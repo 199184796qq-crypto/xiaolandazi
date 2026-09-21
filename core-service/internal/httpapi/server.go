@@ -1,0 +1,524 @@
+package httpapi
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"livecompanion/core/internal/collector"
+	eventstore "livecompanion/core/internal/events"
+	"livecompanion/core/internal/media"
+	"livecompanion/core/internal/model"
+	roomstore "livecompanion/core/internal/room"
+)
+
+type Server struct {
+	rooms         *roomstore.Store
+	events        *eventstore.Store
+	hub           *eventstore.Hub
+	collectors    *collector.Manager
+	media         *media.Manager
+	env           string
+	internalToken string
+}
+
+func New(
+	rooms *roomstore.Store,
+	events *eventstore.Store,
+	hub *eventstore.Hub,
+	collectors *collector.Manager,
+	mediaManager *media.Manager,
+	env string,
+	internalToken string,
+) *Server {
+	return &Server{
+		rooms:         rooms,
+		events:        events,
+		hub:           hub,
+		collectors:    collectors,
+		media:         mediaManager,
+		env:           env,
+		internalToken: internalToken,
+	}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.health)
+
+	mux.Handle("GET /internal/v1/rooms", s.internal(http.HandlerFunc(s.listRooms)))
+	mux.Handle("POST /internal/v1/rooms", s.internal(http.HandlerFunc(s.createRoom)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.getRoom)))
+	mux.Handle("PATCH /internal/v1/rooms/{roomID}/runtime", s.internal(http.HandlerFunc(s.updateRoomRuntime)))
+	mux.Handle("DELETE /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.deleteRoom)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.listEvents)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/stream", s.internal(http.HandlerFunc(s.streamEvents)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/preview", s.internal(http.HandlerFunc(s.previewRoom)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/live/{file}", s.internal(http.HandlerFunc(s.liveMedia)))
+	mux.Handle("POST /internal/v1/dev/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.createDevEvent)))
+
+	return requestLogger(mux)
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": "core-service",
+		"status":  "ok",
+		"time":    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) internal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.internalToken == "" || r.Header.Get("X-Core-Token") != s.internalToken {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	items, err := s.rooms.List(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list rooms failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
+	var input model.CreateRoomInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	input.ExternalRoomID = strings.TrimSpace(input.ExternalRoomID)
+	input.Platform = strings.TrimSpace(input.Platform)
+	input.Name = strings.TrimSpace(input.Name)
+	input.CollectorMode = strings.TrimSpace(input.CollectorMode)
+
+	if input.TenantID <= 0 {
+		writeError(w, http.StatusBadRequest, "tenant_id is required")
+		return
+	}
+	if input.ExternalRoomID == "" {
+		writeError(w, http.StatusBadRequest, "external_room_id is required")
+		return
+	}
+	if input.Platform == "" {
+		input.Platform = "douyin"
+	}
+	if input.CollectorMode == "" {
+		input.CollectorMode = "auto"
+	}
+
+	item, err := s.rooms.Create(r.Context(), input)
+	if err != nil {
+		if errors.Is(err, roomstore.ErrConflict) {
+			writeError(w, http.StatusConflict, "room already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create room failed")
+		return
+	}
+
+	s.collectors.Start(item)
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	item, err := s.rooms.Get(r.Context(), tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) updateRoomRuntime(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	var input model.UpdateRoomRuntimeInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.MonitorEnabled == nil && input.DeviceOnline == nil {
+		writeError(w, http.StatusBadRequest, "runtime state is required")
+		return
+	}
+
+	item, err := s.rooms.UpdateRuntime(
+		r.Context(),
+		tenantID,
+		roomID,
+		input,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update room runtime failed")
+		return
+	}
+
+	s.collectors.Reconcile(item)
+	writeJSON(w, http.StatusOK, item)
+}
+func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	s.collectors.Stop(roomID)
+
+	if err := s.rooms.Delete(r.Context(), tenantID, roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "delete room failed")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	if _, err := s.rooms.Get(r.Context(), tenantID, roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+
+	items, err := s.events.ListRecent(r.Context(), tenantID, roomID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list room events failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	if _, err := s.rooms.Get(r.Context(), tenantID, roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream unsupported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, cancel := s.hub.Subscribe(roomID)
+	defer cancel()
+
+	_, _ = fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case event, open := <-ch:
+			if !open {
+				return
+			}
+			payload, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) liveMedia(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	item, err := s.rooms.Get(r.Context(), tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	fileName := strings.TrimSpace(r.PathValue("file"))
+	path, err := s.media.File(r.Context(), item, fileName)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "live video unavailable")
+		return
+	}
+
+	switch {
+	case strings.HasSuffix(fileName, ".m3u8"):
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
+	case strings.HasSuffix(fileName, ".ts"):
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Cache-Control", "public, max-age=2")
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported media file")
+		return
+	}
+
+	http.ServeFile(w, r, path)
+}
+func (s *Server) previewRoom(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := optionalTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	item, err := s.rooms.Get(r.Context(), tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	previewCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	data, contentType, err := s.collectors.Preview(previewCtx, item)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "room preview unavailable")
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, http.StatusServiceUnavailable, "room preview empty")
+		return
+	}
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+func (s *Server) createDevEvent(w http.ResponseWriter, r *http.Request) {
+	if s.env != "development" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenantID, ok := requiredTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	roomItem, err := s.rooms.Get(r.Context(), &tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+
+	var input model.CreateEventInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	input.EventType = strings.TrimSpace(input.EventType)
+	input.Nickname = strings.TrimSpace(input.Nickname)
+	input.Content = strings.TrimSpace(input.Content)
+
+	if input.EventType == "" {
+		input.EventType = "chat"
+	}
+	if input.Nickname == "" {
+		input.Nickname = "测试用户"
+	}
+	if input.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	event, err := s.events.Create(r.Context(), roomItem.TenantID, roomID, input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create event failed")
+		return
+	}
+	if err := s.rooms.MarkLive(r.Context(), roomItem.TenantID, roomID); err != nil {
+		writeError(w, http.StatusInternalServerError, "update room failed")
+		return
+	}
+
+	s.hub.Publish(event)
+	writeJSON(w, http.StatusCreated, event)
+}
+
+func optionalTenantID(w http.ResponseWriter, r *http.Request) (*int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if raw == "" {
+		return nil, true
+	}
+
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid tenant_id")
+		return nil, false
+	}
+	return &value, true
+}
+
+func requiredTenantID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	value, ok := optionalTenantID(w, r)
+	if !ok {
+		return 0, false
+	}
+	if value == nil {
+		writeError(w, http.StatusBadRequest, "tenant_id is required")
+		return 0, false
+	}
+	return *value, true
+}
+
+func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	value, err := strconv.ParseInt(r.PathValue(name), 10, 64)
+	if err != nil || value <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid resource id")
+		return 0, false
+	}
+	return value, true
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		log.Printf("http method=%s path=%s duration=%s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+}
