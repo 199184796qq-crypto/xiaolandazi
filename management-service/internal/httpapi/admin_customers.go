@@ -9,16 +9,16 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/model"
 )
 
 type adminResetPasswordRequest struct {
-	NewPassword     string `json:"new_password"`
-	ConfirmPassword string `json:"confirm_password"`
+	DeliveryMethod string `json:"delivery_method"`
+	Email          string `json:"email,omitempty"`
 }
-
 type coreRoomListResponse struct {
 	Items []struct {
 		ID int64 `json:"id"`
@@ -34,7 +34,7 @@ func (s *Server) requirePlatformAdmin(
 		return model.Actor{}, false
 	}
 	if !actor.IsPlatformAdmin() {
-		writeError(w, http.StatusForbidden, "仅平台管理员可执行此操作")
+		writeError(w, http.StatusForbidden, "仅超级系统管理员可执行此操作")
 		return model.Actor{}, false
 	}
 	return actor, true
@@ -44,7 +44,11 @@ func (s *Server) adminListCustomers(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	actor, ok := s.requirePlatformAdmin(w, r)
+	actor, _, ok := s.requireStaffPermission(
+		w,
+		r,
+		"customer.view_all",
+	)
 	if !ok {
 		return
 	}
@@ -68,7 +72,7 @@ func (s *Server) adminListCustomers(
 
 	items, err := s.store.ListAdminCustomers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取客户列表失败")
+		writeError(w, http.StatusInternalServerError, "读取终端列表失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -94,41 +98,71 @@ func (s *Server) adminResetCustomerPassword(
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if input.NewPassword != input.ConfirmPassword {
-		writeError(w, http.StatusBadRequest, "两次输入的新密码不一致")
-		return
-	}
+	input.DeliveryMethod = normalizeDeliveryMethod(input.DeliveryMethod)
 
-	passwordHash, err := auth.HashPassword(input.NewPassword)
+	customer, err := s.store.GetAdminCustomer(r.Context(), userID)
 	if err != nil {
-		if errors.Is(err, auth.ErrWeakPassword) {
-			writeError(w, http.StatusBadRequest, "新密码长度需为 8-72 位")
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "终端不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "密码加密失败")
+		writeError(w, http.StatusInternalServerError, "读取终端失败")
 		return
 	}
 
-	customer, err := s.store.AdminResetCustomerPassword(
+	emailValue := strings.TrimSpace(input.Email)
+	if emailValue == "" {
+		emailValue = customer.Email
+	}
+	email, emailOK := normalizeCredentialEmail(emailValue)
+	if !emailOK {
+		writeError(w, http.StatusBadRequest, "邮箱格式不正确")
+		return
+	}
+	if input.DeliveryMethod == "email" && email == "" {
+		writeError(w, http.StatusBadRequest, "该终端没有邮箱，请使用复制方式交付初始密码")
+		return
+	}
+
+	initialPassword, err := auth.GenerateInitialPassword()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "生成初始密码失败")
+		return
+	}
+	passwordHash, err := auth.HashPassword(initialPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "初始密码加密失败")
+		return
+	}
+
+	customer, err = s.store.AdminResetCustomerPassword(
 		r.Context(),
 		userID,
 		passwordHash,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "客户不存在")
+			writeError(w, http.StatusNotFound, "终端不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "重置客户密码失败")
+		writeError(w, http.StatusInternalServerError, "重置终端密码失败")
 		return
 	}
 
+	credential := s.deliverInitialCredential(
+		input.DeliveryMethod,
+		email,
+		customer.DisplayName,
+		customer.Username,
+		initialPassword,
+	)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"customer": customer,
+		"ok":         true,
+		"customer":   customer,
+		"credential": credential,
 	})
 }
-
 func (s *Server) adminDeleteCustomer(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -145,10 +179,10 @@ func (s *Server) adminDeleteCustomer(
 	customer, err := s.store.GetAdminCustomer(r.Context(), userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "客户不存在")
+			writeError(w, http.StatusNotFound, "终端不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "读取客户失败")
+		writeError(w, http.StatusInternalServerError, "读取终端失败")
 		return
 	}
 
@@ -159,7 +193,7 @@ func (s *Server) adminDeleteCustomer(
 		writeError(
 			w,
 			http.StatusBadGateway,
-			"删除客户失败：核心直播间清理未完成",
+			"删除终端失败：核心直播间清理未完成",
 		)
 		return
 	}
@@ -169,10 +203,10 @@ func (s *Server) adminDeleteCustomer(
 		userID,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "客户不存在")
+			writeError(w, http.StatusNotFound, "终端不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "删除客户失败")
+		writeError(w, http.StatusInternalServerError, "删除终端失败")
 		return
 	}
 
@@ -183,7 +217,11 @@ func (s *Server) adminListAuditLogs(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	actor, ok := s.requirePlatformAdmin(w, r)
+	actor, _, ok := s.requireStaffPermission(
+		w,
+		r,
+		"audit.view",
+	)
 	if !ok {
 		return
 	}
@@ -232,7 +270,7 @@ func adminUserID(
 		64,
 	)
 	if err != nil || value <= 0 {
-		writeError(w, http.StatusBadRequest, "客户ID无效")
+		writeError(w, http.StatusBadRequest, "终端ID无效")
 		return 0, false
 	}
 	return value, true

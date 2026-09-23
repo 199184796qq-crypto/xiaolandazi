@@ -192,9 +192,18 @@ func (s *Store) SetStatus(
 	roomID int64,
 	status string,
 ) error {
+	if status == "live" {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE core_rooms
+			SET status = ?
+			WHERE id = ? AND tenant_id = ?
+		`, status, roomID, tenantID)
+		return err
+	}
+
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE core_rooms
-		SET status = ?
+		SET status = ?, online_count = 0
 		WHERE id = ? AND tenant_id = ?
 	`, status, roomID, tenantID)
 	return err
@@ -209,7 +218,7 @@ func (s *Store) SetOnlineCount(
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE core_rooms
 		SET online_count = ?, last_event_at = CURRENT_TIMESTAMP(3)
-		WHERE id = ? AND tenant_id = ?
+		WHERE id = ? AND tenant_id = ? AND status = 'live'
 	`, onlineCount, roomID, tenantID)
 	if err != nil {
 		return err

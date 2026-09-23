@@ -33,3 +33,9 @@ management-service/vendor/
 legacy/
 
 data/tools/
+
+data/avatars/*
+!data/avatars/.gitkeep
+data/run/*
+**/__pycache__/
+*.py[cod]

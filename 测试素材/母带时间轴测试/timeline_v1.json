@@ -1,0 +1,270 @@
+{
+  "version": "timeline-v1",
+  "source_audio": "mainline_master.wav",
+  "source_text": "mainline_text.txt",
+  "timestamp_source": "Qwen-Audio word_timestamp_enabled streaming output",
+  "text_chars": 579,
+  "audio_end_ms": 87704,
+  "sentence_count": 16,
+  "sentences": [
+    {
+      "id": "S001",
+      "char_start": 0,
+      "char_end": 31,
+      "start_ms": 148,
+      "end_ms": 5037,
+      "duration_ms": 4889,
+      "text": "咱们今天聊的这只童子鸡，它是来自安徽皖南高山区域的纯种土黄鸡。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 5037,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S002",
+      "char_start": 31,
+      "char_end": 66,
+      "start_ms": 4815,
+      "end_ms": 10074,
+      "duration_ms": 5259,
+      "text": "大家拿到手的时候，可以先别急着下锅，把袋子拆开，仔细看看这个鸡的状态。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 10074,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S003",
+      "char_start": 66,
+      "char_end": 105,
+      "start_ms": 9852,
+      "end_ms": 16074,
+      "duration_ms": 6222,
+      "text": "你会发现它的皮是比较薄的，皮下基本以精瘦肉为主，肉质呈现出一种相对紧实的感觉。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 16074,
+      "safe_score": 70,
+      "safe_grade": "B",
+      "safe_reason": [
+        "strong_sentence_end",
+        "next_sentence_context_dependent"
+      ]
+    },
+    {
+      "id": "S004",
+      "char_start": 105,
+      "char_end": 127,
+      "start_ms": 16000,
+      "end_ms": 19333,
+      "duration_ms": 3333,
+      "text": "这种状态其实跟它在山上的生长过程是分不开的。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 19333,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S005",
+      "char_start": 127,
+      "char_end": 181,
+      "start_ms": 19185,
+      "end_ms": 27111,
+      "duration_ms": 7926,
+      "text": "它不是那种关在笼子里的圈养模式，而是属于跑山鸡、溜达鸡，在漫山遍野的高山环境里活动，平时的运动量是比较大的。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 27111,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S006",
+      "char_start": 181,
+      "char_end": 241,
+      "start_ms": 26963,
+      "end_ms": 36222,
+      "duration_ms": 9259,
+      "text": "正因为有这种放养空间，鸡在活动过程中会自己捕食一些小虫、小竹笋这些天然的东西，同时我们也会配合喂人工科学配比的安全食材。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 36222,
+      "safe_score": 70,
+      "safe_grade": "B",
+      "safe_reason": [
+        "strong_sentence_end",
+        "next_sentence_context_dependent"
+      ]
+    },
+    {
+      "id": "S007",
+      "char_start": 241,
+      "char_end": 270,
+      "start_ms": 36148,
+      "end_ms": 40593,
+      "duration_ms": 4445,
+      "text": "这样做的逻辑很简单，就是让鸡吃得干净，咱们人才能吃得放心。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 40593,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S008",
+      "char_start": 270,
+      "char_end": 341,
+      "start_ms": 40444,
+      "end_ms": 51407,
+      "duration_ms": 10963,
+      "text": "现在下单的都是活鸡新鲜宰杀，而且我知道很多朋友特别在意完整性，我们这边是保留鸡真、鸡肝、鸡心的，整只去头、去鸡屁股后切块发货，也就是原切状态。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 51407,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S009",
+      "char_start": 341,
+      "char_end": 371,
+      "start_ms": 51333,
+      "end_ms": 56074,
+      "duration_ms": 4741,
+      "text": "虽然切了块，但品质和整只的一样，像清蒸这种做法也完全没问题。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 56074,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S010",
+      "char_start": 371,
+      "char_end": 397,
+      "start_ms": 55926,
+      "end_ms": 60148,
+      "duration_ms": 4222,
+      "text": "单只毛重两斤以上，净重大概在一点二斤到一点八斤左右。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 60148,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S011",
+      "char_start": 397,
+      "char_end": 425,
+      "start_ms": 60000,
+      "end_ms": 64296,
+      "duration_ms": 4296,
+      "text": "关于物流这块，我得多啰嗦几句，因为很多外地朋友关心时效。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 64296,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S012",
+      "char_start": 425,
+      "char_end": 459,
+      "start_ms": 64148,
+      "end_ms": 69556,
+      "duration_ms": 5408,
+      "text": "江浙沪皖的朋友，正常发货后基本隔天就能到，其他地区大概需要两到三天。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 69556,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S013",
+      "char_start": 459,
+      "char_end": 474,
+      "start_ms": 69333,
+      "end_ms": 72000,
+      "duration_ms": 2667,
+      "text": "大家收到后按实际状态检查即可。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 72000,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S014",
+      "char_start": 474,
+      "char_end": 516,
+      "start_ms": 71778,
+      "end_ms": 78370,
+      "duration_ms": 6592,
+      "text": "如果拿到手不知道怎么处理，包装袋后面有教程入口，或者联系客服获取详细做法指导都可以。",
+      "pause_after_ms": 0,
+      "cut_after_ms": 78370,
+      "safe_score": 70,
+      "safe_grade": "B",
+      "safe_reason": [
+        "strong_sentence_end",
+        "next_sentence_context_dependent"
+      ]
+    },
+    {
+      "id": "S015",
+      "char_start": 516,
+      "char_end": 564,
+      "start_ms": 78222,
+      "end_ms": 85852,
+      "duration_ms": 7630,
+      "text": "那么对于这种皮薄肉紧、内脏齐全且已切块方便处理的原切童子鸡，您觉得这个规格适合家里一顿饭的量吗？",
+      "pause_after_ms": 0,
+      "cut_after_ms": 85852,
+      "safe_score": 82,
+      "safe_grade": "A",
+      "safe_reason": [
+        "strong_sentence_end"
+      ]
+    },
+    {
+      "id": "S016",
+      "char_start": 564,
+      "char_end": 579,
+      "start_ms": 85704,
+      "end_ms": 87704,
+      "duration_ms": 2000,
+      "text": "觉得合适的话，可以直接拍一号。",
+      "pause_after_ms": null,
+      "cut_after_ms": null,
+      "safe_score": 100,
+      "safe_grade": "A",
+      "safe_reason": [
+        "track_end"
+      ]
+    }
+  ]
+}

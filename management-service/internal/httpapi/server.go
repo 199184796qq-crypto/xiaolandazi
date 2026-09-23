@@ -14,15 +14,19 @@ import (
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
 )
 
 type Server struct {
-	store *appdb.Store
-	auth  *auth.Resolver
-	core  *coreclient.Client
-	audit *auditlog.Store
-	env   string
+	store        *appdb.Store
+	auth         *auth.Resolver
+	core         *coreclient.Client
+	audit        *auditlog.Store
+	mailer       *mailer.Client
+	env          string
+	avatarDir    string
+	publicWebURL string
 }
 
 func New(
@@ -30,14 +34,20 @@ func New(
 	authResolver *auth.Resolver,
 	core *coreclient.Client,
 	auditStore *auditlog.Store,
+	mailerClient *mailer.Client,
 	env string,
+	avatarDir string,
+	publicWebURL string,
 ) *Server {
 	return &Server{
-		store: store,
-		auth:  authResolver,
-		core:  core,
-		audit: auditStore,
-		env:   env,
+		store:        store,
+		auth:         authResolver,
+		core:         core,
+		audit:        auditStore,
+		mailer:       mailerClient,
+		env:          env,
+		avatarDir:    avatarDir,
+		publicWebURL: strings.TrimRight(publicWebURL, "/"),
 	}
 }
 
@@ -49,15 +59,137 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/captcha", s.authCaptcha)
 	mux.HandleFunc("POST /api/v1/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/v1/auth/register", s.authRegister)
+	mux.HandleFunc("GET /api/v1/auth/invite/{code}", s.authInvitePreview)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.authLogout)
 	mux.HandleFunc("POST /api/v1/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("GET /api/v1/auth/sessions", s.authSessions)
+	mux.HandleFunc("POST /api/v1/auth/sessions/logout-others", s.authLogoutOtherSessions)
 
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
+	mux.HandleFunc("GET /api/v1/invitations/dashboard", s.invitationDashboard)
+	mux.HandleFunc("PATCH /api/v1/invitations/mine", s.updateOwnInviteCodeStatus)
+	mux.HandleFunc("GET /api/v1/resources", s.currentResourceDashboard)
+
+	mux.HandleFunc("GET /api/v1/staff/dashboard", s.staffDashboard)
+	mux.HandleFunc("GET /api/v1/staff/finance", s.staffFinanceOverview)
+	mux.HandleFunc("GET /api/v1/staff/finance/customers/{tenantID}", s.staffFinanceCustomerDashboard)
+	mux.HandleFunc("POST /api/v1/staff/finance/recharge", s.staffFinanceCreateRecharge)
+	mux.HandleFunc("POST /api/v1/staff/finance/refund", s.staffFinanceCreateRefund)
+	mux.HandleFunc("POST /api/v1/staff/finance/reward", s.staffFinanceCreateReward)
+	mux.HandleFunc("POST /api/v1/staff/finance/approvals/{taskID}/approve", s.staffFinanceApproveTask)
+	mux.HandleFunc("POST /api/v1/staff/finance/approvals/{taskID}/reject", s.staffFinanceRejectTask)
+	mux.HandleFunc("POST /api/v1/staff/groups", s.staffCreateGroup)
+	mux.HandleFunc("PATCH /api/v1/staff/groups/{groupID}", s.staffUpdateGroup)
+	mux.HandleFunc("POST /api/v1/staff/roles", s.staffCreateRole)
+	mux.HandleFunc("PUT /api/v1/staff/roles/{roleID}", s.staffUpdateRole)
+	mux.HandleFunc("POST /api/v1/staff/employees", s.staffCreateEmployee)
+	mux.HandleFunc("POST /api/v1/staff/employees/{employeeID}/disable", s.staffDisableEmployee)
+	mux.HandleFunc("PUT /api/v1/staff/employees/{employeeID}/roles", s.staffReplaceEmployeeRoles)
+	mux.HandleFunc("PATCH /api/v1/staff/approval-policies/{policyID}", s.staffUpdateApprovalPolicy)
+
+	mux.HandleFunc("GET /api/v1/account", s.accountDashboard)
+	mux.HandleFunc("PATCH /api/v1/account/profile", s.accountUpdateProfile)
+	mux.HandleFunc("POST /api/v1/account/avatar", s.accountUploadAvatar)
+	mux.HandleFunc("GET /api/v1/account/avatar/{file}", s.accountAvatarFile)
+	mux.HandleFunc("GET /api/v1/finance/dashboard", s.financeDashboard)
+	mux.HandleFunc("POST /api/v1/finance/recharge-request", s.financeCreateRechargeRequest)
 
 	mux.HandleFunc("GET /api/v1/admin/customers", s.adminListCustomers)
+	mux.HandleFunc("PUT /api/v1/admin/customers/{tenantID}/sales-assignment", s.adminAssignCustomerSales)
+	mux.HandleFunc("GET /api/v1/admin/customers/{tenantID}/resources", s.adminCustomerResourceDashboard)
+	mux.HandleFunc("POST /api/v1/admin/customers/{tenantID}/resources/adjust", s.adminAdjustCustomerResource)
 	mux.HandleFunc("POST /api/v1/admin/customers/{userID}/reset-password", s.adminResetCustomerPassword)
-	mux.HandleFunc("DELETE /api/v1/admin/customers/{userID}", s.adminDeleteCustomer)
+	mux.HandleFunc("GET /api/v1/admin/agents", s.adminListAgents)
+	mux.HandleFunc("GET /api/v1/admin/agents/{organizationID}/exit-check", s.adminAgentExitCheck)
+	mux.HandleFunc("GET /api/v1/admin/agents/{organizationID}/exit-history", s.adminAgentExitHistory)
+	mux.HandleFunc("POST /api/v1/admin/agents/{organizationID}/finalize-exit", s.adminFinalizeAgentExit)
+	mux.HandleFunc("POST /api/v1/admin/agents", s.adminCreateAgent)
+	mux.HandleFunc("GET /api/v1/admin/agent-levels", s.adminAgentLevels)
+	mux.HandleFunc("POST /api/v1/admin/agent-levels", s.adminCreateAgentLevel)
+	mux.HandleFunc("PUT /api/v1/admin/agent-levels/{levelID}", s.adminUpdateAgentLevel)
+	mux.HandleFunc("POST /api/v1/admin/agents/{organizationID}/level-assignments", s.adminAssignAgentLevel)
+	mux.HandleFunc("GET /api/v1/admin/agent-contracts", s.adminAgentContracts)
+	mux.HandleFunc("POST /api/v1/admin/agent-contracts", s.adminCreateAgentContract)
+	mux.HandleFunc("PUT /api/v1/admin/agent-contracts/{contractID}", s.adminUpdateAgentContract)
+	mux.HandleFunc("POST /api/v1/admin/agent-contracts/{contractID}/transition", s.adminTransitionAgentContract)
+	mux.HandleFunc("POST /api/v1/admin/agent-contracts/{contractID}/attachments", s.adminUploadAgentContractAttachments)
+	mux.HandleFunc("DELETE /api/v1/admin/agent-contracts/{contractID}/attachments/{attachmentID}", s.adminDeleteAgentContractAttachment)
+	mux.HandleFunc("GET /api/v1/admin/agent-contract-files/{file}", s.adminAgentContractFile)
+	mux.HandleFunc("GET /api/v1/admin/sales", s.adminListSalesStaff)
+	mux.HandleFunc("GET /api/v1/admin/sales/performance", s.adminSalesPerformance)
+	mux.HandleFunc("POST /api/v1/admin/sales", s.adminCreateSalesStaff)
+	mux.HandleFunc("GET /api/v1/admin/agents/{orgID}/resources", s.adminAgentResourceDashboard)
+	mux.HandleFunc("POST /api/v1/admin/agents/{orgID}/resources/adjust", s.adminAdjustAgentResource)
 	mux.HandleFunc("GET /api/v1/admin/audit-logs", s.adminListAuditLogs)
+	mux.HandleFunc("PATCH /api/v1/admin/invitations/{codeID}", s.adminUpdateInviteCodeStatus)
+
+	mux.HandleFunc("GET /api/v1/agent/customers", s.agentListCustomers)
+	mux.HandleFunc("POST /api/v1/agent/customers", s.agentCreateCustomer)
+	mux.HandleFunc("GET /api/v1/sales/customers", s.salesListCustomers)
+	mux.HandleFunc("GET /api/v1/agent/customers/{tenantID}/resources", s.agentCustomerResourceDashboard)
+	mux.HandleFunc("POST /api/v1/agent/customers/{tenantID}/resources/allocate", s.agentAllocateCustomerResource)
+
+	mux.HandleFunc("GET /api/v1/commercial/memberships", s.commercialListMemberships)
+	mux.HandleFunc("POST /api/v1/commercial/memberships", s.commercialCreateMembership)
+	mux.HandleFunc("PUT /api/v1/commercial/memberships/{planID}/draft", s.commercialSaveMembershipDraft)
+	mux.HandleFunc("POST /api/v1/commercial/memberships/{planID}/publish", s.commercialPublishMembership)
+	mux.HandleFunc("GET /api/v1/commercial/time-cards", s.commercialListTimeCards)
+	mux.HandleFunc("POST /api/v1/commercial/time-cards", s.commercialCreateTimeCard)
+	mux.HandleFunc("PUT /api/v1/commercial/time-cards/{productID}/draft", s.commercialSaveTimeCardDraft)
+	mux.HandleFunc("POST /api/v1/commercial/time-cards/{productID}/publish", s.commercialPublishTimeCard)
+	mux.HandleFunc("GET /api/v1/commercial/device-products", s.commercialListDeviceProducts)
+	mux.HandleFunc("POST /api/v1/commercial/device-products", s.commercialCreateDeviceProduct)
+	mux.HandleFunc("PUT /api/v1/commercial/device-products/{productID}/draft", s.commercialSaveDeviceProductDraft)
+	mux.HandleFunc("POST /api/v1/commercial/device-products/{productID}/publish", s.commercialPublishDeviceProduct)
+	mux.HandleFunc("GET /api/v1/commercial/incentives", s.commercialListIncentivePrograms)
+	mux.HandleFunc("POST /api/v1/commercial/incentives", s.commercialCreateIncentiveProgram)
+	mux.HandleFunc("PUT /api/v1/commercial/incentives/{programID}/draft", s.commercialSaveIncentiveDraft)
+	mux.HandleFunc("POST /api/v1/commercial/incentives/{programID}/publish", s.commercialPublishIncentive)
+	mux.HandleFunc("GET /api/v1/finance/settlements", s.financeSettlementDashboard)
+	mux.HandleFunc("POST /api/v1/finance/settlements/batches", s.financeCreateSettlementBatch)
+	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/approve", s.financeApproveSettlementBatch)
+	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/reject", s.financeRejectSettlementBatch)
+	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/pay", s.financePaySettlementBatch)
+	mux.HandleFunc("GET /api/v1/finance/operating", s.financeOperatingOverview)
+	mux.HandleFunc("POST /api/v1/finance/token-purchases", s.financeCreateTokenPurchase)
+	mux.HandleFunc("GET /api/v1/shop/time-cards", s.customerShopTimeCards)
+	mux.HandleFunc("GET /api/v1/shop/devices", s.customerShopDevices)
+	mux.HandleFunc("GET /api/v1/shop/orders", s.customerShopListOrders)
+	mux.HandleFunc("POST /api/v1/shop/orders", s.customerShopCreateOrder)
+	mux.HandleFunc("GET /api/v1/shop/orders/{orderID}", s.customerShopGetOrder)
+	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/sandbox-pay", s.customerShopSandboxPayOrder)
+	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/sandbox-refund", s.customerShopSandboxRefundOrder)
+	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/cancel", s.customerShopCancelOrder)
+	mux.HandleFunc("GET /api/v1/after-sales/requests", s.afterSalesListRequests)
+	mux.HandleFunc("POST /api/v1/after-sales/requests", s.afterSalesCreateRequest)
+	mux.HandleFunc("GET /api/v1/after-sales/requests/{rmaID}/events", s.afterSalesRequestEvents)
+	mux.HandleFunc("GET /api/v1/inventory/warehouses", s.inventoryListWarehouses)
+	mux.HandleFunc("GET /api/v1/inventory/device-products", s.inventoryListDeviceProducts)
+	mux.HandleFunc("GET /api/v1/inventory/agents", s.inventoryListAgents)
+	mux.HandleFunc("GET /api/v1/inventory/devices", s.inventoryListDevices)
+	mux.HandleFunc("POST /api/v1/inventory/devices", s.inventoryCreateDevice)
+	mux.HandleFunc("POST /api/v1/inventory/inbounds", s.inventoryBatchInbound)
+	mux.HandleFunc("POST /api/v1/inventory/devices/{deviceID}/transition", s.inventoryTransitionDevice)
+	mux.HandleFunc("POST /api/v1/inventory/devices/{deviceID}/scrap-dispose", s.inventoryDisposeScrapDevice)
+	mux.HandleFunc("GET /api/v1/inventory/devices/{deviceID}/ledger", s.inventoryDeviceLedger)
+	mux.HandleFunc("GET /api/v1/inventory/ledger", s.inventoryAllLedger)
+	mux.HandleFunc("GET /api/v1/inventory/summary", s.inventorySummary)
+	mux.HandleFunc("GET /api/v1/inventory/documents", s.inventoryDocuments)
+	mux.HandleFunc("GET /api/v1/inventory/rmas", s.inventoryListRMAs)
+	mux.HandleFunc("POST /api/v1/inventory/rmas", s.inventoryCreateRMA)
+	mux.HandleFunc("POST /api/v1/inventory/rmas/{rmaID}/accept", s.inventoryAcceptRMA)
+	mux.HandleFunc("POST /api/v1/inventory/rmas/{rmaID}/start-repair", s.inventoryStartRMARepair)
+	mux.HandleFunc("GET /api/v1/inventory/rmas/{rmaID}/events", s.inventoryRMAEvents)
+	mux.HandleFunc("GET /api/v1/inventory/rmas/{rmaID}/costs", s.inventoryListRMACosts)
+	mux.HandleFunc("POST /api/v1/inventory/rmas/{rmaID}/costs", s.inventoryCreateRMACost)
+	mux.HandleFunc("POST /api/v1/inventory/rmas/{rmaID}/complete", s.inventoryCompleteRMA)
+	mux.HandleFunc("GET /api/v1/logistics/shipments", s.logisticsListShipments)
+	mux.HandleFunc("POST /api/v1/logistics/shipments", s.logisticsCreateShipment)
+	mux.HandleFunc("POST /api/v1/logistics/shipments/{shipmentID}/status", s.logisticsUpdateShipmentStatus)
+	mux.HandleFunc("GET /api/v1/admin/features/{featureKey}", s.adminListFeatureRecords)
+	mux.HandleFunc("POST /api/v1/admin/features/{featureKey}", s.adminCreateFeatureRecord)
+	mux.HandleFunc("PUT /api/v1/admin/features/{featureKey}/{recordID}", s.adminUpdateFeatureRecord)
+	mux.HandleFunc("DELETE /api/v1/admin/features/{featureKey}/{recordID}", s.adminDeleteFeatureRecord)
 
 	mux.HandleFunc("GET /api/v1/rooms", s.listRooms)
 	mux.HandleFunc("POST /api/v1/rooms", s.createRoom)
@@ -88,6 +220,15 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	var tenants []model.Tenant
 	var err error
 
+	var staffAccess *model.StaffAccessContext
+
+	if actor.IsInternalStaff() {
+		access, accessErr := s.store.GetStaffAccess(r.Context(), actor.UserID)
+		if accessErr == nil {
+			staffAccess = &access
+		}
+	}
+
 	if actor.IsPlatformAdmin() {
 		tenants, err = s.store.ListTenants(r.Context())
 	} else if actor.TenantID != nil {
@@ -98,14 +239,15 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取客户信息失败")
+		writeError(w, http.StatusInternalServerError, "读取终端信息失败")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"actor":       actor,
-		"tenants":     tenants,
-		"environment": s.env,
+		"actor":        actor,
+		"staff_access": staffAccess,
+		"tenants":      tenants,
+		"environment":  s.env,
 	})
 }
 
@@ -131,6 +273,10 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
+		return
+	}
+	if actor.Role != "customer" {
+		writeError(w, http.StatusForbidden, "仅终端账号可创建直播间")
 		return
 	}
 
@@ -171,21 +317,33 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		input.CollectorMode = "auto"
 	}
 
-	if actor.IsPlatformAdmin() {
-		if input.TenantID <= 0 {
-			writeError(w, http.StatusBadRequest, "请选择所属客户")
-			return
-		}
-		if _, err := s.store.GetTenant(r.Context(), input.TenantID); err != nil {
-			writeError(w, http.StatusBadRequest, "所属客户不存在")
-			return
-		}
-	} else {
-		if actor.TenantID == nil {
-			writeError(w, http.StatusForbidden, "当前账号没有客户范围")
-			return
-		}
-		input.TenantID = *actor.TenantID
+	if actor.TenantID == nil {
+		writeError(w, http.StatusForbidden, "当前账号没有终端范围")
+		return
+	}
+	input.TenantID = *actor.TenantID
+
+	roomLimit, err := s.store.GetOrganizationResourceBalance(
+		r.Context(),
+		input.TenantID,
+		"room_slots",
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取直播间额度失败")
+		return
+	}
+	roomCount, err := s.store.GetTenantRoomCount(r.Context(), input.TenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前直播间数量失败")
+		return
+	}
+	if roomCount >= roomLimit {
+		writeError(
+			w,
+			http.StatusConflict,
+			"直播间额度不足，请联系平台或所属代理增加直播间额度",
+		)
+		return
 	}
 
 	resp, err := s.core.Do(r.Context(), http.MethodPost, "/internal/v1/rooms", nil, input)
@@ -224,6 +382,10 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
+		return
+	}
+	if actor.Role != "customer" {
+		writeError(w, http.StatusForbidden, "仅终端账号可删除直播间")
 		return
 	}
 	roomID, ok := pathID(w, r)
@@ -469,7 +631,7 @@ func (s *Server) tenantForRoom(
 ) (int64, bool) {
 	if !actor.IsPlatformAdmin() {
 		if actor.TenantID == nil {
-			writeError(w, http.StatusForbidden, "当前账号没有客户范围")
+			writeError(w, http.StatusForbidden, "当前账号没有终端范围")
 			return 0, false
 		}
 		return *actor.TenantID, true
@@ -508,7 +670,15 @@ func (s *Server) roomScopeQuery(
 	r *http.Request,
 	actor model.Actor,
 ) (url.Values, bool) {
-	if !actor.IsPlatformAdmin() {
+	hasSystemScope := actor.IsPlatformAdmin()
+	if !hasSystemScope && actor.IsInternalStaff() {
+		access, err := s.store.GetStaffAccess(r.Context(), actor.UserID)
+		if err == nil && staffHasPermission(access, "system.architecture.view") {
+			hasSystemScope = true
+		}
+	}
+
+	if !hasSystemScope {
 		return scopeForActor(actor), true
 	}
 
@@ -520,18 +690,17 @@ func (s *Server) roomScopeQuery(
 
 	tenantID, err := strconv.ParseInt(rawTenantID, 10, 64)
 	if err != nil || tenantID <= 0 {
-		writeError(w, http.StatusBadRequest, "无效的客户 ID")
+		writeError(w, http.StatusBadRequest, "无效的终端 ID")
 		return nil, false
 	}
 	if _, err := s.store.GetTenant(r.Context(), tenantID); err != nil {
-		writeError(w, http.StatusBadRequest, "客户不存在")
+		writeError(w, http.StatusBadRequest, "终端不存在")
 		return nil, false
 	}
 
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 	return query, true
 }
-
 func scopeForActor(actor model.Actor) url.Values {
 	query := url.Values{}
 	if !actor.IsPlatformAdmin() && actor.TenantID != nil {
@@ -563,7 +732,7 @@ func normalizeDouyinRoomInput(value string) (string, string, error) {
 
 	host := strings.ToLower(parsed.Hostname())
 	if host != "live.douyin.com" {
-		return "", "", fmt.Errorf("当前只支持 live.douyin.com 直播链接或直播间房间号")
+		return "", "", fmt.Errorf("当前仅支持 live.douyin.com 直播链接或直播间房间号")
 	}
 
 	path := strings.Trim(parsed.Path, "/")

@@ -19,10 +19,19 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 	AuditLogLimit int
+	AvatarDir     string
 	CoreBaseURL   string
 	CoreToken     string
 	DevTenantCode string
 	DevTenantName string
+	PublicWebURL  string
+	SMTPHost      string
+	SMTPPort      string
+	SMTPUsername  string
+	SMTPPassword  string
+	SMTPFromEmail string
+	SMTPFromName  string
+	SMTPTLSMode   string
 }
 
 func Load() Config {
@@ -39,10 +48,19 @@ func Load() Config {
 		RedisPassword: strings.TrimSpace(os.Getenv("REDIS_PASSWORD")),
 		RedisDB:       envInt("REDIS_DB", 0),
 		AuditLogLimit: envInt("MGMT_AUDIT_LOG_LIMIT", 10000),
+		AvatarDir:     envOrDefault("MGMT_AVATAR_DIR", "data/avatars"),
 		CoreBaseURL:   envOrDefault("CORE_BASE_URL", "http://127.0.0.1:8081"),
 		CoreToken:     envOrDefault("CORE_INTERNAL_TOKEN", "local-core-dev-token"),
 		DevTenantCode: envOrDefault("DEV_TENANT_CODE", "demo"),
-		DevTenantName: envOrDefault("DEV_TENANT_NAME", "演示客户"),
+		DevTenantName: envOrDefault("DEV_TENANT_NAME", "演示终端"),
+		PublicWebURL:  envOrDefault("PUBLIC_WEB_BASE_URL", "http://127.0.0.1:5173"),
+		SMTPHost:      strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:      envOrDefault("SMTP_PORT", "587"),
+		SMTPUsername:  strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
+		SMTPPassword:  os.Getenv("SMTP_PASSWORD"),
+		SMTPFromEmail: strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")),
+		SMTPFromName:  envOrDefault("SMTP_FROM_NAME", "伴播搭子"),
+		SMTPTLSMode:   envOrDefault("SMTP_TLS_MODE", "starttls"),
 	}
 }
 

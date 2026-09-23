@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>真实直播 AI 观察台</title>
+<style>
+:root{
+  font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;
+  color:#0f172a;background:#eef5ff;
+  --blue:#2563eb;--line:#dbe7f7;--muted:#64748b;--green:#16a34a;--red:#dc2626;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#e9f3ff 0,#f7faff 230px,#f5f7fb 100%)}
+.wrap{max-width:1600px;margin:0 auto;padding:18px}
+.header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
+.title h1{font-size:24px;margin:0 0 5px}.title p{margin:0;color:var(--muted);font-size:13px}
+.statusbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.pill{font-size:12px;padding:7px 10px;border-radius:999px;background:white;border:1px solid var(--line)}
+.pill.ok{color:#166534;background:#ecfdf3}.pill.bad{color:#991b1b;background:#fef2f2}
+.metrics{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));gap:10px;margin-bottom:12px}
+.metric{background:white;border:1px solid var(--line);border-radius:13px;padding:12px;box-shadow:0 4px 16px rgba(30,64,175,.05)}
+.metric span{font-size:12px;color:var(--muted)}.metric strong{display:block;font-size:21px;margin-top:4px}.metric small{color:#94a3b8}
+.grid{display:grid;grid-template-columns:1.05fr 1.2fr 1.05fr;gap:12px}
+.card{background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 5px 20px rgba(30,64,175,.06);overflow:hidden}
+.card-head{height:48px;padding:0 14px;background:#eff6ff;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+.card-head h2{font-size:15px;margin:0}.card-head small{color:var(--muted)}
+.list{height:560px;overflow:auto;padding:8px}
+.item{border:1px solid #e8eef7;border-radius:10px;padding:10px;margin-bottom:8px;background:#fff}
+.item:hover{border-color:#bfd3f6}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.name{font-weight:700;font-size:13px}.time{font-size:11px;color:#94a3b8}
+.content{font-size:14px;line-height:1.55;margin-top:6px;word-break:break-word}
+.tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+.tag{font-size:10px;padding:3px 6px;border-radius:6px;background:#f1f5f9;color:#475569}
+.tag.blue{background:#dbeafe;color:#1d4ed8}.tag.green{background:#dcfce7;color:#166534}.tag.orange{background:#ffedd5;color:#9a3412}.tag.gray{background:#f1f5f9}
+.output{background:#f8fbff;border-left:3px solid var(--blue);padding:9px 10px;border-radius:8px;margin-top:7px;font-size:14px;line-height:1.55}
+.empty{padding:100px 20px;color:#94a3b8;text-align:center}
+.bottom{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.config{padding:14px}.config-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px}
+.field input{width:100%;border:1px solid #d6e2f2;border-radius:8px;padding:8px 9px;font-size:12px;outline:none}
+.field input:focus{border-color:#7aa7ef}
+.actions{display:flex;gap:8px;margin-top:10px}
+button{border:0;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer}
+.primary{background:var(--blue);color:white}.ghost{background:#edf2f7;color:#334155}
+.note{padding:14px;font-size:13px;line-height:1.65;color:#475569}.note strong{color:#0f172a}
+.error{color:var(--red)}
+@media(max-width:1200px){.metrics{grid-template-columns:repeat(4,1fr)}.grid{grid-template-columns:1fr}.list{height:420px}.bottom{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="title">
+      <h1>真实直播 AI 观察台</h1>
+      <p>真实抖音公屏 → 本地规则 → Monitor → Control → 仅输出文字；不发回直播间，不启用 TTS</p>
+    </div>
+    <div class="statusbar">
+      <span id="coreStatus" class="pill">Core 检查中</span>
+      <span id="streamStatus" class="pill">事件流检查中</span>
+      <span id="roomStatus" class="pill">房间状态</span>
+      <span id="online" class="pill">在线 -</span>
+    </div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><span>收到事件</span><strong id="mEvents">0</strong><small>真实公屏</small></div>
+    <div class="metric"><span>弹幕</span><strong id="mChat">0</strong><small>需要重点观察</small></div>
+    <div class="metric"><span>规则快路</span><strong id="mRule">0%</strong><small>0 Token</small></div>
+    <div class="metric"><span>Monitor 调用</span><strong id="mMonitor">0</strong><small>模型决策</small></div>
+    <div class="metric"><span>Control 调用</span><strong id="mControl">0</strong><small>自然话术</small></div>
+    <div class="metric"><span>平均处理</span><strong id="mLatency">0 ms</strong><small id="mQueue">队列 0</small></div>
+    <div class="metric"><span>模型费用</span><strong id="mCost">¥0.0000</strong><small>本次观察累计</small></div>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-head"><h2>① 真实公屏</h2><small>Redis / Hub 实时事件</small></div>
+      <div id="events" class="list"><div class="empty">等待真实事件…</div></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>② Monitor 决策</h2><small>规则优先，复杂才调模型</small></div>
+      <div id="decisions" class="list"><div class="empty">等待决策…</div></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>③ 最终准备输出文字</h2><small>当前仅观察，不播音</small></div>
+      <div id="outputs" class="list"><div class="empty">等待可回复内容…</div></div>
+    </section>
+  </div>
+
+  <div class="bottom">
+    <section class="card config">
+      <div class="row"><div><strong>测试业务事实</strong><div style="font-size:11px;color:#64748b;margin-top:3px">空着就表示未知，AI 必须保守回答</div></div><button class="primary" onclick="saveConfig()">保存事实</button></div>
+      <div class="config-grid" style="margin-top:12px">
+        <div class="field"><label>价格 price</label><input id="f_price"></div>
+        <div class="field"><label>优惠券 coupon</label><input id="f_coupon"></div>
+        <div class="field"><label>折扣 promotion</label><input id="f_promotion"></div>
+        <div class="field"><label>规格 quantity</label><input id="f_quantity"></div>
+        <div class="field"><label>发货 shipping</label><input id="f_shipping"></div>
+        <div class="field"><label>保质期 shelf_life</label><input id="f_shelf_life"></div>
+        <div class="field"><label>保存 storage</label><input id="f_storage"></div>
+        <div class="field"><label>使用/做法 usage</label><input id="f_usage"></div>
+      </div>
+      <div class="actions"><button class="ghost" onclick="resetStats()">清空 AI 观察记录</button></div>
+    </section>
+
+    <section class="card note">
+      <strong>当前测试策略</strong><br>
+      普通进房 / 点赞 / 关注直接 NO_ACTION，不调用模型。价格、优惠券、折扣、规格、发货等标准问题走本地规则和模板。复杂弹幕才调用 Monitor；只有需要自然表达时才调用 Control。敏感人群与健康问题由合规规则直接切到安全模板，不增加第三个 Agent。<br><br>
+      <span id="errorText" class="error"></span>
+    </section>
+  </div>
+</div>
+
+<script>
+var configLoaded=false;
+
+function esc(v){
+  return String(v == null ? "" : v).replace(/[&<>"']/g,function(m){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m];
+  });
+}
+function fmtTime(v){
+  try{return new Date(v).toLocaleTimeString("zh-CN",{hour12:false});}catch(e){return "";}
+}
+function eventLabel(v){
+  return {chat:"弹幕",member:"进房",like:"点赞",follow:"关注",gift:"礼物"}[v] || v;
+}
+function tagClass(v){
+  if(v==="chat") return "blue";
+  if(v==="member") return "green";
+  if(v==="like" || v==="follow") return "orange";
+  return "gray";
+}
+function setStatus(id,text,ok){
+  var el=document.getElementById(id);
+  el.textContent=text;
+  el.className="pill "+(ok ? "ok" : "bad");
+}
+function renderEvents(items){
+  var box=document.getElementById("events");
+  if(!items.length){box.innerHTML='<div class="empty">等待真实事件…</div>';return;}
+  box.innerHTML=items.slice(0,100).map(function(e){
+    var c=e.content || "";
+    return '<div class="item"><div class="row"><span class="name">'+esc(e.nickname || "匿名用户")+'</span><span class="time">'+esc(fmtTime(e.occurred_at))+'</span></div>'+
+      '<div class="content">'+esc(c)+'</div><div class="tags"><span class="tag '+tagClass(e.event_type)+'">'+esc(eventLabel(e.event_type))+'</span><span class="tag">#'+esc(e.id)+'</span></div></div>';
+  }).join("");
+}
+function renderDecisions(items){
+  var box=document.getElementById("decisions");
+  if(!items.length){box.innerHTML='<div class="empty">等待决策…</div>';return;}
+  box.innerHTML=items.slice(0,100).map(function(r){
+    var d=r.decision || {};
+    var err=r.error ? '<div class="error">'+esc(r.error)+'</div>' : "";
+    return '<div class="item"><div class="row"><span class="name">'+esc(r.nickname || "匿名用户")+'</span><span class="time">'+esc(fmtTime(r.time))+'</span></div>'+
+      '<div class="content">'+esc(r.content)+'</div>'+
+      '<div class="tags"><span class="tag blue">'+esc(d.action || "-")+'</span><span class="tag">'+esc(d.generation_mode || "-")+'</span><span class="tag">'+esc(r.route)+'</span><span class="tag">'+esc(r.total_ms)+" ms"+'</span></div>'+
+      '<div class="tags"><span class="tag">intent: '+esc(d.intent_code || "-")+'</span><span class="tag">facts: '+esc((d.fact_keys || []).join(","))+'</span></div>'+err+'</div>';
+  }).join("");
+}
+function renderOutputs(items){
+  var box=document.getElementById("outputs");
+  if(!items.length){box.innerHTML='<div class="empty">等待可回复内容…</div>';return;}
+  box.innerHTML=items.slice(0,100).map(function(r){
+    return '<div class="item"><div class="row"><span class="name">'+esc(r.nickname || "匿名用户")+'</span><span class="time">'+esc(fmtTime(r.time))+'</span></div>'+
+      '<div class="content">'+esc(r.content)+'</div><div class="output">'+esc(r.response_text)+'</div>'+
+      '<div class="tags"><span class="tag green">'+esc(r.route)+'</span><span class="tag">'+esc(r.total_ms)+" ms"+'</span><span class="tag">¥'+Number(r.estimated_model_cost_cny || 0).toFixed(6)+'</span></div></div>';
+  }).join("");
+}
+function applyConfig(cfg){
+  if(configLoaded) return;
+  var facts=(cfg && cfg.facts) || {};
+  ["price","coupon","promotion","quantity","shipping","shelf_life","storage","usage"].forEach(function(k){
+    document.getElementById("f_"+k).value=facts[k] || "";
+  });
+  configLoaded=true;
+}
+async function loadState(){
+  try{
+    var r=await fetch("/api/state",{cache:"no-store"});
+    var s=await r.json();
+    var room=s.room || {}, run=s.runtime || {}, m=s.metrics || {};
+    setStatus("coreStatus",run.core_connected ? "Core 已连接" : "Core 未连接",!!run.core_connected);
+    setStatus("streamStatus",run.stream_connected ? "真实事件流已连接" : "真实事件流断开",!!run.stream_connected);
+    setStatus("roomStatus","房间 "+(room.status || "-"),room.status==="live" || room.status==="connecting");
+    document.getElementById("online").textContent="在线 "+Number(room.online_count || 0).toLocaleString();
+    document.getElementById("mEvents").textContent=m.events_total || 0;
+    document.getElementById("mChat").textContent=m.chat_total || 0;
+    document.getElementById("mRule").textContent=(m.rule_hit_rate || 0)+"%";
+    document.getElementById("mMonitor").textContent=m.monitor_calls || 0;
+    document.getElementById("mControl").textContent=m.control_calls || 0;
+    document.getElementById("mLatency").textContent=(m.avg_processing_ms || 0)+" ms";
+    document.getElementById("mQueue").textContent="队列 "+(m.queue_depth || 0)+" · 最大 "+(m.latency_max_ms || 0)+" ms";
+    document.getElementById("mCost").textContent="¥"+Number(m.model_cost_cny || 0).toFixed(4);
+    document.getElementById("errorText").textContent=run.last_stream_error || "";
+    renderEvents(s.events || []);
+    renderDecisions(s.decisions || []);
+    renderOutputs(s.outputs || []);
+    applyConfig(s.config || {});
+  }catch(e){
+    setStatus("coreStatus","观察服务异常",false);
+    document.getElementById("errorText").textContent=String(e);
+  }
+}
+async function saveConfig(){
+  var facts={};
+  ["price","coupon","promotion","quantity","shipping","shelf_life","storage","usage"].forEach(function(k){
+    facts[k]=document.getElementById("f_"+k).value;
+  });
+  await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({facts:facts})});
+}
+async function resetStats(){
+  await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+}
+loadState();
+setInterval(loadState,800);
+</script>
+</body>
+</html>

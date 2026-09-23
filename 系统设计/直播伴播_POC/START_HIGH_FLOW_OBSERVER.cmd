@@ -1,0 +1,5 @@
+@echo off
+chcp 65001 >nul
+cd /d E:\????\????\????_POC
+start "" http://127.0.0.1:8767
+python high_flow_observer.py

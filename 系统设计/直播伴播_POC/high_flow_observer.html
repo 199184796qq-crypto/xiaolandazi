@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>高流量直播间调度观察台</title>
+<style>
+:root{
+  font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;
+  color:#0f172a;background:#f4f7fb;
+  --blue:#2563eb;--line:#dbe5f1;--muted:#64748b;--green:#15803d;
+  --orange:#c2410c;--red:#b91c1c;--purple:#7e22ce;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#e8f2ff 0,#f7faff 250px,#f5f7fb 100%)}
+.wrap{max-width:1750px;margin:0 auto;padding:16px}
+.header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+h1{margin:0;font-size:24px}.sub{color:var(--muted);font-size:12px;margin-top:4px}
+.status{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.pill{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px}
+.ok{background:#ecfdf3;color:#166534}.bad{background:#fef2f2;color:#991b1b}
+.pace-LOW{background:#f8fafc}.pace-NORMAL{background:#eff6ff;color:#1d4ed8}.pace-HIGH{background:#fff7ed;color:#c2410c}.pace-BURST{background:#fef2f2;color:#b91c1c}
+.metrics{display:grid;grid-template-columns:repeat(10,minmax(105px,1fr));gap:8px;margin-bottom:10px}
+.metric{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px;min-height:74px}
+.metric span{font-size:11px;color:var(--muted)}.metric strong{display:block;font-size:19px;margin-top:4px}.metric small{font-size:10px;color:#94a3b8}
+.pacebox{display:grid;grid-template-columns:1.3fr repeat(5,1fr);gap:8px;margin-bottom:10px}
+.pacecard{background:white;border:1px solid var(--line);border-radius:12px;padding:10px}
+.pacecard b{display:block;font-size:18px}.pacecard span{font-size:11px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1.05fr 1.1fr 1.12fr;gap:10px}
+.card{background:#fff;border:1px solid var(--line);border-radius:13px;overflow:hidden}
+.head{height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#f8fbff;border-bottom:1px solid var(--line)}
+.head h2{font-size:14px;margin:0}.head small{color:var(--muted)}
+.list{height:560px;overflow:auto;padding:8px}
+.item{border:1px solid #e8eef6;border-radius:9px;padding:9px;margin-bottom:7px}
+.item:hover{border-color:#bfd2f0}.row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.name{font-size:12px;font-weight:700}.time{font-size:10px;color:#94a3b8}
+.content{font-size:13px;line-height:1.5;margin-top:5px;word-break:break-word}
+.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.tag{font-size:10px;padding:3px 6px;border-radius:6px;background:#f1f5f9;color:#475569}
+.blue{background:#dbeafe;color:#1d4ed8}.green{background:#dcfce7;color:#166534}.orange{background:#ffedd5;color:#9a3412}.red{background:#fee2e2;color:#991b1b}.purple{background:#f3e8ff;color:#7e22ce}
+.output{margin-top:7px;border-left:3px solid var(--blue);background:#f8fbff;border-radius:7px;padding:8px;font-size:13px;line-height:1.55}
+.empty{padding:120px 15px;text-align:center;color:#94a3b8}
+.bottom{display:grid;grid-template-columns:1.4fr 1fr;gap:10px;margin-top:10px}
+.config{padding:12px}.configgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:10px}
+.field label{display:block;font-size:10px;color:var(--muted);margin-bottom:4px}.field input{width:100%;padding:7px 8px;border:1px solid #d5dfec;border-radius:7px;font-size:11px}
+button{border:0;border-radius:7px;padding:8px 11px;font-weight:700;cursor:pointer}.primary{background:var(--blue);color:white}.ghost{background:#edf2f7;color:#334155}
+.note{padding:12px;font-size:12px;line-height:1.65;color:#475569}.note strong{color:#0f172a}.error{color:var(--red)}
+@media(max-width:1400px){.metrics{grid-template-columns:repeat(5,1fr)}.pacebox{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:1050px){.grid{grid-template-columns:1fr}.list{height:420px}.bottom{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <h1>高流量直播间调度观察台</h1>
+      <div class="sub">真实公屏 → Pace Controller → Event Gate / Chat Gate → Priority / TTL → Monitor → Control；观察模式，不发回直播间，不启用 TTS</div>
+    </div>
+    <div class="status">
+      <span id="core" class="pill">Core</span>
+      <span id="stream" class="pill">事件流</span>
+      <span id="room" class="pill">房间</span>
+      <span id="online" class="pill">在线 -</span>
+      <span id="pace" class="pill">节奏 -</span>
+    </div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><span>真实事件</span><strong id="m_events">0</strong><small>全部公屏</small></div>
+    <div class="metric"><span>弹幕</span><strong id="m_chat">0</strong><small>Chat Gate 输入</small></div>
+    <div class="metric"><span>社交聚合</span><strong id="m_social">0</strong><small>进房/赞/关注</small></div>
+    <div class="metric"><span>噪音过滤</span><strong id="m_noise">0</strong><small>666/哈哈/表情</small></div>
+    <div class="metric"><span>重复合并</span><strong id="m_dup">0</strong><small>同意图 10~12 秒</small></div>
+    <div class="metric"><span>非行动弹幕</span><strong id="m_noact">0</strong><small>不进模型</small></div>
+    <div class="metric"><span>Monitor</span><strong id="m_monitor">0</strong><small id="m_llmrate">0%</small></div>
+    <div class="metric"><span>Control</span><strong id="m_control">0</strong><small>自然话术</small></div>
+    <div class="metric"><span>过期丢弃</span><strong id="m_expired">0</strong><small id="m_queue">队列 0</small></div>
+    <div class="metric"><span>模型费用</span><strong id="m_cost">¥0.0000</strong><small id="m_latency">平均 0 ms</small></div>
+  </div>
+
+  <div class="pacebox">
+    <div class="pacecard"><span>当前房间节奏</span><b id="p_level">-</b></div>
+    <div class="pacecard"><span>30秒事件</span><b id="p_events">0</b></div>
+    <div class="pacecard"><span>30秒进房</span><b id="p_member">0</b></div>
+    <div class="pacecard"><span>30秒弹幕</span><b id="p_chat">0</b></div>
+    <div class="pacecard"><span>30秒关注</span><b id="p_follow">0</b></div>
+    <div class="pacecard"><span>30秒点赞数</span><b id="p_like">0</b></div>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <div class="head"><h2>① 真实公屏</h2><small>原始事件</small></div>
+      <div id="events" class="list"><div class="empty">等待真实公屏…</div></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>② Event Gate / Chat Gate</h2><small>为什么留下 / 合并 / 丢弃</small></div>
+      <div id="gates" class="list"><div class="empty">等待 Gate 判断…</div></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>③ 准备说的话</h2><small>含用户问答 + 聚合欢迎候选</small></div>
+      <div id="outputs" class="list"><div class="empty">等待候选话术…</div></div>
+    </section>
+  </div>
+
+  <div class="bottom">
+    <section class="card config">
+      <div class="row">
+        <div><b>业务事实</b><div class="sub">不知道就留空，系统必须保守回答，不准猜</div></div>
+        <div><button class="ghost" onclick="resetStats()">清空观察记录</button> <button class="primary" onclick="saveFacts()">保存事实</button></div>
+      </div>
+      <div class="configgrid">
+        <div class="field"><label>价格 price</label><input id="f_price"></div>
+        <div class="field"><label>优惠券 coupon</label><input id="f_coupon"></div>
+        <div class="field"><label>折扣 promotion</label><input id="f_promotion"></div>
+        <div class="field"><label>规格 quantity</label><input id="f_quantity"></div>
+        <div class="field"><label>发货 shipping</label><input id="f_shipping"></div>
+        <div class="field"><label>保质期 shelf_life</label><input id="f_shelf_life"></div>
+        <div class="field"><label>保存 storage</label><input id="f_storage"></div>
+        <div class="field"><label>使用/做法 usage</label><input id="f_usage"></div>
+        <div class="field"><label>年龄/月龄 age</label><input id="f_age"></div>
+        <div class="field"><label>公母/性别 sex</label><input id="f_sex"></div>
+        <div class="field"><label>运输保鲜 cold_chain</label><input id="f_cold_chain"></div>
+        <div class="field"><label>款式选择 variant</label><input id="f_variant"></div>
+        <div class="field"><label>成分配料 ingredients</label><input id="f_ingredients"></div>
+      </div>
+    </section>
+
+    <section class="card note">
+      <strong>本版已经落地的调度规则</strong><br>
+      进房 / 点赞 / 关注只累计，不逐个说；按 LOW / NORMAL / HIGH / BURST 自动调整欢迎冷却时间。普通 666、哈哈、表情、官方客服消息、非行动弹幕不进模型。相同标准问题 12 秒合并，复杂重复问题 10 秒合并。复杂问题排队超过 10 秒自动过期，防止两分钟前的问题突然回答。欢迎、关注感谢、点赞感谢只有在没有高优先级问题和模型队列时才产生候选。<br><br>
+      <span id="err" class="error"></span>
+    </section>
+  </div>
+</div>
+
+<script>
+var configLoaded=false;
+function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(m){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m];});}
+function timeText(v){try{return new Date(v).toLocaleTimeString("zh-CN",{hour12:false});}catch(e){return "";}}
+function tagType(t){if(t==="chat")return "blue";if(t==="member")return "green";if(t==="like"||t==="follow")return "orange";return "";}
+function eventName(t){return {chat:"弹幕",member:"进房",like:"点赞",follow:"关注",gift:"礼物"}[t]||t;}
+function status(id,text,ok){var e=document.getElementById(id);e.textContent=text;e.className="pill "+(ok?"ok":"bad");}
+function renderEvents(items){
+  var b=document.getElementById("events");
+  if(!items.length){b.innerHTML='<div class="empty">等待真实公屏…</div>';return;}
+  b.innerHTML=items.slice(0,100).map(function(e){
+    return '<div class="item"><div class="row"><span class="name">'+esc(e.nickname||"匿名用户")+'</span><span class="time">'+esc(timeText(e.occurred_at))+'</span></div>'+
+      '<div class="content">'+esc(e.content||"")+'</div><div class="tags"><span class="tag '+tagType(e.event_type)+'">'+esc(eventName(e.event_type))+'</span><span class="tag">#'+esc(e.id)+'</span></div></div>';
+  }).join("");
+}
+function gateClass(g){if(g==="DROP")return "red";if(g==="MERGE")return "orange";if(g==="RULE")return "green";if(g==="MONITOR")return "purple";if(g==="AGGREGATE")return "blue";return "";}
+function renderGates(items){
+  var b=document.getElementById("gates");
+  if(!items.length){b.innerHTML='<div class="empty">等待 Gate 判断…</div>';return;}
+  b.innerHTML=items.slice(0,100).map(function(x){
+    return '<div class="item"><div class="row"><span class="name">'+esc(x.nickname||eventName(x.event_type))+'</span><span class="time">'+esc(timeText(x.time))+'</span></div>'+
+      '<div class="content">'+esc(x.content||"")+'</div><div class="tags"><span class="tag '+gateClass(x.gate)+'">'+esc(x.gate)+'</span><span class="tag">'+esc(x.reason)+'</span><span class="tag">P'+esc(x.priority)+'</span>'+
+      (x.intent&&x.intent!=="NONE"?'<span class="tag">'+esc(x.intent)+'</span>':'')+
+      (x.merged_count>1?'<span class="tag orange">合并×'+esc(x.merged_count)+'</span>':'')+
+      '</div></div>';
+  }).join("");
+}
+function renderOutputs(items){
+  var b=document.getElementById("outputs");
+  if(!items.length){b.innerHTML='<div class="empty">等待候选话术…</div>';return;}
+  b.innerHTML=items.slice(0,100).map(function(x){
+    var d=x.decision||{};
+    return '<div class="item"><div class="row"><span class="name">'+esc(x.nickname||"系统聚合")+'</span><span class="time">'+esc(timeText(x.time))+'</span></div>'+
+      '<div class="content">'+esc(x.content||"")+'</div><div class="output">'+esc(x.response_text||"")+'</div>'+
+      '<div class="tags"><span class="tag blue">'+esc(d.action||"-")+'</span><span class="tag">P'+esc(d.priority||"-")+'</span><span class="tag green">'+esc(x.route||"-")+'</span><span class="tag">¥'+Number(x.estimated_model_cost_cny||0).toFixed(6)+'</span></div></div>';
+  }).join("");
+}
+function applyConfig(c){
+  if(configLoaded)return;
+  var f=(c&&c.facts)||{};
+  ["price","coupon","promotion","quantity","shipping","shelf_life","storage","usage","age","sex","cold_chain","variant","ingredients"].forEach(function(k){document.getElementById("f_"+k).value=f[k]||"";});
+  configLoaded=true;
+}
+async function load(){
+  try{
+    var r=await fetch("/api/state",{cache:"no-store"}),s=await r.json();
+    var room=s.room||{},run=s.runtime||{},m=s.metrics||{},p=s.pace||{};
+    status("core",run.core_connected?"Core 已连接":"Core 未连接",!!run.core_connected);
+    status("stream",run.stream_connected?"真实事件流已连接":"事件流断开",!!run.stream_connected);
+    status("room","房间 "+(room.status||"-"),room.status==="live"||room.status==="connecting");
+    document.getElementById("online").textContent="在线 "+Number(room.online_count||0).toLocaleString();
+    var pace=document.getElementById("pace");pace.textContent="节奏 "+(p.level||"-");pace.className="pill pace-"+(p.level||"LOW");
+    document.getElementById("m_events").textContent=m.events_total||0;
+    document.getElementById("m_chat").textContent=m.chat_total||0;
+    document.getElementById("m_social").textContent=m.social_aggregated||0;
+    document.getElementById("m_noise").textContent=m.noise_filtered||0;
+    document.getElementById("m_dup").textContent=m.duplicate_merged||0;
+    document.getElementById("m_noact").textContent=m.not_actionable||0;
+    document.getElementById("m_monitor").textContent=m.monitor_calls||0;
+    document.getElementById("m_llmrate").textContent="调用率 "+(m.llm_call_rate||0)+"% · 事实兜底 "+(m.fact_guarded||0);
+    document.getElementById("m_control").textContent=m.control_calls||0;
+    document.getElementById("m_expired").textContent=m.expired_dropped||0;
+    document.getElementById("m_queue").textContent="队列 "+(m.queue_depth||0);
+    document.getElementById("m_cost").textContent="¥"+Number(m.model_cost_cny||0).toFixed(4);
+    document.getElementById("m_latency").textContent="平均模型 "+(m.avg_model_ms||0)+" ms";
+    document.getElementById("p_level").textContent=p.level||"-";
+    document.getElementById("p_events").textContent=p.events_30s||0;
+    document.getElementById("p_member").textContent=p.member_30s||0;
+    document.getElementById("p_chat").textContent=p.chat_30s||0;
+    document.getElementById("p_follow").textContent=p.follow_30s||0;
+    document.getElementById("p_like").textContent=p.likes_30s||0;
+    document.getElementById("err").textContent=run.last_error||"";
+    renderEvents(s.events||[]);renderGates(s.gates||[]);renderOutputs(s.outputs||[]);applyConfig(s.config||{});
+  }catch(e){document.getElementById("err").textContent=String(e);status("core","观察服务异常",false);}
+}
+async function saveFacts(){
+  var facts={};["price","coupon","promotion","quantity","shipping","shelf_life","storage","usage","age","sex","cold_chain","variant","ingredients"].forEach(function(k){facts[k]=document.getElementById("f_"+k).value;});
+  await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({facts:facts})});
+}
+async function resetStats(){await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});}
+load();setInterval(load,800);
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+text_chars=579
+timestamp_tokens=529
+sentence_count=16
+audio_duration_ms=87902
+segment_count=16
+master_pcm_sha256=4bb127596843e45d63c98e0db4ee6d416cd5c46842b81399709dacb94206c71c
+rejoined_pcm_sha256=4bb127596843e45d63c98e0db4ee6d416cd5c46842b81399709dacb94206c71c
+pcm_exact_match=True
+
+SAFE POINTS:
+S001 end=5037ms pause=0ms cut=5037ms score=82 grade=A | 咱们今天聊的这只童子鸡，它是来自安徽皖南高山区域的纯种土黄鸡。
+S002 end=10074ms pause=0ms cut=10074ms score=82 grade=A | 大家拿到手的时候，可以先别急着下锅，把袋子拆开，仔细看看这个鸡的状态。
+S003 end=16074ms pause=0ms cut=16074ms score=70 grade=B | 你会发现它的皮是比较薄的，皮下基本以精瘦肉为主，肉质呈现出一种相对紧实的
+S004 end=19333ms pause=0ms cut=19333ms score=82 grade=A | 这种状态其实跟它在山上的生长过程是分不开的。
+S005 end=27111ms pause=0ms cut=27111ms score=82 grade=A | 它不是那种关在笼子里的圈养模式，而是属于跑山鸡、溜达鸡，在漫山遍野的高山
+S006 end=36222ms pause=0ms cut=36222ms score=70 grade=B | 正因为有这种放养空间，鸡在活动过程中会自己捕食一些小虫、小竹笋这些天然的
+S007 end=40593ms pause=0ms cut=40593ms score=82 grade=A | 这样做的逻辑很简单，就是让鸡吃得干净，咱们人才能吃得放心。
+S008 end=51407ms pause=0ms cut=51407ms score=82 grade=A | 现在下单的都是活鸡新鲜宰杀，而且我知道很多朋友特别在意完整性，我们这边是
+S009 end=56074ms pause=0ms cut=56074ms score=82 grade=A | 虽然切了块，但品质和整只的一样，像清蒸这种做法也完全没问题。
+S010 end=60148ms pause=0ms cut=60148ms score=82 grade=A | 单只毛重两斤以上，净重大概在一点二斤到一点八斤左右。
+S011 end=64296ms pause=0ms cut=64296ms score=82 grade=A | 关于物流这块，我得多啰嗦几句，因为很多外地朋友关心时效。
+S012 end=69556ms pause=0ms cut=69556ms score=82 grade=A | 江浙沪皖的朋友，正常发货后基本隔天就能到，其他地区大概需要两到三天。
+S013 end=72000ms pause=0ms cut=72000ms score=82 grade=A | 大家收到后按实际状态检查即可。
+S014 end=78370ms pause=0ms cut=78370ms score=70 grade=B | 如果拿到手不知道怎么处理，包装袋后面有教程入口，或者联系客服获取详细做法
+S015 end=85852ms pause=0ms cut=85852ms score=82 grade=A | 那么对于这种皮薄肉紧、内脏齐全且已切块方便处理的原切童子鸡，您觉得这个规

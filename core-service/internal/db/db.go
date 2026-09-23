@@ -124,5 +124,12 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 		return fmt.Errorf("drop legacy core_room_events: %w", err)
 	}
 
+	if _, err := database.ExecContext(
+		ctx,
+		"UPDATE core_rooms SET online_count = 0 WHERE status <> 'live'",
+	); err != nil {
+		return fmt.Errorf("clear stale online_count: %w", err)
+	}
+
 	return nil
 }

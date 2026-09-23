@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>策略配置 Agent · 三层策略测试</title>
+<style>
+*{box-sizing:border-box}
+:root{
+  --bg:#0b0f14;--panel:#111821;--panel2:#151e29;--line:#263241;
+  --text:#ecf2f8;--muted:#8fa1b3;--blue:#55a7ff;--green:#46d6a7;
+  --orange:#ffb454;--red:#ff6b6b;--shadow:0 18px 60px rgba(0,0,0,.28);
+}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 Inter,"Microsoft YaHei",Arial,sans-serif;overflow:hidden}
+button,input,textarea,select{font:inherit}
+button{cursor:pointer}
+.app{height:100vh;display:grid;grid-template-rows:64px 1fr}
+.topbar{display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--line);background:#0d131b}
+.brand{font-size:18px;font-weight:800;letter-spacing:.2px}
+.sub{color:var(--muted);font-size:12px}
+.spacer{flex:1}
+.status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(70,214,167,.7)}
+.topbtn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:9px;padding:8px 12px}
+.main{min-height:0;display:grid;grid-template-columns:minmax(520px,1fr) 430px;gap:14px;padding:14px}
+.chat,.side{min-height:0;border:1px solid var(--line);background:var(--panel);border-radius:14px;box-shadow:var(--shadow)}
+.chat{display:grid;grid-template-rows:auto 1fr auto}
+.chathead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+.chathead h2{font-size:15px;margin:0}
+.layer-tabs{display:flex;gap:6px;margin-left:auto}
+.layer-tab{border:1px solid var(--line);background:#0d141d;color:var(--muted);border-radius:9px;padding:7px 10px;font-size:12px}
+.layer-tab.active{color:#fff;border-color:#4377aa;background:#17314d;box-shadow:0 0 0 2px rgba(85,167,255,.1)}
+.layer-tab.l1.active{border-color:#9b6767;background:#3a2024}
+.layer-tab.l2.active{border-color:#8a7040;background:#392e1b}
+.layer-tab.l3.active{border-color:#427c70;background:#163c35}
+.messages{overflow:auto;padding:18px 18px 24px;scroll-behavior:smooth}
+.empty{max-width:720px;margin:60px auto 0;text-align:center;color:var(--muted)}
+.empty h1{color:var(--text);font-size:24px;margin:0 0 10px}
+.examples{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:20px}
+.example{border:1px solid var(--line);background:#101822;color:#b9c8d7;border-radius:999px;padding:8px 12px}
+.msg{display:flex;margin:0 auto 16px;max-width:860px;gap:10px}
+.msg.user{justify-content:flex-end}
+.avatar{width:30px;height:30px;border-radius:9px;background:#223044;display:grid;place-items:center;font-weight:800;font-size:12px;flex:0 0 auto}
+.msg.user .avatar{order:2;background:#244c45}
+.bubble{max-width:76%;border-radius:14px;padding:11px 13px;white-space:pre-wrap}
+.msg.assistant .bubble{background:#18222e;border:1px solid #263646}
+.msg.user .bubble{background:#17314d;border:1px solid #28547e}
+.meta{font-size:11px;color:var(--muted);margin-top:5px}
+.proposal{max-width:860px;margin:0 auto 18px;border:1px solid #3d5f7e;background:#122337;border-radius:13px;padding:14px}
+.proposal-title{font-weight:800;display:flex;align-items:center;gap:8px}
+.badge{font-size:11px;border-radius:999px;padding:2px 7px;background:#24364a;color:#bcd6ed}
+.proposal ul{margin:8px 0 0;padding-left:20px;color:#bfd0df}
+.conflict{color:#ffb3b3}
+.proposal-actions{display:flex;gap:8px;margin-top:12px}
+.primary{border:0;background:#2779c8;color:white;border-radius:9px;padding:9px 14px;font-weight:700}
+.secondary{border:1px solid var(--line);background:#101821;color:#dce8f2;border-radius:9px;padding:9px 14px}
+.composer{border-top:1px solid var(--line);padding:12px 14px 14px;background:#0f161f;border-radius:0 0 14px 14px}
+.targetline{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin:0 0 8px 3px}
+.targetpill{padding:2px 7px;border-radius:999px;background:#213348;color:#bfdbf5}
+.inputrow{display:flex;gap:8px;align-items:flex-end}
+#messageInput{min-height:52px;max-height:150px;resize:none;flex:1;border:1px solid #314051;background:#0b1118;color:white;border-radius:12px;padding:12px 13px;outline:none}
+#messageInput:focus{border-color:#4f8dc7;box-shadow:0 0 0 3px rgba(85,167,255,.08)}
+.send{width:88px;height:52px;border:0;border-radius:12px;background:#2b82d3;color:white;font-weight:800}
+.send:disabled{opacity:.5;cursor:wait}
+.side{display:grid;grid-template-rows:auto 1fr auto;overflow:hidden}
+.sidehead{padding:13px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.sidehead strong{font-size:15px}
+.industry{margin-left:auto;border:1px solid var(--line);background:#0c131b;color:white;border-radius:8px;padding:6px 8px;width:180px}
+.layers{overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.layer-card{border:1px solid var(--line);background:var(--panel2);border-radius:12px;overflow:hidden}
+.layer-card.active{box-shadow:0 0 0 2px rgba(85,167,255,.16);border-color:#4e7aa1}
+.layer-title{display:flex;align-items:center;gap:9px;padding:10px 11px;border-bottom:1px solid var(--line)}
+.level{font-weight:900;font-size:12px;border-radius:7px;padding:3px 7px}
+.level.l1{background:#46272b;color:#ffc2c2}.level.l2{background:#44351e;color:#ffd48c}.level.l3{background:#173d36;color:#98f1d3}
+.layer-name{font-weight:700}
+.layer-desc{color:var(--muted);font-size:11px;margin-left:auto}
+.layer-card textarea{width:100%;height:155px;resize:vertical;border:0;outline:none;background:#111923;color:#dfeaf4;padding:11px;line-height:1.55}
+.layer-tools{display:flex;gap:7px;padding:8px 10px;background:#101720;border-top:1px solid var(--line)}
+.smallbtn{border:1px solid var(--line);background:#151f2a;color:#cbd9e6;border-radius:7px;padding:5px 8px;font-size:11px}
+.smallbtn.current{background:#1d405f;border-color:#376d9a;color:#fff}
+.sidefoot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:8px}
+.sidefoot button{flex:1}
+.effective{font-size:11px;color:var(--muted);padding:8px 12px 0}
+details{border-top:1px solid var(--line);margin-top:8px;padding:8px 12px}
+summary{cursor:pointer;color:#aac0d2;font-size:12px}
+#effectivePolicy{white-space:pre-wrap;color:#94a9bb;font-size:11px;max-height:180px;overflow:auto;margin-top:8px}
+.loading{display:inline-flex;gap:4px;padding:4px 0}
+.loading i{width:5px;height:5px;border-radius:50%;background:#9eb0c0;animation:b 1s infinite alternate}
+.loading i:nth-child(2){animation-delay:.2s}.loading i:nth-child(3){animation-delay:.4s}
+@keyframes b{to{opacity:.25;transform:translateY(-3px)}}
+@media(max-width:1000px){body{overflow:auto}.app{height:auto;min-height:100vh}.main{grid-template-columns:1fr}.chat{height:72vh}.side{min-height:760px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div>
+      <div class="brand">策略配置 Agent</div>
+      <div class="sub">三层策略自然语言配置测试 · Qwen3.8-Flash</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="status"><span class="dot"></span><span id="statusText">连接中</span></div>
+    <button class="topbtn" onclick="resetAll()">重置测试</button>
+  </header>
+
+  <main class="main">
+    <section class="chat">
+      <div class="chathead">
+        <div>
+          <h2>像交代直播主管一样聊天</h2>
+          <div class="sub">先选择要测试的策略层，再直接用自然语言告诉 Agent 你想怎么改。</div>
+        </div>
+        <div class="layer-tabs">
+          <button id="tabL1" class="layer-tab l1" onclick="setLayer('L1')">L1 基础</button>
+          <button id="tabL2" class="layer-tab l2" onclick="setLayer('L2')">L2 行业</button>
+          <button id="tabL3" class="layer-tab l3" onclick="setLayer('L3')">L3 用户</button>
+        </div>
+      </div>
+
+      <div id="messages" class="messages">
+        <div id="emptyState" class="empty">
+          <h1>直接告诉我你希望直播间怎么处理</h1>
+          <div>不用写规则，不用懂 Prompt。你说人话，我来整理成对应层策略。</div>
+          <div class="examples">
+            <button class="example" onclick="useExample('老人小孩问能不能吃时，不要动不动让人找医生，正常就说做熟做软一点。')">老人小孩不要乱推医生</button>
+            <button class="example" onclick="useExample('库存问题不要报具体数量，也不要总让人问客服，告诉他怎么看当前能不能下单。')">库存怎么回答</button>
+            <button class="example" onclick="useExample('我们家的养殖方式只说不圈养、跑山鸡、溜达鸡，不要说散养。')">固定商品表达</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="targetline">本次对话修改目标：<span id="targetPill" class="targetpill">L3 用户特殊策略</span></div>
+        <div class="inputrow">
+          <textarea id="messageInput" placeholder="例如：我们不喜欢行业默认的老人小孩回答方式，改成……"></textarea>
+          <button id="sendBtn" class="send" onclick="sendMessage()">发送</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="sidehead">
+        <strong>三层策略配置</strong>
+        <input id="industryPath" class="industry" value="食品 > 生鲜 > 禽类" title="行业路径">
+      </div>
+
+      <div class="layers">
+        <div id="cardL1" class="layer-card">
+          <div class="layer-title"><span class="level l1">L1</span><span class="layer-name">基础策略</span><span class="layer-desc">正式版：管理权限</span></div>
+          <textarea id="l1Policy"></textarea>
+          <div class="layer-tools"><button id="editL1" class="smallbtn" onclick="setLayer('L1')">让 Agent 修改这层</button></div>
+        </div>
+
+        <div id="cardL2" class="layer-card">
+          <div class="layer-title"><span class="level l2">L2</span><span class="layer-name">行业默认策略</span><span class="layer-desc">正式版：运营权限</span></div>
+          <textarea id="l2Policy"></textarea>
+          <div class="layer-tools"><button id="editL2" class="smallbtn" onclick="setLayer('L2')">让 Agent 修改这层</button></div>
+        </div>
+
+        <div id="cardL3" class="layer-card">
+          <div class="layer-title"><span class="level l3">L3</span><span class="layer-name">用户特殊策略</span><span class="layer-desc">覆盖 L2，不突破 L1</span></div>
+          <textarea id="l3Policy"></textarea>
+          <div class="layer-tools"><button id="editL3" class="smallbtn" onclick="setLayer('L3')">让 Agent 修改这层</button></div>
+        </div>
+
+        <div class="effective">有效策略 = L1 强制边界 + L2 行业默认 + L3 用户覆盖</div>
+        <details>
+          <summary>查看机器实际合并后的 Effective Policy</summary>
+          <div id="effectivePolicy"></div>
+        </details>
+      </div>
+
+      <div class="sidefoot">
+        <button class="secondary" onclick="reloadConfig()">放弃手改</button>
+        <button class="primary" onclick="saveManual()">保存三层配置</button>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+let activeLayer='L3';
+let currentProposal=null;
+let busy=false;
+
+const layerNames={L1:'L1 基础策略',L2:'L2 行业默认策略',L3:'L3 用户特殊策略'};
+
+function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function setStatus(text,ok=true){document.getElementById('statusText').textContent=text;document.querySelector('.dot').style.background=ok?'var(--green)':'var(--red)';}
+function setLayer(layer){
+  activeLayer=layer;
+  ['L1','L2','L3'].forEach(x=>{
+    document.getElementById('tab'+x).classList.toggle('active',x===layer);
+    document.getElementById('card'+x).classList.toggle('active',x===layer);
+    document.getElementById('edit'+x).classList.toggle('current',x===layer);
+  });
+  document.getElementById('targetPill').textContent=layerNames[layer];
+}
+function fillConfig(c){
+  document.getElementById('industryPath').value=c.industry_path||'';
+  document.getElementById('l1Policy').value=c.l1_policy||'';
+  document.getElementById('l2Policy').value=c.l2_policy||'';
+  document.getElementById('l3Policy').value=c.l3_policy||'';
+  setLayer(c.active_layer||activeLayer||'L3');
+  currentProposal=c.pending_update||null;
+}
+function renderHistory(history){
+  const box=document.getElementById('messages');
+  box.innerHTML='';
+  if(!history||!history.length){
+    box.innerHTML=document.getElementById('emptyTemplate')?document.getElementById('emptyTemplate').innerHTML:'';
+    const d=document.createElement('div');d.className='empty';d.id='emptyState';
+    d.innerHTML='<h1>直接告诉我你希望直播间怎么处理</h1><div>不用写规则，不用懂 Prompt。你说人话，我来整理成对应层策略。</div><div class="examples"><button class="example" onclick="useExample(\'老人小孩问能不能吃时，不要动不动让人找医生，正常就说做熟做软一点。\')">老人小孩不要乱推医生</button><button class="example" onclick="useExample(\'库存问题不要报具体数量，也不要总让人问客服，告诉他怎么看当前能不能下单。\')">库存怎么回答</button><button class="example" onclick="useExample(\'我们家的养殖方式只说不圈养、跑山鸡、溜达鸡，不要说散养。\')">固定商品表达</button></div>';
+    box.appendChild(d);return;
+  }
+  history.forEach(x=>addMessage(x.role,x.content,x.meta,false));
+}
+function addMessage(role,content,meta,scroll=true){
+  const box=document.getElementById('messages');
+  const empty=document.getElementById('emptyState');if(empty)empty.remove();
+  const wrap=document.createElement('div');wrap.className='msg '+(role==='user'?'user':'assistant');
+  const avatar=document.createElement('div');avatar.className='avatar';avatar.textContent=role==='user'?'你':'AI';
+  const b=document.createElement('div');b.className='bubble';b.textContent=content||'';
+  wrap.appendChild(avatar);wrap.appendChild(b);
+  box.appendChild(wrap);
+  if(meta&&meta.target_layer){
+    const m=document.createElement('div');m.className='meta';m.textContent='目标：'+meta.target_layer+(meta.action?' · '+meta.action:'');b.appendChild(m);
+  }
+  if(scroll)box.scrollTop=box.scrollHeight;
+}
+function renderProposal(p){
+  currentProposal=p||null;
+  const old=document.getElementById('proposalBox');if(old)old.remove();
+  if(!p)return;
+  const box=document.getElementById('messages');
+  const el=document.createElement('div');el.className='proposal';el.id='proposalBox';
+  const changes=(p.change_summary||[]).map(x=>'<li>'+esc(x)+'</li>').join('');
+  const conflicts=(p.conflicts||[]).map(x=>'<li class="conflict">'+esc(x)+'</li>').join('');
+  el.innerHTML='<div class="proposal-title">策略修改建议 <span class="badge">'+esc(p.target_layer||activeLayer)+'</span></div>'
+    +(changes?'<ul>'+changes+'</ul>':'')
+    +(conflicts?'<ul>'+conflicts+'</ul>':'')
+    +'<div class="proposal-actions"><button class="primary" onclick="applyProposal()">应用这次调整</button><button class="secondary" onclick="cancelProposal()">继续聊，先不应用</button></div>';
+  box.appendChild(el);box.scrollTop=box.scrollHeight;
+}
+async function reloadConfig(){
+  setStatus('读取配置…');
+  const r=await fetch('/api/strategy-chat/config',{cache:'no-store'});const j=await r.json();
+  if(!j.ok)throw new Error(j.error||'载入失败');
+  fillConfig(j.config);document.getElementById('effectivePolicy').textContent=j.effective_policy||'';
+  renderHistory(j.history||[]);renderProposal(j.config.pending_update);
+  setStatus('已连接 · '+(j.model||'Qwen3.8'));
+}
+async function saveManual(){
+  const body={
+    industry_path:document.getElementById('industryPath').value,
+    l1_policy:document.getElementById('l1Policy').value,
+    l2_policy:document.getElementById('l2Policy').value,
+    l3_policy:document.getElementById('l3Policy').value,
+    active_layer:activeLayer
+  };
+  const r=await fetch('/api/strategy-chat/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();if(!j.ok)throw new Error(j.error||'保存失败');
+  fillConfig(j.config);document.getElementById('effectivePolicy').textContent=j.effective_policy||'';
+  renderProposal(null);setStatus('三层配置已保存');
+}
+function useExample(text){document.getElementById('messageInput').value=text;document.getElementById('messageInput').focus();}
+async function sendMessage(){
+  if(busy)return;
+  const input=document.getElementById('messageInput');const text=input.value.trim();if(!text)return;
+  busy=true;document.getElementById('sendBtn').disabled=true;addMessage('user',text,{target_layer:activeLayer});input.value='';
+  const box=document.getElementById('messages');
+  const wait=document.createElement('div');wait.className='msg assistant';wait.id='thinking';
+  wait.innerHTML='<div class="avatar">AI</div><div class="bubble"><span class="loading"><i></i><i></i><i></i></span></div>';box.appendChild(wait);box.scrollTop=box.scrollHeight;
+  try{
+    const r=await fetch('/api/strategy-chat/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,active_layer:activeLayer})});
+    const j=await r.json();if(!j.ok)throw new Error(j.error||'Agent调用失败');
+    wait.remove();const x=j.result;addMessage('assistant',x.reply,{target_layer:x.target_layer,action:x.action});
+    fillConfig(x.config);document.getElementById('effectivePolicy').textContent=x.effective_policy||'';
+    renderProposal(x.proposal);setStatus('Agent 已完成 · '+Math.round(x.model_ms||0)+'ms');
+  }catch(e){wait.remove();addMessage('assistant','出错了：'+e.message);setStatus('调用失败',false);}
+  finally{busy=false;document.getElementById('sendBtn').disabled=false;input.focus();}
+}
+async function applyProposal(){
+  const r=await fetch('/api/strategy-chat/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const j=await r.json();if(!j.ok){alert(j.error||'应用失败');return;}
+  addMessage('assistant',j.reply||'已应用。');fillConfig(j.config);document.getElementById('effectivePolicy').textContent=j.effective_policy||'';renderProposal(null);setStatus('策略已应用');
+}
+async function cancelProposal(){
+  document.getElementById('messageInput').value='不应用，这次建议先取消。';
+  await sendMessage();
+}
+async function resetAll(){
+  if(!confirm('重置三层策略和聊天记录？'))return;
+  const r=await fetch('/api/strategy-chat/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const j=await r.json();if(!j.ok){alert(j.error||'重置失败');return;}
+  fillConfig(j.config);document.getElementById('effectivePolicy').textContent=j.effective_policy||'';renderHistory([]);renderProposal(null);setStatus('已重置');
+}
+document.getElementById('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}});
+reloadConfig().catch(e=>setStatus(e.message,false));
+</script>
+</body>
+</html>

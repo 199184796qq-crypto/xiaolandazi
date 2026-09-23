@@ -1,0 +1,1 @@
+@echo off`r`nchcp 65001 >nul`r`ncd /d E:\????\????\????_POC`r`nstart "" http://127.0.0.1:8766`r`npython room_config_test_server.py`r`n

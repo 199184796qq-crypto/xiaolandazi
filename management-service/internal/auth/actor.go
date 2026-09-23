@@ -38,15 +38,19 @@ const (
 )
 
 var (
-	ErrNotAuthenticated   = errors.New("not authenticated")
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrCaptchaInvalid     = errors.New("captcha invalid")
-	ErrRateLimited        = errors.New("too many login attempts")
-	ErrUsernameTaken      = errors.New("username already exists")
-	ErrInvalidUsername    = errors.New("invalid username")
-	ErrInvalidDisplayName = errors.New("invalid display name")
-	ErrWeakPassword       = errors.New("weak password")
-	ErrCurrentPassword    = errors.New("current password incorrect")
+	ErrNotAuthenticated     = errors.New("not authenticated")
+	ErrInvalidCredentials   = errors.New("invalid credentials")
+	ErrCaptchaInvalid       = errors.New("captcha invalid")
+	ErrRateLimited          = errors.New("too many login attempts")
+	ErrUsernameTaken        = errors.New("username already exists")
+	ErrInvalidUsername      = errors.New("invalid username")
+	ErrInvalidDisplayName   = errors.New("invalid display name")
+	ErrInvalidPhone         = errors.New("invalid phone")
+	ErrInvalidLocation      = errors.New("invalid location")
+	ErrInvalidInviteCode    = errors.New("invalid invite code")
+	ErrRegistrationCapacity = errors.New("registration capacity insufficient")
+	ErrWeakPassword         = errors.New("weak password")
+	ErrCurrentPassword      = errors.New("current password incorrect")
 )
 
 var usernamePattern = regexp.MustCompile("^[A-Za-z0-9_.-]{4,32}$")
@@ -82,6 +86,46 @@ func NewResolver(env string, store *appdb.Store) *Resolver {
 	}
 }
 
+func GenerateInitialPassword() (string, error) {
+	const (
+		length   = 14
+		lower    = "abcdefghijkmnopqrstuvwxyz"
+		upper    = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+		digits   = "23456789"
+		symbols  = "!@#$%*+-_"
+		alphabet = lower + upper + digits + symbols
+	)
+
+	result := make([]byte, 0, length)
+	groups := []string{lower, upper, digits, symbols}
+
+	for _, group := range groups {
+		value, err := rand.Int(rand.Reader, big.NewInt(int64(len(group))))
+		if err != nil {
+			return "", err
+		}
+		result = append(result, group[value.Int64()])
+	}
+
+	for len(result) < length {
+		value, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "", err
+		}
+		result = append(result, alphabet[value.Int64()])
+	}
+
+	for i := len(result) - 1; i > 0; i-- {
+		value, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return "", err
+		}
+		j := int(value.Int64())
+		result[i], result[j] = result[j], result[i]
+	}
+
+	return string(result), nil
+}
 func HashPassword(password string) (string, error) {
 	if err := validatePassword(password); err != nil {
 		return "", err
@@ -144,7 +188,7 @@ func (r *Resolver) Login(
 	}
 
 	r.resetFailures(key)
-	if err := r.issueSession(ctx, w, user.ID); err != nil {
+	if err := r.issueSession(ctx, w, req, user.ID); err != nil {
 		return model.Actor{}, err
 	}
 
@@ -157,11 +201,21 @@ func (r *Resolver) Register(
 	req *http.Request,
 	username string,
 	displayName string,
+	phone string,
+	province string,
+	city string,
+	district string,
 	password string,
+	inviteCode string,
 	captcha string,
 ) (model.Actor, error) {
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
+	phone = strings.TrimSpace(phone)
+	province = strings.TrimSpace(province)
+	city = strings.TrimSpace(city)
+	district = strings.TrimSpace(district)
+	inviteCode = strings.TrimSpace(inviteCode)
 
 	if !r.verifyCaptcha(req, captcha) {
 		return model.Actor{}, ErrCaptchaInvalid
@@ -171,6 +225,12 @@ func (r *Resolver) Register(
 	}
 	if len([]rune(displayName)) < 2 || len([]rune(displayName)) > 64 {
 		return model.Actor{}, ErrInvalidDisplayName
+	}
+	if phone == "" {
+		return model.Actor{}, ErrInvalidPhone
+	}
+	if inviteCode == "" {
+		return model.Actor{}, ErrInvalidInviteCode
 	}
 	if err := validatePassword(password); err != nil {
 		return model.Actor{}, err
@@ -187,20 +247,31 @@ func (r *Resolver) Register(
 		return model.Actor{}, err
 	}
 
-	user, err := r.store.RegisterCustomer(
+	user, err := r.store.RegisterCustomerByInvite(
 		ctx,
 		username,
 		displayName,
+		phone,
+		province,
+		city,
+		district,
 		passwordHash,
+		inviteCode,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate:") {
 			return model.Actor{}, ErrUsernameTaken
 		}
+		if errors.Is(err, appdb.ErrInviteCodeInvalid) {
+			return model.Actor{}, ErrInvalidInviteCode
+		}
+		if errors.Is(err, appdb.ErrInsufficientResource) {
+			return model.Actor{}, ErrRegistrationCapacity
+		}
 		return model.Actor{}, err
 	}
 
-	if err := r.issueSession(ctx, w, user.ID); err != nil {
+	if err := r.issueSession(ctx, w, req, user.ID); err != nil {
 		return model.Actor{}, err
 	}
 	return actorFromUser(user), nil
@@ -259,7 +330,31 @@ func (r *Resolver) ChangePassword(
 	if err := r.store.DeleteUserSessions(ctx, user.ID); err != nil {
 		return err
 	}
-	return r.issueSession(ctx, w, user.ID)
+	return r.issueSession(ctx, w, req, user.ID)
+}
+
+func (r *Resolver) ListSessions(ctx context.Context, req *http.Request) ([]model.AuthSessionSummary, error) {
+	actor, err := r.Resolve(req)
+	if err != nil {
+		return nil, err
+	}
+	cookie, err := req.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return nil, ErrNotAuthenticated
+	}
+	return r.store.ListUserSessions(ctx, actor.UserID, hashToken(cookie.Value))
+}
+
+func (r *Resolver) LogoutOtherSessions(ctx context.Context, req *http.Request) error {
+	actor, err := r.Resolve(req)
+	if err != nil {
+		return err
+	}
+	cookie, err := req.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return ErrNotAuthenticated
+	}
+	return r.store.DeleteOtherUserSessions(ctx, actor.UserID, hashToken(cookie.Value))
 }
 
 func (r *Resolver) Captcha(
@@ -317,6 +412,7 @@ func (r *Resolver) SetDevelopmentActor(
 func (r *Resolver) issueSession(
 	ctx context.Context,
 	w http.ResponseWriter,
+	req *http.Request,
 	userID int64,
 ) error {
 	token, err := randomToken(32)
@@ -330,6 +426,8 @@ func (r *Resolver) issueSession(
 		userID,
 		hashToken(token),
 		expiresAt,
+		requestIP(req),
+		req.UserAgent(),
 	); err != nil {
 		return err
 	}
@@ -434,11 +532,17 @@ func (r *Resolver) resetFailures(key string) {
 
 func actorFromUser(user model.User) model.Actor {
 	return model.Actor{
-		UserID:      user.ID,
-		Username:    user.Username,
-		Role:        user.Role,
-		TenantID:    user.TenantID,
-		DisplayName: user.DisplayName,
+		UserID:             user.ID,
+		Username:           user.Username,
+		Role:               user.Role,
+		MustChangePassword: user.MustChangePassword,
+		Phone:              user.Phone,
+		Province:           user.Province,
+		City:               user.City,
+		District:           user.District,
+		TenantID:           user.TenantID,
+		DisplayName:        user.DisplayName,
+		AvatarURL:          user.AvatarURL,
 	}
 }
 
@@ -474,6 +578,14 @@ func randomDigits(count int) (string, error) {
 		builder.WriteByte(byte('0' + value.Int64()))
 	}
 	return builder.String(), nil
+}
+
+func requestIP(req *http.Request) string {
+	host := strings.TrimSpace(req.RemoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		host = parsedHost
+	}
+	return host
 }
 
 func loginKey(req *http.Request, username string) string {

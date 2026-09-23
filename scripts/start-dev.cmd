@@ -1,9 +1,11 @@
 @echo off
+setlocal
 chcp 65001 >nul
-cd /d E:\直播伴播
+set "ROOT=%~dp0.."
+cd /d "%ROOT%"
 
 echo [1/4] 启动 MySQL / Redis...
-docker compose -f docker\compose.yaml up -d
+docker compose -f "%ROOT%\docker\compose.yaml" up -d
 if errorlevel 1 (
   echo Docker 启动失败，请先打开 Docker Desktop。
   pause
@@ -11,15 +13,21 @@ if errorlevel 1 (
 )
 
 echo [2/4] 启动 Core Service...
-start "LiveCompanion Core" /min "E:\直播伴播\core-service\bin\core-service.exe"
+start "LiveCompanion Core" /min "%ROOT%\scripts\run-core.cmd"
 timeout /t 2 /nobreak >nul
 
 echo [3/4] 启动 Management Service...
-start "LiveCompanion Management" /min "E:\直播伴播\management-service\bin\management-service.exe"
+start "LiveCompanion Management" /min "%ROOT%\scripts\run-management.cmd"
 timeout /t 2 /nobreak >nul
 
 echo [4/4] 启动 Web Console...
-start "LiveCompanion Web" /min "C:\Users\19918\AppData\Roaming\fnm\node-versions\v24.21.0\installation\node.exe" "E:\直播伴播\web-console\node_modules\vite\bin\vite.js" "E:\直播伴播\web-console" --host 127.0.0.1 --port 5173
+where pnpm.cmd >nul 2>nul
+if errorlevel 1 (
+  echo 未找到 pnpm.cmd，请先安装项目要求的 Node.js / pnpm。
+  pause
+  exit /b 1
+)
+start "LiveCompanion Web" /min pnpm.cmd -C "%ROOT%" --filter web-console dev --host 127.0.0.1 --port 5173
 timeout /t 2 /nobreak >nul
 
 echo.

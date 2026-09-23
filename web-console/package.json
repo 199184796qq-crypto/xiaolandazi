@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "china-area-data": "5.0.1",
     "hls.js": "^1.7.3",
     "vue": "^3.5.42",
     "vue-router": "^4.6.4"

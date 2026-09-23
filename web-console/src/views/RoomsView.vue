@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import { useFeedbackErrorRef } from '../uiFeedback'
+import { confirmAction } from '../uiFeedback'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { createRoom, deleteRoom, getRooms } from '../api'
+import DataListControls from '../components/DataListControls.vue'
+import PaginationBar from '../components/PaginationBar.vue'
+import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 import type { Room } from '../types'
 
@@ -9,10 +14,67 @@ const router = useRouter()
 
 const rooms = ref<Room[]>([])
 const loading = ref(false)
-const error = ref('')
+const error = useFeedbackErrorRef()
 const showCreate = ref(false)
 const submitting = ref(false)
 const selectedTenantId = ref<number | undefined>(undefined)
+
+const viewMode = ref<'card' | 'table'>('card')
+const search = ref('')
+const statusFilter = ref('all')
+const sortMode = ref('online-desc')
+const page = ref(1)
+const pageSize = ref(12)
+
+const statusOptions = [
+  { label: '全部状态', value: 'all' },
+  { label: '直播中', value: 'live' },
+  { label: '连接中', value: 'connecting' },
+  { label: '等待连接', value: 'pending' },
+  { label: '未开播', value: 'offline' },
+  { label: '连接异常', value: 'error' },
+]
+
+const sortOptions = [
+  { label: '在线人数从高到低', value: 'online-desc' },
+  { label: '在线人数从低到高', value: 'online-asc' },
+  { label: '直播间名称 A-Z', value: 'name-asc' },
+  { label: '直播间名称 Z-A', value: 'name-desc' },
+]
+
+const filteredRooms = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
+  const result = rooms.value.filter((room) => {
+    const tenant = tenantName(room.tenant_id)
+    const matchesKeyword =
+      !keyword ||
+      [roomTitle(room), room.external_room_id, room.platform, tenant]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword))
+    const matchesStatus = statusFilter.value === 'all' || room.status === statusFilter.value
+    return matchesKeyword && matchesStatus
+  })
+
+  return [...result].sort((a, b) => {
+    if (sortMode.value === 'online-asc') return (a.online_count || 0) - (b.online_count || 0)
+    if (sortMode.value === 'name-asc') return roomTitle(a).localeCompare(roomTitle(b), 'zh-CN')
+    if (sortMode.value === 'name-desc') return roomTitle(b).localeCompare(roomTitle(a), 'zh-CN')
+    return (b.online_count || 0) - (a.online_count || 0)
+  })
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredRooms.value.length / pageSize.value)))
+const pagedRooms = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredRooms.value.slice(start, start + pageSize.value)
+})
+
+watch([search, statusFilter, sortMode, pageSize], () => {
+  page.value = 1
+})
+watch(totalPages, (value) => {
+  if (page.value > value) page.value = value
+})
 
 const form = reactive({
   tenant_id: 0,
@@ -23,14 +85,20 @@ const form = reactive({
 })
 
 const isAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
+const isInternalViewer = computed(() => ['platform_admin', 'staff', 'sales_staff'].includes(session.bootstrap?.actor.role || ''))
+const canManageRooms = computed(() => session.bootstrap?.actor.role === 'customer')
 const tenants = computed(() => session.bootstrap?.tenants ?? [])
 
 const liveCount = computed(() => rooms.value.filter((room) => room.status === 'live').length)
 const waitingCount = computed(() => rooms.value.filter((room) => room.status !== 'live').length)
-const totalOnline = computed(() => rooms.value.reduce((sum, room) => sum + (room.online_count || 0), 0))
+const totalOnline = computed(() =>
+  rooms.value
+    .filter((room) => room.status === 'live')
+    .reduce((sum, room) => sum + (room.online_count || 0), 0),
+)
 
 function tenantName(tenantId: number) {
-  return tenants.value.find((tenant) => tenant.id === tenantId)?.name || '未知客户'
+  return tenants.value.find((tenant) => tenant.id === tenantId)?.name || '未知终端'
 }
 
 function roomTitle(room: Room) {
@@ -62,6 +130,7 @@ async function loadRooms() {
 }
 
 function openCreate() {
+  if (isAdmin.value) return
   form.external_room_id = ''
   form.name = ''
   form.platform = 'douyin'
@@ -72,7 +141,7 @@ function openCreate() {
 }
 
 async function submitCreate() {
-  if (!form.external_room_id.trim() || submitting.value) return
+  if (isAdmin.value || !form.external_room_id.trim() || submitting.value) return
 
   submitting.value = true
   error.value = ''
@@ -95,7 +164,8 @@ async function submitCreate() {
 
 async function removeRoom(room: Room, event: MouseEvent) {
   event.stopPropagation()
-  const confirmed = window.confirm('确定删除“' + roomTitle(room) + '”吗？')
+  if (isAdmin.value) return
+  const confirmed = await confirmAction({ title: '删除直播间', message: '确定删除“' + roomTitle(room) + '”吗？删除后不可恢复。', confirmText: '确认删除', danger: true })
   if (!confirmed) return
 
   try {
@@ -141,19 +211,24 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="rooms-page">
+    <ModulePageNav
+      :context="isInternalViewer ? 'live' : 'workspace-customer'"
+      :active-title="isInternalViewer ? '直播间列表' : '直播运维'"
+      :active-nav-title="isInternalViewer ? '直播间列表' : '直播运维'"
+    />
     <section class="page-hero">
       <div>
         <p class="section-kicker">{{ isAdmin ? '全局直播间' : '我的直播间' }}</p>
-        <h2>{{ isAdmin ? '管理所有客户的直播间' : '查看并管理你的直播间' }}</h2>
+        <h2>{{ isAdmin ? '管理所有终端的直播间' : '查看并管理你的直播间' }}</h2>
         <p>
           {{
             isAdmin
-              ? '添加房间、查看连接状态，并进入房间查看实时公屏。'
-              : '这里仅展示当前客户名下的直播间和实时状态。'
+              ? '只读查看所有终端直播间的连接状态、在线情况和实时公屏。'
+              : '这里仅展示当前终端名下的直播间和实时状态。'
           }}
         </p>
       </div>
-      <button class="primary-button" :disabled="!session.bootstrap" @click="openCreate">
+      <button v-if="canManageRooms" class="primary-button" :disabled="!session.bootstrap" @click="openCreate">
         <span class="button-plus">＋</span>
         添加直播间
       </button>
@@ -191,9 +266,9 @@ onBeforeUnmount(() => {
 
         <div class="toolbar-actions">
           <label v-if="isAdmin" class="select-wrap">
-            <span>客户</span>
+            <span>终端</span>
             <select v-model="selectedTenantId">
-              <option :value="undefined">全部客户</option>
+              <option :value="undefined">全部终端</option>
               <option
                 v-for="tenant in tenants"
                 :key="tenant.id"
@@ -210,15 +285,26 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <DataListControls
+        v-model:view-mode="viewMode"
+        v-model:search="search"
+        v-model:status="statusFilter"
+        v-model:sort="sortMode"
+        v-model:page-size="pageSize"
+        search-placeholder="直播间名称 / 房间号 / 终端"
+        :status-options="statusOptions"
+        :sort-options="sortOptions"
+      />
+
       <div v-if="error" class="inline-error">{{ error }}</div>
 
-      <div v-if="loading && !rooms.length" class="room-grid">
+      <div v-if="loading && !rooms.length && viewMode === 'card'" class="room-grid">
         <div v-for="index in 6" :key="index" class="room-card skeleton-card"></div>
       </div>
 
-      <div v-else-if="rooms.length" class="room-grid">
+      <div v-else-if="filteredRooms.length && viewMode === 'card'" class="room-grid">
         <article
-          v-for="room in rooms"
+          v-for="room in pagedRooms"
           :key="room.id"
           class="room-card"
           @click="router.push('/rooms/' + room.id)"
@@ -249,10 +335,11 @@ onBeforeUnmount(() => {
           <div class="room-card-footer">
             <div>
               <span v-if="isAdmin" class="tenant-chip">{{ tenantName(room.tenant_id) }}</span>
-              <span v-else class="muted-chip">客户直播间</span>
+              <span v-else class="muted-chip">终端直播间</span>
             </div>
             <div class="card-actions">
               <button
+                v-if="!isAdmin"
                 class="danger-link"
                 title="删除直播间"
                 @click="removeRoom(room, $event)"
@@ -265,15 +352,47 @@ onBeforeUnmount(() => {
         </article>
       </div>
 
+      <div v-else-if="filteredRooms.length && viewMode === 'table'" class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>直播间</th>
+              <th v-if="isAdmin">终端</th>
+              <th>平台</th>
+              <th>在线人数</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="room in pagedRooms" :key="room.id">
+              <td><strong>{{ roomTitle(room) }}</strong><small>房间号 {{ room.external_room_id }}</small></td>
+              <td v-if="isAdmin">{{ tenantName(room.tenant_id) }}</td>
+              <td>{{ room.platform === 'douyin' ? '抖音' : room.platform }}</td>
+              <td>{{ room.online_count.toLocaleString() }}</td>
+              <td><span class="status-pill" :class="'status-' + room.status">{{ statusText(room.status) }}</span></td>
+              <td><button class="text-action" type="button" @click="router.push('/rooms/' + room.id)">进入</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <div v-else class="empty-state">
         <div class="empty-icon">▦</div>
-        <h3>还没有直播间</h3>
-        <p>添加第一个直播间，接入后就能在这里查看实时公屏。</p>
-        <button class="primary-button" @click="openCreate">＋ 添加直播间</button>
+        <h3>{{ rooms.length ? '没有符合筛选条件的直播间' : '还没有直播间' }}</h3>
+        <p>{{ rooms.length ? '可以调整搜索、状态或终端筛选。' : (isAdmin ? '当前还没有终端直播间。管理员只负责查看运行状态。' : '添加第一个直播间，接入后就能在这里查看实时公屏。') }}</p>
+        <button v-if="canManageRooms && !rooms.length" class="primary-button" @click="openCreate">＋ 添加直播间</button>
       </div>
+
+      <PaginationBar
+        v-model:page="page"
+        :total-pages="totalPages"
+        :total="filteredRooms.length"
+        :page-size="pageSize"
+      />
     </section>
 
-    <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
+    <div v-if="showCreate && !isAdmin" class="modal-backdrop" @click.self="showCreate = false">
       <form class="modal-card" @submit.prevent="submitCreate">
         <div class="modal-header">
           <div>
@@ -285,7 +404,7 @@ onBeforeUnmount(() => {
 
         <div class="form-stack">
           <label v-if="isAdmin">
-            <span>所属客户</span>
+            <span>所属终端</span>
             <select v-model="form.tenant_id" required>
               <option v-for="tenant in tenants" :key="tenant.id" :value="tenant.id">
                 {{ tenant.name }}

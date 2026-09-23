@@ -1,0 +1,43 @@
+CREATE TABLE IF NOT EXISTS fin_operating_entries (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    entry_no VARCHAR(64) NOT NULL,
+    direction VARCHAR(16) NOT NULL,
+    category VARCHAR(48) NOT NULL,
+    amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    business_type VARCHAR(48) NOT NULL DEFAULT '',
+    business_id BIGINT UNSIGNED NULL,
+    business_no VARCHAR(96) NOT NULL DEFAULT '',
+    source_key VARCHAR(160) NOT NULL,
+    counterparty_name VARCHAR(160) NOT NULL DEFAULT '',
+    payment_method VARCHAR(64) NOT NULL DEFAULT '',
+    description VARCHAR(1024) NOT NULL DEFAULT '',
+    operator_user_id BIGINT UNSIGNED NULL,
+    occurred_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_fin_operating_entries_no (entry_no),
+    UNIQUE KEY uk_fin_operating_entries_source (source_key),
+    KEY idx_fin_operating_entries_category (category, occurred_at),
+    KEY idx_fin_operating_entries_direction (direction, occurred_at),
+    KEY idx_fin_operating_entries_business (business_type, business_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS fin_token_purchases (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    purchase_no VARCHAR(64) NOT NULL,
+    provider_name VARCHAR(160) NOT NULL,
+    model_scope VARCHAR(160) NOT NULL DEFAULT '',
+    token_quantity BIGINT UNSIGNED NOT NULL,
+    amount_cents BIGINT UNSIGNED NOT NULL,
+    payment_method VARCHAR(64) NOT NULL DEFAULT '',
+    invoice_no VARCHAR(96) NOT NULL DEFAULT '',
+    purchased_at DATETIME(3) NOT NULL,
+    note VARCHAR(1024) NOT NULL DEFAULT '',
+    operator_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_fin_token_purchases_no (purchase_no),
+    KEY idx_fin_token_purchases_provider (provider_name, purchased_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

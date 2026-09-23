@@ -1,0 +1,329 @@
+import { moduleEntries, moduleUiMap, type HubKey } from './moduleUi'
+import type { Bootstrap } from './types'
+
+export type WorkspaceNavKey =
+  | 'workspace-auto'
+  | 'workspace-admin'
+  | 'workspace-staff'
+  | 'workspace-sales'
+  | 'workspace-agent'
+  | 'workspace-customer'
+  | 'personal-auto'
+
+export type NavigationContextKey = HubKey | WorkspaceNavKey | 'staff-after-sales'
+
+export interface NavigationLink {
+  title: string
+  to: string
+  icon: string
+}
+
+
+function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null | undefined) {
+  if (key === 'staff' && to.startsWith('/staff/approvals')) {
+    return hasStaffPermission(bootstrap, 'finance.dashboard.view')
+  }
+  if (key === 'staff' && to.startsWith('/staff/audit')) {
+    return hasStaffPermission(bootstrap, 'audit.view')
+  }
+  if (key === 'customers' && to.includes('focus=security')) {
+    return Boolean(
+      bootstrap?.actor.role === 'platform_admin' || bootstrap?.staff_access?.is_super_admin,
+    )
+  }
+  if (key === 'customers' && to.includes('focus=audit')) {
+    return hasStaffPermission(bootstrap, 'audit.view')
+  }
+  if (key === 'resources' && to.includes('focus=adjust')) {
+    return hasStaffPermission(bootstrap, 'finance.resource.adjust')
+  }
+  if (key === 'finance' && to.startsWith('/staff/finance/ai-time')) {
+    return (
+      hasStaffPermission(bootstrap, 'finance.resource.view') ||
+      hasStaffPermission(bootstrap, 'finance.resource.adjust')
+    )
+  }
+  return true
+}
+export interface NavigationContext {
+  rootTitle: string
+  rootTo: string
+  sectionTitle?: string
+  sectionTo?: string
+  sectionIcon?: string
+  kicker: string
+  entries: NavigationLink[]
+}
+
+function hasStaffPermission(bootstrap: Bootstrap | null | undefined, code: string) {
+  if (!bootstrap) return false
+  if (bootstrap.actor.role === 'platform_admin') return true
+  const access = bootstrap.staff_access
+  return Boolean(access && (access.is_super_admin || access.permissions.includes(code)))
+}
+
+function adminEntries(): NavigationLink[] {
+  return [
+    { title: '系统总览', to: '/overview', icon: '总' },
+    { title: '组织架构', to: '/staff', icon: '部' },
+    { title: '直播运维', to: '/operations/live', icon: '播' },
+    { title: '终端资源', to: '/customers', icon: '客' },
+    { title: '代理体系', to: '/agents', icon: '代' },
+    { title: '销售体系', to: '/sales', icon: '销' },
+    { title: '邀请与推荐', to: '/invitations', icon: '邀' },
+    { title: '商品与会员', to: '/commercial/memberships', icon: '会' },
+    { title: '财务结算', to: '/staff/finance', icon: '财' },
+    { title: '设备库存', to: '/resources', icon: '库' },
+    { title: '售后维修', to: '/staff/after-sales', icon: '修' },
+  ]
+}
+
+function customerEntries(): NavigationLink[] {
+  return [
+    { title: '直播运维', to: '/', icon: '播' },
+    { title: '商城', to: '/shop', icon: '商' },
+    { title: '财务管理', to: '/finance', icon: '财' },
+    { title: '邀请与推荐', to: '/invitations', icon: '邀' },
+  ]
+}
+
+function agentEntries(): NavigationLink[] {
+  return [
+    { title: '代理总览', to: '/agent/overview', icon: '总' },
+    { title: '终端管理', to: '/agent/customers', icon: '客' },
+    { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
+    { title: '邀请与推荐', to: '/invitations', icon: '邀' },
+  ]
+}
+
+function salesEntries(): NavigationLink[] {
+  return [
+    { title: '我的终端', to: '/sales/customers', icon: '客' },
+    { title: '组织架构', to: '/staff', icon: '部' },
+    { title: '邀请与推荐', to: '/invitations', icon: '邀' },
+  ]
+}
+
+function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[] {
+  const entries: NavigationLink[] = []
+
+  if (hasStaffPermission(bootstrap, 'system.architecture.view')) {
+    entries.push(
+      { title: '系统总览', to: '/overview', icon: '总' },
+      { title: '直播运维', to: '/operations/live', icon: '播' },
+    )
+  }
+
+  if (
+    hasStaffPermission(bootstrap, 'system.architecture.view') ||
+    hasStaffPermission(bootstrap, 'staff.group.view') ||
+    hasStaffPermission(bootstrap, 'staff.employee.view') ||
+    hasStaffPermission(bootstrap, 'staff.role.view')
+  ) {
+    entries.push({ title: '组织架构', to: '/staff', icon: '部' })
+  }
+
+  if (hasStaffPermission(bootstrap, 'customer.view_all')) {
+    entries.push({ title: '终端资源', to: '/customers', icon: '客' })
+  }
+  if (hasStaffPermission(bootstrap, 'agent.view_all')) {
+    entries.push({ title: '代理体系', to: '/agents', icon: '代' })
+  }
+  if (hasStaffPermission(bootstrap, 'sales.view_all')) {
+    entries.push({ title: '销售体系', to: '/sales', icon: '销' })
+  }
+  if (hasStaffPermission(bootstrap, 'finance.dashboard.view')) {
+    entries.push({ title: '财务结算', to: '/staff/finance', icon: '财' })
+  }
+  if (hasStaffPermission(bootstrap, 'commercial.membership.view')) {
+    entries.push({ title: '商品与会员', to: '/commercial/memberships', icon: '会' })
+  }
+  if (
+    hasStaffPermission(bootstrap, 'inventory.view') ||
+    hasStaffPermission(bootstrap, 'logistics.view')
+  ) {
+    entries.push({
+      title: '设备库存',
+      to: '/resources',
+      icon: '库',
+    })
+  }
+  if (hasStaffPermission(bootstrap, 'inventory.after_sales.view')) {
+    entries.push({
+      title: '售后维修',
+      to: '/staff/after-sales',
+      icon: '修',
+    })
+  }
+  if (hasStaffPermission(bootstrap, 'invitations.view_all')) {
+    entries.push({ title: '邀请与推荐', to: '/invitations', icon: '邀' })
+  }
+
+  return entries
+}
+
+function workspaceForRole(bootstrap: Bootstrap | null | undefined): WorkspaceNavKey {
+  const role = bootstrap?.actor.role
+  if (role === 'platform_admin') return 'workspace-admin'
+  if (role === 'agent_admin') return 'workspace-agent'
+  if (role === 'sales_staff') return 'workspace-sales'
+  if (role === 'staff') return 'workspace-staff'
+  return 'workspace-customer'
+}
+
+function rootForWorkspace(
+  key: Exclude<WorkspaceNavKey, 'workspace-auto' | 'personal-auto'>,
+  bootstrap: Bootstrap | null | undefined,
+) {
+  if (key === 'workspace-admin') {
+    return {
+      title: '系统',
+      to: '/overview',
+      kicker: 'SYSTEM',
+      entries: adminEntries(),
+    }
+  }
+  if (key === 'workspace-agent') {
+    return {
+      title: '代理工作台',
+      to: '/agent/overview',
+      kicker: 'AGENT CONSOLE',
+      entries: agentEntries(),
+    }
+  }
+  if (key === 'workspace-sales') {
+    return {
+      title: '销售工作台',
+      to: '/sales/customers',
+      kicker: 'SALES CONSOLE',
+      entries: salesEntries(),
+    }
+  }
+  if (key === 'workspace-staff') {
+    return {
+      title: (bootstrap?.staff_access?.primary_group_name || '内部员工') + '工作台',
+      to: '/staff',
+      kicker: 'STAFF CONSOLE',
+      entries: staffEntries(bootstrap),
+    }
+  }
+  return {
+    title: '终端工作台',
+    to: '/',
+    kicker: 'CUSTOMER CONSOLE',
+    entries: customerEntries(),
+  }
+}
+
+function moduleRoot(
+  hub: HubKey,
+  bootstrap: Bootstrap | null | undefined,
+) {
+  const role = bootstrap?.actor.role
+
+  if (role === 'agent_admin') {
+    return rootForWorkspace('workspace-agent', bootstrap)
+  }
+  if (role === 'sales_staff') {
+    return rootForWorkspace('workspace-sales', bootstrap)
+  }
+  if (role === 'staff' && !hasStaffPermission(bootstrap, 'system.architecture.view')) {
+    return rootForWorkspace('workspace-staff', bootstrap)
+  }
+
+  const config = moduleUiMap[hub]
+  return {
+    title: config.parentTitle,
+    to: config.parentTo,
+    kicker: config.kicker,
+    entries: [],
+  }
+}
+
+export function resolveNavigationContext(
+  key: NavigationContextKey,
+  bootstrap: Bootstrap | null | undefined,
+): NavigationContext {
+  if (key === 'staff-after-sales') {
+    const workspace = rootForWorkspace(
+      workspaceForRole(bootstrap) as Exclude<WorkspaceNavKey, 'workspace-auto' | 'personal-auto'>,
+      bootstrap,
+    )
+    return {
+      rootTitle: workspace.title,
+      rootTo: workspace.to,
+      sectionTitle: '售后维修',
+      sectionTo: '/staff/after-sales',
+      sectionIcon: '修',
+      kicker: 'AFTER-SALES SERVICE',
+      entries: [{ title: '售后维修', to: '/staff/after-sales', icon: '修' }],
+    }
+  }
+
+  if (key === 'personal-auto') {
+    const workspace = rootForWorkspace(
+      workspaceForRole(bootstrap) as Exclude<WorkspaceNavKey, 'workspace-auto' | 'personal-auto'>,
+      bootstrap,
+    )
+    return {
+      rootTitle: workspace.title,
+      rootTo: workspace.to,
+      sectionTitle: '个人中心',
+      sectionTo: '/personal',
+      sectionIcon: '我',
+      kicker: 'PERSONAL CENTER',
+      entries: [
+        { title: '账户与安全', to: '/account', icon: '安' },
+        { title: '个人设置', to: '/settings', icon: '设' },
+      ],
+    }
+  }
+
+  if (key.startsWith('workspace-')) {
+    const resolvedKey =
+      key === 'workspace-auto'
+        ? workspaceForRole(bootstrap)
+        : key
+
+    const workspace = rootForWorkspace(
+      resolvedKey as Exclude<WorkspaceNavKey, 'workspace-auto' | 'personal-auto'>,
+      bootstrap,
+    )
+
+    return {
+      rootTitle: workspace.title,
+      rootTo: workspace.to,
+      kicker: workspace.kicker,
+      entries: workspace.entries,
+    }
+  }
+
+  const config = moduleUiMap[key as HubKey]
+  const root = moduleRoot(key as HubKey, bootstrap)
+
+  return {
+    rootTitle: root.title,
+    rootTo: root.to,
+    sectionTitle: config.title,
+    sectionTo: config.hubTo,
+    sectionIcon: config.heroIcon,
+    kicker: config.kicker,
+    entries: moduleEntries(key as HubKey)
+      .filter((entry): entry is typeof entry & { to: string } => {
+        if (!entry.to) return false
+        if (!moduleEntryVisible(key as HubKey, entry.to, bootstrap)) return false
+        if (
+          key === 'resources' &&
+          bootstrap?.actor.role === 'agent_admin'
+        ) {
+          return entry.to.startsWith('/resources/workspace')
+        }
+        return true
+      })
+      .map((entry) => ({
+        title: entry.title,
+        to: entry.to,
+        icon: entry.icon,
+      })),
+  }
+}

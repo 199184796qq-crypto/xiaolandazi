@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useFeedbackErrorRef } from '../uiFeedback'
+import PasswordInput from '../components/PasswordInput.vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { login } from '../api'
@@ -12,7 +14,7 @@ const password = ref('')
 const captcha = ref('')
 const captchaNonce = ref(Date.now())
 const submitting = ref(false)
-const error = ref('')
+const error = useFeedbackErrorRef()
 
 const isAdminIntent = computed(
   () => username.value.trim().toLowerCase() === 'admin',
@@ -24,13 +26,13 @@ const sideLabel = computed(() =>
 
 const sideHeadline = computed(() =>
   isAdminIntent.value
-    ? '数据驱动直播运营，全局尽在掌握。'
+    ? '数据驱动直播运维，全局尽在掌握。'
     : '直播搭子，让你直播不再冷场。',
 )
 
 const sideDescription = computed(() =>
   isAdminIntent.value
-    ? '连接客户、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。'
+    ? '连接终端、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。'
     : '实时感知公屏互动，智能辅助接待与回应，让直播间始终有人陪、有人接、有人聊。',
 )
 
@@ -105,9 +107,8 @@ async function submit() {
 
           <label>
             <span>密码</span>
-            <input
+            <PasswordInput
               v-model="password"
-              type="password"
               autocomplete="current-password"
               maxlength="72"
               placeholder="请输入密码"
@@ -146,8 +147,8 @@ async function submit() {
         </form>
 
         <div class="auth-footer">
-          <span>还没有客户账号？</span>
-          <RouterLink to="/register">注册客户账号</RouterLink>
+          <span>已有邀请码？</span>
+          <RouterLink to="/register">使用邀请码注册</RouterLink>
         </div>
       </div>
     </section>

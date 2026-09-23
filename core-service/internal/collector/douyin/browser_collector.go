@@ -40,10 +40,14 @@ func (f *Factory) Create(room model.Room) (collector.Runner, error) {
 		}, nil
 
 	case "lightweight":
-		return nil, fmt.Errorf(
-			"%w: lightweight collector is not implemented yet",
-			ErrUnsupportedMode,
-		)
+		// Compatibility mode: keep legacy/lightweight room configurations usable
+		// by sharing the proven Playwright transport. This avoids hard failures
+		// while preserving one decoder/event pipeline for all Douyin rooms.
+		return &BrowserCollector{
+			browser:      f.browser,
+			frameTimeout: defaultFrameTimeout,
+			name:         "douyin-lightweight-compat",
+		}, nil
 
 	default:
 		return nil, fmt.Errorf(
@@ -70,9 +74,13 @@ func (f *Factory) Preview(
 type BrowserCollector struct {
 	browser      *BrowserManager
 	frameTimeout time.Duration
+	name         string
 }
 
 func (c *BrowserCollector) Name() string {
+	if strings.TrimSpace(c.name) != "" {
+		return c.name
+	}
 	return "douyin-playwright"
 }
 

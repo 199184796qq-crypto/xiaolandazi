@@ -1,0 +1,1217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>直播导演循环测试台 v2</title>
+<style>
+:root{font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;background:#f4f5f7;color:#17191f}
+*{box-sizing:border-box}body{margin:0}.page{max-width:1580px;margin:auto;padding:20px}
+.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:15px}
+h1{font-size:24px;margin:0 0 6px}.sub{font-size:13px;color:#6b7280;line-height:1.6}.badges{display:flex;gap:7px;flex-wrap:wrap}.badge{padding:7px 10px;border-radius:999px;background:#e5e7eb;font-size:12px}.ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}.warn{background:#fef3c7;color:#92400e}
+.grid{display:grid;grid-template-columns:330px minmax(550px,1fr) 410px;gap:15px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:15px;padding:15px;box-shadow:0 5px 20px rgba(0,0,0,.04)}
+h2{font-size:15px;margin:0 0 11px}.field{margin-bottom:10px}label{display:block;font-size:12px;color:#6b7280;margin-bottom:5px}
+input,textarea,select{width:100%;padding:9px 10px;border:1px solid #d1d5db;border-radius:8px;font:inherit;font-size:13px;outline:none}textarea{resize:vertical;min-height:86px;line-height:1.5}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.btn{border:0;border-radius:9px;padding:9px 13px;font-weight:650;cursor:pointer}.primary{background:#111827;color:#fff}.secondary{background:#eceff3;color:#111827}.danger{background:#fee2e2;color:#991b1b}.btn:disabled{opacity:.5}
+.stage{border:1px solid #e5e7eb;border-radius:10px;padding:9px;margin-bottom:7px}.stage.active{border-color:#111827;background:#f9fafb}.stage-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.stage-title{font-weight:700;font-size:13px}.stage small{color:#6b7280;line-height:1.45;display:block}.nums{display:flex;gap:5px;align-items:center;font-size:11px;color:#6b7280}.duration{width:55px;text-align:center;padding:6px}
+.state{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px}.metric{background:#f8fafc;border-radius:9px;padding:9px}.metric span{display:block;font-size:10px;color:#6b7280}.metric strong{display:block;margin-top:4px;font-size:14px}
+.control-output{background:#111827;color:white;border-radius:12px;padding:15px;min-height:126px;font-size:17px;line-height:1.72;margin:10px 0;transition:background .15s ease,box-shadow .15s ease}.control-output.interrupting{background:#b91c1c;color:#fff;box-shadow:0 0 0 3px rgba(185,28,28,.18) inset}
+.monitor-box{background:#f8fafc;border:1px solid #edf0f3;border-radius:10px;padding:9px;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;max-height:175px;overflow:auto}
+.feed{height:300px;overflow:auto;border:1px solid #edf0f3;border-radius:10px;padding:8px;background:#fafafa}.event{padding:8px 9px;background:#fff;border-radius:8px;margin-bottom:6px;font-size:12px;line-height:1.45}.event.chat{border-left:3px solid #2563eb}.event.member{border-left:3px solid #16a34a}.event.like{border-left:3px solid #f59e0b}.event.follow{border-left:3px solid #8b5cf6}.event .meta{color:#9ca3af;font-size:10px}.feed-main{height:420px}.timeline{height:340px;overflow:auto;border:1px solid #edf0f3;border-radius:10px;padding:8px;background:#fafafa}.timeline-tall{height:760px}.log{padding:8px 9px;background:#fff;border-radius:8px;margin-bottom:7px;border-left:3px solid #d1d5db;font-size:12px;line-height:1.5}.log.monitor{border-left-color:#111827}.log.control{border-left-color:#16a34a}.log.interrupt{border-left-color:#dc2626}.log.resume{border-left-color:#2563eb}.ts{color:#9ca3af;font-size:10px}.interrupt-box{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:11px}.hint{font-size:12px;color:#6b7280;line-height:1.55}.actions{display:flex;gap:7px;flex-wrap:wrap}.toolbar{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:9px}
+.switch{display:flex;align-items:center;gap:6px;font-size:12px;color:#374151}.switch input{width:auto}
+@media(max-width:1250px){.grid{grid-template-columns:1fr}.feed,.timeline{height:280px}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <h1>直播导演循环测试台 v2</h1>
+      <div class="sub">8分钟左右一轮：开场 → 塑品 → 讲链接 → 转化 → 问答 → 回开场。每个阶段 Monitor 会多次给 Control 下任务，不是每阶段只说一句。</div>
+    </div>
+    <div class="badges">
+      <div id="health" class="badge">检查服务…</div>
+      <div id="liveState" class="badge">真实公屏连接中…</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>客户直播间配置</h2>
+        <div class="row">
+          <div class="field"><label>Room ID</label><input id="room_id"></div>
+          <div class="field"><label>客户</label><input id="customer_name"></div>
+        </div>
+        <div class="field"><label>直播间</label><input id="room_name"></div>
+        <div class="field"><label>当前产品</label><input id="product_name"></div>
+        <div class="field"><label>业务事实 Facts</label><textarea id="facts_text" style="min-height:180px"></textarea></div>
+        <div class="field">
+          <label>深度塑品真实素材（只填当前商品已经确认的事实）</label>
+          <textarea id="deep_facts_text" style="min-height:210px"></textarea>
+          <div class="hint">建议补齐：产地、品种、养殖方式、活动环境、饲喂、鸡皮/肉质、现杀、鸡胗鸡肝鸡心、包装、快递、推荐做法。没有确认就留空，主播不会拿别人的样本事实硬套。</div>
+        </div>
+        <div class="field"><label>回答 / 打断规则</label><textarea id="answer_rules" style="min-height:155px"></textarea></div>
+        <div class="field"><label>Control 人格</label><textarea id="persona"></textarea></div>
+        <div class="row">
+          <div class="field">
+            <label>Qwen TTS 音色</label>
+            <select id="tts_voice">
+              <option value="qwen-audio-3.0-tts-plus-yangduck-d4988b957aff42a89c44ec3ddb34d052">杨鸭子 · Qwen-Audio 3.0 TTS Plus（克隆）</option>
+              <option value="qwen-audio-3.0-tts-flash-yangduckf-8fe9f85b0c524eee981be5d294b123cd">杨鸭子 · Qwen-Audio 3.0 TTS Flash（克隆/低延迟）</option>
+              <option value="qwen-tts-vc-yangduck0922-voice-20260922214829504-f044">杨鸭子 · 克隆音色（Qwen3 VC）</option>
+              <option value="Cherry">Cherry · 芊悦（亲切自然女声）</option>
+              <option value="Serena">Serena · 苏瑶（温柔女声）</option>
+              <option value="Ethan">Ethan · 晨煦（阳光男声）</option>
+              <option value="Chelsie">Chelsie · 千雪（年轻女声）</option>
+              <option value="Momo">Momo · 茉兔（活泼女声）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>TTS 语速</label>
+            <select id="tts_speech_rate">
+              <option value="0.9">0.9 慢一点</option>
+              <option value="1.0">1.0 正常</option>
+              <option value="1.08">1.08 推荐</option>
+              <option value="1.1">1.1 稍快</option>
+              <option value="1.2">1.2 快一点</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn secondary" onclick="saveConfig()">保存到 Redis</button>
+        <span id="saveState" class="hint"></span>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="toolbar">
+          <div>
+            <h2 style="margin:0">母带 SRT · 安全切点测试</h2>
+            <div class="hint" style="margin-top:5px">逼真测试：完整母带持续播放 → 手动观众提问 → Monitor 调度 → 后台生成回答与 TTS → Safe Point 插话 → 语义回接。</div>
+          </div>
+          <div class="actions">
+            <button class="btn secondary" onclick="loadTimelineTest()">载入测试母带</button>
+            <button class="btn primary" onclick="armTimelineInterrupt(80,'普通插话')">普通插话（A级句尾）</button>
+            <button class="btn secondary" onclick="armTimelineInterrupt(65,'高优插话')">高优插话（允许B级短语点）</button>
+            <button class="btn secondary" onclick="resumeTimelineTest()">继续主线</button>
+          </div>
+        </div>
+        <audio id="timelineTestAudio" controls style="width:100%;margin-top:12px"></audio>
+        <div class="state" style="margin-top:10px">
+          <div class="metric"><span>母带时长</span><strong id="timelineDuration">—</strong></div>
+          <div class="metric"><span>当前语义句</span><strong id="timelineSentenceId">—</strong></div>
+          <div class="metric"><span>下个 Safe Point</span><strong id="timelineNextSafe">—</strong></div>
+          <div class="metric"><span>切入状态</span><strong id="timelineInterruptState">未请求</strong></div>
+          <div class="metric"><span>策略版本</span><strong id="timelinePolicyVersion">—</strong></div>
+        </div>
+        <div class="interrupt-box" style="margin-top:12px">
+          <div class="row">
+            <div class="field" style="flex:2">
+              <label>手动观众提问</label>
+              <input id="timelineQuestion" value="这个鸡平时吃什么？">
+            </div>
+            <div class="field">
+              <label>直播间热度</label>
+              <select id="timelineHeat">
+                <option value="COLD">COLD 冷场</option>
+                <option value="WARM" selected>WARM 正常</option>
+                <option value="HOT">HOT 热场</option>
+                <option value="VERY_HOT">VERY_HOT 高热</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn primary" onclick="submitTimelineQuestion()">提交给 Monitor Agent</button>
+        </div>
+        <label style="margin-top:12px">Monitor / Interaction 实时状态（灵活回答压力测试）</label>
+        <div id="timelineAgentState" class="monitor-box">当前策略：尽量给有用回答。库里没有直接答案时，可结合已确认资料和一般常识做非绝对解释；只有价格、库存、券、快递等实时信息不乱猜具体值。</div>
+        <label>当前对应文字</label>
+        <div id="timelineCurrentText" class="control-output">点击“载入测试母带”。</div>
+        <div id="timelineTestInfo" class="hint" style="margin-top:8px"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="toolbar">
+          <div>
+            <h2 style="margin:0">完整真人口播方案模板</h2>
+            <div class="hint" style="margin-top:5px">先只验证一件事：不接公屏、不打断，让 Control 按这一套方案一次生成完整塑品，并从头到尾连续播完。</div>
+          </div>
+          <div class="actions">
+            <button class="btn secondary" onclick="saveConfig()">保存模板</button>
+            <button id="fullPlanBtn" class="btn primary" onclick="testFullSpeechPlan()">稳定骨架动态口播测试（不打断）</button>
+          </div>
+        </div>
+        <textarea id="speech_plan_template" style="min-height:620px;font-size:13px;line-height:1.68"></textarea>
+        <div class="field" style="margin-top:12px">
+          <label>真人直播样本（只学习表达方式，不自动当成当前商品事实）</label>
+          <textarea id="reference_script" style="min-height:320px;font-size:13px;line-height:1.68"></textarea>
+        </div>
+        <div class="hint">当前商品如果也有“产地 / 养殖方式 / 饲喂 / 口感 / 现杀 / 内脏保留 / 包装 / 快递 / 做法”等真实资料，请写进上面的业务事实 Facts。样本只负责教主播怎么说，不能把别人的商品事实搬过来。</div>
+        <div id="fullPlanState" class="hint" style="margin-top:8px">测试时会暂时关闭“真实事件自动交给 Monitor”，整篇播完后自动恢复。</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div class="toolbar">
+          <h2 style="margin:0">Monitor 主线导演</h2>
+          <div class="actions">
+            <label class="switch"><input id="ttsEnabled" type="checkbox" checked> Qwen TTS</label>
+            <button class="btn secondary" onclick="testTts()">试听TTS</button>
+            <button class="btn primary" onclick="startLoop()">开始循环</button>
+            <button class="btn secondary" onclick="nextStage()">下一阶段</button>
+            <button class="btn danger" onclick="stopLoop()">停止</button>
+          </div>
+        </div>
+
+        <div class="state">
+          <div class="metric"><span>当前阶段</span><strong id="currentStage">未开始</strong></div>
+          <div class="metric"><span>本阶段剩余</span><strong id="countdown">—</strong></div>
+          <div class="metric"><span>下一次说话</span><strong id="nextSpeak">—</strong></div>
+          <div class="metric"><span>循环次数</span><strong id="cycleCount">0</strong></div>
+          <div class="metric"><span>TTS状态</span><strong id="ttsStatus">空闲</strong></div>
+        </div>
+
+        <div id="stages"></div>
+
+        <label>Control 当前正在播报</label>
+        <div id="controlOutput" class="control-output">点击“开始循环”，Monitor 会在每个阶段持续让 Control 讲话。</div>
+
+        <label>Monitor 当前指令</label>
+        <div id="monitorBox" class="monitor-box">等待 Monitor 指令…</div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="toolbar">
+          <h2 style="margin:0">真实公屏 · Room <span id="roomLabel">9</span></h2>
+          <label class="switch"><input id="autoAi" type="checkbox" checked> 真实事件自动交给 Monitor</label>
+        </div>
+        <div id="feed" class="feed feed-main"><div class="hint">正在连接现有 core-service 实时流…</div></div>
+        <div class="hint" style="margin-top:8px">公屏全部显示；AI只处理“像问题的 chat”，进房事件按时间聚合，避免高频房间逐个欢迎。</div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h2>手动模拟插入（保留）</h2>
+        <div class="interrupt-box">
+          <div class="row">
+            <div class="field">
+              <label>事件类型</label>
+              <select id="eventType">
+                <option value="QUESTION">观众提问</option>
+                <option value="MEMBER">用户进入直播间</option>
+              </select>
+            </div>
+            <div class="field"><label>事件内容</label><input id="eventText" value="一只童子鸡有多重？"></div>
+          </div>
+          <button class="btn primary" onclick="manualInterrupt()">插入这个事件</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Monitor → Control 轨迹</h2>
+        <div id="timeline" class="timeline timeline-tall"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+var config=null, stages={}, phaseOrder=["OPENING","PRODUCT_SHAPING","LINK_GUIDE","CONVERSION","QNA_WINDOW"];
+var phase="OPENING", running=false, paused=false, tickTimer=null, remaining=0, speakIn=0, segmentIndex=0, cycles=0, mainlineBusy=false, interruptBusy=false;
+var liveSource=null, liveQueue=[], recentQuestions=new Map(), memberBurst=0, memberFlushTimer=null;
+var ttsQueue=[], ttsPlaying=false, currentAudio=null, ttsChars=0, ttsCost=0;
+var mainlinePrefetching=false, phaseEnding=false, pipelineGeneration=0;
+var lastPipelineProgressAt=Date.now(), lastInterruptCompletedAt=0, interruptProtectMs=10000;
+var activeSpeechPlan=null, currentPlanChunkIndex=-1;
+var fullPlanTestMode=false, fullPlanPrevAutoAi=true, fullPlanRound=0, fullPlanNextRound=null, fullPlanPrefetching=false;
+var timelineTestData=null, timelineTestBlobUrl=null, timelineInterruptTarget=null, timelineInterruptRaf=0;
+var timelineInteractionAudio=null, timelineInteractionBlobUrl=null, timelineCoveredTopics=new Set(), timelineSkipSentenceIds=new Set(), timelineAgentBusy=false;
+
+function esc(s){return String(s||"").replace(/[&<>"']/g,function(m){return({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[m]})}
+function timelineFmt(ms){
+  ms=Math.max(0,Number(ms)||0);
+  return (ms/1000).toFixed(2)+"s";
+}
+function timelineSentenceAt(ms){
+  if(!timelineTestData)return null;
+  var arr=timelineTestData.timeline.sentences||[];
+  for(var i=0;i<arr.length;i++){
+    if(ms>=Number(arr[i].play_start_ms||0) && ms<Number(arr[i].play_end_ms||0))return arr[i];
+  }
+  return arr.length?arr[arr.length-1]:null;
+}
+function timelineNextSafe(ms,minScore){
+  if(!timelineTestData)return null;
+  var arr=timelineTestData.timeline.safe_points||[];
+  minScore=Number(minScore||80);
+  for(var i=0;i<arr.length;i++){
+    var cut=arr[i].cut_ms;
+    if(Number(arr[i].score)>=minScore && cut!==null && cut!==undefined && Number(cut)>ms+40)return arr[i];
+  }
+  return null;
+}
+function updateTimelineView(){
+  var a=document.getElementById("timelineTestAudio");
+  if(!a||!timelineTestData)return;
+  var ms=a.currentTime*1000;
+  var cur=timelineSentenceAt(ms), next=timelineNextSafe(ms,80);
+  document.getElementById("timelineSentenceId").textContent=cur?cur.id:"—";
+  document.getElementById("timelineCurrentText").textContent=cur?cur.text:"—";
+  document.getElementById("timelineNextSafe").textContent=next?(timelineFmt(next.cut_ms)+" / "+next.grade+" "+next.score):"末尾";
+}
+async function loadTimelineTest(){
+  var info=document.getElementById("timelineTestInfo");
+  info.textContent="正在载入母带、SRT和时间轴…";
+  try{
+    var j=await (await fetch("/api/timeline-test",{cache:"no-store"})).json();
+    if(!j.ok)throw new Error(j.error||"时间轴载入失败");
+    timelineTestData=j;
+    try{
+      var pj=await (await fetch("/api/policies",{cache:"no-store"})).json();
+      if(pj.ok)document.getElementById("timelinePolicyVersion").textContent=pj.version||"unknown";
+    }catch(_policyError){}
+    var r=await fetch("/api/timeline-test/audio",{cache:"no-store"});
+    if(!r.ok)throw new Error("母带载入失败");
+    var blob=await r.blob();
+    if(timelineTestBlobUrl)URL.revokeObjectURL(timelineTestBlobUrl);
+    timelineTestBlobUrl=URL.createObjectURL(blob);
+    var a=document.getElementById("timelineTestAudio");
+    a.src=timelineTestBlobUrl;
+    a.ontimeupdate=updateTimelineView;
+    a.onloadedmetadata=function(){
+      document.getElementById("timelineDuration").textContent=timelineFmt(j.timeline.audio_duration_ms);
+      updateTimelineView();
+    };
+    timelineInterruptTarget=null;
+    document.getElementById("timelineInterruptState").textContent="未请求";
+    var ns=j.timeline.wait_stats&&j.timeline.wait_stats.normal?j.timeline.wait_stats.normal:null;
+    var hs=j.timeline.wait_stats&&j.timeline.wait_stats.high?j.timeline.wait_stats.high:null;
+    info.textContent="已载入："+j.timeline.sentence_count+" 个语义句；普通A级切点 "+(ns?ns.cut_count:"?")+" 个，高优A级+B级切点 "+(hs?hs.cut_count:"?")+" 个。普通P95等待 "+(ns?timelineFmt(ns.p95_wait_ms):"?")+"；高优P95等待 "+(hs?timelineFmt(hs.p95_wait_ms):"?")+"。";
+    log("monitor","SRT母带测试","已载入 "+j.timeline.sentence_count+" 个语义句，PCM切片重组="+(j.manifest.pcm_exact_rejoin?"完全一致":"需检查"));
+  }catch(e){
+    info.textContent="载入失败："+e.message;
+  }
+}
+function watchTimelineInterrupt(){
+  var a=document.getElementById("timelineTestAudio");
+  if(!a||!timelineInterruptTarget)return;
+  var targetMs=Number(timelineInterruptTarget.cut_ms);
+  var nowMs=a.currentTime*1000;
+  if(nowMs>=targetMs-10){
+    a.pause();
+    a.currentTime=targetMs/1000;
+    document.getElementById("timelineInterruptState").textContent="已在 "+timelineFmt(targetMs)+" 安全切断";
+    document.getElementById("timelineNextSafe").textContent=timelineInterruptTarget.id+" / "+timelineInterruptTarget.grade+" "+timelineInterruptTarget.score;
+    log("interrupt","Safe Point切断",timelineInterruptTarget.id+" · "+timelineFmt(targetMs)+" · score "+timelineInterruptTarget.score+" · "+(timelineInterruptTarget.left_preview||""));
+    timelineInterruptTarget=null;
+    timelineInterruptRaf=0;
+    return;
+  }
+  timelineInterruptRaf=requestAnimationFrame(watchTimelineInterrupt);
+}
+function armTimelineInterrupt(minScore,label){
+  if(!timelineTestData){loadTimelineTest();return;}
+  minScore=Number(minScore||80);
+  label=label||"普通插话";
+  var a=document.getElementById("timelineTestAudio");
+  var currentMs=a.currentTime*1000;
+  var next=timelineNextSafe(currentMs,minScore);
+  if(!next){
+    document.getElementById("timelineInterruptState").textContent="已经没有后续切点";
+    return;
+  }
+  timelineInterruptTarget=next;
+  timelineInterruptTarget.requestLabel=label;
+  document.getElementById("timelineInterruptState").textContent="PENDING → "+next.id+" "+timelineFmt(next.cut_ms);
+  log("monitor",label,"当前 "+timelineFmt(currentMs)+"，主线继续；计划在 "+next.id+" / "+timelineFmt(next.cut_ms)+" / "+next.kind+" / score "+next.score+" 自然切入。");
+  if(a.paused)a.play();
+  if(timelineInterruptRaf)cancelAnimationFrame(timelineInterruptRaf);
+  timelineInterruptRaf=requestAnimationFrame(watchTimelineInterrupt);
+}
+function resumeTimelineTest(){
+  var a=document.getElementById("timelineTestAudio");
+  if(!a)return;
+  timelineInterruptTarget=null;
+  if(timelineInterruptRaf){cancelAnimationFrame(timelineInterruptRaf);timelineInterruptRaf=0;}
+  document.getElementById("timelineInterruptState").textContent="主线继续";
+  a.play();
+}
+function timelineFirstPlayableAfter(cutMs,coveredTopics,skipIds){
+  if(!timelineTestData)return null;
+  var arr=timelineTestData.timeline.sentences||[];
+  var covered=new Set(coveredTopics||[]);
+  var skip=new Set(skipIds||[]);
+  for(var i=0;i<arr.length;i++){
+    var s=arr[i];
+    if(Number(s.play_start_ms||0)<Number(cutMs)-20)continue;
+    var topics=s.topics||[];
+    var fullyCovered=topics.length>0 && topics.every(function(t){return covered.has(t)});
+    if(skip.has(s.id) || fullyCovered)continue;
+    return s;
+  }
+  return null;
+}
+async function prepareInteractionTts(plan){
+  var text=String(plan.interaction.interaction_text||"").trim();
+  if(!text)throw new Error("互动话术为空");
+  var voice=document.getElementById("tts_voice").value||"Cherry";
+  var rate=Number(document.getElementById("tts_speech_rate").value)||1.08;
+  var r=await fetchWithTimeout("/api/tts",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({text:text,voice:voice,speech_rate:rate})
+  },45000);
+  if(!r.ok){
+    var err=await r.json().catch(function(){return {error:"互动TTS失败"}});
+    throw new Error(err.error||"互动TTS失败");
+  }
+  return {
+    blob:await r.blob(),
+    firstMs:Number(r.headers.get("X-TTS-First-Audio-Ms")||0),
+    totalMs:Number(r.headers.get("X-TTS-Total-Ms")||0),
+    model:r.headers.get("X-TTS-Model")||"",
+    voice:r.headers.get("X-TTS-Voice")||""
+  };
+}
+function waitUntilTimelineCut(target,plan){
+  return new Promise(function(resolve,reject){
+    var a=document.getElementById("timelineTestAudio");
+    var minScore=Number((plan.monitor||{}).min_safe_score||80);
+    var requestedCut=Number(target&&target.cut_ms||0);
+    function chooseLiveTarget(){
+      var nowMs=a.currentTime*1000;
+      if(requestedCut>nowMs+40)return target;
+      return timelineNextSafe(nowMs,minScore)||target;
+    }
+    var liveTarget=chooseLiveTarget();
+    document.getElementById("timelineInterruptState").textContent="READY，等待 "+liveTarget.id+" / "+timelineFmt(liveTarget.cut_ms);
+    function loop(){
+      if(!a || a.ended)return reject(new Error("主线已经播放结束"));
+      var nowMs=a.currentTime*1000;
+      if(nowMs>Number(liveTarget.cut_ms)+180){
+        liveTarget=chooseLiveTarget();
+        document.getElementById("timelineInterruptState").textContent="切点顺延 → "+liveTarget.id+" / "+timelineFmt(liveTarget.cut_ms);
+      }
+      if(nowMs>=Number(liveTarget.cut_ms)-12){
+        a.pause();
+        a.currentTime=Number(liveTarget.cut_ms)/1000;
+        document.getElementById("timelineInterruptState").textContent="切入 "+liveTarget.id+" / "+timelineFmt(liveTarget.cut_ms);
+        resolve(liveTarget);
+        return;
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  });
+}
+async function playPreparedInteraction(plan,ttsMeta,actualCut){
+  var state=document.getElementById("timelineAgentState");
+  var speechBox=document.getElementById("timelineCurrentText");
+  if(timelineInteractionBlobUrl)URL.revokeObjectURL(timelineInteractionBlobUrl);
+  timelineInteractionBlobUrl=URL.createObjectURL(ttsMeta.blob);
+  timelineInteractionAudio=new Audio(timelineInteractionBlobUrl);
+  state.textContent="正在播放互动："+plan.interaction.interaction_text;
+  if(speechBox){
+    speechBox.textContent=plan.interaction.interaction_text;
+    speechBox.classList.add("interrupting");
+  }
+  log("interrupt","互动开始",plan.interaction.interaction_text);
+  await new Promise(function(resolve,reject){
+    timelineInteractionAudio.onended=resolve;
+    timelineInteractionAudio.onerror=function(){reject(new Error("互动音频播放失败"))};
+    timelineInteractionAudio.play().catch(reject);
+  });
+  (plan.interaction.covered_topics||[]).forEach(function(t){timelineCoveredTopics.add(t)});
+  (plan.interaction.suggested_skip_sentence_ids||[]).forEach(function(id){timelineSkipSentenceIds.add(id)});
+  var resume=timelineFirstPlayableAfter(
+    Number(actualCut.cut_ms)+20,
+    Array.from(timelineCoveredTopics),
+    Array.from(timelineSkipSentenceIds)
+  );
+  var main=document.getElementById("timelineTestAudio");
+  if(resume){
+    main.currentTime=Number(resume.play_start_ms||resume.start_ms||actualCut.cut_ms)/1000;
+    state.textContent="互动完成 → 自动回接 "+resume.id+"："+resume.text;
+    document.getElementById("timelineInterruptState").textContent="RESUME → "+resume.id;
+    if(speechBox){
+      speechBox.classList.remove("interrupting");
+      speechBox.textContent=resume.text;
+    }
+    log("control","语义回接",resume.id+" · "+resume.text);
+    await main.play();
+  }else{
+    if(speechBox)speechBox.classList.remove("interrupting");
+    state.textContent="互动完成，当前母带没有后续可恢复单元。";
+  }
+}
+async function submitTimelineQuestion(){
+  if(timelineAgentBusy)return;
+  if(!timelineTestData)await loadTimelineTest();
+  var a=document.getElementById("timelineTestAudio");
+  if(!a || !a.src)return;
+  var q=String(document.getElementById("timelineQuestion").value||"").trim();
+  if(!q)return;
+  var heat=document.getElementById("timelineHeat").value||"WARM";
+  timelineAgentBusy=true;
+  var state=document.getElementById("timelineAgentState");
+  var requestMs=a.currentTime*1000;
+  var started=performance.now();
+  if(a.paused)await a.play();
+  state.textContent="Monitor Agent 分析中；主线继续播放…";
+  log("monitor","手动提问",q+" · heat="+heat+" · at "+timelineFmt(requestMs));
+  try{
+    var r=await fetchWithTimeout("/api/timeline-interaction-plan",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({question:q,current_ms:requestMs,heat_level:heat})
+    },35000);
+    var j=await r.json();
+    if(!r.ok || !j.ok)throw new Error(j.error||"Monitor 调度失败");
+    var plan=j.result;
+    var m=plan.monitor||{};
+    state.textContent="Monitor："+m.decision+" / "+m.priority+" / "+(m.reason||"")+"；耗时 "+Number(m.monitor_ms||0).toFixed(0)+"ms";
+    log("monitor","Monitor决策",m.decision+" · "+m.priority+" · "+(m.reason||"")+" · safe>="+m.min_safe_score);
+    if(m.decision!=="PREPARE_INTERRUPT" || !plan.interaction){
+      document.getElementById("timelineInterruptState").textContent="Monitor选择不打断";
+      return;
+    }
+    state.textContent="互动文案已生成，后台转 TTS；主线仍继续…\n回答："+plan.interaction.interaction_text;
+    log("control","Interaction生成",plan.interaction.interaction_text+" · covered="+(plan.interaction.covered_topics||[]).join(","));
+    var ttsMeta=await prepareInteractionTts(plan);
+    var readyMs=a.currentTime*1000;
+    state.textContent="互动音频 READY；生成到准备共 "+Math.round(performance.now()-started)+"ms；等待 Safe Point。";
+    log("tts","互动TTS READY","first "+ttsMeta.firstMs+"ms · total "+ttsMeta.totalMs+"ms · 主线当前 "+timelineFmt(readyMs));
+    var target=plan.interaction.planned_cut;
+    var actualCut=await waitUntilTimelineCut(target,plan);
+    await playPreparedInteraction(plan,ttsMeta,actualCut);
+  }catch(e){
+    state.textContent="测试失败："+e.message;
+    log("error","互动测试失败",e.message);
+  }finally{
+    timelineAgentBusy=false;
+  }
+}
+function now(){return new Date().toLocaleTimeString("zh-CN",{hour12:false});}
+function log(type,title,text){
+  var box=document.getElementById("timeline"), d=document.createElement("div");
+  d.className="log "+type; d.innerHTML='<div class="ts">'+now()+'</div><b>'+esc(title)+'</b><br>'+esc(text);
+  box.prepend(d);
+}
+function feedEvent(e){
+  var box=document.getElementById("feed"), d=document.createElement("div");
+  d.className="event "+(e.event_type||"");
+  d.innerHTML='<div class="meta">'+esc(new Date(e.occurred_at||Date.now()).toLocaleTimeString("zh-CN",{hour12:false}))+' · '+esc(e.event_type)+' · '+esc(e.nickname||"匿名")+'</div>'+esc(e.content||"");
+  box.prepend(d); while(box.children.length>120)box.removeChild(box.lastChild);
+}
+function renderStages(){
+  var w=document.getElementById("stages"); w.innerHTML="";
+  phaseOrder.forEach(function(p){
+    var s=stages[p], d=document.createElement("div"); d.className="stage "+(p===phase?"active":""); d.id="stage-"+p;
+    d.innerHTML='<div class="stage-head"><div><div class="stage-title">'+esc(s.label)+' · '+s.segments.length+'个话术点</div><small>'+esc(s.segments.map(function(x){return x.goal}).join(" / "))+'</small></div><div class="nums"><input class="duration" id="dur-'+p+'" type="number" min="20" max="600" value="'+config.durations[p]+'">秒 / 段间<input class="duration" id="spk-'+p+'" type="number" min="0.1" max="3" step="0.1" value="'+config.speak_every[p]+'">秒</div></div>';
+    w.appendChild(d);
+  });
+}
+function refresh(){
+  phaseOrder.forEach(function(p){var e=document.getElementById("stage-"+p);if(e)e.className="stage "+(p===phase?"active":"")});
+  document.getElementById("currentStage").textContent=stages[phase]?stages[phase].label:phase;
+  document.getElementById("cycleCount").textContent=cycles;
+}
+async function load(){
+  var j=await (await fetch("/api/config")).json(); config=j.config; stages=j.stages;
+  ["room_id","customer_name","room_name","product_name","facts_text","deep_facts_text","answer_rules","persona","speech_plan_template","reference_script"].forEach(function(k){document.getElementById(k).value=config[k]||""});
+  document.getElementById("tts_voice").value=config.tts_voice||"Cherry";
+  document.getElementById("tts_speech_rate").value=String(config.tts_speech_rate||1.0);
+  document.getElementById("roomLabel").textContent=config.room_id;
+  renderStages(); refresh(); connectLive();
+}
+async function saveConfig(){
+  if(!config)return;
+  ["room_id","customer_name","room_name","product_name","facts_text","deep_facts_text","answer_rules","persona","speech_plan_template","reference_script"].forEach(function(k){config[k]=document.getElementById(k).value});
+  config.tts_voice=document.getElementById("tts_voice").value;
+  config.tts_speech_rate=Number(document.getElementById("tts_speech_rate").value)||1.0;
+  config.durations={}; config.speak_every={};
+  phaseOrder.forEach(function(p){
+    config.durations[p]=Number(document.getElementById("dur-"+p).value)||60;
+    config.speak_every[p]=Number(document.getElementById("spk-"+p).value)||0.5;
+  });
+  var j=await (await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(config)})).json();
+  document.getElementById("saveState").textContent=j.ok?" 已保存":" 保存失败";
+  document.getElementById("roomLabel").textContent=config.room_id;
+}
+function updateTtsStatus(text){
+  var e=document.getElementById("ttsStatus"); if(e)e.textContent=text;
+}
+function fetchWithTimeout(url,options,ms){
+  var controller=new AbortController();
+  var timer=setTimeout(function(){controller.abort()},ms||15000);
+  options=options||{}; options.signal=controller.signal;
+  return fetch(url,options).finally(function(){clearTimeout(timer)});
+}
+function ttsGapMs(){
+  var el=document.getElementById("spk-"+phase);
+  var seconds=el?Number(el.value):0.5;
+  if(!isFinite(seconds))seconds=0.5;
+  return Math.max(100,Math.min(seconds*1000,3000));
+}
+function prepareTtsItem(item){
+  if(item.prepared)return item.prepared;
+  if(!document.getElementById("ttsEnabled").checked){
+    item.prepared=Promise.resolve({noAudio:true});
+    return item.prepared;
+  }
+  var voice=document.getElementById("tts_voice").value||"Cherry";
+  var rate=Number(document.getElementById("tts_speech_rate").value)||1.08;
+  item.voice=voice; item.rate=rate;
+  item.prepared=(async function(){
+    var r=await fetchWithTimeout("/api/tts",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text:item.text,voice:voice,speech_rate:rate})
+    },30000);
+    if(!r.ok){
+      var err=await r.json().catch(function(){return {error:"TTS失败"}});
+      throw new Error(err.error||"TTS失败");
+    }
+    var meta={
+      firstMs:r.headers.get("X-TTS-First-Audio-Ms")||"?",
+      totalMs:r.headers.get("X-TTS-Total-Ms")||"?",
+      chars:Number(r.headers.get("X-TTS-Chars")||0),
+      cost:Number(r.headers.get("X-TTS-Cost-Cny")||0)
+    };
+    meta.blob=await r.blob();
+    return meta;
+  })().catch(function(e){
+    item.prepared=null;
+    throw e;
+  });
+  return item.prepared;
+}
+function isMainlineItem(item){
+  return !!item && (item.kind==="mainline" || item.kind==="plan_chunk");
+}
+function warmTtsQueue(depth){
+  var n=0;
+  for(var i=0;i<ttsQueue.length && n<(depth||2);i++){
+    if(ttsQueue[i].kind==="interrupt" || ttsQueue[i].kind==="resume" || isMainlineItem(ttsQueue[i])){
+      prepareTtsItem(ttsQueue[i]);
+      n++;
+    }
+  }
+}
+function enqueueTts(text,label,kind,meta,front){
+  text=String(text||"").trim();
+  if(!text)return null;
+  var item={
+    text:text,
+    label:label||"Control",
+    kind:kind||"mainline",
+    meta:meta||{},
+    generation:pipelineGeneration
+  };
+  if(front)ttsQueue.unshift(item);else ttsQueue.push(item);
+  warmTtsQueue(2);
+  updateTtsStatus("准备 "+ttsQueue.length);
+  playNextTts();
+  return item;
+}
+function clearQueuedMainline(){
+  ttsQueue=ttsQueue.filter(function(item){return !isMainlineItem(item)});
+}
+function captureBookmarkedPlanRemainder(){
+  if(!activeSpeechPlan)return [];
+  var planId=activeSpeechPlan.id;
+  return ttsQueue.filter(function(item){
+    return item.kind==="plan_chunk" && item.meta && item.meta.planId===planId;
+  });
+}
+function restoreBookmarkedPlan(items){
+  if(!items||!items.length)return 0;
+  items.forEach(function(item){
+    item.generation=pipelineGeneration;
+    ttsQueue.push(item);
+  });
+  warmTtsQueue(2);
+  return items.length;
+}
+async function playAudioWithWatchdog(audio){
+  return new Promise(function(resolve,reject){
+    var done=false;
+    var timer=setTimeout(finish,25000);
+    function finish(){
+      if(done)return; done=true; clearTimeout(timer);
+      try{audio.pause()}catch(e){}
+      resolve();
+    }
+    audio.onloadedmetadata=function(){
+      if(isFinite(audio.duration)&&audio.duration>0){
+        clearTimeout(timer);
+        timer=setTimeout(finish,Math.max(10000,(audio.duration+5)*1000));
+      }
+    };
+    audio.onended=finish;
+    audio.onerror=function(){if(done)return;done=true;clearTimeout(timer);reject(new Error("浏览器音频播放失败"))};
+    var p=audio.play();
+    if(p&&p.catch)p.catch(function(e){if(done)return;done=true;clearTimeout(timer);reject(e)});
+  });
+}
+async function playNextTts(){
+  if(ttsPlaying||!ttsQueue.length)return;
+  var item=ttsQueue.shift();
+
+  if(isMainlineItem(item) && item.generation!==pipelineGeneration){
+    setTimeout(playNextTts,0);
+    return;
+  }
+
+  ttsPlaying=true;
+  updateTtsStatus("准备播放");
+  var outputBox=document.getElementById("controlOutput");
+  var url=null;
+
+  try{
+    var prepared=await prepareTtsItem(item);
+    warmTtsQueue(2);
+
+    if(isMainlineItem(item) && item.generation!==pipelineGeneration)return;
+
+    outputBox.textContent=item.text;
+    if(item.kind==="interrupt")outputBox.classList.add("interrupting");
+    else outputBox.classList.remove("interrupting");
+
+    if(item.kind==="plan_chunk" && item.meta){
+      currentPlanChunkIndex=Number(item.meta.chunkIndex||0);
+      if(activeSpeechPlan && item.meta.planId===activeSpeechPlan.id){
+        activeSpeechPlan.currentIndex=currentPlanChunkIndex;
+      }
+      document.getElementById("nextSpeak").textContent=
+        "塑品主线 "+(currentPlanChunkIndex+1)+"/"+Number(item.meta.chunkCount||1);
+      log("monitor","Monitor 主线书签",
+        "完整塑品第 "+(currentPlanChunkIndex+1)+"/"+Number(item.meta.chunkCount||1)+" 块");
+    }
+
+    if(item.meta&&item.meta.monitor){
+      document.getElementById("monitorBox").textContent=JSON.stringify(item.meta.monitor,null,2);
+      if(item.kind==="resume"){
+        log("resume","Monitor 恢复主线",item.meta.monitor.control_goal||"回到原主线");
+      }else if(item.kind==="mainline"){
+        log("monitor","Monitor → Control",item.meta.monitor.control_goal||"继续当前主线");
+      }
+    }
+
+    if(item.kind==="interrupt"){
+      log("control","Control 插话",item.text);
+    }else if(item.kind==="plan_chunk"){
+      log("control","Control 完整塑品 · "+(Number(item.meta.chunkIndex||0)+1)+"/"+Number(item.meta.chunkCount||1),item.text);
+    }else{
+      log("control","Control",item.text+(item.meta&&item.meta.total_ms?"  （生成 "+item.meta.total_ms+" ms）":""));
+    }
+
+    if(prepared.noAudio){
+      updateTtsStatus("文字模式");
+      await new Promise(function(resolve){setTimeout(resolve,800)});
+    }else{
+      ttsChars+=prepared.chars; ttsCost+=prepared.cost;
+      log("control","Qwen TTS",item.label+" · "+item.voice+" · "+prepared.chars+"字 · 首音频 "+prepared.firstMs+"ms · 合成 "+prepared.totalMs+"ms · ¥"+prepared.cost.toFixed(4));
+      url=URL.createObjectURL(prepared.blob);
+      var audio=new Audio(url); currentAudio=audio;
+      updateTtsStatus("播放中");
+
+      if(item.kind==="mainline" && running && !paused && !phaseEnding){
+        setTimeout(function(){prefetchNextMainline(false,false)},0);
+      }
+      if(item.kind==="resume" && running && !phaseEnding){
+        setTimeout(function(){prefetchNextMainline(false,true)},0);
+      }
+
+      await playAudioWithWatchdog(audio);
+    }
+  }catch(e){
+    if(item && item.meta && item.meta.fullPlanTest && Number(item.ttsRetry||0)<1){
+      item.ttsRetry=Number(item.ttsRetry||0)+1;
+      item.prepared=null;
+      ttsQueue.unshift(item);
+      log("interrupt","TTS重试","完整口播第 "+(Number(item.meta.chunkIndex||0)+1)+"/"+Number(item.meta.chunkCount||1)+" 块首次合成失败，自动重试一次。");
+      updateTtsStatus("TTS自动重试");
+    }else{
+      log("interrupt","TTS错误",(e.name==="AbortError"?"TTS超时":e.message));
+    }
+  }finally{
+    if(url)URL.revokeObjectURL(url);
+    outputBox.classList.remove("interrupting");
+    currentAudio=null; ttsPlaying=false;
+
+    if(item.meta&&item.meta.releasePause){
+      paused=false; interruptBusy=false;
+      lastInterruptCompletedAt=Date.now();
+      setTimeout(processLiveQueue,interruptProtectMs);
+    }
+
+    if(item.meta&&item.meta.fullPlanTest&&item.meta.isLastFullPlanChunk){
+      fullPlanTestMode=false;
+      var autoBox=document.getElementById("autoAi");
+      if(autoBox)autoBox.checked=fullPlanPrevAutoAi;
+      var st=document.getElementById("fullPlanState");
+      var btn=document.getElementById("fullPlanBtn");
+      if(btn){btn.disabled=false;btn.textContent="稳定骨架动态口播测试（不打断）";}
+      if(st)st.textContent="本轮动态口播已完整播完；真实公屏自动处理已恢复。";
+      log("resume","完整口播测试","本轮动态口播已经完整连续播完，没有接公屏打断。");
+    }
+
+    updateTtsStatus(ttsQueue.length?"已预生成 "+ttsQueue.length:"空闲");
+
+    if(ttsQueue.length){
+      if(paused&&interruptBusy&&isMainlineItem(ttsQueue[0])){
+        updateTtsStatus("等待插话决策");
+        return;
+      }
+      var gap=(item.kind==="interrupt"||item.kind==="resume")?180:ttsGapMs();
+      setTimeout(playNextTts,gap);
+    }else if(phaseEnding && running && !paused && !interruptBusy){
+      setTimeout(advancePhase,180);
+    }else if(running && !paused && !phaseEnding){
+      setTimeout(function(){prefetchNextMainline(false,false)},100);
+    }
+  }
+}
+function stopTts(){
+  pipelineGeneration++;
+  ttsQueue=[];
+  if(currentAudio){try{currentAudio.pause()}catch(e){} currentAudio=null}
+  ttsPlaying=false; mainlinePrefetching=false;
+  activeSpeechPlan=null; currentPlanChunkIndex=-1;
+  document.getElementById("controlOutput").classList.remove("interrupting");
+  updateTtsStatus("空闲");
+}
+async function testFullSpeechPlan(){
+  var btn=document.getElementById("fullPlanBtn");
+  var st=document.getElementById("fullPlanState");
+  if(fullPlanTestMode){
+    if(st)st.textContent="完整口播正在执行，请稍等。";
+    return;
+  }
+
+  fullPlanTestMode=true;
+  if(btn){btn.disabled=true;btn.textContent="正在生成动态口播…";}
+  if(st)st.textContent="已收到指令，正在按稳定骨架生成本轮动态口播……";
+
+  try{
+    await saveConfig();
+  }catch(e){
+    fullPlanTestMode=false;
+    if(btn){btn.disabled=false;btn.textContent="稳定骨架动态口播测试（不打断）";}
+    if(st)st.textContent="保存配置失败："+e.message;
+    return;
+  }
+
+  fullPlanTestMode=true;
+  fullPlanRound=1;
+  fullPlanNextRound=null;
+  fullPlanPrefetching=false;
+  fullPlanPrevAutoAi=document.getElementById("autoAi").checked;
+  document.getElementById("autoAi").checked=false;
+
+  st.textContent="正在一次生成完整动态口播……";
+
+  running=false; paused=false; interruptBusy=false; phaseEnding=false;
+  clearInterval(tickTimer); tickTimer=null;
+  pipelineGeneration++;
+  ttsQueue=[];
+  activeSpeechPlan=null; currentPlanChunkIndex=-1;
+  if(currentAudio){try{currentAudio.pause()}catch(e){} currentAudio=null}
+  ttsPlaying=false;
+
+  try{
+    var r=await fetchWithTimeout("/api/full-speech-plan",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:"{}"
+    },45000);
+    var j=await r.json();
+    if(!r.ok||!j.ok)throw new Error((j&&j.error)||"完整口播1-7生成失败");
+
+    var x=j.result;
+    var sections=Array.isArray(x.sections)?x.sections:[];
+    if(sections.length!==7)throw new Error("完整口播不是7段，实际："+sections.length+"段");
+
+    var planId=x.trace_id||("full-plan-"+Date.now());
+    activeSpeechPlan={
+      id:planId,
+      phase:"FULL_SPEECH_PLAN",
+      fullText:x.full_text||x.control_text||"",
+      chunks:sections.map(function(sec){return sec.text}),
+      chunkCount:7,
+      currentIndex:-1,
+      startedAt:Date.now(),
+      roundNo:1
+    };
+
+    document.getElementById("monitorBox").textContent=JSON.stringify({
+      action:"STABLE_SKELETON_DYNAMIC_EXPRESSION",
+      mode:x.plan_mode||"STABLE_SKELETON_DYNAMIC_EXPRESSION",
+      variation_round:x.variation_profile&&x.variation_profile.round_no,
+      opening:x.variation_profile&&x.variation_profile.opening&&x.variation_profile.opening.id,
+      cadence:x.variation_profile&&x.variation_profile.cadence&&x.variation_profile.cadence.id,
+      focus_groups:x.variation_profile&&x.variation_profile.focus_groups,
+      recent_round_count:x.recent_round_count||0,
+      recent_similarity:x.final_recent_similarity||0,
+      section_count:7,
+      titles:sections.map(function(sec){return sec.section+"."+sec.title})
+    },null,2);
+
+    log("monitor","完整真人口播1-7",
+      "已一次生成完整一轮，共7段、"+String(x.full_text||"").length+"字。现在先把7段TTS全部准备好，再从第1段连续播到第7段。");
+
+    var items=sections.map(function(sec,idx){
+      return {
+        text:String(sec.text||"").trim(),
+        label:"第"+sec.section+"段 · "+sec.title,
+        kind:"plan_chunk",
+        meta:{
+          monitor:{action:"FULL_SPEECH_PLAN_1_TO_7",section:sec.section,title:sec.title},
+          total_ms:x.total_ms,
+          phase:"FULL_SPEECH_PLAN",
+          planId:planId,
+          chunkIndex:idx,
+          chunkCount:7,
+          sectionNumber:sec.section,
+          sectionTitle:sec.title,
+          fullPlanTest:true,
+          isLastFullPlanChunk:idx===6
+        },
+        generation:pipelineGeneration
+      };
+    });
+
+    st.textContent="7段话术已生成，先准备第1段语音；其余6段会在后台同时预合成。";
+    if(btn)btn.textContent="准备第1段语音…";
+    updateTtsStatus("准备第1段");
+
+    // 只等待第1段语音。不要一次并发6个TTS请求，避免实时TTS被并发打满后后半段超时。
+    await prepareTtsItem(items[0]);
+    if(!fullPlanTestMode)return;
+
+    st.textContent="开始播放本轮动态口播；后面采用滚动预合成，始终提前准备后续2块，本轮不接公屏打断。";
+    if(btn)btn.textContent="正在连续播完整口播…";
+    log("monitor","完整口播TTS","第1段已准备完成；后续采用滚动2段缓冲，不再一次并发合成全部语音。");
+
+    items.forEach(function(item){ttsQueue.push(item)});
+    warmTtsQueue(3);
+    updateTtsStatus("连续口播已启动");
+    playNextTts();
+
+  }catch(e){
+    fullPlanTestMode=false;
+    document.getElementById("autoAi").checked=fullPlanPrevAutoAi;
+    if(btn){btn.disabled=false;btn.textContent="稳定骨架动态口播测试（不打断）";}
+    st.textContent="动态口播测试失败："+e.message;
+    log("interrupt","动态口播测试失败",e.message);
+  }
+}
+
+function testTts(){
+  enqueueTts("这里是千问实时语音合成测试，现在开始进入直播伴播。","试听","test",{},true);
+}
+function startLoop(){
+  if(running)return;
+  running=true; paused=false; phaseEnding=false; phase=phase||"OPENING"; segmentIndex=0;
+  saveConfig().then(function(){beginPhase(true)});
+}
+function stopLoop(){
+  running=false; paused=false; phaseEnding=false; clearInterval(tickTimer); tickTimer=null;
+  document.getElementById("countdown").textContent="—"; document.getElementById("nextSpeak").textContent="—";
+
+  if(fullPlanTestMode){
+    fullPlanTestMode=false;
+    fullPlanNextRound=null;
+    fullPlanPrefetching=false;
+    var autoBox=document.getElementById("autoAi");
+    if(autoBox)autoBox.checked=fullPlanPrevAutoAi;
+    var st=document.getElementById("fullPlanState");
+    if(st)st.textContent="完整口播连续测试已停止；真实公屏自动处理已恢复。";
+  }
+
+  stopTts();
+  log("monitor","系统","自动主线/完整口播测试已停止");
+}
+function nextStage(){
+  if(!running)running=true;
+  stopTts();
+  advancePhase();
+}
+function beginPhase(speakNow){
+  pipelineGeneration++;
+  phaseEnding=false;
+  clearQueuedMainline();
+  refresh();
+  remaining=Number(document.getElementById("dur-"+phase).value)||60;
+  segmentIndex=0;
+  document.getElementById("nextSpeak").textContent="预生成中";
+  log("monitor","Monitor","进入 "+stages[phase].label+"，本阶段 "+remaining+" 秒；采用前置生成，上一段播报时就准备下一段。");
+  if(speakNow)prefetchNextMainline(false,false);
+  startTicker();
+}
+function startTicker(){
+  clearInterval(tickTimer);
+  document.getElementById("countdown").textContent=remaining+"s";
+  tickTimer=setInterval(function(){
+    if(!running||paused)return;
+    remaining=Math.max(0,remaining-1);
+    document.getElementById("countdown").textContent=remaining+"s";
+    if(ttsPlaying)document.getElementById("nextSpeak").textContent="播报中";
+    else if(mainlinePrefetching)document.getElementById("nextSpeak").textContent="预生成中";
+    else if(ttsQueue.length)document.getElementById("nextSpeak").textContent="已就绪";
+    else document.getElementById("nextSpeak").textContent="准备中";
+
+    if(remaining<=0 && !phaseEnding){
+      phaseEnding=true;
+      pipelineGeneration++;
+      clearQueuedMainline();
+      document.getElementById("nextSpeak").textContent="本阶段收尾";
+      if(!ttsPlaying && !interruptBusy && !paused && ttsQueue.length===0){
+        clearInterval(tickTimer);
+        setTimeout(advancePhase,180);
+      }
+    }
+  },1000);
+}
+function advancePhase(){
+  if(!running)return;
+  clearInterval(tickTimer);
+  pipelineGeneration++;
+  clearQueuedMainline();
+  activeSpeechPlan=null; currentPlanChunkIndex=-1;
+  var idx=phaseOrder.indexOf(phase); phase=phaseOrder[(idx+1)%phaseOrder.length];
+  if(phase==="OPENING")cycles++;
+  beginPhase(true);
+}
+async function prefetchNextMainline(resume,allowWhilePaused){
+  if(!running)return null;
+  if(!resume){
+    if((paused&&!allowWhilePaused)||phaseEnding||mainlinePrefetching)return null;
+    if(ttsQueue.some(function(i){return i.kind==="mainline"&&i.meta&&i.meta.phase===phase}))return null;
+  }
+
+  var gen=pipelineGeneration;
+  var p=phase;
+
+  // 塑品是“一个完整大段”，不循环拆小段。完整播完后再进入讲链接。
+  if(!resume && p==="PRODUCT_SHAPING" && stages[p] && segmentIndex>=stages[p].segments.length){
+    phaseEnding=true;
+    document.getElementById("nextSpeak").textContent="塑品完整收尾";
+    return null;
+  }
+
+  var idx=resume?Math.max(segmentIndex-1,0):segmentIndex;
+  if(!resume){mainlinePrefetching=true;mainlineBusy=true;document.getElementById("nextSpeak").textContent="预生成中";}
+
+  try{
+    var r=await fetchWithTimeout("/api/mainline",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({phase:p,segment_index:idx,resume:!!resume})
+    },18000);
+    var j=await r.json();
+    if(!r.ok||!j.ok)throw new Error((j&&j.error)||"主线生成失败");
+    if(!resume && (gen!==pipelineGeneration||p!==phase||!running))return null;
+
+    var x=j.result;
+    if(!resume)segmentIndex++;
+    var meta={monitor:x.monitor,total_ms:x.total_ms,phase:p,segment_index:idx};
+
+    if(!resume){
+      mainlinePrefetching=false; mainlineBusy=false;
+
+      if(p==="PRODUCT_SHAPING" && Array.isArray(x.speech_chunks) && x.speech_chunks.length>1){
+        var planId=x.trace_id||("plan-"+Date.now());
+        activeSpeechPlan={
+          id:planId,
+          phase:p,
+          fullText:x.control_text,
+          chunks:x.speech_chunks.slice(),
+          chunkCount:x.speech_chunks.length,
+          currentIndex:-1,
+          startedAt:Date.now()
+        };
+        x.speech_chunks.forEach(function(chunk,chunkIndex){
+          enqueueTts(
+            chunk,
+            stages[p].label+" "+(chunkIndex+1)+"/"+x.speech_chunks.length,
+            "plan_chunk",
+            {
+              monitor:x.monitor,
+              total_ms:x.total_ms,
+              phase:p,
+              segment_index:idx,
+              planId:planId,
+              chunkIndex:chunkIndex,
+              chunkCount:x.speech_chunks.length
+            },
+            false
+          );
+        });
+        phaseEnding=true;
+        document.getElementById("nextSpeak").textContent="塑品主线 1/"+x.speech_chunks.length;
+        log("monitor","Monitor 完整塑品计划",
+          "Control 已一次生成完整塑品，共 "+x.speech_chunks.length+" 个可打断语义块；问题回答后从书签继续，不重新生成主题。");
+      }else{
+        enqueueTts(x.control_text,stages[p].label,"mainline",meta,false);
+        setTimeout(function(){prefetchNextMainline(false,false)},0);
+      }
+    }
+    return {text:x.control_text,meta:meta};
+  }catch(e){
+    if(!resume){log("interrupt","主线预生成错误",(e.name==="AbortError"?"生成超时，自动重试":e.message)); if(running&&!paused&&!phaseEnding)setTimeout(function(){prefetchNextMainline(false,false)},800);}
+    return null;
+  }finally{
+    if(!resume){mainlinePrefetching=false;mainlineBusy=false}
+  }
+}
+async function speakMainline(resume){
+  if(resume)return prefetchNextMainline(true);
+  return prefetchNextMainline(false,false);
+}
+async function handleInterrupt(eventType,text,source){
+  if(interruptBusy)return;
+  interruptBusy=true;
+  paused=true;
+  log("interrupt",(source==="live"?"真实公屏":"模拟事件"),(eventType==="QUESTION"?"提问：":"进房：")+text);
+
+  try{
+    var r=await fetchWithTimeout("/api/interrupt",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({event_type:eventType,text:text,phase:phase,source:source})
+    },18000);
+    var j=await r.json();
+    if(!r.ok||!j.ok)throw new Error((j&&j.error)||"打断判断失败");
+    var x=j.result;
+    document.getElementById("monitorBox").textContent=JSON.stringify(x.monitor,null,2);
+    log("monitor","Monitor 打断决策",x.monitor.decision+" / "+x.monitor.reason);
+
+    if(x.monitor.decision==="SOFT_INTERRUPT"){
+      var bookmarkedPlanItems=captureBookmarkedPlanRemainder();
+
+      pipelineGeneration++;
+      clearQueuedMainline();
+
+      var interruptItem=enqueueTts(
+        x.control_text,
+        "公屏插话",
+        "interrupt",
+        {monitor:x.monitor,total_ms:x.total_ms,releasePause:!running},
+        true
+      );
+
+      if(running && bookmarkedPlanItems.length){
+        var restored=restoreBookmarkedPlan(bookmarkedPlanItems);
+        if(interruptItem)interruptItem.meta.releasePause=true;
+        var nextIdx=bookmarkedPlanItems[0].meta?Number(bookmarkedPlanItems[0].meta.chunkIndex||0):0;
+        log("resume","Monitor 书签恢复",
+          "回答完从完整塑品第 "+(nextIdx+1)+" 块继续；已保留后续 "+restored+" 块，不重新生成塑品。");
+      }else if(running){
+        var resume=await prefetchNextMainline(true,true);
+        if(resume){
+          resume.meta.releasePause=true;
+          enqueueTts(resume.text,"恢复主线","resume",resume.meta,false);
+        }else if(interruptItem){
+          interruptItem.meta.releasePause=true;
+        }
+      }
+    }else{
+      log("control","处理结果",x.control_text);
+      paused=false; interruptBusy=false;
+      lastInterruptCompletedAt=Date.now();
+      setTimeout(playNextTts,100);
+      setTimeout(processLiveQueue,interruptProtectMs);
+      if(running&&!phaseEnding)setTimeout(function(){prefetchNextMainline(false,false)},100);
+    }
+  }catch(e){
+    log("interrupt","打断处理错误",(e.name==="AbortError"?"处理超时":e.message));
+    paused=false; interruptBusy=false;
+    lastInterruptCompletedAt=Date.now();
+    setTimeout(playNextTts,100);
+    setTimeout(processLiveQueue,interruptProtectMs);
+  }
+}
+
+function manualInterrupt(){
+  handleInterrupt(document.getElementById("eventType").value,document.getElementById("eventText").value.trim(),"manual");
+}
+function looksLikeQuestion(t){
+  t=String(t||"").trim();
+  if(!t)return false;
+  if(/[？?]/.test(t))return true;
+  return /(为什么|为啥|怎么|怎么办|多少|几斤|多重|多大|多久|什么时候|有没有|有吗|能不能|可以吗|是不是|是什么|哪一个|哪个|哪里|谁|贵吗|熟吗|生吗|发货吗|到货吗|补贴吗|赠品吗|公鸡还是母鸡|母鸡还是公鸡)/.test(t);
+}
+function normalizeQ(t){return String(t||"").replace(/\s+/g,"").replace(/[？?！!。,.，]/g,"");}
+function enqueueLiveQuestion(e){
+  var key=normalizeQ(e.content), ts=Date.now(), old=recentQuestions.get(key)||0;
+  if(ts-old<20000)return;
+  recentQuestions.set(key,ts); liveQueue.push(e);
+  if(liveQueue.length>30)liveQueue=liveQueue.slice(-30);
+  processLiveQueue();
+}
+async function processLiveQueue(){
+  if(!running||paused||interruptBusy||!document.getElementById("autoAi").checked||!liveQueue.length)return;
+  var since=Date.now()-lastInterruptCompletedAt;
+  if(lastInterruptCompletedAt>0 && since<interruptProtectMs){
+    setTimeout(processLiveQueue,Math.max(500,interruptProtectMs-since));
+    return;
+  }
+  var e=liveQueue.shift();
+  await handleInterrupt("QUESTION",e.content,"live");
+  setTimeout(processLiveQueue,1200);
+}
+function flushMembers(){
+  if(memberBurst>0&&running&&document.getElementById("autoAi").checked&&!interruptBusy){
+    var n=memberBurst; memberBurst=0;
+    handleInterrupt("MEMBER","最近30秒有 "+n+" 位朋友进入直播间","live");
+  }else{memberBurst=0}
+}
+function connectLive(){
+  if(liveSource)liveSource.close();
+  var room=(config&&config.room_id)||"9";
+  liveSource=new EventSource("/api/live-stream?room_id="+encodeURIComponent(room));
+  liveSource.onopen=function(){var e=document.getElementById("liveState");e.textContent="真实公屏已连接 · Room "+room;e.className="badge ok"};
+  liveSource.onerror=function(){var e=document.getElementById("liveState");e.textContent="真实公屏重连中…";e.className="badge warn"};
+  liveSource.onmessage=function(m){
+    try{
+      var e=JSON.parse(m.data); feedEvent(e);
+      if(!document.getElementById("autoAi").checked)return;
+      if(e.event_type==="chat"&&looksLikeQuestion(e.content))enqueueLiveQuestion(e);
+      if(e.event_type==="member")memberBurst++;
+    }catch(err){}
+  };
+  clearInterval(memberFlushTimer); memberFlushTimer=setInterval(flushMembers,30000);
+}
+function pipelineWatchdog(){
+  if(!running)return;
+  var idle=Date.now()-lastPipelineProgressAt;
+
+  // If an interrupt state got stuck but there is no audio/task left, release it.
+  if(paused&&interruptBusy&&!ttsPlaying&&!mainlinePrefetching&&ttsQueue.length===0&&idle>12000){
+    paused=false;
+    interruptBusy=false;
+    lastInterruptCompletedAt=Date.now();
+    log("resume","系统自恢复","检测到打断状态卡住，已自动释放并继续主线。");
+  }
+
+  // Mainline must never die silently.
+  if(!paused&&!interruptBusy&&!ttsPlaying&&!mainlinePrefetching&&ttsQueue.length===0){
+    if(phaseEnding){
+      log("monitor","系统自恢复","当前阶段已结束，自动切下一阶段。");
+      advancePhase();
+    }else if(idle>2500){
+      log("monitor","系统自恢复","检测到主线空闲，自动继续生成下一段。");
+      prefetchNextMainline(false,false);
+    }
+  }
+}
+setInterval(pipelineWatchdog,2000);
+
+fetch("/api/health").then(function(r){return r.json()}).then(function(j){
+  var e=document.getElementById("health"); e.textContent=j.ok?("Qwen "+j.model+" · Redis "+(j.redis?"OK":"NO")+" · Core "+(j.core?"OK":"NO")):"服务异常"; e.className="badge "+(j.ok&&j.redis&&j.core?"ok":"bad");
+}).catch(function(){var e=document.getElementById("health");e.textContent="服务未启动";e.className="badge bad"});
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,166 @@
+{
+  "master": "mainline_master.wav",
+  "srt": "mainline_master_v2.srt",
+  "timeline": "timeline_v2.json",
+  "segment_dir": "segments_v2",
+  "segment_count": 16,
+  "audio_duration_ms": 87902,
+  "pcm_exact_rejoin": true,
+  "safe_points": [
+    {
+      "id": "S001",
+      "cut_ms": 4850,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "identity_source"
+      ],
+      "next_id": "S002"
+    },
+    {
+      "id": "S002",
+      "cut_ms": 9903,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "general"
+      ],
+      "next_id": "S003"
+    },
+    {
+      "id": "S003",
+      "cut_ms": 15841,
+      "score": 80,
+      "grade": "A",
+      "topics": [
+        "appearance_meat"
+      ],
+      "next_id": "S004"
+    },
+    {
+      "id": "S004",
+      "cut_ms": 19063,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "general"
+      ],
+      "next_id": "S005"
+    },
+    {
+      "id": "S005",
+      "cut_ms": 26969,
+      "score": 80,
+      "grade": "A",
+      "topics": [
+        "raising_activity"
+      ],
+      "next_id": "S006"
+    },
+    {
+      "id": "S006",
+      "cut_ms": 36093,
+      "score": 80,
+      "grade": "A",
+      "topics": [
+        "raising_activity",
+        "feeding"
+      ],
+      "next_id": "S007"
+    },
+    {
+      "id": "S007",
+      "cut_ms": 40386,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "feeding"
+      ],
+      "next_id": "S008"
+    },
+    {
+      "id": "S008",
+      "cut_ms": 51254,
+      "score": 88,
+      "grade": "A",
+      "topics": [
+        "slaughter_offal",
+        "original_cut"
+      ],
+      "next_id": "S009"
+    },
+    {
+      "id": "S009",
+      "cut_ms": 55940,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "original_cut",
+        "cooking"
+      ],
+      "next_id": "S010"
+    },
+    {
+      "id": "S010",
+      "cut_ms": 60038,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "spec_state"
+      ],
+      "next_id": "S011"
+    },
+    {
+      "id": "S011",
+      "cut_ms": 64098,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "delivery"
+      ],
+      "next_id": "S012"
+    },
+    {
+      "id": "S012",
+      "cut_ms": 69392,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "delivery"
+      ],
+      "next_id": "S013"
+    },
+    {
+      "id": "S013",
+      "cut_ms": 71845,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "general"
+      ],
+      "next_id": "S014"
+    },
+    {
+      "id": "S014",
+      "cut_ms": 78228,
+      "score": 80,
+      "grade": "A",
+      "topics": [
+        "cooking"
+      ],
+      "next_id": "S015"
+    },
+    {
+      "id": "S015",
+      "cut_ms": 85662,
+      "score": 92,
+      "grade": "A",
+      "topics": [
+        "appearance_meat",
+        "slaughter_offal",
+        "original_cut"
+      ],
+      "next_id": "S016"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "version": "1.2",
+  "monitor": {
+    "default_decision": "PREPARE_INTERRUPT",
+    "very_hot_defer_p3": true,
+    "priority": {
+      "P1": {"min_safe_score": 65, "max_wait_ms": 9000},
+      "P2": {"min_safe_score": 80, "max_wait_ms": 11000},
+      "P3": {"min_safe_score": 80, "max_wait_ms": 14000}
+    }
+  },
+  "interaction": {
+    "max_chars_hint": 90,
+    "absolute_terms": [
+      "百分百",
+      "绝对",
+      "肯定",
+      "保证",
+      "一定",
+      "最好",
+      "最香",
+      "最嫩",
+      "完全没问题"
+    ],
+    "dynamic_intents": ["price_dynamic", "dynamic_unknown"],
+    "cooking_question_terms": [
+      "怎么做",
+      "怎么吃",
+      "炖汤",
+      "炖",
+      "清蒸",
+      "蒸",
+      "红烧",
+      "煮",
+      "空气炸锅",
+      "微波炉"
+    ],
+    "medical_escalation_terms": [
+      "过敏",
+      "疾病",
+      "用药",
+      "药物",
+      "症状",
+      "治疗",
+      "诊断",
+      "高血压",
+      "血压",
+      "糖尿病",
+      "血糖",
+      "痛风",
+      "尿酸",
+      "肾病",
+      "肝病",
+      "术后"
+    ]
+  }
+}

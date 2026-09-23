@@ -1,0 +1,23 @@
+﻿Qwen3.8-Flash Monitor direct API benchmark
+Date: 2026-09-22
+thinking: disabled
+mode: non-stream + strict JSON Schema
+endpoint: DashScope Beijing shared compatible endpoint
+
+Run 1: total_ms=3171.1, estimated_cost_cny=0.0004192
+Run 2: total_ms=2307.3, estimated_cost_cny=0.0004003
+Run 3: total_ms=2863.9, estimated_cost_cny=0.0004219
+Run 4: total_ms=2671.9, estimated_cost_cny=0.0003976
+Run 5: total_ms=2005.0, estimated_cost_cny=0.0004003
+
+Average latency: 2603.8 ms
+Median latency: 2671.9 ms
+Observed range: 2005.0 - 3171.1 ms
+Approx average model cost/call: 0.0004079 CNY
+
+Latest validated action example:
+ANSWER_COMMENT / priority=1 / SOFT_INTERRUPT / VOICE / TEMPLATE_FIRST / fact_keys=[power_mode]
+
+Notes:
+- Monitor must wait for the complete structured decision, so non-stream mode is appropriate for the decision path.
+- API key is read from the Windows user environment and is not stored in project files.

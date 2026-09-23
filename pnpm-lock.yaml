@@ -41,6 +41,9 @@ importers:
 
   web-console:
     dependencies:
+      china-area-data:
+        specifier: 5.0.1
+        version: 5.0.1
       hls.js:
         specifier: ^1.7.3
         version: 1.7.3
@@ -264,6 +267,9 @@ packages:
 
   alien-signals@3.2.1:
     resolution: {integrity: sha512-I8FjmltrfnDFoZedi5CG8DghVYNhzb/Ijluz7tCSJH0xpd0484Kowhbb1XDYOxfJpU1p5wnM2X54dA+IfGyD1g==}
+
+  china-area-data@5.0.1:
+    resolution: {integrity: sha512-BQDPpiv5Nn+018ekcJK2oSD9PAD+E1bvXB0wgabc//dFVS/KvRqCgg0QOEUt3vBkx9XzB5a9BmkJCEZDBxVjVw==}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -648,6 +654,8 @@ snapshots:
       vue: 3.5.43(typescript@6.0.3)
 
   alien-signals@3.2.1: {}
+
+  china-area-data@5.0.1: {}
 
   csstype@3.2.3: {}
 

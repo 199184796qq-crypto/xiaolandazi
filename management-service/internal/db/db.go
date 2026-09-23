@@ -112,7 +112,7 @@ func (s *Store) EnsureDevelopmentSeed(
 
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO mgmt_users (tenant_id, username, display_name, role, status)
-		VALUES (NULL, 'platform-admin', '平台管理员', 'platform_admin', 'active')
+		VALUES (NULL, 'platform-admin', '超级系统管理员', 'platform_admin', 'active')
 		ON DUPLICATE KEY UPDATE
 			display_name = VALUES(display_name),
 			role = VALUES(role),

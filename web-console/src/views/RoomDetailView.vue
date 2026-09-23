@@ -1,19 +1,26 @@
 <script setup lang="ts">
+import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import Hls from 'hls.js'
 import { getRoom, getRoomEvents } from '../api'
 import { session } from '../session'
+import ModulePageNav from '../components/ModulePageNav.vue'
 import type { Room, RoomEvent } from '../types'
 
 const route = useRoute()
-const router = useRouter()
 const roomId = Number(route.params.id)
+
+const isInternalViewer = computed(() =>
+  ['platform_admin', 'staff', 'sales_staff'].includes(
+    session.bootstrap?.actor.role || '',
+  ),
+)
 
 const room = ref<Room | null>(null)
 const events = ref<RoomEvent[]>([])
 const loading = ref(true)
-const error = ref('')
+const error = useFeedbackErrorRef()
 const streamState = ref<'connecting' | 'online' | 'offline'>('connecting')
 const activeType = ref('all')
 const liveVideo = ref<HTMLVideoElement | null>(null)
@@ -280,7 +287,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="room-detail-page">
-    <button class="back-button" @click="router.push('/')">← 返回直播间列表</button>
+    <ModulePageNav
+      :context="isInternalViewer ? 'live' : 'workspace-customer'"
+      active-title="直播间详情"
+      :active-nav-title="isInternalViewer ? '直播间列表' : '直播运维'"
+      :section-title="isInternalViewer ? '' : '直播运维'"
+      :section-to="isInternalViewer ? '' : '/'"
+      :section-icon="isInternalViewer ? '' : '播'"
+    />
 
     <div v-if="loading" class="detail-loading">正在读取直播间…</div>
     <div v-else-if="error && !room" class="inline-error">{{ error }}</div>

@@ -1,0 +1,3 @@
+interface:
+  display_name: "直播主播学习"
+  short_description: "从真人样本、评分和反馈持续学习直播带货主播表达，并回归测试。"

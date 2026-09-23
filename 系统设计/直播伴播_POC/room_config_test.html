@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>单直播间客户配置测试</title>
+<style>
+:root{font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;background:#f5f6f8;color:#16181d}
+*{box-sizing:border-box}body{margin:0}.page{max-width:1380px;margin:auto;padding:24px}
+.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:18px}
+h1{margin:0 0 6px;font-size:25px}.sub{color:#6b7280;font-size:13px}
+.badge{padding:7px 11px;border-radius:999px;background:#e5e7eb;font-size:12px}.ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px;box-shadow:0 5px 22px rgba(0,0,0,.04)}
+.card h2{font-size:16px;margin:0 0 14px}.section{padding-top:14px;margin-top:14px;border-top:1px solid #eef0f3}.section:first-of-type{padding-top:0;margin-top:0;border-top:0}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{margin-bottom:12px}label{display:block;font-size:12px;color:#6b7280;margin-bottom:6px}
+input,select,textarea{width:100%;border:1px solid #d1d5db;border-radius:9px;padding:10px 11px;font:inherit;font-size:13px;background:#fff;outline:none}
+textarea{resize:vertical;min-height:88px;line-height:1.55}input:focus,select:focus,textarea:focus{border-color:#6b7280}
+.checks{display:flex;gap:14px;flex-wrap:wrap}.checks label{display:flex;align-items:center;gap:6px;color:#374151;margin:0}.checks input{width:auto}
+.actions{display:flex;gap:10px;align-items:center}.btn{border:0;border-radius:9px;padding:10px 15px;font-weight:650;cursor:pointer}.primary{background:#111827;color:#fff}.secondary{background:#eef0f3;color:#111827}.btn:disabled{opacity:.5;cursor:not-allowed}
+.test-box{background:#fafafa;border:1px solid #eceff3;border-radius:12px;padding:14px;margin-bottom:14px}
+.result-main{font-size:18px;line-height:1.65;padding:18px;background:#111827;color:#fff;border-radius:12px;min-height:96px;display:flex;align-items:center}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.metric{background:#f8fafc;border-radius:10px;padding:11px}.metric span{display:block;font-size:11px;color:#6b7280}.metric strong{display:block;margin-top:4px;font-size:14px}
+.trace{margin-top:12px;background:#f8fafc;border-radius:10px;padding:12px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;max-height:310px;overflow:auto}
+.hint{font-size:12px;color:#6b7280;line-height:1.6}.save-state{font-size:12px;color:#166534}
+.phase-note{font-size:12px;color:#92400e;background:#fffbeb;padding:9px 10px;border-radius:8px;margin-top:9px}
+@media(max-width:980px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <h1>单直播间 · 客户配置与回答效果测试</h1>
+      <div class="sub">先给一个客户直播间配置业务事实、回答规则和直播节奏，再现场输入问题看实际结果。</div>
+    </div>
+    <div id="health" class="badge">检查服务中…</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>1. 客户 / 直播间配置</h2>
+
+      <div class="section">
+        <div class="row">
+          <div class="field"><label>客户名称</label><input id="customer_name"></div>
+          <div class="field"><label>直播间名称</label><input id="room_name"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>直播间内部 ID</label><input id="room_id"></div>
+          <div class="field"><label>商品 / 服务名称</label><input id="product_name"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>业务场景</label><input id="scene"></div>
+          <div class="field"><label>行业</label><input id="industry"></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="field">
+          <label>业务事实 Facts（每行 key=value；模型只能使用这里的事实）</label>
+          <textarea id="facts_text" style="min-height:145px"></textarea>
+        </div>
+        <div class="field">
+          <label>回答规则</label>
+          <textarea id="answer_rules" style="min-height:145px"></textarea>
+        </div>
+        <div class="field">
+          <label>直播话术人格 Persona</label>
+          <textarea id="persona"></textarea>
+        </div>
+      </div>
+
+      <div class="section">
+        <label>允许直接语音回答的直播阶段</label>
+        <div class="checks" style="margin-top:8px">
+          <label><input type="checkbox" name="voice_phase" value="PRODUCT_INTRO"> 产品讲解</label>
+          <label><input type="checkbox" name="voice_phase" value="DEMO"> 演示</label>
+          <label><input type="checkbox" name="voice_phase" value="CONVERSION"> 转化 / 逼单</label>
+          <label><input type="checkbox" name="voice_phase" value="QNA"> 问答</label>
+          <label><input type="checkbox" name="voice_phase" value="TRANSITION"> 转场</label>
+          <label><input type="checkbox" name="voice_phase" value="COLD_ROOM"> 冷场</label>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div class="field">
+            <label>当前不适合语音回答时</label>
+            <select id="defer_mode">
+              <option value="DEFER_TO_QNA_WINDOW">进入问题池，等合适窗口</option>
+              <option value="PUBLIC_CHAT_RESERVED">转公屏文字回复（仅预留，不实际发送）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>事实库里没有答案时</label>
+            <select id="unknown_policy">
+              <option value="SILENT">不回答，避免乱说</option>
+              <option value="SAFE_REPLY">安全兜底一句</option>
+            </select>
+          </div>
+        </div>
+        <div class="phase-note">直播主线优先。即使 Monitor 认为问题值得回答，只要当前阶段不允许或主播正在说话，也不会立即抢话。</div>
+      </div>
+
+      <div class="actions" style="margin-top:16px">
+        <button id="saveBtn" class="btn primary" onclick="saveConfig()">保存这个直播间配置</button>
+        <span id="saveState" class="save-state"></span>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>2. 现场测试这个直播间会怎么处理</h2>
+        <div class="test-box">
+          <div class="row">
+            <div class="field">
+              <label>当前直播阶段</label>
+              <select id="phase">
+                <option value="PRODUCT_INTRO">产品讲解</option>
+                <option value="DEMO">演示</option>
+                <option value="CONVERSION">转化 / 逼单</option>
+                <option value="QNA" selected>问答</option>
+                <option value="TRANSITION">转场</option>
+                <option value="COLD_ROOM">冷场</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>主播状态</label>
+              <select id="anchor_state">
+                <option value="idle">主播当前没讲话</option>
+                <option value="speaking">主播正在讲话</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>观众提问</label>
+            <input id="question" value="一只童子鸡有多重？" onkeydown="if(event.key==='Enter')runTest()">
+          </div>
+          <button id="testBtn" class="btn primary" onclick="runTest()">测试回答效果</button>
+        </div>
+
+        <label>最终处理结果</label>
+        <div id="finalText" class="result-main">等待测试…</div>
+
+        <div class="metrics">
+          <div class="metric"><span>Monitor</span><strong id="monitorAction">—</strong></div>
+          <div class="metric"><span>节奏决策</span><strong id="rhythm">—</strong></div>
+          <div class="metric"><span>回复路径</span><strong id="route">—</strong></div>
+          <div class="metric"><span>总耗时</span><strong id="latency">—</strong></div>
+          <div class="metric"><span>模型费用</span><strong id="cost">—</strong></div>
+          <div class="metric"><span>Redis 留痕</span><strong id="redis">—</strong></div>
+        </div>
+
+        <div id="trace" class="trace">Monitor / Rhythm / fact_keys 的详细结果会显示在这里。</div>
+      </div>
+
+      <div class="card" style="margin-top:18px">
+        <h2>这个页面现在验证什么</h2>
+        <div class="hint">
+          ① 不直接连真实直播间，先验证“单客户配置 → 问题判断 → 节奏控制 → 最终文字”的效果。<br>
+          ② 配置保存在本机 Redis；每次测试结果同时写入该直播间的 ai_trace，默认保留 7 天。<br>
+          ③ 公屏文字回复目前只保留接口概念，不会假装已经发送。<br>
+          ④ 下一步接真实直播间时，直接把这里的配置作为该 room_id 的 Business Profile / Facts / Rules 使用。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+var configKeys = ["room_id","customer_name","room_name","scene","industry","product_name","persona","facts_text","answer_rules","defer_mode","unknown_policy"];
+
+function selectedPhases(){
+  return Array.from(document.querySelectorAll('input[name="voice_phase"]:checked')).map(function(x){ return x.value; });
+}
+
+function collectConfig(){
+  var data = {};
+  configKeys.forEach(function(k){ data[k] = document.getElementById(k).value; });
+  data.allowed_voice_phases = selectedPhases();
+  return data;
+}
+
+function applyConfig(c){
+  configKeys.forEach(function(k){ if(document.getElementById(k)) document.getElementById(k).value = c[k] || ""; });
+  document.querySelectorAll('input[name="voice_phase"]').forEach(function(x){
+    x.checked = (c.allowed_voice_phases || []).indexOf(x.value) >= 0;
+  });
+}
+
+async function loadConfig(){
+  var r = await fetch("/api/config");
+  var j = await r.json();
+  if(j.ok) applyConfig(j.config);
+}
+
+async function saveConfig(){
+  var btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  document.getElementById("saveState").textContent = "保存中…";
+  try{
+    var r = await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(collectConfig())});
+    var j = await r.json();
+    if(!j.ok) throw new Error(j.error || "保存失败");
+    document.getElementById("saveState").textContent = "已保存到 Redis";
+  }catch(e){
+    document.getElementById("saveState").textContent = "保存失败：" + e.message;
+  }finally{ btn.disabled=false; }
+}
+
+async function runTest(){
+  await saveConfig();
+  var q = document.getElementById("question").value.trim();
+  if(!q) return;
+  var btn = document.getElementById("testBtn");
+  btn.disabled = true;
+  document.getElementById("finalText").textContent = "正在判断这个问题该不该现在回答…";
+  try{
+    var payload = {
+      question:q,
+      phase:document.getElementById("phase").value,
+      anchor_speaking:document.getElementById("anchor_state").value === "speaking"
+    };
+    var r = await fetch("/api/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    var j = await r.json();
+    if(!j.ok) throw new Error(j.error || "测试失败");
+    var x = j.result;
+    document.getElementById("finalText").textContent = x.final_text;
+    document.getElementById("monitorAction").textContent = x.monitor.action;
+    document.getElementById("rhythm").textContent = x.rhythm_decision;
+    document.getElementById("route").textContent = x.route;
+    document.getElementById("latency").textContent = x.total_ms + " ms";
+    document.getElementById("cost").textContent = "¥" + x.estimated_model_cost_cny;
+    document.getElementById("redis").textContent = x.redis_logged ? "已记录" : "未记录";
+    document.getElementById("trace").textContent = JSON.stringify({
+      trace_id:x.trace_id,
+      monitor:x.monitor,
+      rhythm_decision:x.rhythm_decision,
+      redis_key:x.redis_key,
+      monitor_ms:x.monitor_ms,
+      control_ms:x.control_ms,
+      monitor_usage:x.monitor_usage,
+      control_usage:x.control_usage
+    },null,2);
+  }catch(e){
+    document.getElementById("finalText").textContent = "错误：" + e.message;
+  }finally{ btn.disabled=false; }
+}
+
+fetch("/api/health").then(function(r){return r.json()}).then(function(j){
+  var el=document.getElementById("health");
+  el.textContent = j.ok ? ("Qwen 已连接 · Redis " + (j.redis ? "已连接" : "未连接")) : "服务异常";
+  el.className = "badge " + (j.ok && j.redis ? "ok" : "bad");
+}).catch(function(){
+  var el=document.getElementById("health"); el.textContent="服务未启动"; el.className="badge bad";
+});
+
+loadConfig();
+</script>
+</body>
+</html>

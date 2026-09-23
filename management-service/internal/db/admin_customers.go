@@ -17,10 +17,35 @@ func (s *Store) ListAdminCustomers(
 			u.tenant_id,
 			u.username,
 			u.display_name,
+			u.phone,
+			u.email,
 			u.status,
+			COALESCE(p.source_type, 'unknown'),
+			COALESCE(parent.id, 0),
+			COALESCE(parent.name, ''),
+			COALESCE(parent.org_type, ''),
+			COALESCE(rr.inviter_user_id, 0),
+			COALESCE(inviter.username, ''),
+			COALESCE(inviter.display_name, ''),
+			COALESCE(sa.sales_staff_id, 0),
+			COALESCE(sales_user.id, 0),
+			COALESCE(ss.employee_code, ''),
+			COALESCE(sales_user.username, ''),
+			COALESCE(sales_user.display_name, ''),
 			u.created_at
 		FROM mgmt_users u
-		WHERE u.role = 'customer'
+		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
+		LEFT JOIN mgmt_tenants parent ON parent.id=customer_org.parent_id
+		LEFT JOIN crm_customer_profiles p ON p.tenant_id=u.tenant_id
+		LEFT JOIN crm_registration_referrals rr ON rr.referred_user_id=u.id
+		LEFT JOIN mgmt_users inviter ON inviter.id=rr.inviter_user_id
+		LEFT JOIN crm_customer_sales_assignments sa
+		  ON sa.tenant_id=u.tenant_id
+		 AND sa.status='active'
+		 AND sa.effective_to IS NULL
+		LEFT JOIN crm_sales_staff ss ON ss.id=sa.sales_staff_id
+		LEFT JOIN mgmt_users sales_user ON sales_user.id=ss.user_id
+		WHERE u.role='customer'
 		  AND u.tenant_id IS NOT NULL
 		ORDER BY u.id DESC
 	`)
@@ -37,7 +62,21 @@ func (s *Store) ListAdminCustomers(
 			&item.TenantID,
 			&item.Username,
 			&item.DisplayName,
+			&item.Phone,
+			&item.Email,
 			&item.Status,
+			&item.SourceType,
+			&item.ParentOrgID,
+			&item.ParentOrgName,
+			&item.ParentOrgType,
+			&item.InviterUserID,
+			&item.InviterUsername,
+			&item.InviterDisplayName,
+			&item.SalesStaffID,
+			&item.SalesUserID,
+			&item.SalesEmployeeCode,
+			&item.SalesUsername,
+			&item.SalesDisplayName,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -58,11 +97,36 @@ func (s *Store) GetAdminCustomer(
 			u.tenant_id,
 			u.username,
 			u.display_name,
+			u.phone,
+			u.email,
 			u.status,
+			COALESCE(p.source_type, 'unknown'),
+			COALESCE(parent.id, 0),
+			COALESCE(parent.name, ''),
+			COALESCE(parent.org_type, ''),
+			COALESCE(rr.inviter_user_id, 0),
+			COALESCE(inviter.username, ''),
+			COALESCE(inviter.display_name, ''),
+			COALESCE(sa.sales_staff_id, 0),
+			COALESCE(sales_user.id, 0),
+			COALESCE(ss.employee_code, ''),
+			COALESCE(sales_user.username, ''),
+			COALESCE(sales_user.display_name, ''),
 			u.created_at
 		FROM mgmt_users u
-		WHERE u.id = ?
-		  AND u.role = 'customer'
+		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
+		LEFT JOIN mgmt_tenants parent ON parent.id=customer_org.parent_id
+		LEFT JOIN crm_customer_profiles p ON p.tenant_id=u.tenant_id
+		LEFT JOIN crm_registration_referrals rr ON rr.referred_user_id=u.id
+		LEFT JOIN mgmt_users inviter ON inviter.id=rr.inviter_user_id
+		LEFT JOIN crm_customer_sales_assignments sa
+		  ON sa.tenant_id=u.tenant_id
+		 AND sa.status='active'
+		 AND sa.effective_to IS NULL
+		LEFT JOIN crm_sales_staff ss ON ss.id=sa.sales_staff_id
+		LEFT JOIN mgmt_users sales_user ON sales_user.id=ss.user_id
+		WHERE u.id=?
+		  AND u.role='customer'
 		  AND u.tenant_id IS NOT NULL
 		LIMIT 1
 	`, userID).Scan(
@@ -70,12 +134,25 @@ func (s *Store) GetAdminCustomer(
 		&item.TenantID,
 		&item.Username,
 		&item.DisplayName,
+		&item.Phone,
+		&item.Email,
 		&item.Status,
+		&item.SourceType,
+		&item.ParentOrgID,
+		&item.ParentOrgName,
+		&item.ParentOrgType,
+		&item.InviterUserID,
+		&item.InviterUsername,
+		&item.InviterDisplayName,
+		&item.SalesStaffID,
+		&item.SalesUserID,
+		&item.SalesEmployeeCode,
+		&item.SalesUsername,
+		&item.SalesDisplayName,
 		&item.CreatedAt,
 	)
 	return item, err
 }
-
 func (s *Store) AdminResetCustomerPassword(
 	ctx context.Context,
 	userID int64,
@@ -88,7 +165,8 @@ func (s *Store) AdminResetCustomerPassword(
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE mgmt_users
-		SET password_hash = ?
+		SET password_hash = ?,
+		    must_change_password = 1
 		WHERE id = ?
 		  AND role = 'customer'
 		  AND status = 'active'
@@ -127,6 +205,7 @@ func (s *Store) DeleteAdminCustomer(
 			u.tenant_id,
 			u.username,
 			u.display_name,
+			u.phone,
 			u.status,
 			u.created_at
 		FROM mgmt_users u

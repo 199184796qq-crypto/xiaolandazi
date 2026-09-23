@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/model"
@@ -17,7 +18,12 @@ type loginRequest struct {
 type registerRequest struct {
 	Username        string `json:"username"`
 	DisplayName     string `json:"display_name"`
+	Phone           string `json:"phone"`
+	Province        string `json:"province"`
+	City            string `json:"city"`
+	District        string `json:"district"`
 	Password        string `json:"password"`
+	InviteCode      string `json:"invite_code"`
 	ConfirmPassword string `json:"confirm_password"`
 	Captcha         string `json:"captcha"`
 }
@@ -95,6 +101,10 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(input.InviteCode) == "" {
+		writeError(w, http.StatusBadRequest, "邀请码不能为空，系统已关闭无邀请码注册")
+		return
+	}
 	if input.Password != input.ConfirmPassword {
 		writeError(w, http.StatusBadRequest, "两次输入的密码不一致")
 		return
@@ -106,7 +116,12 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
 		r,
 		input.Username,
 		input.DisplayName,
+		input.Phone,
+		input.Province,
+		input.City,
+		input.District,
 		input.Password,
+		input.InviteCode,
 		input.Captcha,
 	)
 	if err != nil {
@@ -117,8 +132,14 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "该登录账号已被使用")
 		case errors.Is(err, auth.ErrInvalidUsername):
 			writeError(w, http.StatusBadRequest, "账号需为 4-32 位字母、数字、下划线、点或短横线")
+		case errors.Is(err, auth.ErrInvalidPhone):
+			writeError(w, http.StatusBadRequest, "联系电话不能为空")
+		case errors.Is(err, auth.ErrInvalidInviteCode):
+			writeError(w, http.StatusBadRequest, "邀请码无效、已停用或已过期")
+		case errors.Is(err, auth.ErrRegistrationCapacity):
+			writeError(w, http.StatusConflict, "该代理终端名额已用完，请联系邀请人或平台处理")
 		case errors.Is(err, auth.ErrInvalidDisplayName):
-			writeError(w, http.StatusBadRequest, "客户名称需为 2-64 个字符")
+			writeError(w, http.StatusBadRequest, "终端名称需为 2-64 个字符")
 		case errors.Is(err, auth.ErrWeakPassword):
 			writeError(w, http.StatusBadRequest, "密码长度需为 8-72 位")
 		default:
@@ -180,4 +201,29 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"ok": true,
 	})
+}
+
+func (s *Server) authSessions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.auth.ListSessions(r.Context(), r)
+	if err != nil {
+		if errors.Is(err, auth.ErrNotAuthenticated) {
+			writeError(w, http.StatusUnauthorized, "请先登录")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取登录会话失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) authLogoutOtherSessions(w http.ResponseWriter, r *http.Request) {
+	if err := s.auth.LogoutOtherSessions(r.Context(), r); err != nil {
+		if errors.Is(err, auth.ErrNotAuthenticated) {
+			writeError(w, http.StatusUnauthorized, "请先登录")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "退出其他设备失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
