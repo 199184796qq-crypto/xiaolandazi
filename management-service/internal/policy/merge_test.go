@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"livecompanion/management/internal/model"
@@ -57,6 +58,26 @@ func TestVerbatimModePreserved(t *testing.T) {
 	}
 	if effective.Rules[0].ExecutionMode != "verbatim" || effective.Rules[0].FixedText == "" {
 		t.Fatalf("rule=%+v", effective.Rules[0])
+	}
+}
+
+func TestRenderPromptUsesExpressionHierarchy(t *testing.T) {
+	prompt := RenderPrompt(model.LiveEffectivePolicy{
+		IndustryCode: "food",
+		Rules: []model.LiveEffectivePolicyRule{
+			{Key: "l1.truth", Text: "事实要真实", SourceLayer: "L1", ExecutionMode: "intent"},
+		},
+	})
+	for _, required := range []string{
+		"L1 是通用判断与表达方法",
+		"L2 是行业表达层",
+		"L3 是直播间个性层",
+		"L1 不等于禁止清单",
+		"自然、热情、好听、可直接播出且不违规",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q: %s", required, prompt)
+		}
 	}
 }
 

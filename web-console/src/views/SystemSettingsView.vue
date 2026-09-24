@@ -257,6 +257,75 @@ async function saveGlobalSettings() {
   }
 }
 
+async function saveFinancePolicy() {
+  if (!canViewGlobal.value || !dashboard.value || savingFinancePolicy.value) return
+  savingFinancePolicy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const value = settingsDraft[financeReviewSettingKey] === 'false' ? 'false' : 'true'
+    const result = await updateSystemSettings([{ key: financeReviewSettingKey, value }])
+    // Do not overwrite unrelated unsaved settings in the same page.
+    const saved = result.settings.find((item) => item.key === financeReviewSettingKey)
+    if (!saved) throw new Error('审核配置保存结果缺失，请重新读取核对')
+    settingsDraft[financeReviewSettingKey] = saved.value
+    dashboard.value.settings = dashboard.value.settings.map((item) => item.key === financeReviewSettingKey ? saved : item)
+    notice.value = saved.value === 'false' ? '已保存：不强制分人，有审核权限的同一人可以办理；审核记录仍完整保留。' : '已保存：强制经办人与审核人不同。'
+    window.dispatchEvent(new CustomEvent('system-config-updated'))
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '保存审核配置失败'
+  } finally {
+    savingFinancePolicy.value = false
+  }
+}
+
+function draftFontSize(key: string, fallback: number) {
+  const value = Number(settingsDraft[key])
+  return Number.isFinite(value) ? value : fallback
+}
+
+async function saveRuleTypography() {
+  if (!dashboard.value || savingRuleTypography.value) return
+  const fields = [
+    { key: 'live_policy_rule_title_font_size', label: '规则标题', min: 16, max: 40, fallback: 26 },
+    { key: 'live_policy_rule_body_font_size', label: '规则正文', min: 14, max: 36, fallback: 24 },
+    { key: 'live_policy_rule_meta_font_size', label: '规则辅助文字', min: 12, max: 28, fallback: 20 },
+    { key: 'live_policy_test_title_font_size', label: '测试结果主标题', min: 18, max: 32, fallback: 22 },
+    { key: 'live_policy_test_body_font_size', label: '测试结果内容', min: 16, max: 28, fallback: 18 },
+    { key: 'live_policy_test_meta_font_size', label: '测试结果辅助文字', min: 14, max: 24, fallback: 16 },
+  ]
+  const updates = fields.map((field) => {
+    const value = Number(settingsDraft[field.key] || field.fallback)
+    return { ...field, value }
+  })
+  const invalid = updates.find(
+    (item) => !Number.isInteger(item.value) || item.value < item.min || item.value > item.max,
+  )
+  if (invalid) {
+    error.value = invalid.label + '字号必须是 ' + invalid.min + ' 到 ' + invalid.max + ' 的整数'
+    return
+  }
+
+  savingRuleTypography.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await updateSystemSettings(
+      updates.map((item) => ({
+        key: item.key,
+        value: String(item.value),
+      })),
+    )
+    syncDashboard(result)
+    notice.value = '直播规则文字大小已保存并立即生效。'
+    window.dispatchEvent(new CustomEvent('system-config-updated'))
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '保存直播规则文字大小失败'
+  } finally {
+    savingRuleTypography.value = false
+  }
+}
+
 async function saveMembershipLimits() {
   if (!canManageMembershipLimits.value || !dashboard.value || savingMembershipLimits.value) return
   const items = (dashboard.value.membership_room_limits || []).map((item) => ({
@@ -589,6 +658,123 @@ onMounted(load)
           <span v-if="settingsDraft.footer_police_text">| {{ settingsDraft.footer_police_text }}</span>
           <span v-if="settingsDraft.footer_report_text">| {{ settingsDraft.footer_report_text }}</span>
           <span v-if="settingsDraft.footer_extra_text">| {{ settingsDraft.footer_extra_text }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="canViewGlobal" class="system-settings-card">
+      <header>
+        <div>
+          <span class="section-kicker">LIVE POLICY TYPOGRAPHY</span>
+          <h3>直播规则文字大小</h3>
+          <p>规则列表与测试结果分别配置，互不影响。</p>
+        </div>
+        <button
+          class="primary-button"
+          type="button"
+          :disabled="savingRuleTypography || loading"
+          @click="saveRuleTypography"
+        >
+          {{ savingRuleTypography ? '保存中...' : '保存文字大小' }}
+        </button>
+      </header>
+
+      <div class="system-settings-form system-rule-font-settings">
+        <label>
+          <span>规则列表标题（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_rule_title_font_size"
+            type="number"
+            min="16"
+            max="40"
+            step="1"
+          />
+          <small>范围 16–40，当前默认 26。</small>
+        </label>
+        <label>
+          <span>规则列表正文（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_rule_body_font_size"
+            type="number"
+            min="14"
+            max="36"
+            step="1"
+          />
+          <small>范围 14–36，当前默认 24。</small>
+        </label>
+        <label>
+          <span>规则列表辅助文字（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_rule_meta_font_size"
+            type="number"
+            min="12"
+            max="28"
+            step="1"
+          />
+          <small>范围 12–28，当前默认 20。</small>
+        </label>
+        <label>
+          <span>测试结果主标题（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_test_title_font_size"
+            type="number"
+            min="18"
+            max="32"
+            step="1"
+          />
+          <small>范围 18–32，当前默认 22。</small>
+        </label>
+        <label>
+          <span>测试结果内容（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_test_body_font_size"
+            type="number"
+            min="16"
+            max="28"
+            step="1"
+          />
+          <small>范围 16–28，当前默认 18。</small>
+        </label>
+        <label>
+          <span>测试结果辅助文字（px）</span>
+          <input
+            v-model="settingsDraft.live_policy_test_meta_font_size"
+            type="number"
+            min="14"
+            max="24"
+            step="1"
+          />
+          <small>范围 14–24，当前默认 16。</small>
+        </label>
+      </div>
+
+      <div class="system-live-policy-font-preview">
+        <span>规则列表预览</span>
+        <div>
+          <strong :style="{ fontSize: draftFontSize('live_policy_rule_title_font_size', 26) + 'px' }">
+            事实真实性
+          </strong>
+          <p :style="{ fontSize: draftFontSize('live_policy_rule_body_font_size', 24) + 'px' }">
+            不得编造商品信息、价格、库存、优惠或商家承诺；信息无法确认时应明确说明需要核实。
+          </p>
+          <small :style="{ fontSize: draftFontSize('live_policy_rule_meta_font_size', 20) + 'px' }">
+            l1.事实真实性.6384c844
+          </small>
+        </div>
+      </div>
+
+      <div class="system-live-policy-font-preview">
+        <span>测试结果预览</span>
+        <div>
+          <strong :style="{ fontSize: draftFontSize('live_policy_test_title_font_size', 22) + 'px' }">
+            数据依据
+          </strong>
+          <p :style="{ fontSize: draftFontSize('live_policy_test_body_font_size', 18) + 'px' }">
+            当前实时库存数量、商家承诺的发货时效及物流状态。
+          </p>
+          <small :style="{ fontSize: draftFontSize('live_policy_test_meta_font_size', 16) + 'px' }">
+            L1 · 事实真实性
+          </small>
         </div>
       </div>
     </section>

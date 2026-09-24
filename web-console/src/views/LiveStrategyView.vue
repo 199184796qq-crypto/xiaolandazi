@@ -9,8 +9,11 @@ import {
   getLiveAgentConfigVersions,
   getLiveAgentSettings,
   getLiveRoomPolicyContext,
+  getLiveRoomSupportAuthorizations,
+  getLiveSupportStaff,
   getRooms,
   publishLiveRoomPolicyVersion,
+  updateLiveRoomSupportAuthorizations,
   updateLiveAgentSettings,
   uploadLiveMediaAsset,
 } from '../api'
@@ -20,6 +23,9 @@ import type {
   LiveAgentSettings,
   LiveAgentSettingsInput,
   LiveRoomPolicyContext,
+  LiveSupportAuthorization,
+  LiveSupportCapability,
+  LiveSupportStaff,
   Room,
 } from '../types'
 
@@ -57,6 +63,15 @@ const referenceAudioInput = ref<HTMLInputElement | null>(null)
 const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
+const supportStaff = ref<LiveSupportStaff[]>([])
+const supportAuthorizations = ref<LiveSupportAuthorization[]>([])
+const supportSavingStaffId = ref<number | null>(null)
+const supportError = ref('')
+const supportCapabilityOptions: Array<{ code: LiveSupportCapability; label: string }> = [
+  { code: 'l3_policy', label: 'L3策略' },
+  { code: 'anchor_training', label: '主播训练' },
+  { code: 'voice_clone', label: '声音复刻' },
+]
 const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
 const activeConfig = computed(
   () => configVersions.value.find((item) => item.lifecycle_status === 'active') || null,
@@ -95,6 +110,84 @@ function settingsToInput(value: LiveAgentSettings): LiveAgentSettingsInput {
     self_introduction: value.self_introduction,
     mission: value.mission,
     greeting: value.greeting,
+  }
+}
+
+async function loadSupportStaff() {
+  try {
+    const result = await getLiveSupportStaff()
+    supportStaff.value = result.items
+  } catch (err) {
+    supportError.value = err instanceof Error ? err.message : '读取营销运维人员失败'
+  }
+}
+
+async function refreshSupportAuthorizations() {
+  const roomId = activeRoomId.value
+  if (!roomId) {
+    supportAuthorizations.value = []
+    return
+  }
+  try {
+    const result = await getLiveRoomSupportAuthorizations(roomId)
+    supportAuthorizations.value = result.items
+    supportError.value = ''
+  } catch (err) {
+    supportError.value = err instanceof Error ? err.message : '读取运维授权失败'
+  }
+}
+
+function staffSupportCapabilities(staffUserId: number) {
+  return new Set(
+    supportAuthorizations.value
+      .filter((item) => item.staff_user_id === staffUserId && item.status === 'active')
+      .map((item) => item.capability as LiveSupportCapability),
+  )
+}
+
+function hasStaffSupportCapability(staffUserId: number, capability: LiveSupportCapability) {
+  return staffSupportCapabilities(staffUserId).has(capability)
+}
+
+function canAuthorizeSupportCapability(staff: LiveSupportStaff, capability: LiveSupportCapability) {
+  return staff.allowed_capabilities?.includes(capability) === true
+}
+
+async function toggleStaffSupportCapability(
+  staff: LiveSupportStaff,
+  capability: LiveSupportCapability,
+  event: Event,
+) {
+  const roomId = activeRoomId.value
+  if (!roomId || supportSavingStaffId.value !== null) return
+  const checkbox = event.target as HTMLInputElement
+  const checked = checkbox.checked
+  if (checked && !canAuthorizeSupportCapability(staff, capability)) {
+    checkbox.checked = false
+    supportError.value = staff.l3_restriction_reason || '该员工不具备这项协助能力'
+    return
+  }
+  const capabilities = new Set(
+    Array.from(staffSupportCapabilities(staff.user_id))
+      .filter((item) => canAuthorizeSupportCapability(staff, item)),
+  )
+  if (checked) capabilities.add(capability)
+  else capabilities.delete(capability)
+
+  supportSavingStaffId.value = staff.user_id
+  supportError.value = ''
+  try {
+    const result = await updateLiveRoomSupportAuthorizations(
+      roomId,
+      staff.user_id,
+      Array.from(capabilities),
+    )
+    supportAuthorizations.value = result.items
+  } catch (err) {
+    supportError.value = err instanceof Error ? err.message : '保存运维授权失败'
+    checkbox.checked = hasStaffSupportCapability(staff.user_id, capability)
+  } finally {
+    supportSavingStaffId.value = null
   }
 }
 
@@ -283,7 +376,7 @@ async function publishLatestDraft() {
   if (activeMode.value === 'strategy') {
     const draft = roomPolicyDraft.value
     const roomId = activeRoomId.value
-    if (!draft || !roomId || settingsSaving.value || draft.conflicts.length) return
+    if (!draft || !roomId || settingsSaving.value || (draft.conflicts?.length ?? 0)) return
     settingsSaving.value = true
     settingsError.value = ''
     try {
@@ -437,6 +530,7 @@ async function send() {
 
 watch(activeRoomId, () => {
   void refreshRoomPolicy()
+  void refreshSupportAuthorizations()
 })
 
 watch(
@@ -457,7 +551,10 @@ watch(
   { immediate: true },
 )
 
-onMounted(loadAgentSettings)
+onMounted(async () => {
+  await Promise.all([loadSupportStaff(), loadAgentSettings()])
+  await refreshSupportAuthorizations()
+})
 </script>
 
 <template>
@@ -484,6 +581,38 @@ onMounted(loadAgentSettings)
             <small>{{ room.platform }} · {{ roomStatusLabel(room.status) }}</small>
           </span>
         </button>
+        <section class="live-support-authorize-panel">
+          <div class="live-support-authorize-head">
+            <span class="section-kicker">OPERATIONS SUPPORT</span>
+            <strong>授权运维协助</strong>
+            <small>只对当前直播间生效，可随时取消。</small>
+          </div>
+          <p v-if="supportError" class="inline-error">{{ supportError }}</p>
+          <div v-if="supportStaff.length" class="live-support-staff-list">
+            <article v-for="staff in supportStaff" :key="staff.user_id" class="live-support-staff-card">
+              <div>
+                <strong>{{ staff.display_name || staff.username }}</strong>
+                <small>{{ staff.username }}</small>
+                <small v-if="staff.l3_restriction_reason">{{ staff.l3_restriction_reason }}</small>
+              </div>
+              <label
+                v-for="option in supportCapabilityOptions"
+                :key="option.code"
+                class="live-support-capability-toggle"
+              >
+                <input
+                  type="checkbox"
+                  :checked="hasStaffSupportCapability(staff.user_id, option.code)"
+                  :disabled="supportSavingStaffId !== null || (!canAuthorizeSupportCapability(staff, option.code) && !hasStaffSupportCapability(staff.user_id, option.code))"
+                  :title="option.code === 'l3_policy' ? staff.l3_restriction_reason : undefined"
+                  @change="toggleStaffSupportCapability(staff, option.code, $event)"
+                />
+                <span>{{ option.label }}</span>
+              </label>
+            </article>
+          </div>
+          <div v-else class="empty-state">暂无可授权的营销运维人员</div>
+        </section>
       </aside>
 
       <main class="live-strategy-agent">
@@ -522,10 +651,10 @@ onMounted(loadAgentSettings)
               v-if="activeMode === 'strategy' ? !!roomPolicyDraft : latestConfig?.lifecycle_status === 'draft'"
               class="strategy-version-button primary"
               type="button"
-              :disabled="settingsSaving || (activeMode === 'strategy' && !!roomPolicyDraft?.conflicts.length)"
+              :disabled="settingsSaving || (activeMode === 'strategy' && !!roomPolicyDraft?.conflicts?.length)"
               @click="publishLatestDraft"
             >
-              {{ activeMode === 'strategy' && roomPolicyDraft?.conflicts.length ? '存在冲突' : '发布草稿' }}
+              {{ activeMode === 'strategy' && roomPolicyDraft?.conflicts?.length ? '存在冲突' : '发布草稿' }}
             </button>
           </div>
         </header>

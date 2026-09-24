@@ -51,6 +51,10 @@ var staffPermissionSeeds = []struct {
 	{"liveops.room_quota.manage", "liveops", "manage_room_quota", "调整终端直播间数量额度"},
 	{"livepolicy.view", "livepolicy", "view", "查看系统与行业直播策略"},
 	{"livepolicy.manage_l2", "livepolicy", "manage_l2", "维护并发布行业默认直播策略"},
+	{"livepolicy.manage_l1", "livepolicy", "manage_l1", "维护并发布系统底层直播规则"},
+	{"livepolicy.manage_l3_authorized", "livepolicy", "manage_l3_authorized", "经客户授权后代维护指定直播间 L3 策略"},
+	{"livecoach.anchor_authorized", "livecoach", "anchor_authorized", "经客户授权后协助指定直播间主播训练"},
+	{"livevoice.clone_authorized", "livevoice", "clone_authorized", "经客户授权后协助指定直播间声音复刻"},
 	{"finance.dashboard.view", "finance", "view_dashboard", "查看财务数据"},
 	{"finance.recharge.create", "finance", "create_recharge", "发起充值"},
 	{"finance.recharge.approve", "finance", "approve_recharge", "审核充值"},
@@ -200,8 +204,8 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"customer.view_all", "agent.view_all", "liveops.view_all", "liveops.configure", "liveops.ticket.manage", "liveops.room_quota.view", "liveops.room_quota.manage",
-			"system.settings.view", "system.settings.liveops.manage", "livepolicy.view", "livepolicy.manage_l2",
+			"liveops.view_all", "liveops.configure", "liveops.ticket.manage", "liveops.room_quota.view", "liveops.room_quota.manage",
+			"livepolicy.view", "livepolicy.manage_l1", "livepolicy.manage_l2", "livecoach.anchor_authorized", "livevoice.clone_authorized",
 			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
 			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all", "audit.view",
 		},
@@ -210,10 +214,10 @@ var staffRoleSeeds = []staffRoleSeed{
 		GroupCode:        "live_operations",
 		Code:             "live_operations_staff",
 		Name:             "营销运维专员",
-		Description:      "执行直播配置与联调，并负责活动营销、时长卡运营和设备商城运营；行业目录仅查看。",
+		Description:      "执行直播配置与联调、活动营销、时长卡与设备商城运营；可维护 L2，并在客户授权后代维护 L3、协助主播训练和声音复刻。",
 		DefaultScopeType: "assigned",
 		Permissions: []string{
-			"customer.view_all", "agent.view_all", "liveops.configure", "liveops.room_quota.view", "system.settings.view", "livepolicy.view",
+			"liveops.configure", "liveops.room_quota.view", "livepolicy.view", "livepolicy.manage_l2", "livepolicy.manage_l3_authorized", "livecoach.anchor_authorized", "livevoice.clone_authorized",
 			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
 			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all",
 		},
@@ -412,7 +416,7 @@ func (s *Store) MigrateStaff(ctx context.Context) error {
 	if err := s.migrateLegacySalesStaff(ctx); err != nil {
 		return err
 	}
-	return nil
+	return s.migrateLivePolicyAccessSeparation(ctx)
 }
 
 func (s *Store) seedInitialStaffModel(ctx context.Context) error {

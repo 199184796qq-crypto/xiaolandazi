@@ -78,6 +78,24 @@ func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request
 	current, _ := s.store.GetActiveLivePolicyVersion(
 		r.Context(), input.Layer, input.IndustryCode, 0, 0,
 	)
+	if scope, scopeErr := s.store.GetLivePolicyScope(
+		r.Context(), input.Layer, input.IndustryCode, 0, 0,
+	); scopeErr == nil {
+		if versions, listErr := s.store.ListLivePolicyVersions(r.Context(), scope.ID); listErr == nil {
+			for index := range versions {
+				if versions[index].LifecycleStatus == "draft" {
+					candidate := versions[index]
+					current = &candidate
+					break
+				}
+			}
+		}
+	}
+	if current != nil {
+		stabilized := *current
+		stabilized.Rules = policy.EnsureStableRuleKeys(input.Layer, current.Rules, nil)
+		current = &stabilized
+	}
 	l1, _ := s.store.GetActiveLivePolicyVersion(
 		r.Context(), model.LivePolicyLayerL1, "", 0, 0,
 	)
@@ -93,6 +111,33 @@ func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "策略 Agent 暂时无法回答，请稍后再试")
 		return
+	}
+	if normalizePolicyAgentAction(modelOutput.Action) == "DRAFT" &&
+		!adminPolicyModelRulesComplete(modelOutput.Rules) {
+		repairPrompt := prompt +
+			"\n\n【输出完整性修复】\n" +
+			"上一轮草稿结构不完整。重新输出完整 JSON。\n" +
+			"如果 action=DRAFT：\n" +
+			"- rules 中每条必须完整包含 key、title、text、execution_mode、enabled。\n" +
+			"- text 必须是完整规则正文，不能只给标题、摘要或空字符串。\n" +
+			"- execution_mode 只能是 intent 或 verbatim；verbatim 必须同时提供 fixed_text。\n" +
+			"- 新增规则默认 enabled=true；已有规则保留原 enabled 状态。\n" +
+			"- 必须输出当前层完整规则集，不能省略正文。"
+		repaired, repairedModel, repairedLatency, repairErr := callDashScopePolicyAgent(
+			r.Context(), repairPrompt, input.Message, input.History,
+		)
+		if repairErr != nil {
+			writeError(w, http.StatusBadGateway, "策略 Agent 草稿结构不完整，自动修复失败，请重试")
+			return
+		}
+		modelOutput = repaired
+		modelName = repairedModel
+		latencyMS += repairedLatency
+		if normalizePolicyAgentAction(modelOutput.Action) != "DRAFT" ||
+			!adminPolicyModelRulesComplete(modelOutput.Rules) {
+			writeError(w, http.StatusBadGateway, "策略 Agent 返回的规则正文不完整，本次未保存草稿，请重试")
+			return
+		}
 	}
 
 	output := livePolicyAgentOutput{
@@ -110,13 +155,20 @@ func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	baseRules := []model.LivePolicyRule{}
+	if current != nil {
+		baseRules = current.Rules
+	}
 	draftInput := model.CreateLivePolicyDraftInput{
 		Layer:        input.Layer,
 		IndustryCode: input.IndustryCode,
 		SourceText:   strings.TrimSpace(modelOutput.SourceText),
-		Rules:        modelOutput.Rules,
-		Conflicts:    append([]model.LivePolicyConflict{}, modelOutput.Conflicts...),
-		Note:         strings.TrimSpace(modelOutput.Note),
+		Rules: policy.PrioritizeNewRules(
+			policy.EnsureStableRuleKeys(input.Layer, modelOutput.Rules, baseRules),
+			baseRules,
+		),
+		Conflicts: filterPolicyAgentMachineKeyConflicts(modelOutput.Conflicts),
+		Note:      strings.TrimSpace(modelOutput.Note),
 	}
 	if draftInput.SourceText == "" {
 		draftInput.SourceText = input.Message
@@ -202,13 +254,17 @@ func (s *Server) liveRoomPolicyAgentChat(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	baseOverrides := []model.LivePolicyOverride{}
+	if l3 != nil {
+		baseOverrides = l3.Overrides
+	}
 	draftInput := model.CreateLivePolicyDraftInput{
 		Layer:      model.LivePolicyLayerL3,
 		TenantID:   tenantID,
 		RoomID:     roomID,
 		SourceText: strings.TrimSpace(modelOutput.SourceText),
-		Overrides:  modelOutput.Overrides,
-		Conflicts:  append([]model.LivePolicyConflict{}, modelOutput.Conflicts...),
+		Overrides:  policy.EnsureStableOverrideKeys(modelOutput.Overrides, baseOverrides),
+		Conflicts:  filterPolicyAgentMachineKeyConflicts(modelOutput.Conflicts),
 		Note:       strings.TrimSpace(modelOutput.Note),
 	}
 	if draftInput.SourceText == "" {
@@ -242,11 +298,11 @@ func buildAdminPolicyAgentPrompt(
 	if err != nil {
 		return "", err
 	}
-	scope := "系统全局规则，对所有行业、终端和直播间生效"
-	layerRules := "只编辑 L1；L1 是强制边界，不放行业或客户专属业务。"
+	scope := "系统通用判断与表达原则，对所有行业、终端和直播间生效"
+	layerRules := "只编辑 L1；L1 重点定义如何理解意图、核对事实、处理冲突并生成自然好听且不违规的直播表达，不写行业或客户专属业务，也不要把 L1 写成禁止清单。"
 	if layer == model.LivePolicyLayerL2 {
-		scope = "行业默认规则，行业代码：" + industryCode
-		layerRules = "只编辑 L2；L2 是行业默认业务，L3 后续可 add/replace/disable；L2 不能削弱 L1，也不能写具体客户或直播间专属规则。"
+		scope = "行业表达规则，行业代码：" + industryCode
+		layerRules = "只编辑 L2；L2 在 L1 的判断与表达方法上增加行业专业知识、常见问法、销售节奏、行业边界和表达习惯。L3 后续再做具体直播间个性化；L2 不改变 L1 的事实判断方法。"
 	}
 	return strings.TrimSpace(fmt.Sprintf(`
 你是“%s”，工作在管理端。
@@ -255,13 +311,15 @@ func buildAdminPolicyAgentPrompt(
 
 【铁律】
 1. 管理端助手只管理 L1/L2，绝不列出或编辑任何客户直播间 L3。
-2. L1 是系统强制边界，L2/L3 不得解除。
-3. L2 是行业默认业务规则，终端 L3 可补充、替换、关闭 L2。
-4. %s
+2. L1 是通用判断与表达方法：先理解真实意图，再核对事实与约束，最后形成自然、热情、好听、可直接播出且不违规的表达；不要把 L1 写成“禁止/不得/拒绝”的条款堆积。
+3. L2 是行业表达层：在 L1 基础上加入行业专业知识、常见问法、销售节奏和行业表达习惯；L3 再做当前直播间和主播个性化。
+4. 用户反馈“太硬、太官方、再自然一点、销售感更强”等时，要结合历史对话和当前草稿继续打磨，只调整不满意的部分，不要另起一套无关规则。
+5. %s
 
 【表达模式】
 用户明确说必须原话、一字不改、固定这样说、100%%原话时，execution_mode=verbatim，fixed_text 逐字保存。
 其它情况默认 execution_mode=intent，可变表达但必须保留意思、事实和约束。
+intent 模式默认目标是“保留真实意图并把话说得更好听、更像直播主播”，不是把不适合的原话改成冷冰冰的拒绝。
 固定原话若与 L1 冲突，必须返回 conflict，不得偷偷改写。
 
 【输出】
@@ -270,6 +328,8 @@ func buildAdminPolicyAgentPrompt(
 明确修改时 action=DRAFT，并输出当前层完整的新版本 rules，不只输出差异。
 字段：action, assistant_message, source_text, rules, overrides, conflicts, note。
 管理端 overrides 必须为空数组。
+每条 rules 都必须有非空且稳定的 key。已有规则修改时必须原样保留原 key；新增规则生成简短、可读且唯一的 key。不要因为修改正文或标题而给已有规则换 key。
+每条 rules 对象必须完整包含 key、title、text、execution_mode、enabled。text 必须保存完整规则正文，禁止只输出标题、摘要或空字符串；新增规则默认 enabled=true。
 
 【当前 L1】
 %s
@@ -304,16 +364,55 @@ func buildRoomPolicyAgentPrompt(
 3. 用户明确要求必须原话、一字不改、固定这样说、100%%原话时，execution_mode=verbatim，fixed_text 逐字保存。
 4. 其它情况默认 execution_mode=intent。
 5. 无法确定是否允许的修改，先 action=EXPLAIN，不要编造内部规则。
+6. L3 的作用是让表达更像当前直播间和主播：商品、活动、风格、口头习惯、节奏和客户策略都在这里个性化；不要把 L3 写成新的审核层。
+7. 用户根据上一轮回复继续提出“更自然/更简短/更有销售感”等反馈时，结合 history 延续打磨，保留已认可部分。
 
 【输出】
 只输出 JSON 对象，不要 Markdown。
 讨论/询问 action=EXPLAIN；明确修改 action=DRAFT。
 字段：action, assistant_message, source_text, rules, overrides, conflicts, note。
 L3 rules 必须为空数组；overrides 使用 add|replace|disable。
+operation=add 的新增项必须提供非空、稳定且唯一的 key；replace/disable 必须使用用户已知的现有 key，不能自行猜测。
 
 【当前客户自己的 L3】
 %s
 `, strings.TrimSpace(assistantName), string(l3Raw))), nil
+}
+
+func adminPolicyModelRulesComplete(rules []model.LivePolicyRule) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.Title) == "" || strings.TrimSpace(rule.Text) == "" {
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(rule.ExecutionMode)) {
+		case model.LivePolicyModeIntent:
+		case model.LivePolicyModeVerbatim:
+			if strings.TrimSpace(rule.FixedText) == "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func filterPolicyAgentMachineKeyConflicts(
+	conflicts []model.LivePolicyConflict,
+) []model.LivePolicyConflict {
+	result := make([]model.LivePolicyConflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		switch strings.TrimSpace(conflict.Code) {
+		case "missing_rule_key", "duplicate_rule_key", "missing_override_key", "duplicate_override_key":
+			continue
+		default:
+			result = append(result, conflict)
+		}
+	}
+	return result
 }
 
 func normalizePolicyAgentAction(action string) string {

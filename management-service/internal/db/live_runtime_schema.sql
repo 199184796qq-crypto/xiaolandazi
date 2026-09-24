@@ -377,6 +377,52 @@ CREATE TABLE IF NOT EXISTS live_policy_audit_logs (
     KEY idx_live_policy_audit_layer (layer, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_support_authorizations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    staff_user_id BIGINT UNSIGNED NOT NULL,
+    capability VARCHAR(48) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    granted_by_user_id BIGINT UNSIGNED NOT NULL,
+    granted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    revoked_by_user_id BIGINT UNSIGNED NULL,
+    revoked_at DATETIME(3) NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_support_authorization (tenant_id, room_id, staff_user_id, capability),
+    KEY idx_live_support_staff (staff_user_id, status, room_id),
+    KEY idx_live_support_room (tenant_id, room_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_support_config_versions (
+    version_id BIGINT UNSIGNED NOT NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    staff_user_id BIGINT UNSIGNED NOT NULL,
+    capability VARCHAR(48) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (version_id),
+    KEY idx_live_support_config_staff (staff_user_id, room_id, created_at),
+    KEY idx_live_support_config_room (tenant_id, room_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_support_authorization_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    action VARCHAR(64) NOT NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    staff_user_id BIGINT UNSIGNED NOT NULL,
+    actor_user_id BIGINT UNSIGNED NOT NULL,
+    capability VARCHAR(48) NOT NULL,
+    detail_json JSON NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_support_event_room (tenant_id, room_id, created_at),
+    KEY idx_live_support_event_staff (staff_user_id, created_at),
+    KEY idx_live_support_event_actor (actor_user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_runtime_policy_snapshots (
     session_id BIGINT UNSIGNED NOT NULL,
     tenant_id BIGINT UNSIGNED NOT NULL,

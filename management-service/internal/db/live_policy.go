@@ -17,6 +17,18 @@ type livePolicyScanner interface {
 	Scan(dest ...any) error
 }
 
+func normalizeLivePolicyVersionCollections(item *model.LivePolicyVersion) {
+	if item.Rules == nil {
+		item.Rules = []model.LivePolicyRule{}
+	}
+	if item.Overrides == nil {
+		item.Overrides = []model.LivePolicyOverride{}
+	}
+	if item.Conflicts == nil {
+		item.Conflicts = []model.LivePolicyConflict{}
+	}
+}
+
 func scanLivePolicyScope(scanner livePolicyScanner) (model.LivePolicyScope, error) {
 	var item model.LivePolicyScope
 	var tenantID, roomID, currentVersionID sql.NullInt64
@@ -315,6 +327,7 @@ func scanLivePolicyVersion(scanner livePolicyScanner) (model.LivePolicyVersion, 
 	_ = json.Unmarshal([]byte(rulesRaw), &item.Rules)
 	_ = json.Unmarshal([]byte(overridesRaw), &item.Overrides)
 	_ = json.Unmarshal([]byte(conflictsRaw), &item.Conflicts)
+	normalizeLivePolicyVersionCollections(&item)
 	if sourceVersionID.Valid {
 		value := sourceVersionID.Int64
 		item.SourceVersionID = &value

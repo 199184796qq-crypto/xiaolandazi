@@ -330,6 +330,12 @@ export interface PublicSystemConfig {
   site_name: string
   internal_agent_name: string
   client_agent_name: string
+  live_policy_rule_title_font_size: number
+  live_policy_rule_body_font_size: number
+  live_policy_rule_meta_font_size: number
+  live_policy_test_title_font_size: number
+  live_policy_test_body_font_size: number
+  live_policy_test_meta_font_size: number
   footer_enabled: boolean
   footer_copyright: string
   footer_icp_text: string
@@ -623,11 +629,76 @@ export interface LiveEffectivePolicy {
   prompt_text: string
 }
 
+export interface LivePolicyTestMatchedRule {
+  key: string
+  title?: string
+  source_layer: 'L1' | 'L2' | 'L3' | string
+  execution_mode: string
+}
+
+export interface LivePolicyTestVersionSource {
+  layer: 'L1' | 'L2' | 'L3' | string
+  version_id: number
+  version_no: number
+  lifecycle_status: string
+  is_test_target: boolean
+}
+
+export interface LivePolicyTestResult {
+  sandbox: boolean
+  reply: string
+  blocked: boolean
+  block_reason?: string
+  matched_rules: LivePolicyTestMatchedRule[]
+  data_sources: string[]
+  missing_data: string[]
+  effective: {
+    industry_code: string
+    rule_count: number
+    conflict_count: number
+    sources: LivePolicyTestVersionSource[]
+  }
+  model?: string
+  latency_ms?: number
+}
+
 export interface LiveRoomPolicyContext {
   industry_code: string
   effective: LiveEffectivePolicy
   l3_versions: LivePolicyVersion[]
   l3_scope?: LivePolicyScope
+}
+
+export type LiveSupportCapability = 'l3_policy' | 'anchor_training' | 'voice_clone'
+
+export interface LiveSupportStaff {
+  user_id: number
+  username: string
+  display_name: string
+  allowed_capabilities?: LiveSupportCapability[]
+  l3_restriction_reason?: string
+}
+
+export interface LiveSupportAuthorization {
+  id: number
+  tenant_id: number
+  room_id: number
+  staff_user_id: number
+  staff_username?: string
+  staff_display_name?: string
+  capability: LiveSupportCapability | string
+  status: string
+  granted_by_user_id: number
+  granted_at: string
+  revoked_by_user_id?: number
+  revoked_at?: string
+  updated_at: string
+}
+
+export interface LiveSupportTrainingDraft {
+  version_id: number
+  version_no: number
+  status: string
 }
 
 export interface MediaAsset {

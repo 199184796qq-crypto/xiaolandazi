@@ -70,6 +70,12 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 		{Key: "internal_agent_name", Group: "agent", Label: "后台智能体名称", Value: "小蓝工作搭子", InputType: "text", SortOrder: 10},
 		{Key: "client_agent_name", Group: "agent", Label: "前端智能体名称", Value: "小蓝直播搭子", InputType: "text", SortOrder: 20},
 		{Key: "device_order_hold_minutes", Group: "commerce", Label: "设备订单未支付锁库分钟数", Value: "15", InputType: "number", SortOrder: 10},
+		{Key: "live_policy_rule_title_font_size", Group: "ui", Label: "直播规则标题字号", Value: "26", InputType: "number", SortOrder: 10},
+		{Key: "live_policy_rule_body_font_size", Group: "ui", Label: "直播规则正文字号", Value: "24", InputType: "number", SortOrder: 20},
+		{Key: "live_policy_rule_meta_font_size", Group: "ui", Label: "直播规则辅助文字字号", Value: "20", InputType: "number", SortOrder: 30},
+		{Key: "live_policy_test_title_font_size", Group: "ui", Label: "规则测试主标题字号", Value: "22", InputType: "number", SortOrder: 40},
+		{Key: "live_policy_test_body_font_size", Group: "ui", Label: "规则测试内容字号", Value: "18", InputType: "number", SortOrder: 50},
+		{Key: "live_policy_test_meta_font_size", Group: "ui", Label: "规则测试辅助文字字号", Value: "16", InputType: "number", SortOrder: 60},
 		{Key: "footer_enabled", Group: "footer", Label: "显示全局页脚", Value: "true", InputType: "boolean", SortOrder: 10},
 		{Key: "footer_copyright", Group: "footer", Label: "版权文字", Value: "© 2026 小蓝搭子", InputType: "text", SortOrder: 20},
 		{Key: "footer_icp_text", Group: "footer", Label: "ICP备案文字", Value: "", InputType: "text", SortOrder: 30},
@@ -383,6 +389,18 @@ func (s *Store) SystemSettingsDashboard(ctx context.Context) (model.SystemSettin
 	}, nil
 }
 
+func boundedSystemSettingInt(
+	values map[string]string,
+	key string,
+	fallback, minValue, maxValue int,
+) int {
+	value, err := strconv.Atoi(strings.TrimSpace(values[key]))
+	if err != nil || value < minValue || value > maxValue {
+		return fallback
+	}
+	return value
+}
+
 func (s *Store) PublicSystemConfig(ctx context.Context) (model.PublicSystemConfig, error) {
 	settings, err := s.ListSystemSettings(ctx)
 	if err != nil {
@@ -407,17 +425,23 @@ func (s *Store) PublicSystemConfig(ctx context.Context) (model.PublicSystemConfi
 		clientAgentName = "小蓝直播搭子"
 	}
 	return model.PublicSystemConfig{
-		SiteName:          values["site_name"],
-		InternalAgentName: internalAgentName,
-		ClientAgentName:   clientAgentName,
-		FooterEnabled:     footerEnabled,
-		FooterCopyright:   values["footer_copyright"],
-		FooterICPText:     values["footer_icp_text"],
-		FooterICPURL:      values["footer_icp_url"],
-		FooterPoliceText:  values["footer_police_text"],
-		FooterPoliceURL:   values["footer_police_url"],
-		FooterReportText:  values["footer_report_text"],
-		FooterReportURL:   values["footer_report_url"],
-		FooterExtraText:   values["footer_extra_text"],
+		SiteName:                    values["site_name"],
+		InternalAgentName:           internalAgentName,
+		ClientAgentName:             clientAgentName,
+		LivePolicyRuleTitleFontSize: boundedSystemSettingInt(values, "live_policy_rule_title_font_size", 26, 16, 40),
+		LivePolicyRuleBodyFontSize:  boundedSystemSettingInt(values, "live_policy_rule_body_font_size", 24, 14, 36),
+		LivePolicyRuleMetaFontSize:  boundedSystemSettingInt(values, "live_policy_rule_meta_font_size", 20, 12, 28),
+		LivePolicyTestTitleFontSize: boundedSystemSettingInt(values, "live_policy_test_title_font_size", 22, 18, 32),
+		LivePolicyTestBodyFontSize:  boundedSystemSettingInt(values, "live_policy_test_body_font_size", 18, 16, 28),
+		LivePolicyTestMetaFontSize:  boundedSystemSettingInt(values, "live_policy_test_meta_font_size", 16, 14, 24),
+		FooterEnabled:               footerEnabled,
+		FooterCopyright:             values["footer_copyright"],
+		FooterICPText:               values["footer_icp_text"],
+		FooterICPURL:                values["footer_icp_url"],
+		FooterPoliceText:            values["footer_police_text"],
+		FooterPoliceURL:             values["footer_police_url"],
+		FooterReportText:            values["footer_report_text"],
+		FooterReportURL:             values["footer_report_url"],
+		FooterExtraText:             values["footer_extra_text"],
 	}, nil
 }

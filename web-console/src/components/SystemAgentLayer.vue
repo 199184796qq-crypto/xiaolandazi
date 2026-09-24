@@ -14,12 +14,14 @@ import {
   chatClientAgent,
   chatInternalAgent,
   chatLiveRoomPolicyAgent,
+  createLiveOpsAnchorTraining,
   createCommercialMarketingCampaign,
   createStaffEmployee,
   getClientAgentContext,
   getInternalAgentContext,
   getPublicSystemConfig,
   getRooms,
+  testLivePolicyAdmin,
 } from '../api'
 import type {
   InitialCredential,
@@ -28,13 +30,21 @@ import type {
   SystemAgentContextResponse,
 } from '../types'
 import { session } from '../session'
+import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
 import { resolveAgentNavigationTargets } from '../navigationUi'
+import { shouldRouteToSystemAgent } from '../systemAgentRouting'
 
-type AgentDomain = 'system' | 'live-room' | 'live-strategy' | 'live-policy-admin'
+type AgentDomain = 'system' | 'live-room' | 'live-strategy' | 'live-policy-admin' | 'live-support'
 type SystemTaskKey = 'create_staff_employee' | 'create_marketing_campaign'
 type AgentHistoryItem = { role: 'user' | 'agent'; text: string }
 type ComposerSource = 'dock' | 'drawer'
 type SuggestionKind = 'department' | 'capability' | 'navigation'
+
+type LivePolicyTestMode = {
+  active: boolean
+  layer: 'L1' | 'L2'
+  industryCode: string
+}
 
 type ChatMessage = {
   role: 'user' | 'agent'
@@ -64,16 +74,58 @@ const systemContext = ref<SystemAgentContextResponse>({
   capabilities: [],
   departments: [],
 })
-const inputEl = ref<HTMLInputElement | null>(null)
-const drawerInputEl = ref<HTMLInputElement | null>(null)
+const inputEl = ref<HTMLTextAreaElement | null>(null)
+const drawerInputEl = ref<HTMLTextAreaElement | null>(null)
 const chatEl = ref<HTMLElement | null>(null)
 const activeComposer = ref<ComposerSource | null>(null)
 const suggestionIndex = ref(0)
 const dismissedSuggestionInput = ref('')
 const activeSystemTask = ref<SystemTaskKey | null>(null)
 const systemTaskHistory = ref<AgentHistoryItem[]>([])
+const livePolicyTestMode = ref<LivePolicyTestMode>({
+  active: false,
+  layer: 'L1',
+  industryCode: '',
+})
+const livePolicyTestHistory = ref<AgentHistoryItem[]>([])
+
+const dockEl = ref<HTMLElement | null>(null)
+const dockPosition = ref<{ left: number; top: number } | null>(null)
+const dockDragging = ref(false)
+const dockStyle = computed(() => {
+  if (!dockPosition.value) return undefined
+  return {
+    left: dockPosition.value.left + 'px',
+    top: dockPosition.value.top + 'px',
+    right: 'auto',
+    bottom: 'auto',
+    transform: 'none',
+  }
+})
+
+const DOCK_VIEWPORT_MARGIN = 8
+let dockDragPointerID: number | null = null
+let dockDragStartX = 0
+let dockDragStartY = 0
+let dockDragOriginLeft = 0
+let dockDragOriginTop = 0
+let dockDragWidth = 0
+let dockDragHeight = 0
+let dockDragMoved = false
 
 const actor = computed(() => session.bootstrap?.actor)
+const internalLiveStrategyMode = ref<'policy' | 'support'>(
+  window.localStorage.getItem('system-agent-live-strategy-internal-mode') === 'support'
+    ? 'support'
+    : 'policy',
+)
+const liveSupportMode = ref<'strategy' | 'anchor' | 'voice'>(
+  window.localStorage.getItem('system-agent-live-support-mode') === 'anchor'
+    ? 'anchor'
+    : window.localStorage.getItem('system-agent-live-support-mode') === 'voice'
+      ? 'voice'
+      : 'strategy',
+)
 const isInternalAgentProfile = computed(() =>
   ['platform_admin', 'staff', 'sales_staff'].includes(actor.value?.role || ''),
 )
@@ -82,7 +134,11 @@ const currentDomain = computed<AgentDomain>(() => {
   if (route.name === 'room-detail') return 'live-room'
   if (route.name === 'live-strategy') {
     if (actor.value?.role === 'customer') return 'live-strategy'
-    if (isInternalAgentProfile.value) return 'live-policy-admin'
+    if (isInternalAgentProfile.value) {
+      return internalLiveStrategyMode.value === 'support'
+        ? 'live-support'
+        : 'live-policy-admin'
+    }
   }
   return 'system'
 })
@@ -102,9 +158,13 @@ const messages = ref<ChatMessage[]>([
 ])
 
 const contextLabel = computed(() => {
+  if (livePolicyTestMode.value.active && currentDomain.value === 'live-policy-admin') {
+    return '直播策略 · 规则测试'
+  }
   if (currentDomain.value === 'live-room') return '直播场控'
   if (currentDomain.value === 'live-strategy') return '直播策略 · 当前直播间 L3'
   if (currentDomain.value === 'live-policy-admin') return '直播策略 · 系统/行业规则'
+  if (currentDomain.value === 'live-support') return '直播策略 · 客户授权协助'
   return isInternalAgentProfile.value ? '系统管理' : '终端助手'
 })
 
@@ -118,12 +178,28 @@ const contextDescription = computed(() => {
   if (currentDomain.value === 'live-policy-admin') {
     return '已进入管理端直播策略上下文，自动跟随当前 L1/L2 与行业选择。'
   }
+  if (currentDomain.value === 'live-support') {
+    if (liveSupportMode.value === 'strategy') {
+      return canDelegateLivePolicyL3(session.bootstrap)
+        ? '已进入客户授权的 L3 代维护上下文，只会作用于当前授权直播间。'
+        : '当前账号不能代维护客户 L3。L1 配置人员不可代维护 L3；其他员工需要 L2 配置能力及客户授权。'
+    }
+    if (liveSupportMode.value === 'anchor') {
+      return '已进入客户授权的主播训练上下文；明确要求训练/学习时生成草稿，发布仍在工作台确认。'
+    }
+    return '已进入客户授权的声音复刻上下文；声音样本上传和复刻档案仍需在工作台完成。'
+  }
   return isInternalAgentProfile.value
     ? '按照当前账号权限查询和执行后台事务；写入动作先预览再确认。'
     : '只处理当前账号自己的终端业务，不接触内部后台数据和管理工具。'
 })
 
 const inputPlaceholder = computed(() => {
+  if (livePolicyTestMode.value.active && currentDomain.value === 'live-policy-admin') {
+    return livePolicyTestHistory.value.length
+      ? '继续打磨：例如“再自然一点”“销售感强一点”“保留意思再简短些”……'
+      : '输入一个直播问题，之后可以连续反馈直到满意……'
+  }
   if (currentDomain.value === 'live-room') {
     return '输入内容，或用 / 呼出场控能力……'
   }
@@ -132,6 +208,17 @@ const inputPlaceholder = computed(() => {
   }
   if (currentDomain.value === 'live-policy-admin') {
     return '输入规则要求，或用 / 呼出 L1/L2 策略能力……'
+  }
+  if (currentDomain.value === 'live-support') {
+    if (liveSupportMode.value === 'strategy') {
+      return canDelegateLivePolicyL3(session.bootstrap)
+        ? '输入客户 L3 调整要求，或用 / 呼出授权协助能力……'
+        : '当前岗位不可代维护客户 L3，请选择本岗位可用功能……'
+    }
+    if (liveSupportMode.value === 'anchor') {
+      return '输入主播训练要求；素材请在当前工作台上传……'
+    }
+    return '输入声音复刻相关问题；声音样本请在当前工作台上传……'
   }
   return isInternalAgentProfile.value
     ? '输入要做的事；@ 呼出部门，/ 呼出能力……'
@@ -147,6 +234,17 @@ const capabilities = computed(() => {
   }
   if (currentDomain.value === 'live-policy-admin') {
     return ['L1/L2 策略', '行业规则', '规则调教', '生成策略草稿']
+  }
+  if (currentDomain.value === 'live-support') {
+    if (liveSupportMode.value === 'strategy') {
+      return canDelegateLivePolicyL3(session.bootstrap)
+        ? ['客户授权 L3', '策略调教', '生成 L3 草稿']
+        : ['当前岗位不可代维护 L3']
+    }
+    if (liveSupportMode.value === 'anchor') {
+      return ['客户授权主播训练', '训练要求', '生成训练草稿']
+    }
+    return ['客户授权声音复刻', '复刻说明', '声音样本协助']
   }
   return (
     latestSystemResponse.value?.capabilities ||
@@ -169,16 +267,36 @@ const latestAgentMessage = computed(() => {
   return contextDescription.value
 })
 
+function isEscapedAgentTrigger(value: string, index: number) {
+  let slashCount = 0
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
+    slashCount += 1
+  }
+  return slashCount % 2 === 1
+}
+
+function unescapeAgentTriggerText(value: string) {
+  return value.replace(/\\([@/])/g, '$1')
+}
+
 const triggerState = computed(() => {
   if (!input.value || input.value === dismissedSuggestionInput.value) return null
-  const match = input.value.match(/(?:^|\s)([@/])([^\s@/]*)$/)
-  if (!match) return null
-  return {
-    full: match[0],
-    symbol: match[1] as '@' | '/',
-    query: (match[2] || '').trim().toLowerCase(),
-    index: match.index ?? 0,
+
+  const trailingTokenStart = input.value.search(/\S*$/)
+  for (let index = input.value.length - 1; index >= trailingTokenStart; index -= 1) {
+    const symbol = input.value[index]
+    if (symbol !== '@' && symbol !== '/') continue
+    if (isEscapedAgentTrigger(input.value, index)) continue
+
+    const full = input.value.slice(index)
+    return {
+      full,
+      symbol: symbol as '@' | '/',
+      query: unescapeAgentTriggerText(full.slice(1)).trim().toLowerCase(),
+      index,
+    }
   }
+  return null
 })
 
 function systemCapabilityCommand(label: string) {
@@ -217,6 +335,24 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
       { kind: 'capability', label: '修改规则', description: '修改当前选择的 L1 或 L2 规则并生成草稿', insertText: '修改规则 ' },
       { kind: 'capability', label: '查看规则', description: '围绕当前系统/行业规则进行说明和检查', insertText: '查看规则 ' },
       { kind: 'capability', label: '生成草稿', description: '按自然语言要求生成策略草稿，不直接发布', insertText: '生成草稿 ' },
+    ]
+  }
+  if (currentDomain.value === 'live-support') {
+    if (liveSupportMode.value === 'strategy') {
+      if (!canDelegateLivePolicyL3(session.bootstrap)) return []
+      return [
+        { kind: 'capability', label: '调整客户L3', description: '按客户授权调整当前直播间 L3 并生成草稿', insertText: '调整当前客户L3 ' },
+        { kind: 'capability', label: '查看客户L3', description: '查看和讨论当前授权直播间的 L3', insertText: '查看当前客户L3 ' },
+      ]
+    }
+    if (liveSupportMode.value === 'anchor') {
+      return [
+        { kind: 'capability', label: '主播训练', description: '明确训练要求并生成授权主播训练草稿', insertText: '训练当前主播：' },
+        { kind: 'capability', label: '训练建议', description: '先讨论主播训练方案，不直接生成草稿', insertText: '先给我主播训练建议，不要生成草稿：' },
+      ]
+    }
+    return [
+      { kind: 'capability', label: '声音复刻说明', description: '说明当前授权声音复刻的操作方法', insertText: '说明声音复刻步骤 ' },
     ]
   }
   return capabilities.value.map((label) => {
@@ -306,11 +442,7 @@ function selectSuggestion(item: SuggestionItem) {
   const trigger = triggerState.value
   if (!trigger) return
 
-  const leading = trigger.full.slice(0, trigger.full.indexOf(trigger.symbol))
-  input.value =
-    input.value.slice(0, trigger.index) +
-    leading +
-    item.insertText
+  input.value = input.value.slice(0, trigger.index) + item.insertText
   dismissedSuggestionInput.value = input.value
   suggestionIndex.value = 0
   focusActiveComposer()
@@ -375,6 +507,127 @@ function openDrawer() {
   void nextTick(() => drawerInputEl.value?.focus())
 }
 
+function toggleDrawer() {
+  if (drawerOpen.value) {
+    drawerOpen.value = false
+    activeComposer.value = 'dock'
+    void nextTick(() => inputEl.value?.focus())
+    return
+  }
+  openDrawer()
+}
+
+function clampDockCoordinates(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+) {
+  const maxLeft = Math.max(
+    DOCK_VIEWPORT_MARGIN,
+    window.innerWidth - width - DOCK_VIEWPORT_MARGIN,
+  )
+  const maxTop = Math.max(
+    DOCK_VIEWPORT_MARGIN,
+    window.innerHeight - height - DOCK_VIEWPORT_MARGIN,
+  )
+  return {
+    left: Math.min(Math.max(DOCK_VIEWPORT_MARGIN, left), maxLeft),
+    top: Math.min(Math.max(DOCK_VIEWPORT_MARGIN, top), maxTop),
+  }
+}
+
+function keepDockInsideViewport() {
+  if (!dockPosition.value || !dockEl.value) return
+  const rect = dockEl.value.getBoundingClientRect()
+  dockPosition.value = clampDockCoordinates(
+    dockPosition.value.left,
+    dockPosition.value.top,
+    rect.width,
+    rect.height,
+  )
+}
+
+function moveDockDrag(event: PointerEvent) {
+  if (!dockDragging.value || dockDragPointerID !== event.pointerId) return
+
+  const deltaX = event.clientX - dockDragStartX
+  const deltaY = event.clientY - dockDragStartY
+  if (!dockDragMoved && Math.hypot(deltaX, deltaY) >= 4) {
+    dockDragMoved = true
+  }
+
+  dockPosition.value = clampDockCoordinates(
+    dockDragOriginLeft + deltaX,
+    dockDragOriginTop + deltaY,
+    dockDragWidth,
+    dockDragHeight,
+  )
+}
+
+function stopDockDrag(event?: PointerEvent) {
+  if (
+    event &&
+    dockDragPointerID !== null &&
+    event.pointerId !== dockDragPointerID
+  ) {
+    return
+  }
+  dockDragging.value = false
+  dockDragPointerID = null
+  window.removeEventListener('pointermove', moveDockDrag)
+  window.removeEventListener('pointerup', stopDockDrag)
+  window.removeEventListener('pointercancel', stopDockDrag)
+}
+
+function startDockDrag(event: PointerEvent) {
+  if (!expanded.value || drawerOpen.value || !dockEl.value) return
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+
+  const target = event.target as HTMLElement | null
+  const orbHandle = Boolean(target?.closest('.system-agent-orb.mini'))
+  if (
+    !orbHandle &&
+    target?.closest(
+      'input, textarea, select, a, button, .system-agent-suggestion-menu',
+    )
+  ) {
+    return
+  }
+
+  const rect = dockEl.value.getBoundingClientRect()
+  dockDragPointerID = event.pointerId
+  dockDragStartX = event.clientX
+  dockDragStartY = event.clientY
+  dockDragOriginLeft = rect.left
+  dockDragOriginTop = rect.top
+  dockDragWidth = rect.width
+  dockDragHeight = rect.height
+  dockDragMoved = false
+  dockDragging.value = true
+  dockPosition.value = { left: rect.left, top: rect.top }
+
+  event.preventDefault()
+  window.addEventListener('pointermove', moveDockDrag)
+  window.addEventListener('pointerup', stopDockDrag)
+  window.addEventListener('pointercancel', stopDockDrag)
+}
+
+function handleDockMiniOrbClick(event: MouseEvent) {
+  if (dockDragMoved) {
+    event.preventDefault()
+    event.stopPropagation()
+    dockDragMoved = false
+    return
+  }
+  collapse()
+}
+
+function handleDockViewportResize() {
+  if (!dockPosition.value) return
+  void nextTick(keepDockInsideViewport)
+}
+
 function historyPayload(domain: AgentDomain) {
   return messages.value
     .filter((item) => item.domain === domain)
@@ -419,6 +672,74 @@ function readAdminPolicyContext() {
   return { layer, industryCode }
 }
 
+function resolveExplicitAdminPolicyIntent(value: string) {
+  if (!isInternalAgentProfile.value) return null
+  const compact = value.replace(/\s+/g, '')
+  if (
+    !/(配置|新增|添加|修改|调整|生成|创建|建立|删除|移除|保存|草稿|发布|回滚)/.test(compact)
+  ) {
+    return null
+  }
+
+  const upper = compact.toUpperCase()
+  const explicitL1 =
+    /只(?:修改|配置|处理)?L1/.test(upper) ||
+    /当前L1/.test(upper) ||
+    /L1(?:系统|全局|底层|规则|草稿)/.test(upper) ||
+    /(?:第一层|最底层|第?底层|底层规则|系统全局规则)/.test(compact)
+  const explicitL2 =
+    /只(?:修改|配置|处理)?L2/.test(upper) ||
+    /当前L2/.test(upper) ||
+    /L2(?:行业|规则|草稿)/.test(upper) ||
+    /(?:第二层|行业默认规则)/.test(compact)
+
+  let layer: 'L1' | 'L2' | null = null
+  if (explicitL1 && !/只(?:修改|配置|处理)?L2/.test(upper)) {
+    layer = 'L1'
+  } else if (explicitL2 && !/只(?:修改|配置|处理)?L1/.test(upper)) {
+    layer = 'L2'
+  } else if (upper.includes('L1') && !upper.includes('L2')) {
+    layer = 'L1'
+  } else if (upper.includes('L2') && !upper.includes('L1')) {
+    layer = 'L2'
+  }
+  if (!layer) return null
+
+  const current = readAdminPolicyContext()
+  return {
+    layer,
+    industryCode:
+      layer === 'L2' && current.layer === 'L2'
+        ? current.industryCode || 'general'
+        : layer === 'L2'
+          ? 'general'
+          : '',
+  }
+}
+
+function persistAdminPolicyContext(layer: 'L1' | 'L2', industryCode = '') {
+  window.localStorage.setItem(
+    'system-agent-live-policy-context',
+    JSON.stringify({
+      layer,
+      industry_code: layer === 'L2' ? industryCode || 'general' : '',
+    }),
+  )
+  window.localStorage.setItem('system-agent-live-strategy-internal-mode', 'policy')
+  internalLiveStrategyMode.value = 'policy'
+}
+
+function notifyAdminPolicyUpdated(layer: 'L1' | 'L2', industryCode = '') {
+  window.dispatchEvent(
+    new CustomEvent('live-policy-admin-updated', {
+      detail: {
+        layer,
+        industry_code: layer === 'L2' ? industryCode || 'general' : '',
+      },
+    }),
+  )
+}
+
 async function resolveLiveStrategyRoomID() {
   const stored = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
   if (stored > 0) return stored
@@ -429,6 +750,38 @@ async function resolveLiveStrategyRoomID() {
     window.localStorage.setItem('system-agent-live-room-id', String(roomId))
   }
   return roomId
+}
+
+function resolveLiveSupportRoomID() {
+  const stored = Number(
+    window.localStorage.getItem('system-agent-live-support-room-id') || 0,
+  )
+  return stored > 0 ? stored : 0
+}
+
+function isExplicitAnchorTrainingIntent(value: string) {
+  const compact = value.replace(/\s+/g, '')
+  if (/[?？]$/.test(compact)) return false
+  if (
+    /(怎么|如何|为什么|是什么|说明|建议|分析|先不要|不要生成|不要保存)/.test(compact)
+  ) {
+    return false
+  }
+  return /(训练|学习|新增|添加|保存|生成).*(主播|风格|语气|节奏|表达)|(?:主播|风格|语气|节奏|表达).*(训练|学习|新增|添加|保存|生成)/.test(compact)
+}
+
+function handleLiveStrategyModeEvent(event: Event) {
+  const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode
+  internalLiveStrategyMode.value = mode === 'support' ? 'support' : 'policy'
+}
+
+function handleLiveSupportContextEvent(event: Event) {
+  const detail = (event as CustomEvent<{ mode?: string }>).detail
+  if (detail?.mode === 'anchor' || detail?.mode === 'voice') {
+    liveSupportMode.value = detail.mode
+    return
+  }
+  liveSupportMode.value = 'strategy'
 }
 
 function handleExternalPrefill(event: Event) {
@@ -445,6 +798,99 @@ function handleExternalPrefill(event: Event) {
   }
   dismissedSuggestionInput.value = ''
   focusActiveComposer()
+}
+
+function handleLivePolicyTestModeEvent(event: Event) {
+  const detail = (
+    event as CustomEvent<{
+      active?: boolean
+      layer?: 'L1' | 'L2'
+      industry_code?: string
+    }>
+  ).detail
+
+  if (!detail?.active) {
+    livePolicyTestMode.value = {
+      ...livePolicyTestMode.value,
+      active: false,
+    }
+    livePolicyTestHistory.value = []
+    return
+  }
+
+  const nextLayer: 'L1' | 'L2' = detail.layer === 'L2' ? 'L2' : 'L1'
+  const nextIndustryCode =
+    nextLayer === 'L2'
+      ? String(detail.industry_code || 'general').trim() || 'general'
+      : ''
+  const contextChanged =
+    !livePolicyTestMode.value.active ||
+    livePolicyTestMode.value.layer !== nextLayer ||
+    livePolicyTestMode.value.industryCode !== nextIndustryCode
+
+  livePolicyTestMode.value = {
+    active: true,
+    layer: nextLayer,
+    industryCode: nextIndustryCode,
+  }
+  if (contextChanged) {
+    livePolicyTestHistory.value = []
+  }
+  expanded.value = true
+  drawerOpen.value = false
+  activeComposer.value = 'dock'
+  void nextTick(focusActiveComposer)
+}
+
+async function sendLivePolicyTest(value: string) {
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  activeComposer.value = null
+  busy.value = true
+  busyDomain.value = 'live-policy-admin'
+  window.dispatchEvent(
+    new CustomEvent('live-policy-test-loading', { detail: { loading: true } }),
+  )
+
+  try {
+    const result = await testLivePolicyAdmin({
+
+      layer: livePolicyTestMode.value.layer,
+      industry_code:
+        livePolicyTestMode.value.layer === 'L2'
+          ? livePolicyTestMode.value.industryCode || 'general'
+          : undefined,
+      message: value,
+      history: livePolicyTestHistory.value.slice(-12),
+    })
+    livePolicyTestHistory.value.push(
+      { role: 'user', text: value },
+      { role: 'agent', text: result.reply },
+    )
+    livePolicyTestHistory.value = livePolicyTestHistory.value.slice(-12)
+    window.dispatchEvent(
+      new CustomEvent('live-policy-test-result', {
+        detail: { question: value, result },
+      }),
+    )
+  } catch (error) {
+    window.dispatchEvent(
+      new CustomEvent('live-policy-test-error', {
+        detail: {
+          question: value,
+          message: error instanceof Error ? error.message : '规则测试失败',
+        },
+      }),
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    window.dispatchEvent(
+      new CustomEvent('live-policy-test-loading', { detail: { loading: false } }),
+    )
+    activeComposer.value = 'dock'
+    void nextTick(focusActiveComposer)
+  }
 }
 
 function syncAgentWelcomeMessage() {
@@ -484,8 +930,17 @@ async function loadSystemAgentContext() {
 onMounted(() => {
   window.addEventListener('system-agent:prefill', handleExternalPrefill)
   window.addEventListener('system-config-updated', loadAgentBranding)
+  window.addEventListener('system-agent-live-strategy-mode', handleLiveStrategyModeEvent)
+  window.addEventListener('system-agent-live-support-context', handleLiveSupportContextEvent)
+  window.addEventListener('live-policy-test-mode', handleLivePolicyTestModeEvent)
+  window.addEventListener('resize', handleDockViewportResize)
   void loadAgentBranding()
   void loadSystemAgentContext()
+})
+
+watch(expanded, () => {
+  if (!dockPosition.value) return
+  void nextTick(keepDockInsideViewport)
 })
 
 watch(
@@ -499,8 +954,13 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  stopDockDrag()
   window.removeEventListener('system-agent:prefill', handleExternalPrefill)
   window.removeEventListener('system-config-updated', loadAgentBranding)
+  window.removeEventListener('system-agent-live-strategy-mode', handleLiveStrategyModeEvent)
+  window.removeEventListener('system-agent-live-support-context', handleLiveSupportContextEvent)
+  window.removeEventListener('live-policy-test-mode', handleLivePolicyTestModeEvent)
+  window.removeEventListener('resize', handleDockViewportResize)
 })
 
 function resolveNavigationIntent(value: string) {
@@ -601,18 +1061,23 @@ async function send() {
   const rawValue = input.value.trim()
   if (!rawValue || busy.value) return
 
-  const value = rawValue.replace(/^\/+/, '').trim()
+  const value = unescapeAgentTriggerText(rawValue.replace(/^\/+/, '').trim()).trim()
   if (!value) return
 
   const domain = currentDomain.value
+  if (livePolicyTestMode.value.active && domain === 'live-policy-admin') {
+    await sendLivePolicyTest(value)
+    return
+  }
   const history = historyPayload(domain)
   const navigationTarget = resolveNavigationIntent(value)
   const systemTask = startOrContinueSystemTask(value)
-  const routeToSystemAgent =
-    domain === 'system' ||
-    Boolean(systemTask) ||
-    isSystemCapabilityIntent(value) ||
-    isClientBoundaryIntent(value)
+  const adminPolicyIntent = resolveExplicitAdminPolicyIntent(value)
+  const routeToSystemAgent = shouldRouteToSystemAgent(domain, {
+    hasSystemTask: Boolean(systemTask),
+    systemCapabilityIntent: isSystemCapabilityIntent(value),
+    clientBoundaryIntent: isClientBoundaryIntent(value),
+  })
   messages.value.push({ role: 'user', domain, text: value })
   input.value = ''
   dismissedSuggestionInput.value = ''
@@ -620,7 +1085,7 @@ async function send() {
   drawerOpen.value = true
   void scrollChatToBottom()
 
-  if (navigationTarget && isInternalAgentProfile.value) {
+  if (navigationTarget && isInternalAgentProfile.value && !adminPolicyIntent) {
     await router.push(navigationTarget.to)
     pushAgentMessage(
       currentDomain.value,
@@ -638,6 +1103,52 @@ async function send() {
   busyDomain.value = domain
 
   try {
+    if (adminPolicyIntent) {
+      const policyHistory = historyPayload('live-policy-admin')
+      const response = await chatLivePolicyAdminAgent({
+        layer: adminPolicyIntent.layer,
+        industry_code:
+          adminPolicyIntent.layer === 'L2'
+            ? adminPolicyIntent.industryCode || 'general'
+            : undefined,
+        message: value,
+        history: policyHistory,
+      })
+
+      persistAdminPolicyContext(
+        adminPolicyIntent.layer,
+        adminPolicyIntent.industryCode,
+      )
+      if (domain !== 'live-policy-admin') {
+        messages.value.push({
+          role: 'user',
+          domain: 'live-policy-admin',
+          text: value,
+        })
+      }
+      if (route.name !== 'live-strategy') {
+        await router.push('/operations/live/strategy')
+      }
+      if (response.draft) {
+        notifyAdminPolicyUpdated(
+          adminPolicyIntent.layer,
+          adminPolicyIntent.industryCode,
+        )
+      }
+      pushAgentMessage(
+        'live-policy-admin',
+        response.reply +
+          (response.draft
+            ? '\n\n已生成' +
+              adminPolicyIntent.layer +
+              '草稿 V' +
+              response.draft.version_no +
+              '，已经打开直播策略页面供你核对；仍需手动发布后才正式生效。'
+            : ''),
+      )
+      return
+    }
+
     if (routeToSystemAgent) {
       const systemHistory = activeSystemTask.value
         ? systemTaskHistory.value.slice(-10)
@@ -712,6 +1223,58 @@ async function send() {
       return
     }
 
+    if (domain === 'live-support') {
+      const roomId = resolveLiveSupportRoomID()
+      if (!roomId) {
+        pushAgentMessage(domain, '当前没有选中的客户授权直播间，请先在“客户授权协助”里选择直播间。')
+        return
+      }
+      if (liveSupportMode.value === 'strategy') {
+        if (!canDelegateLivePolicyL3(session.bootstrap)) {
+          pushAgentMessage(domain, '当前账号不能代维护客户 L3。具备 L1 配置能力的账号即使获得客户授权也不能操作 L3；请由仅具备 L2 配置能力的运维员工在授权后处理。')
+          return
+        }
+        const response = await chatLiveRoomPolicyAgent(roomId, {
+          message: value,
+          history,
+        })
+        pushAgentMessage(
+          domain,
+          response.reply +
+            (response.draft
+              ? '\n\n已生成当前授权直播间 L3 草稿 V' +
+                response.draft.version_no +
+                '，仍需在客户授权协助工作台发布后才正式生效。'
+              : ''),
+        )
+        return
+      }
+      if (liveSupportMode.value === 'anchor' && isExplicitAnchorTrainingIntent(value)) {
+        const draft = await createLiveOpsAnchorTraining(roomId, { text: value })
+        pushAgentMessage(
+          domain,
+          '已根据你的要求生成当前授权直播间主播训练草稿 V' +
+            draft.version_no +
+            '。请在客户授权协助工作台确认并发布；需要录音或文档样本时，请从工作台上传。',
+        )
+        return
+      }
+
+      const response = await chatInternalAgent({
+        message: value,
+        history,
+        current_path: route.fullPath,
+        navigation: navigationTargets.value.map((item) => ({
+          title: item.title,
+          to: item.to,
+          section: item.section,
+        })),
+      })
+      latestSystemResponse.value = response
+      pushAgentMessage(domain, response.reply)
+      return
+    }
+
     if (domain === 'live-policy-admin') {
       const policyContext = readAdminPolicyContext()
       const response = await chatLivePolicyAdminAgent({
@@ -721,6 +1284,9 @@ async function send() {
         message: value,
         history,
       })
+      if (response.draft) {
+        notifyAdminPolicyUpdated(policyContext.layer, policyContext.industryCode)
+      }
       pushAgentMessage(
         domain,
         response.reply +
@@ -900,7 +1466,16 @@ async function copyCredential(credential?: InitialCredential) {
 
 <template>
   <Teleport to="body">
-    <div v-if="actor" class="system-agent-dock">
+    <div
+      v-if="actor"
+      ref="dockEl"
+      class="system-agent-dock"
+      :class="{
+        dragging: dockDragging,
+        'policy-test-active': livePolicyTestMode.active,
+      }"
+      :style="dockStyle"
+    >
       <button
         v-if="!expanded"
         class="system-agent-orb"
@@ -913,29 +1488,40 @@ async function copyCredential(credential?: InitialCredential) {
         <i class="ring-two"></i>
       </button>
 
-      <div v-else class="system-agent-inline">
-        <button class="system-agent-orb mini" type="button" @click="collapse">
+      <div
+        v-else
+        class="system-agent-inline"
+        title="按住空白区域可拖动"
+        @pointerdown="startDockDrag"
+      >
+        <button
+          class="system-agent-orb mini"
+          type="button"
+          title="拖动移动；单击收起"
+          @pointerdown.stop="startDockDrag"
+          @click="handleDockMiniOrbClick"
+        >
           <span>✦</span>
         </button>
         <div class="system-agent-inline-main">
           <small>{{ assistantName }} · {{ contextLabel }} · {{ latestAgentMessage }}</small>
           <div class="system-agent-composer-field">
-            <input
+            <textarea
               ref="inputEl"
               v-model="input"
-              type="text"
+              rows="2"
               :placeholder="inputPlaceholder"
               @focus="composerFocus('dock')"
               @input="composerInput('dock')"
               @keydown="handleComposerKeydown($event, 'dock')"
-            />
+            ></textarea>
             <div
               v-if="showSuggestions('dock')"
               class="system-agent-suggestion-menu"
             >
               <div class="system-agent-suggestion-head">
                 <strong>{{ suggestionTitle }}</strong>
-                <span>↑↓ 选择 · Enter 确认 · Esc 关闭</span>
+                <span>↑↓ 选择 · Enter 确认 · Esc 关闭 · \@ / \/ 按普通字符输入</span>
               </div>
               <button
                 v-for="(item, index) in suggestions"
@@ -962,7 +1548,14 @@ async function copyCredential(credential?: InitialCredential) {
         >
           发送
         </button>
-        <button class="system-agent-open" type="button" @click="openDrawer">展开</button>
+        <button
+          class="system-agent-open"
+          type="button"
+          :aria-expanded="drawerOpen"
+          @click="toggleDrawer"
+        >
+          {{ drawerOpen ? '关闭' : '展开' }}
+        </button>
         <button
           class="system-agent-close"
           type="button"
@@ -977,7 +1570,6 @@ async function copyCredential(credential?: InitialCredential) {
     <div
       v-if="drawerOpen && actor"
       class="system-agent-backdrop"
-      @click.self="drawerOpen = false"
     >
       <aside class="system-agent-drawer">
         <header>
@@ -1115,22 +1707,22 @@ async function copyCredential(credential?: InitialCredential) {
 
         <footer>
           <div class="system-agent-composer-field">
-            <input
+            <textarea
               ref="drawerInputEl"
               v-model="input"
-              type="text"
+              rows="3"
               :placeholder="inputPlaceholder"
               @focus="composerFocus('drawer')"
               @input="composerInput('drawer')"
               @keydown="handleComposerKeydown($event, 'drawer')"
-            />
+            ></textarea>
             <div
               v-if="showSuggestions('drawer')"
               class="system-agent-suggestion-menu"
             >
               <div class="system-agent-suggestion-head">
                 <strong>{{ suggestionTitle }}</strong>
-                <span>↑↓ 选择 · Enter 确认 · Esc 关闭</span>
+                <span>↑↓ 选择 · Enter 确认 · Esc 关闭 · \@ / \/ 按普通字符输入</span>
               </div>
               <button
                 v-for="(item, index) in suggestions"

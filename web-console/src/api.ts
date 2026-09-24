@@ -84,9 +84,15 @@ import type {
   LiveAgentConfigInput,
   LivePolicyIndustry,
   LivePolicyContext,
+  LivePolicyRule,
   LivePolicyAgentResponse,
+  LivePolicyTestResult,
   LivePolicyVersion,
   LiveRoomPolicyContext,
+  LiveSupportAuthorization,
+  LiveSupportCapability,
+  LiveSupportStaff,
+  LiveSupportTrainingDraft,
   MediaAsset,
   VoiceProfile,
   InvitationDashboard,
@@ -395,8 +401,22 @@ export function bindTenantLivePolicyIndustry(tenantId: number, industryCode: str
 
 export function getLivePolicyAdminContext(layer: 'L1' | 'L2', industryCode?: string) {
   const params = new URLSearchParams({ layer })
+  params.set('_ts', String(Date.now()))
   if (industryCode) params.set('industry_code', industryCode)
   return request<LivePolicyContext>('/api/v1/live/policies/admin/context?' + params.toString())
+}
+
+export function createLivePolicyAdminDraft(payload: {
+  layer: 'L1' | 'L2'
+  industry_code?: string
+  source_text: string
+  rules: LivePolicyRule[]
+  note?: string
+}) {
+  return request<LivePolicyVersion>('/api/v1/live/policies/admin/drafts', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function chatLivePolicyAdminAgent(payload: {
@@ -406,6 +426,19 @@ export function chatLivePolicyAdminAgent(payload: {
   history?: Array<{ role: 'user' | 'agent'; text: string }>
 }) {
   return request<LivePolicyAgentResponse>('/api/v1/live/policies/admin/agent/chat', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function testLivePolicyAdmin(payload: {
+  layer: 'L1' | 'L2'
+  industry_code?: string
+  room_id?: number
+  message: string
+  history?: Array<{ role: 'user' | 'agent'; text: string }>
+}) {
+  return request<LivePolicyTestResult>('/api/v1/live/policies/admin/test', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -453,6 +486,100 @@ export function rollbackLiveRoomPolicyVersion(roomId: number, versionId: number)
   return request<LivePolicyVersion>(
     '/api/v1/live/rooms/' + roomId + '/policy/versions/' + versionId + '/rollback',
     { method: 'POST' },
+  )
+}
+
+export function getLiveSupportStaff() {
+  return request<{ items: LiveSupportStaff[] }>('/api/v1/live/support/staff')
+}
+
+export function getLiveRoomSupportAuthorizations(roomId: number) {
+  return request<{ items: LiveSupportAuthorization[] }>(
+    '/api/v1/live/rooms/' + roomId + '/support-authorizations',
+  )
+}
+
+export function updateLiveRoomSupportAuthorizations(
+  roomId: number,
+  staffUserId: number,
+  capabilities: LiveSupportCapability[],
+) {
+  return request<{ items: LiveSupportAuthorization[] }>(
+    '/api/v1/live/rooms/' + roomId + '/support-authorizations/' + staffUserId,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ capabilities }),
+    },
+  )
+}
+
+export function getLiveOpsSupportAuthorizations() {
+  return request<{ items: LiveSupportAuthorization[] }>(
+    '/api/v1/liveops/support-authorizations',
+  )
+}
+
+export function createLiveOpsAnchorTraining(
+  roomId: number,
+  payload: { text: string; asset_ids?: number[] },
+) {
+  return request<LiveSupportTrainingDraft>(
+    '/api/v1/liveops/support/rooms/' + roomId + '/anchor-training',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function activateLiveOpsSupportConfigVersion(roomId: number, versionId: number) {
+  return request<{ status: string; version_id: number }>(
+    '/api/v1/liveops/support/rooms/' + roomId + '/config-versions/' + versionId + '/activate',
+    { method: 'POST' },
+  )
+}
+
+export function uploadLiveOpsSupportMediaAsset(
+  roomId: number,
+  file: File,
+  assetType: 'document' | 'audio' | 'voice_sample',
+) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('asset_type', assetType)
+  return request<{ asset: MediaAsset }>(
+    '/api/v1/liveops/support/rooms/' + roomId + '/media-assets',
+    {
+      method: 'POST',
+      body: form,
+    },
+  )
+}
+
+export function getLiveOpsSupportVoiceProfiles(roomId: number) {
+  return request<{ items: VoiceProfile[] }>(
+    '/api/v1/liveops/support/rooms/' + roomId + '/voice-profiles',
+  )
+}
+
+export function createLiveOpsSupportVoiceProfile(
+  roomId: number,
+  payload: {
+    name: string
+    provider: string
+    voice_id?: string
+    sample_asset_id?: number
+    clone_status?: string
+    config?: Record<string, unknown>
+    is_default?: boolean
+  },
+) {
+  return request<VoiceProfile>(
+    '/api/v1/liveops/support/rooms/' + roomId + '/voice-profiles',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
   )
 }
 

@@ -23,7 +23,7 @@ func (s *Server) requireLivePolicyView(w http.ResponseWriter, r *http.Request) (
 		return model.Actor{}, false
 	}
 	access, err := s.staffAccessForActor(r, actor)
-	if err != nil || !staffHasPermission(access, "livepolicy.view") {
+	if err != nil || (!staffHasPermission(access, "livepolicy.view") && !access.CanManageLivePolicyL2()) {
 		writeError(w, http.StatusForbidden, "当前角色没有策略查看权限")
 		return model.Actor{}, false
 	}
@@ -41,11 +41,18 @@ func (s *Server) requireLivePolicyLayerManage(
 	}
 	layer = strings.ToUpper(strings.TrimSpace(layer))
 	if layer == model.LivePolicyLayerL1 {
-		if !actor.IsPlatformAdmin() {
-			writeError(w, http.StatusForbidden, "L1 系统强制规则仅超级系统管理员可发布")
-			return model.Actor{}, false
+		if actor.IsPlatformAdmin() {
+			return actor, true
 		}
-		return actor, true
+		if actor.IsInternalStaff() {
+			access, err := s.staffAccessForActor(r, actor)
+			if err == nil &&
+				access.CanManageLivePolicyL1() {
+				return actor, true
+			}
+		}
+		writeError(w, http.StatusForbidden, "L1 系统规则仅部门主管及以上可维护")
+		return model.Actor{}, false
 	}
 	if layer != model.LivePolicyLayerL2 {
 		writeError(w, http.StatusBadRequest, "管理端只允许维护 L1 或 L2")
@@ -59,7 +66,7 @@ func (s *Server) requireLivePolicyLayerManage(
 		return model.Actor{}, false
 	}
 	access, err := s.staffAccessForActor(r, actor)
-	if err != nil || !staffHasPermission(access, "livepolicy.manage_l2") {
+	if err != nil || !access.CanManageLivePolicyL2() {
 		writeError(w, http.StatusForbidden, "当前角色没有行业策略维护权限")
 		return model.Actor{}, false
 	}
@@ -74,17 +81,53 @@ func (s *Server) requireCustomerPolicyRoom(
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
-	if actor.Role != "customer" || actor.TenantID == nil {
-		writeError(w, http.StatusForbidden, "L3 直播间策略只能由对应终端账号维护")
-		return model.Actor{}, 0, 0, false
-	}
 	roomID, ok := pathID(w, r)
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
-	tenantID := *actor.TenantID
+
+	if actor.Role == "customer" && actor.TenantID != nil {
+		tenantID := *actor.TenantID
+		if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
+			writeError(w, http.StatusNotFound, "直播间不存在或不属于当前终端")
+			return model.Actor{}, 0, 0, false
+		}
+		return actor, tenantID, roomID, true
+	}
+
+	if !actor.IsInternalStaff() {
+		writeError(w, http.StatusForbidden, "当前账号不能维护该直播间 L3 策略")
+		return model.Actor{}, 0, 0, false
+	}
+	access, err := s.staffAccessForActor(r, actor)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "读取员工策略权限失败")
+		return model.Actor{}, 0, 0, false
+	}
+	if access.CanManageLivePolicyL1() {
+		writeError(w, http.StatusForbidden, "具备 L1 配置权限的账号不能代维护客户 L3，即使已获客户授权")
+		return model.Actor{}, 0, 0, false
+	}
+	if !access.CanDelegateLivePolicyL3() {
+		writeError(w, http.StatusForbidden, "仅具备 L2 配置能力且不具备 L1 权限的运维员工可申请 L3 授权")
+		return model.Actor{}, 0, 0, false
+	}
+	tenantID, err := s.store.GetLiveSupportAuthorizedTenant(
+		r.Context(),
+		roomID,
+		actor.UserID,
+		model.LiveSupportCapabilityL3Policy,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusForbidden, "客户尚未授权你维护该直播间 L3 策略")
+			return model.Actor{}, 0, 0, false
+		}
+		writeError(w, http.StatusInternalServerError, "校验客户授权失败")
+		return model.Actor{}, 0, 0, false
+	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
-		writeError(w, http.StatusNotFound, "直播间不存在或不属于当前终端")
+		writeError(w, http.StatusNotFound, "授权直播间不存在或已失效")
 		return model.Actor{}, 0, 0, false
 	}
 	return actor, tenantID, roomID, true
@@ -202,6 +245,31 @@ func (s *Server) livePolicyAdminCreateDraft(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+	baseRules := []model.LivePolicyRule{}
+	if scope, scopeErr := s.store.GetLivePolicyScope(
+		r.Context(), input.Layer, input.IndustryCode, 0, 0,
+	); scopeErr == nil {
+		if versions, listErr := s.store.ListLivePolicyVersions(r.Context(), scope.ID); listErr == nil {
+			for index := range versions {
+				if versions[index].LifecycleStatus == "draft" {
+					baseRules = versions[index].Rules
+					break
+				}
+			}
+			if len(baseRules) == 0 {
+				for index := range versions {
+					if versions[index].LifecycleStatus == "active" {
+						baseRules = versions[index].Rules
+						break
+					}
+				}
+			}
+		}
+	}
+	input.Rules = policy.PrioritizeNewRules(
+		policy.EnsureStableRuleKeys(input.Layer, input.Rules, baseRules),
+		baseRules,
+	)
 	var l1 *model.LivePolicyVersion
 	if input.Layer == model.LivePolicyLayerL2 {
 		l1, _ = s.store.GetActiveLivePolicyVersion(r.Context(), model.LivePolicyLayerL1, "", 0, 0)

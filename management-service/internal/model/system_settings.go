@@ -61,16 +61,22 @@ type SystemSettingsDashboard struct {
 }
 
 type PublicSystemConfig struct {
-	SiteName          string `json:"site_name"`
-	InternalAgentName string `json:"internal_agent_name"`
-	ClientAgentName   string `json:"client_agent_name"`
-	FooterEnabled     bool   `json:"footer_enabled"`
-	FooterCopyright   string `json:"footer_copyright"`
-	FooterICPText     string `json:"footer_icp_text"`
-	FooterICPURL      string `json:"footer_icp_url"`
-	FooterPoliceText  string `json:"footer_police_text"`
-	FooterPoliceURL   string `json:"footer_police_url"`
-	FooterReportText  string `json:"footer_report_text"`
-	FooterReportURL   string `json:"footer_report_url"`
-	FooterExtraText   string `json:"footer_extra_text"`
+	SiteName                    string `json:"site_name"`
+	InternalAgentName           string `json:"internal_agent_name"`
+	ClientAgentName             string `json:"client_agent_name"`
+	LivePolicyRuleTitleFontSize int    `json:"live_policy_rule_title_font_size"`
+	LivePolicyRuleBodyFontSize  int    `json:"live_policy_rule_body_font_size"`
+	LivePolicyRuleMetaFontSize  int    `json:"live_policy_rule_meta_font_size"`
+	LivePolicyTestTitleFontSize int    `json:"live_policy_test_title_font_size"`
+	LivePolicyTestBodyFontSize  int    `json:"live_policy_test_body_font_size"`
+	LivePolicyTestMetaFontSize  int    `json:"live_policy_test_meta_font_size"`
+	FooterEnabled               bool   `json:"footer_enabled"`
+	FooterCopyright             string `json:"footer_copyright"`
+	FooterICPText               string `json:"footer_icp_text"`
+	FooterICPURL                string `json:"footer_icp_url"`
+	FooterPoliceText            string `json:"footer_police_text"`
+	FooterPoliceURL             string `json:"footer_police_url"`
+	FooterReportText            string `json:"footer_report_text"`
+	FooterReportURL             string `json:"footer_report_url"`
+	FooterExtraText             string `json:"footer_extra_text"`
 }

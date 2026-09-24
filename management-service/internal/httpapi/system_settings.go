@@ -3,6 +3,7 @@ package httpapi
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +54,31 @@ func (s *Server) systemSettingsDashboard(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, item)
 }
 
+func validateLivePolicyFontSetting(key, raw string) error {
+	minValue, maxValue := 0, 0
+	switch key {
+	case "live_policy_rule_title_font_size":
+		minValue, maxValue = 16, 40
+	case "live_policy_rule_body_font_size":
+		minValue, maxValue = 14, 36
+	case "live_policy_rule_meta_font_size":
+		minValue, maxValue = 12, 28
+	case "live_policy_test_title_font_size":
+		minValue, maxValue = 18, 32
+	case "live_policy_test_body_font_size":
+		minValue, maxValue = 16, 28
+	case "live_policy_test_meta_font_size":
+		minValue, maxValue = 14, 24
+	default:
+		return nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < minValue || value > maxValue {
+		return fmt.Errorf("%s 必须是 %d 到 %d 的整数", key, minValue, maxValue)
+	}
+	return nil
+}
+
 func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requirePlatformAdmin(w, r)
 	if !ok {
@@ -70,6 +96,10 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	for _, item := range input.Settings {
 		if utf8.RuneCountInString(item.Value) > 4096 {
 			writeError(w, http.StatusBadRequest, "单项系统设置内容过长")
+			return
+		}
+		if err := validateLivePolicyFontSetting(item.Key, item.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if item.Key == "internal_agent_name" || item.Key == "client_agent_name" {

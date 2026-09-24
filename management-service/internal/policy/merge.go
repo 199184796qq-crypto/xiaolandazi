@@ -131,6 +131,15 @@ func ValidateDraft(
 			conflicts = append(conflicts, model.LivePolicyConflict{Code: "missing_override_key", Message: "L3 覆盖项缺少 key"})
 			continue
 		}
+		if _, exists := seen[item.Key]; exists {
+			conflicts = append(conflicts, model.LivePolicyConflict{
+				Code:    "duplicate_override_key",
+				Key:     item.Key,
+				Message: "同一层存在重复的 L3 覆盖 key",
+			})
+			continue
+		}
+		seen[item.Key] = struct{}{}
 		switch item.Operation {
 		case model.LivePolicyOverrideAdd, model.LivePolicyOverrideReplace, model.LivePolicyOverrideDisable:
 		default:
@@ -300,12 +309,15 @@ func uniqueL3Key(existing map[string]model.LiveEffectivePolicyRule, base string)
 
 func RenderPrompt(p model.LiveEffectivePolicy) string {
 	lines := []string{
-		"【三层策略执行规则】",
-		"1. L1 是系统强制边界，L2/L3 都不能解除。",
-		"2. L2 是行业默认业务规则。",
-		"3. L3 是当前终端/直播间差异规则；可补充、替换、关闭 L2，但不能突破 L1。",
-		"4. 没有冲突的 L2 与 L3 同时生效。",
-		"5. execution_mode=verbatim 时必须逐字使用 fixed_text；execution_mode=intent 时保留意思、事实和约束，但允许自然改写。",
+		"【三层策略执行原则】",
+		"1. L1 是通用判断与表达方法：先理解对方真实意图，再核对事实与约束，最后生成自然、热情、好听、可直接播出且不违规的表达。L1 不等于禁止清单。",
+		"2. L2 是行业表达层：在 L1 方法上加入行业专业知识、常见问法、销售节奏、行业边界和表达习惯。",
+		"3. L3 是直播间个性层：在 L1+L2 上加入当前商品、活动、主播风格、口头习惯、直播节奏和客户策略。",
+		"4. L2/L3 可以让表达更贴合场景，但不能改变 L1 的事实判断、真实性和最终表达方法。",
+		"5. 对方的原话不适合直接说时，不要把内部判断或审核口吻念给观众；应理解其目的，转换成一条同样能推进交流或销售、但更自然合适的直播表达。",
+		"6. 能直接回答就积极热情地回答；信息不足时先承接，再说明以实时信息为准，并继续给出当前能确认的内容或下一步。",
+		"7. 除确实没有任何可用表达的极端情况外，最终直播话术避免使用“拒绝”“不能回答”“违规”“系统不允许”等审核式措辞。",
+		"8. execution_mode=verbatim 时在不与 L1 判断冲突的前提下逐字使用 fixed_text；execution_mode=intent 时保留意思、事实和约束，并允许按 L1/L2/L3 自然改写。",
 		"",
 		"【当前有效规则】",
 	}
