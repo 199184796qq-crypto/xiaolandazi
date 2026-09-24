@@ -14,6 +14,10 @@ import (
 
 var membershipCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 
+type commercialListingStatusRequest struct {
+	Status string `json:"status"`
+}
+
 func (s *Server) commercialListMemberships(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requireStaffPermission(
 		w,
@@ -26,6 +30,23 @@ func (s *Server) commercialListMemberships(w http.ResponseWriter, r *http.Reques
 	items, err := s.store.ListCommercialMembershipPlans(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取会员方案失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) customerShopMemberships(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	if actor.Role != "customer" || actor.TenantID == nil {
+		writeError(w, http.StatusForbidden, "仅终端账号可访问会员购买")
+		return
+	}
+	items, err := s.store.ListCustomerMembershipOffers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取会员商品失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -132,6 +153,62 @@ func (s *Server) commercialPublishMembership(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (s *Server) commercialSetMembershipListing(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	if !ok {
+		return
+	}
+	planID, ok := commercialPlanID(w, r)
+	if !ok {
+		return
+	}
+	var input commercialListingStatusRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	input.Status = strings.ToLower(strings.TrimSpace(input.Status))
+	if input.Status != "active" && input.Status != "inactive" {
+		writeError(w, http.StatusBadRequest, "上架状态无效")
+		return
+	}
+	item, err := s.store.SetCommercialMembershipStatus(r.Context(), actor.UserID, planID, input.Status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "会员方案不存在")
+			return
+		}
+		if strings.Contains(err.Error(), "no published version") {
+			writeError(w, http.StatusConflict, "会员方案还没有已发布版本，不能上架")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "更新会员方案上下架状态失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) commercialArchiveMembership(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	if !ok {
+		return
+	}
+	planID, ok := commercialPlanID(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.store.SetCommercialMembershipStatus(r.Context(), actor.UserID, planID, "archived")
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "会员方案不存在")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "删除会员方案失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func readMembershipInput(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -145,6 +222,21 @@ func readMembershipInput(
 	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
+	if input.RecurringMonthDiscountBPS == 0 {
+		input.RecurringMonthDiscountBPS = 10000
+	}
+	if input.RecurringQuarterDiscountBPS == 0 {
+		input.RecurringQuarterDiscountBPS = 10000
+	}
+	if input.AnnualDiscountBPS == 0 {
+		input.AnnualDiscountBPS = 10000
+	}
+	if input.DefaultTimeCardDiscountBPS == 0 {
+		input.DefaultTimeCardDiscountBPS = 10000
+	}
+	if input.DefaultDeviceDiscountBPS == 0 {
+		input.DefaultDeviceDiscountBPS = 10000
+	}
 
 	if !membershipCodePattern.MatchString(input.Code) {
 		writeError(w, http.StatusBadRequest, "内部编码需为 2-64 位小写字母、数字、下划线或短横线")
@@ -167,8 +259,23 @@ func readMembershipInput(
 		writeError(w, http.StatusBadRequest, "基础时长超出允许范围")
 		return model.CommercialMembershipInput{}, false
 	}
+	if input.RecurringMonthDiscountBPS > 10000 ||
+		input.RecurringQuarterDiscountBPS > 10000 ||
+		input.AnnualDiscountBPS > 10000 {
+		writeError(w, http.StatusBadRequest, "会员连续购买折扣不能超过 100%")
+		return model.CommercialMembershipInput{}, false
+	}
+	if input.RecurringQuarterDiscountBPS > input.RecurringMonthDiscountBPS ||
+		input.AnnualDiscountBPS > input.RecurringQuarterDiscountBPS {
+		writeError(w, http.StatusBadRequest, "购买月数越多，会员折扣应保持不变或更优惠")
+		return model.CommercialMembershipInput{}, false
+	}
 	if input.DefaultTimeCardDiscountBPS > 10000 {
 		writeError(w, http.StatusBadRequest, "时长卡折扣不能超过 100%")
+		return model.CommercialMembershipInput{}, false
+	}
+	if input.DefaultDeviceDiscountBPS > 10000 {
+		writeError(w, http.StatusBadRequest, "设备会员折扣不能超过 100%")
 		return model.CommercialMembershipInput{}, false
 	}
 

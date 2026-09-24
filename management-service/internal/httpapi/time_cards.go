@@ -15,20 +15,22 @@ import (
 var timeCardCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 
 type customerTimeCardOffer struct {
-	ID                 int64  `json:"id"`
-	Code               string `json:"code"`
-	Name               string `json:"name"`
-	Description        string `json:"description"`
-	DurationSeconds    uint64 `json:"duration_seconds"`
-	ValidityDays       uint32 `json:"validity_days"`
-	OriginalPriceCents uint64 `json:"original_price_cents"`
-	DiscountBPS        uint32 `json:"discount_bps"`
-	SalePriceCents     uint64 `json:"sale_price_cents"`
-	VersionNo          uint32 `json:"version_no"`
+	ID                     int64  `json:"id"`
+	Code                   string `json:"code"`
+	Name                   string `json:"name"`
+	Description            string `json:"description"`
+	DurationSeconds        uint64 `json:"duration_seconds"`
+	ValidityDays           uint32 `json:"validity_days"`
+	ActivationMode         string `json:"activation_mode"`
+	ActivationDeadlineDays uint32 `json:"activation_deadline_days"`
+	OriginalPriceCents     uint64 `json:"original_price_cents"`
+	DiscountBPS            uint32 `json:"discount_bps"`
+	SalePriceCents         uint64 `json:"sale_price_cents"`
+	VersionNo              uint32 `json:"version_no"`
 }
 
 func (s *Server) commercialListTimeCards(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireStaffPermission(w, r, "commercial.membership.view"); !ok {
+	if _, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.view"); !ok {
 		return
 	}
 
@@ -41,7 +43,7 @@ func (s *Server) commercialListTimeCards(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) commercialCreateTimeCard(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.manage")
 	if !ok {
 		return
 	}
@@ -63,7 +65,7 @@ func (s *Server) commercialCreateTimeCard(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) commercialSaveTimeCardDraft(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.manage")
 	if !ok {
 		return
 	}
@@ -97,7 +99,7 @@ func (s *Server) commercialSaveTimeCardDraft(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) commercialPublishTimeCard(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.manage")
 	if !ok {
 		return
 	}
@@ -113,6 +115,62 @@ func (s *Server) commercialPublishTimeCard(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "发布时长卡失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) commercialSetTimeCardListing(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.manage")
+	if !ok {
+		return
+	}
+	productID, ok := timeCardProductID(w, r)
+	if !ok {
+		return
+	}
+	var input commercialListingStatusRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	input.Status = strings.ToLower(strings.TrimSpace(input.Status))
+	if input.Status != "active" && input.Status != "inactive" {
+		writeError(w, http.StatusBadRequest, "上架状态无效")
+		return
+	}
+	item, err := s.store.SetCommercialTimeCardStatus(r.Context(), actor.UserID, productID, input.Status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "时长卡不存在")
+			return
+		}
+		if strings.Contains(err.Error(), "no published version") {
+			writeError(w, http.StatusConflict, "时长卡还没有已发布版本，不能上架")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "更新时长卡上下架状态失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) commercialArchiveTimeCard(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.time_card.manage")
+	if !ok {
+		return
+	}
+	productID, ok := timeCardProductID(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.store.SetCommercialTimeCardStatus(r.Context(), actor.UserID, productID, "archived")
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "时长卡不存在")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "删除时长卡失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -148,16 +206,18 @@ func (s *Server) customerShopTimeCards(w http.ResponseWriter, r *http.Request) {
 		version := item.ActiveVersion
 		salePrice := version.PriceCents * uint64(discountBPS) / 10000
 		offers = append(offers, customerTimeCardOffer{
-			ID:                 item.ID,
-			Code:               item.Code,
-			Name:               item.Name,
-			Description:        item.Description,
-			DurationSeconds:    version.DurationSeconds,
-			ValidityDays:       version.ValidityDays,
-			OriginalPriceCents: version.PriceCents,
-			DiscountBPS:        discountBPS,
-			SalePriceCents:     salePrice,
-			VersionNo:          version.VersionNo,
+			ID:                     item.ID,
+			Code:                   item.Code,
+			Name:                   item.Name,
+			Description:            item.Description,
+			DurationSeconds:        version.DurationSeconds,
+			ValidityDays:           version.ValidityDays,
+			ActivationMode:         version.ActivationMode,
+			ActivationDeadlineDays: version.ActivationDeadlineDays,
+			OriginalPriceCents:     version.PriceCents,
+			DiscountBPS:            discountBPS,
+			SalePriceCents:         salePrice,
+			VersionNo:              version.VersionNo,
 		})
 	}
 
@@ -177,6 +237,10 @@ func readTimeCardInput(
 	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
+	input.ActivationMode = strings.ToLower(strings.TrimSpace(input.ActivationMode))
+	if input.ActivationMode == "" {
+		input.ActivationMode = "first_use"
+	}
 
 	if !timeCardCodePattern.MatchString(input.Code) {
 		writeError(w, http.StatusBadRequest, "内部编码需为 2-64 位小写字母、数字、下划线或短横线")
@@ -200,6 +264,14 @@ func readTimeCardInput(
 	}
 	if input.ValidityDays == 0 || input.ValidityDays > 3650 {
 		writeError(w, http.StatusBadRequest, "有效期需为 1-3650 天")
+		return model.CommercialTimeCardInput{}, false
+	}
+	if input.ActivationMode != "first_use" {
+		writeError(w, http.StatusBadRequest, "当前时长卡仅支持首次使用激活")
+		return model.CommercialTimeCardInput{}, false
+	}
+	if input.ActivationDeadlineDays > 3650 {
+		writeError(w, http.StatusBadRequest, "最晚激活期限需为 0-3650 天，0 表示不限")
 		return model.CommercialTimeCardInput{}, false
 	}
 

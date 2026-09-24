@@ -46,6 +46,8 @@ type workerMessage struct {
 	Error        string `json:"error,omitempty"`
 	FinalURL     string `json:"final_url,omitempty"`
 	Title        string `json:"title,omitempty"`
+	State        string `json:"state,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 	PID          int    `json:"pid,omitempty"`
 }
 
@@ -84,24 +86,38 @@ func (p *workerProcess) getErr() error {
 	return p.err
 }
 
-type roomSession struct {
-	frames chan []byte
-	errors chan error
-	live   chan struct{}
-
-	liveOnce sync.Once
+type roomStateSignal struct {
+	state  string
+	reason string
 }
 
-func (s *roomSession) markLive() {
-	s.liveOnce.Do(func() {
-		close(s.live)
+type roomSession struct {
+	frames    chan []byte
+	errors    chan error
+	transport chan struct{}
+	states    chan roomStateSignal
+
+	transportOnce sync.Once
+}
+
+func (s *roomSession) markTransport() {
+	s.transportOnce.Do(func() {
+		close(s.transport)
 	})
+}
+
+func (s *roomSession) sendState(state string, reason string) {
+	select {
+	case s.states <- roomStateSignal{state: state, reason: reason}:
+	default:
+	}
 }
 
 type BrowserSession struct {
 	manager *BrowserManager
 	roomID  int64
 	session *roomSession
+	onClose func()
 	once    sync.Once
 }
 
@@ -113,13 +129,20 @@ func (s *BrowserSession) Errors() <-chan error {
 	return s.session.errors
 }
 
-func (s *BrowserSession) Live() <-chan struct{} {
-	return s.session.live
+func (s *BrowserSession) Transport() <-chan struct{} {
+	return s.session.transport
+}
+
+func (s *BrowserSession) States() <-chan roomStateSignal {
+	return s.session.states
 }
 
 func (s *BrowserSession) Close() {
 	s.once.Do(func() {
 		s.manager.StopRoom(s.roomID)
+		if s.onClose != nil {
+			s.onClose()
+		}
 	})
 }
 
@@ -151,6 +174,18 @@ func NewBrowserManager(configuredPath string, headless bool) *BrowserManager {
 	}
 }
 
+func (m *BrowserManager) clearStream(roomID int64) {
+	m.streamMu.Lock()
+	delete(m.streams, roomID)
+	m.streamMu.Unlock()
+}
+
+func (m *BrowserManager) clearStreams() {
+	m.streamMu.Lock()
+	m.streams = make(map[int64]collector.StreamSource)
+	m.streamMu.Unlock()
+}
+
 func (m *BrowserManager) StartRoom(
 	ctx context.Context,
 	room model.Room,
@@ -158,6 +193,8 @@ func (m *BrowserManager) StartRoom(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	m.clearStream(room.ID)
 
 	if err := m.ensureWorker(ctx); err != nil {
 		return nil, err
@@ -174,9 +211,10 @@ func (m *BrowserManager) StartRoom(
 	}
 
 	session := &roomSession{
-		frames: make(chan []byte, 512),
-		errors: make(chan error, 8),
-		live:   make(chan struct{}),
+		frames:    make(chan []byte, 512),
+		errors:    make(chan error, 8),
+		transport: make(chan struct{}),
+		states:    make(chan roomStateSignal, 8),
 	}
 
 	m.mu.Lock()
@@ -370,6 +408,7 @@ func streamSourceScore(source collector.StreamSource) int {
 	return score
 }
 func (m *BrowserManager) StopRoom(roomID int64) {
+	m.clearStream(roomID)
 	m.mu.Lock()
 	_, exists := m.sessions[roomID]
 	delete(m.sessions, roomID)
@@ -389,6 +428,7 @@ func (m *BrowserManager) StopRoom(roomID int64) {
 }
 
 func (m *BrowserManager) Close() {
+	m.clearStreams()
 	m.mu.Lock()
 	worker := m.worker
 	m.sessions = make(map[int64]*roomSession)
@@ -547,8 +587,19 @@ func (m *BrowserManager) readWorkerStdout(
 			)
 		case "transport_live":
 			if session := m.getSession(message.RoomID); session != nil {
-				session.markLive()
+				session.markTransport()
 			}
+
+		case "room_state":
+			if session := m.getSession(message.RoomID); session != nil {
+				session.sendState(message.State, message.Reason)
+			}
+			log.Printf(
+				"collector room=%d worker_state=%s reason=%s",
+				message.RoomID,
+				message.State,
+				message.Reason,
+			)
 
 		case "frame":
 			session := m.getSession(message.RoomID)
@@ -635,6 +686,7 @@ func (m *BrowserManager) waitWorker(worker *workerProcess) {
 	}
 	m.sessions = make(map[int64]*roomSession)
 	m.mu.Unlock()
+	m.clearStreams()
 
 	workerErr := ErrWorkerClosed
 	if err != nil {

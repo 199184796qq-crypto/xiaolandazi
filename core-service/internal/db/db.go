@@ -14,17 +14,19 @@ import (
 )
 
 func Open(cfg config.Config) (*sql.DB, error) {
-	mysqlCfg := mysql.Config{
-		User:      cfg.DBUser,
-		Passwd:    cfg.DBPassword,
-		Net:       "tcp",
-		Addr:      net.JoinHostPort(cfg.DBHost, cfg.DBPort),
-		DBName:    cfg.DBName,
-		ParseTime: true,
-		Loc:       time.UTC,
-		Params: map[string]string{
-			"charset": "utf8mb4",
-		},
+	mysqlCfg := mysql.NewConfig()
+	mysqlCfg.User = cfg.DBUser
+	mysqlCfg.Passwd = cfg.DBPassword
+	mysqlCfg.Net = "tcp"
+	mysqlCfg.Addr = net.JoinHostPort(cfg.DBHost, cfg.DBPort)
+	mysqlCfg.DBName = cfg.DBName
+	mysqlCfg.ParseTime = true
+	mysqlCfg.Loc = time.UTC
+	mysqlCfg.Timeout = 3 * time.Second
+	mysqlCfg.ReadTimeout = 5 * time.Second
+	mysqlCfg.WriteTimeout = 5 * time.Second
+	mysqlCfg.Params = map[string]string{
+		"charset": "utf8mb4",
 	}
 	dsn := mysqlCfg.FormatDSN()
 
@@ -33,8 +35,8 @@ func Open(cfg config.Config) (*sql.DB, error) {
 		return nil, err
 	}
 
-	database.SetMaxOpenConns(30)
-	database.SetMaxIdleConns(10)
+	database.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	database.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	database.SetConnMaxLifetime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

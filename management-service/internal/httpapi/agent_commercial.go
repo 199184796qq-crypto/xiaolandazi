@@ -79,16 +79,11 @@ func readAgentLevelInput(w http.ResponseWriter, r *http.Request) (storedb.AgentL
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return storedb.AgentLevelInput{}, false
 	}
-	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Status = strings.TrimSpace(input.Status)
 	input.SettlementCycle = strings.TrimSpace(input.SettlementCycle)
 	input.Note = strings.TrimSpace(input.Note)
 
-	if input.Code == "" || len(input.Code) > 64 {
-		writeError(w, http.StatusBadRequest, "等级编码不能为空且最多 64 个字符")
-		return storedb.AgentLevelInput{}, false
-	}
 	if utf8.RuneCountInString(input.Name) < 1 || utf8.RuneCountInString(input.Name) > 128 {
 		writeError(w, http.StatusBadRequest, "等级名称需为 1-128 个字符")
 		return storedb.AgentLevelInput{}, false
@@ -126,7 +121,6 @@ func readAgentLevelInput(w http.ResponseWriter, r *http.Request) (storedb.AgentL
 	}
 
 	return storedb.AgentLevelInput{
-		Code:              input.Code,
 		Name:              input.Name,
 		Status:            input.Status,
 		EntryFeeCents:     input.EntryFeeCents,
@@ -153,7 +147,7 @@ func (s *Server) adminCreateAgentLevel(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.CreateAgentLevel(r.Context(), actor.UserID, input)
 	if err != nil {
 		if isDuplicateDBError(err) {
-			writeError(w, http.StatusConflict, "等级编码已存在")
+			writeError(w, http.StatusConflict, "系统生成等级编码冲突，请重试")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "创建代理等级失败")
@@ -189,8 +183,6 @@ func (s *Server) adminUpdateAgentLevel(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusNotFound, "代理等级不存在")
-		case isDuplicateDBError(err):
-			writeError(w, http.StatusConflict, "等级编码已存在")
 		default:
 			writeError(w, http.StatusInternalServerError, "保存代理等级失败")
 		}

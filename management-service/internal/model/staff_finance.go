@@ -24,7 +24,9 @@ type StaffFinanceTaskSummary struct {
 	ApproverName     string     `json:"approver_name,omitempty"`
 	TenantID         int64      `json:"tenant_id"`
 	CustomerName     string     `json:"customer_name"`
+	TargetType       string     `json:"target_type"`
 	AmountYuan       float64    `json:"amount_yuan"`
+	ResourceSeconds  int64      `json:"resource_seconds,omitempty"`
 	Status           string     `json:"status"`
 	Reason           string     `json:"reason"`
 	ApproverRoleCode string     `json:"approver_role_code"`

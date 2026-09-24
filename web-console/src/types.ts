@@ -20,7 +20,9 @@ export interface StaffFinanceTaskSummary {
   approver_name?: string
   tenant_id: number
   customer_name: string
+  target_type: string
   amount_yuan: number
+  resource_seconds?: number
   status: string
   reason: string
   approver_role_code: string
@@ -47,6 +49,8 @@ export interface StaffAccessContext {
   role_codes: string[]
   permissions: string[]
   permission_scopes: Record<string, string>
+  permission_group_ids: Record<string, number[]>
+  group_ids: number[]
   managed_group_ids: number[]
 }
 
@@ -89,10 +93,20 @@ export interface StaffRoleSummary {
 
 export interface StaffEmployeeRoleSummary {
   role_id: number
+  group_id: number
+  group_code: string
+  group_name: string
   code: string
   name: string
   scope_type: string
   is_group_manager: boolean
+}
+
+export interface StaffEmployeeGroupSummary {
+  group_id: number
+  group_code: string
+  group_name: string
+  is_primary: boolean
 }
 
 export interface StaffEmployeeSummary {
@@ -112,6 +126,7 @@ export interface StaffEmployeeSummary {
   employment_status: string
   user_status: string
   roles: StaffEmployeeRoleSummary[]
+  groups: StaffEmployeeGroupSummary[]
   created_at: string
 }
 
@@ -142,6 +157,83 @@ export interface InitialCredential {
   email_sent: boolean
   email_error?: string
 }
+
+export interface SystemAgentCreateEmployeePayload {
+  employee_no: string
+  primary_group_id: number
+  primary_group_name: string
+  role_ids: number[]
+  role_names: string[]
+  username: string
+  display_name: string
+  phone: string
+  email: string
+  province: string
+  city: string
+  district: string
+  delivery_method: 'copy' | 'email' | string
+}
+
+export interface SystemAgentActionPayload {
+  employee_no?: string
+  primary_group_id?: number
+  primary_group_name?: string
+  role_ids?: number[]
+  role_names?: string[]
+  username?: string
+  display_name?: string
+  phone?: string
+  email?: string
+  province?: string
+  city?: string
+  district?: string
+  delivery_method?: 'copy' | 'email' | string
+
+  code?: string
+  name?: string
+  description?: string
+  status?: 'active' | 'inactive' | 'draft' | string
+  sort_order?: number
+  pricing_rule?: 'floor_yuan' | string
+  starts_at?: string
+  ends_at?: string
+  items?: MarketingCampaignItem[]
+  display_locations?: string[]
+}
+
+export interface SystemAgentActionPreview {
+  type: string
+  title: string
+  summary: string
+  risk_level: string
+  requires_confirmation: boolean
+  payload: SystemAgentActionPayload
+}
+
+export interface SystemAgentDepartment {
+  name: string
+  code: string
+}
+
+export interface SystemAgentContextResponse {
+  capabilities: string[]
+  departments: SystemAgentDepartment[]
+}
+
+export interface SystemAgentNavigateTarget {
+  title: string
+  to: string
+  section?: string
+}
+
+export interface SystemAgentChatResponse {
+  reply: string
+  action?: SystemAgentActionPreview
+  navigate?: SystemAgentNavigateTarget
+  capabilities: string[]
+  model?: string
+  latency_ms?: number
+}
 export interface Actor {
   user_id: number
   username: string
@@ -170,6 +262,85 @@ export interface Bootstrap {
   environment: string
 }
 
+export interface SystemSetting {
+  key: string
+  group: string
+  label: string
+  value: string
+  input_type: 'text' | 'url' | 'boolean' | string
+  sort_order: number
+  updated_by_user_id: number
+  updated_at: string
+}
+
+export interface SystemSettingUpdate {
+  key: string
+  value: string
+}
+
+export interface SystemDictionaryItem {
+  id: number
+  category: string
+  code: string
+  label: string
+  description: string
+  sort_order: number
+  enabled: boolean
+  system_seeded: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface SystemDictionaryItemInput {
+  category: string
+  code: string
+  label: string
+  description: string
+  sort_order: number
+  enabled: boolean
+}
+
+export interface SystemWarehouseInput {
+  code: string
+  name: string
+  status: 'active' | 'inactive' | string
+}
+
+export interface MembershipRoomLimitSetting {
+  plan_id: number
+  plan_code: string
+  plan_name: string
+  plan_status: string
+  room_limit: number
+}
+
+export interface MembershipRoomLimitUpdate {
+  plan_id: number
+  room_limit: number
+}
+
+export interface SystemSettingsDashboard {
+  settings: SystemSetting[]
+  dictionaries: Record<string, SystemDictionaryItem[]>
+  warehouses: InventoryWarehouse[]
+  membership_room_limits: MembershipRoomLimitSetting[]
+}
+
+export interface PublicSystemConfig {
+  site_name: string
+  internal_agent_name: string
+  client_agent_name: string
+  footer_enabled: boolean
+  footer_copyright: string
+  footer_icp_text: string
+  footer_icp_url: string
+  footer_police_text: string
+  footer_police_url: string
+  footer_report_text: string
+  footer_report_url: string
+  footer_extra_text: string
+}
+
 export interface Room {
   id: number
   tenant_id: number
@@ -179,6 +350,8 @@ export interface Room {
   name: string
   status: 'pending' | 'connecting' | 'live' | 'offline' | 'error' | string
   collector_mode: string
+  monitor_enabled?: boolean
+  device_online?: boolean
   online_count: number
   last_event_at?: string
   created_at: string
@@ -205,6 +378,321 @@ export interface CreateRoomPayload {
   collector_mode: string
 }
 
+export interface LiveDevice {
+  id: number
+  sn: string
+  sku_code: string
+  lifecycle_status: string
+  tenant_id: number
+  room_id?: number
+  binding_role: string
+  connection_status: string
+  work_status: string
+  stop_reason: string
+  last_heartbeat_at?: string
+}
+
+export interface LiveOpsRoomQuotaSummary {
+  tenant_id: number
+  user_id: number
+  username: string
+  display_name: string
+  phone: string
+  status: string
+  parent_org_name: string
+  membership_plan_id: number
+  membership_name: string
+  membership_room_limit: number
+  current_room_count: number
+  room_limit: number
+  remaining_slots: number
+  last_reason: string
+  last_operator_name: string
+  last_adjusted_at?: string
+}
+
+export interface LiveOpsRoomQuotaAdjustInput {
+  room_limit: number
+  reason: string
+}
+
+export interface LiveRuntimeSession {
+  id: number
+  external_id: string
+  tenant_id: number
+  room_id: number
+  device_id?: number
+  device_sn?: string
+  status: string
+  stop_reason: string
+  started_by_user_id?: number
+  stopped_by_user_id?: number
+  started_at: string
+  last_billed_at: string
+  ended_at?: string
+  total_billed_seconds: number
+  version: number
+}
+
+export interface LiveQuotaSourceSummary {
+  source_type: string
+  source_label: string
+  asset_no?: string
+  remaining_seconds: number
+  expires_at?: string
+}
+
+export interface LiveTimeCardSummary {
+  asset_no: string
+  product_name: string
+  status: string
+  original_seconds: number
+  remaining_seconds: number
+  activation_deadline_at?: string
+  activated_at?: string
+  expires_at?: string
+}
+
+export interface LiveQuotaSummary {
+  active_seconds: number
+  reserve_time_card_seconds: number
+  reserve_time_card_count: number
+  current?: LiveQuotaSourceSummary
+  time_cards: LiveTimeCardSummary[]
+}
+
+export interface LiveRuntimeSnapshot {
+  session?: LiveRuntimeSession
+  quota_remaining_seconds: number
+  reserve_time_card_seconds: number
+  reserve_time_card_count: number
+  current_quota?: LiveQuotaSourceSummary
+  time_cards: LiveTimeCardSummary[]
+  room_live: boolean
+  device?: LiveDevice
+}
+
+export interface LiveAgentSettings {
+  tenant_id: number
+  display_name: string
+  role_name: string
+  self_introduction: string
+  mission: string
+  greeting: string
+  updated_by_user_id?: number
+  updated_at?: string
+}
+
+export interface LiveAgentSettingsInput {
+  display_name: string
+  role_name: string
+  self_introduction: string
+  mission: string
+  greeting: string
+}
+
+export interface LiveAgentConfigVersion {
+  id: number
+  agent_id: number
+  version_no: number
+  layer1: Record<string, unknown>
+  layer2: Record<string, unknown>
+  layer3: Record<string, unknown>
+  persona: Record<string, unknown>
+  model_config: Record<string, unknown>
+  speech_config: Record<string, unknown>
+  style_profile: Record<string, unknown>
+  safety_config: Record<string, unknown>
+  lifecycle_status: 'draft' | 'active' | 'archived' | string
+  created_at: string
+  published_at?: string
+}
+
+export interface LiveAgentConfigInput {
+  layer1?: Record<string, unknown>
+  layer2?: Record<string, unknown>
+  layer3?: Record<string, unknown>
+  persona?: Record<string, unknown>
+  model_config?: Record<string, unknown>
+  speech_config?: Record<string, unknown>
+  style_profile?: Record<string, unknown>
+  safety_config?: Record<string, unknown>
+}
+
+export interface LivePolicyIndustry {
+  code: string
+  name: string
+  parent_code?: string
+  status: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LivePolicyRule {
+  key: string
+  title?: string
+  text: string
+  execution_mode: 'intent' | 'verbatim' | string
+  fixed_text?: string
+  enabled: boolean
+  metadata?: Record<string, unknown>
+}
+
+export interface LivePolicyOverride {
+  key: string
+  operation: 'add' | 'replace' | 'disable' | string
+  title?: string
+  text?: string
+  execution_mode?: 'intent' | 'verbatim' | string
+  fixed_text?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface LivePolicyConflict {
+  code: string
+  key?: string
+  message: string
+}
+
+export interface LivePolicyVersion {
+  id: number
+  policy_id: number
+  version_no: number
+  lifecycle_status: 'draft' | 'active' | 'archived' | string
+  source_text: string
+  rules: LivePolicyRule[]
+  overrides: LivePolicyOverride[]
+  conflicts: LivePolicyConflict[]
+  note?: string
+  source_version_id?: number
+  created_by_user_id?: number
+  published_by_user_id?: number
+  created_at: string
+  published_at?: string
+}
+
+export interface LivePolicyScope {
+  id: number
+  layer: 'L1' | 'L2' | 'L3' | string
+  scope_key: string
+  industry_code?: string
+  tenant_id?: number
+  room_id?: number
+  name: string
+  status: string
+  current_version_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LivePolicyContext {
+  scope: LivePolicyScope
+  versions: LivePolicyVersion[]
+  active?: LivePolicyVersion
+  industry?: LivePolicyIndustry
+}
+
+export interface LivePolicyAgentResponse {
+  reply: string
+  action: 'EXPLAIN' | 'DRAFT' | string
+  draft?: LivePolicyVersion
+  conflicts?: LivePolicyConflict[]
+  model?: string
+  latency_ms?: number
+}
+
+export interface LiveEffectivePolicyRule {
+  key: string
+  title?: string
+  text: string
+  execution_mode: 'intent' | 'verbatim' | string
+  fixed_text?: string
+  source_layer: 'L1' | 'L2' | 'L3' | string
+  source_version_id?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface LiveEffectivePolicy {
+  industry_code: string
+  l1?: LivePolicyVersion
+  l2?: LivePolicyVersion
+  l3?: LivePolicyVersion
+  rules: LiveEffectivePolicyRule[]
+  conflicts: LivePolicyConflict[]
+  prompt_text: string
+}
+
+export interface LiveRoomPolicyContext {
+  industry_code: string
+  effective: LiveEffectivePolicy
+  l3_versions: LivePolicyVersion[]
+  l3_scope?: LivePolicyScope
+}
+
+export interface MediaAsset {
+  id: number
+  tenant_id: number
+  agent_id?: number
+  asset_type: string
+  original_name: string
+  storage_driver: string
+  storage_bucket?: string
+  object_key: string
+  mime_type: string
+  size_bytes: number
+  duration_ms?: number
+  checksum_sha256: string
+  status: string
+  metadata?: Record<string, unknown>
+  created_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface VoiceProfile {
+  id: number
+  tenant_id: number
+  agent_id?: number
+  name: string
+  provider: string
+  voice_id: string
+  sample_asset_id?: number
+  clone_status: 'pending' | 'training' | 'ready' | 'failed' | 'disabled' | string
+  config?: Record<string, unknown>
+  is_default: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveRuntimeEvent {
+  id: number
+  tenant_id: number
+  room_id?: number
+  device_id?: number
+  session_id?: number
+  actor_type: string
+  actor_user_id?: number
+  event_code: string
+  title: string
+  detail?: Record<string, unknown>
+  occurred_at: string
+}
+
+export interface StaffBusinessScope {
+  mode: 'all' | 'groups' | 'self' | string
+  actor_user_id?: number
+  group_ids?: number[]
+  manager_view: boolean
+}
+
+export interface CustomerScopeSummary {
+  total_count: number
+  active_count: number
+  agent_count: number
+  referral_count: number
+}
+
 export interface AdminCustomer {
   user_id: number
   tenant_id: number
@@ -226,7 +714,19 @@ export interface AdminCustomer {
   sales_employee_code: string
   sales_username: string
   sales_display_name: string
+  industry_code: string
+  industry_name: string
   created_at: string
+}
+
+export interface AdminCustomerPage {
+  items: AdminCustomer[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  summary: CustomerScopeSummary
+  scope: StaffBusinessScope
 }
 export interface AdminAuditLog {
   id: string
@@ -241,6 +741,14 @@ export interface AdminAuditLog {
   path?: string
   client_ip?: string
   result: string
+}
+
+export interface AdminAuditPage {
+  items: AdminAuditLog[]
+  page_size: number
+  next_cursor: number
+  has_more: boolean
+  scope: StaffBusinessScope
 }
 export interface AccountProfile {
   user_id: number
@@ -363,15 +871,67 @@ export interface CommercialMembershipVersion {
   lifecycle_status: string
   currency: string
   price_cents: number
+  recurring_month_discount_bps: number
+  recurring_quarter_discount_bps: number
+  annual_discount_bps: number
   billing_period_unit: string
   billing_period_count: number
   included_seconds: number
   default_time_card_discount_bps: number
+  default_device_discount_bps: number
   allow_auto_renew: boolean
   effective_from?: string
   effective_to?: string
   published_at?: string
   created_at: string
+}
+
+export interface MarketingCampaignItem {
+  id?: number
+  campaign_id?: number
+  target_type: 'membership' | 'time_card' | 'device_product' | string
+  target_id: number
+  pricing_mode: 'discount' | 'package' | string
+  package_months: number
+  discount_bps: number
+  quantity: number
+  sort_order?: number
+}
+
+export interface MarketingCampaign {
+  id: number
+  code: string
+  name: string
+  description?: string
+  status: string
+  sort_order: number
+  pricing_rule?: 'floor_yuan' | string
+  items: MarketingCampaignItem[]
+  display_locations: string[]
+  target_type?: 'membership' | 'time_card' | 'device_product' | string
+  target_id?: number
+  pricing_mode?: 'discount' | 'package' | string
+  package_months?: number
+  discount_bps?: number
+  starts_at?: string
+  ends_at?: string
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface MarketingCampaignInput {
+  code: string
+  name: string
+  description: string
+  status: 'active' | 'inactive' | 'draft' | string
+  sort_order: number
+  pricing_rule: 'floor_yuan' | string
+  starts_at?: string
+  ends_at?: string
+  items: MarketingCampaignItem[]
+  display_locations: string[]
 }
 
 export interface CommercialMembershipPlan {
@@ -386,6 +946,7 @@ export interface CommercialMembershipPlan {
   latest_version?: CommercialMembershipVersion
   active_version?: CommercialMembershipVersion
   draft_version?: CommercialMembershipVersion
+  marketing_campaigns: MarketingCampaign[]
 }
 
 export interface CommercialMembershipInput {
@@ -394,9 +955,30 @@ export interface CommercialMembershipInput {
   description: string
   sort_order: number
   price_cents: number
+  recurring_month_discount_bps: number
+  recurring_quarter_discount_bps: number
+  annual_discount_bps: number
   included_seconds: number
   default_time_card_discount_bps: number
+  default_device_discount_bps: number
   allow_auto_renew: boolean
+}
+
+export interface CustomerMembershipOffer {
+  id: number
+  code: string
+  name: string
+  description: string
+  monthly_price_cents: number
+  recurring_month_discount_bps: number
+  recurring_quarter_discount_bps: number
+  annual_discount_bps: number
+  included_seconds: number
+  time_card_discount_bps: number
+  device_discount_bps: number
+  allow_auto_renew: boolean
+  version_no: number
+  marketing_campaigns: MarketingCampaign[]
 }
 export interface AgentSummary {
   organization_id: number
@@ -455,7 +1037,10 @@ export interface InvitationRecord {
 export interface InvitationDashboard {
   my_code: InviteCodeSummary
   codes: InviteCodeSummary[]
+  codes_total: number
   records: InvitationRecord[]
+  records_total: number
+  own_referral_count: number
 }
 export interface ResourceAccount {
   id: number
@@ -507,6 +1092,15 @@ export interface SalesStaffSummary {
   created_at: string
 }
 
+export interface SalesStaffPage {
+  items: SalesStaffSummary[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  scope: StaffBusinessScope
+}
+
 
 export interface CommercialTimeCardVersion {
   id: number
@@ -517,7 +1111,9 @@ export interface CommercialTimeCardVersion {
   price_cents: number
   duration_seconds: number
   validity_days: number
-  participates_referral: boolean
+  participates_referral: boolean  activation_mode: string
+  activation_deadline_days: number
+
   participates_sales_commission: boolean
   participates_agent_settlement: boolean
   effective_from?: string
@@ -538,6 +1134,7 @@ export interface CommercialTimeCardProduct {
   latest_version?: CommercialTimeCardVersion
   active_version?: CommercialTimeCardVersion
   draft_version?: CommercialTimeCardVersion
+  marketing_campaigns: MarketingCampaign[]
 }
 
 export interface CommercialTimeCardInput {
@@ -548,7 +1145,9 @@ export interface CommercialTimeCardInput {
   price_cents: number
   duration_seconds: number
   validity_days: number
-  participates_referral: boolean
+  participates_referral: boolean  activation_mode: string
+  activation_deadline_days: number
+
   participates_sales_commission: boolean
   participates_agent_settlement: boolean
 }
@@ -560,7 +1159,9 @@ export interface CustomerTimeCardOffer {
   description: string
   duration_seconds: number
   validity_days: number
-  original_price_cents: number
+  original_price_cents: number  activation_mode: string
+  activation_deadline_days: number
+
   discount_bps: number
   sale_price_cents: number
   version_no: number
@@ -572,6 +1173,7 @@ export interface CommercialDeviceVersion {
   version_no: number
   lifecycle_status: string
   currency: string
+  cost_price_cents: number
   list_price_cents: number
   sale_price_cents: number
   participates_referral: boolean
@@ -589,14 +1191,20 @@ export interface CommercialDeviceProduct {
   sku_code: string
   name: string
   description: string
+  image_url: string
+  unit_code: string
+  unit_label: string
   status: string
   sort_order: number
   available_stock: number
+  sales_stock: number
+  real_stock: number
   created_at: string
   updated_at: string
   latest_version?: CommercialDeviceVersion
   active_version?: CommercialDeviceVersion
   draft_version?: CommercialDeviceVersion
+  marketing_campaigns: MarketingCampaign[]
 }
 
 export interface CommercialDeviceInput {
@@ -604,8 +1212,12 @@ export interface CommercialDeviceInput {
   sku_code: string
   name: string
   description: string
+  image_url: string
+  unit_code: string
   sort_order: number
   list_price_cents: number
+  sales_stock: number
+  cost_price_cents: number
   sale_price_cents: number
   participates_referral: boolean
   participates_sales_commission: boolean
@@ -618,8 +1230,13 @@ export interface CustomerDeviceOffer {
   sku_code: string
   name: string
   description: string
+  image_url: string
+  unit_code: string
+  unit_label: string
   original_price_cents: number
+  base_sale_price_cents: number
   sale_price_cents: number
+  membership_discount_bps: number
   discount_bps: number
   version_no: number
   available_stock: number
@@ -664,6 +1281,17 @@ export interface InventoryDeviceProduct {
   sku_code: string
   name: string
   status: string
+}
+
+export interface InventoryDeviceSKUType {
+  sku_code: string
+  total_quantity: number
+  in_stock_quantity: number
+  warehouse_count: number
+  sample_sn: string
+  sample_batch_no: string
+  bound_product_id: number
+  bound_product_name: string
 }
 
 export interface InventoryBatchInboundInput {
@@ -908,11 +1536,28 @@ export interface SalesPerformanceSummary {
   settled_earning_cents: number
 }
 
+export interface SalesPerformanceTotals {
+  paid_order_count: number
+  customer_count: number
+  paid_amount_cents: number
+  refunded_amount_cents: number
+  net_revenue_cents: number
+  earning_amount_cents: number
+  pending_earning_cents: number
+  settled_earning_cents: number
+}
+
 export interface SalesPerformanceResponse {
   period: string
   period_start: string
   period_end: string
   items: SalesPerformanceSummary[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  totals: SalesPerformanceTotals
+  scope: StaffBusinessScope
 }
 
 
@@ -1385,6 +2030,9 @@ export interface CreateCustomerShopOrderInput {
   product_type: string
   product_id: number
   quantity: number
+  membership_cycle?: 'single_month' | 'recurring_month' | 'quarter' | 'half_year' | 'annual' | string
+  marketing_campaign_id?: number
+  marketing_placement?: 'shop' | 'membership' | string
   idempotency_key: string
   recipient_name?: string
   recipient_phone?: string

@@ -11,6 +11,19 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+func normalizeMembershipDiscountBPS(value uint32) uint32 {
+	// Legacy editor values such as 9折/8折 were once persisted as 900/800 BPS.
+	// Treat that historical range as 9000/8000 BPS. New writes use canonical
+	// basis points directly (9折 = 9000, 8.5折 = 8500, 原价 = 10000).
+	if value >= 100 && value < 1000 {
+		value *= 10
+	}
+	if value == 0 || value > 10000 {
+		return 10000
+	}
+	return value
+}
+
 func (s *Store) ListCommercialMembershipPlans(ctx context.Context) ([]model.CommercialMembershipPlan, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, code, name, description, status, sort_order, created_at, updated_at
@@ -67,6 +80,58 @@ func (s *Store) ListCommercialMembershipPlans(ctx context.Context) ([]model.Comm
 		}
 	}
 
+	campaigns, err := s.ListMarketingCampaigns(ctx, "membership", 0, false)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].MarketingCampaigns = make([]model.MarketingCampaign, 0)
+		for _, campaign := range campaigns {
+			if marketingCampaignHasTarget(campaign, "membership", items[i].ID) {
+				items[i].MarketingCampaigns = append(items[i].MarketingCampaigns, campaign)
+			}
+		}
+	}
+
+	return items, nil
+}
+
+func (s *Store) ListCustomerMembershipOffers(ctx context.Context) ([]model.CustomerMembershipOffer, error) {
+	plans, err := s.ListCommercialMembershipPlans(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]model.CustomerMembershipOffer, 0)
+	for _, plan := range plans {
+		if plan.Status != "active" || plan.ActiveVersion == nil {
+			continue
+		}
+		version := plan.ActiveVersion
+		activeCampaigns := make([]model.MarketingCampaign, 0)
+		for _, campaign := range plan.MarketingCampaigns {
+			if marketingCampaignWindowActive(campaign, time.Now().UTC()) &&
+				marketingCampaignHasDisplayLocation(campaign, "membership") {
+				activeCampaigns = append(activeCampaigns, campaign)
+			}
+		}
+		items = append(items, model.CustomerMembershipOffer{
+			ID:                          plan.ID,
+			Code:                        plan.Code,
+			Name:                        plan.Name,
+			Description:                 plan.Description,
+			MonthlyPriceCents:           version.PriceCents,
+			RecurringMonthDiscountBPS:   version.RecurringMonthDiscountBPS,
+			RecurringQuarterDiscountBPS: version.RecurringQuarterDiscountBPS,
+			AnnualDiscountBPS:           version.AnnualDiscountBPS,
+			IncludedSeconds:             version.IncludedSeconds,
+			TimeCardDiscountBPS:         version.DefaultTimeCardDiscountBPS,
+			DeviceDiscountBPS:           version.DefaultDeviceDiscountBPS,
+			AllowAutoRenew:              version.AllowAutoRenew,
+			VersionNo:                   version.VersionNo,
+			MarketingCampaigns:          activeCampaigns,
+		})
+	}
 	return items, nil
 }
 
@@ -93,8 +158,9 @@ func (s *Store) listMembershipVersions(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, plan_id, version_no, lifecycle_status, currency, price_cents,
+			recurring_month_discount_bps, recurring_quarter_discount_bps, annual_discount_bps,
 			billing_period_unit, billing_period_count, included_seconds,
-			default_time_card_discount_bps, allow_auto_renew,
+			default_time_card_discount_bps, default_device_discount_bps, allow_auto_renew,
 			effective_from, effective_to, published_at, created_at
 		FROM catalog_membership_plan_versions
 		WHERE plan_id = ?
@@ -115,10 +181,14 @@ func (s *Store) listMembershipVersions(
 			&item.LifecycleStatus,
 			&item.Currency,
 			&item.PriceCents,
+			&item.RecurringMonthDiscountBPS,
+			&item.RecurringQuarterDiscountBPS,
+			&item.AnnualDiscountBPS,
 			&item.BillingPeriodUnit,
 			&item.BillingPeriodCount,
 			&item.IncludedSeconds,
 			&item.DefaultTimeCardDiscountBPS,
+			&item.DefaultDeviceDiscountBPS,
 			&item.AllowAutoRenew,
 			&item.EffectiveFrom,
 			&item.EffectiveTo,
@@ -127,6 +197,11 @@ func (s *Store) listMembershipVersions(
 		); err != nil {
 			return nil, err
 		}
+		item.RecurringMonthDiscountBPS = normalizeMembershipDiscountBPS(item.RecurringMonthDiscountBPS)
+		item.RecurringQuarterDiscountBPS = normalizeMembershipDiscountBPS(item.RecurringQuarterDiscountBPS)
+		item.AnnualDiscountBPS = normalizeMembershipDiscountBPS(item.AnnualDiscountBPS)
+		item.DefaultTimeCardDiscountBPS = normalizeMembershipDiscountBPS(item.DefaultTimeCardDiscountBPS)
+		item.DefaultDeviceDiscountBPS = normalizeMembershipDiscountBPS(item.DefaultDeviceDiscountBPS)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -160,16 +235,21 @@ func (s *Store) CreateCommercialMembershipPlan(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO catalog_membership_plan_versions (
 			plan_id, version_no, lifecycle_status, currency, price_cents,
+			recurring_month_discount_bps, recurring_quarter_discount_bps, annual_discount_bps,
 			billing_period_unit, billing_period_count, included_seconds,
-			default_time_card_discount_bps, allow_auto_renew,
+			default_time_card_discount_bps, default_device_discount_bps, allow_auto_renew,
 			created_by_user_id
 		)
-		VALUES (?, 1, 'draft', 'CNY', ?, 'month', 1, ?, ?, ?, ?)
+		VALUES (?, 1, 'draft', 'CNY', ?, ?, ?, ?, 'month', 1, ?, ?, ?, ?, ?)
 	`,
 		planID,
 		input.PriceCents,
+		input.RecurringMonthDiscountBPS,
+		input.RecurringQuarterDiscountBPS,
+		input.AnnualDiscountBPS,
 		input.IncludedSeconds,
 		input.DefaultTimeCardDiscountBPS,
+		input.DefaultDeviceDiscountBPS,
 		input.AllowAutoRenew,
 		actorUserID,
 	); err != nil {
@@ -257,14 +337,22 @@ func (s *Store) SaveCommercialMembershipDraft(
 			UPDATE catalog_membership_plan_versions
 			SET
 				price_cents = ?,
+				recurring_month_discount_bps = ?,
+				recurring_quarter_discount_bps = ?,
+				annual_discount_bps = ?,
 				included_seconds = ?,
 				default_time_card_discount_bps = ?,
+				default_device_discount_bps = ?,
 				allow_auto_renew = ?
 			WHERE id = ?
 		`,
 			input.PriceCents,
+			input.RecurringMonthDiscountBPS,
+			input.RecurringQuarterDiscountBPS,
+			input.AnnualDiscountBPS,
 			input.IncludedSeconds,
 			input.DefaultTimeCardDiscountBPS,
+			input.DefaultDeviceDiscountBPS,
 			input.AllowAutoRenew,
 			draftID,
 		); err != nil {
@@ -273,13 +361,19 @@ func (s *Store) SaveCommercialMembershipDraft(
 	case errors.Is(err, sql.ErrNoRows):
 		var maxVersionNo uint32
 		var activePrice uint64
+		var activeRecurringMonthDiscount uint32
+		var activeRecurringQuarterDiscount uint32
+		var activeAnnualDiscount uint32
 		var activeIncluded uint64
 		var activeDiscount uint32
+		var activeDeviceDiscount uint32
 		var activeAutoRenew bool
 		copyErr := tx.QueryRowContext(ctx, `
 			SELECT
-				version_no, price_cents, included_seconds,
-				default_time_card_discount_bps, allow_auto_renew
+				version_no, price_cents,
+				recurring_month_discount_bps, recurring_quarter_discount_bps, annual_discount_bps,
+				included_seconds, default_time_card_discount_bps,
+				default_device_discount_bps, allow_auto_renew
 			FROM catalog_membership_plan_versions
 			WHERE plan_id = ?
 			ORDER BY version_no DESC
@@ -288,8 +382,12 @@ func (s *Store) SaveCommercialMembershipDraft(
 		`, planID).Scan(
 			&maxVersionNo,
 			&activePrice,
+			&activeRecurringMonthDiscount,
+			&activeRecurringQuarterDiscount,
+			&activeAnnualDiscount,
 			&activeIncluded,
 			&activeDiscount,
+			&activeDeviceDiscount,
 			&activeAutoRenew,
 		)
 		if copyErr != nil && !errors.Is(copyErr, sql.ErrNoRows) {
@@ -302,17 +400,22 @@ func (s *Store) SaveCommercialMembershipDraft(
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO catalog_membership_plan_versions (
 				plan_id, version_no, lifecycle_status, currency, price_cents,
+				recurring_month_discount_bps, recurring_quarter_discount_bps, annual_discount_bps,
 				billing_period_unit, billing_period_count, included_seconds,
-				default_time_card_discount_bps, allow_auto_renew,
+				default_time_card_discount_bps, default_device_discount_bps, allow_auto_renew,
 				created_by_user_id
 			)
-			VALUES (?, ?, 'draft', 'CNY', ?, 'month', 1, ?, ?, ?, ?)
+			VALUES (?, ?, 'draft', 'CNY', ?, ?, ?, ?, 'month', 1, ?, ?, ?, ?, ?)
 		`,
 			planID,
 			draftVersionNo,
 			input.PriceCents,
+			input.RecurringMonthDiscountBPS,
+			input.RecurringQuarterDiscountBPS,
+			input.AnnualDiscountBPS,
 			input.IncludedSeconds,
 			input.DefaultTimeCardDiscountBPS,
+			input.DefaultDeviceDiscountBPS,
 			input.AllowAutoRenew,
 			actorUserID,
 		); err != nil {
@@ -424,6 +527,55 @@ func (s *Store) PublishCommercialMembershipDraft(
 		return model.CommercialMembershipPlan{}, err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return model.CommercialMembershipPlan{}, err
+	}
+	return s.GetCommercialMembershipPlan(ctx, planID)
+}
+
+func (s *Store) SetCommercialMembershipStatus(
+	ctx context.Context,
+	actorUserID int64,
+	planID int64,
+	status string,
+) (model.CommercialMembershipPlan, error) {
+	if status != "active" && status != "inactive" && status != "archived" {
+		return model.CommercialMembershipPlan{}, fmt.Errorf("invalid membership status")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.CommercialMembershipPlan{}, err
+	}
+	defer tx.Rollback()
+
+	var name, beforeStatus string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT name, status FROM catalog_membership_plans WHERE id=? FOR UPDATE
+	`, planID).Scan(&name, &beforeStatus); err != nil {
+		return model.CommercialMembershipPlan{}, err
+	}
+	if status == "active" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM catalog_membership_plan_versions
+			WHERE plan_id=? AND lifecycle_status='active'
+		`, planID).Scan(&count); err != nil {
+			return model.CommercialMembershipPlan{}, err
+		}
+		if count == 0 {
+			return model.CommercialMembershipPlan{}, fmt.Errorf("membership has no published version")
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE catalog_membership_plans SET status=? WHERE id=?`, status, planID); err != nil {
+		return model.CommercialMembershipPlan{}, err
+	}
+	if err := insertCommercialAuditTx(
+		ctx, tx, actorUserID, "membership.plan.status", "membership_plan", fmt.Sprintf("%d", planID),
+		map[string]any{"name": name, "status": beforeStatus},
+		map[string]any{"name": name, "status": status},
+	); err != nil {
+		return model.CommercialMembershipPlan{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CommercialMembershipPlan{}, err
 	}

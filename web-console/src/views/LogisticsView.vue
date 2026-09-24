@@ -8,6 +8,7 @@ import {
   getInventoryDevices,
   getInventoryWarehouses,
   getLogisticsShipments,
+  getSystemDictionaryItems,
   updateLogisticsShipmentStatus,
 } from '../api'
 import DataListControls from '../components/DataListControls.vue'
@@ -20,6 +21,7 @@ import type {
   InventoryDevice,
   InventoryWarehouse,
   LogisticsShipment,
+  SystemDictionaryItem,
   UpdateLogisticsShipmentStatusInput,
 } from '../types'
 
@@ -32,6 +34,7 @@ const shipments = ref<LogisticsShipment[]>([])
 const devices = ref<InventoryDevice[]>([])
 const warehouses = ref<InventoryWarehouse[]>([])
 const agents = ref<AgentSummary[]>([])
+const logisticsProviders = ref<SystemDictionaryItem[]>([])
 
 const viewMode = ref<'card' | 'table'>('table')
 const search = ref('')
@@ -447,6 +450,14 @@ async function submitCreate() {
     error.value = '请填写物流费用，无费用请填 0'
     return
   }
+  if (createForm.delivery_method === 'courier' && !createForm.carrier_code) {
+    error.value = '请选择快递公司'
+    return
+  }
+
+  const carrier = logisticsProviders.value.find(
+    (item) => item.code === createForm.carrier_code,
+  )
 
   const payload: CreateLogisticsShipmentInput = {
     shipment_type: createForm.shipment_type,
@@ -466,8 +477,8 @@ async function submitCreate() {
     recipient_name: createForm.recipient_name.trim(),
     recipient_phone: createForm.recipient_phone.trim(),
     recipient_address: createForm.recipient_address.trim(),
-    carrier_code: createForm.carrier_code.trim(),
-    carrier_name: createForm.carrier_name.trim(),
+    carrier_code: carrier?.code || createForm.carrier_code.trim(),
+    carrier_name: carrier?.label || createForm.carrier_name.trim(),
     tracking_no: createForm.tracking_no.trim(),
     device_ids: [...selectedDeviceIDs.value],
     note: createForm.note.trim(),
@@ -517,16 +528,18 @@ async function loadAll() {
   loading.value = true
   error.value = ''
   try {
-    const [shipmentData, deviceData, warehouseData, agentData] = await Promise.all([
+    const [shipmentData, deviceData, warehouseData, agentData, logisticsData] = await Promise.all([
       getLogisticsShipments(),
       getInventoryDevices(),
       getInventoryWarehouses(),
       getInventoryAgents(),
+      getSystemDictionaryItems('logistics_provider'),
     ])
     shipments.value = shipmentData.items
     devices.value = deviceData.items
     warehouses.value = warehouseData.items
     agents.value = agentData.items
+    logisticsProviders.value = logisticsData.items
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取物流数据失败'
   } finally {
@@ -810,7 +823,12 @@ watch(
           </label>
           <label v-if="createForm.shipment_type !== 'transfer' && createForm.delivery_method === 'courier'">
             <span>快递公司 *</span>
-            <input v-model="createForm.carrier_name" type="text" placeholder="例如 顺丰" />
+            <select v-model="createForm.carrier_code">
+              <option value="">请选择物流公司</option>
+              <option v-for="provider in logisticsProviders" :key="provider.id" :value="provider.code">
+                {{ provider.label }}
+              </option>
+            </select>
           </label>
           <label v-if="createForm.shipment_type !== 'transfer' && createForm.delivery_method === 'courier'">
             <span>运单号 *</span>

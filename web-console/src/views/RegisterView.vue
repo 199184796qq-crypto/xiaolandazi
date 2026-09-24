@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { useFeedbackErrorRef } from '../uiFeedback'
 import PasswordInput from '../components/PasswordInput.vue'
+import SystemFooter from '../components/SystemFooter.vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getInvitePreview, register } from '../api'
-import { loadSession } from '../session'
+import { applySession } from '../session'
 import type { InvitePreview } from '../types'
 
 const route = useRoute()
 const router = useRouter()
 
 const username = ref('')
-const displayName = ref('')
 const phone = ref('')
 const password = ref('')
 const confirmPassword = ref('')
@@ -88,9 +88,8 @@ async function submit() {
   error.value = ''
 
   try {
-    await register({
+    const bootstrap = await register({
       username: username.value.trim(),
-      display_name: displayName.value.trim(),
       phone: phone.value.trim(),
       password: password.value,
       confirm_password: confirmPassword.value,
@@ -98,7 +97,7 @@ async function submit() {
       captcha: captcha.value.trim(),
     })
 
-    await loadSession()
+    applySession(bootstrap)
     await router.replace('/')
   } catch (value) {
     error.value = value instanceof Error ? value.message : '注册失败'
@@ -118,17 +117,16 @@ if (inviteCode.value) {
     <section class="auth-panel register-panel">
       <div class="auth-panel-inner">
         <div class="auth-brand">
-          <div class="auth-brand-mark">伴</div>
+          <div class="auth-brand-mark">蓝</div>
           <div>
-            <strong>伴播搭子</strong>
-            <span>BANBO AI</span>
+            <span>BANBO AI SYSTEM</span>
+            <strong>小蓝搭子</strong>
           </div>
         </div>
 
         <div class="auth-heading">
           <p class="section-kicker">INVITATION REGISTRATION</p>
           <h1>邀请码注册</h1>
-          <p>伴播搭子已关闭无邀请码自由注册，请使用有效邀请码完成基础账号注册。地区资料将在首次进入系统后补全。</p>
         </div>
 
         <form class="auth-form" @submit.prevent="submit">
@@ -165,29 +163,15 @@ if (inviteCode.value) {
           </div>
           <p v-if="inviteError" class="invite-preview-error">{{ inviteError }}</p>
 
-          <div class="auth-form-grid register-basic-grid">
-            <label>
-              <span>终端名称</span>
-              <input
-                v-model="displayName"
-                type="text"
-                maxlength="64"
-                placeholder="例如：南充杨鸭子"
-                required
-              />
-            </label>
-
-            <label>
-              <span>联系电话 <em class="required-mark">*</em></span>
-              <input
-                v-model="phone"
-                type="text"
-                autocomplete="tel"
-                placeholder="有联系电话即可，不校验号码格式"
-                required
-              />
-            </label>
-          </div>
+          <label>
+            <span>联系电话 <em class="required-mark">*</em></span>
+            <input
+              v-model="phone"
+              type="text"
+              autocomplete="tel"
+              required
+            />
+          </label>
 
           <label>
             <span>登录账号</span>
@@ -257,7 +241,7 @@ if (inviteCode.value) {
 
         <div class="auth-footer">
           <span>已有账号？</span>
-          <RouterLink to="/login">返回登录</RouterLink>
+          <RouterLink to="/login?portal=user">返回登录</RouterLink>
         </div>
       </div>
     </section>
@@ -272,7 +256,7 @@ if (inviteCode.value) {
       <div class="auth-side-content">
         <span class="auth-side-label">BANBO AI LIVE</span>
         <h2 class="customer-tagline">
-          <span>直播搭子，</span>
+          <span>AI直播搭子，</span>
           <span>让你直播不再冷场。</span>
         </h2>
         <p>
@@ -288,5 +272,7 @@ if (inviteCode.value) {
         </div>
       </div>
     </aside>
+
+    <SystemFooter class="auth-site-footer" />
   </main>
 </template>

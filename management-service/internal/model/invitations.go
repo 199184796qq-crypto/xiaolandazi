@@ -36,9 +36,12 @@ type InvitationRecord struct {
 }
 
 type InvitationDashboard struct {
-	MyCode  InviteCodeSummary   `json:"my_code"`
-	Codes   []InviteCodeSummary `json:"codes"`
-	Records []InvitationRecord  `json:"records"`
+	MyCode           InviteCodeSummary   `json:"my_code"`
+	Codes            []InviteCodeSummary `json:"codes"`
+	CodesTotal       int                 `json:"codes_total"`
+	Records          []InvitationRecord  `json:"records"`
+	RecordsTotal     int                 `json:"records_total"`
+	OwnReferralCount int                 `json:"own_referral_count"`
 }
 type InvitePreview struct {
 	Code        string `json:"code"`

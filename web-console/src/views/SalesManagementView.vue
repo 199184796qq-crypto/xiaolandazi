@@ -111,7 +111,7 @@ onMounted(load)
 <template>
   <div class="management-page">
     <ModulePageNav hub="sales" active-title="销售团队" />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">SALES BUSINESS</p>
         <h2>销售管理</h2>
@@ -119,7 +119,7 @@ onMounted(load)
           这里查看内部销售与直营终端关系。销售员工的新增、停用、部门负责人和角色权限统一在“组织架构 → 销售部”维护。
         </p>
       </div>
-      <div class="page-hero-actions">
+      <div class="feature-workspace-hero-actions">
         <button
           class="ghost-button"
           type="button"
@@ -233,7 +233,7 @@ onMounted(load)
       <div class="account-opening-note sales-staff-note">
         <strong>统一规则</strong>
         <span>
-          销售员工属于“销售部”，可分配销售人员或销售主管角色；登录密码由系统生成，首次登录强制修改。终端归属仍保留现有销售关系，不受员工体系迁移影响。
+          销售员工属于“销售部”，可分配销售人员或销售主管角色；登录密码由系统生成，首次登录强制修改。客户资源归属仍保留现有销售关系，不受员工体系迁移影响。
         </span>
       </div>
     </section>

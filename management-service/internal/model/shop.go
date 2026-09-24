@@ -68,16 +68,19 @@ type CustomerShopOrder struct {
 }
 
 type CreateCustomerShopOrderInput struct {
-	ProductType    string `json:"product_type"`
-	ProductID      int64  `json:"product_id"`
-	Quantity       uint32 `json:"quantity"`
-	IdempotencyKey string `json:"idempotency_key"`
-	RecipientName  string `json:"recipient_name"`
-	RecipientPhone string `json:"recipient_phone"`
-	Province       string `json:"province"`
-	City           string `json:"city"`
-	District       string `json:"district"`
-	Address        string `json:"address"`
+	ProductType         string `json:"product_type"`
+	ProductID           int64  `json:"product_id"`
+	Quantity            uint32 `json:"quantity"`
+	MembershipCycle     string `json:"membership_cycle"`
+	MarketingCampaignID int64  `json:"marketing_campaign_id"`
+	MarketingPlacement  string `json:"marketing_placement"`
+	IdempotencyKey      string `json:"idempotency_key"`
+	RecipientName       string `json:"recipient_name"`
+	RecipientPhone      string `json:"recipient_phone"`
+	Province            string `json:"province"`
+	City                string `json:"city"`
+	District            string `json:"district"`
+	Address             string `json:"address"`
 }
 
 type SandboxPayOrderInput struct {

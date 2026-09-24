@@ -1,17 +1,34 @@
 <script setup lang="ts">
-import { useFeedbackErrorRef } from '../uiFeedback'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { getAdminSalesPerformance } from '../api'
 import DataListControls from '../components/DataListControls.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
-import type { SalesPerformanceSummary } from '../types'
+import type {
+  SalesPerformanceSummary,
+  SalesPerformanceTotals,
+  StaffBusinessScope,
+} from '../types'
+import { useFeedbackErrorRef } from '../uiFeedback'
 
 const now = new Date()
 const period = ref(now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'))
 const loading = ref(false)
 const error = useFeedbackErrorRef()
 const items = ref<SalesPerformanceSummary[]>([])
+const totals = ref<SalesPerformanceTotals>({
+  paid_order_count: 0,
+  customer_count: 0,
+  paid_amount_cents: 0,
+  refunded_amount_cents: 0,
+  net_revenue_cents: 0,
+  earning_amount_cents: 0,
+  pending_earning_cents: 0,
+  settled_earning_cents: 0,
+})
+const scope = ref<StaffBusinessScope | null>(null)
+const total = ref(0)
+const totalPages = ref(1)
 const search = ref('')
 const sortMode = ref('revenue-desc')
 const page = ref(1)
@@ -25,43 +42,14 @@ const sortOptions = [
   { label: '姓名 A-Z', value: 'name-asc' },
 ]
 
-const filteredItems = computed(() => {
-  const keyword = search.value.trim().toLowerCase()
-  const result = items.value.filter((item) =>
-    !keyword ||
-    [item.display_name, item.employee_code, item.team_name]
-      .some((value) => String(value || '').toLowerCase().includes(keyword)),
-  )
-
-  return [...result].sort((a, b) => {
-    if (sortMode.value === 'earning-desc') return b.earning_amount_cents - a.earning_amount_cents
-    if (sortMode.value === 'orders-desc') return b.paid_order_count - a.paid_order_count
-    if (sortMode.value === 'name-asc') return a.display_name.localeCompare(b.display_name, 'zh-CN')
-    return b.net_revenue_cents - a.net_revenue_cents
-  })
+const scopeHint = computed(() => {
+  if (!scope.value) return ''
+  return scope.value.manager_view
+    ? '当前显示你管理范围内的销售人员'
+    : '当前仅显示你自己的业绩与提成'
 })
 
-const totalPages = computed(() =>
-  Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value)),
-)
-
-const pagedItems = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return filteredItems.value.slice(start, start + pageSize.value)
-})
-
-const totals = computed(() =>
-  items.value.reduce(
-    (acc, item) => {
-      acc.orders += item.paid_order_count
-      acc.customers += item.customer_count
-      acc.revenue += item.net_revenue_cents
-      acc.earnings += item.earning_amount_cents
-      return acc
-    },
-    { orders: 0, customers: 0, revenue: 0, earnings: 0 },
-  ),
-)
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 
 function formatMoney(cents: number) {
   return '¥' + (cents / 100).toLocaleString('zh-CN', {
@@ -70,13 +58,23 @@ function formatMoney(cents: number) {
   })
 }
 
-async function load() {
+async function load(resetPage = false) {
+  if (resetPage) page.value = 1
   loading.value = true
   error.value = ''
-  page.value = 1
   try {
-    const data = await getAdminSalesPerformance(period.value)
+    const data = await getAdminSalesPerformance(period.value, {
+      search: search.value.trim(),
+      sort: sortMode.value,
+      page: page.value,
+      page_size: pageSize.value,
+    })
     items.value = data.items
+    totals.value = data.totals
+    scope.value = data.scope
+    total.value = data.total
+    totalPages.value = data.total_pages
+    if (page.value > data.total_pages) page.value = data.total_pages
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取销售业绩失败'
   } finally {
@@ -84,7 +82,15 @@ async function load() {
   }
 }
 
-onMounted(load)
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void load(true), 280)
+})
+
+watch([sortMode, pageSize], () => void load(true))
+watch(page, () => void load(false))
+
+onMounted(() => void load(false))
 </script>
 
 <template>
@@ -96,14 +102,15 @@ onMounted(load)
         <p class="section-kicker">SALES PERFORMANCE</p>
         <h2>业绩与提成</h2>
         <p>按订单创建时保存的销售归属快照统计业绩；后续终端转交不会改写历史订单归属。</p>
+        <span v-if="scopeHint" class="sales-performance-scope-hint">{{ scopeHint }}</span>
       </div>
 
       <div class="sales-period-control">
         <label>
           <span>统计月份</span>
-          <input v-model="period" type="month" @change="load" />
+          <input v-model="period" type="month" @change="load(true)" />
         </label>
-        <button class="ghost-button" type="button" :disabled="loading" @click="load">
+        <button class="ghost-button" type="button" :disabled="loading" @click="load(false)">
           {{ loading ? '统计中...' : '重新统计' }}
         </button>
       </div>
@@ -111,16 +118,16 @@ onMounted(load)
 
     <section class="module-hub-metrics-v2">
       <article class="module-hub-metric-v2 tone-primary">
-        <span>成交订单</span><strong>{{ totals.orders }}</strong><small>{{ period }}</small>
+        <span>成交订单</span><strong>{{ totals.paid_order_count }}</strong><small>{{ period }}</small>
       </article>
       <article class="module-hub-metric-v2 tone-success">
-        <span>成交终端</span><strong>{{ totals.customers }}</strong><small>按销售分别去重后合计</small>
+        <span>成交终端</span><strong>{{ totals.customer_count }}</strong><small>按当前权限范围统计</small>
       </article>
       <article class="module-hub-metric-v2 tone-neutral">
-        <span>净销售额</span><strong>{{ formatMoney(totals.revenue) }}</strong><small>支付金额 - 已退款</small>
+        <span>净销售额</span><strong>{{ formatMoney(totals.net_revenue_cents) }}</strong><small>支付金额 - 已退款</small>
       </article>
       <article class="module-hub-metric-v2 tone-warning">
-        <span>提成收益</span><strong>{{ formatMoney(totals.earnings) }}</strong><small>含待结算与已结算</small>
+        <span>提成收益</span><strong>{{ formatMoney(totals.earning_amount_cents) }}</strong><small>含待结算与已结算</small>
       </article>
     </section>
 
@@ -154,7 +161,7 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in pagedItems" :key="item.sales_staff_id">
+            <tr v-for="item in items" :key="item.sales_staff_id">
               <td><strong>{{ item.display_name }}</strong><small>{{ item.employee_code }}</small></td>
               <td>{{ item.team_name || '销售部' }}</td>
               <td>{{ item.paid_order_count }}</td>
@@ -168,11 +175,11 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
-        <div v-if="filteredItems.length === 0" class="empty-state">当前月份暂无销售业绩。</div>
+        <div v-if="!items.length" class="empty-state">当前月份暂无销售业绩。</div>
       </div>
 
       <div v-else class="feature-record-grid">
-        <article v-for="item in pagedItems" :key="item.sales_staff_id" class="feature-record-card">
+        <article v-for="item in items" :key="item.sales_staff_id" class="feature-record-card">
           <header>
             <div><span>{{ item.employee_code }}</span><h3>{{ item.display_name }}</h3></div>
             <span class="status-pill">{{ item.team_name || '销售部' }}</span>
@@ -191,7 +198,7 @@ onMounted(load)
       <PaginationBar
         v-model:page="page"
         :total-pages="totalPages"
-        :total="filteredItems.length"
+        :total="total"
         :page-size="pageSize"
       />
     </section>

@@ -52,7 +52,6 @@ const activeNavTitle = computed(
 )
 
 const isHubVariant = computed(() => props.variant === 'hub')
-
 const atRoot = computed(
   () => route.path === config.value.rootTo.split('?')[0],
 )
@@ -64,10 +63,7 @@ const siblingEntries = computed(() =>
 </script>
 
 <template>
-  <section
-    class="module-page-nav"
-    :class="{ 'module-page-nav-hub': isHubVariant }"
-  >
+  <Teleport to="#app-global-breadcrumbs">
     <nav class="module-breadcrumbs breadcrumb-nav" aria-label="页面位置">
       <RouterLink :to="config.rootTo" class="breadcrumb-back-chip">
         <span class="breadcrumb-back-icon">{{ atRoot ? '⌂' : '←' }}</span>
@@ -107,9 +103,13 @@ const siblingEntries = computed(() =>
         </template>
       </template>
     </nav>
+  </Teleport>
 
+  <Teleport
+    v-if="!isHubVariant && siblingEntries.length"
+    to="#app-global-switches"
+  >
     <div
-      v-if="!isHubVariant && siblingEntries.length"
       class="module-page-nav-main module-page-nav-switches"
     >
       <span class="module-sibling-label">切换功能</span>
@@ -127,5 +127,5 @@ const siblingEntries = computed(() =>
         </RouterLink>
       </nav>
     </div>
-  </section>
+  </Teleport>
 </template>

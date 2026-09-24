@@ -3,21 +3,23 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { createRoom, deleteRoom, getRooms } from '../api'
+import { createRoom, deleteRoom, getRooms, getTenants, setRoomMonitor } from '../api'
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
-import type { Room } from '../types'
+import type { Room, Tenant } from '../types'
 
 const router = useRouter()
 
 const rooms = ref<Room[]>([])
 const loading = ref(false)
 const error = useFeedbackErrorRef()
+const tenantDirectoryError = ref('')
 const showCreate = ref(false)
 const submitting = ref(false)
 const selectedTenantId = ref<number | undefined>(undefined)
+const monitorBusyIds = ref<number[]>([])
 
 const viewMode = ref<'card' | 'table'>('card')
 const search = ref('')
@@ -32,6 +34,8 @@ const statusOptions = [
   { label: '连接中', value: 'connecting' },
   { label: '等待连接', value: 'pending' },
   { label: '未开播', value: 'offline' },
+  { label: '已停止', value: 'stopped' },
+  { label: '设备离线', value: 'device_offline' },
   { label: '连接异常', value: 'error' },
 ]
 
@@ -51,7 +55,7 @@ const filteredRooms = computed(() => {
       [roomTitle(room), room.external_room_id, room.platform, tenant]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword))
-    const matchesStatus = statusFilter.value === 'all' || room.status === statusFilter.value
+    const matchesStatus = statusFilter.value === 'all' || effectiveStatus(room) === statusFilter.value
     return matchesKeyword && matchesStatus
   })
 
@@ -87,7 +91,19 @@ const form = reactive({
 const isAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
 const isInternalViewer = computed(() => ['platform_admin', 'staff', 'sales_staff'].includes(session.bootstrap?.actor.role || ''))
 const canManageRooms = computed(() => session.bootstrap?.actor.role === 'customer')
-const tenants = computed(() => session.bootstrap?.tenants ?? [])
+const canControlMonitoring = computed(() => {
+  const bootstrap = session.bootstrap
+  if (!bootstrap) return false
+  if (bootstrap.actor.role === 'customer' || bootstrap.actor.role === 'platform_admin') {
+    return true
+  }
+  const access = bootstrap.staff_access
+  return Boolean(
+    access &&
+      (access.is_super_admin || access.permissions.includes('liveops.configure')),
+  )
+})
+const tenants = ref<Tenant[]>([])
 
 const liveCount = computed(() => rooms.value.filter((room) => room.status === 'live').length)
 const waitingCount = computed(() => rooms.value.filter((room) => room.status !== 'live').length)
@@ -105,13 +121,69 @@ function roomTitle(room: Room) {
   return room.name || '直播间 ' + room.external_room_id
 }
 
-function statusText(status: string) {
+function effectiveStatus(room: Room) {
+  if (!room.monitor_enabled) return 'stopped'
+  return room.status
+}
+
+function statusText(room: Room) {
+  const status = effectiveStatus(room)
   if (status === 'live') return '直播中'
   if (status === 'connecting') return '连接中'
   if (status === 'pending') return '等待连接'
   if (status === 'offline') return '未开播'
+  if (status === 'stopped') return '已停止'
+  if (status === 'device_offline') return '设备离线'
   if (status === 'error') return '连接异常'
   return status || '未知'
+}
+
+function monitorBusy(roomID: number) {
+  return monitorBusyIds.value.includes(roomID)
+}
+
+async function changeMonitoring(room: Room, enabled: boolean, event: MouseEvent) {
+  event.stopPropagation()
+  if (!canControlMonitoring.value || monitorBusy(room.id)) return
+  monitorBusyIds.value = [...monitorBusyIds.value, room.id]
+  error.value = ''
+  try {
+    await setRoomMonitor(room.id, enabled)
+    await loadRooms()
+  } catch (err) {
+    error.value = err instanceof Error
+      ? err.message
+      : enabled
+        ? '连接直播间失败'
+        : '停止直播间失败'
+  } finally {
+    monitorBusyIds.value = monitorBusyIds.value.filter((id) => id !== room.id)
+  }
+}
+
+async function loadTenantDirectory() {
+  const bootstrap = session.bootstrap
+  if (!bootstrap) {
+    tenants.value = []
+    tenantDirectoryError.value = ''
+    return
+  }
+
+  if (!isAdmin.value) {
+    tenants.value = bootstrap.tenants
+    tenantDirectoryError.value = ''
+    return
+  }
+
+  try {
+    tenantDirectoryError.value = ''
+    const response = await getTenants()
+    tenants.value = response.items
+  } catch (err) {
+    tenants.value = []
+    tenantDirectoryError.value =
+      err instanceof Error ? err.message : '读取终端目录失败'
+  }
 }
 
 async function loadRooms() {
@@ -183,6 +255,7 @@ watch(
     if (!bootstrap.actor || bootstrap.actor.role !== 'platform_admin') {
       selectedTenantId.value = undefined
     }
+    void loadTenantDirectory()
     loadRooms()
   },
   { immediate: true },
@@ -212,18 +285,18 @@ onBeforeUnmount(() => {
 <template>
   <div class="rooms-page">
     <ModulePageNav
-      :context="isInternalViewer ? 'live' : 'workspace-customer'"
-      :active-title="isInternalViewer ? '直播间列表' : '直播运维'"
-      :active-nav-title="isInternalViewer ? '直播间列表' : '直播运维'"
+      context="live"
+      :active-title="isInternalViewer ? '直播间列表' : '直播间'"
+      :active-nav-title="isInternalViewer ? '直播间列表' : '直播间'"
     />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">{{ isAdmin ? '全局直播间' : '我的直播间' }}</p>
         <h2>{{ isAdmin ? '管理所有终端的直播间' : '查看并管理你的直播间' }}</h2>
         <p>
           {{
             isAdmin
-              ? '只读查看所有终端直播间的连接状态、在线情况和实时公屏。'
+              ? '查看所有终端直播间，并按权限控制后台连接、在线状态和实时公屏。'
               : '这里仅展示当前终端名下的直播间和实时状态。'
           }}
         </p>
@@ -296,6 +369,7 @@ onBeforeUnmount(() => {
         :sort-options="sortOptions"
       />
 
+      <div v-if="tenantDirectoryError" class="inline-error">{{ tenantDirectoryError }}</div>
       <div v-if="error" class="inline-error">{{ error }}</div>
 
       <div v-if="loading && !rooms.length && viewMode === 'card'" class="room-grid">
@@ -315,9 +389,9 @@ onBeforeUnmount(() => {
               <strong>{{ roomTitle(room) }}</strong>
               <span>房间号 {{ room.external_room_id }}</span>
             </div>
-            <span class="status-pill" :class="'status-' + room.status">
+            <span class="status-pill" :class="'status-' + effectiveStatus(room)">
               <i></i>
-              {{ statusText(room.status) }}
+              {{ statusText(room) }}
             </span>
           </div>
 
@@ -339,14 +413,42 @@ onBeforeUnmount(() => {
             </div>
             <div class="card-actions">
               <button
+                v-if="canControlMonitoring"
+                class="room-action-button room-action-connect"
+                type="button"
+                :disabled="room.monitor_enabled || monitorBusy(room.id)"
+                @click="changeMonitoring(room, true, $event)"
+              >
+                <span class="room-action-symbol" aria-hidden="true">⛓</span>
+                {{ monitorBusy(room.id) && !room.monitor_enabled ? '连接中…' : '连接' }}
+              </button>
+              <button
+                v-if="canControlMonitoring"
+                class="room-action-button room-action-stop"
+                type="button"
+                :disabled="!room.monitor_enabled || monitorBusy(room.id)"
+                @click="changeMonitoring(room, false, $event)"
+              >
+                <span class="room-action-symbol room-action-stop-symbol" aria-hidden="true">■</span>
+                {{ monitorBusy(room.id) && room.monitor_enabled ? '停止中…' : '停止' }}
+              </button>
+              <button
                 v-if="!isAdmin"
-                class="danger-link"
+                class="room-action-button room-action-delete"
+                type="button"
                 title="删除直播间"
                 @click="removeRoom(room, $event)"
               >
+                <span class="room-action-symbol" aria-hidden="true">×</span>
                 删除
               </button>
-              <button class="enter-link">进入公屏 →</button>
+              <button
+                class="room-action-button room-action-enter"
+                type="button"
+                @click.stop="router.push('/rooms/' + room.id)"
+              >
+                进入公屏 <span class="room-action-arrow" aria-hidden="true">→</span>
+              </button>
             </div>
           </div>
         </article>
@@ -370,8 +472,30 @@ onBeforeUnmount(() => {
               <td v-if="isAdmin">{{ tenantName(room.tenant_id) }}</td>
               <td>{{ room.platform === 'douyin' ? '抖音' : room.platform }}</td>
               <td>{{ room.online_count.toLocaleString() }}</td>
-              <td><span class="status-pill" :class="'status-' + room.status">{{ statusText(room.status) }}</span></td>
-              <td><button class="text-action" type="button" @click="router.push('/rooms/' + room.id)">进入</button></td>
+              <td><span class="status-pill" :class="'status-' + effectiveStatus(room)">{{ statusText(room) }}</span></td>
+              <td>
+                <div class="room-table-actions">
+                  <button
+                    v-if="canControlMonitoring"
+                    class="room-action-button room-action-connect compact"
+                    type="button"
+                    :disabled="room.monitor_enabled || monitorBusy(room.id)"
+                    @click="changeMonitoring(room, true, $event)"
+                  ><span class="room-action-symbol" aria-hidden="true">⛓</span>连接</button>
+                  <button
+                    v-if="canControlMonitoring"
+                    class="room-action-button room-action-stop compact"
+                    type="button"
+                    :disabled="!room.monitor_enabled || monitorBusy(room.id)"
+                    @click="changeMonitoring(room, false, $event)"
+                  ><span class="room-action-symbol room-action-stop-symbol" aria-hidden="true">■</span>停止</button>
+                  <button
+                    class="room-action-button room-action-enter compact"
+                    type="button"
+                    @click="router.push('/rooms/' + room.id)"
+                  >进入 <span class="room-action-arrow" aria-hidden="true">→</span></button>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>

@@ -52,8 +52,10 @@ func New(
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /metrics", s.metrics)
 
 	mux.Handle("GET /internal/v1/rooms", s.internal(http.HandlerFunc(s.listRooms)))
+	mux.Handle("POST /internal/v1/rooms/runtime-states", s.internal(http.HandlerFunc(s.batchRoomRuntimeStates)))
 	mux.Handle("POST /internal/v1/rooms", s.internal(http.HandlerFunc(s.createRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.getRoom)))
 	mux.Handle("PATCH /internal/v1/rooms/{roomID}/runtime", s.internal(http.HandlerFunc(s.updateRoomRuntime)))
@@ -68,11 +70,50 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	collectorStats := s.collectors.Stats()
+	mediaStats := s.media.Stats()
+	collectorProviders := s.collectors.ProviderDescriptors()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": "core-service",
-		"status":  "ok",
-		"time":    time.Now().UTC().Format(time.RFC3339),
+		"service":               "core-service",
+		"status":                "ok",
+		"time":                  time.Now().UTC().Format(time.RFC3339),
+		"active_rooms":          collectorStats.ActiveRooms,
+		"shard_index":           collectorStats.ShardIndex,
+		"shard_count":           collectorStats.ShardCount,
+		"lease_enabled":         collectorStats.LeaseEnabled,
+		"node_id":               collectorStats.LeaseNodeID,
+		"media_active_sessions": mediaStats.ActiveSessions,
+		"media_max_sessions":    mediaStats.MaxSessions,
+		"collector_providers":   collectorProviders,
 	})
+}
+
+func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+	collectorStats := s.collectors.Stats()
+	mediaStats := s.media.Stats()
+	providerCount := len(s.collectors.ProviderDescriptors())
+	leaseEnabled := 0
+	if collectorStats.LeaseEnabled {
+		leaseEnabled = 1
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintf(
+		w,
+		"livecompanion_core_active_rooms %d\n"+
+			"livecompanion_core_shard_index %d\n"+
+			"livecompanion_core_shard_count %d\n"+
+			"livecompanion_core_room_leases_enabled %d\n"+
+			"livecompanion_core_media_active_sessions %d\n"+
+			"livecompanion_core_media_max_sessions %d\n"+
+			"livecompanion_core_collector_provider_count %d\n",
+		collectorStats.ActiveRooms,
+		collectorStats.ShardIndex,
+		collectorStats.ShardCount,
+		leaseEnabled,
+		mediaStats.ActiveSessions,
+		mediaStats.MaxSessions,
+		providerCount,
+	)
 }
 
 func (s *Server) internal(next http.Handler) http.Handler {
@@ -95,6 +136,36 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list rooms failed")
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Items []roomstore.Key `json:"items"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(input.Items) > 1000 {
+		writeError(w, http.StatusBadRequest, "too many room state items")
+		return
+	}
+	rooms, err := s.rooms.ListByKeys(r.Context(), input.Items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "batch room state failed")
+		return
+	}
+	type stateItem struct {
+		TenantID  int64     `json:"tenant_id"`
+		RoomID    int64     `json:"room_id"`
+		Status    string    `json:"status"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	items := make([]stateItem, 0, len(rooms))
+	for _, room := range rooms {
+		items = append(items, stateItem{TenantID: room.TenantID, RoomID: room.ID, Status: room.Status, UpdatedAt: room.UpdatedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -136,7 +207,7 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.collectors.Start(item)
+	s.collectors.Reconcile(item)
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -278,6 +349,10 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "get room failed")
 		return
 	}
+	if !s.collectors.IsServingRoom(roomID) {
+		writeError(w, http.StatusServiceUnavailable, "room is served by another core node")
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -339,6 +414,10 @@ func (s *Server) liveMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "get room failed")
 		return
 	}
+	if !s.collectors.IsServingRoom(roomID) {
+		writeError(w, http.StatusServiceUnavailable, "room is served by another core node")
+		return
+	}
 
 	fileName := strings.TrimSpace(r.PathValue("file"))
 	path, err := s.media.File(r.Context(), item, fileName)
@@ -378,6 +457,10 @@ func (s *Server) previewRoom(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "get room failed")
+		return
+	}
+	if !s.collectors.IsServingRoom(roomID) {
+		writeError(w, http.StatusServiceUnavailable, "room is served by another core node")
 		return
 	}
 

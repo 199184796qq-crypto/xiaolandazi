@@ -2,20 +2,29 @@
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { session } from '../session'
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import {
+  floorToWholeYuanCents,
+  formatWholeYuanMoney,
+  marketingPayableCents,
+  wholeYuanPerHour,
+} from '../pricingRules'
+import {
   createCommercialMembership,
+  deleteCommercialMembership,
   getCommercialMemberships,
   publishCommercialMembership,
   saveCommercialMembershipDraft,
+  setCommercialMembershipListing,
 } from '../api'
 import type {
   CommercialMembershipInput,
   CommercialMembershipPlan,
   CommercialMembershipVersion,
+  MarketingCampaign,
+  MarketingCampaignItem,
 } from '../types'
 
 type MembershipEditorMode = 'create' | 'edit'
@@ -25,6 +34,7 @@ const props = withDefaults(defineProps<{ focus?: MembershipFocus }>(), { focus: 
 const showPlans = computed(() => props.focus === 'plans')
 const showSimulator = computed(() => props.focus === 'simulator')
 const pageTitle = computed(() => props.focus === 'simulator' ? '会员规则模拟器' : '会员方案')
+const navContext = computed(() => 'activityMarketing' as const)
 
 interface MembershipFormState {
   code: string
@@ -34,6 +44,7 @@ interface MembershipFormState {
   price_yuan: number
   included_hours: number
   discount_percent: number
+  device_discount_percent: number
   allow_auto_renew: boolean
 }
 
@@ -44,6 +55,8 @@ const editorError = ref('')
 const notice = ref('')
 const saving = ref(false)
 const publishingId = ref<number | null>(null)
+const listingId = ref<number | null>(null)
+const deletingId = ref<number | null>(null)
 
 const viewMode = ref<'card' | 'table'>('card')
 const search = ref('')
@@ -54,9 +67,10 @@ const pageSize = ref(12)
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
-  { label: '已发布', value: 'published' },
+  { label: '已上架', value: 'listed' },
+  { label: '已下架', value: 'unlisted' },
   { label: '有草稿', value: 'draft' },
-  { label: '未发布', value: 'unpublished' },
+  { label: '已归档', value: 'archived' },
 ]
 
 const sortOptions = [
@@ -76,9 +90,10 @@ const filteredPlans = computed(() => {
         .some((value) => String(value).toLowerCase().includes(keyword))
     const matchesStatus =
       statusFilter.value === 'all' ||
-      (statusFilter.value === 'published' && Boolean(plan.active_version)) ||
+      (statusFilter.value === 'listed' && plan.status === 'active') ||
+      (statusFilter.value === 'unlisted' && plan.status === 'inactive') ||
       (statusFilter.value === 'draft' && Boolean(plan.draft_version)) ||
-      (statusFilter.value === 'unpublished' && !plan.active_version)
+      (statusFilter.value === 'archived' && plan.status === 'archived')
     return matchesKeyword && matchesStatus
   })
 
@@ -100,8 +115,14 @@ const pagedPlans = computed(() => {
 
 watch([search, statusFilter, sortMode, pageSize], () => { page.value = 1 })
 watch(totalPages, (value) => { if (page.value > value) page.value = value })
+watch(
+  () => simulation.target_plan_id,
+  () => { simulation.cycle = 'single_month' },
+)
 const canManageMembership = computed(() => {
-  const access = session.bootstrap?.staff_access
+  const bootstrap = session.bootstrap
+  if (bootstrap?.actor.role === 'platform_admin') return true
+  const access = bootstrap?.staff_access
   return Boolean(
     access &&
       (access.is_super_admin ||
@@ -120,7 +141,8 @@ const form = reactive<MembershipFormState>({
   sort_order: 10,
   price_yuan: 69,
   included_hours: 0,
-  discount_percent: 100,
+  discount_percent: 10,
+  device_discount_percent: 10,
   allow_auto_renew: true,
 })
 
@@ -129,8 +151,9 @@ const simulation = reactive({
   wallet_yuan: 500,
   current_plan_id: 0,
   target_plan_id: 0,
-  months: 1,
+  cycle: 'single_month',
   sample_card_price_yuan: 100,
+  sample_device_price_yuan: 1000,
 })
 
 const activeCount = computed(
@@ -158,21 +181,74 @@ const selectedTargetVersion = computed(() =>
   preferredSimulationVersion(selectedTargetPlan.value),
 )
 
+const simulationMarketingCampaigns = computed(() =>
+  (selectedTargetPlan.value?.marketing_campaigns ?? []).filter(
+    (campaign) =>
+      campaign.status === 'active' &&
+      Boolean(membershipCampaignItem(campaign, selectedTargetPlan.value?.id ?? 0)),
+  ),
+)
+
+const simulationPlanCampaign = computed(() => {
+  if (!simulation.cycle.startsWith('campaign:')) return undefined
+  const id = Number(simulation.cycle.slice('campaign:'.length))
+  return simulationMarketingCampaigns.value.find((campaign) => campaign.id === id)
+})
+
+const simulationPlanCampaignItem = computed(() =>
+  simulationPlanCampaign.value
+    ? membershipCampaignItem(
+        simulationPlanCampaign.value,
+        selectedTargetPlan.value?.id ?? 0,
+      )
+    : undefined,
+)
+
+const simulationPlanMonths = computed(
+  () => Math.max(1, simulationPlanCampaignItem.value?.package_months ?? 1),
+)
+
+const simulationPlanDiscountBps = computed(
+  () => normalizeDiscountBps(simulationPlanCampaignItem.value?.discount_bps ?? 10000),
+)
+
+const simulationCycleLabel = computed(
+  () => simulationPlanCampaign.value?.name || '单月原价',
+)
+
+const simulationPlanListCents = computed(
+  () => floorToWholeYuanCents(
+    (selectedTargetVersion.value?.price_cents ?? 0) * simulationPlanMonths.value,
+  ),
+)
 const simulationPlanPriceCents = computed(
-  () => (selectedTargetVersion.value?.price_cents ?? 0) * simulation.months,
+  () => marketingPayableCents(
+    simulationPlanListCents.value,
+    simulationPlanDiscountBps.value,
+  ),
+)
+const simulationPlanSavingCents = computed(
+  () => Math.max(0, simulationPlanListCents.value - simulationPlanPriceCents.value),
 )
 
 const simulationIncludedSeconds = computed(
-  () => (selectedTargetVersion.value?.included_seconds ?? 0) * simulation.months,
+  () => (selectedTargetVersion.value?.included_seconds ?? 0) * simulationPlanMonths.value,
 )
 
 const simulationDiscountBps = computed(
   () => selectedTargetVersion.value?.default_time_card_discount_bps ?? 10000,
 )
+const simulationDeviceDiscountBps = computed(
+  () => selectedTargetVersion.value?.default_device_discount_bps ?? 10000,
+)
 
 const simulationCardPriceCents = computed(() => {
   const originalCents = yuanToCents(simulation.sample_card_price_yuan)
-  return Math.round(originalCents * simulationDiscountBps.value / 10000)
+  return marketingPayableCents(originalCents, simulationDiscountBps.value)
+})
+const simulationDevicePriceCents = computed(() => {
+  const originalCents = yuanToCents(simulation.sample_device_price_yuan)
+  return marketingPayableCents(originalCents, simulationDeviceDiscountBps.value)
 })
 
 const simulationWalletCents = computed(() => yuanToCents(simulation.wallet_yuan))
@@ -229,13 +305,24 @@ function openCreate() {
     sort_order: (plans.value.length + 1) * 10,
     price_yuan: 69,
     included_hours: 0,
-    discount_percent: 100,
+    discount_percent: 10,
+    device_discount_percent: 10,
     allow_auto_renew: true,
   })
   error.value = ''
   editorError.value = ''
   notice.value = ''
   editorOpen.value = true
+}
+
+function normalizeDiscountBps(value: number) {
+  if (value >= 100 && value < 1000) return value * 10
+  if (value > 10000) return 10000
+  return Math.max(0, value || 0)
+}
+
+function discountBpsToZhe(value: number) {
+  return normalizeDiscountBps(value) / 1000
 }
 
 function openEdit(plan: CommercialMembershipPlan) {
@@ -250,7 +337,8 @@ function openEdit(plan: CommercialMembershipPlan) {
     sort_order: plan.sort_order,
     price_yuan: centsToYuan(version?.price_cents ?? 0),
     included_hours: secondsToHours(version?.included_seconds ?? 0),
-    discount_percent: (version?.default_time_card_discount_bps ?? 10000) / 100,
+    discount_percent: discountBpsToZhe(version?.default_time_card_discount_bps ?? 10000),
+    device_discount_percent: discountBpsToZhe(version?.default_device_discount_bps ?? 10000),
     allow_auto_renew: version?.allow_auto_renew ?? true,
   })
   error.value = ''
@@ -319,6 +407,53 @@ async function publishPlan(plan: CommercialMembershipPlan) {
   }
 }
 
+async function toggleListing(plan: CommercialMembershipPlan) {
+  if (!canManageMembership.value || listingId.value !== null || plan.status === 'archived' || !plan.active_version) return
+  const nextStatus = plan.status === 'active' ? 'inactive' : 'active'
+  if (nextStatus === 'inactive') {
+    const confirmed = await confirmAction({
+      title: '下架会员方案',
+      message: '下架“' + plan.name + '”后将停止新销售，已有会员和历史订单不受影响。',
+      confirmText: '确认下架',
+    })
+    if (!confirmed) return
+  }
+  listingId.value = plan.id
+  error.value = ''
+  notice.value = ''
+  try {
+    await setCommercialMembershipListing(plan.id, nextStatus)
+    notice.value = nextStatus === 'active' ? '会员方案已上架。' : '会员方案已下架。'
+    await loadPlans()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '更新会员方案上下架失败'
+  } finally {
+    listingId.value = null
+  }
+}
+
+async function archivePlan(plan: CommercialMembershipPlan) {
+  if (!canManageMembership.value || deletingId.value !== null) return
+  const confirmed = await confirmAction({
+    title: '删除会员方案',
+    message: '确认删除“' + plan.name + '”？系统会归档并停止销售，历史会员、订单和版本记录继续保留。',
+    confirmText: '确认删除',
+  })
+  if (!confirmed) return
+  deletingId.value = plan.id
+  error.value = ''
+  notice.value = ''
+  try {
+    await deleteCommercialMembership(plan.id)
+    notice.value = '会员方案已归档，不再销售。'
+    await loadPlans()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '删除会员方案失败'
+  } finally {
+    deletingId.value = null
+  }
+}
+
 function buildPayload(): CommercialMembershipInput | null {
   const code = form.code.trim().toLowerCase()
   const name = form.name.trim()
@@ -331,26 +466,35 @@ function buildPayload(): CommercialMembershipInput | null {
     return null
   }
   if (form.price_yuan < 0) {
-    editorError.value = '会员月费不能小于 0。'
+    editorError.value = '会员单月价不能小于 0。'
     return null
   }
   if (form.included_hours < 0) {
     editorError.value = '基础时长不能小于 0。'
     return null
   }
-  if (form.discount_percent < 0 || form.discount_percent > 100) {
-    editorError.value = '时长卡折扣需在 0%-100% 之间。'
+  const discountValues = [
+    form.discount_percent,
+    form.device_discount_percent,
+  ]
+  if (discountValues.some((value) => value <= 0 || value > 10)) {
+    editorError.value = '所有折扣需大于 0 折且不超过 10 折。'
     return null
   }
-
   return {
     code,
     name,
     description: form.description.trim(),
     sort_order: Math.round(form.sort_order || 0),
     price_cents: yuanToCents(form.price_yuan),
+    // Legacy package columns stay neutral. Package/term discounts now live in
+    // Product & Membership -> Marketing Design.
+    recurring_month_discount_bps: 10000,
+    recurring_quarter_discount_bps: 10000,
+    annual_discount_bps: 10000,
     included_seconds: Math.round(form.included_hours * 3600),
-    default_time_card_discount_bps: Math.round(form.discount_percent * 100),
+    default_time_card_discount_bps: Math.round(form.discount_percent * 1000),
+    default_device_discount_bps: Math.round(form.device_discount_percent * 1000),
     allow_auto_renew: form.allow_auto_renew,
   }
 }
@@ -362,9 +506,8 @@ function preferredSimulationVersion(
 }
 
 function formatMoney(cents: number) {
-  return '¥' + (cents / 100).toLocaleString('zh-CN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+  return '¥' + Math.round(cents / 100).toLocaleString('zh-CN', {
+    maximumFractionDigits: 0,
   })
 }
 
@@ -375,10 +518,82 @@ function formatHours(seconds: number) {
     : hours.toFixed(1) + ' 小时'
 }
 
+function formatDailyAverageHours(seconds: number) {
+  const dailyHours = Math.max(0, seconds) / 3600 / 30
+  const value = dailyHours.toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  })
+  return value + ' 小时 / 天'
+}
+
+function formatYuanPerHour(priceCents: number, includedSeconds: number, months = 1) {
+  const totalHours = Math.max(0, includedSeconds) / 3600 * Math.max(0, months)
+  if (totalHours <= 0) return '暂无元/时'
+  return '¥' + wholeYuanPerHour(priceCents, totalHours) + '/时'
+}
+
 function formatDiscount(bps: number) {
-  if (bps >= 10000) return '原价'
-  const zhe = bps / 1000
+  const safeBps = normalizeDiscountBps(bps)
+  if (safeBps <= 0) return '赠送'
+  if (safeBps >= 10000) return '原价'
+  const zhe = safeBps / 1000
   return zhe.toFixed(zhe % 1 === 0 ? 0 : 1) + ' 折'
+}
+
+function membershipCampaignItem(
+  campaign: MarketingCampaign,
+  planId: number,
+): MarketingCampaignItem | undefined {
+  const item = (campaign.items ?? []).find(
+    (entry) => entry.target_type === 'membership' && entry.target_id === planId,
+  )
+  if (item) return item
+  if (campaign.target_type === 'membership' && campaign.target_id === planId) {
+    return {
+      target_type: 'membership',
+      target_id: planId,
+      pricing_mode: campaign.pricing_mode || 'discount',
+      package_months: campaign.package_months || 1,
+      discount_bps: campaign.discount_bps ?? 10000,
+      quantity: 1,
+    }
+  }
+  return undefined
+}
+
+function marketingCampaignPrice(plan: CommercialMembershipPlan, campaign: MarketingCampaign) {
+  const version = preferredSimulationVersion(plan)
+  const monthlyPrice = version?.price_cents ?? 0
+  const item = membershipCampaignItem(campaign, plan.id)
+  if (!item) return 0
+  const months = Math.max(1, item.package_months || 1)
+  const safeDiscount = normalizeDiscountBps(item.discount_bps)
+  return marketingPayableCents(
+    floorToWholeYuanCents(monthlyPrice * months),
+    safeDiscount,
+  )
+}
+
+function formatMarketingMoney(cents: number) {
+  return formatWholeYuanMoney(cents)
+}
+
+function activeMarketingCampaigns(plan: CommercialMembershipPlan) {
+  return (plan.marketing_campaigns ?? []).filter(
+    (campaign) =>
+      campaign.status === 'active' &&
+      Boolean(membershipCampaignItem(campaign, plan.id)),
+  )
+}
+
+function campaignPackageLabel(item?: MarketingCampaignItem) {
+  if (!item || item.pricing_mode !== 'package') return '普通折扣'
+  if (item.package_months === 1) return '包月'
+  if (item.package_months === 3) return '包季'
+  if (item.package_months === 6) return '包半年'
+  if (item.package_months === 12) return '包年'
+  return item.package_months + '个月'
 }
 
 function versionLabel(plan: CommercialMembershipPlan) {
@@ -388,10 +603,11 @@ function versionLabel(plan: CommercialMembershipPlan) {
 }
 
 function statusLabel(plan: CommercialMembershipPlan) {
-  if (plan.draft_version && plan.active_version) return '有新草稿'
+  if (plan.status === 'archived') return '已删除/归档'
+  if (plan.status === 'active') return '已上架'
+  if (plan.status === 'inactive') return '已下架'
   if (plan.draft_version) return '待发布'
-  if (plan.active_version) return '生效中'
-  return plan.status || '未配置'
+  return '未上架'
 }
 
 function centsToYuan(cents: number) {
@@ -412,8 +628,9 @@ function resetSimulation() {
   simulation.wallet_yuan = 500
   simulation.current_plan_id = 0
   simulation.target_plan_id = plans.value[0]?.id ?? 0
-  simulation.months = 1
+  simulation.cycle = 'single_month'
   simulation.sample_card_price_yuan = 100
+  simulation.sample_device_price_yuan = 1000
 }
 
 onMounted(loadPlans)
@@ -421,14 +638,13 @@ onMounted(loadPlans)
 
 <template>
   <div class="commercial-membership-page">
-    <ModulePageNav hub="commercial" :active-title="pageTitle" />
+    <ModulePageNav :context="navContext" :active-title="pageTitle" :active-nav-title="pageTitle" />
     <section class="commercial-hero">
       <div>
         <p class="section-kicker">COMMERCIAL CENTER · MEMBERSHIP</p>
         <h2>{{ pageTitle }}</h2>
         <p>
-          管理会员价格、月度基础时长和时长卡折扣。规则采用版本化发布，
-          右侧测试用户只做沙盒计算，不产生真实订单。
+          这里只定义会员基础价格、月度基础时长和会员固有权益；促销折扣统一由“营销运维 → 活动营销”管理。
         </p>
       </div>
 
@@ -533,38 +749,85 @@ onMounted(loadPlans)
             <div class="membership-benefit-grid">
               <div>
                 <span>每月基础时长</span>
-                <strong>
-                  {{ formatHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}
-                </strong>
+                <strong>{{ formatHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}</strong>
+                <small>
+                  日均约 {{ formatDailyAverageHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}
+                  · 按 30 天计算
+                </small>
+                <small class="membership-hourly-rate">
+                  月费折算 {{ formatYuanPerHour(
+                    preferredSimulationVersion(plan)?.price_cents ?? 0,
+                    preferredSimulationVersion(plan)?.included_seconds ?? 0,
+                  ) }}
+                </small>
               </div>
               <div>
-                <span>时长卡折扣</span>
-                <strong>
-                  {{
-                    formatDiscount(
-                      preferredSimulationVersion(plan)?.default_time_card_discount_bps ?? 10000,
-                    )
-                  }}
-                </strong>
+                <span>超额时长卡</span>
+                <strong>{{ formatDiscount(preferredSimulationVersion(plan)?.default_time_card_discount_bps ?? 10000) }}</strong>
+                <small>按时长卡售价结算</small>
               </div>
               <div>
-                <span>自动续费</span>
-                <strong>
-                  {{ preferredSimulationVersion(plan)?.allow_auto_renew ? '允许' : '关闭' }}
-                </strong>
+                <span>购买设备</span>
+                <strong>{{ formatDiscount(preferredSimulationVersion(plan)?.default_device_discount_bps ?? 10000) }}</strong>
+                <small>按设备正常售价结算</small>
               </div>
-              <div>
-                <span>排序</span>
-                <strong>{{ plan.sort_order }}</strong>
+              <div
+                v-for="campaign in activeMarketingCampaigns(plan)"
+                :key="'marketing-' + campaign.id"
+                class="membership-marketing-benefit"
+              >
+                <span>{{ campaign.name }}</span>
+                <strong>
+                  {{ campaignPackageLabel(membershipCampaignItem(campaign, plan.id)) }}
+                  ·
+                  {{ formatDiscount(membershipCampaignItem(campaign, plan.id)?.discount_bps ?? 10000) }}
+                </strong>
+                <small>
+                  {{ membershipCampaignItem(campaign, plan.id)?.package_months ?? 1 }}个月实付
+                  {{ formatMarketingMoney(marketingCampaignPrice(plan, campaign)) }}
+                </small>
+                <small class="membership-hourly-rate">
+                  {{ formatYuanPerHour(
+                    marketingCampaignPrice(plan, campaign),
+                    preferredSimulationVersion(plan)?.included_seconds ?? 0,
+                    membershipCampaignItem(campaign, plan.id)?.package_months ?? 1,
+                  ) }}
+                </small>
+              </div>
+              <div v-if="!activeMarketingCampaigns(plan).length" class="membership-marketing-empty">
+                <span>营销活动</span>
+                <strong>暂未挂链</strong>
+                <small>到“活动营销”创建营销计划并挂接该会员</small>
               </div>
             </div>
 
+            <div class="product-marketing-links">
+              <span>参与营销计划 · {{ plan.marketing_campaigns?.length || 0 }}</span>
+              <div v-if="plan.marketing_campaigns?.length" class="product-marketing-link-list">
+                <div
+                  v-for="campaign in plan.marketing_campaigns"
+                  :key="'linked-marketing-' + campaign.id"
+                  class="product-marketing-link"
+                  :class="{ inactive: campaign.status !== 'active' }"
+                >
+                  <strong>{{ campaign.name }}</strong>
+                  <small>
+                    {{ campaign.status === 'active' ? '生效中' : '已停用' }}
+                    · {{ campaignPackageLabel(membershipCampaignItem(campaign, plan.id)) }}
+                    · {{ formatDiscount(membershipCampaignItem(campaign, plan.id)?.discount_bps ?? 10000) }}
+                    · 实际价值 {{ formatMarketingMoney(marketingCampaignPrice(plan, campaign)) }}
+                  </small>
+                </div>
+              </div>
+              <small v-else class="product-marketing-empty">暂未参加营销计划</small>
+            </div>
+
             <div class="membership-plan-actions">
-              <button v-if="canManageMembership" class="ghost-button" type="button" @click="openEdit(plan)">
+              <button v-if="canManageMembership && plan.status !== 'archived'" class="ghost-button" type="button" @click="openEdit(plan)">
                 {{ plan.draft_version ? '继续编辑草稿' : '创建新版本' }}
               </button>
               <button
-                v-if="plan.draft_version && canManageMembership"
+                v-if="plan.draft_version && canManageMembership && plan.status !== 'archived'"
                 class="primary-button"
                 type="button"
                 :disabled="publishingId !== null"
@@ -576,7 +839,25 @@ onMounted(loadPlans)
                     : '发布 V' + plan.draft_version.version_no
                 }}
               </button>
-              <span v-else class="plan-published-note">当前无待发布修改</span>
+              <button
+                v-if="canManageMembership && plan.active_version && plan.status !== 'archived'"
+                class="ghost-button"
+                type="button"
+                :disabled="listingId !== null"
+                @click="toggleListing(plan)"
+              >
+                {{ listingId === plan.id ? '处理中...' : (plan.status === 'active' ? '下架' : '上架') }}
+              </button>
+              <button
+                v-if="canManageMembership && plan.status !== 'archived'"
+                class="ghost-button"
+                type="button"
+                :disabled="deletingId !== null"
+                @click="archivePlan(plan)"
+              >
+                {{ deletingId === plan.id ? '删除中...' : '删除' }}
+              </button>
+              <span v-if="!canManageMembership" class="plan-published-note">只读</span>
             </div>
           </article>
         </div>
@@ -597,10 +878,23 @@ onMounted(loadPlans)
               <tr v-for="plan in pagedPlans" :key="plan.id">
                 <td><strong>{{ plan.name }}</strong><small>{{ plan.code }}</small></td>
                 <td>{{ formatMoney(preferredSimulationVersion(plan)?.price_cents ?? 0) }}</td>
-                <td>{{ formatHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}</td>
+                <td>
+                  {{ formatHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}
+                  <small>日均约 {{ formatDailyAverageHours(preferredSimulationVersion(plan)?.included_seconds ?? 0) }}</small>
+                  <small>{{ formatYuanPerHour(
+                    preferredSimulationVersion(plan)?.price_cents ?? 0,
+                    preferredSimulationVersion(plan)?.included_seconds ?? 0,
+                  ) }}</small>
+                </td>
                 <td>{{ formatDiscount(preferredSimulationVersion(plan)?.default_time_card_discount_bps ?? 10000) }}</td>
                 <td><span class="status-pill">{{ statusLabel(plan) }} · {{ versionLabel(plan) }}</span></td>
-                <td><button v-if="canManageMembership" class="text-action" type="button" @click="openEdit(plan)">编辑</button></td>
+                <td>
+                  <div class="table-actions">
+                    <button v-if="canManageMembership && plan.status !== 'archived'" class="text-action" type="button" @click="openEdit(plan)">编辑</button>
+                    <button v-if="canManageMembership && plan.active_version && plan.status !== 'archived'" class="text-action" type="button" @click="toggleListing(plan)">{{ plan.status === 'active' ? '下架' : '上架' }}</button>
+                    <button v-if="canManageMembership && plan.status !== 'archived'" class="text-action" type="button" @click="archivePlan(plan)">删除</button>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -674,12 +968,18 @@ onMounted(loadPlans)
           </label>
 
           <label>
-            <span>购买周期</span>
-            <select v-model.number="simulation.months">
-              <option :value="1">1 个月</option>
-              <option :value="3">3 个月</option>
-              <option :value="6">6 个月</option>
-              <option :value="12">12 个月</option>
+            <span>购买方式</span>
+            <select v-model="simulation.cycle">
+              <option value="single_month">单月原价</option>
+              <option
+                v-for="campaign in simulationMarketingCampaigns"
+                :key="campaign.id"
+                :value="'campaign:' + campaign.id"
+              >
+                {{ campaign.name }}
+                · {{ campaignPackageLabel(membershipCampaignItem(campaign, selectedTargetPlan?.id ?? 0)) }}
+                · {{ formatDiscount(membershipCampaignItem(campaign, selectedTargetPlan?.id ?? 0)?.discount_bps ?? 10000) }}
+              </option>
             </select>
           </label>
 
@@ -687,12 +987,15 @@ onMounted(loadPlans)
             <span>测试时长卡原价</span>
             <div class="input-with-prefix">
               <span>¥</span>
-              <input
-                v-model.number="simulation.sample_card_price_yuan"
-                type="number"
-                min="0"
-                step="1"
-              />
+              <input v-model.number="simulation.sample_card_price_yuan" type="number" min="0" step="1" />
+            </div>
+          </label>
+
+          <label>
+            <span>测试设备正常售价</span>
+            <div class="input-with-prefix">
+              <span>¥</span>
+              <input v-model.number="simulation.sample_device_price_yuan" type="number" min="0" step="1" />
             </div>
           </label>
         </div>
@@ -707,10 +1010,11 @@ onMounted(loadPlans)
           </div>
 
           <div class="simulation-purchase">
-            <span>购买 {{ selectedTargetPlan?.name }}</span>
-            <strong>{{ formatMoney(simulationPlanPriceCents) }}</strong>
+            <span>购买 {{ selectedTargetPlan?.name }} · {{ simulationCycleLabel }}</span>
+            <strong>{{ formatMarketingMoney(simulationPlanPriceCents) }}</strong>
             <small>
-              {{ simulation.months }} 个月 ·
+              一次支付 · {{ simulationPlanMonths }} 个月 ·
+              {{ formatDiscount(simulationPlanDiscountBps) }} ·
               V{{ selectedTargetVersion.version_no }}
               {{ selectedTargetVersion.lifecycle_status === 'draft' ? '草稿' : '正式' }}
             </small>
@@ -718,16 +1022,28 @@ onMounted(loadPlans)
 
           <div class="simulation-metrics">
             <div>
+              <span>套餐原价合计</span>
+              <strong>{{ formatMarketingMoney(simulationPlanListCents) }}</strong>
+            </div>
+            <div>
+              <span>营销活动折扣</span>
+              <strong>{{ formatDiscount(simulationPlanDiscountBps) }}</strong>
+            </div>
+            <div>
+              <span>本次已优惠</span>
+              <strong>{{ formatMarketingMoney(simulationPlanSavingCents) }}</strong>
+            </div>
+            <div>
               <span>获得基础时长</span>
               <strong>{{ formatHours(simulationIncludedSeconds) }}</strong>
             </div>
             <div>
-              <span>购买时长卡</span>
-              <strong>{{ formatDiscount(simulationDiscountBps) }}</strong>
+              <span>时长卡 {{ formatDiscount(simulationDiscountBps) }}</span>
+              <strong>{{ formatMarketingMoney(simulationCardPriceCents) }}</strong>
             </div>
             <div>
-              <span>¥{{ simulation.sample_card_price_yuan }} 时长卡实付</span>
-              <strong>{{ formatMoney(simulationCardPriceCents) }}</strong>
+              <span>设备 {{ formatDiscount(simulationDeviceDiscountBps) }}</span>
+              <strong>{{ formatMarketingMoney(simulationDevicePriceCents) }}</strong>
             </div>
             <div>
               <span>购买会员后余额</span>
@@ -800,15 +1116,16 @@ onMounted(loadPlans)
           </label>
 
           <label>
-            <span>月费</span>
+            <span>单月基础价</span>
             <div class="input-with-prefix">
               <span>¥</span>
               <input v-model.number="form.price_yuan" type="number" min="0" step="0.01" />
             </div>
+            <small>这里只定义产品基础价；营销折扣到“活动营销”中配置。</small>
           </label>
 
           <label>
-            <span>每月基础时长</span>
+            <span>每月基础 AI 时长</span>
             <div class="input-with-suffix">
               <input v-model.number="form.included_hours" type="number" min="0" step="1" />
               <span>小时</span>
@@ -816,20 +1133,21 @@ onMounted(loadPlans)
           </label>
 
           <label>
-            <span>时长卡默认折扣</span>
+            <span>超额购买时长卡折扣</span>
             <div class="input-with-suffix">
-              <input
-                v-model.number="form.discount_percent"
-                type="number"
-                min="0"
-                max="100"
-                step="1"
-              />
-              <span>%</span>
+              <input v-model.number="form.discount_percent" type="number" min="0.1" max="10" step="0.1" />
+              <span>折</span>
             </div>
-            <small>
-              100% = 原价，85% = 8.5 折。以后具体时长卡还可以单独覆盖。
-            </small>
+            <small>基础 AI 时长用完后，再买时长卡按此会员折扣结算。</small>
+          </label>
+
+          <label>
+            <span>购买设备折扣</span>
+            <div class="input-with-suffix">
+              <input v-model.number="form.device_discount_percent" type="number" min="0.1" max="10" step="0.1" />
+              <span>折</span>
+            </div>
+            <small>设备商城以设备正常售价为基准计算该会员的实付价。</small>
           </label>
 
           <label>

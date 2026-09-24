@@ -279,13 +279,10 @@ onMounted(async () => {
 <template>
   <div class="account-page">
     <ModulePageNav context="personal-auto" active-title="账户与安全" />
-    <section class="page-hero account-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">ACCOUNT CENTER</p>
         <h2>账户与安全</h2>
-        <p>
-          管理当前登录账号的资料、联系方式、地址信息、头像与登录安全。
-        </p>
       </div>
     </section>
 

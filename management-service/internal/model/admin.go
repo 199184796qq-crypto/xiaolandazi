@@ -22,6 +22,8 @@ type AdminCustomer struct {
 	SalesEmployeeCode  string    `json:"sales_employee_code,omitempty"`
 	SalesUsername      string    `json:"sales_username,omitempty"`
 	SalesDisplayName   string    `json:"sales_display_name,omitempty"`
+	IndustryCode       string    `json:"industry_code"`
+	IndustryName       string    `json:"industry_name"`
 	CreatedAt          time.Time `json:"created_at"`
 }
 type AgentSummary struct {

@@ -60,6 +60,7 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	input.ProductType = strings.ToLower(strings.TrimSpace(input.ProductType))
+	input.MembershipCycle = strings.ToLower(strings.TrimSpace(input.MembershipCycle))
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
 	if input.ProductType == "" {
 		input.ProductType = "time_card"
@@ -77,6 +78,20 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 	}
 	switch input.ProductType {
 	case "time_card":
+	case "membership":
+		if input.MarketingCampaignID > 0 {
+			if !strings.HasPrefix(input.MembershipCycle, "campaign:") {
+				input.MembershipCycle = "campaign:" + strconv.FormatInt(input.MarketingCampaignID, 10)
+			}
+		} else {
+			switch input.MembershipCycle {
+			case "single_month", "recurring_month", "quarter", "half_year", "annual":
+			default:
+				writeError(w, http.StatusBadRequest, "会员购买周期不正确")
+				return
+			}
+		}
+		input.Quantity = 1
 	case "device":
 		input.RecipientName = strings.TrimSpace(input.RecipientName)
 		input.RecipientPhone = strings.TrimSpace(input.RecipientPhone)
@@ -136,6 +151,8 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "当前商品类型不支持")
 		case errors.Is(err, db.ErrInsufficientDeviceStock):
 			writeError(w, http.StatusConflict, "当前可售设备库存不足，请调整购买数量或联系管理员补充库存")
+		case errors.Is(err, db.ErrMarketingCampaignStockInsufficient):
+			writeError(w, http.StatusConflict, "当前活动名额或活动库存不足，请刷新活动后重试")
 		case errors.Is(err, db.ErrDeviceShippingRequired):
 			writeError(w, http.StatusBadRequest, "购买实体设备必须填写完整收货信息")
 		case errors.Is(err, sql.ErrNoRows):
@@ -233,14 +250,14 @@ func (s *Server) customerShopSandboxPayOrder(w http.ResponseWriter, r *http.Requ
 			result = "order_cancelled"
 			status = http.StatusConflict
 			message = "订单已取消，不能继续支付"
-		case errors.Is(err, db.ErrInsufficientDeviceStock):
-			result = "device_stock_changed"
+		case errors.Is(err, db.ErrShopOrderExpired):
+			result = "order_expired"
 			status = http.StatusConflict
-			message = "设备库存已发生变化，当前可售 SN 不足，请刷新商城后重新下单"
+			message = "订单锁库已超时，商品库存已自动释放，请重新下单"
 		case errors.Is(err, db.ErrInsufficientDeviceStock):
 			result = "device_stock_insufficient"
 			status = http.StatusConflict
-			message = "支付未完成：设备库存不足，系统没有扣款，也没有生成支付成功记录"
+			message = "设备库存已发生变化，当前可售库存不足，请刷新商城后重新下单"
 		case errors.Is(err, sql.ErrNoRows):
 			result = "not_found"
 			status = http.StatusNotFound

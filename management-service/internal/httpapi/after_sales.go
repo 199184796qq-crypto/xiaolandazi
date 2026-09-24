@@ -11,11 +11,11 @@ import (
 )
 
 type afterSalesRequestInput struct {
-	SN            string `json:"sn"`
-	ServiceType   string `json:"service_type"`
-	CustomerName  string `json:"customer_name"`
-	ContactPhone  string `json:"contact_phone"`
-	Issue         string `json:"issue"`
+	SN           string `json:"sn"`
+	ServiceType  string `json:"service_type"`
+	CustomerName string `json:"customer_name"`
+	ContactPhone string `json:"contact_phone"`
+	Issue        string `json:"issue"`
 }
 
 func (s *Server) afterSalesListRequests(w http.ResponseWriter, r *http.Request) {

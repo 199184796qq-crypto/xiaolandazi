@@ -182,7 +182,7 @@ onMounted(load)
 <template>
   <div class="management-page">
     <ModulePageNav hub="agents" active-title="代理列表" />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">CHANNEL PARTNERS</p>
         <h2>代理管理</h2>

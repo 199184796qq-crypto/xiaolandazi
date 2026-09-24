@@ -71,7 +71,7 @@ type BusinessAuditTraceEntry struct {
 }
 
 type OrderTraceBundle struct {
-	Order          CustomerShopOrder        `json:"order"`
+	Order          CustomerShopOrder         `json:"order"`
 	Relation       OrderTraceRelation        `json:"relation"`
 	Refunds        []RefundRecord            `json:"refunds"`
 	QuotaLedger    []QuotaTraceEntry         `json:"quota_ledger"`

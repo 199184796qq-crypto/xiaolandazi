@@ -2,8 +2,8 @@ package audit
 
 import (
 	"context"
-	"fmt"
-	"strconv"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,8 +13,15 @@ import (
 
 const streamKey = "livecompanion:mgmt:audit"
 
+type Ledger interface {
+	BeginAdminAudit(context.Context, model.AdminAuditLog) (string, error)
+	CompleteAdminAudit(context.Context, string, model.AdminAuditLog) error
+	ListAdminAudits(context.Context, int64) ([]model.AdminAuditLog, error)
+}
+
 type Store struct {
 	client *redis.Client
+	ledger Ledger
 	limit  int64
 }
 
@@ -23,6 +30,7 @@ func New(
 	password string,
 	db int,
 	limit int,
+	ledger Ledger,
 ) *Store {
 	if limit <= 0 {
 		limit = 10000
@@ -33,7 +41,8 @@ func New(
 			Password: password,
 			DB:       db,
 		}),
-		limit: int64(limit),
+		ledger: ledger,
+		limit:  int64(limit),
 	}
 }
 
@@ -52,7 +61,29 @@ func (s *Store) Begin(
 	if entry.OccurredAt.IsZero() {
 		entry.OccurredAt = time.Now().UTC()
 	}
+	ledgerID, err := s.ledger.BeginAdminAudit(ctx, entry)
+	if err != nil {
+		return "", err
+	}
+	streamID, err := s.appendRedis(ctx, entry)
+	if err != nil {
+		log.Printf(
+			"admin audit redis mirror failed ledger_id=%s action=%s: %v",
+			ledgerID,
+			entry.Action,
+			err,
+		)
+		streamID = ""
+	}
+	return ledgerID + "|" + streamID, nil
+}
 
+func (s *Store) appendRedis(
+	ctx context.Context,
+	entry model.AdminAuditLog,
+) (string, error) {
+	mirrorCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
 	values := map[string]any{
 		"occurred_at":      entry.OccurredAt.UTC().Format(time.RFC3339Nano),
 		"actor_user_id":    entry.ActorUserID,
@@ -66,95 +97,76 @@ func (s *Store) Begin(
 		"client_ip":        entry.ClientIP,
 		"result":           entry.Result,
 	}
-
-	messageID, err := s.client.XAdd(ctx, &redis.XAddArgs{
+	return s.client.XAdd(mirrorCtx, &redis.XAddArgs{
 		Stream: streamKey,
 		MaxLen: s.limit,
 		Approx: true,
 		Values: values,
 	}).Result()
-	return messageID, err
 }
 
 func (s *Store) Record(
 	ctx context.Context,
 	entry model.AdminAuditLog,
 ) error {
-	_, err := s.Begin(ctx, entry)
-	return err
+	if entry.OccurredAt.IsZero() {
+		entry.OccurredAt = time.Now().UTC()
+	}
+	ledgerID, err := s.ledger.BeginAdminAudit(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if _, err := s.appendRedis(ctx, entry); err != nil {
+		log.Printf(
+			"admin audit redis mirror failed ledger_id=%s action=%s: %v",
+			ledgerID,
+			entry.Action,
+			err,
+		)
+	}
+	return nil
 }
+
 func (s *Store) Complete(
 	ctx context.Context,
 	pendingID string,
 	entry model.AdminAuditLog,
 ) error {
-	entry.OccurredAt = time.Now().UTC()
-
-	finalID, err := s.Begin(ctx, entry)
-	if err != nil {
+	ledgerID, streamID, _ := strings.Cut(pendingID, "|")
+	if err := s.ledger.CompleteAdminAudit(ctx, ledgerID, entry); err != nil {
 		return err
 	}
-	if pendingID == "" || finalID == pendingID {
+
+	entry.OccurredAt = time.Now().UTC()
+	finalID, err := s.appendRedis(ctx, entry)
+	if err != nil {
+		log.Printf(
+			"admin audit redis finalize mirror failed ledger_id=%s action=%s: %v",
+			ledgerID,
+			entry.Action,
+			err,
+		)
 		return nil
 	}
-	return s.client.XDel(ctx, streamKey, pendingID).Err()
+	if streamID == "" || finalID == streamID {
+		return nil
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cleanupCancel()
+	if err := s.client.XDel(cleanupCtx, streamKey, streamID).Err(); err != nil {
+		log.Printf(
+			"admin audit redis pending cleanup failed ledger_id=%s stream_id=%s: %v",
+			ledgerID,
+			streamID,
+			err,
+		)
+	}
+	return nil
 }
 
 func (s *Store) List(
 	ctx context.Context,
 	limit int64,
 ) ([]model.AdminAuditLog, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-
-	messages, err := s.client.XRevRangeN(
-		ctx,
-		streamKey,
-		"+",
-		"-",
-		limit,
-	).Result()
-	if err != nil {
-		return nil, err
-	}
-
-	items := make([]model.AdminAuditLog, 0, len(messages))
-	for _, message := range messages {
-		item := model.AdminAuditLog{
-			ID: message.ID,
-		}
-
-		item.OccurredAt, _ = time.Parse(
-			time.RFC3339Nano,
-			valueString(message.Values["occurred_at"]),
-		)
-		item.ActorUserID = valueInt64(message.Values["actor_user_id"])
-		item.ActorUsername = valueString(message.Values["actor_username"])
-		item.Action = valueString(message.Values["action"])
-		item.TargetUserID = valueInt64(message.Values["target_user_id"])
-		item.TargetUsername = valueString(message.Values["target_username"])
-		item.TargetTenantID = valueInt64(message.Values["target_tenant_id"])
-		item.HTTPMethod = valueString(message.Values["http_method"])
-		item.Path = valueString(message.Values["path"])
-		item.ClientIP = valueString(message.Values["client_ip"])
-		item.Result = valueString(message.Values["result"])
-		items = append(items, item)
-	}
-	return items, nil
-}
-
-func valueString(value any) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprint(value)
-}
-
-func valueInt64(value any) int64 {
-	parsed, _ := strconv.ParseInt(valueString(value), 10, 64)
-	return parsed
+	return s.ledger.ListAdminAudits(ctx, limit)
 }

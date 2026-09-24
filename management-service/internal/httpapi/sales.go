@@ -27,20 +27,38 @@ type assignCustomerSalesRequest struct {
 }
 
 func (s *Server) adminListSalesStaff(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireStaffPermission(
+	actor, access, ok := s.requireStaffPermission(
 		w,
 		r,
 		"sales.view_all",
-	); !ok {
+	)
+	if !ok {
 		return
 	}
 
-	items, err := s.store.ListSalesStaff(r.Context())
+	page, pageSize := normalizedPageQuery(r, 50, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	scope := staffBusinessScope(actor, access, "sales.view_all")
+
+	items, total, err := s.store.ListSalesStaffScoped(
+		r.Context(),
+		scope,
+		search,
+		page,
+		pageSize,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取销售列表失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       items,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": totalPages(total, pageSize),
+		"scope":       scope,
+	})
 }
 
 func (s *Server) adminCreateSalesStaff(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +146,7 @@ func (s *Server) adminCreateSalesStaff(w http.ResponseWriter, r *http.Request) {
 		input.DisplayName,
 		input.Username,
 		initialPassword,
+		"internal",
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]any{

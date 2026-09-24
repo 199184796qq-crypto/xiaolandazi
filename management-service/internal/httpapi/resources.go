@@ -47,6 +47,7 @@ func (s *Server) adminAgentResourceDashboard(w http.ResponseWriter, r *http.Requ
 		r,
 		"finance.resource.view",
 		"finance.resource.adjust",
+		"commercial.ai_time.view",
 	)
 	if !ok {
 		return
@@ -227,6 +228,7 @@ func (s *Server) adminCustomerResourceDashboard(w http.ResponseWriter, r *http.R
 		r,
 		"finance.resource.view",
 		"finance.resource.adjust",
+		"commercial.ai_time.view",
 	)
 	if !ok {
 		return

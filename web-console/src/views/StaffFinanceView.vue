@@ -13,6 +13,7 @@ import {
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import type {
   FinanceDashboard,
   StaffFinanceOverview,
@@ -20,6 +21,7 @@ import type {
 } from '../types'
 
 type OperationType = 'recharge' | 'refund' | 'reward'
+type ApprovalType = OperationType | 'ai_time_grant'
 type FinanceFocus = 'accounts' | 'approvals' | 'ledger' | 'history'
 
 const props = withDefaults(defineProps<{ focus?: FinanceFocus }>(), { focus: 'accounts' })
@@ -39,6 +41,19 @@ const reason = ref('')
 const paymentMethod = ref('manual')
 const submitting = ref(false)
 const reviewingTaskId = ref<number | null>(null)
+const approvalKeyword = ref('')
+const approvalType = ref<'all' | ApprovalType>('all')
+const approvalPage = ref(1)
+const approvalPageSize = 20
+const customerSearch = ref('')
+const customerPage = ref(1)
+const customerPageSize = 8
+const ledgerSearch = ref('')
+const ledgerPage = ref(1)
+const ledgerPageSize = 20
+const historySearch = ref('')
+const historyPage = ref(1)
+const historyPageSize = 20
 
 const access = computed(() => session.bootstrap?.staff_access ?? null)
 const showCustomerPanel = computed(() => props.focus === 'accounts' || props.focus === 'ledger')
@@ -69,6 +84,20 @@ const canReward = computed(() =>
 
 const customers = computed(() => overview.value?.customers ?? [])
 const tasks = computed(() => overview.value?.tasks ?? [])
+const filteredCustomers = computed(() => {
+  const keyword = customerSearch.value.trim().toLowerCase()
+  if (!keyword) return customers.value
+  return customers.value.filter((item) =>
+    [item.display_name, item.username, item.phone, item.parent_org_name, String(item.tenant_id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const customerPageCount = computed(() => Math.max(1, Math.ceil(filteredCustomers.value.length / customerPageSize)))
+const pagedCustomers = computed(() => {
+  const page = Math.min(customerPage.value, customerPageCount.value)
+  const start = (page - 1) * customerPageSize
+  return filteredCustomers.value.slice(start, start + customerPageSize)
+})
 const selectedCustomer = computed(
   () =>
     customers.value.find(
@@ -79,14 +108,61 @@ const selectedCustomer = computed(
 const pendingTasks = computed(() =>
   tasks.value.filter((item) => item.status === 'pending'),
 )
-const historyTasks = computed(() =>
-  tasks.value.filter((item) => item.status !== 'pending').slice(0, 30),
-)
+const approvalRechargeCount = computed(() => pendingTasks.value.filter((item) => item.operation_code === 'finance.recharge').length)
+const approvalRefundCount = computed(() => pendingTasks.value.filter((item) => item.operation_code === 'finance.refund').length)
+const approvalRewardCount = computed(() => pendingTasks.value.filter((item) => item.operation_code === 'finance.reward').length)
+const approvalAITimeCount = computed(() => pendingTasks.value.filter((item) => item.operation_code === 'finance.ai_time_grant').length)
+const filteredPendingTasks = computed(() => {
+  const keyword = approvalKeyword.value.trim().toLowerCase()
+  const operationCode = approvalType.value === 'all' ? '' : 'finance.' + approvalType.value
+  return pendingTasks.value.filter((item) => {
+    if (operationCode && item.operation_code !== operationCode) return false
+    if (!keyword) return true
+    return [item.customer_name, item.requester_name, item.reason, operationLabel(item.operation_code), String(item.id)].some((value) => String(value || '').toLowerCase().includes(keyword))
+  })
+})
+const approvalPageCount = computed(() => Math.max(1, Math.ceil(filteredPendingTasks.value.length / approvalPageSize)))
+const pagedPendingTasks = computed(() => {
+  const page = Math.min(approvalPage.value, approvalPageCount.value)
+  const start = (page - 1) * approvalPageSize
+  return filteredPendingTasks.value.slice(start, start + approvalPageSize)
+})
+const walletLedger = computed(() => customerDashboard.value?.ledger ?? [])
+const filteredWalletLedger = computed(() => {
+  const keyword = ledgerSearch.value.trim().toLowerCase()
+  if (!keyword) return walletLedger.value
+  return walletLedger.value.filter((item) =>
+    [item.business_type, item.reason, item.order_no, item.direction, String(item.id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const ledgerPageCount = computed(() => Math.max(1, Math.ceil(filteredWalletLedger.value.length / ledgerPageSize)))
+const pagedWalletLedger = computed(() => {
+  const page = Math.min(ledgerPage.value, ledgerPageCount.value)
+  const start = (page - 1) * ledgerPageSize
+  return filteredWalletLedger.value.slice(start, start + ledgerPageSize)
+})
+const historyTasks = computed(() => tasks.value.filter((item) => item.status !== 'pending'))
+const filteredHistoryTasks = computed(() => {
+  const keyword = historySearch.value.trim().toLowerCase()
+  if (!keyword) return historyTasks.value
+  return historyTasks.value.filter((item) =>
+    [item.customer_name, item.requester_name, item.approver_name, item.reason, operationLabel(item.operation_code), String(item.id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const historyPageCount = computed(() => Math.max(1, Math.ceil(filteredHistoryTasks.value.length / historyPageSize)))
+const pagedHistoryTasks = computed(() => {
+  const page = Math.min(historyPage.value, historyPageCount.value)
+  const start = (page - 1) * historyPageSize
+  return filteredHistoryTasks.value.slice(start, start + historyPageSize)
+})
 
 function operationLabel(value: string) {
   if (value === 'finance.recharge') return '充值'
   if (value === 'finance.refund') return '退款'
   if (value === 'finance.reward') return '奖励发放'
+  if (value === 'finance.ai_time_grant') return 'AI 时长增加'
   return value
 }
 
@@ -115,6 +191,9 @@ function canApproveTask(item: StaffFinanceTaskSummary) {
   if (item.operation_code === 'finance.reward') {
     return hasPermission('finance.reward.approve')
   }
+  if (item.operation_code === 'finance.ai_time_grant') {
+    return hasPermission('finance.ai_time.approve')
+  }
   return false
 }
 
@@ -125,6 +204,15 @@ function formatMoney(cents: number) {
 function formatTime(value?: string) {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+function changeApprovalType(value: 'all' | ApprovalType) {
+  approvalType.value = value
+  approvalPage.value = 1
+}
+
+function changeApprovalPage(delta: number) {
+  approvalPage.value = Math.min(approvalPageCount.value, Math.max(1, approvalPage.value + delta))
 }
 
 async function loadOverview() {
@@ -177,6 +265,8 @@ async function refreshAll() {
 
 async function selectCustomer(tenantId: number) {
   selectedTenantId.value = tenantId
+  ledgerPage.value = 1
+  ledgerSearch.value = ''
   await loadCustomer()
 }
 
@@ -268,7 +358,9 @@ async function reviewTask(
 
   const message =
     action === 'approve'
-      ? '确认审核通过这笔' + operationLabel(item.operation_code) + '吗？通过后将立即影响终端余额。'
+      ? item.operation_code === 'finance.ai_time_grant'
+        ? '确认审核通过这笔 AI 时长增加申请吗？通过后将立即增加对应代理或终端的 AI 时长。'
+        : '确认审核通过这笔' + operationLabel(item.operation_code) + '吗？通过后将立即影响终端余额。'
       : '确认拒绝这笔' + operationLabel(item.operation_code) + '吗？'
 
   if (!(await confirmAction({
@@ -306,13 +398,10 @@ onMounted(async () => {
 <template>
   <div class="management-page staff-finance-page">
     <ModulePageNav hub="finance" :active-title="pageTitle" />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">FINANCE WORKSPACE</p>
         <h2>{{ pageTitle }}</h2>
-        <p>
-          充值、退款、奖励发放直接进入真实终端钱包账本。是否需要审核由系统中的财务审批策略决定，操作人与审核人必须分离。
-        </p>
       </div>
       <button
         class="ghost-button"
@@ -327,7 +416,7 @@ onMounted(async () => {
     <p v-if="error" class="auth-error">{{ error }}</p>
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
-    <section class="finance-workspace-grid">
+    <section class="finance-workspace-grid" :class="{ 'finance-workspace-grid--full': !showCustomerPanel }">
       <article v-if="showCustomerPanel" class="settings-card finance-customer-panel">
         <div class="settings-card-header">
           <div>
@@ -337,9 +426,19 @@ onMounted(async () => {
           <span>{{ customers.length }} 个终端</span>
         </div>
 
+        <div class="finance-customer-tools">
+          <input
+            v-model="customerSearch"
+            type="search"
+            placeholder="搜索终端名称 / 账号 / 手机号"
+            @input="customerPage = 1"
+          />
+          <span>匹配 {{ filteredCustomers.length }} 个</span>
+        </div>
+
         <div class="finance-customer-list">
           <button
-            v-for="item in customers"
+            v-for="item in pagedCustomers"
             :key="item.tenant_id"
             type="button"
             class="finance-customer-row"
@@ -356,15 +455,22 @@ onMounted(async () => {
             </div>
           </button>
 
-          <div v-if="!customers.length && !loading" class="empty-state">
-            暂无终端财务账户。
+          <div v-if="!filteredCustomers.length && !loading" class="empty-state">
+            暂无符合条件的终端财务账户。
           </div>
         </div>
+        <PaginationBar
+          :page="customerPage"
+          :total-pages="customerPageCount"
+          :total="filteredCustomers.length"
+          :page-size="customerPageSize"
+          @update:page="customerPage = $event"
+        />
       </article>
 
       <div class="finance-main-column">
         <section
-          v-if="selectedCustomer"
+          v-if="selectedCustomer && showCustomerPanel"
           class="finance-balance-grid"
         >
           <article class="finance-balance-card">
@@ -428,75 +534,135 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section v-if="showApprovals" class="settings-card finance-approval-card">
-          <div class="settings-card-header">
-            <div>
-              <span class="section-kicker">APPROVALS</span>
-              <h3>待审核</h3>
-            </div>
-            <span>{{ pendingTasks.length }} 条</span>
-          </div>
-
-          <div v-if="!pendingTasks.length" class="empty-state">
-            当前没有待审核财务操作。
-          </div>
-
-          <div v-else class="finance-task-list">
-            <article
-              v-for="item in pendingTasks"
-              :key="item.id"
-              class="finance-task-row"
-            >
-              <div>
-                <span class="muted-label">{{ operationLabel(item.operation_code) }}</span>
-                <strong>{{ item.customer_name }}</strong>
-                <small>{{ item.reason || '无备注' }}</small>
-              </div>
-              <div>
-                <span class="muted-label">金额</span>
-                <strong>¥{{ item.amount_yuan.toFixed(2) }}</strong>
-              </div>
-              <div>
-                <span class="muted-label">发起人</span>
-                <strong>{{ item.requester_name }}</strong>
-                <small>{{ formatTime(item.created_at) }}</small>
-              </div>
-              <div class="finance-review-actions">
-                <span
-                  class="status-pill"
-                  :class="taskStatusClass(item.status)"
-                >
-                  {{ taskStatusLabel(item.status) }}
-                </span>
-                <template v-if="canApproveTask(item)">
-                  <button
-                    class="text-action"
-                    type="button"
-                    :disabled="reviewingTaskId === item.id"
-                    @click="reviewTask(item, 'approve')"
-                  >
-                    通过
-                  </button>
-                  <button
-                    class="text-action danger"
-                    type="button"
-                    :disabled="reviewingTaskId === item.id"
-                    @click="reviewTask(item, 'reject')"
-                  >
-                    拒绝
-                  </button>
-                </template>
-                <span v-else class="finance-review-hint">
-                  {{
-                    item.requester_user_id === currentUserId
-                      ? '本人发起，等待他人审核'
-                      : '无审核权限'
-                  }}
-                </span>
-              </div>
+        <template v-if="showApprovals">
+          <section class="finance-approval-metrics">
+            <article>
+              <span>待审核总数</span>
+              <strong>{{ pendingTasks.length }}</strong>
+              <small>全部未处理财务申请</small>
             </article>
-          </div>
-        </section>
+            <article>
+              <span>充值审核</span>
+              <strong>{{ approvalRechargeCount }}</strong>
+              <small>充值申请</small>
+            </article>
+            <article>
+              <span>退款审核</span>
+              <strong>{{ approvalRefundCount }}</strong>
+              <small>退款申请</small>
+            </article>
+            <article>
+              <span>奖励审核</span>
+              <strong>{{ approvalRewardCount }}</strong>
+              <small>奖励发放申请</small>
+            </article>
+            <article>
+              <span>AI 时长审核</span>
+              <strong>{{ approvalAITimeCount }}</strong>
+              <small>营销运维增加时长申请</small>
+            </article>
+          </section>
+
+          <section class="settings-card finance-approval-card finance-approval-table-card">
+            <div class="settings-card-header finance-approval-header">
+              <div>
+                <span class="section-kicker">APPROVALS</span>
+                <h3>待审核财务申请</h3>
+                <small>审核通过后立即执行并写入对应资金或 AI 时长流水；发起人与审核人必须分离。</small>
+              </div>
+              <span>{{ filteredPendingTasks.length }} / {{ pendingTasks.length }} 条</span>
+            </div>
+
+            <div class="finance-approval-toolbar">
+              <div class="finance-approval-tabs">
+                <button type="button" :class="{ active: approvalType === 'all' }" @click="changeApprovalType('all')">全部 {{ pendingTasks.length }}</button>
+                <button type="button" :class="{ active: approvalType === 'recharge' }" @click="changeApprovalType('recharge')">充值 {{ approvalRechargeCount }}</button>
+                <button type="button" :class="{ active: approvalType === 'refund' }" @click="changeApprovalType('refund')">退款 {{ approvalRefundCount }}</button>
+                <button type="button" :class="{ active: approvalType === 'reward' }" @click="changeApprovalType('reward')">奖励 {{ approvalRewardCount }}</button>
+                <button type="button" :class="{ active: approvalType === 'ai_time_grant' }" @click="changeApprovalType('ai_time_grant')">AI 时长 {{ approvalAITimeCount }}</button>
+              </div>
+              <input
+                v-model="approvalKeyword"
+                class="finance-approval-search"
+                type="search"
+                placeholder="搜索终端、发起人、备注或单号"
+                @input="approvalPage = 1"
+              />
+            </div>
+
+            <div v-if="!pendingTasks.length" class="empty-state">
+              当前没有待审核财务操作。
+            </div>
+            <div v-else-if="!filteredPendingTasks.length" class="empty-state">
+              没有符合当前筛选条件的待审核申请。
+            </div>
+
+            <div v-else class="finance-approval-table-wrap">
+              <table class="finance-approval-table">
+                <thead>
+                  <tr>
+                    <th>单号</th>
+                    <th>业务类型</th>
+                    <th>目标</th>
+                    <th>申请量</th>
+                    <th>申请说明</th>
+                    <th>发起人</th>
+                    <th>发起时间</th>
+                    <th>状态</th>
+                    <th class="finance-approval-action-head">审核操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in pagedPendingTasks" :key="item.id">
+                    <td><span class="finance-approval-id">#{{ item.id }}</span></td>
+                    <td><strong>{{ operationLabel(item.operation_code) }}</strong></td>
+                    <td><strong>{{ item.operation_code === 'finance.ai_time_grant' ? (item.target_type === 'agent' ? '代理 · ' : '终端 · ') + item.customer_name : item.customer_name }}</strong></td>
+                    <td class="finance-approval-amount">{{ item.operation_code === 'finance.ai_time_grant' ? ((item.resource_seconds || 0) / 3600).toFixed(1) + ' 小时' : '¥' + item.amount_yuan.toFixed(2) }}</td>
+                    <td>
+                      <span class="finance-approval-reason" :title="item.reason || '无备注'">{{ item.reason || '无备注' }}</span>
+                    </td>
+                    <td>{{ item.requester_name }}</td>
+                    <td>{{ formatTime(item.created_at) }}</td>
+                    <td>
+                      <span class="status-pill" :class="taskStatusClass(item.status)">{{ taskStatusLabel(item.status) }}</span>
+                    </td>
+                    <td class="finance-approval-actions-cell">
+                      <div v-if="canApproveTask(item)" class="finance-approval-row-actions">
+                        <button
+                          class="finance-approval-action approve"
+                          type="button"
+                          :disabled="reviewingTaskId === item.id"
+                          @click="reviewTask(item, 'approve')"
+                        >
+                          {{ reviewingTaskId === item.id ? '处理中' : '审核通过' }}
+                        </button>
+                        <button
+                          class="finance-approval-action reject"
+                          type="button"
+                          :disabled="reviewingTaskId === item.id"
+                          @click="reviewTask(item, 'reject')"
+                        >
+                          驳回
+                        </button>
+                      </div>
+                      <span v-else class="finance-review-hint">
+                        {{ item.requester_user_id === currentUserId ? '本人发起，等待他人审核' : '无审核权限' }}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <PaginationBar
+              :page="Math.min(approvalPage, approvalPageCount)"
+              :total-pages="approvalPageCount"
+              :total="filteredPendingTasks.length"
+              :page-size="approvalPageSize"
+              @update:page="approvalPage = $event"
+            />
+          </section>
+        </template>
 
         <section v-if="showLedger" class="settings-card finance-ledger-card">
           <div class="settings-card-header">
@@ -504,16 +670,25 @@ onMounted(async () => {
               <span class="section-kicker">WALLET LEDGER</span>
               <h3>终端钱包流水</h3>
             </div>
-            <span>{{ customerLoading ? '读取中...' : (customerDashboard?.ledger.length || 0) + ' 条' }}</span>
+            <span>{{ customerLoading ? '读取中...' : filteredWalletLedger.length + ' 条' }}</span>
           </div>
 
-          <div v-if="!customerDashboard?.ledger.length" class="empty-state">
-            当前终端暂无钱包流水。
+          <div class="finance-ledger-toolbar">
+            <input
+              v-model="ledgerSearch"
+              type="search"
+              placeholder="搜索业务类型 / 原因 / 订单号"
+              @input="ledgerPage = 1"
+            />
+          </div>
+
+          <div v-if="!filteredWalletLedger.length" class="empty-state">
+            当前终端暂无符合条件的钱包流水。
           </div>
 
           <div v-else class="finance-ledger-list">
             <article
-              v-for="item in customerDashboard.ledger"
+              v-for="item in pagedWalletLedger"
               :key="item.id"
               class="finance-ledger-row"
             >
@@ -534,6 +709,13 @@ onMounted(async () => {
               <span>{{ formatTime(item.occurred_at) }}</span>
             </article>
           </div>
+          <PaginationBar
+            :page="Math.min(ledgerPage, ledgerPageCount)"
+            :total-pages="ledgerPageCount"
+            :total="filteredWalletLedger.length"
+            :page-size="ledgerPageSize"
+            @update:page="ledgerPage = $event"
+          />
         </section>
 
         <section v-if="showHistory" class="settings-card finance-history-card">
@@ -544,9 +726,18 @@ onMounted(async () => {
             </div>
           </div>
 
+          <div class="finance-ledger-toolbar">
+            <input
+              v-model="historySearch"
+              type="search"
+              placeholder="搜索终端 / 发起人 / 审核人 / 原因"
+              @input="historyPage = 1"
+            />
+          </div>
+
           <div class="finance-task-list">
             <article
-              v-for="item in historyTasks"
+              v-for="item in pagedHistoryTasks"
               :key="item.id"
               class="finance-task-row"
             >
@@ -554,7 +745,7 @@ onMounted(async () => {
                 <span class="muted-label">{{ operationLabel(item.operation_code) }}</span>
                 <strong>{{ item.customer_name }}</strong>
               </div>
-              <strong>¥{{ item.amount_yuan.toFixed(2) }}</strong>
+              <strong>{{ item.operation_code === 'finance.ai_time_grant' ? ((item.resource_seconds || 0) / 3600).toFixed(1) + ' 小时' : '¥' + item.amount_yuan.toFixed(2) }}</strong>
               <div>
                 <span class="muted-label">发起 / 审核</span>
                 <strong>
@@ -572,6 +763,13 @@ onMounted(async () => {
               </span>
             </article>
           </div>
+          <PaginationBar
+            :page="Math.min(historyPage, historyPageCount)"
+            :total-pages="historyPageCount"
+            :total="filteredHistoryTasks.length"
+            :page-size="historyPageSize"
+            @update:page="historyPage = $event"
+          />
         </section>
       </div>
     </section>

@@ -27,6 +27,24 @@ function Show-Service([string]$Name, [int]$Port, [string]$Url) {
     }
 }
 
+$RunDir = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'data\run'
+$modeFile = Join-Path $RunDir 'runtime-mode.txt'
+$runtimeMode = if (Test-Path $modeFile) {
+    (Get-Content -LiteralPath $modeFile -Raw).Trim()
+} else {
+    'unknown'
+}
+
+$supervisor = Get-ScheduledTask -TaskName 'LiveCompanion-Supervisor' -ErrorAction SilentlyContinue
+if ($runtimeMode -eq 'development') {
+    $taskState = if ($supervisor) { $supervisor.State } else { 'missing' }
+    Write-Host ("[DEV]  {0,-20} watchdog=off task={1}" -f 'runtime-mode', $taskState)
+} elseif ($supervisor) {
+    Write-Host ("[SUP]  {0,-20} state={1}" -f 'supervisor', $supervisor.State)
+} else {
+    Write-Host ("[DOWN] {0,-20} task=missing" -f 'supervisor')
+}
+
 Show-Service 'web-console' 5173 'http://127.0.0.1:5173/'
 Show-Service 'management-service' 8080 'http://127.0.0.1:8080/api/v1/auth/captcha'
 Show-Service 'core-service' 8081 'http://127.0.0.1:8081/healthz'

@@ -71,7 +71,7 @@ func (c *Client) SendInitialCredential(
 		strings.TrimSpace(displayName),
 		strings.TrimSpace(username),
 		password,
-		strings.TrimRight(loginURL, "/")+"/login",
+		strings.TrimSpace(loginURL),
 	)
 
 	fromHeader := c.cfg.FromEmail

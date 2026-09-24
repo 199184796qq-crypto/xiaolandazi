@@ -1,0 +1,38 @@
+{
+  "LogDir": "${ROOT}/data/logs",
+  "RunDir": "${ROOT}/data/run",
+  "CheckInterval": "5s",
+  "HealthTimeout": "2s",
+  "HeartbeatInterval": "1m",
+  "FailureThreshold": 2,
+  "RestartBackoff": "2s",
+  "Services": [
+    {
+      "Name": "web-console",
+      "HealthURL": "http://127.0.0.1:5173/",
+      "Command": "node",
+      "Args": ["${ROOT}/web-console/node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5173"],
+      "WorkingDir": "${ROOT}/web-console",
+      "StartupGrace": "10s"
+    },
+    {
+      "Name": "management-service",
+      "HealthURL": "http://127.0.0.1:8080/healthz",
+      "Command": "${ROOT}/management-service/bin/management-service",
+      "CommandWindows": "${ROOT}/management-service/bin/management-service.exe",
+      "WorkingDir": "${ROOT}",
+      "StartupGrace": "8s",
+      "Env": {
+        "MGMT_AVATAR_DIR": "${ROOT}/data/avatars"
+      }
+    },
+    {
+      "Name": "core-service",
+      "HealthURL": "http://127.0.0.1:8081/healthz",
+      "Command": "${ROOT}/core-service/bin/core-service",
+      "CommandWindows": "${ROOT}/core-service/bin/core-service.exe",
+      "WorkingDir": "${ROOT}",
+      "StartupGrace": "8s"
+    }
+  ]
+}

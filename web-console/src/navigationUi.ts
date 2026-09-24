@@ -18,6 +18,10 @@ export interface NavigationLink {
   icon: string
 }
 
+export interface AgentNavigationTarget extends NavigationLink {
+  section: string
+}
+
 
 function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null | undefined) {
   if (key === 'staff' && to.startsWith('/staff/approvals')) {
@@ -37,11 +41,45 @@ function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null
   if (key === 'resources' && to.includes('focus=adjust')) {
     return hasStaffPermission(bootstrap, 'finance.resource.adjust')
   }
-  if (key === 'finance' && to.startsWith('/staff/finance/ai-time')) {
+  if (key === 'live' && to.startsWith('/operations/live/room-quotas')) {
+    return hasStaffPermission(bootstrap, 'liveops.room_quota.view')
+  }
+  if (key === 'live' && to.startsWith('/operations/live/marketing')) {
     return (
-      hasStaffPermission(bootstrap, 'finance.resource.view') ||
-      hasStaffPermission(bootstrap, 'finance.resource.adjust')
+      hasStaffPermission(bootstrap, 'commercial.marketing.view') ||
+      hasStaffPermission(bootstrap, 'commercial.time_card.view') ||
+      hasStaffPermission(bootstrap, 'commercial.device.view')
     )
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/marketing/channels')) {
+    return hasStaffPermission(bootstrap, 'invitations.view_all')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/marketing')) {
+    return hasStaffPermission(bootstrap, 'commercial.marketing.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/operations/live/marketing/ai-time')) {
+    return hasStaffPermission(bootstrap, 'commercial.ai_time.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/memberships/plans')) {
+    return hasStaffPermission(bootstrap, 'commercial.membership.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/memberships/simulator')) {
+    return hasStaffPermission(bootstrap, 'commercial.membership.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/invitations')) {
+    return hasStaffPermission(bootstrap, 'invitations.view_all')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/referrals')) {
+    return hasStaffPermission(bootstrap, 'commercial.referral.view')
+  }
+  if (key === 'finance' && to.startsWith('/commercial/settlement')) {
+    return hasStaffPermission(bootstrap, 'finance.settlement_rules.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/time-cards')) {
+    return hasStaffPermission(bootstrap, 'commercial.time_card.view')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/device-products')) {
+    return hasStaffPermission(bootstrap, 'commercial.device.view')
   }
   return true
 }
@@ -65,24 +103,25 @@ function hasStaffPermission(bootstrap: Bootstrap | null | undefined, code: strin
 function adminEntries(): NavigationLink[] {
   return [
     { title: '系统总览', to: '/overview', icon: '总' },
+    { title: '系统设定', to: '/system/settings', icon: '设' },
     { title: '组织架构', to: '/staff', icon: '部' },
     { title: '直播运维', to: '/operations/live', icon: '播' },
-    { title: '终端资源', to: '/customers', icon: '客' },
-    { title: '代理体系', to: '/agents', icon: '代' },
+    { title: '活动营销', to: '/operations/live/marketing', icon: '营' },
+    { title: '客户资源', to: '/customers', icon: '客' },
+    { title: '代理合作', to: '/agents', icon: '代' },
     { title: '销售体系', to: '/sales', icon: '销' },
-    { title: '邀请与推荐', to: '/invitations', icon: '邀' },
-    { title: '商品与会员', to: '/commercial/memberships', icon: '会' },
-    { title: '财务结算', to: '/staff/finance', icon: '财' },
-    { title: '设备库存', to: '/resources', icon: '库' },
-    { title: '售后维修', to: '/staff/after-sales', icon: '修' },
+    { title: '财务与结算', to: '/staff/finance', icon: '财' },
+    { title: '设备与仓储', to: '/resources', icon: '库' },
+    { title: '物流与售后', to: '/staff/after-sales', icon: '修' },
   ]
 }
 
 function customerEntries(): NavigationLink[] {
   return [
     { title: '直播运维', to: '/', icon: '播' },
-    { title: '商城', to: '/shop', icon: '商' },
+    { title: '终端商城', to: '/shop', icon: '商' },
     { title: '财务管理', to: '/finance', icon: '财' },
+    { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
   ]
 }
@@ -90,7 +129,7 @@ function customerEntries(): NavigationLink[] {
 function agentEntries(): NavigationLink[] {
   return [
     { title: '代理总览', to: '/agent/overview', icon: '总' },
-    { title: '终端管理', to: '/agent/customers', icon: '客' },
+    { title: '客户资源', to: '/agent/customers', icon: '客' },
     { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
   ]
@@ -110,8 +149,30 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
   if (hasStaffPermission(bootstrap, 'system.architecture.view')) {
     entries.push(
       { title: '系统总览', to: '/overview', icon: '总' },
-      { title: '直播运维', to: '/operations/live', icon: '播' },
     )
+  }
+  if (hasStaffPermission(bootstrap, 'system.settings.view')) {
+    entries.push({ title: '系统设定', to: '/system/settings', icon: '设' })
+  }
+  if (
+    hasStaffPermission(bootstrap, 'system.architecture.view') ||
+    hasStaffPermission(bootstrap, 'liveops.configure') ||
+    hasStaffPermission(bootstrap, 'liveops.view_all') ||
+    hasStaffPermission(bootstrap, 'liveops.room_quota.view')
+  ) {
+    entries.push({ title: '直播运维', to: '/operations/live', icon: '播' })
+  }
+  if (
+    hasStaffPermission(bootstrap, 'system.architecture.view') ||
+    hasStaffPermission(bootstrap, 'commercial.marketing.view') ||
+    hasStaffPermission(bootstrap, 'commercial.membership.view') ||
+    hasStaffPermission(bootstrap, 'commercial.ai_time.view') ||
+    hasStaffPermission(bootstrap, 'commercial.time_card.view') ||
+    hasStaffPermission(bootstrap, 'commercial.device.view') ||
+    hasStaffPermission(bootstrap, 'commercial.referral.view') ||
+    hasStaffPermission(bootstrap, 'invitations.view_all')
+  ) {
+    entries.push({ title: '活动营销', to: '/operations/live/marketing', icon: '营' })
   }
 
   if (
@@ -124,39 +185,36 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
   }
 
   if (hasStaffPermission(bootstrap, 'customer.view_all')) {
-    entries.push({ title: '终端资源', to: '/customers', icon: '客' })
-  }
-  if (hasStaffPermission(bootstrap, 'agent.view_all')) {
-    entries.push({ title: '代理体系', to: '/agents', icon: '代' })
+    entries.push({ title: '客户资源', to: '/customers', icon: '客' })
   }
   if (hasStaffPermission(bootstrap, 'sales.view_all')) {
     entries.push({ title: '销售体系', to: '/sales', icon: '销' })
   }
-  if (hasStaffPermission(bootstrap, 'finance.dashboard.view')) {
-    entries.push({ title: '财务结算', to: '/staff/finance', icon: '财' })
+  if (
+    hasStaffPermission(bootstrap, 'finance.dashboard.view') ||
+    hasStaffPermission(bootstrap, 'finance.settlement_rules.view')
+  ) {
+    entries.push({ title: '财务与结算', to: '/staff/finance', icon: '财' })
   }
-  if (hasStaffPermission(bootstrap, 'commercial.membership.view')) {
-    entries.push({ title: '商品与会员', to: '/commercial/memberships', icon: '会' })
+  if (hasStaffPermission(bootstrap, 'agent.view_all')) {
+    entries.push({ title: '代理合作', to: '/agents', icon: '代' })
   }
   if (
     hasStaffPermission(bootstrap, 'inventory.view') ||
     hasStaffPermission(bootstrap, 'logistics.view')
   ) {
     entries.push({
-      title: '设备库存',
+      title: '设备与仓储',
       to: '/resources',
       icon: '库',
     })
   }
   if (hasStaffPermission(bootstrap, 'inventory.after_sales.view')) {
     entries.push({
-      title: '售后维修',
+      title: '物流与售后',
       to: '/staff/after-sales',
       icon: '修',
     })
-  }
-  if (hasStaffPermission(bootstrap, 'invitations.view_all')) {
-    entries.push({ title: '邀请与推荐', to: '/invitations', icon: '邀' })
   }
 
   return entries
@@ -227,6 +285,9 @@ function moduleRoot(
   if (role === 'sales_staff') {
     return rootForWorkspace('workspace-sales', bootstrap)
   }
+  if (role === 'customer' && hub === 'live') {
+    return rootForWorkspace('workspace-customer', bootstrap)
+  }
   if (role === 'staff' && !hasStaffPermission(bootstrap, 'system.architecture.view')) {
     return rootForWorkspace('workspace-staff', bootstrap)
   }
@@ -238,6 +299,69 @@ function moduleRoot(
     kicker: config.kicker,
     entries: [],
   }
+}
+
+export function resolveAgentNavigationTargets(
+  bootstrap: Bootstrap | null | undefined,
+): AgentNavigationTarget[] {
+  if (!bootstrap) return []
+
+  const targets: AgentNavigationTarget[] = []
+  const seen = new Set<string>()
+  const add = (title: string, to: string, icon: string, section: string) => {
+    const normalizedTitle = title.trim()
+    const normalizedTo = to.trim()
+    if (!normalizedTitle || !normalizedTo) return
+    const key = normalizedTitle + '|' + normalizedTo
+    if (seen.has(key)) return
+    seen.add(key)
+    targets.push({
+      title: normalizedTitle,
+      to: normalizedTo,
+      icon,
+      section,
+    })
+  }
+
+  const workspace = resolveNavigationContext('workspace-auto', bootstrap)
+  add(workspace.rootTitle, workspace.rootTo, '总', '工作台')
+  for (const entry of workspace.entries) {
+    add(entry.title, entry.to, entry.icon, '工作台')
+  }
+
+  const expandable = new Map<string, HubKey>([
+    ['/operations/live', 'live'],
+    ['/operations/live/marketing', 'activityMarketing'],
+    ['/staff', 'staff'],
+    ['/customers', 'customers'],
+    ['/agents', 'agents'],
+    ['/sales', 'sales'],
+    ['/staff/finance', 'finance'],
+    ['/resources', 'resources'],
+  ])
+
+  const visibleWorkspacePaths = new Set(workspace.entries.map((entry) => entry.to))
+  if (bootstrap.actor.role === 'customer') {
+    visibleWorkspacePaths.add('/operations/live')
+  }
+
+  for (const [rootPath, hub] of expandable) {
+    if (!visibleWorkspacePaths.has(rootPath)) continue
+    const context = resolveNavigationContext(hub, bootstrap)
+    if (context.sectionTitle && context.sectionTo) {
+      add(context.sectionTitle, context.sectionTo, context.sectionIcon || '入', context.sectionTitle)
+    }
+    for (const entry of context.entries) {
+      add(entry.title, entry.to, entry.icon, context.sectionTitle || context.rootTitle)
+    }
+  }
+
+  const personal = resolveNavigationContext('personal-auto', bootstrap)
+  for (const entry of personal.entries) {
+    add(entry.title, entry.to, entry.icon, '个人中心')
+  }
+
+  return targets
 }
 
 export function resolveNavigationContext(
@@ -305,7 +429,10 @@ export function resolveNavigationContext(
     rootTitle: root.title,
     rootTo: root.to,
     sectionTitle: config.title,
-    sectionTo: config.hubTo,
+    sectionTo:
+      bootstrap?.actor.role === 'customer' && key === 'live'
+        ? '/'
+        : config.hubTo,
     sectionIcon: config.heroIcon,
     kicker: config.kicker,
     entries: moduleEntries(key as HubKey)

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { useFeedbackErrorRef } from '../uiFeedback'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { createAgentCustomer, getAgentCustomers } from '../api'
 import CredentialResultModal from '../components/CredentialResultModal.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import RegionSelect from '../components/RegionSelect.vue'
 import type { AdminCustomer, InitialCredential } from '../types'
 
@@ -11,6 +12,23 @@ const items = ref<AdminCustomer[]>([])
 const loading = ref(false)
 const error = useFeedbackErrorRef()
 const showCreate = ref(false)
+const search = ref('')
+const page = ref(1)
+const pageSize = 12
+const filteredItems = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
+  if (!keyword) return items.value
+  return items.value.filter((item) =>
+    [item.display_name, item.username, item.phone, item.email, item.inviter_display_name, item.source_type]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize)))
+const pagedItems = computed(() => {
+  const current = Math.min(page.value, totalPages.value)
+  const start = (current - 1) * pageSize
+  return filteredItems.value.slice(start, start + pageSize)
+})
 
 const username = ref('')
 const displayName = ref('')
@@ -116,13 +134,13 @@ onMounted(load)
 
 <template>
   <div class="management-page">
-    <ModulePageNav context="workspace-agent" active-title="终端管理" />
-    <section class="page-hero">
+    <ModulePageNav context="workspace-agent" active-title="客户资源" />
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">MY CUSTOMERS</p>
-        <h2>终端管理</h2>
+        <h2>客户资源</h2>
         <p>
-          管理当前代理名下的终端。代理开通的终端账号可直接登录伴播搭子终端工作台。
+          管理当前代理名下的客户资源。代理开通的终端账号可直接登录伴播搭子终端工作台。
         </p>
       </div>
       <button class="primary-button" type="button" @click="openCreate">
@@ -138,12 +156,15 @@ onMounted(load)
           <span class="section-kicker">CUSTOMERS</span>
           <h3>我的终端</h3>
         </div>
-        <span>{{ loading ? '加载中...' : items.length + ' 个终端' }}</span>
+        <span>{{ loading ? '加载中...' : filteredItems.length + ' / ' + items.length + ' 个终端' }}</span>
+      </div>
+      <div class="scalable-list-toolbar">
+        <input v-model="search" type="search" placeholder="搜索终端名称 / 账号 / 手机号 / 邮箱" @input="page = 1" />
       </div>
 
       <div class="agent-list">
         <article
-          v-for="item in items"
+          v-for="item in pagedItems"
           :key="item.user_id"
           class="agent-row customer-row"
         >
@@ -168,10 +189,17 @@ onMounted(load)
           </div>
         </article>
 
-        <div v-if="!loading && items.length === 0" class="empty-state">
+        <div v-if="!loading && filteredItems.length === 0" class="empty-state">
           暂无终端。点击“开通终端账号”即可为商家建立登录账号。
         </div>
       </div>
+      <PaginationBar
+        :page="Math.min(page, totalPages)"
+        :total-pages="totalPages"
+        :total="filteredItems.length"
+        :page-size="pageSize"
+        @update:page="page = $event"
+      />
     </section>
 
     <div

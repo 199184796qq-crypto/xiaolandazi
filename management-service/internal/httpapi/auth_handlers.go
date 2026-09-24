@@ -10,9 +10,16 @@ import (
 )
 
 type loginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Captcha  string `json:"captcha"`
+	Method     string `json:"method"`
+	Identifier string `json:"identifier"`
+	Credential string `json:"credential"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Captcha    string `json:"captcha"`
+}
+
+type smsLoginCodeRequest struct {
+	Phone string `json:"phone"`
 }
 
 type registerRequest struct {
@@ -47,13 +54,31 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, err := s.auth.Login(
+	method := strings.ToLower(strings.TrimSpace(input.Method))
+	if method == "" {
+		method = string(auth.LoginMethodPassword)
+	}
+	identifier := strings.TrimSpace(input.Identifier)
+	credential := input.Credential
+	if method == string(auth.LoginMethodPassword) {
+		if identifier == "" {
+			identifier = strings.TrimSpace(input.Username)
+		}
+		if credential == "" {
+			credential = input.Password
+		}
+	}
+
+	actor, err := s.auth.Authenticate(
 		r.Context(),
 		w,
 		r,
-		input.Username,
-		input.Password,
-		input.Captcha,
+		auth.LoginInput{
+			Method:     auth.LoginMethod(method),
+			Identifier: identifier,
+			Credential: credential,
+			Captcha:    input.Captcha,
+		},
 	)
 	if err != nil {
 		switch {
@@ -63,6 +88,16 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusTooManyRequests, "登录尝试过多，请 15 分钟后再试")
 		case errors.Is(err, auth.ErrInvalidCredentials):
 			writeError(w, http.StatusUnauthorized, "账号或密码错误")
+		case errors.Is(err, auth.ErrInvalidPhone):
+			writeError(w, http.StatusBadRequest, "请输入正确的手机号码")
+		case errors.Is(err, auth.ErrPhoneNotRegistered):
+			writeError(w, http.StatusUnauthorized, "该手机号未绑定已注册账号")
+		case errors.Is(err, auth.ErrSMSCodeInvalid):
+			writeError(w, http.StatusUnauthorized, "短信验证码错误或已失效")
+		case errors.Is(err, auth.ErrSMSCodeExpired):
+			writeError(w, http.StatusUnauthorized, "短信验证码已过期，请重新获取")
+		case errors.Is(err, auth.ErrUnsupportedLoginMethod):
+			writeError(w, http.StatusBadRequest, "不支持的登录方式")
 		default:
 			writeError(w, http.StatusInternalServerError, "登录失败")
 		}
@@ -89,9 +124,38 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"actor": actor,
-	})
+	payload, err := s.buildBootstrap(r.Context(), actor)
+	if err != nil {
+		_ = s.auth.Logout(r.Context(), w, r)
+		writeError(w, http.StatusInternalServerError, "读取登录信息失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) authSendSMSLoginCode(w http.ResponseWriter, r *http.Request) {
+	var input smsLoginCodeRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	result, err := s.auth.SendSMSLoginCode(r.Context(), r, input.Phone)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidPhone):
+			writeError(w, http.StatusBadRequest, "请输入正确的手机号码")
+		case errors.Is(err, auth.ErrPhoneNotRegistered):
+			writeError(w, http.StatusNotFound, "该手机号未绑定任何已注册账号")
+		case errors.Is(err, auth.ErrSMSRateLimited):
+			writeError(w, http.StatusTooManyRequests, "验证码发送过于频繁，请稍后再试")
+		case errors.Is(err, auth.ErrSMSUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "短信服务尚未配置")
+		default:
+			writeError(w, http.StatusInternalServerError, "发送短信验证码失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +197,9 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrInvalidUsername):
 			writeError(w, http.StatusBadRequest, "账号需为 4-32 位字母、数字、下划线、点或短横线")
 		case errors.Is(err, auth.ErrInvalidPhone):
-			writeError(w, http.StatusBadRequest, "联系电话不能为空")
+			writeError(w, http.StatusBadRequest, "请输入正确的中国大陆手机号码")
+		case errors.Is(err, auth.ErrPhoneTaken):
+			writeError(w, http.StatusConflict, "该手机号已经绑定其他账号")
 		case errors.Is(err, auth.ErrInvalidInviteCode):
 			writeError(w, http.StatusBadRequest, "邀请码无效、已停用或已过期")
 		case errors.Is(err, auth.ErrRegistrationCapacity):
@@ -148,9 +214,13 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"actor": actor,
-	})
+	payload, err := s.buildBootstrap(r.Context(), actor)
+	if err != nil {
+		_ = s.auth.Logout(r.Context(), w, r)
+		writeError(w, http.StatusInternalServerError, "读取注册登录信息失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, payload)
 }
 
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {

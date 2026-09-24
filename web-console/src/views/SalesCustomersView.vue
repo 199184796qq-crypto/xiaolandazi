@@ -54,7 +54,7 @@ onMounted(load)
 <template>
   <div class="management-page">
     <ModulePageNav context="workspace-sales" active-title="我的终端" />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">MY SALES CUSTOMERS</p>
         <h2>我的终端</h2>

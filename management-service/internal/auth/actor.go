@@ -38,22 +38,82 @@ const (
 )
 
 var (
-	ErrNotAuthenticated     = errors.New("not authenticated")
-	ErrInvalidCredentials   = errors.New("invalid credentials")
-	ErrCaptchaInvalid       = errors.New("captcha invalid")
-	ErrRateLimited          = errors.New("too many login attempts")
-	ErrUsernameTaken        = errors.New("username already exists")
-	ErrInvalidUsername      = errors.New("invalid username")
-	ErrInvalidDisplayName   = errors.New("invalid display name")
-	ErrInvalidPhone         = errors.New("invalid phone")
-	ErrInvalidLocation      = errors.New("invalid location")
-	ErrInvalidInviteCode    = errors.New("invalid invite code")
-	ErrRegistrationCapacity = errors.New("registration capacity insufficient")
-	ErrWeakPassword         = errors.New("weak password")
-	ErrCurrentPassword      = errors.New("current password incorrect")
+	ErrNotAuthenticated       = errors.New("not authenticated")
+	ErrInvalidCredentials     = errors.New("invalid credentials")
+	ErrCaptchaInvalid         = errors.New("captcha invalid")
+	ErrRateLimited            = errors.New("too many login attempts")
+	ErrUsernameTaken          = errors.New("username already exists")
+	ErrInvalidUsername        = errors.New("invalid username")
+	ErrInvalidDisplayName     = errors.New("invalid display name")
+	ErrInvalidPhone           = errors.New("invalid phone")
+	ErrInvalidLocation        = errors.New("invalid location")
+	ErrInvalidInviteCode      = errors.New("invalid invite code")
+	ErrRegistrationCapacity   = errors.New("registration capacity insufficient")
+	ErrWeakPassword           = errors.New("weak password")
+	ErrCurrentPassword        = errors.New("current password incorrect")
+	ErrUnsupportedLoginMethod = errors.New("unsupported login method")
+	ErrPhoneNotRegistered     = errors.New("phone not registered")
+	ErrPhoneTaken             = errors.New("phone already exists")
+	ErrSMSCodeInvalid         = errors.New("sms code invalid")
+	ErrSMSCodeExpired         = errors.New("sms code expired")
+	ErrSMSUnavailable         = errors.New("sms provider unavailable")
+	ErrSMSRateLimited         = errors.New("sms rate limited")
 )
 
 var usernamePattern = regexp.MustCompile("^[A-Za-z0-9_.-]{4,32}$")
+var mainlandPhonePattern = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
+
+type LoginMethod string
+
+const (
+	LoginMethodPassword LoginMethod = "password"
+	LoginMethodSMS      LoginMethod = "sms"
+)
+
+type LoginInput struct {
+	Method     LoginMethod
+	Identifier string
+	Credential string
+	Captcha    string
+}
+
+type SMSCodeDelivery struct {
+	Phone             string `json:"phone"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+	DebugCode         string `json:"debug_code,omitempty"`
+}
+
+type SMSProvider interface {
+	SendLoginCode(context.Context, string, string) error
+}
+
+type developmentSMSProvider struct{}
+
+func (developmentSMSProvider) SendLoginCode(context.Context, string, string) error { return nil }
+
+type unavailableSMSProvider struct{}
+
+func (unavailableSMSProvider) SendLoginCode(context.Context, string, string) error {
+	return ErrSMSUnavailable
+}
+
+func NormalizeMainlandPhone(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	var digits strings.Builder
+	for _, ch := range value {
+		if ch >= '0' && ch <= '9' {
+			digits.WriteRune(ch)
+		}
+	}
+	normalized := digits.String()
+	switch {
+	case len(normalized) == 13 && strings.HasPrefix(normalized, "86"):
+		normalized = normalized[2:]
+	case len(normalized) == 15 && strings.HasPrefix(normalized, "0086"):
+		normalized = normalized[4:]
+	}
+	return normalized, mainlandPhonePattern.MatchString(normalized)
+}
 
 type captchaChallenge struct {
 	Code      string
@@ -67,8 +127,9 @@ type loginAttempt struct {
 }
 
 type Resolver struct {
-	env   string
-	store *appdb.Store
+	env         string
+	store       *appdb.Store
+	smsProvider SMSProvider
 
 	captchaMu sync.Mutex
 	captchas  map[string]captchaChallenge
@@ -78,12 +139,25 @@ type Resolver struct {
 }
 
 func NewResolver(env string, store *appdb.Store) *Resolver {
-	return &Resolver{
-		env:      env,
-		store:    store,
-		captchas: make(map[string]captchaChallenge),
-		attempts: make(map[string]loginAttempt),
+	var smsProvider SMSProvider = unavailableSMSProvider{}
+	if env == "development" {
+		smsProvider = developmentSMSProvider{}
 	}
+	return &Resolver{
+		env:         env,
+		store:       store,
+		smsProvider: smsProvider,
+		captchas:    make(map[string]captchaChallenge),
+		attempts:    make(map[string]loginAttempt),
+	}
+}
+
+func (r *Resolver) SetSMSProvider(provider SMSProvider) {
+	if provider == nil {
+		r.smsProvider = unavailableSMSProvider{}
+		return
+	}
+	r.smsProvider = provider
 }
 
 func GenerateInitialPassword() (string, error) {
@@ -163,26 +237,48 @@ func (r *Resolver) Login(
 	password string,
 	captcha string,
 ) (model.Actor, error) {
-	username = strings.TrimSpace(username)
-	key := loginKey(req, username)
+	return r.Authenticate(ctx, w, req, LoginInput{
+		Method:     LoginMethodPassword,
+		Identifier: username,
+		Credential: password,
+		Captcha:    captcha,
+	})
+}
 
+func (r *Resolver) Authenticate(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	input LoginInput,
+) (model.Actor, error) {
+	method := LoginMethod(strings.ToLower(strings.TrimSpace(string(input.Method))))
+	identifier := strings.TrimSpace(input.Identifier)
+	key := loginKey(req, string(method)+":"+identifier)
 	if err := r.checkRateLimit(key); err != nil {
 		return model.Actor{}, err
 	}
-	if !r.verifyCaptcha(req, captcha) {
-		r.recordFailure(key)
-		return model.Actor{}, ErrCaptchaInvalid
-	}
 
-	user, err := r.store.GetUserByUsername(ctx, username)
-	if err != nil || user.Status != "active" || user.PasswordHash == "" {
-		r.recordFailure(key)
-		return model.Actor{}, ErrInvalidCredentials
+	var (
+		user model.User
+		err  error
+	)
+	switch method {
+	case LoginMethodPassword:
+		if !r.verifyCaptcha(req, input.Captcha) {
+			r.recordFailure(key)
+			return model.Actor{}, ErrCaptchaInvalid
+		}
+		user, err = r.authenticatePassword(ctx, identifier, input.Credential)
+	case LoginMethodSMS:
+		user, err = r.authenticateSMS(ctx, identifier, input.Credential)
+	default:
+		return model.Actor{}, ErrUnsupportedLoginMethod
 	}
-	if bcrypt.CompareHashAndPassword(
-		[]byte(user.PasswordHash),
-		[]byte(password),
-	) != nil {
+	if err != nil {
+		r.recordFailure(key)
+		return model.Actor{}, err
+	}
+	if user.Status != "active" {
 		r.recordFailure(key)
 		return model.Actor{}, ErrInvalidCredentials
 	}
@@ -191,8 +287,129 @@ func (r *Resolver) Login(
 	if err := r.issueSession(ctx, w, req, user.ID); err != nil {
 		return model.Actor{}, err
 	}
-
 	return actorFromUser(user), nil
+}
+
+func (r *Resolver) authenticatePassword(
+	ctx context.Context,
+	username string,
+	password string,
+) (model.User, error) {
+	user, err := r.store.GetUserByUsername(ctx, strings.TrimSpace(username))
+	if err != nil || user.Status != "active" || user.PasswordHash == "" {
+		return model.User{}, ErrInvalidCredentials
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return model.User{}, ErrInvalidCredentials
+	}
+	return user, nil
+}
+
+func (r *Resolver) authenticateSMS(
+	ctx context.Context,
+	phone string,
+	code string,
+) (model.User, error) {
+	normalizedPhone, ok := NormalizeMainlandPhone(phone)
+	if !ok {
+		return model.User{}, ErrInvalidPhone
+	}
+	user, err := r.store.GetUserByPhone(ctx, normalizedPhone)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.User{}, ErrPhoneNotRegistered
+		}
+		return model.User{}, err
+	}
+	if user.Status != "active" {
+		return model.User{}, ErrInvalidCredentials
+	}
+
+	challenge, err := r.store.GetLatestSMSLoginChallenge(ctx, normalizedPhone)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.User{}, ErrSMSCodeInvalid
+		}
+		return model.User{}, err
+	}
+	if challenge.UsedAt.Valid || challenge.FailedAttempts >= 5 {
+		return model.User{}, ErrSMSCodeInvalid
+	}
+	if time.Now().UTC().After(challenge.ExpiresAt) {
+		return model.User{}, ErrSMSCodeExpired
+	}
+	if bcrypt.CompareHashAndPassword([]byte(challenge.CodeHash), []byte(strings.TrimSpace(code))) != nil {
+		_ = r.store.IncrementSMSLoginChallengeFailure(ctx, challenge.ID)
+		return model.User{}, ErrSMSCodeInvalid
+	}
+	if err := r.store.MarkSMSLoginChallengeUsed(ctx, challenge.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.User{}, ErrSMSCodeInvalid
+		}
+		return model.User{}, err
+	}
+	return user, nil
+}
+
+func (r *Resolver) SendSMSLoginCode(
+	ctx context.Context,
+	req *http.Request,
+	phone string,
+) (SMSCodeDelivery, error) {
+	normalizedPhone, ok := NormalizeMainlandPhone(phone)
+	if !ok {
+		return SMSCodeDelivery{}, ErrInvalidPhone
+	}
+	user, err := r.store.GetUserByPhone(ctx, normalizedPhone)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SMSCodeDelivery{}, ErrPhoneNotRegistered
+		}
+		return SMSCodeDelivery{}, err
+	}
+	if user.Status != "active" {
+		return SMSCodeDelivery{}, ErrPhoneNotRegistered
+	}
+
+	if _, unavailable := r.smsProvider.(unavailableSMSProvider); unavailable {
+		return SMSCodeDelivery{}, ErrSMSUnavailable
+	}
+
+	code, err := randomDigits(6)
+	if err != nil {
+		return SMSCodeDelivery{}, err
+	}
+	codeHash, err := bcrypt.GenerateFromPassword([]byte(code), 10)
+	if err != nil {
+		return SMSCodeDelivery{}, err
+	}
+	if err := r.store.CreateSMSLoginChallenge(
+		ctx,
+		normalizedPhone,
+		string(codeHash),
+		time.Now().UTC().Add(5*time.Minute),
+		requestIP(req),
+	); err != nil {
+		if errors.Is(err, appdb.ErrSMSChallengeRateLimited) {
+			return SMSCodeDelivery{}, ErrSMSRateLimited
+		}
+		return SMSCodeDelivery{}, err
+	}
+	if err := r.smsProvider.SendLoginCode(ctx, normalizedPhone, code); err != nil {
+		if challenge, loadErr := r.store.GetLatestSMSLoginChallenge(ctx, normalizedPhone); loadErr == nil {
+			_ = r.store.MarkSMSLoginChallengeUsed(ctx, challenge.ID)
+		}
+		return SMSCodeDelivery{}, err
+	}
+
+	result := SMSCodeDelivery{
+		Phone:             normalizedPhone,
+		RetryAfterSeconds: 60,
+	}
+	if r.env == "development" {
+		result.DebugCode = code
+	}
+	return result, nil
 }
 
 func (r *Resolver) Register(
@@ -211,6 +428,9 @@ func (r *Resolver) Register(
 ) (model.Actor, error) {
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = username
+	}
 	phone = strings.TrimSpace(phone)
 	province = strings.TrimSpace(province)
 	city = strings.TrimSpace(city)
@@ -226,9 +446,11 @@ func (r *Resolver) Register(
 	if len([]rune(displayName)) < 2 || len([]rune(displayName)) > 64 {
 		return model.Actor{}, ErrInvalidDisplayName
 	}
-	if phone == "" {
+	normalizedPhone, phoneOK := NormalizeMainlandPhone(phone)
+	if !phoneOK {
 		return model.Actor{}, ErrInvalidPhone
 	}
+	phone = normalizedPhone
 	if inviteCode == "" {
 		return model.Actor{}, ErrInvalidInviteCode
 	}
@@ -238,6 +460,11 @@ func (r *Resolver) Register(
 
 	if _, err := r.store.GetUserByUsername(ctx, username); err == nil {
 		return model.Actor{}, ErrUsernameTaken
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return model.Actor{}, err
+	}
+	if _, err := r.store.GetUserByPhone(ctx, phone); err == nil {
+		return model.Actor{}, ErrPhoneTaken
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return model.Actor{}, err
 	}
@@ -259,6 +486,9 @@ func (r *Resolver) Register(
 		inviteCode,
 	)
 	if err != nil {
+		if strings.Contains(err.Error(), "uk_mgmt_users_phone_unique") {
+			return model.Actor{}, ErrPhoneTaken
+		}
 		if strings.Contains(err.Error(), "duplicate:") {
 			return model.Actor{}, ErrUsernameTaken
 		}

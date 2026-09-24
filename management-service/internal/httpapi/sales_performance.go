@@ -10,7 +10,8 @@ import (
 var salesPerformancePeriodPattern = regexp.MustCompile(`^\d{4}-\d{2}$`)
 
 func (s *Server) adminSalesPerformance(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireStaffPermission(w, r, "sales.view_all"); !ok {
+	actor, access, ok := s.requireStaffPermission(w, r, "sales.view_all")
+	if !ok {
 		return
 	}
 
@@ -28,11 +29,18 @@ func (s *Server) adminSalesPerformance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	periodEnd := periodStart.AddDate(0, 1, 0)
+	page, pageSize := normalizedPageQuery(r, 12, 100)
+	scope := staffBusinessScope(actor, access, "sales.view_all")
 
-	items, err := s.store.ListSalesPerformance(
+	items, total, totals, err := s.store.ListSalesPerformanceScoped(
 		r.Context(),
+		scope,
 		periodStart.UTC(),
 		periodEnd.UTC(),
+		strings.TrimSpace(r.URL.Query().Get("search")),
+		strings.TrimSpace(r.URL.Query().Get("sort")),
+		page,
+		pageSize,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取销售业绩失败")
@@ -44,5 +52,11 @@ func (s *Server) adminSalesPerformance(w http.ResponseWriter, r *http.Request) {
 		"period_start": periodStart,
 		"period_end":   periodEnd,
 		"items":        items,
+		"total":        total,
+		"page":         page,
+		"page_size":    pageSize,
+		"total_pages":  totalPages(total, pageSize),
+		"totals":       totals,
+		"scope":        scope,
 	})
 }

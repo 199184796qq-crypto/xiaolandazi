@@ -42,12 +42,44 @@ func (s *Server) invitationDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := s.store.GetInvitationDashboard(r.Context(), actor)
+	codePage := invitationPositiveInt(r, "code_page", 1, 1000000)
+	codePageSize := invitationPositiveInt(r, "code_page_size", 10, 100)
+	recordPage := invitationPositiveInt(r, "record_page", 1, 1000000)
+	recordPageSize := invitationPositiveInt(r, "record_page_size", 10, 100)
+
+	item, err := s.store.GetInvitationDashboard(
+		r.Context(),
+		actor,
+		codePage,
+		codePageSize,
+		recordPage,
+		recordPageSize,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取邀请与推荐数据失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func invitationPositiveInt(
+	r *http.Request,
+	key string,
+	fallback int,
+	max int,
+) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return fallback
+	}
+	if parsed > max {
+		return max
+	}
+	return parsed
 }
 
 func (s *Server) updateOwnInviteCodeStatus(w http.ResponseWriter, r *http.Request) {

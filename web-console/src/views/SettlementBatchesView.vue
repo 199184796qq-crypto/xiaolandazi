@@ -10,6 +10,7 @@ import {
   rejectSettlementBatch,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type {
   CreateSettlementBatchInput,
@@ -24,6 +25,9 @@ const earnings = ref<IncentiveEarning[]>([])
 const batches = ref<SettlementBatch[]>([])
 const tab = ref<'earnings' | 'batches'>('earnings')
 const modalOpen = ref(false)
+const earningsPage = ref(1)
+const batchesPage = ref(1)
+const pageSize = 20
 
 const now = new Date()
 const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -75,6 +79,18 @@ const paidAmount = computed(() =>
 const reviewCount = computed(() =>
   batches.value.filter((item) => item.status === 'reviewing').length,
 )
+const earningsPageCount = computed(() => Math.max(1, Math.ceil(earnings.value.length / pageSize)))
+const batchesPageCount = computed(() => Math.max(1, Math.ceil(batches.value.length / pageSize)))
+const pagedEarnings = computed(() => {
+  const page = Math.min(earningsPage.value, earningsPageCount.value)
+  const start = (page - 1) * pageSize
+  return earnings.value.slice(start, start + pageSize)
+})
+const pagedBatches = computed(() => {
+  const page = Math.min(batchesPage.value, batchesPageCount.value)
+  const start = (page - 1) * pageSize
+  return batches.value.slice(start, start + pageSize)
+})
 
 function dateInput(value: Date) {
   const y = value.getFullYear()
@@ -274,7 +290,7 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in earnings" :key="item.id">
+            <tr v-for="item in pagedEarnings" :key="item.id">
               <td><strong>{{ item.external_id }}</strong></td>
               <td>{{ beneficiaryLabel(item.beneficiary_type) }} #{{ item.beneficiary_id }}</td>
               <td>{{ earningTypeLabel(item.earning_type) }}</td>
@@ -291,6 +307,13 @@ onMounted(load)
           </tbody>
         </table>
         <div v-if="earnings.length === 0" class="empty-state">暂无收益明细。</div>
+        <PaginationBar
+          :page="Math.min(earningsPage, earningsPageCount)"
+          :total-pages="earningsPageCount"
+          :total="earnings.length"
+          :page-size="pageSize"
+          @update:page="earningsPage = $event"
+        />
       </div>
 
       <div v-else class="data-table-wrap">
@@ -309,7 +332,7 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in batches" :key="item.id">
+            <tr v-for="item in pagedBatches" :key="item.id">
               <td><strong>{{ item.batch_no }}</strong></td>
               <td>{{ beneficiaryLabel(item.beneficiary_type) }} #{{ item.beneficiary_id }}</td>
               <td>{{ new Date(item.period_start_at).toLocaleDateString('zh-CN') }} → {{ new Date(item.period_end_at).toLocaleDateString('zh-CN') }}</td>
@@ -353,6 +376,13 @@ onMounted(load)
           </tbody>
         </table>
         <div v-if="batches.length === 0" class="empty-state">暂无结算批次。</div>
+        <PaginationBar
+          :page="Math.min(batchesPage, batchesPageCount)"
+          :total-pages="batchesPageCount"
+          :total="batches.length"
+          :page-size="pageSize"
+          @update:page="batchesPage = $event"
+        />
       </div>
     </section>
 

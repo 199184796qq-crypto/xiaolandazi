@@ -51,7 +51,7 @@ type WithdrawalRequest struct {
 }
 
 type BeneficiaryWalletDashboard struct {
-	Wallet      BeneficiaryWallet        `json:"wallet"`
+	Wallet      BeneficiaryWallet         `json:"wallet"`
 	Ledger      []BeneficiaryWalletLedger `json:"ledger"`
 	Withdrawals []WithdrawalRequest       `json:"withdrawals"`
 }

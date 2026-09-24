@@ -87,6 +87,78 @@ func (s *Store) MigrateAuth(ctx context.Context) error {
 		return fmt.Errorf("widen mgmt_users.phone: %w", err)
 	}
 
+	// Phone is an authentication identifier, so it must be globally unique
+	// across every user type. Existing duplicate test/legacy rows keep the
+	// oldest user's phone; later duplicates are replaced with an explicit
+	// marker and must be corrected before those accounts can use SMS login.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE mgmt_users
+		SET phone=TRIM(phone)
+	`); err != nil {
+		return fmt.Errorf("normalize mgmt_users.phone: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE mgmt_users u
+		INNER JOIN (
+			SELECT phone_key, MIN(id) AS keep_id
+			FROM (
+				SELECT id, TRIM(phone) AS phone_key
+				FROM mgmt_users
+				WHERE TRIM(phone) <> ''
+			) normalized
+			GROUP BY phone_key
+			HAVING COUNT(*) > 1
+		) dup ON TRIM(u.phone)=dup.phone_key AND u.id<>dup.keep_id
+		SET u.phone=CONCAT('DUP-PHONE-', u.id)
+	`); err != nil {
+		return fmt.Errorf("deduplicate mgmt_users.phone: %w", err)
+	}
+
+	hasPhoneUniqueKey, err := s.columnExists(ctx, "mgmt_users", "phone_unique_key")
+	if err != nil {
+		return err
+	}
+	if !hasPhoneUniqueKey {
+		if _, err := s.db.ExecContext(ctx, `
+			ALTER TABLE mgmt_users
+			ADD COLUMN phone_unique_key VARCHAR(128)
+			GENERATED ALWAYS AS (NULLIF(TRIM(phone), '')) STORED AFTER phone
+		`); err != nil {
+			return fmt.Errorf("add mgmt_users.phone_unique_key: %w", err)
+		}
+	}
+	hasPhoneUniqueIndex, err := s.indexExists(ctx, "mgmt_users", "uk_mgmt_users_phone_unique")
+	if err != nil {
+		return err
+	}
+	if !hasPhoneUniqueIndex {
+		if _, err := s.db.ExecContext(ctx, `
+			CREATE UNIQUE INDEX uk_mgmt_users_phone_unique
+			ON mgmt_users (phone_unique_key)
+		`); err != nil {
+			return fmt.Errorf("create unique phone index: %w", err)
+		}
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS mgmt_sms_login_codes (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			phone VARCHAR(32) NOT NULL,
+			code_hash VARCHAR(255) NOT NULL,
+			expires_at DATETIME(3) NOT NULL,
+			used_at DATETIME(3) NULL,
+			failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+			request_ip VARCHAR(64) NOT NULL DEFAULT '',
+			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			PRIMARY KEY (id),
+			KEY idx_mgmt_sms_login_phone_created (phone, created_at),
+			KEY idx_mgmt_sms_login_ip_created (request_ip, created_at),
+			KEY idx_mgmt_sms_login_expires (expires_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+	`); err != nil {
+		return fmt.Errorf("create sms login codes table: %w", err)
+	}
+
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS mgmt_sessions (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -181,6 +253,155 @@ func (s *Store) GetUserByUsername(
 		WHERE username = ?
 		LIMIT 1
 	`, strings.TrimSpace(username))
+}
+
+func (s *Store) GetUserByPhone(
+	ctx context.Context,
+	phone string,
+) (model.User, error) {
+	return s.queryUser(ctx, `
+		SELECT id, tenant_id, username, password_hash, display_name, avatar_url, role, must_change_password, phone, province, city, district, status, created_at
+		FROM mgmt_users
+		WHERE phone_unique_key = ?
+		LIMIT 1
+	`, strings.TrimSpace(phone))
+}
+
+type SMSLoginChallenge struct {
+	ID             int64
+	Phone          string
+	CodeHash       string
+	ExpiresAt      time.Time
+	UsedAt         sql.NullTime
+	FailedAttempts uint32
+	CreatedAt      time.Time
+}
+
+var ErrSMSChallengeRateLimited = errors.New("sms challenge rate limited")
+
+func (s *Store) CreateSMSLoginChallenge(
+	ctx context.Context,
+	phone string,
+	codeHash string,
+	expiresAt time.Time,
+	requestIP string,
+) error {
+	phone = strings.TrimSpace(phone)
+	requestIP = strings.TrimSpace(requestIP)
+	now := time.Now().UTC()
+
+	var lastCreated sql.NullTime
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT MAX(created_at)
+		FROM mgmt_sms_login_codes
+		WHERE phone=?
+	`, phone).Scan(&lastCreated); err != nil {
+		return err
+	}
+	if lastCreated.Valid && now.Sub(lastCreated.Time) < time.Minute {
+		return ErrSMSChallengeRateLimited
+	}
+
+	var phoneDailyCount int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM mgmt_sms_login_codes
+		WHERE phone=? AND created_at>=?
+	`, phone, now.Add(-24*time.Hour)).Scan(&phoneDailyCount); err != nil {
+		return err
+	}
+	if phoneDailyCount >= 10 {
+		return ErrSMSChallengeRateLimited
+	}
+	if requestIP != "" {
+		var ipHourlyCount int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM mgmt_sms_login_codes
+			WHERE request_ip=? AND created_at>=?
+		`, requestIP, now.Add(-time.Hour)).Scan(&ipHourlyCount); err != nil {
+			return err
+		}
+		if ipHourlyCount >= 30 {
+			return ErrSMSChallengeRateLimited
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE mgmt_sms_login_codes
+		SET used_at=COALESCE(used_at, CURRENT_TIMESTAMP(3))
+		WHERE phone=? AND used_at IS NULL
+	`, phone); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO mgmt_sms_login_codes (
+			phone, code_hash, expires_at, request_ip
+		)
+		VALUES (?, ?, ?, ?)
+	`, phone, codeHash, expiresAt.UTC(), requestIP); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetLatestSMSLoginChallenge(
+	ctx context.Context,
+	phone string,
+) (SMSLoginChallenge, error) {
+	var item SMSLoginChallenge
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, phone, code_hash, expires_at, used_at, failed_attempts, created_at
+		FROM mgmt_sms_login_codes
+		WHERE phone=?
+		ORDER BY id DESC
+		LIMIT 1
+	`, strings.TrimSpace(phone)).Scan(
+		&item.ID,
+		&item.Phone,
+		&item.CodeHash,
+		&item.ExpiresAt,
+		&item.UsedAt,
+		&item.FailedAttempts,
+		&item.CreatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) MarkSMSLoginChallengeUsed(ctx context.Context, challengeID int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE mgmt_sms_login_codes
+		SET used_at=CURRENT_TIMESTAMP(3)
+		WHERE id=?
+		  AND used_at IS NULL
+		  AND expires_at>CURRENT_TIMESTAMP(3)
+		  AND failed_attempts<5
+	`, challengeID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) IncrementSMSLoginChallengeFailure(ctx context.Context, challengeID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE mgmt_sms_login_codes
+		SET failed_attempts=failed_attempts+1
+		WHERE id=? AND used_at IS NULL
+	`, challengeID)
+	return err
 }
 
 func (s *Store) GetUserByID(

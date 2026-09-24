@@ -12,11 +12,13 @@ coverage/
 
 data/audio/generated/*
 data/audio/temp/*
+data/media/*
 data/cache/*
 data/logs/*
 
 !data/audio/generated/.gitkeep
 !data/audio/temp/.gitkeep
+!data/media/.gitkeep
 !data/cache/.gitkeep
 !data/logs/.gitkeep
 
@@ -37,5 +39,6 @@ data/tools/
 data/avatars/*
 !data/avatars/.gitkeep
 data/run/*
+data/chrome-auth-check*/
 **/__pycache__/
 *.py[cod]

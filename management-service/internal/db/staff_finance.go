@@ -22,12 +22,15 @@ type financeApprovalPolicy struct {
 }
 
 type financeTaskPayload struct {
-	AmountCents   uint64 `json:"amount_cents"`
-	OrderID       int64  `json:"order_id,omitempty"`
-	SourceOrderID int64  `json:"source_order_id,omitempty"`
-	RMAID         int64  `json:"rma_id,omitempty"`
-	PaymentMethod string `json:"payment_method,omitempty"`
-	Reason        string `json:"reason"`
+	AmountCents     uint64 `json:"amount_cents"`
+	OrderID         int64  `json:"order_id,omitempty"`
+	SourceOrderID   int64  `json:"source_order_id,omitempty"`
+	RMAID           int64  `json:"rma_id,omitempty"`
+	PaymentMethod   string `json:"payment_method,omitempty"`
+	ResourceType    string `json:"resource_type,omitempty"`
+	ResourceSeconds int64  `json:"resource_seconds,omitempty"`
+	TargetOrgType   string `json:"target_org_type,omitempty"`
+	Reason          string `json:"reason"`
 }
 
 func (s *Store) ListStaffFinanceCustomers(
@@ -99,8 +102,8 @@ func (s *Store) ListStaffFinanceTasks(
 	ctx context.Context,
 	limit int,
 ) ([]model.StaffFinanceTaskSummary, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 100
+	if limit <= 0 || limit > 1000 {
+		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -113,6 +116,7 @@ func (s *Store) ListStaffFinanceTasks(
 			COALESCE(approver.display_name, approver.username, ''),
 			COALESCE(t.target_id, 0),
 			COALESCE(customer.name, ''),
+			COALESCE(t.target_type, ''),
 			t.amount,
 			t.status,
 			COALESCE(CAST(t.payload_json AS CHAR), '{}'),
@@ -127,9 +131,10 @@ func (s *Store) ListStaffFinanceTasks(
 		WHERE t.operation_code IN (
 			'finance.recharge',
 			'finance.refund',
-			'finance.reward'
+			'finance.reward',
+			'finance.ai_time_grant'
 		)
-		ORDER BY t.created_at DESC, t.id DESC
+		ORDER BY (t.status='pending') DESC, t.created_at DESC, t.id DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -171,6 +176,7 @@ func scanStaffFinanceTask(
 		&item.ApproverName,
 		&item.TenantID,
 		&item.CustomerName,
+		&item.TargetType,
 		&item.AmountYuan,
 		&item.Status,
 		&payloadRaw,
@@ -197,6 +203,7 @@ func scanStaffFinanceTask(
 	var payload financeTaskPayload
 	if err := json.Unmarshal([]byte(payloadRaw), &payload); err == nil {
 		item.Reason = payload.Reason
+		item.ResourceSeconds = payload.ResourceSeconds
 	}
 
 	return item, nil
@@ -217,6 +224,7 @@ func (s *Store) GetStaffFinanceTask(
 			COALESCE(approver.display_name, approver.username, ''),
 			COALESCE(t.target_id, 0),
 			COALESCE(customer.name, ''),
+			COALESCE(t.target_type, ''),
 			t.amount,
 			t.status,
 			COALESCE(CAST(t.payload_json AS CHAR), '{}'),
@@ -684,6 +692,95 @@ func (s *Store) CreateStaffFinanceReward(
 	}, nil
 }
 
+func (s *Store) CreateStaffAITimeGrantRequest(
+	ctx context.Context,
+	organizationID int64,
+	resourceSeconds int64,
+	reason string,
+	requesterUserID int64,
+) (model.StaffFinanceOperationResult, error) {
+	if organizationID <= 0 || resourceSeconds <= 0 {
+		return model.StaffFinanceOperationResult{}, fmt.Errorf("invalid ai time request")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return model.StaffFinanceOperationResult{}, fmt.Errorf("reason is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	defer tx.Rollback()
+
+	var orgType string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT org_type
+		FROM mgmt_tenants
+		WHERE id=? AND status='active'
+		LIMIT 1
+	`, organizationID).Scan(&orgType); err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	if orgType != "agent" && orgType != "customer" {
+		return model.StaffFinanceOperationResult{}, fmt.Errorf("unsupported ai time target")
+	}
+
+	policy, _, err := loadFinancePolicyTx(ctx, tx, "finance.ai_time_grant", 0)
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+
+	payload := financeTaskPayload{
+		ResourceType:    "ai_seconds",
+		ResourceSeconds: resourceSeconds,
+		TargetOrgType:   orgType,
+		Reason:          reason,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	var policyID any
+	if policy != nil {
+		policyID = policy.ID
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO staff_approval_tasks (
+			policy_id,
+			operation_code,
+			requester_user_id,
+			target_type,
+			target_id,
+			amount,
+			status,
+			payload_json
+		)
+		VALUES (?, 'finance.ai_time_grant', ?, ?, ?, 0, 'pending', ?)
+	`, policyID, requesterUserID, orgType, organizationID, payloadJSON)
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	taskID, err := result.LastInsertId()
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	task, err := s.GetStaffFinanceTask(ctx, taskID)
+	if err != nil {
+		return model.StaffFinanceOperationResult{}, err
+	}
+	return model.StaffFinanceOperationResult{
+		Task:             task,
+		RequiresApproval: true,
+		Applied:          false,
+	}, nil
+}
+
 func (s *Store) ApproveStaffFinanceTask(
 	ctx context.Context,
 	taskID int64,
@@ -811,6 +908,23 @@ func (s *Store) ApproveStaffFinanceTask(
 		); err != nil {
 			return err
 		}
+	case "finance.ai_time_grant":
+		if payload.ResourceType != "ai_seconds" || payload.ResourceSeconds <= 0 {
+			return fmt.Errorf("invalid ai time approval payload")
+		}
+		reason := fmt.Sprintf("%s（申请人用户ID:%d；审批任务#%d）", payload.Reason, requesterUserID, taskID)
+		if err := adjustOrganizationResourceTx(
+			ctx,
+			tx,
+			tenantID.Int64,
+			payload.ResourceType,
+			payload.ResourceSeconds,
+			approverUserID,
+			reason,
+			"marketing_ai_time_grant",
+		); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unsupported finance approval operation")
 	}
@@ -891,6 +1005,7 @@ func (s *Store) RejectStaffFinanceTask(
 			return err
 		}
 	case "finance.reward":
+	case "finance.ai_time_grant":
 	default:
 		return fmt.Errorf("unsupported finance approval operation")
 	}

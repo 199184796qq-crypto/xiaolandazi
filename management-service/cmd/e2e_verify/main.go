@@ -21,17 +21,16 @@ type check struct {
 
 func main() {
 	cfg := config.Load()
-	mysqlCfg := mysql.Config{
-		User:      cfg.DBUser,
-		Passwd:    cfg.DBPassword,
-		Net:       "tcp",
-		Addr:      net.JoinHostPort(cfg.DBHost, cfg.DBPort),
-		DBName:    cfg.DBName,
-		ParseTime: true,
-		Loc:       time.UTC,
-		Params: map[string]string{
-			"charset": "utf8mb4",
-		},
+	mysqlCfg := mysql.NewConfig()
+	mysqlCfg.User = cfg.DBUser
+	mysqlCfg.Passwd = cfg.DBPassword
+	mysqlCfg.Net = "tcp"
+	mysqlCfg.Addr = net.JoinHostPort(cfg.DBHost, cfg.DBPort)
+	mysqlCfg.DBName = cfg.DBName
+	mysqlCfg.ParseTime = true
+	mysqlCfg.Loc = time.UTC
+	mysqlCfg.Params = map[string]string{
+		"charset": "utf8mb4",
 	}
 	db, err := sql.Open("mysql", mysqlCfg.FormatDSN())
 	if err != nil {

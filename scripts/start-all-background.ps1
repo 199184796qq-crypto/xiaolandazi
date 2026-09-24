@@ -1,3 +1,12 @@
+& (Join-Path $PSScriptRoot 'start-development-services.ps1')
+exit $LASTEXITCODE
+
+<#
+Legacy detached launcher kept below for history. The wrapper above intentionally
+uses Windows Task Scheduler so development services are not children of the
+WebCodex runner and therefore are not killed by its execution timeout.
+#>
+
 $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -5,6 +14,31 @@ $LogDir = Join-Path $Root 'data\logs'
 $RunDir = Join-Path $Root 'data\run'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+
+function Import-LocalEnvFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith('#')) { continue }
+
+        $idx = $line.IndexOf('=')
+        if ($idx -le 0) { continue }
+
+        $name = $line.Substring(0, $idx).Trim()
+        $value = $line.Substring($idx + 1)
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+
+        [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    }
+
+    return $true
+}
+
+$cloudDevConfig = Join-Path $Root 'configs\cloud-dev.local'
+if (Import-LocalEnvFile $cloudDevConfig) {
+    Write-Host '[ENV] Loaded configs\cloud-dev.local for development services.'
+}
 
 function Get-PortPid([int]$Port) {
     $line = netstat -ano |

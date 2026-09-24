@@ -25,7 +25,12 @@ import AgentLevelsView from './views/AgentLevelsView.vue'
 import AgentContractsView from './views/AgentContractsView.vue'
 import CommercialTimeCardsView from './views/CommercialTimeCardsView.vue'
 import CommercialDeviceProductsView from './views/CommercialDeviceProductsView.vue'
+import MarketingDesignView from './views/MarketingDesignView.vue'
+import MarketingOperationsView from './views/MarketingOperationsView.vue'
 import LiveOperationsView from './views/LiveOperationsView.vue'
+import LiveRoomQuotaView from './views/LiveRoomQuotaView.vue'
+import LiveStrategyEntryView from './views/LiveStrategyEntryView.vue'
+import DeviceBindingView from './views/DeviceBindingView.vue'
 import AuditLogView from './views/AuditLogView.vue'
 import FinanceTraceView from './views/FinanceTraceView.vue'
 import InventoryLifecycleView from './views/InventoryLifecycleView.vue'
@@ -36,14 +41,21 @@ import IncentiveProgramsView from './views/IncentiveProgramsView.vue'
 import SettlementBatchesView from './views/SettlementBatchesView.vue'
 import OperatingFinanceView from './views/OperatingFinanceView.vue'
 import AfterSalesPortalView from './views/AfterSalesPortalView.vue'
+import SystemSettingsView from './views/SystemSettingsView.vue'
 import { loadSession, session } from './session'
 
 function isInternalRole(role?: string) {
   return role === 'platform_admin' || role === 'staff' || role === 'sales_staff'
 }
 
+function hasAuthenticatedActor() {
+  return Boolean(session.bootstrap?.actor?.user_id && session.bootstrap?.actor?.role)
+}
+
 function hasStaffPermission(code: string) {
-  const access = session.bootstrap?.staff_access
+  const bootstrap = session.bootstrap
+  if (bootstrap?.actor.role === 'platform_admin') return true
+  const access = bootstrap?.staff_access
   if (!access) return false
   return access.is_super_admin || access.permissions.includes(code)
 }
@@ -68,6 +80,13 @@ function defaultAuthenticatedRoute() {
       return { name: 'staff-finance-hub' }
     }
     if (
+      hasStaffPermission('liveops.configure') ||
+      hasStaffPermission('liveops.view_all') ||
+      hasStaffPermission('liveops.room_quota.view')
+    ) {
+      return { name: 'live-hub' }
+    }
+    if (
       hasStaffPermission('inventory.view') ||
       hasStaffPermission('logistics.view') ||
       hasStaffPermission('inventory.after_sales.view')
@@ -85,6 +104,12 @@ function defaultAuthenticatedRoute() {
     }
     if (hasStaffPermission('commercial.membership.view')) {
       return { name: 'commercial-hub' }
+    }
+    if (hasStaffPermission('commercial.time_card.view')) {
+      return { name: 'commercial-time-cards' }
+    }
+    if (hasStaffPermission('commercial.device.view')) {
+      return { name: 'commercial-device-products' }
     }
     if (hasStaffPermission('invitations.view_all')) {
       return { name: 'invitations' }
@@ -114,6 +139,12 @@ export const router = createRouter({
       name: 'platform-overview',
       component: PlatformOverviewView,
       meta: { staffPermission: 'system.architecture.view' },
+    },
+    {
+      path: '/system/settings',
+      name: 'system-settings',
+      component: SystemSettingsView,
+      meta: { staffPermission: 'system.settings.view' },
     },
     {
       path: '/staff',
@@ -206,8 +237,7 @@ export const router = createRouter({
     {
       path: '/staff/finance/ai-time',
       name: 'staff-finance-ai-time',
-      component: ResourcesView,
-      meta: { staffPermission: 'finance.resource.view' },
+      redirect: '/operations/live/marketing/ai-time',
     },
     {
       path: '/staff/finance/operating',
@@ -226,7 +256,35 @@ export const router = createRouter({
       name: 'live-hub',
       component: DomainHubView,
       props: { hub: 'live' },
-      meta: { staffPermission: 'system.architecture.view' },
+      meta: { staffPermission: 'liveops.configure' },
+    },
+    {
+      path: '/operations/live/marketing',
+      name: 'live-activity-marketing',
+      component: DomainHubView,
+      props: { hub: 'activityMarketing' },
+      meta: {
+        staffPermissionsAny: [
+          'commercial.marketing.view',
+          'commercial.membership.view',
+          'commercial.ai_time.view',
+          'commercial.time_card.view',
+          'commercial.device.view',
+          'invitations.view_all',
+        ],
+      },
+    },
+    {
+      path: '/operations/live/marketing/ai-time',
+      name: 'commercial-ai-time',
+      component: ResourcesView,
+      meta: { staffPermission: 'commercial.ai_time.view' },
+    },
+    {
+      path: '/operations/live/room-quotas',
+      name: 'live-room-quotas',
+      component: LiveRoomQuotaView,
+      meta: { staffPermission: 'liveops.room_quota.view' },
     },
     {
       path: '/operations/live/monitor',
@@ -243,9 +301,20 @@ export const router = createRouter({
       meta: { staffPermission: 'system.architecture.view' },
     },
     {
+      path: '/operations/live/strategy',
+      name: 'live-strategy',
+      component: LiveStrategyEntryView,
+    },
+    {
+      path: '/operations/live/devices',
+      name: 'live-devices',
+      component: DeviceBindingView,
+    },
+    {
       path: '/',
       name: 'rooms',
-      component: RoomsView,
+      component: DomainHubView,
+      props: { hub: 'live' },
     },
     {
       path: '/rooms/list',
@@ -335,8 +404,7 @@ export const router = createRouter({
     {
       path: '/commercial/memberships',
       name: 'commercial-hub',
-      component: DomainHubView,
-      props: { hub: 'commercial' },
+      redirect: '/operations/live/marketing',
       meta: { staffPermission: 'commercial.membership.view' },
     },
     {
@@ -357,27 +425,54 @@ export const router = createRouter({
       path: '/commercial/time-cards',
       name: 'commercial-time-cards',
       component: CommercialTimeCardsView,
-      meta: { staffPermission: 'commercial.membership.view' },
+      meta: { staffPermission: 'commercial.time_card.view' },
     },
     {
       path: '/commercial/device-products',
       name: 'commercial-device-products',
       component: CommercialDeviceProductsView,
-      meta: { staffPermission: 'commercial.membership.view' },
+      meta: { staffPermission: 'commercial.device.view' },
+    },
+    {
+      path: '/commercial/marketing',
+      name: 'commercial-marketing',
+      component: MarketingDesignView,
+      meta: { staffPermission: 'commercial.marketing.view' },
+    },
+    {
+      path: '/commercial/marketing/tools',
+      name: 'commercial-marketing-tools',
+      component: MarketingOperationsView,
+      props: { mode: 'tools' },
+      meta: { staffPermission: 'commercial.marketing.view' },
+    },
+    {
+      path: '/commercial/marketing/channels',
+      name: 'commercial-marketing-channels',
+      component: MarketingOperationsView,
+      props: { mode: 'channels' },
+      meta: { staffPermission: 'invitations.view_all' },
+    },
+    {
+      path: '/commercial/marketing/analytics',
+      name: 'commercial-marketing-analytics',
+      component: MarketingOperationsView,
+      props: { mode: 'analytics' },
+      meta: { staffPermission: 'commercial.marketing.view' },
     },
     {
       path: '/commercial/referrals',
       name: 'commercial-referrals',
       component: IncentiveProgramsView,
       props: { mode: 'referral' },
-      meta: { staffPermission: 'commercial.membership.view' },
+      meta: { staffPermission: 'commercial.referral.view' },
     },
     {
       path: '/commercial/settlement',
       name: 'commercial-settlement',
       component: IncentiveProgramsView,
       props: { mode: 'settlement' },
-      meta: { staffPermission: 'commercial.membership.view' },
+      meta: { staffPermission: 'finance.settlement_rules.view' },
     },
     {
       path: '/shop',
@@ -474,21 +569,34 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.public === true) {
-    if (session.bootstrap) {
+    if (hasAuthenticatedActor()) {
       return defaultAuthenticatedRoute()
     }
     return true
   }
 
-  if (!session.bootstrap) {
+  if (!hasAuthenticatedActor()) {
     return {
       name: 'login',
-      query: { redirect: to.fullPath },
+      query: {
+        redirect: to.fullPath,
+        portal:
+          to.meta.platformAdminOnly === true ||
+          to.meta.internalStaffOnly === true ||
+          typeof to.meta.staffPermission === 'string' ||
+          Array.isArray(to.meta.staffPermissionsAny)
+            ? 'internal'
+            : 'user',
+      },
     }
   }
 
   const role = session.bootstrap.actor.role
   const primaryGroupCode = session.bootstrap.staff_access?.primary_group_code
+
+  if (to.meta.platformAdminOnly === true && role !== 'platform_admin') {
+    return defaultAuthenticatedRoute()
+  }
 
   if (
     to.meta.internalStaffOnly === true &&
@@ -521,15 +629,27 @@ router.beforeEach(async (to) => {
 
   if (
     (role === 'staff' || role === 'platform_admin') &&
-    to.name === 'resources-workspace'
+    to.name === 'resources-workspace' &&
+    hasStaffPermission('commercial.ai_time.view')
   ) {
-    return { name: 'staff-finance-ai-time' }
+    return { name: 'commercial-ai-time' }
   }
 
   const staffPermission = to.meta.staffPermission
   if (
     typeof staffPermission === 'string' &&
     !hasStaffPermission(staffPermission)
+  ) {
+    return defaultAuthenticatedRoute()
+  }
+
+  const staffPermissionsAny = to.meta.staffPermissionsAny
+  if (
+    Array.isArray(staffPermissionsAny) &&
+    staffPermissionsAny.length > 0 &&
+    !staffPermissionsAny.some(
+      (permission) => typeof permission === 'string' && hasStaffPermission(permission),
+    )
   ) {
     return defaultAuthenticatedRoute()
   }
@@ -566,6 +686,7 @@ router.beforeEach(async (to) => {
   if (to.meta.resourceAccess === true) {
     const allowed =
       role === 'agent_admin' ||
+      role === 'customer' ||
       hasStaffPermission('finance.resource.view') ||
       hasStaffPermission('finance.resource.adjust')
 

@@ -4,28 +4,58 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"hash/fnv"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"livecompanion/core/internal/coordination"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/model"
 	roomstore "livecompanion/core/internal/room"
 )
 
+type Stats struct {
+	ActiveRooms  int
+	ShardIndex   int
+	ShardCount   int
+	LeaseEnabled bool
+	LeaseNodeID  string
+}
+
+func (m *Manager) ProviderDescriptors() []ProviderDescriptor {
+	catalog, ok := m.factory.(ProviderCatalog)
+	if !ok {
+		return nil
+	}
+	return catalog.ProviderDescriptors()
+}
+
 type Manager struct {
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
 
-	rooms   *roomstore.Store
-	events  *eventstore.Store
-	hub     *eventstore.Hub
-	factory Factory
+	rooms                 *roomstore.Store
+	events                *eventstore.Store
+	hub                   *eventstore.Hub
+	factory               Factory
+	shardIndex            int
+	shardCount            int
+	publicEventLogEnabled bool
+	leases                *coordination.RoomLeases
+	failoverDelay         time.Duration
 
-	mu       sync.Mutex
-	sessions map[int64]context.CancelFunc
-	wg       sync.WaitGroup
+	mu                sync.Mutex
+	sessions          map[int64]context.CancelFunc
+	sessionLeases     map[int64]coordination.RoomLease
+	missingLeaseSince map[int64]time.Time
+	wg                sync.WaitGroup
+
+	activityMu        sync.Mutex
+	lastLiveTouch     map[int64]time.Time
+	liveTouchInterval time.Duration
 }
 
 func NewManager(
@@ -33,17 +63,40 @@ func NewManager(
 	events *eventstore.Store,
 	hub *eventstore.Hub,
 	factory Factory,
+	shardIndex int,
+	shardCount int,
+	publicEventLogEnabled bool,
+	leases *coordination.RoomLeases,
+	failoverDelay time.Duration,
 ) *Manager {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
+	if shardCount <= 0 {
+		shardCount = 1
+	}
+	if shardIndex < 0 || shardIndex >= shardCount {
+		shardIndex = 0
+	}
+	if failoverDelay < 0 {
+		failoverDelay = 0
+	}
 	return &Manager{
-		rootCtx:    rootCtx,
-		rootCancel: rootCancel,
-		rooms:      rooms,
-		events:     events,
-		hub:        hub,
-		factory:    factory,
-		sessions:   make(map[int64]context.CancelFunc),
+		rootCtx:               rootCtx,
+		rootCancel:            rootCancel,
+		rooms:                 rooms,
+		events:                events,
+		hub:                   hub,
+		factory:               factory,
+		shardIndex:            shardIndex,
+		shardCount:            shardCount,
+		publicEventLogEnabled: publicEventLogEnabled,
+		leases:                leases,
+		failoverDelay:         failoverDelay,
+		sessions:              make(map[int64]context.CancelFunc),
+		sessionLeases:         make(map[int64]coordination.RoomLease),
+		missingLeaseSince:     make(map[int64]time.Time),
+		lastLiveTouch:         make(map[int64]time.Time),
+		liveTouchInterval:     5 * time.Second,
 	}
 }
 
@@ -54,15 +107,62 @@ func (m *Manager) Resume(ctx context.Context) error {
 	}
 
 	for _, room := range rooms {
-		m.clearRoomEvents(room.ID)
 		m.Reconcile(room)
 	}
 	return nil
 }
 
+func (m *Manager) Sync(ctx context.Context) error {
+	rooms, err := m.rooms.List(ctx, nil)
+	if err != nil {
+		return err
+	}
+	present := make(map[int64]struct{}, len(rooms))
+	for _, room := range rooms {
+		present[room.ID] = struct{}{}
+		m.Reconcile(room)
+	}
+
+	m.mu.Lock()
+	localIDs := make([]int64, 0, len(m.sessions))
+	for roomID := range m.sessions {
+		localIDs = append(localIDs, roomID)
+	}
+	m.mu.Unlock()
+	for _, roomID := range localIDs {
+		if _, ok := present[roomID]; !ok {
+			m.stopLocal(roomID, true)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) RunSyncLoop(interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.rootCtx.Done():
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(m.rootCtx, interval)
+			if err := m.Sync(ctx); err != nil {
+				log.Printf("collector shard sync failed: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
 func (m *Manager) Start(room model.Room) {
-	if !room.MonitorEnabled || !room.DeviceOnline {
-		m.clearRoomEvents(room.ID)
+	m.start(room, nil)
+}
+
+func (m *Manager) start(room model.Room, lease *coordination.RoomLease) {
+	if !room.MonitorEnabled {
 		return
 	}
 
@@ -74,15 +174,40 @@ func (m *Manager) Start(room model.Room) {
 
 	ctx, cancel := context.WithCancel(m.rootCtx)
 	m.sessions[room.ID] = cancel
+	if lease != nil {
+		m.sessionLeases[room.ID] = *lease
+	}
 	m.wg.Add(1)
 	m.mu.Unlock()
 
 	go func() {
 		defer m.wg.Done()
+		var renewDone chan struct{}
+		if lease != nil && m.leases != nil {
+			renewDone = make(chan struct{})
+			go func() {
+				defer close(renewDone)
+				m.renewRoomLease(ctx, cancel, *lease)
+			}()
+		}
 		defer func() {
+			cancel()
+			if renewDone != nil {
+				<-renewDone
+			}
+			if lease != nil && m.leases != nil {
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := m.leases.Release(releaseCtx, *lease); err != nil {
+					log.Printf("collector room=%d release lease fence=%d: %v", room.ID, lease.Fence, err)
+				}
+				releaseCancel()
+			}
 			m.mu.Lock()
 			delete(m.sessions, room.ID)
+			delete(m.sessionLeases, room.ID)
+			delete(m.missingLeaseSince, room.ID)
 			m.mu.Unlock()
+			m.clearLiveTouch(room.ID)
 		}()
 
 		m.run(ctx, room)
@@ -90,6 +215,10 @@ func (m *Manager) Start(room model.Room) {
 }
 
 func (m *Manager) Stop(roomID int64) {
+	m.stopLocal(roomID, true)
+}
+
+func (m *Manager) stopLocal(roomID int64, clearEvents bool) {
 	m.mu.Lock()
 	cancel, ok := m.sessions[roomID]
 	m.mu.Unlock()
@@ -97,29 +226,185 @@ func (m *Manager) Stop(roomID int64) {
 	if ok {
 		cancel()
 	}
-	m.clearRoomEvents(roomID)
+	if clearEvents {
+		m.clearRoomEvents(roomID)
+	}
 }
 
 func (m *Manager) Reconcile(room model.Room) {
-	switch {
-	case !room.MonitorEnabled:
-		m.Stop(room.ID)
-		_ = m.rooms.SetStatus(
-			context.Background(),
-			room.TenantID,
-			room.ID,
-			"stopped",
-		)
-	case !room.DeviceOnline:
-		m.Stop(room.ID)
-		_ = m.rooms.SetStatus(
-			context.Background(),
-			room.TenantID,
-			room.ID,
-			"device_offline",
-		)
-	default:
+	if !room.MonitorEnabled {
+		if m.IsServingRoom(room.ID) {
+			m.Stop(room.ID)
+			_ = m.rooms.SetStatus(
+				context.Background(),
+				room.TenantID,
+				room.ID,
+				"stopped",
+			)
+		}
+		return
+	}
+
+	if m.IsServingRoom(room.ID) {
+		return
+	}
+
+	if m.leases == nil {
+		if !m.OwnsRoom(room) {
+			m.stopLocal(room.ID, false)
+			return
+		}
 		m.Start(room)
+		return
+	}
+
+	if !m.OwnsRoom(room) {
+		leaseCtx, cancel := context.WithTimeout(m.rootCtx, 2*time.Second)
+		_, exists, err := m.leases.Current(
+			leaseCtx,
+			room.TenantID,
+			room.ID,
+		)
+		cancel()
+		if err != nil {
+			log.Printf("collector room=%d inspect lease: %v", room.ID, err)
+			return
+		}
+		if exists {
+			m.mu.Lock()
+			delete(m.missingLeaseSince, room.ID)
+			m.mu.Unlock()
+			return
+		}
+
+		now := time.Now()
+		m.mu.Lock()
+		missingSince := m.missingLeaseSince[room.ID]
+		if missingSince.IsZero() {
+			m.missingLeaseSince[room.ID] = now
+		}
+		m.mu.Unlock()
+		if missingSince.IsZero() ||
+			now.Sub(missingSince) < m.failoverDelay {
+			return
+		}
+	} else {
+		m.mu.Lock()
+		delete(m.missingLeaseSince, room.ID)
+		m.mu.Unlock()
+	}
+
+	leaseCtx, cancel := context.WithTimeout(m.rootCtx, 2*time.Second)
+	lease, acquired, err := m.leases.Acquire(
+		leaseCtx,
+		room.TenantID,
+		room.ID,
+	)
+	cancel()
+	if err != nil {
+		log.Printf("collector room=%d acquire lease: %v", room.ID, err)
+		return
+	}
+	if !acquired {
+		return
+	}
+	log.Printf(
+		"collector room=%d lease acquired owner=%s fence=%d preferred=%t",
+		room.ID,
+		lease.Owner,
+		lease.Fence,
+		m.OwnsRoom(room),
+	)
+	m.start(room, &lease)
+}
+
+func (m *Manager) OwnsRoom(room model.Room) bool {
+	if m.shardCount <= 1 {
+		return true
+	}
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d:%d", room.TenantID, room.ID)
+	return int(h.Sum64()%uint64(m.shardCount)) == m.shardIndex
+}
+
+func (m *Manager) IsServingRoom(roomID int64) bool {
+	m.mu.Lock()
+	_, ok := m.sessions[roomID]
+	m.mu.Unlock()
+	return ok
+}
+
+func (m *Manager) Stats() Stats {
+	m.mu.Lock()
+	active := len(m.sessions)
+	m.mu.Unlock()
+	stats := Stats{
+		ActiveRooms:  active,
+		ShardIndex:   m.shardIndex,
+		ShardCount:   m.shardCount,
+		LeaseEnabled: m.leases != nil,
+	}
+	if m.leases != nil {
+		stats.LeaseNodeID = m.leases.NodeID()
+	}
+	return stats
+}
+
+func (m *Manager) renewRoomLease(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	lease coordination.RoomLease,
+) {
+	interval := m.leases.RenewInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var failureSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, renewCancel := context.WithTimeout(ctx, 2*time.Second)
+			ok, err := m.leases.Renew(renewCtx, lease)
+			renewCancel()
+			if err == nil && ok {
+				failureSince = time.Time{}
+				continue
+			}
+			if err == nil && !ok {
+				log.Printf(
+					"collector room=%d lease lost fence=%d",
+					lease.RoomID,
+					lease.Fence,
+				)
+				cancel()
+				return
+			}
+			log.Printf(
+				"collector room=%d lease renew failed fence=%d: %v",
+				lease.RoomID,
+				lease.Fence,
+				err,
+			)
+			if failureSince.IsZero() {
+				failureSince = time.Now()
+				continue
+			}
+			maxFailure := m.leases.TTL() - interval
+			if maxFailure < interval {
+				maxFailure = interval
+			}
+			if time.Since(failureSince) >= maxFailure {
+				log.Printf(
+					"collector room=%d stopping before lease expiry fence=%d",
+					lease.RoomID,
+					lease.Fence,
+				)
+				cancel()
+				return
+			}
+		}
 	}
 }
 
@@ -189,13 +474,13 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		}
 
 		emit := func(runCtx context.Context, input model.CreateEventInput) error {
-			if err := m.rooms.MarkLive(runCtx, room.TenantID, room.ID); err != nil {
-				return err
-			}
-
 			if input.EventType == "room" {
 				m.applyRoomMetrics(runCtx, room, input)
 				return nil
+			}
+
+			if err := m.touchRoomLive(runCtx, room); err != nil {
+				return err
 			}
 
 			event, err := m.events.Create(
@@ -208,7 +493,9 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 				return err
 			}
 
-			logPublicEvent(room, event)
+			if m.publicEventLogEnabled {
+				logPublicEvent(room, event)
+			}
 			m.hub.Publish(event)
 			return nil
 		}
@@ -246,6 +533,34 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		case <-timer.C:
 		}
 	}
+}
+
+func (m *Manager) touchRoomLive(ctx context.Context, room model.Room) error {
+	now := time.Now().UTC()
+	m.activityMu.Lock()
+	last := m.lastLiveTouch[room.ID]
+	if !last.IsZero() && now.Sub(last) < m.liveTouchInterval {
+		m.activityMu.Unlock()
+		return nil
+	}
+	m.lastLiveTouch[room.ID] = now
+	m.activityMu.Unlock()
+
+	if err := m.rooms.MarkLive(ctx, room.TenantID, room.ID); err != nil {
+		m.activityMu.Lock()
+		if current, ok := m.lastLiveTouch[room.ID]; ok && current.Equal(now) {
+			delete(m.lastLiveTouch, room.ID)
+		}
+		m.activityMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) clearLiveTouch(roomID int64) {
+	m.activityMu.Lock()
+	delete(m.lastLiveTouch, roomID)
+	m.activityMu.Unlock()
 }
 
 func (m *Manager) clearRoomEvents(roomID int64) {

@@ -122,9 +122,12 @@ const selectedRoles = computed(() =>
 )
 
 const selectedEmployees = computed(() =>
-  employees.value.filter(
-    (item) => item.primary_group_id === selectedGroup.value?.id,
-  ),
+  employees.value.filter((item) => {
+    const groupId = selectedGroup.value?.id
+    if (!groupId) return false
+    if (item.primary_group_id === groupId) return true
+    return item.groups?.some((group) => group.group_id === groupId) === true
+  }),
 )
 
 const isSuperAdmin = computed(() => access.value?.is_super_admin === true)
@@ -165,7 +168,11 @@ function canManageGroup(code: string, groupId: number) {
   if (isSuperAdmin.value) return true
   const scope = permissionScope(code)
   if (scope === 'all' || scope === 'all_internal') return true
-  if (scope === 'group') return access.value?.primary_group_id === groupId
+  if (scope === 'group') {
+    const groupIds = access.value?.permission_group_ids?.[code] ?? []
+    if (groupIds.length) return groupIds.includes(groupId)
+    return access.value?.primary_group_id === groupId
+  }
   if (scope === 'managed_groups') {
     return access.value?.managed_group_ids.includes(groupId) === true
   }
@@ -186,25 +193,83 @@ const canAssignEmployeeRoles = computed(
     canManageGroup('staff.employee.role_assign', selectedGroup.value!.id),
 )
 
-const canDisableEmployee = computed(
-  () =>
-    Boolean(selectedGroup.value) &&
+function canDisableEmployeeAccount(item: StaffEmployeeSummary) {
+  return (
     hasPermission('staff.employee.disable') &&
-    canManageGroup('staff.employee.disable', selectedGroup.value!.id),
-)
+    canManageGroup('staff.employee.disable', item.primary_group_id)
+  )
+}
 
 const canAssignManagerRole = computed(
   () =>
     isSuperAdmin.value ||
-    (access.value?.primary_group_code === 'management' &&
-      permissionScope('staff.employee.role_assign') === 'all_internal'),
+    permissionScope('staff.employee.role_assign') === 'all_internal',
 )
 
+function canAssignRole(role: StaffRoleSummary, creating = false) {
+  if (role.status !== 'active') return false
+  if (role.is_group_manager && !canAssignManagerRole.value) return false
+  if (isSuperAdmin.value) return true
+  if (
+    creating &&
+    role.group_id === selectedGroup.value?.id &&
+    canCreateEmployee.value
+  ) {
+    return true
+  }
+  return (
+    hasPermission('staff.employee.role_assign') &&
+    canManageGroup('staff.employee.role_assign', role.group_id)
+  )
+}
+
 const assignableEmployeeRoles = computed(() =>
-  selectedRoles.value.filter(
-    (role) => canAssignManagerRole.value || !role.is_group_manager,
-  ),
+  roles.value.filter((role) => canAssignRole(role, true)),
 )
+
+const editableEmployeeRoles = computed(() => {
+  const assigned = new Set(employeeEditRoleIds.value)
+  return roles.value.filter(
+    (role) => assigned.has(role.id) || canAssignRole(role, false),
+  )
+})
+
+function canEditEmployeeRole(role: StaffRoleSummary) {
+  return canAssignRole(role, false)
+}
+
+const mutuallyExclusiveLiveOpsRoleCodes = new Set([
+  'live_operations_manager',
+  'live_operations_staff',
+])
+
+function toggleEmployeeRole(role: StaffRoleSummary, editing = false) {
+  if (editing && !canEditEmployeeRole(role)) return
+  if (!editing && !canAssignRole(role, true)) return
+  const selected = editing ? employeeEditRoleIds : employeeRoleIds
+  const isSelected = selected.value.includes(role.id)
+
+  if (isSelected) {
+    selected.value = selected.value.filter((id) => id !== role.id)
+    return
+  }
+
+  let next = selected.value
+  if (mutuallyExclusiveLiveOpsRoleCodes.has(role.code)) {
+    const conflictingRoleIds = new Set(
+      roles.value
+        .filter(
+          (item) =>
+            item.id !== role.id &&
+            mutuallyExclusiveLiveOpsRoleCodes.has(item.code),
+        )
+        .map((item) => item.id),
+    )
+    next = next.filter((id) => !conflictingRoleIds.has(id))
+  }
+
+  selected.value = [...next, role.id]
+}
 
 function scopeLabel(value: string) {
   if (value === 'self') return '本人'
@@ -291,7 +356,8 @@ function openEmployeeCreate() {
   if (!selectedGroup.value) return
   resetEmployeeForm()
   const firstRole = assignableEmployeeRoles.value.find(
-    (item) => item.status === 'active',
+    (item) =>
+      item.status === 'active' && item.group_id === selectedGroup.value?.id,
   )
   if (firstRole) employeeRoleIds.value = [firstRole.id]
   showEmployeeModal.value = true
@@ -309,7 +375,17 @@ async function submitEmployee() {
     return
   }
   if (!employeeRoleIds.value.length) {
-    error.value = '至少选择一个员工角色'
+    error.value = '至少选择一个员工岗位'
+    return
+  }
+  if (
+    !employeeRoleIds.value.some((roleId) =>
+      roles.value.some(
+        (role) => role.id === roleId && role.group_id === selectedGroup.value?.id,
+      ),
+    )
+  ) {
+    error.value = '主部门必须至少选择一个岗位'
     return
   }
   if (
@@ -499,11 +575,11 @@ async function submitEmployeeRoles() {
       employeeEditRoleIds.value,
     )
     showEmployeeRolesModal.value = false
-    notice.value = '员工角色已更新。'
+    notice.value = '员工部门职责已更新。'
     await load()
   } catch (value) {
     error.value =
-      value instanceof Error ? value.message : '更新员工角色失败'
+      value instanceof Error ? value.message : '更新员工部门职责失败'
   } finally {
     saving.value = false
   }
@@ -576,12 +652,12 @@ onMounted(load)
       hub="staff"
       :active-title="props.groupsOnly ? '部门' : props.initialTab === 'roles' ? '角色权限' : props.initialTab === 'approvals' ? '审批策略' : '员工账号'"
     />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">INTERNAL ORGANIZATION</p>
         <h2>组织架构</h2>
         <p>
-          内部员工统一按“部门 → 员工 → 角色 → 权限 → 数据范围”管理。代理和终端仍属于外部组织体系，不与员工混用。
+          主部门只负责人事归属；同一员工可跨多个部门兼任不同岗位。权限按全部有效岗位合并，并保留各岗位所属部门的数据范围。
         </p>
       </div>
       <button class="ghost-button" type="button" :disabled="loading" @click="load">
@@ -732,6 +808,7 @@ onMounted(load)
                 <div>
                   <strong>{{ item.display_name }}</strong>
                   <span>{{ item.employee_no }} · @{{ item.username }}</span>
+                  <small>主部门：{{ item.primary_group_name }}<template v-if="item.groups?.length > 1"> · 兼任 {{ item.groups.length - 1 }} 个部门</template></small>
                 </div>
               </div>
 
@@ -748,7 +825,7 @@ onMounted(load)
                   class="staff-role-badge"
                   :class="{ manager: role.is_group_manager }"
                 >
-                  {{ role.name }}
+                  {{ role.group_name }} · {{ role.name }}<template v-if="role.group_id !== item.primary_group_id"> · 兼任</template>
                 </span>
               </div>
 
@@ -765,10 +842,10 @@ onMounted(load)
                   type="button"
                   @click="openEmployeeRoleEdit(item)"
                 >
-                  角色
+                  职责
                 </button>
                 <button
-                  v-if="canDisableEmployee && item.employment_status === 'active'"
+                  v-if="canDisableEmployeeAccount(item) && item.employment_status === 'active'"
                   class="text-action danger"
                   type="button"
                   @click="disableEmployee(item)"
@@ -910,7 +987,7 @@ onMounted(load)
         <div class="modal-header">
           <div>
             <p class="section-kicker">NEW EMPLOYEE</p>
-            <h3>添加员工 · {{ selectedGroup.name }}</h3>
+            <h3>添加员工 · 主部门：{{ selectedGroup.name }}</h3>
           </div>
           <button class="icon-button" type="button" @click="showEmployeeModal = false">
             ×
@@ -963,20 +1040,28 @@ onMounted(load)
           />
 
           <div class="form-span-2 staff-role-selector">
-            <span>员工角色</span>
+            <span>部门岗位（支持跨部门兼任）</span>
             <label
               v-for="role in assignableEmployeeRoles"
               :key="role.id"
               class="staff-role-option"
               :class="{ selected: employeeRoleIds.includes(role.id), manager: role.is_group_manager }"
             >
-              <input v-model="employeeRoleIds" type="checkbox" :value="role.id" />
+              <input
+                type="checkbox"
+                :checked="employeeRoleIds.includes(role.id)"
+                @change="toggleEmployeeRole(role)"
+              />
               <div>
-                <strong>{{ role.name }}</strong>
-                <span>{{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template></span>
+                <strong>{{ role.group_name }} · {{ role.name }}</strong>
+                <span><template v-if="role.group_id === selectedGroup.id">主部门岗位 · </template><template v-else>兼任岗位 · </template>{{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template></span>
               </div>
             </label>
           </div>
+
+          <small class="form-span-2 staff-multi-role-note">
+            主部门至少保留一个岗位；勾选其他部门岗位即表示该员工同时兼任对应部门职责，仍使用同一个登录账号。
+          </small>
 
           <label class="form-span-2">
             <span>初始凭证交付</span>
@@ -1166,8 +1251,8 @@ onMounted(load)
       <form class="modal-card" @submit.prevent="submitEmployeeRoles">
         <div class="modal-header">
           <div>
-            <p class="section-kicker">EMPLOYEE ROLES</p>
-            <h3>调整角色 · {{ editingEmployee.display_name }}</h3>
+            <p class="section-kicker">EMPLOYEE RESPONSIBILITIES</p>
+            <h3>调整部门职责 · {{ editingEmployee.display_name }}</h3>
           </div>
           <button
             class="icon-button"
@@ -1180,15 +1265,20 @@ onMounted(load)
 
         <div class="staff-role-selector">
           <label
-            v-for="role in assignableEmployeeRoles"
+            v-for="role in editableEmployeeRoles"
             :key="role.id"
             class="staff-role-option"
             :class="{ selected: employeeEditRoleIds.includes(role.id), manager: role.is_group_manager }"
           >
-            <input v-model="employeeEditRoleIds" type="checkbox" :value="role.id" />
+            <input
+              type="checkbox"
+              :checked="employeeEditRoleIds.includes(role.id)"
+              :disabled="!canEditEmployeeRole(role)"
+              @change="toggleEmployeeRole(role, true)"
+            />
             <div>
-              <strong>{{ role.name }}</strong>
-              <span>{{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template></span>
+              <strong>{{ role.group_name }} · {{ role.name }}</strong>
+              <span>{{ role.group_id === editingEmployee.primary_group_id ? '主部门岗位' : '兼任岗位' }} · {{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template><template v-if="!canEditEmployeeRole(role)"> · 其他部门锁定</template></span>
             </div>
           </label>
         </div>
@@ -1202,7 +1292,7 @@ onMounted(load)
             取消
           </button>
           <button class="primary-button" type="submit" :disabled="saving">
-            保存角色
+            保存部门职责
           </button>
         </div>
       </form>

@@ -173,6 +173,9 @@ func auditAction(method string, path string) string {
 		strings.HasPrefix(path, "/api/v1/staff/approval-policies/"):
 		return "staff.approval_policy.update"
 	case method == http.MethodPost &&
+		path == "/api/v1/commercial/ai-time/requests":
+		return "commercial.ai_time.request"
+	case method == http.MethodPost &&
 		path == "/api/v1/staff/finance/recharge":
 		return "finance.recharge.create"
 	case method == http.MethodPost &&

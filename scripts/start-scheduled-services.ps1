@@ -1,8 +1,11 @@
 $ErrorActionPreference = 'Stop'
-$tasks = @('LiveCompanion-Management','LiveCompanion-Core','LiveCompanion-Web')
-foreach ($task in $tasks) {
-    $existing = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
-    if (-not $existing) { throw ('Scheduled task not found: ' + $task) }
-    Start-ScheduledTask -TaskName $task
-    Write-Host ('[OK] started {0}' -f $task)
+
+$taskName = 'LiveCompanion-Supervisor'
+$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if (-not $existing) {
+    throw ('Scheduled task not found: ' + $taskName)
 }
+
+Start-ScheduledTask -TaskName $taskName
+Write-Host ('[OK] started {0}' -f $taskName)
+Write-Host '[INFO] Go supervisor now owns web, management and core health/restart.'

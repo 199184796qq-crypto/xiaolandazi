@@ -402,7 +402,23 @@ func (s *Store) GetInviteCodeByID(
 	}
 	return item, nil
 }
-func (s *Store) ListInviteCodes(ctx context.Context) ([]model.InviteCodeSummary, error) {
+func (s *Store) ListInviteCodes(
+	ctx context.Context,
+	page int,
+	pageSize int,
+) ([]model.InviteCodeSummary, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM iam_invite_codes`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			c.id,
@@ -420,9 +436,10 @@ func (s *Store) ListInviteCodes(ctx context.Context) ([]model.InviteCodeSummary,
 		FROM iam_invite_codes c
 		INNER JOIN mgmt_users u ON u.id=c.owner_user_id
 		ORDER BY c.id DESC
-	`)
+		LIMIT ? OFFSET ?
+	`, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -445,7 +462,7 @@ func (s *Store) ListInviteCodes(ctx context.Context) ([]model.InviteCodeSummary,
 			&expiresAt,
 			&item.CreatedAt,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if ownerTenantID.Valid {
 			value := ownerTenantID.Int64
@@ -457,7 +474,10 @@ func (s *Store) ListInviteCodes(ctx context.Context) ([]model.InviteCodeSummary,
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 func (s *Store) UpdateInviteCodeStatus(
@@ -550,7 +570,42 @@ func (s *Store) UpdateInviteCodePolicy(
 func (s *Store) ListInvitationRecords(
 	ctx context.Context,
 	actor model.Actor,
-) ([]model.InvitationRecord, error) {
+	page int,
+	pageSize int,
+) ([]model.InvitationRecord, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+
+	where := ""
+	args := make([]any, 0)
+	switch actor.Role {
+	case "platform_admin":
+	case "agent_admin":
+		if actor.TenantID == nil {
+			return []model.InvitationRecord{}, 0, nil
+		}
+		where = " WHERE r.parent_org_id=?"
+		args = append(args, *actor.TenantID)
+	case "sales_staff", "customer":
+		where = " WHERE r.inviter_user_id=?"
+		args = append(args, actor.UserID)
+	default:
+		return []model.InvitationRecord{}, 0, nil
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM crm_registration_referrals r"+where,
+		args...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	query := `
 		SELECT
 			r.id,
@@ -573,28 +628,11 @@ func (s *Store) ListInvitationRecords(
 		INNER JOIN mgmt_users inviter ON inviter.id=r.inviter_user_id
 		INNER JOIN mgmt_users referred ON referred.id=r.referred_user_id
 		INNER JOIN mgmt_tenants parent ON parent.id=r.parent_org_id
-	`
-	args := make([]any, 0)
-
-	switch actor.Role {
-	case "platform_admin":
-		query += " ORDER BY r.id DESC"
-	case "agent_admin":
-		if actor.TenantID == nil {
-			return []model.InvitationRecord{}, nil
-		}
-		query += " WHERE r.parent_org_id=? ORDER BY r.id DESC"
-		args = append(args, *actor.TenantID)
-	case "sales_staff", "customer":
-		query += " WHERE r.inviter_user_id=? ORDER BY r.id DESC"
-		args = append(args, actor.UserID)
-	default:
-		return []model.InvitationRecord{}, nil
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	` + where + " ORDER BY r.id DESC LIMIT ? OFFSET ?"
+	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -619,7 +657,7 @@ func (s *Store) ListInvitationRecords(
 			&item.ParentOrgName,
 			&item.BoundAt,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if inviterTenantID.Valid {
 			value := inviterTenantID.Int64
@@ -627,12 +665,19 @@ func (s *Store) ListInvitationRecords(
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 func (s *Store) GetInvitationDashboard(
 	ctx context.Context,
 	actor model.Actor,
+	codePage int,
+	codePageSize int,
+	recordPage int,
+	recordPageSize int,
 ) (model.InvitationDashboard, error) {
 	myCode, err := s.ensureUserInviteCode(ctx, actor.UserID, actor.TenantID, actor.Role)
 	if err != nil {
@@ -640,22 +685,39 @@ func (s *Store) GetInvitationDashboard(
 	}
 
 	codes := []model.InviteCodeSummary{myCode}
+	codesTotal := 1
 	if actor.IsPlatformAdmin() {
-		codes, err = s.ListInviteCodes(ctx)
+		codes, codesTotal, err = s.ListInviteCodes(ctx, codePage, codePageSize)
 		if err != nil {
 			return model.InvitationDashboard{}, err
 		}
 	}
 
-	records, err := s.ListInvitationRecords(ctx, actor)
+	records, recordsTotal, err := s.ListInvitationRecords(
+		ctx,
+		actor,
+		recordPage,
+		recordPageSize,
+	)
 	if err != nil {
+		return model.InvitationDashboard{}, err
+	}
+	var ownReferralCount int
+	if err := s.db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM crm_registration_referrals WHERE inviter_user_id=?",
+		actor.UserID,
+	).Scan(&ownReferralCount); err != nil {
 		return model.InvitationDashboard{}, err
 	}
 
 	return model.InvitationDashboard{
-		MyCode:  myCode,
-		Codes:   codes,
-		Records: records,
+		MyCode:           myCode,
+		Codes:            codes,
+		CodesTotal:       codesTotal,
+		Records:          records,
+		RecordsTotal:     recordsTotal,
+		OwnReferralCount: ownReferralCount,
 	}, nil
 }
 

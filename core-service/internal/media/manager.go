@@ -16,7 +16,10 @@ import (
 	"livecompanion/core/internal/model"
 )
 
-var ErrStreamUnavailable = errors.New("live stream unavailable")
+var (
+	ErrStreamUnavailable = errors.New("live stream unavailable")
+	ErrMediaCapacity     = errors.New("live preview capacity reached")
+)
 
 const (
 	playlistName = "index.m3u8"
@@ -37,10 +40,16 @@ type session struct {
 	err        error
 }
 
+type Stats struct {
+	ActiveSessions int
+	MaxSessions    int
+}
+
 type Manager struct {
-	ffmpegPath string
-	root       string
-	resolver   StreamResolver
+	ffmpegPath  string
+	root        string
+	resolver    StreamResolver
+	maxSessions int
 
 	mu       sync.Mutex
 	sessions map[int64]*session
@@ -48,10 +57,20 @@ type Manager struct {
 	wg       sync.WaitGroup
 }
 
+func (m *Manager) Stats() Stats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return Stats{
+		ActiveSessions: len(m.sessions),
+		MaxSessions:    m.maxSessions,
+	}
+}
+
 func NewManager(
 	ffmpegPath string,
 	root string,
 	resolver StreamResolver,
+	maxSessions int,
 ) (*Manager, error) {
 	resolved, err := resolveFFmpeg(strings.TrimSpace(ffmpegPath))
 	if err != nil {
@@ -66,12 +85,16 @@ func NewManager(
 		return nil, fmt.Errorf("create media cache root: %w", err)
 	}
 
+	if maxSessions <= 0 {
+		maxSessions = 8
+	}
 	manager := &Manager{
-		ffmpegPath: resolved,
-		root:       root,
-		resolver:   resolver,
-		sessions:   make(map[int64]*session),
-		stop:       make(chan struct{}),
+		ffmpegPath:  resolved,
+		root:        root,
+		resolver:    resolver,
+		maxSessions: maxSessions,
+		sessions:    make(map[int64]*session),
+		stop:        make(chan struct{}),
 	}
 
 	manager.wg.Add(1)
@@ -181,6 +204,10 @@ func (m *Manager) ensureSession(
 			delete(m.sessions, room.ID)
 			stopSession(current)
 		}
+	}
+
+	if len(m.sessions) >= m.maxSessions {
+		return nil, fmt.Errorf("%w: max_sessions=%d", ErrMediaCapacity, m.maxSessions)
 	}
 
 	dir := filepath.Join(m.root, fmt.Sprintf("room-%d", room.ID))

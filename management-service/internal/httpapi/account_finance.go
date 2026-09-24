@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/model"
 )
 
@@ -88,10 +89,12 @@ func (s *Server) accountUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "账户名称需为 2-64 个字符")
 		return
 	}
-	if input.Phone == "" {
-		writeError(w, http.StatusBadRequest, "联系电话不能为空")
+	normalizedPhone, phoneOK := auth.NormalizeMainlandPhone(input.Phone)
+	if !phoneOK {
+		writeError(w, http.StatusBadRequest, "请输入正确的中国大陆手机号码")
 		return
 	}
+	input.Phone = normalizedPhone
 	if input.Province == "" || input.City == "" || input.District == "" {
 		writeError(w, http.StatusBadRequest, "省、市、区/县不能为空")
 		return
@@ -128,6 +131,10 @@ func (s *Server) accountUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		input.Address,
 	)
 	if err != nil {
+		if isDuplicateDBError(err) {
+			writeError(w, http.StatusConflict, "该手机号已经绑定其他账号")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "修改账户资料失败")
 		return
 	}

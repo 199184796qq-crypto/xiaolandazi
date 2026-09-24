@@ -26,6 +26,7 @@ func normalizeStaffEmployeeNo(raw string) (string, bool) {
 	}
 	return fmt.Sprintf("EMP-%06d", n), true
 }
+
 type createStaffGroupRequest struct {
 	Code        string `json:"code"`
 	Name        string `json:"name"`
@@ -86,6 +87,17 @@ func (s *Server) staffAccessForActor(
 	r *http.Request,
 	actor model.Actor,
 ) (model.StaffAccessContext, error) {
+	if actor.IsPlatformAdmin() {
+		return model.StaffAccessContext{
+			IsSuperAdmin:       true,
+			RoleCodes:          []string{"super_system_admin"},
+			Permissions:        []string{"*"},
+			PermissionScopes:   map[string]string{"*": "all"},
+			PermissionGroupIDs: map[string][]int64{},
+			GroupIDs:           []int64{},
+			ManagedGroupIDs:    []int64{},
+		}, nil
+	}
 	return s.store.GetStaffAccess(r.Context(), actor.UserID)
 }
 
@@ -115,6 +127,31 @@ func staffPermissionScope(
 		return value
 	}
 	return ""
+}
+
+func staffPermissionGroupIDs(
+	access model.StaffAccessContext,
+	permission string,
+) []int64 {
+	if access.IsSuperAdmin {
+		return nil
+	}
+	return access.PermissionGroupIDs[permission]
+}
+
+func staffEmployeeBelongsToGroup(item model.StaffEmployeeSummary, groupID int64) bool {
+	if groupID <= 0 {
+		return false
+	}
+	if item.PrimaryGroupID == groupID {
+		return true
+	}
+	for _, group := range item.Groups {
+		if group.GroupID == groupID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) requireStaffPermission(
@@ -188,7 +225,12 @@ func canManageStaffGroup(
 		}
 		return false
 	case "group":
-		return access.PrimaryGroupID == groupID
+		for _, id := range staffPermissionGroupIDs(access, permission) {
+			if id == groupID {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -207,13 +249,18 @@ func canViewStaffEmployee(
 		return true
 	case "managed_groups":
 		for _, id := range access.ManagedGroupIDs {
-			if id == item.PrimaryGroupID {
+			if staffEmployeeBelongsToGroup(item, id) {
 				return true
 			}
 		}
 		return false
 	case "group":
-		return item.PrimaryGroupID == access.PrimaryGroupID
+		for _, id := range staffPermissionGroupIDs(access, "staff.employee.view") {
+			if staffEmployeeBelongsToGroup(item, id) {
+				return true
+			}
+		}
+		return false
 	case "self":
 		return item.ID == access.EmployeeID
 	default:
@@ -256,12 +303,12 @@ func (s *Server) staffDashboard(w http.ResponseWriter, r *http.Request) {
 			visibleGroupIDs[groupID] = struct{}{}
 		}
 	case groupScope == "group":
-		if access.PrimaryGroupID > 0 {
-			visibleGroupIDs[access.PrimaryGroupID] = struct{}{}
+		for _, groupID := range staffPermissionGroupIDs(access, "staff.group.view") {
+			visibleGroupIDs[groupID] = struct{}{}
 		}
 	default:
-		if access.PrimaryGroupID > 0 {
-			visibleGroupIDs[access.PrimaryGroupID] = struct{}{}
+		for _, groupID := range access.GroupIDs {
+			visibleGroupIDs[groupID] = struct{}{}
 		}
 	}
 
@@ -520,22 +567,30 @@ func (s *Server) staffCreateEmployee(w http.ResponseWriter, r *http.Request) {
 	}
 
 	allowManagerRole := access.IsSuperAdmin ||
-		(access.PrimaryGroupCode == "management" &&
-			staffPermissionScope(access, "staff.employee.role_assign") == "all_internal")
-	if !allowManagerRole {
-		roles, err := s.store.ListStaffRoles(
-			r.Context(),
-			input.PrimaryGroupID,
-		)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "读取角色失败")
+		staffPermissionScope(access, "staff.employee.role_assign") == "all_internal"
+	allRoles, err := s.store.ListStaffRoles(r.Context(), 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取角色失败")
+		return
+	}
+	roleByID := make(map[int64]model.StaffRoleSummary, len(allRoles))
+	for _, role := range allRoles {
+		roleByID[role.ID] = role
+	}
+	for _, roleID := range input.RoleIDs {
+		role, exists := roleByID[roleID]
+		if !exists || role.Status != "active" {
+			writeError(w, http.StatusBadRequest, "选择的岗位不存在或已停用")
 			return
 		}
-		for _, role := range roles {
-			if role.IsGroupManager && containsRoleID(input.RoleIDs, role.ID) {
-				writeError(w, http.StatusForbidden, "部门负责人角色只能由超级系统管理员或管理部负责人分配")
-				return
-			}
+		if role.GroupID != input.PrimaryGroupID &&
+			!canManageStaffGroup(access, "staff.employee.role_assign", role.GroupID) {
+			writeError(w, http.StatusForbidden, "当前角色不能给员工增加该部门的兼任职责")
+			return
+		}
+		if role.IsGroupManager && !allowManagerRole {
+			writeError(w, http.StatusForbidden, "部门负责人角色只能由超级系统管理员或具备全局员工管理权限的人员分配")
+			return
 		}
 	}
 
@@ -579,6 +634,7 @@ func (s *Server) staffCreateEmployee(w http.ResponseWriter, r *http.Request) {
 		input.DisplayName,
 		input.Username,
 		initialPassword,
+		"internal",
 	)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"item":       item,
@@ -641,30 +697,84 @@ func (s *Server) staffReplaceEmployeeRoles(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "员工不存在")
 		return
 	}
-	if !canManageStaffGroup(
-		access,
-		"staff.employee.role_assign",
-		item.PrimaryGroupID,
-	) {
-		writeError(w, http.StatusForbidden, "当前角色不能调整该员工角色")
-		return
-	}
 	var input replaceStaffEmployeeRolesRequest
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
 
+	allRoles, err := s.store.ListStaffRoles(r.Context(), 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取角色失败")
+		return
+	}
+	roleByID := make(map[int64]model.StaffRoleSummary, len(allRoles))
+	for _, role := range allRoles {
+		roleByID[role.ID] = role
+	}
+	currentRoleIDs := make(map[int64]struct{}, len(item.Roles))
+	requestedRoleIDs := make(map[int64]struct{}, len(input.RoleIDs))
+	for _, role := range item.Roles {
+		currentRoleIDs[role.RoleID] = struct{}{}
+	}
+	for _, roleID := range input.RoleIDs {
+		requestedRoleIDs[roleID] = struct{}{}
+	}
+
 	allowManagerRoles := access.IsSuperAdmin ||
-		(access.PrimaryGroupCode == "management" &&
-			staffPermissionScope(access, "staff.employee.role_assign") == "all_internal")
+		staffPermissionScope(access, "staff.employee.role_assign") == "all_internal"
+
+	// Responsibilities from departments the operator cannot manage are locked:
+	// they must remain on the employee and cannot be added by this operator.
+	for _, currentRole := range item.Roles {
+		if canManageStaffGroup(access, "staff.employee.role_assign", currentRole.GroupID) {
+			continue
+		}
+		if _, retained := requestedRoleIDs[currentRole.RoleID]; !retained {
+			writeError(w, http.StatusForbidden, "该员工还有其他部门职责，当前账号不能移除")
+			return
+		}
+	}
+	for _, roleID := range input.RoleIDs {
+		role, exists := roleByID[roleID]
+		if !exists || role.Status != "active" {
+			writeError(w, http.StatusBadRequest, "选择的岗位不存在或已停用")
+			return
+		}
+		_, alreadyAssigned := currentRoleIDs[roleID]
+		if !alreadyAssigned &&
+			!canManageStaffGroup(access, "staff.employee.role_assign", role.GroupID) {
+			writeError(w, http.StatusForbidden, "当前账号不能增加该部门的兼任职责")
+			return
+		}
+		if role.IsGroupManager && !allowManagerRoles && !alreadyAssigned {
+			writeError(w, http.StatusForbidden, "部门负责人角色只能由超级系统管理员或具备全局员工管理权限的人员分配")
+			return
+		}
+	}
+	if !allowManagerRoles {
+		for _, currentRole := range item.Roles {
+			if !currentRole.IsGroupManager {
+				continue
+			}
+			if _, retained := requestedRoleIDs[currentRole.RoleID]; !retained {
+				writeError(w, http.StatusForbidden, "当前账号不能移除部门负责人职责")
+				return
+			}
+		}
+	}
+
 	if err := s.store.ReplaceStaffEmployeeRoles(
 		r.Context(),
 		employeeID,
 		input.RoleIDs,
-		allowManagerRoles,
+		true,
 	); err != nil {
-		writeError(w, http.StatusBadRequest, "调整员工角色失败")
+		message := "调整员工部门职责失败"
+		if strings.Contains(err.Error(), "primary department") {
+			message = "主部门必须至少保留一个岗位"
+		}
+		writeError(w, http.StatusBadRequest, message)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

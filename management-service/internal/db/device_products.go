@@ -4,20 +4,39 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"livecompanion/management/internal/model"
 )
 
+var ErrInvalidDeviceSalesStock = errors.New("invalid device sales stock")
+
 func (s *Store) ListCommercialDeviceProducts(ctx context.Context) ([]model.CommercialDeviceProduct, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.code, p.sku_code, p.name, p.description,
-		       p.status, p.sort_order, p.created_at, p.updated_at,
+		SELECT p.id, p.code, p.sku_code, p.name, p.description, p.image_url,
+		       p.unit_code,
+		       COALESCE((
+		         SELECT d.label
+		         FROM mgmt_system_dictionary_items d
+		         WHERE d.category='product_unit' AND d.code=p.unit_code
+		         LIMIT 1
+		       ), p.unit_code),
+		       p.status, p.sort_order, p.sales_stock,
 		       COALESCE((
 		         SELECT COUNT(*)
 		         FROM inv_devices d
 		         WHERE d.sku_code=p.sku_code AND d.lifecycle_status='IN_STOCK'
-		       ), 0)
+		       ), 0),
+		       p.created_at, p.updated_at,
+		       LEAST(
+		         p.sales_stock,
+		         COALESCE((
+		           SELECT COUNT(*)
+		           FROM inv_devices d
+		           WHERE d.sku_code=p.sku_code AND d.lifecycle_status='IN_STOCK'
+		         ), 0)
+		       )
 		FROM catalog_device_products p
 		ORDER BY p.sort_order ASC, p.id ASC
 	`)
@@ -35,8 +54,13 @@ func (s *Store) ListCommercialDeviceProducts(ctx context.Context) ([]model.Comme
 			&item.SKUCode,
 			&item.Name,
 			&item.Description,
+			&item.ImageURL,
+			&item.UnitCode,
+			&item.UnitLabel,
 			&item.Status,
 			&item.SortOrder,
+			&item.SalesStock,
+			&item.RealStock,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 			&item.AvailableStock,
@@ -70,6 +94,18 @@ func (s *Store) ListCommercialDeviceProducts(ctx context.Context) ([]model.Comme
 			}
 		}
 	}
+	campaigns, err := s.ListMarketingCampaigns(ctx, "device_product", 0, false)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].MarketingCampaigns = make([]model.MarketingCampaign, 0)
+		for _, campaign := range campaigns {
+			if marketingCampaignHasTarget(campaign, "device_product", items[i].ID) {
+				items[i].MarketingCampaigns = append(items[i].MarketingCampaigns, campaign)
+			}
+		}
+	}
 	return items, nil
 }
 
@@ -89,7 +125,7 @@ func (s *Store) GetCommercialDeviceProduct(ctx context.Context, productID int64)
 func (s *Store) listDeviceProductVersions(ctx context.Context, productID int64) ([]model.CommercialDeviceVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, product_id, version_no, lifecycle_status, currency,
-		       list_price_cents, sale_price_cents,
+		       cost_price_cents, list_price_cents, sale_price_cents,
 		       participates_referral, participates_sales_commission,
 		       participates_agent_settlement, effective_from, effective_to,
 		       published_at, created_at
@@ -111,6 +147,7 @@ func (s *Store) listDeviceProductVersions(ctx context.Context, productID int64) 
 			&item.VersionNo,
 			&item.LifecycleStatus,
 			&item.Currency,
+			&item.CostPriceCents,
 			&item.ListPriceCents,
 			&item.SalePriceCents,
 			&item.ParticipatesReferral,
@@ -128,6 +165,48 @@ func (s *Store) listDeviceProductVersions(ctx context.Context, productID int64) 
 	return items, rows.Err()
 }
 
+func ensureInventorySKUExistsTx(ctx context.Context, tx *sql.Tx, skuCode string) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1
+		FROM inv_devices
+		WHERE sku_code=?
+		LIMIT 1
+	`, skuCode).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("inventory sku not found")
+		}
+		return err
+	}
+	return nil
+}
+
+func inventorySKUInStockCountTx(ctx context.Context, tx *sql.Tx, skuCode string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM inv_devices
+		WHERE sku_code=? AND lifecycle_status='IN_STOCK'
+	`, skuCode).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func validateDeviceSalesStockTx(ctx context.Context, tx *sql.Tx, skuCode string, salesStock int) error {
+	if salesStock < 0 {
+		return ErrInvalidDeviceSalesStock
+	}
+	realStock, err := inventorySKUInStockCountTx(ctx, tx, skuCode)
+	if err != nil {
+		return err
+	}
+	if salesStock > realStock {
+		return ErrInvalidDeviceSalesStock
+	}
+	return nil
+}
+
 func (s *Store) CreateCommercialDeviceProduct(
 	ctx context.Context,
 	userID int64,
@@ -139,12 +218,20 @@ func (s *Store) CreateCommercialDeviceProduct(
 	}
 	defer tx.Rollback()
 
+	if err := ensureInventorySKUExistsTx(ctx, tx, input.SKUCode); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	if err := validateDeviceSalesStockTx(ctx, tx, input.SKUCode, input.SalesStock); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+
+	temporaryCode := fmt.Sprintf("tmp-%d-%d", userID, time.Now().UTC().UnixNano())
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO catalog_device_products (
-			code, sku_code, name, description, status, sort_order
+			code, sku_code, name, description, image_url, unit_code, sales_stock, status, sort_order
 		)
-		VALUES (?, ?, ?, ?, 'draft', ?)
-	`, input.Code, input.SKUCode, input.Name, input.Description, input.SortOrder)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)
+	`, temporaryCode, input.SKUCode, input.Name, input.Description, input.ImageURL, input.UnitCode, input.SalesStock, input.SortOrder)
 	if err != nil {
 		return model.CommercialDeviceProduct{}, err
 	}
@@ -152,17 +239,26 @@ func (s *Store) CreateCommercialDeviceProduct(
 	if err != nil {
 		return model.CommercialDeviceProduct{}, err
 	}
+	fixedCode := fmt.Sprintf("dev-%06d", productID)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE catalog_device_products
+		SET code=?
+		WHERE id=?
+	`, fixedCode, productID); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO catalog_device_versions (
 			product_id, version_no, lifecycle_status, currency,
-			list_price_cents, sale_price_cents,
+			cost_price_cents, list_price_cents, sale_price_cents,
 			participates_referral, participates_sales_commission,
 			participates_agent_settlement, created_by_user_id
 		)
-		VALUES (?, 1, 'draft', 'CNY', ?, ?, ?, ?, ?, ?)
+		VALUES (?, 1, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?)
 	`,
 		productID,
+		input.CostPriceCents,
 		input.ListPriceCents,
 		input.SalePriceCents,
 		input.ParticipatesReferral,
@@ -191,20 +287,30 @@ func (s *Store) SaveCommercialDeviceProductDraft(
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `
-		UPDATE catalog_device_products
-		SET code=?, sku_code=?, name=?, description=?, sort_order=?
+	if err := ensureInventorySKUExistsTx(ctx, tx, input.SKUCode); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	if err := validateDeviceSalesStockTx(ctx, tx, input.SKUCode, input.SalesStock); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+
+	var existingID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM catalog_device_products
 		WHERE id=?
-	`, input.Code, input.SKUCode, input.Name, input.Description, input.SortOrder, productID)
-	if err != nil {
+		FOR UPDATE
+	`, productID).Scan(&existingID); err != nil {
 		return model.CommercialDeviceProduct{}, err
 	}
-	affected, err := result.RowsAffected()
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE catalog_device_products
+		SET sku_code=?, name=?, description=?, image_url=?, unit_code=?, sales_stock=?, sort_order=?
+		WHERE id=?
+	`, input.SKUCode, input.Name, input.Description, input.ImageURL, input.UnitCode, input.SalesStock, input.SortOrder, productID)
 	if err != nil {
 		return model.CommercialDeviceProduct{}, err
-	}
-	if affected == 0 {
-		return model.CommercialDeviceProduct{}, sql.ErrNoRows
 	}
 
 	var draftID int64
@@ -219,11 +325,12 @@ func (s *Store) SaveCommercialDeviceProductDraft(
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE catalog_device_versions
-			SET list_price_cents=?, sale_price_cents=?,
+			SET cost_price_cents=?, list_price_cents=?, sale_price_cents=?,
 			    participates_referral=?, participates_sales_commission=?,
 			    participates_agent_settlement=?, created_by_user_id=?
 			WHERE id=?
 		`,
+			input.CostPriceCents,
 			input.ListPriceCents,
 			input.SalePriceCents,
 			input.ParticipatesReferral,
@@ -247,14 +354,15 @@ func (s *Store) SaveCommercialDeviceProductDraft(
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO catalog_device_versions (
 				product_id, version_no, lifecycle_status, currency,
-				list_price_cents, sale_price_cents,
+				cost_price_cents, list_price_cents, sale_price_cents,
 				participates_referral, participates_sales_commission,
 				participates_agent_settlement, created_by_user_id
 			)
-			VALUES (?, ?, 'draft', 'CNY', ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?)
 		`,
 			productID,
 			nextVersion,
+			input.CostPriceCents,
 			input.ListPriceCents,
 			input.SalePriceCents,
 			input.ParticipatesReferral,
@@ -328,15 +436,78 @@ func (s *Store) PublishCommercialDeviceProduct(
 	return s.GetCommercialDeviceProduct(ctx, productID)
 }
 
-func (s *Store) ListCustomerDeviceOffers(ctx context.Context) ([]model.CustomerDeviceOffer, error) {
+func (s *Store) SetCommercialDeviceProductStatus(
+	ctx context.Context,
+	actorUserID int64,
+	productID int64,
+	status string,
+) (model.CommercialDeviceProduct, error) {
+	if status != "active" && status != "inactive" && status != "archived" {
+		return model.CommercialDeviceProduct{}, errors.New("invalid device product status")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	defer tx.Rollback()
+
+	var name, beforeStatus string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT name, status FROM catalog_device_products WHERE id=? FOR UPDATE
+	`, productID).Scan(&name, &beforeStatus); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	if status == "active" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM catalog_device_versions
+			WHERE product_id=? AND lifecycle_status='published'
+		`, productID).Scan(&count); err != nil {
+			return model.CommercialDeviceProduct{}, err
+		}
+		if count == 0 {
+			return model.CommercialDeviceProduct{}, errors.New("device product has no published version")
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE catalog_device_products SET status=? WHERE id=?`, status, productID); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	if err := insertCommercialAuditTx(
+		ctx, tx, actorUserID, "device.product.status", "device_product", fmt.Sprintf("%d", productID),
+		map[string]any{"name": name, "status": beforeStatus},
+		map[string]any{"name": name, "status": status},
+	); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.CommercialDeviceProduct{}, err
+	}
+	return s.GetCommercialDeviceProduct(ctx, productID)
+}
+
+func (s *Store) ListCustomerDeviceOffers(ctx context.Context, tenantID int64) ([]model.CustomerDeviceOffer, error) {
+	membershipDiscountBPS, err := s.CustomerDeviceDiscountBPS(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.code, p.sku_code, p.name, p.description,
-		       v.list_price_cents, v.sale_price_cents, v.version_no,
+		SELECT p.id, p.code, p.sku_code, p.name, p.description, p.image_url,
+		       p.unit_code,
 		       COALESCE((
-		         SELECT COUNT(*)
-		         FROM inv_devices d
-		         WHERE d.sku_code=p.sku_code AND d.lifecycle_status='IN_STOCK'
-		       ), 0)
+		         SELECT d.label
+		         FROM mgmt_system_dictionary_items d
+		         WHERE d.category='product_unit' AND d.code=p.unit_code
+		         LIMIT 1
+		       ), p.unit_code),
+		       v.list_price_cents, v.sale_price_cents, v.version_no,
+		       LEAST(
+		         p.sales_stock,
+		         COALESCE((
+		           SELECT COUNT(*)
+		           FROM inv_devices d
+		           WHERE d.sku_code=p.sku_code AND d.lifecycle_status='IN_STOCK'
+		         ), 0)
+		       )
 		FROM catalog_device_products p
 		INNER JOIN catalog_device_versions v ON v.product_id=p.id
 		WHERE p.status='active'
@@ -359,13 +530,18 @@ func (s *Store) ListCustomerDeviceOffers(ctx context.Context) ([]model.CustomerD
 			&item.SKUCode,
 			&item.Name,
 			&item.Description,
+			&item.ImageURL,
+			&item.UnitCode,
+			&item.UnitLabel,
 			&item.OriginalPriceCents,
-			&item.SalePriceCents,
+			&item.BaseSalePriceCents,
 			&item.VersionNo,
 			&item.AvailableStock,
 		); err != nil {
 			return nil, err
 		}
+		item.MembershipDiscountBPS = membershipDiscountBPS
+		item.SalePriceCents = item.BaseSalePriceCents * uint64(membershipDiscountBPS) / 10000
 		item.DiscountBPS = 10000
 		if item.OriginalPriceCents > 0 {
 			item.DiscountBPS = uint32(item.SalePriceCents * 10000 / item.OriginalPriceCents)
@@ -373,4 +549,25 @@ func (s *Store) ListCustomerDeviceOffers(ctx context.Context) ([]model.CustomerD
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) CustomerDeviceDiscountBPS(ctx context.Context, tenantID int64) (uint32, error) {
+	var discount uint32
+	err := s.db.QueryRowContext(ctx, `
+		SELECT v.default_device_discount_bps
+		FROM biz_memberships m
+		INNER JOIN catalog_membership_plan_versions v ON v.id=m.plan_version_id
+		WHERE m.tenant_id=? AND m.status='active'
+		  AND m.cycle_start_at <= CURRENT_TIMESTAMP(3)
+		  AND m.cycle_end_at > CURRENT_TIMESTAMP(3)
+		ORDER BY m.cycle_end_at DESC, m.id DESC
+		LIMIT 1
+	`, tenantID).Scan(&discount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 10000, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return normalizeMembershipDiscountBPS(discount), nil
 }

@@ -156,7 +156,7 @@ func (s *Store) EnsureDefaultWarehouse(ctx context.Context) error {
 			('AFTER_SALES_PENDING', '售后待检库', 'active'),
 			('REPAIR', '维修库', 'active'),
 			('SCRAP_HOLD', '报废待处置库', 'active')
-		ON DUPLICATE KEY UPDATE name=VALUES(name), status='active'
+		ON DUPLICATE KEY UPDATE status='active'
 	`)
 	if err != nil {
 		return fmt.Errorf("seed default warehouse: %w", err)
@@ -193,12 +193,66 @@ func (s *Store) ListInventoryDeviceProducts(ctx context.Context) ([]model.Invent
 	return items, rows.Err()
 }
 
-func (s *Store) ListWarehouses(ctx context.Context) ([]model.Warehouse, error) {
+func (s *Store) ListInventoryDeviceSKUTypes(ctx context.Context) ([]model.InventoryDeviceSKUType, error) {
 	rows, err := s.db.QueryContext(ctx, `
+		SELECT d.sku_code,
+		       COUNT(*) AS total_quantity,
+		       SUM(CASE WHEN d.lifecycle_status='IN_STOCK' THEN 1 ELSE 0 END) AS in_stock_quantity,
+		       COUNT(DISTINCT CASE WHEN d.lifecycle_status='IN_STOCK' THEN d.custody_warehouse_id END) AS warehouse_count,
+		       MIN(d.sn) AS sample_sn,
+		       COALESCE(MAX(d.batch_no), '') AS sample_batch_no,
+		       COALESCE(MAX(p.id), 0) AS bound_product_id,
+		       COALESCE(MAX(p.name), '') AS bound_product_name
+		FROM inv_devices d
+		LEFT JOIN catalog_device_products p ON p.sku_code=d.sku_code
+		WHERE TRIM(d.sku_code) <> ''
+		GROUP BY d.sku_code
+		ORDER BY in_stock_quantity DESC, total_quantity DESC, d.sku_code ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.InventoryDeviceSKUType, 0)
+	for rows.Next() {
+		var item model.InventoryDeviceSKUType
+		if err := rows.Scan(
+			&item.SKUCode,
+			&item.TotalQuantity,
+			&item.InStockQuantity,
+			&item.WarehouseCount,
+			&item.SampleSN,
+			&item.SampleBatchNo,
+			&item.BoundProductID,
+			&item.BoundProductName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListWarehouses(ctx context.Context) ([]model.Warehouse, error) {
+	return s.listWarehouses(ctx, false)
+}
+
+func (s *Store) ListAllWarehouses(ctx context.Context) ([]model.Warehouse, error) {
+	return s.listWarehouses(ctx, true)
+}
+
+func (s *Store) listWarehouses(ctx context.Context, includeInactive bool) ([]model.Warehouse, error) {
+	query := `
 		SELECT id, code, name, organization_id, status, created_at, updated_at
 		FROM inv_warehouses
-		ORDER BY id ASC
-	`)
+	`
+	if !includeInactive {
+		query += " WHERE status='active'"
+	}
+	query += " ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, id ASC"
+
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +275,56 @@ func (s *Store) ListWarehouses(ctx context.Context) ([]model.Warehouse, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) GetWarehouse(ctx context.Context, warehouseID int64) (model.Warehouse, error) {
+	var item model.Warehouse
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, code, name, organization_id, status, created_at, updated_at
+		FROM inv_warehouses
+		WHERE id=?
+	`, warehouseID).Scan(
+		&item.ID,
+		&item.Code,
+		&item.Name,
+		&item.OrganizationID,
+		&item.Status,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) CreateWarehouse(ctx context.Context, input model.WarehouseInput) (model.Warehouse, error) {
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO inv_warehouses (code, name, status)
+		VALUES (?, ?, ?)
+	`, input.Code, input.Name, input.Status)
+	if err != nil {
+		return model.Warehouse{}, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return model.Warehouse{}, err
+	}
+	return s.GetWarehouse(ctx, id)
+}
+
+func (s *Store) UpdateWarehouse(ctx context.Context, warehouseID int64, input model.WarehouseInput) (model.Warehouse, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE inv_warehouses
+		SET code=?, name=?, status=?
+		WHERE id=?
+	`, input.Code, input.Name, input.Status, warehouseID)
+	if err != nil {
+		return model.Warehouse{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		if _, err := s.GetWarehouse(ctx, warehouseID); err != nil {
+			return model.Warehouse{}, err
+		}
+	}
+	return s.GetWarehouse(ctx, warehouseID)
 }
 
 func (s *Store) ListDevices(ctx context.Context) ([]model.Device, error) {
@@ -600,20 +704,20 @@ func (s *Store) CreateBatchInbound(
 	}
 
 	return model.BatchInboundResult{
-		DocumentID:       docID,
-		DocumentNo:       documentNo,
-		ProductID:        product.ID,
-		ProductName:      product.Name,
-		SKUCode:          product.SKUCode,
-		BatchNo:          strings.TrimSpace(input.BatchNo),
-		PurchaseNo:       strings.TrimSpace(input.PurchaseNo),
-		ExpectedQuantity: input.ExpectedQuantity,
-		ActualQuantity:   len(sns),
+		DocumentID:          docID,
+		DocumentNo:          documentNo,
+		ProductID:           product.ID,
+		ProductName:         product.Name,
+		SKUCode:             product.SKUCode,
+		BatchNo:             strings.TrimSpace(input.BatchNo),
+		PurchaseNo:          strings.TrimSpace(input.PurchaseNo),
+		ExpectedQuantity:    input.ExpectedQuantity,
+		ActualQuantity:      len(sns),
 		PurchaseAmountCents: input.PurchaseAmountCents,
-		SupplierName:     strings.TrimSpace(input.SupplierName),
-		PaymentMethod:    strings.TrimSpace(input.PaymentMethod),
-		DeviceIDs:        deviceIDs,
-		SNs:              sns,
+		SupplierName:        strings.TrimSpace(input.SupplierName),
+		PaymentMethod:       strings.TrimSpace(input.PaymentMethod),
+		DeviceIDs:           deviceIDs,
+		SNs:                 sns,
 	}, nil
 }
 
@@ -1620,7 +1724,7 @@ func deviceTransitionAllowed(fromStatus string, toStatus string) bool {
 		},
 		"EXTERNAL_REPAIR": {
 			"REPAIR_RETURN_TRANSIT": true,
-			"REPAIRING":              true,
+			"REPAIRING":             true,
 		},
 		"REPAIR_RETURN_TRANSIT": {
 			"REPAIRING": true,

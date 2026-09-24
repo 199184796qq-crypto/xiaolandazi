@@ -5,19 +5,31 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"livecompanion/management/internal/audit"
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/config"
+	"livecompanion/management/internal/coordination"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/httpapi"
+	"livecompanion/management/internal/liveruntime"
 	"livecompanion/management/internal/mailer"
+	assetstorage "livecompanion/management/internal/storage"
 )
 
 func main() {
 	cfg := config.Load()
+	appCtx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
 
 	store, err := appdb.Open(cfg)
 	if err != nil {
@@ -25,11 +37,17 @@ func main() {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Cloud RDS adds network latency to each idempotent migration statement.
+	// Keep startup migrations bounded, but give the full migration chain enough
+	// time to complete instead of sharing the old local-MySQL 20s budget.
+	ctx, cancel := context.WithTimeout(appCtx, 3*time.Minute)
 	defer cancel()
 
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("migrate management database: %v", err)
+	}
+	if err := store.MigrateSystemSettings(ctx); err != nil {
+		log.Fatalf("migrate system settings database: %v", err)
 	}
 	if err := store.MigrateOrganizations(ctx); err != nil {
 		log.Fatalf("migrate organization database: %v", err)
@@ -85,10 +103,11 @@ func main() {
 	if err := store.MigrateInventory(ctx); err != nil {
 		log.Fatalf("migrate inventory database: %v", err)
 	}
-	if cfg.Env == "development" {
-		if err := store.EnsureDefaultWarehouse(ctx); err != nil {
-			log.Fatalf("seed default warehouse: %v", err)
-		}
+	if err := store.MigrateLiveRuntime(ctx); err != nil {
+		log.Fatalf("migrate live runtime database: %v", err)
+	}
+	if err := store.EnsureDefaultWarehouse(ctx); err != nil {
+		log.Fatalf("ensure default warehouse: %v", err)
 	}
 	_ = store.DeleteExpiredSessions(ctx, time.Now().UTC())
 
@@ -97,11 +116,30 @@ func main() {
 		cfg.RedisPassword,
 		cfg.RedisDB,
 		cfg.AuditLogLimit,
+		store,
 	)
 	if err := auditStore.Ping(ctx); err != nil {
-		log.Fatalf("connect management audit redis: %v", err)
+		log.Printf(
+			"management audit redis mirror unavailable; MySQL ledger remains authoritative: %v",
+			err,
+		)
 	}
 	defer auditStore.Close()
+
+	leaderLease, err := coordination.NewLeaderLease(
+		cfg.RedisHost,
+		cfg.RedisPort,
+		cfg.RedisPassword,
+		cfg.RedisDB,
+		"livecompanion:cluster:leader:live-runtime-reconciler",
+		cfg.NodeID,
+		time.Duration(cfg.ReconcileLeaderTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		log.Fatalf("create management leader lease: %v", err)
+	}
+	defer leaderLease.Close()
+	leaderLease.Start(appCtx)
 
 	authResolver := auth.NewResolver(cfg.Env, store)
 	core := coreclient.New(cfg.CoreBaseURL, cfg.CoreToken)
@@ -114,7 +152,73 @@ func main() {
 		FromName:  cfg.SMTPFromName,
 		TLSMode:   cfg.SMTPTLSMode,
 	})
-	api := httpapi.New(store, authResolver, core, auditStore, mailerClient, cfg.Env, cfg.AvatarDir, cfg.PublicWebURL)
+	assetStorage, err := assetstorage.NewRegistry(assetstorage.Config{
+		Driver:             cfg.StorageDriver,
+		LocalRoot:          cfg.MediaRoot,
+		OSSEndpoint:        cfg.OSSEndpoint,
+		OSSPublicEndpoint:  cfg.OSSPublicEndpoint,
+		OSSBucket:          cfg.OSSBucket,
+		OSSAccessKeyID:     cfg.OSSAccessKeyID,
+		OSSAccessKeySecret: cfg.OSSAccessKeySecret,
+	})
+	if err != nil {
+		log.Fatalf("initialize media storage: %v", err)
+	}
+	api := httpapi.New(
+		store,
+		authResolver,
+		core,
+		auditStore,
+		mailerClient,
+		cfg.Env,
+		cfg.AvatarDir,
+		cfg.PublicWebURL,
+		assetStorage,
+		time.Duration(cfg.OSSURLExpirySeconds)*time.Second,
+		leaderLease,
+	)
+	runtimeReconciler := liveruntime.NewReconciler(
+		store,
+		core,
+		cfg.RuntimeReconcileWorkers,
+		cfg.RuntimeReconcileBatch,
+		leaderLease,
+	)
+	go runtimeReconciler.Run(appCtx)
+
+	// Pending device orders hold concrete inventory immediately. Only the
+	// cluster leader releases expired holds so multiple management nodes never
+	// race the same order. The payment path also checks expiry synchronously.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		releaseExpired := func() {
+			if !leaderLease.IsLeader() {
+				return
+			}
+			ctx, cancel := context.WithTimeout(appCtx, 20*time.Second)
+			defer cancel()
+			count, err := store.ReleaseExpiredDeviceOrderHolds(ctx)
+			if err != nil {
+				log.Printf("release expired device order holds: %v", err)
+				return
+			}
+			if count > 0 {
+				log.Printf("released %d expired device order holds", count)
+			}
+		}
+
+		releaseExpired()
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case <-ticker.C:
+				releaseExpired()
+			}
+		}
+	}()
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -122,8 +226,32 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("management-service listening on %s", cfg.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	log.Printf(
+		"management-service listening on %s node=%s",
+		cfg.Addr,
+		cfg.NodeID,
+	)
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-appCtx.Done():
+		log.Printf("management-service shutdown requested")
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			log.Printf("management-service stopped unexpectedly: %v", err)
+		}
+	}
+	stop()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		15*time.Second,
+	)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("management-service graceful shutdown: %v", err)
 	}
 }

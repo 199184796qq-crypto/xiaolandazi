@@ -62,7 +62,7 @@ onMounted(load)
 <template>
   <div class="management-page overview-page">
     <ModulePageNav context="workspace-agent" active-title="代理总览" />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">AGENT OVERVIEW</p>
         <h2>代理总览</h2>
@@ -95,7 +95,7 @@ onMounted(load)
       </RouterLink>
       <RouterLink class="overview-metric-card" to="/invitations">
         <span>邀请注册</span>
-        <strong>{{ invitations?.records.length || 0 }}</strong>
+        <strong>{{ invitations?.records_total || 0 }}</strong>
         <small>当前代理归属范围</small>
       </RouterLink>
       <RouterLink class="overview-metric-card" to="/account">

@@ -1,40 +1,83 @@
 <script setup lang="ts">
-import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import CredentialResultModal from '../components/CredentialResultModal.vue'
 import DataListControls from '../components/DataListControls.vue'
-import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
-import { useRoute } from 'vue-router'
+import PaginationBar from '../components/PaginationBar.vue'
+import SalesScopeSelector from '../components/SalesScopeSelector.vue'
 import { session } from '../session'
+import { useFeedbackErrorRef } from '../uiFeedback'
 import {
   adminResetCustomerPassword,
+  bindTenantLivePolicyIndustry,
   getAdminAuditLogs,
   getAdminCustomers,
+  getAdminSalesStaff,
+  getLivePolicyIndustries,
 } from '../api'
-import type { AdminAuditLog, AdminCustomer, InitialCredential } from '../types'
+import type {
+  AdminAuditLog,
+  AdminCustomer,
+  CustomerScopeSummary,
+  InitialCredential,
+  LivePolicyIndustry,
+  SalesStaffSummary,
+  StaffBusinessScope,
+} from '../types'
 
 const route = useRoute()
 const customerFocus = computed(() => String(route.query.focus || ''))
+
 const customerPageTitle = computed(() => {
-  if (customerFocus.value === 'attribution') return '终端归属'
+  if (customerFocus.value === 'attribution') return '客户资源'
   if (customerFocus.value === 'security') return '终端密码重置'
-  if (customerFocus.value === 'audit') return '终端管理审计'
-  return '终端列表'
-})
-const customerPageDescription = computed(() => {
-  if (customerFocus.value === 'attribution') return '只读查看终端来源、代理归属、销售归属与推荐关系。'
-  if (customerFocus.value === 'security') return '仅授权账号管理员可为终端生成新的系统初始密码。'
-  if (customerFocus.value === 'audit') return '查看终端管理操作、经办人、目标对象、执行结果与发生时间。审计记录不可修改或删除。'
-  return '{{ customerPageDescription }}'
+  if (customerFocus.value === 'audit') return '客户资源审计'
+  return '终端账号与归属'
 })
 
+const customerPageDescription = computed(() => {
+  if (customerFocus.value === 'attribution') return '按当前员工权限范围查看客户来源、销售归属、代理归属与行业。'
+  if (customerFocus.value === 'security') return '只能查看并操作当前权限范围内的终端账号。'
+  if (customerFocus.value === 'audit') return '普通员工只看自己的操作记录；部门负责人查看管理范围内员工的操作记录。'
+  return '普通销售只看自己开发的客户；部门负责人及以上可按管理范围选择销售人员。'
+})
+
+const staffAccess = computed(() => session.bootstrap?.staff_access ?? null)
+const canViewAudit = computed(
+  () =>
+    staffAccess.value?.is_super_admin === true ||
+    staffAccess.value?.permissions.includes('*') === true ||
+    staffAccess.value?.permissions.includes('audit.view') === true,
+)
+const canResetCustomer = computed(
+  () =>
+    staffAccess.value?.is_super_admin === true ||
+    staffAccess.value?.permissions.includes('*') === true ||
+    staffAccess.value?.permissions.includes('customer.password_reset') === true,
+)
+const canManageL2 = computed(
+  () =>
+    session.bootstrap?.actor.role === 'platform_admin' ||
+    staffAccess.value?.is_super_admin === true ||
+    staffAccess.value?.permissions.includes('*') === true ||
+    staffAccess.value?.permissions.includes('livepolicy.manage_l2') === true,
+)
+
 const customers = ref<AdminCustomer[]>([])
-const auditLogs = ref<AdminAuditLog[]>([])
+const customerScope = ref<StaffBusinessScope | null>(null)
+const customerSummary = ref<CustomerScopeSummary>({
+  total_count: 0,
+  active_count: 0,
+  agent_count: 0,
+  referral_count: 0,
+})
+const customerTotal = ref(0)
+const customerTotalPages = ref(1)
 const loading = ref(false)
-const auditLoading = ref(false)
 const error = useFeedbackErrorRef()
 const notice = ref('')
+
 const search = ref('')
 const viewMode = ref<'card' | 'table'>('table')
 const statusFilter = ref('all')
@@ -47,13 +90,35 @@ const statusOptions = [
   { label: '正常', value: 'active' },
   { label: '其他状态', value: 'other' },
 ]
-
 const sortOptions = [
   { label: '注册时间从新到旧', value: 'created-desc' },
   { label: '注册时间从旧到新', value: 'created-asc' },
   { label: '终端名称 A-Z', value: 'name-asc' },
   { label: '终端名称 Z-A', value: 'name-desc' },
 ]
+
+const salesItems = ref<SalesStaffSummary[]>([])
+const salesSearch = ref('')
+const salesPage = ref(1)
+const salesTotal = ref(0)
+const salesTotalPages = ref(1)
+const salesLoading = ref(false)
+const selectedSalesStaffId = ref(0)
+const selectedSalesName = ref('')
+
+const industries = ref<LivePolicyIndustry[]>([])
+const bindingTenantID = ref<number | null>(null)
+
+const auditLogs = ref<AdminAuditLog[]>([])
+const auditLoading = ref(false)
+const auditSearch = ref('')
+const auditAction = ref('all')
+const auditResult = ref('all')
+const auditPageSize = ref(20)
+const auditPageIndex = ref(1)
+const auditCursorStack = ref<number[]>([0])
+const auditNextCursor = ref(0)
+const auditHasMore = ref(false)
 
 const resetTarget = ref<AdminCustomer | null>(null)
 const resetDeliveryMethod = ref<'copy' | 'email'>('copy')
@@ -64,87 +129,41 @@ const resetCredential = ref<InitialCredential | null>(null)
 const resetCredentialName = ref('')
 const resetCredentialUsername = ref('')
 
-const staffAccess = computed(() => session.bootstrap?.staff_access ?? null)
-const canViewAudit = computed(
-  () =>
-    staffAccess.value?.is_super_admin === true ||
-    staffAccess.value?.permissions.includes('audit.view') === true,
-)
-const canResetCustomer = computed(
-  () => staffAccess.value?.is_super_admin === true,
-)
-const showCustomerRecords = computed(
-  () =>
-    customerFocus.value !== 'audit' &&
-    (customerFocus.value !== 'security' || canResetCustomer.value),
-)
-
-const filteredCustomers = computed(() => {
-  const keyword = search.value.trim().toLowerCase()
-  const result = customers.value.filter((customer) => {
-    const matchesKeyword =
-      !keyword ||
-      [
-        customer.display_name,
-        customer.username,
-        customer.phone,
-        customer.parent_org_name,
-        customer.inviter_display_name,
-        customer.inviter_username,
-        sourceLabel(customer.source_type),
-        String(customer.tenant_id),
-        String(customer.user_id),
-      ].some((value) => String(value || '').toLowerCase().includes(keyword))
-
-    const matchesStatus =
-      statusFilter.value === 'all' ||
-      (statusFilter.value === 'active' && customer.status === 'active') ||
-      (statusFilter.value === 'other' && customer.status !== 'active')
-
-    return matchesKeyword && matchesStatus
-  })
-
-  return [...result].sort((a, b) => {
-    if (sortMode.value === 'name-asc') return a.display_name.localeCompare(b.display_name, 'zh-CN')
-    if (sortMode.value === 'name-desc') return b.display_name.localeCompare(a.display_name, 'zh-CN')
-    const timeA = new Date(a.created_at).getTime() || 0
-    const timeB = new Date(b.created_at).getTime() || 0
-    return sortMode.value === 'created-asc' ? timeA - timeB : timeB - timeA
-  })
+const showCustomerRecords = computed(() => customerFocus.value !== 'audit')
+const managerView = computed(() => customerScope.value?.manager_view === true)
+const scopeCaption = computed(() => {
+  if (!managerView.value) return '我的客户'
+  if (selectedSalesStaffId.value > 0) return selectedSalesName.value + ' · 名下客户'
+  return '当前管理范围 · 全部客户'
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredCustomers.value.length / pageSize.value)))
-const pagedCustomers = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return filteredCustomers.value.slice(start, start + pageSize.value)
-})
-
-watch([search, statusFilter, sortMode, pageSize], () => {
-  page.value = 1
-})
-watch(totalPages, (value) => {
-  if (page.value > value) page.value = value
-})
-
-const activeCount = computed(
-  () => customers.value.filter((item) => item.status === 'active').length,
-)
-
-const agentCustomerCount = computed(
-  () =>
-    customers.value.filter((item) => item.parent_org_type === 'agent').length,
-)
-
-const referralCount = computed(
-  () => customers.value.filter((item) => item.source_type === 'referral').length,
-)
+let customerSearchTimer: ReturnType<typeof setTimeout> | undefined
+let salesSearchTimer: ReturnType<typeof setTimeout> | undefined
+let auditSearchTimer: ReturnType<typeof setTimeout> | undefined
 
 async function loadCustomers() {
+  if (!showCustomerRecords.value) return
   loading.value = true
   error.value = ''
   try {
-    const response = await getAdminCustomers()
+    const response = await getAdminCustomers({
+      search: search.value.trim(),
+      status: statusFilter.value,
+      sort: sortMode.value,
+      page: page.value,
+      page_size: pageSize.value,
+      sales_staff_id: selectedSalesStaffId.value || undefined,
+    })
     customers.value = response.items
+    customerScope.value = response.scope
+    customerSummary.value = response.summary
+    customerTotal.value = response.total
+    customerTotalPages.value = response.total_pages
+    if (page.value > response.total_pages) page.value = response.total_pages
+
+    if (response.scope.manager_view && !salesItems.value.length && !salesLoading.value) {
+      void loadSalesStaff()
+    }
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取终端列表失败'
   } finally {
@@ -152,31 +171,147 @@ async function loadCustomers() {
   }
 }
 
+async function loadSalesStaff() {
+  if (!managerView.value && customerScope.value !== null) return
+  salesLoading.value = true
+  try {
+    const response = await getAdminSalesStaff({
+      search: salesSearch.value.trim(),
+      page: salesPage.value,
+      page_size: 10,
+    })
+    salesItems.value = response.items
+    salesTotal.value = response.total
+    salesTotalPages.value = response.total_pages
+    if (salesPage.value > response.total_pages) salesPage.value = response.total_pages
+  } catch (value) {
+    if (!error.value) {
+      error.value = value instanceof Error ? value.message : '读取销售人员失败'
+    }
+  } finally {
+    salesLoading.value = false
+  }
+}
+
+async function loadIndustries() {
+  if (!canManageL2.value) {
+    industries.value = []
+    return
+  }
+  try {
+    const response = await getLivePolicyIndustries()
+    industries.value = response.items
+  } catch (value) {
+    if (!error.value) {
+      error.value = value instanceof Error ? value.message : '读取行业目录失败'
+    }
+  }
+}
+
+function currentAuditCursor() {
+  return auditCursorStack.value[Math.max(0, auditPageIndex.value - 1)] || 0
+}
+
 async function loadAuditLogs() {
-  if (!canViewAudit.value) {
+  if (!canViewAudit.value || customerFocus.value !== 'audit') {
     auditLogs.value = []
     return
   }
-
   auditLoading.value = true
+  error.value = ''
   try {
-    const response = await getAdminAuditLogs(50)
+    const response = await getAdminAuditLogs({
+      search: auditSearch.value.trim(),
+      action: auditAction.value,
+      result: auditResult.value,
+      page_size: auditPageSize.value,
+      before_id: currentAuditCursor() || undefined,
+    })
     auditLogs.value = response.items
+    auditNextCursor.value = response.next_cursor
+    auditHasMore.value = response.has_more
   } catch (value) {
-    if (!error.value) {
-      error.value =
-        value instanceof Error ? value.message : '读取审计日志失败'
-    }
+    error.value = value instanceof Error ? value.message : '读取审计日志失败'
   } finally {
     auditLoading.value = false
   }
 }
 
 async function loadAll() {
-  await Promise.all([loadCustomers(), loadAuditLogs()])
+  notice.value = ''
+  if (customerFocus.value === 'audit') {
+    await loadAuditLogs()
+    return
+  }
+  await Promise.all([loadCustomers(), loadIndustries()])
+}
+
+function selectSalesStaff(staffId: number) {
+  selectedSalesStaffId.value = staffId
+  const item = salesItems.value.find((entry) => entry.staff_id === staffId)
+  selectedSalesName.value = item?.display_name || ''
+  page.value = 1
+  void loadCustomers()
+}
+
+function setSalesPage(value: number) {
+  salesPage.value = Math.min(Math.max(1, value), salesTotalPages.value)
+  void loadSalesStaff()
+}
+
+function resetAuditPaging() {
+  auditPageIndex.value = 1
+  auditCursorStack.value = [0]
+  auditNextCursor.value = 0
+  auditHasMore.value = false
+}
+
+function nextAuditPage() {
+  if (!auditHasMore.value || !auditNextCursor.value) return
+  auditCursorStack.value = [
+    ...auditCursorStack.value.slice(0, auditPageIndex.value),
+    auditNextCursor.value,
+  ]
+  auditPageIndex.value += 1
+  void loadAuditLogs()
+}
+
+function previousAuditPage() {
+  if (auditPageIndex.value <= 1) return
+  auditPageIndex.value -= 1
+  void loadAuditLogs()
+}
+
+async function changeIndustry(customer: AdminCustomer, industryCode: string) {
+  if (!canManageL2.value || bindingTenantID.value) return
+  const previousCode = customer.industry_code
+  const previousName = customer.industry_name
+  bindingTenantID.value = customer.tenant_id
+  error.value = ''
+  notice.value = ''
+  try {
+    await bindTenantLivePolicyIndustry(customer.tenant_id, industryCode)
+    const industry = industries.value.find((item) => item.code === industryCode)
+    customer.industry_code = industryCode
+    customer.industry_name = industry?.name || industryCode
+    notice.value = '已将 ' + customer.display_name + ' 绑定到“' + customer.industry_name + '”行业。'
+  } catch (value) {
+    customer.industry_code = previousCode
+    customer.industry_name = previousName
+    error.value = value instanceof Error ? value.message : '绑定终端行业失败'
+  } finally {
+    bindingTenantID.value = null
+  }
+}
+
+function changeIndustryFromEvent(customer: AdminCustomer, event: Event) {
+  const target = event.target as HTMLSelectElement | null
+  if (!target) return
+  void changeIndustry(customer, target.value)
 }
 
 function openReset(customer: AdminCustomer) {
+  if (!canResetCustomer.value) return
   resetTarget.value = customer
   resetDeliveryMethod.value = customer.email ? 'email' : 'copy'
   resetError.value = ''
@@ -198,40 +333,31 @@ function closeResetCredential() {
 
 async function submitReset() {
   if (!resetTarget.value || resetting.value) return
-
   resetError.value = ''
   const customer = resetTarget.value
-
   if (resetDeliveryMethod.value === 'email' && !customer.email) {
     resetError.value = '该终端没有邮箱，请选择复制方式交付'
     return
   }
-
   resetting.value = true
   try {
     const result = await adminResetCustomerPassword(customer.user_id, {
       delivery_method: resetDeliveryMethod.value,
       email: customer.email || '',
     })
-
     resetCredentialName.value = result.customer.display_name
     resetCredentialUsername.value = result.customer.username
     resetCredential.value = result.credential
-
     resetTarget.value = null
     resetCredentialOpen.value = true
-    notice.value =
-      '已为 ' +
-      customer.display_name +
-      ' 生成新的系统初始密码。终端下次登录必须先修改密码。'
-    await loadAuditLogs()
+    notice.value = '已为 ' + customer.display_name + ' 生成新的系统初始密码。'
   } catch (value) {
-    resetError.value =
-      value instanceof Error ? value.message : '重置终端密码失败'
+    resetError.value = value instanceof Error ? value.message : '重置终端密码失败'
   } finally {
     resetting.value = false
   }
 }
+
 function sourceLabel(source: string) {
   if (source === 'agent') return '代理直接开户'
   if (source === 'agent_invite') return '代理邀请码'
@@ -245,9 +371,7 @@ function parentLabel(customer: AdminCustomer) {
   if (customer.parent_org_type === 'agent') {
     return '代理 · ' + (customer.parent_org_name || '#' + customer.parent_org_id)
   }
-  if (customer.parent_org_type === 'platform') {
-    return '平台直营'
-  }
+  if (customer.parent_org_type === 'platform') return '平台直营'
   return customer.parent_org_name || '未识别'
 }
 
@@ -273,8 +397,8 @@ function auditActionLabel(action: string) {
     'agent.customer.create': '代理开通终端',
     'invitation.status_update': '修改邀请码状态',
     'agent.resource_adjust': '调整代理资源',
-    'customer.resource_adjust': '调整终端资源',
-    'agent.customer.resource_allocate': '代理分配终端资源',
+    'customer.resource_adjust': '调整客户资源',
+    'agent.customer.resource_allocate': '代理分配客户资源',
   }
   return labels[action] ?? action
 }
@@ -287,21 +411,66 @@ function auditResultLabel(result: string) {
   return result
 }
 
+watch(search, () => {
+  if (!showCustomerRecords.value) return
+  if (customerSearchTimer) clearTimeout(customerSearchTimer)
+  customerSearchTimer = setTimeout(() => {
+    page.value = 1
+    void loadCustomers()
+  }, 280)
+})
+
+watch([statusFilter, sortMode, pageSize], () => {
+  if (!showCustomerRecords.value) return
+  page.value = 1
+  void loadCustomers()
+})
+
+watch(page, () => {
+  if (showCustomerRecords.value) void loadCustomers()
+})
+
+watch(salesSearch, () => {
+  if (salesSearchTimer) clearTimeout(salesSearchTimer)
+  salesSearchTimer = setTimeout(() => {
+    salesPage.value = 1
+    void loadSalesStaff()
+  }, 280)
+})
+
+watch([auditSearch, auditAction, auditResult, auditPageSize], () => {
+  if (customerFocus.value !== 'audit') return
+  if (auditSearchTimer) clearTimeout(auditSearchTimer)
+  auditSearchTimer = setTimeout(() => {
+    resetAuditPaging()
+    void loadAuditLogs()
+  }, 280)
+})
+
+watch(customerFocus, () => {
+  search.value = ''
+  page.value = 1
+  selectedSalesStaffId.value = 0
+  selectedSalesName.value = ''
+  salesItems.value = []
+  salesPage.value = 1
+  resetAuditPaging()
+  void loadAll()
+})
+
 onMounted(loadAll)
 </script>
 
 <template>
   <div class="customer-management-page">
     <ModulePageNav hub="customers" :active-title="customerPageTitle" />
-    <section class="page-hero customer-admin-hero">
+
+    <section class="feature-workspace-hero customer-admin-hero">
       <div>
         <p class="section-kicker">CUSTOMER MANAGEMENT</p>
         <h2>{{ customerPageTitle }}</h2>
-        <p>
-          {{ customerPageDescription }}
-        </p>
+        <p>{{ customerPageDescription }}</p>
       </div>
-
       <button
         class="ghost-button"
         type="button"
@@ -315,232 +484,295 @@ onMounted(loadAll)
     <div v-if="error" class="inline-error">{{ error }}</div>
     <div v-if="notice" class="settings-success">{{ notice }}</div>
 
-    <section v-if="showCustomerRecords" class="customer-admin-stats customer-admin-stats-wide">
-      <article>
-        <span>终端总数</span>
-        <strong>{{ customers.length }}</strong>
-      </article>
-      <article>
-        <span>正常账号</span>
-        <strong>{{ activeCount }}</strong>
-      </article>
-      <article>
-        <span>代理归属终端</span>
-        <strong>{{ agentCustomerCount }}</strong>
-      </article>
-      <article>
-        <span>终端推荐注册</span>
-        <strong>{{ referralCount }}</strong>
-      </article>
-    </section>
+    <template v-if="showCustomerRecords">
+      <section class="customer-admin-stats customer-admin-stats-wide">
+        <article>
+          <span>终端总数</span>
+          <strong>{{ customerSummary.total_count }}</strong>
+        </article>
+        <article>
+          <span>正常账号</span>
+          <strong>{{ customerSummary.active_count }}</strong>
+        </article>
+        <article>
+          <span>代理归属终端</span>
+          <strong>{{ customerSummary.agent_count }}</strong>
+        </article>
+        <article>
+          <span>终端推荐注册</span>
+          <strong>{{ customerSummary.referral_count }}</strong>
+        </article>
+      </section>
 
-    <section v-if="showCustomerRecords" class="customer-admin-card">
-      <div class="customer-admin-card-head">
-        <div>
-          <span class="section-kicker">CUSTOMER ATTRIBUTION</span>
-          <h3>终端账号与归属</h3>
-        </div>
+      <section class="customer-scope-layout">
+        <SalesScopeSelector
+          v-if="managerView"
+          :items="salesItems"
+          :total="salesTotal"
+          :page="salesPage"
+          :total-pages="salesTotalPages"
+          :search="salesSearch"
+          :selected-staff-id="selectedSalesStaffId"
+          :loading="salesLoading"
+          @update:search="salesSearch = $event"
+          @update:page="setSalesPage"
+          @select="selectSalesStaff"
+        />
 
-      </div>
-
-      <DataListControls
-        v-model:view-mode="viewMode"
-        v-model:search="search"
-        v-model:status="statusFilter"
-        v-model:sort="sortMode"
-        v-model:page-size="pageSize"
-        search-placeholder="终端 / 电话 / 代理 / 推荐人 / 来源"
-        :status-options="statusOptions"
-        :sort-options="sortOptions"
-      />
-
-      <div v-if="loading && !customers.length" class="customer-admin-loading">
-        正在读取终端账号...
-      </div>
-
-      <div v-else-if="!filteredCustomers.length" class="customer-admin-empty">
-        <strong>没有匹配的终端</strong>
-        <span>邀请码注册或代理开户后会自动出现在这里。</span>
-      </div>
-
-      <div v-else-if="viewMode === 'table'" class="data-table-wrap">
-        <table class="customer-table customer-attribution-table">
-          <thead>
-            <tr>
-              <th>终端</th>
-              <th>联系电话</th>
-              <th>来源</th>
-              <th>归属</th>
-              <th>邀请 / 推荐人</th>
-              <th>状态</th>
-              <th>注册时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="customer in pagedCustomers" :key="customer.user_id">
-              <td>
-                <div class="customer-identity">
-                  <span class="customer-avatar">
-                    {{ customer.display_name.slice(0, 1) }}
-                  </span>
-                  <div>
-                    <strong>{{ customer.display_name }}</strong>
-                    <span>@{{ customer.username }} · #{{ customer.tenant_id }}</span>
-                  </div>
-                </div>
-              </td>
-              <td class="customer-account">
-                {{ customer.phone || '未完善' }}
-              </td>
-              <td>
-                <span class="source-badge">{{ sourceLabel(customer.source_type) }}</span>
-              </td>
-              <td>{{ parentLabel(customer) }}</td>
-              <td>
-                <template v-if="customer.inviter_display_name">
-                  <strong>{{ customer.inviter_display_name }}</strong>
-                  <span class="table-subtext">@{{ customer.inviter_username }}</span>
-                </template>
-                <span v-else>—</span>
-              </td>
-              <td>
-                <span
-                  class="customer-status"
-                  :class="{ active: customer.status === 'active' }"
-                >
-                  {{ customer.status === 'active' ? '正常' : customer.status }}
-                </span>
-              </td>
-              <td>{{ formatDate(customer.created_at) }}</td>
-              <td>
-                <div class="customer-actions">
-                  <button v-if="canResetCustomer && customerFocus === 'security'" type="button" @click="openReset(customer)">
-                    重置密码
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div v-else class="customer-card-grid">
-        <article
-          v-for="customer in pagedCustomers"
-          :key="'mobile-' + customer.user_id"
-          class="customer-mobile-card"
-        >
-          <div class="customer-mobile-head">
-            <div class="customer-identity">
-              <span class="customer-avatar">
-                {{ customer.display_name.slice(0, 1) }}
-              </span>
-              <div>
-                <strong>{{ customer.display_name }}</strong>
-                <span>{{ customer.username }}</span>
-              </div>
+        <section class="customer-admin-card customer-scoped-results">
+          <div class="customer-admin-card-head customer-scope-result-head">
+            <div>
+              <span class="section-kicker">CUSTOMER ATTRIBUTION</span>
+              <h3>{{ scopeCaption }}</h3>
             </div>
-            <span
-              class="customer-status"
-              :class="{ active: customer.status === 'active' }"
-            >
-              {{ customer.status === 'active' ? '正常' : customer.status }}
-            </span>
+            <span>{{ customerTotal }} 条</span>
           </div>
 
-          <dl class="customer-mobile-meta customer-source-meta">
-            <div>
-              <dt>联系电话</dt>
-              <dd>{{ customer.phone || '未完善' }}</dd>
-            </div>
-            <div>
-              <dt>来源</dt>
-              <dd>{{ sourceLabel(customer.source_type) }}</dd>
-            </div>
-            <div>
-              <dt>归属</dt>
-              <dd>{{ parentLabel(customer) }}</dd>
-            </div>
-            <div>
-              <dt>邀请 / 推荐人</dt>
-              <dd>{{ customer.inviter_display_name || '—' }}</dd>
-            </div>
-          </dl>
+          <DataListControls
+            v-model:view-mode="viewMode"
+            v-model:search="search"
+            v-model:status="statusFilter"
+            v-model:sort="sortMode"
+            v-model:page-size="pageSize"
+            search-placeholder="终端 / 电话 / 代理 / 推荐人 / 来源 / 行业"
+            :status-options="statusOptions"
+            :sort-options="sortOptions"
+          />
 
-          <button
-            v-if="canResetCustomer"
-            class="ghost-button customer-mobile-reset"
-            type="button"
-            @click="openReset(customer)"
-          >
-            重置密码
-          </button>
-        </article>
-      </div>
+          <div v-if="loading" class="customer-admin-loading">正在读取终端...</div>
 
-      <PaginationBar
-        v-model:page="page"
-        :total-pages="totalPages"
-        :total="filteredCustomers.length"
-        :page-size="pageSize"
-      />
-    </section>
+          <div v-else-if="viewMode === 'table'" class="customer-table-wrap">
+            <table class="customer-table">
+              <thead>
+                <tr>
+                  <th>终端</th>
+                  <th>联系电话</th>
+                  <th>来源</th>
+                  <th>归属</th>
+                  <th>行业 / L2</th>
+                  <th>邀请 / 推荐人</th>
+                  <th>状态</th>
+                  <th>注册时间</th>
+                  <th v-if="customerFocus === 'security'">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="customer in customers" :key="customer.user_id">
+                  <td>
+                    <div class="customer-identity">
+                      <span class="customer-avatar">{{ customer.display_name.slice(0, 1) }}</span>
+                      <div>
+                        <strong>{{ customer.display_name }}</strong>
+                        <span>@{{ customer.username }} · #{{ customer.tenant_id }}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td>{{ customer.phone || '未完善' }}</td>
+                  <td><span class="source-badge">{{ sourceLabel(customer.source_type) }}</span></td>
+                  <td>
+                    <strong>{{ parentLabel(customer) }}</strong>
+                    <span class="table-subtext">
+                      销售：{{ customer.sales_display_name || '未分配' }}
+                    </span>
+                  </td>
+                  <td>
+                    <select
+                      v-if="canManageL2"
+                      class="customer-industry-select"
+                      :value="customer.industry_code || 'general'"
+                      :disabled="bindingTenantID === customer.tenant_id"
+                      @change="changeIndustryFromEvent(customer, $event)"
+                    >
+                      <option
+                        v-for="industry in industries"
+                        :key="industry.code"
+                        :value="industry.code"
+                      >
+                        {{ industry.name }}
+                      </option>
+                    </select>
+                    <span v-else class="customer-industry-badge">
+                      {{ customer.industry_name || '通用' }}
+                    </span>
+                  </td>
+                  <td>
+                    <template v-if="customer.inviter_display_name">
+                      <strong>{{ customer.inviter_display_name }}</strong>
+                      <span class="table-subtext">@{{ customer.inviter_username }}</span>
+                    </template>
+                    <span v-else>—</span>
+                  </td>
+                  <td>
+                    <span class="customer-status" :class="{ active: customer.status === 'active' }">
+                      {{ customer.status === 'active' ? '正常' : customer.status }}
+                    </span>
+                  </td>
+                  <td>{{ formatDate(customer.created_at) }}</td>
+                  <td v-if="customerFocus === 'security'">
+                    <button
+                      v-if="canResetCustomer"
+                      class="table-action-button"
+                      type="button"
+                      @click="openReset(customer)"
+                    >
+                      重置密码
+                    </button>
+                    <span v-else>—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="!customers.length" class="empty-state">当前范围内暂无符合条件的客户。</div>
+          </div>
 
-        <section v-if="customerFocus === 'audit' && !canViewAudit" class="customer-admin-card">
-      <div class="customer-admin-empty">
-        <strong>无审计查看权限</strong>
-        <span>当前角色不能查看终端管理审计记录。</span>
-      </div>
-    </section>
+          <div v-else class="customer-card-grid">
+            <article
+              v-for="customer in customers"
+              :key="'mobile-' + customer.user_id"
+              class="customer-mobile-card"
+            >
+              <div class="customer-mobile-head">
+                <div class="customer-identity">
+                  <span class="customer-avatar">{{ customer.display_name.slice(0, 1) }}</span>
+                  <div>
+                    <strong>{{ customer.display_name }}</strong>
+                    <span>{{ customer.username }}</span>
+                  </div>
+                </div>
+                <span class="customer-status" :class="{ active: customer.status === 'active' }">
+                  {{ customer.status === 'active' ? '正常' : customer.status }}
+                </span>
+              </div>
+              <dl class="customer-mobile-meta customer-source-meta">
+                <div><dt>联系电话</dt><dd>{{ customer.phone || '未完善' }}</dd></div>
+                <div><dt>来源</dt><dd>{{ sourceLabel(customer.source_type) }}</dd></div>
+                <div><dt>归属</dt><dd>{{ parentLabel(customer) }}</dd></div>
+                <div><dt>销售</dt><dd>{{ customer.sales_display_name || '未分配' }}</dd></div>
+                <div><dt>行业 / L2</dt><dd>{{ customer.industry_name || '通用' }}</dd></div>
+                <div><dt>邀请 / 推荐人</dt><dd>{{ customer.inviter_display_name || '—' }}</dd></div>
+              </dl>
+              <button
+                v-if="customerFocus === 'security' && canResetCustomer"
+                class="ghost-button customer-mobile-reset"
+                type="button"
+                @click="openReset(customer)"
+              >
+                重置密码
+              </button>
+            </article>
+          </div>
 
-    <section v-if="customerFocus === 'security' && !canResetCustomer" class="customer-admin-card">
-      <div class="customer-admin-empty">
-        <strong>无密码重置权限</strong>
-        <span>当前角色只能查看终端资料，不能重置终端密码。</span>
-      </div>
-    </section>
-<section v-if="canViewAudit && customerFocus === 'audit'" class="customer-admin-card audit-card">
+          <PaginationBar
+            v-model:page="page"
+            :total-pages="customerTotalPages"
+            :total="customerTotal"
+            :page-size="pageSize"
+          />
+        </section>
+      </section>
+    </template>
+
+    <section
+      v-else-if="customerFocus === 'audit' && canViewAudit"
+      class="customer-admin-card audit-card customer-audit-table-card"
+    >
       <div class="customer-admin-card-head">
         <div>
           <span class="section-kicker">AUDIT LOG</span>
-          <h3>近期管理操作</h3>
+          <h3>客户资源操作审计</h3>
         </div>
-        <span>{{ auditLogs.length }} 条</span>
+        <span>第 {{ auditPageIndex }} 页</span>
       </div>
 
-      <div v-if="auditLoading && !auditLogs.length" class="customer-admin-loading">
-        正在读取审计日志...
+      <div class="customer-audit-filters">
+        <label>
+          <span>查询</span>
+          <input v-model="auditSearch" type="search" placeholder="经办人 / 操作 / 目标 / 路径 / IP" />
+        </label>
+        <label>
+          <span>操作</span>
+          <select v-model="auditAction">
+            <option value="all">全部操作</option>
+            <option value="customer.list_view">查看终端列表</option>
+            <option value="customer.password_reset">重置终端密码</option>
+            <option value="audit.list_view">查看审计日志</option>
+          </select>
+        </label>
+        <label>
+          <span>结果</span>
+          <select v-model="auditResult">
+            <option value="all">全部结果</option>
+            <option value="success">成功</option>
+            <option value="denied">已拒绝</option>
+            <option value="failed">失败</option>
+          </select>
+        </label>
+        <label>
+          <span>每页</span>
+          <select v-model.number="auditPageSize">
+            <option :value="20">20</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+          </select>
+        </label>
       </div>
 
-      <div v-else-if="!auditLogs.length" class="customer-admin-empty">
-        <strong>暂无审计记录</strong>
+      <div v-if="auditLoading" class="customer-admin-loading">正在读取审计日志...</div>
+      <div v-else class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>经办人</th>
+              <th>操作</th>
+              <th>目标</th>
+              <th>来源 IP</th>
+              <th>结果</th>
+              <th>接口</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in auditLogs" :key="item.id">
+              <td>{{ formatDate(item.occurred_at) }}</td>
+              <td><strong>{{ item.actor_username }}</strong><small>#{{ item.actor_user_id }}</small></td>
+              <td>{{ auditActionLabel(item.action) }}</td>
+              <td>{{ item.target_username || '—' }}</td>
+              <td>{{ item.client_ip || '—' }}</td>
+              <td><span class="status-pill">{{ auditResultLabel(item.result) }}</span></td>
+              <td><small>{{ item.http_method || '' }} {{ item.path || '—' }}</small></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!auditLogs.length" class="empty-state">暂无符合条件的审计记录。</div>
       </div>
 
-      <div v-else class="audit-list">
-        <article v-for="item in auditLogs" :key="item.id" class="audit-row">
-          <div>
-            <strong>{{ auditActionLabel(item.action) }}</strong>
-            <span>{{ item.actor_username }}</span>
-          </div>
-          <div>
-            <span>目标</span>
-            <strong>{{ item.target_username || '—' }}</strong>
-          </div>
-          <div>
-            <span>结果</span>
-            <strong>{{ auditResultLabel(item.result) }}</strong>
-          </div>
-          <time>{{ formatDate(item.occurred_at) }}</time>
-        </article>
+      <div class="audit-cursor-pagination">
+        <button
+          type="button"
+          :disabled="auditLoading || auditPageIndex <= 1"
+          @click="previousAuditPage"
+        >
+          上一页
+        </button>
+        <span>第 {{ auditPageIndex }} 页 · 游标分页</span>
+        <button
+          type="button"
+          :disabled="auditLoading || !auditHasMore"
+          @click="nextAuditPage"
+        >
+          下一页
+        </button>
       </div>
     </section>
 
-    <div
-      v-if="resetTarget"
-      class="modal-backdrop"
-      @click.self="closeReset"
-    >
+    <section v-else-if="customerFocus === 'audit'" class="customer-admin-card">
+      <div class="customer-admin-empty">
+        <strong>无审计查看权限</strong>
+        <span>当前角色不能查看客户资源审计记录。</span>
+      </div>
+    </section>
+
+    <div v-if="resetTarget" class="modal-backdrop" @click.self="closeReset">
       <form class="modal-card" @submit.prevent="submitReset">
         <div class="modal-header">
           <div>
@@ -549,37 +781,25 @@ onMounted(loadAll)
           </div>
           <button class="icon-button" type="button" @click="closeReset">×</button>
         </div>
-
         <p class="modal-helper">
-          系统将为 {{ resetTarget.display_name }}（{{ resetTarget.username }}）
-          随机生成新的初始密码。终端下次登录后必须立即修改。
+          系统将为 {{ resetTarget.display_name }}（{{ resetTarget.username }}）随机生成新的初始密码。
         </p>
-
         <div class="form-grid">
           <label class="form-span-2">
             <span>初始凭证交付方式</span>
             <select v-model="resetDeliveryMethod" class="text-input">
               <option value="copy">生成后复制登录信息</option>
-              <option value="email" :disabled="!resetTarget.email">
-                发送到终端邮箱
-              </option>
+              <option value="email" :disabled="!resetTarget.email">发送到终端邮箱</option>
             </select>
           </label>
-
           <div class="form-span-2 account-opening-note">
             <strong>终端邮箱</strong>
-            <span>
-              {{ resetTarget.email || '未填写邮箱，只能使用复制方式交付' }}
-            </span>
+            <span>{{ resetTarget.email || '未填写邮箱，只能使用复制方式交付' }}</span>
           </div>
         </div>
-
         <p v-if="resetError" class="auth-error">{{ resetError }}</p>
-
         <div class="modal-actions">
-          <button class="ghost-button" type="button" @click="closeReset">
-            取消
-          </button>
+          <button class="ghost-button" type="button" @click="closeReset">取消</button>
           <button class="primary-button" type="submit" :disabled="resetting">
             {{ resetting ? '生成中...' : '生成新初始密码' }}
           </button>

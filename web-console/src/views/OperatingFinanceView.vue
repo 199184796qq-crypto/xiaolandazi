@@ -3,6 +3,7 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { createTokenPurchase, getOperatingFinance } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type {
   OperatingFinanceEntry,
@@ -18,6 +19,11 @@ const search = ref('')
 const category = ref('all')
 const direction = ref('all')
 const showTokenPurchase = ref(false)
+const entryPage = ref(1)
+const entryPageSize = 20
+const tokenSearch = ref('')
+const tokenPage = ref(1)
+const tokenPageSize = 20
 
 const tokenForm = reactive({
   provider_name: '',
@@ -63,6 +69,27 @@ const filteredEntries = computed(() => {
       ].some((value) => String(value || '').toLowerCase().includes(keyword))
     return categoryMatch && directionMatch && keywordMatch
   })
+})
+const entryPageCount = computed(() => Math.max(1, Math.ceil(filteredEntries.value.length / entryPageSize)))
+const pagedEntries = computed(() => {
+  const page = Math.min(entryPage.value, entryPageCount.value)
+  const start = (page - 1) * entryPageSize
+  return filteredEntries.value.slice(start, start + entryPageSize)
+})
+const filteredTokenPurchases = computed(() => {
+  const keyword = tokenSearch.value.trim().toLowerCase()
+  const rows = data.value?.token_purchases || []
+  if (!keyword) return rows
+  return rows.filter((item) =>
+    [item.purchase_no, item.provider_name, item.model_scope, item.invoice_no, item.operator_name, item.note]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const tokenPageCount = computed(() => Math.max(1, Math.ceil(filteredTokenPurchases.value.length / tokenPageSize)))
+const pagedTokenPurchases = computed(() => {
+  const page = Math.min(tokenPage.value, tokenPageCount.value)
+  const start = (page - 1) * tokenPageSize
+  return filteredTokenPurchases.value.slice(start, start + tokenPageSize)
 })
 
 function money(cents: number) {
@@ -222,8 +249,9 @@ onMounted(loadData)
           class="text-input"
           type="search"
           placeholder="搜索流水号 / 业务单号 / 对方 / 经办人"
+          @input="entryPage = 1"
         />
-        <select v-model="category" class="text-input">
+        <select v-model="category" class="text-input" @change="entryPage = 1">
           <option value="all">全部业务</option>
           <option value="device_purchase">设备采购</option>
           <option value="logistics">物流费用</option>
@@ -235,7 +263,7 @@ onMounted(loadData)
           <option value="after_sales_inspection">售后检测</option>
           <option value="after_sales_other">售后其他</option>
         </select>
-        <select v-model="direction" class="text-input">
+        <select v-model="direction" class="text-input" @change="entryPage = 1">
           <option value="all">全部收支</option>
           <option value="income">收入</option>
           <option value="expense">支出</option>
@@ -259,7 +287,7 @@ onMounted(loadData)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in filteredEntries" :key="item.id">
+            <tr v-for="item in pagedEntries" :key="item.id">
               <td>{{ new Date(item.occurred_at).toLocaleString('zh-CN') }}</td>
               <td><span class="status-pill">{{ categoryLabel(item.category) }}</span></td>
               <td>
@@ -286,15 +314,31 @@ onMounted(loadData)
         </table>
         <div v-if="filteredEntries.length === 0" class="empty-state">暂无符合条件的经营流水。</div>
       </div>
+      <PaginationBar
+        :page="Math.min(entryPage, entryPageCount)"
+        :total-pages="entryPageCount"
+        :total="filteredEntries.length"
+        :page-size="entryPageSize"
+        @update:page="entryPage = $event"
+      />
     </section>
 
     <section class="settings-card operating-token-panel">
       <header class="inventory-section-head">
         <div>
           <strong>Token 采购记录</strong>
-          <span>记录供应商、模型范围、Token 数量、采购成本和发票信息。</span>
+          <span>{{ filteredTokenPurchases.length }} 条 · 记录供应商、模型范围、Token 数量、采购成本和发票信息。</span>
         </div>
       </header>
+      <div class="operating-token-toolbar">
+        <input
+          v-model="tokenSearch"
+          class="text-input"
+          type="search"
+          placeholder="搜索采购单 / 供应商 / 模型 / 发票 / 经办人"
+          @input="tokenPage = 1"
+        />
+      </div>
       <div class="data-table-wrap">
         <table class="data-table">
           <thead>
@@ -309,7 +353,7 @@ onMounted(loadData)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in data?.token_purchases || []" :key="item.id">
+            <tr v-for="item in pagedTokenPurchases" :key="item.id">
               <td><strong>{{ item.purchase_no }}</strong></td>
               <td>{{ item.provider_name }}</td>
               <td>{{ item.model_scope || '通用' }}</td>
@@ -320,10 +364,17 @@ onMounted(loadData)
             </tr>
           </tbody>
         </table>
-        <div v-if="!(data?.token_purchases || []).length" class="empty-state">
+        <div v-if="!filteredTokenPurchases.length" class="empty-state">
           暂无 Token 采购记录。
         </div>
       </div>
+      <PaginationBar
+        :page="Math.min(tokenPage, tokenPageCount)"
+        :total-pages="tokenPageCount"
+        :total="filteredTokenPurchases.length"
+        :page-size="tokenPageSize"
+        @update:page="tokenPage = $event"
+      />
     </section>
 
     <p v-if="error && !showTokenPurchase" class="inline-error">{{ error }}</p>

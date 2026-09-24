@@ -15,6 +15,12 @@ type staffFinanceOperationRequest struct {
 	PaymentMethod string `json:"payment_method,omitempty"`
 }
 
+type staffAITimeGrantRequest struct {
+	OrganizationID  int64  `json:"organization_id"`
+	ResourceSeconds int64  `json:"resource_seconds"`
+	Reason          string `json:"reason"`
+}
+
 func (s *Server) staffFinanceOverview(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requireStaffPermission(
 		w,
@@ -29,7 +35,7 @@ func (s *Server) staffFinanceOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取财务终端失败")
 		return
 	}
-	tasks, err := s.store.ListStaffFinanceTasks(r.Context(), 120)
+	tasks, err := s.store.ListStaffFinanceTasks(r.Context(), 1000)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取财务审批记录失败")
 		return
@@ -173,6 +179,56 @@ func (s *Server) staffFinanceCreateReward(
 	writeJSON(w, http.StatusCreated, result)
 }
 
+func (s *Server) commercialCreateAITimeGrantRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	actor, _, ok := s.requireStaffPermission(
+		w,
+		r,
+		"commercial.ai_time.request",
+	)
+	if !ok {
+		return
+	}
+
+	var input staffAITimeGrantRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.OrganizationID <= 0 {
+		writeError(w, http.StatusBadRequest, "目标组织无效")
+		return
+	}
+	if input.ResourceSeconds <= 0 {
+		writeError(w, http.StatusBadRequest, "增加时长必须大于 0")
+		return
+	}
+	if input.ResourceSeconds > 100000*3600 {
+		writeError(w, http.StatusBadRequest, "单次增加时长超过系统上限")
+		return
+	}
+	if input.Reason == "" {
+		writeError(w, http.StatusBadRequest, "申请原因不能为空")
+		return
+	}
+
+	result, err := s.store.CreateStaffAITimeGrantRequest(
+		r.Context(),
+		input.OrganizationID,
+		input.ResourceSeconds,
+		input.Reason,
+		actor.UserID,
+	)
+	if err != nil {
+		writeStaffFinanceOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
 func (s *Server) staffFinanceApproveTask(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -287,6 +343,8 @@ func financeApprovalPermission(operationCode string) string {
 		return "finance.refund.approve"
 	case "finance.reward":
 		return "finance.reward.approve"
+	case "finance.ai_time_grant":
+		return "finance.ai_time.approve"
 	default:
 		return ""
 	}
@@ -301,6 +359,8 @@ func writeStaffFinanceOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "操作人与审核人必须分离")
 	case strings.Contains(message, "not pending"):
 		writeError(w, http.StatusConflict, "该审批任务已处理")
+	case strings.Contains(message, "ai time"):
+		writeError(w, http.StatusBadRequest, "AI 时长申请数据无效")
 	case strings.Contains(message, "customer"):
 		writeError(w, http.StatusBadRequest, "终端不可用")
 	default:

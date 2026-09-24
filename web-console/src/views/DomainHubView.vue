@@ -6,7 +6,10 @@ import {
   getAdminAgents,
   getAdminCustomers,
   getAdminSalesStaff,
+  getCommercialDeviceProducts,
+  getCommercialMarketingCampaigns,
   getCommercialMemberships,
+  getCommercialTimeCards,
   getInventoryDevices,
   getRooms,
   getStaffDashboard,
@@ -57,6 +60,58 @@ function canShowEntry(to?: string) {
   if (props.hub === 'resources' && to.includes('focus=adjust')) {
     return hasStaffPermission('resources.adjust') || hasStaffPermission('finance.resource.adjust')
   }
+  if (props.hub === 'live' && to.startsWith('/operations/live/room-quotas')) {
+    return hasStaffPermission('liveops.room_quota.view')
+  }
+  if (props.hub === 'live' && to.startsWith('/commercial/memberships')) {
+    return hasStaffPermission('commercial.membership.view')
+  }
+  if (props.hub === 'live' && to.startsWith('/commercial/time-cards')) {
+    return hasStaffPermission('commercial.time_card.view')
+  }
+  if (props.hub === 'live' && to.startsWith('/commercial/device-products')) {
+    return hasStaffPermission('commercial.device.view')
+  }
+  if (props.hub === 'live' && to.startsWith('/operations/live/marketing')) {
+    return (
+      hasStaffPermission('commercial.marketing.view') ||
+      hasStaffPermission('commercial.time_card.view') ||
+      hasStaffPermission('commercial.device.view')
+    )
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/marketing/channels')) {
+    return hasStaffPermission('invitations.view_all')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/marketing')) {
+    return hasStaffPermission('commercial.marketing.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/operations/live/marketing/ai-time')) {
+    return hasStaffPermission('commercial.ai_time.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/memberships/plans')) {
+    return hasStaffPermission('commercial.membership.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/memberships/simulator')) {
+    return hasStaffPermission('commercial.membership.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/invitations')) {
+    return hasStaffPermission('invitations.view_all')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/referrals')) {
+    return hasStaffPermission('commercial.referral.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/time-cards')) {
+    return hasStaffPermission('commercial.time_card.view')
+  }
+  if (props.hub === 'activityMarketing' && to.startsWith('/commercial/device-products')) {
+    return hasStaffPermission('commercial.device.view')
+  }
+  if (props.hub === 'finance' && to.startsWith('/staff/finance')) {
+    return hasStaffPermission('finance.dashboard.view')
+  }
+  if (props.hub === 'finance' && to.startsWith('/commercial/settlement')) {
+    return hasStaffPermission('finance.settlement_rules.view')
+  }
   return true
 }
 const quickEntries = computed(() => {
@@ -71,7 +126,60 @@ const quickEntries = computed(() => {
   }
   return entries.filter((entry) => canShowEntry(entry.to))
 })
-const readyCount = computed(() => quickEntries.value.filter((item) => item.to).length)
+const entryEnglishTitles: Record<string, string> = {
+  '直播间': 'LIVE ROOMS',
+  '直播间数量': 'ROOM QUOTAS',
+  '直播策略': 'LIVE STRATEGY',
+  '设备绑定': 'DEVICE BINDING',
+  '活动营销': 'ACTIVITY MARKETING',
+  '营销活动': 'MARKETING CAMPAIGNS',
+  '营销设计': 'MARKETING DESIGN',
+  '邀请与推荐': 'INVITATION & REFERRAL',
+  '优惠工具': 'PROMOTION TOOLS',
+  '奖励管理': 'REWARD MANAGEMENT',
+  '渠道活动': 'CHANNEL CAMPAIGNS',
+  '营销数据': 'MARKETING ANALYTICS',
+  '会员与折扣': 'MEMBERSHIP PRICING',
+  '时长卡运营': 'AI TIME CARD OPERATIONS',
+  '设备商城运营': 'DEVICE SHOP OPERATIONS',
+  '部门': 'DEPARTMENTS',
+  '员工账号': 'EMPLOYEE ACCOUNTS',
+  '角色权限': 'ROLES & PERMISSIONS',
+  '审批策略': 'APPROVAL POLICIES',
+  '权限审计': 'ACCESS AUDIT',
+  '终端列表': 'CUSTOMER LIST',
+  '客户资源': 'CUSTOMER RESOURCES',
+  '密码重置': 'PASSWORD RESET',
+  '管理审计': 'MANAGEMENT AUDIT',
+  '代理合作': 'AGENT PARTNERSHIP',
+  '代理列表': 'AGENT LIST',
+  '代理等级': 'AGENT LEVELS',
+  '代理合同': 'AGENT CONTRACTS',
+  '退出清算': 'EXIT SETTLEMENT',
+  '销售团队': 'SALES TEAM',
+  '业绩与提成': 'PERFORMANCE & COMMISSION',
+  '会员方案': 'MEMBERSHIP PLANS',
+  '规则模拟器': 'RULE SIMULATOR',
+  '时长卡': 'AI TIME CARDS',
+  '设备商品': 'DEVICE PRODUCTS',
+  '一级推荐奖励': 'REFERRAL REWARDS',
+  '结算规则': 'SETTLEMENT RULES',
+  '终端账户': 'CUSTOMER ACCOUNTS',
+  '待审核': 'PENDING APPROVALS',
+  'AI 时长': 'AI TIME',
+  '经营收支': 'OPERATING FINANCE',
+  '钱包流水': 'WALLET LEDGER',
+  '操作记录': 'OPERATION HISTORY',
+  '全链路追溯': 'FULL TRACE',
+  '收益结算': 'EARNINGS SETTLEMENT',
+  '设备出入库': 'DEVICE INVENTORY',
+  '物流管理': 'LOGISTICS',
+}
+
+function entryEnglishTitle(title: string) {
+  return entryEnglishTitles[title] || 'FUNCTION'
+}
+
 function metric(label: string, value: string | number, hint: string, tone: Metric['tone'] = 'neutral'): Metric {
   return { label, value, hint, tone }
 }
@@ -132,6 +240,21 @@ async function loadMetrics() {
         metric('已发布', items.filter((item) => Boolean(item.active_version)).length, '当前正式生效版本', 'success'),
         metric('草稿', items.filter((item) => Boolean(item.draft_version)).length, '等待发布的新版本', 'warning'),
         metric('规则模型', '版本化', '历史订单不被新规则覆盖', 'neutral'),
+      ]
+      return
+    }
+
+    if (props.hub === 'activityMarketing') {
+      const [campaignData, timeCardData, deviceData] = await Promise.all([
+        getCommercialMarketingCampaigns(),
+        getCommercialTimeCards(),
+        getCommercialDeviceProducts(),
+      ])
+      metrics.value = [
+        metric('营销计划', campaignData.items.length, '当前活动营销计划', 'primary'),
+        metric('时长卡', timeCardData.items.length, '当前时长卡商品', 'success'),
+        metric('设备商品', deviceData.items.length, '当前设备商城商品', 'neutral'),
+        metric('管理归口', '营销运维部', '活动营销统一归口', 'warning'),
       ]
       return
     }
@@ -222,11 +345,7 @@ onMounted(loadMetrics)
       <div class="module-hub-hero-copy">
         <p class="section-kicker">{{ config.kicker }}</p>
         <h2>{{ config.title }}</h2>
-        <p>{{ config.description }}</p>
 
-        <div class="module-hub-hero-tags">
-          <span>{{ readyCount }} 个可用功能</span>
-        </div>
       </div>
 
       <button class="ghost-button module-hub-refresh" type="button" :disabled="loading" @click="loadMetrics">
@@ -256,7 +375,7 @@ onMounted(loadMetrics)
           <span class="section-kicker">FUNCTIONS</span>
           <h3>功能入口</h3>
         </div>
-        <p>功能较多时在入口区域直接分组展示，不再重复第二套菜单。</p>
+
       </div>
 
       <div class="module-quick-grid">
@@ -270,10 +389,9 @@ onMounted(loadMetrics)
           <div class="module-quick-card-icon">{{ entry.icon }}</div>
           <div class="module-quick-card-copy">
             <div>
+              <span class="module-quick-card-en">{{ entryEnglishTitle(entry.title) }}</span>
               <strong>{{ entry.title }}</strong>
-              <span>{{ entry.badge || '进入功能' }}</span>
             </div>
-            <p>{{ entry.description }}</p>
           </div>
           <b>{{ entry.to ? '→' : '·' }}</b>
         </component>

@@ -21,6 +21,7 @@ import {
   getInventoryRMACosts,
   getInventoryRMAs,
   getInventoryWarehouses,
+  getSystemDictionaryItems,
   startInventoryRMARepair,
   transitionInventoryDevice,
   updateLogisticsShipmentStatus,
@@ -44,6 +45,7 @@ import type {
   RMAEvent,
   InventoryStockDocument,
   InventoryWarehouse,
+  SystemDictionaryItem,
 } from '../types'
 
 const props = withDefaults(
@@ -56,6 +58,7 @@ const loading = ref(false)
 const saving = ref(false)
 const error = useFeedbackErrorRef()
 const warehouses = ref<InventoryWarehouse[]>([])
+const logisticsProviders = ref<SystemDictionaryItem[]>([])
 const products = ref<InventoryDeviceProduct[]>([])
 const agents = ref<AgentSummary[]>([])
 const devices = ref<InventoryDevice[]>([])
@@ -125,7 +128,7 @@ const outboundForm = reactive({
   recipient_phone: '',
   recipient_address: '',
   delivery_method: 'courier',
-  carrier_name: '',
+  carrier_code: '',
   tracking_no: '',
   logistics_fee_yuan: '',
   note: '',
@@ -184,16 +187,6 @@ const pageTitle = computed(() => {
   if (props.focus === 'inventory') return '设备出入库'
   if (props.focus === 'after-sales') return '售后维修单中心'
   return '设备档案'
-})
-
-const pageDescription = computed(() => {
-  if (props.focus === 'inventory') {
-    return '按设备名称管理采购批量入库和批量出库，每一台实物都保留独立 SN、内部 ID 和完整流水。'
-  }
-  if (props.focus === 'after-sales') {
-    return '统一接收终端、代理和内部录入的维修单，跟踪受理、寄回、签收、售后入库、内部/上游维修、返还和费用。'
-  }
-  return '按 SN 管理设备唯一身份、SKU、批次、所在仓库、所有权、终端绑定和完整生命周期。'
 })
 
 const canManageInventory = computed(() => {
@@ -731,7 +724,7 @@ function openOutbound(productID?: number) {
   outboundForm.recipient_phone = ''
   outboundForm.recipient_address = ''
   outboundForm.delivery_method = 'courier'
-  outboundForm.carrier_name = ''
+  outboundForm.carrier_code = ''
   outboundForm.tracking_no = ''
   outboundForm.logistics_fee_yuan = ''
   outboundForm.note = ''
@@ -1134,6 +1127,17 @@ async function submitOutbound() {
     error.value = '请填写物流费用，无费用请填 0'
     return
   }
+  if (
+    outboundForm.delivery_method === 'courier' &&
+    !outboundForm.carrier_code
+  ) {
+    error.value = '请选择快递公司'
+    return
+  }
+
+  const carrier = logisticsProviders.value.find(
+    (item) => item.code === outboundForm.carrier_code,
+  )
 
   const payload: CreateLogisticsShipmentInput = {
     shipment_type: 'outbound',
@@ -1153,8 +1157,8 @@ async function submitOutbound() {
     recipient_name: outboundForm.recipient_name.trim(),
     recipient_phone: outboundForm.recipient_phone.trim(),
     recipient_address: outboundForm.recipient_address.trim(),
-    carrier_code: outboundForm.carrier_name.trim(),
-    carrier_name: outboundForm.carrier_name.trim(),
+    carrier_code: carrier?.code || outboundForm.carrier_code,
+    carrier_name: carrier?.label || outboundForm.carrier_code,
     tracking_no: outboundForm.tracking_no.trim(),
     device_ids: [...selectedOutboundDeviceIDs.value],
     note: outboundForm.note.trim(),
@@ -1351,6 +1355,7 @@ async function loadAll() {
       documentData,
       ledgerData,
       rmaData,
+      logisticsData,
     ] = await Promise.all([
       getInventoryWarehouses(),
       getInventoryDeviceProducts(),
@@ -1359,6 +1364,7 @@ async function loadAll() {
       getInventoryDocuments(),
       getInventoryLedger(),
       getInventoryRMAs(rmaPage.value, rmaPageSize.value),
+      getSystemDictionaryItems('logistics_provider'),
     ])
     warehouses.value = warehouseData.items
     products.value = productData.items
@@ -1367,6 +1373,7 @@ async function loadAll() {
     documents.value = documentData.items
     ledger.value = ledgerData.items
     rmas.value = rmaData.items
+    logisticsProviders.value = logisticsData.items
     rmaTotal.value = rmaData.total
     rmaOpenTotal.value = rmaData.open_total
     if (
@@ -1401,7 +1408,6 @@ onMounted(loadAll)
           {{ focus === 'inventory' ? 'WAREHOUSE & STOCK' : focus === 'after-sales' ? 'AFTER-SALES SERVICE' : 'DEVICE REGISTRY' }}
         </p>
         <h2>{{ pageTitle }}</h2>
-        <p>{{ pageDescription }}</p>
       </div>
 
       <div class="inventory-hero-actions">
@@ -1873,7 +1879,15 @@ onMounted(loadAll)
     </section>
 
     <div v-if="modal" class="feature-editor-backdrop" @click.self="modal = ''">
-      <section class="feature-editor-panel inventory-editor-panel">
+      <section
+        class="feature-editor-panel inventory-editor-panel"
+        :class="{
+          'inventory-rma-detail-modal': modal === 'rma-detail',
+          'inventory-compact-operation-modal': modal === 'batch-inbound' || modal === 'outbound',
+          'inventory-inbound-operation-modal': modal === 'batch-inbound',
+          'inventory-outbound-operation-modal': modal === 'outbound',
+        }"
+      >
         <header>
           <div>
             <span class="section-kicker">INVENTORY OPERATION</span>
@@ -1893,7 +1907,7 @@ onMounted(loadAll)
           <button class="icon-button" type="button" @click="modal = ''">×</button>
         </header>
 
-        <div v-if="modal === 'batch-inbound'" class="feature-editor-grid">
+        <div v-if="modal === 'batch-inbound'" class="feature-editor-grid inventory-operation-form inventory-inbound-form">
           <label>
             <span>设备名称 *</span>
             <select v-model="batchInboundForm.product_id">
@@ -1967,7 +1981,7 @@ onMounted(loadAll)
             </div>
             <textarea
               v-model="batchInboundForm.sns_text"
-              rows="12"
+              rows="7"
               placeholder="每行一个 SN，也支持用逗号、空格分隔"
             />
             <div class="inventory-v2-sn-stats">
@@ -1983,11 +1997,11 @@ onMounted(loadAll)
           </div>
           <label class="feature-editor-wide">
             <span>入库备注</span>
-            <textarea v-model="batchInboundForm.reason" rows="3" />
+            <textarea v-model="batchInboundForm.reason" rows="2" />
           </label>
         </div>
 
-        <div v-else-if="modal === 'outbound'" class="feature-editor-grid">
+        <div v-else-if="modal === 'outbound'" class="feature-editor-grid inventory-operation-form inventory-outbound-form">
           <label>
             <span>设备名称 *</span>
             <select v-model="outboundForm.product_id" @change="resetOutboundSelection">
@@ -2196,7 +2210,7 @@ onMounted(loadAll)
 
               <textarea
                 v-model="outboundSNText"
-                rows="9"
+                rows="6"
                 placeholder="每行一个 SN，也支持逗号、空格分隔"
               />
 
@@ -2278,7 +2292,12 @@ onMounted(loadAll)
           </label>
           <label v-if="outboundForm.delivery_method === 'courier'">
             <span>快递公司 *</span>
-            <input v-model="outboundForm.carrier_name" type="text" placeholder="例如 顺丰" />
+            <select v-model="outboundForm.carrier_code">
+              <option value="">请选择物流公司</option>
+              <option v-for="provider in logisticsProviders" :key="provider.id" :value="provider.code">
+                {{ provider.label }}
+              </option>
+            </select>
           </label>
           <label v-if="outboundForm.delivery_method === 'courier'">
             <span>快递单号 *</span>
@@ -2395,28 +2414,94 @@ onMounted(loadAll)
 
         <div v-else-if="modal === 'rma-detail' && selectedRMA" class="rma-detail-panel">
           <div class="rma-detail-hero">
-            <div><span>售后单</span><strong>{{ selectedRMA.rma_no }}</strong></div>
+            <div class="rma-detail-hero-main">
+              <span class="rma-detail-hero-icon">售</span>
+              <div>
+                <span>AFTER-SALES ORDER</span>
+                <strong>{{ selectedRMA.rma_no }}</strong>
+                <small>{{ serviceTypeLabel(selectedRMA.service_type) }} · {{ selectedRMA.customer_name || '内部售后' }}</small>
+              </div>
+            </div>
             <span class="status-pill" :class="rmaStatusTone(selectedRMA.status)">{{ rmaStatusLabel(selectedRMA.status) }}</span>
           </div>
-          <div class="rma-detail-grid">
-            <div><span>售后类型</span><strong>{{ serviceTypeLabel(selectedRMA.service_type) }}</strong></div>
-            <div><span>发起来源</span><strong>{{ selectedRMA.source_type === 'customer' ? '终端发起' : selectedRMA.source_type === 'agent' ? '代理发起' : '内部录入' }}</strong></div>
-            <div><span>终端 / 代理</span><strong>{{ selectedRMA.customer_name || '—' }}</strong></div>
-            <div><span>联系电话</span><strong>{{ selectedRMA.contact_phone || '—' }}</strong></div>
-            <div><span>原设备 SN</span><button class="table-link-button" type="button" @click="openRMADeviceLedger(selectedRMA.device_id)">{{ selectedRMA.device_sn }}</button></div>
-            <div><span>换机新设备</span><button v-if="replacementDevice(selectedRMA)" class="table-link-button" type="button" @click="openRMADeviceLedger(selectedRMA.replacement_device_id)">{{ replacementDevice(selectedRMA)?.sn }}</button><strong v-else>—</strong></div>
-            <div><span>原订单</span><strong>{{ selectedRMA.source_order_no || '—' }}</strong></div>
-            <div><span>原物流</span><strong>{{ selectedRMA.source_shipment_no || '—' }}</strong></div>
-            <div><span>退回物流</span><strong>{{ selectedRMA.return_shipment_no || '—' }}</strong></div>
-            <div><span>外送维修</span><strong>{{ selectedRMA.repair_outbound_shipment_no || '—' }}</strong></div>
-            <div><span>维修返回</span><strong>{{ selectedRMA.repair_return_shipment_no || '—' }}</strong></div>
-            <div><span>寄出物流</span><strong>{{ selectedRMA.outbound_shipment_no || '—' }}</strong></div>
-            <div><span>创建时间</span><strong>{{ new Date(selectedRMA.created_at).toLocaleString('zh-CN') }}</strong></div>
-            <div><span>受理时间</span><strong>{{ selectedRMA.accepted_at ? new Date(selectedRMA.accepted_at).toLocaleString('zh-CN') : '待受理' }}</strong></div>
-            <div><span>完成时间</span><strong>{{ selectedRMA.completed_at ? new Date(selectedRMA.completed_at).toLocaleString('zh-CN') : '—' }}</strong></div>
+
+          <section class="rma-info-section">
+            <div class="rma-info-section-head">
+              <span>OVERVIEW</span>
+              <strong>基础信息</strong>
+            </div>
+            <div class="rma-overview-grid">
+              <div><span>售后类型</span><strong>{{ serviceTypeLabel(selectedRMA.service_type) }}</strong></div>
+              <div><span>发起来源</span><strong>{{ selectedRMA.source_type === 'customer' ? '终端发起' : selectedRMA.source_type === 'agent' ? '代理发起' : '内部录入' }}</strong></div>
+              <div><span>终端 / 代理</span><strong>{{ selectedRMA.customer_name || '—' }}</strong></div>
+              <div><span>联系电话</span><strong>{{ selectedRMA.contact_phone || '—' }}</strong></div>
+            </div>
+          </section>
+
+          <section class="rma-info-section">
+            <div class="rma-info-section-head">
+              <span>DEVICE RELATION</span>
+              <strong>设备与订单关联</strong>
+            </div>
+            <div class="rma-link-grid">
+              <div>
+                <span>原设备 SN</span>
+                <button class="rma-sn-link" type="button" @click="openRMADeviceLedger(selectedRMA.device_id)">
+                  {{ selectedRMA.device_sn }}
+                </button>
+              </div>
+              <div>
+                <span>换机新设备</span>
+                <button
+                  v-if="replacementDevice(selectedRMA)"
+                  class="rma-sn-link"
+                  type="button"
+                  @click="openRMADeviceLedger(selectedRMA.replacement_device_id)"
+                >
+                  {{ replacementDevice(selectedRMA)?.sn }}
+                </button>
+                <strong v-else>—</strong>
+              </div>
+              <div><span>原订单</span><strong>{{ selectedRMA.source_order_no || '—' }}</strong></div>
+            </div>
+          </section>
+
+          <section class="rma-info-section">
+            <div class="rma-info-section-head">
+              <span>LOGISTICS FLOW</span>
+              <strong>物流链路</strong>
+            </div>
+            <div class="rma-logistics-grid">
+              <div><span>原物流</span><strong>{{ selectedRMA.source_shipment_no || '—' }}</strong></div>
+              <div><span>退回物流</span><strong>{{ selectedRMA.return_shipment_no || '—' }}</strong></div>
+              <div><span>外送维修</span><strong>{{ selectedRMA.repair_outbound_shipment_no || '—' }}</strong></div>
+              <div><span>维修返回</span><strong>{{ selectedRMA.repair_return_shipment_no || '—' }}</strong></div>
+              <div><span>寄出物流</span><strong>{{ selectedRMA.outbound_shipment_no || '—' }}</strong></div>
+            </div>
+          </section>
+
+          <section class="rma-info-section">
+            <div class="rma-info-section-head">
+              <span>TIME LINE</span>
+              <strong>时间节点</strong>
+            </div>
+            <div class="rma-time-grid">
+              <div><span>创建时间</span><strong>{{ new Date(selectedRMA.created_at).toLocaleString('zh-CN') }}</strong></div>
+              <div><span>受理时间</span><strong>{{ selectedRMA.accepted_at ? new Date(selectedRMA.accepted_at).toLocaleString('zh-CN') : '待受理' }}</strong></div>
+              <div><span>完成时间</span><strong>{{ selectedRMA.completed_at ? new Date(selectedRMA.completed_at).toLocaleString('zh-CN') : '—' }}</strong></div>
+            </div>
+          </section>
+
+          <div class="rma-detail-copy-grid">
+            <div class="rma-detail-copy">
+              <span>问题说明</span>
+              <p>{{ selectedRMA.issue || '—' }}</p>
+            </div>
+            <div class="rma-detail-copy">
+              <span>处理结果</span>
+              <p>{{ selectedRMA.resolution || '尚未完成处理' }}</p>
+            </div>
           </div>
-          <div class="rma-detail-copy"><span>问题说明</span><p>{{ selectedRMA.issue || '—' }}</p></div>
-          <div class="rma-detail-copy"><span>处理结果</span><p>{{ selectedRMA.resolution || '尚未完成处理' }}</p></div>
 
           <section class="rma-detail-section">
             <div class="rma-detail-section-head">

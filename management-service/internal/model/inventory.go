@@ -12,6 +12,12 @@ type Warehouse struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type WarehouseInput struct {
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
 type Device struct {
 	ID                 int64     `json:"id"`
 	SN                 string    `json:"sn"`
@@ -49,65 +55,65 @@ type DeviceLedgerEntry struct {
 }
 
 type StockDocument struct {
-	ID                int64      `json:"id"`
-	DocumentNo        string     `json:"document_no"`
-	DocumentType      string     `json:"document_type"`
-	Status            string     `json:"status"`
-	FromWarehouseID   *int64     `json:"from_warehouse_id,omitempty"`
-	ToWarehouseID     *int64     `json:"to_warehouse_id,omitempty"`
-	CounterpartyOrgID *int64     `json:"counterparty_org_id,omitempty"`
-	ReferenceNo       string     `json:"reference_no"`
-	ProductID         *int64     `json:"product_id,omitempty"`
-	ProductName       string     `json:"product_name"`
-	ExpectedQuantity  int        `json:"expected_quantity"`
-	ActualQuantity    int        `json:"actual_quantity"`
-	BusinessAmountCents uint64   `json:"business_amount_cents"`
-	CounterpartyName  string     `json:"counterparty_name"`
-	PaymentMethod     string     `json:"payment_method"`
-	Reason            string     `json:"reason"`
-	OperatorUserID    *int64     `json:"operator_user_id,omitempty"`
-	ApprovedByUserID  *int64     `json:"approved_by_user_id,omitempty"`
-	EffectiveAt       *time.Time `json:"effective_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	ItemCount         int        `json:"item_count"`
+	ID                  int64      `json:"id"`
+	DocumentNo          string     `json:"document_no"`
+	DocumentType        string     `json:"document_type"`
+	Status              string     `json:"status"`
+	FromWarehouseID     *int64     `json:"from_warehouse_id,omitempty"`
+	ToWarehouseID       *int64     `json:"to_warehouse_id,omitempty"`
+	CounterpartyOrgID   *int64     `json:"counterparty_org_id,omitempty"`
+	ReferenceNo         string     `json:"reference_no"`
+	ProductID           *int64     `json:"product_id,omitempty"`
+	ProductName         string     `json:"product_name"`
+	ExpectedQuantity    int        `json:"expected_quantity"`
+	ActualQuantity      int        `json:"actual_quantity"`
+	BusinessAmountCents uint64     `json:"business_amount_cents"`
+	CounterpartyName    string     `json:"counterparty_name"`
+	PaymentMethod       string     `json:"payment_method"`
+	Reason              string     `json:"reason"`
+	OperatorUserID      *int64     `json:"operator_user_id,omitempty"`
+	ApprovedByUserID    *int64     `json:"approved_by_user_id,omitempty"`
+	EffectiveAt         *time.Time `json:"effective_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ItemCount           int        `json:"item_count"`
 }
 
 type RMARecord struct {
-	ID                  int64      `json:"id"`
-	RMANo               string     `json:"rma_no"`
-	DeviceID            int64      `json:"device_id"`
-	DeviceSN            string     `json:"device_sn"`
-	ServiceType         string     `json:"service_type"`
-	Status              string     `json:"status"`
-	SourceType          string     `json:"source_type"`
-	SourceUserID        *int64     `json:"source_user_id,omitempty"`
-	SourceTenantID      *int64     `json:"source_tenant_id,omitempty"`
-	SourceAgentOrgID    *int64     `json:"source_agent_org_id,omitempty"`
-	CustomerName        string     `json:"customer_name"`
-	ContactPhone        string     `json:"contact_phone"`
-	Issue               string     `json:"issue"`
-	Resolution          string     `json:"resolution"`
-	ReplacementDeviceID *int64     `json:"replacement_device_id,omitempty"`
-	SourceOrderID       *int64     `json:"source_order_id,omitempty"`
-	SourceOrderNo       string     `json:"source_order_no"`
-	SourceShipmentID    *int64     `json:"source_shipment_id,omitempty"`
-	SourceShipmentNo    string     `json:"source_shipment_no"`
-	ReturnShipmentID    *int64     `json:"return_shipment_id,omitempty"`
-	ReturnShipmentNo    string     `json:"return_shipment_no"`
-	OutboundShipmentID  *int64     `json:"outbound_shipment_id,omitempty"`
-	OutboundShipmentNo  string     `json:"outbound_shipment_no"`
-	RepairOutboundShipmentID *int64 `json:"repair_outbound_shipment_id,omitempty"`
-	RepairOutboundShipmentNo string `json:"repair_outbound_shipment_no"`
-	RepairReturnShipmentID   *int64 `json:"repair_return_shipment_id,omitempty"`
-	RepairReturnShipmentNo   string `json:"repair_return_shipment_no"`
-	RefundID            *int64     `json:"refund_id,omitempty"`
-	RefundNo            string     `json:"refund_no"`
-	OperatorUserID      *int64     `json:"operator_user_id,omitempty"`
-	AcceptedByUserID    *int64     `json:"accepted_by_user_id,omitempty"`
-	AcceptedAt          *time.Time `json:"accepted_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                       int64      `json:"id"`
+	RMANo                    string     `json:"rma_no"`
+	DeviceID                 int64      `json:"device_id"`
+	DeviceSN                 string     `json:"device_sn"`
+	ServiceType              string     `json:"service_type"`
+	Status                   string     `json:"status"`
+	SourceType               string     `json:"source_type"`
+	SourceUserID             *int64     `json:"source_user_id,omitempty"`
+	SourceTenantID           *int64     `json:"source_tenant_id,omitempty"`
+	SourceAgentOrgID         *int64     `json:"source_agent_org_id,omitempty"`
+	CustomerName             string     `json:"customer_name"`
+	ContactPhone             string     `json:"contact_phone"`
+	Issue                    string     `json:"issue"`
+	Resolution               string     `json:"resolution"`
+	ReplacementDeviceID      *int64     `json:"replacement_device_id,omitempty"`
+	SourceOrderID            *int64     `json:"source_order_id,omitempty"`
+	SourceOrderNo            string     `json:"source_order_no"`
+	SourceShipmentID         *int64     `json:"source_shipment_id,omitempty"`
+	SourceShipmentNo         string     `json:"source_shipment_no"`
+	ReturnShipmentID         *int64     `json:"return_shipment_id,omitempty"`
+	ReturnShipmentNo         string     `json:"return_shipment_no"`
+	OutboundShipmentID       *int64     `json:"outbound_shipment_id,omitempty"`
+	OutboundShipmentNo       string     `json:"outbound_shipment_no"`
+	RepairOutboundShipmentID *int64     `json:"repair_outbound_shipment_id,omitempty"`
+	RepairOutboundShipmentNo string     `json:"repair_outbound_shipment_no"`
+	RepairReturnShipmentID   *int64     `json:"repair_return_shipment_id,omitempty"`
+	RepairReturnShipmentNo   string     `json:"repair_return_shipment_no"`
+	RefundID                 *int64     `json:"refund_id,omitempty"`
+	RefundNo                 string     `json:"refund_no"`
+	OperatorUserID           *int64     `json:"operator_user_id,omitempty"`
+	AcceptedByUserID         *int64     `json:"accepted_by_user_id,omitempty"`
+	AcceptedAt               *time.Time `json:"accepted_at,omitempty"`
+	CompletedAt              *time.Time `json:"completed_at,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 type InventorySummary struct {
@@ -135,35 +141,46 @@ type InventoryDeviceProduct struct {
 	Status  string `json:"status"`
 }
 
+type InventoryDeviceSKUType struct {
+	SKUCode          string `json:"sku_code"`
+	TotalQuantity    int64  `json:"total_quantity"`
+	InStockQuantity  int64  `json:"in_stock_quantity"`
+	WarehouseCount   int64  `json:"warehouse_count"`
+	SampleSN         string `json:"sample_sn"`
+	SampleBatchNo    string `json:"sample_batch_no"`
+	BoundProductID   int64  `json:"bound_product_id"`
+	BoundProductName string `json:"bound_product_name"`
+}
+
 type BatchInboundInput struct {
-	ProductID        int64    `json:"product_id"`
-	BatchNo          string   `json:"batch_no"`
-	PurchaseNo       string   `json:"purchase_no"`
-	WarehouseID      int64    `json:"warehouse_id"`
-	ExpectedQuantity int      `json:"expected_quantity"`
-	PurchaseAmountCents uint64 `json:"purchase_amount_cents"`
-	SupplierName     string   `json:"supplier_name"`
-	PaymentMethod    string   `json:"payment_method"`
-	SNs              []string `json:"sns"`
-	QualityStatus    string   `json:"quality_status"`
-	Reason           string   `json:"reason"`
+	ProductID           int64    `json:"product_id"`
+	BatchNo             string   `json:"batch_no"`
+	PurchaseNo          string   `json:"purchase_no"`
+	WarehouseID         int64    `json:"warehouse_id"`
+	ExpectedQuantity    int      `json:"expected_quantity"`
+	PurchaseAmountCents uint64   `json:"purchase_amount_cents"`
+	SupplierName        string   `json:"supplier_name"`
+	PaymentMethod       string   `json:"payment_method"`
+	SNs                 []string `json:"sns"`
+	QualityStatus       string   `json:"quality_status"`
+	Reason              string   `json:"reason"`
 }
 
 type BatchInboundResult struct {
-	DocumentID       int64    `json:"document_id"`
-	DocumentNo       string   `json:"document_no"`
-	ProductID        int64    `json:"product_id"`
-	ProductName      string   `json:"product_name"`
-	SKUCode          string   `json:"sku_code"`
-	BatchNo          string   `json:"batch_no"`
-	PurchaseNo       string   `json:"purchase_no"`
-	ExpectedQuantity int      `json:"expected_quantity"`
-	ActualQuantity   int      `json:"actual_quantity"`
-	PurchaseAmountCents uint64 `json:"purchase_amount_cents"`
-	SupplierName     string   `json:"supplier_name"`
-	PaymentMethod    string   `json:"payment_method"`
-	DeviceIDs        []int64  `json:"device_ids"`
-	SNs              []string `json:"sns"`
+	DocumentID          int64    `json:"document_id"`
+	DocumentNo          string   `json:"document_no"`
+	ProductID           int64    `json:"product_id"`
+	ProductName         string   `json:"product_name"`
+	SKUCode             string   `json:"sku_code"`
+	BatchNo             string   `json:"batch_no"`
+	PurchaseNo          string   `json:"purchase_no"`
+	ExpectedQuantity    int      `json:"expected_quantity"`
+	ActualQuantity      int      `json:"actual_quantity"`
+	PurchaseAmountCents uint64   `json:"purchase_amount_cents"`
+	SupplierName        string   `json:"supplier_name"`
+	PaymentMethod       string   `json:"payment_method"`
+	DeviceIDs           []int64  `json:"device_ids"`
+	SNs                 []string `json:"sns"`
 }
 
 type DeviceTransitionInput struct {

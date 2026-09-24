@@ -28,11 +28,10 @@ function onPublicScreenInput(event: Event) {
 <template>
   <div class="settings-page">
     <ModulePageNav context="personal-auto" active-title="个人设置" />
-    <section class="page-hero settings-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">PREFERENCES</p>
         <h2>个人设置</h2>
-        <p>调整个人控制台的显示偏好。账号资料、联系方式和密码请到账户与安全中管理。</p>
       </div>
     </section>
 

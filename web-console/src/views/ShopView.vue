@@ -1,23 +1,34 @@
 <script setup lang="ts">
 import { useFeedbackErrorRef } from '../uiFeedback'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   cancelCustomerShopOrder,
   createCustomerShopOrder,
   getAccountDashboard,
   getCustomerDeviceOffers,
+  getCustomerMarketingCampaigns,
+  getCustomerMembershipOffers,
   getCustomerShopOrders,
   getCustomerTimeCardOffers,
   sandboxPayCustomerShopOrder,
   sandboxRefundCustomerShopOrder,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import RegionSelect from '../components/RegionSelect.vue'
+import {
+  floorToWholeYuanCents,
+  formatWholeYuanMoney,
+  marketingPayableCents,
+} from '../pricingRules'
 import type {
   AccountProfile,
   CustomerDeviceOffer,
+  CustomerMembershipOffer,
   CustomerShopOrder,
   CustomerTimeCardOffer,
+  MarketingCampaign,
+  MarketingCampaignItem,
   SandboxPaymentRecord,
 } from '../types'
 
@@ -32,10 +43,22 @@ const refundError = ref('')
 const successMessage = ref('')
 const products = ref<CustomerTimeCardOffer[]>([])
 const deviceProducts = ref<CustomerDeviceOffer[]>([])
+const membershipOffers = ref<CustomerMembershipOffer[]>([])
+const marketingPlans = ref<MarketingCampaign[]>([])
 const accountProfile = ref<AccountProfile | null>(null)
 const orders = ref<CustomerShopOrder[]>([])
 const selectedDeviceProduct = ref<CustomerDeviceOffer | null>(null)
+const selectedDeviceMarketing = ref<{
+  campaign: MarketingCampaign
+  item: MarketingCampaignItem
+} | null>(null)
 const deviceQuantity = ref(1)
+const timePage = ref(1)
+const timePageSize = 8
+const devicePage = ref(1)
+const devicePageSize = 8
+const orderPage = ref(1)
+const orderPageSize = 12
 
 const shippingForm = reactive({
   recipient_name: '',
@@ -53,10 +76,146 @@ const refundAmount = ref('')
 const refundReason = ref('')
 const simulateResult = ref<'success' | 'failure'>('success')
 
-const latestOrders = computed(() => orders.value.slice(0, 12))
+const timePageCount = computed(() => Math.max(1, Math.ceil(products.value.length / timePageSize)))
+const devicePageCount = computed(() => Math.max(1, Math.ceil(deviceProducts.value.length / devicePageSize)))
+const orderPageCount = computed(() => Math.max(1, Math.ceil(orders.value.length / orderPageSize)))
+const pagedProducts = computed(() => {
+  const current = Math.min(timePage.value, timePageCount.value)
+  return products.value.slice((current - 1) * timePageSize, current * timePageSize)
+})
+const pagedDeviceProducts = computed(() => {
+  const current = Math.min(devicePage.value, devicePageCount.value)
+  return deviceProducts.value.slice((current - 1) * devicePageSize, current * devicePageSize)
+})
+const pagedOrders = computed(() => {
+  const current = Math.min(orderPage.value, orderPageCount.value)
+  return orders.value.slice((current - 1) * orderPageSize, current * orderPageSize)
+})
 
 function formatMoney(cents: number) {
   return '¥' + (cents / 100).toFixed(2)
+}
+
+function normalizeMarketingDiscountBps(value: number) {
+  if (value >= 100 && value < 1000) return value * 10
+  if (value > 10000) return 10000
+  return Math.max(0, Number(value || 0))
+}
+
+function marketingDiscountLabel(value: number) {
+  const bps = normalizeMarketingDiscountBps(value)
+  if (bps <= 0) return '赠送'
+  if (bps >= 10000) return '原价'
+  const zhe = bps / 1000
+  return zhe.toFixed(zhe % 1 === 0 ? 0 : 1) + ' 折'
+}
+
+function marketingTargetName(item: MarketingCampaignItem) {
+  if (item.target_type === 'membership') {
+    return membershipOffers.value.find((offer) => offer.id === item.target_id)?.name || '会员方案 #' + item.target_id
+  }
+  if (item.target_type === 'time_card') {
+    return products.value.find((offer) => offer.id === item.target_id)?.name || '时长卡 #' + item.target_id
+  }
+  return deviceProducts.value.find((offer) => offer.id === item.target_id)?.name || '设备商品 #' + item.target_id
+}
+
+function marketingTargetTypeLabel(item: MarketingCampaignItem) {
+  if (item.target_type === 'membership') return '会员'
+  if (item.target_type === 'time_card') return '时长卡'
+  return '设备'
+}
+
+function marketingPackageLabel(item: MarketingCampaignItem) {
+  const quantity = Math.max(1, item.quantity || 1)
+  if (item.target_type === 'membership' && item.pricing_mode === 'package') {
+    const months = Math.max(1, item.package_months || 1)
+    const label =
+      months === 1 ? '包月' :
+      months === 3 ? '包季' :
+      months === 6 ? '包半年' :
+      months === 12 ? '包年' : months + '个月'
+    return quantity > 1 ? label + ' × ' + quantity : label
+  }
+  return quantity > 1 ? '数量 × ' + quantity : '1 份'
+}
+
+function marketingItemBaseCents(item: MarketingCampaignItem) {
+  const quantity = Math.max(1, item.quantity || 1)
+  if (item.target_type === 'membership') {
+    const offer = membershipOffers.value.find((row) => row.id === item.target_id)
+    return floorToWholeYuanCents(
+      (offer?.monthly_price_cents || 0) * Math.max(1, item.package_months || 1) * quantity,
+    )
+  }
+  if (item.target_type === 'time_card') {
+    const offer = products.value.find((row) => row.id === item.target_id)
+    return floorToWholeYuanCents((offer?.original_price_cents || 0) * quantity)
+  }
+  const offer = deviceProducts.value.find((row) => row.id === item.target_id)
+  return floorToWholeYuanCents(
+    (offer?.base_sale_price_cents || offer?.original_price_cents || 0) * quantity,
+  )
+}
+
+function marketingItemPayableCents(item: MarketingCampaignItem) {
+  return marketingPayableCents(
+    marketingItemBaseCents(item),
+    normalizeMarketingDiscountBps(item.discount_bps),
+  )
+}
+
+function formatMarketingMoney(cents: number) {
+  return formatWholeYuanMoney(cents)
+}
+
+function marketingPlanBaseCents(plan: MarketingCampaign) {
+  return (plan.items ?? []).reduce((sum, item) => sum + marketingItemBaseCents(item), 0)
+}
+
+function marketingPlanPayableCents(plan: MarketingCampaign) {
+  return (plan.items ?? []).reduce((sum, item) => sum + marketingItemPayableCents(item), 0)
+}
+
+function marketingPlanSavingCents(plan: MarketingCampaign) {
+  return Math.max(0, marketingPlanBaseCents(plan) - marketingPlanPayableCents(plan))
+}
+
+function marketingItemDetail(item: MarketingCampaignItem) {
+  const quantity = Math.max(1, item.quantity || 1)
+  if (item.target_type === 'membership') {
+    const offer = membershipOffers.value.find((row) => row.id === item.target_id)
+    const hours = (offer?.included_seconds || 0) / 3600 *
+      Math.max(1, item.package_months || 1) * quantity
+    return hours > 0 ? hours.toLocaleString('zh-CN') + ' 小时权益' : '会员权益'
+  }
+  if (item.target_type === 'time_card') {
+    const offer = products.value.find((row) => row.id === item.target_id)
+    const totalHours = (offer?.duration_seconds || 0) / 3600 * quantity
+    return totalHours.toLocaleString('zh-CN') + ' 小时'
+  }
+  const offer = deviceProducts.value.find((row) => row.id === item.target_id)
+  return quantity + ' ' + (offer?.unit_label || '台')
+}
+
+const visibleMarketingPlans = computed(() =>
+  marketingPlans.value.filter(
+    (plan) => plan.status === 'active' && (plan.items?.length || 0) > 0,
+  ),
+)
+
+function marketingPlansForTarget(type: MarketingCampaignItem['target_type'], id: number) {
+  return visibleMarketingPlans.value
+    .map((plan) => ({
+      plan,
+      item: (plan.items ?? []).find(
+        (entry) => entry.target_type === type && entry.target_id === id,
+      ),
+    }))
+    .filter(
+      (entry): entry is { plan: MarketingCampaign; item: MarketingCampaignItem } =>
+        Boolean(entry.item),
+    )
 }
 
 function hours(product: CustomerTimeCardOffer) {
@@ -88,18 +247,21 @@ function badge(product: CustomerTimeCardOffer) {
 }
 
 function deviceSavings(product: CustomerDeviceOffer) {
-  return Math.max(product.original_price_cents - product.sale_price_cents, 0)
+  return Math.max(product.base_sale_price_cents - product.sale_price_cents, 0)
 }
 
 function deviceDiscountLabel(product: CustomerDeviceOffer) {
-  if (product.discount_bps >= 10000) return '原价'
-  return (product.discount_bps / 1000).toFixed(1).replace(/.0$/, '') + ' 折'
+  if (product.membership_discount_bps >= 10000) return '原价'
+  return (product.membership_discount_bps / 1000).toFixed(1).replace(/.0$/, '') + ' 折'
 }
 
 function orderSpec(order: CustomerShopOrder) {
   if (order.order_type === 'device') {
     const count = order.items.reduce((sum, item) => sum + item.quantity, 0)
     return count.toLocaleString('zh-CN') + ' 台'
+  }
+  if (order.order_type === 'membership') {
+    return order.items[0]?.product_name || '会员权益'
   }
   return orderHours(order).toLocaleString('zh-CN') + ' 小时'
 }
@@ -202,13 +364,17 @@ function inputToCents(value: string) {
 }
 
 async function loadProducts() {
-  const [timeCardData, deviceData, accountData] = await Promise.all([
+  const [timeCardData, deviceData, membershipData, marketingData, accountData] = await Promise.all([
     getCustomerTimeCardOffers(),
     getCustomerDeviceOffers(),
+    getCustomerMembershipOffers(),
+    getCustomerMarketingCampaigns(),
     getAccountDashboard(),
   ])
   products.value = timeCardData.items
   deviceProducts.value = deviceData.items
+  membershipOffers.value = membershipData.items
+  marketingPlans.value = marketingData.items
   accountProfile.value = accountData.profile
 }
 
@@ -228,15 +394,24 @@ async function load() {
   try {
     await Promise.all([loadProducts(), loadOrders()])
   } catch (value) {
-    error.value = value instanceof Error ? value.message : '读取商城数据失败'
+    error.value = value instanceof Error ? value.message : '读取终端商城数据失败'
   } finally {
     loading.value = false
   }
 }
 
-function openDevicePurchase(product: CustomerDeviceOffer) {
+function openDevicePurchase(
+  product: CustomerDeviceOffer,
+  campaign?: MarketingCampaign,
+  campaignItem?: MarketingCampaignItem,
+) {
   selectedDeviceProduct.value = product
-  deviceQuantity.value = 1
+  selectedDeviceMarketing.value = campaign && campaignItem
+    ? { campaign, item: campaignItem }
+    : null
+  deviceQuantity.value = selectedDeviceMarketing.value
+    ? Math.max(1, selectedDeviceMarketing.value.item.quantity || 1)
+    : 1
   const profile = accountProfile.value
   shippingForm.recipient_name = profile?.display_name || ''
   shippingForm.recipient_phone = profile?.phone || ''
@@ -276,6 +451,8 @@ async function submitDeviceOrder() {
       product_type: 'device',
       product_id: product.id,
       quantity,
+      marketing_campaign_id: selectedDeviceMarketing.value?.campaign.id || undefined,
+      marketing_placement: 'shop',
       idempotency_key: newIdempotencyKey('device-order'),
       recipient_name: shippingForm.recipient_name.trim(),
       recipient_phone: shippingForm.recipient_phone.trim(),
@@ -297,7 +474,11 @@ async function submitDeviceOrder() {
   }
 }
 
-async function buy(product: CustomerTimeCardOffer) {
+async function buy(
+  product: CustomerTimeCardOffer,
+  marketingCampaignId = 0,
+  marketingQuantity = 1,
+) {
   creatingOrder.value = product.id
   error.value = ''
   successMessage.value = ''
@@ -305,8 +486,10 @@ async function buy(product: CustomerTimeCardOffer) {
     const order = await createCustomerShopOrder({
       product_type: 'time_card',
       product_id: product.id,
-      quantity: 1,
-      idempotency_key: newIdempotencyKey('shop-order'),
+      quantity: Math.max(1, marketingQuantity),
+      marketing_campaign_id: marketingCampaignId || undefined,
+      marketing_placement: 'shop',
+      idempotency_key: newIdempotencyKey(marketingCampaignId ? 'marketing-time-card' : 'shop-order'),
     })
     selectedOrder.value = order
     paymentAmount.value = centsToInput(order.payable_amount_cents)
@@ -450,12 +633,23 @@ async function cancelOrder(order: CustomerShopOrder) {
   }
 }
 
-onMounted(load)
+function handleMembershipUpdated() {
+  void loadProducts()
+}
+
+onMounted(() => {
+  void load()
+  window.addEventListener('membership-updated', handleMembershipUpdated)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('membership-updated', handleMembershipUpdated)
+})
 </script>
 
 <template>
   <div class="management-page customer-shop-page">
-    <ModulePageNav context="workspace-customer" active-title="商城" />
+    <ModulePageNav context="workspace-customer" active-title="终端商城" />
 
     <section class="customer-shop-hero">
       <div class="customer-shop-hero-copy">
@@ -486,11 +680,66 @@ onMounted(load)
     <p v-if="successMessage" class="inline-success shop-success-message">
       {{ successMessage }}
     </p>
-    <div v-if="loading" class="panel-loading">正在读取商城商品...</div>
+    <div v-if="loading" class="panel-loading">正在读取终端商城商品...</div>
 
-    <section v-else-if="products.length" class="customer-shop-grid">
+    <section v-if="!loading && visibleMarketingPlans.length" class="shop-marketing-section">
+      <header class="shop-category-head">
+        <div>
+          <span>MARKETING PLANS</span>
+          <strong>当前营销活动</strong>
+          <p>每张活动卡直接展示计划里包含的会员、时长卡和设备，以及对应折扣和实际价值。</p>
+        </div>
+      </header>
+
+      <div class="shop-marketing-grid">
+        <article v-for="plan in visibleMarketingPlans" :key="'marketing-' + plan.id" class="shop-marketing-card">
+          <header>
+            <div>
+              <span>{{ plan.items.length }} 项营销内容</span>
+              <h3>{{ plan.name }}</h3>
+              <p v-if="plan.description">{{ plan.description }}</p>
+            </div>
+            <strong class="shop-marketing-total">{{ formatMarketingMoney(marketingPlanPayableCents(plan)) }}</strong>
+          </header>
+
+          <div class="shop-marketing-value-row">
+            <div>
+              <span>商品总价值</span>
+              <strong>{{ formatMarketingMoney(marketingPlanBaseCents(plan)) }}</strong>
+            </div>
+            <div>
+              <span>活动实际价值</span>
+              <strong>{{ formatMarketingMoney(marketingPlanPayableCents(plan)) }}</strong>
+            </div>
+            <div>
+              <span>优惠 / 赠送价值</span>
+              <strong>{{ formatMarketingMoney(marketingPlanSavingCents(plan)) }}</strong>
+            </div>
+          </div>
+
+          <div class="shop-marketing-items">
+            <div v-for="(item, index) in plan.items" :key="plan.id + '-' + index" class="shop-marketing-item">
+              <div class="shop-marketing-item-copy">
+                <span>{{ marketingTargetTypeLabel(item) }} · {{ marketingPackageLabel(item) }}</span>
+                <strong>{{ marketingTargetName(item) }}</strong>
+                <small>{{ marketingItemDetail(item) }}</small>
+              </div>
+              <div class="shop-marketing-item-discount" :class="{ gift: item.discount_bps === 0 }">
+                {{ marketingDiscountLabel(item.discount_bps) }}
+              </div>
+              <div class="shop-marketing-item-price">
+                <del>{{ formatMarketingMoney(marketingItemBaseCents(item)) }}</del>
+                <strong>{{ item.discount_bps === 0 ? '赠送' : formatMarketingMoney(marketingItemPayableCents(item)) }}</strong>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section v-if="!loading && products.length" class="customer-shop-grid">
       <article
-        v-for="product in products"
+        v-for="product in pagedProducts"
         :key="product.id"
         class="time-card-product"
       >
@@ -534,8 +783,43 @@ onMounted(load)
             <strong>{{ formatMoney(savings(product)) }}</strong>
           </div>
           <div>
-            <span>有效期</span>
+            <span>首次使用后有效</span>
             <strong>{{ product.validity_days }} 天</strong>
+          </div>
+        </div>
+
+        <small class="time-card-activation-note">
+          购买后不会立即开始倒计时；首次实际使用时自动激活。
+          <template v-if="product.activation_deadline_days > 0">
+            需在购买后 {{ product.activation_deadline_days }} 天内激活。
+          </template>
+          <template v-else>未激活前可长期储备。</template>
+        </small>
+
+        <div
+          v-if="marketingPlansForTarget('time_card', product.id).length"
+          class="shop-product-marketing-links"
+        >
+          <span>正在参与</span>
+          <div>
+            <div
+              v-for="entry in marketingPlansForTarget('time_card', product.id)"
+              :key="entry.plan.id"
+              class="shop-product-marketing-option"
+            >
+              <small>
+                {{ entry.plan.name }} · {{ marketingDiscountLabel(entry.item.discount_bps) }}
+                · {{ entry.item.quantity || 1 }}份
+              </small>
+              <button
+                type="button"
+                class="shop-marketing-buy-link"
+                :disabled="creatingOrder === product.id"
+                @click="buy(product, entry.plan.id, entry.item.quantity || 1)"
+              >
+                活动价 {{ formatMarketingMoney(marketingItemPayableCents(entry.item)) }} · 购买
+              </button>
+            </div>
           </div>
         </div>
 
@@ -551,6 +835,14 @@ onMounted(load)
         </button>
       </article>
     </section>
+    <PaginationBar
+      v-if="!loading && products.length"
+      :page="Math.min(timePage, timePageCount)"
+      :total-pages="timePageCount"
+      :total="products.length"
+      :page-size="timePageSize"
+      @update:page="timePage = $event"
+    />
 
     <section v-if="!loading && deviceProducts.length" class="shop-device-section">
       <header class="shop-category-head">
@@ -563,7 +855,7 @@ onMounted(load)
 
       <div class="customer-shop-grid device-shop-grid">
         <article
-          v-for="product in deviceProducts"
+          v-for="product in pagedDeviceProducts"
           :key="'device-' + product.id"
           class="time-card-product device-product-card"
         >
@@ -575,9 +867,18 @@ onMounted(load)
             </div>
             <div class="device-stock-badge" :class="{ empty: product.available_stock <= 0 }">
               <strong>{{ product.available_stock }}</strong>
-              <span>可售库存</span>
+              <span>可售{{ product.unit_label || '台' }}</span>
             </div>
           </header>
+
+          <div class="shop-device-product-image">
+            <img v-if="product.image_url" :src="product.image_url" :alt="product.name" />
+            <div v-else>
+              <span>LIVE DEVICE</span>
+              <strong>▣</strong>
+              <small>商品图片待配置</small>
+            </div>
+          </div>
 
           <p class="time-card-description">
             {{ product.description || '直播伴播实体设备' }}
@@ -585,30 +886,57 @@ onMounted(load)
 
           <div class="time-card-price-block">
             <div class="time-card-sale-price">
-              <span>当前价</span>
+              <span>当前会员价</span>
               <strong>{{ formatMoney(product.sale_price_cents) }}</strong>
             </div>
             <div class="time-card-original-price">
-              <span>原价</span>
-              <del v-if="product.sale_price_cents < product.original_price_cents">
-                {{ formatMoney(product.original_price_cents) }}
+              <span>设备正常售价</span>
+              <del v-if="product.sale_price_cents < product.base_sale_price_cents">
+                {{ formatMoney(product.base_sale_price_cents) }}
               </del>
-              <strong v-else>{{ formatMoney(product.original_price_cents) }}</strong>
+              <strong v-else>{{ formatMoney(product.base_sale_price_cents) }}</strong>
             </div>
           </div>
 
           <div class="time-card-meta">
             <div>
-              <span>当前折扣</span>
+              <span>会员设备折扣</span>
               <strong>{{ deviceDiscountLabel(product) }}</strong>
             </div>
             <div>
-              <span>单台立省</span>
+              <span>会员单台优惠</span>
               <strong>{{ formatMoney(deviceSavings(product)) }}</strong>
             </div>
             <div>
-              <span>履约方式</span>
-              <strong>SN + 物流</strong>
+              <span>商品原价</span>
+              <strong>{{ formatMoney(product.original_price_cents) }}</strong>
+            </div>
+          </div>
+
+          <div
+            v-if="marketingPlansForTarget('device_product', product.id).length"
+            class="shop-product-marketing-links"
+          >
+            <span>正在参与</span>
+            <div>
+              <div
+                v-for="entry in marketingPlansForTarget('device_product', product.id)"
+                :key="entry.plan.id"
+                class="shop-product-marketing-option"
+              >
+                <small>
+                  {{ entry.plan.name }} · {{ marketingDiscountLabel(entry.item.discount_bps) }}
+                  · {{ entry.item.quantity || 1 }}{{ product.unit_label || '台' }}
+                </small>
+                <button
+                  type="button"
+                  class="shop-marketing-buy-link"
+                  :disabled="(entry.item.quantity || 1) > product.available_stock"
+                  @click="openDevicePurchase(product, entry.plan, entry.item)"
+                >
+                  活动价 {{ formatMarketingMoney(marketingItemPayableCents(entry.item)) }} · 购买
+                </button>
+              </div>
             </div>
           </div>
 
@@ -630,6 +958,13 @@ onMounted(load)
           </button>
         </article>
       </div>
+      <PaginationBar
+        :page="Math.min(devicePage, devicePageCount)"
+        :total-pages="devicePageCount"
+        :total="deviceProducts.length"
+        :page-size="devicePageSize"
+        @update:page="devicePage = $event"
+      />
     </section>
 
     <div v-if="!loading && !products.length && !deviceProducts.length" class="empty-state">
@@ -639,7 +974,7 @@ onMounted(load)
     <section class="settings-card shop-orders-panel">
       <header class="inventory-section-head">
         <div>
-          <strong>我的商城订单</strong>
+          <strong>我的终端商城订单</strong>
           <span>订单金额为下单时快照，后台后续改价不会影响已经生成的订单。</span>
         </div>
         <button class="ghost-button" type="button" :disabled="ordersLoading" @click="loadOrders">
@@ -648,7 +983,7 @@ onMounted(load)
       </header>
 
       <div v-if="ordersLoading && !orders.length" class="panel-loading">正在读取订单...</div>
-      <div v-else-if="latestOrders.length" class="data-table-wrap">
+      <div v-else-if="pagedOrders.length" class="data-table-wrap">
         <table class="data-table shop-orders-table">
           <thead>
             <tr>
@@ -664,9 +999,9 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="order in latestOrders" :key="order.id">
+            <tr v-for="order in pagedOrders" :key="order.id">
               <td><strong>{{ order.order_no }}</strong></td>
-              <td>{{ order.items[0]?.product_name || '商城商品' }}</td>
+              <td>{{ order.items[0]?.product_name || '终端商城商品' }}</td>
               <td>{{ orderSpec(order) }}</td>
               <td>{{ formatMoney(order.list_amount_cents) }}</td>
               <td>{{ formatMoney(order.discount_amount_cents) }}</td>
@@ -712,7 +1047,14 @@ onMounted(load)
           </tbody>
         </table>
       </div>
-      <div v-else class="empty-state">还没有商城订单。</div>
+      <div v-else class="empty-state">还没有终端商城订单。</div>
+      <PaginationBar
+        :page="Math.min(orderPage, orderPageCount)"
+        :total-pages="orderPageCount"
+        :total="orders.length"
+        :page-size="orderPageSize"
+        @update:page="orderPage = $event"
+      />
     </section>
 
     <div
@@ -739,8 +1081,18 @@ onMounted(load)
             <strong>{{ selectedDeviceProduct.sku_code }}</strong>
           </div>
           <div>
-            <span>单价</span>
-            <strong>{{ formatMoney(selectedDeviceProduct.sale_price_cents) }}</strong>
+            <span>{{ selectedDeviceMarketing ? '活动总价' : '单价' }}</span>
+            <strong>
+              {{
+                selectedDeviceMarketing
+                  ? formatMarketingMoney(marketingItemPayableCents(selectedDeviceMarketing.item))
+                  : formatMoney(selectedDeviceProduct.sale_price_cents)
+              }}
+            </strong>
+          </div>
+          <div v-if="selectedDeviceMarketing">
+            <span>营销活动</span>
+            <strong>{{ selectedDeviceMarketing.campaign.name }}</strong>
           </div>
           <div>
             <span>可售库存</span>
@@ -756,10 +1108,14 @@ onMounted(load)
               type="number"
               min="1"
               :max="selectedDeviceProduct.available_stock"
+              :disabled="Boolean(selectedDeviceMarketing)"
             />
           </label>
           <label>
             <span>收货人 *</span>
+          <small v-if="selectedDeviceMarketing" class="shop-campaign-fixed-quantity">
+            活动数量由营销计划固定为 {{ selectedDeviceMarketing.item.quantity || 1 }} {{ selectedDeviceProduct.unit_label || '台' }}。
+          </small>
             <input v-model="shippingForm.recipient_name" type="text" />
           </label>
           <label>
@@ -778,7 +1134,7 @@ onMounted(load)
             <span>详细地址 *</span>
             <textarea
               v-model="shippingForm.address"
-              rows="3"
+              rows="2"
               placeholder="街道、门牌号、楼栋等"
             />
           </label>
@@ -831,7 +1187,7 @@ onMounted(load)
           </div>
           <div>
             <span>商品</span>
-            <strong>{{ selectedOrder.items[0]?.product_name || '商城商品' }}</strong>
+            <strong>{{ selectedOrder.items[0]?.product_name || '终端商城商品' }}</strong>
           </div>
           <div>
             <span>{{ selectedOrder.order_type === 'device' ? '购买数量' : '购买时长' }}</span>

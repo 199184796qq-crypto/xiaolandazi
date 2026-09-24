@@ -15,6 +15,7 @@ import type {
   SalesStaffSummary,
   StaffDashboard,
 } from '../types'
+import { moduleEntries, type HubKey, type ModuleEntry } from '../moduleUi'
 
 const loading = ref(false)
 const error = useFeedbackErrorRef()
@@ -33,21 +34,6 @@ const activeCustomers = computed(
 const liveRooms = computed(
   () => rooms.value.filter((item) => item.status === 'live').length,
 )
-const directCustomers = computed(
-  () =>
-    customers.value.filter((item) => item.parent_org_type === 'platform')
-      .length,
-)
-const agentCustomers = computed(
-  () =>
-    customers.value.filter((item) => item.parent_org_type === 'agent').length,
-)
-const salesCustomers = computed(
-  () => customers.value.filter((item) => item.sales_staff_id > 0).length,
-)
-const referralCustomers = computed(
-  () => customers.value.filter((item) => item.inviter_user_id > 0).length,
-)
 
 function hasPermission(code: string) {
   const access = staff.value?.access
@@ -56,6 +42,95 @@ function hasPermission(code: string) {
       (access.is_super_admin || access.permissions.includes(code)),
   )
 }
+
+function canShowSubfunction(hub: HubKey, entry: ModuleEntry) {
+  const to = entry.to || ''
+  if (!to) return false
+
+  if (hub === 'live' && to.includes('/room-quotas')) {
+    return hasPermission('liveops.room_quota.view')
+  }
+  if (hub === 'staff' && to.includes('/staff/audit')) {
+    return hasPermission('audit.view')
+  }
+  if (hub === 'staff' && to.includes('/staff/approvals')) {
+    return hasPermission('finance.dashboard.view')
+  }
+  if (hub === 'customers' && to.includes('focus=security')) {
+    return hasPermission('customer.password_reset')
+  }
+  if (hub === 'customers' && to.includes('focus=audit')) {
+    return hasPermission('audit.view')
+  }
+  if (hub === 'commercial') {
+    return hasPermission('commercial.membership.view')
+  }
+  if (hub === 'activityMarketing' && to.includes('/commercial/marketing/channels')) {
+    return hasPermission('invitations.view_all')
+  }
+  if (hub === 'activityMarketing' && to.includes('/commercial/marketing')) {
+    return hasPermission('commercial.marketing.view')
+  }
+  if (
+    hub === 'activityMarketing' &&
+    (
+      to.includes('/commercial/memberships/plans') ||
+      to.includes('/commercial/memberships/simulator') ||
+      to.includes('/commercial/referrals') ||
+      to.includes('/commercial/settlement')
+    )
+  ) {
+    return hasPermission('commercial.membership.view')
+  }
+  if (hub === 'activityMarketing' && to.includes('/invitations')) {
+    return hasPermission('invitations.view_all')
+  }
+  if (hub === 'activityMarketing' && to.includes('/commercial/time-cards')) {
+    return hasPermission('commercial.time_card.view')
+  }
+  if (hub === 'activityMarketing' && to.includes('/commercial/device-products')) {
+    return hasPermission('commercial.device.view')
+  }
+  if (hub === 'resources' && to.includes('/inventory')) {
+    return hasPermission('inventory.view') || hasPermission('resources.view')
+  }
+  if (hub === 'resources' && to.includes('/logistics')) {
+    return hasPermission('logistics.view') || hasPermission('resources.view')
+  }
+  if (hub === 'finance' && to.includes('/ai-time')) {
+    return hasPermission('finance.resource.view')
+  }
+  if (hub === 'finance' && to.includes('/operating')) {
+    return hasPermission('finance.operating.view')
+  }
+  if (hub === 'finance') {
+    return hasPermission('finance.dashboard.view')
+  }
+  return true
+}
+
+function collectSubfunctions(hubs: HubKey[]) {
+  const seen = new Set<string>()
+  const result: ModuleEntry[] = []
+  for (const hub of hubs) {
+    for (const entry of moduleEntries(hub)) {
+      if (!entry.to || !canShowSubfunction(hub, entry)) continue
+      if (seen.has(entry.to)) continue
+      seen.add(entry.to)
+      result.push(entry)
+    }
+  }
+  return result
+}
+
+const overviewSubfunctions = computed(() => ({
+  staff: collectSubfunctions(['staff']),
+  live: collectSubfunctions(['live', 'activityMarketing']),
+  customers: collectSubfunctions(['customers', 'sales']),
+  agents: collectSubfunctions(['agents']),
+  products: collectSubfunctions(['commercial', 'resources']),
+  finance: collectSubfunctions(['finance']),
+}))
 
 async function load() {
   loading.value = true
@@ -88,18 +163,6 @@ onMounted(load)
 
 <template>
   <div class="management-page admin-control-page">
-    <section class="page-hero admin-control-hero">
-      <div>
-        <p class="section-kicker">SYSTEM</p>
-        <h2>系统</h2>
-        <p>
-          串联内部员工、渠道、终端、直播运维、商业方案和资源账户。超级系统管理员负责系统规则；管理部可以查看整体架构，但不能修改部门和权限定义。
-        </p>
-      </div>
-      <button class="ghost-button" type="button" :disabled="loading" @click="load">
-        {{ loading ? '刷新中...' : '刷新数据' }}
-      </button>
-    </section>
 
     <p v-if="error" class="auth-error">{{ error }}</p>
 
@@ -111,7 +174,7 @@ onMounted(load)
       </RouterLink>
 
       <RouterLink class="admin-kpi-card" to="/customers">
-        <span>终端总数</span>
+        <span>客户总数</span>
         <strong>{{ customers.length }}</strong>
         <small>正常 {{ activeCustomers }}</small>
       </RouterLink>
@@ -129,185 +192,211 @@ onMounted(load)
       </RouterLink>
     </section>
 
-    <section class="settings-card admin-flow-card">
+    <section class="settings-card admin-architecture-card">
       <div class="settings-card-header">
         <div>
-          <span class="section-kicker">SYSTEM FLOW</span>
-          <h3>系统业务链路</h3>
+          <span class="section-kicker">SYSTEM ARCHITECTURE</span>
+          <h3>系统业务架构</h3>
         </div>
-        <span>企业组织与外部业务分层管理</span>
       </div>
 
-      <div class="admin-business-flow">
-        <RouterLink class="admin-flow-step" to="/staff">
-          <span class="admin-flow-index">01</span>
-          <strong>组织架构</strong>
-          <small>部门 · 员工 · 角色 · 权限 · 数据范围</small>
-          <em>{{ staff?.employees.length || 0 }} 名可见员工</em>
-        </RouterLink>
+      <div class="admin-architecture-grid">
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">系</span>
+            <div>
+              <span class="section-kicker">SYSTEM MANAGEMENT</span>
+              <h3>系统管理</h3>
+            </div>
+          </div>
+          <p>系统总览、组织、员工、角色、权限和审批规则。</p>
+          <div class="admin-domain-links">
+            <RouterLink to="/overview">系统总览</RouterLink>
+            <RouterLink to="/system/settings">系统设定</RouterLink>
+            <RouterLink to="/staff">组织架构</RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.staff"
+                :key="entry.to"
+                :to="entry.to || '/staff'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+            </div>
+          </div>
+          <em>{{ staff?.employees.length || 0 }} 名员工 · {{ staff?.groups.length || 0 }} 个部门</em>
+        </article>
 
-        <span class="admin-flow-arrow">→</span>
-
-        <RouterLink class="admin-flow-step" to="/sales">
-          <span class="admin-flow-index">02</span>
-          <strong>获客渠道</strong>
-          <small>内部销售 · 外部代理 · 推荐关系</small>
-          <em>{{ sales.length }} 销售 / {{ agents.length }} 代理</em>
-        </RouterLink>
-
-        <span class="admin-flow-arrow">→</span>
-
-        <RouterLink class="admin-flow-step" to="/customers">
-          <span class="admin-flow-index">03</span>
-          <strong>终端归属</strong>
-          <small>直营 · 销售 · 代理 · 终端推荐</small>
-          <em>{{ customers.length }} 个终端</em>
-        </RouterLink>
-
-        <span class="admin-flow-arrow">→</span>
-
-        <RouterLink class="admin-flow-step" to="/">
-          <span class="admin-flow-index">04</span>
-          <strong>直播运维</strong>
-          <small>直播间 · 实时监控 · 后续设备</small>
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">播</span>
+            <div>
+              <span class="section-kicker">MARKETING OPERATIONS</span>
+              <h3>营销运维</h3>
+            </div>
+          </div>
+          <p>围绕直播间运行、策略、监控和现场设备开展日常业务。</p>
+          <div class="admin-domain-links">
+            <RouterLink to="/operations/live">直播运维</RouterLink>
+            <RouterLink to="/operations/live/marketing">活动营销</RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.live"
+                :key="entry.to"
+                :to="entry.to || '/operations/live'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+            </div>
+          </div>
           <em>{{ liveRooms }} 个直播中</em>
-        </RouterLink>
+        </article>
 
-        <span class="admin-flow-arrow">→</span>
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">客</span>
+            <div>
+              <span class="section-kicker">CUSTOMER & SALES</span>
+              <h3>客资销售</h3>
+            </div>
+          </div>
+          <p>客户来源、销售归属、推荐关系和持续经营统一管理。</p>
+          <div class="admin-domain-links">
+            <RouterLink to="/customers">客户资源</RouterLink>
+            <RouterLink to="/sales">销售体系</RouterLink>
+            <RouterLink to="/invitations">邀请与推荐</RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.customers"
+                :key="entry.to"
+                :to="entry.to || '/customers'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+            </div>
+          </div>
+          <em>{{ customers.length }} 个客户 · {{ sales.length }} 名销售</em>
+        </article>
 
-        <RouterLink
-          v-if="hasPermission('commercial.membership.view')"
-          class="admin-flow-step"
-          to="/commercial/memberships"
-        >
-          <span class="admin-flow-index">05</span>
-          <strong>商业与资源</strong>
-          <small>会员方案 · 时长 · 资源账户 · 调整流水</small>
-          <em>进入商业管理</em>
-        </RouterLink>
-        <div v-else class="admin-flow-step admin-flow-step-static">
-          <span class="admin-flow-index">05</span>
-          <strong>商业与资源</strong>
-          <small>当前角色仅查看系统架构，无商业管理权限</small>
-          <em>权限由角色定义</em>
-        </div>
+
+
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">仓</span>
+            <div>
+              <span class="section-kicker">WAREHOUSE & AFTER-SALES</span>
+              <h3>仓储与售后</h3>
+            </div>
+          </div>
+          <p>实体设备、库存仓储、物流交付、维修退换和售后闭环。</p>
+          <div class="admin-domain-links">
+            <RouterLink
+              v-if="
+                hasPermission('resources.view') ||
+                hasPermission('inventory.view') ||
+                hasPermission('logistics.view')
+              "
+              to="/resources"
+            >
+              设备与仓储
+            </RouterLink>
+            <RouterLink
+              v-if="hasPermission('inventory.after_sales.view')"
+              to="/staff/after-sales"
+            >
+              物流与售后
+            </RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.products"
+                :key="entry.to"
+                :to="entry.to || '/resources'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+              <RouterLink
+                v-if="hasPermission('inventory.after_sales.view')"
+                to="/staff/after-sales"
+              >
+                <b>修</b>售后维修
+              </RouterLink>
+            </div>
+          </div>
+          <em>按商品、设备 SN 和售后单据全链追溯</em>
+        </article>
+
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">财</span>
+            <div>
+              <span class="section-kicker">FINANCE MANAGEMENT</span>
+              <h3>财务管理</h3>
+            </div>
+          </div>
+          <p>资金账户、审批、流水、收益结算和全链路财务追溯。</p>
+          <div class="admin-domain-links">
+            <RouterLink
+              v-if="hasPermission('finance.dashboard.view')"
+              to="/staff/finance"
+            >
+              财务与结算
+            </RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.finance"
+                :key="entry.to"
+                :to="entry.to || '/staff/finance'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+            </div>
+          </div>
+          <em>资金可进、可退、可抵、可提、可核对</em>
+        </article>
+
+        <article class="admin-architecture-domain">
+          <div class="admin-architecture-domain-head">
+            <span class="admin-domain-icon">渠</span>
+            <div>
+              <span class="section-kicker">CHANNEL PARTNERS</span>
+              <h3>渠道合作</h3>
+            </div>
+          </div>
+          <p>管理代理准入、等级政策、合作合同以及退出清算。</p>
+          <div class="admin-domain-links">
+            <RouterLink to="/agents">代理合作</RouterLink>
+          </div>
+          <div class="admin-domain-subfunctions">
+            <span>二级功能</span>
+            <div>
+              <RouterLink
+                v-for="entry in overviewSubfunctions.agents"
+                :key="entry.to"
+                :to="entry.to || '/agents'"
+              >
+                <b>{{ entry.icon }}</b>{{ entry.title }}
+              </RouterLink>
+            </div>
+          </div>
+          <em>{{ agents.length }} 个代理 · 正常 {{ activeAgents }}</em>
+        </article>
       </div>
     </section>
 
-    <section class="admin-domain-grid">
-      <article class="settings-card admin-domain-card">
-        <div class="admin-domain-heading">
-          <span class="admin-domain-icon">♜</span>
-          <div>
-            <span class="section-kicker">INTERNAL STAFF</span>
-            <h3>组织架构</h3>
-          </div>
-        </div>
-
-        <div class="admin-domain-links">
-          <RouterLink to="/staff">员工与部门</RouterLink>
-        </div>
-
-        <p class="admin-domain-note">
-          销售、财务、管理及未来运营/客服/技术人员统一进入内部员工体系；代理和终端保持外部组织体系。
-        </p>
-      </article>
-
-      <article class="settings-card admin-domain-card">
-        <div class="admin-domain-heading">
-          <span class="admin-domain-icon">◎</span>
-          <div>
-            <span class="section-kicker">OPERATIONS</span>
-            <h3>业务运营</h3>
-          </div>
-        </div>
-
-        <div class="admin-domain-links">
-          <RouterLink to="/">直播间</RouterLink>
-          <RouterLink to="/customers">终端管理</RouterLink>
-          <RouterLink to="/agents">代理管理</RouterLink>
-          <RouterLink to="/sales">销售管理</RouterLink>
-        </div>
-      </article>
-
-      <article class="settings-card admin-domain-card">
-        <div class="admin-domain-heading">
-          <span class="admin-domain-icon">◆</span>
-          <div>
-            <span class="section-kicker">COMMERCIAL</span>
-            <h3>商业管理</h3>
-          </div>
-        </div>
-
-        <div class="admin-domain-links">
-          <RouterLink
-            v-if="hasPermission('commercial.membership.view')"
-            to="/commercial/memberships"
-          >
-            会员方案
-          </RouterLink>
-          <RouterLink
-            v-if="
-              hasPermission('resources.view') ||
-              hasPermission('finance.resource.adjust')
-            "
-            to="/resources"
-          >
-            资源中心
-          </RouterLink>
-        </div>
-
-        <p class="admin-domain-note">
-          财务角色的充值、退款、奖励及审批能力统一从角色权限和审批策略进入，不再给所有内部员工同一套管理权限。
-        </p>
-      </article>
-    </section>
-
-    <section class="admin-bottom-grid">
-      <article class="settings-card admin-structure-card">
-        <div class="settings-card-header">
-          <div>
-            <span class="section-kicker">CUSTOMER STRUCTURE</span>
-            <h3>终端结构</h3>
-          </div>
-        </div>
-
-        <div class="admin-structure-list">
-          <div>
-            <span>平台直营</span>
-            <strong>{{ directCustomers }}</strong>
-          </div>
-          <div>
-            <span>代理归属</span>
-            <strong>{{ agentCustomers }}</strong>
-          </div>
-          <div>
-            <span>销售绑定</span>
-            <strong>{{ salesCustomers }}</strong>
-          </div>
-          <div>
-            <span>推荐关系</span>
-            <strong>{{ referralCustomers }}</strong>
-          </div>
-        </div>
-      </article>
-
-      <article class="settings-card admin-structure-card">
-        <div class="settings-card-header">
-          <div>
-            <span class="section-kicker">STAFF STRUCTURE</span>
-            <h3>组织架构</h3>
-          </div>
-          <RouterLink class="text-action" to="/staff">管理</RouterLink>
-        </div>
-
-        <div class="admin-structure-list">
-          <div v-for="group in staff?.groups || []" :key="group.id">
-            <span>{{ group.name }}</span>
-            <strong>{{ group.member_count }}</strong>
-          </div>
-        </div>
-      </article>
-    </section>
   </div>
 </template>

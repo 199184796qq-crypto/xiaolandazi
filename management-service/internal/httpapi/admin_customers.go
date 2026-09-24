@@ -44,7 +44,7 @@ func (s *Server) adminListCustomers(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	actor, _, ok := s.requireStaffPermission(
+	actor, access, ok := s.requireStaffPermission(
 		w,
 		r,
 		"customer.view_all",
@@ -70,13 +70,32 @@ func (s *Server) adminListCustomers(
 		return
 	}
 
-	items, err := s.store.ListAdminCustomers(r.Context())
+	page, pageSize := normalizedPageQuery(r, 12, 100)
+	scope := staffBusinessScope(actor, access, "customer.view_all")
+	salesStaffID := queryInt64(r, "sales_staff_id", 0)
+
+	items, total, summary, err := s.store.ListAdminCustomersScoped(
+		r.Context(),
+		scope,
+		salesStaffID,
+		strings.TrimSpace(r.URL.Query().Get("search")),
+		strings.TrimSpace(r.URL.Query().Get("status")),
+		strings.TrimSpace(r.URL.Query().Get("sort")),
+		page,
+		pageSize,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取终端列表失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items,
+		"items":       items,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": totalPages(total, pageSize),
+		"summary":     summary,
+		"scope":       scope,
 	})
 }
 
@@ -84,7 +103,12 @@ func (s *Server) adminResetCustomerPassword(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	if _, ok := s.requirePlatformAdmin(w, r); !ok {
+	actor, access, ok := s.requireStaffPermission(
+		w,
+		r,
+		"customer.password_reset",
+	)
+	if !ok {
 		return
 	}
 
@@ -94,6 +118,21 @@ func (s *Server) adminResetCustomerPassword(
 	}
 
 	var input adminResetPasswordRequest
+	scope := staffBusinessScope(actor, access, "customer.password_reset")
+	visible, err := s.store.AdminCustomerVisibleToScope(
+		r.Context(),
+		scope,
+		userID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "校验终端权限失败")
+		return
+	}
+	if !visible {
+		writeError(w, http.StatusForbidden, "该终端不在当前员工的数据范围内")
+		return
+	}
+
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
@@ -217,7 +256,7 @@ func (s *Server) adminListAuditLogs(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	actor, _, ok := s.requireStaffPermission(
+	actor, access, ok := s.requireStaffPermission(
 		w,
 		r,
 		"audit.view",
@@ -243,20 +282,38 @@ func (s *Server) adminListAuditLogs(
 		return
 	}
 
-	limit := int64(50)
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			limit = parsed
-		}
+	pageSize := queryInt(r, "page_size", 0)
+	if pageSize <= 0 {
+		pageSize = queryInt(r, "limit", 30)
 	}
+	if pageSize <= 0 {
+		pageSize = 30
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	beforeID := queryInt64(r, "before_id", 0)
+	scope := staffBusinessScope(actor, access, "audit.view")
 
-	items, err := s.audit.List(r.Context(), limit)
+	items, nextCursor, hasMore, err := s.store.ListAdminAuditsScoped(
+		r.Context(),
+		scope,
+		strings.TrimSpace(r.URL.Query().Get("search")),
+		strings.TrimSpace(r.URL.Query().Get("action")),
+		strings.TrimSpace(r.URL.Query().Get("result")),
+		beforeID,
+		pageSize,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取审计日志失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items,
+		"items":       items,
+		"page_size":   pageSize,
+		"next_cursor": nextCursor,
+		"has_more":    hasMore,
+		"scope":       scope,
 	})
 }
 
@@ -310,8 +367,10 @@ func (s *Server) deleteTenantCoreRooms(
 	}
 
 	for _, room := range list.Items {
-		deleteResp, err := s.core.Do(
+		deleteResp, err := s.core.DoRoom(
 			r.Context(),
+			tenantID,
+			room.ID,
 			http.MethodDelete,
 			fmt.Sprintf("/internal/v1/rooms/%d", room.ID),
 			query,

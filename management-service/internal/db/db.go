@@ -18,17 +18,19 @@ type Store struct {
 }
 
 func Open(cfg config.Config) (*Store, error) {
-	mysqlCfg := mysql.Config{
-		User:      cfg.DBUser,
-		Passwd:    cfg.DBPassword,
-		Net:       "tcp",
-		Addr:      net.JoinHostPort(cfg.DBHost, cfg.DBPort),
-		DBName:    cfg.DBName,
-		ParseTime: true,
-		Loc:       time.UTC,
-		Params: map[string]string{
-			"charset": "utf8mb4",
-		},
+	mysqlCfg := mysql.NewConfig()
+	mysqlCfg.User = cfg.DBUser
+	mysqlCfg.Passwd = cfg.DBPassword
+	mysqlCfg.Net = "tcp"
+	mysqlCfg.Addr = net.JoinHostPort(cfg.DBHost, cfg.DBPort)
+	mysqlCfg.DBName = cfg.DBName
+	mysqlCfg.ParseTime = true
+	mysqlCfg.Loc = time.UTC
+	mysqlCfg.Timeout = 3 * time.Second
+	mysqlCfg.ReadTimeout = 5 * time.Second
+	mysqlCfg.WriteTimeout = 5 * time.Second
+	mysqlCfg.Params = map[string]string{
+		"charset": "utf8mb4",
 	}
 	dsn := mysqlCfg.FormatDSN()
 
@@ -37,8 +39,8 @@ func Open(cfg config.Config) (*Store, error) {
 		return nil, err
 	}
 
-	database.SetMaxOpenConns(15)
-	database.SetMaxIdleConns(5)
+	database.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	database.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	database.SetConnMaxLifetime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -79,6 +81,27 @@ func (s *Store) Migrate(ctx context.Context) error {
 			PRIMARY KEY (id),
 			UNIQUE KEY uk_mgmt_users_username (username),
 			KEY idx_mgmt_users_tenant (tenant_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+		`CREATE TABLE IF NOT EXISTS mgmt_admin_audit_ledger (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			occurred_at DATETIME(3) NOT NULL,
+			actor_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			actor_username VARCHAR(128) NOT NULL DEFAULT '',
+			action VARCHAR(160) NOT NULL,
+			target_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			target_username VARCHAR(128) NOT NULL DEFAULT '',
+			target_tenant_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			http_method VARCHAR(16) NOT NULL DEFAULT '',
+			path VARCHAR(512) NOT NULL DEFAULT '',
+			client_ip VARCHAR(64) NOT NULL DEFAULT '',
+			result VARCHAR(64) NOT NULL DEFAULT '',
+			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+			PRIMARY KEY (id),
+			KEY idx_admin_audit_occurred (occurred_at, id),
+			KEY idx_admin_audit_actor (actor_user_id, occurred_at),
+			KEY idx_admin_audit_target_tenant (target_tenant_id, occurred_at),
+			KEY idx_admin_audit_action (action, occurred_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
 	}
 

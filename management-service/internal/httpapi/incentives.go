@@ -14,13 +14,24 @@ import (
 )
 
 func (s *Server) commercialListIncentivePrograms(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireStaffPermission(w, r, "commercial.membership.view"); !ok {
-		return
-	}
 	programType := strings.TrimSpace(r.URL.Query().Get("type"))
 	if programType != "" && !validIncentiveProgramType(programType) {
 		writeError(w, http.StatusBadRequest, "奖励/结算规则类型不支持")
 		return
+	}
+	if programType == "" {
+		if _, _, ok := s.requireAnyStaffPermission(
+			w,
+			r,
+			"commercial.referral.view",
+			"finance.settlement_rules.view",
+		); !ok {
+			return
+		}
+	} else {
+		if _, _, ok := s.requireStaffPermission(w, r, incentiveViewPermission(programType)); !ok {
+			return
+		}
 	}
 
 	items, err := s.store.ListIncentivePrograms(r.Context(), programType)
@@ -32,11 +43,11 @@ func (s *Server) commercialListIncentivePrograms(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) commercialCreateIncentiveProgram(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	input, ok := readIncentiveProgramInput(w, r)
 	if !ok {
 		return
 	}
-	input, ok := readIncentiveProgramInput(w, r)
+	actor, _, ok := s.requireStaffPermission(w, r, incentiveManagePermission(input.ProgramType))
 	if !ok {
 		return
 	}
@@ -54,15 +65,28 @@ func (s *Server) commercialCreateIncentiveProgram(w http.ResponseWriter, r *http
 }
 
 func (s *Server) commercialSaveIncentiveDraft(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
-	if !ok {
-		return
-	}
 	programID, ok := incentivePathID(w, r, "programID")
 	if !ok {
 		return
 	}
 	input, ok := readIncentiveProgramInput(w, r)
+	if !ok {
+		return
+	}
+	existing, err := s.store.GetIncentiveProgram(r.Context(), programID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "规则不存在")
+		} else {
+			writeError(w, http.StatusInternalServerError, "读取规则失败")
+		}
+		return
+	}
+	if incentivePermissionDomain(existing.ProgramType) != incentivePermissionDomain(input.ProgramType) {
+		writeError(w, http.StatusBadRequest, "奖励规则与结算规则不能跨部门改成另一类")
+		return
+	}
+	actor, _, ok := s.requireStaffPermission(w, r, incentiveManagePermission(existing.ProgramType))
 	if !ok {
 		return
 	}
@@ -88,11 +112,20 @@ func (s *Server) commercialSaveIncentiveDraft(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) commercialPublishIncentive(w http.ResponseWriter, r *http.Request) {
-	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	programID, ok := incentivePathID(w, r, "programID")
 	if !ok {
 		return
 	}
-	programID, ok := incentivePathID(w, r, "programID")
+	existing, err := s.store.GetIncentiveProgram(r.Context(), programID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "规则不存在")
+		} else {
+			writeError(w, http.StatusInternalServerError, "读取规则失败")
+		}
+		return
+	}
+	actor, _, ok := s.requireStaffPermission(w, r, incentiveManagePermission(existing.ProgramType))
 	if !ok {
 		return
 	}
@@ -313,6 +346,27 @@ func validIncentiveProgramType(value string) bool {
 	default:
 		return false
 	}
+}
+
+func incentivePermissionDomain(programType string) string {
+	if programType == "referral" {
+		return "referral"
+	}
+	return "settlement"
+}
+
+func incentiveViewPermission(programType string) string {
+	if incentivePermissionDomain(programType) == "referral" {
+		return "commercial.referral.view"
+	}
+	return "finance.settlement_rules.view"
+}
+
+func incentiveManagePermission(programType string) string {
+	if incentivePermissionDomain(programType) == "referral" {
+		return "commercial.referral.manage"
+	}
+	return "finance.settlement_rules.manage"
 }
 
 func incentivePathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {

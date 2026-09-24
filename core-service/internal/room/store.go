@@ -13,6 +13,11 @@ import (
 
 var ErrConflict = errors.New("room already exists")
 
+type Key struct {
+	TenantID int64 `json:"tenant_id"`
+	RoomID   int64 `json:"room_id"`
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -50,6 +55,44 @@ func (s *Store) List(ctx context.Context, tenantID *int64) ([]model.Room, error)
 		items = append(items, item)
 	}
 
+	return items, rows.Err()
+}
+
+func (s *Store) ListByKeys(ctx context.Context, keys []Key) ([]model.Room, error) {
+	if len(keys) == 0 {
+		return []model.Room{}, nil
+	}
+	placeholders := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys)*2)
+	for _, key := range keys {
+		if key.TenantID <= 0 || key.RoomID <= 0 {
+			continue
+		}
+		placeholders = append(placeholders, "(?, ?)")
+		args = append(args, key.TenantID, key.RoomID)
+	}
+	if len(placeholders) == 0 {
+		return []model.Room{}, nil
+	}
+	query := `
+		SELECT id, tenant_id, platform, external_room_id, source_url, name, status,
+		       collector_mode, monitor_enabled, device_online, online_count, last_event_at, created_at, updated_at
+		FROM core_rooms
+		WHERE (tenant_id, id) IN (` + strings.Join(placeholders, ",") + `)
+	`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.Room, 0, len(keys))
+	for rows.Next() {
+		item, err := scanRoom(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
 	return items, rows.Err()
 }
 
@@ -135,7 +178,7 @@ func (s *Store) MarkLive(ctx context.Context, tenantID int64, roomID int64) erro
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE core_rooms
 		SET status = 'live', last_event_at = CURRENT_TIMESTAMP(3)
-		WHERE id = ? AND tenant_id = ?
+		WHERE id = ? AND tenant_id = ? AND monitor_enabled = 1
 	`, roomID, tenantID)
 	if err != nil {
 		return err

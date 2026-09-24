@@ -8,6 +8,7 @@ import {
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import type {
   InvitationDashboard,
   InvitationRecord,
@@ -27,28 +28,69 @@ const policyMaxUses = ref<number | null>(0)
 const policyExpiresAt = ref('')
 const policySaving = ref(false)
 
+const codePage = ref(1)
+const recordPage = ref(1)
+const codePageSize = 10
+const recordPageSize = 10
+
 const actor = computed(() => session.bootstrap?.actor)
 const isAdmin = computed(() => actor.value?.role === 'platform_admin')
 const isAgent = computed(() => actor.value?.role === 'agent_admin')
 const isSales = computed(() => actor.value?.role === 'sales_staff')
+const isInvitationManager = computed(() => {
+  if (isAdmin.value) return true
+  const access = session.bootstrap?.staff_access
+  return Boolean(
+    access &&
+      (access.is_super_admin || access.permissions.includes('invitations.view_all')),
+  )
+})
+const navContext = computed(() =>
+  isInvitationManager.value ? 'activityMarketing' : 'workspace-auto',
+)
 
 const registrationUrl = computed(() => {
   const code = dashboard.value?.my_code.code || ''
   return window.location.origin + '/register?invite=' + encodeURIComponent(code)
 })
 
-const ownReferralCount = computed(
-  () =>
-    dashboard.value?.records.filter(
-      (item) => item.inviter_user_id === actor.value?.user_id,
-    ).length || 0,
+const ownReferralCount = computed(() => dashboard.value?.own_referral_count || 0)
+
+const codeTotalPages = computed(() =>
+  Math.max(1, Math.ceil((dashboard.value?.codes_total || 0) / codePageSize)),
 )
+const recordTotalPages = computed(() =>
+  Math.max(1, Math.ceil((dashboard.value?.records_total || 0) / recordPageSize)),
+)
+
+async function setCodePage(page: number) {
+  codePage.value = Math.min(Math.max(page, 1), codeTotalPages.value)
+  await load()
+}
+
+async function setRecordPage(page: number) {
+  recordPage.value = Math.min(Math.max(page, 1), recordTotalPages.value)
+  await load()
+}
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    dashboard.value = await getInvitationDashboard()
+    dashboard.value = await getInvitationDashboard({
+      code_page: codePage.value,
+      code_page_size: codePageSize,
+      record_page: recordPage.value,
+      record_page_size: recordPageSize,
+    })
+    codePage.value = Math.min(
+      codePage.value,
+      Math.max(1, Math.ceil(dashboard.value.codes_total / codePageSize)),
+    )
+    recordPage.value = Math.min(
+      recordPage.value,
+      Math.max(1, Math.ceil(dashboard.value.records_total / recordPageSize)),
+    )
   } catch (value) {
     error.value =
       value instanceof Error ? value.message : '读取邀请与推荐数据失败'
@@ -171,23 +213,11 @@ onMounted(load)
 
 <template>
   <div class="management-page invitation-page">
-    <ModulePageNav context="workspace-auto" active-title="邀请与推荐" />
-    <section class="page-hero">
+    <ModulePageNav :context="navContext" active-title="邀请与推荐" />
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">INVITATION & REFERRAL</p>
         <h2>邀请与推荐</h2>
-        <p v-if="isAdmin">
-          管理全系统邀请码、注册来源与推荐关系。邀请码决定注册来源和终端归属，推荐关系独立保留。
-        </p>
-        <p v-else-if="isAgent">
-          当前代理的邀请码注册终端会归属本代理；终端再推荐新终端时，仍沿用本代理归属。
-        </p>
-        <p v-else-if="isSales">
-          使用自己的邀请码发展平台直营终端，终端归属平台，同时自动绑定到当前销售人员。
-        </p>
-        <p v-else>
-          分享自己的邀请码推荐新终端。新终端沿用您的上级平台或代理归属，同时保留您作为推荐人。
-        </p>
       </div>
       <button
         class="ghost-button"
@@ -291,7 +321,7 @@ onMounted(load)
           <span class="section-kicker">VISIBLE RECORDS</span>
           <h3>{{ visibleScopeTitle }}</h3>
           <div class="invitation-stat-value">
-            {{ dashboard.records.length }}
+            {{ dashboard.records_total }}
           </div>
           <p>当前权限范围内可查看的邀请注册关系。</p>
         </article>
@@ -303,7 +333,7 @@ onMounted(load)
             <span class="section-kicker">INVITE CODE CONTROL</span>
             <h3>全系统邀请码</h3>
           </div>
-          <span>{{ dashboard.codes.length }} 个账号邀请码</span>
+          <span>{{ dashboard.codes_total }} 个账号邀请码</span>
         </div>
 
         <div class="invite-code-table-wrap">
@@ -354,6 +384,13 @@ onMounted(load)
             </tbody>
           </table>
         </div>
+        <PaginationBar
+          :page="codePage"
+          :total-pages="codeTotalPages"
+          :total="dashboard.codes_total"
+          :page-size="codePageSize"
+          @update:page="setCodePage"
+        />
       </section>
 
       <section class="settings-card invitation-record-card">
@@ -362,10 +399,10 @@ onMounted(load)
             <span class="section-kicker">REGISTRATION ATTRIBUTION</span>
             <h3>邀请注册与推荐记录</h3>
           </div>
-          <span>{{ dashboard.records.length }} 条</span>
+          <span>{{ dashboard.records_total }} 条</span>
         </div>
 
-        <div v-if="!dashboard.records.length" class="empty-state">
+        <div v-if="dashboard.records_total === 0" class="empty-state">
           暂无邀请注册记录。
         </div>
 
@@ -408,6 +445,13 @@ onMounted(load)
             </div>
           </article>
         </div>
+        <PaginationBar
+          :page="recordPage"
+          :total-pages="recordTotalPages"
+          :total="dashboard.records_total"
+          :page-size="recordPageSize"
+          @update:page="setRecordPage"
+        />
       </section>
     </template>
 

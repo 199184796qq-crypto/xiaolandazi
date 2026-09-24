@@ -13,7 +13,6 @@ import (
 )
 
 type AgentLevelInput struct {
-	Code              string
 	Name              string
 	Status            string
 	EntryFeeCents     uint64
@@ -122,7 +121,6 @@ func (s *Store) GetAgentLevel(ctx context.Context, levelID int64) (model.AgentLe
 }
 
 func normalizeAgentLevelInput(input AgentLevelInput) AgentLevelInput {
-	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Status = strings.TrimSpace(input.Status)
 	input.SettlementCycle = strings.TrimSpace(input.SettlementCycle)
@@ -142,16 +140,22 @@ func (s *Store) CreateAgentLevel(
 	input AgentLevelInput,
 ) (model.AgentLevel, error) {
 	input = normalizeAgentLevelInput(input)
-	result, err := s.db.ExecContext(ctx, `
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.AgentLevel{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO crm_agent_levels (
 			code, name, status, entry_fee_cents, included_devices,
 			device_discount_bps, consumer_share_bps, reserve_bps,
 			settlement_cycle, hold_days, oem_enabled, note,
 			created_by_user_id, updated_by_user_id
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (CONCAT('__pending__', UUID()), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		input.Code,
 		input.Name,
 		input.Status,
 		input.EntryFeeCents,
@@ -169,11 +173,28 @@ func (s *Store) CreateAgentLevel(
 	if err != nil {
 		return model.AgentLevel{}, err
 	}
+
 	id, err := result.LastInsertId()
 	if err != nil {
 		return model.AgentLevel{}, err
 	}
+	code := systemAgentLevelCode(id)
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE crm_agent_levels
+		SET code=?
+		WHERE id=?
+	`, code, id); err != nil {
+		return model.AgentLevel{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.AgentLevel{}, err
+	}
 	return s.GetAgentLevel(ctx, id)
+}
+
+func systemAgentLevelCode(levelID int64) string {
+	return fmt.Sprintf("AL-%06d", levelID)
 }
 
 func (s *Store) UpdateAgentLevel(
@@ -186,7 +207,6 @@ func (s *Store) UpdateAgentLevel(
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE crm_agent_levels
 		SET
-			code=?,
 			name=?,
 			status=?,
 			entry_fee_cents=?,
@@ -201,7 +221,6 @@ func (s *Store) UpdateAgentLevel(
 			updated_by_user_id=?
 		WHERE id=?
 	`,
-		input.Code,
 		input.Name,
 		input.Status,
 		input.EntryFeeCents,

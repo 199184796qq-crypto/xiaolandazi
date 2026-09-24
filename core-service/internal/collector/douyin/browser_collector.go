@@ -20,11 +20,31 @@ var (
 const defaultFrameTimeout = 45 * time.Second
 
 type Factory struct {
-	browser *BrowserManager
+	browser browserRuntime
 }
 
-func NewFactory(browser *BrowserManager) *Factory {
+func NewFactory(browser browserRuntime) *Factory {
 	return &Factory{browser: browser}
+}
+
+func (f *Factory) Descriptor() collector.ProviderDescriptor {
+	return collector.ProviderDescriptor{
+		ID:       "douyin.browser",
+		Platform: "douyin",
+		Modes: []string{
+			"browser",
+			// Keep the old lightweight mode as a compatibility alias until a real
+			// lightweight provider is registered. A future provider with a lower
+			// priority can take over this mode without changing Core.
+			"lightweight",
+		},
+		Priority: 1000,
+		Capabilities: []collector.Capability{
+			collector.CapabilityEvents,
+			collector.CapabilityPreview,
+			collector.CapabilityMediaStream,
+		},
+	}
 }
 
 func (f *Factory) Create(room model.Room) (collector.Runner, error) {
@@ -72,7 +92,7 @@ func (f *Factory) Preview(
 }
 
 type BrowserCollector struct {
-	browser      *BrowserManager
+	browser      browserRuntime
 	frameTimeout time.Duration
 	name         string
 }
@@ -98,19 +118,45 @@ func (c *BrowserCollector) Run(
 
 	timer := time.NewTimer(c.frameTimeout)
 	defer timer.Stop()
+	timeoutCh := timer.C
 
 	liveNotified := false
 	transportSeen := false
 	frameCount := 0
 	decodeErrors := 0
-	liveCh := session.Live()
+	transportCh := session.Transport()
+	stateCh := session.States()
+
+	markLive := func(reason string) error {
+		if liveNotified {
+			return nil
+		}
+		if err := onLive(ctx); err != nil {
+			return err
+		}
+		liveNotified = true
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timeoutCh = nil
+		log.Printf(
+			"collector room=%d status=live reason=%s frames=%d",
+			room.ID,
+			reason,
+			frameCount,
+		)
+		return nil
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 
-		case <-liveCh:
+		case <-transportCh:
 			if !transportSeen {
 				log.Printf(
 					"collector room=%d transport=playwright-wss seen=true",
@@ -118,7 +164,24 @@ func (c *BrowserCollector) Run(
 				)
 			}
 			transportSeen = true
-			liveCh = nil
+			transportCh = nil
+
+		case state := <-stateCh:
+			switch strings.ToLower(strings.TrimSpace(state.state)) {
+			case "live":
+				if err := markLive("worker:" + strings.TrimSpace(state.reason)); err != nil {
+					return err
+				}
+			case "offline":
+				return fmt.Errorf(
+					"%w (reason=%s transport_seen=%t frames=%d decode_errors=%d)",
+					collector.ErrOffline,
+					strings.TrimSpace(state.reason),
+					transportSeen,
+					frameCount,
+					decodeErrors,
+				)
+			}
 
 		case sessionErr := <-session.Errors():
 			if sessionErr == nil {
@@ -126,9 +189,9 @@ func (c *BrowserCollector) Run(
 			}
 			return sessionErr
 
-		case <-timer.C:
+		case <-timeoutCh:
 			return fmt.Errorf(
-				"%w (transport_seen=%t frames=%d decode_errors=%d)",
+				"%w (reason=no_live_evidence transport_seen=%t frames=%d decode_errors=%d)",
 				collector.ErrOffline,
 				transportSeen,
 				frameCount,
@@ -154,19 +217,13 @@ func (c *BrowserCollector) Run(
 				continue
 			}
 
-			if !liveNotified {
-				if err := onLive(ctx); err != nil {
+			// A real public-room event is also strong evidence that the anchor is
+			// live, even if the browser did not expose a media URL yet.
+			if len(result.Events) > 0 && !liveNotified {
+				if err := markLive("decoded_event"); err != nil {
 					return err
 				}
-				liveNotified = true
-				log.Printf(
-					"collector room=%d status=live frames=%d",
-					room.ID,
-					frameCount,
-				)
 			}
-
-			resetTimer(timer, c.frameTimeout)
 
 			for _, event := range result.Events {
 				if err := emit(ctx, event); err != nil {

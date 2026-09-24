@@ -6,6 +6,7 @@ import {
   getStaffFinanceOverview,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import type {
   FinanceDashboard,
   StaffFinanceCustomerSummary,
@@ -36,6 +37,10 @@ const dashboard = ref<FinanceDashboard | null>(null)
 const customerSearch = ref('')
 const traceSearch = ref('')
 const categoryFilter = ref('all')
+const customerPage = ref(1)
+const customerPageSize = 10
+const tracePage = ref(1)
+const tracePageSize = 25
 
 const filteredCustomers = computed(() => {
   const keyword = customerSearch.value.trim().toLowerCase()
@@ -44,6 +49,12 @@ const filteredCustomers = computed(() => {
     [item.display_name, item.username, item.phone, String(item.tenant_id)]
       .some((value) => String(value || '').toLowerCase().includes(keyword)),
   )
+})
+const customerPageCount = computed(() => Math.max(1, Math.ceil(filteredCustomers.value.length / customerPageSize)))
+const pagedCustomers = computed(() => {
+  const page = Math.min(customerPage.value, customerPageCount.value)
+  const start = (page - 1) * customerPageSize
+  return filteredCustomers.value.slice(start, start + customerPageSize)
 })
 
 const selectedCustomer = computed(() =>
@@ -151,6 +162,12 @@ const filteredTraceRows = computed(() => {
     return matchesCategory && matchesKeyword
   })
 })
+const tracePageCount = computed(() => Math.max(1, Math.ceil(filteredTraceRows.value.length / tracePageSize)))
+const pagedTraceRows = computed(() => {
+  const page = Math.min(tracePage.value, tracePageCount.value)
+  const start = (page - 1) * tracePageSize
+  return filteredTraceRows.value.slice(start, start + tracePageSize)
+})
 
 watch(selectedTenantId, async (tenantId) => {
   if (!tenantId) {
@@ -236,11 +253,12 @@ onMounted(loadOverview)
           class="finance-trace-search"
           type="search"
           placeholder="终端 / 账号 / 手机号"
+          @input="customerPage = 1"
         />
 
         <div class="finance-trace-customer-list">
           <button
-            v-for="customer in filteredCustomers"
+            v-for="customer in pagedCustomers"
             :key="customer.tenant_id"
             type="button"
             :class="{ active: selectedTenantId === customer.tenant_id }"
@@ -253,6 +271,13 @@ onMounted(loadOverview)
             <b>{{ formatMoney(customer.cash_balance_cents + customer.reward_balance_cents) }}</b>
           </button>
         </div>
+        <PaginationBar
+          :page="Math.min(customerPage, customerPageCount)"
+          :total-pages="customerPageCount"
+          :total="filteredCustomers.length"
+          :page-size="customerPageSize"
+          @update:page="customerPage = $event"
+        />
       </aside>
 
       <section class="settings-card finance-trace-main">
@@ -278,8 +303,8 @@ onMounted(loadOverview)
           </header>
 
           <div class="finance-trace-toolbar">
-            <input v-model="traceSearch" type="search" placeholder="单号 / 经办人 / 审核人 / 原因" />
-            <select v-model="categoryFilter">
+            <input v-model="traceSearch" type="search" placeholder="单号 / 经办人 / 审核人 / 原因" @input="tracePage = 1" />
+            <select v-model="categoryFilter" @change="tracePage = 1">
               <option value="all">全部链路</option>
               <option value="ledger">钱包流水</option>
               <option value="recharge">充值</option>
@@ -304,7 +329,7 @@ onMounted(loadOverview)
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in filteredTraceRows" :key="row.id">
+                <tr v-for="row in pagedTraceRows" :key="row.id">
                   <td>{{ new Date(row.occurred_at).toLocaleString('zh-CN') }}</td>
                   <td><span class="status-pill">{{ categoryLabel(row.category) }}</span></td>
                   <td>{{ row.title }}</td>
@@ -333,6 +358,13 @@ onMounted(loadOverview)
             </table>
             <div v-if="filteredTraceRows.length === 0" class="empty-state">暂无符合条件的资金链路。</div>
           </div>
+          <PaginationBar
+            :page="Math.min(tracePage, tracePageCount)"
+            :total-pages="tracePageCount"
+            :total="filteredTraceRows.length"
+            :page-size="tracePageSize"
+            @update:page="tracePage = $event"
+          />
         </template>
 
         <div v-else-if="loading" class="panel-loading">正在读取终端资金链...</div>

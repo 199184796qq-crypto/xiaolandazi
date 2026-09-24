@@ -63,6 +63,18 @@ func (s *Store) ListCommercialTimeCards(ctx context.Context) ([]model.Commercial
 			}
 		}
 	}
+	campaigns, err := s.ListMarketingCampaigns(ctx, "time_card", 0, false)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].MarketingCampaigns = make([]model.MarketingCampaign, 0)
+		for _, campaign := range campaigns {
+			if marketingCampaignHasTarget(campaign, "time_card", items[i].ID) {
+				items[i].MarketingCampaigns = append(items[i].MarketingCampaigns, campaign)
+			}
+		}
+	}
 	return items, nil
 }
 
@@ -83,6 +95,7 @@ func (s *Store) listTimeCardVersions(ctx context.Context, productID int64) ([]mo
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, product_id, version_no, lifecycle_status, currency,
 		       price_cents, duration_seconds, validity_days,
+		       activation_mode, activation_deadline_days,
 		       participates_referral, participates_sales_commission,
 		       participates_agent_settlement, effective_from, effective_to,
 		       published_at, created_at
@@ -107,6 +120,8 @@ func (s *Store) listTimeCardVersions(ctx context.Context, productID int64) ([]mo
 			&item.PriceCents,
 			&item.DurationSeconds,
 			&item.ValidityDays,
+			&item.ActivationMode,
+			&item.ActivationDeadlineDays,
 			&item.ParticipatesReferral,
 			&item.ParticipatesSalesCommission,
 			&item.ParticipatesAgentSettlement,
@@ -148,16 +163,18 @@ func (s *Store) CreateCommercialTimeCard(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO catalog_time_card_versions (
 			product_id, version_no, lifecycle_status, currency, price_cents,
-			duration_seconds, validity_days, participates_referral,
-			participates_sales_commission, participates_agent_settlement,
+			duration_seconds, validity_days, activation_mode, activation_deadline_days,
+			participates_referral, participates_sales_commission, participates_agent_settlement,
 			created_by_user_id
 		)
-		VALUES (?, 1, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, 1, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		productID,
 		input.PriceCents,
 		input.DurationSeconds,
 		input.ValidityDays,
+		input.ActivationMode,
+		input.ActivationDeadlineDays,
 		input.ParticipatesReferral,
 		input.ParticipatesSalesCommission,
 		input.ParticipatesAgentSettlement,
@@ -185,20 +202,23 @@ func (s *Store) SaveCommercialTimeCardDraft(
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `
+	var existingID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM catalog_time_card_products
+		WHERE id=?
+		FOR UPDATE
+	`, productID).Scan(&existingID); err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
+
+	_, err = tx.ExecContext(ctx, `
 		UPDATE catalog_time_card_products
 		SET code=?, name=?, description=?, sort_order=?
 		WHERE id=?
 	`, input.Code, input.Name, input.Description, input.SortOrder, productID)
 	if err != nil {
 		return model.CommercialTimeCardProduct{}, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return model.CommercialTimeCardProduct{}, err
-	}
-	if affected == 0 {
-		return model.CommercialTimeCardProduct{}, sql.ErrNoRows
 	}
 
 	var draftID int64
@@ -214,6 +234,7 @@ func (s *Store) SaveCommercialTimeCardDraft(
 		_, err = tx.ExecContext(ctx, `
 			UPDATE catalog_time_card_versions
 			SET price_cents=?, duration_seconds=?, validity_days=?,
+			    activation_mode=?, activation_deadline_days=?,
 			    participates_referral=?, participates_sales_commission=?,
 			    participates_agent_settlement=?, created_by_user_id=?
 			WHERE id=?
@@ -221,6 +242,8 @@ func (s *Store) SaveCommercialTimeCardDraft(
 			input.PriceCents,
 			input.DurationSeconds,
 			input.ValidityDays,
+			input.ActivationMode,
+			input.ActivationDeadlineDays,
 			input.ParticipatesReferral,
 			input.ParticipatesSalesCommission,
 			input.ParticipatesAgentSettlement,
@@ -242,17 +265,19 @@ func (s *Store) SaveCommercialTimeCardDraft(
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO catalog_time_card_versions (
 				product_id, version_no, lifecycle_status, currency, price_cents,
-				duration_seconds, validity_days, participates_referral,
-				participates_sales_commission, participates_agent_settlement,
+				duration_seconds, validity_days, activation_mode, activation_deadline_days,
+				participates_referral, participates_sales_commission, participates_agent_settlement,
 				created_by_user_id
 			)
-			VALUES (?, ?, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, 'draft', 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			productID,
 			nextVersion,
 			input.PriceCents,
 			input.DurationSeconds,
 			input.ValidityDays,
+			input.ActivationMode,
+			input.ActivationDeadlineDays,
 			input.ParticipatesReferral,
 			input.ParticipatesSalesCommission,
 			input.ParticipatesAgentSettlement,
@@ -319,6 +344,55 @@ func (s *Store) PublishCommercialTimeCard(
 		return model.CommercialTimeCardProduct{}, err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
+	return s.GetCommercialTimeCard(ctx, productID)
+}
+
+func (s *Store) SetCommercialTimeCardStatus(
+	ctx context.Context,
+	actorUserID int64,
+	productID int64,
+	status string,
+) (model.CommercialTimeCardProduct, error) {
+	if status != "active" && status != "inactive" && status != "archived" {
+		return model.CommercialTimeCardProduct{}, fmt.Errorf("invalid time card status")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
+	defer tx.Rollback()
+
+	var name, beforeStatus string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT name, status FROM catalog_time_card_products WHERE id=? FOR UPDATE
+	`, productID).Scan(&name, &beforeStatus); err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
+	if status == "active" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM catalog_time_card_versions
+			WHERE product_id=? AND lifecycle_status='published'
+		`, productID).Scan(&count); err != nil {
+			return model.CommercialTimeCardProduct{}, err
+		}
+		if count == 0 {
+			return model.CommercialTimeCardProduct{}, fmt.Errorf("time card has no published version")
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE catalog_time_card_products SET status=? WHERE id=?`, status, productID); err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
+	if err := insertCommercialAuditTx(
+		ctx, tx, actorUserID, "time_card.product.status", "time_card_product", fmt.Sprintf("%d", productID),
+		map[string]any{"name": name, "status": beforeStatus},
+		map[string]any{"name": name, "status": status},
+	); err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CommercialTimeCardProduct{}, err
 	}

@@ -56,15 +56,18 @@ const form = reactive({
 })
 
 const pageTitle = computed(() =>
-  props.mode === 'referral' ? '一级推荐奖励' : '结算规则',
+  props.mode === 'referral' ? '奖励管理' : '结算规则',
 )
 const kicker = computed(() =>
-  props.mode === 'referral' ? 'REFERRAL REWARD' : 'SETTLEMENT RULES',
+  props.mode === 'referral' ? 'MARKETING REWARDS' : 'SETTLEMENT RULES',
 )
 const pageDescription = computed(() =>
   props.mode === 'referral'
-    ? '配置一级推荐触发事件、固定奖励金额、冻结期和退款冲回规则。规则发布后生成不可变版本。'
+    ? '配置老带新等推荐奖励的触发事件、固定金额、冻结期和退款冲回规则。规则发布后生成不可变版本；AI 时长奖励继续走“AI 时长 → 财务审批 → 时长流水”的真实入账链路。'
     : '分别配置销售提成和代理返佣比例、最低订单金额与冻结期。历史订单继续引用下单时规则版本。',
+)
+const navContext = computed(() =>
+  props.mode === 'referral' ? 'activityMarketing' as const : 'finance' as const,
 )
 
 const canManage = computed(() => {
@@ -72,10 +75,14 @@ const canManage = computed(() => {
   if (!bootstrap) return false
   if (bootstrap.actor.role === 'platform_admin') return true
   const access = bootstrap.staff_access
+  const permission =
+    props.mode === 'referral'
+      ? 'commercial.referral.manage'
+      : 'finance.settlement_rules.manage'
   return Boolean(
     access &&
       (access.is_super_admin ||
-        access.permissions.includes('commercial.membership.manage')),
+        access.permissions.includes(permission)),
   )
 })
 
@@ -157,7 +164,7 @@ function displayVersion(item: IncentiveProgram) {
 
 function programTypeLabel(value: string) {
   const map: Record<string, string> = {
-    referral: '一级推荐奖励',
+    referral: '推荐奖励',
     sales_commission: '销售提成',
     agent_settlement: '代理返佣',
   }
@@ -365,7 +372,7 @@ onMounted(load)
 
 <template>
   <div class="management-page incentive-program-page">
-    <ModulePageNav context="commercial" :active-title="pageTitle" />
+    <ModulePageNav :context="navContext" :active-title="pageTitle" :active-nav-title="pageTitle" />
 
     <section class="feature-workspace-hero">
       <div>
@@ -374,7 +381,7 @@ onMounted(load)
         <p>{{ pageDescription }}</p>
       </div>
       <button v-if="canManage" class="primary-button" type="button" @click="openCreate">
-        ＋ 新建{{ props.mode === 'referral' ? '奖励' : '结算' }}规则
+        ＋ 新建{{ props.mode === 'referral' ? '营销奖励' : '结算' }}规则
       </button>
     </section>
 

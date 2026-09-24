@@ -6,6 +6,7 @@ import {
   adjustAdminAgentResource,
   adjustAdminCustomerResource,
   allocateAgentCustomerResource,
+  createCommercialAITimeGrantRequest,
   getAdminAgentResources,
   getAdminAgents,
   getAdminCustomerResources,
@@ -16,6 +17,7 @@ import {
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import type {
   AdminCustomer,
   AgentSummary,
@@ -26,6 +28,9 @@ import type {
 const route = useRoute()
 const isFinanceTimePage = computed(() =>
   route.path.startsWith('/staff/finance/ai-time'),
+)
+const isMarketingTimePage = computed(() =>
+  route.path.startsWith('/operations/live/marketing/ai-time'),
 )
 const resourcePageTitle = computed(() => {
   if (isFinanceTimePage.value) return 'AI 时长'
@@ -50,8 +55,12 @@ const isAdmin = computed(
   () => actor.value?.role === 'platform_admin' || actor.value?.role === 'staff',
 )
 const isAgent = computed(() => actor.value?.role === 'agent_admin')
+const isCustomer = computed(() => actor.value?.role === 'customer')
+const canRequestAITime = computed(() => hasStaffPermission('commercial.ai_time.request'))
 const canAdjustSystemResource = computed(() =>
-  hasStaffPermission('finance.resource.adjust'),
+  isMarketingTimePage.value
+    ? canRequestAITime.value
+    : hasStaffPermission('finance.resource.adjust'),
 )
 
 const loading = ref(false)
@@ -66,6 +75,15 @@ const selectedAgentID = ref<number | null>(null)
 const selectedCustomerID = ref<number | null>(null)
 const showAgentPicker = ref(false)
 const agentSearch = ref('')
+const agentPage = ref(1)
+const agentPageSize = 20
+const showCustomerPicker = ref(false)
+const customerSearch = ref('')
+const customerPage = ref(1)
+const customerPageSize = 20
+const resourceLedgerSearch = ref('')
+const resourceLedgerPage = ref(1)
+const resourceLedgerPageSize = 20
 
 const ownResources = ref<ResourceDashboard | null>(null)
 const targetResources = ref<ResourceDashboard | null>(null)
@@ -94,6 +112,22 @@ const currentLedger = computed(() => {
   const allowed = new Set(['ai_seconds'])
   return dashboard.ledger.filter((item) => allowed.has(item.resource_type))
 })
+const filteredCurrentLedger = computed(() => {
+  const keyword = resourceLedgerSearch.value.trim().toLowerCase()
+  if (!keyword) return currentLedger.value
+  return currentLedger.value.filter((item) =>
+    [businessLabel(item.business_type), item.reason, item.business_type, String(item.id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const resourceLedgerPageCount = computed(() =>
+  Math.max(1, Math.ceil(filteredCurrentLedger.value.length / resourceLedgerPageSize)),
+)
+const pagedCurrentLedger = computed(() => {
+  const page = Math.min(resourceLedgerPage.value, resourceLedgerPageCount.value)
+  const start = (page - 1) * resourceLedgerPageSize
+  return filteredCurrentLedger.value.slice(start, start + resourceLedgerPageSize)
+})
 
 const selectedAgent = computed(
   () =>
@@ -112,7 +146,12 @@ const filteredAgents = computed(() => {
   )
 })
 
-const visibleAgents = computed(() => filteredAgents.value.slice(0, 80))
+const agentPageCount = computed(() => Math.max(1, Math.ceil(filteredAgents.value.length / agentPageSize)))
+const pagedAgents = computed(() => {
+  const page = Math.min(agentPage.value, agentPageCount.value)
+  const start = (page - 1) * agentPageSize
+  return filteredAgents.value.slice(start, start + agentPageSize)
+})
 
 const selectedCustomer = computed(
   () =>
@@ -120,6 +159,20 @@ const selectedCustomer = computed(
       (item) => item.tenant_id === selectedCustomerID.value,
     ) || null,
 )
+const filteredCustomers = computed(() => {
+  const keyword = customerSearch.value.trim().toLowerCase()
+  if (!keyword) return customers.value
+  return customers.value.filter((item) =>
+    [item.display_name, item.username, item.phone, item.parent_org_name, String(item.tenant_id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const customerPageCount = computed(() => Math.max(1, Math.ceil(filteredCustomers.value.length / customerPageSize)))
+const pagedCustomers = computed(() => {
+  const page = Math.min(customerPage.value, customerPageCount.value)
+  const start = (page - 1) * customerPageSize
+  return filteredCustomers.value.slice(start, start + customerPageSize)
+})
 
 function resourceLabel(type: string) {
   const labels: Record<string, string> = {
@@ -137,9 +190,7 @@ function unitLabel(unit: string) {
 
 function formatQuantity(type: string, value: number) {
   if (type === 'ai_seconds') {
-    return new Intl.NumberFormat('zh-CN', {
-      maximumFractionDigits: 2,
-    }).format(value / 3600)
+    return (value / 3600).toFixed(2)
   }
   return new Intl.NumberFormat('zh-CN').format(value)
 }
@@ -147,6 +198,7 @@ function formatQuantity(type: string, value: number) {
 function businessLabel(type: string) {
   const labels: Record<string, string> = {
     platform_adjust: '平台调整',
+    marketing_ai_time_grant: '营销运维申请 · 财务已审核',
     agent_allocate: '代理分配',
     customer_slot_consume: '开户占用终端名额',
   }
@@ -244,6 +296,8 @@ async function load() {
       await loadAdminData()
     } else if (isAgent.value) {
       await loadAgentData()
+    } else if (isCustomer.value) {
+      ownResources.value = await getCurrentResources()
     }
   } catch (value) {
     error.value =
@@ -274,6 +328,7 @@ async function changeAdminScope(scope: 'agent' | 'customer') {
 
 function openAgentPicker() {
   agentSearch.value = ''
+  agentPage.value = 1
   showAgentPicker.value = true
 }
 
@@ -284,6 +339,22 @@ async function chooseAgent(item: AgentSummary) {
   agentSearch.value = ''
   if (changed || !targetResources.value) {
     await selectAgent()
+  }
+}
+
+function openCustomerPicker() {
+  customerSearch.value = ''
+  customerPage.value = 1
+  showCustomerPicker.value = true
+}
+
+async function chooseCustomer(item: AdminCustomer) {
+  const changed = selectedCustomerID.value !== item.tenant_id
+  selectedCustomerID.value = item.tenant_id
+  showCustomerPicker.value = false
+  customerSearch.value = ''
+  if (changed || !targetResources.value) {
+    await selectCustomer()
   }
 }
 
@@ -313,7 +384,7 @@ async function selectCustomer() {
       : await getAgentCustomerResources(selectedCustomerID.value)
   } catch (value) {
     error.value =
-      value instanceof Error ? value.message : '读取终端资源失败'
+      value instanceof Error ? value.message : '读取客户资源失败'
   } finally {
     loading.value = false
   }
@@ -338,11 +409,15 @@ function openAdjust(account?: ResourceAccount) {
 async function submitAdjust() {
   if (adjusting.value) return
   if (!adjustDelta.value) {
-    error.value = '调整数量不能为 0'
+    error.value = isMarketingTimePage.value ? '增加时长必须大于 0' : '调整数量不能为 0'
+    return
+  }
+  if (isMarketingTimePage.value && adjustDelta.value <= 0) {
+    error.value = '运营申请只允许增加 AI 时长，不能扣减'
     return
   }
   if (!adjustReason.value.trim()) {
-    error.value = '请填写调整原因'
+    error.value = isMarketingTimePage.value ? '请填写申请原因' : '请填写调整原因'
     return
   }
 
@@ -371,20 +446,34 @@ async function submitAdjust() {
       reason: adjustReason.value.trim(),
     }
 
-    if (adminScope.value === 'agent') {
-      if (!selectedAgentID.value) return
-      await adjustAdminAgentResource(selectedAgentID.value, payload)
+    if (isMarketingTimePage.value) {
+      const organizationID = adminScope.value === 'agent'
+        ? selectedAgentID.value
+        : selectedCustomerID.value
+      if (!organizationID) return
+      await createCommercialAITimeGrantRequest({
+        organization_id: organizationID,
+        resource_seconds: payload.delta,
+        reason: payload.reason,
+      })
+      showAdjust.value = false
+      notice.value = 'AI 时长增加申请已提交财务审核，审批通过前余额不会变动。'
     } else {
-      if (!selectedCustomerID.value) return
-      await adjustAdminCustomerResource(
-        selectedCustomerID.value,
-        payload,
-      )
-    }
+      if (adminScope.value === 'agent') {
+        if (!selectedAgentID.value) return
+        await adjustAdminAgentResource(selectedAgentID.value, payload)
+      } else {
+        if (!selectedCustomerID.value) return
+        await adjustAdminCustomerResource(
+          selectedCustomerID.value,
+          payload,
+        )
+      }
 
-    showAdjust.value = false
-    notice.value = '资源已调整，并写入资源流水。'
-    await loadAdminTarget()
+      showAdjust.value = false
+      notice.value = '资源已调整，并写入资源流水。'
+      await loadAdminTarget()
+    }
   } catch (value) {
     error.value =
       value instanceof Error ? value.message : '调整资源失败'
@@ -440,25 +529,37 @@ onMounted(load)
 <template>
   <div class="management-page resource-page">
     <ModulePageNav
-      v-if="isFinanceTimePage"
-      hub="finance"
+      v-if="isMarketingTimePage"
+      context="activityMarketing"
+      active-title="AI 时长"
+      active-nav-title="AI 时长"
+    />
+    <ModulePageNav
+      v-else-if="isFinanceTimePage"
+      context="finance"
       active-title="AI 时长"
     />
     <ModulePageNav
       v-else
-      context="workspace-agent"
+      :context="isAgent ? 'workspace-agent' : 'workspace-customer'"
       active-title="AI 时长"
       active-nav-title="AI 时长"
     />
-    <section class="page-hero">
+    <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">AI TIME CONTROL</p>
         <h2>AI 时长</h2>
-        <p v-if="isAdmin">
-          财务统一查看和调整代理、终端 AI 时长；单位统一为小时，每次变动都保留完整流水。
+        <p v-if="isAdmin && isMarketingTimePage">
+          营销运维统一查看代理和终端 AI 时长；增加时长必须提交财务审核，审批通过后才实际入账。
+        </p>
+        <p v-else-if="isAdmin">
+          查看代理、终端 AI 时长与完整资源流水。
+        </p>
+        <p v-else-if="isAgent">
+          查看当前代理 AI 时长余额，并把可分配时长划拨给自己名下的终端。
         </p>
         <p v-else>
-          查看当前代理 AI 时长余额，并把可分配时长划拨给自己名下的终端。
+          查看当前终端可用 AI 时长和完整变动流水。
         </p>
       </div>
       <button
@@ -492,7 +593,7 @@ onMounted(load)
             "
             @click="openAdjust()"
           >
-            调整时长
+            {{ isMarketingTimePage ? '申请增加时长' : '调整时长' }}
           </button>
         </div>
 
@@ -532,18 +633,16 @@ onMounted(load)
             </button>
           </div>
 
-          <label v-else>
+          <div v-else class="resource-picker-field">
             <span>选择终端</span>
-            <select v-model="selectedCustomerID" @change="selectCustomer">
-              <option
-                v-for="item in customers"
-                :key="item.tenant_id"
-                :value="item.tenant_id"
-              >
-                {{ item.display_name }} · {{ item.username }}
-              </option>
-            </select>
-          </label>
+            <button class="resource-picker-trigger" type="button" :disabled="!customers.length" @click="openCustomerPicker">
+              <span class="resource-picker-trigger-main">
+                <strong>{{ selectedCustomer?.display_name || '请选择终端' }}</strong>
+                <small v-if="selectedCustomer">{{ selectedCustomer.username }} · {{ selectedCustomer.phone || '无电话' }}</small>
+              </span>
+              <span class="resource-picker-trigger-action">搜索切换</span>
+            </button>
+          </div>
 
           <div
             v-if="adminScope === 'agent' && selectedAgent"
@@ -604,7 +703,7 @@ onMounted(load)
         <div class="settings-card-header">
           <div>
             <span class="section-kicker">CUSTOMER ALLOCATION</span>
-            <h3>终端资源分配</h3>
+            <h3>客户资源分配</h3>
           </div>
           <button
             v-if="canAdjustSystemResource && resourcePageTitle === '资源调整'"
@@ -618,18 +717,16 @@ onMounted(load)
         </div>
 
         <div class="resource-scope-select">
-          <label>
+          <div class="resource-picker-field">
             <span>选择终端</span>
-            <select v-model="selectedCustomerID" @change="selectCustomer">
-              <option
-                v-for="item in customers"
-                :key="item.tenant_id"
-                :value="item.tenant_id"
-              >
-                {{ item.display_name }} · {{ item.username }}
-              </option>
-            </select>
-          </label>
+            <button class="resource-picker-trigger" type="button" :disabled="!customers.length" @click="openCustomerPicker">
+              <span class="resource-picker-trigger-main">
+                <strong>{{ selectedCustomer?.display_name || '请选择终端' }}</strong>
+                <small v-if="selectedCustomer">{{ selectedCustomer.username }} · {{ selectedCustomer.phone || '无电话' }}</small>
+              </span>
+              <span class="resource-picker-trigger-action">搜索切换</span>
+            </button>
+          </div>
 
           <div v-if="selectedCustomer" class="resource-scope-meta">
             <strong>{{ selectedCustomer.display_name }}</strong>
@@ -666,12 +763,12 @@ onMounted(load)
           </strong>
           <small>{{ unitLabel(item.unit) }}</small>
           <button
-            v-if="isAdmin"
+            v-if="isAdmin && canAdjustSystemResource"
             class="text-action"
             type="button"
             @click="openAdjust(item)"
           >
-            调整
+            {{ isMarketingTimePage ? '申请增加' : '调整' }}
           </button>
         </article>
       </div>
@@ -684,7 +781,7 @@ onMounted(load)
       <div class="resource-section-heading">
         <div>
           <span class="section-kicker">CUSTOMER BALANCE</span>
-          <h3>{{ targetResources.organization }} · 终端资源</h3>
+          <h3>{{ targetResources.organization }} · 客户资源</h3>
         </div>
       </div>
 
@@ -721,11 +818,20 @@ onMounted(load)
           <span class="section-kicker">RESOURCE LEDGER</span>
           <h3>资源流水</h3>
         </div>
-        <span>{{ currentLedger.length }} 条</span>
+        <span>{{ filteredCurrentLedger.length }} 条</span>
+      </div>
+
+      <div class="resource-ledger-toolbar">
+        <input
+          v-model="resourceLedgerSearch"
+          type="search"
+          placeholder="搜索业务 / 原因 / 流水编号"
+          @input="resourceLedgerPage = 1"
+        />
       </div>
 
       <div
-        v-if="!currentLedger.length"
+        v-if="!filteredCurrentLedger.length"
         class="empty-state"
       >
         暂无资源流水。平台调整或代理分配后会自动记录。
@@ -733,7 +839,7 @@ onMounted(load)
 
       <div v-else class="resource-ledger-list">
         <article
-          v-for="item in currentLedger"
+          v-for="item in pagedCurrentLedger"
           :key="item.id"
           class="resource-ledger-row"
         >
@@ -777,6 +883,13 @@ onMounted(load)
           <time>{{ formatDate(item.created_at) }}</time>
         </article>
       </div>
+      <PaginationBar
+        :page="Math.min(resourceLedgerPage, resourceLedgerPageCount)"
+        :total-pages="resourceLedgerPageCount"
+        :total="filteredCurrentLedger.length"
+        :page-size="resourceLedgerPageSize"
+        @update:page="resourceLedgerPage = $event"
+      />
     </section>
 
     <div
@@ -800,6 +913,7 @@ onMounted(load)
             type="search"
             autofocus
             placeholder="输入代理名称、账号、编码、联系人或手机号"
+            @input="agentPage = 1"
           />
         </label>
 
@@ -810,7 +924,7 @@ onMounted(load)
 
         <div class="resource-agent-picker-list">
           <button
-            v-for="item in visibleAgents"
+            v-for="item in pagedAgents"
             :key="item.organization_id"
             class="resource-agent-picker-row"
             :class="{ active: item.organization_id === selectedAgentID }"
@@ -830,14 +944,81 @@ onMounted(load)
             <span class="resource-agent-picker-status">{{ item.status === 'active' ? '正常' : item.status }}</span>
           </button>
 
-          <div v-if="!visibleAgents.length" class="resource-agent-picker-empty">
+          <div v-if="!pagedAgents.length" class="resource-agent-picker-empty">
             没有找到匹配的代理，请更换关键词。
           </div>
         </div>
 
-        <p v-if="filteredAgents.length > visibleAgents.length" class="resource-agent-picker-more">
-          当前仅展示前 {{ visibleAgents.length }} 个匹配结果，请继续输入关键词缩小范围。
-        </p>
+        <PaginationBar
+          :page="Math.min(agentPage, agentPageCount)"
+          :total-pages="agentPageCount"
+          :total="filteredAgents.length"
+          :page-size="agentPageSize"
+          @update:page="agentPage = $event"
+        />
+      </section>
+    </div>
+
+    <div
+      v-if="showCustomerPicker"
+      class="modal-backdrop resource-agent-picker-backdrop"
+      @click.self="showCustomerPicker = false"
+    >
+      <section class="modal-card resource-agent-picker-modal">
+        <div class="modal-header">
+          <div>
+            <p class="section-kicker">CUSTOMER SELECTOR</p>
+            <h3>选择终端</h3>
+          </div>
+          <button class="icon-button" type="button" @click="showCustomerPicker = false">×</button>
+        </div>
+
+        <label class="resource-agent-picker-search">
+          <span>搜索终端</span>
+          <input
+            v-model.trim="customerSearch"
+            type="search"
+            autofocus
+            placeholder="输入终端名称、账号、手机号或归属"
+            @input="customerPage = 1"
+          />
+        </label>
+
+        <div class="resource-agent-picker-summary">
+          <span>全部 {{ customers.length }} 个终端</span>
+          <span v-if="customerSearch">匹配 {{ filteredCustomers.length }} 个</span>
+        </div>
+
+        <div class="resource-agent-picker-list">
+          <button
+            v-for="item in pagedCustomers"
+            :key="item.tenant_id"
+            class="resource-agent-picker-row"
+            :class="{ active: item.tenant_id === selectedCustomerID }"
+            type="button"
+            @click="chooseCustomer(item)"
+          >
+            <span class="resource-agent-picker-avatar">{{ (item.display_name || item.username || '终').slice(0, 1) }}</span>
+            <span class="resource-agent-picker-copy">
+              <strong>{{ item.display_name }}</strong>
+              <small>{{ item.username }} · {{ item.phone || '电话未设置' }}</small>
+              <em>{{ item.parent_org_name || '平台直营' }}</em>
+            </span>
+            <span class="resource-agent-picker-status">终端</span>
+          </button>
+
+          <div v-if="!pagedCustomers.length" class="resource-agent-picker-empty">
+            没有找到匹配的终端，请更换关键词。
+          </div>
+        </div>
+
+        <PaginationBar
+          :page="Math.min(customerPage, customerPageCount)"
+          :total-pages="customerPageCount"
+          :total="filteredCustomers.length"
+          :page-size="customerPageSize"
+          @update:page="customerPage = $event"
+        />
       </section>
     </div>
 
@@ -849,12 +1030,12 @@ onMounted(load)
       <form class="modal-card" @submit.prevent="submitAdjust">
         <div class="modal-header">
           <div>
-            <p class="section-kicker">SYSTEM ADJUSTMENT</p>
+            <p class="section-kicker">{{ isMarketingTimePage ? 'AI TIME REQUEST' : 'SYSTEM ADJUSTMENT' }}</p>
             <h3>
               {{
-                adminScope === 'agent'
-                  ? '调整代理资源'
-                  : '调整终端资源'
+                isMarketingTimePage
+                  ? (adminScope === 'agent' ? '申请增加代理 AI 时长' : '申请增加终端 AI 时长')
+                  : (adminScope === 'agent' ? '调整代理资源' : '调整客户资源')
               }}
             </h3>
           </div>
@@ -868,7 +1049,9 @@ onMounted(load)
         </div>
 
         <p class="modal-helper">
-          正数为增加，负数为扣减。扣减后的资源余额不能小于 0。
+          {{ isMarketingTimePage
+            ? '运营只允许申请增加时长。提交后进入财务待审核，审批通过前余额不会变化。'
+            : '正数为增加，负数为扣减。扣减后的资源余额不能小于 0。' }}
         </p>
 
         <div class="form-grid">
@@ -887,23 +1070,24 @@ onMounted(load)
           </label>
 
           <label>
-            <span>{{ adjustResourceType === 'ai_seconds' ? '调整小时数' : '调整设备数量' }}</span>
+            <span>{{ isMarketingTimePage ? '增加小时数' : (adjustResourceType === 'ai_seconds' ? '调整小时数' : '调整设备数量') }}</span>
             <input
               v-model.number="adjustDelta"
               type="number"
+              :min="isMarketingTimePage ? 0.1 : undefined"
               :step="adjustResourceType === 'ai_seconds' ? 0.1 : 1"
               required
-              :placeholder="adjustResourceType === 'ai_seconds' ? '例如 10 或 -5（小时）' : '例如 10 或 -5（台）'"
+              :placeholder="isMarketingTimePage ? '例如 10（小时）' : (adjustResourceType === 'ai_seconds' ? '例如 10 或 -5（小时）' : '例如 10 或 -5（台）')"
             />
           </label>
 
           <label class="form-span-2">
-            <span>调整原因</span>
+            <span>{{ isMarketingTimePage ? '申请原因' : '调整原因' }}</span>
             <input
               v-model="adjustReason"
               maxlength="512"
               required
-              placeholder="例如：首批资源包 / 终端增购"
+               :placeholder="isMarketingTimePage ? '例如：客户活动赠送 / 售后补偿 / 运营补时' : '例如：首批资源包 / 终端增购'"
             />
           </label>
         </div>
@@ -921,7 +1105,7 @@ onMounted(load)
             type="submit"
             :disabled="adjusting"
           >
-            {{ adjusting ? '处理中...' : '确认调整' }}
+            {{ adjusting ? '提交中...' : (isMarketingTimePage ? '提交财务审核' : '确认调整') }}
           </button>
         </div>
       </form>

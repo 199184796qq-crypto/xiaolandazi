@@ -41,11 +41,16 @@ func (s *Server) deliverInitialCredential(
 	displayName string,
 	username string,
 	password string,
+	portals ...string,
 ) credentialDeliveryResponse {
 	method = normalizeDeliveryMethod(method)
+	portal := "user"
+	if len(portals) > 0 && strings.EqualFold(strings.TrimSpace(portals[0]), "internal") {
+		portal = "internal"
+	}
 	result := credentialDeliveryResponse{
 		InitialPassword: password,
-		LoginURL:        strings.TrimRight(s.publicWebURL, "/") + "/login",
+		LoginURL:        strings.TrimRight(s.publicWebURL, "/") + "/login?portal=" + portal,
 		DeliveryMethod:  method,
 		Email:           strings.TrimSpace(email),
 	}
@@ -68,7 +73,7 @@ func (s *Server) deliverInitialCredential(
 		displayName,
 		username,
 		password,
-		s.publicWebURL,
+		result.LoginURL,
 	); err != nil {
 		if err == mailer.ErrNotConfigured {
 			result.EmailError = "邮件服务尚未配置，请使用复制方式交付登录凭证"

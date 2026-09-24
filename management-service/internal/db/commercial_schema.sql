@@ -179,10 +179,14 @@ CREATE TABLE IF NOT EXISTS catalog_membership_plan_versions (
     lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'draft',
     currency CHAR(3) NOT NULL DEFAULT 'CNY',
     price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    recurring_month_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
+    recurring_quarter_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
+    annual_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
     billing_period_unit VARCHAR(16) NOT NULL DEFAULT 'month',
     billing_period_count INT UNSIGNED NOT NULL DEFAULT 1,
     included_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
     default_time_card_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
+    default_device_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
     allow_auto_renew TINYINT(1) NOT NULL DEFAULT 0,
     entitlements_json JSON NULL,
     effective_from DATETIME(3) NULL,
@@ -220,6 +224,8 @@ CREATE TABLE IF NOT EXISTS catalog_time_card_versions (
     price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     duration_seconds BIGINT UNSIGNED NOT NULL,
     validity_days INT UNSIGNED NOT NULL,
+    activation_mode VARCHAR(32) NOT NULL DEFAULT 'first_use',
+    activation_deadline_days INT UNSIGNED NOT NULL DEFAULT 0,
     participates_referral TINYINT(1) NOT NULL DEFAULT 1,
     participates_sales_commission TINYINT(1) NOT NULL DEFAULT 1,
     participates_agent_settlement TINYINT(1) NOT NULL DEFAULT 1,
@@ -312,6 +318,8 @@ CREATE TABLE IF NOT EXISTS biz_order_items (
     quantity INT UNSIGNED NOT NULL DEFAULT 1,
     duration_seconds_snapshot BIGINT UNSIGNED NULL,
     validity_days_snapshot INT UNSIGNED NULL,
+    activation_mode_snapshot VARCHAR(32) NULL,
+    activation_deadline_days_snapshot INT UNSIGNED NULL,
     unit_list_price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     unit_paid_price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     discount_bps_snapshot INT UNSIGNED NOT NULL DEFAULT 10000,
@@ -407,6 +415,35 @@ CREATE TABLE IF NOT EXISTS fin_refund_orders (
     KEY idx_fin_refund_orders_tenant (tenant_id, created_at),
     KEY idx_fin_refund_orders_source (source_type, source_id),
     KEY idx_fin_refund_orders_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS biz_time_card_assets (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    asset_no VARCHAR(64) NOT NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    source_order_id BIGINT UNSIGNED NOT NULL,
+    source_order_item_id BIGINT UNSIGNED NOT NULL,
+    asset_sequence INT UNSIGNED NOT NULL,
+    product_id BIGINT UNSIGNED NOT NULL,
+    product_version_id BIGINT UNSIGNED NOT NULL,
+    product_name_snapshot VARCHAR(128) NOT NULL,
+    original_seconds BIGINT UNSIGNED NOT NULL,
+    remaining_seconds BIGINT UNSIGNED NOT NULL,
+    activation_mode VARCHAR(32) NOT NULL DEFAULT 'first_use',
+    activation_deadline_at DATETIME(3) NULL,
+    validity_days INT UNSIGNED NOT NULL,
+    activated_at DATETIME(3) NULL,
+    expires_at DATETIME(3) NULL,
+    quota_bucket_id BIGINT UNSIGNED NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'unactivated',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_biz_time_card_assets_no (asset_no),
+    UNIQUE KEY uk_biz_time_card_assets_order_item_seq (source_order_item_id, asset_sequence),
+    UNIQUE KEY uk_biz_time_card_assets_bucket (quota_bucket_id),
+    KEY idx_biz_time_card_assets_tenant_status (tenant_id, status, activation_deadline_at, id),
+    KEY idx_biz_time_card_assets_order (source_order_id, source_order_item_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS quota_buckets (
@@ -622,6 +659,154 @@ CREATE TABLE IF NOT EXISTS sys_feature_records (
 
 
 -- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaigns (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    code VARCHAR(128) NOT NULL,
+    name VARCHAR(160) NOT NULL,
+    description TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    sort_order INT NOT NULL DEFAULT 0,
+    pricing_rule VARCHAR(32) NOT NULL DEFAULT 'floor_yuan',
+    starts_at DATETIME(3) NULL,
+    ends_at DATETIME(3) NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaigns_code (code),
+    KEY idx_mkt_campaigns_status_window (status, starts_at, ends_at),
+    KEY idx_mkt_campaigns_sort (sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_placements (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    placement_code VARCHAR(64) NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaign_placements_campaign_code (campaign_id, placement_code),
+    KEY idx_mkt_campaign_placements_code (placement_code, campaign_id),
+    CONSTRAINT fk_mkt_campaign_placements_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_items (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    target_type VARCHAR(32) NOT NULL,
+    target_id BIGINT UNSIGNED NOT NULL,
+    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_mkt_campaign_items_campaign (campaign_id, sort_order, id),
+    KEY idx_mkt_campaign_items_target (target_type, target_id, campaign_id),
+    CONSTRAINT fk_mkt_campaign_items_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_price_rules (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    campaign_item_id BIGINT UNSIGNED NOT NULL,
+    pricing_mode VARCHAR(32) NOT NULL DEFAULT 'discount',
+    package_months INT UNSIGNED NOT NULL DEFAULT 1,
+    discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
+    fixed_price_cents BIGINT UNSIGNED NULL,
+    pricing_rule VARCHAR(32) NOT NULL DEFAULT 'floor_yuan',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaign_price_rules_item (campaign_item_id),
+    KEY idx_mkt_campaign_price_rules_campaign (campaign_id),
+    CONSTRAINT fk_mkt_campaign_price_rules_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE,
+    CONSTRAINT fk_mkt_campaign_price_rules_item
+        FOREIGN KEY (campaign_item_id) REFERENCES mkt_campaign_items(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_scopes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    scope_type VARCHAR(32) NOT NULL DEFAULT 'all_customers',
+    scope_ref_id BIGINT UNSIGNED NULL,
+    scope_value VARCHAR(128) NOT NULL DEFAULT '',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_mkt_campaign_scopes_campaign (campaign_id),
+    KEY idx_mkt_campaign_scopes_ref (scope_type, scope_ref_id),
+    CONSTRAINT fk_mkt_campaign_scopes_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_inventory (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    campaign_item_id BIGINT UNSIGNED NOT NULL,
+    stock_limit BIGINT UNSIGNED NULL,
+    reserved_quantity BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    used_quantity BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaign_inventory_item (campaign_item_id),
+    KEY idx_mkt_campaign_inventory_campaign (campaign_id),
+    CONSTRAINT fk_mkt_campaign_inventory_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE,
+    CONSTRAINT fk_mkt_campaign_inventory_item
+        FOREIGN KEY (campaign_item_id) REFERENCES mkt_campaign_items(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_usage (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    campaign_item_id BIGINT UNSIGNED NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    order_id BIGINT UNSIGNED NULL,
+    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+    discount_amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_mkt_campaign_usage_campaign (campaign_id, status, created_at),
+    KEY idx_mkt_campaign_usage_tenant (tenant_id, created_at),
+    KEY idx_mkt_campaign_usage_order (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_order_snapshots (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    order_id BIGINT UNSIGNED NOT NULL,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    campaign_item_id BIGINT UNSIGNED NULL,
+    campaign_code VARCHAR(128) NOT NULL,
+    campaign_name VARCHAR(160) NOT NULL,
+    target_type VARCHAR(32) NOT NULL,
+    target_id BIGINT UNSIGNED NOT NULL,
+    pricing_mode VARCHAR(32) NOT NULL,
+    package_months INT UNSIGNED NOT NULL DEFAULT 1,
+    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+    discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
+    list_amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    payable_amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    discount_amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaign_order_snapshot (order_id, campaign_id, target_type, target_id),
+    KEY idx_mkt_campaign_order_campaign (campaign_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+
+-- +statement
 CREATE TABLE IF NOT EXISTS crm_agent_levels (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     code VARCHAR(64) NOT NULL,
@@ -742,6 +927,9 @@ CREATE TABLE IF NOT EXISTS catalog_device_products (
     sku_code VARCHAR(96) NOT NULL,
     name VARCHAR(128) NOT NULL,
     description VARCHAR(1024) NOT NULL DEFAULT '',
+    image_url VARCHAR(2048) NOT NULL DEFAULT '',
+    unit_code VARCHAR(96) NOT NULL DEFAULT 'unit',
+    sales_stock INT UNSIGNED NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'draft',
     sort_order INT NOT NULL DEFAULT 0,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -758,6 +946,7 @@ CREATE TABLE IF NOT EXISTS catalog_device_versions (
     version_no INT UNSIGNED NOT NULL,
     lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'draft',
     currency CHAR(3) NOT NULL DEFAULT 'CNY',
+    cost_price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     list_price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     sale_price_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
     participates_referral TINYINT(1) NOT NULL DEFAULT 1,
@@ -802,6 +991,7 @@ CREATE TABLE IF NOT EXISTS biz_order_devices (
     status VARCHAR(32) NOT NULL DEFAULT 'reserved',
     shipment_id BIGINT UNSIGNED NULL,
     reserved_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    hold_expires_at DATETIME(3) NULL,
     shipped_at DATETIME(3) NULL,
     delivered_at DATETIME(3) NULL,
     returned_at DATETIME(3) NULL,

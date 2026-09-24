@@ -2,11 +2,15 @@
 import PasswordInput from './components/PasswordInput.vue'
 import GlobalFeedback from './components/GlobalFeedback.vue'
 import RegionSelect from './components/RegionSelect.vue'
-import { computed, ref, watch } from 'vue'
+import SystemFooter from './components/SystemFooter.vue'
+import CustomerMembershipCenter from './components/CustomerMembershipCenter.vue'
+import SystemAgentLayer from './components/SystemAgentLayer.vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   changePassword,
   getAccountDashboard,
+  getLiveQuotaSummary,
   logout,
   updateAccountProfile,
 } from './api'
@@ -29,9 +33,77 @@ const router = useRouter()
 
 const loggingOut = ref(false)
 
-const isAuthPage = computed(() => route.meta.public === true)
+const isAuthPage = computed(() => {
+  const routeName = String(route.name || '')
+  return (
+    routeName === 'login' ||
+    routeName === 'register' ||
+    route.path === '/login' ||
+    route.path === '/register' ||
+    route.meta.public === true
+  )
+})
 const actor = computed(() => session.bootstrap?.actor)
+const showAuthenticatedShell = computed(
+  () => !isAuthPage.value && Boolean(session.bootstrap?.actor),
+)
 const staffAccess = computed(() => session.bootstrap?.staff_access ?? null)
+
+const customerLiveRouteNames = new Set([
+  'rooms',
+  'rooms-list',
+  'room-detail',
+  'live-strategy',
+  'live-devices',
+])
+const showCustomerLiveQuota = computed(
+  () =>
+    actor.value?.role === 'customer' &&
+    customerLiveRouteNames.has(String(route.name || '')),
+)
+const customerLiveQuota = ref<Awaited<ReturnType<typeof getLiveQuotaSummary>> | null>(null)
+let customerLiveQuotaTimer: number | undefined
+
+function formatCustomerAIQuota(seconds = 0) {
+  const totalMinutes = Math.max(0, Math.ceil(Number(seconds || 0) / 60))
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return hours + '小时' + minutes + '分'
+}
+
+async function refreshCustomerLiveQuota() {
+  if (!showCustomerLiveQuota.value) return
+  try {
+    customerLiveQuota.value = await getLiveQuotaSummary()
+  } catch {
+    // Keep the last visible value during transient development-service restarts.
+  }
+}
+
+function stopCustomerLiveQuotaPolling() {
+  if (customerLiveQuotaTimer !== undefined) {
+    window.clearInterval(customerLiveQuotaTimer)
+    customerLiveQuotaTimer = undefined
+  }
+}
+
+watch(
+  showCustomerLiveQuota,
+  (visible) => {
+    stopCustomerLiveQuotaPolling()
+    if (!visible) {
+      customerLiveQuota.value = null
+      return
+    }
+    void refreshCustomerLiveQuota()
+    customerLiveQuotaTimer = window.setInterval(() => {
+      void refreshCustomerLiveQuota()
+    }, 15000)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(stopCustomerLiveQuotaPolling)
 
 const isAdmin = computed(() => actor.value?.role === 'platform_admin')
 const isAgent = computed(() => actor.value?.role === 'agent_admin')
@@ -58,38 +130,71 @@ function navItem(
   return { label, to, icon, routeNames }
 }
 
+function navSectionIcon(section: NavSection) {
+  const label = section.label
+  if (label.includes('系统')) return '⌂'
+  if (label.includes('业务') || label.includes('直播')) return '▣'
+  if (label.includes('客户') || label.includes('销售')) return '客'
+  if (label.includes('渠道') || label.includes('代理')) return '合'
+  if (label.includes('产品') || label.includes('交付')) return '◆'
+  if (label.includes('财务')) return '¥'
+  if (label.includes('终端')) return '终'
+  if (label.includes('工作台')) return '台'
+  return '组'
+}
+
+function navSectionTone(section: NavSection) {
+  const label = section.label
+  if (label.includes('客户') || label.includes('销售')) return 'nav-tone-cyan'
+  if (label.includes('渠道') || label.includes('代理')) return 'nav-tone-orange'
+  if (label.includes('产品') || label.includes('交付')) return 'nav-tone-purple'
+  if (label.includes('财务')) return 'nav-tone-green'
+  if (label.includes('业务') || label.includes('直播')) return 'nav-tone-sky'
+  return 'nav-tone-blue'
+}
+
 const navSections = computed<NavSection[]>(() => {
   if (isAdmin.value) {
     return [
       {
-        label: '系统',
+        label: '系统管理',
         items: [
           navItem('系统总览', '/overview', '⌂', ['platform-overview']),
+          navItem('系统设定', '/system/settings', '设', ['system-settings']),
           navItem('组织架构', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit']),
         ],
       },
       {
-        label: '运营管理',
+        label: '营销运维',
         items: [
-          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'rooms', 'rooms-list', 'room-detail']),
-          navItem('终端资源', '/customers', '◎', ['customers-hub', 'customers-list']),
-          navItem('代理体系', '/agents', '◇', ['agents-hub', 'agents-list', 'agent-levels', 'agent-contracts', 'agent-exit']),
-          navItem('销售体系', '/sales', '◈', ['sales-hub', 'sales-team', 'sales-performance']),
-          navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
+          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+          navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-referrals', 'invitations']),
         ],
       },
       {
-        label: '商业管理',
+        label: '客资销售',
         items: [
-          navItem(
-            '商品与会员',
-            '/commercial/memberships',
-            '◆',
-            ['commercial-hub', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-time-cards', 'commercial-referrals', 'commercial-settlement'],
-          ),
-          navItem('财务结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-settlements', 'staff-finance-ai-time']),
-          navItem('设备库存', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']),
-          navItem('售后维修', '/staff/after-sales', '修', ['staff-after-sales']),
+          navItem('客户资源', '/customers', '◎', ['customers-hub', 'customers-list']),
+          navItem('销售体系', '/sales', '◈', ['sales-hub', 'sales-team', 'sales-performance']),
+        ],
+      },
+      {
+        label: '仓储与售后',
+        items: [
+          navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']),
+          navItem('物流与售后', '/staff/after-sales', '修', ['staff-after-sales']),
+        ],
+      },
+      {
+        label: '财务管理',
+        items: [
+          navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
+        ],
+      },
+      {
+        label: '渠道合作',
+        items: [
+          navItem('代理合作', '/agents', '◇', ['agents-hub', 'agents-list', 'agent-levels', 'agent-contracts', 'agent-exit']),
         ],
       },
     ]
@@ -101,7 +206,7 @@ const navSections = computed<NavSection[]>(() => {
         label: '代理工作台',
         items: [
           navItem('代理总览', '/agent/overview', '⌂', ['agent-overview']),
-          navItem('终端管理', '/agent/customers', '◎', ['agent-customers']),
+          navItem('客户资源', '/agent/customers', '◎', ['agent-customers']),
           navItem('AI 时长', '/resources/workspace', '时', ['resources-workspace']),
           navItem('售后维修', '/after-sales', '修', ['after-sales-portal']),
           navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
@@ -116,10 +221,54 @@ const navSections = computed<NavSection[]>(() => {
     if (hasStaffPermission('system.architecture.view')) {
       workItems.push(
         navItem('系统总览', '/overview', '⌂', ['platform-overview']),
-        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'rooms', 'rooms-list', 'room-detail']),
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
       )
     }
 
+    if (
+      !hasStaffPermission('system.architecture.view') &&
+      (
+        hasStaffPermission('liveops.configure') ||
+        hasStaffPermission('liveops.view_all') ||
+        hasStaffPermission('liveops.room_quota.view')
+      )
+    ) {
+      workItems.push(
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+      )
+    }
+    if (
+      hasStaffPermission('system.architecture.view') ||
+      hasStaffPermission('commercial.marketing.view') ||
+      hasStaffPermission('commercial.membership.view') ||
+      hasStaffPermission('commercial.ai_time.view') ||
+      hasStaffPermission('commercial.time_card.view') ||
+      hasStaffPermission('commercial.device.view') ||
+      hasStaffPermission('commercial.referral.view') ||
+      hasStaffPermission('invitations.view_all')
+    ) {
+      workItems.push(
+        navItem(
+          '活动营销',
+          '/operations/live/marketing',
+          '营',
+          [
+            'live-activity-marketing',
+            'commercial-membership-plans',
+            'commercial-membership-simulator',
+            'commercial-ai-time',
+            'commercial-marketing',
+            'commercial-marketing-tools',
+            'commercial-marketing-channels',
+            'commercial-marketing-analytics',
+            'commercial-time-cards',
+            'commercial-device-products',
+            'commercial-referrals',
+            ...(hasStaffPermission('invitations.view_all') ? ['invitations'] : []),
+          ],
+        ),
+      )
+    }
     if (
       hasStaffPermission('system.architecture.view') ||
       hasStaffPermission('staff.group.view') ||
@@ -142,42 +291,37 @@ const navSections = computed<NavSection[]>(() => {
       )
     }
     if (hasStaffPermission('customer.view_all')) {
-      workItems.push(navItem('终端资源', '/customers', '◎', ['customers-hub', 'customers-list']))
-    }
-    if (hasStaffPermission('agent.view_all')) {
-      workItems.push(navItem('代理体系', '/agents', '◇', ['agents-hub', 'agents-list', 'agent-levels', 'agent-contracts', 'agent-exit']))
+      workItems.push(navItem('客户资源', '/customers', '◎', ['customers-hub', 'customers-list']))
     }
     if (hasStaffPermission('sales.view_all')) {
       workItems.push(navItem('销售体系', '/sales', '◈', ['sales-hub', 'sales-team', 'sales-performance']))
     }
-    if (hasStaffPermission('finance.dashboard.view')) {
-      workItems.push(
-        navItem('财务结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-settlements', 'staff-finance-ai-time']),
-      )
-    }
-
     if (
-      hasStaffPermission('commercial.membership.view')
+      hasStaffPermission('finance.dashboard.view') ||
+      hasStaffPermission('finance.settlement_rules.view')
     ) {
       workItems.push(
-        navItem(
-          '会员方案',
-          '/commercial/memberships',
-          '◆',
-          ['commercial-hub', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-time-cards', 'commercial-referrals', 'commercial-settlement'],
-        ),
+        navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
       )
     }
+    if (hasStaffPermission('agent.view_all')) {
+      workItems.push(navItem('代理合作', '/agents', '◇', ['agents-hub', 'agents-list', 'agent-levels', 'agent-contracts', 'agent-exit']))
+    }
+
+    if (hasStaffPermission('system.settings.view')) {
+      workItems.push(navItem('系统设定', '/system/settings', '设', ['system-settings']))
+    }
+
     if (
       hasStaffPermission('inventory.view') ||
       hasStaffPermission('logistics.view')
     ) {
-      workItems.push(navItem('设备库存', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']))
+      workItems.push(navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']))
     }
     if (hasStaffPermission('inventory.after_sales.view')) {
-      workItems.push(navItem('售后维修', '/staff/after-sales', '修', ['staff-after-sales']))
+      workItems.push(navItem('物流与售后', '/staff/after-sales', '修', ['staff-after-sales']))
     }
-    if (isSales.value || hasStaffPermission('invitations.view_all')) {
+    if (isSales.value && !hasStaffPermission('invitations.view_all')) {
       workItems.push(
         navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
       )
@@ -195,9 +339,10 @@ const navSections = computed<NavSection[]>(() => {
     {
       label: '终端工作台',
       items: [
-        navItem('直播运维', '/', '▣', ['rooms', 'room-detail']),
-        navItem('商城', '/shop', '▤', ['shop']),
+        navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
+        navItem('终端商城', '/shop', '▤', ['shop']),
         navItem('财务管理', '/finance', '¥', ['finance']),
+        navItem('AI 时长', '/resources/workspace', '时', ['resources-workspace']),
         navItem('售后维修', '/after-sales', '修', ['after-sales-portal']),
         navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
       ],
@@ -226,6 +371,17 @@ function toggleNavSection(section: NavSection) {
   }
 }
 
+async function openNavSection(section: NavSection) {
+  collapsedNavSections.value = {
+    ...collapsedNavSections.value,
+    [section.label]: false,
+  }
+  const target = section.items[0]?.to
+  if (!target) return
+  if (route.path === target) return
+  await router.push(target)
+}
+
 
 watch(
   () => String(route.name || ''),
@@ -246,14 +402,18 @@ const mobileNavItems = computed<NavItem[]>(() => {
   if (isAdmin.value) {
     return [
       navItem('系统总览', '/overview', '⌂', ['platform-overview']),
+      navItem('设定', '/system/settings', '设', ['system-settings']),
       navItem('组织', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit']),
-      navItem('终端', '/customers', '◎', ['customers-hub', 'customers-list']),
-      navItem('商业', '/commercial/memberships', '◆', [
-        'commercial-hub',
+      navItem('客户', '/customers', '◎', ['customers-hub', 'customers-list']),
+      navItem('营销', '/operations/live/marketing', '营', [
+        'live-activity-marketing',
         'commercial-membership-plans',
         'commercial-membership-simulator',
-        'resources-hub',
-        'resources-workspace',
+        'commercial-ai-time',
+        'commercial-marketing',
+        'commercial-time-cards',
+        'commercial-device-products',
+        'commercial-referrals',
       ]),
       navItem('我的', '/personal', '♙', ['personal-center', 'account', 'settings']),
     ]
@@ -285,27 +445,47 @@ const mobileNavItems = computed<NavItem[]>(() => {
     if (hasStaffPermission('system.architecture.view')) {
       items.unshift(navItem('系统', '/overview', '⌂', ['platform-overview']))
     }
-    if (hasStaffPermission('finance.dashboard.view')) {
+    if (hasStaffPermission('system.settings.view')) {
+      items.push(navItem('设定', '/system/settings', '设', ['system-settings']))
+    }
+    if (
+      hasStaffPermission('liveops.configure') ||
+      hasStaffPermission('liveops.view_all') ||
+      hasStaffPermission('liveops.room_quota.view')
+    ) {
       items.push(
-        navItem('财务', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-settlements']),
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+      )
+    }
+    if (
+      hasStaffPermission('finance.dashboard.view') ||
+      hasStaffPermission('finance.settlement_rules.view')
+    ) {
+      items.push(
+        navItem('财务', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
       )
     }
     if (hasStaffPermission('customer.view_all')) {
-      items.push(navItem('终端', '/customers', '◎', ['customers-hub', 'customers-list']))
+      items.push(navItem('客户', '/customers', '◎', ['customers-hub', 'customers-list']))
+    }
+    if (
+      hasStaffPermission('commercial.marketing.view') ||
+      hasStaffPermission('commercial.referral.view')
+    ) {
+      items.push(
+        navItem(
+          '营销',
+          '/operations/live/marketing',
+          '营',
+          ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-time-cards', 'commercial-device-products', 'commercial-referrals'],
+        ),
+      )
     }
     if (
       hasStaffPermission('resources.view') ||
       hasStaffPermission('finance.resource.adjust')
     ) {
       items.push(navItem('资源', '/resources', '◌', ['resources-hub', 'resources-workspace', 'resource-devices', 'resource-inventory', 'resource-logistics']))
-    } else if (hasStaffPermission('commercial.membership.view')) {
-      items.push(
-        navItem('商业', '/commercial/memberships', '◆', [
-          'commercial-hub',
-          'commercial-membership-plans',
-          'commercial-membership-simulator',
-        ]),
-      )
     }
     if (hasStaffPermission('inventory.after_sales.view')) {
       items.push(navItem('售后', '/staff/after-sales', '修', ['staff-after-sales']))
@@ -315,8 +495,8 @@ const mobileNavItems = computed<NavItem[]>(() => {
   }
 
   return [
-    navItem('直播运维', '/', '▣', ['rooms', 'room-detail']),
-    navItem('商城', '/shop', '▤', ['shop']),
+    navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
+    navItem('终端商城', '/shop', '▤', ['shop']),
     navItem('财务', '/finance', '¥', ['finance']),
     navItem('售后', '/after-sales', '修', ['after-sales-portal']),
     navItem('我的', '/personal', '♙', ['personal-center', 'account', 'settings']),
@@ -499,15 +679,28 @@ async function signOut() {
 </script>
 
 <template>
-  <RouterView v-if="isAuthPage" />
+  <RouterView v-if="isAuthPage" :key="route.fullPath" />
 
-  <div v-else class="app-shell">
+  <div v-else-if="showAuthenticatedShell" class="app-shell">
+    <div
+      v-if="showCustomerLiveQuota"
+      class="customer-ai-time-global-topbar"
+      :title="customerLiveQuota?.reserve_time_card_count
+        ? '当前已激活 ' + formatCustomerAIQuota(customerLiveQuota.active_seconds) + '；另有 ' + customerLiveQuota.reserve_time_card_count + ' 张未激活储备卡'
+        : '当前已激活可用时长 ' + formatCustomerAIQuota(customerLiveQuota?.active_seconds || 0)"
+    >
+      <span>时长卡剩余</span>
+      <strong>{{ customerLiveQuota ? formatCustomerAIQuota(customerLiveQuota.active_seconds) : '读取中…' }}</strong>
+      <small v-if="customerLiveQuota?.reserve_time_card_count">
+        储备 {{ customerLiveQuota.reserve_time_card_count }} 张未激活
+      </small>
+    </div>
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">{{ isInternalStaff ? '蓝' : '伴' }}</div>
+        <div class="brand-mark">{{ isInternalStaff ? '蓝' : '蓝' }}</div>
         <div>
-          <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '伴播搭子' }}</strong>
-          <span>{{ isInternalStaff ? 'BANBO AI SYSTEM' : 'BANBO AI' }}</span>
+          <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '小蓝搭子' }}</strong>
+          <span>{{ isInternalStaff ? 'BANBO AI SYSTEM' : 'BANBO AI SYSTEM' }}</span>
         </div>
       </div>
 
@@ -516,16 +709,22 @@ async function signOut() {
           v-for="section in navSections"
           :key="section.label"
           class="nav-section-card"
-          :class="{ collapsed: sectionCollapsed(section), 'has-active': sectionHasActive(section) }"
+          :class="[
+            navSectionTone(section),
+            { collapsed: sectionCollapsed(section), 'has-active': sectionHasActive(section) },
+          ]"
         >
           <button
             class="nav-section-heading"
             type="button"
             :aria-expanded="!sectionCollapsed(section)"
-            @click="toggleNavSection(section)"
+            @click="openNavSection(section)"
           >
-            <span class="nav-section-title-wrap">
-              <span class="nav-section-label">{{ section.label }}</span>
+            <span class="nav-section-leading">
+              <span class="nav-section-group-icon">{{ navSectionIcon(section) }}</span>
+              <span class="nav-section-title-wrap">
+                <span class="nav-section-label">{{ section.label }}</span>
+              </span>
             </span>
             <span class="nav-section-heading-actions">
               <span class="nav-section-count">{{ section.items.length }}</span>
@@ -562,7 +761,14 @@ async function signOut() {
           }"
           to="/personal"
         >
-          <span class="sidebar-personal-button-icon">我</span>
+          <span class="sidebar-personal-button-icon">
+            <img
+              v-if="actor?.avatar_url"
+              :src="actor.avatar_url"
+              alt="个人头像"
+            />
+            <span v-else>我</span>
+          </span>
           <span class="sidebar-personal-button-copy">
             <strong>个人中心</strong>
             <small>账户、安全与个人偏好</small>
@@ -581,13 +787,17 @@ async function signOut() {
     </aside>
 
     <main class="main-area">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">{{ topbarEyebrow }}</p>
-          <h1>{{ topbarTitle }}</h1>
+      <header class="topbar global-topbar">
+        <div id="app-global-breadcrumbs" class="global-topbar-navigation">
+          <div class="topbar-fallback">
+            <p class="eyebrow">{{ topbarEyebrow }}</p>
+            <h1>{{ topbarTitle }}</h1>
+          </div>
         </div>
 
         <div class="topbar-actions">
+          <div id="app-global-status" class="global-topbar-status"></div>
+          <CustomerMembershipCenter v-if="actor?.role === 'customer'" />
           <RouterLink class="account-chip account-chip-link" to="/personal">
             <div class="avatar">
               <img
@@ -614,9 +824,12 @@ async function signOut() {
         </div>
       </header>
 
+      <div id="app-global-switches" class="global-topbar-switches"></div>
+
       <section class="page-content">
-        <RouterView />
+        <RouterView :key="route.fullPath" />
       </section>
+      <SystemFooter />
     </main>
 
     <nav class="mobile-nav" aria-label="移动端导航">
@@ -635,6 +848,8 @@ async function signOut() {
 
   <GlobalFeedback />
 
+  <SystemAgentLayer v-if="!isAuthPage && !mustChangePassword && !mustCompleteContact" />
+
   <Teleport to="body">
     <div
       v-if="mustChangePassword"
@@ -648,9 +863,9 @@ async function signOut() {
         @submit.prevent="submitForcedPassword"
       >
         <div class="forced-password-brand">
-          <div class="brand-mark">{{ isInternalStaff ? '蓝' : '伴' }}</div>
+          <div class="brand-mark">{{ isInternalStaff ? '蓝' : '蓝' }}</div>
           <div>
-            <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '伴播搭子' }}</strong>
+            <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '小蓝搭子' }}</strong>
             <span>ACCOUNT SECURITY</span>
           </div>
         </div>
@@ -727,9 +942,9 @@ async function signOut() {
         @submit.prevent="submitRequiredPhone"
       >
         <div class="forced-password-brand">
-          <div class="brand-mark">{{ isInternalStaff ? '蓝' : '伴' }}</div>
+          <div class="brand-mark">{{ isInternalStaff ? '蓝' : '蓝' }}</div>
           <div>
-            <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '伴播搭子' }}</strong>
+            <strong>{{ isInternalStaff ? '小蓝搭子管理系统' : '小蓝搭子' }}</strong>
             <span>ACCOUNT PROFILE</span>
           </div>
         </div>

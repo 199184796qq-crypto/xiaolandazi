@@ -221,7 +221,6 @@ function numberValue(value: string, fallback = 0) {
 
 function levelPayload() {
   return {
-    code: form.code.trim(),
     name: form.name.trim(),
     status: form.status,
     entry_fee_cents: Math.max(0, Math.round(numberValue(form.entry_fee_yuan) * 100)),
@@ -525,7 +524,15 @@ onMounted(load)
         </header>
 
         <div class="feature-editor-grid">
-          <label><span>等级编码</span><input v-model="form.code" type="text" /></label>
+          <label>
+            <span>等级编码</span>
+            <input
+              :value="editing ? form.code : '保存后由系统自动生成'"
+              class="system-generated-input"
+              type="text"
+              readonly
+            />
+          </label>
           <label><span>等级名称</span><input v-model="form.name" type="text" /></label>
           <label>
             <span>状态</span>

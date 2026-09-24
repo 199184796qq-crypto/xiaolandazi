@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-const staffSeedVersion = "staff_seed_v9"
+const staffSeedVersion = "staff_seed_v17"
+
+var ErrMutuallyExclusiveStaffRoles = errors.New("mutually exclusive staff roles")
 
 var staffPermissionSeeds = []struct {
 	Code        string
@@ -19,6 +22,9 @@ var staffPermissionSeeds = []struct {
 	Description string
 }{
 	{"system.architecture.view", "system", "view_architecture", "查看系统业务与组织架构"},
+	{"system.settings.view", "system", "view_settings", "查看本人权限范围内的系统设定"},
+	{"system.settings.liveops.manage", "system", "manage_liveops_settings", "维护直播运维相关系统设定"},
+	{"system.settings.inventory.manage", "system", "manage_inventory_settings", "维护仓库、物流与产品基础字典"},
 	{"staff.group.view", "staff", "view_groups", "查看部门"},
 	{"staff.group.manage", "staff", "manage_groups", "管理部门"},
 	{"staff.role.view", "staff", "view_roles", "查看角色"},
@@ -29,6 +35,7 @@ var staffPermissionSeeds = []struct {
 	{"staff.employee.disable", "staff", "disable_employee", "停用员工"},
 	{"staff.employee.role_assign", "staff", "assign_role", "分配员工已有角色"},
 	{"customer.view_all", "customer", "view_all", "查看全部终端"},
+	{"customer.password_reset", "customer", "password_reset", "按权限范围重置终端密码"},
 	{"agent.view_all", "agent", "view_all", "查看全部代理"},
 	{"agent.level.manage", "agent", "manage_level", "管理代理等级政策"},
 	{"agent.contract.manage", "agent", "manage_contract", "管理代理合同"},
@@ -40,6 +47,10 @@ var staffPermissionSeeds = []struct {
 	{"liveops.view_all", "liveops", "view_all", "查看全部直播运维对象"},
 	{"liveops.configure", "liveops", "configure", "配置终端直播间与直播设备"},
 	{"liveops.ticket.manage", "liveops", "manage_ticket", "管理直播运维工单"},
+	{"liveops.room_quota.view", "liveops", "view_room_quota", "查看终端直播间数量额度"},
+	{"liveops.room_quota.manage", "liveops", "manage_room_quota", "调整终端直播间数量额度"},
+	{"livepolicy.view", "livepolicy", "view", "查看系统与行业直播策略"},
+	{"livepolicy.manage_l2", "livepolicy", "manage_l2", "维护并发布行业默认直播策略"},
 	{"finance.dashboard.view", "finance", "view_dashboard", "查看财务数据"},
 	{"finance.recharge.create", "finance", "create_recharge", "发起充值"},
 	{"finance.recharge.approve", "finance", "approve_recharge", "审核充值"},
@@ -49,7 +60,8 @@ var staffPermissionSeeds = []struct {
 	{"finance.reward.approve", "finance", "approve_reward", "审核奖励发放"},
 	{"finance.membership.adjust", "finance", "adjust_membership", "调整终端会员权益"},
 	{"finance.resource.view", "finance", "view_ai_time", "查看终端或代理 AI 时长"},
-	{"finance.resource.adjust", "finance", "adjust_ai_time", "调整终端或代理 AI 时长"},
+	{"finance.resource.adjust", "finance", "adjust_ai_time", "超级管理员紧急调整终端或代理 AI 时长"},
+	{"finance.ai_time.approve", "finance", "approve_ai_time_grant", "审核营销运维发起的 AI 时长增加申请"},
 	{"finance.operating.view", "finance", "view_operating_finance", "查看设备采购、物流、报废处置和 Token 采购经营收支"},
 	{"finance.operating.manage", "finance", "manage_operating_finance", "登记 Token 采购等公司经营成本"},
 	{"finance.settlement.create", "finance", "create_settlement", "生成收益结算批次"},
@@ -57,6 +69,18 @@ var staffPermissionSeeds = []struct {
 	{"finance.settlement.pay", "finance", "pay_settlement", "确认收益结算支付"},
 	{"commercial.membership.view", "commercial", "view_membership", "查看会员方案"},
 	{"commercial.membership.manage", "commercial", "manage_membership", "管理会员方案"},
+	{"commercial.time_card.view", "commercial", "view_time_card", "查看时长卡商品"},
+	{"commercial.time_card.manage", "commercial", "manage_time_card", "新增、修改、归档及上下架时长卡"},
+	{"commercial.device.view", "commercial", "view_device_product", "查看设备商品及可售库存"},
+	{"commercial.device.listing.manage", "commercial", "manage_device_listing", "控制设备商品上架与下架"},
+	{"commercial.marketing.view", "commercial", "view_marketing", "查看营销活动与标的挂链"},
+	{"commercial.marketing.manage", "commercial", "manage_marketing", "创建、修改、启停和归档营销活动"},
+	{"commercial.referral.view", "commercial", "view_referral_rules", "查看营销推荐奖励规则"},
+	{"commercial.referral.manage", "commercial", "manage_referral_rules", "创建、修改和发布营销推荐奖励规则"},
+	{"commercial.ai_time.view", "commercial", "view_ai_time", "查看代理与终端 AI 时长及流水"},
+	{"commercial.ai_time.request", "commercial", "request_ai_time", "发起 AI 时长增加申请并提交财务审核"},
+	{"finance.settlement_rules.view", "finance", "view_settlement_rules", "查看销售提成与代理返佣结算规则"},
+	{"finance.settlement_rules.manage", "finance", "manage_settlement_rules", "创建、修改和发布销售提成与代理返佣结算规则"},
 	{"inventory.view", "inventory", "view", "查看设备档案与库存"},
 	{"inventory.manage", "inventory", "manage", "执行设备入库、出库、调拨与状态变更"},
 	{"inventory.after_sales.view", "inventory", "view_after_sales", "查看设备售后维修单、维修状态与费用"},
@@ -92,8 +116,8 @@ var staffRoleSeeds = []staffRoleSeed{
 		Permissions: []string{
 			"system.architecture.view", "staff.group.view", "staff.role.view", "staff.permission.view",
 			"staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"customer.view_all", "agent.view_all", "sales.view_all", "commercial.membership.view",
-			"finance.resource.view", "inventory.view", "logistics.view", "inventory.after_sales.view", "audit.view",
+			"customer.view_all", "customer.password_reset", "agent.view_all", "sales.view_all", "commercial.membership.view", "commercial.marketing.view", "commercial.referral.view", "livepolicy.view",
+			"finance.resource.view", "finance.settlement_rules.view", "inventory.view", "logistics.view", "inventory.after_sales.view", "audit.view",
 		},
 	},
 	{
@@ -104,8 +128,8 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "all_internal",
 		Permissions: []string{
 			"system.architecture.view", "staff.group.view", "staff.role.view", "staff.permission.view", "staff.employee.view",
-			"customer.view_all", "agent.view_all", "sales.view_all", "commercial.membership.view",
-			"finance.resource.view", "inventory.view", "logistics.view", "inventory.after_sales.view", "audit.view",
+			"customer.view_all", "agent.view_all", "sales.view_all", "commercial.membership.view", "commercial.marketing.view", "commercial.referral.view", "livepolicy.view",
+			"finance.resource.view", "finance.settlement_rules.view", "inventory.view", "logistics.view", "inventory.after_sales.view", "audit.view",
 		},
 	},
 	{
@@ -119,7 +143,7 @@ var staffRoleSeeds = []staffRoleSeed{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
 			"customer.view_all", "agent.view_all", "finance.dashboard.view", "finance.recharge.create", "finance.recharge.approve",
 			"finance.refund.create", "finance.refund.approve", "finance.reward.grant", "finance.reward.approve",
-			"finance.membership.adjust", "finance.resource.view", "finance.resource.adjust", "finance.operating.view", "finance.operating.manage", "finance.settlement.create", "finance.settlement.approve", "finance.settlement.pay",
+			"finance.membership.adjust", "finance.resource.view", "finance.ai_time.approve", "finance.operating.view", "finance.operating.manage", "finance.settlement_rules.view", "finance.settlement_rules.manage", "finance.settlement.create", "finance.settlement.approve", "finance.settlement.pay",
 			"audit.view",
 		},
 	},
@@ -127,21 +151,21 @@ var staffRoleSeeds = []staffRoleSeed{
 		GroupCode:        "finance",
 		Code:             "finance_operator",
 		Name:             "财务操作员",
-		Description:      "发起充值、退款、奖励、会员和 AI 时长调整。",
+		Description:      "发起充值、退款、奖励和会员调整；AI 时长由营销运维发起、财务负责审核。",
 		DefaultScopeType: "self",
 		Permissions: []string{
 			"customer.view_all", "agent.view_all", "finance.dashboard.view", "finance.recharge.create", "finance.refund.create",
-			"finance.reward.grant", "finance.membership.adjust", "finance.resource.view", "finance.resource.adjust", "finance.operating.view", "finance.operating.manage", "finance.settlement.create",
+			"finance.reward.grant", "finance.membership.adjust", "finance.resource.view", "finance.operating.view", "finance.operating.manage", "finance.settlement_rules.view", "finance.settlement_rules.manage", "finance.settlement.create",
 		},
 	},
 	{
 		GroupCode:        "finance",
 		Code:             "finance_reviewer",
 		Name:             "财务审核员",
-		Description:      "审核充值、退款、奖励并查看审计记录。",
+		Description:      "审核充值、退款、奖励、AI 时长增加申请并查看审计记录。",
 		DefaultScopeType: "group",
 		Permissions: []string{
-			"finance.dashboard.view", "finance.resource.view", "finance.operating.view", "finance.recharge.approve", "finance.refund.approve", "finance.reward.approve", "finance.settlement.approve", "audit.view",
+			"finance.dashboard.view", "finance.resource.view", "finance.operating.view", "finance.settlement_rules.view", "finance.recharge.approve", "finance.refund.approve", "finance.reward.approve", "finance.ai_time.approve", "finance.settlement.approve", "audit.view",
 		},
 	},
 	{
@@ -153,7 +177,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"sales.view_all", "sales.customer.view_group", "sales.assignment.manage",
+			"customer.view_all", "customer.password_reset", "sales.view_all", "sales.customer.view_group", "sales.assignment.manage", "audit.view",
 		},
 	},
 	{
@@ -162,27 +186,37 @@ var staffRoleSeeds = []staffRoleSeed{
 		Name:             "销售人员",
 		Description:      "查看分配给自己的终端并维护销售关系。",
 		DefaultScopeType: "assigned",
-		Permissions:      []string{"sales.customer.view_assigned"},
+		Permissions: []string{
+			"customer.view_all", "customer.password_reset", "sales.view_all",
+			"sales.customer.view_assigned", "audit.view",
+		},
 	},
 	{
 		GroupCode:        "live_operations",
 		Code:             "live_operations_manager",
-		Name:             "直播运维负责人",
-		Description:      "管理直播运维部员工，分配运维任务并处理终端直播配置、联调与故障升级。",
+		Name:             "营销运维负责人",
+		Description:      "管理营销运维部员工；负责直播配置、活动营销、时长卡运营、设备商城运营及相关异常处理。",
 		IsGroupManager:   true,
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"customer.view_all", "liveops.view_all", "liveops.configure", "liveops.ticket.manage", "audit.view",
+			"customer.view_all", "agent.view_all", "liveops.view_all", "liveops.configure", "liveops.ticket.manage", "liveops.room_quota.view", "liveops.room_quota.manage",
+			"system.settings.view", "system.settings.liveops.manage", "livepolicy.view", "livepolicy.manage_l2",
+			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
+			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all", "audit.view",
 		},
 	},
 	{
 		GroupCode:        "live_operations",
 		Code:             "live_operations_staff",
-		Name:             "直播运维专员",
-		Description:      "执行终端直播间、直播设备、AI/TTS 等运行配置、联调、监控与故障处理。",
+		Name:             "营销运维专员",
+		Description:      "执行直播配置与联调，并负责活动营销、时长卡运营和设备商城运营；行业目录仅查看。",
 		DefaultScopeType: "assigned",
-		Permissions:      []string{"liveops.configure"},
+		Permissions: []string{
+			"customer.view_all", "agent.view_all", "liveops.configure", "liveops.room_quota.view", "system.settings.view", "livepolicy.view",
+			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
+			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all",
+		},
 	},
 	{
 		GroupCode:        "warehouse_after_sales",
@@ -193,6 +227,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
+			"system.settings.view", "system.settings.inventory.manage", "commercial.device.view",
 			"inventory.view", "inventory.manage", "inventory.after_sales.view", "inventory.after_sales.manage", "logistics.view", "logistics.manage", "audit.view",
 		},
 	},
@@ -202,7 +237,10 @@ var staffRoleSeeds = []staffRoleSeed{
 		Name:             "仓储售后员工",
 		Description:      "执行设备入库、出库、调拨、物流与售后处理。",
 		DefaultScopeType: "group",
-		Permissions:      []string{"inventory.view", "inventory.manage", "inventory.after_sales.view", "inventory.after_sales.manage", "logistics.view", "logistics.manage"},
+		Permissions: []string{
+			"system.settings.view", "commercial.device.view", "inventory.view", "inventory.manage",
+			"inventory.after_sales.view", "inventory.after_sales.manage", "logistics.view", "logistics.manage",
+		},
 	},
 }
 
@@ -393,7 +431,7 @@ func (s *Store) seedInitialStaffModel(ctx context.Context) error {
 		{"management", "管理部", "查看系统架构、维护已有部门内员工，但不能修改部门和权限定义。", 10},
 		{"finance", "财务部", "负责充值、退款、奖励、会员、AI 时长调整及审核。", 20},
 		{"sales", "销售部", "负责直营终端销售关系、终端分配与销售人员管理。", 30},
-		{"live_operations", "直播运维部", "负责终端直播设备与直播过程配置、联调、监控、异常处理、远程协助和运维工单。", 40},
+		{"live_operations", "营销运维部", "负责直播运维、营销活动、时长卡运营、设备商城运营、联调监控、异常处理和远程协助。", 40},
 		{"warehouse_after_sales", "仓储售后部", "负责设备入库、出库、调拨、物流、退换货、维修、翻新和报废。", 50},
 	}
 	for _, item := range groupSeeds {
@@ -496,6 +534,7 @@ func (s *Store) seedInitialStaffModel(ctx context.Context) error {
 		{"finance_recharge", "充值审核", "finance.recharge", "finance_reviewer"},
 		{"finance_refund", "退款审核", "finance.refund", "finance_reviewer"},
 		{"finance_reward", "奖励发放审核", "finance.reward", "finance_reviewer"},
+		{"finance_ai_time_grant", "AI 时长增加审核", "finance.ai_time_grant", "finance_reviewer"},
 	}
 	for _, policy := range policies {
 		if _, err := tx.ExecContext(ctx, `
@@ -615,10 +654,13 @@ func (s *Store) GetStaffAccess(
 
 	if userRole == "platform_admin" {
 		return model.StaffAccessContext{
-			IsSuperAdmin:     true,
-			RoleCodes:        []string{"super_system_admin"},
-			Permissions:      []string{"*"},
-			PermissionScopes: map[string]string{"*": "all"},
+			IsSuperAdmin:       true,
+			RoleCodes:          []string{"super_system_admin"},
+			Permissions:        []string{"*"},
+			PermissionScopes:   map[string]string{"*": "all"},
+			PermissionGroupIDs: map[string][]int64{},
+			GroupIDs:           []int64{},
+			ManagedGroupIDs:    []int64{},
 		}, nil
 	}
 
@@ -644,6 +686,7 @@ func (s *Store) GetStaffAccess(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			r.code,
+			r.group_id,
 			er.scope_type,
 			r.is_group_manager,
 			COALESCE(p.code, '')
@@ -663,13 +706,17 @@ func (s *Store) GetStaffAccess(
 	roleSet := map[string]struct{}{}
 	permissionSet := map[string]struct{}{}
 	access.PermissionScopes = map[string]string{}
+	access.PermissionGroupIDs = map[string][]int64{}
+	access.GroupIDs = []int64{access.PrimaryGroupID}
 	for rows.Next() {
 		var roleCode string
+		var roleGroupID int64
 		var scopeType string
 		var isManager bool
 		var permissionCode string
 		if err := rows.Scan(
 			&roleCode,
+			&roleGroupID,
 			&scopeType,
 			&isManager,
 			&permissionCode,
@@ -677,6 +724,7 @@ func (s *Store) GetStaffAccess(
 			return model.StaffAccessContext{}, err
 		}
 		roleSet[roleCode] = struct{}{}
+		access.GroupIDs = append(access.GroupIDs, roleGroupID)
 		if permissionCode != "" {
 			permissionSet[permissionCode] = struct{}{}
 			current := access.PermissionScopes[permissionCode]
@@ -684,11 +732,17 @@ func (s *Store) GetStaffAccess(
 				current,
 				scopeType,
 			)
+			if scopeType == "group" {
+				access.PermissionGroupIDs[permissionCode] = append(
+					access.PermissionGroupIDs[permissionCode],
+					roleGroupID,
+				)
+			}
 		}
 		if isManager {
 			access.ManagedGroupIDs = append(
 				access.ManagedGroupIDs,
-				access.PrimaryGroupID,
+				roleGroupID,
 			)
 		}
 	}
@@ -724,6 +778,10 @@ func (s *Store) GetStaffAccess(
 	}
 	sort.Strings(access.RoleCodes)
 	sort.Strings(access.Permissions)
+	access.GroupIDs = sortedUniqueInt64(access.GroupIDs)
+	for permissionCode, groupIDs := range access.PermissionGroupIDs {
+		access.PermissionGroupIDs[permissionCode] = sortedUniqueInt64(groupIDs)
+	}
 	access.ManagedGroupIDs = sortedUniqueInt64(access.ManagedGroupIDs)
 
 	return access, nil
@@ -742,10 +800,17 @@ func (s *Store) ListStaffGroups(
 			g.sort_order,
 			g.system_managed,
 			(
-				SELECT COUNT(*)
+				SELECT COUNT(DISTINCT e.id)
 				FROM staff_employees e
-				WHERE e.primary_group_id=g.id
-				  AND e.employment_status='active'
+				WHERE e.employment_status='active'
+				  AND (
+					e.primary_group_id=g.id OR EXISTS (
+						SELECT 1
+						FROM staff_employee_roles er
+						INNER JOIN staff_roles r ON r.id=er.role_id
+						WHERE er.employee_id=e.id AND r.group_id=g.id
+					)
+				  )
 			),
 			(
 				SELECT COUNT(DISTINCT gm.employee_id)
@@ -994,8 +1059,15 @@ func (s *Store) ListStaffEmployees(
 	`
 	args := make([]any, 0, 1)
 	if groupID > 0 {
-		query += " WHERE e.primary_group_id=?"
-		args = append(args, groupID)
+		query += `
+			WHERE e.primary_group_id=? OR EXISTS (
+				SELECT 1
+				FROM staff_employee_roles er
+				INNER JOIN staff_roles r ON r.id=er.role_id
+				WHERE er.employee_id=e.id AND r.group_id=?
+			)
+		`
+		args = append(args, groupID, groupID)
 	}
 	query += " ORDER BY g.sort_order ASC, e.id DESC"
 
@@ -1029,6 +1101,7 @@ func (s *Store) ListStaffEmployees(
 			return nil, err
 		}
 		item.Roles = []model.StaffEmployeeRoleSummary{}
+		item.Groups = []model.StaffEmployeeGroupSummary{}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1041,6 +1114,30 @@ func (s *Store) ListStaffEmployees(
 			return nil, err
 		}
 		items[index].Roles = roles
+		groupMap := map[int64]model.StaffEmployeeGroupSummary{
+			items[index].PrimaryGroupID: {
+				GroupID:   items[index].PrimaryGroupID,
+				GroupCode: items[index].PrimaryGroupCode,
+				GroupName: items[index].PrimaryGroupName,
+				IsPrimary: true,
+			},
+		}
+		for _, role := range roles {
+			entry := groupMap[role.GroupID]
+			entry.GroupID = role.GroupID
+			entry.GroupCode = role.GroupCode
+			entry.GroupName = role.GroupName
+			entry.IsPrimary = role.GroupID == items[index].PrimaryGroupID
+			groupMap[role.GroupID] = entry
+		}
+		groupIDs := make([]int64, 0, len(groupMap))
+		for groupID := range groupMap {
+			groupIDs = append(groupIDs, groupID)
+		}
+		sort.Slice(groupIDs, func(i, j int) bool { return groupIDs[i] < groupIDs[j] })
+		for _, groupID := range groupIDs {
+			items[index].Groups = append(items[index].Groups, groupMap[groupID])
+		}
 	}
 	return items, nil
 }
@@ -1068,14 +1165,18 @@ func (s *Store) listStaffEmployeeRoles(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			r.id,
+			r.group_id,
+			g.code,
+			g.name,
 			r.code,
 			r.name,
 			er.scope_type,
 			r.is_group_manager
 		FROM staff_employee_roles er
 		INNER JOIN staff_roles r ON r.id=er.role_id
+		INNER JOIN staff_groups g ON g.id=r.group_id
 		WHERE er.employee_id=?
-		ORDER BY r.id ASC
+		ORDER BY g.sort_order ASC, r.id ASC
 	`, employeeID)
 	if err != nil {
 		return nil, err
@@ -1087,6 +1188,9 @@ func (s *Store) listStaffEmployeeRoles(
 		var item model.StaffEmployeeRoleSummary
 		if err := rows.Scan(
 			&item.RoleID,
+			&item.GroupID,
+			&item.GroupCode,
+			&item.GroupName,
 			&item.Code,
 			&item.Name,
 			&item.ScopeType,
@@ -1365,14 +1469,13 @@ func (s *Store) CreateStaffEmployee(
 	}
 	defer tx.Rollback()
 
-	var groupCode string
 	var groupStatus string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT code, status
+		SELECT status
 		FROM staff_groups
 		WHERE id=?
 		LIMIT 1
-	`, groupID).Scan(&groupCode, &groupStatus); err != nil {
+	`, groupID).Scan(&groupStatus); err != nil {
 		return model.StaffEmployeeSummary{}, err
 	}
 	if groupStatus != "active" {
@@ -1391,9 +1494,12 @@ func (s *Store) CreateStaffEmployee(
 	if len(validatedRoles) == 0 {
 		return model.StaffEmployeeSummary{}, fmt.Errorf("at least one role is required")
 	}
+	if err := validateStaffRoleCombination(validatedRoles); err != nil {
+		return model.StaffEmployeeSummary{}, err
+	}
 
 	userRole := "staff"
-	if groupCode == "sales" {
+	if staffRolesContainGroupCode(validatedRoles, "sales") {
 		userRole = "sales_staff"
 	}
 
@@ -1466,40 +1572,20 @@ func (s *Store) CreateStaffEmployee(
 					group_id, employee_id
 				)
 				VALUES (?, ?)
-			`, groupID, employeeID); err != nil {
+			`, role.GroupID, employeeID); err != nil {
 				return model.StaffEmployeeSummary{}, err
 			}
 		}
 	}
 
-	if groupCode == "sales" {
-		var teamID int64
-		if err := tx.QueryRowContext(ctx, `
-			SELECT id
-			FROM crm_sales_teams
-			WHERE code=? AND status='active'
-			LIMIT 1
-		`, defaultSalesTeamCode).Scan(&teamID); err != nil {
-			return model.StaffEmployeeSummary{}, err
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO crm_sales_staff (
-				user_id, employee_code, team_id, status
-			)
-			VALUES (?, ?, ?, 'active')
-		`, userID, employeeNo, teamID); err != nil {
-			return model.StaffEmployeeSummary{}, normalizeDuplicate(err)
-		}
-		if err := ensureUserInviteCodeTx(
-			ctx,
-			tx,
-			userID,
-			nil,
-			"sales_staff",
-		); err != nil {
-			return model.StaffEmployeeSummary{}, err
-		}
+	if err := syncSalesStaffRoleTx(
+		ctx,
+		tx,
+		userID,
+		employeeNo,
+		validatedRoles,
+	); err != nil {
+		return model.StaffEmployeeSummary{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1571,12 +1657,14 @@ func (s *Store) ReplaceStaffEmployeeRoles(
 	defer tx.Rollback()
 
 	var groupID int64
+	var userID int64
+	var employeeNo string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT primary_group_id
+		SELECT primary_group_id, user_id, employee_no
 		FROM staff_employees
 		WHERE id=? AND employment_status='active'
 		LIMIT 1
-	`, employeeID).Scan(&groupID); err != nil {
+	`, employeeID).Scan(&groupID, &userID, &employeeNo); err != nil {
 		return err
 	}
 
@@ -1591,6 +1679,9 @@ func (s *Store) ReplaceStaffEmployeeRoles(
 	}
 	if len(roles) == 0 {
 		return fmt.Errorf("at least one role is required")
+	}
+	if err := validateStaffRoleCombination(roles); err != nil {
+		return err
 	}
 	if !allowManagerRoles {
 		for _, role := range roles {
@@ -1630,53 +1721,153 @@ func (s *Store) ReplaceStaffEmployeeRoles(
 					group_id, employee_id
 				)
 				VALUES (?, ?)
-			`, groupID, employeeID); err != nil {
+			`, role.GroupID, employeeID); err != nil {
 				return err
 			}
 		}
 	}
+	if err := syncSalesStaffRoleTx(ctx, tx, userID, employeeNo, roles); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
 func loadStaffRolesForAssignmentTx(
 	ctx context.Context,
 	tx *sql.Tx,
-	groupID int64,
+	primaryGroupID int64,
 	roleIDs []int64,
 ) ([]model.StaffRoleSummary, error) {
 	roleIDs = sortedUniqueInt64(roleIDs)
 	items := make([]model.StaffRoleSummary, 0, len(roleIDs))
+	hasPrimaryRole := false
 	for _, roleID := range roleIDs {
 		var item model.StaffRoleSummary
+		var groupStatus string
 		if err := tx.QueryRowContext(ctx, `
 			SELECT
-				id,
-				group_id,
-				code,
-				name,
-				is_group_manager,
-				default_scope_type,
-				status
-			FROM staff_roles
-			WHERE id=? AND group_id=?
+				r.id,
+				r.group_id,
+				g.code,
+				g.name,
+				r.code,
+				r.name,
+				r.is_group_manager,
+				r.default_scope_type,
+				r.status,
+				g.status
+			FROM staff_roles r
+			INNER JOIN staff_groups g ON g.id=r.group_id
+			WHERE r.id=?
 			LIMIT 1
-		`, roleID, groupID).Scan(
+		`, roleID).Scan(
 			&item.ID,
 			&item.GroupID,
+			&item.GroupCode,
+			&item.GroupName,
 			&item.Code,
 			&item.Name,
 			&item.IsGroupManager,
 			&item.DefaultScopeType,
 			&item.Status,
+			&groupStatus,
 		); err != nil {
 			return nil, err
 		}
-		if item.Status != "active" {
-			return nil, fmt.Errorf("role is disabled")
+		if item.Status != "active" || groupStatus != "active" {
+			return nil, fmt.Errorf("role or department is disabled")
+		}
+		if item.GroupID == primaryGroupID {
+			hasPrimaryRole = true
 		}
 		items = append(items, item)
 	}
+	if len(items) > 0 && !hasPrimaryRole {
+		return nil, fmt.Errorf("at least one role must belong to the primary department")
+	}
 	return items, nil
+}
+
+func staffRolesContainGroupCode(roles []model.StaffRoleSummary, groupCode string) bool {
+	groupCode = normalizeStaffCode(groupCode)
+	for _, role := range roles {
+		if normalizeStaffCode(role.GroupCode) == groupCode {
+			return true
+		}
+	}
+	return false
+}
+
+func syncSalesStaffRoleTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	employeeNo string,
+	roles []model.StaffRoleSummary,
+) error {
+	if !staffRolesContainGroupCode(roles, "sales") {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE crm_sales_staff
+			SET status='disabled'
+			WHERE user_id=?
+		`, userID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE mgmt_users
+			SET role='staff'
+			WHERE id=? AND role='sales_staff'
+		`, userID)
+		return err
+	}
+
+	var teamID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM crm_sales_teams
+		WHERE code=? AND status='active'
+		LIMIT 1
+	`, defaultSalesTeamCode).Scan(&teamID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO crm_sales_staff (
+			user_id, employee_code, team_id, status
+		)
+		VALUES (?, ?, ?, 'active')
+		ON DUPLICATE KEY UPDATE
+			employee_code=VALUES(employee_code),
+			team_id=COALESCE(crm_sales_staff.team_id, VALUES(team_id)),
+			status='active'
+	`, userID, employeeNo, teamID); err != nil {
+		return normalizeDuplicate(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE mgmt_users
+		SET role='sales_staff'
+		WHERE id=?
+	`, userID); err != nil {
+		return err
+	}
+	return ensureUserInviteCodeTx(ctx, tx, userID, nil, "sales_staff")
+}
+
+func validateStaffRoleCombination(roles []model.StaffRoleSummary) error {
+	hasLiveOperationsManager := false
+	hasLiveOperationsStaff := false
+	for _, role := range roles {
+		switch role.Code {
+		case "live_operations_manager":
+			hasLiveOperationsManager = true
+		case "live_operations_staff":
+			hasLiveOperationsStaff = true
+		}
+	}
+	if hasLiveOperationsManager && hasLiveOperationsStaff {
+		return ErrMutuallyExclusiveStaffRoles
+	}
+	return nil
 }
 
 func validStaffScope(value string) bool {

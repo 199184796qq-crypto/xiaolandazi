@@ -9,6 +9,7 @@ import {
   getAdminAgents,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type { AgentExitCheck, AgentExitRecord } from '../types'
 
@@ -28,10 +29,32 @@ const agents = ref<AgentOption[]>([])
 const selectedOrganizationId = ref<number | null>(null)
 const check = ref<AgentExitCheck | null>(null)
 const history = ref<AgentExitRecord[]>([])
+const agentSearch = ref('')
+const historyPage = ref(1)
+const historyPageSize = 20
 
 const selectedAgent = computed(() =>
   agents.value.find((item) => item.organization_id === selectedOrganizationId.value) || null,
 )
+const filteredAgents = computed(() => {
+  const keyword = agentSearch.value.trim().toLowerCase()
+  if (!keyword) return agents.value
+  return agents.value.filter((item) =>
+    [item.name, item.code, item.status, String(item.organization_id)]
+      .some((value) => String(value || '').toLowerCase().includes(keyword)),
+  )
+})
+const visibleAgents = computed(() => {
+  const list = filteredAgents.value.slice(0, 50)
+  const selected = selectedAgent.value
+  if (
+    selected &&
+    !list.some((item) => item.organization_id === selected.organization_id)
+  ) {
+    return [selected, ...list.slice(0, 49)]
+  }
+  return list
+})
 
 const canFinalize = computed(() => {
   const bootstrap = session.bootstrap
@@ -45,11 +68,19 @@ const canFinalize = computed(() => {
   )
 })
 
-const currentHistory = computed(() => history.value)
+const historyPageCount = computed(() =>
+  Math.max(1, Math.ceil(history.value.length / historyPageSize)),
+)
+const currentHistory = computed(() => {
+  const page = Math.min(historyPage.value, historyPageCount.value)
+  const start = (page - 1) * historyPageSize
+  return history.value.slice(start, start + historyPageSize)
+})
 
 watch(selectedOrganizationId, async (value) => {
   check.value = null
   history.value = []
+  historyPage.value = 1
   if (!value) return
   await Promise.all([loadCheck(), loadHistory()])
 })
@@ -162,10 +193,14 @@ onMounted(load)
 
     <section class="settings-card agent-exit-selector">
       <label>
-        <span>选择代理</span>
+        <span>搜索代理</span>
+        <input v-model="agentSearch" type="search" placeholder="代理名称 / 编码" />
+      </label>
+      <label>
+        <span>选择代理（最多展示 50 个匹配项）</span>
         <select v-model.number="selectedOrganizationId">
           <option
-            v-for="agent in agents"
+            v-for="agent in visibleAgents"
             :key="agent.organization_id"
             :value="agent.organization_id"
           >
@@ -269,6 +304,13 @@ onMounted(load)
           </table>
           <div v-if="currentHistory.length === 0" class="empty-state">当前代理暂无退出清算完成记录。</div>
         </div>
+        <PaginationBar
+          :page="Math.min(historyPage, historyPageCount)"
+          :total-pages="historyPageCount"
+          :total="history.length"
+          :page-size="historyPageSize"
+          @update:page="historyPage = $event"
+        />
       </section>
     </template>
   </div>

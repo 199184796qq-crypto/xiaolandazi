@@ -3,6 +3,7 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onMounted, ref } from 'vue'
 import { createCustomerRechargeRequest, getFinanceDashboard } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import type { FinanceDashboard } from '../types'
 
 type FinanceTab = 'ledger' | 'recharge' | 'payment' | 'purchase' | 'refund'
@@ -16,6 +17,8 @@ const rechargeAmount = ref('')
 const rechargeReason = ref('')
 const rechargeSubmitting = ref(false)
 const rechargeMessage = ref('')
+const page = ref(1)
+const pageSize = 20
 
 const tabItems = computed(() => [
   { key: 'ledger' as const, label: '资金流水', count: data.value?.ledger.length ?? 0 },
@@ -24,12 +27,27 @@ const tabItems = computed(() => [
   { key: 'purchase' as const, label: '消费 / 购买记录', count: data.value?.purchases.length ?? 0 },
   { key: 'refund' as const, label: '退款记录', count: data.value?.refunds.length ?? 0 },
 ])
+const currentTotal = computed(() => {
+  if (!data.value) return 0
+  if (activeTab.value === 'ledger') return data.value.ledger.length
+  if (activeTab.value === 'recharge') return data.value.recharges.length
+  if (activeTab.value === 'payment') return data.value.payments.length
+  if (activeTab.value === 'purchase') return data.value.purchases.length
+  return data.value.refunds.length
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(currentTotal.value / pageSize)))
+const pageStart = computed(() => (Math.min(page.value, totalPages.value) - 1) * pageSize)
+const pagedLedger = computed(() => data.value?.ledger.slice(pageStart.value, pageStart.value + pageSize) ?? [])
+const pagedRecharges = computed(() => data.value?.recharges.slice(pageStart.value, pageStart.value + pageSize) ?? [])
+const pagedPayments = computed(() => data.value?.payments.slice(pageStart.value, pageStart.value + pageSize) ?? [])
+const pagedPurchases = computed(() => data.value?.purchases.slice(pageStart.value, pageStart.value + pageSize) ?? [])
+const pagedRefunds = computed(() => data.value?.refunds.slice(pageStart.value, pageStart.value + pageSize) ?? [])
 
 async function loadFinance() {
   loading.value = true
   error.value = ''
   try {
-    data.value = await getFinanceDashboard(50)
+    data.value = await getFinanceDashboard(200)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '读取财务信息失败'
   } finally {
@@ -159,7 +177,7 @@ onMounted(loadFinance)
 <template>
   <div class="finance-page">
     <ModulePageNav context="workspace-customer" active-title="财务管理" />
-    <section class="page-hero finance-hero">
+    <section class="feature-workspace-hero finance-hero">
       <div>
         <p class="section-kicker">FINANCE CENTER</p>
         <h2>财务管理</h2>
@@ -196,7 +214,7 @@ onMounted(loadFinance)
             </div>
           </div>
 
-          <p>钱包支付会按订单规则扣减余额；当前商城 Sandbox 模拟支付为独立测试渠道，不会扣减现金余额。</p>
+          <p>钱包支付会按订单规则扣减余额；当前终端商城 Sandbox 模拟支付为独立测试渠道，不会扣减现金余额。</p>
         </article>
 
         <article class="finance-stat-card">
@@ -243,7 +261,7 @@ onMounted(loadFinance)
             class="finance-tab"
             :class="{ active: activeTab === item.key }"
             type="button"
-            @click="activeTab = item.key"
+            @click="activeTab = item.key; page = 1"
           >
             {{ item.label }}
             <span>{{ item.count }}</span>
@@ -262,7 +280,7 @@ onMounted(loadFinance)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in data.ledger" :key="item.id">
+              <tr v-for="item in pagedLedger" :key="item.id">
                 <td>{{ formatDate(item.occurred_at) }}</td>
                 <td>
                   <strong>{{ businessLabel(item.business_type) }}</strong>
@@ -298,7 +316,7 @@ onMounted(loadFinance)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in data.recharges" :key="item.id">
+              <tr v-for="item in pagedRecharges" :key="item.id">
                 <td>{{ formatDate(item.paid_at || item.created_at) }}</td>
                 <td>{{ item.recharge_no }}</td>
                 <td>{{ formatMoney(item.requested_amount_cents) }}</td>
@@ -329,7 +347,7 @@ onMounted(loadFinance)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in data.payments" :key="item.id">
+              <tr v-for="item in pagedPayments" :key="item.id">
                 <td>{{ formatDate(item.paid_at || item.created_at) }}</td>
                 <td>
                   <strong>{{ item.payment_no }}</strong>
@@ -354,7 +372,7 @@ onMounted(loadFinance)
           </table>
           <div v-else class="finance-empty">
             <strong>暂无支付记录</strong>
-            <span>商城模拟支付或未来真实支付发生后，会在这里保留支付渠道和来源订单。</span>
+            <span>终端商城模拟支付或未来真实支付发生后，会在这里保留支付渠道和来源订单。</span>
           </div>
         </div>
 
@@ -373,7 +391,7 @@ onMounted(loadFinance)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in data.purchases" :key="item.id">
+              <tr v-for="item in pagedPurchases" :key="item.id">
                 <td>{{ formatDate(item.paid_at || item.created_at) }}</td>
                 <td>{{ orderTypeLabel(item.order_type) }}</td>
                 <td>{{ item.order_no }}</td>
@@ -405,7 +423,7 @@ onMounted(loadFinance)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in data.refunds" :key="item.id">
+              <tr v-for="item in pagedRefunds" :key="item.id">
                 <td>{{ formatDate(item.processed_at || item.created_at) }}</td>
                 <td>{{ item.refund_no }}</td>
                 <td>{{ item.source_type }} #{{ item.source_id }}</td>
@@ -421,6 +439,13 @@ onMounted(loadFinance)
             <span>以后任何退款都会保留原订单关系和独立退款流水，不会删除历史消费。</span>
           </div>
         </div>
+        <PaginationBar
+          :page="Math.min(page, totalPages)"
+          :total-pages="totalPages"
+          :total="currentTotal"
+          :page-size="pageSize"
+          @update:page="page = $event"
+        />
       </section>
     </template>
 

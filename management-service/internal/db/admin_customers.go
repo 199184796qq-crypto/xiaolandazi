@@ -32,6 +32,8 @@ func (s *Store) ListAdminCustomers(
 			COALESCE(ss.employee_code, ''),
 			COALESCE(sales_user.username, ''),
 			COALESCE(sales_user.display_name, ''),
+			COALESCE(policy_industry.industry_code, 'general'),
+			COALESCE(industry.name, '通用'),
 			u.created_at
 		FROM mgmt_users u
 		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
@@ -45,6 +47,10 @@ func (s *Store) ListAdminCustomers(
 		 AND sa.effective_to IS NULL
 		LEFT JOIN crm_sales_staff ss ON ss.id=sa.sales_staff_id
 		LEFT JOIN mgmt_users sales_user ON sales_user.id=ss.user_id
+		LEFT JOIN live_policy_tenant_industries policy_industry
+		  ON policy_industry.tenant_id=u.tenant_id
+		LEFT JOIN live_policy_industries industry
+		  ON industry.code=COALESCE(policy_industry.industry_code, 'general')
 		WHERE u.role='customer'
 		  AND u.tenant_id IS NOT NULL
 		ORDER BY u.id DESC
@@ -77,6 +83,8 @@ func (s *Store) ListAdminCustomers(
 			&item.SalesEmployeeCode,
 			&item.SalesUsername,
 			&item.SalesDisplayName,
+			&item.IndustryCode,
+			&item.IndustryName,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -112,6 +120,8 @@ func (s *Store) GetAdminCustomer(
 			COALESCE(ss.employee_code, ''),
 			COALESCE(sales_user.username, ''),
 			COALESCE(sales_user.display_name, ''),
+			COALESCE(policy_industry.industry_code, 'general'),
+			COALESCE(industry.name, '通用'),
 			u.created_at
 		FROM mgmt_users u
 		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
@@ -125,6 +135,10 @@ func (s *Store) GetAdminCustomer(
 		 AND sa.effective_to IS NULL
 		LEFT JOIN crm_sales_staff ss ON ss.id=sa.sales_staff_id
 		LEFT JOIN mgmt_users sales_user ON sales_user.id=ss.user_id
+		LEFT JOIN live_policy_tenant_industries policy_industry
+		  ON policy_industry.tenant_id=u.tenant_id
+		LEFT JOIN live_policy_industries industry
+		  ON industry.code=COALESCE(policy_industry.industry_code, 'general')
 		WHERE u.id=?
 		  AND u.role='customer'
 		  AND u.tenant_id IS NOT NULL
@@ -149,6 +163,8 @@ func (s *Store) GetAdminCustomer(
 		&item.SalesEmployeeCode,
 		&item.SalesUsername,
 		&item.SalesDisplayName,
+		&item.IndustryCode,
+		&item.IndustryName,
 		&item.CreatedAt,
 	)
 	return item, err
