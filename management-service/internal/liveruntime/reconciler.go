@@ -26,10 +26,15 @@ type Reconciler struct {
 }
 
 type coreRoomState struct {
-	TenantID  int64     `json:"tenant_id"`
-	RoomID    int64     `json:"room_id"`
-	Status    string    `json:"status"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TenantID             int64     `json:"tenant_id"`
+	RoomID               int64     `json:"room_id"`
+	Status               string    `json:"status"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	AgentState           string    `json:"agent_state"`
+	AgentMode            string    `json:"agent_mode"`
+	AgentWorkingSeconds  uint64    `json:"agent_working_seconds"`
+	AgentUpdatedAt       time.Time `json:"agent_updated_at"`
+	SessionResumePending bool      `json:"session_resume_pending"`
 }
 
 type stateKey struct {
@@ -59,7 +64,7 @@ func NewReconciler(
 	result := &Reconciler{
 		store:     store,
 		core:      core,
-		interval:  5 * time.Second,
+		interval:  10 * time.Second,
 		workers:   workers,
 		batchSize: batchSize,
 	}
@@ -135,32 +140,85 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 
 func (r *Reconciler) reconcileOne(ctx context.Context, job reconcileJob) {
 	session := job.Session
-	roomLive := job.StateOK && job.State.Status == "live"
-	var roomStoppedAt *time.Time
 	if !job.StateOK {
+		// Never charge wall-clock time when Core cannot prove that the paid
+		// intelligent-agent layer was actually working.
 		log.Printf(
-			"live runtime room guard missing tenant=%d room=%d",
+			"live runtime core state missing tenant=%d room=%d",
 			session.TenantID,
 			session.RoomID,
 		)
-	} else if !roomLive && !job.State.UpdatedAt.IsZero() {
-		value := job.State.UpdatedAt
-		roomStoppedAt = &value
+		return
 	}
 
-	updated, err := r.store.ReconcileLiveRuntimeSession(
+	roomLive := job.State.Status == "live"
+	if roomLive && job.State.SessionResumePending {
+		// 重新开播后必须等用户明确选择“续接上一场/新开一场”。这一段时间
+		// 只保留免费采集，绝不能让后台对账器把付费 Agent 自动拉起来。
+		if err := r.setCoreAgentState(ctx, session.TenantID, session.RoomID, "stopped", job.State.AgentWorkingSeconds); err != nil {
+			log.Printf("hold core agent for session decision tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
+		}
+		return
+	}
+	if !roomLive {
+		updated, err := r.store.ReconcileLiveRuntimeMeter(
+			ctx,
+			session.ID,
+			false,
+			job.State.AgentWorkingSeconds,
+			time.Now().UTC(),
+		)
+		if err != nil {
+			log.Printf("live runtime offline reconcile session=%d: %v", session.ID, err)
+			return
+		}
+		if err := r.setCoreAgentState(ctx, updated.TenantID, updated.RoomID, "stopped", updated.TotalBilledSeconds); err != nil {
+			log.Printf("sync core agent stop tenant=%d room=%d: %v", updated.TenantID, updated.RoomID, err)
+		}
+		return
+	}
+
+	if session.Status == "paused" {
+		if err := r.setCoreAgentState(ctx, session.TenantID, session.RoomID, "paused", session.TotalBilledSeconds); err != nil {
+			log.Printf("sync core agent pause tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
+		}
+		return
+	}
+
+	if session.Status != "running" {
+		return
+	}
+
+	// Core is the work-time meter. If Core restarted or its gate drifted to
+	// stopped, restore it from the durable billed total first and start counting
+	// again from that baseline. Do not charge the outage gap.
+	if job.State.AgentState != "working" || job.State.AgentWorkingSeconds < session.TotalBilledSeconds {
+		if err := r.setCoreAgentState(ctx, session.TenantID, session.RoomID, "working", session.TotalBilledSeconds); err != nil {
+			log.Printf("restore core agent meter tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
+		}
+		return
+	}
+
+	updated, err := r.store.ReconcileLiveRuntimeMeter(
 		ctx,
 		session.ID,
-		roomLive,
-		roomStoppedAt,
+		true,
+		job.State.AgentWorkingSeconds,
 		time.Now().UTC(),
 	)
 	if err != nil {
-		log.Printf("live runtime reconcile session=%d: %v", session.ID, err)
+		log.Printf("live runtime meter reconcile session=%d: %v", session.ID, err)
 		return
 	}
-	if updated.Status != "running" {
-		_ = r.setCoreDeviceOnline(ctx, updated.TenantID, updated.RoomID, false)
+
+	agentState := "stopped"
+	if updated.Status == "running" {
+		agentState = "working"
+	} else if updated.Status == "paused" {
+		agentState = "paused"
+	}
+	if err := r.setCoreAgentState(ctx, updated.TenantID, updated.RoomID, agentState, updated.TotalBilledSeconds); err != nil {
+		log.Printf("sync core agent runtime tenant=%d room=%d state=%s: %v", updated.TenantID, updated.RoomID, agentState, err)
 	}
 }
 
@@ -209,10 +267,11 @@ func (r *Reconciler) roomStates(
 	return states, nil
 }
 
-func (r *Reconciler) setCoreDeviceOnline(
+func (r *Reconciler) setCoreAgentState(
 	ctx context.Context,
 	tenantID, roomID int64,
-	online bool,
+	state string,
+	baseWorkingSeconds uint64,
 ) error {
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
@@ -220,17 +279,20 @@ func (r *Reconciler) setCoreDeviceOnline(
 		ctx,
 		tenantID,
 		roomID,
-		http.MethodPatch,
-		fmt.Sprintf("/internal/v1/rooms/%d/runtime", roomID),
+		http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
 		query,
-		map[string]any{"device_online": online},
+		map[string]any{
+			"state":                state,
+			"base_working_seconds": baseWorkingSeconds,
+		},
 	)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("core runtime status %d", resp.StatusCode)
+		return fmt.Errorf("core agent runtime status %d", resp.StatusCode)
 	}
 	return nil
 }

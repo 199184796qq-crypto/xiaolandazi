@@ -19,8 +19,8 @@ function Stop-FromPidFile([string]$Name, [string]$PidFile) {
 
     $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
     if ($process) {
-        Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
-        Write-Host ("[OK] stopped {0}, pid={1}" -f $Name, $pidValue)
+        & taskkill.exe /PID $pidValue /T /F | Out-Null
+        Write-Host ("[OK] stopped process tree {0}, pid={1}" -f $Name, $pidValue)
     } else {
         Write-Host ("[SKIP] {0}: pid {1} is not running" -f $Name, $pidValue)
     }

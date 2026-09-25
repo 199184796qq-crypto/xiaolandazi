@@ -153,6 +153,12 @@ func (s *Store) Create(ctx context.Context, input model.CreateRoomInput) (model.
 }
 
 func (s *Store) Delete(ctx context.Context, tenantID *int64, roomID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	query := "DELETE FROM core_rooms WHERE id = ?"
 	args := []any{roomID}
 	if tenantID != nil {
@@ -160,7 +166,24 @@ func (s *Store) Delete(ctx context.Context, tenantID *int64, roomID int64) error
 		args = append(args, *tenantID)
 	}
 
-	result, err := s.db.ExecContext(ctx, query, args...)
+	archiveQuery := "DELETE FROM live_room_event_archive WHERE room_id = ?"
+	blockQuery := "DELETE FROM core_room_user_blocks WHERE room_id = ?"
+	archiveArgs := []any{roomID}
+	blockArgs := []any{roomID}
+	if tenantID != nil {
+		archiveQuery += " AND tenant_id = ?"
+		blockQuery += " AND tenant_id = ?"
+		archiveArgs = append(archiveArgs, *tenantID)
+		blockArgs = append(blockArgs, *tenantID)
+	}
+	if _, err := tx.ExecContext(ctx, archiveQuery, archiveArgs...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, blockQuery, blockArgs...); err != nil {
+		return err
+	}
+
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -171,7 +194,7 @@ func (s *Store) Delete(ctx context.Context, tenantID *int64, roomID int64) error
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) MarkLive(ctx context.Context, tenantID int64, roomID int64) error {

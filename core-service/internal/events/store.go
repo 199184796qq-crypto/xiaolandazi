@@ -17,14 +17,18 @@ import (
 const eventCacheTTL = 24 * time.Hour
 
 type Store struct {
-	redis *redis.Client
-	limit int64
+	redis          *redis.Client
+	limit          int64
+	importantLimit int64
 
-	observerMu sync.RWMutex
-	observer   func(model.RoomEvent)
+	observerMu  sync.RWMutex
+	observer    func(model.RoomEvent)
+	archiveSink func(model.RoomEvent)
 
-	recentMu sync.RWMutex
-	recent   map[int64][]model.RoomEvent
+	recentMu  sync.RWMutex
+	recent    map[int64][]model.RoomEvent
+	important map[int64]map[string][]model.RoomEvent
+	stats     map[int64]SessionStats
 
 	idMu       sync.Mutex
 	idMillis   int64
@@ -32,23 +36,42 @@ type Store struct {
 }
 
 func NewStore(client *redis.Client, limit int) *Store {
+	return NewStoreWithImportantLimit(client, limit, 20000)
+}
+
+func NewStoreWithImportantLimit(client *redis.Client, limit int, importantLimit int) *Store {
 	if limit <= 0 {
 		limit = 500
 	}
 	if limit > 5000 {
 		limit = 5000
 	}
+	if importantLimit <= 0 {
+		importantLimit = 20000
+	}
+	if importantLimit > 100000 {
+		importantLimit = 100000
+	}
 
 	return &Store{
-		redis:  client,
-		limit:  int64(limit),
-		recent: make(map[int64][]model.RoomEvent),
+		redis:          client,
+		limit:          int64(limit),
+		importantLimit: int64(importantLimit),
+		recent:         make(map[int64][]model.RoomEvent),
+		important:      make(map[int64]map[string][]model.RoomEvent),
+		stats:          make(map[int64]SessionStats),
 	}
 }
 
 func (s *Store) SetObserver(observer func(model.RoomEvent)) {
 	s.observerMu.Lock()
 	s.observer = observer
+	s.observerMu.Unlock()
+}
+
+func (s *Store) SetArchiveSink(sink func(model.RoomEvent)) {
+	s.observerMu.Lock()
+	s.archiveSink = sink
 	s.observerMu.Unlock()
 }
 
@@ -116,6 +139,17 @@ func (s *Store) BuildEvent(
 // does not perform network or database I/O.
 func (s *Store) Accept(event model.RoomEvent) {
 	s.remember(event)
+	s.rememberImportant(event)
+	s.updateSessionStatsMemory(event)
+	s.observerMu.RLock()
+	archiveSink := s.archiveSink
+	s.observerMu.RUnlock()
+	if archiveSink != nil && event.ID > 0 {
+		func() {
+			defer func() { _ = recover() }()
+			archiveSink(event)
+		}()
+	}
 	s.notify(event)
 }
 
@@ -214,6 +248,7 @@ func (s *Store) PersistBatch(ctx context.Context, items []model.RoomEvent) error
 	pipe.LPush(ctx, eventsKey(roomID), values...)
 	pipe.LTrim(ctx, eventsKey(roomID), 0, s.limit-1)
 	pipe.Expire(ctx, eventsKey(roomID), eventCacheTTL)
+	s.persistExtraChannels(ctx, pipe, items, values)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -224,15 +259,15 @@ func (s *Store) ClearRoom(ctx context.Context, roomID int64) error {
 	}
 	s.recentMu.Lock()
 	delete(s.recent, roomID)
+	delete(s.important, roomID)
+	delete(s.stats, roomID)
 	s.recentMu.Unlock()
 	if s.redis == nil {
 		return nil
 	}
-	return s.redis.Del(
-		ctx,
-		eventsKey(roomID),
-		sequenceKey(roomID),
-	).Err()
+	keys := []string{eventsKey(roomID), sequenceKey(roomID), agentModeKey(roomID)}
+	keys = append(keys, s.extraRedisKeys(roomID)...)
+	return s.redis.Del(ctx, keys...).Err()
 }
 
 func eventsKey(roomID int64) string {

@@ -272,6 +272,35 @@ func devMainlineContextAt(cutMS int) (devMainlineSafePoint, bool) {
 	return best, true
 }
 
+func devMainlineNextSafePoint(afterMS int, maxWait time.Duration) (devMainlineSafePoint, bool) {
+	data, err := loadDevMainlineMap()
+	if err != nil || len(data.SafePoints) == 0 {
+		return devMainlineSafePoint{}, false
+	}
+	maxDelta := int(maxWait.Milliseconds())
+	var fallback devMainlineSafePoint
+	for _, point := range data.SafePoints {
+		delta := point.CutMS - afterMS
+		if delta < 120 {
+			continue
+		}
+		if maxDelta > 0 && delta > maxDelta {
+			break
+		}
+		if fallback.ID == "" {
+			fallback = point
+		}
+		grade := strings.ToUpper(strings.TrimSpace(point.Grade))
+		if grade == "A" || grade == "B" {
+			return point, true
+		}
+	}
+	if fallback.ID != "" {
+		return fallback, true
+	}
+	return devMainlineSafePoint{}, false
+}
+
 func absInt(value int) int {
 	if value < 0 {
 		return -value

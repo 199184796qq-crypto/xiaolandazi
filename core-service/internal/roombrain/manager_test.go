@@ -31,8 +31,11 @@ func TestPriceQuestionsBecomeAggregateBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Intelligence.TopTopics) == 0 || view.Intelligence.TopTopics[0].Topic != "PRICE" {
+	if len(view.Intelligence.TopTopics) == 0 || view.Intelligence.TopTopics[0].Topic != "FAMILY:价格费用" {
 		t.Fatalf("topics=%#v", view.Intelligence.TopTopics)
+	}
+	if len(view.Intelligence.TopTopics[0].Questions) != 15 {
+		t.Fatalf("question details were dropped by roombrain DTO: %#v", view.Intelligence.TopTopics[0].Questions)
 	}
 	if !view.Intelligence.PreferAggregateQNA {
 		t.Fatalf("expected aggregate QNA: %#v", view.Intelligence)
@@ -64,10 +67,11 @@ func TestPinMarksTopicAnsweredAndSpendsDebt(t *testing.T) {
 	m := NewManager()
 	m.now = func() time.Time { return now }
 	m.Ingest(testEvent(3, "chat", "u1", "多少钱？", now, nil))
+	m.Ingest(testEvent(3, "chat", "u2", "价格多少", now, nil))
 
 	m.RecordPin(3, timeline.Pin{
 		At: now, Kind: timeline.PinAnswer,
-		Topic: "PRICE", Strategy: "answer.price",
+		Topic: "FAMILY:价格费用", Strategy: "answer.price",
 	}, timeline.DebtQuestion, 2*time.Minute)
 
 	view, err := m.Snapshot(3)
@@ -80,12 +84,43 @@ func TestPinMarksTopicAnsweredAndSpendsDebt(t *testing.T) {
 	}
 	found := false
 	for _, topic := range view.Intelligence.TopTopics {
-		if topic.Topic == "PRICE" && topic.LastAnsweredAt.Equal(now) {
+		if topic.Topic == "FAMILY:价格费用" && topic.LastAnsweredAt.Equal(now) {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("price bucket was not marked answered: %#v", view.Intelligence.TopTopics)
+	}
+}
+
+func TestOrderSignalTextDetectionAvoidsPurchaseQuestions(t *testing.T) {
+	for _, text := range []string{"已拍", "我已下单", "拍好了", "我买了两桶", "已经购买"} {
+		if !IsOrderSignalText(text) {
+			t.Fatalf("expected order signal: %q", text)
+		}
+	}
+	for _, text := range []string{"怎么拍", "怎么下单", "拍哪个链接", "能买吗？", "哪里买"} {
+		if IsOrderSignalText(text) {
+			t.Fatalf("purchase question misclassified as order signal: %q", text)
+		}
+	}
+}
+
+func TestLikeCountAndOrderSignalFeedIntelligence(t *testing.T) {
+	now := time.Date(2026, 9, 25, 1, 0, 0, 0, time.UTC)
+	m := NewManager()
+	m.now = func() time.Time { return now }
+	m.Ingest(testEvent(8, "like", "u1", "点赞 × 4", now, map[string]any{"count": 4}))
+	m.Ingest(testEvent(8, "order_signal", "u2", "已拍", now, map[string]any{"verified_order": false}))
+	view, err := m.Snapshot(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Intelligence.SessionLikes != 4 || view.Intelligence.Likes30s != 4 {
+		t.Fatalf("like count not preserved: %#v", view.Intelligence)
+	}
+	if view.Intelligence.OrderSignals30s != 1 {
+		t.Fatalf("order signal missing: %#v", view.Intelligence)
 	}
 }
 

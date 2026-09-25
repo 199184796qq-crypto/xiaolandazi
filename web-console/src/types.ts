@@ -382,6 +382,69 @@ export interface RoomEvent {
   payload?: unknown
 }
 
+export interface RoomEventPage {
+  items: RoomEvent[]
+  has_more: boolean
+  next_before_id: number
+}
+
+export interface RoomSessionStats {
+  started_at?: string
+  ended_at?: string
+  resume_pending: boolean
+  reopened_at?: string
+  interrupted_seconds: number
+  live_seconds: number
+  event_count: number
+  entries: number
+  chats: number
+  likes: number
+  follows: number
+  gifts: number
+  order_signals: number
+}
+
+export interface LiveReviewQuestionGroup {
+  text: string
+  count: number
+  last_at: string
+  nicknames?: string[]
+}
+
+export interface LiveReviewSummary {
+  room_id: number
+  started_at: string
+  ended_at?: string
+  active_seconds: number
+  interrupted_seconds: number
+  event_count: number
+  entries: number
+  chats: number
+  likes: number
+  follows: number
+  gifts: number
+  order_signals: number
+  question_groups: LiveReviewQuestionGroup[]
+}
+
+export interface LiveReviewEvent {
+  id: number
+  event_id: number
+  tenant_id: number
+  room_id: number
+  event_type: string
+  user_id?: string
+  nickname?: string
+  content?: string
+  payload_json?: string
+  occurred_at: string
+}
+
+export interface LiveReviewResponse {
+  summary: LiveReviewSummary
+  events: LiveReviewEvent[]
+}
+
 export interface RoomBlockedUser {
   id: number
   tenant_id: number
@@ -391,6 +454,151 @@ export interface RoomBlockedUser {
   nickname?: string
   reason?: string
   blocked_at: string
+}
+
+export interface RoomBrainQuestion {
+  EventID: number
+  UserID: string
+  Nickname: string
+  Content: string
+  OccurredAt: string
+}
+
+export interface RoomBrainTopic {
+  Topic: string
+  Count: number
+  UniqueUsers: number
+  LastSeenAt: string
+  LastAnsweredAt: string
+  SampleQuestions: string[]
+  Questions: RoomBrainQuestion[]
+  TTSQuestions: RoomBrainQuestion[]
+  TTSEligibleCount: number
+  ArchivedQuestionCount: number
+}
+
+export interface RoomBrainIntelligence {
+  Heat: string
+  OnlineCount: number
+  Entries30s: number
+  Entries60s: number
+  Chats30s: number
+  Likes30s: number
+  Follows30s: number
+  Orders30s: number
+  OrderSignals30s: number
+  OrderSignals60s: number
+  OrderSignalSamples: string[]
+  SessionEntries: number
+  SessionChats: number
+  SessionLikes: number
+  SessionFollows: number
+  SessionGifts: number
+  UniqueChatters30s: number
+  QuestionCount30s: number
+  NegativeFeedback30s: number
+  QuestionPressure: number
+  AudienceTurnover5m: number
+  PreferAggregateQNA: boolean
+  PreferOneToOneQNA: boolean
+  TopTopics: RoomBrainTopic[]
+}
+
+export interface RoomBrainView {
+  RoomID: number
+  GeneratedAt: string
+  Intelligence: RoomBrainIntelligence
+}
+
+export interface SpeechTrackRuntime {
+  status: string
+  text?: string
+  question_text?: string
+  reply_text?: string
+  source?: string
+  audio_url?: string
+  decision_id?: string
+  speech_task_id?: string
+  started_at?: string
+  updated_at?: string
+}
+
+export interface SpeechRuntimeSnapshot {
+  room_id: number
+  revision: number
+  mainline: SpeechTrackRuntime
+  interrupt: SpeechTrackRuntime
+  updated_at?: string
+}
+
+export type AgentDecisionSource = 'agent' | 'manual'
+
+export interface AgentDecisionItem {
+  id: string
+  room_id: number
+  topic: string
+  title: string
+  summary?: string
+  reply_hint?: string
+  priority: number
+  status: string
+  sources: AgentDecisionSource[]
+  merged_count: number
+  sample_questions?: string[]
+  linked_event_ids?: number[]
+  user_ids?: string[]
+  created_at: string
+  last_seen_at: string
+  expires_at: string
+  claimed_at?: string
+  manual_promoted: boolean
+  manual_action?: 'answer' | 'quick'
+}
+
+export interface AgentDecisionRecentAnswer {
+  topic: string
+  title: string
+  answered_at: string
+  cooldown_until: string
+  accumulated: number
+  sample_questions?: string[]
+}
+
+export interface AgentDecisionNote {
+  kind: string
+  message: string
+  created_at: string
+}
+
+export interface AgentDecisionSummary {
+  state: string
+  focus?: string
+  reason?: string
+  queue_length: number
+  manual_waiting: number
+  agent_waiting: number
+  cooling_topics: number
+}
+
+export interface AgentDecisionSnapshot {
+  room_id: number
+  generated_at: string
+  summary: AgentDecisionSummary
+  queue: AgentDecisionItem[]
+  recently_answered: AgentDecisionRecentAnswer[]
+  notes: AgentDecisionNote[]
+  capacity: number
+  ttl_seconds: number
+  cooldown_seconds: number
+}
+
+export interface AgentDecisionEnqueueResult {
+  item?: AgentDecisionItem
+  merged: boolean
+  promoted: boolean
+  suppressed: boolean
+  recently_answered?: AgentDecisionRecentAnswer
+  dropped?: AgentDecisionItem
 }
 
 export interface CreateRoomPayload {
@@ -486,6 +694,9 @@ export interface LiveQuotaSummary {
 
 export interface LiveRuntimeSnapshot {
   session?: LiveRuntimeSession
+  agent_state: 'stopped' | 'working' | 'paused'
+  agent_mode: 'control' | 'anchor'
+  agent_working_seconds: number
   quota_remaining_seconds: number
   reserve_time_card_seconds: number
   reserve_time_card_count: number
@@ -493,6 +704,40 @@ export interface LiveRuntimeSnapshot {
   time_cards: LiveTimeCardSummary[]
   room_live: boolean
   device?: LiveDevice
+}
+
+export interface LiveAgentPlanTermVariant {
+  id: number
+  variant_text: string
+  source: string
+  confirmation_count: number
+  last_confirmed_at: string
+}
+
+export interface LiveAgentPlanTerm {
+  id: number
+  plan_id: number
+  canonical_text: string
+  term_type: string
+  note?: string
+  status: string
+  variants: LiveAgentPlanTermVariant[]
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlan {
+  id: number
+  tenant_id: number
+  name: string
+  description?: string
+  status: string
+  room_count: number
+  term_count: number
+  room_ids?: number[]
+  terms?: LiveAgentPlanTerm[]
+  created_at: string
+  updated_at: string
 }
 
 export interface LiveAgentSettings {

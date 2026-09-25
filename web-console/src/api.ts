@@ -3,7 +3,6 @@ import type {
   AccountDashboard,
   AccountProfile,
   AuthSessionSummary,
-  AdminAuditLog,
   AdminAuditPage,
   AdminCustomer,
   AdminCustomerPage,
@@ -76,6 +75,14 @@ import type {
   WithdrawalRequest,
   Room,
   RoomEvent,
+  RoomEventPage,
+  RoomSessionStats,
+  LiveReviewResponse,
+  RoomBlockedUser,
+  RoomBrainView,
+  SpeechRuntimeSnapshot,
+  AgentDecisionSnapshot,
+  AgentDecisionEnqueueResult,
   LiveDevice,
   LiveOpsRoomQuotaSummary,
   LiveOpsRoomQuotaAdjustInput,
@@ -86,6 +93,7 @@ import type {
   LiveRuntimeEvent,
   LiveAgentSettings,
   LiveAgentSettingsInput,
+  LiveAgentPlan,
   LiveAgentConfigVersion,
   LiveAgentConfigInput,
   LivePolicyIndustry,
@@ -289,6 +297,128 @@ export function getRoomEvents(roomId: number, limit = 200) {
   return request<ListResponse<RoomEvent>>(
     '/api/v1/rooms/' + roomId + '/events?limit=' + limit,
   )
+}
+
+export function getRoomImportantEvents(roomId: number, eventType: string, limit = 300, beforeId = 0) {
+  const query = new URLSearchParams({
+    channel: 'important',
+    type: eventType,
+    limit: String(limit),
+  })
+  if (beforeId > 0) query.set('before_id', String(beforeId))
+  return request<RoomEventPage>('/api/v1/rooms/' + roomId + '/events?' + query.toString())
+}
+
+export function getRoomSessionStats(roomId: number) {
+  return request<RoomSessionStats>('/api/v1/rooms/' + roomId + '/session-stats')
+}
+
+export function getRoomReview(roomId: number, limit = 5000) {
+  return request<LiveReviewResponse>(
+    '/api/v1/rooms/' + roomId + '/review?limit=' + encodeURIComponent(String(limit)),
+  )
+}
+
+export function resolveRoomSessionDecision(roomId: number, action: 'merge' | 'fresh') {
+  return request<RoomSessionStats>('/api/v1/rooms/' + roomId + '/session-decision', {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  })
+}
+
+export function getRoomBrain(roomId: number) {
+  return request<RoomBrainView>('/api/v1/rooms/' + roomId + '/brain')
+}
+
+export function getRoomSpeechRuntime(roomId: number) {
+  return request<SpeechRuntimeSnapshot>('/api/v1/rooms/' + roomId + '/speech-runtime')
+}
+
+export function getRoomAgentDecisions(roomId: number) {
+  return request<AgentDecisionSnapshot>('/api/v1/rooms/' + roomId + '/agent-decisions')
+}
+
+export function enqueueRoomManualAgentDecision(
+  roomId: number,
+  payload: {
+    question?: string
+    topic?: string
+    title?: string
+    summary?: string
+    reply_hint?: string
+    event_id?: number
+    user_id?: string
+    force_reopen?: boolean
+    manual_action?: 'answer' | 'quick'
+    manual_origin?: 'agent_input' | 'question_cluster'
+    execution_mode?: 'intent' | 'verbatim'
+    fixed_text?: string
+    ttl_seconds?: number
+  },
+) {
+  return request<AgentDecisionEnqueueResult>('/api/v1/rooms/' + roomId + '/agent-decisions/manual', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function completeRoomAgentDecision(roomId: number, decisionId: string) {
+  return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/agent-decisions/' + encodeURIComponent(decisionId) + '/complete', {
+    method: 'POST',
+  })
+}
+
+export function removeRoomAgentDecision(roomId: number, decisionId: string) {
+  return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/agent-decisions/' + encodeURIComponent(decisionId), {
+    method: 'DELETE',
+  })
+}
+
+export function getRoomBlockedUsers(roomId: number) {
+  return request<ListResponse<RoomBlockedUser>>('/api/v1/rooms/' + roomId + '/blocked-users')
+}
+
+export function blockRoomUser(
+  roomId: number,
+  payload: { user_id?: string; nickname?: string; reason?: string },
+) {
+  return request<RoomBlockedUser>('/api/v1/rooms/' + roomId + '/blocked-users', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function restoreRoomBlockedUser(
+  roomId: number,
+  payload: { user_id?: string; nickname?: string },
+) {
+  return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/blocked-users/restore', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getLiveAgentPlans(tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlan[] }>('/api/v1/live-agent-plans' + query)
+}
+
+export function createLiveAgentPlan(payload: { name: string; description?: string; tenant_id?: number }) {
+  return request<LiveAgentPlan>('/api/v1/live-agent-plans', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRoomLiveAgentPlan(roomId: number) {
+  return request<{ plan?: LiveAgentPlan | null }>('/api/v1/rooms/' + roomId + '/live-agent-plan')
+}
+
+export function bindRoomLiveAgentPlan(planId: number, roomId: number, tenantId?: number) {
+  return request<LiveAgentPlan>('/api/v1/live-agent-plans/' + planId + '/room-bindings', {
+    method: 'POST',
+    body: JSON.stringify({ room_id: roomId, tenant_id: tenantId }),
+  })
 }
 
 export function getLiveAgentSettings() {
@@ -736,18 +866,61 @@ export function heartbeatLiveDevice(deviceId: number, roomId?: number) {
   })
 }
 
+export function controlLiveDevice(
+  deviceId: number,
+  roomId: number,
+  action: 'connect' | 'pause' | 'resume' | 'disconnect',
+) {
+  return request<LiveDevice>('/api/v1/live/devices/' + deviceId + '/control', {
+    method: 'POST',
+    body: JSON.stringify({ room_id: roomId, action }),
+  })
+}
+
 export function getLiveQuotaSummary() {
   return request<LiveQuotaSummary>('/api/v1/live/quota-summary')
+}
+
+export function activateLiveQuotaCards(count = 1) {
+  return request<{ activated_count: number; quota: LiveQuotaSummary }>(
+    '/api/v1/live/quota/activate',
+    {
+      method: 'POST',
+      body: JSON.stringify({ count }),
+    },
+  )
 }
 
 export function getLiveRuntime(roomId: number) {
   return request<LiveRuntimeSnapshot>('/api/v1/rooms/' + roomId + '/runtime')
 }
 
+export function setLiveRuntimeMode(roomId: number, mode: 'control' | 'anchor') {
+  return request<{ room_id: number; state: string; mode: 'control' | 'anchor'; working_seconds: number }>(
+    '/api/v1/rooms/' + roomId + '/runtime/mode',
+    {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    },
+  )
+}
+
 export function startLiveRuntime(roomId: number, deviceId?: number) {
   return request<LiveRuntimeSession>('/api/v1/rooms/' + roomId + '/runtime/start', {
     method: 'POST',
     body: JSON.stringify(deviceId ? { device_id: deviceId } : {}),
+  })
+}
+
+export function pauseLiveRuntime(roomId: number) {
+  return request<LiveRuntimeSession>('/api/v1/rooms/' + roomId + '/runtime/pause', {
+    method: 'POST',
+  })
+}
+
+export function resumeLiveRuntime(roomId: number) {
+  return request<LiveRuntimeSession>('/api/v1/rooms/' + roomId + '/runtime/resume', {
+    method: 'POST',
   })
 }
 

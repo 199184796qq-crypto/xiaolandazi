@@ -3,6 +3,7 @@ package httpapi
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -82,6 +83,12 @@ func (s *Server) blockRoomUser(w http.ResponseWriter, r *http.Request) {
 	if input.UserID != "" && s.questions != nil {
 		s.questions.DropByUser(roomID, input.UserID)
 	}
+	if input.UserID != "" && s.brain != nil {
+		if remover, ok := s.brain.(interface{ RemoveUser(int64, string) }); ok {
+			remover.RemoveUser(roomID, input.UserID)
+		}
+	}
+	log.Printf("[BLOCK_USER] room=%d tenant=%d subject=%s user_id=%q nickname=%q reason=%q", roomID, *tenantID, item.SubjectKey, item.UserID, item.Nickname, item.Reason)
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -118,6 +125,7 @@ func (s *Server) restoreRoomBlockedUser(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "blocked user not found")
 		return
 	}
+	log.Printf("[RESTORE_USER] room=%d subject=%s", roomID, userblock.SubjectKey(input.UserID, input.Nickname))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -211,7 +211,7 @@ function formatDate(value: string) {
 
 function orderedAccounts(
   accounts: ResourceAccount[],
-  orgType: 'agent' | 'customer' = 'agent',
+  orgType: string = 'agent',
 ) {
   const allowed =
     orgType === 'customer' ? customerResourceTypes : resourceOrder
@@ -706,7 +706,7 @@ onMounted(load)
             <h3>客户资源分配</h3>
           </div>
           <button
-            v-if="canAdjustSystemResource && resourcePageTitle === '资源调整'"
+            v-if="canAdjustSystemResource && resourcePageTitle === 'AI 时长调整'"
             class="primary-button"
             type="button"
             :disabled="!selectedCustomerID"

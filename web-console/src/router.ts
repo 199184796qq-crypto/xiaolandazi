@@ -732,12 +732,13 @@ router.beforeEach(async (to) => {
     }
   }
 
-  const role = session.bootstrap.actor.role
+  const bootstrap = session.bootstrap!
+  const role = bootstrap.actor.role
   if (to.name === 'work-inbox' && !canUseWorkInbox(role)) {
     return { path: '/personal', replace: true }
   }
 
-  const primaryGroupCode = session.bootstrap.staff_access?.primary_group_code
+  const primaryGroupCode = bootstrap.staff_access?.primary_group_code
 
   if (
     role !== 'platform_admin' &&

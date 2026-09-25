@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/timeline"
 )
 
 type audioTaskClient interface {
 	CreateTestTask(context.Context, audioout.CreateTestTaskInput) (audioout.SpeechTask, error)
+	CreateExternalTask(context.Context, audioout.CreateExternalTaskInput) (audioout.SpeechTask, error)
 	StartTestProgram(context.Context, int64, string, string, string) (audioout.RoomProgramSnapshot, error)
 	InsertTestProgramInteraction(context.Context, audioout.InsertInteractionInput) (audioout.RoomProgramSnapshot, error)
+	ProgramSnapshot(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	StopTestProgram(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	Enabled() bool
 }
@@ -37,6 +40,11 @@ type audioInteractionMeta struct {
 	ResumeUnit   string
 	TextDigest   string
 	BridgeDigest string
+	DecisionID   string
+	QuestionText string
+	ReplyText    string
+	Source       string
+	AudioURL     string
 	SkipUnits    []string
 	AnswerPinned bool
 	ResumePinned bool
@@ -62,6 +70,38 @@ func (s *Server) audioDevState() *audioDevState {
 	}
 	state, _ := value.(*audioDevState)
 	return state
+}
+
+func (s *Server) stopRoomAudio(ctx context.Context, roomID int64) error {
+	state := s.audioDevState()
+	if state == nil || state.client == nil || !state.client.Enabled() {
+		return nil
+	}
+	_, err := state.client.StopTestProgram(ctx, roomID)
+	return err
+}
+
+func (s *Server) clearRoomAudioState(roomID int64) {
+	if roomID <= 0 {
+		return
+	}
+	state := s.audioDevState()
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	for id, event := range state.events {
+		if event.RoomID == roomID {
+			delete(state.events, id)
+		}
+	}
+	for id, meta := range state.interactions {
+		if meta != nil && meta.RoomID == roomID {
+			delete(state.interactions, id)
+		}
+	}
+	delete(state.history, roomID)
+	state.mu.Unlock()
 }
 
 func (s *Server) requireDevAudio(w http.ResponseWriter) (*audioDevState, bool) {
@@ -347,6 +387,10 @@ func (s *Server) receiveDevAudioEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	s.receiveAudioEvent(w, r)
+}
+
+func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 	state := s.audioDevState()
 	if state == nil {
 		writeError(w, http.StatusServiceUnavailable, "播音分发层尚未配置")
@@ -404,6 +448,36 @@ func (s *Server) receiveDevAudioEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	state.mu.Unlock()
+	if meta != nil && meta.DecisionID != "" {
+		if s.speechRuntime != nil {
+			status := speechruntime.StatusPlaying
+			switch event.Status {
+			case "COMPLETED":
+				status = speechruntime.StatusCompleted
+			case "FAILED":
+				status = speechruntime.StatusFailed
+			case "READY":
+				status = speechruntime.StatusReady
+			}
+			_, _ = s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
+				Track:        speechruntime.TrackInterrupt,
+				Status:       status,
+				Text:         meta.ReplyText,
+				QuestionText: meta.QuestionText,
+				ReplyText:    meta.ReplyText,
+				Source:       meta.Source,
+				AudioURL:     meta.AudioURL,
+				DecisionID:   meta.DecisionID,
+				SpeechTaskID: event.SpeechTaskID,
+			})
+		}
+		if event.Status == "COMPLETED" && s.agentDecisions != nil {
+			_, _ = s.agentDecisions.Complete(meta.RoomID, meta.DecisionID)
+		}
+		if event.Status == "FAILED" && s.agentDecisions != nil {
+			_, _ = s.agentDecisions.Release(meta.RoomID, meta.DecisionID)
+		}
+	}
 	if completedRecord != nil {
 		appendDevInteractionRecord(*completedRecord)
 	}

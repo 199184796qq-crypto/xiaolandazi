@@ -30,6 +30,7 @@ import {
   getLiveOfficialVoices,
   getLiveVoiceProfiles,
   getRooms,
+  enqueueRoomManualAgentDecision,
   testLivePolicyAdmin,
 } from '../api'
 import type {
@@ -67,11 +68,14 @@ type ChatMessage = {
   introduction?: boolean
 }
 
+type LiveRoomAnswerMode = 'quick' | 'answer'
+
 type SuggestionItem = {
   kind: SuggestionKind
   label: string
   description: string
   insertText: string
+  liveAction?: LiveRoomAnswerMode
 }
 
 const route = useRoute()
@@ -103,12 +107,24 @@ const livePolicyTestMode = ref<LivePolicyTestMode>({
   industryCode: '',
 })
 const livePolicyTestHistory = ref<AgentHistoryItem[]>([])
+const liveRoomAnswerMode = ref<LiveRoomAnswerMode | null>(null)
+const liveRoomExecutionStatus = ref('')
+const liveRoomExecutionError = ref(false)
+const liveRoomAnswerModeLabel = computed(() =>
+  liveRoomAnswerMode.value === 'quick'
+    ? '抢答模式'
+    : liveRoomAnswerMode.value === 'answer'
+      ? '回答模式'
+      : '',
+)
 
 const dockEl = ref<HTMLElement | null>(null)
 const dockPosition = ref<{ left: number; top: number } | null>(null)
 const dockDragging = ref(false)
 const dockStyle = computed(() => {
-  if (!dockPosition.value) return undefined
+  // Collapsed orb is always anchored at the global bottom-center CSS position.
+  // Preserve any dragged coordinates so expanding restores the existing dock logic.
+  if (!expanded.value || !dockPosition.value) return undefined
   return {
     left: dockPosition.value.left + 'px',
     top: dockPosition.value.top + 'px',
@@ -249,7 +265,9 @@ const inputPlaceholder = computed(() => {
       : '输入一个直播问题，之后可以连续反馈直到满意……'
   }
   if (currentDomain.value === 'live-room') {
-    return '输入内容，或用 / 呼出场控能力……'
+    if (liveRoomAnswerMode.value === 'quick') return '抢答模式：输入内容后立即生成并播出……'
+    if (liveRoomAnswerMode.value === 'answer') return '回答模式：输入内容后进入待打断队列……'
+    return '输入内容，或用 / 选择抢答 / 回答模式……'
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '输入主播训练要求……'
@@ -377,9 +395,23 @@ function systemCapabilityCommand(label: string) {
 const capabilitySuggestions = computed<SuggestionItem[]>(() => {
   if (currentDomain.value === 'live-room') {
     return [
-      { kind: 'capability', label: '处理现场问题', description: '结合当前直播间上下文处理观众问题', insertText: '处理现场问题 ' },
-      { kind: 'capability', label: '生成话术', description: '根据当前场景生成主播可说的话术', insertText: '生成话术 ' },
-      { kind: 'capability', label: '场控建议', description: '结合直播状态给出现场操作建议', insertText: '场控建议 ' },
+      {
+        kind: 'capability',
+        label: '抢答',
+        description: '输入内容后立即交给监控 Agent 生成话术并打断当前播音',
+        insertText: '/抢答 ',
+        liveAction: 'quick',
+      },
+      {
+        kind: 'capability',
+        label: '回答',
+        description: '输入内容后进入待打断队列，由监控 Agent 协调合适时间播出',
+        insertText: '/回答 ',
+        liveAction: 'answer',
+      },
+      { kind: 'capability', label: '处理现场问题', description: '结合当前直播间上下文处理观众问题', insertText: '/处理现场问题 ' },
+      { kind: 'capability', label: '生成话术', description: '根据当前场景生成主播可说的话术', insertText: '/生成话术 ' },
+      { kind: 'capability', label: '场控建议', description: '结合直播状态给出现场操作建议', insertText: '/场控建议 ' },
     ]
   }
   if (currentDomain.value === 'live-strategy') {
@@ -523,6 +555,24 @@ function selectSuggestion(item: SuggestionItem) {
   const trigger = triggerState.value
   if (!trigger) return
 
+  if (currentDomain.value === 'live-room' && item.liveAction) {
+    liveRoomAnswerMode.value = item.liveAction
+    liveRoomExecutionError.value = false
+    liveRoomExecutionStatus.value = item.liveAction === 'quick'
+      ? '已进入抢答模式 · 输入后立即生成并播出'
+      : '已进入回答模式 · 输入后进入待打断队列'
+    input.value = input.value.slice(0, trigger.index) + item.insertText
+    dismissedSuggestionInput.value = input.value
+    suggestionIndex.value = 0
+    focusActiveComposer()
+    return
+  }
+
+  if (currentDomain.value === 'live-room') {
+    liveRoomAnswerMode.value = null
+    liveRoomExecutionStatus.value = ''
+    liveRoomExecutionError.value = false
+  }
   input.value = input.value.slice(0, trigger.index) + item.insertText
   dismissedSuggestionInput.value = input.value
   suggestionIndex.value = 0
@@ -1353,6 +1403,13 @@ watch(
   },
 )
 
+watch(currentDomain, (domain) => {
+  if (domain === 'live-room') return
+  liveRoomAnswerMode.value = null
+  liveRoomExecutionStatus.value = ''
+  liveRoomExecutionError.value = false
+})
+
 onBeforeUnmount(() => {
   stopDockDrag()
   window.removeEventListener('system-agent:prefill', handleExternalPrefill)
@@ -1458,14 +1515,115 @@ function startOrContinueSystemTask(value: string) {
   return detected
 }
 
+function resolveLiveRoomExecution(value: string) {
+  const compact = value.replace(/\s+/g, '').toLowerCase()
+  const verbatim = /100%|百分百|一字不改|一个字不要改|原封不动|照原话|按原话|必须原文|逐字|严格.*(?:原话|照说|照着说|按照)/.test(compact)
+  if (!verbatim) {
+    return { executionMode: 'intent' as const, fixedText: '' }
+  }
+
+  let fixedText = value.trim()
+  const colon = fixedText.search(/[:：]/)
+  if (colon >= 0 && colon < Math.min(fixedText.length - 1, 40)) {
+    const candidate = fixedText.slice(colon + 1).trim()
+    if (candidate) fixedText = candidate
+  } else {
+    fixedText = fixedText
+      .replace(/^(?:请)?\s*(?:严格\s*)?(?:100%|百分百)?\s*(?:按照|按|照)?\s*(?:这个|以下|下面)?\s*(?:原话|文字|内容|回答|话术)?\s*(?:来说|说|播|回答)?\s*[，,。.!！]?\s*/i, '')
+      .trim() || value.trim()
+  }
+  return { executionMode: 'verbatim' as const, fixedText }
+}
+
+async function sendLiveRoomAnswer(value: string, mode: LiveRoomAnswerMode) {
+  const roomId = Number(route.params.id)
+  if (!roomId) {
+    pushAgentMessage('live-room', '当前页面没有有效直播间编号，不能提交现场回答。')
+    return
+  }
+
+  const execution = resolveLiveRoomExecution(value)
+  liveRoomExecutionError.value = false
+  liveRoomExecutionStatus.value = mode === 'quick' ? '正在提交抢答…' : '正在提交回答…'
+  input.value = mode === 'quick' ? '/抢答 ' : '/回答 '
+  dismissedSuggestionInput.value = input.value
+  activeComposer.value = 'dock'
+  busy.value = true
+  busyDomain.value = 'live-room'
+  try {
+    const result = await enqueueRoomManualAgentDecision(roomId, {
+      question: value,
+      title: mode === 'quick' ? '智能体输入抢答' : '智能体输入回答',
+      summary: mode === 'quick'
+        ? '直播操作者通过智能体输入框发起抢答，要求立即生成并播出'
+        : '直播操作者通过智能体输入框提交回答，由监控 Agent 协调待打断时机',
+      reply_hint: value,
+      force_reopen: mode === 'quick',
+      manual_action: mode,
+      manual_origin: 'agent_input',
+      execution_mode: execution.executionMode,
+      fixed_text: execution.fixedText || undefined,
+      ttl_seconds: mode === 'quick' ? 180 : 600,
+    })
+    const modeText = mode === 'quick' ? '抢答' : '回答'
+    const executionText = execution.executionMode === 'verbatim' ? ' · 100%原话' : ''
+    const queueText = result.merged
+      ? '已融合到现有待执行任务'
+      : mode === 'quick'
+        ? '已进入最高优先执行区'
+        : '已进入待打断队列'
+    pushAgentMessage('live-room', modeText + executionText + '：' + queueText + '。')
+    liveRoomExecutionError.value = false
+    liveRoomExecutionStatus.value = modeText + executionText + ' · ' + queueText
+  } catch (error) {
+    liveRoomExecutionError.value = true
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '现场回答提交失败'
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '现场回答提交失败：' + error.message : '现场回答提交失败。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    void nextTick(focusActiveComposer)
+  }
+}
+
 async function send() {
   const rawValue = input.value.trim()
   if (!rawValue || busy.value) return
 
+  const domain = currentDomain.value
+  if (domain === 'live-room') {
+    const command = rawValue.match(/^\/(抢答|回答)(?:\s+|$)/)
+    const commandMode: LiveRoomAnswerMode | null = command?.[1] === '抢答'
+      ? 'quick'
+      : command?.[1] === '回答'
+        ? 'answer'
+        : null
+    const otherSlashCommand = rawValue.startsWith('/') && !command
+    if (otherSlashCommand) {
+      liveRoomAnswerMode.value = null
+      liveRoomExecutionStatus.value = ''
+      liveRoomExecutionError.value = false
+    }
+    const mode = commandMode || (otherSlashCommand ? null : liveRoomAnswerMode.value)
+    if (mode) {
+      liveRoomAnswerMode.value = mode
+      const commandText = command ? rawValue.slice(command[0].length) : rawValue
+      const liveValue = unescapeAgentTriggerText(commandText).trim()
+      if (!liveValue) {
+        liveRoomExecutionError.value = true
+        liveRoomExecutionStatus.value = '请在功能触发词后输入要执行的内容'
+        return
+      }
+      await sendLiveRoomAnswer(liveValue, mode)
+      return
+    }
+  }
+
   const value = unescapeAgentTriggerText(rawValue.replace(/^\/+/, '').trim()).trim()
   if (!value) return
-
-  const domain = currentDomain.value
   if (showInbox.value && isInboxIntent(value)) {
     inboxRequest.value = value
     drawerOpen.value = true
@@ -1972,6 +2130,14 @@ async function copyCredential(credential?: InitialCredential) {
         <div class="system-agent-inline-main">
           <small v-if="!isTerminalCustomer">{{ assistantName }} · {{ contextLabel }} · {{ latestAgentMessage }}</small>
           <small v-else>{{ assistantName }}</small>
+          <div
+            v-if="currentDomain === 'live-room' && (liveRoomAnswerMode || liveRoomExecutionStatus)"
+            class="live-room-answer-state"
+            :class="{ error: liveRoomExecutionError }"
+          >
+            <strong v-if="liveRoomAnswerMode">{{ liveRoomAnswerModeLabel }}</strong>
+            <span v-if="liveRoomExecutionStatus">{{ liveRoomExecutionStatus }}</span>
+          </div>
           <div class="system-agent-composer-field">
             <textarea
               ref="inputEl"
@@ -2013,7 +2179,7 @@ async function copyCredential(credential?: InitialCredential) {
           :disabled="busy || !input.trim()"
           @click="send"
         >
-          发送
+          {{ currentDomain === 'live-room' && liveRoomAnswerMode ? (liveRoomAnswerMode === 'quick' ? '抢答' : '回答') : '发送' }}
         </button>
         <button
           class="system-agent-open"
@@ -2217,6 +2383,7 @@ async function copyCredential(credential?: InitialCredential) {
   </Teleport>
 </template>
 <style scoped>
+.live-room-answer-state{display:flex;align-items:center;gap:8px;min-height:24px;margin:0 0 5px;padding:3px 8px;border:1px solid rgba(104,118,220,.18);border-radius:8px;background:rgba(244,246,255,.9);color:#66708c;font-size:12px;line-height:1.35}.live-room-answer-state strong{flex:0 0 auto;color:#5666d8;font-size:12px;font-weight:900}.live-room-answer-state span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-room-answer-state.error{border-color:rgba(216,63,79,.22);background:rgba(255,244,246,.94);color:#cf4050}.live-room-answer-state.error strong{color:#cf4050}
 .system-agent-drawer{grid-template-rows:auto auto minmax(0,1fr) auto;overflow:hidden}
 .system-agent-drawer.without-work-inbox{grid-template-rows:auto minmax(0,1fr) auto}
 .system-agent-drawer.terminal-agent-drawer{grid-template-rows:auto minmax(0,1fr) auto}

@@ -70,6 +70,23 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 			UNIQUE KEY uk_core_rooms_tenant_platform_external (tenant_id, platform, external_room_id),
 			KEY idx_core_rooms_tenant_status (tenant_id, status)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+		`CREATE TABLE IF NOT EXISTS live_room_event_archive (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			tenant_id BIGINT UNSIGNED NOT NULL,
+			room_id BIGINT UNSIGNED NOT NULL,
+			event_id BIGINT NOT NULL,
+			event_type VARCHAR(64) NOT NULL,
+			user_id VARCHAR(255) NOT NULL DEFAULT '',
+			nickname VARCHAR(255) NOT NULL DEFAULT '',
+			content TEXT NULL,
+			payload_json MEDIUMTEXT NULL,
+			occurred_at DATETIME(3) NOT NULL,
+			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			PRIMARY KEY (id),
+			UNIQUE KEY uk_live_room_event_archive_event (tenant_id, room_id, event_id),
+			KEY idx_live_room_event_archive_room_time (tenant_id, room_id, occurred_at, id),
+			KEY idx_live_room_event_archive_type_time (room_id, event_type, occurred_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
 		`CREATE TABLE IF NOT EXISTS core_room_user_blocks (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			tenant_id BIGINT UNSIGNED NOT NULL,

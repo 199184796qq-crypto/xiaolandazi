@@ -11,15 +11,20 @@ import (
 )
 
 type Config struct {
-	Root              string
-	LogDir            string
-	RunDir            string
-	CheckInterval     time.Duration
-	HealthTimeout     time.Duration
-	HeartbeatInterval time.Duration
-	FailureThreshold  int
-	RestartBackoff    time.Duration
-	Services          []ServiceConfig
+	Root                      string
+	LogDir                    string
+	RunDir                    string
+	CheckInterval             time.Duration
+	HealthTimeout             time.Duration
+	HeartbeatInterval         time.Duration
+	FailureThreshold          int
+	RestartBackoff            time.Duration
+	ResourceCheckInterval     time.Duration
+	EmergencyMemoryFloorMB    uint64
+	EmergencyFailureThreshold int
+	EmergencyRestartDelay     time.Duration
+	EmergencyTargetService    string
+	Services                  []ServiceConfig
 }
 
 type ServiceConfig struct {
@@ -33,17 +38,23 @@ type ServiceConfig struct {
 	WorkingDir     string
 	Env            map[string]string
 	StartupGrace   time.Duration
+	Priority       string
 }
 
 type rawConfig struct {
-	LogDir            string
-	RunDir            string
-	CheckInterval     string
-	HealthTimeout     string
-	HeartbeatInterval string
-	FailureThreshold  int
-	RestartBackoff    string
-	Services          []rawService
+	LogDir                    string
+	RunDir                    string
+	CheckInterval             string
+	HealthTimeout             string
+	HeartbeatInterval         string
+	FailureThreshold          int
+	RestartBackoff            string
+	ResourceCheckInterval     string
+	EmergencyMemoryFloorMB    uint64
+	EmergencyFailureThreshold int
+	EmergencyRestartDelay     string
+	EmergencyTargetService    string
+	Services                  []rawService
 }
 
 type rawService struct {
@@ -57,6 +68,7 @@ type rawService struct {
 	WorkingDir     string
 	Env            map[string]string
 	StartupGrace   string
+	Priority       string
 }
 
 func LoadConfig(path, root string) (Config, error) {
@@ -89,17 +101,39 @@ func LoadConfig(path, root string) (Config, error) {
 	if raw.FailureThreshold <= 0 {
 		raw.FailureThreshold = 2
 	}
+	resourceCheckInterval, err := parseDuration(raw.ResourceCheckInterval, time.Second)
+	if err != nil {
+		return Config{}, fmt.Errorf("ResourceCheckInterval: %w", err)
+	}
+	emergencyRestartDelay, err := parseDuration(raw.EmergencyRestartDelay, 15*time.Second)
+	if err != nil {
+		return Config{}, fmt.Errorf("EmergencyRestartDelay: %w", err)
+	}
+	if raw.EmergencyMemoryFloorMB == 0 {
+		raw.EmergencyMemoryFloorMB = 1024
+	}
+	if raw.EmergencyFailureThreshold <= 0 {
+		raw.EmergencyFailureThreshold = 3
+	}
+	if strings.TrimSpace(raw.EmergencyTargetService) == "" {
+		raw.EmergencyTargetService = "core-service"
+	}
 
 	config := Config{
-		Root:              filepath.Clean(root),
-		LogDir:            expandPath(raw.LogDir, root, filepath.Join(root, "data", "logs")),
-		RunDir:            expandPath(raw.RunDir, root, filepath.Join(root, "data", "run")),
-		CheckInterval:     checkInterval,
-		HealthTimeout:     healthTimeout,
-		HeartbeatInterval: heartbeatInterval,
-		FailureThreshold:  raw.FailureThreshold,
-		RestartBackoff:    restartBackoff,
-		Services:          make([]ServiceConfig, 0, len(raw.Services)),
+		Root:                      filepath.Clean(root),
+		LogDir:                    expandPath(raw.LogDir, root, filepath.Join(root, "data", "logs")),
+		RunDir:                    expandPath(raw.RunDir, root, filepath.Join(root, "data", "run")),
+		CheckInterval:             checkInterval,
+		HealthTimeout:             healthTimeout,
+		HeartbeatInterval:         heartbeatInterval,
+		FailureThreshold:          raw.FailureThreshold,
+		RestartBackoff:            restartBackoff,
+		ResourceCheckInterval:     resourceCheckInterval,
+		EmergencyMemoryFloorMB:    raw.EmergencyMemoryFloorMB,
+		EmergencyFailureThreshold: raw.EmergencyFailureThreshold,
+		EmergencyRestartDelay:     emergencyRestartDelay,
+		EmergencyTargetService:    strings.TrimSpace(raw.EmergencyTargetService),
+		Services:                  make([]ServiceConfig, 0, len(raw.Services)),
 	}
 
 	seen := map[string]struct{}{}
@@ -128,6 +162,7 @@ func LoadConfig(path, root string) (Config, error) {
 			WorkingDir:     expandPath(item.WorkingDir, root, root),
 			Env:            make(map[string]string, len(item.Env)),
 			StartupGrace:   grace,
+			Priority:       normalizePriority(item.Priority),
 		}
 		for key, value := range item.Env {
 			service.Env[key] = expandValue(value, root)
@@ -145,6 +180,17 @@ func LoadConfig(path, root string) (Config, error) {
 		return Config{}, fmt.Errorf("at least one service is required")
 	}
 	return config, nil
+}
+
+func normalizePriority(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "below_normal", "belownormal", "low":
+		return "below_normal"
+	case "high":
+		return "high"
+	default:
+		return "normal"
+	}
 }
 
 func (s ServiceConfig) commandForOS(goos string) string {

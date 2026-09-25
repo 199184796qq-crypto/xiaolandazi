@@ -1,8 +1,24 @@
+param(
+    [switch]$NoWatchdog
+)
+
 $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $RunDir = Join-Path $Root 'data\run'
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+
+if (-not $NoWatchdog) {
+    $supervisorTask = Get-ScheduledTask -TaskName 'LiveCompanion-Supervisor' -ErrorAction SilentlyContinue
+    if (-not $supervisorTask) {
+        Write-Host '[SAFE] Supervisor task is not installed; installing it first.'
+        & (Join-Path $PSScriptRoot 'install-autostart.ps1')
+    }
+    & (Join-Path $PSScriptRoot 'enter-supervised-mode.ps1')
+    exit $LASTEXITCODE
+}
+
+Set-Content -LiteralPath (Join-Path $RunDir 'runtime-mode.txt') -Value 'development' -Encoding ascii
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
@@ -100,6 +116,6 @@ foreach ($service in $services) {
 }
 
 Write-Host ''
-Write-Host '[DEV] Development services are running under Windows Task Scheduler.'
-Write-Host '      No watchdog/restart policy is enabled.'
-Write-Host '      Processes are not tied to the WebCodex runner timeout.'
+Write-Host '[DEV-UNSAFE] Development services are running without the watchdog.'
+Write-Host '             Use this mode only while actively replacing service binaries.'
+Write-Host '             Normal startup should omit -NoWatchdog so Supervisor protection stays enabled.'

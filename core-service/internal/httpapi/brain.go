@@ -19,6 +19,10 @@ type roomBrain interface {
 	Reset(roomID int64)
 }
 
+type roomBrainTopicMerger interface {
+	MergeTopics(roomID int64, representative string, sources []string) int
+}
+
 func (s *Server) SetRoomBrain(brain roomBrain) {
 	s.brain = brain
 }
@@ -38,6 +42,71 @@ func (s *Server) getRoomBrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+type roomBrainTopicMergeInput struct {
+	Groups []struct {
+		RepresentativeTopic string   `json:"representative_topic"`
+		SourceTopics        []string `json:"source_topics"`
+	} `json:"groups"`
+}
+
+func (s *Server) mergeRoomBrainTopics(w http.ResponseWriter, r *http.Request) {
+	if s.brain == nil {
+		writeError(w, http.StatusServiceUnavailable, "room brain is not configured")
+		return
+	}
+	merger, ok := s.brain.(roomBrainTopicMerger)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "room brain topic merge is not configured")
+		return
+	}
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	var input roomBrainTopicMergeInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(input.Groups) == 0 || len(input.Groups) > 20 {
+		writeError(w, http.StatusBadRequest, "groups must contain 1..20 items")
+		return
+	}
+	merged := 0
+	for _, group := range input.Groups {
+		representative := strings.TrimSpace(group.RepresentativeTopic)
+		if representative == "" || len(group.SourceTopics) == 0 || len(group.SourceTopics) > 20 {
+			continue
+		}
+		sources := make([]string, 0, len(group.SourceTopics))
+		seen := map[string]struct{}{}
+		for _, source := range group.SourceTopics {
+			source = strings.TrimSpace(source)
+			if source == "" || source == representative {
+				continue
+			}
+			if _, exists := seen[source]; exists {
+				continue
+			}
+			seen[source] = struct{}{}
+			sources = append(sources, source)
+		}
+		if len(sources) == 0 {
+			continue
+		}
+		merged += merger.MergeTopics(roomID, representative, sources)
+	}
+	view, err := s.brain.Snapshot(roomID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"merged_topics": merged,
+		"brain":         view,
+	})
 }
 
 type roomBrainPinInput struct {

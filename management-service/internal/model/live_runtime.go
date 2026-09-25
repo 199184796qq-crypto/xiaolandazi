@@ -77,6 +77,9 @@ type LiveQuotaSummary struct {
 
 type LiveRuntimeSnapshot struct {
 	Session                *LiveRuntimeSession     `json:"session,omitempty"`
+	AgentState             string                  `json:"agent_state"`
+	AgentMode              string                  `json:"agent_mode"`
+	AgentWorkingSeconds    uint64                  `json:"agent_working_seconds"`
 	QuotaRemainingSeconds  uint64                  `json:"quota_remaining_seconds"`
 	ReserveTimeCardSeconds uint64                  `json:"reserve_time_card_seconds"`
 	ReserveTimeCardCount   uint32                  `json:"reserve_time_card_count"`
@@ -119,6 +122,11 @@ type BindLiveDeviceInput struct {
 type DeviceHeartbeatInput struct {
 	RoomID   *int64         `json:"room_id,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type DeviceControlInput struct {
+	RoomID int64  `json:"room_id"`
+	Action string `json:"action"`
 }
 
 type StartLiveRuntimeInput struct {

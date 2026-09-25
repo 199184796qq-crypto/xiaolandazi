@@ -183,6 +183,68 @@ func (s *Store) GetLiveQuotaSummary(
 	return summary, nil
 }
 
+func (s *Store) ActivateLiveTimeCards(
+	ctx context.Context,
+	tenantID int64,
+	count uint32,
+	now time.Time,
+) (model.LiveQuotaSummary, uint32, error) {
+	if tenantID <= 0 {
+		return model.LiveQuotaSummary{}, 0, errors.New("invalid tenant")
+	}
+	if count == 0 {
+		count = 1
+	}
+	if count > 20 {
+		count = 20
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveQuotaSummary{}, 0, err
+	}
+	defer tx.Rollback()
+
+	if err := lockTenantAIResourceTx(ctx, tx, tenantID); err != nil {
+		return model.LiveQuotaSummary{}, 0, err
+	}
+	if _, err := expireTimeCardAssetsTx(ctx, tx, tenantID, now); err != nil {
+		return model.LiveQuotaSummary{}, 0, err
+	}
+
+	var activated uint32
+	for activated < count {
+		ok, err := activateNextTimeCardAssetTx(ctx, tx, tenantID, now, false)
+		if err != nil {
+			return model.LiveQuotaSummary{}, activated, err
+		}
+		if !ok {
+			break
+		}
+		activated++
+	}
+	if activated > 0 {
+		if err := reconcileCustomerAIResourceToQuotaTx(
+			ctx,
+			tx,
+			tenantID,
+			now,
+			"time_card_pool_load",
+			fmt.Sprintf("一次充入 AI 工作时长池 %d 张时长卡", activated),
+		); err != nil {
+			return model.LiveQuotaSummary{}, activated, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveQuotaSummary{}, activated, err
+	}
+	summary, err := s.GetLiveQuotaSummary(ctx, tenantID, now)
+	return summary, activated, err
+}
+
 func ensureLiveQuotaAvailableTx(
 	ctx context.Context,
 	tx *sql.Tx,

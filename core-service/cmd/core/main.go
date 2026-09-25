@@ -2,31 +2,167 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"livecompanion/core/internal/agentdecision"
+	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/basepipeline"
 	"livecompanion/core/internal/collector"
 	"livecompanion/core/internal/collector/douyin"
 	"livecompanion/core/internal/config"
 	"livecompanion/core/internal/coordination"
 	appdb "livecompanion/core/internal/db"
+	"livecompanion/core/internal/eventarchive"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/httpapi"
 	"livecompanion/core/internal/logging"
 	"livecompanion/core/internal/media"
 	"livecompanion/core/internal/model"
+	"livecompanion/core/internal/paidpipeline"
 	"livecompanion/core/internal/questionqueue"
 	"livecompanion/core/internal/rediscache"
 	roomstore "livecompanion/core/internal/room"
 	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/userblock"
 )
+
+func hydrateAgentModes(
+	ctx context.Context,
+	rooms *roomstore.Store,
+	events *eventstore.Store,
+	registry *agentwork.Registry,
+) error {
+	roomItems, err := rooms.List(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, room := range roomItems {
+		mode, modeErr := events.GetAgentMode(ctx, room.ID)
+		if modeErr != nil {
+			log.Printf("hydrate agent mode room=%d: %v", room.ID, modeErr)
+			continue
+		}
+		if _, modeErr = registry.SetMode(room.ID, agentwork.Mode(mode)); modeErr != nil {
+			log.Printf("hydrate agent mode room=%d value=%q: %v", room.ID, mode, modeErr)
+		}
+	}
+	return nil
+}
+
+func hydrateRoomBrainState(
+	ctx context.Context,
+	rooms *roomstore.Store,
+	events *eventstore.Store,
+	brain *roombrain.Manager,
+	blocks *userblock.Store,
+	recentLimit int,
+	importantLimit int,
+) error {
+	roomItems, err := rooms.List(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, room := range roomItems {
+		stats, ensureErr := events.EnsureSessionState(ctx, room.ID)
+		if ensureErr != nil || stats.StartedAt.IsZero() {
+			continue
+		}
+		brain.Ingest(model.RoomEvent{
+			TenantID:   room.TenantID,
+			RoomID:     room.ID,
+			EventType:  "session_start",
+			OccurredAt: stats.StartedAt,
+		})
+		tenantID := room.TenantID
+		merged := map[int64]model.RoomEvent{}
+		recent, _ := events.ListRecent(ctx, &tenantID, room.ID, recentLimit)
+		for _, event := range recent {
+			eventType := strings.ToLower(strings.TrimSpace(event.EventType))
+			if eventType == "chat" || eventType == "comment" || eventType == "order_signal" {
+				merged[event.ID] = event
+			}
+		}
+		importantChats := []model.RoomEvent{}
+		existingOrderSignals := map[int64]struct{}{}
+		for _, eventType := range []string{"chat", "order_signal"} {
+			items, listErr := events.ListImportant(ctx, &tenantID, room.ID, eventType, 0, importantLimit)
+			if listErr != nil {
+				continue
+			}
+			for _, event := range items {
+				merged[event.ID] = event
+				if eventType == "chat" {
+					importantChats = append(importantChats, event)
+				} else if sourceID := sourceEventID(event.Payload); sourceID > 0 {
+					existingOrderSignals[sourceID] = struct{}{}
+				}
+			}
+		}
+		for _, chat := range importantChats {
+			if !roombrain.IsOrderSignalText(chat.Content) {
+				continue
+			}
+			if _, exists := existingOrderSignals[chat.ID]; exists {
+				continue
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"source_event_id": chat.ID,
+				"verified_order":  false,
+				"source":          "chat_backfill",
+			})
+			created, createErr := events.Create(ctx, room.TenantID, room.ID, model.CreateEventInput{
+				EventType:  "order_signal",
+				UserID:     chat.UserID,
+				Nickname:   chat.Nickname,
+				Content:    chat.Content,
+				OccurredAt: chat.OccurredAt,
+				Payload:    payload,
+			})
+			if createErr != nil {
+				log.Printf("room=%d backfill order signal chat=%d: %v", room.ID, chat.ID, createErr)
+				continue
+			}
+			merged[created.ID] = created
+			existingOrderSignals[chat.ID] = struct{}{}
+		}
+		ordered := make([]model.RoomEvent, 0, len(merged))
+		for _, event := range merged {
+			ordered = append(ordered, event)
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+		for _, event := range ordered {
+			if blocks != nil && blocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
+				continue
+			}
+			brain.Ingest(event)
+		}
+	}
+	return nil
+}
+
+func sourceEventID(payload json.RawMessage) int64 {
+	if len(payload) == 0 {
+		return 0
+	}
+	var value struct {
+		SourceEventID int64 `json:"source_event_id"`
+	}
+	if json.Unmarshal(payload, &value) != nil {
+		return 0
+	}
+	return value.SourceEventID
+}
 
 func main() {
 	cfg := config.Load()
@@ -86,32 +222,35 @@ func main() {
 	}
 
 	rooms := roomstore.NewStore(database)
-	events := eventstore.NewStore(redisClient, cfg.EventCacheLimit)
+	events := eventstore.NewStoreWithImportantLimit(redisClient, cfg.EventCacheLimit, cfg.ImportantEventCacheLimit)
+	archiveWriter := eventarchive.NewWithSpool(database, cfg.EventArchiveSpoolDir)
+	archiveWriter.Start(appCtx)
+	defer archiveWriter.Close()
+	events.SetArchiveSink(archiveWriter.Enqueue)
 	hub := eventstore.NewHub()
 	brain := roombrain.NewManager()
 	questions := questionqueue.New()
+	agentDecisions := agentdecision.New()
+	agentWork := agentwork.New()
+	if err := hydrateAgentModes(startupCtx, rooms, events, agentWork); err != nil {
+		log.Printf("hydrate agent modes: %v", err)
+	}
+	speechState := speechruntime.New()
 	userBlocks, err := userblock.NewStore(startupCtx, database)
 	if err != nil {
 		log.Fatalf("load room user blocks: %v", err)
 	}
+	if err := hydrateRoomBrainState(startupCtx, rooms, events, brain, userBlocks, cfg.EventCacheLimit, cfg.ImportantEventCacheLimit); err != nil {
+		log.Printf("hydrate room brain state: %v", err)
+	}
+	baseEvents := basepipeline.New(brain, questions, userBlocks)
+	paidAgents := paidpipeline.New(agentWork, agentDecisions)
 	events.SetObserver(func(event model.RoomEvent) {
-		eventType := strings.ToLower(strings.TrimSpace(event.EventType))
-		switch eventType {
+		signal := baseEvents.Handle(event)
+		paidAgents.Handle(event, signal)
+		switch strings.ToLower(strings.TrimSpace(event.EventType)) {
 		case "session_start", "session_end":
-			brain.Ingest(event)
-			questions.ClearRoom(event.RoomID)
-			return
-		}
-		if userBlocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
-			return
-		}
-		brain.Ingest(event)
-		switch eventType {
-		case "chat", "comment":
-			classification := brain.Classify(event.Content)
-			if classification.Question {
-				questions.Enqueue(event.RoomID, event.Content, classification.Topic, event.UserID)
-			}
+			speechState.Reset(event.RoomID)
 		}
 	})
 
@@ -160,6 +299,48 @@ func main() {
 		roomLeases,
 		time.Duration(cfg.RoomFailoverDelaySeconds)*time.Second,
 	)
+	type blockedHitLogState struct {
+		last       time.Time
+		suppressed uint64
+	}
+	var blockedHitLogMu sync.Mutex
+	blockedHitLogs := make(map[int64]map[string]blockedHitLogState)
+	collectorManager.SetEventFilter(func(event model.RoomEvent) bool {
+		if !userBlocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
+			return false
+		}
+
+		subject := userblock.SubjectKey(event.UserID, event.Nickname)
+		now := time.Now()
+		blockedHitLogMu.Lock()
+		roomLogs := blockedHitLogs[event.RoomID]
+		if roomLogs == nil {
+			roomLogs = make(map[string]blockedHitLogState)
+			blockedHitLogs[event.RoomID] = roomLogs
+		}
+		state := roomLogs[subject]
+		shouldLog := state.last.IsZero() || now.Sub(state.last) >= 5*time.Second
+		suppressed := state.suppressed
+		if shouldLog {
+			roomLogs[subject] = blockedHitLogState{last: now}
+		} else {
+			state.suppressed++
+			roomLogs[subject] = state
+		}
+		blockedHitLogMu.Unlock()
+
+		if shouldLog {
+			log.Printf(
+				"[BLOCKED_HIT] room=%d event=%s subject=%q nickname=%q suppressed_since_last=%d",
+				event.RoomID,
+				event.EventType,
+				subject,
+				event.Nickname,
+				suppressed,
+			)
+		}
+		return true
+	})
 	defer collectorManager.Close()
 
 	mediaManager, err := media.NewManager(
@@ -191,6 +372,9 @@ func main() {
 	api.SetAudioClient(audioClient, cfg.CorePublicURL)
 	api.SetRoomBrain(brain)
 	api.SetQuestionQueue(questions)
+	api.SetAgentDecisionQueue(agentDecisions)
+	api.SetAgentWorkRegistry(agentWork)
+	api.SetSpeechRuntimeRegistry(speechState)
 	api.SetUserBlockStore(userBlocks)
 
 	server := &http.Server{

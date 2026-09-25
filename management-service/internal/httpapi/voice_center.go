@@ -13,39 +13,20 @@ import (
 
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voicecatalog"
 )
 
 const (
-	qwenSystemTTSModel = "qwen3-tts-flash"
 	qwenCloneTTSModel  = "qwen3-tts-vc-2026-01-22"
 	maxCloneAudioBytes = 20 << 20
 )
 
-type officialVoice struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Gender      string   `json:"gender"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
-	Model       string   `json:"model"`
-}
+type officialVoice = voicecatalog.Voice
 
-var officialVoices = []officialVoice{
-	{ID: "Cherry", Name: "芊悦", Gender: "女声", Description: "阳光积极、亲切自然", Tags: []string{"自然", "亲切", "活力"}, Model: qwenSystemTTSModel},
-	{ID: "Serena", Name: "苏瑶", Gender: "女声", Description: "温柔、柔和、亲近", Tags: []string{"温柔", "柔和"}, Model: qwenSystemTTSModel},
-	{ID: "Ethan", Name: "晨煦", Gender: "男声", Description: "阳光、温暖、有活力", Tags: []string{"温暖", "活力"}, Model: qwenSystemTTSModel},
-	{ID: "Chelsie", Name: "千雪", Gender: "女声", Description: "年轻、轻快、二次元风格", Tags: []string{"年轻", "轻快"}, Model: qwenSystemTTSModel},
-	{ID: "Momo", Name: "茉兔", Gender: "女声", Description: "活泼、俏皮、有互动感", Tags: []string{"活泼", "俏皮"}, Model: qwenSystemTTSModel},
-}
+var officialVoices = voicecatalog.Official()
 
 func findOfficialVoice(id string) (officialVoice, bool) {
-	id = strings.TrimSpace(id)
-	for _, item := range officialVoices {
-		if item.ID == id {
-			return item, true
-		}
-	}
-	return officialVoice{}, false
+	return voicecatalog.Find(id)
 }
 
 func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {

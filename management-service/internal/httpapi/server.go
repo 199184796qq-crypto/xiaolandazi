@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -278,6 +279,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/monitor", s.updateRoomMonitor)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}", s.deleteRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/events", s.listEvents)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/session-stats", s.getRoomSessionStats)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/session-decision", s.resolveRoomSessionDecision)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/agent-decisions", s.getRoomAgentDecisions)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/manual", s.enqueueRoomManualAgentDecision)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.completeRoomAgentDecision)
+	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.removeRoomAgentDecision)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/blocked-users", s.listRoomBlockedUsers)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/blocked-users", s.blockRoomUser)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/blocked-users/restore", s.restoreRoomBlockedUser)
@@ -286,6 +295,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live/{file}", s.liveMedia)
 
 	mux.HandleFunc("GET /api/v1/live/quota-summary", s.liveQuotaSummary)
+	mux.HandleFunc("POST /api/v1/live/quota/activate", s.liveQuotaActivateCards)
 	mux.HandleFunc("GET /api/v1/live/agent/settings", s.liveAgentSettings)
 	mux.HandleFunc("PUT /api/v1/live/agent/settings", s.liveUpdateAgentSettings)
 	mux.HandleFunc("GET /api/v1/live/agent/config-versions", s.liveAgentConfigVersions)
@@ -338,6 +348,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}", s.liveAgentPlanGet)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/archive", s.liveAgentPlanArchive)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/room-bindings", s.liveAgentPlanBindRoom)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan", s.liveAgentPlanCurrentForRoom)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/review", s.liveRoomReview)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/room-bindings/{roomID}", s.liveAgentPlanUnbindRoom)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/terms", s.liveAgentPlanUpsertTerm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)
@@ -352,8 +364,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/devices", s.liveListDevices)
 	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/bind", s.liveBindDevice)
 	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/heartbeat", s.liveDeviceHeartbeat)
+	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/control", s.liveDeviceControl)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime", s.liveRuntimeStatus)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/mode", s.liveRuntimeMode)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/start", s.liveRuntimeStart)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/pause", s.liveRuntimePause)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/resume", s.liveRuntimeResume)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/stop", s.liveRuntimeStop)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeEvents)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeRecordEvent)
@@ -659,6 +675,19 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "核心服务暂不可用")
 		return
 	}
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		var cleanupErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			cleanupErr = s.store.CleanupDeletedRoomDerivedState(r.Context(), tenantID, roomID)
+			if cleanupErr == nil {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+		}
+		if cleanupErr != nil {
+			log.Printf("cleanup deleted room derived state tenant=%d room=%d: %v", tenantID, roomID, cleanupErr)
+		}
+	}
 	if isOperationsDelete &&
 		resp.StatusCode >= http.StatusOK &&
 		resp.StatusCode < http.StatusMultipleChoices {
@@ -692,8 +721,10 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-	if limit := strings.TrimSpace(r.URL.Query().Get("limit")); limit != "" {
-		query.Set("limit", limit)
+	for _, key := range []string{"limit", "channel", "type", "before_id"} {
+		if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
+			query.Set(key, value)
+		}
 	}
 
 	resp, err := s.core.Do(

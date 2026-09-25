@@ -354,6 +354,99 @@ func (s *Store) ListLiveAgentConfigVersions(
 	return items, rows.Err()
 }
 
+func (s *Store) PauseLiveRuntimeSession(
+	ctx context.Context,
+	tenantID, roomID, userID int64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockRunningSessionByRoom(ctx, tx, tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
+		}
+		return model.LiveRuntimeSession{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='paused', stop_reason='', last_billed_at=?,
+		    version=version+1, updated_at=?
+		WHERE id=? AND status='running'
+	`, now, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title, occurred_at
+		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_PAUSED', 'AI直播伴播已暂停', ?)
+	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func (s *Store) ResumeLiveRuntimeSession(
+	ctx context.Context,
+	tenantID, roomID, userID int64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockPausedSessionByRoom(ctx, tx, tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
+		}
+		return model.LiveRuntimeSession{}, err
+	}
+	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now, true)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	var quota uint64
+	for _, bucket := range buckets {
+		quota += bucket.Remaining
+	}
+	if quota == 0 {
+		return model.LiveRuntimeSession{}, ErrLiveQuotaExhausted
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='running', stop_reason='', last_billed_at=?,
+		    version=version+1, updated_at=?
+		WHERE id=? AND status='paused'
+	`, now, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title, occurred_at
+		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_RESUMED', 'AI直播伴播已继续', ?)
+	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
 func (s *Store) CreateLiveAgentConfigDraft(
 	ctx context.Context,
 	tenantID, userID int64,
@@ -1136,6 +1229,132 @@ func (s *Store) HeartbeatLiveDevice(
 	return s.GetLiveDevice(ctx, tenantID, deviceID)
 }
 
+func (s *Store) ControlLiveDevice(
+	ctx context.Context,
+	tenantID, userID, deviceID, roomID int64,
+	action string,
+) (model.LiveDevice, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveDevice{}, err
+	}
+	defer tx.Rollback()
+
+	var boundDeviceID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT b.device_id
+		FROM live_device_room_bindings b
+		INNER JOIN inv_devices d ON d.id=b.device_id
+		WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
+		  AND b.status='active' AND d.current_customer_id=?
+		LIMIT 1
+		FOR UPDATE
+	`, tenantID, roomID, deviceID, tenantID).Scan(&boundDeviceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveDevice{}, ErrLiveDeviceNotBound
+		}
+		return model.LiveDevice{}, err
+	}
+
+	previousConnection := "offline"
+	previousWork := "idle"
+	err = tx.QueryRowContext(ctx, `
+		SELECT connection_status, work_status
+		FROM live_device_runtime_state
+		WHERE device_id=? AND tenant_id=?
+		FOR UPDATE
+	`, deviceID, tenantID).Scan(&previousConnection, &previousWork)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.LiveDevice{}, err
+	}
+
+	now := time.Now().UTC()
+	connectionStatus := previousConnection
+	workStatus := previousWork
+	stopReason := ""
+	var currentRoom any = roomID
+	var heartbeatAt any = now
+	eventCode := ""
+	title := ""
+	switch action {
+	case "connect":
+		connectionStatus = "online"
+		workStatus = "working"
+		eventCode = "DEVICE_CONNECTED"
+		title = "设备握手成功"
+	case "pause":
+		if previousConnection != "online" {
+			return model.LiveDevice{}, ErrLiveDeviceOffline
+		}
+		connectionStatus = "online"
+		workStatus = "paused"
+		eventCode = "DEVICE_PAUSED"
+		title = "设备已暂停"
+	case "resume":
+		if previousConnection != "online" {
+			return model.LiveDevice{}, ErrLiveDeviceOffline
+		}
+		connectionStatus = "online"
+		workStatus = "working"
+		eventCode = "DEVICE_RESUMED"
+		title = "设备已继续工作"
+	case "disconnect":
+		connectionStatus = "offline"
+		workStatus = "idle"
+		stopReason = "manual_disconnect"
+		currentRoom = nil
+		heartbeatAt = nil
+		eventCode = "DEVICE_DISCONNECTED"
+		title = "设备已断开"
+	default:
+		return model.LiveDevice{}, fmt.Errorf("unsupported device control action %q", action)
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"control_action": action,
+		"transport":      "development_control",
+		"handshake":      action == "connect",
+	})
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_device_runtime_state (
+			device_id, tenant_id, current_room_id, connection_status,
+			work_status, stop_reason, last_heartbeat_at, metadata_json,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			tenant_id=VALUES(tenant_id),
+			current_room_id=VALUES(current_room_id),
+			connection_status=VALUES(connection_status),
+			work_status=VALUES(work_status),
+			stop_reason=VALUES(stop_reason),
+			last_heartbeat_at=VALUES(last_heartbeat_at),
+			metadata_json=VALUES(metadata_json),
+			updated_at=VALUES(updated_at)
+	`, deviceID, tenantID, currentRoom, connectionStatus, workStatus, stopReason, heartbeatAt, nullableJSON(metadata), now, now); err != nil {
+		return model.LiveDevice{}, err
+	}
+
+	detail, _ := json.Marshal(map[string]any{
+		"action":              action,
+		"previous_connection": previousConnection,
+		"previous_work":       previousWork,
+	})
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, actor_type, actor_user_id,
+			event_code, title, detail_json, occurred_at
+		) VALUES (?, ?, ?, 'user', ?, ?, ?, ?, ?)
+	`, tenantID, roomID, deviceID, userID, eventCode, title, nullableJSON(detail), now); err != nil {
+		return model.LiveDevice{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.LiveDevice{}, err
+	}
+	return s.GetLiveDevice(ctx, tenantID, deviceID)
+}
+
 func (s *Store) StartLiveRuntimeSession(
 	ctx context.Context,
 	tenantID, roomID, userID int64,
@@ -1152,7 +1371,7 @@ func (s *Store) StartLiveRuntimeSession(
 	err = tx.QueryRowContext(ctx, `
 		SELECT id
 		FROM live_runtime_sessions
-		WHERE tenant_id=? AND room_id=? AND status='running'
+		WHERE tenant_id=? AND room_id=? AND status IN ('running','paused')
 		ORDER BY id DESC
 		LIMIT 1
 		FOR UPDATE
@@ -1164,47 +1383,27 @@ func (s *Store) StartLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 
-	if deviceID == nil {
+	// Device is an optional audio-distribution endpoint. Core collection and the
+	// paid intelligent-agent runtime can work without a device bound. If a device
+	// is explicitly requested, only verify ownership/binding; device heartbeat is
+	// not the switch for the AI layer.
+	if deviceID != nil {
 		var found int64
 		err = tx.QueryRowContext(ctx, `
-			SELECT device_id
-			FROM live_device_room_bindings
-			WHERE tenant_id=? AND room_id=? AND status='active'
-			ORDER BY CASE WHEN binding_role='primary' THEN 0 ELSE 1 END, id DESC
+			SELECT b.device_id
+			FROM live_device_room_bindings b
+			INNER JOIN inv_devices d ON d.id=b.device_id
+			WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
+			  AND b.status='active' AND d.current_customer_id=?
 			LIMIT 1
 			FOR UPDATE
-		`, tenantID, roomID).Scan(&found)
+		`, tenantID, roomID, *deviceID, tenantID).Scan(&found)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
 			}
 			return model.LiveRuntimeSession{}, err
 		}
-		deviceID = &found
-	}
-
-	var connection string
-	var heartbeat sql.NullTime
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(rs.connection_status, 'offline'), rs.last_heartbeat_at
-		FROM live_device_room_bindings b
-		INNER JOIN inv_devices d ON d.id=b.device_id
-		LEFT JOIN live_device_runtime_state rs ON rs.device_id=b.device_id
-		WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
-		  AND b.status='active'
-		  AND d.current_customer_id=?
-		ORDER BY b.id DESC
-		LIMIT 1
-		FOR UPDATE
-	`, tenantID, roomID, *deviceID, tenantID).Scan(&connection, &heartbeat)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
-		}
-		return model.LiveRuntimeSession{}, err
-	}
-	if connection != "online" || !heartbeat.Valid || heartbeat.Time.Before(now.Add(-liveDeviceHeartbeatTimeout)) {
-		return model.LiveRuntimeSession{}, ErrLiveDeviceOffline
 	}
 
 	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now, true)
@@ -1229,7 +1428,7 @@ func (s *Store) StartLiveRuntimeSession(
 			started_by_user_id, started_at, last_billed_at,
 			total_billed_seconds, version
 		) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 0, 1)
-	`, externalID, tenantID, roomID, *deviceID, userID, now, now)
+	`, externalID, tenantID, roomID, deviceID, userID, now, now)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -1239,19 +1438,11 @@ func (s *Store) StartLiveRuntimeSession(
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE live_device_runtime_state
-		SET current_room_id=?, work_status='working', stop_reason='', updated_at=?
-		WHERE device_id=? AND tenant_id=?
-	`, roomID, now, *deviceID, tenantID); err != nil {
-		return model.LiveRuntimeSession{}, err
-	}
-
-	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO live_runtime_events (
 			tenant_id, room_id, device_id, session_id,
 			actor_type, actor_user_id, event_code, title, occurred_at
 		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_STARTED', 'AI直播伴播已启动', ?)
-	`, tenantID, roomID, *deviceID, sessionID, userID, now); err != nil {
+	`, tenantID, roomID, deviceID, sessionID, userID, now); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 
@@ -1292,7 +1483,7 @@ func (s *Store) GetLiveRuntimeByRoom(
 		FROM live_runtime_sessions s
 		LEFT JOIN inv_devices d ON d.id=s.device_id
 		WHERE s.tenant_id=? AND s.room_id=?
-		ORDER BY (s.status='running') DESC, s.id DESC
+		ORDER BY CASE s.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, s.id DESC
 		LIMIT 1
 	`, tenantID, roomID))
 }
@@ -1350,7 +1541,7 @@ func (s *Store) ListRunningLiveRuntimeSessions(ctx context.Context) ([]model.Liv
 			s.total_billed_seconds, s.version
 		FROM live_runtime_sessions s
 		LEFT JOIN inv_devices d ON d.id=s.device_id
-		WHERE s.status='running'
+		WHERE s.status IN ('running','paused')
 		ORDER BY s.id ASC
 	`)
 	if err != nil {
@@ -1462,6 +1653,333 @@ func (s *Store) ReconcileLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 	return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
+}
+
+func (s *Store) ReconcileLiveRuntimeMeter(
+	ctx context.Context,
+	sessionID int64,
+	roomLive bool,
+	coreWorkingSeconds uint64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockLiveRuntimeSession(ctx, tx, sessionID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if session.Status == "paused" {
+		if roomLive {
+			if err := tx.Commit(); err != nil {
+				return model.LiveRuntimeSession{}, err
+			}
+			return session, nil
+		}
+		session, err = stopPausedLiveRuntimeTx(ctx, tx, session, now, "room_offline", nil)
+		if err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
+	}
+	if session.Status != "running" {
+		if err := tx.Commit(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		return session, nil
+	}
+
+	stopReason := ""
+	if !roomLive {
+		stopReason = "room_offline"
+	}
+	session, err = settleLiveRuntimeMeterTx(
+		ctx,
+		tx,
+		session,
+		coreWorkingSeconds,
+		roomLive,
+		now,
+		stopReason,
+		nil,
+	)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
+}
+
+func (s *Store) PauseLiveRuntimeSessionMeter(
+	ctx context.Context,
+	tenantID, roomID, userID int64,
+	coreWorkingSeconds uint64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockRunningSessionByRoom(ctx, tx, tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
+		}
+		return model.LiveRuntimeSession{}, err
+	}
+	session, err = settleLiveRuntimeMeterTx(
+		ctx, tx, session, coreWorkingSeconds, true, now, "", nil,
+	)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if session.Status != "running" {
+		if err := tx.Commit(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='paused', stop_reason='', last_billed_at=?,
+		    version=version+1, updated_at=?
+		WHERE id=? AND status='running'
+	`, now, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title, occurred_at
+		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_PAUSED', 'AI直播伴播已暂停', ?)
+	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func (s *Store) StopLiveRuntimeSessionMeter(
+	ctx context.Context,
+	tenantID, roomID, userID int64,
+	reason string,
+	coreWorkingSeconds uint64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockActiveSessionByRoom(ctx, tx, tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
+		}
+		return model.LiveRuntimeSession{}, err
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "manual_stop"
+	}
+	stoppedBy := userID
+	if session.Status == "paused" {
+		session, err = stopPausedLiveRuntimeTx(ctx, tx, session, now, reason, &stoppedBy)
+	} else {
+		session, err = settleLiveRuntimeMeterTx(
+			ctx, tx, session, coreWorkingSeconds, false, now, reason, &stoppedBy,
+		)
+	}
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func stopPausedLiveRuntimeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	session model.LiveRuntimeSession,
+	now time.Time,
+	stopReason string,
+	stoppedBy *int64,
+) (model.LiveRuntimeSession, error) {
+	if stopReason == "" {
+		stopReason = "stopped"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='stopped', stop_reason=?, stopped_by_user_id=?, ended_at=?,
+		    last_billed_at=?, version=version+1, updated_at=?
+		WHERE id=? AND status='paused'
+	`, stopReason, stoppedBy, now, now, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	session.Status = "stopped"
+	session.StopReason = stopReason
+	session.EndedAt = &now
+	session.StoppedByUserID = stoppedBy
+	session.LastBilledAt = now
+	session.Version++
+
+	eventCode := "AI_RUNTIME_STOPPED"
+	title := "AI直播伴播已停止"
+	if stopReason == "room_offline" {
+		eventCode = "ROOM_OFFLINE_STOP"
+		title = "直播间掉线，AI已停止"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title,
+			detail_json, occurred_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		session.TenantID,
+		session.RoomID,
+		session.DeviceID,
+		session.ID,
+		func() string {
+			if stoppedBy != nil {
+				return "user"
+			}
+			return "system"
+		}(),
+		stoppedBy,
+		eventCode,
+		title,
+		mustJSON(map[string]any{
+			"stop_reason":          stopReason,
+			"total_billed_seconds": session.TotalBilledSeconds,
+		}),
+		now,
+	); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return session, nil
+}
+
+func settleLiveRuntimeMeterTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	session model.LiveRuntimeSession,
+	coreWorkingSeconds uint64,
+	canContinue bool,
+	now time.Time,
+	stopReason string,
+	stoppedBy *int64,
+) (model.LiveRuntimeSession, error) {
+	if now.Before(session.LastBilledAt) {
+		now = session.LastBilledAt
+	}
+
+	requested := uint64(0)
+	if coreWorkingSeconds > session.TotalBilledSeconds {
+		requested = coreWorkingSeconds - session.TotalBilledSeconds
+	}
+	if requested > 0 {
+		usageStartedAt := now.Add(-time.Duration(requested) * time.Second)
+		charged, quotaRemaining, err := chargeQuotaTx(
+			ctx, tx, session, requested, usageStartedAt,
+		)
+		if err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		session.TotalBilledSeconds += charged
+		if charged < requested || !quotaRemaining {
+			canContinue = false
+			stopReason = "quota_exhausted"
+		}
+	}
+
+	session.LastBilledAt = now
+	if canContinue {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_runtime_sessions
+			SET last_billed_at=?, total_billed_seconds=?, version=version+1, updated_at=?
+			WHERE id=? AND status='running'
+		`, now, session.TotalBilledSeconds, now, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		session.Version++
+		return session, nil
+	}
+
+	if stopReason == "" {
+		stopReason = "stopped"
+	}
+	endedAt := now
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='stopped', stop_reason=?, stopped_by_user_id=?,
+		    last_billed_at=?, ended_at=?, total_billed_seconds=?,
+		    version=version+1, updated_at=?
+		WHERE id=? AND status='running'
+	`, stopReason, stoppedBy, now, endedAt, session.TotalBilledSeconds, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	session.Status = "stopped"
+	session.StopReason = stopReason
+	session.EndedAt = &endedAt
+	session.StoppedByUserID = stoppedBy
+	session.Version++
+
+	eventCode := "AI_RUNTIME_STOPPED"
+	title := "AI直播伴播已停止"
+	switch stopReason {
+	case "room_offline":
+		eventCode = "ROOM_OFFLINE_STOP"
+		title = "直播间掉线，AI已停止"
+	case "quota_exhausted":
+		eventCode = "AI_QUOTA_EXHAUSTED"
+		title = "AI时长已用完，直播伴播已停止"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title,
+			detail_json, occurred_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		session.TenantID,
+		session.RoomID,
+		session.DeviceID,
+		session.ID,
+		func() string {
+			if stoppedBy != nil {
+				return "user"
+			}
+			return "system"
+		}(),
+		stoppedBy,
+		eventCode,
+		title,
+		mustJSON(map[string]any{
+			"stop_reason":          stopReason,
+			"total_billed_seconds": session.TotalBilledSeconds,
+			"core_working_seconds": coreWorkingSeconds,
+		}),
+		endedAt,
+	); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return session, nil
 }
 
 func settleLiveRuntimeTx(
@@ -1604,14 +2122,13 @@ func chargeQuotaTx(
 	charged := uint64(0)
 	for remaining > 0 {
 		usageAt := startedAt.Add(time.Duration(charged) * time.Second)
-		buckets, err := ensureLiveQuotaAvailableTx(
-			ctx,
-			tx,
-			session.TenantID,
-			1,
-			usageAt,
-			false,
-		)
+		if err := lockTenantAIResourceTx(ctx, tx, session.TenantID); err != nil {
+			return 0, false, err
+		}
+		if _, err := expireTimeCardAssetsTx(ctx, tx, session.TenantID, usageAt); err != nil {
+			return 0, false, err
+		}
+		buckets, err := loadActiveQuotaBucketsTx(ctx, tx, session.TenantID, usageAt)
 		if err != nil {
 			return 0, false, err
 		}
@@ -1752,26 +2269,16 @@ func chargeQuotaTx(
 	afterAt := startedAt.Add(time.Duration(charged) * time.Second)
 	var hasQuotaAfter bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT (
-			EXISTS(
-				SELECT 1
-				FROM quota_buckets
-				WHERE tenant_id=?
-				  AND status='active'
-				  AND effective_at<=?
-				  AND expires_at>?
-				  AND remaining_seconds>0
-			)
-			OR EXISTS(
-				SELECT 1
-				FROM biz_time_card_assets
-				WHERE tenant_id=?
-				  AND status='unactivated'
-				  AND remaining_seconds>0
-				  AND (activation_deadline_at IS NULL OR activation_deadline_at>?)
-			)
+		SELECT EXISTS(
+			SELECT 1
+			FROM quota_buckets
+			WHERE tenant_id=?
+			  AND status='active'
+			  AND effective_at<=?
+			  AND expires_at>?
+			  AND remaining_seconds>0
 		)
-	`, session.TenantID, afterAt, afterAt, session.TenantID, afterAt).Scan(&hasQuotaAfter); err != nil {
+	`, session.TenantID, afterAt, afterAt).Scan(&hasQuotaAfter); err != nil {
 		return 0, false, err
 	}
 	return charged, hasQuotaAfter, nil
@@ -1825,6 +2332,48 @@ func lockRunningSessionByRoom(
 		FROM live_runtime_sessions s
 		LEFT JOIN inv_devices d ON d.id=s.device_id
 		WHERE s.tenant_id=? AND s.room_id=? AND s.status='running'
+		ORDER BY s.id DESC
+		LIMIT 1
+		FOR UPDATE
+	`, tenantID, roomID))
+}
+
+func lockPausedSessionByRoom(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, roomID int64,
+) (model.LiveRuntimeSession, error) {
+	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
+		SELECT
+			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
+			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			s.started_by_user_id, s.stopped_by_user_id,
+			s.started_at, s.last_billed_at, s.ended_at,
+			s.total_billed_seconds, s.version
+		FROM live_runtime_sessions s
+		LEFT JOIN inv_devices d ON d.id=s.device_id
+		WHERE s.tenant_id=? AND s.room_id=? AND s.status='paused'
+		ORDER BY s.id DESC
+		LIMIT 1
+		FOR UPDATE
+	`, tenantID, roomID))
+}
+
+func lockActiveSessionByRoom(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, roomID int64,
+) (model.LiveRuntimeSession, error) {
+	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
+		SELECT
+			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
+			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			s.started_by_user_id, s.stopped_by_user_id,
+			s.started_at, s.last_billed_at, s.ended_at,
+			s.total_billed_seconds, s.version
+		FROM live_runtime_sessions s
+		LEFT JOIN inv_devices d ON d.id=s.device_id
+		WHERE s.tenant_id=? AND s.room_id=? AND s.status IN ('running','paused')
 		ORDER BY s.id DESC
 		LIMIT 1
 		FOR UPDATE

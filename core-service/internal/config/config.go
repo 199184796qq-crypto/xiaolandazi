@@ -22,7 +22,9 @@ type Config struct {
 	RedisPassword            string
 	RedisDB                  int
 	EventCacheLimit          int
+	ImportantEventCacheLimit int
 	PublicEventLogEnabled    bool
+	EventArchiveSpoolDir     string
 	InternalToken            string
 	AudioServiceURL          string
 	AudioServiceToken        string
@@ -67,7 +69,9 @@ func Load() Config {
 		RedisPassword:            strings.TrimSpace(os.Getenv("REDIS_PASSWORD")),
 		RedisDB:                  envInt("REDIS_DB", 0),
 		EventCacheLimit:          envInt("PUBLIC_EVENT_CACHE_LIMIT", 500),
+		ImportantEventCacheLimit: envPositiveInt("IMPORTANT_EVENT_CACHE_LIMIT", 20000),
 		PublicEventLogEnabled:    envBool("PUBLIC_EVENT_LOG_ENABLED", env == "development"),
+		EventArchiveSpoolDir:     envOrDefault("EVENT_ARCHIVE_SPOOL_DIR", "data/event-archive-spool"),
 		InternalToken:            envOrDefault("CORE_INTERNAL_TOKEN", "local-core-dev-token"),
 		AudioServiceURL:          envOrDefault("AUDIO_SERVICE_URL", "http://127.0.0.1:8082"),
 		AudioServiceToken:        envOrDefault("AUDIO_INTERNAL_TOKEN", "local-audio-dev-token"),

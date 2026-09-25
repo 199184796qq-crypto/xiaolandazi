@@ -376,13 +376,6 @@ function sectionCollapsed(section: NavSection) {
   return collapsedNavSections.value[section.label] === true
 }
 
-function toggleNavSection(section: NavSection) {
-  collapsedNavSections.value = {
-    ...collapsedNavSections.value,
-    [section.label]: !sectionCollapsed(section),
-  }
-}
-
 async function openNavSection(section: NavSection) {
   collapsedNavSections.value = {
     ...collapsedNavSections.value,

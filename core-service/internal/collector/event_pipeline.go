@@ -35,6 +35,9 @@ type eventPipeline struct {
 	hub              *eventstore.Hub
 	publicLogEnabled bool
 
+	filterMu sync.RWMutex
+	filter   func(model.RoomEvent) bool
+
 	mu     sync.Mutex
 	rooms  map[int64]*roomEventPipeline
 	closed bool
@@ -79,6 +82,19 @@ func newEventPipeline(
 	}
 }
 
+func (p *eventPipeline) SetFilter(filter func(model.RoomEvent) bool) {
+	p.filterMu.Lock()
+	p.filter = filter
+	p.filterMu.Unlock()
+}
+
+func (p *eventPipeline) filtered(event model.RoomEvent) bool {
+	p.filterMu.RLock()
+	filter := p.filter
+	p.filterMu.RUnlock()
+	return filter != nil && filter(event)
+}
+
 // Enqueue is the capture hot path. It performs no Redis/MySQL/network I/O and
 // never waits for the room worker. High-value events have their own queue so a
 // like/member storm cannot crowd chat/questions out of the local fast path.
@@ -89,6 +105,9 @@ func (p *eventPipeline) Enqueue(
 	publish bool,
 ) (model.RoomEvent, bool) {
 	event := p.store.BuildEvent(room.TenantID, room.ID, input)
+	if p.filtered(event) {
+		return event, false
+	}
 	worker := p.roomPipeline(room)
 	if worker == nil || worker.closed.Load() {
 		p.ingressDropped.Add(1)
@@ -321,7 +340,7 @@ func (r *roomEventPipeline) persistLoop() {
 
 func isHighPriorityEvent(eventType string) bool {
 	switch strings.ToLower(strings.TrimSpace(eventType)) {
-	case "chat", "comment", "gift", "follow", "order":
+	case "session_start", "chat", "comment", "gift", "follow", "order", "order_signal":
 		return true
 	default:
 		return false

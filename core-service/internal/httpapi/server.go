@@ -12,26 +12,32 @@ import (
 	"strings"
 	"time"
 
+	"livecompanion/core/internal/agentdecision"
+	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/collector"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/media"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/userblock"
 )
 
 type Server struct {
-	rooms         *roomstore.Store
-	events        *eventstore.Store
-	hub           *eventstore.Hub
-	collectors    *collector.Manager
-	media         *media.Manager
-	brain         roomBrain
-	questions     *questionqueue.Queue
-	userBlocks    *userblock.Store
-	env           string
-	internalToken string
+	rooms          *roomstore.Store
+	events         *eventstore.Store
+	hub            *eventstore.Hub
+	collectors     *collector.Manager
+	media          *media.Manager
+	brain          roomBrain
+	questions      *questionqueue.Queue
+	agentDecisions *agentdecision.Queue
+	agentWork      *agentwork.Registry
+	userBlocks     *userblock.Store
+	speechRuntime  *speechruntime.Registry
+	env            string
+	internalToken  string
 }
 
 func New(
@@ -44,15 +50,25 @@ func New(
 	internalToken string,
 ) *Server {
 	return &Server{
-		rooms:         rooms,
-		events:        events,
-		hub:           hub,
-		collectors:    collectors,
-		media:         mediaManager,
-		questions:     questionqueue.New(),
-		env:           env,
-		internalToken: internalToken,
+		rooms:          rooms,
+		events:         events,
+		hub:            hub,
+		collectors:     collectors,
+		media:          mediaManager,
+		speechRuntime:  speechruntime.New(),
+		questions:      questionqueue.New(),
+		agentDecisions: agentdecision.New(),
+		agentWork:      agentwork.New(),
+		env:            env,
+		internalToken:  internalToken,
 	}
+}
+
+func (s *Server) SetSpeechRuntimeRegistry(registry *speechruntime.Registry) {
+	if registry == nil {
+		registry = speechruntime.New()
+	}
+	s.speechRuntime = registry
 }
 
 func (s *Server) Handler() http.Handler {
@@ -67,7 +83,23 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /internal/v1/rooms/{roomID}/runtime", s.internal(http.HandlerFunc(s.updateRoomRuntime)))
 	mux.Handle("DELETE /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.deleteRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.listEvents)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/session-stats", s.internal(http.HandlerFunc(s.getRoomSessionStats)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/session-decision", s.internal(http.HandlerFunc(s.resolveRoomSessionDecision)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/brain", s.internal(http.HandlerFunc(s.getRoomBrain)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/brain/topic-merges", s.internal(http.HandlerFunc(s.mergeRoomBrainTopics)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.getRoomSpeechRuntime)))
+	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
+	mux.Handle("POST /internal/v1/audio/events", s.internal(http.HandlerFunc(s.receiveAudioEvent)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/agent-decisions", s.internal(http.HandlerFunc(s.getRoomAgentDecisions)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/candidates", s.internal(http.HandlerFunc(s.enqueueRoomAgentDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/manual", s.internal(http.HandlerFunc(s.enqueueRoomManualDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/claim", s.internal(http.HandlerFunc(s.claimRoomAgentDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.internal(http.HandlerFunc(s.completeRoomAgentDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/release", s.internal(http.HandlerFunc(s.releaseRoomAgentDecision)))
+	mux.Handle("DELETE /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.internal(http.HandlerFunc(s.removeRoomAgentDecision)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/agent-runtime", s.internal(http.HandlerFunc(s.getRoomAgentWork)))
+	mux.Handle("PUT /internal/v1/rooms/{roomID}/agent-runtime", s.internal(http.HandlerFunc(s.updateRoomAgentWork)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/brain/pins", s.internal(http.HandlerFunc(s.recordRoomBrainPin)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/questions", s.internal(http.HandlerFunc(s.listRoomQuestions)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/questions", s.internal(http.HandlerFunc(s.enqueueRoomQuestion)))
@@ -115,6 +147,12 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"media_active_sessions": mediaStats.ActiveSessions,
 		"media_max_sessions":    mediaStats.MaxSessions,
 		"collector_providers":   collectorProviders,
+		"event_queue_depth":     collectorStats.EventQueueDepth,
+		"event_ingress_dropped": collectorStats.EventIngressDropped,
+		"event_persist_dropped": collectorStats.EventPersistDropped,
+		"event_persist_errors":  collectorStats.EventPersistErrors,
+		"runtime_pending":       collectorStats.RuntimePending,
+		"runtime_errors":        collectorStats.RuntimeErrors,
 	})
 }
 
@@ -206,14 +244,40 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	type stateItem struct {
-		TenantID  int64     `json:"tenant_id"`
-		RoomID    int64     `json:"room_id"`
-		Status    string    `json:"status"`
-		UpdatedAt time.Time `json:"updated_at"`
+		TenantID             int64           `json:"tenant_id"`
+		RoomID               int64           `json:"room_id"`
+		Status               string          `json:"status"`
+		UpdatedAt            time.Time       `json:"updated_at"`
+		AgentState           agentwork.State `json:"agent_state"`
+		AgentMode            agentwork.Mode  `json:"agent_mode"`
+		AgentWorkingSeconds  uint64          `json:"agent_working_seconds"`
+		AgentUpdatedAt       time.Time       `json:"agent_updated_at"`
+		SessionResumePending bool            `json:"session_resume_pending"`
 	}
 	items := make([]stateItem, 0, len(rooms))
 	for _, room := range rooms {
-		items = append(items, stateItem{TenantID: room.TenantID, RoomID: room.ID, Status: room.Status, UpdatedAt: room.UpdatedAt})
+		agent := agentwork.Snapshot{RoomID: room.ID, State: agentwork.StateStopped}
+		if s.agentWork != nil {
+			s.ensureAgentMode(r.Context(), room.ID)
+			agent = s.agentWork.Get(room.ID)
+		}
+		resumePending := false
+		if s.events != nil {
+			if stats, statsErr := s.events.GetSessionStats(r.Context(), room.ID); statsErr == nil {
+				resumePending = stats.ResumePending
+			}
+		}
+		items = append(items, stateItem{
+			TenantID:             room.TenantID,
+			RoomID:               room.ID,
+			Status:               room.Status,
+			UpdatedAt:            room.UpdatedAt,
+			AgentState:           agent.State,
+			AgentMode:            agent.Mode,
+			AgentWorkingSeconds:  agent.WorkingSeconds,
+			AgentUpdatedAt:       agent.UpdatedAt,
+			SessionResumePending: resumePending,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -320,6 +384,36 @@ func (s *Server) updateRoomRuntime(w http.ResponseWriter, r *http.Request) {
 	s.collectors.Reconcile(item)
 	writeJSON(w, http.StatusOK, item)
 }
+func (s *Server) cleanupDeletedRoomRuntime(ctx context.Context, roomID int64) {
+	if roomID <= 0 {
+		return
+	}
+	if err := s.stopRoomAudio(ctx, roomID); err != nil {
+		log.Printf("stop room audio during delete room=%d: %v", roomID, err)
+	}
+	if s.events != nil {
+		if err := s.events.ClearRoom(ctx, roomID); err != nil {
+			log.Printf("clear room event cache room=%d: %v", roomID, err)
+		}
+	}
+	if s.brain != nil {
+		s.brain.Reset(roomID)
+	}
+	if s.questions != nil {
+		s.questions.ClearRoom(roomID)
+	}
+	if s.agentDecisions != nil {
+		s.agentDecisions.ClearRoom(roomID)
+	}
+	if s.speechRuntime != nil {
+		s.speechRuntime.Reset(roomID)
+	}
+	if s.agentWork != nil {
+		s.agentWork.Clear(roomID)
+	}
+	s.clearRoomAudioState(roomID)
+}
+
 func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	roomID, ok := pathID(w, r, "roomID")
 	if !ok {
@@ -340,6 +434,8 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "delete room failed")
 		return
 	}
+
+	s.cleanupDeletedRoomRuntime(r.Context(), roomID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -370,11 +466,29 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	items, err := s.events.ListRecent(r.Context(), tenantID, roomID, limit)
+	channel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("channel")))
+	eventType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	beforeID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("before_id")); raw != "" {
+		beforeID, _ = strconv.ParseInt(raw, 10, 64)
+	}
+	var items []model.RoomEvent
+	var err error
+	if channel == "important" && eventType != "" {
+		items, err = s.events.ListImportant(r.Context(), tenantID, roomID, eventType, beforeID, limit)
+	} else {
+		items, err = s.events.ListRecent(r.Context(), tenantID, roomID, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list room events failed")
 		return
 	}
+	if strings.TrimSpace(r.URL.Query().Get("history")) != "all" {
+		if stats, statsErr := s.events.GetSessionStats(r.Context(), roomID); statsErr == nil {
+			items = filterEventsToActiveSession(items, stats.StartedAt)
+		}
+	}
+	hasMore := len(items) >= limit
 	if s.userBlocks != nil {
 		filtered := items[:0]
 		for _, item := range items {
@@ -385,8 +499,11 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	nextBeforeID := int64(0)
+	if len(items) > 0 {
+		nextBeforeID = items[len(items)-1].ID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore, "next_before_id": nextBeforeID})
 }
 
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {

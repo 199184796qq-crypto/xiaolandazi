@@ -157,6 +157,25 @@ func (s *Store) ArchiveLiveAgentPlan(ctx context.Context, tenantID, planID int64
 	return tx.Commit()
 }
 
+func (s *Store) GetLiveAgentPlanForRoom(ctx context.Context, tenantID, roomID int64) (model.LiveAgentPlan, error) {
+	var planID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT b.plan_id
+		FROM live_agent_plan_room_bindings b
+		INNER JOIN live_agent_plans p ON p.id=b.plan_id AND p.tenant_id=b.tenant_id
+		WHERE b.tenant_id=? AND b.room_id=? AND b.status='active' AND p.status='active'
+		ORDER BY b.id DESC
+		LIMIT 1
+	`, tenantID, roomID).Scan(&planID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
+	}
+	if err != nil {
+		return model.LiveAgentPlan{}, err
+	}
+	return s.GetLiveAgentPlan(ctx, tenantID, planID)
+}
+
 func (s *Store) BindRoomToLiveAgentPlan(
 	ctx context.Context,
 	tenantID, planID, roomID, actorUserID int64,

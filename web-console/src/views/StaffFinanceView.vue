@@ -216,10 +216,6 @@ function changeApprovalType(value: 'all' | ApprovalType) {
   approvalPage.value = 1
 }
 
-function changeApprovalPage(delta: number) {
-  approvalPage.value = Math.min(approvalPageCount.value, Math.max(1, approvalPage.value + delta))
-}
-
 async function loadOverview() {
   loading.value = true
   error.value = ''

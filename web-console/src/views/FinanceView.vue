@@ -123,15 +123,6 @@ function formatMoney(cents: number) {
   })
 }
 
-function formatSeconds(value: number) {
-  if (!value) return '0 小时'
-  const hours = Math.floor(value / 3600)
-  const minutes = Math.floor((value % 3600) / 60)
-  if (hours > 0 && minutes > 0) return hours + ' 小时 ' + minutes + ' 分钟'
-  if (hours > 0) return hours + ' 小时'
-  return minutes + ' 分钟'
-}
-
 function formatDate(value?: string) {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', {

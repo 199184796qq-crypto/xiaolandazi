@@ -11,16 +11,20 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/audit"
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/config"
 	"livecompanion/management/internal/coordination"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/decisionexecutor"
 	"livecompanion/management/internal/httpapi"
 	"livecompanion/management/internal/liveruntime"
 	"livecompanion/management/internal/mailer"
+	"livecompanion/management/internal/questioncluster"
 	assetstorage "livecompanion/management/internal/storage"
+	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/workinbox"
 )
 
@@ -195,6 +199,11 @@ func main() {
 		leaderLease,
 	)
 	go runtimeReconciler.Run(appCtx)
+	agentGateway := agentgateway.NewFromEnv()
+	clusterWorker := questioncluster.New(store, core, agentGateway, leaderLease)
+	go clusterWorker.Run(appCtx)
+	decisionWorker := decisionexecutor.New(store, core, agentGateway, ttsgateway.NewFromEnv(), leaderLease)
+	go decisionWorker.Run(appCtx)
 
 	// Pending device orders hold concrete inventory immediately. Only the
 	// cluster leader releases expired holds so multiple management nodes never

@@ -54,6 +54,7 @@ type RoomSignals struct {
 	Follows30s          int
 	Likes30s            int
 	Orders30s           int
+	OrderSignals30s     int
 	NegativeFeedback30s int
 	ActionableQuestions int
 	SecondsSinceHumor   int
@@ -317,7 +318,7 @@ func (ConversionProgressStrategy) Name() string         { return "progress.conve
 func (ConversionProgressStrategy) Dimension() Dimension { return DimensionProgress }
 func (ConversionProgressStrategy) Priority() int        { return 600 }
 func (ConversionProgressStrategy) Match(s Snapshot) bool {
-	return s.Signals.Orders30s > 0 || strings.EqualFold(strings.TrimSpace(s.ProgressHint), "CONVERSION")
+	return s.Signals.Orders30s > 0 || s.Signals.OrderSignals30s > 0 || strings.EqualFold(strings.TrimSpace(s.ProgressHint), "CONVERSION")
 }
 func (ConversionProgressStrategy) Apply(_ Snapshot, _ Plan) Contribution {
 	return Contribution{
@@ -368,7 +369,7 @@ func (OrderMomentumStrategy) Name() string         { return "atmosphere.positive
 func (OrderMomentumStrategy) Dimension() Dimension { return DimensionAtmosphere }
 func (OrderMomentumStrategy) Priority() int        { return 700 }
 func (OrderMomentumStrategy) Match(s Snapshot) bool {
-	return s.Signals.Orders30s > 0 || s.Signals.Follows30s >= 3
+	return s.Signals.Orders30s > 0 || s.Signals.OrderSignals30s > 0 || s.Signals.Follows30s >= 3
 }
 func (OrderMomentumStrategy) Apply(s Snapshot, _ Plan) Contribution {
 	humor := 0

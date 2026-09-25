@@ -28,6 +28,14 @@ type CreateTestTaskInput struct {
 	CallbackURL  string
 }
 
+type CreateExternalTaskInput struct {
+	RoomID      int64
+	SessionID   string
+	Label       string
+	AudioURL    string
+	CallbackURL string
+}
+
 type InsertInteractionInput struct {
 	RoomID         int64
 	SessionID      string
@@ -133,6 +141,51 @@ func (c *Client) CreateTestTask(ctx context.Context, input CreateTestTaskInput) 
 	return task, nil
 }
 
+func (c *Client) CreateExternalTask(ctx context.Context, input CreateExternalTaskInput) (SpeechTask, error) {
+	if !c.Enabled() {
+		return SpeechTask{}, fmt.Errorf("audio service is not configured")
+	}
+	if input.RoomID <= 0 || strings.TrimSpace(input.SessionID) == "" {
+		return SpeechTask{}, fmt.Errorf("room_id and session_id are required")
+	}
+	if strings.TrimSpace(input.AudioURL) == "" {
+		return SpeechTask{}, fmt.Errorf("audio_url is required")
+	}
+	body, err := json.Marshal(map[string]any{
+		"label":        strings.TrimSpace(input.Label),
+		"audio_url":    strings.TrimSpace(input.AudioURL),
+		"callback_url": strings.TrimSpace(input.CallbackURL),
+	})
+	if err != nil {
+		return SpeechTask{}, err
+	}
+	endpoint := c.baseURL + "/internal/v1/rooms/" + strconv.FormatInt(input.RoomID, 10) +
+		"/sessions/" + url.PathEscape(strings.TrimSpace(input.SessionID)) + "/tasks/external-wav"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return SpeechTask{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("X-Audio-Token", c.token)
+	}
+	client := &http.Client{Timeout: 50 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return SpeechTask{}, fmt.Errorf("audio service external task request: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return SpeechTask{}, fmt.Errorf("audio service http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var task SpeechTask
+	if err := json.Unmarshal(raw, &task); err != nil {
+		return SpeechTask{}, fmt.Errorf("decode audio task: %w", err)
+	}
+	return task, nil
+}
+
 func (c *Client) StartTestProgram(ctx context.Context, roomID int64, sessionID, label, callbackURL string) (RoomProgramSnapshot, error) {
 	if !c.Enabled() {
 		return RoomProgramSnapshot{}, fmt.Errorf("audio service is not configured")
@@ -196,6 +249,34 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input InsertI
 	var snapshot RoomProgramSnapshot
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return RoomProgramSnapshot{}, fmt.Errorf("decode room program interaction: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (c *Client) ProgramSnapshot(ctx context.Context, roomID int64) (RoomProgramSnapshot, error) {
+	if !c.Enabled() {
+		return RoomProgramSnapshot{}, fmt.Errorf("audio service is not configured")
+	}
+	if roomID <= 0 {
+		return RoomProgramSnapshot{}, fmt.Errorf("room_id is required")
+	}
+	endpoint := c.baseURL + "/v1/rooms/" + strconv.FormatInt(roomID, 10) + "/sync"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return RoomProgramSnapshot{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return RoomProgramSnapshot{}, fmt.Errorf("audio service sync request: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return RoomProgramSnapshot{}, fmt.Errorf("audio service sync http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var snapshot RoomProgramSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return RoomProgramSnapshot{}, fmt.Errorf("decode room program sync: %w", err)
 	}
 	return snapshot, nil
 }

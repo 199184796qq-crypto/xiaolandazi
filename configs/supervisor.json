@@ -1,11 +1,16 @@
 {
   "LogDir": "${ROOT}/data/logs",
   "RunDir": "${ROOT}/data/run",
-  "CheckInterval": "5s",
-  "HealthTimeout": "2s",
-  "HeartbeatInterval": "1m",
+  "CheckInterval": "2s",
+  "HealthTimeout": "1s",
+  "HeartbeatInterval": "30s",
   "FailureThreshold": 2,
   "RestartBackoff": "2s",
+  "ResourceCheckInterval": "1s",
+  "EmergencyMemoryFloorMB": 1024,
+  "EmergencyFailureThreshold": 3,
+  "EmergencyRestartDelay": "15s",
+  "EmergencyTargetService": "core-service",
   "Services": [
     {
       "Name": "web-console",
@@ -64,7 +69,8 @@
       "Command": "${ROOT}/core-service/bin/core-service",
       "CommandWindows": "${ROOT}/core-service/bin/core-service.exe",
       "WorkingDir": "${ROOT}",
-      "StartupGrace": "8s"
+      "StartupGrace": "8s",
+      "Priority": "below_normal"
     }
   ]
 }

@@ -95,7 +95,14 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 		return SynthesizeResponse{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return SynthesizeResponse{}, fmt.Errorf("qwen tts provider http %d", resp.StatusCode)
+		message := strings.TrimSpace(string(body))
+		if len(message) > 1200 {
+			message = message[:1200]
+		}
+		if message == "" {
+			return SynthesizeResponse{}, fmt.Errorf("qwen tts provider http %d", resp.StatusCode)
+		}
+		return SynthesizeResponse{}, fmt.Errorf("qwen tts provider http %d: %s", resp.StatusCode, message)
 	}
 	var result struct {
 		Output struct {

@@ -53,6 +53,20 @@ func (f *fakeAudioTaskClient) CreateTestTask(_ context.Context, input audioout.C
 	}, nil
 }
 
+func (f *fakeAudioTaskClient) CreateExternalTask(_ context.Context, input audioout.CreateExternalTaskInput) (audioout.SpeechTask, error) {
+	return audioout.SpeechTask{
+		ID:         "standalone-interaction-1",
+		RoomID:     input.RoomID,
+		SessionID:  input.SessionID,
+		Kind:       "interaction_tts",
+		Label:      input.Label,
+		AudioURL:   "http://127.0.0.1:8082/v1/tasks/standalone-interaction-1/audio.wav",
+		MimeType:   "audio/wav",
+		DurationMS: 900,
+		CreatedAt:  time.Now().UTC(),
+	}, nil
+}
+
 func (f *fakeAudioTaskClient) StartTestProgram(_ context.Context, roomID int64, sessionID, label, _ string) (audioout.RoomProgramSnapshot, error) {
 	return audioout.RoomProgramSnapshot{
 		ProgramID: "program-1",
@@ -83,6 +97,22 @@ func (f *fakeAudioTaskClient) InsertTestProgramInteraction(_ context.Context, in
 			Slot: "B", ProgramID: "program-1", Sequence: 2,
 		},
 		ServerTime: time.Now().UTC(),
+	}, nil
+}
+
+func (f *fakeAudioTaskClient) ProgramSnapshot(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
+	now := time.Now().UTC()
+	return audioout.RoomProgramSnapshot{
+		ProgramID: "program-1",
+		RoomID:    roomID,
+		Running:   true,
+		Sequence:  1,
+		Slot:      "A",
+		Task: &audioout.SpeechTask{
+			ID: "program-task-1", RoomID: roomID, SessionID: "session-a",
+			Kind: "test_wav_program", Label: "mainline", DurationMS: 120000, StartedAt: now,
+		},
+		ServerTime: now,
 	}, nil
 }
 
@@ -230,6 +260,23 @@ func TestDevAudioInteractionWritesTimelinePins(t *testing.T) {
 	}
 	if brain.spends[1] != "" {
 		t.Fatalf("resume should not spend debt: %q", brain.spends[1])
+	}
+}
+
+func TestAudioEventCallbackIsAvailableOutsideDevelopment(t *testing.T) {
+	server := New(nil, nil, nil, nil, nil, "production", "core-secret")
+	server.SetAudioClient(&fakeAudioTaskClient{}, "http://core.local")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/internal/v1/audio/events",
+		strings.NewReader(`{"speech_task_id":"interaction-prod-1","room_id":44,"session_id":"session-a","receiver_id":"pc-a","status":"COMPLETED","progress_ms":900}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Core-Token", "core-secret")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("production callback=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

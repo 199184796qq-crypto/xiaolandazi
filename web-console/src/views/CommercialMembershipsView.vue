@@ -2,6 +2,7 @@
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { session } from '../session'
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'

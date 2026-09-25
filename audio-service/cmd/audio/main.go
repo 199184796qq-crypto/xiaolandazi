@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ const (
 	defaultToken       = "local-audio-dev-token"
 	defaultCoreToken   = "local-core-dev-token"
 	maxBodyBytes       = 64 << 10
+	defaultReceiverTTL = 45 * time.Second
 	defaultTestWAVPath = `E:\直播伴播\测试素材\母带时间轴测试\mainline_same_tts.wav`
 )
 
@@ -104,12 +106,25 @@ type TaskSnapshot struct {
 	Terminal          bool                     `json:"terminal"`
 }
 
+type ReceiverRegistration struct {
+	ReceiverID   string    `json:"receiver_id"`
+	RoomID       int64     `json:"room_id"`
+	TerminalType string    `json:"terminal_type"`
+	Name         string    `json:"name,omitempty"`
+	Capabilities []string  `json:"capabilities,omitempty"`
+	RegisteredAt time.Time `json:"registered_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	Online       bool      `json:"online"`
+}
+
 type Broker struct {
 	mu             sync.RWMutex
 	tasks          map[string]*taskState
 	roomLatest     map[int64]string
 	programs       map[int64]*roomProgram
 	subscribers    map[int64]map[chan SpeechTask]struct{}
+	receivers      map[string]*ReceiverRegistration
+	receiverTTL    time.Duration
 	sequence       atomic.Uint64
 	publicURL      string
 	coreToken      string
@@ -130,10 +145,163 @@ func NewBroker(publicURL, coreToken string) *Broker {
 		roomLatest:  make(map[int64]string),
 		programs:    make(map[int64]*roomProgram),
 		subscribers: make(map[int64]map[chan SpeechTask]struct{}),
+		receivers:   make(map[string]*ReceiverRegistration),
+		receiverTTL: defaultReceiverTTL,
 		publicURL:   publicURL,
 		coreToken:   strings.TrimSpace(coreToken),
 		httpClient:  &http.Client{Timeout: 2 * time.Second},
 	}
+}
+
+func normalizeReceiverCapabilities(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 80 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) >= 16 {
+			break
+		}
+	}
+	return result
+}
+
+func (b *Broker) pruneStaleReceiversLocked(now time.Time) {
+	ttl := b.receiverTTL
+	if ttl <= 0 {
+		ttl = defaultReceiverTTL
+	}
+	for id, receiver := range b.receivers {
+		if receiver == nil || receiver.LastSeenAt.IsZero() || now.Sub(receiver.LastSeenAt) > ttl {
+			delete(b.receivers, id)
+		}
+	}
+}
+
+func (b *Broker) RegisterReceiver(input ReceiverRegistration) (ReceiverRegistration, error) {
+	input.ReceiverID = strings.TrimSpace(input.ReceiverID)
+	input.TerminalType = strings.TrimSpace(input.TerminalType)
+	input.Name = strings.TrimSpace(input.Name)
+	if input.ReceiverID == "" || len(input.ReceiverID) > 160 {
+		return ReceiverRegistration{}, errors.New("receiver_id is required")
+	}
+	if input.RoomID <= 0 {
+		return ReceiverRegistration{}, errors.New("room_id must be positive")
+	}
+	if input.TerminalType == "" {
+		input.TerminalType = "unknown"
+	}
+	if len(input.TerminalType) > 80 {
+		return ReceiverRegistration{}, errors.New("terminal_type is too long")
+	}
+	if len(input.Name) > 160 {
+		return ReceiverRegistration{}, errors.New("name is too long")
+	}
+	input.Capabilities = normalizeReceiverCapabilities(input.Capabilities)
+	now := time.Now().UTC()
+	input.RegisteredAt = now
+	input.LastSeenAt = now
+	input.Online = true
+
+	b.mu.Lock()
+	b.pruneStaleReceiversLocked(now)
+	if existing := b.receivers[input.ReceiverID]; existing != nil && existing.RoomID == input.RoomID {
+		input.RegisteredAt = existing.RegisteredAt
+	}
+	copy := input
+	b.receivers[input.ReceiverID] = &copy
+	b.mu.Unlock()
+	return input, nil
+}
+
+func (b *Broker) HeartbeatReceiver(receiverID string, roomID int64) (ReceiverRegistration, error) {
+	receiverID = strings.TrimSpace(receiverID)
+	now := time.Now().UTC()
+	b.mu.Lock()
+	b.pruneStaleReceiversLocked(now)
+	receiver := b.receivers[receiverID]
+	if receiver == nil || receiver.RoomID != roomID {
+		b.mu.Unlock()
+		return ReceiverRegistration{}, errors.New("receiver is not registered for this room")
+	}
+	receiver.LastSeenAt = now
+	receiver.Online = true
+	copy := *receiver
+	copy.Capabilities = append([]string(nil), receiver.Capabilities...)
+	b.mu.Unlock()
+	return copy, nil
+}
+
+func (b *Broker) UnregisterReceiver(receiverID string, roomID int64) error {
+	receiverID = strings.TrimSpace(receiverID)
+	b.mu.Lock()
+	receiver := b.receivers[receiverID]
+	if receiver == nil {
+		b.mu.Unlock()
+		return nil
+	}
+	if roomID > 0 && receiver.RoomID != roomID {
+		b.mu.Unlock()
+		return errors.New("receiver is registered to another room")
+	}
+	delete(b.receivers, receiverID)
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Broker) ReceiverForRoom(receiverID string, roomID int64) (ReceiverRegistration, bool) {
+	now := time.Now().UTC()
+	b.mu.Lock()
+	b.pruneStaleReceiversLocked(now)
+	receiver := b.receivers[strings.TrimSpace(receiverID)]
+	if receiver == nil || receiver.RoomID != roomID {
+		b.mu.Unlock()
+		return ReceiverRegistration{}, false
+	}
+	copy := *receiver
+	copy.Capabilities = append([]string(nil), receiver.Capabilities...)
+	copy.Online = true
+	b.mu.Unlock()
+	return copy, true
+}
+
+func (b *Broker) ListReceivers(roomID int64) []ReceiverRegistration {
+	now := time.Now().UTC()
+	b.mu.Lock()
+	b.pruneStaleReceiversLocked(now)
+	result := make([]ReceiverRegistration, 0, len(b.receivers))
+	for _, receiver := range b.receivers {
+		if receiver == nil || (roomID > 0 && receiver.RoomID != roomID) {
+			continue
+		}
+		copy := *receiver
+		copy.Capabilities = append([]string(nil), receiver.Capabilities...)
+		copy.Online = true
+		result = append(result, copy)
+	}
+	b.mu.Unlock()
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].RoomID == result[j].RoomID {
+			return result[i].ReceiverID < result[j].ReceiverID
+		}
+		return result[i].RoomID < result[j].RoomID
+	})
+	return result
+}
+
+func (b *Broker) SubscribeRegistered(roomID int64, receiverID string) (<-chan SpeechTask, *SpeechTask, func(), error) {
+	if _, ok := b.ReceiverForRoom(receiverID, roomID); !ok {
+		return nil, nil, func() {}, errors.New("receiver is not registered for this room")
+	}
+	ch, latest, cancel := b.Subscribe(roomID)
+	return ch, latest, cancel, nil
 }
 
 func NewBrokerWithTestAudio(publicURL, coreToken string, audio []byte, durationMS int, sourcePath string) (*Broker, error) {
@@ -225,6 +393,65 @@ func (b *Broker) CreateTestTask(roomID int64, sessionID, requestedID, label stri
 		case ch <- task:
 		default:
 			// A slow receiver must never block the room program or other receivers.
+		}
+	}
+	return task, nil
+}
+
+func (b *Broker) CreateExternalWAVTask(ctx context.Context, roomID int64, sessionID, label, audioURL, callbackURL string) (SpeechTask, error) {
+	if roomID <= 0 {
+		return SpeechTask{}, errors.New("room_id must be positive")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SpeechTask{}, errors.New("session_id is required")
+	}
+	audio, durationMS, err := b.downloadExternalWAV(ctx, audioURL)
+	if err != nil {
+		return SpeechTask{}, err
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "实时互动 TTS"
+	}
+	now := time.Now().UTC()
+	id := fmt.Sprintf("interaction-%d-%d-%06d", roomID, now.UnixMilli(), b.sequence.Add(1))
+	task := SpeechTask{
+		ID:         id,
+		RoomID:     roomID,
+		SessionID:  sessionID,
+		Kind:       "interaction_tts",
+		Label:      label,
+		AudioURL:   b.publicURL + "/v1/tasks/" + url.PathEscape(id) + "/audio.wav",
+		MimeType:   "audio/wav",
+		DurationMS: durationMS,
+		StartedAt:  now,
+		CreatedAt:  now,
+	}
+	b.mu.Lock()
+	if oldID := b.roomLatest[roomID]; oldID != "" {
+		if old := b.tasks[oldID]; old != nil && !old.terminal && old.task.Kind == "interaction_tts" {
+			b.mu.Unlock()
+			return SpeechTask{}, errors.New("room already has an active TTS interaction")
+		}
+	}
+	b.tasks[id] = &taskState{
+		task:           task,
+		audio:          audio,
+		callbackURL:    strings.TrimSpace(callbackURL),
+		receiverEvents: make(map[string]PlaybackEvent),
+	}
+	b.roomLatest[roomID] = id
+	subs := make([]chan SpeechTask, 0, len(b.subscribers[roomID]))
+	for ch := range b.subscribers[roomID] {
+		subs = append(subs, ch)
+	}
+	b.pruneLocked()
+	b.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- task:
+		default:
 		}
 	}
 	return task, nil
@@ -931,7 +1158,12 @@ func newServer(broker *Broker, internalToken string) *server {
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /v1/receivers/register", s.registerReceiver)
+	mux.HandleFunc("POST /v1/receivers/{receiverID}/heartbeat", s.heartbeatReceiver)
+	mux.HandleFunc("POST /v1/receivers/{receiverID}/unregister", s.unregisterReceiver)
+	mux.HandleFunc("GET /v1/rooms/{roomID}/receivers", s.roomReceivers)
 	mux.Handle("POST /internal/v1/rooms/{roomID}/sessions/{sessionID}/tasks/test-tone", s.internal(http.HandlerFunc(s.createTestTask)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/sessions/{sessionID}/tasks/external-wav", s.internal(http.HandlerFunc(s.createExternalWAVTask)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/program/test-loop/start", s.internal(http.HandlerFunc(s.startTestProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/program/test-loop/stop", s.internal(http.HandlerFunc(s.stopTestProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/program/test-loop/interaction", s.internal(http.HandlerFunc(s.insertTestProgramInteraction)))
@@ -980,13 +1212,15 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 		receiverCount += len(subs)
 	}
 	s.broker.mu.RUnlock()
+	registeredReceivers := len(s.broker.ListReceivers(0))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service":             "audio-service",
-		"status":              "ok",
-		"time":                time.Now().UTC(),
-		"tasks":               taskCount,
-		"subscribed_rooms":    roomCount,
-		"connected_receivers": receiverCount,
+		"service":              "audio-service",
+		"status":               "ok",
+		"time":                 time.Now().UTC(),
+		"tasks":                taskCount,
+		"subscribed_rooms":     roomCount,
+		"connected_receivers":  receiverCount,
+		"registered_receivers": registeredReceivers,
 	})
 }
 
@@ -996,6 +1230,62 @@ func parsePositivePathInt(r *http.Request, name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return value, nil
+}
+
+func (s *server) registerReceiver(w http.ResponseWriter, r *http.Request) {
+	var input ReceiverRegistration
+	if err := readJSON(w, r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	registration, err := s.broker.RegisterReceiver(input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, registration)
+}
+
+func (s *server) heartbeatReceiver(w http.ResponseWriter, r *http.Request) {
+	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
+	var input struct {
+		RoomID int64 `json:"room_id"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	registration, err := s.broker.HeartbeatReceiver(receiverID, input.RoomID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, registration)
+}
+
+func (s *server) unregisterReceiver(w http.ResponseWriter, r *http.Request) {
+	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
+	var input struct {
+		RoomID int64 `json:"room_id"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	if err := s.broker.UnregisterReceiver(receiverID, input.RoomID); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"unregistered": true})
+}
+
+func (s *server) roomReceivers(w http.ResponseWriter, r *http.Request) {
+	roomID, err := parsePositivePathInt(r, "roomID")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.broker.ListReceivers(roomID)})
 }
 
 func (s *server) createTestTask(w http.ResponseWriter, r *http.Request) {
@@ -1026,6 +1316,38 @@ func (s *server) createTestTask(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (s *server) createExternalWAVTask(w http.ResponseWriter, r *http.Request) {
+	roomID, err := parsePositivePathInt(r, "roomID")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" || len(sessionID) > 160 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid session_id"})
+		return
+	}
+	var input struct {
+		Label       string `json:"label"`
+		AudioURL    string `json:"audio_url"`
+		CallbackURL string `json:"callback_url"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	if strings.TrimSpace(input.AudioURL) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "audio_url is required"})
+		return
+	}
+	task, err := s.broker.CreateExternalWAVTask(r.Context(), roomID, sessionID, input.Label, input.AudioURL, input.CallbackURL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusCreated, task)
@@ -1143,13 +1465,22 @@ func (s *server) roomStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, latest, cancel := s.broker.Subscribe(roomID)
+	registration, registered := s.broker.ReceiverForRoom(receiverID, roomID)
+	if !registered {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "receiver is not registered for this room"})
+		return
+	}
+	ch, latest, cancel, err := s.broker.SubscribeRegistered(roomID, receiverID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
 	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"room_id\":%d,\"receiver_id\":%q}\n\n", roomID, receiverID)
+	writeSSE(w, "connected", registration)
 	if latest != nil {
 		writeSSE(w, "task", latest)
 	}
@@ -1168,6 +1499,11 @@ func (s *server) roomStream(w http.ResponseWriter, r *http.Request) {
 			writeSSE(w, "task", task)
 			flusher.Flush()
 		case <-keepAlive.C:
+			if _, ok := s.broker.ReceiverForRoom(receiverID, roomID); !ok {
+				writeSSE(w, "unregistered", map[string]any{"receiver_id": receiverID, "room_id": roomID})
+				flusher.Flush()
+				return
+			}
 			_, _ = io.WriteString(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
@@ -1211,6 +1547,15 @@ func (s *server) taskEvent(w http.ResponseWriter, r *http.Request) {
 	var input PlaybackEvent
 	if err := readJSON(w, r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	snapshot, ok := s.broker.Snapshot(taskID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "speech task not found"})
+		return
+	}
+	if _, registered := s.broker.ReceiverForRoom(input.ReceiverID, snapshot.Task.RoomID); !registered {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "receiver is not registered for this room"})
 		return
 	}
 	event, reference, err := s.broker.ReportEvent(taskID, input)

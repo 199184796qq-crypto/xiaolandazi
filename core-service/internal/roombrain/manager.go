@@ -31,37 +31,32 @@ type HeuristicClassifier struct{}
 func (HeuristicClassifier) Classify(text string) Classification {
 	value := strings.TrimSpace(text)
 	lower := strings.ToLower(value)
+	question := strings.ContainsAny(value, "?？") || containsAny(lower,
+		"多少", "怎么", "什么", "哪里", "哪儿", "哪个地方", "什么地方", "地址", "位置",
+		"几斤", "多大", "能不能", "有没有", "吗", "呢", "为啥", "为什么", "多久", "几天")
 	result := Classification{
-		Question: strings.ContainsAny(value, "?？") || containsAny(lower,
-			"多少", "怎么", "什么", "哪里", "哪儿", "几斤", "多大", "能不能", "有没有", "吗", "呢"),
+		Question: question,
 		Negative: containsAny(lower,
 			"骗人", "假的", "太贵", "坑", "垃圾", "不好", "投诉", "退货", "退款", "破损", "坏了", "没发货", "不发货"),
 	}
-	switch {
-	case containsAny(lower, "优惠券", "券", "优惠"):
-		result.Topic = "COUPON"
-	case containsAny(lower, "多少钱", "价格", "价钱", "好多钱", "贵不贵"):
-		result.Topic = "PRICE"
-	case containsAny(lower, "发货", "快递", "运费", "多久到", "几天到", "包邮"):
-		result.Topic = "SHIPPING"
-	case containsAny(lower, "怎么吃", "怎么做", "空气炸锅", "微波炉", "加热", "做法"):
-		result.Topic = "HOW_TO_EAT"
-	case containsAny(lower, "规格", "多大", "几斤", "重量", "一只多重"):
-		result.Topic = "SPEC"
-	case containsAny(lower, "哪里", "哪儿", "产地", "哪里的"):
-		result.Topic = "ORIGIN"
-	case containsAny(lower, "保存", "冷藏", "冷冻", "保质"):
-		result.Topic = "STORAGE"
-	case containsAny(lower, "售后", "退货", "退款", "破损", "坏了", "漏气"):
-		result.Topic = "AFTER_SALE"
-	case containsAny(lower, "肉质", "口感", "质量", "好不好", "新鲜"):
-		result.Topic = "QUALITY"
-	case containsAny(lower, "怎么买", "怎么拍", "下单", "拍哪个", "链接"):
-		result.Topic = "ORDERING"
-	case result.Question:
-		result.Topic = "GENERAL_QUESTION"
+	if question {
+		result.Topic = roomintel.QuestionTopic(value)
 	}
 	return result
+}
+
+func IsOrderSignalText(text string) bool {
+	value := strings.ToLower(strings.TrimSpace(text))
+	if value == "" {
+		return false
+	}
+	if strings.ContainsAny(value, "?？") || containsAny(value,
+		"怎么买", "怎么拍", "怎么下单", "如何买", "如何拍", "拍哪个", "哪个链接", "能买吗", "能不能买", "哪里买") {
+		return false
+	}
+	return containsAny(value,
+		"已下单", "已经下单", "下单了", "我下单", "已拍", "已经拍", "拍了", "拍好了", "拍下了", "我拍了",
+		"买了", "我买了", "买好了", "已购买", "已经购买", "购买了")
 }
 
 func containsAny(value string, parts ...string) bool {
@@ -195,7 +190,9 @@ func (m *Manager) toIntelEvent(event model.RoomEvent) (roomintel.Event, bool) {
 		at = m.now()
 	}
 	out := roomintel.Event{
+		EventID:    event.ID,
 		UserID:     event.UserID,
+		Nickname:   event.Nickname,
 		Content:    event.Content,
 		Count:      1,
 		OccurredAt: at,
@@ -226,6 +223,8 @@ func (m *Manager) toIntelEvent(event model.RoomEvent) (roomintel.Event, bool) {
 		if out.Count <= 0 {
 			out.Count = 1
 		}
+	case "order_signal":
+		out.Type = roomintel.EventOrderSignal
 	case "gift":
 		out.Type = roomintel.EventGift
 	case "room":
@@ -304,7 +303,7 @@ func (m *Manager) evaluateDebtsLocked(state *roomState, now time.Time) {
 	if intel.Heat != roomintel.HeatCold {
 		state.timeline.RaiseDebt(timeline.DebtConversion, 0.03, now)
 	}
-	if intel.Orders30s > 0 {
+	if intel.Orders30s > 0 || intel.OrderSignals30s > 0 {
 		state.timeline.RaiseDebt(timeline.DebtConversion, 0.10, now)
 	}
 }
@@ -352,6 +351,37 @@ func (m *Manager) RecordPin(roomID int64, pin timeline.Pin, spend timeline.DebtK
 	}
 }
 
+func (m *Manager) RemoveUser(roomID int64, userID string) {
+	userID = strings.TrimSpace(userID)
+	if roomID <= 0 || userID == "" {
+		return
+	}
+	m.mu.Lock()
+	state := m.rooms[roomID]
+	m.mu.Unlock()
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.intel.RemoveUser(userID)
+	state.mu.Unlock()
+}
+
+func (m *Manager) MergeTopics(roomID int64, representative string, sources []string) int {
+	if roomID <= 0 || strings.TrimSpace(representative) == "" || len(sources) == 0 {
+		return 0
+	}
+	m.mu.Lock()
+	state := m.rooms[roomID]
+	m.mu.Unlock()
+	if state == nil {
+		return 0
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.intel.MergeTopics(representative, sources)
+}
+
 func (m *Manager) Reset(roomID int64) {
 	m.mu.Lock()
 	delete(m.rooms, roomID)
@@ -359,12 +389,16 @@ func (m *Manager) Reset(roomID int64) {
 }
 
 type TopicView struct {
-	Topic           string
-	Count           int
-	UniqueUsers     int
-	LastSeenAt      time.Time
-	LastAnsweredAt  time.Time
-	SampleQuestions []string
+	Topic                 string
+	Count                 int
+	UniqueUsers           int
+	LastSeenAt            time.Time
+	LastAnsweredAt        time.Time
+	SampleQuestions       []string
+	Questions             []roomintel.TopicQuestion
+	TTSQuestions          []roomintel.TopicQuestion
+	TTSEligibleCount      int
+	ArchivedQuestionCount int
 }
 
 type IntelligenceView struct {
@@ -376,6 +410,14 @@ type IntelligenceView struct {
 	Likes30s            int64
 	Follows30s          int
 	Orders30s           int
+	OrderSignals30s     int
+	OrderSignals60s     int
+	OrderSignalSamples  []string
+	SessionEntries      int
+	SessionChats        int
+	SessionLikes        int64
+	SessionFollows      int
+	SessionGifts        int
 	UniqueChatters30s   int
 	QuestionCount30s    int
 	NegativeFeedback30s int
@@ -488,6 +530,7 @@ func (m *Manager) Snapshot(roomID int64) (View, error) {
 			Follows30s:          intel.Follows30s,
 			Likes30s:            int(intel.Likes30s),
 			Orders30s:           intel.Orders30s,
+			OrderSignals30s:     intel.OrderSignals30s,
 			NegativeFeedback30s: intel.NegativeFeedback30s,
 			ActionableQuestions: intel.QuestionCount30s,
 			SecondsSinceHumor:   secondsSinceHumor,
@@ -543,11 +586,14 @@ func buildHumanizationContext(now time.Time, intel roomintel.Snapshot, view time
 	afterSale := false
 	priceDispute := false
 	for _, bucket := range intel.TopTopics {
-		if bucket.Topic == "AFTER_SALE" {
-			afterSale = true
-		}
-		if bucket.Topic == "PRICE" && intel.NegativeFeedback30s > 0 {
-			priceDispute = true
+		for _, sample := range bucket.SampleQuestions {
+			lower := strings.ToLower(sample)
+			if containsAny(lower, "售后", "退货", "退款", "破损", "坏了", "漏气") {
+				afterSale = true
+			}
+			if intel.NegativeFeedback30s > 0 && containsAny(lower, "多少钱", "价格", "价钱", "贵", "优惠") {
+				priceDispute = true
+			}
 		}
 	}
 
@@ -557,7 +603,7 @@ func buildHumanizationContext(now time.Time, intel roomintel.Snapshot, view time
 		Complaint:                afterSale && intel.NegativeFeedback30s > 0,
 		AfterSale:                afterSale,
 		PriceDispute:             priceDispute,
-		HighIntentClose:          intel.Orders30s > 0,
+		HighIntentClose:          intel.Orders30s > 0 || intel.OrderSignals30s > 0,
 		SecondsSinceLastBehavior: lastHumanization,
 		BehaviorCount60s:         behaviorCount,
 		MaxBehaviorsPerMinute:    1,
@@ -616,12 +662,16 @@ func intelligenceDTO(value roomintel.Snapshot) IntelligenceView {
 	topics := make([]TopicView, 0, len(value.TopTopics))
 	for _, bucket := range value.TopTopics {
 		topics = append(topics, TopicView{
-			Topic:           bucket.Topic,
-			Count:           bucket.Count,
-			UniqueUsers:     bucket.UniqueUsers,
-			LastSeenAt:      bucket.LastSeenAt,
-			LastAnsweredAt:  bucket.LastAnsweredAt,
-			SampleQuestions: bucket.SampleQuestions,
+			Topic:                 bucket.Topic,
+			Count:                 bucket.Count,
+			UniqueUsers:           bucket.UniqueUsers,
+			LastSeenAt:            bucket.LastSeenAt,
+			LastAnsweredAt:        bucket.LastAnsweredAt,
+			SampleQuestions:       bucket.SampleQuestions,
+			Questions:             bucket.Questions,
+			TTSQuestions:          bucket.TTSQuestions,
+			TTSEligibleCount:      bucket.TTSEligibleCount,
+			ArchivedQuestionCount: bucket.ArchivedQuestionCount,
 		})
 	}
 	return IntelligenceView{
@@ -633,6 +683,14 @@ func intelligenceDTO(value roomintel.Snapshot) IntelligenceView {
 		Likes30s:            value.Likes30s,
 		Follows30s:          value.Follows30s,
 		Orders30s:           value.Orders30s,
+		OrderSignals30s:     value.OrderSignals30s,
+		OrderSignals60s:     value.OrderSignals60s,
+		OrderSignalSamples:  value.OrderSignalSamples,
+		SessionEntries:      value.SessionEntries,
+		SessionChats:        value.SessionChats,
+		SessionLikes:        value.SessionLikes,
+		SessionFollows:      value.SessionFollows,
+		SessionGifts:        value.SessionGifts,
 		UniqueChatters30s:   value.UniqueChatters30s,
 		QuestionCount30s:    value.QuestionCount30s,
 		NegativeFeedback30s: value.NegativeFeedback30s,

@@ -169,6 +169,31 @@ func (s *Server) liveAgentPlanArchive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) liveAgentPlanCurrentForRoom(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	item, err := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+		writeJSON(w, http.StatusOK, map[string]any{"plan": nil})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前直播智能体方案失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plan": item})
+}
+
 func (s *Server) liveAgentPlanBindRoom(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {

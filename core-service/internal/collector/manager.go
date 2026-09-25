@@ -15,6 +15,7 @@ import (
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/model"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/roombrain"
 )
 
 type Stats struct {
@@ -40,6 +41,13 @@ func (m *Manager) ProviderDescriptors() []ProviderDescriptor {
 		return nil
 	}
 	return catalog.ProviderDescriptors()
+}
+
+func (m *Manager) SetEventFilter(filter func(model.RoomEvent) bool) {
+	if m == nil || m.eventPipeline == nil {
+		return
+	}
+	m.eventPipeline.SetFilter(filter)
 }
 
 type Manager struct {
@@ -223,7 +231,9 @@ func (m *Manager) start(room model.Room, lease *coordination.RoomLease) {
 }
 
 func (m *Manager) Stop(roomID int64) {
-	m.stopLocal(roomID, true)
+	// Preserve the last successful session cache when a user stops monitoring.
+	// A future failed reconnect must not erase the previous live-room history.
+	m.stopLocal(roomID, false)
 }
 
 func (m *Manager) stopLocal(roomID int64, clearEvents bool) {
@@ -455,17 +465,13 @@ func (m *Manager) Close() {
 	m.rootCancel()
 
 	m.mu.Lock()
-	roomIDs := make([]int64, 0, len(m.sessions))
-	for roomID, cancel := range m.sessions {
+	for _, cancel := range m.sessions {
 		cancel()
-		roomIDs = append(roomIDs, roomID)
 	}
 	m.mu.Unlock()
 
-	for _, roomID := range roomIDs {
-		m.clearRoomEvents(roomID)
-	}
-
+	// Do not clear room events on process shutdown. Redis keeps the last
+	// successful live session available for the next UI/backend start.
 	m.wg.Wait()
 	if m.eventPipeline != nil {
 		m.eventPipeline.Close()
@@ -477,6 +483,8 @@ func (m *Manager) Close() {
 
 func (m *Manager) run(ctx context.Context, room model.Room) {
 	backoff := 5 * time.Second
+	currentPlatformRoomID, hasCachedEvents := m.cachedPlatformRoomID(room.ID)
+	sessionEnded := false
 
 	for {
 		if ctx.Err() != nil {
@@ -494,41 +502,83 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 			log.Printf("collector room=%d create runner: %v", room.ID, err)
 			return
 		}
-		// Clear stale cache before entering the collector runner. This may touch
-		// remote Redis, so it must never run inside the collector callbacks.
-		m.clearRoomEvents(room.ID)
-
+		attemptLive := false
 		live := func(_ context.Context) error {
-			m.eventPipeline.Enqueue(room, model.CreateEventInput{
-				EventType:  "session_start",
-				OccurredAt: time.Now().UTC(),
-			}, false, false)
+			attemptLive = true
 			m.runtimeUpdater.Touch(room)
 			return nil
 		}
 
+		ensureSession := func(input model.CreateEventInput) {
+			platformRoomID := platformRoomIDFromPayload(input.Payload)
+			if platformRoomID == "" {
+				return
+			}
+			if platformRoomID == currentPlatformRoomID && !sessionEnded {
+				return
+			}
+
+			// First confirmed broadcast starts a fresh logical session. Any later
+			// return from offline is deliberately marked as reopen-pending so the
+			// user can choose to merge it with the previous broadcast or start a
+			// fresh active runtime. We keep cached raw events for review either way.
+			eventType := "session_start"
+			if hasCachedEvents {
+				eventType = "session_reopen"
+			}
+			m.eventPipeline.Enqueue(room, model.CreateEventInput{
+				EventType:  eventType,
+				OccurredAt: time.Now().UTC(),
+			}, true, false)
+			currentPlatformRoomID = platformRoomID
+			hasCachedEvents = true
+			sessionEnded = false
+		}
+
 		emit := func(_ context.Context, input model.CreateEventInput) error {
+			ensureSession(input)
 			if input.EventType == "room" {
 				m.applyRoomMetrics(room, input)
 				m.eventPipeline.Enqueue(room, input, false, false)
 				return nil
 			}
 
-			m.runtimeUpdater.Touch(room)
-			m.eventPipeline.Enqueue(room, input, true, true)
+			event, accepted := m.eventPipeline.Enqueue(room, input, true, true)
+			if accepted {
+				m.runtimeUpdater.Touch(room)
+				if (strings.EqualFold(input.EventType, "chat") || strings.EqualFold(input.EventType, "comment")) && roombrain.IsOrderSignalText(input.Content) {
+					payload, _ := json.Marshal(map[string]any{
+						"source_event_id": event.ID,
+						"verified_order":  false,
+						"source":          "user_chat",
+					})
+					m.eventPipeline.Enqueue(room, model.CreateEventInput{
+						EventType:  "order_signal",
+						UserID:     input.UserID,
+						Nickname:   input.Nickname,
+						Content:    input.Content,
+						OccurredAt: event.OccurredAt,
+						Payload:    payload,
+					}, true, true)
+				}
+			}
 			return nil
 		}
 
 		err = runner.Run(ctx, room, live, emit)
-		m.eventPipeline.Enqueue(room, model.CreateEventInput{
-			EventType:  "session_end",
-			OccurredAt: time.Now().UTC(),
-		}, false, false)
+		if errors.Is(err, ErrOffline) && attemptLive && currentPlatformRoomID != "" {
+			m.eventPipeline.Enqueue(room, model.CreateEventInput{
+				EventType:  "session_end",
+				OccurredAt: time.Now().UTC(),
+			}, false, false)
+			sessionEnded = true
+		}
 		m.eventPipeline.CloseRoom(room.ID)
 		// Drop any coalesced live/online write before publishing an offline/error
 		// state. Otherwise a delayed cloud-DB flush could resurrect a stopped run.
 		m.runtimeUpdater.ClearRoom(room.ID)
-		m.clearRoomEvents(room.ID)
+		// Keep the last successful session cache. It is only replaced after a
+		// future real event proves that Douyin's platform room_id has changed.
 		if ctx.Err() != nil {
 			return
 		}
@@ -560,6 +610,39 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		case <-timer.C:
 		}
 	}
+}
+
+func platformRoomIDFromPayload(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var value struct {
+		RoomID json.RawMessage `json:"room_id"`
+	}
+	if err := json.Unmarshal(payload, &value); err != nil || len(value.RoomID) == 0 {
+		return ""
+	}
+	roomID := strings.Trim(strings.TrimSpace(string(value.RoomID)), "\"")
+	if roomID == "" || roomID == "0" || strings.EqualFold(roomID, "null") {
+		return ""
+	}
+	return roomID
+}
+
+func (m *Manager) cachedPlatformRoomID(roomID int64) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	items, err := m.events.ListRecent(ctx, nil, roomID, 100)
+	if err != nil {
+		log.Printf("collector room=%d inspect cached session: %v", roomID, err)
+		return "", false
+	}
+	for _, item := range items {
+		if platformRoomID := platformRoomIDFromPayload(item.Payload); platformRoomID != "" {
+			return platformRoomID, true
+		}
+	}
+	return "", len(items) > 0
 }
 
 func (m *Manager) clearRoomEvents(roomID int64) {

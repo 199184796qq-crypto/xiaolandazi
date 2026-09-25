@@ -68,6 +68,80 @@ func TestBrokerUsesConfiguredTestWAV(t *testing.T) {
 	}
 }
 
+func TestRegisteredReceiversFanOneTaskToTwoTerminals(t *testing.T) {
+	broker := NewBroker("http://127.0.0.1:8082", "")
+	for _, receiverID := range []string{"pc-a", "box-b"} {
+		if _, err := broker.RegisterReceiver(ReceiverRegistration{
+			ReceiverID:   receiverID,
+			RoomID:       77,
+			TerminalType: "test",
+			Capabilities: []string{"audio/wav"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _, cancelA, err := broker.SubscribeRegistered(77, "pc-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelA()
+	b, _, cancelB, err := broker.SubscribeRegistered(77, "box-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelB()
+
+	task, err := broker.CreateTestTask(77, "session-registered", "task-registered", "registered fanout", 900, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, ch := range map[string]<-chan SpeechTask{"pc-a": a, "box-b": b} {
+		select {
+		case got := <-ch:
+			if got.ID != task.ID || got.AudioURL != task.AudioURL {
+				t.Fatalf("%s received different task: %#v", name, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not receive task", name)
+		}
+	}
+}
+
+func TestSubscribeRegisteredRequiresRegistration(t *testing.T) {
+	broker := NewBroker("http://127.0.0.1:8082", "")
+	if _, _, _, err := broker.SubscribeRegistered(77, "missing"); err == nil {
+		t.Fatal("unregistered receiver must not subscribe")
+	}
+}
+
+func TestReceiverHeartbeatAndExpiry(t *testing.T) {
+	broker := NewBroker("http://127.0.0.1:8082", "")
+	broker.receiverTTL = 25 * time.Millisecond
+	registered, err := broker.RegisterReceiver(ReceiverRegistration{
+		ReceiverID:   "pc-heartbeat",
+		RoomID:       88,
+		TerminalType: "web_console",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	heartbeat, err := broker.HeartbeatReceiver("pc-heartbeat", 88)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !heartbeat.LastSeenAt.After(registered.LastSeenAt) {
+		t.Fatalf("heartbeat did not advance last_seen: registered=%s heartbeat=%s", registered.LastSeenAt, heartbeat.LastSeenAt)
+	}
+	time.Sleep(35 * time.Millisecond)
+	if _, ok := broker.ReceiverForRoom("pc-heartbeat", 88); ok {
+		t.Fatal("stale receiver should expire")
+	}
+	if got := broker.ListReceivers(88); len(got) != 0 {
+		t.Fatalf("expired receivers=%d want=0", len(got))
+	}
+}
+
 func TestBrokerFansOneTaskToTwoReceivers(t *testing.T) {
 	broker := NewBroker("http://127.0.0.1:8082", "")
 	a, _, cancelA := broker.Subscribe(77)
@@ -115,6 +189,80 @@ func TestCompletedTaskIsNotReplayedToReconnect(t *testing.T) {
 	snapshot, ok := broker.Snapshot(task.ID)
 	if !ok || !snapshot.Terminal {
 		t.Fatalf("completed task not marked terminal: %#v", snapshot)
+	}
+}
+
+func TestStandaloneExternalWAVPublishesWithoutMainlineProgram(t *testing.T) {
+	broker := NewBroker("http://audio.local", "")
+	interactionAudio := testChimeWAV(180)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(interactionAudio)
+	}))
+	defer source.Close()
+
+	ch, latest, cancelSub := broker.Subscribe(302)
+	defer cancelSub()
+	if latest != nil {
+		t.Fatalf("unexpected latest task before standalone interaction: %#v", latest)
+	}
+
+	task, err := broker.CreateExternalWAVTask(
+		context.Background(),
+		302,
+		"control-session-302",
+		"中控抢答",
+		source.URL,
+		"http://core.local/internal/v1/audio/events",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Kind != "interaction_tts" || task.ProgramID != "" || task.Slot != "" {
+		t.Fatalf("standalone task should not require a mainline program: %#v", task)
+	}
+	if task.AudioURL == source.URL {
+		t.Fatal("receiver must use audio-service cached URL, not provider URL")
+	}
+
+	select {
+	case got := <-ch:
+		if got.ID != task.ID || got.Kind != "interaction_tts" {
+			t.Fatalf("unexpected standalone task: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("standalone interaction was not published to room receivers")
+	}
+
+	if _, ok := broker.ProgramSnapshot(302); ok {
+		t.Fatal("standalone control-mode task must not create a mainline program")
+	}
+}
+
+func TestStandaloneExternalWAVMustFinishBeforeNextTTS(t *testing.T) {
+	broker := NewBroker("http://audio.local", "")
+	audio := testChimeWAV(180)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(audio)
+	}))
+	defer source.Close()
+
+	first, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "first", source.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "second", source.URL, ""); err == nil {
+		t.Fatal("second TTS must not replace an active TTS")
+	}
+	if _, _, err := broker.ReportEvent(first.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "READY"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := broker.ReportEvent(first.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: first.DurationMS}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "second", source.URL, ""); err != nil {
+		t.Fatalf("second TTS should be accepted after first completes: %v", err)
 	}
 }
 

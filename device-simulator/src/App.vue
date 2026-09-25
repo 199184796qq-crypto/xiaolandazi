@@ -335,7 +335,13 @@ interface NormalizePlanTextResult {
 
 const audioServiceURL = ref(localStorage.getItem('xl-audio-service-url') || 'http://127.0.0.1:8082')
 const roomID = ref(Number(localStorage.getItem('xl-audio-room-id') || '1001'))
-const receiverID = 'web-' + crypto.randomUUID().slice(0, 12)
+const receiverID = (() => {
+  const stored = localStorage.getItem('xl-audio-receiver-id')
+  if (stored) return stored
+  const id = 'device-sim-' + crypto.randomUUID().slice(0, 12)
+  localStorage.setItem('xl-audio-receiver-id', id)
+  return id
+})()
 
 const connected = ref(false)
 const connecting = ref(false)
@@ -434,6 +440,8 @@ let roomSyncTimer: number | undefined
 let brainPollTimer: number | undefined
 let historyPollTimer: number | undefined
 let questionQueueTimer: number | undefined
+let receiverHeartbeatTimer: number | undefined
+let registeredRoomID = 0
 let reportQueue: Promise<void> = Promise.resolve()
 let syncInFlight = false
 
@@ -1442,9 +1450,66 @@ async function generateRealInteraction(queueItem: PendingQuestionItem) {
   }
 }
 
-function disconnect() {
+async function registerReceiver(room: number) {
+  const response = await fetch(baseURL() + '/v1/receivers/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      receiver_id: receiverID,
+      room_id: room,
+      terminal_type: 'device_simulator',
+      name: '研发设备模拟器',
+      capabilities: ['audio/wav', 'interaction_tts', 'mainline'],
+    }),
+  })
+  if (!response.ok) throw new Error('声音网关注册失败 HTTP ' + response.status)
+  registeredRoomID = room
+  if (receiverHeartbeatTimer !== undefined) window.clearInterval(receiverHeartbeatTimer)
+  receiverHeartbeatTimer = window.setInterval(() => void heartbeatReceiver(), 15_000)
+}
+
+async function heartbeatReceiver() {
+  if (registeredRoomID <= 0) return
+  try {
+    const response = await fetch(
+      baseURL() + '/v1/receivers/' + encodeURIComponent(receiverID) + '/heartbeat',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: registeredRoomID }),
+      },
+    )
+    if (!response.ok && response.status === 409) {
+      await registerReceiver(registeredRoomID)
+    }
+  } catch {
+    connected.value = false
+  }
+}
+
+async function unregisterReceiver() {
+  const room = registeredRoomID
+  registeredRoomID = 0
+  if (receiverHeartbeatTimer !== undefined) {
+    window.clearInterval(receiverHeartbeatTimer)
+    receiverHeartbeatTimer = undefined
+  }
+  if (room <= 0) return
+  try {
+    await fetch(baseURL() + '/v1/receivers/' + encodeURIComponent(receiverID) + '/unregister', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room_id: room }),
+    })
+  } catch {
+    // Best effort during disconnect.
+  }
+}
+
+async function disconnect() {
   stream?.close()
   stream = null
+  await unregisterReceiver()
   connected.value = false
   connecting.value = false
   playbackStatus.value = '未接听'
@@ -1460,8 +1525,8 @@ function disconnect() {
   addEvent('已停止接听')
 }
 
-function connect() {
-  disconnect()
+async function connect() {
+  await disconnect()
   const room = Number(roomID.value)
   if (!Number.isInteger(room) || room <= 0) {
     error.value = '请输入正确的房间编号。'
@@ -1472,6 +1537,14 @@ function connect() {
   error.value = ''
   connecting.value = true
   playbackStatus.value = '连接中'
+  try {
+    await registerReceiver(room)
+  } catch (value) {
+    connecting.value = false
+    playbackStatus.value = '注册失败'
+    error.value = value instanceof Error ? value.message : String(value)
+    return
+  }
 
   const source = new EventSource(baseURL() + '/v1/rooms/' + room + '/stream?receiver_id=' + encodeURIComponent(receiverID))
   stream = source
@@ -1489,6 +1562,11 @@ function connect() {
     } catch {
       error.value = '收到无法识别的播音任务。'
     }
+  })
+  source.addEventListener('unregistered', () => {
+    connected.value = false
+    playbackStatus.value = '注册已过期，正在重连'
+    void connect()
   })
   source.onerror = () => {
     connected.value = false
@@ -2017,7 +2095,7 @@ onBeforeUnmount(() => {
   if (historyPollTimer !== undefined) window.clearInterval(historyPollTimer)
   if (questionQueueTimer !== undefined) window.clearInterval(questionQueueTimer)
   revokeCaptchaURL()
-  disconnect()
+  void disconnect()
 })
 </script>
 

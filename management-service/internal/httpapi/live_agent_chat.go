@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -100,6 +102,22 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 			Reply: reply,
 			Kind:  "local",
 		})
+		return
+	}
+
+	// This is the paid-model boundary. Deterministic local answers above stay free,
+	// but any large-model request must belong to an active billed live runtime.
+	runtimeSession, runtimeErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if runtimeErr != nil {
+		if errors.Is(runtimeErr, sql.ErrNoRows) {
+			writeError(w, http.StatusConflict, "请先启动直播搭子后再使用智能回答")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取智能体运行状态失败")
+		return
+	}
+	if runtimeSession.Status != "running" {
+		writeError(w, http.StatusConflict, "请先启动直播搭子后再使用智能回答")
 		return
 	}
 

@@ -82,7 +82,6 @@ const page = ref(1)
 const pageSize = ref(12)
 const viewMode = ref<'card' | 'table'>('table')
 const inventorySelectedDeviceID = ref<number | null>(null)
-const inventoryRecordTab = ref<'flow' | 'status'>('flow')
 const modal = ref<
   | 'batch-inbound'
   | 'outbound'
@@ -268,26 +267,6 @@ const totalPages = computed(() =>
 const pagedDevices = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return filteredDevices.value.slice(start, start + pageSize.value)
-})
-
-const inventorySelectedDevice = computed(
-  () =>
-    devices.value.find((item) => item.id === inventorySelectedDeviceID.value) ||
-    null,
-)
-
-const inventoryDeviceLedger = computed(() => {
-  if (!inventorySelectedDeviceID.value) return []
-  return ledger.value.filter(
-    (item) => item.device_id === inventorySelectedDeviceID.value,
-  )
-})
-
-const inventoryDeviceDocuments = computed(() => {
-  const documentIDs = new Set(
-    inventoryDeviceLedger.value.map((item) => item.document_id),
-  )
-  return documents.value.filter((item) => documentIDs.has(item.id))
 })
 
 const inventoryProductGroups = computed(() => {
@@ -567,25 +546,6 @@ function actionLabel(value: string) {
   return map[value] || value
 }
 
-function documentTypeLabel(value: string) {
-  const map: Record<string, string> = {
-    inbound: '采购/生产入库单',
-    reserve: '锁库单',
-    unreserve: '释放锁库单',
-    outbound: '销售/调拨出库单',
-    agent_inbound: '代理入库单',
-    sale: '销售单',
-    customer_bind: '终端绑定单',
-    activate: '激活单',
-    after_sales: '售后流转单',
-    rma_open: '售后发起单',
-    rma_complete: '售后完成单',
-    scrap: '报废单',
-    adjust: '调整单',
-  }
-  return map[value] || value
-}
-
 function serviceTypeLabel(value: string) {
   const map: Record<string, string> = {
     return: '退货',
@@ -641,11 +601,6 @@ function rmaStatusTone(value: string) {
 
 function canCompleteRMA(item: InventoryRMA) {
   return ['OPEN', 'PROCESSING', 'REPAIRING'].includes(item.status)
-}
-
-function deviceSN(id?: number) {
-  if (!id) return '—'
-  return devices.value.find((item) => item.id === id)?.sn || ('设备 #' + id)
 }
 
 function warehouseName(id?: number) {

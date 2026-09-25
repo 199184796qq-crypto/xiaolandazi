@@ -242,11 +242,6 @@ async function inspectRoomPageState(session, roomId, finalizeUnknown = false) {
       }, OFFLINE_ROOM_TEXTS);
     } catch {}
 
-    if (snapshot?.offlineText) {
-      publishRoomState(session, roomId, "offline", "page_live_ended");
-      return;
-    }
-
     if (snapshot?.liveVideo) {
       const videoTime = Number(snapshot.liveVideoTime) || 0;
       const videoRestarted = videoTime + 1 < session.lastVideoCurrentTime;
@@ -269,6 +264,15 @@ async function inspectRoomPageState(session, roomId, finalizeUnknown = false) {
         "live",
         session.lastLiveEvidenceReason || "live_evidence",
       );
+      return;
+    }
+
+    // Douyin can leave hidden/stale "live ended" text in the DOM while the
+    // room is still producing real media or push frames. Live transport/video
+    // evidence is authoritative; page text is only allowed to declare offline
+    // after the recent-evidence window has expired.
+    if (snapshot?.offlineText) {
+      publishRoomState(session, roomId, "offline", "page_live_ended");
       return;
     }
 

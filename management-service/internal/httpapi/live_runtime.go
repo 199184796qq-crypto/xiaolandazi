@@ -26,6 +26,18 @@ type coreRoomRuntimeState struct {
 	DeviceOnline bool   `json:"device_online"`
 }
 
+type coreAgentRuntimeState struct {
+	RoomID         int64     `json:"room_id"`
+	State          string    `json:"state"`
+	Mode           string    `json:"mode"`
+	WorkingSeconds uint64    `json:"working_seconds"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type coreSessionRuntimeState struct {
+	ResumePending bool `json:"resume_pending"`
+}
+
 func (s *Server) liveAgentSettings(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -196,6 +208,54 @@ func (s *Server) liveDeviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (s *Server) liveDeviceControl(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := actorTenantID(w, actor)
+	if !ok {
+		return
+	}
+	deviceID, ok := namedPathID(w, r, "deviceID", "设备")
+	if !ok {
+		return
+	}
+	var input model.DeviceControlInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "设备控制参数格式错误")
+		return
+	}
+	input.Action = strings.ToLower(strings.TrimSpace(input.Action))
+	if input.RoomID <= 0 {
+		writeError(w, http.StatusBadRequest, "缺少直播间")
+		return
+	}
+	switch input.Action {
+	case "connect", "pause", "resume", "disconnect":
+	default:
+		writeError(w, http.StatusBadRequest, "不支持的设备控制动作")
+		return
+	}
+	item, err := s.store.ControlLiveDevice(
+		r.Context(), tenantID, actor.UserID, deviceID, input.RoomID, input.Action,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, appdb.ErrLiveDeviceNotBound):
+			writeError(w, http.StatusConflict, "设备没有绑定到该直播间")
+		case errors.Is(err, appdb.ErrLiveDeviceOffline):
+			writeError(w, http.StatusConflict, "设备当前未连接，请先连接")
+		case errors.Is(err, sql.ErrNoRows):
+			writeError(w, http.StatusNotFound, "设备不存在或不属于当前客户")
+		default:
+			writeError(w, http.StatusInternalServerError, "设备控制失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) liveQuotaSummary(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -217,6 +277,52 @@ func (s *Server) liveQuotaSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, quotaSummary)
 }
 
+func (s *Server) liveQuotaActivateCards(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	if actor.Role != "customer" {
+		writeError(w, http.StatusForbidden, "仅终端用户可充入 AI 工作时长")
+		return
+	}
+	tenantID, ok := actorTenantID(w, actor)
+	if !ok {
+		return
+	}
+	var input struct {
+		Count uint32 `json:"count"`
+	}
+	if r.ContentLength > 0 {
+		if err := readJSON(w, r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "充入时长卡参数格式错误")
+			return
+		}
+	}
+	if input.Count == 0 {
+		input.Count = 1
+	}
+	if input.Count > 20 {
+		writeError(w, http.StatusBadRequest, "单次最多充入20张时长卡")
+		return
+	}
+	summary, activated, err := s.store.ActivateLiveTimeCards(
+		r.Context(), tenantID, input.Count, time.Now().UTC(),
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "充入AI工作时长失败")
+		return
+	}
+	if activated == 0 {
+		writeError(w, http.StatusConflict, "当前没有可充入的未激活时长卡")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"activated_count": activated,
+		"quota":           summary,
+	})
+}
+
 func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -236,6 +342,11 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取直播间状态")
 		return
 	}
+	agentRuntime, err := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
+		return
+	}
 	quotaSummary, err := s.store.GetLiveQuotaSummary(r.Context(), tenantID, time.Now().UTC())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取AI时长失败")
@@ -243,6 +354,9 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := model.LiveRuntimeSnapshot{
+		AgentState:             agentRuntime.State,
+		AgentMode:              agentRuntime.Mode,
+		AgentWorkingSeconds:    agentRuntime.WorkingSeconds,
 		QuotaRemainingSeconds:  quotaSummary.ActiveSeconds,
 		ReserveTimeCardSeconds: quotaSummary.ReserveTimeCardSeconds,
 		ReserveTimeCardCount:   quotaSummary.ReserveTimeCardCount,
@@ -253,7 +367,7 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	session, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
 	if err == nil {
 		snapshot.Session = &session
-		if session.Status == "running" && session.DeviceID != nil {
+		if (session.Status == "running" || session.Status == "paused") && session.DeviceID != nil {
 			if device, deviceErr := s.store.GetLiveDevice(r.Context(), tenantID, *session.DeviceID); deviceErr == nil {
 				snapshot.Device = &device
 			}
@@ -272,6 +386,52 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) liveRuntimeMode(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	var input struct {
+		Mode string `json:"mode"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "模式参数格式错误")
+		return
+	}
+	input.Mode = strings.ToLower(strings.TrimSpace(input.Mode))
+	if input.Mode != "control" && input.Mode != "anchor" {
+		writeError(w, http.StatusBadRequest, "mode 只允许 control 或 anchor")
+		return
+	}
+	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
+		writeError(w, http.StatusNotFound, "直播间不存在或不属于当前客户")
+		return
+	}
+	if input.Mode == "anchor" {
+		if _, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
+			writeError(w, http.StatusConflict, "主播模式需要先选择智能体直播方案")
+			return
+		} else if planErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取智能体直播方案失败")
+			return
+		}
+	}
+	state, err := s.setCoreAgentMode(r.Context(), tenantID, roomID, input.Mode)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "切换直播搭子模式失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +465,61 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "直播间当前未开播，AI不会开始计时")
 		return
 	}
+	if sessionState, sessionErr := s.getCoreSessionState(r.Context(), tenantID, roomID); sessionErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取直播续接状态")
+		return
+	} else if sessionState.ResumePending {
+		writeError(w, http.StatusConflict, "请先选择续接上一场或作为新直播，再启动AI")
+		return
+	}
+	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if agentErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取直播搭子模式")
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
+		if _, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
+			writeError(w, http.StatusConflict, "主播模式需要先选择智能体直播方案")
+			return
+		} else if planErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取智能体直播方案失败")
+			return
+		}
+	}
+
+	if existing, existingErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); existingErr == nil {
+		switch existing.Status {
+		case "running":
+			if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", existing.TotalBilledSeconds); err != nil {
+				writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
+				return
+			}
+			writeJSON(w, http.StatusOK, existing)
+			return
+		case "paused":
+			resumed, resumeErr := s.store.ResumeLiveRuntimeSession(
+				r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
+			)
+			if resumeErr != nil {
+				if errors.Is(resumeErr, appdb.ErrLiveQuotaExhausted) {
+					writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充入时长卡")
+				} else {
+					writeError(w, http.StatusInternalServerError, "恢复AI直播伴播失败")
+				}
+				return
+			}
+			if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", resumed.TotalBilledSeconds); err != nil {
+				_, _ = s.store.PauseLiveRuntimeSession(r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC())
+				writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
+				return
+			}
+			writeJSON(w, http.StatusOK, resumed)
+			return
+		}
+	} else if !errors.Is(existingErr, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "读取AI运行状态失败")
+		return
+	}
 
 	session, err := s.store.StartLiveRuntimeSession(
 		r.Context(),
@@ -322,8 +537,6 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
 		case errors.Is(err, appdb.ErrLiveDeviceNotBound):
 			writeError(w, http.StatusConflict, "请先给直播间绑定工作设备")
-		case errors.Is(err, appdb.ErrLiveDeviceOffline):
-			writeError(w, http.StatusConflict, "绑定设备当前不在线")
 		default:
 			writeError(w, http.StatusInternalServerError, "启动AI直播伴播失败")
 		}
@@ -359,8 +572,108 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = s.setCoreDeviceOnline(r.Context(), tenantID, roomID, true)
+	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds); err != nil {
+		_, _ = s.store.StopLiveRuntimeSession(
+			r.Context(), tenantID, roomID, actor.UserID, "core_start_failed", time.Now().UTC(),
+		)
+		writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, session)
+}
+
+func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+
+	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if agentErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
+		return
+	}
+	session, err := s.store.PauseLiveRuntimeSessionMeter(
+		r.Context(), tenantID, roomID, actor.UserID, agentRuntime.WorkingSeconds, time.Now().UTC(),
+	)
+	if err != nil {
+		if errors.Is(err, appdb.ErrLiveRuntimeNotRunning) {
+			writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "暂停AI直播伴播失败")
+		return
+	}
+	state := "paused"
+	if session.Status != "paused" {
+		state = "stopped"
+	}
+	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, state, session.TotalBilledSeconds); err != nil {
+		log.Printf("sync core agent runtime pause tenant=%d room=%d: %v", tenantID, roomID, err)
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+
+	room, err := s.getCoreRoomState(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取直播间状态")
+		return
+	}
+	if room.Status != "live" {
+		writeError(w, http.StatusConflict, "直播间当前未开播，AI不会继续计时")
+		return
+	}
+	if sessionState, sessionErr := s.getCoreSessionState(r.Context(), tenantID, roomID); sessionErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取直播续接状态")
+		return
+	} else if sessionState.ResumePending {
+		writeError(w, http.StatusConflict, "请先选择直播续接方式，再继续AI")
+		return
+	}
+
+	session, err := s.store.ResumeLiveRuntimeSession(
+		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, appdb.ErrLiveRuntimeNotRunning):
+			writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
+		case errors.Is(err, appdb.ErrLiveQuotaExhausted):
+			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
+		default:
+			writeError(w, http.StatusInternalServerError, "继续AI直播伴播失败")
+		}
+		return
+	}
+	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds); err != nil {
+		_, _ = s.store.PauseLiveRuntimeSession(r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC())
+		writeError(w, http.StatusBadGateway, "智能体恢复失败，请稍后重试")
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
 }
 
 func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
@@ -389,12 +702,18 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		reason = "manual_stop"
 	}
 
-	session, err := s.store.StopLiveRuntimeSession(
+	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if agentErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
+		return
+	}
+	session, err := s.store.StopLiveRuntimeSessionMeter(
 		r.Context(),
 		tenantID,
 		roomID,
 		actor.UserID,
 		reason,
+		agentRuntime.WorkingSeconds,
 		time.Now().UTC(),
 	)
 	if err != nil {
@@ -406,7 +725,9 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.setCoreDeviceOnline(r.Context(), tenantID, roomID, false)
+	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "stopped", session.TotalBilledSeconds); err != nil {
+		log.Printf("sync core agent runtime stop tenant=%d room=%d: %v", tenantID, roomID, err)
+	}
 	writeJSON(w, http.StatusOK, session)
 }
 
@@ -523,6 +844,124 @@ func (s *Server) getCoreRoomState(
 		return coreRoomRuntimeState{}, sql.ErrNoRows
 	}
 	return room, nil
+}
+
+func (s *Server) getCoreAgentState(
+	ctx context.Context,
+	tenantID, roomID int64,
+) (coreAgentRuntimeState, error) {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodGet,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		nil,
+	)
+	if err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return coreAgentRuntimeState{}, fmt.Errorf("core agent runtime status %d", resp.StatusCode)
+	}
+	var state coreAgentRuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	return state, nil
+}
+
+func (s *Server) getCoreSessionState(
+	ctx context.Context,
+	tenantID, roomID int64,
+) (coreSessionRuntimeState, error) {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodGet,
+		fmt.Sprintf("/internal/v1/rooms/%d/session-stats", roomID),
+		query,
+		nil,
+	)
+	if err != nil {
+		return coreSessionRuntimeState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return coreSessionRuntimeState{}, fmt.Errorf("core session status %d", resp.StatusCode)
+	}
+	var state coreSessionRuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return coreSessionRuntimeState{}, err
+	}
+	return state, nil
+}
+
+func (s *Server) setCoreAgentMode(
+	ctx context.Context,
+	tenantID, roomID int64,
+	mode string,
+) (coreAgentRuntimeState, error) {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		map[string]any{"mode": mode},
+	)
+	if err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return coreAgentRuntimeState{}, fmt.Errorf("core agent mode status %d", resp.StatusCode)
+	}
+	var state coreAgentRuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	return state, nil
+}
+
+func (s *Server) setCoreAgentState(
+	ctx context.Context,
+	tenantID, roomID int64,
+	state string,
+	baseWorkingSeconds uint64,
+) error {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		map[string]any{
+			"state":                state,
+			"base_working_seconds": baseWorkingSeconds,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("core agent runtime status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *Server) setCoreDeviceOnline(

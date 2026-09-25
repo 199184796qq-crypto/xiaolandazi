@@ -9,8 +9,16 @@ import (
 	"syscall"
 )
 
-func configureProcess(cmd *exec.Cmd) {
+func configureSupervisorProcess() error {
+	return nil
+}
+
+func configureProcess(cmd *exec.Cmd, _ string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func availableMemoryMB() (uint64, bool) {
+	return 0, false
 }
 
 func terminatePID(pid int) error {

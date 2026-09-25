@@ -5,6 +5,10 @@ import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import {
   activateLiveAgentConfigVersion,
+  bindRoomLiveAgentPlan,
+  createLiveAgentPlan,
+  getLiveAgentPlans,
+  getRoomLiveAgentPlan,
   createLiveAgentConfigDraft,
   getLiveAgentConfigVersions,
   getLiveAgentSettings,
@@ -16,6 +20,7 @@ import {
 } from '../api'
 import type {
   LiveAgentConfigInput,
+  LiveAgentPlan,
   LiveAgentConfigVersion,
   LiveAgentSettings,
   LiveAgentSettingsInput,
@@ -25,7 +30,7 @@ import type {
 
 const rooms = ref<Room[]>([])
 const activeRoomId = ref<number | null>(null)
-const activeMode = ref<'basic' | 'strategy' | 'anchor' | 'script' | 'voice'>('strategy')
+const activeMode = ref<'plan' | 'basic' | 'strategy' | 'anchor' | 'script' | 'voice'>('strategy')
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -45,6 +50,11 @@ const settingsDraft = ref<LiveAgentSettingsInput>({
 const settingsSaving = ref(false)
 const settingsError = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
+const livePlans = ref<LiveAgentPlan[]>([])
+const currentRoomPlanId = ref<number | null>(null)
+const planBusy = ref(false)
+const newPlanName = ref('')
+const newPlanDescription = ref('')
 const roomPolicyContext = ref<LiveRoomPolicyContext | null>(null)
 const selectedVersionId = ref<number | null>(null)
 const uploading = ref(false)
@@ -72,6 +82,7 @@ const roomPolicyActive = computed(
 )
 
 const activeModeLabel = computed(() => {
+  if (activeMode.value === 'plan') return '直播方案'
   if (activeMode.value === 'basic') return '基础设置'
   if (activeMode.value === 'strategy') return '用户层策略'
   if (activeMode.value === 'anchor') return '主播训练'
@@ -117,6 +128,81 @@ async function refreshRoomPolicy() {
   }
 }
 
+async function refreshLivePlans() {
+  try {
+    const result = await getLiveAgentPlans()
+    livePlans.value = (result.items || []).filter((item) => item.status === 'active')
+  } catch (err) {
+    if (!settingsError.value) {
+      settingsError.value = err instanceof Error ? err.message : '读取智能体直播方案失败'
+    }
+  }
+}
+
+async function refreshCurrentRoomPlan() {
+  const roomId = activeRoomId.value
+  if (!roomId) {
+    currentRoomPlanId.value = null
+    return
+  }
+  try {
+    const result = await getRoomLiveAgentPlan(roomId)
+    currentRoomPlanId.value = result.plan?.id || null
+  } catch (err) {
+    currentRoomPlanId.value = null
+    if (!settingsError.value) {
+      settingsError.value = err instanceof Error ? err.message : '读取直播间当前方案失败'
+    }
+  }
+}
+
+async function createPlanForCurrentRoom() {
+  const name = newPlanName.value.trim()
+  const room = activeRoom.value
+  if (!name || planBusy.value) return
+  planBusy.value = true
+  settingsError.value = ''
+  try {
+    const created = await createLiveAgentPlan({
+      name,
+      description: newPlanDescription.value.trim(),
+      tenant_id: room?.tenant_id,
+    })
+    if (room) {
+      await bindRoomLiveAgentPlan(created.id, room.id, room.tenant_id)
+      currentRoomPlanId.value = created.id
+    }
+    newPlanName.value = ''
+    newPlanDescription.value = ''
+    await refreshLivePlans()
+    messages.value.push({
+      role: 'agent',
+      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。这个方案可以继续给同一客户的其他直播间使用。`,
+    })
+  } catch (err) {
+    settingsError.value = err instanceof Error ? err.message : '创建智能体直播方案失败'
+  } finally {
+    planBusy.value = false
+  }
+}
+
+async function usePlanForCurrentRoom(plan: LiveAgentPlan) {
+  const room = activeRoom.value
+  if (!room || planBusy.value || currentRoomPlanId.value === plan.id) return
+  planBusy.value = true
+  settingsError.value = ''
+  try {
+    await bindRoomLiveAgentPlan(plan.id, room.id, room.tenant_id)
+    currentRoomPlanId.value = plan.id
+    await refreshLivePlans()
+    messages.value.push({ role: 'agent', text: `当前直播间已切换到“${plan.name}”。` })
+  } catch (err) {
+    settingsError.value = err instanceof Error ? err.message : '切换智能体直播方案失败'
+  } finally {
+    planBusy.value = false
+  }
+}
+
 async function loadAgentSettings() {
   settingsError.value = ''
 
@@ -143,6 +229,7 @@ async function loadAgentSettings() {
 
   await refreshRoomPolicy()
   await refreshAgentVersions()
+  await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
 }
 
 async function refreshAgentVersions() {
@@ -334,6 +421,7 @@ function notifySystemAgentContext() {
 
 watch(activeRoomId, () => {
   void refreshRoomPolicy()
+  void refreshCurrentRoomPlan()
 })
 
 watch(
@@ -433,6 +521,7 @@ onMounted(async () => {
         </header>
 
         <div class="strategy-mode-tabs">
+          <button :class="{ active: activeMode === 'plan' }" @click="activeMode = 'plan'">直播方案</button>
           <button :class="{ active: activeMode === 'basic' }" @click="activeMode = 'basic'">基础设置</button>
           <button :class="{ active: activeMode === 'strategy' }" @click="activeMode = 'strategy'">策略调教</button>
           <button :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">主播训练</button>
@@ -440,7 +529,51 @@ onMounted(async () => {
           <button :class="{ active: activeMode === 'voice' }" @click="activeMode = 'voice'">声音配置</button>
         </div>
 
-        <section v-if="activeMode === 'basic'" class="strategy-basic-settings">
+        <section v-if="activeMode === 'plan'" class="strategy-plan-settings">
+          <div class="strategy-basic-settings-head">
+            <div>
+              <span class="section-kicker">LIVE AGENT PLANS</span>
+              <h3>智能体直播方案</h3>
+              <p>一个方案可以给当前客户的多个直播间共用；每个直播间同时选择一个当前运行方案。</p>
+            </div>
+          </div>
+
+          <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
+
+          <form class="strategy-plan-create" @submit.prevent="createPlanForCurrentRoom">
+            <input v-model="newPlanName" maxlength="160" placeholder="方案名称，例如：跑山鸡中控方案" />
+            <input v-model="newPlanDescription" maxlength="2000" placeholder="方案说明，例如：中控答疑、物流/价格/吃法优先" />
+            <button class="primary-button" type="submit" :disabled="planBusy || !newPlanName.trim()">
+              {{ planBusy ? '处理中…' : '＋ 新建方案' }}
+            </button>
+          </form>
+
+          <div v-if="!livePlans.length" class="strategy-plan-empty">还没有直播方案，先在上面创建一个。</div>
+          <div v-else class="strategy-plan-grid">
+            <article
+              v-for="plan in livePlans"
+              :key="plan.id"
+              class="strategy-plan-card"
+              :class="{ active: currentRoomPlanId === plan.id }"
+            >
+              <div>
+                <span>{{ currentRoomPlanId === plan.id ? '当前直播间使用中' : '可复用方案' }}</span>
+                <strong>{{ plan.name }}</strong>
+                <p>{{ plan.description || '暂无方案说明' }}</p>
+                <small>已用于 {{ plan.room_count || 0 }} 个直播间 · 专用词 {{ plan.term_count || 0 }} 条</small>
+              </div>
+              <button
+                type="button"
+                :disabled="planBusy || currentRoomPlanId === plan.id || !activeRoom"
+                @click="usePlanForCurrentRoom(plan)"
+              >
+                {{ currentRoomPlanId === plan.id ? '正在使用' : '当前直播间使用' }}
+              </button>
+            </article>
+          </div>
+        </section>
+
+        <section v-else-if="activeMode === 'basic'" class="strategy-basic-settings">
           <div class="strategy-basic-settings-head">
             <div>
               <span class="section-kicker">AGENT IDENTITY</span>
@@ -514,13 +647,13 @@ onMounted(async () => {
         </section>
 
         <LiveVoiceCenter
-          v-if="activeMode === 'voice'"
+          v-else-if="activeMode === 'voice'"
           :room-id="activeRoomId"
           :room-name="activeRoom?.name"
           @changed="refreshAgentVersions"
         />
 
-        <section v-else-if="activeMode !== 'basic'" class="strategy-agent-workspace">
+        <section v-else class="strategy-agent-workspace">
           <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
           <div class="strategy-agent-context-card">
             <span class="section-kicker">CURRENT CONTEXT</span>
@@ -551,3 +684,21 @@ onMounted(async () => {
     </section>
   </div>
 </template>
+
+<style scoped>
+.strategy-plan-settings { display:grid; gap:18px; }
+.strategy-plan-create { display:grid; grid-template-columns:minmax(180px,.75fr) minmax(260px,1.4fr) auto; gap:10px; align-items:center; }
+.strategy-plan-create input { min-height:44px; border:1px solid rgba(100,113,166,.18); border-radius:12px; padding:0 13px; background:#fff; color:#33415f; font:inherit; }
+.strategy-plan-grid { display:grid; gap:12px; }
+.strategy-plan-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center; padding:18px; border:1px solid rgba(100,113,166,.16); border-radius:18px; background:rgba(255,255,255,.82); }
+.strategy-plan-card.active { border-color:rgba(82,101,225,.38); box-shadow:0 0 0 3px rgba(82,101,225,.07); }
+.strategy-plan-card div { display:grid; gap:6px; }
+.strategy-plan-card span { color:#6876cf; font-size:12px; font-weight:850; }
+.strategy-plan-card strong { color:#293756; font-size:18px; }
+.strategy-plan-card p { margin:0; color:#77839a; line-height:1.55; }
+.strategy-plan-card small { color:#919bb0; }
+.strategy-plan-card button { min-width:132px; min-height:40px; border:1px solid rgba(82,101,225,.18); border-radius:11px; background:#f4f6ff; color:#5261cc; font-weight:800; cursor:pointer; }
+.strategy-plan-card button:disabled { cursor:default; opacity:.58; }
+.strategy-plan-empty { padding:28px; border:1px dashed rgba(100,113,166,.22); border-radius:16px; text-align:center; color:#8a95aa; }
+@media (max-width: 900px) { .strategy-plan-create { grid-template-columns:1fr; } .strategy-plan-card { grid-template-columns:1fr; } }
+</style>
