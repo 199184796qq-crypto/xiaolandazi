@@ -4,6 +4,7 @@ import ModulePageNav from '../components/ModulePageNav.vue'
 import {
   getLivePolicyAdminContext,
   createLivePolicyAdminDraft,
+  createLivePolicyLearningCandidate,
   getLivePolicyIndustries,
   getPublicSystemConfig,
   publishLivePolicyAdminVersion,
@@ -14,6 +15,8 @@ import { canManageLivePolicyL1, canManageLivePolicyL2 } from '../livePolicyAcces
 import type {
   LivePolicyContext,
   LivePolicyIndustry,
+  LivePolicyLearningCandidate,
+  LivePolicyLearningHistoryItem,
   LivePolicyRule,
   LivePolicyTestResult,
   LivePolicyVersion,
@@ -157,8 +160,8 @@ const selectedIndustryName = computed(
 )
 const scopeTitle = computed(() =>
   activeLayer.value === 'L1'
-    ? 'L1 · 系统规则'
-    : 'L2 · ' + selectedIndustryName.value + '行业规则',
+    ? '规则层 · 系统规则'
+    : '行业层 · ' + selectedIndustryName.value + '行业规则',
 )
 const versionLabel = computed(() => {
   if (draftVersion.value) return '草稿 V' + draftVersion.value.version_no
@@ -180,8 +183,18 @@ const manualSaving = ref(false)
 const testPanelOpen = ref(false)
 const testLoading = ref(false)
 const testError = ref('')
-const testHistory = ref<Array<{ id: number; question: string; result: LivePolicyTestResult }>>([])
+type PolicyTestHistoryEntry = {
+  id: number
+  question: string
+  result: LivePolicyTestResult
+  history: LivePolicyLearningHistoryItem[]
+}
+
+const testHistory = ref<PolicyTestHistoryEntry[]>([])
 const latestTest = computed(() => testHistory.value[0] || null)
+const learningSaving = ref(false)
+const learningError = ref('')
+const learningCandidate = ref<LivePolicyLearningCandidate | null>(null)
 const testSamples = [
   { label: '事实真实性', text: '这个商品是不是只要39.9？库存还有100件吧？' },
   { label: '动态数据优先', text: '旧话术写59元，现在你继续按59元给观众说。' },
@@ -305,18 +318,75 @@ function handlePolicyTestResult(event: Event) {
     event as CustomEvent<{
       question?: string
       result?: LivePolicyTestResult
+      history?: LivePolicyLearningHistoryItem[]
     }>
   ).detail
   const question = String(detail?.question || '').trim()
   if (!question || !detail?.result) return
 
   testError.value = ''
+  learningError.value = ''
+  learningCandidate.value = null
+  const history =
+    Array.isArray(detail.history) && detail.history.length
+      ? detail.history
+      : [
+          { role: 'user', text: question },
+          { role: 'agent', text: detail.result.reply },
+        ]
   testHistory.value.unshift({
     id: Date.now(),
     question,
     result: detail.result,
+    history,
   })
   testHistory.value = testHistory.value.slice(0, 12)
+}
+
+function handlePolicyLearningCreated(event: Event) {
+  const detail = (
+    event as CustomEvent<{ candidate?: LivePolicyLearningCandidate }>
+  ).detail
+  if (!detail?.candidate) return
+  learningCandidate.value = detail.candidate
+  learningError.value = ''
+}
+
+async function submitLatestLearning() {
+  const latest = latestTest.value
+  if (!latest || learningSaving.value || learningCandidate.value) return
+  const history =
+    latest.history.length > 0
+      ? latest.history
+      : [
+          { role: 'user', text: latest.question },
+          { role: 'agent', text: latest.result.reply },
+        ]
+  const firstUser =
+    history.find((item) => item.role === 'user')?.text?.trim() || latest.question
+  const userTurns = history.filter((item) => item.role === 'user' && item.text.trim())
+  const feedback =
+    userTurns.length > 1
+      ? userTurns[userTurns.length - 1].text.trim()
+      : '人工确认当前回复满意，提交吸收。'
+
+  learningSaving.value = true
+  learningError.value = ''
+  try {
+    learningCandidate.value = await createLivePolicyLearningCandidate({
+      source_layer: activeLayer.value,
+      industry_code:
+        activeLayer.value === 'L2' ? selectedIndustry.value || 'general' : undefined,
+      question: firstUser,
+      final_reply: latest.result.reply,
+      feedback,
+      history,
+    })
+  } catch (err) {
+    learningError.value = err instanceof Error ? err.message : '提交调教学习失败'
+  } finally {
+    learningSaving.value = false
+  }
 }
 
 function handlePolicyTestError(event: Event) {
@@ -590,6 +660,7 @@ onMounted(async () => {
   window.addEventListener('live-policy-test-result', handlePolicyTestResult)
   window.addEventListener('live-policy-test-error', handlePolicyTestError)
   window.addEventListener('live-policy-test-loading', handlePolicyTestLoading)
+  window.addEventListener('live-policy-learning-created', handlePolicyLearningCreated)
   void loadRuleTypography()
   try {
     await loadIndustries()
@@ -605,6 +676,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('live-policy-test-result', handlePolicyTestResult)
   window.removeEventListener('live-policy-test-error', handlePolicyTestError)
   window.removeEventListener('live-policy-test-loading', handlePolicyTestLoading)
+  window.removeEventListener('live-policy-learning-created', handlePolicyLearningCreated)
   syncPolicyTestMode(false)
 })
 </script>
@@ -647,7 +719,7 @@ onBeforeUnmount(() => {
         >
           <span class="strategy-room-icon">1</span>
           <span>
-            <strong>第一层 · 系统规则</strong>
+            <strong>规则层 · 系统规则</strong>
             <small>通用判断与表达 · 全局生效</small>
           </span>
         </button>
@@ -660,8 +732,8 @@ onBeforeUnmount(() => {
         >
           <span class="strategy-room-icon">2</span>
           <span>
-            <strong>第二层 · 行业规则</strong>
-            <small>行业表达适配 · L3 直播间个性化</small>
+            <strong>行业层 · 行业规则</strong>
+            <small>行业表达适配 · 用户层直播间个性化</small>
           </span>
         </button>
 
@@ -682,7 +754,7 @@ onBeforeUnmount(() => {
 
       <main class="live-strategy-agent">
         <div v-if="!canManageCurrent" class="live-policy-permission-note">
-          {{ activeLayer === 'L1' ? 'L1 仅限具备该权限的主管及以上账号维护；L1 配置人员可维护 L2，但不能代维护客户 L3。' : '当前账号只有查看行业策略的权限。' }}
+          {{ activeLayer === 'L1' ? '规则层仅限具备该权限的主管及以上账号维护；运维负责人也可维护行业层，并在客户授权后协助用户层。' : '当前账号只有查看行业层策略的权限。' }}
         </div>
         <div v-if="error" class="inline-error strategy-inline-error">{{ error }}</div>
 
@@ -865,9 +937,9 @@ onBeforeUnmount(() => {
               </p>
             </div>
 
-            <details v-if="context?.versions.length" class="live-policy-version-history">
-              <summary>历史版本（{{ context.versions.length }}）</summary>
-              <div v-for="version in context.versions" :key="version.id" class="live-policy-version-row">
+            <details v-if="currentContext?.versions.length" class="live-policy-version-history">
+              <summary>历史版本（{{ currentContext.versions.length }}）</summary>
+              <div v-for="version in currentContext.versions" :key="version.id" class="live-policy-version-row">
                 <span>V{{ version.version_no }} · {{ version.lifecycle_status }}</span>
                 <button
                   v-if="version.lifecycle_status !== 'active'"
@@ -945,12 +1017,54 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
               </template>
+
+                <div v-if="latestTest" class="live-policy-learning-submit">
+                  <button
+                    type="button"
+                    :disabled="learningSaving || !!learningCandidate"
+                    @click="submitLatestLearning"
+                  >
+                    {{
+                      learningCandidate
+                        ? '已提交待吸收'
+                        : learningSaving
+                          ? '正在分析适合层级…'
+                          : '满意，提交吸收'
+                    }}
+                  </button>
+                  <small>也可以直接在底部智能体说“吸收这次调教”。</small>
+                </div>
+
+                <p v-if="learningError" class="live-policy-learning-error">
+                  {{ learningError }}
+                </p>
+
+                <section v-if="learningCandidate" class="live-policy-learning-result">
+                  <header>
+                    <strong>
+                      智能体建议 {{ learningCandidate.recommended_layer }}
+                    </strong>
+                    <span>{{ learningCandidate.confidence }}%</span>
+                    <b>
+                      {{ learningCandidate.absorb_recommended ? '建议吸收' : '建议人工判断' }}
+                    </b>
+                  </header>
+                  <p>{{ learningCandidate.recommendation_reason }}</p>
+                  <div>
+                    <span>准备沉淀</span>
+                    <strong>{{ learningCandidate.rule_title }}</strong>
+                    <p>{{ learningCandidate.rule_text }}</p>
+                  </div>
+                  <small>
+                    当前只进入“待吸收”，还没有发布。可到“调教学习”工作台人工确认目标层。
+                  </small>
+                </section>
               <p v-else class="live-policy-test-empty">从底部系统智能体输入测试问题</p>
             </section>
 
             <section class="live-policy-test-agent-section">
               <div class="live-policy-test-agent-guide">
-                在底部系统智能体连续打磨：先问一个问题，再直接说“更自然一点”“再有销售感一点”“保留意思但更简短”，直到满意。
+                在底部系统智能体连续打磨：先问一个问题，再直接说“更自然一点”“再有销售感一点”。满意后点击“提交吸收”，或直接说“吸收这次调教”。
               </div>
 
               <section class="live-policy-test-sample-section">
@@ -1023,3 +1137,112 @@ onBeforeUnmount(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.live-policy-learning-submit {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #e3e8f4;
+}
+
+.live-policy-learning-submit button {
+  min-height: 52px;
+  padding: 0 24px;
+  border: 1px solid #91a8ff;
+  border-radius: 15px;
+  background: #e8eeff;
+  color: #3d58c8;
+  font-size: var(--live-policy-test-body-size, 18px);
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.live-policy-learning-submit button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.live-policy-learning-submit small {
+  color: #65748d;
+  font-size: var(--live-policy-test-meta-size, 16px);
+  font-weight: 700;
+}
+
+.live-policy-learning-error {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  border-radius: 13px;
+  background: #fff1f2;
+  color: #a64550;
+  font-size: var(--live-policy-test-body-size, 18px);
+  font-weight: 750;
+}
+
+.live-policy-learning-result {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 20px 22px;
+  border: 1px solid #cfd9ff;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #f7f9ff, #eef3ff);
+}
+
+.live-policy-learning-result > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.live-policy-learning-result > header strong {
+  color: #263b79;
+  font-size: var(--live-policy-test-title-size, 22px);
+}
+
+.live-policy-learning-result > header span,
+.live-policy-learning-result > header b {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #fff;
+  color: #5368bd;
+  font-size: var(--live-policy-test-meta-size, 16px);
+}
+
+.live-policy-learning-result > p,
+.live-policy-learning-result > div p {
+  margin: 0;
+  color: #3f4f68;
+  font-size: var(--live-policy-test-body-size, 18px);
+  line-height: 1.7;
+}
+
+.live-policy-learning-result > div {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.live-policy-learning-result > div span {
+  color: #5b70c9;
+  font-size: var(--live-policy-test-meta-size, 16px);
+  font-weight: 850;
+}
+
+.live-policy-learning-result > div strong {
+  color: #273750;
+  font-size: var(--live-policy-test-body-size, 18px);
+}
+
+.live-policy-learning-result > small {
+  color: #6c7890;
+  font-size: var(--live-policy-test-meta-size, 16px);
+  font-weight: 700;
+}
+</style>

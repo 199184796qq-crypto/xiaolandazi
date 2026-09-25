@@ -12,7 +12,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-var ErrLiveSupportL3Ineligible = errors.New("L3 仅能授权给不具备 L1 权限、具备 L2 配置能力的运维员工")
+var ErrLiveSupportL3Ineligible = errors.New("用户层仅能授权给具备行业层配置能力和用户层授权协助权限的运维员工")
 
 func validLiveSupportCapability(capability string) bool {
 	switch strings.TrimSpace(capability) {
@@ -44,7 +44,7 @@ func normalizeLiveSupportCapabilities(values []string) ([]string, error) {
 
 func (s *Store) ListLiveSupportStaff(ctx context.Context) ([]model.LiveSupportStaff, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT u.id, u.username, u.display_name
+		SELECT DISTINCT u.id, u.username, u.display_name, COALESCE(u.avatar_url, '')
 		FROM staff_employees e
 		INNER JOIN mgmt_users u ON u.id=e.user_id
 		INNER JOIN staff_groups g ON g.id=e.primary_group_id
@@ -61,7 +61,7 @@ func (s *Store) ListLiveSupportStaff(ctx context.Context) ([]model.LiveSupportSt
 	items := make([]model.LiveSupportStaff, 0)
 	for rows.Next() {
 		var item model.LiveSupportStaff
-		if err := rows.Scan(&item.UserID, &item.Username, &item.DisplayName); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Username, &item.DisplayName, &item.AvatarURL); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -78,15 +78,14 @@ func (s *Store) ListLiveSupportStaff(ctx context.Context) ([]model.LiveSupportSt
 			return nil, err
 		}
 		items[index].AllowedCapabilities = []string{}
+		items[index].SpecialtyIndustries = []string{}
 		for _, capability := range []string{model.LiveSupportCapabilityL3Policy, model.LiveSupportCapabilityAnchorTraining, model.LiveSupportCapabilityVoiceClone} {
 			if access.CanUseLiveSupportCapability(capability) {
 				items[index].AllowedCapabilities = append(items[index].AllowedCapabilities, capability)
 			}
 		}
-		if access.CanManageLivePolicyL1() {
-			items[index].L3RestrictionReason = "该员工可配置 L1，不能接受客户 L3 代维护授权"
-		} else if !access.CanDelegateLivePolicyL3() {
-			items[index].L3RestrictionReason = "该员工缺少 L2 配置能力，不能接受 L3 代维护授权"
+		if !access.CanDelegateLivePolicyL3() {
+			items[index].L3RestrictionReason = "该员工缺少行业层配置能力或用户层授权协助权限，不能接受用户层代维护授权"
 		}
 	}
 	return items, nil

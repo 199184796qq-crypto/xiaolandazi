@@ -31,6 +31,17 @@ import type {
   SystemDictionaryItem,
 } from '../types'
 
+const props = withDefaults(
+  defineProps<{
+    navigationContext?: 'activityMarketing' | 'resources'
+    pageTitle?: string
+  }>(),
+  {
+    navigationContext: 'activityMarketing',
+    pageTitle: '设备商城运营',
+  },
+)
+
 const loading = ref(false)
 const saving = ref(false)
 const publishingId = ref<number | null>(null)
@@ -44,7 +55,8 @@ const skuPickerOpen = ref(false)
 const skuSearch = ref('')
 const viewMode = ref<'card' | 'table'>('card')
 const search = ref('')
-const navContext = computed(() => 'activityMarketing' as const)
+const navContext = computed(() => props.navigationContext)
+const currentPageTitle = computed(() => props.pageTitle)
 const statusFilter = ref('listed')
 const sortMode = ref('sort-asc')
 const page = ref(1)
@@ -429,12 +441,12 @@ onMounted(load)
 
 <template>
   <div class="management-page commercial-device-product-page">
-    <ModulePageNav :context="navContext" active-title="设备商城运营" active-nav-title="设备商城运营" />
+    <ModulePageNav :context="navContext" :active-title="currentPageTitle" :active-nav-title="currentPageTitle" />
 
     <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">DEVICE CATALOG</p>
-        <h2>设备商城运营</h2>
+        <h2>{{ currentPageTitle }}</h2>
 
       </div>
       <button v-if="canEditCatalog" class="primary-button" type="button" @click="openCreate">

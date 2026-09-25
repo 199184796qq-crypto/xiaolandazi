@@ -38,3 +38,59 @@ func TestStaffRolesContainGroupCode(t *testing.T) {
 		t.Fatal("unassigned department must not be detected")
 	}
 }
+
+func TestLiveOperationsRolesDoNotGrantUnrelatedTopLevelPermissions(t *testing.T) {
+	forbidden := map[string]bool{
+		"customer.view_all":    true,
+		"agent.view_all":       true,
+		"system.settings.view": true,
+	}
+
+	for _, role := range staffRoleSeeds {
+		if role.Code != "live_operations_manager" && role.Code != "live_operations_staff" {
+			continue
+		}
+		for _, permission := range role.Permissions {
+			if forbidden[permission] {
+				t.Fatalf("role %s must not grant unrelated permission %s", role.Code, permission)
+			}
+		}
+	}
+}
+
+func TestSystemSettingsAreReservedForPlatformAdmin(t *testing.T) {
+	for _, role := range staffRoleSeeds {
+		for _, permission := range role.Permissions {
+			if permission == "system.settings.view" || permission == "system.settings.liveops.manage" || permission == "system.settings.inventory.manage" {
+				t.Fatalf("role %s must not grant system settings permission %s", role.Code, permission)
+			}
+		}
+	}
+}
+
+func TestFinanceRolesDoNotGrantCustomerOrAgentModules(t *testing.T) {
+	forbidden := map[string]bool{"customer.view_all": true, "agent.view_all": true}
+	for _, role := range staffRoleSeeds {
+		if role.GroupCode != "finance" {
+			continue
+		}
+		for _, permission := range role.Permissions {
+			if forbidden[permission] {
+				t.Fatalf("role %s must not grant unrelated permission %s", role.Code, permission)
+			}
+		}
+	}
+}
+
+func TestSalesStaffOnlyGetsAssignedCustomerAccess(t *testing.T) {
+	for _, role := range staffRoleSeeds {
+		if role.Code != "sales_staff" {
+			continue
+		}
+		if len(role.Permissions) != 1 || role.Permissions[0] != "sales.customer.view_assigned" {
+			t.Fatalf("sales_staff permissions=%v want [sales.customer.view_assigned]", role.Permissions)
+		}
+		return
+	}
+	t.Fatal("sales_staff seed missing")
+}

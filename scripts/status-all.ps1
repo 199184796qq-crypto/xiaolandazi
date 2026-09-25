@@ -46,5 +46,9 @@ if ($runtimeMode -eq 'development') {
 }
 
 Show-Service 'web-console' 5173 'http://127.0.0.1:5173/'
+Show-Service 'customer-mobile' 5174 'http://127.0.0.1:5174/login'
+Show-Service 'sales-mobile' 5175 'http://127.0.0.1:5175/login'
+Show-Service 'device-simulator' 5176 'http://127.0.0.1:5176/'
 Show-Service 'management-service' 8080 'http://127.0.0.1:8080/api/v1/auth/captcha'
 Show-Service 'core-service' 8081 'http://127.0.0.1:8081/healthz'
+Show-Service 'audio-service' 8082 'http://127.0.0.1:8082/healthz'

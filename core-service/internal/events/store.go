@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,6 +19,16 @@ const eventCacheTTL = 24 * time.Hour
 type Store struct {
 	redis *redis.Client
 	limit int64
+
+	observerMu sync.RWMutex
+	observer   func(model.RoomEvent)
+
+	recentMu sync.RWMutex
+	recent   map[int64][]model.RoomEvent
+
+	idMu       sync.Mutex
+	idMillis   int64
+	idSequence int64
 }
 
 func NewStore(client *redis.Client, limit int) *Store {
@@ -28,9 +40,83 @@ func NewStore(client *redis.Client, limit int) *Store {
 	}
 
 	return &Store{
-		redis: client,
-		limit: int64(limit),
+		redis:  client,
+		limit:  int64(limit),
+		recent: make(map[int64][]model.RoomEvent),
 	}
+}
+
+func (s *Store) SetObserver(observer func(model.RoomEvent)) {
+	s.observerMu.Lock()
+	s.observer = observer
+	s.observerMu.Unlock()
+}
+
+func (s *Store) notify(event model.RoomEvent) {
+	s.observerMu.RLock()
+	observer := s.observer
+	s.observerMu.RUnlock()
+	if observer == nil {
+		return
+	}
+	func() {
+		defer func() { _ = recover() }()
+		observer(event)
+	}()
+}
+
+func (s *Store) Observe(
+	tenantID int64,
+	roomID int64,
+	input model.CreateEventInput,
+) {
+	occurredAt := input.OccurredAt.UTC()
+	if input.OccurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	s.notify(model.RoomEvent{
+		TenantID:   tenantID,
+		RoomID:     roomID,
+		EventType:  input.EventType,
+		UserID:     input.UserID,
+		Nickname:   input.Nickname,
+		Content:    input.Content,
+		OccurredAt: occurredAt,
+		Payload:    input.Payload,
+	})
+}
+
+// BuildEvent creates a locally ordered event without touching Redis. Event IDs
+// stay inside JavaScript's safe-integer range while allowing up to 1000 events
+// per logical millisecond before the local logical clock advances.
+func (s *Store) BuildEvent(
+	tenantID int64,
+	roomID int64,
+	input model.CreateEventInput,
+) model.RoomEvent {
+	occurredAt := input.OccurredAt.UTC()
+	if input.OccurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	payload := append(json.RawMessage(nil), input.Payload...)
+	return model.RoomEvent{
+		ID:         s.nextEventID(),
+		TenantID:   tenantID,
+		RoomID:     roomID,
+		EventType:  input.EventType,
+		UserID:     input.UserID,
+		Nickname:   input.Nickname,
+		Content:    input.Content,
+		OccurredAt: occurredAt,
+		Payload:    payload,
+	}
+}
+
+// Accept makes an event visible to the in-process fast path. It deliberately
+// does not perform network or database I/O.
+func (s *Store) Accept(event model.RoomEvent) {
+	s.remember(event)
+	s.notify(event)
 }
 
 func (s *Store) ListRecent(
@@ -45,6 +131,9 @@ func (s *Store) ListRecent(
 	if int64(limit) > s.limit {
 		limit = int(s.limit)
 	}
+	if s.redis == nil {
+		return s.listMemory(tenantID, roomID, limit), nil
+	}
 
 	values, err := s.redis.LRange(
 		ctx,
@@ -53,10 +142,15 @@ func (s *Store) ListRecent(
 		int64(limit-1),
 	).Result()
 	if err != nil {
-		return nil, err
+		return s.listMemory(tenantID, roomID, limit), nil
 	}
 
-	items := make([]model.RoomEvent, 0, len(values))
+	items := make([]model.RoomEvent, 0, len(values)+limit)
+	seen := make(map[int64]struct{}, len(values)+limit)
+	for _, item := range s.listMemory(tenantID, roomID, limit) {
+		items = append(items, item)
+		seen[item.ID] = struct{}{}
+	}
 	for _, raw := range values {
 		var item model.RoomEvent
 		if err := json.Unmarshal([]byte(raw), &item); err != nil {
@@ -65,7 +159,17 @@ func (s *Store) ListRecent(
 		if tenantID != nil && item.TenantID != *tenantID {
 			continue
 		}
+		if _, ok := seen[item.ID]; ok {
+			continue
+		}
 		items = append(items, item)
+		seen[item.ID] = struct{}{}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID > items[j].ID
+	})
+	if len(items) > limit {
+		items = items[:limit]
 	}
 	return items, nil
 }
@@ -76,48 +180,53 @@ func (s *Store) Create(
 	roomID int64,
 	input model.CreateEventInput,
 ) (model.RoomEvent, error) {
-	occurredAt := input.OccurredAt.UTC()
-	if input.OccurredAt.IsZero() {
-		occurredAt = time.Now().UTC()
-	}
-
-	eventID, err := s.redis.Incr(ctx, sequenceKey(roomID)).Result()
-	if err != nil {
+	event := s.BuildEvent(tenantID, roomID, input)
+	if err := s.PersistBatch(ctx, []model.RoomEvent{event}); err != nil {
 		return model.RoomEvent{}, err
 	}
+	s.Accept(event)
+	return event, nil
+}
 
-	event := model.RoomEvent{
-		ID:         eventID,
-		TenantID:   tenantID,
-		RoomID:     roomID,
-		EventType:  input.EventType,
-		UserID:     input.UserID,
-		Nickname:   input.Nickname,
-		Content:    input.Content,
-		OccurredAt: occurredAt,
-		Payload:    input.Payload,
+// PersistBatch writes a room-local event batch with one Redis pipeline round
+// trip. Events are already assigned local IDs before reaching this method.
+func (s *Store) PersistBatch(ctx context.Context, items []model.RoomEvent) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if s.redis == nil {
+		return fmt.Errorf("redis is not configured")
+	}
+	roomID := items[0].RoomID
+	values := make([]any, 0, len(items))
+	for _, item := range items {
+		if item.RoomID != roomID {
+			return fmt.Errorf("mixed room event batch")
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		values = append(values, raw)
 	}
 
-	raw, err := json.Marshal(event)
-	if err != nil {
-		return model.RoomEvent{}, err
-	}
-
-	pipe := s.redis.TxPipeline()
-	pipe.LPush(ctx, eventsKey(roomID), raw)
+	pipe := s.redis.Pipeline()
+	pipe.LPush(ctx, eventsKey(roomID), values...)
 	pipe.LTrim(ctx, eventsKey(roomID), 0, s.limit-1)
 	pipe.Expire(ctx, eventsKey(roomID), eventCacheTTL)
-	pipe.Expire(ctx, sequenceKey(roomID), eventCacheTTL)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return model.RoomEvent{}, err
-	}
-	return event, nil
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (s *Store) ClearRoom(ctx context.Context, roomID int64) error {
 	if roomID <= 0 {
 		return fmt.Errorf("invalid room id")
+	}
+	s.recentMu.Lock()
+	delete(s.recent, roomID)
+	s.recentMu.Unlock()
+	if s.redis == nil {
+		return nil
 	}
 	return s.redis.Del(
 		ctx,
@@ -132,4 +241,51 @@ func eventsKey(roomID int64) string {
 
 func sequenceKey(roomID int64) string {
 	return "livecompanion:room:" + strconv.FormatInt(roomID, 10) + ":event_seq"
+}
+
+func (s *Store) nextEventID() int64 {
+	nowMillis := time.Now().UTC().UnixMilli()
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+
+	if nowMillis > s.idMillis {
+		s.idMillis = nowMillis
+		s.idSequence = 0
+	} else {
+		s.idSequence++
+		if s.idSequence >= 1000 {
+			s.idMillis++
+			s.idSequence = 0
+		}
+	}
+	return s.idMillis*1000 + s.idSequence
+}
+
+func (s *Store) remember(event model.RoomEvent) {
+	s.recentMu.Lock()
+	items := append(s.recent[event.RoomID], event)
+	if int64(len(items)) > s.limit {
+		items = items[len(items)-int(s.limit):]
+	}
+	s.recent[event.RoomID] = items
+	s.recentMu.Unlock()
+}
+
+func (s *Store) listMemory(
+	tenantID *int64,
+	roomID int64,
+	limit int,
+) []model.RoomEvent {
+	s.recentMu.RLock()
+	source := s.recent[roomID]
+	result := make([]model.RoomEvent, 0, min(limit, len(source)))
+	for i := len(source) - 1; i >= 0 && len(result) < limit; i-- {
+		item := source[i]
+		if tenantID != nil && item.TenantID != *tenantID {
+			continue
+		}
+		result = append(result, item)
+	}
+	s.recentMu.RUnlock()
+	return result
 }

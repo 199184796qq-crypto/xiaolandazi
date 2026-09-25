@@ -156,19 +156,6 @@ const simulation = reactive({
   sample_device_price_yuan: 1000,
 })
 
-const activeCount = computed(
-  () => plans.value.filter((item) => item.active_version).length,
-)
-const draftCount = computed(
-  () => plans.value.filter((item) => item.draft_version).length,
-)
-
-const publishedMonthlyRevenuePreview = computed(() =>
-  plans.value.reduce((sum, item) => {
-    return sum + (item.active_version?.price_cents ?? 0)
-  }, 0),
-)
-
 const selectedTargetPlan = computed(() =>
   plans.value.find((item) => item.id === simulation.target_plan_id),
 )
@@ -660,29 +647,6 @@ onMounted(loadPlans)
 
     <div v-if="error" class="inline-error">{{ error }}</div>
     <div v-if="notice" class="settings-success">{{ notice }}</div>
-
-    <section class="commercial-summary-grid">
-      <article>
-        <span>会员方案</span>
-        <strong>{{ plans.length }}</strong>
-        <small>稳定方案数量</small>
-      </article>
-      <article>
-        <span>已发布</span>
-        <strong>{{ activeCount }}</strong>
-        <small>当前可作为正式版本</small>
-      </article>
-      <article>
-        <span>待发布草稿</span>
-        <strong>{{ draftCount }}</strong>
-        <small>不会影响现有终端</small>
-      </article>
-      <article>
-        <span>月费合计预览</span>
-        <strong>{{ formatMoney(publishedMonthlyRevenuePreview) }}</strong>
-        <small>各已发布档位价格合计，仅作配置检查</small>
-      </article>
-    </section>
 
     <section class="commercial-membership-layout" :class="{ 'single-pane': showPlans !== showSimulator }">
       <div v-if="showPlans" class="membership-plan-panel">

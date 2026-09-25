@@ -16,7 +16,9 @@ import (
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/media"
 	"livecompanion/core/internal/model"
+	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/userblock"
 )
 
 type Server struct {
@@ -25,6 +27,9 @@ type Server struct {
 	hub           *eventstore.Hub
 	collectors    *collector.Manager
 	media         *media.Manager
+	brain         roomBrain
+	questions     *questionqueue.Queue
+	userBlocks    *userblock.Store
 	env           string
 	internalToken string
 }
@@ -44,6 +49,7 @@ func New(
 		hub:           hub,
 		collectors:    collectors,
 		media:         mediaManager,
+		questions:     questionqueue.New(),
 		env:           env,
 		internalToken: internalToken,
 	}
@@ -61,10 +67,34 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /internal/v1/rooms/{roomID}/runtime", s.internal(http.HandlerFunc(s.updateRoomRuntime)))
 	mux.Handle("DELETE /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.deleteRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.listEvents)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/brain", s.internal(http.HandlerFunc(s.getRoomBrain)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/brain/pins", s.internal(http.HandlerFunc(s.recordRoomBrainPin)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/questions", s.internal(http.HandlerFunc(s.listRoomQuestions)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/questions", s.internal(http.HandlerFunc(s.enqueueRoomQuestion)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/questions/claim", s.internal(http.HandlerFunc(s.claimRoomQuestion)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/questions/{questionID}/complete", s.internal(http.HandlerFunc(s.completeRoomQuestion)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/questions/{questionID}/release", s.internal(http.HandlerFunc(s.releaseRoomQuestion)))
+	mux.Handle("DELETE /internal/v1/rooms/{roomID}/questions/{questionID}", s.internal(http.HandlerFunc(s.dropRoomQuestion)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/blocked-users", s.internal(http.HandlerFunc(s.listRoomBlockedUsers)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-users", s.internal(http.HandlerFunc(s.blockRoomUser)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-users/restore", s.internal(http.HandlerFunc(s.restoreRoomBlockedUser)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/stream", s.internal(http.HandlerFunc(s.streamEvents)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/preview", s.internal(http.HandlerFunc(s.previewRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/live/{file}", s.internal(http.HandlerFunc(s.liveMedia)))
-	mux.Handle("POST /internal/v1/dev/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.createDevEvent)))
+	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
+		mux.Handle("POST /internal/v1/dev/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.createDevEvent)))
+		mux.Handle("POST /internal/v1/dev/rooms/{roomID}/brain/reset", s.internal(http.HandlerFunc(s.resetRoomBrain)))
+		mux.Handle("POST /internal/v1/dev/rooms/{roomID}/brain/scenario", s.internal(http.HandlerFunc(s.simulateRoomBrainScenario)))
+		mux.Handle("POST /internal/v1/dev/audio/test", s.internal(http.HandlerFunc(s.createDevAudioTest)))
+		mux.Handle("POST /internal/v1/dev/audio/program/start", s.internal(http.HandlerFunc(s.startDevAudioProgram)))
+		mux.Handle("POST /internal/v1/dev/audio/interaction", s.internal(http.HandlerFunc(s.insertDevAudioInteraction)))
+		mux.Handle("GET /internal/v1/dev/audio/mainline-map", s.internal(http.HandlerFunc(s.getDevAudioMainlineMap)))
+		mux.Handle("GET /internal/v1/dev/audio/interactions", s.internal(http.HandlerFunc(s.listDevAudioInteractions)))
+		mux.Handle("DELETE /internal/v1/dev/audio/interactions", s.internal(http.HandlerFunc(s.clearDevAudioInteractions)))
+		mux.Handle("POST /internal/v1/dev/audio/program/stop", s.internal(http.HandlerFunc(s.stopDevAudioProgram)))
+		mux.Handle("POST /internal/v1/dev/audio/events", s.internal(http.HandlerFunc(s.receiveDevAudioEvent)))
+		mux.Handle("GET /internal/v1/dev/audio/tasks/{taskID}", s.internal(http.HandlerFunc(s.getDevAudioTaskState)))
+	}
 
 	return requestLogger(mux)
 }
@@ -105,7 +135,16 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 			"livecompanion_core_room_leases_enabled %d\n"+
 			"livecompanion_core_media_active_sessions %d\n"+
 			"livecompanion_core_media_max_sessions %d\n"+
-			"livecompanion_core_collector_provider_count %d\n",
+			"livecompanion_core_collector_provider_count %d\n"+
+			"livecompanion_core_event_queue_depth %d\n"+
+			"livecompanion_core_event_ingress_dropped_total %d\n"+
+			"livecompanion_core_event_persist_dropped_total %d\n"+
+			"livecompanion_core_event_delivered_total %d\n"+
+			"livecompanion_core_event_persisted_total %d\n"+
+			"livecompanion_core_event_persist_errors_total %d\n"+
+			"livecompanion_core_runtime_pending %d\n"+
+			"livecompanion_core_runtime_writes_total %d\n"+
+			"livecompanion_core_runtime_errors_total %d\n",
 		collectorStats.ActiveRooms,
 		collectorStats.ShardIndex,
 		collectorStats.ShardCount,
@@ -113,6 +152,15 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		mediaStats.ActiveSessions,
 		mediaStats.MaxSessions,
 		providerCount,
+		collectorStats.EventQueueDepth,
+		collectorStats.EventIngressDropped,
+		collectorStats.EventPersistDropped,
+		collectorStats.EventDelivered,
+		collectorStats.EventPersisted,
+		collectorStats.EventPersistErrors,
+		collectorStats.RuntimePending,
+		collectorStats.RuntimeWrites,
+		collectorStats.RuntimeErrors,
 	)
 }
 
@@ -327,6 +375,16 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "list room events failed")
 		return
 	}
+	if s.userBlocks != nil {
+		filtered := items[:0]
+		for _, item := range items {
+			if s.eventIsBlocked(roomID, item.UserID, item.Nickname) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -373,24 +431,42 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	flushTicker := time.NewTicker(100 * time.Millisecond)
+	defer flushTicker.Stop()
+	pending := false
 
 	for {
 		select {
 		case <-r.Context().Done():
+			if pending {
+				flusher.Flush()
+			}
 			return
 		case <-heartbeat.C:
 			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
+			pending = false
+		case <-flushTicker.C:
+			if pending {
+				flusher.Flush()
+				pending = false
+			}
 		case event, open := <-ch:
 			if !open {
+				if pending {
+					flusher.Flush()
+				}
 				return
+			}
+			if s.eventIsBlocked(roomID, event.UserID, event.Nickname) {
+				continue
 			}
 			payload, err := json.Marshal(event)
 			if err != nil {
 				continue
 			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-			flusher.Flush()
+			pending = true
 		}
 	}
 }

@@ -597,6 +597,12 @@ func (s *Store) ListInvitationRecords(
 		return []model.InvitationRecord{}, 0, nil
 	}
 
+	return s.listInvitationRecordsWhere(ctx, where, args, page, pageSize)
+}
+
+// Shared read projection: caller supplies only a server-owned authorization predicate.
+func (s *Store) listInvitationRecordsWhere(ctx context.Context, where string, args []any, page, pageSize int) ([]model.InvitationRecord, int, error) {
+	page, pageSize = businessPage(page, pageSize)
 	var total int
 	if err := s.db.QueryRowContext(
 		ctx,

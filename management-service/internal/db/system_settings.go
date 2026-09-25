@@ -66,6 +66,7 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	}
 
 	settings := []seededSystemSetting{
+		{Key: model.FinanceDistinctReviewerSetting, Group: "finance", Label: "强制经办人与审核人不同", Value: "true", InputType: "boolean", SortOrder: 10},
 		{Key: "site_name", Group: "brand", Label: "系统显示名称", Value: "小蓝搭子", InputType: "text", SortOrder: 10},
 		{Key: "internal_agent_name", Group: "agent", Label: "后台智能体名称", Value: "小蓝工作搭子", InputType: "text", SortOrder: 10},
 		{Key: "client_agent_name", Group: "agent", Label: "前端智能体名称", Value: "小蓝直播搭子", InputType: "text", SortOrder: 20},
@@ -196,6 +197,11 @@ func (s *Store) UpdateSystemSettings(
 	updates []model.SystemSettingUpdate,
 	actorUserID int64,
 ) error {
+	for _, update := range updates {
+		if err := ValidateFinanceReviewSetting(update.Key, update.Value); err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

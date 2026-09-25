@@ -29,5 +29,7 @@ function Stop-FromPidFile([string]$Name, [string]$PidFile) {
 }
 
 Stop-FromPidFile 'web-console' (Join-Path $RunDir 'web-console.pid')
+Stop-FromPidFile 'device-simulator' (Join-Path $RunDir 'device-simulator.pid')
 Stop-FromPidFile 'core-service' (Join-Path $RunDir 'core-service.pid')
+Stop-FromPidFile 'audio-service' (Join-Path $RunDir 'audio-service.pid')
 Stop-FromPidFile 'management-service' (Join-Path $RunDir 'management-service.pid')

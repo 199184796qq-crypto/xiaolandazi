@@ -103,15 +103,25 @@ const canControlMonitoring = computed(() => {
       (access.is_super_admin || access.permissions.includes('liveops.configure')),
   )
 })
-const tenants = ref<Tenant[]>([])
 
-const liveCount = computed(() => rooms.value.filter((room) => room.status === 'live').length)
-const waitingCount = computed(() => rooms.value.filter((room) => room.status !== 'live').length)
-const totalOnline = computed(() =>
-  rooms.value
-    .filter((room) => room.status === 'live')
-    .reduce((sum, room) => sum + (room.online_count || 0), 0),
-)
+function canDeleteRoom(room: Room) {
+  const bootstrap = session.bootstrap
+  if (!bootstrap) return false
+  if (bootstrap.actor.role === 'customer') return true
+  if (room.cooperation_status !== 'non_cooperating') return false
+  if (bootstrap.actor.role === 'platform_admin') return true
+  if (bootstrap.actor.role !== 'staff') return false
+  const access = bootstrap.staff_access
+  return Boolean(
+    access &&
+      (access.is_super_admin || access.permissions.includes('liveops.configure')),
+  )
+}
+
+function cooperationText(room: Room) {
+  return room.cooperation_status === 'non_cooperating' ? '不合作' : '合作中'
+}
+const tenants = ref<Tenant[]>([])
 
 function tenantName(tenantId: number) {
   return tenants.value.find((tenant) => tenant.id === tenantId)?.name || '未知终端'
@@ -236,8 +246,22 @@ async function submitCreate() {
 
 async function removeRoom(room: Room, event: MouseEvent) {
   event.stopPropagation()
-  if (isAdmin.value) return
-  const confirmed = await confirmAction({ title: '删除直播间', message: '确定删除“' + roomTitle(room) + '”吗？删除后不可恢复。', confirmText: '确认删除', danger: true })
+  if (!canDeleteRoom(room)) return
+
+  const isOperationsCleanup =
+    session.bootstrap?.actor.role !== 'customer' &&
+    room.cooperation_status === 'non_cooperating'
+  const message = isOperationsCleanup
+    ? '该商户已标记为“不合作”。确定清理直播间“' +
+      roomTitle(room) +
+      '”吗？删除后不可恢复，并会留下操作审计。'
+    : '确定删除“' + roomTitle(room) + '”吗？删除后不可恢复。'
+  const confirmed = await confirmAction({
+    title: isOperationsCleanup ? '删除不合作商户直播间' : '删除直播间',
+    message,
+    confirmText: '确认删除',
+    danger: true,
+  })
   if (!confirmed) return
 
   try {
@@ -307,29 +331,6 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
-    <section class="stat-grid">
-      <article class="stat-card">
-        <span class="stat-label">房间总数</span>
-        <strong>{{ rooms.length }}</strong>
-        <small>当前可管理房间</small>
-      </article>
-      <article class="stat-card">
-        <span class="stat-label">直播中</span>
-        <strong class="success-number">{{ liveCount }}</strong>
-        <small>正在产生实时事件</small>
-      </article>
-      <article class="stat-card">
-        <span class="stat-label">等待 / 离线</span>
-        <strong>{{ waitingCount }}</strong>
-        <small>等待开播或接入采集</small>
-      </article>
-      <article class="stat-card">
-        <span class="stat-label">当前在线</span>
-        <strong>{{ totalOnline.toLocaleString() }}</strong>
-        <small>所有可见房间合计</small>
-      </article>
-    </section>
-
     <section class="room-section">
       <div class="section-toolbar">
         <div>
@@ -383,6 +384,13 @@ onBeforeUnmount(() => {
           class="room-card"
           @click="router.push('/rooms/' + room.id)"
         >
+          <span
+            v-if="room.cooperation_status === 'non_cooperating'"
+            class="room-cooperation-corner"
+            :title="room.cooperation_note || '商户已标记不合作'"
+          >
+            不合作
+          </span>
           <div class="room-card-top">
             <div class="platform-icon">抖</div>
             <div class="room-heading">
@@ -410,6 +418,13 @@ onBeforeUnmount(() => {
             <div>
               <span v-if="isAdmin" class="tenant-chip">{{ tenantName(room.tenant_id) }}</span>
               <span v-else class="muted-chip">终端直播间</span>
+              <span
+                v-if="room.recharge_dormant_90_days && room.cooperation_status !== 'non_cooperating'"
+                class="room-recharge-warning-chip"
+                title="仅作业务提醒，不自动改变合作状态"
+              >
+                90天+未充值
+              </span>
             </div>
             <div class="card-actions">
               <button
@@ -433,7 +448,7 @@ onBeforeUnmount(() => {
                 {{ monitorBusy(room.id) && room.monitor_enabled ? '停止中…' : '停止' }}
               </button>
               <button
-                v-if="!isAdmin"
+                v-if="canDeleteRoom(room)"
                 class="room-action-button room-action-delete"
                 type="button"
                 title="删除直播间"
@@ -463,6 +478,7 @@ onBeforeUnmount(() => {
               <th>平台</th>
               <th>在线人数</th>
               <th>状态</th>
+              <th v-if="isInternalViewer">合作</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -473,6 +489,16 @@ onBeforeUnmount(() => {
               <td>{{ room.platform === 'douyin' ? '抖音' : room.platform }}</td>
               <td>{{ room.online_count.toLocaleString() }}</td>
               <td><span class="status-pill" :class="'status-' + effectiveStatus(room)">{{ statusText(room) }}</span></td>
+              <td v-if="isInternalViewer">
+                <span
+                  class="room-cooperation-table-badge"
+                  :class="{ danger: room.cooperation_status === 'non_cooperating' }"
+                  :title="room.cooperation_note || ''"
+                >
+                  {{ cooperationText(room) }}
+                </span>
+                <small v-if="room.recharge_dormant_90_days">90天+未充值</small>
+              </td>
               <td>
                 <div class="room-table-actions">
                   <button
@@ -489,6 +515,12 @@ onBeforeUnmount(() => {
                     :disabled="!room.monitor_enabled || monitorBusy(room.id)"
                     @click="changeMonitoring(room, false, $event)"
                   ><span class="room-action-symbol room-action-stop-symbol" aria-hidden="true">■</span>停止</button>
+                  <button
+                    v-if="canDeleteRoom(room)"
+                    class="room-action-button room-action-delete compact"
+                    type="button"
+                    @click="removeRoom(room, $event)"
+                  ><span class="room-action-symbol" aria-hidden="true">×</span>删除</button>
                   <button
                     class="room-action-button room-action-enter compact"
                     type="button"

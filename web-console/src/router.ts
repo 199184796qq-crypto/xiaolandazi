@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import WorkInboxView from './views/WorkInboxView.vue'
+import { canOpenWorkInboxRoute, canUseWorkInbox } from './workInboxRoutes'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import RoomsView from './views/RoomsView.vue'
@@ -12,6 +14,9 @@ import InvitationsView from './views/InvitationsView.vue'
 import ResourcesView from './views/ResourcesView.vue'
 import SalesManagementView from './views/SalesManagementView.vue'
 import SalesCustomersView from './views/SalesCustomersView.vue'
+import SalesWorkspaceView from './views/SalesWorkspaceView.vue'
+import SalesFollowupsView from './views/SalesFollowupsView.vue'
+import SalesCatalogView from './views/SalesCatalogView.vue'
 import StaffOrganizationView from './views/StaffOrganizationView.vue'
 import StaffFinanceView from './views/StaffFinanceView.vue'
 import CommercialMembershipsView from './views/CommercialMembershipsView.vue'
@@ -62,6 +67,7 @@ function hasStaffPermission(code: string) {
 
 function defaultAuthenticatedRoute() {
   const role = session.bootstrap?.actor.role
+  const primaryGroupCode = session.bootstrap?.staff_access?.primary_group_code
 
   if (role === 'platform_admin') {
     return { name: 'platform-overview' }
@@ -70,9 +76,25 @@ function defaultAuthenticatedRoute() {
     return { name: 'agent-overview' }
   }
   if (role === 'sales_staff') {
-    return { name: 'sales-customers' }
+    return { name: 'sales-workspace' }
   }
   if (role === 'staff') {
+    if (primaryGroupCode === 'management') {
+      return { name: 'platform-overview' }
+    }
+    if (primaryGroupCode === 'finance') {
+      return { name: 'staff-finance-hub' }
+    }
+    if (primaryGroupCode === 'sales') {
+      return { name: 'sales-hub' }
+    }
+    if (primaryGroupCode === 'live_operations') {
+      return { name: 'live-hub' }
+    }
+    if (primaryGroupCode === 'warehouse_after_sales') {
+      return { name: 'resource-inventory' }
+    }
+
     if (hasStaffPermission('system.architecture.view')) {
       return { name: 'platform-overview' }
     }
@@ -93,35 +115,95 @@ function defaultAuthenticatedRoute() {
     ) {
       return { name: 'resource-inventory' }
     }
-    if (hasStaffPermission('customer.view_all')) {
-      return { name: 'customers-hub' }
-    }
-    if (hasStaffPermission('agent.view_all')) {
-      return { name: 'agents-hub' }
-    }
-    if (hasStaffPermission('sales.view_all')) {
-      return { name: 'sales-hub' }
-    }
-    if (hasStaffPermission('commercial.membership.view')) {
-      return { name: 'commercial-hub' }
-    }
-    if (hasStaffPermission('commercial.time_card.view')) {
-      return { name: 'commercial-time-cards' }
-    }
-    if (hasStaffPermission('commercial.device.view')) {
-      return { name: 'commercial-device-products' }
-    }
-    if (hasStaffPermission('invitations.view_all')) {
-      return { name: 'invitations' }
-    }
     return { name: 'staff-hub' }
   }
   return { name: 'rooms' }
 }
 
+const departmentRouteOwners: Record<string, string> = {
+  'staff-finance-invitations': 'finance',
+  'staff-finance-receipts': 'finance',
+  'staff-finance-customer-money': 'finance',
+  'sales-receipts': 'sales',
+  'sales-customer-money': 'sales',
+  'sales-support': 'sales',
+  'operations-support': 'live_operations',
+  'platform-overview': 'management',
+
+  'staff-finance-hub': 'finance',
+  'staff-finance-accounts': 'finance',
+  'staff-finance-approvals': 'finance',
+  'staff-finance-ledger': 'finance',
+  'staff-finance-history': 'finance',
+  'staff-finance-trace': 'finance',
+  'staff-finance-settlements': 'finance',
+  'staff-finance-operating': 'finance',
+  'commercial-settlement': 'finance',
+
+  'customers-hub': 'sales',
+  'customers-list': 'sales',
+  'sales-hub': 'sales',
+  'sales-team': 'sales',
+  'sales-performance': 'sales',
+  'sales-workspace': 'sales',
+  'sales-leads': 'sales',
+  'sales-handovers': 'sales',
+  'sales-followups': 'sales',
+  'sales-catalog': 'sales',
+  'sales-my-performance': 'sales',
+  'sales-customers': 'sales',
+  invitations: 'sales',
+
+  'live-hub': 'live_operations',
+  'live-customer-handoffs': 'live_operations',
+  'live-activity-marketing': 'live_operations',
+  'commercial-ai-time': 'live_operations',
+  'live-room-quotas': 'live_operations',
+  'live-monitor': 'live_operations',
+  'live-events': 'live_operations',
+  'live-strategy': 'live_operations',
+  'live-devices': 'live_operations',
+  rooms: 'live_operations',
+  'rooms-list': 'live_operations',
+  'room-detail': 'live_operations',
+  'commercial-hub': 'live_operations',
+  'commercial-membership-plans': 'live_operations',
+  'commercial-membership-simulator': 'live_operations',
+  'commercial-time-cards': 'live_operations',
+  'commercial-device-products': 'live_operations',
+  'commercial-marketing': 'live_operations',
+  'commercial-marketing-tools': 'live_operations',
+  'commercial-marketing-channels': 'live_operations',
+  'commercial-marketing-analytics': 'live_operations',
+  'commercial-referrals': 'live_operations',
+
+  'resources-hub': 'warehouse_after_sales',
+  'resource-devices': 'warehouse_after_sales',
+  'resource-inventory': 'warehouse_after_sales',
+  'resource-device-products': 'warehouse_after_sales',
+  'resource-logistics': 'warehouse_after_sales',
+  'staff-after-sales': 'warehouse_after_sales',
+}
+
+function isCrossDepartmentRoute(routeName: string, primaryGroupCode?: string) {
+  const owner = departmentRouteOwners[routeName]
+  return Boolean(owner && primaryGroupCode && owner !== primaryGroupCode)
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/work/inbox', name: 'work-inbox', component: WorkInboxView },
+    {path:'/staff/finance/invitations',name:'staff-finance-invitations',component:()=>import('./views/FinanceInvitationsView.vue'),meta:{internalStaffOnly:true,staffPermission:'finance.dashboard.view'}},
+    {path:'/staff/finance/receipts',name:'staff-finance-receipts',component:()=>import('./views/CustomerReceiptsView.vue'),meta:{staffPermission:'finance.dashboard.view'}},
+    {path:'/staff/finance/customers/:tenantID/money',name:'staff-finance-customer-money',component:()=>import('./views/CustomerMoneyView.vue'),meta:{staffPermission:'finance.dashboard.view'}},
+    {path:'/sales/receipts',name:'sales-receipts',component:()=>import('./views/CustomerReceiptsView.vue'),meta:{salesOnly:true}},
+    {path:'/sales/customers/:tenantID/money',name:'sales-customer-money',component:()=>import('./views/CustomerMoneyView.vue'),meta:{salesOnly:true}},
+    {path:'/sales/support',name:'sales-support',component:()=>import('./views/ServiceTicketsView.vue'),meta:{salesOnly:true}},
+    {path:'/finance/receipts',name:'customer-receipts',component:()=>import('./views/CustomerReceiptsView.vue'),meta:{customerOnly:true}},
+    {path:'/finance/records',name:'customer-money',component:()=>import('./views/CustomerMoneyView.vue'),meta:{customerOnly:true}},
+    {path:'/support',name:'customer-support',component:()=>import('./views/ServiceTicketsView.vue'),meta:{customerOnly:true}},
+    {path:'/operations/support',name:'operations-support',component:()=>import('./views/ServiceTicketsView.vue'),meta:{staffPermissionsAny:['liveops.configure','liveops.ticket.manage']}},
     {
       path: '/login',
       name: 'login',
@@ -144,42 +226,49 @@ export const router = createRouter({
       path: '/system/settings',
       name: 'system-settings',
       component: SystemSettingsView,
-      meta: { staffPermission: 'system.settings.view' },
+      meta: { platformAdminOnly: true },
     },
     {
       path: '/staff',
       name: 'staff-hub',
       component: DomainHubView,
       props: { hub: 'staff' },
-      meta: { internalStaffOnly: true },
+      meta: {
+        staffPermissionsAny: [
+          'system.architecture.view',
+          'staff.group.view',
+          'staff.employee.view',
+          'staff.role.view',
+        ],
+      },
     },
     {
       path: '/staff/groups',
       name: 'staff-groups',
       component: StaffOrganizationView,
       props: { initialTab: 'employees', groupsOnly: true },
-      meta: { internalStaffOnly: true },
+      meta: { staffPermission: 'staff.group.view' },
     },
     {
       path: '/staff/employees',
       name: 'staff-employees',
       component: StaffOrganizationView,
       props: { initialTab: 'employees' },
-      meta: { internalStaffOnly: true },
+      meta: { staffPermission: 'staff.employee.view' },
     },
     {
       path: '/staff/roles',
       name: 'staff-roles',
       component: StaffOrganizationView,
       props: { initialTab: 'roles' },
-      meta: { internalStaffOnly: true },
+      meta: { staffPermission: 'staff.role.view' },
     },
     {
       path: '/staff/approvals',
       name: 'staff-approvals',
       component: StaffOrganizationView,
       props: { initialTab: 'approvals' },
-      meta: { internalStaffOnly: true },
+      meta: { staffPermission: 'finance.dashboard.view' },
     },
     {
       path: '/staff/audit',
@@ -237,7 +326,7 @@ export const router = createRouter({
     {
       path: '/staff/finance/ai-time',
       name: 'staff-finance-ai-time',
-      redirect: '/operations/live/marketing/ai-time',
+      redirect: '/staff/finance/approvals?focus=ai-time',
     },
     {
       path: '/staff/finance/operating',
@@ -291,14 +380,14 @@ export const router = createRouter({
       name: 'live-monitor',
       component: LiveOperationsView,
       props: { focus: 'monitor' },
-      meta: { staffPermission: 'system.architecture.view' },
+      meta: { staffPermissionsAny: ['liveops.view_all', 'liveops.configure'] },
     },
     {
       path: '/operations/live/events',
       name: 'live-events',
       component: LiveOperationsView,
       props: { focus: 'events' },
-      meta: { staffPermission: 'system.architecture.view' },
+      meta: { staffPermissionsAny: ['liveops.view_all', 'liveops.configure'] },
     },
     {
       path: '/operations/live/strategy',
@@ -390,9 +479,51 @@ export const router = createRouter({
       meta: { staffPermission: 'sales.view_all' },
     },
     {
+      path: '/sales/leads',
+      name: 'sales-leads',
+      component: () => import('./views/SalesLeadsView.vue'),
+      meta: { salesOnly: true },
+    },
+    {
+      path: '/sales/handovers',
+      name: 'sales-handovers',
+      component: () => import('./views/SalesHandoverView.vue'),
+      meta: { staffPermission: 'sales.assignment.manage' },
+    },
+    {
+      path: '/operations/live/customer-handoffs',
+      name: 'live-customer-handoffs',
+      component: () => import('./views/CustomerHandoffsView.vue'),
+      meta: { staffPermissionsAny: ['liveops.configure', 'liveops.ticket.manage'] },
+    },
+    {
+      path: '/sales/workspace',
+      name: 'sales-workspace',
+      component: SalesWorkspaceView,
+      meta: { salesOnly: true },
+    },
+    {
       path: '/sales/customers',
       name: 'sales-customers',
       component: SalesCustomersView,
+      meta: { salesOnly: true },
+    },
+    {
+      path: '/sales/followups',
+      name: 'sales-followups',
+      component: SalesFollowupsView,
+      meta: { salesOnly: true },
+    },
+    {
+      path: '/sales/catalog',
+      name: 'sales-catalog',
+      component: SalesCatalogView,
+      meta: { salesOnly: true },
+    },
+    {
+      path: '/sales/my-performance',
+      name: 'sales-my-performance',
+      component: SalesPerformanceView,
       meta: { salesOnly: true },
     },
     {
@@ -525,6 +656,16 @@ export const router = createRouter({
       meta: { staffPermission: 'inventory.view' },
     },
     {
+      path: '/resources/device-products',
+      name: 'resource-device-products',
+      component: CommercialDeviceProductsView,
+      props: {
+        navigationContext: 'resources',
+        pageTitle: '设备商品资料',
+      },
+      meta: { staffPermission: 'commercial.device.view' },
+    },
+    {
       path: '/staff/after-sales',
       name: 'staff-after-sales',
       component: InventoryLifecycleView,
@@ -592,7 +733,21 @@ router.beforeEach(async (to) => {
   }
 
   const role = session.bootstrap.actor.role
+  if (to.name === 'work-inbox' && !canUseWorkInbox(role)) {
+    return { path: '/personal', replace: true }
+  }
+
   const primaryGroupCode = session.bootstrap.staff_access?.primary_group_code
+
+  if (
+    role !== 'platform_admin' &&
+    (role === 'staff' || role === 'sales_staff') &&
+    isCrossDepartmentRoute(String(to.name || ''), primaryGroupCode) &&
+    !canOpenWorkInboxRoute(to.path, role, hasStaffPermission) &&
+    !(String(to.name || '').startsWith('staff-finance-') && hasStaffPermission('finance.dashboard.view'))
+  ) {
+    return defaultAuthenticatedRoute()
+  }
 
   if (to.meta.platformAdminOnly === true && role !== 'platform_admin') {
     return defaultAuthenticatedRoute()
@@ -702,12 +857,19 @@ router.beforeEach(async (to) => {
     return { name: 'agent-overview' }
   }
 
-  if (
-    (role === 'staff' || role === 'sales_staff') &&
-    (to.name === 'rooms' || to.name === 'rooms-list' || to.name === 'room-detail') &&
-    !hasStaffPermission('system.architecture.view')
-  ) {
-    return defaultAuthenticatedRoute()
+  if (to.name === 'rooms' || to.name === 'rooms-list' || to.name === 'room-detail') {
+    const canAccessRooms =
+      role === 'customer' ||
+      role === 'platform_admin' ||
+      (role === 'staff' &&
+        (
+          hasStaffPermission('system.architecture.view') ||
+          hasStaffPermission('liveops.view_all') ||
+          hasStaffPermission('liveops.configure')
+        ))
+    if (!canAccessRooms) {
+      return defaultAuthenticatedRoute()
+    }
   }
 
   if (role === 'staff' && to.name === 'invitations') {

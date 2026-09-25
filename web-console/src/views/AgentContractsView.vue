@@ -112,15 +112,6 @@ const pagedContracts = computed(() => {
   return filteredContracts.value.slice(start, start + pageSize.value)
 })
 
-const activeContracts = computed(() =>
-  contracts.value.filter((item) => item.status === 'active'),
-)
-const pendingContracts = computed(() =>
-  contracts.value.filter((item) =>
-    ['draft', 'pending_signature', 'signed'].includes(item.status),
-  ),
-)
-
 watch([search, statusFilter, sortMode, pageSize], () => {
   page.value = 1
 })
@@ -379,29 +370,6 @@ onMounted(load)
     </section>
 
     <p v-if="error" class="inline-error">{{ error }}</p>
-
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>合同总数</span>
-        <strong>{{ contracts.length }}</strong>
-        <small>全部合同与补充协议</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>生效中</span>
-        <strong>{{ activeContracts.length }}</strong>
-        <small>当前正式合作合同</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>签署流程中</span>
-        <strong>{{ pendingContracts.length }}</strong>
-        <small>草稿、待签或已签待生效</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>合同原则</span>
-        <strong>不可删除</strong>
-        <small>状态流转 + 规则快照</small>
-      </article>
-    </section>
 
     <section class="settings-card feature-record-panel">
       <DataListControls

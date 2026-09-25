@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TodoBadge from './TodoBadge.vue'
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
@@ -124,8 +125,10 @@ const siblingEntries = computed(() =>
         >
           <i>{{ entry.icon }}</i>
           <span>{{ entry.title }}</span>
+          <TodoBadge :to="entry.to" />
         </RouterLink>
       </nav>
     </div>
   </Teleport>
 </template>
+<style scoped>.module-sibling-link{position:relative;padding-right:30px}</style>

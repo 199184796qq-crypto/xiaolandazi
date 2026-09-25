@@ -1,39 +1,16 @@
 <script setup lang="ts">
+import TodoBadge from '../components/TodoBadge.vue'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onMounted, ref } from 'vue'
-import {
-  getAdminAgents,
-  getAdminCustomers,
-  getAdminSalesStaff,
-  getRooms,
-  getStaffDashboard,
-} from '../api'
-import type {
-  AdminCustomer,
-  AgentSummary,
-  Room,
-  SalesStaffSummary,
-  StaffDashboard,
-} from '../types'
+import { getStaffDashboard } from '../api'
+
+import type { StaffDashboard } from '../types'
+
 import { moduleEntries, type HubKey, type ModuleEntry } from '../moduleUi'
 
 const loading = ref(false)
 const error = useFeedbackErrorRef()
-const agents = ref<AgentSummary[]>([])
-const customers = ref<AdminCustomer[]>([])
-const sales = ref<SalesStaffSummary[]>([])
-const rooms = ref<Room[]>([])
 const staff = ref<StaffDashboard | null>(null)
-
-const activeAgents = computed(
-  () => agents.value.filter((item) => item.status === 'active').length,
-)
-const activeCustomers = computed(
-  () => customers.value.filter((item) => item.status === 'active').length,
-)
-const liveRooms = computed(
-  () => rooms.value.filter((item) => item.status === 'live').length,
-)
 
 function hasPermission(code: string) {
   const access = staff.value?.access
@@ -42,6 +19,10 @@ function hasPermission(code: string) {
       (access.is_super_admin || access.permissions.includes(code)),
   )
 }
+
+const canDrillAcrossDepartments = computed(() =>
+  Boolean(staff.value?.access?.is_super_admin),
+)
 
 function canShowSubfunction(hub: HubKey, entry: ModuleEntry) {
   const to = entry.to || ''
@@ -136,20 +117,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [agentData, customerData, salesData, roomData, staffData] =
-      await Promise.all([
-        getAdminAgents(),
-        getAdminCustomers(),
-        getAdminSalesStaff(),
-        getRooms(),
-        getStaffDashboard(),
-      ])
-
-    agents.value = agentData.items
-    customers.value = customerData.items
-    sales.value = salesData.items
-    rooms.value = roomData.items
-    staff.value = staffData
+    staff.value = await getStaffDashboard()
   } catch (value) {
     error.value =
       value instanceof Error ? value.message : '读取系统总览失败'
@@ -165,32 +133,6 @@ onMounted(load)
   <div class="management-page admin-control-page">
 
     <p v-if="error" class="auth-error">{{ error }}</p>
-
-    <section class="admin-kpi-grid">
-      <RouterLink class="admin-kpi-card" to="/staff">
-        <span>内部员工</span>
-        <strong>{{ staff?.employees.length || 0 }}</strong>
-        <small>{{ staff?.groups.length || 0 }} 个部门</small>
-      </RouterLink>
-
-      <RouterLink class="admin-kpi-card" to="/customers">
-        <span>客户总数</span>
-        <strong>{{ customers.length }}</strong>
-        <small>正常 {{ activeCustomers }}</small>
-      </RouterLink>
-
-      <RouterLink class="admin-kpi-card" to="/agents">
-        <span>代理</span>
-        <strong>{{ agents.length }}</strong>
-        <small>正常 {{ activeAgents }}</small>
-      </RouterLink>
-
-      <RouterLink class="admin-kpi-card" to="/">
-        <span>直播间</span>
-        <strong>{{ rooms.length }}</strong>
-        <small>直播中 {{ liveRooms }}</small>
-      </RouterLink>
-    </section>
 
     <section class="settings-card admin-architecture-card">
       <div class="settings-card-header">
@@ -212,7 +154,7 @@ onMounted(load)
           <p>系统总览、组织、员工、角色、权限和审批规则。</p>
           <div class="admin-domain-links">
             <RouterLink to="/overview">系统总览</RouterLink>
-            <RouterLink to="/system/settings">系统设定</RouterLink>
+            <RouterLink v-if="canDrillAcrossDepartments" to="/system/settings">系统设定</RouterLink>
             <RouterLink to="/staff">组织架构</RouterLink>
           </div>
           <div class="admin-domain-subfunctions">
@@ -223,11 +165,10 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/staff'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
             </div>
           </div>
-          <em>{{ staff?.employees.length || 0 }} 名员工 · {{ staff?.groups.length || 0 }} 个部门</em>
         </article>
 
         <article class="admin-architecture-domain">
@@ -239,11 +180,11 @@ onMounted(load)
             </div>
           </div>
           <p>围绕直播间运行、策略、监控和现场设备开展日常业务。</p>
-          <div class="admin-domain-links">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-links">
             <RouterLink to="/operations/live">直播运维</RouterLink>
             <RouterLink to="/operations/live/marketing">活动营销</RouterLink>
           </div>
-          <div class="admin-domain-subfunctions">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-subfunctions">
             <span>二级功能</span>
             <div>
               <RouterLink
@@ -251,11 +192,11 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/operations/live'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
             </div>
           </div>
-          <em>{{ liveRooms }} 个直播中</em>
+          <p v-else>观察模式：只在系统总览查看运行概况，不进入营销运维工作台。</p>
         </article>
 
         <article class="admin-architecture-domain">
@@ -267,12 +208,12 @@ onMounted(load)
             </div>
           </div>
           <p>客户来源、销售归属、推荐关系和持续经营统一管理。</p>
-          <div class="admin-domain-links">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-links">
             <RouterLink to="/customers">客户资源</RouterLink>
             <RouterLink to="/sales">销售体系</RouterLink>
             <RouterLink to="/invitations">邀请与推荐</RouterLink>
           </div>
-          <div class="admin-domain-subfunctions">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-subfunctions">
             <span>二级功能</span>
             <div>
               <RouterLink
@@ -280,14 +221,12 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/customers'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
             </div>
           </div>
-          <em>{{ customers.length }} 个客户 · {{ sales.length }} 名销售</em>
+          <p v-else>观察模式：只看客资与销售概况，不进入客资销售工作台。</p>
         </article>
-
-
 
         <article class="admin-architecture-domain">
           <div class="admin-architecture-domain-head">
@@ -298,7 +237,7 @@ onMounted(load)
             </div>
           </div>
           <p>实体设备、库存仓储、物流交付、维修退换和售后闭环。</p>
-          <div class="admin-domain-links">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-links">
             <RouterLink
               v-if="
                 hasPermission('resources.view') ||
@@ -316,7 +255,7 @@ onMounted(load)
               物流与售后
             </RouterLink>
           </div>
-          <div class="admin-domain-subfunctions">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-subfunctions">
             <span>二级功能</span>
             <div>
               <RouterLink
@@ -324,7 +263,7 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/resources'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
               <RouterLink
                 v-if="hasPermission('inventory.after_sales.view')"
@@ -334,6 +273,7 @@ onMounted(load)
               </RouterLink>
             </div>
           </div>
+          <p v-else>观察模式：只看仓储售后概况，不进入仓储售后工作台。</p>
           <em>按商品、设备 SN 和售后单据全链追溯</em>
         </article>
 
@@ -346,7 +286,7 @@ onMounted(load)
             </div>
           </div>
           <p>资金账户、审批、流水、收益结算和全链路财务追溯。</p>
-          <div class="admin-domain-links">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-links">
             <RouterLink
               v-if="hasPermission('finance.dashboard.view')"
               to="/staff/finance"
@@ -354,7 +294,7 @@ onMounted(load)
               财务与结算
             </RouterLink>
           </div>
-          <div class="admin-domain-subfunctions">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-subfunctions">
             <span>二级功能</span>
             <div>
               <RouterLink
@@ -362,10 +302,11 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/staff/finance'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
             </div>
           </div>
+          <p v-else>观察模式：只看财务概况，不进入财务工作台。</p>
           <em>资金可进、可退、可抵、可提、可核对</em>
         </article>
 
@@ -378,10 +319,10 @@ onMounted(load)
             </div>
           </div>
           <p>管理代理准入、等级政策、合作合同以及退出清算。</p>
-          <div class="admin-domain-links">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-links">
             <RouterLink to="/agents">代理合作</RouterLink>
           </div>
-          <div class="admin-domain-subfunctions">
+          <div v-if="canDrillAcrossDepartments" class="admin-domain-subfunctions">
             <span>二级功能</span>
             <div>
               <RouterLink
@@ -389,14 +330,15 @@ onMounted(load)
                 :key="entry.to"
                 :to="entry.to || '/agents'"
               >
-                <b>{{ entry.icon }}</b>{{ entry.title }}
+                <b>{{ entry.icon }}</b>{{ entry.title }}<TodoBadge :to="entry.to"/>
               </RouterLink>
             </div>
           </div>
-          <em>{{ agents.length }} 个代理 · 正常 {{ activeAgents }}</em>
+          <p v-else>观察模式：只看渠道合作概况，不进入代理业务页面。</p>
         </article>
       </div>
     </section>
 
   </div>
 </template>
+<style scoped>.admin-domain-subfunctions a{position:relative;padding-right:30px}</style>

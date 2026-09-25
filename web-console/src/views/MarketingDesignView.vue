@@ -180,11 +180,6 @@ function campaignRuntimeStatusLabel(plan: MarketingPlanView) {
   return '生效中'
 }
 
-const activeCount = computed(() => plans.value.filter((item) => campaignRuntimeStatus(item) === 'active').length)
-const targetLinkCount = computed(() =>
-  plans.value.reduce((sum, item) => sum + item.items.length, 0),
-)
-
 function targetKey(planId: number, index: number) {
   return planId + ':' + index
 }
@@ -661,12 +656,6 @@ onMounted(load)
 
     <div v-if="error" class="inline-error">{{ error }}</div>
     <div v-if="notice" class="settings-success">{{ notice }}</div>
-
-    <section class="marketing-summary">
-      <article><span>营销计划</span><strong>{{ plans.length }}</strong><small>独立活动方案</small></article>
-      <article><span>正在生效</span><strong>{{ activeCount }}</strong><small>按各自展示场地投放</small></article>
-      <article><span>挂链标的</span><strong>{{ targetLinkCount }}</strong><small>会员 / 时长卡 / 设备</small></article>
-    </section>
 
     <section class="marketing-workspace">
       <header>

@@ -11,7 +11,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-const staffSeedVersion = "staff_seed_v17"
+const staffSeedVersion = "staff_seed_v20"
 
 var ErrMutuallyExclusiveStaffRoles = errors.New("mutually exclusive staff roles")
 
@@ -36,6 +36,7 @@ var staffPermissionSeeds = []struct {
 	{"staff.employee.role_assign", "staff", "assign_role", "分配员工已有角色"},
 	{"customer.view_all", "customer", "view_all", "查看全部终端"},
 	{"customer.password_reset", "customer", "password_reset", "按权限范围重置终端密码"},
+	{"customer.cooperation.manage", "customer", "manage_cooperation", "标记终端合作或不合作状态"},
 	{"agent.view_all", "agent", "view_all", "查看全部代理"},
 	{"agent.level.manage", "agent", "manage_level", "管理代理等级政策"},
 	{"agent.contract.manage", "agent", "manage_contract", "管理代理合同"},
@@ -50,9 +51,9 @@ var staffPermissionSeeds = []struct {
 	{"liveops.room_quota.view", "liveops", "view_room_quota", "查看终端直播间数量额度"},
 	{"liveops.room_quota.manage", "liveops", "manage_room_quota", "调整终端直播间数量额度"},
 	{"livepolicy.view", "livepolicy", "view", "查看系统与行业直播策略"},
-	{"livepolicy.manage_l2", "livepolicy", "manage_l2", "维护并发布行业默认直播策略"},
-	{"livepolicy.manage_l1", "livepolicy", "manage_l1", "维护并发布系统底层直播规则"},
-	{"livepolicy.manage_l3_authorized", "livepolicy", "manage_l3_authorized", "经客户授权后代维护指定直播间 L3 策略"},
+	{"livepolicy.manage_l2", "livepolicy", "manage_l2", "维护并发布行业层默认直播策略"},
+	{"livepolicy.manage_l1", "livepolicy", "manage_l1", "维护并发布规则层直播规则"},
+	{"livepolicy.manage_l3_authorized", "livepolicy", "manage_l3_authorized", "经客户授权后代维护指定直播间用户层策略"},
 	{"livecoach.anchor_authorized", "livecoach", "anchor_authorized", "经客户授权后协助指定直播间主播训练"},
 	{"livevoice.clone_authorized", "livevoice", "clone_authorized", "经客户授权后协助指定直播间声音复刻"},
 	{"finance.dashboard.view", "finance", "view_dashboard", "查看财务数据"},
@@ -145,7 +146,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"customer.view_all", "agent.view_all", "finance.dashboard.view", "finance.recharge.create", "finance.recharge.approve",
+			"finance.dashboard.view", "finance.recharge.create", "finance.recharge.approve",
 			"finance.refund.create", "finance.refund.approve", "finance.reward.grant", "finance.reward.approve",
 			"finance.membership.adjust", "finance.resource.view", "finance.ai_time.approve", "finance.operating.view", "finance.operating.manage", "finance.settlement_rules.view", "finance.settlement_rules.manage", "finance.settlement.create", "finance.settlement.approve", "finance.settlement.pay",
 			"audit.view",
@@ -158,7 +159,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		Description:      "发起充值、退款、奖励和会员调整；AI 时长由营销运维发起、财务负责审核。",
 		DefaultScopeType: "self",
 		Permissions: []string{
-			"customer.view_all", "agent.view_all", "finance.dashboard.view", "finance.recharge.create", "finance.refund.create",
+			"finance.dashboard.view", "finance.recharge.create", "finance.refund.create",
 			"finance.reward.grant", "finance.membership.adjust", "finance.resource.view", "finance.operating.view", "finance.operating.manage", "finance.settlement_rules.view", "finance.settlement_rules.manage", "finance.settlement.create",
 		},
 	},
@@ -181,7 +182,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"customer.view_all", "customer.password_reset", "sales.view_all", "sales.customer.view_group", "sales.assignment.manage", "audit.view",
+			"customer.view_all", "customer.password_reset", "customer.cooperation.manage", "sales.view_all", "sales.customer.view_group", "sales.assignment.manage", "audit.view",
 		},
 	},
 	{
@@ -191,21 +192,20 @@ var staffRoleSeeds = []staffRoleSeed{
 		Description:      "查看分配给自己的终端并维护销售关系。",
 		DefaultScopeType: "assigned",
 		Permissions: []string{
-			"customer.view_all", "customer.password_reset", "sales.view_all",
-			"sales.customer.view_assigned", "audit.view",
+			"sales.customer.view_assigned",
 		},
 	},
 	{
 		GroupCode:        "live_operations",
 		Code:             "live_operations_manager",
 		Name:             "营销运维负责人",
-		Description:      "管理营销运维部员工；负责直播配置、活动营销、时长卡运营、设备商城运营及相关异常处理。",
+		Description:      "管理营销运维部员工；可维护规则层、行业层，并在客户授权后协助维护用户层；同时负责直播配置、活动营销及相关异常处理。",
 		IsGroupManager:   true,
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
 			"liveops.view_all", "liveops.configure", "liveops.ticket.manage", "liveops.room_quota.view", "liveops.room_quota.manage",
-			"livepolicy.view", "livepolicy.manage_l1", "livepolicy.manage_l2", "livecoach.anchor_authorized", "livevoice.clone_authorized",
+			"livepolicy.view", "livepolicy.manage_l1", "livepolicy.manage_l2", "livepolicy.manage_l3_authorized", "livecoach.anchor_authorized", "livevoice.clone_authorized",
 			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
 			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all", "audit.view",
 		},
@@ -214,7 +214,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		GroupCode:        "live_operations",
 		Code:             "live_operations_staff",
 		Name:             "营销运维专员",
-		Description:      "执行直播配置与联调、活动营销、时长卡与设备商城运营；可维护 L2，并在客户授权后代维护 L3、协助主播训练和声音复刻。",
+		Description:      "执行直播配置与联调、活动营销、时长卡与设备商城运营；可维护行业层，并在客户授权后代维护用户层、协助主播训练和声音复刻。",
 		DefaultScopeType: "assigned",
 		Permissions: []string{
 			"liveops.configure", "liveops.room_quota.view", "livepolicy.view", "livepolicy.manage_l2", "livepolicy.manage_l3_authorized", "livecoach.anchor_authorized", "livevoice.clone_authorized",
@@ -231,7 +231,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		DefaultScopeType: "group",
 		Permissions: []string{
 			"staff.group.view", "staff.role.view", "staff.employee.view", "staff.employee.create", "staff.employee.disable", "staff.employee.role_assign",
-			"system.settings.view", "system.settings.inventory.manage", "commercial.device.view",
+			"commercial.device.view",
 			"inventory.view", "inventory.manage", "inventory.after_sales.view", "inventory.after_sales.manage", "logistics.view", "logistics.manage", "audit.view",
 		},
 	},
@@ -242,7 +242,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		Description:      "执行设备入库、出库、调拨、物流与售后处理。",
 		DefaultScopeType: "group",
 		Permissions: []string{
-			"system.settings.view", "commercial.device.view", "inventory.view", "inventory.manage",
+			"commercial.device.view", "inventory.view", "inventory.manage",
 			"inventory.after_sales.view", "inventory.after_sales.manage", "logistics.view", "logistics.manage",
 		},
 	},
@@ -1602,6 +1602,8 @@ func (s *Store) DisableStaffEmployee(
 	ctx context.Context,
 	employeeID int64,
 ) error {
+	// Revoke access immediately; managers can transfer a disabled seller later.
+	// Unfinished handover must not keep departed accounts live.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1643,6 +1645,52 @@ func (s *Store) DisableStaffEmployee(
 		"DELETE FROM mgmt_sessions WHERE user_id=?",
 		userID,
 	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ResetStaffEmployeePassword(
+	ctx context.Context,
+	employeeID int64,
+	passwordHash string,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var userID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT se.user_id
+		FROM staff_employees se
+		INNER JOIN mgmt_users u ON u.id = se.user_id
+		WHERE se.id=?
+		  AND se.employment_status='active'
+		  AND u.status='active'
+		LIMIT 1
+	`, employeeID).Scan(&userID); err != nil {
+		return err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE mgmt_users
+		SET password_hash=?, must_change_password=1
+		WHERE id=? AND status='active'
+	`, passwordHash, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM mgmt_sessions WHERE user_id=?", userID); err != nil {
 		return err
 	}
 	return tx.Commit()

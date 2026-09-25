@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { getAdminSalesPerformance } from '../api'
+import { getAdminSalesPerformance, getMySalesPerformance } from '../api'
 import DataListControls from '../components/DataListControls.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
+import { session } from '../session'
 import type {
   SalesPerformanceSummary,
-  SalesPerformanceTotals,
   StaffBusinessScope,
 } from '../types'
 import { useFeedbackErrorRef } from '../uiFeedback'
@@ -16,16 +16,6 @@ const period = ref(now.getFullYear() + '-' + String(now.getMonth() + 1).padStart
 const loading = ref(false)
 const error = useFeedbackErrorRef()
 const items = ref<SalesPerformanceSummary[]>([])
-const totals = ref<SalesPerformanceTotals>({
-  paid_order_count: 0,
-  customer_count: 0,
-  paid_amount_cents: 0,
-  refunded_amount_cents: 0,
-  net_revenue_cents: 0,
-  earning_amount_cents: 0,
-  pending_earning_cents: 0,
-  settled_earning_cents: 0,
-})
 const scope = ref<StaffBusinessScope | null>(null)
 const total = ref(0)
 const totalPages = ref(1)
@@ -34,6 +24,7 @@ const sortMode = ref('revenue-desc')
 const page = ref(1)
 const pageSize = ref(12)
 const viewMode = ref<'card' | 'table'>('table')
+const isSelfSales = computed(() => session.bootstrap?.actor.role === 'sales_staff')
 
 const sortOptions = [
   { label: '净销售额从高到低', value: 'revenue-desc' },
@@ -63,14 +54,15 @@ async function load(resetPage = false) {
   loading.value = true
   error.value = ''
   try {
-    const data = await getAdminSalesPerformance(period.value, {
-      search: search.value.trim(),
-      sort: sortMode.value,
-      page: page.value,
-      page_size: pageSize.value,
-    })
+    const data = isSelfSales.value
+      ? await getMySalesPerformance(period.value)
+      : await getAdminSalesPerformance(period.value, {
+          search: search.value.trim(),
+          sort: sortMode.value,
+          page: page.value,
+          page_size: pageSize.value,
+        })
     items.value = data.items
-    totals.value = data.totals
     scope.value = data.scope
     total.value = data.total
     totalPages.value = data.total_pages
@@ -95,13 +87,20 @@ onMounted(() => void load(false))
 
 <template>
   <div class="management-page sales-performance-page">
-    <ModulePageNav context="sales" active-title="业绩与提成" />
+    <ModulePageNav
+      :context="isSelfSales ? 'workspace-sales' : 'sales'"
+      :active-title="isSelfSales ? '我的业绩' : '业绩与提成'"
+    />
 
     <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">SALES PERFORMANCE</p>
-        <h2>业绩与提成</h2>
-        <p>按订单创建时保存的销售归属快照统计业绩；后续终端转交不会改写历史订单归属。</p>
+        <h2>{{ isSelfSales ? '我的业绩' : '业绩与提成' }}</h2>
+        <p>
+          {{ isSelfSales
+            ? '这里只显示你本人的订单、销售额和提成；客户后续转交不会改写你的历史订单归属。'
+            : '按订单创建时保存的销售归属快照统计业绩；后续终端转交不会改写历史订单归属。' }}
+        </p>
         <span v-if="scopeHint" class="sales-performance-scope-hint">{{ scopeHint }}</span>
       </div>
 
@@ -116,23 +115,10 @@ onMounted(() => void load(false))
       </div>
     </section>
 
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>成交订单</span><strong>{{ totals.paid_order_count }}</strong><small>{{ period }}</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>成交终端</span><strong>{{ totals.customer_count }}</strong><small>按当前权限范围统计</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>净销售额</span><strong>{{ formatMoney(totals.net_revenue_cents) }}</strong><small>支付金额 - 已退款</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>提成收益</span><strong>{{ formatMoney(totals.earning_amount_cents) }}</strong><small>含待结算与已结算</small>
-      </article>
-    </section>
 
     <section class="settings-card feature-workspace-panel">
       <DataListControls
+        v-if="!isSelfSales"
         v-model:view-mode="viewMode"
         v-model:search="search"
         v-model:sort="sortMode"
@@ -144,7 +130,7 @@ onMounted(() => void load(false))
       <p v-if="error" class="inline-error">{{ error }}</p>
       <div v-if="loading" class="panel-loading">正在统计销售业绩...</div>
 
-      <div v-else-if="viewMode === 'table'" class="data-table-wrap">
+      <div v-else-if="viewMode === 'table' || isSelfSales" class="data-table-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -196,6 +182,7 @@ onMounted(() => void load(false))
       </div>
 
       <PaginationBar
+        v-if="!isSelfSales"
         v-model:page="page"
         :total-pages="totalPages"
         :total="total"

@@ -5,11 +5,8 @@ import { createTokenPurchase, getOperatingFinance } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
-import type {
-  OperatingFinanceEntry,
-  OperatingFinanceOverview,
-  TokenPurchaseInput,
-} from '../types'
+import type { OperatingFinanceOverview, TokenPurchaseInput } from '../types'
+
 
 const loading = ref(false)
 const saving = ref(false)
@@ -47,10 +44,6 @@ const canManage = computed(() => {
         access.permissions.includes('finance.operating.manage')),
   )
 })
-
-const monthNetCents = computed(
-  () => (data.value?.month_income_cents || 0) - (data.value?.month_expense_cents || 0),
-)
 
 const filteredEntries = computed(() => {
   const keyword = search.value.trim().toLowerCase()
@@ -209,29 +202,6 @@ onMounted(loadData)
       >
         ＋ 登记 Token 采购
       </button>
-    </section>
-
-    <section class="operating-summary-grid">
-      <article class="settings-card operating-summary-card">
-        <span>本月经营收入</span>
-        <strong>{{ money(data?.month_income_cents || 0) }}</strong>
-        <small>当前主要来自报废回收处置等经营收入</small>
-      </article>
-      <article class="settings-card operating-summary-card">
-        <span>本月经营支出</span>
-        <strong>{{ money(data?.month_expense_cents || 0) }}</strong>
-        <small>设备采购 + 物流 + 售后维修 + Token 采购</small>
-      </article>
-      <article class="settings-card operating-summary-card">
-        <span>本月经营净额</span>
-        <strong :class="{ negative: monthNetCents < 0 }">{{ money(monthNetCents) }}</strong>
-        <small>仅统计本经营台账内已登记收支</small>
-      </article>
-      <article class="settings-card operating-summary-card">
-        <span>累计经营支出</span>
-        <strong>{{ money(data?.total_expense_cents || 0) }}</strong>
-        <small>可与采购单、物流单、Token 单逐笔核对</small>
-      </article>
     </section>
 
     <section class="settings-card operating-ledger-panel">

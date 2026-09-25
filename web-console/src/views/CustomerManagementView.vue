@@ -15,11 +15,11 @@ import {
   getAdminCustomers,
   getAdminSalesStaff,
   getLivePolicyIndustries,
+  updateAdminCustomerCooperation,
 } from '../api'
 import type {
   AdminAuditLog,
   AdminCustomer,
-  CustomerScopeSummary,
   InitialCredential,
   LivePolicyIndustry,
   SalesStaffSummary,
@@ -56,6 +56,13 @@ const canResetCustomer = computed(
     staffAccess.value?.permissions.includes('*') === true ||
     staffAccess.value?.permissions.includes('customer.password_reset') === true,
 )
+const canManageCooperation = computed(
+  () =>
+    session.bootstrap?.actor.role === 'platform_admin' ||
+    staffAccess.value?.is_super_admin === true ||
+    staffAccess.value?.permissions.includes('*') === true ||
+    staffAccess.value?.permissions.includes('customer.cooperation.manage') === true,
+)
 const canManageL2 = computed(
   () =>
     session.bootstrap?.actor.role === 'platform_admin' ||
@@ -66,12 +73,6 @@ const canManageL2 = computed(
 
 const customers = ref<AdminCustomer[]>([])
 const customerScope = ref<StaffBusinessScope | null>(null)
-const customerSummary = ref<CustomerScopeSummary>({
-  total_count: 0,
-  active_count: 0,
-  agent_count: 0,
-  referral_count: 0,
-})
 const customerTotal = ref(0)
 const customerTotalPages = ref(1)
 const loading = ref(false)
@@ -129,6 +130,12 @@ const resetCredential = ref<InitialCredential | null>(null)
 const resetCredentialName = ref('')
 const resetCredentialUsername = ref('')
 
+const cooperationTarget = ref<AdminCustomer | null>(null)
+const cooperationStatus = ref<'cooperating' | 'non_cooperating'>('cooperating')
+const cooperationNote = ref('')
+const cooperationSaving = ref(false)
+const cooperationError = ref('')
+
 const showCustomerRecords = computed(() => customerFocus.value !== 'audit')
 const managerView = computed(() => customerScope.value?.manager_view === true)
 const scopeCaption = computed(() => {
@@ -156,7 +163,6 @@ async function loadCustomers() {
     })
     customers.value = response.items
     customerScope.value = response.scope
-    customerSummary.value = response.summary
     customerTotal.value = response.total
     customerTotalPages.value = response.total_pages
     if (page.value > response.total_pages) page.value = response.total_pages
@@ -358,6 +364,72 @@ async function submitReset() {
   }
 }
 
+function cooperationLabel(customer: AdminCustomer) {
+  return customer.cooperation_status === 'non_cooperating' ? '不合作' : '合作中'
+}
+
+function rechargeLabel(customer: AdminCustomer) {
+  if (customer.last_recharge_at) {
+    return '最近充值：' + formatDate(customer.last_recharge_at)
+  }
+  return customer.recharge_dormant_90_days ? '90天+无成功充值' : '暂无成功充值'
+}
+
+function openCooperation(customer: AdminCustomer) {
+  if (!canManageCooperation.value) return
+  cooperationTarget.value = customer
+  cooperationStatus.value =
+    customer.cooperation_status === 'non_cooperating'
+      ? 'cooperating'
+      : 'non_cooperating'
+  cooperationNote.value =
+    cooperationStatus.value === 'non_cooperating'
+      ? customer.cooperation_note || ''
+      : ''
+  cooperationError.value = ''
+}
+
+function closeCooperation() {
+  if (cooperationSaving.value) return
+  cooperationTarget.value = null
+  cooperationError.value = ''
+}
+
+async function submitCooperation() {
+  const customer = cooperationTarget.value
+  if (!customer || cooperationSaving.value) return
+  if (cooperationStatus.value === 'non_cooperating' && !cooperationNote.value.trim()) {
+    cooperationError.value = '标记不合作时请填写原因'
+    return
+  }
+
+  cooperationSaving.value = true
+  cooperationError.value = ''
+  try {
+    const result = await updateAdminCustomerCooperation(customer.tenant_id, {
+      status: cooperationStatus.value,
+      note: cooperationNote.value.trim(),
+    })
+    customer.cooperation_status = result.cooperation_status
+    customer.cooperation_note = result.cooperation_note
+    customer.cooperation_marked_at = result.cooperation_marked_at
+    customer.cooperation_marked_by_user_id = result.cooperation_marked_by_user_id
+    customer.last_recharge_at = result.last_recharge_at
+    customer.recharge_dormant_90_days = result.recharge_dormant_90_days
+    notice.value =
+      customer.display_name +
+      (result.cooperation_status === 'non_cooperating'
+        ? ' 已标记为不合作，直播运维可清理其直播间。'
+        : ' 已恢复为合作中。')
+    cooperationTarget.value = null
+  } catch (value) {
+    cooperationError.value =
+      value instanceof Error ? value.message : '更新合作状态失败'
+  } finally {
+    cooperationSaving.value = false
+  }
+}
+
 function sourceLabel(source: string) {
   if (source === 'agent') return '代理直接开户'
   if (source === 'agent_invite') return '代理邀请码'
@@ -485,24 +557,6 @@ onMounted(loadAll)
     <div v-if="notice" class="settings-success">{{ notice }}</div>
 
     <template v-if="showCustomerRecords">
-      <section class="customer-admin-stats customer-admin-stats-wide">
-        <article>
-          <span>终端总数</span>
-          <strong>{{ customerSummary.total_count }}</strong>
-        </article>
-        <article>
-          <span>正常账号</span>
-          <strong>{{ customerSummary.active_count }}</strong>
-        </article>
-        <article>
-          <span>代理归属终端</span>
-          <strong>{{ customerSummary.agent_count }}</strong>
-        </article>
-        <article>
-          <span>终端推荐注册</span>
-          <strong>{{ customerSummary.referral_count }}</strong>
-        </article>
-      </section>
 
       <section class="customer-scope-layout">
         <SalesScopeSelector
@@ -549,7 +603,8 @@ onMounted(loadAll)
                   <th>联系电话</th>
                   <th>来源</th>
                   <th>归属</th>
-                  <th>行业 / L2</th>
+                  <th>行业 / 行业层</th>
+                  <th>合作状态</th>
                   <th>邀请 / 推荐人</th>
                   <th>状态</th>
                   <th>注册时间</th>
@@ -594,6 +649,32 @@ onMounted(loadAll)
                     <span v-else class="customer-industry-badge">
                       {{ customer.industry_name || '通用' }}
                     </span>
+                  </td>
+                  <td>
+                    <span
+                      class="customer-status"
+                      :class="{
+                        active: customer.cooperation_status !== 'non_cooperating',
+                        'non-cooperating': customer.cooperation_status === 'non_cooperating',
+                      }"
+                    >
+                      {{ cooperationLabel(customer) }}
+                    </span>
+                    <span
+                      v-if="customer.recharge_dormant_90_days"
+                      class="cooperation-recharge-warning"
+                    >
+                      90天+未充值
+                    </span>
+                    <span class="table-subtext">{{ rechargeLabel(customer) }}</span>
+                    <button
+                      v-if="canManageCooperation"
+                      class="table-action-button cooperation-action-button"
+                      type="button"
+                      @click="openCooperation(customer)"
+                    >
+                      {{ customer.cooperation_status === 'non_cooperating' ? '恢复合作' : '标记不合作' }}
+                    </button>
                   </td>
                   <td>
                     <template v-if="customer.inviter_display_name">
@@ -648,9 +729,35 @@ onMounted(loadAll)
                 <div><dt>来源</dt><dd>{{ sourceLabel(customer.source_type) }}</dd></div>
                 <div><dt>归属</dt><dd>{{ parentLabel(customer) }}</dd></div>
                 <div><dt>销售</dt><dd>{{ customer.sales_display_name || '未分配' }}</dd></div>
-                <div><dt>行业 / L2</dt><dd>{{ customer.industry_name || '通用' }}</dd></div>
+                <div><dt>行业 / 行业层</dt><dd>{{ customer.industry_name || '通用' }}</dd></div>
+                <div>
+                  <dt>合作状态</dt>
+                  <dd>
+                    <span
+                      class="customer-status"
+                      :class="{
+                        active: customer.cooperation_status !== 'non_cooperating',
+                        'non-cooperating': customer.cooperation_status === 'non_cooperating',
+                      }"
+                    >
+                      {{ cooperationLabel(customer) }}
+                    </span>
+                    <span v-if="customer.recharge_dormant_90_days" class="cooperation-recharge-warning">
+                      90天+未充值
+                    </span>
+                  </dd>
+                </div>
+                <div><dt>充值参考</dt><dd>{{ rechargeLabel(customer) }}</dd></div>
                 <div><dt>邀请 / 推荐人</dt><dd>{{ customer.inviter_display_name || '—' }}</dd></div>
               </dl>
+              <button
+                v-if="canManageCooperation"
+                class="ghost-button customer-mobile-reset"
+                type="button"
+                @click="openCooperation(customer)"
+              >
+                {{ customer.cooperation_status === 'non_cooperating' ? '恢复合作' : '标记不合作' }}
+              </button>
               <button
                 v-if="customerFocus === 'security' && canResetCustomer"
                 class="ghost-button customer-mobile-reset"
@@ -802,6 +909,53 @@ onMounted(loadAll)
           <button class="ghost-button" type="button" @click="closeReset">取消</button>
           <button class="primary-button" type="submit" :disabled="resetting">
             {{ resetting ? '生成中...' : '生成新初始密码' }}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="cooperationTarget" class="modal-backdrop" @click.self="closeCooperation">
+      <form class="modal-card" @submit.prevent="submitCooperation">
+        <div class="modal-header">
+          <div>
+            <p class="section-kicker">COOPERATION STATUS</p>
+            <h3>客户合作状态</h3>
+          </div>
+          <button class="icon-button" type="button" @click="closeCooperation">×</button>
+        </div>
+        <p class="modal-helper">
+          {{ cooperationTarget.display_name }} · {{ rechargeLabel(cooperationTarget) }}
+        </p>
+        <div class="form-grid">
+          <label class="form-span-2">
+            <span>状态</span>
+            <select v-model="cooperationStatus" class="text-input">
+              <option value="cooperating">合作中</option>
+              <option value="non_cooperating">不合作</option>
+            </select>
+          </label>
+          <label class="form-span-2">
+            <span>原因 / 备注</span>
+            <textarea
+              v-model="cooperationNote"
+              class="text-input"
+              rows="4"
+              :placeholder="cooperationStatus === 'non_cooperating' ? '必填，例如：合同终止、客户主动停止合作等' : '可填写恢复合作说明'"
+            />
+          </label>
+          <div
+            v-if="cooperationStatus === 'non_cooperating'"
+            class="form-span-2 account-opening-note"
+          >
+            <strong>影响</strong>
+            <span>标记后，该商户名下直播间会显示红色“不合作”角标，直播运维人员可以删除这些直播间。</span>
+          </div>
+        </div>
+        <p v-if="cooperationError" class="auth-error">{{ cooperationError }}</p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" @click="closeCooperation">取消</button>
+          <button class="primary-button" type="submit" :disabled="cooperationSaving">
+            {{ cooperationSaving ? '保存中...' : '确认保存' }}
           </button>
         </div>
       </form>

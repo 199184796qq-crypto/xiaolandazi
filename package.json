@@ -7,9 +7,13 @@
   },
   "scripts": {
     "dev:web": "pnpm --dir web-console dev",
+    "dev:customer": "pnpm --dir customer-mobile dev",
+    "dev:sales": "pnpm --dir sales-mobile dev",
     "dev:device": "pnpm --dir device-simulator dev",
     "build:web": "pnpm --dir web-console build",
+    "build:customer": "pnpm --dir customer-mobile build",
+    "build:sales": "pnpm --dir sales-mobile build",
     "build:device": "pnpm --dir device-simulator build",
-    "build:all": "pnpm build:web && pnpm build:device"
+    "build:all": "pnpm build:web && pnpm build:customer && pnpm build:sales && pnpm build:device"
   }
 }

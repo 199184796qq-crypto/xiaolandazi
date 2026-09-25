@@ -99,6 +99,137 @@ CREATE TABLE IF NOT EXISTS crm_customer_sales_assignments (
     KEY idx_crm_sales_assignment_period (effective_from, effective_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS crm_sales_followups (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    sales_staff_id BIGINT UNSIGNED NOT NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    followup_type VARCHAR(32) NOT NULL DEFAULT 'note',
+    content VARCHAR(2000) NOT NULL,
+    next_followup_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_crm_sales_followups_staff_created (sales_staff_id, created_at),
+    KEY idx_crm_sales_followups_staff_next (sales_staff_id, next_followup_at),
+    KEY idx_crm_sales_followups_tenant (tenant_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_sales_leads (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    lead_no VARCHAR(64) NOT NULL,
+    owner_sales_staff_id BIGINT UNSIGNED NOT NULL,
+    business_name VARCHAR(160) NOT NULL,
+    contact_name VARCHAR(128) NOT NULL DEFAULT '',
+    phone VARCHAR(64) NOT NULL DEFAULT '',
+    wechat VARCHAR(128) NOT NULL DEFAULT '',
+    email VARCHAR(255) NOT NULL DEFAULT '',
+    industry_name VARCHAR(128) NOT NULL DEFAULT '',
+    province VARCHAR(64) NOT NULL DEFAULT '',
+    city VARCHAR(64) NOT NULL DEFAULT '',
+    district VARCHAR(64) NOT NULL DEFAULT '',
+    address VARCHAR(255) NOT NULL DEFAULT '',
+    source_type VARCHAR(32) NOT NULL DEFAULT 'self_developed',
+    stage VARCHAR(32) NOT NULL DEFAULT 'new',
+    status VARCHAR(32) NOT NULL DEFAULT 'open',
+    planned_visit_at DATETIME(3) NULL,
+    next_followup_at DATETIME(3) NULL,
+    latest_activity_at DATETIME(3) NULL,
+    lost_reason VARCHAR(1024) NOT NULL DEFAULT '',
+    converted_tenant_id BIGINT UNSIGNED NULL,
+    converted_user_id BIGINT UNSIGNED NULL,
+    converted_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_crm_sales_leads_no (lead_no),
+    KEY idx_crm_sales_leads_owner_status (owner_sales_staff_id, status, stage, updated_at),
+    KEY idx_crm_sales_leads_owner_visit (owner_sales_staff_id, planned_visit_at),
+    KEY idx_crm_sales_leads_owner_followup (owner_sales_staff_id, next_followup_at),
+    KEY idx_crm_sales_leads_phone (phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_sales_lead_activities (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    lead_id BIGINT UNSIGNED NOT NULL,
+    sales_staff_id BIGINT UNSIGNED NOT NULL,
+    activity_type VARCHAR(32) NOT NULL DEFAULT 'note',
+    outcome VARCHAR(64) NOT NULL DEFAULT '',
+    content VARCHAR(2000) NOT NULL,
+    occurred_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    next_followup_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_crm_sales_lead_activities_lead (lead_id, occurred_at, id),
+    KEY idx_crm_sales_lead_activities_staff (sales_staff_id, occurred_at),
+    CONSTRAINT fk_crm_sales_lead_activities_lead
+        FOREIGN KEY (lead_id) REFERENCES crm_sales_leads(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_customer_handoffs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    handoff_no VARCHAR(64) NOT NULL,
+    lead_id BIGINT UNSIGNED NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    customer_user_id BIGINT UNSIGNED NOT NULL,
+    sales_staff_id BIGINT UNSIGNED NOT NULL,
+    target_group_code VARCHAR(64) NOT NULL DEFAULT 'live_operations',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    summary VARCHAR(2000) NOT NULL DEFAULT '',
+    accepted_by_user_id BIGINT UNSIGNED NULL,
+    accepted_at DATETIME(3) NULL,
+    completed_by_user_id BIGINT UNSIGNED NULL,
+    completed_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_crm_customer_handoffs_no (handoff_no),
+    KEY idx_crm_customer_handoffs_status (target_group_code, status, created_at),
+    KEY idx_crm_customer_handoffs_tenant (tenant_id, created_at),
+    KEY idx_crm_customer_handoffs_sales (sales_staff_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_customer_handoff_events (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ handoff_id BIGINT UNSIGNED NOT NULL,
+ operator_user_id BIGINT UNSIGNED NOT NULL,
+ status VARCHAR(32) NOT NULL,
+ content VARCHAR(2000) NOT NULL DEFAULT '',
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ KEY idx_handoff_events (handoff_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_sales_handover_batches (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    handover_no VARCHAR(64) NOT NULL,
+    from_sales_staff_id BIGINT UNSIGNED NOT NULL,
+    to_sales_staff_id BIGINT UNSIGNED NOT NULL,
+    customer_count INT UNSIGNED NOT NULL DEFAULT 0,
+    lead_count INT UNSIGNED NOT NULL DEFAULT 0,
+    reason VARCHAR(1000) NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'completed',
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_crm_sales_handover_batches_no (handover_no),
+    KEY idx_crm_sales_handover_batches_from (from_sales_staff_id, created_at),
+    KEY idx_crm_sales_handover_batches_to (to_sales_staff_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS crm_sales_handover_items (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    batch_id BIGINT UNSIGNED NOT NULL,
+    item_type VARCHAR(32) NOT NULL,
+    reference_id BIGINT UNSIGNED NOT NULL,
+    tenant_id BIGINT UNSIGNED NULL,
+    lead_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_crm_sales_handover_items_batch (batch_id, item_type),
+    KEY idx_crm_sales_handover_items_tenant (tenant_id),
+    KEY idx_crm_sales_handover_items_lead (lead_id),
+    CONSTRAINT fk_crm_sales_handover_items_batch
+        FOREIGN KEY (batch_id) REFERENCES crm_sales_handover_batches(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS crm_agent_orgs (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     code VARCHAR(64) NOT NULL,
@@ -188,6 +319,7 @@ CREATE TABLE IF NOT EXISTS catalog_membership_plan_versions (
     default_time_card_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
     default_device_discount_bps INT UNSIGNED NOT NULL DEFAULT 10000,
     allow_auto_renew TINYINT(1) NOT NULL DEFAULT 0,
+    participates_referral TINYINT(1) NOT NULL DEFAULT 1,
     entitlements_json JSON NULL,
     effective_from DATETIME(3) NULL,
     effective_to DATETIME(3) NULL,
@@ -336,6 +468,7 @@ CREATE TABLE IF NOT EXISTS fin_wallet_accounts (
     account_type VARCHAR(32) NOT NULL DEFAULT 'cash',
     currency CHAR(3) NOT NULL DEFAULT 'CNY',
     balance_cents BIGINT NOT NULL DEFAULT 0,
+    frozen_balance_cents BIGINT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

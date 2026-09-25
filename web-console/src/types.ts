@@ -355,6 +355,12 @@ export interface Room {
   source_url?: string
   name: string
   status: 'pending' | 'connecting' | 'live' | 'offline' | 'error' | string
+  cooperation_status?: 'cooperating' | 'non_cooperating' | string
+  cooperation_note?: string
+  cooperation_marked_at?: string
+  cooperation_marked_by_user_id?: number
+  last_recharge_at?: string
+  recharge_dormant_90_days?: boolean
   collector_mode: string
   monitor_enabled?: boolean
   device_online?: boolean
@@ -374,6 +380,17 @@ export interface RoomEvent {
   content?: string
   occurred_at: string
   payload?: unknown
+}
+
+export interface RoomBlockedUser {
+  id: number
+  tenant_id: number
+  room_id: number
+  subject_key: string
+  user_id?: string
+  nickname?: string
+  reason?: string
+  blocked_at: string
 }
 
 export interface CreateRoomPayload {
@@ -662,6 +679,64 @@ export interface LivePolicyTestResult {
   latency_ms?: number
 }
 
+export type LivePolicyLearningStatus = 'pending' | 'adopted' | 'rejected' | string
+
+export interface LivePolicyLearningHistoryItem {
+  role: 'user' | 'agent' | string
+  text: string
+}
+
+export interface LivePolicyLearningCandidate {
+  id: number
+  source_layer: 'L1' | 'L2' | 'L3' | string
+  industry_code?: string
+  tenant_id?: number
+  room_id?: number
+  question: string
+  final_reply: string
+  feedback?: string
+  history: LivePolicyLearningHistoryItem[]
+  recommended_layer: 'L1' | 'L2' | 'L3' | string
+  recommendation_reason: string
+  absorb_recommended: boolean
+  confidence: number
+  rule_title: string
+  rule_text: string
+  execution_mode: 'intent' | 'verbatim' | string
+  status: LivePolicyLearningStatus
+  model?: string
+  latency_ms?: number
+  adopted_version_id?: number
+  created_by_user_id: number
+  reviewed_by_user_id?: number
+  review_note?: string
+  created_at: string
+  updated_at: string
+  reviewed_at?: string
+}
+
+export interface CreateLivePolicyLearningCandidateInput {
+  source_layer: 'L1' | 'L2' | 'L3'
+  industry_code?: string
+  room_id?: number
+  question: string
+  final_reply: string
+  feedback?: string
+  history?: LivePolicyLearningHistoryItem[]
+}
+
+export interface AdoptLivePolicyLearningCandidateInput {
+  target_layer?: 'L1' | 'L2' | 'L3'
+  industry_code?: string
+  room_id?: number
+  review_note?: string
+}
+
+export interface LivePolicyLearningAdoptResult {
+  candidate: LivePolicyLearningCandidate
+  draft: LivePolicyVersion
+}
+
 export interface LiveRoomPolicyContext {
   industry_code: string
   effective: LiveEffectivePolicy
@@ -675,6 +750,8 @@ export interface LiveSupportStaff {
   user_id: number
   username: string
   display_name: string
+  avatar_url?: string
+  specialty_industries?: string[]
   allowed_capabilities?: LiveSupportCapability[]
   l3_restriction_reason?: string
 }
@@ -692,6 +769,24 @@ export interface LiveSupportAuthorization {
   granted_at: string
   revoked_by_user_id?: number
   revoked_at?: string
+  updated_at: string
+}
+
+export interface LiveSupportRequest {
+  id: number
+  tenant_id: number
+  room_id: number
+  room_name?: string
+  staff_user_id: number
+  staff_username?: string
+  staff_display_name?: string
+  requested_by_user_id: number
+  capabilities: LiveSupportCapability[]
+  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | string
+  decided_by_user_id?: number
+  decision_note: string
+  requested_at: string
+  decided_at?: string
   updated_at: string
 }
 
@@ -736,6 +831,19 @@ export interface VoiceProfile {
   updated_at: string
 }
 
+export interface OfficialVoice {
+  id: string
+  name: string
+  gender: string
+  description: string
+  tags: string[]
+  model: string
+}
+
+export interface VoicePreviewResponse {
+  audio_url: string
+}
+
 export interface LiveRuntimeEvent {
   id: number
   tenant_id: number
@@ -774,6 +882,12 @@ export interface AdminCustomer {
   email: string
   status: string
   source_type: string
+  cooperation_status: 'cooperating' | 'non_cooperating' | string
+  cooperation_note: string
+  cooperation_marked_at?: string
+  cooperation_marked_by_user_id?: number
+  last_recharge_at?: string
+  recharge_dormant_90_days: boolean
   parent_org_id: number
   parent_org_name: string
   parent_org_type: string
@@ -788,6 +902,16 @@ export interface AdminCustomer {
   industry_code: string
   industry_name: string
   created_at: string
+}
+
+export interface CustomerCooperationInfo {
+  tenant_id: number
+  cooperation_status: 'cooperating' | 'non_cooperating' | string
+  cooperation_note: string
+  cooperation_marked_at?: string
+  cooperation_marked_by_user_id?: number
+  last_recharge_at?: string
+  recharge_dormant_90_days: boolean
 }
 
 export interface AdminCustomerPage {
@@ -925,6 +1049,8 @@ export interface RefundRecord {
 export interface FinanceDashboard {
   cash_balance_cents: number
   reward_balance_cents: number
+  commission_balance_cents: number
+  commission_frozen_cents: number
   total_balance_cents: number
   month_spent_cents: number
   available_seconds: number
@@ -934,6 +1060,60 @@ export interface FinanceDashboard {
   purchases: PurchaseRecord[]
   refunds: RefundRecord[]
   payments: SandboxPaymentRecord[]
+}
+
+export interface BeneficiaryWallet {
+  id: number
+  beneficiary_type: string
+  beneficiary_id: number
+  currency: string
+  available_balance_cents: number
+  frozen_balance_cents: number
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface BeneficiaryWalletLedger {
+  id: number
+  wallet_id: number
+  external_id: string
+  business_type: string
+  reference_type: string
+  reference_id?: number
+  available_delta_cents: number
+  frozen_delta_cents: number
+  available_before_cents: number
+  available_after_cents: number
+  frozen_before_cents: number
+  frozen_after_cents: number
+  operator_user_id?: number
+  reason: string
+  created_at: string
+}
+
+export interface WithdrawalRequest {
+  id: number
+  withdrawal_no: string
+  wallet_id: number
+  beneficiary_type: string
+  beneficiary_id: number
+  amount_cents: number
+  status: string
+  requested_by_user_id: number
+  approved_by_user_id?: number
+  paid_by_user_id?: number
+  reject_reason: string
+  requested_at: string
+  approved_at?: string
+  paid_at?: string
+  updated_at: string
+}
+
+export interface BeneficiaryWalletDashboard {
+  wallet: BeneficiaryWallet
+  ledger: BeneficiaryWalletLedger[]
+  withdrawals: WithdrawalRequest[]
 }
 export interface CommercialMembershipVersion {
   id: number
@@ -1182,7 +1362,8 @@ export interface CommercialTimeCardVersion {
   price_cents: number
   duration_seconds: number
   validity_days: number
-  participates_referral: boolean  activation_mode: string
+  participates_referral: boolean
+  activation_mode: string
   activation_deadline_days: number
 
   participates_sales_commission: boolean
@@ -1216,7 +1397,8 @@ export interface CommercialTimeCardInput {
   price_cents: number
   duration_seconds: number
   validity_days: number
-  participates_referral: boolean  activation_mode: string
+  participates_referral: boolean
+  activation_mode: string
   activation_deadline_days: number
 
   participates_sales_commission: boolean
@@ -1230,7 +1412,8 @@ export interface CustomerTimeCardOffer {
   description: string
   duration_seconds: number
   validity_days: number
-  original_price_cents: number  activation_mode: string
+  original_price_cents: number
+  activation_mode: string
   activation_deadline_days: number
 
   discount_bps: number
@@ -1629,6 +1812,77 @@ export interface SalesPerformanceResponse {
   total_pages: number
   totals: SalesPerformanceTotals
   scope: StaffBusinessScope
+}
+
+export interface SalesFollowup {
+  id: number
+  sales_staff_id: number
+  tenant_id: number
+  customer_user_id: number
+  customer_username: string
+  customer_name: string
+  customer_phone: string
+  followup_type: string
+  content: string
+  next_followup_at?: string
+  created_at: string
+}
+
+export interface SalesFollowupSummary {
+  total_count: number
+  due_count: number
+  overdue_count: number
+}
+
+export interface SalesFollowupResponse {
+  items: SalesFollowup[]
+  summary: SalesFollowupSummary
+}
+
+export interface SalesCatalogMembership {
+  id: number
+  code: string
+  name: string
+  description: string
+  price_cents: number
+  included_seconds: number
+  billing_period_unit: string
+  billing_period_count: number
+  allow_auto_renew: boolean
+  version_no: number
+}
+
+export interface SalesCatalogTimeCard {
+  id: number
+  code: string
+  name: string
+  description: string
+  price_cents: number
+  duration_seconds: number
+  validity_days: number
+  activation_mode: string
+  activation_deadline_days: number
+  version_no: number
+}
+
+export interface SalesCatalogDevice {
+  id: number
+  code: string
+  sku_code: string
+  name: string
+  description: string
+  image_url: string
+  unit_label: string
+  list_price_cents: number
+  sale_price_cents: number
+  available_stock: number
+  version_no: number
+}
+
+export interface SalesCatalog {
+  memberships: SalesCatalogMembership[]
+  time_cards: SalesCatalogTimeCard[]
+  devices: SalesCatalogDevice[]
 }
 
 

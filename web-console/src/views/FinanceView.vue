@@ -1,14 +1,23 @@
 <script setup lang="ts">
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onMounted, ref } from 'vue'
-import { createCustomerRechargeRequest, getFinanceDashboard } from '../api'
+import {
+  createCustomerRechargeRequest,
+  createCustomerWalletWithdrawal,
+  createReferralWithdrawal,
+  getCustomerWithdrawals,
+  getFinanceDashboard,
+  getReferralWallet,
+} from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
-import type { FinanceDashboard } from '../types'
+import type { BeneficiaryWalletDashboard, FinanceDashboard, WithdrawalRequest } from '../types'
 
 type FinanceTab = 'ledger' | 'recharge' | 'payment' | 'purchase' | 'refund'
 
 const data = ref<FinanceDashboard | null>(null)
+const referralWallet = ref<BeneficiaryWalletDashboard | null>(null)
+const customerWithdrawals = ref<WithdrawalRequest[]>([])
 const loading = ref(true)
 const error = useFeedbackErrorRef()
 const activeTab = ref<FinanceTab>('ledger')
@@ -17,6 +26,11 @@ const rechargeAmount = ref('')
 const rechargeReason = ref('')
 const rechargeSubmitting = ref(false)
 const rechargeMessage = ref('')
+const showWithdrawal = ref(false)
+const withdrawalType = ref<'cash' | 'reward' | 'commission'>('cash')
+const withdrawalAmount = ref('')
+const withdrawalSubmitting = ref(false)
+const withdrawalMessage = ref('')
 const page = ref(1)
 const pageSize = 20
 
@@ -43,11 +57,58 @@ const pagedPayments = computed(() => data.value?.payments.slice(pageStart.value,
 const pagedPurchases = computed(() => data.value?.purchases.slice(pageStart.value, pageStart.value + pageSize) ?? [])
 const pagedRefunds = computed(() => data.value?.refunds.slice(pageStart.value, pageStart.value + pageSize) ?? [])
 
+const allWithdrawals = computed(() => [
+  ...customerWithdrawals.value,
+  ...(referralWallet.value?.withdrawals || []),
+].sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime()))
+
+function withdrawalCategory(item: WithdrawalRequest) {
+  if (item.beneficiary_type === 'customer_cash') return 'cash'
+  if (item.beneficiary_type === 'customer_reward') return 'reward'
+  return 'commission'
+}
+
+function withdrawalLabel(type: 'cash' | 'reward' | 'commission') {
+  if (type === 'cash') return '现金余额'
+  if (type === 'reward') return '奖励余额'
+  return '返佣余额'
+}
+
+const cashWithdrawals = computed(() => allWithdrawals.value.filter((item) => withdrawalCategory(item) === 'cash'))
+const rewardWithdrawals = computed(() => allWithdrawals.value.filter((item) => withdrawalCategory(item) === 'reward'))
+const commissionWithdrawals = computed(() => allWithdrawals.value.filter((item) => withdrawalCategory(item) === 'commission'))
+
+function paidWithdrawalTotal(items: WithdrawalRequest[]) {
+  return items
+    .filter((item) => item.status === 'paid')
+    .reduce((sum, item) => sum + Number(item.amount_cents || 0), 0)
+}
+
+const cashWithdrawalTotal = computed(() => paidWithdrawalTotal(cashWithdrawals.value))
+const rewardWithdrawalTotal = computed(() => paidWithdrawalTotal(rewardWithdrawals.value))
+const commissionWithdrawalTotal = computed(() => paidWithdrawalTotal(commissionWithdrawals.value))
+const allWithdrawalTotal = computed(
+  () => cashWithdrawalTotal.value + rewardWithdrawalTotal.value + commissionWithdrawalTotal.value,
+)
+
+const withdrawalGroups = computed(() => [
+  { key: 'cash', label: '现金余额提现', total: cashWithdrawalTotal.value, items: cashWithdrawals.value },
+  { key: 'reward', label: '奖励余额提现', total: rewardWithdrawalTotal.value, items: rewardWithdrawals.value },
+  { key: 'commission', label: '返佣余额提现', total: commissionWithdrawalTotal.value, items: commissionWithdrawals.value },
+])
+
 async function loadFinance() {
   loading.value = true
   error.value = ''
   try {
-    data.value = await getFinanceDashboard(200)
+    const [dashboard, referral, withdrawals] = await Promise.all([
+      getFinanceDashboard(200),
+      getReferralWallet(200),
+      getCustomerWithdrawals('all'),
+    ])
+    data.value = dashboard
+    referralWallet.value = referral
+    customerWithdrawals.value = withdrawals.items || []
   } catch (err) {
     error.value = err instanceof Error ? err.message : '读取财务信息失败'
   } finally {
@@ -121,8 +182,10 @@ function statusLabel(value: string) {
   const labels: Record<string, string> = {
     pending: '待处理',
     pending_approval: '待财务审核',
+    reviewing: '待财务审核',
+    approved: '已审核待打款',
     rejected: '已驳回',
-    paid: '已支付',
+    paid: '已打款',
     success: '成功',
     completed: '已完成',
     refunded: '已退款',
@@ -133,6 +196,49 @@ function statusLabel(value: string) {
   return labels[value] || value || '—'
 }
 
+function withdrawalAvailable(type: 'cash' | 'reward' | 'commission') {
+  if (!data.value) return 0
+  if (type === 'cash') return data.value.cash_balance_cents
+  if (type === 'reward') return data.value.reward_balance_cents
+  return data.value.commission_balance_cents
+}
+
+function openWithdrawal(type: 'cash' | 'reward' | 'commission') {
+  withdrawalType.value = type
+  withdrawalAmount.value = ''
+  withdrawalMessage.value = ''
+  showWithdrawal.value = true
+}
+
+async function submitWithdrawal() {
+  const amountYuan = Number(withdrawalAmount.value)
+  if (!Number.isFinite(amountYuan) || amountYuan <= 0) {
+    error.value = '请输入正确的提现金额'
+    return
+  }
+  const amountCents = Math.round(amountYuan * 100)
+  if (amountCents > withdrawalAvailable(withdrawalType.value)) {
+    error.value = '提现金额不能超过当前可提现余额'
+    return
+  }
+  withdrawalSubmitting.value = true
+  withdrawalMessage.value = ''
+  error.value = ''
+  try {
+    if (withdrawalType.value === 'commission') {
+      await createReferralWithdrawal(amountCents)
+    } else {
+      await createCustomerWalletWithdrawal(withdrawalType.value, amountCents)
+    }
+    withdrawalMessage.value = '提现申请已提交，等待财务审核。'
+    withdrawalAmount.value = ''
+    await loadFinance()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '提交提现申请失败'
+  } finally {
+    withdrawalSubmitting.value = false
+  }
+}
 
 async function submitRechargeRequest() {
   const amountYuan = Number(rechargeAmount.value)
@@ -176,12 +282,11 @@ onMounted(loadFinance)
 
 <template>
   <div class="finance-page">
-    <ModulePageNav context="workspace-customer" active-title="财务管理" />
-    <section class="feature-workspace-hero finance-hero">
+    <ModulePageNav context="workspace-customer" active-title="我的钱包" />
+    <section class="feature-workspace-hero finance-hero finance-hero-compact">
       <div>
-        <p class="section-kicker">FINANCE CENTER</p>
-        <h2>财务管理</h2>
-        <p>查看账户余额、充值、消费、时长卡购买、模拟支付和退款记录。Sandbox 支付会明确标记，不会与未来真实支付混淆。</p>
+        <p class="section-kicker">MY WALLET</p>
+        <h2>我的钱包</h2>
       </div>
     </section>
 
@@ -191,56 +296,38 @@ onMounted(loadFinance)
     <template v-if="data">
       <p v-if="error" class="settings-error">{{ error }}</p>
 
-      <section class="finance-summary-grid">
-        <article class="wallet-hero-card">
-          <div class="wallet-card-top">
-            <div>
-              <span class="wallet-label">账户可用余额</span>
-              <strong>{{ formatMoney(data.total_balance_cents) }}</strong>
-            </div>
-            <button class="wallet-recharge-button" type="button" @click="showRecharge = true">
-              充值
-            </button>
-          </div>
-
-          <div class="wallet-balance-split">
-            <div>
-              <span>现金余额</span>
-              <strong>{{ formatMoney(data.cash_balance_cents) }}</strong>
-            </div>
-            <div>
-              <span>奖励余额</span>
-              <strong>{{ formatMoney(data.reward_balance_cents) }}</strong>
-            </div>
-          </div>
-
-          <p>钱包支付会按订单规则扣减余额；当前终端商城 Sandbox 模拟支付为独立测试渠道，不会扣减现金余额。</p>
-        </article>
-
-        <article class="finance-stat-card">
-          <span class="finance-stat-icon">↘</span>
+      <section class="wallet-balance-grid">
+        <article class="wallet-balance-card wallet-balance-card-cash">
           <div>
-            <span>本月消费</span>
-            <strong>{{ formatMoney(data.month_spent_cents) }}</strong>
-            <small>统计已支付订单净额，包含明确标记的 Sandbox 测试支付</small>
+            <span class="wallet-label">现金余额</span>
+            <strong>{{ formatMoney(data.cash_balance_cents) }}</strong>
+          </div>
+          <div class="wallet-card-actions">
+            <button type="button" @click="showRecharge = true">充值</button>
+            <button type="button" class="primary-button" @click="openWithdrawal('cash')">提现</button>
           </div>
         </article>
 
-        <article class="finance-stat-card">
-          <span class="finance-stat-icon">◷</span>
+        <article class="wallet-balance-card wallet-balance-card-reward">
           <div>
-            <span>当前可用时长</span>
-            <strong>{{ formatSeconds(data.available_seconds) }}</strong>
-            <small>所有未过期时长资产合计</small>
+            <span class="wallet-label">奖励余额</span>
+            <strong>{{ formatMoney(data.reward_balance_cents) }}</strong>
+          </div>
+          <div class="wallet-card-actions">
+            <button type="button" class="primary-button" @click="openWithdrawal('reward')">提现</button>
           </div>
         </article>
 
-        <article class="finance-stat-card">
-          <span class="finance-stat-icon">◇</span>
+        <article class="wallet-balance-card wallet-balance-card-commission">
           <div>
-            <span>当前会员</span>
-            <strong>{{ data.membership_name || '暂未开通' }}</strong>
-            <small>会员等级由商业后台统一配置</small>
+            <span class="wallet-label">返佣余额</span>
+            <strong>{{ formatMoney(data.commission_balance_cents) }}</strong>
+            <small v-if="data.commission_frozen_cents > 0">
+              冻结中 {{ formatMoney(data.commission_frozen_cents) }}
+            </small>
+          </div>
+          <div class="wallet-card-actions">
+            <button type="button" class="primary-button" @click="openWithdrawal('commission')">提现</button>
           </div>
         </article>
       </section>
@@ -447,6 +534,59 @@ onMounted(loadFinance)
           @update:page="page = $event"
         />
       </section>
+
+      <section class="withdrawal-records-card">
+        <div class="withdrawal-records-head">
+          <div>
+            <span class="section-kicker">WITHDRAWAL HISTORY</span>
+            <h3>提现记录</h3>
+          </div>
+          <div class="withdrawal-total-box">
+            <span>累计已提现</span>
+            <strong>{{ formatMoney(allWithdrawalTotal) }}</strong>
+          </div>
+        </div>
+
+        <div class="withdrawal-summary-grid">
+          <div v-for="group in withdrawalGroups" :key="group.key">
+            <span>{{ group.label }}</span>
+            <strong>{{ formatMoney(group.total) }}</strong>
+          </div>
+        </div>
+
+        <article v-for="group in withdrawalGroups" :key="'table-' + group.key" class="withdrawal-category-block">
+          <header>
+            <div>
+              <strong>{{ group.label }}</strong>
+              <small>已提现合计 {{ formatMoney(group.total) }}</small>
+            </div>
+            <span>{{ group.items.length }} 条</span>
+          </header>
+          <div class="finance-table-wrap">
+            <table v-if="group.items.length" class="finance-table withdrawal-table">
+              <thead>
+                <tr>
+                  <th>申请时间</th>
+                  <th>提现单号</th>
+                  <th>金额</th>
+                  <th>状态</th>
+                  <th>完成时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in group.items" :key="item.id">
+                  <td>{{ formatDate(item.requested_at) }}</td>
+                  <td>{{ item.withdrawal_no }}</td>
+                  <td><strong>{{ formatMoney(item.amount_cents) }}</strong></td>
+                  <td><span class="record-status">{{ statusLabel(item.status) }}</span></td>
+                  <td>{{ formatDate(item.paid_at || item.approved_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="finance-empty compact"><strong>暂无提现记录</strong></div>
+          </div>
+        </article>
+      </section>
     </template>
 
     <div v-if="showRecharge" class="modal-backdrop" @click.self="showRecharge = false">
@@ -496,5 +636,37 @@ onMounted(loadFinance)
         </form>
       </section>
     </div>
+    <div v-if="showWithdrawal" class="modal-backdrop" @click.self="showWithdrawal = false">
+      <section class="dialog-card withdrawal-dialog">
+        <div class="dialog-icon">提</div>
+        <h3>{{ withdrawalLabel(withdrawalType) }}提现</h3>
+        <div class="withdrawal-available-line">
+          <span>当前可提现</span>
+          <strong>{{ formatMoney(withdrawalAvailable(withdrawalType)) }}</strong>
+        </div>
+        <form class="recharge-request-form" @submit.prevent="submitWithdrawal">
+          <label>
+            <span>提现金额（元）</span>
+            <input
+              v-model="withdrawalAmount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              :max="withdrawalAvailable(withdrawalType) / 100"
+              placeholder="请输入提现金额"
+              required
+            />
+          </label>
+          <p v-if="withdrawalMessage" class="recharge-request-success">{{ withdrawalMessage }}</p>
+          <div class="dialog-actions">
+            <button class="ghost-button" type="button" @click="showWithdrawal = false">取消</button>
+            <button class="primary-button" type="submit" :disabled="withdrawalSubmitting">
+              {{ withdrawalSubmitting ? '提交中...' : '提交提现申请' }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
   </div>
 </template>

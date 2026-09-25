@@ -74,10 +74,6 @@ func (s *Server) requireLiveSupportRoomCapability(
 		return model.Actor{}, 0, 0, false
 	}
 	access, err := s.staffAccessForActor(r, actor)
-	if err == nil && capability == model.LiveSupportCapabilityL3Policy && access.CanManageLivePolicyL1() {
-		writeError(w, http.StatusForbidden, "具备 L1 配置权限的账号不能代维护客户 L3，即使已获客户授权")
-		return model.Actor{}, 0, 0, false
-	}
 	if err != nil || !access.CanUseLiveSupportCapability(capability) {
 		writeError(w, http.StatusForbidden, "当前岗位没有该客户协助能力")
 		return model.Actor{}, 0, 0, false
@@ -153,6 +149,10 @@ func (s *Server) liveRoomUpdateSupportAuthorizations(w http.ResponseWriter, r *h
 	var input model.LiveSupportAuthorizationInput
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "授权内容格式错误")
+		return
+	}
+	if len(input.Capabilities) > 0 {
+		writeError(w, http.StatusConflict, "新增或扩大协助权限请通过协助申请，由对应运维人员接受后生效")
 		return
 	}
 

@@ -397,7 +397,7 @@ func (s *Store) CreateShipment(
 		return model.Shipment{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "logistics", "inventory"); err != nil {
 		return model.Shipment{}, err
 	}
 	return s.GetShipment(ctx, shipmentID)
@@ -761,7 +761,7 @@ func (s *Store) UpdateShipmentStatus(
 		return model.Shipment{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "logistics", "inventory"); err != nil {
 		return model.Shipment{}, err
 	}
 	return s.GetShipment(ctx, shipmentID)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -94,6 +95,10 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range input.Settings {
+		if err := db.ValidateFinanceReviewSetting(item.Key, item.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if utf8.RuneCountInString(item.Value) > 4096 {
 			writeError(w, http.StatusBadRequest, "单项系统设置内容过长")
 			return

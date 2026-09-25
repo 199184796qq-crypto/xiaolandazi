@@ -17,7 +17,7 @@ func TestLivePolicyAccessSeparationMatrix(t *testing.T) {
 				}
 				wantL1 := super || mask&1 != 0
 				wantL2 := wantL1 || mask&2 != 0
-				wantL3 := !wantL1 && mask&2 != 0
+				wantL3 := wantL2 && (super || mask&4 != 0)
 				if got := access.CanManageLivePolicyL1(); got != wantL1 {
 					t.Fatalf("L1=%v want %v", got, wantL1)
 				}
@@ -32,15 +32,21 @@ func TestLivePolicyAccessSeparationMatrix(t *testing.T) {
 	}
 }
 
-func TestLivePolicyWildcardAndMultipleRolesCannotBypassL3Exclusion(t *testing.T) {
-	for _, permissions := range [][]string{
-		{"*"},
-		{"*", "livepolicy.manage_l3_authorized"},
-		{"livepolicy.manage_l3_authorized", "livepolicy.manage_l2", "livepolicy.manage_l1"},
-	} {
-		access := StaffAccessContext{Permissions: permissions, RoleCodes: []string{"custom_manager", "live_operations_staff"}}
-		if !access.CanManageLivePolicyL2() || access.CanDelegateLivePolicyL3() {
-			t.Fatalf("incorrect permission union for %v", permissions)
+func TestLivePolicyUserLayerDelegationRequiresIndustryAndExplicitSupportPermission(t *testing.T) {
+	cases := []struct {
+		permissions []string
+		want        bool
+	}{
+		{permissions: []string{"livepolicy.manage_l2"}, want: false},
+		{permissions: []string{"livepolicy.manage_l3_authorized"}, want: false},
+		{permissions: []string{"livepolicy.manage_l2", "livepolicy.manage_l3_authorized"}, want: true},
+		{permissions: []string{"livepolicy.manage_l1", "livepolicy.manage_l3_authorized"}, want: true},
+		{permissions: []string{"*"}, want: true},
+	}
+	for _, item := range cases {
+		access := StaffAccessContext{Permissions: item.permissions, RoleCodes: []string{"live_operations_staff"}}
+		if got := access.CanDelegateLivePolicyL3(); got != item.want {
+			t.Fatalf("delegated user layer=%v want %v for %v", got, item.want, item.permissions)
 		}
 	}
 }
@@ -50,8 +56,8 @@ func TestLivePolicySeparationPreservesIndependentSupportCapabilities(t *testing.
 		"livepolicy.manage_l1", "livepolicy.manage_l3_authorized",
 		"livecoach.anchor_authorized", "livevoice.clone_authorized",
 	}}
-	if access.CanDelegateLivePolicyL3() {
-		t.Fatal("L1 staff must never delegate L3")
+	if !access.CanDelegateLivePolicyL3() {
+		t.Fatal("rule-layer manager with explicit customer-authorized user-layer permission should be eligible")
 	}
 	if !access.CanUseLiveSupportCapability(LiveSupportCapabilityAnchorTraining) ||
 		!access.CanUseLiveSupportCapability(LiveSupportCapabilityVoiceClone) {

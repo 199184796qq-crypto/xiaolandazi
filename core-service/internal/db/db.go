@@ -70,6 +70,20 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 			UNIQUE KEY uk_core_rooms_tenant_platform_external (tenant_id, platform, external_room_id),
 			KEY idx_core_rooms_tenant_status (tenant_id, status)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+		`CREATE TABLE IF NOT EXISTS core_room_user_blocks (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			tenant_id BIGINT UNSIGNED NOT NULL,
+			room_id BIGINT UNSIGNED NOT NULL,
+			subject_key VARCHAR(320) NOT NULL,
+			user_id VARCHAR(255) NOT NULL DEFAULT '',
+			nickname VARCHAR(255) NOT NULL DEFAULT '',
+			reason VARCHAR(255) NOT NULL DEFAULT '',
+			blocked_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			PRIMARY KEY (id),
+			UNIQUE KEY uk_core_room_user_blocks_room_subject (room_id, subject_key),
+			KEY idx_core_room_user_blocks_tenant_room (tenant_id, room_id),
+			KEY idx_core_room_user_blocks_user (room_id, user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
 	}
 
 	for _, statement := range statements {

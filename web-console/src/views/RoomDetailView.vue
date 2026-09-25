@@ -2,7 +2,6 @@
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import Hls from 'hls.js'
 import {
   getLiveAgentSettings,
   chatLiveAgent,
@@ -12,8 +11,6 @@ import {
   getRoomEvents,
   getTenants,
   recordLiveRuntimeEvent,
-  startLiveRuntime,
-  stopLiveRuntime,
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -36,17 +33,11 @@ const loading = ref(true)
 const error = useFeedbackErrorRef()
 const streamState = ref<'connecting' | 'online' | 'offline'>('connecting')
 const activeType = ref('all')
-const liveVideo = ref<HTMLVideoElement | null>(null)
-const videoState = ref<'idle' | 'connecting' | 'live' | 'error'>('idle')
-const previewPaused = ref(false)
-const videoAspectRatio = ref(16 / 9)
-const videoOrientation = ref<'portrait' | 'landscape'>('landscape')
 let eventSource: EventSource | null = null
-let hls: Hls | null = null
-let videoRetryTimer: number | undefined
 let runtimePollTimer: number | undefined
+let streamBatchTimer: number | undefined
+let pendingStreamEvents: RoomEvent[] = []
 const runtimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
-const runtimeBusy = ref(false)
 const runtimeError = ref('')
 
 const questionIds = ref<number[]>([])
@@ -98,29 +89,14 @@ const anchorTranscript = ref('等待主播实时语音转写…')
 
 const aiRunning = computed(() => runtimeSnapshot.value?.session?.status === 'running')
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
-const activeQuotaSeconds = computed(() => runtimeSnapshot.value?.quota_remaining_seconds || 0)
-const reserveCardCount = computed(() => runtimeSnapshot.value?.reserve_time_card_count || 0)
-const reserveCardSeconds = computed(() => runtimeSnapshot.value?.reserve_time_card_seconds || 0)
-const hasAnyAIQuota = computed(() => activeQuotaSeconds.value > 0 || reserveCardCount.value > 0)
 type SimDeviceState = 'working' | 'connected' | 'offline'
 const simulatedDeviceState = ref<SimDeviceState>(
   (localStorage.getItem('live-sim-device-' + roomId) as SimDeviceState) || 'offline',
 )
-const canStartAI = computed(() =>
-  room.value?.status === 'live' &&
-  !aiRunning.value &&
-  hasAnyAIQuota.value &&
-  boundDevice.value?.connection_status === 'online',
-)
 
 const aiStatusText = computed(() => {
-  if (aiRunning.value) return '运行中'
-  if (!hasAnyAIQuota.value) return '时长已用完'
-  if (activeQuotaSeconds.value <= 0 && reserveCardCount.value > 0) return '有储备卡，启动后自动激活'
-  if (room.value?.status !== 'live') return '等待开播'
-  if (!boundDevice.value) return '未绑定设备'
-  if (boundDevice.value.connection_status !== 'online') return '设备离线'
-  return '已停止'
+  if (aiRunning.value) return '工作中'
+  return '等待开始'
 })
 
 const deviceVisualState = computed<SimDeviceState>(() => {
@@ -346,25 +322,6 @@ function formatDuration(seconds?: number) {
   return secs + '秒'
 }
 
-function formatQuotaExpiry(value?: string) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-}
-
-function timeCardStatusLabel(status: string) {
-  if (status === 'active') return '使用中'
-  if (status === 'unactivated') return '未激活'
-  return status
-}
-
 function runtimeEventKind(code: string) {
   if (code.includes('QUOTA')) return '计费'
   if (code.includes('DEVICE')) return '设备'
@@ -404,35 +361,6 @@ function startRuntimePolling() {
   }, 5000)
 }
 
-async function handleStartAI() {
-  if (!canStartAI.value || runtimeBusy.value) return
-  runtimeBusy.value = true
-  runtimeError.value = ''
-  try {
-    await startLiveRuntime(roomId, boundDevice.value?.id)
-    await refreshRuntime()
-  } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '启动AI伴播失败'
-  } finally {
-    runtimeBusy.value = false
-  }
-}
-
-async function handleStopAI() {
-  if (!aiRunning.value || runtimeBusy.value) return
-  runtimeBusy.value = true
-  runtimeError.value = ''
-  try {
-    await stopLiveRuntime(roomId, 'manual_stop')
-    await refreshRuntime()
-  } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '停止AI伴播失败'
-  } finally {
-    runtimeBusy.value = false
-  }
-}
-
-
 const eventTypes = [
   { key: 'all', label: '全部' },
   { key: 'chat', label: '弹幕' },
@@ -452,152 +380,6 @@ const filteredEvents = computed(() => {
 })
 
 const isAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
-const livePreviewUrl = computed(() => {
-  if (!room.value) return ''
-  if (room.value.source_url) return room.value.source_url
-  if (!room.value.external_room_id) return ''
-  return 'https://live.douyin.com/' + room.value.external_room_id + '?from=web_code_link'
-})
-
-function clearVideoRetry() {
-  if (videoRetryTimer !== undefined) {
-    window.clearTimeout(videoRetryTimer)
-    videoRetryTimer = undefined
-  }
-}
-
-function destroyLivePlayer() {
-  clearVideoRetry()
-
-  if (hls) {
-    hls.destroy()
-    hls = null
-  }
-
-  const video = liveVideo.value
-  if (video) {
-    video.pause()
-    video.removeAttribute('src')
-    video.load()
-  }
-}
-
-function scheduleVideoRetry() {
-  clearVideoRetry()
-  if (previewPaused.value) return
-  videoRetryTimer = window.setTimeout(() => {
-    if (!previewPaused.value) startLivePlayer()
-  }, 3000)
-}
-
-async function startLivePlayer() {
-  if (previewPaused.value) {
-    videoState.value = 'idle'
-    return
-  }
-  if (!room.value || room.value.status !== 'live') {
-    videoState.value = 'idle'
-    return
-  }
-
-  await nextTick()
-  const video = liveVideo.value
-  if (!video) return
-
-  clearVideoRetry()
-  if (hls) {
-    hls.destroy()
-    hls = null
-  }
-
-  videoState.value = 'connecting'
-  videoAspectRatio.value = 16 / 9
-  videoOrientation.value = 'landscape'
-  const source =
-    '/api/v1/rooms/' + roomId + '/live/index.m3u8?t=' + Date.now()
-
-  if (Hls.isSupported()) {
-    const instance = new Hls({
-      lowLatencyMode: true,
-      liveSyncDurationCount: 2,
-      liveMaxLatencyDurationCount: 6,
-      maxBufferLength: 8,
-      backBufferLength: 0,
-    })
-
-    hls = instance
-    instance.attachMedia(video)
-
-    instance.on(Hls.Events.MEDIA_ATTACHED, () => {
-      instance.loadSource(source)
-    })
-
-    instance.on(Hls.Events.MANIFEST_PARSED, () => {
-      video.play().catch(() => {})
-    })
-
-    instance.on(Hls.Events.ERROR, (_event, data) => {
-      if (!data.fatal) return
-      videoState.value = 'error'
-      instance.destroy()
-      if (hls === instance) hls = null
-      scheduleVideoRetry()
-    })
-    return
-  }
-
-  if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = source
-    video.play().catch(() => {})
-    return
-  }
-
-  videoState.value = 'error'
-}
-
-function handleVideoMetadata() {
-  const video = liveVideo.value
-  if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) {
-    return
-  }
-
-  videoAspectRatio.value = video.videoWidth / video.videoHeight
-  videoOrientation.value =
-    video.videoHeight > video.videoWidth ? 'portrait' : 'landscape'
-}
-function handleVideoPlaying() {
-  if (previewPaused.value) return
-  videoState.value = 'live'
-}
-
-function handleVideoError() {
-  if (previewPaused.value) return
-  videoState.value = 'error'
-  scheduleVideoRetry()
-}
-function pauseLivePreview() {
-  if (previewPaused.value) return
-  previewPaused.value = true
-  destroyLivePlayer()
-  videoState.value = 'idle'
-  logUserAction('LIVE_PREVIEW_PAUSED', { source: 'room_detail' })
-}
-
-function resumeLivePreview() {
-  if (!previewPaused.value) return
-  previewPaused.value = false
-  videoState.value = room.value?.status === 'live' ? 'connecting' : 'idle'
-  logUserAction('LIVE_PREVIEW_RESUMED', { source: 'room_detail' })
-  void startLivePlayer()
-}
-
-function toggleLivePreview() {
-  if (previewPaused.value) {
-    resumeLivePreview()
-    return
-  }
-  pauseLivePreview()
-}
 function roomTitle() {
   if (!room.value) return '直播间'
   return room.value.name || '直播间 ' + room.value.external_room_id
@@ -659,12 +441,27 @@ function formatTime(value: string) {
   })
 }
 
-function pushEvent(event: RoomEvent) {
-  if (events.value.some((item) => item.id === event.id)) return
-  events.value.unshift(event)
-  if (events.value.length > 500) {
-    events.value = events.value.slice(0, 500)
-  }
+function flushStreamEvents() {
+	streamBatchTimer = undefined
+	if (!pendingStreamEvents.length) return
+	const incoming = pendingStreamEvents
+	pendingStreamEvents = []
+	const seen = new Set(events.value.map((item) => item.id))
+	const additions: RoomEvent[] = []
+	for (const event of incoming) {
+		if (seen.has(event.id)) continue
+		seen.add(event.id)
+		additions.push(event)
+	}
+	if (!additions.length) return
+	events.value = [...additions.reverse(), ...events.value].slice(0, 500)
+}
+
+function queueStreamEvent(event: RoomEvent) {
+	pendingStreamEvents.push(event)
+	if (streamBatchTimer === undefined) {
+		streamBatchTimer = window.setTimeout(flushStreamEvents, 100)
+	}
 }
 
 async function load() {
@@ -697,7 +494,7 @@ async function load() {
       }
     }
     connectStream()
-    await Promise.all([startLivePlayer(), refreshRuntime()])
+    await refreshRuntime()
     startRuntimePolling()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '读取直播间失败'
@@ -718,19 +515,13 @@ function connectStream() {
     streamState.value = 'online'
   }
 
-  eventSource.onmessage = (message) => {
-    try {
-      const event = JSON.parse(message.data) as RoomEvent
-      pushEvent(event)
-      if (room.value) {
-        room.value.status = 'live'
+	eventSource.onmessage = (message) => {
+		try {
+			const event = JSON.parse(message.data) as RoomEvent
+			queueStreamEvent(event)
+			if (room.value) {
+				room.value.status = 'live'
         room.value.last_event_at = event.occurred_at
-      }
-      if (
-        !previewPaused.value &&
-        (videoState.value === 'idle' || videoState.value === 'error')
-      ) {
-        startLivePlayer()
       }
     } catch {
       // Ignore malformed development events.
@@ -744,10 +535,11 @@ function connectStream() {
 
 onMounted(load)
 onBeforeUnmount(() => {
-  eventSource?.close()
-  if (runtimePollTimer !== undefined) window.clearInterval(runtimePollTimer)
-  finishAgentDockDrag()
-  destroyLivePlayer()
+	eventSource?.close()
+	if (runtimePollTimer !== undefined) window.clearInterval(runtimePollTimer)
+	if (streamBatchTimer !== undefined) window.clearTimeout(streamBatchTimer)
+	pendingStreamEvents = []
+	finishAgentDockDrag()
 })
 </script>
 
@@ -796,78 +588,19 @@ onBeforeUnmount(() => {
       <div v-if="error" class="inline-error">{{ error }}</div>
       <div v-if="runtimeError" class="inline-error">{{ runtimeError }}</div>
 
-      <section class="detail-stat-grid">
-        <article>
-          <span>在线人数</span>
-          <strong>{{ room.online_count.toLocaleString() }}</strong>
-        </article>
-        <article>
-          <span>公屏事件</span>
-          <strong>{{ events.length }}</strong>
-        </article>
-        <article class="runtime-stat-card">
-          <span>AI 伴播</span>
+      <section class="detail-stat-grid room-control-grid" aria-label="直播运行控制">
+        <article class="runtime-stat-card companion-control-card">
+          <span>直播搭子</span>
           <strong :class="aiRunning ? 'live-agent-status' : 'muted-value'">{{ aiStatusText }}</strong>
-          <div class="runtime-quota-brief">
-            <div>
-              <span>当前已激活</span>
-              <b>{{ formatDuration(activeQuotaSeconds) }}</b>
-            </div>
-            <small v-if="runtimeSnapshot?.current_quota">
-              {{ runtimeSnapshot.current_quota.source_label }}
-              <template v-if="runtimeSnapshot.current_quota.asset_no"> · {{ runtimeSnapshot.current_quota.asset_no }}</template>
-              <template v-if="runtimeSnapshot.current_quota.expires_at"> · {{ formatQuotaExpiry(runtimeSnapshot.current_quota.expires_at) }} 到期</template>
-            </small>
-            <small v-else-if="reserveCardCount > 0">当前没有已激活额度，启动 AI 时自动激活 1 张储备卡。</small>
-            <small v-if="reserveCardCount > 0" class="runtime-quota-reserve">
-              储备 {{ reserveCardCount }} 张未激活 · {{ formatDuration(reserveCardSeconds) }}
-            </small>
+          <small>按当前直播智能体方案工作</small>
+          <div class="companion-control-buttons" aria-label="直播搭子控制（设计阶段）">
+            <button type="button" disabled>开始</button>
+            <button type="button" class="pause" disabled>暂停</button>
+            <button type="button" class="end" disabled>结束</button>
           </div>
-          <details v-if="runtimeSnapshot?.time_cards?.length" class="runtime-time-card-details">
-            <summary>查看时长卡（{{ runtimeSnapshot.time_cards.length }}）</summary>
-            <div class="runtime-time-card-list">
-              <div
-                v-for="card in runtimeSnapshot.time_cards"
-                :key="card.asset_no"
-                class="runtime-time-card-item"
-                :class="{ active: card.status === 'active' }"
-              >
-                <div>
-                  <strong>{{ card.product_name }}</strong>
-                  <span>{{ card.asset_no }} · {{ timeCardStatusLabel(card.status) }}</span>
-                </div>
-                <b>{{ formatDuration(card.remaining_seconds) }}</b>
-                <small v-if="card.status === 'active' && card.expires_at">
-                  {{ formatQuotaExpiry(card.expires_at) }} 到期
-                </small>
-                <small v-else-if="card.activation_deadline_at">
-                  {{ formatQuotaExpiry(card.activation_deadline_at) }} 前需激活
-                </small>
-                <small v-else>首次实际使用时自动激活</small>
-              </div>
-            </div>
-          </details>
-          <button
-            v-if="!aiRunning"
-            type="button"
-            class="runtime-control-button"
-            :disabled="!canStartAI || runtimeBusy"
-            @click="handleStartAI"
-          >
-            {{ runtimeBusy ? '处理中…' : '启动 AI' }}
-          </button>
-          <button
-            v-else
-            type="button"
-            class="runtime-control-button danger"
-            :disabled="runtimeBusy"
-            @click="handleStopAI"
-          >
-            {{ runtimeBusy ? '处理中…' : '停止 AI' }}
-          </button>
         </article>
-        <article class="device-runtime-card">
-          <span>工作设备</span>
+        <article class="device-runtime-card xiaozhi-device-card">
+          <span>小智盒子</span>
           <div class="device-runtime-status" :class="'state-' + deviceVisualState">
             <i></i>
             <strong>{{ deviceStatusLabel }}</strong>
@@ -876,21 +609,20 @@ onBeforeUnmount(() => {
           <div class="device-sim-controls">
             <button
               type="button"
-              :class="{ active: deviceVisualState === 'working' }"
-              @click="setSimulatedDeviceState('working')"
-            >开始</button>
-            <button
-              type="button"
-              class="pause"
               :class="{ active: deviceVisualState === 'connected' }"
               @click="setSimulatedDeviceState('connected')"
-            >暂停</button>
+            >连接</button>
+            <button
+              type="button"
+              :class="{ active: deviceVisualState === 'working' }"
+              @click="setSimulatedDeviceState('working')"
+            >工作</button>
             <button
               type="button"
               class="close"
               :class="{ active: deviceVisualState === 'offline' }"
               @click="setSimulatedDeviceState('offline')"
-            >关闭</button>
+            >断开</button>
           </div>
         </article>
       </section>
@@ -904,7 +636,7 @@ onBeforeUnmount(() => {
         <p>{{ anchorTranscript }}</p>
       </section>
 
-      <section class="detail-layout">
+      <section class="detail-layout detail-layout-no-preview">
         <div class="public-screen-panel">
           <div class="panel-header">
             <div>
@@ -1014,87 +746,6 @@ onBeforeUnmount(() => {
           </section>
         </div>
 
-        <aside class="room-side-panel">
-          <section class="live-preview-card">
-            <div class="live-preview-head">
-              <div>
-                <span class="section-kicker">LIVE PREVIEW</span>
-                <h3>直播画面</h3>
-              </div>
-              <span class="preview-live-state" :class="{ live: room.status === 'live' }">
-                <i></i>
-                {{ statusText(room.status) }}
-              </span>
-            </div>
-
-            <div
-              class="live-preview-stage"
-              :class="'is-' + videoOrientation"
-              :style="{ aspectRatio: String(videoAspectRatio) }"
-            >
-              <video
-                ref="liveVideo"
-                class="live-preview-frame"
-                autoplay
-                playsinline
-                controls
-                @loadedmetadata="handleVideoMetadata"
-                @playing="handleVideoPlaying"
-                @error="handleVideoError"
-              ></video>
-
-              <div v-if="videoState !== 'live'" class="live-preview-placeholder">
-                <strong>
-                  {{
-                    previewPaused
-                      ? '直播画面采集已暂停'
-                      : videoState === 'error'
-                        ? '直播画面连接失败，正在重试'
-                        : room.status === 'live'
-                          ? '正在连接直播视频流'
-                          : '直播画面暂不可用'
-                  }}
-                </strong>
-                <span>
-                  {{
-                    previewPaused
-                      ? '点击“继续采集”后恢复画面；弹幕与直播状态仍保持连接'
-                      : room.status === 'live'
-                        ? '正在将抖音直播流转换为浏览器可播放画面'
-                        : '房间进入直播状态后会自动显示画面'
-                  }}
-                </span>
-              </div>
-
-
-            </div>
-
-            <div class="live-preview-actions">
-              <button
-                class="ghost-button live-preview-capture-toggle"
-                :class="{ paused: previewPaused }"
-                type="button"
-                :disabled="room.status !== 'live' && !previewPaused"
-                @click="toggleLivePreview"
-              >
-                <span class="live-preview-capture-icon">{{ previewPaused ? '▶' : 'Ⅱ' }}</span>
-                {{ previewPaused ? '继续采集' : '暂停采集' }}
-              </button>
-              <a
-                class="primary-button"
-                :href="livePreviewUrl"
-                target="_blank"
-                rel="noreferrer"
-              >
-                打开原直播间 ↗
-              </a>
-            </div>
-
-            <p class="live-preview-note">
-              画面来自实时直播流，按需启动低延迟转码；暂停采集会停止本页视频拉流，继续后自动恢复。
-            </p>
-          </section>
-        </aside>
       </section>
 
       <div
@@ -1189,3 +840,87 @@ onBeforeUnmount(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.room-detail-page .room-control-grid {
+  grid-template-columns: repeat(2, minmax(280px, 430px));
+  justify-content: start;
+  gap: 12px;
+}
+
+.room-detail-page .room-control-grid > article {
+  min-height: 138px;
+  padding: 16px 18px;
+}
+
+.companion-control-card,
+.xiaozhi-device-card {
+  align-content: start;
+}
+
+.companion-control-card > strong,
+.xiaozhi-device-card .device-runtime-status strong {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.companion-control-card > small,
+.xiaozhi-device-card > small {
+  min-height: 18px;
+}
+
+.companion-control-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.companion-control-buttons button {
+  min-width: 68px;
+  height: 34px;
+  border: 1px solid #d9e0ec;
+  border-radius: 9px;
+  color: #657186;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.companion-control-buttons button:first-child {
+  border-color: #cbd5ff;
+  color: #4f46e5;
+  background: #f3f4ff;
+}
+
+.companion-control-buttons button.end {
+  color: #8b5a60;
+  background: #fff7f7;
+}
+
+.companion-control-buttons button:disabled {
+  opacity: .78;
+}
+
+.room-detail-page .detail-layout-no-preview {
+  grid-template-columns: minmax(0, 1.18fr) minmax(360px, .82fr) !important;
+}
+
+@media(max-width:1100px){
+  .room-detail-page .room-control-grid {
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+  }
+}
+
+@media(max-width:900px){
+  .room-detail-page .detail-layout-no-preview {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media(max-width:800px){
+  .room-detail-page .room-control-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

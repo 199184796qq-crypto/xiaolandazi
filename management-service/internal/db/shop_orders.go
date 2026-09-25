@@ -1210,6 +1210,10 @@ func (s *Store) SandboxPayCustomerShopOrder(
 		return model.CustomerShopOrder{}, err
 	}
 
+	if err := accrueReferralRewardForPaidOrderTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
@@ -1706,6 +1710,17 @@ func (s *Store) SandboxRefundCustomerShopOrder(
 		return model.CustomerShopOrder{}, model.RefundRecord{}, err
 	}
 	if handledByAssets {
+		if err := reverseOrderIncentivesForRefundTx(
+			ctx,
+			tx,
+			orderID,
+			assetRefund.ID,
+			assetRefund.RefundNo,
+			assetRefund.RefundAmountCents,
+			paidAmount,
+		); err != nil {
+			return model.CustomerShopOrder{}, model.RefundRecord{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.CustomerShopOrder{}, model.RefundRecord{}, err
 		}
@@ -1901,6 +1916,18 @@ func (s *Store) SandboxRefundCustomerShopOrder(
 		SET refunded_amount_cents=?, status=?
 		WHERE id=? AND tenant_id=?
 	`, newRefundedAmount, newOrderStatus, orderID, tenantID); err != nil {
+		return model.CustomerShopOrder{}, model.RefundRecord{}, err
+	}
+
+	if err := reverseOrderIncentivesForRefundTx(
+		ctx,
+		tx,
+		orderID,
+		refundID,
+		refundNo,
+		input.AmountCents,
+		paidAmount,
+	); err != nil {
 		return model.CustomerShopOrder{}, model.RefundRecord{}, err
 	}
 

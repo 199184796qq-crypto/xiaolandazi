@@ -143,26 +143,6 @@ const pagedShipments = computed(() => {
   return filteredShipments.value.slice(start, start + pageSize.value)
 })
 
-const pendingCount = computed(() =>
-  shipments.value.filter((item) =>
-    ['pending', 'ready_to_ship'].includes(item.status),
-  ).length,
-)
-
-const transitCount = computed(() =>
-  shipments.value.filter((item) =>
-    ['shipped', 'in_transit'].includes(item.status),
-  ).length,
-)
-
-const exceptionCount = computed(() =>
-  shipments.value.filter((item) => item.status === 'exception').length,
-)
-
-const deliveredCount = computed(() =>
-  shipments.value.filter((item) => item.status === 'delivered').length,
-)
-
 const eligibleDevices = computed(() => {
   const sourceWarehouseID = Number(createForm.from_warehouse_id) || 0
   const type = createForm.shipment_type
@@ -581,21 +561,6 @@ watch(
           ＋ 新建物流 / 交接单
         </button>
       </div>
-    </section>
-
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>物流单</span><strong>{{ shipments.length }}</strong><small>累计物流单</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>待出库</span><strong>{{ pendingCount }}</strong><small>待处理 / 待发货</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>运输中</span><strong>{{ transitCount }}</strong><small>已发货 / 运输途中</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>已签收 / 异常</span><strong>{{ deliveredCount }} / {{ exceptionCount }}</strong><small>签收完成 / 待处理异常</small>
-      </article>
     </section>
 
     <section class="settings-card logistics-list-panel">

@@ -1,18 +1,17 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
@@ -121,8 +120,8 @@ func buildPolicyTestSystemPrompt(effective model.LiveEffectivePolicy) (string, e
 	prompt := "你是直播话术规则测试器，目标不是判断“能不能说”，而是判断“怎样说最合适”。\n\n" +
 		"这是纯测试环境，必须遵守：\n" +
 		"1. 只模拟主播最终应该怎样对观众表达；禁止发送 TTS、禁止发直播消息、禁止调用或声称调用退款/改价/发货/订单修改/库存修改等真实动作。\n" +
-		"2. L1 是通用判断与表达方法：理解真实意图 -> 核对事实和约束 -> 生成自然、热情、积极、可直接播出且不违规的话术。不要把 L1 当成禁止清单。\n" +
-		"3. L2 负责让表达符合当前行业；L3 负责让表达符合当前直播间和主播。它们是在 L1 方法上做风格和业务适配，而不是把 L1 变成更严厉的拒绝。\n" +
+		"2. 规则层是通用判断与表达方法：理解真实意图 -> 核对事实和约束 -> 生成自然、热情、积极、可直接播出且不违规的话术。不要把规则层当成禁止清单。\n" +
+		"3. 行业层负责让表达符合当前行业；用户层负责让表达符合当前直播间和主播。它们是在规则层方法上做风格和业务适配，而不是把规则层变成更严厉的拒绝。\n" +
 		"4. reply 必须优先给一条可以直接在直播间说出口的话。能直接回答就热情回答；原要求不适合直接照说时，要理解对方目的并转换成好听、自然、还能继续承接交流或销售的替代表达。\n" +
 		"5. 不得编造商品价格、库存、活动、物流、订单、效果或商家承诺。缺少数据时，不要只说“不知道/不能回答”；先承接，再说明以实时信息为准，并尽量给出当前能确认的内容或下一步。\n" +
 		"6. 除极端情况外，reply 不输出“拒绝”“不能回答”“违规”“系统不允许”“根据规则不能”等审核式话术。\n" +
@@ -179,7 +178,7 @@ func (s *Server) livePolicyAdminTest(w http.ResponseWriter, r *http.Request) {
 	input.IndustryCode = strings.ToLower(strings.TrimSpace(input.IndustryCode))
 	input.Message = strings.TrimSpace(input.Message)
 	if input.Layer != model.LivePolicyLayerL1 && input.Layer != model.LivePolicyLayerL2 {
-		writeError(w, http.StatusBadRequest, "规则测试只支持 L1 或 L2")
+		writeError(w, http.StatusBadRequest, "规则测试只支持规则层或行业层")
 		return
 	}
 	if input.Layer == model.LivePolicyLayerL2 && input.IndustryCode == "" {
@@ -223,11 +222,11 @@ func (s *Server) livePolicyAdminTest(w http.ResponseWriter, r *http.Request) {
 	if input.Layer == model.LivePolicyLayerL1 {
 		target, err := s.policyTestTargetVersion(r.Context(), model.LivePolicyLayerL1, "")
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "读取 L1 测试版本失败")
+			writeError(w, http.StatusInternalServerError, "读取规则层测试版本失败")
 			return
 		}
 		if target == nil {
-			writeError(w, http.StatusBadRequest, "当前没有可测试的 L1 规则")
+			writeError(w, http.StatusBadRequest, "当前没有可测试的规则层规则")
 			return
 		}
 		l1 = target
@@ -238,11 +237,11 @@ func (s *Server) livePolicyAdminTest(w http.ResponseWriter, r *http.Request) {
 		}
 		target, err := s.policyTestTargetVersion(r.Context(), model.LivePolicyLayerL2, testIndustry)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "读取 L2 测试版本失败")
+			writeError(w, http.StatusInternalServerError, "读取行业层测试版本失败")
 			return
 		}
 		if target == nil {
-			writeError(w, http.StatusBadRequest, "当前没有可测试的 L2 规则")
+			writeError(w, http.StatusBadRequest, "当前没有可测试的行业层规则")
 			return
 		}
 		l2 = target
@@ -255,7 +254,7 @@ func (s *Server) livePolicyAdminTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "构建规则测试上下文失败")
 		return
 	}
-	modelOutput, modelName, latencyMS, err := callDashScopePolicyTest(
+	modelOutput, modelName, latencyMS, err := callPolicyTestModel(
 		r.Context(), systemPrompt, input.Message, input.History,
 	)
 	if err != nil {
@@ -336,60 +335,33 @@ func buildPolicyTestMessages(
 	return messages
 }
 
-func callDashScopePolicyTest(
+func callPolicyTestModel(
 	ctx context.Context,
 	systemPrompt, message string,
 	history []liveAgentChatHistoryItem,
 ) (livePolicyTestModelOutput, string, int64, error) {
-	apiKey := dashScopeAPIKey()
-	if apiKey == "" {
-		return livePolicyTestModelOutput{}, "", 0, fmt.Errorf("DASHSCOPE_API_KEY not configured")
+	rawMessages := buildPolicyTestMessages(systemPrompt, message, history)
+	messages := make([]agentgateway.Message, 0, len(rawMessages))
+	for _, item := range rawMessages {
+		messages = append(messages, agentgateway.Message{
+			Role:    item["role"],
+			Content: item["content"],
+		})
 	}
-	payload := map[string]any{
-		"model":           liveAgentModel(),
-		"messages":        buildPolicyTestMessages(systemPrompt, message, history),
-		"enable_thinking": false,
-		"stream":          false,
-		"max_tokens":      1200,
-		"response_format": map[string]string{"type": "json_object"},
-	}
-	body, err := json.Marshal(payload)
+	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+		Messages:       messages,
+		MaxTokens:      1200,
+		EnableThinking: false,
+		ResponseFormat: agentgateway.ResponseJSON,
+		Timeout:        30 * time.Second,
+	})
 	if err != nil {
 		return livePolicyTestModelOutput{}, "", 0, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, dashScopeChatURL(), bytes.NewReader(body))
-	if err != nil {
-		return livePolicyTestModelOutput{}, "", 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	started := time.Now()
-	resp, err := http.DefaultClient.Do(req)
-	latencyMS := time.Since(started).Milliseconds()
-	if err != nil {
-		return livePolicyTestModelOutput{}, "", latencyMS, err
-	}
-	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return livePolicyTestModelOutput{}, "", latencyMS, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return livePolicyTestModelOutput{}, "", latencyMS, fmt.Errorf("dashscope status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
-	}
-	var decoded dashScopeChatResponse
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return livePolicyTestModelOutput{}, "", latencyMS, err
-	}
-	if len(decoded.Choices) == 0 {
-		return livePolicyTestModelOutput{}, "", latencyMS, fmt.Errorf("dashscope returned no choices")
-	}
-	raw := stripPolicyJSONFence(decoded.Choices[0].Message.Content)
+	raw := stripPolicyJSONFence(result.Text)
 	var output livePolicyTestModelOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		return livePolicyTestModelOutput{}, "", latencyMS, fmt.Errorf("decode policy test output: %w", err)
+		return livePolicyTestModelOutput{}, "", result.LatencyMS, fmt.Errorf("decode policy test output: %w", err)
 	}
-	return output, liveAgentModel(), latencyMS, nil
+	return output, result.Model, result.LatencyMS, nil
 }

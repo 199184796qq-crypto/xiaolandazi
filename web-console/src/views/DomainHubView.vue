@@ -1,35 +1,12 @@
 <script setup lang="ts">
-import { useFeedbackErrorRef } from '../uiFeedback'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed } from 'vue'
+import TodoBadge from '../components/TodoBadge.vue'
 import { RouterLink } from 'vue-router'
-import {
-  getAdminAgents,
-  getAdminCustomers,
-  getAdminSalesStaff,
-  getCommercialDeviceProducts,
-  getCommercialMarketingCampaigns,
-  getCommercialMemberships,
-  getCommercialTimeCards,
-  getInventoryDevices,
-  getRooms,
-  getStaffDashboard,
-  getStaffFinanceOverview,
-} from '../api'
 import { moduleEntries, moduleUiMap, type HubKey } from '../moduleUi'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 
-interface Metric {
-  label: string
-  value: string | number
-  hint: string
-  tone: 'primary' | 'success' | 'warning' | 'neutral'
-}
-
 const props = defineProps<{ hub: HubKey }>()
-const loading = ref(false)
-const error = useFeedbackErrorRef()
-const metrics = ref<Metric[]>([])
 
 const config = computed(() => moduleUiMap[props.hub])
 
@@ -42,6 +19,8 @@ function hasStaffPermission(code: string) {
 }
 
 function canShowEntry(to?: string) {
+  if (to === '/operations/live/customer-handoffs') return hasStaffPermission('liveops.configure') || hasStaffPermission('liveops.ticket.manage')
+  if (to === '/sales/handovers') return hasStaffPermission('sales.assignment.manage')
   if (!to) return true
   if (props.hub === 'staff' && to.startsWith('/staff/approvals')) {
     return hasStaffPermission('finance.dashboard.view')
@@ -165,7 +144,8 @@ const entryEnglishTitles: Record<string, string> = {
   '一级推荐奖励': 'REFERRAL REWARDS',
   '结算规则': 'SETTLEMENT RULES',
   '终端账户': 'CUSTOMER ACCOUNTS',
-  '待审核': 'PENDING APPROVALS',
+  '客户收款确认': 'CUSTOMER RECEIPTS',
+  '资金与权益审批': 'OPERATION APPROVALS',
   'AI 时长': 'AI TIME',
   '经营收支': 'OPERATING FINANCE',
   '钱包流水': 'WALLET LEDGER',
@@ -180,156 +160,6 @@ function entryEnglishTitle(title: string) {
   return entryEnglishTitles[title] || 'FUNCTION'
 }
 
-function metric(label: string, value: string | number, hint: string, tone: Metric['tone'] = 'neutral'): Metric {
-  return { label, value, hint, tone }
-}
-
-async function loadMetrics() {
-  loading.value = true
-  error.value = ''
-
-  try {
-    if (props.hub === 'staff') {
-      const data = await getStaffDashboard()
-      metrics.value = [
-        metric('部门', data.groups.length, '当前可见部门', 'primary'),
-        metric('员工', data.employees.length, '在册内部员工', 'success'),
-        metric('角色', data.roles.length, '已配置角色模板', 'neutral'),
-        metric('审批策略', data.approval_policies.length, '资金与高风险业务规则', 'warning'),
-      ]
-      return
-    }
-
-    if (props.hub === 'customers') {
-      const items = (await getAdminCustomers()).items
-      metrics.value = [
-        metric('终端总数', items.length, '当前系统终端主档', 'primary'),
-        metric('代理终端', items.filter((item) => item.parent_org_type === 'agent').length, '归属代理组织', 'success'),
-        metric('推荐注册', items.filter((item) => item.source_type === 'referral').length, '通过推荐关系注册', 'warning'),
-        metric('直营终端', items.filter((item) => item.parent_org_type !== 'agent').length, '总部直营或自然注册', 'neutral'),
-      ]
-      return
-    }
-
-    if (props.hub === 'agents') {
-      const items = (await getAdminAgents()).items
-      metrics.value = [
-        metric('代理总数', items.length, '当前代理组织', 'primary'),
-        metric('正常合作', items.filter((item) => item.status === 'active').length, '当前可正常开展业务', 'success'),
-        metric('其他状态', items.filter((item) => item.status !== 'active').length, '待审、停用或其他状态', 'warning'),
-        metric('渠道模型', '分级', '等级和结算规则可独立扩展', 'neutral'),
-      ]
-      return
-    }
-
-    if (props.hub === 'sales') {
-      const items = (await getAdminSalesStaff()).items
-      metrics.value = [
-        metric('销售账号', items.length, '当前销售业务账号', 'primary'),
-        metric('员工体系', '统一', '销售纳入内部员工体系', 'success'),
-        metric('终端范围', '隔离', '默认只看本人或团队终端', 'neutral'),
-        metric('资金权限', '只读', '销售不能发奖励或改钱包', 'warning'),
-      ]
-      return
-    }
-
-    if (props.hub === 'commercial') {
-      const items = (await getCommercialMemberships()).items
-      metrics.value = [
-        metric('会员方案', items.length, '当前稳定方案数量', 'primary'),
-        metric('已发布', items.filter((item) => Boolean(item.active_version)).length, '当前正式生效版本', 'success'),
-        metric('草稿', items.filter((item) => Boolean(item.draft_version)).length, '等待发布的新版本', 'warning'),
-        metric('规则模型', '版本化', '历史订单不被新规则覆盖', 'neutral'),
-      ]
-      return
-    }
-
-    if (props.hub === 'activityMarketing') {
-      const [campaignData, timeCardData, deviceData] = await Promise.all([
-        getCommercialMarketingCampaigns(),
-        getCommercialTimeCards(),
-        getCommercialDeviceProducts(),
-      ])
-      metrics.value = [
-        metric('营销计划', campaignData.items.length, '当前活动营销计划', 'primary'),
-        metric('时长卡', timeCardData.items.length, '当前时长卡商品', 'success'),
-        metric('设备商品', deviceData.items.length, '当前设备商城商品', 'neutral'),
-        metric('管理归口', '营销运维部', '活动营销统一归口', 'warning'),
-      ]
-      return
-    }
-
-    if (props.hub === 'finance') {
-      const data = await getStaffFinanceOverview()
-      metrics.value = [
-        metric('终端账户', data.customers.length, '当前可管理资金账户', 'primary'),
-        metric('待审核', data.tasks.filter((item) => item.status === 'pending').length, '需要有权人员处理', 'warning'),
-        metric('财务任务', data.tasks.length, '当前操作记录', 'neutral'),
-        metric('职责分离', '启用', '经办人不能审核本人单据', 'success'),
-      ]
-      return
-    }
-
-    if (props.hub === 'live') {
-      const items = (await getRooms()).items
-      metrics.value = [
-        metric('直播间', items.length, '当前可见直播间', 'primary'),
-        metric('直播中', items.filter((item) => item.status === 'live').length, '正在运行', 'success'),
-        metric('连接中', items.filter((item) => item.status === 'connecting').length, '正在建立连接', 'neutral'),
-        metric('异常', items.filter((item) => item.status === 'error').length, '需要尽快处理', 'warning'),
-      ]
-      return
-    }
-
-    if (props.hub === 'resources') {
-      const items = (await getInventoryDevices()).items
-      const lockedOrTransit = items.filter((item) =>
-        [
-          'RESERVED',
-          'IN_TRANSIT',
-          'RMA_TRANSIT',
-          'REPAIR_TRANSIT',
-          'REPAIR_RETURN_TRANSIT',
-        ].includes(item.lifecycle_status),
-      ).length
-      const afterSalesOrScrap = items.filter((item) =>
-        [
-          'AFTER_SALES',
-          'REPAIRING',
-          'EXTERNAL_REPAIR',
-          'SCRAP_PENDING',
-          'SCRAPPED',
-        ].includes(item.lifecycle_status),
-      ).length
-      metrics.value = [
-        metric('设备总数', items.length, '所有 SN 档案', 'primary'),
-        metric(
-          '在库可用',
-          items.filter((item) => item.lifecycle_status === 'IN_STOCK').length,
-          'IN_STOCK',
-          'success',
-        ),
-        metric('锁定 / 在途', lockedOrTransit, '锁定、运输与维修往返中的设备', 'neutral'),
-        metric('售后 / 报废', afterSalesOrScrap, '售后、维修和报废设备', 'warning'),
-      ]
-      return
-    }
-
-    metrics.value = [
-      metric('资源模型', '分账', '总部、代理、终端分别核算', 'primary'),
-      metric('资源流水', '可追溯', '每次变化保留来源和去向', 'success'),
-      metric('设备标识', 'SN', '按序列号追踪全生命周期', 'neutral'),
-      metric('库存模型', '可重算', '库存余额可由流水重建', 'warning'),
-    ]
-  } catch (value) {
-    error.value = value instanceof Error ? value.message : '读取总览数据失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-watch(() => props.hub, loadMetrics)
-onMounted(loadMetrics)
 </script>
 
 <template>
@@ -348,25 +178,6 @@ onMounted(loadMetrics)
 
       </div>
 
-      <button class="ghost-button module-hub-refresh" type="button" :disabled="loading" @click="loadMetrics">
-        {{ loading ? '刷新中...' : '刷新总览' }}
-      </button>
-    </section>
-
-    <p v-if="error" class="auth-error">{{ error }}</p>
-
-    <section class="module-hub-metrics-v2">
-      <article
-        v-for="item in metrics"
-        :key="item.label"
-        class="module-hub-metric-v2"
-        :class="'tone-' + item.tone"
-      >
-        <div class="module-metric-dot"></div>
-        <span>{{ item.label }}</span>
-        <strong>{{ item.value }}</strong>
-        <small>{{ item.hint }}</small>
-      </article>
     </section>
 
     <section class="module-quick-menu">
@@ -385,12 +196,15 @@ onMounted(loadMetrics)
           :key="entry.title"
           :to="entry.to"
           class="module-quick-card"
+          :class="{ 'finance-review-entry': props.hub === 'finance' && entry.scopeHint }"
         >
           <div class="module-quick-card-icon">{{ entry.icon }}</div>
+          <TodoBadge :to="entry.to" />
           <div class="module-quick-card-copy">
             <div>
               <span class="module-quick-card-en">{{ entryEnglishTitle(entry.title) }}</span>
               <strong>{{ entry.title }}</strong>
+              <span v-if="entry.scopeHint" class="module-entry-scope">{{ entry.scopeHint }}</span>
             </div>
           </div>
           <b>{{ entry.to ? '→' : '·' }}</b>
@@ -400,3 +214,11 @@ onMounted(loadMetrics)
 
   </div>
 </template>
+
+<style scoped>
+.module-quick-card {position:relative}
+.hub-finance .module-quick-card.finance-review-entry .module-quick-card-copy {min-width:0}
+.hub-finance .module-quick-card.finance-review-entry .module-quick-card-copy strong {font-size:18px;line-height:1.4}
+.hub-finance .module-quick-card.finance-review-entry .module-quick-card-en {font-size:14px;line-height:1.4;letter-spacing:.05em}
+.hub-finance .module-quick-card.finance-review-entry .module-entry-scope {display:block;margin-top:5px;color:#526783;font-size:16px;line-height:1.45;font-weight:400;white-space:normal;overflow-wrap:anywhere}
+</style>

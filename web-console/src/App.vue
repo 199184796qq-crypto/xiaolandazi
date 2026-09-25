@@ -5,6 +5,8 @@ import RegionSelect from './components/RegionSelect.vue'
 import SystemFooter from './components/SystemFooter.vue'
 import CustomerMembershipCenter from './components/CustomerMembershipCenter.vue'
 import SystemAgentLayer from './components/SystemAgentLayer.vue'
+import TodoBadge from './components/TodoBadge.vue'
+import { startInbox, stopInbox, canUseWorkInbox } from './workInbox'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -181,13 +183,14 @@ const navSections = computed<NavSection[]>(() => {
       {
         label: '仓储与售后',
         items: [
-          navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']),
+          navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-device-products', 'resource-logistics']),
           navItem('物流与售后', '/staff/after-sales', '修', ['staff-after-sales']),
         ],
       },
       {
         label: '财务管理',
         items: [
+          navItem('邀请与推荐', '/staff/finance/invitations', '邀', ['staff-finance-invitations']),          navItem('客户收款确认', '/staff/finance/receipts', '款', ['staff-finance-receipts', 'staff-finance-customer-money']),
           navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
         ],
       },
@@ -217,37 +220,62 @@ const navSections = computed<NavSection[]>(() => {
 
   if (isInternalStaff.value) {
     const workItems: NavItem[] = []
+    const access = staffAccess.value
+    const groupCode = access?.primary_group_code || ''
+    const roleCodes = new Set(access?.role_codes || [])
+    const isPrimaryGroupManager =
+      roleCodes.has(groupCode + '_manager') ||
+      Boolean(
+        access?.primary_group_id &&
+          access.managed_group_ids?.includes(access.primary_group_id),
+      )
 
-    if (hasStaffPermission('system.architecture.view')) {
+    const addOrganization = () => {
       workItems.push(
-        navItem('系统总览', '/overview', '⌂', ['platform-overview']),
-        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+        navItem(
+          '组织架构',
+          '/staff',
+          '♜',
+          ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit'],
+        ),
       )
     }
 
-    if (
-      !hasStaffPermission('system.architecture.view') &&
-      (
-        hasStaffPermission('liveops.configure') ||
-        hasStaffPermission('liveops.view_all') ||
-        hasStaffPermission('liveops.room_quota.view')
-      )
-    ) {
+    if (groupCode === 'management') {
+      workItems.push(navItem('系统总览', '/overview', '⌂', ['platform-overview']))
+      addOrganization()
+    } else if (groupCode === 'finance') {
       workItems.push(
+        navItem('客户收款确认', '/staff/finance/receipts', '款', ['staff-finance-receipts','staff-finance-customer-money']),
+        navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
+      )
+      if (isPrimaryGroupManager) addOrganization()
+    } else if (groupCode === 'sales') {
+      if (isSales.value) {
+        workItems.push(
+          navItem('销售工作台', '/sales/workspace', '工', ['sales-workspace']),
+          navItem('意向顾客', '/sales/leads', '意', ['sales-leads']),
+          navItem('我的客户', '/sales/customers', '客', ['sales-customers']),
+          navItem('收款进度', '/sales/receipts', '款', ['sales-receipts','sales-customer-money']),
+          navItem('运维协助', '/sales/support', '助', ['sales-support']),
+          navItem('跟进与回访', '/sales/followups', '访', ['sales-followups']),
+          navItem('产品与报价', '/sales/catalog', '价', ['sales-catalog']),
+          navItem('我的业绩', '/sales/my-performance', '绩', ['sales-my-performance']),
+          navItem('邀请与推荐', '/invitations', '邀', ['invitations']),
+        )
+      } else {
+        if (hasStaffPermission('customer.view_all')) {
+          workItems.push(navItem('客户资源', '/customers', '◎', ['customers-hub', 'customers-list']))
+        }
+        if (hasStaffPermission('sales.view_all')) {
+          workItems.push(navItem('销售体系', '/sales', '◈', ['sales-hub', 'sales-team', 'sales-performance']))
+        }
+        if (isPrimaryGroupManager) addOrganization()
+      }
+    } else if (groupCode === 'live_operations') {
+      workItems.push(
+        navItem('协助工单', '/operations/support', '助', ['operations-support']),
         navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
-      )
-    }
-    if (
-      hasStaffPermission('system.architecture.view') ||
-      hasStaffPermission('commercial.marketing.view') ||
-      hasStaffPermission('commercial.membership.view') ||
-      hasStaffPermission('commercial.ai_time.view') ||
-      hasStaffPermission('commercial.time_card.view') ||
-      hasStaffPermission('commercial.device.view') ||
-      hasStaffPermission('commercial.referral.view') ||
-      hasStaffPermission('invitations.view_all')
-    ) {
-      workItems.push(
         navItem(
           '活动营销',
           '/operations/live/marketing',
@@ -268,68 +296,49 @@ const navSections = computed<NavSection[]>(() => {
           ],
         ),
       )
-    }
-    if (
-      hasStaffPermission('system.architecture.view') ||
-      hasStaffPermission('staff.group.view') ||
-      hasStaffPermission('staff.employee.view') ||
-      hasStaffPermission('staff.role.view')
-    ) {
+      if (isPrimaryGroupManager) addOrganization()
+    } else if (groupCode === 'warehouse_after_sales') {
       workItems.push(
-        navItem(
-          '组织架构',
-          '/staff',
-          '♜',
-          ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit'],
-        ),
+        navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']),
+        navItem('物流与售后', '/staff/after-sales', '修', ['staff-after-sales']),
       )
+      if (isPrimaryGroupManager) addOrganization()
+    } else {
+      if (hasStaffPermission('system.architecture.view')) {
+        workItems.push(navItem('系统总览', '/overview', '⌂', ['platform-overview']))
+      }
+      if (
+        hasStaffPermission('liveops.configure') ||
+        hasStaffPermission('liveops.view_all') ||
+        hasStaffPermission('liveops.room_quota.view')
+      ) {
+        workItems.push(navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']))
+      }
+      if (hasStaffPermission('finance.dashboard.view')) {
+        workItems.push(navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub']))
+      }
+      if (hasStaffPermission('inventory.view') || hasStaffPermission('logistics.view')) {
+        workItems.push(navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-device-products', 'resource-logistics']))
+      }
+      if (
+        hasStaffPermission('staff.group.view') ||
+        hasStaffPermission('staff.employee.view') ||
+        hasStaffPermission('staff.role.view')
+      ) {
+        addOrganization()
+      }
     }
 
-    if (isSales.value) {
-      workItems.push(
-        navItem('我的终端', '/sales/customers', '◎', ['sales-customers']),
-      )
+    if (hasStaffPermission('finance.dashboard.view') && !workItems.some((item) => item.to === '/staff/finance/receipts')) {
+      workItems.push(navItem('客户收款确认', '/staff/finance/receipts', '款', ['staff-finance-receipts', 'staff-finance-customer-money']))
     }
-    if (hasStaffPermission('customer.view_all')) {
-      workItems.push(navItem('客户资源', '/customers', '◎', ['customers-hub', 'customers-list']))
-    }
-    if (hasStaffPermission('sales.view_all')) {
-      workItems.push(navItem('销售体系', '/sales', '◈', ['sales-hub', 'sales-team', 'sales-performance']))
-    }
-    if (
-      hasStaffPermission('finance.dashboard.view') ||
-      hasStaffPermission('finance.settlement_rules.view')
-    ) {
-      workItems.push(
-        navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
-      )
-    }
-    if (hasStaffPermission('agent.view_all')) {
-      workItems.push(navItem('代理合作', '/agents', '◇', ['agents-hub', 'agents-list', 'agent-levels', 'agent-contracts', 'agent-exit']))
-    }
-
-    if (hasStaffPermission('system.settings.view')) {
-      workItems.push(navItem('系统设定', '/system/settings', '设', ['system-settings']))
-    }
-
-    if (
-      hasStaffPermission('inventory.view') ||
-      hasStaffPermission('logistics.view')
-    ) {
-      workItems.push(navItem('设备与仓储', '/resources', '◌', ['resources-hub', 'resource-devices', 'resource-inventory', 'resource-logistics']))
-    }
-    if (hasStaffPermission('inventory.after_sales.view')) {
-      workItems.push(navItem('物流与售后', '/staff/after-sales', '修', ['staff-after-sales']))
-    }
-    if (isSales.value && !hasStaffPermission('invitations.view_all')) {
-      workItems.push(
-        navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
-      )
+    if (hasStaffPermission('finance.dashboard.view')) {
+      workItems.push(navItem(workItems.some(item => item.to === '/invitations') ? '邀请与推荐（财务）' : '邀请与推荐', '/staff/finance/invitations', '邀', ['staff-finance-invitations']))
     }
 
     return [
       {
-        label: staffAccess.value?.primary_group_name || '内部员工',
+        label: access?.primary_group_name || '内部员工',
         items: workItems,
       },
     ]
@@ -341,7 +350,10 @@ const navSections = computed<NavSection[]>(() => {
       items: [
         navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
         navItem('终端商城', '/shop', '▤', ['shop']),
-        navItem('财务管理', '/finance', '¥', ['finance']),
+        navItem('我的钱包', '/finance', '¥', ['finance']),
+        navItem('收款进度', '/finance/receipts', '款', ['customer-receipts']),
+        navItem('资金记录', '/finance/records', '流', ['customer-money']),
+        navItem('申请运维协助', '/support', '助', ['customer-support']),
         navItem('AI 时长', '/resources/workspace', '时', ['resources-workspace']),
         navItem('售后维修', '/after-sales', '修', ['after-sales-portal']),
         navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
@@ -431,9 +443,13 @@ const mobileNavItems = computed<NavItem[]>(() => {
 
   if (isSales.value) {
     return [
-      navItem('终端', '/sales/customers', '◎', ['sales-customers']),
-      navItem('组织', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit']),
-      navItem('邀请', '/invitations', '↗', ['invitations']),
+      navItem('工作台', '/sales/workspace', '工', ['sales-workspace']),
+      navItem('意向', '/sales/leads', '意', ['sales-leads']),
+      navItem('客户', '/sales/customers', '客', ['sales-customers']),
+      navItem('跟进与回访', '/sales/followups', '访', ['sales-followups']),
+      navItem('报价', '/sales/catalog', '价', ['sales-catalog']),
+      navItem('业绩', '/sales/my-performance', '绩', ['sales-my-performance']),
+      navItem('邀请', '/invitations', '邀', ['invitations']),
       navItem('我的', '/personal', '♙', ['personal-center', 'account', 'settings']),
     ]
   }
@@ -676,6 +692,11 @@ async function signOut() {
     await router.replace('/login')
   }
 }
+
+watch(() => showAuthenticatedShell.value && canUseWorkInbox(actor.value?.role) && !mustChangePassword.value && !mustCompleteContact.value
+  ? JSON.stringify([actor.value?.user_id, actor.value?.role, actor.value?.tenant_id, staffAccess.value]) : '',
+  key => { if (key) startInbox(key); else stopInbox() }, { immediate: true })
+onBeforeUnmount(stopInbox)
 </script>
 
 <template>
@@ -744,11 +765,14 @@ async function signOut() {
                 <span class="nav-icon">{{ item.icon }}</span>
               </span>
               <span class="nav-item-label">{{ item.label }}</span>
+              <TodoBadge :to="item.to" />
               <span class="nav-item-arrow">›</span>
             </RouterLink>
           </div>
         </section>
       </nav>
+
+      <RouterLink v-if="canUseWorkInbox(actor?.role)" to="/work/inbox" class="nav-item work-inbox-entry"><span class="nav-icon">办</span><span class="nav-item-label">我的待办</span><TodoBadge to="/work/inbox" /></RouterLink>
 
       <section class="sidebar-personal-section">
         <RouterLink
@@ -786,7 +810,7 @@ async function signOut() {
       </div>
     </aside>
 
-    <main class="main-area">
+    <main class="main-area" :class="{'work-inbox-main': route.name === 'work-inbox'}">
       <header class="topbar global-topbar">
         <div id="app-global-breadcrumbs" class="global-topbar-navigation">
           <div class="topbar-fallback">
@@ -841,6 +865,7 @@ async function signOut() {
         :to="item.to"
       >
         <span class="mobile-nav-icon">{{ item.icon }}</span>
+        <TodoBadge :to="item.to" />
         <span>{{ item.label }}</span>
       </RouterLink>
     </nav>
@@ -995,3 +1020,23 @@ async function signOut() {
     </div>
   </Teleport>
 </template>
+<style scoped>
+/* One shared, in-flow pinned header for customers and every staff department.
+   Sticky preserves its actual height (including wrapped breadcrumbs) without
+   scroll listeners, duplicated spacers, or role-specific fixed offsets. */
+.main-area { min-width: 0; }
+.main-area > .global-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  flex-shrink: 0;
+  background: #fbfcff;
+}
+/* The sidebar is hidden at this breakpoint; don't retain its desktop gutter. */
+@media (max-width: 680px) {
+  .main-area { width: 100%; margin-left: 0; min-width: 0; }
+  .main-area > .global-topbar { flex-wrap: wrap; gap: 10px; }
+  .global-topbar-navigation { flex-basis: 100%; }
+  .topbar-actions { max-width: 100%; margin-left: auto; flex-wrap: wrap; }
+}
+</style>

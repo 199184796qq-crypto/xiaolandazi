@@ -253,10 +253,6 @@ func (s *Server) staffFinanceApproveTask(
 	if !ok {
 		return
 	}
-	if task.RequesterUserID == actor.UserID {
-		writeError(w, http.StatusConflict, "操作人与审核人必须分离，不能审核自己发起的单据")
-		return
-	}
 
 	if err := s.store.ApproveStaffFinanceTask(
 		r.Context(),
@@ -291,10 +287,6 @@ func (s *Server) staffFinanceRejectTask(
 
 	actor, _, ok := s.requireStaffPermission(w, r, permission)
 	if !ok {
-		return
-	}
-	if task.RequesterUserID == actor.UserID {
-		writeError(w, http.StatusConflict, "操作人与审核人必须分离，不能审核自己发起的单据")
 		return
 	}
 
@@ -355,8 +347,10 @@ func writeStaffFinanceOperationError(w http.ResponseWriter, err error) {
 	switch {
 	case strings.Contains(message, "insufficient"):
 		writeError(w, http.StatusConflict, "终端现金余额不足，无法退款")
-	case strings.Contains(message, "requester cannot"):
-		writeError(w, http.StatusConflict, "操作人与审核人必须分离")
+	case strings.Contains(message, "经办人与审核人必须不同"):
+		writeError(w, http.StatusConflict, err.Error())
+	case strings.Contains(message, "财务审核配置读取失败"):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case strings.Contains(message, "not pending"):
 		writeError(w, http.StatusConflict, "该审批任务已处理")
 	case strings.Contains(message, "ai time"):

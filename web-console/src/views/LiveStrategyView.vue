@@ -1,19 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
+import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import {
   activateLiveAgentConfigVersion,
-  chatLiveRoomPolicyAgent,
-  chatLiveAgent,
   createLiveAgentConfigDraft,
   getLiveAgentConfigVersions,
   getLiveAgentSettings,
   getLiveRoomPolicyContext,
-  getLiveRoomSupportAuthorizations,
-  getLiveSupportStaff,
   getRooms,
   publishLiveRoomPolicyVersion,
-  updateLiveRoomSupportAuthorizations,
   updateLiveAgentSettings,
   uploadLiveMediaAsset,
 } from '../api'
@@ -23,23 +20,18 @@ import type {
   LiveAgentSettings,
   LiveAgentSettingsInput,
   LiveRoomPolicyContext,
-  LiveSupportAuthorization,
-  LiveSupportCapability,
-  LiveSupportStaff,
   Room,
 } from '../types'
 
 const rooms = ref<Room[]>([])
 const activeRoomId = ref<number | null>(null)
 const activeMode = ref<'basic' | 'strategy' | 'anchor' | 'script' | 'voice'>('strategy')
-const input = ref('')
-const enterToSend = ref(localStorage.getItem('live-agent-enter-to-send') !== 'false')
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
   role_name: '直播策略与场控 Agent',
   self_introduction: '我是小伴直播教练，是你的直播策略与场控 Agent。',
-  mission: '我负责直播策略调教、主播训练、固定话术、声音配置和现场场控协作。终端用户的调整只写入当前直播间第3层策略，不修改系统层和行业层。',
+  mission: '我负责直播策略调教、主播训练、固定话术、声音配置和现场场控协作。终端用户的策略调整只作用于当前直播间用户层，不修改规则层和行业层。',
   greeting: '你好，我是小伴直播教练。你可以直接告诉我想调整主播表达、固定话术、声音或直播策略。',
 }
 const settings = ref<LiveAgentSettings>({ ...defaultSettings })
@@ -55,23 +47,12 @@ const settingsError = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const roomPolicyContext = ref<LiveRoomPolicyContext | null>(null)
 const selectedVersionId = ref<number | null>(null)
-const sending = ref(false)
 const uploading = ref(false)
 const documentInput = ref<HTMLInputElement | null>(null)
 const audioInput = ref<HTMLInputElement | null>(null)
-const referenceAudioInput = ref<HTMLInputElement | null>(null)
 const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
-const supportStaff = ref<LiveSupportStaff[]>([])
-const supportAuthorizations = ref<LiveSupportAuthorization[]>([])
-const supportSavingStaffId = ref<number | null>(null)
-const supportError = ref('')
-const supportCapabilityOptions: Array<{ code: LiveSupportCapability; label: string }> = [
-  { code: 'l3_policy', label: 'L3策略' },
-  { code: 'anchor_training', label: '主播训练' },
-  { code: 'voice_clone', label: '声音复刻' },
-]
 const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
 const activeConfig = computed(
   () => configVersions.value.find((item) => item.lifecycle_status === 'active') || null,
@@ -90,11 +71,19 @@ const roomPolicyActive = computed(
   () => roomPolicyContext.value?.l3_versions.find((item) => item.lifecycle_status === 'active') || null,
 )
 
+const activeModeLabel = computed(() => {
+  if (activeMode.value === 'basic') return '基础设置'
+  if (activeMode.value === 'strategy') return '用户层策略'
+  if (activeMode.value === 'anchor') return '主播训练'
+  if (activeMode.value === 'script') return '固定话术'
+  return '声音配置'
+})
+
 const versionLabel = computed(() => {
   if (activeMode.value === 'strategy') {
-    if (roomPolicyDraft.value) return 'L3 草稿 V' + roomPolicyDraft.value.version_no
-    if (roomPolicyActive.value) return 'L3 已发布 V' + roomPolicyActive.value.version_no
-    return 'L3 未版本化'
+    if (roomPolicyDraft.value) return '用户层草稿 V' + roomPolicyDraft.value.version_no
+    if (roomPolicyActive.value) return '用户层已发布 V' + roomPolicyActive.value.version_no
+    return '用户层未版本化'
   }
   const latest = latestConfig.value
   if (!latest) return '未版本化'
@@ -113,84 +102,6 @@ function settingsToInput(value: LiveAgentSettings): LiveAgentSettingsInput {
   }
 }
 
-async function loadSupportStaff() {
-  try {
-    const result = await getLiveSupportStaff()
-    supportStaff.value = result.items
-  } catch (err) {
-    supportError.value = err instanceof Error ? err.message : '读取营销运维人员失败'
-  }
-}
-
-async function refreshSupportAuthorizations() {
-  const roomId = activeRoomId.value
-  if (!roomId) {
-    supportAuthorizations.value = []
-    return
-  }
-  try {
-    const result = await getLiveRoomSupportAuthorizations(roomId)
-    supportAuthorizations.value = result.items
-    supportError.value = ''
-  } catch (err) {
-    supportError.value = err instanceof Error ? err.message : '读取运维授权失败'
-  }
-}
-
-function staffSupportCapabilities(staffUserId: number) {
-  return new Set(
-    supportAuthorizations.value
-      .filter((item) => item.staff_user_id === staffUserId && item.status === 'active')
-      .map((item) => item.capability as LiveSupportCapability),
-  )
-}
-
-function hasStaffSupportCapability(staffUserId: number, capability: LiveSupportCapability) {
-  return staffSupportCapabilities(staffUserId).has(capability)
-}
-
-function canAuthorizeSupportCapability(staff: LiveSupportStaff, capability: LiveSupportCapability) {
-  return staff.allowed_capabilities?.includes(capability) === true
-}
-
-async function toggleStaffSupportCapability(
-  staff: LiveSupportStaff,
-  capability: LiveSupportCapability,
-  event: Event,
-) {
-  const roomId = activeRoomId.value
-  if (!roomId || supportSavingStaffId.value !== null) return
-  const checkbox = event.target as HTMLInputElement
-  const checked = checkbox.checked
-  if (checked && !canAuthorizeSupportCapability(staff, capability)) {
-    checkbox.checked = false
-    supportError.value = staff.l3_restriction_reason || '该员工不具备这项协助能力'
-    return
-  }
-  const capabilities = new Set(
-    Array.from(staffSupportCapabilities(staff.user_id))
-      .filter((item) => canAuthorizeSupportCapability(staff, item)),
-  )
-  if (checked) capabilities.add(capability)
-  else capabilities.delete(capability)
-
-  supportSavingStaffId.value = staff.user_id
-  supportError.value = ''
-  try {
-    const result = await updateLiveRoomSupportAuthorizations(
-      roomId,
-      staff.user_id,
-      Array.from(capabilities),
-    )
-    supportAuthorizations.value = result.items
-  } catch (err) {
-    supportError.value = err instanceof Error ? err.message : '保存运维授权失败'
-    checkbox.checked = hasStaffSupportCapability(staff.user_id, capability)
-  } finally {
-    supportSavingStaffId.value = null
-  }
-}
-
 async function refreshRoomPolicy() {
   const roomId = activeRoomId.value
   if (!roomId) {
@@ -201,7 +112,7 @@ async function refreshRoomPolicy() {
     roomPolicyContext.value = await getLiveRoomPolicyContext(roomId)
   } catch (err) {
     if (!settingsError.value) {
-      settingsError.value = err instanceof Error ? err.message : '读取直播间 L3 策略失败'
+      settingsError.value = err instanceof Error ? err.message : '读取直播间用户层策略失败'
     }
   }
 }
@@ -279,25 +190,6 @@ function roomStatusLabel(status: string) {
   return status || '未知'
 }
 
-function setEnterToSend(event: Event) {
-  const value = (event.target as HTMLInputElement).checked
-  enterToSend.value = value
-  localStorage.setItem('live-agent-enter-to-send', String(value))
-}
-
-function handleInputKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Enter' || event.isComposing) return
-  if (enterToSend.value && !event.shiftKey) {
-    event.preventDefault()
-    send()
-    return
-  }
-  if (!enterToSend.value && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault()
-    send()
-  }
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   return { ...(value as Record<string, unknown>) }
@@ -329,49 +221,6 @@ function roomScopedRecord(
   }
 }
 
-async function persistInstruction(value: string) {
-  const roomId = activeRoomId.value
-  if (!roomId || activeMode.value === 'basic') return null
-  const now = new Date().toISOString()
-  const latest = latestConfig.value
-  const payload: LiveAgentConfigInput = {}
-
-  if (activeMode.value === 'strategy') {
-    payload.layer3 = roomScopedRecord(latest?.layer3, roomId, 'strategy_entries', {
-      text: value,
-      created_at: now,
-    })
-  } else if (activeMode.value === 'script') {
-    const normalized = value.replace(/\s/g, '')
-    const executionMode =
-      normalized.includes('100%原话') ||
-      normalized.includes('照原文') ||
-      normalized.includes('原话锁定')
-        ? 'exact'
-        : 'intent'
-    payload.layer3 = roomScopedRecord(latest?.layer3, roomId, 'fixed_scripts', {
-      text: value,
-      execution_mode: executionMode,
-      created_at: now,
-    })
-  } else if (activeMode.value === 'anchor') {
-    payload.style_profile = roomScopedRecord(latest?.style_profile, roomId, 'training_entries', {
-      text: value,
-      created_at: now,
-    })
-  } else if (activeMode.value === 'voice') {
-    payload.speech_config = roomScopedRecord(latest?.speech_config, roomId, 'instruction_entries', {
-      text: value,
-      created_at: now,
-    })
-  }
-
-  const draft = await createLiveAgentConfigDraft(payload)
-  configVersions.value = [draft, ...configVersions.value.filter((item) => item.id !== draft.id)]
-  selectedVersionId.value = draft.id
-  return draft
-}
-
 async function publishLatestDraft() {
   if (activeMode.value === 'strategy') {
     const draft = roomPolicyDraft.value
@@ -384,10 +233,10 @@ async function publishLatestDraft() {
       await refreshRoomPolicy()
       messages.value.push({
         role: 'agent',
-        text: 'L3 草稿 V' + draft.version_no + ' 已发布，当前直播间后续运行会按新的有效策略加载。',
+        text: '用户层草稿 V' + draft.version_no + ' 已发布，当前直播间后续运行会按新的有效策略加载。',
       })
     } catch (err) {
-      settingsError.value = err instanceof Error ? err.message : '发布 L3 策略失败'
+      settingsError.value = err instanceof Error ? err.message : '发布用户层策略失败'
     } finally {
       settingsSaving.value = false
     }
@@ -472,73 +321,26 @@ async function handleMediaUpload(event: Event, assetType: 'document' | 'audio' |
   }
 }
 
-async function send() {
-  const value = input.value.trim()
-  const roomId = activeRoomId.value
-  if (!value || sending.value) return
-  if (activeMode.value === 'basic') {
-    messages.value.push({
-      role: 'agent',
-      text: '基础身份请直接在上方“基础设置”里修改并保存。',
-    })
-    return
-  }
-  if (!roomId) {
-    settingsError.value = '请先选择直播间'
-    return
-  }
-
-  const history = messages.value.slice(-10)
-  messages.value.push({ role: 'user', text: value })
-  input.value = ''
-  sending.value = true
-  settingsError.value = ''
-  try {
-    if (activeMode.value === 'strategy') {
-      const response = await chatLiveRoomPolicyAgent(roomId, {
-        message: value,
-        history,
-      })
-      messages.value.push({
-        role: 'agent',
-        text: response.draft
-          ? response.reply + '\n\n已保存为 L3 草稿 V' + response.draft.version_no + '，发布后正式生效。'
-          : response.reply,
-      })
-      if (response.draft) await refreshRoomPolicy()
-    } else {
-      const draft = await persistInstruction(value)
-      const response = await chatLiveAgent(roomId, {
-        message: value,
-        history,
-      })
-      messages.value.push({
-        role: 'agent',
-        text: draft
-          ? response.reply + '\n\n已保存为草稿 V' + draft.version_no + '，发布后正式生效。'
-          : response.reply,
-      })
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Agent 处理失败'
-    settingsError.value = message
-    messages.value.push({ role: 'agent', text: '处理失败：' + message })
-  } finally {
-    sending.value = false
-  }
+function notifySystemAgentContext() {
+  window.dispatchEvent(
+    new CustomEvent('system-agent-live-strategy-context', {
+      detail: {
+        room_id: activeRoomId.value || 0,
+        mode: activeMode.value,
+      },
+    }),
+  )
 }
 
 watch(activeRoomId, () => {
   void refreshRoomPolicy()
-  void refreshSupportAuthorizations()
 })
 
 watch(
   activeRoomId,
   (roomId) => {
-    if (roomId) {
-      window.localStorage.setItem('system-agent-live-room-id', String(roomId))
-    }
+    if (roomId) window.localStorage.setItem('system-agent-live-room-id', String(roomId))
+    notifySystemAgentContext()
   },
   { immediate: true },
 )
@@ -547,13 +349,13 @@ watch(
   activeMode,
   (mode) => {
     window.localStorage.setItem('system-agent-live-mode', mode)
+    notifySystemAgentContext()
   },
   { immediate: true },
 )
 
 onMounted(async () => {
-  await Promise.all([loadSupportStaff(), loadAgentSettings()])
-  await refreshSupportAuthorizations()
+  await loadAgentSettings()
 })
 </script>
 
@@ -582,36 +384,7 @@ onMounted(async () => {
           </span>
         </button>
         <section class="live-support-authorize-panel">
-          <div class="live-support-authorize-head">
-            <span class="section-kicker">OPERATIONS SUPPORT</span>
-            <strong>授权运维协助</strong>
-            <small>只对当前直播间生效，可随时取消。</small>
-          </div>
-          <p v-if="supportError" class="inline-error">{{ supportError }}</p>
-          <div v-if="supportStaff.length" class="live-support-staff-list">
-            <article v-for="staff in supportStaff" :key="staff.user_id" class="live-support-staff-card">
-              <div>
-                <strong>{{ staff.display_name || staff.username }}</strong>
-                <small>{{ staff.username }}</small>
-                <small v-if="staff.l3_restriction_reason">{{ staff.l3_restriction_reason }}</small>
-              </div>
-              <label
-                v-for="option in supportCapabilityOptions"
-                :key="option.code"
-                class="live-support-capability-toggle"
-              >
-                <input
-                  type="checkbox"
-                  :checked="hasStaffSupportCapability(staff.user_id, option.code)"
-                  :disabled="supportSavingStaffId !== null || (!canAuthorizeSupportCapability(staff, option.code) && !hasStaffSupportCapability(staff.user_id, option.code))"
-                  :title="option.code === 'l3_policy' ? staff.l3_restriction_reason : undefined"
-                  @change="toggleStaffSupportCapability(staff, option.code, $event)"
-                />
-                <span>{{ option.label }}</span>
-              </label>
-            </article>
-          </div>
-          <div v-else class="empty-state">暂无可授权的营销运维人员</div>
+          <SupportAssistantPicker :room-id="activeRoomId" />
         </section>
       </aside>
 
@@ -620,7 +393,7 @@ onMounted(async () => {
           <div>
             <span class="section-kicker">{{ settings.role_name }}</span>
             <h2>{{ settings.display_name }}</h2>
-            <p>当前配置：{{ activeRoom?.name }} · 所有用户策略写入当前直播间第 3 层</p>
+            <p>当前直播间：{{ activeRoom?.name || '未选择' }} · {{ activeModeLabel }}</p>
           </div>
           <div class="strategy-version-actions">
             <span class="strategy-version">{{ versionLabel }}</span>
@@ -740,21 +513,20 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section v-show="activeMode !== 'basic'" class="strategy-chat">
-          <div v-if="settingsError" class="inline-error strategy-inline-error">
-            {{ settingsError }}
-          </div>
-          <article
-            v-for="(message, index) in messages"
-            :key="index"
-            :class="['strategy-message', message.role]"
-          >
-            <strong>{{ message.role === 'agent' ? settings.display_name : '我' }}</strong>
-            <p>{{ message.text }}</p>
-          </article>
-        </section>
+        <LiveVoiceCenter
+          v-if="activeMode === 'voice'"
+          :room-id="activeRoomId"
+          :room-name="activeRoom?.name"
+          @changed="refreshAgentVersions"
+        />
 
-        <footer v-if="activeMode !== 'basic'" class="strategy-composer">
+        <section v-else-if="activeMode !== 'basic'" class="strategy-agent-workspace">
+          <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
+          <div class="strategy-agent-context-card">
+            <span class="section-kicker">CURRENT CONTEXT</span>
+            <strong>{{ activeModeLabel }}</strong>
+            <small>使用页面底部小蓝输入框进行调整</small>
+          </div>
           <div class="strategy-upload-row">
             <input
               ref="documentInput"
@@ -770,39 +542,11 @@ onMounted(async () => {
               accept="audio/*"
               @change="handleMediaUpload($event, 'audio')"
             />
-            <input
-              ref="referenceAudioInput"
-              type="file"
-              hidden
-              accept="audio/*"
-              @change="handleMediaUpload($event, 'voice_sample')"
-            />
             <button type="button" :disabled="uploading" @click="documentInput?.click()">＋ 文案</button>
             <button type="button" :disabled="uploading" @click="audioInput?.click()">＋ 录音</button>
-            <button type="button" :disabled="uploading" @click="referenceAudioInput?.click()">＋ 参考音</button>
-            <span>{{ uploading ? '素材上传中…' : '配置写入 MySQL · 媒体走统一存储' }}</span>
-            <label class="enter-send-toggle">
-              <input
-                type="checkbox"
-                :checked="enterToSend"
-                @change="setEnterToSend"
-              />
-              Enter 发送
-            </label>
+            <span v-if="uploading">素材上传中…</span>
           </div>
-          <div class="strategy-input-row">
-            <textarea
-              v-model="input"
-              rows="3"
-              placeholder="告诉 Agent 你想怎么调整这个直播间……"
-              :disabled="sending"
-              @keydown="handleInputKeydown"
-            ></textarea>
-            <button class="primary-button" type="button" :disabled="sending" @click="send">
-              {{ sending ? '处理中…' : '发送' }}
-            </button>
-          </div>
-        </footer>
+        </section>
       </main>
     </section>
   </div>

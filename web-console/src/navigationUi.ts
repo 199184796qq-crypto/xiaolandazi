@@ -24,6 +24,11 @@ export interface AgentNavigationTarget extends NavigationLink {
 
 
 function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null | undefined) {
+  if (to === '/staff/finance/invitations') return hasStaffPermission(bootstrap, 'finance.dashboard.view')
+  if (to === '/operations/live/customer-handoffs') {
+    return hasStaffPermission(bootstrap, 'liveops.configure') || hasStaffPermission(bootstrap, 'liveops.ticket.manage')
+  }
+  if (to === '/sales/handovers') return hasStaffPermission(bootstrap, 'sales.assignment.manage')
   if (key === 'staff' && to.startsWith('/staff/approvals')) {
     return hasStaffPermission(bootstrap, 'finance.dashboard.view')
   }
@@ -120,7 +125,10 @@ function customerEntries(): NavigationLink[] {
   return [
     { title: '直播运维', to: '/', icon: '播' },
     { title: '终端商城', to: '/shop', icon: '商' },
-    { title: '财务管理', to: '/finance', icon: '财' },
+    { title: '我的钱包', to: '/finance', icon: '财' },
+    { title: '资金记录', to: '/finance/records', icon: '流' },
+    { title: '收款进度', to: '/finance/receipts', icon: '款' },
+    { title: '运维协助', to: '/support', icon: '助' },
     { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
   ]
@@ -137,84 +145,96 @@ function agentEntries(): NavigationLink[] {
 
 function salesEntries(): NavigationLink[] {
   return [
-    { title: '我的终端', to: '/sales/customers', icon: '客' },
-    { title: '组织架构', to: '/staff', icon: '部' },
+    { title: '销售工作台', to: '/sales/workspace', icon: '工' },
+    { title: '意向顾客', to: '/sales/leads', icon: '意' },
+    { title: '我的客户', to: '/sales/customers', icon: '客' },
+    { title: '收款进度', to: '/sales/receipts', icon: '款' },
+    { title: '运维协助', to: '/sales/support', icon: '助' },
+    { title: '跟进与回访', to: '/sales/followups', icon: '访' },
+    { title: '产品与报价', to: '/sales/catalog', icon: '价' },
+    { title: '我的业绩', to: '/sales/my-performance', icon: '绩' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
   ]
 }
 
 function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[] {
   const entries: NavigationLink[] = []
+  const access = bootstrap?.staff_access
+  const groupCode = access?.primary_group_code || ''
+  const roleCodes = new Set(access?.role_codes || [])
+  const isPrimaryGroupManager =
+    roleCodes.has(groupCode + '_manager') ||
+    Boolean(
+      access?.primary_group_id &&
+        access.managed_group_ids?.includes(access.primary_group_id),
+    )
+
+  if (groupCode === 'management') {
+    return [
+      { title: '系统总览', to: '/overview', icon: '总' },
+      { title: '组织架构', to: '/staff', icon: '部' },
+    ]
+  }
+
+  if (groupCode === 'finance') {
+    if (hasStaffPermission(bootstrap, 'finance.dashboard.view')) {
+      entries.push({ title: '客户收款确认', to: '/staff/finance/receipts', icon: '款' })
+    }
+    entries.push({ title: '财务与结算', to: '/staff/finance', icon: '财' })
+    if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
+    return entries
+  }
+
+  if (groupCode === 'sales') {
+    if (hasStaffPermission(bootstrap, 'customer.view_all')) {
+      entries.push({ title: '客户资源', to: '/customers', icon: '客' })
+    }
+    if (hasStaffPermission(bootstrap, 'sales.view_all')) {
+      entries.push({ title: '销售体系', to: '/sales', icon: '销' })
+    }
+    if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
+    return entries
+  }
+
+  if (groupCode === 'live_operations') {
+    entries.push(
+      { title: '直播运维', to: '/operations/live', icon: '播' },
+      { title: '活动营销', to: '/operations/live/marketing', icon: '营' },
+    )
+    if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
+    return entries
+  }
+
+  if (groupCode === 'warehouse_after_sales') {
+    entries.push(
+      { title: '设备与仓储', to: '/resources', icon: '库' },
+      { title: '物流与售后', to: '/staff/after-sales', icon: '修' },
+    )
+    if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
+    return entries
+  }
 
   if (hasStaffPermission(bootstrap, 'system.architecture.view')) {
-    entries.push(
-      { title: '系统总览', to: '/overview', icon: '总' },
-    )
-  }
-  if (hasStaffPermission(bootstrap, 'system.settings.view')) {
-    entries.push({ title: '系统设定', to: '/system/settings', icon: '设' })
+    entries.push({ title: '系统总览', to: '/overview', icon: '总' })
   }
   if (
-    hasStaffPermission(bootstrap, 'system.architecture.view') ||
     hasStaffPermission(bootstrap, 'liveops.configure') ||
-    hasStaffPermission(bootstrap, 'liveops.view_all') ||
-    hasStaffPermission(bootstrap, 'liveops.room_quota.view')
+    hasStaffPermission(bootstrap, 'liveops.view_all')
   ) {
     entries.push({ title: '直播运维', to: '/operations/live', icon: '播' })
   }
-  if (
-    hasStaffPermission(bootstrap, 'system.architecture.view') ||
-    hasStaffPermission(bootstrap, 'commercial.marketing.view') ||
-    hasStaffPermission(bootstrap, 'commercial.membership.view') ||
-    hasStaffPermission(bootstrap, 'commercial.ai_time.view') ||
-    hasStaffPermission(bootstrap, 'commercial.time_card.view') ||
-    hasStaffPermission(bootstrap, 'commercial.device.view') ||
-    hasStaffPermission(bootstrap, 'commercial.referral.view') ||
-    hasStaffPermission(bootstrap, 'invitations.view_all')
-  ) {
-    entries.push({ title: '活动营销', to: '/operations/live/marketing', icon: '营' })
+  if (hasStaffPermission(bootstrap, 'finance.dashboard.view')) {
+    entries.push({ title: '财务与结算', to: '/staff/finance', icon: '财' })
   }
-
+  if (hasStaffPermission(bootstrap, 'inventory.view') || hasStaffPermission(bootstrap, 'logistics.view')) {
+    entries.push({ title: '设备与仓储', to: '/resources', icon: '库' })
+  }
   if (
-    hasStaffPermission(bootstrap, 'system.architecture.view') ||
     hasStaffPermission(bootstrap, 'staff.group.view') ||
     hasStaffPermission(bootstrap, 'staff.employee.view') ||
     hasStaffPermission(bootstrap, 'staff.role.view')
   ) {
     entries.push({ title: '组织架构', to: '/staff', icon: '部' })
-  }
-
-  if (hasStaffPermission(bootstrap, 'customer.view_all')) {
-    entries.push({ title: '客户资源', to: '/customers', icon: '客' })
-  }
-  if (hasStaffPermission(bootstrap, 'sales.view_all')) {
-    entries.push({ title: '销售体系', to: '/sales', icon: '销' })
-  }
-  if (
-    hasStaffPermission(bootstrap, 'finance.dashboard.view') ||
-    hasStaffPermission(bootstrap, 'finance.settlement_rules.view')
-  ) {
-    entries.push({ title: '财务与结算', to: '/staff/finance', icon: '财' })
-  }
-  if (hasStaffPermission(bootstrap, 'agent.view_all')) {
-    entries.push({ title: '代理合作', to: '/agents', icon: '代' })
-  }
-  if (
-    hasStaffPermission(bootstrap, 'inventory.view') ||
-    hasStaffPermission(bootstrap, 'logistics.view')
-  ) {
-    entries.push({
-      title: '设备与仓储',
-      to: '/resources',
-      icon: '库',
-    })
-  }
-  if (hasStaffPermission(bootstrap, 'inventory.after_sales.view')) {
-    entries.push({
-      title: '物流与售后',
-      to: '/staff/after-sales',
-      icon: '修',
-    })
   }
 
   return entries
@@ -252,7 +272,7 @@ function rootForWorkspace(
   if (key === 'workspace-sales') {
     return {
       title: '销售工作台',
-      to: '/sales/customers',
+      to: '/sales/workspace',
       kicker: 'SALES CONSOLE',
       entries: salesEntries(),
     }
@@ -321,6 +341,10 @@ export function resolveAgentNavigationTargets(
       icon,
       section,
     })
+  }
+
+  if (['platform_admin','staff','sales_staff'].includes(bootstrap.actor.role) && hasStaffPermission(bootstrap,'finance.dashboard.view')) {
+    add('邀请与推荐（财务）', '/staff/finance/invitations', '邀', '财务与结算')
   }
 
   const workspace = resolveNavigationContext('workspace-auto', bootstrap)

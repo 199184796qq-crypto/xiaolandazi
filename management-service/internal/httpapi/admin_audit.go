@@ -94,6 +94,31 @@ func isMutationMethod(method string) bool {
 }
 
 func auditAction(method string, path string) string {
+	if isMutationMethod(method) {
+		switch {
+		case strings.HasPrefix(path, "/api/v1/customer-business/receipts"):
+			return "finance.customer_receipt.mutate"
+		case strings.HasPrefix(path, "/api/v1/service/tickets"):
+			return "service.ticket.mutate"
+		case path == "/api/v1/sales/leads":
+			return "sales.lead.create"
+		case strings.HasPrefix(path, "/api/v1/sales/leads/"):
+			if strings.HasSuffix(path, "/convert") {
+				return "sales.lead.convert"
+			}
+			if strings.HasSuffix(path, "/lost") {
+				return "sales.lead.lost"
+			}
+			if strings.HasSuffix(path, "/activities") {
+				return "sales.lead.activity"
+			}
+			return "sales.lead.update"
+		case strings.HasPrefix(path, "/api/v1/admin/sales/") && strings.HasSuffix(path, "/handover"):
+			return "sales.portfolio.handover"
+		case strings.HasPrefix(path, "/api/v1/liveops/customer-handoffs/"):
+			return "liveops.handoff.update"
+		}
+	}
 	switch {
 	case method == http.MethodPost &&
 		path == "/api/v1/auth/change-password":
@@ -139,6 +164,10 @@ func auditAction(method string, path string) string {
 		strings.HasPrefix(path, "/api/v1/agent/customers/") &&
 		strings.HasSuffix(path, "/resources/allocate"):
 		return "agent.customer.resource_allocate"
+	case method == http.MethodPatch &&
+		strings.HasPrefix(path, "/api/v1/admin/customers/") &&
+		strings.HasSuffix(path, "/cooperation"):
+		return "customer.cooperation_update"
 	case method == http.MethodPost &&
 		strings.HasPrefix(path, "/api/v1/admin/customers/") &&
 		strings.HasSuffix(path, "/reset-password"):
@@ -165,6 +194,10 @@ func auditAction(method string, path string) string {
 		strings.HasPrefix(path, "/api/v1/staff/employees/") &&
 		strings.HasSuffix(path, "/disable"):
 		return "staff.employee.disable"
+	case method == http.MethodPost &&
+		strings.HasPrefix(path, "/api/v1/staff/employees/") &&
+		strings.HasSuffix(path, "/reset-password"):
+		return "staff.employee.password_reset"
 	case method == http.MethodPut &&
 		strings.HasPrefix(path, "/api/v1/staff/employees/") &&
 		strings.HasSuffix(path, "/roles"):
@@ -213,7 +246,18 @@ func (s *Server) fillAuditTarget(
 		64,
 	)
 	if err != nil || userID <= 0 {
-		return
+		tenantID, tenantErr := strconv.ParseInt(
+			r.PathValue("tenantID"),
+			10,
+			64,
+		)
+		if tenantErr != nil || tenantID <= 0 {
+			return
+		}
+		userID, err = s.store.GetCustomerUserIDByTenantID(r.Context(), tenantID)
+		if err != nil {
+			return
+		}
 	}
 
 	entry.TargetUserID = userID

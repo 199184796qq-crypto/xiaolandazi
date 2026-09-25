@@ -2,6 +2,7 @@
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   approveStaffFinanceTask,
   createStaffFinanceRecharge,
@@ -12,6 +13,7 @@ import {
   rejectStaffFinanceTask,
 } from '../api'
 import { session } from '../session'
+import { useFinanceReviewPolicy } from '../financeReviewPolicy'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import type {
@@ -42,7 +44,8 @@ const paymentMethod = ref('manual')
 const submitting = ref(false)
 const reviewingTaskId = ref<number | null>(null)
 const approvalKeyword = ref('')
-const approvalType = ref<'all' | ApprovalType>('all')
+const route = useRoute()
+const approvalType = ref<'all' | ApprovalType>(route.query.type === 'reward' ? 'reward' : 'all')
 const approvalPage = ref(1)
 const approvalPageSize = 20
 const customerSearch = ref('')
@@ -61,8 +64,9 @@ const showAccounts = computed(() => props.focus === 'accounts')
 const showApprovals = computed(() => props.focus === 'approvals')
 const showLedger = computed(() => props.focus === 'ledger')
 const showHistory = computed(() => props.focus === 'history')
-const pageTitle = computed(() => ({ accounts: '终端账户', approvals: '财务待审核', ledger: '钱包流水', history: '财务操作记录' }[props.focus]))
+const pageTitle = computed(() => ({ accounts: '终端账户', approvals: '资金与权益审批', ledger: '钱包流水', history: '财务操作记录' }[props.focus]))
 const currentUserId = computed(() => session.bootstrap?.actor.user_id ?? 0)
+const { policyReady, policyError, requireDistinctReviewer, refreshPolicy } = useFinanceReviewPolicy(computed(() => Boolean(session.bootstrap?.actor)))
 
 function hasPermission(code: string) {
   return Boolean(
@@ -181,7 +185,8 @@ function taskStatusClass(value: string) {
 }
 
 function canApproveTask(item: StaffFinanceTaskSummary) {
-  if (item.requester_user_id === currentUserId.value) return false
+  if (!policyReady.value) return false
+  if (requireDistinctReviewer.value && item.requester_user_id === currentUserId.value) return false
   if (item.operation_code === 'finance.recharge') {
     return hasPermission('finance.recharge.approve')
   }
@@ -413,6 +418,12 @@ onMounted(async () => {
       </button>
     </section>
 
+    <aside v-if="showApprovals" class="receipt-review-shortcut" aria-label="资金与权益审批范围及客户收款入口">
+      <div><strong>这里审批内部操作申请</strong><p>处理员工发起的充值、退款、奖励和 AI 时长申请。</p></div>
+      <RouterLink to="/staff/finance/receipts">进入客户收款确认</RouterLink>
+    </aside>
+
+    <p v-if="showApprovals && policyError" class="finance-policy-notice" role="alert">{{ policyError }} <button type="button" @click="refreshPolicy">重试读取规则</button></p>
     <p v-if="error" class="auth-error">{{ error }}</p>
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
@@ -503,7 +514,6 @@ onMounted(async () => {
               <span class="section-kicker">OPERATIONS</span>
               <h3>财务操作</h3>
             </div>
-            <span>所有操作写审计与钱包流水</span>
           </div>
 
           <div class="finance-action-buttons">
@@ -535,40 +545,13 @@ onMounted(async () => {
         </section>
 
         <template v-if="showApprovals">
-          <section class="finance-approval-metrics">
-            <article>
-              <span>待审核总数</span>
-              <strong>{{ pendingTasks.length }}</strong>
-              <small>全部未处理财务申请</small>
-            </article>
-            <article>
-              <span>充值审核</span>
-              <strong>{{ approvalRechargeCount }}</strong>
-              <small>充值申请</small>
-            </article>
-            <article>
-              <span>退款审核</span>
-              <strong>{{ approvalRefundCount }}</strong>
-              <small>退款申请</small>
-            </article>
-            <article>
-              <span>奖励审核</span>
-              <strong>{{ approvalRewardCount }}</strong>
-              <small>奖励发放申请</small>
-            </article>
-            <article>
-              <span>AI 时长审核</span>
-              <strong>{{ approvalAITimeCount }}</strong>
-              <small>营销运维增加时长申请</small>
-            </article>
-          </section>
 
           <section class="settings-card finance-approval-card finance-approval-table-card">
             <div class="settings-card-header finance-approval-header">
               <div>
                 <span class="section-kicker">APPROVALS</span>
                 <h3>待审核财务申请</h3>
-                <small>审核通过后立即执行并写入对应资金或 AI 时长流水；发起人与审核人必须分离。</small>
+                <small>审核通过后立即执行并写入对应资金或 AI 时长流水。</small>
               </div>
               <span>{{ filteredPendingTasks.length }} / {{ pendingTasks.length }} 条</span>
             </div>
@@ -646,7 +629,7 @@ onMounted(async () => {
                         </button>
                       </div>
                       <span v-else class="finance-review-hint">
-                        {{ item.requester_user_id === currentUserId ? '本人发起，等待他人审核' : '无审核权限' }}
+                        {{ !policyReady ? '审核规则未就绪，请刷新' : requireDistinctReviewer && item.requester_user_id === currentUserId ? '当前强制分人审核' : '无审核权限' }}
                       </span>
                     </td>
                   </tr>
@@ -881,3 +864,10 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.receipt-review-shortcut {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;padding:20px;margin-bottom:20px;border:1px solid #c7ddff;border-radius:16px;background:#f4f8ff;font-size:16px;color:#315780}
+.receipt-review-shortcut p {margin:6px 0 0;font-size:16px}
+.receipt-review-shortcut a {display:inline-flex;align-items:center;min-height:44px;padding:10px 18px;border:1px solid #8eb8ff;border-radius:12px;background:#edf5ff;color:#285db5;font-size:16px;text-decoration:none;font-weight:650}
+.receipt-review-shortcut a:hover,.receipt-review-shortcut a:focus-visible {outline:none;border-color:#5595ff;box-shadow:0 0 0 3px #4285ff22,0 6px 20px #3388ff2b}
+</style>

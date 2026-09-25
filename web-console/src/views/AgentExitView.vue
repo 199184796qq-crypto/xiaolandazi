@@ -218,38 +218,6 @@ onMounted(load)
     <div v-if="loading || checking" class="panel-loading">正在检查退出条件...</div>
 
     <template v-else-if="check">
-      <section class="module-hub-metrics-v2">
-        <article class="module-hub-metric-v2" :class="check.active_device_count ? 'tone-warning' : 'tone-success'">
-          <span>未清设备</span>
-          <strong>{{ check.active_device_count }}</strong>
-          <small>代理名下非报废设备</small>
-        </article>
-        <article class="module-hub-metric-v2" :class="check.open_rma_count ? 'tone-warning' : 'tone-success'">
-          <span>未结售后</span>
-          <strong>{{ check.open_rma_count }}</strong>
-          <small>处理中售后单</small>
-        </article>
-        <article class="module-hub-metric-v2" :class="check.unsettled_earning_count ? 'tone-warning' : 'tone-success'">
-          <span>未结收益</span>
-          <strong>{{ money(check.unsettled_earning_amount_cents) }}</strong>
-          <small>{{ check.unsettled_earning_count }} 笔待处理</small>
-        </article>
-        <article class="module-hub-metric-v2" :class="check.open_settlement_batch_count ? 'tone-warning' : 'tone-success'">
-          <span>未完结批次</span>
-          <strong>{{ check.open_settlement_batch_count }}</strong>
-          <small>待审核或待支付</small>
-        </article>
-        <article class="module-hub-metric-v2" :class="check.nonzero_resource_account_count ? 'tone-warning' : 'tone-success'">
-          <span>未清资源账户</span>
-          <strong>{{ check.nonzero_resource_account_count }}</strong>
-          <small>余额或预留量需先清零</small>
-        </article>
-        <article class="module-hub-metric-v2 tone-neutral">
-          <span>在服终端</span>
-          <strong>{{ check.active_customer_count }}</strong>
-          <small>退出完成时自动归还平台</small>
-        </article>
-      </section>
 
       <section
         class="agent-exit-result"

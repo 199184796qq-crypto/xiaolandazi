@@ -19,4 +19,4 @@ Start-ScheduledTask -TaskName $taskName
 Set-Content -LiteralPath $ModeFile -Value 'supervised' -Encoding ascii
 
 Write-Host '[OK] Supervised mode active.'
-Write-Host '     Go Supervisor owns Web, Management and Core health/restart.'
+Write-Host '     Go Supervisor owns Web, Customer Mobile, Sales Mobile, PC Audio Receiver, Management, Core and Audio health/restart.'

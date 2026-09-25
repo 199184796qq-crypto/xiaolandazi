@@ -26,8 +26,10 @@ const props = withDefaults(
 
 interface EditorRule {
   event_type: string
+  reward_mode: 'fixed_amount' | 'percent_paid_amount'
   value: number
   minimum_yuan: number
+  product_ids_text: string
   refund_reversal: boolean
   enabled: boolean
 }
@@ -102,9 +104,9 @@ const sortOptions = [
 const eventOptions = computed(() => {
   if (props.mode === 'referral') {
     return [
-      { label: '首次充值完成', value: 'first_recharge' },
       { label: '会员购买完成', value: 'membership_paid' },
       { label: '时长卡购买完成', value: 'time_card_paid' },
+      { label: '设备购买完成', value: 'device_paid' },
     ]
   }
   return [
@@ -194,8 +196,8 @@ function parseJSON(value: string) {
 
 function ruleValue(rule: IncentiveRule) {
   const action = parseJSON(rule.action_config_json)
-  if (props.mode === 'referral') {
-    return '奖励 ¥' + ((Number(action.amount_cents || 0)) / 100).toFixed(2)
+  if (rule.action_type === 'fixed_amount') {
+    return '固定 ¥' + ((Number(action.amount_cents || 0)) / 100).toFixed(2)
   }
   return '比例 ' + (Number(action.rate_bps || 0) / 100).toFixed(2).replace(/\.00$/, '') + '%'
 }
@@ -204,6 +206,15 @@ function ruleMinimum(rule: IncentiveRule) {
   const conditions = parseJSON(rule.conditions_json)
   const cents = Number(conditions.minimum_paid_cents || 0)
   return cents > 0 ? '最低 ¥' + (cents / 100).toFixed(2) : '无金额门槛'
+}
+
+function parseProductIds(value: string) {
+  return [...new Set(
+    value
+      .split(/[,，\s]+/)
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0),
+  )]
 }
 
 function resetForm() {
@@ -215,8 +226,10 @@ function resetForm() {
   editorRules.value = [
     {
       event_type: eventOptions.value[0]?.value || 'order_paid',
-      value: props.mode === 'referral' ? 10 : 10,
+      reward_mode: props.mode === 'referral' ? 'percent_paid_amount' : 'percent_paid_amount',
+      value: 10,
       minimum_yuan: 0,
+      product_ids_text: '',
       refund_reversal: true,
       enabled: true,
     },
@@ -243,11 +256,15 @@ function openEdit(item: IncentiveProgram) {
     const action = parseJSON(rule.action_config_json)
     return {
       event_type: rule.event_type,
+      reward_mode: rule.action_type === 'fixed_amount' ? 'fixed_amount' : 'percent_paid_amount',
       value:
-        props.mode === 'referral'
+        rule.action_type === 'fixed_amount'
           ? Number(action.amount_cents || 0) / 100
           : Number(action.rate_bps || 0) / 100,
       minimum_yuan: Number(conditions.minimum_paid_cents || 0) / 100,
+      product_ids_text: Array.isArray(conditions.product_ids)
+        ? conditions.product_ids.map((item) => String(item)).join(', ')
+        : '',
       refund_reversal: Boolean(conditions.refund_reversal ?? true),
       enabled: rule.enabled,
     }
@@ -262,8 +279,10 @@ function openEdit(item: IncentiveProgram) {
 function addRule() {
   editorRules.value.push({
     event_type: eventOptions.value[0]?.value || 'order_paid',
-    value: props.mode === 'referral' ? 10 : 10,
+    reward_mode: 'percent_paid_amount',
+    value: 10,
     minimum_yuan: 0,
+    product_ids_text: '',
     refund_reversal: true,
     enabled: true,
   })
@@ -282,12 +301,13 @@ function buildInput(): IncentiveProgramInput {
       minimum_paid_cents: Math.max(0, Math.round(Number(rule.minimum_yuan || 0) * 100)),
       refund_reversal: rule.refund_reversal,
       referral_level: props.mode === 'referral' ? 1 : undefined,
+      product_ids: props.mode === 'referral' ? parseProductIds(rule.product_ids_text) : undefined,
     }),
-    action_type: props.mode === 'referral' ? 'fixed_amount' : 'percent_paid_amount',
+    action_type: props.mode === 'referral' ? rule.reward_mode : 'percent_paid_amount',
     action_config_json: JSON.stringify(
-      props.mode === 'referral'
+      props.mode === 'referral' && rule.reward_mode === 'fixed_amount'
         ? { amount_cents: Math.max(0, Math.round(Number(rule.value || 0) * 100)) }
-        : { rate_bps: Math.max(0, Math.round(Number(rule.value || 0) * 100)) },
+        : { rate_bps: Math.max(0, Math.min(10000, Math.round(Number(rule.value || 0) * 100))) },
     ),
     enabled: rule.enabled,
   }))
@@ -534,12 +554,23 @@ onMounted(load)
                 </option>
               </select>
             </label>
+            <label v-if="props.mode === 'referral'">
+              <span>返佣方式</span>
+              <select v-model="rule.reward_mode">
+                <option value="percent_paid_amount">按实际支付金额比例</option>
+                <option value="fixed_amount">每笔固定金额</option>
+              </select>
+            </label>
             <label>
-              <span>{{ props.mode === 'referral' ? '奖励金额' : '结算比例' }}</span>
+              <span>{{ props.mode === 'referral' ? (rule.reward_mode === 'fixed_amount' ? '固定返佣' : '返佣比例') : '结算比例' }}</span>
               <div class="feature-input-unit">
-                <input v-model.number="rule.value" type="number" min="0" step="0.01" />
-                <span>{{ props.mode === 'referral' ? '元' : '%' }}</span>
+                <input v-model.number="rule.value" type="number" min="0" :max="rule.reward_mode === 'percent_paid_amount' ? 100 : undefined" step="0.01" />
+                <span>{{ props.mode === 'referral' && rule.reward_mode === 'fixed_amount' ? '元' : '%' }}</span>
               </div>
+            </label>
+            <label v-if="props.mode === 'referral'">
+              <span>指定产品 ID</span>
+              <input v-model="rule.product_ids_text" type="text" placeholder="留空=该类全部产品；多个用逗号分隔" />
             </label>
             <label>
               <span>最低支付金额</span>

@@ -316,6 +316,14 @@ func (s *Server) financeDashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取财务信息失败")
 		return
 	}
+	referralWallet, err := s.store.GetCustomerReferralWalletDashboard(r.Context(), *actor.TenantID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取返佣钱包失败")
+		return
+	}
+	item.CommissionBalanceCents = referralWallet.Wallet.AvailableBalanceCents
+	item.CommissionFrozenCents = referralWallet.Wallet.FrozenBalanceCents
+	item.TotalBalanceCents += referralWallet.Wallet.AvailableBalanceCents
 	writeJSON(w, http.StatusOK, item)
 }
 

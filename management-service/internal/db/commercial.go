@@ -10,6 +10,9 @@ import (
 //go:embed commercial_schema.sql
 var commercialSchema string
 
+//go:embed beneficiary_wallet_schema.sql
+var beneficiaryWalletSchema string
+
 // MigrateCommercial creates the stable commercial foundation used by
 // memberships, wallet, quota, referral, internal sales commission and
 // external-agent settlement.
@@ -30,6 +33,42 @@ func (s *Store) MigrateCommercial(ctx context.Context) error {
 		}
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply commercial schema: %w", err)
+		}
+	}
+
+	beneficiarySchema := strings.ReplaceAll(beneficiaryWalletSchema, "\r\n", "\n")
+	for _, raw := range strings.Split(beneficiarySchema, "\n-- +statement\n") {
+		statement := strings.TrimSpace(raw)
+		if statement == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("apply beneficiary wallet schema: %w", err)
+		}
+	}
+
+	if err := s.migrateCustomerBusiness(ctx); err != nil {
+		return err
+	}
+
+	customerCooperationColumns := []struct {
+		name string
+		sql  string
+	}{
+		{"cooperation_status", "ALTER TABLE crm_customer_profiles ADD COLUMN cooperation_status VARCHAR(32) NOT NULL DEFAULT 'cooperating' AFTER source_note"},
+		{"cooperation_note", "ALTER TABLE crm_customer_profiles ADD COLUMN cooperation_note VARCHAR(512) NOT NULL DEFAULT '' AFTER cooperation_status"},
+		{"cooperation_marked_at", "ALTER TABLE crm_customer_profiles ADD COLUMN cooperation_marked_at DATETIME(3) NULL AFTER cooperation_note"},
+		{"cooperation_marked_by_user_id", "ALTER TABLE crm_customer_profiles ADD COLUMN cooperation_marked_by_user_id BIGINT UNSIGNED NULL AFTER cooperation_marked_at"},
+	}
+	for _, column := range customerCooperationColumns {
+		exists, err := s.columnExists(ctx, "crm_customer_profiles", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.ExecContext(ctx, column.sql); err != nil {
+				return fmt.Errorf("add crm_customer_profiles.%s: %w", column.name, err)
+			}
 		}
 	}
 
@@ -322,6 +361,26 @@ func (s *Store) MigrateCommercial(ctx context.Context) error {
 			return fmt.Errorf("normalize membership discount %s: %w", column, err)
 		}
 	}
+	hasWalletFrozen, err := s.columnExists(ctx, "fin_wallet_accounts", "frozen_balance_cents")
+	if err != nil {
+		return err
+	}
+	if !hasWalletFrozen {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE fin_wallet_accounts ADD COLUMN frozen_balance_cents BIGINT NOT NULL DEFAULT 0 AFTER balance_cents`); err != nil {
+			return fmt.Errorf("add fin_wallet_accounts.frozen_balance_cents: %w", err)
+		}
+	}
+
+	hasMembershipReferral, err := s.columnExists(ctx, "catalog_membership_plan_versions", "participates_referral")
+	if err != nil {
+		return err
+	}
+	if !hasMembershipReferral {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE catalog_membership_plan_versions ADD COLUMN participates_referral TINYINT(1) NOT NULL DEFAULT 1 AFTER allow_auto_renew`); err != nil {
+			return fmt.Errorf("add catalog_membership_plan_versions.participates_referral: %w", err)
+		}
+	}
+
 	// backfill customer commercial foundation for tenants created before the
 	// commercial domain existed. No sales/agent/referral relationship is inferred.
 	if _, err := s.db.ExecContext(ctx, `

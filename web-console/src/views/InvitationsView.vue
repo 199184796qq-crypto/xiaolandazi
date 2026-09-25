@@ -35,8 +35,6 @@ const recordPageSize = 10
 
 const actor = computed(() => session.bootstrap?.actor)
 const isAdmin = computed(() => actor.value?.role === 'platform_admin')
-const isAgent = computed(() => actor.value?.role === 'agent_admin')
-const isSales = computed(() => actor.value?.role === 'sales_staff')
 const isInvitationManager = computed(() => {
   if (isAdmin.value) return true
   const access = session.bootstrap?.staff_access
@@ -53,8 +51,6 @@ const registrationUrl = computed(() => {
   const code = dashboard.value?.my_code.code || ''
   return window.location.origin + '/register?invite=' + encodeURIComponent(code)
 })
-
-const ownReferralCount = computed(() => dashboard.value?.own_referral_count || 0)
 
 const codeTotalPages = computed(() =>
   Math.max(1, Math.ceil((dashboard.value?.codes_total || 0) / codePageSize)),
@@ -201,13 +197,6 @@ function recordScopeText(item: InvitationRecord) {
   return '归属：' + item.parent_org_name
 }
 
-const visibleScopeTitle = computed(() => {
-  if (isAdmin.value) return '全平台注册记录'
-  if (isAgent.value) return '当前代理归属注册'
-  if (isSales.value) return '我的销售邀请注册'
-  return '我的推荐记录'
-})
-
 onMounted(load)
 </script>
 
@@ -233,7 +222,7 @@ onMounted(load)
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
     <template v-if="dashboard">
-      <section class="invitation-summary-grid">
+      <section class="invitation-code-panel">
         <article class="settings-card invite-code-card">
           <div class="settings-card-header">
             <div>
@@ -241,10 +230,10 @@ onMounted(load)
               <h3>我的邀请码</h3>
             </div>
             <span
-              class="status-pill"
+              class="invite-status-corner"
               :class="{ inactive: dashboard.my_code.status !== 'active' }"
             >
-              {{ dashboard.my_code.status === 'active' ? '可用' : '已停用' }}
+              {{ dashboard.my_code.status === 'active' ? '可用' : '停用' }}
             </span>
           </div>
 
@@ -305,26 +294,6 @@ onMounted(load)
           </p>
         </article>
 
-        <article class="settings-card invitation-stat-card">
-          <span class="section-kicker">ATTRIBUTION</span>
-          <h3>我的邀请成果</h3>
-          <div class="invitation-stat-value">
-            {{ ownReferralCount }}
-          </div>
-          <p>由当前账号邀请码直接带来的注册数量。</p>
-          <div class="invitation-rule-note">
-            终端推荐只绑定推荐关系，不改变其平台/代理归属。
-          </div>
-        </article>
-
-        <article class="settings-card invitation-stat-card">
-          <span class="section-kicker">VISIBLE RECORDS</span>
-          <h3>{{ visibleScopeTitle }}</h3>
-          <div class="invitation-stat-value">
-            {{ dashboard.records_total }}
-          </div>
-          <p>当前权限范围内可查看的邀请注册关系。</p>
-        </article>
       </section>
 
       <section v-if="isAdmin" class="settings-card invite-admin-card">

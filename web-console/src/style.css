@@ -3769,6 +3769,82 @@ textarea:focus {
   background: #3bb78f;
 }
 
+.customer-status.non-cooperating {
+  color: #b42318;
+  background: #fff0ee;
+  border: 1px solid #ffd2cc;
+}
+
+.customer-status.non-cooperating::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e5484d;
+}
+
+.cooperation-recharge-warning {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #9a6700;
+  background: #fff7d6;
+  font-size: calc(9px + var(--ui-font-delta));
+  font-weight: 700;
+}
+
+.cooperation-action-button {
+  margin-top: 6px;
+}
+
+.room-card {
+  position: relative;
+}
+
+.room-cooperation-corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  padding: 6px 12px 7px;
+  border-radius: 0 18px 0 14px;
+  background: #d92d20;
+  color: #fff;
+  font-size: calc(10px + var(--ui-font-delta));
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  box-shadow: 0 8px 20px rgba(217, 45, 32, 0.22);
+}
+
+.room-recharge-warning-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #9a6700;
+  background: #fff7d6;
+  font-size: calc(9px + var(--ui-font-delta));
+  font-weight: 700;
+}
+
+.room-cooperation-table-badge {
+  display: inline-flex;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #23765f;
+  background: #edf9f4;
+  font-size: calc(9px + var(--ui-font-delta));
+  font-weight: 700;
+}
+
+.room-cooperation-table-badge.danger {
+  color: #b42318;
+  background: #fff0ee;
+  border: 1px solid #ffd2cc;
+}
+
 .customer-actions {
   display: flex;
   align-items: center;
@@ -21221,3 +21297,68 @@ table tbody tr > td {
 .runtime-time-card-item small {
   grid-column: 1 / -1;
 }
+
+/* ===== Customer-side compact refinements ===== */
+.invitation-code-panel{width:min(650px,100%);max-width:650px}
+.invite-code-card{position:relative;padding:22px 24px!important;overflow:hidden}
+.invite-code-display{margin-top:14px!important}
+.invite-code-display strong{font-size:34px!important;letter-spacing:.11em}
+.invite-copy-actions-wrap{gap:8px!important;margin-top:14px!important;flex-wrap:wrap}
+.invite-copy-actions-wrap button{min-height:40px;padding:8px 12px!important}
+.invite-card-note{margin-top:12px!important;overflow-wrap:anywhere;font-size:13px!important}
+.invite-status-corner{position:absolute;top:0;right:0;min-width:66px;padding:8px 14px 9px;border-radius:0 18px 0 16px;background:#eaf8f1;color:#24815e;font-size:13px;font-weight:900;text-align:center}
+.invite-status-corner.inactive{background:#f2f3f6;color:#7c8492}
+
+.wallet-account-panel{width:min(900px,100%)}
+.wallet-hero-card{min-height:0!important;padding:24px 28px!important;border-radius:20px!important}
+.wallet-card-top>div>strong{font-size:42px!important}
+.wallet-balance-split{margin-top:18px!important;gap:10px!important}
+.wallet-balance-split>div{padding:12px 14px!important;border-radius:12px!important}
+
+.finance-hero-compact{min-height:0!important;padding:20px 28px!important}
+.finance-hero-compact h2{margin-bottom:0!important}
+.wallet-balance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;width:min(1050px,100%);margin:0 0 22px}
+.wallet-balance-card{min-height:150px;padding:20px 22px;border:1px solid #dde5f2;border-radius:18px;background:linear-gradient(145deg,#ffffff,#f7f9ff);box-shadow:0 12px 30px #344e850d;display:flex;flex-direction:column;justify-content:space-between;gap:18px}
+.wallet-balance-card>div:first-child{display:grid;gap:5px}
+.wallet-balance-card .wallet-label{font-size:14px;font-weight:800;color:#718099}
+.wallet-balance-card>div:first-child>strong{font-size:32px;line-height:1.1;color:#202c44}
+.wallet-balance-card>div:first-child>small{font-size:12px;color:#8a95a8}
+.wallet-balance-card-cash{background:linear-gradient(145deg,#f4f5ff,#ffffff)}
+.wallet-balance-card-reward{background:linear-gradient(145deg,#fffaf2,#ffffff)}
+.wallet-balance-card-commission{background:linear-gradient(145deg,#f1fbf8,#ffffff)}
+.wallet-card-actions{display:flex;justify-content:flex-end;gap:8px}
+.wallet-card-actions button{min-height:38px;padding:7px 13px;border:1px solid #d5deed;border-radius:10px;background:#fff;color:#40506a;font-weight:800;cursor:pointer}
+.withdrawal-records-card{margin-top:22px;padding:24px;border:1px solid #e1e7f1;border-radius:22px;background:#fff;box-shadow:0 12px 30px #354d7f0a}
+.withdrawal-records-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
+.withdrawal-records-head h3{margin:2px 0 0;font-size:24px;color:#1e2a42}
+.withdrawal-total-box{display:grid;justify-items:end;gap:2px;padding:10px 14px;border-radius:13px;background:#f5f7fb}
+.withdrawal-total-box span{font-size:12px;color:#8490a3}
+.withdrawal-total-box strong{font-size:20px;color:#26354f}
+.withdrawal-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:18px}
+.withdrawal-summary-grid>div{display:grid;gap:4px;padding:12px 14px;border:1px solid #e4e9f2;border-radius:13px;background:#fafbfe}
+.withdrawal-summary-grid span{font-size:12px;color:#7d899c}
+.withdrawal-summary-grid strong{font-size:18px;color:#28364f}
+.withdrawal-category-block{margin-top:14px;border:1px solid #e4e9f2;border-radius:15px;overflow:hidden}
+.withdrawal-category-block>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 15px;background:#f8faff}
+.withdrawal-category-block>header>div{display:grid;gap:2px}
+.withdrawal-category-block>header strong{color:#28364f}
+.withdrawal-category-block>header small,.withdrawal-category-block>header>span{font-size:12px;color:#8792a5}
+.withdrawal-category-block .finance-table-wrap{margin:0!important;border:0!important;border-radius:0!important}
+.finance-empty.compact{min-height:72px;padding:18px}
+.withdrawal-available-line{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 16px;padding:12px 14px;border-radius:12px;background:#f5f7fb}
+.withdrawal-available-line span{color:#7d899d}
+.withdrawal-available-line strong{font-size:22px;color:#25344d}
+.withdrawal-dialog{width:min(460px,92vw)!important}
+
+.customer-shop-hero-compact{min-height:0!important;padding:22px 28px!important;align-items:center!important}
+.customer-shop-hero-compact .customer-shop-hero-copy{max-width:none!important}
+.customer-shop-hero-compact h2{margin-bottom:0!important}
+
+.strategy-agent-workspace{display:grid;gap:14px;align-content:start;padding:20px 22px 28px;min-height:220px;background:linear-gradient(180deg,#fbfcff,#f7f9fe)}
+.strategy-agent-context-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:min(620px,100%);padding:16px 18px;border:1px solid #e0e6f2;border-radius:16px;background:#fff;box-shadow:0 8px 22px #405aa80d}
+.strategy-agent-context-card .section-kicker{width:100%}
+.strategy-agent-context-card strong{font-size:20px;color:#202c43}
+.strategy-agent-context-card small{color:#7f8b9f}
+.strategy-agent-workspace .strategy-upload-row{width:min(620px,100%);margin:0;padding:0;border:0;background:transparent;justify-content:flex-start}
+
+@media(max-width:900px){.invitation-code-panel,.wallet-account-panel{max-width:none}.invite-code-card,.wallet-hero-card{padding:20px!important}.wallet-balance-grid,.withdrawal-summary-grid{grid-template-columns:1fr}.withdrawal-records-head{align-items:flex-start;flex-direction:column}.withdrawal-total-box{justify-items:start;width:100%}}

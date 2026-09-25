@@ -679,6 +679,58 @@ func (s *Server) staffDisableEmployee(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) staffResetEmployeePassword(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requirePlatformAdmin(w, r); !ok {
+		return
+	}
+
+	employeeID, ok := staffPathID(w, r, "employeeID")
+	if !ok {
+		return
+	}
+	item, err := s.store.GetStaffEmployee(r.Context(), employeeID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "员工不存在")
+		return
+	}
+	if item.EmploymentStatus != "active" || item.UserStatus != "active" {
+		writeError(w, http.StatusConflict, "只能重置在职且启用中的员工账号")
+		return
+	}
+
+	initialPassword, err := auth.GenerateInitialPassword()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "生成临时密码失败")
+		return
+	}
+	passwordHash, err := auth.HashPassword(initialPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "临时密码加密失败")
+		return
+	}
+	if err := s.store.ResetStaffEmployeePassword(r.Context(), employeeID, passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "员工不存在或已停用")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "重置员工密码失败")
+		return
+	}
+
+	credential := s.deliverInitialCredential(
+		"copy",
+		item.Email,
+		item.DisplayName,
+		item.Username,
+		initialPassword,
+		"internal",
+	)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"item":       item,
+		"credential": credential,
+	})
+}
+
 func (s *Server) staffReplaceEmployeeRoles(w http.ResponseWriter, r *http.Request) {
 	_, access, ok := s.requireStaffPermission(
 		w,

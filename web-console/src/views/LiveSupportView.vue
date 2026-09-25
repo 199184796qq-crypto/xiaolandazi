@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
-import { canDelegateLivePolicyL3, canManageLivePolicyL1 } from '../livePolicyAccess'
+import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
 import {
   activateLiveOpsSupportConfigVersion,
   createLiveOpsAnchorTraining,
@@ -56,7 +56,6 @@ const voiceProfiles = ref<VoiceProfile[]>([])
 const voiceSaving = ref(false)
 
 const canDelegateL3 = computed(() => canDelegateLivePolicyL3(session.bootstrap))
-const isL1Configurator = computed(() => canManageLivePolicyL1(session.bootstrap))
 const eligibleAuthorizations = computed(() => authorizations.value.filter(
   (item) => item.status === 'active' && (item.capability !== 'l3_policy' || canDelegateL3.value),
 ))
@@ -87,7 +86,7 @@ const policyDraft = computed(
 )
 
 function capabilityLabel(capability: LiveSupportCapability) {
-  if (capability === 'l3_policy') return 'L3策略'
+  if (capability === 'l3_policy') return '用户层策略'
   if (capability === 'anchor_training') return '主播训练'
   return '声音复刻'
 }
@@ -139,7 +138,7 @@ async function refreshPolicy() {
   try {
     policyContext.value = await getLiveRoomPolicyContext(roomId)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取客户 L3 策略失败'
+    error.value = err instanceof Error ? err.message : '读取客户用户层策略失败'
   }
 }
 
@@ -167,7 +166,7 @@ async function publishPolicyDraft() {
     await publishLiveRoomPolicyVersion(roomId, draft.id)
     await refreshPolicy()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '发布客户 L3 策略失败'
+    error.value = err instanceof Error ? err.message : '发布客户用户层策略失败'
   } finally {
     loading.value = false
   }
@@ -377,7 +376,7 @@ onMounted(async () => {
             v-if="canStrategy"
             :class="{ active: activeMode === 'strategy' }"
             @click="activeMode = 'strategy'"
-          >L3策略调教</button>
+          >用户层策略调教</button>
           <button
             v-if="canAnchor"
             :class="{ active: activeMode === 'anchor' }"
@@ -391,9 +390,6 @@ onMounted(async () => {
         </div>
 
         <div v-if="error" class="inline-error strategy-inline-error">{{ error }}</div>
-        <div v-if="isL1Configurator" class="live-policy-permission-note">
-          当前账号可配置 L1 / L2，不能代维护客户 L3；主播训练与声音复刻仍分别以客户授权为准。
-        </div>
 
         <section
           v-if="activeRoom && activeMode === 'strategy' && canStrategy"
@@ -401,9 +397,9 @@ onMounted(async () => {
         >
           <div class="live-support-editor-head">
             <div>
-              <span class="section-kicker">L3 POLICY SUPPORT</span>
-              <h3>客户 L3 策略调教</h3>
-              <p>直接使用页面底部的系统智能体描述要怎么调整。智能体只会写入当前客户授权直播间的 L3 草稿，不会越权修改客户其它配置。</p>
+              <span class="section-kicker">USER LAYER SUPPORT</span>
+              <h3>客户用户层策略调教</h3>
+              <p>直接使用页面底部的系统智能体描述要怎么调整。智能体只会写入当前客户授权直播间的用户层草稿，不会越权修改客户其它配置。</p>
             </div>
           </div>
           <div class="live-policy-system-agent-hint">
@@ -412,14 +408,14 @@ onMounted(async () => {
             <small>当前授权直播间会自动带入系统智能体上下文。</small>
           </div>
           <div v-if="policyDraft" class="live-support-draft-actions">
-            <span>L3 草稿 V{{ policyDraft.version_no }}</span>
+            <span>用户层草稿 V{{ policyDraft.version_no }}</span>
             <button
               class="primary-button"
               type="button"
               :disabled="loading || !!policyDraft.conflicts?.length"
               @click="publishPolicyDraft"
             >
-              {{ policyDraft.conflicts?.length ? '存在冲突' : '发布客户 L3' }}
+              {{ policyDraft.conflicts?.length ? '存在冲突' : '发布客户用户层' }}
             </button>
           </div>
         </section>

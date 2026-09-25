@@ -7,6 +7,7 @@ import type {
   AdminAuditPage,
   AdminCustomer,
   AdminCustomerPage,
+  CustomerCooperationInfo,
   AgentSummary,
   Bootstrap,
   CommercialMembershipInput,
@@ -56,6 +57,9 @@ import type {
   TokenPurchase,
   TokenPurchaseInput,
   SalesPerformanceResponse,
+  SalesFollowup,
+  SalesFollowupResponse,
+  SalesCatalog,
   IncentiveProgram,
   IncentiveProgramInput,
   SettlementDashboard,
@@ -68,6 +72,8 @@ import type {
   AgentContract,
   CreateRoomPayload,
   FinanceDashboard,
+  BeneficiaryWalletDashboard,
+  WithdrawalRequest,
   Room,
   RoomEvent,
   LiveDevice,
@@ -87,14 +93,21 @@ import type {
   LivePolicyRule,
   LivePolicyAgentResponse,
   LivePolicyTestResult,
+  LivePolicyLearningCandidate,
+  CreateLivePolicyLearningCandidateInput,
+  AdoptLivePolicyLearningCandidateInput,
+  LivePolicyLearningAdoptResult,
   LivePolicyVersion,
   LiveRoomPolicyContext,
   LiveSupportAuthorization,
   LiveSupportCapability,
+  LiveSupportRequest,
   LiveSupportStaff,
   LiveSupportTrainingDraft,
   MediaAsset,
   VoiceProfile,
+  OfficialVoice,
+  VoicePreviewResponse,
   InvitationDashboard,
   InvitePreview,
   InitialCredential,
@@ -122,7 +135,7 @@ interface ListResponse<T> {
   items: T[]
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -359,6 +372,31 @@ export function createLiveVoiceProfile(payload: {
   })
 }
 
+export function getLiveOfficialVoices() {
+  return request<{ items: OfficialVoice[] }>('/api/v1/live/official-voices')
+}
+
+export function previewLiveOfficialVoice(voiceId: string, text = '') {
+  return request<VoicePreviewResponse>(
+    '/api/v1/live/official-voices/' + encodeURIComponent(voiceId) + '/preview',
+    { method: 'POST', body: JSON.stringify({ text }) },
+  )
+}
+
+export function cloneLiveVoiceProfile(payload: { name: string; sample_asset_id: number }) {
+  return request<VoiceProfile>('/api/v1/live/voice-profiles/clone', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewLiveVoiceProfile(profileId: number, text = '') {
+  return request<VoicePreviewResponse>(
+    '/api/v1/live/voice-profiles/' + profileId + '/preview',
+    { method: 'POST', body: JSON.stringify({ text }) },
+  )
+}
+
 export function chatLiveAgent(
   roomId: number,
   payload: {
@@ -444,6 +482,48 @@ export function testLivePolicyAdmin(payload: {
   })
 }
 
+export function createLivePolicyLearningCandidate(
+  payload: CreateLivePolicyLearningCandidateInput,
+) {
+  return request<LivePolicyLearningCandidate>('/api/v1/live/policy-learning/candidates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getLivePolicyLearningCandidates(status = 'pending') {
+  const params = new URLSearchParams({ status })
+  return request<{ items: LivePolicyLearningCandidate[] }>(
+    '/api/v1/live/policy-learning/candidates?' + params.toString(),
+  )
+}
+
+export function adoptLivePolicyLearningCandidate(
+  candidateId: number,
+  payload: AdoptLivePolicyLearningCandidateInput = {},
+) {
+  return request<LivePolicyLearningAdoptResult>(
+    '/api/v1/live/policy-learning/candidates/' + candidateId + '/adopt',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function rejectLivePolicyLearningCandidate(
+  candidateId: number,
+  reviewNote = '',
+) {
+  return request<LivePolicyLearningCandidate>(
+    '/api/v1/live/policy-learning/candidates/' + candidateId + '/reject',
+    {
+      method: 'POST',
+      body: JSON.stringify({ review_note: reviewNote }),
+    },
+  )
+}
+
 export function publishLivePolicyAdminVersion(versionId: number) {
   return request<LivePolicyVersion>(
     '/api/v1/live/policies/admin/versions/' + versionId + '/publish',
@@ -499,6 +579,26 @@ export function getLiveRoomSupportAuthorizations(roomId: number) {
   )
 }
 
+export function getLiveRoomSupportRequests(roomId: number) {
+  return request<{ items: LiveSupportRequest[] }>(
+    '/api/v1/live/rooms/' + roomId + '/support-requests',
+  )
+}
+
+export function createLiveRoomSupportRequest(
+  roomId: number,
+  staffUserId: number,
+  capabilities: LiveSupportCapability[],
+) {
+  return request<LiveSupportRequest>(
+    '/api/v1/live/rooms/' + roomId + '/support-requests/' + staffUserId,
+    {
+      method: 'POST',
+      body: JSON.stringify({ capabilities }),
+    },
+  )
+}
+
 export function updateLiveRoomSupportAuthorizations(
   roomId: number,
   staffUserId: number,
@@ -516,6 +616,24 @@ export function updateLiveRoomSupportAuthorizations(
 export function getLiveOpsSupportAuthorizations() {
   return request<{ items: LiveSupportAuthorization[] }>(
     '/api/v1/liveops/support-authorizations',
+  )
+}
+
+export function getLiveOpsSupportRequests() {
+  return request<{ items: LiveSupportRequest[] }>('/api/v1/liveops/support-requests')
+}
+
+export function acceptLiveOpsSupportRequest(requestId: number, note = '') {
+  return request<LiveSupportRequest>(
+    '/api/v1/liveops/support-requests/' + requestId + '/accept',
+    { method: 'POST', body: JSON.stringify({ note }) },
+  )
+}
+
+export function rejectLiveOpsSupportRequest(requestId: number, note = '') {
+  return request<LiveSupportRequest>(
+    '/api/v1/liveops/support-requests/' + requestId + '/reject',
+    { method: 'POST', body: JSON.stringify({ note }) },
   )
 }
 
@@ -772,6 +890,89 @@ export function getFinanceDashboard(limit = 50) {
   )
 }
 
+export function getReferralWallet(limit = 100) {
+  return request<BeneficiaryWalletDashboard>(
+    '/api/v1/finance/referral-wallet?limit=' + encodeURIComponent(String(limit)),
+  )
+}
+
+export function createReferralWithdrawal(amountCents: number) {
+  return request<WithdrawalRequest>('/api/v1/finance/referral-withdrawals', {
+    method: 'POST',
+    body: JSON.stringify({ amount_cents: amountCents }),
+  })
+}
+
+export function getCustomerWithdrawals(accountType = 'all') {
+  return request<{ items: WithdrawalRequest[] }>(
+    '/api/v1/finance/withdrawals?account_type=' + encodeURIComponent(accountType),
+  )
+}
+
+export function createCustomerWalletWithdrawal(
+  accountType: 'cash' | 'reward',
+  amountCents: number,
+) {
+  return request<WithdrawalRequest>('/api/v1/finance/withdrawals', {
+    method: 'POST',
+    body: JSON.stringify({ account_type: accountType, amount_cents: amountCents }),
+  })
+}
+
+export function getFinanceCustomerWithdrawals(status = 'all') {
+  return request<{ items: WithdrawalRequest[] }>(
+    '/api/v1/finance/customer-withdrawals?status=' + encodeURIComponent(status),
+  )
+}
+
+export function approveCustomerWalletWithdrawal(withdrawalId: number) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/customer-withdrawals/' + withdrawalId + '/approve',
+    { method: 'POST' },
+  )
+}
+
+export function rejectCustomerWalletWithdrawal(withdrawalId: number, reason: string) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/customer-withdrawals/' + withdrawalId + '/reject',
+    { method: 'POST', body: JSON.stringify({ reason }) },
+  )
+}
+
+export function payCustomerWalletWithdrawal(withdrawalId: number) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/customer-withdrawals/' + withdrawalId + '/pay',
+    { method: 'POST' },
+  )
+}
+
+export function getReferralWithdrawals(status = 'all') {
+  return request<{ items: WithdrawalRequest[] }>(
+    '/api/v1/finance/referral-withdrawals?status=' + encodeURIComponent(status),
+  )
+}
+
+export function approveReferralWithdrawal(withdrawalId: number) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/referral-withdrawals/' + withdrawalId + '/approve',
+    { method: 'POST' },
+  )
+}
+
+export function rejectReferralWithdrawal(withdrawalId: number, reason: string) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/referral-withdrawals/' + withdrawalId + '/reject',
+    { method: 'POST', body: JSON.stringify({ reason }) },
+  )
+}
+
+export function payReferralWithdrawal(withdrawalId: number) {
+  return request<WithdrawalRequest>(
+    '/api/v1/finance/referral-withdrawals/' + withdrawalId + '/pay',
+    { method: 'POST' },
+  )
+}
+
 export function createCustomerRechargeRequest(payload: {
   amount_cents: number
   reason: string
@@ -799,6 +1000,19 @@ export function getAdminCustomers(params: {
   if (params.sales_staff_id) query.set('sales_staff_id', String(params.sales_staff_id))
   const suffix = query.toString() ? '?' + query.toString() : ''
   return request<AdminCustomerPage>('/api/v1/admin/customers' + suffix)
+}
+
+export function updateAdminCustomerCooperation(
+  tenantId: number,
+  payload: { status: 'cooperating' | 'non_cooperating'; note: string },
+) {
+  return request<CustomerCooperationInfo>(
+    '/api/v1/admin/customers/' + tenantId + '/cooperation',
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export function adminResetCustomerPassword(
@@ -1120,6 +1334,31 @@ export function getSalesCustomers() {
   return request<ListResponse<AdminCustomer>>('/api/v1/sales/customers')
 }
 
+export function getMySalesPerformance(period: string) {
+  const query = new URLSearchParams({ period })
+  return request<SalesPerformanceResponse>('/api/v1/sales/performance?' + query.toString())
+}
+
+export function getSalesFollowups() {
+  return request<SalesFollowupResponse>('/api/v1/sales/followups')
+}
+
+export function createSalesFollowup(payload: {
+  tenant_id: number
+  followup_type: string
+  content: string
+  next_followup_at?: string
+}) {
+  return request<SalesFollowup>('/api/v1/sales/followups', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getSalesCatalog() {
+  return request<SalesCatalog>('/api/v1/sales/catalog')
+}
+
 export interface AgentChatPayload {
   message: string
   history?: Array<{ role: 'user' | 'agent'; text: string }>
@@ -1243,6 +1482,15 @@ export function createStaffEmployee(payload: {
 
 export function disableStaffEmployee(employeeId: number) {
   return request<void>('/api/v1/staff/employees/' + employeeId + '/disable', {
+    method: 'POST',
+  })
+}
+
+export function resetStaffEmployeePassword(employeeId: number) {
+  return request<{
+    item: StaffEmployeeSummary
+    credential: InitialCredential
+  }>('/api/v1/staff/employees/' + employeeId + '/reset-password', {
     method: 'POST',
   })
 }

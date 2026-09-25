@@ -699,7 +699,7 @@ func (s *Store) CreateBatchInbound(
 	); err != nil {
 		return model.BatchInboundResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory"); err != nil {
 		return model.BatchInboundResult{}, err
 	}
 
@@ -800,7 +800,7 @@ func (s *Store) CreateDevice(
 		return model.Device{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory"); err != nil {
 		return model.Device{}, err
 	}
 	return s.GetDevice(ctx, deviceID)
@@ -919,7 +919,7 @@ func (s *Store) TransitionDevice(
 		return model.Device{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory", "logistics"); err != nil {
 		return model.Device{}, err
 	}
 	return s.GetDevice(ctx, deviceID)
@@ -1026,7 +1026,7 @@ func (s *Store) DisposeScrapDevice(
 	); err != nil {
 		return model.ScrapDisposal{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory"); err != nil {
 		return model.ScrapDisposal{}, err
 	}
 	return s.getScrapDisposal(ctx, disposalID)
@@ -1268,7 +1268,7 @@ func (s *Store) CreateRMA(
 		return model.RMARecord{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory", "logistics"); err != nil {
 		return model.RMARecord{}, err
 	}
 	return s.getRMA(ctx, rmaID)
@@ -1389,7 +1389,7 @@ func (s *Store) CompleteRMA(
 		return model.RMARecord{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory", "logistics"); err != nil {
 		return model.RMARecord{}, err
 	}
 	return s.getRMA(ctx, rmaID)

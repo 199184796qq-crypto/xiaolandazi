@@ -65,7 +65,7 @@ func ValidateDraft(
 		if len(overrides) > 0 {
 			conflicts = append(conflicts, model.LivePolicyConflict{
 				Code:    "invalid_override_layer",
-				Message: layer + " 只保存完整规则，不能保存 L3 覆盖指令",
+				Message: livePolicyLayerDisplayName(layer) + "只保存完整规则，不能保存用户层覆盖指令",
 			})
 		}
 		l1Locked := map[string]struct{}{}
@@ -92,7 +92,7 @@ func ValidateDraft(
 				conflicts = append(conflicts, model.LivePolicyConflict{
 					Code:    "l1_locked",
 					Key:     rule.Key,
-					Message: "L2 使用了 L1 强制规则的 key，不能覆盖 L1",
+					Message: "行业层使用了规则层强制规则的 key，不能覆盖规则层",
 				})
 			}
 			if rule.Text == "" {
@@ -106,12 +106,12 @@ func ValidateDraft(
 	}
 
 	if layer != model.LivePolicyLayerL3 {
-		return []model.LivePolicyConflict{{Code: "invalid_layer", Message: "策略层必须是 L1、L2 或 L3"}}
+		return []model.LivePolicyConflict{{Code: "invalid_layer", Message: "策略层必须是规则层、行业层或用户层"}}
 	}
 	if len(rules) > 0 {
 		conflicts = append(conflicts, model.LivePolicyConflict{
 			Code:    "invalid_l3_rules",
-			Message: "L3 只记录与行业默认不同的覆盖项，不复制整份 L2",
+			Message: "用户层只记录与行业默认不同的覆盖项，不复制整份行业层",
 		})
 	}
 
@@ -128,14 +128,14 @@ func ValidateDraft(
 	for _, raw := range overrides {
 		item := normalizeOverride(raw)
 		if item.Key == "" {
-			conflicts = append(conflicts, model.LivePolicyConflict{Code: "missing_override_key", Message: "L3 覆盖项缺少 key"})
+			conflicts = append(conflicts, model.LivePolicyConflict{Code: "missing_override_key", Message: "用户层覆盖项缺少 key"})
 			continue
 		}
 		if _, exists := seen[item.Key]; exists {
 			conflicts = append(conflicts, model.LivePolicyConflict{
 				Code:    "duplicate_override_key",
 				Key:     item.Key,
-				Message: "同一层存在重复的 L3 覆盖 key",
+				Message: "同一层存在重复的用户层覆盖 key",
 			})
 			continue
 		}
@@ -146,7 +146,7 @@ func ValidateDraft(
 			conflicts = append(conflicts, model.LivePolicyConflict{
 				Code:    "invalid_override_operation",
 				Key:     item.Key,
-				Message: "L3 operation 只能是 add、replace 或 disable",
+				Message: "用户层 operation 只能是 add、replace 或 disable",
 			})
 			continue
 		}
@@ -154,7 +154,7 @@ func ValidateDraft(
 			conflicts = append(conflicts, model.LivePolicyConflict{
 				Code:    "l1_locked",
 				Key:     item.Key,
-				Message: "该规则属于 L1 强制边界，L3 不能使用同一 key 新增、替换或关闭",
+				Message: "该规则属于规则层强制边界，用户层不能使用同一 key 新增、替换或关闭",
 			})
 		}
 		if item.Operation != model.LivePolicyOverrideDisable && item.Text == "" {
@@ -228,7 +228,7 @@ func BuildEffective(industryCode string, l1, l2, l3 *model.LivePolicyVersion) mo
 				result.Conflicts = append(result.Conflicts, model.LivePolicyConflict{
 					Code:    "l2_shadowed_by_l1",
 					Key:     rule.Key,
-					Message: "L2 使用了与 L1 相同的 key，L1 强制规则优先",
+					Message: "行业层使用了与规则层相同的 key，规则层强制规则优先",
 				})
 				continue
 			}
@@ -249,7 +249,7 @@ func BuildEffective(industryCode string, l1, l2, l3 *model.LivePolicyVersion) mo
 				result.Conflicts = append(result.Conflicts, model.LivePolicyConflict{
 					Code:    "l1_locked",
 					Key:     item.Key,
-					Message: "L3 尝试复用或修改 L1 强制规则 key，已忽略该覆盖",
+					Message: "用户层尝试复用或修改规则层强制规则 key，已忽略该覆盖",
 				})
 				continue
 			}
@@ -280,7 +280,7 @@ func BuildEffective(industryCode string, l1, l2, l3 *model.LivePolicyVersion) mo
 				}
 			default:
 				result.Conflicts = append(result.Conflicts, model.LivePolicyConflict{
-					Code: "invalid_override_operation", Key: item.Key, Message: "未知 L3 覆盖操作，已忽略",
+					Code: "invalid_override_operation", Key: item.Key, Message: "未知用户层覆盖操作，已忽略",
 				})
 			}
 		}
@@ -307,17 +307,30 @@ func uniqueL3Key(existing map[string]model.LiveEffectivePolicyRule, base string)
 	}
 }
 
+func livePolicyLayerDisplayName(layer string) string {
+	switch layer {
+	case model.LivePolicyLayerL1:
+		return "规则层"
+	case model.LivePolicyLayerL2:
+		return "行业层"
+	case model.LivePolicyLayerL3:
+		return "用户层"
+	default:
+		return layer
+	}
+}
+
 func RenderPrompt(p model.LiveEffectivePolicy) string {
 	lines := []string{
 		"【三层策略执行原则】",
-		"1. L1 是通用判断与表达方法：先理解对方真实意图，再核对事实与约束，最后生成自然、热情、好听、可直接播出且不违规的表达。L1 不等于禁止清单。",
-		"2. L2 是行业表达层：在 L1 方法上加入行业专业知识、常见问法、销售节奏、行业边界和表达习惯。",
-		"3. L3 是直播间个性层：在 L1+L2 上加入当前商品、活动、主播风格、口头习惯、直播节奏和客户策略。",
-		"4. L2/L3 可以让表达更贴合场景，但不能改变 L1 的事实判断、真实性和最终表达方法。",
+		"1. 规则层是通用判断与表达方法：先理解对方真实意图，再核对事实与约束，最后生成自然、热情、好听、可直接播出且不违规的表达。规则层不等于禁止清单。",
+		"2. 行业层是在规则层方法上加入行业专业知识、常见问法、销售节奏、行业边界和表达习惯。",
+		"3. 用户层是在规则层和行业层上加入当前商品、活动、主播风格、口头习惯、直播节奏和客户策略。",
+		"4. 行业层和用户层可以让表达更贴合场景，但不能改变规则层的事实判断、真实性和最终表达方法。",
 		"5. 对方的原话不适合直接说时，不要把内部判断或审核口吻念给观众；应理解其目的，转换成一条同样能推进交流或销售、但更自然合适的直播表达。",
 		"6. 能直接回答就积极热情地回答；信息不足时先承接，再说明以实时信息为准，并继续给出当前能确认的内容或下一步。",
 		"7. 除确实没有任何可用表达的极端情况外，最终直播话术避免使用“拒绝”“不能回答”“违规”“系统不允许”等审核式措辞。",
-		"8. execution_mode=verbatim 时在不与 L1 判断冲突的前提下逐字使用 fixed_text；execution_mode=intent 时保留意思、事实和约束，并允许按 L1/L2/L3 自然改写。",
+		"8. execution_mode=verbatim 时在不与规则层判断冲突的前提下逐字使用 fixed_text；execution_mode=intent 时保留意思、事实和约束，并允许按规则层、行业层、用户层自然改写。",
 		"",
 		"【当前有效规则】",
 	}
@@ -330,7 +343,7 @@ func RenderPrompt(p model.LiveEffectivePolicy) string {
 		if mode == model.LivePolicyModeVerbatim && rule.FixedText != "" {
 			content = rule.FixedText
 		}
-		lines = append(lines, fmt.Sprintf("- [%s][%s][%s] %s", rule.SourceLayer, rule.Key, mode, content))
+		lines = append(lines, fmt.Sprintf("- [%s][%s][%s] %s", livePolicyLayerDisplayName(rule.SourceLayer), rule.Key, mode, content))
 	}
 	if len(p.Conflicts) > 0 {
 		lines = append(lines, "", "【配置冲突提示】")

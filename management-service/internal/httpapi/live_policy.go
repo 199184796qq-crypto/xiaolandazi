@@ -51,11 +51,11 @@ func (s *Server) requireLivePolicyLayerManage(
 				return actor, true
 			}
 		}
-		writeError(w, http.StatusForbidden, "L1 系统规则仅部门主管及以上可维护")
+		writeError(w, http.StatusForbidden, "规则层仅部门主管及以上可维护")
 		return model.Actor{}, false
 	}
 	if layer != model.LivePolicyLayerL2 {
-		writeError(w, http.StatusBadRequest, "管理端只允许维护 L1 或 L2")
+		writeError(w, http.StatusBadRequest, "管理端只允许维护规则层或行业层")
 		return model.Actor{}, false
 	}
 	if actor.IsPlatformAdmin() {
@@ -77,11 +77,23 @@ func (s *Server) requireCustomerPolicyRoom(
 	w http.ResponseWriter,
 	r *http.Request,
 ) (model.Actor, int64, int64, bool) {
-	actor, ok := s.resolveActor(w, r)
+	roomID, ok := pathID(w, r)
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
-	roomID, ok := pathID(w, r)
+	return s.requireCustomerPolicyRoomID(w, r, roomID)
+}
+
+func (s *Server) requireCustomerPolicyRoomID(
+	w http.ResponseWriter,
+	r *http.Request,
+	roomID int64,
+) (model.Actor, int64, int64, bool) {
+	if roomID <= 0 {
+		writeError(w, http.StatusBadRequest, "无效的直播间 ID")
+		return model.Actor{}, 0, 0, false
+	}
+	actor, ok := s.resolveActor(w, r)
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
@@ -96,7 +108,7 @@ func (s *Server) requireCustomerPolicyRoom(
 	}
 
 	if !actor.IsInternalStaff() {
-		writeError(w, http.StatusForbidden, "当前账号不能维护该直播间 L3 策略")
+		writeError(w, http.StatusForbidden, "当前账号不能维护该直播间用户层策略")
 		return model.Actor{}, 0, 0, false
 	}
 	access, err := s.staffAccessForActor(r, actor)
@@ -104,12 +116,8 @@ func (s *Server) requireCustomerPolicyRoom(
 		writeError(w, http.StatusForbidden, "读取员工策略权限失败")
 		return model.Actor{}, 0, 0, false
 	}
-	if access.CanManageLivePolicyL1() {
-		writeError(w, http.StatusForbidden, "具备 L1 配置权限的账号不能代维护客户 L3，即使已获客户授权")
-		return model.Actor{}, 0, 0, false
-	}
 	if !access.CanDelegateLivePolicyL3() {
-		writeError(w, http.StatusForbidden, "仅具备 L2 配置能力且不具备 L1 权限的运维员工可申请 L3 授权")
+		writeError(w, http.StatusForbidden, "当前运维账号没有用户层授权协助权限")
 		return model.Actor{}, 0, 0, false
 	}
 	tenantID, err := s.store.GetLiveSupportAuthorizedTenant(
@@ -120,7 +128,7 @@ func (s *Server) requireCustomerPolicyRoom(
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusForbidden, "客户尚未授权你维护该直播间 L3 策略")
+			writeError(w, http.StatusForbidden, "客户尚未授权你维护该直播间用户层策略")
 			return model.Actor{}, 0, 0, false
 		}
 		writeError(w, http.StatusInternalServerError, "校验客户授权失败")
@@ -206,7 +214,7 @@ func (s *Server) livePolicyAdminContext(w http.ResponseWriter, r *http.Request) 
 		layer = model.LivePolicyLayerL1
 	}
 	if layer != model.LivePolicyLayerL1 && layer != model.LivePolicyLayerL2 {
-		writeError(w, http.StatusBadRequest, "管理端只能查看 L1 或 L2")
+		writeError(w, http.StatusBadRequest, "管理端只能查看规则层或行业层")
 		return
 	}
 	industryCode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("industry_code")))
@@ -241,7 +249,7 @@ func (s *Server) livePolicyAdminCreateDraft(w http.ResponseWriter, r *http.Reque
 	if input.Layer == model.LivePolicyLayerL2 {
 		input.IndustryCode = strings.ToLower(strings.TrimSpace(input.IndustryCode))
 		if input.IndustryCode == "" {
-			writeError(w, http.StatusBadRequest, "L2 草稿必须指定行业")
+			writeError(w, http.StatusBadRequest, "行业层草稿必须指定行业")
 			return
 		}
 	}
@@ -354,7 +362,7 @@ func (s *Server) livePolicyAdminRollback(w http.ResponseWriter, r *http.Request)
 	conflicts := policy.ValidateDraft(scope.Layer, version.Rules, version.Overrides, l1)
 	if len(conflicts) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":     "历史版本与当前 L1 存在冲突，不能直接回滚",
+			"error":     "历史版本与当前规则层存在冲突，不能直接回滚",
 			"conflicts": conflicts,
 		})
 		return
@@ -419,7 +427,7 @@ func customerSafeEffectivePolicy(
 func customerSafePolicyPrompt(effective model.LiveEffectivePolicy) string {
 	safe := customerSafeEffectivePolicy(effective)
 	if len(safe.Rules) == 0 {
-		return "平台上层直播规则由服务端强制执行且不会向终端会话暴露。当前直播间暂无客户自定义 L3 规则。"
+		return "平台上层直播规则由服务端强制执行且不会向终端会话暴露。当前直播间暂无客户自定义用户层规则。"
 	}
 	return strings.TrimSpace(
 		"平台上层直播规则由服务端强制执行且不会向终端会话暴露。\n\n" +
@@ -477,7 +485,7 @@ func (s *Server) liveRoomPolicyCreateDraft(w http.ResponseWriter, r *http.Reques
 	}
 	var input model.CreateLivePolicyDraftInput
 	if err := readJSON(w, r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, "L3 策略草稿格式错误")
+		writeError(w, http.StatusBadRequest, "用户层策略草稿格式错误")
 		return
 	}
 	input.Layer = model.LivePolicyLayerL3
@@ -491,7 +499,7 @@ func (s *Server) liveRoomPolicyCreateDraft(w http.ResponseWriter, r *http.Reques
 	)
 	item, err := s.store.CreateLivePolicyDraft(r.Context(), actor.UserID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "保存 L3 策略草稿失败")
+		writeError(w, http.StatusInternalServerError, "保存用户层策略草稿失败")
 		return
 	}
 	safeItem := customerSafeLivePolicyVersion(item)
@@ -509,7 +517,7 @@ func (s *Server) liveRoomPolicyPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	scope, err := s.store.GetLivePolicyScope(r.Context(), model.LivePolicyLayerL3, "", tenantID, roomID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "直播间还没有 L3 策略")
+		writeError(w, http.StatusNotFound, "直播间还没有用户层策略")
 		return
 	}
 	version, err := s.store.GetLivePolicyVersion(r.Context(), versionID)
@@ -529,7 +537,7 @@ func (s *Server) liveRoomPolicyPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.store.PublishLivePolicyVersion(r.Context(), versionID, actor.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "发布 L3 策略失败")
+		writeError(w, http.StatusInternalServerError, "发布用户层策略失败")
 		return
 	}
 	s.refreshRunningPolicySnapshots(r.Context())
@@ -548,7 +556,7 @@ func (s *Server) liveRoomPolicyRollback(w http.ResponseWriter, r *http.Request) 
 	}
 	scope, err := s.store.GetLivePolicyScope(r.Context(), model.LivePolicyLayerL3, "", tenantID, roomID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "直播间还没有 L3 策略")
+		writeError(w, http.StatusNotFound, "直播间还没有用户层策略")
 		return
 	}
 	version, err := s.store.GetLivePolicyVersion(r.Context(), versionID)
@@ -567,7 +575,7 @@ func (s *Server) liveRoomPolicyRollback(w http.ResponseWriter, r *http.Request) 
 	}
 	item, err := s.store.RollbackLivePolicyVersion(r.Context(), versionID, actor.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "回滚 L3 策略失败")
+		writeError(w, http.StatusInternalServerError, "回滚用户层策略失败")
 		return
 	}
 	s.refreshRunningPolicySnapshots(r.Context())

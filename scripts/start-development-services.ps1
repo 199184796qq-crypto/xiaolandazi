@@ -39,10 +39,13 @@ function Ensure-DevTask([string]$TaskName, [string]$ScriptPath, [string[]]$Extra
 
 $backendRunner = Join-Path $PSScriptRoot 'run-service-with-local-env.ps1'
 $webRunner = Join-Path $PSScriptRoot 'run-web-task.ps1'
+$deviceRunner = Join-Path $PSScriptRoot 'run-device-simulator-task.ps1'
 
 Ensure-DevTask 'LiveCompanion-Dev-Management' $backendRunner @('-Service', 'management')
 Ensure-DevTask 'LiveCompanion-Dev-Core' $backendRunner @('-Service', 'core')
+Ensure-DevTask 'LiveCompanion-Dev-Audio' $backendRunner @('-Service', 'audio')
 Ensure-DevTask 'LiveCompanion-Dev-Web' $webRunner @()
+Ensure-DevTask 'LiveCompanion-Dev-DeviceSimulator' $deviceRunner @()
 
 $services = @(
     @{
@@ -58,10 +61,22 @@ $services = @(
         PidFile = Join-Path $RunDir 'core-service.pid'
     },
     @{
+        Name = 'audio-service'
+        Task = 'LiveCompanion-Dev-Audio'
+        Port = 8082
+        PidFile = Join-Path $RunDir 'audio-service.pid'
+    },
+    @{
         Name = 'web-console'
         Task = 'LiveCompanion-Dev-Web'
         Port = 5173
         PidFile = Join-Path $RunDir 'web-console.pid'
+    },
+    @{
+        Name = 'device-simulator'
+        Task = 'LiveCompanion-Dev-DeviceSimulator'
+        Port = 5176
+        PidFile = Join-Path $RunDir 'device-simulator.pid'
     }
 )
 

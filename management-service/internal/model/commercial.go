@@ -95,15 +95,17 @@ type RefundRecord struct {
 }
 
 type FinanceDashboard struct {
-	CashBalanceCents   int64                  `json:"cash_balance_cents"`
-	RewardBalanceCents int64                  `json:"reward_balance_cents"`
-	TotalBalanceCents  int64                  `json:"total_balance_cents"`
-	MonthSpentCents    uint64                 `json:"month_spent_cents"`
-	AvailableSeconds   uint64                 `json:"available_seconds"`
-	MembershipName     string                 `json:"membership_name,omitempty"`
-	Ledger             []WalletLedgerRecord   `json:"ledger"`
-	Recharges          []RechargeRecord       `json:"recharges"`
-	Purchases          []PurchaseRecord       `json:"purchases"`
-	Refunds            []RefundRecord         `json:"refunds"`
-	Payments           []SandboxPaymentRecord `json:"payments"`
+	CashBalanceCents       int64                  `json:"cash_balance_cents"`
+	RewardBalanceCents     int64                  `json:"reward_balance_cents"`
+	CommissionBalanceCents int64                  `json:"commission_balance_cents"`
+	CommissionFrozenCents  int64                  `json:"commission_frozen_cents"`
+	TotalBalanceCents      int64                  `json:"total_balance_cents"`
+	MonthSpentCents        uint64                 `json:"month_spent_cents"`
+	AvailableSeconds       uint64                 `json:"available_seconds"`
+	MembershipName         string                 `json:"membership_name,omitempty"`
+	Ledger                 []WalletLedgerRecord   `json:"ledger"`
+	Recharges              []RechargeRecord       `json:"recharges"`
+	Purchases              []PurchaseRecord       `json:"purchases"`
+	Refunds                []RefundRecord         `json:"refunds"`
+	Payments               []SandboxPaymentRecord `json:"payments"`
 }

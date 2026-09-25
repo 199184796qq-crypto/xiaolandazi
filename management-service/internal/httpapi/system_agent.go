@@ -1,17 +1,16 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
 )
 
@@ -377,6 +376,9 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.tryInboxAgentResponse(w, r, actor, input.Message) {
+		return
+	}
 	input.Navigation = sanitizeClientAgentNavigation(actor, input.Navigation)
 	input.CurrentPath = strings.TrimSpace(input.CurrentPath)
 	if utf8.RuneCountInString(input.CurrentPath) > 512 {
@@ -389,7 +391,7 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	modelOutput, modelName, latencyMS, err := callDashScopeSystemAgent(
+	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
 		r.Context(), prompt, input.Message, input.History,
 	)
 	if err != nil {
@@ -476,6 +478,9 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "单次输入不能超过 3000 字")
 		return
 	}
+	if s.tryInboxAgentResponse(w, r, actor, input.Message) {
+		return
+	}
 	input.Navigation = sanitizeSystemAgentNavigation(input.Navigation)
 	input.CurrentPath = strings.TrimSpace(input.CurrentPath)
 	if utf8.RuneCountInString(input.CurrentPath) > 512 {
@@ -547,7 +552,7 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	modelOutput, modelName, latencyMS, err := callDashScopeSystemAgent(
+	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
 		r.Context(), prompt, input.Message, input.History,
 	)
 	if err != nil {
@@ -611,7 +616,7 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func systemAgentCapabilities(access model.StaffAccessContext) []string {
-	items := make([]string, 0, 4)
+	items := []string{"我的待办", "分类提醒"}
 	if staffHasPermission(access, "staff.employee.view") {
 		items = append(items, "查询员工")
 	}
@@ -1449,20 +1454,16 @@ func normalizeSystemAgentAction(value string) string {
 	}
 }
 
-func callDashScopeSystemAgent(
+func callSystemAgentModel(
 	ctx context.Context,
 	systemPrompt, message string,
 	history []liveAgentChatHistoryItem,
 ) (systemAgentModelOutput, string, int64, error) {
-	apiKey := dashScopeAPIKey()
-	if apiKey == "" {
-		return systemAgentModelOutput{}, "", 0, fmt.Errorf("DASHSCOPE_API_KEY not configured")
-	}
 	if len(history) > 12 {
 		history = history[len(history)-12:]
 	}
 
-	messages := []map[string]string{{"role": "system", "content": systemPrompt}}
+	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}}
 	for _, item := range history {
 		role := strings.TrimSpace(item.Role)
 		if role == "agent" {
@@ -1478,65 +1479,26 @@ func callDashScopeSystemAgent(
 		if utf8.RuneCountInString(text) > 1200 {
 			text = string([]rune(text)[:1200])
 		}
-		messages = append(messages, map[string]string{"role": role, "content": text})
+		messages = append(messages, agentgateway.Message{Role: role, Content: text})
 	}
-	messages = append(messages, map[string]string{"role": "user", "content": message})
+	messages = append(messages, agentgateway.Message{Role: "user", Content: message})
 
-	payload := map[string]any{
-		"model":           liveAgentModel(),
-		"messages":        messages,
-		"enable_thinking": false,
-		"stream":          false,
-		"max_tokens":      1400,
-		"response_format": map[string]string{"type": "json_object"},
-	}
-	body, err := json.Marshal(payload)
+	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+		Messages:       messages,
+		MaxTokens:      1400,
+		EnableThinking: false,
+		ResponseFormat: agentgateway.ResponseJSON,
+		Timeout:        30 * time.Second,
+	})
 	if err != nil {
 		return systemAgentModelOutput{}, "", 0, err
 	}
 
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, dashScopeChatURL(), bytes.NewReader(body))
-	if err != nil {
-		return systemAgentModelOutput{}, "", 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	started := time.Now()
-	resp, err := http.DefaultClient.Do(req)
-	latencyMS := time.Since(started).Milliseconds()
-	if err != nil {
-		return systemAgentModelOutput{}, "", latencyMS, err
-	}
-	defer resp.Body.Close()
-
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return systemAgentModelOutput{}, "", latencyMS, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return systemAgentModelOutput{}, "", latencyMS, fmt.Errorf(
-			"dashscope status %d: %s",
-			resp.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-		)
-	}
-
-	var decoded dashScopeChatResponse
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return systemAgentModelOutput{}, "", latencyMS, err
-	}
-	if len(decoded.Choices) == 0 {
-		return systemAgentModelOutput{}, "", latencyMS, fmt.Errorf("dashscope returned no choices")
-	}
-
-	raw := stripPolicyJSONFence(decoded.Choices[0].Message.Content)
+	raw := stripPolicyJSONFence(result.Text)
 	var output systemAgentModelOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		return systemAgentModelOutput{}, "", latencyMS, fmt.Errorf("decode system agent output: %w", err)
+		return systemAgentModelOutput{}, "", result.LatencyMS, fmt.Errorf("decode system agent output: %w", err)
 	}
 	output.Action = normalizeSystemAgentAction(output.Action)
-	return output, liveAgentModel(), latencyMS, nil
+	return output, result.Model, result.LatencyMS, nil
 }

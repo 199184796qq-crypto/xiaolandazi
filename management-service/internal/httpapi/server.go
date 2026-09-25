@@ -17,9 +17,11 @@ import (
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
 	assetstorage "livecompanion/management/internal/storage"
+	"livecompanion/management/internal/workinbox"
 )
 
 type Server struct {
+	inbox  *workinbox.Service
 	store  *appdb.Store
 	auth   *auth.Resolver
 	core   *coreclient.Client
@@ -72,9 +74,15 @@ func New(
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerWorkInboxRoutes(mux)
 
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
+	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
+		mux.HandleFunc("POST /internal/v1/dev/runtime/answer-tts", s.devRuntimeAnswerTTS)
+		mux.HandleFunc("POST /internal/v1/dev/runtime/synthesize-text", s.devRuntimeSynthesizeText)
+		mux.HandleFunc("GET /internal/v1/dev/runtime/models", s.devRuntimeAgentModels)
+	}
 
 	mux.HandleFunc("GET /api/v1/auth/captcha", s.authCaptcha)
 	mux.HandleFunc("POST /api/v1/auth/login", s.authLogin)
@@ -115,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/staff/roles/{roleID}", s.staffUpdateRole)
 	mux.HandleFunc("POST /api/v1/staff/employees", s.staffCreateEmployee)
 	mux.HandleFunc("POST /api/v1/staff/employees/{employeeID}/disable", s.staffDisableEmployee)
+	mux.HandleFunc("POST /api/v1/staff/employees/{employeeID}/reset-password", s.staffResetEmployeePassword)
 	mux.HandleFunc("PUT /api/v1/staff/employees/{employeeID}/roles", s.staffReplaceEmployeeRoles)
 	mux.HandleFunc("PATCH /api/v1/staff/approval-policies/{policyID}", s.staffUpdateApprovalPolicy)
 
@@ -124,8 +133,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/account/avatar/{file}", s.accountAvatarFile)
 	mux.HandleFunc("GET /api/v1/finance/dashboard", s.financeDashboard)
 	mux.HandleFunc("POST /api/v1/finance/recharge-request", s.financeCreateRechargeRequest)
+	mux.HandleFunc("GET /api/v1/finance/referral-wallet", s.customerReferralWallet)
+	mux.HandleFunc("POST /api/v1/finance/referral-withdrawals", s.customerCreateReferralWithdrawal)
+	mux.HandleFunc("GET /api/v1/finance/withdrawals", s.customerWalletWithdrawals)
+	mux.HandleFunc("POST /api/v1/finance/withdrawals", s.customerCreateWalletWithdrawal)
 
 	mux.HandleFunc("GET /api/v1/admin/customers", s.adminListCustomers)
+	mux.HandleFunc("PATCH /api/v1/admin/customers/{tenantID}/cooperation", s.adminUpdateCustomerCooperation)
 	mux.HandleFunc("PUT /api/v1/admin/customers/{tenantID}/sales-assignment", s.adminAssignCustomerSales)
 	mux.HandleFunc("GET /api/v1/admin/customers/{tenantID}/resources", s.adminCustomerResourceDashboard)
 	mux.HandleFunc("POST /api/v1/admin/customers/{tenantID}/resources/adjust", s.adminAdjustCustomerResource)
@@ -157,6 +171,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/agent/customers", s.agentListCustomers)
 	mux.HandleFunc("POST /api/v1/agent/customers", s.agentCreateCustomer)
 	mux.HandleFunc("GET /api/v1/sales/customers", s.salesListCustomers)
+	mux.HandleFunc("GET /api/v1/sales/performance", s.salesSelfPerformance)
+	mux.HandleFunc("GET /api/v1/sales/followups", s.salesListFollowups)
+	mux.HandleFunc("POST /api/v1/sales/followups", s.salesCreateFollowup)
+	mux.HandleFunc("GET /api/v1/sales/catalog", s.salesCatalog)
+	s.registerSalesBusinessRoutes(mux)
 	mux.HandleFunc("GET /api/v1/agent/customers/{tenantID}/resources", s.agentCustomerResourceDashboard)
 	mux.HandleFunc("POST /api/v1/agent/customers/{tenantID}/resources/allocate", s.agentAllocateCustomerResource)
 
@@ -193,6 +212,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/approve", s.financeApproveSettlementBatch)
 	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/reject", s.financeRejectSettlementBatch)
 	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/pay", s.financePaySettlementBatch)
+	mux.HandleFunc("GET /api/v1/finance/referral-withdrawals", s.financeListReferralWithdrawals)
+	mux.HandleFunc("POST /api/v1/finance/referral-withdrawals/{withdrawalID}/approve", s.financeApproveReferralWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/referral-withdrawals/{withdrawalID}/reject", s.financeRejectReferralWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/referral-withdrawals/{withdrawalID}/pay", s.financePayReferralWithdrawal)
+	mux.HandleFunc("GET /api/v1/finance/customer-withdrawals", s.financeListCustomerWalletWithdrawals)
+	mux.HandleFunc("POST /api/v1/finance/customer-withdrawals/{withdrawalID}/approve", s.financeApproveCustomerWalletWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/customer-withdrawals/{withdrawalID}/reject", s.financeRejectCustomerWalletWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/customer-withdrawals/{withdrawalID}/pay", s.financePayCustomerWalletWithdrawal)
 	mux.HandleFunc("GET /api/v1/finance/operating", s.financeOperatingOverview)
 	mux.HandleFunc("POST /api/v1/finance/token-purchases", s.financeCreateTokenPurchase)
 	mux.HandleFunc("GET /api/v1/shop/memberships", s.customerShopMemberships)
@@ -251,6 +278,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/monitor", s.updateRoomMonitor)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}", s.deleteRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/events", s.listEvents)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/blocked-users", s.listRoomBlockedUsers)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/blocked-users", s.blockRoomUser)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/blocked-users/restore", s.restoreRoomBlockedUser)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/stream", s.streamEvents)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/preview", s.previewRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live/{file}", s.liveMedia)
@@ -269,12 +299,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/voice-profiles", s.liveListVoiceProfiles)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles", s.liveCreateVoiceProfile)
 	mux.HandleFunc("PUT /api/v1/live/voice-profiles/{profileID}", s.liveUpdateVoiceProfile)
+	mux.HandleFunc("GET /api/v1/live/official-voices", s.liveOfficialVoices)
+	mux.HandleFunc("POST /api/v1/live/official-voices/{voiceID}/preview", s.liveOfficialVoicePreview)
+	mux.HandleFunc("POST /api/v1/live/voice-profiles/clone", s.liveCloneVoiceProfile)
+	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/preview", s.liveVoiceProfilePreview)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/chat", s.liveAgentChat)
 	mux.HandleFunc("GET /api/v1/live/policies/industries", s.livePolicyIndustries)
 	mux.HandleFunc("GET /api/v1/live/support/staff", s.liveSupportStaff)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/support-authorizations", s.liveRoomSupportAuthorizations)
+	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/support-requests", s.liveRoomSupportRequests)
+	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/support-requests/{staffUserID}", s.liveRoomCreateSupportRequest)
 	mux.HandleFunc("PUT /api/v1/live/rooms/{roomID}/support-authorizations/{staffUserID}", s.liveRoomUpdateSupportAuthorizations)
 	mux.HandleFunc("GET /api/v1/liveops/support-authorizations", s.liveOpsSupportAuthorizations)
+	mux.HandleFunc("GET /api/v1/liveops/support-requests", s.liveOpsSupportRequests)
+	mux.HandleFunc("POST /api/v1/liveops/support-requests/{requestID}/accept", s.liveOpsAcceptSupportRequest)
+	mux.HandleFunc("POST /api/v1/liveops/support-requests/{requestID}/reject", s.liveOpsRejectSupportRequest)
 	mux.HandleFunc("POST /api/v1/liveops/support/rooms/{roomID}/anchor-training", s.liveOpsSupportAnchorTraining)
 	mux.HandleFunc("POST /api/v1/liveops/support/rooms/{roomID}/config-versions/{versionID}/activate", s.liveOpsSupportActivateConfigVersion)
 	mux.HandleFunc("POST /api/v1/liveops/support/rooms/{roomID}/media-assets", s.liveOpsSupportMediaUpload)
@@ -289,6 +328,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/policies/admin/versions/{versionID}/rollback", s.livePolicyAdminRollback)
 	mux.HandleFunc("POST /api/v1/live/policies/admin/agent/chat", s.livePolicyAdminAgentChat)
 	mux.HandleFunc("POST /api/v1/live/policies/admin/test", s.livePolicyAdminTest)
+	mux.HandleFunc("POST /api/v1/live/policy-learning/candidates", s.livePolicyLearningCreateCandidate)
+	mux.HandleFunc("POST /api/v1/live/policy-learning/evidence", s.livePolicyLearningCreateEvidence)
+	mux.HandleFunc("GET /api/v1/live/policy-learning/candidates", s.livePolicyLearningListCandidates)
+	mux.HandleFunc("POST /api/v1/live/policy-learning/candidates/{candidateID}/adopt", s.livePolicyLearningAdoptCandidate)
+	mux.HandleFunc("POST /api/v1/live/policy-learning/candidates/{candidateID}/reject", s.livePolicyLearningRejectCandidate)
+	mux.HandleFunc("GET /api/v1/live-agent-plans", s.liveAgentPlanList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans", s.liveAgentPlanCreate)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}", s.liveAgentPlanGet)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/archive", s.liveAgentPlanArchive)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/room-bindings", s.liveAgentPlanBindRoom)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/room-bindings/{roomID}", s.liveAgentPlanUnbindRoom)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/terms", s.liveAgentPlanUpsertTerm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/policy", s.liveRoomPolicyContext)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/policy/drafts", s.liveRoomPolicyCreateDraft)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/policy/versions/{versionID}/publish", s.liveRoomPolicyPublish)
@@ -306,7 +358,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeEvents)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeRecordEvent)
 
-	return requestLogger(s.adminAuditMiddleware(mux))
+	return requestLogger(s.inboxMutationMiddleware(s.adminAuditMiddleware(mux)))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -382,7 +434,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "核心服务暂不可用")
 		return
 	}
-	s.copyCoreResponse(w, resp)
+	s.writeEnrichedRoomListResponse(w, r, resp)
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -478,7 +530,12 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := scopeForActor(actor)
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 	resp, err := s.core.Do(
 		r.Context(),
 		http.MethodGet,
@@ -490,7 +547,7 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "核心服务暂不可用")
 		return
 	}
-	s.copyCoreResponse(w, resp)
+	s.writeEnrichedRoomResponse(w, r, resp)
 }
 
 func (s *Server) updateRoomMonitor(w http.ResponseWriter, r *http.Request) {
@@ -551,10 +608,6 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if actor.Role != "customer" {
-		writeError(w, http.StatusForbidden, "仅终端账号可删除直播间")
-		return
-	}
 	roomID, ok := pathID(w, r)
 	if !ok {
 		return
@@ -564,18 +617,61 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isCustomer := actor.Role == "customer"
+	isOperationsDelete := false
+	if !isCustomer {
+		allowed := actor.IsPlatformAdmin()
+		if !allowed && actor.IsInternalStaff() {
+			access, err := s.store.GetStaffAccess(r.Context(), actor.UserID)
+			if err == nil && staffHasPermission(access, "liveops.configure") {
+				allowed = true
+			}
+		}
+		if !allowed {
+			writeError(w, http.StatusForbidden, "当前账号没有删除直播间权限")
+			return
+		}
+
+		cooperation, err := s.store.GetCustomerCooperationInfo(r.Context(), tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取商户合作状态失败")
+			return
+		}
+		if !cooperation.IsNonCooperating() {
+			writeError(w, http.StatusForbidden, "合作中的商户直播间禁止运维删除")
+			return
+		}
+		isOperationsDelete = true
+	}
+
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 	resp, err := s.core.DoRoom(
 		r.Context(),
 		tenantID,
 		roomID,
 		http.MethodDelete,
 		fmt.Sprintf("/internal/v1/rooms/%d", roomID),
-		scopeForActor(actor),
+		query,
 		nil,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "核心服务暂不可用")
 		return
+	}
+	if isOperationsDelete &&
+		resp.StatusCode >= http.StatusOK &&
+		resp.StatusCode < http.StatusMultipleChoices {
+		_ = s.audit.Record(r.Context(), model.AdminAuditLog{
+			ActorUserID:    actor.UserID,
+			ActorUsername:  actor.Username,
+			Action:         "room.delete_non_cooperating",
+			TargetTenantID: tenantID,
+			HTTPMethod:     r.Method,
+			Path:           r.URL.Path,
+			ClientIP:       requestClientIP(r),
+			Result:         "http_" + strconv.Itoa(resp.StatusCode),
+		})
 	}
 	s.copyCoreResponse(w, resp)
 }
@@ -590,7 +686,12 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := scopeForActor(actor)
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 	if limit := strings.TrimSpace(r.URL.Query().Get("limit")); limit != "" {
 		query.Set("limit", limit)
 	}
@@ -873,16 +974,27 @@ func (s *Server) roomScopeQuery(
 	r *http.Request,
 	actor model.Actor,
 ) (url.Values, bool) {
+	if actor.Role == "customer" {
+		if actor.TenantID == nil {
+			writeError(w, http.StatusForbidden, "当前账号没有终端范围")
+			return nil, false
+		}
+		return scopeForActor(actor), true
+	}
+
 	hasSystemScope := actor.IsPlatformAdmin()
 	if !hasSystemScope && actor.IsInternalStaff() {
 		access, err := s.store.GetStaffAccess(r.Context(), actor.UserID)
-		if err == nil && staffHasPermission(access, "system.architecture.view") {
-			hasSystemScope = true
+		if err == nil {
+			hasSystemScope =
+				staffHasPermission(access, "system.architecture.view") ||
+					staffHasPermission(access, "liveops.view_all") ||
+					staffHasPermission(access, "liveops.configure")
 		}
 	}
-
 	if !hasSystemScope {
-		return scopeForActor(actor), true
+		writeError(w, http.StatusForbidden, "当前账号没有直播间查看权限")
+		return nil, false
 	}
 
 	query := url.Values{}

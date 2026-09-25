@@ -14,7 +14,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db                 *sql.DB
+	inboxEventsEnabled bool
 }
 
 func Open(cfg config.Config) (*Store, error) {

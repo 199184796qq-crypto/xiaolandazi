@@ -24,6 +24,9 @@ type Config struct {
 	EventCacheLimit          int
 	PublicEventLogEnabled    bool
 	InternalToken            string
+	AudioServiceURL          string
+	AudioServiceToken        string
+	CorePublicURL            string
 	BrowserPath              string
 	BrowserHeadless          bool
 	CollectorWorkers         int
@@ -66,6 +69,9 @@ func Load() Config {
 		EventCacheLimit:          envInt("PUBLIC_EVENT_CACHE_LIMIT", 500),
 		PublicEventLogEnabled:    envBool("PUBLIC_EVENT_LOG_ENABLED", env == "development"),
 		InternalToken:            envOrDefault("CORE_INTERNAL_TOKEN", "local-core-dev-token"),
+		AudioServiceURL:          envOrDefault("AUDIO_SERVICE_URL", "http://127.0.0.1:8082"),
+		AudioServiceToken:        envOrDefault("AUDIO_INTERNAL_TOKEN", "local-audio-dev-token"),
+		CorePublicURL:            envOrDefault("CORE_PUBLIC_URL", "http://127.0.0.1:8081"),
 		BrowserPath:              strings.TrimSpace(os.Getenv("COLLECTOR_BROWSER_PATH")),
 		BrowserHeadless:          envBool("COLLECTOR_BROWSER_HEADLESS", true),
 		CollectorWorkers:         envPositiveInt("COLLECTOR_WORKERS", 5),

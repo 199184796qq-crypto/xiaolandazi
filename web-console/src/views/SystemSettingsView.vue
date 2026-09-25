@@ -14,6 +14,7 @@ import {
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 import PaginationBar from '../components/PaginationBar.vue'
+import { financeReviewSettingKey } from '../financeReviewPolicy'
 import type {
   InventoryWarehouse,
   LivePolicyIndustry,
@@ -27,6 +28,8 @@ type DictionaryCategory = 'logistics_provider' | 'product_unit'
 
 const loading = ref(false)
 const saving = ref(false)
+const savingRuleTypography = ref(false)
+const savingFinancePolicy = ref(false)
 const savingMembershipLimits = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -242,7 +245,7 @@ async function saveGlobalSettings() {
   notice.value = ''
   try {
     const result = await updateSystemSettings(
-      dashboard.value.settings.map((item) => ({
+      dashboard.value.settings.filter((item) => item.key !== financeReviewSettingKey).map((item) => ({
         key: item.key,
         value: settingsDraft[item.key] ?? '',
       })),
@@ -561,6 +564,14 @@ onMounted(load)
     <p v-if="error" class="auth-error">{{ error }}</p>
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
+    <section v-if="canViewGlobal" id="finance-review-policy" class="system-settings-card finance-review-settings">
+      <header><div><h3>财务审核规则</h3><p>适用于收款审核及充值、退款、奖励、AI 时长审批。仅控制是否必须分人，不取消权限和实际入账校验。</p></div><button type="button" class="primary-button" :disabled="loading || savingFinancePolicy || !dashboard" @click="saveFinancePolicy">{{ savingFinancePolicy ? '保存中…' : '保存审核规则' }}</button></header>
+      <div class="system-settings-form">
+        <label class="system-setting-wide finance-review-toggle"><input type="checkbox" :checked="settingsDraft[financeReviewSettingKey] !== 'false'" :disabled="loading || savingFinancePolicy" @change="settingsDraft[financeReviewSettingKey] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'"/><span>强制经办人与审核人不同</span></label>
+        <p class="system-setting-wide">{{ settingsDraft[financeReviewSettingKey] === 'false' ? '不强制：适合一人兼岗。本人提交或补件的单据也可由本人审核，前提是具备对应审核权限。' : '强制：本人提交或补件的单据，必须由另一位有审核权限的人处理。' }}经办人、审核人、时间、审核结果均保留。点击“保存审核规则”后生效。</p>
+      </div>
+    </section>
+
     <section v-if="canViewGlobal" class="system-settings-card">
       <header>
         <div>
@@ -758,7 +769,7 @@ onMounted(load)
             不得编造商品信息、价格、库存、优惠或商家承诺；信息无法确认时应明确说明需要核实。
           </p>
           <small :style="{ fontSize: draftFontSize('live_policy_rule_meta_font_size', 20) + 'px' }">
-            l1.事实真实性.6384c844
+            规则层.事实真实性.6384c844
           </small>
         </div>
       </div>
@@ -773,7 +784,7 @@ onMounted(load)
             当前实时库存数量、商家承诺的发货时效及物流状态。
           </p>
           <small :style="{ fontSize: draftFontSize('live_policy_test_meta_font_size', 16) + 'px' }">
-            L1 · 事实真实性
+            规则层 · 事实真实性
           </small>
         </div>
       </div>
@@ -1126,6 +1137,11 @@ onMounted(load)
 </template>
 
 <style scoped>
+.finance-review-settings h3 {font-size:20px}
+.finance-review-settings p,.finance-review-settings button,.finance-review-settings label {font-size:18px;line-height:1.5}
+.finance-review-settings .finance-review-toggle {display:flex;align-items:center;gap:12px;cursor:pointer}
+.finance-review-settings .finance-review-toggle input {width:20px;height:20px;min-height:20px;accent-color:#326bd8}
+.finance-review-settings button:hover {box-shadow:0 0 0 3px #4285ff22;border-color:#65a1ff}
 .system-settings-page { display: grid; gap: 16px; }
 .system-settings-card { overflow: hidden; border: 1px solid #e3e8f0; border-radius: 18px; background: #fff; box-shadow: 0 12px 34px rgba(43, 56, 91, .055); }
 .system-settings-card > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #edf0f5; }

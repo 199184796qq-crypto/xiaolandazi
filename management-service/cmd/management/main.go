@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"livecompanion/management/internal/audit"
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/config"
@@ -20,6 +21,7 @@ import (
 	"livecompanion/management/internal/liveruntime"
 	"livecompanion/management/internal/mailer"
 	assetstorage "livecompanion/management/internal/storage"
+	"livecompanion/management/internal/workinbox"
 )
 
 func main() {
@@ -164,6 +166,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize media storage: %v", err)
 	}
+	if err := store.MigrateWorkInbox(ctx); err != nil {
+		log.Fatalf("migrate work inbox: %v", err)
+	}
+	inboxRedis := redis.NewClient(&redis.Options{Addr: net.JoinHostPort(cfg.RedisHost, cfg.RedisPort), Password: cfg.RedisPassword, DB: cfg.RedisDB, DialTimeout: 500 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond, PoolTimeout: 500 * time.Millisecond, ContextTimeoutEnabled: true, MaxRetries: -1})
+	defer inboxRedis.Close()
+	inbox := workinbox.New(store, inboxRedis, net.JoinHostPort(cfg.DBHost, cfg.DBPort)+"/"+cfg.DBName)
+	go inbox.Run(appCtx)
 	api := httpapi.New(
 		store,
 		authResolver,
@@ -177,6 +186,7 @@ func main() {
 		time.Duration(cfg.OSSURLExpirySeconds)*time.Second,
 		leaderLease,
 	)
+	api.SetWorkInbox(inbox)
 	runtimeReconciler := liveruntime.NewReconciler(
 		store,
 		core,

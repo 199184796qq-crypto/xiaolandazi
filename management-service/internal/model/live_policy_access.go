@@ -1,7 +1,7 @@
 package model
 
-// L1 and customer L3 delegation are deliberately mutually exclusive. Check the
-// effective permission union, not a job title, so a second role cannot bypass it.
+// Live policy permissions are evaluated from the effective permission union,
+// not from a job title, so custom roles keep the same authorization semantics.
 func (a StaffAccessContext) hasLivePolicyPermission(permission string) bool {
 	if a.IsSuperAdmin {
 		return true
@@ -25,7 +25,8 @@ func (a StaffAccessContext) CanManageLivePolicyL2() bool {
 // This is only the staff-side eligibility check. A live, room-specific customer
 // grant and room ownership must still be checked before every delegated action.
 func (a StaffAccessContext) CanDelegateLivePolicyL3() bool {
-	return !a.CanManageLivePolicyL1() && a.CanManageLivePolicyL2()
+	return a.CanManageLivePolicyL2() &&
+		a.hasLivePolicyPermission("livepolicy.manage_l3_authorized")
 }
 
 func (a StaffAccessContext) CanUseLiveSupportCapability(capability string) bool {

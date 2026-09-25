@@ -480,24 +480,6 @@ const outboundSNMissing = computed(() => {
   )
 })
 
-const availableCount = computed(() =>
-  devices.value.filter((item) => item.lifecycle_status === 'IN_STOCK').length,
-)
-const reservedCount = computed(() =>
-  devices.value.filter((item) => item.lifecycle_status === 'RESERVED').length,
-)
-const transitCount = computed(() =>
-  devices.value.filter((item) => item.lifecycle_status === 'IN_TRANSIT').length,
-)
-const afterSalesCount = computed(() =>
-  devices.value.filter((item) =>
-    ['RMA_TRANSIT', 'AFTER_SALES', 'REPAIRING', 'REPAIR_TRANSIT', 'EXTERNAL_REPAIR', 'REPAIR_RETURN_TRANSIT', 'SCRAP_PENDING'].includes(item.lifecycle_status),
-  ).length,
-)
-const scrappedCount = computed(() =>
-  devices.value.filter((item) => item.lifecycle_status === 'SCRAPPED').length,
-)
-
 const openRMA = computed(() => rmaOpenTotal.value)
 const rmaTotalPages = computed(() =>
   Math.max(1, Math.ceil(rmaTotal.value / rmaPageSize.value)),
@@ -1449,36 +1431,6 @@ onMounted(loadAll)
       </div>
     </section>
 
-    <section v-if="focus !== 'after-sales'" class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>设备总数</span><strong>{{ devices.length }}</strong><small>所有 SN 档案</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>在库可用</span><strong>{{ availableCount }}</strong><small>IN_STOCK</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>锁定 / 在途</span><strong>{{ reservedCount + transitCount }}</strong><small>{{ reservedCount }} 锁定 · {{ transitCount }} 在途</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>售后 / 报废</span><strong>{{ afterSalesCount + scrappedCount }}</strong><small>{{ afterSalesCount }} 售后 · {{ scrappedCount }} 报废</small>
-      </article>
-    </section>
-
-    <section v-else class="module-hub-metrics-v2 after-sales-project-metrics">
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>处理中维修单</span><strong>{{ openRMA }}</strong><small>待受理、物流、检测和维修中的工单</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>累计维修单</span><strong>{{ rmaTotal }}</strong><small>全部售后维修单</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>售后 / 维修设备</span><strong>{{ afterSalesCount }}</strong><small>当前在售后、维修和往返链路中的设备</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>已结束</span><strong>{{ Math.max(rmaTotal - openRMA, 0) }}</strong><small>已完成或已取消的维修单</small>
-      </article>
-    </section>
-
     <p v-if="error" class="inline-error">{{ error }}</p>
 
     <section v-if="focus === 'devices'" class="settings-card feature-workspace-panel">
@@ -2253,7 +2205,6 @@ onMounted(loadAll)
               <p>已锁定到具体设备 ID / SN，下面继续填写收货对象和物流信息。</p>
             </div>
           </div>
-
 
           <label>
             <span>出库给谁 *</span>

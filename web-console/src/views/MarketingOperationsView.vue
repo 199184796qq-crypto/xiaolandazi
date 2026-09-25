@@ -72,10 +72,6 @@ function campaignRuntimeStatus(item: MarketingCampaign) {
   return '进行中'
 }
 
-function isCampaignActive(item: MarketingCampaign) {
-  return campaignRuntimeStatus(item) === '进行中'
-}
-
 function toolTags(item: MarketingCampaign) {
   const tags: string[] = []
   if (item.items.some((rule) => rule.discount_bps > 0 && rule.discount_bps < 10000)) tags.push('折扣')
@@ -84,27 +80,6 @@ function toolTags(item: MarketingCampaign) {
   if (item.starts_at || item.ends_at) tags.push('限时')
   return tags.length ? tags : ['标准定价']
 }
-
-const activeCampaignCount = computed(() => campaigns.value.filter(isCampaignActive).length)
-const discountCampaignCount = computed(() =>
-  campaigns.value.filter((item) =>
-    item.items.some((rule) => rule.discount_bps > 0 && rule.discount_bps < 10000),
-  ).length,
-)
-const giftCampaignCount = computed(() =>
-  campaigns.value.filter((item) => item.items.some((rule) => rule.discount_bps === 0)).length,
-)
-const packageCampaignCount = computed(() =>
-  campaigns.value.filter((item) =>
-    item.items.some((rule) => (rule.package_months || 1) > 1 || (rule.quantity || 1) > 1),
-  ).length,
-)
-const timedCampaignCount = computed(() =>
-  campaigns.value.filter((item) => Boolean(item.starts_at || item.ends_at)).length,
-)
-const publishedRewardCount = computed(() =>
-  rewardPrograms.value.filter((item) => Boolean(item.active_version)).length,
-)
 
 const loadedChannelCounts = computed(() => {
   const counts: Record<string, number> = {}
@@ -145,31 +120,6 @@ const channelRows = computed(() => [
   },
 ])
 
-const metrics = computed(() => {
-  if (props.mode === 'channels') {
-    return [
-      { label: '邀请关系', value: invitations.value?.records_total || 0, hint: '全平台已记录邀请/推荐关系', tone: 'primary' },
-      { label: '邀请码', value: invitations.value?.codes_total || 0, hint: '当前邀请码总量', tone: 'success' },
-      { label: '奖励规则', value: publishedRewardCount.value, hint: '当前已发布推荐奖励版本', tone: 'warning' },
-      { label: '归属方式', value: '可追溯', hint: '注册来源与推荐关系单独留档', tone: 'neutral' },
-    ]
-  }
-  if (props.mode === 'analytics') {
-    return [
-      { label: '营销活动', value: campaigns.value.length, hint: '当前营销活动总量', tone: 'primary' },
-      { label: '进行中', value: activeCampaignCount.value, hint: '当前时间窗口内生效', tone: 'success' },
-      { label: '邀请关系', value: invitations.value?.records_total || 0, hint: '已记录邀请/推荐关系', tone: 'warning' },
-      { label: '已发布奖励规则', value: publishedRewardCount.value, hint: '历史版本继续保留引用', tone: 'neutral' },
-    ]
-  }
-  return [
-    { label: '折扣活动', value: discountCampaignCount.value, hint: '按基点配置折扣，不写死售价', tone: 'primary' },
-    { label: '赠送活动', value: giftCampaignCount.value, hint: '0 折标的按赠送处理', tone: 'success' },
-    { label: '组合活动', value: packageCampaignCount.value, hint: '多月或多份组合规则', tone: 'warning' },
-    { label: '限时活动', value: timedCampaignCount.value, hint: '配置开始或结束时间', tone: 'neutral' },
-  ]
-})
-
 function formatDate(value?: string) {
   if (!value) return '长期'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
@@ -183,7 +133,7 @@ async function load() {
   invitations.value = null
   rewardPrograms.value = []
 
-  if (props.mode !== 'channels' || hasStaffPermission('commercial.marketing.view')) {
+  if (props.mode !== 'channels') {
     try {
       campaigns.value = (await getCommercialMarketingCampaigns()).items
     } catch (value) {
@@ -192,7 +142,7 @@ async function load() {
   }
 
   if (props.mode === 'channels' || props.mode === 'analytics') {
-    if (hasStaffPermission('invitations.view_all')) {
+    if (props.mode === 'channels' && hasStaffPermission('invitations.view_all')) {
       try {
         invitations.value = await getInvitationDashboard({
           code_page: 1,
@@ -203,11 +153,11 @@ async function load() {
       } catch (value) {
         warnings.value.push(value instanceof Error ? value.message : '邀请数据暂时无法读取')
       }
-    } else {
+    } else if (props.mode === 'channels') {
       warnings.value.push('当前账号没有全平台邀请关系查看权限，渠道数据仅显示可访问部分。')
     }
 
-    if (hasStaffPermission('commercial.referral.view')) {
+    if (props.mode === 'analytics' && hasStaffPermission('commercial.referral.view')) {
       try {
         rewardPrograms.value = (await getIncentivePrograms('referral')).items
       } catch (value) {
@@ -252,20 +202,6 @@ watch(
 
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-for="item in warnings" :key="item" class="settings-help">{{ item }}</p>
-
-    <section class="module-hub-metrics-v2">
-      <article
-        v-for="item in metrics"
-        :key="item.label"
-        class="module-hub-metric-v2"
-        :class="'tone-' + item.tone"
-      >
-        <div class="module-metric-dot"></div>
-        <span>{{ item.label }}</span>
-        <strong>{{ item.value }}</strong>
-        <small>{{ item.hint }}</small>
-      </article>
-    </section>
 
     <section v-if="props.mode === 'tools'" class="settings-card feature-workspace-panel">
       <div class="module-section-title">

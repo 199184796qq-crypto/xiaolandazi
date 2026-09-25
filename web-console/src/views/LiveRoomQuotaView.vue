@@ -51,13 +51,6 @@ const pagedItems = computed(() => {
   return filtered.value.slice(start, start + pageSize.value)
 })
 
-const summary = computed(() => ({
-  customers: items.value.length,
-  rooms: items.value.reduce((sum, item) => sum + item.current_room_count, 0),
-  quota: items.value.reduce((sum, item) => sum + item.room_limit, 0),
-  full: items.value.filter((item) => item.remaining_slots === 0).length,
-}))
-
 function usagePercent(item: LiveOpsRoomQuotaSummary) {
   if (item.room_limit <= 0) return item.current_room_count > 0 ? 100 : 0
   return Math.min(100, Math.round((item.current_room_count / item.room_limit) * 100))
@@ -146,13 +139,6 @@ onMounted(load)
       <button class="room-quota-refresh" type="button" :disabled="loading" @click="load">
         {{ loading ? '刷新中...' : '刷新数据' }}
       </button>
-    </section>
-
-    <section class="room-quota-metrics">
-      <article><span>客户</span><strong>{{ summary.customers }}</strong><small>当前客户账号</small></article>
-      <article><span>已建直播间</span><strong>{{ summary.rooms }}</strong><small>当前实际使用</small></article>
-      <article><span>总配额</span><strong>{{ summary.quota }}</strong><small>全部客户当前配额</small></article>
-      <article><span>配额已满</span><strong>{{ summary.full }}</strong><small>暂无剩余可开数量</small></article>
     </section>
 
     <section class="room-quota-card">

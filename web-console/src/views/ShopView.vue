@@ -651,29 +651,11 @@ onBeforeUnmount(() => {
   <div class="management-page customer-shop-page">
     <ModulePageNav context="workspace-customer" active-title="终端商城" />
 
-    <section class="customer-shop-hero">
+    <section class="customer-shop-hero customer-shop-hero-compact">
       <div class="customer-shop-hero-copy">
-        <p class="section-kicker">CUSTOMER STORE · SANDBOX</p>
+        <p class="section-kicker">CUSTOMER STORE</p>
         <h2>终端商城</h2>
-        <p>
-          时长卡属于虚拟商品，模拟支付成功后直接入账；设备属于实体商品，支付成功后会自动锁定具体 SN、生成待出库物流并进入签收链路。当前不会调用真实支付渠道。
-        </p>
       </div>
-
-      <div class="customer-shop-status sandbox-ready">
-        <span>测试支付环境</span>
-        <strong>模拟支付已开放</strong>
-      </div>
-    </section>
-
-    <section class="customer-shop-notice sandbox-notice">
-      <div>
-        <strong>怎么测试？</strong>
-        <p>
-          时长卡可直接购买；设备购买会先确认收货地址，再进入同一套模拟支付窗口。输入应付金额即可模拟成功，输入不同金额会记录失败支付。真实支付接入后只替换支付网关。
-        </p>
-      </div>
-      <span>Sandbox · 不产生真实扣款</span>
     </section>
 
     <p v-if="error" class="inline-error">{{ error }}</p>
@@ -687,7 +669,7 @@ onBeforeUnmount(() => {
         <div>
           <span>MARKETING PLANS</span>
           <strong>当前营销活动</strong>
-          <p>每张活动卡直接展示计划里包含的会员、时长卡和设备，以及对应折扣和实际价值。</p>
+
         </div>
       </header>
 

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,12 +20,13 @@ import (
 const maxLogSize = 5 * 1024 * 1024
 
 type Supervisor struct {
-	cfg       Config
-	client    *http.Client
-	logger    *log.Logger
-	logFile   *os.File
-	services  []*serviceState
-	closeOnce sync.Once
+	cfg          Config
+	client       *http.Client
+	logger       *log.Logger
+	logFile      *os.File
+	instanceLock *os.File
+	services     []*serviceState
+	closeOnce    sync.Once
 }
 
 type serviceState struct {
@@ -44,6 +46,16 @@ func New(cfg Config) (*Supervisor, error) {
 	if err := os.MkdirAll(cfg.RunDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create run dir: %w", err)
 	}
+	lock, err := acquireInstanceLock(filepath.Join(cfg.RunDir, "supervisor.instance.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("supervisor ownership: %w", err)
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = lock.Close()
+		}
+	}()
 
 	logPath := filepath.Join(cfg.LogDir, "supervisor.log")
 	if err := rotateLog(logPath); err != nil {
@@ -55,21 +67,23 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 
 	runner := &Supervisor{
-		cfg:     cfg,
-		client:  &http.Client{},
-		logFile: logFile,
-		logger:  log.New(io.MultiWriter(logFile), "", log.LstdFlags|log.Lmicroseconds),
+		cfg:          cfg,
+		client:       &http.Client{},
+		logFile:      logFile,
+		instanceLock: lock,
+		logger:       log.New(io.MultiWriter(logFile), "", log.LstdFlags|log.Lmicroseconds),
 	}
 	for _, item := range cfg.Services {
 		runner.services = append(runner.services, &serviceState{cfg: item})
 	}
+	transferred = true
 	return runner, nil
 }
 
 func (s *Supervisor) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
-		err = s.logFile.Close()
+		err = errors.Join(s.logFile.Close(), s.instanceLock.Close())
 	})
 	return err
 }

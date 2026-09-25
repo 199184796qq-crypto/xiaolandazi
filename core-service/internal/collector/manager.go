@@ -18,11 +18,20 @@ import (
 )
 
 type Stats struct {
-	ActiveRooms  int
-	ShardIndex   int
-	ShardCount   int
-	LeaseEnabled bool
-	LeaseNodeID  string
+	ActiveRooms         int
+	ShardIndex          int
+	ShardCount          int
+	LeaseEnabled        bool
+	LeaseNodeID         string
+	EventQueueDepth     int
+	EventIngressDropped uint64
+	EventPersistDropped uint64
+	EventDelivered      uint64
+	EventPersisted      uint64
+	EventPersistErrors  uint64
+	RuntimePending      int
+	RuntimeWrites       uint64
+	RuntimeErrors       uint64
 }
 
 func (m *Manager) ProviderDescriptors() []ProviderDescriptor {
@@ -46,16 +55,14 @@ type Manager struct {
 	publicEventLogEnabled bool
 	leases                *coordination.RoomLeases
 	failoverDelay         time.Duration
+	eventPipeline         *eventPipeline
+	runtimeUpdater        *runtimeUpdater
 
 	mu                sync.Mutex
 	sessions          map[int64]context.CancelFunc
 	sessionLeases     map[int64]coordination.RoomLease
 	missingLeaseSince map[int64]time.Time
 	wg                sync.WaitGroup
-
-	activityMu        sync.Mutex
-	lastLiveTouch     map[int64]time.Time
-	liveTouchInterval time.Duration
 }
 
 func NewManager(
@@ -95,8 +102,8 @@ func NewManager(
 		sessions:              make(map[int64]context.CancelFunc),
 		sessionLeases:         make(map[int64]coordination.RoomLease),
 		missingLeaseSince:     make(map[int64]time.Time),
-		lastLiveTouch:         make(map[int64]time.Time),
-		liveTouchInterval:     5 * time.Second,
+		eventPipeline:         newEventPipeline(events, hub, publicEventLogEnabled),
+		runtimeUpdater:        newRuntimeUpdater(rooms),
 	}
 }
 
@@ -207,7 +214,8 @@ func (m *Manager) start(room model.Room, lease *coordination.RoomLease) {
 			delete(m.sessionLeases, room.ID)
 			delete(m.missingLeaseSince, room.ID)
 			m.mu.Unlock()
-			m.clearLiveTouch(room.ID)
+			m.runtimeUpdater.ClearRoom(room.ID)
+			m.eventPipeline.CloseRoom(room.ID)
 		}()
 
 		m.run(ctx, room)
@@ -347,6 +355,21 @@ func (m *Manager) Stats() Stats {
 	if m.leases != nil {
 		stats.LeaseNodeID = m.leases.NodeID()
 	}
+	if m.eventPipeline != nil {
+		pipelineStats := m.eventPipeline.Stats()
+		stats.EventQueueDepth = pipelineStats.QueueDepth
+		stats.EventIngressDropped = pipelineStats.IngressDropped
+		stats.EventPersistDropped = pipelineStats.PersistDropped
+		stats.EventDelivered = pipelineStats.Delivered
+		stats.EventPersisted = pipelineStats.Persisted
+		stats.EventPersistErrors = pipelineStats.PersistErrors
+	}
+	if m.runtimeUpdater != nil {
+		runtimeStats := m.runtimeUpdater.Stats()
+		stats.RuntimePending = runtimeStats.Pending
+		stats.RuntimeWrites = runtimeStats.Writes
+		stats.RuntimeErrors = runtimeStats.Errors
+	}
 	return stats
 }
 
@@ -444,6 +467,12 @@ func (m *Manager) Close() {
 	}
 
 	m.wg.Wait()
+	if m.eventPipeline != nil {
+		m.eventPipeline.Close()
+	}
+	if m.runtimeUpdater != nil {
+		m.runtimeUpdater.Close()
+	}
 }
 
 func (m *Manager) run(ctx context.Context, room model.Room) {
@@ -465,42 +494,40 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 			log.Printf("collector room=%d create runner: %v", room.ID, err)
 			return
 		}
+		// Clear stale cache before entering the collector runner. This may touch
+		// remote Redis, so it must never run inside the collector callbacks.
+		m.clearRoomEvents(room.ID)
 
-		live := func(runCtx context.Context) error {
-			if err := m.events.ClearRoom(runCtx, room.ID); err != nil {
-				return err
-			}
-			return m.rooms.SetStatus(runCtx, room.TenantID, room.ID, "live")
+		live := func(_ context.Context) error {
+			m.eventPipeline.Enqueue(room, model.CreateEventInput{
+				EventType:  "session_start",
+				OccurredAt: time.Now().UTC(),
+			}, false, false)
+			m.runtimeUpdater.Touch(room)
+			return nil
 		}
 
-		emit := func(runCtx context.Context, input model.CreateEventInput) error {
+		emit := func(_ context.Context, input model.CreateEventInput) error {
 			if input.EventType == "room" {
-				m.applyRoomMetrics(runCtx, room, input)
+				m.applyRoomMetrics(room, input)
+				m.eventPipeline.Enqueue(room, input, false, false)
 				return nil
 			}
 
-			if err := m.touchRoomLive(runCtx, room); err != nil {
-				return err
-			}
-
-			event, err := m.events.Create(
-				runCtx,
-				room.TenantID,
-				room.ID,
-				input,
-			)
-			if err != nil {
-				return err
-			}
-
-			if m.publicEventLogEnabled {
-				logPublicEvent(room, event)
-			}
-			m.hub.Publish(event)
+			m.runtimeUpdater.Touch(room)
+			m.eventPipeline.Enqueue(room, input, true, true)
 			return nil
 		}
 
 		err = runner.Run(ctx, room, live, emit)
+		m.eventPipeline.Enqueue(room, model.CreateEventInput{
+			EventType:  "session_end",
+			OccurredAt: time.Now().UTC(),
+		}, false, false)
+		m.eventPipeline.CloseRoom(room.ID)
+		// Drop any coalesced live/online write before publishing an offline/error
+		// state. Otherwise a delayed cloud-DB flush could resurrect a stopped run.
+		m.runtimeUpdater.ClearRoom(room.ID)
 		m.clearRoomEvents(room.ID)
 		if ctx.Err() != nil {
 			return
@@ -533,34 +560,6 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		case <-timer.C:
 		}
 	}
-}
-
-func (m *Manager) touchRoomLive(ctx context.Context, room model.Room) error {
-	now := time.Now().UTC()
-	m.activityMu.Lock()
-	last := m.lastLiveTouch[room.ID]
-	if !last.IsZero() && now.Sub(last) < m.liveTouchInterval {
-		m.activityMu.Unlock()
-		return nil
-	}
-	m.lastLiveTouch[room.ID] = now
-	m.activityMu.Unlock()
-
-	if err := m.rooms.MarkLive(ctx, room.TenantID, room.ID); err != nil {
-		m.activityMu.Lock()
-		if current, ok := m.lastLiveTouch[room.ID]; ok && current.Equal(now) {
-			delete(m.lastLiveTouch, room.ID)
-		}
-		m.activityMu.Unlock()
-		return err
-	}
-	return nil
-}
-
-func (m *Manager) clearLiveTouch(roomID int64) {
-	m.activityMu.Lock()
-	delete(m.lastLiveTouch, roomID)
-	m.activityMu.Unlock()
 }
 
 func (m *Manager) clearRoomEvents(roomID int64) {
@@ -612,7 +611,6 @@ func sanitizeLogText(value string, maxRunes int) string {
 	return value
 }
 func (m *Manager) applyRoomMetrics(
-	ctx context.Context,
 	room model.Room,
 	input model.CreateEventInput,
 ) {
@@ -630,5 +628,5 @@ func (m *Manager) applyRoomMetrics(
 		return
 	}
 
-	_ = m.rooms.SetOnlineCount(ctx, room.TenantID, room.ID, payload.OnlineCount)
+	m.runtimeUpdater.SetOnlineCount(room, payload.OnlineCount)
 }

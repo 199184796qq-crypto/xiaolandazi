@@ -1,0 +1,8 @@
+node_modules
+.svelte-kit
+build
+dist
+vite-dev*.log
+.env
+.env.*
+!.env.example

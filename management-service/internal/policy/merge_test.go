@@ -69,11 +69,12 @@ func TestRenderPromptUsesExpressionHierarchy(t *testing.T) {
 		},
 	})
 	for _, required := range []string{
-		"L1 是通用判断与表达方法",
-		"L2 是行业表达层",
-		"L3 是直播间个性层",
-		"L1 不等于禁止清单",
+		"规则层是通用判断与表达方法",
+		"行业层是在规则层方法上",
+		"用户层是在规则层和行业层上",
+		"规则层不等于禁止清单",
 		"自然、热情、好听、可直接播出且不违规",
+		"[规则层][l1.truth]",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q: %s", required, prompt)

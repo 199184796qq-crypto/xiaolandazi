@@ -20,9 +20,11 @@ type User struct {
 	Role               string
 	MustChangePassword bool
 	Phone              string
+	Email              string
 	Province           string
 	City               string
 	District           string
+	Address            string
 	Status             string
 	CreatedAt          time.Time
 }

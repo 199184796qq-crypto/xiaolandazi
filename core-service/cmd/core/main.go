@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/collector"
 	"livecompanion/core/internal/collector/douyin"
 	"livecompanion/core/internal/config"
@@ -18,8 +20,12 @@ import (
 	"livecompanion/core/internal/httpapi"
 	"livecompanion/core/internal/logging"
 	"livecompanion/core/internal/media"
+	"livecompanion/core/internal/model"
+	"livecompanion/core/internal/questionqueue"
 	"livecompanion/core/internal/rediscache"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/userblock"
 )
 
 func main() {
@@ -82,6 +88,32 @@ func main() {
 	rooms := roomstore.NewStore(database)
 	events := eventstore.NewStore(redisClient, cfg.EventCacheLimit)
 	hub := eventstore.NewHub()
+	brain := roombrain.NewManager()
+	questions := questionqueue.New()
+	userBlocks, err := userblock.NewStore(startupCtx, database)
+	if err != nil {
+		log.Fatalf("load room user blocks: %v", err)
+	}
+	events.SetObserver(func(event model.RoomEvent) {
+		eventType := strings.ToLower(strings.TrimSpace(event.EventType))
+		switch eventType {
+		case "session_start", "session_end":
+			brain.Ingest(event)
+			questions.ClearRoom(event.RoomID)
+			return
+		}
+		if userBlocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
+			return
+		}
+		brain.Ingest(event)
+		switch eventType {
+		case "chat", "comment":
+			classification := brain.Classify(event.Content)
+			if classification.Question {
+				questions.Enqueue(event.RoomID, event.Content, classification.Topic, event.UserID)
+			}
+		}
+	})
 
 	browser := douyin.NewBrowserPool(
 		cfg.CollectorWorkers,
@@ -155,6 +187,11 @@ func main() {
 		cfg.Env,
 		cfg.InternalToken,
 	)
+	audioClient := audioout.NewClient(cfg.AudioServiceURL, cfg.AudioServiceToken)
+	api.SetAudioClient(audioClient, cfg.CorePublicURL)
+	api.SetRoomBrain(brain)
+	api.SetQuestionQueue(questions)
+	api.SetUserBlockStore(userBlocks)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,

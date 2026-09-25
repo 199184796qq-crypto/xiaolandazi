@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -295,7 +296,8 @@ func reverseOrderIncentivesForRefundTx(
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, beneficiary_type, beneficiary_id, earning_type,
 		       program_version_id, rule_id, currency,
-		       amount_cents, quota_seconds, status
+		       amount_cents, quota_seconds, status, available_at,
+		       COALESCE(CAST(calculation_snapshot_json AS CHAR), '{}')
 		FROM inc_earnings
 		WHERE source_order_id=?
 		  AND reversal_of_earning_id IS NULL
@@ -319,6 +321,8 @@ func reverseOrderIncentivesForRefundTx(
 		AmountCents      int64
 		QuotaSeconds     int64
 		Status           string
+		AvailableAt      sql.NullTime
+		SnapshotJSON     string
 	}
 	items := make([]earningRow, 0)
 	for rows.Next() {
@@ -334,6 +338,8 @@ func reverseOrderIncentivesForRefundTx(
 			&item.AmountCents,
 			&item.QuotaSeconds,
 			&item.Status,
+			&item.AvailableAt,
+			&item.SnapshotJSON,
 		); err != nil {
 			return err
 		}
@@ -348,6 +354,14 @@ func reverseOrderIncentivesForRefundTx(
 
 	fullRefund := refundAmount >= paidAmount
 	for _, item := range items {
+		if item.BeneficiaryType == customerReferralBeneficiaryType {
+			var snapshot map[string]any
+			if json.Unmarshal([]byte(item.SnapshotJSON), &snapshot) == nil {
+				if enabled, exists := snapshot["refund_reversal"].(bool); exists && !enabled {
+					continue
+				}
+			}
+		}
 		reverseAmount := item.AmountCents
 		reverseQuota := item.QuotaSeconds
 		if !fullRefund && paidAmount > 0 {
@@ -358,23 +372,31 @@ func reverseOrderIncentivesForRefundTx(
 			continue
 		}
 
-		switch item.Status {
-		case "pending", "available":
-			if fullRefund {
-				if _, err := tx.ExecContext(ctx, `
-					UPDATE inc_earnings
-					SET status='reversed', source_refund_id=?, updated_at=CURRENT_TIMESTAMP(3)
-					WHERE id=?
-				`, refundID, item.ID); err != nil {
-					return err
+		if item.BeneficiaryType != customerReferralBeneficiaryType {
+			switch item.Status {
+			case "pending", "available":
+				if fullRefund {
+					if _, err := tx.ExecContext(ctx, `
+						UPDATE inc_earnings
+						SET status='reversed', source_refund_id=?, updated_at=CURRENT_TIMESTAMP(3)
+						WHERE id=?
+					`, refundID, item.ID); err != nil {
+						return err
+					}
+					continue
 				}
-				continue
 			}
 		}
 
 		externalID := fmt.Sprintf("REV-%d-%d", refundID, item.ID)
 		idempotencyKey := fmt.Sprintf("refund-earning-reversal-%d-%d", refundID, item.ID)
-		if _, err := tx.ExecContext(ctx, `
+		reversalStatus := "available"
+		var reversalAvailableAt any = time.Now().UTC()
+		if item.BeneficiaryType == customerReferralBeneficiaryType && item.Status == "pending" && item.AvailableAt.Valid {
+			reversalStatus = "pending"
+			reversalAvailableAt = item.AvailableAt.Time
+		}
+		result, err := tx.ExecContext(ctx, `
 			INSERT IGNORE INTO inc_earnings (
 				external_id, beneficiary_type, beneficiary_id,
 				earning_type, source_order_id, source_refund_id,
@@ -386,7 +408,7 @@ func reverseOrderIncentivesForRefundTx(
 			VALUES (
 				?, ?, ?, ?, ?, ?,
 				?, ?, ?,
-				?, ?, 'available', CURRENT_TIMESTAMP(3),
+				?, ?, ?, ?,
 				?, JSON_OBJECT(
 					'refund_no', ?,
 					'refund_amount_cents', ?,
@@ -406,13 +428,49 @@ func reverseOrderIncentivesForRefundTx(
 			item.Currency,
 			-reverseAmount,
 			-reverseQuota,
+			reversalStatus,
+			reversalAvailableAt,
 			item.ID,
 			refundNo,
 			refundAmount,
 			paidAmount,
 			idempotencyKey,
-		); err != nil {
+		)
+		if err != nil {
 			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected > 0 && item.BeneficiaryType == customerReferralBeneficiaryType && reverseAmount != 0 {
+			reversalID, err := result.LastInsertId()
+			if err != nil {
+				return err
+			}
+			referenceID := reversalID
+			availableDelta := -reverseAmount
+			frozenDelta := int64(0)
+			if item.Status == "pending" {
+				availableDelta = 0
+				frozenDelta = -reverseAmount
+			}
+			if err := applyBeneficiaryWalletDeltaTx(
+				ctx,
+				tx,
+				customerReferralBeneficiaryType,
+				item.BeneficiaryID,
+				fmt.Sprintf("referral-reversal-%d-%d", refundID, item.ID),
+				"referral_refund_reversal",
+				"earning",
+				&referenceID,
+				availableDelta,
+				frozenDelta,
+				nil,
+				"推荐客户退款，按原返佣规则冲回",
+			); err != nil {
+				return err
+			}
 		}
 	}
 

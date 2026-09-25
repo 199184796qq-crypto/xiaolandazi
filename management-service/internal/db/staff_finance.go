@@ -356,7 +356,7 @@ func (s *Store) CreateStaffFinanceRecharge(
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "finance"); err != nil {
 		return model.StaffFinanceOperationResult{}, err
 	}
 	task, err := s.GetStaffFinanceTask(ctx, taskID)
@@ -459,7 +459,7 @@ func (s *Store) CreateCustomerRechargeRequest(
 		return model.StaffFinanceOperationResult{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "finance"); err != nil {
 		return model.StaffFinanceOperationResult{}, err
 	}
 
@@ -593,7 +593,7 @@ func (s *Store) CreateStaffFinanceRefund(
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "finance"); err != nil {
 		return model.StaffFinanceOperationResult{}, err
 	}
 	task, err := s.GetStaffFinanceTask(ctx, taskID)
@@ -678,7 +678,7 @@ func (s *Store) CreateStaffFinanceReward(
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "finance"); err != nil {
 		return model.StaffFinanceOperationResult{}, err
 	}
 	task, err := s.GetStaffFinanceTask(ctx, taskID)
@@ -767,7 +767,7 @@ func (s *Store) CreateStaffAITimeGrantRequest(
 		return model.StaffFinanceOperationResult{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "finance"); err != nil {
 		return model.StaffFinanceOperationResult{}, err
 	}
 	task, err := s.GetStaffFinanceTask(ctx, taskID)
@@ -791,6 +791,11 @@ func (s *Store) ApproveStaffFinanceTask(
 		return err
 	}
 	defer tx.Rollback()
+
+	policy, err := loadFinanceReviewPolicy(ctx, tx, true)
+	if err != nil {
+		return err
+	}
 
 	var operationCode string
 	var requesterUserID int64
@@ -820,8 +825,8 @@ func (s *Store) ApproveStaffFinanceTask(
 	if status != "pending" {
 		return fmt.Errorf("approval task is not pending")
 	}
-	if requesterUserID == approverUserID {
-		return fmt.Errorf("requester cannot approve own task")
+	if policy.BlocksReviewer(approverUserID, requesterUserID) {
+		return ErrFinanceDistinctReviewer
 	}
 	if !tenantID.Valid || tenantID.Int64 <= 0 {
 		return fmt.Errorf("approval target customer is missing")
@@ -934,13 +939,14 @@ func (s *Store) ApproveStaffFinanceTask(
 		SET
 			status='approved',
 			approver_user_id=?,
-			decided_at=UTC_TIMESTAMP(3)
+			decided_at=UTC_TIMESTAMP(3),
+			payload_json=JSON_SET(payload_json, '$.review_policy_mode', ?, '$.review_same_operator', ?)
 		WHERE id=? AND status='pending'
-	`, approverUserID, taskID); err != nil {
+	`, approverUserID, policy.Mode(), requesterUserID == approverUserID, taskID); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	return s.commitInboxTx(ctx, tx, "finance", "inventory", "logistics")
 }
 
 func (s *Store) RejectStaffFinanceTask(
@@ -953,6 +959,11 @@ func (s *Store) RejectStaffFinanceTask(
 		return err
 	}
 	defer tx.Rollback()
+
+	policy, err := loadFinanceReviewPolicy(ctx, tx, true)
+	if err != nil {
+		return err
+	}
 
 	var operationCode string
 	var requesterUserID int64
@@ -978,8 +989,8 @@ func (s *Store) RejectStaffFinanceTask(
 	if status != "pending" {
 		return fmt.Errorf("approval task is not pending")
 	}
-	if requesterUserID == approverUserID {
-		return fmt.Errorf("requester cannot review own task")
+	if policy.BlocksReviewer(approverUserID, requesterUserID) {
+		return ErrFinanceDistinctReviewer
 	}
 
 	var payload financeTaskPayload
@@ -1015,12 +1026,13 @@ func (s *Store) RejectStaffFinanceTask(
 		SET
 			status='rejected',
 			approver_user_id=?,
-			decided_at=UTC_TIMESTAMP(3)
+			decided_at=UTC_TIMESTAMP(3),
+			payload_json=JSON_SET(payload_json, '$.review_policy_mode', ?, '$.review_same_operator', ?)
 		WHERE id=? AND status='pending'
-	`, approverUserID, taskID); err != nil {
+	`, approverUserID, policy.Mode(), requesterUserID == approverUserID, taskID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return s.commitInboxTx(ctx, tx, "finance")
 }
 
 func loadFinancePolicyTx(

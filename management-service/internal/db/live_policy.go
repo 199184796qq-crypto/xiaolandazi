@@ -450,6 +450,24 @@ func (s *Store) CreateLivePolicyDraft(
 		return model.LivePolicyVersion{}, err
 	}
 
+	var beforeVersion *model.LivePolicyVersion
+	previousVersion, previousErr := scanLivePolicyVersion(tx.QueryRowContext(ctx, `
+		SELECT id, policy_id, version_no, lifecycle_status, source_text,
+		       CAST(rules_json AS CHAR), CAST(overrides_json AS CHAR), CAST(conflicts_json AS CHAR),
+		       note, source_version_id, created_by_user_id, published_by_user_id,
+		       created_at, published_at
+		FROM live_policy_versions
+		WHERE policy_id=? AND lifecycle_status IN ('draft', 'active')
+		ORDER BY CASE lifecycle_status WHEN 'draft' THEN 0 ELSE 1 END, version_no DESC
+		LIMIT 1
+	`, scope.ID))
+	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+		return model.LivePolicyVersion{}, previousErr
+	}
+	if previousErr == nil {
+		beforeVersion = &previousVersion
+	}
+
 	var nextVersion uint64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(version_no), 0) + 1
@@ -480,9 +498,25 @@ func (s *Store) CreateLivePolicyDraft(
 	if err != nil {
 		return model.LivePolicyVersion{}, err
 	}
+	auditDetail := map[string]any{
+		"version_no": nextVersion,
+		"before":     beforeVersion,
+		"after": map[string]any{
+			"id":               versionID,
+			"version_no":       nextVersion,
+			"lifecycle_status": "draft",
+			"source_text":      input.SourceText,
+			"rules":            input.Rules,
+			"overrides":        input.Overrides,
+			"conflicts":        input.Conflicts,
+			"note":             input.Note,
+		},
+	}
+	if input.Layer == model.LivePolicyLayerL3 && input.TenantID > 0 && input.RoomID > 0 {
+		auditDetail["room_scoped_user_layer"] = true
+	}
 	if err := insertLivePolicyAuditTx(
-		ctx, tx, userID, "draft.create", scope, &versionID,
-		map[string]any{"version_no": nextVersion},
+		ctx, tx, userID, "draft.create", scope, &versionID, auditDetail,
 	); err != nil {
 		return model.LivePolicyVersion{}, err
 	}

@@ -3,10 +3,18 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
+  approveCustomerWalletWithdrawal,
+  approveReferralWithdrawal,
   approveSettlementBatch,
   createSettlementBatch,
+  getFinanceCustomerWithdrawals,
   getFinanceSettlementDashboard,
+  getReferralWithdrawals,
+  payCustomerWalletWithdrawal,
+  payReferralWithdrawal,
   paySettlementBatch,
+  rejectCustomerWalletWithdrawal,
+  rejectReferralWithdrawal,
   rejectSettlementBatch,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -16,6 +24,7 @@ import type {
   CreateSettlementBatchInput,
   IncentiveEarning,
   SettlementBatch,
+  WithdrawalRequest,
 } from '../types'
 
 const loading = ref(false)
@@ -23,10 +32,12 @@ const saving = ref(false)
 const error = useFeedbackErrorRef()
 const earnings = ref<IncentiveEarning[]>([])
 const batches = ref<SettlementBatch[]>([])
-const tab = ref<'earnings' | 'batches'>('earnings')
+const withdrawals = ref<WithdrawalRequest[]>([])
+const tab = ref<'earnings' | 'batches' | 'withdrawals'>('earnings')
 const modalOpen = ref(false)
 const earningsPage = ref(1)
 const batchesPage = ref(1)
+const withdrawalsPage = ref(1)
 const pageSize = 20
 
 const now = new Date()
@@ -54,33 +65,9 @@ function hasPermission(code: string) {
 const canCreate = computed(() => hasPermission('finance.settlement.create'))
 const canApprove = computed(() => hasPermission('finance.settlement.approve'))
 const canPay = computed(() => hasPermission('finance.settlement.pay'))
-
-const availableAmount = computed(() =>
-  earnings.value
-    .filter((item) => item.status === 'available')
-    .reduce((sum, item) => sum + item.amount_cents, 0),
-)
-const pendingAmount = computed(() =>
-  earnings.value
-    .filter((item) => item.status === 'pending')
-    .reduce((sum, item) => sum + item.amount_cents, 0),
-)
-const settlingAmount = computed(() =>
-  earnings.value
-    .filter((item) => item.status === 'settling')
-    .reduce((sum, item) => sum + item.amount_cents, 0),
-)
-const paidAmount = computed(() =>
-  earnings.value
-    .filter((item) => item.status === 'paid')
-    .reduce((sum, item) => sum + item.amount_cents, 0),
-)
-
-const reviewCount = computed(() =>
-  batches.value.filter((item) => item.status === 'reviewing').length,
-)
 const earningsPageCount = computed(() => Math.max(1, Math.ceil(earnings.value.length / pageSize)))
 const batchesPageCount = computed(() => Math.max(1, Math.ceil(batches.value.length / pageSize)))
+const withdrawalsPageCount = computed(() => Math.max(1, Math.ceil(withdrawals.value.length / pageSize)))
 const pagedEarnings = computed(() => {
   const page = Math.min(earningsPage.value, earningsPageCount.value)
   const start = (page - 1) * pageSize
@@ -90,6 +77,11 @@ const pagedBatches = computed(() => {
   const page = Math.min(batchesPage.value, batchesPageCount.value)
   const start = (page - 1) * pageSize
   return batches.value.slice(start, start + pageSize)
+})
+const pagedWithdrawals = computed(() => {
+  const page = Math.min(withdrawalsPage.value, withdrawalsPageCount.value)
+  const start = (page - 1) * pageSize
+  return withdrawals.value.slice(start, start + pageSize)
 })
 
 function dateInput(value: Date) {
@@ -111,6 +103,15 @@ function beneficiaryLabel(value: string) {
     sales_staff: '销售员工',
     agent: '代理',
     referrer: '推荐人',
+  }
+  return map[value] || value
+}
+
+function withdrawalTypeLabel(value: string) {
+  const map: Record<string, string> = {
+    customer_cash: '现金余额',
+    customer_reward: '奖励余额',
+    customer_referrer: '返佣余额',
   }
   return map[value] || value
 }
@@ -209,13 +210,58 @@ async function pay(item: SettlementBatch) {
   }
 }
 
+async function approveWithdrawal(item: WithdrawalRequest) {
+  if (!(await confirmAction({ title: '审核提现', message: '确认审核通过提现单“' + item.withdrawal_no + '”？', confirmText: '审核通过' }))) return
+  error.value = ''
+  try {
+    if (item.beneficiary_type === 'customer_referrer') await approveReferralWithdrawal(item.id)
+    else await approveCustomerWalletWithdrawal(item.id)
+    await load()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '提现审核失败'
+  }
+}
+
+async function rejectWithdrawal(item: WithdrawalRequest) {
+  const reason = window.prompt('请输入驳回原因', '财务审核驳回')
+  if (reason === null) return
+  error.value = ''
+  try {
+    if (item.beneficiary_type === 'customer_referrer') await rejectReferralWithdrawal(item.id, reason)
+    else await rejectCustomerWalletWithdrawal(item.id, reason)
+    await load()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '提现驳回失败'
+  }
+}
+
+async function payWithdrawal(item: WithdrawalRequest) {
+  if (!(await confirmAction({ title: '确认提现打款', message: '确认提现单“' + item.withdrawal_no + '”已经完成实际打款？', confirmText: '确认已打款' }))) return
+  error.value = ''
+  try {
+    if (item.beneficiary_type === 'customer_referrer') await payReferralWithdrawal(item.id)
+    else await payCustomerWalletWithdrawal(item.id)
+    await load()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '确认提现打款失败'
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getFinanceSettlementDashboard()
+    const [data, customerWithdrawalData, referralWithdrawalData] = await Promise.all([
+      getFinanceSettlementDashboard(),
+      getFinanceCustomerWithdrawals('all'),
+      getReferralWithdrawals('all'),
+    ])
     earnings.value = data.earnings
     batches.value = data.batches
+    withdrawals.value = [
+      ...(customerWithdrawalData.items || []),
+      ...(referralWithdrawalData.items || []),
+    ].sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime())
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取收益结算失败'
   } finally {
@@ -246,21 +292,6 @@ onMounted(load)
       </div>
     </section>
 
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>冻结中收益</span><strong>{{ formatMoney(pendingAmount) }}</strong><small>等待冻结期结束</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>可结算收益</span><strong>{{ formatMoney(availableAmount) }}</strong><small>可生成结算批次</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>结算中</span><strong>{{ formatMoney(settlingAmount) }}</strong><small>{{ reviewCount }} 个批次待审核</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>累计已支付</span><strong>{{ formatMoney(paidAmount) }}</strong><small>已完成支付收益</small>
-      </article>
-    </section>
-
     <p v-if="error" class="inline-error">{{ error }}</p>
 
     <section class="settings-card settlement-workspace">
@@ -270,6 +301,9 @@ onMounted(load)
         </button>
         <button type="button" :class="{ active: tab === 'batches' }" @click="tab = 'batches'">
           结算批次
+        </button>
+        <button type="button" :class="{ active: tab === 'withdrawals' }" @click="tab = 'withdrawals'">
+          提现申请
         </button>
       </div>
 
@@ -316,7 +350,7 @@ onMounted(load)
         />
       </div>
 
-      <div v-else class="data-table-wrap">
+      <div v-else-if="tab === 'batches'" class="data-table-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -382,6 +416,52 @@ onMounted(load)
           :total="batches.length"
           :page-size="pageSize"
           @update:page="batchesPage = $event"
+        />
+      </div>
+
+      <div v-else class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>提现单号</th>
+              <th>客户</th>
+              <th>类型</th>
+              <th>金额</th>
+              <th>状态</th>
+              <th>申请时间</th>
+              <th>审核 / 打款</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in pagedWithdrawals" :key="item.id">
+              <td><strong>{{ item.withdrawal_no }}</strong></td>
+              <td>客户 #{{ item.beneficiary_id }}</td>
+              <td>{{ withdrawalTypeLabel(item.beneficiary_type) }}</td>
+              <td><strong>{{ formatMoney(item.amount_cents) }}</strong></td>
+              <td><span class="status-pill">{{ statusLabel(item.status) }}</span></td>
+              <td>{{ new Date(item.requested_at).toLocaleString('zh-CN') }}</td>
+              <td>
+                <span>{{ item.approved_by_user_id ? '审核 #' + item.approved_by_user_id : '未审核' }}</span>
+                <small>{{ item.paid_by_user_id ? '打款 #' + item.paid_by_user_id : '未打款' }}</small>
+              </td>
+              <td>
+                <div class="table-actions">
+                  <button v-if="canApprove && item.status === 'reviewing' && item.requested_by_user_id !== actorUserId" class="text-action" type="button" @click="approveWithdrawal(item)">审核通过</button>
+                  <button v-if="canApprove && (item.status === 'reviewing' || item.status === 'approved')" class="text-action danger" type="button" @click="rejectWithdrawal(item)">驳回</button>
+                  <button v-if="canPay && item.status === 'approved'" class="text-action" type="button" @click="payWithdrawal(item)">确认打款</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="withdrawals.length === 0" class="empty-state">暂无提现申请。</div>
+        <PaginationBar
+          :page="Math.min(withdrawalsPage, withdrawalsPageCount)"
+          :total-pages="withdrawalsPageCount"
+          :total="withdrawals.length"
+          :page-size="pageSize"
+          @update:page="withdrawalsPage = $event"
         />
       </div>
     </section>

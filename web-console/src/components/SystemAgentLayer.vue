@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import WorkInboxPanel from './WorkInboxPanel.vue'
+import TodoBadge from './TodoBadge.vue'
+import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
   computed,
   nextTick,
@@ -9,22 +12,29 @@ import {
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  activateLiveAgentConfigVersion,
   chatLiveAgent,
   chatLivePolicyAdminAgent,
   chatClientAgent,
   chatInternalAgent,
   chatLiveRoomPolicyAgent,
   createLiveOpsAnchorTraining,
+  createLiveAgentConfigDraft,
+  createLivePolicyLearningCandidate,
   createCommercialMarketingCampaign,
   createStaffEmployee,
   getClientAgentContext,
   getInternalAgentContext,
   getPublicSystemConfig,
+  getLiveAgentConfigVersions,
+  getLiveOfficialVoices,
+  getLiveVoiceProfiles,
   getRooms,
   testLivePolicyAdmin,
 } from '../api'
 import type {
   InitialCredential,
+  LivePolicyLearningCandidate,
   SystemAgentActionPreview,
   SystemAgentChatResponse,
   SystemAgentContextResponse,
@@ -46,12 +56,15 @@ type LivePolicyTestMode = {
   industryCode: string
 }
 
+type LiveStrategyMode = 'basic' | 'strategy' | 'anchor' | 'script' | 'voice'
+
 type ChatMessage = {
   role: 'user' | 'agent'
   text: string
   domain: AgentDomain
   action?: SystemAgentActionPreview
   credential?: InitialCredential
+  introduction?: boolean
 }
 
 type SuggestionItem = {
@@ -65,6 +78,8 @@ const route = useRoute()
 const router = useRouter()
 const expanded = ref(false)
 const drawerOpen = ref(false)
+const drawerTab = ref<'chat' | 'inbox'>('chat')
+const inboxRequest = ref('')
 const input = ref('')
 const busy = ref(false)
 const busyDomain = ref<AgentDomain | null>(null)
@@ -114,9 +129,18 @@ let dockDragHeight = 0
 let dockDragMoved = false
 
 const actor = computed(() => session.bootstrap?.actor)
-const internalLiveStrategyMode = ref<'policy' | 'support'>(
-  window.localStorage.getItem('system-agent-live-strategy-internal-mode') === 'support'
-    ? 'support'
+const isTerminalCustomer = computed(() => actor.value?.role === 'customer')
+const showInbox = computed(() => canUseWorkInbox(actor.value?.role))
+watch(showInbox, enabled => {
+  if (!enabled) { drawerTab.value = 'chat'; inboxRequest.value = '' }
+}, { immediate: true })
+
+const storedInternalLiveStrategyMode = window.localStorage.getItem(
+  'system-agent-live-strategy-internal-mode',
+)
+const internalLiveStrategyMode = ref<'policy' | 'support' | 'learning'>(
+  storedInternalLiveStrategyMode === 'support' || storedInternalLiveStrategyMode === 'learning'
+    ? storedInternalLiveStrategyMode
     : 'policy',
 )
 const liveSupportMode = ref<'strategy' | 'anchor' | 'voice'>(
@@ -125,6 +149,15 @@ const liveSupportMode = ref<'strategy' | 'anchor' | 'voice'>(
     : window.localStorage.getItem('system-agent-live-support-mode') === 'voice'
       ? 'voice'
       : 'strategy',
+)
+const storedLiveStrategyMode = window.localStorage.getItem('system-agent-live-mode')
+const liveStrategyMode = ref<LiveStrategyMode>(
+  storedLiveStrategyMode === 'basic' ||
+  storedLiveStrategyMode === 'anchor' ||
+  storedLiveStrategyMode === 'script' ||
+  storedLiveStrategyMode === 'voice'
+    ? storedLiveStrategyMode
+    : 'strategy',
 )
 const isInternalAgentProfile = computed(() =>
   ['platform_admin', 'staff', 'sales_staff'].includes(actor.value?.role || ''),
@@ -153,6 +186,7 @@ const messages = ref<ChatMessage[]>([
   {
     role: 'agent',
     domain: 'system',
+    introduction: true,
     text: `我是${assistantName.value}。你在系统里走到哪里，我就切换到那个业务工作域；所有动作仍受当前账号权限和原有审批规则约束。`,
   },
 ])
@@ -162,7 +196,13 @@ const contextLabel = computed(() => {
     return '直播策略 · 规则测试'
   }
   if (currentDomain.value === 'live-room') return '直播场控'
-  if (currentDomain.value === 'live-strategy') return '直播策略 · 当前直播间 L3'
+  if (currentDomain.value === 'live-strategy') {
+    if (liveStrategyMode.value === 'anchor') return '直播策略 · 主播训练'
+    if (liveStrategyMode.value === 'script') return '直播策略 · 固定话术'
+    if (liveStrategyMode.value === 'voice') return '直播策略 · 声音配置'
+    if (liveStrategyMode.value === 'basic') return '直播策略 · 基础设置'
+    return '直播策略 · 当前直播间用户层'
+  }
   if (currentDomain.value === 'live-policy-admin') return '直播策略 · 系统/行业规则'
   if (currentDomain.value === 'live-support') return '直播策略 · 客户授权协助'
   return isInternalAgentProfile.value ? '系统管理' : '终端助手'
@@ -173,16 +213,23 @@ const contextDescription = computed(() => {
     return '已进入当前直播间场控上下文，直接处理现场问题、话术和场控协作。'
   }
   if (currentDomain.value === 'live-strategy') {
-    return '已进入终端直播策略上下文，默认围绕当前选中直播间的 L3 策略工作。'
+    if (liveStrategyMode.value === 'anchor') return '已进入当前直播间主播训练上下文。'
+    if (liveStrategyMode.value === 'script') return '已进入当前直播间固定话术上下文。'
+    if (liveStrategyMode.value === 'voice') return '已进入当前直播间声音配置上下文。'
+    if (liveStrategyMode.value === 'basic') return '已进入当前客户直播助手基础设置上下文。'
+    return '已进入当前直播间用户层策略上下文。'
   }
   if (currentDomain.value === 'live-policy-admin') {
-    return '已进入管理端直播策略上下文，自动跟随当前 L1/L2 与行业选择。'
+    if (internalLiveStrategyMode.value === 'learning') {
+      return '已进入调教学习中心；满意的对话可提交吸收，智能体会判断应沉淀到规则层、行业层还是用户层。'
+    }
+    return '已进入管理端直播策略上下文，自动跟随当前规则层 / 行业层与行业选择。'
   }
   if (currentDomain.value === 'live-support') {
     if (liveSupportMode.value === 'strategy') {
       return canDelegateLivePolicyL3(session.bootstrap)
-        ? '已进入客户授权的 L3 代维护上下文，只会作用于当前授权直播间。'
-        : '当前账号不能代维护客户 L3。L1 配置人员不可代维护 L3；其他员工需要 L2 配置能力及客户授权。'
+        ? '已进入客户授权的用户层代维护上下文，只会作用于当前授权直播间。'
+        : '当前账号没有用户层授权协助权限；运维人员需要具备行业层配置能力，并获得客户对当前直播间的授权。'
     }
     if (liveSupportMode.value === 'anchor') {
       return '已进入客户授权的主播训练上下文；明确要求训练/学习时生成草稿，发布仍在工作台确认。'
@@ -195,25 +242,33 @@ const contextDescription = computed(() => {
 })
 
 const inputPlaceholder = computed(() => {
+  if (isTerminalCustomer.value) return '输入你想说的话…'
   if (livePolicyTestMode.value.active && currentDomain.value === 'live-policy-admin') {
     return livePolicyTestHistory.value.length
-      ? '继续打磨：例如“再自然一点”“销售感强一点”“保留意思再简短些”……'
+      ? '继续打磨；满意后直接说“吸收这次调教”……'
       : '输入一个直播问题，之后可以连续反馈直到满意……'
   }
   if (currentDomain.value === 'live-room') {
     return '输入内容，或用 / 呼出场控能力……'
   }
   if (currentDomain.value === 'live-strategy') {
-    return '输入策略要求，或用 / 呼出直播策略能力……'
+    if (liveStrategyMode.value === 'anchor') return '输入主播训练要求……'
+    if (liveStrategyMode.value === 'script') return '输入固定话术要求……'
+    if (liveStrategyMode.value === 'voice') return '输入声音配置要求……'
+    if (liveStrategyMode.value === 'basic') return '输入直播助手基础设置问题……'
+    return '输入用户层策略要求……'
   }
   if (currentDomain.value === 'live-policy-admin') {
-    return '输入规则要求，或用 / 呼出 L1/L2 策略能力……'
+    if (internalLiveStrategyMode.value === 'learning') {
+      return '查看学习建议，或说“吸收这次调教”沉淀满意对话……'
+    }
+    return '输入规则要求，或用 / 呼出规则层 / 行业层策略能力……'
   }
   if (currentDomain.value === 'live-support') {
     if (liveSupportMode.value === 'strategy') {
       return canDelegateLivePolicyL3(session.bootstrap)
-        ? '输入客户 L3 调整要求，或用 / 呼出授权协助能力……'
-        : '当前岗位不可代维护客户 L3，请选择本岗位可用功能……'
+        ? '输入客户用户层调整要求，或用 / 呼出授权协助能力……'
+        : '当前岗位不可代维护客户用户层，请选择本岗位可用功能……'
     }
     if (liveSupportMode.value === 'anchor') {
       return '输入主播训练要求；素材请在当前工作台上传……'
@@ -230,16 +285,20 @@ const capabilities = computed(() => {
     return ['当前直播间场控', '现场问题处理', '话术协作', '场控建议']
   }
   if (currentDomain.value === 'live-strategy') {
-    return ['当前直播间 L3', '策略调教', '固定话术', '生成策略草稿']
+    if (liveStrategyMode.value === 'anchor') return ['主播训练', '主播风格', '训练草稿']
+    if (liveStrategyMode.value === 'script') return ['固定话术', '原话锁定', '意图执行']
+    if (liveStrategyMode.value === 'voice') return ['声音配置', '官方声音', '我的声音']
+    if (liveStrategyMode.value === 'basic') return ['基础设置']
+    return ['当前直播间用户层', '策略调教', '生成策略草稿']
   }
   if (currentDomain.value === 'live-policy-admin') {
-    return ['L1/L2 策略', '行业规则', '规则调教', '生成策略草稿']
+    return ['规则层 / 行业层策略', '行业规则', '规则调教', '生成策略草稿']
   }
   if (currentDomain.value === 'live-support') {
     if (liveSupportMode.value === 'strategy') {
       return canDelegateLivePolicyL3(session.bootstrap)
-        ? ['客户授权 L3', '策略调教', '生成 L3 草稿']
-        : ['当前岗位不可代维护 L3']
+        ? ['客户授权用户层', '策略调教', '生成用户层草稿']
+        : ['当前岗位不可代维护用户层']
     }
     if (liveSupportMode.value === 'anchor') {
       return ['客户授权主播训练', '训练要求', '生成训练草稿']
@@ -254,7 +313,7 @@ const capabilities = computed(() => {
 })
 
 const visibleMessages = computed(() =>
-  messages.value.filter((item) => item.domain === currentDomain.value),
+  messages.value.filter((item) => item.domain === currentDomain.value && (!isTerminalCustomer.value || !item.introduction)),
 )
 
 const latestAgentMessage = computed(() => {
@@ -324,15 +383,37 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
     ]
   }
   if (currentDomain.value === 'live-strategy') {
+    if (liveStrategyMode.value === 'anchor') {
+      return [
+        { kind: 'capability', label: '主播训练', description: '调整当前直播间主播表达、语气和节奏', insertText: '训练主播：' },
+        { kind: 'capability', label: '主播风格', description: '沉淀当前直播间主播风格要求', insertText: '主播风格：' },
+      ]
+    }
+    if (liveStrategyMode.value === 'script') {
+      return [
+        { kind: 'capability', label: '固定话术', description: '新增或调整当前直播间固定话术', insertText: '固定话术：' },
+        { kind: 'capability', label: '原话锁定', description: '要求固定话术逐字执行', insertText: '100%原话：' },
+        { kind: 'capability', label: '意图执行', description: '保留核心意思但允许自然变化', insertText: '按照这个意思来：' },
+      ]
+    }
+    if (liveStrategyMode.value === 'voice') {
+      return [
+        { kind: 'capability', label: '声音配置', description: '讨论当前直播间声音选择和使用', insertText: '声音配置：' },
+        { kind: 'capability', label: '官方声音', description: '询问官方声音选择建议', insertText: '推荐官方声音：' },
+        { kind: 'capability', label: '我的声音', description: '使用已克隆的个人声音', insertText: '使用我的声音：' },
+      ]
+    }
+    if (liveStrategyMode.value === 'basic') {
+      return [{ kind: 'capability', label: '基础设置', description: '咨询直播助手基础身份设置', insertText: '基础设置：' }]
+    }
     return [
-      { kind: 'capability', label: '调整策略', description: '调整当前直播间 L3 策略并生成草稿', insertText: '调整策略 ' },
-      { kind: 'capability', label: '固定话术', description: '新增或调整当前直播间固定话术', insertText: '固定话术 ' },
-      { kind: 'capability', label: '主播风格', description: '调整主播表达、风格或训练要求', insertText: '主播风格 ' },
+      { kind: 'capability', label: '调整策略', description: '调整当前直播间用户层策略并生成草稿', insertText: '调整策略 ' },
+      { kind: 'capability', label: '生成草稿', description: '按当前直播间用户层要求生成策略草稿', insertText: '生成策略草稿：' },
     ]
   }
   if (currentDomain.value === 'live-policy-admin') {
     return [
-      { kind: 'capability', label: '修改规则', description: '修改当前选择的 L1 或 L2 规则并生成草稿', insertText: '修改规则 ' },
+      { kind: 'capability', label: '修改规则', description: '修改当前选择的规则层或行业层规则并生成草稿', insertText: '修改规则 ' },
       { kind: 'capability', label: '查看规则', description: '围绕当前系统/行业规则进行说明和检查', insertText: '查看规则 ' },
       { kind: 'capability', label: '生成草稿', description: '按自然语言要求生成策略草稿，不直接发布', insertText: '生成草稿 ' },
     ]
@@ -341,8 +422,8 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
     if (liveSupportMode.value === 'strategy') {
       if (!canDelegateLivePolicyL3(session.bootstrap)) return []
       return [
-        { kind: 'capability', label: '调整客户L3', description: '按客户授权调整当前直播间 L3 并生成草稿', insertText: '调整当前客户L3 ' },
-        { kind: 'capability', label: '查看客户L3', description: '查看和讨论当前授权直播间的 L3', insertText: '查看当前客户L3 ' },
+        { kind: 'capability', label: '调整用户层', description: '按客户授权调整当前直播间用户层并生成草稿', insertText: '调整当前客户用户层 ' },
+        { kind: 'capability', label: '查看用户层', description: '查看和讨论当前授权直播间的用户层', insertText: '查看当前客户用户层 ' },
       ]
     }
     if (liveSupportMode.value === 'anchor') {
@@ -686,12 +767,12 @@ function resolveExplicitAdminPolicyIntent(value: string) {
     /只(?:修改|配置|处理)?L1/.test(upper) ||
     /当前L1/.test(upper) ||
     /L1(?:系统|全局|底层|规则|草稿)/.test(upper) ||
-    /(?:第一层|最底层|第?底层|底层规则|系统全局规则)/.test(compact)
+    /(?:规则层|第一层|最底层|第?底层|底层规则|系统全局规则)/.test(compact)
   const explicitL2 =
     /只(?:修改|配置|处理)?L2/.test(upper) ||
     /当前L2/.test(upper) ||
     /L2(?:行业|规则|草稿)/.test(upper) ||
-    /(?:第二层|行业默认规则)/.test(compact)
+    /(?:行业层|第二层|行业默认规则)/.test(compact)
 
   let layer: 'L1' | 'L2' | null = null
   if (explicitL1 && !/只(?:修改|配置|处理)?L2/.test(upper)) {
@@ -752,6 +833,154 @@ async function resolveLiveStrategyRoomID() {
   return roomId
 }
 
+function agentConfigRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return { ...(value as Record<string, unknown>) }
+}
+
+function agentConfigArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? [...value] : []
+}
+
+function agentRoomScopedRecord(
+  source: Record<string, unknown> | undefined,
+  roomId: number,
+  key: string,
+  entry: Record<string, unknown>,
+) {
+  const root = agentConfigRecord(source)
+  const roomMap = agentConfigRecord(root.rooms)
+  const roomKey = String(roomId)
+  const roomConfig = agentConfigRecord(roomMap[roomKey])
+  return {
+    ...root,
+    rooms: {
+      ...roomMap,
+      [roomKey]: {
+        ...roomConfig,
+        [key]: [...agentConfigArray(roomConfig[key]), entry],
+      },
+    },
+  }
+}
+
+async function persistLiveStrategyModeDraft(roomId: number, value: string) {
+  if (liveStrategyMode.value === 'basic' || liveStrategyMode.value === 'strategy') return null
+  const versions = await getLiveAgentConfigVersions()
+  const latest =
+    versions.find((item) => item.lifecycle_status === 'draft') ||
+    versions.find((item) => item.lifecycle_status === 'active') ||
+    versions[0]
+  const now = new Date().toISOString()
+  const payload: {
+    layer3?: Record<string, unknown>
+    style_profile?: Record<string, unknown>
+    speech_config?: Record<string, unknown>
+  } = {}
+
+  if (liveStrategyMode.value === 'script') {
+    const compact = value.replace(/\s/g, '')
+    const executionMode =
+      compact.includes('100%原话') || compact.includes('照原文') || compact.includes('原话锁定')
+        ? 'exact'
+        : 'intent'
+    payload.layer3 = agentRoomScopedRecord(latest?.layer3, roomId, 'fixed_scripts', {
+      text: value,
+      execution_mode: executionMode,
+      created_at: now,
+    })
+  } else if (liveStrategyMode.value === 'anchor') {
+    payload.style_profile = agentRoomScopedRecord(latest?.style_profile, roomId, 'training_entries', {
+      text: value,
+      created_at: now,
+    })
+  } else if (liveStrategyMode.value === 'voice') {
+    payload.speech_config = agentRoomScopedRecord(latest?.speech_config, roomId, 'instruction_entries', {
+      text: value,
+      created_at: now,
+    })
+  }
+
+  return createLiveAgentConfigDraft(payload)
+}
+
+function agentRoomSelectedVoice(
+  source: Record<string, unknown> | undefined,
+  roomId: number,
+  voice: Record<string, unknown>,
+) {
+  const root = agentConfigRecord(source)
+  const roomMap = agentConfigRecord(root.rooms)
+  const roomKey = String(roomId)
+  const roomConfig = agentConfigRecord(roomMap[roomKey])
+  return {
+    ...root,
+    rooms: {
+      ...roomMap,
+      [roomKey]: {
+        ...roomConfig,
+        selected_voice: {
+          ...voice,
+          selected_at: new Date().toISOString(),
+        },
+      },
+    },
+  }
+}
+
+async function tryBindRequestedVoice(roomId: number, value: string) {
+  const compact = value.replace(/\s+/g, '').toLowerCase()
+  if (!/(使用|用|换成|切换|设为|选择|改成)/.test(compact)) return null
+
+  const [officialResponse, profiles, versions] = await Promise.all([
+    getLiveOfficialVoices(),
+    getLiveVoiceProfiles(),
+    getLiveAgentConfigVersions(),
+  ])
+  const latest =
+    versions.find((item) => item.lifecycle_status === 'draft') ||
+    versions.find((item) => item.lifecycle_status === 'active') ||
+    versions[0]
+
+  const official = [...(officialResponse.items || [])]
+    .sort((a, b) => Math.max(b.name.length, b.id.length) - Math.max(a.name.length, a.id.length))
+    .find((item) => compact.includes(item.name.toLowerCase()) || compact.includes(item.id.toLowerCase()))
+  if (official) {
+    const draft = await createLiveAgentConfigDraft({
+      speech_config: agentRoomSelectedVoice(latest?.speech_config, roomId, {
+        source: 'official',
+        provider: 'aliyun_qwen',
+        name: official.name,
+        voice_id: official.id,
+        model: official.model,
+      }),
+    })
+    await activateLiveAgentConfigVersion(draft.id)
+    return '已将当前直播间声音切换为“' + official.name + '”。后续该直播间会使用这个声音。'
+  }
+
+  const profile = [...profiles]
+    .filter((item) => item.clone_status === 'ready' && item.voice_id)
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((item) => compact.includes(item.name.toLowerCase()))
+  if (profile) {
+    const draft = await createLiveAgentConfigDraft({
+      speech_config: agentRoomSelectedVoice(latest?.speech_config, roomId, {
+        source: 'clone',
+        provider: profile.provider,
+        name: profile.name,
+        voice_id: profile.voice_id,
+        profile_id: profile.id,
+        model: String(profile.config?.target_model || 'qwen3-tts-vc-2026-01-22'),
+      }),
+    })
+    await activateLiveAgentConfigVersion(draft.id)
+    return '已将当前直播间声音切换为“' + profile.name + '”。这个克隆声音仍可在你的其它直播间继续使用。'
+  }
+
+  return null
+}
+
 function resolveLiveSupportRoomID() {
   const stored = Number(
     window.localStorage.getItem('system-agent-live-support-room-id') || 0,
@@ -772,7 +1001,21 @@ function isExplicitAnchorTrainingIntent(value: string) {
 
 function handleLiveStrategyModeEvent(event: Event) {
   const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode
-  internalLiveStrategyMode.value = mode === 'support' ? 'support' : 'policy'
+  internalLiveStrategyMode.value =
+    mode === 'support' || mode === 'learning' ? mode : 'policy'
+}
+
+function handleLiveStrategyContextEvent(event: Event) {
+  const detail = (event as CustomEvent<{ room_id?: number; mode?: string }>).detail
+  if (detail?.room_id && detail.room_id > 0) {
+    window.localStorage.setItem('system-agent-live-room-id', String(detail.room_id))
+  }
+  const mode = detail?.mode
+  liveStrategyMode.value =
+    mode === 'basic' || mode === 'anchor' || mode === 'script' || mode === 'voice'
+      ? mode
+      : 'strategy'
+  window.localStorage.setItem('system-agent-live-mode', liveStrategyMode.value)
 }
 
 function handleLiveSupportContextEvent(event: Event) {
@@ -870,7 +1113,11 @@ async function sendLivePolicyTest(value: string) {
     livePolicyTestHistory.value = livePolicyTestHistory.value.slice(-12)
     window.dispatchEvent(
       new CustomEvent('live-policy-test-result', {
-        detail: { question: value, result },
+        detail: {
+          question: value,
+          result,
+          history: livePolicyTestHistory.value.slice(-12),
+        },
       }),
     )
   } catch (error) {
@@ -891,6 +1138,158 @@ async function sendLivePolicyTest(value: string) {
     activeComposer.value = 'dock'
     void nextTick(focusActiveComposer)
   }
+}
+
+function isPolicyLearningAbsorbIntent(value: string) {
+  const compact = value.replace(/s+/g, '')
+  if (/(?:不要|先不|暂不|别)(?:吸收|沉淀|学习|保存)/.test(compact)) return false
+  if (
+    [
+      '吸收这次调教',
+      '吸收本次调教',
+      '沉淀这次调教',
+      '沉淀本次调教',
+      '把这次调教吸收',
+      '把这次调教沉淀',
+      '记住这次调教',
+      '保存这次学习',
+    ].some((item) => compact.includes(item))
+  ) {
+    return true
+  }
+  return /(?:吸收|沉淀|记住|学习).*(?:这次|本次|当前).*(?:调教|回复|经验)|(?:这次|本次|当前).*(?:调教|回复|经验).*(?:吸收|沉淀|记住|学习)/.test(
+    compact,
+  )
+}
+
+function extractPolicyLearningConversation(history: AgentHistoryItem[]) {
+  const usable = history.filter((item) => item.text.trim())
+  const firstUser = usable.find((item) => item.role === 'user')
+  const lastAgent = [...usable].reverse().find((item) => item.role === 'agent')
+  if (!firstUser || !lastAgent) return null
+  const userTurns = usable.filter((item) => item.role === 'user')
+  return {
+    question: firstUser.text.trim(),
+    finalReply: lastAgent.text.trim(),
+    feedback:
+      userTurns.length > 1
+        ? userTurns[userTurns.length - 1].text.trim()
+        : '人工确认当前回复满意，提交吸收。',
+  }
+}
+
+function policyLearningCandidateMessage(candidate: LivePolicyLearningCandidate) {
+  const recommendation = candidate.absorb_recommended ? '建议吸收' : '建议人工判断'
+  return (
+    '已提交调教学习。\n\n' +
+    '智能体判断：' +
+    recommendation +
+    ' → ' +
+    candidate.recommended_layer +
+    '（' +
+    candidate.confidence +
+    '%）\n' +
+    candidate.recommendation_reason +
+    '\n\n准备沉淀的规则：' +
+    candidate.rule_title +
+    '\n' +
+    candidate.rule_text +
+    '\n\n当前只是“待吸收”，还没有自动发布到正式规则。'
+  )
+}
+
+async function createPolicyLearningFromHistory(
+  sourceLayer: 'L1' | 'L2' | 'L3',
+  history: AgentHistoryItem[],
+  options: {
+    industryCode?: string
+    roomId?: number
+    feedback?: string
+  } = {},
+) {
+  const conversation = extractPolicyLearningConversation(history)
+  if (!conversation) {
+    throw new Error('当前还没有完整的“问题 → 满意回复”对话，先完成至少一轮调教再吸收。')
+  }
+  return createLivePolicyLearningCandidate({
+    source_layer: sourceLayer,
+    industry_code: options.industryCode,
+    room_id: options.roomId,
+    question: conversation.question,
+    final_reply: conversation.finalReply,
+    feedback: options.feedback?.trim() || conversation.feedback,
+    history: history.slice(-16),
+  })
+}
+
+async function absorbLivePolicyTest(value: string) {
+  const history = livePolicyTestHistory.value.slice(-16)
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  activeComposer.value = null
+  busy.value = true
+  busyDomain.value = 'live-policy-admin'
+  try {
+    const candidate = await createPolicyLearningFromHistory(
+      livePolicyTestMode.value.layer,
+      history,
+      {
+        industryCode:
+          livePolicyTestMode.value.layer === 'L2'
+            ? livePolicyTestMode.value.industryCode || 'general'
+            : undefined,
+        feedback: value,
+      },
+    )
+    window.dispatchEvent(
+      new CustomEvent('live-policy-learning-created', {
+        detail: { candidate },
+      }),
+    )
+    pushAgentMessage('live-policy-admin', policyLearningCandidateMessage(candidate))
+  } catch (error) {
+    pushAgentMessage(
+      'live-policy-admin',
+      error instanceof Error ? '吸收失败：' + error.message : '这次调教暂时无法吸收。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    activeComposer.value = 'dock'
+    void nextTick(focusActiveComposer)
+  }
+}
+
+async function createPolicyLearningForDomain(
+  domain: AgentDomain,
+  history: AgentHistoryItem[],
+  feedback: string,
+) {
+  if (domain === 'live-policy-admin') {
+    const policyContext = readAdminPolicyContext()
+    return createPolicyLearningFromHistory(policyContext.layer, history, {
+      industryCode:
+        policyContext.layer === 'L2' ? policyContext.industryCode || 'general' : undefined,
+      feedback,
+    })
+  }
+  if (domain === 'live-strategy') {
+    const roomId = await resolveLiveStrategyRoomID()
+    if (!roomId) throw new Error('当前没有可用直播间，不能沉淀为直播间学习。')
+    return createPolicyLearningFromHistory('L3', history, {
+      roomId,
+      feedback,
+    })
+  }
+  if (domain === 'live-support' && liveSupportMode.value === 'strategy') {
+    const roomId = resolveLiveSupportRoomID()
+    if (!roomId) throw new Error('当前没有选中的客户授权直播间。')
+    return createPolicyLearningFromHistory('L3', history, {
+      roomId,
+      feedback,
+    })
+  }
+  return null
 }
 
 function syncAgentWelcomeMessage() {
@@ -931,6 +1330,7 @@ onMounted(() => {
   window.addEventListener('system-agent:prefill', handleExternalPrefill)
   window.addEventListener('system-config-updated', loadAgentBranding)
   window.addEventListener('system-agent-live-strategy-mode', handleLiveStrategyModeEvent)
+  window.addEventListener('system-agent-live-strategy-context', handleLiveStrategyContextEvent)
   window.addEventListener('system-agent-live-support-context', handleLiveSupportContextEvent)
   window.addEventListener('live-policy-test-mode', handleLivePolicyTestModeEvent)
   window.addEventListener('resize', handleDockViewportResize)
@@ -958,6 +1358,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('system-agent:prefill', handleExternalPrefill)
   window.removeEventListener('system-config-updated', loadAgentBranding)
   window.removeEventListener('system-agent-live-strategy-mode', handleLiveStrategyModeEvent)
+  window.removeEventListener('system-agent-live-strategy-context', handleLiveStrategyContextEvent)
   window.removeEventListener('system-agent-live-support-context', handleLiveSupportContextEvent)
   window.removeEventListener('live-policy-test-mode', handleLivePolicyTestModeEvent)
   window.removeEventListener('resize', handleDockViewportResize)
@@ -1065,7 +1466,21 @@ async function send() {
   if (!value) return
 
   const domain = currentDomain.value
+  if (showInbox.value && isInboxIntent(value)) {
+    inboxRequest.value = value
+    drawerOpen.value = true
+    expanded.value = true
+    drawerTab.value = 'inbox'
+    input.value = ''
+    await refreshInbox()
+    return
+  }
+  drawerTab.value = 'chat'
   if (livePolicyTestMode.value.active && domain === 'live-policy-admin') {
+    if (isPolicyLearningAbsorbIntent(value)) {
+      await absorbLivePolicyTest(value)
+      return
+    }
     await sendLivePolicyTest(value)
     return
   }
@@ -1103,6 +1518,24 @@ async function send() {
   busyDomain.value = domain
 
   try {
+    if (
+      isPolicyLearningAbsorbIntent(value) &&
+      (domain === 'live-policy-admin' ||
+        domain === 'live-strategy' ||
+        (domain === 'live-support' && liveSupportMode.value === 'strategy'))
+    ) {
+      const candidate = await createPolicyLearningForDomain(domain, history, value)
+      if (candidate) {
+        window.dispatchEvent(
+          new CustomEvent('live-policy-learning-created', {
+            detail: { candidate },
+          }),
+        )
+        pushAgentMessage(domain, policyLearningCandidateMessage(candidate))
+        return
+      }
+    }
+
     if (adminPolicyIntent) {
       const policyHistory = historyPayload('live-policy-admin')
       const response = await chatLivePolicyAdminAgent({
@@ -1207,17 +1640,49 @@ async function send() {
         pushAgentMessage(domain, '你当前还没有可用直播间，请先创建或选择直播间。')
         return
       }
-      const response = await chatLiveRoomPolicyAgent(roomId, {
+      if (liveStrategyMode.value === 'strategy') {
+        const response = await chatLiveRoomPolicyAgent(roomId, {
+          message: value,
+          history,
+        })
+        pushAgentMessage(
+          domain,
+          response.reply +
+            (response.draft
+              ? '\n\n已生成当前直播间用户层草稿 V' +
+                response.draft.version_no +
+                '，仍需在直播策略工作台发布后才正式生效。'
+              : ''),
+        )
+        return
+      }
+
+      if (liveStrategyMode.value === 'voice') {
+        const voiceBoundMessage = await tryBindRequestedVoice(roomId, value)
+        if (voiceBoundMessage) {
+          pushAgentMessage(domain, voiceBoundMessage)
+          return
+        }
+      }
+
+      const draft = await persistLiveStrategyModeDraft(roomId, value)
+      const response = await chatLiveAgent(roomId, {
         message: value,
         history,
       })
+      const modeName =
+        liveStrategyMode.value === 'anchor'
+          ? '主播训练'
+          : liveStrategyMode.value === 'script'
+            ? '固定话术'
+            : liveStrategyMode.value === 'voice'
+              ? '声音配置'
+              : '基础设置'
       pushAgentMessage(
         domain,
         response.reply +
-          (response.draft
-            ? '\n\n已生成当前直播间 L3 草稿 V' +
-              response.draft.version_no +
-              '，仍需在直播策略工作台发布后才正式生效。'
+          (draft
+            ? '\n\n已保存为当前直播间' + modeName + '草稿 V' + draft.version_no + '。'
             : ''),
       )
       return
@@ -1231,7 +1696,7 @@ async function send() {
       }
       if (liveSupportMode.value === 'strategy') {
         if (!canDelegateLivePolicyL3(session.bootstrap)) {
-          pushAgentMessage(domain, '当前账号不能代维护客户 L3。具备 L1 配置能力的账号即使获得客户授权也不能操作 L3；请由仅具备 L2 配置能力的运维员工在授权后处理。')
+          pushAgentMessage(domain, '当前账号没有用户层授权协助权限，或尚未获得客户对当前直播间的授权。')
           return
         }
         const response = await chatLiveRoomPolicyAgent(roomId, {
@@ -1242,7 +1707,7 @@ async function send() {
           domain,
           response.reply +
             (response.draft
-              ? '\n\n已生成当前授权直播间 L3 草稿 V' +
+              ? '\n\n已生成当前授权直播间用户层草稿 V' +
                 response.draft.version_no +
                 '，仍需在客户授权协助工作台发布后才正式生效。'
               : ''),
@@ -1484,6 +1949,7 @@ async function copyCredential(credential?: InitialCredential) {
         @click="expand"
       >
         <span>✦</span>
+        <TodoBadge v-if="showInbox" to="/work/inbox" />
         <i class="ring-one"></i>
         <i class="ring-two"></i>
       </button>
@@ -1504,7 +1970,8 @@ async function copyCredential(credential?: InitialCredential) {
           <span>✦</span>
         </button>
         <div class="system-agent-inline-main">
-          <small>{{ assistantName }} · {{ contextLabel }} · {{ latestAgentMessage }}</small>
+          <small v-if="!isTerminalCustomer">{{ assistantName }} · {{ contextLabel }} · {{ latestAgentMessage }}</small>
+          <small v-else>{{ assistantName }}</small>
           <div class="system-agent-composer-field">
             <textarea
               ref="inputEl"
@@ -1571,24 +2038,20 @@ async function copyCredential(credential?: InitialCredential) {
       v-if="drawerOpen && actor"
       class="system-agent-backdrop"
     >
-      <aside class="system-agent-drawer">
+      <aside class="system-agent-drawer" :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer}">
         <header>
           <div>
-            <span class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
+            <span v-if="!isTerminalCustomer" class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
             <h3>{{ assistantName }}</h3>
-            <p>{{ contextDescription }}</p>
+            <small v-if="isTerminalCustomer" class="terminal-agent-subtitle" lang="en">XIAOLAN LIVE COMPANION</small>
           </div>
           <button class="icon-button" type="button" @click="drawerOpen = false">×</button>
         </header>
 
-        <div class="system-agent-capabilities">
-          <span>当前工作域：</span>
-          <b>{{ contextLabel }}</b>
-          <b v-for="item in capabilities" :key="item">{{ item }}</b>
-        </div>
-
-        <section ref="chatEl" class="system-agent-chat">
-          <div v-if="visibleMessages.length === 0" class="system-agent-context-empty">
+        <nav v-if="showInbox" class="agent-inbox-tabs" aria-label="智能体工作面板"><button type="button" :class="{active:drawerTab==='chat'}" @click="drawerTab='chat'">对话</button><button type="button" :class="{active:drawerTab==='inbox'}" @click="drawerTab='inbox';inboxRequest=''">我的待办<TodoBadge to="/work/inbox"/></button></nav>
+        <WorkInboxPanel v-if="showInbox && drawerTab==='inbox'" :request="inboxRequest" compact />
+        <section v-show="!showInbox || drawerTab==='chat'" ref="chatEl" class="system-agent-chat">
+          <div v-if="!isTerminalCustomer && visibleMessages.length === 0" class="system-agent-context-empty">
             <strong>{{ contextLabel }}</strong>
             <p>{{ contextDescription }}</p>
           </div>
@@ -1700,7 +2163,7 @@ async function copyCredential(credential?: InitialCredential) {
               <span class="system-agent-thinking-dots" aria-label="智能体正在思考">
                 <i></i><i></i><i></i>
               </span>
-              <small>正在理解你的要求，并检查当前工作域与权限…</small>
+              <small>{{ isTerminalCustomer ? '正在思考…' : '正在理解你的要求，并检查当前工作域与权限…' }}</small>
             </div>
           </article>
         </section>
@@ -1753,4 +2216,19 @@ async function copyCredential(credential?: InitialCredential) {
     </div>
   </Teleport>
 </template>
-
+<style scoped>
+.system-agent-drawer{grid-template-rows:auto auto minmax(0,1fr) auto;overflow:hidden}
+.system-agent-drawer.without-work-inbox{grid-template-rows:auto minmax(0,1fr) auto}
+.system-agent-drawer.terminal-agent-drawer{grid-template-rows:auto minmax(0,1fr) auto}
+.terminal-agent-drawer > header{padding:18px 20px;align-items:center}
+.terminal-agent-drawer > header h3{font-size:18px!important;line-height:1.5;margin:0}
+.terminal-agent-drawer > header > div{min-width:0}
+.terminal-agent-drawer .terminal-agent-subtitle{display:block;margin-top:4px;color:#65748e;font-size:14px;line-height:1.4;font-weight:500;letter-spacing:.06em;overflow-wrap:anywhere}
+.terminal-agent-drawer > footer{grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
+.terminal-agent-drawer > footer .system-agent-composer-field > textarea{display:block;margin:0}
+.terminal-agent-drawer > footer > .primary-button{align-self:center;justify-self:end;min-width:76px;height:48px;min-height:48px;margin:0;padding:0 18px;border-radius:12px;white-space:nowrap;transform:none}
+.terminal-agent-drawer .system-agent-message p,.terminal-agent-drawer textarea,.terminal-agent-drawer > footer button{font-size:18px!important;line-height:1.6}
+.system-agent-drawer :deep(.work-inbox-panel.compact){min-height:0;max-height:none;overflow:auto}
+.system-agent-drawer > .system-agent-chat{min-height:0}
+.agent-inbox-tabs{display:flex;gap:10px;padding:0 18px 12px}.agent-inbox-tabs button{position:relative;padding:8px 32px 8px 14px;min-height:40px;font-size:18px;border:1px solid #cfdbef;border-radius:8px;background:#fff;color:#315b94;cursor:pointer}.agent-inbox-tabs button.active{background:#eaf3ff;border-color:#75a4ea}.agent-inbox-tabs button:hover,.agent-inbox-tabs button:focus-visible{outline:none;box-shadow:0 0 0 3px #4285ff22;border-color:#5e96ed}.system-agent-orb{position:relative}
+</style>

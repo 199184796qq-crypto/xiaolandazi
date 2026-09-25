@@ -170,6 +170,12 @@ func customerScopedFromSQL() string {
 		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
 		LEFT JOIN mgmt_tenants parent ON parent.id=customer_org.parent_id
 		LEFT JOIN crm_customer_profiles p ON p.tenant_id=u.tenant_id
+		LEFT JOIN (
+		  SELECT tenant_id, MAX(paid_at) AS last_recharge_at
+		  FROM fin_recharge_orders
+		  WHERE status='paid' AND paid_at IS NOT NULL
+		  GROUP BY tenant_id
+		) recharge ON recharge.tenant_id=u.tenant_id
 		LEFT JOIN crm_registration_referrals rr ON rr.referred_user_id=u.id
 		LEFT JOIN mgmt_users inviter ON inviter.id=rr.inviter_user_id
 		LEFT JOIN crm_customer_sales_assignments sa
@@ -301,6 +307,15 @@ func (s *Store) ListAdminCustomersScoped(
 			u.email,
 			u.status,
 			COALESCE(p.source_type, 'unknown'),
+			COALESCE(p.cooperation_status, 'cooperating'),
+			COALESCE(p.cooperation_note, ''),
+			p.cooperation_marked_at,
+			COALESCE(p.cooperation_marked_by_user_id, 0),
+			recharge.last_recharge_at,
+			CASE
+				WHEN COALESCE(recharge.last_recharge_at, u.created_at) <= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 90 DAY)
+				THEN 1 ELSE 0
+			END,
 			COALESCE(parent.id, 0),
 			COALESCE(parent.name, ''),
 			COALESCE(parent.org_type, ''),
@@ -337,6 +352,12 @@ func (s *Store) ListAdminCustomersScoped(
 			&item.Email,
 			&item.Status,
 			&item.SourceType,
+			&item.CooperationStatus,
+			&item.CooperationNote,
+			&item.CooperationMarkedAt,
+			&item.CooperationMarkedByUserID,
+			&item.LastRechargeAt,
+			&item.RechargeDormant90Days,
 			&item.ParentOrgID,
 			&item.ParentOrgName,
 			&item.ParentOrgType,

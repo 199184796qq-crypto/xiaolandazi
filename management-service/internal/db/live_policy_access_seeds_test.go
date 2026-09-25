@@ -14,15 +14,18 @@ func TestLivePolicySeedHierarchyAndSeparation(t *testing.T) {
 		seen[role.Code] = true
 		access := model.StaffAccessContext{Permissions: role.Permissions}
 		isManager := role.Code == "live_operations_manager"
-		if access.CanManageLivePolicyL1() != isManager || !access.CanManageLivePolicyL2() || access.CanDelegateLivePolicyL3() == isManager {
+		if access.CanManageLivePolicyL1() != isManager || !access.CanManageLivePolicyL2() || !access.CanDelegateLivePolicyL3() {
 			t.Fatalf("unexpected hierarchy for %s", role.Code)
 		}
-		if isManager {
-			for _, permission := range role.Permissions {
-				if permission == "livepolicy.manage_l3_authorized" {
-					t.Fatal("L1 role must not advertise delegated L3 permission")
-				}
+		hasUserLayerSupport := false
+		for _, permission := range role.Permissions {
+			if permission == "livepolicy.manage_l3_authorized" {
+				hasUserLayerSupport = true
+				break
 			}
+		}
+		if !hasUserLayerSupport {
+			t.Fatalf("%s must advertise customer-authorized user-layer support", role.Code)
 		}
 		if !access.CanUseLiveSupportCapability(model.LiveSupportCapabilityAnchorTraining) ||
 			!access.CanUseLiveSupportCapability(model.LiveSupportCapabilityVoiceClone) {

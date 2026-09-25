@@ -3,12 +3,15 @@ import { computed, ref, watch } from 'vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 import LivePolicyAdminView from './LivePolicyAdminView.vue'
+import LivePolicyLearningView from './LivePolicyLearningView.vue'
 import LiveStrategyView from './LiveStrategyView.vue'
 import LiveSupportView from './LiveSupportView.vue'
 
 const isCustomer = computed(() => session.bootstrap?.actor.role === 'customer')
 const storedMode = window.localStorage.getItem('system-agent-live-strategy-internal-mode')
-const internalMode = ref<'policy' | 'support'>(storedMode === 'support' ? 'support' : 'policy')
+const internalMode = ref<'policy' | 'support' | 'learning'>(
+  storedMode === 'support' || storedMode === 'learning' ? storedMode : 'policy',
+)
 
 watch(
   internalMode,
@@ -41,8 +44,16 @@ watch(
       >
         客户授权协助
       </button>
+      <button
+        type="button"
+        :class="{ active: internalMode === 'learning' }"
+        @click="internalMode = 'learning'"
+      >
+        调教学习
+      </button>
     </div>
     <LivePolicyAdminView v-if="internalMode === 'policy'" embedded />
-    <LiveSupportView v-else embedded />
+    <LiveSupportView v-else-if="internalMode === 'support'" embedded />
+    <LivePolicyLearningView v-else />
   </div>
 </template>

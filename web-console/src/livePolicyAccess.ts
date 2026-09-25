@@ -16,11 +16,12 @@ export function canManageLivePolicyL2(bootstrap: Bootstrap | null | undefined): 
   return canManageLivePolicyL1(bootstrap) || hasPermission(bootstrap, 'livepolicy.manage_l2')
 }
 
-// Customer ownership and the room grant remain server-side checks. Never allow
-// a second L2/L3 role, wildcard, or old grant to override the L1 exclusion.
+// Customer ownership and the room-specific grant remain server-side checks.
+// Staff-side eligibility requires both industry-layer management and the
+// explicit customer-authorized user-layer support permission.
 export function canDelegateLivePolicyL3(bootstrap: Bootstrap | null | undefined): boolean {
   const role = bootstrap?.actor.role
   return (role === 'staff' || role === 'sales_staff') &&
-    !canManageLivePolicyL1(bootstrap) &&
-    canManageLivePolicyL2(bootstrap)
+    canManageLivePolicyL2(bootstrap) &&
+    hasPermission(bootstrap, 'livepolicy.manage_l3_authorized')
 }

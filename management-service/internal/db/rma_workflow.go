@@ -168,7 +168,7 @@ func (s *Store) AcceptRMA(
 		return model.RMARecord{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory", "logistics"); err != nil {
 		return model.RMARecord{}, err
 	}
 	return s.getRMA(ctx, rmaID)
@@ -248,7 +248,7 @@ func (s *Store) StartInternalRMARepair(
 	); err != nil {
 		return model.RMARecord{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory"); err != nil {
 		return model.RMARecord{}, err
 	}
 	return s.getRMA(ctx, rmaID)
@@ -428,7 +428,7 @@ func (s *Store) CreateRMACost(
 		return model.RMACost{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "inventory"); err != nil {
 		return model.RMACost{}, err
 	}
 	return s.getRMACost(ctx, costID)

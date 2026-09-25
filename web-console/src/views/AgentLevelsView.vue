@@ -115,9 +115,6 @@ const pagedLevels = computed(() => {
 const activeAssignments = computed(() =>
   history.value.filter((item) => item.status === 'active'),
 )
-const scheduledAssignments = computed(() =>
-  history.value.filter((item) => item.status === 'scheduled'),
-)
 const currentLevelByAgent = computed(() => {
   const result = new Map<number, AgentLevelHistory>()
   for (const item of activeAssignments.value) {
@@ -346,29 +343,6 @@ onMounted(load)
     </section>
 
     <p v-if="error" class="inline-error">{{ error }}</p>
-
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>等级政策</span>
-        <strong>{{ levels.length }}</strong>
-        <small>独立商业等级</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>启用等级</span>
-        <strong>{{ levels.filter((item) => item.status === 'active').length }}</strong>
-        <small>可分配给代理</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>当前等级关系</span>
-        <strong>{{ activeAssignments.length }}</strong>
-        <small>当前生效记录</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>待生效调整</span>
-        <strong>{{ scheduledAssignments.length }}</strong>
-        <small>未来生效记录</small>
-      </article>
-    </section>
 
     <section class="settings-card feature-record-panel">
       <DataListControls

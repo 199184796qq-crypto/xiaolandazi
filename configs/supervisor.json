@@ -16,15 +16,47 @@
       "StartupGrace": "10s"
     },
     {
+      "Name": "customer-mobile",
+      "HealthURL": "http://127.0.0.1:5174/login",
+      "Command": "node",
+      "Args": ["${ROOT}/customer-mobile/node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5174"],
+      "WorkingDir": "${ROOT}/customer-mobile",
+      "StartupGrace": "10s"
+    },
+    {
+      "Name": "sales-mobile",
+      "HealthURL": "http://127.0.0.1:5175/login",
+      "Command": "node",
+      "Args": ["${ROOT}/sales-mobile/node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5175"],
+      "WorkingDir": "${ROOT}/sales-mobile",
+      "StartupGrace": "10s"
+    },
+    {
+      "Name": "device-simulator",
+      "HealthURL": "http://127.0.0.1:5176/",
+      "Command": "node",
+      "Args": ["${ROOT}/device-simulator/node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5176"],
+      "WorkingDir": "${ROOT}/device-simulator",
+      "StartupGrace": "10s"
+    },
+    {
       "Name": "management-service",
       "HealthURL": "http://127.0.0.1:8080/healthz",
       "Command": "${ROOT}/management-service/bin/management-service",
       "CommandWindows": "${ROOT}/management-service/bin/management-service.exe",
       "WorkingDir": "${ROOT}",
-      "StartupGrace": "8s",
+      "StartupGrace": "180s",
       "Env": {
         "MGMT_AVATAR_DIR": "${ROOT}/data/avatars"
       }
+    },
+    {
+      "Name": "audio-service",
+      "HealthURL": "http://127.0.0.1:8082/healthz",
+      "Command": "${ROOT}/audio-service/bin/audio-service",
+      "CommandWindows": "${ROOT}/audio-service/bin/audio-service.exe",
+      "WorkingDir": "${ROOT}",
+      "StartupGrace": "8s"
     },
     {
       "Name": "core-service",

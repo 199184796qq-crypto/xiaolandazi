@@ -10,6 +10,7 @@ import {
   disableStaffEmployee,
   getStaffDashboard,
   replaceStaffEmployeeRoles,
+  resetStaffEmployeePassword,
   updateStaffApprovalPolicy,
   updateStaffGroup,
   updateStaffRole,
@@ -102,6 +103,7 @@ const credentialOpen = ref(false)
 const credential = ref<InitialCredential | null>(null)
 const credentialName = ref('')
 const credentialUsername = ref('')
+const credentialTitle = ref('员工账号已创建')
 
 const access = computed(() => dashboard.value?.access ?? null)
 const groups = computed(() => dashboard.value?.groups ?? [])
@@ -421,6 +423,7 @@ async function submitEmployee() {
 
     credentialName.value = result.item.display_name
     credentialUsername.value = result.item.username
+    credentialTitle.value = '员工账号已创建'
     credential.value = result.credential
     showEmployeeModal.value = false
     credentialOpen.value = true
@@ -585,6 +588,30 @@ async function submitEmployeeRoles() {
   }
 }
 
+async function resetEmployeePassword(item: StaffEmployeeSummary) {
+  if (!isSuperAdmin.value || item.employment_status !== 'active') return
+  if (!(await confirmAction({
+    title: '重置员工密码',
+    message: '确认重置员工“' + item.display_name + '”的密码吗？重置后该员工现有登录会话会立即失效，并在下次登录时强制修改密码。',
+    confirmText: '确认重置',
+    danger: true,
+  }))) return
+
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await resetStaffEmployeePassword(item.id)
+    credentialName.value = result.item.display_name
+    credentialUsername.value = result.item.username
+    credentialTitle.value = '员工密码已重置'
+    credential.value = result.credential
+    credentialOpen.value = true
+    notice.value = '员工密码已重置，旧会话已注销。'
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '重置员工密码失败'
+  }
+}
+
 async function disableEmployee(item: StaffEmployeeSummary) {
   if (!(await confirmAction({
     title: '停用员工',
@@ -669,30 +696,6 @@ onMounted(load)
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
     <template v-if="dashboard">
-      <section class="staff-summary-grid">
-        <article class="staff-summary-card">
-          <span>内部员工</span>
-          <strong>{{ employees.length }}</strong>
-          <small>当前权限可见</small>
-        </article>
-        <article class="staff-summary-card">
-          <span>部门</span>
-          <strong>{{ groups.length }}</strong>
-          <small>组织结构</small>
-        </article>
-        <article class="staff-summary-card">
-          <span>角色</span>
-          <strong>{{ roles.length }}</strong>
-          <small>可复用权限模板</small>
-        </article>
-        <article class="staff-summary-card">
-          <span>当前身份</span>
-          <strong class="staff-summary-role">
-            {{ access?.is_super_admin ? '超级系统管理员' : access?.primary_group_name }}
-          </strong>
-          <small>{{ access?.role_codes.join(' / ') || '—' }}</small>
-        </article>
-      </section>
 
       <section class="settings-card staff-groups-card">
         <div class="settings-card-header">
@@ -843,6 +846,14 @@ onMounted(load)
                   @click="openEmployeeRoleEdit(item)"
                 >
                   职责
+                </button>
+                <button
+                  v-if="isSuperAdmin && item.employment_status === 'active'"
+                  class="text-action"
+                  type="button"
+                  @click="resetEmployeePassword(item)"
+                >
+                  重置密码
                 </button>
                 <button
                   v-if="canDisableEmployeeAccount(item) && item.employment_status === 'active'"
@@ -1385,7 +1396,7 @@ onMounted(load)
     </div>
     <CredentialResultModal
       :open="credentialOpen"
-      title="员工账号已创建"
+      :title="credentialTitle"
       :display-name="credentialName"
       :username="credentialUsername"
       :credential="credential"

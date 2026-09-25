@@ -1,0 +1,72 @@
+.sales-business {font-size:16px;line-height:1.6;color:#253450}
+.sales-business h2 {font-size:26px;margin:0 0 6px}
+.sales-business h3 {font-size:20px;margin:0}
+.sales-business p {margin:8px 0 16px}
+.sales-business small,.sales-business .muted {font-size:14px;color:#687891}
+.sales-business button,.sales-business input,.sales-business select,.sales-business textarea {font:inherit;font-size:16px}
+.sales-business button {min-height:42px;border:1px solid #d5e1f5;border-radius:10px;background:#fff;color:#2856a4;padding:8px 14px;cursor:pointer;transition:box-shadow .16s,border-color .16s,background .16s}
+.sales-business button:hover:not(:disabled),.sales-business button:focus-visible:not(:disabled),.sales-business a:focus-visible {border-color:#65a1ff;box-shadow:0 0 0 3px #4285ff22,0 5px 18px #3388ff2b;background:#f3f8ff;outline:none}
+.sales-business button:disabled {opacity:.5;cursor:not-allowed}
+.sales-business button.primary {background:#326bd8;color:#fff;border-color:#326bd8}
+/* Keep selected/primary controls blue: neutral hover must not leave white text on a pale surface. */
+.sales-business button.primary:hover:not(:disabled),
+.sales-business button.primary:focus-visible:not(:disabled) {background:#285cc4;color:#fff;border-color:#65a1ff}
+.sales-business button.primary:active:not(:disabled) {background:#234fa8;color:#fff;border-color:#65a1ff}
+.sales-business button.danger {color:#b84343;border-color:#f0cdcd}
+.sales-business .sb-toolbar,.sales-business .sb-actions {display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sales-business .sb-toolbar {justify-content:space-between;margin-bottom:18px}
+.sales-business .sb-actions {margin-top:12px}
+.sales-business .sb-panel {padding:22px;background:#fff;border:1px solid #e0e7f2;border-radius:18px;margin-bottom:20px;box-shadow:0 8px 26px #1c407207}
+.sales-business .sb-metrics {display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:12px;margin:16px 0}
+.sales-business .sb-metrics article {background:#f4f8ff;border:1px solid #e0e9fc;padding:16px;border-radius:14px}
+.sales-business .sb-metrics strong {display:block;font-size:28px;color:#3465b5}
+.sales-business .sb-grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.sales-business .sb-record {border:1px solid #dce7f7;border-radius:15px;background:linear-gradient(145deg,#f7faff,#fff);padding:20px;min-width:0;transition:box-shadow .18s,border-color .18s}
+.sales-business .sb-record:hover,.sales-business .sb-record:focus-within {border-color:#78aaff;box-shadow:0 0 0 2px #4085ff18,0 10px 28px #387ce51b}
+.sales-business .sb-record header {display:flex;justify-content:space-between;gap:12px;align-items:start}
+.sales-business .sb-record p,.sales-business td {overflow-wrap:anywhere;white-space:pre-wrap}
+.sales-business .sb-table {overflow-x:auto;width:100%}
+.sales-business table {border-collapse:separate;border-spacing:0;width:100%;min-width:800px}
+.sales-business th {text-align:left;background:#f1f6ff;padding:14px;color:#526783;font-size:15px}
+.sales-business td {padding:15px 14px;border-bottom:1px solid #e9eef7;vertical-align:top;font-size:16px;max-width:340px}
+.sales-business td strong,.sales-business td small {display:block}
+/* The shared management table rules use !important. Scope the readable minimum
+   here, retaining larger user-selected table text without changing other pages. */
+.sales-business .sb-table table th,
+.sales-business .sb-table table td {font-size:max(16px,var(--table-font-size,16px))!important}
+.sales-business .sb-table table td strong {font-size:inherit}
+.sales-business .sb-table table td small {font-size:max(14px,calc(var(--table-font-size,16px) - 2px))!important}
+.sales-business .sb-table table tbody tr:hover > td {background:#f0f7ff!important}
+.sales-business .sb-table table tbody tr:hover > td:first-child {box-shadow:inset 3px 0 #4d94ff}
+.sales-business tbody tr:hover {background:#f4f9ff;box-shadow:inset 3px 0 #4d94ff,0 0 14px #4285ff14}
+.sales-business .sb-badge {display:inline-block;border:1px solid #d6e5ff;color:#3262ad;background:#eef5ff;padding:3px 10px;border-radius:999px;font-size:14px;white-space:nowrap}
+.sales-business .sb-empty {padding:34px 20px;text-align:center;border:1px dashed #cad9ec;border-radius:14px;color:#687891}
+.sales-business .sb-error {padding:12px 16px;background:#fff3f3;color:#a33232;border-radius:10px;white-space:pre-wrap}
+.sales-business .sb-success {padding:12px 16px;background:#effaf4;color:#286a47;border-radius:10px}
+.sales-business .sb-form {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.sales-business .sb-form label {display:grid;gap:6px}
+.sales-business .sb-form input,.sales-business .sb-form select,.sales-business .sb-form textarea,.sales-business .sb-search {width:100%;min-width:0;border:1px solid #ccd9ed;border-radius:10px;padding:10px 12px;background:#fcfdff;color:#253450}
+.sales-business input:focus,.sales-business select:focus,.sales-business textarea:focus {outline:2px solid #78aaff;outline-offset:1px}
+.sales-business .sb-form textarea {min-height:110px;resize:vertical}
+.sales-business .sb-wide {grid-column:1/-1}
+.sales-business .sb-note {padding:12px 16px;border-radius:12px;background:#f4f7fc;color:#62728b}
+.sb-overlay {position:fixed;inset:0;z-index:2200;background:#172d4d66;display:flex;align-items:center;justify-content:center;padding:24px}
+.sb-dialog {width:min(1020px,96vw);max-height:92dvh;overflow:auto;background:#f7f9fd;border-radius:22px;padding:26px;box-shadow:0 30px 90px #15294655}
+.sb-dialog .sb-sticky {position:sticky;top:-26px;background:#f7f9df;z-index:1;padding:10px 0}
+.sales-business .data-list-controls {margin-bottom:18px}
+/* Shared toggles must stay readable even when this sheet loads before global CSS. */
+.sales-business .data-list-controls .data-view-toggle button {font-size:16px;min-height:42px}
+.sales-business .data-list-controls .data-view-toggle button:hover:not(:disabled),
+.sales-business .data-list-controls .data-view-toggle button:focus-visible {border-color:#65a1ff;box-shadow:0 0 0 3px #4285ff22,0 5px 18px #3388ff2b;background:#f3f8ff;outline:none}
+.sales-business .data-list-controls span,.sales-business .pagination-bar span {font-size:15px}
+.sales-business .pagination-bar {margin-top:18px;display:flex;flex-wrap:wrap;gap:12px}
+.sales-business .pagination-bar-actions {display:flex;flex-wrap:wrap;gap:8px}
+@media(max-width:800px){.sales-business .sb-form{grid-template-columns:1fr}.sb-overlay{padding:8px}.sb-dialog{padding:18px;width:100%;max-height:96dvh}.sales-business .sb-panel{padding:16px}.sales-business .sb-grid{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.sales-business *{transition:none!important}}
+
+/* Compact customer money filters */
+.sales-business .money-filter-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:2px 0 18px}
+.sales-business .money-filter-item{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;color:#40506a;font-weight:700}
+.sales-business .money-filter-item select,.sales-business .money-filter-item input{width:auto;min-width:170px;min-height:42px;border:1px solid #ccd9ed;border-radius:10px;padding:8px 11px;background:#fcfdff;color:#253450}
+.sales-business .money-filter-item input[type=date]{min-width:160px}
+@media(max-width:800px){.sales-business .money-filter-row{align-items:stretch;gap:10px}.sales-business .money-filter-item{width:100%}.sales-business .money-filter-item select,.sales-business .money-filter-item input{flex:1;min-width:0}}

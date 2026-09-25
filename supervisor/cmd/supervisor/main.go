@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -35,6 +36,10 @@ func main() {
 	}
 
 	runner, err := supervisor.New(cfg)
+	if errors.Is(err, supervisor.ErrAlreadyRunning) {
+		fmt.Fprintln(os.Stderr, "supervisor already running; duplicate launch ignored")
+		return
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create supervisor:", err)
 		os.Exit(1)

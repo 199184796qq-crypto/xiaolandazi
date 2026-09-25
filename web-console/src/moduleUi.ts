@@ -12,6 +12,7 @@ export type HubKey =
 export interface ModuleEntry {
   title: string
   description: string
+  scopeHint?: string
   icon: string
   to?: string
   badge?: string
@@ -41,17 +42,19 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '直播运维',
     description: '集中查看直播业务运行状态，再进入直播间、监控和事件处理具体工作。',
     hubTo: '/operations/live',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '营销运维部',
+    parentTo: '/operations/live',
     heroIcon: '播',
     groups: [{
       title: '功能入口',
       description: '围绕直播间、策略、会员价格和商品运营组织直播运维能力。',
       entries: [
-        { title: '直播间', description: '管理直播间、查看实时公屏、直播画面和现场状态。', icon: '播', to: '/rooms/list', badge: '现场', status: 'ready' },
+        { title: '直播间', description: '管理直播间、查看实时公屏和现场状态。', icon: '播', to: '/rooms/list', badge: '现场', status: 'ready' },
         { title: '直播间数量', description: '查看终端已开直播间、额度和剩余可开数量，由营销运维部统一管理。', icon: '额', to: '/operations/live/room-quotas', badge: '额度', status: 'ready' },
-        { title: '直播策略', description: '通过策略 Agent 调教当前直播间的主播、话术、声音和第 3 层策略。', icon: '策', to: '/operations/live/strategy', badge: 'Agent', status: 'ready' },
+        { title: '直播策略', description: '通过策略 Agent 调教当前直播间的主播、话术、声音和用户层策略。', icon: '策', to: '/operations/live/strategy', badge: 'Agent', status: 'ready' },
         { title: '设备绑定', description: '查看名下设备状态，并管理设备与直播间的绑定关系。', icon: '设', to: '/operations/live/devices', badge: '设备', status: 'ready' },
+        { title: '协助工单', description: '受理销售代申请与客户自助申请，接单处理、回复并等待客户确认。', icon: '助', to: '/operations/support', badge: '待办', status: 'ready' },
+        { title: '历史客户交接', description: '保留早期交接历史；新协助使用工单，开户和入账不自动派单。', icon: '接', to: '/operations/live/customer-handoffs', badge: '历史', status: 'ready' },
       ],
     }],
   },
@@ -60,8 +63,8 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '活动营销',
     description: '统一管理营销活动、邀请推荐、优惠工具、奖励、渠道活动和营销数据；商品与资源配置作为营销执行底座继续保留。',
     hubTo: '/operations/live/marketing',
-    parentTitle: '营销运维',
-    parentTo: '/overview',
+    parentTitle: '营销运维部',
+    parentTo: '/operations/live',
     heroIcon: '营',
     groups: [
       {
@@ -69,7 +72,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
         description: '围绕获客、转介绍、优惠、奖励、渠道和效果数据形成完整营销闭环。',
         entries: [
           { title: '营销活动', description: '建立营销计划，为会员、时长卡和设备商品配置活动折扣、赠送、组合标的和生效时间。', icon: '营', to: '/commercial/marketing', badge: '活动', status: 'ready' },
-          { title: '邀请与推荐', description: '统一管理全平台邀请码、邀请注册归属、推荐记录和邀请码策略；终端客户端仍保留一级入口。', icon: '邀', to: '/invitations', badge: '推荐', status: 'ready' },
+          { title: '邀请与推荐', description: '在营销运维工作台观察邀请注册归属、推荐记录和渠道来源，不进入客资销售工作台。', icon: '邀', to: '/commercial/marketing/channels?focus=invitations', badge: '观察', status: 'ready' },
           { title: '优惠工具', description: '汇总折扣、赠送、组合和限时等现有营销工具，统一回到营销活动配置，不把优惠参数写死在代码里。', icon: '惠', to: '/commercial/marketing/tools', badge: '工具', status: 'ready' },
           { title: '奖励管理', description: '配置推荐奖励触发条件、冻结期和退款冲回规则；AI 时长奖励继续经过真实审批与流水入账。', icon: '奖', to: '/commercial/referrals', badge: '奖励', status: 'ready' },
           { title: '渠道活动', description: '查看终端老带新、销售邀请、代理邀请等渠道来源，并从邀请关系和奖励规则继续配置。', icon: '渠', to: '/commercial/marketing/channels', badge: '渠道', status: 'ready' },
@@ -94,8 +97,8 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '组织架构',
     description: '统一管理内部部门、员工账号、角色权限和高风险审批规则。',
     hubTo: '/staff',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '组织架构',
+    parentTo: '/staff',
     heroIcon: '组',
     groups: [
       {
@@ -122,8 +125,8 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '客户资源',
     description: '统一查看终端主档、来源归属、账号安全和管理审计。',
     hubTo: '/customers',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '客资销售',
+    parentTo: '/sales',
     heroIcon: '客',
     groups: [
       {
@@ -168,8 +171,8 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '销售体系',
     description: '统一查看销售团队、客户资源、业绩和提成关系。',
     hubTo: '/sales',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '客资销售',
+    parentTo: '/sales',
     heroIcon: '销',
     groups: [{
       title: '销售经营',
@@ -178,6 +181,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
         { title: '销售团队', description: '查看销售业务账号并进入内部员工体系维护。', icon: '销', to: '/sales/team', badge: '已上线', status: 'ready' },
         { title: '客户资源', description: '查看销售与客户的当前关系和历史来源。', icon: '客', to: '/customers/list?focus=attribution', badge: '归属', status: 'ready' },
         { title: '业绩与提成', description: '按订单和规则版本追踪业绩、提成与冲回。', icon: '绩', to: '/sales/performance', badge: '提成', status: 'ready' },
+        { title: '客户交接', description: '销售离职或调岗时，交接正式客户、意向顾客及后续跟进，历史归属保留。', icon: '接', to: '/sales/handovers', badge: '交接', status: 'ready' },
       ],
     }],
   },
@@ -196,16 +200,17 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '财务与结算',
     description: '客户资金、经营收支、结算规则、审批、账务流水和追溯职责分离。',
     hubTo: '/staff/finance',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '财务部',
+    parentTo: '/staff/finance',
     heroIcon: '财',
     groups: [
       {
         title: '资金业务',
         description: '终端资金账户和审批职责分离。',
         entries: [
+          { title: '客户收款确认', description: '核对客户实际付款，审核后按款项用途入账；不在内部操作审批重复办理。', scopeHint: '客户付款核实与入账', icon: '款', to: '/staff/finance/receipts', badge: '收款', status: 'ready' },
           { title: '终端账户', description: '查看余额并发起授权范围内的资金操作。', icon: '账', to: '/staff/finance/accounts', badge: '账户', status: 'ready' },
-          { title: '待审核', description: '集中处理充值、退款、奖励等待审核任务。', icon: '审', to: '/staff/finance/approvals', badge: '审批', status: 'ready' },
+          { title: '资金与权益审批', description: '处理员工发起的充值、退款、奖励、AI 时长操作申请；客户收款资料在客户收款确认办理。', scopeHint: '充值、退款、奖励、时长申请', icon: '审', to: '/staff/finance/approvals', badge: '申请', status: 'ready' },
           { title: '经营收支', description: '统一查看设备采购、物流成本、报废收入和 Token 采购成本。', icon: '营', to: '/staff/finance/operating', badge: '成本', status: 'ready' },
         ],
       },
@@ -218,6 +223,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
           { title: '全链路追溯', description: '从任意资金穿透到订单、结算、提现和责任人。', icon: '追', to: '/staff/finance/trace', badge: '追溯', status: 'ready' },
           { title: '结算规则', description: '配置销售提成、代理返佣、最低订单金额、冻结期和冲回规则。', icon: '规', to: '/commercial/settlement', badge: '规则', status: 'ready' },
           { title: '收益结算', description: '查看收益明细并完成结算批次生成、审核和支付。', icon: '结', to: '/staff/finance/settlements', badge: '结算', status: 'ready' },
+          { title: '邀请与推荐', description: '核对邀请关系、客户收款和已有奖励依据。', icon: '邀', to: '/staff/finance/invitations', status: 'ready' },
         ],
       },
     ],
@@ -227,8 +233,8 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
     title: '设备与仓储',
     description: '按设备名称管理采购批量入库、批量出库和物流交付；每一台实物都保留独立 SN、内部 ID 和完整生命周期记录。',
     hubTo: '/resources',
-    parentTitle: '系统',
-    parentTo: '/overview',
+    parentTitle: '仓储售后部',
+    parentTo: '/resources',
     heroIcon: '库',
     groups: [
       {
@@ -236,7 +242,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
         description: '设备出入库与物流交付统一按 SN 串联追溯；售后维修作为独立业务项目单独管理。',
         entries: [
           { title: '设备出入库', description: '按设备名称管理采购批量入库、SN 实物库存和批量出库。', icon: '库', to: '/resources/inventory', badge: '出入库', status: 'ready' },
-          { title: '设备商品资料', description: '仓库维护设备商品/SKU 主资料；商品上下架由营销运维部负责。', icon: '设', to: '/commercial/device-products', badge: '主数据', status: 'ready' },
+          { title: '设备商品资料', description: '仓库在自己的工作台维护设备商品/SKU 主资料；商品上下架仍由营销运维部负责。', icon: '设', to: '/resources/device-products', badge: '主数据', status: 'ready' },
           { title: '物流管理', description: '管理快递和直接领取，关联具体出库对象、运单和设备 SN。', icon: '物', to: '/resources/logistics', badge: '物流', status: 'ready' },
         ],
       },

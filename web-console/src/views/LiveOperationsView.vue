@@ -119,11 +119,6 @@ const pagedEventItems = computed(() => {
   return eventItems.value.slice(start, start + pageSize.value)
 })
 
-const liveCount = computed(() => rooms.value.filter((room) => room.status === 'live').length)
-const errorCount = computed(() => rooms.value.filter((room) => room.status === 'error').length)
-const onlineTotal = computed(() => rooms.value.reduce((sum, room) => sum + (room.online_count || 0), 0))
-const connectingCount = computed(() => rooms.value.filter((room) => room.status === 'connecting').length)
-
 watch(
   () => props.focus,
   () => {
@@ -228,25 +223,6 @@ onMounted(load)
       <button class="ghost-button" type="button" :disabled="loading" @click="load">
         {{ loading ? '刷新中...' : '刷新数据' }}
       </button>
-    </section>
-
-    <section class="module-hub-metrics-v2">
-      <article class="module-hub-metric-v2 tone-primary">
-        <span>直播间</span><strong>{{ rooms.length }}</strong><small>当前可见直播间</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-success">
-        <span>直播中</span><strong>{{ liveCount }}</strong><small>正在运行</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-neutral">
-        <span>{{ focus === 'events' ? '最近事件' : '在线人数' }}</span>
-        <strong>{{ focus === 'events' ? events.length : onlineTotal.toLocaleString() }}</strong>
-        <small>{{ focus === 'events' ? '已聚合事件' : '所有直播间合计' }}</small>
-      </article>
-      <article class="module-hub-metric-v2 tone-warning">
-        <span>{{ focus === 'events' ? '异常直播间' : '连接中 / 异常' }}</span>
-        <strong>{{ focus === 'events' ? errorCount : connectingCount + errorCount }}</strong>
-        <small>需要关注</small>
-      </article>
     </section>
 
     <section class="settings-card feature-workspace-panel">
