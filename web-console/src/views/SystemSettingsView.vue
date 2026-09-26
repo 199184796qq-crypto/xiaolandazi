@@ -4,8 +4,13 @@ import {
   createSystemDictionaryItem,
   createSystemWarehouse,
   getLivePolicyIndustries,
+  getAgentPromptHistory,
   getSystemSettingsDashboard,
+  resetAgentPromptConfig,
+  publishAgentPromptConfig,
+  rollbackAgentPromptConfig,
   updateSystemDictionaryItem,
+  updateAgentPromptConfigs,
   updateSystemSettings,
   updateMembershipRoomLimits,
   updateSystemWarehouse,
@@ -17,6 +22,7 @@ import PaginationBar from '../components/PaginationBar.vue'
 import { financeReviewSettingKey } from '../financeReviewPolicy'
 import type {
   InventoryWarehouse,
+  AgentPromptHistory,
   LivePolicyIndustry,
   SystemDictionaryItem,
   SystemDictionaryItemInput,
@@ -31,10 +37,17 @@ const saving = ref(false)
 const savingRuleTypography = ref(false)
 const savingFinancePolicy = ref(false)
 const savingMembershipLimits = ref(false)
+const savingAgentPrompts = ref(false)
+const resettingPromptKey = ref('')
+const publishingPromptKey = ref('')
+const promptHistoryKey = ref('')
+const promptHistories = reactive<Record<string, AgentPromptHistory[]>>({})
+const rollingBackPromptKey = ref('')
 const error = ref('')
 const notice = ref('')
 const dashboard = ref<SystemSettingsDashboard | null>(null)
 const settingsDraft = reactive<Record<string, string>>({})
+const agentPromptDrafts = reactive<Record<string, { current_value: string; enabled: boolean }>>({})
 const membershipRoomLimitDrafts = reactive<Record<number, number>>({})
 const dictionaryDrafts = reactive<Record<number, SystemDictionaryItemInput>>({})
 const dictionaryCategory = ref<DictionaryCategory>('logistics_provider')
@@ -90,6 +103,7 @@ function hasPermission(code: string) {
 }
 
 const canViewGlobal = computed(() => isPlatformAdmin.value)
+const canManageAgentPrompts = computed(() => isPlatformAdmin.value || Boolean(session.bootstrap?.staff_access?.is_super_admin))
 const canViewMembershipLimits = computed(() => hasPermission('commercial.membership.view'))
 const canManageMembershipLimits = computed(() => hasPermission('system.settings.liveops.manage'))
 const canViewIndustry = computed(() => hasPermission('livepolicy.view'))
@@ -180,6 +194,12 @@ function syncDashboard(value: SystemSettingsDashboard) {
   for (const setting of value.settings) {
     settingsDraft[setting.key] = setting.value
   }
+  for (const item of value.agent_prompt_configs || []) {
+    agentPromptDrafts[item.key] = {
+      current_value: item.draft_value ?? item.current_value,
+      enabled: item.draft_enabled ?? item.enabled,
+    }
+  }
   for (const items of Object.values(value.dictionaries)) {
     for (const item of items) {
       dictionaryDrafts[item.id] = {
@@ -257,6 +277,114 @@ async function saveGlobalSettings() {
     error.value = value instanceof Error ? value.message : '保存系统设置失败'
   } finally {
     saving.value = false
+  }
+}
+
+async function saveAgentPrompts() {
+  if (!dashboard.value || savingAgentPrompts.value) return
+  savingAgentPrompts.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await updateAgentPromptConfigs(
+      (dashboard.value.agent_prompt_configs || []).map((item) => ({
+        key: item.key,
+        current_value: agentPromptDrafts[item.key]?.current_value ?? item.current_value,
+        enabled: agentPromptDrafts[item.key]?.enabled ?? item.enabled,
+      })),
+    )
+    dashboard.value.agent_prompt_configs = result.items
+    for (const item of result.items) {
+      agentPromptDrafts[item.key] = { current_value: item.draft_value ?? item.current_value, enabled: item.draft_enabled ?? item.enabled }
+    }
+    notice.value = '模型指令草稿已保存。发布后新请求才会使用。'
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '保存模型与智能体配置失败'
+  } finally {
+    savingAgentPrompts.value = false
+  }
+}
+
+async function restoreAgentPromptDefault(key: string) {
+  if (!dashboard.value || resettingPromptKey.value) return
+  resettingPromptKey.value = key
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await resetAgentPromptConfig(key)
+    dashboard.value.agent_prompt_configs = result.items
+    for (const item of result.items) {
+      agentPromptDrafts[item.key] = { current_value: item.draft_value ?? item.current_value, enabled: item.draft_enabled ?? item.enabled }
+    }
+    notice.value = '已把系统默认内容恢复到草稿，确认后再发布。'
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '恢复默认模型要求失败'
+  } finally {
+    resettingPromptKey.value = ''
+  }
+}
+
+async function publishAgentPrompt(key: string) {
+  if (!dashboard.value || publishingPromptKey.value) return
+  publishingPromptKey.value = key
+  error.value = ''
+  notice.value = ''
+  try {
+    await updateAgentPromptConfigs([{
+      key,
+      current_value: agentPromptDrafts[key]?.current_value ?? '',
+      enabled: agentPromptDrafts[key]?.enabled ?? true,
+    }])
+    const result = await publishAgentPromptConfig(key)
+    dashboard.value.agent_prompt_configs = result.items
+    for (const item of result.items) {
+      agentPromptDrafts[item.key] = { current_value: item.draft_value ?? item.current_value, enabled: item.draft_enabled ?? item.enabled }
+    }
+    notice.value = '模型指令已发布，新请求立即使用 V' + (result.items.find((item) => item.key === key)?.version || '') + '。'
+    if (promptHistoryKey.value === key) {
+      const history = await getAgentPromptHistory(key)
+      promptHistories[key] = history.items
+    }
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '发布模型指令失败'
+  } finally {
+    publishingPromptKey.value = ''
+  }
+}
+
+async function loadAgentPromptHistory(key: string) {
+  if (promptHistoryKey.value === key) {
+    promptHistoryKey.value = ''
+    return
+  }
+  error.value = ''
+  try {
+    const result = await getAgentPromptHistory(key)
+    promptHistories[key] = result.items
+    promptHistoryKey.value = key
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '读取版本历史失败'
+  }
+}
+
+async function rollbackAgentPrompt(key: string, version: number) {
+  if (!dashboard.value || rollingBackPromptKey.value) return
+  rollingBackPromptKey.value = key
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await rollbackAgentPromptConfig(key, version)
+    dashboard.value.agent_prompt_configs = result.items
+    for (const item of result.items) {
+      agentPromptDrafts[item.key] = { current_value: item.draft_value ?? item.current_value, enabled: item.draft_enabled ?? item.enabled }
+    }
+    notice.value = '已回滚到 V' + version + ' 的内容，并作为新版本发布。'
+    const history = await getAgentPromptHistory(key)
+    promptHistories[key] = history.items
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '回滚模型指令失败'
+  } finally {
+    rollingBackPromptKey.value = ''
   }
 }
 
@@ -671,6 +799,74 @@ onMounted(load)
           <span v-if="settingsDraft.footer_extra_text">| {{ settingsDraft.footer_extra_text }}</span>
         </div>
       </div>
+    </section>
+
+    <section v-if="canManageAgentPrompts" class="system-settings-card agent-prompt-settings">
+      <header>
+        <div>
+          <span class="section-kicker">MODEL & AGENT CONFIG</span>
+          <h3>模型与智能体配置</h3>
+          <p>统一维护系统与大模型之间的业务要求。先保存草稿，发布后新请求立即生效；终端用户不可查看这些内容。</p>
+        </div>
+        <button class="primary-button" type="button" :disabled="savingAgentPrompts || loading || !dashboard" @click="saveAgentPrompts">
+          {{ savingAgentPrompts ? '保存中...' : '保存全部草稿' }}
+        </button>
+      </header>
+
+      <div v-if="dashboard?.agent_prompt_configs?.length" class="agent-prompt-list">
+        <article v-for="item in dashboard.agent_prompt_configs" :key="item.key" class="agent-prompt-item">
+          <div class="agent-prompt-item-head">
+            <div>
+              <strong>{{ item.name }}</strong>
+              <code>{{ item.key }}</code>
+            </div>
+            <label class="system-setting-toggle compact-toggle">
+              <span>{{ agentPromptDrafts[item.key]?.enabled ? '启用' : '停用' }}</span>
+              <input
+                type="checkbox"
+                :checked="agentPromptDrafts[item.key]?.enabled"
+                @change="agentPromptDrafts[item.key].enabled = ($event.target as HTMLInputElement).checked"
+              />
+            </label>
+          </div>
+          <p>{{ item.description }}</p>
+          <small>场景：{{ item.scene }} · 已发布 V{{ item.version }} · 最近发布 {{ new Date(item.updated_at).toLocaleString() }}</small>
+          <small v-if="agentPromptDrafts[item.key] && (agentPromptDrafts[item.key].current_value !== item.current_value || agentPromptDrafts[item.key].enabled !== item.enabled)" class="agent-prompt-draft-badge">有未发布草稿</small>
+          <textarea
+            v-model="agentPromptDrafts[item.key].current_value"
+            rows="7"
+            spellcheck="false"
+          />
+          <div class="agent-prompt-actions">
+            <button class="ghost-button" type="button" :disabled="resettingPromptKey === item.key" @click="restoreAgentPromptDefault(item.key)">
+              {{ resettingPromptKey === item.key ? '恢复中...' : '恢复默认到草稿' }}
+            </button>
+            <button class="ghost-button" type="button" @click="loadAgentPromptHistory(item.key)">
+              {{ promptHistoryKey === item.key ? '收起版本历史' : '版本历史' }}
+            </button>
+            <button class="primary-button" type="button" :disabled="publishingPromptKey === item.key" @click="publishAgentPrompt(item.key)">
+              {{ publishingPromptKey === item.key ? '发布中...' : '发布' }}
+            </button>
+          </div>
+          <div v-if="promptHistoryKey === item.key" class="agent-prompt-history">
+            <article v-for="history in promptHistories[item.key] || []" :key="history.version">
+              <div>
+                <strong>V{{ history.version }}</strong>
+                <span>{{ history.operation }}</span>
+                <small>{{ new Date(history.created_at).toLocaleString() }}</small>
+              </div>
+              <pre>{{ history.value }}</pre>
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="rollingBackPromptKey === item.key || history.version === item.version"
+                @click="rollbackAgentPrompt(item.key, history.version)"
+              >{{ history.version === item.version ? '当前版本' : '回滚到此版本' }}</button>
+            </article>
+          </div>
+        </article>
+      </div>
+      <div v-else class="panel-loading">暂无模型配置，刷新后重试。</div>
     </section>
 
     <section v-if="canViewGlobal" class="system-settings-card">
@@ -1137,6 +1333,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.agent-prompt-list{display:grid;gap:14px;margin-top:16px}.agent-prompt-item{padding:16px;border:1px solid rgba(96,112,190,.16);border-radius:16px;background:rgba(250,251,255,.86)}.agent-prompt-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.agent-prompt-item-head>div{display:grid;gap:4px}.agent-prompt-item-head strong{font-size:18px;color:#26324c}.agent-prompt-item-head code{font-size:12px;color:#77819a}.agent-prompt-item p{margin:8px 0;color:#68728a;line-height:1.6}.agent-prompt-item small{display:block;margin-bottom:10px;color:#9098aa}.agent-prompt-draft-badge{display:inline-flex!important;width:max-content;padding:3px 8px;border-radius:999px;background:#fff3d9;color:#986a20;font-weight:850}.agent-prompt-item textarea{box-sizing:border-box;width:100%;min-height:150px;padding:12px 14px;border:1px solid rgba(93,107,188,.18);border-radius:12px;background:#fff;color:#2d374d;font:inherit;line-height:1.6;resize:vertical}.agent-prompt-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}.agent-prompt-history{display:grid;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(96,112,190,.12)}.agent-prompt-history>article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border:1px solid rgba(96,112,190,.12);border-radius:10px;background:#fff}.agent-prompt-history>article>div{display:flex;align-items:center;gap:8px}.agent-prompt-history>article>div small{margin:0}.agent-prompt-history pre{grid-column:1/-1;max-height:120px;margin:0;padding:8px;border-radius:8px;background:#f7f8fc;color:#5a647a;overflow:auto;white-space:pre-wrap;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.compact-toggle{display:flex;align-items:center;gap:8px}
 .finance-review-settings h3 {font-size:20px}
 .finance-review-settings p,.finance-review-settings button,.finance-review-settings label {font-size:18px;line-height:1.5}
 .finance-review-settings .finance-review-toggle {display:flex;align-items:center;gap:12px;cursor:pointer}

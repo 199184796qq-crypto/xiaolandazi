@@ -7,6 +7,8 @@ import {
   adjustAdminCustomerResource,
   allocateAgentCustomerResource,
   createCommercialAITimeGrantRequest,
+  getCommercialAITimeAgents,
+  getCommercialAITimeCustomers,
   getAdminAgentResources,
   getAdminAgents,
   getAdminCustomerResources,
@@ -57,6 +59,11 @@ const isAdmin = computed(
 const isAgent = computed(() => actor.value?.role === 'agent_admin')
 const isCustomer = computed(() => actor.value?.role === 'customer')
 const canRequestAITime = computed(() => hasStaffPermission('commercial.ai_time.request'))
+const canReadAITimeTargets = computed(() =>
+  hasStaffPermission('commercial.ai_time.view') ||
+  hasStaffPermission('finance.resource.view') ||
+  hasStaffPermission('finance.resource.adjust'),
+)
 const canAdjustSystemResource = computed(() =>
   isMarketingTimePage.value
     ? canRequestAITime.value
@@ -246,10 +253,11 @@ async function loadAdminTarget() {
 }
 
 async function loadAdminData() {
-  const [agentList, customerList] = await Promise.all([
-    getAdminAgents(),
-    getAdminCustomers(),
-  ])
+  const [agentList, customerList] = await Promise.all(
+    canReadAITimeTargets.value
+      ? [getCommercialAITimeAgents(), getCommercialAITimeCustomers()]
+      : [getAdminAgents(), getAdminCustomers()],
+  )
 
   agents.value = agentList.items
   customers.value = customerList.items

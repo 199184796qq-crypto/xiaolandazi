@@ -22,6 +22,9 @@ function canShowEntry(to?: string) {
   if (to === '/operations/live/customer-handoffs') return hasStaffPermission('liveops.configure') || hasStaffPermission('liveops.ticket.manage')
   if (to === '/sales/handovers') return hasStaffPermission('sales.assignment.manage')
   if (!to) return true
+  if (props.hub === 'staff' && to.startsWith('/staff/permissions')) {
+    return hasStaffPermission('staff.role.manage')
+  }
   if (props.hub === 'staff' && to.startsWith('/staff/approvals')) {
     return hasStaffPermission('finance.dashboard.view')
   }
@@ -124,6 +127,7 @@ const entryEnglishTitles: Record<string, string> = {
   '部门': 'DEPARTMENTS',
   '员工账号': 'EMPLOYEE ACCOUNTS',
   '角色权限': 'ROLES & PERMISSIONS',
+  '权限中心': 'PERMISSION CENTER',
   '审批策略': 'APPROVAL POLICIES',
   '权限审计': 'ACCESS AUDIT',
   '终端列表': 'CUSTOMER LIST',

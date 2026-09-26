@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { useFeedbackErrorRef } from '../uiFeedback'
+import { confirmAction, useFeedbackErrorRef } from '../uiFeedback'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getLiveAgentSettings,
   getLiveAgentPlans,
+  createLiveAgentPlan,
   getRoomLiveAgentPlan,
-  bindRoomLiveAgentPlan,
+  setLiveRuntimePlan,
   chatLiveAgent,
   controlLiveDevice,
   getLiveRuntime,
@@ -15,6 +16,7 @@ import {
   startLiveRuntime,
   stopLiveRuntime,
   getRoom,
+  setRoomMonitor,
   getRoomEvents,
   getRoomImportantEvents,
   getRoomSessionStats,
@@ -30,6 +32,16 @@ import {
   restoreRoomBlockedUser,
   getTenants,
   recordLiveRuntimeEvent,
+  getRoomCapture,
+  startRoomAudioRecording,
+  stopRoomAudioRecording,
+  roomAudioRecordingFileUrl,
+  getRoomSpeechAnalysis,
+  startRoomSpeechAnalysis,
+  uploadRoomSpeechAnalysis,
+  roomSpeechAnalysisTranscriptUrl,
+  roomSpeechAnalysisReportUrl,
+  getRoomSpeechAnalysisReportText,
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -49,6 +61,8 @@ import type {
   SpeechTrackRuntime,
   AgentDecisionSnapshot,
   AgentDecisionItem,
+  RoomCaptureSnapshot,
+  RoomSpeechAnalysisStatus,
   Tenant,
 } from '../types'
 
@@ -93,12 +107,21 @@ const liveReview = ref<LiveReviewResponse | null>(null)
 const liveReviewOpen = ref(false)
 const liveReviewLoading = ref(false)
 const liveReviewError = ref('')
+const liveReviewAvailable = computed(() => {
+  const status = room.value?.status || ''
+  return status === 'offline' || status === 'stopped'
+})
 const sessionDecisionBusy = ref(false)
 const loading = ref(true)
 const error = useFeedbackErrorRef()
+const monitorToggleBusy = ref(false)
 const streamState = ref<'connecting' | 'online' | 'offline'>('connecting')
 const activeType = ref('all')
 let eventSource: EventSource | null = null
+let streamReconnectTimer: number | undefined
+let eventFallbackPollTimer: number | undefined
+let eventFallbackBusy = false
+let pageUnmounted = false
 type LocalAudioTask = {
   speech_task_id: string
   room_id: number
@@ -107,14 +130,16 @@ type LocalAudioTask = {
   label: string
   audio_url: string
   duration_ms: number
+  start_ms?: number
   created_at?: string
 }
 let localAudioEventSource: EventSource | null = null
 let localAudioContext: AudioContext | null = null
-let localAudioSource: AudioBufferSourceNode | null = null
+let localAudioPlayer: HTMLAudioElement | null = null
 let localAudioTask: LocalAudioTask | null = null
 let localAudioProgressTimer: number | undefined
 let localAudioHeartbeatTimer: number | undefined
+let localAudioReconnectTimer: number | undefined
 let localAudioRegisteredRoomID = 0
 let localAudioPlaybackGeneration = 0
 const localAudioState = ref<'disconnected' | 'connected' | 'playing' | 'error'>('disconnected')
@@ -167,8 +192,44 @@ const runtimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const runtimeError = ref('')
 const runtimeControlBusy = ref(false)
 const runtimeModeBusy = ref(false)
+const captureSnapshot = ref<RoomCaptureSnapshot | null>(null)
+const captureBusy = ref(false)
+const captureError = ref('')
+const speechAnalysisStatus = ref<RoomSpeechAnalysisStatus | null>(null)
+const speechAnalysisBusy = ref(false)
+const speechAnalysisError = ref('')
+const speechAnalysisReportOpen = ref(false)
+const speechAnalysisReportLoading = ref(false)
+const speechAnalysisReportText = ref('')
+const speechAnalysisUploadFile = ref<File | null>(null)
+const speechAnalysisUploadBusy = ref(false)
+const speechAnalysisUploadLoaded = ref(0)
+const speechAnalysisUploadTotal = ref(0)
+const speechAnalysisUploadPercent = ref(0)
+const speechAnalysisUploadStartedAt = ref(0)
+let speechAnalysisUploadAbort: AbortController | null = null
+const sharedVideoEl = ref<HTMLVideoElement | null>(null)
+const sharedVideoCanvasEl = ref<HTMLCanvasElement | null>(null)
+const sharedVideoFloatEl = ref<HTMLElement | null>(null)
+const sharedVideoStream = ref<MediaStream | null>(null)
+const videoShareBusy = ref(false)
+const videoShareError = ref('')
+const videoFloatCollapsed = ref(false)
+const videoCropPanelOpen = ref(false)
+const videoCropLayout = ref<'portrait' | 'landscape'>('portrait')
+const videoFloatX = ref(0)
+const videoFloatY = ref(118)
+const videoCrop = ref({ top: 0, right: 0, bottom: 0, left: 0 })
+let videoDrawFrame: number | undefined
+let videoFloatDragState: {
+  pointerId: number
+  startX: number
+  startY: number
+  originX: number
+  originY: number
+} | null = null
 const liveAgentPlans = ref<LiveAgentPlan[]>([])
-const selectedLiveAgentPlanId = ref(0)
+const boundLiveAgentPlan = ref<LiveAgentPlan | null>(null)
 const agentPlanBusy = ref(false)
 const agentPlanError = ref('')
 const roomBrain = ref<RoomBrainView | null>(null)
@@ -178,6 +239,7 @@ const questionDecisionBusy = ref<Record<number, EventDecisionAction | undefined>
 const bucketDecisionBusy = ref<Record<string, EventDecisionAction | undefined>>({})
 const agentDecisionActionMessage = ref('')
 const agentDecisionLastSuppressed = ref(false)
+const answerReferencePicking = ref(false)
 const agentDecisionPanelEl = ref<HTMLElement | null>(null)
 const agentPanelHeight = ref<number | null>(null)
 const agentThinkingHeight = ref<number | null>(null)
@@ -516,12 +578,7 @@ function speechStatusLabel(status: string, track: 'mainline' | 'interrupt') {
 const aiRuntimeStatus = computed(() => runtimeSnapshot.value?.agent_state || 'stopped')
 const aiRuntimeMode = computed<'control' | 'anchor'>(() => runtimeSnapshot.value?.agent_mode || 'control')
 const aiRunning = computed(() => aiRuntimeStatus.value === 'working')
-const aiPaused = computed(() => aiRuntimeStatus.value === 'paused')
 const aiActive = computed(() => aiRuntimeStatus.value === 'working' || aiRuntimeStatus.value === 'paused')
-const aiSessionActive = computed(() => {
-  const status = runtimeSnapshot.value?.session?.status || 'stopped'
-  return status === 'running' || status === 'paused'
-})
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
 type DeviceVisualState = 'working' | 'paused' | 'offline'
 const deviceControlBusy = ref(false)
@@ -534,37 +591,81 @@ async function loadLiveAgentPlansForRoom() {
   try {
     const [listResult, currentResult] = await Promise.all([
       getLiveAgentPlans(currentRoom.tenant_id),
-      getRoomLiveAgentPlan(roomId),
+      getRoomLiveAgentPlan(roomId).catch(() => ({ plan: null })),
     ])
-    liveAgentPlans.value = (listResult.items || []).filter((item) => item.status === 'active')
-    selectedLiveAgentPlanId.value = currentResult.plan?.id || 0
+    const selectable = (listResult.items || []).filter((item) => item.status !== 'archived')
+    boundLiveAgentPlan.value = currentResult.plan || null
+    if (currentResult.plan && !selectable.some((item) => item.id === currentResult.plan?.id)) {
+      selectable.unshift(currentResult.plan)
+    }
+    liveAgentPlans.value = selectable
   } catch (err) {
     liveAgentPlans.value = []
-    selectedLiveAgentPlanId.value = 0
+    boundLiveAgentPlan.value = null
     agentPlanError.value = err instanceof Error ? err.message : '读取智能体直播方案失败'
   }
 }
 
-async function changeLiveAgentPlan(event: Event) {
+const selectedLiveAgentPlanId = computed(() =>
+  runtimeSnapshot.value?.agent_plan_id || boundLiveAgentPlan.value?.id || 0,
+)
+const selectedLiveAgentPlanName = computed(() =>
+  runtimeSnapshot.value?.agent_plan_name || boundLiveAgentPlan.value?.name || '',
+)
+const liveAgentPlanSelectValue = computed(() => {
+  const selectedId = selectedLiveAgentPlanId.value
+  if (!selectedId) return ''
+  return liveAgentPlans.value.some((item) => item.id === selectedId) ? String(selectedId) : ''
+})
+
+async function createDefaultLiveAgentPlan() {
   const currentRoom = room.value
-  if (!currentRoom || agentPlanBusy.value) return
+  if (!currentRoom) throw new Error('当前直播间不存在')
+  const prefix = '智能体+' + currentRoom.name + '+方案'
+  const maxNo = liveAgentPlans.value.reduce((max, item) => {
+    if (!item.name.startsWith(prefix)) return max
+    const parsed = Number(item.name.slice(prefix.length))
+    return Number.isFinite(parsed) && parsed > max ? parsed : max
+  }, 0)
+  const plan = await createLiveAgentPlan({
+    name: prefix + String(maxNo + 1),
+    description: '系统自动创建的基础智能体直播方案，可在直播策略中继续修改。',
+    tenant_id: currentRoom.tenant_id,
+  })
+  await setLiveRuntimePlan(roomId, plan.id)
+  boundLiveAgentPlan.value = plan
+  await Promise.all([refreshRuntime(), loadLiveAgentPlansForRoom()])
+  return plan
+}
+
+async function changeLiveAgentPlan(event: Event) {
+  if (!room.value || agentPlanBusy.value) return
   const target = event.target as HTMLSelectElement
-  const planId = Number(target.value)
-  if (!Number.isFinite(planId) || planId <= 0 || planId === selectedLiveAgentPlanId.value) return
-  const previous = selectedLiveAgentPlanId.value
+  const rawValue = target.value
+  const previous = liveAgentPlanSelectValue.value
   agentPlanBusy.value = true
   agentPlanError.value = ''
   try {
-    await bindRoomLiveAgentPlan(planId, roomId, currentRoom.tenant_id)
-    selectedLiveAgentPlanId.value = planId
-    const plan = liveAgentPlans.value.find((item) => item.id === planId)
+    if (rawValue === '__create_default__') {
+      const plan = await createDefaultLiveAgentPlan()
+      logUserAction('LIVE_AGENT_PLAN_CREATED', {
+        plan_id: plan.id,
+        plan_name: plan.name,
+      })
+      return
+    }
+    const planId = Number(rawValue)
+    if (!Number.isFinite(planId) || planId <= 0 || planId === selectedLiveAgentPlanId.value) return
+    await setLiveRuntimePlan(roomId, planId)
+    const plan = liveAgentPlans.value.find((item) => item.id === planId) || null
+    boundLiveAgentPlan.value = plan
+    await refreshRuntime()
     logUserAction('LIVE_AGENT_PLAN_SELECTED', {
       plan_id: planId,
       plan_name: plan?.name || '',
     })
   } catch (err) {
-    selectedLiveAgentPlanId.value = previous
-    target.value = String(previous || '')
+    target.value = previous
     agentPlanError.value = err instanceof Error ? err.message : '切换智能体直播方案失败'
   } finally {
     agentPlanBusy.value = false
@@ -680,6 +781,100 @@ function selectQuestionDetail(question: RoomBrainQuestion) {
   agentDecisionLastSuppressed.value = false
 }
 
+function emitAnswerReferenceSelection(detail: {
+  kind: 'event' | 'question' | 'bucket'
+  question: string
+  topic?: string
+  eventId?: number
+  userId?: string
+  nickname?: string
+  time?: string
+  aggregateCount?: number
+  uniqueUsers?: number
+  similarQuestions?: string[]
+}) {
+  if (!detail.question.trim()) return
+  answerReferencePicking.value = false
+  window.dispatchEvent(new CustomEvent('live-answer-reference-selected', { detail }))
+}
+
+function sendQuestionToAnswerReference(
+  question: RoomBrainQuestion,
+  _bucket?: RoomBrainTopic,
+) {
+  emitAnswerReferenceSelection({
+    kind: 'question',
+    question: question.Content,
+    eventId: question.EventID,
+    userId: question.UserID || '',
+    nickname: question.Nickname || question.UserID || '',
+    time: formatTime(question.OccurredAt),
+    aggregateCount: 1,
+    uniqueUsers: 1,
+    similarQuestions: [],
+  })
+}
+
+function sendBucketToAnswerReference(bucket: RoomBrainTopic) {
+  const sampleQuestions = Array.from(
+    new Set([
+      ...(bucket.Questions || []).map((item) => item.Content),
+      ...(bucket.SampleQuestions || []),
+    ].filter(Boolean)),
+  ).slice(0, 8)
+  emitAnswerReferenceSelection({
+    kind: 'bucket',
+    question: bucket.Topic || sampleQuestions[0] || '问题桶',
+    topic: bucket.Topic,
+    time: formatTime(bucket.LastSeenAt),
+    aggregateCount: bucket.Count,
+    uniqueUsers: bucket.UniqueUsers || bucket.Count,
+    similarQuestions: sampleQuestions,
+  })
+}
+
+function handleQuestionBucketClick(bucket: RoomBrainTopic) {
+  if (answerReferencePicking.value) {
+    sendBucketToAnswerReference(bucket)
+    return
+  }
+  toggleQuestionBucket(bucket)
+}
+
+function handleQuestionDetailClick(question: RoomBrainQuestion, bucket: RoomBrainTopic) {
+  if (answerReferencePicking.value) {
+    sendQuestionToAnswerReference(question, bucket)
+    return
+  }
+  selectQuestionDetail(question)
+}
+
+function sendPublicScreenEventToAnswerReference(event: RoomEvent) {
+  if (!isDirectAnswerEvent(event)) return
+  emitAnswerReferenceSelection({
+    kind: 'event',
+    question: event.content || '',
+    eventId: event.id,
+    userId: event.user_id || '',
+    nickname: event.nickname || event.user_id || '',
+    time: formatTime(event.occurred_at),
+    aggregateCount: 1,
+    uniqueUsers: 1,
+    similarQuestions: [],
+  })
+}
+
+function handlePublicScreenAnswerReferenceClick(event: RoomEvent) {
+  if (!answerReferencePicking.value) return
+  sendPublicScreenEventToAnswerReference(event)
+}
+
+function handleAnswerReferenceMode(event: Event) {
+  answerReferencePicking.value = Boolean(
+    (event as CustomEvent<{ active?: boolean }>).detail?.active,
+  )
+}
+
 const selectedQuestionDetail = computed<RoomBrainQuestion | null>(() => {
   if (!expandedQuestionTopic.value || !selectedQuestionEventId.value) return null
   const bucket = semanticBuckets.value.find((item) => item.Topic === expandedQuestionTopic.value)
@@ -691,13 +886,11 @@ const selectedQuestionBucket = computed(() =>
 )
 
 function questionTTSEligible(bucket: RoomBrainTopic, question: RoomBrainQuestion) {
-  const occurredAt = Date.parse(question.OccurredAt || '')
-  if (!Number.isFinite(occurredAt) || dashboardNow.value - occurredAt > 30 * 60 * 1000) return false
-  return Boolean(bucket.TTSQuestions?.some((item) => item.EventID === question.EventID))
+  return Boolean(bucket.Questions?.some((item) => item.EventID === question.EventID))
 }
 
 function questionBucketTTSEligible(bucket: RoomBrainTopic) {
-  return Boolean((bucket.TTSEligibleCount || 0) > 0 && (bucket.TTSQuestions?.length || 0) > 0)
+  return Boolean((bucket.Questions?.length || 0) > 0)
 }
 
 const selectedQuestionTTSEligible = computed(() => {
@@ -1122,6 +1315,8 @@ async function refreshRuntime() {
       if (room.value) {
         room.value.online_count = roomData.online_count
         room.value.status = roomData.status
+        room.value.monitor_enabled = roomData.monitor_enabled
+        room.value.monitor_started_at = roomData.monitor_started_at
         room.value.last_event_at = roomData.last_event_at
       }
       runtimeError.value = ''
@@ -1143,11 +1338,536 @@ async function refreshRuntime() {
   }
 }
 
+const localVideoViewerActive = computed(() => Boolean(sharedVideoStream.value))
+const sharedVideoFloatStyle = computed<Record<string, string>>(() => ({
+  left: Math.round(videoFloatX.value) + 'px',
+  top: Math.round(videoFloatY.value) + 'px',
+}))
+const audioRecordingActive = computed(() => captureSnapshot.value?.mode === 'audio_recording')
+const audioRecordingFinalizing = computed(() => captureSnapshot.value?.mode === 'finalizing')
+const captureModeLabel = computed(() => {
+  switch (captureSnapshot.value?.mode) {
+    case 'audio_recording': return '声音录制中'
+    case 'finalizing': return '正在合并'
+    default: return '空闲'
+  }
+})
+const audioRecordingDuration = computed(() => {
+  const recording = captureSnapshot.value?.recording
+  if (!recording) return 0
+  if (recording.status === 'recording' && recording.started_at) {
+    const started = Date.parse(recording.started_at)
+    if (Number.isFinite(started)) return Math.max(recording.duration_seconds || 0, Math.floor((dashboardNow.value - started) / 1000))
+  }
+  return recording.duration_seconds || 0
+})
+
+const currentSpeechAnalysisTask = computed(() => {
+  const task = speechAnalysisStatus.value?.task
+  const recordingID = captureSnapshot.value?.recording?.id
+  if (!task) return undefined
+  if (String(task.recording_id || '').startsWith('upload-')) return task
+  if (!recordingID || task.recording_id !== recordingID) return undefined
+  return task
+})
+const speechAnalysisRunning = computed(() => {
+  const status = currentSpeechAnalysisTask.value?.status || ''
+  return ['queued', 'uploading', 'transcribing', 'analyzing', 'rendering'].includes(status)
+})
+const speechAnalysisStatusLabel = computed(() => {
+  if (speechAnalysisStatus.value && !speechAnalysisStatus.value.configured) return '未配置'
+  if (speechAnalysisUploadBusy.value) return '上传中'
+  const status = currentSpeechAnalysisTask.value?.status || ''
+  const labels: Record<string, string> = {
+    queued: '准备中',
+    uploading: '上传中',
+    transcribing: '文字处理中',
+    analyzing: '分析中',
+    rendering: '整理中',
+    ready: '已完成',
+    failed: '失败',
+  }
+  if (status) return labels[status] || '处理中'
+  if (captureSnapshot.value?.recording?.status !== 'ready') return '待录音/上传'
+  return '待分析'
+})
+const speechAnalysisCanStart = computed(() =>
+  Boolean(
+    speechAnalysisStatus.value?.configured &&
+    captureSnapshot.value?.recording?.status === 'ready' &&
+    !speechAnalysisRunning.value &&
+    currentSpeechAnalysisTask.value?.status !== 'ready' &&
+    !speechAnalysisBusy.value,
+  ),
+)
+const speechAnalysisCanUpload = computed(() => Boolean(
+  speechAnalysisStatus.value?.configured &&
+  speechAnalysisUploadFile.value &&
+  !speechAnalysisRunning.value &&
+  !speechAnalysisUploadBusy.value &&
+  !speechAnalysisBusy.value,
+))
+const speechAnalysisUploadSpeed = computed(() => {
+  if (!speechAnalysisUploadBusy.value || !speechAnalysisUploadStartedAt.value) return ''
+  const seconds = Math.max(0.25, (Date.now() - speechAnalysisUploadStartedAt.value) / 1000)
+  return formatCaptureBytes(speechAnalysisUploadLoaded.value / seconds) + '/s'
+})
+const speechAnalysisSteps = ['上传录音', '分析语音', '转成文本', '分析话术', '优化话术', '整理建议', '完成']
+const speechAnalysisStepIndex = computed(() => {
+  if (speechAnalysisUploadBusy.value) return 0
+  const task = currentSpeechAnalysisTask.value
+  if (!task) return -1
+  if (task.status === 'ready') return 6
+  const stage = String(task.stage || '')
+  if (task.status === 'failed') {
+    if (stage.includes('整理')) return 5
+    if (stage.includes('优化')) return 4
+    if (stage.includes('话术')) return 3
+    if (stage.includes('文本')) return 2
+    if (stage.includes('语音')) return 1
+    return 1
+  }
+  if (task.status === 'rendering') return 5
+  if (task.status === 'analyzing') return stage.includes('优化') ? 4 : 3
+  if (task.status === 'transcribing') return stage.includes('文本') ? 2 : 1
+  if (task.status === 'queued' || task.status === 'uploading') return 1
+  return -1
+})
+const speechAnalysisPublicStage = computed(() => {
+  if (speechAnalysisUploadBusy.value) {
+    return speechAnalysisUploadPercent.value >= 100 ? '上传完成，正在准备分析' : '正在上传录音'
+  }
+  const index = speechAnalysisStepIndex.value
+  const task = currentSpeechAnalysisTask.value
+  if (task?.status === 'failed') {
+    const label = index >= 0 ? speechAnalysisSteps[index] : '处理'
+    return label + '失败'
+  }
+  if (index >= 0) {
+    return index === 6 ? '分析完成' : '正在' + speechAnalysisSteps[index]
+  }
+  return '录音完成后可进行智能分析'
+})
+const speechAnalysisFailureText = computed(() => {
+  if (currentSpeechAnalysisTask.value?.status !== 'failed') return ''
+  const index = speechAnalysisStepIndex.value
+  const label = index >= 0 && index < 6 ? speechAnalysisSteps[index] : '处理'
+  return label + '失败，请稍后重试；如持续失败请联系管理员。'
+})
+
+function formatCaptureBytes(value?: number) {
+  const bytes = Math.max(0, Number(value || 0))
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+async function refreshCaptureStatus() {
+  try {
+    captureSnapshot.value = await getRoomCapture(roomId)
+  } catch (err) {
+    captureError.value = err instanceof Error ? err.message : '读取采集状态失败'
+  }
+}
+
+async function refreshSpeechAnalysisStatus() {
+  try {
+    speechAnalysisStatus.value = await getRoomSpeechAnalysis(roomId)
+    speechAnalysisError.value = ''
+  } catch (err) {
+    speechAnalysisError.value = err instanceof Error ? err.message : '读取智能话术分析状态失败'
+  }
+}
+
+async function startSpeechAnalysis() {
+  if (!speechAnalysisCanStart.value) return
+  speechAnalysisBusy.value = true
+  speechAnalysisError.value = ''
+  speechAnalysisReportOpen.value = false
+  speechAnalysisReportText.value = ''
+  try {
+    speechAnalysisStatus.value = await startRoomSpeechAnalysis(roomId)
+  } catch (err) {
+    speechAnalysisError.value = err instanceof Error ? err.message : '启动智能话术分析失败'
+  } finally {
+    speechAnalysisBusy.value = false
+  }
+}
+
+function selectSpeechAnalysisUploadFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] || null
+  speechAnalysisError.value = ''
+  if (!file) {
+    speechAnalysisUploadFile.value = null
+    return
+  }
+  const allowed = /\.(wav|mp3|m4a|aac|flac|ogg|webm)$/i
+  if (!allowed.test(file.name)) {
+    speechAnalysisUploadFile.value = null
+    input.value = ''
+    speechAnalysisError.value = '仅支持 WAV、MP3、M4A、AAC、FLAC、OGG、WEBM 录音。'
+    return
+  }
+  if (file.size <= 0 || file.size > 2 * 1024 * 1024 * 1024) {
+    speechAnalysisUploadFile.value = null
+    input.value = ''
+    speechAnalysisError.value = '录音文件大小不合法，单个文件最大 2GB。'
+    return
+  }
+  speechAnalysisUploadFile.value = file
+}
+
+async function uploadSpeechAnalysisRecording() {
+  const file = speechAnalysisUploadFile.value
+  if (!file || !speechAnalysisCanUpload.value) return
+  speechAnalysisUploadBusy.value = true
+  speechAnalysisUploadLoaded.value = 0
+  speechAnalysisUploadTotal.value = file.size
+  speechAnalysisUploadPercent.value = 0
+  speechAnalysisUploadStartedAt.value = Date.now()
+  speechAnalysisUploadAbort = new AbortController()
+  if (speechAnalysisStatus.value) {
+    speechAnalysisStatus.value = {
+      configured: speechAnalysisStatus.value.configured,
+      configuration_reason: speechAnalysisStatus.value.configuration_reason,
+    }
+  }
+  speechAnalysisError.value = ''
+  speechAnalysisReportOpen.value = false
+  speechAnalysisReportText.value = ''
+  try {
+    speechAnalysisStatus.value = await uploadRoomSpeechAnalysis(
+      roomId,
+      file,
+      (loaded, total) => {
+        speechAnalysisUploadLoaded.value = loaded
+        speechAnalysisUploadTotal.value = total || file.size
+        speechAnalysisUploadPercent.value = Math.max(
+          0,
+          Math.min(100, Math.round((loaded / Math.max(1, total || file.size)) * 100)),
+        )
+      },
+      speechAnalysisUploadAbort.signal,
+    )
+    speechAnalysisUploadLoaded.value = speechAnalysisUploadTotal.value || file.size
+    speechAnalysisUploadPercent.value = 100
+    speechAnalysisUploadFile.value = null
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      speechAnalysisError.value = '录音上传已取消。'
+    } else {
+      speechAnalysisError.value = err instanceof Error ? err.message : '上传录音分析失败'
+    }
+  } finally {
+    speechAnalysisUploadBusy.value = false
+    speechAnalysisUploadAbort = null
+  }
+}
+
+function cancelSpeechAnalysisUpload() {
+  speechAnalysisUploadAbort?.abort()
+}
+
+async function toggleSpeechAnalysisReport() {
+  if (speechAnalysisReportOpen.value) {
+    speechAnalysisReportOpen.value = false
+    return
+  }
+  if (!speechAnalysisReportText.value) {
+    speechAnalysisReportLoading.value = true
+    speechAnalysisError.value = ''
+    try {
+      speechAnalysisReportText.value = await getRoomSpeechAnalysisReportText(roomId)
+    } catch (err) {
+      speechAnalysisError.value = err instanceof Error ? err.message : '读取智能话术分析报告失败'
+      return
+    } finally {
+      speechAnalysisReportLoading.value = false
+    }
+  }
+  speechAnalysisReportOpen.value = true
+}
+
+async function copySpeechAnalysisReport() {
+  if (!speechAnalysisReportText.value) return
+  try {
+    await navigator.clipboard.writeText(speechAnalysisReportText.value)
+  } catch {
+    speechAnalysisError.value = '复制失败，请在报告正文中手动选择复制。'
+  }
+}
+
+function openDouyinWatchPage() {
+  const url = douyinLiveRoomUrl.value
+  if (!url) {
+    videoShareError.value = '当前直播间缺少可用的抖音直播地址。'
+    return
+  }
+  videoShareError.value = ''
+  const opened = window.open(url, '_blank')
+  if (!opened) {
+    videoShareError.value = '浏览器阻止了新窗口，请允许弹出窗口后重试。'
+    return
+  }
+  try { opened.opener = null } catch { /* cross-origin window */ }
+}
+
+const LEGACY_VIDEO_CROP_STORAGE_KEY = 'livecompanion.video-crop.v2'
+
+function videoCropStorageKey() {
+  return 'livecompanion.video-crop.v3.room-' + String(roomId)
+}
+
+function clampVideoCrop(persist = true) {
+  const crop = videoCrop.value
+  crop.top = Math.max(0, Math.min(45, Number(crop.top || 0)))
+  crop.right = Math.max(0, Math.min(45, Number(crop.right || 0)))
+  crop.bottom = Math.max(0, Math.min(45, Number(crop.bottom || 0)))
+  crop.left = Math.max(0, Math.min(45, Number(crop.left || 0)))
+  if (crop.left + crop.right > 80) crop.right = Math.max(0, 80 - crop.left)
+  if (crop.top + crop.bottom > 80) crop.bottom = Math.max(0, 80 - crop.top)
+  if (persist) {
+    try {
+      window.localStorage.setItem(videoCropStorageKey(), JSON.stringify({
+        crop: { ...crop },
+        layout: videoCropLayout.value,
+      }))
+    } catch {
+      // Browser storage can be unavailable in hardened/private sessions.
+    }
+  }
+}
+
+function restoreVideoCrop() {
+  try {
+    const roomKey = videoCropStorageKey()
+    const roomRaw = window.localStorage.getItem(roomKey)
+    const legacyRaw = window.localStorage.getItem(LEGACY_VIDEO_CROP_STORAGE_KEY)
+    const raw = roomRaw || legacyRaw
+    if (!raw) {
+      applyDouyinCropPreset(false)
+      return
+    }
+    const parsed = JSON.parse(raw) as {
+      crop?: Partial<typeof videoCrop.value>
+      layout?: 'portrait' | 'landscape'
+      top?: number
+      right?: number
+      bottom?: number
+      left?: number
+    }
+    const saved = parsed.crop || parsed
+    videoCrop.value = {
+      top: Number(saved.top || 0),
+      right: Number(saved.right || 0),
+      bottom: Number(saved.bottom || 0),
+      left: Number(saved.left || 0),
+    }
+    videoCropLayout.value = parsed.layout || (100 - videoCrop.value.left - videoCrop.value.right < 45 ? 'portrait' : 'landscape')
+    clampVideoCrop(true)
+    if (!roomRaw && legacyRaw) {
+      window.localStorage.removeItem(LEGACY_VIDEO_CROP_STORAGE_KEY)
+    }
+  } catch {
+    applyDouyinCropPreset(false)
+  }
+}
+
+function applyDouyinCropPreset(persist = true) {
+  videoCropLayout.value = 'portrait'
+  videoCrop.value = { top: 11, right: 45, bottom: 13, left: 28 }
+  clampVideoCrop(persist)
+}
+
+function applyDouyinLandscapeCropPreset() {
+  videoCropLayout.value = 'landscape'
+  videoCrop.value = { top: 7, right: 18, bottom: 12, left: 1 }
+  clampVideoCrop()
+}
+
+function resetVideoCrop() {
+  videoCropLayout.value = 'landscape'
+  videoCrop.value = { top: 0, right: 0, bottom: 0, left: 0 }
+  clampVideoCrop()
+}
+
+function stopVideoCanvasDraw() {
+  if (videoDrawFrame !== undefined) {
+    window.cancelAnimationFrame(videoDrawFrame)
+    videoDrawFrame = undefined
+  }
+}
+
+function drawSharedVideoFrame() {
+  const video = sharedVideoEl.value
+  const canvas = sharedVideoCanvasEl.value
+  if (video && canvas && video.videoWidth > 0 && video.videoHeight > 0) {
+    const crop = videoCrop.value
+    const sourceX = Math.round(video.videoWidth * crop.left / 100)
+    const sourceY = Math.round(video.videoHeight * crop.top / 100)
+    const sourceWidth = Math.max(1, Math.round(video.videoWidth * (100 - crop.left - crop.right) / 100))
+    const sourceHeight = Math.max(1, Math.round(video.videoHeight * (100 - crop.top - crop.bottom) / 100))
+    const rect = canvas.getBoundingClientRect()
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1))
+    const targetWidth = Math.max(2, Math.round(rect.width * dpr))
+    const targetHeight = Math.max(2, Math.round(rect.height * dpr))
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    const context = canvas.getContext('2d')
+    if (context) {
+      context.fillStyle = '#05070b'
+      context.fillRect(0, 0, targetWidth, targetHeight)
+      const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight)
+      const drawWidth = sourceWidth * scale
+      const drawHeight = sourceHeight * scale
+      const drawX = (targetWidth - drawWidth) / 2
+      const drawY = (targetHeight - drawHeight) / 2
+      context.drawImage(
+        video,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        drawX,
+        drawY,
+        drawWidth,
+        drawHeight,
+      )
+    }
+  }
+  videoDrawFrame = window.requestAnimationFrame(drawSharedVideoFrame)
+}
+
+function startVideoCanvasDraw() {
+  stopVideoCanvasDraw()
+  videoDrawFrame = window.requestAnimationFrame(drawSharedVideoFrame)
+}
+
+function stopBrowserVideoShare() {
+  stopVideoCanvasDraw()
+  const stream = sharedVideoStream.value
+  sharedVideoStream.value = null
+  if (stream) {
+    for (const track of stream.getTracks()) track.stop()
+  }
+  if (sharedVideoEl.value) sharedVideoEl.value.srcObject = null
+  videoShareBusy.value = false
+  videoFloatCollapsed.value = false
+  videoCropPanelOpen.value = false
+}
+
+async function startBrowserVideoShare() {
+  if (videoShareBusy.value || sharedVideoStream.value) return
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    videoShareError.value = '当前浏览器不支持 Chrome 标签页共享。正式部署请使用 HTTPS + Chrome/Edge。'
+    return
+  }
+  videoShareBusy.value = true
+  videoShareError.value = ''
+  try {
+    const options: DisplayMediaStreamOptions & Record<string, unknown> = {
+      video: { frameRate: { ideal: 20, max: 30 } },
+      audio: false,
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'include',
+    }
+    const stream = await navigator.mediaDevices.getDisplayMedia(options)
+    const videoTrack = stream.getVideoTracks()[0]
+    if (!videoTrack) {
+      for (const track of stream.getTracks()) track.stop()
+      throw new Error('没有获得可用的视频共享轨道')
+    }
+    sharedVideoStream.value = stream
+    restoreVideoCrop()
+    await nextTick()
+    if (sharedVideoEl.value) {
+      sharedVideoEl.value.srcObject = stream
+      await sharedVideoEl.value.play().catch(() => undefined)
+    }
+    const floatWidth = sharedVideoFloatEl.value?.offsetWidth || 420
+    videoFloatX.value = Math.max(12, window.innerWidth - floatWidth - 18)
+    videoFloatY.value = Math.max(76, Math.min(150, window.innerHeight - 260))
+    videoTrack.addEventListener('ended', stopBrowserVideoShare, { once: true })
+    startVideoCanvasDraw()
+  } catch (err) {
+    stopBrowserVideoShare()
+    if (err instanceof DOMException && err.name === 'NotAllowedError') {
+      videoShareError.value = '已取消共享。需要观看时再次点击“共享抖音标签页”。'
+    } else {
+      videoShareError.value = err instanceof Error ? err.message : '启动 Chrome 标签页共享失败'
+    }
+  } finally {
+    videoShareBusy.value = false
+  }
+}
+
+function startVideoFloatDrag(event: PointerEvent) {
+  if (!sharedVideoFloatEl.value || event.button !== 0) return
+  videoFloatDragState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: videoFloatX.value,
+    originY: videoFloatY.value,
+  }
+  ;(event.currentTarget as HTMLElement)?.setPointerCapture?.(event.pointerId)
+}
+
+function moveVideoFloatDrag(event: PointerEvent) {
+  const state = videoFloatDragState
+  const element = sharedVideoFloatEl.value
+  if (!state || !element || event.pointerId !== state.pointerId) return
+  const maxX = Math.max(8, window.innerWidth - element.offsetWidth - 8)
+  const maxY = Math.max(64, window.innerHeight - element.offsetHeight - 8)
+  videoFloatX.value = Math.max(8, Math.min(maxX, state.originX + event.clientX - state.startX))
+  videoFloatY.value = Math.max(64, Math.min(maxY, state.originY + event.clientY - state.startY))
+}
+
+function finishVideoFloatDrag(event?: PointerEvent) {
+  const element = sharedVideoFloatEl.value
+  if (!videoFloatDragState || !element) return
+  if (event && event.pointerId !== videoFloatDragState.pointerId) return
+  const rightX = Math.max(8, window.innerWidth - element.offsetWidth - 12)
+  videoFloatX.value = videoFloatX.value + element.offsetWidth / 2 < window.innerWidth / 2 ? 12 : rightX
+  videoFloatDragState = null
+}
+
+async function startCoreAudioRecording() {
+  if (captureBusy.value) return
+  captureBusy.value = true
+  captureError.value = ''
+  try {
+    captureSnapshot.value = await startRoomAudioRecording(roomId)
+  } catch (err) {
+    captureError.value = err instanceof Error ? err.message : '启动声音录制失败'
+  } finally {
+    captureBusy.value = false
+  }
+}
+
+async function stopCoreAudioRecording() {
+  if (captureBusy.value || !audioRecordingActive.value) return
+  captureBusy.value = true
+  captureError.value = ''
+  try {
+    captureSnapshot.value = await stopRoomAudioRecording(roomId)
+  } catch (err) {
+    captureError.value = err instanceof Error ? err.message : '停止并合并录音失败'
+    await refreshCaptureStatus()
+  } finally {
+    captureBusy.value = false
+  }
+}
+
 function localAudioBaseURL() {
-  const configured = String(import.meta.env.VITE_AUDIO_SERVICE_URL || '').trim().replace(/\/$/, '')
+  const configured = String(import.meta.env.VITE_CORE_AUDIO_URL || '').trim().replace(/\/$/, '')
   if (configured) return configured
   const host = window.location.hostname
-  if (host === '127.0.0.1' || host === 'localhost') return 'http://127.0.0.1:8082'
+  if (host === '127.0.0.1' || host === 'localhost') return 'http://127.0.0.1:8081'
   return ''
 }
 
@@ -1162,17 +1882,22 @@ function localAudioReceiverID() {
   return id
 }
 
-function ensureLocalAudioUnlocked() {
+async function ensureLocalAudioUnlocked() {
   const AudioContextCtor = window.AudioContext
-  if (!AudioContextCtor) {
-    localAudioError.value = '当前浏览器不支持本机音频播放。'
-    return
-  }
-  if (!localAudioContext) localAudioContext = new AudioContextCtor()
-  if (localAudioContext.state === 'suspended') {
-    void localAudioContext.resume().catch(() => {
-      localAudioError.value = '浏览器阻止了自动播放，请再次点击抢答或开始。'
-    })
+  if (!AudioContextCtor) return true
+  try {
+    if (!localAudioContext) localAudioContext = new AudioContextCtor()
+    if (localAudioContext.state === 'suspended') await localAudioContext.resume()
+    if (localAudioContext.state !== 'running') {
+      throw new Error('浏览器音频上下文未进入运行状态')
+    }
+    localAudioError.value = ''
+    return true
+  } catch (err) {
+    localAudioError.value = err instanceof Error
+      ? '浏览器阻止了声音播放：' + err.message
+      : '浏览器阻止了声音播放，请再次点击“开始”或“抢答”。'
+    return false
   }
 }
 
@@ -1203,70 +1928,137 @@ function stopLocalAudioPlayback(reportInterrupted = false) {
     localAudioProgressTimer = undefined
   }
   const previousTask = localAudioTask
-  const source = localAudioSource
-  localAudioSource = null
+  const player = localAudioPlayer
+  const progressMS = player ? Math.round(player.currentTime * 1000) : 0
+  localAudioPlayer = null
   localAudioTask = null
-  if (source) {
-    try { source.stop() } catch { /* already stopped */ }
+  if (player) {
+    player.pause()
+    player.removeAttribute('src')
+    player.load()
   }
   if (reportInterrupted && previousTask) {
-    void reportLocalAudioTask(previousTask, 'FAILED', 0, 'interrupted_by_new_task')
+    void reportLocalAudioTask(previousTask, 'FAILED', progressMS, 'interrupted_by_new_task')
   }
 }
 
 async function playLocalAudioTask(task: LocalAudioTask) {
   if (!task?.speech_task_id || !task.audio_url) return
-  if (localAudioTask?.speech_task_id === task.speech_task_id && localAudioSource) return
-  ensureLocalAudioUnlocked()
-  const context = localAudioContext
-  if (!context || context.state !== 'running') {
-    localAudioError.value = '本机声音未解锁，请点击“开始”或“抢答”后再试。'
-    return
-  }
+  if (localAudioTask?.speech_task_id === task.speech_task_id && localAudioPlayer) return
 
   stopLocalAudioPlayback(Boolean(localAudioTask))
   const generation = ++localAudioPlaybackGeneration
   localAudioTask = task
   localAudioError.value = ''
+
   try {
-    const response = await fetch(task.audio_url, { cache: 'no-store' })
-    if (!response.ok) throw new Error('音频 HTTP ' + response.status)
-    const raw = await response.arrayBuffer()
-    const buffer = await context.decodeAudioData(raw.slice(0))
+    await ensureLocalAudioUnlocked()
     if (generation !== localAudioPlaybackGeneration) return
 
-    const source = context.createBufferSource()
-    source.buffer = buffer
-    source.connect(context.destination)
-    localAudioSource = source
-    localAudioState.value = 'playing'
-    const startedAt = performance.now()
-    await reportLocalAudioTask(task, 'READY', 0)
-    await reportLocalAudioTask(task, 'PLAYING', 0)
+    const audio = new Audio(task.audio_url)
+    audio.preload = 'auto'
+    audio.autoplay = false
+    audio.muted = false
+    audio.volume = 1
+    const sinkAwareAudio = audio as HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }
+    if (typeof sinkAwareAudio.setSinkId === 'function') {
+      await sinkAwareAudio.setSinkId('default').catch(() => undefined)
+    }
+    if (generation !== localAudioPlaybackGeneration) return
 
-    localAudioProgressTimer = window.setInterval(() => {
+    localAudioPlayer = audio
+    let readySent = false
+    const reportReady = () => {
+      if (readySent || generation !== localAudioPlaybackGeneration) return
+      readySent = true
+      void reportLocalAudioTask(task, 'READY', Math.round(audio.currentTime * 1000))
+    }
+    audio.addEventListener('canplay', reportReady)
+    audio.addEventListener('canplaythrough', reportReady)
+    audio.addEventListener('playing', () => {
       if (generation !== localAudioPlaybackGeneration) return
-      const elapsed = Math.min(task.duration_ms || buffer.duration * 1000, performance.now() - startedAt)
-      void reportLocalAudioTask(task, 'PROGRESS', elapsed)
-    }, 1500)
-
-    source.onended = () => {
+      localAudioState.value = 'playing'
+      localAudioError.value = ''
+      void reportLocalAudioTask(task, 'PLAYING', Math.round(audio.currentTime * 1000))
+    })
+    audio.addEventListener('ended', () => {
       if (generation !== localAudioPlaybackGeneration) return
       if (localAudioProgressTimer !== undefined) {
         window.clearInterval(localAudioProgressTimer)
         localAudioProgressTimer = undefined
       }
-      localAudioSource = null
+      localAudioPlayer = null
       localAudioTask = null
       localAudioState.value = 'connected'
-      void reportLocalAudioTask(task, 'COMPLETED', task.duration_ms || Math.round(buffer.duration * 1000))
+      void reportLocalAudioTask(task, 'COMPLETED', task.duration_ms || Math.round(audio.duration * 1000))
+    })
+    audio.addEventListener('error', () => {
+      if (generation !== localAudioPlaybackGeneration) return
+      const mediaError = audio.error
+      const message = mediaError
+        ? '浏览器音频播放失败（MediaError ' + mediaError.code + '）'
+        : '浏览器音频加载或解码失败'
+      localAudioState.value = 'error'
+      localAudioError.value = message
+      localAudioPlayer = null
+      localAudioTask = null
+      void reportLocalAudioTask(task, 'FAILED', Math.round(audio.currentTime * 1000), message)
+    })
+
+    audio.load()
+    const requestedStartMS = Math.max(
+      0,
+      Math.min(Number(task.start_ms || 0), Math.max(0, Number(task.duration_ms || 0) - 1)),
+    )
+    if (requestedStartMS > 0) {
+      if (audio.readyState < 1) {
+        await new Promise<void>((resolve, reject) => {
+          const onLoadedMetadata = () => {
+            cleanup()
+            resolve()
+          }
+          const onLoadError = () => {
+            cleanup()
+            reject(new Error('本机音频元数据加载失败'))
+          }
+          const cleanup = () => {
+            audio.removeEventListener('loadedmetadata', onLoadedMetadata)
+            audio.removeEventListener('error', onLoadError)
+          }
+          audio.addEventListener('loadedmetadata', onLoadedMetadata)
+          audio.addEventListener('error', onLoadError)
+        })
+      }
+      if (generation !== localAudioPlaybackGeneration) return
+      const durationSeconds = Number.isFinite(audio.duration) ? audio.duration : 0
+      const targetSeconds = requestedStartMS / 1000
+      audio.currentTime = durationSeconds > 0
+        ? Math.min(targetSeconds, Math.max(0, durationSeconds - 0.02))
+        : targetSeconds
     }
-    source.start()
+    await audio.play()
+    if (generation !== localAudioPlaybackGeneration) {
+      audio.pause()
+      return
+    }
+    reportReady()
+    localAudioProgressTimer = window.setInterval(() => {
+      if (generation !== localAudioPlaybackGeneration || localAudioPlayer !== audio) return
+      void reportLocalAudioTask(task, 'PROGRESS', Math.round(audio.currentTime * 1000))
+    }, 1500)
   } catch (err) {
     if (generation !== localAudioPlaybackGeneration) return
+    const message = err instanceof Error ? err.message : '本机播放失败'
     localAudioState.value = 'error'
-    localAudioError.value = err instanceof Error ? err.message : '本机播放失败'
-    localAudioSource = null
+    localAudioError.value = message.includes('play() failed')
+      ? '浏览器阻止了自动播放，请点击页面上的“开始”或“抢答”后再试。'
+      : message
+    if (localAudioPlayer) {
+      localAudioPlayer.pause()
+      localAudioPlayer.removeAttribute('src')
+      localAudioPlayer.load()
+    }
+    localAudioPlayer = null
     localAudioTask = null
     await reportLocalAudioTask(task, 'FAILED', 0, localAudioError.value)
   }
@@ -1287,7 +2079,7 @@ async function registerLocalAudioReceiver() {
         capabilities: ['audio/wav', 'interaction_tts', 'mainline'],
       }),
     })
-    if (!response.ok) throw new Error('声音网关注册失败 HTTP ' + response.status)
+    if (!response.ok) throw new Error('Core声音注册失败 HTTP ' + response.status)
     localAudioRegisteredRoomID = roomId
     if (localAudioHeartbeatTimer !== undefined) window.clearInterval(localAudioHeartbeatTimer)
     localAudioHeartbeatTimer = window.setInterval(() => {
@@ -1299,6 +2091,15 @@ async function registerLocalAudioReceiver() {
     localAudioError.value = err instanceof Error ? err.message : '声音终端注册失败'
     return false
   }
+}
+
+function scheduleLocalAudioReconnect(delayMS = 900) {
+  if (pageUnmounted || localAudioReconnectTimer !== undefined) return
+  localAudioReconnectTimer = window.setTimeout(() => {
+    localAudioReconnectTimer = undefined
+    if (pageUnmounted) return
+    void connectLocalAudioReceiver()
+  }, delayMS)
 }
 
 async function heartbeatLocalAudioReceiver() {
@@ -1316,11 +2117,14 @@ async function heartbeatLocalAudioReceiver() {
     if (!response.ok) {
       localAudioState.value = 'disconnected'
       if (response.status === 409) {
-        await registerLocalAudioReceiver()
+        await connectLocalAudioReceiver()
+      } else {
+        scheduleLocalAudioReconnect()
       }
     }
   } catch {
     localAudioState.value = 'disconnected'
+    scheduleLocalAudioReconnect()
   }
 }
 
@@ -1348,6 +2152,11 @@ async function unregisterLocalAudioReceiver() {
 }
 
 async function connectLocalAudioReceiver() {
+  if (pageUnmounted) return
+  if (localAudioReconnectTimer !== undefined) {
+    window.clearTimeout(localAudioReconnectTimer)
+    localAudioReconnectTimer = undefined
+  }
   localAudioEventSource?.close()
   localAudioEventSource = null
   const base = localAudioBaseURL()
@@ -1361,10 +2170,20 @@ async function connectLocalAudioReceiver() {
   source.addEventListener('connected', () => {
     localAudioState.value = 'connected'
     localAudioError.value = ''
+    if (localAudioReconnectTimer !== undefined) {
+      window.clearTimeout(localAudioReconnectTimer)
+      localAudioReconnectTimer = undefined
+    }
   })
   source.addEventListener('task', (rawEvent) => {
     try {
       const task = JSON.parse((rawEvent as MessageEvent).data) as LocalAudioTask
+      const durationMS = Math.max(0, Number(task.duration_ms || 0))
+      const startMS = Math.max(0, Number(task.start_ms || 0))
+      if (durationMS > 0 && startMS >= durationMS - 120) {
+        void reportLocalAudioTask(task, 'COMPLETED', durationMS)
+        return
+      }
       void playLocalAudioTask(task)
     } catch {
       localAudioState.value = 'error'
@@ -1373,16 +2192,20 @@ async function connectLocalAudioReceiver() {
   })
   source.addEventListener('unregistered', () => {
     localAudioState.value = 'disconnected'
-    void connectLocalAudioReceiver()
+    scheduleLocalAudioReconnect(250)
   })
   source.onerror = () => {
+    if (pageUnmounted || localAudioEventSource !== source) return
     localAudioState.value = 'disconnected'
+    source.close()
+    if (localAudioEventSource === source) localAudioEventSource = null
+    scheduleLocalAudioReconnect()
   }
 }
 
 async function startCompanionRuntime() {
-  if (runtimeControlBusy.value) return
-  ensureLocalAudioUnlocked()
+  if (runtimeControlBusy.value || aiActive.value) return
+  await ensureLocalAudioUnlocked()
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
     runtimeError.value = '主播模式需要先选择智能体直播方案'
     return
@@ -1400,7 +2223,7 @@ async function startCompanionRuntime() {
 }
 
 async function stopCompanionRuntime() {
-  if (runtimeControlBusy.value || (!aiActive.value && !aiSessionActive.value)) return
+  if (runtimeControlBusy.value || !aiActive.value) return
   runtimeControlBusy.value = true
   runtimeError.value = ''
   try {
@@ -1483,6 +2306,8 @@ function startRuntimePolling() {
   runtimePollTimer = window.setInterval(() => {
     void refreshRuntime()
     void refreshRoomBrain()
+    void refreshCaptureStatus()
+    void refreshSpeechAnalysisStatus()
   }, 5000)
 }
 
@@ -1613,10 +2438,87 @@ function handleEventListScroll() {
 }
 
 const isAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
+const canControlMonitoring = computed(() => {
+  const bootstrap = session.bootstrap
+  if (!bootstrap) return false
+  if (bootstrap.actor.role === 'customer' || bootstrap.actor.role === 'platform_admin') return true
+  const access = bootstrap.staff_access
+  return Boolean(access && (access.is_super_admin || access.permissions.includes('liveops.configure')))
+})
+
+const dashboardCollectorState = computed(() => {
+  const currentRoom = room.value
+  if (!currentRoom?.monitor_enabled) return 'stopped'
+  if (streamState.value !== 'online') return 'connecting'
+  if (currentRoom.status === 'live') return 'live'
+  if (currentRoom.status === 'connecting' || currentRoom.status === 'pending') return 'connecting'
+  if (currentRoom.status === 'error') return 'error'
+  if (currentRoom.status === 'offline') return 'offline'
+  return 'connecting'
+})
+
+const dashboardCollectorLabel = computed(() => {
+  if (monitorToggleBusy.value) return room.value?.monitor_enabled ? '停止中…' : '连接中…'
+  if (!room.value?.monitor_enabled) return '连接采集'
+  if (streamState.value !== 'online') return '实时流连接中'
+  if (room.value.status === 'live') return '直播中'
+  if (room.value.status === 'connecting') return '连接中'
+  if (room.value.status === 'pending') return '等待连接'
+  if (room.value.status === 'error') return '连接异常'
+  if (room.value.status === 'offline') return '未开播'
+  return '采集中'
+})
+
+const dashboardCollectorTitle = computed(() => {
+  if (!canControlMonitoring.value) return dashboardCollectorLabel.value
+  if (monitorToggleBusy.value) return dashboardCollectorLabel.value
+  return room.value?.monitor_enabled ? '点击停止 Core 公屏采集' : '点击连接 Core 公屏采集'
+})
+
+async function toggleRoomMonitoring() {
+  const currentRoom = room.value
+  if (!currentRoom || !canControlMonitoring.value || monitorToggleBusy.value) return
+  const enabled = Boolean(currentRoom.monitor_enabled)
+  if (enabled) {
+    const confirmed = await confirmAction({
+      title: '停止采集',
+      message: '确认停止这个直播间的公屏采集？停止后可随时在这里重新连接。',
+      confirmText: '停止采集',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+
+  monitorToggleBusy.value = true
+  error.value = ''
+  try {
+    const updated = await setRoomMonitor(currentRoom.id, !enabled)
+    room.value = updated
+    if (updated.monitor_enabled) startPublicScreenTransport()
+    else stopPublicScreenTransport()
+  } catch (err) {
+    error.value = err instanceof Error
+      ? err.message
+      : enabled
+        ? '停止采集失败'
+        : '连接采集失败'
+  } finally {
+    monitorToggleBusy.value = false
+  }
+}
 function roomTitle() {
   if (!room.value) return '直播间'
   return room.value.name || '直播间 ' + room.value.external_room_id
 }
+
+const douyinLiveRoomUrl = computed(() => {
+  const currentRoom = room.value
+  if (!currentRoom) return ''
+  const sourceURL = (currentRoom.source_url || '').trim()
+  if (/^https?:\/\/live\.douyin\.com(?:\/|$)/i.test(sourceURL)) return sourceURL
+  const externalRoomID = (currentRoom.external_room_id || '').trim()
+  return externalRoomID ? 'https://live.douyin.com/' + encodeURIComponent(externalRoomID) : ''
+})
 
 function tenantName() {
   if (!room.value) return ''
@@ -1728,7 +2630,7 @@ async function refreshAgentDecisions() {
 
 async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAction) {
   if (!isDirectAnswerEvent(event) || eventDecisionRowState(event.id).busy) return
-  ensureLocalAudioUnlocked()
+  await ensureLocalAudioUnlocked()
   if (!aiRunning.value) {
     setEventDecisionRowState(event.id, { error: '请先启动直播搭子。' })
     return
@@ -1737,12 +2639,6 @@ async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAc
     setEventDecisionRowState(event.id, { error: '请先选择续接上一场或作为新直播。' })
     return
   }
-  const occurredAt = Date.parse(event.occurred_at || '')
-  if (!Number.isFinite(occurredAt) || Date.now() - occurredAt > 30 * 60 * 1000) {
-    setEventDecisionRowState(event.id, { error: '已超过30分钟实时回答窗口。' })
-    return
-  }
-
   setEventDecisionRowState(event.id, { busy: action, error: '', message: '' })
   try {
     const result = await enqueueRoomManualAgentDecision(roomId, {
@@ -1807,22 +2703,19 @@ async function submitQuestionDecision(
     agentDecisionActionMessage.value = '请先选择续接上一场或作为新直播。'
     return
   }
-  if (!questionTTSEligible(bucket, question)) {
-    agentDecisionActionMessage.value = '这个问题已超过30分钟实时回答窗口，仅保留用于复盘。'
-    return
-  }
-  ensureLocalAudioUnlocked()
+  if (!questionTTSEligible(bucket, question)) return
+  await ensureLocalAudioUnlocked()
   setQuestionDecisionBusy(question.EventID, action)
   agentDecisionActionMessage.value = ''
   agentDecisionLastSuppressed.value = false
   try {
     const result = await enqueueRoomManualAgentDecision(roomId, {
       question: question.Content,
-      topic: bucket.Topic,
-      title: semanticBucketLabel(bucket),
+      topic: question.EventID ? 'EVENT:' + question.EventID : '',
+      title: '单条问题：' + String(question.Content || '').slice(0, 36),
       summary: action === 'quick'
-        ? '人工抢答，进入最高优先级硬打断流程'
-        : '人工回答，等待当前播音窗口后优先插入',
+        ? '人工对这一条观众问题发起抢答，只回答当前这一条，不合并整个问题聚类'
+        : '人工对这一条观众问题发起回答，只回答当前这一条，不合并整个问题聚类',
       event_id: question.EventID,
       user_id: question.UserID,
       force_reopen: action === 'quick',
@@ -1876,15 +2769,15 @@ async function answerQuestionBucket(bucket: RoomBrainTopic, action: EventDecisio
     agentDecisionActionMessage.value = '请先选择续接上一场或作为新直播。'
     return
   }
-  const eligibleQuestions = (bucket.TTSQuestions || [])
+  const eligibleQuestions = (bucket.Questions || [])
     .filter((question) => questionTTSEligible(bucket, question))
     .slice(0, 8)
   if (!eligibleQuestions.length) {
-    agentDecisionActionMessage.value = '这个问题聚类已超过30分钟实时回答窗口，仅保留用于复盘。'
+    agentDecisionActionMessage.value = '这个问题聚类当前没有可回答的问题。'
     return
   }
 
-  ensureLocalAudioUnlocked()
+  await ensureLocalAudioUnlocked()
   setBucketDecisionBusy(bucket.Topic, action)
   agentDecisionActionMessage.value = ''
   agentDecisionLastSuppressed.value = false
@@ -2043,8 +2936,11 @@ function flushStreamEvents() {
 }
 
 function queueStreamEvent(event: RoomEvent) {
+	if (events.value.some((item) => item.id === event.id)) return
+	if (pendingStreamEvents.some((item) => item.id === event.id)) return
 	pushFlowSample(event)
 	pendingStreamEvents.push(event)
+	if (pendingStreamEvents.length > 500) pendingStreamEvents = pendingStreamEvents.slice(-500)
 	if (streamPaused.value) return
 	if (streamBatchTimer === undefined) {
 		streamBatchTimer = window.setTimeout(flushStreamEvents, 100)
@@ -2084,10 +2980,11 @@ async function load() {
         agentSettings.value = { ...defaultAgentSettings }
       }
     }
-    connectStream()
+    if (roomData.monitor_enabled) startPublicScreenTransport()
+    else stopPublicScreenTransport()
     void connectLocalAudioReceiver()
     await refreshRuntime()
-    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats()])
+    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
     startRuntimePolling()
     startSessionStatsPolling()
     startSpeechRuntimePolling()
@@ -2099,19 +2996,82 @@ async function load() {
   }
 }
 
+function clearStreamReconnectTimer() {
+	if (streamReconnectTimer === undefined) return
+	window.clearTimeout(streamReconnectTimer)
+	streamReconnectTimer = undefined
+}
+
+function scheduleStreamReconnect() {
+	if (pageUnmounted || !room.value?.monitor_enabled || streamReconnectTimer !== undefined) return
+	streamReconnectTimer = window.setTimeout(() => {
+		streamReconnectTimer = undefined
+		if (!pageUnmounted && room.value?.monitor_enabled) connectStream()
+	}, 2000)
+}
+
+async function pollRecentEventsFallback() {
+	if (pageUnmounted || !room.value?.monitor_enabled || eventFallbackBusy) return
+	eventFallbackBusy = true
+	try {
+		const page = await getRoomEvents(roomId, 300)
+		const incoming = [...page.items].sort((a, b) => a.id - b.id)
+		let newest: RoomEvent | null = null
+		for (const event of incoming) {
+			const alreadyVisible = events.value.some((item) => item.id === event.id)
+			const alreadyPending = pendingStreamEvents.some((item) => item.id === event.id)
+			if (alreadyVisible || alreadyPending) continue
+			queueStreamEvent(event)
+			newest = event
+		}
+		if (newest && room.value?.monitor_enabled) {
+			room.value.status = 'live'
+			room.value.last_event_at = newest.occurred_at
+		}
+	} catch {
+		// SSE remains the primary channel; polling is only a recovery path.
+	} finally {
+		eventFallbackBusy = false
+	}
+}
+
+function startEventFallbackPolling() {
+	if (eventFallbackPollTimer !== undefined || pageUnmounted || !room.value?.monitor_enabled) return
+	void pollRecentEventsFallback()
+	eventFallbackPollTimer = window.setInterval(() => {
+		void pollRecentEventsFallback()
+	}, 3000)
+}
+
+function stopEventFallbackPolling() {
+	if (eventFallbackPollTimer !== undefined) {
+		window.clearInterval(eventFallbackPollTimer)
+		eventFallbackPollTimer = undefined
+	}
+	eventFallbackBusy = false
+}
+
 function connectStream() {
-  eventSource?.close()
-  streamState.value = 'connecting'
+	if (pageUnmounted || !room.value?.monitor_enabled) return
+	clearStreamReconnectTimer()
+	const previous = eventSource
+	eventSource = null
+	previous?.close()
+	streamState.value = 'connecting'
 
-  eventSource = new EventSource('/api/v1/rooms/' + roomId + '/stream', {
-    withCredentials: true,
-  })
+	const source = new EventSource('/api/v1/rooms/' + roomId + '/stream', {
+		withCredentials: true,
+	})
+	eventSource = source
 
-  eventSource.onopen = () => {
-    streamState.value = 'online'
-  }
+	source.onopen = () => {
+		if (eventSource !== source) return
+		clearStreamReconnectTimer()
+		streamState.value = 'online'
+	}
 
-	eventSource.onmessage = (message) => {
+	source.onmessage = (message) => {
+		if (eventSource !== source) return
 		try {
 			const event = JSON.parse(message.data) as RoomEvent
 			queueStreamEvent(event)
@@ -2124,9 +3084,28 @@ function connectStream() {
     }
   }
 
-  eventSource.onerror = () => {
-    streamState.value = 'offline'
-  }
+	source.onerror = () => {
+		if (eventSource !== source) return
+		streamState.value = 'offline'
+		eventSource = null
+		source.close()
+		scheduleStreamReconnect()
+	}
+}
+
+function startPublicScreenTransport() {
+	if (pageUnmounted || !room.value?.monitor_enabled) return
+	startEventFallbackPolling()
+	if (!eventSource || eventSource.readyState === EventSource.CLOSED) connectStream()
+}
+
+function stopPublicScreenTransport() {
+	clearStreamReconnectTimer()
+	stopEventFallbackPolling()
+	const source = eventSource
+	eventSource = null
+	source?.close()
+	streamState.value = 'offline'
 }
 
 onMounted(() => {
@@ -2142,19 +3121,30 @@ onMounted(() => {
   window.addEventListener('pointermove', movePublicScreenResize)
   window.addEventListener('pointerup', finishPublicScreenResize)
   window.addEventListener('pointercancel', finishPublicScreenResize)
+  window.addEventListener('pointermove', moveVideoFloatDrag)
+  window.addEventListener('pointerup', finishVideoFloatDrag)
+  window.addEventListener('pointercancel', finishVideoFloatDrag)
   dashboardTickTimer = window.setInterval(() => {
     dashboardNow.value = Date.now()
     pruneFlowSamples()
   }, 1000)
+  restoreVideoCrop()
   window.addEventListener('click', closeEventContextMenu)
   window.addEventListener('click', closeAgentDecisionContextMenu)
+  window.addEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
   mascotActionTimer = window.setTimeout(runMascotAction, 1200 + Math.random() * 1400)
   load()
 })
 onBeforeUnmount(() => {
-	eventSource?.close()
+	pageUnmounted = true
+	stopBrowserVideoShare()
+	stopPublicScreenTransport()
 	localAudioEventSource?.close()
 	localAudioEventSource = null
+	if (localAudioReconnectTimer !== undefined) {
+		window.clearTimeout(localAudioReconnectTimer)
+		localAudioReconnectTimer = undefined
+	}
 	void unregisterLocalAudioReceiver()
 	stopLocalAudioPlayback(false)
 	if (localAudioContext) {
@@ -2172,9 +3162,13 @@ onBeforeUnmount(() => {
 	pendingStreamEvents = []
 	window.removeEventListener('click', closeEventContextMenu)
 	window.removeEventListener('click', closeAgentDecisionContextMenu)
+	window.removeEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
 	window.removeEventListener('pointermove', movePublicScreenResize)
 	window.removeEventListener('pointerup', finishPublicScreenResize)
 	window.removeEventListener('pointercancel', finishPublicScreenResize)
+	window.removeEventListener('pointermove', moveVideoFloatDrag)
+	window.removeEventListener('pointerup', finishVideoFloatDrag)
+	window.removeEventListener('pointercancel', finishVideoFloatDrag)
 	finishPublicScreenResize()
 	window.removeEventListener('pointermove', moveEventBucketResize)
 	window.removeEventListener('pointerup', finishEventBucketResize)
@@ -2228,7 +3222,7 @@ onBeforeUnmount(() => {
               ? '公屏实时连接'
               : streamState === 'connecting'
                 ? '正在连接公屏'
-                : '实时流重连中'
+                : '实时流连接中'
           }}
         </div>
       </section>
@@ -2275,16 +3269,17 @@ onBeforeUnmount(() => {
           <span>直播搭子</span>
           <label class="companion-plan-select" aria-label="智能体直播方案">
             <select
-              :value="selectedLiveAgentPlanId || ''"
+              :value="liveAgentPlanSelectValue"
               :disabled="agentPlanBusy"
               @change="changeLiveAgentPlan"
             >
               <option value="" disabled>
-                {{ liveAgentPlans.length ? '未选方案 · 仅中控模式' : '无直播方案 · 仅中控模式' }}
+                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择直播方案' : '暂无直播方案') }}
               </option>
-              <option v-for="plan in liveAgentPlans" :key="plan.id" :value="plan.id">
+              <option v-for="plan in liveAgentPlans" :key="plan.id" :value="String(plan.id)">
                 {{ plan.name }}
               </option>
+              <option value="__create_default__">＋ 自动创建默认方案</option>
             </select>
           </label>
           <small v-if="agentPlanError" class="companion-plan-error">{{ agentPlanError }}</small>
@@ -2304,18 +3299,18 @@ onBeforeUnmount(() => {
           </div>
           <div class="companion-control-buttons" aria-label="直播搭子控制">
             <button
-              v-if="!aiRunning"
+              v-if="!aiActive"
               type="button"
               :disabled="runtimeControlBusy || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
               @click="startCompanionRuntime"
-            >{{ runtimeControlBusy ? (aiPaused ? '恢复中…' : '启动中…') : (aiPaused ? '继续' : '开始') }}</button>
+            >{{ runtimeControlBusy ? '开始中…' : '开始' }}</button>
             <button
-              v-if="aiActive || aiSessionActive"
+              v-else
               type="button"
               class="end"
               :disabled="runtimeControlBusy"
               @click="stopCompanionRuntime"
-            >结束</button>
+            >{{ runtimeControlBusy ? '结束中…' : '结束' }}</button>
           </div>
         </article>
         <article class="live-room-dashboard" :class="'heat-' + roomHeatLevel">
@@ -2328,10 +3323,17 @@ onBeforeUnmount(() => {
                 <span>直播时长 <b>{{ sessionDurationText }}</b></span>
               </div>
             </div>
-            <div class="dashboard-live-state" :class="streamState">
+            <button
+              type="button"
+              class="dashboard-live-state dashboard-collector-toggle"
+              :class="dashboardCollectorState"
+              :disabled="!canControlMonitoring || monitorToggleBusy"
+              :title="dashboardCollectorTitle"
+              @click="toggleRoomMonitoring"
+            >
               <i></i>
-              {{ room.status === 'live' ? '直播中' : statusText(room.status) }}
-            </div>
+              {{ dashboardCollectorLabel }}
+            </button>
           </div>
 
           <div class="dashboard-main-metric">
@@ -2373,8 +3375,15 @@ onBeforeUnmount(() => {
             <div class="dashboard-pulse-track" aria-hidden="true">
               <i v-for="index in 12" :key="index" :style="{ height: Math.max(18, Math.min(100, 22 + ((flowStats.total + index * 11) % 78))) + '%' }"></i>
             </div>
+            <button
+              v-if="liveReviewAvailable"
+              type="button"
+              class="dashboard-review-button"
+              :disabled="liveReviewLoading"
+              @click="toggleLiveReview"
+            >{{ liveReviewOpen ? '收起复盘' : '查看复盘' }}</button>
             <div class="dashboard-connection-copy">
-              <span>{{ streamState === 'online' ? '公屏链路正常' : '公屏链路重连' }}</span>
+              <span>{{ streamState === 'online' ? '公屏链路正常' : '公屏链路连接中' }}</span>
               <small>最近 60 秒滚动统计</small>
             </div>
           </div>
@@ -2413,19 +3422,8 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <section class="live-review-panel" :class="{ open: liveReviewOpen }">
-        <header class="live-review-head">
-          <div>
-            <span class="section-kicker">LIVE REVIEW</span>
-            <h3>直播复盘</h3>
-            <p>从本直播间的归档数据重新梳理，不读取实时问题桶。</p>
-          </div>
-          <button type="button" :disabled="liveReviewLoading" @click="toggleLiveReview">
-            {{ liveReviewOpen ? '收起复盘' : '查看复盘' }}
-          </button>
-        </header>
-
-        <div v-if="liveReviewOpen" class="live-review-body">
+      <section v-if="liveReviewAvailable && liveReviewOpen" class="live-review-panel open review-body-only">
+        <div class="live-review-body">
           <div v-if="liveReviewLoading" class="live-review-empty">正在从归档重建本场复盘…</div>
           <div v-else-if="liveReviewError" class="live-review-error">{{ liveReviewError }}</div>
           <template v-else-if="liveReview">
@@ -2483,11 +3481,10 @@ onBeforeUnmount(() => {
 
           <article class="speech-track-card speech-interrupt-card" :class="'status-' + (interruptSpeech.status || 'idle')">
             <header>
-              <span>临时打断</span>
+              <span v-if="interruptSpeech.question_text" class="speech-trigger-question"><strong>触发问题：</strong>{{ interruptSpeech.question_text }}</span>
+              <span v-else class="speech-interrupt-placeholder">场控答疑 / 临时插播</span>
               <b>{{ speechStatusLabel(interruptSpeech.status, 'interrupt') }}</b>
             </header>
-            <small v-if="interruptSpeech.question_text" class="speech-trigger-question"><span>触发问题：</span>{{ interruptSpeech.question_text }}</small>
-            <small v-else>场控答疑 / 临时插播</small>
             <p>{{ interruptSpeech.reply_text || interruptSpeech.text || '等待临时插播…' }}</p>
             <time v-if="interruptSpeech.updated_at">更新 {{ formatTime(interruptSpeech.updated_at) }}</time>
           </article>
@@ -2544,34 +3541,43 @@ onBeforeUnmount(() => {
               :class="{
                 'is-hovered': hoveredEventId === event.id,
                 'has-ai-actions': aiRunning && isDirectAnswerEvent(event),
+                'answer-reference-pickable': answerReferencePicking && isDirectAnswerEvent(event),
               }"
               @mouseenter="handleEventMouseEnter(event)"
               @mouseleave="handleEventMouseLeave(event)"
+              @click="handlePublicScreenAnswerReferenceClick(event)"
               @contextmenu.prevent.stop="openEventContextMenu($event, event)"
             >
               <time>{{ formatTime(event.occurred_at) }}</time>
               <span class="event-type" :class="eventClass(event.event_type)">
                 {{ eventLabel(event.event_type) }}
               </span>
-              <div class="event-body event-inline">
-                <span class="event-user">【{{ event.nickname || '直播间用户' }}】：</span>
+              <div class="event-body event-stacked">
+                <div class="event-topline">
+                  <span class="event-user">【{{ event.nickname || '直播间用户' }}】：</span>
+                  <div v-if="aiRunning && isDirectAnswerEvent(event)" class="event-ai-actions" @click.stop @contextmenu.stop>
+                    <button
+                      type="button"
+                      class="reference"
+                      @click="sendPublicScreenEventToAnswerReference(event)"
+                    >参考回答</button>
+                    <button
+                      type="button"
+                      class="quick"
+                      :disabled="eventDecisionDisabled(event, 'quick')"
+                      @click="answerPublicScreenEvent(event, 'quick')"
+                    >{{ eventDecisionLabel(event, 'quick') }}</button>
+                    <button
+                      type="button"
+                      class="answer"
+                      :disabled="eventDecisionDisabled(event, 'answer')"
+                      @click="answerPublicScreenEvent(event, 'answer')"
+                    >{{ eventDecisionLabel(event, 'answer') }}</button>
+                  </div>
+                </div>
                 <span class="event-action">{{ event.content || eventLabel(event.event_type) }}</span>
-              </div>
-              <div v-if="aiRunning && isDirectAnswerEvent(event)" class="event-ai-actions" @click.stop @contextmenu.stop>
-                <button
-                  type="button"
-                  class="quick"
-                  :disabled="eventDecisionDisabled(event, 'quick')"
-                  @click="answerPublicScreenEvent(event, 'quick')"
-                >{{ eventDecisionLabel(event, 'quick') }}</button>
-                <button
-                  type="button"
-                  class="answer"
-                  :disabled="eventDecisionDisabled(event, 'answer')"
-                  @click="answerPublicScreenEvent(event, 'answer')"
-                >{{ eventDecisionLabel(event, 'answer') }}</button>
-                <small v-if="eventDecisionRowState(event.id).message" class="ok">{{ eventDecisionRowState(event.id).message }}</small>
-                <small v-else-if="eventDecisionRowState(event.id).error" class="error">{{ eventDecisionRowState(event.id).error }}</small>
+                <small v-if="eventDecisionRowState(event.id).message" class="event-ai-feedback ok">{{ eventDecisionRowState(event.id).message }}</small>
+                <small v-else-if="eventDecisionRowState(event.id).error" class="event-ai-feedback error">{{ eventDecisionRowState(event.id).error }}</small>
               </div>
             </article>
             <div v-if="importantLoading[activeType]" class="important-history-loading">正在加载更早记录…</div>
@@ -2771,7 +3777,8 @@ onBeforeUnmount(() => {
                     <button
                       type="button"
                       class="semantic-bucket-summary"
-                      @click="toggleQuestionBucket(bucket)"
+                      :class="{ 'answer-reference-pickable': answerReferencePicking }"
+                      @click="handleQuestionBucketClick(bucket)"
                     >
                       <span class="semantic-bucket-copy">
                         <strong>{{ semanticBucketLabel(bucket) }}</strong>
@@ -2781,6 +3788,10 @@ onBeforeUnmount(() => {
                       <i class="semantic-bucket-chevron">⌄</i>
                     </button>
                     <div v-if="aiActive" class="semantic-bucket-actions">
+                      <button
+                        type="button"
+                        @click.stop="sendBucketToAnswerReference(bucket)"
+                      >参考回答</button>
                       <button
                         type="button"
                         class="force"
@@ -2804,8 +3815,11 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         class="question-detail-row"
-                        :class="{ selected: selectedQuestionEventId === question.EventID }"
-                        @click.stop="selectQuestionDetail(question)"
+                        :class="{
+                          selected: selectedQuestionEventId === question.EventID,
+                          'answer-reference-pickable': answerReferencePicking,
+                        }"
+                        @click.stop="handleQuestionDetailClick(question, bucket)"
                       >
                         <span>
                           <b>{{ question.Nickname || question.UserID || '匿名用户' }}</b>
@@ -2814,6 +3828,10 @@ onBeforeUnmount(() => {
                         <p>{{ question.Content }}</p>
                       </button>
                       <div v-if="aiActive" class="question-detail-actions">
+                        <button
+                          type="button"
+                          @click.stop="sendQuestionToAnswerReference(question, bucket)"
+                        >参考回答</button>
                         <button
                           type="button"
                           class="force"
@@ -2841,10 +3859,11 @@ onBeforeUnmount(() => {
                   {{ selectedQuestionDetail.Nickname || selectedQuestionDetail.UserID || '匿名用户' }}
                   · {{ formatTime(selectedQuestionDetail.OccurredAt) }}
                 </small>
-                <small v-if="!selectedQuestionTTSEligible" class="single-question-expired">
-                  已超过30分钟实时回答窗口 · 仅用于复盘
-                </small>
                 <div class="single-question-actions">
+                  <button
+                    type="button"
+                    @click="sendQuestionToAnswerReference(selectedQuestionDetail, selectedQuestionBucket || undefined)"
+                  >参考回答</button>
                   <button type="button" :disabled="Boolean(questionDecisionBusyState(selectedQuestionDetail.EventID)) || !aiRunning || !selectedQuestionTTSEligible" @click="answerSelectedQuestion('answer')">
                     {{ questionDecisionBusyState(selectedQuestionDetail.EventID) === 'answer' ? '提交中…' : '回答' }}
                   </button>
@@ -2873,7 +3892,225 @@ onBeforeUnmount(() => {
 
         </div>
 
+        <aside class="capture-workspace">
+          <header class="capture-workspace-head">
+            <div>
+              <span class="section-kicker">CAPTURE</span>
+              <h3>采集工作区</h3>
+            </div>
+            <b :class="'mode-' + (captureSnapshot?.mode || 'idle')">{{ captureModeLabel }}</b>
+          </header>
+
+          <section class="capture-card local-video-viewer-card" :class="{ active: localVideoViewerActive }">
+            <header>
+              <div>
+                <strong>视频观看</strong>
+                <small>Chrome 标签页共享 · 仅浏览器本机处理</small>
+              </div>
+              <span :class="{ active: localVideoViewerActive }">
+                {{ localVideoViewerActive ? '共享中' : '本机' }}
+              </span>
+            </header>
+            <div class="browser-share-guide" :class="{ active: localVideoViewerActive }">
+              <div><b>1</b><span>打开当前抖音直播页，需要登录就正常扫码登录。</span></div>
+              <div><b>2</b><span>点击共享，在 Chrome 弹窗里选择刚打开的抖音标签页。</span></div>
+              <div><b>3</b><span>系统右侧出现悬浮窗，可裁掉评论区和网页边缘。</span></div>
+            </div>
+            <div class="browser-share-actions">
+              <button
+                type="button"
+                class="capture-primary-button viewer secondary"
+                :disabled="!douyinLiveRoomUrl"
+                @click="openDouyinWatchPage"
+              >打开抖音页面</button>
+              <button
+                v-if="!localVideoViewerActive"
+                type="button"
+                class="capture-primary-button viewer"
+                :disabled="videoShareBusy"
+                @click="startBrowserVideoShare"
+              >{{ videoShareBusy ? '正在请求共享…' : '共享抖音标签页' }}</button>
+              <button
+                v-else
+                type="button"
+                class="capture-stop-button"
+                @click="stopBrowserVideoShare"
+              >停止共享画面</button>
+            </div>
+            <small class="capture-lock-tip">Chrome 会要求用户主动授权共享；视频只在当前浏览器内处理，不上传服务器。</small>
+            <div v-if="videoShareError" class="recording-error">{{ videoShareError }}</div>
+          <p class="capture-business-note">观看窗口与直播数据采集完全独立；关掉共享不会停止公屏、智能分析或声音录制。</p>
+          </section>
+
+          <section class="capture-card audio-record-card" :class="{ recording: audioRecordingActive }">
+            <header>
+              <div>
+                <strong>声音录制</strong>
+                <small>当前直播间音轨 · 网页关闭后继续</small>
+              </div>
+              <span :class="{ active: audioRecordingActive }">
+                {{ audioRecordingActive ? '录制中' : (audioRecordingFinalizing ? '合并中' : '后台') }}
+              </span>
+            </header>
+            <div class="audio-record-visual" :class="{ active: audioRecordingActive }" aria-hidden="true">
+              <i v-for="index in 18" :key="index" :style="{ height: (18 + ((index * 17 + audioRecordingDuration) % 64)) + '%' }"></i>
+            </div>
+            <div class="audio-record-metrics">
+              <div><span>已录时长</span><strong>{{ formatClockSeconds(audioRecordingDuration) }}</strong></div>
+              <div><span>分段</span><strong>{{ captureSnapshot?.recording?.segment_count || 0 }}</strong></div>
+            </div>
+            <button
+              v-if="!audioRecordingActive"
+              type="button"
+              class="capture-primary-button audio"
+              :disabled="captureBusy || audioRecordingFinalizing"
+              @click="startCoreAudioRecording"
+            >
+              {{ audioRecordingFinalizing ? '正在合并录音…' : '开始声音录制' }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="capture-stop-button"
+              :disabled="captureBusy"
+              @click="stopCoreAudioRecording"
+            >{{ captureBusy ? '正在停止并合并…' : '停止并合并' }}</button>
+            <div v-if="captureSnapshot?.recording?.status === 'ready'" class="recording-delivery">
+              <div>
+                <strong>完整录音已生成</strong>
+                <small>{{ captureSnapshot.recording.final_file_name }} · {{ formatCaptureBytes(captureSnapshot.recording.final_bytes) }}</small>
+              </div>
+              <a :href="roomAudioRecordingFileUrl(roomId)" download>下载 WAV</a>
+            </div>
+            <div v-else-if="captureSnapshot?.recording?.status === 'failed'" class="recording-error">
+              {{ captureSnapshot.recording.error || '录音处理失败' }}
+            </div>
+            <p class="capture-business-note">可用于同行直播跟踪；后续可继续转逐字稿、拆解话术并进入素材库。</p>
+          </section>
+
+          <div v-if="captureError" class="capture-workspace-error">{{ captureError }}</div>
+          <section class="capture-card speech-analysis-card" :class="{ active: speechAnalysisRunning }">
+            <header>
+              <div>
+                <strong>智能话术分析</strong>
+                <small>录音转文字 · 话术分析 · 优化建议</small>
+              </div>
+              <span :class="{ active: currentSpeechAnalysisTask?.status === 'ready' }">{{ speechAnalysisStatusLabel }}</span>
+            </header>
+
+            <div class="speech-analysis-progress" :class="{ active: speechAnalysisRunning || speechAnalysisUploadBusy }">
+              <div class="speech-analysis-progress-copy">
+                <span>{{ speechAnalysisPublicStage }}</span>
+                <strong>{{ speechAnalysisUploadBusy ? speechAnalysisUploadPercent : (currentSpeechAnalysisTask?.progress || 0) }}%</strong>
+              </div>
+              <div class="speech-analysis-progress-track" aria-hidden="true">
+                <i :style="{ width: Math.max(0, Math.min(100, speechAnalysisUploadBusy ? speechAnalysisUploadPercent : (currentSpeechAnalysisTask?.progress || 0))) + '%' }"></i>
+              </div>
+              <div v-if="speechAnalysisUploadBusy" class="speech-analysis-upload-progress-detail">
+                <span>{{ formatCaptureBytes(speechAnalysisUploadLoaded) }} / {{ formatCaptureBytes(speechAnalysisUploadTotal || speechAnalysisUploadFile?.size) }}</span>
+                <span>{{ speechAnalysisUploadSpeed }}</span>
+                <button type="button" @click="cancelSpeechAnalysisUpload">取消上传</button>
+              </div>
+              <div v-if="speechAnalysisStepIndex >= 0" class="speech-analysis-steps">
+                <div
+                  v-for="(step, index) in speechAnalysisSteps"
+                  :key="step"
+                  class="speech-analysis-step"
+                  :class="{
+                    done: !speechAnalysisUploadBusy && (index < speechAnalysisStepIndex || currentSpeechAnalysisTask?.status === 'ready'),
+                    current: index === speechAnalysisStepIndex && (speechAnalysisUploadBusy || currentSpeechAnalysisTask?.status !== 'ready'),
+                    failed: !speechAnalysisUploadBusy && index === speechAnalysisStepIndex && currentSpeechAnalysisTask?.status === 'failed',
+                  }"
+                >
+                  <i>{{ !speechAnalysisUploadBusy && (index < speechAnalysisStepIndex || currentSpeechAnalysisTask?.status === 'ready') ? '✓' : index + 1 }}</i>
+                  <span>{{ step }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="currentSpeechAnalysisTask?.transcript_object_key" class="recording-delivery speech-analysis-transcript-delivery">
+              <div>
+                <strong>文字稿已生成</strong>
+                <small>后续话术分析会继续进行，现在就可以先下载文字。</small>
+              </div>
+              <a :href="roomSpeechAnalysisTranscriptUrl(roomId)" download>下载文字</a>
+            </div>
+
+            <div class="speech-analysis-upload-box">
+              <label class="speech-analysis-file-picker" :class="{ disabled: speechAnalysisRunning || speechAnalysisUploadBusy }">
+                <input
+                  type="file"
+                  accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,audio/*"
+                  :disabled="speechAnalysisRunning || speechAnalysisUploadBusy"
+                  @change="selectSpeechAnalysisUploadFile"
+                />
+                <span>{{ speechAnalysisUploadFile ? '重新选择录音' : '选择已有录音' }}</span>
+              </label>
+              <div class="speech-analysis-file-meta">
+                <strong>{{ speechAnalysisUploadFile?.name || '支持 WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM' }}</strong>
+                <small v-if="speechAnalysisUploadFile">{{ formatCaptureBytes(speechAnalysisUploadFile.size) }}</small>
+                <small v-else>上传后自动开始转文字、话术分析和优化建议。</small>
+              </div>
+              <button
+                type="button"
+                class="capture-primary-button speech-analysis upload"
+                :disabled="!speechAnalysisCanUpload"
+                @click="uploadSpeechAnalysisRecording"
+              >{{ speechAnalysisUploadBusy ? ('上传 ' + speechAnalysisUploadPercent + '%') : '上传并分析' }}</button>
+            </div>
+
+            <div class="speech-analysis-or"><span>或使用本直播间刚录好的音频</span></div>
+
+            <button
+              v-if="currentSpeechAnalysisTask?.status !== 'ready'"
+              type="button"
+              class="capture-primary-button speech-analysis"
+              :disabled="!speechAnalysisCanStart"
+              @click="startSpeechAnalysis"
+            >
+              {{ speechAnalysisRunning ? '智能分析进行中…' : (speechAnalysisBusy ? '正在准备分析…' : '分析刚完成的直播录音') }}
+            </button>
+
+            <small v-if="speechAnalysisStatus && !speechAnalysisStatus.configured" class="capture-lock-tip">
+              分析服务暂不可用，请联系管理员。
+            </small>
+            <small v-else-if="captureSnapshot?.recording?.status !== 'ready' && !currentSpeechAnalysisTask" class="capture-lock-tip">
+              可以直接上传已有录音；也可以先完成本直播间声音录制再分析。
+            </small>
+
+            <div v-if="currentSpeechAnalysisTask?.status === 'ready'" class="recording-delivery speech-analysis-delivery">
+              <div>
+                <strong>本场直播分析已生成</strong>
+                <small>可以直接查看，也可以下载完整分析报告。</small>
+              </div>
+              <div class="speech-analysis-delivery-actions">
+                <button type="button" :disabled="speechAnalysisReportLoading" @click="toggleSpeechAnalysisReport">
+                  {{ speechAnalysisReportLoading ? '读取中…' : (speechAnalysisReportOpen ? '收起报告' : '查看报告') }}
+                </button>
+                <a :href="roomSpeechAnalysisReportUrl(roomId)" download>下载报告</a>
+              </div>
+            </div>
+            <div v-if="speechAnalysisReportOpen" class="speech-analysis-report-panel">
+              <header>
+                <div>
+                  <strong>本场直播复盘</strong>
+                  <small>优点 · 问题 · 修改建议 · 改写示例 · 风险点 · 完整逐字稿</small>
+                </div>
+                <button type="button" :disabled="!speechAnalysisReportText" @click="copySpeechAnalysisReport">复制报告</button>
+              </header>
+              <pre>{{ speechAnalysisReportText }}</pre>
+            </div>
+            <div v-if="currentSpeechAnalysisTask?.status === 'failed'" class="recording-error">
+              {{ speechAnalysisFailureText }}
+            </div>
+            <div v-if="speechAnalysisError" class="recording-error">{{ speechAnalysisError }}</div>
+            <p class="capture-business-note">这里只复盘这一场直播：明确做得好的、做得不好的、怎么优化，并给出下一场可执行建议。</p>
+          </section>
+
+          <div v-if="captureError" class="capture-workspace-error">{{ captureError }}</div>
+        </aside>
       </section>
+
 
       <button
         type="button"
@@ -3031,6 +4268,63 @@ onBeforeUnmount(() => {
           </footer>
         </aside>
       </div>
+
+      <aside
+        v-if="localVideoViewerActive"
+        ref="sharedVideoFloatEl"
+        class="browser-video-float"
+        :class="{ collapsed: videoFloatCollapsed, cropping: videoCropPanelOpen, portrait: videoCropLayout === 'portrait' }"
+        :style="sharedVideoFloatStyle"
+      >
+        <header class="browser-video-float-head" @pointerdown="startVideoFloatDrag">
+          <div>
+            <span>LOCAL VIDEO</span>
+            <strong>{{ room?.name || '直播画面' }}</strong>
+          </div>
+          <div class="browser-video-float-actions" @pointerdown.stop>
+            <button
+              type="button"
+              :class="{ active: videoCropPanelOpen }"
+              title="调整纯净裁剪"
+              @click="videoCropPanelOpen = !videoCropPanelOpen"
+            >裁剪</button>
+            <button
+              type="button"
+              :title="videoFloatCollapsed ? '展开观看窗口' : '收起观看窗口'"
+              @click="videoFloatCollapsed = !videoFloatCollapsed"
+            >{{ videoFloatCollapsed ? '展开' : '收起' }}</button>
+            <button type="button" title="停止共享" @click="stopBrowserVideoShare">×</button>
+          </div>
+        </header>
+
+        <div v-show="!videoFloatCollapsed" class="browser-video-float-body">
+          <video ref="sharedVideoEl" autoplay playsinline muted aria-hidden="true"></video>
+          <canvas ref="sharedVideoCanvasEl" aria-label="本机共享的直播视频画面"></canvas>
+          <div v-if="videoCropPanelOpen" class="browser-video-crop-panel">
+            <div class="browser-video-crop-actions">
+              <button type="button" @click="applyDouyinCropPreset()">竖屏纯视频</button>
+              <button type="button" @click="applyDouyinLandscapeCropPreset">横屏播放器</button>
+              <button type="button" @click="resetVideoCrop">还原全页</button>
+            </div>
+            <label>
+              <span>上 {{ videoCrop.top }}%</span>
+              <input v-model.number="videoCrop.top" type="range" min="0" max="45" step="1" @input="clampVideoCrop()" />
+            </label>
+            <label>
+              <span>右 {{ videoCrop.right }}%</span>
+              <input v-model.number="videoCrop.right" type="range" min="0" max="45" step="1" @input="clampVideoCrop()" />
+            </label>
+            <label>
+              <span>下 {{ videoCrop.bottom }}%</span>
+              <input v-model.number="videoCrop.bottom" type="range" min="0" max="45" step="1" @input="clampVideoCrop()" />
+            </label>
+            <label>
+              <span>左 {{ videoCrop.left }}%</span>
+              <input v-model.number="videoCrop.left" type="range" min="0" max="45" step="1" @input="clampVideoCrop()" />
+            </label>
+          </div>
+        </div>
+      </aside>
     </template>
   </div>
 </template>
@@ -3075,6 +4369,8 @@ onBeforeUnmount(() => {
   font-weight:850;
   cursor:pointer;
 }
+.live-review-panel.review-body-only { margin-top:14px; }
+.live-review-panel.review-body-only .live-review-body { padding:18px; border-top:0; }
 .live-review-body { padding:0 18px 18px; border-top:1px solid rgba(91,111,163,.09); }
 .live-review-metrics { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; padding:16px 0; }
 .live-review-metrics article { display:grid; gap:5px; min-width:0; padding:12px 13px; border-radius:13px; background:#f7f9fd; }
@@ -3238,16 +4534,23 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.speech-track-card > small.speech-trigger-question {
+.speech-interrupt-card > header .speech-trigger-question {
+  min-width: 0;
   color: #d83f4f;
-  opacity: .92;
-  max-height: 2.9em;
-  overflow: hidden;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.35;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
-.speech-trigger-question > span {
+.speech-trigger-question > strong {
   color: inherit;
   font-weight: 900;
+}
+
+.speech-interrupt-placeholder {
+  color: #7f899d;
 }
 
 .room-detail-page .speech-track-card > p {
@@ -3596,6 +4899,21 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
+.dashboard-collector-toggle {
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.dashboard-collector-toggle:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 7px 18px rgba(72, 88, 150, .12);
+}
+
+.dashboard-collector-toggle:disabled {
+  cursor: default;
+}
+
 .dashboard-session-meta {
   display: flex;
   align-items: center;
@@ -3623,9 +4941,67 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 4px rgba(167, 176, 193, 0.14);
 }
 
-.dashboard-live-state.online i {
+.dashboard-live-state.live {
+  border-color: rgba(54, 185, 140, .28);
+  color: #52647a;
+  background: rgba(255, 255, 255, .82);
+}
+
+.dashboard-live-state.live i {
   background: #36b98c;
   box-shadow: 0 0 0 4px rgba(54, 185, 140, 0.14), 0 0 12px rgba(54, 185, 140, 0.4);
+}
+
+.dashboard-collector-toggle.live:not(:disabled):hover {
+  border-color: rgba(219, 87, 98, .30);
+  color: #b64855;
+  background: #fff5f6;
+}
+
+.dashboard-collector-toggle.live:not(:disabled):hover i {
+  background: #df5b68;
+  box-shadow: 0 0 0 4px rgba(223, 91, 104, .12);
+}
+
+.dashboard-live-state.connecting {
+  border-color: rgba(100, 116, 206, .22);
+  color: #6370a9;
+  background: #f5f6ff;
+}
+
+.dashboard-live-state.connecting i {
+  background: #7180d3;
+  box-shadow: 0 0 0 4px rgba(113, 128, 211, .12);
+  animation: dashboard-collector-pulse 1.2s ease-in-out infinite;
+}
+
+.dashboard-live-state.stopped {
+  border-color: rgba(100, 116, 206, .20);
+  color: #6170b4;
+  background: #f7f8ff;
+}
+
+.dashboard-live-state.stopped i {
+  background: #8290d9;
+  box-shadow: 0 0 0 4px rgba(130, 144, 217, .12);
+}
+
+.dashboard-live-state.error,
+.dashboard-live-state.offline {
+  border-color: rgba(205, 91, 103, .18);
+  color: #a9525d;
+  background: #fff7f8;
+}
+
+.dashboard-live-state.error i,
+.dashboard-live-state.offline i {
+  background: #d36a75;
+  box-shadow: 0 0 0 4px rgba(211, 106, 117, .11);
+}
+
+@keyframes dashboard-collector-pulse {
+  0%, 100% { opacity: .55; transform: scale(.9); }
+  50% { opacity: 1; transform: scale(1.08); }
 }
 
 .dashboard-main-metric {
@@ -3719,7 +5095,7 @@ onBeforeUnmount(() => {
 .dashboard-pulse-bar {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: 128px minmax(160px, 1fr) auto;
+  grid-template-columns: 128px minmax(160px, 1fr) auto auto;
   align-items: end;
   gap: 14px;
   min-height: 48px;
@@ -3740,6 +5116,23 @@ onBeforeUnmount(() => {
 .dashboard-connection-copy {
   text-align: right;
 }
+
+.dashboard-review-button {
+  align-self:end;
+  min-height:34px;
+  padding:0 14px;
+  border:1px solid rgba(82,101,225,.2);
+  border-radius:10px;
+  background:#f5f7ff;
+  color:#5261cc;
+  font:inherit;
+  font-size:10px;
+  font-weight:850;
+  white-space:nowrap;
+  cursor:pointer;
+}
+.dashboard-review-button:hover { background:#eef1ff; }
+.dashboard-review-button:disabled { opacity:.55; cursor:wait; }
 
 .dashboard-pulse-track {
   height: 34px;
@@ -3947,21 +5340,42 @@ onBeforeUnmount(() => {
 
 .room-detail-page .event-row {
   grid-template-columns: 64px 54px minmax(0, 1fr);
+  align-items: start;
   cursor: context-menu;
   transition: background 0.16s ease, box-shadow 0.16s ease;
 }
 
 .room-detail-page .event-row.has-ai-actions {
-  grid-template-columns: 64px 54px minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: 64px 54px minmax(0, 1fr);
+  align-items: start;
+}
+
+.room-detail-page .event-row > time,
+.room-detail-page .event-row > .event-type {
+  margin-top: 2px;
+}
+.room-detail-page .event-row > time { font-size: 11px; }
+.room-detail-page .event-row > .event-type { font-size: 11px; }
+
+.event-stacked {
+  display: grid;
+  gap: 7px;
+}
+
+.event-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .event-ai-actions {
   display: flex;
-  align-items: center;
+  flex: 0 0 auto;
+  align-items: flex-start;
   justify-content: flex-end;
   gap: 6px;
-  min-width: 158px;
 }
 .event-ai-actions button {
   min-width: 54px;
@@ -3983,37 +5397,51 @@ onBeforeUnmount(() => {
   color: #4f5fd0;
   background: #f4f6ff;
 }
+.event-ai-actions button.reference {
+  color: #5965b9;
+  border-color: rgba(92,105,213,.24);
+  background: #f1f3ff;
+}
 .event-ai-actions button:disabled {
   opacity: .5;
   cursor: not-allowed;
 }
-.event-ai-actions small {
-  max-width: 128px;
+.event-ai-feedback {
+  display: block;
+  max-width: 100%;
   font-size: 10px;
   line-height: 1.25;
 }
-.event-ai-actions small.ok { color: #3d8a6e; }
-.event-ai-actions small.error { color: #c84d59; }
+.event-ai-feedback.ok { color: #3d8a6e; }
+.event-ai-feedback.error { color: #c84d59; }
 
-.room-detail-page .event-body,
-.room-detail-page .event-inline {
+.room-detail-page .event-body {
   min-width: 0;
   max-width: 100%;
 }
 
-.room-detail-page .event-inline {
-  display: block;
-  white-space: normal;
-}
-
 .room-detail-page .event-user,
 .room-detail-page .event-action {
-  display: inline;
   max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+
+.room-detail-page .event-user {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.room-detail-page .event-user { font-size: 13px; }
+
+.room-detail-page .event-action {
+  display: block;
+  width: 100%;
+  line-height: 1.7;
+}
+.room-detail-page .event-action { font-size: 13px; }
+.room-detail-page .event-ai-feedback { font-size: 9px; }
 
 .room-detail-page .event-row.is-hovered {
   position: relative;
@@ -4231,10 +5659,12 @@ onBeforeUnmount(() => {
 .blocked-user-row:disabled { opacity:.6; cursor:wait; }
 
 .room-detail-page .detail-layout-no-preview {
-  width: min(100%, 880px);
+  width: 100%;
+  max-width: none;
   margin-inline: 0;
-  grid-template-columns: minmax(460px, 520px) minmax(280px, 340px) !important;
-  justify-content: start;
+  grid-template-columns: minmax(460px, 520px) minmax(280px, 340px) minmax(300px, 360px) !important;
+  justify-content: space-between;
+  align-items: start;
   gap: 16px;
 }
 
@@ -4267,6 +5697,297 @@ onBeforeUnmount(() => {
   align-self: start;
 }
 
+.capture-workspace {
+  grid-column: 3;
+  grid-row: 1;
+  display: grid;
+  align-content: start;
+  justify-self: end;
+  gap: 14px;
+  width: 100%;
+  max-width: 360px;
+}
+.capture-workspace-head,
+.capture-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.capture-workspace-head {
+  padding: 2px 2px 0;
+}
+.capture-workspace-head h3 { margin:3px 0 0; color:#2f3d5c; font-size:22px; }
+.capture-workspace-head > b {
+  padding:6px 9px;
+  border-radius:999px;
+  color:#7f89a0;
+  background:#f1f3f8;
+  font-size:10px;
+  white-space:nowrap;
+}
+.capture-workspace-head > b.mode-audio_recording { color:#c84f5d; background:#fff0f2; }
+.capture-workspace-head > b.mode-finalizing { color:#a26a25; background:#fff5e8; }
+.capture-card {
+  display:grid;
+  gap:12px;
+  padding:15px;
+  border:1px solid rgba(93,110,177,.16);
+  border-radius:20px;
+  background:rgba(255,255,255,.92);
+  box-shadow:0 10px 28px rgba(43,58,111,.06);
+  overflow:hidden;
+}
+.capture-card > header strong { display:block; color:#33415f; font-size:16px; }
+.capture-card > header small { display:block; margin-top:3px; color:#8b96aa; font-size:10px; line-height:1.45; }
+.capture-card > header > span {
+  padding:5px 8px;
+  border-radius:999px;
+  color:#8791a5;
+  background:#f2f4f8;
+  font-size:9px;
+  font-weight:900;
+}
+.capture-card > header > span.active { color:#2c9a80; background:#e8f8f3; }
+.audio-record-card.recording > header > span.active { color:#c54b5b; background:#fff0f2; }
+.browser-share-guide {
+  display:grid;
+  gap:7px;
+  padding:10px;
+  border:1px dashed rgba(99,115,184,.24);
+  border-radius:13px;
+  background:#f7f8fc;
+}
+.browser-share-guide.active { border-style:solid; border-color:rgba(74,154,128,.24); background:#f3faf7; }
+.browser-share-guide > div { display:grid; grid-template-columns:22px minmax(0,1fr); align-items:start; gap:7px; }
+.browser-share-guide b {
+  display:grid;
+  place-items:center;
+  width:20px;
+  height:20px;
+  border-radius:50%;
+  color:#6472c7;
+  background:#edf0ff;
+  font-size:10px;
+}
+.browser-share-guide span { color:#7e889d; font-size:10px; line-height:1.45; }
+.browser-share-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.browser-share-actions .capture-stop-button { grid-column:2; }
+.browser-video-float {
+  position:fixed;
+  z-index:1180;
+  width:min(420px,calc(100vw - 24px));
+  height:264px;
+  min-width:300px;
+  min-height:190px;
+  border:1px solid rgba(102,118,173,.3);
+  border-radius:14px;
+  background:#080b11;
+  box-shadow:0 20px 55px rgba(20,28,55,.28),0 4px 14px rgba(20,28,55,.18);
+  overflow:hidden;
+  resize:both;
+}
+.browser-video-float.portrait {
+  width:min(330px,calc(100vw - 24px));
+  height:min(590px,calc(100vh - 92px));
+}
+.browser-video-float.collapsed {
+  width:240px;
+  height:44px;
+  min-width:220px;
+  min-height:44px;
+  resize:none;
+}
+.browser-video-float-head {
+  height:44px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:0 8px 0 12px;
+  color:#dfe5f3;
+  background:linear-gradient(180deg,#202738,#161b27);
+  cursor:grab;
+  user-select:none;
+}
+.browser-video-float-head:active { cursor:grabbing; }
+.browser-video-float-head > div:first-child { min-width:0; }
+.browser-video-float-head span { display:block; color:#8490aa; font-size:8px; font-weight:900; letter-spacing:.12em; }
+.browser-video-float-head strong { display:block; max-width:180px; overflow:hidden; color:#eef2fa; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.browser-video-float-actions { display:flex; align-items:center; gap:4px; }
+.browser-video-float-actions button,
+.browser-video-crop-actions button {
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:7px;
+  color:#b9c2d5;
+  background:rgba(255,255,255,.06);
+  font:inherit;
+  font-size:9px;
+  font-weight:800;
+  cursor:pointer;
+}
+.browser-video-float-actions button { min-height:26px; padding:4px 7px; }
+.browser-video-float-actions button:last-child { width:26px; padding:0; color:#e3a2aa; }
+.browser-video-float-actions button.active { color:#fff; background:rgba(95,112,210,.42); }
+.browser-video-float-body { position:relative; height:calc(100% - 44px); background:#05070b; overflow:hidden; }
+.browser-video-float-body > video {
+  position:absolute;
+  width:2px;
+  height:2px;
+  opacity:0;
+  pointer-events:none;
+}
+.browser-video-float-body > canvas { display:block; width:100%; height:100%; background:#05070b; }
+.browser-video-crop-panel {
+  position:absolute;
+  top:10px;
+  right:10px;
+  width:210px;
+  display:grid;
+  gap:8px;
+  padding:10px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:11px;
+  background:rgba(15,19,29,.92);
+  box-shadow:0 10px 28px rgba(0,0,0,.28);
+  backdrop-filter:blur(12px);
+}
+.browser-video-crop-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.browser-video-crop-actions button:last-child { grid-column:1 / -1; }
+.browser-video-crop-actions button { min-height:28px; padding:5px 7px; }
+.browser-video-crop-panel label { display:grid; grid-template-columns:48px minmax(0,1fr); align-items:center; gap:6px; color:#aeb7ca; font-size:9px; }
+.browser-video-crop-panel input[type='range'] { width:100%; accent-color:#7483df; }
+.capture-room-link {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  width:100%;
+  min-height:34px;
+  padding:7px 11px;
+  border:1px solid rgba(83,98,206,.16);
+  border-radius:9px;
+  color:#6572bd;
+  background:#fafbff;
+  font-size:10px;
+  font-weight:800;
+  line-height:1;
+  text-decoration:none;
+  transition:background .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.capture-room-link:hover {
+  background:#fff;
+  box-shadow:0 6px 18px rgba(74,88,178,.12);
+  transform:translateY(-1px);
+}
+.capture-primary-button,
+.capture-stop-button {
+  width:100%;
+  min-height:38px;
+  border-radius:11px;
+  border:1px solid rgba(87,104,210,.22);
+  color:#5362ce;
+  background:#f1f3ff;
+  font:inherit;
+  font-size:12px;
+  font-weight:900;
+  cursor:pointer;
+}
+.capture-primary-button.audio { color:#3e7b8e; border-color:rgba(71,147,168,.24); background:#edf8fa; }
+.capture-primary-button.viewer { color:#4e68b8; border-color:rgba(77,103,190,.23); background:#eef3ff; }
+.capture-primary-button.speech-analysis { color:#5b5fc7; border-color:rgba(91,95,199,.22); background:#f2f2ff; }
+.capture-stop-button { color:#b94f5b; border-color:rgba(206,83,99,.24); background:#fff2f3; }
+.capture-primary-button:disabled,.capture-stop-button:disabled { opacity:.45; cursor:not-allowed; }
+.capture-lock-tip { color:#a06e39; font-size:10px; line-height:1.55; }
+.audio-record-visual {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:3px;
+  height:62px;
+  padding:8px 12px;
+  border-radius:14px;
+  background:#f4f6fa;
+  overflow:hidden;
+}
+.audio-record-visual i { width:4px; min-height:8%; border-radius:999px; background:#bbc4d4; transition:height .25s ease; }
+.audio-record-visual.active i { background:#d16774; }
+.audio-record-metrics { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.audio-record-metrics > div { padding:9px 10px; border-radius:12px; background:#f7f8fb; }
+.audio-record-metrics span { display:block; color:#929bad; font-size:9px; }
+.audio-record-metrics strong { display:block; margin-top:3px; color:#3a4763; font-size:15px; }
+.recording-delivery {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
+  gap:10px;
+  padding:10px;
+  border-radius:12px;
+  background:#edf8f4;
+}
+.recording-delivery strong { display:block; color:#357b67; font-size:11px; }
+.recording-delivery small { display:block; margin-top:3px; color:#79a091; font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.recording-delivery a { padding:7px 9px; border-radius:9px; color:#fff; background:#4aa78d; font-size:10px; font-weight:900; text-decoration:none; white-space:nowrap; }
+.speech-analysis-progress { display:grid; gap:7px; padding:10px; border-radius:12px; background:#f7f7fc; }
+.speech-analysis-progress-copy { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.speech-analysis-progress-copy span { color:#7f89a0; font-size:10px; line-height:1.4; }
+.speech-analysis-progress-copy strong { color:#5e67b8; font-size:11px; }
+.speech-analysis-progress-track { height:6px; border-radius:999px; background:#e7e9f3; overflow:hidden; }
+.speech-analysis-progress-track i { display:block; width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg,#7b83df 0%,#5ba3d8 42%,#aeb5ff 58%,#5ba3d8 100%); background-size:220% 100%; transition:width .35s ease; }
+.speech-analysis-progress.active .speech-analysis-progress-track i { animation:speech-analysis-flow 1.2s linear infinite; }
+.speech-analysis-progress.active { background:#f4f5ff; }
+.speech-analysis-upload-progress-detail { display:flex; align-items:center; gap:9px; color:#7f89a0; font-size:9px; }
+.speech-analysis-upload-progress-detail span:first-child { font-weight:900; color:#5c6783; }
+.speech-analysis-upload-progress-detail span:nth-child(2) { margin-left:auto; color:#7080bf; }
+.speech-analysis-upload-progress-detail button { padding:4px 7px; border:1px solid rgba(184,77,91,.18); border-radius:7px; color:#b24b59; background:#fff1f3; font:inherit; font-weight:900; cursor:pointer; }
+.speech-analysis-steps { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; margin-top:2px; }
+.speech-analysis-step { position:relative; display:grid; justify-items:center; gap:4px; min-width:0; color:#a1a8b8; font-size:8px; text-align:center; }
+.speech-analysis-step::before { content:''; position:absolute; top:9px; left:calc(-50% + 11px); width:calc(100% - 18px); height:2px; background:#e2e5ef; }
+.speech-analysis-step:first-child::before { display:none; }
+.speech-analysis-step i { position:relative; z-index:1; display:grid; place-items:center; width:18px; height:18px; border-radius:50%; color:#8f98ae; background:#e7e9f2; font-style:normal; font-size:8px; font-weight:900; }
+.speech-analysis-step span { overflow:hidden; max-width:100%; white-space:nowrap; text-overflow:ellipsis; }
+.speech-analysis-step.done { color:#6170b1; }
+.speech-analysis-step.done::before { background:#8b96dc; }
+.speech-analysis-step.done i { color:#fff; background:#7582d2; }
+.speech-analysis-step.current { color:#4f5fba; font-weight:900; }
+.speech-analysis-step.current::before { background:#8b96dc; }
+.speech-analysis-step.current i { color:#fff; background:#6272d2; animation:speech-analysis-pulse 1.15s ease-in-out infinite; }
+.speech-analysis-step.failed { color:#b54b58; }
+.speech-analysis-step.failed i { color:#fff; background:#c65b69; animation:none; }
+.speech-analysis-transcript-delivery { background:#eff8f4; }
+.speech-analysis-transcript-delivery strong { color:#3d7b68; }
+.speech-analysis-transcript-delivery small { color:#789d90; }
+.speech-analysis-transcript-delivery a { background:#4c9a82; }
+@keyframes speech-analysis-flow { from { background-position:100% 0; } to { background-position:-120% 0; } }
+@keyframes speech-analysis-pulse { 0%,100% { box-shadow:0 0 0 0 rgba(98,114,210,.2); transform:scale(1); } 50% { box-shadow:0 0 0 6px rgba(98,114,210,0); transform:scale(1.08); } }
+.speech-analysis-card.active > header > span { color:#5f68c6; background:#eff0ff; }
+.speech-analysis-upload-box { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; padding:10px; border:1px solid rgba(96,117,201,.14); border-radius:12px; background:#f8f9ff; }
+.speech-analysis-file-picker { position:relative; display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:0 10px; border:1px solid rgba(96,117,201,.18); border-radius:9px; color:#596ab2; background:#edf1ff; font-size:10px; font-weight:900; cursor:pointer; white-space:nowrap; }
+.speech-analysis-file-picker.disabled { opacity:.5; cursor:not-allowed; }
+.speech-analysis-file-picker input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.speech-analysis-file-meta { min-width:0; }
+.speech-analysis-file-meta strong { display:block; color:#59637c; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.speech-analysis-file-meta small { display:block; margin-top:3px; color:#939caf; font-size:9px; line-height:1.45; }
+.capture-primary-button.speech-analysis.upload { min-width:88px; }
+.speech-analysis-or { display:flex; align-items:center; gap:8px; color:#a0a7b6; font-size:9px; }
+.speech-analysis-or::before,.speech-analysis-or::after { content:''; flex:1; height:1px; background:#eceef4; }
+.speech-analysis-or span { white-space:nowrap; }
+.speech-analysis-delivery { background:#f0f5ff; }
+.speech-analysis-delivery strong { color:#5064aa; }
+.speech-analysis-delivery small { color:#7f8fb8; }
+.speech-analysis-delivery a { background:#6075c9; }
+.speech-analysis-delivery-actions { display:flex; align-items:center; gap:6px; }
+.speech-analysis-delivery-actions button { padding:7px 9px; border:0; border-radius:9px; color:#5363a8; background:#e5eaff; font-size:10px; font-weight:900; cursor:pointer; white-space:nowrap; }
+.speech-analysis-delivery-actions button:disabled { opacity:.55; cursor:not-allowed; }
+.speech-analysis-report-panel { display:grid; gap:9px; max-height:560px; padding:11px; border:1px solid rgba(92,105,174,.15); border-radius:12px; background:#f8f9fe; overflow:hidden; }
+.speech-analysis-report-panel > header { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.speech-analysis-report-panel > header strong { display:block; color:#4f5f9f; font-size:11px; }
+.speech-analysis-report-panel > header small { display:block; margin-top:3px; color:#8a94ad; font-size:9px; line-height:1.45; }
+.speech-analysis-report-panel > header button { flex:0 0 auto; padding:6px 8px; border:1px solid rgba(96,117,201,.18); border-radius:8px; color:#5a6cb8; background:#eef1ff; font-size:9px; font-weight:900; cursor:pointer; }
+.speech-analysis-report-panel pre { margin:0; padding:12px; border-radius:10px; color:#47516a; background:#fff; font:10px/1.72 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace; white-space:pre-wrap; overflow:auto; }
+.recording-error,.capture-workspace-error { padding:9px 10px; border-radius:10px; color:#b54b58; background:#fff0f2; font-size:10px; line-height:1.5; }
+.capture-business-note { margin:0; color:#98a1b1; font-size:9px; line-height:1.55; }
+
 @media(max-width:1260px){
   .room-detail-page .room-control-grid {
     grid-template-columns: minmax(230px, .8fr) minmax(440px, 1.45fr) minmax(230px, .8fr);
@@ -4275,6 +5996,20 @@ onBeforeUnmount(() => {
   .dashboard-flow-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+@media(max-width:1200px){
+  .room-detail-page .detail-layout-no-preview {
+    width:min(100%, 880px);
+    grid-template-columns:minmax(460px,520px) minmax(280px,340px) !important;
+  }
+  .capture-workspace {
+    grid-column:1 / -1;
+    grid-row:2;
+    grid-template-columns:1fr 1fr;
+    max-width:880px;
+  }
+  .capture-workspace-head,.capture-workspace-error { grid-column:1 / -1; }
 }
 
 @media(max-width:1050px){
@@ -4309,6 +6044,14 @@ onBeforeUnmount(() => {
     width: 100%;
     max-width: 100%;
   }
+
+  .capture-workspace {
+    grid-column:1;
+    grid-row:auto;
+    grid-template-columns:1fr;
+    max-width:100%;
+  }
+  .capture-workspace-head,.capture-workspace-error { grid-column:1; }
 
   .room-detail-page .agent-decision-panel,
   .room-detail-page .event-bucket-panel {

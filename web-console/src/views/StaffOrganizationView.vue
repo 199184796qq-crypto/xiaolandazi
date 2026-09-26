@@ -82,6 +82,8 @@ const employeeCity = ref('')
 const employeeDistrict = ref('')
 const employeeDelivery = ref<'copy' | 'email'>('copy')
 const employeeRoleIds = ref<number[]>([])
+const employeeRoleSearch = ref('')
+const employeeRoleExpandedGroupIds = ref<number[]>([])
 
 const groupCode = ref('')
 const groupName = ref('')
@@ -95,6 +97,7 @@ const roleIsManager = ref(false)
 const roleScope = ref('self')
 const roleStatus = ref<'active' | 'disabled'>('active')
 const rolePermissionIds = ref<number[]>([])
+const roleEditorRoleId = ref<number | null>(null)
 
 const employeeEditRoleIds = ref<number[]>([])
 const saving = ref(false)
@@ -121,6 +124,10 @@ const selectedGroup = computed(
 
 const selectedRoles = computed(() =>
   roles.value.filter((item) => item.group_id === selectedGroup.value?.id),
+)
+
+const roleEditorOptions = computed(() =>
+  selectedRoles.value.filter((item) => item.status === 'active' || item.id === editingRole.value?.id),
 )
 
 const selectedEmployees = computed(() =>
@@ -229,6 +236,52 @@ const assignableEmployeeRoles = computed(() =>
   roles.value.filter((role) => canAssignRole(role, true)),
 )
 
+const selectedEmployeeCreateRoles = computed(() =>
+  employeeRoleIds.value
+    .map((roleId) => assignableEmployeeRoles.value.find((role) => role.id === roleId))
+    .filter((role): role is StaffRoleSummary => Boolean(role)),
+)
+
+const employeeRoleTree = computed(() => {
+  const keyword = employeeRoleSearch.value.trim().toLowerCase()
+  const grouped = groups.value
+    .map((group) => {
+      const items = assignableEmployeeRoles.value.filter((role) => role.group_id === group.id)
+      const visibleItems = keyword
+        ? items.filter((role) =>
+            [role.name, role.code, role.group_name, role.description]
+              .some((value) => String(value || '').toLowerCase().includes(keyword)),
+          )
+        : items
+      return { group, items: visibleItems, total: items.length }
+    })
+    .filter((entry) => entry.items.length > 0)
+
+  return grouped.sort((a, b) => {
+    if (a.group.id === selectedGroup.value?.id) return -1
+    if (b.group.id === selectedGroup.value?.id) return 1
+    return a.group.sort_order - b.group.sort_order || a.group.name.localeCompare(b.group.name, 'zh-CN')
+  })
+})
+
+function employeeRoleGroupExpanded(groupId: number) {
+  return employeeRoleSearch.value.trim() !== '' || employeeRoleExpandedGroupIds.value.includes(groupId)
+}
+
+function toggleEmployeeRoleGroup(groupId: number) {
+  if (employeeRoleExpandedGroupIds.value.includes(groupId)) {
+    employeeRoleExpandedGroupIds.value = employeeRoleExpandedGroupIds.value.filter((id) => id !== groupId)
+  } else {
+    employeeRoleExpandedGroupIds.value = [...employeeRoleExpandedGroupIds.value, groupId]
+  }
+}
+
+function employeeRoleGroupSelectedCount(groupId: number) {
+  return assignableEmployeeRoles.value.filter(
+    (role) => role.group_id === groupId && employeeRoleIds.value.includes(role.id),
+  ).length
+}
+
 const editableEmployeeRoles = computed(() => {
   const assigned = new Set(employeeEditRoleIds.value)
   return roles.value.filter(
@@ -297,12 +350,24 @@ function moduleLabel(value: string) {
     agent: '代理',
     sales: '销售',
     finance: '财务',
-    commercial: '商业',
-    resources: '资源',
-    invitations: '邀请',
+    commercial: '商业运营',
+    resources: '资源账户',
+    invitations: '邀请与推荐',
     audit: '审计',
+    after_sales: '售后管理',
+    inventory: '仓储库存',
+    logistics: '物流管理',
+    liveops: '直播运维',
+    livepolicy: '直播策略',
+    livecoach: '主播训练',
+    livevoice: '声音能力',
+    liveanalysis: '直播分析',
   }
   return labels[value] || value
+}
+
+function permissionModuleSelectedCount(items: StaffPermissionSummary[]) {
+  return items.reduce((count, item) => count + (rolePermissionIds.value.includes(item.id) ? 1 : 0), 0)
 }
 
 function setSelectedGroup(groupId: number) {
@@ -352,6 +417,8 @@ function resetEmployeeForm() {
   employeeDistrict.value = ''
   employeeDelivery.value = 'copy'
   employeeRoleIds.value = []
+  employeeRoleSearch.value = ''
+  employeeRoleExpandedGroupIds.value = []
 }
 
 function openEmployeeCreate() {
@@ -362,6 +429,7 @@ function openEmployeeCreate() {
       item.status === 'active' && item.group_id === selectedGroup.value?.id,
   )
   if (firstRole) employeeRoleIds.value = [firstRole.id]
+  employeeRoleExpandedGroupIds.value = [selectedGroup.value.id]
   showEmployeeModal.value = true
   error.value = ''
 }
@@ -486,6 +554,7 @@ async function submitGroup() {
 
 function resetRoleForm() {
   editingRole.value = null
+  roleEditorRoleId.value = null
   roleCode.value = ''
   roleName.value = ''
   roleDescription.value = ''
@@ -495,13 +564,9 @@ function resetRoleForm() {
   rolePermissionIds.value = []
 }
 
-function openRoleCreate() {
-  resetRoleForm()
-  showRoleModal.value = true
-}
-
-function openRoleEdit(item: StaffRoleSummary) {
+function loadRoleIntoEditor(item: StaffRoleSummary) {
   editingRole.value = item
+  roleEditorRoleId.value = item.id
   roleCode.value = item.code
   roleName.value = item.name
   roleDescription.value = item.description
@@ -509,6 +574,21 @@ function openRoleEdit(item: StaffRoleSummary) {
   roleScope.value = item.default_scope_type
   roleStatus.value = item.status === 'disabled' ? 'disabled' : 'active'
   rolePermissionIds.value = item.permissions.map((permission) => permission.id)
+}
+
+function changeRoleEditorSelection() {
+  if (!roleEditorRoleId.value) return
+  const nextRole = selectedRoles.value.find((item) => item.id === roleEditorRoleId.value)
+  if (nextRole) loadRoleIntoEditor(nextRole)
+}
+
+function openRoleCreate() {
+  resetRoleForm()
+  showRoleModal.value = true
+}
+
+function openRoleEdit(item: StaffRoleSummary) {
+  loadRoleIntoEditor(item)
   showRoleModal.value = true
 }
 
@@ -1005,95 +1085,153 @@ onMounted(load)
           </button>
         </div>
 
-        <div class="form-grid">
-          <label :class="{ 'field-error': employeeNoDuplicate }">
-            <span>员工编号</span>
-            <div class="employee-number-input">
-              <b>EMP-</b>
-              <input
-                :value="employeeNo"
-                inputmode="numeric"
-                maxlength="6"
-                required
-                placeholder="例如：32"
-                @input="employeeNo = ($event.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)"
-              />
-            </div>
-            <small v-if="employeeFullNo && !employeeNoDuplicate">系统编号：{{ employeeFullNo }}</small>
-            <small v-if="employeeNoDuplicate" class="field-error-text">{{ employeeFullNo }} 已存在，请更换</small>
-          </label>
-          <label>
-            <span>员工姓名</span>
-            <input v-model="employeeName" required placeholder="员工姓名" />
-          </label>
-          <label>
-            <span>登录账号</span>
-            <input v-model="employeeUsername" required placeholder="登录账号" />
-          </label>
-          <label>
-            <span>联系电话</span>
-            <input v-model="employeePhone" required placeholder="联系电话" />
-          </label>
-          <label class="form-span-2">
-            <span>邮箱</span>
-            <input
-              v-model="employeeEmail"
-              type="email"
-              placeholder="选择邮件交付初始密码时必填"
-            />
-          </label>
-
-          <RegionSelect
-            class="form-span-2"
-            v-model:province="employeeProvince"
-            v-model:city="employeeCity"
-            v-model:district="employeeDistrict"
-          />
-
-          <div class="form-span-2 staff-role-selector">
-            <span>部门岗位（支持跨部门兼任）</span>
-            <label
-              v-for="role in assignableEmployeeRoles"
-              :key="role.id"
-              class="staff-role-option"
-              :class="{ selected: employeeRoleIds.includes(role.id), manager: role.is_group_manager }"
-            >
-              <input
-                type="checkbox"
-                :checked="employeeRoleIds.includes(role.id)"
-                @change="toggleEmployeeRole(role)"
-              />
+        <div class="staff-employee-modal-body">
+          <section class="staff-employee-basic-panel">
+            <div class="staff-employee-section-head">
               <div>
-                <strong>{{ role.group_name }} · {{ role.name }}</strong>
-                <span><template v-if="role.group_id === selectedGroup.id">主部门岗位 · </template><template v-else>兼任岗位 · </template>{{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template></span>
+                <strong>员工资料</strong>
+                <small>账号与基础信息</small>
               </div>
-            </label>
-          </div>
+            </div>
 
-          <small class="form-span-2 staff-multi-role-note">
-            主部门至少保留一个岗位；勾选其他部门岗位即表示该员工同时兼任对应部门职责，仍使用同一个登录账号。
-          </small>
+            <div class="form-grid staff-employee-form-grid">
+              <label :class="{ 'field-error': employeeNoDuplicate }">
+                <span>员工编号</span>
+                <div class="employee-number-input">
+                  <b>EMP-</b>
+                  <input
+                    :value="employeeNo"
+                    inputmode="numeric"
+                    maxlength="6"
+                    required
+                    placeholder="例如：32"
+                    @input="employeeNo = ($event.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)"
+                  />
+                </div>
+                <small v-if="employeeFullNo && !employeeNoDuplicate">系统编号：{{ employeeFullNo }}</small>
+                <small v-if="employeeNoDuplicate" class="field-error-text">{{ employeeFullNo }} 已存在，请更换</small>
+              </label>
+              <label>
+                <span>员工姓名</span>
+                <input v-model="employeeName" required placeholder="员工姓名" />
+              </label>
+              <label>
+                <span>登录账号</span>
+                <input v-model="employeeUsername" required placeholder="登录账号" />
+              </label>
+              <label>
+                <span>联系电话</span>
+                <input v-model="employeePhone" required placeholder="联系电话" />
+              </label>
+              <label class="form-span-2">
+                <span>邮箱</span>
+                <input
+                  v-model="employeeEmail"
+                  type="email"
+                  placeholder="选择邮件交付初始密码时必填"
+                />
+              </label>
 
-          <label class="form-span-2">
-            <span>初始凭证交付</span>
-            <select v-model="employeeDelivery" class="text-input">
-              <option value="copy">创建后复制登录信息</option>
-              <option value="email">发送到邮箱</option>
-            </select>
-          </label>
+              <RegionSelect
+                class="form-span-2 staff-employee-region-select"
+                v-model:province="employeeProvince"
+                v-model:city="employeeCity"
+                v-model:district="employeeDistrict"
+              />
+
+              <label class="form-span-2">
+                <span>初始凭证交付</span>
+                <select v-model="employeeDelivery" class="text-input">
+                  <option value="copy">创建后复制登录信息</option>
+                  <option value="email">发送到邮箱</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="account-opening-note staff-employee-security-note">
+              <strong>账号安全</strong>
+              <span>初始密码由系统随机生成，数据库只保存哈希。员工首次登录后必须修改密码。</span>
+            </div>
+          </section>
+
+          <section class="staff-employee-role-panel">
+            <div class="staff-employee-section-head">
+              <div>
+                <strong>部门岗位</strong>
+                <small>树型多选 · 支持跨部门兼任</small>
+              </div>
+              <span>{{ employeeRoleIds.length }} 个已选</span>
+            </div>
+
+            <div v-if="selectedEmployeeCreateRoles.length" class="staff-role-selected-chips">
+              <button
+                v-for="role in selectedEmployeeCreateRoles"
+                :key="role.id"
+                type="button"
+                :class="{ primary: role.group_id === selectedGroup.id, manager: role.is_group_manager }"
+                @click="toggleEmployeeRole(role)"
+              >
+                <span>{{ role.group_name }} · {{ role.name }}</span>
+                <b>×</b>
+              </button>
+            </div>
+
+            <div class="staff-role-tree-search">
+              <span>⌕</span>
+              <input v-model="employeeRoleSearch" type="search" placeholder="搜索部门或岗位" />
+            </div>
+
+            <div class="staff-role-tree" role="tree" aria-label="部门岗位选择">
+              <article v-for="entry in employeeRoleTree" :key="entry.group.id" class="staff-role-tree-group">
+                <button
+                  class="staff-role-tree-group-button"
+                  type="button"
+                  :class="{ primary: entry.group.id === selectedGroup.id }"
+                  @click="toggleEmployeeRoleGroup(entry.group.id)"
+                >
+                  <i>{{ employeeRoleGroupExpanded(entry.group.id) ? '▾' : '▸' }}</i>
+                  <span>
+                    <strong>{{ entry.group.name }}</strong>
+                    <small v-if="entry.group.id === selectedGroup.id">主部门</small>
+                  </span>
+                  <b>{{ employeeRoleGroupSelectedCount(entry.group.id) }}/{{ entry.total }}</b>
+                </button>
+
+                <div v-if="employeeRoleGroupExpanded(entry.group.id)" class="staff-role-tree-children">
+                  <label
+                    v-for="role in entry.items"
+                    :key="role.id"
+                    class="staff-role-tree-role"
+                    :class="{
+                      selected: employeeRoleIds.includes(role.id),
+                      manager: role.is_group_manager,
+                    }"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="employeeRoleIds.includes(role.id)"
+                      @change="toggleEmployeeRole(role)"
+                    />
+                    <span class="staff-role-tree-role-copy">
+                      <strong>{{ role.name }}</strong>
+                      <small>{{ scopeLabel(role.default_scope_type) }}<template v-if="role.is_group_manager"> · 高权限负责人</template></small>
+                    </span>
+                    <em v-if="role.group_id === selectedGroup.id">主</em>
+                    <em v-else>兼</em>
+                  </label>
+                </div>
+              </article>
+              <div v-if="!employeeRoleTree.length" class="staff-role-tree-empty">没有匹配的部门岗位</div>
+            </div>
+
+            <small class="staff-multi-role-note">
+              主部门至少保留一个岗位；其他部门岗位表示兼任，仍使用同一个登录账号。
+            </small>
+          </section>
         </div>
 
-        <div class="account-opening-note">
-          <strong>账号安全</strong>
-          <span>
-            初始密码由系统随机生成，数据库只保存哈希。员工首次登录后必须修改密码。
-          </span>
-        </div>
-
-        <div class="modal-actions">
-          <button class="ghost-button" type="button" @click="showEmployeeModal = false">
-            取消
-          </button>
+        <div class="modal-actions staff-employee-modal-actions">
+          <button class="ghost-button" type="button" @click="showEmployeeModal = false">取消</button>
           <button class="primary-button" type="submit" :disabled="saving">
             {{ saving ? '创建中...' : '创建员工' }}
           </button>
@@ -1178,7 +1316,8 @@ onMounted(load)
           </button>
         </div>
 
-        <div class="form-grid">
+        <div class="staff-role-modal-body">
+          <div class="form-grid staff-role-form-grid">
           <label>
             <span>角色编码</span>
             <input
@@ -1190,7 +1329,22 @@ onMounted(load)
           </label>
           <label>
             <span>角色名称</span>
-            <input v-model="roleName" required />
+            <select
+              v-if="editingRole"
+              v-model.number="roleEditorRoleId"
+              class="text-input role-name-select"
+              required
+              @change="changeRoleEditorSelection"
+            >
+              <option
+                v-for="role in roleEditorOptions"
+                :key="role.id"
+                :value="role.id"
+              >
+                {{ role.name }}
+              </option>
+            </select>
+            <input v-else v-model="roleName" required placeholder="请输入角色名称" />
           </label>
           <label>
             <span>默认数据范围</span>
@@ -1212,22 +1366,37 @@ onMounted(load)
           </label>
           <label class="form-span-2">
             <span>角色说明</span>
-            <textarea v-model="roleDescription" rows="3"></textarea>
+            <textarea v-model="roleDescription" rows="3" placeholder="说明该角色负责的业务范围与职责边界"></textarea>
           </label>
-        </div>
+          </div>
 
-        <div class="staff-permission-editor">
+          <div class="staff-permission-editor-head">
+            <div>
+              <span>权限配置</span>
+              <small>按业务模块分组，可精确控制该角色可访问和可操作的范围。</small>
+            </div>
+            <strong>{{ rolePermissionIds.length }} 项已选</strong>
+          </div>
+
+          <div class="staff-permission-editor">
           <div
             v-for="section in permissionModules"
             :key="section.module"
             class="staff-permission-module"
           >
-            <strong>{{ moduleLabel(section.module) }}</strong>
-            <div>
+            <div class="staff-permission-module-head">
+              <div>
+                <strong>{{ moduleLabel(section.module) }}</strong>
+                <small>{{ section.module }}</small>
+              </div>
+              <span>{{ permissionModuleSelectedCount(section.items) }}/{{ section.items.length }}</span>
+            </div>
+            <div class="staff-permission-grid">
               <label
                 v-for="permission in section.items"
                 :key="permission.id"
                 class="staff-permission-option"
+                :class="{ selected: rolePermissionIds.includes(permission.id) }"
               >
                 <input
                   type="checkbox"
@@ -1242,13 +1411,14 @@ onMounted(load)
             </div>
           </div>
         </div>
+        </div>
 
-        <div class="modal-actions">
-          <button class="ghost-button" type="button" @click="showRoleModal = false">
+        <div class="modal-actions staff-role-modal-actions">
+          <button class="ghost-button staff-role-action-button" type="button" @click="showRoleModal = false">
             取消
           </button>
-          <button class="primary-button" type="submit" :disabled="saving">
-            保存角色
+          <button class="primary-button staff-role-action-button" type="submit" :disabled="saving">
+            {{ saving ? '保存中...' : '保存角色' }}
           </button>
         </div>
       </form>

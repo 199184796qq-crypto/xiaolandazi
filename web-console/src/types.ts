@@ -149,6 +149,14 @@ export interface StaffDashboard {
   employees: StaffEmployeeSummary[]
   approval_policies: StaffApprovalPolicySummary[]
 }
+
+export interface StaffPermissionCenterDashboard {
+  access: StaffAccessContext
+  groups: StaffGroupSummary[]
+  roles: StaffRoleSummary[]
+  permissions: StaffPermissionSummary[]
+  employees: StaffEmployeeSummary[]
+}
 export interface InitialCredential {
   initial_password: string
   login_url: string
@@ -319,11 +327,43 @@ export interface MembershipRoomLimitUpdate {
   room_limit: number
 }
 
+export interface AgentPromptConfig {
+  key: string
+  name: string
+  description: string
+  scene: string
+  default_value: string
+  current_value: string
+  draft_value: string
+  enabled: boolean
+  draft_enabled: boolean
+  version: number
+  updated_by_user_id: number
+  updated_at: string
+}
+
+export interface AgentPromptConfigUpdate {
+  key: string
+  current_value: string
+  enabled: boolean
+}
+
+export interface AgentPromptHistory {
+  key: string
+  version: number
+  value: string
+  enabled: boolean
+  operation: string
+  updated_by_user_id: number
+  created_at: string
+}
+
 export interface SystemSettingsDashboard {
   settings: SystemSetting[]
   dictionaries: Record<string, SystemDictionaryItem[]>
   warehouses: InventoryWarehouse[]
   membership_room_limits: MembershipRoomLimitSetting[]
+  agent_prompt_configs: AgentPromptConfig[]
 }
 
 export interface PublicSystemConfig {
@@ -363,6 +403,7 @@ export interface Room {
   recharge_dormant_90_days?: boolean
   collector_mode: string
   monitor_enabled?: boolean
+  monitor_started_at?: string
   device_online?: boolean
   online_count: number
   last_event_at?: string
@@ -580,6 +621,16 @@ export interface AgentDecisionSummary {
   cooling_topics: number
 }
 
+export interface AgentDecisionSimulationResult {
+  decision_id: string
+  question: string
+  reply: string
+  execution_mode: 'intent' | 'verbatim' | string
+  plan_name?: string
+  user_layer_version?: number
+  created_at: string
+}
+
 export interface AgentDecisionSnapshot {
   room_id: number
   generated_at: string
@@ -587,6 +638,7 @@ export interface AgentDecisionSnapshot {
   queue: AgentDecisionItem[]
   recently_answered: AgentDecisionRecentAnswer[]
   notes: AgentDecisionNote[]
+  simulation_results?: AgentDecisionSimulationResult[]
   capacity: number
   ttl_seconds: number
   cooldown_seconds: number
@@ -599,6 +651,82 @@ export interface AgentDecisionEnqueueResult {
   suppressed: boolean
   recently_answered?: AgentDecisionRecentAnswer
   dropped?: AgentDecisionItem
+}
+
+export interface RoomAudioRecordingStatus {
+  id: string
+  status: 'recording' | 'finalizing' | 'ready' | 'failed' | string
+  started_at: string
+  finished_at?: string
+  duration_seconds: number
+  segment_count: number
+  final_file_name?: string
+  final_bytes?: number
+  source_protocol?: string
+  error?: string
+}
+
+export interface RoomCaptureSnapshot {
+  room_id: number
+  mode: 'idle' | 'audio_recording' | 'finalizing' | string
+  recording?: RoomAudioRecordingStatus
+}
+
+export interface RoomSpeechAnalysisTask {
+  id: number
+  tenant_id: number
+  room_id: number
+  recording_id: string
+  recording_started_at: string
+  status: 'queued' | 'uploading' | 'transcribing' | 'analyzing' | 'rendering' | 'ready' | 'failed' | string
+  stage: string
+  progress: number
+  error_message?: string
+  asr_task_id?: string
+  audio_object_key?: string
+  transcript_object_key?: string
+  report_object_key?: string
+  report_file_name?: string
+  created_by_user_id: number
+  created_at: string
+  updated_at: string
+  finished_at?: string
+}
+
+export interface RoomSpeechAnalysisStatus {
+  configured: boolean
+  configuration_reason?: string
+  task?: RoomSpeechAnalysisTask
+}
+
+export interface SpeechAnalysisProfile {
+  id: number
+  version: number
+  name: string
+  description: string
+  provider: string
+  model: string
+  segment_system_prompt: string
+  segment_prompt_template: string
+  summary_system_prompt: string
+  summary_prompt_template: string
+  status: 'active' | 'draft' | 'inactive' | string
+  updated_by_user_id?: number
+  updated_by_display_name: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SpeechAnalysisProfileInput {
+  name: string
+  description: string
+  provider: string
+  model: string
+  segment_system_prompt: string
+  segment_prompt_template: string
+  summary_system_prompt: string
+  summary_prompt_template: string
+  activate: boolean
 }
 
 export interface CreateRoomPayload {
@@ -696,6 +824,8 @@ export interface LiveRuntimeSnapshot {
   session?: LiveRuntimeSession
   agent_state: 'stopped' | 'working' | 'paused'
   agent_mode: 'control' | 'anchor'
+  agent_plan_id?: number
+  agent_plan_name?: string
   agent_working_seconds: number
   quota_remaining_seconds: number
   reserve_time_card_seconds: number
@@ -962,6 +1092,7 @@ export interface LivePolicyLearningCandidate {
 
 export interface CreateLivePolicyLearningCandidateInput {
   source_layer: 'L1' | 'L2' | 'L3'
+  source_ref?: string
   industry_code?: string
   room_id?: number
   question: string
@@ -980,6 +1111,8 @@ export interface AdoptLivePolicyLearningCandidateInput {
 export interface LivePolicyLearningAdoptResult {
   candidate: LivePolicyLearningCandidate
   draft: LivePolicyVersion
+  version?: LivePolicyVersion
+  published?: boolean
 }
 
 export interface LiveRoomPolicyContext {

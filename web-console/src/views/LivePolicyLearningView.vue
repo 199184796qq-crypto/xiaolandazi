@@ -99,12 +99,15 @@ async function adopt(item: LivePolicyLearningCandidate) {
       room_id: target === 'L3' ? Number(roomIds[item.id]) || undefined : undefined,
       review_note: reviewNotes[item.id]?.trim() || '',
     })
+    const version = result.version || result.draft
     const message =
-      '已采纳为 ' +
-      layerLabel(target) +
-      ' 草稿 V' +
-      result.draft.version_no +
-      '；仍需在对应策略工作台确认发布。'
+      target === 'L3' && result.published
+        ? '已采纳并发布为用户层 V' + version.version_no + '，已立即生效；可在用户层版本历史中回滚。'
+        : '已采纳为 ' +
+          layerLabel(target) +
+          ' 草稿 V' +
+          version.version_no +
+          '；仍需在对应策略工作台确认发布。'
     await load()
     success.value = message
   } catch (err) {
