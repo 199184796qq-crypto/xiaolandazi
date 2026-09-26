@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 const proxy = 'http://127.0.0.1:5176';
-const audio = 'http://127.0.0.1:8082';
+const audio = 'http://127.0.0.1:8081';
 const room = Date.now();
 const receiver = 'real-tts-e2e-' + room;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -76,6 +76,21 @@ function subscribe() {
   return {connected, nextTask, close:()=>controller.abort()};
 }
 
+async function registerReceiver() {
+  const res = await fetch(audio + '/v1/receivers/register', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      receiver_id:receiver,
+      room_id:room,
+      terminal_type:'test',
+      name:receiver,
+      capabilities:['audio/wav','mainline','interaction_tts'],
+    }),
+  });
+  if (!res.ok) throw new Error('receiver register HTTP '+res.status+': '+await res.text());
+}
+
 async function postJSON(path, body) {
   const res = await fetch(proxy + path, {
     method:'POST',
@@ -115,6 +130,7 @@ async function playback(task, status, progressMS=0) {
   return JSON.parse(text);
 }
 
+await registerReceiver();
 const sub = subscribe();
 try {
   await sub.connected;

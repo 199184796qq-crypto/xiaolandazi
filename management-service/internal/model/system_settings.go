@@ -53,11 +53,43 @@ type MembershipRoomLimitUpdate struct {
 	RoomLimit int64 `json:"room_limit"`
 }
 
+type AgentPromptConfig struct {
+	Key             string    `json:"key"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	Scene           string    `json:"scene"`
+	DefaultValue    string    `json:"default_value"`
+	CurrentValue    string    `json:"current_value"`
+	DraftValue      string    `json:"draft_value"`
+	Enabled         bool      `json:"enabled"`
+	DraftEnabled    bool      `json:"draft_enabled"`
+	Version         uint64    `json:"version"`
+	UpdatedByUserID int64     `json:"updated_by_user_id"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type AgentPromptConfigUpdate struct {
+	Key          string `json:"key"`
+	CurrentValue string `json:"current_value"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type AgentPromptHistory struct {
+	Key             string    `json:"key"`
+	Version         uint64    `json:"version"`
+	Value           string    `json:"value"`
+	Enabled         bool      `json:"enabled"`
+	Operation       string    `json:"operation"`
+	UpdatedByUserID int64     `json:"updated_by_user_id"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 type SystemSettingsDashboard struct {
 	Settings             []SystemSetting                   `json:"settings"`
 	Dictionaries         map[string][]SystemDictionaryItem `json:"dictionaries"`
 	Warehouses           []Warehouse                       `json:"warehouses"`
 	MembershipRoomLimits []MembershipRoomLimitSetting      `json:"membership_room_limits"`
+	AgentPromptConfigs   []AgentPromptConfig               `json:"agent_prompt_configs"`
 }
 
 type PublicSystemConfig struct {

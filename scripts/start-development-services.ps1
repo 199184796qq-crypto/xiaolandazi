@@ -59,7 +59,6 @@ $deviceRunner = Join-Path $PSScriptRoot 'run-device-simulator-task.ps1'
 
 Ensure-DevTask 'LiveCompanion-Dev-Management' $backendRunner @('-Service', 'management')
 Ensure-DevTask 'LiveCompanion-Dev-Core' $backendRunner @('-Service', 'core')
-Ensure-DevTask 'LiveCompanion-Dev-Audio' $backendRunner @('-Service', 'audio')
 Ensure-DevTask 'LiveCompanion-Dev-Web' $webRunner @()
 Ensure-DevTask 'LiveCompanion-Dev-DeviceSimulator' $deviceRunner @()
 
@@ -75,12 +74,6 @@ $services = @(
         Task = 'LiveCompanion-Dev-Core'
         Port = 8081
         PidFile = Join-Path $RunDir 'core-service.pid'
-    },
-    @{
-        Name = 'audio-service'
-        Task = 'LiveCompanion-Dev-Audio'
-        Port = 8082
-        PidFile = Join-Path $RunDir 'audio-service.pid'
     },
     @{
         Name = 'web-console'

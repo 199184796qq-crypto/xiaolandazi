@@ -61,23 +61,21 @@ func TestVerbatimModePreserved(t *testing.T) {
 	}
 }
 
-func TestRenderPromptUsesExpressionHierarchy(t *testing.T) {
+func TestRenderPromptContainsOnlyEffectivePolicyData(t *testing.T) {
 	prompt := RenderPrompt(model.LiveEffectivePolicy{
 		IndustryCode: "food",
 		Rules: []model.LiveEffectivePolicyRule{
 			{Key: "l1.truth", Text: "事实要真实", SourceLayer: "L1", ExecutionMode: "intent"},
 		},
 	})
-	for _, required := range []string{
-		"规则层是通用判断与表达方法",
-		"行业层是在规则层方法上",
-		"用户层是在规则层和行业层上",
-		"规则层不等于禁止清单",
-		"自然、热情、好听、可直接播出且不违规",
-		"[规则层][l1.truth]",
-	} {
+	for _, required := range []string{"【当前有效规则】", "[规则层][l1.truth]", "事实要真实"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q: %s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"规则层是通用判断与表达方法", "规则层不等于禁止清单"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("runtime model instruction leaked back into policy data prompt: %q", forbidden)
 		}
 	}
 }

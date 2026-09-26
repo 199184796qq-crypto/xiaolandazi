@@ -18,6 +18,7 @@ import SalesWorkspaceView from './views/SalesWorkspaceView.vue'
 import SalesFollowupsView from './views/SalesFollowupsView.vue'
 import SalesCatalogView from './views/SalesCatalogView.vue'
 import StaffOrganizationView from './views/StaffOrganizationView.vue'
+import StaffPermissionCenterView from './views/StaffPermissionCenterView.vue'
 import StaffFinanceView from './views/StaffFinanceView.vue'
 import CommercialMembershipsView from './views/CommercialMembershipsView.vue'
 import FinanceView from './views/FinanceView.vue'
@@ -35,6 +36,7 @@ import MarketingOperationsView from './views/MarketingOperationsView.vue'
 import LiveOperationsView from './views/LiveOperationsView.vue'
 import LiveRoomQuotaView from './views/LiveRoomQuotaView.vue'
 import LiveStrategyEntryView from './views/LiveStrategyEntryView.vue'
+import LiveAnalysisSettingsView from './views/LiveAnalysisSettingsView.vue'
 import DeviceBindingView from './views/DeviceBindingView.vue'
 import AuditLogView from './views/AuditLogView.vue'
 import FinanceTraceView from './views/FinanceTraceView.vue'
@@ -162,6 +164,7 @@ const departmentRouteOwners: Record<string, string> = {
   'live-monitor': 'live_operations',
   'live-events': 'live_operations',
   'live-strategy': 'live_operations',
+  'live-analysis-settings': 'live_operations',
   'live-devices': 'live_operations',
   rooms: 'live_operations',
   'rooms-list': 'live_operations',
@@ -239,6 +242,7 @@ export const router = createRouter({
           'staff.group.view',
           'staff.employee.view',
           'staff.role.view',
+          'staff.role.manage',
         ],
       },
     },
@@ -262,6 +266,12 @@ export const router = createRouter({
       component: StaffOrganizationView,
       props: { initialTab: 'roles' },
       meta: { staffPermission: 'staff.role.view' },
+    },
+    {
+      path: '/staff/permissions',
+      name: 'staff-permissions',
+      component: StaffPermissionCenterView,
+      meta: { staffPermission: 'staff.role.manage' },
     },
     {
       path: '/staff/approvals',
@@ -393,6 +403,12 @@ export const router = createRouter({
       path: '/operations/live/strategy',
       name: 'live-strategy',
       component: LiveStrategyEntryView,
+    },
+    {
+      path: '/operations/live/analysis-settings',
+      name: 'live-analysis-settings',
+      component: LiveAnalysisSettingsView,
+      meta: { staffPermission: 'liveanalysis.view' },
     },
     {
       path: '/operations/live/devices',

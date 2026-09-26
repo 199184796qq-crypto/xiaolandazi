@@ -21,6 +21,14 @@ type updateMembershipRoomLimitsRequest struct {
 	Items []model.MembershipRoomLimitUpdate `json:"items"`
 }
 
+type updateAgentPromptConfigsRequest struct {
+	Items []model.AgentPromptConfigUpdate `json:"items"`
+}
+
+type rollbackAgentPromptRequest struct {
+	Version uint64 `json:"version"`
+}
+
 func (s *Server) systemPublicConfig(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.PublicSystemConfig(r.Context())
 	if err != nil {
@@ -44,6 +52,7 @@ func (s *Server) systemSettingsDashboard(w http.ResponseWriter, r *http.Request)
 	// 系统设定是统一入口，但返回内容必须跟随角色权限收敛。
 	if !actor.IsPlatformAdmin() && !access.IsSuperAdmin {
 		item.Settings = []model.SystemSetting{}
+		item.AgentPromptConfigs = []model.AgentPromptConfig{}
 		if !staffHasPermission(access, "commercial.membership.view") {
 			item.MembershipRoomLimits = []model.MembershipRoomLimitSetting{}
 		}
@@ -129,6 +138,138 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) requireAgentPromptAdmin(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
+	actor, access, ok := s.requireStaffPermission(w, r, "system.settings.view")
+	if !ok {
+		return model.Actor{}, false
+	}
+	if !actor.IsPlatformAdmin() && !access.IsSuperAdmin {
+		writeError(w, http.StatusForbidden, "仅超级系统管理员可维护模型与智能体配置")
+		return model.Actor{}, false
+	}
+	return actor, true
+}
+
+func (s *Server) systemUpdateAgentPromptConfigs(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireAgentPromptAdmin(w, r)
+	if !ok {
+		return
+	}
+	var input updateAgentPromptConfigsRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "模型指令配置格式错误")
+		return
+	}
+	if len(input.Items) == 0 {
+		writeError(w, http.StatusBadRequest, "没有需要保存的模型指令配置")
+		return
+	}
+	for _, item := range input.Items {
+		if strings.TrimSpace(item.Key) == "" {
+			writeError(w, http.StatusBadRequest, "模型指令 Key 不能为空")
+			return
+		}
+		if utf8.RuneCountInString(item.CurrentValue) > 20000 {
+			writeError(w, http.StatusBadRequest, "单项模型指令内容不能超过 20000 字")
+			return
+		}
+	}
+	if err := s.store.UpdateAgentPromptConfigs(r.Context(), input.Items, actor.UserID); err != nil {
+		writeError(w, http.StatusBadRequest, "保存模型指令草稿失败")
+		return
+	}
+	items, err := s.store.ListAgentPromptConfigs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "草稿已保存，但重新读取失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) systemPublishAgentPromptConfig(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireAgentPromptAdmin(w, r)
+	if !ok {
+		return
+	}
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "模型指令 Key 不能为空")
+		return
+	}
+	if err := s.store.PublishAgentPromptConfig(r.Context(), key, actor.UserID, "publish"); err != nil {
+		writeError(w, http.StatusBadRequest, "发布模型指令失败")
+		return
+	}
+	items, err := s.store.ListAgentPromptConfigs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "模型指令已发布，但重新读取失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) systemAgentPromptHistory(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAgentPromptAdmin(w, r); !ok {
+		return
+	}
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "模型指令 Key 不能为空")
+		return
+	}
+	items, err := s.store.ListAgentPromptHistory(r.Context(), key, 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取模型指令版本历史失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) systemRollbackAgentPromptConfig(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireAgentPromptAdmin(w, r)
+	if !ok {
+		return
+	}
+	key := strings.TrimSpace(r.PathValue("key"))
+	var input rollbackAgentPromptRequest
+	if err := readJSON(w, r, &input); err != nil || input.Version == 0 {
+		writeError(w, http.StatusBadRequest, "请选择需要回滚的版本")
+		return
+	}
+	if err := s.store.RollbackAgentPromptConfig(r.Context(), key, input.Version, actor.UserID); err != nil {
+		writeError(w, http.StatusBadRequest, "回滚模型指令失败")
+		return
+	}
+	items, err := s.store.ListAgentPromptConfigs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "模型指令已回滚，但重新读取失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) systemResetAgentPromptConfig(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireAgentPromptAdmin(w, r)
+	if !ok {
+		return
+	}
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "模型指令 Key 不能为空")
+		return
+	}
+	if err := s.store.ResetAgentPromptConfig(r.Context(), key, actor.UserID); err != nil {
+		writeError(w, http.StatusBadRequest, "恢复默认模型指令草稿失败")
+		return
+	}
+	items, err := s.store.ListAgentPromptConfigs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "默认内容已恢复到草稿，但重新读取失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (s *Server) systemUpdateMembershipRoomLimits(w http.ResponseWriter, r *http.Request) {

@@ -79,6 +79,8 @@ type LiveRuntimeSnapshot struct {
 	Session                *LiveRuntimeSession     `json:"session,omitempty"`
 	AgentState             string                  `json:"agent_state"`
 	AgentMode              string                  `json:"agent_mode"`
+	AgentPlanID            int64                   `json:"agent_plan_id,omitempty"`
+	AgentPlanName          string                  `json:"agent_plan_name,omitempty"`
 	AgentWorkingSeconds    uint64                  `json:"agent_working_seconds"`
 	QuotaRemainingSeconds  uint64                  `json:"quota_remaining_seconds"`
 	ReserveTimeCardSeconds uint64                  `json:"reserve_time_card_seconds"`

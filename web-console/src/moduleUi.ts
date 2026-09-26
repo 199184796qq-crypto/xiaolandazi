@@ -52,6 +52,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
         { title: '直播间', description: '管理直播间、查看实时公屏和现场状态。', icon: '播', to: '/rooms/list', badge: '现场', status: 'ready' },
         { title: '直播间数量', description: '查看终端已开直播间、额度和剩余可开数量，由营销运维部统一管理。', icon: '额', to: '/operations/live/room-quotas', badge: '额度', status: 'ready' },
         { title: '直播策略', description: '通过策略 Agent 调教当前直播间的主播、话术、声音和用户层策略。', icon: '策', to: '/operations/live/strategy', badge: 'Agent', status: 'ready' },
+        { title: '直播分析配置', description: '配置录音分析使用的大模型和分析提示词，保留历史版本并控制当前启用版本。', icon: '析', to: '/operations/live/analysis-settings', badge: '配置', status: 'ready' },
         { title: '设备绑定', description: '查看名下设备状态，并管理设备与直播间的绑定关系。', icon: '设', to: '/operations/live/devices', badge: '设备', status: 'ready' },
         { title: '协助工单', description: '受理销售代申请与客户自助申请，接单处理、回复并等待客户确认。', icon: '助', to: '/operations/support', badge: '待办', status: 'ready' },
         { title: '历史客户交接', description: '保留早期交接历史；新协助使用工单，开户和入账不自动派单。', icon: '接', to: '/operations/live/customer-handoffs', badge: '历史', status: 'ready' },
@@ -114,6 +115,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
         description: '角色、数据范围和高风险审批分开管理。',
         entries: [
           { title: '角色权限', description: '配置角色可以做什么以及默认数据范围。', icon: '权', to: '/staff/roles', badge: '权限', status: 'ready' },
+          { title: '权限中心', description: '从业务能力反查角色与员工，追踪权限来源并诊断权限组合。', icon: '核', to: '/staff/permissions', badge: '反查', status: 'ready' },
           { title: '审批策略', description: '配置充值、退款、奖励等业务的审核规则。', icon: '审', to: '/staff/approvals', badge: '审批', status: 'ready' },
           { title: '权限审计', description: '查看高权限角色变化、授权与撤权记录。', icon: '迹', to: '/staff/audit', badge: '审计', status: 'ready' },
         ],

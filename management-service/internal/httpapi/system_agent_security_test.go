@@ -81,6 +81,7 @@ func TestSanitizeClientAgentNavigationAgentAdmin(t *testing.T) {
 func TestClientAgentPromptContainsNoInternalDirectory(t *testing.T) {
 	actor := model.Actor{Role: "customer"}
 	prompt, err := buildClientAgentPrompt(
+		"只服务外部用户，只允许 EXPLAIN 或 NAVIGATE_PAGE，不得访问内部管理功能。",
 		actor,
 		[]systemAgentNavigationContext{
 			{Title: "终端商城", To: "/shop", Section: "工作台"},

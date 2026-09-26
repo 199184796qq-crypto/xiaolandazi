@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("management", "core", "audio")]
+  [ValidateSet("management", "core")]
   [string]$Service
 )
 
@@ -31,8 +31,6 @@ if ($Service -eq 'management') {
     $env:MGMT_AVATAR_DIR = Join-Path $Root 'data\avatars'
     New-Item -ItemType Directory -Force -Path $env:MGMT_AVATAR_DIR | Out-Null
     $Exe = Join-Path $Root 'management-service\bin\management-service.exe'
-} elseif ($Service -eq 'audio') {
-    $Exe = Join-Path $Root 'audio-service\bin\audio-service.exe'
 } else {
     $Exe = Join-Path $Root 'core-service\bin\core-service.exe'
 }

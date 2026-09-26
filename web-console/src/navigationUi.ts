@@ -29,6 +29,9 @@ function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null
     return hasStaffPermission(bootstrap, 'liveops.configure') || hasStaffPermission(bootstrap, 'liveops.ticket.manage')
   }
   if (to === '/sales/handovers') return hasStaffPermission(bootstrap, 'sales.assignment.manage')
+  if (key === 'staff' && to.startsWith('/staff/permissions')) {
+    return hasStaffPermission(bootstrap, 'staff.role.manage')
+  }
   if (key === 'staff' && to.startsWith('/staff/approvals')) {
     return hasStaffPermission(bootstrap, 'finance.dashboard.view')
   }
@@ -48,6 +51,9 @@ function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null
   }
   if (key === 'live' && to.startsWith('/operations/live/room-quotas')) {
     return hasStaffPermission(bootstrap, 'liveops.room_quota.view')
+  }
+  if (key === 'live' && to.startsWith('/operations/live/analysis-settings')) {
+    return hasStaffPermission(bootstrap, 'liveanalysis.view')
   }
   if (key === 'live' && to.startsWith('/operations/live/marketing')) {
     return (
@@ -233,6 +239,7 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
     hasStaffPermission(bootstrap, 'staff.group.view') ||
     hasStaffPermission(bootstrap, 'staff.employee.view') ||
     hasStaffPermission(bootstrap, 'staff.role.view')
+    || hasStaffPermission(bootstrap, 'staff.role.manage')
   ) {
     entries.push({ title: '组织架构', to: '/staff', icon: '部' })
   }

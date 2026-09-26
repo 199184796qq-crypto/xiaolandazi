@@ -163,13 +163,13 @@ const navSections = computed<NavSection[]>(() => {
         items: [
           navItem('系统总览', '/overview', '⌂', ['platform-overview']),
           navItem('系统设定', '/system/settings', '设', ['system-settings']),
-          navItem('组织架构', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit']),
+          navItem('组织架构', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-permissions', 'staff-approvals', 'staff-audit']),
         ],
       },
       {
         label: '营销运维',
         items: [
-          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-analysis-settings', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
           navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-referrals', 'invitations']),
         ],
       },

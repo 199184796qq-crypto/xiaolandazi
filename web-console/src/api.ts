@@ -82,7 +82,12 @@ import type {
   RoomBrainView,
   SpeechRuntimeSnapshot,
   AgentDecisionSnapshot,
+  AgentDecisionSimulationResult,
   AgentDecisionEnqueueResult,
+  RoomCaptureSnapshot,
+  RoomSpeechAnalysisStatus,
+  SpeechAnalysisProfile,
+  SpeechAnalysisProfileInput,
   LiveDevice,
   LiveOpsRoomQuotaSummary,
   LiveOpsRoomQuotaAdjustInput,
@@ -126,10 +131,14 @@ import type {
   StaffGroupSummary,
   StaffEmployeeSummary,
   StaffDashboard,
+  StaffPermissionCenterDashboard,
   StaffFinanceOverview,
   StaffFinanceOperationResult,
   SystemAgentChatResponse,
   SystemAgentContextResponse,
+  AgentPromptConfig,
+  AgentPromptConfigUpdate,
+  AgentPromptHistory,
   SystemDictionaryItem,
   SystemDictionaryItemInput,
   SystemSettingUpdate,
@@ -201,6 +210,40 @@ export function updateSystemSettings(settings: SystemSettingUpdate[]) {
     method: 'PUT',
     body: JSON.stringify({ settings }),
   })
+}
+
+export function updateAgentPromptConfigs(items: AgentPromptConfigUpdate[]) {
+  return request<{ items: AgentPromptConfig[] }>('/api/v1/system/agent-prompts', {
+    method: 'PUT',
+    body: JSON.stringify({ items }),
+  })
+}
+
+export function publishAgentPromptConfig(key: string) {
+  return request<{ items: AgentPromptConfig[] }>(
+    '/api/v1/system/agent-prompts/' + encodeURIComponent(key) + '/publish',
+    { method: 'POST' },
+  )
+}
+
+export function getAgentPromptHistory(key: string) {
+  return request<{ items: AgentPromptHistory[] }>(
+    '/api/v1/system/agent-prompts/' + encodeURIComponent(key) + '/history',
+  )
+}
+
+export function rollbackAgentPromptConfig(key: string, version: number) {
+  return request<{ items: AgentPromptConfig[] }>(
+    '/api/v1/system/agent-prompts/' + encodeURIComponent(key) + '/rollback',
+    { method: 'POST', body: JSON.stringify({ version }) },
+  )
+}
+
+export function resetAgentPromptConfig(key: string) {
+  return request<{ items: AgentPromptConfig[] }>(
+    '/api/v1/system/agent-prompts/' + encodeURIComponent(key) + '/reset',
+    { method: 'POST' },
+  )
 }
 
 export function updateMembershipRoomLimits(items: MembershipRoomLimitUpdate[]) {
@@ -338,6 +381,13 @@ export function getRoomAgentDecisions(roomId: number) {
   return request<AgentDecisionSnapshot>('/api/v1/rooms/' + roomId + '/agent-decisions')
 }
 
+export function simulateRoomAgentDecision(roomId: number, payload: { question: string }) {
+  return request<AgentDecisionSimulationResult>('/api/v1/rooms/' + roomId + '/agent-decisions/simulate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function enqueueRoomManualAgentDecision(
   roomId: number,
   payload: {
@@ -350,7 +400,7 @@ export function enqueueRoomManualAgentDecision(
     user_id?: string
     force_reopen?: boolean
     manual_action?: 'answer' | 'quick'
-    manual_origin?: 'agent_input' | 'question_cluster'
+    manual_origin?: 'agent_input' | 'question_cluster' | 'test_simulation'
     execution_mode?: 'intent' | 'verbatim'
     fixed_text?: string
     ttl_seconds?: number
@@ -395,6 +445,125 @@ export function restoreRoomBlockedUser(
   return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/blocked-users/restore', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function getRoomCapture(roomId: number) {
+  return request<RoomCaptureSnapshot>('/api/v1/rooms/' + roomId + '/capture')
+}
+
+export function startRoomAudioRecording(roomId: number) {
+  return request<RoomCaptureSnapshot>('/api/v1/rooms/' + roomId + '/capture/audio/start', {
+    method: 'POST',
+  })
+}
+
+export function stopRoomAudioRecording(roomId: number) {
+  return request<RoomCaptureSnapshot>('/api/v1/rooms/' + roomId + '/capture/audio/stop', {
+    method: 'POST',
+  })
+}
+
+export function roomAudioRecordingFileUrl(roomId: number) {
+  return '/api/v1/rooms/' + roomId + '/capture/audio/file'
+}
+
+export function getRoomSpeechAnalysis(roomId: number) {
+  return request<RoomSpeechAnalysisStatus>('/api/v1/rooms/' + roomId + '/speech-analysis')
+}
+
+export function startRoomSpeechAnalysis(roomId: number) {
+  return request<RoomSpeechAnalysisStatus>('/api/v1/rooms/' + roomId + '/speech-analysis', {
+    method: 'POST',
+  })
+}
+
+export function uploadRoomSpeechAnalysis(
+  roomId: number,
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+) {
+  const form = new FormData()
+  form.append('file', file)
+  return new Promise<RoomSpeechAnalysisStatus>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/v1/rooms/' + roomId + '/speech-analysis/upload')
+    xhr.withCredentials = true
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable) return
+      onProgress?.(event.loaded, event.total)
+    })
+    xhr.addEventListener('load', () => {
+      let payload: RoomSpeechAnalysisStatus | { error?: string } | null = null
+      try {
+        payload = xhr.responseText ? JSON.parse(xhr.responseText) : null
+      } catch {
+        payload = null
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload as RoomSpeechAnalysisStatus)
+        return
+      }
+      const message = payload && 'error' in payload && payload.error
+        ? payload.error
+        : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传录音失败')
+      if (xhr.status === 403) showPermissionToast(message)
+      reject(new Error(message))
+    })
+    xhr.addEventListener('error', () => reject(new Error('上传录音失败，请检查网络后重试')))
+    xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort()
+        return
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true })
+    }
+    xhr.send(form)
+  })
+}
+
+export function roomSpeechAnalysisReportUrl(roomId: number) {
+  return '/api/v1/rooms/' + roomId + '/speech-analysis/report'
+}
+
+export function roomSpeechAnalysisTranscriptUrl(roomId: number) {
+  return '/api/v1/rooms/' + roomId + '/speech-analysis/transcript'
+}
+
+export async function getRoomSpeechAnalysisReportText(roomId: number) {
+  const response = await fetch(roomSpeechAnalysisReportUrl(roomId), {
+    credentials: 'include',
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    let message = '读取智能话术分析报告失败'
+    try {
+      const payload = await response.json() as { error?: string }
+      if (payload?.error) message = payload.error
+    } catch {
+      // Ignore non-JSON error bodies.
+    }
+    throw new Error(message)
+  }
+  return response.text()
+}
+
+export function getSpeechAnalysisProfiles() {
+  return request<{ items: SpeechAnalysisProfile[] }>('/api/v1/live-analysis/profiles')
+}
+
+export function createSpeechAnalysisProfile(payload: SpeechAnalysisProfileInput) {
+  return request<SpeechAnalysisProfile>('/api/v1/live-analysis/profiles', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function activateSpeechAnalysisProfile(profileId: number) {
+  return request<SpeechAnalysisProfile>('/api/v1/live-analysis/profiles/' + profileId + '/activate', {
+    method: 'POST',
   })
 }
 
@@ -677,6 +846,7 @@ export function chatLiveRoomPolicyAgent(
   payload: {
     message: string
     history?: Array<{ role: 'user' | 'agent'; text: string }>
+    scene?: 'reference_answer' | string
   },
 ) {
   return request<LivePolicyAgentResponse>('/api/v1/live/rooms/' + roomId + '/policy-agent/chat', {
@@ -901,6 +1071,16 @@ export function setLiveRuntimeMode(roomId: number, mode: 'control' | 'anchor') {
     {
       method: 'POST',
       body: JSON.stringify({ mode }),
+    },
+  )
+}
+
+export function setLiveRuntimePlan(roomId: number, planId: number) {
+  return request<{ room_id: number; state: string; mode: 'control' | 'anchor'; plan_id: number; plan_name: string; working_seconds: number }>(
+    '/api/v1/rooms/' + roomId + '/runtime/plan',
+    {
+      method: 'POST',
+      body: JSON.stringify({ plan_id: planId }),
     },
   )
 }
@@ -1574,6 +1754,17 @@ export function getStaffDashboard() {
   return request<StaffDashboard>('/api/v1/staff/dashboard')
 }
 
+export function getStaffPermissionCenter() {
+  return request<StaffPermissionCenterDashboard>('/api/v1/staff/permission-center')
+}
+
+export function updateStaffPermissionCenterRole(roleId: number, permissionIds: number[]) {
+  return request<void>('/api/v1/staff/permission-center/roles/' + roleId, {
+    method: 'PUT',
+    body: JSON.stringify({ permission_ids: permissionIds }),
+  })
+}
+
 export function createStaffGroup(payload: {
   code: string
   name: string
@@ -1743,6 +1934,14 @@ export function createStaffFinanceReward(payload: {
       body: JSON.stringify(payload),
     },
   )
+}
+
+export function getCommercialAITimeAgents() {
+  return request<ListResponse<AgentSummary>>('/api/v1/commercial/ai-time/agents')
+}
+
+export function getCommercialAITimeCustomers() {
+  return request<ListResponse<AdminCustomer>>('/api/v1/commercial/ai-time/customers')
 }
 
 export function createCommercialAITimeGrantRequest(payload: {

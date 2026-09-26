@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 
 const coreURL = 'http://127.0.0.1:8081';
-const audioURL = 'http://127.0.0.1:8082';
+const audioURL = coreURL;
 const coreToken = process.env.CORE_INTERNAL_TOKEN || 'local-core-dev-token';
 const roomID = Date.now();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -76,6 +76,38 @@ function subscribe(receiverID) {
   return { connected, nextTask, close: () => controller.abort() };
 }
 
+async function register(receiverID) {
+  const response = await fetch(audioURL + '/v1/receivers/register', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      receiver_id: receiverID,
+      room_id: roomID,
+      terminal_type: 'test',
+      name: receiverID,
+      capabilities: ['audio/wav', 'mainline', 'interaction_tts'],
+    }),
+  });
+  if (!response.ok) throw new Error('register HTTP ' + response.status + ': ' + await response.text());
+}
+
+async function heartbeat(receiverID) {
+  const response = await fetch(audioURL + '/v1/receivers/' + encodeURIComponent(receiverID) + '/heartbeat', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({room_id: roomID}),
+  });
+  if (!response.ok) throw new Error('heartbeat HTTP ' + response.status + ': ' + await response.text());
+}
+
+function keepAlive(receiverID) {
+  const timer = setInterval(() => {
+    void heartbeat(receiverID).catch(error => console.error('heartbeat ' + receiverID + ': ' + error.message));
+  }, 12000);
+  timer.unref?.();
+  return timer;
+}
+
 async function coreProgram(action) {
   const response = await fetch(coreURL + '/internal/v1/dev/audio/program/' + action, {
     method: 'POST',
@@ -97,6 +129,8 @@ async function roomSync() {
 }
 
 (async () => {
+  await register('continuous-a');
+  keepAlive('continuous-a');
   const a = subscribe('continuous-a');
   await a.connected;
 
@@ -119,6 +153,8 @@ async function roomSync() {
   assert.equal(syncBeforeB.sequence, 1);
   assert.ok(syncBeforeB.task.start_ms >= Math.max(250, lateDelay - 450));
 
+  await register('continuous-b-late');
+  keepAlive('continuous-b-late');
   const b = subscribe('continuous-b-late');
   await b.connected;
   const taskB1 = await b.nextTask(5000);

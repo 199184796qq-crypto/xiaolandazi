@@ -27,6 +27,7 @@ const (
 
 type sessionStore interface {
 	ListRunningLiveRuntimeSessions(context.Context) ([]model.LiveRuntimeSession, error)
+	AgentPromptValue(context.Context, string, string) string
 }
 
 type completer interface {
@@ -213,12 +214,10 @@ func (w *Worker) refineRoom(ctx context.Context, session model.LiveRuntimeSessio
 	if err != nil {
 		return err
 	}
+	systemPrompt := w.store.AgentPromptValue(ctx, "question.cluster.system", "按可用同一段主播回答覆盖的语义整理问题类别；不要回答问题，严格输出 JSON。")
 	response, err := w.agent.Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
-			{
-				Role:    "system",
-				Content: "你是直播间问题语义聚类器，只负责把现有问题桶整理成适合主播统一回答的类别。不要回答问题，不要改写观众原话，不要创造新问题桶。聚类标准不是逐字同义：只要这些问题在直播中可以由主播用同一段回答一起覆盖，就应当合并，例如同属原料/榨油工艺、价格优惠、品质口感、保存方法、购买方式等。相反，如果需要明显不同的回答逻辑，就必须分开，例如发货时效不能和运费价格混为一类，售后破损不能和正常物流进度混为一类。目标是明显减少孤立的 +1 小桶，但不要为了减少数量而硬合并。输入中的 topic 是现有桶 ID；只有 eligible_for_merge=true 的桶可以放入 source_topics，representative_topic 必须从输入已有 topic 中选择。优先把多个小桶并入一个最能代表该回答类别的现有桶；已有 FAMILY: 桶如果语义匹配可以优先作为 representative_topic。不确定就不要合并。严格只输出 JSON：{\"groups\":[{\"representative_topic\":\"现有topic\",\"source_topics\":[\"要并入的现有topic\"],\"confidence\":0.0}]}。",
-			},
+			{Role: "system", Content: systemPrompt},
 			{
 				Role:    "user",
 				Content: "请整理" + scopeText + "。以下是当前桶数据：\n" + string(inputJSON),
