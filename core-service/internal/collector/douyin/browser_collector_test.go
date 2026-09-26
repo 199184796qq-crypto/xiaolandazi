@@ -34,7 +34,7 @@ func (r *testBrowserRuntime) Stream(
 	return collector.StreamSource{}, errors.New("not implemented")
 }
 
-func TestBrowserCollectorTransportNeedsLiveEvidence(t *testing.T) {
+func TestBrowserCollectorMarksLiveAfterDecodedPublicScreenFrame(t *testing.T) {
 	room := model.Room{ID: 10, TenantID: 14}
 	roomState := &roomSession{
 		frames:    make(chan []byte, 4),
@@ -54,7 +54,7 @@ func TestBrowserCollectorTransportNeedsLiveEvidence(t *testing.T) {
 	}
 	runner := &BrowserCollector{
 		browser:      runtime,
-		frameTimeout: 100 * time.Millisecond,
+		frameTimeout: 300 * time.Millisecond,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,11 +84,35 @@ func TestBrowserCollectorTransportNeedsLiveEvidence(t *testing.T) {
 	default:
 	}
 
-	roomState.sendState("live", "stream_flv")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	common := protoMessage(
+		protoString(1, "WebcastChatMessage"),
+		protoVarint(2, 901),
+		protoVarint(3, 777),
+		protoVarint(4, uint64(now.UnixMilli())),
+	)
+	user := protoMessage(
+		protoVarint(1, 12345),
+		protoString(3, "测试观众"),
+		protoString(1029, "u-12345"),
+	)
+	chat := protoMessage(
+		protoBytes(1, common),
+		protoBytes(2, user),
+		protoString(3, "回滚公屏采集测试"),
+	)
+	message := protoMessage(
+		protoString(1, "WebcastChatMessage"),
+		protoBytes(2, chat),
+		protoVarint(3, 901),
+	)
+	response := protoMessage(protoBytes(1, message))
+	frame := protoMessage(protoBytes(8, response))
+	roomState.frames <- frame
 	select {
 	case <-liveCalled:
 	case <-time.After(time.Second):
-		t.Fatal("collector did not mark room live after live-state evidence")
+		t.Fatal("collector did not mark room live after decoded public-screen frame")
 	}
 
 	// Once actual live evidence is established, the old startup timeout must
@@ -111,7 +135,7 @@ func TestBrowserCollectorTransportNeedsLiveEvidence(t *testing.T) {
 	}
 }
 
-func TestBrowserCollectorOfflineStateReturnsOffline(t *testing.T) {
+func TestBrowserCollectorTimesOutWhenTransportHasNoPublicScreenFrames(t *testing.T) {
 	room := model.Room{ID: 11, TenantID: 14}
 	roomState := &roomSession{
 		frames:    make(chan []byte, 2),
@@ -127,7 +151,7 @@ func TestBrowserCollectorOfflineStateReturnsOffline(t *testing.T) {
 			roomID:  room.ID,
 			session: roomState,
 		}},
-		frameTimeout: time.Second,
+		frameTimeout: 80 * time.Millisecond,
 	}
 
 	done := make(chan error, 1)
@@ -141,15 +165,13 @@ func TestBrowserCollectorOfflineStateReturnsOffline(t *testing.T) {
 	}()
 
 	roomState.markTransport()
-	roomState.sendState("offline", "page_live_ended")
-
 	select {
 	case err := <-done:
 		if !errors.Is(err, collector.ErrOffline) {
-			t.Fatalf("collector error = %v, want ErrOffline", err)
+			t.Fatalf("collector exit error = %v, want ErrOffline", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("collector did not stop after offline state")
+		t.Fatal("collector did not timeout without public-screen frames")
 	}
 }
 

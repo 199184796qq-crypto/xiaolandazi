@@ -170,17 +170,22 @@ func TestBrokerFansOneTaskToTwoReceivers(t *testing.T) {
 }
 
 func TestCompletedTaskIsNotReplayedToReconnect(t *testing.T) {
-	broker := NewBroker("http://127.0.0.1:8082", "")
-	task, err := broker.CreateTestTask(88, "session-2", "task-done", "done", 800, "")
+	audio := testChimeWAV(80)
+	broker, err := NewBrokerWithTestAudio("http://127.0.0.1:8082", "", audio, 80, "test.wav")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "READY"}); err != nil || !ref {
-		t.Fatalf("reference ready: ref=%v err=%v", ref, err)
+	task, err := broker.CreateTestTask(88, "session-2", "task-done", "done", 80, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: 800}); err != nil || !ref {
-		t.Fatalf("reference completed: ref=%v err=%v", ref, err)
+	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: 80}); err != nil || !ref {
+		t.Fatalf("receiver feedback: ref=%v err=%v", ref, err)
 	}
+	if snapshot, ok := broker.Snapshot(task.ID); !ok || snapshot.Terminal {
+		t.Fatalf("receiver completion must not end scheduler task: %#v", snapshot)
+	}
+	time.Sleep(120 * time.Millisecond)
 	_, latest, cancel := broker.Subscribe(88)
 	defer cancel()
 	if latest != nil {
@@ -188,7 +193,73 @@ func TestCompletedTaskIsNotReplayedToReconnect(t *testing.T) {
 	}
 	snapshot, ok := broker.Snapshot(task.ID)
 	if !ok || !snapshot.Terminal {
-		t.Fatalf("completed task not marked terminal: %#v", snapshot)
+		t.Fatalf("clock-completed task not marked terminal: %#v", snapshot)
+	}
+}
+
+func TestLateSubscriberReceivesCurrentOffsetForStandaloneExternalWAV(t *testing.T) {
+	broker := NewBroker("http://audio.local", "")
+	interactionAudio := testChimeWAV(220)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(interactionAudio)
+	}))
+	defer source.Close()
+
+	task, err := broker.CreateExternalWAVTask(
+		context.Background(),
+		303,
+		"control-session-303",
+		"中控抢答",
+		source.URL,
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ProgramID != "" {
+		t.Fatalf("expected standalone task without program, got %#v", task)
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	_, latest, cancel := broker.Subscribe(303)
+	defer cancel()
+	if latest == nil {
+		t.Fatal("late subscriber did not receive active standalone task")
+	}
+	if latest.ID != task.ID {
+		t.Fatalf("unexpected task for late subscriber: %#v", latest)
+	}
+	if latest.StartMS < 25 {
+		t.Fatalf("late subscriber did not receive current playback offset: start_ms=%d", latest.StartMS)
+	}
+	if latest.StartMS >= latest.DurationMS {
+		t.Fatalf("late subscriber offset beyond task duration: start_ms=%d duration_ms=%d", latest.StartMS, latest.DurationMS)
+	}
+}
+
+func TestExpiredStandaloneTaskIsNotReplayedToLateSubscriber(t *testing.T) {
+	broker := NewBroker("http://audio.local", "")
+	interactionAudio := testChimeWAV(80)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(interactionAudio)
+	}))
+	defer source.Close()
+
+	task, err := broker.CreateExternalWAVTask(context.Background(), 304, "control-session-304", "expired", source.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	_, latest, cancel := broker.Subscribe(304)
+	defer cancel()
+	if latest != nil {
+		t.Fatalf("expired task replayed to late subscriber: %#v", latest)
+	}
+	snapshot, ok := broker.Snapshot(task.ID)
+	if !ok || !snapshot.Terminal {
+		t.Fatalf("expired task not marked terminal: %#v", snapshot)
 	}
 }
 
@@ -241,7 +312,7 @@ func TestStandaloneExternalWAVPublishesWithoutMainlineProgram(t *testing.T) {
 
 func TestStandaloneExternalWAVMustFinishBeforeNextTTS(t *testing.T) {
 	broker := NewBroker("http://audio.local", "")
-	audio := testChimeWAV(180)
+	audio := testChimeWAV(80)
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "audio/wav")
 		_, _ = w.Write(audio)
@@ -255,14 +326,15 @@ func TestStandaloneExternalWAVMustFinishBeforeNextTTS(t *testing.T) {
 	if _, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "second", source.URL, ""); err == nil {
 		t.Fatal("second TTS must not replace an active TTS")
 	}
-	if _, _, err := broker.ReportEvent(first.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "READY"}); err != nil {
-		t.Fatal(err)
-	}
 	if _, _, err := broker.ReportEvent(first.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: first.DurationMS}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "second", source.URL, ""); err == nil {
+		t.Fatal("receiver completion must not release the scheduler task early")
+	}
+	time.Sleep(120 * time.Millisecond)
 	if _, err := broker.CreateExternalWAVTask(context.Background(), 303, "control-303", "second", source.URL, ""); err != nil {
-		t.Fatalf("second TTS should be accepted after first completes: %v", err)
+		t.Fatalf("second TTS should be accepted after scheduler duration completes: %v", err)
 	}
 }
 
@@ -406,7 +478,7 @@ func TestTestAudioSupportsRangeAndDisablesCache(t *testing.T) {
 	}
 }
 
-func TestOnlyReferenceReceiverForwardsRoomPlayback(t *testing.T) {
+func TestReceiverFeedbackDoesNotDriveRoomLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	var callbacks []PlaybackEvent
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -424,37 +496,47 @@ func TestOnlyReferenceReceiverForwardsRoomPlayback(t *testing.T) {
 	}))
 	defer core.Close()
 
-	broker := NewBroker("http://audio.local", "core-secret")
-	task, err := broker.CreateTestTask(9, "s1", "t1", "test", 900, core.URL)
+	audio := testChimeWAV(90)
+	broker, err := NewBrokerWithTestAudio("http://audio.local", "core-secret", audio, 90, "test.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := broker.CreateTestTask(9, "s1", "t1", "test", 90, core.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "READY"}); err != nil || !ref {
-		t.Fatalf("first receiver should become reference: ref=%v err=%v", ref, err)
+		t.Fatalf("first receiver should become reference for diagnostics: ref=%v err=%v", ref, err)
 	}
-	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-b", Status: "COMPLETED"}); err != nil || ref {
-		t.Fatalf("second receiver must not advance room: ref=%v err=%v", ref, err)
+	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: 90}); err != nil || !ref {
+		t.Fatalf("receiver completion should be accepted as diagnostics: ref=%v err=%v", ref, err)
 	}
-	if _, ref, err := broker.ReportEvent(task.ID, PlaybackEvent{ReceiverID: "pc-a", Status: "COMPLETED", ProgressMS: 900}); err != nil || !ref {
-		t.Fatalf("reference completion should forward: ref=%v err=%v", ref, err)
+	if snapshot, ok := broker.Snapshot(task.ID); !ok || snapshot.Terminal {
+		t.Fatalf("receiver callback must not end task: %#v", snapshot)
 	}
+	mu.Lock()
+	if len(callbacks) != 0 {
+		mu.Unlock()
+		t.Fatalf("receiver callbacks must not be forwarded to Core: %#v", callbacks)
+	}
+	mu.Unlock()
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := len(callbacks)
 		mu.Unlock()
-		if n >= 2 {
+		if n >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(callbacks) != 2 {
-		t.Fatalf("callbacks=%d want=2 (READY + COMPLETED from reference only)", len(callbacks))
+	if len(callbacks) != 1 {
+		t.Fatalf("callbacks=%d want=1 scheduler completion", len(callbacks))
 	}
-	if callbacks[1].Status != "COMPLETED" || callbacks[1].ReceiverID != "pc-a" {
-		t.Fatalf("unexpected completion callback: %#v", callbacks[1])
+	if callbacks[0].Status != "COMPLETED" || callbacks[0].ReceiverID != schedulerReceiverID {
+		t.Fatalf("unexpected scheduler callback: %#v", callbacks[0])
 	}
 }

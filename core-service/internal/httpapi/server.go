@@ -14,12 +14,15 @@ import (
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/audiohub"
+	"livecompanion/core/internal/capture"
 	"livecompanion/core/internal/collector"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/media"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/userblock"
 )
@@ -30,12 +33,15 @@ type Server struct {
 	hub            *eventstore.Hub
 	collectors     *collector.Manager
 	media          *media.Manager
+	capture        *capture.Manager
 	brain          roomBrain
 	questions      *questionqueue.Queue
 	agentDecisions *agentdecision.Queue
 	agentWork      *agentwork.Registry
 	userBlocks     *userblock.Store
+	speechAnalysis *speechanalysis.Manager
 	speechRuntime  *speechruntime.Registry
+	audioHub       *audiohub.Hub
 	env            string
 	internalToken  string
 }
@@ -55,6 +61,7 @@ func New(
 		hub:            hub,
 		collectors:     collectors,
 		media:          mediaManager,
+		audioHub:       audiohub.New(),
 		speechRuntime:  speechruntime.New(),
 		questions:      questionqueue.New(),
 		agentDecisions: agentdecision.New(),
@@ -71,10 +78,34 @@ func (s *Server) SetSpeechRuntimeRegistry(registry *speechruntime.Registry) {
 	s.speechRuntime = registry
 }
 
+func (s *Server) SetAudioHub(hub *audiohub.Hub) {
+	if hub == nil {
+		hub = audiohub.New()
+	}
+	s.audioHub = hub
+}
+
+func (s *Server) SetCaptureManager(manager *capture.Manager) {
+	s.capture = manager
+}
+
+func (s *Server) SetSpeechAnalysisManager(manager *speechanalysis.Manager) {
+	s.speechAnalysis = manager
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
+	mux.Handle("/v1/receivers/register", s.audioPublic(http.HandlerFunc(s.registerAudioReceiver)))
+	mux.Handle("/v1/receivers/{receiverID}/heartbeat", s.audioPublic(http.HandlerFunc(s.heartbeatAudioReceiver)))
+	mux.Handle("/v1/receivers/{receiverID}/unregister", s.audioPublic(http.HandlerFunc(s.unregisterAudioReceiver)))
+	mux.Handle("/v1/rooms/{roomID}/receivers", s.audioPublic(http.HandlerFunc(s.listAudioReceivers)))
+	mux.Handle("/v1/rooms/{roomID}/stream", s.audioPublic(http.HandlerFunc(s.streamAudioRoom)))
+	mux.Handle("/v1/rooms/{roomID}/sync", s.audioPublic(http.HandlerFunc(s.syncAudioRoom)))
+	mux.Handle("/v1/tasks/{taskID}", s.audioPublic(http.HandlerFunc(s.getAudioTask)))
+	mux.Handle("/v1/tasks/{taskID}/events", s.audioPublic(http.HandlerFunc(s.reportAudioTaskEvent)))
+	mux.Handle("/v1/test-audio.wav", s.audioPublic(http.HandlerFunc(s.serveCoreTestAudio)))
 
 	mux.Handle("GET /internal/v1/rooms", s.internal(http.HandlerFunc(s.listRooms)))
 	mux.Handle("POST /internal/v1/rooms/runtime-states", s.internal(http.HandlerFunc(s.batchRoomRuntimeStates)))
@@ -96,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/manual", s.internal(http.HandlerFunc(s.enqueueRoomManualDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/claim", s.internal(http.HandlerFunc(s.claimRoomAgentDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.internal(http.HandlerFunc(s.completeRoomAgentDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/simulation-complete", s.internal(http.HandlerFunc(s.completeRoomAgentSimulation)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/release", s.internal(http.HandlerFunc(s.releaseRoomAgentDecision)))
 	mux.Handle("DELETE /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.internal(http.HandlerFunc(s.removeRoomAgentDecision)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/agent-runtime", s.internal(http.HandlerFunc(s.getRoomAgentWork)))
@@ -113,6 +145,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/rooms/{roomID}/stream", s.internal(http.HandlerFunc(s.streamEvents)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/preview", s.internal(http.HandlerFunc(s.previewRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/live/{file}", s.internal(http.HandlerFunc(s.liveMedia)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/capture", s.internal(http.HandlerFunc(s.getRoomCapture)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/capture/audio/start", s.internal(http.HandlerFunc(s.startRoomAudioRecording)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/capture/audio/stop", s.internal(http.HandlerFunc(s.stopRoomAudioRecording)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/capture/audio/file", s.internal(http.HandlerFunc(s.downloadRoomAudioRecording)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/speech-analysis/jobs", s.internal(http.HandlerFunc(s.startRoomSpeechAnalysisJob)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-analysis/jobs/{taskID}", s.internal(http.HandlerFunc(s.getRoomSpeechAnalysisJob)))
 	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
 		mux.Handle("POST /internal/v1/dev/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.createDevEvent)))
 		mux.Handle("POST /internal/v1/dev/rooms/{roomID}/brain/reset", s.internal(http.HandlerFunc(s.resetRoomBrain)))
@@ -135,6 +173,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	collectorStats := s.collectors.Stats()
 	mediaStats := s.media.Stats()
 	collectorProviders := s.collectors.ProviderDescriptors()
+	audioStats := audiohub.Metrics{}
+	if s.audioHub != nil {
+		audioStats = s.audioHub.Metrics()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":               "core-service",
 		"status":                "ok",
@@ -152,6 +194,9 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"event_persist_dropped": collectorStats.EventPersistDropped,
 		"event_persist_errors":  collectorStats.EventPersistErrors,
 		"runtime_pending":       collectorStats.RuntimePending,
+		"audio_active_rooms":    audioStats.ActiveRooms,
+		"audio_receivers":       audioStats.Receivers,
+		"audio_subscribers":     audioStats.Subscribers,
 		"runtime_errors":        collectorStats.RuntimeErrors,
 	})
 }
@@ -258,7 +303,7 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 	for _, room := range rooms {
 		agent := agentwork.Snapshot{RoomID: room.ID, State: agentwork.StateStopped}
 		if s.agentWork != nil {
-			s.ensureAgentMode(r.Context(), room.ID)
+			s.ensureAgentRuntimeConfig(r.Context(), room.ID)
 			agent = s.agentWork.Get(room.ID)
 		}
 		resumePending := false

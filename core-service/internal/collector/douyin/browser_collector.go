@@ -118,38 +118,12 @@ func (c *BrowserCollector) Run(
 
 	timer := time.NewTimer(c.frameTimeout)
 	defer timer.Stop()
-	timeoutCh := timer.C
 
 	liveNotified := false
 	transportSeen := false
 	frameCount := 0
 	decodeErrors := 0
 	transportCh := session.Transport()
-	stateCh := session.States()
-
-	markLive := func(reason string) error {
-		if liveNotified {
-			return nil
-		}
-		if err := onLive(ctx); err != nil {
-			return err
-		}
-		liveNotified = true
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timeoutCh = nil
-		log.Printf(
-			"collector room=%d status=live reason=%s frames=%d",
-			room.ID,
-			reason,
-			frameCount,
-		)
-		return nil
-	}
 
 	for {
 		select {
@@ -166,32 +140,15 @@ func (c *BrowserCollector) Run(
 			transportSeen = true
 			transportCh = nil
 
-		case state := <-stateCh:
-			switch strings.ToLower(strings.TrimSpace(state.state)) {
-			case "live":
-				if err := markLive("worker:" + strings.TrimSpace(state.reason)); err != nil {
-					return err
-				}
-			case "offline":
-				return fmt.Errorf(
-					"%w (reason=%s transport_seen=%t frames=%d decode_errors=%d)",
-					collector.ErrOffline,
-					strings.TrimSpace(state.reason),
-					transportSeen,
-					frameCount,
-					decodeErrors,
-				)
-			}
-
 		case sessionErr := <-session.Errors():
 			if sessionErr == nil {
 				continue
 			}
 			return sessionErr
 
-		case <-timeoutCh:
+		case <-timer.C:
 			return fmt.Errorf(
-				"%w (reason=no_live_evidence transport_seen=%t frames=%d decode_errors=%d)",
+				"%w (transport_seen=%t frames=%d decode_errors=%d)",
 				collector.ErrOffline,
 				transportSeen,
 				frameCount,
@@ -217,13 +174,19 @@ func (c *BrowserCollector) Run(
 				continue
 			}
 
-			// A real public-room event is also strong evidence that the anchor is
-			// live, even if the browser did not expose a media URL yet.
-			if len(result.Events) > 0 && !liveNotified {
-				if err := markLive("decoded_event"); err != nil {
+			if !liveNotified {
+				if err := onLive(ctx); err != nil {
 					return err
 				}
+				liveNotified = true
+				log.Printf(
+					"collector room=%d status=live frames=%d",
+					room.ID,
+					frameCount,
+				)
 			}
+
+			resetTimer(timer, c.frameTimeout)
 
 			for _, event := range result.Events {
 				if err := emit(ctx, event); err != nil {

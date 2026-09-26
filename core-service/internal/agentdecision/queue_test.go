@@ -169,6 +169,38 @@ func TestRemoveCanRemovePendingOrClaimedDecision(t *testing.T) {
 	}
 }
 
+func TestSimulationCanCompleteWithoutEnteringCooldown(t *testing.T) {
+	now := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
+	created := q.Enqueue(15, Candidate{
+		Source:       SourceManual,
+		Question:     "哪年的菜籽",
+		ManualOrigin: "test_simulation",
+		ManualAction: "answer",
+	})
+	if created.Item == nil {
+		t.Fatalf("simulation should enqueue even when semantic topic is unknown: %#v", created)
+	}
+	claimed, ok := q.ClaimNext(15)
+	if !ok || claimed == nil || claimed.ManualOrigin != "test_simulation" {
+		t.Fatalf("simulation claim failed: %#v", claimed)
+	}
+	result, ok := q.CompleteSimulation(15, claimed.ID, "咱家用的是今年新采购的菜籽。", "intent", "智能体+菜籽油+方案1", 11)
+	if !ok {
+		t.Fatal("simulation completion failed")
+	}
+	if result.Question != "哪年的菜籽" || result.UserLayerVersion != 11 {
+		t.Fatalf("unexpected simulation result: %#v", result)
+	}
+	snapshot := q.Snapshot(15)
+	if len(snapshot.Queue) != 0 || len(snapshot.RecentlyAnswered) != 0 {
+		t.Fatalf("simulation must not pollute real queue/cooldown: %#v", snapshot)
+	}
+	if len(snapshot.SimulationResults) != 1 || snapshot.SimulationResults[0].Reply == "" {
+		t.Fatalf("simulation result missing: %#v", snapshot.SimulationResults)
+	}
+}
+
 func TestCapacityDropsLowestPriorityAndTTLExpires(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 30*time.Second, 90*time.Second, 2)

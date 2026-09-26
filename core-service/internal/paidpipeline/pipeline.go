@@ -44,11 +44,8 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 	if runtime.State != agentwork.StateWorking {
 		return
 	}
-	// 中控模式只保留免费采集/聚类，由人工决定是否回答；主播模式才允许
-	// 付费智能体根据事件自动生成待打断候选。
-	if runtime.Mode == agentwork.ModeControl {
-		return
-	}
+	// 中控和主播模式都允许监控 Agent 扫描新事件并生成待打断候选。
+	// 两种模式只在后续播音/主线衔接方式上不同，不能阻断问题扫描装载。
 
 	if signal.IsQuestion {
 		priority := 30

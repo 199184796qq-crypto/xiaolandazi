@@ -26,6 +26,8 @@ type Snapshot struct {
 	RoomID         int64      `json:"room_id"`
 	State          State      `json:"state"`
 	Mode           Mode       `json:"mode"`
+	PlanID         int64      `json:"plan_id,omitempty"`
+	PlanName       string     `json:"plan_name,omitempty"`
 	WorkingSeconds uint64     `json:"working_seconds"`
 	WorkingSince   *time.Time `json:"working_since,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`
@@ -35,6 +37,8 @@ type roomState struct {
 	roomID       int64
 	state        State
 	mode         Mode
+	planID       int64
+	planName     string
 	accumulated  time.Duration
 	workingSince time.Time
 	updatedAt    time.Time
@@ -176,6 +180,31 @@ func (r *Registry) Mode(roomID int64) Mode {
 	return r.Get(roomID).Mode
 }
 
+func (r *Registry) SetPlan(roomID, planID int64, planName string) (Snapshot, error) {
+	if roomID <= 0 {
+		return Snapshot{}, errors.New("room_id must be positive")
+	}
+	if planID < 0 {
+		return Snapshot{}, errors.New("plan_id must not be negative")
+	}
+	planName = strings.TrimSpace(planName)
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.rooms[roomID]
+	if current == nil {
+		current = &roomState{roomID: roomID, state: StateStopped, mode: ModeControl, updatedAt: now}
+		r.rooms[roomID] = current
+	}
+	r.accrueLocked(current, now)
+	if current.planID != planID || current.planName != planName {
+		current.planID = planID
+		current.planName = planName
+		current.updatedAt = now
+	}
+	return r.snapshotLocked(current, now), nil
+}
+
 func (r *Registry) IsWorking(roomID int64) bool {
 	return r.Get(roomID).State == StateWorking
 }
@@ -219,6 +248,8 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		RoomID:         current.roomID,
 		State:          current.state,
 		Mode:           current.mode,
+		PlanID:         current.planID,
+		PlanName:       current.planName,
 		WorkingSeconds: uint64(total / time.Second),
 		WorkingSince:   workingSince,
 		UpdatedAt:      current.updatedAt,

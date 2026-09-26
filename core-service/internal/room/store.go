@@ -29,7 +29,7 @@ func NewStore(database *sql.DB) *Store {
 func (s *Store) List(ctx context.Context, tenantID *int64) ([]model.Room, error) {
 	query := `
 		SELECT id, tenant_id, platform, external_room_id, source_url, name, status,
-		       collector_mode, monitor_enabled, device_online, online_count, last_event_at, created_at, updated_at
+		       collector_mode, monitor_enabled, monitor_started_at, device_online, online_count, last_event_at, created_at, updated_at
 		FROM core_rooms
 	`
 	args := make([]any, 0, 1)
@@ -76,7 +76,7 @@ func (s *Store) ListByKeys(ctx context.Context, keys []Key) ([]model.Room, error
 	}
 	query := `
 		SELECT id, tenant_id, platform, external_room_id, source_url, name, status,
-		       collector_mode, monitor_enabled, device_online, online_count, last_event_at, created_at, updated_at
+		       collector_mode, monitor_enabled, monitor_started_at, device_online, online_count, last_event_at, created_at, updated_at
 		FROM core_rooms
 		WHERE (tenant_id, id) IN (` + strings.Join(placeholders, ",") + `)
 	`
@@ -99,7 +99,7 @@ func (s *Store) ListByKeys(ctx context.Context, keys []Key) ([]model.Room, error
 func (s *Store) Get(ctx context.Context, tenantID *int64, roomID int64) (model.Room, error) {
 	query := `
 		SELECT id, tenant_id, platform, external_room_id, source_url, name, status,
-		       collector_mode, monitor_enabled, device_online, online_count, last_event_at, created_at, updated_at
+		       collector_mode, monitor_enabled, monitor_started_at, device_online, online_count, last_event_at, created_at, updated_at
 		FROM core_rooms
 		WHERE id = ?
 	`
@@ -222,6 +222,7 @@ type rowScanner interface {
 
 func scanRoom(scanner rowScanner) (model.Room, error) {
 	var item model.Room
+	var monitorStartedAt sql.NullTime
 	var lastEventAt sql.NullTime
 
 	err := scanner.Scan(
@@ -234,6 +235,7 @@ func scanRoom(scanner rowScanner) (model.Room, error) {
 		&item.Status,
 		&item.CollectorMode,
 		&item.MonitorEnabled,
+		&monitorStartedAt,
 		&item.DeviceOnline,
 		&item.OnlineCount,
 		&lastEventAt,
@@ -242,6 +244,11 @@ func scanRoom(scanner rowScanner) (model.Room, error) {
 	)
 	if err != nil {
 		return model.Room{}, err
+	}
+
+	if monitorStartedAt.Valid {
+		value := monitorStartedAt.Time
+		item.MonitorStartedAt = &value
 	}
 
 	if lastEventAt.Valid {
@@ -309,8 +316,21 @@ func (s *Store) UpdateRuntime(
 	args := make([]any, 0, 4)
 
 	if input.MonitorEnabled != nil {
-		sets = append(sets, "monitor_enabled = ?")
-		args = append(args, *input.MonitorEnabled)
+		if *input.MonitorEnabled {
+			sets = append(
+				sets,
+				"monitor_started_at = CASE WHEN monitor_enabled = 0 OR monitor_started_at IS NULL THEN CURRENT_TIMESTAMP(3) ELSE monitor_started_at END",
+				"monitor_enabled = 1",
+			)
+		} else {
+			sets = append(
+				sets,
+				"monitor_enabled = 0",
+				"monitor_started_at = NULL",
+				"status = 'stopped'",
+				"online_count = 0",
+			)
+		}
 	}
 	if input.DeviceOnline != nil {
 		sets = append(sets, "device_online = ?")

@@ -23,13 +23,14 @@ import (
 )
 
 const (
-	defaultAddr        = "127.0.0.1:8082"
-	defaultPublicURL   = "http://127.0.0.1:8082"
-	defaultToken       = "local-audio-dev-token"
-	defaultCoreToken   = "local-core-dev-token"
-	maxBodyBytes       = 64 << 10
-	defaultReceiverTTL = 45 * time.Second
-	defaultTestWAVPath = `E:\直播伴播\测试素材\母带时间轴测试\mainline_same_tts.wav`
+	defaultAddr         = "127.0.0.1:8082"
+	defaultPublicURL    = "http://127.0.0.1:8082"
+	defaultToken        = "local-audio-dev-token"
+	defaultCoreToken    = "local-core-dev-token"
+	maxBodyBytes        = 64 << 10
+	defaultReceiverTTL  = 45 * time.Second
+	defaultTestWAVPath  = `E:\直播伴播\测试素材\母带时间轴测试\mainline_same_tts.wav`
+	schedulerReceiverID = "audio-service-scheduler"
 )
 
 type SpeechTask struct {
@@ -357,6 +358,7 @@ func (b *Broker) CreateTestTask(roomID int64, sessionID, requestedID, label stri
 		}
 		wav = testChimeWAV(durationMS)
 	}
+	now := time.Now().UTC()
 	task := SpeechTask{
 		ID:         id,
 		RoomID:     roomID,
@@ -366,7 +368,8 @@ func (b *Broker) CreateTestTask(roomID int64, sessionID, requestedID, label stri
 		AudioURL:   b.publicURL + "/v1/tasks/" + url.PathEscape(id) + "/audio.wav",
 		MimeType:   "audio/wav",
 		DurationMS: durationMS,
-		CreatedAt:  time.Now().UTC(),
+		StartedAt:  now,
+		CreatedAt:  now,
 	}
 
 	b.mu.Lock()
@@ -395,6 +398,7 @@ func (b *Broker) CreateTestTask(roomID int64, sessionID, requestedID, label stri
 			// A slow receiver must never block the room program or other receivers.
 		}
 	}
+	b.scheduleTaskCompletion(task.ID)
 	return task, nil
 }
 
@@ -454,6 +458,7 @@ func (b *Broker) CreateExternalWAVTask(ctx context.Context, roomID int64, sessio
 		default:
 		}
 	}
+	b.scheduleTaskCompletion(task.ID)
 	return task, nil
 }
 
@@ -840,6 +845,7 @@ func (b *Broker) resumeAfterInteraction(program *roomProgram, interactionTaskID 
 	<-timer.C
 
 	now := time.Now().UTC()
+	b.completeTaskByClock(interactionTaskID, now)
 	b.mu.RLock()
 	current := b.programs[program.RoomID]
 	canResume := current == program && current.Running && current.Suspended && current.CurrentTaskID == interactionTaskID
@@ -943,6 +949,61 @@ func (b *Broker) programSnapshotLocked(program *roomProgram, now time.Time) Room
 	return snapshot
 }
 
+func (b *Broker) scheduleTaskCompletion(taskID string) {
+	b.mu.RLock()
+	state := b.tasks[taskID]
+	if state == nil {
+		b.mu.RUnlock()
+		return
+	}
+	task := state.task
+	b.mu.RUnlock()
+	if task.DurationMS <= 0 {
+		return
+	}
+	startedAt := task.StartedAt
+	if startedAt.IsZero() {
+		startedAt = task.CreatedAt
+	}
+	deadline := startedAt.Add(time.Duration(task.DurationMS) * time.Millisecond)
+	delay := time.Until(deadline)
+	if delay < 0 {
+		delay = 0
+	}
+	time.AfterFunc(delay, func() {
+		b.completeTaskByClock(taskID, time.Now().UTC())
+	})
+}
+
+func (b *Broker) completeTaskByClock(taskID string, occurredAt time.Time) bool {
+	b.mu.Lock()
+	state := b.tasks[taskID]
+	if state == nil || state.terminal {
+		b.mu.Unlock()
+		return false
+	}
+	state.terminal = true
+	if b.roomLatest[state.task.RoomID] == taskID {
+		delete(b.roomLatest, state.task.RoomID)
+	}
+	event := PlaybackEvent{
+		SpeechTaskID: state.task.ID,
+		RoomID:       state.task.RoomID,
+		SessionID:    state.task.SessionID,
+		ReceiverID:   schedulerReceiverID,
+		Status:       "COMPLETED",
+		ProgressMS:   state.task.DurationMS,
+		OccurredAt:   occurredAt.UTC(),
+	}
+	state.receiverEvents[schedulerReceiverID] = event
+	callbackURL := state.callbackURL
+	b.mu.Unlock()
+	if callbackURL != "" {
+		b.postCoreEvent(callbackURL, event)
+	}
+	return true
+}
+
 func (b *Broker) pruneLocked() {
 	if len(b.tasks) <= 512 {
 		return
@@ -985,13 +1046,17 @@ func (b *Broker) Subscribe(roomID int64) (<-chan SpeechTask, *SpeechTask, func()
 	if id := b.roomLatest[roomID]; id != "" {
 		if state := b.tasks[id]; state != nil && !state.terminal {
 			copy := state.task
-			if copy.ProgramID != "" && !copy.StartedAt.IsZero() {
+			if !copy.StartedAt.IsZero() {
 				copy.StartMS = int(time.Since(copy.StartedAt).Milliseconds())
 				if copy.StartMS < 0 {
 					copy.StartMS = 0
 				}
-				if copy.StartMS >= copy.DurationMS {
-					copy.StartMS = max(0, copy.DurationMS-1)
+				if copy.DurationMS > 0 && copy.StartMS >= copy.DurationMS {
+					state.terminal = true
+					if b.roomLatest[roomID] == id {
+						delete(b.roomLatest, roomID)
+					}
+					copy.StartMS = copy.DurationMS
 				}
 			} else if state.referenceReceiver != "" {
 				if event, ok := state.receiverEvents[state.referenceReceiver]; ok {
@@ -1100,22 +1165,15 @@ func (b *Broker) ReportEvent(taskID string, input PlaybackEvent) (PlaybackEvent,
 	}
 	state.receiverEvents[input.ReceiverID] = input
 	isReference := state.referenceReceiver == input.ReceiverID
-	callbackURL := state.callbackURL
-	if isReference && input.Status == "COMPLETED" && !state.programManaged {
-		state.terminal = true
-	}
 	if isReference && input.Status == "FAILED" {
-		// A later healthy receiver may become the new room playback reference.
+		// Receiver feedback is health/observability only. A failed device may stop
+		// being the reference for diagnostics, but it never controls task lifetime.
 		state.referenceReceiver = ""
 	}
 	b.mu.Unlock()
 
-	if isReference && callbackURL != "" {
-		// Preserve the reference receiver's event order all the way into Core.
-		// The receiver itself also serializes feedback requests, so READY cannot
-		// be observed after COMPLETED simply because callback goroutines raced.
-		b.postCoreEvent(callbackURL, input)
-	}
+	// Playback devices only report what happened locally. Task state and Core
+	// progression are driven by the server clock, never by receiver callbacks.
 	return input, isReference, nil
 }
 

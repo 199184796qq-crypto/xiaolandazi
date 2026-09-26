@@ -21,6 +21,48 @@ type roomAudioInteractionInput struct {
 	Topic      string `json:"topic,omitempty"`
 }
 
+func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audioout.SpeechTask, decisionID string) {
+	if roomID <= 0 || strings.TrimSpace(task.ID) == "" || task.DurationMS <= 0 {
+		return
+	}
+	startedAt := task.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	deadline := startedAt.Add(time.Duration(task.DurationMS) * time.Millisecond)
+	delay := time.Until(deadline)
+	if delay < 0 {
+		delay = 0
+	}
+	time.AfterFunc(delay, func() {
+		if s.speechRuntime == nil {
+			return
+		}
+		snapshot, err := s.speechRuntime.Snapshot(roomID)
+		if err != nil || snapshot.Interrupt.SpeechTaskID != task.ID {
+			return
+		}
+		if snapshot.Interrupt.Status != speechruntime.StatusPlaying && snapshot.Interrupt.Status != speechruntime.StatusReady {
+			return
+		}
+		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
+			Track:        speechruntime.TrackInterrupt,
+			Status:       speechruntime.StatusCompleted,
+			Text:         snapshot.Interrupt.Text,
+			QuestionText: snapshot.Interrupt.QuestionText,
+			ReplyText:    snapshot.Interrupt.ReplyText,
+			Source:       snapshot.Interrupt.Source,
+			AudioURL:     snapshot.Interrupt.AudioURL,
+			DecisionID:   snapshot.Interrupt.DecisionID,
+			SpeechTaskID: snapshot.Interrupt.SpeechTaskID,
+			StartedAt:    snapshot.Interrupt.StartedAt,
+		})
+		if s.agentDecisions != nil && strings.TrimSpace(decisionID) != "" {
+			_, _ = s.agentDecisions.Complete(roomID, decisionID)
+		}
+	})
+}
+
 func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Request) {
 	roomID, ok := pathID(w, r, "roomID")
 	if !ok {
@@ -90,12 +132,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	controlMode := s.agentWork.Mode(roomID) == agentwork.ModeControl
 	state := s.audioDevState()
-	if state == nil || state.client == nil || !state.client.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "播音分发层尚未配置")
+	if !controlMode && (state == nil || state.client == nil || !state.client.Enabled()) {
+		writeError(w, http.StatusServiceUnavailable, "主线播音调度尚未配置")
 		return
 	}
-	controlMode := s.agentWork.Mode(roomID) == agentwork.ModeControl
+	if controlMode && s.audioHub == nil {
+		writeError(w, http.StatusServiceUnavailable, "Core声音广播尚未配置")
+		return
+	}
 	var program audioout.RoomProgramSnapshot
 	var switchAtMS *int
 	if !controlMode {
@@ -146,25 +192,38 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		})
 	}
 
-	callbackBase := state.callbackBase
-	if callbackBase == "" {
-		callbackBase = "http://127.0.0.1:8081"
-	}
-	callbackURL := callbackBase + "/internal/v1/audio/events"
 	var task audioout.SpeechTask
 	if controlMode {
 		sessionID := input.SessionID
 		if sessionID == "" {
 			sessionID = fmt.Sprintf("control-%d", roomID)
 		}
-		task, err = state.client.CreateExternalTask(r.Context(), audioout.CreateExternalTaskInput{
-			RoomID:      roomID,
-			SessionID:   sessionID,
-			Label:       fmt.Sprintf("%s · %s", label, input.Topic),
-			AudioURL:    input.AudioURL,
-			CallbackURL: callbackURL,
-		})
+		hubTask, hubErr := s.audioHub.CreateExternalTask(
+			r.Context(), roomID, sessionID, fmt.Sprintf("%s · %s", label, input.Topic), input.AudioURL,
+		)
+		err = hubErr
+		if hubErr == nil {
+			task = audioout.SpeechTask{
+				ID:         hubTask.ID,
+				RoomID:     hubTask.RoomID,
+				SessionID:  hubTask.SessionID,
+				Kind:       hubTask.Kind,
+				Label:      hubTask.Label,
+				AudioURL:   hubTask.AudioURL,
+				MimeType:   hubTask.MimeType,
+				DurationMS: hubTask.DurationMS,
+				StartMS:    hubTask.StartMS,
+				Sequence:   hubTask.Sequence,
+				StartedAt:  hubTask.StartedAt,
+				CreatedAt:  hubTask.CreatedAt,
+			}
+		}
 	} else {
+		callbackBase := state.callbackBase
+		if callbackBase == "" {
+			callbackBase = "http://127.0.0.1:8081"
+		}
+		callbackURL := callbackBase + "/internal/v1/audio/events"
 		var snapshot audioout.RoomProgramSnapshot
 		snapshot, err = state.client.InsertTestProgramInteraction(r.Context(), audioout.InsertInteractionInput{
 			RoomID:      roomID,
@@ -199,21 +258,26 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	state.mu.Lock()
-	state.interactions[task.ID] = &audioInteractionMeta{
-		RoomID:       roomID,
-		Topic:        input.Topic,
-		ResumeMode:   resumeMode,
-		DecisionID:   input.DecisionID,
-		QuestionText: input.Question,
-		ReplyText:    input.ReplyText,
-		Source:       source,
-		AudioURL:     input.AudioURL,
+	if state != nil {
+		state.mu.Lock()
+		state.interactions[task.ID] = &audioInteractionMeta{
+			RoomID:       roomID,
+			Topic:        input.Topic,
+			ResumeMode:   resumeMode,
+			DecisionID:   input.DecisionID,
+			QuestionText: input.Question,
+			ReplyText:    input.ReplyText,
+			Source:       source,
+			AudioURL:     input.AudioURL,
+		}
+		state.mu.Unlock()
 	}
-	state.mu.Unlock()
 
 	if s.speechRuntime != nil {
-		now := time.Now().UTC()
+		startedAt := task.StartedAt
+		if startedAt.IsZero() {
+			startedAt = time.Now().UTC()
+		}
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 			Track:        speechruntime.TrackInterrupt,
 			Status:       speechruntime.StatusPlaying,
@@ -224,9 +288,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			AudioURL:     input.AudioURL,
 			DecisionID:   input.DecisionID,
 			SpeechTaskID: task.ID,
-			StartedAt:    &now,
+			StartedAt:    &startedAt,
 		})
 	}
+	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dispatched":   true,
 		"action":       input.Action,

@@ -30,7 +30,7 @@ func TestManualCandidateTTSEligibleAcceptsRecentDirectDanmaku(t *testing.T) {
 	}
 }
 
-func TestManualCandidateTTSEligibleRejectsOldDirectDanmaku(t *testing.T) {
+func TestManualCandidateTTSEligibleAcceptsOldRetainedDirectDanmaku(t *testing.T) {
 	store := events.NewStore(nil, 5000)
 	event := store.BuildEvent(7, 11, model.CreateEventInput{
 		EventType:  "comment",
@@ -41,11 +41,38 @@ func TestManualCandidateTTSEligibleRejectsOldDirectDanmaku(t *testing.T) {
 	store.Accept(event)
 	server := &Server{events: store}
 
-	if server.manualCandidateTTSEligible(context.Background(), 7, 11, agentdecision.Candidate{
+	if !server.manualCandidateTTSEligible(context.Background(), 7, 11, agentdecision.Candidate{
 		EventID:  event.ID,
 		Question: event.Content,
 	}) {
-		t.Fatal("danmaku older than 30 minutes must not be TTS eligible")
+		t.Fatal("retained direct danmaku must remain manually answerable without a 30-minute cutoff")
+	}
+}
+
+func TestManualCandidateTTSEligibleAcceptsChatEvictedFromRecentWindow(t *testing.T) {
+	store := events.NewStoreWithImportantLimit(nil, 2, 20)
+	chat := store.BuildEvent(7, 11, model.CreateEventInput{
+		EventType:  "chat",
+		UserID:     "u-1",
+		Content:    "哪年的菜籽",
+		OccurredAt: time.Now().UTC(),
+	})
+	store.Accept(chat)
+	for index := 0; index < 3; index++ {
+		store.Accept(store.BuildEvent(7, 11, model.CreateEventInput{
+			EventType:  "member",
+			UserID:     "u-member",
+			Content:    "进入直播间",
+			OccurredAt: time.Now().UTC(),
+		}))
+	}
+	server := &Server{events: store}
+
+	if !server.manualCandidateTTSEligible(context.Background(), 7, 11, agentdecision.Candidate{
+		EventID:  chat.ID,
+		Question: chat.Content,
+	}) {
+		t.Fatal("chat retained in important history must remain manually answerable after leaving recent window")
 	}
 }
 

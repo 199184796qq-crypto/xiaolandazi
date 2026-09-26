@@ -15,12 +15,14 @@ import (
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
-	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/basepipeline"
+	"livecompanion/core/internal/capture"
 	"livecompanion/core/internal/collector"
 	"livecompanion/core/internal/collector/douyin"
 	"livecompanion/core/internal/config"
 	"livecompanion/core/internal/coordination"
+	"livecompanion/core/internal/coreaudio"
 	appdb "livecompanion/core/internal/db"
 	"livecompanion/core/internal/eventarchive"
 	eventstore "livecompanion/core/internal/events"
@@ -33,6 +35,7 @@ import (
 	"livecompanion/core/internal/rediscache"
 	roomstore "livecompanion/core/internal/room"
 	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/userblock"
 )
@@ -354,6 +357,16 @@ func main() {
 	}
 	defer mediaManager.Close()
 
+	captureManager, err := capture.NewManager(
+		cfg.FFmpegPath,
+		cfg.CaptureRoot,
+		collectorManager,
+	)
+	if err != nil {
+		log.Fatalf("create capture manager: %v", err)
+	}
+	defer captureManager.Close()
+
 	if err := collectorManager.Resume(startupCtx); err != nil {
 		log.Fatalf("resume collectors: %v", err)
 	}
@@ -368,8 +381,15 @@ func main() {
 		cfg.Env,
 		cfg.InternalToken,
 	)
-	audioClient := audioout.NewClient(cfg.AudioServiceURL, cfg.AudioServiceToken)
-	api.SetAudioClient(audioClient, cfg.CorePublicURL)
+	audioHub := audiohub.New()
+	coreAudioClient, err := coreaudio.New(audioHub, cfg.CorePublicURL, cfg.CoreAudioTestWAVPath)
+	if err != nil {
+		log.Fatalf("create core audio runtime: %v", err)
+	}
+	api.SetAudioHub(audioHub)
+	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
+	api.SetCaptureManager(captureManager)
+	api.SetSpeechAnalysisManager(speechanalysis.NewManager())
 	api.SetRoomBrain(brain)
 	api.SetQuestionQueue(questions)
 	api.SetAgentDecisionQueue(agentDecisions)

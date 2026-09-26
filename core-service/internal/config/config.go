@@ -26,9 +26,8 @@ type Config struct {
 	PublicEventLogEnabled    bool
 	EventArchiveSpoolDir     string
 	InternalToken            string
-	AudioServiceURL          string
-	AudioServiceToken        string
 	CorePublicURL            string
+	CoreAudioTestWAVPath     string
 	BrowserPath              string
 	BrowserHeadless          bool
 	CollectorWorkers         int
@@ -43,6 +42,7 @@ type Config struct {
 	FFmpegPath               string
 	MediaCacheRoot           string
 	MediaMaxSessions         int
+	CaptureRoot              string
 	StorageDriver            string
 	MediaRoot                string
 	OSSEndpoint              string
@@ -73,9 +73,8 @@ func Load() Config {
 		PublicEventLogEnabled:    envBool("PUBLIC_EVENT_LOG_ENABLED", env == "development"),
 		EventArchiveSpoolDir:     envOrDefault("EVENT_ARCHIVE_SPOOL_DIR", "data/event-archive-spool"),
 		InternalToken:            envOrDefault("CORE_INTERNAL_TOKEN", "local-core-dev-token"),
-		AudioServiceURL:          envOrDefault("AUDIO_SERVICE_URL", "http://127.0.0.1:8082"),
-		AudioServiceToken:        envOrDefault("AUDIO_INTERNAL_TOKEN", "local-audio-dev-token"),
 		CorePublicURL:            envOrDefault("CORE_PUBLIC_URL", "http://127.0.0.1:8081"),
+		CoreAudioTestWAVPath:     envOrDefault("CORE_AUDIO_TEST_WAV_PATH", envOrDefault("AUDIO_TEST_WAV_PATH", `E:\直播伴播\测试素材\母带时间轴测试\mainline_same_tts.wav`)),
 		BrowserPath:              strings.TrimSpace(os.Getenv("COLLECTOR_BROWSER_PATH")),
 		BrowserHeadless:          envBool("COLLECTOR_BROWSER_HEADLESS", true),
 		CollectorWorkers:         envPositiveInt("COLLECTOR_WORKERS", 5),
@@ -90,6 +89,7 @@ func Load() Config {
 		FFmpegPath:               envOrDefault("FFMPEG_PATH", "ffmpeg"),
 		MediaCacheRoot:           strings.TrimSpace(os.Getenv("MEDIA_CACHE_ROOT")),
 		MediaMaxSessions:         envPositiveInt("MEDIA_MAX_SESSIONS", 8),
+		CaptureRoot:              envOrDefault("CAPTURE_ROOT", "data/recordings"),
 		StorageDriver:            strings.ToLower(envOrDefault("STORAGE_DRIVER", "local")),
 		MediaRoot:                envOrDefault("MEDIA_ROOT", "data/media"),
 		OSSEndpoint:              strings.TrimSpace(os.Getenv("OSS_ENDPOINT")),

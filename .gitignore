@@ -42,3 +42,6 @@ data/run/*
 data/chrome-auth-check*/
 **/__pycache__/
 *.py[cod]
+
+data/douyin-browser-profile/
+data/recordings/

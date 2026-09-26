@@ -61,7 +61,7 @@ func TestPaidPipelineOnlyQueuesWhileRuntimeWorking(t *testing.T) {
 	}
 }
 
-func TestControlModeKeepsPaidAutonomyQuiet(t *testing.T) {
+func TestControlModeAlsoAutoQueuesQuestions(t *testing.T) {
 	runtime := agentwork.New()
 	decisions := agentdecision.New()
 	pipeline := New(runtime, decisions)
@@ -71,16 +71,16 @@ func TestControlModeKeepsPaidAutonomyQuiet(t *testing.T) {
 	pipeline.Handle(model.RoomEvent{RoomID: 5, EventType: "chat", Content: "多少钱？"}, basepipeline.Signal{
 		RoomID: 5, Content: "多少钱？", Topic: "FAMILY:价格费用", IsQuestion: true,
 	})
-	if got := decisions.Snapshot(5).Queue; len(got) != 0 {
-		t.Fatalf("control mode must not auto queue paid decisions: %#v", got)
+	if got := decisions.Snapshot(5).Queue; len(got) != 1 {
+		t.Fatalf("control mode should auto queue monitor-agent decisions: %#v", got)
 	}
 	if _, err := runtime.SetMode(5, agentwork.ModeAnchor); err != nil {
 		t.Fatal(err)
 	}
-	pipeline.Handle(model.RoomEvent{RoomID: 5, EventType: "chat", Content: "多少钱？"}, basepipeline.Signal{
-		RoomID: 5, Content: "多少钱？", Topic: "FAMILY:价格费用", IsQuestion: true,
+	pipeline.Handle(model.RoomEvent{RoomID: 5, EventType: "chat", Content: "什么时候发货？"}, basepipeline.Signal{
+		RoomID: 5, Content: "什么时候发货？", Topic: "FAMILY:发货物流", IsQuestion: true,
 	})
-	if got := decisions.Snapshot(5).Queue; len(got) != 1 {
+	if got := decisions.Snapshot(5).Queue; len(got) != 2 {
 		t.Fatalf("anchor mode should auto queue paid decisions: %#v", got)
 	}
 }

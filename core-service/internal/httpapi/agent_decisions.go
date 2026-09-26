@@ -8,6 +8,7 @@ import (
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/speechruntime"
 )
 
@@ -93,8 +94,9 @@ func (s *Server) enqueueAgentDecision(w http.ResponseWriter, r *http.Request, so
 		writeError(w, http.StatusBadRequest, "question or topic is required")
 		return
 	}
-	if source == agentdecision.SourceManual && strings.TrimSpace(input.ManualOrigin) != "agent_input" && !s.manualCandidateTTSEligible(r.Context(), tenantID, roomID, input) {
-		writeError(w, http.StatusConflict, "这个问题已超过30分钟实时回答窗口，仅保留用于复盘")
+	manualOrigin := strings.ToLower(strings.TrimSpace(input.ManualOrigin))
+	if source == agentdecision.SourceManual && manualOrigin != "agent_input" && manualOrigin != "test_simulation" && !s.manualCandidateTTSEligible(r.Context(), tenantID, roomID, input) {
+		writeError(w, http.StatusConflict, "这个问题已不在当前直播问题池中")
 		return
 	}
 	result := s.agentDecisions.Enqueue(roomID, input)
@@ -142,6 +144,14 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	queue := s.agentDecisions.Snapshot(roomID).Queue
 	if len(queue) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "empty"})
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(queue[0].ManualOrigin), "test_simulation") {
+		item, claimed := s.agentDecisions.ClaimNext(roomID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"claimed": claimed,
+			"item":    item,
+		})
 		return
 	}
 	if s.speechRuntime != nil {
@@ -200,23 +210,37 @@ func speechSnapshotBusy(snapshot speechruntime.Snapshot) bool {
 
 func (s *Server) manualCandidateTTSEligible(ctx context.Context, tenantID, roomID int64, input agentdecision.Candidate) bool {
 	// Direct per-danmaku manual actions are allowed independently from semantic
-	// question clustering. The operator clicked a concrete public-screen event,
-	// so validate that exact Core event and its 30-minute realtime window.
+	// question clustering. There is no artificial 30-minute answer cutoff: if
+	// the event is still present in Core's retained event stream it can be used.
 	if input.EventID > 0 && s.events != nil {
-		items, err := s.events.ListRecent(ctx, &tenantID, roomID, 5000)
-		if err == nil {
+		matchesDirectChat := func(items []model.RoomEvent) bool {
 			for _, event := range items {
 				if event.ID != input.EventID {
 					continue
 				}
 				eventType := strings.ToLower(strings.TrimSpace(event.EventType))
-				if eventType != "chat" && eventType != "comment" {
-					return false
-				}
-				if event.OccurredAt.IsZero() || time.Since(event.OccurredAt) > 30*time.Minute {
-					return false
-				}
+				return eventType == "chat" || eventType == "comment"
+			}
+			return false
+		}
+
+		// The hot recent channel is intentionally small and can be displaced by
+		// high-frequency member/entry events. Manual answerability follows the
+		// longer-lived important chat channel so a danmaku that is still visible
+		// in the current session does not become unanswerable just because it fell
+		// out of the recent 500-event window.
+		if items, err := s.events.ListRecent(ctx, &tenantID, roomID, 5000); err == nil && matchesDirectChat(items) {
+			return true
+		}
+		if items, err := s.events.ListImportant(ctx, &tenantID, roomID, "chat", 0, 20000); err == nil && matchesDirectChat(items) {
+			stats, statsErr := s.events.GetSessionStats(ctx, roomID)
+			if statsErr != nil || stats.StartedAt.IsZero() {
 				return true
+			}
+			for _, event := range items {
+				if event.ID == input.EventID {
+					return !event.OccurredAt.Before(stats.StartedAt)
+				}
 			}
 		}
 	}
@@ -234,12 +258,12 @@ func (s *Server) manualCandidateTTSEligible(ctx context.Context, tenantID, roomI
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(input.ManualOrigin), "question_cluster") {
-			return bucket.TTSEligibleCount > 0
+			return len(bucket.Questions) > 0
 		}
 		if input.EventID <= 0 && question == "" {
-			return bucket.TTSEligibleCount > 0
+			return len(bucket.Questions) > 0
 		}
-		for _, candidate := range bucket.TTSQuestions {
+		for _, candidate := range bucket.Questions {
 			if input.EventID > 0 && candidate.EventID == input.EventID {
 				return true
 			}
@@ -293,6 +317,38 @@ func (s *Server) removeRoomAgentDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
+}
+
+func (s *Server) completeRoomAgentSimulation(w http.ResponseWriter, r *http.Request) {
+	if s.agentDecisions == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent decision queue is not configured")
+		return
+	}
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("decisionID"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "decision id is required")
+		return
+	}
+	var input struct {
+		Reply            string `json:"reply"`
+		ExecutionMode    string `json:"execution_mode"`
+		PlanName         string `json:"plan_name"`
+		UserLayerVersion uint64 `json:"user_layer_version"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid simulation result")
+		return
+	}
+	result, completed := s.agentDecisions.CompleteSimulation(roomID, id, input.Reply, input.ExecutionMode, input.PlanName, input.UserLayerVersion)
+	if !completed {
+		writeError(w, http.StatusNotFound, "simulation decision is no longer pending")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 }
 
 func (s *Server) completeRoomAgentDecision(w http.ResponseWriter, r *http.Request) {

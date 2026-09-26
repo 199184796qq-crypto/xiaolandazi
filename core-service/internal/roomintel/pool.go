@@ -19,7 +19,6 @@ const (
 
 const (
 	realtimeQuestionDetailRetention = 10 * time.Hour
-	ttsAggregateWindow              = 30 * time.Minute
 )
 
 type EventType string
@@ -392,7 +391,6 @@ func (p *Pool) Snapshot(now time.Time, answerCapacityPerMinute float64) Snapshot
 	}
 
 	questionDetailCutoff := now.Add(-realtimeQuestionDetailRetention)
-	ttsCutoff := now.Add(-ttsAggregateWindow)
 	for topic, state := range p.buckets {
 		users := map[string]struct{}{}
 		retained := state.events[:0]
@@ -458,10 +456,8 @@ func (p *Pool) Snapshot(now time.Time, answerCapacityPerMinute float64) Snapshot
 				OccurredAt: event.OccurredAt,
 			}
 			bucket.Questions = append(bucket.Questions, question)
-			if !event.OccurredAt.Before(ttsCutoff) {
-				bucket.TTSQuestions = append(bucket.TTSQuestions, question)
-				bucket.TTSEligibleCount += int(event.Count)
-			}
+			bucket.TTSQuestions = append(bucket.TTSQuestions, question)
+			bucket.TTSEligibleCount += int(event.Count)
 		}
 		out.TopTopics = append(out.TopTopics, bucket)
 	}

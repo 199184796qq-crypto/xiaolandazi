@@ -116,6 +116,21 @@ func TestRealtimeQuestionBucketsDropDormantContextAfterTenHours(t *testing.T) {
 	}
 }
 
+func TestRetainedQuestionRemainsTTSEligiblePastThirtyMinutes(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	p := NewPool()
+	p.Add(Event{EventID: 21, Type: EventChat, UserID: "u1", Content: "这个多少钱", Question: true, OccurredAt: now.Add(-2 * time.Hour)})
+
+	s := p.Snapshot(now, 6)
+	if len(s.TopTopics) != 1 {
+		t.Fatalf("expected retained question bucket: %#v", s.TopTopics)
+	}
+	bucket := s.TopTopics[0]
+	if len(bucket.Questions) != 1 || len(bucket.TTSQuestions) != 1 || bucket.TTSEligibleCount != 1 {
+		t.Fatalf("question retained in realtime pool must stay answerable without a 30-minute cutoff: %#v", bucket)
+	}
+}
+
 func TestShippingQuestionAppearsImmediatelyAndLaterVariantsMerge(t *testing.T) {
 	now := time.Now().UTC()
 	p := NewPool()

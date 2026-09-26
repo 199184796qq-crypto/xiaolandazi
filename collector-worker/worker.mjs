@@ -118,8 +118,6 @@ async function stopRoom(roomId, notify = true) {
 
   rooms.delete(key);
   session.stopped = true;
-  if (session.stateCheckTimer) clearTimeout(session.stateCheckTimer);
-  if (session.statePollTimer) clearInterval(session.statePollTimer);
 
   try {
     await session.cdp?.detach();
@@ -163,137 +161,6 @@ function classifyStreamCandidate(url, contentType = "", resourceType = "") {
 
   return "";
 }
-
-const OFFLINE_ROOM_TEXTS = [
-  "\u76f4\u64ad\u5df2\u7ed3\u675f",
-  "\u5f53\u524d\u76f4\u64ad\u5df2\u7ed3\u675f",
-  "\u4e3b\u64ad\u5df2\u4e0b\u64ad",
-  "\u5df2\u4e0b\u64ad",
-  "\u6682\u672a\u5f00\u64ad",
-  "\u4e3b\u64ad\u6682\u672a\u5f00\u64ad",
-  "\u76f4\u64ad\u6682\u672a\u5f00\u59cb",
-];
-
-const LIVE_EVIDENCE_TTL_MS = 15000;
-
-function markLiveEvidence(session, reason) {
-  if (!session || session.stopped || session.offlineLatched) return;
-  session.lastLiveEvidenceAt = Date.now();
-  session.lastLiveEvidenceReason = reason;
-}
-
-function hasRecentLiveEvidence(session) {
-  return (
-    session.lastLiveEvidenceAt > 0 &&
-    Date.now() - session.lastLiveEvidenceAt <= LIVE_EVIDENCE_TTL_MS
-  );
-}
-
-function publishRoomState(session, roomId, state, reason) {
-  if (!session || session.stopped) return;
-  if (state === "live" && session.offlineLatched) return;
-  if (state === "offline") {
-    session.offlineLatched = true;
-    session.streamCandidates.clear();
-    session.lastLiveEvidenceAt = 0;
-    session.lastLiveEvidenceReason = "";
-  }
-  if (session.roomState === state) return;
-  session.roomState = state;
-  session.roomStateReason = reason;
-  send({
-    type: "room_state",
-    room_id: roomId,
-    state,
-    reason,
-  });
-  log("room " + roomId + " state=" + state + " reason=" + reason);
-}
-
-async function inspectRoomPageState(session, roomId, finalizeUnknown = false) {
-  if (!session || session.stopped || session.stateProbeBusy) return;
-  session.stateProbeBusy = true;
-  try {
-    let snapshot = null;
-    try {
-      snapshot = await session.page.evaluate((offlineTexts) => {
-        const bodyText = String(document.body?.innerText ?? "").replace(/\s+/g, " ");
-        const offlineText = offlineTexts.find((text) => bodyText.includes(text)) ?? "";
-        const liveVideo = [...document.querySelectorAll("video")].find((video) => {
-          const rect = video.getBoundingClientRect();
-          const visible = rect.width > 200 && rect.height > 120;
-          const durationLooksLive =
-            !Number.isFinite(video.duration) ||
-            video.duration === 0 ||
-            String(video.currentSrc || video.src || "").startsWith("blob:");
-          return (
-            visible &&
-            !video.ended &&
-            video.readyState >= 2 &&
-            video.currentTime > 0 &&
-            durationLooksLive
-          );
-        });
-        return {
-          offlineText,
-          liveVideo: Boolean(liveVideo),
-          liveVideoTime: Number(liveVideo?.currentTime ?? 0),
-        };
-      }, OFFLINE_ROOM_TEXTS);
-    } catch {}
-
-    if (snapshot?.liveVideo) {
-      const videoTime = Number(snapshot.liveVideoTime) || 0;
-      const videoRestarted = videoTime + 1 < session.lastVideoCurrentTime;
-      const videoProgressed =
-        session.lastVideoCurrentTime <= 0 ||
-        videoRestarted ||
-        videoTime > session.lastVideoCurrentTime + 0.2;
-
-      if (videoProgressed) {
-        session.lastVideoCurrentTime = videoTime;
-        session.lastVideoProgressAt = Date.now();
-        markLiveEvidence(session, "video_playing");
-      }
-    }
-
-    if (hasRecentLiveEvidence(session)) {
-      publishRoomState(
-        session,
-        roomId,
-        "live",
-        session.lastLiveEvidenceReason || "live_evidence",
-      );
-      return;
-    }
-
-    // Douyin can leave hidden/stale "live ended" text in the DOM while the
-    // room is still producing real media or push frames. Live transport/video
-    // evidence is authoritative; page text is only allowed to declare offline
-    // after the recent-evidence window has expired.
-    if (snapshot?.offlineText) {
-      publishRoomState(session, roomId, "offline", "page_live_ended");
-      return;
-    }
-
-    if (finalizeUnknown) {
-      publishRoomState(session, roomId, "offline", "no_live_media");
-    }
-  } finally {
-    session.stateProbeBusy = false;
-  }
-}
-
-function scheduleRoomStateChecks(session, roomId) {
-  if (!session || session.stopped) return;
-  void inspectRoomPageState(session, roomId, false);
-  session.stateCheckTimer = setTimeout(() => {
-    void inspectRoomPageState(session, roomId, true);
-  }, 12000);
-  session.statePollTimer = setInterval(() => {
-    void inspectRoomPageState(session, roomId, true);
-  }, 5000);
-}
 async function startRoom(command) {
   const roomId = command.room_id;
   const url = String(command.url ?? "").trim();
@@ -314,16 +181,6 @@ async function startRoom(command) {
     stopped: false,
     frameCount: 0,
     streamCandidates: new Set(),
-    roomState: "",
-    roomStateReason: "",
-    offlineLatched: false,
-    lastLiveEvidenceAt: 0,
-    lastLiveEvidenceReason: "",
-    lastVideoCurrentTime: 0,
-    lastVideoProgressAt: 0,
-    stateCheckTimer: null,
-    statePollTimer: null,
-    stateProbeBusy: false,
   };
   rooms.set(String(roomId), session);
 
@@ -331,7 +188,7 @@ async function startRoom(command) {
     await cdp.send("Network.enable");
 
     page.on("response", async (response) => {
-      if (session.stopped || session.offlineLatched) return;
+      if (session.stopped || session.streamCandidates.size >= 12) return;
 
       const request = response.request();
       const responseURL = response.url();
@@ -353,14 +210,8 @@ async function startRoom(command) {
       );
       if (!protocol) return;
 
-      markLiveEvidence(session, "stream_" + protocol);
-      publishRoomState(session, roomId, "live", "stream_" + protocol);
-
       const key = protocol + "|" + responseURL;
       if (session.streamCandidates.has(key)) return;
-      if (session.streamCandidates.size >= 12) {
-        session.streamCandidates.clear();
-      }
       session.streamCandidates.add(key);
 
       log(
@@ -391,9 +242,6 @@ async function startRoom(command) {
       if (!payloadData || response?.opcode === 1) return;
 
       session.frameCount += 1;
-      if (session.roomState === "live") {
-        markLiveEvidence(session, "push_frame");
-      }
       send({
         type: "frame",
         room_id: roomId,
@@ -409,14 +257,13 @@ async function startRoom(command) {
     });
 
     cdp.on("Network.webSocketClosed", () => {
-      if (session.stopped || session.offlineLatched) return;
-
-      // A transport socket can reconnect while the anchor is still live.
-      // Drop transport-only freshness and let current page/video/media evidence
-      // decide the actual broadcast state instead of equating disconnect=offline.
-      session.lastLiveEvidenceAt = 0;
-      session.lastLiveEvidenceReason = "";
-      void inspectRoomPageState(session, roomId, true);
+      if (!session.stopped) {
+        send({
+          type: "room_error",
+          room_id: roomId,
+          error: "douyin websocket closed",
+        });
+      }
     });
 
     page.on("close", () => {
@@ -455,8 +302,6 @@ async function startRoom(command) {
       final_url: page.url(),
       title: await page.title().catch(() => ""),
     });
-
-    scheduleRoomStateChecks(session, roomId);
   } catch (error) {
     await stopRoom(roomId, false);
     throw error;

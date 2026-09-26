@@ -61,6 +61,7 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 			status VARCHAR(32) NOT NULL DEFAULT 'pending',
 			collector_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
 			monitor_enabled TINYINT(1) NOT NULL DEFAULT 0,
+			monitor_started_at DATETIME(3) NULL,
 			device_online TINYINT(1) NOT NULL DEFAULT 0,
 			online_count INT UNSIGNED NOT NULL DEFAULT 0,
 			last_event_at DATETIME(3) NULL,
@@ -128,12 +129,29 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 
 	if _, err := database.ExecContext(
 		ctx,
+		"ALTER TABLE core_rooms ADD COLUMN monitor_started_at DATETIME(3) NULL AFTER monitor_enabled",
+	); err != nil {
+		var mysqlErr *mysql.MySQLError
+		if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1060 {
+			return fmt.Errorf("add core_rooms.monitor_started_at: %w", err)
+		}
+	}
+
+	if _, err := database.ExecContext(
+		ctx,
 		"ALTER TABLE core_rooms ADD COLUMN device_online TINYINT(1) NOT NULL DEFAULT 0 AFTER monitor_enabled",
 	); err != nil {
 		var mysqlErr *mysql.MySQLError
 		if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1060 {
 			return fmt.Errorf("add core_rooms.device_online: %w", err)
 		}
+	}
+
+	if _, err := database.ExecContext(
+		ctx,
+		"UPDATE core_rooms SET monitor_started_at = CURRENT_TIMESTAMP(3) WHERE monitor_enabled = 1 AND monitor_started_at IS NULL",
+	); err != nil {
+		return fmt.Errorf("initialize core_rooms.monitor_started_at: %w", err)
 	}
 
 	if _, err := database.ExecContext(

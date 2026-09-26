@@ -15,17 +15,24 @@ func (s *Server) SetAgentWorkRegistry(registry *agentwork.Registry) {
 	s.agentWork = registry
 }
 
-func (s *Server) ensureAgentMode(ctx context.Context, roomID int64) {
-	if roomID <= 0 || s.agentWork == nil || s.agentWork.Has(roomID) {
+func (s *Server) ensureAgentRuntimeConfig(ctx context.Context, roomID int64) {
+	if roomID <= 0 || s.agentWork == nil {
 		return
 	}
-	mode := agentwork.ModeControl
+	if !s.agentWork.Has(roomID) {
+		mode := agentwork.ModeControl
+		if s.events != nil {
+			if persisted, err := s.events.GetAgentMode(ctx, roomID); err == nil {
+				mode = agentwork.Mode(persisted)
+			}
+		}
+		_, _ = s.agentWork.SetMode(roomID, mode)
+	}
 	if s.events != nil {
-		if persisted, err := s.events.GetAgentMode(ctx, roomID); err == nil {
-			mode = agentwork.Mode(persisted)
+		if plan, err := s.events.GetAgentPlan(ctx, roomID); err == nil {
+			_, _ = s.agentWork.SetPlan(roomID, plan.ID, plan.Name)
 		}
 	}
-	_, _ = s.agentWork.SetMode(roomID, mode)
 }
 
 func (s *Server) getRoomAgentWork(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +44,7 @@ func (s *Server) getRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "agent work registry is not configured")
 		return
 	}
-	s.ensureAgentMode(r.Context(), roomID)
+	s.ensureAgentRuntimeConfig(r.Context(), roomID)
 	writeJSON(w, http.StatusOK, s.agentWork.Get(roomID))
 }
 
@@ -58,18 +65,20 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "agent work registry is not configured")
 		return
 	}
-	s.ensureAgentMode(r.Context(), roomID)
+	s.ensureAgentRuntimeConfig(r.Context(), roomID)
 	var input struct {
 		State              agentwork.State `json:"state"`
 		Mode               agentwork.Mode  `json:"mode"`
+		PlanID             *int64          `json:"plan_id"`
+		PlanName           string          `json:"plan_name"`
 		BaseWorkingSeconds uint64          `json:"base_working_seconds"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if input.State == "" && input.Mode == "" {
-		writeError(w, http.StatusBadRequest, "state or mode is required")
+	if input.State == "" && input.Mode == "" && input.PlanID == nil {
+		writeError(w, http.StatusBadRequest, "state, mode or plan_id is required")
 		return
 	}
 	snapshot := s.agentWork.Get(roomID)
@@ -82,6 +91,23 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		snapshot, err = s.agentWork.SetMode(roomID, input.Mode)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if input.PlanID != nil {
+		if *input.PlanID < 0 {
+			writeError(w, http.StatusBadRequest, "plan_id must not be negative")
+			return
+		}
+		if s.events != nil {
+			if persistErr := s.events.SetAgentPlan(r.Context(), roomID, *input.PlanID, input.PlanName); persistErr != nil {
+				writeError(w, http.StatusServiceUnavailable, "persist agent plan failed")
+				return
+			}
+		}
+		snapshot, err = s.agentWork.SetPlan(roomID, *input.PlanID, input.PlanName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

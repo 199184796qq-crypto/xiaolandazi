@@ -56,14 +56,6 @@
       }
     },
     {
-      "Name": "audio-service",
-      "HealthURL": "http://127.0.0.1:8082/healthz",
-      "Command": "${ROOT}/audio-service/bin/audio-service",
-      "CommandWindows": "${ROOT}/audio-service/bin/audio-service.exe",
-      "WorkingDir": "${ROOT}",
-      "StartupGrace": "8s"
-    },
-    {
       "Name": "core-service",
       "HealthURL": "http://127.0.0.1:8081/healthz",
       "Command": "${ROOT}/core-service/bin/core-service",
