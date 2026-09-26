@@ -53,6 +53,18 @@ func (f *fakeStore) GetLiveAgentPlanForRoom(context.Context, int64, int64) (mode
 	return f.plan, nil
 }
 
+func (f *fakeStore) AgentPromptValue(_ context.Context, _ string, fallback string) string {
+	return fallback
+}
+
+func (f *fakeStore) RenderAgentPrompt(_ context.Context, _ string, fallback string, variables map[string]string) string {
+	value := fallback
+	for key, replacement := range variables {
+		value = strings.ReplaceAll(value, "{{"+key+"}}", replacement)
+	}
+	return value
+}
+
 type fakeCore struct {
 	releases   int
 	dispatches int
@@ -297,6 +309,50 @@ func TestLimitSpeechTextPrefersRecentSentenceBoundary(t *testing.T) {
 	got := limitSpeechText(text, 300)
 	if got != prefix {
 		t.Fatalf("got length=%d want sentence boundary length=%d", len([]rune(got)), len([]rune(prefix)))
+	}
+}
+
+func TestLiveAgentPlanPromptContextPrioritizesPlanFacts(t *testing.T) {
+	plan := model.LiveAgentPlan{
+		ID:          8,
+		Name:        "跑山鸡直播方案",
+		Description: "物流问题统一回答：发圆通快递。",
+		Terms: []model.LiveAgentPlanTerm{{
+			ID: 1, PlanID: 8, CanonicalText: "圆通快递", TermType: "logistics", Note: "观众问发什么快递时直接回答发圆通", Status: "active",
+			Variants: []model.LiveAgentPlanTermVariant{{VariantText: "我们发圆通"}},
+		}},
+	}
+	got := liveAgentPlanPromptContext(plan)
+	for _, want := range []string{
+		"事实与回答口径，优先执行",
+		"物流问题统一回答：发圆通快递。",
+		"圆通快递",
+		"观众问发什么快递时直接回答发圆通",
+		"我们发圆通",
+		"不得",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("plan prompt missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestFinalSpeechRisksFlagsUnsupportedShippingClaims(t *testing.T) {
+	text := "咱们默认安排合作的主流快递，一般48小时内会发出，具体由系统匹配和仓库实际发货为准。"
+	_, reasons := finalSpeechRisks(text, "观众问：发什么快递", model.LiveEffectivePolicy{})
+	joined := strings.Join(reasons, "；")
+	for _, want := range []string{"主流快递", "48小时内", "系统匹配", "仓库实际发货"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("shipping risk %q not detected: %s", want, joined)
+		}
+	}
+}
+
+func TestFinalSpeechRisksAllowsShippingFactWhenPlanProvidesIt(t *testing.T) {
+	text := "我们发圆通快递。"
+	_, reasons := finalSpeechRisks(text, "方案说明：物流问题统一回答：发圆通快递。", model.LiveEffectivePolicy{})
+	if len(reasons) != 0 {
+		t.Fatalf("plan-backed shipping fact should not be flagged: %#v", reasons)
 	}
 }
 

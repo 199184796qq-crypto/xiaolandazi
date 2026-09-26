@@ -1,11 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
+
+	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/decisionexecutor"
 )
 
 func (s *Server) getRoomAgentDecisions(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +42,42 @@ func (s *Server) getRoomAgentDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.copyCoreResponse(w, resp)
+}
+
+func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	var input struct {
+		Question string `json:"question"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "测试问题格式错误")
+		return
+	}
+	input.Question = strings.TrimSpace(input.Question)
+	if input.Question == "" {
+		writeError(w, http.StatusBadRequest, "测试问题不能为空")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	defer cancel()
+	worker := decisionexecutor.New(s.store, nil, agentgateway.NewFromEnv(), nil)
+	result, err := worker.SimulateAnswer(ctx, tenantID, roomID, input.Question)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +118,7 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
 	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))
 	input.FixedText = strings.TrimSpace(input.FixedText)
-	if input.ManualOrigin != "agent_input" && input.ManualOrigin != "question_cluster" {
+	if input.ManualOrigin != "agent_input" && input.ManualOrigin != "question_cluster" && input.ManualOrigin != "test_simulation" {
 		input.ManualOrigin = ""
 	}
 	if input.ExecutionMode != "verbatim" {

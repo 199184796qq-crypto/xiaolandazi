@@ -97,73 +97,25 @@ func normalizeLivePolicyLearningHistory(
 	return result
 }
 
-func buildLivePolicyLearningPrompt(input model.CreateLivePolicyLearningCandidateInput) (string, error) {
+func buildLivePolicyLearningPrompt(instruction string, input model.CreateLivePolicyLearningCandidateInput) (string, error) {
 	historyRaw, err := json.Marshal(input.History)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(fmt.Sprintf(`
-你是直播策略“调教学习归因器”。你的任务不是再次回答观众，而是从一次人工反馈证据中提取可复用的学习，并判断它应该沉淀到规则层、行业层还是用户层。证据可能是满意回复，也可能是错误回答、截图复盘或人工纠正。
+	return strings.TrimSpace(instruction + fmt.Sprintf(`
 
-【三层定义】
-规则层：跨行业、跨商户、跨商品、跨直播间仍成立的“判断方法与表达原则”。例如真实性判断、先理解意图再柔性转译、信息不足时如何热情承接。规则层不是禁止清单。
-行业层：同一行业内多数商户都适用，但换行业后不一定适用的专业知识、常见问法、行业销售节奏、行业表达习惯和行业边界。
-用户层：只属于具体商户、直播间、商品、活动、主播个人风格、口头习惯、当地经营策略或具体事实的数据与表达。
-
-【判断规则】
-1. 用“换行业、换商户、换商品、换主播后还成立吗”判断层级。
-2. 只要依赖具体商品事实、活动、价格、库存、发货时间、门店、主播称呼偏好等，优先用户层，不能为了复用而硬升到规则层或行业层。
-3. 某行业普遍规律才进入行业层；单一客户经验不能冒充行业规则。
-4. 真正跨行业的判断与表达方法才进入规则层。
-5. 如果这次只是一次偶然改词，没有可复用规律，absorb_recommended=false；仍给出最接近的层级和原因，供人工判断。
-6. rule_text 要写成“以后遇到同类情况如何判断、如何表达”的规则，不要简单复制最终答案或错误答案。规则层和行业层尤其要去掉具体客户、价格、库存、活动等一次性事实。
-7. 默认 execution_mode=intent。只有学习本身明确要求“一字不改/固定原话/100%%原话”时才可 verbatim。
-8. observed_reply 是当时真实生成或播出的回答，可能是错误样本；final_reply 可能为空。不要把错误回答里的事实或错误理解吸收到规则里。
-9. 如果证据反映的是纯运行时故障，例如音频丢块、播放器失败，不要伪造成语言策略规则。
-10. 返回严格 JSON，不要 Markdown。reason 等面向人的文字只能使用“规则层 / 行业层 / 用户层”称呼，不要输出内部层级编码。
-
-JSON：
-{
-  "absorb_recommended": true,
-  "target_layer": "L1|L2|L3",
-  "reason": "为什么属于这一层，说明为什么不是另外两层",
-  "confidence": 0-100,
-  "rule_title": "简短规则名",
-  "rule_text": "可直接保存为规则的完整正文",
-  "execution_mode": "intent|verbatim"
-}
-
+【本次证据】
 证据类型：%s
 证据来源：%s
-当前来源层：%s
+当前来源：%s
 当前行业：%s
 当前直播间ID：%d
-原始问题：
-%s
-
-当时真实回答（可能是错误样本）：
-%s
-
-最终满意回复/人工改写（可能为空）：
-%s
-
-用户最后的调教/确认：
-%s
-
-多轮调教历史：
-%s
-`,
-		input.EvidenceType,
-		input.SourceRef,
-		input.SourceLayer,
-		input.IndustryCode,
-		input.RoomID,
-		input.Question,
-		input.ObservedReply,
-		input.FinalReply,
-		input.Feedback,
-		string(historyRaw),
-	)), nil
+原始问题：%s
+当时真实回答：%s
+最终满意回复/人工改写：%s
+用户最后的调教/确认：%s
+多轮调教历史：%s
+`, input.EvidenceType, input.SourceRef, input.SourceLayer, input.IndustryCode, input.RoomID, input.Question, input.ObservedReply, input.FinalReply, input.Feedback, string(historyRaw))), nil
 }
 
 func normalizeLivePolicyLearningModelOutput(
@@ -308,7 +260,8 @@ func (s *Server) livePolicyLearningCreateCandidate(w http.ResponseWriter, r *htt
 		actor = policyActor
 	}
 
-	prompt, err := buildLivePolicyLearningPrompt(input)
+	learningInstruction := s.store.AgentPromptValue(r.Context(), "policy.learning.attribution", "从人工反馈中提炼可复用学习并严格返回 JSON。")
+	prompt, err := buildLivePolicyLearningPrompt(learningInstruction, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "准备调教学习上下文失败")
 		return
@@ -351,87 +304,25 @@ func (s *Server) livePolicyLearningCreateCandidate(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func buildLivePolicyLearningEvidencePrompt(input model.CreateLivePolicyLearningEvidenceInput) (string, error) {
+func buildLivePolicyLearningEvidencePrompt(instruction string, input model.CreateLivePolicyLearningEvidenceInput) (string, error) {
 	historyRaw, err := json.Marshal(input.History)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(fmt.Sprintf(`
-你是直播系统的“学习 Agent”。你不负责重新回答观众，而是把一次真实反馈证据提炼成可复用、可验证、可人工审核的学习候选。
+	return strings.TrimSpace(instruction + fmt.Sprintf(`
 
-【目标】
-从一份证据中提炼 0 到 4 条彼此独立的候选规律。不要为了凑数量强行拆分。
-每条候选都必须判断应进入规则层、行业层还是用户层，并给出回归测试问题。
-所有候选都只是候选，最终是否发布由人工批准。
-
-【三层定义】
-规则层：跨行业、跨商户、跨商品、跨直播间仍成立的判断方法、真实性原则、意图理解原则、表达与质量评审原则。
-行业层：同一行业多数商户都适用，但换行业后不一定成立的专业知识、常见问法、行业表达与销售节奏。
-用户层：具体直播间、商户、商品、活动、主播风格、地域说法、当地经营策略或具体事实。
-
-【必须分开】
-1. 风格规律、商品事实、合规边界、运行时故障不能混成一条。
-2. observed_reply 是真实生成/播出的内容，可能是错误样本，绝不能因为它出现过就当成正确事实。
-3. corrected_reply 如果存在，是强证据；feedback 是用户对本次结果的直接判断，优先级高。
-4. 一次商品事实不能升级成跨行业规则；地域口语通常优先用户层或行业层语义样本。
-5. 如果问题是纯播放器、TTS丢块、音频延迟等运行时问题，没有可学习的语言规律，就返回 proposals=[]，在 summary 里说明应进入运行时问题而不是策略层。
-6. “意图理解错误仍被评审放行”这类问题可以拆成两个独立候选：回答侧的理解原则、评审侧的质量原则。
-7. 不要把一个词写死成唯一含义；要写成结合上下文判断的可泛化规则。
-8. execution_mode 默认 intent；只有用户明确要求固定原话时才 verbatim。
-9. promotion_level 只表示学习成熟度：candidate=单次证据候选；stable=用户明确确认或有重复证据；guardrail=真实性/合规/用户明确硬性原则。即使是 guardrail 也必须人工批准后才能生效。
-10. regression_cases 给 2 到 6 个短测试输入，既要覆盖正例，也至少包含一个容易过拟合的反例。
-11. 只返回严格 JSON，不要 Markdown。
-
-JSON：
-{
-  "summary": "这次证据学到了什么；如果不适合策略学习，说明原因",
-  "proposals": [
-    {
-      "absorb_recommended": true,
-      "target_layer": "L1|L2|L3",
-      "reason": "为什么属于这一层",
-      "confidence": 0-100,
-      "rule_title": "简短规则名",
-      "rule_text": "以后遇到同类情况如何判断、如何表达或如何评审",
-      "execution_mode": "intent|verbatim",
-      "promotion_level": "candidate|stable|guardrail",
-      "regression_cases": ["测试问题1", "测试问题2"]
-    }
-  ]
-}
-
+【本次证据】
 证据类型：%s
 证据来源：%s
-来源层：%s
+来源：%s
 行业：%s
 直播间ID：%d
-
-原始问题/场景：
-%s
-
-当时真实回答（可能错误）：
-%s
-
-人工修正后的回复（可能为空）：
-%s
-
-用户反馈：
-%s
-
-相关历史：
-%s
-`,
-		input.EvidenceType,
-		input.SourceRef,
-		input.SourceLayer,
-		input.IndustryCode,
-		input.RoomID,
-		input.Question,
-		input.ObservedReply,
-		input.CorrectedReply,
-		input.Feedback,
-		string(historyRaw),
-	)), nil
+原始问题/场景：%s
+当时真实回答：%s
+人工修正后的回复：%s
+用户反馈：%s
+相关历史：%s
+`, input.EvidenceType, input.SourceRef, input.SourceLayer, input.IndustryCode, input.RoomID, input.Question, input.ObservedReply, input.CorrectedReply, input.Feedback, string(historyRaw))), nil
 }
 
 func callPolicyLearningEvidenceModel(
@@ -569,7 +460,8 @@ func (s *Server) livePolicyLearningCreateEvidence(w http.ResponseWriter, r *http
 		actor = policyActor
 	}
 
-	prompt, err := buildLivePolicyLearningEvidencePrompt(input)
+	evidenceInstruction := s.store.AgentPromptValue(r.Context(), "policy.learning.evidence", "从证据中提炼可审核的学习候选并严格返回 JSON。")
+	prompt, err := buildLivePolicyLearningEvidencePrompt(evidenceInstruction, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "准备学习证据失败")
 		return
@@ -722,6 +614,45 @@ func preferredLearningPolicyVersion(ctx model.LivePolicyContext) *model.LivePoli
 	return nil
 }
 
+func activeLearningPolicyVersion(ctx model.LivePolicyContext) *model.LivePolicyVersion {
+	if ctx.Active != nil {
+		value := *ctx.Active
+		return &value
+	}
+	for index := range ctx.Versions {
+		if strings.EqualFold(ctx.Versions[index].LifecycleStatus, "active") {
+			value := ctx.Versions[index]
+			return &value
+		}
+	}
+	return nil
+}
+
+func answerReferenceLearningOverride(candidate model.LivePolicyLearningCandidate) (title, text, fixedText string) {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.SourceRef)), "answer_reference:") {
+		return strings.TrimSpace(candidate.RuleTitle), strings.TrimSpace(candidate.RuleText), ""
+	}
+	question := strings.TrimSpace(candidate.Question)
+	finalReply := strings.TrimSpace(candidate.FinalReply)
+	if finalReply == "" {
+		finalReply = strings.TrimSpace(candidate.RuleText)
+	}
+	if question != "" {
+		title = "回答参考：" + question
+	} else {
+		title = "回答参考"
+	}
+	if question == "" {
+		text = "当前直播间已人工确认的回答事实/口径：" + finalReply + "。回答时必须保留其中的具体事实，不得用抽象方法论替代。"
+	} else {
+		text = fmt.Sprintf("当观众询问“%s”或语义相近的问题时，以人工确认的回答为事实口径：%s。允许按直播语气自然改写，但必须保留其中的商品年份、批次、产地、重量、物流等具体事实，不得改成抽象规则，也不得再回答为‘方案未注明’或‘无法确认’。", question, finalReply)
+	}
+	if candidate.ExecutionMode == model.LivePolicyModeVerbatim {
+		fixedText = finalReply
+	}
+	return title, text, fixedText
+}
+
 func (s *Server) adoptLearningToAdminLayer(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -830,7 +761,9 @@ func (s *Server) adoptLearningToL3(
 	}
 	baseOverrides := []model.LivePolicyOverride{}
 	if err == nil {
-		if base := preferredLearningPolicyVersion(contextValue); base != nil {
+		// 用户层“采用”会立即发布，因此只继承当前 active 版本。
+		// 这样不会把尚未发布的其他草稿顺带发布出去。
+		if base := activeLearningPolicyVersion(contextValue); base != nil {
 			baseOverrides = base.Overrides
 		}
 	}
@@ -838,14 +771,18 @@ func (s *Server) adoptLearningToL3(
 	if mode != model.LivePolicyModeVerbatim {
 		mode = model.LivePolicyModeIntent
 	}
+	overrideTitle, overrideText, answerReferenceFixedText := answerReferenceLearningOverride(candidate)
 	override := model.LivePolicyOverride{
 		Operation:     model.LivePolicyOverrideAdd,
-		Title:         candidate.RuleTitle,
-		Text:          candidate.RuleText,
+		Title:         overrideTitle,
+		Text:          overrideText,
 		ExecutionMode: mode,
 	}
 	if mode == model.LivePolicyModeVerbatim {
-		override.FixedText = candidate.RuleText
+		override.FixedText = answerReferenceFixedText
+		if override.FixedText == "" {
+			override.FixedText = strings.TrimSpace(candidate.RuleText)
+		}
 	}
 	overrides := append(append([]model.LivePolicyOverride{}, baseOverrides...), override)
 	overrides = policy.EnsureStableOverrideKeys(overrides, baseOverrides)
@@ -866,6 +803,11 @@ func (s *Server) adoptLearningToL3(
 	item, err := s.store.CreateLivePolicyDraft(r.Context(), actor.UserID, draftInput)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "生成直播间用户层草稿失败")
+		return nil, model.Actor{}, false
+	}
+	item, err = s.store.PublishLivePolicyVersion(r.Context(), item.ID, actor.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "发布直播间用户层版本失败")
 		return nil, model.Actor{}, false
 	}
 	if actor.IsInternalStaff() {
@@ -939,11 +881,13 @@ func (s *Server) livePolicyLearningAdoptCandidate(w http.ResponseWriter, r *http
 		input.ReviewNote,
 	)
 	if err != nil {
-		writeError(w, http.StatusConflict, "草稿已生成，但学习候选状态更新失败，请刷新确认")
+		writeError(w, http.StatusConflict, "策略版本已生成，但学习候选状态更新失败，请刷新确认")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"candidate": item,
 		"draft":     version,
+		"version":   version,
+		"published": targetLayer == model.LivePolicyLayerL3,
 	})
 }

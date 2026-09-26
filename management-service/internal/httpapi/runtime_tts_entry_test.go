@@ -56,10 +56,10 @@ func TestContinuityQualityPromptTreatsEntryLooserThanResume(t *testing.T) {
 		},
 	}
 	prompt := devContinuityQualityPrompt(plan, input)
-	if !strings.Contains(prompt, "切入侧比回归侧宽松") {
-		t.Fatalf("quality prompt missing entry policy: %s", prompt)
+	if !strings.Contains(prompt, `"entry_mode":"HARD"`) {
+		t.Fatalf("quality prompt missing entry mode data: %s", prompt)
 	}
-	if !strings.Contains(prompt, "HARD=硬接") {
-		t.Fatalf("quality prompt missing hard-entry semantics: %s", prompt)
+	if !strings.Contains(prompt, `"resume_target"`) {
+		t.Fatalf("quality prompt missing resume target data: %s", prompt)
 	}
 }

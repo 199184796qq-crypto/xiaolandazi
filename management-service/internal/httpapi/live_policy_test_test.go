@@ -59,7 +59,8 @@ func TestBuildPolicyTestMessagesPreservesRefinementHistory(t *testing.T) {
 }
 
 func TestBuildPolicyTestSystemPromptIsSandboxOnly(t *testing.T) {
-	prompt, err := buildPolicyTestSystemPrompt(model.LiveEffectivePolicy{
+	instruction := "纯测试环境；目标是怎样说最合适；禁止发送 TTS；禁止调用或声称调用真实动作；reply 要自然热情；blocked 表示原要求需要调整后再表达；matched_keys 只能来自有效规则；多轮时结合上一轮用户问题和主播回复继续优化"
+	prompt, err := buildPolicyTestSystemPrompt(instruction, model.LiveEffectivePolicy{
 		IndustryCode: "general",
 		Rules: []model.LiveEffectivePolicyRule{
 			{Key: "l1.truth", Title: "事实真实性", Text: "不得编造", SourceLayer: "L1"},

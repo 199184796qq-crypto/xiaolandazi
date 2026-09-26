@@ -255,10 +255,5 @@ func devResumeCorrectionPrompt(plan devInteractionPlan, input devAnswerTTSInput)
 		"resume_target":    target,
 		"current_mainline": input.CurrentMainline,
 	})
-	return "程序已经根据已覆盖主题确定了真正的回归位置。请只修正 resume_tail。" +
-		"resume_tail 的职责只是结束当前回答并让下一句主线听起来自然，绝不能复述、改写、概括或提前预告 resume_target.text 里的具体事实和动作。" +
-		"例如 resume_target 里有‘包装袋后有教程入口、联系客服指导’，resume_tail 就不能再提教程入口、包装袋、客服或指导。" +
-		"如果 reply_core 结束后直接播放 resume_target.text 已经自然，FUSION_SKIP/CROSS_RESUME 的 resume_tail 直接留空，优先留空也不要重复。" +
-		"如果必须桥接，最多只写一句很短的语气承接，不引入任何 resume_target 的信息。" +
-		"必须保留原来的 covered_topics、skip_units、resume_unit、resume_mode，不得改这些字段。只返回同结构 JSON。\n\n" + string(raw)
+	return "本次回归桥接动态数据：\n" + string(raw)
 }

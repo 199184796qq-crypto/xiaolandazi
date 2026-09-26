@@ -36,6 +36,8 @@ type store interface {
 	GetVoiceProfile(context.Context, int64, int64) (model.VoiceProfile, error)
 	LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error)
 	GetLiveAgentPlanForRoom(context.Context, int64, int64) (model.LiveAgentPlan, error)
+	AgentPromptValue(context.Context, string, string) string
+	RenderAgentPrompt(context.Context, string, string, map[string]string) string
 }
 
 type coreDoer interface {
@@ -172,56 +174,39 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		}
 	}()
 
+	isSimulation := strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation")
+	text, err := w.generateDecisionText(ctx, session, *item)
+	if err != nil {
+		return err
+	}
+
+	if isSimulation {
+		planName := ""
+		if plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID); planErr == nil {
+			planName = strings.TrimSpace(plan.Name)
+		}
+		var userLayerVersion uint64
+		if _, _, _, l3, layerErr := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID); layerErr == nil && l3 != nil {
+			userLayerVersion = l3.VersionNo
+		}
+		executionMode := strings.TrimSpace(item.ExecutionMode)
+		if executionMode == "" {
+			executionMode = "intent"
+		}
+		if err := w.completeSimulation(ctx, session, *item, text, executionMode, planName, userLayerVersion); err != nil {
+			return err
+		}
+		completed = true
+		w.clearBackoff(session.RoomID)
+		return nil
+	}
+
 	voice, ok, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("没有可用的默认声音，请先在声音中心选择可用音色")
-	}
-
-	text := ""
-	if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
-		// 100%原话只表示不主动改写；规则层仍然拥有最终播出否决权。
-		text = strings.TrimSpace(item.FixedText)
-		if text == "" {
-			text = strings.TrimSpace(primaryQuestion(*item))
-		}
-		if text == "" {
-			return fmt.Errorf("100%%原话模式没有可播出的固定文字")
-		}
-	} else {
-		prompt, err := w.answerPrompt(ctx, session, *item)
-		if err != nil {
-			return err
-		}
-		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-		defer cancel()
-		answer, err := w.agent.Complete(answerCtx, agentgateway.Request{
-			Messages: []agentgateway.Message{
-				{Role: "system", Content: "你是直播间实时口播回答生成器。严格遵守规则层、行业层、用户层策略；只说可直接播出的正文，不输出解释、标题、Markdown或JSON。不得编造事实。最终正文最多300个中文字符。"},
-				{Role: "user", Content: prompt},
-			},
-			MaxTokens:      650,
-			EnableThinking: false,
-			Timeout:        20 * time.Second,
-		})
-		if err != nil {
-			return fmt.Errorf("生成回答失败: %w", err)
-		}
-		text = strings.TrimSpace(answer.Text)
-		if text == "" {
-			return fmt.Errorf("生成回答为空")
-		}
-	}
-
-	finalText, err := w.finalizeSpeechText(ctx, session, *item, text)
-	if err != nil {
-		return err
-	}
-	text = limitSpeechText(finalText, maxSpeechRunes)
-	if strings.TrimSpace(text) == "" {
-		return fmt.Errorf("最终播出文字为空")
 	}
 
 	ttsModel := voiceModel(voice)
@@ -247,10 +232,96 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if err := w.dispatch(ctx, session, *item, action, text, audio.AudioURL); err != nil {
 		return err
 	}
-	// 播音回调负责把 decision 标成 completed；这里成功只表示已交给分发层。
+	// Core 自己按 started_at + duration_ms 完成播音任务；终端回报只用于设备健康与排查。
 	completed = true
 	w.clearBackoff(session.RoomID)
 	return nil
+}
+
+type SimulationOutput struct {
+	Question         string `json:"question"`
+	Reply            string `json:"reply"`
+	ExecutionMode    string `json:"execution_mode"`
+	PlanName         string `json:"plan_name,omitempty"`
+	UserLayerVersion uint64 `json:"user_layer_version,omitempty"`
+}
+
+func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+	text := ""
+	if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+		// 100%原话只表示不主动改写；规则层仍然拥有最终播出否决权。
+		text = strings.TrimSpace(item.FixedText)
+		if text == "" {
+			text = strings.TrimSpace(primaryQuestion(item))
+		}
+		if text == "" {
+			return "", fmt.Errorf("100%%原话模式没有可播出的固定文字")
+		}
+	} else {
+		prompt, err := w.answerPrompt(ctx, session, item)
+		if err != nil {
+			return "", err
+		}
+		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "生成真实、自然、可直接播出的直播回答，不编造事实。")
+		answer, err := w.agent.Complete(answerCtx, agentgateway.Request{
+			Messages: []agentgateway.Message{
+				{Role: "system", Content: answerSystemPrompt},
+				{Role: "user", Content: prompt},
+			},
+			MaxTokens:      650,
+			EnableThinking: false,
+			Timeout:        20 * time.Second,
+		})
+		if err != nil {
+			return "", fmt.Errorf("生成回答失败: %w", err)
+		}
+		text = strings.TrimSpace(answer.Text)
+		if text == "" {
+			return "", fmt.Errorf("生成回答为空")
+		}
+	}
+	finalText, err := w.finalizeSpeechText(ctx, session, item, text)
+	if err != nil {
+		return "", err
+	}
+	text = limitSpeechText(finalText, maxSpeechRunes)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("最终播出文字为空")
+	}
+	return text, nil
+}
+
+func (w *Worker) SimulateAnswer(ctx context.Context, tenantID, roomID int64, question string) (SimulationOutput, error) {
+	question = strings.TrimSpace(question)
+	if tenantID <= 0 || roomID <= 0 || question == "" {
+		return SimulationOutput{}, fmt.Errorf("测试问题不能为空")
+	}
+	if w == nil || w.store == nil || w.agent == nil {
+		return SimulationOutput{}, fmt.Errorf("测试智能体未初始化")
+	}
+	session := model.LiveRuntimeSession{TenantID: tenantID, RoomID: roomID}
+	item := decisionItem{
+		Title:           "测试模拟观众提问",
+		Summary:         "测试模式模拟真实观众问题，只生成最终回答，不播音",
+		SampleQuestions: []string{question},
+		ManualAction:    "answer",
+		ManualOrigin:    "test_simulation",
+		ExecutionMode:   "intent",
+	}
+	text, err := w.generateDecisionText(ctx, session, item)
+	if err != nil {
+		return SimulationOutput{}, err
+	}
+	result := SimulationOutput{Question: question, Reply: text, ExecutionMode: "intent"}
+	if plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, tenantID, roomID); planErr == nil {
+		result.PlanName = strings.TrimSpace(plan.Name)
+	}
+	if _, _, _, l3, layerErr := w.store.LoadLivePolicyLayers(ctx, tenantID, roomID); layerErr == nil && l3 != nil {
+		result.UserLayerVersion = l3.VersionNo
+	}
+	return result, nil
 }
 
 func (w *Worker) claim(ctx context.Context, session model.LiveRuntimeSession) (claimResponse, error) {
@@ -292,6 +363,36 @@ func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		return fmt.Errorf("release http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+func (w *Worker) completeSimulation(
+	ctx context.Context,
+	session model.LiveRuntimeSession,
+	item decisionItem,
+	text, executionMode, planName string,
+	userLayerVersion uint64,
+) error {
+	query := tenantQuery(session.TenantID)
+	resp, err := w.core.DoRoom(
+		ctx, session.TenantID, session.RoomID, http.MethodPost,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-decisions/%s/simulation-complete", session.RoomID, url.PathEscape(item.ID)),
+		query,
+		map[string]any{
+			"reply":              text,
+			"execution_mode":     executionMode,
+			"plan_name":          planName,
+			"user_layer_version": userLayerVersion,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return fmt.Errorf("complete simulation http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return nil
 }
@@ -434,6 +535,15 @@ var unsupportedClaimPhrases = []string{
 	"绝对正品",
 }
 
+var unsupportedShippingClaimPhrases = []string{
+	"合作的主流快递",
+	"主流快递",
+	"系统匹配",
+	"仓库实际发货",
+	"48小时内",
+	"四十八小时内",
+}
+
 func (w *Worker) finalizeSpeechText(
 	ctx context.Context,
 	session model.LiveRuntimeSession,
@@ -450,6 +560,10 @@ func (w *Worker) finalizeSpeechText(
 		return "", fmt.Errorf("规则层终审读取失败: %w", err)
 	}
 	effective := policy.BuildEffective(industry, l1, l2, l3)
+	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
+	if strings.TrimSpace(runtimeInstruction) != "" {
+		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
+	}
 	contextText, _ := w.answerPrompt(ctx, session, item)
 	riskTerms, reasons := finalSpeechRisks(text, contextText, effective)
 	if len(reasons) == 0 {
@@ -458,19 +572,19 @@ func (w *Worker) finalizeSpeechText(
 
 	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	reviewSystemPrompt := w.store.AgentPromptValue(ctx, "live.final_review.system", "只返回修正后的可直接播出正文，删除无依据事实和绝对化承诺。")
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{
 				Role:    "system",
-				Content: "你是直播口播的规则层最终闸门。规则层优先级最高。只输出修正后的可直接播出正文，不解释、不列规则、不输出Markdown或JSON。删除绝对化承诺、无依据事实和无法从上下文确认的保证；保留原意、语气和销售推进能力，改成自然好听的可播表达。",
+				Content: reviewSystemPrompt,
 			},
 			{
 				Role: "user",
 				Content: "【当前有效规则】\n" + effective.PromptText +
 					"\n\n【事实与现场上下文】\n" + contextText +
 					"\n\n【待播话术】\n" + text +
-					"\n\n【已检出风险】\n" + strings.Join(reasons, "；") +
-					"\n\n请只返回终审后的直播口播正文。",
+					"\n\n【已检出风险】\n" + strings.Join(reasons, "；"),
 			},
 		},
 		MaxTokens:      650,
@@ -513,6 +627,16 @@ func finalSpeechRisks(
 			continue
 		}
 		reasons = append(reasons, "缺少事实依据的承诺或事实："+phrase)
+		terms = append(terms, phrase)
+	}
+	for _, phrase := range unsupportedShippingClaimPhrases {
+		if !strings.Contains(text, phrase) {
+			continue
+		}
+		if strings.Contains(contextText, phrase) {
+			continue
+		}
+		reasons = append(reasons, "直播方案/策略中没有依据的物流事实："+phrase)
 		terms = append(terms, phrase)
 	}
 	return uniqueNonEmptyStrings(terms), uniqueNonEmptyStrings(reasons)
@@ -679,6 +803,61 @@ func uniqueNonEmptyStrings(values []string) []string {
 	return result
 }
 
+func liveAgentPlanPromptContext(plan model.LiveAgentPlan) string {
+	if plan.ID <= 0 {
+		return "\n【当前智能体直播方案】\n当前直播间未配置可用直播方案。遇到物流、价格、库存、发货时效等事实问题，不得按行业常识猜测；没有事实依据时只做不确定表达。"
+	}
+
+	var builder strings.Builder
+	builder.WriteString("\n【当前智能体直播方案：事实与回答口径，优先执行】")
+	builder.WriteString("\n方案名称：")
+	builder.WriteString(strings.TrimSpace(plan.Name))
+	if description := strings.TrimSpace(plan.Description); description != "" {
+		builder.WriteString("\n方案说明：")
+		builder.WriteString(description)
+	}
+	builder.WriteString("\n执行要求：观众问题如果能从本方案得到明确答案，必须直接按本方案的事实和口径回答；不得把明确方案改写成‘默认/一般/通常/主流快递/系统匹配’之类通用兜底，也不得增加方案没有写明的快递公司、发货时效、仓库流程、价格、库存或承诺。")
+
+	termCount := 0
+	for _, term := range plan.Terms {
+		if termCount >= 30 || !strings.EqualFold(strings.TrimSpace(term.Status), "active") {
+			continue
+		}
+		canonical := strings.TrimSpace(term.CanonicalText)
+		note := strings.TrimSpace(term.Note)
+		if canonical == "" && note == "" {
+			continue
+		}
+		termCount++
+		builder.WriteString("\n- 方案条目")
+		if termType := strings.TrimSpace(term.TermType); termType != "" {
+			builder.WriteString("[")
+			builder.WriteString(termType)
+			builder.WriteString("]")
+		}
+		builder.WriteString("：")
+		builder.WriteString(canonical)
+		if note != "" {
+			builder.WriteString("；说明：")
+			builder.WriteString(note)
+		}
+		variants := make([]string, 0, 3)
+		for _, variant := range term.Variants {
+			if len(variants) >= 3 {
+				break
+			}
+			if value := strings.TrimSpace(variant.VariantText); value != "" {
+				variants = append(variants, value)
+			}
+		}
+		if len(variants) > 0 {
+			builder.WriteString("；已确认表达：")
+			builder.WriteString(strings.Join(variants, "、"))
+		}
+	}
+	return builder.String()
+}
+
 func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
 	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if planErr != nil && !errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
@@ -689,26 +868,12 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		return "", fmt.Errorf("读取直播策略失败: %w", err)
 	}
 	effective := policy.BuildEffective(industry, l1, l2, l3)
+	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
+	if strings.TrimSpace(runtimeInstruction) != "" {
+		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
+	}
 	rulesJSON, _ := json.Marshal(effective.Rules)
-	termValues := make([]string, 0, len(plan.Terms))
-	for _, term := range plan.Terms {
-		if len(termValues) >= 30 {
-			break
-		}
-		if value := strings.TrimSpace(term.CanonicalText); value != "" {
-			termValues = append(termValues, value)
-		}
-	}
-	planContext := ""
-	if plan.ID > 0 {
-		planContext = "\n当前智能体直播方案：\n方案名称：" + strings.TrimSpace(plan.Name)
-		if description := strings.TrimSpace(plan.Description); description != "" {
-			planContext += "\n方案说明：" + description
-		}
-		if len(termValues) > 0 {
-			planContext += "\n方案专用词：" + strings.Join(termValues, "、")
-		}
-	}
+	planContext := liveAgentPlanPromptContext(plan)
 	questions := item.SampleQuestions
 	if len(questions) > 8 {
 		questions = questions[:8]
@@ -716,14 +881,28 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if len(questions) == 0 {
 		questions = []string{primaryQuestion(item)}
 	}
+	variables := map[string]string{
+		"question":             strings.Join(questions, "；"),
+		"room_name":            fmt.Sprintf("room-%d", session.RoomID),
+		"plan_name":            strings.TrimSpace(plan.Name),
+		"industry_policy":      industry,
+		"user_policy":          string(rulesJSON),
+		"reference_answer":     strings.TrimSpace(item.ReplyHint),
+		"conversation_history": strings.TrimSpace(item.Summary),
+	}
 	if strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "agent_input") {
+		requirement := w.store.RenderAgentPrompt(ctx, "live.answer.operator", "按操作者指令生成可直接播出的口播正文。", variables)
 		return planContext +
 			"\n当前直播策略规则：" + string(rulesJSON) +
-			"\n这是直播操作者通过智能体输入框发出的现场口播指令，不是观众提问。" +
 			"\n操作者指令：" + strings.Join(questions, "；") +
 			"\n任务摘要：" + strings.TrimSpace(item.Summary) +
 			"\n额外要求：" + strings.TrimSpace(item.ReplyHint) +
-			"\n请严格理解操作者限定词和语气要求，在不编造事实的前提下生成可直接播出的自然中文口播。只输出最终口播正文。", nil
+			"\n当前场景生成要求：" + requirement, nil
+	}
+	requirement := w.store.RenderAgentPrompt(ctx, "live.answer.audience", "根据当前方案和策略回答观众问题。", variables)
+	if strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation") {
+		testRequirement := w.store.RenderAgentPrompt(ctx, "test.simulation.answer", "测试模式只返回模拟回答，不执行真实播音。", variables)
+		requirement = strings.TrimSpace(requirement + "\n" + testRequirement)
 	}
 	return planContext +
 		"\n当前直播策略规则：" + string(rulesJSON) +
@@ -731,7 +910,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		"\n观众原话：" + strings.Join(questions, "；") +
 		"\n任务摘要：" + strings.TrimSpace(item.Summary) +
 		"\n回答提示：" + strings.TrimSpace(item.ReplyHint) +
-		"\n请生成约10到20秒的自然中文直播口播。能直接回答就热情回答；需要纠偏就给可播替代说法。不要补充策略和观众原话中没有依据的具体价格、库存、时间、功效或承诺。只输出最终口播正文。", nil
+		"\n当前场景生成要求：" + requirement, nil
 }
 
 func primaryQuestion(item decisionItem) string {

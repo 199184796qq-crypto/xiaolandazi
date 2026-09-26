@@ -157,6 +157,9 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 			return fmt.Errorf("seed system dictionary %s/%s: %w", item.Category, item.Code, err)
 		}
 	}
+	if err := s.MigrateAgentPromptConfigs(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -383,6 +386,10 @@ func (s *Store) SystemSettingsDashboard(ctx context.Context) (model.SystemSettin
 	if err != nil {
 		return model.SystemSettingsDashboard{}, err
 	}
+	agentPromptConfigs, err := s.ListAgentPromptConfigs(ctx)
+	if err != nil {
+		return model.SystemSettingsDashboard{}, err
+	}
 	dictionaries := make(map[string][]model.SystemDictionaryItem)
 	for _, item := range items {
 		dictionaries[item.Category] = append(dictionaries[item.Category], item)
@@ -392,6 +399,7 @@ func (s *Store) SystemSettingsDashboard(ctx context.Context) (model.SystemSettin
 		Dictionaries:         dictionaries,
 		Warehouses:           warehouses,
 		MembershipRoomLimits: membershipRoomLimits,
+		AgentPromptConfigs:   agentPromptConfigs,
 	}, nil
 }
 

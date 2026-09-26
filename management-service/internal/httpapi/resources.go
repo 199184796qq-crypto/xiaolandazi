@@ -22,6 +22,42 @@ type allocateResourceRequest struct {
 	Reason       string `json:"reason"`
 }
 
+func (s *Server) commercialAITimeAgentTargets(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requireAnyStaffPermission(
+		w,
+		r,
+		"commercial.ai_time.view",
+		"finance.resource.view",
+		"finance.resource.adjust",
+	); !ok {
+		return
+	}
+	items, err := s.store.ListAgents(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取 AI 时长代理对象失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) commercialAITimeCustomerTargets(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requireAnyStaffPermission(
+		w,
+		r,
+		"commercial.ai_time.view",
+		"finance.resource.view",
+		"finance.resource.adjust",
+	); !ok {
+		return
+	}
+	items, err := s.store.ListAdminCustomers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取 AI 时长终端对象失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) currentResourceDashboard(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {

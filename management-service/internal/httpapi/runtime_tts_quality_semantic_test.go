@@ -30,10 +30,9 @@ func TestQualityPromptMakesIntentCorrectnessFirstGate(t *testing.T) {
 		CurrentMainline: "这只童子鸡已经切块处理。",
 	})
 	for _, want := range []string{
-		"第一，是否正确理解 question 的真实意图",
-		"fatal=true",
-		"不得达到中高质量",
-		"只返回 JSON：score, fatal, fatal_reason, summary, issues",
+		`"question":"娃娃能吃吗？"`,
+		`"generated_reply_core":"鸡是拿来吃的，不是拿来玩的娃娃。"`,
+		`"mainline_before_stop":"这只童子鸡已经切块处理。"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("quality prompt missing %q", want)

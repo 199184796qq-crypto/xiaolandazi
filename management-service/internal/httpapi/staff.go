@@ -58,6 +58,10 @@ type updateStaffRoleRequest struct {
 	PermissionIDs    []int64 `json:"permission_ids"`
 }
 
+type updateStaffRolePermissionsRequest struct {
+	PermissionIDs []int64 `json:"permission_ids"`
+}
+
 type createStaffEmployeeRequest struct {
 	EmployeeNo     string  `json:"employee_no"`
 	PrimaryGroupID int64   `json:"primary_group_id"`
@@ -375,6 +379,115 @@ func (s *Server) staffDashboard(w http.ResponseWriter, r *http.Request) {
 		"approval_policies": policies,
 	})
 }
+func (s *Server) staffPermissionCenterDashboard(w http.ResponseWriter, r *http.Request) {
+	_, access, ok := s.requireStaffPermission(w, r, "staff.role.manage")
+	if !ok {
+		return
+	}
+
+	allGroups, err := s.store.ListStaffGroups(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取权限中心部门失败")
+		return
+	}
+	allRoles, err := s.store.ListStaffRoles(r.Context(), 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取权限中心角色失败")
+		return
+	}
+	permissions, err := s.store.ListStaffPermissions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取权限目录失败")
+		return
+	}
+	allEmployees, err := s.store.ListStaffEmployees(r.Context(), 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取权限中心员工失败")
+		return
+	}
+
+	allowedGroupIDs := map[int64]struct{}{}
+	groups := make([]model.StaffGroupSummary, 0)
+	for _, group := range allGroups {
+		if canManageStaffGroup(access, "staff.role.manage", group.ID) {
+			allowedGroupIDs[group.ID] = struct{}{}
+			groups = append(groups, group)
+		}
+	}
+	roles := make([]model.StaffRoleSummary, 0)
+	visibleRoleIDs := map[int64]struct{}{}
+	for _, role := range allRoles {
+		if _, allowed := allowedGroupIDs[role.GroupID]; !allowed {
+			continue
+		}
+		roles = append(roles, role)
+		visibleRoleIDs[role.ID] = struct{}{}
+	}
+	employees := make([]model.StaffEmployeeSummary, 0)
+	for _, employee := range allEmployees {
+		visible := false
+		for _, role := range employee.Roles {
+			if _, ok := visibleRoleIDs[role.RoleID]; ok {
+				visible = true
+				break
+			}
+		}
+		if visible {
+			employees = append(employees, employee)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access":      access,
+		"groups":      groups,
+		"roles":       roles,
+		"permissions": permissions,
+		"employees":   employees,
+	})
+}
+
+func (s *Server) staffPermissionCenterUpdateRole(w http.ResponseWriter, r *http.Request) {
+	_, access, ok := s.requireStaffPermission(w, r, "staff.role.manage")
+	if !ok {
+		return
+	}
+	roleID, ok := staffPathID(w, r, "roleID")
+	if !ok {
+		return
+	}
+	role, err := s.store.GetStaffRole(r.Context(), roleID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "角色不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取角色失败")
+		return
+	}
+	if !canManageStaffGroup(access, "staff.role.manage", role.GroupID) {
+		writeError(w, http.StatusForbidden, "当前账号无权修改此部门角色")
+		return
+	}
+	var input updateStaffRolePermissionsRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := s.store.UpdateStaffRolePermissions(r.Context(), roleID, input.PermissionIDs); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "角色不存在")
+			return
+		}
+		if strings.Contains(err.Error(), "staff permission not found:") {
+			writeError(w, http.StatusBadRequest, "所选权限不存在或已失效，请刷新后重试")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "保存角色权限失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) staffCreateGroup(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -516,6 +629,10 @@ func (s *Server) staffUpdateRole(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "角色不存在")
+			return
+		}
+		if strings.Contains(err.Error(), "staff permission not found:") {
+			writeError(w, http.StatusBadRequest, "所选权限不存在或已失效，请刷新页面后重试")
 			return
 		}
 		writeError(w, http.StatusBadRequest, "修改角色失败")

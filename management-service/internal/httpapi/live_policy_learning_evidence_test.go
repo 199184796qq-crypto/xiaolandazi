@@ -28,7 +28,7 @@ func TestLearningPromptKeepsBadAnswerSeparateFromCorrection(t *testing.T) {
 		FinalReply:    "",
 		Feedback:      "这里的娃娃是小孩，原回答把问题理解错了；意图理解错误不应该被评审高分放行。",
 	}
-	prompt, err := buildLivePolicyLearningPrompt(input)
+	prompt, err := buildLivePolicyLearningPrompt("不要把错误回答里的事实或错误理解吸收到规则里；当时真实回答（可能是错误样本）；最终满意回复/人工改写（可能为空）", input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestEvidencePromptAllowsMultipleIndependentLearnings(t *testing.T) {
 		ObservedReply: "鸡是拿来吃的，不是拿来玩的娃娃。",
 		Feedback:      "回答理解错了，评审却给了高分。",
 	}
-	prompt, err := buildLivePolicyLearningEvidencePrompt(input)
+	prompt, err := buildLivePolicyLearningEvidencePrompt("从一份证据中提炼 0 到 4 条彼此独立的候选规律；回答侧的理解原则、评审侧的质量原则；回归测试至少包含一个容易过拟合的反例", input)
 	if err != nil {
 		t.Fatal(err)
 	}

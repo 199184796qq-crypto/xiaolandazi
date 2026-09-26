@@ -333,7 +333,12 @@ interface NormalizePlanTextResult {
   }>
 }
 
-const audioServiceURL = ref(localStorage.getItem('xl-audio-service-url') || 'http://127.0.0.1:8082')
+const savedAudioBroadcastURL = localStorage.getItem('xl-core-audio-url') || localStorage.getItem('xl-audio-service-url') || ''
+const audioServiceURL = ref(
+  savedAudioBroadcastURL === 'http://127.0.0.1:8082' || savedAudioBroadcastURL === 'http://localhost:8082'
+    ? 'http://127.0.0.1:8081'
+    : savedAudioBroadcastURL || 'http://127.0.0.1:8081',
+)
 const roomID = ref(Number(localStorage.getItem('xl-audio-room-id') || '1001'))
 const receiverID = (() => {
   const stored = localStorage.getItem('xl-audio-receiver-id')
@@ -1532,7 +1537,8 @@ async function connect() {
     error.value = '请输入正确的房间编号。'
     return
   }
-  localStorage.setItem('xl-audio-service-url', baseURL())
+  localStorage.setItem('xl-core-audio-url', baseURL())
+  localStorage.removeItem('xl-audio-service-url')
   localStorage.setItem('xl-audio-room-id', String(room))
   error.value = ''
   connecting.value = true
@@ -2112,7 +2118,7 @@ onBeforeUnmount(() => {
 
     <section class="control-card">
       <div class="field-grid">
-        <label><span>播音分发层</span><input v-model="audioServiceURL" :disabled="connected" /></label>
+        <label><span>Core 声音广播</span><input v-model="audioServiceURL" :disabled="connected" /></label>
         <label><span>测试房间</span><input v-model.number="roomID" type="number" min="1" :disabled="connected" /></label>
         <label><span>本机接收端</span><input :value="receiverID" disabled /></label>
       </div>

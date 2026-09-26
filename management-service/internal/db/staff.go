@@ -84,6 +84,8 @@ var staffPermissionSeeds = []struct {
 	{"commercial.referral.manage", "commercial", "manage_referral_rules", "创建、修改和发布营销推荐奖励规则"},
 	{"commercial.ai_time.view", "commercial", "view_ai_time", "查看代理与终端 AI 时长及流水"},
 	{"commercial.ai_time.request", "commercial", "request_ai_time", "发起 AI 时长增加申请并提交财务审核"},
+	{"liveanalysis.view", "live_operations", "view_live_analysis", "查看直播录音分析模型与提示词配置"},
+	{"liveanalysis.manage", "live_operations", "manage_live_analysis", "创建并启用直播录音分析模型与提示词版本"},
 	{"finance.settlement_rules.view", "finance", "view_settlement_rules", "查看销售提成与代理返佣结算规则"},
 	{"finance.settlement_rules.manage", "finance", "manage_settlement_rules", "创建、修改和发布销售提成与代理返佣结算规则"},
 	{"inventory.view", "inventory", "view", "查看设备档案与库存"},
@@ -207,7 +209,7 @@ var staffRoleSeeds = []staffRoleSeed{
 			"liveops.view_all", "liveops.configure", "liveops.ticket.manage", "liveops.room_quota.view", "liveops.room_quota.manage",
 			"livepolicy.view", "livepolicy.manage_l1", "livepolicy.manage_l2", "livepolicy.manage_l3_authorized", "livecoach.anchor_authorized", "livevoice.clone_authorized",
 			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
-			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all", "audit.view",
+			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "liveanalysis.view", "liveanalysis.manage", "invitations.view_all", "audit.view",
 		},
 	},
 	{
@@ -219,7 +221,7 @@ var staffRoleSeeds = []staffRoleSeed{
 		Permissions: []string{
 			"liveops.configure", "liveops.room_quota.view", "livepolicy.view", "livepolicy.manage_l2", "livepolicy.manage_l3_authorized", "livecoach.anchor_authorized", "livevoice.clone_authorized",
 			"commercial.membership.view", "commercial.membership.manage", "commercial.time_card.view", "commercial.time_card.manage",
-			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "invitations.view_all",
+			"commercial.device.view", "commercial.device.listing.manage", "commercial.marketing.view", "commercial.marketing.manage", "commercial.referral.view", "commercial.referral.manage", "commercial.ai_time.view", "commercial.ai_time.request", "liveanalysis.view", "liveanalysis.manage", "invitations.view_all",
 		},
 	},
 	{
@@ -1334,6 +1336,19 @@ func (s *Store) CreateStaffRole(
 	return model.StaffRoleSummary{}, sql.ErrNoRows
 }
 
+func (s *Store) GetStaffRole(ctx context.Context, roleID int64) (model.StaffRoleSummary, error) {
+	roles, err := s.ListStaffRoles(ctx, 0)
+	if err != nil {
+		return model.StaffRoleSummary{}, err
+	}
+	for _, role := range roles {
+		if role.ID == roleID {
+			return role, nil
+		}
+	}
+	return model.StaffRoleSummary{}, sql.ErrNoRows
+}
+
 func (s *Store) UpdateStaffRole(
 	ctx context.Context,
 	roleID int64,
@@ -1361,7 +1376,15 @@ func (s *Store) UpdateStaffRole(
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `
+	var roleExists int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM staff_roles WHERE id=?", roleID).Scan(&roleExists); err != nil {
+		return err
+	}
+	if roleExists == 0 {
+		return sql.ErrNoRows
+	}
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE staff_roles
 		SET
 			name=?,
@@ -1377,16 +1400,8 @@ func (s *Store) UpdateStaffRole(
 		defaultScope,
 		status,
 		roleID,
-	)
-	if err != nil {
+	); err != nil {
 		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return sql.ErrNoRows
 	}
 
 	if err := replaceRolePermissionsTx(
@@ -1395,6 +1410,25 @@ func (s *Store) UpdateStaffRole(
 		roleID,
 		permissionIDs,
 	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateStaffRolePermissions(ctx context.Context, roleID int64, permissionIDs []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM staff_roles WHERE id=?", roleID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return sql.ErrNoRows
+	}
+	if err := replaceRolePermissionsTx(ctx, tx, roleID, permissionIDs); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1423,7 +1457,7 @@ func replaceRolePermissionsTx(
 			return err
 		}
 		if count == 0 {
-			return sql.ErrNoRows
+			return fmt.Errorf("staff permission not found: %d", permissionID)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO staff_role_permissions (role_id, permission_id)

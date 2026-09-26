@@ -100,6 +100,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
 	mux.HandleFunc("PUT /api/v1/system/settings", s.systemUpdateSettings)
+	mux.HandleFunc("PUT /api/v1/system/agent-prompts", s.systemUpdateAgentPromptConfigs)
+	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/publish", s.systemPublishAgentPromptConfig)
+	mux.HandleFunc("GET /api/v1/system/agent-prompts/{key}/history", s.systemAgentPromptHistory)
+	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/rollback", s.systemRollbackAgentPromptConfig)
+	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/reset", s.systemResetAgentPromptConfig)
 	mux.HandleFunc("PUT /api/v1/system/membership-room-limits", s.systemUpdateMembershipRoomLimits)
 	mux.HandleFunc("GET /api/v1/system/dictionaries/{category}", s.systemDictionaryList)
 	mux.HandleFunc("POST /api/v1/system/dictionaries", s.systemDictionaryCreate)
@@ -111,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/resources", s.currentResourceDashboard)
 
 	mux.HandleFunc("GET /api/v1/staff/dashboard", s.staffDashboard)
+	mux.HandleFunc("GET /api/v1/staff/permission-center", s.staffPermissionCenterDashboard)
+	mux.HandleFunc("PUT /api/v1/staff/permission-center/roles/{roleID}", s.staffPermissionCenterUpdateRole)
 	mux.HandleFunc("GET /api/v1/staff/finance", s.staffFinanceOverview)
 	mux.HandleFunc("GET /api/v1/staff/finance/customers/{tenantID}", s.staffFinanceCustomerDashboard)
 	mux.HandleFunc("POST /api/v1/staff/finance/recharge", s.staffFinanceCreateRecharge)
@@ -203,6 +210,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/commercial/marketing-campaigns", s.commercialCreateMarketingCampaign)
 	mux.HandleFunc("PUT /api/v1/commercial/marketing-campaigns/{campaignID}", s.commercialUpdateMarketingCampaign)
 	mux.HandleFunc("DELETE /api/v1/commercial/marketing-campaigns/{campaignID}", s.commercialDeleteMarketingCampaign)
+	mux.HandleFunc("GET /api/v1/commercial/ai-time/agents", s.commercialAITimeAgentTargets)
+	mux.HandleFunc("GET /api/v1/commercial/ai-time/customers", s.commercialAITimeCustomerTargets)
 	mux.HandleFunc("POST /api/v1/commercial/ai-time/requests", s.commercialCreateAITimeGrantRequest)
 	mux.HandleFunc("GET /api/v1/commercial/incentives", s.commercialListIncentivePrograms)
 	mux.HandleFunc("POST /api/v1/commercial/incentives", s.commercialCreateIncentiveProgram)
@@ -284,6 +293,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/agent-decisions", s.getRoomAgentDecisions)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/simulate", s.simulateRoomAgentDecision)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/manual", s.enqueueRoomManualAgentDecision)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.completeRoomAgentDecision)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.removeRoomAgentDecision)
@@ -293,6 +303,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/stream", s.streamEvents)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/preview", s.previewRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live/{file}", s.liveMedia)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/capture", s.roomCaptureStatus)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/capture/audio/start", s.roomCaptureAudioStart)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/capture/audio/stop", s.roomCaptureAudioStop)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/capture/audio/file", s.roomCaptureAudioFile)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-analysis", s.roomSpeechAnalysisStatus)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/speech-analysis", s.roomSpeechAnalysisStart)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/speech-analysis/upload", s.roomSpeechAnalysisUpload)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-analysis/transcript", s.roomSpeechAnalysisTranscript)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-analysis/report", s.roomSpeechAnalysisReport)
+	mux.HandleFunc("GET /api/v1/live-analysis/profiles", s.liveAnalysisListProfiles)
+	mux.HandleFunc("POST /api/v1/live-analysis/profiles", s.liveAnalysisCreateProfile)
+	mux.HandleFunc("POST /api/v1/live-analysis/profiles/{profileID}/activate", s.liveAnalysisActivateProfile)
 
 	mux.HandleFunc("GET /api/v1/live/quota-summary", s.liveQuotaSummary)
 	mux.HandleFunc("POST /api/v1/live/quota/activate", s.liveQuotaActivateCards)
@@ -367,6 +389,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/control", s.liveDeviceControl)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime", s.liveRuntimeStatus)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/mode", s.liveRuntimeMode)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/plan", s.liveRuntimePlan)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/start", s.liveRuntimeStart)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/pause", s.liveRuntimePause)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/resume", s.liveRuntimeResume)
@@ -1115,8 +1138,10 @@ func (s *Server) copyCoreResponse(w http.ResponseWriter, resp *http.Response) {
 }
 
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
-	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
-		w.Header().Set("Content-Type", contentType)
+	for _, header := range []string{"Content-Type", "Content-Disposition", "Cache-Control", "Content-Length"} {
+		if value := resp.Header.Get(header); value != "" {
+			w.Header().Set(header, value)
+		}
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)

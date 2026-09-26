@@ -90,25 +90,6 @@ func spokenUnitCount(text string) int {
 	return count
 }
 
-func devAnswerPrompt(question string, targetSeconds, targetUnits int) string {
-	minUnits := int(float64(targetUnits) * 0.90)
-	maxUnits := int(float64(targetUnits) * 1.10)
-	return "你是直播口播回答策划器。当前是纯链路测试，不加载行业策略、用户策略或固定直播话术。\n" +
-		"请直接、自然地回答用户问题，内容可以自由发挥，但不要编造具体事实。\n" +
-		"目标口播时长约 " + itoa(targetSeconds) + " 秒。按正常中文口播速度控制正文约 " +
-		itoa(targetUnits) + " 个有效文字单位，建议范围 " + itoa(minUnits) + " 到 " + itoa(maxUnits) + "。\n" +
-		"只输出最终可直接拿去做 TTS 的口播正文，不要标题、不要解释、不要标注时长、不要 Markdown。\n" +
-		"句子要自然完整，不要为了凑长度机械重复。\n\n用户问题：" + question
-}
-
-func refineDurationPrompt(text string, targetSeconds, targetUnits int) string {
-	minUnits := int(float64(targetUnits) * 0.92)
-	maxUnits := int(float64(targetUnits) * 1.08)
-	return "把下面这段口播在保持核心意思的前提下调整长度，使正常中文口播约 " +
-		itoa(targetSeconds) + " 秒，有效文字单位控制在 " + itoa(minUnits) + " 到 " + itoa(maxUnits) +
-		"。只输出调整后的口播正文，不要解释，不要标题，不要 Markdown。\n\n原文：" + text
-}
-
 func itoa(value int) string {
 	if value == 0 {
 		return "0"
@@ -178,18 +159,23 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The target duration covers reply_core + resume_tail together.
-	// audio-service measures the real WAV duration again before scheduling.
+	// Core probes the real WAV duration again before scheduling/broadcasting.
 	// This is an empirical text-length planning heuristic for the current
-	// cloned voice. audio-service still measures the real WAV duration after
-	// synthesis. Production calibration should eventually be stored per
+	// cloned voice. Core still measures the real WAV duration after synthesis.
+	// Production calibration should eventually be stored per
 	// voice/profile instead of using one global coefficient.
 	targetUnits := plannedSpeechUnits(input.TargetSeconds, input.TTSRate)
 	agent := agentgateway.NewFromEnv()
+	interactionSystemPrompt := s.store.AgentPromptValue(r.Context(), "tts.interaction.plan", "生成结构化直播互动话术计划并保留事实。")
+	resumeSystemPrompt := s.store.AgentPromptValue(r.Context(), "tts.resume.correct", "只修正互动后的回归桥接，不改变回答事实。")
+	lengthSystemPrompt := s.store.AgentPromptValue(r.Context(), "tts.length.refine", "只调整口播长度并保留回答事实与桥接结构。")
+	repairSystemPrompt := s.store.AgentPromptValue(r.Context(), "tts.continuity.repair", "根据接续质检意见修正插播文案，不改变已确认事实。")
+	qualitySystemPrompt := s.store.AgentPromptValue(r.Context(), "tts.continuity.quality", "严格验收直播口播接续的真实听感。")
 	agentResult, err := agent.Complete(r.Context(), agentgateway.Request{
 		Provider: input.AgentProvider,
 		Model:    input.AgentModel,
 		Messages: []agentgateway.Message{
-			{Role: "system", Content: "你负责生成结构化的直播互动话术计划，回答正文和语义桥接必须一次规划完成。"},
+			{Role: "system", Content: interactionSystemPrompt},
 			{Role: "user", Content: devInteractionPrompt(input, targetUnits)},
 		},
 		MaxTokens:      1200,
@@ -213,7 +199,7 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 			Provider: input.AgentProvider,
 			Model:    input.AgentModel,
 			Messages: []agentgateway.Message{
-				{Role: "system", Content: "你只负责修正直播互动后的回归桥接，使桥接准确接到程序已经确定的主线语义段。不得改变回答事实。"},
+				{Role: "system", Content: resumeSystemPrompt},
 				{Role: "user", Content: devResumeCorrectionPrompt(plan, input)},
 			},
 			MaxTokens:      900,
@@ -246,7 +232,7 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 			Provider: input.AgentProvider,
 			Model:    input.AgentModel,
 			Messages: []agentgateway.Message{
-				{Role: "system", Content: "你只负责调整结构化直播互动计划的口播长度，必须严格达到给定文字数量范围，并保留回答和桥接结构。"},
+				{Role: "system", Content: lengthSystemPrompt},
 				{Role: "user", Content: refineDevInteractionPrompt(plan, input, targetUnits, units)},
 			},
 			MaxTokens:      1600,
@@ -280,7 +266,7 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	qualityAttempts := 1
-	quality, qualityLatencyMS, qualityErr := evaluateDevContinuity(r.Context(), agent, input, plan)
+	quality, qualityLatencyMS, qualityErr := evaluateDevContinuity(r.Context(), agent, input, plan, qualitySystemPrompt)
 	if qualityErr != nil {
 		writeError(w, http.StatusBadGateway, "接续质量评估失败，已停止语音合成："+qualityErr.Error())
 		return
@@ -292,7 +278,7 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 			Provider: input.AgentProvider,
 			Model:    input.AgentModel,
 			Messages: []agentgateway.Message{
-				{Role: "system", Content: "你负责根据接续质检意见修正直播插播文案与切入策略。前接允许顺接、软接或有意硬接，不要求强行同主题；后接必须严格做到自然、不重复、不抢讲下一段。"},
+				{Role: "system", Content: repairSystemPrompt},
 				{Role: "user", Content: devContinuityRepairPrompt(plan, input, quality, targetUnits)},
 			},
 			MaxTokens:      1400,
@@ -325,7 +311,7 @@ func (s *Server) devRuntimeAnswerTTS(w http.ResponseWriter, r *http.Request) {
 
 		agentResult.LatencyMS += repaired.LatencyMS
 		qualityAttempts++
-		quality, qualityLatencyMS, qualityErr = evaluateDevContinuity(r.Context(), agent, input, plan)
+		quality, qualityLatencyMS, qualityErr = evaluateDevContinuity(r.Context(), agent, input, plan, qualitySystemPrompt)
 		if qualityErr != nil {
 			break
 		}

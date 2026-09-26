@@ -112,28 +112,12 @@ func resolvePolicyTestMatchedRules(keys []string, rules []model.LiveEffectivePol
 	return result
 }
 
-func buildPolicyTestSystemPrompt(effective model.LiveEffectivePolicy) (string, error) {
+func buildPolicyTestSystemPrompt(instruction string, effective model.LiveEffectivePolicy) (string, error) {
 	rulesJSON, err := json.Marshal(effective.Rules)
 	if err != nil {
 		return "", err
 	}
-	prompt := "你是直播话术规则测试器，目标不是判断“能不能说”，而是判断“怎样说最合适”。\n\n" +
-		"这是纯测试环境，必须遵守：\n" +
-		"1. 只模拟主播最终应该怎样对观众表达；禁止发送 TTS、禁止发直播消息、禁止调用或声称调用退款/改价/发货/订单修改/库存修改等真实动作。\n" +
-		"2. 规则层是通用判断与表达方法：理解真实意图 -> 核对事实和约束 -> 生成自然、热情、积极、可直接播出且不违规的话术。不要把规则层当成禁止清单。\n" +
-		"3. 行业层负责让表达符合当前行业；用户层负责让表达符合当前直播间和主播。它们是在规则层方法上做风格和业务适配，而不是把规则层变成更严厉的拒绝。\n" +
-		"4. reply 必须优先给一条可以直接在直播间说出口的话。能直接回答就热情回答；原要求不适合直接照说时，要理解对方目的并转换成好听、自然、还能继续承接交流或销售的替代表达。\n" +
-		"5. 不得编造商品价格、库存、活动、物流、订单、效果或商家承诺。缺少数据时，不要只说“不知道/不能回答”；先承接，再说明以实时信息为准，并尽量给出当前能确认的内容或下一步。\n" +
-		"6. 除极端情况外，reply 不输出“拒绝”“不能回答”“违规”“系统不允许”“根据规则不能”等审核式话术。\n" +
-		"7. blocked=true 仅代表内部判断为“原要求需要调整后再表达”，不代表主播最终拒绝。即使 blocked=true，也必须给出可直接播出的替代说法。\n" +
-		"8. block_reason 只写给运营人员看的内部调整原因，不要把这种审核口吻复制进 reply。\n" +
-		"9. matched_keys 只能从下方规则 key 中选择。不要虚构 key；data_sources 只写本次实际依据。\n" +
-		"10. 返回严格 JSON，不要 Markdown，不要额外文字。\n\n" +
-		"11. 如果当前输入是在评价、修改或继续打磨上一轮回复，例如“太硬了”“再自然一点”“销售感强一点”“保留这个意思”，必须结合 history 中上一轮用户问题和主播回复继续优化，不要把这类反馈误当成新的观众原始问题。\n" +
-		"12. 多轮打磨时优先保留用户已经认可的部分，只修改用户指出的不满意部分，直到形成满意的可播表达。\n\n" +
-		"JSON 格式：{\"reply\":\"模拟给观众的回复\",\"blocked\":false,\"block_reason\":\"\",\"matched_keys\":[\"规则key\"],\"data_sources\":[\"依据\"],\"missing_data\":[\"缺失数据\"]}\n\n" +
-		"当前行业：" + effective.IndustryCode + "\n当前 effective rules：\n" + string(rulesJSON)
-	return strings.TrimSpace(prompt), nil
+	return strings.TrimSpace(instruction + "\n\n【当前测试上下文】\n当前行业：" + effective.IndustryCode + "\n当前有效规则：\n" + string(rulesJSON)), nil
 }
 
 func (s *Server) policyTestTargetVersion(ctx context.Context, layer, industryCode string) (*model.LivePolicyVersion, error) {
@@ -249,7 +233,8 @@ func (s *Server) livePolicyAdminTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	effective := policy.BuildEffective(industryCode, l1, l2, l3)
-	systemPrompt, err := buildPolicyTestSystemPrompt(effective)
+	testInstruction := s.store.AgentPromptValue(r.Context(), "policy.sandbox.system", "只模拟主播最终回答，不执行真实动作；严格返回 JSON。")
+	systemPrompt, err := buildPolicyTestSystemPrompt(testInstruction, effective)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "构建规则测试上下文失败")
 		return

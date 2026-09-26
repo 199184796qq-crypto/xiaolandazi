@@ -112,6 +112,12 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateSpeechAnalysis(ctx); err != nil {
+		log.Fatalf("migrate speech analysis database: %v", err)
+	}
+	if err := store.EnsureDefaultSpeechAnalysisProfile(ctx); err != nil {
+		log.Fatalf("ensure default speech analysis profile: %v", err)
+	}
 	if err := store.EnsureDefaultWarehouse(ctx); err != nil {
 		log.Fatalf("ensure default warehouse: %v", err)
 	}
@@ -191,6 +197,7 @@ func main() {
 		leaderLease,
 	)
 	api.SetWorkInbox(inbox)
+	go api.RunSpeechAnalysisAudioCleanup(appCtx)
 	runtimeReconciler := liveruntime.NewReconciler(
 		store,
 		core,
