@@ -36,6 +36,9 @@ func TestPaidPipelineOnlyQueuesWhileRuntimeWorking(t *testing.T) {
 		t.Fatalf("paid decisions must stay empty while runtime stopped: %#v", got)
 	}
 
+	if _, err := runtime.GrantLease(22, 60); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := runtime.Set(22, agentwork.StateWorking); err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +68,9 @@ func TestControlModeAlsoAutoQueuesQuestions(t *testing.T) {
 	runtime := agentwork.New()
 	decisions := agentdecision.New()
 	pipeline := New(runtime, decisions)
+	if _, err := runtime.GrantLease(5, 60); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := runtime.Set(5, agentwork.StateWorking); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +95,9 @@ func TestSessionEndStopsPaidPipelineWithoutTouchingBaseState(t *testing.T) {
 	runtime := agentwork.New()
 	decisions := agentdecision.New()
 	pipeline := New(runtime, decisions)
+	if _, err := runtime.GrantLease(7, 60); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := runtime.Set(7, agentwork.StateWorking); err != nil {
 		t.Fatal(err)
 	}

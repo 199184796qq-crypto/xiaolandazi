@@ -43,5 +43,24 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			return fmt.Errorf("add live learning column %s: %w", column.name, err)
 		}
 	}
+	reservedExists, err := s.columnExists(ctx, "quota_buckets", "reserved_seconds")
+	if err != nil {
+		return fmt.Errorf("check quota reserved column: %w", err)
+	}
+	if !reservedExists {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE quota_buckets ADD COLUMN reserved_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER remaining_seconds"); err != nil {
+			return fmt.Errorf("add quota reserved column: %w", err)
+		}
+	}
+
+	exists, err := s.columnExists(ctx, "agent_learning_results", "matched_memory_item_id")
+	if err != nil {
+		return fmt.Errorf("check agent learning matched memory column: %w", err)
+	}
+	if !exists {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE agent_learning_results ADD COLUMN matched_memory_item_id BIGINT UNSIGNED NULL AFTER memory_key"); err != nil {
+			return fmt.Errorf("add agent learning matched memory column: %w", err)
+		}
+	}
 	return nil
 }

@@ -24,6 +24,7 @@ import {
   resolveRoomSessionDecision,
   getRoomBrain,
   getRoomSpeechRuntime,
+  getRoomGeneratedSpeechHistory,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
@@ -59,6 +60,8 @@ import type {
   LiveReviewResponse,
   SpeechRuntimeSnapshot,
   SpeechTrackRuntime,
+  GeneratedSpeechHistoryItem,
+  GeneratedSpeechHistoryPage,
   AgentDecisionSnapshot,
   AgentDecisionItem,
   RoomCaptureSnapshot,
@@ -234,6 +237,31 @@ const agentPlanBusy = ref(false)
 const agentPlanError = ref('')
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
+const speechHistoryOpen = ref(false)
+const speechHistoryLoading = ref(false)
+const speechHistoryError = ref('')
+const speechHistoryQuery = ref('')
+const speechHistoryPageSize = ref(15)
+const generatedSpeechHistory = ref<GeneratedSpeechHistoryPage>({
+  items: [],
+  page: 1,
+  page_size: speechHistoryPageSize.value,
+  total: 0,
+  runtime_session_id: 0,
+})
+let speechHistorySearchTimer: number | undefined
+const speechHistoryTotalPages = computed(() =>
+  Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
+)
+const speechHistoryPageNumbers = computed(() => {
+  const total = speechHistoryTotalPages.value
+  const current = generatedSpeechHistory.value.page
+  const start = Math.max(1, Math.min(current - 2, total - 4))
+  const end = Math.min(total, start + 4)
+  const result: number[] = []
+  for (let page = start; page <= end; page += 1) result.push(page)
+  return result
+})
 const agentDecisionState = ref<AgentDecisionSnapshot | null>(null)
 const questionDecisionBusy = ref<Record<number, EventDecisionAction | undefined>>({})
 const bucketDecisionBusy = ref<Record<string, EventDecisionAction | undefined>>({})
@@ -573,6 +601,112 @@ function speechStatusLabel(status: string, track: 'mainline' | 'interrupt') {
     case 'failed': return '异常'
     default: return '等待'
   }
+}
+
+function generatedSpeechSourceLabel(sourceType: string) {
+  if (sourceType === 'interrupt_quick') return '临时插播'
+  if (sourceType === 'interrupt_answer') return '场控答疑'
+  return sourceType || '场控答疑'
+}
+
+function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
+  if (item.correction_status === 'adopted') return '已采用修正'
+  if (item.correction_status === 'editing') return '纠正中'
+  if (item.correction_count > 0) return '已纠正'
+  return '未纠正'
+}
+
+function openGeneratedSpeechCorrection(input: {
+  decisionId?: string
+  question?: string
+  reply: string
+  sourceLabel: string
+  time?: string
+}) {
+  const reply = input.reply.trim()
+  if (!reply) return
+  const decisionId = (input.decisionId || '').trim()
+  window.dispatchEvent(new CustomEvent('live-answer-reference-open', {
+    detail: {
+      kind: 'speech',
+      question: input.question?.trim() || '这次生成的话术',
+      topic: input.sourceLabel,
+      time: input.time || '当前',
+      originalReply: reply,
+      sourceRef: decisionId ? 'generated_speech:' + decisionId : '',
+      sourceType: 'generated_speech_correction',
+    },
+  }))
+}
+
+function correctCurrentGeneratedSpeech() {
+  const reply = String(interruptSpeech.value.reply_text || interruptSpeech.value.text || '').trim()
+  if (!reply) return
+  openGeneratedSpeechCorrection({
+    decisionId: interruptSpeech.value.decision_id,
+    question: interruptSpeech.value.question_text,
+    reply,
+    sourceLabel: interruptSpeech.value.question_text ? '场控答疑' : '临时插播',
+    time: interruptSpeech.value.updated_at ? formatTime(interruptSpeech.value.updated_at) : '当前',
+  })
+}
+
+function correctGeneratedSpeechHistoryItem(item: GeneratedSpeechHistoryItem) {
+  speechHistoryOpen.value = false
+  openGeneratedSpeechCorrection({
+    decisionId: item.decision_id,
+    question: item.question_text,
+    reply: item.generated_text,
+    sourceLabel: generatedSpeechSourceLabel(item.source_type),
+    time: formatTime(item.created_at),
+  })
+}
+
+async function loadGeneratedSpeechHistory(page = generatedSpeechHistory.value.page || 1) {
+  speechHistoryLoading.value = true
+  speechHistoryError.value = ''
+  try {
+    generatedSpeechHistory.value = await getRoomGeneratedSpeechHistory(roomId, {
+      query: speechHistoryQuery.value,
+      page,
+      pageSize: speechHistoryPageSize.value,
+      sessionId: runtimeSnapshot.value?.session?.id,
+    })
+  } catch (err) {
+    speechHistoryError.value = err instanceof Error ? err.message : '读取回答历史失败'
+  } finally {
+    speechHistoryLoading.value = false
+  }
+}
+
+function openGeneratedSpeechHistory() {
+  speechHistoryOpen.value = true
+  generatedSpeechHistory.value.page = 1
+  void loadGeneratedSpeechHistory(1)
+}
+
+function closeGeneratedSpeechHistory() {
+  speechHistoryOpen.value = false
+}
+
+function scheduleGeneratedSpeechHistorySearch() {
+  if (speechHistorySearchTimer !== undefined) window.clearTimeout(speechHistorySearchTimer)
+  speechHistorySearchTimer = window.setTimeout(() => {
+    speechHistorySearchTimer = undefined
+    void loadGeneratedSpeechHistory(1)
+  }, 280)
+}
+
+function goGeneratedSpeechHistoryPage(page: number) {
+  if (speechHistoryLoading.value) return
+  const nextPage = Math.min(speechHistoryTotalPages.value, Math.max(1, page))
+  if (nextPage === generatedSpeechHistory.value.page) return
+  void loadGeneratedSpeechHistory(nextPage)
+}
+
+function changeGeneratedSpeechHistoryPageSize() {
+  generatedSpeechHistory.value.page = 1
+  void loadGeneratedSpeechHistory(1)
 }
 
 const aiRuntimeStatus = computed(() => runtimeSnapshot.value?.agent_state || 'stopped')
@@ -3157,6 +3291,7 @@ onBeforeUnmount(() => {
 	if (agentDecisionPollTimer !== undefined) window.clearInterval(agentDecisionPollTimer)
 	if (streamBatchTimer !== undefined) window.clearTimeout(streamBatchTimer)
 	if (dashboardTickTimer !== undefined) window.clearInterval(dashboardTickTimer)
+	if (speechHistorySearchTimer !== undefined) window.clearTimeout(speechHistorySearchTimer)
 	if (pageBottomRestoreFrame !== undefined) window.cancelAnimationFrame(pageBottomRestoreFrame)
 	stopMascotActions()
 	pendingStreamEvents = []
@@ -3486,10 +3621,97 @@ onBeforeUnmount(() => {
               <b>{{ speechStatusLabel(interruptSpeech.status, 'interrupt') }}</b>
             </header>
             <p>{{ interruptSpeech.reply_text || interruptSpeech.text || '等待临时插播…' }}</p>
-            <time v-if="interruptSpeech.updated_at">更新 {{ formatTime(interruptSpeech.updated_at) }}</time>
+            <div class="speech-interrupt-footer">
+              <time v-if="interruptSpeech.updated_at">更新 {{ formatTime(interruptSpeech.updated_at) }}</time>
+              <div class="speech-interrupt-actions">
+                <button
+                  type="button"
+                  :disabled="!(interruptSpeech.reply_text || interruptSpeech.text)"
+                  @click="correctCurrentGeneratedSpeech"
+                >
+                  纠正
+                </button>
+                <button type="button" class="history" @click="openGeneratedSpeechHistory">回答历史</button>
+              </div>
+            </div>
           </article>
         </div>
       </section>
+
+      <div v-if="speechHistoryOpen" class="speech-history-mask" @click.self="closeGeneratedSpeechHistory">
+        <section class="speech-history-dialog" role="dialog" aria-modal="true" aria-label="回答历史">
+          <header class="speech-history-head">
+            <div>
+              <span>ANSWER HISTORY</span>
+              <strong>回答历史</strong>
+              <small>本场直播所有已生成并成功下发的话术</small>
+            </div>
+            <button type="button" class="speech-history-close" aria-label="关闭回答历史" @click="closeGeneratedSpeechHistory">×</button>
+          </header>
+
+          <div class="speech-history-search">
+            <input
+              v-model="speechHistoryQuery"
+              type="search"
+              placeholder="搜索问题、话术内容或来源"
+              @input="scheduleGeneratedSpeechHistorySearch"
+              @keyup.enter="loadGeneratedSpeechHistory(1)"
+            />
+            <button type="button" :disabled="speechHistoryLoading" @click="loadGeneratedSpeechHistory(1)">
+              {{ speechHistoryLoading ? '查询中…' : '检索' }}
+            </button>
+          </div>
+
+          <div v-if="speechHistoryError" class="speech-history-error">{{ speechHistoryError }}</div>
+          <div v-else-if="speechHistoryLoading && !generatedSpeechHistory.items.length" class="speech-history-empty">正在读取本场回答历史…</div>
+          <div v-else-if="!generatedSpeechHistory.items.length" class="speech-history-empty">本场还没有已生成并成功下发的话术。</div>
+          <div v-else class="speech-history-list">
+            <article v-for="item in generatedSpeechHistory.items" :key="item.id" class="speech-history-item">
+              <div class="speech-history-item-meta">
+                <span class="speech-history-source">{{ generatedSpeechSourceLabel(item.source_type) }}</span>
+                <time>{{ formatTime(item.created_at) }}</time>
+                <span class="speech-history-correction" :class="'status-' + item.correction_status">
+                  {{ generatedSpeechCorrectionLabel(item) }}
+                  <template v-if="item.correction_count"> · {{ item.correction_count }} 次</template>
+                </span>
+              </div>
+              <p v-if="item.question_text" class="speech-history-question"><strong>关联问题：</strong>{{ item.question_text }}</p>
+              <p class="speech-history-reply">{{ item.generated_text }}</p>
+              <div class="speech-history-item-actions">
+                <button type="button" @click="correctGeneratedSpeechHistoryItem(item)">纠正</button>
+              </div>
+            </article>
+          </div>
+
+          <footer class="speech-history-pagination">
+            <div class="speech-history-pagination-summary">
+              <span>共 {{ generatedSpeechHistory.total }} 条</span>
+              <label class="speech-history-page-size">
+                <span>每页</span>
+                <select v-model.number="speechHistoryPageSize" :disabled="speechHistoryLoading" @change="changeGeneratedSpeechHistoryPageSize">
+                  <option :value="15">15</option>
+                  <option :value="30">30</option>
+                  <option :value="50">50</option>
+                </select>
+                <span>行</span>
+              </label>
+            </div>
+            <div class="speech-history-page-buttons">
+              <button type="button" :disabled="generatedSpeechHistory.page <= 1 || speechHistoryLoading" @click="goGeneratedSpeechHistoryPage(generatedSpeechHistory.page - 1)">上一页</button>
+              <button
+                v-for="page in speechHistoryPageNumbers"
+                :key="page"
+                type="button"
+                class="page-number"
+                :class="{ active: page === generatedSpeechHistory.page }"
+                :disabled="speechHistoryLoading"
+                @click="goGeneratedSpeechHistoryPage(page)"
+              >{{ page }}</button>
+              <button type="button" :disabled="generatedSpeechHistory.page >= speechHistoryTotalPages || speechHistoryLoading" @click="goGeneratedSpeechHistoryPage(generatedSpeechHistory.page + 1)">下一页</button>
+            </div>
+          </footer>
+        </section>
+      </div>
 
       <section class="detail-layout detail-layout-no-preview">
         <div
@@ -3560,7 +3782,7 @@ onBeforeUnmount(() => {
                       type="button"
                       class="reference"
                       @click="sendPublicScreenEventToAnswerReference(event)"
-                    >参考回答</button>
+                    >纠正</button>
                     <button
                       type="button"
                       class="quick"
@@ -3791,7 +4013,7 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         @click.stop="sendBucketToAnswerReference(bucket)"
-                      >参考回答</button>
+                      >纠正</button>
                       <button
                         type="button"
                         class="force"
@@ -3831,7 +4053,7 @@ onBeforeUnmount(() => {
                         <button
                           type="button"
                           @click.stop="sendQuestionToAnswerReference(question, bucket)"
-                        >参考回答</button>
+                        >纠正</button>
                         <button
                           type="button"
                           class="force"
@@ -3863,7 +4085,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     @click="sendQuestionToAnswerReference(selectedQuestionDetail, selectedQuestionBucket || undefined)"
-                  >参考回答</button>
+                  >纠正</button>
                   <button type="button" :disabled="Boolean(questionDecisionBusyState(selectedQuestionDetail.EventID)) || !aiRunning || !selectedQuestionTTSEligible" @click="answerSelectedQuestion('answer')">
                     {{ questionDecisionBusyState(selectedQuestionDetail.EventID) === 'answer' ? '提交中…' : '回答' }}
                   </button>
@@ -4609,6 +4831,269 @@ onBeforeUnmount(() => {
   box-shadow: 0 7px 18px rgba(8, 17, 37, .08);
 }
 .speech-interrupt-card > header b { color: #76829b; background: #e9edf4; }
+
+.speech-interrupt-card {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.speech-interrupt-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.speech-interrupt-footer > time {
+  color: inherit;
+  opacity: .48;
+  font-size: 9px;
+}
+.speech-interrupt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+.speech-interrupt-actions button {
+  min-width: 68px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid rgba(82, 97, 196, .22);
+  border-radius: 10px;
+  background: #5564d9;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(78, 92, 194, .18);
+}
+.speech-interrupt-actions button.history {
+  background: #f0f3fb;
+  color: #445172;
+  box-shadow: none;
+}
+.speech-interrupt-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+.speech-history-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(17, 27, 48, .46);
+  backdrop-filter: blur(10px);
+}
+.speech-history-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 18px;
+  width: min(980px, 94vw);
+  height: min(900px, 92vh);
+  max-height: 92vh;
+  padding: 24px;
+  border: 1px solid rgba(112, 128, 196, .24);
+  border-radius: 24px;
+  background: #f9fbff;
+  box-shadow: 0 34px 90px rgba(18, 31, 68, .28);
+}
+.speech-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.speech-history-head > div {
+  display: grid;
+  gap: 4px;
+}
+.speech-history-head span {
+  color: #6d79c9;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .14em;
+}
+.speech-history-head strong {
+  color: #263353;
+  font-size: 25px;
+}
+.speech-history-head small {
+  color: #8791a8;
+  font-size: 13px;
+}
+.speech-history-close {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 12px;
+  background: #eef1f8;
+  color: #5a6785;
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+}
+.speech-history-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.speech-history-search input {
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(119, 132, 185, .24);
+  border-radius: 12px;
+  outline: none;
+  background: #fff;
+  color: #2d3957;
+  font-size: 14px;
+}
+.speech-history-search input:focus {
+  border-color: rgba(83, 100, 217, .52);
+  box-shadow: 0 0 0 3px rgba(83, 100, 217, .09);
+}
+.speech-history-search button,
+.speech-history-pagination button,
+.speech-history-item-actions button {
+  border: 1px solid rgba(82, 97, 196, .2);
+  border-radius: 10px;
+  background: #5867db;
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+.speech-history-search button {
+  min-width: 78px;
+  padding: 0 18px;
+}
+.speech-history-list {
+  display: grid;
+  gap: 11px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.speech-history-item {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid rgba(133, 146, 194, .18);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 5px 16px rgba(27, 42, 83, .05);
+}
+.speech-history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #8b94a8;
+  font-size: 12px;
+}
+.speech-history-source {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #edf0ff;
+  color: #5261c8;
+  font-weight: 850;
+}
+.speech-history-correction {
+  margin-left: auto;
+  font-weight: 800;
+}
+.speech-history-correction.status-adopted { color: #17845e; }
+.speech-history-correction.status-editing { color: #a66a00; }
+.speech-history-question,
+.speech-history-reply {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.speech-history-question {
+  color: #697590;
+  font-size: 13px;
+}
+.speech-history-reply {
+  color: #2e3954;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.7;
+}
+.speech-history-item-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.speech-history-item-actions button {
+  min-width: 72px;
+  height: 34px;
+}
+.speech-history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #7f899f;
+  font-size: 13px;
+}
+.speech-history-pagination-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.speech-history-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #7f899f;
+  font-size: 13px;
+}
+.speech-history-page-size select {
+  height: 34px;
+  min-width: 64px;
+  padding: 0 26px 0 10px;
+  border: 1px solid rgba(82, 97, 196, .2);
+  border-radius: 10px;
+  outline: none;
+  background: #f0f3fb;
+  color: #4c5877;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.speech-history-page-size select:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.speech-history-page-buttons {
+  display: flex;
+  gap: 6px;
+}
+.speech-history-pagination button {
+  min-width: 38px;
+  height: 34px;
+  padding: 0 10px;
+  background: #f0f3fb;
+  color: #4c5877;
+}
+.speech-history-pagination button.page-number.active {
+  background: #5867db;
+  color: #fff;
+}
+.speech-history-pagination button:disabled,
+.speech-history-search button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.speech-history-error,
+.speech-history-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  border: 1px dashed rgba(128, 142, 190, .25);
+  border-radius: 16px;
+  color: #8993aa;
+  background: #fff;
+}
 
 .speech-track-card.status-playing { border-color: rgba(73, 201, 155, .48); }
 .speech-track-card.status-playing > header b { color: #198b67; background: #dcf8ee; }

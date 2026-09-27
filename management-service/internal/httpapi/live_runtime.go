@@ -27,13 +27,16 @@ type coreRoomRuntimeState struct {
 }
 
 type coreAgentRuntimeState struct {
-	RoomID         int64     `json:"room_id"`
-	State          string    `json:"state"`
-	Mode           string    `json:"mode"`
-	PlanID         int64     `json:"plan_id"`
-	PlanName       string    `json:"plan_name"`
-	WorkingSeconds uint64    `json:"working_seconds"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	BootID                string     `json:"boot_id"`
+	RoomID                int64      `json:"room_id"`
+	State                 string     `json:"state"`
+	Mode                  string     `json:"mode"`
+	PlanID                int64      `json:"plan_id"`
+	PlanName              string     `json:"plan_name"`
+	WorkingSeconds        uint64     `json:"working_seconds"`
+	LeaseRemainingSeconds uint64     `json:"lease_remaining_seconds"`
+	LeaseUntil            *time.Time `json:"lease_until,omitempty"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 type coreSessionRuntimeState struct {
@@ -276,7 +279,93 @@ func (s *Server) liveQuotaSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取AI时长失败")
 		return
 	}
+	billingRooms, err := s.store.ListTenantLiveBillingRooms(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取正在扣费的直播间失败")
+		return
+	}
+	quotaSummary.ActiveBillingRooms = make([]model.LiveBillingRoomSummary, 0, len(billingRooms))
+	for _, room := range billingRooms {
+		agentRuntime, runtimeErr := s.getCoreAgentState(r.Context(), tenantID, room.RoomID)
+		if runtimeErr != nil {
+			continue
+		}
+		if agentRuntime.State != "working" {
+			continue
+		}
+		quotaSummary.ActiveBillingRooms = append(quotaSummary.ActiveBillingRooms, room)
+	}
 	writeJSON(w, http.StatusOK, quotaSummary)
+}
+
+func (s *Server) liveTimeCardAssets(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	if actor.Role != "customer" {
+		writeError(w, http.StatusForbidden, "仅终端用户可查看时长卡包")
+		return
+	}
+	tenantID, ok := actorTenantID(w, actor)
+	if !ok {
+		return
+	}
+	page := 1
+	pageSize := 5
+	if value := strings.TrimSpace(r.URL.Query().Get("page")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("page_size")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			pageSize = parsed
+		}
+	}
+	items, err := s.store.ListLiveTimeCardAssets(r.Context(), tenantID, page, pageSize, time.Now().UTC())
+	if err != nil {
+		log.Printf("live time card pack list failed tenant=%d page=%d page_size=%d: %v", tenantID, page, pageSize, err)
+		writeError(w, http.StatusInternalServerError, "读取时长卡包失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) liveTimeCardActivate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	if actor.Role != "customer" {
+		writeError(w, http.StatusForbidden, "仅终端用户可启用时长卡")
+		return
+	}
+	tenantID, ok := actorTenantID(w, actor)
+	if !ok {
+		return
+	}
+	assetID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("assetID")), 10, 64)
+	if err != nil || assetID <= 0 {
+		writeError(w, http.StatusBadRequest, "时长卡编号无效")
+		return
+	}
+	summary, err := s.store.ActivateLiveTimeCardAsset(r.Context(), tenantID, assetID, time.Now().UTC())
+	if err != nil {
+		switch {
+		case errors.Is(err, appdb.ErrTimeCardNotActivatable):
+			writeError(w, http.StatusConflict, "这张时长卡当前不能启用，可能已启用、已过期或已失效")
+		case errors.Is(err, sql.ErrNoRows):
+			writeError(w, http.StatusNotFound, "时长卡不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "启用时长卡失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"asset_id": assetID,
+		"quota":    summary,
+	})
 }
 
 func (s *Server) liveQuotaActivateCards(w http.ResponseWriter, r *http.Request) {
@@ -285,44 +374,10 @@ func (s *Server) liveQuotaActivateCards(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if actor.Role != "customer" {
-		writeError(w, http.StatusForbidden, "仅终端用户可充入 AI 工作时长")
+		writeError(w, http.StatusForbidden, "仅终端用户可启用时长卡")
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
-	if !ok {
-		return
-	}
-	var input struct {
-		Count uint32 `json:"count"`
-	}
-	if r.ContentLength > 0 {
-		if err := readJSON(w, r, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "充入时长卡参数格式错误")
-			return
-		}
-	}
-	if input.Count == 0 {
-		input.Count = 1
-	}
-	if input.Count > 20 {
-		writeError(w, http.StatusBadRequest, "单次最多充入20张时长卡")
-		return
-	}
-	summary, activated, err := s.store.ActivateLiveTimeCards(
-		r.Context(), tenantID, input.Count, time.Now().UTC(),
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "充入AI工作时长失败")
-		return
-	}
-	if activated == 0 {
-		writeError(w, http.StatusConflict, "当前没有可充入的未激活时长卡")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"activated_count": activated,
-		"quota":           summary,
-	})
+	writeError(w, http.StatusConflict, "批量自动启用已停用，请到“AI 时长 → 时长卡包”选择具体卡片使用")
 }
 
 func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
@@ -349,32 +404,12 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
 	}
-	// The persisted runtime session is the durable source of truth. Core keeps
-	// the hot execution state in memory, so a Core restart must not make a
-	// running room look stopped in the browser. Rehydrate Core from the durable
-	// session before returning the snapshot.
+	// Core is the authority for paid runtime state. A Core restart intentionally
+	// resets the paid Agent/TTS stack to stopped; reading this status endpoint
+	// must never restart paid work from a stale database session.
 	var persistedSession *model.LiveRuntimeSession
 	if session, sessionErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); sessionErr == nil {
 		persistedSession = &session
-		desiredState := "stopped"
-		switch session.Status {
-		case "running":
-			desiredState = "working"
-		case "paused":
-			desiredState = "paused"
-		}
-		if agentRuntime.State != desiredState {
-			if syncErr := s.setCoreAgentState(r.Context(), tenantID, roomID, desiredState, session.TotalBilledSeconds); syncErr != nil {
-				writeError(w, http.StatusBadGateway, "无法恢复智能体服务端运行状态")
-				return
-			}
-			if refreshed, refreshErr := s.getCoreAgentState(r.Context(), tenantID, roomID); refreshErr == nil {
-				agentRuntime = refreshed
-			} else {
-				writeError(w, http.StatusBadGateway, "无法读取恢复后的智能体运行状态")
-				return
-			}
-		}
 	} else if !errors.Is(sessionErr, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "读取AI运行状态失败")
 		return
@@ -587,17 +622,33 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	if existing, existingErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); existingErr == nil {
 		switch existing.Status {
 		case "running":
-			if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", existing.TotalBilledSeconds); err != nil {
-				writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
+			if agentRuntime.State == "working" && agentRuntime.BootID != "" && agentRuntime.LeaseRemainingSeconds > 0 {
+				writeJSON(w, http.StatusOK, existing)
 				return
 			}
-			writeJSON(w, http.StatusOK, existing)
-			return
+			// Core restart/lease expiry leaves a stale durable session. An explicit
+			// Start click closes it without charging the unfinished lease, then starts fresh.
+			if _, abortErr := s.store.AbortLiveRuntimeSession(r.Context(), existing.ID, "core_runtime_reset", time.Now().UTC()); abortErr != nil {
+				writeError(w, http.StatusInternalServerError, "清理旧AI运行状态失败")
+				return
+			}
 		case "paused":
+			leaseSeconds, leaseErr := s.allocateInitialLiveQuotaLease(
+				r.Context(), tenantID, roomID, existing.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds,
+			)
+			if leaseErr != nil {
+				if errors.Is(leaseErr, appdb.ErrLiveQuotaExhausted) {
+					writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充入时长卡")
+				} else {
+					writeError(w, http.StatusInternalServerError, "申请AI运行额度失败")
+				}
+				return
+			}
 			resumed, resumeErr := s.store.ResumeLiveRuntimeSession(
 				r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
 			)
 			if resumeErr != nil {
+				_, _ = s.store.ReconcileLiveQuotaLeases(r.Context(), tenantID, existing.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds, true, false, time.Now().UTC())
 				if errors.Is(resumeErr, appdb.ErrLiveQuotaExhausted) {
 					writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充入时长卡")
 				} else {
@@ -605,7 +656,8 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", resumed.TotalBilledSeconds); err != nil {
+			if err := s.setCoreAgentStateWithLease(r.Context(), tenantID, roomID, "working", resumed.TotalBilledSeconds, leaseSeconds); err != nil {
+				_, _ = s.store.ReconcileLiveQuotaLeases(r.Context(), tenantID, resumed.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds, true, false, time.Now().UTC())
 				_, _ = s.store.PauseLiveRuntimeSession(r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC())
 				writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
 				return
@@ -669,10 +721,21 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds); err != nil {
-		_, _ = s.store.StopLiveRuntimeSession(
-			r.Context(), tenantID, roomID, actor.UserID, "core_start_failed", time.Now().UTC(),
-		)
+	leaseSeconds, leaseErr := s.allocateInitialLiveQuotaLease(
+		r.Context(), tenantID, roomID, session.ID, agentRuntime.BootID, session.TotalBilledSeconds,
+	)
+	if leaseErr != nil {
+		_, _ = s.store.AbortLiveRuntimeSession(r.Context(), session.ID, "quota_unavailable", time.Now().UTC())
+		if errors.Is(leaseErr, appdb.ErrLiveQuotaExhausted) {
+			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
+		} else {
+			writeError(w, http.StatusInternalServerError, "申请AI运行额度失败")
+		}
+		return
+	}
+	if err := s.setCoreAgentStateWithLease(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds, leaseSeconds); err != nil {
+		_, _ = s.store.ReconcileLiveQuotaLeases(r.Context(), tenantID, session.ID, agentRuntime.BootID, session.TotalBilledSeconds, true, false, time.Now().UTC())
+		_, _ = s.store.AbortLiveRuntimeSession(r.Context(), session.ID, "core_start_failed", time.Now().UTC())
 		writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
 		return
 	}
@@ -699,8 +762,20 @@ func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
 	}
-	session, err := s.store.PauseLiveRuntimeSessionMeter(
-		r.Context(), tenantID, roomID, actor.UserID, agentRuntime.WorkingSeconds, time.Now().UTC(),
+	existing, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		return
+	}
+	if _, err := s.store.ReconcileLiveQuotaLeases(
+		r.Context(), tenantID, existing.ID, agentRuntime.BootID,
+		agentRuntime.WorkingSeconds, true, true, time.Now().UTC(),
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "结算当前AI运行额度失败")
+		return
+	}
+	session, err := s.store.PauseLiveRuntimeSession(
+		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
 	)
 	if err != nil {
 		if errors.Is(err, appdb.ErrLiveRuntimeNotRunning) {
@@ -751,10 +826,32 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if agentErr != nil {
+		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
+		return
+	}
+	existing, existingErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if existingErr != nil || existing.Status != "paused" {
+		writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
+		return
+	}
+	leaseSeconds, leaseErr := s.allocateInitialLiveQuotaLease(
+		r.Context(), tenantID, roomID, existing.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds,
+	)
+	if leaseErr != nil {
+		if errors.Is(leaseErr, appdb.ErrLiveQuotaExhausted) {
+			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
+		} else {
+			writeError(w, http.StatusInternalServerError, "申请AI运行额度失败")
+		}
+		return
+	}
 	session, err := s.store.ResumeLiveRuntimeSession(
 		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
 	)
 	if err != nil {
+		_, _ = s.store.ReconcileLiveQuotaLeases(r.Context(), tenantID, existing.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds, true, false, time.Now().UTC())
 		switch {
 		case errors.Is(err, appdb.ErrLiveRuntimeNotRunning):
 			writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
@@ -765,7 +862,8 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.setCoreAgentState(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds); err != nil {
+	if err := s.setCoreAgentStateWithLease(r.Context(), tenantID, roomID, "working", session.TotalBilledSeconds, leaseSeconds); err != nil {
+		_, _ = s.store.ReconcileLiveQuotaLeases(r.Context(), tenantID, session.ID, agentRuntime.BootID, agentRuntime.WorkingSeconds, true, false, time.Now().UTC())
 		_, _ = s.store.PauseLiveRuntimeSession(r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC())
 		writeError(w, http.StatusBadGateway, "智能体恢复失败，请稍后重试")
 		return
@@ -804,14 +902,20 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
 	}
-	session, err := s.store.StopLiveRuntimeSessionMeter(
-		r.Context(),
-		tenantID,
-		roomID,
-		actor.UserID,
-		reason,
-		agentRuntime.WorkingSeconds,
-		time.Now().UTC(),
+	existing, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		return
+	}
+	if _, err := s.store.ReconcileLiveQuotaLeases(
+		r.Context(), tenantID, existing.ID, agentRuntime.BootID,
+		agentRuntime.WorkingSeconds, true, true, time.Now().UTC(),
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "结算当前AI运行额度失败")
+		return
+	}
+	session, err := s.store.StopLiveRuntimeSessionWithoutMeter(
+		r.Context(), tenantID, roomID, actor.UserID, reason, time.Now().UTC(),
 	)
 	if err != nil {
 		if errors.Is(err, appdb.ErrLiveRuntimeNotRunning) {
@@ -1059,6 +1163,88 @@ func (s *Server) setCoreAgentPlan(
 		return coreAgentRuntimeState{}, err
 	}
 	return state, nil
+}
+
+func (s *Server) allocateInitialLiveQuotaLease(
+	ctx context.Context,
+	tenantID, roomID, sessionID int64,
+	coreBootID string,
+	coreWorkingStart uint64,
+) (uint64, error) {
+	if strings.TrimSpace(coreBootID) == "" {
+		return 0, errors.New("core boot id is missing")
+	}
+	grants, err := s.store.AllocateLiveQuotaLeases(ctx, tenantID, []appdb.LiveQuotaLeaseRequest{{
+		RoomID:                  roomID,
+		RuntimeSessionID:        sessionID,
+		CoreBootID:              coreBootID,
+		CoreWorkingStartSeconds: coreWorkingStart,
+		RequestedSeconds:        appdb.LiveQuotaLeaseSeconds,
+	}}, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	for _, grant := range grants {
+		if grant.RuntimeSessionID == sessionID && grant.AllocatedSeconds > 0 {
+			return grant.AllocatedSeconds, nil
+		}
+	}
+	return 0, appdb.ErrLiveQuotaExhausted
+}
+
+func (s *Server) setCoreAgentStateWithLease(
+	ctx context.Context,
+	tenantID, roomID int64,
+	state string,
+	baseWorkingSeconds uint64,
+	leaseSeconds uint64,
+) error {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx, tenantID, roomID, http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		map[string]any{
+			"state":                state,
+			"base_working_seconds": baseWorkingSeconds,
+			"lease_seconds":        leaseSeconds,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("core agent runtime lease status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Server) grantCoreAgentLease(
+	ctx context.Context,
+	tenantID, roomID int64,
+	leaseSeconds uint64,
+) error {
+	if leaseSeconds == 0 {
+		return nil
+	}
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx, tenantID, roomID, http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		map[string]any{"lease_seconds": leaseSeconds},
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("core agent lease status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *Server) setCoreAgentState(

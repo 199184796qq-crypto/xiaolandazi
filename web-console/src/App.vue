@@ -73,6 +73,14 @@ function formatCustomerAIQuota(seconds = 0) {
   return hours + '小时' + minutes + '分'
 }
 
+function formatCustomerAIUsage(seconds = 0) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds || 0)))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const secs = totalSeconds % 60
+  return [hours, minutes, secs].map(value => String(value).padStart(2, '0')).join(':')
+}
+
 async function refreshCustomerLiveQuota() {
   if (!showCustomerLiveQuota.value) return
   try {
@@ -349,14 +357,13 @@ const navSections = computed<NavSection[]>(() => {
       label: '终端工作台',
       items: [
         navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
-        navItem('终端商城', '/shop', '▤', ['shop']),
-        navItem('我的钱包', '/finance', '¥', ['finance']),
-        navItem('收款进度', '/finance/receipts', '款', ['customer-receipts']),
-        navItem('资金记录', '/finance/records', '流', ['customer-money']),
-        navItem('申请运维协助', '/support', '助', ['customer-support']),
+        navItem('运维协助', '/support', '助', ['customer-support']),
         navItem('AI 时长', '/resources/workspace', '时', ['resources-workspace']),
+        navItem('终端商城', '/shop', '▤', ['shop']),
         navItem('售后维修', '/after-sales', '修', ['after-sales-portal']),
         navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
+        navItem('我的钱包', '/finance', '¥', ['finance']),
+        navItem('资金记录', '/finance/records', '流', ['customer-money']),
       ],
     },
   ]
@@ -698,15 +705,35 @@ onBeforeUnmount(stopInbox)
   <div v-else-if="showAuthenticatedShell" class="app-shell">
     <div
       v-if="showCustomerLiveQuota"
-      class="customer-ai-time-global-topbar"
+      :class="['customer-ai-time-global-topbar', { 'has-active-billing-rooms': customerLiveQuota?.active_billing_rooms?.length }]"
       :title="customerLiveQuota?.reserve_time_card_count
-        ? '当前已激活 ' + formatCustomerAIQuota(customerLiveQuota.active_seconds) + '；另有 ' + customerLiveQuota.reserve_time_card_count + ' 张未激活储备卡'
-        : '当前已激活可用时长 ' + formatCustomerAIQuota(customerLiveQuota?.active_seconds || 0)"
+        ? '当前可扣费总剩余 ' + formatCustomerAIQuota(customerLiveQuota.active_seconds) + '；另有 ' + customerLiveQuota.reserve_time_card_count + ' 张未启用卡'
+        : '当前可扣费总剩余 ' + formatCustomerAIQuota(customerLiveQuota?.active_seconds || 0)"
     >
-      <span>时长卡剩余</span>
-      <strong>{{ customerLiveQuota ? formatCustomerAIQuota(customerLiveQuota.active_seconds) : '读取中…' }}</strong>
-      <small v-if="customerLiveQuota?.reserve_time_card_count">
-        储备 {{ customerLiveQuota.reserve_time_card_count }} 张未激活
+      <span class="customer-ai-time-title">时长卡剩余</span>
+      <strong class="customer-ai-time-value">{{ customerLiveQuota ? formatCustomerAIQuota(customerLiveQuota.active_seconds) : '读取中…' }}</strong>
+      <div
+        v-if="customerLiveQuota?.active_billing_rooms?.length"
+        class="customer-ai-time-billing-rooms"
+      >
+        <div class="customer-ai-time-billing-heading">
+          <span>正在扣费</span>
+          <em>{{ customerLiveQuota.active_billing_rooms.length }} 个房间</em>
+        </div>
+        <div
+          v-for="room in customerLiveQuota.active_billing_rooms"
+          :key="room.session_id"
+          class="customer-ai-time-billing-room"
+        >
+          <div class="customer-ai-time-billing-room-name">
+            <i></i>
+            <b>{{ room.room_name }}</b>
+          </div>
+          <span class="customer-ai-time-billing-usage">已扣 {{ formatCustomerAIUsage(room.billed_seconds) }}</span>
+        </div>
+      </div>
+      <small v-if="customerLiveQuota?.reserve_time_card_count" class="customer-ai-time-reserve">
+        卡包 {{ customerLiveQuota.reserve_time_card_count }} 张未启用
       </small>
     </div>
     <aside class="sidebar">

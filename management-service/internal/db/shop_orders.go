@@ -25,6 +25,7 @@ var (
 	ErrInsufficientDeviceStock     = errors.New("insufficient device stock")
 	ErrDeviceShippingRequired      = errors.New("device shipping required")
 	ErrShopOrderExpired            = errors.New("shop order expired")
+	ErrInsufficientWalletBalance   = errors.New("insufficient wallet balance")
 )
 
 const defaultDeviceOrderHoldMinutes = 15
@@ -982,6 +983,142 @@ func (s *Store) createMembershipCustomerShopOrder(
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+}
+
+func (s *Store) WalletPayCustomerTimeCardOrder(
+	ctx context.Context,
+	tenantID int64,
+	userID int64,
+	orderID int64,
+	idempotencyKey string,
+) (model.CustomerShopOrder, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	defer tx.Rollback()
+
+	var (
+		orderNo       string
+		orderType     string
+		status        string
+		currency      string
+		payableAmount uint64
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT order_no, order_type, status, currency, payable_amount_cents
+		FROM biz_orders
+		WHERE id=? AND tenant_id=?
+		FOR UPDATE
+	`, orderID, tenantID).Scan(&orderNo, &orderType, &status, &currency, &payableAmount); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if status == "paid" || status == "fulfilled" || status == "completed" {
+		_ = tx.Rollback()
+		return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+	}
+	if status == "cancelled" {
+		return model.CustomerShopOrder{}, ErrShopOrderCancelled
+	}
+	if orderType != "time_card" {
+		return model.CustomerShopOrder{}, ErrUnsupportedShopProduct
+	}
+	if currency != "CNY" {
+		return model.CustomerShopOrder{}, fmt.Errorf("unsupported wallet currency")
+	}
+
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("wallet-time-card-%d", orderID)
+	}
+	var existingLedgerID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM fin_wallet_ledger WHERE idempotency_key=? LIMIT 1
+	`, idempotencyKey).Scan(&existingLedgerID)
+	if err == nil {
+		_ = tx.Rollback()
+		return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return model.CustomerShopOrder{}, err
+	}
+
+	walletID, walletBalance, err := lockWalletAccountTx(ctx, tx, tenantID, "cash")
+	if err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	var frozenBalance int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT frozen_balance_cents FROM fin_wallet_accounts WHERE id=?
+	`, walletID).Scan(&frozenBalance); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	availableBalance := walletBalance - frozenBalance
+	if payableAmount > uint64(^uint64(0)>>1) || availableBalance < int64(payableAmount) {
+		return model.CustomerShopOrder{}, ErrInsufficientWalletBalance
+	}
+	payableSigned := int64(payableAmount)
+	walletAfter := walletBalance - payableSigned
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE fin_wallet_accounts SET balance_cents=? WHERE id=?
+	`, walletAfter, walletID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if payableAmount > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO fin_wallet_ledger (
+				external_id, tenant_id, wallet_account_id, direction,
+				amount_cents, balance_before_cents, balance_after_cents,
+				business_type, business_id, order_no, operator_user_id,
+				reason, idempotency_key, occurred_at
+			) VALUES (?, ?, ?, 'out', ?, ?, ?, 'time_card_purchase', ?, ?, ?, ?, ?, ?)
+		`,
+			fmt.Sprintf("wallet-time-card-%d", orderID), tenantID, walletID,
+			payableAmount, walletBalance, walletAfter, orderID, orderNo, userID,
+			"钱包余额购买时长卡 · "+orderNo, idempotencyKey, time.Now().UTC(),
+		); err != nil {
+			return model.CustomerShopOrder{}, err
+		}
+	}
+
+	now := time.Now().UTC()
+	paymentNo := fmt.Sprintf("PAY-WALLET-%d", now.UnixNano())
+	externalTradeNo := fmt.Sprintf("WALLET-%d", orderID)
+	paymentIdempotency := "payment-" + idempotencyKey
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO fin_payment_transactions (
+			payment_no, tenant_id, order_id, order_no,
+			channel, payment_method, currency,
+			expected_amount_cents, input_amount_cents, paid_amount_cents,
+			status, failure_reason, external_trade_no,
+			operator_user_id, idempotency_key, paid_at
+		) VALUES (?, ?, ?, ?, 'wallet', 'wallet_balance', ?, ?, ?, ?, 'paid', '', ?, ?, ?, ?)
+	`, paymentNo, tenantID, orderID, orderNo, currency,
+		payableAmount, payableAmount, payableAmount,
+		externalTradeNo, userID, paymentIdempotency, now,
+	); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE biz_orders
+		SET status='paid', paid_amount_cents=?, paid_at=CURRENT_TIMESTAMP(3)
+		WHERE id=? AND tenant_id=? AND status='pending'
+	`, payableAmount, orderID, tenantID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if err := fulfillTimeCardOrderTx(ctx, tx, tenantID, userID, orderID, orderNo); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if err := consumeMarketingCampaignOrderTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
+	if err := accrueReferralRewardForPaidOrderTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}

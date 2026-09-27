@@ -180,6 +180,90 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, item)
 }
 
+func (s *Server) customerShopWalletPayOrder(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireCustomerShopActor(w, r)
+	if !ok {
+		return
+	}
+	orderID, ok := shopOrderID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if r.ContentLength > 0 {
+		if err := readJSON(w, r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+	}
+	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
+	if utf8.RuneCountInString(input.IdempotencyKey) > 120 {
+		writeError(w, http.StatusBadRequest, "支付幂等键过长")
+		return
+	}
+	pendingID, err := s.audit.Begin(r.Context(), model.AdminAuditLog{
+		ActorUserID:    actor.UserID,
+		ActorUsername:  actor.Username,
+		Action:         "shop.wallet_payment",
+		TargetTenantID: *actor.TenantID,
+		HTTPMethod:     r.Method,
+		Path:           r.URL.Path,
+		ClientIP:       requestClientIP(r),
+		Result:         "pending",
+	})
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "审计日志服务暂不可用")
+		return
+	}
+	item, err := s.store.WalletPayCustomerTimeCardOrder(
+		r.Context(), *actor.TenantID, actor.UserID, orderID, input.IdempotencyKey,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrInsufficientWalletBalance):
+			_ = s.audit.Complete(r.Context(), pendingID, model.AdminAuditLog{
+				ActorUserID:    actor.UserID,
+				ActorUsername:  actor.Username,
+				Action:         "shop.wallet_payment",
+				TargetTenantID: *actor.TenantID,
+				HTTPMethod:     r.Method,
+				Path:           r.URL.Path,
+				ClientIP:       requestClientIP(r),
+				Result:         "failed",
+			})
+			writeError(w, http.StatusConflict, "钱包余额不足，请先充值后再购买时长卡")
+		case errors.Is(err, db.ErrShopOrderCancelled):
+			writeError(w, http.StatusConflict, "订单已取消，不能继续支付")
+		case errors.Is(err, db.ErrUnsupportedShopProduct):
+			writeError(w, http.StatusBadRequest, "钱包余额支付当前仅用于时长卡订单")
+		case errors.Is(err, sql.ErrNoRows):
+			writeError(w, http.StatusNotFound, "订单不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "钱包支付失败")
+		}
+		return
+	}
+	if err := s.audit.Complete(r.Context(), pendingID, model.AdminAuditLog{
+		ActorUserID:    actor.UserID,
+		ActorUsername:  actor.Username,
+		Action:         "shop.wallet_payment",
+		TargetTenantID: *actor.TenantID,
+		HTTPMethod:     r.Method,
+		Path:           r.URL.Path,
+		ClientIP:       requestClientIP(r),
+		Result:         "paid",
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "钱包支付已完成，但审计确认暂不可用；请刷新订单")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"order":          item,
+		"payment_method": "wallet_balance",
+	})
+}
+
 func (s *Server) customerShopSandboxPayOrder(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requireCustomerShopActor(w, r)
 	if !ok {

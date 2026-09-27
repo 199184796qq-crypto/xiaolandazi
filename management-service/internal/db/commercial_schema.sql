@@ -587,6 +587,7 @@ CREATE TABLE IF NOT EXISTS quota_buckets (
     source_id BIGINT UNSIGNED NULL,
     original_seconds BIGINT UNSIGNED NOT NULL,
     remaining_seconds BIGINT UNSIGNED NOT NULL,
+    reserved_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
     effective_at DATETIME(3) NOT NULL,
     expires_at DATETIME(3) NOT NULL,
     priority INT NOT NULL DEFAULT 100,

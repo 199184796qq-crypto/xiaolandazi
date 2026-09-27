@@ -28,7 +28,15 @@ const liveDeviceHeartbeatTimeout = 20 * time.Second
 type quotaBucketLock struct {
 	ID        int64
 	Remaining uint64
+	Reserved  uint64
 	ExpiresAt time.Time
+}
+
+func (b quotaBucketLock) Available() uint64 {
+	if b.Remaining <= b.Reserved {
+		return 0
+	}
+	return b.Remaining - b.Reserved
 }
 
 func newLiveReference(prefix string) (string, error) {
@@ -413,13 +421,13 @@ func (s *Store) ResumeLiveRuntimeSession(
 		}
 		return model.LiveRuntimeSession{}, err
 	}
-	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now, true)
+	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	var quota uint64
 	for _, bucket := range buckets {
-		quota += bucket.Remaining
+		quota += bucket.Available()
 	}
 	if quota == 0 {
 		return model.LiveRuntimeSession{}, ErrLiveQuotaExhausted
@@ -1406,13 +1414,13 @@ func (s *Store) StartLiveRuntimeSession(
 		}
 	}
 
-	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now, true)
+	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	var quota uint64
 	for _, bucket := range buckets {
-		quota += bucket.Remaining
+		quota += bucket.Available()
 	}
 	if quota == 0 {
 		return model.LiveRuntimeSession{}, ErrLiveQuotaExhausted
@@ -1531,6 +1539,38 @@ func scanLiveRuntimeSession(scanner interface{ Scan(...any) error }) (model.Live
 	return item, nil
 }
 
+func (s *Store) ListTenantLiveBillingRooms(ctx context.Context, tenantID int64) ([]model.LiveBillingRoomSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.room_id,
+		       COALESCE(NULLIF(r.name, ''), CONCAT('直播间 ', s.room_id)),
+		       s.id, s.total_billed_seconds, s.started_at
+		FROM live_runtime_sessions s
+		LEFT JOIN core_rooms r ON r.id=s.room_id AND r.tenant_id=s.tenant_id
+		WHERE s.tenant_id=? AND s.status='running'
+		ORDER BY s.started_at ASC, s.id ASC
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.LiveBillingRoomSummary, 0)
+	for rows.Next() {
+		var item model.LiveBillingRoomSummary
+		if err := rows.Scan(
+			&item.RoomID,
+			&item.RoomName,
+			&item.SessionID,
+			&item.BilledSeconds,
+			&item.StartedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) ListRunningLiveRuntimeSessions(ctx context.Context) ([]model.LiveRuntimeSession, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -1591,6 +1631,108 @@ func (s *Store) StopLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func (s *Store) StopLiveRuntimeSessionWithoutMeter(
+	ctx context.Context,
+	tenantID, roomID, userID int64,
+	reason string,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "manual_stop"
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+	session, err := lockActiveSessionByRoom(ctx, tx, tenantID, roomID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
+		}
+		return model.LiveRuntimeSession{}, err
+	}
+	stoppedBy := userID
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='stopped', stop_reason=?, stopped_by_user_id=?, ended_at=?, last_billed_at=?,
+		    version=version+1, updated_at=?
+		WHERE id=? AND status IN ('running','paused')
+	`, reason, stoppedBy, now, now, now, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, actor_user_id, event_code, title, detail_json, occurred_at
+		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_STOPPED', 'AI直播伴播已停止', ?, ?)
+	`, tenantID, roomID, session.DeviceID, session.ID, userID,
+		mustJSON(map[string]any{"stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func (s *Store) AbortLiveRuntimeSession(
+	ctx context.Context,
+	sessionID int64,
+	reason string,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	if sessionID <= 0 {
+		return model.LiveRuntimeSession{}, errors.New("invalid runtime session")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "core_runtime_reset"
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+	session, err := lockLiveRuntimeSession(ctx, tx, sessionID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if session.Status == "running" || session.Status == "paused" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_runtime_sessions
+			SET status='stopped', stop_reason=?, ended_at=?, last_billed_at=?,
+			    version=version+1, updated_at=?
+			WHERE id=? AND status IN ('running','paused')
+		`, reason, now, now, now, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO live_runtime_events (
+				tenant_id, room_id, device_id, session_id,
+				actor_type, event_code, title, detail_json, occurred_at
+			) VALUES (?, ?, ?, ?, 'system', 'AI_RUNTIME_ABORTED', 'Core重启，付费AI未自动恢复', ?, ?)
+		`, session.TenantID, session.RoomID, session.DeviceID, session.ID,
+			mustJSON(map[string]any{"stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	// A Core reset invalidates every unfinished lease from the old Core lifecycle.
+	// Cancelling releases reserved quota and deliberately charges zero seconds.
+	if _, err := s.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, "", 0, true, false, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
 }
 
 func (s *Store) ReconcileLiveRuntimeSession(
@@ -2141,7 +2283,8 @@ func chargeQuotaTx(
 			if remaining == 0 {
 				break
 			}
-			if bucket.Remaining == 0 {
+			available := bucket.Available()
+			if available == 0 {
 				continue
 			}
 			bucketUsageAt := startedAt.Add(time.Duration(charged) * time.Second)
@@ -2149,7 +2292,7 @@ func chargeQuotaTx(
 			if validFor <= 0 {
 				continue
 			}
-			use := bucket.Remaining
+			use := available
 			// Billing is whole-second based. Never consume more seconds from a
 			// bucket than can fit before its expiry boundary; the next loop
 			// will expire/switch the source and, if necessary, activate one
@@ -2167,7 +2310,7 @@ func chargeQuotaTx(
 			}
 			after := bucket.Remaining - use
 			status := "active"
-			if after == 0 {
+			if after == 0 && bucket.Reserved == 0 {
 				status = "exhausted"
 			}
 			if _, err := tx.ExecContext(ctx, `
@@ -2276,7 +2419,7 @@ func chargeQuotaTx(
 			  AND status='active'
 			  AND effective_at<=?
 			  AND expires_at>?
-			  AND remaining_seconds>0
+			  AND remaining_seconds>reserved_seconds
 		)
 	`, session.TenantID, afterAt, afterAt).Scan(&hasQuotaAfter); err != nil {
 		return 0, false, err
@@ -2291,13 +2434,13 @@ func loadActiveQuotaBucketsTx(
 	now time.Time,
 ) ([]quotaBucketLock, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, remaining_seconds, expires_at
+		SELECT id, remaining_seconds, reserved_seconds, expires_at
 		FROM quota_buckets
 		WHERE tenant_id=?
 		  AND status='active'
 		  AND effective_at <= ?
 		  AND expires_at > ?
-		  AND remaining_seconds > 0
+		  AND remaining_seconds > reserved_seconds
 		ORDER BY expires_at ASC, priority ASC, id ASC
 		FOR UPDATE
 	`, tenantID, now, now)
@@ -2309,7 +2452,7 @@ func loadActiveQuotaBucketsTx(
 	items := make([]quotaBucketLock, 0)
 	for rows.Next() {
 		var item quotaBucketLock
-		if err := rows.Scan(&item.ID, &item.Remaining, &item.ExpiresAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Remaining, &item.Reserved, &item.ExpiresAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

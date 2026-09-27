@@ -130,13 +130,13 @@ function adminEntries(): NavigationLink[] {
 function customerEntries(): NavigationLink[] {
   return [
     { title: '直播运维', to: '/', icon: '播' },
-    { title: '终端商城', to: '/shop', icon: '商' },
-    { title: '我的钱包', to: '/finance', icon: '财' },
-    { title: '资金记录', to: '/finance/records', icon: '流' },
-    { title: '收款进度', to: '/finance/receipts', icon: '款' },
     { title: '运维协助', to: '/support', icon: '助' },
     { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
+    { title: '终端商城', to: '/shop', icon: '商' },
+    { title: '售后维修', to: '/after-sales', icon: '修' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
+    { title: '我的钱包', to: '/finance', icon: '财' },
+    { title: '资金记录', to: '/finance/records', icon: '流' },
   ]
 }
 

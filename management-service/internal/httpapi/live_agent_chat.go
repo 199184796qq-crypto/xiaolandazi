@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/agentmemory"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
@@ -100,28 +99,20 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effectivePolicyPrompt = strings.TrimSpace(runtimeInstruction + "\n\n" + effectivePolicyPrompt)
 	}
+	memories, memoryErr := s.store.ListActiveAgentMemories(r.Context(), tenantID, roomID)
+	if memoryErr != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前直播间智能体记忆失败")
+		return
+	}
+	if memoryPrompt := agentmemory.Prompt(memories); memoryPrompt != "" {
+		effectivePolicyPrompt = strings.TrimSpace(effectivePolicyPrompt + "\n\n" + memoryPrompt)
+	}
 
 	if reply, matched := localLiveAgentAnswer(input.Message); matched {
 		writeJSON(w, http.StatusOK, liveAgentChatOutput{
 			Reply: reply,
 			Kind:  "local",
 		})
-		return
-	}
-
-	// This is the paid-model boundary. Deterministic local answers above stay free,
-	// but any large-model request must belong to an active billed live runtime.
-	runtimeSession, runtimeErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
-	if runtimeErr != nil {
-		if errors.Is(runtimeErr, sql.ErrNoRows) {
-			writeError(w, http.StatusConflict, "请先启动直播搭子后再使用智能回答")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "读取智能体运行状态失败")
-		return
-	}
-	if runtimeSession.Status != "running" {
-		writeError(w, http.StatusConflict, "请先启动直播搭子后再使用智能回答")
 		return
 	}
 
@@ -142,6 +133,16 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 		})
 		baseSystemPrompt = strings.TrimSpace(baseSystemPrompt + "\n\n" + guard)
 	}
+	baseSystemPrompt = strings.TrimSpace(baseSystemPrompt + `
+
+【长期搭档式交流】
+- 你不仅能处理直播业务，也可以正常聊天。用户聊日常、情绪、吐槽或轻松话题时，自然接话，不要硬把话题拉回直播业务。
+- 语气像长期合作的工作搭档：亲近、自然、简洁，可以适度幽默，但不要装熟、过度热情或制造情感依赖。
+- 不要假装自己有真实身体或现实生活经历。
+- 只有用户明确要求修改、记录、采用某项业务规则时，才把它理解为业务修改；普通聊天不能自动变成规则或事实。
+`)
+	roomRef := roomID
+	invocationID := s.beginAISingleUse(r.Context(), actor, &roomRef, "live_agent", map[string]any{"mode": "chat"})
 	reply, providerName, modelName, latencyMS, err := callLiveAgent(
 		r.Context(),
 		settings,
@@ -151,9 +152,11 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 		input,
 	)
 	if err != nil {
+		s.finishAISingleUse(r.Context(), invocationID, "failed", providerName, modelName, latencyMS, map[string]any{"error": err.Error()})
 		writeError(w, http.StatusBadGateway, "场控 Agent 暂时无法回答，请稍后再试")
 		return
 	}
+	s.finishAISingleUse(r.Context(), invocationID, "succeeded", providerName, modelName, latencyMS, nil)
 	writeJSON(w, http.StatusOK, liveAgentChatOutput{
 		Reply:     reply,
 		Kind:      "model",

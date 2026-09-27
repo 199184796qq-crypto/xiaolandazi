@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/agentmemory"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
@@ -36,6 +37,8 @@ type store interface {
 	GetVoiceProfile(context.Context, int64, int64) (model.VoiceProfile, error)
 	LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error)
 	GetLiveAgentPlanForRoom(context.Context, int64, int64) (model.LiveAgentPlan, error)
+	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
+	RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error
 	AgentPromptValue(context.Context, string, string) string
 	RenderAgentPrompt(context.Context, string, string, map[string]string) string
 }
@@ -71,16 +74,20 @@ type Worker struct {
 }
 
 type decisionItem struct {
-	ID              string   `json:"id"`
-	Topic           string   `json:"topic"`
-	Title           string   `json:"title"`
-	Summary         string   `json:"summary"`
-	ReplyHint       string   `json:"reply_hint"`
-	SampleQuestions []string `json:"sample_questions"`
-	ManualAction    string   `json:"manual_action"`
-	ManualOrigin    string   `json:"manual_origin"`
-	ExecutionMode   string   `json:"execution_mode"`
-	FixedText       string   `json:"fixed_text"`
+	ID                     string   `json:"id"`
+	Topic                  string   `json:"topic"`
+	Title                  string   `json:"title"`
+	Summary                string   `json:"summary"`
+	ReplyHint              string   `json:"reply_hint"`
+	SampleQuestions        []string `json:"sample_questions"`
+	ManualAction           string   `json:"manual_action"`
+	ManualOrigin           string   `json:"manual_origin"`
+	ExecutionMode          string   `json:"execution_mode"`
+	FixedText              string   `json:"fixed_text"`
+	PreviewInstruction     string   `json:"preview_instruction,omitempty"`
+	PreviewMemoryType      string   `json:"preview_memory_type,omitempty"`
+	PreviewMemoryKey       string   `json:"preview_memory_key,omitempty"`
+	PreviewMatchedMemoryID int64    `json:"preview_matched_memory_id,omitempty"`
 }
 
 type claimResponse struct {
@@ -232,6 +239,23 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if err := w.dispatch(ctx, session, *item, action, text, audio.AudioURL); err != nil {
 		return err
 	}
+	sourceType := "interrupt_answer"
+	if action == "quick" {
+		sourceType = "interrupt_quick"
+	}
+	if historyErr := w.store.RecordGeneratedSpeechHistory(ctx, model.GeneratedSpeechHistoryInput{
+		TenantID:          session.TenantID,
+		RoomID:            session.RoomID,
+		RuntimeSessionID:  session.ID,
+		RuntimeExternalID: session.ExternalID,
+		DecisionID:        item.ID,
+		SourceType:        sourceType,
+		QuestionText:      primaryQuestion(*item),
+		GeneratedText:     text,
+	}); historyErr != nil {
+		// 播音已经成功下发，历史写入失败不能触发重试，否则会重复播音。
+		log.Printf("decision executor history tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, historyErr)
+	}
 	// Core 自己按 started_at + duration_ms 完成播音任务；终端回报只用于设备健康与排查。
 	completed = true
 	w.clearBackoff(session.RoomID)
@@ -294,6 +318,15 @@ func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRun
 }
 
 func (w *Worker) SimulateAnswer(ctx context.Context, tenantID, roomID int64, question string) (SimulationOutput, error) {
+	return w.SimulateAnswerWithPreview(ctx, tenantID, roomID, question, "", "", "", 0)
+}
+
+func (w *Worker) SimulateAnswerWithPreview(
+	ctx context.Context,
+	tenantID, roomID int64,
+	question, previewInstruction, previewMemoryType, previewMemoryKey string,
+	previewMatchedMemoryID int64,
+) (SimulationOutput, error) {
 	question = strings.TrimSpace(question)
 	if tenantID <= 0 || roomID <= 0 || question == "" {
 		return SimulationOutput{}, fmt.Errorf("测试问题不能为空")
@@ -303,12 +336,16 @@ func (w *Worker) SimulateAnswer(ctx context.Context, tenantID, roomID int64, que
 	}
 	session := model.LiveRuntimeSession{TenantID: tenantID, RoomID: roomID}
 	item := decisionItem{
-		Title:           "测试模拟观众提问",
-		Summary:         "测试模式模拟真实观众问题，只生成最终回答，不播音",
-		SampleQuestions: []string{question},
-		ManualAction:    "answer",
-		ManualOrigin:    "test_simulation",
-		ExecutionMode:   "intent",
+		Title:                  "测试模拟观众提问",
+		Summary:                "测试模式模拟真实观众问题，只生成最终回答，不播音",
+		SampleQuestions:        []string{question},
+		ManualAction:           "answer",
+		ManualOrigin:           "test_simulation",
+		ExecutionMode:          "intent",
+		PreviewInstruction:     strings.TrimSpace(previewInstruction),
+		PreviewMemoryType:      strings.TrimSpace(previewMemoryType),
+		PreviewMemoryKey:       strings.TrimSpace(previewMemoryKey),
+		PreviewMatchedMemoryID: previewMatchedMemoryID,
 	}
 	text, err := w.generateDecisionText(ctx, session, item)
 	if err != nil {
@@ -566,13 +603,28 @@ func (w *Worker) finalizeSpeechText(
 	}
 	contextText, _ := w.answerPrompt(ctx, session, item)
 	riskTerms, reasons := finalSpeechRisks(text, contextText, effective)
-	if len(reasons) == 0 {
+	for _, term := range memoryWordingRiskTerms(contextText) {
+		if term != "" && strings.Contains(text, term) {
+			riskTerms = append(riskTerms, term)
+			reasons = append(reasons, "当前直播间用词规范禁止表达："+term)
+		}
+	}
+	riskTerms = uniqueNonEmptyStrings(riskTerms)
+	reasons = uniqueNonEmptyStrings(reasons)
+	hasAgentMemories := hasAgentMemoryPrompt(contextText)
+	if len(reasons) == 0 && !hasAgentMemories {
 		return text, nil
 	}
 
 	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	reviewSystemPrompt := w.store.AgentPromptValue(ctx, "live.final_review.system", "只返回修正后的可直接播出正文，删除无依据事实和绝对化承诺。")
+	if hasAgentMemories {
+		reviewSystemPrompt += "\n\n【智能体记忆终审硬要求】\n当前直播间智能体记忆都是用户已经采用、正在生效的约束。必须逐条核对与当前问题相关的记忆，不能遗漏：\n- semantic：必须结合当前问题、商品和上下文判断含义，禁止无条件字符串替换；\n- fact：不得与已确认事实冲突，不得把未知事实补成确定事实；\n- wording：禁止使用 avoid/blocked 类表达，并优先采用已确认的表达口径；\n- style：只能改变说话方式，不能改变事实。\n若待播话术已经正确，保持原意和自然度；若存在冲突，直接修正。只返回最终可播正文。"
+	}
+	if strings.TrimSpace(item.PreviewInstruction) != "" {
+		reviewSystemPrompt += "\n\n【候选修正预览测试】\n本次正在测试尚未采用的候选修正。候选修正与同一用户层记忆直接冲突时，以候选修正为准；规则层、行业层和其他不冲突的已采用记忆继续执行。只评估本次回答，不得声称候选已经采用、发布或保存。"
+	}
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{
@@ -584,7 +636,7 @@ func (w *Worker) finalizeSpeechText(
 				Content: "【当前有效规则】\n" + effective.PromptText +
 					"\n\n【事实与现场上下文】\n" + contextText +
 					"\n\n【待播话术】\n" + text +
-					"\n\n【已检出风险】\n" + strings.Join(reasons, "；"),
+					"\n\n【已检出风险】\n" + finalReviewReasonText(reasons, hasAgentMemories),
 			},
 		},
 		MaxTokens:      650,
@@ -592,16 +644,35 @@ func (w *Worker) finalizeSpeechText(
 		Timeout:        16 * time.Second,
 	})
 	candidate := text
+	if reviewErr != nil && hasAgentMemories {
+		return "", fmt.Errorf("智能体记忆终审失败: %w", reviewErr)
+	}
 	if reviewErr == nil && strings.TrimSpace(review.Text) != "" {
 		candidate = strings.TrimSpace(review.Text)
+	} else if hasAgentMemories {
+		return "", fmt.Errorf("智能体记忆终审未返回可播文字")
 	}
 
-	// 无论终审模型是否可用，都再做一次确定性的硬过滤，确保已知绝对化词不能进入TTS。
+	// 终审后再做一次确定性的硬过滤，确保已知绝对化词和用词禁词不能进入 TTS。
 	candidate = hardSanitizeSpeech(candidate, riskTerms, contextText)
 	if strings.TrimSpace(candidate) == "" {
 		return "", fmt.Errorf("规则层终审后没有可播出文字")
 	}
 	return strings.TrimSpace(candidate), nil
+}
+
+func hasAgentMemoryPrompt(contextText string) bool {
+	return strings.Contains(contextText, "【当前直播间智能体记忆】")
+}
+
+func finalReviewReasonText(reasons []string, hasAgentMemories bool) string {
+	if len(reasons) > 0 {
+		return strings.Join(reasons, "；")
+	}
+	if hasAgentMemories {
+		return "未检出显式关键词风险；仍必须逐条核对当前直播间已采用的智能体记忆，确认无遗漏后再输出。"
+	}
+	return "无"
 }
 
 func finalSpeechRisks(
@@ -640,6 +711,26 @@ func finalSpeechRisks(
 		terms = append(terms, phrase)
 	}
 	return uniqueNonEmptyStrings(terms), uniqueNonEmptyStrings(reasons)
+}
+
+func memoryWordingRiskTerms(contextText string) []string {
+	const marker = "【用词硬校验词】"
+	result := make([]string, 0)
+	for _, line := range strings.Split(contextText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, marker) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, marker))
+		for _, term := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == '｜' || r == '|' || r == ',' || r == '，' || r == '、' || r == ';' || r == '；'
+		}) {
+			if term = strings.TrimSpace(term); term != "" {
+				result = append(result, term)
+			}
+		}
+	}
+	return uniqueNonEmptyStrings(result)
 }
 
 func configuredL1RiskTerms(effective model.LiveEffectivePolicy) []string {
@@ -872,6 +963,25 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
 	}
+	memories, memoryErr := w.store.ListActiveAgentMemories(ctx, session.TenantID, session.RoomID)
+	if memoryErr != nil {
+		return "", fmt.Errorf("读取智能体记忆失败: %w", memoryErr)
+	}
+	if strings.TrimSpace(item.PreviewInstruction) != "" {
+		filtered := memories[:0]
+		for _, memory := range memories {
+			if item.PreviewMatchedMemoryID > 0 && memory.ID == item.PreviewMatchedMemoryID {
+				continue
+			}
+			if item.PreviewMemoryKey != "" && strings.EqualFold(strings.TrimSpace(memory.MemoryKey), strings.TrimSpace(item.PreviewMemoryKey)) &&
+				(item.PreviewMemoryType == "" || strings.EqualFold(strings.TrimSpace(memory.MemoryType), strings.TrimSpace(item.PreviewMemoryType))) {
+				continue
+			}
+			filtered = append(filtered, memory)
+		}
+		memories = filtered
+	}
+	memoryPrompt := agentmemory.Prompt(memories)
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
 	questions := item.SampleQuestions
@@ -894,18 +1004,25 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		requirement := w.store.RenderAgentPrompt(ctx, "live.answer.operator", "按操作者指令生成可直接播出的口播正文。", variables)
 		return planContext +
 			"\n当前直播策略规则：" + string(rulesJSON) +
+			"\n当前直播间智能体记忆：" + memoryPrompt +
 			"\n操作者指令：" + strings.Join(questions, "；") +
 			"\n任务摘要：" + strings.TrimSpace(item.Summary) +
 			"\n额外要求：" + strings.TrimSpace(item.ReplyHint) +
 			"\n当前场景生成要求：" + requirement, nil
 	}
 	requirement := w.store.RenderAgentPrompt(ctx, "live.answer.audience", "根据当前方案和策略回答观众问题。", variables)
+	previewPrompt := ""
 	if strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation") {
 		testRequirement := w.store.RenderAgentPrompt(ctx, "test.simulation.answer", "测试模式只返回模拟回答，不执行真实播音。", variables)
 		requirement = strings.TrimSpace(requirement + "\n" + testRequirement)
+		if preview := strings.TrimSpace(item.PreviewInstruction); preview != "" {
+			previewPrompt = "\n【本次候选修正预览】\n" + preview +
+				"\n这是尚未采用的候选修正，仅本次测试临时生效。若它与同一用户记忆发生直接冲突，以本候选为准；其他不冲突的已采用记忆继续执行。不得声称已经采用或保存。"
+		}
 	}
 	return planContext +
 		"\n当前直播策略规则：" + string(rulesJSON) +
+		"\n当前直播间智能体记忆：" + memoryPrompt + previewPrompt +
 		"\n当前问题类别：" + strings.TrimSpace(item.Title) +
 		"\n观众原话：" + strings.Join(questions, "；") +
 		"\n任务摘要：" + strings.TrimSpace(item.Summary) +

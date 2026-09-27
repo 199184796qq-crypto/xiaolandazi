@@ -572,6 +572,31 @@ export interface SpeechRuntimeSnapshot {
   updated_at?: string
 }
 
+export interface GeneratedSpeechHistoryItem {
+  id: number
+  tenant_id: number
+  room_id: number
+  runtime_session_id: number
+  runtime_external_id: string
+  decision_id: string
+  source_type: string
+  question_text?: string
+  generated_text: string
+  correction_count: number
+  adopted_correction_count: number
+  editing_correction_count: number
+  correction_status: 'none' | 'editing' | 'corrected' | 'adopted' | string
+  created_at: string
+}
+
+export interface GeneratedSpeechHistoryPage {
+  items: GeneratedSpeechHistoryItem[]
+  page: number
+  page_size: number
+  total: number
+  runtime_session_id: number
+}
+
 export type AgentDecisionSource = 'agent' | 'manual'
 
 export interface AgentDecisionItem {
@@ -795,6 +820,7 @@ export interface LiveRuntimeSession {
 
 export interface LiveQuotaSourceSummary {
   source_type: string
+  source_id?: number
   source_label: string
   asset_no?: string
   remaining_seconds: number
@@ -802,22 +828,44 @@ export interface LiveQuotaSourceSummary {
 }
 
 export interface LiveTimeCardSummary {
+  id: number
   asset_no: string
   product_name: string
   status: string
   original_seconds: number
   remaining_seconds: number
+  activation_mode: string
+  validity_days: number
   activation_deadline_at?: string
   activated_at?: string
   expires_at?: string
+  purchased_at: string
+}
+
+export interface LiveTimeCardPage {
+  items: LiveTimeCardSummary[]
+  page: number
+  page_size: number
+  total: number
+}
+
+export interface LiveBillingRoomSummary {
+  room_id: number
+  room_name: string
+  session_id: number
+  billed_seconds: number
+  started_at: string
 }
 
 export interface LiveQuotaSummary {
   active_seconds: number
+  active_time_card_seconds: number
   reserve_time_card_seconds: number
   reserve_time_card_count: number
   current?: LiveQuotaSourceSummary
+  sources: LiveQuotaSourceSummary[]
   time_cards: LiveTimeCardSummary[]
+  active_billing_rooms: LiveBillingRoomSummary[]
 }
 
 export interface LiveRuntimeSnapshot {
@@ -993,6 +1041,7 @@ export interface LivePolicyContext {
 
 export interface LivePolicyAgentResponse {
   reply: string
+  target?: string
   action: 'EXPLAIN' | 'DRAFT' | string
   draft?: LivePolicyVersion
   conflicts?: LivePolicyConflict[]
@@ -1052,6 +1101,101 @@ export interface LivePolicyTestResult {
   }
   model?: string
   latency_ms?: number
+}
+
+export type AgentMemoryType = 'semantic' | 'fact' | 'wording' | 'style' | string
+
+export interface AgentLearningSession {
+  id: number
+  tenant_id: number
+  room_id: number
+  source_type: string
+  source_ref?: string
+  question?: string
+  original_reply?: string
+  target?: string
+  status: 'editing' | 'adopted' | 'closed' | string
+  memory_type?: AgentMemoryType
+  adopted_memory_item_id?: number
+  created_by_user_id: number
+  created_at: string
+  updated_at: string
+  adopted_at?: string
+}
+
+export interface AgentLearningEvidence {
+  id: number
+  session_id: number
+  turn_no: number
+  feedback: string
+  created_at: string
+}
+
+export interface AgentLearningResult {
+  id: number
+  session_id: number
+  evidence_id: number
+  turn_no: number
+  memory_type: AgentMemoryType
+  target: string
+  memory_key: string
+  matched_memory_item_id?: number
+  result_text: string
+  structured?: Record<string, unknown>
+  model_provider?: string
+  model_name?: string
+  latency_ms?: number
+  created_at: string
+}
+
+export interface AgentLearningTimelineItem {
+  evidence: AgentLearningEvidence
+  result: AgentLearningResult
+}
+
+export interface AgentLearningSessionDetail {
+  session: AgentLearningSession
+  timeline: AgentLearningTimelineItem[]
+  latest?: AgentLearningResult
+}
+
+export interface AgentMemoryVersion {
+  id: number
+  memory_item_id: number
+  version_no: number
+  status: 'active' | 'superseded' | 'rolled_back' | string
+  content_text: string
+  structured?: Record<string, unknown>
+  source_session_id: number
+  source_result_id: number
+  created_by_user_id: number
+  created_at: string
+}
+
+export interface AgentMemoryItem {
+  id: number
+  tenant_id: number
+  room_id: number
+  memory_type: AgentMemoryType
+  memory_key: string
+  target: string
+  status: 'active' | 'inactive' | string
+  current_version_id?: number
+  created_by_user_id: number
+  created_at: string
+  updated_at: string
+  current_version?: AgentMemoryVersion
+}
+
+export interface AgentLearningTurnOutput {
+  session: AgentLearningSession
+  result: AgentLearningResult
+}
+
+export interface AdoptAgentLearningOutput {
+  session: AgentLearningSession
+  memory: AgentMemoryItem
+  version: AgentMemoryVersion
 }
 
 export type LivePolicyLearningStatus = 'pending' | 'adopted' | 'rejected' | string

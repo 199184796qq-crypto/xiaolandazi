@@ -16,6 +16,9 @@ import {
   getAgentCustomerResources,
   getAgentCustomers,
   getCurrentResources,
+  getLiveQuotaSummary,
+  getLiveTimeCards,
+  activateLiveTimeCard,
 } from '../api'
 import { session } from '../session'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -25,6 +28,9 @@ import type {
   AgentSummary,
   ResourceAccount,
   ResourceDashboard,
+  LiveQuotaSummary,
+  LiveTimeCardPage,
+  LiveTimeCardSummary,
 } from '../types'
 
 const route = useRoute()
@@ -94,6 +100,23 @@ const resourceLedgerPageSize = 20
 
 const ownResources = ref<ResourceDashboard | null>(null)
 const targetResources = ref<ResourceDashboard | null>(null)
+
+const liveQuotaSummary = ref<LiveQuotaSummary | null>(null)
+const timeCardPackOpen = ref(false)
+const timeCardPackLoading = ref(false)
+const timeCardPackError = ref('')
+const timeCardPackPageSize = 4
+const timeCardActivatingID = ref<number | null>(null)
+const timeCardSlideName = ref<'time-card-slide-next' | 'time-card-slide-prev'>('time-card-slide-next')
+const timeCardPage = ref<LiveTimeCardPage>({
+  items: [],
+  page: 1,
+  page_size: timeCardPackPageSize,
+  total: 0,
+})
+const timeCardTotalPages = computed(() =>
+  Math.max(1, Math.ceil(timeCardPage.value.total / timeCardPackPageSize)),
+)
 
 const showAdjust = ref(false)
 const adjustResourceType = ref('ai_seconds')
@@ -231,6 +254,65 @@ function orderedAccounts(
     )
 }
 
+function formatTimeCardFaceHours(seconds: number) {
+  const hours = Math.max(0, seconds || 0) / 3600
+  return Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function timeCardCanActivate(item: LiveTimeCardSummary) {
+  return item.status === 'unactivated' && item.remaining_seconds > 0
+}
+
+function formatTimeCardDate(value?: string) {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+async function loadTimeCardPack(page = timeCardPage.value.page || 1) {
+  if (!isCustomer.value) return
+  timeCardPackLoading.value = true
+  timeCardPackError.value = ''
+  try {
+    timeCardPage.value = await getLiveTimeCards(page, timeCardPackPageSize)
+  } catch (value) {
+    timeCardPackError.value = value instanceof Error ? value.message : '读取时长卡包失败'
+  } finally {
+    timeCardPackLoading.value = false
+  }
+}
+
+async function openTimeCardPack() {
+  if (!isCustomer.value) return
+  timeCardPackOpen.value = true
+  await loadTimeCardPack(1)
+}
+
+async function activateTimeCard(item: LiveTimeCardSummary) {
+  if (!timeCardCanActivate(item) || timeCardActivatingID.value) return
+  timeCardActivatingID.value = item.id
+  timeCardPackError.value = ''
+  notice.value = ''
+  try {
+    const response = await activateLiveTimeCard(item.id)
+    liveQuotaSummary.value = response.quota
+    ownResources.value = await getCurrentResources()
+    await loadTimeCardPack(timeCardPage.value.page)
+    notice.value = '时长卡已启用。有效期从现在开始计算，剩余时长已进入当前 AI 时长池。'
+  } catch (value) {
+    timeCardPackError.value = value instanceof Error ? value.message : '启用时长卡失败'
+  } finally {
+    timeCardActivatingID.value = null
+  }
+}
+
+function changeTimeCardPackPage(page: number) {
+  if (timeCardPackLoading.value) return
+  const target = Math.max(1, Math.min(timeCardTotalPages.value, page))
+  if (target === timeCardPage.value.page) return
+  timeCardSlideName.value = target > timeCardPage.value.page ? 'time-card-slide-next' : 'time-card-slide-prev'
+  void loadTimeCardPack(target)
+}
+
 async function loadAdminTarget() {
   if (adminScope.value === 'agent') {
     if (!selectedAgentID.value) {
@@ -305,6 +387,13 @@ async function load() {
     } else if (isAgent.value) {
       await loadAgentData()
     } else if (isCustomer.value) {
+      const [quota, cards] = await Promise.all([
+        getLiveQuotaSummary(),
+        getLiveTimeCards(1, timeCardPackPageSize),
+      ])
+      liveQuotaSummary.value = quota
+      timeCardPage.value = cards
+      // 先让过期卡完成清理/资源对账，再读取展示余额，避免页面短暂显示已过期旧余额。
       ownResources.value = await getCurrentResources()
     }
   } catch (value) {
@@ -767,7 +856,11 @@ onMounted(load)
             <em>{{ item.status === 'active' ? '可用' : item.status }}</em>
           </div>
           <strong>
-            {{ formatQuantity(item.resource_type, item.balance) }}
+            {{
+              isCustomer && item.resource_type === 'ai_seconds'
+                ? formatQuantity(item.resource_type, liveQuotaSummary?.active_seconds || 0)
+                : formatQuantity(item.resource_type, item.balance)
+            }}
           </strong>
           <small>{{ unitLabel(item.unit) }}</small>
           <button
@@ -779,9 +872,18 @@ onMounted(load)
             {{ isMarketingTimePage ? '申请增加' : '调整' }}
           </button>
         </article>
+        <article v-if="isCustomer" class="resource-account-card time-card-pack-entry" @click="openTimeCardPack">
+          <div>
+            <span>时长卡包</span>
+            <em>{{ liveQuotaSummary?.reserve_time_card_count || 0 }} 张待启用</em>
+          </div>
+          <strong>{{ timeCardPage.total }}</strong>
+          <small>张时长卡</small>
+          <p>购买后先放在这里，手动启用后才进入 AI 时长池。</p>
+          <button type="button" class="time-card-pack-open" @click.stop="openTimeCardPack">打开卡包</button>
+        </article>
       </div>
     </section>
-
     <section
       v-if="isAgent && targetResources"
       class="resource-account-section customer-resource-section"
@@ -899,6 +1001,81 @@ onMounted(load)
         @update:page="resourceLedgerPage = $event"
       />
     </section>
+
+    <div v-if="timeCardPackOpen" class="modal-backdrop time-card-pack-backdrop" @click.self="timeCardPackOpen = false">
+      <section
+        :class="['time-card-pack-modal', 'cards-' + Math.max(1, Math.min(timeCardPackPageSize, timeCardPage.items.length))]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="时长卡包"
+      >
+        <header class="time-card-pack-header">
+          <div>
+            <p class="section-kicker">TIME CARD WALLET</p>
+            <h3>时长卡包</h3>
+          </div>
+          <button class="icon-button" type="button" @click="timeCardPackOpen = false">×</button>
+        </header>
+
+        <p v-if="timeCardPackError" class="inline-error">{{ timeCardPackError }}</p>
+        <div v-if="timeCardPackLoading && !timeCardPage.items.length" class="time-card-pack-empty">正在打开卡包…</div>
+        <div v-else-if="!timeCardPage.items.length" class="time-card-pack-empty">暂无未使用时长卡</div>
+        <div v-else class="time-card-pack-viewport">
+          <Transition :name="timeCardSlideName" mode="out-in">
+            <div :key="timeCardPage.page" class="time-card-pack-list">
+              <article
+                v-for="item in timeCardPage.items"
+                :key="item.id"
+                class="time-card-asset"
+              >
+                <header>
+                  <div>
+                    <span>{{ item.asset_no }}</span>
+                    <strong>{{ item.product_name }}</strong>
+                  </div>
+                </header>
+                <div class="time-card-asset-duration" aria-label="卡面时长">
+                  <strong>{{ formatTimeCardFaceHours(item.original_seconds) }}</strong>
+                  <span>时</span>
+                </div>
+                <dl>
+                  <div><dt>购买时间</dt><dd>{{ formatTimeCardDate(item.purchased_at) }}</dd></div>
+                  <div><dt>使用有效期</dt><dd>启用后 {{ item.validity_days }} 天</dd></div>
+                  <div v-if="item.activation_deadline_at"><dt>最晚启用</dt><dd>{{ formatTimeCardDate(item.activation_deadline_at) }}</dd></div>
+                </dl>
+                <button
+                  v-if="timeCardCanActivate(item)"
+                  type="button"
+                  class="time-card-use-button"
+                  :disabled="timeCardActivatingID !== null"
+                  @click="activateTimeCard(item)"
+                >
+                  {{ timeCardActivatingID === item.id ? '正在启用…' : '使用这张' }}
+                </button>
+              </article>
+            </div>
+          </Transition>
+        </div>
+
+        <footer v-if="timeCardPage.total > timeCardPackPageSize" class="time-card-pack-pagination">
+          <button
+            type="button"
+            class="time-card-pack-arrow"
+            aria-label="上一组时长卡"
+            :disabled="timeCardPage.page <= 1 || timeCardPackLoading"
+            @click="changeTimeCardPackPage(timeCardPage.page - 1)"
+          >←</button>
+          <strong>{{ timeCardPage.page }} / {{ timeCardTotalPages }}</strong>
+          <button
+            type="button"
+            class="time-card-pack-arrow"
+            aria-label="下一组时长卡"
+            :disabled="timeCardPage.page >= timeCardTotalPages || timeCardPackLoading"
+            @click="changeTimeCardPackPage(timeCardPage.page + 1)"
+          >→</button>
+        </footer>
+      </section>
+    </div>
 
     <div
       v-if="showAgentPicker"

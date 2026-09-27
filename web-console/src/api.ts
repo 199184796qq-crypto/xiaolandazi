@@ -81,6 +81,7 @@ import type {
   RoomBlockedUser,
   RoomBrainView,
   SpeechRuntimeSnapshot,
+  GeneratedSpeechHistoryPage,
   AgentDecisionSnapshot,
   AgentDecisionSimulationResult,
   AgentDecisionEnqueueResult,
@@ -95,6 +96,7 @@ import type {
   LiveRuntimeSession,
   LiveRuntimeSnapshot,
   LiveQuotaSummary,
+  LiveTimeCardPage,
   LiveRuntimeEvent,
   LiveAgentSettings,
   LiveAgentSettingsInput,
@@ -110,6 +112,12 @@ import type {
   CreateLivePolicyLearningCandidateInput,
   AdoptLivePolicyLearningCandidateInput,
   LivePolicyLearningAdoptResult,
+  AgentLearningSession,
+  AgentLearningSessionDetail,
+  AgentLearningTurnOutput,
+  AgentMemoryItem,
+  AgentMemoryVersion,
+  AdoptAgentLearningOutput,
   LivePolicyVersion,
   LiveRoomPolicyContext,
   LiveSupportAuthorization,
@@ -375,6 +383,20 @@ export function getRoomBrain(roomId: number) {
 
 export function getRoomSpeechRuntime(roomId: number) {
   return request<SpeechRuntimeSnapshot>('/api/v1/rooms/' + roomId + '/speech-runtime')
+}
+
+export function getRoomGeneratedSpeechHistory(
+  roomId: number,
+  options: { query?: string; page?: number; pageSize?: number; sessionId?: number } = {},
+) {
+  const params = new URLSearchParams()
+  if (options.query?.trim()) params.set('q', options.query.trim())
+  params.set('page', String(options.page || 1))
+  params.set('page_size', String(options.pageSize || 10))
+  if (options.sessionId) params.set('session_id', String(options.sessionId))
+  return request<GeneratedSpeechHistoryPage>(
+    '/api/v1/rooms/' + roomId + '/generated-speeches?' + params.toString(),
+  )
 }
 
 export function getRoomAgentDecisions(roomId: number) {
@@ -855,6 +877,129 @@ export function chatLiveRoomPolicyAgent(
   })
 }
 
+export function createAgentLearningSession(
+  roomId: number,
+  payload: {
+    source_type?: string
+    source_ref?: string
+    question?: string
+    original_reply?: string
+    target?: string
+  },
+) {
+  return request<AgentLearningSession>('/api/v1/live/rooms/' + roomId + '/agent-learning/sessions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getAgentLearningSessions(roomId: number) {
+  return request<{ items: AgentLearningSession[] }>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/sessions',
+  )
+}
+
+export function getAgentLearningSession(roomId: number, sessionId: number) {
+  return request<AgentLearningSessionDetail>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/sessions/' + sessionId,
+  )
+}
+
+export function createAgentLearningTurn(roomId: number, sessionId: number, feedback: string) {
+  return request<AgentLearningTurnOutput>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/sessions/' + sessionId + '/turns',
+    {
+      method: 'POST',
+      body: JSON.stringify({ feedback }),
+    },
+  )
+}
+
+export function testAgentLearningSession(roomId: number, sessionId: number, question = '') {
+  return request<AgentDecisionSimulationResult>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/sessions/' + sessionId + '/test',
+    {
+      method: 'POST',
+      body: JSON.stringify(question.trim() ? { question: question.trim() } : {}),
+    },
+  )
+}
+
+export function classifyAgentLearningMessage(
+  roomId: number,
+  payload: {
+    message: string
+    session_id?: number
+    target?: string
+    latest_candidate?: string
+    current_mode?: 'chat' | 'learning' | 'test' | 'execution'
+    learning_active?: boolean
+    test_active?: boolean
+    execution_active?: boolean
+    history?: Array<{ role: 'user' | 'agent'; text: string }>
+  },
+) {
+  return request<{ intent: 'chat' | 'learning' | 'test' | 'execution'; confidence?: string; reason?: string }>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/intent',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function chatAgentLearningCompanion(
+  roomId: number,
+  payload: {
+    message: string
+    session_id?: number
+    target?: string
+    latest_candidate?: string
+    history?: Array<{ role: 'user' | 'agent'; text: string }>
+  },
+) {
+  return request<{ reply: string; kind: string; model?: string; latency_ms?: number }>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/chat',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function adoptAgentLearningSession(roomId: number, sessionId: number) {
+  return request<AdoptAgentLearningOutput>(
+    '/api/v1/live/rooms/' + roomId + '/agent-learning/sessions/' + sessionId + '/adopt',
+    { method: 'POST' },
+  )
+}
+
+export function getAgentMemories(roomId: number) {
+  return request<{ items: AgentMemoryItem[] }>(
+    '/api/v1/live/rooms/' + roomId + '/agent-memories',
+  )
+}
+
+export function deactivateAgentMemory(roomId: number, memoryId: number) {
+  return request<AgentMemoryItem>(
+    '/api/v1/live/rooms/' + roomId + '/agent-memories/' + memoryId + '/deactivate',
+    { method: 'POST' },
+  )
+}
+
+export function getAgentMemoryVersions(roomId: number, memoryId: number) {
+  return request<{ items: AgentMemoryVersion[] }>(
+    '/api/v1/live/rooms/' + roomId + '/agent-memories/' + memoryId + '/versions',
+  )
+}
+
+export function rollbackAgentMemoryVersion(roomId: number, memoryId: number, versionId: number) {
+  return request<AgentMemoryItem>(
+    '/api/v1/live/rooms/' + roomId + '/agent-memories/' + memoryId + '/versions/' + versionId + '/rollback',
+    { method: 'POST' },
+  )
+}
+
 export function publishLiveRoomPolicyVersion(roomId: number, versionId: number) {
   return request<LivePolicyVersion>(
     '/api/v1/live/rooms/' + roomId + '/policy/versions/' + versionId + '/publish',
@@ -1049,6 +1194,21 @@ export function controlLiveDevice(
 
 export function getLiveQuotaSummary() {
   return request<LiveQuotaSummary>('/api/v1/live/quota-summary')
+}
+
+export function getLiveTimeCards(page = 1, pageSize = 5) {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  })
+  return request<LiveTimeCardPage>('/api/v1/live/time-cards?' + params.toString())
+}
+
+export function activateLiveTimeCard(assetId: number) {
+  return request<{ asset_id: number; quota: LiveQuotaSummary }>(
+    '/api/v1/live/time-cards/' + assetId + '/activate',
+    { method: 'POST' },
+  )
 }
 
 export function activateLiveQuotaCards(count = 1) {
@@ -2125,6 +2285,16 @@ export function sandboxPayCustomerShopOrder(orderId: number, payload: SandboxPay
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function walletPayCustomerTimeCardOrder(orderId: number, idempotencyKey: string) {
+  return request<{ order: CustomerShopOrder; payment_method: string }>(
+    '/api/v1/shop/orders/' + orderId + '/wallet-pay',
+    {
+      method: 'POST',
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
     },
   )
 }

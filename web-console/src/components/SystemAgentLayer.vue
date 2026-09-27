@@ -18,24 +18,29 @@ import {
   chatClientAgent,
   chatInternalAgent,
   chatLiveRoomPolicyAgent,
-  createLiveAgentPlan,
+  createAgentLearningSession,
+  createAgentLearningTurn,
+  testAgentLearningSession,
+  classifyAgentLearningMessage,
+  chatAgentLearningCompanion,
+  adoptAgentLearningSession,
+  getAgentMemories,
+  deactivateAgentMemory,
+  getAgentMemoryVersions,
+  rollbackAgentMemoryVersion,
   createLiveOpsAnchorTraining,
   createLiveAgentConfigDraft,
   createLivePolicyLearningCandidate,
-  adoptLivePolicyLearningCandidate,
   createCommercialMarketingCampaign,
   createStaffEmployee,
   getClientAgentContext,
   getInternalAgentContext,
   getPublicSystemConfig,
   getLiveAgentConfigVersions,
-  getLiveAgentPlans,
   getLiveOfficialVoices,
-  getRoomLiveAgentPlan,
   getRoomAgentDecisions,
   getLiveVoiceProfiles,
   getRooms,
-  setLiveRuntimePlan,
   enqueueRoomManualAgentDecision,
   simulateRoomAgentDecision,
   testLivePolicyAdmin,
@@ -43,7 +48,8 @@ import {
 import type {
   InitialCredential,
   AgentDecisionSimulationResult,
-  LiveAgentPlan,
+  AgentMemoryItem,
+  AgentMemoryVersion,
   LivePolicyLearningCandidate,
   SystemAgentActionPreview,
   SystemAgentChatResponse,
@@ -78,6 +84,7 @@ type ChatMessage = {
   introduction?: boolean
   conversationScope?: string
   answerReference?: {
+    learningSessionId?: number
     question: string
     strategy: string
     reference?: string
@@ -88,10 +95,19 @@ type ChatMessage = {
     accepted?: boolean
     coachingKind?: CoachingKind
     target?: string
+    memoryType?: string
+    matchedMemoryItemId?: number
+    adoptedVersionNo?: number
+  }
+  memoryList?: AgentMemoryItem[]
+  memoryVersions?: {
+    memory: AgentMemoryItem
+    versions: AgentMemoryVersion[]
   }
 }
 
 type LiveRoomAnswerMode = 'quick' | 'answer'
+type LiveRoomWorkMode = 'chat' | 'learning' | 'test' | 'execution'
 
 type SuggestionItem = {
   kind: SuggestionKind
@@ -103,7 +119,7 @@ type SuggestionItem = {
 }
 
 type AnswerReferenceContext = {
-  kind?: 'event' | 'question' | 'bucket'
+  kind?: 'event' | 'question' | 'bucket' | 'speech'
   question: string
   topic?: string
   eventId?: number
@@ -113,6 +129,9 @@ type AnswerReferenceContext = {
   aggregateCount?: number
   uniqueUsers?: number
   similarQuestions?: string[]
+  originalReply?: string
+  sourceRef?: string
+  sourceType?: string
 }
 
 type AnswerReferenceSession = {
@@ -131,17 +150,7 @@ type CoachingSession = {
   history: AgentHistoryItem[]
   initialReference?: string
   latestReply?: string
-}
-
-type AnswerReferenceAdoptionPending = {
-  message: NonNullable<ChatMessage['answerReference']>
-  roomId: number
-  tenantId: number
-  roomName: string
-  plans: LiveAgentPlan[]
-  currentPlanId: number
-  selectedPlan?: LiveAgentPlan
-  stage: 'plan' | 'action'
+  backendSessionId?: number
 }
 
 const route = useRoute()
@@ -177,14 +186,15 @@ const liveRoomAnswerMode = ref<LiveRoomAnswerMode | null>(null)
 const liveRoomExecutionStatus = ref('')
 const liveRoomExecutionError = ref(false)
 const liveRoomTestMode = ref(false)
+const liveRoomWorkMode = ref<LiveRoomWorkMode>('chat')
 const answerReferencePicking = ref(false)
 const answerReferencePending = ref<AnswerReferenceContext | null>(null)
 const answerReferenceSession = ref<AnswerReferenceSession | null>(null)
-const answerReferenceAdoptionPending = ref<AnswerReferenceAdoptionPending | null>(null)
 const coachingSession = ref<CoachingSession | null>(null)
 
 function toggleLiveRoomTestMode() {
   liveRoomTestMode.value = !liveRoomTestMode.value
+  liveRoomWorkMode.value = liveRoomTestMode.value ? 'test' : 'chat'
   liveRoomAnswerMode.value = null
   liveRoomExecutionError.value = false
   liveRoomExecutionStatus.value = liveRoomTestMode.value
@@ -203,9 +213,10 @@ function setAnswerReferencePicking(active: boolean) {
 }
 
 function beginAnswerReferencePicking() {
+  liveRoomWorkMode.value = 'learning'
   liveRoomAnswerMode.value = null
   liveRoomExecutionError.value = false
-  liveRoomExecutionStatus.value = '参考回答 · 请点击公屏问题、问题聚类或聚类内单条问题'
+  liveRoomExecutionStatus.value = '纠正智能体 · 请点击公屏问题、问题聚类或聚类内单条问题'
   answerReferencePending.value = null
   answerReferenceSession.value = null
   coachingSession.value = null
@@ -228,7 +239,11 @@ function openAnswerReference(payload: AnswerReferenceContext) {
   }
   setAnswerReferencePicking(false)
   answerReferencePending.value = context
-  answerReferenceSession.value = { context, history: [] }
+  answerReferenceSession.value = {
+    context,
+    history: [],
+    latestReply: context.originalReply,
+  }
   coachingSession.value = {
     active: true,
     kind: 'reference_answer',
@@ -236,16 +251,41 @@ function openAnswerReference(payload: AnswerReferenceContext) {
     scope: conversationScopeForDomain('live-room'),
     context,
     history: [],
+    latestReply: context.originalReply,
   }
+  liveRoomWorkMode.value = 'learning'
   liveRoomAnswerMode.value = null
   liveRoomExecutionError.value = false
   liveRoomExecutionStatus.value = ''
   input.value = ''
   dismissedSuggestionInput.value = ''
   expanded.value = true
-  drawerOpen.value = false
-  activeComposer.value = 'dock'
-  void nextTick(() => inputEl.value?.focus())
+  drawerOpen.value = true
+  drawerTab.value = 'chat'
+  activeComposer.value = 'drawer'
+  if (context.originalReply) {
+    pushAgentMessage(
+      'live-room',
+      '正在纠正这次生成的话术：\n' + context.originalReply + '\n\n直接告诉我哪里不对，或者正确应该怎么说。',
+    )
+  }
+  void nextTick(() => drawerInputEl.value?.focus())
+}
+
+async function ensureAgentLearningBackendSession(sessionState: CoachingSession) {
+  if (sessionState.backendSessionId) return sessionState.backendSessionId
+  const roomId = Number(route.params.id)
+  if (!roomId) throw new Error('当前没有有效直播间')
+  const context = sessionState.context
+  const created = await createAgentLearningSession(roomId, {
+    source_type: context?.sourceType || (context?.question ? 'question_correction' : 'direct_correction'),
+    source_ref: context?.sourceRef || (context?.eventId ? 'room_event:' + context.eventId : ''),
+    question: context?.question || '',
+    original_reply: context?.originalReply || sessionState.latestReply || '',
+    target: sessionState.target,
+  })
+  sessionState.backendSessionId = created.id
+  return created.id
 }
 
 function cancelAnswerReference() {
@@ -258,18 +298,6 @@ function cancelAnswerReference() {
   input.value = ''
   dismissedSuggestionInput.value = ''
   void nextTick(focusActiveComposer)
-}
-
-function latestLiveRoomCoachingTarget() {
-  const scope = conversationScopeForDomain('live-room')
-  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    const item = messages.value[index]
-    if (item.domain !== 'live-room') continue
-    if ((item.conversationScope || conversationScopeForDomain(item.domain)) !== scope) continue
-    if (item.answerReference?.question) return item.answerReference.target || item.answerReference.question
-    if (item.role === 'user' && item.text && !item.text.trim().startsWith('/')) return item.text.trim().slice(0, 80)
-  }
-  return '当前直播间回答方式'
 }
 
 function beginCoachingMode(targetOverride = '') {
@@ -286,10 +314,11 @@ function beginCoachingMode(targetOverride = '') {
       initialReference: answerReferenceSession.value?.initialReference,
       latestReply: answerReferenceSession.value?.latestReply,
     }
-    liveRoomExecutionStatus.value = '调教中 · ' + coachingSession.value.target
+    liveRoomWorkMode.value = 'learning'
+    liveRoomExecutionStatus.value = '智能体学习 · ' + coachingSession.value.target
     return
   }
-  const target = targetOverride.trim() || latestLiveRoomCoachingTarget()
+  const target = targetOverride.trim() || '当前直播间需要纠正的内容'
   coachingSession.value = {
     active: true,
     kind: 'general',
@@ -297,13 +326,13 @@ function beginCoachingMode(targetOverride = '') {
     scope: conversationScopeForDomain('live-room'),
     history: [],
   }
+  liveRoomWorkMode.value = 'learning'
   setAnswerReferencePicking(false)
   answerReferencePending.value = null
   answerReferenceSession.value = null
-  answerReferenceAdoptionPending.value = null
   liveRoomAnswerMode.value = null
   liveRoomExecutionError.value = false
-  liveRoomExecutionStatus.value = '调教中 · ' + target
+  liveRoomExecutionStatus.value = '智能体学习 · ' + target
   input.value = ''
   dismissedSuggestionInput.value = ''
   expanded.value = true
@@ -315,48 +344,13 @@ function endCoachingMode(announce = true) {
   setAnswerReferencePicking(false)
   answerReferencePending.value = null
   answerReferenceSession.value = null
-  answerReferenceAdoptionPending.value = null
   coachingSession.value = null
+  liveRoomWorkMode.value = 'chat'
   liveRoomExecutionStatus.value = ''
   liveRoomExecutionError.value = false
   input.value = ''
   dismissedSuggestionInput.value = ''
-  if (announce && wasActive) pushAgentMessage('live-room', '已结束调教，本次对话记录已经保留。')
-  void nextTick(focusActiveComposer)
-}
-
-function continueCoachingFromCandidate(message: NonNullable<ChatMessage['answerReference']>) {
-  const kind = message.coachingKind || 'reference_answer'
-  const target = message.target || message.question || '当前直播间回答方式'
-  coachingSession.value = {
-    active: true,
-    kind,
-    target,
-    scope: conversationScopeForDomain('live-room'),
-    history: message.history?.slice(-16) || [],
-    latestReply: message.strategy,
-    initialReference: message.reference,
-    context: kind === 'reference_answer'
-      ? (answerReferencePending.value || { kind: 'question', question: message.question })
-      : undefined,
-  }
-  if (kind === 'reference_answer') {
-    const context = coachingSession.value.context || { kind: 'question', question: message.question }
-    answerReferencePending.value = context
-    answerReferenceSession.value = {
-      context,
-      history: coachingSession.value.history.slice(-16),
-      initialReference: message.reference,
-      latestReply: message.strategy,
-    }
-  } else {
-    answerReferencePending.value = null
-    answerReferenceSession.value = null
-  }
-  liveRoomExecutionError.value = false
-  liveRoomExecutionStatus.value = '调教中 · ' + target
-  input.value = ''
-  activeComposer.value = drawerOpen.value ? 'drawer' : 'dock'
+  if (announce && wasActive) pushAgentMessage('live-room', '已退出当前学习界面，未采用内容仍保留在对话记录中。')
   void nextTick(focusActiveComposer)
 }
 
@@ -366,243 +360,39 @@ function handleAnswerReferenceSelected(event: Event) {
   openAnswerReference(detail)
 }
 
-async function loadAnswerReferencePlanContext(roomId: number) {
-  const [current, roomList] = await Promise.all([
-    getRoomLiveAgentPlan(roomId).catch(() => ({ plan: null })),
-    getRooms(),
-  ])
-  const room = (roomList.items || []).find((item) => item.id === roomId)
-  if (!room) throw new Error('当前直播间不存在')
-  const list = await getLiveAgentPlans(room.tenant_id)
-  const plans = (list.items || []).filter((item) => item.status !== 'archived')
-  if (current.plan && !plans.some((item) => item.id === current.plan?.id)) plans.unshift(current.plan)
-  return {
-    room,
-    plans,
-    currentPlanId: current.plan?.id || 0,
-  }
-}
-
-async function createAnswerReferencePlan(pending: AnswerReferenceAdoptionPending) {
-  const prefix = '智能体+' + pending.roomName + '+方案'
-  const maxNo = pending.plans.reduce((max, item) => {
-    if (!item.name.startsWith(prefix)) return max
-    const parsed = Number(item.name.slice(prefix.length))
-    return Number.isFinite(parsed) && parsed > max ? parsed : max
-  }, 0)
-  const originLabel = pending.message.coachingKind === 'general' ? '调教成果' : '参考回答'
-  const plan = await createLiveAgentPlan({
-    name: prefix + String(maxNo + 1),
-    description: '由' + originLabel + '自动创建的基础智能体直播方案，可在直播策略中继续修改。',
-    tenant_id: pending.tenantId,
-  })
-  pending.plans.push(plan)
-  return plan
-}
-
-function answerReferencePlanPrompt(pending: AnswerReferenceAdoptionPending) {
-  const lines = pending.plans.map((plan, index) =>
-    String(index + 1) + '. ' + plan.name + (plan.id === pending.currentPlanId ? '（当前生效）' : ''),
-  )
-  lines.push(String(pending.plans.length + 1) + '. 新建方案')
-  return '当前直播间有多个可用智能体直播方案，请直接在对话中回复编号或方案名选择：\n' + lines.join('\n')
-}
-
-function resolveAnswerReferencePlan(pending: AnswerReferenceAdoptionPending, value: string) {
-  const inputValue = value.trim()
-  const numeric = Number(inputValue)
-  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= pending.plans.length) {
-    return pending.plans[numeric - 1]
-  }
-  return pending.plans.find((plan) => plan.name === inputValue)
-    || pending.plans.find((plan) => plan.name.includes(inputValue) || inputValue.includes(plan.name))
-    || null
-}
-
-async function finishAnswerReferenceAdoption(
-  pending: AnswerReferenceAdoptionPending,
-  plan: LiveAgentPlan,
-  switchPlan: boolean,
-) {
-  const { message, roomId } = pending
-  const isGeneralCoaching = message.coachingKind === 'general'
-  const adoptionLabel = isGeneralCoaching ? '调教成果' : '参考回答'
-  const history = message.history?.length
-    ? message.history.slice(-16)
-    : [
-        { role: 'user' as const, text: message.reference || message.question },
-        { role: 'agent' as const, text: message.strategy },
-      ]
-  const candidate = await createLivePolicyLearningCandidate({
-    source_layer: 'L3',
-    source_ref: (isGeneralCoaching ? 'coaching' : 'answer_reference') + ':live_agent_plan:' + plan.id,
-    room_id: roomId,
-    question: message.question,
-    final_reply: message.strategy,
-    feedback:
-      message.feedback ||
-      (message.reference ? '人工参考：' + message.reference : '人工采用' + adoptionLabel + '。'),
-    history,
-  })
-  const adopted = await adoptLivePolicyLearningCandidate(candidate.id, {
-    target_layer: 'L3',
-    room_id: roomId,
-    review_note: '由' + adoptionLabel + '人工采用，关联智能体直播方案“' + plan.name + '”，立即发布到当前直播间。',
-  })
-  const publishedVersion = adopted.version || adopted.draft
-  let switchError = ''
-  if (switchPlan && plan.id !== pending.currentPlanId) {
-    try {
-      await setLiveRuntimePlan(roomId, plan.id)
-      pending.currentPlanId = plan.id
-    } catch (error) {
-      switchError = error instanceof Error ? error.message : '切换方案失败'
-    }
-  }
-  message.accepted = true
-  message.canAdopt = false
-  answerReferenceAdoptionPending.value = null
-  window.dispatchEvent(
-    new CustomEvent('live-policy-learning-created', {
-      detail: { candidate: adopted.candidate || candidate },
-    }),
-  )
-  const switchText = switchPlan
-    ? switchError
-      ? '；回答已采用，但切换当前方案失败：' + switchError
-      : '；已切换为当前生效方案'
-    : plan.id === pending.currentPlanId
-      ? '；当前方案保持不变'
-      : '；仅记录关联，不切换当前运行方案'
-  pushAgentMessage(
-    'live-room',
-    '已采用到智能体直播方案“' + plan.name + '”，版本 V' + publishedVersion.version_no + ' 已发布生效' +
-      switchText + '。后续可在智能体策略的版本历史中回滚。',
-  )
-}
-
-async function handleAnswerReferenceAdoptionInput(value: string) {
-  const pending = answerReferenceAdoptionPending.value
-  if (!pending) return false
-  const normalized = value.trim()
-  if (!normalized) return true
-
-  pending.message.saving = true
-  try {
-    if (pending.stage === 'plan') {
-      const createNo = pending.plans.length + 1
-      const wantsCreate = normalized === '新建' || normalized === '新建方案' || Number(normalized) === createNo
-      const plan = wantsCreate ? await createAnswerReferencePlan(pending) : resolveAnswerReferencePlan(pending, normalized)
-      if (!plan) {
-        pushAgentMessage('live-room', '没有识别到这个方案。\n' + answerReferencePlanPrompt(pending))
-        return true
-      }
-      pending.selectedPlan = plan
-      if (plan.id === pending.currentPlanId) {
-        await finishAnswerReferenceAdoption(pending, plan, false)
-        return true
-      }
-      pending.stage = 'action'
-      const currentName = pending.plans.find((item) => item.id === pending.currentPlanId)?.name || '未选择方案'
-      pushAgentMessage(
-        'live-room',
-        '你选择了“' + plan.name + '”，当前生效方案是“' + currentName + '”。\n' +
-          '请回复：\n1. 仅采用到这个方案，不切换当前运行方案\n2. 采用并切换为当前生效方案\n3. 返回重新选择方案',
-      )
-      return true
-    }
-
-    const plan = pending.selectedPlan
-    if (!plan) {
-      pending.stage = 'plan'
-      pushAgentMessage('live-room', answerReferencePlanPrompt(pending))
-      return true
-    }
-    if (normalized === '1' || normalized.includes('仅采用') || normalized.includes('不切换')) {
-      await finishAnswerReferenceAdoption(pending, plan, false)
-      return true
-    }
-    if (normalized === '2' || normalized.includes('切换')) {
-      await finishAnswerReferenceAdoption(pending, plan, true)
-      return true
-    }
-    if (normalized === '3' || normalized.includes('返回') || normalized.includes('重新选择')) {
-      pending.selectedPlan = undefined
-      pending.stage = 'plan'
-      pushAgentMessage('live-room', answerReferencePlanPrompt(pending))
-      return true
-    }
-    pushAgentMessage('live-room', '请直接回复 1、2 或 3。')
-    return true
-  } catch (error) {
-    pushAgentMessage(
-      'live-room',
-      error instanceof Error ? '采用失败：' + error.message : '采用失败，请稍后重试。',
-    )
-    return true
-  } finally {
-    pending.message.saving = false
-    void scrollChatToBottom()
-  }
-}
-
 async function adoptAnswerReference(message: NonNullable<ChatMessage['answerReference']>) {
   if (message.accepted || message.saving || message.canAdopt === false) return
   const roomId = Number(route.params.id)
   if (!roomId) {
-    pushAgentMessage('live-room', '当前没有有效直播间，暂时不能采用这条参考回答。')
+    pushAgentMessage('live-room', '当前没有有效直播间，暂时不能采用这条修正结果。')
+    return
+  }
+  const sessionId = message.learningSessionId || coachingSession.value?.backendSessionId
+  if (!sessionId) {
+    pushAgentMessage('live-room', '这条修正结果还没有学习会话，请继续输入一次纠正后再采用。')
     return
   }
 
   message.saving = true
   try {
-    const context = await loadAnswerReferencePlanContext(roomId)
-    if (context.plans.length === 0) {
-      const pending: AnswerReferenceAdoptionPending = {
-        message,
-        roomId,
-        tenantId: context.room.tenant_id,
-        roomName: context.room.name,
-        plans: [],
-        currentPlanId: 0,
-        stage: 'plan',
-      }
-      const plan = await createAnswerReferencePlan(pending)
-      await setLiveRuntimePlan(roomId, plan.id)
-      pending.currentPlanId = plan.id
-      await finishAnswerReferenceAdoption(pending, plan, false)
-      return
-    }
-    if (context.plans.length === 1) {
-      const plan = context.plans[0]
-      const pending: AnswerReferenceAdoptionPending = {
-        message,
-        roomId,
-        tenantId: context.room.tenant_id,
-        roomName: context.room.name,
-        plans: context.plans,
-        currentPlanId: context.currentPlanId,
-        stage: 'plan',
-      }
-      if (!pending.currentPlanId) {
-        await setLiveRuntimePlan(roomId, plan.id)
-        pending.currentPlanId = plan.id
-      }
-      await finishAnswerReferenceAdoption(pending, plan, false)
-      return
-    }
-
-    answerReferenceAdoptionPending.value = {
-      message,
-      roomId,
-      tenantId: context.room.tenant_id,
-      roomName: context.room.name,
-      plans: context.plans,
-      currentPlanId: context.currentPlanId,
-      stage: 'plan',
-    }
-    pushAgentMessage('live-room', answerReferencePlanPrompt(answerReferenceAdoptionPending.value))
-    liveRoomExecutionStatus.value = '参考回答 · 等待在对话中选择智能体直播方案'
+    const adopted = await adoptAgentLearningSession(roomId, sessionId)
+    disablePriorLearningCandidates(sessionId)
+    message.accepted = true
+    message.canAdopt = false
+    message.memoryType = adopted.memory.memory_type
+    message.adoptedVersionNo = adopted.version.version_no
+    setAnswerReferencePicking(false)
+    answerReferencePending.value = null
+    answerReferenceSession.value = null
+    coachingSession.value = null
+    liveRoomWorkMode.value = 'chat'
+    liveRoomExecutionError.value = false
+    liveRoomExecutionStatus.value = ''
+    window.dispatchEvent(new CustomEvent('agent-memory-updated', { detail: adopted.memory }))
+    pushAgentMessage(
+      'live-room',
+      '已采用并立即生效。V' + adopted.version.version_no + '。当前直播间从下一次回答开始按这个意思处理。',
+    )
   } catch (error) {
     pushAgentMessage(
       'live-room',
@@ -611,6 +401,118 @@ async function adoptAnswerReference(message: NonNullable<ChatMessage['answerRefe
   } finally {
     message.saving = false
     void scrollChatToBottom()
+  }
+}
+
+function disablePriorLearningCandidates(sessionId: number) {
+  if (!sessionId) return
+  for (const item of messages.value) {
+    if (item.answerReference?.learningSessionId !== sessionId) continue
+    item.answerReference.canAdopt = false
+  }
+}
+
+async function showAgentMemories() {
+  const roomId = Number(route.params.id)
+  if (!roomId) return
+  busy.value = true
+  busyDomain.value = 'live-room'
+  drawerOpen.value = true
+  expanded.value = true
+  drawerTab.value = 'chat'
+  try {
+    const response = await getAgentMemories(roomId)
+    messages.value.push({
+      role: 'agent',
+      domain: 'live-room',
+      text: response.items.length ? '当前直播间正在生效的智能体记忆：' : '当前直播间还没有已采用的智能体记忆。',
+      conversationScope: conversationScopeForDomain('live-room'),
+      memoryList: response.items,
+    })
+  } catch (error) {
+    pushAgentMessage('live-room', error instanceof Error ? error.message : '读取智能体记忆失败')
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    void scrollChatToBottom()
+  }
+}
+
+async function correctAgentMemory(memory: AgentMemoryItem) {
+  const roomId = Number(route.params.id)
+  if (!roomId) return
+  const created = await createAgentLearningSession(roomId, {
+    source_type: 'memory_correction',
+    source_ref: 'agent_memory:' + memory.id,
+    original_reply: memory.current_version?.content_text || '',
+    target: memory.target,
+  })
+  coachingSession.value = {
+    active: true,
+    kind: 'general',
+    target: memory.target,
+    scope: conversationScopeForDomain('live-room'),
+    history: [],
+    latestReply: memory.current_version?.content_text,
+    backendSessionId: created.id,
+  }
+  drawerOpen.value = true
+  expanded.value = true
+  liveRoomExecutionStatus.value = '智能体学习 · 正在纠正：' + memory.target
+  pushAgentMessage(
+    'live-room',
+    '正在纠正“' + memory.target + '”当前记忆（V' +
+      (memory.current_version?.version_no || 1) +
+      '）：\n' + (memory.current_version?.content_text || '') +
+      '\n\n直接告诉我哪里不对，或者正确应该是什么。',
+  )
+  activeComposer.value = 'drawer'
+  void nextTick(focusActiveComposer)
+}
+
+async function stopAgentMemory(memory: AgentMemoryItem) {
+  const roomId = Number(route.params.id)
+  if (!roomId) return
+  try {
+    await deactivateAgentMemory(roomId, memory.id)
+    pushAgentMessage('live-room', '已停用“' + memory.target + '”。从下一次回答开始不再使用这条记忆，历史版本仍保留。')
+    await showAgentMemories()
+  } catch (error) {
+    pushAgentMessage('live-room', error instanceof Error ? error.message : '停用智能体记忆失败')
+  }
+}
+
+async function showAgentMemoryVersions(memory: AgentMemoryItem) {
+  const roomId = Number(route.params.id)
+  if (!roomId) return
+  try {
+    const response = await getAgentMemoryVersions(roomId, memory.id)
+    messages.value.push({
+      role: 'agent',
+      domain: 'live-room',
+      text: '“' + memory.target + '”版本记录',
+      conversationScope: conversationScopeForDomain('live-room'),
+      memoryVersions: { memory, versions: response.items },
+    })
+    drawerOpen.value = true
+    void scrollChatToBottom()
+  } catch (error) {
+    pushAgentMessage('live-room', error instanceof Error ? error.message : '读取记忆版本失败')
+  }
+}
+
+async function rollbackAgentMemory(memory: AgentMemoryItem, version: AgentMemoryVersion) {
+  const roomId = Number(route.params.id)
+  if (!roomId) return
+  try {
+    const updated = await rollbackAgentMemoryVersion(roomId, memory.id, version.id)
+    memory.status = updated.status
+    memory.current_version_id = updated.current_version_id
+    memory.current_version = updated.current_version
+    pushAgentMessage('live-room', '已恢复“' + memory.target + '”到 V' + version.version_no + '，立即对当前直播间生效。')
+    window.dispatchEvent(new CustomEvent('agent-memory-updated', { detail: updated }))
+  } catch (error) {
+    pushAgentMessage('live-room', error instanceof Error ? error.message : '回滚记忆版本失败')
   }
 }
 
@@ -751,7 +653,7 @@ function restoreAgentChatHistory(userId: number) {
         ...savedCoaching,
         history: Array.isArray(savedCoaching.history) ? savedCoaching.history.slice(-16) : [],
       }
-      liveRoomExecutionStatus.value = '调教中 · ' + savedCoaching.target
+      liveRoomExecutionStatus.value = '智能体学习 · ' + savedCoaching.target
       if (savedCoaching.kind === 'reference_answer' && savedCoaching.context?.question) {
         answerReferencePending.value = savedCoaching.context
         answerReferenceSession.value = {
@@ -850,15 +752,18 @@ const contextDescription = computed(() => {
 
 const inputPlaceholder = computed(() => {
   if (currentDomain.value === 'live-room' && answerReferencePicking.value) {
-    return '参考回答：先到公屏、问题聚类或聚类内单条问题点击要处理的问题…'
+    return '纠正智能体：请点击公屏问题、问题聚类或聚类内单条问题…'
   }
   if (currentDomain.value === 'live-room' && answerReferencePending.value) {
     return answerReferenceSession.value?.history.length
-      ? '继续告诉智能体怎么改，例如“口语一点、别太像广告”……'
-      : '输入你希望采用的回答思路，回车后开始优化……'
+      ? '继续告诉智能体哪里不对，或者正确应该是什么……'
+      : '告诉智能体哪里不对，或者正确应该是什么……'
   }
   if (currentDomain.value === 'live-room' && coachingSession.value?.active && coachingSession.value.kind === 'general') {
-    return '调教中：继续告诉智能体怎么改；满意后点“采用”或输入 /采用……'
+    if (liveRoomWorkMode.value === 'chat') return '正常聊就行；要继续纠正时直接说哪里需要改……'
+    if (liveRoomWorkMode.value === 'test') return '正在测试当前候选；也可以继续纠正或正常聊天……'
+    if (liveRoomWorkMode.value === 'execution') return '正式回答模式；也可以随时继续纠正当前候选……'
+    return '智能体学习：继续输入修改意见；满意后点“采用”……'
   }
   if (currentDomain.value === 'live-room' && liveRoomTestMode.value) {
     return '测试模式：输入模拟观众问题，例如“哪年的菜籽？”……'
@@ -1021,28 +926,28 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
       },
       {
         kind: 'capability',
-        label: '参考回答',
-        description: '先点击公屏问题、问题聚类或聚类内单条问题，再输入人工参考，和智能体多轮打磨后采用为当前直播间成果',
-        insertText: '/参考回答 ',
+        label: '纠正问题',
+        description: '点击公屏问题或问题聚类后，直接告诉智能体哪里不对、正确应该是什么',
+        insertText: '/纠正智能体 ',
         answerReferenceAction: true,
       },
       {
         kind: 'capability',
-        label: '调教',
-        description: '明确进入调教模式，后续对话持续优化当前目标，直到采用或结束调教',
-        insertText: '/调教 ',
+        label: '纠正智能体',
+        description: '直接进入智能体学习，后续继续聊天就是继续修改，采用后立即生效',
+        insertText: '/纠正智能体 ',
       },
       {
         kind: 'capability',
         label: '采用',
-        description: '采用当前调教会话最新一条可采用成果',
+        description: '采用当前最新修正结果，立即写入当前直播间智能体记忆并生效',
         insertText: '/采用',
       },
       {
         kind: 'capability',
-        label: '结束调教',
-        description: '退出调教模式但保留本次对话记录',
-        insertText: '/结束调教',
+        label: '智能体记忆',
+        description: '查看当前直播间已生效的语义、事实、用词和主播风格记忆',
+        insertText: '/智能体记忆',
       },
       { kind: 'capability', label: '处理现场问题', description: '结合当前直播间上下文处理观众问题', insertText: '/处理现场问题 ' },
       { kind: 'capability', label: '生成话术', description: '根据当前场景生成主播可说的话术', insertText: '/生成话术 ' },
@@ -2250,6 +2155,7 @@ function resolveLiveRoomExecution(value: string) {
 }
 
 async function sendLiveRoomAnswer(value: string, mode: LiveRoomAnswerMode) {
+  liveRoomWorkMode.value = 'execution'
   const roomId = Number(route.params.id)
   if (!roomId) {
     pushAgentMessage('live-room', '当前页面没有有效直播间编号，不能提交现场回答。')
@@ -2304,6 +2210,7 @@ async function sendLiveRoomAnswer(value: string, mode: LiveRoomAnswerMode) {
 }
 
 async function sendLiveRoomSimulation(value: string) {
+  liveRoomWorkMode.value = 'test'
   const roomId = Number(route.params.id)
   if (!roomId) {
     pushAgentMessage('live-room', '当前页面没有有效直播间编号，不能进行真实链路测试。')
@@ -2386,111 +2293,16 @@ async function sendLiveRoomSimulation(value: string) {
 }
 
 async function sendAnswerReference(value: string) {
+  liveRoomWorkMode.value = 'learning'
+  const roomId = Number(route.params.id)
   const sessionState = answerReferenceSession.value
+  const learningState = coachingSession.value
   const context = answerReferencePending.value || sessionState?.context
-  const roomId = Number(route.params.id)
-  if (!context || !sessionState || !roomId) return
-
-  const firstTurn = sessionState.history.length === 0
-  const prompt = firstTurn
-    ? [
-        '用户问题：' + context.question,
-        context.kind === 'bucket' && context.topic ? '问题聚类：' + context.topic : '',
-        context.eventId ? '原始事件ID：' + context.eventId : '',
-        context.userId ? '提问用户ID：' + context.userId : '',
-        context.nickname ? '提问用户：' + context.nickname : '',
-        context.time ? '发生时间：' + context.time : '',
-        context.kind === 'bucket' && context.aggregateCount ? '聚合条数：' + context.aggregateCount : '',
-        context.kind === 'bucket' && context.uniqueUsers ? '提问人数：' + context.uniqueUsers : '',
-        context.kind === 'bucket' && context.similarQuestions?.length
-          ? '相似问题：' + context.similarQuestions.join('；')
-          : '',
-        '人工参考回答：' + value,
-      ].filter(Boolean).join('\n')
-    : [
-        '继续优化同一个参考回答，问题保持不变。',
-        '最新人工反馈：' + value,
-      ].join('\n')
-
-  messages.value.push({
-    role: 'user',
-    domain: 'live-room',
-    text: firstTurn ? '参考回答：' + value : value,
-  })
-  input.value = ''
-  dismissedSuggestionInput.value = ''
-  drawerTab.value = 'chat'
-  drawerOpen.value = true
-  expanded.value = true
-  activeComposer.value = 'drawer'
-  busy.value = true
-  busyDomain.value = 'live-room'
-  void scrollChatToBottom()
-
-  try {
-    const result = await chatLiveRoomPolicyAgent(roomId, {
-      message: prompt,
-      history: sessionState.history.slice(-12),
-      scene: 'reference_answer',
-    })
-    const visibleReply = sanitizeTerminalAgentText(result.reply)
-    if (firstTurn) sessionState.initialReference = value
-    sessionState.history.push(
-      { role: 'user', text: firstTurn ? prompt : value },
-      { role: 'agent', text: visibleReply },
-    )
-    sessionState.history = sessionState.history.slice(-16)
-    sessionState.latestReply = visibleReply
-    if (coachingSession.value?.kind === 'reference_answer') {
-      coachingSession.value.history = sessionState.history.slice(-16)
-      coachingSession.value.initialReference = sessionState.initialReference
-      coachingSession.value.latestReply = visibleReply
-    }
-
-    messages.value.push({
-      role: 'agent',
-      domain: 'live-room',
-      text: visibleReply,
-      answerReference: {
-        question: context.question,
-        strategy: visibleReply,
-        reference: sessionState.initialReference,
-        feedback: firstTurn ? undefined : value,
-        history: sessionState.history.slice(-16),
-        canAdopt: true,
-        coachingKind: 'reference_answer',
-        target: context.topic || context.question,
-      },
-    })
-    liveRoomExecutionError.value = false
-    liveRoomExecutionStatus.value = '参考回答 · 可继续调教，满意后点击“采用”'
-  } catch (error) {
-    liveRoomExecutionError.value = true
-    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '参考回答优化失败'
-    pushAgentMessage(
-      'live-room',
-      error instanceof Error ? '参考回答优化失败：' + error.message : '参考回答优化失败。',
-    )
-  } finally {
-    busy.value = false
-    busyDomain.value = null
-    activeComposer.value = 'drawer'
-    void nextTick(focusActiveComposer)
-    void scrollChatToBottom()
-  }
-}
-
-async function sendGeneralCoaching(value: string) {
-  const sessionState = coachingSession.value
-  const roomId = Number(route.params.id)
-  if (!sessionState?.active || sessionState.kind !== 'general' || !roomId) return
+  if (!roomId || !sessionState || !learningState?.active || !context) return
 
   const userValue = value.trim()
   if (!userValue) return
-  const prompt = [
-    '当前调教目标：' + sessionState.target,
-    '用户最新反馈：' + userValue,
-  ].join('\n')
+  const firstTurn = sessionState.history.length === 0
 
   messages.value.push({
     role: 'user',
@@ -2509,12 +2321,94 @@ async function sendGeneralCoaching(value: string) {
   void scrollChatToBottom()
 
   try {
-    const result = await chatLiveRoomPolicyAgent(roomId, {
-      message: prompt,
-      history: sessionState.history.slice(-12),
-      scene: 'coaching',
+    const backendSessionId = await ensureAgentLearningBackendSession(learningState)
+    const output = await createAgentLearningTurn(roomId, backendSessionId, userValue)
+    const result = output.result
+    disablePriorLearningCandidates(backendSessionId)
+    const visibleReply = sanitizeTerminalAgentText(result.result_text)
+    if (firstTurn) sessionState.initialReference = userValue
+    sessionState.history.push(
+      { role: 'user', text: userValue },
+      { role: 'agent', text: visibleReply },
+    )
+    sessionState.history = sessionState.history.slice(-16)
+    sessionState.latestReply = visibleReply
+    learningState.backendSessionId = backendSessionId
+    learningState.target = result.target || learningState.target
+    learningState.history = sessionState.history.slice(-16)
+    learningState.initialReference = sessionState.initialReference
+    learningState.latestReply = visibleReply
+
+    messages.value.push({
+      role: 'agent',
+      domain: 'live-room',
+      text: visibleReply,
+      conversationScope: conversationScopeForDomain('live-room'),
+      answerReference: {
+        learningSessionId: backendSessionId,
+        question: context.question,
+        strategy: visibleReply,
+        reference: sessionState.initialReference,
+        feedback: userValue,
+        history: sessionState.history.slice(-16),
+        canAdopt: true,
+        coachingKind: 'reference_answer',
+        target: result.target || context.topic || context.question,
+        memoryType: result.memory_type,
+        matchedMemoryItemId: result.matched_memory_item_id,
+      },
     })
-    const visibleReply = sanitizeTerminalAgentText(result.reply)
+    liveRoomExecutionError.value = false
+    liveRoomExecutionStatus.value = '智能体学习 · 继续输入就是继续修改，满意后点击“采用”'
+  } catch (error) {
+    liveRoomExecutionError.value = true
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '生成修正结果失败'
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '生成修正结果失败：' + error.message : '生成修正结果失败，请稍后再试。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    activeComposer.value = 'drawer'
+    void nextTick(focusActiveComposer)
+    void scrollChatToBottom()
+  }
+}
+
+async function sendGeneralCoaching(value: string) {
+  liveRoomWorkMode.value = 'learning'
+  const sessionState = coachingSession.value
+  const roomId = Number(route.params.id)
+  if (!sessionState?.active || sessionState.kind !== 'general' || !roomId) return
+
+  const userValue = value.trim()
+  if (!userValue) return
+
+  messages.value.push({
+    role: 'user',
+    domain: 'live-room',
+    text: userValue,
+    conversationScope: conversationScopeForDomain('live-room'),
+  })
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  drawerTab.value = 'chat'
+  drawerOpen.value = true
+  expanded.value = true
+  activeComposer.value = 'drawer'
+  busy.value = true
+  busyDomain.value = 'live-room'
+  void scrollChatToBottom()
+
+  try {
+    const backendSessionId = await ensureAgentLearningBackendSession(sessionState)
+    const output = await createAgentLearningTurn(roomId, backendSessionId, userValue)
+    const result = output.result
+    disablePriorLearningCandidates(backendSessionId)
+    const visibleReply = sanitizeTerminalAgentText(result.result_text)
+    sessionState.backendSessionId = backendSessionId
+    sessionState.target = result.target || sessionState.target
     sessionState.history.push(
       { role: 'user', text: userValue },
       { role: 'agent', text: visibleReply },
@@ -2527,21 +2421,24 @@ async function sendGeneralCoaching(value: string) {
       text: visibleReply,
       conversationScope: conversationScopeForDomain('live-room'),
       answerReference: {
+        learningSessionId: backendSessionId,
         question: sessionState.target,
         strategy: visibleReply,
         feedback: userValue,
         history: sessionState.history.slice(-16),
         canAdopt: true,
         coachingKind: 'general',
-        target: sessionState.target,
+        target: result.target || sessionState.target,
+        memoryType: result.memory_type,
+        matchedMemoryItemId: result.matched_memory_item_id,
       },
     })
     liveRoomExecutionError.value = false
-    liveRoomExecutionStatus.value = '调教中 · 可继续优化，满意后点击“采用”或输入 /采用'
+    liveRoomExecutionStatus.value = '智能体学习 · 继续输入就是继续修改，满意后点击“采用”'
   } catch (error) {
     liveRoomExecutionError.value = true
-    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '调教失败'
-    pushAgentMessage('live-room', error instanceof Error ? '调教失败：' + error.message : '调教失败，请稍后再试。')
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '生成修正结果失败'
+    pushAgentMessage('live-room', error instanceof Error ? '生成修正结果失败：' + error.message : '生成修正结果失败，请稍后再试。')
   } finally {
     busy.value = false
     busyDomain.value = null
@@ -2551,10 +2448,235 @@ async function sendGeneralCoaching(value: string) {
   }
 }
 
+function parseAgentLearningPreviewTestIntent(value: string) {
+  const text = value.trim()
+  if (!text || text.startsWith('/')) return null
+  const matched = text.match(/^(?:你)?(?:帮我)?(?:试试看|试试|测试|验证|测)(?:一下|下|一遍|看看|看下)?(?:[：:，,\s]*(.+?))?[。！!？?]*$/)
+  if (!matched) return null
+  return { question: (matched[1] || '').trim() }
+}
+
+async function sendAgentLearningPreviewTest(rawValue: string, question = '') {
+  liveRoomWorkMode.value = 'test'
+  const activeSession = coachingSession.value
+  const roomId = Number(route.params.id)
+  if (!activeSession?.active || !roomId) return
+
+  messages.value.push({
+    role: 'user',
+    domain: 'live-room',
+    text: rawValue.trim(),
+    conversationScope: conversationScopeForDomain('live-room'),
+  })
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  drawerTab.value = 'chat'
+  drawerOpen.value = true
+  expanded.value = true
+  activeComposer.value = 'drawer'
+  busy.value = true
+  busyDomain.value = 'live-room'
+  liveRoomExecutionError.value = false
+  liveRoomExecutionStatus.value = '正在测试当前修正结果…'
+  void scrollChatToBottom()
+
+  try {
+    const backendSessionId = await ensureAgentLearningBackendSession(activeSession)
+    const result = await testAgentLearningSession(roomId, backendSessionId, question)
+    pushAgentMessage(
+      'live-room',
+      '候选测试｜尚未采用\n' +
+        '模拟观众：' + result.question + '\n' +
+        '最终回复：' + result.reply + '\n' +
+        '状态：仅测试当前修正结果，未采用、未播音',
+    )
+    liveRoomExecutionStatus.value = '候选测试完成 · 当前修正结果尚未采用'
+  } catch (error) {
+    liveRoomExecutionError.value = true
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '测试当前修正结果失败'
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '测试当前修正结果失败：' + error.message : '测试当前修正结果失败，请稍后再试。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    activeComposer.value = 'drawer'
+    void nextTick(focusActiveComposer)
+    void scrollChatToBottom()
+  }
+}
+
+async function sendAgentLearningCompanionChat(rawValue: string) {
+  liveRoomWorkMode.value = 'chat'
+  const activeSession = coachingSession.value
+  const roomId = Number(route.params.id)
+  if (!activeSession?.active || !roomId) return
+
+  const userValue = rawValue.trim()
+  if (!userValue) return
+  const history = historyPayload('live-room')
+  messages.value.push({
+    role: 'user',
+    domain: 'live-room',
+    text: userValue,
+    conversationScope: conversationScopeForDomain('live-room'),
+  })
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  drawerTab.value = 'chat'
+  drawerOpen.value = true
+  expanded.value = true
+  activeComposer.value = 'drawer'
+  busy.value = true
+  busyDomain.value = 'live-room'
+  void scrollChatToBottom()
+
+  try {
+    const response = await chatAgentLearningCompanion(roomId, {
+      message: userValue,
+      session_id: activeSession.backendSessionId,
+      target: activeSession.target,
+      latest_candidate: activeSession.latestReply || '',
+      history,
+    })
+    pushAgentMessage('live-room', sanitizeTerminalAgentText(response.reply))
+    liveRoomExecutionError.value = false
+  } catch (error) {
+    liveRoomExecutionError.value = true
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '这句话刚才没接上：' + error.message : '这句话刚才没接上，再说一次就好。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    activeComposer.value = 'drawer'
+    void nextTick(focusActiveComposer)
+    void scrollChatToBottom()
+  }
+}
+
+async function routeActiveAgentLearningInput(rawValue: string) {
+  const activeSession = coachingSession.value
+  const roomId = Number(route.params.id)
+  if (!activeSession?.active || !roomId) return false
+
+  const previewTest = parseAgentLearningPreviewTestIntent(rawValue)
+  if (previewTest) {
+    await sendAgentLearningPreviewTest(rawValue, previewTest.question)
+    return true
+  }
+
+  let intent: LiveRoomWorkMode = 'chat'
+  try {
+    const routed = await classifyAgentLearningMessage(roomId, {
+      message: rawValue,
+      session_id: activeSession.backendSessionId,
+      target: activeSession.target,
+      latest_candidate: activeSession.latestReply || '',
+      current_mode: liveRoomWorkMode.value,
+      learning_active: true,
+      test_active: liveRoomTestMode.value,
+      execution_active: Boolean(liveRoomAnswerMode.value),
+      history: historyPayload('live-room').slice(-10),
+    })
+    intent = routed.intent
+  } catch {
+    // 分流服务异常时宁可聊天，也不能把普通闲聊误写成长期记忆。
+    intent = 'chat'
+  }
+
+  if (intent === 'test') {
+    await sendAgentLearningPreviewTest(rawValue)
+    return true
+  }
+  if (intent === 'learning') {
+    if (activeSession.kind === 'reference_answer' && (answerReferencePending.value || answerReferenceSession.value)) {
+      await sendAnswerReference(rawValue)
+    } else {
+      await sendGeneralCoaching(rawValue)
+    }
+    return true
+  }
+  if (intent === 'execution') {
+    await sendLiveRoomAnswer(extractLiveRoomExecutionContent(rawValue), 'answer')
+    input.value = ''
+    dismissedSuggestionInput.value = ''
+    return true
+  }
+
+  await sendAgentLearningCompanionChat(rawValue)
+  return true
+}
+
+function isLikelyAgentCorrectionIntent(value: string) {
+  const text = value.trim()
+  if (!text || text.startsWith('/')) return false
+  return /(?:我|之前|刚才).{0,8}(?:说错|写错|打错|教错)|(?:说错了|写错了|打错了|教错了).{0,12}(?:应该|实际|正确)|^不是.{1,30}[，,、 ]?(?:是|应该是)/.test(text)
+}
+
+function extractLiveRoomExecutionContent(value: string) {
+  const text = value.trim()
+  const direct = text.match(/^(?:(?:你)?(?:帮我|替我)?(?:直接)?(?:回答|回复|抢答)(?:一下|下)?(?:这条(?:弹幕|问题)?|这个(?:问题|用户)?|他|她)?|给(?:这个用户|他|她)回复)[：:，,\s]*(.+)$/)
+  return direct?.[1]?.trim() || text
+}
+
+function isPotentialLiveRoomWorkModeSwitch(value: string) {
+  const text = value.trim()
+  if (!text || text.startsWith('/')) return false
+  if (isLikelyAgentCorrectionIntent(text)) return true
+  return /(?:这个|刚才|之前).{0,10}(?:不对|有问题|生硬|太官方|不自然)|(?:改一下|改成|改为|换成|纠正|修正|再短一点|再简短一点|再自然一点|怎么回答|应该怎么说|测试下|测试一下|试试看|验证一下|帮我回答这条|回答这条弹幕|回复这条弹幕|给他回复|给她回复|抢答这条)/.test(text)
+}
+
+async function routeInactiveLiveRoomWorkModeInput(rawValue: string) {
+  const roomId = Number(route.params.id)
+  if (!roomId || !isPotentialLiveRoomWorkModeSwitch(rawValue)) {
+    liveRoomWorkMode.value = 'chat'
+    return false
+  }
+
+  let intent: LiveRoomWorkMode = 'chat'
+  try {
+    const routed = await classifyAgentLearningMessage(roomId, {
+      message: rawValue,
+      current_mode: liveRoomWorkMode.value,
+      learning_active: false,
+      test_active: liveRoomTestMode.value,
+      execution_active: Boolean(liveRoomAnswerMode.value),
+      history: historyPayload('live-room').slice(-10),
+    })
+    intent = routed.intent
+  } catch {
+    intent = isLikelyAgentCorrectionIntent(rawValue) ? 'learning' : 'chat'
+  }
+
+  if (intent === 'learning') {
+    beginCoachingMode('当前对话纠正')
+    await sendGeneralCoaching(rawValue)
+    return true
+  }
+  if (intent === 'execution') {
+    await sendLiveRoomAnswer(extractLiveRoomExecutionContent(rawValue), 'answer')
+    input.value = ''
+    dismissedSuggestionInput.value = ''
+    return true
+  }
+  if (intent === 'test') {
+    liveRoomWorkMode.value = 'test'
+    liveRoomExecutionStatus.value = '当前没有待测试的学习候选；要测试直播回答，请先开启“测试模式”并输入模拟观众问题。'
+    pushAgentMessage('live-room', '当前没有待测试的修正结果。要测试真实直播回答链，可以开启“测试模式”后直接输入一个模拟观众问题。')
+    return true
+  }
+
+  liveRoomWorkMode.value = 'chat'
+  return false
+}
+
 async function adoptLatestCoachingCandidate() {
   const activeSession = coachingSession.value
   if (!activeSession?.active) {
-    pushAgentMessage('live-room', '当前不在调教模式，请先输入 /调教 或从“参考回答”进入调教。')
+    pushAgentMessage('live-room', '当前没有可采用的修正结果，请先输入 /纠正智能体，或从公屏问题旁点击“纠正”。')
     return
   }
   const scope = conversationScopeForDomain('live-room')
@@ -2582,7 +2704,7 @@ async function adoptLatestCoachingCandidate() {
     return
   }
   if (latest.canAdopt === false) {
-    pushAgentMessage('live-room', '最新这条成果当前不可采用，请继续优化后再试。')
+    pushAgentMessage('live-room', '最新这条修正结果当前不可采用，请继续输入纠正内容后再试。')
     return
   }
   await adoptAnswerReference(latest)
@@ -2603,56 +2725,46 @@ async function send() {
     await adoptLatestCoachingCandidate()
     return
   }
+  if (domain === 'live-room' && /^\/智能体记忆\s*$/.test(rawValue)) {
+    input.value = ''
+    dismissedSuggestionInput.value = ''
+    await showAgentMemories()
+    return
+  }
   if (domain === 'live-room') {
-    const coachingCommand = rawValue.match(/^\/调教(?:\s+|$)/)
+    const coachingCommand = rawValue.match(/^\/(?:纠正智能体|调教)(?:\s+|$)/)
     if (coachingCommand) {
       const coachingFeedback = rawValue.slice(coachingCommand[0].length).trim()
       beginCoachingMode()
-      if (coachingFeedback) {
-        if (coachingSession.value?.kind === 'reference_answer') await sendAnswerReference(coachingFeedback)
-        else await sendGeneralCoaching(coachingFeedback)
-      }
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      if (coachingFeedback) await sendGeneralCoaching(coachingFeedback)
       return
     }
   }
-  if (domain === 'live-room' && /^\/(?:参考回答|回答参考)\s*$/.test(rawValue)) {
+  if (domain === 'live-room' && /^\/(?:纠正问题|参考回答|回答参考)\s*$/.test(rawValue)) {
     beginAnswerReferencePicking()
     return
   }
   if (domain === 'live-room' && answerReferencePicking.value) {
     liveRoomExecutionError.value = true
-    liveRoomExecutionStatus.value = '参考回答 · 先点击要处理的问题'
+    liveRoomExecutionStatus.value = '纠正智能体 · 先点击要处理的问题'
     return
   }
-  if (domain === 'live-room' && answerReferenceAdoptionPending.value) {
-    const liveExecutionCommand = /^\/(抢答|回答)(?:\s+|$)/.test(rawValue)
-    if (!liveExecutionCommand) {
-      messages.value.push({ role: 'user', domain: 'live-room', text: rawValue })
-      input.value = ''
-      dismissedSuggestionInput.value = ''
-      await handleAnswerReferenceAdoptionInput(rawValue)
-      return
-    }
-  }
-  if (domain === 'live-room' && (answerReferencePending.value || answerReferenceSession.value)) {
-    const liveExecutionCommand = /^\/(抢答|回答)(?:\s+|$)/.test(rawValue)
-    if (!liveExecutionCommand) {
-      const referenceValue = rawValue.replace(/^\/(?:参考回答|回答参考)\s*/, '').trim()
-      if (referenceValue) await sendAnswerReference(referenceValue)
-      return
-    }
-  }
-  if (domain === 'live-room' && coachingSession.value?.active && coachingSession.value.kind === 'general') {
+  if (domain === 'live-room' && coachingSession.value?.active) {
     const liveExecutionCommand = /^\/(抢答|回答)(?:\s+|$)/.test(rawValue)
     if (!liveExecutionCommand && !rawValue.startsWith('/')) {
-      await sendGeneralCoaching(rawValue)
+      await routeActiveAgentLearningInput(rawValue)
       return
     }
   }
-
   if (domain === 'live-room' && liveRoomTestMode.value && !rawValue.startsWith('/')) {
     await sendLiveRoomSimulation(rawValue)
     return
+  }
+  if (domain === 'live-room' && !coachingSession.value?.active && !rawValue.startsWith('/')) {
+    const handledByModeSwitch = await routeInactiveLiveRoomWorkModeInput(rawValue)
+    if (handledByModeSwitch) return
   }
 
   if (domain === 'live-room') {
@@ -3197,7 +3309,7 @@ async function copyCredential(credential?: InitialCredential) {
             :class="{ picking: answerReferencePicking }"
           >
             <div>
-              <strong>{{ answerReferencePicking ? '参考回答 · 选择问题' : '参考回答 · 调教中' }}</strong>
+              <strong>{{ answerReferencePicking ? '纠正智能体 · 选择问题' : '智能体学习' }}</strong>
               <span v-if="answerReferencePicking">点击公屏问题、问题桶或桶内问题</span>
               <template v-else-if="answerReferencePending">
                 <span>{{ answerReferencePending.topic || answerReferencePending.question }}</span>
@@ -3208,18 +3320,19 @@ async function copyCredential(credential?: InitialCredential) {
                 </small>
               </template>
             </div>
-            <button type="button" @click.stop="answerReferencePicking ? cancelAnswerReference() : endCoachingMode(true)">{{ answerReferencePicking ? '取消' : '结束调教' }}</button>
+            <button v-if="answerReferencePicking" type="button" @click.stop="cancelAnswerReference()">取消</button>
+            <button v-else-if="coachingSession?.active && coachingSession.latestReply" type="button" @click.stop="adoptLatestCoachingCandidate">采用当前修正</button>
           </div>
           <div
             v-if="currentDomain === 'live-room' && coachingSession?.active && coachingSession.kind === 'general'"
             class="answer-reference-context coaching-context"
           >
             <div>
-              <strong>调教中</strong>
+              <strong>智能体学习</strong>
               <span>{{ coachingSession.target }}</span>
-              <small>继续交流即可优化 · /采用 可采用最新成果</small>
+              <small>继续输入就是继续修改；满意后点击“采用”立即生效</small>
             </div>
-            <button type="button" @click.stop="endCoachingMode(true)">结束调教</button>
+            <button v-if="coachingSession.latestReply" type="button" @click.stop="adoptLatestCoachingCandidate">采用当前修正</button>
           </div>
           <div
             v-if="currentDomain === 'live-room' && (liveRoomAnswerMode || liveRoomExecutionStatus)"
@@ -3271,9 +3384,9 @@ async function copyCredential(credential?: InitialCredential) {
           @click="send"
         >
           {{ currentDomain === 'live-room' && answerReferencePending
-            ? (answerReferenceSession?.history.length ? '优化' : '生成')
+            ? '发送'
             : currentDomain === 'live-room' && coachingSession?.active && coachingSession.kind === 'general'
-              ? '优化'
+              ? '发送'
               : currentDomain === 'live-room' && liveRoomAnswerMode
                 ? (liveRoomAnswerMode === 'quick' ? '抢答' : '回答')
                 : '发送' }}
@@ -3335,19 +3448,19 @@ async function copyCredential(credential?: InitialCredential) {
             :class="['system-agent-message', message.role]"
           >
             <strong>{{ message.role === 'agent' ? assistantName : '我' }}</strong>
-            <p>{{ message.text }}</p>
+            <p v-if="!message.answerReference">{{ message.text }}</p>
 
             <div
-              v-if="message.answerReference && (
-                message.answerReference.accepted ||
-                message.answerReference.saving ||
-                (coachingSession?.active && (message.answerReference.target || message.answerReference.question) === coachingSession.target)
-              )"
+              v-if="message.answerReference"
               class="system-agent-action-card answer-reference-result-card"
             >
-              <div>
-                <span>{{ message.answerReference.coachingKind === 'general' ? '调教成果' : '参考回答' }}</span>
-                <h4>{{ message.answerReference.target || message.answerReference.question }}</h4>
+              <div class="answer-reference-result-copy">
+                <span>以后这样处理</span>
+                <small class="answer-reference-result-target">
+                  {{ message.answerReference.target || message.answerReference.question }}
+                </small>
+                <p class="answer-reference-result-text">{{ message.answerReference.strategy }}</p>
+                <small v-if="message.answerReference.accepted" class="answer-reference-result-reference">已采用 · V{{ message.answerReference.adoptedVersionNo || 1 }} · 当前直播间立即生效</small>
               </div>
               <div class="coaching-result-actions">
                 <button
@@ -3359,19 +3472,48 @@ async function copyCredential(credential?: InitialCredential) {
                 >
                   {{ message.answerReference.saving ? '采用中…' : message.answerReference.accepted ? '已采用' : '采用' }}
                 </button>
-                <button
-                  v-if="coachingSession?.active && (message.answerReference.target || message.answerReference.question) === coachingSession.target"
-                  class="ghost-button"
-                  type="button"
-                  @click="continueCoachingFromCandidate(message.answerReference)"
-                >继续优化</button>
-                <button
-                  v-if="coachingSession?.active && (message.answerReference.target || message.answerReference.question) === coachingSession.target"
-                  class="ghost-button"
-                  type="button"
-                  @click="endCoachingMode(true)"
-                >结束调教</button>
               </div>
+            </div>
+
+            <div v-if="message.memoryList" class="system-agent-action-card agent-memory-list-card">
+              <div class="agent-memory-list-head">
+                <span>智能体记忆</span>
+                <small>当前直播间 · 已生效</small>
+              </div>
+              <div v-if="!message.memoryList.length" class="agent-memory-empty">暂无已采用记忆。</div>
+              <article v-for="memory in message.memoryList" :key="memory.id" class="agent-memory-item">
+                <div>
+                  <strong>{{ memory.target }}</strong>
+                  <p>{{ memory.current_version?.content_text || '暂无内容' }}</p>
+                  <small>V{{ memory.current_version?.version_no || 1 }}</small>
+                </div>
+                <div class="agent-memory-actions">
+                  <button type="button" @click="correctAgentMemory(memory)">纠正</button>
+                  <button type="button" @click="showAgentMemoryVersions(memory)">历史</button>
+                  <button type="button" @click="stopAgentMemory(memory)">停用</button>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="message.memoryVersions" class="system-agent-action-card agent-memory-list-card">
+              <div class="agent-memory-list-head">
+                <span>{{ message.memoryVersions.memory.target }} · 版本记录</span>
+                <small>当前 V{{ message.memoryVersions.memory.current_version?.version_no || 1 }}</small>
+              </div>
+              <article v-for="version in message.memoryVersions.versions" :key="version.id" class="agent-memory-item">
+                <div>
+                  <strong>V{{ version.version_no }}</strong>
+                  <p>{{ version.content_text }}</p>
+                  <small>{{ version.status }}</small>
+                </div>
+                <div class="agent-memory-actions">
+                  <button
+                    v-if="version.id !== message.memoryVersions.memory.current_version_id"
+                    type="button"
+                    @click="rollbackAgentMemory(message.memoryVersions.memory, version)"
+                  >恢复此版本</button>
+                </div>
+              </article>
             </div>
 
             <div v-if="message.action" class="system-agent-action-card">
@@ -3484,7 +3626,7 @@ async function copyCredential(credential?: InitialCredential) {
             class="answer-reference-context drawer-answer-reference-context"
           >
             <div>
-              <strong>参考回答 · 调教中</strong>
+              <strong>智能体学习</strong>
               <span>{{ answerReferencePending.topic || answerReferencePending.question }}</span>
               <small>
                 <template v-if="answerReferencePending.uniqueUsers">{{ answerReferencePending.uniqueUsers }} 人 · </template>
@@ -3492,18 +3634,18 @@ async function copyCredential(credential?: InitialCredential) {
                 {{ answerReferencePending.time || '当前' }}
               </small>
             </div>
-            <button type="button" @click="endCoachingMode(true)">结束调教</button>
+            <button v-if="coachingSession?.active && coachingSession.latestReply" type="button" @click.stop="adoptLatestCoachingCandidate">采用当前修正</button>
           </div>
           <div
             v-if="currentDomain === 'live-room' && coachingSession?.active && coachingSession.kind === 'general'"
             class="answer-reference-context drawer-answer-reference-context coaching-context"
           >
             <div>
-              <strong>调教中</strong>
+              <strong>智能体学习</strong>
               <span>{{ coachingSession.target }}</span>
-              <small>继续交流即可优化 · /采用 可采用最新成果</small>
+              <small>继续输入就是继续修改；满意后点击“采用”</small>
             </div>
-            <button type="button" @click="endCoachingMode(true)">结束调教</button>
+            <button v-if="coachingSession.latestReply" type="button" @click.stop="adoptLatestCoachingCandidate">采用当前修正</button>
           </div>
           <div class="system-agent-composer-field">
             <textarea
@@ -3546,9 +3688,9 @@ async function copyCredential(credential?: InitialCredential) {
             @click="send"
           >
             {{ currentDomain === 'live-room' && answerReferencePending
-              ? (answerReferenceSession?.history.length ? '优化' : '生成')
+              ? '发送'
               : currentDomain === 'live-room' && coachingSession?.active && coachingSession.kind === 'general'
-                ? '优化'
+                ? '发送'
                 : '发送' }}
           </button>
           <div v-if="currentDomain === 'live-room'" class="live-room-test-toggle drawer-live-room-test-toggle">
@@ -3569,7 +3711,8 @@ async function copyCredential(credential?: InitialCredential) {
 <style scoped>
 .live-room-answer-state{display:flex;align-items:center;gap:8px;min-height:24px;margin:0 0 5px;padding:3px 8px;border:1px solid rgba(104,118,220,.18);border-radius:8px;background:rgba(244,246,255,.9);color:#66708c;font-size:12px;line-height:1.35}.live-room-answer-state strong{flex:0 0 auto;color:#5666d8;font-size:12px;font-weight:900}.live-room-answer-state span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-room-answer-state.error{border-color:rgba(216,63,79,.22);background:rgba(255,244,246,.94);color:#cf4050}.live-room-answer-state.error strong{color:#cf4050}
 .live-room-test-toggle{display:flex;align-items:center;gap:8px}.live-room-test-toggle button{height:26px;padding:0 10px;border:1px solid rgba(84,104,214,.22);border-radius:999px;background:rgba(255,255,255,.88);color:#6672b8;font:inherit;font-size:11px;font-weight:900;cursor:pointer;box-shadow:0 2px 8px rgba(72,88,170,.06)}.live-room-test-toggle button.active{border-color:rgba(84,104,214,.5);background:linear-gradient(135deg,rgba(96,111,230,.16),rgba(120,134,243,.10));color:#4f5fd0;box-shadow:0 0 0 2px rgba(84,104,214,.07),0 4px 12px rgba(72,88,170,.10)}.live-room-test-toggle span{color:#8a93a8;font-size:10px;line-height:1.3}.dock-live-room-test-toggle{flex:0 0 100%;width:100%;box-sizing:border-box;justify-content:flex-start;margin:2px 0 0;padding:7px 10px 0 0;border-top:1px solid rgba(105,121,190,.12)}.drawer-live-room-test-toggle{grid-column:1 / -1;margin:0;padding-top:7px;border-top:1px solid rgba(105,121,190,.12)}
-.answer-reference-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;padding:7px 9px;border:1px solid rgba(84,104,214,.2);border-radius:10px;background:linear-gradient(135deg,rgba(241,244,255,.96),rgba(250,251,255,.96));color:#5f6985;line-height:1.35}.answer-reference-context>div{min-width:0;display:grid;gap:2px}.answer-reference-context strong{color:#5362cf;font-size:12px;font-weight:900}.answer-reference-context span{max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.answer-reference-context small{color:#929bb0;font-size:10px}.answer-reference-context button{flex:0 0 auto;padding:4px 8px;border:1px solid rgba(84,104,214,.16);border-radius:8px;background:#fff;color:#6874b8;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.answer-reference-context.picking{border-style:dashed;background:rgba(244,246,255,.96)}.coaching-context{border-color:rgba(112,91,220,.22);background:linear-gradient(135deg,rgba(244,241,255,.97),rgba(251,250,255,.97))}.drawer-answer-reference-context{grid-column:1 / -1;margin:0}.answer-reference-result-card{align-items:center;flex-wrap:wrap}.answer-reference-result-card h4{margin-bottom:0}.coaching-result-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.coaching-result-actions .ghost-button{min-height:36px;padding:7px 12px}
+.answer-reference-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;padding:7px 9px;border:1px solid rgba(84,104,214,.2);border-radius:10px;background:linear-gradient(135deg,rgba(241,244,255,.96),rgba(250,251,255,.96));color:#5f6985;line-height:1.35}.answer-reference-context>div{min-width:0;display:grid;gap:2px}.answer-reference-context strong{color:#5362cf;font-size:12px;font-weight:900}.answer-reference-context span{max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.answer-reference-context small{color:#929bb0;font-size:10px}.answer-reference-context button{flex:0 0 auto;padding:4px 8px;border:1px solid rgba(84,104,214,.16);border-radius:8px;background:#fff;color:#6874b8;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.answer-reference-context.picking{border-style:dashed;background:rgba(244,246,255,.96)}.coaching-context{border-color:rgba(112,91,220,.22);background:linear-gradient(135deg,rgba(244,241,255,.97),rgba(251,250,255,.97))}.drawer-answer-reference-context{grid-column:1 / -1;margin:0}.answer-reference-result-card{align-items:stretch;gap:14px;flex-wrap:wrap}.answer-reference-result-copy{display:grid;gap:8px}.answer-reference-result-target{color:#7f8aa0;font-size:12px;line-height:1.45}.answer-reference-result-text{margin:0!important;padding:12px 14px;border:1px solid rgba(92,111,210,.14);border-radius:10px;background:#f8f9ff;color:#293349!important;font-size:17px!important;font-weight:750;line-height:1.7;white-space:pre-wrap}.answer-reference-result-reference{color:#8d96a8;font-size:11px;line-height:1.5}.coaching-result-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.coaching-result-actions .ghost-button{min-height:36px;padding:7px 12px}
+.agent-memory-list-card{align-items:stretch}.agent-memory-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.agent-memory-list-head>span{color:#5666d8!important;font-size:13px!important;font-weight:900}.agent-memory-list-head>small{color:#929bb0;font-size:11px}.agent-memory-empty{padding:14px;border-radius:10px;background:#f8f9fc;color:#8a93a6;text-align:center}.agent-memory-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:12px;border:1px solid #e5e8f2;border-radius:11px;background:#fafbff}.agent-memory-item>div:first-child{display:grid;min-width:0;gap:4px}.agent-memory-item>div:first-child>span{width:max-content;padding:2px 7px;border-radius:999px;background:#eef0ff;color:#5965c8;font-size:10px;font-weight:850}.agent-memory-item strong{color:#30394a;font-size:14px}.agent-memory-item p{margin:0!important;color:#596579!important;line-height:1.55;white-space:pre-wrap}.agent-memory-item small{color:#9aa2b0;font-size:10px}.agent-memory-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.agent-memory-actions button{min-height:32px;padding:5px 9px;border:1px solid #d9deeb;border-radius:8px;background:#fff;color:#5f6a7e;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.agent-memory-actions button:hover{border-color:#aeb7df;background:#f4f6ff;color:#4f5fc4}@media(max-width:720px){.agent-memory-item{grid-template-columns:1fr}.agent-memory-actions{justify-content:flex-start}}
 .system-agent-drawer{grid-template-rows:auto auto minmax(0,1fr) auto;overflow:hidden}
 .system-agent-drawer.without-work-inbox{grid-template-rows:auto minmax(0,1fr) auto}
 .system-agent-drawer.terminal-agent-drawer{grid-template-rows:auto minmax(0,1fr) auto}

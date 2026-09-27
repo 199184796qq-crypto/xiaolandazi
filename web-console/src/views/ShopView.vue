@@ -11,6 +11,7 @@ import {
   getCustomerShopOrders,
   getCustomerTimeCardOffers,
   sandboxPayCustomerShopOrder,
+  walletPayCustomerTimeCardOrder,
   sandboxRefundCustomerShopOrder,
 } from '../api'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -531,6 +532,33 @@ function openRefund(order: CustomerShopOrder) {
 
 async function submitPayment(result: 'success' | 'failure' = simulateResult.value) {
   if (!selectedOrder.value) return
+  if (selectedOrder.value.order_type === 'time_card') {
+    paying.value = true
+    paymentError.value = ''
+    successMessage.value = ''
+    try {
+      const response = await walletPayCustomerTimeCardOrder(
+        selectedOrder.value.id,
+        newIdempotencyKey('wallet-time-card'),
+      )
+      selectedOrder.value = response.order
+      await loadOrders()
+      const purchasedHours = orderHours(response.order)
+      successMessage.value =
+        '钱包支付成功，' +
+        purchasedHours.toLocaleString('zh-CN') +
+        ' 小时时长卡已放入“时长卡包”。当前尚未启用，不计入 AI 时长；需要使用时再到 AI 时长页面手动启用。'
+      modal.value = 'order'
+    } catch (value) {
+      paymentError.value = value instanceof Error ? value.message : '钱包支付失败'
+      await loadOrders()
+      const refreshed = orders.value.find((item) => item.id === selectedOrder.value?.id)
+      if (refreshed) selectedOrder.value = refreshed
+    } finally {
+      paying.value = false
+    }
+    return
+  }
   const cents = inputToCents(paymentAmount.value)
   if (cents === null) {
     paymentError.value = '请输入正确的支付金额，最多保留两位小数。'
@@ -1149,14 +1177,14 @@ onBeforeUnmount(() => {
             <span class="section-kicker">
               {{
                 modal === 'payment'
-                  ? 'SANDBOX PAYMENT'
+                  ? (selectedOrder.order_type === 'time_card' ? 'WALLET PAYMENT' : 'SANDBOX PAYMENT')
                   : modal === 'refund'
                     ? 'SANDBOX REFUND'
                     : 'ORDER DETAIL'
               }}
             </span>
             <h3>
-              {{ modal === 'payment' ? '模拟支付' : modal === 'refund' ? '模拟退款' : '订单详情' }}
+              {{ modal === 'payment' ? (selectedOrder.order_type === 'time_card' ? '钱包余额支付' : '模拟支付') : modal === 'refund' ? '模拟退款' : '订单详情' }}
             </h3>
           </div>
           <button class="icon-button" type="button" @click="modal = ''">×</button>
@@ -1182,47 +1210,63 @@ onBeforeUnmount(() => {
         </section>
 
         <template v-if="modal === 'payment'">
-          <div class="sandbox-payment-warning">
-            <strong>这是模拟支付页面</strong>
-            <p>输入的是测试金额，不会发起任何真实扣款。金额必须与应付金额完全一致才能模拟支付成功。</p>
-          </div>
-
-          <div class="sandbox-payment-form">
-            <label>
-              <span>模拟支付金额（元）</span>
-              <div class="sandbox-money-input">
-                <b>¥</b>
-                <input
-                  v-model="paymentAmount"
-                  type="text"
-                  inputmode="decimal"
-                  autocomplete="off"
-                  placeholder="0.00"
-                />
-              </div>
-            </label>
-
-            <div class="sandbox-quick-amount">
-              <button
-                type="button"
-                @click="paymentAmount = centsToInput(selectedOrder.payable_amount_cents)"
-              >
-                填入应付金额
-              </button>
-              <span>应付 {{ formatMoney(selectedOrder.payable_amount_cents) }}</span>
+          <template v-if="selectedOrder.order_type === 'time_card'">
+            <div class="sandbox-payment-warning time-card-wallet-payment-note">
+              <strong>使用钱包余额购买</strong>
+              <p>请先充值钱包余额，再购买时长卡。支付成功后，卡片只会进入“AI 时长 → 时长卡包”，不会立即计入 AI 时长。</p>
+              <p>以后需要使用时，再手动启用指定卡片；有效期从启用时刻开始，到期后未用完的时长也会自动失效。</p>
             </div>
-          </div>
+            <p v-if="paymentError" class="inline-error">{{ paymentError }}</p>
+            <footer class="sandbox-payment-actions">
+              <button class="ghost-button" type="button" :disabled="paying" @click="modal = ''">暂不购买</button>
+              <button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">
+                {{ paying ? '正在从钱包扣款...' : '使用钱包余额支付 ' + formatMoney(selectedOrder.payable_amount_cents) }}
+              </button>
+            </footer>
+          </template>
+          <template v-else>
+            <div class="sandbox-payment-warning">
+              <strong>这是模拟支付页面</strong>
+              <p>输入的是测试金额，不会发起任何真实扣款。金额必须与应付金额完全一致才能模拟支付成功。</p>
+            </div>
 
-          <p v-if="paymentError" class="inline-error">{{ paymentError }}</p>
+            <div class="sandbox-payment-form">
+              <label>
+                <span>模拟支付金额（元）</span>
+                <div class="sandbox-money-input">
+                  <b>¥</b>
+                  <input
+                    v-model="paymentAmount"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="0.00"
+                  />
+                </div>
+              </label>
 
-          <footer class="sandbox-payment-actions">
-            <button class="ghost-button" type="button" :disabled="paying" @click="submitPayment('failure')">
-              模拟失败
-            </button>
-            <button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">
-              {{ paying ? '正在模拟支付...' : '确认模拟支付' }}
-            </button>
-          </footer>
+              <div class="sandbox-quick-amount">
+                <button
+                  type="button"
+                  @click="paymentAmount = centsToInput(selectedOrder.payable_amount_cents)"
+                >
+                  填入应付金额
+                </button>
+                <span>应付 {{ formatMoney(selectedOrder.payable_amount_cents) }}</span>
+              </div>
+            </div>
+
+            <p v-if="paymentError" class="inline-error">{{ paymentError }}</p>
+
+            <footer class="sandbox-payment-actions">
+              <button class="ghost-button" type="button" :disabled="paying" @click="submitPayment('failure')">
+                模拟失败
+              </button>
+              <button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">
+                {{ paying ? '正在模拟支付...' : '确认模拟支付' }}
+              </button>
+            </footer>
+          </template>
         </template>
 
         <template v-else-if="modal === 'refund'">

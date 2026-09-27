@@ -48,8 +48,45 @@ type LiveRuntimeEvent struct {
 	OccurredAt  time.Time      `json:"occurred_at"`
 }
 
+type GeneratedSpeechHistoryInput struct {
+	TenantID          int64
+	RoomID            int64
+	RuntimeSessionID  int64
+	RuntimeExternalID string
+	DecisionID        string
+	SourceType        string
+	QuestionText      string
+	GeneratedText     string
+}
+
+type GeneratedSpeechHistoryItem struct {
+	ID                     int64     `json:"id"`
+	TenantID               int64     `json:"tenant_id"`
+	RoomID                 int64     `json:"room_id"`
+	RuntimeSessionID       int64     `json:"runtime_session_id"`
+	RuntimeExternalID      string    `json:"runtime_external_id"`
+	DecisionID             string    `json:"decision_id"`
+	SourceType             string    `json:"source_type"`
+	QuestionText           string    `json:"question_text,omitempty"`
+	GeneratedText          string    `json:"generated_text"`
+	CorrectionCount        uint64    `json:"correction_count"`
+	AdoptedCorrectionCount uint64    `json:"adopted_correction_count"`
+	EditingCorrectionCount uint64    `json:"editing_correction_count"`
+	CorrectionStatus       string    `json:"correction_status"`
+	CreatedAt              time.Time `json:"created_at"`
+}
+
+type GeneratedSpeechHistoryPage struct {
+	Items            []GeneratedSpeechHistoryItem `json:"items"`
+	Page             int                          `json:"page"`
+	PageSize         int                          `json:"page_size"`
+	Total            uint64                       `json:"total"`
+	RuntimeSessionID int64                        `json:"runtime_session_id"`
+}
+
 type LiveQuotaSourceSummary struct {
 	SourceType       string     `json:"source_type"`
+	SourceID         *int64     `json:"source_id,omitempty"`
 	SourceLabel      string     `json:"source_label"`
 	AssetNo          string     `json:"asset_no,omitempty"`
 	RemainingSeconds uint64     `json:"remaining_seconds"`
@@ -57,22 +94,44 @@ type LiveQuotaSourceSummary struct {
 }
 
 type LiveTimeCardSummary struct {
+	ID                   int64      `json:"id"`
 	AssetNo              string     `json:"asset_no"`
 	ProductName          string     `json:"product_name"`
 	Status               string     `json:"status"`
 	OriginalSeconds      uint64     `json:"original_seconds"`
 	RemainingSeconds     uint64     `json:"remaining_seconds"`
+	ActivationMode       string     `json:"activation_mode"`
+	ValidityDays         uint32     `json:"validity_days"`
 	ActivationDeadlineAt *time.Time `json:"activation_deadline_at,omitempty"`
 	ActivatedAt          *time.Time `json:"activated_at,omitempty"`
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
+	PurchasedAt          time.Time  `json:"purchased_at"`
+}
+
+type LiveTimeCardPage struct {
+	Items    []LiveTimeCardSummary `json:"items"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"page_size"`
+	Total    uint64                `json:"total"`
+}
+
+type LiveBillingRoomSummary struct {
+	RoomID        int64     `json:"room_id"`
+	RoomName      string    `json:"room_name"`
+	SessionID     int64     `json:"session_id"`
+	BilledSeconds uint64    `json:"billed_seconds"`
+	StartedAt     time.Time `json:"started_at"`
 }
 
 type LiveQuotaSummary struct {
-	ActiveSeconds          uint64                  `json:"active_seconds"`
-	ReserveTimeCardSeconds uint64                  `json:"reserve_time_card_seconds"`
-	ReserveTimeCardCount   uint32                  `json:"reserve_time_card_count"`
-	Current                *LiveQuotaSourceSummary `json:"current,omitempty"`
-	TimeCards              []LiveTimeCardSummary   `json:"time_cards"`
+	ActiveSeconds          uint64                   `json:"active_seconds"`
+	ActiveTimeCardSeconds  uint64                   `json:"active_time_card_seconds"`
+	ReserveTimeCardSeconds uint64                   `json:"reserve_time_card_seconds"`
+	ReserveTimeCardCount   uint32                   `json:"reserve_time_card_count"`
+	Current                *LiveQuotaSourceSummary  `json:"current,omitempty"`
+	Sources                []LiveQuotaSourceSummary `json:"sources"`
+	TimeCards              []LiveTimeCardSummary    `json:"time_cards"`
+	ActiveBillingRooms     []LiveBillingRoomSummary `json:"active_billing_rooms"`
 }
 
 type LiveRuntimeSnapshot struct {

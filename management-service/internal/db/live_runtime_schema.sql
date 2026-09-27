@@ -58,6 +58,69 @@ CREATE TABLE IF NOT EXISTS live_runtime_sessions (
     KEY idx_live_runtime_device_status (device_id, status, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_quota_leases (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    external_id VARCHAR(96) NOT NULL,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    runtime_session_id BIGINT UNSIGNED NOT NULL,
+    core_boot_id VARCHAR(128) NOT NULL,
+    core_working_start_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    core_working_end_seconds BIGINT UNSIGNED NULL,
+    allocated_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    consumed_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'reserved',
+    granted_at DATETIME(3) NOT NULL,
+    expires_at DATETIME(3) NOT NULL,
+    settled_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_quota_leases_external (external_id),
+    KEY idx_live_quota_leases_tenant_status (tenant_id, status, expires_at),
+    KEY idx_live_quota_leases_room_status (room_id, status, expires_at),
+    KEY idx_live_quota_leases_session (runtime_session_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_quota_lease_allocations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    lease_id BIGINT UNSIGNED NOT NULL,
+    bucket_id BIGINT UNSIGNED NOT NULL,
+    reserved_seconds BIGINT UNSIGNED NOT NULL,
+    consumed_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_quota_lease_bucket (lease_id, bucket_id),
+    KEY idx_live_quota_lease_alloc_bucket (bucket_id, lease_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS ai_single_use_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    external_id VARCHAR(96) NOT NULL,
+    actor_user_id BIGINT UNSIGNED NOT NULL,
+    tenant_id BIGINT UNSIGNED NULL,
+    room_id BIGINT UNSIGNED NULL,
+    source VARCHAR(64) NOT NULL,
+    payer_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'started',
+    quoted_beans BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    charged_beans BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    provider VARCHAR(64) NOT NULL DEFAULT '',
+    model VARCHAR(128) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    metadata_json JSON NULL,
+    started_at DATETIME(3) NOT NULL,
+    completed_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ai_single_use_external (external_id),
+    KEY idx_ai_single_use_actor (actor_user_id, started_at),
+    KEY idx_ai_single_use_tenant (tenant_id, started_at),
+    KEY idx_ai_single_use_source (source, payer_type, status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_room_event_archive (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,
@@ -532,6 +595,144 @@ CREATE TABLE IF NOT EXISTS live_policy_learning_candidates (
     KEY idx_live_policy_learning_layer (recommended_layer, status, id),
     KEY idx_live_policy_learning_room (tenant_id, room_id, status, id),
     KEY idx_live_policy_learning_creator (created_by_user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_learning_sessions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    source_type VARCHAR(32) NOT NULL DEFAULT 'direct_correction',
+    source_ref VARCHAR(512) NOT NULL DEFAULT '',
+    question TEXT NOT NULL,
+    original_reply MEDIUMTEXT NOT NULL,
+    target VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'editing',
+    memory_type VARCHAR(24) NOT NULL DEFAULT '',
+    adopted_memory_item_id BIGINT UNSIGNED NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    adopted_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    KEY idx_agent_learning_session_room (tenant_id, room_id, status, updated_at),
+    KEY idx_agent_learning_session_creator (created_by_user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_learning_evidence (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    session_id BIGINT UNSIGNED NOT NULL,
+    turn_no BIGINT UNSIGNED NOT NULL,
+    feedback MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_learning_evidence_turn (session_id, turn_no),
+    KEY idx_agent_learning_evidence_session (session_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_learning_results (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    session_id BIGINT UNSIGNED NOT NULL,
+    evidence_id BIGINT UNSIGNED NOT NULL,
+    turn_no BIGINT UNSIGNED NOT NULL,
+    memory_type VARCHAR(24) NOT NULL,
+    target VARCHAR(255) NOT NULL,
+    memory_key VARCHAR(255) NOT NULL,
+    matched_memory_item_id BIGINT UNSIGNED NULL,
+    result_text MEDIUMTEXT NOT NULL,
+    structured_json JSON NOT NULL,
+    model_provider VARCHAR(64) NOT NULL DEFAULT '',
+    model_name VARCHAR(96) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_learning_result_turn (session_id, turn_no),
+    KEY idx_agent_learning_result_session (session_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_memory_items (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    memory_type VARCHAR(24) NOT NULL,
+    memory_key VARCHAR(255) NOT NULL,
+    target VARCHAR(255) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    current_version_id BIGINT UNSIGNED NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_memory_room_key (tenant_id, room_id, memory_type, memory_key),
+    KEY idx_agent_memory_room_type (tenant_id, room_id, memory_type, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_memory_versions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    memory_item_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    content_text MEDIUMTEXT NOT NULL,
+    structured_json JSON NOT NULL,
+    source_session_id BIGINT UNSIGNED NOT NULL,
+    source_result_id BIGINT UNSIGNED NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_memory_version_no (memory_item_id, version_no),
+    KEY idx_agent_memory_version_status (memory_item_id, status, version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_memory_evidence_stats (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    memory_type VARCHAR(24) NOT NULL,
+    memory_key VARCHAR(255) NOT NULL,
+    value_signature CHAR(64) NOT NULL,
+    value_text MEDIUMTEXT NOT NULL,
+    occurrence_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    consecutive_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    explicit_correction_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    adopted_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    last_session_id BIGINT UNSIGNED NULL,
+    last_result_id BIGINT UNSIGNED NULL,
+    first_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    last_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    last_adopted_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_memory_evidence_value (
+        tenant_id, room_id, memory_type, memory_key, value_signature
+    ),
+    KEY idx_agent_memory_evidence_lookup (
+        tenant_id, room_id, memory_type, memory_key, adopted_count, occurrence_count, last_seen_at
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_generated_speech_history (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    runtime_session_id BIGINT UNSIGNED NOT NULL,
+    runtime_external_id VARCHAR(128) NOT NULL DEFAULT '',
+    decision_id VARCHAR(160) NOT NULL,
+    source_type VARCHAR(32) NOT NULL DEFAULT 'interrupt_answer',
+    question_text TEXT NOT NULL,
+    generated_text MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_generated_speech_decision (
+        tenant_id, room_id, runtime_session_id, decision_id
+    ),
+    KEY idx_live_generated_speech_session (
+        tenant_id, room_id, runtime_session_id, created_at, id
+    )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 -- +statement

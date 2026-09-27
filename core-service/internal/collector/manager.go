@@ -481,10 +481,23 @@ func (m *Manager) Close() {
 	}
 }
 
+const offlineConfirmRetryDelay = 3 * time.Second
+
+func nextOfflineConfirmation(suspected bool, hadRealActivity bool) (nextSuspected bool, confirmed bool) {
+	if hadRealActivity {
+		return true, false
+	}
+	if suspected {
+		return false, true
+	}
+	return true, false
+}
+
 func (m *Manager) run(ctx context.Context, room model.Room) {
 	backoff := 5 * time.Second
 	currentPlatformRoomID, hasCachedEvents := m.cachedPlatformRoomID(room.ID)
 	sessionEnded := false
+	offlineSuspected := false
 
 	for {
 		if ctx.Err() != nil {
@@ -503,6 +516,7 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 			return
 		}
 		attemptLive := false
+		hadRealActivity := false
 		live := func(_ context.Context) error {
 			attemptLive = true
 			m.runtimeUpdater.Touch(room)
@@ -536,6 +550,8 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		}
 
 		emit := func(_ context.Context, input model.CreateEventInput) error {
+			hadRealActivity = true
+			offlineSuspected = false
 			ensureSession(input)
 			if input.EventType == "room" {
 				m.applyRoomMetrics(room, input)
@@ -566,16 +582,39 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		}
 
 		err = runner.Run(ctx, room, live, emit)
-		if errors.Is(err, ErrOffline) && attemptLive && currentPlatformRoomID != "" {
-			m.eventPipeline.Enqueue(room, model.CreateEventInput{
-				EventType:  "session_end",
-				OccurredAt: time.Now().UTC(),
-			}, false, false)
-			sessionEnded = true
+		if errors.Is(err, ErrOffline) {
+			nextSuspected, confirmed := nextOfflineConfirmation(offlineSuspected, hadRealActivity)
+			offlineSuspected = nextSuspected
+			if !confirmed {
+				log.Printf(
+					"collector room=%d runner=%s suspected offline; keeping live session and retrying confirmation",
+					room.ID,
+					runner.Name(),
+				)
+				m.eventPipeline.CloseRoom(room.ID)
+				if ctx.Err() != nil {
+					return
+				}
+				timer := time.NewTimer(offlineConfirmRetryDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				continue
+			}
+			if attemptLive && currentPlatformRoomID != "" {
+				m.eventPipeline.Enqueue(room, model.CreateEventInput{
+					EventType:  "session_end",
+					OccurredAt: time.Now().UTC(),
+				}, false, false)
+				sessionEnded = true
+			}
 		}
 		m.eventPipeline.CloseRoom(room.ID)
-		// Drop any coalesced live/online write before publishing an offline/error
-		// state. Otherwise a delayed cloud-DB flush could resurrect a stopped run.
+		// Only a confirmed offline/error may clear the coalesced live state.
+		// A single no-frame timeout is treated as a transient collector wobble.
 		m.runtimeUpdater.ClearRoom(room.ID)
 		// Keep the last successful session cache. It is only replaced after a
 		// future real event proves that Douyin's platform room_id has changed.

@@ -72,13 +72,14 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		PlanID             *int64          `json:"plan_id"`
 		PlanName           string          `json:"plan_name"`
 		BaseWorkingSeconds uint64          `json:"base_working_seconds"`
+		LeaseSeconds       uint64          `json:"lease_seconds"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if input.State == "" && input.Mode == "" && input.PlanID == nil {
-		writeError(w, http.StatusBadRequest, "state, mode or plan_id is required")
+	if input.State == "" && input.Mode == "" && input.PlanID == nil && input.LeaseSeconds == 0 {
+		writeError(w, http.StatusBadRequest, "state, mode, plan_id or lease_seconds is required")
 		return
 	}
 	snapshot := s.agentWork.Get(roomID)
@@ -108,6 +109,13 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		snapshot, err = s.agentWork.SetPlan(roomID, *input.PlanID, input.PlanName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if input.LeaseSeconds > 0 {
+		snapshot, err = s.agentWork.GrantLease(roomID, input.LeaseSeconds)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

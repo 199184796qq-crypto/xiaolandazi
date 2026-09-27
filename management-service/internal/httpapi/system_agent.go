@@ -370,13 +370,16 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "client_agent", map[string]any{"current_path": input.CurrentPath})
 	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
 		r.Context(), prompt, input.Message, input.History,
 	)
 	if err != nil {
+		s.finishAISingleUse(r.Context(), invocationID, "failed", "", modelName, latencyMS, map[string]any{"error": err.Error()})
 		writeError(w, http.StatusBadGateway, "终端智能体暂时无法回答，请稍后再试")
 		return
 	}
+	s.finishAISingleUse(r.Context(), invocationID, "succeeded", "", modelName, latencyMS, nil)
 
 	output := systemAgentChatOutput{
 		Reply:        strings.TrimSpace(modelOutput.AssistantMessage),
@@ -533,13 +536,16 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "internal_agent", map[string]any{"current_path": input.CurrentPath})
 	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
 		r.Context(), prompt, input.Message, input.History,
 	)
 	if err != nil {
+		s.finishAISingleUse(r.Context(), invocationID, "failed", "", modelName, latencyMS, map[string]any{"error": err.Error()})
 		writeError(w, http.StatusBadGateway, "系统助手暂时无法理解这条指令，请稍后再试")
 		return
 	}
+	s.finishAISingleUse(r.Context(), invocationID, "succeeded", "", modelName, latencyMS, nil)
 
 	output := systemAgentChatOutput{
 		Reply:        strings.TrimSpace(modelOutput.AssistantMessage),

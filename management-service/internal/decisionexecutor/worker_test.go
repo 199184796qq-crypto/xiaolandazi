@@ -21,6 +21,10 @@ type fakeStore struct {
 	plan     model.LiveAgentPlan
 }
 
+func (f *fakeStore) RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error {
+	return nil
+}
+
 func (f *fakeStore) ListRunningLiveRuntimeSessions(context.Context) ([]model.LiveRuntimeSession, error) {
 	return nil, nil
 }
@@ -51,6 +55,10 @@ func (f *fakeStore) GetLiveAgentPlanForRoom(context.Context, int64, int64) (mode
 		return model.LiveAgentPlan{}, errors.New("plan missing")
 	}
 	return f.plan, nil
+}
+
+func (f *fakeStore) ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error) {
+	return nil, nil
 }
 
 func (f *fakeStore) AgentPromptValue(_ context.Context, _ string, fallback string) string {

@@ -289,15 +289,18 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	type stateItem struct {
-		TenantID             int64           `json:"tenant_id"`
-		RoomID               int64           `json:"room_id"`
-		Status               string          `json:"status"`
-		UpdatedAt            time.Time       `json:"updated_at"`
-		AgentState           agentwork.State `json:"agent_state"`
-		AgentMode            agentwork.Mode  `json:"agent_mode"`
-		AgentWorkingSeconds  uint64          `json:"agent_working_seconds"`
-		AgentUpdatedAt       time.Time       `json:"agent_updated_at"`
-		SessionResumePending bool            `json:"session_resume_pending"`
+		CoreBootID                 string          `json:"core_boot_id"`
+		TenantID                   int64           `json:"tenant_id"`
+		RoomID                     int64           `json:"room_id"`
+		Status                     string          `json:"status"`
+		UpdatedAt                  time.Time       `json:"updated_at"`
+		AgentState                 agentwork.State `json:"agent_state"`
+		AgentMode                  agentwork.Mode  `json:"agent_mode"`
+		AgentWorkingSeconds        uint64          `json:"agent_working_seconds"`
+		AgentLeaseRemainingSeconds uint64          `json:"agent_lease_remaining_seconds"`
+		AgentLeaseUntil            *time.Time      `json:"agent_lease_until,omitempty"`
+		AgentUpdatedAt             time.Time       `json:"agent_updated_at"`
+		SessionResumePending       bool            `json:"session_resume_pending"`
 	}
 	items := make([]stateItem, 0, len(rooms))
 	for _, room := range rooms {
@@ -313,15 +316,18 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		items = append(items, stateItem{
-			TenantID:             room.TenantID,
-			RoomID:               room.ID,
-			Status:               room.Status,
-			UpdatedAt:            room.UpdatedAt,
-			AgentState:           agent.State,
-			AgentMode:            agent.Mode,
-			AgentWorkingSeconds:  agent.WorkingSeconds,
-			AgentUpdatedAt:       agent.UpdatedAt,
-			SessionResumePending: resumePending,
+			CoreBootID:                 agent.BootID,
+			TenantID:                   room.TenantID,
+			RoomID:                     room.ID,
+			Status:                     room.Status,
+			UpdatedAt:                  room.UpdatedAt,
+			AgentState:                 agent.State,
+			AgentMode:                  agent.Mode,
+			AgentWorkingSeconds:        agent.WorkingSeconds,
+			AgentLeaseRemainingSeconds: agent.LeaseRemainingSeconds,
+			AgentLeaseUntil:            agent.LeaseUntil,
+			AgentUpdatedAt:             agent.UpdatedAt,
+			SessionResumePending:       resumePending,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

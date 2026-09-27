@@ -49,6 +49,19 @@ func (s *Store) GetLiveQuotaSummary(
 	}
 
 	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(remaining_seconds), 0)
+		FROM quota_buckets
+		WHERE tenant_id=?
+		  AND source_type IN ('time_card_asset', 'time_card_purchase')
+		  AND status='active'
+		  AND effective_at<=?
+		  AND expires_at>?
+		  AND remaining_seconds>0
+	`, tenantID, now, now).Scan(&summary.ActiveTimeCardSeconds); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+
+	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(remaining_seconds), 0)
 		FROM biz_time_card_assets
 		WHERE tenant_id=?
@@ -62,15 +75,8 @@ func (s *Store) GetLiveQuotaSummary(
 		return model.LiveQuotaSummary{}, err
 	}
 
-	var (
-		sourceType  string
-		sourceID    sql.NullInt64
-		remaining   uint64
-		expiresAt   time.Time
-		assetNo     string
-		productName string
-	)
-	err = tx.QueryRowContext(ctx, `
+	summary.Sources = []model.LiveQuotaSourceSummary{}
+	sourceRows, err := tx.QueryContext(ctx, `
 		SELECT q.source_type, q.source_id, q.remaining_seconds, q.expires_at,
 		       COALESCE(a.asset_no, ''), COALESCE(a.product_name_snapshot, '')
 		FROM quota_buckets q
@@ -81,19 +87,23 @@ func (s *Store) GetLiveQuotaSummary(
 		  AND q.expires_at>?
 		  AND q.remaining_seconds>0
 		ORDER BY q.expires_at ASC, q.priority ASC, q.id ASC
-		LIMIT 1
-	`, tenantID, now, now).Scan(
-		&sourceType,
-		&sourceID,
-		&remaining,
-		&expiresAt,
-		&assetNo,
-		&productName,
-	)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	`, tenantID, now, now)
+	if err != nil {
 		return model.LiveQuotaSummary{}, err
 	}
-	if err == nil {
+	for sourceRows.Next() {
+		var (
+			sourceType  string
+			sourceID    sql.NullInt64
+			remaining   uint64
+			expiresAt   time.Time
+			assetNo     string
+			productName string
+		)
+		if err := sourceRows.Scan(&sourceType, &sourceID, &remaining, &expiresAt, &assetNo, &productName); err != nil {
+			_ = sourceRows.Close()
+			return model.LiveQuotaSummary{}, err
+		}
 		label := "AI 时长"
 		switch sourceType {
 		case "membership_cycle":
@@ -103,24 +113,51 @@ func (s *Store) GetLiveQuotaSummary(
 			if productName != "" {
 				label = productName
 			}
+		case "marketing_ai_time_grant":
+			label = "后台增加 AI 时长"
+		case "platform_adjust":
+			label = "后台调整 AI 时长"
+		case "agent_allocate":
+			label = "代理分配 AI 时长"
+		default:
+			if strings.TrimSpace(sourceType) != "" {
+				label = "AI 时长 · " + sourceType
+			}
 		}
 		expiry := expiresAt
-		summary.Current = &model.LiveQuotaSourceSummary{
+		item := model.LiveQuotaSourceSummary{
 			SourceType:       sourceType,
 			SourceLabel:      label,
 			AssetNo:          assetNo,
 			RemainingSeconds: remaining,
 			ExpiresAt:        &expiry,
 		}
+		if sourceID.Valid {
+			value := sourceID.Int64
+			item.SourceID = &value
+		}
+		summary.Sources = append(summary.Sources, item)
+		if summary.Current == nil {
+			current := item
+			summary.Current = &current
+		}
+	}
+	if err := sourceRows.Err(); err != nil {
+		_ = sourceRows.Close()
+		return model.LiveQuotaSummary{}, err
+	}
+	if err := sourceRows.Close(); err != nil {
+		return model.LiveQuotaSummary{}, err
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT a.asset_no, a.product_name_snapshot, a.status,
+		SELECT a.id, a.asset_no, a.product_name_snapshot, a.status,
 		       a.original_seconds,
 		       CASE WHEN a.status='active'
 		            THEN COALESCE(q.remaining_seconds, a.remaining_seconds)
 		            ELSE a.remaining_seconds END,
-		       a.activation_deadline_at, a.activated_at, a.expires_at
+		       a.activation_mode, a.validity_days,
+		       a.activation_deadline_at, a.activated_at, a.expires_at, a.created_at
 		FROM biz_time_card_assets a
 		LEFT JOIN quota_buckets q ON q.id=a.quota_bucket_id
 		WHERE a.tenant_id=?
@@ -147,14 +184,18 @@ func (s *Store) GetLiveQuotaSummary(
 		var activatedAt sql.NullTime
 		var assetExpiresAt sql.NullTime
 		if err := rows.Scan(
+			&item.ID,
 			&item.AssetNo,
 			&item.ProductName,
 			&item.Status,
 			&item.OriginalSeconds,
 			&item.RemainingSeconds,
+			&item.ActivationMode,
+			&item.ValidityDays,
 			&activationDeadline,
 			&activatedAt,
 			&assetExpiresAt,
+			&item.PurchasedAt,
 		); err != nil {
 			rows.Close()
 			return model.LiveQuotaSummary{}, err
@@ -183,66 +224,26 @@ func (s *Store) GetLiveQuotaSummary(
 	return summary, nil
 }
 
+// ActivateLiveTimeCards is retained only for source compatibility with older callers.
+// Batch/implicit activation is intentionally disabled: the user must select a concrete asset ID.
 func (s *Store) ActivateLiveTimeCards(
 	ctx context.Context,
 	tenantID int64,
 	count uint32,
 	now time.Time,
 ) (model.LiveQuotaSummary, uint32, error) {
+	_ = count
 	if tenantID <= 0 {
 		return model.LiveQuotaSummary{}, 0, errors.New("invalid tenant")
-	}
-	if count == 0 {
-		count = 1
-	}
-	if count > 20 {
-		count = 20
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
+	summary, err := s.GetLiveQuotaSummary(ctx, tenantID, now)
 	if err != nil {
 		return model.LiveQuotaSummary{}, 0, err
 	}
-	defer tx.Rollback()
-
-	if err := lockTenantAIResourceTx(ctx, tx, tenantID); err != nil {
-		return model.LiveQuotaSummary{}, 0, err
-	}
-	if _, err := expireTimeCardAssetsTx(ctx, tx, tenantID, now); err != nil {
-		return model.LiveQuotaSummary{}, 0, err
-	}
-
-	var activated uint32
-	for activated < count {
-		ok, err := activateNextTimeCardAssetTx(ctx, tx, tenantID, now, false)
-		if err != nil {
-			return model.LiveQuotaSummary{}, activated, err
-		}
-		if !ok {
-			break
-		}
-		activated++
-	}
-	if activated > 0 {
-		if err := reconcileCustomerAIResourceToQuotaTx(
-			ctx,
-			tx,
-			tenantID,
-			now,
-			"time_card_pool_load",
-			fmt.Sprintf("一次充入 AI 工作时长池 %d 张时长卡", activated),
-		); err != nil {
-			return model.LiveQuotaSummary{}, activated, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return model.LiveQuotaSummary{}, activated, err
-	}
-	summary, err := s.GetLiveQuotaSummary(ctx, tenantID, now)
-	return summary, activated, err
+	return summary, 0, ErrTimeCardNotActivatable
 }
 
 func ensureLiveQuotaAvailableTx(
@@ -251,7 +252,6 @@ func ensureLiveQuotaAvailableTx(
 	tenantID int64,
 	required uint64,
 	now time.Time,
-	reconcileResource bool,
 ) ([]quotaBucketLock, error) {
 	if required == 0 {
 		required = 1
@@ -262,33 +262,231 @@ func ensureLiveQuotaAvailableTx(
 	if _, err := expireTimeCardAssetsTx(ctx, tx, tenantID, now); err != nil {
 		return nil, err
 	}
-	for attempts := 0; attempts < 128; attempts++ {
-		buckets, err := loadActiveQuotaBucketsTx(ctx, tx, tenantID, now)
-		if err != nil {
-			return nil, err
-		}
-		var available uint64
-		for _, bucket := range buckets {
-			available += bucket.Remaining
-		}
-		if available >= required {
-			return buckets, nil
-		}
-		activated, err := activateNextTimeCardAssetTx(
-			ctx,
-			tx,
-			tenantID,
-			now,
-			reconcileResource,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if !activated {
-			return buckets, nil
-		}
-	}
+	// 未启用时长卡属于“卡包资产”，绝不能在直播启动或扣费不足时自动激活。
+	// 只有用户显式点击某张卡的“使用/启用”后，才会进入 quota_buckets。
 	return loadActiveQuotaBucketsTx(ctx, tx, tenantID, now)
+}
+
+var ErrTimeCardNotActivatable = errors.New("time card not activatable")
+
+func (s *Store) ListLiveTimeCardAssets(
+	ctx context.Context,
+	tenantID int64,
+	page, pageSize int,
+	now time.Time,
+) (model.LiveTimeCardPage, error) {
+	if tenantID <= 0 {
+		return model.LiveTimeCardPage{}, errors.New("invalid tenant")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 5
+	}
+	if pageSize > 50 {
+		pageSize = 50
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+	defer tx.Rollback()
+	if err := lockTenantAIResourceTx(ctx, tx, tenantID); err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+	if _, err := expireTimeCardAssetsTx(ctx, tx, tenantID, now); err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+
+	result := model.LiveTimeCardPage{Items: []model.LiveTimeCardSummary{}, Page: page, PageSize: pageSize}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM biz_time_card_assets
+		WHERE tenant_id=? AND status='unactivated'
+	`, tenantID).Scan(&result.Total); err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.id, a.asset_no, a.product_name_snapshot, a.status,
+		       a.original_seconds,
+		       CASE WHEN a.status='active'
+		            THEN COALESCE(q.remaining_seconds, a.remaining_seconds)
+		            ELSE a.remaining_seconds END,
+		       a.activation_mode, a.validity_days,
+		       a.activation_deadline_at, a.activated_at, a.expires_at, a.created_at
+		FROM biz_time_card_assets a
+		LEFT JOIN quota_buckets q ON q.id=a.quota_bucket_id
+		WHERE a.tenant_id=? AND a.status='unactivated'
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT ? OFFSET ?
+	`, tenantID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+	for rows.Next() {
+		var item model.LiveTimeCardSummary
+		var activationDeadline sql.NullTime
+		var activatedAt sql.NullTime
+		var expiresAt sql.NullTime
+		if err := rows.Scan(
+			&item.ID, &item.AssetNo, &item.ProductName, &item.Status,
+			&item.OriginalSeconds, &item.RemainingSeconds,
+			&item.ActivationMode, &item.ValidityDays,
+			&activationDeadline, &activatedAt, &expiresAt, &item.PurchasedAt,
+		); err != nil {
+			return model.LiveTimeCardPage{}, err
+		}
+		if activationDeadline.Valid {
+			value := activationDeadline.Time
+			item.ActivationDeadlineAt = &value
+		}
+		if activatedAt.Valid {
+			value := activatedAt.Time
+			item.ActivatedAt = &value
+		}
+		if expiresAt.Valid {
+			value := expiresAt.Time
+			item.ExpiresAt = &value
+		}
+		result.Items = append(result.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return model.LiveTimeCardPage{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveTimeCardPage{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) ActivateLiveTimeCardAsset(
+	ctx context.Context,
+	tenantID, assetID int64,
+	now time.Time,
+) (model.LiveQuotaSummary, error) {
+	if tenantID <= 0 || assetID <= 0 {
+		return model.LiveQuotaSummary{}, errors.New("invalid time card asset")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	defer tx.Rollback()
+	if err := lockTenantAIResourceTx(ctx, tx, tenantID); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	if _, err := expireTimeCardAssetsTx(ctx, tx, tenantID, now); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	if err := activateTimeCardAssetByIDTx(ctx, tx, tenantID, assetID, now); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	if err := reconcileCustomerAIResourceToQuotaTx(
+		ctx, tx, tenantID, now, "time_card_activation", "用户手动启用时长卡",
+	); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveQuotaSummary{}, err
+	}
+	return s.GetLiveQuotaSummary(ctx, tenantID, now)
+}
+
+func activateTimeCardAssetByIDTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, assetID int64,
+	now time.Time,
+) error {
+	var (
+		assetNo        string
+		orderID        int64
+		productName    string
+		original       uint64
+		remaining      uint64
+		activationMode string
+		validityDays   uint32
+		status         string
+		deadline       sql.NullTime
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT asset_no, source_order_id, product_name_snapshot,
+		       original_seconds, remaining_seconds, activation_mode,
+		       validity_days, status, activation_deadline_at
+		FROM biz_time_card_assets
+		WHERE id=? AND tenant_id=?
+		FOR UPDATE
+	`, assetID, tenantID).Scan(
+		&assetNo, &orderID, &productName, &original, &remaining,
+		&activationMode, &validityDays, &status, &deadline,
+	); err != nil {
+		return err
+	}
+	if status != "unactivated" || remaining == 0 || activationMode != "first_use" || validityDays == 0 {
+		return ErrTimeCardNotActivatable
+	}
+	if deadline.Valid && !deadline.Time.After(now) {
+		return ErrTimeCardNotActivatable
+	}
+
+	expiresAt := now.AddDate(0, 0, int(validityDays))
+	bucketExternalID := fmt.Sprintf("time-card-asset-%d", assetID)
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO quota_buckets (
+			external_id, tenant_id, source_type, source_id,
+			original_seconds, remaining_seconds, effective_at,
+			expires_at, priority, status, metadata_json
+		)
+		VALUES (
+			?, ?, 'time_card_asset', ?,
+			?, ?, ?, ?, 50, 'active',
+			JSON_OBJECT('asset_no', ?, 'order_id', ?, 'product_name', ?)
+		)
+	`, bucketExternalID, tenantID, assetID, original, remaining, now, expiresAt, assetNo, orderID, productName)
+	if err != nil {
+		return err
+	}
+	bucketID, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE biz_time_card_assets
+		SET activated_at=?, expires_at=?, quota_bucket_id=?, status='active'
+		WHERE id=? AND tenant_id=? AND status='unactivated'
+	`, now, expiresAt, bucketID, assetID, tenantID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO quota_ledger (
+			external_id, tenant_id, bucket_id,
+			change_seconds, remaining_before_seconds, remaining_after_seconds,
+			business_type, business_id, operator_user_id,
+			reason, idempotency_key, occurred_at
+		)
+		VALUES (?, ?, ?, ?, 0, ?, 'time_card_activation', ?, NULL, ?, ?, ?)
+	`,
+		fmt.Sprintf("time-card-activation-%d", assetID), tenantID, bucketID,
+		int64(remaining), remaining, assetID,
+		"用户手动启用时长卡 · "+assetNo,
+		fmt.Sprintf("time-card-activation-%d", assetID), now,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func activateNextTimeCardAssetTx(
@@ -874,6 +1072,23 @@ func lockTenantAIResourceTx(
 	tx *sql.Tx,
 	tenantID int64,
 ) error {
+	var accountID int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM org_resource_accounts
+		WHERE organization_id=? AND resource_type='ai_seconds'
+		FOR UPDATE
+	`, tenantID).Scan(&accountID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	// Only create the resource account on the rare first-use path. Doing
+	// INSERT IGNORE before every SELECT ... FOR UPDATE adds unnecessary
+	// insert-intention locks and can deadlock concurrent read requests.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT IGNORE INTO org_resource_accounts (
 			organization_id, resource_type, unit, balance, reserved, status
@@ -882,7 +1097,6 @@ func lockTenantAIResourceTx(
 	`, tenantID); err != nil {
 		return err
 	}
-	var accountID int64
 	return tx.QueryRowContext(ctx, `
 		SELECT id
 		FROM org_resource_accounts
