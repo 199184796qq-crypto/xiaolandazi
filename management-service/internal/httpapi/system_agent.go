@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/agentunderstanding"
 	"livecompanion/management/internal/model"
 )
 
@@ -27,6 +28,7 @@ type systemAgentChatInput struct {
 	History     []liveAgentChatHistoryItem     `json:"history,omitempty"`
 	CurrentPath string                         `json:"current_path,omitempty"`
 	Navigation  []systemAgentNavigationContext `json:"navigation,omitempty"`
+	ImageURLs   []string                       `json:"image_urls,omitempty"`
 }
 
 type systemAgentEmployeeDraft struct {
@@ -111,12 +113,20 @@ type systemAgentActionPreview struct {
 }
 
 type systemAgentChatOutput struct {
-	Reply        string                        `json:"reply"`
-	Action       *systemAgentActionPreview     `json:"action,omitempty"`
-	Navigate     *systemAgentNavigationContext `json:"navigate,omitempty"`
-	Capabilities []string                      `json:"capabilities"`
-	Model        string                        `json:"model,omitempty"`
-	LatencyMS    int64                         `json:"latency_ms,omitempty"`
+	ProtocolVersion    string                        `json:"protocol_version"`
+	State              string                        `json:"state"`
+	Code               string                        `json:"code,omitempty"`
+	RequiredPermission string                        `json:"required_permission,omitempty"`
+	Reply              string                        `json:"reply"`
+	Action             *systemAgentActionPreview     `json:"action,omitempty"`
+	Navigate           *systemAgentNavigationContext `json:"navigate,omitempty"`
+	Capabilities       []string                      `json:"capabilities"`
+	Data               any                           `json:"data,omitempty"`
+	Credential         *credentialDeliveryResponse   `json:"credential,omitempty"`
+	Model              string                        `json:"model,omitempty"`
+	LatencyMS          int64                         `json:"latency_ms,omitempty"`
+	Engine             string                        `json:"engine,omitempty"`
+	PolicySource       string                        `json:"policy_source,omitempty"`
 }
 
 type systemAgentGroupContext struct {
@@ -331,8 +341,14 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input systemAgentChatInput
-	if err := readJSON(w, r, &input); err != nil {
+	if err := readAgentJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "终端智能体请求格式错误")
+		return
+	}
+	var imageErr error
+	input.ImageURLs, imageErr = sanitizeAgentChatImageURLs(input.ImageURLs)
+	if imageErr != nil {
+		writeError(w, http.StatusBadRequest, imageErr.Error())
 		return
 	}
 	input.Message = strings.TrimSpace(input.Message)
@@ -347,7 +363,9 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 
 	capabilities := clientAgentCapabilities(actor)
 	if customerAgentRestrictedRequest(input.Message) {
-		writeJSON(w, http.StatusOK, systemAgentChatOutput{
+		writeAgentChatOutput(w, http.StatusOK, systemAgentChatOutput{
+			State:        agentStatePermissionDenied,
+			Code:         "domain_forbidden",
 			Reply:        clientAgentBoundaryReply,
 			Capabilities: capabilities,
 		})
@@ -362,30 +380,64 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 	if utf8.RuneCountInString(input.CurrentPath) > 512 {
 		input.CurrentPath = ""
 	}
-	assistantName := s.configuredAgentName(r.Context(), false)
-	clientInstruction := s.store.AgentPromptValue(r.Context(), "client.agent.system", "只处理当前外部用户自己的业务并严格返回 JSON。")
-	prompt, err := buildClientAgentPrompt(clientInstruction, actor, input.Navigation, input.CurrentPath, assistantName)
+	tenantID := int64(0)
+	if actor.TenantID != nil {
+		tenantID = *actor.TenantID
+	}
+	understandingPolicy, err := s.store.ResolveAgentUnderstandingPolicy(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "准备终端智能体上下文失败")
+		writeError(w, http.StatusInternalServerError, "读取智能体理解策略失败")
 		return
 	}
-
-	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "client_agent", map[string]any{"current_path": input.CurrentPath})
-	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
-		r.Context(), prompt, input.Message, input.History,
-	)
-	if err != nil {
-		s.finishAISingleUse(r.Context(), invocationID, "failed", "", modelName, latencyMS, map[string]any{"error": err.Error()})
-		writeError(w, http.StatusBadGateway, "终端智能体暂时无法回答，请稍后再试")
-		return
+	programContext := agentunderstanding.SystemProgramContext{HasImages: len(input.ImageURLs) > 0}
+	for _, item := range input.Navigation {
+		programContext.Navigation = append(programContext.Navigation, agentunderstanding.SystemNavigation{
+			Title: item.Title, To: item.To, Section: item.Section,
+		})
 	}
-	s.finishAISingleUse(r.Context(), invocationID, "succeeded", "", modelName, latencyMS, nil)
+	programIntent := agentunderstanding.ProgramInterpretSystem(input.Message, programContext)
+	programResolved := programIntent.Kind != agentunderstanding.KindClarify
+	modelOutput := systemAgentModelOutputFromProgram(programIntent)
+	modelResponse := agentgateway.Response{}
+	engineName := "program"
+	if agentunderstanding.UseModel(understandingPolicy.AgentUnderstandingPolicy, programResolved, programIntent.Confidence) {
+		assistantName := s.configuredAgentName(r.Context(), false)
+		clientInstruction := s.store.AgentPromptValue(r.Context(), "client.agent.system", "只处理当前外部用户自己的业务并严格返回 JSON。")
+		prompt, promptErr := buildClientAgentPrompt(clientInstruction, actor, input.Navigation, input.CurrentPath, assistantName)
+		if promptErr != nil {
+			writeError(w, http.StatusInternalServerError, "准备终端智能体上下文失败")
+			return
+		}
+		invocationID := s.beginAISingleUse(r.Context(), actor, nil, "client_agent_understanding", map[string]any{
+			"current_path": input.CurrentPath, "understanding_mode": understandingPolicy.Mode, "policy_source": understandingPolicy.ResolvedFrom,
+		})
+		var modelErr error
+		modelOutput, modelResponse, modelErr = callSystemAgentModel(
+			r.Context(), prompt, input.Message, input.History, input.ImageURLs, understandingPolicy.AgentUnderstandingPolicy,
+		)
+		if modelErr != nil {
+			s.finishAISingleUseWithUsage(
+				r.Context(), invocationID, "failed", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
+				modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"error": modelErr.Error()},
+			)
+			modelOutput = systemAgentModelOutputFromProgram(programIntent)
+			engineName = "program_fallback"
+		} else {
+			s.finishAISingleUseWithUsage(
+				r.Context(), invocationID, "succeeded", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
+				modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, nil,
+			)
+			engineName = "model"
+		}
+	}
 
 	output := systemAgentChatOutput{
 		Reply:        strings.TrimSpace(modelOutput.AssistantMessage),
 		Capabilities: capabilities,
-		Model:        modelName,
-		LatencyMS:    latencyMS,
+		Model:        modelResponse.Model,
+		LatencyMS:    modelResponse.LatencyMS,
+		Engine:       engineName,
+		PolicySource: understandingPolicy.ResolvedFrom,
 	}
 	if output.Reply == "" {
 		output.Reply = "我可以继续帮你处理当前账号自己的终端业务。"
@@ -396,7 +448,7 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 			output.Navigate = &navigate
 		}
 	}
-	writeJSON(w, http.StatusOK, output)
+	writeAgentChatOutput(w, http.StatusOK, output)
 }
 
 func (s *Server) internalAgentContext(w http.ResponseWriter, r *http.Request) {
@@ -447,8 +499,14 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input systemAgentChatInput
-	if err := readJSON(w, r, &input); err != nil {
+	if err := readAgentJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "系统助手请求格式错误")
+		return
+	}
+	var imageErr error
+	input.ImageURLs, imageErr = sanitizeAgentChatImageURLs(input.ImageURLs)
+	if imageErr != nil {
+		writeError(w, http.StatusBadRequest, imageErr.Error())
 		return
 	}
 	input.Message = strings.TrimSpace(input.Message)
@@ -460,6 +518,24 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "单次输入不能超过 3000 字")
 		return
 	}
+	access, err := s.staffAccessForActor(r, actor)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "当前账号没有可用的内部员工权限")
+		return
+	}
+	capabilities := systemAgentCapabilities(access)
+	if intent, matched := detectInternalAgentPermissionIntent(input.Message); matched && !staffHasPermission(access, intent.Permission) {
+		s.writeInternalAgentPermissionDenied(
+			w,
+			r,
+			actor,
+			capabilities,
+			intent.Code,
+			intent.Permission,
+			intent.Reply,
+		)
+		return
+	}
 	if s.tryInboxAgentResponse(w, r, actor, input.Message) {
 		return
 	}
@@ -467,12 +543,6 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 	input.CurrentPath = strings.TrimSpace(input.CurrentPath)
 	if utf8.RuneCountInString(input.CurrentPath) > 512 {
 		input.CurrentPath = ""
-	}
-
-	access, err := s.staffAccessForActor(r, actor)
-	if err != nil {
-		writeError(w, http.StatusForbidden, "当前账号没有可用的内部员工权限")
-		return
 	}
 
 	allGroups, err := s.store.ListStaffGroups(r.Context())
@@ -500,7 +570,6 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	capabilities := systemAgentCapabilities(access)
 	visibleGroups := make([]systemAgentGroupContext, 0)
 	for _, group := range allGroups {
 		if group.Status != "active" || !systemAgentCanSeeGroup(access, group.ID) {
@@ -518,46 +587,108 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	assistantName := s.configuredAgentName(r.Context(), true)
-	systemInstruction := s.store.AgentPromptValue(r.Context(), "system.agent.system", "只使用当前权限和已开放工具处理后台任务，并严格返回 JSON。")
-	prompt, err := buildSystemAgentPrompt(
-		systemInstruction,
-		actor,
-		access,
-		visibleGroups,
-		visibleRoles,
-		marketingTargets,
-		input.Navigation,
-		input.CurrentPath,
-		assistantName,
-	)
+	tenantID := int64(0)
+	if actor.TenantID != nil {
+		tenantID = *actor.TenantID
+	}
+	understandingPolicy, err := s.store.ResolveAgentUnderstandingPolicy(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "准备系统助手上下文失败")
+		writeError(w, http.StatusInternalServerError, "读取智能体理解策略失败")
 		return
 	}
+	programContext := agentunderstanding.SystemProgramContext{HasImages: len(input.ImageURLs) > 0}
+	for _, item := range input.Navigation {
+		programContext.Navigation = append(programContext.Navigation, agentunderstanding.SystemNavigation{
+			Title: item.Title, To: item.To, Section: item.Section,
+		})
+	}
+	for _, item := range visibleGroups {
+		programContext.Groups = append(programContext.Groups, item.Name)
+	}
+	for _, item := range visibleRoles {
+		programContext.Roles = append(programContext.Roles, item.Name)
+	}
+	for _, item := range allEmployees {
+		programContext.Employees = append(programContext.Employees, agentunderstanding.SystemEmployee{
+			DisplayName: item.DisplayName, GroupName: item.PrimaryGroupName, Status: item.EmploymentStatus,
+		})
+	}
+	programIntent := agentunderstanding.ProgramInterpretSystem(input.Message, programContext)
+	programResolved := programIntent.Kind != agentunderstanding.KindClarify
+	modelOutput := systemAgentModelOutputFromProgram(programIntent)
+	modelResponse := agentgateway.Response{}
+	engineName := "program"
 
-	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "internal_agent", map[string]any{"current_path": input.CurrentPath})
-	modelOutput, modelName, latencyMS, err := callSystemAgentModel(
-		r.Context(), prompt, input.Message, input.History,
-	)
-	if err != nil {
-		s.finishAISingleUse(r.Context(), invocationID, "failed", "", modelName, latencyMS, map[string]any{"error": err.Error()})
-		writeError(w, http.StatusBadGateway, "系统助手暂时无法理解这条指令，请稍后再试")
+	if agentunderstanding.UseModel(understandingPolicy.AgentUnderstandingPolicy, programResolved, programIntent.Confidence) {
+		assistantName := s.configuredAgentName(r.Context(), true)
+		systemInstruction := s.store.AgentPromptValue(r.Context(), "system.agent.system", "只使用当前权限和已开放工具处理后台任务，并严格返回 JSON。")
+		prompt, promptErr := buildSystemAgentPrompt(
+			systemInstruction,
+			actor,
+			access,
+			visibleGroups,
+			visibleRoles,
+			marketingTargets,
+			input.Navigation,
+			input.CurrentPath,
+			assistantName,
+		)
+		if promptErr != nil {
+			writeError(w, http.StatusInternalServerError, "准备系统助手上下文失败")
+			return
+		}
+		invocationID := s.beginAISingleUse(r.Context(), actor, nil, "internal_agent_understanding", map[string]any{
+			"current_path": input.CurrentPath, "understanding_mode": understandingPolicy.Mode, "policy_source": understandingPolicy.ResolvedFrom,
+		})
+		var modelErr error
+		modelOutput, modelResponse, modelErr = callSystemAgentModel(
+			r.Context(), prompt, input.Message, input.History, input.ImageURLs, understandingPolicy.AgentUnderstandingPolicy,
+		)
+		if modelErr != nil {
+			s.finishAISingleUseWithUsage(
+				r.Context(), invocationID, "failed", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
+				modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"error": modelErr.Error()},
+			)
+			modelOutput = systemAgentModelOutputFromProgram(programIntent)
+			if strings.TrimSpace(modelOutput.AssistantMessage) == "" {
+				modelOutput.AssistantMessage = "大模型理解暂时不可用，我没有执行任何修改。请把目标说得更明确一些。"
+			}
+			engineName = "program_fallback"
+		} else {
+			s.finishAISingleUseWithUsage(
+				r.Context(), invocationID, "succeeded", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
+				modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, nil,
+			)
+			engineName = "model"
+		}
+	}
+	actionName := normalizeSystemAgentAction(modelOutput.Action)
+	if permission := internalAgentActionRequiredPermission(actionName); permission != "" && !staffHasPermission(access, permission) {
+		s.writeInternalAgentPermissionDenied(
+			w,
+			r,
+			actor,
+			capabilities,
+			actionName,
+			permission,
+			internalAgentPermissionReply(permission),
+		)
 		return
 	}
-	s.finishAISingleUse(r.Context(), invocationID, "succeeded", "", modelName, latencyMS, nil)
 
 	output := systemAgentChatOutput{
 		Reply:        strings.TrimSpace(modelOutput.AssistantMessage),
 		Capabilities: capabilities,
-		Model:        modelName,
-		LatencyMS:    latencyMS,
+		Model:        modelResponse.Model,
+		LatencyMS:    modelResponse.LatencyMS,
+		Engine:       engineName,
+		PolicySource: understandingPolicy.ResolvedFrom,
 	}
 	if output.Reply == "" {
 		output.Reply = "我已经理解你的要求。"
 	}
 
-	switch normalizeSystemAgentAction(modelOutput.Action) {
+	switch actionName {
 	case systemAgentActionQueryStaff:
 		reply, err := s.systemAgentAnswerStaffQuery(access, allEmployees, modelOutput.Query)
 		if err != nil {
@@ -599,7 +730,7 @@ func (s *Server) systemAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, output)
+	writeAgentChatOutput(w, http.StatusOK, output)
 }
 
 func systemAgentCapabilities(access model.StaffAccessContext) []string {
@@ -1322,13 +1453,89 @@ func normalizeSystemAgentAction(value string) string {
 	}
 }
 
+func systemAgentModelOutputFromProgram(intent agentunderstanding.UnifiedIntent) systemAgentModelOutput {
+	output := systemAgentModelOutput{
+		Action:           normalizeSystemAgentAction(intent.Intent),
+		AssistantMessage: strings.TrimSpace(intent.Reply),
+	}
+	switch output.Action {
+	case systemAgentActionQueryStaff:
+		output.Query = &systemAgentStaffQuery{
+			DisplayName: intentAnyString(intent.Changes, "display_name"),
+			GroupName:   intentAnyString(intent.Changes, "group_name"),
+			RoleName:    intentAnyString(intent.Changes, "role_name"),
+			Status:      intentAnyString(intent.Changes, "status"),
+			CountOnly:   intentAnyBool(intent.Changes, "count_only"),
+		}
+	case systemAgentActionCreateStaffEmployee:
+		output.Employee = &systemAgentEmployeeDraft{
+			DisplayName: intentAnyString(intent.Changes, "display_name"),
+			Phone:       intentAnyString(intent.Changes, "phone"),
+			Email:       intentAnyString(intent.Changes, "email"),
+			Province:    intentAnyString(intent.Changes, "province"),
+			City:        intentAnyString(intent.Changes, "city"),
+			District:    intentAnyString(intent.Changes, "district"),
+			GroupName:   intentAnyString(intent.Changes, "group_name"),
+			RoleNames:   intentAnyStrings(intent.Changes, "role_names"),
+		}
+	case systemAgentActionNavigatePage:
+		output.Navigate = &systemAgentNavigationContext{
+			Title:   intentAnyString(intent.Target, "title"),
+			To:      intentAnyString(intent.Target, "to"),
+			Section: intentAnyString(intent.Target, "section"),
+		}
+	}
+	return output
+}
+
+func intentAnyString(values map[string]any, key string) string {
+	if values == nil || values[key] == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(values[key]))
+}
+
+func intentAnyBool(values map[string]any, key string) bool {
+	if values == nil || values[key] == nil {
+		return false
+	}
+	value, ok := values[key].(bool)
+	return ok && value
+}
+
+func intentAnyStrings(values map[string]any, key string) []string {
+	if values == nil || values[key] == nil {
+		return nil
+	}
+	switch typed := values[key].(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
 func callSystemAgentModel(
 	ctx context.Context,
 	systemPrompt, message string,
 	history []liveAgentChatHistoryItem,
-) (systemAgentModelOutput, string, int64, error) {
-	if len(history) > 12 {
-		history = history[len(history)-12:]
+	imageURLs []string,
+	policy model.AgentUnderstandingPolicy,
+) (systemAgentModelOutput, agentgateway.Response, error) {
+	policy = agentunderstanding.NormalizePolicy(policy)
+	if len(history) > policy.MaxContextMessages {
+		history = history[len(history)-policy.MaxContextMessages:]
+	}
+	if len(imageURLs) > 0 {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【图片理解要求】用户在本轮附带了图片。先根据图片中直接可见的文字、页面布局、按钮、控件和对象定位用户指向，再结合文字判断任务；看不清的内容不要猜。图片不等于执行授权，任何系统写入仍按原有预览、确认和权限规则处理。")
 	}
 
 	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}}
@@ -1349,24 +1556,26 @@ func callSystemAgentModel(
 		}
 		messages = append(messages, agentgateway.Message{Role: role, Content: text})
 	}
-	messages = append(messages, agentgateway.Message{Role: "user", Content: message})
+	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+		Provider:       policy.Provider,
+		Model:          policy.Model,
 		Messages:       messages,
-		MaxTokens:      1400,
+		MaxTokens:      policy.MaxTokens,
 		EnableThinking: false,
 		ResponseFormat: agentgateway.ResponseJSON,
-		Timeout:        30 * time.Second,
+		Timeout:        agentunderstanding.Timeout(policy),
 	})
 	if err != nil {
-		return systemAgentModelOutput{}, "", 0, err
+		return systemAgentModelOutput{}, result, err
 	}
 
 	raw := stripPolicyJSONFence(result.Text)
 	var output systemAgentModelOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		return systemAgentModelOutput{}, "", result.LatencyMS, fmt.Errorf("decode system agent output: %w", err)
+		return systemAgentModelOutput{}, result, fmt.Errorf("decode system agent output: %w", err)
 	}
 	output.Action = normalizeSystemAgentAction(output.Action)
-	return output, result.Model, result.LatencyMS, nil
+	return output, result, nil
 }

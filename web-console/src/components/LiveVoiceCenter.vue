@@ -47,13 +47,13 @@ const selectedVoice = computed(() => {
 })
 
 function selectedName() {
-  return String(selectedVoice.value.name || '').trim() || '尚未选择'
+  return String(selectedVoice.value.name || '').trim() || '龙安灵心'
 }
 
 function selectedSource() {
   if (selectedVoice.value.source === 'clone') return '我的声音'
   if (selectedVoice.value.source === 'official') return '阿里官方声音'
-  return '未配置'
+  return '系统默认官方声音'
 }
 
 async function load() {
@@ -211,7 +211,6 @@ onBeforeUnmount(stopPreview)
   <section class="voice-center">
     <div class="voice-current-card">
       <div>
-        <span class="section-kicker">CURRENT VOICE</span>
         <small>{{ roomName || '当前直播间' }}</small>
         <h3>{{ selectedName() }}</h3>
         <p>{{ selectedSource() }}</p>
@@ -227,7 +226,6 @@ onBeforeUnmount(stopPreview)
     <section class="voice-library-section">
       <div class="voice-section-head">
         <div>
-          <span class="section-kicker">MY VOICES</span>
           <h3>我的声音</h3>
         </div>
         <button type="button" @click="cloneOpen = true">＋ 克隆新声音</button>
@@ -267,7 +265,7 @@ onBeforeUnmount(stopPreview)
         <section class="voice-dialog" role="dialog" aria-modal="true" aria-label="选择官方声音">
           <header>
             <div>
-              <span class="section-kicker">ALIYUN QWEN-TTS</span>
+              <span class="section-kicker">ALIYUN QWEN · 声音</span>
               <h3>选择官方声音</h3>
             </div>
             <button type="button" class="voice-close" @click="catalogOpen = false">×</button>

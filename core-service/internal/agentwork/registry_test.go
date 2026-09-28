@@ -37,27 +37,27 @@ func TestRegistryDefaultsStoppedAndTracksState(t *testing.T) {
 	}
 
 	now = now.Add(500 * time.Millisecond)
-	snapshot, err = registry.Set(7, StatePaused)
+	snapshot, err = registry.StopAgent(7, StopReasonManual)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.State != StatePaused || registry.IsWorking(7) {
-		t.Fatalf("paused state mismatch: %#v", snapshot)
+	if snapshot.State != StateStopped || registry.IsWorking(7) {
+		t.Fatalf("stopped state mismatch: %#v", snapshot)
 	}
 	if snapshot.WorkingSeconds != 2 {
-		t.Fatalf("paused working seconds=%d want 2", snapshot.WorkingSeconds)
+		t.Fatalf("stopped working seconds=%d want 2", snapshot.WorkingSeconds)
 	}
 
 	now = now.Add(30 * time.Second)
 	snapshot = registry.Get(7)
 	if snapshot.WorkingSeconds != 2 {
-		t.Fatalf("paused meter advanced: %d", snapshot.WorkingSeconds)
+		t.Fatalf("stopped meter advanced: %d", snapshot.WorkingSeconds)
 	}
 
 	if _, err := registry.GrantLease(7, 60); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = registry.Set(7, StateWorking)
+	snapshot, err = registry.StartAgent(7, snapshot.WorkingSeconds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,5 +242,191 @@ func TestRegistryRejectsInvalidState(t *testing.T) {
 	registry := New()
 	if _, err := registry.Set(1, State("weird")); err == nil {
 		t.Fatal("expected invalid state error")
+	}
+}
+
+func TestRegistryTracksLifecycleTransitionsAndStopReason(t *testing.T) {
+	now := time.Date(2026, 9, 25, 13, 0, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+
+	if _, err := registry.SetWithReason(21, StateStarting, "", 0); err == nil {
+		t.Fatal("starting must require a paid lease")
+	}
+	if _, err := registry.GrantLease(21, 3); err != nil {
+		t.Fatal(err)
+	}
+	starting, err := registry.SetWithReason(21, StateStarting, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starting.State != StateStarting || starting.StopReason != "" {
+		t.Fatalf("starting snapshot=%#v", starting)
+	}
+	working, err := registry.SetWithReason(21, StateWorking, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working.State != StateWorking {
+		t.Fatalf("working snapshot=%#v", working)
+	}
+
+	now = now.Add(4 * time.Second)
+	expired := registry.Get(21)
+	if expired.State != StateStopped || expired.StopReason != StopReasonQuotaExhausted {
+		t.Fatalf("expired snapshot=%#v", expired)
+	}
+	if expired.WorkingSeconds != 3 {
+		t.Fatalf("expired working seconds=%d want 3", expired.WorkingSeconds)
+	}
+
+	if _, err := registry.GrantLease(21, 30); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetWithReason(21, StateWorking, "", expired.WorkingSeconds); err != nil {
+		t.Fatal(err)
+	}
+	stopping, err := registry.SetWithReason(21, StateStopping, StopReasonManual, expired.WorkingSeconds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopping.State != StateStopping || stopping.WorkingSince != nil || stopping.LeaseRemainingSeconds != 0 {
+		t.Fatalf("stopping snapshot=%#v", stopping)
+	}
+	stopped, err := registry.SetWithReason(21, StateStopped, StopReasonManual, stopping.WorkingSeconds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != StateStopped || stopped.StopReason != StopReasonManual {
+		t.Fatalf("stopped snapshot=%#v", stopped)
+	}
+}
+
+func TestNormalizeStopReasonAcceptsHistoricalValues(t *testing.T) {
+	cases := map[StopReason]StopReason{
+		"manual_stop":        StopReasonManual,
+		"manual_pause":       StopReasonManualPause,
+		"quota_unavailable":  StopReasonQuotaExhausted,
+		"room_offline":       StopReasonLiveFinished,
+		"core_runtime_reset": StopReasonCoreRestart,
+		"core_start_failed":  StopReasonSystemError,
+	}
+	for input, want := range cases {
+		if got := NormalizeStopReason(input); got != want {
+			t.Fatalf("NormalizeStopReason(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestManualPauseStopPreservesModeAndPlan(t *testing.T) {
+	now := time.Date(2026, 9, 28, 6, 20, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+	if _, err := registry.SetMode(28, ModeAnchor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetPlan(28, 901, "菜籽油直播间智能体方案"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.GrantLease(28, 60); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.StartAgent(28, 11); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(4 * time.Second)
+	paused, err := registry.StopAgent(28, StopReasonManualPause)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.State != StateStopped || paused.StopReason != StopReasonManualPause {
+		t.Fatalf("paused snapshot=%#v", paused)
+	}
+	if paused.Mode != ModeAnchor || paused.PlanID != 901 || paused.PlanName != "菜籽油直播间智能体方案" {
+		t.Fatalf("pause lost anchor configuration: %#v", paused)
+	}
+}
+
+func TestRegistryStartStopCommandsOwnLifecycle(t *testing.T) {
+	now := time.Date(2026, 9, 27, 5, 0, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+
+	if _, err := registry.StartAgent(31, 0); err == nil {
+		t.Fatal("start without lease must fail")
+	}
+	if _, err := registry.GrantLease(31, 60); err != nil {
+		t.Fatal(err)
+	}
+	working, err := registry.StartAgent(31, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working.State != StateWorking || working.WorkingSeconds != 7 {
+		t.Fatalf("working snapshot=%#v", working)
+	}
+
+	now = now.Add(5 * time.Second)
+	stopped, err := registry.StopAgent(31, StopReasonManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != StateStopped || stopped.StopReason != StopReasonManual {
+		t.Fatalf("stopped snapshot=%#v", stopped)
+	}
+	if stopped.LeaseRemainingSeconds != 0 {
+		t.Fatalf("stopped lease remaining=%d want 0", stopped.LeaseRemainingSeconds)
+	}
+	if stopped.WorkingSeconds != 12 {
+		t.Fatalf("stopped working seconds=%d want 12", stopped.WorkingSeconds)
+	}
+}
+
+func TestRegistryStopIsIsolatedPerRoom(t *testing.T) {
+	now := time.Date(2026, 9, 27, 5, 30, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+	for _, roomID := range []int64{41, 42} {
+		if _, err := registry.GrantLease(roomID, 60); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := registry.StartAgent(roomID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now = now.Add(2 * time.Second)
+	if _, err := registry.StopAgent(41, StopReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	first := registry.Get(41)
+	second := registry.Get(42)
+	if first.State != StateStopped || first.StopReason != StopReasonManual {
+		t.Fatalf("room 41 snapshot=%#v", first)
+	}
+	if second.State != StateWorking {
+		t.Fatalf("room 42 state=%q want working", second.State)
+	}
+	if second.LeaseRemainingSeconds == 0 {
+		t.Fatal("room 42 lease was cleared when stopping room 41")
+	}
+}
+
+func TestRegistryMarksLeaseRenewalDueInsideCore(t *testing.T) {
+	now := time.Date(2026, 9, 27, 6, 0, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+	if _, err := registry.GrantLease(51, 60); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.StartAgent(51, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(44 * time.Second)
+	before := registry.Get(51)
+	if before.LeaseRemainingSeconds != 16 || before.LeaseRenewalDue {
+		t.Fatalf("before renewal window snapshot=%#v", before)
+	}
+
+	now = now.Add(time.Second)
+	due := registry.Get(51)
+	if due.LeaseRemainingSeconds != LeaseRenewThresholdSeconds || !due.LeaseRenewalDue {
+		t.Fatalf("renewal-due snapshot=%#v", due)
 	}
 }

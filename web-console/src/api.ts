@@ -74,6 +74,7 @@ import type {
   BeneficiaryWalletDashboard,
   WithdrawalRequest,
   Room,
+  CoreRuntimeStatus,
   RoomEvent,
   RoomEventPage,
   RoomSessionStats,
@@ -101,6 +102,32 @@ import type {
   LiveAgentSettings,
   LiveAgentSettingsInput,
   LiveAgentPlan,
+  LiveAgentPlanFact,
+  LiveAgentPlanFactCandidate,
+  AdoptLiveAgentPlanFactsOutput,
+  LiveAgentPlanBenefit,
+  LiveAgentPlanBenefitCandidate,
+  AdoptLiveAgentPlanBenefitsOutput,
+  LiveAgentPlanProductLink,
+  LiveAgentPlanProductLinkCandidate,
+  AdoptLiveAgentPlanProductLinksOutput,
+  LiveAgentPlanScript,
+  LiveAgentPlanScriptReference,
+  LiveAgentPlanScriptAnalysisPreviewResponse,
+  LiveAgentPlanImageRecognitionPreviewResponse,
+  LiveAgentFullShowPreviewInput,
+  LiveAgentFullShowPreviewResponse,
+  LiveAgentFullShowAuditPreviewInput,
+  LiveAgentFullShowAuditPreviewResponse,
+  LiveAgentFullShowRegenerateInput,
+  LiveAgentFullShowRegenerateResponse,
+  LiveAgentFullShowVoiceResponse,
+  LiveAgentCustomMainlineResponse,
+  LiveAgentPlanTimelineSegment,
+  CreateLiveAgentPlanVersionInput,
+  LiveAgentPlanVersion,
+  LiveAgentPlanWorkspaceResponse,
+  SaveLiveAgentPlanScriptInput,
   LiveAgentConfigVersion,
   LiveAgentConfigInput,
   LivePolicyIndustry,
@@ -142,11 +169,18 @@ import type {
   StaffPermissionCenterDashboard,
   StaffFinanceOverview,
   StaffFinanceOperationResult,
+  SystemAgentActionPreview,
   SystemAgentChatResponse,
   SystemAgentContextResponse,
   AgentPromptConfig,
   AgentPromptConfigUpdate,
   AgentPromptHistory,
+  AgentRoutingAssistResponse,
+  AgentRoutingMaintenanceResponse,
+  AgentUnderstandingEffectivePolicy,
+  AgentUnderstandingModelDescriptor,
+  AgentUnderstandingPolicy,
+  AgentUnderstandingPolicyInput,
   SystemDictionaryItem,
   SystemDictionaryItemInput,
   SystemSettingUpdate,
@@ -247,6 +281,75 @@ export function rollbackAgentPromptConfig(key: string, version: number) {
   )
 }
 
+export function getAgentRoutingConfig() {
+  return request<AgentRoutingMaintenanceResponse>('/api/v1/system/agent-routing')
+}
+
+export function saveAgentRoutingDraft(value: string) {
+  return request<AgentRoutingMaintenanceResponse>('/api/v1/system/agent-routing/draft', {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  })
+}
+
+export function publishAgentRoutingConfig() {
+  return request<AgentRoutingMaintenanceResponse>('/api/v1/system/agent-routing/publish', {
+    method: 'POST',
+  })
+}
+
+export function getAgentRoutingHistory() {
+  return request<{ items: AgentPromptHistory[] }>('/api/v1/system/agent-routing/history')
+}
+
+export function rollbackAgentRoutingConfig(version: number) {
+  return request<AgentRoutingMaintenanceResponse>('/api/v1/system/agent-routing/rollback', {
+    method: 'POST',
+    body: JSON.stringify({ version }),
+  })
+}
+
+export function assistAgentRoutingConfig(instruction: string, currentJson: string) {
+  return request<AgentRoutingAssistResponse>('/api/v1/system/agent-routing/assist', {
+    method: 'POST',
+    body: JSON.stringify({ instruction, current_json: currentJson }),
+  })
+}
+
+export function getAgentUnderstandingPolicies() {
+  return request<{ items: AgentUnderstandingPolicy[] }>('/api/v1/system/agent-understanding')
+}
+
+export function getEffectiveAgentUnderstandingPolicy(tenantId = 0) {
+  const query = tenantId > 0 ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ policy: AgentUnderstandingEffectivePolicy }>(
+    '/api/v1/system/agent-understanding/effective' + query,
+  )
+}
+
+export function saveAgentUnderstandingPolicy(policy: AgentUnderstandingPolicyInput) {
+  return request<{ policy: AgentUnderstandingPolicy }>('/api/v1/system/agent-understanding/policy', {
+    method: 'PUT',
+    body: JSON.stringify({ policy }),
+  })
+}
+
+export function deleteAgentUnderstandingPolicy(scopeType: string, scopeId: number) {
+  return request<{ deleted: boolean }>(
+    '/api/v1/system/agent-understanding/policy/' +
+      encodeURIComponent(scopeType) +
+      '/' +
+      encodeURIComponent(String(scopeId)),
+    { method: 'DELETE' },
+  )
+}
+
+export function getAgentUnderstandingModels(provider = 'qwen') {
+  return request<{ provider: string; items: AgentUnderstandingModelDescriptor[] }>(
+    '/api/v1/system/agent-understanding/models?provider=' + encodeURIComponent(provider),
+  )
+}
+
 export function resetAgentPromptConfig(key: string) {
   return request<{ items: AgentPromptConfig[] }>(
     '/api/v1/system/agent-prompts/' + encodeURIComponent(key) + '/reset',
@@ -318,6 +421,10 @@ export function getTenants() {
 export function getRooms(tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
   return request<ListResponse<Room>>('/api/v1/rooms' + query)
+}
+
+export function getCoreRuntimeStatus() {
+  return request<CoreRuntimeStatus>('/api/v1/runtime/core-status')
 }
 
 export function createRoom(payload: CreateRoomPayload) {
@@ -601,8 +708,29 @@ export function createLiveAgentPlan(payload: { name: string; description?: strin
   })
 }
 
+export function updateLiveAgentPlan(
+  planId: number,
+  payload: { name: string; description?: string; tenant_id?: number },
+) {
+  return request<LiveAgentPlan>('/api/v1/live-agent-plans/' + planId, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function archiveLiveAgentPlan(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ ok: boolean }>('/api/v1/live-agent-plans/' + planId + '/archive' + query, {
+    method: 'POST',
+  })
+}
+
 export function getRoomLiveAgentPlan(roomId: number) {
   return request<{ plan?: LiveAgentPlan | null }>('/api/v1/rooms/' + roomId + '/live-agent-plan')
+}
+
+export function getRoomLiveAgentPlans(roomId: number) {
+  return request<{ items: LiveAgentPlan[] }>('/api/v1/rooms/' + roomId + '/live-agent-plans')
 }
 
 export function bindRoomLiveAgentPlan(planId: number, roomId: number, tenantId?: number) {
@@ -610,6 +738,491 @@ export function bindRoomLiveAgentPlan(planId: number, roomId: number, tenantId?:
     method: 'POST',
     body: JSON.stringify({ room_id: roomId, tenant_id: tenantId }),
   })
+}
+
+export function unbindRoomLiveAgentPlan(planId: number, roomId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ ok: boolean }>(
+    '/api/v1/live-agent-plans/' + planId + '/room-bindings/' + roomId + query,
+    { method: 'DELETE' },
+  )
+}
+
+export function getLiveAgentPlanFacts(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlanFact[] }>('/api/v1/live-agent-plans/' + planId + '/facts' + query)
+}
+
+export function adoptLiveAgentPlanFacts(
+  planId: number,
+  facts: LiveAgentPlanFactCandidate[],
+  tenantId?: number,
+  sourceRef?: string,
+) {
+  return request<AdoptLiveAgentPlanFactsOutput>('/api/v1/live-agent-plans/' + planId + '/facts/adopt', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      source_ref: sourceRef,
+      facts,
+    }),
+  })
+}
+
+export function updateLiveAgentPlanFact(
+  planId: number,
+  factId: number,
+  input: { category: string; key: string; value: string },
+  tenantId?: number,
+) {
+  return request<LiveAgentPlanFact>('/api/v1/live-agent-plans/' + planId + '/facts/' + factId, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      category: input.category,
+      key: input.key,
+      value: input.value,
+    }),
+  })
+}
+
+export function deleteLiveAgentPlanFact(planId: number, factId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<void>('/api/v1/live-agent-plans/' + planId + '/facts/' + factId + query, {
+    method: 'DELETE',
+  })
+}
+
+export function getLiveAgentPlanBenefits(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlanBenefit[] }>('/api/v1/live-agent-plans/' + planId + '/benefits' + query)
+}
+
+export function adoptLiveAgentPlanBenefits(
+  planId: number,
+  benefits: LiveAgentPlanBenefitCandidate[],
+  tenantId?: number,
+  sourceRef?: string,
+) {
+  return request<AdoptLiveAgentPlanBenefitsOutput>('/api/v1/live-agent-plans/' + planId + '/benefits/adopt', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      source_ref: sourceRef,
+      benefits,
+    }),
+  })
+}
+
+export function updateLiveAgentPlanBenefit(
+  planId: number,
+  benefitId: number,
+  input: {
+    expected_version_no?: number
+    key: string
+    link_key?: string
+    product_name?: string
+    activity_price?: string
+    gift?: string
+    activity?: string
+    starts_at?: string
+    ends_at?: string
+  },
+  tenantId?: number,
+) {
+  return request<LiveAgentPlanBenefit>('/api/v1/live-agent-plans/' + planId + '/benefits/' + benefitId, {
+    method: 'PATCH',
+    body: JSON.stringify({ tenant_id: tenantId, ...input }),
+  })
+}
+
+export function deleteLiveAgentPlanBenefit(
+  planId: number,
+  benefitId: number,
+  tenantId?: number,
+) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<void>('/api/v1/live-agent-plans/' + planId + '/benefits/' + benefitId + query, {
+    method: 'DELETE',
+  })
+}
+
+export function getLiveAgentPlanProductLinks(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlanProductLink[] }>('/api/v1/live-agent-plans/' + planId + '/product-links' + query)
+}
+
+export function adoptLiveAgentPlanProductLinks(
+  planId: number,
+  links: LiveAgentPlanProductLinkCandidate[],
+  tenantId?: number,
+  sourceRef?: string,
+) {
+  return request<AdoptLiveAgentPlanProductLinksOutput>('/api/v1/live-agent-plans/' + planId + '/product-links/adopt', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      source_ref: sourceRef,
+      links,
+    }),
+  })
+}
+
+export function updateLiveAgentPlanProductLink(
+  planId: number,
+  productLinkId: number,
+  input: {
+    link_key: string
+    product_name: string
+    spec?: string
+    daily_price?: string
+    quantity?: string
+    audience?: string
+  },
+  tenantId?: number,
+) {
+  return request<LiveAgentPlanProductLink>(
+    '/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        ...input,
+      }),
+    },
+  )
+}
+
+export function deleteLiveAgentPlanProductLink(
+  planId: number,
+  productLinkId: number,
+  tenantId?: number,
+) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<void>(
+    '/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + query,
+    { method: 'DELETE' },
+  )
+}
+
+export function getLiveAgentPlanScripts(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlanScript[] }>('/api/v1/live-agent-plans/' + planId + '/scripts' + query)
+}
+
+export function createLiveAgentPlanScript(planId: number, payload: SaveLiveAgentPlanScriptInput) {
+  return request<LiveAgentPlanScript>('/api/v1/live-agent-plans/' + planId + '/scripts', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateLiveAgentPlanScript(
+  planId: number,
+  scriptId: number,
+  payload: SaveLiveAgentPlanScriptInput,
+) {
+  return request<LiveAgentPlanScript>(
+    '/api/v1/live-agent-plans/' + planId + '/scripts/' + scriptId,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getLiveAgentPlanScriptReferences(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAgentPlanScriptReference[] }>(
+    '/api/v1/live-agent-plans/' + planId + '/script-references' + query,
+  )
+}
+
+export function createLiveAgentPlanScriptReference(
+  planId: number,
+  input: {
+    reference_key: string
+    title: string
+    content_text: string
+    goal?: string
+    transition?: string
+    execution_mode?: string
+    source_quote?: string
+    source_type?: string
+    source_ref?: string
+  },
+  tenantId?: number,
+) {
+  return request<LiveAgentPlanScriptReference>('/api/v1/live-agent-plans/' + planId + '/script-references', {
+    method: 'POST',
+    body: JSON.stringify({ tenant_id: tenantId, ...input }),
+  })
+}
+
+export function updateLiveAgentPlanScriptReference(
+  planId: number,
+  referenceId: number,
+  input: {
+    expected_version_no?: number
+    reference_key: string
+    title: string
+    content_text: string
+    goal?: string
+    transition?: string
+    execution_mode?: string
+  },
+  tenantId?: number,
+) {
+  return request<LiveAgentPlanScriptReference>(
+    '/api/v1/live-agent-plans/' + planId + '/script-references/' + referenceId,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ tenant_id: tenantId, ...input }),
+    },
+  )
+}
+
+export function deleteLiveAgentPlanScriptReference(
+  planId: number,
+  referenceId: number,
+  expectedVersionNo?: number,
+  tenantId?: number,
+) {
+  const params = new URLSearchParams()
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  if (expectedVersionNo) params.set('expected_version_no', String(expectedVersionNo))
+  const query = params.toString() ? '?' + params.toString() : ''
+  return request<void>(
+    '/api/v1/live-agent-plans/' + planId + '/script-references/' + referenceId + query,
+    { method: 'DELETE' },
+  )
+}
+
+export function previewAnalyzeLiveAgentPlanScript(planId: number, text: string, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAgentPlanScriptAnalysisPreviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/scripts/analyze-preview' + query,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    },
+  )
+}
+
+export function previewRecognizeLiveAgentPlanImage(
+  planId: number,
+  file: File,
+  tenantId?: number,
+) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  const form = new FormData()
+  form.append('file', file)
+  return request<LiveAgentPlanImageRecognitionPreviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/scripts/recognize-image-preview' + query,
+    {
+      method: 'POST',
+      body: form,
+    },
+  )
+}
+
+export function previewGenerateLiveAgentFullShow(planId: number, payload: LiveAgentFullShowPreviewInput) {
+  return request<LiveAgentFullShowPreviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/full-show/preview',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function auditLiveAgentFullShowPreview(planId: number, payload: LiveAgentFullShowAuditPreviewInput) {
+  return request<LiveAgentFullShowAuditPreviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/full-show/audit-preview',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function regenerateLiveAgentFullShowVariant(
+  planId: number,
+  variantKey: string,
+  payload: LiveAgentFullShowRegenerateInput,
+) {
+  return request<LiveAgentFullShowRegenerateResponse>(
+    '/api/v1/live-agent-plans/' +
+      planId +
+      '/full-show/variants/' +
+      encodeURIComponent(variantKey) +
+      '/regenerate-preview',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function generateLiveAgentFullShowVariantVoice(
+  planId: number,
+  variantKey: string,
+  payload: {
+    tenant_id?: number
+    room_id: number
+    text: string
+    source: string
+    voice_id?: string
+    profile_id?: number
+    rate?: number
+  },
+) {
+  return request<LiveAgentFullShowVoiceResponse>(
+    '/api/v1/live-agent-plans/' +
+      planId +
+      '/full-show/variants/' +
+      encodeURIComponent(variantKey) +
+      '/voice',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function rebuildLiveAgentFullShowVariantSubtitles(
+  planId: number,
+  variantKey: string,
+  payload: {
+    tenant_id?: number
+    room_id: number
+    audio_asset_id: number
+    timeline: LiveAgentPlanTimelineSegment[]
+  },
+) {
+  return request<LiveAgentFullShowVoiceResponse>(
+    '/api/v1/live-agent-plans/' +
+      planId +
+      '/full-show/variants/' +
+      encodeURIComponent(variantKey) +
+      '/voice/subtitles',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function uploadLiveAgentCustomMainline(
+  planId: number,
+  roomId: number,
+  file: File,
+  durationMs: number,
+  voiceSample?: File | null,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+) {
+  const form = new FormData()
+  form.append('file', file)
+  if (voiceSample) form.append('voice_sample', voiceSample)
+  form.append('room_id', String(roomId))
+  if (durationMs > 0) form.append('duration_ms', String(Math.round(durationMs)))
+  return new Promise<LiveAgentCustomMainlineResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload')
+    xhr.withCredentials = true
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable) return
+      onProgress?.(event.loaded, event.total)
+    })
+    xhr.addEventListener('load', () => {
+      let payload: LiveAgentCustomMainlineResponse | { error?: string } | null = null
+      try {
+        payload = xhr.responseText ? JSON.parse(xhr.responseText) : null
+      } catch {
+        payload = null
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload as LiveAgentCustomMainlineResponse)
+        return
+      }
+      const message = payload && 'error' in payload && payload.error
+        ? payload.error
+        : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传自定义音稿失败')
+      if (xhr.status === 403) showPermissionToast(message)
+      reject(new Error(message))
+    })
+    xhr.addEventListener('error', () => reject(new Error('上传自定义音稿失败，请检查网络后重试')))
+    xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort()
+        return
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true })
+    }
+    xhr.send(form)
+  })
+}
+
+export function rebuildLiveAgentCustomMainline(
+  planId: number,
+  payload: {
+    room_id: number
+    audio_asset_id: number
+    timeline: LiveAgentPlanTimelineSegment[]
+  },
+) {
+  return request<LiveAgentCustomMainlineResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/custom-mainline/rebuild',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function createLiveAgentPlanVersion(planId: number, payload: CreateLiveAgentPlanVersionInput) {
+  return request<LiveAgentPlanVersion>('/api/v1/live-agent-plans/' + planId + '/versions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getLiveAgentPlanVersions(planId: number, roomId: number, tenantId?: number) {
+  const params = new URLSearchParams({ room_id: String(roomId) })
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  return request<{ items: LiveAgentPlanVersion[] }>(
+    '/api/v1/live-agent-plans/' + planId + '/versions?' + params.toString(),
+  )
+}
+
+export function getLiveAgentPlanWorkspace(planId: number, roomId: number, tenantId?: number) {
+  const params = new URLSearchParams({ room_id: String(roomId) })
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  return request<LiveAgentPlanWorkspaceResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/workspace?' + params.toString(),
+  )
+}
+
+export function publishLiveAgentPlanVersion(
+  planId: number,
+  versionId: number,
+  payload: { room_id: number; tenant_id?: number },
+) {
+  return request<LiveAgentPlanVersion>(
+    '/api/v1/live-agent-plans/' + planId + '/versions/' + versionId + '/publish',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getRoomPublishedLiveAgentPlanVersion(roomId: number) {
+  return request<{ version?: LiveAgentPlanVersion | null }>(
+    '/api/v1/rooms/' + roomId + '/live-agent-plan/published-version',
+  )
 }
 
 export function getLiveAgentSettings() {
@@ -697,10 +1310,10 @@ export function getLiveOfficialVoices() {
   return request<{ items: OfficialVoice[] }>('/api/v1/live/official-voices')
 }
 
-export function previewLiveOfficialVoice(voiceId: string, text = '') {
+export function previewLiveOfficialVoice(voiceId: string, text = '', tenantId?: number) {
   return request<VoicePreviewResponse>(
     '/api/v1/live/official-voices/' + encodeURIComponent(voiceId) + '/preview',
-    { method: 'POST', body: JSON.stringify({ text }) },
+    { method: 'POST', body: JSON.stringify({ text, tenant_id: tenantId }) },
   )
 }
 
@@ -711,10 +1324,10 @@ export function cloneLiveVoiceProfile(payload: { name: string; sample_asset_id: 
   })
 }
 
-export function previewLiveVoiceProfile(profileId: number, text = '') {
+export function previewLiveVoiceProfile(profileId: number, text = '', tenantId?: number) {
   return request<VoicePreviewResponse>(
     '/api/v1/live/voice-profiles/' + profileId + '/preview',
-    { method: 'POST', body: JSON.stringify({ text }) },
+    { method: 'POST', body: JSON.stringify({ text, tenant_id: tenantId }) },
   )
 }
 
@@ -724,6 +1337,7 @@ export function chatLiveAgent(
     message: string
     anchor_transcript?: string
     history?: Array<{ role: 'user' | 'agent'; text: string }>
+    image_urls?: string[]
   },
 ) {
   return request<{
@@ -734,6 +1348,95 @@ export function chatLiveAgent(
   }>('/api/v1/live/rooms/' + roomId + '/agent/chat', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export interface LiveStrategyIntentResponse {
+  protocol_version?: string
+  state?: 'responded' | 'permission_denied'
+  code?: string
+  required_permission?: string
+  kind: 'chat' | 'command' | 'clarify'
+  intent:
+    | 'chat'
+    | 'product.add'
+    | 'product.update'
+    | 'product.disable'
+    | 'benefit.add'
+    | 'benefit.update'
+    | 'benefit.disable'
+    | 'fact.add'
+    | 'fact.update'
+    | 'fact.disable'
+    | 'script.add'
+    | 'script.update'
+    | 'script.disable'
+    | 'plan.bind'
+    | 'plan.unbind'
+    | 'plan.switch'
+    | 'unknown'
+  reply?: string
+  target?: {
+    link_key?: string
+    benefit_key?: string
+    fact_category?: string
+    fact_key?: string
+    script_reference_key?: string
+    script_title?: string
+    plan_id?: number
+    plan_name?: string
+  }
+  changes?: {
+    product_name?: string
+    spec?: string
+    daily_price?: string
+    quantity?: string
+    audience?: string
+    activity_price?: string
+    gift?: string
+    activity?: string
+    starts_at?: string
+    ends_at?: string
+    fact_value?: string
+    script_text?: string
+  }
+  missing?: string[]
+  confidence?: number
+  provider?: string
+  model?: string
+  latency_ms?: number
+  engine?: 'program' | 'model' | 'program_fallback' | string
+  policy_source?: string
+}
+
+export function interpretLiveStrategyIntent(
+  roomId: number,
+  payload: {
+    message: string
+    plan_id?: number
+    current_mode?: string
+    history?: Array<{ role: 'user' | 'agent'; text: string }>
+    image_urls?: string[]
+  },
+) {
+  return request<LiveStrategyIntentResponse>('/api/v1/live/rooms/' + roomId + '/agent/interpret', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function executeLiveStrategyAction(
+  roomId: number,
+  action: SystemAgentActionPreview,
+) {
+  return request<SystemAgentChatResponse>('/api/v1/live/rooms/' + roomId + '/agent/actions/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      action: {
+        type: action.type,
+        payload: action.payload,
+      },
+    }),
   })
 }
 
@@ -783,6 +1486,7 @@ export function chatLivePolicyAdminAgent(payload: {
   industry_code?: string
   message: string
   history?: Array<{ role: 'user' | 'agent'; text: string }>
+  image_urls?: string[]
 }) {
   return request<LivePolicyAgentResponse>('/api/v1/live/policies/admin/agent/chat', {
     method: 'POST',
@@ -869,6 +1573,7 @@ export function chatLiveRoomPolicyAgent(
     message: string
     history?: Array<{ role: 'user' | 'agent'; text: string }>
     scene?: 'reference_answer' | string
+    image_urls?: string[]
   },
 ) {
   return request<LivePolicyAgentResponse>('/api/v1/live/rooms/' + roomId + '/policy-agent/chat', {
@@ -939,7 +1644,7 @@ export function classifyAgentLearningMessage(
     history?: Array<{ role: 'user' | 'agent'; text: string }>
   },
 ) {
-  return request<{ intent: 'chat' | 'learning' | 'test' | 'execution'; confidence?: string; reason?: string }>(
+  return request<{ intent: 'chat' | 'learning' | 'test' | 'execution' | 'adopt'; confidence?: string; reason?: string }>(
     '/api/v1/live/rooms/' + roomId + '/agent-learning/intent',
     {
       method: 'POST',
@@ -1371,6 +2076,28 @@ export function getAccountDashboard() {
   return request<AccountDashboard>('/api/v1/account')
 }
 
+export interface UserUIPreferences {
+  user_id: number
+  selected_live_room_id?: number | null
+  sidebar_collapsed: boolean
+  live_plan_panel_collapsed: boolean
+  agent_drawer_collapsed: boolean
+}
+
+export function getUserUIPreferences() {
+  return request<UserUIPreferences>('/api/v1/account/ui-preferences')
+}
+
+export function updateUserUIPreferences(payload: Partial<Pick<
+  UserUIPreferences,
+  'selected_live_room_id' | 'sidebar_collapsed' | 'live_plan_panel_collapsed' | 'agent_drawer_collapsed'
+>>) {
+  return request<UserUIPreferences>('/api/v1/account/ui-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function updateAccountProfile(payload: {
   display_name: string
   phone: string
@@ -1557,6 +2284,12 @@ export function getAdminAuditLogs(params: number | {
   search?: string
   action?: string
   result?: string
+  source?: string
+  object_type?: string
+  room_id?: number
+  tenant_id?: number
+  from?: string
+  to?: string
   page_size?: number
   before_id?: number
 } = {}) {
@@ -1569,6 +2302,12 @@ export function getAdminAuditLogs(params: number | {
   if (params.search) query.set('search', params.search)
   if (params.action) query.set('action', params.action)
   if (params.result) query.set('result', params.result)
+  if (params.source) query.set('source', params.source)
+  if (params.object_type) query.set('object_type', params.object_type)
+  if (params.room_id) query.set('room_id', String(params.room_id))
+  if (params.tenant_id) query.set('tenant_id', String(params.tenant_id))
+  if (params.from) query.set('from', params.from)
+  if (params.to) query.set('to', params.to)
   if (params.page_size) query.set('page_size', String(params.page_size))
   if (params.before_id) query.set('before_id', String(params.before_id))
   const suffix = query.toString() ? '?' + query.toString() : ''
@@ -1877,6 +2616,7 @@ export interface AgentChatPayload {
   history?: Array<{ role: 'user' | 'agent'; text: string }>
   current_path?: string
   navigation?: Array<{ title: string; to: string; section?: string }>
+  image_urls?: string[]
 }
 
 export function getClientAgentContext() {
@@ -1898,6 +2638,13 @@ export function chatInternalAgent(payload: AgentChatPayload) {
   return request<SystemAgentChatResponse>('/api/v1/internal-agent/chat', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function executeInternalAgentAction(action: SystemAgentActionPreview) {
+  return request<SystemAgentChatResponse>('/api/v1/internal-agent/actions/execute', {
+    method: 'POST',
+    body: JSON.stringify({ action }),
   })
 }
 

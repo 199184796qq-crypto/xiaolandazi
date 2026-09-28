@@ -17,11 +17,27 @@ import (
 	"livecompanion/core/internal/audioout"
 )
 
+type programTrack struct {
+	ID         string
+	Label      string
+	Kind       string
+	Text       string
+	AudioURL   string
+	MimeType   string
+	DurationMS int
+	Timeline   []audioout.ProgramTimelineSegment
+	SafePoints []audioout.ProgramSafePoint
+}
+
 type programState struct {
 	ID               string
 	RoomID           int64
 	SessionID        string
 	Label            string
+	VersionID        int64
+	VersionNo        int64
+	Tracks           []programTrack
+	TrackIndex       int
 	StartedAt        time.Time
 	SegmentStartedAt time.Time
 	CurrentTaskID    string
@@ -29,6 +45,7 @@ type programState struct {
 	Sequence         uint64
 	Running          bool
 	Suspended        bool
+	ManualPaused     bool
 	ResumeOffsetMS   int
 }
 
@@ -193,6 +210,206 @@ func (c *Client) StartTestProgram(_ context.Context, roomID int64, sessionID, la
 		label = "Core 主线循环"
 	}
 
+	return c.startPreparedProgram(roomID, sessionID, label, 0, 0, []programTrack{{
+		ID:         "test-mainline",
+		Label:      label,
+		Kind:       "test_wav_program",
+		AudioURL:   c.testAudioURL(),
+		MimeType:   "audio/wav",
+		DurationMS: c.testDurationMS,
+	}})
+}
+
+func (c *Client) StartProgram(ctx context.Context, input audioout.StartProgramInput) (audioout.RoomProgramSnapshot, error) {
+	if !c.Enabled() {
+		return audioout.RoomProgramSnapshot{}, errors.New("Core声音广播未启用")
+	}
+	if input.RoomID <= 0 {
+		return audioout.RoomProgramSnapshot{}, errors.New("room_id is required")
+	}
+	if len(input.Tracks) == 0 {
+		return audioout.RoomProgramSnapshot{}, errors.New("program tracks are required")
+	}
+	if len(input.Tracks) > 20 {
+		return audioout.RoomProgramSnapshot{}, errors.New("program tracks exceed limit")
+	}
+	prepared := make([]programTrack, 0, len(input.Tracks))
+	for index, track := range input.Tracks {
+		url := strings.TrimSpace(track.AudioURL)
+		if url == "" {
+			return audioout.RoomProgramSnapshot{}, fmt.Errorf("track %d audio_url is required", index+1)
+		}
+		durationMS, mimeType, err := c.hub.ProbeExternalWAV(ctx, url)
+		if err != nil {
+			return audioout.RoomProgramSnapshot{}, fmt.Errorf("probe track %d: %w", index+1, err)
+		}
+		id := strings.TrimSpace(track.ID)
+		if id == "" {
+			id = fmt.Sprintf("track-%d", index+1)
+		}
+		label := strings.TrimSpace(track.Label)
+		if label == "" {
+			label = id
+		}
+		timeline, err := normalizeProgramTimeline(track.Timeline, durationMS)
+		if err != nil {
+			return audioout.RoomProgramSnapshot{}, fmt.Errorf("track %d timeline: %w", index+1, err)
+		}
+		safePoints, err := normalizeProgramSafePoints(track.SafePoints, timeline, durationMS)
+		if err != nil {
+			return audioout.RoomProgramSnapshot{}, fmt.Errorf("track %d safe points: %w", index+1, err)
+		}
+		prepared = append(prepared, programTrack{
+			ID:         id,
+			Label:      label,
+			Kind:       "mainline_program",
+			Text:       strings.TrimSpace(track.Text),
+			AudioURL:   url,
+			MimeType:   mimeType,
+			DurationMS: durationMS,
+			Timeline:   timeline,
+			SafePoints: safePoints,
+		})
+	}
+	return c.startPreparedProgram(
+		input.RoomID,
+		strings.TrimSpace(input.SessionID),
+		strings.TrimSpace(input.Label),
+		input.VersionID,
+		input.VersionNo,
+		prepared,
+	)
+}
+
+func normalizeProgramTimeline(input []audioout.ProgramTimelineSegment, durationMS int) ([]audioout.ProgramTimelineSegment, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	if len(input) > 1024 || durationMS <= 0 {
+		return nil, errors.New("invalid timeline size or duration")
+	}
+	result := append([]audioout.ProgramTimelineSegment(nil), input...)
+	previousEnd := 0
+	for index := range result {
+		segment := &result[index]
+		segment.SegmentID = strings.TrimSpace(segment.SegmentID)
+		segment.Text = strings.TrimSpace(segment.Text)
+		if segment.SegmentID == "" || segment.Text == "" {
+			return nil, errors.New("timeline segment id and text are required")
+		}
+		// Older published versions marked every generated chunk as a safe cut.
+		// Runtime only accepts a real sentence/semantic ending so an interaction
+		// never cuts after a comma or an arbitrary max-length chunk.
+		segment.SafeCut = segment.SafeCut && strongSemanticEnding(segment.Text)
+		if segment.Index != index+1 {
+			return nil, errors.New("timeline index is not sequential")
+		}
+		if segment.StartMS < previousEnd || segment.StartMS < 0 || segment.EndMS <= segment.StartMS {
+			return nil, errors.New("timeline overlaps or has an invalid time range")
+		}
+		if segment.EndMS > durationMS+5 {
+			return nil, errors.New("timeline exceeds probed audio duration")
+		}
+		previousEnd = segment.EndMS
+	}
+	return result, nil
+}
+
+func strongSemanticEnding(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	runes := []rune(text)
+	switch runes[len(runes)-1] {
+	case '。', '！', '？', '!', '?', '；', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeProgramSafePoints(
+	input []audioout.ProgramSafePoint,
+	timeline []audioout.ProgramTimelineSegment,
+	durationMS int,
+) ([]audioout.ProgramSafePoint, error) {
+	if durationMS <= 0 {
+		return nil, errors.New("invalid audio duration")
+	}
+	if len(input) == 0 {
+		fallback := make([]audioout.ProgramSafePoint, 0, len(timeline))
+		for _, segment := range timeline {
+			if !segment.SafeCut {
+				continue
+			}
+			nextPreview := ""
+			if segment.Index < len(timeline) {
+				nextPreview = strings.TrimSpace(timeline[segment.Index].Text)
+			}
+			fallback = append(fallback, audioout.ProgramSafePoint{
+				ID:          fmt.Sprintf("SP%03d", len(fallback)+1),
+				CutMS:       segment.EndMS,
+				Score:       90,
+				Grade:       "B",
+				Kind:        "SENTENCE",
+				SentenceID:  segment.SegmentID,
+				LeftPreview: strings.TrimSpace(segment.Text),
+				NextPreview: nextPreview,
+			})
+		}
+		return fallback, nil
+	}
+	if len(input) > 1024 {
+		return nil, errors.New("safe point count exceeds limit")
+	}
+	result := append([]audioout.ProgramSafePoint(nil), input...)
+	previousCut := 0
+	segmentByID := make(map[string]audioout.ProgramTimelineSegment, len(timeline))
+	for _, segment := range timeline {
+		segmentByID[segment.SegmentID] = segment
+	}
+	for index := range result {
+		point := &result[index]
+		point.ID = strings.TrimSpace(point.ID)
+		point.Grade = strings.ToUpper(strings.TrimSpace(point.Grade))
+		point.Kind = strings.ToUpper(strings.TrimSpace(point.Kind))
+		point.SentenceID = strings.TrimSpace(point.SentenceID)
+		point.LeftPreview = strings.TrimSpace(point.LeftPreview)
+		point.NextPreview = strings.TrimSpace(point.NextPreview)
+		if point.ID == "" || point.SentenceID == "" || point.CutMS <= previousCut || point.CutMS > durationMS {
+			return nil, errors.New("safe points are invalid or not strictly increasing")
+		}
+		if point.Score < 0 || point.Score > 100 {
+			return nil, errors.New("safe point score is out of range")
+		}
+		if point.Grade != "A" && point.Grade != "B" && point.Grade != "C" {
+			return nil, errors.New("safe point grade must be A, B, or C")
+		}
+		segment, ok := segmentByID[point.SentenceID]
+		if !ok || segment.EndMS != point.CutMS || !strongSemanticEnding(segment.Text) {
+			return nil, errors.New("safe point does not align to a semantic sentence boundary")
+		}
+		previousCut = point.CutMS
+	}
+	return result, nil
+}
+
+func (c *Client) startPreparedProgram(
+	roomID int64,
+	sessionID, label string,
+	versionID, versionNo int64,
+	tracks []programTrack,
+) (audioout.RoomProgramSnapshot, error) {
+	if roomID <= 0 || len(tracks) == 0 {
+		return audioout.RoomProgramSnapshot{}, errors.New("room_id and tracks are required")
+	}
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("core-room-%d", roomID)
+	}
+	if label == "" {
+		label = "Core 主线循环"
+	}
 	c.mu.Lock()
 	if existing := c.programs[roomID]; existing != nil && existing.Running {
 		snapshot := c.programSnapshotLocked(existing, c.now().UTC())
@@ -205,6 +422,10 @@ func (c *Client) StartTestProgram(_ context.Context, roomID int64, sessionID, la
 		RoomID:           roomID,
 		SessionID:        sessionID,
 		Label:            label,
+		VersionID:        versionID,
+		VersionNo:        versionNo,
+		Tracks:           append([]programTrack(nil), tracks...),
+		TrackIndex:       0,
 		StartedAt:        now,
 		SegmentStartedAt: now,
 		CurrentSlot:      "B",
@@ -228,10 +449,22 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 	if program == nil || !program.Running {
 		return audioout.SpeechTask{}, errors.New("room program is not running")
 	}
+	if len(program.Tracks) == 0 {
+		return audioout.SpeechTask{}, errors.New("room program has no tracks")
+	}
+	trackIndex := program.TrackIndex
+	if trackIndex < 0 || trackIndex >= len(program.Tracks) {
+		trackIndex = 0
+	}
+	track := program.Tracks[trackIndex]
+	trackKind := strings.TrimSpace(track.Kind)
+	if trackKind == "" {
+		trackKind = "mainline_program"
+	}
 	if startOffsetMS < 0 {
 		startOffsetMS = 0
 	}
-	if startOffsetMS >= c.testDurationMS {
+	if startOffsetMS >= track.DurationMS {
 		startOffsetMS = 0
 		startedAt = c.now().UTC()
 	}
@@ -241,11 +474,11 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 		ID:         id,
 		RoomID:     program.RoomID,
 		SessionID:  program.SessionID,
-		Kind:       "test_wav_program",
-		Label:      program.Label,
-		AudioURL:   c.testAudioURL(),
-		MimeType:   "audio/wav",
-		DurationMS: c.testDurationMS,
+		Kind:       trackKind,
+		Label:      track.Label,
+		AudioURL:   track.AudioURL,
+		MimeType:   track.MimeType,
+		DurationMS: track.DurationMS,
 		StartMS:    startOffsetMS,
 		ProgramID:  program.ID,
 		Sequence:   sequence,
@@ -268,10 +501,11 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 	program.CurrentSlot = task.Slot
 	program.SegmentStartedAt = task.StartedAt
 	program.Suspended = false
+	program.ManualPaused = false
 	program.ResumeOffsetMS = 0
 	c.mu.Unlock()
 
-	remainingMS := c.testDurationMS - startOffsetMS
+	remainingMS := track.DurationMS - startOffsetMS
 	if remainingMS < 1 {
 		remainingMS = 1
 	}
@@ -292,9 +526,18 @@ func (c *Client) advanceMainline(program *programState, taskID string) {
 		return
 	}
 	nextSequence := program.Sequence + 1
+	nextTrack := program.TrackIndex + 1
+	if nextTrack >= len(program.Tracks) {
+		nextTrack = 0
+	}
 	c.mu.RUnlock()
 
 	c.hub.Expire(taskID)
+	c.mu.Lock()
+	if c.programs[program.RoomID] == program && program.Running && !program.Suspended && program.CurrentTaskID == taskID {
+		program.TrackIndex = nextTrack
+	}
+	c.mu.Unlock()
 	if _, err := c.publishMainline(program, nextSequence, 0, c.now().UTC()); err != nil {
 		log.Printf("core audio mainline advance room=%d failed: %v", program.RoomID, err)
 	}
@@ -326,7 +569,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	c.mu.RUnlock()
 
 	currentSnapshot, ok := c.hub.Snapshot(currentTaskID)
-	if !ok || currentSnapshot.Task.Kind != "test_wav_program" {
+	if !ok || (currentSnapshot.Task.Kind != "test_wav_program" && currentSnapshot.Task.Kind != "mainline_program") {
 		return audioout.RoomProgramSnapshot{}, errors.New("current room output is not resumable mainline")
 	}
 	now := c.now().UTC()
@@ -334,10 +577,13 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if currentPositionMS < 0 {
 		currentPositionMS = 0
 	}
+	if receiverPositionMS, ok := activeReceiverPlaybackPosition(currentSnapshot); ok {
+		currentPositionMS = receiverPositionMS
+	}
 	waitMS := 0
 	if input.SwitchAtMS != nil {
 		target := *input.SwitchAtMS
-		if target < 0 || target >= c.testDurationMS {
+		if target < 0 || target >= currentSnapshot.Task.DurationMS {
 			return audioout.RoomProgramSnapshot{}, errors.New("switch_at_ms is outside current mainline")
 		}
 		if target <= currentPositionMS {
@@ -348,13 +594,18 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			return audioout.RoomProgramSnapshot{}, errors.New("switch_at_ms is too far ahead")
 		}
 	}
-	if waitMS > 0 {
-		timer := time.NewTimer(time.Duration(waitMS) * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return audioout.RoomProgramSnapshot{}, ctx.Err()
-		case <-timer.C:
+	if waitMS > 0 && input.SwitchAtMS != nil {
+		target := *input.SwitchAtMS
+		c.hub.BroadcastControl(audiohub.ControlEvent{
+			RoomID:       input.RoomID,
+			Action:       "prepare_switch",
+			SpeechTaskID: currentTaskID,
+			ProgramID:    program.ID,
+			PositionMS:   target,
+			OccurredAt:   c.now().UTC(),
+		})
+		if err := c.waitForReceiverSwitchPoint(ctx, currentTaskID, target, time.Duration(waitMS)*time.Millisecond); err != nil {
+			return audioout.RoomProgramSnapshot{}, err
 		}
 	}
 
@@ -375,8 +626,8 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if resumeMS < 0 {
 		resumeMS = 0
 	}
-	if resumeMS >= c.testDurationMS {
-		resumeMS = c.testDurationMS - 1
+	if resumeMS > currentSnapshot.Task.DurationMS {
+		resumeMS = currentSnapshot.Task.DurationMS
 	}
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
@@ -390,6 +641,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	slot := oppositeSlot(program.CurrentSlot)
 	interactionID := fmt.Sprintf("core-interaction-%d-%s-%06d", input.RoomID, program.ID, sequence)
 	program.Suspended = true
+	program.ManualPaused = false
 	program.ResumeOffsetMS = resumeMS
 	c.mu.Unlock()
 
@@ -413,6 +665,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		c.mu.Lock()
 		if c.programs[input.RoomID] == program {
 			program.Suspended = false
+			resumeMS = prepareProgramResumeLocked(program, resumeMS)
 		}
 		c.mu.Unlock()
 		_, _ = c.publishMainline(program, sequence, resumeMS, now.Add(-time.Duration(resumeMS)*time.Millisecond))
@@ -431,10 +684,110 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	program.SegmentStartedAt = now
 	c.mu.Unlock()
 
-	time.AfterFunc(time.Duration(durationMS)*time.Millisecond, func() {
+	log.Printf(
+		"core audio interaction start room=%d task=%s resume_ms=%d duration_ms=%d",
+		input.RoomID, interaction.ID, resumeMS, durationMS,
+	)
+	// Receiver COMPLETED is authoritative. The delayed timer is only a
+	// fallback for receivers that disappear without sending a terminal event.
+	time.AfterFunc(time.Duration(durationMS+4000)*time.Millisecond, func() {
 		c.resumeAfterInteraction(program, interaction.ID)
 	})
 	return c.ProgramSnapshot(context.Background(), input.RoomID)
+}
+
+func (c *Client) waitForReceiverSwitchPoint(ctx context.Context, taskID string, targetMS int, wallClockWait time.Duration) error {
+	if targetMS <= 0 || wallClockWait <= 0 {
+		return nil
+	}
+	snapshot, ok := c.hub.Snapshot(taskID)
+	if !ok || !hasActivePlaybackReceiver(snapshot) {
+		timer := time.NewTimer(wallClockWait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
+
+	// Once a receiver is actually playing, its media cursor is authoritative.
+	// The task wall clock can run ahead during browser/device buffering, which
+	// previously cut the highlighted final sentence before it was fully heard.
+	deadline := time.NewTimer(wallClockWait + 3*time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if snapshot, ok := c.hub.Snapshot(taskID); ok && receiversReachedPlaybackPosition(snapshot, targetMS) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			// Backward-compatible fallback for a receiver that reports PLAYING but
+			// does not yet acknowledge prepare_switch/progress.
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func hasActivePlaybackReceiver(snapshot audiohub.TaskSnapshot) bool {
+	for _, event := range snapshot.ReceiverEvents {
+		switch strings.ToUpper(strings.TrimSpace(event.Status)) {
+		case "PLAYING", "PROGRESS":
+			return true
+		}
+	}
+	return false
+}
+
+func activeReceiverPlaybackPosition(snapshot audiohub.TaskSnapshot) (int, bool) {
+	positionMS := 0
+	found := false
+	for _, event := range snapshot.ReceiverEvents {
+		switch strings.ToUpper(strings.TrimSpace(event.Status)) {
+		case "PLAYING", "PROGRESS":
+			if !found || event.ProgressMS < positionMS {
+				positionMS = event.ProgressMS
+			}
+			found = true
+		}
+	}
+	return positionMS, found
+}
+
+func receiversReachedPlaybackPosition(snapshot audiohub.TaskSnapshot, targetMS int) bool {
+	receivers := 0
+	for _, event := range snapshot.ReceiverEvents {
+		switch strings.ToUpper(strings.TrimSpace(event.Status)) {
+		case "PLAYING", "PROGRESS":
+			receivers++
+			if event.ProgressMS < targetMS {
+				return false
+			}
+		case "COMPLETED":
+			receivers++
+		}
+	}
+	return receivers > 0
+}
+
+func (c *Client) CompleteProgramInteraction(_ context.Context, roomID int64, interactionTaskID string) (audioout.RoomProgramSnapshot, error) {
+	if roomID <= 0 || strings.TrimSpace(interactionTaskID) == "" {
+		return audioout.RoomProgramSnapshot{}, errors.New("room_id and interaction_task_id are required")
+	}
+	c.mu.RLock()
+	program := c.programs[roomID]
+	c.mu.RUnlock()
+	if program == nil || !program.Running {
+		return audioout.RoomProgramSnapshot{}, errors.New("room program is not running")
+	}
+	c.resumeAfterInteraction(program, strings.TrimSpace(interactionTaskID))
+	return c.ProgramSnapshot(context.Background(), roomID)
 }
 
 func (c *Client) resumeAfterInteraction(program *programState, interactionTaskID string) {
@@ -443,20 +796,137 @@ func (c *Client) resumeAfterInteraction(program *programState, interactionTaskID
 	}
 	c.mu.Lock()
 	current := c.programs[program.RoomID]
-	if current != program || !program.Running || !program.Suspended || program.CurrentTaskID != interactionTaskID {
+	if current != program || !program.Running || !program.Suspended || program.ManualPaused || program.CurrentTaskID != interactionTaskID {
 		c.mu.Unlock()
 		return
 	}
 	resumeMS := program.ResumeOffsetMS
 	nextSequence := program.Sequence + 1
 	program.Suspended = false
+	resumeMS = prepareProgramResumeLocked(program, resumeMS)
 	c.mu.Unlock()
 
 	c.hub.Expire(interactionTaskID)
 	now := c.now().UTC()
 	if _, err := c.publishMainline(program, nextSequence, resumeMS, now.Add(-time.Duration(resumeMS)*time.Millisecond)); err != nil {
 		log.Printf("core audio mainline resume room=%d failed: %v", program.RoomID, err)
+	} else {
+		log.Printf(
+			"core audio mainline resume room=%d interaction=%s resume_ms=%d sequence=%d",
+			program.RoomID, interactionTaskID, resumeMS, nextSequence,
+		)
 	}
+}
+
+func (c *Client) PauseProgram(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
+	if roomID <= 0 {
+		return audioout.RoomProgramSnapshot{}, errors.New("room_id is required")
+	}
+	now := c.now().UTC()
+	c.mu.Lock()
+	program := c.programs[roomID]
+	if program == nil || !program.Running {
+		c.mu.Unlock()
+		return audioout.RoomProgramSnapshot{}, errors.New("room program is not running")
+	}
+	if program.ManualPaused {
+		snapshot := c.programSnapshotLocked(program, now)
+		c.mu.Unlock()
+		return snapshot, nil
+	}
+	currentTaskID := program.CurrentTaskID
+	resumeMS := program.ResumeOffsetMS
+	if !program.Suspended {
+		if state, ok := c.hub.Snapshot(currentTaskID); ok {
+			task := state.Task
+			if task.Kind == "mainline_program" || task.Kind == "test_wav_program" {
+				resumeMS = int(now.Sub(task.StartedAt).Milliseconds())
+				if resumeMS < 0 {
+					resumeMS = 0
+				}
+				if task.DurationMS > 0 && resumeMS > task.DurationMS {
+					resumeMS = task.DurationMS
+				}
+			}
+		}
+	}
+	program.ResumeOffsetMS = resumeMS
+	program.Suspended = true
+	program.ManualPaused = true
+	snapshot := c.programSnapshotLocked(program, now)
+	c.mu.Unlock()
+	if currentTaskID != "" {
+		c.hub.Expire(currentTaskID)
+	}
+	c.hub.BroadcastControl(audiohub.ControlEvent{
+		RoomID:       roomID,
+		Action:       "pause",
+		SpeechTaskID: currentTaskID,
+		ProgramID:    program.ID,
+		PositionMS:   resumeMS,
+		OccurredAt:   now,
+	})
+	return snapshot, nil
+}
+
+func (c *Client) ResumeProgram(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
+	if roomID <= 0 {
+		return audioout.RoomProgramSnapshot{}, errors.New("room_id is required")
+	}
+	c.mu.Lock()
+	program := c.programs[roomID]
+	if program == nil || !program.Running {
+		c.mu.Unlock()
+		return audioout.RoomProgramSnapshot{}, errors.New("room program is not running")
+	}
+	if !program.ManualPaused {
+		if program.Suspended {
+			c.mu.Unlock()
+			return audioout.RoomProgramSnapshot{}, errors.New("room program is suspended by an active interaction")
+		}
+		snapshot := c.programSnapshotLocked(program, c.now().UTC())
+		c.mu.Unlock()
+		return snapshot, nil
+	}
+	resumeMS := prepareProgramResumeLocked(program, program.ResumeOffsetMS)
+	nextSequence := program.Sequence + 1
+	c.mu.Unlock()
+
+	now := c.now().UTC()
+	if _, err := c.publishMainline(
+		program,
+		nextSequence,
+		resumeMS,
+		now.Add(-time.Duration(resumeMS)*time.Millisecond),
+	); err != nil {
+		return audioout.RoomProgramSnapshot{}, err
+	}
+	return c.ProgramSnapshot(context.Background(), roomID)
+}
+
+func (c *Client) StopProgram(ctx context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
+	return c.StopTestProgram(ctx, roomID)
+}
+
+func prepareProgramResumeLocked(program *programState, resumeMS int) int {
+	if program == nil {
+		return 0
+	}
+	if resumeMS < 0 {
+		resumeMS = 0
+	}
+	if len(program.Tracks) == 0 || program.TrackIndex < 0 || program.TrackIndex >= len(program.Tracks) {
+		return resumeMS
+	}
+	durationMS := program.Tracks[program.TrackIndex].DurationMS
+	if durationMS > 0 && resumeMS >= durationMS {
+		program.TrackIndex++
+		if program.TrackIndex >= len(program.Tracks) {
+			program.TrackIndex = 0
+		}
+		return 0
+	}
+	return resumeMS
 }
 
 func (c *Client) ProgramSnapshot(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
@@ -475,9 +945,28 @@ func (c *Client) ProgramSnapshot(_ context.Context, roomID int64) (audioout.Room
 }
 
 func (c *Client) programSnapshotLocked(program *programState, now time.Time) audioout.RoomProgramSnapshot {
+	trackID := ""
+	trackText := ""
+	var timeline []audioout.ProgramTimelineSegment
+	var safePoints []audioout.ProgramSafePoint
+	if program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
+		track := program.Tracks[program.TrackIndex]
+		trackID = track.ID
+		trackText = track.Text
+		timeline = append([]audioout.ProgramTimelineSegment(nil), track.Timeline...)
+		safePoints = append([]audioout.ProgramSafePoint(nil), track.SafePoints...)
+	}
 	snapshot := audioout.RoomProgramSnapshot{
 		ProgramID:      program.ID,
 		RoomID:         program.RoomID,
+		VersionID:      program.VersionID,
+		VersionNo:      program.VersionNo,
+		TrackID:        trackID,
+		TrackIndex:     program.TrackIndex,
+		TrackCount:     len(program.Tracks),
+		TrackText:      trackText,
+		Timeline:       timeline,
+		SafePoints:     safePoints,
 		Running:        program.Running,
 		Suspended:      program.Suspended,
 		ResumeOffsetMS: program.ResumeOffsetMS,
@@ -486,9 +975,13 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		StartedAt:      program.StartedAt,
 		ServerTime:     now,
 	}
+	currentMS := 0
+	if program.Suspended {
+		currentMS = program.ResumeOffsetMS
+	}
 	if state, ok := c.hub.Snapshot(program.CurrentTaskID); ok {
 		task := hubTaskToAudioout(state.Task)
-		if program.Running && !task.StartedAt.IsZero() && task.DurationMS > 0 {
+		if program.Running && !program.Suspended && task.Kind != "interaction_tts" && !task.StartedAt.IsZero() && task.DurationMS > 0 {
 			progress := int(now.Sub(task.StartedAt).Milliseconds())
 			if progress < 0 {
 				progress = 0
@@ -496,9 +989,31 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 			if progress >= task.DurationMS {
 				progress = task.DurationMS - 1
 			}
+			if receiverPositionMS, ok := activeReceiverPlaybackPosition(state); ok {
+				progress = receiverPositionMS
+				if progress >= task.DurationMS {
+					progress = task.DurationMS - 1
+				}
+			}
 			task.StartMS = progress
+			currentMS = progress
 		}
 		snapshot.Task = &task
+	}
+	snapshot.CurrentMS = currentMS
+	for index := range timeline {
+		segment := timeline[index]
+		if currentMS >= segment.StartMS && currentMS < segment.EndMS {
+			copy := segment
+			snapshot.CurrentSegment = &copy
+			break
+		}
+	}
+	for _, point := range safePoints {
+		if point.CutMS > currentMS {
+			snapshot.NextSafeCutMS = point.CutMS
+			break
+		}
 	}
 	return snapshot
 }
@@ -515,9 +1030,17 @@ func (c *Client) StopTestProgram(_ context.Context, roomID int64) (audioout.Room
 	}
 	program.Running = false
 	program.Suspended = false
+	program.ManualPaused = false
 	currentTaskID := program.CurrentTaskID
 	snapshot := c.programSnapshotLocked(program, c.now().UTC())
 	c.mu.Unlock()
 	c.hub.Expire(currentTaskID)
+	c.hub.BroadcastControl(audiohub.ControlEvent{
+		RoomID:       roomID,
+		Action:       "stop",
+		SpeechTaskID: currentTaskID,
+		ProgramID:    program.ID,
+		OccurredAt:   c.now().UTC(),
+	})
 	return snapshot, nil
 }

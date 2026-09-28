@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"livecompanion/management/internal/model"
 )
@@ -402,11 +403,11 @@ func (s *Store) AdminCustomerVisibleToScope(
 func auditResultSQL(result string) string {
 	switch strings.TrimSpace(result) {
 	case "success":
-		return "a.result LIKE 'http_2%'"
+		return "(a.result LIKE 'http_2%' OR a.result='success')"
 	case "denied":
 		return "a.result LIKE 'http_4%'"
 	case "failed":
-		return "a.result LIKE 'http_5%'"
+		return "(a.result LIKE 'http_4%' OR a.result LIKE 'http_5%' OR a.result='failed')"
 	default:
 		return "1=1"
 	}
@@ -418,6 +419,12 @@ func (s *Store) ListAdminAuditsScoped(
 	search string,
 	action string,
 	resultFilter string,
+	source string,
+	objectType string,
+	roomID int64,
+	tenantID int64,
+	from *time.Time,
+	to *time.Time,
 	beforeID int64,
 	limit int,
 ) ([]model.AdminAuditLog, int64, bool, error) {
@@ -436,17 +443,49 @@ func (s *Store) ListAdminAuditsScoped(
 		like := "%" + search + "%"
 		where = append(where, `(
 			a.actor_username LIKE ? OR
+			COALESCE(a.actor_role,'') LIKE ? OR
+			COALESCE(a.source,'') LIKE ? OR
 			a.action LIKE ? OR
 			COALESCE(a.target_username,'') LIKE ? OR
+			COALESCE(a.object_type,'') LIKE ? OR
+			COALESCE(a.object_id,'') LIKE ? OR
+			COALESCE(a.object_name,'') LIKE ? OR
+			COALESCE(a.reason,'') LIKE ? OR
 			COALESCE(a.path,'') LIKE ? OR
 			COALESCE(a.client_ip,'') LIKE ?
 		)`)
-		args = append(args, like, like, like, like, like)
+		args = append(args, like, like, like, like, like, like, like, like, like, like, like)
 	}
 	action = strings.TrimSpace(action)
 	if action != "" && action != "all" {
 		where = append(where, "a.action=?")
 		args = append(args, action)
+	}
+	source = strings.TrimSpace(source)
+	if source != "" && source != "all" {
+		where = append(where, "a.source=?")
+		args = append(args, source)
+	}
+	objectType = strings.TrimSpace(objectType)
+	if objectType != "" && objectType != "all" {
+		where = append(where, "a.object_type=?")
+		args = append(args, objectType)
+	}
+	if roomID > 0 {
+		where = append(where, "a.target_room_id=?")
+		args = append(args, roomID)
+	}
+	if tenantID > 0 {
+		where = append(where, "a.target_tenant_id=?")
+		args = append(args, tenantID)
+	}
+	if from != nil {
+		where = append(where, "a.occurred_at>=?")
+		args = append(args, from.UTC())
+	}
+	if to != nil {
+		where = append(where, "a.occurred_at<=?")
+		args = append(args, to.UTC())
 	}
 	where = append(where, auditResultSQL(resultFilter))
 	if beforeID > 0 {
@@ -462,10 +501,24 @@ func (s *Store) ListAdminAuditsScoped(
 			a.occurred_at,
 			a.actor_user_id,
 			a.actor_username,
+			a.actor_role,
+			a.actor_type,
+			a.source,
 			a.action,
 			a.target_user_id,
 			a.target_username,
 			a.target_tenant_id,
+			a.target_room_id,
+			a.object_type,
+			a.object_id,
+			a.object_name,
+			a.reason,
+			COALESCE(a.before_state,''),
+			COALESCE(a.after_state,''),
+			a.runtime_session_id,
+			a.core_boot_id,
+			a.request_id,
+			COALESCE(a.detail_json,''),
 			a.http_method,
 			a.path,
 			a.client_ip,
@@ -490,10 +543,24 @@ func (s *Store) ListAdminAuditsScoped(
 			&item.OccurredAt,
 			&item.ActorUserID,
 			&item.ActorUsername,
+			&item.ActorRole,
+			&item.ActorType,
+			&item.Source,
 			&item.Action,
 			&item.TargetUserID,
 			&item.TargetUsername,
 			&item.TargetTenantID,
+			&item.TargetRoomID,
+			&item.ObjectType,
+			&item.ObjectID,
+			&item.ObjectName,
+			&item.Reason,
+			&item.BeforeState,
+			&item.AfterState,
+			&item.RuntimeSessionID,
+			&item.CoreBootID,
+			&item.RequestID,
+			&item.DetailJSON,
 			&item.HTTPMethod,
 			&item.Path,
 			&item.ClientIP,

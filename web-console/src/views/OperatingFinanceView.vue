@@ -370,7 +370,7 @@ onMounted(loadData)
           </label>
           <label>
             <span>模型 / 用途</span>
-            <input v-model="tokenForm.model_scope" type="text" placeholder="例如 Qwen / TTS / LLM" />
+            <input v-model="tokenForm.model_scope" type="text" placeholder="例如 Qwen / 声音 / LLM" />
           </label>
           <label>
             <span>Token 数量 *</span>

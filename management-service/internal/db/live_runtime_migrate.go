@@ -53,6 +53,26 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		}
 	}
 
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{"input_tokens", "ALTER TABLE ai_single_use_events ADD COLUMN input_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER latency_ms"},
+		{"output_tokens", "ALTER TABLE ai_single_use_events ADD COLUMN output_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER input_tokens"},
+		{"total_tokens", "ALTER TABLE ai_single_use_events ADD COLUMN total_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER output_tokens"},
+	} {
+		exists, err := s.columnExists(ctx, "ai_single_use_events", column.name)
+		if err != nil {
+			return fmt.Errorf("check ai usage column %s: %w", column.name, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, column.sql); err != nil {
+			return fmt.Errorf("add ai usage column %s: %w", column.name, err)
+		}
+	}
+
 	exists, err := s.columnExists(ctx, "agent_learning_results", "matched_memory_item_id")
 	if err != nil {
 		return fmt.Errorf("check agent learning matched memory column: %w", err)
@@ -62,5 +82,55 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			return fmt.Errorf("add agent learning matched memory column: %w", err)
 		}
 	}
+
+	indexColumns, err := s.indexColumns(ctx, "live_agent_plan_room_bindings", "uk_live_agent_plan_active_room")
+	if err != nil {
+		return fmt.Errorf("check live agent room binding unique key: %w", err)
+	}
+	if strings.Join(indexColumns, ",") != "tenant_id,plan_id,active_room_id" {
+		if len(indexColumns) > 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_agent_plan_room_bindings DROP INDEX uk_live_agent_plan_active_room"); err != nil {
+				return fmt.Errorf("drop legacy live agent room unique key: %w", err)
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_agent_plan_room_bindings ADD UNIQUE KEY uk_live_agent_plan_active_room (tenant_id, plan_id, active_room_id)"); err != nil {
+			return fmt.Errorf("add multi-plan room unique key: %w", err)
+		}
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT IGNORE INTO live_agent_room_plan_selections (
+			tenant_id, room_id, plan_id, selected_by_user_id, selected_at
+		)
+		SELECT b.tenant_id, b.room_id, b.plan_id, b.bound_by_user_id, b.bound_at
+		FROM live_agent_plan_room_bindings b
+		INNER JOIN live_agent_plans p ON p.id=b.plan_id AND p.tenant_id=b.tenant_id
+		WHERE b.status='active' AND p.status='active'
+		ORDER BY b.id DESC
+	`); err != nil {
+		return fmt.Errorf("backfill live agent room plan selections: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) indexColumns(ctx context.Context, tableName, indexName string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COLUMN_NAME
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?
+		ORDER BY SEQ_IN_INDEX
+	`, tableName, indexName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
 }

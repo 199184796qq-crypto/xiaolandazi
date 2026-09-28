@@ -18,6 +18,15 @@ interface SpeechTask {
   created_at: string
 }
 
+interface AudioControlEvent {
+  room_id: number
+  action: string
+  speech_task_id?: string
+  program_id?: string
+  position_ms?: number
+  occurred_at?: string
+}
+
 interface RoomProgramSnapshot {
   program_id?: string
   room_id: number
@@ -1567,6 +1576,22 @@ async function connect() {
       void playTask(task)
     } catch {
       error.value = '收到无法识别的播音任务。'
+    }
+  })
+  source.addEventListener('control', (event) => {
+    try {
+      const control = JSON.parse((event as MessageEvent).data) as AudioControlEvent
+      if (Number(control.room_id) !== room) return
+      const action = String(control.action || '').toLowerCase()
+      if (action !== 'pause' && action !== 'stop') return
+      stopPlayer()
+      currentTask.value = null
+      progressMS.value = Math.max(0, Number(control.position_ms || 0))
+      playbackStatus.value = action === 'pause' ? '已暂停' : '等待节目'
+      if (action === 'stop') programRunning.value = false
+      addEvent(action === 'pause' ? '收到 Core 暂停指令，已立即停播' : '收到 Core 停止指令')
+    } catch {
+      error.value = '收到无法识别的声音控制指令。'
     }
   })
   source.addEventListener('unregistered', () => {

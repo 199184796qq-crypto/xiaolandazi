@@ -55,12 +55,6 @@ function initials(item: LiveSupportStaff) {
   return (item.display_name || item.username || '协').slice(0, 1)
 }
 
-function specialty(item: LiveSupportStaff) {
-  return item.specialty_industries?.length
-    ? item.specialty_industries.join(' / ')
-    : '暂未设置擅长行业'
-}
-
 function allowed(item: LiveSupportStaff | null, capability: LiveSupportCapability) {
   return Boolean(item?.allowed_capabilities?.includes(capability))
 }
@@ -201,14 +195,7 @@ onMounted(() => void load())
             <img v-if="item.avatar_url" :src="item.avatar_url" alt="" />
             <span v-else>{{ initials(item) }}</span>
           </div>
-          <div class="support-staff-copy">
-            <strong>{{ item.display_name || item.username }}</strong>
-            <small>@{{ item.username }}</small>
-            <p><b>擅长行业</b><span>{{ specialty(item) }}</span></p>
-            <div class="support-capability-tags">
-              <span v-for="code in item.allowed_capabilities || []" :key="code">{{ capabilityLabel(code) }}</span>
-            </div>
-          </div>
+          <strong class="support-staff-name">{{ item.display_name || item.username }}</strong>
         </article>
       </div>
       <button type="button" class="support-carousel-arrow" :disabled="selectedIndex >= staff.length - 1" aria-label="下一位协助员" @click="scrollToStaff(selectedIndex + 1)">›</button>
@@ -229,18 +216,29 @@ onMounted(() => void load())
 
     <section v-if="selectedStaff" class="support-scope-panel">
       <div class="support-scope-title">
-        <strong>授权范围</strong>
-        <small>选择允许该协助员处理的内容</small>
+        <div>
+          <strong>授权范围</strong>
+        </div>
+        <span>{{ selectedCapabilities.length }}/{{ capabilityOptions.length }} 已选择</span>
       </div>
       <div class="support-scope-options">
-        <label v-for="option in capabilityOptions" :key="option.code" :class="{ disabled: !allowed(selectedStaff, option.code) }">
+        <label
+          v-for="option in capabilityOptions"
+          :key="option.code"
+          class="support-scope-option"
+          :class="{
+            disabled: !allowed(selectedStaff, option.code),
+            selected: selectedCapabilities.includes(option.code),
+          }"
+        >
           <input
             type="checkbox"
             :checked="selectedCapabilities.includes(option.code)"
             :disabled="!allowed(selectedStaff, option.code)"
             @change="toggleCapability(option.code)"
           />
-          <span>{{ option.label }}</span>
+          <span class="support-scope-checkmark" aria-hidden="true">✓</span>
+          <strong>{{ option.label }}</strong>
         </label>
       </div>
     </section>
@@ -263,50 +261,55 @@ onMounted(() => void load())
 </template>
 
 <style scoped>
-.support-picker{display:grid;gap:14px}
+.support-picker{display:grid;gap:18px;min-width:0}
 .support-picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.support-picker-head>div{display:grid;gap:2px}
-.support-picker-head strong{font-size:18px;color:#1d2940}
+.support-picker-head>div{display:grid;gap:4px}
+.support-picker-head strong{font-size:24px;color:#1d2940;line-height:1.2}
 .support-request-state{padding:5px 10px;border-radius:999px;background:#f1f4fa;color:#66758e;font-size:12px;font-weight:800}
 .support-request-state.pending{background:#fff5d9;color:#a66b00}
 .support-request-state.accepted{background:#e8f8ef;color:#278253}
 .support-request-state.rejected{background:#fff0f1;color:#b74a55}
 .support-success{margin:0;padding:8px 10px;border-radius:10px;background:#eef9f3;color:#26784d;font-size:13px}
-.support-carousel-shell{display:grid;grid-template-columns:34px minmax(0,1fr) 34px;align-items:center;gap:8px}
-.support-carousel{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;gap:14px;padding:4px 20%;overscroll-behavior-x:contain}
+.support-carousel-shell{display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;gap:10px;min-width:0}
+.support-carousel{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;gap:12px;padding:6px;overscroll-behavior-x:contain;min-width:0}
 .support-carousel::-webkit-scrollbar{display:none}
-.support-staff-card{flex:0 0 60%;scroll-snap-align:center;display:flex;align-items:center;gap:16px;min-height:146px;padding:18px;border:1px solid #dfe6f3;border-radius:20px;background:#fff;cursor:pointer;transition:.18s ease}
-.support-staff-card.active{border-color:#7483ea;box-shadow:0 0 0 3px #6374ec16,0 12px 30px #4e63bb17;transform:translateY(-1px)}
-.support-carousel-arrow{width:34px;height:42px;border:1px solid #d8e0ef;border-radius:12px;background:#fff;color:#5567ce;font-size:24px;cursor:pointer}
+.support-staff-card{flex:0 0 100%;scroll-snap-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:186px;padding:20px 18px;border:1px solid #dfe6f3;border-radius:22px;background:linear-gradient(180deg,#fff 0%,#fbfcff 100%);cursor:pointer;transition:.18s ease;box-sizing:border-box;overflow:hidden}
+.support-staff-card.active{border-color:#7483ea;box-shadow:0 0 0 3px #6374ec14,0 14px 30px #4e63bb16;transform:translateY(-1px)}
+.support-carousel-arrow{width:40px;height:48px;border:1px solid #d8e0ef;border-radius:14px;background:#fff;color:#5567ce;font-size:26px;cursor:pointer;box-shadow:0 6px 18px #5263a50c}
 .support-carousel-arrow:disabled{opacity:.35;cursor:default}
-.support-avatar{width:68px;height:68px;flex:0 0 68px;border-radius:20px;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,#e8ecff,#dbe6ff);color:#4c5fd4;font-size:26px;font-weight:900}
+.support-avatar{width:96px;height:96px;border-radius:26px;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,#e8ecff,#dbe6ff);color:#4c5fd4;font-size:36px;font-weight:900}
 .support-avatar img{width:100%;height:100%;object-fit:cover}
-.support-staff-copy{display:grid;gap:4px;min-width:0}
-.support-staff-copy>strong{font-size:19px;color:#1e2b43}
-.support-staff-copy>small{font-size:12px;color:#909aae}
-.support-staff-copy p{display:grid;gap:1px;margin:7px 0 3px;color:#65738b;font-size:13px}
-.support-staff-copy p b{font-size:11px;color:#9aa4b6}
-.support-capability-tags{display:flex;flex-wrap:wrap;gap:5px}
-.support-capability-tags span{padding:3px 8px;border-radius:999px;background:#f0f3ff;color:#5262cb;font-size:11px;font-weight:700}
+.support-staff-name{max-width:100%;font-size:21px;color:#1e2b43;line-height:1.25;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .support-carousel-dots{display:flex;justify-content:center;gap:6px}
 .support-carousel-dots button{width:6px;height:6px;padding:0;border:0;border-radius:999px;background:#cbd3e4;cursor:pointer}
 .support-carousel-dots button.active{width:20px;background:#6675dd}
-.support-scope-panel{display:grid;gap:12px;padding:15px 16px;border-radius:16px;background:#fff;border:1px solid #e1e7f3}
-.support-scope-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.support-scope-title small{color:#8b96a8}
-.support-scope-options{display:flex;gap:12px;flex-wrap:wrap}
-.support-scope-options label{display:flex;align-items:center;gap:7px;padding:8px 11px;border-radius:10px;background:#f8faff;font-weight:700;color:#3d4a62}
-.support-scope-options label.disabled{opacity:.45}
+.support-scope-panel{display:grid;gap:16px;padding:18px;border-radius:18px;background:#fff;border:1px solid #e1e7f3}
+.support-scope-title{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.support-scope-title>div{display:grid;gap:3px;min-width:0}
+.support-scope-title strong{font-size:19px;color:#202b42;line-height:1.2}
+.support-scope-title small{color:#8b96a8;font-size:13px}
+.support-scope-title>span{flex:0 0 auto;padding:5px 9px;border-radius:999px;background:#f0f3ff;color:#6572c9;font-size:12px;font-weight:800}
+.support-scope-options{display:grid;grid-template-columns:1fr;gap:10px;min-width:0}
+.support-scope-option{position:relative;display:flex;align-items:center;gap:12px;min-width:0;min-height:58px;padding:12px 14px;border:1px solid #e3e8f4;border-radius:14px;background:#f8faff;color:#3d4a62;cursor:pointer;box-sizing:border-box;transition:.16s ease}
+.support-scope-option:hover{border-color:#b9c4f4;background:#fbfcff}
+.support-scope-option.selected{border-color:#7b88e8;background:#f1f3ff;box-shadow:0 0 0 2px #6f7be80f}
+.support-scope-option.disabled{opacity:.42;cursor:not-allowed}
+.support-scope-option input{position:absolute;opacity:0;pointer-events:none}
+.support-scope-checkmark{width:24px;height:24px;flex:0 0 24px;border:1.5px solid #c8d0df;border-radius:8px;display:grid;place-items:center;background:#fff;color:transparent;font-size:15px;font-weight:900;transition:.16s ease}
+.support-scope-option.selected .support-scope-checkmark{border-color:#6676de;background:#6676de;color:#fff}
+.support-scope-option strong{min-width:0;font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .support-active-authority{display:flex;align-items:center;justify-content:center;gap:8px;color:#758196;font-size:12px}
 .support-active-authority strong{color:#5363be}
-.support-apply-button{justify-self:center;min-width:190px;min-height:44px;border:0;border-radius:13px;background:#5968d8;color:#fff;font-weight:900;cursor:pointer;box-shadow:0 10px 24px #5367ca2b}
+.support-apply-button{justify-self:stretch;min-height:48px;border:0;border-radius:14px;background:#5968d8;color:#fff;font-size:15px;font-weight:900;cursor:pointer;box-shadow:0 10px 24px #5367ca2b}
 .support-apply-button:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
 .support-picker-empty{margin:0;color:#8a95a8;font-size:13px;text-align:center}
 @media(max-width:720px){
-  .support-carousel{padding:4px 8%}
-  .support-staff-card{flex-basis:84%}
-  .support-carousel-shell{grid-template-columns:28px minmax(0,1fr) 28px}
-  .support-carousel-arrow{width:28px}
-  .support-scope-title{align-items:flex-start;flex-direction:column}
+  .support-carousel{padding:4px}
+  .support-staff-card{min-height:164px;gap:10px;padding:16px 14px}
+  .support-avatar{width:82px;height:82px;border-radius:22px;font-size:31px}
+  .support-staff-name{font-size:19px}
+  .support-carousel-shell{grid-template-columns:32px minmax(0,1fr) 32px;gap:6px}
+  .support-carousel-arrow{width:32px;height:44px}
+  .support-scope-title{align-items:flex-start}
 }
 </style>

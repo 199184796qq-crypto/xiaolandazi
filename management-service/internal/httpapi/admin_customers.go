@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/model"
@@ -268,6 +269,9 @@ func (s *Server) adminListAuditLogs(
 	if err := s.audit.Record(r.Context(), model.AdminAuditLog{
 		ActorUserID:   actor.UserID,
 		ActorUsername: actor.Username,
+		ActorRole:     actor.Role,
+		ActorType:     "user",
+		Source:        auditSourceForActor(actor),
 		Action:        "audit.list_view",
 		HTTPMethod:    r.Method,
 		Path:          r.URL.Path,
@@ -294,6 +298,23 @@ func (s *Server) adminListAuditLogs(
 	}
 	beforeID := queryInt64(r, "before_id", 0)
 	scope := staffBusinessScope(actor, access, "audit.view")
+	var from, to *time.Time
+	if raw := strings.TrimSpace(r.URL.Query().Get("from")); raw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, raw)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "from 时间格式必须为 RFC3339")
+			return
+		}
+		from = &parsed
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("to")); raw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, raw)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "to 时间格式必须为 RFC3339")
+			return
+		}
+		to = &parsed
+	}
 
 	items, nextCursor, hasMore, err := s.store.ListAdminAuditsScoped(
 		r.Context(),
@@ -301,6 +322,12 @@ func (s *Server) adminListAuditLogs(
 		strings.TrimSpace(r.URL.Query().Get("search")),
 		strings.TrimSpace(r.URL.Query().Get("action")),
 		strings.TrimSpace(r.URL.Query().Get("result")),
+		strings.TrimSpace(r.URL.Query().Get("source")),
+		strings.TrimSpace(r.URL.Query().Get("object_type")),
+		queryInt64(r, "room_id", 0),
+		queryInt64(r, "tenant_id", 0),
+		from,
+		to,
 		beforeID,
 		pageSize,
 	)

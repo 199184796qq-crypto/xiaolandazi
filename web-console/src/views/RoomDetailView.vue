@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { confirmAction, useFeedbackErrorRef } from '../uiFeedback'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getLiveAgentSettings,
   getLiveAgentPlans,
   createLiveAgentPlan,
-  getRoomLiveAgentPlan,
+  getRoomLiveAgentPlans,
+  bindRoomLiveAgentPlan,
   setLiveRuntimePlan,
   chatLiveAgent,
   controlLiveDevice,
@@ -14,6 +15,8 @@ import {
   setLiveRuntimeMode,
   getLiveRuntimeEvents,
   startLiveRuntime,
+  pauseLiveRuntime,
+  resumeLiveRuntime,
   stopLiveRuntime,
   getRoom,
   setRoomMonitor,
@@ -45,6 +48,7 @@ import {
   getRoomSpeechAnalysisReportText,
 } from '../api'
 import { session } from '../session'
+import { coreRuntime } from '../coreRuntime'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import type {
   LiveAgentSettings,
@@ -78,8 +82,33 @@ const isInternalViewer = computed(() =>
     session.bootstrap?.actor.role || '',
   ),
 )
+const coreActionsAvailable = computed(() => coreRuntime.phase === 'online')
 
 const room = ref<Room | null>(null)
+
+function roomDetailCacheKey() {
+  return 'livecompanion.room-detail-cache.v1:' + roomId
+}
+
+function saveRoomDetailCache(value: Room) {
+  try {
+    window.localStorage.setItem(roomDetailCacheKey(), JSON.stringify(value))
+  } catch {
+    // The cache is only used to keep the last known room visible while Core is unavailable.
+  }
+}
+
+function restoreRoomDetailCache(): Room | null {
+  try {
+    const raw = window.localStorage.getItem(roomDetailCacheKey())
+    if (!raw) return null
+    const cached = JSON.parse(raw) as Room
+    return cached && Number(cached.id) === roomId ? cached : null
+  } catch {
+    return null
+  }
+}
+
 const tenantDirectory = ref<Tenant[]>([])
 const events = ref<RoomEvent[]>([])
 type EventDecisionAction = 'quick' | 'answer'
@@ -136,11 +165,20 @@ type LocalAudioTask = {
   start_ms?: number
   created_at?: string
 }
+type LocalAudioControl = {
+  room_id: number
+  action: 'pause' | 'stop' | string
+  speech_task_id?: string
+  program_id?: string
+  position_ms?: number
+  occurred_at?: string
+}
 let localAudioEventSource: EventSource | null = null
 let localAudioContext: AudioContext | null = null
 let localAudioPlayer: HTMLAudioElement | null = null
 let localAudioTask: LocalAudioTask | null = null
 let localAudioProgressTimer: number | undefined
+let localAudioPreparedSwitchTimer: number | undefined
 let localAudioHeartbeatTimer: number | undefined
 let localAudioReconnectTimer: number | undefined
 let localAudioRegisteredRoomID = 0
@@ -232,7 +270,6 @@ let videoFloatDragState: {
   originY: number
 } | null = null
 const liveAgentPlans = ref<LiveAgentPlan[]>([])
-const boundLiveAgentPlan = ref<LiveAgentPlan | null>(null)
 const agentPlanBusy = ref(false)
 const agentPlanError = ref('')
 const roomBrain = ref<RoomBrainView | null>(null)
@@ -564,7 +601,103 @@ const mainlineSpeech = computed<SpeechTrackRuntime>(() =>
 const interruptSpeech = computed<SpeechTrackRuntime>(() =>
   speechRuntime.value?.interrupt || { status: 'idle' },
 )
+const mainlineProgram = computed(() => speechRuntime.value?.program || null)
+const mainlineProgramSegment = computed(() => {
+  const program = mainlineProgram.value
+  if (program?.current_segment) return program.current_segment
+  const timeline = program?.timeline || []
+  if (!timeline.length) return null
+  const currentMS = Math.max(0, Number(program?.current_ms || 0))
+  const matched = timeline.find((segment) => currentMS >= Number(segment.start_ms || 0) && currentMS < Number(segment.end_ms || 0))
+  if (matched) return matched
+  if (currentMS >= Number(timeline[timeline.length - 1]?.end_ms || 0)) return timeline[timeline.length - 1]
+  return timeline[0]
+})
+const speechTrackFocus = ref<'auto' | 'mainline' | 'interrupt'>('auto')
+function toggleSpeechTrackFocus(track: 'mainline' | 'interrupt') {
+  speechTrackFocus.value = speechTrackFocus.value === track ? 'auto' : track
+}
+const mainlineProgramText = computed(() =>
+  mainlineProgramSegment.value?.text ||
+  mainlineProgram.value?.track_text ||
+  mainlineSpeech.value.text ||
+  '',
+)
+const mainlineProgramDurationMS = computed(() => {
+  const taskDuration = Number(mainlineProgram.value?.task?.duration_ms || 0)
+  if (taskDuration > 0) return taskDuration
+  const timeline = mainlineProgram.value?.timeline || []
+  return Number(timeline[timeline.length - 1]?.end_ms || 0)
+})
+const mainlineFallbackPreview = computed(() => {
+  const text = String(mainlineProgramText.value || '').trim()
+  if (!text) return ''
+  const chars = Array.from(text)
+  const limit = speechTrackFocus.value === 'mainline' ? 82 : 60
+  if (chars.length <= limit) return text
+  const durationMS = Math.max(1, mainlineProgramDurationMS.value)
+  const currentMS = Math.max(0, Number(mainlineProgram.value?.current_ms || 0))
+  const ratio = Math.min(1, Math.max(0, currentMS / durationMS))
+  const center = Math.min(chars.length - 1, Math.max(0, Math.floor(ratio * chars.length)))
+  const before = speechTrackFocus.value === 'mainline' ? 32 : 24
+  const after = limit - before
+  const start = Math.max(0, center - before)
+  const end = Math.min(chars.length, center + after)
+  return (start > 0 ? '…' : '') + chars.slice(start, end).join('') + (end < chars.length ? '…' : '')
+})
+const mainlineTransitionCutMS = computed(() => {
+  const scheduled = Number(interruptSpeech.value.switch_at_ms || 0)
+  if (scheduled > 0) return scheduled
+  return Number(mainlineProgram.value?.resume_offset_ms || 0)
+})
+const mainlineCaptionRows = computed(() => {
+  const timeline = mainlineProgram.value?.timeline || []
+  const current = mainlineProgramSegment.value
+  if (!timeline.length || !current) return []
+  const currentIndex = timeline.findIndex((item) => item.segment_id === current.segment_id)
+  if (currentIndex < 0) return []
+  const cutMS = mainlineTransitionCutMS.value
+  const stopIndex = cutMS > 0
+    ? timeline.findIndex((item) => Number(item.end_ms || 0) === cutMS)
+    : -1
+  const resumeIndex = stopIndex >= 0 && stopIndex + 1 < timeline.length ? stopIndex + 1 : -1
+  return [currentIndex - 1, currentIndex, currentIndex + 1]
+    .filter((index) => index >= 0 && index < timeline.length)
+    .map((index) => ({
+      segment: timeline[index],
+      role: index < currentIndex ? 'previous' : index > currentIndex ? 'next' : 'current',
+      transition: index === stopIndex ? 'stop' : index === resumeIndex ? 'resume' : '',
+    }))
+})
+const speechWaveBars = [
+  7, 11, 16, 22, 13, 9, 17, 27, 18, 11, 8, 14, 24, 31, 20, 12,
+  9, 15, 26, 34, 23, 14, 10, 17, 29, 21, 13, 8, 12, 20, 15, 9,
+]
+const mainlineSafeCutRemainingMS = computed(() => {
+  const program = mainlineProgram.value
+  if (!program?.running || program.suspended) return 0
+  const scheduled = Number(interruptSpeech.value.switch_at_ms || 0)
+  const next = scheduled > 0 ? scheduled : Number(program.next_safe_cut_ms || 0)
+  if (!next) return 0
+  return Math.max(0, next - Number(program.current_ms || 0))
+})
+const mainlineSafeCutImminent = computed(() => {
+  const interruptStatus = String(interruptSpeech.value.status || 'idle').toLowerCase()
+  return interruptStatus === 'ready' &&
+    mainlineSafeCutRemainingMS.value > 0 &&
+    mainlineSafeCutRemainingMS.value <= 5000
+})
+function formatSpeechOffset(value?: number) {
+  const totalSeconds = Math.max(0, Math.floor(Number(value || 0) / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0')
+}
 const effectiveMainlineStatus = computed(() => {
+  const program = mainlineProgram.value
+  if (program?.running) {
+    return program.suspended ? 'paused' : 'playing'
+  }
   const mainlineStatus = (mainlineSpeech.value.status || 'idle').toLowerCase()
   const interruptStatus = (interruptSpeech.value.status || 'idle').toLowerCase()
   if (interruptStatus === 'playing' && mainlineStatus === 'playing') return 'paused'
@@ -578,6 +711,8 @@ const displayMainlineStatus = computed(() => {
   return effectiveMainlineStatus.value
 })
 const speechTrackLayoutState = computed<'balanced' | 'mainline' | 'interrupt'>(() => {
+  if (speechTrackFocus.value === 'mainline') return 'mainline'
+  if (speechTrackFocus.value === 'interrupt') return 'interrupt'
   const interruptStatus = (interruptSpeech.value.status || 'idle').toLowerCase()
   if (interruptStatus === 'playing') return 'interrupt'
   if (displayMainlineStatus.value === 'playing') return 'mainline'
@@ -585,7 +720,11 @@ const speechTrackLayoutState = computed<'balanced' | 'mainline' | 'interrupt'>((
 })
 const speechRuntimeSummary = computed(() => {
   const interruptStatus = (interruptSpeech.value.status || 'idle').toLowerCase()
-  if (interruptStatus === 'playing') return '临时插播中，主线等待恢复'
+  if (interruptStatus === 'playing') {
+    const resume = mainlineProgram.value?.resume_offset_ms
+    return resume ? '临时插播中，将从 ' + formatSpeechOffset(resume) + ' 的语义点恢复主线' : '临时插播中，主线等待恢复'
+  }
+  if (mainlineProgram.value?.running && mainlineProgramSegment.value) return '主线口播中 · 精确文字时间轴运行'
   if (displayMainlineStatus.value === 'playing') return '主线口播中'
   if (displayMainlineStatus.value === 'paused') return '主线已暂停，等待恢复'
   if (displayMainlineStatus.value === 'ready') return '主线已就绪，等待播放'
@@ -652,7 +791,6 @@ function correctCurrentGeneratedSpeech() {
 }
 
 function correctGeneratedSpeechHistoryItem(item: GeneratedSpeechHistoryItem) {
-  speechHistoryOpen.value = false
   openGeneratedSpeechCorrection({
     decisionId: item.decision_id,
     question: item.question_text,
@@ -712,6 +850,7 @@ function changeGeneratedSpeechHistoryPageSize() {
 const aiRuntimeStatus = computed(() => runtimeSnapshot.value?.agent_state || 'stopped')
 const aiRuntimeMode = computed<'control' | 'anchor'>(() => runtimeSnapshot.value?.agent_mode || 'control')
 const aiRunning = computed(() => aiRuntimeStatus.value === 'working')
+const aiPaused = computed(() => aiRuntimeStatus.value === 'paused')
 const aiActive = computed(() => aiRuntimeStatus.value === 'working' || aiRuntimeStatus.value === 'paused')
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
 type DeviceVisualState = 'working' | 'paused' | 'offline'
@@ -723,29 +862,16 @@ async function loadLiveAgentPlansForRoom() {
   if (!currentRoom) return
   agentPlanError.value = ''
   try {
-    const [listResult, currentResult] = await Promise.all([
-      getLiveAgentPlans(currentRoom.tenant_id),
-      getRoomLiveAgentPlan(roomId).catch(() => ({ plan: null })),
-    ])
-    const selectable = (listResult.items || []).filter((item) => item.status !== 'archived')
-    boundLiveAgentPlan.value = currentResult.plan || null
-    if (currentResult.plan && !selectable.some((item) => item.id === currentResult.plan?.id)) {
-      selectable.unshift(currentResult.plan)
-    }
-    liveAgentPlans.value = selectable
+    const result = await getRoomLiveAgentPlans(roomId)
+    liveAgentPlans.value = (result.items || []).filter((item) => item.status !== 'archived')
   } catch (err) {
     liveAgentPlans.value = []
-    boundLiveAgentPlan.value = null
-    agentPlanError.value = err instanceof Error ? err.message : '读取智能体直播方案失败'
+    agentPlanError.value = err instanceof Error ? err.message : '读取当前直播间已绑定方案失败'
   }
 }
 
-const selectedLiveAgentPlanId = computed(() =>
-  runtimeSnapshot.value?.agent_plan_id || boundLiveAgentPlan.value?.id || 0,
-)
-const selectedLiveAgentPlanName = computed(() =>
-  runtimeSnapshot.value?.agent_plan_name || boundLiveAgentPlan.value?.name || '',
-)
+const selectedLiveAgentPlanId = computed(() => runtimeSnapshot.value?.agent_plan_id || 0)
+const selectedLiveAgentPlanName = computed(() => runtimeSnapshot.value?.agent_plan_name || '')
 const liveAgentPlanSelectValue = computed(() => {
   const selectedId = selectedLiveAgentPlanId.value
   if (!selectedId) return ''
@@ -756,7 +882,8 @@ async function createDefaultLiveAgentPlan() {
   const currentRoom = room.value
   if (!currentRoom) throw new Error('当前直播间不存在')
   const prefix = '智能体+' + currentRoom.name + '+方案'
-  const maxNo = liveAgentPlans.value.reduce((max, item) => {
+  const allPlans = await getLiveAgentPlans(currentRoom.tenant_id)
+  const maxNo = (allPlans.items || []).reduce((max, item) => {
     if (!item.name.startsWith(prefix)) return max
     const parsed = Number(item.name.slice(prefix.length))
     return Number.isFinite(parsed) && parsed > max ? parsed : max
@@ -766,14 +893,14 @@ async function createDefaultLiveAgentPlan() {
     description: '系统自动创建的基础智能体直播方案，可在直播策略中继续修改。',
     tenant_id: currentRoom.tenant_id,
   })
+  await bindRoomLiveAgentPlan(plan.id, roomId, currentRoom.tenant_id)
   await setLiveRuntimePlan(roomId, plan.id)
-  boundLiveAgentPlan.value = plan
   await Promise.all([refreshRuntime(), loadLiveAgentPlansForRoom()])
   return plan
 }
 
 async function changeLiveAgentPlan(event: Event) {
-  if (!room.value || agentPlanBusy.value) return
+  if (!room.value || !coreActionsAvailable.value || agentPlanBusy.value) return
   const target = event.target as HTMLSelectElement
   const rawValue = target.value
   const previous = liveAgentPlanSelectValue.value
@@ -792,7 +919,6 @@ async function changeLiveAgentPlan(event: Event) {
     if (!Number.isFinite(planId) || planId <= 0 || planId === selectedLiveAgentPlanId.value) return
     await setLiveRuntimePlan(roomId, planId)
     const plan = liveAgentPlans.value.find((item) => item.id === planId) || null
-    boundLiveAgentPlan.value = plan
     await refreshRuntime()
     logUserAction('LIVE_AGENT_PLAN_SELECTED', {
       plan_id: planId,
@@ -807,7 +933,7 @@ async function changeLiveAgentPlan(event: Event) {
 }
 
 async function setCompanionMode(mode: 'control' | 'anchor') {
-  if (runtimeModeBusy.value || aiRuntimeMode.value === mode) return
+  if (!coreActionsAvailable.value || runtimeModeBusy.value || aiRuntimeMode.value === mode) return
   if (mode === 'anchor' && !selectedLiveAgentPlanId.value) {
     runtimeError.value = '主播模式需要先选择智能体直播方案'
     return
@@ -1271,7 +1397,7 @@ async function controlBoundDevice(action: 'connect' | 'pause' | 'resume' | 'disc
     deviceControlError.value = '当前直播间还没有绑定小蓝盒子'
     return
   }
-  if (deviceControlBusy.value) return
+  if (!coreActionsAvailable.value || deviceControlBusy.value) return
   deviceControlBusy.value = true
   deviceControlError.value = ''
   try {
@@ -1971,7 +2097,7 @@ function finishVideoFloatDrag(event?: PointerEvent) {
 }
 
 async function startCoreAudioRecording() {
-  if (captureBusy.value) return
+  if (!coreActionsAvailable.value || captureBusy.value) return
   captureBusy.value = true
   captureError.value = ''
   try {
@@ -1984,7 +2110,7 @@ async function startCoreAudioRecording() {
 }
 
 async function stopCoreAudioRecording() {
-  if (captureBusy.value || !audioRecordingActive.value) return
+  if (!coreActionsAvailable.value || captureBusy.value || !audioRecordingActive.value) return
   captureBusy.value = true
   captureError.value = ''
   try {
@@ -2057,6 +2183,10 @@ async function reportLocalAudioTask(task: LocalAudioTask, status: string, progre
 
 function stopLocalAudioPlayback(reportInterrupted = false) {
   localAudioPlaybackGeneration += 1
+  if (localAudioPreparedSwitchTimer !== undefined) {
+    window.clearTimeout(localAudioPreparedSwitchTimer)
+    localAudioPreparedSwitchTimer = undefined
+  }
   if (localAudioProgressTimer !== undefined) {
     window.clearInterval(localAudioProgressTimer)
     localAudioProgressTimer = undefined
@@ -2074,6 +2204,38 @@ function stopLocalAudioPlayback(reportInterrupted = false) {
   if (reportInterrupted && previousTask) {
     void reportLocalAudioTask(previousTask, 'FAILED', progressMS, 'interrupted_by_new_task')
   }
+}
+
+function prepareLocalAudioSwitch(control: LocalAudioControl) {
+  const player = localAudioPlayer
+  const task = localAudioTask
+  const targetMS = Math.max(0, Number(control.position_ms || 0))
+  if (!player || !task || !targetMS || control.speech_task_id !== task.speech_task_id) return
+  if (localAudioPreparedSwitchTimer !== undefined) {
+    window.clearTimeout(localAudioPreparedSwitchTimer)
+    localAudioPreparedSwitchTimer = undefined
+  }
+  const generation = localAudioPlaybackGeneration
+  const tick = () => {
+    if (
+      generation !== localAudioPlaybackGeneration ||
+      localAudioPlayer !== player ||
+      localAudioTask?.speech_task_id !== task.speech_task_id
+    ) {
+      localAudioPreparedSwitchTimer = undefined
+      return
+    }
+    const currentMS = Math.max(0, Math.round(player.currentTime * 1000))
+    if (currentMS >= targetMS) {
+      player.pause()
+      localAudioPreparedSwitchTimer = undefined
+      void reportLocalAudioTask(task, 'PROGRESS', currentMS)
+      return
+    }
+    const remainingMS = targetMS - currentMS
+    localAudioPreparedSwitchTimer = window.setTimeout(tick, Math.max(8, Math.min(40, remainingMS - 4)))
+  }
+  tick()
 }
 
 async function playLocalAudioTask(task: LocalAudioTask) {
@@ -2228,15 +2390,16 @@ async function registerLocalAudioReceiver() {
 }
 
 function scheduleLocalAudioReconnect(delayMS = 900) {
-  if (pageUnmounted || localAudioReconnectTimer !== undefined) return
+  if (pageUnmounted || !coreActionsAvailable.value || localAudioReconnectTimer !== undefined) return
   localAudioReconnectTimer = window.setTimeout(() => {
     localAudioReconnectTimer = undefined
-    if (pageUnmounted) return
+    if (pageUnmounted || !coreActionsAvailable.value) return
     void connectLocalAudioReceiver()
   }, delayMS)
 }
 
 async function heartbeatLocalAudioReceiver() {
+  if (!coreActionsAvailable.value) return
   const base = localAudioBaseURL()
   if (!base || localAudioRegisteredRoomID <= 0) return
   try {
@@ -2286,7 +2449,7 @@ async function unregisterLocalAudioReceiver() {
 }
 
 async function connectLocalAudioReceiver() {
-  if (pageUnmounted) return
+  if (pageUnmounted || !coreActionsAvailable.value) return
   if (localAudioReconnectTimer !== undefined) {
     window.clearTimeout(localAudioReconnectTimer)
     localAudioReconnectTimer = undefined
@@ -2324,6 +2487,24 @@ async function connectLocalAudioReceiver() {
       localAudioError.value = '收到无法识别的本机播音任务。'
     }
   })
+  source.addEventListener('control', (rawEvent) => {
+    try {
+      const control = JSON.parse((rawEvent as MessageEvent).data) as LocalAudioControl
+      if (Number(control.room_id) !== roomId) return
+      const action = String(control.action || '').toLowerCase()
+      if (action === 'prepare_switch') {
+        prepareLocalAudioSwitch(control)
+        return
+      }
+      if (action !== 'pause' && action !== 'stop') return
+      stopLocalAudioPlayback(false)
+      localAudioState.value = 'connected'
+      localAudioError.value = ''
+    } catch {
+      localAudioState.value = 'error'
+      localAudioError.value = '收到无法识别的声音控制指令。'
+    }
+  })
   source.addEventListener('unregistered', () => {
     localAudioState.value = 'disconnected'
     scheduleLocalAudioReconnect(250)
@@ -2338,7 +2519,7 @@ async function connectLocalAudioReceiver() {
 }
 
 async function startCompanionRuntime() {
-  if (runtimeControlBusy.value || aiActive.value) return
+  if (!coreActionsAvailable.value || runtimeControlBusy.value || aiActive.value) return
   await ensureLocalAudioUnlocked()
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
     runtimeError.value = '主播模式需要先选择智能体直播方案'
@@ -2356,12 +2537,45 @@ async function startCompanionRuntime() {
   }
 }
 
+async function pauseCompanionRuntime() {
+  if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiRunning.value) return
+  runtimeControlBusy.value = true
+  runtimeError.value = ''
+  try {
+    await pauseLiveRuntime(roomId)
+    // Core control SSE normally stops the receiver first; this is a same-page
+    // fallback so local testing still stops immediately if SSE is reconnecting.
+    stopLocalAudioPlayback(false)
+    await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
+  } catch (err) {
+    runtimeError.value = err instanceof Error ? err.message : '暂停主播模式失败'
+  } finally {
+    runtimeControlBusy.value = false
+  }
+}
+
+async function resumeCompanionRuntime() {
+  if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiPaused.value) return
+  await ensureLocalAudioUnlocked()
+  runtimeControlBusy.value = true
+  runtimeError.value = ''
+  try {
+    await resumeLiveRuntime(roomId)
+    await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
+  } catch (err) {
+    runtimeError.value = err instanceof Error ? err.message : '继续主播模式失败'
+  } finally {
+    runtimeControlBusy.value = false
+  }
+}
+
 async function stopCompanionRuntime() {
-  if (runtimeControlBusy.value || !aiActive.value) return
+  if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiActive.value) return
   runtimeControlBusy.value = true
   runtimeError.value = ''
   try {
     await stopLiveRuntime(roomId)
+    stopLocalAudioPlayback(false)
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
     runtimeError.value = err instanceof Error ? err.message : '结束直播搭子失败'
@@ -2438,6 +2652,7 @@ async function chooseSessionContinuation(action: 'merge' | 'fresh') {
 function startRuntimePolling() {
   if (runtimePollTimer !== undefined) window.clearInterval(runtimePollTimer)
   runtimePollTimer = window.setInterval(() => {
+    if (!coreActionsAvailable.value) return
     void refreshRuntime()
     void refreshRoomBrain()
     void refreshCaptureStatus()
@@ -2455,6 +2670,7 @@ function startSessionStatsPolling() {
 function startSpeechRuntimePolling() {
   if (speechPollTimer !== undefined) window.clearInterval(speechPollTimer)
   speechPollTimer = window.setInterval(() => {
+    if (!coreActionsAvailable.value) return
     void refreshSpeechRuntime()
   }, 1000)
 }
@@ -2462,6 +2678,7 @@ function startSpeechRuntimePolling() {
 function startAgentDecisionPolling() {
   if (agentDecisionPollTimer !== undefined) window.clearInterval(agentDecisionPollTimer)
   agentDecisionPollTimer = window.setInterval(() => {
+    if (!coreActionsAvailable.value) return
     void refreshAgentDecisions()
   }, 1500)
 }
@@ -2592,6 +2809,8 @@ const dashboardCollectorState = computed(() => {
 })
 
 const dashboardCollectorLabel = computed(() => {
+  if (coreRuntime.phase === 'offline') return 'Core异常'
+  if (coreRuntime.phase === 'recovering' || coreRuntime.phase === 'checking') return '状态同步中'
   if (monitorToggleBusy.value) return room.value?.monitor_enabled ? '停止中…' : '连接中…'
   if (!room.value?.monitor_enabled) return '连接采集'
   if (streamState.value !== 'online') return '实时流连接中'
@@ -2604,6 +2823,7 @@ const dashboardCollectorLabel = computed(() => {
 })
 
 const dashboardCollectorTitle = computed(() => {
+  if (!coreActionsAvailable.value) return 'Core 服务恢复后可操作'
   if (!canControlMonitoring.value) return dashboardCollectorLabel.value
   if (monitorToggleBusy.value) return dashboardCollectorLabel.value
   return room.value?.monitor_enabled ? '点击停止 Core 公屏采集' : '点击连接 Core 公屏采集'
@@ -2611,7 +2831,7 @@ const dashboardCollectorTitle = computed(() => {
 
 async function toggleRoomMonitoring() {
   const currentRoom = room.value
-  if (!currentRoom || !canControlMonitoring.value || monitorToggleBusy.value) return
+  if (!currentRoom || !canControlMonitoring.value || !coreActionsAvailable.value || monitorToggleBusy.value) return
   const enabled = Boolean(currentRoom.monitor_enabled)
   if (enabled) {
     const confirmed = await confirmAction({
@@ -3090,12 +3310,23 @@ async function load() {
 
   loading.value = true
   error.value = ''
+  if (coreRuntime.phase === 'offline') {
+    const cached = restoreRoomDetailCache()
+    if (cached) {
+      room.value = cached
+      await loadLiveAgentPlansForRoom()
+      void loadTenantDirectory()
+      loading.value = false
+      return
+    }
+  }
   try {
     const [roomData, eventData] = await Promise.all([
       getRoom(roomId),
       getRoomEvents(roomId, 300),
     ])
     room.value = roomData
+    saveRoomDetailCache(roomData)
     await loadLiveAgentPlansForRoom()
     events.value = [...eventData.items].sort((a, b) => b.id - a.id)
     dashboardNow.value = Date.now()
@@ -3124,7 +3355,13 @@ async function load() {
     startSpeechRuntimePolling()
     startAgentDecisionPolling()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取直播间失败'
+    const cached = restoreRoomDetailCache()
+    if (cached && coreRuntime.phase !== 'online') {
+      room.value = cached
+      error.value = ''
+    } else {
+      error.value = err instanceof Error ? err.message : '读取直播间失败'
+    }
   } finally {
     loading.value = false
   }
@@ -3137,10 +3374,10 @@ function clearStreamReconnectTimer() {
 }
 
 function scheduleStreamReconnect() {
-	if (pageUnmounted || !room.value?.monitor_enabled || streamReconnectTimer !== undefined) return
+	if (pageUnmounted || !coreActionsAvailable.value || !room.value?.monitor_enabled || streamReconnectTimer !== undefined) return
 	streamReconnectTimer = window.setTimeout(() => {
 		streamReconnectTimer = undefined
-		if (!pageUnmounted && room.value?.monitor_enabled) connectStream()
+		if (!pageUnmounted && coreActionsAvailable.value && room.value?.monitor_enabled) connectStream()
 	}, 2000)
 }
 
@@ -3228,7 +3465,7 @@ function connectStream() {
 }
 
 function startPublicScreenTransport() {
-	if (pageUnmounted || !room.value?.monitor_enabled) return
+	if (pageUnmounted || !coreActionsAvailable.value || !room.value?.monitor_enabled) return
 	startEventFallbackPolling()
 	if (!eventSource || eventSource.readyState === EventSource.CLOSED) connectStream()
 }
@@ -3269,6 +3506,46 @@ onMounted(() => {
   mascotActionTimer = window.setTimeout(runMascotAction, 1200 + Math.random() * 1400)
   load()
 })
+
+watch(
+  () => coreRuntime.recoverySerial,
+  () => {
+    if (pageUnmounted) return
+    void refreshRuntime()
+    void refreshSessionStats()
+    void refreshCaptureStatus()
+    void refreshSpeechRuntime()
+    void refreshAgentDecisions()
+    if (room.value?.monitor_enabled) startPublicScreenTransport()
+    scheduleLocalAudioReconnect(0)
+  },
+)
+watch(
+  () => coreRuntime.phase,
+  (phase) => {
+    if (pageUnmounted) return
+    if (phase === 'offline') {
+      stopPublicScreenTransport()
+      localAudioEventSource?.close()
+      localAudioEventSource = null
+      if (localAudioReconnectTimer !== undefined) {
+        window.clearTimeout(localAudioReconnectTimer)
+        localAudioReconnectTimer = undefined
+      }
+      if (localAudioHeartbeatTimer !== undefined) {
+        window.clearInterval(localAudioHeartbeatTimer)
+        localAudioHeartbeatTimer = undefined
+      }
+      localAudioState.value = 'disconnected'
+      stopLocalAudioPlayback(false)
+      return
+    }
+    if (phase === 'online') {
+      if (room.value?.monitor_enabled) startPublicScreenTransport()
+      scheduleLocalAudioReconnect(0)
+    }
+  },
+)
 onBeforeUnmount(() => {
 	pageUnmounted = true
 	stopBrowserVideoShare()
@@ -3325,7 +3602,7 @@ onBeforeUnmount(() => {
     <ModulePageNav
       context="live"
       active-title="直播间详情"
-      :active-nav-title="isInternalViewer ? '直播间列表' : '直播间'"
+      active-nav-title="直播间详情"
     />
 
     <div v-if="loading" class="detail-loading">正在读取直播间…</div>
@@ -3405,11 +3682,11 @@ onBeforeUnmount(() => {
           <label class="companion-plan-select" aria-label="智能体直播方案">
             <select
               :value="liveAgentPlanSelectValue"
-              :disabled="agentPlanBusy"
+              :disabled="!coreActionsAvailable || agentPlanBusy"
               @change="changeLiveAgentPlan"
             >
               <option value="" disabled>
-                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择直播方案' : '暂无直播方案') }}
+                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择已绑定方案' : '暂无已绑定方案') }}
               </option>
               <option v-for="plan in liveAgentPlans" :key="plan.id" :value="String(plan.id)">
                 {{ plan.name }}
@@ -3422,13 +3699,13 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :class="{ active: aiRuntimeMode === 'control' }"
-              :disabled="runtimeModeBusy"
+              :disabled="!coreActionsAvailable || runtimeModeBusy"
               @click="setCompanionMode('control')"
             >中控模式</button>
             <button
               type="button"
               :class="{ active: aiRuntimeMode === 'anchor' }"
-              :disabled="runtimeModeBusy || !selectedLiveAgentPlanId"
+              :disabled="!coreActionsAvailable || runtimeModeBusy || !selectedLiveAgentPlanId"
               @click="setCompanionMode('anchor')"
             >主播模式</button>
           </div>
@@ -3436,16 +3713,31 @@ onBeforeUnmount(() => {
             <button
               v-if="!aiActive"
               type="button"
-              :disabled="runtimeControlBusy || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
+              :disabled="!coreActionsAvailable || runtimeControlBusy || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
               @click="startCompanionRuntime"
             >{{ runtimeControlBusy ? '开始中…' : '开始' }}</button>
-            <button
-              v-else
-              type="button"
-              class="end"
-              :disabled="runtimeControlBusy"
-              @click="stopCompanionRuntime"
-            >{{ runtimeControlBusy ? '结束中…' : '结束' }}</button>
+            <template v-else>
+              <button
+                v-if="aiRunning"
+                type="button"
+                class="pause"
+                :disabled="!coreActionsAvailable || runtimeControlBusy"
+                @click="pauseCompanionRuntime"
+              >{{ runtimeControlBusy ? '暂停中…' : '暂停' }}</button>
+              <button
+                v-else-if="aiPaused"
+                type="button"
+                class="resume"
+                :disabled="!coreActionsAvailable || runtimeControlBusy"
+                @click="resumeCompanionRuntime"
+              >{{ runtimeControlBusy ? '继续中…' : '继续' }}</button>
+              <button
+                type="button"
+                class="end"
+                :disabled="!coreActionsAvailable || runtimeControlBusy"
+                @click="stopCompanionRuntime"
+              >停止</button>
+            </template>
           </div>
         </article>
         <article class="live-room-dashboard" :class="'heat-' + roomHeatLevel">
@@ -3462,7 +3754,7 @@ onBeforeUnmount(() => {
               type="button"
               class="dashboard-live-state dashboard-collector-toggle"
               :class="dashboardCollectorState"
-              :disabled="!canControlMonitoring || monitorToggleBusy"
+              :disabled="!coreActionsAvailable || !canControlMonitoring || monitorToggleBusy"
               :title="dashboardCollectorTitle"
               @click="toggleRoomMonitoring"
             >
@@ -3535,20 +3827,20 @@ onBeforeUnmount(() => {
               v-if="deviceVisualState === 'offline'"
               type="button"
               class="connect"
-              :disabled="deviceControlBusy"
+              :disabled="!coreActionsAvailable || deviceControlBusy"
               @click="controlBoundDevice('connect')"
             >{{ deviceControlBusy ? '连接中…' : '连接' }}</button>
             <template v-else>
               <button
                 type="button"
                 class="pause"
-                :disabled="deviceControlBusy"
+                :disabled="!coreActionsAvailable || deviceControlBusy"
                 @click="controlBoundDevice(deviceVisualState === 'paused' ? 'resume' : 'pause')"
               >{{ deviceVisualState === 'paused' ? '继续' : '暂停' }}</button>
               <button
                 type="button"
                 class="close"
-                :disabled="deviceControlBusy"
+                :disabled="!coreActionsAvailable || deviceControlBusy"
                 @click="controlBoundDevice('disconnect')"
               >断开</button>
             </template>
@@ -3596,29 +3888,73 @@ onBeforeUnmount(() => {
           <div class="speech-runtime-brand">
             <span class="anchor-live-dot"></span>
             <strong>主播实时口播</strong>
-            <small>双轨文字</small>
           </div>
           <p>{{ speechRuntimeSummary }}</p>
         </header>
 
         <div
           class="speech-runtime-track-grid"
-          :class="'layout-' + speechTrackLayoutState"
+          :class="[
+            'layout-' + speechTrackLayoutState,
+            {
+              'is-mainline-expanded': speechTrackFocus === 'mainline',
+              'is-interrupt-expanded': speechTrackFocus === 'interrupt',
+            },
+          ]"
         >
-          <article class="speech-track-card speech-mainline-card" :class="'status-' + displayMainlineStatus">
-            <header>
-              <span>主播内容</span>
-              <b>{{ speechStatusLabel(displayMainlineStatus, 'mainline') }}</b>
-            </header>
-            <p :class="{ 'speech-empty-copy': !mainlineSpeech.text }">{{ mainlineSpeech.text || '等待主播文案' }}</p>
+          <div class="speech-mainline-track-column">
+            <div class="speech-runtime-mainline-tools">
+              <button type="button" class="speech-track-size-button" @click="toggleSpeechTrackFocus('mainline')">
+                {{ speechTrackFocus === 'mainline' ? '还原' : '放大' }}
+              </button>
+              <b :class="'status-' + displayMainlineStatus">{{ speechStatusLabel(displayMainlineStatus, 'mainline') }}</b>
+            </div>
+            <article
+              class="speech-track-card speech-mainline-card"
+              :class="['status-' + displayMainlineStatus, { 'cut-imminent': mainlineSafeCutImminent }]"
+            >
+            <div v-if="mainlineCaptionRows.length" class="speech-mainline-live-caption">
+              <div class="speech-mainline-caption-stack">
+                <div
+                  v-for="row in mainlineCaptionRows"
+                  :key="row.segment.segment_id"
+                  class="speech-mainline-caption-row"
+                  :class="[
+                    'role-' + row.role,
+                    row.transition ? 'transition-' + row.transition : '',
+                  ]"
+                >
+                  <span>{{ row.segment.text }}</span>
+                  <b v-if="row.transition === 'resume'">接回</b>
+                </div>
+              </div>
+            </div>
+            <p v-else :class="{ 'speech-empty-copy': !mainlineFallbackPreview }">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
+            <div
+              class="speech-mainline-waveform"
+              :class="{ active: displayMainlineStatus === 'playing' }"
+              aria-hidden="true"
+            >
+              <i
+                v-for="(height, index) in speechWaveBars"
+                :key="index"
+                :style="{ '--wave-height': height + 'px', '--wave-delay': (index * 37) + 'ms' }"
+              ></i>
+            </div>
             <time v-if="mainlineSpeech.updated_at">更新 {{ formatTime(mainlineSpeech.updated_at) }}</time>
-          </article>
+            </article>
+          </div>
 
           <article class="speech-track-card speech-interrupt-card" :class="'status-' + (interruptSpeech.status || 'idle')">
             <header>
               <span v-if="interruptSpeech.question_text" class="speech-trigger-question"><strong>触发问题：</strong>{{ interruptSpeech.question_text }}</span>
               <span v-else class="speech-interrupt-placeholder">场控答疑 / 临时插播</span>
-              <b>{{ speechStatusLabel(interruptSpeech.status, 'interrupt') }}</b>
+              <div class="speech-track-head-actions">
+                <button type="button" class="speech-track-size-button" @click="toggleSpeechTrackFocus('interrupt')">
+                  {{ speechTrackFocus === 'interrupt' ? '还原' : '放大' }}
+                </button>
+                <b>{{ speechStatusLabel(interruptSpeech.status, 'interrupt') }}</b>
+              </div>
             </header>
             <p>{{ interruptSpeech.reply_text || interruptSpeech.text || '等待临时插播…' }}</p>
             <div class="speech-interrupt-footer">
@@ -4185,7 +4521,7 @@ onBeforeUnmount(() => {
               v-if="!audioRecordingActive"
               type="button"
               class="capture-primary-button audio"
-              :disabled="captureBusy || audioRecordingFinalizing"
+              :disabled="!coreActionsAvailable || captureBusy || audioRecordingFinalizing"
               @click="startCoreAudioRecording"
             >
               {{ audioRecordingFinalizing ? '正在合并录音…' : '开始声音录制' }}
@@ -4194,7 +4530,7 @@ onBeforeUnmount(() => {
               v-else
               type="button"
               class="capture-stop-button"
-              :disabled="captureBusy"
+              :disabled="!coreActionsAvailable || captureBusy"
               @click="stopCoreAudioRecording"
             >{{ captureBusy ? '正在停止并合并…' : '停止并合并' }}</button>
             <div v-if="captureSnapshot?.recording?.status === 'ready'" class="recording-delivery">
@@ -4643,6 +4979,30 @@ onBeforeUnmount(() => {
 
 .speech-runtime-brand strong { font-size: 16px; }
 .speech-runtime-brand small { color: #8fa3bf; font-size: 12px; }
+.speech-runtime-mainline-tools {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex:0 0 auto;
+  min-height:30px;
+}
+.speech-runtime-mainline-tools > b {
+  min-height:30px;
+  display:inline-flex;
+  align-items:center;
+  padding:0 10px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:950;
+  white-space:nowrap;
+  color:#9ca8bc;
+  background:rgba(137,151,176,.14);
+}
+.speech-runtime-mainline-tools > b.status-playing { color:#81e4bf; background:rgba(44,179,132,.18); }
+.speech-runtime-mainline-tools > b.status-paused { color:#8c6300; background:#ffefbf; }
+.speech-runtime-mainline-tools > b.status-ready { color:#5260c8; background:#e9edff; }
+.speech-runtime-mainline-tools > b.status-failed { color:#a63340; background:#ffe1e5; }
 .speech-runtime-head > p {
   min-width: 0;
   margin: 0;
@@ -4661,6 +5021,17 @@ onBeforeUnmount(() => {
   transition: grid-template-columns .28s cubic-bezier(.22, .8, .22, 1);
 }
 
+.speech-mainline-track-column {
+  display:grid;
+  grid-template-rows:auto auto;
+  gap:8px;
+  min-width:0;
+}
+
+.speech-runtime-track-grid > .speech-interrupt-card {
+  align-self:end;
+}
+
 .speech-runtime-track-grid.layout-mainline {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
 }
@@ -4671,6 +5042,21 @@ onBeforeUnmount(() => {
 
 .speech-runtime-track-grid.layout-balanced {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.speech-runtime-track-grid.is-mainline-expanded {
+  grid-template-columns: minmax(0, 1.75fr) minmax(220px, .55fr);
+}
+
+.speech-runtime-track-grid.is-interrupt-expanded {
+  grid-template-columns: minmax(220px, .55fr) minmax(0, 1.75fr);
+}
+
+.speech-runtime-track-grid.is-mainline-expanded .speech-mainline-card,
+.speech-runtime-track-grid.is-interrupt-expanded .speech-interrupt-card {
+  height: 270px;
+  min-height: 270px;
+  max-height: 270px;
 }
 
 .speech-track-card {
@@ -4733,6 +5119,38 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.speech-track-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.speech-track-size-button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(151, 169, 220, .28);
+  border-radius: 7px;
+  color: inherit;
+  background: rgba(255,255,255,.08);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 900;
+  cursor: pointer;
+  opacity: .78;
+  transition: opacity .16s ease, transform .16s ease, background .16s ease;
+}
+
+.speech-track-size-button:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.speech-interrupt-card .speech-track-size-button {
+  border-color: #d9dfeb;
+  background: #fff;
+}
+
 .speech-track-card > header span {
   font-size: 13px;
   font-weight: 900;
@@ -4780,7 +5198,7 @@ onBeforeUnmount(() => {
   margin: 0;
   padding-right: 5px;
   color: inherit;
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 800;
   line-height: 1.65;
   white-space: normal;
@@ -4791,7 +5209,123 @@ onBeforeUnmount(() => {
 }
 
 .speech-mainline-card {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+	grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.speech-mainline-program-meta {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	min-width: 0;
+	padding: 7px 9px;
+	border: 1px solid rgba(126, 151, 232, .20);
+	border-radius: 9px;
+	background: rgba(105, 127, 210, .10);
+}
+
+.speech-mainline-program-meta strong {
+	min-width: 0;
+	color: #cbd5ff;
+	font-size: 10px;
+	font-weight: 900;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.speech-mainline-program-meta span {
+	flex: 0 0 auto;
+	color: #8ee3c4;
+	font-size: 9px;
+	font-weight: 800;
+}
+
+.speech-mainline-program-meta span.warning {
+  color: #ffd765;
+  font-weight: 950;
+}
+
+.speech-mainline-live-caption {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 0;
+  padding: 4px 2px;
+  overflow: hidden;
+}
+
+.speech-mainline-live-caption > small {
+  color: #7de0bd;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: .08em;
+}
+
+.speech-mainline-live-caption > p {
+  margin: 0;
+  color: #d6deef;
+  font-size: 20px;
+  font-weight: 820;
+  line-height: 1.72;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.speech-mainline-live-caption mark {
+  padding: 1px 2px;
+  border-radius: 4px;
+  color: #ffffff;
+  background: rgba(87, 208, 167, .28);
+  box-shadow: 0 0 0 1px rgba(104, 229, 187, .18);
+  font-weight: 950;
+}
+
+.speech-mainline-subtitle-progress {
+  height: 3px;
+  margin: 1px 0 0;
+  border-radius: 999px;
+  background: rgba(135, 153, 202, .18);
+  overflow: hidden;
+}
+
+.speech-mainline-subtitle-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg,#6c80ff,#59d6ae);
+  transition: width .25s linear;
+}
+
+.speech-mainline-segment-state {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	min-width: 0;
+	color: rgba(220, 229, 250, .68);
+	font-size: 9px;
+}
+
+.speech-mainline-segment-state span { font-weight: 900; }
+.speech-mainline-segment-state time { font-variant-numeric: tabular-nums; }
+.speech-mainline-segment-state b {
+	margin-left: auto;
+	color: #85ddbd;
+	font-size: 9px;
+	font-weight: 900;
+	white-space: nowrap;
+}
+
+.speech-mainline-segment-state b.warning { color: #ffd765; }
+
+.speech-mainline-card.cut-imminent {
+  border-color: rgba(255, 205, 70, .82);
+  box-shadow: 0 0 0 2px rgba(255, 205, 70, .10), 0 12px 30px rgba(155, 113, 11, .18);
+}
+
+.speech-mainline-card.cut-imminent::before {
+  border-color: rgba(255, 205, 70, .66) !important;
 }
 
 .room-detail-page .speech-mainline-card > p.speech-empty-copy {
@@ -5039,13 +5573,20 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .speech-history-page-size {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex: 0 0 auto;
   color: #7f899f;
   font-size: 13px;
+  white-space: nowrap;
+}
+.speech-history-page-size > span {
+  white-space: nowrap;
 }
 .speech-history-page-size select {
   height: 34px;
@@ -5098,8 +5639,130 @@ onBeforeUnmount(() => {
 .speech-track-card.status-playing { border-color: rgba(73, 201, 155, .48); }
 .speech-track-card.status-playing > header b { color: #198b67; background: #dcf8ee; }
 .speech-mainline-card.status-playing > header b { color: #80e4bf; background: rgba(44, 179, 132, .18); }
+.speech-mainline-card {
+  grid-template-rows: minmax(0, 1fr) 28px auto;
+}
+.speech-mainline-card.status-playing {
+  border-color: rgba(205, 100, 100, .58);
+  background: linear-gradient(145deg, rgba(77, 29, 33, .96), rgba(46, 23, 31, .98));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 12px 30px rgba(79, 24, 29, .16);
+}
+.speech-mainline-live-caption {
+  align-content: start;
+  gap: 5px;
+  padding: 0 2px;
+}
+.speech-mainline-caption-stack {
+  display: grid;
+  grid-template-rows: minmax(0, .82fr) minmax(0, 1.22fr) minmax(0, .82fr);
+  gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+.speech-mainline-caption-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #cbd4e7;
+  font-size: 14px;
+  font-weight: 760;
+  line-height: 1.35;
+  opacity: .38;
+  transform: translateY(-2px) scale(.98);
+  transition: opacity .28s ease, transform .28s ease, color .28s ease, background .28s ease;
+}
+.speech-mainline-caption-row > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.speech-mainline-caption-row.role-current {
+  color: #f2f5fc;
+  font-size: 18px;
+  font-weight: 900;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.speech-mainline-caption-row.role-next {
+  opacity: .24;
+  transform: translateY(2px) scale(.98);
+}
+.speech-mainline-caption-row.transition-stop {
+  border-color: rgba(255, 203, 83, .34);
+  background: rgba(116, 82, 17, .24);
+  color: #ffe18e;
+}
+.speech-mainline-caption-row.transition-resume {
+  border-color: rgba(83, 219, 166, .38);
+  background: rgba(24, 105, 77, .25);
+  color: #a9efd2;
+}
+.speech-mainline-caption-row > b {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+.speech-mainline-caption-row.transition-stop > b {
+  color: #6f4b00;
+  background: #ffe39a;
+}
+.speech-mainline-caption-row.transition-resume > b {
+  color: #0e6549;
+  background: #a9efd2;
+}
+.speech-mainline-waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  overflow: hidden;
+  opacity: .22;
+  transition: opacity .2s ease;
+}
+.speech-mainline-waveform::before,
+.speech-mainline-waveform::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 2px;
+  min-width: 26px;
+  border-radius: 999px;
+  background: rgba(116, 139, 192, .22);
+}
+.speech-mainline-waveform i {
+  display: block;
+  width: 3px;
+  height: 4px;
+  flex: 0 0 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #74c9ff 0%, #55e2c0 100%);
+  box-shadow: 0 0 7px rgba(85, 226, 192, .16);
+  transform-origin: 50% 50%;
+}
+.speech-mainline-waveform.active {
+  opacity: .9;
+}
+.speech-mainline-waveform.active i {
+  animation: speech-wave-pulse .78s ease-in-out infinite alternate;
+  animation-delay: var(--wave-delay);
+}
+@keyframes speech-wave-pulse {
+  from { height: 4px; opacity: .52; }
+  to { height: var(--wave-height); opacity: 1; }
+}
 .speech-mainline-card.status-playing::before {
-  border-color: rgba(87, 145, 255, .34);
+  border-color: rgba(219, 111, 111, .34);
 }
 .speech-interrupt-card.status-playing::before {
   border-color: rgba(73, 201, 155, .42);
@@ -5110,6 +5773,10 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .speech-track-card.status-playing::before {
     animation: none;
+  }
+  .speech-mainline-waveform.active i {
+    animation: none;
+    height: min(var(--wave-height), 14px);
   }
 }
 

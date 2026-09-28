@@ -95,6 +95,7 @@ const newWarehouse = reactive<SystemWarehouseInput>({
 })
 
 const isPlatformAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
+const agentRoutingConfigKey = 'agent.routing.live_room'
 
 function hasPermission(code: string) {
   if (isPlatformAdmin.value) return true
@@ -104,6 +105,10 @@ function hasPermission(code: string) {
 
 const canViewGlobal = computed(() => isPlatformAdmin.value)
 const canManageAgentPrompts = computed(() => isPlatformAdmin.value || Boolean(session.bootstrap?.staff_access?.is_super_admin))
+const canManageAgentRouting = computed(() => hasPermission('system.settings.agent_routing.manage'))
+const agentPromptItems = computed(() =>
+  (dashboard.value?.agent_prompt_configs || []).filter((item) => item.key !== agentRoutingConfigKey),
+)
 const canViewMembershipLimits = computed(() => hasPermission('commercial.membership.view'))
 const canManageMembershipLimits = computed(() => hasPermission('system.settings.liveops.manage'))
 const canViewIndustry = computed(() => hasPermission('livepolicy.view'))
@@ -287,7 +292,7 @@ async function saveAgentPrompts() {
   notice.value = ''
   try {
     const result = await updateAgentPromptConfigs(
-      (dashboard.value.agent_prompt_configs || []).map((item) => ({
+      agentPromptItems.value.map((item) => ({
         key: item.key,
         current_value: agentPromptDrafts[item.key]?.current_value ?? item.current_value,
         enabled: agentPromptDrafts[item.key]?.enabled ?? item.enabled,
@@ -801,20 +806,30 @@ onMounted(load)
       </div>
     </section>
 
+    <section v-if="canManageAgentRouting" class="system-settings-card">
+      <header>
+        <div>
+          <h3>智能体理解配置</h3>
+          <p>统一配置程序理解 / 大模型理解 / 自动理解，并按系统、会员、客户分层控制模型、上下文、预算和降级；高级意图词库仍可版本化维护。</p>
+        </div>
+        <RouterLink class="primary-button" to="/system/settings/agent-routing">进入理解配置</RouterLink>
+      </header>
+    </section>
+
     <section v-if="canManageAgentPrompts" class="system-settings-card agent-prompt-settings">
       <header>
         <div>
           <span class="section-kicker">MODEL & AGENT CONFIG</span>
           <h3>模型与智能体配置</h3>
-          <p>统一维护系统与大模型之间的业务要求。先保存草稿，发布后新请求立即生效；终端用户不可查看这些内容。</p>
+          <p>统一维护系统与大模型之间的其他业务要求。智能体路由配置已拆到专用维护页；这里仍采用草稿、发布、版本和回滚机制。</p>
         </div>
         <button class="primary-button" type="button" :disabled="savingAgentPrompts || loading || !dashboard" @click="saveAgentPrompts">
           {{ savingAgentPrompts ? '保存中...' : '保存全部草稿' }}
         </button>
       </header>
 
-      <div v-if="dashboard?.agent_prompt_configs?.length" class="agent-prompt-list">
-        <article v-for="item in dashboard.agent_prompt_configs" :key="item.key" class="agent-prompt-item">
+      <div v-if="agentPromptItems.length" class="agent-prompt-list">
+        <article v-for="item in agentPromptItems" :key="item.key" class="agent-prompt-item">
           <div class="agent-prompt-item-head">
             <div>
               <strong>{{ item.name }}</strong>

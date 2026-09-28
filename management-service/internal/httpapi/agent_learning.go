@@ -13,6 +13,8 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/agentrouting"
+	"livecompanion/management/internal/agentunderstanding"
 	"livecompanion/management/internal/decisionexecutor"
 	"livecompanion/management/internal/model"
 )
@@ -661,62 +663,59 @@ Agent 原回答：%s
 }
 
 func strongAgentLearningMessageIntent(message string) string {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return "chat"
-	}
-	compact := strings.NewReplacer(
-		" ", "", "\t", "", "\r", "", "\n", "",
-		"，", "", "。", "", "！", "", "!", "", "？", "", "?", "",
-	).Replace(message)
-	if utf8.RuneCountInString(compact) <= 24 && containsAgentLearningCue(compact,
-		"测试下", "测试一下", "你测试", "帮我测试", "试试看", "你试试", "试一下", "测一下", "验证一下", "验证下",
-	) {
-		return "test"
-	}
-	if agentmemory.LooksLikeExplicitCorrection(message) || agentLearningLooksLikeResponseStrategy(message) || containsAgentLearningCue(message,
-		"改成", "改为", "换成", "改一下", "修改一下", "纠正一下", "修正一下", "重新改", "重新写", "重新说",
-		"不要说", "别说", "统一说", "应该说", "要说成", "说成", "删掉", "去掉", "加上", "补充一下",
-		"太官方", "太生硬", "太啰嗦", "不自然", "不准确", "这个说法不对", "这个回答不对", "这样不对",
-		"保留好的", "好的保留", "保留正确", "纠正错误", "只改错误", "其他不变", "其余不变",
-		"再自然一点", "再口语一点", "再简短一点", "再亲切一点", "再直接一点", "再柔和一点",
-	) {
+	if agentmemory.LooksLikeExplicitCorrection(message) || agentLearningLooksLikeResponseStrategy(message) {
 		return "learning"
 	}
-	if containsAgentLearningCue(compact,
-		"帮我回答这条", "替我回答这条", "回答这条弹幕", "回复这条弹幕", "帮我回复这条",
-		"给他回复", "给她回复", "给这个用户回复", "直接回答这个问题", "抢答这条",
-	) {
-		return "execution"
-	}
-	return ""
+	return agentrouting.Match(agentrouting.Default(), message)
 }
 
 func normalizeAgentLearningMessageIntent(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "learning", "learn", "edit", "correction":
-		return "learning"
-	case "test", "preview":
-		return "test"
-	case "execution", "execute", "answer", "operation":
-		return "execution"
-	default:
-		return "chat"
+	if normalized := agentrouting.NormalizeIntent(value); normalized != "" {
+		return normalized
 	}
+	return "chat"
 }
 
-func classifyAgentLearningMessage(ctx context.Context, input agentLearningConversationInput) agentLearningMessageIntentOutput {
-	if strong := strongAgentLearningMessageIntent(input.Message); strong != "" {
-		return agentLearningMessageIntentOutput{Intent: strong, Confidence: "high", Reason: "deterministic_cue"}
+func (s *Server) classifyAgentLearningMessage(
+	ctx context.Context,
+	actor model.Actor,
+	tenantID int64,
+	roomID int64,
+	input agentLearningConversationInput,
+) agentLearningMessageIntentOutput {
+	rawConfig := s.store.AgentPromptValue(ctx, agentrouting.ConfigKey, agentrouting.DefaultJSON())
+	routingConfig, configErr := agentrouting.Parse(rawConfig)
+	if configErr != nil {
+		routingConfig = agentrouting.Default()
 	}
-	if len(input.History) > 10 {
-		input.History = input.History[len(input.History)-10:]
+	if strong := agentrouting.Match(routingConfig, input.Message); strong != "" {
+		if (strong == "adopt" || strong == "execution") && !agentrouting.NaturalActionAllowed(routingConfig, strong) {
+			return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: "high", Reason: "natural_action_disabled"}
+		}
+		return agentLearningMessageIntentOutput{Intent: strong, Confidence: "high", Reason: "configured_rule"}
+	}
+	if agentmemory.LooksLikeExplicitCorrection(input.Message) || agentLearningLooksLikeResponseStrategy(input.Message) {
+		return agentLearningMessageIntentOutput{Intent: "learning", Confidence: "high", Reason: "semantic_learning_guard"}
+	}
+	understandingPolicy, policyErr := s.store.ResolveAgentUnderstandingPolicy(ctx, tenantID)
+	if policyErr != nil {
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: "low", Reason: "understanding_policy_unavailable"}
+	}
+	if !routingConfig.ModelEnabled || understandingPolicy.Mode == model.AgentUnderstandingModeProgram {
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: "low", Reason: "classifier_disabled"}
+	}
+	contextLimit := understandingPolicy.MaxContextMessages
+	if contextLimit <= 0 {
+		contextLimit = 10
+	}
+	if len(input.History) > contextLimit {
+		input.History = input.History[len(input.History)-contextLimit:]
 	}
 	historyRaw, _ := json.Marshal(input.History)
 	currentMode := normalizeAgentLearningMessageIntent(input.CurrentMode)
-	prompt := fmt.Sprintf(`
-你负责判断当前直播间 Agent 这一轮对话应该处于哪种“工作模式”。不要只看当前一句，要结合最近对话、当前模式和是否存在学习候选。
+	prompt := strings.TrimSpace(routingConfig.ClassifierPrompt) + fmt.Sprintf(`
 
+【动态上下文】
 当前工作模式：%s
 学习会话是否仍存在：%t
 显式测试模式：%t
@@ -726,47 +725,62 @@ func classifyAgentLearningMessage(ctx context.Context, input agentLearningConver
 最近对话：%s
 用户这句话：%s
 
-只能四选一：
-- chat：纯聊天/讨论/情绪/寒暄/普通业务咨询。本轮只自然回复，不写记忆，不生成修正卡。
-- learning：用户正在教 Agent 修改、纠正、补充、替换当前候选或已有回答。本轮必须输出完整可采用的修正结果。
-- test：用户要测试、验证当前候选或进入模拟观众测试。本轮只测试，不采用、不写记忆、不播音。
-- execution：用户明确要求现在替他回答某条观众问题、弹幕或执行正式直播回答。本轮走真实业务回答/执行链，不进入学习。
-
-模式切换规则：
-1. 当前模式只是上下文，不是锁死；用户可以在学习中突然聊天，也可以聊着聊着继续纠正。
-2. 有学习会话时，“再短一点 / 这里不对 / 保留好的只改错误”通常是 learning；“今天好累 / 哈哈 / 我先吃饭”是 chat。
-3. “你测试下 / 试试看”是 test。
-4. “帮我回答这条弹幕：多少钱”“给这个用户回复……”是 execution；“这个问题以后应该怎么回答”是 learning，不是 execution。
-5. “你觉得这样怎么样”如果只是讨论，判 chat；“这样有点生硬，再改自然一点”判 learning。
-6. 宁可把模糊内容判为 chat，也不要把普通聊天误写成长期规则；只有明确执行请求才判 execution。
-
-只返回严格 JSON：{"intent":"chat|learning|test|execution","confidence":"high|medium|low","reason":"简短原因"}
+只返回严格 JSON：{"intent":"chat|learning|test|execution|adopt","confidence":"high|medium|low","reason":"简短原因"}
 `, currentMode, input.LearningActive, input.TestActive, input.ExecutionActive, strings.TrimSpace(input.Target), strings.TrimSpace(input.LatestCandidate), string(historyRaw), strings.TrimSpace(input.Message))
-	classifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	classifyCtx, cancel := context.WithTimeout(ctx, agentunderstanding.Timeout(understandingPolicy.AgentUnderstandingPolicy))
 	defer cancel()
+	roomRef := roomID
+	invocationID := s.beginAISingleUse(ctx, actor, &roomRef, "agent_learning_intent", map[string]any{
+		"understanding_mode": understandingPolicy.Mode,
+		"policy_source":      understandingPolicy.ResolvedFrom,
+	})
+	maxTokens := understandingPolicy.MaxTokens
+	if maxTokens <= 0 || maxTokens > 180 {
+		maxTokens = 180
+	}
 	response, err := agentgateway.NewFromEnv().Complete(classifyCtx, agentgateway.Request{
+		Provider: understandingPolicy.Provider,
+		Model:    understandingPolicy.Model,
 		Messages: []agentgateway.Message{
-			{Role: "system", Content: "你是智能体学习消息分流器，只做意图分类，不修改任何规则。"},
+			{Role: "system", Content: "你是智能体路由分类器，只做意图分类，不修改任何规则，不声称执行动作。"},
 			{Role: "user", Content: prompt},
 		},
-		MaxTokens:      120,
+		MaxTokens:      maxTokens,
 		EnableThinking: false,
 		ResponseFormat: agentgateway.ResponseJSON,
-		Timeout:        8 * time.Second,
+		Timeout:        agentunderstanding.Timeout(understandingPolicy.AgentUnderstandingPolicy),
 	})
 	if err != nil {
-		return agentLearningMessageIntentOutput{Intent: "chat", Confidence: "low", Reason: "classifier_unavailable_safe_chat"}
+		s.finishAISingleUseWithUsage(
+			ctx, invocationID, "failed", response.Provider, response.Model, response.LatencyMS,
+			response.InputTokens, response.OutputTokens, response.TotalTokens, map[string]any{"error": err.Error()},
+		)
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: "low", Reason: "classifier_unavailable_fallback"}
 	}
+	s.finishAISingleUseWithUsage(
+		ctx, invocationID, "succeeded", response.Provider, response.Model, response.LatencyMS,
+		response.InputTokens, response.OutputTokens, response.TotalTokens, nil,
+	)
 	var output agentLearningMessageIntentOutput
 	if err := json.Unmarshal([]byte(stripPolicyJSONFence(response.Text)), &output); err != nil {
-		return agentLearningMessageIntentOutput{Intent: "chat", Confidence: "low", Reason: "classifier_invalid_safe_chat"}
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: "low", Reason: "classifier_invalid_fallback"}
 	}
 	output.Intent = normalizeAgentLearningMessageIntent(output.Intent)
+	if !agentrouting.ConfidenceAtLeast(output.Confidence, routingConfig.MinModelConfidence) {
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: output.Confidence, Reason: "classifier_below_threshold"}
+	}
+	confidenceScore := map[string]float64{"low": 0.35, "medium": 0.72, "high": 0.95}[strings.ToLower(strings.TrimSpace(output.Confidence))]
+	if confidenceScore < understandingPolicy.MinConfidence {
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: output.Confidence, Reason: "understanding_below_threshold"}
+	}
+	if (output.Intent == "adopt" || output.Intent == "execution") && !agentrouting.NaturalActionAllowed(routingConfig, output.Intent) {
+		return agentLearningMessageIntentOutput{Intent: routingConfig.FallbackIntent, Confidence: output.Confidence, Reason: "natural_action_disabled"}
+	}
 	return output
 }
 
 func (s *Server) agentLearningClassifyMessage(w http.ResponseWriter, r *http.Request) {
-	_, _, _, ok := s.requireCustomerPolicyRoom(w, r)
+	actor, tenantID, roomID, ok := s.requireCustomerPolicyRoom(w, r)
 	if !ok {
 		return
 	}
@@ -787,7 +801,7 @@ func (s *Server) agentLearningClassifyMessage(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "消息过长")
 		return
 	}
-	writeJSON(w, http.StatusOK, classifyAgentLearningMessage(r.Context(), input))
+	writeJSON(w, http.StatusOK, s.classifyAgentLearningMessage(r.Context(), actor, tenantID, roomID, input))
 }
 
 func (s *Server) agentLearningCompanionChat(w http.ResponseWriter, r *http.Request) {

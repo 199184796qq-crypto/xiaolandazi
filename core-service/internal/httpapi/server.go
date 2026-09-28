@@ -121,6 +121,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.getRoomSpeechRuntime)))
 	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/start", s.internal(http.HandlerFunc(s.startRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/pause", s.internal(http.HandlerFunc(s.pauseRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/resume", s.internal(http.HandlerFunc(s.resumeRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/stop", s.internal(http.HandlerFunc(s.stopRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/audio/events", s.internal(http.HandlerFunc(s.receiveAudioEvent)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/agent-decisions", s.internal(http.HandlerFunc(s.getRoomAgentDecisions)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/candidates", s.internal(http.HandlerFunc(s.enqueueRoomAgentDecision)))
@@ -180,6 +184,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":               "core-service",
 		"status":                "ok",
+		"boot_id":               s.agentWork.BootID(),
 		"time":                  time.Now().UTC().Format(time.RFC3339),
 		"active_rooms":          collectorStats.ActiveRooms,
 		"shard_index":           collectorStats.ShardIndex,
@@ -289,18 +294,20 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	type stateItem struct {
-		CoreBootID                 string          `json:"core_boot_id"`
-		TenantID                   int64           `json:"tenant_id"`
-		RoomID                     int64           `json:"room_id"`
-		Status                     string          `json:"status"`
-		UpdatedAt                  time.Time       `json:"updated_at"`
-		AgentState                 agentwork.State `json:"agent_state"`
-		AgentMode                  agentwork.Mode  `json:"agent_mode"`
-		AgentWorkingSeconds        uint64          `json:"agent_working_seconds"`
-		AgentLeaseRemainingSeconds uint64          `json:"agent_lease_remaining_seconds"`
-		AgentLeaseUntil            *time.Time      `json:"agent_lease_until,omitempty"`
-		AgentUpdatedAt             time.Time       `json:"agent_updated_at"`
-		SessionResumePending       bool            `json:"session_resume_pending"`
+		CoreBootID                 string               `json:"core_boot_id"`
+		TenantID                   int64                `json:"tenant_id"`
+		RoomID                     int64                `json:"room_id"`
+		Status                     string               `json:"status"`
+		UpdatedAt                  time.Time            `json:"updated_at"`
+		AgentState                 agentwork.State      `json:"agent_state"`
+		AgentStopReason            agentwork.StopReason `json:"agent_stop_reason"`
+		AgentMode                  agentwork.Mode       `json:"agent_mode"`
+		AgentWorkingSeconds        uint64               `json:"agent_working_seconds"`
+		AgentLeaseRemainingSeconds uint64               `json:"agent_lease_remaining_seconds"`
+		AgentLeaseRenewalDue       bool                 `json:"agent_lease_renewal_due"`
+		AgentLeaseUntil            *time.Time           `json:"agent_lease_until,omitempty"`
+		AgentUpdatedAt             time.Time            `json:"agent_updated_at"`
+		SessionResumePending       bool                 `json:"session_resume_pending"`
 	}
 	items := make([]stateItem, 0, len(rooms))
 	for _, room := range rooms {
@@ -322,9 +329,11 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 			Status:                     room.Status,
 			UpdatedAt:                  room.UpdatedAt,
 			AgentState:                 agent.State,
+			AgentStopReason:            agent.StopReason,
 			AgentMode:                  agent.Mode,
 			AgentWorkingSeconds:        agent.WorkingSeconds,
 			AgentLeaseRemainingSeconds: agent.LeaseRemainingSeconds,
+			AgentLeaseRenewalDue:       agent.LeaseRenewalDue,
 			AgentLeaseUntil:            agent.LeaseUntil,
 			AgentUpdatedAt:             agent.UpdatedAt,
 			SessionResumePending:       resumePending,

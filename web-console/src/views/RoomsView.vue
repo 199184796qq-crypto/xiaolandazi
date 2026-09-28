@@ -8,6 +8,7 @@ import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
+import { coreRuntime } from '../coreRuntime'
 import type { Room, Tenant } from '../types'
 
 const router = useRouter()
@@ -24,7 +25,7 @@ const monitorBusyIds = ref<number[]>([])
 const viewMode = ref<'card' | 'table'>('card')
 const search = ref('')
 const statusFilter = ref('all')
-const sortMode = ref('online-desc')
+const sortMode = ref('name-asc')
 const page = ref(1)
 const pageSize = ref(12)
 
@@ -91,6 +92,11 @@ const form = reactive({
 const isAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
 const isInternalViewer = computed(() => ['platform_admin', 'staff', 'sales_staff'].includes(session.bootstrap?.actor.role || ''))
 const canManageRooms = computed(() => session.bootstrap?.actor.role === 'customer')
+const coreActionsAvailable = computed(() => coreRuntime.phase === 'online')
+
+function coreIsOffline() {
+  return coreRuntime.phase === 'offline'
+}
 const canControlMonitoring = computed(() => {
   const bootstrap = session.bootstrap
   if (!bootstrap) return false
@@ -132,6 +138,8 @@ function roomTitle(room: Room) {
 }
 
 function effectiveStatus(room: Room) {
+  if (coreRuntime.phase === 'offline') return 'core_unavailable'
+  if (coreRuntime.phase === 'recovering' || coreRuntime.phase === 'checking') return 'core_recovering'
   if (!room.monitor_enabled) return 'stopped'
   return room.status
 }
@@ -145,7 +153,34 @@ function statusText(room: Room) {
   if (status === 'stopped') return '已停止'
   if (status === 'device_offline') return '设备离线'
   if (status === 'error') return '连接异常'
+  if (status === 'core_unavailable') return 'Core异常'
+  if (status === 'core_recovering') return '状态同步中'
   return status || '未知'
+}
+
+function roomCacheKey() {
+  const actorID = session.bootstrap?.actor.user_id || 0
+  const scope = isAdmin.value ? (selectedTenantId.value || 'all') : (session.bootstrap?.actor.tenant_id || 'self')
+  return 'livecompanion.rooms-cache.v1:' + actorID + ':' + scope
+}
+
+function saveRoomCache(items: Room[]) {
+  try {
+    window.localStorage.setItem(roomCacheKey(), JSON.stringify(items))
+  } catch {
+    // Room cache is only a degraded-mode convenience.
+  }
+}
+
+function restoreRoomCache() {
+  try {
+    const raw = window.localStorage.getItem(roomCacheKey())
+    if (!raw) return
+    const cached = JSON.parse(raw) as Room[]
+    if (Array.isArray(cached)) rooms.value = cached
+  } catch {
+    // Ignore malformed or unavailable browser storage.
+  }
 }
 
 function monitorBusy(roomID: number) {
@@ -154,7 +189,7 @@ function monitorBusy(roomID: number) {
 
 async function changeMonitoring(room: Room, enabled: boolean, event: MouseEvent) {
   event.stopPropagation()
-  if (!canControlMonitoring.value || monitorBusy(room.id)) return
+  if (!canControlMonitoring.value || !coreActionsAvailable.value || monitorBusy(room.id)) return
   monitorBusyIds.value = [...monitorBusyIds.value, room.id]
   error.value = ''
   try {
@@ -198,14 +233,22 @@ async function loadTenantDirectory() {
 
 async function loadRooms() {
   if (!session.bootstrap) return
+  if (coreIsOffline()) {
+    if (!rooms.value.length) restoreRoomCache()
+    return
+  }
 
   loading.value = true
   error.value = ''
   try {
     const response = await getRooms(isAdmin.value ? selectedTenantId.value : undefined)
     rooms.value = response.items
+    saveRoomCache(response.items)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取直播间失败'
+    if (!rooms.value.length) restoreRoomCache()
+    if (!coreIsOffline()) {
+      error.value = err instanceof Error ? err.message : '读取直播间失败'
+    }
   } finally {
     loading.value = false
   }
@@ -246,7 +289,7 @@ async function submitCreate() {
 
 async function removeRoom(room: Room, event: MouseEvent) {
   event.stopPropagation()
-  if (!canDeleteRoom(room)) return
+  if (!canDeleteRoom(room) || !coreActionsAvailable.value) return
 
   const isOperationsCleanup =
     session.bootstrap?.actor.role !== 'customer' &&
@@ -289,6 +332,13 @@ watch(selectedTenantId, () => {
   if (session.bootstrap && isAdmin.value) loadRooms()
 })
 
+watch(
+  () => coreRuntime.recoverySerial,
+  () => {
+    if (session.bootstrap) void loadRooms()
+  },
+)
+
 let refreshTimer: number | undefined
 
 onMounted(() => {
@@ -310,8 +360,8 @@ onBeforeUnmount(() => {
   <div class="rooms-page">
     <ModulePageNav
       context="live"
-      :active-title="isInternalViewer ? '直播间列表' : '直播间'"
-      :active-nav-title="isInternalViewer ? '直播间列表' : '直播间'"
+      active-title="直播间列表"
+      active-nav-title="直播间列表"
     />
     <section class="feature-workspace-hero">
       <div>
@@ -325,7 +375,7 @@ onBeforeUnmount(() => {
           }}
         </p>
       </div>
-      <button v-if="canManageRooms" class="primary-button" :disabled="!session.bootstrap" @click="openCreate">
+      <button v-if="canManageRooms" class="primary-button" :disabled="!session.bootstrap || !coreActionsAvailable" @click="openCreate">
         <span class="button-plus">＋</span>
         添加直播间
       </button>
@@ -353,7 +403,7 @@ onBeforeUnmount(() => {
             </select>
           </label>
 
-          <button class="ghost-button" :disabled="loading" @click="loadRooms">
+          <button class="ghost-button" :disabled="loading || !coreActionsAvailable" @click="loadRooms">
             {{ loading ? '刷新中…' : '刷新' }}
           </button>
         </div>
@@ -431,7 +481,7 @@ onBeforeUnmount(() => {
                 v-if="canControlMonitoring"
                 class="room-action-button room-action-connect"
                 type="button"
-                :disabled="room.monitor_enabled || monitorBusy(room.id)"
+                :disabled="!coreActionsAvailable || room.monitor_enabled || monitorBusy(room.id)"
                 @click="changeMonitoring(room, true, $event)"
               >
                 <span class="room-action-symbol" aria-hidden="true">⛓</span>
@@ -441,7 +491,7 @@ onBeforeUnmount(() => {
                 v-if="canControlMonitoring"
                 class="room-action-button room-action-stop"
                 type="button"
-                :disabled="!room.monitor_enabled || monitorBusy(room.id)"
+                :disabled="!coreActionsAvailable || !room.monitor_enabled || monitorBusy(room.id)"
                 @click="changeMonitoring(room, false, $event)"
               >
                 <span class="room-action-symbol room-action-stop-symbol" aria-hidden="true">■</span>
@@ -451,6 +501,7 @@ onBeforeUnmount(() => {
                 v-if="canDeleteRoom(room)"
                 class="room-action-button room-action-delete"
                 type="button"
+                :disabled="!coreActionsAvailable"
                 title="删除直播间"
                 @click="removeRoom(room, $event)"
               >
@@ -505,20 +556,21 @@ onBeforeUnmount(() => {
                     v-if="canControlMonitoring"
                     class="room-action-button room-action-connect compact"
                     type="button"
-                    :disabled="room.monitor_enabled || monitorBusy(room.id)"
+                    :disabled="!coreActionsAvailable || room.monitor_enabled || monitorBusy(room.id)"
                     @click="changeMonitoring(room, true, $event)"
                   ><span class="room-action-symbol" aria-hidden="true">⛓</span>连接</button>
                   <button
                     v-if="canControlMonitoring"
                     class="room-action-button room-action-stop compact"
                     type="button"
-                    :disabled="!room.monitor_enabled || monitorBusy(room.id)"
+                    :disabled="!coreActionsAvailable || !room.monitor_enabled || monitorBusy(room.id)"
                     @click="changeMonitoring(room, false, $event)"
                   ><span class="room-action-symbol room-action-stop-symbol" aria-hidden="true">■</span>停止</button>
                   <button
                     v-if="canDeleteRoom(room)"
                     class="room-action-button room-action-delete compact"
                     type="button"
+                    :disabled="!coreActionsAvailable"
                     @click="removeRoom(room, $event)"
                   ><span class="room-action-symbol" aria-hidden="true">×</span>删除</button>
                   <button

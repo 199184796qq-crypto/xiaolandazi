@@ -97,3 +97,20 @@ func TestReceiverCompletionDoesNotControlTaskLifecycle(t *testing.T) {
 		t.Fatalf("server clock did not end task: %#v", snapshot)
 	}
 }
+
+func TestControlBroadcastReachesRoomSubscribers(t *testing.T) {
+	hub := New()
+	controls, cancel := hub.SubscribeControls(33)
+	defer cancel()
+	hub.BroadcastControl(ControlEvent{
+		RoomID: 33, Action: "pause", SpeechTaskID: "task-33", ProgramID: "program-33", PositionMS: 1234,
+	})
+	select {
+	case event := <-controls:
+		if event.Action != "pause" || event.SpeechTaskID != "task-33" || event.PositionMS != 1234 || event.OccurredAt.IsZero() {
+			t.Fatalf("unexpected control event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("control event was not broadcast")
+	}
+}

@@ -61,3 +61,35 @@ func (s *Server) finishAISingleUse(
 		log.Printf("ai single-use finish id=%s status=%s: %v", externalID, status, err)
 	}
 }
+
+func (s *Server) finishAISingleUseWithUsage(
+	ctx context.Context,
+	externalID string,
+	status string,
+	provider string,
+	modelName string,
+	latencyMS int64,
+	inputTokens int64,
+	outputTokens int64,
+	totalTokens int64,
+	metadata map[string]any,
+) {
+	if externalID == "" {
+		return
+	}
+	if err := s.store.FinishAISingleUseEventWithUsage(
+		ctx,
+		externalID,
+		status,
+		provider,
+		modelName,
+		latencyMS,
+		inputTokens,
+		outputTokens,
+		totalTokens,
+		metadata,
+		time.Now().UTC(),
+	); err != nil {
+		log.Printf("ai single-use finish with usage id=%s status=%s: %v", externalID, status, err)
+	}
+}

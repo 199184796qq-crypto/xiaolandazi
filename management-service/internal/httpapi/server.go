@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	auditlog "livecompanion/management/internal/audit"
@@ -37,6 +39,8 @@ type Server struct {
 	publicWebURL string
 	assetStorage *assetstorage.Registry
 	assetURLTTL  time.Duration
+	coreStatusMu sync.RWMutex
+	coreStatus   coreRuntimeStatus
 }
 
 func New(
@@ -96,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/sessions/logout-others", s.authLogoutOtherSessions)
 
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
+	mux.HandleFunc("GET /api/v1/runtime/core-status", s.getCoreRuntimeStatus)
 	mux.HandleFunc("GET /api/v1/tenants", s.listTenants)
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
@@ -105,6 +110,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/agent-prompts/{key}/history", s.systemAgentPromptHistory)
 	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/rollback", s.systemRollbackAgentPromptConfig)
 	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/reset", s.systemResetAgentPromptConfig)
+	mux.HandleFunc("GET /api/v1/system/agent-routing", s.systemAgentRoutingGet)
+	mux.HandleFunc("PUT /api/v1/system/agent-routing/draft", s.systemAgentRoutingSaveDraft)
+	mux.HandleFunc("POST /api/v1/system/agent-routing/publish", s.systemAgentRoutingPublish)
+	mux.HandleFunc("GET /api/v1/system/agent-routing/history", s.systemAgentRoutingHistory)
+	mux.HandleFunc("POST /api/v1/system/agent-routing/rollback", s.systemAgentRoutingRollback)
+	mux.HandleFunc("POST /api/v1/system/agent-routing/assist", s.systemAgentRoutingAssist)
+	mux.HandleFunc("GET /api/v1/system/agent-understanding", s.systemAgentUnderstandingList)
+	mux.HandleFunc("GET /api/v1/system/agent-understanding/effective", s.systemAgentUnderstandingEffective)
+	mux.HandleFunc("GET /api/v1/system/agent-understanding/models", s.systemAgentUnderstandingModels)
+	mux.HandleFunc("PUT /api/v1/system/agent-understanding/policy", s.systemAgentUnderstandingUpsert)
+	mux.HandleFunc("DELETE /api/v1/system/agent-understanding/policy/{scopeType}/{scopeID}", s.systemAgentUnderstandingDelete)
 	mux.HandleFunc("PUT /api/v1/system/membership-room-limits", s.systemUpdateMembershipRoomLimits)
 	mux.HandleFunc("GET /api/v1/system/dictionaries/{category}", s.systemDictionaryList)
 	mux.HandleFunc("POST /api/v1/system/dictionaries", s.systemDictionaryCreate)
@@ -139,6 +155,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/account/profile", s.accountUpdateProfile)
 	mux.HandleFunc("POST /api/v1/account/avatar", s.accountUploadAvatar)
 	mux.HandleFunc("GET /api/v1/account/avatar/{file}", s.accountAvatarFile)
+	mux.HandleFunc("GET /api/v1/account/ui-preferences", s.getUserUIPreferences)
+	mux.HandleFunc("PUT /api/v1/account/ui-preferences", s.updateUserUIPreferences)
 	mux.HandleFunc("GET /api/v1/finance/dashboard", s.financeDashboard)
 	mux.HandleFunc("POST /api/v1/finance/recharge-request", s.financeCreateRechargeRequest)
 	mux.HandleFunc("GET /api/v1/finance/referral-wallet", s.customerReferralWallet)
@@ -280,6 +298,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/client-agent/chat", s.clientAgentChat)
 	mux.HandleFunc("GET /api/v1/internal-agent/context", s.internalAgentContext)
 	mux.HandleFunc("POST /api/v1/internal-agent/chat", s.internalAgentChat)
+	mux.HandleFunc("POST /api/v1/internal-agent/actions/execute", s.internalAgentExecuteAction)
 	mux.HandleFunc("GET /api/v1/system-agent/context", s.systemAgentContext)
 	mux.HandleFunc("POST /api/v1/system-agent/chat", s.systemAgentChat)
 
@@ -340,6 +359,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/clone", s.liveCloneVoiceProfile)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/preview", s.liveVoiceProfilePreview)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/chat", s.liveAgentChat)
+	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/interpret", s.liveStrategyIntentInterpret)
+	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/actions/execute", s.liveStrategyExecuteAction)
 	mux.HandleFunc("GET /api/v1/live/policies/industries", s.livePolicyIndustries)
 	mux.HandleFunc("GET /api/v1/live/support/staff", s.liveSupportStaff)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/support-authorizations", s.liveRoomSupportAuthorizations)
@@ -372,13 +393,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live-agent-plans", s.liveAgentPlanList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans", s.liveAgentPlanCreate)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}", s.liveAgentPlanGet)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}", s.liveAgentPlanUpdate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/archive", s.liveAgentPlanArchive)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/room-bindings", s.liveAgentPlanBindRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan", s.liveAgentPlanCurrentForRoom)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plans", s.liveAgentPlansForRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/review", s.liveRoomReview)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/room-bindings/{roomID}", s.liveAgentPlanUnbindRoom)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/terms", s.liveAgentPlanUpsertTerm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/facts", s.liveAgentPlanFactList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/adopt", s.liveAgentPlanFactAdopt)
+	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactUpdate)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactDelete)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/product-links", s.liveAgentPlanProductLinkList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-links/adopt", s.liveAgentPlanProductLinkAdopt)
+	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}", s.liveAgentPlanProductLinkUpdate)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}", s.liveAgentPlanProductLinkDelete)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/benefits", s.liveAgentPlanBenefitList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/benefits/adopt", s.liveAgentPlanBenefitAdopt)
+	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/benefits/{benefitID}", s.liveAgentPlanBenefitUpdate)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/benefits/{benefitID}", s.liveAgentPlanBenefitDelete)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/scripts", s.liveAgentPlanScriptList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts", s.liveAgentPlanScriptCreate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/analyze-preview", s.liveAgentPlanScriptAnalyzePreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/recognize-image-preview", s.liveAgentPlanScriptRecognizeImagePreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/preview", s.liveAgentPlanFullShowPreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/audit-preview", s.liveAgentPlanFullShowAuditPreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/variants/{variantKey}/regenerate-preview", s.liveAgentPlanFullShowRegeneratePreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/variants/{variantKey}/voice", s.liveAgentPlanFullShowVariantVoice)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/variants/{variantKey}/voice/subtitles", s.liveAgentPlanFullShowVariantSubtitleRebuild)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/custom-mainline/upload", s.liveAgentPlanCustomMainlineUpload)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/custom-mainline/rebuild", s.liveAgentPlanCustomMainlineRebuild)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/versions", s.liveAgentPlanVersionList)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/workspace", s.liveAgentPlanWorkspaceGet)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/versions", s.liveAgentPlanVersionCreate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/versions/{versionID}/publish", s.liveAgentPlanVersionPublish)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan/published-version", s.liveAgentPlanPublishedVersionForRoom)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/scripts/{scriptID}", s.liveAgentPlanScriptUpdate)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/script-references", s.liveAgentPlanScriptReferenceList)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/script-references", s.liveAgentPlanScriptReferenceCreate)
+	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/script-references/{referenceID}", s.liveAgentPlanScriptReferenceUpdate)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/script-references/{referenceID}", s.liveAgentPlanScriptReferenceDelete)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/policy", s.liveRoomPolicyContext)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/policy/drafts", s.liveRoomPolicyCreateDraft)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/policy/versions/{versionID}/publish", s.liveRoomPolicyPublish)
@@ -673,7 +729,6 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isCustomer := actor.Role == "customer"
-	isOperationsDelete := false
 	if !isCustomer {
 		allowed := actor.IsPlatformAdmin()
 		if !allowed && actor.IsInternalStaff() {
@@ -696,7 +751,6 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "合作中的商户直播间禁止运维删除")
 			return
 		}
-		isOperationsDelete = true
 	}
 
 	query := url.Values{}
@@ -726,20 +780,6 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		if cleanupErr != nil {
 			log.Printf("cleanup deleted room derived state tenant=%d room=%d: %v", tenantID, roomID, cleanupErr)
 		}
-	}
-	if isOperationsDelete &&
-		resp.StatusCode >= http.StatusOK &&
-		resp.StatusCode < http.StatusMultipleChoices {
-		_ = s.audit.Record(r.Context(), model.AdminAuditLog{
-			ActorUserID:    actor.UserID,
-			ActorUsername:  actor.Username,
-			Action:         "room.delete_non_cooperating",
-			TargetTenantID: tenantID,
-			HTTPMethod:     r.Method,
-			Path:           r.URL.Path,
-			ClientIP:       requestClientIP(r),
-			Result:         "http_" + strconv.Itoa(resp.StatusCode),
-		})
 	}
 	s.copyCoreResponse(w, resp)
 }
@@ -1173,10 +1213,38 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	return readJSONWithLimit(w, r, target, 1<<20)
+}
+
+func readAgentJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	return readJSONWithLimit(w, r, target, 8<<20)
+}
+
+func readAgentCompatibleJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	return readJSONWithLimitCompatible(w, r, target, 16<<20)
+}
+
+func readJSONWithLimit(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(target)
+}
+
+func readJSONWithLimitCompatible(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain a single JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

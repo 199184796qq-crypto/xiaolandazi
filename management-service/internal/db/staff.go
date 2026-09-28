@@ -11,7 +11,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-const staffSeedVersion = "staff_seed_v20"
+const staffSeedVersion = "staff_seed_v21"
 
 var ErrMutuallyExclusiveStaffRoles = errors.New("mutually exclusive staff roles")
 
@@ -25,6 +25,7 @@ var staffPermissionSeeds = []struct {
 	{"system.settings.view", "system", "view_settings", "查看本人权限范围内的系统设定"},
 	{"system.settings.liveops.manage", "system", "manage_liveops_settings", "维护直播运维相关系统设定"},
 	{"system.settings.inventory.manage", "system", "manage_inventory_settings", "维护仓库、物流与产品基础字典"},
+	{"system.settings.agent_routing.manage", "system", "manage_agent_routing", "维护智能体理解策略、模型预算、路由 JSON 与版本"},
 	{"staff.group.view", "staff", "view_groups", "查看部门"},
 	{"staff.group.manage", "staff", "manage_groups", "管理部门"},
 	{"staff.role.view", "staff", "view_roles", "查看角色"},

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,6 +25,49 @@ type liveAgentChatInput struct {
 	Message          string                     `json:"message"`
 	AnchorTranscript string                     `json:"anchor_transcript"`
 	History          []liveAgentChatHistoryItem `json:"history"`
+	ImageURLs        []string                   `json:"image_urls,omitempty"`
+}
+
+const (
+	maxAgentChatImages          = 4
+	maxAgentChatImageDataURLLen = 2200000
+	maxAgentChatImageTotalLen   = 5600000
+)
+
+func sanitizeAgentChatImageURLs(values []string) ([]string, error) {
+	if len(values) > maxAgentChatImages {
+		return nil, fmt.Errorf("单次最多引用 %d 张图片", maxAgentChatImages)
+	}
+	result := make([]string, 0, len(values))
+	total := 0
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		comma := strings.IndexByte(value, ',')
+		if comma <= 0 || comma >= len(value)-1 {
+			return nil, fmt.Errorf("图片数据格式错误")
+		}
+		header := strings.ToLower(value[:comma])
+		switch header {
+		case "data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64":
+		default:
+			return nil, fmt.Errorf("仅支持 PNG、JPEG、WEBP 图片")
+		}
+		if len(value) > maxAgentChatImageDataURLLen {
+			return nil, fmt.Errorf("图片过大，请重新粘贴较小图片")
+		}
+		if _, err := base64.StdEncoding.DecodeString(value[comma+1:]); err != nil {
+			return nil, fmt.Errorf("图片数据损坏")
+		}
+		total += len(value)
+		if total > maxAgentChatImageTotalLen {
+			return nil, fmt.Errorf("本次引用图片总大小过大")
+		}
+		result = append(result, value)
+	}
+	return result, nil
 }
 
 type liveAgentChatOutput struct {
@@ -49,8 +93,14 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input liveAgentChatInput
-	if err := readJSON(w, r, &input); err != nil {
+	if err := readAgentJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "场控 Agent 请求格式错误")
+		return
+	}
+	var imageErr error
+	input.ImageURLs, imageErr = sanitizeAgentChatImageURLs(input.ImageURLs)
+	if imageErr != nil {
+		writeError(w, http.StatusBadRequest, imageErr.Error())
 		return
 	}
 	input.Message = strings.TrimSpace(input.Message)
@@ -108,6 +158,14 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 		effectivePolicyPrompt = strings.TrimSpace(effectivePolicyPrompt + "\n\n" + memoryPrompt)
 	}
 
+	if liveAgentChatMutationIntent(input.Message) {
+		writeJSON(w, http.StatusOK, liveAgentChatOutput{
+			Reply: "这条聊天消息本身没有执行保存或发布。请先完成智能体学习修正，再使用“采用”或“保存发布”；只有系统真实写入并返回版本号后才算生效。",
+			Kind:  "local",
+		})
+		return
+	}
+
 	if reply, matched := localLiveAgentAnswer(input.Message); matched {
 		writeJSON(w, http.StatusOK, liveAgentChatOutput{
 			Reply: reply,
@@ -140,6 +198,12 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 - 语气像长期合作的工作搭档：亲近、自然、简洁，可以适度幽默，但不要装熟、过度热情或制造情感依赖。
 - 不要假装自己有真实身体或现实生活经历。
 - 只有用户明确要求修改、记录、采用某项业务规则时，才把它理解为业务修改；普通聊天不能自动变成规则或事实。
+
+【执行真实性】
+- 当前聊天接口只负责理解、整理和回答，本接口本身不会写数据库、发布配置或让活动生效。
+- 在没有真实写入接口返回成功结果时，禁止说“已记录”“已更新”“已保存”“已发布”“已生效”“已经添加”等完成态文案。
+- 用户提出新增、修改、保存、采用等要求时，可以整理成候选、指出缺失字段或提示用户确认，但必须明确说明“尚未写入/需要确认”。
+- 只有外层业务动作真实执行成功并返回版本或写入结果后，才由系统界面告知用户已经完成。
 `)
 	roomRef := roomID
 	invocationID := s.beginAISingleUse(r.Context(), actor, &roomRef, "live_agent", map[string]any{"mode": "chat"})
@@ -176,6 +240,20 @@ func liveAgentLocation() *time.Location {
 		return time.Local
 	}
 	return location
+}
+
+func liveAgentChatMutationIntent(message string) bool {
+	normalized := strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "",
+		"，", "", ",", "", "。", "", ".", "", "？", "", "?", "", "！", "", "!", "",
+	).Replace(strings.TrimSpace(message))
+	switch normalized {
+	case "采用", "保存", "发布", "保存发布", "保存并发布", "保存采用", "保存并采用",
+		"就按这个", "按这个来", "用这个", "就这样", "确定采用":
+		return true
+	default:
+		return false
+	}
 }
 
 func localLiveAgentAnswer(message string) (string, bool) {
@@ -228,6 +306,9 @@ func callLiveAgent(
 	if strings.TrimSpace(effectivePolicyPrompt) != "" {
 		systemPrompt += "\n\n【当前直播间已生效业务策略】\n" + strings.TrimSpace(effectivePolicyPrompt)
 	}
+	if len(input.ImageURLs) > 0 {
+		systemPrompt += "\n\n【图片理解要求】用户在本轮附带了图片。结合图片中直接可见的文字、布局、控件、商品和对象理解用户说的‘这里/这个/图里’具体指什么；看不清就明确说明，不得猜测。图片只是本轮上下文，不代表用户已经确认任何写入动作，涉及修改或采用仍遵守原有确认流程。"
+	}
 
 	messages := []agentgateway.Message{
 		{Role: "system", Content: systemPrompt},
@@ -259,7 +340,7 @@ func callLiveAgent(
 			input.Message,
 		)
 	}
-	messages = append(messages, agentgateway.Message{Role: "user", Content: userContent})
+	messages = append(messages, agentgateway.Message{Role: "user", Content: userContent, ImageURLs: input.ImageURLs})
 
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
 		Messages:       messages,

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"livecompanion/core/internal/audiohub"
+	"livecompanion/core/internal/audioout"
 )
 
 func (s *Server) audioPublic(next http.Handler) http.Handler {
@@ -166,6 +167,8 @@ func (s *Server) streamAudioRoom(w http.ResponseWriter, r *http.Request) {
 
 	ch, latest, cancel := hub.Subscribe(roomID)
 	defer cancel()
+	controlCh, cancelControls := hub.SubscribeControls(roomID)
+	defer cancelControls()
 	_ = writeAudioSSE(w, "connected", map[string]any{
 		"room_id":     roomID,
 		"receiver_id": receiverID,
@@ -187,6 +190,14 @@ func (s *Server) streamAudioRoom(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := writeAudioSSE(w, "task", task); err != nil {
+				return
+			}
+			flusher.Flush()
+		case control, open := <-controlCh:
+			if !open {
+				return
+			}
+			if err := writeAudioSSE(w, "control", control); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -299,6 +310,28 @@ func (s *Server) reportAudioTaskEvent(w http.ResponseWriter, r *http.Request) {
 	if err := hub.ReportEvent(r.PathValue("taskID"), event); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// Core-native browser/device receivers report directly to the audio hub,
+	// so feed those events into the same interaction state machine used by the
+	// legacy callback path. This makes actual PLAYING/COMPLETED authoritative.
+	if snapshot, exists := hub.Snapshot(r.PathValue("taskID")); exists &&
+		strings.EqualFold(strings.TrimSpace(snapshot.Task.Kind), "interaction_tts") {
+		if state := s.audioDevState(); state != nil {
+			occurredAt := event.OccurredAt
+			if occurredAt.IsZero() {
+				occurredAt = time.Now().UTC()
+			}
+			s.applyAudioInteractionPlaybackEvent(r.Context(), state, audioout.PlaybackEvent{
+				SpeechTaskID: snapshot.Task.ID,
+				RoomID:       snapshot.Task.RoomID,
+				SessionID:    snapshot.Task.SessionID,
+				ReceiverID:   strings.TrimSpace(event.ReceiverID),
+				Status:       strings.ToUpper(strings.TrimSpace(event.Status)),
+				ProgressMS:   event.ProgressMS,
+				Error:        event.Error,
+				OccurredAt:   occurredAt,
+			})
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
 }

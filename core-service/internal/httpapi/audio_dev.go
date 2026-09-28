@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +22,10 @@ type audioTaskClient interface {
 	ProgramSnapshot(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	StopTestProgram(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	Enabled() bool
+}
+
+type audioInteractionCompleter interface {
+	CompleteProgramInteraction(context.Context, int64, string) (audioout.RoomProgramSnapshot, error)
 }
 
 type audioDevState struct {
@@ -417,6 +422,14 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
 	}
+	s.applyAudioInteractionPlaybackEvent(r.Context(), state, event)
+	writeJSON(w, http.StatusOK, map[string]any{"accepted": true})
+}
+
+func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *audioDevState, event audioout.PlaybackEvent) {
+	if state == nil {
+		return
+	}
 	state.mu.Lock()
 	state.events[event.SpeechTaskID] = event
 	meta := state.interactions[event.SpeechTaskID]
@@ -448,6 +461,18 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	state.mu.Unlock()
+	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil {
+		if completer, ok := state.client.(audioInteractionCompleter); ok {
+			if snapshot, resumeErr := completer.CompleteProgramInteraction(ctx, meta.RoomID, event.SpeechTaskID); resumeErr != nil {
+				log.Printf("core audio receiver-terminal resume room=%d task=%s status=%s failed: %v", meta.RoomID, event.SpeechTaskID, event.Status, resumeErr)
+			} else {
+				log.Printf(
+					"core audio receiver-terminal resume room=%d task=%s status=%s current_ms=%d track=%s",
+					meta.RoomID, event.SpeechTaskID, event.Status, snapshot.CurrentMS, snapshot.TrackID,
+				)
+			}
+		}
+	}
 	if meta != nil && meta.DecisionID != "" {
 		if s.speechRuntime != nil {
 			status := speechruntime.StatusPlaying
@@ -459,6 +484,16 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 			case "READY":
 				status = speechruntime.StatusReady
 			}
+			var switchAtMS *int
+			var startedAt *time.Time
+			if current, snapshotErr := s.speechRuntime.Snapshot(meta.RoomID); snapshotErr == nil {
+				switchAtMS = current.Interrupt.SwitchAtMS
+				startedAt = current.Interrupt.StartedAt
+			}
+			if (event.Status == "PLAYING" || event.Status == "PROGRESS") && !event.OccurredAt.IsZero() {
+				at := event.OccurredAt.UTC()
+				startedAt = &at
+			}
 			_, _ = s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
 				Track:        speechruntime.TrackInterrupt,
 				Status:       status,
@@ -469,6 +504,8 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 				AudioURL:     meta.AudioURL,
 				DecisionID:   meta.DecisionID,
 				SpeechTaskID: event.SpeechTaskID,
+				SwitchAtMS:   switchAtMS,
+				StartedAt:    startedAt,
 			})
 		}
 		if event.Status == "COMPLETED" && s.agentDecisions != nil {
@@ -520,7 +557,6 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 			}, "", 0)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": true})
 }
 
 func (s *Server) getDevAudioTaskState(w http.ResponseWriter, r *http.Request) {

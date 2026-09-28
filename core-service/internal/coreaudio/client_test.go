@@ -116,8 +116,7 @@ func TestInteractionSuspendsAndResumesMainline(t *testing.T) {
 		t.Fatalf("interaction not active: %#v", snapshot)
 	}
 	interactionID := snapshot.Task.ID
-	time.Sleep(110 * time.Millisecond)
-	snapshot, err = client.ProgramSnapshot(context.Background(), 15)
+	snapshot, err = client.CompleteProgramInteraction(context.Background(), 15, interactionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,5 +125,116 @@ func TestInteractionSuspendsAndResumesMainline(t *testing.T) {
 	}
 	if active := hub.ActiveTask(15); active == nil || active.ID != snapshot.Task.ID {
 		t.Fatalf("hub did not resume mainline: %#v", active)
+	}
+}
+
+func TestProgramPauseResumeKeepsPlaybackCursor(t *testing.T) {
+	client, hub := newTestClient(t, 420)
+	controls, cancelControls := hub.SubscribeControls(18)
+	defer cancelControls()
+	start, err := client.StartTestProgram(context.Background(), 18, "s18", "main", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.Task == nil {
+		t.Fatal("missing mainline task")
+	}
+	time.Sleep(55 * time.Millisecond)
+	paused, err := client.PauseProgram(context.Background(), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paused.Running || !paused.Suspended || paused.CurrentMS < 30 {
+		t.Fatalf("unexpected paused snapshot: %#v", paused)
+	}
+	frozenMS := paused.CurrentMS
+	select {
+	case control := <-controls:
+		if control.Action != "pause" || control.SpeechTaskID != start.Task.ID || control.PositionMS != frozenMS {
+			t.Fatalf("unexpected pause control: %#v frozen=%d", control, frozenMS)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pause did not broadcast receiver control")
+	}
+	time.Sleep(70 * time.Millisecond)
+	stillPaused, err := client.ProgramSnapshot(context.Background(), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stillPaused.Suspended || stillPaused.CurrentMS != frozenMS {
+		t.Fatalf("pause cursor moved: frozen=%d snapshot=%#v", frozenMS, stillPaused)
+	}
+	resumed, err := client.ResumeProgram(context.Background(), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Suspended || resumed.Task == nil || resumed.CurrentMS < frozenMS-5 {
+		t.Fatalf("program did not resume from cursor %d: %#v", frozenMS, resumed)
+	}
+	time.Sleep(35 * time.Millisecond)
+	after, err := client.ProgramSnapshot(context.Background(), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CurrentMS <= frozenMS {
+		t.Fatalf("resumed cursor did not advance: frozen=%d after=%#v", frozenMS, after)
+	}
+}
+
+func TestNormalizeProgramTimelineRejectsCommaAsSafeCut(t *testing.T) {
+	timeline, err := normalizeProgramTimeline([]audioout.ProgramTimelineSegment{
+		{SegmentID: "A-001", Index: 1, StartMS: 0, EndMS: 1000, Text: "先把产品信息说清楚，", SafeCut: true},
+		{SegmentID: "A-002", Index: 2, StartMS: 1000, EndMS: 2000, Text: "这一句到这里完整结束。", SafeCut: true},
+	}, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeline[0].SafeCut {
+		t.Fatalf("comma chunk must not remain a safe cut: %#v", timeline[0])
+	}
+	if !timeline[1].SafeCut {
+		t.Fatalf("sentence ending should remain a safe cut: %#v", timeline[1])
+	}
+}
+
+func TestPublishedProgramRotatesFormalTracks(t *testing.T) {
+	client, _ := newTestClient(t, 100)
+	trackAPath := filepath.Join(t.TempDir(), "a.wav")
+	trackBPath := filepath.Join(t.TempDir(), "b.wav")
+	if err := os.WriteFile(trackAPath, testWAV(70), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trackBPath, testWAV(90), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serverA := newWAVServer(t, trackAPath)
+	defer serverA.Close()
+	serverB := newWAVServer(t, trackBPath)
+	defer serverB.Close()
+
+	start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{
+		RoomID:    21,
+		SessionID: "live-runtime-99",
+		Label:     "直播智能体 V7 主线",
+		VersionID: 107,
+		VersionNo: 7,
+		Tracks: []audioout.ProgramTrack{
+			{ID: "A", Label: "A稿", AudioURL: serverA.URL},
+			{ID: "B", Label: "B稿", AudioURL: serverB.URL},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.Running || start.VersionID != 107 || start.VersionNo != 7 || start.TrackCount != 2 || start.TrackID != "A" {
+		t.Fatalf("unexpected published program start: %#v", start)
+	}
+	time.Sleep(100 * time.Millisecond)
+	next, err := client.ProgramSnapshot(context.Background(), 21)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Running || next.TrackID != "B" || next.VersionNo != 7 || next.Task == nil || next.Task.AudioURL != serverB.URL {
+		t.Fatalf("published program did not rotate to B track: %#v", next)
 	}
 }

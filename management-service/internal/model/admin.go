@@ -47,16 +47,30 @@ type AgentSummary struct {
 	CustomerCount  int64     `json:"customer_count"`
 }
 type AdminAuditLog struct {
-	ID             string    `json:"id"`
-	OccurredAt     time.Time `json:"occurred_at"`
-	ActorUserID    int64     `json:"actor_user_id"`
-	ActorUsername  string    `json:"actor_username"`
-	Action         string    `json:"action"`
-	TargetUserID   int64     `json:"target_user_id,omitempty"`
-	TargetUsername string    `json:"target_username,omitempty"`
-	TargetTenantID int64     `json:"target_tenant_id,omitempty"`
-	HTTPMethod     string    `json:"http_method,omitempty"`
-	Path           string    `json:"path,omitempty"`
-	ClientIP       string    `json:"client_ip,omitempty"`
-	Result         string    `json:"result"`
+	ID               string    `json:"id"`
+	OccurredAt       time.Time `json:"occurred_at"`
+	ActorUserID      int64     `json:"actor_user_id"`
+	ActorUsername    string    `json:"actor_username"`
+	ActorRole        string    `json:"actor_role,omitempty"`
+	ActorType        string    `json:"actor_type,omitempty"`
+	Source           string    `json:"source,omitempty"`
+	Action           string    `json:"action"`
+	TargetUserID     int64     `json:"target_user_id,omitempty"`
+	TargetUsername   string    `json:"target_username,omitempty"`
+	TargetTenantID   int64     `json:"target_tenant_id,omitempty"`
+	TargetRoomID     int64     `json:"target_room_id,omitempty"`
+	ObjectType       string    `json:"object_type,omitempty"`
+	ObjectID         string    `json:"object_id,omitempty"`
+	ObjectName       string    `json:"object_name,omitempty"`
+	Reason           string    `json:"reason,omitempty"`
+	BeforeState      string    `json:"before_state,omitempty"`
+	AfterState       string    `json:"after_state,omitempty"`
+	RuntimeSessionID int64     `json:"runtime_session_id,omitempty"`
+	CoreBootID       string    `json:"core_boot_id,omitempty"`
+	RequestID        string    `json:"request_id,omitempty"`
+	DetailJSON       string    `json:"detail_json,omitempty"`
+	HTTPMethod       string    `json:"http_method,omitempty"`
+	Path             string    `json:"path,omitempty"`
+	ClientIP         string    `json:"client_ip,omitempty"`
+	Result           string    `json:"result"`
 }

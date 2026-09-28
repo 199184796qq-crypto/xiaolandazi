@@ -1,6 +1,6 @@
 param(
   [string]$Candidate = '',
-  [ValidateSet('management', 'supervisor')][string]$Service = 'management',
+  [ValidateSet('management', 'core', 'supervisor')][string]$Service = 'management',
   [ValidateRange(30, 600)][int]$StartupTimeoutSeconds = 240,
   [string]$ExpectedCurrentSHA256 = ''
 )
@@ -10,11 +10,16 @@ $RunDir = Join-Path $Root 'data/run'
 $Task = 'LiveCompanion-Supervisor'
 $SupervisorExe = Join-Path $Root 'supervisor/bin/livecompanion-supervisor.exe'
 $ManagementExe = Join-Path $Root 'management-service/bin/management-service.exe'
+$CoreExe = Join-Path $Root 'core-service/bin/core-service.exe'
 $Launcher = Join-Path $Root 'scripts/run-supervisor-with-local-env.ps1'
 if ($Service -eq 'supervisor') {
   $Bin = (Resolve-Path (Join-Path $Root 'supervisor/bin')).Path
   $Target = $SupervisorExe
   if (-not $Candidate) { $Candidate = 'supervisor/bin/livecompanion-supervisor.singleton-next.exe' }
+} elseif ($Service -eq 'core') {
+  $Bin = (Resolve-Path (Join-Path $Root 'core-service/bin')).Path
+  $Target = $CoreExe
+  if (-not $Candidate) { $Candidate = 'core-service/bin/core-service.next.exe' }
 } else {
   $Bin = (Resolve-Path (Join-Path $Root 'management-service/bin')).Path
   $Target = $ManagementExe
@@ -23,6 +28,7 @@ if ($Service -eq 'supervisor') {
 $Target = [IO.Path]::GetFullPath($Target)
 $SupervisorExe = [IO.Path]::GetFullPath($SupervisorExe)
 $ManagementExe = [IO.Path]::GetFullPath($ManagementExe)
+$CoreExe = [IO.Path]::GetFullPath($CoreExe)
 $Source = (Resolve-Path (Join-Path $Root $Candidate)).Path
 if (-not $Source.StartsWith($Bin + '\', [StringComparison]::OrdinalIgnoreCase) -or $Source -eq $Target) {
   throw 'Candidate must be a distinct binary inside the selected service bin directory.'
@@ -73,11 +79,11 @@ function Http-Status([string]$Url) {
   try { return [int](Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3).StatusCode }
   catch { if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }; return 0 }
 }
-function Wait-Healthy([bool]$RequireSalesRoutes) {
+function Wait-Healthy([string]$HealthUrl, [bool]$RequireSalesRoutes) {
   $end = (Get-Date).AddSeconds($StartupTimeoutSeconds)
   while ((Get-Date) -lt $end) {
     $oneOwner = @(Find-OwnedProcess $SupervisorExe).Count -eq 1
-    $healthy = (Http-Status 'http://127.0.0.1:8080/healthz') -eq 200
+    $healthy = (Http-Status $HealthUrl) -eq 200
     if ($oneOwner -and $healthy -and (-not $RequireSalesRoutes -or (Http-Status 'http://127.0.0.1:8080/api/v1/sales/leads') -eq 401)) { return $true }
     Start-Sleep -Seconds 3
   }
@@ -91,10 +97,13 @@ try {
   $changed = $OriginalHash -ne $CandidateHash
   $backupReady = $false
   $writeAttempted = $false
+  $HealthUrl = if ($Service -eq 'core') { 'http://127.0.0.1:8081/healthz' } else { 'http://127.0.0.1:8080/healthz' }
+  $RequireSalesRoutes = $Service -ne 'core'
   try {
     Pause-Supervisor
     if ($changed) {
       if ($Service -eq 'management') { Stop-OwnedExecutable $ManagementExe }
+      if ($Service -eq 'core') { Stop-OwnedExecutable $CoreExe }
       if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash -ne $OriginalHash) { throw 'Binary changed concurrently; deployment stopped.' }
       Copy-Item -LiteralPath $Target -Destination $Backup
       $backupReady = $true
@@ -109,19 +118,19 @@ try {
     }
     throw
   } finally { Resume-Supervisor }
-  if (-not (Wait-Healthy $true)) {
+  if (-not (Wait-Healthy $HealthUrl $RequireSalesRoutes)) {
     if ($backupReady -and $writeAttempted) {
       try {
         Pause-Supervisor
         Stop-OwnedExecutable $Target
         Copy-Item -LiteralPath $Backup -Destination $Target -Force
       } finally { Resume-Supervisor }
-      $restored = Wait-Healthy $false
+      $restored = Wait-Healthy $HealthUrl $false
       throw ('Candidate unhealthy; prior binary restored. Healthy=' + $restored)
     }
     throw 'Service health or supervisor ownership did not recover.'
   }
-  Write-Output ('DEPLOYED ' + $Service + ': management health=200, sales leads=401, supervisor owners=1')
+  Write-Output ('DEPLOYED ' + $Service + ': health=200, supervisor owners=1')
   Write-Output ('Supervisor task=' + (Get-ScheduledTask -TaskName $Task).State)
   if ($backupReady) { Write-Output ('Backup=' + [IO.Path]::GetFileName($Backup)) }
 } finally { $Lease.Dispose() }

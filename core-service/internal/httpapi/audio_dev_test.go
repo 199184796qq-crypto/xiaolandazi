@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/roombrain"
@@ -19,6 +20,8 @@ import (
 type fakeAudioTaskClient struct {
 	input            audioout.CreateTestTaskInput
 	interactionInput audioout.InsertInteractionInput
+	completedRoomID  int64
+	completedTaskID  string
 }
 
 type fakeRoomBrain struct {
@@ -116,8 +119,56 @@ func (f *fakeAudioTaskClient) ProgramSnapshot(_ context.Context, roomID int64) (
 	}, nil
 }
 
+func (f *fakeAudioTaskClient) CompleteProgramInteraction(_ context.Context, roomID int64, taskID string) (audioout.RoomProgramSnapshot, error) {
+	f.completedRoomID = roomID
+	f.completedTaskID = taskID
+	return f.ProgramSnapshot(context.Background(), roomID)
+}
+
 func (f *fakeAudioTaskClient) StopTestProgram(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
 	return audioout.RoomProgramSnapshot{ProgramID: "program-1", RoomID: roomID, Running: false, Sequence: 1, Slot: "A", ServerTime: time.Now().UTC()}, nil
+}
+
+func TestPublicAudioCompletedResumesInteractionProgram(t *testing.T) {
+	client := &fakeAudioTaskClient{}
+	server := New(nil, nil, nil, nil, nil, "development", "core-secret")
+	hub := audiohub.New()
+	server.SetAudioHub(hub)
+	server.SetAudioClient(client, "http://core.local")
+
+	task, err := hub.Publish(audiohub.Task{
+		ID:         "interaction-public-1",
+		RoomID:     44,
+		SessionID:  "session-a",
+		Kind:       "interaction_tts",
+		Label:      "回答",
+		AudioURL:   "https://tts.example/reply.wav",
+		MimeType:   "audio/wav",
+		DurationMS: 900,
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := server.audioDevState()
+	state.mu.Lock()
+	state.interactions[task.ID] = &audioInteractionMeta{RoomID: 44}
+	state.mu.Unlock()
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/tasks/"+task.ID+"/events",
+		strings.NewReader(`{"receiver_id":"browser-a","status":"COMPLETED","progress_ms":900}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if client.completedRoomID != 44 || client.completedTaskID != task.ID {
+		t.Fatalf("completion room=%d task=%q", client.completedRoomID, client.completedTaskID)
+	}
 }
 
 func TestDevAudioRoundTripState(t *testing.T) {

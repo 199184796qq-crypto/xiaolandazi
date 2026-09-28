@@ -107,8 +107,12 @@ func TestSessionEndStopsPaidPipelineWithoutTouchingBaseState(t *testing.T) {
 		Question: "什么时候发货",
 	})
 	pipeline.Handle(model.RoomEvent{RoomID: 7, EventType: "session_end"}, basepipeline.Signal{RoomID: 7})
-	if runtime.IsWorking(7) {
-		t.Fatal("session end must stop paid runtime")
+	stopped := runtime.Get(7)
+	if stopped.State != agentwork.StateStopped {
+		t.Fatalf("session end state=%q want stopped", stopped.State)
+	}
+	if stopped.StopReason != agentwork.StopReasonLiveFinished {
+		t.Fatalf("session end stop reason=%q want live_finished", stopped.StopReason)
 	}
 	if got := decisions.Snapshot(7).Queue; len(got) != 0 {
 		t.Fatalf("session end must clear paid queue: %#v", got)

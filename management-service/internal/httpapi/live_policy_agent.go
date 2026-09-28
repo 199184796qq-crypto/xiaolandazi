@@ -20,6 +20,7 @@ type livePolicyAgentInput struct {
 	Message      string                     `json:"message"`
 	History      []liveAgentChatHistoryItem `json:"history,omitempty"`
 	Scene        string                     `json:"scene,omitempty"`
+	ImageURLs    []string                   `json:"image_urls,omitempty"`
 }
 
 type livePolicyAgentModelOutput struct {
@@ -49,8 +50,14 @@ type livePolicyConversationModelOutput struct {
 
 func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request) {
 	var input livePolicyAgentInput
-	if err := readJSON(w, r, &input); err != nil {
+	if err := readAgentJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "策略 Agent 请求格式错误")
+		return
+	}
+	var imageErr error
+	input.ImageURLs, imageErr = sanitizeAgentChatImageURLs(input.ImageURLs)
+	if imageErr != nil {
+		writeError(w, http.StatusBadRequest, imageErr.Error())
 		return
 	}
 	input.Layer = strings.ToUpper(strings.TrimSpace(input.Layer))
@@ -113,7 +120,7 @@ func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request
 		return
 	}
 	modelOutput, modelName, latencyMS, err := callPolicyAgentModel(
-		r.Context(), prompt, input.Message, input.History,
+		r.Context(), prompt, input.Message, input.History, input.ImageURLs,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "策略 Agent 暂时无法回答，请稍后再试")
@@ -124,7 +131,7 @@ func (s *Server) livePolicyAdminAgentChat(w http.ResponseWriter, r *http.Request
 		repairInstruction := s.store.AgentPromptValue(r.Context(), "policy.agent.repair", "上一轮草稿结构不完整，请重新输出完整 JSON。")
 		repairPrompt := strings.TrimSpace(prompt + "\n\n【结构修复要求】\n" + repairInstruction)
 		repaired, repairedModel, repairedLatency, repairErr := callPolicyAgentModel(
-			r.Context(), repairPrompt, input.Message, input.History,
+			r.Context(), repairPrompt, input.Message, input.History, input.ImageURLs,
 		)
 		if repairErr != nil {
 			writeError(w, http.StatusBadGateway, "策略 Agent 草稿结构不完整，自动修复失败，请重试")
@@ -193,8 +200,14 @@ func (s *Server) liveRoomPolicyAgentChat(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var input livePolicyAgentInput
-	if err := readJSON(w, r, &input); err != nil {
+	if err := readAgentJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "直播间策略 Agent 请求格式错误")
+		return
+	}
+	var imageErr error
+	input.ImageURLs, imageErr = sanitizeAgentChatImageURLs(input.ImageURLs)
+	if imageErr != nil {
+		writeError(w, http.StatusBadRequest, imageErr.Error())
 		return
 	}
 	input.Message = strings.TrimSpace(input.Message)
@@ -260,7 +273,7 @@ func (s *Server) liveRoomPolicyAgentChat(w http.ResponseWriter, r *http.Request)
 【输出格式】
 只返回严格 JSON：{"reply":"这里放完整成果","target":"本轮调教目标"}。
 reply 必须是本轮真正的完整成果正文，不得为空，不得是确认句。reference_answer 场景的 target 可以留空；coaching 场景必须给出简短准确的 target。`)
-		reply, target, modelName, latencyMS, modelErr := callPolicyConversationModel(r.Context(), prompt, input.Message, input.History)
+		reply, target, modelName, latencyMS, modelErr := callPolicyConversationModel(r.Context(), prompt, input.Message, input.History, input.ImageURLs)
 		if modelErr != nil {
 			writeError(w, http.StatusBadGateway, "直播间调教暂时无法生成有效成果，请稍后重试")
 			return
@@ -283,7 +296,7 @@ reply 必须是本轮真正的完整成果正文，不得为空，不得是确�
 	}
 	prompt = strings.TrimSpace(prompt + "\n\n【终端输出要求】\n" + terminalGuard)
 	modelOutput, modelName, latencyMS, err := callPolicyAgentModel(
-		r.Context(), prompt, input.Message, input.History,
+		r.Context(), prompt, input.Message, input.History, input.ImageURLs,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "直播间策略 Agent 暂时无法回答，请稍后再试")
@@ -444,9 +457,13 @@ func callPolicyConversationModel(
 	ctx context.Context,
 	systemPrompt, message string,
 	history []liveAgentChatHistoryItem,
+	imageURLs []string,
 ) (string, string, string, int64, error) {
 	if len(history) > 12 {
 		history = history[len(history)-12:]
+	}
+	if len(imageURLs) > 0 {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【图片理解要求】用户附带的图片是本轮调教上下文。结合图片中直接可见的文字、布局和对象理解用户指向；看不清不要猜，图片本身不代表已经采用或发布。")
 	}
 	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}}
 	for _, item := range history {
@@ -466,7 +483,7 @@ func callPolicyConversationModel(
 		}
 		messages = append(messages, agentgateway.Message{Role: role, Content: text})
 	}
-	messages = append(messages, agentgateway.Message{Role: "user", Content: message})
+	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
 		Messages:       messages,
@@ -494,9 +511,13 @@ func callPolicyAgentModel(
 	ctx context.Context,
 	systemPrompt, message string,
 	history []liveAgentChatHistoryItem,
+	imageURLs []string,
 ) (livePolicyAgentModelOutput, string, int64, error) {
 	if len(history) > 12 {
 		history = history[len(history)-12:]
+	}
+	if len(imageURLs) > 0 {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【图片理解要求】用户附带的图片是本轮策略上下文。先依据图片中直接可见的文字、页面结构、控件和对象理解‘这个/这里’的具体指向；不清楚就说明，不得猜。图片不代表用户授权发布或写入，仍按原有草稿、冲突检查和发布流程处理。")
 	}
 	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}}
 	for _, item := range history {
@@ -516,7 +537,7 @@ func callPolicyAgentModel(
 		}
 		messages = append(messages, agentgateway.Message{Role: role, Content: text})
 	}
-	messages = append(messages, agentgateway.Message{Role: "user", Content: message})
+	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
 		Messages:       messages,

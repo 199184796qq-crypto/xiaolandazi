@@ -13,10 +13,17 @@ import {
   changePassword,
   getAccountDashboard,
   getLiveQuotaSummary,
+  getUserUIPreferences,
   logout,
+  updateUserUIPreferences,
   updateAccountProfile,
 } from './api'
 import { clearSession, loadSession, session } from './session'
+import {
+  coreRuntime,
+  startCoreRuntimeWatch,
+  stopCoreRuntimeWatch,
+} from './coreRuntime'
 
 interface NavItem {
   label: string
@@ -34,6 +41,39 @@ const route = useRoute()
 const router = useRouter()
 
 const loggingOut = ref(false)
+const sidebarCollapsed = ref(true)
+
+function sidebarPreferenceCacheKey(userID: number) {
+  return 'xiaolan-ui:' + String(userID) + ':sidebar-collapsed'
+}
+
+function restoreSidebarPreferenceFromLocal(userID: number) {
+  const raw = window.localStorage.getItem(sidebarPreferenceCacheKey(userID))
+  if (raw === '0') sidebarCollapsed.value = false
+  if (raw === '1') sidebarCollapsed.value = true
+}
+
+function persistSidebarPreferenceLocal(userID: number) {
+  window.localStorage.setItem(sidebarPreferenceCacheKey(userID), sidebarCollapsed.value ? '1' : '0')
+}
+
+async function loadSidebarPreference(userID: number) {
+  restoreSidebarPreferenceFromLocal(userID)
+  try {
+    const preferences = await getUserUIPreferences()
+    sidebarCollapsed.value = preferences.sidebar_collapsed
+    persistSidebarPreferenceLocal(userID)
+  } catch {
+    // Local cache keeps the shell stable while management-service is restarting.
+  }
+}
+
+function toggleSidebarCollapsed() {
+  const userID = Number(actor.value?.user_id || 0)
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  if (userID) persistSidebarPreferenceLocal(userID)
+  void updateUserUIPreferences({ sidebar_collapsed: sidebarCollapsed.value }).catch(() => undefined)
+}
 
 const isAuthPage = computed(() => {
   const routeName = String(route.name || '')
@@ -58,12 +98,29 @@ const customerLiveRouteNames = new Set([
   'live-strategy',
   'live-devices',
 ])
+const showCoreRuntimeNotice = computed(
+  () =>
+    showAuthenticatedShell.value &&
+    customerLiveRouteNames.has(String(route.name || '')) &&
+    (coreRuntime.phase === 'offline' || coreRuntime.phase === 'recovering'),
+)
+const coreRuntimeNoticeTitle = computed(() =>
+  coreRuntime.phase === 'recovering'
+    ? 'Core 已恢复，正在同步实时状态'
+    : 'Core 服务异常，实时状态未知',
+)
+const coreRuntimeNoticeText = computed(() =>
+  coreRuntime.phase === 'recovering'
+    ? '正在重新获取直播间真实状态并恢复基础采集；付费 Agent / 声音服务不会自动重新启动。'
+    : '系统正在自动重连。直播间实时状态、采集、Agent、录制和设备实时控制暂不可用；策略、历史记录、财务等功能仍可使用。',
+)
 const showCustomerLiveQuota = computed(
   () =>
     actor.value?.role === 'customer' &&
     customerLiveRouteNames.has(String(route.name || '')),
 )
 const customerLiveQuota = ref<Awaited<ReturnType<typeof getLiveQuotaSummary>> | null>(null)
+const customerLiveQuotaExpanded = ref(false)
 let customerLiveQuotaTimer: number | undefined
 
 function formatCustomerAIQuota(seconds = 0) {
@@ -74,11 +131,10 @@ function formatCustomerAIQuota(seconds = 0) {
 }
 
 function formatCustomerAIUsage(seconds = 0) {
-  const totalSeconds = Math.max(0, Math.floor(Number(seconds || 0)))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const secs = totalSeconds % 60
-  return [hours, minutes, secs].map(value => String(value).padStart(2, '0')).join(':')
+  const totalMinutes = Math.max(0, Math.floor(Number(seconds || 0) / 60))
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return [hours, minutes].map(value => String(value).padStart(2, '0')).join(':')
 }
 
 async function refreshCustomerLiveQuota() {
@@ -103,6 +159,7 @@ watch(
     stopCustomerLiveQuotaPolling()
     if (!visible) {
       customerLiveQuota.value = null
+      customerLiveQuotaExpanded.value = false
       return
     }
     void refreshCustomerLiveQuota()
@@ -114,6 +171,25 @@ watch(
 )
 
 onBeforeUnmount(stopCustomerLiveQuotaPolling)
+
+watch(
+  () => showAuthenticatedShell.value ? String(actor.value?.user_id || '') : '',
+  (key) => {
+    if (key) startCoreRuntimeWatch(key)
+    else stopCoreRuntimeWatch()
+  },
+  { immediate: true },
+)
+onBeforeUnmount(stopCoreRuntimeWatch)
+
+watch(
+  () => showAuthenticatedShell.value ? Number(actor.value?.user_id || 0) : 0,
+  userID => {
+    if (!userID) return
+    void loadSidebarPreference(userID)
+  },
+  { immediate: true },
+)
 
 const isAdmin = computed(() => actor.value?.role === 'platform_admin')
 const isAgent = computed(() => actor.value?.role === 'agent_admin')
@@ -170,7 +246,7 @@ const navSections = computed<NavSection[]>(() => {
         label: '系统管理',
         items: [
           navItem('系统总览', '/overview', '⌂', ['platform-overview']),
-          navItem('系统设定', '/system/settings', '设', ['system-settings']),
+          navItem('系统设定', '/system/settings', '设', ['system-settings', 'system-agent-routing']),
           navItem('组织架构', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-permissions', 'staff-approvals', 'staff-audit']),
         ],
       },
@@ -335,6 +411,13 @@ const navSections = computed<NavSection[]>(() => {
       ) {
         addOrganization()
       }
+    }
+
+    if (
+      hasStaffPermission('system.settings.agent_routing.manage') &&
+      !workItems.some((item) => item.to === '/system/settings/agent-routing')
+    ) {
+      workItems.push(navItem('智能体理解配置', '/system/settings/agent-routing', '智', ['system-agent-routing']))
     }
 
     if (hasStaffPermission('finance.dashboard.view') && !workItems.some((item) => item.to === '/staff/finance/receipts')) {
@@ -702,18 +785,35 @@ onBeforeUnmount(stopInbox)
 <template>
   <RouterView v-if="isAuthPage" :key="route.fullPath" />
 
-  <div v-else-if="showAuthenticatedShell" class="app-shell">
+  <div v-else-if="showAuthenticatedShell" class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <div
       v-if="showCustomerLiveQuota"
-      :class="['customer-ai-time-global-topbar', { 'has-active-billing-rooms': customerLiveQuota?.active_billing_rooms?.length }]"
+      :class="[
+        'customer-ai-time-global-topbar',
+        {
+          'is-expanded': customerLiveQuotaExpanded,
+          'is-collapsed': !customerLiveQuotaExpanded,
+          'has-active-billing-rooms': customerLiveQuotaExpanded && customerLiveQuota?.active_billing_rooms?.length,
+        },
+      ]"
       :title="customerLiveQuota?.reserve_time_card_count
         ? '当前可扣费总剩余 ' + formatCustomerAIQuota(customerLiveQuota.active_seconds) + '；另有 ' + customerLiveQuota.reserve_time_card_count + ' 张未启用卡'
         : '当前可扣费总剩余 ' + formatCustomerAIQuota(customerLiveQuota?.active_seconds || 0)"
     >
-      <span class="customer-ai-time-title">时长卡剩余</span>
+      <button
+        class="customer-ai-time-toggle"
+        type="button"
+        :aria-expanded="customerLiveQuotaExpanded"
+        :aria-label="customerLiveQuotaExpanded ? '折叠时长卡详情' : '展开时长卡详情'"
+        :title="customerLiveQuotaExpanded ? '折叠详情' : '展开详情'"
+        @click.stop="customerLiveQuotaExpanded = !customerLiveQuotaExpanded"
+      >
+        <span aria-hidden="true">⌄</span>
+      </button>
+      <span v-if="customerLiveQuotaExpanded" class="customer-ai-time-title">时长卡剩余</span>
       <strong class="customer-ai-time-value">{{ customerLiveQuota ? formatCustomerAIQuota(customerLiveQuota.active_seconds) : '读取中…' }}</strong>
       <div
-        v-if="customerLiveQuota?.active_billing_rooms?.length"
+        v-if="customerLiveQuotaExpanded && customerLiveQuota?.active_billing_rooms?.length"
         class="customer-ai-time-billing-rooms"
       >
         <div class="customer-ai-time-billing-heading">
@@ -732,11 +832,18 @@ onBeforeUnmount(stopInbox)
           <span class="customer-ai-time-billing-usage">已扣 {{ formatCustomerAIUsage(room.billed_seconds) }}</span>
         </div>
       </div>
-      <small v-if="customerLiveQuota?.reserve_time_card_count" class="customer-ai-time-reserve">
+      <small v-if="customerLiveQuotaExpanded && customerLiveQuota?.reserve_time_card_count" class="customer-ai-time-reserve">
         卡包 {{ customerLiveQuota.reserve_time_card_count }} 张未启用
       </small>
     </div>
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <button
+        class="sidebar-collapse-handle"
+        type="button"
+        :aria-label="sidebarCollapsed ? '展开全局导航' : '折叠全局导航'"
+        :title="sidebarCollapsed ? '展开全局导航' : '折叠全局导航'"
+        @click="toggleSidebarCollapsed"
+      >{{ sidebarCollapsed ? '›' : '‹' }}</button>
       <div class="brand">
         <div class="brand-mark">{{ isInternalStaff ? '蓝' : '蓝' }}</div>
         <div>
@@ -869,6 +976,21 @@ onBeforeUnmount(stopInbox)
       </header>
 
       <div id="app-global-switches" class="global-topbar-switches"></div>
+
+      <div
+        v-if="showCoreRuntimeNotice"
+        class="core-runtime-banner"
+        :class="'phase-' + coreRuntime.phase"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="core-runtime-banner-dot" aria-hidden="true"></span>
+        <div>
+          <strong>{{ coreRuntimeNoticeTitle }}</strong>
+          <span>{{ coreRuntimeNoticeText }}</span>
+        </div>
+        <small v-if="coreRuntime.bootId">Boot {{ coreRuntime.bootId }}</small>
+      </div>
 
       <section class="page-content">
         <RouterView :key="route.fullPath" />

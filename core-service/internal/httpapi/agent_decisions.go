@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/speechruntime"
 )
@@ -182,24 +182,53 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_unavailable", "item": queue[0]})
 		return
 	}
+	plannedSwitchMS := 0
+	currentMainline := ""
+	resumeMainline := ""
+	resumeSegmentID := ""
 	if queue[0].ManualAction != "quick" {
-		currentMS := program.Task.StartMS
-		if !program.Task.StartedAt.IsZero() {
-			elapsed := int(time.Since(program.Task.StartedAt).Milliseconds())
-			if elapsed > 0 {
-				currentMS += elapsed
-			}
+		currentMS := program.CurrentMS
+		if currentMS <= 0 {
+			currentMS = program.Task.StartMS
 		}
-		if _, exists := devMainlineNextSafePoint(currentMS, 35*time.Second); !exists {
+		cutMS, exists := plannedRoomProgramSafeCut(program, currentMS)
+		if !exists {
 			writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_safe_point", "item": queue[0]})
 			return
 		}
+		plannedSwitchMS = cutMS
+		currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"claimed": claimed,
-		"item":    item,
+		"claimed":           claimed,
+		"item":              item,
+		"switch_at_ms":      plannedSwitchMS,
+		"current_mainline":  currentMainline,
+		"resume_mainline":   resumeMainline,
+		"resume_segment_id": resumeSegmentID,
 	})
+}
+
+func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {
+	for _, point := range program.SafePoints {
+		if point.CutMS != cutMS {
+			continue
+		}
+		return strings.TrimSpace(point.LeftPreview), strings.TrimSpace(point.NextPreview), strings.TrimSpace(point.SentenceID)
+	}
+	for index, segment := range program.Timeline {
+		if segment.EndMS != cutMS {
+			continue
+		}
+		current := strings.TrimSpace(segment.Text)
+		if index+1 >= len(program.Timeline) {
+			return current, "", ""
+		}
+		next := program.Timeline[index+1]
+		return current, strings.TrimSpace(next.Text), strings.TrimSpace(next.SegmentID)
+	}
+	return "", "", ""
 }
 
 func speechSnapshotBusy(snapshot speechruntime.Snapshot) bool {

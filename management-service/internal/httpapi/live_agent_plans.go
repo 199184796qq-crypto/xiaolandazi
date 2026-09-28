@@ -121,6 +121,46 @@ func (s *Server) liveAgentPlanCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, item)
 }
 
+func (s *Server) liveAgentPlanUpdate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	var input model.CreateLiveAgentPlanInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	input.Description = strings.TrimSpace(input.Description)
+	if input.Name == "" || utf8.RuneCountInString(input.Name) > 160 {
+		writeError(w, http.StatusBadRequest, "方案名称必须为 1 到 160 字")
+		return
+	}
+	if utf8.RuneCountInString(input.Description) > 2000 {
+		writeError(w, http.StatusBadRequest, "方案说明不能超过 2000 字")
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
+	if !ok {
+		return
+	}
+	item, err := s.store.UpdateLiveAgentPlan(r.Context(), tenantID, planID, input)
+	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+		writeError(w, http.StatusNotFound, "直播智能体方案不存在或已归档")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "保存直播智能体方案失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) liveAgentPlanGet(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -194,6 +234,27 @@ func (s *Server) liveAgentPlanCurrentForRoom(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"plan": item})
 }
 
+func (s *Server) liveAgentPlansForRoom(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	items, err := s.store.ListLiveAgentPlansForRoom(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取直播间已绑定方案失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) liveAgentPlanBindRoom(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -248,6 +309,26 @@ func (s *Server) liveAgentPlanUnbindRoom(w http.ResponseWriter, r *http.Request)
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
 	if !ok {
+		return
+	}
+	if selected, selectedErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); selectedErr == nil && selected.ID == planID {
+		runtimeState, runtimeErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+		if runtimeErr != nil {
+			writeError(w, http.StatusBadGateway, "无法确认当前直播方案运行状态")
+			return
+		}
+		if runtimeState.State == "working" || runtimeState.State == "paused" {
+			writeError(w, http.StatusConflict, "这个方案当前正在直播间使用，请先热切换到其它已绑定方案，或停止AI后再取消绑定")
+			return
+		}
+		if runtimeState.PlanID == planID {
+			if _, syncErr := s.setCoreAgentPlan(r.Context(), tenantID, roomID, 0, ""); syncErr != nil {
+				writeError(w, http.StatusBadGateway, "清理直播间当前方案失败")
+				return
+			}
+		}
+	} else if selectedErr != nil && !errors.Is(selectedErr, appdb.ErrLiveAgentPlanNotFound) {
+		writeError(w, http.StatusInternalServerError, "读取直播间当前方案失败")
 		return
 	}
 	if err := s.store.UnbindRoomFromLiveAgentPlan(r.Context(), tenantID, planID, roomID); errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {

@@ -33,6 +33,22 @@ func (s *Store) CreateLiveAgentPlan(
 	return s.GetLiveAgentPlan(ctx, tenantID, id)
 }
 
+func (s *Store) UpdateLiveAgentPlan(
+	ctx context.Context,
+	tenantID, planID int64,
+	input model.CreateLiveAgentPlanInput,
+) (model.LiveAgentPlan, error) {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE live_agent_plans
+		SET name=?, description=?, updated_at=CURRENT_TIMESTAMP(3)
+		WHERE id=? AND tenant_id=? AND status='active'
+	`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Description), planID, tenantID)
+	if err != nil {
+		return model.LiveAgentPlan{}, err
+	}
+	return s.GetLiveAgentPlan(ctx, tenantID, planID)
+}
+
 func (s *Store) ListLiveAgentPlans(ctx context.Context, tenantID int64) ([]model.LiveAgentPlan, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -154,22 +170,108 @@ func (s *Store) ArchiveLiveAgentPlan(ctx context.Context, tenantID, planID int64
 	`, planID, tenantID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM live_agent_room_plan_selections
+		WHERE tenant_id=? AND plan_id=?
+	`, tenantID, planID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (s *Store) GetLiveAgentPlanForRoom(ctx context.Context, tenantID, roomID int64) (model.LiveAgentPlan, error) {
 	var planID int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT b.plan_id
-		FROM live_agent_plan_room_bindings b
-		INNER JOIN live_agent_plans p ON p.id=b.plan_id AND p.tenant_id=b.tenant_id
-		WHERE b.tenant_id=? AND b.room_id=? AND b.status='active' AND p.status='active'
-		ORDER BY b.id DESC
+		SELECT selection.plan_id
+		FROM live_agent_room_plan_selections selection
+		INNER JOIN live_agent_plan_room_bindings binding
+			ON binding.tenant_id=selection.tenant_id
+			AND binding.room_id=selection.room_id
+			AND binding.plan_id=selection.plan_id
+			AND binding.status='active'
+		INNER JOIN live_agent_plans plan
+			ON plan.id=selection.plan_id AND plan.tenant_id=selection.tenant_id AND plan.status='active'
+		WHERE selection.tenant_id=? AND selection.room_id=?
 		LIMIT 1
 	`, tenantID, roomID).Scan(&planID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
 	}
+	if err != nil {
+		return model.LiveAgentPlan{}, err
+	}
+	return s.GetLiveAgentPlan(ctx, tenantID, planID)
+}
+
+func (s *Store) ListLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID int64) ([]model.LiveAgentPlan, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT plan.id
+		FROM live_agent_plan_room_bindings binding
+		INNER JOIN live_agent_plans plan ON plan.id=binding.plan_id AND plan.tenant_id=binding.tenant_id
+		WHERE binding.tenant_id=? AND binding.room_id=? AND binding.status='active' AND plan.status='active'
+		ORDER BY binding.bound_at DESC, binding.id DESC
+	`, tenantID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]model.LiveAgentPlan, 0, len(ids))
+	for _, id := range ids {
+		item, err := s.GetLiveAgentPlan(ctx, tenantID, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Store) IsRoomBoundToLiveAgentPlan(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM live_agent_plan_room_bindings binding
+		INNER JOIN live_agent_plans plan ON plan.id=binding.plan_id AND plan.tenant_id=binding.tenant_id
+		WHERE binding.tenant_id=? AND binding.room_id=? AND binding.plan_id=?
+			AND binding.status='active' AND plan.status='active'
+		LIMIT 1
+	`, tenantID, roomID, planID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) SelectLiveAgentPlanForRoom(ctx context.Context, tenantID, planID, roomID, actorUserID int64) (model.LiveAgentPlan, error) {
+	bound, err := s.IsRoomBoundToLiveAgentPlan(ctx, tenantID, roomID, planID)
+	if err != nil {
+		return model.LiveAgentPlan{}, err
+	}
+	if !bound {
+		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO live_agent_room_plan_selections (
+			tenant_id, room_id, plan_id, selected_by_user_id, selected_at
+		) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3))
+		ON DUPLICATE KEY UPDATE
+			plan_id=VALUES(plan_id), selected_by_user_id=VALUES(selected_by_user_id),
+			selected_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
+	`, tenantID, roomID, planID, actorUserID)
 	if err != nil {
 		return model.LiveAgentPlan{}, err
 	}
@@ -195,14 +297,6 @@ func (s *Store) BindRoomToLiveAgentPlan(
 		return model.LiveAgentPlan{}, err
 	} else if status != "active" {
 		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE live_agent_plan_room_bindings
-		SET status='replaced', unbound_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
-		WHERE tenant_id=? AND room_id=? AND status='active' AND plan_id<>?
-	`, tenantID, roomID, planID); err != nil {
-		return model.LiveAgentPlan{}, err
 	}
 
 	var existingID int64
@@ -232,7 +326,12 @@ func (s *Store) BindRoomToLiveAgentPlan(
 }
 
 func (s *Store) UnbindRoomFromLiveAgentPlan(ctx context.Context, tenantID, planID, roomID int64) error {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_room_bindings
 		SET status='unbound', unbound_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
 		WHERE tenant_id=? AND plan_id=? AND room_id=? AND status='active'
@@ -244,7 +343,13 @@ func (s *Store) UnbindRoomFromLiveAgentPlan(ctx context.Context, tenantID, planI
 	if affected == 0 {
 		return ErrLiveAgentPlanNotFound
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM live_agent_room_plan_selections
+		WHERE tenant_id=? AND room_id=? AND plan_id=?
+	`, tenantID, roomID, planID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertLiveAgentPlanTerm(

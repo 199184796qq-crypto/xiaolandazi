@@ -207,6 +207,63 @@ export interface SystemAgentActionPayload {
   ends_at?: string
   items?: MarketingCampaignItem[]
   display_locations?: string[]
+
+  plan_id?: number
+  target_plan_id?: number
+  target_plan_name?: string
+  current_plan_id?: number
+  room_id?: number
+  product_link_id?: number
+  benefit_id?: number
+  fact_id?: number
+  current_version_no?: number
+  original_command?: string
+  corrected_command?: string
+  link_key?: string
+  product_name?: string
+  spec?: string
+  daily_price?: string
+  quantity?: string
+  audience?: string
+  current_product_name?: string
+  current_link_key?: string
+  current_spec?: string
+  current_daily_price?: string
+  current_quantity?: string
+  current_audience?: string
+  source_text?: string
+  benefit_key?: string
+  activity_price?: string
+  gift?: string
+  activity?: string
+  current_activity_price?: string
+  current_gift?: string
+  current_activity?: string
+  current_starts_at?: string
+  current_ends_at?: string
+  review_bucket?: string
+  review_reason?: string
+  fact_category?: string
+  fact_key?: string
+  fact_value?: string
+  current_fact_value?: string
+  script_reference_id?: number
+  script_reference_key?: string
+  script_title?: string
+  script_text?: string
+  current_script_text?: string
+  script_goal?: string
+  script_transition?: string
+  execution_mode?: string
+  original_message?: string
+  image_labels?: string[]
+  intent_options?: Array<{
+    id: string
+    label: string
+    description?: string
+    mode?: string
+    command?: string
+  }>
 }
 
 export interface SystemAgentActionPreview {
@@ -235,12 +292,20 @@ export interface SystemAgentNavigateTarget {
 }
 
 export interface SystemAgentChatResponse {
+  protocol_version: string
+  state: 'responded' | 'clarifying' | 'ready_to_confirm' | 'executing' | 'succeeded' | 'failed' | 'cancelled' | 'permission_denied'
+  code?: string
+  required_permission?: string
   reply: string
   action?: SystemAgentActionPreview
   navigate?: SystemAgentNavigateTarget
   capabilities: string[]
+  data?: unknown
+  credential?: InitialCredential
   model?: string
   latency_ms?: number
+  engine?: 'program' | 'model' | 'program_fallback' | string
+  policy_source?: string
 }
 export interface Actor {
   user_id: number
@@ -358,6 +423,68 @@ export interface AgentPromptHistory {
   created_at: string
 }
 
+export interface AgentRoutingMaintenanceResponse {
+  config: AgentPromptConfig
+}
+
+export interface AgentRoutingAssistResponse {
+  proposed_json: string
+  model?: string
+  latency_ms?: number
+}
+
+export type AgentUnderstandingScopeType = 'system' | 'membership' | 'tenant'
+export type AgentUnderstandingMode = 'program' | 'model' | 'auto'
+
+export interface AgentUnderstandingPolicy {
+  id: number
+  scope_type: AgentUnderstandingScopeType
+  scope_id: number
+  mode: AgentUnderstandingMode
+  provider: string
+  model: string
+  max_context_messages: number
+  max_tokens: number
+  timeout_ms: number
+  monthly_budget_tokens: number
+  budget_fallback: 'program' | string
+  min_confidence: number
+  enabled: boolean
+  updated_by_user_id: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentUnderstandingPolicyInput {
+  scope_type: AgentUnderstandingScopeType
+  scope_id: number
+  mode: AgentUnderstandingMode
+  provider: string
+  model: string
+  max_context_messages: number
+  max_tokens: number
+  timeout_ms: number
+  monthly_budget_tokens: number
+  budget_fallback: 'program' | string
+  min_confidence: number
+  enabled: boolean
+}
+
+export interface AgentUnderstandingEffectivePolicy extends AgentUnderstandingPolicy {
+  resolved_from: string
+  resolved_scope_id: number
+  budget_used_tokens: number
+  budget_remaining_tokens: number
+  budget_exceeded: boolean
+  membership_plan_id?: number
+  cooperation_status?: string
+}
+
+export interface AgentUnderstandingModelDescriptor {
+  provider: string
+  id: string
+}
+
 export interface SystemSettingsDashboard {
   settings: SystemSetting[]
   dictionaries: Record<string, SystemDictionaryItem[]>
@@ -409,6 +536,15 @@ export interface Room {
   last_event_at?: string
   created_at: string
   updated_at: string
+}
+
+export interface CoreRuntimeStatus {
+  available: boolean
+  status: string
+  core_boot_id?: string
+  active_rooms: number
+  checked_at: string
+  last_transition_at?: string
 }
 
 export interface RoomEvent {
@@ -560,8 +696,58 @@ export interface SpeechTrackRuntime {
   audio_url?: string
   decision_id?: string
   speech_task_id?: string
+  switch_at_ms?: number
   started_at?: string
   updated_at?: string
+}
+
+export interface SpeechProgramTimelineSegment {
+  segment_id: string
+  index: number
+  start_ms: number
+  end_ms: number
+  text: string
+  safe_cut: boolean
+}
+
+export interface SpeechProgramTask {
+  speech_task_id: string
+  room_id: number
+  session_id: string
+  kind: string
+  label: string
+  audio_url: string
+  mime_type: string
+  duration_ms: number
+  start_ms?: number
+  program_id?: string
+  sequence?: number
+  slot?: string
+  started_at?: string
+  created_at: string
+}
+
+export interface SpeechProgramSnapshot {
+  program_id?: string
+  room_id: number
+  version_id?: number
+  version_no?: number
+  track_id?: string
+  track_index?: number
+  track_count?: number
+  track_text?: string
+  timeline?: SpeechProgramTimelineSegment[]
+  current_ms?: number
+  current_segment?: SpeechProgramTimelineSegment
+  next_safe_cut_ms?: number
+  running: boolean
+  suspended?: boolean
+  resume_offset_ms?: number
+  sequence?: number
+  slot?: string
+  task?: SpeechProgramTask
+  started_at?: string
+  server_time: string
 }
 
 export interface SpeechRuntimeSnapshot {
@@ -569,6 +755,7 @@ export interface SpeechRuntimeSnapshot {
   revision: number
   mainline: SpeechTrackRuntime
   interrupt: SpeechTrackRuntime
+  program?: SpeechProgramSnapshot
   updated_at?: string
 }
 
@@ -916,6 +1103,548 @@ export interface LiveAgentPlan {
   terms?: LiveAgentPlanTerm[]
   created_at: string
   updated_at: string
+}
+
+export interface LiveAgentPlanFactCandidate {
+  category: 'product' | 'link' | 'trade' | 'fulfillment' | 'identity_location' | 'other' | string
+  key: string
+  value: string
+  status: 'pending' | 'confirmed' | 'disabled' | string
+  review_bucket?: 'adoptable' | 'conflict' | 'discuss' | 'violation' | string
+  review_reason?: string
+  source_quote?: string
+  confidence?: 'high' | 'medium' | 'low' | string
+  note?: string
+}
+
+export interface LiveAgentPlanProductLinkCandidate {
+  link_key: string
+  product_name?: string
+  spec?: string
+  daily_price?: string
+  activity_price?: string
+  quantity?: string
+  gift?: string
+  activity?: string
+  audience?: string
+  review_bucket?: 'adoptable' | 'conflict' | 'discuss' | 'violation' | string
+  review_reason?: string
+  source_quotes?: string[]
+  confidence?: 'high' | 'medium' | 'low' | string
+}
+
+export interface LiveAgentPlanBenefitCandidate {
+  key?: string
+  link_key?: string
+  product_name?: string
+  activity_price?: string
+  gift?: string
+  activity?: string
+  starts_at?: string
+  ends_at?: string
+  review_bucket?: 'adoptable' | 'conflict' | 'discuss' | 'violation' | string
+  review_reason?: string
+  source_quotes?: string[]
+}
+
+export interface LiveAgentPlanProductLink {
+  id: number
+  tenant_id: number
+  plan_id: number
+  link_key: string
+  product_name?: string
+  spec?: string
+  daily_price?: string
+  quantity?: string
+  audience?: string
+  source_quote?: string
+  source_review_bucket?: string
+  source_review_reason?: string
+  source_type: string
+  source_ref?: string
+  status: string
+  version_no: number
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlanProductLinkAdoptionResult {
+  candidate: LiveAgentPlanProductLinkCandidate
+  status: 'adopted' | 'unchanged' | 'blocked' | 'conflict' | string
+  message?: string
+  saved?: LiveAgentPlanProductLink
+  existing?: LiveAgentPlanProductLink
+}
+
+export interface AdoptLiveAgentPlanProductLinksOutput {
+  results: LiveAgentPlanProductLinkAdoptionResult[]
+  adopted: number
+  skipped: number
+  blocked: number
+  conflicts: number
+}
+
+export interface LiveAgentPlanAnalysisCompleteness {
+  detected_link_keys: string[]
+  covered_link_keys: string[]
+  missing_link_keys: string[]
+  link_coverage_pct: number
+}
+
+export interface LiveAgentPlanAnchorStyleDimension {
+  key: string
+  group: 'language' | 'structure' | 'interaction' | 'emotion' | string
+  label: string
+  level?: string
+  rule?: string
+  evidence_quotes?: string[]
+  confidence?: 'high' | 'medium' | 'low' | string
+  promotion_level?: 'candidate' | 'stable' | string
+}
+
+export interface LiveAgentPlanAnchorStyleProfile {
+  summary?: string
+  dimensions: LiveAgentPlanAnchorStyleDimension[]
+  reusable_rules: string[]
+  candidate_patterns: string[]
+  excluded_from_style: string[]
+}
+
+export interface LiveAgentPlanRhythmNode {
+  order: number
+  title: string
+  goal?: string
+  fact_keys?: string[]
+  must_cover?: string[]
+  avoid?: string[]
+  execution_mode: 'intent' | 'verbatim' | string
+  fixed_text?: string
+  duration_seconds?: number
+  transition?: string
+}
+
+export interface LiveAgentPlanScriptAnalysis {
+  summary?: string
+  product_links: LiveAgentPlanProductLinkCandidate[]
+  facts: LiveAgentPlanFactCandidate[]
+  rhythm_nodes: LiveAgentPlanRhythmNode[]
+  anchor_style: LiveAgentPlanAnchorStyleProfile
+  completeness?: LiveAgentPlanAnalysisCompleteness
+}
+
+export interface LiveAgentPlanScriptAnalysisPreviewResponse {
+  analysis: LiveAgentPlanScriptAnalysis
+  provider?: string
+  model?: string
+  latency_ms?: number
+  persisted: false
+}
+
+export interface LiveAgentPlanImageRecognitionPreviewResponse {
+  text: string
+  visual_context: string
+  warnings: string[]
+  product?: {
+    product_name?: string
+    spec?: string
+    daily_price?: string
+    quantity?: string
+    audience?: string
+  } | null
+  provider?: string
+  model?: string
+  latency_ms?: number
+  persisted: false
+}
+
+export interface LiveAgentFullShowContextFact {
+  category: string
+  key: string
+  value: string
+  version: number
+}
+
+export interface LiveAgentFullShowContextScriptReference {
+  reference_key: string
+  title: string
+  content_text: string
+  goal?: string
+  transition?: string
+  execution_mode: 'intent' | 'verbatim' | string
+  version: number
+}
+
+export interface LiveAgentFullShowGenerationContext {
+  plan_id: number
+  plan_name: string
+  plan_description?: string
+  room_id?: number
+  industry_code?: string
+  policy_rule_count: number
+  formal_facts: LiveAgentFullShowContextFact[]
+  benefits: LiveAgentPlanBenefit[]
+  product_links: LiveAgentPlanProductLink[]
+  script_references: LiveAgentFullShowContextScriptReference[]
+  rhythm_nodes: LiveAgentPlanRhythmNode[]
+  anchor_style: LiveAgentPlanAnchorStyleProfile
+  duration_minutes: number
+  round_minutes: number
+  round_count: number
+  variant_count: number
+  use_anchor_style: boolean
+  use_dynamic_facts: boolean
+  generate_tts_hints: boolean
+  avoid_recent: boolean
+  draft_product_source: boolean
+  draft_rhythm_source: boolean
+  draft_style_source: boolean
+}
+
+export interface LiveAgentFullShowTTSHint {
+  segment: string
+  instruction: string
+  rate?: number
+}
+
+export interface LiveAgentFullShowAuditIssue {
+  severity: 'error' | 'warning' | string
+  code: string
+  message: string
+}
+
+export interface LiveAgentFullShowAudit {
+  passed: boolean
+  issues: LiveAgentFullShowAuditIssue[]
+  fact_coverage_pct: number
+  link_coverage_pct: number
+  similarity_pct: number
+}
+
+export interface LiveAgentFullShowVariant {
+  index: number
+  variant_key: string
+  title: string
+  opening_angle: string
+  text: string
+  estimated_minutes: number
+  covered_fact_keys: string[]
+  covered_link_keys: string[]
+  tts_hints?: LiveAgentFullShowTTSHint[]
+  audit: LiveAgentFullShowAudit
+}
+
+export interface LiveAgentFullShowPreviewResponse {
+  context: LiveAgentFullShowGenerationContext
+  variants: LiveAgentFullShowVariant[]
+  provider?: string
+  model?: string
+  latency_ms?: number
+  persisted: boolean
+  preview: boolean
+}
+
+export interface LiveAgentFullShowPreviewInput {
+  tenant_id?: number
+  room_id?: number
+  duration_minutes: number
+  round_minutes: number
+  variant_count: number
+  use_anchor_style: boolean
+  use_dynamic_facts: boolean
+  generate_tts_hints: boolean
+  avoid_recent: boolean
+  product_links: LiveAgentPlanProductLinkCandidate[]
+  rhythm_nodes: LiveAgentPlanRhythmNode[]
+  anchor_style: LiveAgentPlanAnchorStyleProfile
+  recent_texts?: string[]
+}
+
+export interface LiveAgentFullShowAuditPreviewInput {
+  tenant_id?: number
+  room_id?: number
+  round_minutes: number
+  use_dynamic_facts: boolean
+  avoid_recent: boolean
+  variants: LiveAgentFullShowVariant[]
+  recent_texts?: string[]
+}
+
+export interface LiveAgentFullShowAuditPreviewResponse {
+  variants: LiveAgentFullShowVariant[]
+}
+
+export interface LiveAgentFullShowRegenerateInput {
+  tenant_id?: number
+  room_id?: number
+  duration_minutes: number
+  round_minutes: number
+  use_anchor_style: boolean
+  use_dynamic_facts: boolean
+  generate_tts_hints: boolean
+  avoid_recent: boolean
+  product_links: LiveAgentPlanProductLinkCandidate[]
+  rhythm_nodes: LiveAgentPlanRhythmNode[]
+  anchor_style: LiveAgentPlanAnchorStyleProfile
+  variants: LiveAgentFullShowVariant[]
+  recent_texts?: string[]
+}
+
+export interface LiveAgentFullShowRegenerateResponse {
+  variant: LiveAgentFullShowVariant
+  variants: LiveAgentFullShowVariant[]
+  provider?: string
+  model?: string
+  latency_ms?: number
+}
+
+export interface LiveAgentVoiceIdentity {
+  name: string
+  version: string
+  source: 'official' | 'clone' | string
+  provider: string
+  voice_id: string
+  profile_id?: number
+  model: string
+  rate?: number
+  emotion?: string
+  style?: Record<string, unknown>
+}
+
+export interface LiveAgentPlanTimelineSegment {
+  segment_id: string
+  index: number
+  start_ms: number
+  end_ms: number
+  text: string
+  safe_cut: boolean
+}
+
+export interface LiveAgentPlanSafePoint {
+  id: string
+  cut_ms: number
+  score: number
+  grade: string
+  kind: string
+  sentence_id: string
+  left_preview: string
+  next_preview: string
+  topics?: string[]
+}
+
+export interface LiveAgentFullShowVoiceResponse {
+  audio_url: string
+  audio_asset_id: number
+  duration_ms: number
+  timeline: LiveAgentPlanTimelineSegment[]
+  segment_count: number
+  srt: string
+  safe_points: LiveAgentPlanSafePoint[]
+  asset_manifest: Record<string, unknown>
+}
+
+export interface LiveAgentCustomMainlineResponse {
+  audio_asset_id: number
+  audio_url: string
+  duration_ms: number
+  transcript: string
+  timeline: LiveAgentPlanTimelineSegment[]
+  srt: string
+  safe_points: LiveAgentPlanSafePoint[]
+  asset_manifest: Record<string, unknown>
+  voice_profile?: VoiceProfile
+  voice_identity?: LiveAgentVoiceIdentity
+  clone_error?: string
+}
+
+export interface LiveAgentPlanVersionVariant {
+  index?: number
+  variant_key: string
+  is_formal: boolean
+  title?: string
+  opening_angle?: string
+  text: string
+  estimated_minutes?: number
+  covered_fact_keys?: string[]
+  covered_link_keys?: string[]
+  tts_hints?: LiveAgentFullShowTTSHint[]
+  audit?: LiveAgentFullShowAudit
+  audio_url: string
+  audio_asset_id?: number
+  audio_duration_ms?: number
+  timeline?: LiveAgentPlanTimelineSegment[]
+  srt?: string
+  safe_points?: LiveAgentPlanSafePoint[]
+  asset_manifest?: Record<string, unknown>
+  generation_no?: number
+  voice_identity_key: string
+}
+
+export interface CreateLiveAgentPlanVersionInput {
+  tenant_id?: number
+  room_id: number
+  duration_minutes: number
+  round_minutes: number
+  voice_identity: LiveAgentVoiceIdentity
+  variants: LiveAgentPlanVersionVariant[]
+  generation_context?: Record<string, unknown>
+}
+
+export interface LiveAgentPlanVersion {
+  id: number
+  tenant_id: number
+  plan_id: number
+  room_id: number
+  version_no: number
+  lifecycle_status: 'draft' | 'published' | 'superseded' | string
+  duration_minutes: number
+  round_minutes: number
+  voice_identity: LiveAgentVoiceIdentity
+  variants: LiveAgentPlanVersionVariant[]
+  generation_context: Record<string, unknown>
+  created_by_user_id?: number
+  published_by_user_id?: number
+  published_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlanWorkspaceResponse {
+  version?: LiveAgentPlanVersion | null
+  source: 'draft' | 'published' | ''
+}
+
+export interface LiveAgentPlanFact {
+  id: number
+  tenant_id: number
+  plan_id: number
+  category: string
+  key: string
+  value: string
+  source_quote?: string
+  source_review_bucket?: string
+  source_review_reason?: string
+  source_type: string
+  source_ref?: string
+  status: string
+  version_no: number
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlanFactAdoptionResult {
+  candidate: LiveAgentPlanFactCandidate
+  status: 'adopted' | 'unchanged' | 'blocked' | 'conflict' | string
+  message?: string
+  saved?: LiveAgentPlanFact
+  existing?: LiveAgentPlanFact
+}
+
+export interface AdoptLiveAgentPlanFactsOutput {
+  results: LiveAgentPlanFactAdoptionResult[]
+  adopted: number
+  skipped: number
+  blocked: number
+  conflicts: number
+}
+
+export interface LiveAgentPlanBenefit {
+  id: number
+  tenant_id: number
+  plan_id: number
+  key: string
+  link_key?: string
+  product_name?: string
+  activity_price?: string
+  gift?: string
+  activity?: string
+  starts_at?: string
+  ends_at?: string
+  source_quote?: string
+  source_review_bucket?: string
+  source_review_reason?: string
+  source_type: string
+  source_ref?: string
+  status: 'draft' | 'active' | 'expired' | 'disabled' | string
+  version_no: number
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlanBenefitAdoptionResult {
+  candidate: LiveAgentPlanBenefitCandidate
+  status: 'adopted' | 'drafted' | 'unchanged' | 'blocked' | 'conflict' | string
+  message?: string
+  saved?: LiveAgentPlanBenefit
+  existing?: LiveAgentPlanBenefit
+}
+
+export interface AdoptLiveAgentPlanBenefitsOutput {
+  results: LiveAgentPlanBenefitAdoptionResult[]
+  adopted: number
+  drafted: number
+  skipped: number
+  blocked: number
+  conflicts: number
+}
+
+export interface LiveAgentPlanScript {
+  id: number
+  tenant_id: number
+  plan_id: number
+  title: string
+  source_type: 'paste' | 'upload' | string
+  source_asset_id?: number
+  original_name?: string
+  raw_text: string
+  readable_text: string
+  analysis_status: 'not_analyzed' | 'analyzed' | string
+  analysis: LiveAgentPlanScriptAnalysis
+  model_provider?: string
+  model_name?: string
+  latency_ms?: number
+  analyzed_at?: string
+  status: string
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAgentPlanScriptReference {
+  id: number
+  tenant_id: number
+  plan_id: number
+  reference_key: string
+  title: string
+  content_text: string
+  goal?: string
+  transition?: string
+  execution_mode: 'intent' | 'verbatim' | string
+  source_quote?: string
+  source_type: string
+  source_ref?: string
+  status: 'active' | 'disabled' | string
+  version_no: number
+  created_by_user_id?: number
+  updated_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SaveLiveAgentPlanScriptInput {
+  tenant_id?: number
+  title?: string
+  source_type?: 'paste' | 'upload' | string
+  source_asset_id?: number
+  original_name?: string
+  raw_text: string
+  readable_text: string
 }
 
 export interface LiveAgentSettings {
@@ -1364,6 +2093,8 @@ export interface OfficialVoice {
 
 export interface VoicePreviewResponse {
   audio_url: string
+  audio_asset_id?: number
+  duration_ms?: number
 }
 
 export interface LiveRuntimeEvent {
@@ -1450,10 +2181,24 @@ export interface AdminAuditLog {
   occurred_at: string
   actor_user_id: number
   actor_username: string
+  actor_role?: string
+  actor_type?: string
+  source?: string
   action: string
   target_user_id?: number
   target_username?: string
   target_tenant_id?: number
+  target_room_id?: number
+  object_type?: string
+  object_id?: string
+  object_name?: string
+  reason?: string
+  before_state?: string
+  after_state?: string
+  runtime_session_id?: number
+  core_boot_id?: string
+  request_id?: string
+  detail_json?: string
   http_method?: string
   path?: string
   client_ip?: string

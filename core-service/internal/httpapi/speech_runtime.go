@@ -3,8 +3,14 @@ package httpapi
 import (
 	"net/http"
 
+	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/speechruntime"
 )
+
+type roomSpeechRuntimeResponse struct {
+	speechruntime.Snapshot
+	Program *audioout.RoomProgramSnapshot `json:"program,omitempty"`
+}
 
 func (s *Server) getRoomSpeechRuntime(w http.ResponseWriter, r *http.Request) {
 	if s.speechRuntime == nil {
@@ -28,7 +34,13 @@ func (s *Server) getRoomSpeechRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, snapshot)
+	response := roomSpeechRuntimeResponse{Snapshot: snapshot}
+	if audioState := s.audioDevState(); audioState != nil && audioState.client != nil && audioState.client.Enabled() {
+		if program, programErr := audioState.client.ProgramSnapshot(r.Context(), roomID); programErr == nil {
+			response.Program = &program
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) updateRoomSpeechRuntime(w http.ResponseWriter, r *http.Request) {

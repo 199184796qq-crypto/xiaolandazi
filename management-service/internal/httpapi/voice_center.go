@@ -1,9 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +22,9 @@ import (
 )
 
 const (
-	qwenCloneTTSModel  = "qwen3-tts-vc-2026-01-22"
-	maxCloneAudioBytes = 20 << 20
+	qwenCloneTTSModel      = "qwen3-tts-vc-2026-01-22"
+	maxCloneAudioBytes     = 20 << 20
+	maxGeneratedVoiceBytes = 32 << 20
 )
 
 type officialVoice = voicecatalog.Voice
@@ -37,11 +43,19 @@ func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 }
 
 type voicePreviewInput struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	TenantID int64  `json:"tenant_id,omitempty"`
 }
 
 func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.resolveActor(w, r); !ok {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	var input voicePreviewInput
+	_ = json.NewDecoder(io.LimitReader(r.Body, 32<<10)).Decode(&input)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
+	if !ok {
 		return
 	}
 	voiceID := strings.TrimSpace(r.PathValue("voiceID"))
@@ -50,8 +64,6 @@ func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "官方声音不存在")
 		return
 	}
-	var input voicePreviewInput
-	_ = json.NewDecoder(io.LimitReader(r.Body, 32<<10)).Decode(&input)
 	text := strings.TrimSpace(input.Text)
 	if text == "" {
 		text = "大家好，欢迎来到直播间，很高兴今天和大家见面。"
@@ -61,7 +73,18 @@ func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadGateway, "声音试听生成失败："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audio_url": audioURL})
+	assetID, durationMS, err := s.archiveGeneratedVoice(
+		r.Context(), tenantID, actor.UserID, audioURL, voice.ID, voice.Model, "official",
+	)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"audio_url":      audioURL,
+		"audio_asset_id": assetID,
+		"duration_ms":    durationMS,
+	})
 }
 
 type cloneVoiceInput struct {
@@ -153,7 +176,9 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	var input voicePreviewInput
+	_ = json.NewDecoder(io.LimitReader(r.Body, 32<<10)).Decode(&input)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
 	if !ok {
 		return
 	}
@@ -171,8 +196,6 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusConflict, "这个声音还没有准备好")
 		return
 	}
-	var input voicePreviewInput
-	_ = json.NewDecoder(io.LimitReader(r.Body, 32<<10)).Decode(&input)
 	text := strings.TrimSpace(input.Text)
 	if text == "" {
 		text = "大家好，欢迎来到直播间，这是我的声音试听。"
@@ -188,7 +211,148 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadGateway, "声音试听生成失败："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audio_url": audioURL})
+	assetID, durationMS, err := s.archiveGeneratedVoice(
+		r.Context(), tenantID, actor.UserID, audioURL, profile.VoiceID, modelName, "clone",
+	)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"audio_url":      audioURL,
+		"audio_asset_id": assetID,
+		"duration_ms":    durationMS,
+	})
+}
+
+func (s *Server) archiveGeneratedVoice(
+	ctx context.Context,
+	tenantID, actorUserID int64,
+	providerURL, voiceID, modelName, source string,
+) (int64, int64, error) {
+	if s.assetStorage == nil {
+		return 0, 0, fmt.Errorf("媒体存储尚未初始化")
+	}
+	providerURL = strings.TrimSpace(providerURL)
+	if providerURL == "" {
+		return 0, 0, fmt.Errorf("声音地址为空")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerURL, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, fmt.Errorf("下载生成声音: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, 0, fmt.Errorf("下载生成声音 HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedVoiceBytes+1))
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取生成声音: %w", err)
+	}
+	if len(raw) == 0 || len(raw) > maxGeneratedVoiceBytes {
+		return 0, 0, fmt.Errorf("生成声音为空或超过 32MB")
+	}
+	durationMS, err := generatedVoiceWAVDurationMS(raw)
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取生成声音时长: %w", err)
+	}
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" || contentType == "application/octet-stream" {
+		limit := len(raw)
+		if limit > 512 {
+			limit = 512
+		}
+		contentType = http.DetectContentType(raw[:limit])
+	}
+	objectKey, err := newMediaObjectKey(tenantID, "generated_voice", "generated.wav")
+	if err != nil {
+		return 0, 0, err
+	}
+	assetStore := s.assetStorage.Current()
+	if ossStore, ossErr := s.assetStorage.For("oss"); ossErr == nil {
+		assetStore = ossStore
+	}
+	if err := assetStore.Put(ctx, objectKey, bytes.NewReader(raw), contentType); err != nil {
+		return 0, 0, fmt.Errorf("写入声音存储: %w", err)
+	}
+	digest := sha256.Sum256(raw)
+	durationValue := uint64(durationMS)
+	item, err := s.store.CreateMediaAsset(ctx, model.CreateMediaAssetInput{
+		TenantID:        tenantID,
+		AssetType:       "generated_voice",
+		OriginalName:    "generated.wav",
+		StorageDriver:   assetStore.Driver(),
+		StorageBucket:   assetStore.Bucket(),
+		ObjectKey:       objectKey,
+		MIMEType:        contentType,
+		SizeBytes:       uint64(len(raw)),
+		DurationMS:      &durationValue,
+		ChecksumSHA256:  hex.EncodeToString(digest[:]),
+		CreatedByUserID: actorUserID,
+		Metadata: map[string]any{
+			"source":    strings.TrimSpace(source),
+			"voice_id":  strings.TrimSpace(voiceID),
+			"tts_model": strings.TrimSpace(modelName),
+			"purpose":   "live_agent_formal_voice_candidate",
+		},
+	})
+	if err != nil {
+		_ = assetStore.Delete(ctx, objectKey)
+		return 0, 0, fmt.Errorf("保存声音资产记录: %w", err)
+	}
+	return item.ID, durationMS, nil
+}
+
+func generatedVoiceWAVDurationMS(audio []byte) (int64, error) {
+	if len(audio) < 12 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
+		return 0, errors.New("生成声音不是 RIFF/WAVE 文件")
+	}
+	var byteRate uint32
+	var dataSize uint32
+	for offset := 12; offset+8 <= len(audio); {
+		chunkID := string(audio[offset : offset+4])
+		chunkSize := binary.LittleEndian.Uint32(audio[offset+4 : offset+8])
+		dataStart := offset + 8
+		dataEnd := dataStart + int(chunkSize)
+		streamingData := chunkID == "data" && dataEnd > len(audio)
+		if dataEnd > len(audio) && !streamingData {
+			return 0, errors.New("生成声音 WAV 分块无效")
+		}
+		switch chunkID {
+		case "fmt ":
+			if chunkSize < 16 || dataStart+16 > len(audio) {
+				return 0, errors.New("生成声音 WAV fmt 分块无效")
+			}
+			byteRate = binary.LittleEndian.Uint32(audio[dataStart+8 : dataStart+12])
+		case "data":
+			if streamingData {
+				dataSize = uint32(len(audio) - dataStart)
+				dataEnd = len(audio)
+			} else {
+				dataSize = chunkSize
+			}
+		}
+		if byteRate > 0 && dataSize > 0 {
+			break
+		}
+		offset = dataEnd
+		if chunkSize%2 == 1 {
+			offset++
+		}
+	}
+	if byteRate == 0 || dataSize == 0 {
+		return 0, errors.New("生成声音 WAV 缺少 fmt 或 data 分块")
+	}
+	durationMS := int64((uint64(dataSize)*1000 + uint64(byteRate)/2) / uint64(byteRate))
+	if durationMS <= 0 {
+		return 0, errors.New("生成声音时长无效")
+	}
+	return durationMS, nil
 }
 
 func synthesizeVoicePreview(ctx context.Context, modelName, voiceID, text string) (string, error) {

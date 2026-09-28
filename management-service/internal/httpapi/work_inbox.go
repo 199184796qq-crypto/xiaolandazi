@@ -226,7 +226,7 @@ func (s *Server) tryInboxAgentResponse(w http.ResponseWriter, r *http.Request, a
 	if !model.WorkInboxAvailable(actor.Role) {
 		// Product guidance only: never read counts, offer an inbox route or dispatch an action.
 		if actor.Role == "customer" && (strings.Contains(message, "待办") || strings.Contains(message, "我的代办")) {
-			writeJSON(w, http.StatusOK, systemAgentChatOutput{
+			writeAgentChatOutput(w, http.StatusOK, systemAgentChatOutput{
 				Reply:        "终端不设置统一待办入口。订单、售后和运维协助的进度，请在对应业务页面查看；需要补充资料或确认处理结果，也在原页面办理。",
 				Capabilities: clientAgentCapabilities(actor),
 			})
@@ -284,7 +284,7 @@ func (s *Server) tryInboxAgentResponse(w http.ResponseWriter, r *http.Request, a
 			break
 		}
 	}
-	writeJSON(w, 200, systemAgentChatOutput{Reply: reply, Capabilities: []string{"我的待办", "分类提醒"}, Model: "business-inbox", Navigate: &systemAgentNavigationContext{Title: "我的待办", To: "/work/inbox" + inboxFilterQuery(category), Section: "当前账号"}})
+	writeAgentChatOutput(w, 200, systemAgentChatOutput{Reply: reply, Capabilities: []string{"我的待办", "分类提醒"}, Model: "business-inbox", Navigate: &systemAgentNavigationContext{Title: "我的待办", To: "/work/inbox" + inboxFilterQuery(category), Section: "当前账号"}})
 	return true
 }
 func inboxFilterQuery(category string) string {

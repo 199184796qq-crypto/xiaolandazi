@@ -109,6 +109,9 @@ CREATE TABLE IF NOT EXISTS ai_single_use_events (
     provider VARCHAR(64) NOT NULL DEFAULT '',
     model VARCHAR(128) NOT NULL DEFAULT '',
     latency_ms BIGINT NOT NULL DEFAULT 0,
+    input_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    output_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
     metadata_json JSON NULL,
     started_at DATETIME(3) NOT NULL,
     completed_at DATETIME(3) NULL,
@@ -119,6 +122,29 @@ CREATE TABLE IF NOT EXISTS ai_single_use_events (
     KEY idx_ai_single_use_actor (actor_user_id, started_at),
     KEY idx_ai_single_use_tenant (tenant_id, started_at),
     KEY idx_ai_single_use_source (source, payer_type, status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS agent_understanding_policies (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    scope_type VARCHAR(32) NOT NULL,
+    scope_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    mode VARCHAR(16) NOT NULL DEFAULT 'model',
+    provider VARCHAR(64) NOT NULL DEFAULT 'qwen',
+    model VARCHAR(128) NOT NULL DEFAULT 'qwen3.8-flash',
+    max_context_messages INT NOT NULL DEFAULT 10,
+    max_tokens INT NOT NULL DEFAULT 900,
+    timeout_ms INT NOT NULL DEFAULT 12000,
+    monthly_budget_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    budget_fallback VARCHAR(32) NOT NULL DEFAULT 'program',
+    min_confidence DECIMAL(6,5) NOT NULL DEFAULT 0.72000,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    updated_by_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_understanding_scope (scope_type, scope_id),
+    KEY idx_agent_understanding_mode (mode, enabled),
+    KEY idx_agent_understanding_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_room_event_archive (
@@ -765,9 +791,68 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_room_bindings (
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
-    UNIQUE KEY uk_live_agent_plan_active_room (tenant_id, active_room_id),
+    UNIQUE KEY uk_live_agent_plan_active_room (tenant_id, plan_id, active_room_id),
     KEY idx_live_agent_plan_binding_room (tenant_id, room_id, status),
     KEY idx_live_agent_plan_binding_plan (plan_id, status, room_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_room_plan_selections (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    selected_by_user_id BIGINT UNSIGNED NULL,
+    selected_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, room_id),
+    KEY idx_live_agent_room_plan_selection_plan (tenant_id, plan_id, room_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_versions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    lifecycle_status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    duration_minutes INT UNSIGNED NOT NULL DEFAULT 0,
+    round_minutes INT UNSIGNED NOT NULL DEFAULT 0,
+    voice_identity_json JSON NOT NULL,
+    variants_json JSON NOT NULL,
+    generation_context_json JSON NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    published_by_user_id BIGINT UNSIGNED NULL,
+    published_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_version_no (tenant_id, plan_id, room_id, version_no),
+    KEY idx_live_agent_plan_versions_room (tenant_id, room_id, lifecycle_status, version_no),
+    KEY idx_live_agent_plan_versions_plan (tenant_id, plan_id, room_id, lifecycle_status, version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_room_plan_publications (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    version_id BIGINT UNSIGNED NOT NULL,
+    published_by_user_id BIGINT UNSIGNED NULL,
+    published_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, room_id),
+    KEY idx_live_agent_room_plan_publications_version (version_id),
+    KEY idx_live_agent_room_plan_publications_plan (tenant_id, plan_id, room_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS mgmt_user_ui_preferences (
+    user_id BIGINT UNSIGNED NOT NULL,
+    selected_live_room_id BIGINT UNSIGNED NULL,
+    sidebar_collapsed TINYINT(1) NOT NULL DEFAULT 1,
+    live_plan_panel_collapsed TINYINT(1) NOT NULL DEFAULT 1,
+    agent_drawer_collapsed TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (user_id),
+    KEY idx_user_ui_preferences_room (selected_live_room_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plan_terms (
@@ -799,4 +884,232 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_term_variants (
     PRIMARY KEY (id),
     UNIQUE KEY uk_live_agent_plan_term_variant (term_id, variant_text),
     KEY idx_live_agent_plan_term_variants_term (term_id, confirmation_count, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_scripts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    title VARCHAR(180) NOT NULL DEFAULT '',
+    source_type VARCHAR(24) NOT NULL DEFAULT 'paste',
+    source_asset_id BIGINT UNSIGNED NULL,
+    original_name VARCHAR(255) NOT NULL DEFAULT '',
+    raw_text MEDIUMTEXT NOT NULL,
+    readable_text MEDIUMTEXT NOT NULL,
+    analysis_status VARCHAR(24) NOT NULL DEFAULT 'not_analyzed',
+    analysis_json MEDIUMTEXT NOT NULL,
+    model_provider VARCHAR(64) NOT NULL DEFAULT '',
+    model_name VARCHAR(128) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    analyzed_at DATETIME(3) NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_agent_plan_scripts_plan (tenant_id, plan_id, status, updated_at),
+    KEY idx_live_agent_plan_scripts_asset (source_asset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_facts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    category VARCHAR(48) NOT NULL DEFAULT 'other',
+    fact_key VARCHAR(255) NOT NULL,
+    fact_value TEXT NOT NULL,
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT 'adoptable',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT 'analysis_adoption',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    version_no BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_fact_current (plan_id, category, fact_key),
+    KEY idx_live_agent_plan_facts_plan (tenant_id, plan_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_fact_revisions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    fact_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    category VARCHAR(48) NOT NULL,
+    fact_key VARCHAR(255) NOT NULL,
+    fact_value TEXT NOT NULL,
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT '',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT '',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    actor_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_fact_revision (fact_id, version_no),
+    KEY idx_live_agent_plan_fact_revisions_plan (tenant_id, plan_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_product_links (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    link_key VARCHAR(64) NOT NULL,
+    product_name VARCHAR(255) NOT NULL DEFAULT '',
+    spec VARCHAR(255) NOT NULL DEFAULT '',
+    daily_price VARCHAR(255) NOT NULL DEFAULT '',
+    quantity VARCHAR(255) NOT NULL DEFAULT '',
+    audience VARCHAR(512) NOT NULL DEFAULT '',
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT 'adoptable',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT 'analysis_adoption',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    version_no BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_product_link_current (plan_id, link_key),
+    KEY idx_live_agent_plan_product_links_plan (tenant_id, plan_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_product_link_revisions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    product_link_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    link_key VARCHAR(64) NOT NULL,
+    product_name VARCHAR(255) NOT NULL DEFAULT '',
+    spec VARCHAR(255) NOT NULL DEFAULT '',
+    daily_price VARCHAR(255) NOT NULL DEFAULT '',
+    quantity VARCHAR(255) NOT NULL DEFAULT '',
+    audience VARCHAR(512) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT '',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT '',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    actor_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_product_link_revision (product_link_id, version_no),
+    KEY idx_live_agent_plan_product_link_revisions_plan (tenant_id, plan_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_benefits (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    benefit_key VARCHAR(255) NOT NULL,
+    link_key VARCHAR(64) NOT NULL DEFAULT '',
+    product_name VARCHAR(255) NOT NULL DEFAULT '',
+    activity_price VARCHAR(255) NOT NULL DEFAULT '',
+    gift VARCHAR(512) NOT NULL DEFAULT '',
+    activity_text TEXT NOT NULL,
+    starts_at DATETIME(3) NULL,
+    ends_at DATETIME(3) NULL,
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT 'adoptable',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT 'analysis_adoption',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    version_no BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_benefit_current (plan_id, benefit_key),
+    KEY idx_live_agent_plan_benefits_plan (tenant_id, plan_id, status, updated_at),
+    KEY idx_live_agent_plan_benefits_window (tenant_id, plan_id, starts_at, ends_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_benefit_revisions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    benefit_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    benefit_key VARCHAR(255) NOT NULL,
+    link_key VARCHAR(64) NOT NULL DEFAULT '',
+    product_name VARCHAR(255) NOT NULL DEFAULT '',
+    activity_price VARCHAR(255) NOT NULL DEFAULT '',
+    gift VARCHAR(512) NOT NULL DEFAULT '',
+    activity_text TEXT NOT NULL,
+    starts_at DATETIME(3) NULL,
+    ends_at DATETIME(3) NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    source_quote TEXT NOT NULL,
+    source_review_bucket VARCHAR(24) NOT NULL DEFAULT '',
+    source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT '',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    actor_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_benefit_revision (benefit_id, version_no),
+    KEY idx_live_agent_plan_benefit_revisions_plan (tenant_id, plan_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_script_references (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    reference_key VARCHAR(255) NOT NULL,
+    title VARCHAR(255) NOT NULL DEFAULT '',
+    content_text MEDIUMTEXT NOT NULL,
+    goal VARCHAR(512) NOT NULL DEFAULT '',
+    transition_text VARCHAR(512) NOT NULL DEFAULT '',
+    execution_mode VARCHAR(24) NOT NULL DEFAULT 'intent',
+    source_quote TEXT NOT NULL,
+    source_type VARCHAR(48) NOT NULL DEFAULT 'system_agent',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    version_no BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_script_reference_current (plan_id, reference_key),
+    KEY idx_live_agent_plan_script_references_plan (tenant_id, plan_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_script_reference_revisions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    reference_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    reference_key VARCHAR(255) NOT NULL,
+    title VARCHAR(255) NOT NULL DEFAULT '',
+    content_text MEDIUMTEXT NOT NULL,
+    goal VARCHAR(512) NOT NULL DEFAULT '',
+    transition_text VARCHAR(512) NOT NULL DEFAULT '',
+    execution_mode VARCHAR(24) NOT NULL DEFAULT 'intent',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    source_quote TEXT NOT NULL,
+    source_type VARCHAR(48) NOT NULL DEFAULT '',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    actor_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_script_reference_revision (reference_id, version_no),
+    KEY idx_live_agent_plan_script_reference_revisions_plan (tenant_id, plan_id, created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

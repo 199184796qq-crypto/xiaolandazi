@@ -130,6 +130,7 @@ const entryEnglishTitles: Record<string, string> = {
   '权限中心': 'PERMISSION CENTER',
   '审批策略': 'APPROVAL POLICIES',
   '权限审计': 'ACCESS AUDIT',
+  '操作审计': 'OPERATION AUDIT',
   '终端列表': 'CUSTOMER LIST',
   '客户资源': 'CUSTOMER RESOURCES',
   '密码重置': 'PASSWORD RESET',

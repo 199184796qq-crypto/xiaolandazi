@@ -52,6 +52,9 @@ func main() {
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("migrate management database: %v", err)
 	}
+	if err := store.MigrateAdminAudit(ctx); err != nil {
+		log.Fatalf("migrate audit database: %v", err)
+	}
 	if err := store.MigrateSystemSettings(ctx); err != nil {
 		log.Fatalf("migrate system settings database: %v", err)
 	}
@@ -198,6 +201,7 @@ func main() {
 	)
 	api.SetWorkInbox(inbox)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
+	go api.RunCoreStatusWatch(appCtx)
 	runtimeReconciler := liveruntime.NewReconciler(
 		store,
 		core,
@@ -205,6 +209,7 @@ func main() {
 		cfg.RuntimeReconcileBatch,
 		leaderLease,
 	)
+	runtimeReconciler.SetAuditRecorder(auditStore)
 	go runtimeReconciler.Run(appCtx)
 	agentGateway := agentgateway.NewFromEnv()
 	clusterWorker := questioncluster.New(store, core, agentGateway, leaderLease)

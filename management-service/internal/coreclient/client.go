@@ -34,7 +34,11 @@ func New(baseURL string, token string) *Client {
 		baseURLs: baseURLs,
 		token:    token,
 		http: &http.Client{
-			Timeout: 20 * time.Second,
+			// Audio interaction dispatch may deliberately wait for the next
+			// semantic sentence boundary before Core switches away from mainline.
+			// Keep this above the scheduler's 35s maximum wait so Management does
+			// not time out and release an otherwise valid interaction.
+			Timeout: 45 * time.Second,
 		},
 	}
 }

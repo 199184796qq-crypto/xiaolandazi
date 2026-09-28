@@ -67,6 +67,24 @@ func (s *Store) FinishAISingleUseEvent(
 	metadata map[string]any,
 	completedAt time.Time,
 ) error {
+	return s.FinishAISingleUseEventWithUsage(
+		ctx, externalID, status, provider, modelName, latencyMS, 0, 0, 0, metadata, completedAt,
+	)
+}
+
+func (s *Store) FinishAISingleUseEventWithUsage(
+	ctx context.Context,
+	externalID string,
+	status string,
+	provider string,
+	modelName string,
+	latencyMS int64,
+	inputTokens int64,
+	outputTokens int64,
+	totalTokens int64,
+	metadata map[string]any,
+	completedAt time.Time,
+) error {
 	externalID = strings.TrimSpace(externalID)
 	if externalID == "" {
 		return nil
@@ -82,10 +100,12 @@ func (s *Store) FinishAISingleUseEvent(
 	result, err := s.db.ExecContext(ctx, `
         UPDATE ai_single_use_events
         SET status=?, charged_beans=0, provider=?, model=?, latency_ms=?,
+            input_tokens=?, output_tokens=?, total_tokens=?,
             metadata_json=CASE WHEN ? IS NULL THEN metadata_json ELSE ? END,
             completed_at=?, updated_at=CURRENT_TIMESTAMP(3)
         WHERE external_id=? AND status='started'
-    `, status, strings.TrimSpace(provider), strings.TrimSpace(modelName), latencyMS,
+	`, status, strings.TrimSpace(provider), strings.TrimSpace(modelName), latencyMS,
+		maxInt64Zero(inputTokens), maxInt64Zero(outputTokens), maxInt64Zero(totalTokens),
 		nullableSingleUseJSON(raw), nullableSingleUseJSON(raw), completedAt, externalID)
 	if err != nil {
 		return err
@@ -100,6 +120,32 @@ func (s *Store) FinishAISingleUseEvent(
 		return err
 	}
 	return nil
+}
+
+func (s *Store) SumUnderstandingTokensForTenantMonth(ctx context.Context, tenantID int64, month time.Time) (int64, error) {
+	if tenantID <= 0 {
+		return 0, nil
+	}
+	month = month.UTC()
+	start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+	var total int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(total_tokens), 0)
+		FROM ai_single_use_events
+		WHERE tenant_id=?
+		  AND status='succeeded'
+		  AND started_at>=? AND started_at<?
+		  AND source IN ('live_strategy_intent', 'internal_agent_understanding', 'client_agent_understanding', 'agent_learning_intent')
+	`, tenantID, start, end).Scan(&total)
+	return total, err
+}
+
+func maxInt64Zero(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func nullableSingleUseInt64(value *int64) any {

@@ -31,25 +31,50 @@ import {
   createLiveOpsAnchorTraining,
   createLiveAgentConfigDraft,
   createLivePolicyLearningCandidate,
-  createCommercialMarketingCampaign,
-  createStaffEmployee,
+  executeInternalAgentAction,
+  executeLiveStrategyAction,
+  adoptLiveAgentPlanFacts,
+  adoptLiveAgentPlanBenefits,
+  adoptLiveAgentPlanProductLinks,
+  bindRoomLiveAgentPlan,
+  deleteLiveAgentPlanFact,
+  deleteLiveAgentPlanBenefit,
+  deleteLiveAgentPlanProductLink,
   getClientAgentContext,
   getInternalAgentContext,
+  getLiveAgentPlans,
+  getLiveAgentPlanFacts,
+  getLiveAgentPlanBenefits,
+  getLiveAgentPlanProductLinks,
+  getLiveAgentPlanScriptReferences,
+  getRoomLiveAgentPlans,
   getPublicSystemConfig,
   getLiveAgentConfigVersions,
   getLiveOfficialVoices,
+  getUserUIPreferences,
   getRoomAgentDecisions,
   getLiveVoiceProfiles,
   getRooms,
+  interpretLiveStrategyIntent,
+  previewRecognizeLiveAgentPlanImage,
   enqueueRoomManualAgentDecision,
   simulateRoomAgentDecision,
+  setLiveRuntimePlan,
   testLivePolicyAdmin,
+  unbindRoomLiveAgentPlan,
+  updateUserUIPreferences,
+  updateLiveAgentPlanFact,
+  updateLiveAgentPlanBenefit,
+  updateLiveAgentPlanProductLink,
+  type LiveStrategyIntentResponse,
 } from '../api'
 import type {
   InitialCredential,
   AgentDecisionSimulationResult,
   AgentMemoryItem,
   AgentMemoryVersion,
+  LiveAgentPlanFactCandidate,
+  LiveAgentPlanBenefitCandidate,
   LivePolicyLearningCandidate,
   SystemAgentActionPreview,
   SystemAgentChatResponse,
@@ -59,12 +84,66 @@ import { session } from '../session'
 import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
 import { resolveAgentNavigationTargets } from '../navigationUi'
 import { shouldRouteToSystemAgent } from '../systemAgentRouting'
+import {
+  buildLiveStrategyIntentClarification,
+  isExplicitPendingBenefitUpdateIntent,
+  isExplicitLiveBenefitCommand,
+  isLiveBenefitAccept,
+  isLiveBenefitCancel,
+  isLiveBenefitUpdateIntent,
+  isLiveImageProductAccept,
+  isLiveImageProductCancel,
+  isLiveProductCorrectionAccept,
+  isLiveProductCorrectionCancel,
+  isLiveStrategyCancelIntent,
+  isLiveStrategyConfirmIntent,
+  liveBenefitUpdateValues,
+  liveProductField,
+  liveProductImplicitSpecFromCommand,
+  liveProductLinkActionFromText,
+  liveProductLinkKeyFromText,
+  liveProductLinkTypoCorrection,
+  liveProductNameFromCommand,
+  liveProductUpdateValues,
+  normalizeBenefitTimeValue,
+  shouldRouteLiveStrategyModuleCommand,
+  type LiveStrategyIntentOption,
+  type LiveStrategyMode,
+} from '../agent/liveStrategyIntentRouter'
 
 type AgentDomain = 'system' | 'live-room' | 'live-strategy' | 'live-policy-admin' | 'live-support'
 type SystemTaskKey = 'create_staff_employee' | 'create_marketing_campaign'
 type AgentHistoryItem = { role: 'user' | 'agent'; text: string }
 type ComposerSource = 'dock' | 'drawer'
-type SuggestionKind = 'department' | 'capability' | 'navigation'
+type SuggestionKind = 'department' | 'capability' | 'navigation' | 'image'
+
+const unifiedLiveStrategyActionTypes = new Set([
+  'add_live_product',
+  'confirm_live_product_update',
+  'confirm_live_product_disable',
+  'add_live_benefit',
+  'confirm_live_benefit_update',
+  'confirm_live_benefit_disable',
+  'add_live_fact',
+  'confirm_live_fact_update',
+  'confirm_live_fact_disable',
+  'add_live_script_reference',
+  'confirm_live_script_reference_update',
+  'confirm_live_script_reference_disable',
+  'confirm_live_plan_bind',
+  'confirm_live_plan_unbind',
+  'confirm_live_plan_switch',
+])
+
+type AgentImageAttachment = {
+  id: string
+  label: string
+  dataUrl: string
+  width: number
+  height: number
+  scope: string
+  createdAt: number
+}
 
 type LivePolicyTestMode = {
   active: boolean
@@ -72,7 +151,6 @@ type LivePolicyTestMode = {
   industryCode: string
 }
 
-type LiveStrategyMode = 'basic' | 'strategy' | 'anchor' | 'script' | 'voice'
 type CoachingKind = 'reference_answer' | 'general'
 
 type ChatMessage = {
@@ -108,6 +186,7 @@ type ChatMessage = {
 
 type LiveRoomAnswerMode = 'quick' | 'answer'
 type LiveRoomWorkMode = 'chat' | 'learning' | 'test' | 'execution'
+type LiveRoomIntent = LiveRoomWorkMode | 'adopt'
 
 type SuggestionItem = {
   kind: SuggestionKind
@@ -157,6 +236,7 @@ const route = useRoute()
 const router = useRouter()
 const expanded = ref(false)
 const drawerOpen = ref(false)
+const drawerPreferenceReady = ref(false)
 const drawerTab = ref<'chat' | 'inbox'>('chat')
 const inboxRequest = ref('')
 const input = ref('')
@@ -171,11 +251,45 @@ const systemContext = ref<SystemAgentContextResponse>({
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const drawerInputEl = ref<HTMLTextAreaElement | null>(null)
 const chatEl = ref<HTMLElement | null>(null)
+const chatNearBottom = ref(true)
+const chatHasOverflow = ref(false)
+const showChatJumpToBottom = computed(() => chatHasOverflow.value && !chatNearBottom.value)
 const activeComposer = ref<ComposerSource | null>(null)
 const suggestionIndex = ref(0)
 const dismissedSuggestionInput = ref('')
 const activeSystemTask = ref<SystemTaskKey | null>(null)
 const systemTaskHistory = ref<AgentHistoryItem[]>([])
+const agentImages = ref<AgentImageAttachment[]>([])
+const imagePreview = ref<AgentImageAttachment | null>(null)
+const imageAttachmentError = ref('')
+
+function agentDrawerPreferenceCacheKey(userID: number) {
+  return 'xiaolan-ui:' + String(userID) + ':agent-drawer-collapsed'
+}
+
+function restoreAgentDrawerPreferenceLocal(userID: number) {
+  const raw = window.localStorage.getItem(agentDrawerPreferenceCacheKey(userID))
+  if (raw === '0') drawerOpen.value = true
+  if (raw === '1') drawerOpen.value = false
+}
+
+function persistAgentDrawerPreferenceLocal(userID: number) {
+  window.localStorage.setItem(agentDrawerPreferenceCacheKey(userID), drawerOpen.value ? '0' : '1')
+}
+
+async function loadAgentDrawerPreference(userID: number) {
+  drawerPreferenceReady.value = false
+  restoreAgentDrawerPreferenceLocal(userID)
+  try {
+    const preferences = await getUserUIPreferences()
+    drawerOpen.value = !preferences.agent_drawer_collapsed
+    persistAgentDrawerPreferenceLocal(userID)
+  } catch {
+    // Keep the locally restored state when management-service is temporarily unavailable.
+  } finally {
+    drawerPreferenceReady.value = true
+  }
+}
 const livePolicyTestMode = ref<LivePolicyTestMode>({
   active: false,
   layer: 'L1',
@@ -575,12 +689,21 @@ const liveSupportMode = ref<'strategy' | 'anchor' | 'voice'>(
 const storedLiveStrategyMode = window.localStorage.getItem('system-agent-live-mode')
 const liveStrategyMode = ref<LiveStrategyMode>(
   storedLiveStrategyMode === 'basic' ||
+  storedLiveStrategyMode === 'products' ||
+  storedLiveStrategyMode === 'benefits' ||
+  storedLiveStrategyMode === 'knowledge' ||
+  storedLiveStrategyMode === 'rhythm' ||
+  storedLiveStrategyMode === 'memory' ||
   storedLiveStrategyMode === 'anchor' ||
   storedLiveStrategyMode === 'script' ||
-  storedLiveStrategyMode === 'voice'
+  storedLiveStrategyMode === 'voice' ||
+  storedLiveStrategyMode === 'fullshow' ||
+  storedLiveStrategyMode === 'plan'
     ? storedLiveStrategyMode
     : 'strategy',
 )
+const liveStrategyPlanId = ref(Number(window.localStorage.getItem('system-agent-live-plan-id') || 0))
+const liveStrategyModuleLabel = ref(window.localStorage.getItem('system-agent-live-module-label') || '')
 const isInternalAgentProfile = computed(() =>
   ['platform_admin', 'staff', 'sales_staff'].includes(actor.value?.role || ''),
 )
@@ -623,6 +746,242 @@ function conversationScopeForDomain(domain: AgentDomain) {
   return domain
 }
 
+const AGENT_IMAGE_MAX_COUNT = 4
+const AGENT_IMAGE_MAX_SOURCE_BYTES = 5 * 1024 * 1024
+const AGENT_IMAGE_TARGET_DATA_URL_LENGTH = 1200000
+const AGENT_IMAGE_HARD_DATA_URL_LENGTH = 2000000
+const AGENT_IMAGE_TOTAL_DATA_URL_LENGTH = 5200000
+
+const currentAgentImages = computed(() => {
+  const scope = conversationScopeForDomain(currentDomain.value)
+  return agentImages.value.filter((item) => item.scope === scope)
+})
+
+function nextAgentImageLabel(scope: string) {
+  let maxIndex = 0
+  for (const item of agentImages.value) {
+    if (item.scope !== scope) continue
+    const matched = item.label.match(/^图片(\d+)$/)
+    if (matched) maxIndex = Math.max(maxIndex, Number(matched[1] || 0))
+  }
+  return '图片' + String(maxIndex + 1)
+}
+
+async function normalizeAgentImage(file: File) {
+  if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
+    throw new Error('只支持 PNG、JPEG、WEBP 图片')
+  }
+  if (file.size <= 0 || file.size > AGENT_IMAGE_MAX_SOURCE_BYTES) {
+    throw new Error('单张图片最大 5MB')
+  }
+  const bitmap = await createImageBitmap(file)
+  try {
+    let maxSide = 2200
+    let quality = 0.92
+    let dataUrl = ''
+    let outputWidth = bitmap.width
+    let outputHeight = bitmap.height
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
+      outputWidth = Math.max(1, Math.round(bitmap.width * scale))
+      outputHeight = Math.max(1, Math.round(bitmap.height * scale))
+      const canvas = document.createElement('canvas')
+      canvas.width = outputWidth
+      canvas.height = outputHeight
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('浏览器暂时无法处理这张图片')
+      context.drawImage(bitmap, 0, 0, outputWidth, outputHeight)
+      dataUrl = canvas.toDataURL('image/webp', quality)
+      if (dataUrl.length <= AGENT_IMAGE_TARGET_DATA_URL_LENGTH) break
+      if (quality > 0.76) {
+        quality -= 0.04
+      } else {
+        maxSide = Math.max(1100, Math.round(maxSide * 0.86))
+      }
+    }
+    if (!dataUrl || dataUrl.length > AGENT_IMAGE_HARD_DATA_URL_LENGTH) {
+      throw new Error('图片内容太大，请裁剪后再粘贴')
+    }
+    return { dataUrl, width: outputWidth, height: outputHeight }
+  } finally {
+    bitmap.close()
+  }
+}
+
+async function addAgentImage(file: File) {
+  imageAttachmentError.value = ''
+  const scope = conversationScopeForDomain(currentDomain.value)
+  const scopedImages = agentImages.value.filter((item) => item.scope === scope)
+  if (scopedImages.length >= AGENT_IMAGE_MAX_COUNT) {
+    imageAttachmentError.value = '当前会话最多保留 4 张图片，请先删除不用的图片。'
+    return
+  }
+  try {
+    const normalized = await normalizeAgentImage(file)
+    const scopedTotal = scopedImages.reduce((sum, item) => sum + item.dataUrl.length, 0)
+    if (scopedTotal + normalized.dataUrl.length > AGENT_IMAGE_TOTAL_DATA_URL_LENGTH) {
+      throw new Error('当前会话图片总大小过大，请删除一张后再粘贴')
+    }
+    const label = nextAgentImageLabel(scope)
+    agentImages.value.push({
+      id: 'agent-image-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+      label,
+      dataUrl: normalized.dataUrl,
+      width: normalized.width,
+      height: normalized.height,
+      scope,
+      createdAt: Date.now(),
+    })
+    if (!input.value.includes('@' + label)) {
+      input.value = (input.value.trimEnd() + (input.value.trim() ? ' ' : '') + '@' + label + ' ').trimStart()
+    }
+    dismissedSuggestionInput.value = input.value
+    await nextTick(focusActiveComposer)
+  } catch (error) {
+    imageAttachmentError.value = error instanceof Error ? error.message : '图片粘贴失败'
+  }
+}
+
+async function handleComposerPaste(event: ClipboardEvent) {
+  const items = Array.from(event.clipboardData?.items || [])
+  const files = items
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((item): item is File => Boolean(item))
+  if (!files.length) return
+  event.preventDefault()
+  for (const file of files.slice(0, AGENT_IMAGE_MAX_COUNT)) {
+    await addAgentImage(file)
+  }
+}
+
+function removeAgentImage(image: AgentImageAttachment) {
+  agentImages.value = agentImages.value.filter((item) => item.id !== image.id)
+  input.value = input.value
+    .replace(new RegExp('\\s*@' + image.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$)', 'g'), ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trimStart()
+  if (imagePreview.value?.id === image.id) imagePreview.value = null
+}
+
+function insertAgentImageReference(image: AgentImageAttachment) {
+  const token = '@' + image.label
+  if (!input.value.includes(token)) {
+    input.value = (input.value.trimEnd() + (input.value.trim() ? ' ' : '') + token + ' ').trimStart()
+  }
+  dismissedSuggestionInput.value = input.value
+  focusActiveComposer()
+}
+
+function resolveAgentImageReferences(value: string) {
+  const images = currentAgentImages.value
+  const labels = Array.from(value.matchAll(/@图片\d+/g), (match) => match[0].slice(1))
+  if (labels.length) {
+    const uniqueLabels = Array.from(new Set(labels))
+    const selected: AgentImageAttachment[] = []
+    for (const label of uniqueLabels) {
+      const image = images.find((item) => item.label === label)
+      if (!image) return { images: [] as AgentImageAttachment[], error: '找不到“@' + label + '”，请重新选择图片。' }
+      selected.push(image)
+    }
+    return { images: selected, error: '' }
+  }
+  if (images.length === 1) return { images: [images[0]], error: '' }
+  if (images.length > 1) {
+    return { images: [] as AgentImageAttachment[], error: '当前有多张图片，请在问题里用 @图片1、@图片2 指定要让智能体看的图片。' }
+  }
+  return { images: [] as AgentImageAttachment[], error: '' }
+}
+
+function agentMessageWithImageContext(value: string, images: AgentImageAttachment[]) {
+  if (!images.length) return value
+  const mapping = images.map((image, index) => image.label + '=第' + String(index + 1) + '张附件').join('；')
+  return value +
+    '\n\n【本轮图片上下文】' + mapping +
+    '\n请结合被引用图片中直接可见的文字、布局、控件、商品或对象理解用户指向；看不清的内容不要猜，也不要把图片之外的信息当成事实。'
+}
+
+type RecognizedAgentImage = {
+  label: string
+  result: Awaited<ReturnType<typeof previewRecognizeLiveAgentPlanImage>>
+}
+
+async function agentImageAttachmentToFile(image: AgentImageAttachment) {
+  const response = await fetch(image.dataUrl)
+  const blob = await response.blob()
+  const mimeType = blob.type || 'image/webp'
+  const extension =
+    mimeType === 'image/png'
+      ? 'png'
+      : mimeType === 'image/jpeg'
+        ? 'jpg'
+        : 'webp'
+  return new File([blob], image.label + '.' + extension, { type: mimeType })
+}
+
+async function resolveLiveStrategyTenantID(roomId: number) {
+  const response = await getRooms()
+  return response.items.find((item) => item.id === roomId)?.tenant_id
+}
+
+async function recognizeLiveStrategyImages(
+  planId: number,
+  roomId: number,
+  images: AgentImageAttachment[],
+): Promise<RecognizedAgentImage[]> {
+  const tenantId = await resolveLiveStrategyTenantID(roomId)
+  const recognized: RecognizedAgentImage[] = []
+  for (const image of images) {
+    const file = await agentImageAttachmentToFile(image)
+    const result = await previewRecognizeLiveAgentPlanImage(planId, file, tenantId)
+    recognized.push({ label: image.label, result })
+  }
+  return recognized
+}
+
+function liveStrategyRecognizedImageContext(items: RecognizedAgentImage[]) {
+  return items
+    .map(({ label, result }) => {
+      const product = result.product
+      const parts = ['【' + label + '识别结果】']
+      if (result.text.trim()) parts.push('图片文字：' + result.text.trim())
+      if (result.visual_context.trim()) parts.push('图片可见内容：' + result.visual_context.trim())
+      if (product?.product_name?.trim()) parts.push('商品名称：' + product.product_name.trim())
+      if (product?.spec?.trim()) parts.push('规格：' + product.spec.trim())
+      if (product?.daily_price?.trim()) parts.push('日常价：' + product.daily_price.trim())
+      if (product?.quantity?.trim()) parts.push('数量：' + product.quantity.trim())
+      if (product?.audience?.trim()) parts.push('适用人群：' + product.audience.trim())
+      if (result.warnings?.length) parts.push('识别提示：' + result.warnings.join('；'))
+      return parts.join('\n')
+    })
+    .join('\n\n')
+}
+
+function liveStrategyRecognizedTextPreview(items: RecognizedAgentImage[]) {
+  return items
+    .map(({ label, result }) => {
+      const text = result.text.trim()
+      const parts = ['【' + label + ' 文字识别】']
+      parts.push(text || '未识别到清晰文字。')
+      if (result.warnings?.length) {
+        parts.push('识别提示：' + result.warnings.join('；'))
+      }
+      return parts.join('\n')
+    })
+    .join('\n\n')
+}
+
+function liveStrategyMessageWithRecognizedImages(value: string, recognized: RecognizedAgentImage[]) {
+  const context = liveStrategyRecognizedImageContext(recognized)
+  if (!context) return value
+  return (
+    value +
+    '\n\n【图片识别后的结构化上下文】\n' +
+    context +
+    '\n\n以上只代表图片中直接可见并识别出的内容；没有识别到的字段保持为空，不得猜测。'
+  )
+}
+
 function agentHistoryStorageKey(userId: number) {
   return AGENT_CHAT_HISTORY_PREFIX + String(userId)
 }
@@ -643,6 +1002,30 @@ function restoreAgentChatHistory(userId: number) {
       domain: item.domain,
       introduction: item.introduction,
       conversationScope: item.conversationScope,
+      action:
+        item.action?.type === 'add_live_image_product' ||
+        item.action?.type === 'add_live_product' ||
+        item.action?.type === 'add_live_benefit' ||
+        item.action?.type === 'confirm_live_product_link_correction' ||
+        item.action?.type === 'clarify_live_product_update' ||
+        item.action?.type === 'confirm_live_product_update' ||
+        item.action?.type === 'confirm_live_product_disable' ||
+        item.action?.type === 'clarify_live_benefit_target' ||
+        item.action?.type === 'clarify_live_benefit_update' ||
+        item.action?.type === 'confirm_live_benefit_update' ||
+        item.action?.type === 'confirm_live_benefit_disable' ||
+        item.action?.type === 'add_live_fact' ||
+        item.action?.type === 'confirm_live_fact_update' ||
+        item.action?.type === 'confirm_live_fact_disable' ||
+        item.action?.type === 'add_live_script_reference' ||
+        item.action?.type === 'confirm_live_script_reference_update' ||
+        item.action?.type === 'confirm_live_script_reference_disable' ||
+        item.action?.type === 'confirm_live_plan_bind' ||
+        item.action?.type === 'confirm_live_plan_unbind' ||
+        item.action?.type === 'confirm_live_plan_switch' ||
+        item.action?.type === 'clarify_live_strategy_intent'
+          ? item.action
+          : undefined,
       answerReference: item.answerReference
         ? { ...item.answerReference, saving: false }
         : undefined,
@@ -677,6 +1060,30 @@ function persistAgentChatHistory(userId: number) {
     domain: item.domain,
     introduction: item.introduction,
     conversationScope: item.conversationScope || conversationScopeForDomain(item.domain),
+    action:
+      item.action?.type === 'add_live_image_product' ||
+      item.action?.type === 'add_live_product' ||
+      item.action?.type === 'add_live_benefit' ||
+      item.action?.type === 'confirm_live_product_link_correction' ||
+      item.action?.type === 'clarify_live_product_update' ||
+      item.action?.type === 'confirm_live_product_update' ||
+      item.action?.type === 'confirm_live_product_disable' ||
+      item.action?.type === 'clarify_live_benefit_target' ||
+      item.action?.type === 'clarify_live_benefit_update' ||
+      item.action?.type === 'confirm_live_benefit_update' ||
+      item.action?.type === 'confirm_live_benefit_disable' ||
+      item.action?.type === 'add_live_fact' ||
+      item.action?.type === 'confirm_live_fact_update' ||
+      item.action?.type === 'confirm_live_fact_disable' ||
+      item.action?.type === 'add_live_script_reference' ||
+      item.action?.type === 'confirm_live_script_reference_update' ||
+      item.action?.type === 'confirm_live_script_reference_disable' ||
+      item.action?.type === 'confirm_live_plan_bind' ||
+      item.action?.type === 'confirm_live_plan_unbind' ||
+      item.action?.type === 'confirm_live_plan_switch' ||
+      item.action?.type === 'clarify_live_strategy_intent'
+        ? item.action
+        : undefined,
     answerReference: item.answerReference
       ? { ...item.answerReference, saving: false }
       : undefined,
@@ -707,7 +1114,7 @@ const contextLabel = computed(() => {
   if (currentDomain.value === 'live-room') return '直播场控'
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '直播策略 · 主播训练'
-    if (liveStrategyMode.value === 'script') return '直播策略 · 固定话术'
+    if (liveStrategyMode.value === 'script') return '直播策略 · 话术参考'
     if (liveStrategyMode.value === 'voice') return '直播策略 · 声音配置'
     if (liveStrategyMode.value === 'basic') return '直播策略 · 基础设置'
     return '直播策略 · 当前直播间用户层'
@@ -723,7 +1130,7 @@ const contextDescription = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '已进入当前直播间主播训练上下文。'
-    if (liveStrategyMode.value === 'script') return '已进入当前直播间固定话术上下文。'
+    if (liveStrategyMode.value === 'script') return '已进入当前直播间话术参考上下文。'
     if (liveStrategyMode.value === 'voice') return '已进入当前直播间声音配置上下文。'
     if (liveStrategyMode.value === 'basic') return '已进入当前客户直播助手基础设置上下文。'
     return '已进入当前直播间用户层策略上下文。'
@@ -781,7 +1188,7 @@ const inputPlaceholder = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '输入主播训练要求……'
-    if (liveStrategyMode.value === 'script') return '输入固定话术要求……'
+    if (liveStrategyMode.value === 'script') return '输入话术参考要求……'
     if (liveStrategyMode.value === 'voice') return '输入声音配置要求……'
     if (liveStrategyMode.value === 'basic') return '输入直播助手基础设置问题……'
     return '输入用户层策略要求……'
@@ -814,7 +1221,7 @@ const capabilities = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return ['主播训练', '主播风格', '训练草稿']
-    if (liveStrategyMode.value === 'script') return ['固定话术', '原话锁定', '意图执行']
+    if (liveStrategyMode.value === 'script') return ['话术参考', '原话锁定', '意图执行']
     if (liveStrategyMode.value === 'voice') return ['声音配置', '官方声音', '我的声音']
     if (liveStrategyMode.value === 'basic') return ['基础设置']
     return ['当前直播间用户层', '策略调教', '生成策略草稿']
@@ -848,6 +1255,178 @@ const visibleMessages = computed(() => {
     (!isTerminalCustomer.value || !item.introduction),
   )
 })
+
+type AgentDisplayBlock =
+  | { kind: 'heading'; text: string }
+  | { kind: 'prompt'; text: string }
+  | { kind: 'paragraph'; text: string }
+  | { kind: 'bullet'; text: string }
+  | { kind: 'numbered'; marker: string; text: string }
+  | { kind: 'field'; label: string; text: string }
+  | { kind: 'choices'; items: string[]; prompt?: string }
+  | { kind: 'examples'; items: string[] }
+
+function cleanAgentDisplayInline(value: string) {
+  return String(value || '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+function splitAgentDisplayItems(value: string) {
+  return String(value || '')
+    .split(/[、，,；;]/)
+    .map((item) => cleanAgentDisplayInline(item).replace(/[。；;]$/, ''))
+    .filter(Boolean)
+}
+
+function splitAgentDisplayExamples(value: string) {
+  return String(value || '')
+    .replace(/^[“\"]|[”\"]$/g, '')
+    .split(/[”\"]\s*或\s*[“\"]|\s+或\s+|；|;/)
+    .map((item) => cleanAgentDisplayInline(item).replace(/^[“\"]|[”\"]$/g, '').replace(/[。；;]$/, ''))
+    .filter(Boolean)
+}
+
+function structuredAgentPromptBlocks(line: string): AgentDisplayBlock[] | null {
+  const optionMarker = line.match(/(?:可选|选项)[：:]/)
+  if (!optionMarker || optionMarker.index === undefined) return null
+
+  const before = cleanAgentDisplayInline(line.slice(0, optionMarker.index))
+  let rest = line.slice(optionMarker.index + optionMarker[0].length).trim()
+  if (!before || !rest) return null
+
+  const optionEnd = rest.search(/[。！？!?](?=\s|$)/)
+  const optionText = cleanAgentDisplayInline(optionEnd >= 0 ? rest.slice(0, optionEnd) : rest)
+  rest = optionEnd >= 0 ? rest.slice(optionEnd + 1).trim() : ''
+  const choices = splitAgentDisplayItems(optionText)
+  if (choices.length < 2) return null
+
+  const blocks: AgentDisplayBlock[] = [{ kind: 'prompt', text: before }]
+  blocks.push({ kind: 'choices', items: choices, prompt: before })
+
+  if (rest) {
+    const exampleMarker = rest.match(/(?:例如|比如)[：:]/)
+    if (exampleMarker && exampleMarker.index !== undefined) {
+      const intro = cleanAgentDisplayInline(rest.slice(0, exampleMarker.index).replace(/[，,\s]+$/, ''))
+      const exampleText = cleanAgentDisplayInline(rest.slice(exampleMarker.index + exampleMarker[0].length))
+      if (intro) blocks.push({ kind: 'paragraph', text: intro })
+      const examples = splitAgentDisplayExamples(exampleText)
+      if (examples.length) blocks.push({ kind: 'examples', items: examples })
+    } else {
+      blocks.push({ kind: 'paragraph', text: cleanAgentDisplayInline(rest) })
+    }
+  }
+  return blocks
+}
+
+function fillAgentStructuredInput(value: string) {
+  input.value = value
+  dismissedSuggestionInput.value = ''
+  expanded.value = true
+  drawerOpen.value = true
+  activeComposer.value = 'drawer'
+  void nextTick(() => {
+    const element = drawerInputEl.value
+    if (!element) return
+    element.focus()
+    const end = element.value.length
+    element.setSelectionRange(end, end)
+  })
+}
+
+function chooseAgentDisplayOption(block: Extract<AgentDisplayBlock, { kind: 'choices' }>, choice: string) {
+  const prompt = String(block.prompt || '')
+  if (/添加哪类事实|添加.*事实/.test(prompt)) {
+    const factTemplates: Record<string, string> = {
+      发货物流: '添加事实 发货物流-快递方式：',
+      身份产地: '添加事实 身份产地-产地：',
+      产品卖点: '添加事实 产品卖点-核心优势：',
+      交易售后: '添加事实 交易售后-售后规则：',
+    }
+    fillAgentStructuredInput(factTemplates[choice] || ('添加事实 ' + choice + '-'))
+    return
+  }
+  fillAgentStructuredInput(choice)
+}
+
+function chooseAgentDisplayExample(example: string) {
+  const normalized = cleanAgentDisplayInline(example)
+  if (!normalized) return
+  if (/^[^：:]{1,24}-[^：:]{1,40}[：:]/.test(normalized)) {
+    fillAgentStructuredInput('添加事实 ' + normalized)
+    return
+  }
+  fillAgentStructuredInput(normalized)
+}
+
+function formatAgentMessageBlocks(value: string): AgentDisplayBlock[] {
+  let text = String(value || '').replace(/\r\n?/g, '\n')
+  if (!text.trim()) return []
+
+  text = text
+    .replace(/\s*\*\*\s*([^*\n：:]{1,20}[：:])\s*\*\*\s*/g, '\n$1 ')
+    .replace(/\s*\*\*\s*([^*\n]{2,24})\s*\*\*\s*/g, '\n$1\n')
+    .replace(/(^|\n)\s*[＊*•·]\s+/g, '$1• ')
+    .replace(/\s+[＊*•·]\s+(?=[^\n])/g, '\n• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  const blocks: AgentDisplayBlock[] = []
+  for (const rawLine of text.split('\n')) {
+    const line = cleanAgentDisplayInline(rawLine)
+    if (!line) continue
+
+    const structuredPrompt = structuredAgentPromptBlocks(line)
+    if (structuredPrompt) {
+      blocks.push(...structuredPrompt)
+      continue
+    }
+
+    const bullet = line.match(/^•\s*(.+)$/)
+    if (bullet) {
+      blocks.push({ kind: 'bullet', text: cleanAgentDisplayInline(bullet[1]) })
+      continue
+    }
+
+    const numbered = line.match(/^(\d{1,2}[.、）)])\s*(.+)$/)
+    if (numbered) {
+      blocks.push({ kind: 'numbered', marker: numbered[1], text: cleanAgentDisplayInline(numbered[2]) })
+      continue
+    }
+
+    const field = line.match(/^([^：:]{1,16})[：:]\s*(.+)$/)
+    const fieldLabel = field ? cleanAgentDisplayInline(field[1]) : ''
+    const looksLikeFieldLabel =
+      Boolean(field) &&
+      fieldLabel.length <= 10 &&
+      !/[。！？!?；;，,]/.test(fieldLabel) &&
+      !/^(?:请问|请|如果|可以|可选|例如|比如|说明|提示)/.test(fieldLabel) &&
+      !/\s/.test(fieldLabel)
+    if (field && looksLikeFieldLabel) {
+      blocks.push({
+        kind: 'field',
+        label: fieldLabel,
+        text: cleanAgentDisplayInline(field[2]),
+      })
+      continue
+    }
+
+    const looksLikeHeading =
+      line.length <= 24 &&
+      !/[。！？!?；;，,]$/.test(line) &&
+      /(?:配置|结果|说明|建议|提示|活动福利|商品信息|当前状态|下一步|确认|注意事项|处理方式)$/.test(line)
+    if (looksLikeHeading) {
+      blocks.push({ kind: 'heading', text: line })
+      continue
+    }
+
+    blocks.push({ kind: 'paragraph', text: line })
+  }
+  return blocks
+}
 
 const latestAgentMessage = computed(() => {
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
@@ -963,8 +1542,8 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
     }
     if (liveStrategyMode.value === 'script') {
       return [
-        { kind: 'capability', label: '固定话术', description: '新增或调整当前直播间固定话术', insertText: '固定话术：' },
-        { kind: 'capability', label: '原话锁定', description: '要求固定话术逐字执行', insertText: '100%原话：' },
+        { kind: 'capability', label: '话术参考', description: '新增或调整当前直播间正式话术参考', insertText: '新增话术参考：' },
+        { kind: 'capability', label: '原话锁定', description: '要求话术参考逐字执行', insertText: '100%原话：' },
         { kind: 'capability', label: '意图执行', description: '保留核心意思但允许自然变化', insertText: '按照这个意思来：' },
       ]
     }
@@ -1024,8 +1603,16 @@ const suggestions = computed<SuggestionItem[]>(() => {
   if (!trigger) return []
 
   if (trigger.symbol === '@') {
-    if (!isInternalAgentProfile.value) return []
-    return systemContext.value.departments
+    const imageSuggestions: SuggestionItem[] = currentAgentImages.value
+      .filter((item) => !trigger.query || item.label.toLowerCase().includes(trigger.query))
+      .map((item) => ({
+        kind: 'image',
+        label: item.label,
+        description: '本会话图片 · ' + item.width + '×' + item.height,
+        insertText: '@' + item.label + ' ',
+      }))
+    const departmentSuggestions: SuggestionItem[] = isInternalAgentProfile.value
+      ? systemContext.value.departments
       .filter((item) => {
         if (!trigger.query) return true
         return (
@@ -1040,6 +1627,8 @@ const suggestions = computed<SuggestionItem[]>(() => {
         description: item.code,
         insertText: '@' + item.name + ' ',
       }))
+      : []
+    return [...imageSuggestions, ...departmentSuggestions].slice(0, 12)
   }
 
   const navigationSuggestions: SuggestionItem[] = navigationTargets.value.map((item) => ({
@@ -1062,7 +1651,9 @@ const suggestions = computed<SuggestionItem[]>(() => {
 })
 
 const suggestionTitle = computed(() =>
-  triggerState.value?.symbol === '@' ? '选择部门' : '选择能力',
+  triggerState.value?.symbol === '@'
+    ? (currentAgentImages.value.length ? (isInternalAgentProfile.value ? '选择图片或部门' : '选择图片') : '选择部门')
+    : '选择能力',
 )
 
 function showSuggestions(source: ComposerSource) {
@@ -1315,11 +1906,48 @@ function historyPayload(domain: AgentDomain) {
     .map((item) => ({ role: item.role, text: item.text }))
 }
 
-async function scrollChatToBottom() {
-  await nextTick()
-  if (chatEl.value) {
-    chatEl.value.scrollTop = chatEl.value.scrollHeight
+function updateChatScrollState() {
+  const element = chatEl.value
+  if (!element) {
+    chatNearBottom.value = true
+    chatHasOverflow.value = false
+    return
   }
+  const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight
+  chatHasOverflow.value = element.scrollHeight > element.clientHeight + 8
+  chatNearBottom.value = distanceToBottom <= 48
+}
+
+function handleChatScroll() {
+  updateChatScrollState()
+}
+
+function handleDrawerWheel(event: WheelEvent) {
+  event.stopPropagation()
+  const element = chatEl.value
+  if (!element || drawerTab.value !== 'chat') return
+  const target = event.target
+  if (target instanceof Node && element.contains(target)) return
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+  event.preventDefault()
+  element.scrollTop += event.deltaY
+  updateChatScrollState()
+}
+
+async function scrollChatToBottom(behavior: ScrollBehavior = 'auto') {
+  await nextTick()
+  const element = chatEl.value
+  if (!element) return
+  element.scrollTo({ top: element.scrollHeight, behavior })
+  if (behavior === 'smooth') {
+    window.setTimeout(updateChatScrollState, 180)
+  } else {
+    updateChatScrollState()
+  }
+}
+
+function jumpChatToBottom() {
+  void scrollChatToBottom('smooth')
 }
 
 function sanitizeTerminalAgentText(value: string) {
@@ -1353,7 +1981,62 @@ function pushAgentMessage(
   action?: SystemAgentActionPreview,
 ) {
   messages.value.push({ role: 'agent', domain, text: sanitizeTerminalAgentText(text), action, conversationScope: conversationScopeForDomain(domain) })
-  void scrollChatToBottom()
+}
+
+function latestPendingLiveProductCorrection() {
+  return latestCurrentPendingLiveStrategyAction(new Set(['confirm_live_product_link_correction']))
+}
+
+function latestPendingLiveImageProduct() {
+  return latestCurrentPendingLiveStrategyAction(new Set(['add_live_image_product', 'add_live_product']))
+}
+
+function latestPendingLiveBenefit() {
+  return latestCurrentPendingLiveStrategyAction(new Set(['add_live_benefit']))
+}
+
+function latestCurrentPendingLiveStrategyAction(types: Set<string>) {
+  const roomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+  const planId = liveStrategyPlanId.value
+  const scope = conversationScopeForDomain('live-strategy')
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    if (message.domain !== 'live-strategy' || message.conversationScope !== scope) continue
+    if (message.role === 'user') return null
+    const action = message.action
+    if (!action || !types.has(action.type)) continue
+    if (Number(action.payload.plan_id || 0) !== planId) continue
+    if (Number(action.payload.room_id || 0) !== roomId) continue
+    return message
+  }
+  return null
+}
+
+function latestPendingLiveStrategyAction() {
+  const supported = new Set([
+    'confirm_live_product_link_correction',
+    'add_live_image_product',
+    'add_live_product',
+    'add_live_benefit',
+    'clarify_live_product_update',
+    'confirm_live_product_update',
+    'confirm_live_product_disable',
+    'clarify_live_benefit_target',
+    'clarify_live_benefit_update',
+    'confirm_live_benefit_update',
+    'confirm_live_benefit_disable',
+    'add_live_fact',
+    'confirm_live_fact_update',
+    'confirm_live_fact_disable',
+    'add_live_script_reference',
+    'confirm_live_script_reference_update',
+    'confirm_live_script_reference_disable',
+    'confirm_live_plan_bind',
+    'confirm_live_plan_unbind',
+    'confirm_live_plan_switch',
+    'clarify_live_strategy_intent',
+  ])
+  return latestCurrentPendingLiveStrategyAction(supported)
 }
 
 function readAdminPolicyContext() {
@@ -1457,6 +2140,1183 @@ async function resolveLiveStrategyRoomID() {
   return roomId
 }
 
+function notifyLivePlanModuleUpdated(planId: number, module: string) {
+  window.dispatchEvent(
+    new CustomEvent('live-agent-plan-module-updated', {
+      detail: { plan_id: planId, module },
+    }),
+  )
+}
+
+function focusLivePlanModule(planId: number, module: LiveStrategyMode) {
+  window.dispatchEvent(
+    new CustomEvent('live-agent-plan-module-updated', {
+      detail: { plan_id: planId, module, focus: true },
+    }),
+  )
+}
+
+function liveImageProductName(value: string, linkKey: string) {
+  const explicit = liveProductField(value, ['商品名称', '商品名', '商品'])
+  if (explicit) return explicit
+
+  const linkNumber = linkKey.match(/^(\d+)号链接$/)?.[1] || ''
+  const patterns = [
+    linkNumber
+      ? new RegExp(linkNumber + '\\s*号?\\s*(?:商品)?链接\\s*商品\\s*[:：]?\\s*([^，,；;\\n\\r。]+)', 'i')
+      : null,
+    /(?:识别为|商品为|商品是|图中商品(?:为|是))\s*[:：]?\s*([^，,；;\n\r。]+)/i,
+  ].filter((item): item is RegExp => Boolean(item))
+
+  for (const pattern of patterns) {
+    const matched = value.match(pattern)
+    if (matched?.[1]) return matched[1].trim()
+  }
+  return ''
+}
+
+function normalizeImageRecognitionText(value: string) {
+  return String(value || '')
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[•*-]\s*/gm, '')
+    .trim()
+}
+
+function liveImageProductCandidate(userText: string, replyText: string) {
+  const cleanReply = normalizeImageRecognitionText(replyText)
+  const combined = userText + '\n' + cleanReply
+  const linkKey = liveProductLinkKeyFromText(combined)
+  if (!linkKey) return null
+
+  const productName = liveImageProductName(cleanReply, linkKey)
+  if (!productName) return null
+
+  return {
+    linkKey,
+    productName,
+    spec: liveProductField(cleanReply, ['规格/卖点', '规格卖点', '规格']),
+    dailyPrice: liveProductField(cleanReply, ['价格', '日常价', '原价']),
+    quantity: liveProductField(cleanReply, ['数量']),
+    audience: liveProductField(cleanReply, ['适用人群', '适用对象', '适用']),
+    sourceText: cleanReply,
+  }
+}
+
+function liveBenefitGiftFromText(value: string) {
+  const explicit = liveProductField(value, ['赠品内容', '赠品', '福利'])
+  if (explicit) return explicit
+  const matched = value.match(/(?:赠送|加赠|赠|送)\s*([^，,；;。\n\r]+)/)
+  return matched?.[1]?.trim() || ''
+}
+
+function liveBenefitActivityPriceFromText(value: string) {
+  return liveProductField(value, ['活动价', '优惠价', '秒杀价', '到手价'])
+}
+
+function liveBenefitCandidateFromText(
+  userText: string,
+  replyText: string,
+  productName = '',
+): LiveAgentPlanBenefitCandidate | null {
+  const cleanReply = normalizeImageRecognitionText(replyText)
+  const combined = userText + '\n' + cleanReply
+  const linkKey = liveProductLinkKeyFromText(combined)
+  const gift = liveBenefitGiftFromText(cleanReply) || liveBenefitGiftFromText(userText)
+  const activityPrice = liveBenefitActivityPriceFromText(cleanReply) || liveBenefitActivityPriceFromText(userText)
+  const activityFromReply = liveProductField(cleanReply, ['活动内容', '活动规则', '触发条件'])
+  const activity = activityFromReply || ((gift || activityPrice) ? userText.trim() : '')
+  if (!gift && !activityPrice && !activity) return null
+
+  const startsAt = normalizeBenefitTimeValue(liveProductField(cleanReply, ['开始时间', '生效时间']))
+  const endsAt = normalizeBenefitTimeValue(liveProductField(cleanReply, ['结束时间', '失效时间', '截止时间']))
+  const hasCompleteWindow = Boolean(startsAt && endsAt)
+  const keyBase = linkKey || 'room'
+  return {
+    key: keyBase + ':current-benefit',
+    link_key: linkKey,
+    product_name: productName || liveProductField(cleanReply, ['商品名称', '商品名']),
+    activity_price: activityPrice,
+    gift,
+    activity,
+    starts_at: startsAt,
+    ends_at: endsAt,
+    review_bucket: hasCompleteWindow ? 'adoptable' : 'discuss',
+    review_reason: hasCompleteWindow
+      ? '用户通过智能体自然语言明确新增活动福利。'
+      : '活动内容已明确，但未提供完整开始/结束时间；采纳后只能进入活动草稿，不会进入直播生成。',
+    source_quotes: [userText.trim()],
+  }
+}
+
+function benefitCandidateReplyForAdd(value: string, candidate: LiveAgentPlanBenefitCandidate) {
+  const hasWindow = Boolean(candidate.starts_at && candidate.ends_at)
+  return String(value || '').trim() + '\n\n' + (
+    hasWindow
+      ? '我已经整理成活动福利候选。当前还没有写入，确认无误后点击下方“添加活动福利”。'
+      : '我已经整理成活动福利候选。当前还没有写入；由于没有完整有效期，点击“添加活动福利”后会先进入活动草稿，不会立即用于直播。'
+  )
+}
+
+function benefitCandidateSummary(candidate: LiveAgentPlanBenefitCandidate) {
+  const lines = ['我理解你要新增一条活动福利：']
+  if (candidate.link_key) lines.push('链接：' + candidate.link_key)
+  if (candidate.product_name) lines.push('商品：' + candidate.product_name)
+  if (candidate.activity_price) lines.push('活动价：' + candidate.activity_price)
+  if (candidate.gift) lines.push('赠品：' + candidate.gift)
+  if (candidate.activity) lines.push('活动内容：' + candidate.activity)
+  lines.push('开始时间：' + (candidate.starts_at || '未设置'))
+  lines.push('结束时间：' + (candidate.ends_at || '未设置'))
+  return lines.join('\n')
+}
+
+function benefitExistingTime(value?: string) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  return raw.replace('T', ' ').replace(/Z$/, '').slice(0, 16)
+}
+
+function updatePendingBenefitCandidateFromText(value: string) {
+  const pending = latestPendingLiveBenefit()
+  if (!pending?.action || !isLiveBenefitUpdateIntent(value)) return false
+  const values = liveBenefitUpdateValues(value)
+  const hasValue = Boolean(values.productName || values.activityPrice || values.gift || values.activity || values.startsAt || values.endsAt)
+  if (!hasValue) return false
+  if (values.productName) pending.action.payload.product_name = values.productName
+  if (values.activityPrice) pending.action.payload.activity_price = values.activityPrice
+  if (values.gift) pending.action.payload.gift = values.gift
+  if (values.activity) pending.action.payload.activity = values.activity
+  if (values.startsAt) pending.action.payload.starts_at = values.startsAt
+  if (values.endsAt) pending.action.payload.ends_at = values.endsAt
+  pending.action.payload.review_bucket = pending.action.payload.starts_at && pending.action.payload.ends_at ? 'adoptable' : 'discuss'
+  pending.action.summary = pending.action.payload.starts_at && pending.action.payload.ends_at
+    ? '候选已按你的要求修改。点击“添加活动福利”后才写入当前方案。'
+    : '候选已按你的要求修改，但有效期仍不完整；点击后会写入活动草稿。'
+  return true
+}
+
+async function prepareLiveBenefitUpdateAction(planId: number, roomId: number, value: string) {
+  const result = await getLiveAgentPlanBenefits(planId)
+  const items = (result.items || []).filter((item) => item.status !== 'disabled')
+  if (!items.length) {
+    return { text: '当前方案还没有正式活动福利。请先新增活动福利。' }
+  }
+  const linkKey = liveProductLinkKeyFromText(value)
+  const matched = linkKey ? items.filter((item) => item.link_key === linkKey) : items
+  if (!matched.length) {
+    return { text: '当前方案里没有找到“' + linkKey + '”对应的活动福利。' }
+  }
+  if (matched.length > 1 && !linkKey) {
+    return {
+      text: '当前方案有多条活动福利，请先选择要修改哪一条：',
+      action: {
+        type: 'clarify_live_benefit_target',
+        title: '选择要修改的活动',
+        summary: '选择后我会把对应修改指令放到输入框。',
+        risk_level: 'low',
+        requires_confirmation: false,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          intent_options: matched.slice(0, 5).map((item) => ({
+            id: String(item.id),
+            label: item.link_key || item.product_name || '活动福利',
+            description: item.activity || item.gift || item.activity_price || '活动',
+            command: '修改' + (item.link_key || '活动') + '活动 ',
+          })),
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  const existing = matched[0]
+  const values = liveBenefitUpdateValues(value)
+  const hasValue = Boolean(values.productName || values.activityPrice || values.gift || values.activity || values.startsAt || values.endsAt)
+  const base = existing.link_key || existing.product_name || '当前活动'
+  if (!hasValue) {
+    return {
+      text: '你要修改“' + base + '”的活动福利，但还没有说明改哪一项。请选择：',
+      action: {
+        type: 'clarify_live_benefit_update',
+        title: '选择要修改的字段',
+        summary: '选择字段后，在输入框补上新值并发送；确认卡通过后才会生成新版本。',
+        risk_level: 'low',
+        requires_confirmation: false,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          benefit_id: existing.id,
+          benefit_key: existing.key,
+          intent_options: [
+            { id: 'product_name', label: '商品名称', description: existing.product_name || '未设置', command: '修改' + base + '活动 商品名称：' },
+            { id: 'activity_price', label: '活动价', description: existing.activity_price || '未设置', command: '修改' + base + '活动 活动价：' },
+            { id: 'gift', label: '赠品', description: existing.gift || '未设置', command: '修改' + base + '活动 赠品：' },
+            { id: 'activity', label: '活动内容', description: existing.activity || '未设置', command: '修改' + base + '活动 活动内容：' },
+            { id: 'starts_at', label: '开始时间', description: benefitExistingTime(existing.starts_at) || '未设置', command: '修改' + base + '活动 开始时间：' },
+            { id: 'ends_at', label: '结束时间', description: benefitExistingTime(existing.ends_at) || '未设置', command: '修改' + base + '活动 结束时间：' },
+          ],
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  const next = {
+    productName: values.productName || existing.product_name || '',
+    activityPrice: values.activityPrice || existing.activity_price || '',
+    gift: values.gift || existing.gift || '',
+    activity: values.activity || existing.activity || '',
+    startsAt: values.startsAt || benefitExistingTime(existing.starts_at),
+    endsAt: values.endsAt || benefitExistingTime(existing.ends_at),
+  }
+  const changed =
+    next.productName !== (existing.product_name || '') ||
+    next.activityPrice !== (existing.activity_price || '') ||
+    next.gift !== (existing.gift || '') ||
+    next.activity !== (existing.activity || '') ||
+    next.startsAt !== benefitExistingTime(existing.starts_at) ||
+    next.endsAt !== benefitExistingTime(existing.ends_at)
+  if (!changed) return { text: '你提供的新值和当前活动福利完全一致，所以没有生成新版本。' }
+
+  return {
+    text: '我已经整理好活动福利的修改内容。请核对“修改前 → 修改后”，确认后才会写入新版本。',
+    action: {
+      type: 'confirm_live_benefit_update',
+      title: '确认修改活动福利',
+      summary: '没有提到的字段保持原值；确认后才写入正式活动福利并生成新版本。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        benefit_id: existing.id,
+        benefit_key: existing.key,
+        current_version_no: existing.version_no,
+        link_key: existing.link_key || '',
+        current_link_key: existing.link_key || '',
+        current_product_name: existing.product_name || '',
+        current_activity_price: existing.activity_price || '',
+        current_gift: existing.gift || '',
+        current_activity: existing.activity || '',
+        current_starts_at: benefitExistingTime(existing.starts_at),
+        current_ends_at: benefitExistingTime(existing.ends_at),
+        product_name: next.productName,
+        activity_price: next.activityPrice,
+        gift: next.gift,
+        activity: next.activity,
+        starts_at: next.startsAt,
+        ends_at: next.endsAt,
+        source_text: value,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+async function pushLiveBenefitUpdatePreview(domain: AgentDomain, planId: number, roomId: number, value: string) {
+  const prepared = await prepareLiveBenefitUpdateAction(planId, roomId, value)
+  focusLivePlanModule(planId, 'benefits')
+  pushAgentMessage(domain, prepared.text, prepared.action)
+}
+
+function imageRecognitionReplyForAdd(value: string) {
+  const clean = String(value || '')
+    .replace(/收到[，,]?\s*已根据图片信息更新[^。！？]*[。！？]?/g, '已识别出图片中的商品信息，以下内容尚未写入。')
+    .replace(/已根据图片信息更新/g, '已根据图片信息识别出')
+  return clean + '\n\n确认无误后，点击下方“添加”写入当前直播智能体方案。'
+}
+
+async function prepareLiveProductUpdateAction(planId: number, roomId: number, value: string) {
+  const linkKey = liveProductLinkKeyFromText(value)
+  if (!linkKey) {
+    return { text: '我知道你要修改商品链接，但还缺少链接编号。请例如说“修改1号链接”。' }
+  }
+
+  const current = await getLiveAgentPlanProductLinks(planId)
+  const existing = (current.items || []).find((item) => item.link_key === linkKey)
+  if (!existing) {
+    return { text: '当前方案里没有“' + linkKey + '”。如果这是新商品，请改说“添加' + linkKey + ' 商品名”。' }
+  }
+
+  const values = liveProductUpdateValues(value)
+  const hasExplicitValue = Boolean(
+    values.productName || values.spec || values.dailyPrice || values.quantity || values.audience,
+  )
+  if (!hasExplicitValue) {
+    return {
+      text:
+        '你要修改“' + linkKey + ' · ' + (existing.product_name || '未命名商品') + '”，但还没有说明改哪一项。请选择：',
+      action: {
+        type: 'clarify_live_product_update',
+        title: '选择要修改的字段',
+        summary: '选择字段后我会把完整修改指令放到输入框；填写新值并发送后，再给你“修改前 → 修改后”的确认。',
+        risk_level: 'low',
+        requires_confirmation: false,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          product_link_id: existing.id,
+          link_key: linkKey,
+          intent_options: [
+            { id: 'product_name', label: '商品名称', description: existing.product_name || '未设置', command: '修改' + linkKey + ' 商品名称：' },
+            { id: 'spec', label: '规格', description: existing.spec || '未设置', command: '修改' + linkKey + ' 规格：' },
+            { id: 'daily_price', label: '日常价', description: existing.daily_price || '未设置', command: '修改' + linkKey + ' 日常价：' },
+            { id: 'quantity', label: '数量', description: existing.quantity || '未设置', command: '修改' + linkKey + ' 数量：' },
+            { id: 'audience', label: '适用人群', description: existing.audience || '未设置', command: '修改' + linkKey + ' 适用人群：' },
+          ],
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  const next = {
+    productName: values.productName || existing.product_name || '',
+    spec: values.spec || existing.spec || '',
+    dailyPrice: values.dailyPrice || existing.daily_price || '',
+    quantity: values.quantity || existing.quantity || '',
+    audience: values.audience || existing.audience || '',
+  }
+  const changed =
+    next.productName !== (existing.product_name || '') ||
+    next.spec !== (existing.spec || '') ||
+    next.dailyPrice !== (existing.daily_price || '') ||
+    next.quantity !== (existing.quantity || '') ||
+    next.audience !== (existing.audience || '')
+  if (!changed) {
+    return { text: '你提供的新值和“' + linkKey + '”当前正式数据完全一致，所以没有生成新版本。' }
+  }
+
+  return {
+    text: '我已经整理好“' + linkKey + '”的修改内容。请核对修改前后，确认后才会写入并生成新版本。',
+    action: {
+      type: 'confirm_live_product_update',
+      title: '确认修改' + linkKey,
+      summary: '未修改的字段保持原值；点击“确认修改”后才写入正式商品链接。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        product_link_id: existing.id,
+        current_version_no: existing.version_no,
+        link_key: linkKey,
+        current_product_name: existing.product_name || '',
+        current_spec: existing.spec || '',
+        current_daily_price: existing.daily_price || '',
+        current_quantity: existing.quantity || '',
+        current_audience: existing.audience || '',
+        product_name: next.productName,
+        spec: next.spec,
+        daily_price: next.dailyPrice,
+        quantity: next.quantity,
+        audience: next.audience,
+        source_text: value,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+async function pushLiveProductUpdatePreview(
+  domain: AgentDomain,
+  planId: number,
+  roomId: number,
+  value: string,
+) {
+  const prepared = await prepareLiveProductUpdateAction(planId, roomId, value)
+  focusLivePlanModule(planId, 'products')
+  pushAgentMessage(domain, prepared.text, prepared.action)
+}
+
+function intentString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+async function prepareLiveProductIntentAction(
+  planId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const linkKey = intentString(result.target?.link_key)
+  const changes = result.changes || {}
+  const current = await getLiveAgentPlanProductLinks(planId)
+  const items = current.items || []
+  const existing = linkKey ? items.find((item) => item.link_key === linkKey) : undefined
+
+  if (result.intent === 'product.add') {
+    const productName = intentString(changes.product_name)
+    if (!linkKey || !productName) {
+      return {
+        text: result.reply || '我已经判断这是新增商品链接，但还缺少链接编号或商品名称。请补充后再继续。',
+      }
+    }
+    if (existing) {
+      return {
+        text: '当前方案已经有“' + linkKey + ' · ' + (existing.product_name || '未命名商品') + '”。如果要改现有内容，请直接说要修改的字段。',
+      }
+    }
+    return {
+      text: '我已经理解为新增“' + linkKey + '”。下面是模型提取出的结构化商品资料，确认后才写入数据库。',
+      action: {
+        type: 'add_live_product',
+        title: '确认添加' + linkKey,
+        summary: '尚未写入。点击“确认添加”后才进入当前直播智能体方案的正式商品链接。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          link_key: linkKey,
+          product_name: productName,
+          spec: intentString(changes.spec),
+          daily_price: intentString(changes.daily_price),
+          quantity: intentString(changes.quantity),
+          audience: intentString(changes.audience),
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent === 'product.disable') {
+    if (!linkKey) {
+      return { text: result.reply || '我知道你想停用商品链接，但还不能确定是哪一个链接。' }
+    }
+    if (!existing) {
+      return { text: '当前方案没有“' + linkKey + '”，所以没有可停用的数据。' }
+    }
+    return {
+      text: '我已经定位到“' + linkKey + ' · ' + (existing.product_name || '未命名商品') + '”。停用后历史版本仍保留，请确认。',
+      action: {
+        type: 'confirm_live_product_disable',
+        title: '确认停用' + linkKey,
+        summary: '确认后这条商品链接不再进入当前正式方案；历史版本与审计记录仍保留。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          product_link_id: existing.id,
+          current_version_no: existing.version_no,
+          link_key: existing.link_key,
+          product_name: existing.product_name || '',
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent !== 'product.update') return null
+  if (!linkKey) {
+    return { text: result.reply || '我判断你要修改商品链接，但还不能确定目标链接。请说清楚是几号链接。' }
+  }
+  if (!existing) {
+    return { text: '当前方案里没有“' + linkKey + '”。如果这是新商品，请改成新增。' }
+  }
+  const productName = intentString(changes.product_name)
+  const spec = intentString(changes.spec)
+  const dailyPrice = intentString(changes.daily_price)
+  const quantity = intentString(changes.quantity)
+  const audience = intentString(changes.audience)
+  if (!productName && !spec && !dailyPrice && !quantity && !audience) {
+    return { text: result.reply || '我已经定位到“' + linkKey + '”，但还没有明确要修改哪个字段。' }
+  }
+  const next = {
+    productName: productName || existing.product_name || '',
+    spec: spec || existing.spec || '',
+    dailyPrice: dailyPrice || existing.daily_price || '',
+    quantity: quantity || existing.quantity || '',
+    audience: audience || existing.audience || '',
+  }
+  const changed =
+    next.productName !== (existing.product_name || '') ||
+    next.spec !== (existing.spec || '') ||
+    next.dailyPrice !== (existing.daily_price || '') ||
+    next.quantity !== (existing.quantity || '') ||
+    next.audience !== (existing.audience || '')
+  if (!changed) {
+    return { text: '模型理解出的新值和“' + linkKey + '”当前正式数据一致，没有生成新版本。' }
+  }
+  return {
+    text: '我已经按你的原话理解成商品链接修改。请核对“修改前 → 修改后”，确认后才会写入。',
+    action: {
+      type: 'confirm_live_product_update',
+      title: '确认修改' + linkKey,
+      summary: '结构化意图已确定；未修改字段保持原值，确认后才生成正式新版本。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        product_link_id: existing.id,
+        current_version_no: existing.version_no,
+        link_key: linkKey,
+        current_product_name: existing.product_name || '',
+        current_spec: existing.spec || '',
+        current_daily_price: existing.daily_price || '',
+        current_quantity: existing.quantity || '',
+        current_audience: existing.audience || '',
+        product_name: next.productName,
+        spec: next.spec,
+        daily_price: next.dailyPrice,
+        quantity: next.quantity,
+        audience: next.audience,
+        source_text: sourceText,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+async function prepareLiveBenefitIntentAction(
+  planId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const linkKey = intentString(result.target?.link_key)
+  const benefitKey = intentString(result.target?.benefit_key)
+  const changes = result.changes || {}
+  const currentBenefits = await getLiveAgentPlanBenefits(planId)
+  const formalItems = (currentBenefits.items || []).filter((item) => item.status !== 'disabled')
+  let existing = benefitKey
+    ? formalItems.find((item) => item.key === benefitKey)
+    : undefined
+  if (!existing && linkKey) {
+    const matches = formalItems.filter((item) => item.link_key === linkKey)
+    if (matches.length === 1) existing = matches[0]
+  }
+
+  if (result.intent === 'benefit.add') {
+    const activityPrice = intentString(changes.activity_price)
+    const gift = intentString(changes.gift)
+    const activity = intentString(changes.activity)
+    if (!activityPrice && !gift && !activity) {
+      return { text: result.reply || '我已经判断这是新增活动福利，但还缺少活动价、赠品或活动内容。' }
+    }
+    let productName = intentString(changes.product_name)
+    if (!productName && linkKey) {
+      const products = await getLiveAgentPlanProductLinks(planId)
+      productName = (products.items || []).find((item) => item.link_key === linkKey)?.product_name || ''
+    }
+    const candidate: LiveAgentPlanBenefitCandidate = {
+      link_key: linkKey,
+      product_name: productName,
+      activity_price: activityPrice,
+      gift,
+      activity,
+      starts_at: intentString(changes.starts_at),
+      ends_at: intentString(changes.ends_at),
+      review_bucket: intentString(changes.starts_at) && intentString(changes.ends_at) ? 'adoptable' : 'discuss',
+      source_quotes: [sourceText],
+    }
+    return {
+      text: '我已经理解为新增活动福利。下面是结构化候选，确认后才写入；有效期不完整时只会进入草稿。',
+      action: {
+        type: 'add_live_benefit',
+        title: '确认添加活动福利',
+        summary: candidate.starts_at && candidate.ends_at
+          ? '尚未写入。确认后写入当前方案，并根据有效期决定是否立即生效。'
+          : '尚未写入，且有效期不完整；确认后只写入活动草稿。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          benefit_key: '',
+          link_key: candidate.link_key || '',
+          product_name: candidate.product_name || '',
+          activity_price: candidate.activity_price || '',
+          gift: candidate.gift || '',
+          activity: candidate.activity || '',
+          starts_at: candidate.starts_at || '',
+          ends_at: candidate.ends_at || '',
+          review_bucket: candidate.review_bucket || 'discuss',
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent === 'benefit.disable') {
+    if (!existing) {
+      return { text: result.reply || '我知道你想停用活动福利，但还不能唯一定位到哪一条活动。' }
+    }
+    return {
+      text: '我已经定位到“' + (existing.link_key || existing.product_name || existing.key) + '”的活动福利。停用后将不再进入直播生成，请确认。',
+      action: {
+        type: 'confirm_live_benefit_disable',
+        title: '确认停用活动福利',
+        summary: '确认后状态改为停用；历史版本和审计记录继续保留。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          benefit_id: existing.id,
+          current_version_no: existing.version_no,
+          benefit_key: existing.key,
+          link_key: existing.link_key || '',
+          product_name: existing.product_name || '',
+          activity: existing.activity || '',
+          gift: existing.gift || '',
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent !== 'benefit.update') return null
+  if (!existing) {
+    if (linkKey) {
+      return { text: '我判断你要修改“' + linkKey + '”的活动福利，但当前正式方案里没有唯一对应活动。' }
+    }
+    return { text: result.reply || '我判断你要修改活动福利，但还不能唯一定位到哪一条活动。' }
+  }
+  const productName = intentString(changes.product_name)
+  const activityPrice = intentString(changes.activity_price)
+  const gift = intentString(changes.gift)
+  const activity = intentString(changes.activity)
+  const startsAt = intentString(changes.starts_at)
+  const endsAt = intentString(changes.ends_at)
+  if (!productName && !activityPrice && !gift && !activity && !startsAt && !endsAt) {
+    return prepareLiveBenefitUpdateAction(planId, roomId, sourceText)
+  }
+  const next = {
+    productName: productName || existing.product_name || '',
+    activityPrice: activityPrice || existing.activity_price || '',
+    gift: gift || existing.gift || '',
+    activity: activity || existing.activity || '',
+    startsAt: startsAt || benefitExistingTime(existing.starts_at),
+    endsAt: endsAt || benefitExistingTime(existing.ends_at),
+  }
+  const changed =
+    next.productName !== (existing.product_name || '') ||
+    next.activityPrice !== (existing.activity_price || '') ||
+    next.gift !== (existing.gift || '') ||
+    next.activity !== (existing.activity || '') ||
+    next.startsAt !== benefitExistingTime(existing.starts_at) ||
+    next.endsAt !== benefitExistingTime(existing.ends_at)
+  if (!changed) {
+    return { text: '模型理解出的新值和当前活动福利一致，没有生成新版本。' }
+  }
+  return {
+    text: '我已经按你的原话理解成活动福利修改。请核对“修改前 → 修改后”，确认后才写入正式新版本。',
+    action: {
+      type: 'confirm_live_benefit_update',
+      title: '确认修改活动福利',
+      summary: '结构化意图已确定；没提到的字段保持原值，确认后才生成新版本。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        benefit_id: existing.id,
+        benefit_key: existing.key,
+        current_version_no: existing.version_no,
+        link_key: existing.link_key || '',
+        current_link_key: existing.link_key || '',
+        current_product_name: existing.product_name || '',
+        current_activity_price: existing.activity_price || '',
+        current_gift: existing.gift || '',
+        current_activity: existing.activity || '',
+        current_starts_at: benefitExistingTime(existing.starts_at),
+        current_ends_at: benefitExistingTime(existing.ends_at),
+        product_name: next.productName,
+        activity_price: next.activityPrice,
+        gift: next.gift,
+        activity: next.activity,
+        starts_at: next.startsAt,
+        ends_at: next.endsAt,
+        source_text: sourceText,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+async function prepareLiveFactIntentAction(
+  planId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const category = intentString(result.target?.fact_category)
+  const factKey = intentString(result.target?.fact_key)
+  const factValue = intentString(result.changes?.fact_value)
+  const current = await getLiveAgentPlanFacts(planId)
+  const items = current.items || []
+  let existing = category && factKey
+    ? items.find((item) => item.category === category && item.key === factKey)
+    : undefined
+  if (!existing && factKey) {
+    const matches = items.filter((item) => item.key === factKey)
+    if (matches.length === 1) existing = matches[0]
+  }
+
+  if (result.intent === 'fact.add') {
+    if (!category || !factKey || !factValue) {
+      return { text: result.reply || '我已经判断这是新增事实依据，但还缺少事实分类、名称或内容。请补充后再继续。' }
+    }
+    if (existing) {
+      return { text: '当前方案已经存在“' + existing.key + '：' + existing.value + '”。如果要调整，请直接说修改后的内容。' }
+    }
+    return {
+      text: '我已经理解为新增事实依据。下面是结构化结果，确认后才会写入当前方案。',
+      action: {
+        type: 'add_live_fact',
+        title: '确认添加事实依据',
+        summary: '事实会进入当前方案的正式事实库；确认前不会写数据库。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          fact_category: category,
+          fact_key: factKey,
+          fact_value: factValue,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent === 'fact.disable') {
+    if (!existing) {
+      return { text: result.reply || '我知道你想停用一条事实，但还不能唯一定位到哪一条。请说清楚事实名称。' }
+    }
+    return {
+      text: '我已经定位到事实“' + existing.key + '：' + existing.value + '”。停用后直播智能体不再引用，请确认。',
+      action: {
+        type: 'confirm_live_fact_disable',
+        title: '确认停用事实依据',
+        summary: '确认后这条事实不再进入直播生成；历史版本与审计记录仍保留。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          fact_id: existing.id,
+          current_version_no: existing.version_no,
+          fact_category: existing.category,
+          fact_key: existing.key,
+          current_fact_value: existing.value,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent !== 'fact.update') return null
+  if (!existing) {
+    return { text: result.reply || '我判断你要修改事实依据，但当前正式事实中还不能唯一定位目标。请补充事实名称。' }
+  }
+  if (!factValue) {
+    return { text: result.reply || '我已经定位到“' + existing.key + '”，但还没有明确新的事实内容。' }
+  }
+  if (factValue === existing.value) {
+    return { text: '模型理解出的新值和当前事实“' + existing.key + '”一致，没有生成新版本。' }
+  }
+  return {
+    text: '我已经按你的原话理解成事实依据修改。请核对修改前后，确认后才写入。',
+    action: {
+      type: 'confirm_live_fact_update',
+      title: '确认修改事实依据',
+      summary: '只修改这条事实的内容；确认后生成正式新版本。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        fact_id: existing.id,
+        current_version_no: existing.version_no,
+        fact_category: existing.category,
+        fact_key: existing.key,
+        current_fact_value: existing.value,
+        fact_value: factValue,
+        source_text: sourceText,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+function liveScriptExecutionModeFromText(value: string) {
+  const compact = String(value || '').replace(/\s+/g, '')
+  if (/(?:100%原话|百分百原话|照原文|逐字照说|一字不改|原话锁定)/.test(compact)) {
+    return 'verbatim'
+  }
+  return 'intent'
+}
+
+async function prepareLiveScriptIntentAction(
+  planId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const requestedKey = intentString(result.target?.script_reference_key)
+  const requestedTitle = intentString(result.target?.script_title)
+  const scriptText = intentString(result.changes?.script_text)
+  const current = await getLiveAgentPlanScriptReferences(planId)
+  const items = current.items || []
+  let existing = requestedKey
+    ? items.find((item) => item.reference_key === requestedKey)
+    : undefined
+  if (!existing && requestedTitle) {
+    const exact = items.filter((item) => item.title === requestedTitle)
+    if (exact.length === 1) existing = exact[0]
+  }
+
+  if (result.intent === 'script.add') {
+    const title = requestedTitle || '话术参考'
+    const referenceKey = requestedKey || title
+    if (!scriptText) {
+      return { text: result.reply || '我已经判断这是新增话术参考，但还缺少具体参考内容。请把想保存的讲法告诉我。' }
+    }
+    if (items.some((item) => item.reference_key === referenceKey)) {
+      return { text: '当前方案已经存在“' + title + '”。如果要调整，请直接说修改后的话术内容。' }
+    }
+    const executionMode = liveScriptExecutionModeFromText(sourceText)
+    return {
+      text: '我已经理解为新增正式话术参考。它只影响“怎么说”，不会自动把里面的商品描述升级成事实依据。确认后才写入。',
+      action: {
+        type: 'add_live_script_reference',
+        title: '确认添加话术参考',
+        summary: executionMode === 'verbatim'
+          ? '确认后进入当前方案正式话术参考，并按“100%原话”执行。'
+          : '确认后进入当前方案正式话术参考，并按“意图参考”执行，允许自然改写。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          script_reference_key: referenceKey,
+          script_title: title,
+          script_text: scriptText,
+          execution_mode: executionMode,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent === 'script.disable') {
+    if (!existing) {
+      return { text: result.reply || '我知道你想停用话术参考，但还不能唯一定位到哪一条。请说出参考名称。' }
+    }
+    return {
+      text: '我已经定位到话术参考“' + existing.title + '”。停用后直播生成不再参考这条内容，请确认。',
+      action: {
+        type: 'confirm_live_script_reference_disable',
+        title: '确认停用话术参考',
+        summary: '确认后停止参与直播生成；历史版本和审计记录继续保留。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          plan_id: planId,
+          room_id: roomId,
+          script_reference_id: existing.id,
+          script_reference_key: existing.reference_key,
+          script_title: existing.title,
+          current_script_text: existing.content_text,
+          current_version_no: existing.version_no,
+          execution_mode: existing.execution_mode,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+
+  if (result.intent !== 'script.update') return null
+  if (!existing) {
+    return { text: result.reply || '我判断你要修改话术参考，但还不能唯一定位目标。请说出参考名称。' }
+  }
+  if (!scriptText) {
+    return { text: result.reply || '我已经定位到“' + existing.title + '”，但还没有明确新的话术内容。' }
+  }
+  const explicitMode = liveScriptExecutionModeFromText(sourceText)
+  const hasModeInstruction = /(?:100%原话|百分百原话|照原文|逐字照说|一字不改|原话锁定|按照这个意思|按这个意思|意图执行|自由发挥)/.test(
+    String(sourceText || '').replace(/\s+/g, ''),
+  )
+  const executionMode = hasModeInstruction ? explicitMode : existing.execution_mode
+  if (scriptText === existing.content_text && executionMode === existing.execution_mode) {
+    return { text: '模型理解出的新内容和当前正式话术参考一致，没有生成新版本。' }
+  }
+  return {
+    text: '我已经按你的原话理解成话术参考修改。请核对修改前后，确认后才生成正式新版本。',
+    action: {
+      type: 'confirm_live_script_reference_update',
+      title: '确认修改话术参考',
+      summary: executionMode === 'verbatim'
+        ? '确认后生成正式新版本，并按“100%原话”执行。'
+        : '确认后生成正式新版本，并按“意图参考”执行。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: {
+        plan_id: planId,
+        room_id: roomId,
+        script_reference_id: existing.id,
+        script_reference_key: existing.reference_key,
+        script_title: existing.title,
+        current_script_text: existing.content_text,
+        script_text: scriptText,
+        script_goal: existing.goal || '',
+        script_transition: existing.transition || '',
+        execution_mode: executionMode,
+        current_version_no: existing.version_no,
+        source_text: sourceText,
+      },
+    } as SystemAgentActionPreview,
+  }
+}
+
+async function resolveIntentTargetPlan(roomId: number, result: LiveStrategyIntentResponse) {
+  const targetID = Number(result.target?.plan_id || 0)
+  const targetName = intentString(result.target?.plan_name)
+  const [allResult, boundResult] = await Promise.all([
+    getLiveAgentPlans(),
+    getRoomLiveAgentPlans(roomId),
+  ])
+  const allPlans = allResult.items || []
+  let target = targetID ? allPlans.find((item) => item.id === targetID) : undefined
+  if (!target && targetName) {
+    const exact = allPlans.filter((item) => item.name.trim().toLowerCase() === targetName.toLowerCase())
+    if (exact.length === 1) target = exact[0]
+  }
+  if (!target && targetName) {
+    const fuzzy = allPlans.filter((item) => item.name.includes(targetName) || targetName.includes(item.name))
+    if (fuzzy.length === 1) target = fuzzy[0]
+  }
+  return {
+    target,
+    boundIDs: new Set((boundResult.items || []).map((item) => item.id)),
+  }
+}
+
+async function prepareLivePlanIntentAction(
+  currentPlanId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const resolved = await resolveIntentTargetPlan(roomId, result)
+  const target = resolved.target
+  if (!target) {
+    return { text: result.reply || '我知道你要操作直播方案，但还不能唯一找到目标方案。请直接说方案名称。' }
+  }
+  if (target.status !== 'active') {
+    return { text: '“' + target.name + '”当前不是可用状态，不能绑定或切换。' }
+  }
+  if (result.intent === 'plan.bind') {
+    if (resolved.boundIDs.has(target.id)) {
+      return { text: '“' + target.name + '”已经绑定到当前直播间，不需要重复绑定。' }
+    }
+    return {
+      text: '我已经定位到方案“' + target.name + '”。绑定只表示当前房间可以使用，不会自动切换运行方案。请确认。',
+      action: {
+        type: 'confirm_live_plan_bind',
+        title: '确认绑定方案',
+        summary: '确认后加入当前直播间可用方案列表；不会自动切换当前运行方案。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: {
+          room_id: roomId,
+          current_plan_id: currentPlanId || 0,
+          target_plan_id: target.id,
+          target_plan_name: target.name,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+  if (result.intent === 'plan.unbind') {
+    if (!resolved.boundIDs.has(target.id)) {
+      return { text: '“' + target.name + '”当前没有绑定到这个直播间。' }
+    }
+    return {
+      text: '我已经定位到已绑定方案“' + target.name + '”。解绑会移出当前直播间可用方案，请确认。',
+      action: {
+        type: 'confirm_live_plan_unbind',
+        title: '确认解绑方案',
+        summary: target.id === currentPlanId
+          ? '这是当前选中的方案。解绑可能使当前方案失效，请确认后执行。'
+          : '确认后从当前直播间解绑；不会删除方案本身。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          room_id: roomId,
+          current_plan_id: currentPlanId || 0,
+          target_plan_id: target.id,
+          target_plan_name: target.name,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+  if (result.intent === 'plan.switch') {
+    if (!resolved.boundIDs.has(target.id)) {
+      return { text: '“' + target.name + '”还没有绑定到当前直播间。我不会把“切换”偷偷变成“绑定”；请先说“绑定' + target.name + '”。' }
+    }
+    if (target.id === currentPlanId) {
+      return { text: '当前直播间已经在使用“' + target.name + '”，不需要重复切换。' }
+    }
+    return {
+      text: '我已经定位到已绑定方案“' + target.name + '”。确认后会热切换当前直播运行方案。',
+      action: {
+        type: 'confirm_live_plan_switch',
+        title: '确认切换运行方案',
+        summary: '其它已绑定方案继续保留；确认后当前直播间只把运行方案切换到这个方案。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: {
+          room_id: roomId,
+          current_plan_id: currentPlanId || 0,
+          target_plan_id: target.id,
+          target_plan_name: target.name,
+          source_text: sourceText,
+        },
+      } as SystemAgentActionPreview,
+    }
+  }
+  return null
+}
+
+async function handleUnifiedLiveStrategyIntent(
+  domain: AgentDomain,
+  roomId: number,
+  planId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  if (result.kind === 'chat') {
+    pushAgentMessage(domain, result.reply || '我在，继续说。')
+    return true
+  }
+  if (result.kind === 'clarify') {
+    pushAgentMessage(domain, result.reply || '我还不能唯一确定你的意思，请再补充一点。')
+    return true
+  }
+  if (result.intent.startsWith('product.')) {
+    if (!planId) {
+      pushAgentMessage(domain, '我已经理解成商品链接操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      return true
+    }
+    const prepared = await prepareLiveProductIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
+  }
+  if (result.intent.startsWith('benefit.')) {
+    if (!planId) {
+      pushAgentMessage(domain, '我已经理解成活动福利操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      return true
+    }
+    const prepared = await prepareLiveBenefitIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      focusLivePlanModule(planId, 'benefits')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
+  }
+  if (result.intent.startsWith('fact.')) {
+    if (!planId) {
+      pushAgentMessage(domain, '我已经理解成事实依据操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      return true
+    }
+    const prepared = await prepareLiveFactIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      focusLivePlanModule(planId, 'knowledge')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
+  }
+  if (result.intent.startsWith('script.')) {
+    if (!planId) {
+      pushAgentMessage(domain, '我已经理解成话术参考操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      return true
+    }
+    const prepared = await prepareLiveScriptIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      focusLivePlanModule(planId, 'rhythm')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
+  }
+  if (result.intent.startsWith('plan.')) {
+    const prepared = await prepareLivePlanIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      if (planId) focusLivePlanModule(planId, 'plan')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
+  }
+  return false
+}
+
+async function executeLiveProductLinkCommand(
+  planId: number,
+  value: string,
+  sourceQuotes: string[] = [value],
+  sourceRef = 'system-agent:product-links',
+) {
+  const linkKey = liveProductLinkKeyFromText(value)
+  const action = liveProductLinkActionFromText(value)
+  if (!action) return null
+  if (!linkKey) {
+    return '我知道你要维护商品链接，但还缺少链接编号。请直接说“添加2号链接 黑菜籽油”或“删除2号链接”。'
+  }
+
+  const current = await getLiveAgentPlanProductLinks(planId)
+  const existing = (current.items || []).find((item) => item.link_key === linkKey)
+  if (action === 'delete') {
+    if (!existing) return '当前方案里没有“' + linkKey + '”，所以没有执行删除。'
+    await deleteLiveAgentPlanProductLink(planId, existing.id)
+    notifyLivePlanModuleUpdated(planId, 'products')
+    return '已从当前方案停用“' + linkKey + '（' + (existing.product_name || '未命名商品') + '）”。历史版本仍保留，可审计和恢复。'
+  }
+
+  const productName = liveProductNameFromCommand(value)
+  const spec = liveProductField(value, ['规格']) || liveProductImplicitSpecFromCommand(value)
+  const dailyPrice = liveProductField(value, ['日常价', '原价'])
+  const quantity = liveProductField(value, ['数量'])
+  const audience = liveProductField(value, ['适用人群', '适用对象', '适用'])
+
+  if (action === 'add') {
+    if (existing) {
+      return '当前方案已经有“' + linkKey + '”：' + (existing.product_name || '未命名商品') + '。如果要改变它，请说“修改' + linkKey + ' …”。'
+    }
+    if (!productName) {
+      return '“' + linkKey + '”已经识别到了，但还缺商品名称。请例如说：“添加' + linkKey + ' 黑菜籽油”。'
+    }
+    const result = await adoptLiveAgentPlanProductLinks(
+      planId,
+      [{
+        link_key: linkKey,
+        product_name: productName,
+        spec,
+        daily_price: dailyPrice,
+        quantity,
+        audience,
+        review_bucket: 'adoptable',
+        source_quotes: sourceQuotes,
+      }],
+      undefined,
+      sourceRef,
+    )
+    if (!result.adopted) {
+      const first = result.results?.[0]
+      return first?.message || '商品链接没有写入，请检查是否与当前方案已有数据冲突。'
+    }
+    notifyLivePlanModuleUpdated(planId, 'products')
+    const saved = result.results?.find((item) => item.saved)?.saved
+    return '已把“' + linkKey + ' · ' + productName + '”直接写入当前直播智能体方案的正式商品链接' +
+      (saved?.version_no ? ' V' + saved.version_no : '') +
+      '。这是正式数据，不需要再发布用户层草稿。'
+  }
+
+  if (!existing) {
+    return '当前方案里没有“' + linkKey + '”。如果这是新商品，请改说“添加' + linkKey + ' 商品名”。'
+  }
+  return '修改“' + linkKey + '”需要先核对具体字段和新值，本次没有写入数据库。'
+}
+
 function agentConfigRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   return { ...(value as Record<string, unknown>) }
@@ -1489,7 +3349,7 @@ function agentRoomScopedRecord(
 }
 
 async function persistLiveStrategyModeDraft(roomId: number, value: string) {
-  if (liveStrategyMode.value === 'basic' || liveStrategyMode.value === 'strategy') return null
+  if (!['anchor', 'voice'].includes(liveStrategyMode.value)) return null
   const versions = await getLiveAgentConfigVersions()
   const latest =
     versions.find((item) => item.lifecycle_status === 'draft') ||
@@ -1497,23 +3357,11 @@ async function persistLiveStrategyModeDraft(roomId: number, value: string) {
     versions[0]
   const now = new Date().toISOString()
   const payload: {
-    layer3?: Record<string, unknown>
     style_profile?: Record<string, unknown>
     speech_config?: Record<string, unknown>
   } = {}
 
-  if (liveStrategyMode.value === 'script') {
-    const compact = value.replace(/\s/g, '')
-    const executionMode =
-      compact.includes('100%原话') || compact.includes('照原文') || compact.includes('原话锁定')
-        ? 'exact'
-        : 'intent'
-    payload.layer3 = agentRoomScopedRecord(latest?.layer3, roomId, 'fixed_scripts', {
-      text: value,
-      execution_mode: executionMode,
-      created_at: now,
-    })
-  } else if (liveStrategyMode.value === 'anchor') {
+  if (liveStrategyMode.value === 'anchor') {
     payload.style_profile = agentRoomScopedRecord(latest?.style_profile, roomId, 'training_entries', {
       text: value,
       created_at: now,
@@ -1630,16 +3478,40 @@ function handleLiveStrategyModeEvent(event: Event) {
 }
 
 function handleLiveStrategyContextEvent(event: Event) {
-  const detail = (event as CustomEvent<{ room_id?: number; mode?: string }>).detail
+  const detail = (
+    event as CustomEvent<{
+      room_id?: number
+      mode?: string
+      module_label?: string
+      plan_id?: number
+    }>
+  ).detail
   if (detail?.room_id && detail.room_id > 0) {
     window.localStorage.setItem('system-agent-live-room-id', String(detail.room_id))
   }
   const mode = detail?.mode
-  liveStrategyMode.value =
-    mode === 'basic' || mode === 'anchor' || mode === 'script' || mode === 'voice'
-      ? mode
-      : 'strategy'
+  const supportedModes: LiveStrategyMode[] = [
+    'basic',
+    'strategy',
+    'script',
+    'products',
+    'benefits',
+    'knowledge',
+    'rhythm',
+    'memory',
+    'anchor',
+    'voice',
+    'fullshow',
+    'plan',
+  ]
+  liveStrategyMode.value = supportedModes.includes(mode as LiveStrategyMode)
+    ? (mode as LiveStrategyMode)
+    : 'strategy'
+  liveStrategyPlanId.value = Number(detail?.plan_id || 0)
+  liveStrategyModuleLabel.value = String(detail?.module_label || '')
   window.localStorage.setItem('system-agent-live-mode', liveStrategyMode.value)
+  window.localStorage.setItem('system-agent-live-plan-id', String(liveStrategyPlanId.value || 0))
+  window.localStorage.setItem('system-agent-live-module-label', liveStrategyModuleLabel.value)
 }
 
 function handleLiveSupportContextEvent(event: Event) {
@@ -1968,6 +3840,9 @@ watch(
   () => actor.value?.user_id || 0,
   (userId, previousUserId) => {
     if (!userId || userId === previousUserId) return
+    agentImages.value = []
+    imagePreview.value = null
+    imageAttachmentError.value = ''
     restoreAgentChatHistory(userId)
   },
   { immediate: true },
@@ -1987,6 +3862,34 @@ watch(
 )
 
 watch(
+  () => visibleMessages.value.length,
+  (length, previousLength) => {
+    const shouldFollow = chatNearBottom.value
+    void nextTick(() => {
+      if (length > previousLength && shouldFollow) {
+        void scrollChatToBottom()
+        return
+      }
+      updateChatScrollState()
+    })
+  },
+)
+
+watch(
+  () => busy.value && busyDomain.value === currentDomain.value,
+  (thinking) => {
+    const shouldFollow = chatNearBottom.value
+    void nextTick(() => {
+      if (thinking && shouldFollow) {
+        void scrollChatToBottom()
+        return
+      }
+      updateChatScrollState()
+    })
+  },
+)
+
+watch(
   coachingSession,
   () => {
     const userId = actor.value?.user_id || 0
@@ -2001,9 +3904,23 @@ watch(expanded, () => {
 })
 
 watch(drawerOpen, (open, previousOpen) => {
+  const userID = Number(actor.value?.user_id || 0)
+  if (drawerPreferenceReady.value && userID) {
+    persistAgentDrawerPreferenceLocal(userID)
+    void updateUserUIPreferences({ agent_drawer_collapsed: !open }).catch(() => undefined)
+  }
   if (!open || previousOpen) return
   void scrollChatToBottom()
 })
+
+watch(
+  () => Number(actor.value?.user_id || 0),
+  userID => {
+    if (!userID) return
+    void loadAgentDrawerPreference(userID)
+  },
+  { immediate: true },
+)
 
 watch(
   () => actor.value?.role,
@@ -2088,6 +4005,7 @@ function isClientBoundaryIntent(value: string) {
     '财务与结算',
     '后台财务',
     '权限审计',
+    '操作审计',
   ].some((keyword) => compact.includes(keyword))
 }
 
@@ -2568,7 +4486,7 @@ async function routeActiveAgentLearningInput(rawValue: string) {
     return true
   }
 
-  let intent: LiveRoomWorkMode = 'chat'
+  let intent: LiveRoomIntent = 'chat'
   try {
     const routed = await classifyAgentLearningMessage(roomId, {
       message: rawValue,
@@ -2589,6 +4507,10 @@ async function routeActiveAgentLearningInput(rawValue: string) {
 
   if (intent === 'test') {
     await sendAgentLearningPreviewTest(rawValue)
+    return true
+  }
+  if (intent === 'adopt') {
+    await adoptLatestCoachingCandidate()
     return true
   }
   if (intent === 'learning') {
@@ -2622,21 +4544,14 @@ function extractLiveRoomExecutionContent(value: string) {
   return direct?.[1]?.trim() || text
 }
 
-function isPotentialLiveRoomWorkModeSwitch(value: string) {
-  const text = value.trim()
-  if (!text || text.startsWith('/')) return false
-  if (isLikelyAgentCorrectionIntent(text)) return true
-  return /(?:这个|刚才|之前).{0,10}(?:不对|有问题|生硬|太官方|不自然)|(?:改一下|改成|改为|换成|纠正|修正|再短一点|再简短一点|再自然一点|怎么回答|应该怎么说|测试下|测试一下|试试看|验证一下|帮我回答这条|回答这条弹幕|回复这条弹幕|给他回复|给她回复|抢答这条)/.test(text)
-}
-
 async function routeInactiveLiveRoomWorkModeInput(rawValue: string) {
   const roomId = Number(route.params.id)
-  if (!roomId || !isPotentialLiveRoomWorkModeSwitch(rawValue)) {
+  if (!roomId) {
     liveRoomWorkMode.value = 'chat'
     return false
   }
 
-  let intent: LiveRoomWorkMode = 'chat'
+  let intent: LiveRoomIntent = 'chat'
   try {
     const routed = await classifyAgentLearningMessage(roomId, {
       message: rawValue,
@@ -2654,6 +4569,10 @@ async function routeInactiveLiveRoomWorkModeInput(rawValue: string) {
   if (intent === 'learning') {
     beginCoachingMode('当前对话纠正')
     await sendGeneralCoaching(rawValue)
+    return true
+  }
+  if (intent === 'adopt') {
+    await adoptLatestCoachingCandidate()
     return true
   }
   if (intent === 'execution') {
@@ -2715,6 +4634,134 @@ async function send() {
   if (!rawValue || busy.value) return
 
   const domain = currentDomain.value
+  if (domain === 'live-strategy') {
+    if (isLiveStrategyCancelIntent(rawValue)) {
+      const pendingAction = latestPendingLiveStrategyAction()
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      if (pendingAction) pendingAction.action = undefined
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      pushAgentMessage(
+        domain,
+        pendingAction
+          ? '已取消，本次操作没有写入数据库。'
+          : '好，已取消。当前没有执行任何修改。',
+      )
+      return
+    }
+
+    const pendingConfirmedAction = latestPendingLiveStrategyAction()
+    if (
+      pendingConfirmedAction?.action &&
+      isLiveStrategyConfirmIntent(rawValue) &&
+      !pendingConfirmedAction.action.type.startsWith('clarify_')
+    ) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      await executeAction(pendingConfirmedAction)
+      return
+    }
+
+    const pendingCorrection = latestPendingLiveProductCorrection()
+    if (pendingCorrection && isLiveProductCorrectionAccept(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      await executeAction(pendingCorrection)
+      return
+    }
+    if (pendingCorrection && isLiveProductCorrectionCancel(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      pendingCorrection.action = undefined
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      pushAgentMessage(domain, '已取消这次文字纠正，没有写入数据库。你可以重新告诉我要怎么改。')
+      return
+    }
+
+    const pendingImageProduct = latestPendingLiveImageProduct()
+    if (pendingImageProduct && isLiveImageProductAccept(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      await executeAction(pendingImageProduct)
+      return
+    }
+    if (pendingImageProduct && isLiveImageProductCancel(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      pendingImageProduct.action = undefined
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      pushAgentMessage(domain, '已取消这次图片识别结果，没有写入当前方案。你可以继续引用图片重新说明。')
+      return
+    }
+
+    const pendingBenefit = latestPendingLiveBenefit()
+    if (pendingBenefit && isLiveBenefitAccept(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      await executeAction(pendingBenefit)
+      return
+    }
+    if (pendingBenefit && isLiveBenefitCancel(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      pendingBenefit.action = undefined
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      pushAgentMessage(domain, '已取消这次活动福利候选，没有写入数据库。你可以重新告诉我要怎么设置活动。')
+      return
+    }
+  }
   if (domain === 'live-room' && /^\/结束调教\s*$/.test(rawValue)) {
     endCoachingMode(true)
     return
@@ -2797,6 +4844,14 @@ async function send() {
 
   const value = unescapeAgentTriggerText(rawValue.replace(/^\/+/, '').trim()).trim()
   if (!value) return
+  const imageResolution = resolveAgentImageReferences(value)
+  if (imageResolution.error) {
+    pushAgentMessage(domain, imageResolution.error)
+    return
+  }
+  const selectedImages = imageResolution.images
+  const imageURLs = selectedImages.map((item) => item.dataUrl)
+  const modelValue = agentMessageWithImageContext(value, selectedImages)
   if (showInbox.value && isInboxIntent(value)) {
     inboxRequest.value = value
     drawerOpen.value = true
@@ -2819,17 +4874,29 @@ async function send() {
   const navigationTarget = resolveNavigationIntent(value)
   const systemTask = startOrContinueSystemTask(value)
   const adminPolicyIntent = resolveExplicitAdminPolicyIntent(value)
-  const routeToSystemAgent = shouldRouteToSystemAgent(domain, {
-    hasSystemTask: Boolean(systemTask),
-    systemCapabilityIntent: isSystemCapabilityIntent(value),
-    clientBoundaryIntent: isClientBoundaryIntent(value),
+  const liveStrategyModuleOwnsCommand =
+    domain === 'live-strategy' &&
+    liveStrategyMode.value !== 'strategy' &&
+    liveStrategyMode.value !== 'basic'
+  const routeToSystemAgent = liveStrategyModuleOwnsCommand
+    ? false
+    : shouldRouteToSystemAgent(domain, {
+        hasSystemTask: Boolean(systemTask),
+        systemCapabilityIntent: isSystemCapabilityIntent(value),
+        clientBoundaryIntent: isClientBoundaryIntent(value),
+      })
+  messages.value.push({
+    role: 'user',
+    domain,
+    text: selectedImages.length
+      ? value + '\n' + selectedImages.map((item) => '[' + item.label + ']').join(' ')
+      : value,
+    conversationScope: conversationScopeForDomain(domain),
   })
-  messages.value.push({ role: 'user', domain, text: value })
   input.value = ''
   dismissedSuggestionInput.value = ''
   activeComposer.value = null
   drawerOpen.value = true
-  void scrollChatToBottom()
 
   if (navigationTarget && isInternalAgentProfile.value && !adminPolicyIntent) {
     await router.push(navigationTarget.to)
@@ -2875,8 +4942,9 @@ async function send() {
           adminPolicyIntent.layer === 'L2'
             ? adminPolicyIntent.industryCode || 'general'
             : undefined,
-        message: value,
+        message: modelValue,
         history: policyHistory,
+        image_urls: imageURLs,
       })
 
       persistAdminPolicyContext(
@@ -2921,9 +4989,10 @@ async function send() {
         systemTaskHistory.value.push({ role: 'user', text: value })
       }
       const agentPayload = {
-        message: value,
+        message: modelValue,
         history: systemHistory,
         current_path: route.fullPath,
+        image_urls: imageURLs,
         navigation: navigationTargets.value.map((item) => ({
           title: item.title,
           to: item.to,
@@ -2938,6 +5007,14 @@ async function send() {
       }
       latestSystemResponse.value = response
       systemContext.value.capabilities = response.capabilities
+      if (response.state === 'permission_denied') {
+        if (activeSystemTask.value) {
+          activeSystemTask.value = null
+          systemTaskHistory.value = []
+        }
+        pushAgentMessage(domain, response.reply)
+        return
+      }
       if (response.navigate) {
         if (activeSystemTask.value) {
           activeSystemTask.value = null
@@ -2947,7 +5024,11 @@ async function send() {
         pushAgentMessage(currentDomain.value, response.reply)
         return
       }
-      pushAgentMessage(domain, response.reply, response.action)
+      pushAgentMessage(
+        domain,
+        response.reply,
+        response.state === 'ready_to_confirm' ? response.action : undefined,
+      )
       return
     }
 
@@ -2958,8 +5039,9 @@ async function send() {
         return
       }
       const response = await chatLiveAgent(roomId, {
-        message: value,
+        message: modelValue,
         history,
+        image_urls: imageURLs,
       })
       pushAgentMessage(domain, response.reply)
       return
@@ -2971,10 +5053,324 @@ async function send() {
         pushAgentMessage(domain, '你当前还没有可用直播间，请先创建或选择直播间。')
         return
       }
+
+      if (selectedImages.length) {
+        const unifiedPlanId = liveStrategyPlanId.value
+        if (!unifiedPlanId) {
+          pushAgentMessage(domain, '你已经引用了图片，但当前还没有选中的直播智能体方案。请先选择方案后再添加商品链接。')
+          return
+        }
+        const recognizedImages = await recognizeLiveStrategyImages(
+          unifiedPlanId,
+          roomId,
+          selectedImages,
+        )
+        pushAgentMessage(
+          domain,
+          liveStrategyRecognizedTextPreview(recognizedImages) +
+            '\n\n我先把图片中识别到的原始文字给你看，下面再根据这些内容判断能否形成商品链接资料。',
+        )
+        const recognizedMessage = liveStrategyMessageWithRecognizedImages(value, recognizedImages)
+        const interpreted = await interpretLiveStrategyIntent(roomId, {
+          message: recognizedMessage,
+          plan_id: unifiedPlanId,
+          current_mode: liveStrategyMode.value,
+          history,
+        })
+        const handledByUnifiedIntent = await handleUnifiedLiveStrategyIntent(
+          domain,
+          roomId,
+          unifiedPlanId,
+          value,
+          interpreted,
+        )
+        if (handledByUnifiedIntent) return
+
+        const response = await chatLiveAgent(roomId, {
+          message: recognizedMessage,
+          history,
+        })
+        const planId = unifiedPlanId
+        const candidate = liveImageProductCandidate(value, response.reply)
+        const clarification = !candidate && planId
+          ? buildLiveStrategyIntentClarification(
+              value,
+              roomId,
+              planId,
+              liveStrategyMode.value,
+              selectedImages.map((item) => item.label),
+            )
+          : undefined
+        pushAgentMessage(
+          domain,
+          candidate
+            ? imageRecognitionReplyForAdd(response.reply)
+            : response.reply + (clarification ? '\n\n我还不能确定你想把这张图用于哪个功能，请从下面选一个。' : ''),
+          candidate
+            ? {
+                type: 'add_live_image_product',
+                title: '添加' + candidate.linkKey + '商品',
+                summary: '图片识别结果尚未写入。点击“添加”后写入当前直播智能体方案，并生成可追溯版本。',
+                risk_level: 'low',
+                requires_confirmation: true,
+                payload: {
+                  plan_id: planId,
+                  room_id: roomId,
+                  link_key: candidate.linkKey,
+                  product_name: candidate.productName,
+                  spec: candidate.spec,
+                  daily_price: candidate.dailyPrice,
+                  quantity: candidate.quantity,
+                  audience: candidate.audience,
+                  source_text: candidate.sourceText,
+                },
+              }
+            : clarification,
+        )
+        return
+      }
+
+      const unifiedPlanId = liveStrategyPlanId.value
+      const interpreted = await interpretLiveStrategyIntent(roomId, {
+        message: value,
+        plan_id: unifiedPlanId || undefined,
+        current_mode: liveStrategyMode.value,
+        history,
+      })
+      const handledByUnifiedIntent = await handleUnifiedLiveStrategyIntent(
+        domain,
+        roomId,
+        unifiedPlanId,
+        value,
+        interpreted,
+      )
+      if (handledByUnifiedIntent) return
+
+      const typoCorrectedProductCommand = liveProductLinkTypoCorrection(value)
+      if (typoCorrectedProductCommand) {
+        const planId = liveStrategyPlanId.value
+        if (!planId) {
+          pushAgentMessage(domain, '我发现“连接”很可能是“链接”的错别字，但当前还没有选中的直播智能体方案。请先选择方案。')
+          return
+        }
+        pushAgentMessage(
+          domain,
+          '我发现你这里的“连接”很可能是“链接”。我不会直接改写并入库，请你确认后再执行。',
+          {
+            type: 'confirm_live_product_link_correction',
+            title: '确认文字纠正',
+            summary: '把“连接”纠正为“链接”，确认后再写入当前直播智能体方案。',
+            risk_level: 'low',
+            requires_confirmation: true,
+            payload: {
+              plan_id: planId,
+              room_id: roomId,
+              original_command: value,
+              corrected_command: typoCorrectedProductCommand,
+            },
+          },
+        )
+        return
+      }
+
+      const planIdForClarification = liveStrategyPlanId.value
+
+      if (isExplicitLiveBenefitCommand(value) && isLiveBenefitUpdateIntent(value)) {
+        if (!planIdForClarification) {
+          pushAgentMessage(domain, '我识别到你要修改活动福利，但当前还没有选中的直播智能体方案。请先选择方案。')
+          return
+        }
+        await pushLiveBenefitUpdatePreview(domain, planIdForClarification, roomId, value)
+        return
+      }
+
+      const intentClarification = buildLiveStrategyIntentClarification(
+        value,
+        roomId,
+        planIdForClarification,
+        liveStrategyMode.value,
+      )
+      if (intentClarification) {
+        pushAgentMessage(
+          domain,
+          '这句话可能对应不止一个功能，我先不执行。请选择你真正想做的事情：',
+          intentClarification,
+        )
+        return
+      }
+
+      const explicitProductAction = liveStrategyMode.value === 'benefits'
+        ? ''
+        : liveProductLinkActionFromText(value)
+      if (explicitProductAction) {
+        const planId = liveStrategyPlanId.value
+        if (!planId) {
+          pushAgentMessage(domain, '我识别到你要维护商品链接，但当前还没有选中的直播智能体方案。请先选择方案，再继续这条指令。')
+          return
+        }
+        if (explicitProductAction === 'update') {
+          await pushLiveProductUpdatePreview(domain, planId, roomId, value)
+          return
+        }
+        const productMessage = await executeLiveProductLinkCommand(planId, value)
+        focusLivePlanModule(planId, 'products')
+        pushAgentMessage(domain, productMessage || '已切换到商品链接模块，请继续告诉我要怎么调整。')
+        return
+      }
+
+      if (
+        (liveStrategyMode.value === 'products' || liveStrategyMode.value === 'benefits') &&
+        !shouldRouteLiveStrategyModuleCommand(value, liveStrategyMode.value)
+      ) {
+        const response = await chatLiveAgent(roomId, {
+          message: modelValue,
+          history,
+          image_urls: imageURLs,
+        })
+        pushAgentMessage(domain, response.reply)
+        return
+      }
+
+      if (liveStrategyMode.value === 'products') {
+        const planId = liveStrategyPlanId.value
+        if (!planId) {
+          pushAgentMessage(domain, '当前还没有选中的直播智能体方案，请先选择方案后再维护商品链接。')
+          return
+        }
+        if (liveProductLinkActionFromText(value) === 'update') {
+          await pushLiveProductUpdatePreview(domain, planId, roomId, value)
+          return
+        }
+        const productMessage = await executeLiveProductLinkCommand(planId, value)
+        if (productMessage) {
+          pushAgentMessage(domain, productMessage)
+          return
+        }
+        pushAgentMessage(
+          domain,
+          '你现在在“商品链接”模块。可以直接对我说：\n' +
+            '“添加2号链接 黑菜籽油”\n' +
+            '“修改2号链接 商品名：黑菜籽油 规格：5L”\n' +
+            '“删除2号链接”',
+        )
+        return
+      }
+      if (liveStrategyMode.value === 'benefits') {
+        const planId = liveStrategyPlanId.value
+        if (!planId) {
+          pushAgentMessage(domain, '当前还没有选中的直播智能体方案，请先选择方案后再新增活动福利。')
+          return
+        }
+
+        if (isLiveBenefitUpdateIntent(value)) {
+          if (isExplicitPendingBenefitUpdateIntent(value) && updatePendingBenefitCandidateFromText(value)) {
+            pushAgentMessage(
+              domain,
+              '已修改上方活动福利候选。当前仍未写入数据库，请继续核对；确认无误后再点“添加活动福利”。',
+            )
+            return
+          }
+
+          const formalBenefits = await getLiveAgentPlanBenefits(planId)
+          const formalItems = (formalBenefits.items || []).filter((item) => item.status !== 'disabled')
+          const updateLinkKey = liveProductLinkKeyFromText(value)
+          const hasMatchingFormal = updateLinkKey
+            ? formalItems.some((item) => item.link_key === updateLinkKey)
+            : formalItems.length > 0
+
+          if (hasMatchingFormal) {
+            await pushLiveBenefitUpdatePreview(domain, planId, roomId, value)
+            return
+          }
+
+          if (updatePendingBenefitCandidateFromText(value)) {
+            pushAgentMessage(
+              domain,
+              '当前还没有对应的正式活动，我已修改未保存的活动福利候选。确认无误后再点“添加活动福利”。',
+            )
+            return
+          }
+
+          await pushLiveBenefitUpdatePreview(domain, planId, roomId, value)
+          return
+        }
+
+        const linkKey = liveProductLinkKeyFromText(value)
+        const currentLinks = await getLiveAgentPlanProductLinks(planId)
+        const linkedProduct = linkKey
+          ? (currentLinks.items || []).find((item) => item.link_key === linkKey)
+          : undefined
+        let candidate = liveBenefitCandidateFromText(
+          value,
+          '',
+          linkedProduct?.product_name || '',
+        )
+        let candidateText = candidate ? benefitCandidateSummary(candidate) : ''
+
+        if (!candidate) {
+          const extractionPrompt =
+            modelValue +
+            '\n\n【当前模块：活动福利候选整理】\n' +
+            '这一步只整理候选，不执行保存、发布或生效，也不要说“已记录/已更新/已保存”。\n' +
+            '请按以下固定字段输出；不知道就写“未设置”：\n' +
+            '链接：\n商品名称：\n活动价：\n赠品：\n活动内容：\n开始时间：YYYY-MM-DD HH:mm\n结束时间：YYYY-MM-DD HH:mm'
+          const response = await chatLiveAgent(roomId, {
+            message: extractionPrompt,
+            history,
+            image_urls: imageURLs,
+          })
+          candidate = liveBenefitCandidateFromText(
+            value,
+            response.reply,
+            linkedProduct?.product_name || '',
+          )
+          candidateText = response.reply
+        }
+
+        if (!candidate) {
+          pushAgentMessage(
+            domain,
+            candidateText || '我知道你在维护“活动福利”，但目前还无法整理出明确的活动价、赠品或活动内容。请例如说：“1号链接买一桶送5升菜籽油，活动到今晚23:00结束”。',
+          )
+          return
+        }
+
+        focusLivePlanModule(planId, 'benefits')
+        pushAgentMessage(
+          domain,
+          benefitCandidateReplyForAdd(candidateText || benefitCandidateSummary(candidate), candidate),
+          {
+            type: 'add_live_benefit',
+            title: '添加活动福利',
+            summary: candidate.starts_at && candidate.ends_at
+              ? '候选尚未写入。点击“添加活动福利”后写入当前直播智能体方案。'
+              : '候选尚未写入，且缺少完整有效期。点击后会写入活动草稿，不会立即进入直播生成。',
+            risk_level: 'low',
+            requires_confirmation: true,
+            payload: {
+              plan_id: planId,
+              room_id: roomId,
+              benefit_key: candidate.key || '',
+              link_key: candidate.link_key || '',
+              product_name: candidate.product_name || '',
+              activity_price: candidate.activity_price || '',
+              gift: candidate.gift || '',
+              activity: candidate.activity || '',
+              starts_at: candidate.starts_at || '',
+              ends_at: candidate.ends_at || '',
+              review_bucket: candidate.review_bucket || 'discuss',
+              review_reason: candidate.review_reason || '',
+              source_text: value,
+            },
+          },
+        )
+        return
+      }
       if (liveStrategyMode.value === 'strategy') {
         const response = await chatLiveRoomPolicyAgent(roomId, {
-          message: value,
+          message: modelValue,
           history,
+          image_urls: imageURLs,
         })
         pushAgentMessage(
           domain,
@@ -2998,15 +5394,14 @@ async function send() {
 
       const draft = await persistLiveStrategyModeDraft(roomId, value)
       const response = await chatLiveAgent(roomId, {
-        message: value,
+        message: modelValue,
         history,
+        image_urls: imageURLs,
       })
       const modeName =
         liveStrategyMode.value === 'anchor'
           ? '主播训练'
-          : liveStrategyMode.value === 'script'
-            ? '固定话术'
-            : liveStrategyMode.value === 'voice'
+          : liveStrategyMode.value === 'voice'
               ? '声音配置'
               : '基础设置'
       pushAgentMessage(
@@ -3031,8 +5426,9 @@ async function send() {
           return
         }
         const response = await chatLiveRoomPolicyAgent(roomId, {
-          message: value,
+          message: modelValue,
           history,
+          image_urls: imageURLs,
         })
         pushAgentMessage(
           domain,
@@ -3057,9 +5453,10 @@ async function send() {
       }
 
       const response = await chatInternalAgent({
-        message: value,
+        message: modelValue,
         history,
         current_path: route.fullPath,
+        image_urls: imageURLs,
         navigation: navigationTargets.value.map((item) => ({
           title: item.title,
           to: item.to,
@@ -3077,8 +5474,9 @@ async function send() {
         layer: policyContext.layer,
         industry_code:
           policyContext.layer === 'L2' ? policyContext.industryCode || 'general' : undefined,
-        message: value,
+        message: modelValue,
         history,
+        image_urls: imageURLs,
       })
       if (response.draft) {
         notifyAdminPolicyUpdated(policyContext.layer, policyContext.industryCode)
@@ -3107,13 +5505,884 @@ async function send() {
   } finally {
     busy.value = false
     busyDomain.value = null
-    void scrollChatToBottom()
   }
+}
+
+async function chooseLiveStrategyIntent(
+  message: ChatMessage,
+  option: LiveStrategyIntentOption,
+) {
+  const action = message.action
+  if (!action || action.type !== 'clarify_live_strategy_intent' || executing.value) return
+
+  const planId = Number(action.payload.plan_id || 0)
+  const roomId = Number(action.payload.room_id || 0)
+  const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+  const originalMessage = String(action.payload.original_message || '').trim()
+  if (!planId || !roomId || !originalMessage) {
+    message.action = undefined
+    pushAgentMessage(message.domain, '这条意图确认缺少上下文，请重新告诉我你想做什么。')
+    return
+  }
+  if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+    message.action = undefined
+    pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧的意图选择已失效。请在当前方案重新说一次。')
+    return
+  }
+
+  const supportedModes: LiveStrategyMode[] = [
+    'basic', 'strategy', 'script', 'products', 'benefits', 'knowledge', 'rhythm', 'memory',
+    'anchor', 'voice', 'fullshow', 'plan',
+  ]
+  const selectedMode = supportedModes.includes(option.mode as LiveStrategyMode)
+    ? (option.mode as LiveStrategyMode)
+    : liveStrategyMode.value
+  const imageLabels = Array.isArray(action.payload.image_labels) ? action.payload.image_labels : []
+  const selectedImages = imageLabels
+    .map((label) => currentAgentImages.value.find((item) => item.label === label))
+    .filter((item): item is AgentImageAttachment => Boolean(item))
+  if (imageLabels.length && selectedImages.length !== imageLabels.length) {
+    message.action = undefined
+    pushAgentMessage(message.domain, '这条选择引用的图片已经不在当前会话里了，请重新粘贴图片后再操作。')
+    return
+  }
+
+  message.action = undefined
+  messages.value.push({
+    role: 'user',
+    domain: 'live-strategy',
+    text: '我选择：' + option.label,
+    conversationScope: conversationScopeForDomain('live-strategy'),
+  })
+  liveStrategyMode.value = selectedMode
+  window.localStorage.setItem('system-agent-live-mode', selectedMode)
+  focusLivePlanModule(planId, selectedMode)
+
+  executing.value = true
+  try {
+    const confirmedMessage =
+      originalMessage +
+      '\n\n【已确认意图】' + option.label +
+      '\n请只按这个功能继续理解，不要执行其他模块的写入；需要写数据库时仍先让我确认。'
+    const history = historyPayload('live-strategy')
+    const recognizedImages = selectedImages.length
+      ? await recognizeLiveStrategyImages(planId, roomId, selectedImages)
+      : []
+    const recognizedMessage = liveStrategyMessageWithRecognizedImages(
+      confirmedMessage,
+      recognizedImages,
+    )
+
+    if (option.id === 'inspect-only') {
+      pushAgentMessage(
+        message.domain,
+        (liveStrategyRecognizedImageContext(recognizedImages) || '没有识别到可可靠读取的图片内容。') +
+          '\n\n本次只识别和说明，没有写入当前方案。',
+      )
+      return
+    }
+
+    if (option.id === 'products' && selectedImages.length) {
+      const interpreted = await interpretLiveStrategyIntent(roomId, {
+        message: recognizedMessage,
+        plan_id: planId,
+        current_mode: 'products',
+        history,
+      })
+      const handled = await handleUnifiedLiveStrategyIntent(
+        message.domain,
+        roomId,
+        planId,
+        originalMessage,
+        interpreted,
+      )
+      if (handled) return
+      pushAgentMessage(message.domain, '图片已经识别，但还没有形成可安全写入的商品资料。请补充商品名称或链接编号。')
+      return
+    }
+
+    const response = await chatLiveAgent(roomId, {
+      message: recognizedMessage,
+      history,
+    })
+    pushAgentMessage(
+      message.domain,
+      response.reply + '\n\n已按“' + option.label + '”理解这句话；本次没有自动写入其它模块。',
+    )
+  } catch (error) {
+    pushAgentMessage(
+      message.domain,
+      error instanceof Error ? '按你选择的意图继续处理失败：' + error.message : '继续处理失败，请重试。',
+    )
+  } finally {
+    executing.value = false
+  }
+}
+
+function chooseLiveProductUpdateField(
+  message: ChatMessage,
+  option: LiveStrategyIntentOption,
+) {
+  const action = message.action
+  if (!action || action.type !== 'clarify_live_product_update') return
+  const command = String(option.command || '').trim()
+  if (!command) return
+  message.action = undefined
+  input.value = command
+  drawerOpen.value = true
+  activeComposer.value = 'drawer'
+  void nextTick(() => {
+    const element = drawerInputEl.value
+    if (!element) return
+    element.focus()
+    const end = element.value.length
+    element.setSelectionRange(end, end)
+  })
+}
+
+function chooseLiveBenefitUpdateField(
+  message: ChatMessage,
+  option: LiveStrategyIntentOption,
+) {
+  const action = message.action
+  if (!action || !['clarify_live_benefit_target', 'clarify_live_benefit_update'].includes(action.type)) return
+  const command = String(option.command || '').trim()
+  if (!command) return
+  message.action = undefined
+  input.value = command
+  drawerOpen.value = true
+  activeComposer.value = 'drawer'
+  void nextTick(() => {
+    const element = drawerInputEl.value
+    if (!element) return
+    element.focus()
+    const end = element.value.length
+    element.setSelectionRange(end, end)
+  })
 }
 
 async function executeAction(message: ChatMessage) {
   const action = message.action
   if (!action || executing.value) return
+
+  if (unifiedLiveStrategyActionTypes.has(action.type)) {
+    const roomId = Number(action.payload.room_id || 0)
+    const planId = Number(action.payload.plan_id || 0)
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (!roomId || currentRoomId !== roomId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间，这条旧确认已失效，没有执行。')
+      return
+    }
+    if (planId && liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了正在编辑的直播方案，这条旧确认已失效，没有执行。')
+      return
+    }
+
+    executing.value = true
+    try {
+      const response = await executeLiveStrategyAction(roomId, action)
+      message.action = undefined
+      const data = response.data && typeof response.data === 'object'
+        ? response.data as Record<string, unknown>
+        : {}
+      const module = String(data.module || '')
+      const responsePlanId = Number(
+        data.plan_id ||
+        action.payload.plan_id ||
+        action.payload.current_plan_id ||
+        action.payload.target_plan_id ||
+        0,
+      )
+      const selectedPlanId = Number(data.selected_plan_id || 0)
+      if (response.state === 'succeeded') {
+        if (selectedPlanId > 0) {
+          liveStrategyPlanId.value = selectedPlanId
+          window.localStorage.setItem('system-agent-live-plan-id', String(selectedPlanId))
+        }
+        if (module === 'products' || module === 'benefits' || module === 'knowledge' || module === 'rhythm') {
+          notifyLivePlanModuleUpdated(responsePlanId, module)
+          focusLivePlanModule(responsePlanId, module)
+        } else if (module === 'plan') {
+          notifyLivePlanModuleUpdated(responsePlanId, 'plan')
+          focusLivePlanModule(responsePlanId, 'plan')
+        }
+      }
+      pushAgentMessage(message.domain, response.reply)
+    } catch (error) {
+      message.action = undefined
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '确认动作没有执行：' + error.message : '确认动作没有执行，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'add_live_fact') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const category = String(action.payload.fact_category || '').trim()
+    const factKey = String(action.payload.fact_key || '').trim()
+    const factValue = String(action.payload.fact_value || '').trim()
+    if (!planId || !roomId || !category || !factKey || !factValue) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条事实候选缺少必要信息，请重新说明。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条事实候选已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanFacts(planId)
+      if ((current.items || []).some((item) => item.category === category && item.key === factKey)) {
+        throw new Error('确认期间这条事实已经存在。为了避免把“新增”悄悄变成“修改”，请重新发起。')
+      }
+      const candidate: LiveAgentPlanFactCandidate = {
+        category,
+        key: factKey,
+        value: factValue,
+        status: 'confirmed',
+        review_bucket: 'adoptable',
+        source_quote: String(action.payload.source_text || '').trim(),
+      }
+      const result = await adoptLiveAgentPlanFacts(
+        planId,
+        [candidate],
+        undefined,
+        'system-agent:intent-fact',
+      )
+      const first = result.results?.[0]
+      if (!result.adopted) {
+        throw new Error(first?.message || '事实依据没有写入，请检查是否存在冲突。')
+      }
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'knowledge')
+      focusLivePlanModule(planId, 'knowledge')
+      pushAgentMessage(message.domain, '已确认添加事实“' + factKey + '：' + factValue + '”。')
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '事实没有写入：' + error.message : '事实没有写入，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_fact_update') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const factId = Number(action.payload.fact_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const category = String(action.payload.fact_category || '').trim()
+    const factKey = String(action.payload.fact_key || '').trim()
+    const factValue = String(action.payload.fact_value || '').trim()
+    if (!planId || !roomId || !factId || !category || !factKey || !factValue) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条事实修改确认缺少必要信息，请重新发起。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧事实修改确认已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanFacts(planId)
+      const existing = (current.items || []).find((item) => item.id === factId && item.category === category && item.key === factKey)
+      if (!existing) throw new Error('当前事实已经变化或被停用，请重新发起。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条事实已经产生新版本，请重新发起修改，避免覆盖新数据。')
+      }
+      const updated = await updateLiveAgentPlanFact(planId, factId, {
+        category,
+        key: factKey,
+        value: factValue,
+      })
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'knowledge')
+      focusLivePlanModule(planId, 'knowledge')
+      pushAgentMessage(message.domain, '已确认修改事实“' + factKey + '”，正式版本更新为 V' + updated.version_no + '。')
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '事实修改没有写入：' + error.message : '事实修改没有写入，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_fact_disable') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const factId = Number(action.payload.fact_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const factKey = String(action.payload.fact_key || '').trim()
+    if (!planId || !roomId || !factId || !factKey) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条事实停用确认缺少必要信息，请重新发起。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧事实停用确认已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanFacts(planId)
+      const existing = (current.items || []).find((item) => item.id === factId)
+      if (!existing) throw new Error('当前事实已经变化或被停用，请重新发起。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条事实已经产生新版本，请重新发起停用。')
+      }
+      await deleteLiveAgentPlanFact(planId, factId)
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'knowledge')
+      focusLivePlanModule(planId, 'knowledge')
+      pushAgentMessage(message.domain, '已确认停用事实“' + factKey + '”。历史版本和审计记录仍保留。')
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '事实停用没有执行：' + error.message : '事实停用没有执行，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (
+    action.type === 'confirm_live_plan_bind' ||
+    action.type === 'confirm_live_plan_unbind' ||
+    action.type === 'confirm_live_plan_switch'
+  ) {
+    const roomId = Number(action.payload.room_id || 0)
+    const targetPlanId = Number(action.payload.target_plan_id || 0)
+    const targetPlanName = String(action.payload.target_plan_name || '').trim()
+    if (!roomId || !targetPlanId || !targetPlanName) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条方案确认缺少目标方案信息，请重新发起。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间，这条旧方案确认已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      if (action.type === 'confirm_live_plan_bind') {
+        const bound = await getRoomLiveAgentPlans(roomId)
+        if ((bound.items || []).some((item) => item.id === targetPlanId)) {
+          throw new Error('这个方案已经绑定到当前直播间。')
+        }
+        await bindRoomLiveAgentPlan(targetPlanId, roomId)
+        message.action = undefined
+        focusLivePlanModule(liveStrategyPlanId.value || targetPlanId, 'plan')
+        pushAgentMessage(message.domain, '已把“' + targetPlanName + '”绑定到当前直播间。当前运行方案没有自动切换。')
+      } else if (action.type === 'confirm_live_plan_unbind') {
+        const bound = await getRoomLiveAgentPlans(roomId)
+        if (!(bound.items || []).some((item) => item.id === targetPlanId)) {
+          throw new Error('这个方案已经不在当前直播间的绑定列表里。')
+        }
+        await unbindRoomLiveAgentPlan(targetPlanId, roomId)
+        message.action = undefined
+        focusLivePlanModule(liveStrategyPlanId.value || targetPlanId, 'plan')
+        pushAgentMessage(message.domain, '已从当前直播间解绑“' + targetPlanName + '”。方案本身没有删除。')
+      } else {
+        const bound = await getRoomLiveAgentPlans(roomId)
+        if (!(bound.items || []).some((item) => item.id === targetPlanId)) {
+          throw new Error('目标方案已经不再绑定到当前直播间，请先重新绑定。')
+        }
+        await setLiveRuntimePlan(roomId, targetPlanId)
+        liveStrategyPlanId.value = targetPlanId
+        window.localStorage.setItem('system-agent-live-plan-id', String(targetPlanId))
+        message.action = undefined
+        focusLivePlanModule(targetPlanId, 'plan')
+        pushAgentMessage(message.domain, '已把当前直播间运行方案热切换到“' + targetPlanName + '”。其它已绑定方案继续保留。')
+      }
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '方案操作没有执行：' + error.message : '方案操作没有执行，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_product_disable') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const productLinkId = Number(action.payload.product_link_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const linkKey = String(action.payload.link_key || '').trim()
+    if (!planId || !roomId || !productLinkId || !linkKey) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条停用确认缺少必要信息，请重新发起。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧停用确认已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanProductLinks(planId)
+      const existing = (current.items || []).find((item) => item.id === productLinkId && item.link_key === linkKey)
+      if (!existing) throw new Error('当前商品链接已经变化或已停用，请重新发起。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条商品链接已经产生新版本，请重新发起停用，避免操作旧版本。')
+      }
+      await deleteLiveAgentPlanProductLink(planId, productLinkId)
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'products')
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(message.domain, '已确认停用“' + linkKey + '”。历史版本和审计记录仍保留。')
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '停用没有执行：' + error.message : '停用没有执行，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_benefit_disable') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const benefitId = Number(action.payload.benefit_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const benefitKey = String(action.payload.benefit_key || '').trim()
+    if (!planId || !roomId || !benefitId || !benefitKey) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条活动停用确认缺少必要信息，请重新发起。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧活动停用确认已失效。')
+      return
+    }
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanBenefits(planId)
+      const existing = (current.items || []).find((item) => item.id === benefitId && item.key === benefitKey)
+      if (!existing) throw new Error('当前活动福利已经变化或已停用，请重新发起。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条活动福利已经产生新版本，请重新发起停用，避免操作旧版本。')
+      }
+      await deleteLiveAgentPlanBenefit(planId, benefitId)
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'benefits')
+      focusLivePlanModule(planId, 'benefits')
+      pushAgentMessage(message.domain, '已确认停用这条活动福利。它不会再进入直播生成，历史版本和审计记录仍保留。')
+    } catch (error) {
+      pushAgentMessage(message.domain, error instanceof Error ? '活动停用没有执行：' + error.message : '活动停用没有执行，请重试。')
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_product_update') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const productLinkId = Number(action.payload.product_link_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const linkKey = String(action.payload.link_key || '').trim()
+    if (!planId || !roomId || !productLinkId || !linkKey) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条修改确认缺少必要信息，请重新输入修改指令。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧修改确认已失效，没有写入数据库。')
+      return
+    }
+
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanProductLinks(planId)
+      const existing = (current.items || []).find((item) => item.id === productLinkId && item.link_key === linkKey)
+      if (!existing) throw new Error('当前正式商品链接已经变化，请重新发起修改。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条链接已经产生了更新版本，请重新发起修改，避免覆盖新数据。')
+      }
+
+      const next = {
+        link_key: linkKey,
+        product_name: String(action.payload.product_name || ''),
+        spec: String(action.payload.spec || ''),
+        daily_price: String(action.payload.daily_price || ''),
+        quantity: String(action.payload.quantity || ''),
+        audience: String(action.payload.audience || ''),
+      }
+      const changed =
+        next.product_name !== (existing.product_name || '') ||
+        next.spec !== (existing.spec || '') ||
+        next.daily_price !== (existing.daily_price || '') ||
+        next.quantity !== (existing.quantity || '') ||
+        next.audience !== (existing.audience || '')
+      if (!changed) {
+        message.action = undefined
+        pushAgentMessage(message.domain, '新值和当前正式数据一致，没有生成新版本。')
+        return
+      }
+
+      const updated = await updateLiveAgentPlanProductLink(planId, existing.id, next)
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'products')
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(message.domain, '已确认修改“' + linkKey + '”，正式版本更新为 V' + updated.version_no + '。')
+    } catch (error) {
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '修改没有写入：' + error.message : '修改没有写入，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_benefit_update') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const benefitId = Number(action.payload.benefit_id || 0)
+    const expectedVersion = Number(action.payload.current_version_no || 0)
+    const benefitKey = String(action.payload.benefit_key || '').trim()
+    if (!planId || !roomId || !benefitId || !benefitKey) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '这条活动修改确认缺少必要信息，请重新发起修改。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧活动修改确认已失效，没有写入数据库。')
+      return
+    }
+
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanBenefits(planId)
+      const existing = (current.items || []).find((item) => item.id === benefitId && item.key === benefitKey)
+      if (!existing) throw new Error('当前活动福利已经变化，请重新发起修改。')
+      if (expectedVersion && existing.version_no !== expectedVersion) {
+        throw new Error('这条活动已经产生了新版本，请重新发起修改，避免覆盖新数据。')
+      }
+
+      const next = {
+        expected_version_no: existing.version_no,
+        key: benefitKey,
+        link_key: String(action.payload.link_key || ''),
+        product_name: String(action.payload.product_name || ''),
+        activity_price: String(action.payload.activity_price || ''),
+        gift: String(action.payload.gift || ''),
+        activity: String(action.payload.activity || ''),
+        starts_at: String(action.payload.starts_at || ''),
+        ends_at: String(action.payload.ends_at || ''),
+      }
+      const changed =
+        next.link_key !== (existing.link_key || '') ||
+        next.product_name !== (existing.product_name || '') ||
+        next.activity_price !== (existing.activity_price || '') ||
+        next.gift !== (existing.gift || '') ||
+        next.activity !== (existing.activity || '') ||
+        next.starts_at !== benefitExistingTime(existing.starts_at) ||
+        next.ends_at !== benefitExistingTime(existing.ends_at)
+      if (!changed) {
+        message.action = undefined
+        pushAgentMessage(message.domain, '新值和当前活动福利一致，没有生成新版本。')
+        return
+      }
+
+      const updated = await updateLiveAgentPlanBenefit(planId, benefitId, next)
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'benefits')
+      focusLivePlanModule(planId, 'benefits')
+      const statusText = updated.status === 'active'
+        ? '当前已生效'
+        : updated.status === 'expired'
+          ? '当前已过期'
+          : '当前为草稿'
+      pushAgentMessage(
+        message.domain,
+        '已确认修改活动福利，正式版本更新为 V' + updated.version_no + '，' + statusText + '。',
+      )
+    } catch (error) {
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '活动修改没有写入：' + error.message : '活动修改没有写入，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'confirm_live_product_link_correction') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const correctedCommand = String(action.payload.corrected_command || '').trim()
+    const originalCommand = String(action.payload.original_command || '').trim()
+    if (!planId || !roomId || !correctedCommand) {
+      pushAgentMessage(message.domain, '这条纠错确认缺少必要信息，请重新输入原指令。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧的纠错确认已失效，没有写入数据库。请在当前方案重新输入。')
+      return
+    }
+    executing.value = true
+    try {
+      if (liveProductLinkActionFromText(correctedCommand) === 'update') {
+        message.action = undefined
+        executing.value = false
+        await pushLiveProductUpdatePreview(message.domain, planId, roomId, correctedCommand)
+        return
+      }
+      const result = await executeLiveProductLinkCommand(
+        planId,
+        correctedCommand,
+        [
+          '原输入：' + originalCommand,
+          '纠正后：' + correctedCommand,
+          '用户确认：采纳',
+        ],
+        'system-agent:product-links:typo-confirmed',
+      )
+      message.action = undefined
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(
+        message.domain,
+        '已采纳文字纠正：\n原输入：' + originalCommand + '\n纠正后：' + correctedCommand + '\n' +
+          (result || '已按纠正后的内容处理。'),
+      )
+    } catch (error) {
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '采纳后写入失败：' + error.message : '采纳后写入失败，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'add_live_image_product' || action.type === 'add_live_product') {
+    const isImageProduct = action.type === 'add_live_image_product'
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    const linkKey = String(action.payload.link_key || '').trim()
+    const productName = String(action.payload.product_name || '').trim()
+    if (!planId || !roomId || !linkKey || !productName) {
+      pushAgentMessage(message.domain, isImageProduct ? '这条图片识别结果缺少必要的商品信息，请重新识别后再添加。' : '这条商品候选缺少链接编号或商品名称，请重新说明。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, isImageProduct ? '你已经切换了直播间或直播方案，这条图片识别结果已失效，没有写入数据库。请在当前方案重新识别。' : '你已经切换了直播间或直播方案，这条商品候选已失效，没有写入数据库。')
+      return
+    }
+
+    executing.value = true
+    try {
+      const current = await getLiveAgentPlanProductLinks(planId)
+      const existing = (current.items || []).find((item) => item.link_key === linkKey)
+      let resultText = ''
+      if (existing) {
+        if (!isImageProduct) {
+          throw new Error('确认期间“' + linkKey + '”已经存在。为避免把“新增”悄悄变成“修改”，请重新发起操作。')
+        }
+        const updated = await updateLiveAgentPlanProductLink(planId, existing.id, {
+          link_key: linkKey,
+          product_name: productName || existing.product_name || '',
+          spec: String(action.payload.spec || '').trim() || existing.spec || '',
+          daily_price: String(action.payload.daily_price || '').trim() || existing.daily_price || '',
+          quantity: String(action.payload.quantity || '').trim() || existing.quantity || '',
+          audience: String(action.payload.audience || '').trim() || existing.audience || '',
+        })
+        resultText = isImageProduct
+          ? '已把图片识别结果添加到“' + linkKey + '”，当前正式版本为 V' + updated.version_no + '。未识别到的字段保持原值。'
+          : '已确认更新“' + linkKey + '”，当前正式版本为 V' + updated.version_no + '。'
+      } else {
+        const adopted = await adoptLiveAgentPlanProductLinks(
+          planId,
+          [{
+            link_key: linkKey,
+            product_name: productName,
+            spec: String(action.payload.spec || '').trim(),
+            daily_price: String(action.payload.daily_price || '').trim(),
+            quantity: String(action.payload.quantity || '').trim(),
+            audience: String(action.payload.audience || '').trim(),
+            review_bucket: 'adoptable',
+            source_quotes: [
+              String(action.payload.source_text || '').trim(),
+              isImageProduct ? '用户确认：添加图片识别结果' : '用户确认：添加商品链接',
+            ].filter(Boolean),
+          }],
+          undefined,
+          isImageProduct ? 'system-agent:image-product' : 'system-agent:intent-product',
+        )
+        const saved = adopted.results?.find((item) => item.saved)?.saved
+        if (!adopted.adopted) {
+          throw new Error(adopted.results?.[0]?.message || '商品信息没有写入，请检查当前方案是否存在冲突。')
+        }
+        resultText = (isImageProduct ? '已把图片识别结果添加为“' : '已确认添加“') + linkKey + ' · ' + productName + '”' +
+          (saved?.version_no ? '，当前正式版本 V' + saved.version_no : '') + '。'
+      }
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'products')
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(message.domain, resultText)
+    } catch (error) {
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '添加失败：' + error.message : '添加失败，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
+
+  if (action.type === 'add_live_benefit') {
+    const planId = Number(action.payload.plan_id || 0)
+    const roomId = Number(action.payload.room_id || 0)
+    if (!planId || !roomId) {
+      pushAgentMessage(message.domain, '这条活动福利候选缺少当前直播间或方案信息，请重新输入。')
+      return
+    }
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (currentRoomId !== roomId || liveStrategyPlanId.value !== planId) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了直播间或直播方案，这条旧的活动福利候选已失效，没有写入数据库。请在当前方案重新输入。')
+      return
+    }
+
+    const candidate: LiveAgentPlanBenefitCandidate = {
+      key: String(action.payload.benefit_key || '').trim(),
+      link_key: String(action.payload.link_key || '').trim(),
+      product_name: String(action.payload.product_name || '').trim(),
+      activity_price: String(action.payload.activity_price || '').trim(),
+      gift: String(action.payload.gift || '').trim(),
+      activity: String(action.payload.activity || '').trim(),
+      starts_at: String(action.payload.starts_at || '').trim(),
+      ends_at: String(action.payload.ends_at || '').trim(),
+      review_bucket: String(action.payload.review_bucket || 'discuss').trim(),
+      review_reason: String(action.payload.review_reason || '').trim(),
+      source_quotes: [
+        String(action.payload.source_text || '').trim(),
+        '用户确认：添加活动福利',
+      ].filter(Boolean),
+    }
+    if (!candidate.activity_price && !candidate.gift && !candidate.activity) {
+      pushAgentMessage(message.domain, '这条候选没有可写入的活动价、赠品或活动内容，请重新说明活动福利。')
+      return
+    }
+
+    executing.value = true
+    try {
+      const result = await adoptLiveAgentPlanBenefits(
+        planId,
+        [candidate],
+        undefined,
+        'system-agent:benefits:natural-language',
+      )
+      const first = result.results?.[0]
+      if (result.blocked) {
+        throw new Error(first?.message || '活动福利被规则阻止，尚未写入。')
+      }
+      if (result.conflicts && first?.existing) {
+        const existing = first.existing
+        const nextProductName = candidate.product_name || existing.product_name || ''
+        const nextActivityPrice = candidate.activity_price || existing.activity_price || ''
+        const nextGift = candidate.gift || existing.gift || ''
+        const nextActivity = candidate.activity || existing.activity || ''
+        const nextStartsAt = candidate.starts_at || benefitExistingTime(existing.starts_at)
+        const nextEndsAt = candidate.ends_at || benefitExistingTime(existing.ends_at)
+        message.action = undefined
+        pushAgentMessage(
+          message.domain,
+          '当前方案已经有同一活动位。我没有重复新增，而是把你的内容整理成“修改现有活动”。请核对修改前后：',
+          {
+            type: 'confirm_live_benefit_update',
+            title: '确认修改活动福利',
+            summary: '点击确认后才会覆盖当前活动内容并生成新版本；未提供的字段保持原值。',
+            risk_level: 'low',
+            requires_confirmation: true,
+            payload: {
+              plan_id: planId,
+              room_id: roomId,
+              benefit_id: existing.id,
+              benefit_key: existing.key,
+              current_version_no: existing.version_no,
+              link_key: candidate.link_key || existing.link_key || '',
+              current_link_key: existing.link_key || '',
+              current_product_name: existing.product_name || '',
+              current_activity_price: existing.activity_price || '',
+              current_gift: existing.gift || '',
+              current_activity: existing.activity || '',
+              current_starts_at: benefitExistingTime(existing.starts_at),
+              current_ends_at: benefitExistingTime(existing.ends_at),
+              product_name: nextProductName,
+              activity_price: nextActivityPrice,
+              gift: nextGift,
+              activity: nextActivity,
+              starts_at: nextStartsAt,
+              ends_at: nextEndsAt,
+              source_text: String(action.payload.source_text || '').trim(),
+            },
+          },
+        )
+        return
+      }
+      if (!result.adopted && !result.drafted && !result.skipped) {
+        throw new Error(first?.message || '活动福利没有发生写入。')
+      }
+
+      message.action = undefined
+      notifyLivePlanModuleUpdated(planId, 'benefits')
+      focusLivePlanModule(planId, 'benefits')
+      if (result.adopted) {
+        const version = first?.saved?.version_no
+        pushAgentMessage(
+          message.domain,
+          '已真正写入活动福利并在有效期内生效' + (version ? '，当前版本 V' + version : '') + '。左侧活动福利列表已刷新。',
+        )
+      } else if (result.drafted) {
+        const version = first?.saved?.version_no
+        pushAgentMessage(
+          message.domain,
+          '已真正写入活动福利草稿' + (version ? '，当前版本 V' + version : '') + '。因为没有完整有效期或尚未到开始时间，所以暂时不会进入直播生成；左侧列表已刷新。',
+        )
+      } else {
+        pushAgentMessage(message.domain, first?.message || '当前方案已经存在相同活动福利，没有重复写入。')
+      }
+    } catch (error) {
+      pushAgentMessage(
+        message.domain,
+        error instanceof Error ? '添加活动福利失败：' + error.message : '添加活动福利失败，请重试。',
+      )
+    } finally {
+      executing.value = false
+    }
+    return
+  }
 
   if (!isInternalAgentProfile.value) {
     pushAgentMessage(
@@ -3125,91 +6394,29 @@ async function executeAction(message: ChatMessage) {
 
   executing.value = true
   try {
-    const payload = action.payload
+    const response = await executeInternalAgentAction(action)
+    latestSystemResponse.value = response
+    systemContext.value.capabilities = response.capabilities
+    message.action = undefined
 
-    if (action.type === 'create_staff_employee') {
-      if (
-        !payload.employee_no ||
-        !payload.primary_group_id ||
-        !payload.role_ids?.length ||
-        !payload.username ||
-        !payload.display_name ||
-        !payload.phone ||
-        !payload.province ||
-        !payload.city ||
-        !payload.district
-      ) {
-        throw new Error('员工执行参数不完整，请重新让智能体整理一次。')
-      }
-
-      const result = await createStaffEmployee({
-        employee_no: payload.employee_no,
-        primary_group_id: payload.primary_group_id,
-        role_ids: payload.role_ids,
-        username: payload.username,
-        display_name: payload.display_name,
-        phone: payload.phone,
-        email: payload.email || '',
-        province: payload.province,
-        city: payload.city,
-        district: payload.district,
-        delivery_method: payload.delivery_method === 'email' ? 'email' : 'copy',
-      })
-      message.action = undefined
-      message.credential = result.credential
+    if (response.credential) {
       messages.value.push({
         role: 'agent',
         domain: message.domain,
-        text:
-          '已通过正式员工创建接口完成：' +
-          result.item.display_name +
-          '（' +
-          result.item.employee_no +
-          '），登录账号：' +
-          result.item.username +
-          '。首次登录需要修改初始密码。',
-        credential: result.credential,
+        text: response.reply,
+        credential: response.credential,
+        conversationScope: conversationScopeForDomain(message.domain),
       })
       void scrollChatToBottom()
-      activeSystemTask.value = null
-      systemTaskHistory.value = []
-      return
+    } else {
+      pushAgentMessage(message.domain, response.reply)
     }
 
-    if (action.type === 'create_marketing_campaign') {
-      if (!payload.code || !payload.name || !payload.items?.length) {
-        throw new Error('营销活动执行参数不完整，请继续补充后再确认。')
-      }
-      const result = await createCommercialMarketingCampaign({
-        code: payload.code,
-        name: payload.name,
-        description: payload.description || '',
-        status: 'draft',
-        sort_order: payload.sort_order || 10,
-        pricing_rule: payload.pricing_rule || 'floor_yuan',
-        starts_at: payload.starts_at || '',
-        ends_at: payload.ends_at || '',
-        items: payload.items,
-        display_locations: payload.display_locations?.length
-          ? payload.display_locations
-          : ['backoffice'],
-      })
-      message.action = undefined
-      pushAgentMessage(
-        message.domain,
-        '已创建营销活动草稿“' +
-          result.name +
-          '”。已默认设为“仅后台”，不会出现在终端商城或会员中心；你可以打开营销活动页面选择展示场地后再启用。',
-      )
+    if (response.state === 'succeeded' || response.state === 'permission_denied') {
       activeSystemTask.value = null
       systemTaskHistory.value = []
-      return
     }
-
-    pushAgentMessage(
-      message.domain,
-      '这个动作当前还没有接入正式执行工具，我不会绕过系统直接修改数据。',
-    )
+    return
   } catch (error) {
     pushAgentMessage(
       message.domain,
@@ -3343,6 +6550,17 @@ async function copyCredential(credential?: InitialCredential) {
             <span v-if="liveRoomExecutionStatus">{{ liveRoomExecutionStatus }}</span>
           </div>
           <div class="system-agent-composer-field">
+            <div v-if="currentAgentImages.length" class="agent-image-strip">
+              <div v-for="image in currentAgentImages" :key="image.id" class="agent-image-chip">
+                <button type="button" class="agent-image-thumb" :title="'打开' + image.label" @click.stop="imagePreview = image">
+                  <img :src="image.dataUrl" :alt="image.label" />
+                  <span>{{ image.label }}</span>
+                </button>
+                <button type="button" class="agent-image-reference" :title="'引用@' + image.label" @click.stop="insertAgentImageReference(image)">@</button>
+                <button type="button" class="agent-image-remove" :aria-label="'删除' + image.label" @click.stop="removeAgentImage(image)">×</button>
+              </div>
+            </div>
+            <div v-if="imageAttachmentError" class="agent-image-error">{{ imageAttachmentError }}</div>
             <textarea
               ref="inputEl"
               v-model="input"
@@ -3350,6 +6568,7 @@ async function copyCredential(credential?: InitialCredential) {
               :placeholder="inputPlaceholder"
               @focus="composerFocus('dock')"
               @input="composerInput('dock')"
+              @paste="handleComposerPaste"
               @keydown="handleComposerKeydown($event, 'dock')"
             ></textarea>
             <div
@@ -3368,7 +6587,7 @@ async function copyCredential(credential?: InitialCredential) {
                 @mousedown.prevent="selectSuggestion(item)"
                 @mouseenter="suggestionIndex = index"
               >
-                <i>{{ item.kind === 'department' ? '@' : '/' }}</i>
+                <i>{{ item.kind === 'image' ? '图' : item.kind === 'department' ? '@' : '/' }}</i>
                 <span>
                   <strong>{{ item.label }}</strong>
                   <small>{{ item.description }}</small>
@@ -3420,11 +6639,31 @@ async function copyCredential(credential?: InitialCredential) {
       </div>
     </div>
 
+    <button
+      v-if="actor && !drawerOpen"
+      class="system-agent-drawer-edge-handle collapsed"
+      type="button"
+      aria-label="展开智能体抽屉"
+      title="展开智能体抽屉"
+      @click="openDrawer"
+    >‹</button>
+
     <div
       v-if="drawerOpen && actor"
       class="system-agent-backdrop"
     >
-      <aside class="system-agent-drawer" :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer}">
+      <aside
+        class="system-agent-drawer"
+        :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer}"
+        @wheel="handleDrawerWheel"
+      >
+        <button
+          class="system-agent-drawer-edge-handle expanded"
+          type="button"
+          aria-label="折叠智能体抽屉"
+          title="折叠智能体抽屉"
+          @click="drawerOpen = false"
+        >›</button>
         <header>
           <div>
             <span v-if="!isTerminalCustomer" class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
@@ -3436,7 +6675,8 @@ async function copyCredential(credential?: InitialCredential) {
 
         <nav v-if="showInbox" class="agent-inbox-tabs" aria-label="智能体工作面板"><button type="button" :class="{active:drawerTab==='chat'}" @click="drawerTab='chat'">对话</button><button type="button" :class="{active:drawerTab==='inbox'}" @click="drawerTab='inbox';inboxRequest=''">我的待办<TodoBadge to="/work/inbox"/></button></nav>
         <WorkInboxPanel v-if="showInbox && drawerTab==='inbox'" :request="inboxRequest" compact />
-        <section v-show="!showInbox || drawerTab==='chat'" ref="chatEl" class="system-agent-chat">
+        <div v-show="!showInbox || drawerTab==='chat'" class="system-agent-chat-shell">
+        <section ref="chatEl" class="system-agent-chat" @scroll="handleChatScroll" @wheel.stop>
           <div v-if="!isTerminalCustomer && visibleMessages.length === 0" class="system-agent-context-empty">
             <strong>{{ contextLabel }}</strong>
             <p>{{ contextDescription }}</p>
@@ -3447,8 +6687,46 @@ async function copyCredential(credential?: InitialCredential) {
             :key="index"
             :class="['system-agent-message', message.role]"
           >
-            <strong>{{ message.role === 'agent' ? assistantName : '我' }}</strong>
-            <p v-if="!message.answerReference">{{ message.text }}</p>
+            <div
+              v-if="!message.answerReference && message.role === 'agent'"
+              class="agent-message-formatted"
+            >
+              <template v-for="(block, blockIndex) in formatAgentMessageBlocks(message.text)" :key="blockIndex">
+                <h4 v-if="block.kind === 'heading'">{{ block.text }}</h4>
+                <div v-else-if="block.kind === 'prompt'" class="agent-message-prompt">{{ block.text }}</div>
+                <div v-else-if="block.kind === 'field'" class="agent-message-field">
+                  <strong>{{ block.label }}</strong>
+                  <span>{{ block.text }}</span>
+                </div>
+                <div v-else-if="block.kind === 'choices'" class="agent-message-choices">
+                  <button
+                    v-for="choice in block.items"
+                    :key="choice"
+                    type="button"
+                    @click="chooseAgentDisplayOption(block, choice)"
+                  >{{ choice }}</button>
+                </div>
+                <div v-else-if="block.kind === 'examples'" class="agent-message-examples">
+                  <strong>示例</strong>
+                  <button
+                    v-for="example in block.items"
+                    :key="example"
+                    type="button"
+                    @click="chooseAgentDisplayExample(example)"
+                  >{{ example }}</button>
+                </div>
+                <div v-else-if="block.kind === 'bullet'" class="agent-message-bullet">
+                  <i></i>
+                  <span>{{ block.text }}</span>
+                </div>
+                <div v-else-if="block.kind === 'numbered'" class="agent-message-numbered">
+                  <b>{{ block.marker }}</b>
+                  <span>{{ block.text }}</span>
+                </div>
+                <p v-else>{{ block.text }}</p>
+              </template>
+            </div>
+            <p v-else-if="!message.answerReference">{{ message.text }}</p>
 
             <div
               v-if="message.answerReference"
@@ -3518,7 +6796,47 @@ async function copyCredential(credential?: InitialCredential) {
 
             <div v-if="message.action" class="system-agent-action-card">
               <div>
-                <span>待确认动作</span>
+                <span>{{ message.action.type === 'add_live_image_product'
+                  ? '图片识别结果'
+                  : message.action.type === 'add_live_product'
+                    ? '商品链接候选'
+                  : message.action.type === 'add_live_benefit'
+                    ? '活动福利候选'
+                  : message.action.type === 'clarify_live_product_update'
+                    ? '选择修改字段'
+                  : message.action.type === 'confirm_live_product_update'
+                    ? '商品修改确认'
+                  : message.action.type === 'confirm_live_product_disable'
+                    ? '商品停用确认'
+                  : message.action.type === 'clarify_live_benefit_target'
+                    ? '选择活动'
+                  : message.action.type === 'clarify_live_benefit_update'
+                    ? '选择活动字段'
+                  : message.action.type === 'confirm_live_benefit_update'
+                    ? '活动修改确认'
+                  : message.action.type === 'confirm_live_benefit_disable'
+                    ? '活动停用确认'
+                  : message.action.type === 'add_live_fact'
+                    ? '事实依据候选'
+                  : message.action.type === 'confirm_live_fact_update'
+                    ? '事实修改确认'
+                  : message.action.type === 'confirm_live_fact_disable'
+                    ? '事实停用确认'
+                  : message.action.type === 'add_live_script_reference'
+                    ? '话术参考候选'
+                  : message.action.type === 'confirm_live_script_reference_update'
+                    ? '话术参考修改确认'
+                  : message.action.type === 'confirm_live_script_reference_disable'
+                    ? '话术参考停用确认'
+                  : message.action.type === 'confirm_live_plan_bind'
+                    ? '方案绑定确认'
+                  : message.action.type === 'confirm_live_plan_unbind'
+                    ? '方案解绑确认'
+                  : message.action.type === 'confirm_live_plan_switch'
+                    ? '方案切换确认'
+                  : message.action.type === 'clarify_live_strategy_intent'
+                    ? '确认意图'
+                    : '待确认动作' }}</span>
                 <h4>{{ message.action.title }}</h4>
                 <p>{{ message.action.summary }}</p>
               </div>
@@ -3580,13 +6898,243 @@ async function copyCredential(credential?: InitialCredential) {
                   </dd>
                 </div>
               </dl>
+              <dl v-else-if="message.action.type === 'confirm_live_product_link_correction'">
+                <div>
+                  <dt>原输入</dt>
+                  <dd>{{ message.action.payload.original_command || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>建议纠正</dt>
+                  <dd>{{ message.action.payload.corrected_command || '-' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'add_live_image_product' || message.action.type === 'add_live_product'">
+                <div>
+                  <dt>链接</dt>
+                  <dd>{{ message.action.payload.link_key || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>商品名称</dt>
+                  <dd>{{ message.action.payload.product_name || '-' }}</dd>
+                </div>
+                <div v-if="message.action.payload.daily_price">
+                  <dt>价格</dt>
+                  <dd>{{ message.action.payload.daily_price }}</dd>
+                </div>
+                <div v-if="message.action.payload.spec">
+                  <dt>规格/卖点</dt>
+                  <dd>{{ message.action.payload.spec }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'add_live_benefit'">
+                <div>
+                  <dt>链接</dt>
+                  <dd>{{ message.action.payload.link_key || '全直播间' }}</dd>
+                </div>
+                <div v-if="message.action.payload.product_name">
+                  <dt>商品</dt>
+                  <dd>{{ message.action.payload.product_name }}</dd>
+                </div>
+                <div v-if="message.action.payload.activity_price">
+                  <dt>活动价</dt>
+                  <dd>{{ message.action.payload.activity_price }}</dd>
+                </div>
+                <div v-if="message.action.payload.gift">
+                  <dt>赠品</dt>
+                  <dd>{{ message.action.payload.gift }}</dd>
+                </div>
+                <div v-if="message.action.payload.activity">
+                  <dt>活动内容</dt>
+                  <dd>{{ message.action.payload.activity }}</dd>
+                </div>
+                <div>
+                  <dt>有效期</dt>
+                  <dd>{{ message.action.payload.starts_at || '未设置' }} → {{ message.action.payload.ends_at || '未设置' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'add_live_fact' || message.action.type === 'confirm_live_fact_update' || message.action.type === 'confirm_live_fact_disable'">
+                <div>
+                  <dt>事实分类</dt>
+                  <dd>{{ message.action.payload.fact_category || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>事实名称</dt>
+                  <dd>{{ message.action.payload.fact_key || '-' }}</dd>
+                </div>
+                <div v-if="message.action.type === 'confirm_live_fact_update'">
+                  <dt>内容</dt>
+                  <dd>{{ message.action.payload.current_fact_value || '未设置' }} → {{ message.action.payload.fact_value || '未设置' }}</dd>
+                </div>
+                <div v-else>
+                  <dt>内容</dt>
+                  <dd>{{ message.action.payload.fact_value || message.action.payload.current_fact_value || '-' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'add_live_script_reference' || message.action.type === 'confirm_live_script_reference_update' || message.action.type === 'confirm_live_script_reference_disable'">
+                <div>
+                  <dt>参考名称</dt>
+                  <dd>{{ message.action.payload.script_title || message.action.payload.script_reference_key || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>执行方式</dt>
+                  <dd>{{ message.action.payload.execution_mode === 'verbatim' ? '100%原话' : '意图参考' }}</dd>
+                </div>
+                <div v-if="message.action.type === 'confirm_live_script_reference_update'">
+                  <dt>话术内容</dt>
+                  <dd>{{ message.action.payload.current_script_text || '未设置' }} → {{ message.action.payload.script_text || '未设置' }}</dd>
+                </div>
+                <div v-else>
+                  <dt>话术内容</dt>
+                  <dd>{{ message.action.payload.script_text || message.action.payload.current_script_text || '-' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'confirm_live_plan_bind' || message.action.type === 'confirm_live_plan_unbind' || message.action.type === 'confirm_live_plan_switch'">
+                <div>
+                  <dt>目标方案</dt>
+                  <dd>{{ message.action.payload.target_plan_name || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>操作</dt>
+                  <dd>{{ message.action.type === 'confirm_live_plan_bind' ? '绑定到当前直播间' : message.action.type === 'confirm_live_plan_unbind' ? '从当前直播间解绑' : '切换为当前运行方案' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'confirm_live_product_update'">
+                <div v-if="message.action.payload.current_product_name !== message.action.payload.product_name">
+                  <dt>商品名称</dt>
+                  <dd>{{ message.action.payload.current_product_name || '未设置' }} → {{ message.action.payload.product_name || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_spec !== message.action.payload.spec">
+                  <dt>规格</dt>
+                  <dd>{{ message.action.payload.current_spec || '未设置' }} → {{ message.action.payload.spec || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_daily_price !== message.action.payload.daily_price">
+                  <dt>日常价</dt>
+                  <dd>{{ message.action.payload.current_daily_price || '未设置' }} → {{ message.action.payload.daily_price || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_quantity !== message.action.payload.quantity">
+                  <dt>数量</dt>
+                  <dd>{{ message.action.payload.current_quantity || '未设置' }} → {{ message.action.payload.quantity || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_audience !== message.action.payload.audience">
+                  <dt>适用人群</dt>
+                  <dd>{{ message.action.payload.current_audience || '未设置' }} → {{ message.action.payload.audience || '未设置' }}</dd>
+                </div>
+              </dl>
+              <dl v-else-if="message.action.type === 'confirm_live_benefit_update'">
+                <div v-if="message.action.payload.current_product_name !== message.action.payload.product_name">
+                  <dt>商品名称</dt>
+                  <dd>{{ message.action.payload.current_product_name || '未设置' }} → {{ message.action.payload.product_name || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_activity_price !== message.action.payload.activity_price">
+                  <dt>活动价</dt>
+                  <dd>{{ message.action.payload.current_activity_price || '未设置' }} → {{ message.action.payload.activity_price || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_gift !== message.action.payload.gift">
+                  <dt>赠品</dt>
+                  <dd>{{ message.action.payload.current_gift || '未设置' }} → {{ message.action.payload.gift || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_activity !== message.action.payload.activity">
+                  <dt>活动内容</dt>
+                  <dd>{{ message.action.payload.current_activity || '未设置' }} → {{ message.action.payload.activity || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_starts_at !== message.action.payload.starts_at">
+                  <dt>开始时间</dt>
+                  <dd>{{ message.action.payload.current_starts_at || '未设置' }} → {{ message.action.payload.starts_at || '未设置' }}</dd>
+                </div>
+                <div v-if="message.action.payload.current_ends_at !== message.action.payload.ends_at">
+                  <dt>结束时间</dt>
+                  <dd>{{ message.action.payload.current_ends_at || '未设置' }} → {{ message.action.payload.ends_at || '未设置' }}</dd>
+                </div>
+              </dl>
+              <div
+                v-else-if="message.action.type === 'clarify_live_strategy_intent'"
+                class="system-agent-intent-options"
+              >
+                <button
+                  v-for="option in message.action.payload.intent_options || []"
+                  :key="option.id"
+                  type="button"
+                  :disabled="executing"
+                  @click="chooseLiveStrategyIntent(message, option)"
+                >
+                  <strong>{{ option.label }}</strong>
+                  <small v-if="option.description">{{ option.description }}</small>
+                </button>
+              </div>
+              <div
+                v-else-if="message.action.type === 'clarify_live_product_update'"
+                class="system-agent-intent-options"
+              >
+                <button
+                  v-for="option in message.action.payload.intent_options || []"
+                  :key="option.id"
+                  type="button"
+                  :disabled="executing"
+                  @click="chooseLiveProductUpdateField(message, option)"
+                >
+                  <strong>{{ option.label }}</strong>
+                  <small v-if="option.description">当前：{{ option.description }}</small>
+                </button>
+              </div>
+              <div
+                v-else-if="message.action.type === 'clarify_live_benefit_target' || message.action.type === 'clarify_live_benefit_update'"
+                class="system-agent-intent-options"
+              >
+                <button
+                  v-for="option in message.action.payload.intent_options || []"
+                  :key="option.id"
+                  type="button"
+                  :disabled="executing"
+                  @click="chooseLiveBenefitUpdateField(message, option)"
+                >
+                  <strong>{{ option.label }}</strong>
+                  <small v-if="option.description">当前：{{ option.description }}</small>
+                </button>
+              </div>
               <button
+                v-if="message.action.type !== 'clarify_live_strategy_intent' && message.action.type !== 'clarify_live_product_update' && message.action.type !== 'clarify_live_benefit_target' && message.action.type !== 'clarify_live_benefit_update'"
                 class="primary-button"
                 type="button"
                 :disabled="executing"
                 @click="executeAction(message)"
               >
-                {{ executing ? '执行中…' : '确认执行' }}
+                {{ executing
+                  ? '处理中…'
+                  : message.action.type === 'add_live_image_product'
+                    ? '添加'
+                    : message.action.type === 'add_live_product'
+                      ? '确认添加'
+                    : message.action.type === 'add_live_benefit'
+                      ? '添加活动福利'
+                    : message.action.type === 'confirm_live_product_link_correction'
+                      ? '采纳'
+                    : message.action.type === 'confirm_live_product_update'
+                      ? '确认修改'
+                    : message.action.type === 'confirm_live_product_disable'
+                      ? '确认停用'
+                    : message.action.type === 'confirm_live_benefit_update'
+                      ? '确认修改活动'
+                    : message.action.type === 'confirm_live_benefit_disable'
+                      ? '确认停用活动'
+                    : message.action.type === 'add_live_fact'
+                      ? '确认添加事实'
+                    : message.action.type === 'confirm_live_fact_update'
+                      ? '确认修改事实'
+                    : message.action.type === 'confirm_live_fact_disable'
+                      ? '确认停用事实'
+                    : message.action.type === 'add_live_script_reference'
+                      ? '确认添加话术'
+                    : message.action.type === 'confirm_live_script_reference_update'
+                      ? '确认修改话术'
+                    : message.action.type === 'confirm_live_script_reference_disable'
+                      ? '确认停用话术'
+                    : message.action.type === 'confirm_live_plan_bind'
+                      ? '确认绑定'
+                    : message.action.type === 'confirm_live_plan_unbind'
+                      ? '确认解绑'
+                    : message.action.type === 'confirm_live_plan_switch'
+                      ? '确认切换'
+                      : '确认执行' }}
               </button>
             </div>
 
@@ -3610,7 +7158,6 @@ async function copyCredential(credential?: InitialCredential) {
             v-if="busy && busyDomain === currentDomain"
             class="system-agent-message agent system-agent-thinking"
           >
-            <strong>{{ assistantName }}</strong>
             <div class="system-agent-thinking-row">
               <span class="system-agent-thinking-dots" aria-label="智能体正在思考">
                 <i></i><i></i><i></i>
@@ -3619,6 +7166,15 @@ async function copyCredential(credential?: InitialCredential) {
             </div>
           </article>
         </section>
+        <button
+          v-if="showChatJumpToBottom"
+          class="system-agent-jump-bottom"
+          type="button"
+          title="快速到底"
+          aria-label="快速滚动到最新消息"
+          @click="jumpChatToBottom"
+        >⌄</button>
+        </div>
 
         <footer>
           <div
@@ -3648,6 +7204,17 @@ async function copyCredential(credential?: InitialCredential) {
             <button v-if="coachingSession.latestReply" type="button" @click.stop="adoptLatestCoachingCandidate">采用当前修正</button>
           </div>
           <div class="system-agent-composer-field">
+            <div v-if="currentAgentImages.length" class="agent-image-strip">
+              <div v-for="image in currentAgentImages" :key="image.id" class="agent-image-chip">
+                <button type="button" class="agent-image-thumb" :title="'打开' + image.label" @click.stop="imagePreview = image">
+                  <img :src="image.dataUrl" :alt="image.label" />
+                  <span>{{ image.label }}</span>
+                </button>
+                <button type="button" class="agent-image-reference" :title="'引用@' + image.label" @click.stop="insertAgentImageReference(image)">@</button>
+                <button type="button" class="agent-image-remove" :aria-label="'删除' + image.label" @click.stop="removeAgentImage(image)">×</button>
+              </div>
+            </div>
+            <div v-if="imageAttachmentError" class="agent-image-error">{{ imageAttachmentError }}</div>
             <textarea
               ref="drawerInputEl"
               v-model="input"
@@ -3655,6 +7222,7 @@ async function copyCredential(credential?: InitialCredential) {
               :placeholder="inputPlaceholder"
               @focus="composerFocus('drawer')"
               @input="composerInput('drawer')"
+              @paste="handleComposerPaste"
               @keydown="handleComposerKeydown($event, 'drawer')"
             ></textarea>
             <div
@@ -3673,7 +7241,7 @@ async function copyCredential(credential?: InitialCredential) {
                 @mousedown.prevent="selectSuggestion(item)"
                 @mouseenter="suggestionIndex = index"
               >
-                <i>{{ item.kind === 'department' ? '@' : '/' }}</i>
+                <i>{{ item.kind === 'image' ? '图' : item.kind === 'department' ? '@' : '/' }}</i>
                 <span>
                   <strong>{{ item.label }}</strong>
                   <small>{{ item.description }}</small>
@@ -3706,14 +7274,33 @@ async function copyCredential(credential?: InitialCredential) {
         </footer>
       </aside>
     </div>
+    <div
+      v-if="imagePreview"
+      class="agent-image-preview-backdrop"
+      @click.self="imagePreview = null"
+    >
+      <section class="agent-image-preview-card">
+        <header>
+          <div>
+            <strong>{{ imagePreview.label }}</strong>
+            <small>{{ imagePreview.width }} × {{ imagePreview.height }}</small>
+          </div>
+          <button type="button" aria-label="关闭图片预览" @click="imagePreview = null">×</button>
+        </header>
+        <img :src="imagePreview.dataUrl" :alt="imagePreview.label" />
+      </section>
+    </div>
   </Teleport>
 </template>
 <style scoped>
+.agent-image-strip{display:flex;align-items:flex-start;gap:8px;max-width:100%;padding:2px 2px 7px;overflow-x:auto;scrollbar-width:thin}.agent-image-chip{position:relative;flex:0 0 72px;width:72px;height:68px;border:1px solid rgba(91,107,207,.2);border-radius:10px;background:#f8f9ff;box-shadow:0 3px 10px rgba(71,86,169,.07);overflow:hidden}.agent-image-thumb{display:grid!important;grid-template-rows:45px 17px!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;color:#5a6480!important;cursor:pointer!important;font-size:10px!important;line-height:1.1!important;box-shadow:none!important}.agent-image-thumb img{display:block;width:100%;height:45px;object-fit:cover;background:#eef1f8}.agent-image-thumb span{display:block;padding:3px 18px 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:10px!important;font-weight:800;line-height:1.1}.agent-image-reference,.agent-image-remove{position:absolute;z-index:2;display:grid!important;place-items:center;width:18px!important;height:18px!important;min-width:18px!important;min-height:18px!important;padding:0!important;border:0!important;border-radius:6px!important;background:rgba(42,51,79,.78)!important;color:#fff!important;font-size:11px!important;font-weight:900!important;line-height:1!important;cursor:pointer!important;box-shadow:none!important}.agent-image-remove{top:3px;right:3px}.agent-image-reference{right:3px;bottom:3px;background:rgba(82,99,213,.9)!important}.agent-image-error{margin:0 2px 6px;padding:5px 8px;border-radius:7px;background:#fff1f3;color:#c24655;font-size:11px;line-height:1.35}.agent-image-preview-backdrop{position:fixed;inset:0;z-index:20050;display:grid;place-items:center;padding:28px;background:rgba(18,23,40,.62);backdrop-filter:blur(3px)}.agent-image-preview-card{display:grid;grid-template-rows:auto minmax(0,1fr);width:min(980px,88vw);max-height:88vh;border:1px solid rgba(255,255,255,.55);border-radius:16px;background:#fff;box-shadow:0 24px 80px rgba(12,18,44,.32);overflow:hidden}.agent-image-preview-card>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 14px;border-bottom:1px solid #e5e8f2;background:#fafbff}.agent-image-preview-card>header>div{display:grid;gap:2px}.agent-image-preview-card>header strong{color:#35405a;font-size:14px}.agent-image-preview-card>header small{color:#929aac;font-size:10px}.agent-image-preview-card>header button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid #dfe3ee;border-radius:8px;background:#fff;color:#59647a;font-size:20px;cursor:pointer}.agent-image-preview-card>img{display:block;max-width:100%;max-height:calc(88vh - 55px);margin:auto;object-fit:contain;background:#f3f5fa}
 .live-room-answer-state{display:flex;align-items:center;gap:8px;min-height:24px;margin:0 0 5px;padding:3px 8px;border:1px solid rgba(104,118,220,.18);border-radius:8px;background:rgba(244,246,255,.9);color:#66708c;font-size:12px;line-height:1.35}.live-room-answer-state strong{flex:0 0 auto;color:#5666d8;font-size:12px;font-weight:900}.live-room-answer-state span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-room-answer-state.error{border-color:rgba(216,63,79,.22);background:rgba(255,244,246,.94);color:#cf4050}.live-room-answer-state.error strong{color:#cf4050}
 .live-room-test-toggle{display:flex;align-items:center;gap:8px}.live-room-test-toggle button{height:26px;padding:0 10px;border:1px solid rgba(84,104,214,.22);border-radius:999px;background:rgba(255,255,255,.88);color:#6672b8;font:inherit;font-size:11px;font-weight:900;cursor:pointer;box-shadow:0 2px 8px rgba(72,88,170,.06)}.live-room-test-toggle button.active{border-color:rgba(84,104,214,.5);background:linear-gradient(135deg,rgba(96,111,230,.16),rgba(120,134,243,.10));color:#4f5fd0;box-shadow:0 0 0 2px rgba(84,104,214,.07),0 4px 12px rgba(72,88,170,.10)}.live-room-test-toggle span{color:#8a93a8;font-size:10px;line-height:1.3}.dock-live-room-test-toggle{flex:0 0 100%;width:100%;box-sizing:border-box;justify-content:flex-start;margin:2px 0 0;padding:7px 10px 0 0;border-top:1px solid rgba(105,121,190,.12)}.drawer-live-room-test-toggle{grid-column:1 / -1;margin:0;padding-top:7px;border-top:1px solid rgba(105,121,190,.12)}
 .answer-reference-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;padding:7px 9px;border:1px solid rgba(84,104,214,.2);border-radius:10px;background:linear-gradient(135deg,rgba(241,244,255,.96),rgba(250,251,255,.96));color:#5f6985;line-height:1.35}.answer-reference-context>div{min-width:0;display:grid;gap:2px}.answer-reference-context strong{color:#5362cf;font-size:12px;font-weight:900}.answer-reference-context span{max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.answer-reference-context small{color:#929bb0;font-size:10px}.answer-reference-context button{flex:0 0 auto;padding:4px 8px;border:1px solid rgba(84,104,214,.16);border-radius:8px;background:#fff;color:#6874b8;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.answer-reference-context.picking{border-style:dashed;background:rgba(244,246,255,.96)}.coaching-context{border-color:rgba(112,91,220,.22);background:linear-gradient(135deg,rgba(244,241,255,.97),rgba(251,250,255,.97))}.drawer-answer-reference-context{grid-column:1 / -1;margin:0}.answer-reference-result-card{align-items:stretch;gap:14px;flex-wrap:wrap}.answer-reference-result-copy{display:grid;gap:8px}.answer-reference-result-target{color:#7f8aa0;font-size:12px;line-height:1.45}.answer-reference-result-text{margin:0!important;padding:12px 14px;border:1px solid rgba(92,111,210,.14);border-radius:10px;background:#f8f9ff;color:#293349!important;font-size:17px!important;font-weight:750;line-height:1.7;white-space:pre-wrap}.answer-reference-result-reference{color:#8d96a8;font-size:11px;line-height:1.5}.coaching-result-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.coaching-result-actions .ghost-button{min-height:36px;padding:7px 12px}
 .agent-memory-list-card{align-items:stretch}.agent-memory-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.agent-memory-list-head>span{color:#5666d8!important;font-size:13px!important;font-weight:900}.agent-memory-list-head>small{color:#929bb0;font-size:11px}.agent-memory-empty{padding:14px;border-radius:10px;background:#f8f9fc;color:#8a93a6;text-align:center}.agent-memory-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:12px;border:1px solid #e5e8f2;border-radius:11px;background:#fafbff}.agent-memory-item>div:first-child{display:grid;min-width:0;gap:4px}.agent-memory-item>div:first-child>span{width:max-content;padding:2px 7px;border-radius:999px;background:#eef0ff;color:#5965c8;font-size:10px;font-weight:850}.agent-memory-item strong{color:#30394a;font-size:14px}.agent-memory-item p{margin:0!important;color:#596579!important;line-height:1.55;white-space:pre-wrap}.agent-memory-item small{color:#9aa2b0;font-size:10px}.agent-memory-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.agent-memory-actions button{min-height:32px;padding:5px 9px;border:1px solid #d9deeb;border-radius:8px;background:#fff;color:#5f6a7e;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.agent-memory-actions button:hover{border-color:#aeb7df;background:#f4f6ff;color:#4f5fc4}@media(max-width:720px){.agent-memory-item{grid-template-columns:1fr}.agent-memory-actions{justify-content:flex-start}}
-.system-agent-drawer{grid-template-rows:auto auto minmax(0,1fr) auto;overflow:hidden}
+.system-agent-drawer{position:relative;grid-template-rows:auto auto minmax(0,1fr) auto;overflow:visible}
+.system-agent-drawer>header,.system-agent-drawer>.agent-inbox-tabs,.system-agent-drawer>.system-agent-chat,.system-agent-drawer>footer,.system-agent-drawer>:deep(.work-inbox-panel.compact){overflow:hidden}
+.system-agent-drawer-edge-handle{position:fixed;top:50%;z-index:1385;display:grid;width:28px;height:74px;place-items:center;padding:0;border:1px solid rgba(87,112,207,.30);background:rgba(239,245,255,.97);color:#5368bd;box-shadow:-5px 0 16px rgba(63,81,143,.13);font:inherit;font-size:23px;font-weight:900;line-height:1;cursor:pointer;transform:translateY(-50%);transition:background .18s ease,color .18s ease,box-shadow .18s ease}.system-agent-drawer-edge-handle:hover{background:#fff;color:#3f59d2;box-shadow:-7px 0 21px rgba(63,81,143,.18)}.system-agent-drawer-edge-handle.collapsed{right:0;border-radius:14px 0 0 14px}.system-agent-drawer .system-agent-drawer-edge-handle.expanded{position:absolute;left:-28px;right:auto;border-radius:14px 0 0 14px;pointer-events:auto}
 .system-agent-drawer.without-work-inbox{grid-template-rows:auto minmax(0,1fr) auto}
 .system-agent-drawer.terminal-agent-drawer{grid-template-rows:auto minmax(0,1fr) auto}
 .terminal-agent-drawer > header{padding:18px 20px;align-items:center}
@@ -3723,8 +7310,26 @@ async function copyCredential(credential?: InitialCredential) {
 .terminal-agent-drawer > footer{grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .terminal-agent-drawer > footer .system-agent-composer-field > textarea{display:block;margin:0}
 .terminal-agent-drawer > footer > .primary-button{align-self:center;justify-self:end;min-width:76px;height:48px;min-height:48px;margin:0;padding:0 18px;border-radius:12px;white-space:nowrap;transform:none}
-.terminal-agent-drawer .system-agent-message p,.terminal-agent-drawer textarea,.terminal-agent-drawer > footer button{font-size:18px!important;line-height:1.6}
+.terminal-agent-drawer .system-agent-message.user>p,.terminal-agent-drawer textarea,.terminal-agent-drawer > footer button{font-size:18px!important;line-height:1.6}
+.agent-message-formatted{display:grid;gap:9px;min-width:0;color:#3b465b;font-size:15px;line-height:1.72}.terminal-agent-drawer .agent-message-formatted{font-size:16px}.agent-message-formatted h4{margin:2px 0 1px;color:#34415a;font-size:1em;font-weight:900;line-height:1.5}.agent-message-formatted p{margin:0!important;color:inherit!important;font-size:1em!important;line-height:1.72!important;white-space:pre-wrap}.agent-message-prompt{padding:1px 0 2px;color:#35415a;font-size:1.02em;font-weight:900;line-height:1.55}.agent-message-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.agent-message-choices>span{display:flex;align-items:center;min-height:38px;padding:7px 10px;border:1px solid rgba(94,109,205,.18);border-radius:9px;background:linear-gradient(135deg,#fafbff,#f3f5ff);color:#4858bd;font-size:.9em;font-weight:850;line-height:1.4;box-sizing:border-box}.agent-message-examples{display:grid;gap:6px;padding:9px 10px;border:1px solid rgba(214,220,238,.9);border-radius:10px;background:#fafbfe}.agent-message-examples>strong{color:#7b8599;font-size:.78em;font-weight:900;letter-spacing:.04em}.agent-message-examples>code{display:block;padding:7px 9px;border-radius:7px;background:#fff;color:#4a5570;font-family:inherit;font-size:.88em;line-height:1.55;white-space:normal;overflow-wrap:anywhere;box-shadow:0 1px 4px rgba(53,68,122,.045)}.agent-message-field{display:grid;grid-template-columns:minmax(70px,112px) minmax(0,1fr);align-items:start;gap:10px;padding:8px 10px;border-left:3px solid rgba(91,105,205,.38);border-radius:0 8px 8px 0;background:rgba(247,249,255,.72)}.agent-message-field>strong{min-width:0;color:#5362c7;font-size:.92em;font-weight:900;line-height:1.55;overflow-wrap:anywhere}.agent-message-field>span{min-width:0;color:#465268;line-height:1.62;overflow-wrap:anywhere}.agent-message-bullet,.agent-message-numbered{display:grid;grid-template-columns:14px minmax(0,1fr);align-items:start;gap:7px}.agent-message-bullet>i{display:block;width:6px;height:6px;margin:10px 0 0 3px;border-radius:50%;background:#7180dd}.agent-message-bullet>span,.agent-message-numbered>span{min-width:0;overflow-wrap:anywhere}.agent-message-numbered{grid-template-columns:24px minmax(0,1fr)}.agent-message-numbered>b{color:#5968ca;font-size:.9em;font-weight:900;line-height:1.8}.system-agent-message.agent .system-agent-action-card p{font-size:14px!important;line-height:1.55!important}@media(max-width:720px){.agent-message-choices{grid-template-columns:1fr}}
+.agent-message-choices>button{display:flex;align-items:center;min-height:38px;padding:7px 10px;border:1px solid rgba(94,109,205,.18);border-radius:9px;background:linear-gradient(135deg,#fafbff,#f3f5ff);color:#4858bd;font:inherit;font-size:.9em;font-weight:850;line-height:1.4;text-align:left;box-sizing:border-box;cursor:pointer;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}.agent-message-choices>button:hover{border-color:rgba(83,100,211,.42);box-shadow:0 5px 14px rgba(74,91,181,.12);transform:translateY(-1px)}.agent-message-examples>button{display:block;width:100%;padding:7px 9px;border:0;border-radius:7px;background:#fff;color:#4a5570;font:inherit;font-size:.88em;line-height:1.55;text-align:left;white-space:normal;overflow-wrap:anywhere;box-shadow:0 1px 4px rgba(53,68,122,.045);cursor:pointer;transition:box-shadow .16s ease,transform .16s ease}.agent-message-examples>button:hover{box-shadow:0 5px 14px rgba(53,68,122,.10);transform:translateY(-1px)}
 .system-agent-drawer :deep(.work-inbox-panel.compact){min-height:0;max-height:none;overflow:auto}
-.system-agent-drawer > .system-agent-chat{min-height:0}
+.system-agent-intent-options{display:grid;gap:8px;width:100%}.system-agent-intent-options>button{display:grid!important;grid-template-columns:1fr!important;justify-items:start!important;gap:3px!important;width:100%!important;min-height:54px!important;padding:10px 12px!important;border:1px solid rgba(86,103,207,.20)!important;border-radius:10px!important;background:linear-gradient(135deg,#fbfcff,#f4f6ff)!important;color:#34415d!important;text-align:left!important;cursor:pointer!important;box-shadow:0 3px 10px rgba(67,83,163,.05)!important}.system-agent-intent-options>button:hover{border-color:rgba(86,103,207,.48)!important;background:#eef1ff!important;box-shadow:0 6px 16px rgba(67,83,163,.10)!important}.system-agent-intent-options>button:disabled{cursor:default!important;opacity:.55}.system-agent-intent-options strong{font-size:13px;font-weight:900;color:#4356c9}.system-agent-intent-options small{font-size:11px;line-height:1.4;color:#7f8aa2}
+.system-agent-chat-shell{position:relative;min-height:0;height:100%;overflow:hidden}
+.system-agent-chat-shell>.system-agent-chat{height:100%;min-height:0;box-sizing:border-box;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior-y:contain;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:rgba(102,119,194,.58) rgba(226,233,248,.72)}
+.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar{width:10px}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-track{background:rgba(226,233,248,.72);border-radius:999px}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-thumb{border:2px solid rgba(226,233,248,.72);border-radius:999px;background:rgba(102,119,194,.58)}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-thumb:hover{background:rgba(81,99,184,.78)}
+.system-agent-jump-bottom{position:absolute;right:22px;bottom:16px;z-index:12;display:grid;width:42px;height:42px;place-items:center;padding:0;border:1px solid rgba(88,105,202,.28);border-radius:50%;background:rgba(255,255,255,.96);color:#5667cb;box-shadow:0 8px 24px rgba(54,71,145,.18);font:inherit;font-size:27px;font-weight:900;line-height:1;cursor:pointer;backdrop-filter:blur(10px);transition:transform .16s ease,box-shadow .16s ease,background .16s ease}.system-agent-jump-bottom:hover{transform:translateY(-2px);background:#fff;box-shadow:0 11px 28px rgba(54,71,145,.25)}
+.system-agent-chat .system-agent-message{position:relative;display:grid;gap:7px;box-sizing:border-box;max-width:82%;margin-left:48px;padding:13px 15px 14px;border:1px solid rgba(211,220,239,.82);border-radius:6px 18px 18px 18px;background:linear-gradient(145deg,rgba(255,255,255,.98),rgba(247,250,255,.97));color:#39465d;box-shadow:0 7px 20px rgba(63,78,130,.075)}
+.system-agent-chat .system-agent-message::before{content:'蓝';position:absolute;left:-48px;top:0;display:grid;width:36px;height:36px;place-items:center;border:1px solid rgba(255,255,255,.72);border-radius:12px;background:linear-gradient(145deg,#72a1ff,#405bf1);color:#fff;box-shadow:0 6px 16px rgba(56,83,198,.22);font-size:16px;font-weight:950;line-height:1}
+.system-agent-chat .system-agent-message::after{content:'';position:absolute;left:-7px;top:14px;width:12px;height:12px;border-left:1px solid rgba(211,220,239,.82);border-bottom:1px solid rgba(211,220,239,.82);background:#fbfdff;transform:rotate(45deg)}
+.system-agent-chat .system-agent-message>strong{position:relative;z-index:1;color:#5262c9;font-size:12px;font-weight:900;line-height:1.35}
+.system-agent-chat .system-agent-message.user{justify-self:end;max-width:78%;margin-right:48px;margin-left:0;border-color:rgba(199,207,250,.88);border-radius:18px 6px 18px 18px;background:linear-gradient(145deg,#f4f5ff,#eef1ff);box-shadow:0 7px 20px rgba(70,78,168,.075)}
+.system-agent-chat .system-agent-message.user::before{content:'我';right:-48px;left:auto;border-radius:50%;background:linear-gradient(145deg,#8f9cff,#6e74ec);box-shadow:0 6px 16px rgba(91,90,196,.18);font-size:14px}
+.system-agent-chat .system-agent-message.user::after{right:-7px;left:auto;border:0;border-top:1px solid rgba(199,207,250,.88);border-right:1px solid rgba(199,207,250,.88);background:#f1f3ff}
+.system-agent-chat .system-agent-message.user>strong{color:#5d59c7;text-align:right}
+.system-agent-chat .system-agent-message.user>p{color:#3e4960}
+.system-agent-chat .system-agent-message .system-agent-action-card{position:relative;z-index:1;border-color:rgba(211,220,241,.9);box-shadow:0 4px 13px rgba(59,72,124,.055)}
+.system-agent-chat .system-agent-message.system-agent-thinking{min-width:210px;max-width:70%;padding-block:12px;background:linear-gradient(145deg,#fff,#f8faff)}
+@media(max-width:720px){.system-agent-chat .system-agent-message{max-width:84%;margin-left:42px}.system-agent-chat .system-agent-message::before{left:-42px;width:32px;height:32px;border-radius:10px;font-size:14px}.system-agent-chat .system-agent-message.user{max-width:82%;margin-right:42px}.system-agent-chat .system-agent-message.user::before{right:-42px;left:auto}}
 .agent-inbox-tabs{display:flex;gap:10px;padding:0 18px 12px}.agent-inbox-tabs button{position:relative;padding:8px 32px 8px 14px;min-height:40px;font-size:18px;border:1px solid #cfdbef;border-radius:8px;background:#fff;color:#315b94;cursor:pointer}.agent-inbox-tabs button.active{background:#eaf3ff;border-color:#75a4ea}.agent-inbox-tabs button:hover,.agent-inbox-tabs button:focus-visible{outline:none;box-shadow:0 0 0 3px #4285ff22;border-color:#5e96ed}.system-agent-orb{position:relative}
 </style>

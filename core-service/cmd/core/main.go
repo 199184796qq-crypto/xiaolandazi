@@ -396,6 +396,7 @@ func main() {
 	api.SetAgentWorkRegistry(agentWork)
 	api.SetSpeechRuntimeRegistry(speechState)
 	api.SetUserBlockStore(userBlocks)
+	go api.RunAgentRuntimeWatch(appCtx, time.Second)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,

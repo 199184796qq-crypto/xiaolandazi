@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"livecompanion/management/internal/agentrouting"
 	"livecompanion/management/internal/model"
 )
 
@@ -52,13 +53,17 @@ func (s *Store) MigrateAgentPromptConfigs(ctx context.Context) error {
 		return fmt.Errorf("apply agent prompt history schema: %w", err)
 	}
 	for _, item := range defaultAgentPromptConfigs() {
-		if _, err := s.db.ExecContext(ctx, `
+		updateClause := "name=VALUES(name),description=VALUES(description),scene=VALUES(scene),default_value=VALUES(default_value)"
+		if preserveAgentPromptDefaultValue(item.Key) {
+			updateClause = "name=VALUES(name),description=VALUES(description),scene=VALUES(scene)"
+		}
+		query := fmt.Sprintf(`
 			INSERT INTO mgmt_agent_prompt_configs (
 				prompt_key,name,description,scene,default_value,current_value,enabled,version
 			) VALUES (?,?,?,?,?,?,?,?)
-			ON DUPLICATE KEY UPDATE
-				name=VALUES(name),description=VALUES(description),scene=VALUES(scene),default_value=VALUES(default_value)
-		`, item.Key, item.Name, item.Description, item.Scene, item.DefaultValue, item.CurrentValue, item.Enabled, item.Version); err != nil {
+			ON DUPLICATE KEY UPDATE %s
+		`, updateClause)
+		if _, err := s.db.ExecContext(ctx, query, item.Key, item.Name, item.Description, item.Scene, item.DefaultValue, item.CurrentValue, item.Enabled, item.Version); err != nil {
 			return fmt.Errorf("seed agent prompt %s: %w", item.Key, err)
 		}
 	}
@@ -78,8 +83,14 @@ func (s *Store) MigrateAgentPromptConfigs(ctx context.Context) error {
 	return nil
 }
 
+func preserveAgentPromptDefaultValue(key string) bool {
+	return strings.TrimSpace(key) == agentrouting.ConfigKey
+}
+
 func defaultAgentPromptConfigs() []model.AgentPromptConfig {
+	routingJSON := agentrouting.DefaultJSON()
 	return []model.AgentPromptConfig{
+		{Key: agentrouting.ConfigKey, Name: "直播间智能体路由", Description: "直播间智能体聊天、学习、测试、执行、采用的结构化路由配置。请使用系统设定中的专用维护页编辑。", Scene: "agent_routing", DefaultValue: routingJSON, CurrentValue: routingJSON, Enabled: true, Version: 1},
 		{Key: "policy.runtime.execution", Name: "三层策略运行原则", Description: "所有直播模型执行当前有效策略时共同遵守的运行原则。", Scene: "policy_runtime", DefaultValue: "规则层负责通用判断与表达方法：理解真实意图、核对事实与约束，再生成自然、热情、可直接播出的表达；行业层加入行业专业知识、常见问法、销售节奏和表达习惯；用户层加入当前商品、活动、主播风格、口头习惯和直播策略。行业层和用户层不能改变规则层的事实判断和真实性原则。原话不适合直接说时，不把内部审核口吻念给观众，而是保留真实意图并转换成自然可播表达。信息不足时先承接，再说明以实时信息为准。execution_mode=verbatim时在不冲突前提下逐字使用fixed_text；intent时保留意思、事实和约束并允许自然改写。", CurrentValue: "规则层负责通用判断与表达方法：理解真实意图、核对事实与约束，再生成自然、热情、可直接播出的表达；行业层加入行业专业知识、常见问法、销售节奏和表达习惯；用户层加入当前商品、活动、主播风格、口头习惯和直播策略。行业层和用户层不能改变规则层的事实判断和真实性原则。原话不适合直接说时，不把内部审核口吻念给观众，而是保留真实意图并转换成自然可播表达。信息不足时先承接，再说明以实时信息为准。execution_mode=verbatim时在不冲突前提下逐字使用fixed_text；intent时保留意思、事实和约束并允许自然改写。", Enabled: true, Version: 1},
 		{Key: "live.answer.operator", Name: "操作者现场口播指令", Description: "直播操作者通过智能体输入框直接要求现场口播时的生成要求。", Scene: "live_answer_operator", DefaultValue: "这是直播操作者发出的现场口播指令，不是观众提问。严格理解操作者限定词、事实边界和语气要求，在不编造事实的前提下生成自然、可直接播出的中文口播，只输出最终口播正文。", CurrentValue: "这是直播操作者发出的现场口播指令，不是观众提问。严格理解操作者限定词、事实边界和语气要求，在不编造事实的前提下生成自然、可直接播出的中文口播，只输出最终口播正文。", Enabled: true, Version: 1},
 		{Key: "live.answer.audience", Name: "观众问题实时回答", Description: "真实观众问题进入实时回答链路时的回答要求。", Scene: "live_answer_audience", DefaultValue: "生成约10到20秒的自然中文直播口播。先使用当前智能体直播方案，再使用当前直播间已生效策略；方案有明确事实或答复口径时必须优先直接采用。能直接回答就热情回答，需要纠偏就给可播替代说法。没有明确依据时不得自行补充快递公司、默认主流快递、系统匹配、仓库流程、发货时效、具体价格、库存、时间、功效或承诺。只输出最终口播正文。", CurrentValue: "生成约10到20秒的自然中文直播口播。先使用当前智能体直播方案，再使用当前直播间已生效策略；方案有明确事实或答复口径时必须优先直接采用。能直接回答就热情回答，需要纠偏就给可播替代说法。没有明确依据时不得自行补充快递公司、默认主流快递、系统匹配、仓库流程、发货时效、具体价格、库存、时间、功效或承诺。只输出最终口播正文。", Enabled: true, Version: 1},

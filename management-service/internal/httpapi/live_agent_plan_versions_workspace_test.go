@@ -1,0 +1,67 @@
+package httpapi
+
+import (
+	"testing"
+
+	"livecompanion/management/internal/model"
+)
+
+func TestSelectLiveAgentPlanWorkspaceVersionPrefersNewerDraft(t *testing.T) {
+	items := []model.LiveAgentPlanVersion{
+		{ID: 5, VersionNo: 5, LifecycleStatus: "draft"},
+		{ID: 4, VersionNo: 4, LifecycleStatus: "published"},
+		{ID: 3, VersionNo: 3, LifecycleStatus: "superseded"},
+	}
+	version, source := selectLiveAgentPlanWorkspaceVersion(items)
+	if version == nil || version.ID != 5 || source != "draft" {
+		t.Fatalf("version=%+v source=%q, want V5 draft", version, source)
+	}
+}
+
+func TestSelectLiveAgentPlanWorkspaceVersionIgnoresStaleDraft(t *testing.T) {
+	items := []model.LiveAgentPlanVersion{
+		{ID: 8, VersionNo: 8, LifecycleStatus: "published"},
+		{ID: 7, VersionNo: 7, LifecycleStatus: "draft"},
+		{ID: 6, VersionNo: 6, LifecycleStatus: "superseded"},
+	}
+	version, source := selectLiveAgentPlanWorkspaceVersion(items)
+	if version == nil || version.ID != 8 || source != "published" {
+		t.Fatalf("version=%+v source=%q, want V8 published", version, source)
+	}
+}
+
+func TestValidateLiveAgentPlanVersionKeepsNonFormalDraftWithoutAudio(t *testing.T) {
+	input := model.CreateLiveAgentPlanVersionInput{
+		RoomID:          9,
+		DurationMinutes: 60,
+		RoundMinutes:    6,
+		VoiceIdentity: model.LiveAgentVoiceIdentity{
+			Name: "测试主播", Version: "V1", Source: "official",
+			Provider: "aliyun_qwen", VoiceID: "longanlingxin",
+			Model: "qwen-audio-3.0-tts-plus", Rate: 1,
+		},
+		Variants: []model.LiveAgentPlanVersionVariant{
+			{
+				Index: 1, VariantKey: "A", IsFormal: true, Text: "正式稿。",
+				AudioAssetID: 12, AudioDurationMS: 2000,
+				Timeline: []model.LiveAgentPlanTimelineSegment{
+					{SegmentID: "A-001", Index: 1, StartMS: 0, EndMS: 2000, Text: "正式稿。", SafeCut: true},
+				},
+				SRT: "1\n00:00:00,000 --> 00:00:02,000\n正式稿。\n",
+				SafePoints: []model.LiveAgentPlanSafePoint{
+					{ID: "SP001", CutMS: 2000, Score: 96, Grade: "A", Kind: "SENTENCE", SentenceID: "A-001", LeftPreview: "正式稿。"},
+				},
+				AssetManifest: map[string]any{"version": "formal-voice-bundle-v3"},
+			},
+			{
+				Index: 2, VariantKey: "B", IsFormal: false, Text: "尚未选为正式稿",
+			},
+		},
+	}
+	if err := validateLiveAgentPlanVersionInput(&input); err != nil {
+		t.Fatal(err)
+	}
+	if input.Variants[1].AudioAssetID != 0 || len(input.Variants[1].Timeline) != 0 {
+		t.Fatalf("non-formal draft unexpectedly retained audio: %+v", input.Variants[1])
+	}
+}

@@ -30,6 +30,11 @@ type qwenChatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 type qwenModelListResponse struct {
@@ -53,7 +58,7 @@ func QwenConfigFromEnv() QwenConfig {
 func NewQwenProvider(config QwenConfig) Provider {
 	client := config.Client
 	if client == nil {
-		client = &http.Client{Timeout: 25 * time.Second}
+		client = &http.Client{}
 	}
 	return &qwenProvider{
 		baseURL: strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
@@ -122,14 +127,35 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 	if strings.TrimSpace(request.Model) == "" {
 		request.Model = DefaultQwenModel
 	}
-	messages := make([]map[string]string, 0, len(request.Messages))
+	messages := make([]map[string]any, 0, len(request.Messages))
 	for _, item := range request.Messages {
 		role := strings.TrimSpace(item.Role)
 		content := strings.TrimSpace(item.Content)
-		if role == "" || content == "" {
+		images := make([]string, 0, len(item.ImageURLs))
+		for _, imageURL := range item.ImageURLs {
+			imageURL = strings.TrimSpace(imageURL)
+			if imageURL != "" {
+				images = append(images, imageURL)
+			}
+		}
+		if role == "" || (content == "" && len(images) == 0) {
 			continue
 		}
-		messages = append(messages, map[string]string{"role": role, "content": content})
+		if len(images) == 0 {
+			messages = append(messages, map[string]any{"role": role, "content": content})
+			continue
+		}
+		parts := make([]map[string]any, 0, len(images)+1)
+		if content != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": content})
+		}
+		for _, imageURL := range images {
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]string{"url": imageURL},
+			})
+		}
+		messages = append(messages, map[string]any{"role": role, "content": parts})
 	}
 	if len(messages) == 0 {
 		return Response{}, fmt.Errorf("agent messages are empty")
@@ -219,9 +245,12 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		return Response{}, fmt.Errorf("qwen provider returned empty reply")
 	}
 	return Response{
-		Text:      text,
-		Provider:  ProviderQwen,
-		Model:     request.Model,
-		LatencyMS: latencyMS,
+		Text:         text,
+		Provider:     ProviderQwen,
+		Model:        request.Model,
+		LatencyMS:    latencyMS,
+		InputTokens:  decoded.Usage.PromptTokens,
+		OutputTokens: decoded.Usage.CompletionTokens,
+		TotalTokens:  decoded.Usage.TotalTokens,
 	}, nil
 }

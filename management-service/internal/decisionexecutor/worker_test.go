@@ -10,15 +10,32 @@ import (
 	"testing"
 
 	"livecompanion/management/internal/agentgateway"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/voicecatalog"
 )
 
+func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
+	short := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{"多少钱"}})
+	if !strings.Contains(short, "20–80字") || !strings.Contains(short, "绝不能超过300字") {
+		t.Fatalf("unexpected short guidance: %s", short)
+	}
+	complex := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{
+		"这个商品适合什么人群，规格怎么选？",
+		"活动怎么算，赠品有什么条件？",
+		"发货和售后分别怎么处理？",
+	}})
+	if !strings.Contains(complex, "80–220字") || !strings.Contains(complex, "300字是硬上限，不是目标字数") {
+		t.Fatalf("unexpected complex guidance: %s", complex)
+	}
+}
+
 type fakeStore struct {
-	profiles []model.VoiceProfile
-	versions []model.AgentConfigVersion
-	plan     model.LiveAgentPlan
+	profiles         []model.VoiceProfile
+	versions         []model.AgentConfigVersion
+	plan             model.LiveAgentPlan
+	publishedVersion *model.LiveAgentPlanVersion
 }
 
 func (f *fakeStore) RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error {
@@ -44,6 +61,13 @@ func (f *fakeStore) GetVoiceProfile(_ context.Context, _ int64, profileID int64)
 		}
 	}
 	return model.VoiceProfile{}, errors.New("voice profile not found")
+}
+
+func (f *fakeStore) GetPublishedLiveAgentPlanVersionForRoom(context.Context, int64, int64) (model.LiveAgentPlanVersion, error) {
+	if f.publishedVersion == nil {
+		return model.LiveAgentPlanVersion{}, appdb.ErrLiveAgentPlanVersionNotFound
+	}
+	return *f.publishedVersion, nil
 }
 
 func (f *fakeStore) LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error) {
@@ -216,6 +240,48 @@ func TestReadyVoiceUsesBoundCloneBeforeSystemDefault(t *testing.T) {
 	}
 	if !ok || voice.VoiceID != "voice-1" {
 		t.Fatalf("voice=%#v ok=%v want room clone", voice, ok)
+	}
+}
+
+func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
+	store := readyVoiceStore()
+	store.publishedVersion = &model.LiveAgentPlanVersion{
+		ID:              44,
+		TenantID:        7,
+		PlanID:          3,
+		RoomID:          11,
+		VersionNo:       6,
+		LifecycleStatus: "published",
+		VoiceIdentity: model.LiveAgentVoiceIdentity{
+			Name:     "发布主播声音",
+			Version:  "V3",
+			Source:   "clone",
+			Provider: "aliyun_qwen_clone",
+			VoiceID:  "published-voice-3",
+			Model:    "published-model-3",
+			Rate:     1.15,
+		},
+	}
+	core := &fakeCore{}
+	agent := &fakeAgent{}
+	tts := &fakeTTS{}
+	worker := New(store, core, agent, tts)
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if tts.last.VoiceID != "published-voice-3" {
+		t.Fatalf("voice_id=%q want published identity", tts.last.VoiceID)
+	}
+	if tts.last.Model != "published-model-3" {
+		t.Fatalf("model=%q want published model", tts.last.Model)
+	}
+	if tts.last.Rate != 1.15 {
+		t.Fatalf("rate=%v want 1.15", tts.last.Rate)
+	}
+	if tts.last.Provider != ttsgateway.ProviderQwen {
+		t.Fatalf("provider=%q want %q", tts.last.Provider, ttsgateway.ProviderQwen)
 	}
 }
 

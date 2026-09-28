@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"livecompanion/core/internal/agentwork"
 )
@@ -13,6 +16,55 @@ func (s *Server) SetAgentWorkRegistry(registry *agentwork.Registry) {
 		registry = agentwork.New()
 	}
 	s.agentWork = registry
+}
+
+func (s *Server) cleanupPaidAgentRuntime(ctx context.Context, roomID int64, reason agentwork.StopReason) {
+	if roomID <= 0 {
+		return
+	}
+	if s.agentDecisions != nil {
+		s.agentDecisions.ClearRoom(roomID)
+	}
+	if s.speechRuntime != nil {
+		s.speechRuntime.Reset(roomID)
+	}
+	if reason != agentwork.StopReasonManualPause {
+		if err := s.stopRoomAudio(ctx, roomID); err != nil {
+			log.Printf("stop paid audio output room=%d: %v", roomID, err)
+		}
+	}
+}
+
+// RunAgentRuntimeWatch keeps paid execution cleanup inside Core. In
+// particular, lease expiry must stop TTS/audio even if Management or the UI
+// is unavailable.
+func (s *Server) RunAgentRuntimeWatch(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	last := make(map[int64]agentwork.State)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.agentWork == nil {
+				continue
+			}
+			for _, snapshot := range s.agentWork.Snapshots() {
+				previous, known := last[snapshot.RoomID]
+				last[snapshot.RoomID] = snapshot.State
+				if snapshot.State != agentwork.StateStopped || snapshot.StopReason == "" {
+					continue
+				}
+				if !known || previous != agentwork.StateStopped {
+					s.cleanupPaidAgentRuntime(ctx, snapshot.RoomID, snapshot.StopReason)
+				}
+			}
+		}
+	}
 }
 
 func (s *Server) ensureAgentRuntimeConfig(ctx context.Context, roomID int64) {
@@ -57,7 +109,8 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.rooms.Get(r.Context(), &tenantID, roomID); err != nil {
+	room, err := s.rooms.Get(r.Context(), &tenantID, roomID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "room not found")
 		return
 	}
@@ -67,23 +120,43 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ensureAgentRuntimeConfig(r.Context(), roomID)
 	var input struct {
-		State              agentwork.State `json:"state"`
-		Mode               agentwork.Mode  `json:"mode"`
-		PlanID             *int64          `json:"plan_id"`
-		PlanName           string          `json:"plan_name"`
-		BaseWorkingSeconds uint64          `json:"base_working_seconds"`
-		LeaseSeconds       uint64          `json:"lease_seconds"`
+		Command            string               `json:"command"`
+		State              agentwork.State      `json:"state"`
+		StopReason         agentwork.StopReason `json:"stop_reason"`
+		Mode               agentwork.Mode       `json:"mode"`
+		PlanID             *int64               `json:"plan_id"`
+		PlanName           string               `json:"plan_name"`
+		BaseWorkingSeconds uint64               `json:"base_working_seconds"`
+		LeaseSeconds       uint64               `json:"lease_seconds"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if input.State == "" && input.Mode == "" && input.PlanID == nil && input.LeaseSeconds == 0 {
-		writeError(w, http.StatusBadRequest, "state, mode, plan_id or lease_seconds is required")
+	command := strings.ToLower(strings.TrimSpace(input.Command))
+	if command != "" && input.State != "" {
+		writeError(w, http.StatusBadRequest, "command and state are mutually exclusive")
+		return
+	}
+	if command != "" && command != "start" && command != "stop" {
+		writeError(w, http.StatusBadRequest, "command must be start or stop")
+		return
+	}
+	if command == "" && input.State == "" && input.Mode == "" && input.PlanID == nil && input.LeaseSeconds == 0 {
+		writeError(w, http.StatusBadRequest, "command, state, mode, plan_id or lease_seconds is required")
+		return
+	}
+	if input.StopReason != "" && command != "stop" && input.State == "" {
+		writeError(w, http.StatusBadRequest, "stop_reason requires stop command or state")
+		return
+	}
+	if (command == "start" || input.State == agentwork.StateStarting || input.State == agentwork.StateWorking) &&
+		!strings.EqualFold(strings.TrimSpace(room.Status), "live") {
+		writeError(w, http.StatusConflict, "room is not live")
 		return
 	}
 	snapshot := s.agentWork.Get(roomID)
-	var err error
+	err = nil
 	if input.Mode != "" {
 		if s.events != nil {
 			if persistErr := s.events.SetAgentMode(r.Context(), roomID, string(input.Mode)); persistErr != nil {
@@ -121,26 +194,44 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	stateUpdated := input.State != ""
-	if stateUpdated {
-		snapshot, err = s.agentWork.SetWithBase(roomID, input.State, input.BaseWorkingSeconds)
+	lifecycleUpdated := command != "" || input.State != ""
+	if command != "" {
+		switch command {
+		case "start":
+			snapshot, err = s.agentWork.StartAgent(roomID, input.BaseWorkingSeconds)
+		case "stop":
+			reason := agentwork.NormalizeStopReason(input.StopReason)
+			if reason == "" {
+				reason = agentwork.StopReasonManual
+			}
+			snapshot, err = s.agentWork.StopAgent(roomID, reason)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else if input.State != "" {
+		switch input.State {
+		case agentwork.StateStarting, agentwork.StateWorking:
+			snapshot, err = s.agentWork.StartAgent(roomID, input.BaseWorkingSeconds)
+		case agentwork.StateStopping, agentwork.StateStopped:
+			reason := agentwork.NormalizeStopReason(input.StopReason)
+			if reason == "" {
+				reason = agentwork.StopReasonManual
+			}
+			snapshot, err = s.agentWork.StopAgent(roomID, reason)
+		default:
+			err = fmt.Errorf("unsupported agent state %q", input.State)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	if stateUpdated && snapshot.State == agentwork.StateStopped {
+	if lifecycleUpdated && snapshot.State == agentwork.StateStopped {
 		// Stopping paid AI must not touch the free base pipeline.
 		// Collection, question clustering and public-screen data keep running.
-		if s.agentDecisions != nil {
-			s.agentDecisions.ClearRoom(roomID)
-		}
-		if s.speechRuntime != nil {
-			s.speechRuntime.Reset(roomID)
-		}
-		if err := s.stopRoomAudio(r.Context(), roomID); err != nil {
-			log.Printf("stop paid audio output room=%d: %v", roomID, err)
-		}
+		s.cleanupPaidAgentRuntime(r.Context(), roomID, snapshot.StopReason)
 	}
 	writeJSON(w, http.StatusOK, snapshot)
 }

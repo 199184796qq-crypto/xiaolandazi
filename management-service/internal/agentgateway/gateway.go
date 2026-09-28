@@ -22,8 +22,9 @@ const (
 )
 
 type Message struct {
-	Role    string
-	Content string
+	Role      string
+	Content   string
+	ImageURLs []string
 }
 
 type Request struct {
@@ -37,10 +38,13 @@ type Request struct {
 }
 
 type Response struct {
-	Text      string
-	Provider  string
-	Model     string
-	LatencyMS int64
+	Text         string
+	Provider     string
+	Model        string
+	LatencyMS    int64
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
 }
 
 type ModelDescriptor struct {

@@ -1693,6 +1693,13 @@ func (s *Store) AbortLiveRuntimeSession(
 	if strings.TrimSpace(reason) == "" {
 		reason = "core_runtime_reset"
 	}
+	abortTitle := "付费AI运行已中止"
+	switch strings.TrimSpace(reason) {
+	case "core_restart", "core_runtime_reset":
+		abortTitle = "Core重启，付费AI未自动恢复"
+	case "room_missing":
+		abortTitle = "直播间已不存在，付费AI已停止"
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -1718,9 +1725,9 @@ func (s *Store) AbortLiveRuntimeSession(
 			INSERT INTO live_runtime_events (
 				tenant_id, room_id, device_id, session_id,
 				actor_type, event_code, title, detail_json, occurred_at
-			) VALUES (?, ?, ?, ?, 'system', 'AI_RUNTIME_ABORTED', 'Core重启，付费AI未自动恢复', ?, ?)
+			) VALUES (?, ?, ?, ?, 'system', 'AI_RUNTIME_ABORTED', ?, ?, ?)
 		`, session.TenantID, session.RoomID, session.DeviceID, session.ID,
-			mustJSON(map[string]any{"stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
+			abortTitle, mustJSON(map[string]any{"stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
 	}

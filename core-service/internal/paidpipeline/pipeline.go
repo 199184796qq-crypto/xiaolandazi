@@ -36,7 +36,7 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 		return
 	case "session_end":
 		p.decisions.ClearRoom(event.RoomID)
-		_, _ = p.runtime.Set(event.RoomID, agentwork.StateStopped)
+		_, _ = p.runtime.StopAgent(event.RoomID, agentwork.StopReasonLiveFinished)
 		return
 	}
 

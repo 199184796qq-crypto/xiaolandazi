@@ -46,6 +46,15 @@ type PlaybackEvent struct {
 	OccurredAt   time.Time `json:"occurred_at"`
 }
 
+type ControlEvent struct {
+	RoomID       int64     `json:"room_id"`
+	Action       string    `json:"action"`
+	SpeechTaskID string    `json:"speech_task_id,omitempty"`
+	ProgramID    string    `json:"program_id,omitempty"`
+	PositionMS   int       `json:"position_ms,omitempty"`
+	OccurredAt   time.Time `json:"occurred_at"`
+}
+
 type Receiver struct {
 	ReceiverID   string    `json:"receiver_id"`
 	RoomID       int64     `json:"room_id"`
@@ -81,6 +90,7 @@ type Hub struct {
 	tasks       map[string]*taskState
 	roomLatest  map[int64]string
 	subscribers map[int64]map[chan Task]struct{}
+	controls    map[int64]map[chan ControlEvent]struct{}
 	receivers   map[string]*Receiver
 	receiverTTL time.Duration
 	sequence    atomic.Uint64
@@ -93,6 +103,7 @@ func New() *Hub {
 		tasks:       make(map[string]*taskState),
 		roomLatest:  make(map[int64]string),
 		subscribers: make(map[int64]map[chan Task]struct{}),
+		controls:    make(map[int64]map[chan ControlEvent]struct{}),
 		receivers:   make(map[string]*Receiver),
 		receiverTTL: defaultReceiverTTL,
 		httpClient:  &http.Client{Timeout: 20 * time.Second},
@@ -375,6 +386,60 @@ func (h *Hub) Subscribe(roomID int64) (<-chan Task, *Task, func()) {
 	return ch, latest, cancel
 }
 
+func (h *Hub) SubscribeControls(roomID int64) (<-chan ControlEvent, func()) {
+	ch := make(chan ControlEvent, 32)
+	h.mu.Lock()
+	if h.controls[roomID] == nil {
+		h.controls[roomID] = make(map[chan ControlEvent]struct{})
+	}
+	h.controls[roomID][ch] = struct{}{}
+	h.mu.Unlock()
+
+	cancel := func() {
+		h.mu.Lock()
+		roomSubs := h.controls[roomID]
+		if _, exists := roomSubs[ch]; exists {
+			delete(roomSubs, ch)
+			close(ch)
+		}
+		if len(roomSubs) == 0 {
+			delete(h.controls, roomID)
+		}
+		h.mu.Unlock()
+	}
+	return ch, cancel
+}
+
+func (h *Hub) BroadcastControl(event ControlEvent) {
+	if event.RoomID <= 0 {
+		return
+	}
+	event.Action = strings.ToLower(strings.TrimSpace(event.Action))
+	if event.Action == "" {
+		return
+	}
+	if event.PositionMS < 0 {
+		event.PositionMS = 0
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = h.now().UTC()
+	} else {
+		event.OccurredAt = event.OccurredAt.UTC()
+	}
+	h.mu.RLock()
+	subs := make([]chan ControlEvent, 0, len(h.controls[event.RoomID]))
+	for ch := range h.controls[event.RoomID] {
+		subs = append(subs, ch)
+	}
+	h.mu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
 func (h *Hub) Expire(taskID string) bool {
 	h.mu.Lock()
 	state := h.tasks[strings.TrimSpace(taskID)]
@@ -455,6 +520,9 @@ func (h *Hub) Metrics() Metrics {
 		Receivers:   len(h.receivers),
 	}
 	for _, roomSubs := range h.subscribers {
+		metrics.Subscribers += len(roomSubs)
+	}
+	for _, roomSubs := range h.controls {
 		metrics.Subscribers += len(roomSubs)
 	}
 	h.mu.Unlock()

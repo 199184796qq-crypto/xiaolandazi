@@ -34,6 +34,7 @@ type TrackState struct {
 	AudioURL     string     `json:"audio_url,omitempty"`
 	DecisionID   string     `json:"decision_id,omitempty"`
 	SpeechTaskID string     `json:"speech_task_id,omitempty"`
+	SwitchAtMS   *int       `json:"switch_at_ms,omitempty"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	UpdatedAt    *time.Time `json:"updated_at,omitempty"`
 }
@@ -56,6 +57,7 @@ type UpdateInput struct {
 	AudioURL     string     `json:"audio_url,omitempty"`
 	DecisionID   string     `json:"decision_id,omitempty"`
 	SpeechTaskID string     `json:"speech_task_id,omitempty"`
+	SwitchAtMS   *int       `json:"switch_at_ms,omitempty"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 }
 
@@ -162,6 +164,7 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 			AudioURL:     strings.TrimSpace(input.AudioURL),
 			DecisionID:   strings.TrimSpace(input.DecisionID),
 			SpeechTaskID: strings.TrimSpace(input.SpeechTaskID),
+			SwitchAtMS:   input.SwitchAtMS,
 			StartedAt:    startedAt,
 			UpdatedAt:    timePtr(now),
 		}

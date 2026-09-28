@@ -35,6 +35,7 @@ type store interface {
 	ListRunningLiveRuntimeSessions(context.Context) ([]model.LiveRuntimeSession, error)
 	ListLiveAgentConfigVersions(context.Context, int64) ([]model.AgentConfigVersion, error)
 	GetVoiceProfile(context.Context, int64, int64) (model.VoiceProfile, error)
+	GetPublishedLiveAgentPlanVersionForRoom(context.Context, int64, int64) (model.LiveAgentPlanVersion, error)
 	LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error)
 	GetLiveAgentPlanForRoom(context.Context, int64, int64) (model.LiveAgentPlan, error)
 	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
@@ -88,12 +89,20 @@ type decisionItem struct {
 	PreviewMemoryType      string   `json:"preview_memory_type,omitempty"`
 	PreviewMemoryKey       string   `json:"preview_memory_key,omitempty"`
 	PreviewMatchedMemoryID int64    `json:"preview_matched_memory_id,omitempty"`
+	PlannedSwitchAtMS      int      `json:"-"`
+	CurrentMainline        string   `json:"-"`
+	ResumeMainline         string   `json:"-"`
+	ResumeSegmentID        string   `json:"-"`
 }
 
 type claimResponse struct {
-	Claimed bool          `json:"claimed"`
-	Reason  string        `json:"reason"`
-	Item    *decisionItem `json:"item"`
+	Claimed         bool          `json:"claimed"`
+	Reason          string        `json:"reason"`
+	Item            *decisionItem `json:"item"`
+	SwitchAtMS      int           `json:"switch_at_ms"`
+	CurrentMainline string        `json:"current_mainline"`
+	ResumeMainline  string        `json:"resume_mainline"`
+	ResumeSegmentID string        `json:"resume_segment_id"`
 }
 
 func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...leader) *Worker {
@@ -170,6 +179,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return nil
 	}
 	item := claim.Item
+	item.PlannedSwitchAtMS = claim.SwitchAtMS
+	item.CurrentMainline = strings.TrimSpace(claim.CurrentMainline)
+	item.ResumeMainline = strings.TrimSpace(claim.ResumeMainline)
+	item.ResumeSegmentID = strings.TrimSpace(claim.ResumeSegmentID)
 	completed := false
 	defer func() {
 		if !completed {
@@ -220,10 +233,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 35*time.Second)
 	defer ttsCancel()
 	audio, err := w.tts.SynthesizeURL(ttsCtx, ttsgateway.SynthesizeRequest{
-		Model:   ttsModel,
-		VoiceID: voice.VoiceID,
-		Text:    text,
-		Rate:    voiceRate(voice),
+		Provider: voiceProvider(voice),
+		Model:    ttsModel,
+		VoiceID:  voice.VoiceID,
+		Text:     text,
+		Rate:     voiceRate(voice),
 	})
 	if err != nil {
 		return fmt.Errorf("TTS生成失败: %w", err)
@@ -446,13 +460,14 @@ func (w *Worker) dispatch(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"decision_id": item.ID,
-			"session_id":  session.ExternalID,
-			"action":      action,
-			"audio_url":   audioURL,
-			"question":    primaryQuestion(item),
-			"reply_text":  text,
-			"topic":       item.Topic,
+			"decision_id":  item.ID,
+			"session_id":   session.ExternalID,
+			"action":       action,
+			"audio_url":    audioURL,
+			"question":     primaryQuestion(item),
+			"reply_text":   text,
+			"topic":        item.Topic,
+			"switch_at_ms": item.PlannedSwitchAtMS,
 		},
 	)
 	if err != nil {
@@ -467,6 +482,34 @@ func (w *Worker) dispatch(
 }
 
 func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.VoiceProfile, bool, error) {
+	// The published live-agent version is the immutable runtime contract.
+	// Its pre-generated mainline audio and realtime interaction audio must
+	// use exactly the same voice identity.
+	if published, publishedErr := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, roomID); publishedErr == nil {
+		identity := published.VoiceIdentity
+		if strings.TrimSpace(identity.VoiceID) == "" || strings.TrimSpace(identity.Model) == "" {
+			return model.VoiceProfile{}, false, fmt.Errorf("已发布智能体版本缺少可用声音身份")
+		}
+		rate := identity.Rate
+		if rate < 0.5 || rate > 2 {
+			rate = 1
+		}
+		return model.VoiceProfile{
+			Name:        strings.TrimSpace(identity.Name),
+			Provider:    strings.TrimSpace(identity.Provider),
+			VoiceID:     strings.TrimSpace(identity.VoiceID),
+			CloneStatus: "ready",
+			Config: map[string]any{
+				"source":           strings.TrimSpace(identity.Source),
+				"target_model":     strings.TrimSpace(identity.Model),
+				"rate":             rate,
+				"identity_version": strings.TrimSpace(identity.Version),
+			},
+		}, true, nil
+	} else if !errors.Is(publishedErr, appdb.ErrLiveAgentPlanVersionNotFound) {
+		return model.VoiceProfile{}, false, publishedErr
+	}
+
 	versions, err := w.store.ListLiveAgentConfigVersions(ctx, tenantID)
 	if err != nil {
 		return model.VoiceProfile{}, false, err
@@ -984,6 +1027,14 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	memoryPrompt := agentmemory.Prompt(memories)
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
+	lengthGuidance := adaptiveAnswerLengthGuidance(item)
+	continuityGuidance := ""
+	if strings.TrimSpace(item.ResumeMainline) != "" {
+		continuityGuidance = "\n【主线衔接硬要求】\n本次回答会在完整句末切入。切点前主线正在讲：" +
+			trimContextRunes(item.CurrentMainline, 120) +
+			"\n回答声音结束后，系统会直接从下一句主线恢复：" + trimContextRunes(item.ResumeMainline, 140) +
+			"\n你的回答最后一句必须让后面的主线句听起来像自然接着说；不要提前照念或重复下一句主线，不要机械固定说“我们继续”，不要改变下一句的事实含义。"
+	}
 	questions := item.SampleQuestions
 	if len(questions) > 8 {
 		questions = questions[:8]
@@ -1008,6 +1059,8 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			"\n操作者指令：" + strings.Join(questions, "；") +
 			"\n任务摘要：" + strings.TrimSpace(item.Summary) +
 			"\n额外要求：" + strings.TrimSpace(item.ReplyHint) +
+			"\n口播长度要求：" + lengthGuidance +
+			continuityGuidance +
 			"\n当前场景生成要求：" + requirement, nil
 	}
 	requirement := w.store.RenderAgentPrompt(ctx, "live.answer.audience", "根据当前方案和策略回答观众问题。", variables)
@@ -1027,7 +1080,48 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		"\n观众原话：" + strings.Join(questions, "；") +
 		"\n任务摘要：" + strings.TrimSpace(item.Summary) +
 		"\n回答提示：" + strings.TrimSpace(item.ReplyHint) +
+		"\n口播长度要求：" + lengthGuidance +
+		continuityGuidance +
 		"\n当前场景生成要求：" + requirement, nil
+}
+
+func trimContextRunes(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || value == "" {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
+}
+
+func adaptiveAnswerLengthGuidance(item decisionItem) string {
+	questions := make([]string, 0, len(item.SampleQuestions))
+	for _, question := range item.SampleQuestions {
+		if value := strings.TrimSpace(question); value != "" {
+			questions = append(questions, value)
+		}
+	}
+	if len(questions) == 0 {
+		if value := strings.TrimSpace(primaryQuestion(item)); value != "" {
+			questions = append(questions, value)
+		}
+	}
+	totalRunes := len([]rune(strings.Join(questions, "；")))
+	recommended := "40–140字"
+	switch {
+	case len(questions) >= 3 || totalRunes >= 80:
+		recommended = "80–220字"
+	case totalRunes <= 14:
+		recommended = "20–80字"
+	case totalRunes <= 35:
+		recommended = "30–120字"
+	case totalRunes >= 55:
+		recommended = "60–180字"
+	}
+	return "300字是硬上限，不是目标字数。请根据当前问题复杂度、是否需要解释以及尽快回到主线的节奏自行决定长度；通常不少于20字。能一句讲清就短答，禁止为了凑字重复扩写。本次建议 " + recommended + "，确有必要可延长，但绝不能超过300字。"
 }
 
 func primaryQuestion(item decisionItem) string {
@@ -1051,6 +1145,15 @@ func voiceModel(profile model.VoiceProfile) string {
 		}
 	}
 	return ""
+}
+
+func voiceProvider(profile model.VoiceProfile) string {
+	switch strings.ToLower(strings.TrimSpace(profile.Provider)) {
+	case "", "aliyun_qwen", "aliyun_qwen_clone", "qwen", "dashscope", "qwen_audio_3_0", ttsgateway.ProviderQwen:
+		return ttsgateway.ProviderQwen
+	default:
+		return strings.TrimSpace(profile.Provider)
+	}
 }
 
 func voiceRate(profile model.VoiceProfile) float64 {

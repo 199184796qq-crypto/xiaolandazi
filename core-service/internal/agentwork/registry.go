@@ -16,11 +16,22 @@ import (
 
 type State string
 type Mode string
+type StopReason string
+
+const LeaseRenewThresholdSeconds uint64 = 15
 
 const (
-	StateStopped State = "stopped"
-	StateWorking State = "working"
-	StatePaused  State = "paused"
+	StateStopped  State = "stopped"
+	StateStarting State = "starting"
+	StateWorking  State = "working"
+	StateStopping State = "stopping"
+
+	StopReasonManual         StopReason = "manual"
+	StopReasonManualPause    StopReason = "manual_pause"
+	StopReasonQuotaExhausted StopReason = "quota_exhausted"
+	StopReasonLiveFinished   StopReason = "live_finished"
+	StopReasonCoreRestart    StopReason = "core_restart"
+	StopReasonSystemError    StopReason = "system_error"
 
 	ModeAnchor  Mode = "anchor"
 	ModeControl Mode = "control"
@@ -30,12 +41,14 @@ type Snapshot struct {
 	BootID                string     `json:"boot_id"`
 	RoomID                int64      `json:"room_id"`
 	State                 State      `json:"state"`
+	StopReason            StopReason `json:"stop_reason,omitempty"`
 	Mode                  Mode       `json:"mode"`
 	PlanID                int64      `json:"plan_id,omitempty"`
 	PlanName              string     `json:"plan_name,omitempty"`
 	WorkingSeconds        uint64     `json:"working_seconds"`
 	LeaseUntil            *time.Time `json:"lease_until,omitempty"`
 	LeaseRemainingSeconds uint64     `json:"lease_remaining_seconds"`
+	LeaseRenewalDue       bool       `json:"lease_renewal_due"`
 	WorkingSince          *time.Time `json:"working_since,omitempty"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }
@@ -46,6 +59,7 @@ type roomState struct {
 	mode         Mode
 	planID       int64
 	planName     string
+	stopReason   StopReason
 	accumulated  time.Duration
 	workingSince time.Time
 	leaseUntil   time.Time
@@ -100,15 +114,27 @@ func (r *Registry) SetWithBase(
 	state State,
 	baseWorkingSeconds uint64,
 ) (Snapshot, error) {
+	return r.SetWithReason(roomID, state, "", baseWorkingSeconds)
+}
+
+// SetWithReason changes the Core-owned agent lifecycle state. Set and
+// SetWithBase remain compatibility wrappers for existing callers.
+func (r *Registry) SetWithReason(
+	roomID int64,
+	state State,
+	reason StopReason,
+	baseWorkingSeconds uint64,
+) (Snapshot, error) {
 	if roomID <= 0 {
 		return Snapshot{}, errors.New("room_id must be positive")
 	}
 	state = State(strings.ToLower(strings.TrimSpace(string(state))))
 	switch state {
-	case StateStopped, StateWorking, StatePaused:
+	case StateStopped, StateStarting, StateWorking, StateStopping:
 	default:
-		return Snapshot{}, errors.New("state must be stopped, working or paused")
+		return Snapshot{}, errors.New("state must be stopped, starting, working or stopping")
 	}
+	reason = NormalizeStopReason(reason)
 
 	now := r.now().UTC()
 	r.mu.Lock()
@@ -126,11 +152,11 @@ func (r *Registry) SetWithBase(
 	}
 
 	r.accrueLocked(current, now)
-	if state == StateWorking && !current.leaseUntil.After(now) {
+	if (state == StateStarting || state == StateWorking) && !current.leaseUntil.After(now) {
 		return Snapshot{}, errors.New("paid work lease required before working state")
 	}
 
-	if current.state == StateStopped && state == StateWorking {
+	if current.state == StateStopped && (state == StateStarting || state == StateWorking) {
 		current.accumulated = time.Duration(baseWorkingSeconds) * time.Second
 	} else {
 		currentSeconds := uint64(current.accumulated / time.Second)
@@ -139,16 +165,24 @@ func (r *Registry) SetWithBase(
 		}
 	}
 
-	if current.state != state {
+	if current.state != state || current.stopReason != reason {
 		current.state = state
+		if state == StateStopped || state == StateStopping {
+			current.stopReason = reason
+		} else if state == StateStarting || state == StateWorking {
+			current.stopReason = ""
+		}
 		current.updatedAt = now
 	}
 
-	if state == StateWorking {
+	switch state {
+	case StateWorking:
 		if current.workingSince.IsZero() {
 			current.workingSince = now
 		}
-	} else {
+	case StateStarting:
+		current.workingSince = time.Time{}
+	case StateStopping, StateStopped:
 		current.workingSince = time.Time{}
 		current.leaseUntil = time.Time{}
 	}
@@ -272,6 +306,47 @@ func (r *Registry) IsWorking(roomID int64) bool {
 	return r.Get(roomID).State == StateWorking
 }
 
+// StartAgent is the Core-owned paid-agent start command. A valid lease must
+// already exist; callers cannot force a working state without paid runway.
+func (r *Registry) StartAgent(roomID int64, baseWorkingSeconds uint64) (Snapshot, error) {
+	if _, err := r.SetWithReason(roomID, StateStarting, "", baseWorkingSeconds); err != nil {
+		return Snapshot{}, err
+	}
+	return r.SetWithReason(roomID, StateWorking, "", baseWorkingSeconds)
+}
+
+// StopAgent is the single paid-agent stop entry point.
+// Callers should provide the business reason instead of mutating state directly.
+func (r *Registry) StopAgent(roomID int64, reason StopReason) (Snapshot, error) {
+	current := r.Get(roomID)
+	if current.State == StateStopped {
+		if normalized := NormalizeStopReason(reason); normalized != "" && current.StopReason == "" {
+			return r.SetWithReason(roomID, StateStopped, normalized, current.WorkingSeconds)
+		}
+		return current, nil
+	}
+	if _, err := r.SetWithReason(roomID, StateStopping, reason, current.WorkingSeconds); err != nil {
+		return Snapshot{}, err
+	}
+	return r.SetWithReason(roomID, StateStopped, reason, current.WorkingSeconds)
+}
+
+// Snapshots returns all Core-owned paid-agent states. Reading snapshots also
+// advances lease expiry, so a Core-local watcher can clean up TTS/audio even
+// when Management or the web UI is disconnected.
+func (r *Registry) Snapshots() []Snapshot {
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result := make([]Snapshot, 0, len(r.rooms))
+	for _, current := range r.rooms {
+		r.expireLeaseLocked(current, now)
+		result = append(result, r.snapshotLocked(current, now))
+	}
+	return result
+}
+
 func (r *Registry) Clear(roomID int64) {
 	r.mu.Lock()
 	delete(r.rooms, roomID)
@@ -284,6 +359,7 @@ func (r *Registry) accrueLocked(current *roomState, now time.Time) {
 	}
 	if current.leaseUntil.IsZero() || current.workingSince.IsZero() {
 		current.state = StateStopped
+		current.stopReason = StopReasonSystemError
 		current.workingSince = time.Time{}
 		current.leaseUntil = time.Time{}
 		current.updatedAt = now
@@ -302,17 +378,32 @@ func (r *Registry) accrueLocked(current *roomState, now time.Time) {
 	current.workingSince = time.Time{}
 	if !current.leaseUntil.IsZero() && !now.Before(current.leaseUntil) {
 		current.state = StateStopped
+		current.stopReason = StopReasonQuotaExhausted
 		current.updatedAt = current.leaseUntil
 		current.leaseUntil = time.Time{}
 	}
 }
 
 func (r *Registry) expireLeaseLocked(current *roomState, now time.Time) {
-	if current == nil || current.state != StateWorking {
+	if current == nil {
 		return
 	}
-	if current.leaseUntil.IsZero() || current.workingSince.IsZero() {
+	if current.state == StateStopping {
 		current.state = StateStopped
+		if current.stopReason == "" {
+			current.stopReason = StopReasonSystemError
+		}
+		current.workingSince = time.Time{}
+		current.leaseUntil = time.Time{}
+		current.updatedAt = now
+		return
+	}
+	if current.state != StateWorking && current.state != StateStarting {
+		return
+	}
+	if current.state == StateWorking && (current.leaseUntil.IsZero() || current.workingSince.IsZero()) {
+		current.state = StateStopped
+		current.stopReason = StopReasonSystemError
 		current.workingSince = time.Time{}
 		current.leaseUntil = time.Time{}
 		current.updatedAt = now
@@ -321,7 +412,15 @@ func (r *Registry) expireLeaseLocked(current *roomState, now time.Time) {
 	if now.Before(current.leaseUntil) {
 		return
 	}
-	r.accrueLocked(current, now)
+	if current.state == StateWorking {
+		r.accrueLocked(current, now)
+		return
+	}
+	current.state = StateStopped
+	current.stopReason = StopReasonQuotaExhausted
+	current.workingSince = time.Time{}
+	current.leaseUntil = time.Time{}
+	current.updatedAt = now
 }
 
 func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
@@ -350,10 +449,14 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		remaining := current.leaseUntil.Sub(now)
 		leaseRemaining = uint64((remaining + time.Second - 1) / time.Second)
 	}
+	leaseRenewalDue := current.state == StateWorking &&
+		leaseRemaining > 0 &&
+		leaseRemaining <= LeaseRenewThresholdSeconds
 	return Snapshot{
 		BootID:                r.bootID,
 		RoomID:                current.roomID,
 		State:                 current.state,
+		StopReason:            current.stopReason,
 		Mode:                  current.mode,
 		PlanID:                current.planID,
 		PlanName:              current.planName,
@@ -361,6 +464,28 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		WorkingSince:          workingSince,
 		LeaseUntil:            leaseUntil,
 		LeaseRemainingSeconds: leaseRemaining,
+		LeaseRenewalDue:       leaseRenewalDue,
 		UpdatedAt:             current.updatedAt,
+	}
+}
+
+// NormalizeStopReason keeps the Core vocabulary stable while accepting the
+// historical reasons sent by the Management service.
+func NormalizeStopReason(reason StopReason) StopReason {
+	switch strings.ToLower(strings.TrimSpace(string(reason))) {
+	case "manual", "manual_stop":
+		return StopReasonManual
+	case "manual_pause":
+		return StopReasonManualPause
+	case "quota_exhausted", "quota_unavailable":
+		return StopReasonQuotaExhausted
+	case "live_finished", "room_offline":
+		return StopReasonLiveFinished
+	case "core_restart", "core_runtime_reset":
+		return StopReasonCoreRestart
+	case "system_error", "core_start_failed", "core_lease_failed":
+		return StopReasonSystemError
+	default:
+		return StopReason(strings.ToLower(strings.TrimSpace(string(reason))))
 	}
 }

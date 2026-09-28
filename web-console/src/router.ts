@@ -232,6 +232,12 @@ export const router = createRouter({
       meta: { platformAdminOnly: true },
     },
     {
+      path: '/system/settings/agent-routing',
+      name: 'system-agent-routing',
+      component: () => import('./views/AgentRoutingSettingsView.vue'),
+      meta: { staffPermission: 'system.settings.agent_routing.manage' },
+    },
+    {
       path: '/staff',
       name: 'staff-hub',
       component: DomainHubView,

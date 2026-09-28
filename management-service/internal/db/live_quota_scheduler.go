@@ -13,7 +13,6 @@ import (
 )
 
 const LiveQuotaLeaseSeconds uint64 = 60
-const LiveQuotaLeaseRenewThresholdSeconds uint64 = 15
 
 type LiveQuotaLeaseRequest struct {
 	RoomID                  int64
