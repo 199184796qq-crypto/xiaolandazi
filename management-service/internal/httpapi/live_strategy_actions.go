@@ -459,6 +459,9 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 		}
 		return liveStrategyFailed("fact_add_failed", msg, nil)
 	}
+	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
+		return liveStrategyFailed("runtime_sync_failed", "事实已保存，但热同步直播间失败。", map[string]any{"error": err.Error()})
+	}
 	return liveStrategySucceeded("fact_added", "已确认添加事实“"+candidate.Key+"："+candidate.Value+"”。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo})
 }
 
@@ -495,6 +498,9 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 	if err != nil {
 		return liveStrategyFailed("fact_update_failed", "修改事实依据失败，请刷新后重试。", nil)
 	}
+	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
+		return liveStrategyFailed("runtime_sync_failed", "事实已修改，但热同步直播间失败。", map[string]any{"error": err.Error()})
+	}
 	return liveStrategySucceeded("fact_updated", "已确认修改事实“"+current.Key+"”，正式版本更新为 V"+strconv.FormatInt(updated.VersionNo, 10)+"。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": updated.VersionNo})
 }
 
@@ -520,6 +526,9 @@ func (s *Server) executeLiveStrategyDisableFact(r *http.Request, actor model.Act
 		return liveStrategyFailed("stale_confirmation", "这条事实已经产生新版本，请重新发起停用。", nil)
 	} else if err != nil {
 		return liveStrategyFailed("fact_disable_failed", "停用事实依据失败，请稍后重试。", nil)
+	}
+	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
+		return liveStrategyFailed("runtime_sync_failed", "事实已停用，但热同步直播间失败。", map[string]any{"error": err.Error()})
 	}
 	return liveStrategySucceeded("fact_disabled", "已确认停用事实“"+current.Key+"”。历史版本和审计记录仍保留。", map[string]any{"module": "knowledge", "plan_id": p.PlanID})
 }

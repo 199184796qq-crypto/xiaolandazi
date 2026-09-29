@@ -10,6 +10,12 @@ func TestDefaultConfigMatchesAdoptAndLearning(t *testing.T) {
 	if got := Match(cfg, "这个回答太生硬，再自然一点"); got != "learning" {
 		t.Fatalf("learning intent=%q want learning", got)
 	}
+	if got := Match(cfg, "帮我说一句欢迎新来的朋友"); got != "execution" {
+		t.Fatalf("spoken execution intent=%q want execution", got)
+	}
+	if got := Match(cfg, "直接打断说 欢迎大家"); got != "execution" {
+		t.Fatalf("quick spoken execution intent=%q want execution", got)
+	}
 	if got := Match(cfg, "今天有点累"); got != "" {
 		t.Fatalf("ordinary chat must not deterministic-match, got %q", got)
 	}

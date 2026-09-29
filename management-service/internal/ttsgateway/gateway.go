@@ -14,11 +14,12 @@ const (
 )
 
 type SynthesizeRequest struct {
-	Provider string
-	Model    string
-	VoiceID  string
-	Text     string
-	Rate     float64
+	Provider    string
+	Model       string
+	VoiceID     string
+	Text        string
+	Rate        float64
+	Instruction string
 }
 
 type SynthesizeResponse struct {

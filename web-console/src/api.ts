@@ -101,6 +101,9 @@ import type {
   LiveRuntimeEvent,
   LiveAgentSettings,
   LiveAgentSettingsInput,
+  LiveAddressingStrategy,
+  LiveStrategyCenterConfig,
+  LiveStrategyCenterInput,
   LiveAgentPlan,
   LiveAgentPlanFact,
   LiveAgentPlanFactCandidate,
@@ -529,7 +532,7 @@ export function enqueueRoomManualAgentDecision(
     user_id?: string
     force_reopen?: boolean
     manual_action?: 'answer' | 'quick'
-    manual_origin?: 'agent_input' | 'question_cluster' | 'test_simulation'
+    manual_origin?: 'agent_input' | 'agent_input_preview' | 'question_cluster' | 'test_simulation'
     execution_mode?: 'intent' | 'verbatim'
     fixed_text?: string
     ttl_seconds?: number
@@ -1009,6 +1012,14 @@ export function previewAnalyzeLiveAgentPlanScript(planId: number, text: string, 
   )
 }
 
+export function analyzeLiveAgentPlanScript(planId: number, scriptId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAgentPlanScript>(
+    '/api/v1/live-agent-plans/' + planId + '/scripts/' + scriptId + '/analyze' + query,
+    { method: 'POST' },
+  )
+}
+
 export function previewRecognizeLiveAgentPlanImage(
   planId: number,
   file: File,
@@ -1230,10 +1241,32 @@ export function getLiveAgentSettings() {
 }
 
 export function updateLiveAgentSettings(payload: LiveAgentSettingsInput) {
-  return request<LiveAgentSettings>('/api/v1/live/agent/settings', {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
+	return request<LiveAgentSettings>('/api/v1/live/agent/settings', {
+		method: 'PUT',
+		body: JSON.stringify(payload),
+	})
+}
+
+export function getLiveAddressingStrategy() {
+	return request<LiveAddressingStrategy>('/api/v1/live/addressing-strategy')
+}
+
+export function updateLiveAddressingStrategy(payload: LiveAddressingStrategy) {
+	return request<LiveAddressingStrategy>('/api/v1/live/addressing-strategy', {
+		method: 'PUT',
+		body: JSON.stringify(payload),
+	})
+}
+
+export function getSystemLiveStrategyCenter() {
+	return request<LiveStrategyCenterConfig>('/api/v1/system/live-strategy-center')
+}
+
+export function updateSystemLiveStrategyCenter(payload: LiveStrategyCenterInput) {
+	return request<LiveStrategyCenterConfig>('/api/v1/system/live-strategy-center', {
+		method: 'PUT',
+		body: JSON.stringify(payload),
+	})
 }
 
 export function getLiveAgentConfigVersions() {

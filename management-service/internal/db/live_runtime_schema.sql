@@ -200,6 +200,16 @@ CREATE TABLE IF NOT EXISTS live_agent_settings (
     KEY idx_live_agent_settings_updated_by (updated_by_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_strategy_center_configs (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    config_json JSON NOT NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id),
+    KEY idx_live_strategy_center_updated_by (updated_by_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_agent_profiles (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,

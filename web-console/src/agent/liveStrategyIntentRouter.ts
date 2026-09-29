@@ -291,8 +291,8 @@ export function liveStrategyIntentClarificationOptions(
   if (/事实|依据|资料|信息|产地|发货|快递|物流|保质期|资质|库存/.test(compact)) {
     push(liveStrategyIntentOption('knowledge', '事实依据', '作为可核对的事实资料整理，不自动当成话术。', 'knowledge'))
   }
-  if (/话术|口播|怎么说|如何说|介绍|开场|逼单|参考说法|话术参考/.test(compact)) {
-    push(liveStrategyIntentOption('script', '话术参考', '作为主播怎么说的参考，不自动升级为商品事实。', 'script'))
+  if (/话术|口播|怎么说|如何说|介绍|开场|逼单|参考说法|口播样稿/.test(compact)) {
+    push(liveStrategyIntentOption('script', '口播样稿', '保存完整口播范文，供生成时参考结构、节奏、转场和表达；不自动升级为商品事实。', 'script'))
   }
   if (explicitBenefitContext) {
     push(liveStrategyIntentOption('benefits', '活动福利', '作为活动/优惠信息处理，仍需核对时效和适用范围。', 'benefits'))
@@ -309,7 +309,7 @@ export function liveStrategyIntentClarificationOptions(
       push(liveStrategyIntentOption('knowledge', '事实依据', '把图片中可见信息作为事实候选。', 'knowledge'))
     }
     if (!options.some((item) => item.id === 'script')) {
-      push(liveStrategyIntentOption('script', '话术参考', '只用于生成或调整主播话术参考。', 'script'))
+      push(liveStrategyIntentOption('script', '口播样稿', '如果图片本身是完整口播稿，可整理为样稿参考；其中事实仍需另行核对。', 'script'))
     }
     push(liveStrategyIntentOption('inspect-only', '只识别图片，不写入', '只告诉你图片里有什么，不修改当前方案。', currentMode))
     return options.slice(0, 5)
@@ -325,7 +325,7 @@ export function liveStrategyIntentClarificationOptions(
     liveStrategyIntentOption('products', '商品链接', '维护几号链接、商品名、规格或价格。', 'products'),
     liveStrategyIntentOption('knowledge', '事实依据', '保存可核对的商品/直播事实。', 'knowledge'),
     liveStrategyIntentOption('benefits', '活动福利', '维护优惠、赠品、限时活动等。', 'benefits'),
-    liveStrategyIntentOption('script', '话术参考', '作为主播表达和参考说法。', 'script'),
+    liveStrategyIntentOption('script', '口播样稿', '保存整篇口播范文，参考从开场到结尾的组织方式。', 'script'),
     liveStrategyIntentOption('plan', '方案绑定 / 切换', '调整直播间和方案关系。', 'plan'),
   ]
 }

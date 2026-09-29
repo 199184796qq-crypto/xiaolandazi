@@ -95,6 +95,9 @@ func TestClientAgentPromptContainsNoInternalDirectory(t *testing.T) {
 	if !strings.Contains(prompt, "小蓝直播搭子") {
 		t.Fatalf("client prompt did not use configured agent name: %s", prompt)
 	}
+	if !strings.Contains(prompt, "不得在 assistant_message 中原样复述路径") {
+		t.Fatalf("client prompt missing terminal secrecy guard: %s", prompt)
+	}
 
 	for _, forbidden := range []string{
 		"staff.employee.create",
@@ -107,6 +110,35 @@ func TestClientAgentPromptContainsNoInternalDirectory(t *testing.T) {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("client prompt leaked internal token %q", forbidden)
 		}
+	}
+}
+
+func TestSanitizeClientAgentReplyRemovesImplementationDetails(t *testing.T) {
+	raw := "你好！你当前在直播间页面（/rooms/15），后端会调用 /api/v1/rooms/15/session-stats，Core-Service 在 http://127.0.0.1:8081，tenant_id=14，模型是 qwen3.8-flash，日志在 E:\\直播伴播\\data\\logs\\core.log。"
+	got := sanitizeClientAgentReply(raw)
+	for _, forbidden := range []string{
+		"/rooms/15",
+		"/api/v1",
+		"127.0.0.1:8081",
+		"tenant_id",
+		"Core-Service",
+		"qwen3.8-flash",
+		"E:\\直播伴播",
+	} {
+		if strings.Contains(strings.ToLower(got), strings.ToLower(forbidden)) {
+			t.Fatalf("sanitized reply leaked %q: %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "直播间页面") {
+		t.Fatalf("sanitized reply lost normal business wording: %s", got)
+	}
+}
+
+func TestSanitizeClientAgentReplyKeepsBusinessRoomNumber(t *testing.T) {
+	raw := "回忆哥这个直播间是房间 #15，现在可以继续查看弹幕和智能体方案。"
+	got := sanitizeClientAgentReply(raw)
+	if got != raw {
+		t.Fatalf("business-visible wording should be kept: got=%q want=%q", got, raw)
 	}
 }
 

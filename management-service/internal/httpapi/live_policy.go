@@ -120,22 +120,23 @@ func (s *Server) requireCustomerPolicyRoomID(
 		writeError(w, http.StatusForbidden, "当前运维账号没有用户层授权协助权限")
 		return model.Actor{}, 0, 0, false
 	}
-	tenantID, err := s.store.GetLiveSupportAuthorizedTenant(
-		r.Context(),
-		roomID,
-		actor.UserID,
-		model.LiveSupportCapabilityL3Policy,
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return model.Actor{}, 0, 0, false
+	}
+	authorized, err := s.store.HasLiveSupportTenantAuthorization(
+		r.Context(), tenantID, actor.UserID, model.LiveSupportCapabilityL3Policy,
 	)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusForbidden, "客户尚未授权你维护该直播间用户层策略")
-			return model.Actor{}, 0, 0, false
-		}
 		writeError(w, http.StatusInternalServerError, "校验客户授权失败")
 		return model.Actor{}, 0, 0, false
 	}
+	if !authorized {
+		writeError(w, http.StatusForbidden, "客户尚未授权你维护该终端的直播智能体")
+		return model.Actor{}, 0, 0, false
+	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
-		writeError(w, http.StatusNotFound, "授权直播间不存在或已失效")
+		writeError(w, http.StatusNotFound, "客户直播间不存在或已失效")
 		return model.Actor{}, 0, 0, false
 	}
 	return actor, tenantID, roomID, true

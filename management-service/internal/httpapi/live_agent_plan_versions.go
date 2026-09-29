@@ -352,6 +352,18 @@ func selectLiveAgentPlanWorkspaceVersion(items []model.LiveAgentPlanVersion) (*m
 	return nil, ""
 }
 
+func selectLatestLiveAgentPlanWorkspaceTemplate(items []model.LiveAgentPlanVersion) (*model.LiveAgentPlanVersion, string) {
+	for index := range items {
+		status := strings.ToLower(strings.TrimSpace(items[index].LifecycleStatus))
+		if status != "draft" && status != "published" {
+			continue
+		}
+		item := items[index]
+		return &item, status
+	}
+	return nil, ""
+}
+
 func hydrateLiveAgentPlanVersionForWorkspace(item *model.LiveAgentPlanVersion) {
 	if item == nil {
 		return
@@ -409,16 +421,28 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 	}
 	version, source := selectLiveAgentPlanWorkspaceVersion(items)
 	if version == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"version": nil,
-			"source":  "",
-		})
-		return
+		planItems, planErr := s.store.ListLiveAgentPlanVersionsForPlan(r.Context(), tenantID, planID)
+		if planErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取直播智能体方案版本失败")
+			return
+		}
+		version, source = selectLatestLiveAgentPlanWorkspaceTemplate(planItems)
+		if version == nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"version":   nil,
+				"source":    "",
+				"inherited": false,
+			})
+			return
+		}
 	}
+	inherited := version.RoomID != roomID
 	hydrateLiveAgentPlanVersionForWorkspace(version)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version": version,
-		"source":  source,
+		"version":        version,
+		"source":         source,
+		"inherited":      inherited,
+		"source_room_id": version.RoomID,
 	})
 }
 

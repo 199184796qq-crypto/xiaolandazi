@@ -169,6 +169,12 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 		}
 		output.Results = append(output.Results, result)
 	}
+	if output.Adopted > 0 {
+		if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, planID, "facts"); err != nil {
+			writeError(w, http.StatusBadGateway, "事实已保存，但热同步到直播间失败："+err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, output)
 }
 
@@ -228,6 +234,10 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "修改正式事实失败")
 		return
 	}
+	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, planID, "facts"); err != nil {
+		writeError(w, http.StatusBadGateway, "事实已修改，但热同步到直播间失败："+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -253,6 +263,10 @@ func (s *Server) liveAgentPlanFactDelete(w http.ResponseWriter, r *http.Request)
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "删除正式事实失败")
+		return
+	}
+	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, planID, "facts"); err != nil {
+		writeError(w, http.StatusBadGateway, "事实已删除，但热同步到直播间失败："+err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

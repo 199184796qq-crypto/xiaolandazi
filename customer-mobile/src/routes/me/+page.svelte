@@ -15,6 +15,7 @@
   <div class="settings-list">
     <a href="/support"><span>申请运维协助 / 工单进度</span><b>›</b></a>
     <a href="/agent"><span>小蓝直播搭子</span><b>›</b></a>
+    <a href="/me/addressing"><span>直播称呼策略</span><small>系统称呼 / 我的称呼</small><b>›</b></a>
     <a href="/shop"><span>会员与时长</span><b>›</b></a>
     <a href="/orders"><span>订单与售后</span><b>›</b></a>
     <a href="/invite"><span>邀请与奖励</span><b>›</b></a>

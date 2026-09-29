@@ -2,13 +2,10 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
   createLiveRoomSupportRequest,
-  getLiveRoomSupportAuthorizations,
   getLiveRoomSupportRequests,
   getLiveSupportStaff,
 } from '../api'
 import type {
-  LiveSupportAuthorization,
-  LiveSupportCapability,
   LiveSupportRequest,
   LiveSupportStaff,
 } from '../types'
@@ -16,22 +13,16 @@ import type {
 const props = defineProps<{ roomId: number | null }>()
 
 const staff = ref<LiveSupportStaff[]>([])
-const authorizations = ref<LiveSupportAuthorization[]>([])
 const requests = ref<LiveSupportRequest[]>([])
 const error = ref('')
 const success = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const selectedStaffId = ref<number | null>(null)
-const selectedCapabilities = ref<LiveSupportCapability[]>([])
 const selectedIndex = ref(0)
 const carousel = ref<HTMLElement | null>(null)
 
-const capabilityOptions: Array<{ code: LiveSupportCapability; label: string }> = [
-  { code: 'l3_policy', label: '用户层策略' },
-  { code: 'anchor_training', label: '主播训练' },
-  { code: 'voice_clone', label: '声音复刻' },
-]
+const fullSupportCapabilities = ['l3_policy', 'anchor_training', 'voice_clone'] as const
 
 const selectedStaff = computed(
   () => staff.value.find((item) => item.user_id === selectedStaffId.value) || null,
@@ -43,65 +34,31 @@ const selectedRequest = computed(() =>
     .sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime())[0] || null,
 )
 
-const activeCapabilities = computed(() =>
-  selectedStaffId.value ? currentCapabilities(selectedStaffId.value) : [],
-)
-
-function capabilityLabel(code: string) {
-  return capabilityOptions.find((item) => item.code === code)?.label || code
-}
-
 function initials(item: LiveSupportStaff) {
   return (item.display_name || item.username || '协').slice(0, 1)
-}
-
-function allowed(item: LiveSupportStaff | null, capability: LiveSupportCapability) {
-  return Boolean(item?.allowed_capabilities?.includes(capability))
-}
-
-function currentCapabilities(staffUserId: number) {
-  return authorizations.value
-    .filter((item) => item.staff_user_id === staffUserId && item.status === 'active')
-    .map((item) => item.capability as LiveSupportCapability)
 }
 
 function chooseStaff(item: LiveSupportStaff, index = staff.value.findIndex((candidate) => candidate.user_id === item.user_id)) {
   selectedStaffId.value = item.user_id
   selectedIndex.value = Math.max(0, index)
-  const authorized = currentCapabilities(item.user_id).filter((capability) => allowed(item, capability))
-  const pending = requests.value.find(
-    (request) => request.staff_user_id === item.user_id && request.status === 'pending',
-  )?.capabilities || []
-  selectedCapabilities.value = (pending.length ? pending : authorized).filter((capability) =>
-    allowed(item, capability),
-  )
-}
-
-function toggleCapability(capability: LiveSupportCapability) {
-  if (!allowed(selectedStaff.value, capability)) return
-  const next = new Set(selectedCapabilities.value)
-  if (next.has(capability)) next.delete(capability)
-  else next.add(capability)
-  selectedCapabilities.value = [...next]
 }
 
 async function load() {
   if (!props.roomId) {
     staff.value = []
-    authorizations.value = []
     requests.value = []
     return
   }
   loading.value = true
   error.value = ''
   try {
-    const [staffResponse, authorizationResponse, requestResponse] = await Promise.all([
+    const [staffResponse, requestResponse] = await Promise.all([
       getLiveSupportStaff(),
-      getLiveRoomSupportAuthorizations(props.roomId),
       getLiveRoomSupportRequests(props.roomId),
     ])
-    staff.value = staffResponse.items || []
-    authorizations.value = authorizationResponse.items || []
+    staff.value = (staffResponse.items || []).filter((item) =>
+      fullSupportCapabilities.every((capability) => item.allowed_capabilities?.includes(capability)),
+    )
     requests.value = requestResponse.items || []
     if (staff.value.length) {
       const previousIndex = Math.max(0, staff.value.findIndex((item) => item.user_id === selectedStaffId.value))
@@ -144,15 +101,11 @@ async function submitRequest() {
   const roomId = props.roomId
   const employee = selectedStaff.value
   if (!roomId || !employee || saving.value) return
-  if (!selectedCapabilities.value.length) {
-    error.value = '请至少选择一项协助权限'
-    return
-  }
   saving.value = true
   error.value = ''
   success.value = ''
   try {
-    await createLiveRoomSupportRequest(roomId, employee.user_id, selectedCapabilities.value)
+    await createLiveRoomSupportRequest(roomId, employee.user_id, [...fullSupportCapabilities])
     success.value = '协助申请已发送给 ' + (employee.display_name || employee.username)
     await load()
   } catch (err) {
@@ -214,48 +167,22 @@ onMounted(() => void load())
       ></button>
     </div>
 
-    <section v-if="selectedStaff" class="support-scope-panel">
-      <div class="support-scope-title">
-        <div>
-          <strong>授权范围</strong>
-        </div>
-        <span>{{ selectedCapabilities.length }}/{{ capabilityOptions.length }} 已选择</span>
-      </div>
-      <div class="support-scope-options">
-        <label
-          v-for="option in capabilityOptions"
-          :key="option.code"
-          class="support-scope-option"
-          :class="{
-            disabled: !allowed(selectedStaff, option.code),
-            selected: selectedCapabilities.includes(option.code),
-          }"
-        >
-          <input
-            type="checkbox"
-            :checked="selectedCapabilities.includes(option.code)"
-            :disabled="!allowed(selectedStaff, option.code)"
-            @change="toggleCapability(option.code)"
-          />
-          <span class="support-scope-checkmark" aria-hidden="true">✓</span>
-          <strong>{{ option.label }}</strong>
-        </label>
-      </div>
-    </section>
-
-    <div v-if="activeCapabilities.length" class="support-active-authority">
-      <span>当前已授权</span>
-      <strong>{{ activeCapabilities.map(capabilityLabel).join(' · ') }}</strong>
-    </div>
-
     <button
       v-if="staff.length"
       type="button"
       class="support-apply-button"
-      :disabled="!roomId || !selectedStaff || !selectedCapabilities.length || saving || selectedRequest?.status === 'pending'"
+      :disabled="!roomId || !selectedStaff || saving || selectedRequest?.status === 'pending' || selectedRequest?.status === 'accepted'"
       @click="submitRequest"
     >
-      {{ saving ? '申请提交中…' : selectedRequest?.status === 'pending' ? '申请已提交' : '申请协助' }}
+      {{
+        saving
+          ? '申请提交中…'
+          : selectedRequest?.status === 'pending'
+            ? '申请已提交'
+            : selectedRequest?.status === 'accepted'
+              ? '已授权'
+              : '申请协助'
+      }}
     </button>
   </section>
 </template>
@@ -283,23 +210,6 @@ onMounted(() => void load())
 .support-carousel-dots{display:flex;justify-content:center;gap:6px}
 .support-carousel-dots button{width:6px;height:6px;padding:0;border:0;border-radius:999px;background:#cbd3e4;cursor:pointer}
 .support-carousel-dots button.active{width:20px;background:#6675dd}
-.support-scope-panel{display:grid;gap:16px;padding:18px;border-radius:18px;background:#fff;border:1px solid #e1e7f3}
-.support-scope-title{display:flex;align-items:center;justify-content:space-between;gap:14px}
-.support-scope-title>div{display:grid;gap:3px;min-width:0}
-.support-scope-title strong{font-size:19px;color:#202b42;line-height:1.2}
-.support-scope-title small{color:#8b96a8;font-size:13px}
-.support-scope-title>span{flex:0 0 auto;padding:5px 9px;border-radius:999px;background:#f0f3ff;color:#6572c9;font-size:12px;font-weight:800}
-.support-scope-options{display:grid;grid-template-columns:1fr;gap:10px;min-width:0}
-.support-scope-option{position:relative;display:flex;align-items:center;gap:12px;min-width:0;min-height:58px;padding:12px 14px;border:1px solid #e3e8f4;border-radius:14px;background:#f8faff;color:#3d4a62;cursor:pointer;box-sizing:border-box;transition:.16s ease}
-.support-scope-option:hover{border-color:#b9c4f4;background:#fbfcff}
-.support-scope-option.selected{border-color:#7b88e8;background:#f1f3ff;box-shadow:0 0 0 2px #6f7be80f}
-.support-scope-option.disabled{opacity:.42;cursor:not-allowed}
-.support-scope-option input{position:absolute;opacity:0;pointer-events:none}
-.support-scope-checkmark{width:24px;height:24px;flex:0 0 24px;border:1.5px solid #c8d0df;border-radius:8px;display:grid;place-items:center;background:#fff;color:transparent;font-size:15px;font-weight:900;transition:.16s ease}
-.support-scope-option.selected .support-scope-checkmark{border-color:#6676de;background:#6676de;color:#fff}
-.support-scope-option strong{min-width:0;font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.support-active-authority{display:flex;align-items:center;justify-content:center;gap:8px;color:#758196;font-size:12px}
-.support-active-authority strong{color:#5363be}
 .support-apply-button{justify-self:stretch;min-height:48px;border:0;border-radius:14px;background:#5968d8;color:#fff;font-size:15px;font-weight:900;cursor:pointer;box-shadow:0 10px 24px #5367ca2b}
 .support-apply-button:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
 .support-picker-empty{margin:0;color:#8a95a8;font-size:13px;text-align:center}
@@ -310,6 +220,5 @@ onMounted(() => void load())
   .support-staff-name{font-size:19px}
   .support-carousel-shell{grid-template-columns:32px minmax(0,1fr) 32px;gap:6px}
   .support-carousel-arrow{width:32px;height:44px}
-  .support-scope-title{align-items:flex-start}
 }
 </style>

@@ -238,6 +238,51 @@ func TestRegistrySetPlanKeepsWorkingLeaseAlive(t *testing.T) {
 	}
 }
 
+func TestRegistryHotReloadKeepsWorkingPlanLeaseAndMeter(t *testing.T) {
+	now := time.Date(2026, 9, 29, 11, 50, 0, 0, time.UTC)
+	registry := newRegistry(func() time.Time { return now })
+	if _, err := registry.GrantLease(31, 120); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetPlan(31, 9, "已生效方案"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Set(31, StateWorking); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(7 * time.Second)
+	before := registry.Get(31)
+
+	hot, err := registry.TouchHotReload(31, []string{"facts", "interaction", "facts", "style"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hot.State != StateWorking || hot.PlanID != 9 || hot.PlanName != "已生效方案" {
+		t.Fatalf("hot reload changed active runtime identity: %#v", hot)
+	}
+	if hot.WorkingSeconds != before.WorkingSeconds {
+		t.Fatalf("hot reload reset/advanced meter unexpectedly: before=%d after=%d", before.WorkingSeconds, hot.WorkingSeconds)
+	}
+	if hot.LeaseRemainingSeconds != before.LeaseRemainingSeconds || hot.LeaseRemainingSeconds == 0 {
+		t.Fatalf("hot reload changed paid lease: before=%d after=%d", before.LeaseRemainingSeconds, hot.LeaseRemainingSeconds)
+	}
+	if hot.HotRevision != 1 || hot.HotUpdatedAt == nil {
+		t.Fatalf("hot revision not recorded: %#v", hot)
+	}
+	if len(hot.HotModules) != 3 || hot.HotModules[0] != "facts" || hot.HotModules[1] != "interaction" || hot.HotModules[2] != "style" {
+		t.Fatalf("hot modules not normalized/deduplicated: %#v", hot.HotModules)
+	}
+
+	now = now.Add(2 * time.Second)
+	hot2, err := registry.TouchHotReload(31, []string{"addressing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hot2.HotRevision != 2 || hot2.State != StateWorking || hot2.WorkingSeconds < before.WorkingSeconds+2 {
+		t.Fatalf("second hot reload corrupted runtime: %#v", hot2)
+	}
+}
+
 func TestRegistryRejectsInvalidState(t *testing.T) {
 	registry := New()
 	if _, err := registry.Set(1, State("weird")); err == nil {

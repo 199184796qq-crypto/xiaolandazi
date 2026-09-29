@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { adjustLiveOpsRoomQuota, getLiveOpsRoomQuotas } from '../api'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type { LiveOpsRoomQuotaSummary } from '../types'
@@ -127,7 +127,7 @@ onMounted(load)
 
 <template>
   <div class="room-quota-page">
-    <ModulePageNav context="live" active-title="直播间数量管理" />
+
 
     <section class="room-quota-hero">
       <div class="room-quota-hero-icon">额</div>

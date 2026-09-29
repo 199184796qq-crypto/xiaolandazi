@@ -1,12 +1,15 @@
 package coreaudio
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 
 	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/roomaudio"
 )
 
 type programTrack struct {
@@ -30,33 +34,46 @@ type programTrack struct {
 }
 
 type programState struct {
-	ID               string
-	RoomID           int64
-	SessionID        string
-	Label            string
-	VersionID        int64
-	VersionNo        int64
-	Tracks           []programTrack
-	TrackIndex       int
-	StartedAt        time.Time
-	SegmentStartedAt time.Time
-	CurrentTaskID    string
-	CurrentSlot      string
-	Sequence         uint64
-	Running          bool
-	Suspended        bool
-	ManualPaused     bool
-	ResumeOffsetMS   int
+	ID                string
+	RoomID            int64
+	SessionID         string
+	Label             string
+	VersionID         int64
+	VersionNo         int64
+	Tracks            []programTrack
+	TrackIndex        int
+	StartedAt         time.Time
+	SegmentStartedAt  time.Time
+	CurrentTaskID     string
+	CurrentSlot       string
+	Sequence          uint64
+	Running           bool
+	Suspended         bool
+	ManualPaused      bool
+	ResumeOffsetMS    int
+	PlannedNextTrack  int
+	PlannedForTaskID  string
+	PlannedNextScore  int
+	PlannedNextReason string
+	RecentTrackIDs    []string
+	TrackPlayCount    map[string]int
+	TrackLastPlayed   map[string]time.Time
+	PrefetchedTrack   int
+	PrefetchedAudio   []byte
 }
 
 type Client struct {
 	mu sync.RWMutex
 
-	hub       *audiohub.Hub
-	publicURL string
-	programs  map[int64]*programState
-	sequence  atomic.Uint64
-	now       func() time.Time
+	hub             *audiohub.Hub
+	roomAudio       *roomaudio.Engine
+	publicURL       string
+	programs        map[int64]*programState
+	sequence        atomic.Uint64
+	now             func() time.Time
+	mainlineSignals MainlineAgentSignalProvider
+	mirrorMu        sync.Mutex
+	mirrors         map[int64]context.CancelFunc
 
 	testAudio      []byte
 	testDurationMS int
@@ -70,6 +87,7 @@ func New(hub *audiohub.Hub, publicURL, testWAVPath string) (*Client, error) {
 		publicURL: strings.TrimRight(strings.TrimSpace(publicURL), "/"),
 		programs:  make(map[int64]*programState),
 		now:       time.Now,
+		mirrors:   make(map[int64]context.CancelFunc),
 		testPath:  strings.TrimSpace(testWAVPath),
 	}
 	if client.publicURL == "" {
@@ -91,6 +109,15 @@ func New(hub *audiohub.Hub, publicURL, testWAVPath string) (*Client, error) {
 	client.testDurationMS = durationMS
 	client.testVersion = hex.EncodeToString(digest[:8])
 	return client, nil
+}
+
+func (c *Client) SetRoomAudioEngine(engine *roomaudio.Engine) {
+	if c == nil {
+		return
+	}
+	c.mirrorMu.Lock()
+	c.roomAudio = engine
+	c.mirrorMu.Unlock()
 }
 
 func (c *Client) Enabled() bool {
@@ -430,6 +457,10 @@ func (c *Client) startPreparedProgram(
 		SegmentStartedAt: now,
 		CurrentSlot:      "B",
 		Running:          true,
+		PlannedNextTrack: -1,
+		PrefetchedTrack:  -1,
+		TrackPlayCount:   make(map[string]int),
+		TrackLastPlayed:  make(map[string]time.Time),
 	}
 	c.programs[roomID] = program
 	c.mu.Unlock()
@@ -503,15 +534,37 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 	program.Suspended = false
 	program.ManualPaused = false
 	program.ResumeOffsetMS = 0
+	if startOffsetMS == 0 {
+		program.TrackPlayCount[track.ID]++
+		program.TrackLastPlayed[track.ID] = c.now().UTC()
+		program.RecentTrackIDs = append(program.RecentTrackIDs, track.ID)
+		if len(program.RecentTrackIDs) > mainlineRecentHistoryN {
+			program.RecentTrackIDs = append([]string(nil), program.RecentTrackIDs[len(program.RecentTrackIDs)-mainlineRecentHistoryN:]...)
+		}
+	} else {
+		// Resuming after an interaction is still the same mainline selection.
+		// Do not penalize it as a repeat, and drop the pre-interaction prefetch
+		// so the Agent can re-plan against the latest room signals.
+		program.PrefetchedTrack = -1
+		program.PrefetchedAudio = nil
+	}
+	program.PlannedNextTrack = -1
+	program.PlannedForTaskID = ""
+	program.PlannedNextScore = 0
+	program.PlannedNextReason = ""
 	c.mu.Unlock()
 
-	remainingMS := track.DurationMS - startOffsetMS
-	if remainingMS < 1 {
-		remainingMS = 1
+	c.startRoomAudioMainlineMirror(program, trackIndex, track, startOffsetMS, task.ID)
+
+	if c.roomAudio == nil {
+		remainingMS := track.DurationMS - startOffsetMS
+		if remainingMS < 1 {
+			remainingMS = 1
+		}
+		time.AfterFunc(time.Duration(remainingMS)*time.Millisecond, func() {
+			c.advanceMainline(program, task.ID)
+		})
 	}
-	time.AfterFunc(time.Duration(remainingMS)*time.Millisecond, func() {
-		c.advanceMainline(program, task.ID)
-	})
 	return hubTaskToAudioout(task), nil
 }
 
@@ -526,18 +579,26 @@ func (c *Client) advanceMainline(program *programState, taskID string) {
 		return
 	}
 	nextSequence := program.Sequence + 1
-	nextTrack := program.TrackIndex + 1
-	if nextTrack >= len(program.Tracks) {
-		nextTrack = 0
-	}
+	currentTrack := program.TrackIndex
+	plannedTrack := program.PlannedNextTrack
 	c.mu.RUnlock()
 
-	c.hub.Expire(taskID)
-	c.mu.Lock()
-	if c.programs[program.RoomID] == program && program.Running && !program.Suspended && program.CurrentTaskID == taskID {
-		program.TrackIndex = nextTrack
+	nextTrack := plannedTrack
+	if nextTrack < 0 || nextTrack >= len(program.Tracks) || (len(program.Tracks) > 1 && nextTrack == currentTrack) {
+		nextTrack, _, _ = c.selectNextMainlineTrack(program, currentTrack)
 	}
+	if nextTrack < 0 || nextTrack >= len(program.Tracks) {
+		nextTrack = currentTrack
+	}
+
+	c.mu.Lock()
+	if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.CurrentTaskID != taskID {
+		c.mu.Unlock()
+		return
+	}
+	program.TrackIndex = nextTrack
 	c.mu.Unlock()
+	c.hub.Expire(taskID)
 	if _, err := c.publishMainline(program, nextSequence, 0, c.now().UTC()); err != nil {
 		log.Printf("core audio mainline advance room=%d failed: %v", program.RoomID, err)
 	}
@@ -577,7 +638,12 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if currentPositionMS < 0 {
 		currentPositionMS = 0
 	}
-	if receiverPositionMS, ok := activeReceiverPlaybackPosition(currentSnapshot); ok {
+	if c.roomAudio != nil {
+		engineSnapshot := c.roomAudio.Snapshot(input.RoomID)
+		if engineSnapshot.MainlineCursorMS > 0 {
+			currentPositionMS = engineSnapshot.MainlineCursorMS
+		}
+	} else if receiverPositionMS, ok := activeReceiverPlaybackPosition(currentSnapshot); ok {
 		currentPositionMS = receiverPositionMS
 	}
 	waitMS := 0
@@ -593,6 +659,12 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		if waitMS > 35000 {
 			return audioout.RoomProgramSnapshot{}, errors.New("switch_at_ms is too far ahead")
 		}
+		if c.roomAudio != nil {
+			cutSegmentID, resumeSegmentID := roomAudioCutSegments(program.Tracks[program.TrackIndex].Timeline, target)
+			if _, prepareErr := c.roomAudio.PrepareInterrupt(input.RoomID); prepareErr == nil && cutSegmentID != "" {
+				_, _ = c.roomAudio.ArmInterrupt(input.RoomID, cutSegmentID, resumeSegmentID)
+			}
+		}
 	}
 	if waitMS > 0 && input.SwitchAtMS != nil {
 		target := *input.SwitchAtMS
@@ -604,8 +676,14 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			PositionMS:   target,
 			OccurredAt:   c.now().UTC(),
 		})
-		if err := c.waitForReceiverSwitchPoint(ctx, currentTaskID, target, time.Duration(waitMS)*time.Millisecond); err != nil {
-			return audioout.RoomProgramSnapshot{}, err
+		var waitErr error
+		if c.roomAudio != nil {
+			waitErr = c.waitForRoomAudioSwitchPoint(ctx, input.RoomID, target, time.Duration(waitMS)*time.Millisecond)
+		} else {
+			waitErr = c.waitForReceiverSwitchPoint(ctx, currentTaskID, target, time.Duration(waitMS)*time.Millisecond)
+		}
+		if waitErr != nil {
+			return audioout.RoomProgramSnapshot{}, waitErr
 		}
 	}
 
@@ -645,6 +723,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	program.ResumeOffsetMS = resumeMS
 	c.mu.Unlock()
 
+	c.cancelRoomAudioMirror(input.RoomID)
 	c.hub.Expire(currentTaskID)
 	interaction, publishErr := c.hub.Publish(audiohub.Task{
 		ID:         interactionID,
@@ -683,6 +762,14 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	program.CurrentSlot = interaction.Slot
 	program.SegmentStartedAt = now
 	c.mu.Unlock()
+
+	if c.roomAudio != nil {
+		if _, err := c.roomAudio.StartInterrupt(input.RoomID); err == nil {
+			c.startRoomAudioInterruptMirror(input.RoomID, strings.TrimSpace(input.AudioURL), interaction.ID)
+		} else {
+			log.Printf("room audio interrupt phase room=%d task=%s failed: %v", input.RoomID, interaction.ID, err)
+		}
+	}
 
 	log.Printf(
 		"core audio interaction start room=%d task=%s resume_ms=%d duration_ms=%d",
@@ -729,6 +816,28 @@ func (c *Client) waitForReceiverSwitchPoint(ctx context.Context, taskID string, 
 		case <-deadline.C:
 			// Backward-compatible fallback for a receiver that reports PLAYING but
 			// does not yet acknowledge prepare_switch/progress.
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Client) waitForRoomAudioSwitchPoint(ctx context.Context, roomID int64, targetMS int, wallClockWait time.Duration) error {
+	if c.roomAudio == nil || roomID <= 0 || targetMS <= 0 {
+		return nil
+	}
+	deadline := time.NewTimer(wallClockWait + 3*time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if c.roomAudio.Snapshot(roomID).MainlineCursorMS >= targetMS {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
 			return nil
 		case <-ticker.C:
 		}
@@ -804,9 +913,18 @@ func (c *Client) resumeAfterInteraction(program *programState, interactionTaskID
 	nextSequence := program.Sequence + 1
 	program.Suspended = false
 	resumeMS = prepareProgramResumeLocked(program, resumeMS)
+	resumeSegmentID := ""
+	if program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
+		resumeSegmentID = roomAudioSegmentAt(program.Tracks[program.TrackIndex].Timeline, resumeMS)
+	}
 	c.mu.Unlock()
 
 	c.hub.Expire(interactionTaskID)
+	if c.roomAudio != nil {
+		if _, err := c.roomAudio.PrepareResume(program.RoomID, resumeSegmentID); err == nil {
+			_, _ = c.roomAudio.StartResume(program.RoomID, resumeSegmentID)
+		}
+	}
 	now := c.now().UTC()
 	if _, err := c.publishMainline(program, nextSequence, resumeMS, now.Add(-time.Duration(resumeMS)*time.Millisecond)); err != nil {
 		log.Printf("core audio mainline resume room=%d failed: %v", program.RoomID, err)
@@ -857,6 +975,10 @@ func (c *Client) PauseProgram(_ context.Context, roomID int64) (audioout.RoomPro
 	c.mu.Unlock()
 	if currentTaskID != "" {
 		c.hub.Expire(currentTaskID)
+	}
+	c.cancelRoomAudioMirror(roomID)
+	if c.roomAudio != nil {
+		_, _ = c.roomAudio.Pause(roomID)
 	}
 	c.hub.BroadcastControl(audiohub.ControlEvent{
 		RoomID:       roomID,
@@ -957,23 +1079,28 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		safePoints = append([]audioout.ProgramSafePoint(nil), track.SafePoints...)
 	}
 	snapshot := audioout.RoomProgramSnapshot{
-		ProgramID:      program.ID,
-		RoomID:         program.RoomID,
-		VersionID:      program.VersionID,
-		VersionNo:      program.VersionNo,
-		TrackID:        trackID,
-		TrackIndex:     program.TrackIndex,
-		TrackCount:     len(program.Tracks),
-		TrackText:      trackText,
-		Timeline:       timeline,
-		SafePoints:     safePoints,
-		Running:        program.Running,
-		Suspended:      program.Suspended,
-		ResumeOffsetMS: program.ResumeOffsetMS,
-		Sequence:       program.Sequence,
-		Slot:           program.CurrentSlot,
-		StartedAt:      program.StartedAt,
-		ServerTime:     now,
+		ProgramID:         program.ID,
+		RoomID:            program.RoomID,
+		VersionID:         program.VersionID,
+		VersionNo:         program.VersionNo,
+		TrackID:           trackID,
+		TrackIndex:        program.TrackIndex,
+		TrackCount:        len(program.Tracks),
+		TrackText:         trackText,
+		Timeline:          timeline,
+		SafePoints:        safePoints,
+		Running:           program.Running,
+		Suspended:         program.Suspended,
+		ResumeOffsetMS:    program.ResumeOffsetMS,
+		PlannedNextScore:  program.PlannedNextScore,
+		PlannedNextReason: program.PlannedNextReason,
+		Sequence:          program.Sequence,
+		Slot:              program.CurrentSlot,
+		StartedAt:         program.StartedAt,
+		ServerTime:        now,
+	}
+	if program.PlannedNextTrack >= 0 && program.PlannedNextTrack < len(program.Tracks) {
+		snapshot.PlannedNextTrackID = program.Tracks[program.PlannedNextTrack].ID
 	}
 	currentMS := 0
 	if program.Suspended {
@@ -1034,6 +1161,10 @@ func (c *Client) StopTestProgram(_ context.Context, roomID int64) (audioout.Room
 	currentTaskID := program.CurrentTaskID
 	snapshot := c.programSnapshotLocked(program, c.now().UTC())
 	c.mu.Unlock()
+	c.cancelRoomAudioMirror(roomID)
+	if c.roomAudio != nil {
+		c.roomAudio.Reset(roomID)
+	}
 	c.hub.Expire(currentTaskID)
 	c.hub.BroadcastControl(audiohub.ControlEvent{
 		RoomID:       roomID,
@@ -1043,4 +1174,194 @@ func (c *Client) StopTestProgram(_ context.Context, roomID int64) (audioout.Room
 		OccurredAt:   c.now().UTC(),
 	})
 	return snapshot, nil
+}
+
+func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex int, track programTrack, startOffsetMS int, taskID string) {
+	if c == nil || c.roomAudio == nil || program == nil || program.RoomID <= 0 || strings.TrimSpace(track.AudioURL) == "" {
+		return
+	}
+	c.cancelRoomAudioMirror(program.RoomID)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.mirrorMu.Lock()
+	c.mirrors[program.RoomID] = cancel
+	c.mirrorMu.Unlock()
+
+	segmentID := roomAudioSegmentAt(track.Timeline, startOffsetMS)
+	resumePhase := c.roomAudio.Snapshot(program.RoomID).Phase == roomaudio.PhaseResume
+	if !resumePhase {
+		if _, err := c.roomAudio.StartMainline(program.RoomID, segmentID); err != nil {
+			log.Printf("room audio mirror start room=%d task=%s failed: %v", program.RoomID, taskID, err)
+			cancel()
+			return
+		}
+	}
+
+	go func() {
+		var source io.ReadCloser
+		c.mu.Lock()
+		if program.PrefetchedTrack == trackIndex && len(program.PrefetchedAudio) > 0 {
+			source = io.NopCloser(bytes.NewReader(program.PrefetchedAudio))
+			program.PrefetchedTrack = -1
+			program.PrefetchedAudio = nil
+		}
+		c.mu.Unlock()
+		if source == nil {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, track.AudioURL, nil)
+			if err != nil {
+				log.Printf("room audio mirror request room=%d task=%s failed: %v", program.RoomID, taskID, err)
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Printf("room audio mirror download room=%d task=%s failed: %v", program.RoomID, taskID, err)
+				}
+				return
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				resp.Body.Close()
+				log.Printf("room audio mirror source room=%d task=%s http=%d", program.RoomID, taskID, resp.StatusCode)
+				return
+			}
+			source = resp.Body
+		}
+		defer source.Close()
+
+		first := true
+		resumeCompleted := false
+		ticker := time.NewTicker(time.Duration(roomaudio.FrameDurationMS) * time.Millisecond)
+		defer ticker.Stop()
+		planned := false
+		err := roomaudio.StreamWAVPCM(ctx, source, startOffsetMS, func(pcm []byte, cursorMS int) error {
+			if !first {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-ticker.C:
+				}
+			}
+			first = false
+			_, publishErr := c.roomAudio.PublishPCMAt(
+				program.RoomID,
+				roomaudio.SourceMainline,
+				pcm,
+				roomAudioSegmentAt(track.Timeline, cursorMS),
+				cursorMS,
+			)
+			if publishErr == nil && resumePhase && !resumeCompleted {
+				resumeCompleted = true
+				_, _ = c.roomAudio.CompleteResume(program.RoomID)
+			}
+			if publishErr == nil && !planned && track.DurationMS-cursorMS <= mainlinePlanLeadMS {
+				planned = true
+				c.planNextMainline(program, taskID)
+			}
+			return publishErr
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("room audio mirror stream room=%d task=%s failed: %v", program.RoomID, taskID, err)
+			return
+		}
+		if ctx.Err() == nil {
+			c.advanceMainline(program, taskID)
+		}
+	}()
+}
+
+func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID string) {
+	if c == nil || c.roomAudio == nil || roomID <= 0 || strings.TrimSpace(audioURL) == "" {
+		return
+	}
+	c.cancelRoomAudioMirror(roomID)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.mirrorMu.Lock()
+	c.mirrors[roomID] = cancel
+	c.mirrorMu.Unlock()
+
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+		if err != nil {
+			log.Printf("room audio interrupt mirror request room=%d task=%s failed: %v", roomID, taskID, err)
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("room audio interrupt mirror download room=%d task=%s failed: %v", roomID, taskID, err)
+			}
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			log.Printf("room audio interrupt mirror source room=%d task=%s http=%d", roomID, taskID, resp.StatusCode)
+			return
+		}
+
+		first := true
+		ticker := time.NewTicker(time.Duration(roomaudio.FrameDurationMS) * time.Millisecond)
+		defer ticker.Stop()
+		err = roomaudio.StreamWAVPCM(ctx, resp.Body, 0, func(pcm []byte, _ int) error {
+			if !first {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-ticker.C:
+				}
+			}
+			first = false
+			_, publishErr := c.roomAudio.PublishPCM(roomID, roomaudio.SourceInterrupt, pcm, "")
+			return publishErr
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("room audio interrupt mirror stream room=%d task=%s failed: %v", roomID, taskID, err)
+			return
+		}
+		if ctx.Err() == nil {
+			c.mu.RLock()
+			program := c.programs[roomID]
+			c.mu.RUnlock()
+			if program != nil {
+				c.resumeAfterInteraction(program, taskID)
+			}
+		}
+	}()
+}
+
+func (c *Client) cancelRoomAudioMirror(roomID int64) {
+	if c == nil || roomID <= 0 {
+		return
+	}
+	c.mirrorMu.Lock()
+	cancel := c.mirrors[roomID]
+	delete(c.mirrors, roomID)
+	c.mirrorMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func roomAudioSegmentAt(timeline []audioout.ProgramTimelineSegment, cursorMS int) string {
+	for _, segment := range timeline {
+		if cursorMS >= segment.StartMS && cursorMS < segment.EndMS {
+			return segment.SegmentID
+		}
+	}
+	if len(timeline) > 0 && cursorMS >= timeline[len(timeline)-1].EndMS {
+		return timeline[len(timeline)-1].SegmentID
+	}
+	return ""
+}
+
+func roomAudioCutSegments(timeline []audioout.ProgramTimelineSegment, cutMS int) (string, string) {
+	for index, segment := range timeline {
+		if segment.EndMS != cutMS {
+			continue
+		}
+		resumeSegmentID := ""
+		if index+1 < len(timeline) {
+			resumeSegmentID = timeline[index+1].SegmentID
+		}
+		return segment.SegmentID, resumeSegmentID
+	}
+	return "", ""
 }

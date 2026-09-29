@@ -10,7 +10,9 @@
   ];
 
   function active(href: string) {
-    return href === '/' ? $page.url.pathname === '/' : $page.url.pathname.startsWith(href);
+    return href === '/'
+      ? $page.url.pathname === '/' || $page.url.pathname.startsWith('/rooms/')
+      : $page.url.pathname.startsWith(href);
   }
 </script>
 

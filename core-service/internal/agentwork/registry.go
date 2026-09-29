@@ -45,6 +45,9 @@ type Snapshot struct {
 	Mode                  Mode       `json:"mode"`
 	PlanID                int64      `json:"plan_id,omitempty"`
 	PlanName              string     `json:"plan_name,omitempty"`
+	HotRevision           uint64     `json:"hot_revision"`
+	HotModules            []string   `json:"hot_modules,omitempty"`
+	HotUpdatedAt          *time.Time `json:"hot_updated_at,omitempty"`
 	WorkingSeconds        uint64     `json:"working_seconds"`
 	LeaseUntil            *time.Time `json:"lease_until,omitempty"`
 	LeaseRemainingSeconds uint64     `json:"lease_remaining_seconds"`
@@ -59,6 +62,9 @@ type roomState struct {
 	mode         Mode
 	planID       int64
 	planName     string
+	hotRevision  uint64
+	hotModules   []string
+	hotUpdatedAt time.Time
 	stopReason   StopReason
 	accumulated  time.Duration
 	workingSince time.Time
@@ -302,6 +308,45 @@ func (r *Registry) SetPlan(roomID, planID int64, planName string) (Snapshot, err
 	return r.snapshotLocked(current, now), nil
 }
 
+func (r *Registry) TouchHotReload(roomID int64, modules []string) (Snapshot, error) {
+	if roomID <= 0 {
+		return Snapshot{}, errors.New("room_id must be positive")
+	}
+	normalized := make([]string, 0, len(modules))
+	seen := map[string]struct{}{}
+	for _, module := range modules {
+		module = strings.ToLower(strings.TrimSpace(module))
+		if module == "" {
+			continue
+		}
+		if _, exists := seen[module]; exists {
+			continue
+		}
+		seen[module] = struct{}{}
+		normalized = append(normalized, module)
+	}
+	if len(normalized) == 0 {
+		return Snapshot{}, errors.New("hot_reload requires at least one module")
+	}
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.rooms[roomID]
+	if current == nil {
+		current = &roomState{roomID: roomID, state: StateStopped, mode: ModeControl, updatedAt: now}
+		r.rooms[roomID] = current
+	}
+	r.accrueLocked(current, now)
+	if current.state == StateWorking && current.workingSince.IsZero() && current.leaseUntil.After(now) {
+		current.workingSince = now
+	}
+	current.hotRevision++
+	current.hotModules = append(current.hotModules[:0], normalized...)
+	current.hotUpdatedAt = now
+	current.updatedAt = now
+	return r.snapshotLocked(current, now), nil
+}
+
 func (r *Registry) IsWorking(roomID int64) bool {
 	return r.Get(roomID).State == StateWorking
 }
@@ -442,6 +487,11 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		workingSince = &value
 	}
 	var leaseUntil *time.Time
+	var hotUpdatedAt *time.Time
+	if !current.hotUpdatedAt.IsZero() {
+		value := current.hotUpdatedAt
+		hotUpdatedAt = &value
+	}
 	var leaseRemaining uint64
 	if !current.leaseUntil.IsZero() && current.leaseUntil.After(now) {
 		value := current.leaseUntil
@@ -460,6 +510,9 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		Mode:                  current.mode,
 		PlanID:                current.planID,
 		PlanName:              current.planName,
+		HotRevision:           current.hotRevision,
+		HotModules:            append([]string(nil), current.hotModules...),
+		HotUpdatedAt:          hotUpdatedAt,
 		WorkingSeconds:        uint64(total / time.Second),
 		WorkingSince:          workingSince,
 		LeaseUntil:            leaseUntil,

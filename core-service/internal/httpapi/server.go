@@ -22,28 +22,32 @@ import (
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
+	"livecompanion/core/internal/strategycenter"
 	"livecompanion/core/internal/userblock"
 )
 
 type Server struct {
-	rooms          *roomstore.Store
-	events         *eventstore.Store
-	hub            *eventstore.Hub
-	collectors     *collector.Manager
-	media          *media.Manager
-	capture        *capture.Manager
-	brain          roomBrain
-	questions      *questionqueue.Queue
-	agentDecisions *agentdecision.Queue
-	agentWork      *agentwork.Registry
-	userBlocks     *userblock.Store
-	speechAnalysis *speechanalysis.Manager
-	speechRuntime  *speechruntime.Registry
-	audioHub       *audiohub.Hub
-	env            string
-	internalToken  string
+	rooms            *roomstore.Store
+	events           *eventstore.Store
+	hub              *eventstore.Hub
+	collectors       *collector.Manager
+	media            *media.Manager
+	capture          *capture.Manager
+	brain            roomBrain
+	questions        *questionqueue.Queue
+	agentDecisions   *agentdecision.Queue
+	agentWork        *agentwork.Registry
+	userBlocks       *userblock.Store
+	speechAnalysis   *speechanalysis.Manager
+	speechRuntime    *speechruntime.Registry
+	audioHub         *audiohub.Hub
+	roomAudio        *roomaudio.Engine
+	strategyPolicies *strategycenter.Store
+	env              string
+	internalToken    string
 }
 
 func New(
@@ -56,18 +60,20 @@ func New(
 	internalToken string,
 ) *Server {
 	return &Server{
-		rooms:          rooms,
-		events:         events,
-		hub:            hub,
-		collectors:     collectors,
-		media:          mediaManager,
-		audioHub:       audiohub.New(),
-		speechRuntime:  speechruntime.New(),
-		questions:      questionqueue.New(),
-		agentDecisions: agentdecision.New(),
-		agentWork:      agentwork.New(),
-		env:            env,
-		internalToken:  internalToken,
+		rooms:            rooms,
+		events:           events,
+		hub:              hub,
+		collectors:       collectors,
+		media:            mediaManager,
+		audioHub:         audiohub.New(),
+		roomAudio:        roomaudio.New(),
+		strategyPolicies: strategycenter.New(),
+		speechRuntime:    speechruntime.New(),
+		questions:        questionqueue.New(),
+		agentDecisions:   agentdecision.New(),
+		agentWork:        agentwork.New(),
+		env:              env,
+		internalToken:    internalToken,
 	}
 }
 
@@ -83,6 +89,20 @@ func (s *Server) SetAudioHub(hub *audiohub.Hub) {
 		hub = audiohub.New()
 	}
 	s.audioHub = hub
+}
+
+func (s *Server) SetRoomAudioEngine(engine *roomaudio.Engine) {
+	if engine == nil {
+		engine = roomaudio.New()
+	}
+	s.roomAudio = engine
+}
+
+func (s *Server) SetStrategyPolicyStore(store *strategycenter.Store) {
+	if store == nil {
+		store = strategycenter.New()
+	}
+	s.strategyPolicies = store
 }
 
 func (s *Server) SetCaptureManager(manager *capture.Manager) {
@@ -103,11 +123,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/v1/rooms/{roomID}/receivers", s.audioPublic(http.HandlerFunc(s.listAudioReceivers)))
 	mux.Handle("/v1/rooms/{roomID}/stream", s.audioPublic(http.HandlerFunc(s.streamAudioRoom)))
 	mux.Handle("/v1/rooms/{roomID}/sync", s.audioPublic(http.HandlerFunc(s.syncAudioRoom)))
+	mux.Handle("/v1/rooms/{roomID}/audio-engine", s.audioPublic(http.HandlerFunc(s.getRoomAudioEngine)))
+	mux.Handle("/v1/rooms/{roomID}/composite.pcm", s.audioPublic(http.HandlerFunc(s.streamRoomCompositePCM)))
 	mux.Handle("/v1/tasks/{taskID}", s.audioPublic(http.HandlerFunc(s.getAudioTask)))
 	mux.Handle("/v1/tasks/{taskID}/events", s.audioPublic(http.HandlerFunc(s.reportAudioTaskEvent)))
 	mux.Handle("/v1/test-audio.wav", s.audioPublic(http.HandlerFunc(s.serveCoreTestAudio)))
 
 	mux.Handle("GET /internal/v1/rooms", s.internal(http.HandlerFunc(s.listRooms)))
+	mux.Handle("GET /internal/v1/strategy-policies/{tenantID}", s.internal(http.HandlerFunc(s.strategyPolicy)))
+	mux.Handle("PUT /internal/v1/strategy-policies/{tenantID}", s.internal(http.HandlerFunc(s.strategyPolicy)))
 	mux.Handle("POST /internal/v1/rooms/runtime-states", s.internal(http.HandlerFunc(s.batchRoomRuntimeStates)))
 	mux.Handle("POST /internal/v1/rooms", s.internal(http.HandlerFunc(s.createRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.getRoom)))
@@ -117,8 +141,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/rooms/{roomID}/session-stats", s.internal(http.HandlerFunc(s.getRoomSessionStats)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/session-decision", s.internal(http.HandlerFunc(s.resolveRoomSessionDecision)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/brain", s.internal(http.HandlerFunc(s.getRoomBrain)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/strategy-select", s.internal(http.HandlerFunc(s.selectRoomStrategy)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/brain/topic-merges", s.internal(http.HandlerFunc(s.mergeRoomBrainTopics)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.getRoomSpeechRuntime)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/audio-engine", s.internal(http.HandlerFunc(s.getRoomAudioEngine)))
 	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/start", s.internal(http.HandlerFunc(s.startRoomAudioProgram)))
@@ -181,28 +207,34 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if s.audioHub != nil {
 		audioStats = s.audioHub.Metrics()
 	}
+	roomAudioStats := roomaudio.Metrics{}
+	if s.roomAudio != nil {
+		roomAudioStats = s.roomAudio.Metrics()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service":               "core-service",
-		"status":                "ok",
-		"boot_id":               s.agentWork.BootID(),
-		"time":                  time.Now().UTC().Format(time.RFC3339),
-		"active_rooms":          collectorStats.ActiveRooms,
-		"shard_index":           collectorStats.ShardIndex,
-		"shard_count":           collectorStats.ShardCount,
-		"lease_enabled":         collectorStats.LeaseEnabled,
-		"node_id":               collectorStats.LeaseNodeID,
-		"media_active_sessions": mediaStats.ActiveSessions,
-		"media_max_sessions":    mediaStats.MaxSessions,
-		"collector_providers":   collectorProviders,
-		"event_queue_depth":     collectorStats.EventQueueDepth,
-		"event_ingress_dropped": collectorStats.EventIngressDropped,
-		"event_persist_dropped": collectorStats.EventPersistDropped,
-		"event_persist_errors":  collectorStats.EventPersistErrors,
-		"runtime_pending":       collectorStats.RuntimePending,
-		"audio_active_rooms":    audioStats.ActiveRooms,
-		"audio_receivers":       audioStats.Receivers,
-		"audio_subscribers":     audioStats.Subscribers,
-		"runtime_errors":        collectorStats.RuntimeErrors,
+		"service":                "core-service",
+		"status":                 "ok",
+		"boot_id":                s.agentWork.BootID(),
+		"time":                   time.Now().UTC().Format(time.RFC3339),
+		"active_rooms":           collectorStats.ActiveRooms,
+		"shard_index":            collectorStats.ShardIndex,
+		"shard_count":            collectorStats.ShardCount,
+		"lease_enabled":          collectorStats.LeaseEnabled,
+		"node_id":                collectorStats.LeaseNodeID,
+		"media_active_sessions":  mediaStats.ActiveSessions,
+		"media_max_sessions":     mediaStats.MaxSessions,
+		"collector_providers":    collectorProviders,
+		"event_queue_depth":      collectorStats.EventQueueDepth,
+		"event_ingress_dropped":  collectorStats.EventIngressDropped,
+		"event_persist_dropped":  collectorStats.EventPersistDropped,
+		"event_persist_errors":   collectorStats.EventPersistErrors,
+		"runtime_pending":        collectorStats.RuntimePending,
+		"audio_active_rooms":     audioStats.ActiveRooms,
+		"audio_receivers":        audioStats.Receivers,
+		"audio_subscribers":      audioStats.Subscribers,
+		"room_audio_rooms":       roomAudioStats.Rooms,
+		"room_audio_subscribers": roomAudioStats.Subscribers,
+		"runtime_errors":         collectorStats.RuntimeErrors,
 	})
 }
 

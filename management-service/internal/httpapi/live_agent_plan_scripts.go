@@ -1013,6 +1013,13 @@ func (s *Server) liveAgentPlanScriptAnalyze(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "保存话术分析结果失败")
 		return
 	}
+	if len(analysis.AnchorStyle.Dimensions) > 0 || len(analysis.AnchorStyle.ReusableRules) > 0 {
+		if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, planID, "style"); err != nil {
+			s.finishAISingleUse(r.Context(), invocationID, "failed", provider, modelName, latencyMS, map[string]any{"error": err.Error()})
+			writeError(w, http.StatusBadGateway, "主播风格已保存，但热同步到直播间失败："+err.Error())
+			return
+		}
+	}
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", provider, modelName, latencyMS, map[string]any{
 		"fact_count": len(analysis.Facts), "rhythm_node_count": len(analysis.RhythmNodes),
 	})

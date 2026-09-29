@@ -26,17 +26,20 @@ const (
 )
 
 type TrackState struct {
-	Status       Status     `json:"status"`
-	Text         string     `json:"text,omitempty"`
-	QuestionText string     `json:"question_text,omitempty"`
-	ReplyText    string     `json:"reply_text,omitempty"`
-	Source       string     `json:"source,omitempty"`
-	AudioURL     string     `json:"audio_url,omitempty"`
-	DecisionID   string     `json:"decision_id,omitempty"`
-	SpeechTaskID string     `json:"speech_task_id,omitempty"`
-	SwitchAtMS   *int       `json:"switch_at_ms,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	UpdatedAt    *time.Time `json:"updated_at,omitempty"`
+	Status         Status     `json:"status"`
+	Text           string     `json:"text,omitempty"`
+	QuestionText   string     `json:"question_text,omitempty"`
+	ReplyText      string     `json:"reply_text,omitempty"`
+	ResumeStrategy string     `json:"resume_strategy,omitempty"`
+	BridgeText     string     `json:"bridge_text,omitempty"`
+	BridgeUsed     bool       `json:"bridge_used,omitempty"`
+	Source         string     `json:"source,omitempty"`
+	AudioURL       string     `json:"audio_url,omitempty"`
+	DecisionID     string     `json:"decision_id,omitempty"`
+	SpeechTaskID   string     `json:"speech_task_id,omitempty"`
+	SwitchAtMS     *int       `json:"switch_at_ms,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
 }
 
 type Snapshot struct {
@@ -48,17 +51,20 @@ type Snapshot struct {
 }
 
 type UpdateInput struct {
-	Track        Track      `json:"track"`
-	Status       Status     `json:"status"`
-	Text         string     `json:"text,omitempty"`
-	QuestionText string     `json:"question_text,omitempty"`
-	ReplyText    string     `json:"reply_text,omitempty"`
-	Source       string     `json:"source,omitempty"`
-	AudioURL     string     `json:"audio_url,omitempty"`
-	DecisionID   string     `json:"decision_id,omitempty"`
-	SpeechTaskID string     `json:"speech_task_id,omitempty"`
-	SwitchAtMS   *int       `json:"switch_at_ms,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
+	Track          Track      `json:"track"`
+	Status         Status     `json:"status"`
+	Text           string     `json:"text,omitempty"`
+	QuestionText   string     `json:"question_text,omitempty"`
+	ReplyText      string     `json:"reply_text,omitempty"`
+	ResumeStrategy string     `json:"resume_strategy,omitempty"`
+	BridgeText     string     `json:"bridge_text,omitempty"`
+	BridgeUsed     bool       `json:"bridge_used,omitempty"`
+	Source         string     `json:"source,omitempty"`
+	AudioURL       string     `json:"audio_url,omitempty"`
+	DecisionID     string     `json:"decision_id,omitempty"`
+	SpeechTaskID   string     `json:"speech_task_id,omitempty"`
+	SwitchAtMS     *int       `json:"switch_at_ms,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
 }
 
 type roomState struct {
@@ -156,17 +162,20 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 			startedAt = timePtr(now)
 		}
 		*target = TrackState{
-			Status:       status,
-			Text:         strings.TrimSpace(input.Text),
-			QuestionText: strings.TrimSpace(input.QuestionText),
-			ReplyText:    strings.TrimSpace(input.ReplyText),
-			Source:       strings.TrimSpace(input.Source),
-			AudioURL:     strings.TrimSpace(input.AudioURL),
-			DecisionID:   strings.TrimSpace(input.DecisionID),
-			SpeechTaskID: strings.TrimSpace(input.SpeechTaskID),
-			SwitchAtMS:   input.SwitchAtMS,
-			StartedAt:    startedAt,
-			UpdatedAt:    timePtr(now),
+			Status:         status,
+			Text:           strings.TrimSpace(input.Text),
+			QuestionText:   strings.TrimSpace(input.QuestionText),
+			ReplyText:      strings.TrimSpace(input.ReplyText),
+			ResumeStrategy: strings.TrimSpace(input.ResumeStrategy),
+			BridgeText:     strings.TrimSpace(input.BridgeText),
+			BridgeUsed:     input.BridgeUsed,
+			Source:         strings.TrimSpace(input.Source),
+			AudioURL:       strings.TrimSpace(input.AudioURL),
+			DecisionID:     strings.TrimSpace(input.DecisionID),
+			SpeechTaskID:   strings.TrimSpace(input.SpeechTaskID),
+			SwitchAtMS:     input.SwitchAtMS,
+			StartedAt:      startedAt,
+			UpdatedAt:      timePtr(now),
 		}
 	}
 

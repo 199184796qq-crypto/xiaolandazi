@@ -4,7 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { getRoomEvents, getRooms } from '../api'
 import DataListControls from '../components/DataListControls.vue'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import PaginationBar from '../components/PaginationBar.vue'
 import type { Room, RoomEvent } from '../types'
 
@@ -211,7 +211,7 @@ onMounted(load)
 
 <template>
   <div class="management-page live-operations-page">
-    <ModulePageNav context="live" :active-title="pageTitle" />
+
 
     <section class="feature-workspace-hero">
       <div>

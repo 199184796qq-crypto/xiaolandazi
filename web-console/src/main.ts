@@ -3,6 +3,16 @@ import App from './App.vue'
 import { router } from './router'
 import './style.css'
 import './uiSettings'
+import { unlockSharedAudioContext } from './audioRuntime'
+
+function unlockBrowserAudioFromFirstGesture() {
+  void unlockSharedAudioContext().catch(() => undefined)
+}
+
+window.addEventListener('pointerdown', unlockBrowserAudioFromFirstGesture, {
+  capture: true,
+  passive: true,
+})
 
 if (import.meta.env.DEV) {
   import.meta.hot?.on('vite:beforeUpdate', (payload) => {

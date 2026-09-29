@@ -4,23 +4,379 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/speechruntime"
+	"livecompanion/core/internal/strategycenter"
 )
 
 type roomAudioInteractionInput struct {
-	DecisionID string `json:"decision_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	Action     string `json:"action"`
-	AudioURL   string `json:"audio_url"`
-	Question   string `json:"question,omitempty"`
-	ReplyText  string `json:"reply_text,omitempty"`
-	Topic      string `json:"topic,omitempty"`
-	SwitchAtMS int    `json:"switch_at_ms,omitempty"`
+	DecisionID        string `json:"decision_id"`
+	SessionID         string `json:"session_id,omitempty"`
+	Action            string `json:"action"`
+	AudioURL          string `json:"audio_url"`
+	Question          string `json:"question,omitempty"`
+	ReplyText         string `json:"reply_text,omitempty"`
+	Topic             string `json:"topic,omitempty"`
+	InterruptStrategy string `json:"interrupt_strategy,omitempty"`
+	ResumeStrategy    string `json:"resume_strategy,omitempty"`
+	BridgeText        string `json:"bridge_text,omitempty"`
+	SwitchAtMS        int    `json:"switch_at_ms,omitempty"`
+}
+
+func estimatedInteractionDurationMS(text string) int {
+	runes := utf8.RuneCountInString(strings.TrimSpace(text))
+	if runes <= 0 {
+		return 4000
+	}
+	ms := runes * 230
+	if ms < 3000 {
+		ms = 3000
+	}
+	if ms > 60000 {
+		ms = 60000
+	}
+	return ms
+}
+
+func safePointTopicOverlap(point audioout.ProgramSafePoint, topic string) bool {
+	topic = strings.ToLower(strings.TrimSpace(topic))
+	if topic == "" {
+		return false
+	}
+	for _, value := range point.Topics {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && (value == topic || strings.Contains(value, topic) || strings.Contains(topic, value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resumeCandidatesForInteraction(program audioout.RoomProgramSnapshot, cutMS, estimatedMS int, topic string) []string {
+	candidates := []string{"DIRECT", "BRIDGE"}
+	overlaps := 0
+	for _, point := range effectiveRoomProgramSafePoints(program) {
+		if point.CutMS <= cutMS {
+			continue
+		}
+		if safePointTopicOverlap(point, topic) {
+			overlaps++
+		}
+	}
+	if overlaps >= 1 {
+		candidates = append(candidates, "FUSION_SKIP")
+	}
+	if overlaps >= 2 {
+		candidates = append(candidates, "CROSS_RESUME")
+	}
+	if estimatedMS >= 15000 {
+		candidates = append(candidates, "RE_ANCHOR")
+	}
+	if estimatedMS >= 25000 {
+		candidates = append(candidates, "SWITCH_PLAN")
+	}
+	return candidates
+}
+
+func resumeOffsetForStrategy(program audioout.RoomProgramSnapshot, cutMS int, strategy, topic string) (int, string) {
+	strategy = strings.ToUpper(strings.TrimSpace(strategy))
+	if strategy == "DIRECT" || strategy == "BRIDGE" || strategy == "" {
+		return cutMS, "same_safe_boundary"
+	}
+	points := effectiveRoomProgramSafePoints(program)
+	if strategy == "SWITCH_PLAN" && program.Task != nil && program.Task.DurationMS > cutMS {
+		return program.Task.DurationMS, "advance_to_next_mainline_track"
+	}
+	targetLead := 6500
+	if strategy == "CROSS_RESUME" {
+		targetLead = 16000
+	} else if strategy == "RE_ANCHOR" {
+		targetLead = 11000
+	}
+	best := 0
+	bestDistance := int(^uint(0) >> 1)
+	for _, point := range points {
+		if point.CutMS <= cutMS {
+			continue
+		}
+		if (strategy == "FUSION_SKIP" || strategy == "CROSS_RESUME") && safePointTopicOverlap(point, topic) {
+			continue
+		}
+		distance := point.CutMS - cutMS - targetLead
+		if distance < 0 {
+			distance = -distance
+		}
+		if best == 0 || distance < bestDistance {
+			best = point.CutMS
+			bestDistance = distance
+		}
+	}
+	if best > cutMS {
+		return best, "next_safe_semantic_entry"
+	}
+	return cutMS, "fallback_same_safe_boundary"
+}
+
+type resumeDedupDecision struct {
+	Triggered        bool
+	OriginalStrategy string
+	FinalStrategy    string
+	OriginalMS       int
+	FinalMS          int
+	OriginalPointID  string
+	FinalPointID     string
+	Score            float64
+	Reason           string
+	ReplyTail        string
+	OriginalPreview  string
+	FinalPreview     string
+	SkippedPoints    int
+}
+
+func normalizeResumeCompareText(value string) []rune {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return nil
+	}
+	for _, filler := range []string{
+		"家人们", "老乡", "宝子", "亲", "朋友", "大家", "咱们", "我们", "这个", "这款", "现在", "刚才", "继续", "直播间", "一下", "就是", "可以", "的话", "这里", "大家看", "给大家",
+	} {
+		value = strings.ReplaceAll(value, filler, "")
+	}
+	out := make([]rune, 0, len([]rune(value)))
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func resumeNGramSet(runes []rune, size int) map[string]struct{} {
+	result := map[string]struct{}{}
+	if size <= 0 || len(runes) < size {
+		return result
+	}
+	for i := 0; i+size <= len(runes); i++ {
+		result[string(runes[i:i+size])] = struct{}{}
+	}
+	return result
+}
+
+func longestCommonResumeRunes(left, right []rune) int {
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	previous := make([]int, len(right)+1)
+	best := 0
+	for i := 1; i <= len(left); i++ {
+		current := make([]int, len(right)+1)
+		for j := 1; j <= len(right); j++ {
+			if left[i-1] == right[j-1] {
+				current[j] = previous[j-1] + 1
+				if current[j] > best {
+					best = current[j]
+				}
+			}
+		}
+		previous = current
+	}
+	return best
+}
+
+func resumeTextSimilarity(left, right string) float64 {
+	l := normalizeResumeCompareText(left)
+	r := normalizeResumeCompareText(right)
+	if len(l) < 2 || len(r) < 2 {
+		return 0
+	}
+	leftBigrams := resumeNGramSet(l, 2)
+	rightBigrams := resumeNGramSet(r, 2)
+	shared := 0
+	for gram := range leftBigrams {
+		if _, ok := rightBigrams[gram]; ok {
+			shared++
+		}
+	}
+	minimum := len(leftBigrams)
+	if len(rightBigrams) < minimum {
+		minimum = len(rightBigrams)
+	}
+	containment := 0.0
+	if minimum > 0 {
+		containment = float64(shared) / float64(minimum)
+	}
+	longest := longestCommonResumeRunes(l, r)
+	longestScore := float64(longest) / float64(minInt(len(l), len(r)))
+	// A stable four-character factual phrase such as “非转基因” is already
+	// audible repetition in a live room even when the surrounding sentence differs.
+	phraseScore := 0.0
+	if longest >= 6 {
+		phraseScore = 0.72
+	} else if longest >= 5 {
+		phraseScore = 0.62
+	} else if longest >= 4 {
+		phraseScore = 0.52
+	}
+	return maxFloat(containment, longestScore, phraseScore)
+}
+
+func maxFloat(values ...float64) float64 {
+	best := 0.0
+	for _, value := range values {
+		if value > best {
+			best = value
+		}
+	}
+	return best
+}
+
+func lastResumeSentences(text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 {
+		return nil
+	}
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		return strings.ContainsRune("。！？!?；;\n", r)
+	})
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) <= limit {
+		return clean
+	}
+	return clean[len(clean)-limit:]
+}
+
+func resumePointAtOrAfter(program audioout.RoomProgramSnapshot, offsetMS int) (audioout.ProgramSafePoint, bool) {
+	points := effectiveRoomProgramSafePoints(program)
+	for _, point := range points {
+		if point.CutMS == offsetMS {
+			return point, true
+		}
+	}
+	return audioout.ProgramSafePoint{}, false
+}
+
+func resumePreview(program audioout.RoomProgramSnapshot, point audioout.ProgramSafePoint) string {
+	parts := make([]string, 0, 2)
+	if preview := strings.TrimSpace(point.NextPreview); preview != "" {
+		parts = append(parts, preview)
+	}
+	for index, segment := range program.Timeline {
+		if segment.StartMS != point.CutMS {
+			continue
+		}
+		if text := strings.TrimSpace(segment.Text); text != "" && (len(parts) == 0 || text != parts[0]) {
+			parts = append(parts, text)
+		}
+		if index+1 < len(program.Timeline) {
+			if next := strings.TrimSpace(program.Timeline[index+1].Text); next != "" {
+				parts = append(parts, next)
+			}
+		}
+		break
+	}
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	return strings.Join(parts, " ")
+}
+
+func resumeDuplicateScore(replyText, preview string) (float64, string) {
+	tails := lastResumeSentences(replyText, 2)
+	if len(tails) == 0 || strings.TrimSpace(preview) == "" {
+		return 0, ""
+	}
+	best := 0.0
+	bestTail := ""
+	for _, tail := range tails {
+		if score := resumeTextSimilarity(tail, preview); score > best {
+			best = score
+			bestTail = tail
+		}
+	}
+	if len(tails) == 2 {
+		combined := strings.Join(tails, " ")
+		if score := resumeTextSimilarity(combined, preview); score > best {
+			best = score
+			bestTail = combined
+		}
+	}
+	return best, bestTail
+}
+
+func applyResumeDedupGate(program audioout.RoomProgramSnapshot, replyText string, originalMS int, strategy string) resumeDedupDecision {
+	strategy = strings.ToUpper(strings.TrimSpace(strategy))
+	decision := resumeDedupDecision{
+		OriginalStrategy: strategy,
+		FinalStrategy:    strategy,
+		OriginalMS:       originalMS,
+		FinalMS:          originalMS,
+	}
+	point, ok := resumePointAtOrAfter(program, originalMS)
+	if !ok {
+		return decision
+	}
+	decision.OriginalPointID = point.ID
+	decision.FinalPointID = point.ID
+	preview := resumePreview(program, point)
+	decision.OriginalPreview = preview
+	score, tail := resumeDuplicateScore(replyText, preview)
+	decision.Score = score
+	decision.ReplyTail = tail
+	if score < 0.5 {
+		return decision
+	}
+	decision.Triggered = true
+	decision.Reason = "reply_tail_overlaps_resume_preview"
+
+	points := effectiveRoomProgramSafePoints(program)
+	sort.SliceStable(points, func(i, j int) bool { return points[i].CutMS < points[j].CutMS })
+	skipped := 0
+	for _, candidate := range points {
+		if candidate.CutMS <= originalMS {
+			continue
+		}
+		skipped++
+		candidatePreview := resumePreview(program, candidate)
+		candidateScore, _ := resumeDuplicateScore(replyText, candidatePreview)
+		if strings.TrimSpace(candidatePreview) == "" || candidateScore < 0.42 {
+			decision.FinalMS = candidate.CutMS
+			decision.FinalPointID = candidate.ID
+			decision.FinalPreview = candidatePreview
+			decision.SkippedPoints = skipped
+			if strategy != "SWITCH_PLAN" {
+				if skipped >= 2 || strategy == "CROSS_RESUME" {
+					decision.FinalStrategy = "CROSS_RESUME"
+				} else {
+					decision.FinalStrategy = "FUSION_SKIP"
+				}
+			}
+			return decision
+		}
+	}
+
+	if program.Task != nil && program.Task.DurationMS > originalMS {
+		decision.FinalMS = program.Task.DurationMS
+		decision.FinalPointID = "TRACK_END"
+		decision.FinalPreview = ""
+		decision.SkippedPoints = skipped
+		decision.FinalStrategy = "SWITCH_PLAN"
+		decision.Reason = "reply_tail_overlaps_remaining_track"
+	}
+	return decision
 }
 
 func nextRoomProgramSafeCut(program audioout.RoomProgramSnapshot, currentMS int, maxWait time.Duration) (int, bool) {
@@ -226,17 +582,20 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 			return
 		}
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-			Track:        speechruntime.TrackInterrupt,
-			Status:       speechruntime.StatusCompleted,
-			Text:         snapshot.Interrupt.Text,
-			QuestionText: snapshot.Interrupt.QuestionText,
-			ReplyText:    snapshot.Interrupt.ReplyText,
-			Source:       snapshot.Interrupt.Source,
-			AudioURL:     snapshot.Interrupt.AudioURL,
-			DecisionID:   snapshot.Interrupt.DecisionID,
-			SpeechTaskID: snapshot.Interrupt.SpeechTaskID,
-			SwitchAtMS:   snapshot.Interrupt.SwitchAtMS,
-			StartedAt:    snapshot.Interrupt.StartedAt,
+			Track:          speechruntime.TrackInterrupt,
+			Status:         speechruntime.StatusCompleted,
+			Text:           snapshot.Interrupt.Text,
+			QuestionText:   snapshot.Interrupt.QuestionText,
+			ReplyText:      snapshot.Interrupt.ReplyText,
+			ResumeStrategy: snapshot.Interrupt.ResumeStrategy,
+			BridgeText:     snapshot.Interrupt.BridgeText,
+			BridgeUsed:     snapshot.Interrupt.BridgeUsed,
+			Source:         snapshot.Interrupt.Source,
+			AudioURL:       snapshot.Interrupt.AudioURL,
+			DecisionID:     snapshot.Interrupt.DecisionID,
+			SpeechTaskID:   snapshot.Interrupt.SpeechTaskID,
+			SwitchAtMS:     snapshot.Interrupt.SwitchAtMS,
+			StartedAt:      snapshot.Interrupt.StartedAt,
 		})
 		if s.agentDecisions != nil && strings.TrimSpace(decisionID) != "" {
 			_, _ = s.agentDecisions.Complete(roomID, decisionID)
@@ -290,6 +649,9 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	input.Question = strings.TrimSpace(input.Question)
 	input.ReplyText = strings.TrimSpace(input.ReplyText)
 	input.Topic = strings.TrimSpace(input.Topic)
+	input.InterruptStrategy = strings.ToLower(strings.TrimSpace(input.InterruptStrategy))
+	input.ResumeStrategy = strings.ToUpper(strings.TrimSpace(input.ResumeStrategy))
+	input.BridgeText = strings.TrimSpace(input.BridgeText)
 	if input.SwitchAtMS < 0 {
 		input.SwitchAtMS = 0
 	}
@@ -329,6 +691,41 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	var program audioout.RoomProgramSnapshot
 	var switchAtMS *int
 	var resumeOffsetMS *int
+	resumeMode := "DIRECT"
+	bridgeUsed := false
+	strategySignals := strategycenter.Signals{}
+	if s.brain != nil {
+		if view, viewErr := s.brain.Snapshot(roomID); viewErr == nil {
+			strategySignals.Entries30s = view.Intelligence.Entries30s
+			strategySignals.Likes30s = view.Intelligence.Likes30s
+			strategySignals.Follows30s = view.Intelligence.Follows30s
+			strategySignals.Heat = view.Intelligence.Heat
+		}
+	}
+	interruptStrategy := input.InterruptStrategy
+	interruptStrategySource := "management"
+	knownInterrupt := false
+	switch interruptStrategy {
+	case "read_comment_softly", "hard_cut", "ask_controller", "thinking_pause", "repeat_confirm":
+		knownInterrupt = true
+	}
+	if !knownInterrupt || (s.strategyPolicies != nil && !s.strategyPolicies.Allowed(tenantID, "interrupt", interruptStrategy)) {
+		interruptStrategy = ""
+		interruptStrategySource = "core_fallback"
+	}
+	if interruptStrategy == "" && s.strategyPolicies != nil {
+		selected := s.strategyPolicies.Pick(
+			tenantID,
+			"interrupt",
+			[]string{"read_comment_softly", "hard_cut", "ask_controller", "thinking_pause", "repeat_confirm"},
+			strategySignals,
+			input.DecisionID,
+		)
+		interruptStrategy = selected.Key
+		log.Printf("core interrupt strategy room=%d decision=%s selected=%s source=%s requested=%s candidates=%v roll=%d/%d", roomID, input.DecisionID, selected.Key, interruptStrategySource, input.InterruptStrategy, selected.Candidates, selected.Roll, selected.Total)
+	} else if interruptStrategy != "" {
+		log.Printf("core interrupt strategy room=%d decision=%s selected=%s source=%s requested=%s", roomID, input.DecisionID, interruptStrategy, interruptStrategySource, input.InterruptStrategy)
+	}
 	if !controlMode {
 		program, err = state.client.ProgramSnapshot(r.Context(), roomID)
 		if err != nil || !program.Running || program.Task == nil {
@@ -341,12 +738,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 		cutMS := 0
 		exists := false
-		if input.Action == "answer" {
+		cutAction := input.Action
+		if interruptStrategy == "hard_cut" {
+			cutAction = "quick"
+		}
+		if cutAction == "answer" {
 			cutMS, exists = resolveRoomProgramSafeCutAfterGeneration(program, input.SwitchAtMS, currentMS)
 		} else {
 			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
 		}
-		if input.Action == "answer" {
+		if cutAction == "answer" {
 			if !exists {
 				writeError(w, http.StatusConflict, "当前35秒内没有安全句末切点，继续排队")
 				return
@@ -364,6 +765,79 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			value := program.Task.DurationMS
 			resumeOffsetMS = &value
 		}
+		if switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
+			estimatedMS := estimatedInteractionDurationMS(input.ReplyText)
+			candidates := resumeCandidatesForInteraction(program, *switchAtMS, estimatedMS, input.Topic)
+			requested := strings.ToUpper(strings.TrimSpace(input.ResumeStrategy))
+			requestedAllowed := false
+			for _, candidate := range candidates {
+				if strings.EqualFold(candidate, requested) && s.strategyPolicies.Allowed(tenantID, "resume", candidate) {
+					requestedAllowed = true
+					break
+				}
+			}
+			selected := s.strategyPolicies.Pick(tenantID, "resume", candidates, strategySignals, input.DecisionID+":resume")
+			if requestedAllowed {
+				selected = s.strategyPolicies.Pick(tenantID, "resume", []string{requested}, strategySignals, input.DecisionID+":resume")
+			}
+			// BRIDGE means the bridge sentence is integrated into the generated
+			// answer audio. Do not report/use a bridge picked only after TTS was
+			// already generated, because that would still sound like a hard cut.
+			if strings.EqualFold(selected.Key, "BRIDGE") && !strings.EqualFold(requested, "BRIDGE") {
+				fallback := make([]string, 0, len(candidates))
+				for _, candidate := range candidates {
+					if !strings.EqualFold(candidate, "BRIDGE") {
+						fallback = append(fallback, candidate)
+					}
+				}
+				selected = s.strategyPolicies.Pick(tenantID, "resume", fallback, strategySignals, input.DecisionID+":resume:fallback")
+			}
+			if selected.Key != "" {
+				bridgeUsed = strings.EqualFold(selected.Key, "BRIDGE") && strings.EqualFold(requested, "BRIDGE")
+				resumeTo, reason := resumeOffsetForStrategy(program, *switchAtMS, selected.Key, input.Topic)
+				dedup := applyResumeDedupGate(program, input.ReplyText, resumeTo, selected.Key)
+				resumeMode = dedup.FinalStrategy
+				*resumeOffsetMS = dedup.FinalMS
+				if dedup.Triggered {
+					log.Printf(
+						"core resume dedup room=%d decision=%s original_policy=%s original_ms=%d original_point=%s duplicate_score=%.3f duplicate_reason=%s reply_tail=%q original_preview=%q final_policy=%s final_ms=%d final_point=%s skipped_points=%d final_preview=%q",
+						roomID,
+						input.DecisionID,
+						selected.Key,
+						resumeTo,
+						dedup.OriginalPointID,
+						dedup.Score,
+						dedup.Reason,
+						dedup.ReplyTail,
+						dedup.OriginalPreview,
+						dedup.FinalStrategy,
+						dedup.FinalMS,
+						dedup.FinalPointID,
+						dedup.SkippedPoints,
+						dedup.FinalPreview,
+					)
+				}
+				log.Printf(
+					"core resume strategy room=%d decision=%s interrupt_ms=%d candidates=%v weights=%v original_policy=%s resume_policy=%s bridge_used=%t resume_from_ms=%d original_resume_to_ms=%d resume_to_ms=%d original_safe_point=%s safe_point=%s reason=%s dedup_triggered=%t duplicate_score=%.3f",
+					roomID,
+					input.DecisionID,
+					estimatedMS,
+					candidates,
+					selected.Candidates,
+					selected.Key,
+					resumeMode,
+					bridgeUsed,
+					*switchAtMS,
+					resumeTo,
+					*resumeOffsetMS,
+					dedup.OriginalPointID,
+					dedup.FinalPointID,
+					reason,
+					dedup.Triggered,
+					dedup.Score,
+				)
+			}
+		}
 		if switchAtMS != nil {
 			log.Printf(
 				"core audio interaction plan room=%d action=%s current_ms=%d switch_ms=%d lead_ms=%d",
@@ -374,9 +848,11 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 
 	source := "manual_answer"
 	label := "回答"
-	resumeMode := "DIRECT"
-	if !controlMode {
+	if !controlMode && resumeMode == "DIRECT" {
 		resumeMode = "SAFE"
+	}
+	if !bridgeUsed {
+		input.BridgeText = ""
 	}
 	if input.Action == "quick" {
 		source = "manual_quick"
@@ -385,15 +861,18 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	}
 	if s.speechRuntime != nil {
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-			Track:        speechruntime.TrackInterrupt,
-			Status:       speechruntime.StatusReady,
-			Text:         input.ReplyText,
-			QuestionText: input.Question,
-			ReplyText:    input.ReplyText,
-			Source:       source,
-			AudioURL:     input.AudioURL,
-			DecisionID:   input.DecisionID,
-			SwitchAtMS:   switchAtMS,
+			Track:          speechruntime.TrackInterrupt,
+			Status:         speechruntime.StatusReady,
+			Text:           input.ReplyText,
+			QuestionText:   input.Question,
+			ReplyText:      input.ReplyText,
+			ResumeStrategy: resumeMode,
+			BridgeText:     input.BridgeText,
+			BridgeUsed:     bridgeUsed,
+			Source:         source,
+			AudioURL:       input.AudioURL,
+			DecisionID:     input.DecisionID,
+			SwitchAtMS:     switchAtMS,
 		})
 	}
 
@@ -446,14 +925,17 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		if s.speechRuntime != nil {
 			_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-				Track:        speechruntime.TrackInterrupt,
-				Status:       speechruntime.StatusFailed,
-				Text:         input.ReplyText,
-				QuestionText: input.Question,
-				ReplyText:    input.ReplyText,
-				Source:       source,
-				AudioURL:     input.AudioURL,
-				DecisionID:   input.DecisionID,
+				Track:          speechruntime.TrackInterrupt,
+				Status:         speechruntime.StatusFailed,
+				Text:           input.ReplyText,
+				QuestionText:   input.Question,
+				ReplyText:      input.ReplyText,
+				ResumeStrategy: resumeMode,
+				BridgeText:     input.BridgeText,
+				BridgeUsed:     bridgeUsed,
+				Source:         source,
+				AudioURL:       input.AudioURL,
+				DecisionID:     input.DecisionID,
 			})
 		}
 		writeError(w, http.StatusBadGateway, "提交插播失败: "+err.Error())
@@ -470,6 +952,8 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			RoomID:       roomID,
 			Topic:        input.Topic,
 			ResumeMode:   resumeMode,
+			BridgeText:   input.BridgeText,
+			BridgeUsed:   bridgeUsed,
 			DecisionID:   input.DecisionID,
 			QuestionText: input.Question,
 			ReplyText:    input.ReplyText,
@@ -485,17 +969,20 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			startedAt = time.Now().UTC()
 		}
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-			Track:        speechruntime.TrackInterrupt,
-			Status:       speechruntime.StatusPlaying,
-			Text:         input.ReplyText,
-			QuestionText: input.Question,
-			ReplyText:    input.ReplyText,
-			Source:       source,
-			AudioURL:     input.AudioURL,
-			DecisionID:   input.DecisionID,
-			SwitchAtMS:   switchAtMS,
-			SpeechTaskID: task.ID,
-			StartedAt:    &startedAt,
+			Track:          speechruntime.TrackInterrupt,
+			Status:         speechruntime.StatusPlaying,
+			Text:           input.ReplyText,
+			QuestionText:   input.Question,
+			ReplyText:      input.ReplyText,
+			ResumeStrategy: resumeMode,
+			BridgeText:     input.BridgeText,
+			BridgeUsed:     bridgeUsed,
+			Source:         source,
+			AudioURL:       input.AudioURL,
+			DecisionID:     input.DecisionID,
+			SwitchAtMS:     switchAtMS,
+			SpeechTaskID:   task.ID,
+			StartedAt:      &startedAt,
 		})
 	}
 	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID)

@@ -260,6 +260,33 @@ func (s *Store) GetLiveSupportAuthorizedTenant(
 	return tenantID, err
 }
 
+func (s *Store) HasLiveSupportTenantAuthorization(
+	ctx context.Context,
+	tenantID, staffUserID int64,
+	capability string,
+) (bool, error) {
+	if tenantID <= 0 || staffUserID <= 0 || !validLiveSupportCapability(capability) {
+		return false, nil
+	}
+	if capability == model.LiveSupportCapabilityL3Policy {
+		access, err := s.GetStaffAccess(ctx, staffUserID)
+		if err != nil {
+			return false, err
+		}
+		if !access.CanDelegateLivePolicyL3() {
+			return false, nil
+		}
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM live_support_authorizations
+		WHERE tenant_id=? AND staff_user_id=?
+		  AND capability=? AND status='active'
+	`, tenantID, staffUserID, capability).Scan(&count)
+	return count > 0, err
+}
+
 func insertLiveSupportEventTx(
 	ctx context.Context,
 	tx *sql.Tx,

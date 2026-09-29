@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { bindLiveDevice, getLiveDevices, getRooms } from '../api'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import PaginationBar from '../components/PaginationBar.vue'
 import type { LiveDevice, Room } from '../types'
 
@@ -90,7 +90,7 @@ onMounted(load)
 
 <template>
   <div class="device-binding-page">
-    <ModulePageNav context="live" active-title="设备绑定" active-nav-title="直播运维" />
+
 
     <section class="feature-workspace-hero">
       <div>

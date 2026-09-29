@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
@@ -38,6 +40,8 @@ type store interface {
 	GetPublishedLiveAgentPlanVersionForRoom(context.Context, int64, int64) (model.LiveAgentPlanVersion, error)
 	LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error)
 	GetLiveAgentPlanForRoom(context.Context, int64, int64) (model.LiveAgentPlan, error)
+	ListLiveAgentPlanFacts(context.Context, int64, int64) ([]model.LiveAgentPlanFact, error)
+	ListLiveAgentPlanScripts(context.Context, int64, int64) ([]model.LiveAgentPlanScript, error)
 	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
 	RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error
 	AgentPromptValue(context.Context, string, string) string
@@ -93,6 +97,32 @@ type decisionItem struct {
 	CurrentMainline        string   `json:"-"`
 	ResumeMainline         string   `json:"-"`
 	ResumeSegmentID        string   `json:"-"`
+	SelectedInterrupt      string   `json:"-"`
+	SelectedResume         string   `json:"-"`
+	SelectedAddressing     string   `json:"-"`
+	BridgeText             string   `json:"-"`
+	HiddenStrategyGuidance []string `json:"-"`
+}
+
+func (item *decisionItem) addHiddenStrategyGuidance(value string) {
+	if item == nil {
+		return
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	item.HiddenStrategyGuidance = append(item.HiddenStrategyGuidance, value)
+}
+
+func hiddenStrategyPrompt(item decisionItem) string {
+	guidance := uniqueNonEmptyStrings(item.HiddenStrategyGuidance)
+	if len(guidance) == 0 {
+		return ""
+	}
+	return "\n\n【仅供模型内部执行的生成控制】\n" +
+		"下面内容不是台词、不是回答前缀、不是需要向观众解释的信息。只把它们融入措辞、语气、称呼和衔接方式；最终只输出主播真正会说的自然口播，绝对不要复述本区标题、策略名称、概率、内部说明或系统字段。\n- " +
+		strings.Join(guidance, "\n- ")
 }
 
 type claimResponse struct {
@@ -194,8 +224,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		}
 	}()
 
-	isSimulation := strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation")
-	text, err := w.generateDecisionText(ctx, session, *item)
+	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
+	isSimulation := manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview"
+	text, err := w.generateDecisionTextMutable(ctx, session, item)
 	if err != nil {
 		return err
 	}
@@ -230,14 +261,16 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 
 	ttsModel := voiceModel(voice)
+	ttsProfile := ttsProfileForInterrupt(item.SelectedInterrupt)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 35*time.Second)
 	defer ttsCancel()
 	audio, err := w.tts.SynthesizeURL(ttsCtx, ttsgateway.SynthesizeRequest{
-		Provider: voiceProvider(voice),
-		Model:    ttsModel,
-		VoiceID:  voice.VoiceID,
-		Text:     text,
-		Rate:     voiceRate(voice),
+		Provider:    voiceProvider(voice),
+		Model:       ttsModel,
+		VoiceID:     voice.VoiceID,
+		Text:        text,
+		Rate:        voiceRate(voice),
+		Instruction: ttsProfile.Instruction,
 	})
 	if err != nil {
 		return fmt.Errorf("TTS生成失败: %w", err)
@@ -245,6 +278,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if strings.TrimSpace(audio.AudioURL) == "" {
 		return fmt.Errorf("TTS未返回音频地址")
 	}
+	log.Printf(
+		"decision tts profile tenant=%d room=%d decision=%s interrupt=%s rate=%.2f instruction=%t model=%s",
+		session.TenantID, session.RoomID, item.ID, item.SelectedInterrupt, voiceRate(voice), strings.TrimSpace(ttsProfile.Instruction) != "", ttsModel,
+	)
 
 	action := "answer"
 	if strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick") {
@@ -284,25 +321,203 @@ type SimulationOutput struct {
 	UserLayerVersion uint64 `json:"user_layer_version,omitempty"`
 }
 
+type coreStrategySelection struct {
+	Category string `json:"category"`
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+}
+
+func (w *Worker) selectCoreStrategy(ctx context.Context, session model.LiveRuntimeSession, seed, category string, candidates []string) (coreStrategySelection, error) {
+	if w == nil || w.core == nil || session.TenantID <= 0 || session.RoomID <= 0 {
+		return coreStrategySelection{}, nil
+	}
+	resp, err := w.core.DoRoom(
+		ctx, session.TenantID, session.RoomID, http.MethodPost,
+		fmt.Sprintf("/internal/v1/rooms/%d/strategy-select", session.RoomID),
+		tenantQuery(session.TenantID),
+		map[string]any{"category": category, "candidates": candidates, "seed": seed},
+	)
+	if err != nil {
+		return coreStrategySelection{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return coreStrategySelection{}, fmt.Errorf("strategy select http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var selected coreStrategySelection
+	if err := json.NewDecoder(resp.Body).Decode(&selected); err != nil {
+		return coreStrategySelection{}, err
+	}
+	return selected, nil
+}
+
+func (w *Worker) selectCoreResumeStrategy(ctx context.Context, session model.LiveRuntimeSession, seed, topic string, estimatedMS int) (coreStrategySelection, error) {
+	if w == nil || w.core == nil || session.TenantID <= 0 || session.RoomID <= 0 {
+		return coreStrategySelection{}, nil
+	}
+	resp, err := w.core.DoRoom(
+		ctx, session.TenantID, session.RoomID, http.MethodPost,
+		fmt.Sprintf("/internal/v1/rooms/%d/strategy-select", session.RoomID),
+		tenantQuery(session.TenantID),
+		map[string]any{
+			"category":     "resume",
+			"seed":         seed,
+			"topic":        strings.TrimSpace(topic),
+			"estimated_ms": estimatedMS,
+		},
+	)
+	if err != nil {
+		return coreStrategySelection{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return coreStrategySelection{}, fmt.Errorf("resume strategy select http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var selected coreStrategySelection
+	if err := json.NewDecoder(resp.Body).Decode(&selected); err != nil {
+		return coreStrategySelection{}, err
+	}
+	return selected, nil
+}
+
+func interruptStrategyInstruction(key string) string {
+	switch strings.TrimSpace(key) {
+	case "read_comment_softly":
+		return "先像真人主播一样轻声、自然地读一下或复述当前弹幕，再回答；不要像系统播报。"
+	case "hard_cut":
+		return "本次采用直接切入：不要长铺垫，第一句就进入核心回答，但保持完整自然句。"
+	case "ask_controller":
+		return "本次采用中控确认感：只有涉及尚未确认的事实时才自然说一句向中控核实；已有明确事实不要假装不知道。"
+	case "thinking_pause":
+		return "本次保留很轻的思考感，可以有极短的‘嗯’或自然停顿，不要拖沓。"
+	case "repeat_confirm":
+		return "先用一句自然口语确认观众到底在问什么，再进入回答。"
+	default:
+		return ""
+	}
+}
+
+type interruptTTSProfile struct {
+	Instruction string
+}
+
+func ttsProfileForInterrupt(key string) interruptTTSProfile {
+	switch strings.TrimSpace(key) {
+	case "read_comment_softly":
+		return interruptTTSProfile{
+			Instruction: "像真人直播间轻声接弹幕：开头复述观众问题时声音轻一点、贴近聊天，随后回答正文恢复正常主播语气和力度；不要像系统播报。",
+		}
+	case "hard_cut":
+		return interruptTTSProfile{
+			Instruction: "直接、利落地切入核心回答，起句清楚，不做长铺垫，不故意拖停顿；保持真人主播自然语气。",
+		}
+	case "ask_controller":
+		return interruptTTSProfile{
+			Instruction: "像真人主播现场确认信息：需要核实时带一点向中控确认后的自然感觉，语气克制真实；已有明确事实时直接回答，不表演、不夸张。",
+		}
+	case "thinking_pause":
+		return interruptTTSProfile{
+			Instruction: "开头带非常轻微的思考感，允许一次很短的自然停顿或轻微语气词，随后马上进入回答；不要拖沓。",
+		}
+	case "repeat_confirm":
+		return interruptTTSProfile{
+			Instruction: "先像真人主播一样自然确认观众问题，再顺势回答；确认句简短，不机械重复整段弹幕。",
+		}
+	default:
+		return interruptTTSProfile{}
+	}
+}
+
+func resumeStrategyInstruction(key string) string {
+	switch strings.ToUpper(strings.TrimSpace(key)) {
+	case "DIRECT":
+		return "核心问题回答清楚后自然收住，不额外复述下一句主线。"
+	case "BRIDGE":
+		return "核心回答结束后必须加一句很短、口语化的桥接，把话题自然交还主线；桥接必须作为最后一句完整独立句，不要照抄下一句主线，也不要每次固定同一句。"
+	case "FUSION_SKIP":
+		return "把当前问题相关内容一次说完整，尾句自然收束；系统会跳过已经被回答覆盖的后续内容，不要再预告重复内容。"
+	case "CROSS_RESUME":
+		return "回答尾部做一次自然的话题收束，给系统跨过已覆盖段落留下干净入口，不要念出内部跳段逻辑。"
+	case "RE_ANCHOR":
+		return "长互动结束时用一句简短口语把注意力重新拉回当前商品或直播主轴，再结束本段回答。"
+	case "SWITCH_PLAN":
+		return "完整收束当前回答，不承诺继续刚才那一段旧主线，给系统切换到新的主线入口。"
+	default:
+		return ""
+	}
+}
+
+func estimatedAnswerDurationMS(item decisionItem) int {
+	if strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick") {
+		return 6000
+	}
+	questionRunes := utf8.RuneCountInString(strings.TrimSpace(primaryQuestion(item)))
+	switch {
+	case questionRunes <= 12:
+		return 8000
+	case questionRunes <= 30:
+		return 11000
+	default:
+		return 15000
+	}
+}
+
 func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+	return w.generateDecisionTextMutable(ctx, session, &item)
+}
+
+func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem) (string, error) {
+	if item == nil {
+		return "", fmt.Errorf("待执行策略为空")
+	}
 	text := ""
 	if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		// 100%原话只表示不主动改写；规则层仍然拥有最终播出否决权。
 		text = strings.TrimSpace(item.FixedText)
 		if text == "" {
-			text = strings.TrimSpace(primaryQuestion(item))
+			text = strings.TrimSpace(primaryQuestion(*item))
 		}
 		if text == "" {
 			return "", fmt.Errorf("100%%原话模式没有可播出的固定文字")
 		}
 	} else {
-		prompt, err := w.answerPrompt(ctx, session, item)
+		seed := strings.TrimSpace(item.ID)
+		if seed == "" {
+			seed = strings.TrimSpace(primaryQuestion(*item))
+		}
+		if selected, selectErr := w.selectCoreStrategy(ctx, session, seed, "interrupt", []string{"read_comment_softly", "hard_cut", "ask_controller", "thinking_pause", "repeat_confirm"}); selectErr == nil {
+			if instruction := interruptStrategyInstruction(selected.Key); instruction != "" {
+				item.SelectedInterrupt = selected.Key
+				item.addHiddenStrategyGuidance("切入方式：" + instruction)
+				log.Printf("decision strategy tenant=%d room=%d decision=%s category=interrupt selected=%s", session.TenantID, session.RoomID, item.ID, selected.Key)
+			}
+		} else {
+			log.Printf("decision strategy tenant=%d room=%d decision=%s category=interrupt fallback=%v", session.TenantID, session.RoomID, item.ID, selectErr)
+		}
+		if addressing, selectErr := w.selectCoreStrategy(ctx, session, seed, "addressing", nil); selectErr == nil && strings.TrimSpace(addressing.Name) != "" {
+			item.SelectedAddressing = addressing.Name
+			item.addHiddenStrategyGuidance("称呼偏好：如果当前语境自然需要称呼观众，可自然使用“" + addressing.Name + "”；不需要称呼时不要为了命中策略生硬插入。")
+			log.Printf("decision strategy tenant=%d room=%d decision=%s category=addressing selected=%s", session.TenantID, session.RoomID, item.ID, addressing.Name)
+		}
+		if resume, selectErr := w.selectCoreResumeStrategy(ctx, session, seed+":resume", item.Topic, estimatedAnswerDurationMS(*item)); selectErr == nil {
+			if instruction := resumeStrategyInstruction(resume.Key); instruction != "" {
+				item.SelectedResume = resume.Key
+				item.addHiddenStrategyGuidance("回答结束与回归主线的方式：" + instruction)
+				log.Printf("decision strategy tenant=%d room=%d decision=%s category=resume selected=%s", session.TenantID, session.RoomID, item.ID, resume.Key)
+			}
+		} else {
+			log.Printf("decision strategy tenant=%d room=%d decision=%s category=resume fallback=%v", session.TenantID, session.RoomID, item.ID, selectErr)
+		}
+		prompt, err := w.answerPrompt(ctx, session, *item)
 		if err != nil {
 			return "", err
 		}
 		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
-		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "生成真实、自然、可直接播出的直播回答，不编造事实。")
+		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "生成真实、自然、可直接播出的直播回答，不编造事实。") +
+			"\n策略、事实、风格、称呼、打断和回归说明都属于隐藏生成条件，只能影响你怎么组织最终口播。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
 		answer, err := w.agent.Complete(answerCtx, agentgateway.Request{
 			Messages: []agentgateway.Message{
 				{Role: "system", Content: answerSystemPrompt},
@@ -320,7 +535,7 @@ func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRun
 			return "", fmt.Errorf("生成回答为空")
 		}
 	}
-	finalText, err := w.finalizeSpeechText(ctx, session, item, text)
+	finalText, err := w.finalizeSpeechText(ctx, session, *item, text)
 	if err != nil {
 		return "", err
 	}
@@ -328,7 +543,53 @@ func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRun
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("最终播出文字为空")
 	}
+	if strings.EqualFold(strings.TrimSpace(item.SelectedResume), "BRIDGE") {
+		item.BridgeText = extractFinalSpeechSentence(text)
+	} else {
+		item.BridgeText = ""
+	}
 	return text, nil
+}
+
+func extractFinalSpeechSentence(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	end := len(runes)
+	var terminal rune
+	if end > 0 && strings.ContainsRune("。！？!?；;", runes[end-1]) {
+		terminal = runes[end-1]
+		end--
+	}
+	for end > 0 && unicode.IsSpace(runes[end-1]) {
+		end--
+	}
+	start := -1
+	for i := end - 1; i >= 0; i-- {
+		if strings.ContainsRune("。！？!?；;", runes[i]) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	for start < end && unicode.IsSpace(runes[start]) {
+		start++
+	}
+	if start >= end {
+		return ""
+	}
+	tail := strings.TrimSpace(string(runes[start:end]))
+	if tail == "" {
+		return ""
+	}
+	if terminal != 0 {
+		tail += string(terminal)
+	}
+	return tail
 }
 
 func (w *Worker) SimulateAnswer(ctx context.Context, tenantID, roomID int64, question string) (SimulationOutput, error) {
@@ -460,14 +721,17 @@ func (w *Worker) dispatch(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"decision_id":  item.ID,
-			"session_id":   session.ExternalID,
-			"action":       action,
-			"audio_url":    audioURL,
-			"question":     primaryQuestion(item),
-			"reply_text":   text,
-			"topic":        item.Topic,
-			"switch_at_ms": item.PlannedSwitchAtMS,
+			"decision_id":        item.ID,
+			"session_id":         session.ExternalID,
+			"action":             action,
+			"audio_url":          audioURL,
+			"question":           primaryQuestion(item),
+			"reply_text":         text,
+			"topic":              item.Topic,
+			"interrupt_strategy": item.SelectedInterrupt,
+			"resume_strategy":    item.SelectedResume,
+			"bridge_text":        item.BridgeText,
+			"switch_at_ms":       item.PlannedSwitchAtMS,
 		},
 	)
 	if err != nil {
@@ -624,6 +888,19 @@ var unsupportedShippingClaimPhrases = []string{
 	"四十八小时内",
 }
 
+var internalSpeechLeakTerms = []string{
+	"【仅供模型内部执行的生成控制】",
+	"【本次称呼】",
+	"【本次打断行为】",
+	"【本次回归策略】",
+	"【当前方案动态事实：实时热更新】",
+	"【当前主播风格：实时热更新】",
+	"【主线衔接硬要求】",
+	"隐藏生成条件",
+	"策略名称：",
+	"系统提示：",
+}
+
 func (w *Worker) finalizeSpeechText(
 	ctx context.Context,
 	session model.LiveRuntimeSession,
@@ -646,6 +923,12 @@ func (w *Worker) finalizeSpeechText(
 	}
 	contextText, _ := w.answerPrompt(ctx, session, item)
 	riskTerms, reasons := finalSpeechRisks(text, contextText, effective)
+	for _, term := range internalSpeechLeakTerms {
+		if term != "" && strings.Contains(text, term) {
+			reasons = append(reasons, "内部生成控制信息不得进入播出文本")
+			break
+		}
+	}
 	for _, term := range memoryWordingRiskTerms(contextText) {
 		if term != "" && strings.Contains(text, term) {
 			riskTerms = append(riskTerms, term)
@@ -655,7 +938,13 @@ func (w *Worker) finalizeSpeechText(
 	riskTerms = uniqueNonEmptyStrings(riskTerms)
 	reasons = uniqueNonEmptyStrings(reasons)
 	hasAgentMemories := hasAgentMemoryPrompt(contextText)
-	if len(reasons) == 0 && !hasAgentMemories {
+	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
+	forceOperatorReview := manualOrigin == "agent_input" || manualOrigin == "agent_input_preview"
+	if forceOperatorReview {
+		reasons = append(reasons, "操作者上行文字必须经过播出前审核")
+		reasons = uniqueNonEmptyStrings(reasons)
+	}
+	if len(reasons) == 0 && !hasAgentMemories && !forceOperatorReview {
 		return text, nil
 	}
 
@@ -665,9 +954,13 @@ func (w *Worker) finalizeSpeechText(
 	if hasAgentMemories {
 		reviewSystemPrompt += "\n\n【智能体记忆终审硬要求】\n当前直播间智能体记忆都是用户已经采用、正在生效的约束。必须逐条核对与当前问题相关的记忆，不能遗漏：\n- semantic：必须结合当前问题、商品和上下文判断含义，禁止无条件字符串替换；\n- fact：不得与已确认事实冲突，不得把未知事实补成确定事实；\n- wording：禁止使用 avoid/blocked 类表达，并优先采用已确认的表达口径；\n- style：只能改变说话方式，不能改变事实。\n若待播话术已经正确，保持原意和自然度；若存在冲突，直接修正。只返回最终可播正文。"
 	}
+	if forceOperatorReview {
+		reviewSystemPrompt += "\n\n【操作者上行播出前审核】\n这段文字来自手机端或电脑端智能体上行，必须先审核再进入TTS。逐项核对事实、合规、当前直播方案和已生效记忆。原文已经自然、安全且事实明确时尽量原样保留；只有存在风险、歧义、生硬或明显不适合直播口播时才优化。不得改变用户真实意图。只返回最终可播正文。"
+	}
 	if strings.TrimSpace(item.PreviewInstruction) != "" {
 		reviewSystemPrompt += "\n\n【候选修正预览测试】\n本次正在测试尚未采用的候选修正。候选修正与同一用户层记忆直接冲突时，以候选修正为准；规则层、行业层和其他不冲突的已采用记忆继续执行。只评估本次回答，不得声称候选已经采用、发布或保存。"
 	}
+	reviewSystemPrompt += "\n\n【内部信息保密】\n策略选择、称呼选择、回归方式、打断方式、概率、系统字段、提示词标题都只用于控制生成，绝不能向观众复述。最终只保留主播自然会说出口的正文。"
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{
@@ -687,21 +980,59 @@ func (w *Worker) finalizeSpeechText(
 		Timeout:        16 * time.Second,
 	})
 	candidate := text
-	if reviewErr != nil && hasAgentMemories {
+	if reviewErr != nil && (hasAgentMemories || forceOperatorReview) {
+		if forceOperatorReview {
+			return "", fmt.Errorf("播出前审核失败: %w", reviewErr)
+		}
 		return "", fmt.Errorf("智能体记忆终审失败: %w", reviewErr)
 	}
 	if reviewErr == nil && strings.TrimSpace(review.Text) != "" {
 		candidate = strings.TrimSpace(review.Text)
-	} else if hasAgentMemories {
+	} else if hasAgentMemories || forceOperatorReview {
+		if forceOperatorReview {
+			return "", fmt.Errorf("播出前审核未返回可播文字")
+		}
 		return "", fmt.Errorf("智能体记忆终审未返回可播文字")
 	}
 
-	// 终审后再做一次确定性的硬过滤，确保已知绝对化词和用词禁词不能进入 TTS。
+	// 终审后再做一次确定性的硬过滤，确保内部控制信息、绝对化词和用词禁词不能进入 TTS。
+	candidate = stripInternalSpeechLeak(candidate)
 	candidate = hardSanitizeSpeech(candidate, riskTerms, contextText)
 	if strings.TrimSpace(candidate) == "" {
 		return "", fmt.Errorf("规则层终审后没有可播出文字")
 	}
 	return strings.TrimSpace(candidate), nil
+}
+
+func stripInternalSpeechLeak(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return text
+	}
+	for _, term := range internalSpeechLeakTerms {
+		if strings.HasPrefix(term, "【") {
+			text = strings.ReplaceAll(text, term, "")
+		}
+	}
+	lines := strings.Split(text, "\n")
+	filtered := lines[:0]
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(trimmed, "策略名称：") ||
+			strings.Contains(trimmed, "系统提示：") ||
+			strings.Contains(trimmed, "隐藏生成条件") ||
+			strings.Contains(lower, "resume_strategy") ||
+			strings.Contains(lower, "interrupt_strategy") ||
+			strings.Contains(lower, "addressing_mode") {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	return strings.TrimSpace(strings.Join(filtered, "\n"))
 }
 
 func hasAgentMemoryPrompt(contextText string) bool {
@@ -992,10 +1323,113 @@ func liveAgentPlanPromptContext(plan model.LiveAgentPlan) string {
 	return builder.String()
 }
 
+func liveAgentPlanFactsPrompt(facts []model.LiveAgentPlanFact) string {
+	if len(facts) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("\n【当前方案动态事实：实时热更新】")
+	builder.WriteString("\n这些事实是当前方案刚刚生效的正式事实，回答相关问题时优先于旧主线稿中的过时表述；不得虚构未列出的事实。")
+	count := 0
+	for _, fact := range facts {
+		if count >= 80 || !strings.EqualFold(strings.TrimSpace(fact.Status), "active") {
+			continue
+		}
+		key := strings.TrimSpace(fact.Key)
+		value := strings.TrimSpace(fact.Value)
+		if key == "" || value == "" {
+			continue
+		}
+		count++
+		builder.WriteString("\n- ")
+		if category := strings.TrimSpace(fact.Category); category != "" {
+			builder.WriteString("[")
+			builder.WriteString(category)
+			builder.WriteString("] ")
+		}
+		builder.WriteString(key)
+		builder.WriteString("：")
+		builder.WriteString(value)
+		if fact.VersionNo > 0 {
+			builder.WriteString("（V")
+			builder.WriteString(strconv.FormatInt(fact.VersionNo, 10))
+			builder.WriteString("）")
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	return builder.String()
+}
+
+func liveAgentPlanStylePrompt(scripts []model.LiveAgentPlanScript) string {
+	for _, script := range scripts {
+		if !strings.EqualFold(strings.TrimSpace(script.Status), "active") ||
+			!strings.EqualFold(strings.TrimSpace(script.AnalysisStatus), "analyzed") {
+			continue
+		}
+		profile := script.Analysis.AnchorStyle
+		if len(profile.Dimensions) == 0 && len(profile.ReusableRules) == 0 && strings.TrimSpace(profile.Summary) == "" {
+			continue
+		}
+		var builder strings.Builder
+		builder.WriteString("\n【当前主播风格：实时热更新】")
+		builder.WriteString("\n这里只控制怎么说，绝不能改变事实、价格、规格、库存、活动、物流或承诺。")
+		if summary := strings.TrimSpace(profile.Summary); summary != "" {
+			builder.WriteString("\n风格摘要：")
+			builder.WriteString(summary)
+		}
+		dimensionCount := 0
+		for _, dimension := range profile.Dimensions {
+			if dimensionCount >= 24 {
+				break
+			}
+			rule := strings.TrimSpace(dimension.Rule)
+			label := strings.TrimSpace(dimension.Label)
+			if rule == "" && label == "" {
+				continue
+			}
+			dimensionCount++
+			builder.WriteString("\n- ")
+			if label != "" {
+				builder.WriteString(label)
+				builder.WriteString("：")
+			}
+			builder.WriteString(rule)
+		}
+		for index, rule := range profile.ReusableRules {
+			if index >= 12 {
+				break
+			}
+			rule = strings.TrimSpace(rule)
+			if rule != "" {
+				builder.WriteString("\n- 可复用表达：")
+				builder.WriteString(rule)
+			}
+		}
+		return builder.String()
+	}
+	return ""
+}
+
 func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
 	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if planErr != nil && !errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
 		return "", fmt.Errorf("读取智能体直播方案失败: %w", planErr)
+	}
+	dynamicFactsPrompt := ""
+	dynamicStylePrompt := ""
+	if plan.ID > 0 {
+		facts, factsErr := w.store.ListLiveAgentPlanFacts(ctx, session.TenantID, plan.ID)
+		if factsErr != nil {
+			return "", fmt.Errorf("读取直播方案动态事实失败: %w", factsErr)
+		}
+		dynamicFactsPrompt = liveAgentPlanFactsPrompt(facts)
+		scripts, scriptsErr := w.store.ListLiveAgentPlanScripts(ctx, session.TenantID, plan.ID)
+		if scriptsErr != nil {
+			return "", fmt.Errorf("读取直播方案主播风格失败: %w", scriptsErr)
+		}
+		dynamicStylePrompt = liveAgentPlanStylePrompt(scripts)
 	}
 	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
 	if err != nil {
@@ -1027,6 +1461,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	memoryPrompt := agentmemory.Prompt(memories)
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
+	strategyGuidance := hiddenStrategyPrompt(item)
 	lengthGuidance := adaptiveAnswerLengthGuidance(item)
 	continuityGuidance := ""
 	if strings.TrimSpace(item.ResumeMainline) != "" {
@@ -1051,9 +1486,13 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		"reference_answer":     strings.TrimSpace(item.ReplyHint),
 		"conversation_history": strings.TrimSpace(item.Summary),
 	}
-	if strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "agent_input") {
+	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
+	if manualOrigin == "agent_input" || manualOrigin == "agent_input_preview" {
 		requirement := w.store.RenderAgentPrompt(ctx, "live.answer.operator", "按操作者指令生成可直接播出的口播正文。", variables)
-		return planContext +
+		if manualOrigin == "agent_input_preview" {
+			requirement = strings.TrimSpace(requirement + "\n这是播出前预生成审核：先核对事实、合规和当前直播方案。原输入已经自然且安全时尽量保持原意和语气；只有确有必要时才优化措辞。只返回最终建议播出的正文，本步骤不触发TTS。")
+		}
+		return planContext + dynamicFactsPrompt + dynamicStylePrompt + strategyGuidance +
 			"\n当前直播策略规则：" + string(rulesJSON) +
 			"\n当前直播间智能体记忆：" + memoryPrompt +
 			"\n操作者指令：" + strings.Join(questions, "；") +
@@ -1073,7 +1512,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 				"\n这是尚未采用的候选修正，仅本次测试临时生效。若它与同一用户记忆发生直接冲突，以本候选为准；其他不冲突的已采用记忆继续执行。不得声称已经采用或保存。"
 		}
 	}
-	return planContext +
+	return planContext + dynamicFactsPrompt + dynamicStylePrompt + strategyGuidance +
 		"\n当前直播策略规则：" + string(rulesJSON) +
 		"\n当前直播间智能体记忆：" + memoryPrompt + previewPrompt +
 		"\n当前问题类别：" + strings.TrimSpace(item.Title) +

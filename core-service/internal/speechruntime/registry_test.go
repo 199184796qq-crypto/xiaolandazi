@@ -41,16 +41,19 @@ func TestUpdateKeepsMainlineAndInterruptIndependent(t *testing.T) {
 
 	now = now.Add(time.Second)
 	snapshot, err = registry.Update(12, UpdateInput{
-		Track:        TrackInterrupt,
-		Status:       StatusPlaying,
-		QuestionText: "什么时候发货",
-		ReplyText:    "今天下单按顺序安排发货。",
-		Source:       "question_bucket",
+		Track:          TrackInterrupt,
+		Status:         StatusPlaying,
+		QuestionText:   "什么时候发货",
+		ReplyText:      "今天下单按顺序安排发货。这个点说清楚了，咱们接着看产品。",
+		ResumeStrategy: "BRIDGE",
+		BridgeText:     "这个点说清楚了，咱们接着看产品。",
+		BridgeUsed:     true,
+		Source:         "question_bucket",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Interrupt.ReplyText != "今天下单按顺序安排发货。" || snapshot.Interrupt.QuestionText != "什么时候发货" {
+	if snapshot.Interrupt.QuestionText != "什么时候发货" || snapshot.Interrupt.ResumeStrategy != "BRIDGE" || !snapshot.Interrupt.BridgeUsed || snapshot.Interrupt.BridgeText != "这个点说清楚了，咱们接着看产品。" {
 		t.Fatalf("unexpected interrupt: %#v", snapshot.Interrupt)
 	}
 	if snapshot.Mainline.Text != "主线正在讲产品卖点" {

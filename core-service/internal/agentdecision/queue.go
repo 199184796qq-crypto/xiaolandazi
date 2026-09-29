@@ -112,16 +112,16 @@ type Summary struct {
 }
 
 type Snapshot struct {
-	RoomID           int64          `json:"room_id"`
-	GeneratedAt      time.Time      `json:"generated_at"`
-	Summary          Summary        `json:"summary"`
-	Queue            []Item         `json:"queue"`
-	RecentlyAnswered []RecentAnswer `json:"recently_answered"`
-	Notes            []Note         `json:"notes"`
+	RoomID            int64              `json:"room_id"`
+	GeneratedAt       time.Time          `json:"generated_at"`
+	Summary           Summary            `json:"summary"`
+	Queue             []Item             `json:"queue"`
+	RecentlyAnswered  []RecentAnswer     `json:"recently_answered"`
+	Notes             []Note             `json:"notes"`
 	SimulationResults []SimulationResult `json:"simulation_results,omitempty"`
-	Capacity         int            `json:"capacity"`
-	TTLSeconds       int64          `json:"ttl_seconds"`
-	CooldownSeconds  int64          `json:"cooldown_seconds"`
+	Capacity          int                `json:"capacity"`
+	TTLSeconds        int64              `json:"ttl_seconds"`
+	CooldownSeconds   int64              `json:"cooldown_seconds"`
 }
 
 type EnqueueResult struct {
@@ -188,7 +188,9 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	input.Topic = normalizeTopic(input.Topic, input.Question)
 	input.ManualAction = strings.ToLower(strings.TrimSpace(input.ManualAction))
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
-	if input.ManualOrigin == "test_simulation" && input.Topic == "" && input.Question != "" {
+	if input.ManualOrigin == "agent_input_preview" && input.Question != "" {
+		input.Topic = "PREVIEW:" + input.Question
+	} else if input.ManualOrigin == "test_simulation" && input.Topic == "" && input.Question != "" {
 		input.Topic = "TEST:" + input.Question
 	}
 	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))
@@ -420,7 +422,8 @@ func (q *Queue) CompleteSimulation(roomID int64, id, reply, executionMode, planN
 	state := q.roomLocked(roomID)
 	q.pruneLocked(roomID, state, now)
 	for index, item := range state.items {
-		if item.ID != id || item.Status != StatusClaimed || !strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation") {
+		origin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
+		if item.ID != id || item.Status != StatusClaimed || (origin != "test_simulation" && origin != "agent_input_preview") {
 			continue
 		}
 		question := ""
@@ -428,13 +431,13 @@ func (q *Queue) CompleteSimulation(roomID int64, id, reply, executionMode, planN
 			question = strings.TrimSpace(item.SampleQuestions[0])
 		}
 		result := SimulationResult{
-			DecisionID: id,
-			Question: question,
-			Reply: reply,
-			ExecutionMode: strings.TrimSpace(executionMode),
-			PlanName: strings.TrimSpace(planName),
+			DecisionID:       id,
+			Question:         question,
+			Reply:            reply,
+			ExecutionMode:    strings.TrimSpace(executionMode),
+			PlanName:         strings.TrimSpace(planName),
 			UserLayerVersion: userLayerVersion,
-			CreatedAt: now,
+			CreatedAt:        now,
 		}
 		state.items = append(state.items[:index], state.items[index+1:]...)
 		state.simulations = append([]SimulationResult{result}, state.simulations...)
@@ -523,16 +526,16 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 	notes := append([]Note(nil), state.notes...)
 	simulations := append([]SimulationResult(nil), state.simulations...)
 	return Snapshot{
-		RoomID:           roomID,
-		GeneratedAt:      now,
-		Summary:          summary,
-		Queue:            items,
-		RecentlyAnswered: recent,
-		Notes:            notes,
+		RoomID:            roomID,
+		GeneratedAt:       now,
+		Summary:           summary,
+		Queue:             items,
+		RecentlyAnswered:  recent,
+		Notes:             notes,
 		SimulationResults: simulations,
-		Capacity:         q.capacity,
-		TTLSeconds:       int64(q.ttl.Seconds()),
-		CooldownSeconds:  int64(q.cooldown.Seconds()),
+		Capacity:          q.capacity,
+		TTLSeconds:        int64(q.ttl.Seconds()),
+		CooldownSeconds:   int64(q.cooldown.Seconds()),
 	}
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import { session } from '../session'
 import LivePolicyAdminView from './LivePolicyAdminView.vue'
 import LivePolicyLearningView from './LivePolicyLearningView.vue'
@@ -28,7 +28,7 @@ watch(
 <template>
   <LiveStrategyView v-if="isCustomer" />
   <div v-else class="live-strategy-entry-page">
-    <ModulePageNav context="live" active-title="直播策略" active-nav-title="直播运维" />
+
     <div class="live-strategy-entry-tabs">
       <button
         type="button"

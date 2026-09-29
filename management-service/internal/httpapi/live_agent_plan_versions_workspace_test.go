@@ -30,6 +30,18 @@ func TestSelectLiveAgentPlanWorkspaceVersionIgnoresStaleDraft(t *testing.T) {
 	}
 }
 
+func TestSelectLatestLiveAgentPlanWorkspaceTemplateUsesMostRecentUsableVersion(t *testing.T) {
+	items := []model.LiveAgentPlanVersion{
+		{ID: 21, RoomID: 20, VersionNo: 1, LifecycleStatus: "published"},
+		{ID: 19, RoomID: 15, VersionNo: 8, LifecycleStatus: "superseded"},
+		{ID: 18, RoomID: 15, VersionNo: 7, LifecycleStatus: "draft"},
+	}
+	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items)
+	if version == nil || version.ID != 21 || source != "published" {
+		t.Fatalf("version=%+v source=%q, want most recent usable version id=21 published", version, source)
+	}
+}
+
 func TestValidateLiveAgentPlanVersionKeepsNonFormalDraftWithoutAudio(t *testing.T) {
 	input := model.CreateLiveAgentPlanVersionInput{
 		RoomID:          9,

@@ -95,7 +95,11 @@ func (s *Server) enqueueAgentDecision(w http.ResponseWriter, r *http.Request, so
 		return
 	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(input.ManualOrigin))
-	if source == agentdecision.SourceManual && manualOrigin != "agent_input" && manualOrigin != "test_simulation" && !s.manualCandidateTTSEligible(r.Context(), tenantID, roomID, input) {
+	if source == agentdecision.SourceManual &&
+		manualOrigin != "agent_input" &&
+		manualOrigin != "agent_input_preview" &&
+		manualOrigin != "test_simulation" &&
+		!s.manualCandidateTTSEligible(r.Context(), tenantID, roomID, input) {
 		writeError(w, http.StatusConflict, "这个问题已不在当前直播问题池中")
 		return
 	}
@@ -146,7 +150,8 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "empty"})
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(queue[0].ManualOrigin), "test_simulation") {
+	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
+	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"claimed": claimed,

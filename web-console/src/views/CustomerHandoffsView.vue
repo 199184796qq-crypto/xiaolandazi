@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {onMounted,onBeforeUnmount,ref,watch} from 'vue'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import {listHandoffs,updateHandoff,listHandoffEvents,handoffLabels,formatSalesTime as time} from '../salesBusinessApi'
@@ -38,7 +38,7 @@ watch(eventPage,loadEvents);watch(eventSize,()=>{if(eventPage.value!==1)eventPag
 
 <template>
  <div class="management-page sales-business">
-  <ModulePageNav context="live" active-title="客户交接" />
+
   <header class="sb-toolbar"><div><h2>客户交接</h2><p>接收销售新转入的正式客户，明确接手人、处理过程和完成结果。</p></div><button :disabled="loading" @click="load">刷新</button></header>
   <p class="sb-note">普通运维可查看待接单和自己接手的任务；负责人按权限管理。接单不自动授予客户直播策略、主播训练或声音复刻的操作授权。</p>
   <p v-if="notice" class="sb-success" role="status">{{notice}}</p>

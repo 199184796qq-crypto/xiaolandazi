@@ -117,6 +117,7 @@ const coreRuntimeNoticeText = computed(() =>
 const showCustomerLiveQuota = computed(
   () =>
     actor.value?.role === 'customer' &&
+    String(route.name || '') !== 'live-strategy' &&
     customerLiveRouteNames.has(String(route.name || '')),
 )
 const customerLiveQuota = ref<Awaited<ReturnType<typeof getLiveQuotaSummary>> | null>(null)
@@ -358,7 +359,7 @@ const navSections = computed<NavSection[]>(() => {
       }
     } else if (groupCode === 'live_operations') {
       workItems.push(
-        navItem('协助工单', '/operations/support', '助', ['operations-support']),
+        navItem('运维协助', '/operations/support', '助', ['operations-support']),
         navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
         navItem(
           '活动营销',
@@ -780,6 +781,7 @@ watch(() => showAuthenticatedShell.value && canUseWorkInbox(actor.value?.role) &
   ? JSON.stringify([actor.value?.user_id, actor.value?.role, actor.value?.tenant_id, staffAccess.value]) : '',
   key => { if (key) startInbox(key); else stopInbox() }, { immediate: true })
 onBeforeUnmount(stopInbox)
+
 </script>
 
 <template>

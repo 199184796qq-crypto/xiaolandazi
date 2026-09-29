@@ -1,0 +1,1091 @@
+<script lang="ts">
+  import { onDestroy, onMount, tick } from 'svelte';
+  import { page } from '$app/stores';
+  import {
+    chatClientAgent,
+    classifyLiveRoomAgentMessage,
+    enqueueRoomManualAgentDecision,
+    getLiveDevices,
+    getLiveRuntime,
+    getRoomAgentDecisions,
+    getRoom,
+    getRoomEvents,
+    getRoomLiveAgentPlans,
+    getRoomSessionStats,
+    pauseLiveRuntime,
+    resolveRoomSessionDecision,
+    resumeLiveRuntime,
+    setLiveRuntimeMode,
+    setLiveRuntimePlan,
+    startLiveRuntime,
+    stopLiveRuntime,
+  } from '$lib/api';
+  import {
+    closeLocalFloatingAudioForDifferentRoom,
+    customerAudioMuted,
+    flushRoomCompositeAudio,
+    startRoomCompositeAudio,
+    stopRoomCompositeAudio,
+    toggleCustomerAudioMuted,
+    updateFloatingAudioSession,
+  } from '$lib/audioRuntime';
+  import type { LiveAgentPlan, LiveDevice, LiveRuntimeSnapshot, Room, RoomEvent } from '$lib/types';
+
+  type LiveRoomAnswerMode = 'quick' | 'answer';
+  type ChatMessage = {
+    role: 'user' | 'agent';
+    text: string;
+    speechChoice?: {
+      question: string;
+      text: string;
+      status?: 'pending' | 'sending' | 'sent';
+      selected?: LiveRoomAnswerMode;
+    };
+  };
+
+  let roomId = 0;
+  let room: Room | null = null;
+  let runtime: LiveRuntimeSnapshot | null = null;
+  let roomDevice: LiveDevice | null = null;
+  let plans: LiveAgentPlan[] = [];
+  let selectedPlanId = 0;
+  let chatEvents: RoomEvent[] = [];
+  let loading = true;
+  let controlBusy = false;
+  let pageError = '';
+  let audioError = '';
+  let selectedMode: 'anchor' | 'control' = 'anchor';
+  let modeBusy = false;
+  let modeSwipeStartX: number | null = null;
+  let chatEl: HTMLDivElement;
+  let pollTimer: number | undefined;
+  let eventTimer: number | undefined;
+  let barrageRefreshing = false;
+  let sessionDecisionOpen = false;
+  let sessionDecisionBusy = false;
+  let pendingStartAfterSessionDecision = false;
+
+  const BARRAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
+  const BARRAGE_HISTORY_PAGE_SIZE = 300;
+  const BARRAGE_HISTORY_MAX_PAGES = 70;
+
+  let orbPressed = false;
+  let listening = false;
+  let holdTimer: number | undefined;
+  let recognition: any = null;
+  let speechFinal = '';
+  let speechInterim = '';
+  let voiceText = '';
+  let voiceComposerVisible = false;
+  let speechHint = '';
+  let voiceComposerEl: HTMLFormElement | null = null;
+  let agentOrbEl: HTMLButtonElement | null = null;
+
+  let drawerOpen = false;
+  let agentMessages: ChatMessage[] = [];
+  let agentInput = '';
+  let agentBusy = false;
+
+  $: roomId = Number($page.params.id || 0);
+  $: audioPlaying = runtime?.agent_state === 'working';
+  $: agentActive = runtime?.agent_state === 'working' || runtime?.agent_state === 'paused';
+  $: displayedMode = agentActive ? (runtime?.agent_mode || selectedMode) : selectedMode;
+
+  onMount(async () => {
+    if (!Number.isFinite(roomId) || roomId <= 0) {
+      pageError = '直播间不存在';
+      loading = false;
+      return;
+    }
+    await closeLocalFloatingAudioForDifferentRoom(roomId);
+    await refreshAll(true);
+    pollTimer = window.setInterval(() => void refreshRoomRuntime(), 1800);
+    eventTimer = window.setInterval(() => void refreshBarrage(), 1100);
+  });
+
+  onMount(() => {
+    const handleOutsideVoiceComposer = (event: PointerEvent) => {
+      if (!voiceComposerVisible) return;
+      const target = event.target as Node | null;
+      if (
+        target &&
+        (voiceComposerEl?.contains(target) || agentOrbEl?.contains(target))
+      ) {
+        return;
+      }
+      voiceComposerVisible = false;
+    };
+    window.addEventListener('pointerdown', handleOutsideVoiceComposer, true);
+    return () => {
+      window.removeEventListener('pointerdown', handleOutsideVoiceComposer, true);
+    };
+  });
+
+  onDestroy(() => {
+    if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    if (eventTimer !== undefined) window.clearInterval(eventTimer);
+    if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+    try { recognition?.stop?.(); } catch {}
+  });
+
+  async function refreshAll(first = false) {
+    if (first) loading = true;
+    pageError = '';
+    try {
+      const [roomValue, runtimeValue, planValue, deviceValues] = await Promise.all([
+        getRoom(roomId),
+        getLiveRuntime(roomId),
+        getRoomLiveAgentPlans(roomId),
+        getLiveDevices().catch(() => []),
+      ]);
+      room = roomValue;
+      runtime = runtimeValue;
+      roomDevice =
+        (deviceValues || []).find(
+          (item) => Number(item.room_id || 0) === roomId && item.binding_role === 'primary',
+        ) ||
+        (deviceValues || []).find((item) => Number(item.room_id || 0) === roomId) ||
+        null;
+      plans = (planValue.items || []).filter((item) => item.status !== 'archived');
+      selectedPlanId = Number(runtimeValue.agent_plan_id || 0);
+      if (runtimeValue.agent_state !== 'stopped') {
+        selectedMode = runtimeValue.agent_mode === 'control' ? 'control' : 'anchor';
+        updateFloatingAudioSession(
+          roomId,
+          roomValue.name,
+          runtimeValue.agent_state === 'paused' ? 'paused' : 'working',
+          true,
+        );
+      }
+      await loadBarrageHistory();
+      if (runtimeValue.agent_state === 'working') {
+        try {
+          await startRoomCompositeAudio(roomId, roomValue.name);
+          audioError = '';
+        } catch (err) {
+          audioError = err instanceof Error ? err.message : '声音连接失败';
+        }
+      }
+    } catch (err) {
+      pageError = err instanceof Error ? err.message : '读取直播间失败';
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function refreshRoomRuntime() {
+    try {
+      const [roomValue, runtimeValue, deviceValues] = await Promise.all([
+        getRoom(roomId),
+        getLiveRuntime(roomId),
+        getLiveDevices().catch(() => []),
+      ]);
+      room = roomValue;
+      runtime = runtimeValue;
+      roomDevice =
+        (deviceValues || []).find(
+          (item) => Number(item.room_id || 0) === roomId && item.binding_role === 'primary',
+        ) ||
+        (deviceValues || []).find((item) => Number(item.room_id || 0) === roomId) ||
+        null;
+      if (runtimeValue.agent_state !== 'stopped') {
+        selectedMode = runtimeValue.agent_mode === 'control' ? 'control' : 'anchor';
+        updateFloatingAudioSession(
+          roomId,
+          roomValue.name,
+          runtimeValue.agent_state === 'paused' ? 'paused' : 'working',
+          true,
+        );
+      }
+      if (runtimeValue.agent_plan_id) selectedPlanId = Number(runtimeValue.agent_plan_id);
+    } catch {}
+  }
+
+  function barrageCutoffMS() {
+    return Date.now() - BARRAGE_WINDOW_MS;
+  }
+
+  function eventTimeMS(item: RoomEvent) {
+    const parsed = Date.parse(item.occurred_at);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function normalizeBarrage(items: RoomEvent[], cutoffMS = barrageCutoffMS()) {
+    const byID = new Map<number, RoomEvent>();
+    for (const item of items) {
+      if (item.event_type !== 'chat' || !String(item.content || '').trim()) continue;
+      const occurred = eventTimeMS(item);
+      if (!occurred || occurred < cutoffMS) continue;
+      byID.set(item.id, item);
+    }
+    return [...byID.values()].sort((a, b) => {
+      const timeDelta = eventTimeMS(b) - eventTimeMS(a);
+      return timeDelta !== 0 ? timeDelta : b.id - a.id;
+    });
+  }
+
+  async function loadBarrageHistory() {
+    if (barrageRefreshing) return;
+    barrageRefreshing = true;
+    const cutoffMS = barrageCutoffMS();
+    const loaded: RoomEvent[] = [];
+    let beforeId = 0;
+    try {
+      for (let pageIndex = 0; pageIndex < BARRAGE_HISTORY_MAX_PAGES; pageIndex += 1) {
+        const result = await getRoomEvents(roomId, {
+          limit: BARRAGE_HISTORY_PAGE_SIZE,
+          channel: 'important',
+          eventType: 'chat',
+          beforeId,
+        });
+        const items = result.items || [];
+        let reachedCutoff = false;
+        for (const item of items) {
+          const occurred = eventTimeMS(item);
+          if (occurred && occurred < cutoffMS) {
+            reachedCutoff = true;
+            continue;
+          }
+          loaded.push(item);
+        }
+        const nextBeforeId = Number(result.next_before_id || 0);
+        if (
+          reachedCutoff ||
+          !result.has_more ||
+          items.length === 0 ||
+          nextBeforeId <= 0 ||
+          nextBeforeId === beforeId
+        ) {
+          break;
+        }
+        beforeId = nextBeforeId;
+      }
+      chatEvents = normalizeBarrage(loaded, cutoffMS);
+    } catch {}
+    finally {
+      barrageRefreshing = false;
+    }
+  }
+
+  async function refreshBarrage() {
+    if (barrageRefreshing) return;
+    barrageRefreshing = true;
+    try {
+      const result = await getRoomEvents(roomId, {
+        limit: BARRAGE_HISTORY_PAGE_SIZE,
+        channel: 'important',
+        eventType: 'chat',
+      });
+      chatEvents = normalizeBarrage([...(result.items || []), ...chatEvents]);
+    } catch {}
+    finally {
+      barrageRefreshing = false;
+    }
+  }
+
+  async function handleStart() {
+    if (controlBusy) return;
+    controlBusy = true;
+    pageError = '';
+    try {
+      if (runtime?.agent_state === 'stopped' && runtime?.agent_mode !== selectedMode) {
+        await setLiveRuntimeMode(roomId, selectedMode);
+      }
+      if (runtime?.agent_state === 'paused') {
+        await resumeLiveRuntime(roomId);
+      } else {
+        const stats = await getRoomSessionStats(roomId).catch(() => null);
+        if (stats?.resume_pending) {
+          pendingStartAfterSessionDecision = true;
+          sessionDecisionOpen = true;
+          return;
+        }
+        await startLiveRuntime(roomId);
+      }
+      await refreshRoomRuntime();
+      try {
+        await startRoomCompositeAudio(roomId, room?.name || '');
+        audioError = '';
+      } catch (audioErr) {
+        audioError = audioErr instanceof Error ? audioErr.message : '声音连接失败';
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '启动失败';
+      if (message.includes('请先选择续接上一场或作为新直播')) {
+        const stats = await getRoomSessionStats(roomId).catch(() => null);
+        if (stats?.resume_pending) {
+          pendingStartAfterSessionDecision = true;
+          sessionDecisionOpen = true;
+          pageError = '';
+          return;
+        }
+      }
+      pageError = message;
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  async function chooseSessionContinuation(action: 'merge' | 'fresh') {
+    if (sessionDecisionBusy) return;
+    const shouldStart = pendingStartAfterSessionDecision;
+    sessionDecisionBusy = true;
+    pageError = '';
+    try {
+      await resolveRoomSessionDecision(roomId, action);
+      sessionDecisionOpen = false;
+      pendingStartAfterSessionDecision = false;
+      await refreshRoomRuntime();
+      if (action === 'fresh') await loadBarrageHistory();
+      if (shouldStart) await handleStart();
+    } catch (err) {
+      pageError = err instanceof Error ? err.message : '处理直播续接失败';
+    } finally {
+      sessionDecisionBusy = false;
+    }
+  }
+
+  async function handlePause() {
+    if (controlBusy || runtime?.agent_state !== 'working') return;
+    controlBusy = true;
+    pageError = '';
+    try {
+      await pauseLiveRuntime(roomId);
+      flushRoomCompositeAudio();
+      updateFloatingAudioSession(roomId, room?.name || '', 'paused', true);
+      await refreshRoomRuntime();
+    } catch (err) {
+      pageError = err instanceof Error ? err.message : '暂停失败';
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  async function handleStop() {
+    if (controlBusy || runtime?.agent_state === 'stopped') return;
+    controlBusy = true;
+    pageError = '';
+    try {
+      await stopLiveRuntime(roomId);
+      await stopRoomCompositeAudio();
+      updateFloatingAudioSession(roomId, room?.name || '', 'stopped', true);
+      await refreshRoomRuntime();
+    } catch (err) {
+      pageError = err instanceof Error ? err.message : '停止失败';
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  async function chooseMode(mode: 'anchor' | 'control') {
+    if (agentActive || modeBusy || selectedMode === mode) return;
+    const previous = selectedMode;
+    selectedMode = mode;
+    modeBusy = true;
+    pageError = '';
+    try {
+      await setLiveRuntimeMode(roomId, mode);
+      await refreshRoomRuntime();
+    } catch (err) {
+      selectedMode = previous;
+      pageError = err instanceof Error ? err.message : '切换模式失败';
+    } finally {
+      modeBusy = false;
+    }
+  }
+
+  function beginModeSwipe(event: PointerEvent) {
+    if (agentActive || modeBusy) return;
+    modeSwipeStartX = event.clientX;
+  }
+
+  function endModeSwipe(event: PointerEvent) {
+    if (modeSwipeStartX === null || agentActive || modeBusy) {
+      modeSwipeStartX = null;
+      return;
+    }
+    const delta = event.clientX - modeSwipeStartX;
+    modeSwipeStartX = null;
+    if (Math.abs(delta) < 24) return;
+    void chooseMode(delta < 0 ? 'control' : 'anchor');
+  }
+
+  async function changePlan(event: Event) {
+    const value = Number((event.currentTarget as HTMLSelectElement).value || 0);
+    if (!value || value === runtime?.agent_plan_id) return;
+    controlBusy = true;
+    pageError = '';
+    try {
+      await setLiveRuntimePlan(roomId, value);
+      selectedPlanId = value;
+      await refreshRoomRuntime();
+    } catch (err) {
+      selectedPlanId = Number(runtime?.agent_plan_id || 0);
+      pageError = err instanceof Error ? err.message : '切换智能体方案失败';
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  function beginAgentHold() {
+    orbPressed = true;
+    speechHint = '';
+    if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+    holdTimer = window.setTimeout(() => {
+      holdTimer = undefined;
+      beginListening();
+    }, 260);
+  }
+
+  function endAgentHold() {
+    if (holdTimer !== undefined) {
+      window.clearTimeout(holdTimer);
+      holdTimer = undefined;
+      if (orbPressed) drawerOpen = true;
+    } else if (listening) {
+      stopListening();
+    }
+    orbPressed = false;
+  }
+
+  function beginListening() {
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    speechFinal = '';
+    speechInterim = '';
+    voiceText = '';
+    if (!Recognition) {
+      listening = false;
+      voiceComposerVisible = true;
+      speechHint = '当前浏览器不支持语音识别，可以直接输入。';
+      return;
+    }
+    try {
+      recognition = new Recognition();
+      recognition.lang = 'zh-CN';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onresult = (event: any) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const text = String(event.results[i]?.[0]?.transcript || '');
+          if (event.results[i].isFinal) speechFinal += text;
+          else interim += text;
+        }
+        speechInterim = interim;
+        voiceText = (speechFinal + speechInterim).trim();
+      };
+      recognition.onerror = () => {
+        speechHint = '没有听清，可以再长按一次或直接输入。';
+      };
+      recognition.onend = () => {
+        listening = false;
+        voiceText = (speechFinal + speechInterim).trim();
+        voiceComposerVisible = true;
+      };
+      listening = true;
+      recognition.start();
+    } catch {
+      listening = false;
+      voiceComposerVisible = true;
+      speechHint = '语音识别启动失败，可以直接输入。';
+    }
+  }
+
+  function stopListening() {
+    try { recognition?.stop?.(); } catch {}
+    listening = false;
+    voiceText = (speechFinal + speechInterim).trim();
+    voiceComposerVisible = true;
+  }
+
+  async function sendVoiceText() {
+    const value = voiceText.trim();
+    if (!value || agentBusy) return;
+    voiceComposerVisible = false;
+    voiceText = '';
+    await sendAgentMessage(value);
+  }
+
+  async function sendDrawerText() {
+    const value = agentInput.trim();
+    if (!value || agentBusy) return;
+    agentInput = '';
+    await sendAgentMessage(value);
+  }
+
+  function extractLiveRoomExecutionContent(value: string) {
+    const text = value.trim();
+    const direct = text.match(/^(?:(?:你)?(?:帮我|替我)?(?:直接(?:打断)?)?(?:回答|回复|抢答|说|播|念|读)(?:一句|一下|下)?(?:这条(?:弹幕|问题)?|这个(?:问题|用户)?|他|她)?|(?:让)?(?:直播间|主播|智能体)(?:直接(?:打断)?)?(?:说|播|念|读)(?:一句|一下|下)?|给(?:这个用户|他|她)回复)[：:，,\s]*(.+)$/);
+    return direct?.[1]?.trim() || text;
+  }
+
+  function isLikelyLiveRoomExecutionIntent(value: string) {
+    const text = value.trim();
+    if (!text || text.startsWith('/')) return false;
+    return /(?:帮我|替我|让(?:直播间|主播|智能体)?|直接(?:打断)?)(?:说|播|念|读)|(?:直播间|主播|智能体).{0,4}(?:说|播|念|读)(?:一句|一下|下)?|^(?:直接(?:打断)?)?(?:说|播|念|读)(?:一句|一下|下)?/.test(text);
+  }
+
+  async function prepareLiveRoomSpeechChoice(value: string) {
+    const question = extractLiveRoomExecutionContent(value);
+    const enqueued = await enqueueRoomManualAgentDecision(roomId, {
+      question,
+      title: '手机端智能体上行播报预审核',
+      summary: '先由 Core Agent 审核输入，并在确有必要时优化为可播文字；用户选择抢答或回答后才真正播音',
+      reply_hint: '保留用户原意。原文字已经自然、安全、事实明确时尽量保持；存在风险、歧义或表达生硬时才优化。',
+      manual_action: 'answer',
+      manual_origin: 'agent_input_preview',
+      execution_mode: 'intent',
+      ttl_seconds: 120,
+    });
+    const decisionId = enqueued.item?.id;
+    if (!decisionId) throw new Error('没有生成可播任务，请确认直播间 AI 已启动');
+
+    let reply = '';
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      const snapshot = await getRoomAgentDecisions(roomId);
+      const matched = (snapshot.simulation_results || []).find((item) => item.decision_id === decisionId);
+      if (matched?.reply?.trim()) {
+        reply = matched.reply.trim();
+        break;
+      }
+    }
+    if (!reply) throw new Error('审核生成超时，请确认直播间 AI 正在工作');
+
+    agentMessages = [
+      ...agentMessages,
+      {
+        role: 'agent',
+        text: '已完成播出前审核。下面是最终建议播出的文字，选择“抢答”或“回答”后才会送入 TTS。',
+        speechChoice: {
+          question,
+          text: reply,
+          status: 'pending',
+        },
+      },
+    ];
+  }
+
+  async function executePreparedLiveRoomSpeech(message: ChatMessage, mode: LiveRoomAnswerMode) {
+    const choice = message.speechChoice;
+    if (!choice || choice.status === 'sending' || choice.status === 'sent') return;
+    choice.status = 'sending';
+    choice.selected = mode;
+    agentMessages = [...agentMessages];
+    agentBusy = true;
+    try {
+      await enqueueRoomManualAgentDecision(roomId, {
+        question: choice.question || choice.text,
+        title: mode === 'quick' ? '手机端智能体上行抢答' : '手机端智能体上行回答',
+        summary: mode === 'quick'
+          ? '用户确认抢答，使用已审核文字进入现有硬打断播报链路'
+          : '用户确认回答，使用已审核文字进入现有安全切点播报链路',
+        reply_hint: choice.text,
+        force_reopen: mode === 'quick',
+        manual_action: mode,
+        manual_origin: 'agent_input',
+        execution_mode: 'verbatim',
+        fixed_text: choice.text,
+        ttl_seconds: mode === 'quick' ? 180 : 600,
+      });
+      choice.status = 'sent';
+      agentMessages = [
+        ...agentMessages,
+        {
+          role: 'agent',
+          text: mode === 'quick'
+            ? '抢答已提交，正在沿用现有 TTS、打断和回归链路播出。'
+            : '回答已提交，正在沿用现有 TTS、安全切点和回归链路播出。',
+        },
+      ];
+    } catch (err) {
+      choice.status = 'pending';
+      choice.selected = undefined;
+      agentMessages = [
+        ...agentMessages,
+        { role: 'agent', text: err instanceof Error ? err.message : '播报提交失败，请稍后再试' },
+      ];
+    } finally {
+      agentBusy = false;
+      agentMessages = [...agentMessages];
+      await tick();
+      chatEl?.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
+    }
+  }
+
+  async function sendAgentMessage(value: string) {
+    const history = [...agentMessages];
+    agentMessages = [...agentMessages, { role: 'user', text: value }];
+    drawerOpen = true;
+    agentBusy = true;
+    await tick();
+    chatEl?.scrollTo({ top: chatEl.scrollHeight });
+    try {
+      let intent: 'chat' | 'learning' | 'test' | 'execution' | 'adopt' = 'chat';
+      try {
+        const classified = await classifyLiveRoomAgentMessage(roomId, {
+          message: value,
+          current_mode: 'chat',
+          learning_active: false,
+          test_active: false,
+          execution_active: false,
+          history: history.slice(-10).map((item) => ({ role: item.role, text: item.text })),
+        });
+        intent =
+          classified.intent === 'chat' && isLikelyLiveRoomExecutionIntent(value)
+            ? 'execution'
+            : classified.intent;
+      } catch {
+        intent = isLikelyLiveRoomExecutionIntent(value) ? 'execution' : 'chat';
+      }
+
+      if (intent === 'execution') {
+        await prepareLiveRoomSpeechChoice(value);
+      } else {
+        const response = await chatClientAgent(value, history.slice(-12));
+        agentMessages = [...agentMessages, { role: 'agent', text: response.reply }];
+      }
+    } catch (err) {
+      agentMessages = [
+        ...agentMessages,
+        { role: 'agent', text: err instanceof Error ? err.message : '暂时无法回答' },
+      ];
+    } finally {
+      agentBusy = false;
+      await tick();
+      chatEl?.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
+    }
+  }
+
+  function runtimeLabel() {
+    if (runtime?.agent_state === 'working') return '工作中';
+    if (runtime?.agent_state === 'paused') return '已暂停';
+    return '已停止';
+  }
+
+  function deviceVisualState(device: LiveDevice | null) {
+    if (!device) return 'offline';
+    const connection = String(device.connection_status || '').toLowerCase();
+    if (connection !== 'online' && connection !== 'connected') return 'offline';
+    const work = String(device.work_status || '').toLowerCase();
+    const reason = String(device.stop_reason || '').toLowerCase();
+    const explicitFault =
+      ['fault', 'faulted', 'error', 'failed', 'failure', 'abnormal'].includes(work) ||
+      /(fault|error|failed|failure|abnormal|exception)/.test(reason);
+    return explicitFault ? 'fault' : 'online';
+  }
+
+  function deviceVisualLabel(device: LiveDevice | null) {
+    const state = deviceVisualState(device);
+    if (state === 'online') return '正常';
+    if (state === 'fault') return '故障';
+    return '离线';
+  }
+
+  function formatAISeconds(seconds = 0) {
+    const safe = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    if (hours > 0) return hours + '小时' + String(minutes).padStart(2, '0') + '分';
+    return minutes + '分';
+  }
+
+  function formatEventClock(value: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '--:--';
+    return date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  }
+
+  function closeDrawerFromMask(event: MouseEvent) {
+    if (event.target === event.currentTarget) drawerOpen = false;
+  }
+</script>
+
+<svelte:head><title>{room?.name || '直播间'}</title></svelte:head>
+
+<section class="room-mobile-page top-space">
+  <header class="room-mobile-header">
+    <a href="/" aria-label="返回首页">‹</a>
+    <div class="room-mobile-header-copy">
+      <span class="room-mobile-eyebrow">LIVE ROOM</span>
+      <h1>{room?.name || '直播间'}</h1>
+      <div class="room-mobile-meta">
+        <span class="room-meta-chip">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 10.2 12 4l8 6.2V20h-5.2v-5.8H9.2V20H4z"></path>
+          </svg>
+          房间 #{roomId}
+        </span>
+        <i>·</i>
+        <span class="room-meta-chip">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="7" width="10.5" height="10" rx="2.5"></rect>
+            <path d="m14.5 10.2 5-2.6v8.8l-5-2.6z"></path>
+          </svg>
+          {displayedMode === 'anchor' ? '主播模式' : '中控模式'}
+        </span>
+      </div>
+    </div>
+  </header>
+
+  {#if pageError}<div class="room-error">{pageError}</div>{/if}
+
+  {#if loading}
+    <div class="room-loading">正在进入直播间…</div>
+  {:else}
+    <section class="room-status-card" class:playing={audioPlaying}>
+      <div class="ai-quota-pill" aria-label={'AI剩余 ' + formatAISeconds(runtime?.quota_remaining_seconds || 0)}>
+        <span class="ai-quota-clock" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="7.5"></circle>
+            <path d="M12 7.7v4.8l3.2 2"></path>
+          </svg>
+        </span>
+        <span class="ai-quota-label">AI剩余</span>
+        <strong>{formatAISeconds(runtime?.quota_remaining_seconds || 0)}</strong>
+        <span class="ai-quota-arrow" aria-hidden="true">›</span>
+      </div>
+      <div class="status-top">
+        <div>
+          <span class="live-dot" class:online={room?.status === 'live' || runtime?.room_live}></span>
+          <div class="live-state-copy">
+            <strong>{room?.status === 'live' || runtime?.room_live ? '直播中' : '当前未直播'}</strong>
+            <small>{displayedMode === 'anchor' ? '主播模式' : '中控模式'}</small>
+          </div>
+          <button
+            class="room-mute-toggle"
+            class:muted={$customerAudioMuted}
+            type="button"
+            aria-label={$customerAudioMuted ? '恢复本机声音' : '静音本机声音'}
+            aria-pressed={$customerAudioMuted}
+            title={$customerAudioMuted ? '恢复声音' : '静音'}
+            on:click={toggleCustomerAudioMuted}
+          >
+            {#if $customerAudioMuted}
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+                <path class="speaker-line" d="m16.2 9.2 4.2 4.2m0-4.2-4.2 4.2"></path>
+              </svg>
+            {:else}
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+                <path class="speaker-line" d="M16 8.2c1.1 1 1.7 2.3 1.7 3.8S17.1 14.8 16 15.8"></path>
+                <path class="speaker-line" d="M18.8 5.8c1.8 1.7 2.8 3.7 2.8 6.2s-1 4.5-2.8 6.2"></path>
+              </svg>
+            {/if}
+          </button>
+        </div>
+        <small class="room-number">房间 #{roomId}</small>
+      </div>
+
+      <div class="audience-block">
+        <strong>{Number(room?.online_count || 0).toLocaleString()}</strong>
+        <span class="audience-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"></circle><path d="M5.5 20c.5-4.1 2.7-6.2 6.5-6.2s6 2.1 6.5 6.2"></path></svg>
+        </span>
+        <small>当前在线</small>
+      </div>
+
+      <div
+        class="audio-wave"
+        class:active={audioPlaying}
+        class:muted={$customerAudioMuted}
+        aria-label={$customerAudioMuted ? '本机已静音' : audioPlaying ? '正在播放声音' : '当前没有播放声音'}
+      >
+        {#each Array(22) as _, i}
+          <span style={'animation-delay:' + (-i * 63) + 'ms'}></span>
+        {/each}
+      </div>
+      {#if agentActive}
+        <div class="mode-locked">
+          <span>{displayedMode === 'anchor' ? '主播模式' : '中控模式'}</span>
+        </div>
+      {:else}
+        <div
+          class="mode-slider"
+          class:control={selectedMode === 'control'}
+          role="group"
+          aria-label="选择运行模式"
+          on:pointerdown={beginModeSwipe}
+          on:pointerup={endModeSwipe}
+          on:pointercancel={() => (modeSwipeStartX = null)}
+        >
+          <span class="mode-slider-thumb"></span>
+          <button
+            type="button"
+            class:active={selectedMode === 'anchor'}
+            disabled={modeBusy}
+            on:click={() => chooseMode('anchor')}
+          >主播模式</button>
+          <button
+            type="button"
+            class:active={selectedMode === 'control'}
+            disabled={modeBusy}
+            on:click={() => chooseMode('control')}
+          >中控模式</button>
+        </div>
+      {/if}
+      {#if audioError}<div class="audio-error">{audioError}，点“开始”重新连接声音。</div>{/if}
+
+      <div class="room-controls">
+        <button
+          class="start"
+          class:active={runtime?.agent_state === 'working'}
+          type="button"
+          disabled={controlBusy || runtime?.agent_state === 'working'}
+          on:click={handleStart}
+        >
+          <span>▶</span><strong>{runtime?.agent_state === 'paused' ? '继续' : '开始'}</strong>
+        </button>
+        <button class="pause" class:active={runtime?.agent_state === 'paused'} type="button" disabled={controlBusy || runtime?.agent_state !== 'working'} on:click={handlePause}>
+          <span>Ⅱ</span><strong>暂停</strong>
+        </button>
+        <button class="stop" class:active={runtime?.agent_state === 'stopped'} type="button" disabled={controlBusy || runtime?.agent_state === 'stopped'} on:click={handleStop}>
+          <span>■</span><strong>停止</strong>
+        </button>
+      </div>
+    </section>
+
+    <section class="plan-select-card">
+      <div
+        class="room-device-indicator"
+        class:online={deviceVisualState(roomDevice) === 'online'}
+        class:fault={deviceVisualState(roomDevice) === 'fault'}
+        class:offline={deviceVisualState(roomDevice) === 'offline'}
+        title={roomDevice ? roomDevice.sn + ' · ' + deviceVisualLabel(roomDevice) : '未检测到已绑定设备'}
+        aria-label={'设备状态：' + deviceVisualLabel(roomDevice)}
+      >
+        <span class="device-shell" aria-hidden="true">
+          <i class="device-screen"></i>
+          <i class="device-led"></i>
+        </span>
+        <strong>{deviceVisualLabel(roomDevice)}</strong>
+      </div>
+      <div>
+        <span>LIVE AGENT PLAN</span>
+        <strong>直播间智能体方案</strong>
+      </div>
+      <select bind:value={selectedPlanId} on:change={changePlan} disabled={controlBusy || plans.length === 0}>
+        {#if plans.length === 0}<option value={0}>还没有绑定方案</option>{/if}
+        {#each plans as plan}
+          <option value={plan.id}>{plan.name}</option>
+        {/each}
+      </select>
+      {#if runtime?.agent_plan_id}
+        <small>当前使用：{runtime.agent_plan_name || plans.find((item) => item.id === runtime?.agent_plan_id)?.name || '已绑定方案'}</small>
+      {:else}
+        <small>请选择当前直播间要使用的智能体方案</small>
+      {/if}
+    </section>
+
+    <section class="barrage-card">
+      <header>
+        <div><span>LIVE CHAT</span><h2>实时弹幕</h2></div>
+        <b>{chatEvents.length}</b>
+      </header>
+      <div class="barrage-list">
+        {#if chatEvents.length === 0}
+          <div class="barrage-empty">等待直播间弹幕…</div>
+        {:else}
+          {#each chatEvents as event}
+            <article>
+              <time datetime={event.occurred_at}>{formatEventClock(event.occurred_at)}</time>
+              <strong>{event.nickname || '游客'}</strong>
+              <p>{event.content}</p>
+            </article>
+          {/each}
+        {/if}
+      </div>
+    </section>
+  {/if}
+</section>
+
+{#if sessionDecisionOpen}
+  <div class="session-decision-mask">
+    <div class="session-decision-dialog" role="dialog" aria-modal="true" aria-label="直播重新开播处理">
+      <span>直播已重新开播</span>
+      <h2>接着上一场，还是新的一场？</h2>
+      <p>续接上一场会保留原开始时间和直播上下文；新的一场会重新建立本场实时上下文，历史记录仍然保留。</p>
+      <div>
+        <button type="button" disabled={sessionDecisionBusy} on:click={() => chooseSessionContinuation('merge')}>
+          {sessionDecisionBusy ? '处理中…' : '续接上一场'}
+        </button>
+        <button class="fresh" type="button" disabled={sessionDecisionBusy} on:click={() => chooseSessionContinuation('fresh')}>
+          新的一场
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<button
+  bind:this={agentOrbEl}
+  class="room-agent-orb"
+  class:listening
+  type="button"
+  aria-label={listening ? '正在听你说话' : '长按和智能体说话'}
+  on:pointerdown|preventDefault={beginAgentHold}
+  on:pointerup|preventDefault={endAgentHold}
+  on:pointercancel={endAgentHold}
+  on:pointerleave={() => listening && stopListening()}
+>
+  {#if listening}
+    <span class="voice-ring one"></span>
+    <span class="voice-ring two"></span>
+    <span class="mic-icon">●</span>
+    <span class="mic-stem"></span>
+  {:else}
+    <span class="agent-star">✦</span>
+  {/if}
+</button>
+
+{#if listening}
+  <div class="listening-caption">松手发送语音文字</div>
+{/if}
+
+{#if voiceComposerVisible}
+  <form bind:this={voiceComposerEl} class="voice-floating-composer" on:submit|preventDefault={sendVoiceText}>
+    <input bind:value={voiceText} placeholder={speechHint || '语音会在这里转成文字…'} aria-label="语音转文字内容" />
+    <button type="submit" disabled={!voiceText.trim() || agentBusy}>发送</button>
+  </form>
+{/if}
+
+{#if drawerOpen}
+  <div class="agent-drawer-mask" role="presentation" on:click={closeDrawerFromMask}>
+    <section class="agent-drawer">
+      <header>
+        <div>
+          <span>LIVE COMPANION</span>
+          <h2>直播智能体</h2>
+        </div>
+        <button type="button" aria-label="关闭对话" on:click={() => (drawerOpen = false)}>×</button>
+      </header>
+      <div class="drawer-chat" bind:this={chatEl}>
+        {#if agentMessages.length === 0}
+          <div class="drawer-empty">长按下面的小球说话，或者直接输入。</div>
+        {/if}
+        {#each agentMessages as message}
+          <article class:mine={message.role === 'user'}>
+            <small>{message.role === 'user' ? '我' : '智能体'}</small>
+            <p>{message.text}</p>
+            {#if message.speechChoice}
+              <div class="mobile-speech-choice">
+                <span>审核后可播文字</span>
+                <p>{message.speechChoice.text}</p>
+                <div>
+                  <button
+                    type="button"
+                    disabled={message.speechChoice.status === 'sending' || message.speechChoice.status === 'sent'}
+                    on:click={() => executePreparedLiveRoomSpeech(message, 'quick')}
+                  >
+                    {message.speechChoice.status === 'sending' && message.speechChoice.selected === 'quick' ? '提交中…' : '抢答'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={message.speechChoice.status === 'sending' || message.speechChoice.status === 'sent'}
+                    on:click={() => executePreparedLiveRoomSpeech(message, 'answer')}
+                  >
+                    {message.speechChoice.status === 'sending' && message.speechChoice.selected === 'answer' ? '提交中…' : '回答'}
+                  </button>
+                </div>
+                {#if message.speechChoice.status === 'sent'}
+                  <small>已按{message.speechChoice.selected === 'quick' ? '抢答' : '回答'}提交</small>
+                {/if}
+              </div>
+            {/if}
+          </article>
+        {/each}
+        {#if agentBusy}
+          <article><small>智能体</small><p>正在处理…</p></article>
+        {/if}
+      </div>
+      <form class="drawer-composer" on:submit|preventDefault={sendDrawerText}>
+        <input bind:value={agentInput} placeholder="继续跟智能体说…" />
+        <button type="submit" disabled={!agentInput.trim() || agentBusy}>发送</button>
+      </form>
+    </section>
+  </div>
+{/if}
+
+<style>
+  .room-mobile-page{padding:0 16px 190px}
+  .room-mobile-header{display:grid;grid-template-columns:48px minmax(0,1fr);align-items:start;gap:14px;margin:0 -3px 16px;padding:10px 10px 12px;border-radius:24px;background:linear-gradient(145deg,rgba(255,255,255,.88),rgba(239,245,255,.72));box-shadow:inset 0 1px 0 rgba(255,255,255,.92)}
+  .room-mobile-header>a{display:grid;width:48px;height:48px;place-items:center;border:1px solid rgba(222,229,240,.78);border-radius:16px;background:rgba(239,243,249,.9);color:#526784;font-size:31px;box-shadow:0 6px 16px rgba(64,79,119,.06)}
+  .room-mobile-header-copy{min-width:0}
+  .room-mobile-eyebrow{display:block;color:#7e8ca8;font-size:10px;font-weight:900;letter-spacing:.15em}
+  .room-mobile-header h1{margin:4px 0 8px;color:#182845;font-size:28px;line-height:1.06;font-weight:950;letter-spacing:-.8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .room-mobile-meta{display:flex;align-items:center;gap:6px;min-width:0;color:#7181b1}
+  .room-mobile-meta>i{font-style:normal;color:#9aa7c7;font-size:12px}
+  .room-meta-chip{display:inline-flex;min-width:0;align-items:center;gap:5px;padding:5px 8px;border:1px solid rgba(206,217,242,.72);border-radius:999px;background:rgba(231,238,253,.72);color:#6373a7;font-size:10px;font-weight:850;white-space:nowrap}
+  .room-meta-chip svg{width:14px;height:14px;flex:0 0 auto;fill:#8295d4}
+  .room-error{margin-bottom:12px;padding:11px 13px;border-radius:13px;background:#fff0f1;color:#b84e58;font-size:12px}
+  .room-loading{display:grid;min-height:360px;place-items:center;color:#8993a7}
+  .session-decision-mask{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:24px;background:rgba(24,34,61,.34);backdrop-filter:blur(8px)}
+  .session-decision-dialog{width:min(100%,350px);padding:24px;border:1px solid rgba(211,220,242,.95);border-radius:26px;background:linear-gradient(160deg,#fff,#f2f6ff);box-shadow:0 24px 70px rgba(31,45,87,.26)}
+  .session-decision-dialog>span{display:inline-flex;padding:6px 10px;border-radius:999px;background:#e9efff;color:#5d70cf;font-size:10px;font-weight:900;letter-spacing:.05em}
+  .session-decision-dialog h2{margin:15px 0 9px;color:#1e2c48;font-size:22px;line-height:1.25}
+  .session-decision-dialog p{margin:0;color:#7c879d;font-size:12px;line-height:1.7}
+  .session-decision-dialog>div{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px}
+  .session-decision-dialog button{min-height:46px;border:1px solid #6578df;border-radius:14px;background:linear-gradient(145deg,#6276df,#5368d6);color:#fff;font-size:13px;font-weight:900;box-shadow:0 9px 22px rgba(76,95,196,.18)}
+  .session-decision-dialog button.fresh{border-color:#d6deef;background:#f2f5fb;color:#56637c;box-shadow:none}
+  .session-decision-dialog button:disabled{opacity:.58}
+  .room-status-card{position:relative;overflow:hidden;padding:17px;border:1px solid #cbd7ef;border-radius:26px;background:linear-gradient(150deg,#e7eefc 0%,#dde8fb 52%,#edf4fd 100%);box-shadow:0 16px 38px rgba(65,82,138,.12)}
+  .ai-quota-pill{position:absolute;right:16px;top:12px;z-index:3;display:flex;min-width:196px;height:42px;align-items:center;justify-content:center;gap:7px;padding:0 13px;border:1px solid rgba(168,184,226,.48);border-radius:999px;background:linear-gradient(180deg,rgba(255,255,255,.78),rgba(238,244,255,.76));color:#6b79a5;box-shadow:0 6px 18px rgba(66,87,156,.10),inset 0 1px 0 rgba(255,255,255,.95);backdrop-filter:blur(10px)}
+  .ai-quota-clock{display:grid;width:20px;height:20px;place-items:center;color:#5269df}
+  .ai-quota-clock svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  .ai-quota-label{font-size:10px;font-weight:850;color:#7581a4;white-space:nowrap}
+  .ai-quota-pill strong{font-size:13px;color:#4057c7;font-weight:950;white-space:nowrap;letter-spacing:-.15px}
+  .ai-quota-arrow{margin-left:1px;color:#5970d6;font-size:23px;line-height:1;font-weight:700;transform:translateY(-1px)}
+  .room-status-card::after{content:"";position:absolute;right:-70px;top:-95px;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,rgba(103,124,229,.20),rgba(103,124,229,0) 70%);pointer-events:none}
+  .room-status-card.playing{border-color:#aebef0;box-shadow:0 18px 42px rgba(74,94,187,.17)}
+  .status-top{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;padding-right:204px}.status-top>div{display:flex;align-items:center;gap:8px}.status-top strong{font-size:12px;color:#65718a}.status-top small{color:#8a95aa;font-size:10px}.live-state-copy{display:grid!important;gap:1px!important}.live-state-copy small{color:#74829f;font-size:9px!important;font-weight:850}.room-number{position:absolute;right:5px;top:47px;white-space:nowrap}
+  .room-mute-toggle{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;margin-left:4px;border:1px solid rgba(126,145,216,.22);border-radius:13px;background:rgba(255,255,255,.48);color:#5b70d7;box-shadow:0 5px 14px rgba(70,88,184,.09),inset 0 1px 0 rgba(255,255,255,.72);transition:transform .16s ease,background .16s ease,border-color .16s ease,color .16s ease}.room-mute-toggle:active{transform:scale(.94)}.room-mute-toggle.muted{border-color:rgba(218,115,134,.30);background:rgba(255,238,241,.72);color:#ca6678}.room-mute-toggle svg{width:24px;height:24px;fill:currentColor}.room-mute-toggle .speaker-line{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .live-dot{width:10px;height:10px;border-radius:50%;background:#b9c3d2}.live-dot.online{background:#28b984;box-shadow:0 0 0 5px rgba(40,185,132,.12)}
+  .audience-block{position:relative;z-index:1;display:grid;grid-template-columns:auto 22px;grid-template-rows:auto auto;justify-content:center;align-items:end;column-gap:5px;padding:19px 0 12px;text-align:center}
+  .audience-block>strong{font-size:48px;line-height:.9;color:#3449b7;letter-spacing:-2px;font-weight:950}.audience-icon{width:19px;height:19px;color:#7183dd;transform:translateY(-2px)}.audience-icon svg{width:100%;height:100%;fill:currentColor}.audience-block small{grid-column:1 / span 2;margin-top:8px;color:#75829a;font-size:10px;font-weight:850;letter-spacing:.08em}
+  .audio-wave{position:relative;z-index:1;display:flex;height:54px;align-items:center;justify-content:center;gap:4px;padding:0 12px;border:1px solid rgba(103,120,188,.13);border-radius:17px;background:rgba(38,50,84,.08)}
+  .audio-wave span{width:3px;height:10px;border-radius:999px;background:#8390bb;opacity:.55;transition:.2s}.audio-wave span:nth-child(3n){height:20px}.audio-wave span:nth-child(4n){height:27px}.audio-wave span:nth-child(5n){height:16px}
+  .audio-wave.active span{background:#5d72e2;opacity:.9;animation:wave 720ms ease-in-out infinite alternate}.audio-wave.active span:nth-child(3n){animation-duration:560ms}.audio-wave.active span:nth-child(4n){animation-duration:840ms}
+  .audio-wave.active.muted span{background:#7f8fcd;opacity:.68}
+  @keyframes wave{from{transform:scaleY(.35);opacity:.5}to{transform:scaleY(1.5);opacity:1}}
+  .mode-locked{position:relative;z-index:1;display:flex;justify-content:center;margin:9px 0 13px}.mode-locked span{min-width:116px;padding:8px 15px;border:1px solid rgba(101,118,183,.16);border-radius:999px;background:rgba(255,255,255,.48);color:#657391;font-size:11px;font-weight:900;text-align:center}
+  .mode-slider{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;width:230px;height:38px;margin:9px auto 13px;padding:3px;border:1px solid rgba(101,118,183,.16);border-radius:999px;background:rgba(255,255,255,.48);overflow:hidden;touch-action:pan-y}
+  .mode-slider-thumb{position:absolute;left:3px;top:3px;width:calc(50% - 3px);height:30px;border-radius:999px;background:linear-gradient(145deg,#6075e2,#4e63d2);box-shadow:0 5px 14px rgba(70,88,184,.23);transition:transform .22s ease}
+  .mode-slider.control .mode-slider-thumb{transform:translateX(100%)}
+  .mode-slider button{position:relative;z-index:1;border:0;background:transparent;color:#78859d;font-size:11px;font-weight:900}.mode-slider button.active{color:#fff}.mode-slider button:disabled{opacity:.6}
+  .audio-error{position:relative;z-index:1;margin:-4px 0 12px;padding:8px 10px;border-radius:11px;background:rgba(255,239,239,.82);color:#b64f5b;font-size:10px;line-height:1.45;text-align:center}
+  .room-controls{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .room-controls button{display:grid;grid-template-columns:auto auto;justify-content:center;align-items:center;gap:6px;min-height:48px;border:1px solid transparent;border-radius:15px;font-size:12px;font-weight:900}.room-controls button span{font-size:13px}.room-controls button:disabled{opacity:.48}
+  .room-controls .start{background:#e9efff;color:#465ccd}.room-controls .pause{background:#fff4dc;color:#a8751b}.room-controls .stop{background:#feecec;color:#bb4d58}.room-controls button.active{box-shadow:inset 0 0 0 1px currentColor,0 6px 18px rgba(55,72,125,.08)}
+  .plan-select-card,.barrage-card{margin-top:14px;border:1px solid #dce3ef;border-radius:22px;background:linear-gradient(150deg,#f8faff,#eef3fb);box-shadow:0 10px 28px rgba(52,67,118,.07)}
+  .plan-select-card{position:relative;display:grid;gap:10px;padding:15px}.plan-select-card>div:not(.room-device-indicator){display:grid;gap:3px}.plan-select-card>div:not(.room-device-indicator) span,.barrage-card header span{color:#8490a7;font-size:9px;font-weight:900;letter-spacing:.12em}.plan-select-card>div:not(.room-device-indicator) strong{color:#25324a;font-size:16px}
+  .room-device-indicator{position:absolute;right:16px;top:15px;display:flex!important;width:126px;height:42px;align-items:center;justify-content:center;gap:9px;border:1px solid #d8dfeb;border-radius:12px;background:#eef2f7;color:#8791a2;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+  .room-device-indicator.online{border-color:#bce8d4;background:#e8f8f0;color:#23986e}
+  .room-device-indicator.fault{border-color:#f0c4c8;background:#fff0f1;color:#c4515d}
+  .room-device-indicator.offline{border-color:#d8dfeb;background:#eef1f5;color:#8b94a3}
+  .room-device-indicator>strong{font-size:11px!important;color:currentColor!important}
+  .device-shell{position:relative;display:block;width:34px;height:22px;border:2px solid currentColor;border-radius:5px;background:rgba(255,255,255,.48)}
+  .device-screen{position:absolute;left:5px;right:5px;top:4px;height:7px;border-radius:2px;background:currentColor;opacity:.16}
+  .device-led{position:absolute;right:4px;bottom:3px;width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px rgba(255,255,255,.7)}
+  .plan-select-card select{width:100%;min-height:48px;padding:0 40px 0 13px;border:1px solid #cad4ea;border-radius:14px;background:#fff;color:#2f3d59;outline:none;font-weight:800}.plan-select-card small{color:#8792a7;font-size:10px}
+  .barrage-card{padding:15px}.barrage-card header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:10px}.barrage-card header h2{margin:3px 0 0;font-size:18px}.barrage-card header b{padding:5px 8px;border-radius:999px;background:#e8edff;color:#5a6ed7;font-size:10px}
+  .barrage-list{height:760px;overflow-y:auto;scrollbar-width:none;padding:4px 1px}.barrage-list::-webkit-scrollbar{display:none}.barrage-list article{display:grid;grid-template-columns:42px auto 1fr;min-height:38px;box-sizing:border-box;align-items:center;gap:7px;padding:8px 2px;border-bottom:1px solid rgba(218,225,238,.75)}.barrage-list article:last-child{border-bottom:0}.barrage-list time{color:#9aa4b5;font-size:10px;font-variant-numeric:tabular-nums}.barrage-list strong{color:#596bd0;font-size:11px;white-space:nowrap}.barrage-list p{margin:0;color:#3c485f;font-size:12px;line-height:1.5}.barrage-empty{display:grid;height:100%;place-items:center;color:#96a0b2;font-size:12px}
+  .room-agent-orb{position:fixed;left:50%;bottom:calc(77px + env(safe-area-inset-bottom));z-index:44;display:grid;width:68px;height:68px;place-items:center;transform:translateX(-50%);border:2px solid rgba(255,255,255,.82);border-radius:50%;background:radial-gradient(circle at 35% 30%,#acbbff 0,#7587f4 34%,#4c5ed6 76%,#37449f 100%);color:#fff;box-shadow:0 14px 34px rgba(75,94,208,.36),inset 0 0 0 1px rgba(255,255,255,.45);animation:orbFloat 3.1s ease-in-out infinite;touch-action:none}
+  .agent-star{font-size:28px}.room-agent-orb.listening{animation:none;background:linear-gradient(145deg,#596ee2,#4054c5);box-shadow:0 0 0 10px rgba(91,111,222,.08),0 14px 35px rgba(70,86,190,.4)}
+  @keyframes orbFloat{0%,100%{transform:translateX(-50%) translateY(0) scale(1)}50%{transform:translateX(-50%) translateY(-6px) scale(1.04)}}
+  .voice-ring{position:absolute;inset:-10px;border:2px solid rgba(100,119,232,.34);border-radius:50%;animation:voiceRing 1.05s ease-out infinite}.voice-ring.two{animation-delay:.42s}@keyframes voiceRing{0%{transform:scale(.8);opacity:.8}100%{transform:scale(1.55);opacity:0}}
+  .mic-icon{width:18px;height:23px;border:3px solid #fff;border-radius:10px;font-size:0}.mic-stem{position:absolute;width:24px;height:12px;bottom:16px;border:3px solid #fff;border-top:0;border-radius:0 0 12px 12px}.mic-stem::after{content:"";position:absolute;left:50%;bottom:-8px;width:3px;height:8px;transform:translateX(-50%);background:#fff;border-radius:2px}
+  .listening-caption{position:fixed;left:50%;bottom:calc(151px + env(safe-area-inset-bottom));z-index:46;transform:translateX(-50%);padding:7px 12px;border-radius:999px;background:rgba(30,41,73,.86);color:#fff;font-size:10px;white-space:nowrap}
+  .voice-floating-composer{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));z-index:48;width:min(calc(100% - 30px),510px);transform:translateX(-50%);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px;border:1px solid #d8e0ef;border-radius:18px;background:rgba(255,255,255,.96);backdrop-filter:blur(18px);box-shadow:0 15px 38px rgba(48,62,114,.16)}.voice-floating-composer input{min-width:0;border:0;outline:none;background:transparent;padding:0 8px;color:#33405a}.voice-floating-composer button,.drawer-composer button{border:0;border-radius:12px;background:#5669df;color:#fff;padding:0 16px;font-weight:900}.voice-floating-composer button:disabled,.drawer-composer button:disabled{opacity:.45}
+  .agent-drawer-mask{position:fixed;inset:0;z-index:60;background:rgba(18,27,47,.3);backdrop-filter:blur(3px)}
+  .agent-drawer{position:fixed;left:50%;top:max(58px,env(safe-area-inset-top));bottom:calc(68px + env(safe-area-inset-bottom));width:min(calc(100% - 20px),520px);transform:translateX(-50%);display:grid;grid-template-rows:auto 1fr auto;border:1px solid #dbe2ef;border-radius:25px;background:#f7f9fe;box-shadow:0 24px 60px rgba(31,44,83,.25);overflow:hidden;animation:drawerIn .22s ease-out}@keyframes drawerIn{from{opacity:0;transform:translateX(-50%) translateY(18px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+  .agent-drawer>header{display:flex;align-items:center;justify-content:space-between;padding:15px 16px 12px;border-bottom:1px solid #e6eaf2;background:rgba(255,255,255,.88)}.agent-drawer>header span{color:#7180d5;font-size:9px;font-weight:900;letter-spacing:.12em}.agent-drawer>header h2{margin:3px 0 0;font-size:18px}.agent-drawer>header button{width:36px;height:36px;border:0;border-radius:11px;background:#eef1f6;color:#667187;font-size:24px}
+  .drawer-chat{overflow-y:auto;padding:14px}.drawer-chat article{width:86%;margin-bottom:10px;padding:11px 12px;border:1px solid #e6eaf2;border-radius:16px 16px 16px 5px;background:#fff}.drawer-chat article.mine{margin-left:auto;border-color:#596bda;border-radius:16px 16px 5px 16px;background:#596bda;color:#fff}.drawer-chat small{font-size:9px;opacity:.65}.drawer-chat p{margin:5px 0 0;font-size:13px;line-height:1.55}.drawer-empty{display:grid;height:100%;place-items:center;color:#929caf;font-size:12px}
+  .mobile-speech-choice{display:grid;gap:8px;margin-top:9px;padding:10px;border:1px solid #dce3f7;border-radius:13px;background:linear-gradient(145deg,#f9faff,#eef2ff)}.mobile-speech-choice>span{color:#5969d5;font-size:10px;font-weight:900}.mobile-speech-choice>p{margin:0!important;padding:9px 10px;border-radius:10px;background:#fff;color:#263551!important;font-size:13px!important;line-height:1.6!important}.mobile-speech-choice>div{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mobile-speech-choice button{min-height:39px;border:1px solid #bfc9f4;border-radius:11px;background:#fff;color:#5062d3;font:inherit;font-weight:900}.mobile-speech-choice button:first-child{border-color:#586bdd;background:#586bdd;color:#fff}.mobile-speech-choice button:disabled{opacity:.55}.mobile-speech-choice>small{color:#7d88a5;font-size:9px;font-weight:800;opacity:1}
+  .drawer-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-top:1px solid #e5e9f2;background:#fff}.drawer-composer input{min-width:0;min-height:45px;border:1px solid #dfe5ef;border-radius:12px;padding:0 12px;outline:none}
+  @media(prefers-reduced-motion:reduce){.room-agent-orb,.voice-ring,.audio-wave.active span{animation:none}}
+</style>

@@ -1,530 +1,226 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import ModulePageNav from '../components/ModulePageNav.vue'
-import { session } from '../session'
-import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
+import { computed, onMounted, ref } from 'vue'
+
 import {
-  activateLiveOpsSupportConfigVersion,
-  createLiveOpsAnchorTraining,
-  createLiveOpsSupportVoiceProfile,
-  getLiveOpsSupportAuthorizations,
-  getLiveOpsSupportVoiceProfiles,
-  getLiveRoomPolicyContext,
-  getRooms,
-  publishLiveRoomPolicyVersion,
-  uploadLiveOpsSupportMediaAsset,
+  acceptLiveOpsSupportRequest,
+  getLiveOpsSupportRequests,
+  rejectLiveOpsSupportRequest,
 } from '../api'
-import type {
-  LiveRoomPolicyContext,
-  LiveSupportAuthorization,
-  LiveSupportCapability,
-  Room,
-  VoiceProfile,
-} from '../types'
+import type { LiveSupportRequest } from '../types'
+import LiveStrategyView from './LiveStrategyView.vue'
 
-type SupportMode = 'strategy' | 'anchor' | 'voice'
-
-const props = withDefaults(defineProps<{ embedded?: boolean }>(), {
-  embedded: false,
-})
-
-const rooms = ref<Room[]>([])
-const authorizations = ref<LiveSupportAuthorization[]>([])
-const activeRoomId = ref<number | null>(null)
-const activeMode = ref<SupportMode>('strategy')
+const requests = ref<LiveSupportRequest[]>([])
+const connectedRequest = ref<LiveSupportRequest | null>(null)
 const loading = ref(false)
+const busyRequestId = ref<number | null>(null)
 const error = ref('')
-const policyContext = ref<LiveRoomPolicyContext | null>(null)
+const notice = ref('')
 
-const anchorText = ref('')
-const anchorAssetIds = ref<number[]>([])
-const anchorAssetNames = ref<string[]>([])
-const anchorDraftId = ref<number | null>(null)
-const anchorDraftVersion = ref<number | null>(null)
-const anchorUploading = ref(false)
-const anchorDocumentInput = ref<HTMLInputElement | null>(null)
-const anchorAudioInput = ref<HTMLInputElement | null>(null)
-
-const voiceSampleInput = ref<HTMLInputElement | null>(null)
-const voiceUploading = ref(false)
-const voiceSampleAssetId = ref<number | null>(null)
-const voiceSampleName = ref('')
-const voiceName = ref('')
-const voiceProvider = ref('')
-const voiceID = ref('')
-const voiceProfiles = ref<VoiceProfile[]>([])
-const voiceSaving = ref(false)
-
-const canDelegateL3 = computed(() => canDelegateLivePolicyL3(session.bootstrap))
-const eligibleAuthorizations = computed(() => authorizations.value.filter(
-  (item) => item.status === 'active' && (item.capability !== 'l3_policy' || canDelegateL3.value),
-))
-const authorizedRoomIds = computed(
-  () => new Set(eligibleAuthorizations.value.map((item) => item.room_id)),
-)
-const supportRooms = computed(() =>
-  rooms.value.filter((room) => authorizedRoomIds.value.has(room.id)),
-)
-const activeRoom = computed(
-  () => supportRooms.value.find((room) => room.id === activeRoomId.value) || null,
-)
-const activeCapabilities = computed(() => {
-  const result = new Set<LiveSupportCapability>()
-  const roomId = activeRoomId.value
-  if (!roomId) return result
-  for (const item of eligibleAuthorizations.value) {
-    if (item.room_id !== roomId || item.status !== 'active') continue
-    result.add(item.capability as LiveSupportCapability)
-  }
-  return result
-})
-const canStrategy = computed(() => activeCapabilities.value.has('l3_policy'))
-const canAnchor = computed(() => activeCapabilities.value.has('anchor_training'))
-const canVoice = computed(() => activeCapabilities.value.has('voice_clone'))
-const policyDraft = computed(
-  () => policyContext.value?.l3_versions.find((item) => item.lifecycle_status === 'draft') || null,
+const activeRequests = computed(() =>
+  requests.value
+    .filter((item) => item.status === 'pending' || item.status === 'accepted')
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
 )
 
-function capabilityLabel(capability: LiveSupportCapability) {
-  if (capability === 'l3_policy') return '用户层策略'
-  if (capability === 'anchor_training') return '主播训练'
-  return '声音复刻'
+function statusLabel(status: string) {
+  if (status === 'pending') return '待连接'
+  if (status === 'accepted') return '已授权'
+  if (status === 'rejected') return '已拒绝'
+  if (status === 'cancelled') return '已取消'
+  return status
 }
 
-function roomStatusLabel(status: string) {
-  if (status === 'live') return '直播中'
-  if (status === 'connecting') return '连接中'
-  if (status === 'offline') return '未开播'
-  if (status === 'error') return '连接异常'
-  return status || '未知'
+function formatTime(value?: string) {
+  if (!value) return ''
+  const time = new Date(value)
+  if (Number.isNaN(time.getTime())) return ''
+  return time.toLocaleString('zh-CN', { hour12: false })
 }
 
-function chooseAllowedMode() {
-  if (activeMode.value === 'strategy' && canStrategy.value) return
-  if (activeMode.value === 'anchor' && canAnchor.value) return
-  if (activeMode.value === 'voice' && canVoice.value) return
-  if (canStrategy.value) activeMode.value = 'strategy'
-  else if (canAnchor.value) activeMode.value = 'anchor'
-  else activeMode.value = 'voice'
-}
-
-async function loadSupportWorkspace() {
+async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [roomResult, authorizationResult] = await Promise.all([
-      getRooms(),
-      getLiveOpsSupportAuthorizations(),
-    ])
-    rooms.value = roomResult.items
-    authorizations.value = authorizationResult.items
-    if (!supportRooms.value.some((room) => room.id === activeRoomId.value)) {
-      activeRoomId.value = supportRooms.value[0]?.id || null
+    const result = await getLiveOpsSupportRequests()
+    requests.value = result.items || []
+    if (connectedRequest.value) {
+      const fresh = requests.value.find((item) => item.id === connectedRequest.value?.id)
+      if (!fresh || fresh.status !== 'accepted') connectedRequest.value = null
+      else connectedRequest.value = fresh
     }
-    chooseAllowedMode()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取客户授权工作台失败'
+    error.value = err instanceof Error ? err.message : '读取运维协助申请失败'
   } finally {
     loading.value = false
   }
 }
 
-async function refreshPolicy() {
-  const roomId = activeRoomId.value
-  if (!roomId || !canStrategy.value) {
-    policyContext.value = null
-    return
-  }
+async function connectRequest(item: LiveSupportRequest) {
+  if (busyRequestId.value) return
+  busyRequestId.value = item.id
+  error.value = ''
+  notice.value = ''
   try {
-    policyContext.value = await getLiveRoomPolicyContext(roomId)
+    let target = item
+    if (item.status === 'pending') {
+      target = await acceptLiveOpsSupportRequest(item.id, '运维人员已连接客户直播智能体工作台')
+      await load()
+      target = requests.value.find((candidate) => candidate.id === item.id) || target
+    }
+    if (target.status !== 'accepted') {
+      error.value = '这条协助申请当前不能连接。'
+      return
+    }
+    connectedRequest.value = target
+    notice.value = '已连接客户 #' + target.tenant_id + '。当前页面按客户视角加载全部直播间与智能体方案。'
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取客户用户层策略失败'
+    error.value = err instanceof Error ? err.message : '连接客户协助工作台失败'
+  } finally {
+    busyRequestId.value = null
   }
 }
 
-async function refreshVoiceProfiles() {
-  const roomId = activeRoomId.value
-  if (!roomId || !canVoice.value) {
-    voiceProfiles.value = []
-    return
-  }
-  try {
-    const result = await getLiveOpsSupportVoiceProfiles(roomId)
-    voiceProfiles.value = result.items
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取客户声音档案失败'
-  }
-}
-
-async function publishPolicyDraft() {
-  const roomId = activeRoomId.value
-  const draft = policyDraft.value
-  if (!roomId || !draft || (draft.conflicts?.length ?? 0) || !canStrategy.value) return
-  loading.value = true
+async function rejectRequest(item: LiveSupportRequest) {
+  if (item.status !== 'pending' || busyRequestId.value) return
+  if (!window.confirm('确定拒绝这条运维协助申请吗？')) return
+  busyRequestId.value = item.id
   error.value = ''
   try {
-    await publishLiveRoomPolicyVersion(roomId, draft.id)
-    await refreshPolicy()
+    await rejectLiveOpsSupportRequest(item.id, '运维人员拒绝本次协助申请')
+    await load()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '发布客户用户层策略失败'
+    error.value = err instanceof Error ? err.message : '拒绝协助申请失败'
   } finally {
-    loading.value = false
+    busyRequestId.value = null
   }
 }
 
-async function uploadAnchorAsset(event: Event, type: 'document' | 'audio') {
-  const roomId = activeRoomId.value
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  target.value = ''
-  if (!roomId || !file || anchorUploading.value || !canAnchor.value) return
-  anchorUploading.value = true
-  error.value = ''
-  try {
-    const result = await uploadLiveOpsSupportMediaAsset(roomId, file, type)
-    anchorAssetIds.value.push(result.asset.id)
-    anchorAssetNames.value.push(result.asset.original_name)
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '上传主播训练素材失败'
-  } finally {
-    anchorUploading.value = false
-  }
+function disconnect() {
+  connectedRequest.value = null
+  notice.value = ''
 }
 
-async function saveAnchorTraining() {
-  const roomId = activeRoomId.value
-  if (!roomId || !canAnchor.value || (!anchorText.value.trim() && !anchorAssetIds.value.length)) return
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await createLiveOpsAnchorTraining(roomId, {
-      text: anchorText.value.trim(),
-      asset_ids: anchorAssetIds.value,
-    })
-    anchorDraftId.value = result.version_id
-    anchorDraftVersion.value = result.version_no
-    anchorText.value = ''
-    anchorAssetIds.value = []
-    anchorAssetNames.value = []
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '保存主播训练草稿失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function publishAnchorTraining() {
-  const roomId = activeRoomId.value
-  const versionId = anchorDraftId.value
-  if (!roomId || !versionId || !canAnchor.value) return
-  loading.value = true
-  error.value = ''
-  try {
-    await activateLiveOpsSupportConfigVersion(roomId, versionId)
-    anchorDraftId.value = null
-    anchorDraftVersion.value = null
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '发布主播训练配置失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function uploadVoiceSample(event: Event) {
-  const roomId = activeRoomId.value
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  target.value = ''
-  if (!roomId || !file || voiceUploading.value || !canVoice.value) return
-  voiceUploading.value = true
-  error.value = ''
-  try {
-    const result = await uploadLiveOpsSupportMediaAsset(roomId, file, 'voice_sample')
-    voiceSampleAssetId.value = result.asset.id
-    voiceSampleName.value = result.asset.original_name
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '上传声音样本失败'
-  } finally {
-    voiceUploading.value = false
-  }
-}
-
-async function saveVoiceProfile() {
-  const roomId = activeRoomId.value
-  if (
-    !roomId ||
-    !canVoice.value ||
-    voiceSaving.value ||
-    !voiceName.value.trim() ||
-    !voiceProvider.value.trim() ||
-    !voiceSampleAssetId.value
-  ) {
-    return
-  }
-  voiceSaving.value = true
-  error.value = ''
-  try {
-    await createLiveOpsSupportVoiceProfile(roomId, {
-      name: voiceName.value.trim(),
-      provider: voiceProvider.value.trim(),
-      voice_id: voiceID.value.trim(),
-      sample_asset_id: voiceSampleAssetId.value,
-      clone_status: 'pending',
-    })
-    voiceName.value = ''
-    voiceID.value = ''
-    voiceSampleAssetId.value = null
-    voiceSampleName.value = ''
-    await refreshVoiceProfiles()
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '创建声音复刻档案失败'
-  } finally {
-    voiceSaving.value = false
-  }
-}
-
-watch(activeRoomId, async (roomId) => {
-  if (roomId) {
-    window.localStorage.setItem('system-agent-live-support-room-id', String(roomId))
-  } else {
-    window.localStorage.removeItem('system-agent-live-support-room-id')
-  }
-  window.dispatchEvent(
-    new CustomEvent('system-agent-live-support-context', {
-      detail: { room_id: roomId || 0, mode: activeMode.value },
-    }),
-  )
-  chooseAllowedMode()
-  anchorDraftId.value = null
-  anchorDraftVersion.value = null
-  await Promise.all([refreshPolicy(), refreshVoiceProfiles()])
-})
-
-watch(
-  activeMode,
-  (mode) => {
-    window.localStorage.setItem('system-agent-live-support-mode', mode)
-    window.dispatchEvent(
-      new CustomEvent('system-agent-live-support-context', {
-        detail: { room_id: activeRoomId.value || 0, mode },
-      }),
-    )
-    if (mode === 'strategy') void refreshPolicy()
-    if (mode === 'voice') void refreshVoiceProfiles()
-  },
-  { immediate: true },
-)
-
-onMounted(async () => {
-  await loadSupportWorkspace()
-  await Promise.all([refreshPolicy(), refreshVoiceProfiles()])
-})
+onMounted(() => void load())
 </script>
 
 <template>
-  <div class="live-strategy-page">
-    <ModulePageNav v-if="!props.embedded" context="live" active-title="客户协助" active-nav-title="直播运维" />
+  <div class="live-support-session-page">
+    <template v-if="connectedRequest">
+      <header class="live-support-session-bar">
+        <div>
+          <span>OPERATIONS SUPPORT CONNECTED</span>
+          <strong>正在协助客户 #{{ connectedRequest.tenant_id }}</strong>
+          <small>
+            从“{{ connectedRequest.room_name || ('直播间 #' + connectedRequest.room_id) }}”发起授权；
+            已进入该客户完整直播智能体工作台，可切换其全部直播间。
+          </small>
+        </div>
+        <button type="button" @click="disconnect">结束查看</button>
+      </header>
 
-    <section class="live-strategy-shell live-support-workspace">
-      <aside class="live-strategy-rooms">
-        <div class="strategy-panel-title">
-          <span class="section-kicker">AUTHORIZED ROOMS</span>
-          <h2>客户授权直播间</h2>
-          <p>这里只显示客户明确授权给你的直播间。</p>
+      <p v-if="error" class="live-support-message error">{{ error }}</p>
+      <p v-if="notice" class="live-support-message success">{{ notice }}</p>
+
+      <LiveStrategyView
+        support-session
+        :support-tenant-id="connectedRequest.tenant_id"
+        :support-room-id="connectedRequest.room_id"
+      />
+    </template>
+
+    <template v-else>
+      <section class="live-support-request-head">
+        <div>
+          <span>OPERATIONS SUPPORT</span>
+          <h2>运维协助申请</h2>
+          <p>客户提交申请后，点击“连接”即接受完整协助授权，并进入与客户一致的直播智能体方案界面。</p>
+        </div>
+        <button type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新申请' }}</button>
+      </section>
+
+      <p v-if="error" class="live-support-message error">{{ error }}</p>
+      <p v-if="notice" class="live-support-message success">{{ notice }}</p>
+
+      <section class="live-support-request-list">
+        <div v-if="!loading && !activeRequests.length" class="live-support-request-empty">
+          <strong>当前没有待处理或已授权的协助申请</strong>
+          <span>客户选择运维人员并提交授权后，会出现在这里。</span>
         </div>
 
-        <button
-          v-for="room in supportRooms"
-          :key="room.id"
-          class="strategy-room-card"
-          :class="{ active: activeRoomId === room.id }"
-          type="button"
-          @click="activeRoomId = room.id"
-        >
-          <span class="strategy-room-icon">协</span>
-          <span>
-            <strong>{{ room.name }}</strong>
-            <small>{{ room.platform }} · {{ roomStatusLabel(room.status) }}</small>
-          </span>
-        </button>
-
-        <div v-if="!loading && !supportRooms.length" class="empty-state">
-          暂无客户授权的直播间。
-        </div>
-      </aside>
-
-      <main class="live-strategy-agent">
-        <header class="strategy-agent-head">
-          <div>
-            <span class="section-kicker">AUTHORIZED CUSTOMER SUPPORT</span>
-            <h2>客户直播协助</h2>
-            <p v-if="activeRoom">当前直播间：{{ activeRoom.name }}。所有操作都会记录员工与客户授权链路。</p>
-            <p v-else>等待客户授权指定直播间后即可协助。</p>
+        <article v-for="item in activeRequests" :key="item.id" class="live-support-request-card">
+          <div class="live-support-request-avatar">客</div>
+          <div class="live-support-request-main">
+            <header>
+              <div>
+                <strong>客户 #{{ item.tenant_id }}</strong>
+                <span>{{ item.room_name || ('直播间 #' + item.room_id) }}</span>
+              </div>
+              <em :class="item.status">{{ statusLabel(item.status) }}</em>
+            </header>
+            <p>
+              授权后可维护该客户全部直播间的智能体方案、方案内容以及直播间与方案的绑定关系。
+            </p>
+            <small>
+              申请时间 {{ formatTime(item.requested_at) }}
+              <template v-if="item.decided_at"> · 授权时间 {{ formatTime(item.decided_at) }}</template>
+            </small>
           </div>
-          <div v-if="activeRoom" class="live-support-capability-tags">
-            <span
-              v-for="capability in Array.from(activeCapabilities)"
-              :key="capability"
-            >
-              {{ capabilityLabel(capability) }}
-            </span>
-          </div>
-        </header>
-
-        <div v-if="activeRoom" class="strategy-mode-tabs">
-          <button
-            v-if="canStrategy"
-            :class="{ active: activeMode === 'strategy' }"
-            @click="activeMode = 'strategy'"
-          >用户层策略调教</button>
-          <button
-            v-if="canAnchor"
-            :class="{ active: activeMode === 'anchor' }"
-            @click="activeMode = 'anchor'"
-          >主播训练</button>
-          <button
-            v-if="canVoice"
-            :class="{ active: activeMode === 'voice' }"
-            @click="activeMode = 'voice'"
-          >声音复刻</button>
-        </div>
-
-        <div v-if="error" class="inline-error strategy-inline-error">{{ error }}</div>
-
-        <section
-          v-if="activeRoom && activeMode === 'strategy' && canStrategy"
-          class="live-support-editor live-support-system-agent-panel"
-        >
-          <div class="live-support-editor-head">
-            <div>
-              <span class="section-kicker">USER LAYER SUPPORT</span>
-              <h3>客户用户层策略调教</h3>
-              <p>直接使用页面底部的系统智能体描述要怎么调整。智能体只会写入当前客户授权直播间的用户层草稿，不会越权修改客户其它配置。</p>
-            </div>
-          </div>
-          <div class="live-policy-system-agent-hint">
-            <span>统一智能体入口</span>
-            <strong>在底部输入框里直接说：“给当前客户直播间新增一条……规则”</strong>
-            <small>当前授权直播间会自动带入系统智能体上下文。</small>
-          </div>
-          <div v-if="policyDraft" class="live-support-draft-actions">
-            <span>用户层草稿 V{{ policyDraft.version_no }}</span>
+          <div class="live-support-request-actions">
             <button
-              class="primary-button"
+              class="primary"
               type="button"
-              :disabled="loading || !!policyDraft.conflicts?.length"
-              @click="publishPolicyDraft"
+              :disabled="busyRequestId === item.id"
+              @click="connectRequest(item)"
             >
-              {{ policyDraft.conflicts?.length ? '存在冲突' : '发布客户用户层' }}
-            </button>
-          </div>
-        </section>
-
-        <section v-else-if="activeRoom && activeMode === 'anchor' && canAnchor" class="live-support-editor">
-          <div class="live-support-editor-head">
-            <div>
-              <span class="section-kicker">ANCHOR TRAINING</span>
-              <h3>主播训练</h3>
-              <p>可录入真人主播文案，也可以上传训练录音或文档。只写入当前授权直播间。</p>
-            </div>
-          </div>
-          <textarea
-            v-model="anchorText"
-            rows="8"
-            placeholder="粘贴真人主播口播样本、说话习惯、节奏要求等……"
-          ></textarea>
-          <div class="strategy-upload-row">
-            <input
-              ref="anchorDocumentInput"
-              hidden
-              type="file"
-              accept=".txt,.md,.doc,.docx,.pdf,text/plain,text/markdown,application/pdf"
-              @change="uploadAnchorAsset($event, 'document')"
-            />
-            <input
-              ref="anchorAudioInput"
-              hidden
-              type="file"
-              accept="audio/*"
-              @change="uploadAnchorAsset($event, 'audio')"
-            />
-            <button type="button" :disabled="anchorUploading" @click="anchorDocumentInput?.click()">＋ 文案素材</button>
-            <button type="button" :disabled="anchorUploading" @click="anchorAudioInput?.click()">＋ 训练录音</button>
-            <span>{{ anchorUploading ? '上传中…' : anchorAssetNames.join('、') || '尚未上传素材' }}</span>
-          </div>
-          <div class="live-support-editor-actions">
-            <button class="primary-button" type="button" :disabled="loading" @click="saveAnchorTraining">
-              生成训练草稿
+              {{ busyRequestId === item.id ? '连接中…' : '连接' }}
             </button>
             <button
-              v-if="anchorDraftId"
-              class="primary-button"
+              v-if="item.status === 'pending'"
               type="button"
-              :disabled="loading"
-              @click="publishAnchorTraining"
-            >
-              发布训练 V{{ anchorDraftVersion }}
-            </button>
+              :disabled="busyRequestId === item.id"
+              @click="rejectRequest(item)"
+            >拒绝</button>
           </div>
-        </section>
-
-        <section v-else-if="activeRoom && activeMode === 'voice' && canVoice" class="live-support-editor">
-          <div class="live-support-editor-head">
-            <div>
-              <span class="section-kicker">VOICE CLONE</span>
-              <h3>声音复刻</h3>
-              <p>客户已授权声音复刻时，运维人员可代上传声音样本并建立克隆档案。</p>
-            </div>
-          </div>
-          <input
-            ref="voiceSampleInput"
-            hidden
-            type="file"
-            accept="audio/*"
-            @change="uploadVoiceSample"
-          />
-          <div class="strategy-upload-row">
-            <button type="button" :disabled="voiceUploading" @click="voiceSampleInput?.click()">
-              ＋ 上传声音样本
-            </button>
-            <span>{{ voiceUploading ? '上传中…' : voiceSampleName || '尚未上传声音样本' }}</span>
-          </div>
-          <div class="strategy-basic-grid">
-            <label>
-              <span>声音名称</span>
-              <input v-model="voiceName" placeholder="例如：老板本人声音" />
-            </label>
-            <label>
-              <span>声音服务商</span>
-              <input v-model="voiceProvider" placeholder="填写实际接入的声音服务商" />
-            </label>
-            <label class="wide">
-              <span>Voice ID（如果服务商已经返回）</span>
-              <input v-model="voiceID" placeholder="可先留空，后续训练完成再补" />
-            </label>
-          </div>
-          <div class="live-support-editor-actions">
-            <button
-              class="primary-button"
-              type="button"
-              :disabled="voiceSaving || !voiceSampleAssetId"
-              @click="saveVoiceProfile"
-            >
-              {{ voiceSaving ? '保存中…' : '建立声音复刻档案' }}
-            </button>
-          </div>
-          <div v-if="voiceProfiles.length" class="live-support-voice-list">
-            <article v-for="profile in voiceProfiles" :key="profile.id">
-              <strong>{{ profile.name }}</strong>
-              <span>{{ profile.provider }} · {{ profile.clone_status }}</span>
-            </article>
-          </div>
-        </section>
-
-        <div v-else-if="!activeRoom" class="empty-state live-support-empty">
-          客户授权后，这里才会出现对应直播间和授权能力。
-        </div>
-      </main>
-    </section>
+        </article>
+      </section>
+    </template>
   </div>
 </template>
+
+<style scoped>
+.live-support-session-page{display:grid;gap:18px;min-width:0}
+.live-support-request-head,.live-support-session-bar{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:20px 22px;border:1px solid #dfe5f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f6f8ff);box-shadow:0 10px 28px rgba(49,64,117,.055)}
+.live-support-request-head>div,.live-support-session-bar>div{display:grid;gap:5px;min-width:0}
+.live-support-request-head span,.live-support-session-bar span{color:#7481ce;font-size:11px;font-weight:950;letter-spacing:.11em}
+.live-support-request-head h2,.live-support-session-bar strong{margin:0;color:#24314c;font-size:24px;line-height:1.25}
+.live-support-request-head p,.live-support-session-bar small{margin:0;color:#7f8aa0;font-size:13px;line-height:1.65}
+.live-support-request-head>button,.live-support-session-bar>button{flex:0 0 auto;min-height:40px;padding:8px 14px;border:1px solid #d8dfed;border-radius:10px;background:#fff;color:#56627b;font:inherit;font-size:13px;font-weight:900;cursor:pointer}
+.live-support-message{margin:0;padding:10px 13px;border-radius:10px;font-size:13px}
+.live-support-message.error{background:#fff1f2;color:#b64f5a}
+.live-support-message.success{background:#eef8f2;color:#2c7a52}
+.live-support-request-list{display:grid;gap:12px}
+.live-support-request-empty{display:grid;gap:7px;place-items:center;min-height:220px;padding:30px;border:1px dashed #d2d9e7;border-radius:18px;background:#fafbfe;text-align:center}
+.live-support-request-empty strong{color:#546078;font-size:17px}
+.live-support-request-empty span{color:#929caf;font-size:13px}
+.live-support-request-card{display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:16px;align-items:center;padding:16px 18px;border:1px solid #dfe5f1;border-radius:16px;background:#fff;box-shadow:0 7px 20px rgba(48,63,109,.045)}
+.live-support-request-avatar{display:grid;width:52px;height:52px;place-items:center;border-radius:15px;background:#edf1ff;color:#5a6bd2;font-size:21px;font-weight:950}
+.live-support-request-main{display:grid;gap:7px;min-width:0}
+.live-support-request-main header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.live-support-request-main header>div{display:flex;align-items:baseline;gap:10px;min-width:0}
+.live-support-request-main strong{color:#303d57;font-size:17px}
+.live-support-request-main header span{color:#748097;font-size:13px}
+.live-support-request-main em{padding:5px 9px;border-radius:999px;background:#f0f3f8;color:#788397;font-size:11px;font-style:normal;font-weight:900}
+.live-support-request-main em.pending{background:#fff5d9;color:#a46c09}
+.live-support-request-main em.accepted{background:#eaf8ef;color:#2d8057}
+.live-support-request-main p{margin:0;color:#667289;font-size:13px;line-height:1.6}
+.live-support-request-main small{color:#98a1b0;font-size:11px}
+.live-support-request-actions{display:flex;gap:8px;align-items:center}
+.live-support-request-actions button{min-width:74px;min-height:38px;padding:7px 12px;border:1px solid #d8dfec;border-radius:9px;background:#fff;color:#5a667d;font:inherit;font-size:12px;font-weight:900;cursor:pointer}
+.live-support-request-actions button.primary{border-color:#5c6fd7;background:#5c6fd7;color:#fff}
+.live-support-request-actions button:disabled{opacity:.5;cursor:default}
+@media(max-width:860px){
+  .live-support-request-card{grid-template-columns:48px minmax(0,1fr)}
+  .live-support-request-actions{grid-column:2}
+  .live-support-request-head,.live-support-session-bar{display:grid}
+}
+</style>

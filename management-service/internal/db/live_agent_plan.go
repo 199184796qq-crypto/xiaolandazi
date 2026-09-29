@@ -203,6 +203,33 @@ func (s *Store) GetLiveAgentPlanForRoom(ctx context.Context, tenantID, roomID in
 	return s.GetLiveAgentPlan(ctx, tenantID, planID)
 }
 
+func (s *Store) ListSelectedLiveAgentPlanRoomIDs(ctx context.Context, tenantID, planID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT selection.room_id
+		FROM live_agent_room_plan_selections selection
+		INNER JOIN live_agent_plan_room_bindings binding
+			ON binding.tenant_id=selection.tenant_id
+			AND binding.room_id=selection.room_id
+			AND binding.plan_id=selection.plan_id
+			AND binding.status='active'
+		WHERE selection.tenant_id=? AND selection.plan_id=?
+		ORDER BY selection.room_id
+	`, tenantID, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	roomIDs := make([]int64, 0)
+	for rows.Next() {
+		var roomID int64
+		if err := rows.Scan(&roomID); err != nil {
+			return nil, err
+		}
+		roomIDs = append(roomIDs, roomID)
+	}
+	return roomIDs, rows.Err()
+}
+
 func (s *Store) ListLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID int64) ([]model.LiveAgentPlan, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT plan.id

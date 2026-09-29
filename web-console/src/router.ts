@@ -206,7 +206,7 @@ export const router = createRouter({
     {path:'/finance/receipts',name:'customer-receipts',component:()=>import('./views/CustomerReceiptsView.vue'),meta:{customerOnly:true}},
     {path:'/finance/records',name:'customer-money',component:()=>import('./views/CustomerMoneyView.vue'),meta:{customerOnly:true}},
     {path:'/support',name:'customer-support',component:()=>import('./views/ServiceTicketsView.vue'),meta:{customerOnly:true}},
-    {path:'/operations/support',name:'operations-support',component:()=>import('./views/ServiceTicketsView.vue'),meta:{staffPermissionsAny:['liveops.configure','liveops.ticket.manage']}},
+    {path:'/operations/support',name:'operations-support',component:()=>import('./views/LiveSupportView.vue'),meta:{staffPermission:'liveops.configure'}},
     {
       path: '/login',
       name: 'login',

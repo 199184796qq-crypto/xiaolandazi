@@ -126,6 +126,7 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		Mode               agentwork.Mode       `json:"mode"`
 		PlanID             *int64               `json:"plan_id"`
 		PlanName           string               `json:"plan_name"`
+		HotReload          []string             `json:"hot_reload"`
 		BaseWorkingSeconds uint64               `json:"base_working_seconds"`
 		LeaseSeconds       uint64               `json:"lease_seconds"`
 	}
@@ -142,8 +143,8 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "command must be start or stop")
 		return
 	}
-	if command == "" && input.State == "" && input.Mode == "" && input.PlanID == nil && input.LeaseSeconds == 0 {
-		writeError(w, http.StatusBadRequest, "command, state, mode, plan_id or lease_seconds is required")
+	if command == "" && input.State == "" && input.Mode == "" && input.PlanID == nil && input.LeaseSeconds == 0 && len(input.HotReload) == 0 {
+		writeError(w, http.StatusBadRequest, "command, state, mode, plan_id, hot_reload or lease_seconds is required")
 		return
 	}
 	if input.StopReason != "" && command != "stop" && input.State == "" {
@@ -186,6 +187,14 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+	if len(input.HotReload) > 0 {
+		snapshot, err = s.agentWork.TouchHotReload(roomID, input.HotReload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		log.Printf("agent hot reload room=%d tenant=%d revision=%d modules=%v plan=%d", roomID, tenantID, snapshot.HotRevision, snapshot.HotModules, snapshot.PlanID)
 	}
 	if input.LeaseSeconds > 0 {
 		snapshot, err = s.agentWork.GrantLease(roomID, input.LeaseSeconds)

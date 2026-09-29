@@ -42,6 +42,8 @@ type audioInteractionMeta struct {
 	RoomID       int64
 	Topic        string
 	ResumeMode   string
+	BridgeText   string
+	BridgeUsed   bool
 	ResumeUnit   string
 	TextDigest   string
 	BridgeDigest string
@@ -495,17 +497,20 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 				startedAt = &at
 			}
 			_, _ = s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
-				Track:        speechruntime.TrackInterrupt,
-				Status:       status,
-				Text:         meta.ReplyText,
-				QuestionText: meta.QuestionText,
-				ReplyText:    meta.ReplyText,
-				Source:       meta.Source,
-				AudioURL:     meta.AudioURL,
-				DecisionID:   meta.DecisionID,
-				SpeechTaskID: event.SpeechTaskID,
-				SwitchAtMS:   switchAtMS,
-				StartedAt:    startedAt,
+				Track:          speechruntime.TrackInterrupt,
+				Status:         status,
+				Text:           meta.ReplyText,
+				QuestionText:   meta.QuestionText,
+				ReplyText:      meta.ReplyText,
+				ResumeStrategy: meta.ResumeMode,
+				BridgeText:     meta.BridgeText,
+				BridgeUsed:     meta.BridgeUsed,
+				Source:         meta.Source,
+				AudioURL:       meta.AudioURL,
+				DecisionID:     meta.DecisionID,
+				SpeechTaskID:   event.SpeechTaskID,
+				SwitchAtMS:     switchAtMS,
+				StartedAt:      startedAt,
 			})
 		}
 		if event.Status == "COMPLETED" && s.agentDecisions != nil {

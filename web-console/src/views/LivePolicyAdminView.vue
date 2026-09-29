@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import ModulePageNav from '../components/ModulePageNav.vue'
+
 import {
   getLivePolicyAdminContext,
   createLivePolicyAdminDraft,
@@ -683,7 +683,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="live-strategy-page live-policy-admin-page" :style="ruleTypographyStyle">
-    <ModulePageNav v-if="!props.embedded" context="live" active-title="直播策略" active-nav-title="直播运维" />
+
 
     <section class="live-strategy-shell">
       <header class="live-policy-compact-head">

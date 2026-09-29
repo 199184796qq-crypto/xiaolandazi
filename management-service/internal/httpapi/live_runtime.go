@@ -34,6 +34,9 @@ type coreAgentRuntimeState struct {
 	Mode                  string     `json:"mode"`
 	PlanID                int64      `json:"plan_id"`
 	PlanName              string     `json:"plan_name"`
+	HotRevision           uint64     `json:"hot_revision"`
+	HotModules            []string   `json:"hot_modules,omitempty"`
+	HotUpdatedAt          *time.Time `json:"hot_updated_at,omitempty"`
 	WorkingSeconds        uint64     `json:"working_seconds"`
 	LeaseRemainingSeconds uint64     `json:"lease_remaining_seconds"`
 	LeaseRenewalDue       bool       `json:"lease_renewal_due"`
@@ -1205,6 +1208,58 @@ func (s *Server) setCoreAgentPlan(
 		return coreAgentRuntimeState{}, err
 	}
 	return state, nil
+}
+
+func (s *Server) hotReloadCoreAgentRoom(
+	ctx context.Context,
+	tenantID, roomID int64,
+	modules ...string,
+) (coreAgentRuntimeState, error) {
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	resp, err := s.core.DoRoom(
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodPut,
+		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
+		query,
+		map[string]any{"hot_reload": modules},
+	)
+	if err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return coreAgentRuntimeState{}, fmt.Errorf("core hot reload status %d", resp.StatusCode)
+	}
+	var state coreAgentRuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	return state, nil
+}
+
+func (s *Server) hotReloadLiveAgentPlanRooms(
+	ctx context.Context,
+	tenantID, planID int64,
+	modules ...string,
+) error {
+	if s.core == nil || planID <= 0 || len(modules) == 0 {
+		return nil
+	}
+	roomIDs, err := s.store.ListSelectedLiveAgentPlanRoomIDs(ctx, tenantID, planID)
+	if err != nil {
+		return err
+	}
+	for _, roomID := range roomIDs {
+		state, reloadErr := s.hotReloadCoreAgentRoom(ctx, tenantID, roomID, modules...)
+		if reloadErr != nil {
+			return fmt.Errorf("room %d hot reload: %w", roomID, reloadErr)
+		}
+		log.Printf("live plan hot applied tenant=%d plan=%d room=%d revision=%d modules=%v", tenantID, planID, roomID, state.HotRevision, state.HotModules)
+	}
+	return nil
 }
 
 func (s *Server) allocateInitialLiveQuotaLease(

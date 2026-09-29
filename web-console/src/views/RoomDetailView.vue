@@ -49,6 +49,7 @@ import {
 } from '../api'
 import { session } from '../session'
 import { coreRuntime } from '../coreRuntime'
+import { getSharedAudioContext, unlockSharedAudioContext } from '../audioRuntime'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import type {
   LiveAgentSettings,
@@ -144,6 +145,7 @@ const liveReviewAvailable = computed(() => {
   return status === 'offline' || status === 'stopped'
 })
 const sessionDecisionBusy = ref(false)
+const pendingStartAfterSessionDecision = ref(false)
 const loading = ref(true)
 const error = useFeedbackErrorRef()
 const monitorToggleBusy = ref(false)
@@ -173,8 +175,23 @@ type LocalAudioControl = {
   position_ms?: number
   occurred_at?: string
 }
+type RoomAudioEngineSnapshot = {
+  room_id: number
+  phase: 'idle' | 'mainline' | 'preparing_interrupt' | 'armed' | 'interrupt' | 'preparing_resume' | 'resume' | 'paused' | 'error'
+  active_source?: 'mainline' | 'interrupt' | ''
+  sequence: number
+  output_pts_ms: number
+  mainline_cursor_ms: number
+  current_segment_id?: string
+  planned_cut_segment_id?: string
+  resume_segment_id?: string
+  paused_from?: string
+  subscribers: number
+  updated_at?: string
+}
 let localAudioEventSource: EventSource | null = null
 let localAudioContext: AudioContext | null = null
+let localAudioGainNode: GainNode | null = null
 let localAudioPlayer: HTMLAudioElement | null = null
 let localAudioTask: LocalAudioTask | null = null
 let localAudioProgressTimer: number | undefined
@@ -183,12 +200,20 @@ let localAudioHeartbeatTimer: number | undefined
 let localAudioReconnectTimer: number | undefined
 let localAudioRegisteredRoomID = 0
 let localAudioPlaybackGeneration = 0
+let compositeAudioAbort: AbortController | null = null
+let compositeAudioGeneration = 0
+let compositeAudioNextStartTime = 0
+let compositeAudioConnectPromise: Promise<void> | null = null
+const compositeAudioSources = new Set<AudioBufferSourceNode>()
 const localAudioState = ref<'disconnected' | 'connected' | 'playing' | 'error'>('disconnected')
 const localAudioError = ref('')
+const localAudioMuted = ref(false)
+const roomAudioEngine = ref<RoomAudioEngineSnapshot | null>(null)
 const LOCAL_AUDIO_RECEIVER_KEY = 'livecompanion.web-audio-receiver.v1'
 let runtimePollTimer: number | undefined
 let sessionStatsPollTimer: number | undefined
 let speechPollTimer: number | undefined
+let roomAudioEnginePollTimer: number | undefined
 let agentDecisionPollTimer: number | undefined
 let streamBatchTimer: number | undefined
 let pendingStreamEvents: RoomEvent[] = []
@@ -601,9 +626,27 @@ const mainlineSpeech = computed<SpeechTrackRuntime>(() =>
 const interruptSpeech = computed<SpeechTrackRuntime>(() =>
   speechRuntime.value?.interrupt || { status: 'idle' },
 )
+const interruptSpeechDisplay = computed(() => {
+  const text = String(interruptSpeech.value.reply_text || interruptSpeech.value.text || '').trim()
+  const bridge = interruptSpeech.value.bridge_used
+    ? String(interruptSpeech.value.bridge_text || '').trim()
+    : ''
+  if (!text || !bridge || !text.endsWith(bridge)) {
+    return { body: text, bridge: '' }
+  }
+  return {
+    body: text.slice(0, text.length - bridge.length).trimEnd(),
+    bridge,
+  }
+})
 const mainlineProgram = computed(() => speechRuntime.value?.program || null)
 const mainlineProgramSegment = computed(() => {
   const program = mainlineProgram.value
+  const engineSegmentID = String(roomAudioEngine.value?.current_segment_id || '').trim()
+  if (program?.timeline?.length && engineSegmentID) {
+    const engineSegment = program.timeline.find((segment) => segment.segment_id === engineSegmentID)
+    if (engineSegment) return engineSegment
+  }
   if (program?.current_segment) return program.current_segment
   const timeline = program?.timeline || []
   if (!timeline.length) return null
@@ -646,6 +689,11 @@ const mainlineFallbackPreview = computed(() => {
   return (start > 0 ? '…' : '') + chars.slice(start, end).join('') + (end < chars.length ? '…' : '')
 })
 const mainlineTransitionCutMS = computed(() => {
+  const engineCutID = String(roomAudioEngine.value?.planned_cut_segment_id || '').trim()
+  if (engineCutID) {
+    const matched = mainlineProgram.value?.timeline?.find((segment) => segment.segment_id === engineCutID)
+    if (matched) return Number(matched.end_ms || 0)
+  }
   const scheduled = Number(interruptSpeech.value.switch_at_ms || 0)
   if (scheduled > 0) return scheduled
   return Number(mainlineProgram.value?.resume_offset_ms || 0)
@@ -656,11 +704,19 @@ const mainlineCaptionRows = computed(() => {
   if (!timeline.length || !current) return []
   const currentIndex = timeline.findIndex((item) => item.segment_id === current.segment_id)
   if (currentIndex < 0) return []
+  const engineStopID = String(roomAudioEngine.value?.planned_cut_segment_id || '').trim()
+  const engineResumeID = String(roomAudioEngine.value?.resume_segment_id || '').trim()
   const cutMS = mainlineTransitionCutMS.value
-  const stopIndex = cutMS > 0
-    ? timeline.findIndex((item) => Number(item.end_ms || 0) === cutMS)
-    : -1
-  const resumeIndex = stopIndex >= 0 && stopIndex + 1 < timeline.length ? stopIndex + 1 : -1
+  const stopIndex = engineStopID
+    ? timeline.findIndex((item) => item.segment_id === engineStopID)
+    : cutMS > 0
+      ? timeline.findIndex((item) => Number(item.end_ms || 0) === cutMS)
+      : -1
+  const resumeIndex = engineResumeID
+    ? timeline.findIndex((item) => item.segment_id === engineResumeID)
+    : stopIndex >= 0 && stopIndex + 1 < timeline.length
+      ? stopIndex + 1
+      : -1
   return [currentIndex - 1, currentIndex, currentIndex + 1]
     .filter((index) => index >= 0 && index < timeline.length)
     .map((index) => ({
@@ -687,13 +743,13 @@ const mainlineSafeCutImminent = computed(() => {
     mainlineSafeCutRemainingMS.value > 0 &&
     mainlineSafeCutRemainingMS.value <= 5000
 })
-function formatSpeechOffset(value?: number) {
-  const totalSeconds = Math.max(0, Math.floor(Number(value || 0) / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0')
-}
 const effectiveMainlineStatus = computed(() => {
+  const phase = roomAudioEngine.value?.phase
+  if (phase === 'paused') return 'paused'
+  if (phase === 'interrupt' || phase === 'preparing_resume') return 'paused'
+  if (phase === 'mainline' || phase === 'preparing_interrupt' || phase === 'armed' || phase === 'resume') {
+    return 'playing'
+  }
   const program = mainlineProgram.value
   if (program?.running) {
     return program.suspended ? 'paused' : 'playing'
@@ -718,19 +774,6 @@ const speechTrackLayoutState = computed<'balanced' | 'mainline' | 'interrupt'>((
   if (displayMainlineStatus.value === 'playing') return 'mainline'
   return 'balanced'
 })
-const speechRuntimeSummary = computed(() => {
-  const interruptStatus = (interruptSpeech.value.status || 'idle').toLowerCase()
-  if (interruptStatus === 'playing') {
-    const resume = mainlineProgram.value?.resume_offset_ms
-    return resume ? '临时插播中，将从 ' + formatSpeechOffset(resume) + ' 的语义点恢复主线' : '临时插播中，主线等待恢复'
-  }
-  if (mainlineProgram.value?.running && mainlineProgramSegment.value) return '主线口播中 · 精确文字时间轴运行'
-  if (displayMainlineStatus.value === 'playing') return '主线口播中'
-  if (displayMainlineStatus.value === 'paused') return '主线已暂停，等待恢复'
-  if (displayMainlineStatus.value === 'ready') return '主线已就绪，等待播放'
-  return '等待口播任务…'
-})
-
 function speechStatusLabel(status: string, track: 'mainline' | 'interrupt') {
   switch ((status || 'idle').toLowerCase()) {
     case 'ready': return track === 'interrupt' ? '待插播' : '待播放'
@@ -2128,6 +2171,7 @@ function localAudioBaseURL() {
   if (configured) return configured
   const host = window.location.hostname
   if (host === '127.0.0.1' || host === 'localhost') return 'http://127.0.0.1:8081'
+  if (host.endsWith('.ngrok-free.dev') || host.endsWith('.ngrok-free.app')) return '/core-audio'
   return ''
 }
 
@@ -2143,13 +2187,11 @@ function localAudioReceiverID() {
 }
 
 async function ensureLocalAudioUnlocked() {
-  const AudioContextCtor = window.AudioContext
-  if (!AudioContextCtor) return true
   try {
-    if (!localAudioContext) localAudioContext = new AudioContextCtor()
-    if (localAudioContext.state === 'suspended') await localAudioContext.resume()
-    if (localAudioContext.state !== 'running') {
-      throw new Error('浏览器音频上下文未进入运行状态')
+    const context = await unlockSharedAudioContext()
+    if (context) {
+      localAudioContext = context
+      ensureLocalAudioGainNode()
     }
     localAudioError.value = ''
     return true
@@ -2158,6 +2200,155 @@ async function ensureLocalAudioUnlocked() {
       ? '浏览器阻止了声音播放：' + err.message
       : '浏览器阻止了声音播放，请再次点击“开始”或“抢答”。'
     return false
+  }
+}
+
+function ensureLocalAudioGainNode() {
+  const context = localAudioContext
+  if (!context || context.state === 'closed') {
+    localAudioGainNode = null
+    return null
+  }
+  if (!localAudioGainNode || localAudioGainNode.context !== context) {
+    try {
+      localAudioGainNode?.disconnect()
+    } catch {
+      // Replacing a stale gain node only.
+    }
+    localAudioGainNode = context.createGain()
+    localAudioGainNode.gain.value = localAudioMuted.value ? 0 : 1
+    localAudioGainNode.connect(context.destination)
+  }
+  return localAudioGainNode
+}
+
+function toggleLocalAudioMuted() {
+  localAudioMuted.value = !localAudioMuted.value
+  const gain = ensureLocalAudioGainNode()
+  if (gain) {
+    gain.gain.setValueAtTime(localAudioMuted.value ? 0 : 1, gain.context.currentTime)
+  }
+}
+
+function flushCompositeAudioQueue() {
+  compositeAudioNextStartTime = 0
+  for (const source of compositeAudioSources) {
+    try {
+      source.stop()
+    } catch {
+      // A source that already ended does not need another stop.
+    }
+    try {
+      source.disconnect()
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+  compositeAudioSources.clear()
+}
+
+function stopCompositeAudioReceiver() {
+  compositeAudioGeneration += 1
+  compositeAudioAbort?.abort()
+  compositeAudioAbort = null
+  flushCompositeAudioQueue()
+}
+
+function compositeAudioBufferWindow() {
+  const host = window.location.hostname.toLowerCase()
+  const local = host === '127.0.0.1' || host === 'localhost'
+  return local
+    ? { initialSeconds: 0.06, lowWaterSeconds: 0.035, refillSeconds: 0.06 }
+    : { initialSeconds: 0.32, lowWaterSeconds: 0.012, refillSeconds: 0.03 }
+}
+
+function scheduleCompositePCMFrame(frame: Uint8Array) {
+  const context = localAudioContext
+  if (!context || context.state !== 'running' || frame.byteLength !== 960) return
+  const buffer = context.createBuffer(1, 480, 24_000)
+  const channel = buffer.getChannelData(0)
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+  for (let index = 0; index < 480; index += 1) {
+    channel[index] = view.getInt16(index * 2, true) / 32768
+  }
+  const source = context.createBufferSource()
+  source.buffer = buffer
+  const gain = ensureLocalAudioGainNode()
+  source.connect(gain || context.destination)
+  const now = context.currentTime
+  const bufferWindow = compositeAudioBufferWindow()
+  if (compositeAudioNextStartTime <= 0) {
+    compositeAudioNextStartTime = now + bufferWindow.initialSeconds
+  } else if (compositeAudioNextStartTime < now + bufferWindow.lowWaterSeconds) {
+    compositeAudioNextStartTime = now + bufferWindow.refillSeconds
+  }
+  const startAt = compositeAudioNextStartTime
+  compositeAudioNextStartTime += 0.02
+  compositeAudioSources.add(source)
+  source.onended = () => {
+    compositeAudioSources.delete(source)
+    try {
+      source.disconnect()
+    } catch {
+      // Source cleanup only.
+    }
+  }
+  source.start(startAt)
+  localAudioState.value = 'playing'
+  localAudioError.value = ''
+}
+
+async function pumpCompositeAudioStream(
+  stream: ReadableStream<Uint8Array>,
+  generation: number,
+  signal: AbortSignal,
+) {
+  const reader = stream.getReader()
+  let pending = new Uint8Array(0)
+  try {
+    while (!signal.aborted && generation === compositeAudioGeneration) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+      const merged = new Uint8Array(pending.byteLength + value.byteLength)
+      merged.set(pending, 0)
+      merged.set(value, pending.byteLength)
+      let offset = 0
+      while (merged.byteLength - offset >= 960) {
+        scheduleCompositePCMFrame(merged.subarray(offset, offset + 960))
+        offset += 960
+      }
+      pending = offset < merged.byteLength ? merged.slice(offset) : new Uint8Array(0)
+    }
+  } catch (err) {
+    if (!signal.aborted && generation === compositeAudioGeneration) {
+      localAudioState.value = 'error'
+      localAudioError.value = err instanceof Error ? err.message : '房间合成音频流读取失败'
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // Reader may already be released by the browser.
+    }
+    if (!signal.aborted && generation === compositeAudioGeneration && !pageUnmounted) {
+      localAudioState.value = 'disconnected'
+      scheduleLocalAudioReconnect(250)
+    }
+  }
+}
+
+async function refreshRoomAudioEngine() {
+  const base = localAudioBaseURL()
+  if (!base || !Number.isFinite(roomId) || roomId <= 0 || !coreActionsAvailable.value) return
+  try {
+    const response = await fetch(base + '/v1/rooms/' + roomId + '/audio-engine', {
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('HTTP ' + response.status)
+    roomAudioEngine.value = await response.json() as RoomAudioEngineSnapshot
+  } catch {
+    // Keep the last good engine state while Core reconnects.
   }
 }
 
@@ -2360,6 +2551,11 @@ async function playLocalAudioTask(task: LocalAudioTask) {
   }
 }
 
+// Legacy task-player helpers are retained only while the old AudioHub API still
+// exists server-side. The current business page does not invoke them.
+void prepareLocalAudioSwitch
+void playLocalAudioTask
+
 async function registerLocalAudioReceiver() {
   const base = localAudioBaseURL()
   if (!base || !Number.isFinite(roomId) || roomId <= 0) return false
@@ -2372,7 +2568,7 @@ async function registerLocalAudioReceiver() {
         room_id: roomId,
         terminal_type: 'web_console',
         name: '直播详情本机测试端',
-        capabilities: ['audio/wav', 'interaction_tts', 'mainline'],
+        capabilities: ['composite_pcm_s16le_24k_mono', 'room_audio_engine'],
       }),
     })
     if (!response.ok) throw new Error('Core声音注册失败 HTTP ' + response.status)
@@ -2414,6 +2610,8 @@ async function heartbeatLocalAudioReceiver() {
     if (!response.ok) {
       localAudioState.value = 'disconnected'
       if (response.status === 409) {
+        localAudioRegisteredRoomID = 0
+        stopCompositeAudioReceiver()
         await connectLocalAudioReceiver()
       } else {
         scheduleLocalAudioReconnect()
@@ -2448,7 +2646,7 @@ async function unregisterLocalAudioReceiver() {
   }
 }
 
-async function connectLocalAudioReceiver() {
+async function connectLocalAudioReceiverOnce() {
   if (pageUnmounted || !coreActionsAvailable.value) return
   if (localAudioReconnectTimer !== undefined) {
     window.clearTimeout(localAudioReconnectTimer)
@@ -2458,69 +2656,64 @@ async function connectLocalAudioReceiver() {
   localAudioEventSource = null
   const base = localAudioBaseURL()
   if (!base || !Number.isFinite(roomId) || roomId <= 0) return
+  if (!localAudioContext) {
+    localAudioContext = getSharedAudioContext(true)
+  }
+  ensureLocalAudioGainNode()
+  if (
+    localAudioRegisteredRoomID === roomId &&
+    compositeAudioAbort &&
+    !compositeAudioAbort.signal.aborted &&
+    (localAudioState.value === 'connected' || localAudioState.value === 'playing')
+  ) {
+    return
+  }
   if (!(await registerLocalAudioReceiver())) return
 
-  const source = new EventSource(
-    base + '/v1/rooms/' + roomId + '/stream?receiver_id=' + encodeURIComponent(localAudioReceiverID()),
-  )
-  localAudioEventSource = source
-  source.addEventListener('connected', () => {
+  stopCompositeAudioReceiver()
+  stopLocalAudioPlayback(false)
+  const generation = ++compositeAudioGeneration
+  const controller = new AbortController()
+  compositeAudioAbort = controller
+  try {
+    const response = await fetch(base + '/v1/rooms/' + roomId + '/composite.pcm', {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) {
+      throw new Error('房间合成音频流连接失败 HTTP ' + response.status)
+    }
+    if (generation !== compositeAudioGeneration || controller.signal.aborted) return
     localAudioState.value = 'connected'
     localAudioError.value = ''
-    if (localAudioReconnectTimer !== undefined) {
-      window.clearTimeout(localAudioReconnectTimer)
-      localAudioReconnectTimer = undefined
-    }
-  })
-  source.addEventListener('task', (rawEvent) => {
-    try {
-      const task = JSON.parse((rawEvent as MessageEvent).data) as LocalAudioTask
-      const durationMS = Math.max(0, Number(task.duration_ms || 0))
-      const startMS = Math.max(0, Number(task.start_ms || 0))
-      if (durationMS > 0 && startMS >= durationMS - 120) {
-        void reportLocalAudioTask(task, 'COMPLETED', durationMS)
-        return
-      }
-      void playLocalAudioTask(task)
-    } catch {
-      localAudioState.value = 'error'
-      localAudioError.value = '收到无法识别的本机播音任务。'
-    }
-  })
-  source.addEventListener('control', (rawEvent) => {
-    try {
-      const control = JSON.parse((rawEvent as MessageEvent).data) as LocalAudioControl
-      if (Number(control.room_id) !== roomId) return
-      const action = String(control.action || '').toLowerCase()
-      if (action === 'prepare_switch') {
-        prepareLocalAudioSwitch(control)
-        return
-      }
-      if (action !== 'pause' && action !== 'stop') return
-      stopLocalAudioPlayback(false)
-      localAudioState.value = 'connected'
-      localAudioError.value = ''
-    } catch {
-      localAudioState.value = 'error'
-      localAudioError.value = '收到无法识别的声音控制指令。'
-    }
-  })
-  source.addEventListener('unregistered', () => {
-    localAudioState.value = 'disconnected'
-    scheduleLocalAudioReconnect(250)
-  })
-  source.onerror = () => {
-    if (pageUnmounted || localAudioEventSource !== source) return
-    localAudioState.value = 'disconnected'
-    source.close()
-    if (localAudioEventSource === source) localAudioEventSource = null
+    void pumpCompositeAudioStream(response.body, generation, controller.signal)
+  } catch (err) {
+    if (controller.signal.aborted || generation !== compositeAudioGeneration) return
+    localAudioState.value = 'error'
+    localAudioError.value = err instanceof Error ? err.message : '房间合成音频流连接失败'
     scheduleLocalAudioReconnect()
+  }
+}
+
+async function connectLocalAudioReceiver() {
+  if (compositeAudioConnectPromise) {
+    await compositeAudioConnectPromise
+    return
+  }
+  const pending = connectLocalAudioReceiverOnce()
+  compositeAudioConnectPromise = pending
+  try {
+    await pending
+  } finally {
+    if (compositeAudioConnectPromise === pending) {
+      compositeAudioConnectPromise = null
+    }
   }
 }
 
 async function startCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || aiActive.value) return
-  await ensureLocalAudioUnlocked()
+  if (!(await ensureLocalAudioUnlocked())) return
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
     runtimeError.value = '主播模式需要先选择智能体直播方案'
     return
@@ -2528,10 +2721,25 @@ async function startCompanionRuntime() {
   runtimeControlBusy.value = true
   runtimeError.value = ''
   try {
+    await refreshSessionStats()
+    if (sessionStats.value?.resume_pending) {
+      pendingStartAfterSessionDecision.value = true
+      return
+    }
+    await connectLocalAudioReceiver()
     await startLiveRuntime(roomId)
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '启动直播搭子失败'
+    const message = err instanceof Error ? err.message : '启动直播搭子失败'
+    if (message.includes('请先选择续接上一场或作为新直播')) {
+      await refreshSessionStats()
+      if (sessionStats.value?.resume_pending) {
+        pendingStartAfterSessionDecision.value = true
+        runtimeError.value = ''
+        return
+      }
+    }
+    runtimeError.value = message
   } finally {
     runtimeControlBusy.value = false
   }
@@ -2543,9 +2751,7 @@ async function pauseCompanionRuntime() {
   runtimeError.value = ''
   try {
     await pauseLiveRuntime(roomId)
-    // Core control SSE normally stops the receiver first; this is a same-page
-    // fallback so local testing still stops immediately if SSE is reconnecting.
-    stopLocalAudioPlayback(false)
+    flushCompositeAudioQueue()
     await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
   } catch (err) {
     runtimeError.value = err instanceof Error ? err.message : '暂停主播模式失败'
@@ -2556,7 +2762,8 @@ async function pauseCompanionRuntime() {
 
 async function resumeCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiPaused.value) return
-  await ensureLocalAudioUnlocked()
+  if (!(await ensureLocalAudioUnlocked())) return
+  await connectLocalAudioReceiver()
   runtimeControlBusy.value = true
   runtimeError.value = ''
   try {
@@ -2575,7 +2782,13 @@ async function stopCompanionRuntime() {
   runtimeError.value = ''
   try {
     await stopLiveRuntime(roomId)
-    stopLocalAudioPlayback(false)
+    stopCompositeAudioReceiver()
+    if (localAudioReconnectTimer !== undefined) {
+      window.clearTimeout(localAudioReconnectTimer)
+      localAudioReconnectTimer = undefined
+    }
+    localAudioState.value = 'disconnected'
+    localAudioError.value = ''
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
     runtimeError.value = err instanceof Error ? err.message : '结束直播搭子失败'
@@ -2616,6 +2829,7 @@ function toggleLiveReview() {
 
 async function chooseSessionContinuation(action: 'merge' | 'fresh') {
   if (sessionDecisionBusy.value) return
+  const shouldStartAfterDecision = pendingStartAfterSessionDecision.value
   sessionDecisionBusy.value = true
   runtimeError.value = ''
   try {
@@ -2641,6 +2855,10 @@ async function chooseSessionContinuation(action: 'merge' | 'fresh') {
     if (action === 'fresh') {
       const page = await getRoomEvents(roomId, 500)
       events.value = page.items
+    }
+    if (shouldStartAfterDecision) {
+      pendingStartAfterSessionDecision.value = false
+      await startCompanionRuntime()
     }
   } catch (err) {
     runtimeError.value = err instanceof Error ? err.message : '处理直播续接失败'
@@ -2673,6 +2891,14 @@ function startSpeechRuntimePolling() {
     if (!coreActionsAvailable.value) return
     void refreshSpeechRuntime()
   }, 1000)
+}
+
+function startRoomAudioEnginePolling() {
+  if (roomAudioEnginePollTimer !== undefined) window.clearInterval(roomAudioEnginePollTimer)
+  roomAudioEnginePollTimer = window.setInterval(() => {
+    if (!coreActionsAvailable.value) return
+    void refreshRoomAudioEngine()
+  }, 250)
 }
 
 function startAgentDecisionPolling() {
@@ -2984,7 +3210,10 @@ async function refreshAgentDecisions() {
 
 async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAction) {
   if (!isDirectAnswerEvent(event) || eventDecisionRowState(event.id).busy) return
-  await ensureLocalAudioUnlocked()
+  if (!(await ensureLocalAudioUnlocked())) return
+  if (localAudioState.value === 'disconnected' || localAudioState.value === 'error') {
+    await connectLocalAudioReceiver()
+  }
   if (!aiRunning.value) {
     setEventDecisionRowState(event.id, { error: '请先启动直播搭子。' })
     return
@@ -3347,12 +3576,18 @@ async function load() {
     }
     if (roomData.monitor_enabled) startPublicScreenTransport()
     else stopPublicScreenTransport()
-    void connectLocalAudioReceiver()
     await refreshRuntime()
-    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
+    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshRoomAudioEngine(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
+    if (aiActive.value || roomAudioEngine.value?.phase !== 'idle') {
+      if (navigator.userActivation?.hasBeenActive) {
+        await ensureLocalAudioUnlocked()
+      }
+      void connectLocalAudioReceiver()
+    }
     startRuntimePolling()
     startSessionStatsPolling()
     startSpeechRuntimePolling()
+    startRoomAudioEnginePolling()
     startAgentDecisionPolling()
   } catch (err) {
     const cached = restoreRoomDetailCache()
@@ -3479,6 +3714,26 @@ function stopPublicScreenTransport() {
 	streamState.value = 'offline'
 }
 
+function handleLocalAudioUserGesture() {
+  if (pageUnmounted || !coreActionsAvailable.value) return
+  if (
+    localAudioContext?.state === 'running' &&
+    (localAudioState.value === 'connected' || localAudioState.value === 'playing')
+  ) {
+    return
+  }
+  void ensureLocalAudioUnlocked().then((ready) => {
+    if (
+      ready &&
+      !pageUnmounted &&
+      (aiActive.value || roomAudioEngine.value?.phase !== 'idle') &&
+      (localAudioState.value === 'disconnected' || localAudioState.value === 'error')
+    ) {
+      void connectLocalAudioReceiver()
+    }
+  })
+}
+
 onMounted(() => {
   restorePublicScreenHeight()
   restoreAgentPanelLayout()
@@ -3503,6 +3758,7 @@ onMounted(() => {
   window.addEventListener('click', closeEventContextMenu)
   window.addEventListener('click', closeAgentDecisionContextMenu)
   window.addEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
+  window.addEventListener('pointerdown', handleLocalAudioUserGesture, { passive: true })
   mascotActionTimer = window.setTimeout(runMascotAction, 1200 + Math.random() * 1400)
   load()
 })
@@ -3515,6 +3771,7 @@ watch(
     void refreshSessionStats()
     void refreshCaptureStatus()
     void refreshSpeechRuntime()
+    void refreshRoomAudioEngine()
     void refreshAgentDecisions()
     if (room.value?.monitor_enabled) startPublicScreenTransport()
     scheduleLocalAudioReconnect(0)
@@ -3538,6 +3795,7 @@ watch(
       }
       localAudioState.value = 'disconnected'
       stopLocalAudioPlayback(false)
+      stopCompositeAudioReceiver()
       return
     }
     if (phase === 'online') {
@@ -3558,13 +3816,15 @@ onBeforeUnmount(() => {
 	}
 	void unregisterLocalAudioReceiver()
 	stopLocalAudioPlayback(false)
-	if (localAudioContext) {
-		void localAudioContext.close().catch(() => undefined)
-		localAudioContext = null
-	}
+	stopCompositeAudioReceiver()
+	// Keep the browser AudioContext alive across room navigation. Closing it here
+	// forces a brand-new context on re-entry, which may be suspended by autoplay
+	// policy even though the room composite stream is already producing PCM.
+	localAudioContext = null
 	if (runtimePollTimer !== undefined) window.clearInterval(runtimePollTimer)
 	if (sessionStatsPollTimer !== undefined) window.clearInterval(sessionStatsPollTimer)
 	if (speechPollTimer !== undefined) window.clearInterval(speechPollTimer)
+	if (roomAudioEnginePollTimer !== undefined) window.clearInterval(roomAudioEnginePollTimer)
 	if (agentDecisionPollTimer !== undefined) window.clearInterval(agentDecisionPollTimer)
 	if (streamBatchTimer !== undefined) window.clearTimeout(streamBatchTimer)
 	if (dashboardTickTimer !== undefined) window.clearInterval(dashboardTickTimer)
@@ -3575,6 +3835,7 @@ onBeforeUnmount(() => {
 	window.removeEventListener('click', closeEventContextMenu)
 	window.removeEventListener('click', closeAgentDecisionContextMenu)
 	window.removeEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
+	window.removeEventListener('pointerdown', handleLocalAudioUserGesture)
 	window.removeEventListener('pointermove', movePublicScreenResize)
 	window.removeEventListener('pointerup', finishPublicScreenResize)
 	window.removeEventListener('pointercancel', finishPublicScreenResize)
@@ -3888,8 +4149,26 @@ onBeforeUnmount(() => {
           <div class="speech-runtime-brand">
             <span class="anchor-live-dot"></span>
             <strong>主播实时口播</strong>
+            <button
+              type="button"
+              class="speech-local-mute-button"
+              :class="{ muted: localAudioMuted }"
+              :title="localAudioMuted ? '恢复网页声音' : '静音网页声音'"
+              :aria-label="localAudioMuted ? '恢复网页声音' : '静音网页声音'"
+              @click="toggleLocalAudioMuted"
+            >
+              <svg v-if="!localAudioMuted" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9h4l5-4v14l-5-4H4z"></path>
+                <path d="M16 8.5c1.2 1 1.8 2.1 1.8 3.5s-.6 2.5-1.8 3.5"></path>
+                <path d="M18.7 6c1.8 1.7 2.8 3.7 2.8 6s-1 4.3-2.8 6"></path>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9h4l5-4v14l-5-4H4z"></path>
+                <path d="M16.5 9.2l4.3 4.3"></path>
+                <path d="M20.8 9.2l-4.3 4.3"></path>
+              </svg>
+            </button>
           </div>
-          <p>{{ speechRuntimeSummary }}</p>
         </header>
 
         <div
@@ -3903,12 +4182,6 @@ onBeforeUnmount(() => {
           ]"
         >
           <div class="speech-mainline-track-column">
-            <div class="speech-runtime-mainline-tools">
-              <button type="button" class="speech-track-size-button" @click="toggleSpeechTrackFocus('mainline')">
-                {{ speechTrackFocus === 'mainline' ? '还原' : '放大' }}
-              </button>
-              <b :class="'status-' + displayMainlineStatus">{{ speechStatusLabel(displayMainlineStatus, 'mainline') }}</b>
-            </div>
             <article
               class="speech-track-card speech-mainline-card"
               :class="['status-' + displayMainlineStatus, { 'cut-imminent': mainlineSafeCutImminent }]"
@@ -3925,7 +4198,6 @@ onBeforeUnmount(() => {
                   ]"
                 >
                   <span>{{ row.segment.text }}</span>
-                  <b v-if="row.transition === 'resume'">接回</b>
                 </div>
               </div>
             </div>
@@ -3956,7 +4228,11 @@ onBeforeUnmount(() => {
                 <b>{{ speechStatusLabel(interruptSpeech.status, 'interrupt') }}</b>
               </div>
             </header>
-            <p>{{ interruptSpeech.reply_text || interruptSpeech.text || '等待临时插播…' }}</p>
+            <p class="speech-interrupt-copy">
+              <span v-if="interruptSpeechDisplay.body">{{ interruptSpeechDisplay.body }}</span>
+              <span v-if="interruptSpeechDisplay.bridge" class="speech-bridge-text">{{ interruptSpeechDisplay.bridge }}</span>
+              <span v-if="!interruptSpeechDisplay.body && !interruptSpeechDisplay.bridge">等待临时插播…</span>
+            </p>
             <div class="speech-interrupt-footer">
               <time v-if="interruptSpeech.updated_at">更新 {{ formatTime(interruptSpeech.updated_at) }}</time>
               <div class="speech-interrupt-actions">
@@ -4964,7 +5240,7 @@ onBeforeUnmount(() => {
 .speech-runtime-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 18px;
   min-width: 0;
 }
@@ -4979,40 +5255,42 @@ onBeforeUnmount(() => {
 
 .speech-runtime-brand strong { font-size: 16px; }
 .speech-runtime-brand small { color: #8fa3bf; font-size: 12px; }
-.speech-runtime-mainline-tools {
-  display:flex;
-  align-items:center;
-  justify-content:flex-end;
-  gap:8px;
-  flex:0 0 auto;
-  min-height:30px;
-}
-.speech-runtime-mainline-tools > b {
-  min-height:30px;
+.speech-local-mute-button {
+  width:30px;
+  height:30px;
+  padding:0;
+  margin-left:2px;
   display:inline-flex;
   align-items:center;
-  padding:0 10px;
-  border-radius:999px;
-  font-size:11px;
-  font-weight:950;
-  white-space:nowrap;
-  color:#9ca8bc;
-  background:rgba(137,151,176,.14);
+  justify-content:center;
+  border:1px solid rgba(119,145,190,.34);
+  border-radius:9px;
+  color:#d6e0ef;
+  background:rgba(255,255,255,.055);
+  cursor:pointer;
+  transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease;
 }
-.speech-runtime-mainline-tools > b.status-playing { color:#81e4bf; background:rgba(44,179,132,.18); }
-.speech-runtime-mainline-tools > b.status-paused { color:#8c6300; background:#ffefbf; }
-.speech-runtime-mainline-tools > b.status-ready { color:#5260c8; background:#e9edff; }
-.speech-runtime-mainline-tools > b.status-failed { color:#a63340; background:#ffe1e5; }
-.speech-runtime-head > p {
-  min-width: 0;
-  margin: 0;
-  color: #cbd5e5;
-  font-size: 12px;
-  font-weight: 700;
-  text-align: right;
-  overflow-wrap: anywhere;
+.speech-local-mute-button:hover {
+  color:#fff;
+  border-color:rgba(112,210,190,.58);
+  background:rgba(63,196,163,.12);
 }
-
+.speech-local-mute-button:active { transform:scale(.95); }
+.speech-local-mute-button.muted {
+  color:#ff9b9b;
+  border-color:rgba(255,120,120,.36);
+  background:rgba(150,48,58,.18);
+}
+.speech-local-mute-button svg {
+  width:18px;
+  height:18px;
+  fill:currentColor;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.speech-local-mute-button svg path:first-child { stroke:none; }
 .speech-runtime-track-grid {
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -5023,8 +5301,7 @@ onBeforeUnmount(() => {
 
 .speech-mainline-track-column {
   display:grid;
-  grid-template-rows:auto auto;
-  gap:8px;
+  grid-template-rows:auto;
   min-width:0;
 }
 
@@ -5206,6 +5483,13 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+}
+
+.speech-interrupt-copy .speech-bridge-text {
+  margin-left: .12em;
+  color: #e23b4a;
+  font-weight: 950;
+  text-shadow: 0 0 10px rgba(226, 59, 74, .12);
 }
 
 .speech-mainline-card {
@@ -5661,7 +5945,7 @@ onBeforeUnmount(() => {
 }
 .speech-mainline-caption-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -5677,10 +5961,13 @@ onBeforeUnmount(() => {
   transition: opacity .28s ease, transform .28s ease, color .28s ease, background .28s ease;
 }
 .speech-mainline-caption-row > span {
+  width: 100%;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: center;
 }
 .speech-mainline-caption-row.role-current {
   color: #f2f5fc;
@@ -5782,7 +6069,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .speech-runtime-head { align-items: flex-start; flex-direction: column; gap: 6px; }
-  .speech-runtime-head > p { text-align: left; }
+  .speech-runtime-mainline-tools { margin-left: 0; }
   .speech-runtime-track-grid,
   .speech-runtime-track-grid.layout-mainline,
   .speech-runtime-track-grid.layout-interrupt,

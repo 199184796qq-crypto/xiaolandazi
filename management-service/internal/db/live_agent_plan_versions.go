@@ -254,6 +254,34 @@ func (s *Store) ListLiveAgentPlanVersions(
 	return items, rows.Err()
 }
 
+func (s *Store) ListLiveAgentPlanVersionsForPlan(
+	ctx context.Context,
+	tenantID, planID int64,
+) ([]model.LiveAgentPlanVersion, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		liveAgentPlanVersionSelect+`
+		WHERE tenant_id=? AND plan_id=?
+		ORDER BY updated_at DESC, id DESC
+	`,
+		tenantID,
+		planID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.LiveAgentPlanVersion, 0)
+	for rows.Next() {
+		item, err := scanLiveAgentPlanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) PublishLiveAgentPlanVersion(
 	ctx context.Context,
 	tenantID, planID, roomID, versionID, actorUserID int64,

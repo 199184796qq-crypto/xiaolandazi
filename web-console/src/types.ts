@@ -692,6 +692,9 @@ export interface SpeechTrackRuntime {
   text?: string
   question_text?: string
   reply_text?: string
+  resume_strategy?: string
+  bridge_text?: string
+  bridge_used?: boolean
   source?: string
   audio_url?: string
   decision_id?: string
@@ -1513,6 +1516,8 @@ export interface LiveAgentPlanVersion {
 export interface LiveAgentPlanWorkspaceResponse {
   version?: LiveAgentPlanVersion | null
   source: 'draft' | 'published' | ''
+  inherited?: boolean
+  source_room_id?: number
 }
 
 export interface LiveAgentPlanFact {
@@ -1659,11 +1664,51 @@ export interface LiveAgentSettings {
 }
 
 export interface LiveAgentSettingsInput {
-  display_name: string
-  role_name: string
-  self_introduction: string
-  mission: string
-  greeting: string
+	display_name: string
+	role_name: string
+	self_introduction: string
+	mission: string
+	greeting: string
+}
+
+export interface LiveStrategyRule {
+	category: 'interrupt' | 'resume' | 'interaction' | string
+	key: string
+	name: string
+	description?: string
+	enabled: boolean
+	base_probability: number
+	min_probability: number
+	system_default?: boolean
+	config?: Record<string, unknown>
+}
+
+export interface LiveAddressingOption {
+	key: string
+	text: string
+	enabled: boolean
+	probability: number
+	system_default: boolean
+}
+
+export interface LiveAddressingStrategy {
+	addressing_mode: 'system' | 'custom' | string
+	addressing: LiveAddressingOption[]
+}
+
+export interface LiveStrategyCenterConfig {
+	tenant_id: number
+	rules: LiveStrategyRule[]
+	addressing_mode: 'system' | 'custom' | string
+	addressing: LiveAddressingOption[]
+	updated_by_user_id?: number
+	updated_at?: string
+}
+
+export interface LiveStrategyCenterInput {
+	rules: LiveStrategyRule[]
+	addressing_mode: 'system' | 'custom' | string
+	addressing: LiveAddressingOption[]
 }
 
 export interface LiveAgentConfigVersion {

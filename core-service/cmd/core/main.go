@@ -34,9 +34,11 @@ import (
 	"livecompanion/core/internal/questionqueue"
 	"livecompanion/core/internal/rediscache"
 	roomstore "livecompanion/core/internal/room"
+	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/roombrain"
 	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
+	"livecompanion/core/internal/strategycenter"
 	"livecompanion/core/internal/userblock"
 )
 
@@ -247,7 +249,12 @@ func main() {
 		log.Printf("hydrate room brain state: %v", err)
 	}
 	baseEvents := basepipeline.New(brain, questions, userBlocks)
-	paidAgents := paidpipeline.New(agentWork, agentDecisions)
+	strategyPolicies := strategycenter.New()
+	if err := strategyPolicies.Load(startupCtx, database); err != nil {
+		log.Printf("hydrate live strategy policies: %v", err)
+	}
+	paidAgents := paidpipeline.New(agentWork, agentDecisions, strategyPolicies)
+	paidAgents.SetBrain(brain)
 	events.SetObserver(func(event model.RoomEvent) {
 		signal := baseEvents.Handle(event)
 		paidAgents.Handle(event, signal)
@@ -382,11 +389,35 @@ func main() {
 		cfg.InternalToken,
 	)
 	audioHub := audiohub.New()
+	roomAudioEngine := roomaudio.New()
 	coreAudioClient, err := coreaudio.New(audioHub, cfg.CorePublicURL, cfg.CoreAudioTestWAVPath)
 	if err != nil {
 		log.Fatalf("create core audio runtime: %v", err)
 	}
+	coreAudioClient.SetRoomAudioEngine(roomAudioEngine)
+	coreAudioClient.SetMainlineAgentSignalProvider(func(roomID int64) coreaudio.MainlineAgentSignals {
+		view, viewErr := brain.Snapshot(roomID)
+		if viewErr != nil {
+			return coreaudio.MainlineAgentSignals{}
+		}
+		topics := make([]string, 0, len(view.Intelligence.TopTopics))
+		for _, topic := range view.Intelligence.TopTopics {
+			topics = append(topics, topic.Topic)
+		}
+		return coreaudio.MainlineAgentSignals{
+			Heat:                view.Intelligence.Heat,
+			Progress:            view.Director.Progress,
+			Atmosphere:          view.Director.Atmosphere,
+			QuestionPressure:    view.Intelligence.QuestionPressure,
+			Orders30s:           view.Intelligence.Orders30s,
+			OrderSignals30s:     view.Intelligence.OrderSignals30s,
+			NegativeFeedback30s: view.Intelligence.NegativeFeedback30s,
+			TopTopics:           topics,
+		}
+	})
 	api.SetAudioHub(audioHub)
+	api.SetRoomAudioEngine(roomAudioEngine)
+	api.SetStrategyPolicyStore(strategyPolicies)
 	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
 	api.SetCaptureManager(captureManager)
 	api.SetSpeechAnalysisManager(speechanalysis.NewManager())

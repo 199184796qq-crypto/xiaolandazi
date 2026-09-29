@@ -118,7 +118,10 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
 	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))
 	input.FixedText = strings.TrimSpace(input.FixedText)
-	if input.ManualOrigin != "agent_input" && input.ManualOrigin != "question_cluster" && input.ManualOrigin != "test_simulation" {
+	if input.ManualOrigin != "agent_input" &&
+		input.ManualOrigin != "agent_input_preview" &&
+		input.ManualOrigin != "question_cluster" &&
+		input.ManualOrigin != "test_simulation" {
 		input.ManualOrigin = ""
 	}
 	if input.ExecutionMode != "verbatim" {

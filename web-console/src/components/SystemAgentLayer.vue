@@ -158,6 +158,12 @@ type ChatMessage = {
   text: string
   domain: AgentDomain
   action?: SystemAgentActionPreview
+  speechChoice?: {
+    question: string
+    text: string
+    status?: 'pending' | 'sending' | 'sent'
+    selected?: 'quick' | 'answer'
+  }
   credential?: InitialCredential
   introduction?: boolean
   conversationScope?: string
@@ -1002,6 +1008,12 @@ function restoreAgentChatHistory(userId: number) {
       domain: item.domain,
       introduction: item.introduction,
       conversationScope: item.conversationScope,
+      speechChoice: item.speechChoice
+        ? {
+            ...item.speechChoice,
+            status: item.speechChoice.status === 'sending' ? 'pending' : item.speechChoice.status,
+          }
+        : undefined,
       action:
         item.action?.type === 'add_live_image_product' ||
         item.action?.type === 'add_live_product' ||
@@ -1060,6 +1072,12 @@ function persistAgentChatHistory(userId: number) {
     domain: item.domain,
     introduction: item.introduction,
     conversationScope: item.conversationScope || conversationScopeForDomain(item.domain),
+    speechChoice: item.speechChoice
+      ? {
+          ...item.speechChoice,
+          status: item.speechChoice.status === 'sending' ? 'pending' : item.speechChoice.status,
+        }
+      : undefined,
     action:
       item.action?.type === 'add_live_image_product' ||
       item.action?.type === 'add_live_product' ||
@@ -1114,7 +1132,7 @@ const contextLabel = computed(() => {
   if (currentDomain.value === 'live-room') return '直播场控'
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '直播策略 · 主播训练'
-    if (liveStrategyMode.value === 'script') return '直播策略 · 话术参考'
+    if (liveStrategyMode.value === 'script') return '直播策略 · 口播样稿'
     if (liveStrategyMode.value === 'voice') return '直播策略 · 声音配置'
     if (liveStrategyMode.value === 'basic') return '直播策略 · 基础设置'
     return '直播策略 · 当前直播间用户层'
@@ -1130,7 +1148,7 @@ const contextDescription = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '已进入当前直播间主播训练上下文。'
-    if (liveStrategyMode.value === 'script') return '已进入当前直播间话术参考上下文。'
+    if (liveStrategyMode.value === 'script') return '已进入当前直播间口播样稿上下文。'
     if (liveStrategyMode.value === 'voice') return '已进入当前直播间声音配置上下文。'
     if (liveStrategyMode.value === 'basic') return '已进入当前客户直播助手基础设置上下文。'
     return '已进入当前直播间用户层策略上下文。'
@@ -1188,7 +1206,7 @@ const inputPlaceholder = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return '输入主播训练要求……'
-    if (liveStrategyMode.value === 'script') return '输入话术参考要求……'
+    if (liveStrategyMode.value === 'script') return '输入口播样稿要求……'
     if (liveStrategyMode.value === 'voice') return '输入声音配置要求……'
     if (liveStrategyMode.value === 'basic') return '输入直播助手基础设置问题……'
     return '输入用户层策略要求……'
@@ -1221,7 +1239,7 @@ const capabilities = computed(() => {
   }
   if (currentDomain.value === 'live-strategy') {
     if (liveStrategyMode.value === 'anchor') return ['主播训练', '主播风格', '训练草稿']
-    if (liveStrategyMode.value === 'script') return ['话术参考', '原话锁定', '意图执行']
+    if (liveStrategyMode.value === 'script') return ['口播样稿', '完整原文', '结构参考']
     if (liveStrategyMode.value === 'voice') return ['声音配置', '官方声音', '我的声音']
     if (liveStrategyMode.value === 'basic') return ['基础设置']
     return ['当前直播间用户层', '策略调教', '生成策略草稿']
@@ -1542,9 +1560,9 @@ const capabilitySuggestions = computed<SuggestionItem[]>(() => {
     }
     if (liveStrategyMode.value === 'script') {
       return [
-        { kind: 'capability', label: '话术参考', description: '新增或调整当前直播间正式话术参考', insertText: '新增话术参考：' },
-        { kind: 'capability', label: '原话锁定', description: '要求话术参考逐字执行', insertText: '100%原话：' },
-        { kind: 'capability', label: '意图执行', description: '保留核心意思但允许自然变化', insertText: '按照这个意思来：' },
+        { kind: 'capability', label: '新增样稿', description: '新增一篇完整历史口播稿作为生成参考', insertText: '新增口播样稿：' },
+        { kind: 'capability', label: '完整原文', description: '保存从开场到结尾的整篇样稿原文', insertText: '这是一篇完整口播样稿：' },
+        { kind: 'capability', label: '结构参考', description: '只参考结构、节奏、转场和表达，不沿用旧事实', insertText: '参考这篇样稿的结构和讲法：' },
       ]
     }
     if (liveStrategyMode.value === 'voice') {
@@ -2963,23 +2981,23 @@ async function prepareLiveScriptIntentAction(
   }
 
   if (result.intent === 'script.add') {
-    const title = requestedTitle || '话术参考'
+    const title = requestedTitle || '口播样稿'
     const referenceKey = requestedKey || title
     if (!scriptText) {
-      return { text: result.reply || '我已经判断这是新增话术参考，但还缺少具体参考内容。请把想保存的讲法告诉我。' }
+      return { text: result.reply || '我已经判断这是新增口播样稿，但还缺少具体参考内容。请把想保存的讲法告诉我。' }
     }
     if (items.some((item) => item.reference_key === referenceKey)) {
       return { text: '当前方案已经存在“' + title + '”。如果要调整，请直接说修改后的话术内容。' }
     }
     const executionMode = liveScriptExecutionModeFromText(sourceText)
     return {
-      text: '我已经理解为新增正式话术参考。它只影响“怎么说”，不会自动把里面的商品描述升级成事实依据。确认后才写入。',
+      text: '我已经理解为新增正式口播样稿。它只影响“怎么说”，不会自动把里面的商品描述升级成事实依据。确认后才写入。',
       action: {
         type: 'add_live_script_reference',
-        title: '确认添加话术参考',
+        title: '确认添加口播样稿',
         summary: executionMode === 'verbatim'
-          ? '确认后进入当前方案正式话术参考，并按“100%原话”执行。'
-          : '确认后进入当前方案正式话术参考，并按“意图参考”执行，允许自然改写。',
+          ? '确认后进入当前方案正式口播样稿，并按“100%原话”执行。'
+          : '确认后进入当前方案正式口播样稿，并按“意图参考”执行，允许自然改写。',
         risk_level: 'low',
         requires_confirmation: true,
         payload: {
@@ -2997,13 +3015,13 @@ async function prepareLiveScriptIntentAction(
 
   if (result.intent === 'script.disable') {
     if (!existing) {
-      return { text: result.reply || '我知道你想停用话术参考，但还不能唯一定位到哪一条。请说出参考名称。' }
+      return { text: result.reply || '我知道你想停用口播样稿，但还不能唯一定位到哪一条。请说出参考名称。' }
     }
     return {
-      text: '我已经定位到话术参考“' + existing.title + '”。停用后直播生成不再参考这条内容，请确认。',
+      text: '我已经定位到口播样稿“' + existing.title + '”。停用后直播生成不再参考这条内容，请确认。',
       action: {
         type: 'confirm_live_script_reference_disable',
-        title: '确认停用话术参考',
+        title: '确认停用口播样稿',
         summary: '确认后停止参与直播生成；历史版本和审计记录继续保留。',
         risk_level: 'medium',
         requires_confirmation: true,
@@ -3024,7 +3042,7 @@ async function prepareLiveScriptIntentAction(
 
   if (result.intent !== 'script.update') return null
   if (!existing) {
-    return { text: result.reply || '我判断你要修改话术参考，但还不能唯一定位目标。请说出参考名称。' }
+    return { text: result.reply || '我判断你要修改口播样稿，但还不能唯一定位目标。请说出参考名称。' }
   }
   if (!scriptText) {
     return { text: result.reply || '我已经定位到“' + existing.title + '”，但还没有明确新的话术内容。' }
@@ -3035,13 +3053,13 @@ async function prepareLiveScriptIntentAction(
   )
   const executionMode = hasModeInstruction ? explicitMode : existing.execution_mode
   if (scriptText === existing.content_text && executionMode === existing.execution_mode) {
-    return { text: '模型理解出的新内容和当前正式话术参考一致，没有生成新版本。' }
+    return { text: '模型理解出的新内容和当前正式口播样稿一致，没有生成新版本。' }
   }
   return {
-    text: '我已经按你的原话理解成话术参考修改。请核对修改前后，确认后才生成正式新版本。',
+    text: '我已经按你的原话理解成口播样稿修改。请核对修改前后，确认后才生成正式新版本。',
     action: {
       type: 'confirm_live_script_reference_update',
-      title: '确认修改话术参考',
+      title: '确认修改口播样稿',
       summary: executionMode === 'verbatim'
         ? '确认后生成正式新版本，并按“100%原话”执行。'
         : '确认后生成正式新版本，并按“意图参考”执行。',
@@ -3229,7 +3247,7 @@ async function handleUnifiedLiveStrategyIntent(
   }
   if (result.intent.startsWith('script.')) {
     if (!planId) {
-      pushAgentMessage(domain, '我已经理解成话术参考操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      pushAgentMessage(domain, '我已经理解成口播样稿操作，但当前还没有选中的直播智能体方案。请先选择方案。')
       return true
     }
     const prepared = await prepareLiveScriptIntentAction(planId, roomId, sourceText, result)
@@ -4127,6 +4145,128 @@ async function sendLiveRoomAnswer(value: string, mode: LiveRoomAnswerMode) {
   }
 }
 
+async function prepareLiveRoomSpeechChoice(rawValue: string) {
+  const roomId = Number(route.params.id)
+  const question = extractLiveRoomExecutionContent(rawValue)
+  if (!roomId || !question) return
+
+  liveRoomWorkMode.value = 'execution'
+  liveRoomExecutionError.value = false
+  liveRoomExecutionStatus.value = '正在审核并生成可播话术…'
+  messages.value.push({
+    role: 'user',
+    domain: 'live-room',
+    text: rawValue.trim(),
+    conversationScope: conversationScopeForDomain('live-room'),
+  })
+  input.value = ''
+  dismissedSuggestionInput.value = ''
+  drawerOpen.value = true
+  expanded.value = true
+  busy.value = true
+  busyDomain.value = 'live-room'
+  void scrollChatToBottom()
+
+  try {
+    const enqueued = await enqueueRoomManualAgentDecision(roomId, {
+      question,
+      title: '智能体上行播报预审核',
+      summary: '先由 Core Agent 审核输入并在必要时优化成可播文字，等待用户选择抢答或回答；本步骤不播音',
+      reply_hint: '保留用户原意；原文字已经自然、安全、事实明确时不要为了改写而改写，确有必要时再优化。',
+      manual_action: 'answer',
+      manual_origin: 'agent_input_preview',
+      execution_mode: 'intent',
+      ttl_seconds: 120,
+    })
+    const decisionId = enqueued.item?.id
+    if (!decisionId) throw new Error('没有生成可播任务，请确认直播间 AI 已启动')
+
+    let reply = ''
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      const snapshot = await getRoomAgentDecisions(roomId)
+      const matched = (snapshot.simulation_results || []).find((item) => item.decision_id === decisionId)
+      if (matched?.reply?.trim()) {
+        reply = matched.reply.trim()
+        break
+      }
+    }
+    if (!reply) throw new Error('审核生成超时，请确认直播间 AI 正在工作')
+
+    messages.value.push({
+      role: 'agent',
+      domain: 'live-room',
+      text: '已完成播出前审核。下面是最终建议播出的文字，选择“抢答”或“回答”后才会真正送入 TTS。',
+      conversationScope: conversationScopeForDomain('live-room'),
+      speechChoice: {
+        question,
+        text: reply,
+        status: 'pending',
+      },
+    })
+    liveRoomExecutionStatus.value = '审核完成 · 请选择抢答或回答'
+  } catch (error) {
+    liveRoomExecutionError.value = true
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '审核生成失败'
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '这次可播话术没有生成成功：' + error.message : '这次可播话术没有生成成功。',
+    )
+  } finally {
+    busy.value = false
+    busyDomain.value = null
+    void nextTick(focusActiveComposer)
+    void scrollChatToBottom()
+  }
+}
+
+async function executePreparedLiveRoomSpeech(
+  message: ChatMessage,
+  mode: LiveRoomAnswerMode,
+) {
+  const roomId = Number(route.params.id)
+  const choice = message.speechChoice
+  if (!roomId || !choice || choice.status === 'sending' || choice.status === 'sent') return
+
+  choice.status = 'sending'
+  choice.selected = mode
+  liveRoomExecutionError.value = false
+  liveRoomExecutionStatus.value = mode === 'quick' ? '正在提交抢答…' : '正在提交回答…'
+  try {
+    const result = await enqueueRoomManualAgentDecision(roomId, {
+      question: choice.question || choice.text,
+      title: mode === 'quick' ? '智能体上行抢答' : '智能体上行回答',
+      summary: mode === 'quick'
+        ? '用户确认抢答，使用已审核文字立即进入现有打断播报链路'
+        : '用户确认回答，使用已审核文字进入现有安全切点播报链路',
+      reply_hint: choice.text,
+      force_reopen: mode === 'quick',
+      manual_action: mode,
+      manual_origin: 'agent_input',
+      execution_mode: 'verbatim',
+      fixed_text: choice.text,
+      ttl_seconds: mode === 'quick' ? 180 : 600,
+    })
+    choice.status = 'sent'
+    const queueText = result.merged
+      ? '已融合到现有待执行任务'
+      : mode === 'quick'
+        ? '已进入最高优先执行区'
+        : '已进入待打断队列'
+    liveRoomExecutionStatus.value = (mode === 'quick' ? '抢答' : '回答') + ' · ' + queueText
+    pushAgentMessage('live-room', (mode === 'quick' ? '抢答' : '回答') + '已提交，后续继续沿用现有 TTS、打断和回归逻辑。')
+  } catch (error) {
+    choice.status = 'pending'
+    choice.selected = undefined
+    liveRoomExecutionError.value = true
+    liveRoomExecutionStatus.value = error instanceof Error ? error.message : '播报提交失败'
+    pushAgentMessage(
+      'live-room',
+      error instanceof Error ? '播报提交失败：' + error.message : '播报提交失败，请稍后再试。',
+    )
+  }
+}
+
 async function sendLiveRoomSimulation(value: string) {
   liveRoomWorkMode.value = 'test'
   const roomId = Number(route.params.id)
@@ -4499,10 +4639,12 @@ async function routeActiveAgentLearningInput(rawValue: string) {
       execution_active: Boolean(liveRoomAnswerMode.value),
       history: historyPayload('live-room').slice(-10),
     })
-    intent = routed.intent
+    intent = routed.intent === 'chat' && isLikelyLiveRoomExecutionIntent(rawValue)
+      ? 'execution'
+      : routed.intent
   } catch {
     // 分流服务异常时宁可聊天，也不能把普通闲聊误写成长期记忆。
-    intent = 'chat'
+    intent = isLikelyLiveRoomExecutionIntent(rawValue) ? 'execution' : 'chat'
   }
 
   if (intent === 'test') {
@@ -4522,9 +4664,7 @@ async function routeActiveAgentLearningInput(rawValue: string) {
     return true
   }
   if (intent === 'execution') {
-    await sendLiveRoomAnswer(extractLiveRoomExecutionContent(rawValue), 'answer')
-    input.value = ''
-    dismissedSuggestionInput.value = ''
+    await prepareLiveRoomSpeechChoice(rawValue)
     return true
   }
 
@@ -4538,9 +4678,15 @@ function isLikelyAgentCorrectionIntent(value: string) {
   return /(?:我|之前|刚才).{0,8}(?:说错|写错|打错|教错)|(?:说错了|写错了|打错了|教错了).{0,12}(?:应该|实际|正确)|^不是.{1,30}[，,、 ]?(?:是|应该是)/.test(text)
 }
 
+function isLikelyLiveRoomExecutionIntent(value: string) {
+  const text = value.trim()
+  if (!text || text.startsWith('/')) return false
+  return /(?:帮我|替我|让(?:直播间|主播|智能体)?|直接(?:打断)?)(?:说|播|念|读)|(?:直播间|主播|智能体).{0,4}(?:说|播|念|读)(?:一句|一下|下)?|^(?:直接(?:打断)?)?(?:说|播|念|读)(?:一句|一下|下)?/.test(text)
+}
+
 function extractLiveRoomExecutionContent(value: string) {
   const text = value.trim()
-  const direct = text.match(/^(?:(?:你)?(?:帮我|替我)?(?:直接)?(?:回答|回复|抢答)(?:一下|下)?(?:这条(?:弹幕|问题)?|这个(?:问题|用户)?|他|她)?|给(?:这个用户|他|她)回复)[：:，,\s]*(.+)$/)
+  const direct = text.match(/^(?:(?:你)?(?:帮我|替我)?(?:直接(?:打断)?)?(?:回答|回复|抢答|说|播|念|读)(?:一句|一下|下)?(?:这条(?:弹幕|问题)?|这个(?:问题|用户)?|他|她)?|(?:让)?(?:直播间|主播|智能体)(?:直接(?:打断)?)?(?:说|播|念|读)(?:一句|一下|下)?|给(?:这个用户|他|她)回复)[：:，,\s]*(.+)$/)
   return direct?.[1]?.trim() || text
 }
 
@@ -4561,9 +4707,15 @@ async function routeInactiveLiveRoomWorkModeInput(rawValue: string) {
       execution_active: Boolean(liveRoomAnswerMode.value),
       history: historyPayload('live-room').slice(-10),
     })
-    intent = routed.intent
+    intent = routed.intent === 'chat' && isLikelyLiveRoomExecutionIntent(rawValue)
+      ? 'execution'
+      : routed.intent
   } catch {
-    intent = isLikelyAgentCorrectionIntent(rawValue) ? 'learning' : 'chat'
+    intent = isLikelyAgentCorrectionIntent(rawValue)
+      ? 'learning'
+      : isLikelyLiveRoomExecutionIntent(rawValue)
+        ? 'execution'
+        : 'chat'
   }
 
   if (intent === 'learning') {
@@ -4576,9 +4728,7 @@ async function routeInactiveLiveRoomWorkModeInput(rawValue: string) {
     return true
   }
   if (intent === 'execution') {
-    await sendLiveRoomAnswer(extractLiveRoomExecutionContent(rawValue), 'answer')
-    input.value = ''
-    dismissedSuggestionInput.value = ''
+    await prepareLiveRoomSpeechChoice(rawValue)
     return true
   }
   if (intent === 'test') {
@@ -6728,6 +6878,30 @@ async function copyCredential(credential?: InitialCredential) {
             </div>
             <p v-else-if="!message.answerReference">{{ message.text }}</p>
 
+            <div v-if="message.speechChoice" class="live-speech-choice-card">
+              <span>播出前审核结果</span>
+              <p>{{ message.speechChoice.text }}</p>
+              <div class="live-speech-choice-actions">
+                <button
+                  type="button"
+                  :disabled="message.speechChoice.status === 'sending' || message.speechChoice.status === 'sent'"
+                  @click="executePreparedLiveRoomSpeech(message, 'quick')"
+                >
+                  {{ message.speechChoice.status === 'sending' && message.speechChoice.selected === 'quick' ? '提交中…' : '抢答' }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="message.speechChoice.status === 'sending' || message.speechChoice.status === 'sent'"
+                  @click="executePreparedLiveRoomSpeech(message, 'answer')"
+                >
+                  {{ message.speechChoice.status === 'sending' && message.speechChoice.selected === 'answer' ? '提交中…' : '回答' }}
+                </button>
+                <small v-if="message.speechChoice.status === 'sent'">
+                  已按{{ message.speechChoice.selected === 'quick' ? '抢答' : '回答' }}提交
+                </small>
+              </div>
+            </div>
+
             <div
               v-if="message.answerReference"
               class="system-agent-action-card answer-reference-result-card"
@@ -6823,11 +6997,11 @@ async function copyCredential(credential?: InitialCredential) {
                   : message.action.type === 'confirm_live_fact_disable'
                     ? '事实停用确认'
                   : message.action.type === 'add_live_script_reference'
-                    ? '话术参考候选'
+                    ? '口播样稿候选'
                   : message.action.type === 'confirm_live_script_reference_update'
-                    ? '话术参考修改确认'
+                    ? '口播样稿修改确认'
                   : message.action.type === 'confirm_live_script_reference_disable'
-                    ? '话术参考停用确认'
+                    ? '口播样稿停用确认'
                   : message.action.type === 'confirm_live_plan_bind'
                     ? '方案绑定确认'
                   : message.action.type === 'confirm_live_plan_unbind'
@@ -7296,6 +7470,7 @@ async function copyCredential(credential?: InitialCredential) {
 .agent-image-strip{display:flex;align-items:flex-start;gap:8px;max-width:100%;padding:2px 2px 7px;overflow-x:auto;scrollbar-width:thin}.agent-image-chip{position:relative;flex:0 0 72px;width:72px;height:68px;border:1px solid rgba(91,107,207,.2);border-radius:10px;background:#f8f9ff;box-shadow:0 3px 10px rgba(71,86,169,.07);overflow:hidden}.agent-image-thumb{display:grid!important;grid-template-rows:45px 17px!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;color:#5a6480!important;cursor:pointer!important;font-size:10px!important;line-height:1.1!important;box-shadow:none!important}.agent-image-thumb img{display:block;width:100%;height:45px;object-fit:cover;background:#eef1f8}.agent-image-thumb span{display:block;padding:3px 18px 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:10px!important;font-weight:800;line-height:1.1}.agent-image-reference,.agent-image-remove{position:absolute;z-index:2;display:grid!important;place-items:center;width:18px!important;height:18px!important;min-width:18px!important;min-height:18px!important;padding:0!important;border:0!important;border-radius:6px!important;background:rgba(42,51,79,.78)!important;color:#fff!important;font-size:11px!important;font-weight:900!important;line-height:1!important;cursor:pointer!important;box-shadow:none!important}.agent-image-remove{top:3px;right:3px}.agent-image-reference{right:3px;bottom:3px;background:rgba(82,99,213,.9)!important}.agent-image-error{margin:0 2px 6px;padding:5px 8px;border-radius:7px;background:#fff1f3;color:#c24655;font-size:11px;line-height:1.35}.agent-image-preview-backdrop{position:fixed;inset:0;z-index:20050;display:grid;place-items:center;padding:28px;background:rgba(18,23,40,.62);backdrop-filter:blur(3px)}.agent-image-preview-card{display:grid;grid-template-rows:auto minmax(0,1fr);width:min(980px,88vw);max-height:88vh;border:1px solid rgba(255,255,255,.55);border-radius:16px;background:#fff;box-shadow:0 24px 80px rgba(12,18,44,.32);overflow:hidden}.agent-image-preview-card>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 14px;border-bottom:1px solid #e5e8f2;background:#fafbff}.agent-image-preview-card>header>div{display:grid;gap:2px}.agent-image-preview-card>header strong{color:#35405a;font-size:14px}.agent-image-preview-card>header small{color:#929aac;font-size:10px}.agent-image-preview-card>header button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid #dfe3ee;border-radius:8px;background:#fff;color:#59647a;font-size:20px;cursor:pointer}.agent-image-preview-card>img{display:block;max-width:100%;max-height:calc(88vh - 55px);margin:auto;object-fit:contain;background:#f3f5fa}
 .live-room-answer-state{display:flex;align-items:center;gap:8px;min-height:24px;margin:0 0 5px;padding:3px 8px;border:1px solid rgba(104,118,220,.18);border-radius:8px;background:rgba(244,246,255,.9);color:#66708c;font-size:12px;line-height:1.35}.live-room-answer-state strong{flex:0 0 auto;color:#5666d8;font-size:12px;font-weight:900}.live-room-answer-state span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-room-answer-state.error{border-color:rgba(216,63,79,.22);background:rgba(255,244,246,.94);color:#cf4050}.live-room-answer-state.error strong{color:#cf4050}
 .live-room-test-toggle{display:flex;align-items:center;gap:8px}.live-room-test-toggle button{height:26px;padding:0 10px;border:1px solid rgba(84,104,214,.22);border-radius:999px;background:rgba(255,255,255,.88);color:#6672b8;font:inherit;font-size:11px;font-weight:900;cursor:pointer;box-shadow:0 2px 8px rgba(72,88,170,.06)}.live-room-test-toggle button.active{border-color:rgba(84,104,214,.5);background:linear-gradient(135deg,rgba(96,111,230,.16),rgba(120,134,243,.10));color:#4f5fd0;box-shadow:0 0 0 2px rgba(84,104,214,.07),0 4px 12px rgba(72,88,170,.10)}.live-room-test-toggle span{color:#8a93a8;font-size:10px;line-height:1.3}.dock-live-room-test-toggle{flex:0 0 100%;width:100%;box-sizing:border-box;justify-content:flex-start;margin:2px 0 0;padding:7px 10px 0 0;border-top:1px solid rgba(105,121,190,.12)}.drawer-live-room-test-toggle{grid-column:1 / -1;margin:0;padding-top:7px;border-top:1px solid rgba(105,121,190,.12)}
+.live-speech-choice-card{display:grid;gap:10px;margin-top:4px;padding:12px;border:1px solid rgba(85,103,214,.22);border-radius:12px;background:linear-gradient(145deg,#f9faff,#f1f4ff)}.live-speech-choice-card>span{color:#5a67c8;font-size:12px;font-weight:900}.live-speech-choice-card>p{margin:0!important;padding:10px 12px;border-radius:9px;background:#fff;color:#2f3a52!important;font-size:15px!important;line-height:1.65!important;white-space:pre-wrap}.live-speech-choice-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.live-speech-choice-actions>button{min-width:86px;min-height:38px;padding:7px 14px;border:1px solid rgba(82,99,211,.30);border-radius:10px;background:#fff;color:#4c5dcc;font:inherit;font-size:13px;font-weight:900;cursor:pointer}.live-speech-choice-actions>button:first-child{background:linear-gradient(135deg,#6475ea,#5264da);color:#fff}.live-speech-choice-actions>button:disabled{opacity:.55;cursor:default}.live-speech-choice-actions>small{color:#7d88a4;font-size:11px;font-weight:800}
 .answer-reference-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;padding:7px 9px;border:1px solid rgba(84,104,214,.2);border-radius:10px;background:linear-gradient(135deg,rgba(241,244,255,.96),rgba(250,251,255,.96));color:#5f6985;line-height:1.35}.answer-reference-context>div{min-width:0;display:grid;gap:2px}.answer-reference-context strong{color:#5362cf;font-size:12px;font-weight:900}.answer-reference-context span{max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.answer-reference-context small{color:#929bb0;font-size:10px}.answer-reference-context button{flex:0 0 auto;padding:4px 8px;border:1px solid rgba(84,104,214,.16);border-radius:8px;background:#fff;color:#6874b8;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.answer-reference-context.picking{border-style:dashed;background:rgba(244,246,255,.96)}.coaching-context{border-color:rgba(112,91,220,.22);background:linear-gradient(135deg,rgba(244,241,255,.97),rgba(251,250,255,.97))}.drawer-answer-reference-context{grid-column:1 / -1;margin:0}.answer-reference-result-card{align-items:stretch;gap:14px;flex-wrap:wrap}.answer-reference-result-copy{display:grid;gap:8px}.answer-reference-result-target{color:#7f8aa0;font-size:12px;line-height:1.45}.answer-reference-result-text{margin:0!important;padding:12px 14px;border:1px solid rgba(92,111,210,.14);border-radius:10px;background:#f8f9ff;color:#293349!important;font-size:17px!important;font-weight:750;line-height:1.7;white-space:pre-wrap}.answer-reference-result-reference{color:#8d96a8;font-size:11px;line-height:1.5}.coaching-result-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.coaching-result-actions .ghost-button{min-height:36px;padding:7px 12px}
 .agent-memory-list-card{align-items:stretch}.agent-memory-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.agent-memory-list-head>span{color:#5666d8!important;font-size:13px!important;font-weight:900}.agent-memory-list-head>small{color:#929bb0;font-size:11px}.agent-memory-empty{padding:14px;border-radius:10px;background:#f8f9fc;color:#8a93a6;text-align:center}.agent-memory-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:12px;border:1px solid #e5e8f2;border-radius:11px;background:#fafbff}.agent-memory-item>div:first-child{display:grid;min-width:0;gap:4px}.agent-memory-item>div:first-child>span{width:max-content;padding:2px 7px;border-radius:999px;background:#eef0ff;color:#5965c8;font-size:10px;font-weight:850}.agent-memory-item strong{color:#30394a;font-size:14px}.agent-memory-item p{margin:0!important;color:#596579!important;line-height:1.55;white-space:pre-wrap}.agent-memory-item small{color:#9aa2b0;font-size:10px}.agent-memory-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.agent-memory-actions button{min-height:32px;padding:5px 9px;border:1px solid #d9deeb;border-radius:8px;background:#fff;color:#5f6a7e;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.agent-memory-actions button:hover{border-color:#aeb7df;background:#f4f6ff;color:#4f5fc4}@media(max-width:720px){.agent-memory-item{grid-template-columns:1fr}.agent-memory-actions{justify-content:flex-start}}
 .system-agent-drawer{position:relative;grid-template-rows:auto auto minmax(0,1fr) auto;overflow:visible}

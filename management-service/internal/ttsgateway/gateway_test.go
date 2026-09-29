@@ -72,3 +72,54 @@ func TestQwenProviderSynthesizeURL(t *testing.T) {
 		t.Fatalf("rate=%v", out.Rate)
 	}
 }
+
+func TestQwenProviderSendsInstructionForSupportedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		input, _ := payload["input"].(map[string]any)
+		if got := input["instruction"]; got != "轻声一点，像真人聊天" {
+			t.Fatalf("instruction=%v", got)
+		}
+		if _, exists := input["volume"]; exists {
+			t.Fatal("interrupt style must not be implemented as a numeric volume override")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"output\":{\"audio\":{\"url\":\"http://example/audio.wav\"}}}"))
+	}))
+	defer server.Close()
+	p := NewQwenProvider(QwenConfig{APIKey: "secret", TTSBaseURL: server.URL, CustomizationURL: server.URL, Client: server.Client()})
+	_, err := p.SynthesizeURL(t.Context(), SynthesizeRequest{
+		Model: "qwen-audio-3.0-tts-plus", VoiceID: "voice", Text: "hello", Rate: 1,
+		Instruction: "轻声一点，像真人聊天",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestQwenProviderOmitsInstructionForUnsupportedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		input, _ := payload["input"].(map[string]any)
+		if _, exists := input["instruction"]; exists {
+			t.Fatalf("unsupported model must ignore instruction: %#v", input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"output\":{\"audio\":{\"url\":\"http://example/audio.wav\"}}}"))
+	}))
+	defer server.Close()
+	p := NewQwenProvider(QwenConfig{APIKey: "secret", TTSBaseURL: server.URL, CustomizationURL: server.URL, Client: server.Client()})
+	_, err := p.SynthesizeURL(t.Context(), SynthesizeRequest{
+		Model: "legacy-tts", VoiceID: "voice", Text: "hello", Rate: 1,
+		Instruction: "轻声一点",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

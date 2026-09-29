@@ -5,6 +5,7 @@ import {
   createSystemWarehouse,
   getLivePolicyIndustries,
   getAgentPromptHistory,
+  getSystemLiveStrategyCenter,
   getSystemSettingsDashboard,
   resetAgentPromptConfig,
   publishAgentPromptConfig,
@@ -13,6 +14,7 @@ import {
   updateAgentPromptConfigs,
   updateSystemSettings,
   updateMembershipRoomLimits,
+  updateSystemLiveStrategyCenter,
   updateSystemWarehouse,
   upsertLivePolicyIndustry,
 } from '../api'
@@ -24,6 +26,10 @@ import type {
   InventoryWarehouse,
   AgentPromptHistory,
   LivePolicyIndustry,
+  LiveAddressingOption,
+  LiveStrategyCenterConfig,
+  LiveStrategyCenterInput,
+  LiveStrategyRule,
   SystemDictionaryItem,
   SystemDictionaryItemInput,
   SystemSettingsDashboard,
@@ -115,6 +121,70 @@ const canViewIndustry = computed(() => hasPermission('livepolicy.view'))
 const canManageIndustry = computed(() => hasPermission('livepolicy.manage_l2'))
 const canViewInventorySettings = computed(() => hasPermission('inventory.view'))
 const canManageInventorySettings = computed(() => hasPermission('system.settings.inventory.manage'))
+const canManageStrategyCenter = computed(() => hasPermission('system.settings.liveops.manage') || canManageAgentPrompts.value)
+
+const strategyCenter = ref<LiveStrategyCenterConfig | null>(null)
+const strategySaving = ref(false)
+const strategyDraft = ref<LiveStrategyCenterInput>({ rules: [], addressing_mode: 'system', addressing: [] })
+
+function cloneStrategyCenter(value: LiveStrategyCenterConfig): LiveStrategyCenterInput {
+  return {
+    rules: (value.rules || []).map((item) => ({ ...item, config: item.config ? { ...item.config } : undefined })),
+    addressing_mode: value.addressing_mode || 'system',
+    addressing: (value.addressing || []).map((item) => ({ ...item })),
+  }
+}
+
+function strategyRules(category: string) {
+  return strategyDraft.value.rules.filter((item) => item.category === category)
+}
+
+const strategyCategoryMeta = [
+  { key: 'interrupt', title: '打断行为策略', note: '控制回答时像真人一样怎么切入。生效时系统自动优化各策略比例，并保证启用项最低 10%。' },
+  { key: 'resume', title: '回归策略', note: '安全条件先筛选，再在候选策略中按权重选择；生效时自动优化比例，并保证启用项最低 20%。' },
+  { key: 'interaction', title: '直播间互动策略', note: '欢迎、点赞、关注和弹幕回复。普通互动最低 5%，回复弹幕最低 20%；Core 会按实时流速动态调权。' },
+]
+
+function toggleStrategyRule(rule: LiveStrategyRule, enabled: boolean) {
+  rule.enabled = enabled
+  if (!enabled) {
+    rule.base_probability = 0
+  } else if (Number(rule.base_probability || 0) < Number(rule.min_probability || 0)) {
+    rule.base_probability = Number(rule.min_probability || 0)
+  }
+}
+
+function addAdminAddressing() {
+  const index = strategyDraft.value.addressing.filter((item) => !item.system_default).length + 1
+  strategyDraft.value.addressing.push({
+    key: `custom_${Date.now()}_${index}`,
+    text: '',
+    enabled: true,
+    probability: 0,
+    system_default: false,
+  })
+}
+
+function removeAdminAddressing(option: LiveAddressingOption) {
+  strategyDraft.value.addressing = strategyDraft.value.addressing.filter((item) => item !== option)
+}
+
+async function saveStrategyCenter() {
+  if (strategySaving.value) return
+  strategySaving.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const saved = await updateSystemLiveStrategyCenter(strategyDraft.value)
+    strategyCenter.value = saved
+    strategyDraft.value = cloneStrategyCenter(saved)
+    notice.value = '直播策略中心已保存并同步到 Core；下一次互动和回归立即按新概率执行。'
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '保存直播策略中心失败'
+  } finally {
+    strategySaving.value = false
+  }
+}
 
 const categoryMeta: Record<
   DictionaryCategory,
@@ -233,12 +303,17 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [settings, industryData] = await Promise.all([
+    const [settings, industryData, liveStrategy] = await Promise.all([
       getSystemSettingsDashboard(),
       canViewIndustry.value ? getLivePolicyIndustries() : Promise.resolve({ items: [] as LivePolicyIndustry[] }),
+      canManageStrategyCenter.value ? getSystemLiveStrategyCenter() : Promise.resolve(null),
     ])
     syncDashboard(settings)
     syncIndustries(industryData.items)
+    if (liveStrategy) {
+      strategyCenter.value = liveStrategy
+      strategyDraft.value = cloneStrategyCenter(liveStrategy)
+    }
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取系统设定失败'
   } finally {
@@ -884,6 +959,96 @@ onMounted(load)
       <div v-else class="panel-loading">暂无模型配置，刷新后重试。</div>
     </section>
 
+    <section v-if="canManageStrategyCenter" class="system-settings-card live-strategy-center-card">
+      <header>
+        <div>
+          <span class="section-kicker">LIVE STRATEGY CENTER</span>
+          <h3>直播策略中心</h3>
+          <p>配置打断行为、主线回归、直播互动和称呼。这里设置基础概率，Core 会先执行安全与语义过滤，再结合实时流速动态调整。</p>
+        </div>
+        <button class="primary-button" type="button" :disabled="strategySaving || !strategyCenter" @click="saveStrategyCenter">
+          {{ strategySaving ? '保存同步中…' : '保存并同步 Core' }}
+        </button>
+      </header>
+
+      <div v-if="strategyCenter" class="strategy-center-body">
+        <section v-for="group in strategyCategoryMeta" :key="group.key" class="strategy-center-group">
+          <div class="strategy-center-group-head">
+            <div>
+              <h4>{{ group.title }}</h4>
+              <p>{{ group.note }}</p>
+            </div>
+          </div>
+
+          <div class="strategy-rule-grid">
+            <article v-for="rule in strategyRules(group.key)" :key="group.key + ':' + rule.key" class="strategy-rule-card" :class="{ disabled: !rule.enabled }">
+              <div class="strategy-rule-title">
+                <label class="strategy-enable">
+                  <input type="checkbox" :checked="rule.enabled" @change="toggleStrategyRule(rule, ($event.target as HTMLInputElement).checked)" />
+                  <span>{{ rule.enabled ? '启用' : '停用' }}</span>
+                </label>
+                <code>{{ rule.key }}</code>
+              </div>
+              <label class="strategy-field">
+                <span>中文名称</span>
+                <input v-model="rule.name" type="text" maxlength="40" />
+              </label>
+              <label class="strategy-field">
+                <span>说明</span>
+                <textarea v-model="rule.description" rows="2" maxlength="180"></textarea>
+              </label>
+              <label class="strategy-probability">
+                <span>基础出现概率</span>
+                <div>
+                  <input
+                    v-model.number="rule.base_probability"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    :disabled="!rule.enabled"
+                  />
+                  <b>%</b>
+                </div>
+                <small>启用后最低 {{ rule.min_probability }}%</small>
+              </label>
+            </article>
+          </div>
+        </section>
+
+        <section class="strategy-center-group addressing-strategy-group">
+          <div class="strategy-center-group-head">
+            <div>
+              <h4>称呼策略</h4>
+              <p>系统默认称呼会直接给终端用户查看；用户可切换自己的称呼方案。终端自定义称呼保存前必须经过大模型安全审核。</p>
+            </div>
+            <div class="addressing-mode-switch">
+              <label><input v-model="strategyDraft.addressing_mode" type="radio" value="system" />系统称呼</label>
+              <label><input v-model="strategyDraft.addressing_mode" type="radio" value="custom" />自定义称呼</label>
+              <button class="ghost-button" type="button" @click="addAdminAddressing">新增称呼</button>
+            </div>
+          </div>
+          <div class="addressing-option-grid">
+            <article v-for="option in strategyDraft.addressing" :key="option.key" class="addressing-option-card">
+              <label class="strategy-enable">
+                <input v-model="option.enabled" type="checkbox" />
+                <span>{{ option.enabled ? '启用' : '停用' }}</span>
+              </label>
+              <input v-model="option.text" type="text" maxlength="12" placeholder="称呼" />
+              <label>
+                <span>随机概率</span>
+                <input v-model.number="option.probability" type="number" min="0" max="100" step="1" :disabled="!option.enabled" />
+                <b>%</b>
+              </label>
+              <small>{{ option.system_default ? '系统默认称呼' : '自定义称呼' }}</small>
+              <button v-if="!option.system_default" class="ghost-button" type="button" @click="removeAdminAddressing(option)">删除</button>
+            </article>
+          </div>
+        </section>
+      </div>
+      <div v-else class="panel-loading">正在读取直播策略中心…</div>
+    </section>
+
     <section v-if="canViewGlobal" class="system-settings-card">
       <header>
         <div>
@@ -1348,6 +1513,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.strategy-center-body{display:grid;gap:18px;padding:18px 20px}.strategy-center-group{display:grid;gap:14px;padding:16px;border:1px solid #e4e8f1;border-radius:16px;background:#fafbfe}.strategy-center-group-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-center-group-head h4,.strategy-center-group-head p{margin:0}.strategy-center-group-head h4{font-size:18px;color:#2b354b}.strategy-center-group-head p{margin-top:5px;color:#7e899d;font-size:13px;line-height:1.55}.strategy-total{padding:7px 11px;border-radius:999px;background:#eaf7ef;color:#25864d;font-size:13px;white-space:nowrap}.strategy-total.invalid{background:#fff0ed;color:#c14b3e}.strategy-rule-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.strategy-rule-card{display:grid;gap:11px;padding:14px;border:1px solid #dfe5f0;border-radius:14px;background:#fff}.strategy-rule-card.disabled{opacity:.58}.strategy-rule-title{display:flex;align-items:center;justify-content:space-between;gap:10px}.strategy-rule-title code{color:#8791a4;font-size:11px}.strategy-enable{display:flex;align-items:center;gap:7px;font-weight:800;color:#445069}.strategy-enable input{width:18px;height:18px}.strategy-field{display:grid;gap:5px}.strategy-field>span,.strategy-probability>span,.addressing-option-card label>span{color:#6b768b;font-size:12px;font-weight:800}.strategy-field input,.strategy-field textarea,.strategy-probability input,.addressing-option-card>input,.addressing-option-card label input{box-sizing:border-box;width:100%;border:1px solid #dfe5ef;border-radius:9px;padding:8px 10px;background:#fff;font:inherit;color:#344057}.strategy-field textarea{resize:vertical}.strategy-probability{display:grid;gap:6px}.strategy-probability>div,.addressing-option-card label{display:flex;align-items:center;gap:7px}.strategy-probability input{width:90px}.strategy-probability small,.addressing-option-card small{color:#8e98a8}.addressing-mode-switch{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.addressing-mode-switch label{display:flex;align-items:center;gap:6px}.addressing-option-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.addressing-option-card{display:grid;gap:9px;padding:12px;border:1px solid #dfe5ef;border-radius:12px;background:#fff}.addressing-option-card label input[type=number]{width:76px}.addressing-option-card .ghost-button{justify-self:end}@media(max-width:1100px){.strategy-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.addressing-option-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:720px){.strategy-rule-grid,.addressing-option-grid{grid-template-columns:1fr}.strategy-center-group-head{flex-direction:column}.addressing-mode-switch{align-items:flex-start}}
 .agent-prompt-list{display:grid;gap:14px;margin-top:16px}.agent-prompt-item{padding:16px;border:1px solid rgba(96,112,190,.16);border-radius:16px;background:rgba(250,251,255,.86)}.agent-prompt-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.agent-prompt-item-head>div{display:grid;gap:4px}.agent-prompt-item-head strong{font-size:18px;color:#26324c}.agent-prompt-item-head code{font-size:12px;color:#77819a}.agent-prompt-item p{margin:8px 0;color:#68728a;line-height:1.6}.agent-prompt-item small{display:block;margin-bottom:10px;color:#9098aa}.agent-prompt-draft-badge{display:inline-flex!important;width:max-content;padding:3px 8px;border-radius:999px;background:#fff3d9;color:#986a20;font-weight:850}.agent-prompt-item textarea{box-sizing:border-box;width:100%;min-height:150px;padding:12px 14px;border:1px solid rgba(93,107,188,.18);border-radius:12px;background:#fff;color:#2d374d;font:inherit;line-height:1.6;resize:vertical}.agent-prompt-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}.agent-prompt-history{display:grid;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(96,112,190,.12)}.agent-prompt-history>article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border:1px solid rgba(96,112,190,.12);border-radius:10px;background:#fff}.agent-prompt-history>article>div{display:flex;align-items:center;gap:8px}.agent-prompt-history>article>div small{margin:0}.agent-prompt-history pre{grid-column:1/-1;max-height:120px;margin:0;padding:8px;border-radius:8px;background:#f7f8fc;color:#5a647a;overflow:auto;white-space:pre-wrap;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.compact-toggle{display:flex;align-items:center;gap:8px}
 .finance-review-settings h3 {font-size:20px}
 .finance-review-settings p,.finance-review-settings button,.finance-review-settings label {font-size:18px;line-height:1.5}

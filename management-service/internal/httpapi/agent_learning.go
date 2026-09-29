@@ -725,6 +725,8 @@ func (s *Server) classifyAgentLearningMessage(
 最近对话：%s
 用户这句话：%s
 
+补充判断：execution 不只包括“回答观众问题”，也包括用户明确要求让当前直播间、主播或直播智能体现在把一段文字说出来、念出来、播出来。此类请求只判断为 execution，后续仍必须先经过播出前审核并由用户选择抢答或回答，分类器本身不执行播音。
+
 只返回严格 JSON：{"intent":"chat|learning|test|execution|adopt","confidence":"high|medium|low","reason":"简短原因"}
 `, currentMode, input.LearningActive, input.TestActive, input.ExecutionActive, strings.TrimSpace(input.Target), strings.TrimSpace(input.LatestCandidate), string(historyRaw), strings.TrimSpace(input.Message))
 	classifyCtx, cancel := context.WithTimeout(ctx, agentunderstanding.Timeout(understandingPolicy.AgentUnderstandingPolicy))
@@ -1200,6 +1202,10 @@ func (s *Server) agentLearningAdoptSession(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "采用修正结果失败")
 		return
 	}
+	if _, err := s.hotReloadCoreAgentRoom(r.Context(), tenantID, roomID, "interaction", "facts", "style"); err != nil {
+		writeError(w, http.StatusBadGateway, "修正结果已采用，但热同步到直播间失败："+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1228,6 +1234,10 @@ func (s *Server) agentMemoryDeactivate(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.DeactivateAgentMemory(r.Context(), tenantID, roomID, memoryID, actor.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "停用智能体记忆失败")
+		return
+	}
+	if _, err := s.hotReloadCoreAgentRoom(r.Context(), tenantID, roomID, "interaction", "facts", "style"); err != nil {
+		writeError(w, http.StatusBadGateway, "智能体记忆已停用，但热同步到直播间失败："+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -1266,6 +1276,10 @@ func (s *Server) agentMemoryRollback(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.RollbackAgentMemoryVersion(r.Context(), tenantID, roomID, memoryID, versionID, actor.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "回滚智能体记忆失败")
+		return
+	}
+	if _, err := s.hotReloadCoreAgentRoom(r.Context(), tenantID, roomID, "interaction", "facts", "style"); err != nil {
+		writeError(w, http.StatusBadGateway, "智能体记忆已回滚，但热同步到直播间失败："+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, item)

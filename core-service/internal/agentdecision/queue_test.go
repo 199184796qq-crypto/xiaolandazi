@@ -1,6 +1,7 @@
 package agentdecision
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -198,6 +199,50 @@ func TestSimulationCanCompleteWithoutEnteringCooldown(t *testing.T) {
 	}
 	if len(snapshot.SimulationResults) != 1 || snapshot.SimulationResults[0].Reply == "" {
 		t.Fatalf("simulation result missing: %#v", snapshot.SimulationResults)
+	}
+}
+
+func TestAgentInputPreviewIsIsolatedAndCompletesWithoutCooldown(t *testing.T) {
+	now := time.Date(2026, 9, 29, 2, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
+	normal := q.Enqueue(15, Candidate{
+		Source:   SourceAgent,
+		Question: "欢迎新来的朋友",
+		Priority: 20,
+	})
+	if normal.Item == nil {
+		t.Fatal("normal decision missing")
+	}
+	preview := q.Enqueue(15, Candidate{
+		Source:       SourceManual,
+		Question:     "欢迎新来的朋友",
+		ManualOrigin: "agent_input_preview",
+		ManualAction: "answer",
+	})
+	if preview.Item == nil {
+		t.Fatal("preview decision missing")
+	}
+	if preview.Merged {
+		t.Fatal("agent input preview must not merge into the real decision queue item")
+	}
+	if !strings.HasPrefix(preview.Item.Topic, "PREVIEW:") {
+		t.Fatalf("preview topic must be isolated, got %q", preview.Item.Topic)
+	}
+
+	claimed, ok := q.ClaimNext(15)
+	if !ok || claimed == nil || claimed.ID != preview.Item.ID {
+		t.Fatalf("preview should be claimable first: %#v", claimed)
+	}
+	result, ok := q.CompleteSimulation(15, claimed.ID, "欢迎新来的朋友们，进来的都先看看咱们今天的直播内容。", "intent", "方案", 3)
+	if !ok || result.Reply == "" {
+		t.Fatalf("preview completion failed: %#v", result)
+	}
+	snapshot := q.Snapshot(15)
+	if len(snapshot.RecentlyAnswered) != 0 {
+		t.Fatalf("preview must not enter cooldown: %#v", snapshot.RecentlyAnswered)
+	}
+	if len(snapshot.Queue) != 1 || snapshot.Queue[0].ID != normal.Item.ID {
+		t.Fatalf("real queue item should remain untouched: %#v", snapshot.Queue)
 	}
 }
 
