@@ -164,6 +164,7 @@ const departmentRouteOwners: Record<string, string> = {
   'live-monitor': 'live_operations',
   'live-events': 'live_operations',
   'live-strategy': 'live_operations',
+  'live-strategy-probability': 'live_operations',
   'live-analysis-settings': 'live_operations',
   'live-devices': 'live_operations',
   rooms: 'live_operations',
@@ -409,6 +410,12 @@ export const router = createRouter({
       path: '/operations/live/strategy',
       name: 'live-strategy',
       component: LiveStrategyEntryView,
+    },
+    {
+      path: '/operations/live/strategy-probability',
+      name: 'live-strategy-probability',
+      component: () => import('./views/StrategyProbabilityStatsView.vue'),
+      meta: { staffPermissionsAny: ['liveops.view_all', 'liveops.configure'] },
     },
     {
       path: '/operations/live/analysis-settings',

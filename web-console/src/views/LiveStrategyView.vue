@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
+import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
 import {
   activateLiveAgentConfigVersion,
   adoptAgentLearningSession,
@@ -4674,13 +4675,24 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace">
-          <div class="strategy-v2-section-head">
+        <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
+          <div class="strategy-v2-section-head interaction-strategy-head">
             <div>
-              <h3>互动策略</h3>
-              <p>这里只保存欢迎、答疑、逼单、问题聚合、回主线等互动行为规则。直播纠正会先分类：事实去事实依据，活动去活动福利，表达习惯去主播风格。</p>
+              <h3>互动偏好</h3>
+              <p>只需要告诉小蓝你更想回应什么。直播间人少会更积极，人多会自动聚合，并优先处理重要问题。</p>
             </div>
-            <button class="strategy-version-button" type="button" @click="refreshMemories">刷新策略</button>
+          </div>
+          <RoomInteractionPreferences v-if="activeRoomId" :room-id="activeRoomId" />
+          <div v-else class="strategy-v2-empty">
+            <strong>先选择一个直播间</strong>
+            <span>互动偏好按直播间保存，选择直播间后即可调整。</span>
+          </div>
+          <div class="strategy-v2-section-head interaction-rules-head">
+            <div>
+              <h3>已采用的互动规则</h3>
+              <p>这里保留你通过智能体确认过的特殊要求，例如“人多时不要逐个点名”或“这类问题优先回答”。</p>
+            </div>
+            <button class="strategy-version-button" type="button" @click="refreshMemories">刷新规则</button>
           </div>
           <div v-if="!memories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>

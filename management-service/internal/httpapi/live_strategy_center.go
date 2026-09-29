@@ -400,6 +400,114 @@ func (s *Server) systemLiveStrategyCenter(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (s *Server) roomLiveStrategyWeight(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	allowed := actor.IsPlatformAdmin()
+	if !allowed && actor.IsInternalStaff() {
+		if access, err := s.store.GetStaffAccess(r.Context(), actor.UserID); err == nil {
+			allowed = access.IsSuperAdmin || staffHasPermission(access, "system.settings.liveops.manage")
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "当前账号没有策略权重调整权限")
+		return
+	}
+
+	var input struct {
+		Category string `json:"category"`
+		Key      string `json:"key"`
+		Value    int    `json:"value"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "策略权重格式错误")
+		return
+	}
+	category := strings.ToLower(strings.TrimSpace(input.Category))
+	key := strings.TrimSpace(input.Key)
+	if key == "" || input.Value < 0 || input.Value > 100 {
+		writeError(w, http.StatusBadRequest, "策略权重必须在0到100之间")
+		return
+	}
+
+	targetTenantID := int64(0)
+	if category == "addressing" {
+		targetTenantID = tenantID
+	}
+	current, err := s.store.GetLiveStrategyCenter(r.Context(), targetTenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取策略中心失败")
+		return
+	}
+
+	updated := false
+	if category == "addressing" {
+		for i := range current.Addressing {
+			if strings.TrimSpace(current.Addressing[i].Key) == key {
+				current.Addressing[i].Probability = input.Value
+				updated = true
+				break
+			}
+		}
+	} else {
+		if category != "interrupt" && category != "resume" && category != "interaction" {
+			writeError(w, http.StatusBadRequest, "未知策略分类")
+			return
+		}
+		for i := range current.Rules {
+			if strings.EqualFold(strings.TrimSpace(current.Rules[i].Category), category) && strings.TrimSpace(current.Rules[i].Key) == key {
+				current.Rules[i].BaseProbability = input.Value
+				updated = true
+				break
+			}
+		}
+	}
+	if !updated {
+		writeError(w, http.StatusNotFound, "策略项不存在")
+		return
+	}
+
+	strategyInput := model.LiveStrategyCenterInput{
+		Rules: current.Rules, AddressingMode: current.AddressingMode, Addressing: current.Addressing,
+	}
+	if err := validateStrategyCenterInput(&strategyInput); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateAddressingOptions(strategyInput.Addressing, strategyInput.AddressingMode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	item, err := s.store.UpsertLiveStrategyCenter(r.Context(), targetTenantID, actor.UserID, strategyInput)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "保存策略权重失败")
+		return
+	}
+	if err := s.pushStrategyCenterToCore(r.Context(), targetTenantID, item); err != nil {
+		writeError(w, http.StatusBadGateway, "策略权重已保存，但同步 Core 失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room_id":         roomID,
+		"tenant_id":       targetTenantID,
+		"category":        category,
+		"key":             key,
+		"requested_value": input.Value,
+		"config":          item,
+	})
+}
+
 func (s *Server) liveAddressingStrategy(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {

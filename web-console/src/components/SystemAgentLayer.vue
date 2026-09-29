@@ -3927,6 +3927,7 @@ watch(drawerOpen, (open, previousOpen) => {
     persistAgentDrawerPreferenceLocal(userID)
     void updateUserUIPreferences({ agent_drawer_collapsed: !open }).catch(() => undefined)
   }
+  void nextTick(() => window.dispatchEvent(new CustomEvent('edge-handle-layout-changed')))
   if (!open || previousOpen) return
   void scrollChatToBottom()
 })
@@ -6792,6 +6793,7 @@ async function copyCredential(credential?: InitialCredential) {
     <button
       v-if="actor && !drawerOpen"
       class="system-agent-drawer-edge-handle collapsed"
+      data-edge-handle="system-agent-drawer"
       type="button"
       aria-label="展开智能体抽屉"
       title="展开智能体抽屉"
@@ -6809,6 +6811,7 @@ async function copyCredential(credential?: InitialCredential) {
       >
         <button
           class="system-agent-drawer-edge-handle expanded"
+          data-edge-handle="system-agent-drawer"
           type="button"
           aria-label="折叠智能体抽屉"
           title="折叠智能体抽屉"

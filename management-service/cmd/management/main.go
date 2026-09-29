@@ -215,6 +215,7 @@ func main() {
 	clusterWorker := questioncluster.New(store, core, agentGateway, leaderLease)
 	go clusterWorker.Run(appCtx)
 	decisionWorker := decisionexecutor.New(store, core, agentGateway, ttsgateway.NewFromEnv(), leaderLease)
+	api.SetSpeechMissionReader(decisionWorker)
 	go decisionWorker.Run(appCtx)
 
 	// Pending device orders hold concrete inventory immediately. Only the

@@ -17,17 +17,21 @@ import (
 )
 
 type roomAudioInteractionInput struct {
-	DecisionID        string `json:"decision_id"`
-	SessionID         string `json:"session_id,omitempty"`
-	Action            string `json:"action"`
-	AudioURL          string `json:"audio_url"`
-	Question          string `json:"question,omitempty"`
-	ReplyText         string `json:"reply_text,omitempty"`
-	Topic             string `json:"topic,omitempty"`
-	InterruptStrategy string `json:"interrupt_strategy,omitempty"`
-	ResumeStrategy    string `json:"resume_strategy,omitempty"`
-	BridgeText        string `json:"bridge_text,omitempty"`
-	SwitchAtMS        int    `json:"switch_at_ms,omitempty"`
+	DecisionID           string `json:"decision_id"`
+	MissionID            string `json:"mission_id,omitempty"`
+	SessionID            string `json:"session_id,omitempty"`
+	Action               string `json:"action"`
+	AudioURL             string `json:"audio_url"`
+	Question             string `json:"question,omitempty"`
+	ReplyText            string `json:"reply_text,omitempty"`
+	Topic                string `json:"topic,omitempty"`
+	InterruptStrategy    string `json:"interrupt_strategy,omitempty"`
+	ResumeStrategy       string `json:"resume_strategy,omitempty"`
+	BridgeText           string `json:"bridge_text,omitempty"`
+	HumanizationStrategy string `json:"humanization_strategy,omitempty"`
+	HumanizationKind     string `json:"humanization_kind,omitempty"`
+	HumanizationApplied  bool   `json:"humanization_applied,omitempty"`
+	SwitchAtMS           int    `json:"switch_at_ms,omitempty"`
 }
 
 func estimatedInteractionDurationMS(text string) int {
@@ -593,8 +597,10 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 			Source:         snapshot.Interrupt.Source,
 			AudioURL:       snapshot.Interrupt.AudioURL,
 			DecisionID:     snapshot.Interrupt.DecisionID,
+			MissionID:      snapshot.Interrupt.MissionID,
 			SpeechTaskID:   snapshot.Interrupt.SpeechTaskID,
 			SwitchAtMS:     snapshot.Interrupt.SwitchAtMS,
+			DurationMS:     snapshot.Interrupt.DurationMS,
 			StartedAt:      snapshot.Interrupt.StartedAt,
 		})
 		if s.agentDecisions != nil && strings.TrimSpace(decisionID) != "" {
@@ -648,6 +654,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	input.AudioURL = strings.TrimSpace(input.AudioURL)
 	input.Question = strings.TrimSpace(input.Question)
 	input.ReplyText = strings.TrimSpace(input.ReplyText)
+	input.MissionID = strings.TrimSpace(input.MissionID)
+	if input.MissionID == "" {
+		input.MissionID = input.DecisionID
+	}
 	input.Topic = strings.TrimSpace(input.Topic)
 	input.InterruptStrategy = strings.ToLower(strings.TrimSpace(input.InterruptStrategy))
 	input.ResumeStrategy = strings.ToUpper(strings.TrimSpace(input.ResumeStrategy))
@@ -693,6 +703,8 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	var resumeOffsetMS *int
 	resumeMode := "DIRECT"
 	bridgeUsed := false
+	resumeDedupTriggered := false
+	resumeDuplicateScore := 0.0
 	strategySignals := strategycenter.Signals{}
 	if s.brain != nil {
 		if view, viewErr := s.brain.Snapshot(roomID); viewErr == nil {
@@ -796,6 +808,8 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				bridgeUsed = strings.EqualFold(selected.Key, "BRIDGE") && strings.EqualFold(requested, "BRIDGE")
 				resumeTo, reason := resumeOffsetForStrategy(program, *switchAtMS, selected.Key, input.Topic)
 				dedup := applyResumeDedupGate(program, input.ReplyText, resumeTo, selected.Key)
+				resumeDedupTriggered = dedup.Triggered
+				resumeDuplicateScore = dedup.Score
 				resumeMode = dedup.FinalStrategy
 				*resumeOffsetMS = dedup.FinalMS
 				if dedup.Triggered {
@@ -872,6 +886,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			Source:         source,
 			AudioURL:       input.AudioURL,
 			DecisionID:     input.DecisionID,
+			MissionID:      input.MissionID,
 			SwitchAtMS:     switchAtMS,
 		})
 	}
@@ -914,6 +929,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			SessionID:      program.Task.SessionID,
 			Label:          fmt.Sprintf("%s · %s", label, input.Topic),
 			AudioURL:       input.AudioURL,
+			Text:           strings.TrimSpace(input.ReplyText),
 			CallbackURL:    callbackURL,
 			ResumeOffsetMS: resumeOffsetMS,
 			SwitchAtMS:     switchAtMS,
@@ -936,6 +952,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				Source:         source,
 				AudioURL:       input.AudioURL,
 				DecisionID:     input.DecisionID,
+				MissionID:      input.MissionID,
 			})
 		}
 		writeError(w, http.StatusBadGateway, "提交插播失败: "+err.Error())
@@ -949,16 +966,20 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	if state != nil {
 		state.mu.Lock()
 		state.interactions[task.ID] = &audioInteractionMeta{
-			RoomID:       roomID,
-			Topic:        input.Topic,
-			ResumeMode:   resumeMode,
-			BridgeText:   input.BridgeText,
-			BridgeUsed:   bridgeUsed,
-			DecisionID:   input.DecisionID,
-			QuestionText: input.Question,
-			ReplyText:    input.ReplyText,
-			Source:       source,
-			AudioURL:     input.AudioURL,
+			RoomID:               roomID,
+			MissionID:            input.MissionID,
+			HumanizationStrategy: input.HumanizationStrategy,
+			HumanizationKind:     input.HumanizationKind,
+			HumanizationApplied:  input.HumanizationApplied,
+			Topic:                input.Topic,
+			ResumeMode:           resumeMode,
+			BridgeText:           input.BridgeText,
+			BridgeUsed:           bridgeUsed,
+			DecisionID:           input.DecisionID,
+			QuestionText:         input.Question,
+			ReplyText:            input.ReplyText,
+			Source:               source,
+			AudioURL:             input.AudioURL,
 		}
 		state.mu.Unlock()
 	}
@@ -967,6 +988,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		startedAt := task.StartedAt
 		if startedAt.IsZero() {
 			startedAt = time.Now().UTC()
+		}
+		durationMS := task.DurationMS
+		if durationMS <= 0 {
+			durationMS = estimatedInteractionDurationMS(input.ReplyText)
 		}
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 			Track:          speechruntime.TrackInterrupt,
@@ -980,17 +1005,24 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			Source:         source,
 			AudioURL:       input.AudioURL,
 			DecisionID:     input.DecisionID,
+			MissionID:      input.MissionID,
 			SwitchAtMS:     switchAtMS,
 			SpeechTaskID:   task.ID,
+			DurationMS:     durationMS,
 			StartedAt:      &startedAt,
 		})
 	}
 	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID)
 	writeJSON(w, http.StatusOK, map[string]any{
+		"mission_id":       input.MissionID,
 		"dispatched":       true,
 		"action":           input.Action,
 		"switch_at_ms":     switchAtMS,
 		"resume_offset_ms": resumeOffsetMS,
+		"resume_strategy":  resumeMode,
+		"bridge_used":      bridgeUsed,
+		"dedup_triggered":  resumeDedupTriggered,
+		"duplicate_score":  resumeDuplicateScore,
 		"task":             task,
 	})
 }

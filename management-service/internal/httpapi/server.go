@@ -19,9 +19,15 @@ import (
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/speechmission"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/workinbox"
 )
+
+type SpeechMissionReader interface {
+	MissionSnapshot(string) (speechmission.Mission, bool)
+	RoomMissionSnapshots(int64) []speechmission.Mission
+}
 
 type Server struct {
 	inbox  *workinbox.Service
@@ -33,14 +39,15 @@ type Server struct {
 		IsLeader() bool
 		Owner() string
 	}
-	mailer       *mailer.Client
-	env          string
-	avatarDir    string
-	publicWebURL string
-	assetStorage *assetstorage.Registry
-	assetURLTTL  time.Duration
-	coreStatusMu sync.RWMutex
-	coreStatus   coreRuntimeStatus
+	mailer         *mailer.Client
+	env            string
+	avatarDir      string
+	publicWebURL   string
+	assetStorage   *assetstorage.Registry
+	assetURLTTL    time.Duration
+	coreStatusMu   sync.RWMutex
+	coreStatus     coreRuntimeStatus
+	speechMissions SpeechMissionReader
 }
 
 func New(
@@ -75,6 +82,10 @@ func New(
 		server.leader = leaders[0]
 	}
 	return server
+}
+
+func (s *Server) SetSpeechMissionReader(reader SpeechMissionReader) {
+	s.speechMissions = reader
 }
 
 func (s *Server) Handler() http.Handler {
@@ -309,6 +320,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}", s.deleteRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/session-stats", s.getRoomSessionStats)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/strategy-stats", s.getRoomStrategyStats)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/strategy-stats/stream", s.streamRoomStrategyStats)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/interaction-preferences", s.roomInteractionPreferences)
+	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/interaction-preferences", s.roomInteractionPreferences)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/session-decision", s.resolveRoomSessionDecision)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)
@@ -345,6 +360,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/live/agent/settings", s.liveUpdateAgentSettings)
 	mux.HandleFunc("GET /api/v1/system/live-strategy-center", s.systemLiveStrategyCenter)
 	mux.HandleFunc("PUT /api/v1/system/live-strategy-center", s.systemLiveStrategyCenter)
+	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/strategy-weight", s.roomLiveStrategyWeight)
 	mux.HandleFunc("GET /api/v1/live/addressing-strategy", s.liveAddressingStrategy)
 	mux.HandleFunc("PUT /api/v1/live/addressing-strategy", s.liveAddressingStrategy)
 	mux.HandleFunc("GET /api/v1/live/agent/config-versions", s.liveAgentConfigVersions)
@@ -365,6 +381,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/chat", s.liveAgentChat)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/interpret", s.liveStrategyIntentInterpret)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/actions/execute", s.liveStrategyExecuteAction)
+	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/speech-missions", s.liveRoomSpeechMissions)
+	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/speech-missions/{missionID}", s.liveRoomSpeechMission)
 	mux.HandleFunc("GET /api/v1/live/policies/industries", s.livePolicyIndustries)
 	mux.HandleFunc("GET /api/v1/live/support/staff", s.liveSupportStaff)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/support-authorizations", s.liveRoomSupportAuthorizations)

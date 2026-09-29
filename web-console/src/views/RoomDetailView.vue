@@ -27,6 +27,7 @@ import {
   resolveRoomSessionDecision,
   getRoomBrain,
   getRoomSpeechRuntime,
+  getRoomSpeechMissions,
   getRoomGeneratedSpeechHistory,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
@@ -51,6 +52,7 @@ import { session } from '../session'
 import { coreRuntime } from '../coreRuntime'
 import { getSharedAudioContext, unlockSharedAudioContext } from '../audioRuntime'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
 import type {
   LiveAgentSettings,
   LiveAgentPlan,
@@ -64,6 +66,7 @@ import type {
   RoomSessionStats,
   LiveReviewResponse,
   SpeechRuntimeSnapshot,
+  SpeechMission,
   SpeechTrackRuntime,
   GeneratedSpeechHistoryItem,
   GeneratedSpeechHistoryPage,
@@ -151,6 +154,7 @@ const error = useFeedbackErrorRef()
 const monitorToggleBusy = ref(false)
 const streamState = ref<'connecting' | 'online' | 'offline'>('connecting')
 const activeType = ref('all')
+const publicScreenMode = ref<'events' | 'bucket' | 'preferences'>('events')
 let eventSource: EventSource | null = null
 let streamReconnectTimer: number | undefined
 let eventFallbackPollTimer: number | undefined
@@ -175,6 +179,20 @@ type LocalAudioControl = {
   position_ms?: number
   occurred_at?: string
 }
+type RoomAudioSpeechFeedItem = {
+  sequence: number
+  segment_id: string
+  text: string
+  tone: 'normal' | 'cut' | 'interrupt' | 'resume'
+  pts_ms: number
+}
+type RoomAudioSpeechFeedSnapshot = {
+  sequence: number
+  previous?: RoomAudioSpeechFeedItem
+  current?: RoomAudioSpeechFeedItem
+  next?: RoomAudioSpeechFeedItem
+  updated_at?: string
+}
 type RoomAudioEngineSnapshot = {
   room_id: number
   phase: 'idle' | 'mainline' | 'preparing_interrupt' | 'armed' | 'interrupt' | 'preparing_resume' | 'resume' | 'paused' | 'error'
@@ -187,6 +205,7 @@ type RoomAudioEngineSnapshot = {
   resume_segment_id?: string
   paused_from?: string
   subscribers: number
+  speech_feed?: RoomAudioSpeechFeedSnapshot
   updated_at?: string
 }
 let localAudioEventSource: EventSource | null = null
@@ -299,6 +318,9 @@ const agentPlanBusy = ref(false)
 const agentPlanError = ref('')
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
+const speechMissions = ref<SpeechMission[]>([])
+const speechMissionOpen = ref(false)
+const latestSpeechMission = computed(() => speechMissions.value[0] || null)
 const speechHistoryOpen = ref(false)
 const speechHistoryLoading = ref(false)
 const speechHistoryError = ref('')
@@ -523,6 +545,8 @@ function finishEventBucketResize(event?: PointerEvent) {
 
 const blockedUsers = ref<RoomBlockedUser[]>([])
 const blockedDrawerOpen = ref(false)
+const blockedDrawerHandleEl = ref<HTMLElement | null>(null)
+const blockedDrawerHandleTop = ref<number | null>(null)
 const blockedBusyKey = ref('')
 const moderationError = ref('')
 const hoveredEventId = ref<number | null>(null)
@@ -530,6 +554,68 @@ const eventContextMenu = ref<{ x: number; y: number; event: RoomEvent } | null>(
 const agentDecisionContextMenu = ref<{ x: number; y: number; item: AgentDecisionItem } | null>(null)
 const agentDecisionRemoveBusy = ref('')
 const streamPaused = computed(() => hoveredEventId.value !== null || eventContextMenu.value !== null)
+const blockedDrawerHandleStyle = computed(() => (
+  blockedDrawerHandleTop.value === null
+    ? undefined
+    : { top: blockedDrawerHandleTop.value + 'px' }
+))
+let blockedDrawerLayoutFrame: number | undefined
+
+function rightEdgeHandleVisible(element: HTMLElement) {
+  const style = window.getComputedStyle(element)
+  if (style.display === 'none' || style.visibility === 'hidden') return false
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0
+}
+
+function layoutBlockedDrawerHandle() {
+  blockedDrawerLayoutFrame = undefined
+  const handle = blockedDrawerHandleEl.value
+  if (!handle) return
+
+  const ownRect = handle.getBoundingClientRect()
+  const height = ownRect.height
+  if (height <= 0) return
+
+  const viewportHeight = Math.max(1, window.innerHeight)
+  const gap = 12
+  const edgePadding = 14
+  const preferredCenter = viewportHeight * 0.54
+  const minCenter = edgePadding + height / 2
+  const maxCenter = Math.max(minCenter, viewportHeight - edgePadding - height / 2)
+  const clampCenter = (value: number) => Math.min(maxCenter, Math.max(minCenter, value))
+
+  const obstacles = Array.from(document.querySelectorAll<HTMLElement>('[data-edge-handle]'))
+    .filter((element) => element !== handle && rightEdgeHandleVisible(element))
+    .map((element) => element.getBoundingClientRect())
+    .filter((rect) => ownRect.left < rect.right + gap && ownRect.right > rect.left - gap)
+
+  const candidates = [clampCenter(preferredCenter)]
+  for (const rect of obstacles) {
+    candidates.push(clampCenter(rect.top - gap - height / 2))
+    candidates.push(clampCenter(rect.bottom + gap + height / 2))
+  }
+
+  const isFree = (center: number) => {
+    const top = center - height / 2
+    const bottom = center + height / 2
+    return obstacles.every((rect) => bottom + gap <= rect.top || top - gap >= rect.bottom)
+  }
+
+  const freeCandidates = candidates
+    .filter(isFree)
+    .sort((left, right) => Math.abs(left - preferredCenter) - Math.abs(right - preferredCenter))
+
+  blockedDrawerHandleTop.value = freeCandidates[0] ?? clampCenter(preferredCenter)
+}
+
+function scheduleBlockedDrawerHandleLayout() {
+  if (blockedDrawerLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(blockedDrawerLayoutFrame)
+  }
+  blockedDrawerLayoutFrame = window.requestAnimationFrame(layoutBlockedDrawerHandle)
+}
+
 const publicScreenPanelStyle = computed(() => ({
   height: (publicScreenHeight.value || PUBLIC_SCREEN_MIN_HEIGHT) + 'px',
   minHeight: PUBLIC_SCREEN_MIN_HEIGHT + 'px',
@@ -724,6 +810,38 @@ const mainlineCaptionRows = computed(() => {
       role: index < currentIndex ? 'previous' : index > currentIndex ? 'next' : 'current',
       transition: index === stopIndex ? 'stop' : index === resumeIndex ? 'resume' : '',
     }))
+})
+
+const publicSpeechCaptionRows = computed(() => {
+  const feed = roomAudioEngine.value?.speech_feed
+  const current = feed?.current
+  if (current) {
+    const toneToTransition = (tone: RoomAudioSpeechFeedItem['tone']) => {
+      if (tone === 'cut') return 'stop'
+      if (tone === 'interrupt') return 'interrupt'
+      if (tone === 'resume') return 'resume'
+      return ''
+    }
+    return [
+      feed?.previous ? { item: feed.previous, role: 'previous' as const } : null,
+      { item: current, role: 'current' as const },
+      feed?.next ? { item: feed.next, role: 'next' as const } : null,
+    ]
+      .filter((row): row is { item: RoomAudioSpeechFeedItem; role: 'previous' | 'current' | 'next' } => Boolean(row))
+      .map(({ item, role }) => ({
+        key: 'feed-' + item.segment_id + '-' + item.tone,
+        text: item.text,
+        role,
+        transition: toneToTransition(item.tone),
+      }))
+  }
+
+  return mainlineCaptionRows.value.map((row) => ({
+    key: 'fallback-' + row.segment.segment_id,
+    text: row.segment.text,
+    role: row.role,
+    transition: row.transition,
+  }))
 })
 const speechWaveBars = [
   7, 11, 16, 22, 13, 9, 17, 27, 18, 11, 8, 14, 24, 31, 20, 12,
@@ -2890,6 +3008,7 @@ function startSpeechRuntimePolling() {
   speechPollTimer = window.setInterval(() => {
     if (!coreActionsAvailable.value) return
     void refreshSpeechRuntime()
+    if (isInternalViewer.value) void refreshSpeechMissions()
   }, 1000)
 }
 
@@ -3195,6 +3314,41 @@ async function refreshSpeechRuntime() {
   } catch {
     // Keep the last good speech state during a transient Core/management hiccup.
   }
+}
+
+async function refreshSpeechMissions() {
+  if (!isInternalViewer.value) return
+  try {
+    const result = await getRoomSpeechMissions(roomId)
+    updatePreservingPageBottom(() => {
+      speechMissions.value = result.missions || []
+    })
+  } catch {
+    // Keep the last good mission blackboard during a transient service hiccup.
+  }
+}
+
+function speechMissionStateLabel(state?: string) {
+  const labels: Record<string, string> = {
+    CREATED: '已创建',
+    PLANNING_INTERACTION: '互动决策',
+    PLANNING_INTERRUPT: '打断决策',
+    PLANNING_RESUME: '回归决策',
+    PLANNING_EXPRESSION: '表达决策',
+    GENERATING_TEXT: '生成话术',
+    VALIDATING_TEXT: '审核话术',
+    SYNTHESIZING_TTS: '生成声音',
+    WAITING_CUT_POINT: '等待切入',
+    DISPATCHED: '已下发',
+    COMPLETED: '已完成',
+    FAILED: '失败',
+  }
+  return labels[String(state || '').toUpperCase()] || state || '暂无任务'
+}
+
+function missionMS(value?: number) {
+  if (!value && value !== 0) return '—'
+  return (value / 1000).toFixed(2) + 's'
 }
 
 async function refreshAgentDecisions() {
@@ -3577,7 +3731,7 @@ async function load() {
     if (roomData.monitor_enabled) startPublicScreenTransport()
     else stopPublicScreenTransport()
     await refreshRuntime()
-    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshRoomAudioEngine(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
+    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshSpeechMissions(), refreshRoomAudioEngine(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
     if (aiActive.value || roomAudioEngine.value?.phase !== 'idle') {
       if (navigator.userActivation?.hasBeenActive) {
         await ensureLocalAudioUnlocked()
@@ -3758,9 +3912,16 @@ onMounted(() => {
   window.addEventListener('click', closeEventContextMenu)
   window.addEventListener('click', closeAgentDecisionContextMenu)
   window.addEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
+  window.addEventListener('edge-handle-layout-changed', scheduleBlockedDrawerHandleLayout)
+  window.addEventListener('resize', scheduleBlockedDrawerHandleLayout)
   window.addEventListener('pointerdown', handleLocalAudioUserGesture, { passive: true })
   mascotActionTimer = window.setTimeout(runMascotAction, 1200 + Math.random() * 1400)
+  void nextTick(scheduleBlockedDrawerHandleLayout)
   load()
+})
+
+watch([blockedDrawerOpen, () => blockedUsers.value.length], () => {
+  void nextTick(scheduleBlockedDrawerHandleLayout)
 })
 
 watch(
@@ -3835,6 +3996,8 @@ onBeforeUnmount(() => {
 	window.removeEventListener('click', closeEventContextMenu)
 	window.removeEventListener('click', closeAgentDecisionContextMenu)
 	window.removeEventListener('live-answer-reference-mode', handleAnswerReferenceMode)
+	window.removeEventListener('edge-handle-layout-changed', scheduleBlockedDrawerHandleLayout)
+	window.removeEventListener('resize', scheduleBlockedDrawerHandleLayout)
 	window.removeEventListener('pointerdown', handleLocalAudioUserGesture)
 	window.removeEventListener('pointermove', movePublicScreenResize)
 	window.removeEventListener('pointerup', finishPublicScreenResize)
@@ -3855,6 +4018,10 @@ onBeforeUnmount(() => {
 	agentDecisionContextMenu.value = null
 	hoveredEventId.value = null
 	finishAgentDockDrag()
+	if (blockedDrawerLayoutFrame !== undefined) {
+		window.cancelAnimationFrame(blockedDrawerLayoutFrame)
+		blockedDrawerLayoutFrame = undefined
+	}
 })
 </script>
 
@@ -4171,7 +4338,27 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
+        <div v-if="!isInternalViewer" class="speech-runtime-unified">
+          <div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">
+            <div class="speech-mainline-caption-stack">
+              <div
+                v-for="row in publicSpeechCaptionRows"
+                :key="row.key"
+                class="speech-mainline-caption-row"
+                :class="['role-' + row.role, row.transition ? 'transition-' + row.transition : '']"
+              >
+                <span>{{ row.text }}</span>
+              </div>
+            </div>
+          </div>
+          <p v-else class="speech-runtime-unified-mainline">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
+          <div class="speech-runtime-unified-wave" :class="{ active: displayMainlineStatus === 'playing' || (interruptSpeech.status || '') === 'playing' }" aria-hidden="true">
+            <i v-for="(height, index) in speechWaveBars" :key="index" :style="{ '--wave-height': height + 'px', '--wave-delay': (index * 37) + 'ms' }"></i>
+          </div>
+        </div>
+
         <div
+          v-if="isInternalViewer"
           class="speech-runtime-track-grid"
           :class="[
             'layout-' + speechTrackLayoutState,
@@ -4337,10 +4524,15 @@ onBeforeUnmount(() => {
               <span class="section-kicker">REALTIME</span>
               <h3>实时公屏</h3>
             </div>
-            <span class="event-count">{{ filteredEvents.length }} 条</span>
+            <span v-if="publicScreenMode !== 'preferences'" class="event-count">{{ publicScreenMode === 'bucket' ? semanticBuckets.length + ' 桶' : filteredEvents.length + ' 条' }}</span>
+          </div>
+          <div class="public-screen-mode-switch" role="tablist" aria-label="公屏视图切换">
+            <button type="button" :class="{ active: publicScreenMode === 'events' }" @click="publicScreenMode = 'events'">实时公屏</button>
+            <button type="button" :class="{ active: publicScreenMode === 'bucket' }" @click="publicScreenMode = 'bucket'">事件桶</button>
+            <button type="button" class="mobile-preferences-tab" :class="{ active: publicScreenMode === 'preferences' }" @click="publicScreenMode = 'preferences'">互动偏好</button>
           </div>
 
-          <div class="event-tabs">
+          <div v-if="publicScreenMode === 'events'" class="event-tabs">
             <button
               v-for="type in eventTypes"
               :key="type.key"
@@ -4351,7 +4543,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div ref="eventListEl" class="event-list" @scroll.passive="handleEventListScroll">
+          <div v-if="publicScreenMode === 'events'" ref="eventListEl" class="event-list" @scroll.passive="handleEventListScroll">
           <div
             class="public-screen-resize-handle is-middle"
             role="separator"
@@ -4416,7 +4608,94 @@ onBeforeUnmount(() => {
             </article>
             <div v-if="importantLoading[activeType]" class="important-history-loading">正在加载更早记录…</div>
           </div>
+          <div v-if="publicScreenMode === 'bucket'" class="public-event-bucket-view">
+            <div class="public-event-bucket-summary">
+              <article class="tone-entry"><span>进房</span><strong>+{{ sessionStats?.entries ?? roomBrain?.Intelligence?.SessionEntries ?? flowStats.member }}</strong></article>
+              <article class="tone-chat"><span>弹幕</span><strong>+{{ sessionStats?.chats ?? roomBrain?.Intelligence?.SessionChats ?? flowStats.chat }}</strong></article>
+              <article class="tone-like"><span>点赞</span><strong>+{{ (sessionStats?.likes ?? roomBrain?.Intelligence?.SessionLikes ?? flowStats.like).toLocaleString() }}</strong></article>
+              <article class="tone-follow"><span>关注</span><strong>+{{ sessionStats?.follows ?? roomBrain?.Intelligence?.SessionFollows ?? flowStats.follow }}</strong></article>
+              <article class="tone-gift"><span>礼物</span><strong>+{{ sessionStats?.gifts ?? roomBrain?.Intelligence?.SessionGifts ?? flowStats.gift }}</strong></article>
+              <article class="tone-order"><span>下单信号</span><strong>+{{ sessionStats?.order_signals || 0 }}</strong></article>
+            </div>
+            <div class="public-question-buckets">
+              <header>
+                <strong>问题聚合</strong>
+                <span>{{ semanticBuckets.length }} 个话题</span>
+              </header>
+              <div v-if="!semanticBuckets.length" class="screen-empty compact">
+                <strong>暂时没有问题聚合</strong>
+                <span>出现相似问题后会自动合并，方便你快速查看。</span>
+              </div>
+              <article
+                v-for="bucket in semanticBuckets"
+                :key="'public-bucket-' + bucket.Topic"
+                class="public-question-bucket"
+                :class="'tone-' + semanticBucketTone(bucket)"
+              >
+                <div class="public-question-bucket-head">
+                  <button type="button" class="public-question-bucket-main" @click="handleQuestionBucketClick(bucket)">
+                    <span>
+                      <strong>{{ semanticBucketLabel(bucket) }}</strong>
+                      <small>{{ bucket.UniqueUsers || bucket.Count }} 人提问 · 最近 {{ formatTime(bucket.LastSeenAt) }}</small>
+                    </span>
+                    <b>+{{ bucket.Count }}</b>
+                  </button>
+                  <div v-if="aiActive" class="public-question-actions" @click.stop>
+                    <button type="button" class="correct" @click="sendBucketToAnswerReference(bucket)">纠正</button>
+                    <button
+                      type="button"
+                      class="quick"
+                      :disabled="Boolean(bucketDecisionBusyState(bucket.Topic)) || !aiRunning || !questionBucketTTSEligible(bucket)"
+                      @click="answerQuestionBucket(bucket, 'quick')"
+                    >{{ bucketDecisionBusyState(bucket.Topic) === 'quick' ? '抢答中…' : '抢答' }}</button>
+                    <button
+                      type="button"
+                      class="answer"
+                      :disabled="Boolean(bucketDecisionBusyState(bucket.Topic)) || !aiRunning || !questionBucketTTSEligible(bucket)"
+                      @click="answerQuestionBucket(bucket, 'answer')"
+                    >{{ bucketDecisionBusyState(bucket.Topic) === 'answer' ? '回答中…' : '回答' }}</button>
+                  </div>
+                </div>
+                <div v-if="expandedQuestionTopic === bucket.Topic" class="public-question-list">
+                  <div
+                    v-for="question in bucket.Questions || []"
+                    :key="question.EventID || question.Content + question.OccurredAt"
+                    class="public-question-item"
+                  >
+                    <div class="public-question-item-copy" @click="handleQuestionDetailClick(question, bucket)">
+                      <span>{{ question.Nickname || question.UserID || '直播间用户' }} · {{ formatTime(question.OccurredAt) }}</span>
+                      <p>{{ question.Content }}</p>
+                    </div>
+                    <div v-if="aiActive" class="public-question-actions item-actions" @click.stop>
+                      <button type="button" class="correct" @click="sendQuestionToAnswerReference(question, bucket)">纠正</button>
+                      <button
+                        type="button"
+                        class="quick"
+                        :disabled="Boolean(questionDecisionBusyState(question.EventID)) || !aiRunning || !questionTTSEligible(bucket, question)"
+                        @click="answerQuestionDetail(bucket, question, 'quick')"
+                      >{{ questionDecisionBusyState(question.EventID) === 'quick' ? '抢答中…' : '抢答' }}</button>
+                      <button
+                        type="button"
+                        class="answer"
+                        :disabled="Boolean(questionDecisionBusyState(question.EventID)) || !aiRunning || !questionTTSEligible(bucket, question)"
+                        @click="answerQuestionDetail(bucket, question, 'answer')"
+                      >{{ questionDecisionBusyState(question.EventID) === 'answer' ? '回答中…' : '回答' }}</button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="agentDecisionActionMessage" class="public-question-action-message">{{ agentDecisionActionMessage }}</div>
+              </article>
+            </div>
+          </div>
+          <RoomInteractionPreferences
+            v-if="publicScreenMode === 'preferences'"
+            class="mobile-public-interaction-preferences"
+            :room-id="roomId"
+            compact
+            :mobile="true"
+          />
           <div
+            v-if="publicScreenMode === 'events'"
             class="public-screen-resize-handle"
             role="separator"
             aria-orientation="horizontal"
@@ -4428,7 +4707,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="live-control-stack">
+          <RoomInteractionPreferences
+            class="room-middle-interaction-preferences"
+            :room-id="roomId"
+            compact
+          />
           <section
+            v-if="isInternalViewer"
             ref="agentDecisionPanelEl"
             class="agent-decision-panel"
             :class="{ 'is-resizing': agentPanelResizing }"
@@ -4438,15 +4723,78 @@ onBeforeUnmount(() => {
               <div>
                 <h3>小蓝 Agent 思考</h3>
               </div>
-              <span
-                class="agent-decision-state"
-                :class="{ ready: agentDecisionState?.summary?.state === 'READY_TO_INTERRUPT' }"
-              >
-                {{ agentDecisionStateLabel(agentDecisionState?.summary?.state) }}
-              </span>
+              <div class="agent-decision-head-actions">
+                <button
+                  v-if="isInternalViewer"
+                  type="button"
+                  class="speech-mission-toggle"
+                  :class="{ active: speechMissionOpen }"
+                  @click="speechMissionOpen = !speechMissionOpen"
+                >策略黑板</button>
+                <span
+                  class="agent-decision-state"
+                  :class="{ ready: agentDecisionState?.summary?.state === 'READY_TO_INTERRUPT' }"
+                >
+                  {{ agentDecisionStateLabel(agentDecisionState?.summary?.state) }}
+                </span>
+              </div>
             </div>
 
             <div class="agent-thinking-zone">
+
+            <div v-if="isInternalViewer && speechMissionOpen" class="speech-mission-board">
+              <template v-if="latestSpeechMission">
+                <header>
+                  <div>
+                    <small>MISSION {{ latestSpeechMission.id }}</small>
+                    <strong>{{ speechMissionStateLabel(latestSpeechMission.state) }}</strong>
+                  </div>
+                  <time>{{ formatTime(latestSpeechMission.updated_at) }}</time>
+                </header>
+                <div class="speech-mission-grid">
+                  <article>
+                    <span>互动</span>
+                    <b>{{ latestSpeechMission.interaction.goal || latestSpeechMission.event.title || '—' }}</b>
+                    <small>{{ latestSpeechMission.event.event_count || 0 }} 个事件 · {{ latestSpeechMission.event.window_seconds || 0 }}s 窗口</small>
+                  </article>
+                  <article>
+                    <span>打断</span>
+                    <b>{{ latestSpeechMission.interrupt.name || latestSpeechMission.interrupt.strategy || '—' }}</b>
+                    <small>实际切点 {{ missionMS(latestSpeechMission.mainline.switch_at_ms) }}</small>
+                  </article>
+                  <article>
+                    <span>回归</span>
+                    <b>{{ latestSpeechMission.resume.name || latestSpeechMission.resume.strategy || '—' }}</b>
+                    <small>计划 {{ missionMS(latestSpeechMission.resume.planned_resume_at_ms) }} · 实际 {{ missionMS(latestSpeechMission.resume.actual_resume_at_ms) }}</small>
+                  </article>
+                  <article>
+                    <span>称呼</span>
+                    <b>{{ latestSpeechMission.addressing.candidate || '不强制称呼' }}</b>
+                    <small>{{ latestSpeechMission.addressing.optional ? '自然时才使用' : '本轮不使用' }}</small>
+                  </article>
+                </div>
+                <div v-if="latestSpeechMission.resume.resume_preview" class="speech-mission-context">
+                  <span>回归目标</span>
+                  <p>{{ latestSpeechMission.resume.resume_preview }}</p>
+                </div>
+                <div v-if="latestSpeechMission.generated_text" class="speech-mission-context final-text">
+                  <span>最终话术</span>
+                  <p>{{ latestSpeechMission.generated_text }}</p>
+                </div>
+                <div class="speech-mission-meta">
+                  <span>{{ latestSpeechMission.human_style.emotion || 'natural' }} · {{ latestSpeechMission.human_style.pace || 'normal' }}</span>
+                  <span v-if="latestSpeechMission.resume.dedup_triggered">回归去重 {{ Math.round((latestSpeechMission.resume.duplicate_score || 0) * 100) }}%</span>
+                </div>
+                <div v-if="latestSpeechMission.trace?.length" class="speech-mission-trace">
+                  <div v-for="entry in latestSpeechMission.trace.slice(-6).reverse()" :key="entry.at + entry.action">
+                    <time>{{ formatTime(entry.at) }}</time>
+                    <b>{{ speechMissionStateLabel(entry.state) }}</b>
+                    <span>{{ entry.note || entry.action || '状态更新' }}</span>
+                  </div>
+                </div>
+              </template>
+              <div v-else class="agent-decision-empty compact">暂无本轮策略黑板</div>
+            </div>
               <div class="agent-scan-watermark" :class="{ scanning: aiRunning }" aria-hidden="true">
                 <strong>{{ aiRunning ? '扫描直播间' : '智能体还没工作' }}</strong>
               </div>
@@ -4521,6 +4869,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
           <section
+            v-if="isInternalViewer"
             ref="eventBucketPanelEl"
             class="semantic-bucket-panel event-bucket-panel"
             :class="{
@@ -4947,9 +5296,12 @@ onBeforeUnmount(() => {
 
 
       <button
+        ref="blockedDrawerHandleEl"
         type="button"
         class="blocked-drawer-handle"
         :class="{ open: blockedDrawerOpen }"
+        :style="blockedDrawerHandleStyle"
+        data-edge-handle="blocked-pool"
         @click.stop="blockedDrawerOpen = !blockedDrawerOpen"
       >
         <span>屏蔽池</span>
@@ -5395,6 +5747,14 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 10px;
 }
+
+.public-screen-mode-switch{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 12px;padding:4px;border:1px solid #dbe2ef;border-radius:12px;background:#f5f7fb}.public-screen-mode-switch button{min-height:40px;border:0;border-radius:9px;background:transparent;color:#3e4b63;font-size:15px;font-weight:900;cursor:pointer}.public-screen-mode-switch button.active{background:#fff;color:#4f60ce;box-shadow:0 5px 14px rgba(58,74,132,.12)}.public-screen-mode-switch .mobile-preferences-tab{display:none}.public-event-bucket-view{display:grid;gap:14px;min-height:420px;max-height:1100px;overflow:auto;padding:4px 2px 10px}.public-event-bucket-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.public-event-bucket-summary article{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 13px;border:1px solid #e1e6f0;border-radius:12px;background:#fbfcff;box-shadow:0 5px 14px rgba(55,72,128,.04);transition:transform .16s ease,box-shadow .16s ease}.public-event-bucket-summary article:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(55,72,128,.09)}.public-event-bucket-summary span{color:#34435f;font-size:15px;font-weight:850}.public-event-bucket-summary strong{font-size:18px;font-weight:950}.public-event-bucket-summary .tone-entry{border-color:#cce8df;background:linear-gradient(135deg,#f3fbf7,#edf8f4)}.public-event-bucket-summary .tone-entry:hover{border-color:#8fcfb9;background:linear-gradient(135deg,#e6f8f0,#dff4eb)}.public-event-bucket-summary .tone-entry strong{color:#2d8b6b}.public-event-bucket-summary .tone-chat{border-color:#d9def9;background:linear-gradient(135deg,#f7f7ff,#f0f2ff)}.public-event-bucket-summary .tone-chat:hover{border-color:#aeb8ef;background:linear-gradient(135deg,#ecefff,#e4e8ff)}.public-event-bucket-summary .tone-chat strong{color:#5a67d8}.public-event-bucket-summary .tone-like{border-color:#f2dfbd;background:linear-gradient(135deg,#fffaf0,#fff5df)}.public-event-bucket-summary .tone-like:hover{border-color:#e7bf79;background:linear-gradient(135deg,#fff3d8,#ffedc8)}.public-event-bucket-summary .tone-like strong{color:#c6842e}.public-event-bucket-summary .tone-follow{border-color:#cfe3f6;background:linear-gradient(135deg,#f3f9ff,#edf6ff)}.public-event-bucket-summary .tone-follow:hover{border-color:#99c7ed;background:linear-gradient(135deg,#e9f5ff,#dfefff)}.public-event-bucket-summary .tone-follow strong{color:#3f82bd}.public-event-bucket-summary .tone-gift{border-color:#edd5f2;background:linear-gradient(135deg,#fff6ff,#f9effc)}.public-event-bucket-summary .tone-gift:hover{border-color:#d7a9e2;background:linear-gradient(135deg,#fbedff,#f3e3f8)}.public-event-bucket-summary .tone-gift strong{color:#9a63b5}.public-event-bucket-summary .tone-order{border-color:#f1d1d4;background:linear-gradient(135deg,#fff6f6,#fff0f1)}.public-event-bucket-summary .tone-order:hover{border-color:#e7a2a9;background:linear-gradient(135deg,#ffecee,#ffe2e5)}.public-event-bucket-summary .tone-order strong{color:#c55461}.public-question-buckets{display:grid;gap:9px}.public-question-buckets>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:2px}.public-question-buckets>header strong{color:#2d3a55;font-size:17px;font-weight:950}.public-question-buckets>header span{color:#53627c;font-size:14px;font-weight:800}.public-question-bucket{border:1px solid #dfe5f2;border-radius:12px;background:#fff;overflow:hidden;box-shadow:0 5px 14px rgba(55,72,128,.035);transform:translateY(0);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.public-question-bucket:hover{transform:translateY(-3px);border-color:#bfc9ee;box-shadow:0 14px 28px rgba(66,82,146,.13)}.public-question-bucket-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}.public-question-bucket-main{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 13px;border:0;background:linear-gradient(90deg,#fff,#fafbff);text-align:left;cursor:pointer;transition:background .2s ease,padding-left .2s ease}.public-question-bucket:hover .public-question-bucket-main{padding-left:17px;background:linear-gradient(90deg,#edf2ff,#fff)}.public-question-bucket-main>span{display:grid;gap:4px;min-width:0}.public-question-bucket-main strong{color:#2f3b56;font-size:15px;font-weight:950}.public-question-bucket-main small{color:#56647c;font-size:13px;font-weight:700}.public-question-bucket-main>b{flex:0 0 auto;padding:5px 8px;border-radius:999px;background:#eef1ff;color:#5967cc;font-size:13px;transform:scale(1);transition:transform .18s ease,box-shadow .18s ease}.public-question-bucket:hover .public-question-bucket-main>b{transform:scale(1.08);box-shadow:0 5px 12px rgba(83,99,201,.16)}.public-question-bucket.tone-hot{border-color:#f0cfd3}.public-question-bucket.tone-hot .public-question-bucket-main{background:linear-gradient(90deg,#fff5f6,#fff)}.public-question-bucket.tone-hot:hover{border-color:#df8f99;background:#fff3f4;box-shadow:0 14px 30px rgba(186,75,89,.16)}.public-question-bucket.tone-hot:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffe6e9,#fff5f6)}.public-question-bucket.tone-hot .public-question-bucket-main>b{background:#ffe7e9;color:#c8515f}.public-question-bucket.tone-warm{border-color:#f0dfbf}.public-question-bucket.tone-warm .public-question-bucket-main{background:linear-gradient(90deg,#fff9ee,#fff)}.public-question-bucket.tone-warm:hover{border-color:#ddb66c;background:#fff9ed;box-shadow:0 14px 30px rgba(181,126,46,.15)}.public-question-bucket.tone-warm:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffefcf,#fff9ee)}.public-question-bucket.tone-warm .public-question-bucket-main>b{background:#fff0d5;color:#b77a28}.public-question-bucket.tone-cool{border-color:#d6def8}.public-question-bucket.tone-cool .public-question-bucket-main{background:linear-gradient(90deg,#f6f8ff,#fff)}.public-question-bucket.tone-cool:hover{border-color:#aab8ee;background:#f4f6ff;box-shadow:0 14px 30px rgba(77,94,186,.15)}.public-question-bucket.tone-cool:hover .public-question-bucket-main{background:linear-gradient(90deg,#e8edff,#f9faff)}.public-question-bucket.tone-cool .public-question-bucket-main>b{background:#e9edff;color:#5969d2}.public-question-list{display:grid;gap:8px;padding:0 12px 12px}.public-question-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px 11px;border:1px solid transparent;border-radius:10px;background:#f7f9fc;transform:translateX(0);transition:transform .18s ease,background .18s ease,box-shadow .18s ease,border-color .18s ease}.public-question-item:hover{transform:translateX(5px);border-color:#cbd4ef;background:#edf2ff;box-shadow:0 8px 18px rgba(66,82,146,.11)}.public-question-item-copy{min-width:0;cursor:pointer}.public-question-list span{color:#56647a;font-size:12px;font-weight:800}.public-question-list p{margin:5px 0 0;color:#2f3a50;font-size:14px;line-height:1.55}.public-question-actions{display:flex;align-items:center;gap:6px;padding-right:10px;opacity:.18;transform:translateX(4px);transition:opacity .18s ease,transform .18s ease}.public-question-bucket:hover>.public-question-bucket-head .public-question-actions,.public-question-bucket:focus-within>.public-question-bucket-head .public-question-actions,.public-question-item:hover .public-question-actions,.public-question-item:focus-within .public-question-actions{opacity:1;transform:translateX(0)}.public-question-actions button{min-width:46px;min-height:32px;padding:5px 9px;border-radius:8px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,filter .15s ease}.public-question-actions button:hover:not(:disabled){transform:translateY(-1px);filter:saturate(1.08)}.public-question-actions .correct{border:1px solid #c5c9ee;background:#f0f1ff;color:#5962b2}.public-question-actions .quick{border:1px solid #efc58e;background:#fff1df;color:#b76b23}.public-question-actions .answer{border:1px solid #a9d8c5;background:#e9f8f1;color:#287858}.public-question-actions .correct:hover:not(:disabled){box-shadow:0 6px 14px rgba(89,98,178,.16)}.public-question-actions .quick:hover:not(:disabled){box-shadow:0 6px 14px rgba(183,107,35,.16)}.public-question-actions .answer:hover:not(:disabled){box-shadow:0 6px 14px rgba(40,120,88,.16)}.public-question-actions button:disabled{opacity:.42;cursor:not-allowed;transform:none}.public-question-actions.item-actions{padding-right:0}.public-question-action-message{margin:0 12px 12px;padding:8px 10px;border-radius:9px;background:#edf3ff;color:#4960a8;font-size:13px;font-weight:800}.room-middle-interaction-preferences{width:100%}.mobile-public-interaction-preferences{display:none}
+.speech-runtime-unified{display:grid;gap:13px;min-height:190px;padding:18px;border:1px solid rgba(126,151,232,.22);border-radius:16px;background:linear-gradient(180deg,rgba(24,31,49,.98),rgba(18,24,39,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.speech-runtime-unified .speech-mainline-live-caption{min-height:94px}
+.speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}
+.speech-runtime-unified-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:38px;overflow:hidden}.speech-runtime-unified-wave i{display:block;width:3px;height:var(--wave-height);max-height:32px;border-radius:999px;background:#6978dd;opacity:.45;transform:scaleY(.45);transform-origin:center;transition:.18s ease}.speech-runtime-unified-wave.active i{opacity:.9;animation:speech-wave-pulse .78s ease-in-out infinite alternate;animation-delay:var(--wave-delay)}
+@media (hover:none){.public-question-actions{opacity:1;transform:none}}
+@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(3,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:15px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}}
 
 .speech-track-head-actions {
   display: flex;
@@ -5976,19 +6336,42 @@ onBeforeUnmount(() => {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
+.speech-mainline-caption-row.role-current.transition-stop,
+.speech-mainline-caption-row.role-current.transition-resume,
+.speech-mainline-caption-row.role-current.transition-interrupt {
+  font-size: 18px;
+  line-height: 1.62;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.speech-mainline-caption-row.role-previous.transition-stop,
+.speech-mainline-caption-row.role-previous.transition-interrupt,
+.speech-mainline-caption-row.role-previous.transition-resume,
+.speech-mainline-caption-row.role-next.transition-stop,
+.speech-mainline-caption-row.role-next.transition-interrupt,
+.speech-mainline-caption-row.role-next.transition-resume {
+  background: transparent;
+  border-color: transparent;
+}
 .speech-mainline-caption-row.role-next {
   opacity: .24;
   transform: translateY(2px) scale(.98);
 }
 .speech-mainline-caption-row.transition-stop {
-  border-color: rgba(255, 203, 83, .34);
-  background: rgba(116, 82, 17, .24);
-  color: #ffe18e;
+  border-color: transparent;
+  background: transparent;
+  color: #ffd86f;
 }
 .speech-mainline-caption-row.transition-resume {
-  border-color: rgba(83, 219, 166, .38);
-  background: rgba(24, 105, 77, .25);
-  color: #a9efd2;
+  border-color: transparent;
+  background: transparent;
+  color: #7de0bd;
+}
+.speech-mainline-caption-row.transition-interrupt {
+  border-color: transparent;
+  background: transparent;
+  color: #ff7f8b;
+  font-weight: 950;
 }
 .speech-mainline-caption-row > b {
   flex: 0 0 auto;
@@ -6891,6 +7274,7 @@ onBeforeUnmount(() => {
 
 .agent-decision-panel {
   --agent-thinking-height: 150px;
+  position: relative;
   box-sizing: border-box;
   min-width: 0;
   width: 100%;
@@ -6909,6 +7293,30 @@ onBeforeUnmount(() => {
 }
 .agent-decision-panel.is-resizing { user-select:none; box-shadow:0 16px 38px rgba(42,55,105,.13), inset 0 0 0 1px rgba(90,104,220,.12); }
 .agent-decision-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.agent-decision-head-actions { display:flex; align-items:center; gap:6px; }
+.speech-mission-toggle { border:1px solid rgba(99,112,190,.18); border-radius:999px; padding:5px 8px; background:#f3f5fb; color:#6d7894; font-size:9px; font-weight:900; cursor:pointer; }
+.speech-mission-toggle.active { color:#4f58bd; background:#e9ebff; border-color:rgba(87,95,207,.28); box-shadow:0 5px 14px rgba(77,84,190,.12); }
+.speech-mission-board { position:absolute; z-index:20; top:44px; left:9px; right:9px; bottom:27px; display:grid; align-content:start; gap:8px; padding:10px; overflow:auto; border:1px solid rgba(91,105,205,.22); border-radius:14px; background:rgba(249,250,255,.98); box-shadow:0 16px 38px rgba(38,48,105,.18); backdrop-filter:blur(10px); }
+.speech-mission-board > header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding-bottom:7px; border-bottom:1px solid rgba(112,124,178,.13); }
+.speech-mission-board > header div { display:grid; gap:2px; }
+.speech-mission-board > header small { color:#9aa3b6; font-size:8px; font-weight:800; overflow-wrap:anywhere; }
+.speech-mission-board > header strong { color:#35405f; font-size:14px; }
+.speech-mission-board > header time { color:#9ca6b8; font-size:8px; }
+.speech-mission-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.speech-mission-grid article { min-width:0; display:grid; gap:2px; padding:7px; border:1px solid rgba(116,129,184,.13); border-radius:10px; background:white; }
+.speech-mission-grid span,.speech-mission-context > span { color:#8d98ad; font-size:8px; font-weight:900; }
+.speech-mission-grid b { color:#46516d; font-size:10px; line-height:1.35; overflow-wrap:anywhere; }
+.speech-mission-grid small { color:#9aa4b6; font-size:8px; line-height:1.35; }
+.speech-mission-context { display:grid; gap:3px; padding:7px 8px; border-radius:10px; background:#f2f5fb; }
+.speech-mission-context.final-text { background:#edf8f3; }
+.speech-mission-context p { margin:0; color:#5f6a82; font-size:9px; line-height:1.55; overflow-wrap:anywhere; }
+.speech-mission-meta { display:flex; flex-wrap:wrap; gap:5px; }
+.speech-mission-meta span { padding:3px 6px; border-radius:999px; background:#eef1f7; color:#7b879f; font-size:8px; font-weight:850; }
+.speech-mission-trace { display:grid; gap:4px; }
+.speech-mission-trace div { display:grid; grid-template-columns:auto auto minmax(0,1fr); gap:5px; align-items:start; padding:5px 6px; border-left:2px solid #aeb7e5; background:#f8f9fd; border-radius:6px; }
+.speech-mission-trace time { color:#9aa4b6; font-size:8px; }
+.speech-mission-trace b { color:#6874a8; font-size:8px; }
+.speech-mission-trace span { color:#748096; font-size:8px; line-height:1.4; overflow-wrap:anywhere; }
 .agent-decision-head h3 { margin:0; color:#29324d; font-size:18px; line-height:1.2; }
 .agent-decision-state { flex:0 0 auto; padding:5px 8px; border-radius:999px; color:#77829a; background:#eef1f7; font-size:10px; font-weight:900; }
 .agent-decision-state.ready { color:#a45d14; background:#fff0d7; box-shadow:inset 0 0 0 1px rgba(218,151,66,.18); }
@@ -7076,7 +7484,7 @@ onBeforeUnmount(() => {
 .agent-interrupt-item { cursor:context-menu; }
 .agent-queue-context-menu button:disabled { cursor:not-allowed; }
 
-.blocked-drawer-handle { position:fixed; top:54%; right:0; z-index:131; display:grid; gap:3px; justify-items:center; min-width:42px; padding:12px 7px; border:1px solid rgba(112,126,181,.26); border-right:0; border-radius:14px 0 0 14px; color:#5e6881; background:rgba(247,249,255,.96); box-shadow:-8px 8px 24px rgba(34,45,86,.10); backdrop-filter:blur(14px); transform:translateY(-50%); transition:right .24s ease, background .18s ease; cursor:pointer; }
+.blocked-drawer-handle { position:fixed; top:54%; right:0; z-index:131; display:grid; gap:3px; justify-items:center; min-width:42px; padding:12px 7px; border:1px solid rgba(112,126,181,.26); border-right:0; border-radius:14px 0 0 14px; color:#5e6881; background:rgba(247,249,255,.96); box-shadow:-8px 8px 24px rgba(34,45,86,.10); backdrop-filter:blur(14px); transform:translateY(-50%); transition:top .18s ease,right .24s ease,background .18s ease; cursor:pointer; }
 .blocked-drawer-handle span { writing-mode:vertical-rl; font-size:11px; font-weight:800; letter-spacing:.08em; }
 .blocked-drawer-handle b { min-width:20px; height:20px; border-radius:999px; display:grid; place-items:center; color:#fff; background:#6977cf; font-size:10px; }
 .blocked-drawer-handle.open { right:min(360px,88vw); }
@@ -7101,7 +7509,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: none;
   margin-inline: 0;
-  grid-template-columns: minmax(460px, 520px) minmax(280px, 340px) minmax(300px, 360px) !important;
+  grid-template-columns: minmax(440px, 490px) minmax(330px, 380px) minmax(300px, 350px) !important;
   justify-content: space-between;
   align-items: start;
   gap: 16px;
@@ -7111,7 +7519,7 @@ onBeforeUnmount(() => {
   grid-column: 1;
   grid-row: 1;
   width: 100%;
-  max-width: 520px;
+  max-width: 490px;
   justify-self: start;
   align-self: stretch;
   overflow: hidden;
@@ -7125,7 +7533,7 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 16px;
   width: 100%;
-  max-width: 340px;
+  max-width: 380px;
 }
 
 .room-detail-page .agent-decision-panel,
@@ -7144,7 +7552,7 @@ onBeforeUnmount(() => {
   justify-self: end;
   gap: 14px;
   width: 100%;
-  max-width: 360px;
+  max-width: 350px;
 }
 .capture-workspace-head,
 .capture-card > header {
@@ -7440,7 +7848,7 @@ onBeforeUnmount(() => {
 @media(max-width:1200px){
   .room-detail-page .detail-layout-no-preview {
     width:min(100%, 880px);
-    grid-template-columns:minmax(460px,520px) minmax(280px,340px) !important;
+    grid-template-columns:minmax(440px,490px) minmax(330px,374px) !important;
   }
   .capture-workspace {
     grid-column:1 / -1;

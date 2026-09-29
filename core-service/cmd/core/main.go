@@ -255,6 +255,15 @@ func main() {
 	}
 	paidAgents := paidpipeline.New(agentWork, agentDecisions, strategyPolicies)
 	paidAgents.SetBrain(brain)
+	paidAgents.SetSessions(events)
+	if existingRooms, listErr := rooms.List(startupCtx, nil); listErr == nil {
+		for _, existingRoom := range existingRooms {
+			paidAgents.RefreshInteractionStats(existingRoom.ID)
+		}
+	} else {
+		log.Printf("initialize interaction strategy stats: %v", listErr)
+	}
+	go paidAgents.Run(appCtx)
 	events.SetObserver(func(event model.RoomEvent) {
 		signal := baseEvents.Handle(event)
 		paidAgents.Handle(event, signal)

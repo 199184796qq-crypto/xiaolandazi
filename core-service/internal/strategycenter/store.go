@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +40,19 @@ type Policy struct {
 	Addressing     []AddressingOption `json:"addressing"`
 }
 
+type RoomInteractionPreferences struct {
+	TenantID             int64     `json:"tenant_id"`
+	RoomID               int64     `json:"room_id"`
+	OverallInteraction   string    `json:"overall_interaction"`
+	QuestionPreference   string    `json:"question_preference"`
+	WelcomePreference    string    `json:"welcome_preference"`
+	EngagementPreference string    `json:"engagement_preference"`
+	ChatPreference       string    `json:"chat_preference"`
+	ConversionPreference string    `json:"conversion_preference"`
+	AutoHeat              bool      `json:"auto_heat"`
+	UpdatedAt             time.Time `json:"updated_at,omitempty"`
+}
+
 type Signals struct {
 	Entries30s int    `json:"entries_30s,omitempty"`
 	Likes30s   int64  `json:"likes_30s,omitempty"`
@@ -46,9 +61,10 @@ type Signals struct {
 }
 
 type Candidate struct {
-	Key    string `json:"key"`
-	Name   string `json:"name"`
-	Weight int    `json:"weight"`
+	Key                  string  `json:"key"`
+	Name                 string  `json:"name"`
+	Weight               int     `json:"weight"`
+	EffectiveProbability float64 `json:"effective_probability"`
 }
 
 type Selection struct {
@@ -69,9 +85,72 @@ type TriggerDecision struct {
 	Triggered   bool   `json:"triggered"`
 }
 
+type ProbabilityStat struct {
+	Category              string    `json:"category"`
+	Key                   string    `json:"key"`
+	Name                  string    `json:"name"`
+	Enabled               bool      `json:"enabled"`
+	ConfiguredProbability float64   `json:"configured_probability"`
+	Samples               int64     `json:"samples"`
+	HitCount              int64     `json:"hit_count"`
+	LastProbability       float64   `json:"last_probability"`
+	AverageProbability    float64   `json:"average_probability"`
+	MinimumProbability    float64   `json:"minimum_probability"`
+	MaximumProbability    float64   `json:"maximum_probability"`
+	LastEvaluatedAt       time.Time `json:"last_evaluated_at"`
+}
+
+type StageStats struct {
+	RoomID           int64                   `json:"room_id"`
+	StageID          string                  `json:"stage_id"`
+	StartedAt        time.Time               `json:"started_at"`
+	UpdatedAt        time.Time               `json:"updated_at"`
+	DecisionCount    int64                   `json:"decision_count"`
+	Items            []ProbabilityStat       `json:"items"`
+	InteractionItems []InteractionWindowStat `json:"interaction_items"`
+}
+
+type InteractionWindowStat struct {
+	Key                   string    `json:"key"`
+	Name                  string    `json:"name"`
+	State                 string    `json:"state"`
+	PendingCount          int       `json:"pending_count"`
+	TotalEvents           int64     `json:"total_events"`
+	EmittedCount          int64     `json:"emitted_count"`
+	LastMissionEventCount int       `json:"last_mission_event_count"`
+	MinIntervalSeconds    int64     `json:"min_interval_seconds"`
+	MaxWaitSeconds        int64     `json:"max_wait_seconds"`
+	ConfiguredWeight      int       `json:"configured_weight"`
+	EffectiveWeight       int       `json:"effective_weight"`
+	EffectivePriority     int       `json:"effective_priority"`
+	FirstPendingAt        time.Time `json:"first_pending_at"`
+	LastEventAt           time.Time `json:"last_event_at"`
+	LastEmittedAt         time.Time `json:"last_emitted_at"`
+	NextDueAt             time.Time `json:"next_due_at"`
+}
+
+type probabilityAccumulator struct {
+	ProbabilityStat
+	sum float64
+}
+
+type stageAccumulator struct {
+	roomID        int64
+	stageID       string
+	startedAt     time.Time
+	updatedAt     time.Time
+	decisionCount int64
+	items         map[string]*probabilityAccumulator
+}
+
 type Store struct {
-	mu       sync.RWMutex
-	policies map[int64]Policy
+	mu               sync.RWMutex
+	policies         map[int64]Policy
+	roomPreferences  map[int64]RoomInteractionPreferences
+	stages           map[int64]*stageAccumulator
+	interactionStats map[int64][]InteractionWindowStat
+	subscribers      map[int64]map[uint64]chan StageStats
+	nextSubscriberID uint64
 }
 
 func DefaultPolicy() Policy {
@@ -107,7 +186,13 @@ func DefaultPolicy() Policy {
 func New() *Store {
 	defaults := DefaultPolicy()
 	defaults.TenantID = 0
-	return &Store{policies: map[int64]Policy{0: defaults}}
+	return &Store{
+		policies:         map[int64]Policy{0: defaults},
+		roomPreferences:  make(map[int64]RoomInteractionPreferences),
+		stages:           make(map[int64]*stageAccumulator),
+		interactionStats: make(map[int64][]InteractionWindowStat),
+		subscribers:      make(map[int64]map[uint64]chan StageStats),
+	}
 }
 
 func (s *Store) Load(ctx context.Context, db *sql.DB) error {
@@ -131,7 +216,152 @@ func (s *Store) Load(ctx context.Context, db *sql.DB) error {
 		}
 		s.Put(tenantID, policy)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	preferenceRows, err := db.QueryContext(ctx, `
+		SELECT tenant_id, room_id, overall_interaction, question_preference,
+		       welcome_preference, engagement_preference, chat_preference,
+		       conversion_preference, auto_heat, updated_at
+		FROM live_room_interaction_preferences
+	`)
+	if err != nil {
+		return fmt.Errorf("load room interaction preferences: %w", err)
+	}
+	defer preferenceRows.Close()
+	for preferenceRows.Next() {
+		var item RoomInteractionPreferences
+		if err := preferenceRows.Scan(
+			&item.TenantID,
+			&item.RoomID,
+			&item.OverallInteraction,
+			&item.QuestionPreference,
+			&item.WelcomePreference,
+			&item.EngagementPreference,
+			&item.ChatPreference,
+			&item.ConversionPreference,
+			&item.AutoHeat,
+			&item.UpdatedAt,
+		); err != nil {
+			return err
+		}
+		s.PutRoomInteractionPreferences(item.RoomID, item)
+	}
+	return preferenceRows.Err()
+}
+
+func DefaultRoomInteractionPreferences(roomID int64) RoomInteractionPreferences {
+	return RoomInteractionPreferences{
+		RoomID:               roomID,
+		OverallInteraction:   "natural",
+		QuestionPreference:   "natural",
+		WelcomePreference:    "natural",
+		EngagementPreference: "natural",
+		ChatPreference:       "natural",
+		ConversionPreference: "natural",
+		AutoHeat:              true,
+	}
+}
+
+func normalizePreferenceValue(value, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func normalizeRoomInteractionPreferences(roomID int64, input RoomInteractionPreferences) RoomInteractionPreferences {
+	defaults := DefaultRoomInteractionPreferences(roomID)
+	input.RoomID = roomID
+	input.OverallInteraction = normalizePreferenceValue(input.OverallInteraction, defaults.OverallInteraction)
+	input.QuestionPreference = normalizePreferenceValue(input.QuestionPreference, defaults.QuestionPreference)
+	input.WelcomePreference = normalizePreferenceValue(input.WelcomePreference, defaults.WelcomePreference)
+	input.EngagementPreference = normalizePreferenceValue(input.EngagementPreference, defaults.EngagementPreference)
+	input.ChatPreference = normalizePreferenceValue(input.ChatPreference, defaults.ChatPreference)
+	input.ConversionPreference = normalizePreferenceValue(input.ConversionPreference, defaults.ConversionPreference)
+	return input
+}
+
+func (s *Store) PutRoomInteractionPreferences(roomID int64, input RoomInteractionPreferences) RoomInteractionPreferences {
+	input = normalizeRoomInteractionPreferences(roomID, input)
+	if s == nil || roomID <= 0 {
+		return input
+	}
+	s.mu.Lock()
+	s.roomPreferences[roomID] = input
+	s.mu.Unlock()
+	return input
+}
+
+func (s *Store) RoomInteractionPreferences(roomID int64) RoomInteractionPreferences {
+	defaults := DefaultRoomInteractionPreferences(roomID)
+	if s == nil || roomID <= 0 {
+		return defaults
+	}
+	s.mu.RLock()
+	item, ok := s.roomPreferences[roomID]
+	s.mu.RUnlock()
+	if !ok {
+		return defaults
+	}
+	return normalizeRoomInteractionPreferences(roomID, item)
+}
+
+func preferenceFactor(value string, less, more float64) float64 {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "quiet", "less", "steady":
+		return less
+	case "active", "more":
+		return more
+	default:
+		return 1
+	}
+}
+
+func (s *Store) InteractionPreferenceFactor(roomID int64, kind string) float64 {
+	prefs := s.RoomInteractionPreferences(roomID)
+	factor := preferenceFactor(prefs.OverallInteraction, 0.78, 1.24)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "question":
+		factor *= preferenceFactor(prefs.QuestionPreference, 0.72, 1.38)
+	case "welcome":
+		factor *= preferenceFactor(prefs.WelcomePreference, 0.68, 1.36)
+	case "engagement":
+		factor *= preferenceFactor(prefs.EngagementPreference, 0.68, 1.32)
+	case "chat":
+		factor *= preferenceFactor(prefs.ChatPreference, 0.64, 1.34)
+	case "conversion":
+		factor *= preferenceFactor(prefs.ConversionPreference, 0.82, 1.38)
+	}
+	return factor
+}
+
+func interactionPreferenceKind(key string) string {
+	switch strings.TrimSpace(key) {
+	case "welcome_named", "welcome_batch":
+		return "welcome"
+	case "reply_like", "reply_follow":
+		return "engagement"
+	case "reply_chat", "reply_chat_social":
+		return "chat"
+	default:
+		return "question"
+	}
+}
+
+func (s *Store) AdjustInteractionWeight(roomID int64, key string, weight int) int {
+	if weight <= 0 {
+		return 0
+	}
+	adjusted := int(math.Round(float64(weight) * s.InteractionPreferenceFactor(roomID, interactionPreferenceKind(key))))
+	if adjusted < 1 {
+		return 1
+	}
+	if adjusted > 100 {
+		return 100
+	}
+	return adjusted
 }
 
 func (s *Store) Put(tenantID int64, policy Policy) Policy {
@@ -184,6 +414,29 @@ func (s *Store) Allowed(tenantID int64, category, key string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Store) RuleWeight(tenantID int64, category, key string, signals Signals) (configured int, effective int, enabled bool) {
+	category = strings.ToLower(strings.TrimSpace(category))
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return 0, 0, false
+	}
+	for _, rule := range s.Resolve(tenantID).Rules {
+		if strings.ToLower(strings.TrimSpace(rule.Category)) != category || strings.TrimSpace(rule.Key) != key {
+			continue
+		}
+		configured = rule.BaseProbability
+		if !rule.Enabled || configured <= 0 {
+			return configured, 0, false
+		}
+		effective = adjustWeight(rule.Key, configured, signals)
+		if effective > 100 {
+			effective = 100
+		}
+		return configured, effective, effective > 0
+	}
+	return 0, 0, false
 }
 
 func (s *Store) Pick(tenantID int64, category string, candidates []string, signals Signals, seed string) Selection {
@@ -239,6 +492,12 @@ func (s *Store) Pick(tenantID int64, category string, candidates []string, signa
 		selection.Name = weighted[0].Name
 		return selection
 	}
+	for i := range selection.Candidates {
+		selection.Candidates[i].EffectiveProbability = effectiveProbability(
+			selection.Candidates[i].Weight,
+			selection.Total,
+		)
+	}
 	h := fnv.New64a()
 	_, _ = fmt.Fprintf(h, "%d:%s:%s", tenantID, category, seed)
 	selection.Roll = int(h.Sum64()%uint64(selection.Total)) + 1
@@ -278,6 +537,15 @@ func (s *Store) PickAddressing(tenantID int64, seed string) Selection {
 	}
 	for _, item := range items {
 		selection.Total += item.Weight
+	}
+	if selection.Total <= 0 {
+		return selection
+	}
+	for i := range selection.Candidates {
+		selection.Candidates[i].EffectiveProbability = effectiveProbability(
+			selection.Candidates[i].Weight,
+			selection.Total,
+		)
 	}
 	h := fnv.New64a()
 	_, _ = fmt.Fprintf(h, "%d:addressing:%s", tenantID, seed)
@@ -333,6 +601,335 @@ func (s *Store) Trigger(tenantID int64, category, key string, signals Signals, s
 	decision.Roll = int(h.Sum64()%100) + 1
 	decision.Triggered = decision.Roll <= decision.Probability
 	return decision
+}
+
+func effectiveProbability(weight, total int) float64 {
+	if weight <= 0 || total <= 0 {
+		return 0
+	}
+	return math.Round((float64(weight)*100/float64(total))*100) / 100
+}
+
+func (s *Store) RecordSelection(roomID int64, stageID string, startedAt time.Time, selection Selection) {
+	if s == nil || roomID <= 0 || strings.TrimSpace(stageID) == "" || selection.Total <= 0 || len(selection.Candidates) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stage := s.ensureStageLocked(roomID, stageID, startedAt, now)
+	stage.decisionCount++
+	for _, candidate := range selection.Candidates {
+		probability := candidate.EffectiveProbability
+		if probability <= 0 && candidate.Weight > 0 {
+			probability = effectiveProbability(candidate.Weight, selection.Total)
+		}
+		s.recordProbabilityLocked(
+			stage,
+			selection.Category,
+			candidate.Key,
+			candidate.Name,
+			probability,
+			candidate.Key == selection.Key,
+			now,
+		)
+	}
+	s.publishStageLocked(roomID)
+}
+
+func (s *Store) RecordTrigger(roomID int64, stageID string, startedAt time.Time, category string, decision TriggerDecision) {
+	if s == nil || roomID <= 0 || strings.TrimSpace(stageID) == "" || strings.TrimSpace(decision.Key) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stage := s.ensureStageLocked(roomID, stageID, startedAt, now)
+	stage.decisionCount++
+	s.recordProbabilityLocked(
+		stage,
+		category,
+		decision.Key,
+		decision.Name,
+		float64(decision.Probability),
+		decision.Triggered,
+		now,
+	)
+	s.publishStageLocked(roomID)
+}
+
+func (s *Store) StageStats(roomID int64) StageStats {
+	if s == nil || roomID <= 0 {
+		return StageStats{RoomID: roomID, Items: []ProbabilityStat{}}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stageStatsLocked(roomID)
+}
+
+func (s *Store) StageStatsForTenant(roomID, tenantID int64) StageStats {
+	if s == nil || roomID <= 0 {
+		return StageStats{RoomID: roomID, Items: []ProbabilityStat{}}
+	}
+	result := s.StageStats(roomID)
+	policy := s.Resolve(tenantID)
+	return mergePolicyCatalog(result, policy)
+}
+
+func (s *Store) stageStatsLocked(roomID int64) StageStats {
+	stage := s.stages[roomID]
+	if stage == nil {
+		return StageStats{
+			RoomID:           roomID,
+			Items:            []ProbabilityStat{},
+			InteractionItems: append([]InteractionWindowStat(nil), s.interactionStats[roomID]...),
+		}
+	}
+	result := StageStats{
+		RoomID:           stage.roomID,
+		StageID:          stage.stageID,
+		StartedAt:        stage.startedAt,
+		UpdatedAt:        stage.updatedAt,
+		DecisionCount:    stage.decisionCount,
+		Items:            make([]ProbabilityStat, 0, len(stage.items)),
+		InteractionItems: append([]InteractionWindowStat(nil), s.interactionStats[roomID]...),
+	}
+	for _, item := range stage.items {
+		copy := item.ProbabilityStat
+		if copy.Samples > 0 {
+			copy.AverageProbability = math.Round((item.sum/float64(copy.Samples))*100) / 100
+		}
+		result.Items = append(result.Items, copy)
+	}
+	sort.SliceStable(result.Items, func(i, j int) bool {
+		if result.Items[i].Category == result.Items[j].Category {
+			return result.Items[i].Key < result.Items[j].Key
+		}
+		return result.Items[i].Category < result.Items[j].Category
+	})
+	return result
+}
+
+func mergePolicyCatalog(result StageStats, policy Policy) StageStats {
+	filtered := result.Items[:0]
+	for _, item := range result.Items {
+		if strings.EqualFold(strings.TrimSpace(item.Category), "interaction") {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	result.Items = filtered
+	byIdentity := make(map[string]int, len(result.Items))
+	for i := range result.Items {
+		identity := strings.ToLower(strings.TrimSpace(result.Items[i].Category)) + ":" + strings.TrimSpace(result.Items[i].Key)
+		byIdentity[identity] = i
+	}
+
+	ensure := func(category, key, name string, enabled bool, configured float64) {
+		category = strings.ToLower(strings.TrimSpace(category))
+		key = strings.TrimSpace(key)
+		if category == "" || key == "" {
+			return
+		}
+		identity := category + ":" + key
+		if index, ok := byIdentity[identity]; ok {
+			result.Items[index].Enabled = enabled
+			result.Items[index].ConfiguredProbability = configured
+			if strings.TrimSpace(result.Items[index].Name) == "" {
+				result.Items[index].Name = strings.TrimSpace(name)
+			}
+			return
+		}
+		byIdentity[identity] = len(result.Items)
+		result.Items = append(result.Items, ProbabilityStat{
+			Category:              category,
+			Key:                   key,
+			Name:                  strings.TrimSpace(name),
+			Enabled:               enabled,
+			ConfiguredProbability: configured,
+		})
+	}
+
+	for _, rule := range policy.Rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Category), "interaction") {
+			continue
+		}
+		ensure(rule.Category, rule.Key, rule.Name, rule.Enabled, float64(rule.BaseProbability))
+	}
+	for _, option := range policy.Addressing {
+		ensure("addressing", option.Key, option.Text, option.Enabled, float64(option.Probability))
+	}
+
+	order := func(category string) int {
+		switch strings.ToLower(strings.TrimSpace(category)) {
+		case "interaction":
+			return 0
+		case "interrupt":
+			return 1
+		case "resume":
+			return 2
+		case "addressing":
+			return 3
+		default:
+			return 9
+		}
+	}
+	sort.SliceStable(result.Items, func(i, j int) bool {
+		leftOrder := order(result.Items[i].Category)
+		rightOrder := order(result.Items[j].Category)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return result.Items[i].Key < result.Items[j].Key
+	})
+	return result
+}
+
+func (s *Store) UpdateInteractionStats(roomID int64, items []InteractionWindowStat) {
+	if s == nil || roomID <= 0 {
+		return
+	}
+	copyItems := append([]InteractionWindowStat(nil), items...)
+	sort.SliceStable(copyItems, func(i, j int) bool {
+		return copyItems[i].Key < copyItems[j].Key
+	})
+	s.mu.Lock()
+	s.interactionStats[roomID] = copyItems
+	if stage := s.stages[roomID]; stage != nil {
+		stage.updatedAt = time.Now().UTC()
+	}
+	s.publishStageLocked(roomID)
+	s.mu.Unlock()
+}
+
+func (s *Store) SubscribeStats(roomID int64) (<-chan StageStats, func()) {
+	ch := make(chan StageStats, 1)
+	if s == nil || roomID <= 0 {
+		close(ch)
+		return ch, func() {}
+	}
+	s.mu.Lock()
+	s.nextSubscriberID++
+	id := s.nextSubscriberID
+	if s.subscribers[roomID] == nil {
+		s.subscribers[roomID] = make(map[uint64]chan StageStats)
+	}
+	s.subscribers[roomID][id] = ch
+	ch <- s.stageStatsLocked(roomID)
+	s.mu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if roomSubscribers := s.subscribers[roomID]; roomSubscribers != nil {
+				if existing, ok := roomSubscribers[id]; ok {
+					delete(roomSubscribers, id)
+					close(existing)
+				}
+				if len(roomSubscribers) == 0 {
+					delete(s.subscribers, roomID)
+				}
+			}
+			s.mu.Unlock()
+		})
+	}
+	return ch, cancel
+}
+
+func (s *Store) publishStageLocked(roomID int64) {
+	roomSubscribers := s.subscribers[roomID]
+	if len(roomSubscribers) == 0 {
+		return
+	}
+	snapshot := s.stageStatsLocked(roomID)
+	for _, ch := range roomSubscribers {
+		select {
+		case ch <- snapshot:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- snapshot:
+			default:
+			}
+		}
+	}
+}
+
+func (s *Store) ensureStageLocked(roomID int64, stageID string, startedAt, now time.Time) *stageAccumulator {
+	stage := s.stages[roomID]
+	if stage == nil || stage.stageID != stageID {
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		stage = &stageAccumulator{
+			roomID:    roomID,
+			stageID:   stageID,
+			startedAt: startedAt.UTC(),
+			updatedAt: now,
+			items:     make(map[string]*probabilityAccumulator),
+		}
+		s.stages[roomID] = stage
+	}
+	stage.updatedAt = now
+	return stage
+}
+
+func (s *Store) recordProbabilityLocked(
+	stage *stageAccumulator,
+	category, key, name string,
+	probability float64,
+	applied bool,
+	now time.Time,
+) {
+	if stage == nil {
+		return
+	}
+	category = strings.ToLower(strings.TrimSpace(category))
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	if probability < 0 {
+		probability = 0
+	}
+	if probability > 100 {
+		probability = 100
+	}
+	probability = math.Round(probability*100) / 100
+	identity := category + ":" + key
+	item := stage.items[identity]
+	if item == nil {
+		item = &probabilityAccumulator{
+			ProbabilityStat: ProbabilityStat{
+				Category:           category,
+				Key:                key,
+				Name:               strings.TrimSpace(name),
+				MinimumProbability: probability,
+				MaximumProbability: probability,
+			},
+		}
+		stage.items[identity] = item
+	}
+	if strings.TrimSpace(name) != "" {
+		item.Name = strings.TrimSpace(name)
+	}
+	item.Samples++
+	if applied {
+		item.HitCount++
+	}
+	item.LastProbability = probability
+	if probability < item.MinimumProbability {
+		item.MinimumProbability = probability
+	}
+	if probability > item.MaximumProbability {
+		item.MaximumProbability = probability
+	}
+	item.LastEvaluatedAt = now
+	item.sum += probability
 }
 
 func adjustWeight(key string, weight int, signals Signals) int {

@@ -581,6 +581,78 @@ export interface RoomSessionStats {
   order_signals: number
 }
 
+export interface RoomStrategyProbabilityStat {
+  category: string
+  key: string
+  name: string
+  enabled: boolean
+  configured_probability: number
+  samples: number
+  hit_count: number
+  last_probability: number
+  average_probability: number
+  minimum_probability: number
+  maximum_probability: number
+  last_evaluated_at: string
+}
+
+export interface RoomInteractionWindowStat {
+  key: string
+  name: string
+  state: 'idle' | 'pending' | 'cooldown' | string
+  pending_count: number
+  total_events: number
+  emitted_count: number
+  last_mission_event_count: number
+  min_interval_seconds: number
+  max_wait_seconds: number
+  configured_weight: number
+  effective_weight: number
+  effective_priority: number
+  first_pending_at?: string
+  last_event_at?: string
+  last_emitted_at?: string
+  next_due_at?: string
+}
+
+export interface RoomStrategyStageStats {
+  room_id: number
+  stage_id: string
+  started_at?: string
+  updated_at?: string
+  decision_count: number
+  items: RoomStrategyProbabilityStat[]
+  interaction_items: RoomInteractionWindowStat[]
+}
+
+export type InteractionPreferenceLevel = 'less' | 'natural' | 'more'
+export type OverallInteractionLevel = 'quiet' | 'natural' | 'active'
+export type ConversionInteractionLevel = 'steady' | 'natural' | 'active'
+
+export interface RoomInteractionPreferences {
+  tenant_id: number
+  room_id: number
+  overall_interaction: OverallInteractionLevel
+  question_preference: InteractionPreferenceLevel
+  welcome_preference: InteractionPreferenceLevel
+  engagement_preference: InteractionPreferenceLevel
+  chat_preference: InteractionPreferenceLevel
+  conversion_preference: ConversionInteractionLevel
+  auto_heat: boolean
+  updated_by_user_id?: number
+  updated_at?: string
+}
+
+export interface RoomInteractionPreferencesInput {
+  overall_interaction: OverallInteractionLevel
+  question_preference: InteractionPreferenceLevel
+  welcome_preference: InteractionPreferenceLevel
+  engagement_preference: InteractionPreferenceLevel
+  chat_preference: InteractionPreferenceLevel
+  conversion_preference: ConversionInteractionLevel
+  auto_heat: boolean
+}
+
 export interface LiveReviewQuestionGroup {
   text: string
   count: number
@@ -698,8 +770,13 @@ export interface SpeechTrackRuntime {
   source?: string
   audio_url?: string
   decision_id?: string
+  mission_id?: string
   speech_task_id?: string
   switch_at_ms?: number
+  duration_ms?: number
+  current_ms?: number
+  timeline?: SpeechProgramTimelineSegment[]
+  current_segment?: SpeechProgramTimelineSegment
   started_at?: string
   updated_at?: string
 }
@@ -760,6 +837,97 @@ export interface SpeechRuntimeSnapshot {
   interrupt: SpeechTrackRuntime
   program?: SpeechProgramSnapshot
   updated_at?: string
+}
+
+export interface SpeechMissionTraceEvent {
+  at: string
+  state: string
+  action?: string
+  note?: string
+}
+
+export interface SpeechMission {
+  id: string
+  decision_id: string
+  tenant_id: number
+  room_id: number
+  runtime_session_id?: number
+  created_at: string
+  updated_at: string
+  plan_frozen_at?: string
+  state: string
+  event: {
+    kind?: string
+    topic?: string
+    title?: string
+    summary?: string
+    questions?: string[]
+    event_count?: number
+    window_seconds?: number
+  }
+  mainline: {
+    before?: string
+    after?: string
+    resume_segment_id?: string
+    switch_at_ms?: number
+  }
+  interaction: {
+    kind?: string
+    goal?: string
+    event_count?: number
+    window_seconds?: number
+    required: boolean
+  }
+  interrupt: {
+    strategy?: string
+    name?: string
+    guidance?: string
+    required: boolean
+  }
+  resume: {
+    strategy?: string
+    name?: string
+    guidance?: string
+    resume_mainline?: string
+    resume_segment_id?: string
+    planned_resume_at_ms?: number
+    actual_resume_at_ms?: number
+    resume_reason?: string
+    resume_preview?: string
+    skipped_previews?: string[]
+    dedup_triggered?: boolean
+    duplicate_score?: number
+    bridge_text?: string
+    required: boolean
+  }
+  addressing: {
+    candidate?: string
+    key?: string
+    optional: boolean
+  }
+  human_style: {
+    mode?: string
+    guidance?: string
+    emotion?: string
+    pace?: string
+  }
+  applied_stages?: string[]
+  generated_text?: string
+  tts: {
+    provider?: string
+    model?: string
+    voice_id?: string
+    rate?: number
+    instruction?: string
+    audio_url?: string
+  }
+  failure_reason?: string
+  trace?: SpeechMissionTraceEvent[]
+}
+
+export interface SpeechMissionListResponse {
+  room_id: number
+  missions: SpeechMission[]
 }
 
 export interface GeneratedSpeechHistoryItem {

@@ -41,6 +41,7 @@ type InsertInteractionInput struct {
 	SessionID      string
 	Label          string
 	AudioURL       string
+	Text           string
 	CallbackURL    string
 	ResumeOffsetMS *int
 	SwitchAtMS     *int
@@ -273,6 +274,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input InsertI
 		"session_id":       strings.TrimSpace(input.SessionID),
 		"label":            strings.TrimSpace(input.Label),
 		"audio_url":        strings.TrimSpace(input.AudioURL),
+		"text":             strings.TrimSpace(input.Text),
 		"callback_url":     strings.TrimSpace(input.CallbackURL),
 		"resume_offset_ms": input.ResumeOffsetMS,
 		"switch_at_ms":     input.SwitchAtMS,

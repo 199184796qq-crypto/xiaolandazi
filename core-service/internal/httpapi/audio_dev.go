@@ -39,23 +39,27 @@ type audioDevState struct {
 }
 
 type audioInteractionMeta struct {
-	RoomID       int64
-	Topic        string
-	ResumeMode   string
-	BridgeText   string
-	BridgeUsed   bool
-	ResumeUnit   string
-	TextDigest   string
-	BridgeDigest string
-	DecisionID   string
-	QuestionText string
-	ReplyText    string
-	Source       string
-	AudioURL     string
-	SkipUnits    []string
-	AnswerPinned bool
-	ResumePinned bool
-	Record       *audioInteractionRecord
+	RoomID               int64
+	MissionID            string
+	HumanizationStrategy string
+	HumanizationKind     string
+	HumanizationApplied  bool
+	Topic                string
+	ResumeMode           string
+	BridgeText           string
+	BridgeUsed           bool
+	ResumeUnit           string
+	TextDigest           string
+	BridgeDigest         string
+	DecisionID           string
+	QuestionText         string
+	ReplyText            string
+	Source               string
+	AudioURL             string
+	SkipUnits            []string
+	AnswerPinned         bool
+	ResumePinned         bool
+	Record               *audioInteractionRecord
 }
 
 var audioDevStates sync.Map
@@ -284,6 +288,7 @@ func (s *Server) insertDevAudioInteraction(w http.ResponseWriter, r *http.Reques
 		SessionID:      strings.TrimSpace(input.SessionID),
 		Label:          strings.TrimSpace(input.Label),
 		AudioURL:       strings.TrimSpace(input.AudioURL),
+		Text:           strings.TrimSpace(input.FinalText),
 		CallbackURL:    callbackBase + "/internal/v1/dev/audio/events",
 		ResumeOffsetMS: input.ResumeOffsetMS,
 		SwitchAtMS:     input.SwitchAtMS,
@@ -488,12 +493,18 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 			}
 			var switchAtMS *int
 			var startedAt *time.Time
+			durationMS := 0
 			if current, snapshotErr := s.speechRuntime.Snapshot(meta.RoomID); snapshotErr == nil {
 				switchAtMS = current.Interrupt.SwitchAtMS
 				startedAt = current.Interrupt.StartedAt
+				durationMS = current.Interrupt.DurationMS
 			}
-			if (event.Status == "PLAYING" || event.Status == "PROGRESS") && !event.OccurredAt.IsZero() {
+			if event.Status == "PLAYING" && startedAt == nil && !event.OccurredAt.IsZero() {
 				at := event.OccurredAt.UTC()
+				startedAt = &at
+			}
+			if event.Status == "PROGRESS" && event.ProgressMS > 0 && !event.OccurredAt.IsZero() {
+				at := event.OccurredAt.UTC().Add(-time.Duration(event.ProgressMS) * time.Millisecond)
 				startedAt = &at
 			}
 			_, _ = s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
@@ -508,8 +519,10 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 				Source:         meta.Source,
 				AudioURL:       meta.AudioURL,
 				DecisionID:     meta.DecisionID,
+				MissionID:      meta.MissionID,
 				SpeechTaskID:   event.SpeechTaskID,
 				SwitchAtMS:     switchAtMS,
+				DurationMS:     durationMS,
 				StartedAt:      startedAt,
 			})
 		}
@@ -558,6 +571,19 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 				Key:      meta.ResumeUnit,
 				Metadata: map[string]string{
 					"interaction_task_id": event.SpeechTaskID,
+				},
+			}, "", 0)
+		}
+		if event.Status == "COMPLETED" && meta.HumanizationApplied && strings.TrimSpace(meta.HumanizationStrategy) != "" {
+			s.brain.RecordPin(meta.RoomID, timeline.Pin{
+				At:       event.OccurredAt,
+				Kind:     timeline.PinHumanization,
+				Strategy: meta.HumanizationStrategy,
+				Key:      meta.HumanizationKind,
+				Topic:    meta.Topic,
+				Metadata: map[string]string{
+					"interaction_task_id": event.SpeechTaskID,
+					"mission_id":          meta.MissionID,
 				},
 			}, "", 0)
 		}

@@ -92,6 +92,30 @@ func TestTenantSystemAddressingFollowsLatestGlobalAddressing(t *testing.T) {
 	}
 }
 
+func TestRuleWeightReturnsConfiguredAndRuntimeAdjustedWeight(t *testing.T) {
+	store := New()
+	configured, effective, enabled := store.RuleWeight(0, "interaction", "reply_like", Signals{Likes30s: 300})
+	if !enabled {
+		t.Fatal("reply_like should be enabled by default")
+	}
+	if configured != 8 || effective != 2 {
+		t.Fatalf("reply_like weights configured=%d effective=%d want 8/2", configured, effective)
+	}
+
+	policy := DefaultPolicy()
+	for i := range policy.Rules {
+		if policy.Rules[i].Category == "interaction" && policy.Rules[i].Key == "reply_like" {
+			policy.Rules[i].Enabled = false
+			policy.Rules[i].BaseProbability = 0
+		}
+	}
+	store.Put(0, policy)
+	configured, effective, enabled = store.RuleWeight(0, "interaction", "reply_like", Signals{Likes30s: 300})
+	if enabled || configured != 0 || effective != 0 {
+		t.Fatalf("disabled reply_like should return 0/0/false, got %d/%d/%v", configured, effective, enabled)
+	}
+}
+
 func TestAllowedHonorsEnabledConfiguredRules(t *testing.T) {
 	store := New()
 	if !store.Allowed(0, "resume", "BRIDGE") {

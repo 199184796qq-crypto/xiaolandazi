@@ -169,6 +169,30 @@ type LiveAgentSettingsInput struct {
 	Greeting         string `json:"greeting"`
 }
 
+type RoomInteractionPreferences struct {
+	TenantID             int64     `json:"tenant_id"`
+	RoomID               int64     `json:"room_id"`
+	OverallInteraction   string    `json:"overall_interaction"`
+	QuestionPreference   string    `json:"question_preference"`
+	WelcomePreference    string    `json:"welcome_preference"`
+	EngagementPreference string    `json:"engagement_preference"`
+	ChatPreference       string    `json:"chat_preference"`
+	ConversionPreference string    `json:"conversion_preference"`
+	AutoHeat              bool      `json:"auto_heat"`
+	UpdatedByUserID      *int64    `json:"updated_by_user_id,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type RoomInteractionPreferencesInput struct {
+	OverallInteraction   string `json:"overall_interaction"`
+	QuestionPreference   string `json:"question_preference"`
+	WelcomePreference    string `json:"welcome_preference"`
+	EngagementPreference string `json:"engagement_preference"`
+	ChatPreference       string `json:"chat_preference"`
+	ConversionPreference string `json:"conversion_preference"`
+	AutoHeat              bool   `json:"auto_heat"`
+}
+
 type RecordLiveRuntimeEventInput struct {
 	EventCode string         `json:"event_code"`
 	Title     string         `json:"title,omitempty"`

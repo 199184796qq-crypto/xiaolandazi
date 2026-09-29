@@ -78,10 +78,15 @@ import type {
   RoomEvent,
   RoomEventPage,
   RoomSessionStats,
+  RoomStrategyStageStats,
+  RoomInteractionPreferences,
+  RoomInteractionPreferencesInput,
   LiveReviewResponse,
   RoomBlockedUser,
   RoomBrainView,
   SpeechRuntimeSnapshot,
+  SpeechMission,
+  SpeechMissionListResponse,
   GeneratedSpeechHistoryPage,
   AgentDecisionSnapshot,
   AgentDecisionSimulationResult,
@@ -474,6 +479,38 @@ export function getRoomSessionStats(roomId: number) {
   return request<RoomSessionStats>('/api/v1/rooms/' + roomId + '/session-stats')
 }
 
+export function getRoomStrategyStats(roomId: number) {
+  return request<RoomStrategyStageStats>('/api/v1/rooms/' + roomId + '/strategy-stats')
+}
+
+export function getRoomInteractionPreferences(roomId: number) {
+  return request<RoomInteractionPreferences>('/api/v1/rooms/' + roomId + '/interaction-preferences')
+}
+
+export function updateRoomInteractionPreferences(roomId: number, payload: RoomInteractionPreferencesInput) {
+  return request<RoomInteractionPreferences>('/api/v1/rooms/' + roomId + '/interaction-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateRoomStrategyWeight(
+  roomId: number,
+  payload: { category: string; key: string; value: number },
+) {
+  return request<{
+    room_id: number
+    tenant_id: number
+    category: string
+    key: string
+    requested_value: number
+    config: LiveStrategyCenterConfig
+  }>('/api/v1/rooms/' + roomId + '/strategy-weight', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getRoomReview(roomId: number, limit = 5000) {
   return request<LiveReviewResponse>(
     '/api/v1/rooms/' + roomId + '/review?limit=' + encodeURIComponent(String(limit)),
@@ -493,6 +530,16 @@ export function getRoomBrain(roomId: number) {
 
 export function getRoomSpeechRuntime(roomId: number) {
   return request<SpeechRuntimeSnapshot>('/api/v1/rooms/' + roomId + '/speech-runtime')
+}
+
+export function getRoomSpeechMissions(roomId: number) {
+  return request<SpeechMissionListResponse>('/api/v1/live/rooms/' + roomId + '/speech-missions')
+}
+
+export function getRoomSpeechMission(roomId: number, missionId: string) {
+  return request<SpeechMission>(
+    '/api/v1/live/rooms/' + roomId + '/speech-missions/' + encodeURIComponent(missionId),
+  )
 }
 
 export function getRoomGeneratedSpeechHistory(

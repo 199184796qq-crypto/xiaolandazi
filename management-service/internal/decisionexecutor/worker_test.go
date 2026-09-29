@@ -14,6 +14,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/speechmission"
 	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/voicecatalog"
 )
@@ -72,7 +73,7 @@ func TestHiddenStrategyGuidanceControlsModelWithoutBecomingReplyHint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt, "【仅供模型内部执行的生成控制】") ||
+	if !strings.Contains(prompt, "【策略黑板：仅供模型内部执行】") ||
 		!strings.Contains(prompt, "称呼偏好：语境自然时可以称呼“宝子”") ||
 		!strings.Contains(prompt, "切入方式：先轻声接住问题") {
 		t.Fatalf("hidden strategy guidance missing from model prompt: %s", prompt)
@@ -83,6 +84,38 @@ func TestHiddenStrategyGuidanceControlsModelWithoutBecomingReplyHint(t *testing.
 	for _, leaked := range []string{"【本次称呼】", "【本次打断行为】", "【本次回归策略】"} {
 		if strings.Contains(prompt, leaked) {
 			t.Fatalf("legacy strategy label must not be used in model prompt: %s", leaked)
+		}
+	}
+}
+
+func TestStrategyStageOrderCanBeReorderedWithoutDroppingRegisteredStages(t *testing.T) {
+	registry := map[string]strategyStageFunc{
+		"interrupt":  nil,
+		"addressing": nil,
+		"resume":     nil,
+		"humanize":   nil,
+	}
+	got := normalizeStrategyStageOrder("resume,addressing,interrupt", registry)
+	want := []string{"resume", "addressing", "interrupt", "humanize"}
+	if len(got) != len(want) {
+		t.Fatalf("order=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestSpeechMissionPromptCarriesAggregatedInteractionContext(t *testing.T) {
+	prompt := speechMissionPrompt(decisionItem{
+		MissionKind:          "reply_like",
+		MissionEventCount:    36,
+		MissionWindowSeconds: 42,
+	})
+	for _, want := range []string{"回应点赞", "聚合事件数：36", "事件聚合窗口：42秒", "只生成一段完整口播"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("mission prompt missing %q: %s", want, prompt)
 		}
 	}
 }
@@ -215,6 +248,7 @@ type fakeCore struct {
 	dispatches int
 	dispatch   map[string]any
 	claimRaw   string
+	runtimeRaw string
 	strategies map[string]coreStrategySelection
 }
 
@@ -241,6 +275,12 @@ func (f *fakeCore) DoRoom(
 			status = http.StatusNotFound
 			raw = `{"error":"not configured"}`
 		}
+	case strings.HasSuffix(path, "/speech-runtime"):
+		if strings.TrimSpace(f.runtimeRaw) != "" {
+			raw = f.runtimeRaw
+		} else {
+			raw = `{"interrupt":{"status":"idle"}}`
+		}
 	case strings.HasSuffix(path, "/agent-decisions/claim"):
 		if strings.TrimSpace(f.claimRaw) != "" {
 			raw = f.claimRaw
@@ -251,8 +291,22 @@ func (f *fakeCore) DoRoom(
 		f.dispatches++
 		if value, ok := body.(map[string]any); ok {
 			f.dispatch = value
+			payload := map[string]any{
+				"mission_id":       strings.TrimSpace(fmt.Sprint(value["mission_id"])),
+				"dispatched":       true,
+				"action":           strings.TrimSpace(fmt.Sprint(value["action"])),
+				"switch_at_ms":     1234,
+				"resume_offset_ms": 2345,
+				"resume_strategy":  strings.TrimSpace(fmt.Sprint(value["resume_strategy"])),
+				"bridge_used":      strings.EqualFold(strings.TrimSpace(fmt.Sprint(value["resume_strategy"])), "BRIDGE"),
+				"dedup_triggered":  false,
+				"duplicate_score":  0,
+			}
+			encoded, _ := json.Marshal(payload)
+			raw = string(encoded)
+		} else {
+			raw = `{"dispatched":true}`
 		}
-		raw = `{"dispatched":true}`
 	case strings.HasSuffix(path, "/release"):
 		f.releases++
 		raw = `{"ok":true}`
@@ -460,6 +514,101 @@ func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 	}
 	if len(agent.requests) == 0 || !strings.Contains(agent.requests[0].Messages[1].Content, "轻声、自然地读一下或复述当前弹幕") {
 		t.Fatalf("model prompt did not receive hidden interrupt guidance: %#v", agent.requests)
+	}
+}
+
+func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
+	core := &fakeCore{
+		claimRaw: `{"claimed":true,"item":{"id":"d-mission","topic":"INTERACTION:CHAT","title":"回复弹幕","summary":"互动时间窗触发","reply_hint":"一次生成完整可播正文","sample_questions":["这个怎么发货"],"mission_kind":"reply_chat","mission_event_count":2,"mission_window_seconds":12,"manual_action":"answer"},"switch_at_ms":900,"current_mainline":"刚才在讲压榨工艺","resume_mainline":"下一句继续讲工艺细节","resume_segment_id":"seg-2"}`,
+		strategies: map[string]coreStrategySelection{
+			"interrupt": {Category: "interrupt", Key: "read_comment_softly", Name: "轻声接弹幕"},
+			"resume": {
+				Category: "resume", Key: "BRIDGE", Name: "自然桥接",
+				PlannedCutMS: 900, ResumeOffsetMS: 2400, ResumeReason: "same_safe_boundary",
+				ResumePreview: "继续讲压榨工艺细节", ResumeSegmentID: "seg-r2",
+			},
+			"addressing": {Category: "addressing", Key: "friend", Name: "朋友"},
+		},
+	}
+	agent := &fakeAgent{responses: []string{"朋友，这个发货问题我给你说明一下，会按当前页面安排；说回刚才这个工艺，关键还是看压榨环节。"}}
+	tts := &fakeTTS{}
+	worker := New(readyVoiceStore(), core, agent, tts)
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(core.dispatch["mission_id"])); got != "d-mission" {
+		t.Fatalf("mission_id=%q want d-mission", got)
+	}
+	mission, ok := worker.MissionSnapshot("d-mission")
+	if !ok {
+		t.Fatal("speech mission snapshot missing")
+	}
+	if mission.State != speechmission.StateDispatched {
+		t.Fatalf("mission state=%s want %s", mission.State, speechmission.StateDispatched)
+	}
+	if mission.PlanFrozenAt == nil {
+		t.Fatal("mission plan was not frozen before generation")
+	}
+	if mission.Interaction.Kind != "reply_chat" || mission.Interaction.EventCount != 2 {
+		t.Fatalf("interaction plan=%#v", mission.Interaction)
+	}
+	if mission.Interrupt.Strategy != "read_comment_softly" {
+		t.Fatalf("interrupt plan=%#v", mission.Interrupt)
+	}
+	if mission.Resume.Strategy != "BRIDGE" || strings.TrimSpace(mission.Resume.BridgeText) == "" {
+		t.Fatalf("resume plan=%#v", mission.Resume)
+	}
+	if mission.Resume.PlannedResumeAtMS != 2400 || mission.Resume.ResumeSegmentID != "seg-r2" || !strings.Contains(mission.Resume.ResumePreview, "压榨工艺") {
+		t.Fatalf("resume pre-plan context=%#v", mission.Resume)
+	}
+	if mission.Resume.ActualResumeAtMS != 2345 {
+		t.Fatalf("actual resume point=%d want 2345", mission.Resume.ActualResumeAtMS)
+	}
+	if mission.Addressing.Candidate != "朋友" || !mission.Addressing.Optional {
+		t.Fatalf("addressing plan=%#v", mission.Addressing)
+	}
+	if mission.HumanStyle.Mode != "natural_live_speech" {
+		t.Fatalf("human style=%#v", mission.HumanStyle)
+	}
+	if strings.TrimSpace(mission.GeneratedText) == "" || strings.TrimSpace(mission.TTS.AudioURL) == "" {
+		t.Fatalf("generated text or tts missing: %#v", mission)
+	}
+	if mission.Mainline.SwitchAtMS != 1234 {
+		t.Fatalf("actual switch point=%d want 1234", mission.Mainline.SwitchAtMS)
+	}
+	if !strings.Contains(tts.last.Instruction, "真人直播临场感") {
+		t.Fatalf("TTS instruction missing human style: %q", tts.last.Instruction)
+	}
+	if len(mission.Trace) < 8 {
+		t.Fatalf("mission trace too short: %d", len(mission.Trace))
+	}
+}
+
+func TestReconcileRoomMissionMarksPlaybackCompleted(t *testing.T) {
+	core := &fakeCore{
+		claimRaw:   `{"claimed":false,"reason":"empty"}`,
+		runtimeRaw: `{"room_id":11,"interrupt":{"status":"completed","decision_id":"d-done","mission_id":"d-done","resume_strategy":"DIRECT","bridge_text":"","bridge_used":false}}`,
+	}
+	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
+	worker.missions.Ensure(speechmission.Mission{
+		ID: "d-done", DecisionID: "d-done", TenantID: 7, RoomID: 11, State: speechmission.StateDispatched,
+	})
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	mission, ok := worker.MissionSnapshot("d-done")
+	if !ok {
+		t.Fatal("mission snapshot missing")
+	}
+	if mission.State != speechmission.StateCompleted {
+		t.Fatalf("mission state=%s want completed", mission.State)
+	}
+	if len(mission.Trace) < 2 || mission.Trace[len(mission.Trace)-1].Action != "playback_completed" {
+		t.Fatalf("unexpected trace=%#v", mission.Trace)
 	}
 }
 

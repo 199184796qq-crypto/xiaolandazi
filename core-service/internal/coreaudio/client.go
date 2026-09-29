@@ -615,6 +615,9 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if err != nil {
 		return audioout.RoomProgramSnapshot{}, err
 	}
+	if c.roomAudio != nil {
+		c.roomAudio.SetInterruptTimeline(input.RoomID, roomAudioInteractionTimeline(input.Text, durationMS))
+	}
 
 	c.mu.RLock()
 	program := c.programs[input.RoomID]
@@ -1187,6 +1190,7 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	c.mirrorMu.Unlock()
 
 	segmentID := roomAudioSegmentAt(track.Timeline, startOffsetMS)
+	c.roomAudio.SetMainlineTimeline(program.RoomID, roomAudioSpeechTimeline(track.Timeline))
 	resumePhase := c.roomAudio.Snapshot(program.RoomID).Phase == roomaudio.PhaseResume
 	if !resumePhase {
 		if _, err := c.roomAudio.StartMainline(program.RoomID, segmentID); err != nil {
@@ -1300,7 +1304,7 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 		first := true
 		ticker := time.NewTicker(time.Duration(roomaudio.FrameDurationMS) * time.Millisecond)
 		defer ticker.Stop()
-		err = roomaudio.StreamWAVPCM(ctx, resp.Body, 0, func(pcm []byte, _ int) error {
+		err = roomaudio.StreamWAVPCM(ctx, resp.Body, 0, func(pcm []byte, cursorMS int) error {
 			if !first {
 				select {
 				case <-ctx.Done():
@@ -1309,7 +1313,7 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 				}
 			}
 			first = false
-			_, publishErr := c.roomAudio.PublishPCM(roomID, roomaudio.SourceInterrupt, pcm, "")
+			_, publishErr := c.roomAudio.PublishPCMAt(roomID, roomaudio.SourceInterrupt, pcm, "", cursorMS)
 			return publishErr
 		})
 		if err != nil && ctx.Err() == nil {
@@ -1338,6 +1342,93 @@ func (c *Client) cancelRoomAudioMirror(roomID int64) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func roomAudioSpeechTimeline(timeline []audioout.ProgramTimelineSegment) []roomaudio.SpeechSegment {
+	result := make([]roomaudio.SpeechSegment, 0, len(timeline))
+	for _, segment := range timeline {
+		if strings.TrimSpace(segment.SegmentID) == "" || strings.TrimSpace(segment.Text) == "" || segment.EndMS <= segment.StartMS {
+			continue
+		}
+		result = append(result, roomaudio.SpeechSegment{
+			SegmentID: segment.SegmentID,
+			StartMS:   segment.StartMS,
+			EndMS:     segment.EndMS,
+			Text:      segment.Text,
+		})
+	}
+	return result
+}
+
+func roomAudioInteractionTimeline(text string, durationMS int) []roomaudio.SpeechSegment {
+	text = strings.TrimSpace(text)
+	if text == "" || durationMS <= 0 {
+		return nil
+	}
+	parts := splitRoomAudioInteractionText(text)
+	if len(parts) == 0 {
+		parts = []string{text}
+	}
+	totalRunes := 0
+	for _, part := range parts {
+		length := len([]rune(part))
+		if length < 1 {
+			length = 1
+		}
+		totalRunes += length
+	}
+	result := make([]roomaudio.SpeechSegment, 0, len(parts))
+	start := 0
+	used := 0
+	for index, part := range parts {
+		length := len([]rune(part))
+		if length < 1 {
+			length = 1
+		}
+		used += length
+		end := durationMS
+		if index < len(parts)-1 {
+			end = int(float64(durationMS) * float64(used) / float64(totalRunes))
+		}
+		if end <= start {
+			end = start + 1
+		}
+		result = append(result, roomaudio.SpeechSegment{
+			SegmentID: fmt.Sprintf("interrupt-%03d", index+1),
+			StartMS:   start,
+			EndMS:     end,
+			Text:      strings.TrimSpace(part),
+		})
+		start = end
+	}
+	return result
+}
+
+func splitRoomAudioInteractionText(text string) []string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return nil
+	}
+	const target = 24
+	const hardMax = 34
+	result := make([]string, 0, 4)
+	buffer := make([]rune, 0, hardMax)
+	flush := func() {
+		value := strings.TrimSpace(string(buffer))
+		if value != "" {
+			result = append(result, value)
+		}
+		buffer = buffer[:0]
+	}
+	for _, r := range runes {
+		buffer = append(buffer, r)
+		punctuation := strings.ContainsRune("，。！？!?；;、", r)
+		if (punctuation && len(buffer) >= 12) || len(buffer) >= hardMax || (len(buffer) >= target && strings.ContainsRune("，。！？!?；;", r)) {
+			flush()
+		}
+	}
+	flush()
+	return result
 }
 
 func roomAudioSegmentAt(timeline []audioout.ProgramTimelineSegment, cursorMS int) string {

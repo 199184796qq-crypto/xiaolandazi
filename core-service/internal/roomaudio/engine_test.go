@@ -128,3 +128,75 @@ func TestSubscribeReceivesOnlyCompositeFrames(t *testing.T) {
 		t.Fatal("subscriber did not receive composite frame")
 	}
 }
+
+func TestSpeechFeedFollowsCompositeSourceTimeline(t *testing.T) {
+	engine := New()
+	engine.SetMainlineTimeline(21, []SpeechSegment{
+		{SegmentID: "S001", StartMS: 0, EndMS: 1000, Text: "第一段主线"},
+		{SegmentID: "S002", StartMS: 1000, EndMS: 2000, Text: "第二段主线"},
+		{SegmentID: "S003", StartMS: 2000, EndMS: 3000, Text: "第三段主线"},
+	})
+	if _, err := engine.StartMainline(21, "S001"); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetInterruptTimeline(21, []SpeechSegment{
+		{SegmentID: "interrupt-001", StartMS: 0, EndMS: 900, Text: "第一段插入"},
+		{SegmentID: "interrupt-002", StartMS: 900, EndMS: 1800, Text: "第二段插入"},
+	})
+	pcm := make([]byte, PCMBytesPerFrame)
+	if _, err := engine.PublishPCMAt(21, SourceMainline, pcm, "S002", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.PrepareInterrupt(21); err != nil {
+		t.Fatal(err)
+	}
+	armed, err := engine.ArmInterrupt(21, "S002", "S003")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if armed.SpeechFeed.Current == nil || armed.SpeechFeed.Current.Text != "第二段主线" || armed.SpeechFeed.Current.Tone != SpeechToneCut {
+		t.Fatalf("armed feed=%#v", armed.SpeechFeed)
+	}
+	if armed.SpeechFeed.Next == nil || armed.SpeechFeed.Next.Text != "第一段插入" || armed.SpeechFeed.Next.Tone != SpeechToneInterrupt {
+		t.Fatalf("armed next=%#v", armed.SpeechFeed.Next)
+	}
+	if _, err := engine.StartInterrupt(21); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.PublishPCMAt(21, SourceInterrupt, pcm, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	firstInterrupt := engine.Snapshot(21)
+	if firstInterrupt.SpeechFeed.Current == nil || firstInterrupt.SpeechFeed.Current.Text != "第一段插入" || firstInterrupt.SpeechFeed.Current.Tone != SpeechToneInterrupt {
+		t.Fatalf("first interrupt feed=%#v", firstInterrupt.SpeechFeed)
+	}
+	if firstInterrupt.SpeechFeed.Previous == nil || firstInterrupt.SpeechFeed.Previous.Tone != SpeechToneCut {
+		t.Fatalf("interrupt previous=%#v", firstInterrupt.SpeechFeed.Previous)
+	}
+	if _, err := engine.PublishPCMAt(21, SourceInterrupt, pcm, "", 1000); err != nil {
+		t.Fatal(err)
+	}
+	secondInterrupt := engine.Snapshot(21)
+	if secondInterrupt.SpeechFeed.Current == nil || secondInterrupt.SpeechFeed.Current.Text != "第二段插入" {
+		t.Fatalf("second interrupt feed=%#v", secondInterrupt.SpeechFeed)
+	}
+	if secondInterrupt.SpeechFeed.Next == nil || secondInterrupt.SpeechFeed.Next.Text != "第三段主线" || secondInterrupt.SpeechFeed.Next.Tone != SpeechToneResume {
+		t.Fatalf("interrupt next=%#v", secondInterrupt.SpeechFeed.Next)
+	}
+	if _, err := engine.PrepareResume(21, "S003"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.StartResume(21, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.CompleteResume(21); err != nil {
+		t.Fatal(err)
+	}
+	resumed := engine.Snapshot(21)
+	if resumed.SpeechFeed.Current == nil || resumed.SpeechFeed.Current.Text != "第三段主线" || resumed.SpeechFeed.Current.Tone != SpeechToneResume {
+		t.Fatalf("resume feed=%#v", resumed.SpeechFeed)
+	}
+	if resumed.SpeechFeed.Previous == nil || resumed.SpeechFeed.Previous.Text != "第二段插入" || resumed.SpeechFeed.Previous.Tone != SpeechToneInterrupt {
+		t.Fatalf("resume previous=%#v", resumed.SpeechFeed.Previous)
+	}
+}

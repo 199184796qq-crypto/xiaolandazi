@@ -210,6 +210,24 @@ CREATE TABLE IF NOT EXISTS live_strategy_center_configs (
     KEY idx_live_strategy_center_updated_by (updated_by_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_room_interaction_preferences (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    overall_interaction VARCHAR(24) NOT NULL DEFAULT 'natural',
+    question_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    welcome_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    engagement_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    chat_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    conversion_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    auto_heat TINYINT(1) NOT NULL DEFAULT 1,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, room_id),
+    KEY idx_live_room_interaction_preferences_room (room_id),
+    KEY idx_live_room_interaction_preferences_updated_by (updated_by_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_agent_profiles (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,

@@ -34,46 +34,52 @@ const (
 )
 
 type Candidate struct {
-	Source        Source `json:"source"`
-	Topic         string `json:"topic,omitempty"`
-	Question      string `json:"question,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Summary       string `json:"summary,omitempty"`
-	ReplyHint     string `json:"reply_hint,omitempty"`
-	Priority      int    `json:"priority,omitempty"`
-	EventID       int64  `json:"event_id,omitempty"`
-	UserID        string `json:"user_id,omitempty"`
-	ForceReopen   bool   `json:"force_reopen,omitempty"`
-	ManualAction  string `json:"manual_action,omitempty"`
-	ManualOrigin  string `json:"manual_origin,omitempty"`
-	ExecutionMode string `json:"execution_mode,omitempty"`
-	FixedText     string `json:"fixed_text,omitempty"`
-	TTLSeconds    int    `json:"ttl_seconds,omitempty"`
+	Source               Source `json:"source"`
+	Topic                string `json:"topic,omitempty"`
+	Question             string `json:"question,omitempty"`
+	Title                string `json:"title,omitempty"`
+	Summary              string `json:"summary,omitempty"`
+	ReplyHint            string `json:"reply_hint,omitempty"`
+	MissionKind          string `json:"mission_kind,omitempty"`
+	MissionEventCount    int    `json:"mission_event_count,omitempty"`
+	MissionWindowSeconds int    `json:"mission_window_seconds,omitempty"`
+	Priority             int    `json:"priority,omitempty"`
+	EventID              int64  `json:"event_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ForceReopen          bool   `json:"force_reopen,omitempty"`
+	ManualAction         string `json:"manual_action,omitempty"`
+	ManualOrigin         string `json:"manual_origin,omitempty"`
+	ExecutionMode        string `json:"execution_mode,omitempty"`
+	FixedText            string `json:"fixed_text,omitempty"`
+	TTLSeconds           int    `json:"ttl_seconds,omitempty"`
 }
 
 type Item struct {
-	ID              string     `json:"id"`
-	RoomID          int64      `json:"room_id"`
-	Topic           string     `json:"topic"`
-	Title           string     `json:"title"`
-	Summary         string     `json:"summary,omitempty"`
-	ReplyHint       string     `json:"reply_hint,omitempty"`
-	Priority        int        `json:"priority"`
-	Status          Status     `json:"status"`
-	Sources         []Source   `json:"sources"`
-	MergedCount     int        `json:"merged_count"`
-	SampleQuestions []string   `json:"sample_questions,omitempty"`
-	LinkedEventIDs  []int64    `json:"linked_event_ids,omitempty"`
-	UserIDs         []string   `json:"user_ids,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	LastSeenAt      time.Time  `json:"last_seen_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	ClaimedAt       *time.Time `json:"claimed_at,omitempty"`
-	ManualPromoted  bool       `json:"manual_promoted"`
-	ManualAction    string     `json:"manual_action,omitempty"`
-	ManualOrigin    string     `json:"manual_origin,omitempty"`
-	ExecutionMode   string     `json:"execution_mode,omitempty"`
-	FixedText       string     `json:"fixed_text,omitempty"`
+	ID                   string     `json:"id"`
+	RoomID               int64      `json:"room_id"`
+	Topic                string     `json:"topic"`
+	Title                string     `json:"title"`
+	Summary              string     `json:"summary,omitempty"`
+	ReplyHint            string     `json:"reply_hint,omitempty"`
+	MissionKind          string     `json:"mission_kind,omitempty"`
+	MissionEventCount    int        `json:"mission_event_count,omitempty"`
+	MissionWindowSeconds int        `json:"mission_window_seconds,omitempty"`
+	Priority             int        `json:"priority"`
+	Status               Status     `json:"status"`
+	Sources              []Source   `json:"sources"`
+	MergedCount          int        `json:"merged_count"`
+	SampleQuestions      []string   `json:"sample_questions,omitempty"`
+	LinkedEventIDs       []int64    `json:"linked_event_ids,omitempty"`
+	UserIDs              []string   `json:"user_ids,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	LastSeenAt           time.Time  `json:"last_seen_at"`
+	ExpiresAt            time.Time  `json:"expires_at"`
+	ClaimedAt            *time.Time `json:"claimed_at,omitempty"`
+	ManualPromoted       bool       `json:"manual_promoted"`
+	ManualAction         string     `json:"manual_action,omitempty"`
+	ManualOrigin         string     `json:"manual_origin,omitempty"`
+	ExecutionMode        string     `json:"execution_mode,omitempty"`
+	FixedText            string     `json:"fixed_text,omitempty"`
 }
 
 type RecentAnswer struct {
@@ -184,6 +190,13 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	input.Title = strings.TrimSpace(input.Title)
 	input.Summary = strings.TrimSpace(input.Summary)
 	input.ReplyHint = strings.TrimSpace(input.ReplyHint)
+	input.MissionKind = strings.ToLower(strings.TrimSpace(input.MissionKind))
+	if input.MissionEventCount < 0 {
+		input.MissionEventCount = 0
+	}
+	if input.MissionWindowSeconds < 0 {
+		input.MissionWindowSeconds = 0
+	}
 	input.UserID = strings.TrimSpace(input.UserID)
 	input.Topic = normalizeTopic(input.Topic, input.Question)
 	input.ManualAction = strings.ToLower(strings.TrimSpace(input.ManualAction))
@@ -262,23 +275,26 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	priority := normalizePriority(input)
 	id := fmt.Sprintf("d-%d-%d-%06d", roomID, now.UnixMilli(), q.seq.Add(1))
 	item := &Item{
-		ID:            id,
-		RoomID:        roomID,
-		Topic:         input.Topic,
-		Title:         candidateTitle(input),
-		Summary:       input.Summary,
-		ReplyHint:     input.ReplyHint,
-		Priority:      priority,
-		Status:        StatusPending,
-		Sources:       []Source{input.Source},
-		MergedCount:   1,
-		CreatedAt:     now,
-		LastSeenAt:    now,
-		ExpiresAt:     now.Add(ttl),
-		ManualAction:  input.ManualAction,
-		ManualOrigin:  input.ManualOrigin,
-		ExecutionMode: input.ExecutionMode,
-		FixedText:     input.FixedText,
+		ID:                   id,
+		RoomID:               roomID,
+		Topic:                input.Topic,
+		Title:                candidateTitle(input),
+		Summary:              input.Summary,
+		ReplyHint:            input.ReplyHint,
+		MissionKind:          input.MissionKind,
+		MissionEventCount:    input.MissionEventCount,
+		MissionWindowSeconds: input.MissionWindowSeconds,
+		Priority:             priority,
+		Status:               StatusPending,
+		Sources:              []Source{input.Source},
+		MergedCount:          1,
+		CreatedAt:            now,
+		LastSeenAt:           now,
+		ExpiresAt:            now.Add(ttl),
+		ManualAction:         input.ManualAction,
+		ManualOrigin:         input.ManualOrigin,
+		ExecutionMode:        input.ExecutionMode,
+		FixedText:            input.FixedText,
 	}
 	if input.Source == SourceManual {
 		item.ManualPromoted = true
@@ -566,6 +582,17 @@ func (q *Queue) mergeLocked(item *Item, input Candidate, now time.Time) {
 	}
 	if input.ReplyHint != "" {
 		item.ReplyHint = input.ReplyHint
+	}
+	if input.MissionKind != "" {
+		if item.MissionKind == "" {
+			item.MissionKind = input.MissionKind
+		}
+		if item.MissionKind == input.MissionKind && input.MissionEventCount > 0 {
+			item.MissionEventCount += input.MissionEventCount
+		}
+		if input.MissionWindowSeconds > item.MissionWindowSeconds {
+			item.MissionWindowSeconds = input.MissionWindowSeconds
+		}
 	}
 	if input.ManualOrigin != "" {
 		item.ManualOrigin = input.ManualOrigin
