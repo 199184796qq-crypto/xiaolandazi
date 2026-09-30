@@ -1,6 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$LocalRoot = if ($env:XIAOLAN_LOCAL_ROOT) {
+    [IO.Path]::GetFullPath($env:XIAOLAN_LOCAL_ROOT)
+} else {
+    Join-Path (Split-Path $Root -Parent) ((Split-Path $Root -Leaf) + '-local')
+}
+$BackupDir = Join-Path $LocalRoot 'backups\audio'
 $RunDir = Join-Path $Root 'data\run'
 $Task = 'LiveCompanion-Supervisor'
 $Launcher = Join-Path $Root 'scripts\run-supervisor-with-local-env.ps1'
@@ -17,7 +23,7 @@ if (@($registered.Actions | Where-Object { $_.Arguments -like ('*' + $Launcher +
     throw 'Scheduled task does not use this project launcher; refusing deployment.'
 }
 
-New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+New-Item -ItemType Directory -Force -Path $RunDir,$BackupDir | Out-Null
 $lease = [IO.File]::Open((Join-Path $RunDir 'service-deployment.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 
 function Find-OwnedProcess([string]$Path) {
@@ -74,7 +80,7 @@ function Wait-Healthy {
 try {
     $oldHash = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash
     $candidateHash = (Get-FileHash -LiteralPath $Candidate -Algorithm SHA256).Hash
-    $backup = Join-Path (Split-Path $Target) ('audio-service.backup-testwav-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    $backup = Join-Path $BackupDir ('audio-service.backup-testwav-' + [Guid]::NewGuid().ToString('N') + '.exe')
     $changed = $oldHash -ne $candidateHash
     $backupReady = $false
 
@@ -107,7 +113,7 @@ try {
 
     Write-Output 'DEPLOYED audio-service configured test WAV'
     Write-Output ('Supervisor task=' + (Get-ScheduledTask -TaskName $Task).State)
-    if ($backupReady) { Write-Output ('Audio backup=' + [IO.Path]::GetFileName($backup)) }
+    if ($backupReady) { Write-Output ('Audio backup=' + $backup) }
 } finally {
     $lease.Dispose()
 }

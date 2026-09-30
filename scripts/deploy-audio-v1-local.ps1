@@ -1,6 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$LocalRoot = if ($env:XIAOLAN_LOCAL_ROOT) {
+    [IO.Path]::GetFullPath($env:XIAOLAN_LOCAL_ROOT)
+} else {
+    Join-Path (Split-Path $Root -Parent) ((Split-Path $Root -Leaf) + '-local')
+}
+$CoreBackupDir = Join-Path $LocalRoot 'backups\core'
+$AudioBackupDir = Join-Path $LocalRoot 'backups\audio'
 $RunDir = Join-Path $Root 'data\run'
 $Task = 'LiveCompanion-Supervisor'
 $Launcher = Join-Path $Root 'scripts\run-supervisor-with-local-env.ps1'
@@ -19,7 +26,7 @@ if (@($registered.Actions | Where-Object { $_.Arguments -like ('*' + $Launcher +
     throw 'Scheduled task does not use this project launcher; refusing deployment.'
 }
 
-New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+New-Item -ItemType Directory -Force -Path $RunDir,$CoreBackupDir,$AudioBackupDir | Out-Null
 $lease = [IO.File]::Open((Join-Path $RunDir 'service-deployment.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 
 function Find-OwnedProcess([string]$Path) {
@@ -89,8 +96,8 @@ try {
     $coreChanged = $coreOldHash -ne $coreCandidateHash
     $audioChanged = $audioOldHash -ne $audioCandidateHash
 
-    $coreBackup = Join-Path (Split-Path $CoreTarget) ('core-service.backup-audio-v1-' + [Guid]::NewGuid().ToString('N') + '.exe')
-    $audioBackup = Join-Path (Split-Path $AudioTarget) ('audio-service.backup-audio-v1-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    $coreBackup = Join-Path $CoreBackupDir ('core-service.backup-audio-v1-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    $audioBackup = Join-Path $AudioBackupDir ('audio-service.backup-audio-v1-' + [Guid]::NewGuid().ToString('N') + '.exe')
     $coreBackupReady = $false
     $audioBackupReady = $false
 
@@ -140,8 +147,8 @@ try {
 
     Write-Output 'DEPLOYED audio-channel-v1: core=8081 audio=8082 receiver=5176 all healthy'
     Write-Output ('Supervisor task=' + (Get-ScheduledTask -TaskName $Task).State)
-    if ($coreBackupReady) { Write-Output ('Core backup=' + [IO.Path]::GetFileName($coreBackup)) }
-    if ($audioBackupReady) { Write-Output ('Audio backup=' + [IO.Path]::GetFileName($audioBackup)) }
+    if ($coreBackupReady) { Write-Output ('Core backup=' + $coreBackup) }
+    if ($audioBackupReady) { Write-Output ('Audio backup=' + $audioBackup) }
 } finally {
     $lease.Dispose()
 }

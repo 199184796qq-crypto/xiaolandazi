@@ -1,0 +1,79 @@
+map $http_user_agent $xiaolan_main_web_root {
+    default /opt/xiaolan/current/web-desktop;
+    ~*(Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera\ Mini|Mobile|HarmonyOS) /opt/xiaolan/current/web-customer;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name xiaolandaizi.cn www.xiaolandaizi.cn;
+    return 301 https://www.xiaolandaizi.cn$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name xiaolandaizi.cn;
+
+    ssl_certificate __MAIN_CERT__;
+    ssl_certificate_key __MAIN_KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    return 301 https://www.xiaolandaizi.cn$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name www.xiaolandaizi.cn;
+
+    ssl_certificate __MAIN_CERT__;
+    ssl_certificate_key __MAIN_KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    root $xiaolan_main_web_root;
+    index index.html;
+    client_max_body_size 100m;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    location /core-audio/ {
+        proxy_pass http://127.0.0.1:8081/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+        add_header Vary "User-Agent" always;
+    }
+
+    location / {
+        add_header Vary "User-Agent" always;
+        try_files $uri $uri/ /index.html;
+    }
+}

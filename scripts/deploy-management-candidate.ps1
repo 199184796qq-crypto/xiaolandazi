@@ -6,6 +6,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$LocalRoot = if ($env:XIAOLAN_LOCAL_ROOT) {
+  [IO.Path]::GetFullPath($env:XIAOLAN_LOCAL_ROOT)
+} else {
+  Join-Path (Split-Path $Root -Parent) ((Split-Path $Root -Leaf) + '-local')
+}
+$BackupDir = Join-Path $LocalRoot ('backups/' + $Service)
 $RunDir = Join-Path $Root 'data/run'
 $Task = 'LiveCompanion-Supervisor'
 $SupervisorExe = Join-Path $Root 'supervisor/bin/livecompanion-supervisor.exe'
@@ -37,7 +43,7 @@ $RegisteredTask = Get-ScheduledTask -TaskName $Task -ErrorAction Stop
 if (@($RegisteredTask.Actions | Where-Object { $_.Arguments -like ('*' + $Launcher + '*') }).Count -ne 1) {
   throw 'Scheduled task does not use this project launcher; refusing to change it.'
 }
-New-Item -ItemType Directory -Force $RunDir | Out-Null
+New-Item -ItemType Directory -Force $RunDir,$BackupDir | Out-Null
 # Shared, kernel-released deployment lease prevents two script invocations racing.
 $Lease = [IO.File]::Open((Join-Path $RunDir 'service-deployment.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 function Find-OwnedProcess([string]$Path) {
@@ -93,7 +99,7 @@ try {
   $OriginalHash = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash
   $CandidateHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
   if ($ExpectedCurrentSHA256 -and $OriginalHash -ne $ExpectedCurrentSHA256) { throw 'Current binary differs from caller snapshot; deployment stopped.' }
-  $Backup = Join-Path $Bin ([IO.Path]::GetFileNameWithoutExtension($Target) + '.backup-' + [Guid]::NewGuid().ToString('N') + '.exe')
+  $Backup = Join-Path $BackupDir ([IO.Path]::GetFileNameWithoutExtension($Target) + '.backup-' + [Guid]::NewGuid().ToString('N') + '.exe')
   $changed = $OriginalHash -ne $CandidateHash
   $backupReady = $false
   $writeAttempted = $false
@@ -132,6 +138,6 @@ try {
   }
   Write-Output ('DEPLOYED ' + $Service + ': health=200, supervisor owners=1')
   Write-Output ('Supervisor task=' + (Get-ScheduledTask -TaskName $Task).State)
-  if ($backupReady) { Write-Output ('Backup=' + [IO.Path]::GetFileName($Backup)) }
+  if ($backupReady) { Write-Output ('Backup=' + $Backup) }
 } finally { $Lease.Dispose() }
 

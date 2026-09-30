@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -689,7 +690,14 @@ func (r *Resolver) clearSessionCookie(w http.ResponseWriter) {
 }
 
 func (r *Resolver) secureCookie() bool {
-	return r.env != "development"
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AUTH_COOKIE_SECURE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return r.env != "development"
+	}
 }
 
 func (r *Resolver) verifyCaptcha(

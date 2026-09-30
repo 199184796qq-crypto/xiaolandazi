@@ -45,3 +45,11 @@ data/chrome-auth-check*/
 
 data/douyin-browser-profile/
 data/recordings/
+data/exports/
+
+# Local release/build artifacts belong in the sibling local workspace
+# (default: <repo-name>-local), never in Git.
+/XiaolanLiveLauncher.exe
+/collector-worker/*.tar.gz
+/暂停
+/结束
