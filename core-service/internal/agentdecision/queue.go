@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	DefaultTTL          = 2 * time.Minute
-	DefaultCooldown     = 90 * time.Second
-	DefaultCapacity     = 24
-	ManualPriority      = 100
-	QuickAnswerPriority = 120
+	DefaultTTL            = 2 * time.Minute
+	DefaultCooldown       = 90 * time.Second
+	DefaultCapacity       = 24
+	ClaimExecutionTimeout = 3 * time.Minute
+	ManualPriority        = 100
+	QuickAnswerPriority   = 120
 )
 
 type Source string
@@ -346,11 +347,20 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 
 	var dropped *Item
 	if len(state.items) > q.capacity {
-		last := state.items[len(state.items)-1]
-		copy := cloneItem(*last)
-		dropped = &copy
-		state.items = state.items[:len(state.items)-1]
-		q.addNoteLocked(state, now, "capacity_drop", fmt.Sprintf("队列已满，低优先级“%s”已抛出", last.Title))
+		dropIndex := -1
+		for index := len(state.items) - 1; index >= 0; index-- {
+			if state.items[index].Status == StatusPending {
+				dropIndex = index
+				break
+			}
+		}
+		if dropIndex >= 0 {
+			candidate := state.items[dropIndex]
+			copy := cloneItem(*candidate)
+			dropped = &copy
+			state.items = append(state.items[:dropIndex], state.items[dropIndex+1:]...)
+			q.addNoteLocked(state, now, "capacity_drop", fmt.Sprintf("队列已满，低优先级“%s”已抛出", candidate.Title))
+		}
 	}
 	if input.Source == SourceManual {
 		if input.ManualAction == "quick" {
@@ -428,19 +438,57 @@ func (q *Queue) Release(roomID int64, id string) (*Item, bool) {
 	now := q.now().UTC()
 	state := q.roomLocked(roomID)
 	q.pruneLocked(roomID, state, now)
-	for _, item := range state.items {
+	for index, item := range state.items {
 		if item.ID != id || item.Status != StatusClaimed {
+			continue
+		}
+		copy := cloneItem(*item)
+		if !now.Before(item.ExpiresAt) {
+			state.items = append(state.items[:index], state.items[index+1:]...)
+			q.addNoteLocked(state, now, "release_expired", fmt.Sprintf("“%s”执行未完成，但原任务已过期，直接抛出", item.Title))
+			return &copy, true
+		}
+		item.Status = StatusPending
+		item.ClaimedAt = nil
+		q.addNoteLocked(state, now, "release", fmt.Sprintf("“%s”执行未完成，已退回待打断队列", item.Title))
+		q.sortLocked(state)
+		copy = cloneItem(*item)
+		return &copy, true
+	}
+	return nil, false
+}
+
+// ReleaseClaimed returns all in-flight decisions to pending without extending
+// their original expires_at. Agent lifecycle changes stop consumption, not
+// task time.
+func (q *Queue) ReleaseClaimed(roomID int64) (released, dropped int) {
+	if q == nil || roomID <= 0 {
+		return 0, 0
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := q.now().UTC()
+	state := q.roomLocked(roomID)
+	kept := state.items[:0]
+	for _, item := range state.items {
+		if item.Status != StatusClaimed {
+			kept = append(kept, item)
+			continue
+		}
+		if !now.Before(item.ExpiresAt) {
+			dropped++
+			q.addNoteLocked(state, now, "agent_stop_expired", fmt.Sprintf("“%s”执行中断时已过期，自动抛出", item.Title))
 			continue
 		}
 		item.Status = StatusPending
 		item.ClaimedAt = nil
-		item.ExpiresAt = now.Add(q.ttl)
-		q.addNoteLocked(state, now, "release", fmt.Sprintf("“%s”执行未完成，已退回待打断队列", item.Title))
-		q.sortLocked(state)
-		copy := cloneItem(*item)
-		return &copy, true
+		released++
+		q.addNoteLocked(state, now, "agent_stop_release", fmt.Sprintf("“%s”执行被中断，已退回待执行队列，原到期时间不变", item.Title))
+		kept = append(kept, item)
 	}
-	return nil, false
+	state.items = kept
+	q.sortLocked(state)
+	return released, dropped
 }
 
 func (q *Queue) Remove(roomID int64, id string) (*Item, bool) {
@@ -594,6 +642,28 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 	}
 }
 
+// Sweep advances task time even when no Agent worker or UI is touching the
+// room. It is intentionally independent of Agent start/pause/stop.
+func (q *Queue) Sweep() int {
+	if q == nil {
+		return 0
+	}
+	now := q.now().UTC()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	removed := 0
+	for roomID, state := range q.rooms {
+		if state == nil {
+			delete(q.rooms, roomID)
+			continue
+		}
+		before := len(state.items)
+		q.pruneLocked(roomID, state, now)
+		removed += before - len(state.items)
+	}
+	return removed
+}
+
 func (q *Queue) ClearRoom(roomID int64) {
 	if roomID <= 0 {
 		return
@@ -724,6 +794,18 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 			if item.Status == StatusPending && !now.Before(item.ExpiresAt) {
 				q.addNoteLocked(state, now, "expired", fmt.Sprintf("“%s”等待过久已自动抛出", item.Title))
 				continue
+			}
+			if item.Status == StatusClaimed {
+				claimedAt := item.ClaimedAt
+				if claimedAt == nil || now.Sub(claimedAt.UTC()) >= ClaimExecutionTimeout {
+					if !now.Before(item.ExpiresAt) {
+						q.addNoteLocked(state, now, "claim_timeout_expired", fmt.Sprintf("“%s”执行超时且原任务已过期，自动抛出", item.Title))
+						continue
+					}
+					item.Status = StatusPending
+					item.ClaimedAt = nil
+					q.addNoteLocked(state, now, "claim_timeout_release", fmt.Sprintf("“%s”执行超时，已退回待执行队列，原到期时间不变", item.Title))
+				}
 			}
 			kept = append(kept, item)
 		}

@@ -131,14 +131,105 @@ func TestReleaseReturnsClaimedItemToPendingQueue(t *testing.T) {
 	if !ok || claimed == nil || claimed.Status != StatusClaimed {
 		t.Fatalf("claim failed: %#v", claimed)
 	}
+	originalExpiresAt := claimed.ExpiresAt
 	now = now.Add(time.Second)
 	released, ok := q.Release(1, claimed.ID)
 	if !ok || released == nil || released.Status != StatusPending || released.ClaimedAt != nil {
 		t.Fatalf("release failed: %#v", released)
 	}
+	if !released.ExpiresAt.Equal(originalExpiresAt) {
+		t.Fatalf("release must not extend task lifetime: got=%s want=%s", released.ExpiresAt, originalExpiresAt)
+	}
 	claimedAgain, ok := q.ClaimNext(1)
 	if !ok || claimedAgain == nil || claimedAgain.ID != created.ID {
 		t.Fatalf("released item should be claimable again: %#v", claimedAgain)
+	}
+}
+
+func TestClaimTimeoutReturnsTaskToPendingWithoutExtendingLifetime(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 5*time.Minute, 90*time.Second, 8)
+	created := q.Enqueue(15, Candidate{Source: SourceAgent, Topic: "Q:timeout", Question: "超时以后还执行吗", Priority: 40}).Item
+	if created == nil {
+		t.Fatal("missing decision")
+	}
+	claimed, ok := q.ClaimNext(15)
+	if !ok || claimed == nil {
+		t.Fatal("claim failed")
+	}
+	originalExpiresAt := claimed.ExpiresAt
+
+	now = now.Add(ClaimExecutionTimeout + time.Second)
+	snapshot := q.Snapshot(15)
+	if len(snapshot.Queue) != 1 {
+		t.Fatalf("expected task to remain queued: %#v", snapshot.Queue)
+	}
+	item := snapshot.Queue[0]
+	if item.Status != StatusPending || item.ClaimedAt != nil {
+		t.Fatalf("timed out claim must return to pending: %#v", item)
+	}
+	if !item.ExpiresAt.Equal(originalExpiresAt) {
+		t.Fatalf("claim timeout must not extend lifetime: got=%s want=%s", item.ExpiresAt, originalExpiresAt)
+	}
+}
+
+func TestClaimTimeoutDropsTaskWhenOriginalLifetimeAlreadyExpired(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 30*time.Second, 90*time.Second, 8)
+	created := q.Enqueue(15, Candidate{Source: SourceAgent, Topic: "Q:expired-timeout", Question: "老问题", Priority: 40}).Item
+	if created == nil {
+		t.Fatal("missing decision")
+	}
+	if _, ok := q.ClaimNext(15); !ok {
+		t.Fatal("claim failed")
+	}
+
+	now = now.Add(ClaimExecutionTimeout + time.Second)
+	if got := q.Snapshot(15).Queue; len(got) != 0 {
+		t.Fatalf("expired claimed task must be dropped after execution timeout: %#v", got)
+	}
+}
+
+func TestCapacityNeverDropsClaimedTask(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 5*time.Minute, 90*time.Second, 2)
+	low := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:low-active", Question: "低优先级执行中", Priority: 10}).Item
+	if low == nil {
+		t.Fatal("missing low-priority task")
+	}
+	claimed, ok := q.ClaimNext(1)
+	if !ok || claimed == nil || claimed.ID != low.ID {
+		t.Fatalf("claim failed: %#v", claimed)
+	}
+	q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:high-1", Question: "高优先级1", Priority: 80})
+	result := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:high-2", Question: "高优先级2", Priority: 70})
+	if result.Dropped == nil || result.Dropped.Topic != "Q:high-2" {
+		t.Fatalf("expected lowest pending task to be dropped, got %#v", result.Dropped)
+	}
+	snapshot := q.Snapshot(1)
+	foundClaimed := false
+	for _, item := range snapshot.Queue {
+		if item.ID == claimed.ID && item.Status == StatusClaimed {
+			foundClaimed = true
+		}
+	}
+	if !foundClaimed {
+		t.Fatalf("claimed task must survive capacity pressure: %#v", snapshot.Queue)
+	}
+}
+
+func TestSweepExpiresPendingWithoutRoomAccess(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 5*time.Second, 90*time.Second, 8)
+	if q.Enqueue(3, Candidate{Source: SourceAgent, Topic: "Q:sweep", Question: "过期任务"}).Item == nil {
+		t.Fatal("missing task")
+	}
+	now = now.Add(6 * time.Second)
+	if removed := q.Sweep(); removed != 1 {
+		t.Fatalf("removed=%d want 1", removed)
+	}
+	if got := q.Snapshot(3).Queue; len(got) != 0 {
+		t.Fatalf("sweep must remove expired task: %#v", got)
 	}
 }
 

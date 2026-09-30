@@ -31,12 +31,14 @@ import (
 )
 
 const (
-	defaultInterval        = 800 * time.Millisecond
-	errorBackoff           = 15 * time.Second
-	maxWorkers             = 4
-	roomExecutionTimeout   = 90 * time.Second
-	maxSpeechRunes         = 300
-	addressingNameCooldown = 5 * time.Minute
+	defaultInterval          = 800 * time.Millisecond
+	errorBackoff             = 15 * time.Second
+	maxWorkers               = 4
+	roomExecutionTimeout     = 90 * time.Second
+	missionActiveTimeout     = 3 * time.Minute
+	missionTerminalRetention = 5 * time.Minute
+	maxSpeechRunes           = 300
+	addressingNameCooldown   = 5 * time.Minute
 )
 
 type store interface {
@@ -1351,6 +1353,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 	if w.leader != nil && !w.leader.IsLeader() {
 		return
 	}
+	w.sweepMissionLifecycle(ctx)
 	sessions, err := w.store.ListRunningLiveRuntimeSessions(ctx)
 	if err != nil {
 		log.Printf("decision executor list runtime sessions: %v", err)
@@ -1386,6 +1389,31 @@ func (w *Worker) runCycle(ctx context.Context) {
 	}
 }
 
+func (w *Worker) sweepMissionLifecycle(ctx context.Context) {
+	if w == nil || w.missions == nil {
+		return
+	}
+	expired, removed := w.missions.Sweep(w.now(), missionActiveTimeout, missionTerminalRetention)
+	for _, mission := range expired {
+		if strings.TrimSpace(mission.DecisionID) == "" || mission.TenantID <= 0 || mission.RoomID <= 0 {
+			continue
+		}
+		releaseCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := w.release(releaseCtx, model.LiveRuntimeSession{
+			ID: mission.RuntimeSessionID, TenantID: mission.TenantID, RoomID: mission.RoomID,
+		}, mission.DecisionID)
+		cancel()
+		if err != nil {
+			log.Printf("decision executor expire release tenant=%d room=%d decision=%s: %v", mission.TenantID, mission.RoomID, mission.DecisionID, err)
+			continue
+		}
+		log.Printf("decision executor expired stale mission tenant=%d room=%d decision=%s mission=%s", mission.TenantID, mission.RoomID, mission.DecisionID, mission.ID)
+	}
+	if removed > 0 {
+		log.Printf("decision executor pruned terminal missions count=%d", removed)
+	}
+}
+
 type coreSpeechRuntimeSnapshot struct {
 	Interrupt struct {
 		Status         string `json:"status"`
@@ -1404,9 +1432,6 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	missions := w.missions.RoomSnapshots(session.RoomID)
 	var target *speechmission.Mission
 	for i := range missions {
-		if missions[i].RuntimeSessionID != session.ID {
-			continue
-		}
 		if missions[i].State == speechmission.StateDispatched ||
 			missions[i].State == speechmission.StateWaitingCutPoint ||
 			missions[i].State == speechmission.StateReturningMainline {
@@ -1434,12 +1459,28 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return
 	}
+	runtimeStatus := strings.ToLower(strings.TrimSpace(snapshot.Interrupt.Status))
 	runtimeMissionID := strings.TrimSpace(snapshot.Interrupt.MissionID)
+	runtimeDecisionID := strings.TrimSpace(snapshot.Interrupt.DecisionID)
+	matches := true
 	if runtimeMissionID != "" {
 		if runtimeMissionID != strings.TrimSpace(target.ID) {
-			return
+			matches = false
 		}
-	} else if strings.TrimSpace(snapshot.Interrupt.DecisionID) != strings.TrimSpace(target.DecisionID) {
+	} else if runtimeDecisionID != strings.TrimSpace(target.DecisionID) {
+		matches = false
+	}
+	if !matches {
+		// If Core is no longer running an interaction, this Management mission
+		// is stale hot state (for example after a Core restart). Release it
+		// immediately instead of blocking the room until the hard timeout.
+		if runtimeStatus == "" || runtimeStatus == "idle" || runtimeStatus == "completed" || runtimeStatus == "failed" {
+			item := &decisionItem{ID: target.DecisionID, MissionID: target.ID}
+			w.transitionMission(item, speechmission.StateExpired, "core_runtime_detached", "Core已不再持有这条互动执行，立即释放残留热状态")
+			releaseCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_ = w.release(releaseCtx, session, target.DecisionID)
+			cancel()
+		}
 		return
 	}
 	item := &decisionItem{ID: target.DecisionID, MissionID: target.ID}
@@ -1449,7 +1490,7 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 		}
 		m.Resume.BridgeText = strings.TrimSpace(snapshot.Interrupt.BridgeText)
 	})
-	switch strings.ToLower(strings.TrimSpace(snapshot.Interrupt.Status)) {
+	switch runtimeStatus {
 	case "returning":
 		w.transitionMission(item, speechmission.StateReturningMainline, "mainline_returning", "互动语音已结束，等待主线实际恢复")
 	case "completed":
@@ -1459,33 +1500,9 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	}
 }
 
-func (w *Worker) supersedeStaleRoomMissions(session model.LiveRuntimeSession) {
-	if w == nil || w.missions == nil || session.RoomID <= 0 || session.ID <= 0 {
-		return
-	}
-	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
-		if mission.RuntimeSessionID == session.ID {
-			continue
-		}
-		switch mission.State {
-		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
-			_, _ = w.missions.Transition(
-				mission.ID,
-				speechmission.StateSuperseded,
-				"runtime_session_replaced",
-				"上一场直播残留任务已被当前直播场次替代，仅保留历史审计",
-			)
-		}
-	}
-}
-
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
-	w.supersedeStaleRoomMissions(session)
 	w.reconcileRoomMission(ctx, session)
 	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
-		if mission.RuntimeSessionID != session.ID {
-			continue
-		}
 		switch mission.State {
 		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
 			// The previous interaction still owns the room until Core confirms

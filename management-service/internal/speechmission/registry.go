@@ -216,6 +216,7 @@ type Mission struct {
 	RuntimeSessionID int64           `json:"runtime_session_id,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+	StateChangedAt   time.Time       `json:"state_changed_at"`
 	PlanFrozenAt     *time.Time      `json:"plan_frozen_at,omitempty"`
 	State            State           `json:"state"`
 	Event            EventContext    `json:"event"`
@@ -258,7 +259,17 @@ func (r *Registry) Ensure(input Mission) Mission {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing := r.missions[id]; existing != nil {
-		return cloneMission(*existing)
+		if input.RuntimeSessionID > 0 {
+			existing.RuntimeSessionID = input.RuntimeSessionID
+		}
+		if !isTerminalState(existing.State) {
+			existing.UpdatedAt = now
+			return cloneMission(*existing)
+		}
+		// The same decision may be retried after a failed/released execution.
+		// Start a fresh hot execution state while keeping the decision identity.
+		input.Trace = append([]TraceEvent(nil), existing.Trace...)
+		input.Trace = append(input.Trace, TraceEvent{At: now, State: StateCreated, Action: "retry_created", Note: "同一互动任务重新进入执行尝试"})
 	}
 	input.ID = id
 	if strings.TrimSpace(input.DecisionID) == "" {
@@ -270,10 +281,14 @@ func (r *Registry) Ensure(input Mission) Mission {
 		input.CreatedAt = input.CreatedAt.UTC()
 	}
 	input.UpdatedAt = now
+	input.StateChangedAt = now
 	if input.State == "" {
 		input.State = StateCreated
 	}
-	input.Trace = append(input.Trace, TraceEvent{At: now, State: input.State, Action: "created"})
+	if len(input.Trace) == 0 || input.Trace[len(input.Trace)-1].Action != "retry_created" {
+		input.Trace = append(input.Trace, TraceEvent{At: now, State: input.State, Action: "created"})
+	}
+	input.Trace = trimTrace(input.Trace)
 	copy := cloneMission(input)
 	r.missions[id] = &copy
 	return cloneMission(copy)
@@ -302,20 +317,104 @@ func (r *Registry) Update(id string, mutate func(*Mission)) (Mission, bool) {
 
 func (r *Registry) Transition(id string, state State, action, note string) (Mission, bool) {
 	return r.Update(id, func(mission *Mission) {
-		if state != "" {
-			mission.State = state
-		}
 		now := time.Now().UTC()
+		if state != "" && state != mission.State {
+			mission.State = state
+			mission.StateChangedAt = now
+		}
+		action = strings.TrimSpace(action)
+		note = strings.TrimSpace(note)
+		if len(mission.Trace) > 0 {
+			last := mission.Trace[len(mission.Trace)-1]
+			if last.State == mission.State && last.Action == action && last.Note == note {
+				return
+			}
+		}
 		mission.Trace = append(mission.Trace, TraceEvent{
 			At:     now,
 			State:  mission.State,
-			Action: strings.TrimSpace(action),
-			Note:   strings.TrimSpace(note),
+			Action: action,
+			Note:   note,
 		})
+		mission.Trace = trimTrace(mission.Trace)
 		if mission.State == StateFailed {
-			mission.FailureReason = strings.TrimSpace(note)
+			mission.FailureReason = note
 		}
 	})
+}
+
+// Sweep bounds the in-memory mission lifecycle. Active execution states get a
+// hard timeout independent of Agent start/pause/stop; terminal states remain
+// briefly for UI/diagnostics and are then removed from hot memory.
+func (r *Registry) Sweep(now time.Time, activeTimeout, terminalRetention time.Duration) (expired []Mission, removed int) {
+	if r == nil {
+		return nil, 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if activeTimeout <= 0 {
+		activeTimeout = 3 * time.Minute
+	}
+	if terminalRetention <= 0 {
+		terminalRetention = 5 * time.Minute
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, mission := range r.missions {
+		if mission == nil {
+			delete(r.missions, id)
+			removed++
+			continue
+		}
+		stateSince := mission.StateChangedAt
+		if stateSince.IsZero() {
+			stateSince = mission.UpdatedAt
+		}
+		if stateSince.IsZero() {
+			stateSince = mission.CreatedAt
+		}
+		if isTerminalState(mission.State) {
+			if !stateSince.IsZero() && now.Sub(stateSince) >= terminalRetention {
+				delete(r.missions, id)
+				removed++
+			}
+			continue
+		}
+		if stateSince.IsZero() || now.Sub(stateSince) < activeTimeout {
+			continue
+		}
+		mission.State = StateExpired
+		mission.StateChangedAt = now
+		mission.UpdatedAt = now
+		mission.FailureReason = "execution_timeout"
+		mission.Trace = append(mission.Trace, TraceEvent{
+			At: now, State: StateExpired, Action: "execution_timeout", Note: "互动执行状态超过允许时长，自动释放热状态",
+		})
+		mission.Trace = trimTrace(mission.Trace)
+		expired = append(expired, cloneMission(*mission))
+	}
+	return expired, removed
+}
+
+func isTerminalState(state State) bool {
+	switch state {
+	case StateCompleted, StateFailed, StateCancelled, StateExpired, StateSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
+func trimTrace(trace []TraceEvent) []TraceEvent {
+	const maxTraceEvents = 64
+	if len(trace) <= maxTraceEvents {
+		return trace
+	}
+	return append([]TraceEvent(nil), trace[len(trace)-maxTraceEvents:]...)
 }
 
 func (r *Registry) Snapshot(id string) (Mission, bool) {

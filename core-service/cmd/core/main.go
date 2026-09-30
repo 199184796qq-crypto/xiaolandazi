@@ -264,6 +264,20 @@ func main() {
 		log.Printf("initialize interaction strategy stats: %v", listErr)
 	}
 	go paidAgents.Run(appCtx)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case <-ticker.C:
+				if removed := agentDecisions.Sweep(); removed > 0 {
+					log.Printf("agent decision lifecycle sweep removed=%d", removed)
+				}
+			}
+		}
+	}()
 	events.SetObserver(func(event model.RoomEvent) {
 		signal := baseEvents.Handle(event)
 		paidAgents.Handle(event, signal)

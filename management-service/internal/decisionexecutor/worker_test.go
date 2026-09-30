@@ -1023,11 +1023,11 @@ func TestReconcileRoomMissionMarksPlaybackCompleted(t *testing.T) {
 	}
 }
 
-func TestProcessRoomIgnoresBlockingMissionFromPreviousRuntimeSession(t *testing.T) {
-	core := &fakeCore{}
-	agent := &fakeAgent{}
-	tts := &fakeTTS{}
-	worker := New(readyVoiceStore(), core, agent, tts)
+func TestProcessRoomBlocksOnActiveMissionRegardlessOfRuntimeSession(t *testing.T) {
+	core := &fakeCore{
+		runtimeRaw: `{"room_id":11,"interrupt":{"status":"returning","decision_id":"old-dispatched","mission_id":"old-dispatched"}}`,
+	}
+	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
 	worker.missions.Ensure(speechmission.Mission{
 		ID:               "old-dispatched",
 		DecisionID:       "old-dispatched",
@@ -1041,15 +1041,15 @@ func TestProcessRoomIgnoresBlockingMissionFromPreviousRuntimeSession(t *testing.
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if core.dispatches != 1 {
-		t.Fatalf("dispatches=%d want 1; previous runtime mission must not block current runtime", core.dispatches)
+	if core.dispatches != 0 {
+		t.Fatalf("dispatches=%d want 0 while earlier task is still returning", core.dispatches)
 	}
-	stale, ok := worker.MissionSnapshot("old-dispatched")
+	active, ok := worker.MissionSnapshot("old-dispatched")
 	if !ok {
-		t.Fatal("stale mission snapshot missing")
+		t.Fatal("active mission snapshot missing")
 	}
-	if stale.State != speechmission.StateSuperseded {
-		t.Fatalf("stale mission state=%s want %s", stale.State, speechmission.StateSuperseded)
+	if active.State != speechmission.StateReturningMainline {
+		t.Fatalf("mission state=%s want %s", active.State, speechmission.StateReturningMainline)
 	}
 }
 
@@ -1080,6 +1080,48 @@ func TestProcessRoomKeepsCurrentRuntimeMissionBlockingUntilCompleted(t *testing.
 	}
 	if mission.State != speechmission.StateReturningMainline {
 		t.Fatalf("mission state=%s want %s", mission.State, speechmission.StateReturningMainline)
+	}
+}
+
+func TestSweepMissionLifecycleReleasesExpiredDecision(t *testing.T) {
+	core := &fakeCore{}
+	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	worker.now = func() time.Time { return now }
+	mission := worker.missions.Ensure(speechmission.Mission{
+		ID: "stale", DecisionID: "stale", TenantID: 7, RoomID: 11, RuntimeSessionID: 8, State: speechmission.StateDispatched,
+	})
+	if _, ok := worker.missions.Update(mission.ID, func(m *speechmission.Mission) {
+		m.StateChangedAt = now.Add(-missionActiveTimeout - time.Second)
+	}); !ok {
+		t.Fatal("mission update failed")
+	}
+
+	worker.sweepMissionLifecycle(context.Background())
+	if core.releases != 1 {
+		t.Fatalf("releases=%d want 1", core.releases)
+	}
+	expired, ok := worker.MissionSnapshot(mission.ID)
+	if !ok || expired.State != speechmission.StateExpired {
+		t.Fatalf("mission must be expired after sweep: %#v", expired)
+	}
+}
+
+func TestReconcileRoomMissionImmediatelyReleasesDetachedCoreState(t *testing.T) {
+	core := &fakeCore{runtimeRaw: `{"room_id":11,"interrupt":{"status":"idle"}}`}
+	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
+	mission := worker.missions.Ensure(speechmission.Mission{
+		ID: "detached", DecisionID: "detached", TenantID: 7, RoomID: 11, RuntimeSessionID: 8, State: speechmission.StateDispatched,
+	})
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	worker.reconcileRoomMission(context.Background(), session)
+	if core.releases != 1 {
+		t.Fatalf("releases=%d want 1", core.releases)
+	}
+	detached, ok := worker.MissionSnapshot(mission.ID)
+	if !ok || detached.State != speechmission.StateExpired {
+		t.Fatalf("detached mission must be expired immediately: %#v", detached)
 	}
 }
 
