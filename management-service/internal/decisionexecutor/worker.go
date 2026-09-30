@@ -1404,7 +1404,9 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	missions := w.missions.RoomSnapshots(session.RoomID)
 	var target *speechmission.Mission
 	for i := range missions {
-		if missions[i].State == speechmission.StateDispatched || missions[i].State == speechmission.StateWaitingCutPoint {
+		if missions[i].State == speechmission.StateDispatched ||
+			missions[i].State == speechmission.StateWaitingCutPoint ||
+			missions[i].State == speechmission.StateReturningMainline {
 			copy := missions[i]
 			target = &copy
 			break
@@ -1445,6 +1447,8 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 		m.Resume.BridgeText = strings.TrimSpace(snapshot.Interrupt.BridgeText)
 	})
 	switch strings.ToLower(strings.TrimSpace(snapshot.Interrupt.Status)) {
+	case "returning":
+		w.transitionMission(item, speechmission.StateReturningMainline, "mainline_returning", "互动语音已结束，等待主线实际恢复")
 	case "completed":
 		w.transitionMission(item, speechmission.StateCompleted, "playback_completed", "Core确认互动语音已经完整播放并完成主线回归")
 	case "failed":
@@ -1454,6 +1458,14 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
 	w.reconcileRoomMission(ctx, session)
+	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
+		switch mission.State {
+		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
+			// The previous interaction still owns the room until Core confirms
+			// playback and mainline return. Do not pre-generate/claim the next item.
+			return nil
+		}
+	}
 	claim, err := w.claim(ctx, session)
 	if err != nil {
 		return err

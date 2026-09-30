@@ -20,6 +20,7 @@ const (
 	StateSynthesizingTTS     State = "SYNTHESIZING_TTS"
 	StateWaitingCutPoint     State = "WAITING_CUT_POINT"
 	StateDispatched          State = "DISPATCHED"
+	StateReturningMainline   State = "RETURNING_MAINLINE"
 	StateCompleted           State = "COMPLETED"
 	StateFailed              State = "FAILED"
 	StateCancelled           State = "CANCELLED"

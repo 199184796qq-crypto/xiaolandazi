@@ -131,7 +131,7 @@ const eventListEl = ref<HTMLElement | null>(null)
 const publicScreenPanelEl = ref<HTMLElement | null>(null)
 const publicScreenHeight = ref<number | null>(null)
 const publicScreenResizing = ref(false)
-const PUBLIC_SCREEN_MIN_ROWS = 20
+const PUBLIC_SCREEN_MIN_ROWS = 10
 const PUBLIC_SCREEN_BASE_ROW_HEIGHT = 62
 const PUBLIC_SCREEN_CHROME_HEIGHT = 180
 const PUBLIC_SCREEN_MIN_HEIGHT = PUBLIC_SCREEN_MIN_ROWS * PUBLIC_SCREEN_BASE_ROW_HEIGHT + PUBLIC_SCREEN_CHROME_HEIGHT
@@ -1328,18 +1328,27 @@ const selectedQuestionTTSEligible = computed(() => {
 
 const agentDecisionQueue = computed(() => agentDecisionState.value?.queue || [])
 const agentDecisionNotes = computed(() => (agentDecisionState.value?.notes || []).slice(0, 6))
-const interactionExecutionQueue = computed(() =>
-  [...agentDecisionQueue.value]
-    .filter((item) => item.status === 'CLAIMED' || Date.parse(item.expires_at) > dashboardNow.value)
-    .sort((a, b) => {
-      const aRunning = a.status === 'CLAIMED' ? 0 : 1
-      const bRunning = b.status === 'CLAIMED' ? 0 : 1
-      if (aRunning !== bRunning) return aRunning - bRunning
-      const aTime = Date.parse(a.claimed_at || a.created_at) || 0
-      const bTime = Date.parse(b.claimed_at || b.created_at) || 0
-      return aTime - bTime
-    }),
+const interactionExecutionMissionByDecision = computed(() => {
+  const result = new Map<string, SpeechMission>()
+  for (const mission of speechMissions.value) {
+    if (mission.decision_id) result.set(mission.decision_id, mission)
+  }
+  return result
+})
+const interactionExecutionPendingTotal = computed(() =>
+  agentDecisionQueue.value.filter((item) => item.status !== 'CLAIMED' && Date.parse(item.expires_at) > dashboardNow.value).length,
 )
+const interactionExecutionQueue = computed(() => {
+  const running = agentDecisionQueue.value
+    .filter((item) => item.status === 'CLAIMED')
+    .sort((a, b) => (Date.parse(a.claimed_at || a.created_at) || 0) - (Date.parse(b.claimed_at || b.created_at) || 0))
+    .slice(0, 1)
+  const pending = agentDecisionQueue.value
+    .filter((item) => item.status !== 'CLAIMED' && Date.parse(item.expires_at) > dashboardNow.value)
+    .sort((a, b) => (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0))
+    .slice(0, 10)
+  return [...running, ...pending]
+})
 const interactionExecutionRunningCount = computed(() => interactionExecutionQueue.value.filter((item) => item.status === 'CLAIMED').length)
 const interactionExecutionPendingCount = computed(() => interactionExecutionQueue.value.filter((item) => item.status !== 'CLAIMED').length)
 
@@ -1407,8 +1416,36 @@ function interactionExecutionDetail(item: AgentDecisionItem) {
 }
 
 function interactionExecutionCountdown(item: AgentDecisionItem) {
-  if (item.status === 'CLAIMED') return '正在执行'
+  if (item.status === 'CLAIMED') return interactionExecutionStageLabel(item)
   return '放弃倒计时 ' + agentDecisionExpiryText(item.expires_at)
+}
+
+function interactionExecutionStageLabel(item: AgentDecisionItem) {
+  if (item.status !== 'CLAIMED') return '准备执行'
+  const mission = interactionExecutionMissionByDecision.value.get(item.id)
+  const state = String(mission?.state || '').toUpperCase()
+  const labels: Record<string, string> = {
+    CREATED: '准备执行',
+    PLANNING_INTERACTION: '互动决策',
+    PLANNING_INTERRUPT: '打断决策',
+    PLANNING_RESUME: '回归决策',
+    PLANNING_EXPRESSION: '表达决策',
+    GENERATING_TEXT: '生成话术',
+    VALIDATING_TEXT: '审核话术',
+    SYNTHESIZING_TTS: '生成声音',
+    WAITING_CUT_POINT: '等待切点',
+    DISPATCHED: '正在互动',
+    RETURNING_MAINLINE: '正在回归',
+    COMPLETED: '完成',
+    FAILED: '失败',
+  }
+  if (labels[state]) return labels[state]
+  if (speechRuntime.value?.interrupt?.decision_id === item.id) {
+    const status = String(speechRuntime.value.interrupt.status || '').toLowerCase()
+    if (status === 'returning') return '正在回归'
+    if (status === 'playing' || status === 'ready') return '正在互动'
+  }
+  return '正在执行'
 }
 
 async function removeInteractionExecutionItem(item: AgentDecisionItem) {
@@ -3442,6 +3479,7 @@ function speechMissionStateLabel(state?: string) {
     SYNTHESIZING_TTS: '生成声音',
     WAITING_CUT_POINT: '等待切入',
     DISPATCHED: '已下发',
+    RETURNING_MAINLINE: '正在回归',
     COMPLETED: '已完成',
     FAILED: '失败',
   }
@@ -4623,14 +4661,14 @@ onBeforeUnmount(() => {
         >
           <div class="panel-header">
             <div>
-              <span class="section-kicker">{{ publicScreenMode === 'bucket' ? 'EVENT BUCKET' : publicScreenMode === 'execution' ? 'INTERACTION EXECUTION' : publicScreenMode === 'preferences' ? 'INTERACTION PREFERENCE' : 'REALTIME' }}</span>
-              <h3>{{ publicScreenMode === 'bucket' ? '事件桶' : publicScreenMode === 'execution' ? '互动执行' : publicScreenMode === 'preferences' ? '互动偏好' : '实时公屏' }}</h3>
+              <span class="section-kicker">{{ publicScreenMode === 'bucket' ? 'EVENT AGGREGATION' : publicScreenMode === 'execution' ? 'INTERACTION EXECUTION' : publicScreenMode === 'preferences' ? 'INTERACTION PREFERENCE' : 'REALTIME' }}</span>
+              <h3>{{ publicScreenMode === 'bucket' ? '事件聚合' : publicScreenMode === 'execution' ? '互动执行' : publicScreenMode === 'preferences' ? '互动偏好' : '实时公屏' }}</h3>
             </div>
-            <span v-if="publicScreenMode !== 'preferences'" class="event-count">{{ publicScreenMode === 'bucket' ? semanticBuckets.length + ' 桶' : publicScreenMode === 'execution' ? interactionExecutionQueue.length + ' 条' : filteredEvents.length + ' 条' }}</span>
+            <span v-if="publicScreenMode !== 'preferences'" class="event-count">{{ publicScreenMode === 'bucket' ? semanticBuckets.length + ' 组' : publicScreenMode === 'execution' ? interactionExecutionQueue.length + ' 条' : filteredEvents.length + ' 条' }}</span>
           </div>
           <div class="public-screen-mode-switch" role="tablist" aria-label="公屏视图切换">
             <button type="button" :class="{ active: publicScreenMode === 'events' }" @click="publicScreenMode = 'events'">实时公屏</button>
-            <button type="button" :class="{ active: publicScreenMode === 'bucket' }" @click="publicScreenMode = 'bucket'">事件桶</button>
+            <button type="button" :class="{ active: publicScreenMode === 'bucket' }" @click="publicScreenMode = 'bucket'">事件聚合</button>
             <button type="button" :class="{ active: publicScreenMode === 'execution' }" @click="publicScreenMode = 'execution'">互动执行</button>
             <button type="button" class="mobile-preferences-tab" :class="{ active: publicScreenMode === 'preferences' }" @click="publicScreenMode = 'preferences'">互动偏好</button>
           </div>
@@ -4647,16 +4685,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="publicScreenMode === 'events'" ref="eventListEl" class="event-list" @scroll.passive="handleEventListScroll">
-          <div
-            class="public-screen-resize-handle is-middle"
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="拖动调整实时公屏高度"
-            @pointerdown="startPublicScreenResize"
-          >
-            <span class="resize-grip-lines" aria-hidden="true"></span>
-          </div>
-
             <div v-if="!filteredEvents.length" class="screen-empty">
               <div class="screen-empty-icon">⌁</div>
               <strong>等待直播间事件</strong>
@@ -4801,7 +4829,10 @@ onBeforeUnmount(() => {
             <div class="interaction-execution-summary">
               <span><b>{{ interactionExecutionRunningCount }}</b> 正在执行</span>
               <span><b>{{ interactionExecutionPendingCount }}</b> 准备执行</span>
-              <small>按进入队列先后执行 · 新任务排在下面</small>
+              <small>
+                默认展示 1 条执行中 + 10 条等待 · 新任务排在下面
+                <template v-if="interactionExecutionPendingTotal > 10"> · 另有 {{ interactionExecutionPendingTotal - 10 }} 条继续排队</template>
+              </small>
             </div>
 
             <div v-if="!interactionExecutionQueue.length" class="screen-empty compact interaction-execution-empty">
@@ -4820,7 +4851,7 @@ onBeforeUnmount(() => {
                 }"
               >
                 <div class="interaction-execution-order">
-                  <b>{{ item.status === 'CLAIMED' ? '执行中' : String(index + 1 - interactionExecutionRunningCount).padStart(2, '0') }}</b>
+                  <b>{{ item.status === 'CLAIMED' ? interactionExecutionStageLabel(item) : String(index + 1 - interactionExecutionRunningCount).padStart(2, '0') }}</b>
                 </div>
                 <div class="interaction-execution-copy">
                   <header>
@@ -4861,7 +4892,7 @@ onBeforeUnmount(() => {
             :mobile="true"
           />
           <div
-            v-if="publicScreenMode !== 'preferences'"
+            v-if="publicScreenMode === 'events'"
             class="public-screen-resize-handle"
             role="separator"
             aria-orientation="horizontal"
@@ -5140,8 +5171,8 @@ onBeforeUnmount(() => {
           >
             <div class="panel-header semantic-bucket-head">
               <div>
-                <span class="section-kicker">EVENT BUCKET</span>
-                <h3>事件桶</h3>
+                <span class="section-kicker">EVENT AGGREGATION</span>
+                <h3>事件聚合</h3>
               </div>
               <span class="semantic-bucket-count">本次采集</span>
             </div>
@@ -5326,7 +5357,7 @@ onBeforeUnmount(() => {
               class="agent-panel-resize-handle is-bottom event-bucket-resize-handle"
               role="separator"
               aria-orientation="horizontal"
-              aria-label="拖动调整事件桶高度"
+              aria-label="拖动调整事件聚合高度"
               @pointerdown="startEventBucketResize"
             >
               <span class="agent-panel-resize-lines" aria-hidden="true"></span>
@@ -6014,9 +6045,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 11px;
-  min-height: 420px;
-  max-height: 1100px;
-  overflow: hidden;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 4px 2px 10px;
 }
 .interaction-execution-summary {
@@ -6052,7 +6084,7 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 9px;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
   padding-right: 2px;
 }
 .interaction-execution-item {
@@ -6158,6 +6190,26 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 .interaction-execution-empty { min-height: 250px; }
+.room-detail-page .public-screen-panel {
+  display: flex;
+  flex-direction: column;
+}
+.room-detail-page .public-screen-panel > .event-list,
+.room-detail-page .public-screen-panel > .public-event-bucket-view,
+.room-detail-page .public-screen-panel > .interaction-execution-view {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.room-detail-page .public-screen-panel > .public-event-bucket-view {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.room-detail-page .public-screen-panel > .interaction-execution-view {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .speech-runtime-unified{display:grid;gap:13px;min-height:190px;padding:18px;border:1px solid rgba(126,151,232,.22);border-radius:16px;background:linear-gradient(180deg,rgba(24,31,49,.98),rgba(18,24,39,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
 .speech-runtime-unified .speech-mainline-live-caption{min-height:94px}
 .speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}

@@ -142,6 +142,25 @@ func TestReleaseReturnsClaimedItemToPendingQueue(t *testing.T) {
 	}
 }
 
+func TestClaimedDecisionSurvivesQueueTTL(t *testing.T) {
+	now := time.Date(2026, 9, 30, 13, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 5*time.Second, 90*time.Second, 8)
+	created := q.Enqueue(15, Candidate{Source: SourceAgent, Topic: "Q:lifecycle", Question: "互动生命周期", Priority: 40}).Item
+	if created == nil {
+		t.Fatal("missing decision")
+	}
+	claimed, ok := q.ClaimNext(15)
+	if !ok || claimed == nil || claimed.Status != StatusClaimed {
+		t.Fatalf("claim failed: %#v", claimed)
+	}
+
+	now = now.Add(30 * time.Second)
+	snapshot := q.Snapshot(15)
+	if len(snapshot.Queue) != 1 || snapshot.Queue[0].ID != claimed.ID || snapshot.Queue[0].Status != StatusClaimed {
+		t.Fatalf("claimed decision must survive waiting TTL: %#v", snapshot.Queue)
+	}
+}
+
 func TestRemoveCanRemovePendingOrClaimedDecision(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)

@@ -56,6 +56,7 @@ type audioInteractionMeta struct {
 	ReplyText            string
 	Source               string
 	AudioURL             string
+	WaitForMainline      bool
 	SkipUnits            []string
 	AnswerPinned         bool
 	ResumePinned         bool
@@ -485,7 +486,11 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 			status := speechruntime.StatusPlaying
 			switch event.Status {
 			case "COMPLETED":
-				status = speechruntime.StatusCompleted
+				if meta.WaitForMainline {
+					status = speechruntime.StatusReturning
+				} else {
+					status = speechruntime.StatusCompleted
+				}
 			case "FAILED":
 				status = speechruntime.StatusFailed
 			case "READY":
@@ -527,7 +532,11 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 			})
 		}
 		if event.Status == "COMPLETED" && s.agentDecisions != nil {
-			_, _ = s.agentDecisions.Complete(meta.RoomID, meta.DecisionID)
+			if meta.WaitForMainline {
+				s.completeInteractionAfterMainlineResume(meta.RoomID, event.SpeechTaskID, meta.DecisionID)
+			} else {
+				_, _ = s.agentDecisions.Complete(meta.RoomID, meta.DecisionID)
+			}
 		}
 		if event.Status == "FAILED" && s.agentDecisions != nil {
 			_, _ = s.agentDecisions.Release(meta.RoomID, meta.DecisionID)

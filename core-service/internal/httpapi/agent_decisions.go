@@ -239,7 +239,9 @@ func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (str
 func speechSnapshotBusy(snapshot speechruntime.Snapshot) bool {
 	// 同一直播间的插播 TTS 必须严格串行：上一条完整结束前，任何下一条
 	// （包括“抢答”）都只能继续排队，不能覆盖或截断正在播放的 TTS。
-	return snapshot.Interrupt.Status == speechruntime.StatusPlaying || snapshot.Interrupt.Status == speechruntime.StatusReady
+	return snapshot.Interrupt.Status == speechruntime.StatusPlaying ||
+		snapshot.Interrupt.Status == speechruntime.StatusReady ||
+		snapshot.Interrupt.Status == speechruntime.StatusReturning
 }
 
 func (s *Server) manualCandidateTTSEligible(ctx context.Context, tenantID, roomID int64, input agentdecision.Candidate) bool {

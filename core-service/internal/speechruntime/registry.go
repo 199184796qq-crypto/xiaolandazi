@@ -22,6 +22,7 @@ const (
 	StatusIdle      Status = "idle"
 	StatusReady     Status = "ready"
 	StatusPlaying   Status = "playing"
+	StatusReturning Status = "returning"
 	StatusPaused    Status = "paused"
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
@@ -241,7 +242,7 @@ func normalizeTrack(track Track) (Track, error) {
 
 func validStatus(status Status) bool {
 	switch status {
-	case StatusIdle, StatusReady, StatusPlaying, StatusPaused, StatusCompleted, StatusFailed:
+	case StatusIdle, StatusReady, StatusPlaying, StatusReturning, StatusPaused, StatusCompleted, StatusFailed:
 		return true
 	default:
 		return false

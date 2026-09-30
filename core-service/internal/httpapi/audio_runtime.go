@@ -12,6 +12,7 @@ import (
 
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/strategycenter"
 )
@@ -597,7 +598,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audioout.SpeechTask, decisionID string) {
+func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audioout.SpeechTask, decisionID string, waitForMainline bool) {
 	if roomID <= 0 || strings.TrimSpace(task.ID) == "" || task.DurationMS <= 0 {
 		return
 	}
@@ -624,9 +625,13 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 		if snapshot.Interrupt.Status != speechruntime.StatusPlaying && snapshot.Interrupt.Status != speechruntime.StatusReady {
 			return
 		}
+		status := speechruntime.StatusCompleted
+		if waitForMainline {
+			status = speechruntime.StatusReturning
+		}
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 			Track:          speechruntime.TrackInterrupt,
-			Status:         speechruntime.StatusCompleted,
+			Status:         status,
 			Text:           snapshot.Interrupt.Text,
 			QuestionText:   snapshot.Interrupt.QuestionText,
 			ReplyText:      snapshot.Interrupt.ReplyText,
@@ -642,10 +647,73 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 			DurationMS:     snapshot.Interrupt.DurationMS,
 			StartedAt:      snapshot.Interrupt.StartedAt,
 		})
-		if s.agentDecisions != nil && strings.TrimSpace(decisionID) != "" {
+		if strings.TrimSpace(decisionID) == "" {
+			return
+		}
+		if waitForMainline {
+			s.completeInteractionAfterMainlineResume(roomID, task.ID, decisionID)
+		} else if s.agentDecisions != nil {
 			_, _ = s.agentDecisions.Complete(roomID, decisionID)
 		}
 	})
+}
+
+func (s *Server) completeInteractionAfterMainlineResume(roomID int64, taskID, decisionID string) {
+	if roomID <= 0 || strings.TrimSpace(taskID) == "" || strings.TrimSpace(decisionID) == "" {
+		return
+	}
+	go func() {
+		deadline := time.NewTimer(30 * time.Second)
+		defer deadline.Stop()
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			if s.speechRuntime == nil || s.roomAudio == nil {
+				return
+			}
+			speech, err := s.speechRuntime.Snapshot(roomID)
+			if err != nil || speech.Interrupt.SpeechTaskID != taskID || speech.Interrupt.DecisionID != decisionID {
+				return
+			}
+			if speech.Interrupt.Status == speechruntime.StatusCompleted || speech.Interrupt.Status == speechruntime.StatusFailed {
+				return
+			}
+			engine := s.roomAudio.Snapshot(roomID)
+			if engine.Phase == roomaudio.PhaseMainline && engine.ActiveSource == roomaudio.SourceMainline {
+				_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
+					Track:          speechruntime.TrackInterrupt,
+					Status:         speechruntime.StatusCompleted,
+					Text:           speech.Interrupt.Text,
+					QuestionText:   speech.Interrupt.QuestionText,
+					ReplyText:      speech.Interrupt.ReplyText,
+					ResumeStrategy: speech.Interrupt.ResumeStrategy,
+					BridgeText:     speech.Interrupt.BridgeText,
+					BridgeUsed:     speech.Interrupt.BridgeUsed,
+					Source:         speech.Interrupt.Source,
+					AudioURL:       speech.Interrupt.AudioURL,
+					DecisionID:     speech.Interrupt.DecisionID,
+					MissionID:      speech.Interrupt.MissionID,
+					SpeechTaskID:   speech.Interrupt.SpeechTaskID,
+					SwitchAtMS:     speech.Interrupt.SwitchAtMS,
+					DurationMS:     speech.Interrupt.DurationMS,
+					StartedAt:      speech.Interrupt.StartedAt,
+				})
+				if s.agentDecisions != nil {
+					_, _ = s.agentDecisions.Complete(roomID, decisionID)
+				}
+				log.Printf("interaction lifecycle completed after mainline resume room=%d task=%s decision=%s", roomID, taskID, decisionID)
+				return
+			}
+
+			select {
+			case <-deadline.C:
+				log.Printf("interaction lifecycle still returning after timeout room=%d task=%s decision=%s phase=%s source=%s", roomID, taskID, decisionID, engine.Phase, engine.ActiveSource)
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Request) {
@@ -1019,6 +1087,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			ReplyText:            input.ReplyText,
 			Source:               source,
 			AudioURL:             input.AudioURL,
+			WaitForMainline:      !controlMode,
 		}
 		state.mu.Unlock()
 	}
@@ -1051,7 +1120,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			StartedAt:      &startedAt,
 		})
 	}
-	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID)
+	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID, !controlMode)
 	actualResumeSegmentID := ""
 	actualSkipCount := 0
 	if !controlMode && switchAtMS != nil && resumeOffsetMS != nil {

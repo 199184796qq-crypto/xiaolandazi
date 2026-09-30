@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/timeline"
 )
 
@@ -169,6 +171,68 @@ func TestPublicAudioCompletedResumesInteractionProgram(t *testing.T) {
 	if client.completedRoomID != 44 || client.completedTaskID != task.ID {
 		t.Fatalf("completion room=%d task=%q", client.completedRoomID, client.completedTaskID)
 	}
+}
+
+func TestInteractionDecisionCompletesOnlyAfterMainlineResume(t *testing.T) {
+	server := New(nil, nil, nil, nil, nil, "development", "core-secret")
+	queued := server.agentDecisions.Enqueue(44, agentdecision.Candidate{
+		Source:   agentdecision.SourceAgent,
+		Topic:    "Q:resume",
+		Question: "等待主线回归",
+		Priority: 40,
+	}).Item
+	if queued == nil {
+		t.Fatal("missing decision")
+	}
+	claimed, ok := server.agentDecisions.ClaimNext(44)
+	if !ok || claimed == nil {
+		t.Fatal("claim failed")
+	}
+
+	if _, err := server.roomAudio.StartMainline(44, "S001"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.roomAudio.PrepareInterrupt(44); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.roomAudio.StartInterrupt(44); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.roomAudio.PrepareResume(44, "S002"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.roomAudio.StartResume(44, "S002"); err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Now().UTC()
+	if _, err := server.speechRuntime.Update(44, speechruntime.UpdateInput{
+		Track:        speechruntime.TrackInterrupt,
+		Status:       speechruntime.StatusReturning,
+		DecisionID:   claimed.ID,
+		SpeechTaskID: "interaction-44-1",
+		DurationMS:   1000,
+		StartedAt:    &startedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.completeInteractionAfterMainlineResume(44, "interaction-44-1", claimed.ID)
+	time.Sleep(80 * time.Millisecond)
+	if current, exists := server.agentDecisions.Get(44, claimed.ID); !exists || current.Status != agentdecision.StatusClaimed {
+		t.Fatalf("decision completed before mainline resume: %#v exists=%t", current, exists)
+	}
+
+	if _, err := server.roomAudio.CompleteResume(44); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, exists := server.agentDecisions.Get(44, claimed.ID); !exists {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("decision still present after mainline resume completed")
 }
 
 func TestDevAudioRoundTripState(t *testing.T) {

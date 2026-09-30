@@ -718,7 +718,10 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 	if len(state.items) > 0 {
 		kept := state.items[:0]
 		for _, item := range state.items {
-			if !now.Before(item.ExpiresAt) {
+			// Queue TTL only governs waiting work. Once a decision has been
+			// claimed, its lifetime is owned by the execution state machine and it
+			// must remain visible until execution completes or explicitly releases.
+			if item.Status == StatusPending && !now.Before(item.ExpiresAt) {
 				q.addNoteLocked(state, now, "expired", fmt.Sprintf("“%s”等待过久已自动抛出", item.Title))
 				continue
 			}
