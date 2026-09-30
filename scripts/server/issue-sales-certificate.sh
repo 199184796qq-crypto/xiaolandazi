@@ -11,8 +11,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exec sudo -n bash "$0" "$DOMAIN" "$EXPECTED_IP"
 fi
 
-if ! getent ahostsv4 "$DOMAIN" | awk '{print $1}' | grep -Fxq "$EXPECTED_IP"; then
+RESOLVED_IPS="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+if ! grep -Fx "$EXPECTED_IP" <<< "$RESOLVED_IPS" >/dev/null; then
   echo "$DOMAIN does not resolve to $EXPECTED_IP yet" >&2
+  [[ -n "$RESOLVED_IPS" ]] && printf 'resolved IPv4 addresses:\n%s\n' "$RESOLVED_IPS" >&2
   exit 2
 fi
 

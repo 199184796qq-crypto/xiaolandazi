@@ -25,24 +25,30 @@ if ($Addresses -notcontains $HostName) {
 $SshCommon = @('-i', $IdentityFile, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes')
 $Remote = "$UserName@$HostName"
 $RemoteIssuer = '/tmp/xiaolan-issue-sales-certificate.sh'
+$RemoteSalesConfig = '/tmp/xiaolan-sales-http.conf'
+$InstalledSalesConfig = '/etc/nginx/conf.d/xiaolan-sales.conf'
 
 & scp @SshCommon (Join-Path $PSScriptRoot 'server\issue-sales-certificate.sh') ($Remote + ':' + $RemoteIssuer)
 if ($LASTEXITCODE -ne 0) { throw 'Sales certificate helper upload failed.' }
 
-& ssh @SshCommon $Remote "sudo -n bash $RemoteIssuer $Domain $HostName"
-if ($LASTEXITCODE -ne 0) { throw 'Sales certificate issuance failed.' }
+$CertificatePath = "/etc/letsencrypt/live/$Domain/fullchain.pem"
+& ssh @SshCommon $Remote "sudo -n test -f $CertificatePath"
+if ($LASTEXITCODE -ne 0) {
+  & ssh @SshCommon $Remote "sudo -n bash $RemoteIssuer $Domain $HostName"
+  if ($LASTEXITCODE -ne 0) { throw 'Sales certificate issuance failed.' }
+}
 
-$SalesCert = "/etc/letsencrypt/live/$Domain/fullchain.pem"
-$SalesKey = "/etc/letsencrypt/live/$Domain/privkey.pem"
+$SalesConfig = Join-Path (Split-Path $PSScriptRoot -Parent) 'deploy\nginx\xiaolan-sales-http.conf'
+& scp @SshCommon $SalesConfig ($Remote + ':' + $RemoteSalesConfig)
+if ($LASTEXITCODE -ne 0) { throw 'Sales Nginx config upload failed.' }
 
-& (Join-Path $PSScriptRoot 'install-production-routing.ps1') `
-  -MainCert '/etc/nginx/ssl/xiaolan/www.xiaolandaizi.cn.pem' `
-  -MainKey '/etc/nginx/ssl/xiaolan/www.xiaolandaizi.cn.key' `
-  -SalesCert $SalesCert `
-  -SalesKey $SalesKey `
-  -TargetConfig '/etc/nginx/sites-enabled/xiaolan' `
-  -HostName $HostName `
-  -UserName $UserName `
-  -IdentityFile $IdentityFile
+& ssh @SshCommon $Remote "sudo -n cp $RemoteSalesConfig $InstalledSalesConfig && sudo -n nginx -t && sudo -n systemctl reload nginx"
+if ($LASTEXITCODE -ne 0) { throw 'Sales HTTP site install failed.' }
+
+& ssh @SshCommon $Remote "sudo -n certbot --nginx --cert-name $Domain -d $Domain --redirect --non-interactive"
+if ($LASTEXITCODE -ne 0) { throw 'Sales HTTPS install failed.' }
+
+& (Join-Path $PSScriptRoot 'test-production.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Sales production smoke test failed.' }
 
 Write-Host "[sales] production enabled: https://$Domain"
