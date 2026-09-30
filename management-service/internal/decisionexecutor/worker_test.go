@@ -1307,6 +1307,34 @@ func TestProcessRoomReleasesClaimWhenTTSFails(t *testing.T) {
 	}
 }
 
+func TestInFlightWatchdogReleasesStaleRoomWithoutOldWorkerClearingNewLease(t *testing.T) {
+	now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
+	worker := New(readyVoiceStore(), &fakeCore{}, &fakeAgent{}, &fakeTTS{})
+	worker.now = func() time.Time { return now }
+
+	first, ok := worker.beginRoom(15)
+	if !ok {
+		t.Fatal("first room lease failed")
+	}
+	now = now.Add(inFlightWatchdog - time.Second)
+	if _, ok := worker.beginRoom(15); ok {
+		t.Fatal("room must remain blocked before watchdog deadline")
+	}
+	now = now.Add(2 * time.Second)
+	second, ok := worker.beginRoom(15)
+	if !ok || second.Equal(first) {
+		t.Fatalf("stale room lease was not replaced first=%s second=%s ok=%t", first, second, ok)
+	}
+	worker.endRoom(15, first)
+	if _, ok := worker.beginRoom(15); ok {
+		t.Fatal("old worker completion must not clear the replacement lease")
+	}
+	worker.endRoom(15, second)
+	if _, ok := worker.beginRoom(15); !ok {
+		t.Fatal("replacement lease should be releasable normally")
+	}
+}
+
 func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 	missions := speechmission.New()
 	missions.Ensure(speechmission.Mission{

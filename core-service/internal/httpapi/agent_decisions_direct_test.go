@@ -94,3 +94,17 @@ func TestManualCandidateTTSEligibleRejectsNonChatEvent(t *testing.T) {
 		t.Fatal("non-chat event must not use direct danmaku manual answer path")
 	}
 }
+
+func TestInteractionRestUntilRequiresTwoMinutesAfterCompletion(t *testing.T) {
+	completedAt := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
+	snapshot := agentdecision.Snapshot{LastCompletedAt: &completedAt}
+
+	next, resting := interactionRestUntil(snapshot, completedAt.Add(119*time.Second))
+	if !resting || !next.Equal(completedAt.Add(2*time.Minute)) {
+		t.Fatalf("next=%s resting=%t", next, resting)
+	}
+	_, resting = interactionRestUntil(snapshot, completedAt.Add(2*time.Minute))
+	if resting {
+		t.Fatal("claim must be allowed exactly at the two-minute boundary")
+	}
+}

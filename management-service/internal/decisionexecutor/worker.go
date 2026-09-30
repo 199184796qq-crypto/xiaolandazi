@@ -37,6 +37,7 @@ const (
 	roomExecutionTimeout     = 90 * time.Second
 	missionActiveTimeout     = 3 * time.Minute
 	missionTerminalRetention = 5 * time.Minute
+	inFlightWatchdog         = roomExecutionTimeout + 5*time.Second
 	maxSpeechRunes           = 300
 	addressingNameCooldown   = 5 * time.Minute
 )
@@ -86,7 +87,7 @@ type Worker struct {
 	slots    chan struct{}
 
 	mu         sync.Mutex
-	inFlight   map[int64]bool
+	inFlight   map[int64]time.Time
 	retryAfter map[int64]time.Time
 
 	addressMu   sync.Mutex
@@ -111,6 +112,7 @@ type decisionItem struct {
 	PreviewMemoryKey       string                                `json:"preview_memory_key,omitempty"`
 	PreviewMatchedMemoryID int64                                 `json:"preview_matched_memory_id,omitempty"`
 	PlannedSwitchAtMS      int                                   `json:"-"`
+	ForceAfterRest         bool                                  `json:"-"`
 	CurrentMainline        string                                `json:"-"`
 	ResumeMainline         string                                `json:"-"`
 	ResumeSegmentID        string                                `json:"-"`
@@ -1188,6 +1190,7 @@ type claimResponse struct {
 	Claimed         bool          `json:"claimed"`
 	Reason          string        `json:"reason"`
 	Item            *decisionItem `json:"item"`
+	ForceAfterRest  bool          `json:"force_after_rest"`
 	SwitchAtMS      int           `json:"switch_at_ms"`
 	CurrentMainline string        `json:"current_mainline"`
 	ResumeMainline  string        `json:"resume_mainline"`
@@ -1204,7 +1207,7 @@ func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...le
 		now:         func() time.Time { return time.Now().UTC() },
 		missions:    speechmission.New(),
 		slots:       make(chan struct{}, maxWorkers),
-		inFlight:    make(map[int64]bool),
+		inFlight:    make(map[int64]time.Time),
 		retryAfter:  make(map[int64]time.Time),
 		recentNamed: make(map[int64]map[string]time.Time),
 	}
@@ -1360,7 +1363,11 @@ func (w *Worker) runCycle(ctx context.Context) {
 		return
 	}
 	for _, session := range sessions {
-		if !strings.EqualFold(strings.TrimSpace(session.Status), "running") || !w.beginRoom(session.RoomID) {
+		if !strings.EqualFold(strings.TrimSpace(session.Status), "running") {
+			continue
+		}
+		flightStartedAt, ok := w.beginRoom(session.RoomID)
+		if !ok {
 			continue
 		}
 		select {
@@ -1368,13 +1375,13 @@ func (w *Worker) runCycle(ctx context.Context) {
 			// A global worker slot is reserved for this room until the goroutine
 			// exits. Later scheduler ticks remain free to scan other rooms.
 		default:
-			w.endRoom(session.RoomID)
+			w.endRoom(session.RoomID, flightStartedAt)
 			continue
 		}
 		session := session
 		go func() {
 			defer func() { <-w.slots }()
-			defer w.endRoom(session.RoomID)
+			defer w.endRoom(session.RoomID, flightStartedAt)
 			roomCtx, cancel := context.WithTimeout(ctx, roomExecutionTimeout)
 			defer cancel()
 			if err := w.processRoom(roomCtx, session); err != nil {
@@ -1515,6 +1522,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 	item := claim.Item
 	item.PlannedSwitchAtMS = claim.SwitchAtMS
+	item.ForceAfterRest = claim.ForceAfterRest
 	item.CurrentMainline = strings.TrimSpace(claim.CurrentMainline)
 	item.ResumeMainline = strings.TrimSpace(claim.ResumeMainline)
 	item.ResumeSegmentID = strings.TrimSpace(claim.ResumeSegmentID)
@@ -2175,6 +2183,7 @@ func (w *Worker) dispatch(
 			"humanization_kind":     item.HumanizationKind,
 			"humanization_applied":  item.HumanizationApplied,
 			"switch_at_ms":          item.PlannedSwitchAtMS,
+			"force_after_rest":      item.ForceAfterRest,
 		},
 	)
 	if err != nil {
@@ -3139,23 +3148,31 @@ func tenantQuery(tenantID int64) url.Values {
 	return query
 }
 
-func (w *Worker) beginRoom(roomID int64) bool {
+func (w *Worker) beginRoom(roomID int64) (time.Time, bool) {
 	if roomID <= 0 {
-		return false
+		return time.Time{}, false
 	}
 	now := w.now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.inFlight[roomID] || now.Before(w.retryAfter[roomID]) {
-		return false
+	if now.Before(w.retryAfter[roomID]) {
+		return time.Time{}, false
 	}
-	w.inFlight[roomID] = true
-	return true
+	if startedAt, exists := w.inFlight[roomID]; exists {
+		if now.Sub(startedAt) < inFlightWatchdog {
+			return time.Time{}, false
+		}
+		log.Printf("decision executor stale in-flight released room=%d age=%s", roomID, now.Sub(startedAt).Round(time.Second))
+	}
+	w.inFlight[roomID] = now
+	return now, true
 }
 
-func (w *Worker) endRoom(roomID int64) {
+func (w *Worker) endRoom(roomID int64, startedAt time.Time) {
 	w.mu.Lock()
-	delete(w.inFlight, roomID)
+	if current, exists := w.inFlight[roomID]; exists && current.Equal(startedAt) {
+		delete(w.inFlight, roomID)
+	}
 	w.mu.Unlock()
 }
 

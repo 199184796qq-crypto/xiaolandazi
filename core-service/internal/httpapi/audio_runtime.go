@@ -33,6 +33,7 @@ type roomAudioInteractionInput struct {
 	HumanizationKind     string `json:"humanization_kind,omitempty"`
 	HumanizationApplied  bool   `json:"humanization_applied,omitempty"`
 	SwitchAtMS           int    `json:"switch_at_ms,omitempty"`
+	ForceAfterRest       bool   `json:"force_after_rest,omitempty"`
 }
 
 func estimatedInteractionDurationMS(text string) int {
@@ -863,6 +864,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 		if cutAction == "answer" {
 			cutMS, exists = resolveRoomProgramSafeCutAfterGeneration(program, input.SwitchAtMS, currentMS)
+			if !exists && input.ForceAfterRest {
+				cutMS, exists = nextRoomProgramSafeCut(program, currentMS, 10*time.Minute)
+				if !exists && program.Task.DurationMS > currentMS {
+					cutMS = program.Task.DurationMS
+					exists = true
+				}
+				if exists {
+					log.Printf("interaction forced dispatch after rest room=%d decision=%s current_ms=%d switch_ms=%d", roomID, input.DecisionID, currentMS, cutMS)
+				}
+			}
 		} else {
 			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
 		}

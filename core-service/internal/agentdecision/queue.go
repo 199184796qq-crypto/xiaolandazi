@@ -150,6 +150,7 @@ type Summary struct {
 type Snapshot struct {
 	RoomID            int64              `json:"room_id"`
 	GeneratedAt       time.Time          `json:"generated_at"`
+	LastCompletedAt   *time.Time         `json:"last_completed_at,omitempty"`
 	Summary           Summary            `json:"summary"`
 	Queue             []Item             `json:"queue"`
 	RecentlyAnswered  []RecentAnswer     `json:"recently_answered"`
@@ -170,10 +171,11 @@ type EnqueueResult struct {
 }
 
 type roomState struct {
-	items       []*Item
-	recent      map[string]*RecentAnswer
-	notes       []Note
-	simulations []SimulationResult
+	items           []*Item
+	recent          map[string]*RecentAnswer
+	notes           []Note
+	simulations     []SimulationResult
+	lastCompletedAt time.Time
 }
 
 type Queue struct {
@@ -349,7 +351,7 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	if len(state.items) > q.capacity {
 		dropIndex := -1
 		for index := len(state.items) - 1; index >= 0; index-- {
-			if state.items[index].Status == StatusPending {
+			if state.items[index].Status == StatusPending && !isMandatoryQuick(state.items[index]) {
 				dropIndex = index
 				break
 			}
@@ -397,6 +399,7 @@ func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
 			SampleQuestions: append([]string(nil), item.SampleQuestions...),
 		}
 		state.recent[item.Topic] = recent
+		state.lastCompletedAt = now
 		state.items = append(state.items[:index], state.items[index+1:]...)
 		q.addNoteLocked(state, now, "answered", fmt.Sprintf("“%s”已回答，%d秒内同类问题先累计", item.Title, int(q.cooldown.Seconds())))
 		copy := cloneRecent(*recent)
@@ -443,7 +446,7 @@ func (q *Queue) Release(roomID int64, id string) (*Item, bool) {
 			continue
 		}
 		copy := cloneItem(*item)
-		if !now.Before(item.ExpiresAt) {
+		if !isMandatoryQuick(item) && !now.Before(item.ExpiresAt) {
 			state.items = append(state.items[:index], state.items[index+1:]...)
 			q.addNoteLocked(state, now, "release_expired", fmt.Sprintf("“%s”执行未完成，但原任务已过期，直接抛出", item.Title))
 			return &copy, true
@@ -475,7 +478,7 @@ func (q *Queue) ReleaseClaimed(roomID int64) (released, dropped int) {
 			kept = append(kept, item)
 			continue
 		}
-		if !now.Before(item.ExpiresAt) {
+		if !isMandatoryQuick(item) && !now.Before(item.ExpiresAt) {
 			dropped++
 			q.addNoteLocked(state, now, "agent_stop_expired", fmt.Sprintf("“%s”执行中断时已过期，自动抛出", item.Title))
 			continue
@@ -631,6 +634,7 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 	return Snapshot{
 		RoomID:            roomID,
 		GeneratedAt:       now,
+		LastCompletedAt:   timePtrIfSet(state.lastCompletedAt),
 		Summary:           summary,
 		Queue:             items,
 		RecentlyAnswered:  recent,
@@ -811,14 +815,14 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 			// Queue TTL only governs waiting work. Once a decision has been
 			// claimed, its lifetime is owned by the execution state machine and it
 			// must remain visible until execution completes or explicitly releases.
-			if item.Status == StatusPending && !now.Before(item.ExpiresAt) {
+			if item.Status == StatusPending && !isMandatoryQuick(item) && !now.Before(item.ExpiresAt) {
 				q.addNoteLocked(state, now, "expired", fmt.Sprintf("“%s”等待过久已自动抛出", item.Title))
 				continue
 			}
 			if item.Status == StatusClaimed {
 				claimedAt := item.ClaimedAt
 				if claimedAt == nil || now.Sub(claimedAt.UTC()) >= ClaimExecutionTimeout {
-					if !now.Before(item.ExpiresAt) {
+					if !isMandatoryQuick(item) && !now.Before(item.ExpiresAt) {
 						q.addNoteLocked(state, now, "claim_timeout_expired", fmt.Sprintf("“%s”执行超时且原任务已过期，自动抛出", item.Title))
 						continue
 					}
@@ -844,6 +848,18 @@ func (q *Queue) addNoteLocked(state *roomState, now time.Time, kind, message str
 	if len(state.notes) > 10 {
 		state.notes = state.notes[:10]
 	}
+}
+
+func isMandatoryQuick(item *Item) bool {
+	return item != nil && strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick")
+}
+
+func timePtrIfSet(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	copy := value.UTC()
+	return &copy
 }
 
 func normalizeTopic(topic, question string) string {

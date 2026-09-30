@@ -144,6 +144,50 @@ func TestQuickAnswerIsHardFirstPendingBehindClaimed(t *testing.T) {
 	}
 }
 
+func TestMandatoryQuickSurvivesTTLUntilCompletedOrRemoved(t *testing.T) {
+	now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 5*time.Second, 90*time.Second, 1)
+	quick := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:must", Question: "必须回答", ManualAction: "quick"}).Item
+	if quick == nil {
+		t.Fatal("missing quick task")
+	}
+	now = now.Add(10 * time.Minute)
+	if removed := q.Sweep(); removed != 0 {
+		t.Fatalf("mandatory quick must not expire, removed=%d", removed)
+	}
+	snapshot := q.Snapshot(1)
+	if len(snapshot.Queue) != 1 || snapshot.Queue[0].ID != quick.ID {
+		t.Fatalf("mandatory quick disappeared: %#v", snapshot.Queue)
+	}
+	second := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:must-2", Question: "第二个必须回答", ManualAction: "quick"}).Item
+	if second == nil {
+		t.Fatal("second quick missing")
+	}
+	if got := q.Snapshot(1).Queue; len(got) != 2 {
+		t.Fatalf("capacity pressure must not drop mandatory quicks: %#v", got)
+	}
+}
+
+func TestCompleteRecordsRoomLastCompletedAt(t *testing.T) {
+	now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
+	item := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:one", Question: "第一条"}).Item
+	if item == nil {
+		t.Fatal("missing task")
+	}
+	if _, ok := q.ClaimNext(1); !ok {
+		t.Fatal("claim failed")
+	}
+	now = now.Add(25 * time.Second)
+	if _, ok := q.Complete(1, item.ID); !ok {
+		t.Fatal("complete failed")
+	}
+	snapshot := q.Snapshot(1)
+	if snapshot.LastCompletedAt == nil || !snapshot.LastCompletedAt.Equal(now) {
+		t.Fatalf("last completed=%v want %s", snapshot.LastCompletedAt, now)
+	}
+}
+
 func TestCooldownStateExpiresEvenAfterAccumulatingSimilarQuestions(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
