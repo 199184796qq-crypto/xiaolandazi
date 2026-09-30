@@ -185,10 +185,35 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		}()
 	}
 	for _, tenantJobs := range byTenant {
-		jobs <- tenantJobs
+		select {
+		case jobs <- tenantJobs:
+		case <-ctx.Done():
+			close(jobs)
+			waitReconcileWorkers(ctx, &wg)
+			return
+		}
 	}
 	close(jobs)
-	wg.Wait()
+	if !waitReconcileWorkers(ctx, &wg) {
+		log.Printf("live runtime reconcile workers exceeded cycle deadline; continuing on next scheduler tick")
+	}
+}
+
+func waitReconcileWorkers(ctx context.Context, wg *sync.WaitGroup) bool {
+	if wg == nil {
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
