@@ -1404,6 +1404,9 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	missions := w.missions.RoomSnapshots(session.RoomID)
 	var target *speechmission.Mission
 	for i := range missions {
+		if missions[i].RuntimeSessionID != session.ID {
+			continue
+		}
 		if missions[i].State == speechmission.StateDispatched ||
 			missions[i].State == speechmission.StateWaitingCutPoint ||
 			missions[i].State == speechmission.StateReturningMainline {
@@ -1456,9 +1459,33 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	}
 }
 
+func (w *Worker) supersedeStaleRoomMissions(session model.LiveRuntimeSession) {
+	if w == nil || w.missions == nil || session.RoomID <= 0 || session.ID <= 0 {
+		return
+	}
+	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
+		if mission.RuntimeSessionID == session.ID {
+			continue
+		}
+		switch mission.State {
+		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
+			_, _ = w.missions.Transition(
+				mission.ID,
+				speechmission.StateSuperseded,
+				"runtime_session_replaced",
+				"上一场直播残留任务已被当前直播场次替代，仅保留历史审计",
+			)
+		}
+	}
+}
+
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
+	w.supersedeStaleRoomMissions(session)
 	w.reconcileRoomMission(ctx, session)
 	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
+		if mission.RuntimeSessionID != session.ID {
+			continue
+		}
 		switch mission.State {
 		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
 			// The previous interaction still owns the room until Core confirms

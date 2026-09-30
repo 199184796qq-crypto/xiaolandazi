@@ -1004,7 +1004,7 @@ func TestReconcileRoomMissionMarksPlaybackCompleted(t *testing.T) {
 	}
 	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
 	worker.missions.Ensure(speechmission.Mission{
-		ID: "d-done", DecisionID: "d-done", TenantID: 7, RoomID: 11, State: speechmission.StateDispatched,
+		ID: "d-done", DecisionID: "d-done", TenantID: 7, RoomID: 11, RuntimeSessionID: 9, State: speechmission.StateDispatched,
 	})
 	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
 
@@ -1020,6 +1020,66 @@ func TestReconcileRoomMissionMarksPlaybackCompleted(t *testing.T) {
 	}
 	if len(mission.Trace) < 2 || mission.Trace[len(mission.Trace)-1].Action != "playback_completed" {
 		t.Fatalf("unexpected trace=%#v", mission.Trace)
+	}
+}
+
+func TestProcessRoomIgnoresBlockingMissionFromPreviousRuntimeSession(t *testing.T) {
+	core := &fakeCore{}
+	agent := &fakeAgent{}
+	tts := &fakeTTS{}
+	worker := New(readyVoiceStore(), core, agent, tts)
+	worker.missions.Ensure(speechmission.Mission{
+		ID:               "old-dispatched",
+		DecisionID:       "old-dispatched",
+		TenantID:         7,
+		RoomID:           11,
+		RuntimeSessionID: 8,
+		State:            speechmission.StateDispatched,
+	})
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if core.dispatches != 1 {
+		t.Fatalf("dispatches=%d want 1; previous runtime mission must not block current runtime", core.dispatches)
+	}
+	stale, ok := worker.MissionSnapshot("old-dispatched")
+	if !ok {
+		t.Fatal("stale mission snapshot missing")
+	}
+	if stale.State != speechmission.StateSuperseded {
+		t.Fatalf("stale mission state=%s want %s", stale.State, speechmission.StateSuperseded)
+	}
+}
+
+func TestProcessRoomKeepsCurrentRuntimeMissionBlockingUntilCompleted(t *testing.T) {
+	core := &fakeCore{
+		runtimeRaw: `{"room_id":11,"interrupt":{"status":"returning","decision_id":"current","mission_id":"current"}}`,
+	}
+	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
+	worker.missions.Ensure(speechmission.Mission{
+		ID:               "current",
+		DecisionID:       "current",
+		TenantID:         7,
+		RoomID:           11,
+		RuntimeSessionID: 9,
+		State:            speechmission.StateDispatched,
+	})
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if core.dispatches != 0 {
+		t.Fatalf("dispatches=%d want 0 while current runtime mission is still returning", core.dispatches)
+	}
+	mission, ok := worker.MissionSnapshot("current")
+	if !ok {
+		t.Fatal("current mission snapshot missing")
+	}
+	if mission.State != speechmission.StateReturningMainline {
+		t.Fatalf("mission state=%s want %s", mission.State, speechmission.StateReturningMainline)
 	}
 }
 
