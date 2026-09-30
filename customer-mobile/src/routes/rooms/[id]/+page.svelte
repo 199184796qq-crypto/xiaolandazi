@@ -19,6 +19,7 @@
     setLiveRuntimePlan,
     startLiveRuntime,
     stopLiveRuntime,
+    transcribeRoomAgentVoice,
   } from '$lib/api';
   import {
     closeLocalFloatingAudioForDifferentRoom,
@@ -73,6 +74,11 @@
   let listening = false;
   let holdTimer: number | undefined;
   let recognition: any = null;
+  let mediaRecorder: MediaRecorder | null = null;
+  let mediaStream: MediaStream | null = null;
+  let mediaChunks: BlobPart[] = [];
+  let mediaMimeType = '';
+  let voiceTranscribing = false;
   let speechFinal = '';
   let speechInterim = '';
   let voiceText = '';
@@ -126,6 +132,10 @@
     if (eventTimer !== undefined) window.clearInterval(eventTimer);
     if (holdTimer !== undefined) window.clearTimeout(holdTimer);
     try { recognition?.stop?.(); } catch {}
+    try {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    } catch {}
+    stopMediaStreamTracks();
   });
 
   async function refreshAll(first = false) {
@@ -427,17 +437,25 @@
     }
   }
 
-  function beginAgentHold() {
+  function beginAgentHold(event?: PointerEvent) {
+    try {
+      const target = event?.currentTarget as HTMLElement | null;
+      if (target && event) target.setPointerCapture(event.pointerId);
+    } catch {}
     orbPressed = true;
     speechHint = '';
     if (holdTimer !== undefined) window.clearTimeout(holdTimer);
     holdTimer = window.setTimeout(() => {
       holdTimer = undefined;
-      beginListening();
+      void beginListening();
     }, 260);
   }
 
-  function endAgentHold() {
+  function endAgentHold(event?: PointerEvent) {
+    try {
+      const target = event?.currentTarget as HTMLElement | null;
+      if (target && event && target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+    } catch {}
     if (holdTimer !== undefined) {
       window.clearTimeout(holdTimer);
       holdTimer = undefined;
@@ -448,15 +466,125 @@
     orbPressed = false;
   }
 
-  function beginListening() {
-    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    speechFinal = '';
-    speechInterim = '';
+  function stopMediaStreamTracks() {
+    for (const track of mediaStream?.getTracks?.() || []) {
+      try { track.stop(); } catch {}
+    }
+    mediaStream = null;
+  }
+
+  function preferredRecordingMimeType() {
+    if (typeof MediaRecorder === 'undefined') return '';
+    const candidates = [
+      'audio/mp4;codecs=mp4a.40.2',
+      'audio/mp4',
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+    ];
+    return candidates.find((item) => {
+      try { return MediaRecorder.isTypeSupported(item); } catch { return false; }
+    }) || '';
+  }
+
+  function recordingFilename(mimeType: string) {
+    const normalized = mimeType.toLowerCase();
+    if (normalized.includes('mp4')) return 'voice.m4a';
+    if (normalized.includes('ogg')) return 'voice.ogg';
+    if (normalized.includes('wav')) return 'voice.wav';
+    return 'voice.webm';
+  }
+
+  async function deliverRecognizedVoice(text: string) {
+    const value = text.trim();
+    voiceText = value;
+    if (!value) {
+      voiceComposerVisible = true;
+      speechHint = speechHint || '没有听清，可以再长按一次或直接输入。';
+      return;
+    }
+    if (agentBusy) {
+      voiceComposerVisible = true;
+      speechHint = '智能体正在处理上一条，识别结果已保留，可以稍后发送。';
+      return;
+    }
+    voiceComposerVisible = false;
     voiceText = '';
+    speechHint = '';
+    await sendAgentMessage(value);
+  }
+
+  async function transcribeRecordedVoice(blob: Blob, mimeType: string) {
+    if (blob.size < 256) {
+      voiceComposerVisible = true;
+      speechHint = '录音太短，没有听清，可以再长按一次。';
+      return;
+    }
+    voiceTranscribing = true;
+    voiceComposerVisible = true;
+    speechHint = '正在把语音转换成文字…';
+    try {
+      const result = await transcribeRoomAgentVoice(roomId, blob, recordingFilename(mimeType));
+      await deliverRecognizedVoice(result.text || '');
+    } catch (err) {
+      voiceComposerVisible = true;
+      speechHint = err instanceof Error ? err.message : '语音转文字失败，请再说一次。';
+    } finally {
+      voiceTranscribing = false;
+    }
+  }
+
+  async function beginMediaRecorderListening() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') return false;
+    speechHint = '正在启用麦克风…';
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    if (!orbPressed) {
+      for (const track of stream.getTracks()) track.stop();
+      voiceComposerVisible = true;
+      speechHint = '麦克风已就绪，请重新长按说话。';
+      return true;
+    }
+    mediaStream = stream;
+    mediaChunks = [];
+    const preferredMime = preferredRecordingMimeType();
+    const recorder = preferredMime ? new MediaRecorder(stream, { mimeType: preferredMime }) : new MediaRecorder(stream);
+    mediaRecorder = recorder;
+    mediaMimeType = recorder.mimeType || preferredMime || 'audio/webm';
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) mediaChunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      listening = false;
+      voiceComposerVisible = true;
+      speechHint = '手机录音失败，请检查麦克风权限后再试。';
+      stopMediaStreamTracks();
+      mediaRecorder = null;
+    };
+    recorder.onstop = () => {
+      const chunks = mediaChunks;
+      const mimeType = mediaMimeType || recorder.mimeType || 'audio/webm';
+      mediaChunks = [];
+      listening = false;
+      mediaRecorder = null;
+      stopMediaStreamTracks();
+      const blob = new Blob(chunks, { type: mimeType });
+      void transcribeRecordedVoice(blob, mimeType);
+    };
+    recorder.start();
+    listening = true;
+    speechHint = '';
+    return true;
+  }
+
+  function beginBrowserSpeechRecognition() {
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!Recognition) {
       listening = false;
       voiceComposerVisible = true;
-      speechHint = '当前浏览器不支持语音识别，可以直接输入。';
+      speechHint = '当前手机浏览器不支持录音识别，请检查浏览器麦克风权限。';
       return;
     }
     try {
@@ -479,8 +607,9 @@
       };
       recognition.onend = () => {
         listening = false;
-        voiceText = (speechFinal + speechInterim).trim();
-        voiceComposerVisible = true;
+        const text = (speechFinal + speechInterim).trim();
+        recognition = null;
+        void deliverRecognizedVoice(text);
       };
       listening = true;
       recognition.start();
@@ -491,11 +620,40 @@
     }
   }
 
+  async function beginListening() {
+    speechFinal = '';
+    speechInterim = '';
+    voiceText = '';
+    voiceComposerVisible = false;
+    try {
+      if (await beginMediaRecorderListening()) return;
+    } catch (err: any) {
+      listening = false;
+      stopMediaStreamTracks();
+      mediaRecorder = null;
+      const name = String(err?.name || '');
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        voiceComposerVisible = true;
+        speechHint = '没有麦克风权限，请在手机浏览器设置里允许本站使用麦克风。';
+        return;
+      }
+      if (name === 'NotFoundError') {
+        voiceComposerVisible = true;
+        speechHint = '没有检测到可用麦克风。';
+        return;
+      }
+    }
+    beginBrowserSpeechRecognition();
+  }
+
   function stopListening() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      speechHint = '正在把语音转换成文字…';
+      voiceComposerVisible = true;
+      try { mediaRecorder.stop(); } catch {}
+      return;
+    }
     try { recognition?.stop?.(); } catch {}
-    listening = false;
-    voiceText = (speechFinal + speechInterim).trim();
-    voiceComposerVisible = true;
   }
 
   async function sendVoiceText() {
@@ -930,8 +1088,7 @@
   aria-label={listening ? '正在听你说话' : '长按和智能体说话'}
   on:pointerdown|preventDefault={beginAgentHold}
   on:pointerup|preventDefault={endAgentHold}
-  on:pointercancel={endAgentHold}
-  on:pointerleave={() => listening && stopListening()}
+  on:pointercancel|preventDefault={endAgentHold}
 >
   {#if listening}
     <span class="voice-ring one"></span>
@@ -944,13 +1101,15 @@
 </button>
 
 {#if listening}
-  <div class="listening-caption">松手发送语音文字</div>
+  <div class="listening-caption">松手识别并发送</div>
 {/if}
 
 {#if voiceComposerVisible}
   <form bind:this={voiceComposerEl} class="voice-floating-composer" on:submit|preventDefault={sendVoiceText}>
     <input bind:value={voiceText} placeholder={speechHint || '语音会在这里转成文字…'} aria-label="语音转文字内容" />
-    <button type="submit" disabled={!voiceText.trim() || agentBusy}>发送</button>
+    <button type="submit" disabled={voiceTranscribing || !voiceText.trim() || agentBusy}>
+      {voiceTranscribing ? '识别中…' : '发送'}
+    </button>
   </form>
 {/if}
 

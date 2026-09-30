@@ -19,7 +19,8 @@ import type {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !headers.has('Content-Type')) {
+  const isFormDataBody = typeof FormData !== 'undefined' && init?.body instanceof FormData;
+  if (init?.body !== undefined && !isFormDataBody && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -214,3 +215,12 @@ export function enqueueRoomManualAgentDecision(
 
 export const getRoomAgentDecisions = (roomId: number) =>
   request<AgentDecisionSnapshot>('/api/v1/rooms/' + roomId + '/agent-decisions');
+
+export function transcribeRoomAgentVoice(roomId: number, audio: Blob, filename: string) {
+  const form = new FormData();
+  form.append('file', audio, filename);
+  return request<{ text: string; task_id?: string }>(
+    '/api/v1/rooms/' + roomId + '/agent-voice/transcribe',
+    { method: 'POST', body: form },
+  );
+}
