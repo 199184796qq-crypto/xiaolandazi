@@ -7,7 +7,16 @@ server {
     listen 80;
     listen [::]:80;
     server_name xiaolandaizi.cn www.xiaolandaizi.cn sales.xiaolandaizi.cn;
-    return 301 https://$host$request_uri;
+
+    location = /MP_verify_GgaHeZiHbrtvaK25.txt {
+        root /opt/xiaolan/verification;
+        default_type text/plain;
+        add_header Cache-Control "no-store";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
@@ -19,7 +28,15 @@ server {
     ssl_certificate __MAIN_CERT__;
     ssl_certificate_key __MAIN_KEY__;
 
-    return 301 https://www.xiaolandaizi.cn$request_uri;
+    location = /MP_verify_GgaHeZiHbrtvaK25.txt {
+        root /opt/xiaolan/verification;
+        default_type text/plain;
+        add_header Cache-Control "no-store";
+    }
+
+    location / {
+        return 301 https://www.xiaolandaizi.cn$request_uri;
+    }
 }
 
 server {
@@ -34,6 +51,12 @@ server {
 
     root $xiaolan_main_web_root;
     index index.html;
+
+    location = /MP_verify_GgaHeZiHbrtvaK25.txt {
+        root /opt/xiaolan/verification;
+        default_type text/plain;
+        add_header Cache-Control "no-store";
+    }
 
     location /api/ {
         proxy_pass http://127.0.0.1:8080;
