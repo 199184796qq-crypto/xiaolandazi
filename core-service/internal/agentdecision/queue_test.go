@@ -99,6 +99,51 @@ func TestQuickAnswerBeatsNormalManualAndBypassesCooldown(t *testing.T) {
 	}
 }
 
+func TestQuickAnswerIsHardFirstPendingBehindClaimed(t *testing.T) {
+	now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
+
+	running := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:running", Question: "正在执行", ManualAction: "answer"}).Item
+	if running == nil {
+		t.Fatal("missing running decision")
+	}
+	claimed, ok := q.ClaimNext(1)
+	if !ok || claimed == nil || claimed.ID != running.ID {
+		t.Fatalf("claim failed: %#v", claimed)
+	}
+	now = now.Add(time.Second)
+	high := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:high", Question: "高优先级普通任务", Priority: 95}).Item
+	now = now.Add(time.Second)
+	quick := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:quick-hard", Question: "立即抢答", ManualAction: "quick"}).Item
+	if high == nil || quick == nil {
+		t.Fatal("missing pending decisions")
+	}
+
+	q.mu.Lock()
+	for _, item := range q.rooms[1].items {
+		if item.ID == high.ID {
+			item.Priority = QuickAnswerPriority + 100
+		}
+	}
+	q.sortLocked(q.rooms[1])
+	q.mu.Unlock()
+
+	items := q.Snapshot(1).Queue
+	if len(items) != 3 {
+		t.Fatalf("queue=%#v", items)
+	}
+	if items[0].ID != claimed.ID || items[0].Status != StatusClaimed {
+		t.Fatalf("claimed task must remain first: %#v", items)
+	}
+	if items[1].ID != quick.ID || items[1].ManualAction != "quick" {
+		t.Fatalf("quick must be first pending regardless of numeric priority: %#v", items)
+	}
+	next, ok := q.ClaimNext(1)
+	if !ok || next == nil || next.ID != quick.ID {
+		t.Fatalf("next claim must be quick answer: %#v", next)
+	}
+}
+
 func TestCooldownStateExpiresEvenAfterAccumulatingSimilarQuestions(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)

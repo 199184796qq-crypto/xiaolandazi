@@ -1502,14 +1502,10 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
 	w.reconcileRoomMission(ctx, session)
-	for _, mission := range w.missions.RoomSnapshots(session.RoomID) {
-		switch mission.State {
-		case speechmission.StateWaitingCutPoint, speechmission.StateDispatched, speechmission.StateReturningMainline:
-			// The previous interaction still owns the room until Core confirms
-			// playback and mainline return. Do not pre-generate/claim the next item.
-			return nil
-		}
-	}
+	// Core is the single authority for room speech occupancy. The claim API
+	// checks speech-runtime and returns speech_busy while an interaction is
+	// ready/playing/returning. SpeechMission is observation/audit state only;
+	// stale Management memory must never block the next interaction.
 	claim, err := w.claim(ctx, session)
 	if err != nil {
 		return err

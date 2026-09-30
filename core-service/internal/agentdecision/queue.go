@@ -777,10 +777,30 @@ func mergeInteractionDecision(current *InteractionDecision, next InteractionDeci
 
 func (q *Queue) sortLocked(state *roomState) {
 	sort.SliceStable(state.items, func(i, j int) bool {
-		if state.items[i].Priority != state.items[j].Priority {
-			return state.items[i].Priority > state.items[j].Priority
+		left := state.items[i]
+		right := state.items[j]
+
+		// The currently claimed interaction owns the room and must remain the
+		// first visible item. A newly arrived quick answer never preempts audio
+		// that is already playing/returning.
+		leftClaimed := left.Status == StatusClaimed
+		rightClaimed := right.Status == StatusClaimed
+		if leftClaimed != rightClaimed {
+			return leftClaimed
 		}
-		return state.items[i].CreatedAt.Before(state.items[j].CreatedAt)
+
+		// Quick answer is a business-level hard priority among waiting work. Do
+		// not rely on the numeric priority value staying larger than every future
+		// strategy priority.
+		leftQuick := left.Status == StatusPending && strings.EqualFold(strings.TrimSpace(left.ManualAction), "quick")
+		rightQuick := right.Status == StatusPending && strings.EqualFold(strings.TrimSpace(right.ManualAction), "quick")
+		if leftQuick != rightQuick {
+			return leftQuick
+		}
+		if left.Priority != right.Priority {
+			return left.Priority > right.Priority
+		}
+		return left.CreatedAt.Before(right.CreatedAt)
 	})
 }
 

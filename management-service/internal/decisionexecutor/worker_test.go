@@ -1023,11 +1023,13 @@ func TestReconcileRoomMissionMarksPlaybackCompleted(t *testing.T) {
 	}
 }
 
-func TestProcessRoomBlocksOnActiveMissionRegardlessOfRuntimeSession(t *testing.T) {
+func TestProcessRoomDoesNotLetStaleMissionBlockCoreClaim(t *testing.T) {
 	core := &fakeCore{
-		runtimeRaw: `{"room_id":11,"interrupt":{"status":"returning","decision_id":"old-dispatched","mission_id":"old-dispatched"}}`,
+		runtimeRaw: `{"room_id":11,"interrupt":{"status":"completed","decision_id":"old-dispatched","mission_id":"old-dispatched"}}`,
 	}
-	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
+	agent := &fakeAgent{}
+	tts := &fakeTTS{}
+	worker := New(readyVoiceStore(), core, agent, tts)
 	worker.missions.Ensure(speechmission.Mission{
 		ID:               "old-dispatched",
 		DecisionID:       "old-dispatched",
@@ -1041,21 +1043,22 @@ func TestProcessRoomBlocksOnActiveMissionRegardlessOfRuntimeSession(t *testing.T
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if core.dispatches != 0 {
-		t.Fatalf("dispatches=%d want 0 while earlier task is still returning", core.dispatches)
+	if core.dispatches != 1 || agent.calls != 1 || tts.calls != 1 {
+		t.Fatalf("stale mission must not block next Core claim: dispatch=%d agent=%d tts=%d", core.dispatches, agent.calls, tts.calls)
 	}
 	active, ok := worker.MissionSnapshot("old-dispatched")
 	if !ok {
-		t.Fatal("active mission snapshot missing")
+		t.Fatal("mission snapshot missing")
 	}
-	if active.State != speechmission.StateReturningMainline {
-		t.Fatalf("mission state=%s want %s", active.State, speechmission.StateReturningMainline)
+	if active.State != speechmission.StateCompleted {
+		t.Fatalf("old mission state=%s want completed", active.State)
 	}
 }
 
-func TestProcessRoomKeepsCurrentRuntimeMissionBlockingUntilCompleted(t *testing.T) {
+func TestProcessRoomReliesOnCoreSpeechBusyInsteadOfMissionLock(t *testing.T) {
 	core := &fakeCore{
 		runtimeRaw: `{"room_id":11,"interrupt":{"status":"returning","decision_id":"current","mission_id":"current"}}`,
+		claimRaw:   `{"claimed":false,"reason":"speech_busy"}`,
 	}
 	worker := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
 	worker.missions.Ensure(speechmission.Mission{
@@ -1072,7 +1075,7 @@ func TestProcessRoomKeepsCurrentRuntimeMissionBlockingUntilCompleted(t *testing.
 		t.Fatal(err)
 	}
 	if core.dispatches != 0 {
-		t.Fatalf("dispatches=%d want 0 while current runtime mission is still returning", core.dispatches)
+		t.Fatalf("dispatches=%d want 0 while Core reports speech_busy", core.dispatches)
 	}
 	mission, ok := worker.MissionSnapshot("current")
 	if !ok {
