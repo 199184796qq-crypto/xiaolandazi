@@ -18,10 +18,10 @@ type State string
 type Mode string
 type StopReason string
 
-// Management reconciles paid runtime every 10 seconds. Renewing with half of
-// the one-minute lease still available leaves several retry opportunities if
-// one DB/Core round-trip is slow.
-const LeaseRenewThresholdSeconds uint64 = 30
+// Kept for wire compatibility with older Management builds. Runtime lifetime
+// is no longer controlled by a wall-clock lease; Management owns quota and
+// sends explicit stop commands when the shared account pool is exhausted.
+const LeaseRenewThresholdSeconds uint64 = 0
 
 const (
 	StateStopped  State = "stopped"
@@ -71,7 +71,6 @@ type roomState struct {
 	stopReason   StopReason
 	accumulated  time.Duration
 	workingSince time.Time
-	leaseUntil   time.Time
 	updatedAt    time.Time
 }
 
@@ -161,9 +160,6 @@ func (r *Registry) SetWithReason(
 	}
 
 	r.accrueLocked(current, now)
-	if (state == StateStarting || state == StateWorking) && !current.leaseUntil.After(now) {
-		return Snapshot{}, errors.New("paid work lease required before working state")
-	}
 
 	if current.state == StateStopped && (state == StateStarting || state == StateWorking) {
 		current.accumulated = time.Duration(baseWorkingSeconds) * time.Second
@@ -193,7 +189,6 @@ func (r *Registry) SetWithReason(
 		current.workingSince = time.Time{}
 	case StateStopping, StateStopped:
 		current.workingSince = time.Time{}
-		current.leaseUntil = time.Time{}
 	}
 
 	return r.snapshotLocked(current, now), nil
@@ -215,11 +210,8 @@ func (r *Registry) GrantLease(roomID int64, seconds uint64) (Snapshot, error) {
 		r.rooms[roomID] = current
 	}
 	r.accrueLocked(current, now)
-	base := now
-	if current.leaseUntil.After(now) {
-		base = current.leaseUntil
-	}
-	current.leaseUntil = base.Add(time.Duration(seconds) * time.Second)
+	// Compatibility no-op. Older Management versions may still send a lease
+	// grant during rolling deployment, but leases no longer govern runtime life.
 	current.updatedAt = now
 	if current.state == StateWorking && current.workingSince.IsZero() {
 		current.workingSince = now
@@ -305,7 +297,7 @@ func (r *Registry) SetPlan(roomID, planID int64, planName string) (Snapshot, err
 		current.planName = planName
 		current.updatedAt = now
 	}
-	if current.state == StateWorking && current.workingSince.IsZero() && current.leaseUntil.After(now) {
+	if current.state == StateWorking && current.workingSince.IsZero() {
 		current.workingSince = now
 	}
 	return r.snapshotLocked(current, now), nil
@@ -340,7 +332,7 @@ func (r *Registry) TouchHotReload(roomID int64, modules []string) (Snapshot, err
 		r.rooms[roomID] = current
 	}
 	r.accrueLocked(current, now)
-	if current.state == StateWorking && current.workingSince.IsZero() && current.leaseUntil.After(now) {
+	if current.state == StateWorking && current.workingSince.IsZero() {
 		current.workingSince = now
 	}
 	current.hotRevision++
@@ -354,8 +346,8 @@ func (r *Registry) IsWorking(roomID int64) bool {
 	return r.Get(roomID).State == StateWorking
 }
 
-// StartAgent is the Core-owned paid-agent start command. A valid lease must
-// already exist; callers cannot force a working state without paid runway.
+// StartAgent starts room-local Agent work. Core intentionally does not inspect
+// account quota; Management is the account-level billing authority.
 func (r *Registry) StartAgent(roomID int64, baseWorkingSeconds uint64) (Snapshot, error) {
 	if _, err := r.SetWithReason(roomID, StateStarting, "", baseWorkingSeconds); err != nil {
 		return Snapshot{}, err
@@ -379,9 +371,7 @@ func (r *Registry) StopAgent(roomID int64, reason StopReason) (Snapshot, error) 
 	return r.SetWithReason(roomID, StateStopped, reason, current.WorkingSeconds)
 }
 
-// Snapshots returns all Core-owned paid-agent states. Reading snapshots also
-// advances lease expiry, so a Core-local watcher can clean up TTS/audio even
-// when Management or the web UI is disconnected.
+// Snapshots returns all Core-owned paid-agent states.
 func (r *Registry) Snapshots() []Snapshot {
 	now := r.now().UTC()
 	r.mu.Lock()
@@ -389,7 +379,7 @@ func (r *Registry) Snapshots() []Snapshot {
 
 	result := make([]Snapshot, 0, len(r.rooms))
 	for _, current := range r.rooms {
-		r.expireLeaseLocked(current, now)
+		r.accrueLocked(current, now)
 		result = append(result, r.snapshotLocked(current, now))
 	}
 	return result
@@ -405,70 +395,23 @@ func (r *Registry) accrueLocked(current *roomState, now time.Time) {
 	if current == nil || current.state != StateWorking {
 		return
 	}
-	if current.leaseUntil.IsZero() || current.workingSince.IsZero() {
-		current.state = StateStopped
-		current.stopReason = StopReasonSystemError
-		current.workingSince = time.Time{}
-		current.leaseUntil = time.Time{}
-		current.updatedAt = now
+	if current.workingSince.IsZero() {
+		current.workingSince = now
 		return
 	}
 	if now.Before(current.workingSince) {
 		now = current.workingSince
 	}
-	end := now
-	if !current.leaseUntil.IsZero() && end.After(current.leaseUntil) {
-		end = current.leaseUntil
+	if now.After(current.workingSince) {
+		current.accumulated += now.Sub(current.workingSince)
 	}
-	if end.After(current.workingSince) {
-		current.accumulated += end.Sub(current.workingSince)
-	}
-	current.workingSince = time.Time{}
-	if !current.leaseUntil.IsZero() && !now.Before(current.leaseUntil) {
-		current.state = StateStopped
-		current.stopReason = StopReasonQuotaExhausted
-		current.updatedAt = current.leaseUntil
-		current.leaseUntil = time.Time{}
-	}
+	current.workingSince = now
 }
 
 func (r *Registry) expireLeaseLocked(current *roomState, now time.Time) {
-	if current == nil {
-		return
-	}
-	if current.state == StateStopping {
-		current.state = StateStopped
-		if current.stopReason == "" {
-			current.stopReason = StopReasonSystemError
-		}
-		current.workingSince = time.Time{}
-		current.leaseUntil = time.Time{}
-		current.updatedAt = now
-		return
-	}
-	if current.state != StateWorking && current.state != StateStarting {
-		return
-	}
-	if current.state == StateWorking && (current.leaseUntil.IsZero() || current.workingSince.IsZero()) {
-		current.state = StateStopped
-		current.stopReason = StopReasonSystemError
-		current.workingSince = time.Time{}
-		current.leaseUntil = time.Time{}
-		current.updatedAt = now
-		return
-	}
-	if now.Before(current.leaseUntil) {
-		return
-	}
-	if current.state == StateWorking {
-		r.accrueLocked(current, now)
-		return
-	}
-	current.state = StateStopped
-	current.stopReason = StopReasonQuotaExhausted
-	current.workingSince = time.Time{}
-	current.leaseUntil = time.Time{}
-	current.updatedAt = now
+	// Backward-compatible hook retained for older callers. Lease expiry no
+	// longer owns Agent lifetime; only an explicit stop command may do that.
+	r.accrueLocked(current, now)
 }
 
 func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
@@ -489,22 +432,11 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		value := start
 		workingSince = &value
 	}
-	var leaseUntil *time.Time
 	var hotUpdatedAt *time.Time
 	if !current.hotUpdatedAt.IsZero() {
 		value := current.hotUpdatedAt
 		hotUpdatedAt = &value
 	}
-	var leaseRemaining uint64
-	if !current.leaseUntil.IsZero() && current.leaseUntil.After(now) {
-		value := current.leaseUntil
-		leaseUntil = &value
-		remaining := current.leaseUntil.Sub(now)
-		leaseRemaining = uint64((remaining + time.Second - 1) / time.Second)
-	}
-	leaseRenewalDue := current.state == StateWorking &&
-		leaseRemaining > 0 &&
-		leaseRemaining <= LeaseRenewThresholdSeconds
 	return Snapshot{
 		BootID:                r.bootID,
 		RoomID:                current.roomID,
@@ -518,9 +450,9 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		HotUpdatedAt:          hotUpdatedAt,
 		WorkingSeconds:        uint64(total / time.Second),
 		WorkingSince:          workingSince,
-		LeaseUntil:            leaseUntil,
-		LeaseRemainingSeconds: leaseRemaining,
-		LeaseRenewalDue:       leaseRenewalDue,
+		LeaseUntil:            nil,
+		LeaseRemainingSeconds: 0,
+		LeaseRenewalDue:       false,
 		UpdatedAt:             current.updatedAt,
 	}
 }

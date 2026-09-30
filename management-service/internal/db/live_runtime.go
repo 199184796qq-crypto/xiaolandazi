@@ -1961,6 +1961,61 @@ func (s *Store) StopLiveRuntimeSessionMeter(
 	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
 }
 
+// StopLiveRuntimeSessionMeterSystem closes a durable runtime from a
+// Management-owned control decision (quota exhausted, room offline, etc.)
+// while settling only the cumulative work Core actually reported. It is the
+// system counterpart of StopLiveRuntimeSessionMeter and deliberately carries
+// no user actor.
+func (s *Store) StopLiveRuntimeSessionMeterSystem(
+	ctx context.Context,
+	sessionID int64,
+	reason string,
+	coreWorkingSeconds uint64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	if sessionID <= 0 {
+		return model.LiveRuntimeSession{}, errors.New("invalid runtime session")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "system_stop"
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockLiveRuntimeSession(ctx, tx, sessionID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	switch session.Status {
+	case "stopped":
+		if err := tx.Commit(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		return session, nil
+	case "paused":
+		session, err = stopPausedLiveRuntimeTx(ctx, tx, session, now, reason, nil)
+	case "running":
+		session, err = settleLiveRuntimeMeterTx(
+			ctx, tx, session, coreWorkingSeconds, false, now, reason, nil,
+		)
+	default:
+		err = fmt.Errorf("unsupported runtime session status %q", session.Status)
+	}
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
+}
+
 func stopPausedLiveRuntimeTx(
 	ctx context.Context,
 	tx *sql.Tx,

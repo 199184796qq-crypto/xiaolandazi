@@ -24,10 +24,11 @@ type Reconciler struct {
 	audit interface {
 		Record(context.Context, model.AdminAuditLog) error
 	}
-	leader    interface{ IsLeader() bool }
-	interval  time.Duration
-	workers   int
-	batchSize int
+	leader                 interface{ IsLeader() bool }
+	interval               time.Duration
+	workers                int
+	batchSize              int
+	legacyLeaseCleanupDone bool
 }
 
 type coreRoomState struct {
@@ -138,6 +139,17 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	if r.leader != nil && !r.leader.IsLeader() {
 		return
 	}
+	if !r.legacyLeaseCleanupDone {
+		count, err := r.store.CancelAllLegacyLiveQuotaLeases(ctx, time.Now().UTC())
+		if err != nil {
+			log.Printf("billing manager legacy lease cleanup: %v", err)
+			return
+		}
+		r.legacyLeaseCleanupDone = true
+		if count > 0 {
+			log.Printf("billing manager released legacy lease registrations sessions=%d", count)
+		}
+	}
 	sessions, err := r.store.ListRunningLiveRuntimeSessions(ctx)
 	if err != nil {
 		log.Printf("live runtime list sessions: %v", err)
@@ -216,77 +228,95 @@ func waitReconcileWorkers(ctx context.Context, wg *sync.WaitGroup) bool {
 	}
 }
 
+// reconcileTenant is the account-level billing manager. The durable
+// live_runtime_sessions rows are the registration table: running means the
+// room is registered for metering, paused/stopped means it is not. Core only
+// reports cumulative working_seconds; it never decides account quota itself.
 func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 	if len(jobs) == 0 {
 		return
 	}
 	now := time.Now().UTC()
 	tenantID := jobs[0].Session.TenantID
-	requests := make([]appdb.LiveQuotaLeaseRequest, 0, len(jobs))
-	requestJobs := make(map[int64]reconcileJob)
 
-	for _, job := range jobs {
+	remaining, err := r.store.GetQuotaRemainingSeconds(ctx, tenantID)
+	if err != nil {
+		log.Printf("billing manager quota read tenant=%d: %v", tenantID, err)
+		return
+	}
+	if remaining == 0 {
+		r.stopTenantForQuota(ctx, tenantID, jobs, now)
+		return
+	}
+
+	quotaExhausted := false
+	for i := range jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		job := jobs[i]
 		session := job.Session
+
 		if !job.StateOK {
-			// Missing Core proof never becomes billable wall-clock time. Confirm a
-			// genuinely deleted room before cleaning the durable zombie session;
-			// transient batch/read failures must not mutate business state.
+			// A transient Core read failure is not a billing or stop decision. Only
+			// clean a durable registration after confirming the room is truly gone.
 			if now.Sub(session.StartedAt) < liveRuntimeStartGracePeriod {
 				continue
 			}
 			exists, existsErr := r.coreRoomExists(ctx, session.TenantID, session.RoomID)
 			if existsErr != nil {
-				log.Printf("confirm missing core room tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, existsErr)
+				log.Printf("billing manager confirm room tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, existsErr)
 				continue
 			}
 			if exists {
-				log.Printf("live runtime core state missing tenant=%d room=%d", session.TenantID, session.RoomID)
 				continue
 			}
 			if _, err := r.store.AbortLiveRuntimeSession(ctx, session.ID, "room_missing", now); err != nil {
-				log.Printf("cleanup missing-room runtime session=%d tenant=%d room=%d: %v", session.ID, session.TenantID, session.RoomID, err)
+				log.Printf("billing manager cleanup missing room session=%d: %v", session.ID, err)
 			} else {
-				log.Printf("cleaned missing-room runtime session=%d tenant=%d room=%d", session.ID, session.TenantID, session.RoomID)
 				r.recordSystemAudit(ctx, session, "room.runtime.cleanup_missing", "room_missing", "", 0)
 			}
 			continue
 		}
-		roomLive := job.State.Status == "live"
-		if roomLive && job.State.SessionResumePending {
-			_, _ = r.store.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, job.State.CoreBootID, job.State.AgentWorkingSeconds, true, false, now)
-			continue
-		}
-		if !roomLive && job.State.AgentState == "working" {
-			// The collector/session_end path inside Core owns live-finished stops.
-			// Do not race it from Management and do not renew this room.
-			continue
-		}
+
 		if session.Status == "paused" {
-			if job.State.AgentState == "stopped" {
-				_, _ = r.store.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, job.State.CoreBootID, job.State.AgentWorkingSeconds, true, true, now)
-			}
+			// Paused == unregistered from active consumption. Resume changes the
+			// durable row back to running and it automatically re-enters this loop.
 			continue
 		}
 		if session.Status != "running" {
 			continue
 		}
 
-		if job.State.AgentState != "working" {
-			// StartLiveRuntimeSession is committed before policy snapshot + quota lease
-			// + Core activation finish. A batch snapshot taken in that small window is
-			// stale by the time this worker runs. Never kill a brand-new session from
-			// that stale observation.
-			if now.Sub(session.StartedAt) < liveRuntimeStartGracePeriod {
+		roomLive := strings.EqualFold(strings.TrimSpace(job.State.Status), "live")
+		if !roomLive {
+			stopped, stopErr := r.stopCoreAgentRuntime(ctx, tenantID, session.RoomID, "live_finished")
+			if stopErr != nil {
+				log.Printf("billing manager stop offline room tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, stopErr)
 				continue
 			}
+			finalSeconds := job.State.AgentWorkingSeconds
+			if stopped.WorkingSeconds > finalSeconds {
+				finalSeconds = stopped.WorkingSeconds
+			}
+			if _, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, "room_offline", finalSeconds, now); err != nil {
+				log.Printf("billing manager settle offline room tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+				continue
+			}
+			r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", "room_offline", stopped.BootID, finalSeconds)
+			continue
+		}
 
-			// Batch state can also become stale while tenant jobs wait in the worker
-			// queue. Confirm the single-room paid runtime immediately before treating
-			// Core as stopped. If confirmation fails, fail closed on billing but keep
-			// the durable session for the next reconcile tick.
-			fresh, freshErr := r.getCoreAgentRuntime(ctx, session.TenantID, session.RoomID)
+		if job.State.SessionResumePending {
+			// The live-session identity is unresolved; do not invent paid usage
+			// until the operator chooses merge/fresh semantics.
+			continue
+		}
+
+		if job.State.AgentState != "working" {
+			fresh, freshErr := r.getCoreAgentRuntime(ctx, tenantID, session.RoomID)
 			if freshErr != nil {
-				log.Printf("confirm stopped core agent tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, freshErr)
+				log.Printf("billing manager confirm agent tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, freshErr)
 				continue
 			}
 			if fresh.State == "working" {
@@ -294,110 +324,59 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 				job.State.AgentState = fresh.State
 				job.State.AgentStopReason = fresh.StopReason
 				job.State.AgentWorkingSeconds = fresh.WorkingSeconds
-				job.State.AgentLeaseRemainingSeconds = fresh.LeaseRemainingSeconds
-				job.State.AgentLeaseUntil = fresh.LeaseUntil
 			} else if fresh.State == "starting" {
-				// Starting is Core-owned and may still legitimately become working.
-				// Leave the durable session untouched until the next observation.
 				continue
 			} else {
-				// Core has already made the stop decision. Management only settles the
-				// durable quota record and closes the matching session. A stopping
-				// state is also recoverable here so a Management crash cannot strand a
-				// room forever between stopping and stopped.
 				reason, authoritative := authoritativeCoreStopReason(fresh)
 				if !authoritative {
-					// An empty stop reason is not authoritative proof that Core
-					// intentionally stopped paid work. Treat it as a transient/default
-					// snapshot and retry on the next reconciliation cycle instead of
-					// inventing core_restart and killing a still-running session.
-					log.Printf(
-						"ignore unproven stopped core agent tenant=%d room=%d session=%d boot=%s state=%q working_seconds=%d lease_remaining=%d",
-						session.TenantID,
-						session.RoomID,
-						session.ID,
-						fresh.BootID,
-						fresh.State,
-						fresh.WorkingSeconds,
-						fresh.LeaseRemainingSeconds,
-					)
 					continue
 				}
-				normalCompletion := reason == "quota_exhausted" || reason == "live_finished" || reason == "manual"
-				_, _ = r.store.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, fresh.BootID, fresh.WorkingSeconds, normalCompletion, normalCompletion, now)
-				if _, err := r.store.AbortLiveRuntimeSession(ctx, session.ID, reason, now); err != nil {
-					log.Printf("abort stopped paid runtime session=%d tenant=%d room=%d: %v", session.ID, session.TenantID, session.RoomID, err)
-				} else {
-					r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", reason, fresh.BootID, fresh.WorkingSeconds)
+				if _, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, reason, fresh.WorkingSeconds, now); err != nil {
+					log.Printf("billing manager finalize stopped agent tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+					continue
 				}
+				r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", reason, fresh.BootID, fresh.WorkingSeconds)
 				continue
 			}
 		}
 
-		if _, err := r.store.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, job.State.CoreBootID, job.State.AgentWorkingSeconds, false, true, now); err != nil {
-			log.Printf("live lease reconcile session=%d: %v", session.ID, err)
+		metered, meterErr := r.store.ReconcileLiveRuntimeMeter(
+			ctx,
+			session.ID,
+			true,
+			job.State.AgentWorkingSeconds,
+			now,
+		)
+		if meterErr != nil {
+			log.Printf("billing manager meter tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, meterErr)
 			continue
 		}
-		if !job.State.AgentLeaseRenewalDue {
-			continue
-		}
-		runway, err := r.store.LiveQuotaLeaseRunway(ctx, session.TenantID, session.ID, job.State.CoreBootID, job.State.AgentWorkingSeconds)
-		if err != nil {
-			log.Printf("live lease runway session=%d: %v", session.ID, err)
-			continue
-		}
-		request := appdb.LiveQuotaLeaseRequest{
-			RoomID:                  session.RoomID,
-			RuntimeSessionID:        session.ID,
-			CoreBootID:              job.State.CoreBootID,
-			CoreWorkingStartSeconds: job.State.AgentWorkingSeconds + runway,
-			RequestedSeconds:        appdb.LiveQuotaLeaseSeconds,
-		}
-		requests = append(requests, request)
-		requestJobs[session.ID] = job
-	}
-
-	if len(requests) == 0 {
-		return
-	}
-	grants, err := r.store.AllocateLiveQuotaLeases(ctx, tenantID, requests, now)
-	if err != nil {
-		log.Printf("tenant live quota schedule tenant=%d: %v", tenantID, err)
-		return
-	}
-	granted := make(map[int64]uint64, len(grants))
-	for _, grant := range grants {
-		granted[grant.RuntimeSessionID] += grant.AllocatedSeconds
-		job, ok := requestJobs[grant.RuntimeSessionID]
-		if !ok {
-			continue
-		}
-		if err := r.grantCoreAgentLease(ctx, tenantID, grant.RoomID, grant.AllocatedSeconds); err != nil {
-			log.Printf("grant core lease tenant=%d room=%d session=%d: %v", tenantID, grant.RoomID, grant.RuntimeSessionID, err)
-			_, _ = r.store.ReconcileLiveQuotaLeases(ctx, tenantID, grant.RuntimeSessionID, job.State.CoreBootID, job.State.AgentWorkingSeconds, true, false, now)
-			// Keep the durable session open. Core remains authoritative and will
-			// either receive a later lease retry or stop itself when its current
-			// lease expires. Closing the session here can create a second session
-			// while the old Core runtime is still working.
-		} else {
+		if metered.TotalBilledSeconds != session.TotalBilledSeconds {
 			log.Printf(
-				"live lease renewed tenant=%d room=%d session=%d seconds=%d previous_remaining=%d",
+				"billing manager usage tenant=%d room=%d session=%d working=%d billed=%d delta=%d",
 				tenantID,
-				grant.RoomID,
-				grant.RuntimeSessionID,
-				grant.AllocatedSeconds,
-				job.State.AgentLeaseRemainingSeconds,
+				session.RoomID,
+				session.ID,
+				job.State.AgentWorkingSeconds,
+				metered.TotalBilledSeconds,
+				metered.TotalBilledSeconds-session.TotalBilledSeconds,
 			)
 		}
-	}
-	for _, request := range requests {
-		if granted[request.RuntimeSessionID] > 0 {
-			continue
+		if metered.Status == "stopped" && strings.EqualFold(metered.StopReason, "quota_exhausted") {
+			quotaExhausted = true
 		}
-		// The scheduler only reports that no further lease can be granted. Core
-		// owns the actual stop at lease expiry; the next state observation will
-		// settle and close the durable session with quota_exhausted.
-		log.Printf("live quota exhausted; waiting for Core lease expiry tenant=%d room=%d session=%d", tenantID, request.RoomID, request.RuntimeSessionID)
+	}
+
+	if !quotaExhausted {
+		remaining, err = r.store.GetQuotaRemainingSeconds(ctx, tenantID)
+		if err != nil {
+			log.Printf("billing manager quota recheck tenant=%d: %v", tenantID, err)
+			return
+		}
+		quotaExhausted = remaining == 0
+	}
+	if quotaExhausted {
+		r.stopTenantForQuota(ctx, tenantID, jobs, now)
 	}
 }
 
@@ -411,6 +390,56 @@ func authoritativeCoreStopReason(state coreAgentRuntimeState) (string, bool) {
 		return "", false
 	}
 	return reason, true
+}
+
+func (r *Reconciler) stopTenantForQuota(
+	ctx context.Context,
+	tenantID int64,
+	jobs []reconcileJob,
+	now time.Time,
+) {
+	log.Printf("billing manager quota exhausted tenant=%d active_rooms=%d; stopping registered agents", tenantID, len(jobs))
+	for _, job := range jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		session := job.Session
+		if session.Status != "running" {
+			continue
+		}
+
+		stopped, err := r.stopCoreAgentRuntime(ctx, tenantID, session.RoomID, "quota_exhausted")
+		if err != nil {
+			// Keep the durable registration open so the next billing cycle retries
+			// the explicit stop instead of pretending the room has stopped.
+			log.Printf("billing manager quota stop tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+			continue
+		}
+		finalSeconds := job.State.AgentWorkingSeconds
+		if stopped.WorkingSeconds > finalSeconds {
+			finalSeconds = stopped.WorkingSeconds
+		}
+		closed, err := r.store.StopLiveRuntimeSessionMeterSystem(
+			ctx,
+			session.ID,
+			"quota_exhausted",
+			finalSeconds,
+			now,
+		)
+		if err != nil {
+			log.Printf("billing manager quota settle tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+			continue
+		}
+		log.Printf(
+			"billing manager unregistered tenant=%d room=%d session=%d reason=quota_exhausted working=%d billed=%d",
+			tenantID,
+			session.RoomID,
+			session.ID,
+			finalSeconds,
+			closed.TotalBilledSeconds,
+		)
+		r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", "quota_exhausted", stopped.BootID, finalSeconds)
+	}
 }
 
 func (r *Reconciler) recordSystemAudit(
@@ -596,27 +625,35 @@ func (r *Reconciler) coreRoomName(
 	return room.Name, nil
 }
 
-func (r *Reconciler) grantCoreAgentLease(
+func (r *Reconciler) stopCoreAgentRuntime(
 	ctx context.Context,
 	tenantID, roomID int64,
-	leaseSeconds uint64,
-) error {
-	if leaseSeconds == 0 {
-		return nil
-	}
+	reason string,
+) (coreAgentRuntimeState, error) {
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 	resp, err := r.core.DoRoom(
-		ctx, tenantID, roomID, http.MethodPut,
+		ctx,
+		tenantID,
+		roomID,
+		http.MethodPut,
 		fmt.Sprintf("/internal/v1/rooms/%d/agent-runtime", roomID),
-		query, map[string]any{"lease_seconds": leaseSeconds},
+		query,
+		map[string]any{
+			"command":     "stop",
+			"stop_reason": strings.TrimSpace(reason),
+		},
 	)
 	if err != nil {
-		return err
+		return coreAgentRuntimeState{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("core agent lease status %d", resp.StatusCode)
+		return coreAgentRuntimeState{}, fmt.Errorf("core agent stop status %d", resp.StatusCode)
 	}
-	return nil
+	var state coreAgentRuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return coreAgentRuntimeState{}, err
+	}
+	return state, nil
 }

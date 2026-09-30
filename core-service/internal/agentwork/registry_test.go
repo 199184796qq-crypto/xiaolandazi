@@ -159,32 +159,26 @@ func TestRegistryTracksRoomModeWithoutResettingWorkMeter(t *testing.T) {
 	}
 }
 
-func TestRegistryWorkingRequiresLeaseAndStopsWhenLeaseExpires(t *testing.T) {
+func TestRegistryWorkingDoesNotExpireWithoutLease(t *testing.T) {
 	now := time.Date(2026, 9, 25, 13, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
-	if _, err := registry.Set(11, StateWorking); err == nil {
-		t.Fatal("working must require paid lease")
-	}
-	if _, err := registry.GrantLease(11, 3); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := registry.Set(11, StateWorking); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(4 * time.Second)
+	now = now.Add(2 * time.Minute)
 	snapshot := registry.Get(11)
-	if snapshot.State != StateStopped {
-		t.Fatalf("expired lease state=%q want stopped", snapshot.State)
+	if snapshot.State != StateWorking {
+		t.Fatalf("runtime state=%q want working", snapshot.State)
 	}
-	if snapshot.WorkingSeconds != 3 {
-		t.Fatalf("expired lease working seconds=%d want 3", snapshot.WorkingSeconds)
+	if snapshot.WorkingSeconds != 120 {
+		t.Fatalf("working seconds=%d want 120", snapshot.WorkingSeconds)
 	}
-	if snapshot.LeaseRemainingSeconds != 0 {
-		t.Fatalf("expired lease remaining=%d want 0", snapshot.LeaseRemainingSeconds)
+	if snapshot.LeaseRemainingSeconds != 0 || snapshot.LeaseRenewalDue || snapshot.LeaseUntil != nil {
+		t.Fatalf("lease compatibility fields must stay empty: %#v", snapshot)
 	}
 }
 
-func TestRegistryStopsOrphanWorkingStateWithoutLease(t *testing.T) {
+func TestRegistryOrphanWorkingStateWithoutLeaseKeepsAccruing(t *testing.T) {
 	now := time.Date(2026, 9, 25, 13, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
 	registry.rooms[12] = &roomState{
@@ -197,20 +191,17 @@ func TestRegistryStopsOrphanWorkingStateWithoutLease(t *testing.T) {
 
 	now = now.Add(2 * time.Second)
 	snapshot := registry.Get(12)
-	if snapshot.State != StateStopped {
-		t.Fatalf("orphan working state=%q want stopped", snapshot.State)
+	if snapshot.State != StateWorking {
+		t.Fatalf("working state=%q want working", snapshot.State)
 	}
-	if snapshot.LeaseRemainingSeconds != 0 {
-		t.Fatalf("orphan lease remaining=%d want 0", snapshot.LeaseRemainingSeconds)
+	if snapshot.WorkingSeconds != 2 {
+		t.Fatalf("working seconds=%d want 2", snapshot.WorkingSeconds)
 	}
 }
 
-func TestRegistrySetPlanKeepsWorkingLeaseAlive(t *testing.T) {
+func TestRegistrySetPlanKeepsWorkingRuntimeAlive(t *testing.T) {
 	now := time.Date(2026, 9, 25, 13, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
-	if _, err := registry.GrantLease(13, 60); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := registry.Set(13, StateWorking); err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +216,8 @@ func TestRegistrySetPlanKeepsWorkingLeaseAlive(t *testing.T) {
 	if snapshot.WorkingSince == nil {
 		t.Fatal("working plan sync must restore working_since")
 	}
-	if snapshot.LeaseRemainingSeconds == 0 {
-		t.Fatal("working plan sync must preserve lease")
+	if snapshot.LeaseRemainingSeconds != 0 || snapshot.LeaseRenewalDue {
+		t.Fatalf("plan sync unexpectedly exposed lease state: %#v", snapshot)
 	}
 	now = now.Add(2 * time.Second)
 	snapshot = registry.Get(13)
@@ -238,12 +229,9 @@ func TestRegistrySetPlanKeepsWorkingLeaseAlive(t *testing.T) {
 	}
 }
 
-func TestRegistryHotReloadKeepsWorkingPlanLeaseAndMeter(t *testing.T) {
+func TestRegistryHotReloadKeepsWorkingPlanAndMeter(t *testing.T) {
 	now := time.Date(2026, 9, 29, 11, 50, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
-	if _, err := registry.GrantLease(31, 120); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := registry.SetPlan(31, 9, "已生效方案"); err != nil {
 		t.Fatal(err)
 	}
@@ -263,8 +251,8 @@ func TestRegistryHotReloadKeepsWorkingPlanLeaseAndMeter(t *testing.T) {
 	if hot.WorkingSeconds != before.WorkingSeconds {
 		t.Fatalf("hot reload reset/advanced meter unexpectedly: before=%d after=%d", before.WorkingSeconds, hot.WorkingSeconds)
 	}
-	if hot.LeaseRemainingSeconds != before.LeaseRemainingSeconds || hot.LeaseRemainingSeconds == 0 {
-		t.Fatalf("hot reload changed paid lease: before=%d after=%d", before.LeaseRemainingSeconds, hot.LeaseRemainingSeconds)
+	if hot.LeaseRemainingSeconds != 0 || hot.LeaseRenewalDue {
+		t.Fatalf("hot reload unexpectedly exposed lease state: %#v", hot)
 	}
 	if hot.HotRevision != 1 || hot.HotUpdatedAt == nil {
 		t.Fatalf("hot revision not recorded: %#v", hot)
@@ -294,12 +282,6 @@ func TestRegistryTracksLifecycleTransitionsAndStopReason(t *testing.T) {
 	now := time.Date(2026, 9, 25, 13, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
 
-	if _, err := registry.SetWithReason(21, StateStarting, "", 0); err == nil {
-		t.Fatal("starting must require a paid lease")
-	}
-	if _, err := registry.GrantLease(21, 3); err != nil {
-		t.Fatal(err)
-	}
 	starting, err := registry.SetWithReason(21, StateStarting, "", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -316,21 +298,15 @@ func TestRegistryTracksLifecycleTransitionsAndStopReason(t *testing.T) {
 	}
 
 	now = now.Add(4 * time.Second)
-	expired := registry.Get(21)
-	if expired.State != StateStopped || expired.StopReason != StopReasonQuotaExhausted {
-		t.Fatalf("expired snapshot=%#v", expired)
+	running := registry.Get(21)
+	if running.State != StateWorking || running.StopReason != "" {
+		t.Fatalf("running snapshot=%#v", running)
 	}
-	if expired.WorkingSeconds != 3 {
-		t.Fatalf("expired working seconds=%d want 3", expired.WorkingSeconds)
+	if running.WorkingSeconds != 4 {
+		t.Fatalf("working seconds=%d want 4", running.WorkingSeconds)
 	}
 
-	if _, err := registry.GrantLease(21, 30); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := registry.SetWithReason(21, StateWorking, "", expired.WorkingSeconds); err != nil {
-		t.Fatal(err)
-	}
-	stopping, err := registry.SetWithReason(21, StateStopping, StopReasonManual, expired.WorkingSeconds)
+	stopping, err := registry.SetWithReason(21, StateStopping, StopReasonManual, running.WorkingSeconds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,12 +370,6 @@ func TestRegistryStartStopCommandsOwnLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 27, 5, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
 
-	if _, err := registry.StartAgent(31, 0); err == nil {
-		t.Fatal("start without lease must fail")
-	}
-	if _, err := registry.GrantLease(31, 60); err != nil {
-		t.Fatal(err)
-	}
 	working, err := registry.StartAgent(31, 7)
 	if err != nil {
 		t.Fatal(err)
@@ -428,9 +398,6 @@ func TestRegistryStopIsIsolatedPerRoom(t *testing.T) {
 	now := time.Date(2026, 9, 27, 5, 30, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
 	for _, roomID := range []int64{41, 42} {
-		if _, err := registry.GrantLease(roomID, 60); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := registry.StartAgent(roomID, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -448,30 +415,26 @@ func TestRegistryStopIsIsolatedPerRoom(t *testing.T) {
 	if second.State != StateWorking {
 		t.Fatalf("room 42 state=%q want working", second.State)
 	}
-	if second.LeaseRemainingSeconds == 0 {
-		t.Fatal("room 42 lease was cleared when stopping room 41")
+	if second.WorkingSeconds != 2 {
+		t.Fatalf("room 42 working seconds=%d want 2", second.WorkingSeconds)
 	}
 }
 
-func TestRegistryMarksLeaseRenewalDueInsideCore(t *testing.T) {
+func TestRegistryLegacyLeaseGrantIsCompatibilityNoOp(t *testing.T) {
 	now := time.Date(2026, 9, 27, 6, 0, 0, 0, time.UTC)
 	registry := newRegistry(func() time.Time { return now })
-	if _, err := registry.GrantLease(51, 60); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := registry.StartAgent(51, 0); err != nil {
 		t.Fatal(err)
 	}
-
-	now = now.Add(time.Duration(60-LeaseRenewThresholdSeconds-1) * time.Second)
-	before := registry.Get(51)
-	if before.LeaseRemainingSeconds != LeaseRenewThresholdSeconds+1 || before.LeaseRenewalDue {
-		t.Fatalf("before renewal window snapshot=%#v", before)
+	if _, err := registry.GrantLease(51, 60); err != nil {
+		t.Fatal(err)
 	}
-
-	now = now.Add(time.Second)
-	due := registry.Get(51)
-	if due.LeaseRemainingSeconds != LeaseRenewThresholdSeconds || !due.LeaseRenewalDue {
-		t.Fatalf("renewal-due snapshot=%#v", due)
+	now = now.Add(90 * time.Second)
+	snapshot := registry.Get(51)
+	if snapshot.State != StateWorking || snapshot.WorkingSeconds != 90 {
+		t.Fatalf("legacy lease grant affected runtime: %#v", snapshot)
+	}
+	if snapshot.LeaseRemainingSeconds != 0 || snapshot.LeaseRenewalDue || snapshot.LeaseUntil != nil {
+		t.Fatalf("legacy lease compatibility fields must remain empty: %#v", snapshot)
 	}
 }

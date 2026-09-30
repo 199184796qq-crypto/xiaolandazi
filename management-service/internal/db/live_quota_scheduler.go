@@ -399,6 +399,57 @@ func (s *Store) ReconcileLiveQuotaLeases(
 	return totalConsumed, nil
 }
 
+// CancelAllLegacyLiveQuotaLeases releases quota reservations left by the old
+// per-room TTL lease model. The cumulative runtime meter will charge the real
+// Core working_seconds afterwards, so migration must release reservations
+// without inventing consumption.
+func (s *Store) CancelAllLegacyLiveQuotaLeases(ctx context.Context, now time.Time) (int, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT tenant_id, runtime_session_id
+		FROM live_quota_leases
+		WHERE status IN ('reserved','active')
+		ORDER BY tenant_id ASC, runtime_session_id ASC
+	`)
+	if err != nil {
+		return 0, err
+	}
+	type legacyLeaseSession struct {
+		tenantID  int64
+		sessionID int64
+	}
+	items := make([]legacyLeaseSession, 0)
+	for rows.Next() {
+		var item legacyLeaseSession
+		if err := rows.Scan(&item.tenantID, &item.sessionID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	for _, item := range items {
+		if _, err := s.ReconcileLiveQuotaLeases(
+			ctx,
+			item.tenantID,
+			item.sessionID,
+			"",
+			0,
+			true,
+			false,
+			now,
+		); err != nil {
+			return 0, fmt.Errorf("cancel legacy live quota lease tenant=%d session=%d: %w", item.tenantID, item.sessionID, err)
+		}
+	}
+	return len(items), nil
+}
+
 func settleLiveQuotaLeaseTx(
 	ctx context.Context,
 	tx *sql.Tx,

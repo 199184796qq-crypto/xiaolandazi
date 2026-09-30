@@ -35,9 +35,9 @@ func (s *Server) cleanupPaidAgentRuntime(ctx context.Context, roomID int64, reas
 	}
 }
 
-// RunAgentRuntimeWatch keeps paid execution cleanup inside Core. In
-// particular, lease expiry must stop TTS/audio even if Management or the UI
-// is unavailable.
+// RunAgentRuntimeWatch keeps room-local execution cleanup inside Core after an
+// explicit lifecycle stop. Account quota is owned by Management; Core never
+// turns a transient control-plane delay into a room stop by itself.
 func (s *Server) RunAgentRuntimeWatch(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
@@ -58,13 +58,12 @@ func (s *Server) RunAgentRuntimeWatch(ctx context.Context, interval time.Duratio
 				last[snapshot.RoomID] = snapshot.State
 				if !known || previous != snapshot.State {
 					log.Printf(
-						"agent runtime transition room=%d previous=%q state=%q reason=%q working_seconds=%d lease_remaining=%d",
+						"agent runtime transition room=%d previous=%q state=%q reason=%q working_seconds=%d",
 						snapshot.RoomID,
 						previous,
 						snapshot.State,
 						snapshot.StopReason,
 						snapshot.WorkingSeconds,
-						snapshot.LeaseRemainingSeconds,
 					)
 				}
 				if snapshot.State != agentwork.StateStopped || snapshot.StopReason == "" {
