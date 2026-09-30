@@ -4749,11 +4749,11 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="publicScreenMode === 'bucket'" class="public-event-bucket-view">
             <div class="public-event-bucket-summary">
-              <article class="tone-entry"><span>进房</span><strong>+{{ sessionStats?.entries ?? roomBrain?.Intelligence?.SessionEntries ?? flowStats.member }}</strong></article>
-              <article class="tone-chat"><span>弹幕</span><strong>+{{ sessionStats?.chats ?? roomBrain?.Intelligence?.SessionChats ?? flowStats.chat }}</strong></article>
-              <article class="tone-like"><span>点赞</span><strong>+{{ (sessionStats?.likes ?? roomBrain?.Intelligence?.SessionLikes ?? flowStats.like).toLocaleString() }}</strong></article>
-              <article class="tone-follow"><span>关注</span><strong>+{{ sessionStats?.follows ?? roomBrain?.Intelligence?.SessionFollows ?? flowStats.follow }}</strong></article>
-              <article class="tone-gift"><span>礼物</span><strong>+{{ sessionStats?.gifts ?? roomBrain?.Intelligence?.SessionGifts ?? flowStats.gift }}</strong></article>
+              <article class="tone-entry"><span>进房</span><strong>+{{ sessionStats?.entries ?? 0 }}</strong></article>
+              <article class="tone-chat"><span>弹幕</span><strong>+{{ sessionStats?.chats ?? 0 }}</strong></article>
+              <article class="tone-like"><span>点赞</span><strong>+{{ (sessionStats?.likes ?? 0).toLocaleString() }}</strong></article>
+              <article class="tone-follow"><span>关注</span><strong>+{{ sessionStats?.follows ?? 0 }}</strong></article>
+              <article class="tone-gift"><span>礼物</span><strong>+{{ sessionStats?.gifts ?? 0 }}</strong></article>
               <article class="tone-order"><span>下单信号</span><strong>+{{ sessionStats?.order_signals || 0 }}</strong></article>
             </div>
             <div class="public-question-buckets">
@@ -5182,19 +5182,19 @@ onBeforeUnmount(() => {
               <span class="event-bucket-section-title">基础事件</span>
               <div class="base-event-bucket-list">
                 <article class="base-event-bucket base-member">
-                  <span>进房</span><strong>+{{ sessionStats?.entries ?? roomBrain?.Intelligence?.SessionEntries ?? flowStats.member }}</strong>
+                  <span>进房</span><strong>+{{ sessionStats?.entries ?? 0 }}</strong>
                 </article>
                 <article class="base-event-bucket base-chat">
-                  <span>弹幕</span><strong>+{{ sessionStats?.chats ?? roomBrain?.Intelligence?.SessionChats ?? flowStats.chat }}</strong>
+                  <span>弹幕</span><strong>+{{ sessionStats?.chats ?? 0 }}</strong>
                 </article>
                 <article class="base-event-bucket base-like">
-                  <span>点赞</span><strong>+{{ (sessionStats?.likes ?? roomBrain?.Intelligence?.SessionLikes ?? flowStats.like).toLocaleString() }}</strong>
+                  <span>点赞</span><strong>+{{ (sessionStats?.likes ?? 0).toLocaleString() }}</strong>
                 </article>
                 <article class="base-event-bucket base-follow">
-                  <span>关注</span><strong>+{{ sessionStats?.follows ?? roomBrain?.Intelligence?.SessionFollows ?? flowStats.follow }}</strong>
+                  <span>关注</span><strong>+{{ sessionStats?.follows ?? 0 }}</strong>
                 </article>
                 <article class="base-event-bucket base-gift">
-                  <span>礼物</span><strong>+{{ sessionStats?.gifts ?? roomBrain?.Intelligence?.SessionGifts ?? flowStats.gift }}</strong>
+                  <span>礼物</span><strong>+{{ sessionStats?.gifts ?? 0 }}</strong>
                 </article>
                 <article class="base-event-bucket base-order-signal">
                   <span>下单信号</span><strong>+{{ sessionStats?.order_signals || 0 }}</strong>
