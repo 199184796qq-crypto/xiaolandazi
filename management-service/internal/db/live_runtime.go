@@ -17,6 +17,7 @@ import (
 var (
 	ErrLiveRuntimeAlreadyRunning = errors.New("live runtime already running")
 	ErrLiveRuntimeNotRunning     = errors.New("live runtime not running")
+	ErrLiveRuntimeNotRecoverable = errors.New("live runtime is not recoverable")
 	ErrLiveQuotaExhausted        = errors.New("live quota exhausted")
 	ErrLiveDeviceNotBound        = errors.New("live device not bound")
 	ErrLiveDeviceOffline         = errors.New("live device offline")
@@ -1598,6 +1599,129 @@ func (s *Store) ListRunningLiveRuntimeSessions(ctx context.Context) ([]model.Liv
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// ListLiveRuntimeReconcileSessions returns active registrations plus the
+// latest recently Core-reset-stopped session for a room. The stopped row is
+// visible only to the billing reconciler so it can heal a transient/stale
+// Core restart snapshot; DecisionExecutor continues to consume running rows
+// only.
+func (s *Store) ListLiveRuntimeReconcileSessions(ctx context.Context) ([]model.LiveRuntimeSession, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
+			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			s.started_by_user_id, s.stopped_by_user_id,
+			s.started_at, s.last_billed_at, s.ended_at,
+			s.total_billed_seconds, s.version
+		FROM live_runtime_sessions s
+		LEFT JOIN inv_devices d ON d.id=s.device_id
+		WHERE s.status IN ('running','paused')
+		   OR (
+			s.status='stopped'
+			AND s.stop_reason IN ('core_restart','core_runtime_reset')
+			AND s.ended_at IS NOT NULL
+			AND s.ended_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 15 MINUTE)
+			AND s.id=(
+				SELECT MAX(latest.id)
+				FROM live_runtime_sessions latest
+				WHERE latest.tenant_id=s.tenant_id AND latest.room_id=s.room_id
+			)
+		   )
+		ORDER BY s.id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.LiveRuntimeSession, 0)
+	for rows.Next() {
+		item, err := scanLiveRuntimeSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// RecoverLiveRuntimeSessionAfterCoreRestart repairs only the latest session
+// that was stopped by a Core-reset reason. Billed seconds and last_billed_at
+// are preserved, so the next cumulative meter pass charges only the missing
+// Core working delta.
+func (s *Store) RecoverLiveRuntimeSessionAfterCoreRestart(
+	ctx context.Context,
+	sessionID int64,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	if sessionID <= 0 {
+		return model.LiveRuntimeSession{}, errors.New("invalid runtime session")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	defer tx.Rollback()
+
+	session, err := lockLiveRuntimeSession(ctx, tx, sessionID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if session.Status == "running" {
+		if err := tx.Commit(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		return session, nil
+	}
+	reason := strings.ToLower(strings.TrimSpace(session.StopReason))
+	if session.Status != "stopped" || (reason != "core_restart" && reason != "core_runtime_reset") {
+		return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRecoverable
+	}
+
+	var conflicts int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM live_runtime_sessions
+		WHERE tenant_id=? AND room_id=? AND id<>?
+		  AND (id>? OR status IN ('running','paused'))
+	`, session.TenantID, session.RoomID, session.ID, session.ID).Scan(&conflicts); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if conflicts > 0 {
+		return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRecoverable
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET status='running', stop_reason='', stopped_by_user_id=NULL,
+		    ended_at=NULL, version=version+1, updated_at=?
+		WHERE id=? AND status='stopped'
+		  AND stop_reason IN ('core_restart','core_runtime_reset')
+	`, now, session.ID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRecoverable
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_runtime_events (
+			tenant_id, room_id, device_id, session_id,
+			actor_type, event_code, title, detail_json, occurred_at
+		) VALUES (?, ?, ?, ?, 'system', 'AI_RUNTIME_RECOVERED', ?, ?, ?)
+	`, session.TenantID, session.RoomID, session.DeviceID, session.ID,
+		"检测到Core仍在工作，AI运行会话已恢复",
+		mustJSON(map[string]any{"previous_stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
 }
 
 func (s *Store) StopLiveRuntimeSession(

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"livecompanion/management/internal/model"
 )
 
 func TestAuthoritativeCoreStopReasonRejectsEmptyReason(t *testing.T) {
@@ -33,6 +35,37 @@ func TestAuthoritativeCoreStopReasonRejectsWorkingState(t *testing.T) {
 	})
 	if ok || reason != "" {
 		t.Fatalf("reason=%q ok=%v; working state must not finalize a session", reason, ok)
+	}
+}
+
+func TestCoreRestartReasonClassification(t *testing.T) {
+	for _, value := range []string{"core_restart", " core_runtime_reset ", "CORE_RESTART"} {
+		if !isCoreRestartReason(value) {
+			t.Fatalf("%q should be classified as a Core restart reason", value)
+		}
+	}
+	for _, value := range []string{"manual", "quota_exhausted", "live_finished", ""} {
+		if isCoreRestartReason(value) {
+			t.Fatalf("%q must not be classified as a Core restart reason", value)
+		}
+	}
+}
+
+func TestRecoverableCoreRestartSessionRequiresStoppedRestartState(t *testing.T) {
+	if !isRecoverableCoreRestartSession(model.LiveRuntimeSession{Status: "stopped", StopReason: "core_restart"}) {
+		t.Fatal("stopped core_restart session should be recoverable")
+	}
+	if !isRecoverableCoreRestartSession(model.LiveRuntimeSession{Status: "stopped", StopReason: "core_runtime_reset"}) {
+		t.Fatal("stopped core_runtime_reset session should be recoverable")
+	}
+	for _, session := range []model.LiveRuntimeSession{
+		{Status: "running", StopReason: "core_restart"},
+		{Status: "stopped", StopReason: "manual"},
+		{Status: "paused", StopReason: "core_restart"},
+	} {
+		if isRecoverableCoreRestartSession(session) {
+			t.Fatalf("unexpected recoverable session: %#v", session)
+		}
 	}
 }
 

@@ -150,7 +150,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 			log.Printf("billing manager released legacy lease registrations sessions=%d", count)
 		}
 	}
-	sessions, err := r.store.ListRunningLiveRuntimeSessions(ctx)
+	sessions, err := r.store.ListLiveRuntimeReconcileSessions(ctx)
 	if err != nil {
 		log.Printf("live runtime list sessions: %v", err)
 		return
@@ -279,6 +279,35 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 			continue
 		}
 
+		if isRecoverableCoreRestartSession(session) {
+			fresh, freshErr := r.getCoreAgentRuntime(ctx, tenantID, session.RoomID)
+			if freshErr != nil {
+				log.Printf("billing manager recover confirm tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, freshErr)
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(fresh.State), "working") {
+				// A genuine Core restart remains stopped. Keep this historical row
+				// stopped; a later explicit Start creates a fresh paid session.
+				continue
+			}
+			recovered, recoverErr := r.store.RecoverLiveRuntimeSessionAfterCoreRestart(ctx, session.ID, now)
+			if recoverErr != nil {
+				if !errors.Is(recoverErr, appdb.ErrLiveRuntimeNotRecoverable) {
+					log.Printf("billing manager recover runtime tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, recoverErr)
+				}
+				continue
+			}
+			log.Printf("billing manager recovered false core restart tenant=%d room=%d session=%d boot=%s working=%d", tenantID, session.RoomID, session.ID, fresh.BootID, fresh.WorkingSeconds)
+			r.recordSystemAudit(ctx, recovered, "agent.runtime.recovered", "false_core_restart", fresh.BootID, fresh.WorkingSeconds)
+			session = recovered
+			job.Session = recovered
+			job.State.CoreBootID = fresh.BootID
+			job.State.AgentState = fresh.State
+			job.State.AgentStopReason = fresh.StopReason
+			job.State.AgentWorkingSeconds = fresh.WorkingSeconds
+			job.State.AgentUpdatedAt = fresh.UpdatedAt
+		}
+
 		if session.Status == "paused" {
 			// Paused == unregistered from active consumption. Resume changes the
 			// durable row back to running and it automatically re-enters this loop.
@@ -331,12 +360,39 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 				if !authoritative {
 					continue
 				}
-				if _, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, reason, fresh.WorkingSeconds, now); err != nil {
-					log.Printf("billing manager finalize stopped agent tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+				if isCoreRestartReason(reason) {
+					confirmed, confirmErr := r.confirmCoreRestartStop(ctx, tenantID, session.RoomID)
+					if confirmErr != nil {
+						log.Printf("billing manager confirm core restart tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, confirmErr)
+						continue
+					}
+					confirmedState := strings.ToLower(strings.TrimSpace(confirmed.State))
+					if confirmedState == "working" {
+						job.State.CoreBootID = confirmed.BootID
+						job.State.AgentState = confirmed.State
+						job.State.AgentStopReason = confirmed.StopReason
+						job.State.AgentWorkingSeconds = confirmed.WorkingSeconds
+						job.State.AgentUpdatedAt = confirmed.UpdatedAt
+						fresh = confirmed
+						log.Printf("billing manager ignored transient core restart tenant=%d room=%d session=%d boot=%s working=%d", tenantID, session.RoomID, session.ID, confirmed.BootID, confirmed.WorkingSeconds)
+					} else if confirmedState == "starting" {
+						continue
+					} else {
+						fresh = confirmed
+						reason, authoritative = authoritativeCoreStopReason(confirmed)
+						if !authoritative || !isCoreRestartReason(reason) {
+							continue
+						}
+					}
+				}
+				if !strings.EqualFold(strings.TrimSpace(job.State.AgentState), "working") {
+					if _, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, reason, fresh.WorkingSeconds, now); err != nil {
+						log.Printf("billing manager finalize stopped agent tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
+						continue
+					}
+					r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", reason, fresh.BootID, fresh.WorkingSeconds)
 					continue
 				}
-				r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", reason, fresh.BootID, fresh.WorkingSeconds)
-				continue
 			}
 		}
 
@@ -390,6 +446,34 @@ func authoritativeCoreStopReason(state coreAgentRuntimeState) (string, bool) {
 		return "", false
 	}
 	return reason, true
+}
+
+func isCoreRestartReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "core_restart", "core_runtime_reset":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRecoverableCoreRestartSession(session model.LiveRuntimeSession) bool {
+	return strings.EqualFold(strings.TrimSpace(session.Status), "stopped") && isCoreRestartReason(session.StopReason)
+}
+
+func (r *Reconciler) confirmCoreRestartStop(
+	ctx context.Context,
+	tenantID, roomID int64,
+) (coreAgentRuntimeState, error) {
+	const confirmDelay = 500 * time.Millisecond
+	timer := time.NewTimer(confirmDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return coreAgentRuntimeState{}, ctx.Err()
+	case <-timer.C:
+	}
+	return r.getCoreAgentRuntime(ctx, tenantID, roomID)
 }
 
 func (r *Reconciler) stopTenantForQuota(
