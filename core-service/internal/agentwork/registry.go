@@ -18,7 +18,10 @@ type State string
 type Mode string
 type StopReason string
 
-const LeaseRenewThresholdSeconds uint64 = 15
+// Management reconciles paid runtime every 10 seconds. Renewing with half of
+// the one-minute lease still available leaves several retry opportunities if
+// one DB/Core round-trip is slow.
+const LeaseRenewThresholdSeconds uint64 = 30
 
 const (
 	StateStopped  State = "stopped"

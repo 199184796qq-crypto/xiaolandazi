@@ -463,9 +463,9 @@ func TestRegistryMarksLeaseRenewalDueInsideCore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	now = now.Add(44 * time.Second)
+	now = now.Add(time.Duration(60-LeaseRenewThresholdSeconds-1) * time.Second)
 	before := registry.Get(51)
-	if before.LeaseRemainingSeconds != 16 || before.LeaseRenewalDue {
+	if before.LeaseRemainingSeconds != LeaseRenewThresholdSeconds+1 || before.LeaseRenewalDue {
 		t.Fatalf("before renewal window snapshot=%#v", before)
 	}
 

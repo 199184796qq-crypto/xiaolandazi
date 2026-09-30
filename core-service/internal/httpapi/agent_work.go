@@ -56,6 +56,17 @@ func (s *Server) RunAgentRuntimeWatch(ctx context.Context, interval time.Duratio
 			for _, snapshot := range s.agentWork.Snapshots() {
 				previous, known := last[snapshot.RoomID]
 				last[snapshot.RoomID] = snapshot.State
+				if !known || previous != snapshot.State {
+					log.Printf(
+						"agent runtime transition room=%d previous=%q state=%q reason=%q working_seconds=%d lease_remaining=%d",
+						snapshot.RoomID,
+						previous,
+						snapshot.State,
+						snapshot.StopReason,
+						snapshot.WorkingSeconds,
+						snapshot.LeaseRemainingSeconds,
+					)
+				}
 				if snapshot.State != agentwork.StateStopped || snapshot.StopReason == "" {
 					continue
 				}

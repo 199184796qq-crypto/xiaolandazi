@@ -3,11 +3,13 @@ package liveruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +58,11 @@ type reconcileJob struct {
 	StateOK bool
 }
 
-const liveRuntimeStartGracePeriod = 20 * time.Second
+const (
+	liveRuntimeStartGracePeriod = 20 * time.Second
+	liveRuntimeReconcileTimeout = 8 * time.Second
+	liveRuntimeTenantTimeout    = 6 * time.Second
+)
 
 type coreAgentRuntimeState struct {
 	BootID                string     `json:"boot_id"`
@@ -107,14 +113,24 @@ func (r *Reconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
-	r.reconcile(ctx)
+	r.runCycle(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.reconcile(ctx)
+			r.runCycle(ctx)
 		}
+	}
+}
+
+func (r *Reconciler) runCycle(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, liveRuntimeReconcileTimeout)
+	defer cancel()
+	started := time.Now()
+	r.reconcile(ctx)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		log.Printf("live runtime reconcile cycle timeout duration=%s", time.Since(started).Round(time.Millisecond))
 	}
 }
 
@@ -159,7 +175,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for tenantJobs := range jobs {
-				r.reconcileTenant(ctx, tenantJobs)
+				tenantCtx, cancel := context.WithTimeout(ctx, liveRuntimeTenantTimeout)
+				r.reconcileTenant(tenantCtx, tenantJobs)
+				if errors.Is(tenantCtx.Err(), context.DeadlineExceeded) && len(tenantJobs) > 0 {
+					log.Printf("live runtime reconcile tenant timeout tenant=%d rooms=%d", tenantJobs[0].Session.TenantID, len(tenantJobs))
+				}
+				cancel()
 			}
 		}()
 	}
@@ -259,9 +280,23 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 				// durable quota record and closes the matching session. A stopping
 				// state is also recoverable here so a Management crash cannot strand a
 				// room forever between stopping and stopped.
-				reason := fresh.StopReason
-				if reason == "" {
-					reason = "core_restart"
+				reason, authoritative := authoritativeCoreStopReason(fresh)
+				if !authoritative {
+					// An empty stop reason is not authoritative proof that Core
+					// intentionally stopped paid work. Treat it as a transient/default
+					// snapshot and retry on the next reconciliation cycle instead of
+					// inventing core_restart and killing a still-running session.
+					log.Printf(
+						"ignore unproven stopped core agent tenant=%d room=%d session=%d boot=%s state=%q working_seconds=%d lease_remaining=%d",
+						session.TenantID,
+						session.RoomID,
+						session.ID,
+						fresh.BootID,
+						fresh.State,
+						fresh.WorkingSeconds,
+						fresh.LeaseRemainingSeconds,
+					)
+					continue
 				}
 				normalCompletion := reason == "quota_exhausted" || reason == "live_finished" || reason == "manual"
 				_, _ = r.store.ReconcileLiveQuotaLeases(ctx, session.TenantID, session.ID, fresh.BootID, fresh.WorkingSeconds, normalCompletion, normalCompletion, now)
@@ -319,6 +354,15 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 			// either receive a later lease retry or stop itself when its current
 			// lease expires. Closing the session here can create a second session
 			// while the old Core runtime is still working.
+		} else {
+			log.Printf(
+				"live lease renewed tenant=%d room=%d session=%d seconds=%d previous_remaining=%d",
+				tenantID,
+				grant.RoomID,
+				grant.RuntimeSessionID,
+				grant.AllocatedSeconds,
+				job.State.AgentLeaseRemainingSeconds,
+			)
 		}
 	}
 	for _, request := range requests {
@@ -330,6 +374,18 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 		// settle and close the durable session with quota_exhausted.
 		log.Printf("live quota exhausted; waiting for Core lease expiry tenant=%d room=%d session=%d", tenantID, request.RoomID, request.RuntimeSessionID)
 	}
+}
+
+func authoritativeCoreStopReason(state coreAgentRuntimeState) (string, bool) {
+	status := strings.ToLower(strings.TrimSpace(state.State))
+	if status != "stopped" && status != "stopping" {
+		return "", false
+	}
+	reason := strings.ToLower(strings.TrimSpace(state.StopReason))
+	if reason == "" {
+		return "", false
+	}
+	return reason, true
 }
 
 func (r *Reconciler) recordSystemAudit(
