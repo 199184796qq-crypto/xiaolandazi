@@ -223,6 +223,8 @@ let compositeAudioAbort: AbortController | null = null
 let compositeAudioGeneration = 0
 let compositeAudioNextStartTime = 0
 let compositeAudioConnectPromise: Promise<void> | null = null
+let compositeAudioConnectedAt = 0
+let compositeAudioLastFrameAt = 0
 const compositeAudioSources = new Set<AudioBufferSourceNode>()
 const localAudioState = ref<'disconnected' | 'connected' | 'playing' | 'error'>('disconnected')
 const localAudioError = ref('')
@@ -2372,7 +2374,32 @@ function stopCompositeAudioReceiver() {
   compositeAudioGeneration += 1
   compositeAudioAbort?.abort()
   compositeAudioAbort = null
+  compositeAudioConnectedAt = 0
+  compositeAudioLastFrameAt = 0
   flushCompositeAudioQueue()
+}
+
+const COMPOSITE_AUDIO_STALE_MS = 4_000
+
+function compositeAudioStreamLooksAlive() {
+  if (!compositeAudioAbort || compositeAudioAbort.signal.aborted) return false
+  if (localAudioState.value !== 'connected' && localAudioState.value !== 'playing') return false
+  const referenceAt = compositeAudioLastFrameAt || compositeAudioConnectedAt
+  if (!referenceAt) return false
+  return Date.now() - referenceAt < COMPOSITE_AUDIO_STALE_MS
+}
+
+function roomAudioPhaseNeedsPCM(phase?: RoomAudioEngineSnapshot['phase']) {
+  return Boolean(phase && phase !== 'idle' && phase !== 'paused' && phase !== 'error')
+}
+
+function ensureCompositeAudioSubscriptionHealth(snapshot: RoomAudioEngineSnapshot) {
+  if (pageUnmounted || !coreActionsAvailable.value || !roomAudioPhaseNeedsPCM(snapshot.phase)) return
+  if (compositeAudioStreamLooksAlive()) return
+  if (compositeAudioConnectPromise) return
+  localAudioState.value = 'disconnected'
+  stopCompositeAudioReceiver()
+  scheduleLocalAudioReconnect(0)
 }
 
 function compositeAudioBufferWindow() {
@@ -2431,6 +2458,7 @@ async function pumpCompositeAudioStream(
       const { done, value } = await reader.read()
       if (done) break
       if (!value?.byteLength) continue
+      compositeAudioLastFrameAt = Date.now()
       const merged = new Uint8Array(pending.byteLength + value.byteLength)
       merged.set(pending, 0)
       merged.set(value, pending.byteLength)
@@ -2453,6 +2481,11 @@ async function pumpCompositeAudioStream(
       // Reader may already be released by the browser.
     }
     if (!signal.aborted && generation === compositeAudioGeneration && !pageUnmounted) {
+      if (compositeAudioAbort?.signal === signal) {
+        compositeAudioAbort = null
+      }
+      compositeAudioConnectedAt = 0
+      compositeAudioLastFrameAt = 0
       localAudioState.value = 'disconnected'
       scheduleLocalAudioReconnect(250)
     }
@@ -2467,7 +2500,9 @@ async function refreshRoomAudioEngine() {
       cache: 'no-store',
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
-    roomAudioEngine.value = await response.json() as RoomAudioEngineSnapshot
+    const snapshot = await response.json() as RoomAudioEngineSnapshot
+    roomAudioEngine.value = snapshot
+    ensureCompositeAudioSubscriptionHealth(snapshot)
   } catch {
     // Keep the last good engine state while Core reconnects.
   }
@@ -2783,9 +2818,7 @@ async function connectLocalAudioReceiverOnce() {
   ensureLocalAudioGainNode()
   if (
     localAudioRegisteredRoomID === roomId &&
-    compositeAudioAbort &&
-    !compositeAudioAbort.signal.aborted &&
-    (localAudioState.value === 'connected' || localAudioState.value === 'playing')
+    compositeAudioStreamLooksAlive()
   ) {
     return
   }
@@ -2796,6 +2829,8 @@ async function connectLocalAudioReceiverOnce() {
   const generation = ++compositeAudioGeneration
   const controller = new AbortController()
   compositeAudioAbort = controller
+  compositeAudioConnectedAt = 0
+  compositeAudioLastFrameAt = 0
   try {
     const response = await fetch(base + '/v1/rooms/' + roomId + '/composite.pcm', {
       cache: 'no-store',
@@ -2805,6 +2840,7 @@ async function connectLocalAudioReceiverOnce() {
       throw new Error('房间合成音频流连接失败 HTTP ' + response.status)
     }
     if (generation !== compositeAudioGeneration || controller.signal.aborted) return
+    compositeAudioConnectedAt = Date.now()
     localAudioState.value = 'connected'
     localAudioError.value = ''
     void pumpCompositeAudioStream(response.body, generation, controller.signal)
