@@ -2294,8 +2294,11 @@ function localAudioBaseURL() {
   if (configured) return configured
   const host = window.location.hostname
   if (host === '127.0.0.1' || host === 'localhost') return 'http://127.0.0.1:8081'
-  if (host.endsWith('.ngrok-free.dev') || host.endsWith('.ngrok-free.app')) return '/core-audio'
-  return ''
+  // All non-local deployments expose Core audio behind the same-origin
+  // /core-audio reverse proxy. Returning an empty base here makes production
+  // silently skip receiver registration and composite PCM subscription while
+  // the timeline UI keeps moving, which looks like "waveform but no sound".
+  return '/core-audio'
 }
 
 function localAudioReceiverID() {
