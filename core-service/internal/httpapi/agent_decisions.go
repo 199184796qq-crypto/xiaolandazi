@@ -156,6 +156,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
+	mandatoryQuick := !shouldEnforceInteractionRest(queue[0])
 	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -175,17 +176,19 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	forceAfterRest := false
-	if nextClaimAt, resting := interactionRestUntil(snapshot, time.Now().UTC()); !nextClaimAt.IsZero() {
-		if resting {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"claimed":       false,
-				"reason":        "interaction_rest",
-				"item":          queue[0],
-				"next_claim_at": nextClaimAt,
-			})
-			return
+	if !mandatoryQuick {
+		if nextClaimAt, resting := interactionRestUntil(snapshot, time.Now().UTC()); !nextClaimAt.IsZero() {
+			if resting {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"claimed":       false,
+					"reason":        "interaction_rest",
+					"item":          queue[0],
+					"next_claim_at": nextClaimAt,
+				})
+				return
+			}
+			forceAfterRest = true
 		}
-		forceAfterRest = true
 	}
 	state := s.audioDevState()
 	if state == nil || state.client == nil || !state.client.Enabled() {
@@ -223,6 +226,9 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
+	if mandatoryQuick && claimed && item != nil {
+		log.Printf("interaction mandatory quick claim room=%d decision=%s", roomID, item.ID)
+	}
 	if forceAfterRest && claimed && item != nil {
 		log.Printf("interaction forced claim after rest room=%d decision=%s rest=%s", roomID, item.ID, mandatoryInteractionRest)
 	}
@@ -243,6 +249,10 @@ func interactionRestUntil(snapshot agentdecision.Snapshot, now time.Time) (time.
 	}
 	nextClaimAt := snapshot.LastCompletedAt.UTC().Add(mandatoryInteractionRest)
 	return nextClaimAt, now.UTC().Before(nextClaimAt)
+}
+
+func shouldEnforceInteractionRest(item agentdecision.Item) bool {
+	return !strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick")
 }
 
 func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {

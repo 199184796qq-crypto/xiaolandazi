@@ -876,6 +876,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			}
 		} else {
 			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
+			if !exists {
+				cutMS, exists = nextRoomProgramSafeCut(program, currentMS, 10*time.Minute)
+			}
+			if !exists && program.Task.DurationMS > currentMS {
+				cutMS = program.Task.DurationMS
+				exists = true
+			}
+			if exists {
+				log.Printf("interaction mandatory quick dispatch room=%d decision=%s current_ms=%d switch_ms=%d", roomID, input.DecisionID, currentMS, cutMS)
+			}
 		}
 		if cutAction == "answer" {
 			if !exists {

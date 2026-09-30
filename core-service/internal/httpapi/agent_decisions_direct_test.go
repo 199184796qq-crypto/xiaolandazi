@@ -108,3 +108,12 @@ func TestInteractionRestUntilRequiresTwoMinutesAfterCompletion(t *testing.T) {
 		t.Fatal("claim must be allowed exactly at the two-minute boundary")
 	}
 }
+
+func TestMandatoryQuickBypassesInteractionRest(t *testing.T) {
+	if shouldEnforceInteractionRest(agentdecision.Item{ManualAction: "quick"}) {
+		t.Fatal("mandatory quick must bypass the two-minute interaction rest")
+	}
+	if !shouldEnforceInteractionRest(agentdecision.Item{ManualAction: "answer"}) {
+		t.Fatal("normal answer must still respect the interaction rest")
+	}
+}
