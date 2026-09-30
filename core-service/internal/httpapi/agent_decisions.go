@@ -2,10 +2,8 @@ package httpapi
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
@@ -13,8 +11,6 @@ import (
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/speechruntime"
 )
-
-const mandatoryInteractionRest = 2 * time.Minute
 
 func (s *Server) SetAgentDecisionQueue(queue *agentdecision.Queue) {
 	if queue == nil {
@@ -149,14 +145,12 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	snapshot := s.agentDecisions.Snapshot(roomID)
-	queue := snapshot.Queue
+	queue := s.agentDecisions.Snapshot(roomID).Queue
 	if len(queue) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "empty"})
 		return
 	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
-	mandatoryQuick := !shouldEnforceInteractionRest(queue[0])
 	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -173,21 +167,6 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 				"item":    queue[0],
 			})
 			return
-		}
-	}
-	forceAfterRest := false
-	if !mandatoryQuick {
-		if nextClaimAt, resting := interactionRestUntil(snapshot, time.Now().UTC()); !nextClaimAt.IsZero() {
-			if resting {
-				writeJSON(w, http.StatusOK, map[string]any{
-					"claimed":       false,
-					"reason":        "interaction_rest",
-					"item":          queue[0],
-					"next_claim_at": nextClaimAt,
-				})
-				return
-			}
-			forceAfterRest = true
 		}
 	}
 	state := s.audioDevState()
@@ -212,7 +191,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	currentMainline := ""
 	resumeMainline := ""
 	resumeSegmentID := ""
-	if queue[0].ManualAction != "quick" && !forceAfterRest {
+	if queue[0].ManualAction != "quick" {
 		currentMS := program.CurrentMS
 		if currentMS <= 0 {
 			currentMS = program.Task.StartMS
@@ -226,33 +205,14 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
-	if mandatoryQuick && claimed && item != nil {
-		log.Printf("interaction mandatory quick claim room=%d decision=%s", roomID, item.ID)
-	}
-	if forceAfterRest && claimed && item != nil {
-		log.Printf("interaction forced claim after rest room=%d decision=%s rest=%s", roomID, item.ID, mandatoryInteractionRest)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"claimed":           claimed,
 		"item":              item,
-		"force_after_rest":  forceAfterRest,
 		"switch_at_ms":      plannedSwitchMS,
 		"current_mainline":  currentMainline,
 		"resume_mainline":   resumeMainline,
 		"resume_segment_id": resumeSegmentID,
 	})
-}
-
-func interactionRestUntil(snapshot agentdecision.Snapshot, now time.Time) (time.Time, bool) {
-	if snapshot.LastCompletedAt == nil || snapshot.LastCompletedAt.IsZero() {
-		return time.Time{}, false
-	}
-	nextClaimAt := snapshot.LastCompletedAt.UTC().Add(mandatoryInteractionRest)
-	return nextClaimAt, now.UTC().Before(nextClaimAt)
-}
-
-func shouldEnforceInteractionRest(item agentdecision.Item) bool {
-	return !strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick")
 }
 
 func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {

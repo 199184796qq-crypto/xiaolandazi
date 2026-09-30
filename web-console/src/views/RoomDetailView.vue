@@ -1417,7 +1417,6 @@ function interactionExecutionDetail(item: AgentDecisionItem) {
 
 function interactionExecutionCountdown(item: AgentDecisionItem) {
   if (item.status === 'CLAIMED') return interactionExecutionStageLabel(item)
-  if (item.manual_action === 'quick') return '必须执行'
   return '放弃倒计时 ' + agentDecisionExpiryText(item.expires_at)
 }
 
@@ -4864,7 +4863,7 @@ onBeforeUnmount(() => {
                   <div class="interaction-execution-meta">
                     <span v-if="item.nicknames?.length">对象 {{ item.nicknames.slice(0, 3).join('、') }}</span>
                     <span v-if="item.merged_count > 1">融合 {{ item.merged_count }} 条</span>
-                    <span :class="{ danger: item.status !== 'CLAIMED' && item.manual_action !== 'quick' && agentDecisionExpiryText(item.expires_at) === '00:00' }">
+                    <span :class="{ danger: item.status !== 'CLAIMED' && agentDecisionExpiryText(item.expires_at) === '00:00' }">
                       {{ interactionExecutionCountdown(item) }}
                     </span>
                   </div>
