@@ -23,7 +23,10 @@ func (s *Server) cleanupPaidAgentRuntime(ctx context.Context, roomID int64, reas
 		return
 	}
 	if s.agentDecisions != nil {
-		s.agentDecisions.ClearRoom(roomID)
+		released, dropped := s.agentDecisions.ReleaseClaimed(roomID)
+		if released > 0 || dropped > 0 {
+			log.Printf("agent interaction execution released room=%d released=%d dropped=%d reason=%s", roomID, released, dropped, reason)
+		}
 	}
 	if s.speechRuntime != nil {
 		s.speechRuntime.Reset(roomID)

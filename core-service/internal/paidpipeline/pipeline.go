@@ -106,11 +106,9 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 	case "session_start":
 		p.setSessionStartedAt(event.RoomID, event.OccurredAt)
 		p.clearInteractionRoom(event.RoomID)
-		p.decisions.ClearRoom(event.RoomID)
 		return
 	case "session_end":
 		p.clearInteractionRoom(event.RoomID)
-		p.decisions.ClearRoom(event.RoomID)
 		_, _ = p.runtime.StopAgent(event.RoomID, agentwork.StopReasonLiveFinished)
 		return
 	}

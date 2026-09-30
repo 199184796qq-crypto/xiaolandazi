@@ -93,7 +93,7 @@ func TestControlModeAlsoAutoQueuesQuestions(t *testing.T) {
 	}
 }
 
-func TestSessionEndStopsPaidPipelineWithoutTouchingBaseState(t *testing.T) {
+func TestSessionEndStopsPaidPipelineWithoutClearingTimedInteractionTasks(t *testing.T) {
 	runtime := agentwork.New()
 	decisions := agentdecision.New()
 	pipeline := New(runtime, decisions)
@@ -116,8 +116,26 @@ func TestSessionEndStopsPaidPipelineWithoutTouchingBaseState(t *testing.T) {
 	if stopped.StopReason != agentwork.StopReasonLiveFinished {
 		t.Fatalf("session end stop reason=%q want live_finished", stopped.StopReason)
 	}
-	if got := decisions.Snapshot(7).Queue; len(got) != 0 {
-		t.Fatalf("session end must clear paid queue: %#v", got)
+	if got := decisions.Snapshot(7).Queue; len(got) != 1 {
+		t.Fatalf("session end must keep timed interaction tasks until their own expiry: %#v", got)
+	}
+}
+
+func TestSessionStartDoesNotClearTimedInteractionTasks(t *testing.T) {
+	runtime := agentwork.New()
+	decisions := agentdecision.New()
+	pipeline := New(runtime, decisions)
+	decisions.Enqueue(8, agentdecision.Candidate{
+		Source:   agentdecision.SourceAgent,
+		Topic:    "FAMILY:价格费用",
+		Question: "多少钱",
+	})
+
+	pipeline.Handle(model.RoomEvent{
+		RoomID: 8, EventType: "session_start", OccurredAt: time.Now().UTC(),
+	}, basepipeline.Signal{RoomID: 8})
+	if got := decisions.Snapshot(8).Queue; len(got) != 1 {
+		t.Fatalf("session start must not clear timed interaction tasks: %#v", got)
 	}
 }
 

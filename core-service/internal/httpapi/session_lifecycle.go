@@ -57,9 +57,6 @@ func (s *Server) resolveRoomSessionDecision(w http.ResponseWriter, r *http.Reque
 		if s.questions != nil {
 			s.questions.ClearRoom(roomID)
 		}
-		if s.agentDecisions != nil {
-			s.agentDecisions.ClearRoom(roomID)
-		}
 		if s.speechRuntime != nil {
 			s.speechRuntime.Reset(roomID)
 		}

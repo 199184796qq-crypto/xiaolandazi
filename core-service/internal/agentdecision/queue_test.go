@@ -146,6 +146,43 @@ func TestReleaseReturnsClaimedItemToPendingQueue(t *testing.T) {
 	}
 }
 
+func TestReleaseClaimedKeepsPendingAndDoesNotExtendLifetime(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	q := NewWithClock(func() time.Time { return now }, 2*time.Minute, 90*time.Second, 8)
+	first := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:first", Question: "第一条", ManualAction: "answer"}).Item
+	second := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:second", Question: "第二条", Priority: 10}).Item
+	if first == nil || second == nil {
+		t.Fatal("missing decisions")
+	}
+	claimed, ok := q.ClaimNext(1)
+	if !ok || claimed == nil {
+		t.Fatal("claim failed")
+	}
+	originalExpiresAt := claimed.ExpiresAt
+	now = now.Add(10 * time.Second)
+	released, dropped := q.ReleaseClaimed(1)
+	if released != 1 || dropped != 0 {
+		t.Fatalf("released=%d dropped=%d want 1/0", released, dropped)
+	}
+	snapshot := q.Snapshot(1)
+	if len(snapshot.Queue) != 2 {
+		t.Fatalf("queue=%#v want two tasks", snapshot.Queue)
+	}
+	foundReleased := false
+	foundPending := false
+	for _, item := range snapshot.Queue {
+		switch item.ID {
+		case claimed.ID:
+			foundReleased = item.Status == StatusPending && item.ClaimedAt == nil && item.ExpiresAt.Equal(originalExpiresAt)
+		case second.ID:
+			foundPending = item.Status == StatusPending
+		}
+	}
+	if !foundReleased || !foundPending {
+		t.Fatalf("unexpected queue after release claimed: %#v", snapshot.Queue)
+	}
+}
+
 func TestClaimTimeoutReturnsTaskToPendingWithoutExtendingLifetime(t *testing.T) {
 	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 5*time.Minute, 90*time.Second, 8)
