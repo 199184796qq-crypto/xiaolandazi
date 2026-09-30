@@ -34,6 +34,7 @@ const (
 	defaultInterval        = 800 * time.Millisecond
 	errorBackoff           = 15 * time.Second
 	maxWorkers             = 4
+	roomExecutionTimeout   = 90 * time.Second
 	maxSpeechRunes         = 300
 	addressingNameCooldown = 5 * time.Minute
 )
@@ -80,6 +81,7 @@ type Worker struct {
 	interval time.Duration
 	now      func() time.Time
 	missions *speechmission.Registry
+	slots    chan struct{}
 
 	mu         sync.Mutex
 	inFlight   map[int64]bool
@@ -1199,6 +1201,7 @@ func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...le
 		interval:    defaultInterval,
 		now:         func() time.Time { return time.Now().UTC() },
 		missions:    speechmission.New(),
+		slots:       make(chan struct{}, maxWorkers),
 		inFlight:    make(map[int64]bool),
 		retryAfter:  make(map[int64]time.Time),
 		recentNamed: make(map[int64]map[string]time.Time),
@@ -1353,26 +1356,34 @@ func (w *Worker) runCycle(ctx context.Context) {
 		log.Printf("decision executor list runtime sessions: %v", err)
 		return
 	}
-	sem := make(chan struct{}, maxWorkers)
-	var wg sync.WaitGroup
 	for _, session := range sessions {
 		if !strings.EqualFold(strings.TrimSpace(session.Status), "running") || !w.beginRoom(session.RoomID) {
 			continue
 		}
+		select {
+		case w.slots <- struct{}{}:
+			// A global worker slot is reserved for this room until the goroutine
+			// exits. Later scheduler ticks remain free to scan other rooms.
+		default:
+			w.endRoom(session.RoomID)
+			continue
+		}
 		session := session
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer func() { <-w.slots }()
 			defer w.endRoom(session.RoomID)
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := w.processRoom(ctx, session); err != nil {
+			roomCtx, cancel := context.WithTimeout(ctx, roomExecutionTimeout)
+			defer cancel()
+			if err := w.processRoom(roomCtx, session); err != nil {
 				w.backoffRoom(session.RoomID)
-				log.Printf("decision executor tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(roomCtx.Err(), context.DeadlineExceeded) {
+					log.Printf("decision executor tenant=%d room=%d timed out after %s", session.TenantID, session.RoomID, roomExecutionTimeout)
+				} else {
+					log.Printf("decision executor tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
+				}
 			}
 		}()
 	}
-	wg.Wait()
 }
 
 type coreSpeechRuntimeSnapshot struct {
@@ -1585,7 +1596,8 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if action == "quick" {
 		sourceType = "interrupt_quick"
 	}
-	if historyErr := w.store.RecordGeneratedSpeechHistory(ctx, model.GeneratedSpeechHistoryInput{
+	historyCtx, historyCancel := context.WithTimeout(ctx, 3*time.Second)
+	historyErr := w.store.RecordGeneratedSpeechHistory(historyCtx, model.GeneratedSpeechHistoryInput{
 		TenantID:          session.TenantID,
 		RoomID:            session.RoomID,
 		RuntimeSessionID:  session.ID,
@@ -1594,7 +1606,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		SourceType:        sourceType,
 		QuestionText:      primaryQuestion(*item),
 		GeneratedText:     text,
-	}); historyErr != nil {
+	})
+	historyCancel()
+	if historyErr != nil {
 		// 播音已经成功下发，历史写入失败不能触发重试，否则会重复播音。
 		log.Printf("decision executor history tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, historyErr)
 	}
