@@ -154,7 +154,7 @@ const error = useFeedbackErrorRef()
 const monitorToggleBusy = ref(false)
 const streamState = ref<'connecting' | 'online' | 'offline'>('connecting')
 const activeType = ref('all')
-const publicScreenMode = ref<'events' | 'bucket' | 'preferences'>('events')
+const publicScreenMode = ref<'events' | 'bucket' | 'execution' | 'preferences'>('events')
 let eventSource: EventSource | null = null
 let streamReconnectTimer: number | undefined
 let eventFallbackPollTimer: number | undefined
@@ -1328,6 +1328,20 @@ const selectedQuestionTTSEligible = computed(() => {
 
 const agentDecisionQueue = computed(() => agentDecisionState.value?.queue || [])
 const agentDecisionNotes = computed(() => (agentDecisionState.value?.notes || []).slice(0, 6))
+const interactionExecutionQueue = computed(() =>
+  [...agentDecisionQueue.value]
+    .filter((item) => item.status === 'CLAIMED' || Date.parse(item.expires_at) > dashboardNow.value)
+    .sort((a, b) => {
+      const aRunning = a.status === 'CLAIMED' ? 0 : 1
+      const bRunning = b.status === 'CLAIMED' ? 0 : 1
+      if (aRunning !== bRunning) return aRunning - bRunning
+      const aTime = Date.parse(a.claimed_at || a.created_at) || 0
+      const bTime = Date.parse(b.claimed_at || b.created_at) || 0
+      return aTime - bTime
+    }),
+)
+const interactionExecutionRunningCount = computed(() => interactionExecutionQueue.value.filter((item) => item.status === 'CLAIMED').length)
+const interactionExecutionPendingCount = computed(() => interactionExecutionQueue.value.filter((item) => item.status !== 'CLAIMED').length)
 
 function agentDecisionSourceLabel(item: AgentDecisionItem) {
   return item.sources?.includes('manual') ? '人工' : 'Agent'
@@ -1368,6 +1382,49 @@ function agentDecisionExpiryText(expiresAt: string) {
   const minutes = Math.floor(remain / 60)
   const seconds = remain % 60
   return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0')
+}
+
+function interactionExecutionTypeLabel(item: AgentDecisionItem) {
+  if (item.manual_action === 'quick') return '人工抢答'
+  if (item.manual_action === 'answer' || item.sources?.includes('manual')) return '人工回答'
+  const kind = String(item.mission_kind || '').toLowerCase()
+  const labels: Record<string, string> = {
+    welcome_named: '点名欢迎',
+    welcome_batch: '批量欢迎',
+    reply_chat: '弹幕互动',
+    reply_follow: '回应关注',
+    reply_like: '回应点赞',
+    reply_gift: '回应礼物',
+  }
+  if (labels[kind]) return labels[kind]
+  const topic = String(item.topic || '').toLowerCase()
+  if (topic.includes('question') || topic.includes('问题')) return '问题回答'
+  return item.title || '互动任务'
+}
+
+function interactionExecutionDetail(item: AgentDecisionItem) {
+  return item.summary || item.reply_hint || item.sample_questions?.[0] || item.title || '等待执行'
+}
+
+function interactionExecutionCountdown(item: AgentDecisionItem) {
+  if (item.status === 'CLAIMED') return '正在执行'
+  return '放弃倒计时 ' + agentDecisionExpiryText(item.expires_at)
+}
+
+async function removeInteractionExecutionItem(item: AgentDecisionItem) {
+  if (item.status === 'CLAIMED' || agentDecisionRemoveBusy.value) return
+  agentDecisionRemoveBusy.value = item.id
+  agentDecisionActionMessage.value = ''
+  try {
+    await removeRoomAgentDecision(roomId, item.id)
+    agentDecisionActionMessage.value = '已删除这条待执行互动。'
+    await refreshAgentDecisions()
+  } catch (err) {
+    agentDecisionActionMessage.value = err instanceof Error ? err.message : '删除互动任务失败'
+    await refreshAgentDecisions()
+  } finally {
+    agentDecisionRemoveBusy.value = ''
+  }
 }
 
 function openAgentDecisionContextMenu(mouseEvent: MouseEvent, item: AgentDecisionItem) {
@@ -4566,14 +4623,15 @@ onBeforeUnmount(() => {
         >
           <div class="panel-header">
             <div>
-              <span class="section-kicker">REALTIME</span>
-              <h3>实时公屏</h3>
+              <span class="section-kicker">{{ publicScreenMode === 'bucket' ? 'EVENT BUCKET' : publicScreenMode === 'execution' ? 'INTERACTION EXECUTION' : publicScreenMode === 'preferences' ? 'INTERACTION PREFERENCE' : 'REALTIME' }}</span>
+              <h3>{{ publicScreenMode === 'bucket' ? '事件桶' : publicScreenMode === 'execution' ? '互动执行' : publicScreenMode === 'preferences' ? '互动偏好' : '实时公屏' }}</h3>
             </div>
-            <span v-if="publicScreenMode !== 'preferences'" class="event-count">{{ publicScreenMode === 'bucket' ? semanticBuckets.length + ' 桶' : filteredEvents.length + ' 条' }}</span>
+            <span v-if="publicScreenMode !== 'preferences'" class="event-count">{{ publicScreenMode === 'bucket' ? semanticBuckets.length + ' 桶' : publicScreenMode === 'execution' ? interactionExecutionQueue.length + ' 条' : filteredEvents.length + ' 条' }}</span>
           </div>
           <div class="public-screen-mode-switch" role="tablist" aria-label="公屏视图切换">
             <button type="button" :class="{ active: publicScreenMode === 'events' }" @click="publicScreenMode = 'events'">实时公屏</button>
             <button type="button" :class="{ active: publicScreenMode === 'bucket' }" @click="publicScreenMode = 'bucket'">事件桶</button>
+            <button type="button" :class="{ active: publicScreenMode === 'execution' }" @click="publicScreenMode = 'execution'">互动执行</button>
             <button type="button" class="mobile-preferences-tab" :class="{ active: publicScreenMode === 'preferences' }" @click="publicScreenMode = 'preferences'">互动偏好</button>
           </div>
 
@@ -4739,6 +4797,62 @@ onBeforeUnmount(() => {
               </article>
             </div>
           </div>
+          <div v-if="publicScreenMode === 'execution'" class="interaction-execution-view">
+            <div class="interaction-execution-summary">
+              <span><b>{{ interactionExecutionRunningCount }}</b> 正在执行</span>
+              <span><b>{{ interactionExecutionPendingCount }}</b> 准备执行</span>
+              <small>按进入队列先后执行 · 新任务排在下面</small>
+            </div>
+
+            <div v-if="!interactionExecutionQueue.length" class="screen-empty compact interaction-execution-empty">
+              <strong>{{ aiRunning ? '暂时没有待执行互动' : '智能体还没工作' }}</strong>
+              <span>欢迎、关注、点赞、问答、抢答等进入执行队列后会显示在这里。</span>
+            </div>
+
+            <div v-else class="interaction-execution-list">
+              <article
+                v-for="(item, index) in interactionExecutionQueue"
+                :key="'interaction-execution-' + item.id"
+                class="interaction-execution-item"
+                :class="{
+                  running: item.status === 'CLAIMED',
+                  manual: item.sources?.includes('manual'),
+                }"
+              >
+                <div class="interaction-execution-order">
+                  <b>{{ item.status === 'CLAIMED' ? '执行中' : String(index + 1 - interactionExecutionRunningCount).padStart(2, '0') }}</b>
+                </div>
+                <div class="interaction-execution-copy">
+                  <header>
+                    <span class="interaction-execution-type">{{ interactionExecutionTypeLabel(item) }}</span>
+                    <time>{{ formatTime(item.created_at) }}</time>
+                  </header>
+                  <strong>{{ item.title || interactionExecutionTypeLabel(item) }}</strong>
+                  <p>{{ interactionExecutionDetail(item) }}</p>
+                  <div class="interaction-execution-meta">
+                    <span v-if="item.nicknames?.length">对象 {{ item.nicknames.slice(0, 3).join('、') }}</span>
+                    <span v-if="item.merged_count > 1">融合 {{ item.merged_count }} 条</span>
+                    <span :class="{ danger: item.status !== 'CLAIMED' && agentDecisionExpiryText(item.expires_at) === '00:00' }">
+                      {{ interactionExecutionCountdown(item) }}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="interaction-execution-delete"
+                  :disabled="item.status === 'CLAIMED' || agentDecisionRemoveBusy === item.id"
+                  :title="item.status === 'CLAIMED' ? '这条互动已经开始执行，不能只删除队列记录' : '删除这条待执行互动'"
+                  @click="removeInteractionExecutionItem(item)"
+                >
+                  {{ agentDecisionRemoveBusy === item.id ? '删除中' : '删除' }}
+                </button>
+              </article>
+            </div>
+
+            <div v-if="agentDecisionActionMessage" class="interaction-execution-message">
+              {{ agentDecisionActionMessage }}
+            </div>
+          </div>
           <RoomPreferenceHub
             v-if="publicScreenMode === 'preferences'"
             class="mobile-public-preference-hub"
@@ -4747,7 +4861,7 @@ onBeforeUnmount(() => {
             :mobile="true"
           />
           <div
-            v-if="publicScreenMode === 'events'"
+            v-if="publicScreenMode !== 'preferences'"
             class="public-screen-resize-handle"
             role="separator"
             aria-orientation="horizontal"
@@ -5894,13 +6008,162 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.public-screen-mode-switch{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 12px;padding:4px;border:1px solid #dbe2ef;border-radius:12px;background:#f5f7fb}.public-screen-mode-switch button{min-height:40px;border:0;border-radius:9px;background:transparent;color:#3e4b63;font-size:15px;font-weight:900;cursor:pointer}.public-screen-mode-switch button.active{background:#fff;color:#4f60ce;box-shadow:0 5px 14px rgba(58,74,132,.12)}.public-screen-mode-switch .mobile-preferences-tab{display:none}.public-event-bucket-view{display:grid;gap:14px;min-height:420px;max-height:1100px;overflow:auto;padding:4px 2px 10px}.public-event-bucket-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.public-event-bucket-summary article{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 13px;border:1px solid #e1e6f0;border-radius:12px;background:#fbfcff;box-shadow:0 5px 14px rgba(55,72,128,.04);transition:transform .16s ease,box-shadow .16s ease}.public-event-bucket-summary article:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(55,72,128,.09)}.public-event-bucket-summary span{color:#34435f;font-size:15px;font-weight:850}.public-event-bucket-summary strong{font-size:18px;font-weight:950}.public-event-bucket-summary .tone-entry{border-color:#cce8df;background:linear-gradient(135deg,#f3fbf7,#edf8f4)}.public-event-bucket-summary .tone-entry:hover{border-color:#8fcfb9;background:linear-gradient(135deg,#e6f8f0,#dff4eb)}.public-event-bucket-summary .tone-entry strong{color:#2d8b6b}.public-event-bucket-summary .tone-chat{border-color:#d9def9;background:linear-gradient(135deg,#f7f7ff,#f0f2ff)}.public-event-bucket-summary .tone-chat:hover{border-color:#aeb8ef;background:linear-gradient(135deg,#ecefff,#e4e8ff)}.public-event-bucket-summary .tone-chat strong{color:#5a67d8}.public-event-bucket-summary .tone-like{border-color:#f2dfbd;background:linear-gradient(135deg,#fffaf0,#fff5df)}.public-event-bucket-summary .tone-like:hover{border-color:#e7bf79;background:linear-gradient(135deg,#fff3d8,#ffedc8)}.public-event-bucket-summary .tone-like strong{color:#c6842e}.public-event-bucket-summary .tone-follow{border-color:#cfe3f6;background:linear-gradient(135deg,#f3f9ff,#edf6ff)}.public-event-bucket-summary .tone-follow:hover{border-color:#99c7ed;background:linear-gradient(135deg,#e9f5ff,#dfefff)}.public-event-bucket-summary .tone-follow strong{color:#3f82bd}.public-event-bucket-summary .tone-gift{border-color:#edd5f2;background:linear-gradient(135deg,#fff6ff,#f9effc)}.public-event-bucket-summary .tone-gift:hover{border-color:#d7a9e2;background:linear-gradient(135deg,#fbedff,#f3e3f8)}.public-event-bucket-summary .tone-gift strong{color:#9a63b5}.public-event-bucket-summary .tone-order{border-color:#f1d1d4;background:linear-gradient(135deg,#fff6f6,#fff0f1)}.public-event-bucket-summary .tone-order:hover{border-color:#e7a2a9;background:linear-gradient(135deg,#ffecee,#ffe2e5)}.public-event-bucket-summary .tone-order strong{color:#c55461}.public-question-buckets{display:grid;gap:9px}.public-question-buckets>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:2px}.public-question-buckets>header strong{color:#2d3a55;font-size:17px;font-weight:950}.public-question-buckets>header span{color:#53627c;font-size:14px;font-weight:800}.public-question-bucket{border:1px solid #dfe5f2;border-radius:12px;background:#fff;overflow:hidden;box-shadow:0 5px 14px rgba(55,72,128,.035);transform:translateY(0);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.public-question-bucket:hover{transform:translateY(-3px);border-color:#bfc9ee;box-shadow:0 14px 28px rgba(66,82,146,.13)}.public-question-bucket-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}.public-question-bucket-main{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 13px;border:0;background:linear-gradient(90deg,#fff,#fafbff);text-align:left;cursor:pointer;transition:background .2s ease,padding-left .2s ease}.public-question-bucket:hover .public-question-bucket-main{padding-left:17px;background:linear-gradient(90deg,#edf2ff,#fff)}.public-question-bucket-main>span{display:grid;gap:4px;min-width:0}.public-question-bucket-main strong{color:#2f3b56;font-size:15px;font-weight:950}.public-question-bucket-main small{color:#56647c;font-size:13px;font-weight:700}.public-question-bucket-main>b{flex:0 0 auto;padding:5px 8px;border-radius:999px;background:#eef1ff;color:#5967cc;font-size:13px;transform:scale(1);transition:transform .18s ease,box-shadow .18s ease}.public-question-bucket:hover .public-question-bucket-main>b{transform:scale(1.08);box-shadow:0 5px 12px rgba(83,99,201,.16)}.public-question-bucket.tone-hot{border-color:#f0cfd3}.public-question-bucket.tone-hot .public-question-bucket-main{background:linear-gradient(90deg,#fff5f6,#fff)}.public-question-bucket.tone-hot:hover{border-color:#df8f99;background:#fff3f4;box-shadow:0 14px 30px rgba(186,75,89,.16)}.public-question-bucket.tone-hot:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffe6e9,#fff5f6)}.public-question-bucket.tone-hot .public-question-bucket-main>b{background:#ffe7e9;color:#c8515f}.public-question-bucket.tone-warm{border-color:#f0dfbf}.public-question-bucket.tone-warm .public-question-bucket-main{background:linear-gradient(90deg,#fff9ee,#fff)}.public-question-bucket.tone-warm:hover{border-color:#ddb66c;background:#fff9ed;box-shadow:0 14px 30px rgba(181,126,46,.15)}.public-question-bucket.tone-warm:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffefcf,#fff9ee)}.public-question-bucket.tone-warm .public-question-bucket-main>b{background:#fff0d5;color:#b77a28}.public-question-bucket.tone-cool{border-color:#d6def8}.public-question-bucket.tone-cool .public-question-bucket-main{background:linear-gradient(90deg,#f6f8ff,#fff)}.public-question-bucket.tone-cool:hover{border-color:#aab8ee;background:#f4f6ff;box-shadow:0 14px 30px rgba(77,94,186,.15)}.public-question-bucket.tone-cool:hover .public-question-bucket-main{background:linear-gradient(90deg,#e8edff,#f9faff)}.public-question-bucket.tone-cool .public-question-bucket-main>b{background:#e9edff;color:#5969d2}.public-question-list{display:grid;gap:8px;padding:0 12px 12px}.public-question-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px 11px;border:1px solid transparent;border-radius:10px;background:#f7f9fc;transform:translateX(0);transition:transform .18s ease,background .18s ease,box-shadow .18s ease,border-color .18s ease}.public-question-item:hover{transform:translateX(5px);border-color:#cbd4ef;background:#edf2ff;box-shadow:0 8px 18px rgba(66,82,146,.11)}.public-question-item-copy{min-width:0;cursor:pointer}.public-question-list span{color:#56647a;font-size:12px;font-weight:800}.public-question-list p{margin:5px 0 0;color:#2f3a50;font-size:14px;line-height:1.55}.public-question-actions{display:flex;align-items:center;gap:6px;padding-right:10px;opacity:.18;transform:translateX(4px);transition:opacity .18s ease,transform .18s ease}.public-question-bucket:hover>.public-question-bucket-head .public-question-actions,.public-question-bucket:focus-within>.public-question-bucket-head .public-question-actions,.public-question-item:hover .public-question-actions,.public-question-item:focus-within .public-question-actions{opacity:1;transform:translateX(0)}.public-question-actions button{min-width:46px;min-height:32px;padding:5px 9px;border-radius:8px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,filter .15s ease}.public-question-actions button:hover:not(:disabled){transform:translateY(-1px);filter:saturate(1.08)}.public-question-actions .correct{border:1px solid #c5c9ee;background:#f0f1ff;color:#5962b2}.public-question-actions .quick{border:1px solid #efc58e;background:#fff1df;color:#b76b23}.public-question-actions .answer{border:1px solid #a9d8c5;background:#e9f8f1;color:#287858}.public-question-actions .correct:hover:not(:disabled){box-shadow:0 6px 14px rgba(89,98,178,.16)}.public-question-actions .quick:hover:not(:disabled){box-shadow:0 6px 14px rgba(183,107,35,.16)}.public-question-actions .answer:hover:not(:disabled){box-shadow:0 6px 14px rgba(40,120,88,.16)}.public-question-actions button:disabled{opacity:.42;cursor:not-allowed;transform:none}.public-question-actions.item-actions{padding-right:0}.public-question-action-message{margin:0 12px 12px;padding:8px 10px;border-radius:9px;background:#edf3ff;color:#4960a8;font-size:13px;font-weight:800}.room-middle-interaction-preferences{width:100%}.mobile-public-interaction-preferences{display:none}
+.public-screen-mode-switch{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 12px;padding:4px;border:1px solid #dbe2ef;border-radius:12px;background:#f5f7fb}.public-screen-mode-switch button{min-height:40px;border:0;border-radius:9px;background:transparent;color:#3e4b63;font-size:15px;font-weight:900;cursor:pointer}.public-screen-mode-switch button.active{background:#fff;color:#4f60ce;box-shadow:0 5px 14px rgba(58,74,132,.12)}.public-screen-mode-switch .mobile-preferences-tab{display:none}.public-event-bucket-view{display:grid;gap:14px;min-height:420px;max-height:1100px;overflow:auto;padding:4px 2px 10px}.public-event-bucket-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.public-event-bucket-summary article{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 13px;border:1px solid #e1e6f0;border-radius:12px;background:#fbfcff;box-shadow:0 5px 14px rgba(55,72,128,.04);transition:transform .16s ease,box-shadow .16s ease}.public-event-bucket-summary article:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(55,72,128,.09)}.public-event-bucket-summary span{color:#34435f;font-size:15px;font-weight:850}.public-event-bucket-summary strong{font-size:18px;font-weight:950}.public-event-bucket-summary .tone-entry{border-color:#cce8df;background:linear-gradient(135deg,#f3fbf7,#edf8f4)}.public-event-bucket-summary .tone-entry:hover{border-color:#8fcfb9;background:linear-gradient(135deg,#e6f8f0,#dff4eb)}.public-event-bucket-summary .tone-entry strong{color:#2d8b6b}.public-event-bucket-summary .tone-chat{border-color:#d9def9;background:linear-gradient(135deg,#f7f7ff,#f0f2ff)}.public-event-bucket-summary .tone-chat:hover{border-color:#aeb8ef;background:linear-gradient(135deg,#ecefff,#e4e8ff)}.public-event-bucket-summary .tone-chat strong{color:#5a67d8}.public-event-bucket-summary .tone-like{border-color:#f2dfbd;background:linear-gradient(135deg,#fffaf0,#fff5df)}.public-event-bucket-summary .tone-like:hover{border-color:#e7bf79;background:linear-gradient(135deg,#fff3d8,#ffedc8)}.public-event-bucket-summary .tone-like strong{color:#c6842e}.public-event-bucket-summary .tone-follow{border-color:#cfe3f6;background:linear-gradient(135deg,#f3f9ff,#edf6ff)}.public-event-bucket-summary .tone-follow:hover{border-color:#99c7ed;background:linear-gradient(135deg,#e9f5ff,#dfefff)}.public-event-bucket-summary .tone-follow strong{color:#3f82bd}.public-event-bucket-summary .tone-gift{border-color:#edd5f2;background:linear-gradient(135deg,#fff6ff,#f9effc)}.public-event-bucket-summary .tone-gift:hover{border-color:#d7a9e2;background:linear-gradient(135deg,#fbedff,#f3e3f8)}.public-event-bucket-summary .tone-gift strong{color:#9a63b5}.public-event-bucket-summary .tone-order{border-color:#f1d1d4;background:linear-gradient(135deg,#fff6f6,#fff0f1)}.public-event-bucket-summary .tone-order:hover{border-color:#e7a2a9;background:linear-gradient(135deg,#ffecee,#ffe2e5)}.public-event-bucket-summary .tone-order strong{color:#c55461}.public-question-buckets{display:grid;gap:9px}.public-question-buckets>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:2px}.public-question-buckets>header strong{color:#2d3a55;font-size:17px;font-weight:950}.public-question-buckets>header span{color:#53627c;font-size:14px;font-weight:800}.public-question-bucket{border:1px solid #dfe5f2;border-radius:12px;background:#fff;overflow:hidden;box-shadow:0 5px 14px rgba(55,72,128,.035);transform:translateY(0);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.public-question-bucket:hover{transform:translateY(-3px);border-color:#bfc9ee;box-shadow:0 14px 28px rgba(66,82,146,.13)}.public-question-bucket-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}.public-question-bucket-main{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 13px;border:0;background:linear-gradient(90deg,#fff,#fafbff);text-align:left;cursor:pointer;transition:background .2s ease,padding-left .2s ease}.public-question-bucket:hover .public-question-bucket-main{padding-left:17px;background:linear-gradient(90deg,#edf2ff,#fff)}.public-question-bucket-main>span{display:grid;gap:4px;min-width:0}.public-question-bucket-main strong{color:#2f3b56;font-size:15px;font-weight:950}.public-question-bucket-main small{color:#56647c;font-size:13px;font-weight:700}.public-question-bucket-main>b{flex:0 0 auto;padding:5px 8px;border-radius:999px;background:#eef1ff;color:#5967cc;font-size:13px;transform:scale(1);transition:transform .18s ease,box-shadow .18s ease}.public-question-bucket:hover .public-question-bucket-main>b{transform:scale(1.08);box-shadow:0 5px 12px rgba(83,99,201,.16)}.public-question-bucket.tone-hot{border-color:#f0cfd3}.public-question-bucket.tone-hot .public-question-bucket-main{background:linear-gradient(90deg,#fff5f6,#fff)}.public-question-bucket.tone-hot:hover{border-color:#df8f99;background:#fff3f4;box-shadow:0 14px 30px rgba(186,75,89,.16)}.public-question-bucket.tone-hot:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffe6e9,#fff5f6)}.public-question-bucket.tone-hot .public-question-bucket-main>b{background:#ffe7e9;color:#c8515f}.public-question-bucket.tone-warm{border-color:#f0dfbf}.public-question-bucket.tone-warm .public-question-bucket-main{background:linear-gradient(90deg,#fff9ee,#fff)}.public-question-bucket.tone-warm:hover{border-color:#ddb66c;background:#fff9ed;box-shadow:0 14px 30px rgba(181,126,46,.15)}.public-question-bucket.tone-warm:hover .public-question-bucket-main{background:linear-gradient(90deg,#ffefcf,#fff9ee)}.public-question-bucket.tone-warm .public-question-bucket-main>b{background:#fff0d5;color:#b77a28}.public-question-bucket.tone-cool{border-color:#d6def8}.public-question-bucket.tone-cool .public-question-bucket-main{background:linear-gradient(90deg,#f6f8ff,#fff)}.public-question-bucket.tone-cool:hover{border-color:#aab8ee;background:#f4f6ff;box-shadow:0 14px 30px rgba(77,94,186,.15)}.public-question-bucket.tone-cool:hover .public-question-bucket-main{background:linear-gradient(90deg,#e8edff,#f9faff)}.public-question-bucket.tone-cool .public-question-bucket-main>b{background:#e9edff;color:#5969d2}.public-question-list{display:grid;gap:8px;padding:0 12px 12px}.public-question-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px 11px;border:1px solid transparent;border-radius:10px;background:#f7f9fc;transform:translateX(0);transition:transform .18s ease,background .18s ease,box-shadow .18s ease,border-color .18s ease}.public-question-item:hover{transform:translateX(5px);border-color:#cbd4ef;background:#edf2ff;box-shadow:0 8px 18px rgba(66,82,146,.11)}.public-question-item-copy{min-width:0;cursor:pointer}.public-question-list span{color:#56647a;font-size:12px;font-weight:800}.public-question-list p{margin:5px 0 0;color:#2f3a50;font-size:14px;line-height:1.55}.public-question-actions{display:flex;align-items:center;gap:6px;padding-right:10px;opacity:.18;transform:translateX(4px);transition:opacity .18s ease,transform .18s ease}.public-question-bucket:hover>.public-question-bucket-head .public-question-actions,.public-question-bucket:focus-within>.public-question-bucket-head .public-question-actions,.public-question-item:hover .public-question-actions,.public-question-item:focus-within .public-question-actions{opacity:1;transform:translateX(0)}.public-question-actions button{min-width:46px;min-height:32px;padding:5px 9px;border-radius:8px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,filter .15s ease}.public-question-actions button:hover:not(:disabled){transform:translateY(-1px);filter:saturate(1.08)}.public-question-actions .correct{border:1px solid #c5c9ee;background:#f0f1ff;color:#5962b2}.public-question-actions .quick{border:1px solid #efc58e;background:#fff1df;color:#b76b23}.public-question-actions .answer{border:1px solid #a9d8c5;background:#e9f8f1;color:#287858}.public-question-actions .correct:hover:not(:disabled){box-shadow:0 6px 14px rgba(89,98,178,.16)}.public-question-actions .quick:hover:not(:disabled){box-shadow:0 6px 14px rgba(183,107,35,.16)}.public-question-actions .answer:hover:not(:disabled){box-shadow:0 6px 14px rgba(40,120,88,.16)}.public-question-actions button:disabled{opacity:.42;cursor:not-allowed;transform:none}.public-question-actions.item-actions{padding-right:0}.public-question-action-message{margin:0 12px 12px;padding:8px 10px;border-radius:9px;background:#edf3ff;color:#4960a8;font-size:13px;font-weight:800}.room-middle-interaction-preferences{width:100%}.mobile-public-interaction-preferences{display:none}
+
+.interaction-execution-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 11px;
+  min-height: 420px;
+  max-height: 1100px;
+  overflow: hidden;
+  padding: 4px 2px 10px;
+}
+.interaction-execution-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e2e7f1;
+  border-radius: 12px;
+  background: #f8faff;
+}
+.interaction-execution-summary > span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #56627a;
+  background: #eef1f8;
+  font-size: 12px;
+  font-weight: 850;
+}
+.interaction-execution-summary > span:first-child {
+  color: #20765d;
+  background: #e8f7f1;
+}
+.interaction-execution-summary b { font-size: 14px; }
+.interaction-execution-summary small {
+  flex: 1 1 100%;
+  color: #8a94a7;
+  font-size: 11px;
+}
+.interaction-execution-list {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+.interaction-execution-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 10px;
+  border: 1px solid #e1e6ef;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 15px rgba(52, 66, 112, .045);
+}
+.interaction-execution-item.running {
+  border-color: #a7d9c7;
+  background: linear-gradient(135deg, #f0fbf7, #fff);
+  box-shadow: inset 3px 0 0 #45b58e, 0 8px 18px rgba(53, 132, 106, .08);
+}
+.interaction-execution-item.manual:not(.running) {
+  border-color: #cfd4f5;
+  background: linear-gradient(135deg, #f7f7ff, #fff);
+}
+.interaction-execution-order {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border-radius: 9px;
+  color: #69758b;
+  background: #f1f3f8;
+  font-size: 11px;
+}
+.interaction-execution-item.running .interaction-execution-order {
+  color: #28795f;
+  background: #dff4eb;
+}
+.interaction-execution-copy { display: grid; gap: 5px; min-width: 0; }
+.interaction-execution-copy > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.interaction-execution-copy > header time { color: #9aa3b4; font-size: 10px; }
+.interaction-execution-type {
+  display: inline-flex;
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #5966c7;
+  background: #edf0ff;
+  font-size: 10px;
+  font-weight: 900;
+}
+.interaction-execution-item.running .interaction-execution-type {
+  color: #2c7b61;
+  background: #e1f5ed;
+}
+.interaction-execution-copy > strong {
+  color: #333f59;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.interaction-execution-copy > p {
+  margin: 0;
+  color: #68758c;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.interaction-execution-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  color: #9099aa;
+  font-size: 10px;
+  font-weight: 750;
+}
+.interaction-execution-meta .danger { color: #c4555d; }
+.interaction-execution-delete {
+  align-self: center;
+  min-width: 48px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid #ead6d9;
+  border-radius: 8px;
+  color: #a9555e;
+  background: #fff8f8;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.interaction-execution-delete:hover:not(:disabled) { background: #fff0f1; }
+.interaction-execution-delete:disabled { opacity: .38; cursor: not-allowed; }
+.interaction-execution-message {
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #4960a8;
+  background: #edf3ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+.interaction-execution-empty { min-height: 250px; }
 .speech-runtime-unified{display:grid;gap:13px;min-height:190px;padding:18px;border:1px solid rgba(126,151,232,.22);border-radius:16px;background:linear-gradient(180deg,rgba(24,31,49,.98),rgba(18,24,39,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
 .speech-runtime-unified .speech-mainline-live-caption{min-height:94px}
 .speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}
 .speech-runtime-unified-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:38px;overflow:hidden}.speech-runtime-unified-wave i{display:block;width:3px;height:var(--wave-height);max-height:32px;border-radius:999px;background:#6978dd;opacity:.45;transform:scaleY(.45);transform-origin:center;transition:.18s ease}.speech-runtime-unified-wave.active i{opacity:.9;animation:speech-wave-pulse .78s ease-in-out infinite alternate;animation-delay:var(--wave-delay)}
 @media (hover:none){.public-question-actions{opacity:1;transform:none}}
-@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(3,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:15px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}}
+@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}}
 
 .speech-track-head-actions {
   display: flex;

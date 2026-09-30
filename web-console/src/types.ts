@@ -1094,6 +1094,9 @@ export interface AgentDecisionItem {
   title: string
   summary?: string
   reply_hint?: string
+  mission_kind?: string
+  mission_event_count?: number
+  mission_window_seconds?: number
   priority: number
   status: string
   sources: AgentDecisionSource[]
@@ -1101,6 +1104,7 @@ export interface AgentDecisionItem {
   sample_questions?: string[]
   linked_event_ids?: number[]
   user_ids?: string[]
+  nicknames?: string[]
   created_at: string
   last_seen_at: string
   expires_at: string
