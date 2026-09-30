@@ -273,6 +273,45 @@ func resumePointAtOrAfter(program audioout.RoomProgramSnapshot, offsetMS int) (a
 	return audioout.ProgramSafePoint{}, false
 }
 
+type semanticResumeBreakpoint struct {
+	CutAfterSegmentID       string
+	OriginalResumeSegmentID string
+	CoveredSegmentIDs       []string
+	PlannedResumeSegmentID  string
+	SkipCount               int
+}
+
+func semanticResumeBreakpointFor(program audioout.RoomProgramSnapshot, cutMS, resumeMS int) semanticResumeBreakpoint {
+	result := semanticResumeBreakpoint{}
+	if cutMS < 0 {
+		cutMS = 0
+	}
+	if resumeMS < cutMS {
+		resumeMS = cutMS
+	}
+	for _, segment := range program.Timeline {
+		if segment.EndMS == cutMS && strings.TrimSpace(segment.SegmentID) != "" {
+			result.CutAfterSegmentID = strings.TrimSpace(segment.SegmentID)
+		}
+		if result.OriginalResumeSegmentID == "" && segment.StartMS >= cutMS && strings.TrimSpace(segment.SegmentID) != "" {
+			result.OriginalResumeSegmentID = strings.TrimSpace(segment.SegmentID)
+		}
+		if result.PlannedResumeSegmentID == "" && segment.StartMS >= resumeMS && strings.TrimSpace(segment.SegmentID) != "" {
+			result.PlannedResumeSegmentID = strings.TrimSpace(segment.SegmentID)
+		}
+		if segment.StartMS >= cutMS && segment.StartMS < resumeMS && strings.TrimSpace(segment.SegmentID) != "" {
+			result.CoveredSegmentIDs = append(result.CoveredSegmentIDs, strings.TrimSpace(segment.SegmentID))
+		}
+	}
+	if result.CutAfterSegmentID == "" {
+		if point, ok := resumePointAtOrAfter(program, cutMS); ok {
+			result.CutAfterSegmentID = strings.TrimSpace(point.SentenceID)
+		}
+	}
+	result.SkipCount = len(result.CoveredSegmentIDs)
+	return result
+}
+
 func resumePreview(program audioout.RoomProgramSnapshot, point audioout.ProgramSafePoint) string {
 	parts := make([]string, 0, 2)
 	if preview := strings.TrimSpace(point.NextPreview); preview != "" {
@@ -1013,16 +1052,25 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		})
 	}
 	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID)
+	actualResumeSegmentID := ""
+	actualSkipCount := 0
+	if !controlMode && switchAtMS != nil && resumeOffsetMS != nil {
+		breakpoint := semanticResumeBreakpointFor(program, *switchAtMS, *resumeOffsetMS)
+		actualResumeSegmentID = breakpoint.PlannedResumeSegmentID
+		actualSkipCount = breakpoint.SkipCount
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"mission_id":       input.MissionID,
-		"dispatched":       true,
-		"action":           input.Action,
-		"switch_at_ms":     switchAtMS,
-		"resume_offset_ms": resumeOffsetMS,
-		"resume_strategy":  resumeMode,
-		"bridge_used":      bridgeUsed,
-		"dedup_triggered":  resumeDedupTriggered,
-		"duplicate_score":  resumeDuplicateScore,
-		"task":             task,
+		"mission_id":        input.MissionID,
+		"dispatched":        true,
+		"action":            input.Action,
+		"switch_at_ms":      switchAtMS,
+		"resume_offset_ms":  resumeOffsetMS,
+		"resume_strategy":   resumeMode,
+		"resume_segment_id": actualResumeSegmentID,
+		"actual_skip_count": actualSkipCount,
+		"bridge_used":       bridgeUsed,
+		"dedup_triggered":   resumeDedupTriggered,
+		"duplicate_score":   resumeDuplicateScore,
+		"task":              task,
 	})
 }

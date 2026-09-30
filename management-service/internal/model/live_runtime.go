@@ -178,7 +178,7 @@ type RoomInteractionPreferences struct {
 	EngagementPreference string    `json:"engagement_preference"`
 	ChatPreference       string    `json:"chat_preference"`
 	ConversionPreference string    `json:"conversion_preference"`
-	AutoHeat              bool      `json:"auto_heat"`
+	AutoHeat             bool      `json:"auto_heat"`
 	UpdatedByUserID      *int64    `json:"updated_by_user_id,omitempty"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
@@ -190,7 +190,39 @@ type RoomInteractionPreferencesInput struct {
 	EngagementPreference string `json:"engagement_preference"`
 	ChatPreference       string `json:"chat_preference"`
 	ConversionPreference string `json:"conversion_preference"`
-	AutoHeat              bool   `json:"auto_heat"`
+	AutoHeat             bool   `json:"auto_heat"`
+}
+
+type RoomHumanBehaviorProfile struct {
+	TenantID        int64      `json:"tenant_id"`
+	RoomID          int64      `json:"room_id"`
+	TraitText       string     `json:"trait_text"`
+	StateText       string     `json:"state_text"`
+	StateExpiresAt  *time.Time `json:"state_expires_at,omitempty"`
+	UpdatedByUserID *int64     `json:"updated_by_user_id,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+type RoomHumanBehaviorProfileInput struct {
+	TraitText      string     `json:"trait_text"`
+	StateText      string     `json:"state_text"`
+	StateExpiresAt *time.Time `json:"state_expires_at,omitempty"`
+}
+
+type RoomAddressingPreferences struct {
+	TenantID         int64     `json:"tenant_id"`
+	RoomID           int64     `json:"room_id"`
+	NamingPreference string    `json:"naming_preference"`
+	PreferredTerms   []string  `json:"preferred_terms"`
+	BlockedTerms     []string  `json:"blocked_terms"`
+	UpdatedByUserID  *int64    `json:"updated_by_user_id,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type RoomAddressingPreferencesInput struct {
+	NamingPreference string   `json:"naming_preference"`
+	PreferredTerms   []string `json:"preferred_terms"`
+	BlockedTerms     []string `json:"blocked_terms"`
 }
 
 type RecordLiveRuntimeEventInput struct {

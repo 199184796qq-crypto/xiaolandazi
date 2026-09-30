@@ -52,7 +52,7 @@ import { session } from '../session'
 import { coreRuntime } from '../coreRuntime'
 import { getSharedAudioContext, unlockSharedAudioContext } from '../audioRuntime'
 import ModulePageNav from '../components/ModulePageNav.vue'
-import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
+import RoomPreferenceHub from '../components/RoomPreferenceHub.vue'
 import type {
   LiveAgentSettings,
   LiveAgentPlan,
@@ -320,7 +320,10 @@ const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
 const speechMissions = ref<SpeechMission[]>([])
 const speechMissionOpen = ref(false)
-const latestSpeechMission = computed(() => speechMissions.value[0] || null)
+const selectedSpeechMissionId = ref('')
+const latestSpeechMission = computed(() =>
+  speechMissions.value.find((item) => item.id === selectedSpeechMissionId.value) || speechMissions.value[0] || null,
+)
 const speechHistoryOpen = ref(false)
 const speechHistoryLoading = ref(false)
 const speechHistoryError = ref('')
@@ -3322,6 +3325,9 @@ async function refreshSpeechMissions() {
     const result = await getRoomSpeechMissions(roomId)
     updatePreservingPageBottom(() => {
       speechMissions.value = result.missions || []
+      if (!selectedSpeechMissionId.value || !speechMissions.value.some((item) => item.id === selectedSpeechMissionId.value)) {
+        selectedSpeechMissionId.value = speechMissions.value[0]?.id || ''
+      }
     })
   } catch {
     // Keep the last good mission blackboard during a transient service hiccup.
@@ -4579,8 +4585,11 @@ onBeforeUnmount(() => {
                 {{ eventLabel(event.event_type) }}
               </span>
               <div class="event-body event-stacked">
-                <div class="event-topline">
-                  <span class="event-user">【{{ event.nickname || '直播间用户' }}】：</span>
+                <div
+                  class="event-topline"
+                  :class="{ 'actions-only': aiRunning && isDirectAnswerEvent(event) }"
+                >
+                  <span v-if="!(aiRunning && isDirectAnswerEvent(event))" class="event-user">【{{ event.nickname || '直播间用户' }}】：</span>
                   <div v-if="aiRunning && isDirectAnswerEvent(event)" class="event-ai-actions" @click.stop @contextmenu.stop>
                     <button
                       type="button"
@@ -4601,7 +4610,11 @@ onBeforeUnmount(() => {
                     >{{ eventDecisionLabel(event, 'answer') }}</button>
                   </div>
                 </div>
-                <span class="event-action">{{ event.content || eventLabel(event.event_type) }}</span>
+                <div v-if="aiRunning && isDirectAnswerEvent(event)" class="event-message-line">
+                  <span class="event-user">【{{ event.nickname || '直播间用户' }}】：</span>
+                  <span class="event-action">{{ event.content || eventLabel(event.event_type) }}</span>
+                </div>
+                <span v-else class="event-action">{{ event.content || eventLabel(event.event_type) }}</span>
                 <small v-if="eventDecisionRowState(event.id).message" class="event-ai-feedback ok">{{ eventDecisionRowState(event.id).message }}</small>
                 <small v-else-if="eventDecisionRowState(event.id).error" class="event-ai-feedback error">{{ eventDecisionRowState(event.id).error }}</small>
               </div>
@@ -4687,9 +4700,9 @@ onBeforeUnmount(() => {
               </article>
             </div>
           </div>
-          <RoomInteractionPreferences
+          <RoomPreferenceHub
             v-if="publicScreenMode === 'preferences'"
-            class="mobile-public-interaction-preferences"
+            class="mobile-public-preference-hub"
             :room-id="roomId"
             compact
             :mobile="true"
@@ -4707,8 +4720,8 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="live-control-stack">
-          <RoomInteractionPreferences
-            class="room-middle-interaction-preferences"
+          <RoomPreferenceHub
+            class="room-middle-preference-hub"
             :room-id="roomId"
             compact
           />
@@ -4745,13 +4758,64 @@ onBeforeUnmount(() => {
             <div v-if="isInternalViewer && speechMissionOpen" class="speech-mission-board">
               <template v-if="latestSpeechMission">
                 <header>
-                  <div>
+                  <div class="speech-mission-title">
                     <small>MISSION {{ latestSpeechMission.id }}</small>
                     <strong>{{ speechMissionStateLabel(latestSpeechMission.state) }}</strong>
                   </div>
-                  <time>{{ formatTime(latestSpeechMission.updated_at) }}</time>
+                  <div class="speech-mission-header-actions">
+                    <select v-model="selectedSpeechMissionId" aria-label="选择口播任务">
+                      <option v-for="mission in speechMissions.slice(0, 20)" :key="mission.id" :value="mission.id">
+                        {{ mission.id }} · {{ speechMissionStateLabel(mission.state) }}
+                      </option>
+                    </select>
+                    <time>{{ formatTime(latestSpeechMission.updated_at) }}</time>
+                  </div>
                 </header>
+                <div class="speech-mission-flow">
+                  <span>
+                    <small>事件价值</small>
+                    <b>{{ Number(latestSpeechMission.interaction.decision?.event_value || 0) > 0 ? Number(latestSpeechMission.interaction.decision.event_value).toFixed(1) : '—' }}</b>
+                  </span>
+                  <i>→</i>
+                  <span>
+                    <small>热度</small>
+                    <b>{{ latestSpeechMission.interaction.decision?.heat || latestSpeechMission.human_style.state?.heat || '—' }}</b>
+                  </span>
+                  <i>→</i>
+                  <span>
+                    <small>决策</small>
+                    <b>{{ latestSpeechMission.interaction.decision?.budget_allowed ? '放行' : '等待' }}</b>
+                  </span>
+                  <i>→</i>
+                  <span>
+                    <small>文本</small>
+                    <b>{{ latestSpeechMission.generated_text ? '已生成' : '待生成' }}</b>
+                  </span>
+                  <i>→</i>
+                  <span>
+                    <small>TTS</small>
+                    <b>{{ latestSpeechMission.tts.audio_url ? '已生成' : '待生成' }}</b>
+                  </span>
+                  <i>→</i>
+                  <span>
+                    <small>恢复段</small>
+                    <b>{{ latestSpeechMission.resume.actual_resume_segment || latestSpeechMission.resume.planned_resume_segment || latestSpeechMission.resume.resume_segment_id || '—' }}</b>
+                  </span>
+                </div>
                 <div class="speech-mission-grid">
+                  <article>
+                    <span>事件决策</span>
+                    <b>
+                      {{ latestSpeechMission.interaction.decision?.value_level || '—' }}
+                      ·
+                      {{ Number(latestSpeechMission.interaction.decision?.event_value || 0) > 0 ? Number(latestSpeechMission.interaction.decision.event_value).toFixed(1) : '—' }}
+                    </b>
+                    <small>
+                      {{ latestSpeechMission.interaction.decision?.heat || '—' }}
+                      · {{ latestSpeechMission.interaction.decision?.budget_level || '—' }}
+                      · {{ latestSpeechMission.interaction.decision?.budget_allowed ? '已放行' : '继续等待' }}
+                    </small>
+                  </article>
                   <article>
                     <span>互动</span>
                     <b>{{ latestSpeechMission.interaction.goal || latestSpeechMission.event.title || '—' }}</b>
@@ -4765,13 +4829,54 @@ onBeforeUnmount(() => {
                   <article>
                     <span>回归</span>
                     <b>{{ latestSpeechMission.resume.name || latestSpeechMission.resume.strategy || '—' }}</b>
-                    <small>计划 {{ missionMS(latestSpeechMission.resume.planned_resume_at_ms) }} · 实际 {{ missionMS(latestSpeechMission.resume.actual_resume_at_ms) }}</small>
+                    <small>
+                      {{ latestSpeechMission.resume.cut_after_segment || '—' }}
+                      → {{ latestSpeechMission.resume.actual_resume_segment || latestSpeechMission.resume.planned_resume_segment || latestSpeechMission.resume.resume_segment_id || '—' }}
+                      · 跳 {{ latestSpeechMission.resume.skip_count || 0 }} 段
+                    </small>
                   </article>
                   <article>
                     <span>称呼</span>
-                    <b>{{ latestSpeechMission.addressing.candidate || '不强制称呼' }}</b>
-                    <small>{{ latestSpeechMission.addressing.optional ? '自然时才使用' : '本轮不使用' }}</small>
+                    <b>
+                      {{ latestSpeechMission.addressing.mode || 'NONE' }}
+                      ·
+                      {{
+                        latestSpeechMission.addressing.selected_names?.length
+                          ? latestSpeechMission.addressing.selected_names.join('、')
+                          : latestSpeechMission.addressing.group_label || latestSpeechMission.addressing.candidate || '不强制称呼'
+                      }}
+                    </b>
+                    <small>最多 {{ latestSpeechMission.addressing.max_named_count || 0 }} 个昵称 · 最近点名惩罚 {{ Math.round((latestSpeechMission.addressing.recent_name_penalty || 0) * 100) }}%</small>
                   </article>
+                  <article>
+                    <span>真人行为</span>
+                    <b>{{ latestSpeechMission.human_style.reaction?.kind || latestSpeechMission.human_style.kind || 'NONE' }}</b>
+                    <small>
+                      {{ latestSpeechMission.human_style.reaction?.enabled ? '本轮启用' : '本轮不触发' }}
+                      · {{ latestSpeechMission.human_style.reaction?.delivery || latestSpeechMission.human_style.delivery || 'TEXT' }}
+                    </small>
+                  </article>
+                </div>
+                <div v-if="latestSpeechMission.interaction.decision?.reason" class="speech-mission-context decision-context">
+                  <span>事件为什么现在处理</span>
+                  <p>{{ latestSpeechMission.interaction.decision.reason }}</p>
+                </div>
+                <div v-if="latestSpeechMission.interaction.decision?.question_debt" class="speech-mission-meta">
+                  <span>问题债务 ×{{ latestSpeechMission.interaction.decision.question_debt.repeat_count || 1 }}</span>
+                  <span>独立用户 {{ latestSpeechMission.interaction.decision.question_debt.unique_users || 0 }}</span>
+                  <span>等待 {{ latestSpeechMission.interaction.decision.question_debt.waiting_seconds || 0 }}s</span>
+                  <span>队列优先 {{ Math.round(latestSpeechMission.interaction.decision.question_debt.current_priority || 0) }}</span>
+                </div>
+                <div
+                  v-if="latestSpeechMission.human_style.trait?.instruction || latestSpeechMission.human_style.state?.host_state || latestSpeechMission.human_style.reaction?.rule_id"
+                  class="speech-mission-meta"
+                >
+                  <span v-if="latestSpeechMission.human_style.trait?.instruction">长期习惯 {{ latestSpeechMission.human_style.trait.instruction }}</span>
+                  <span v-if="latestSpeechMission.human_style.state?.host_state">当前状态 {{ latestSpeechMission.human_style.state.host_state }}</span>
+                  <span v-if="latestSpeechMission.human_style.reaction?.rule_id">规则 {{ latestSpeechMission.human_style.reaction.rule_id }}</span>
+                  <span v-if="latestSpeechMission.human_style.reaction?.source">来源 {{ latestSpeechMission.human_style.reaction.source }}</span>
+                  <span v-if="latestSpeechMission.human_style.reaction?.channel">渠道 {{ latestSpeechMission.human_style.reaction.channel }}</span>
+                  <span v-if="latestSpeechMission.human_style.reaction?.intensity">强度 {{ Math.round((latestSpeechMission.human_style.reaction.intensity || 0) * 100) }}%</span>
                 </div>
                 <div v-if="latestSpeechMission.resume.resume_preview" class="speech-mission-context">
                   <span>回归目标</span>
@@ -4783,6 +4888,8 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="speech-mission-meta">
                   <span>{{ latestSpeechMission.human_style.emotion || 'natural' }} · {{ latestSpeechMission.human_style.pace || 'normal' }}</span>
+                  <span v-if="latestSpeechMission.opening.intent">开头 {{ latestSpeechMission.opening.intent }}</span>
+                  <span v-if="latestSpeechMission.tts.provider">TTS {{ latestSpeechMission.tts.provider }} · {{ latestSpeechMission.tts.model || '默认模型' }}</span>
                   <span v-if="latestSpeechMission.resume.dedup_triggered">回归去重 {{ Math.round((latestSpeechMission.resume.duplicate_score || 0) * 100) }}%</span>
                 </div>
                 <div v-if="latestSpeechMission.trace?.length" class="speech-mission-trace">
@@ -7192,6 +7299,34 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.event-topline.actions-only {
+  justify-content: flex-end;
+}
+
+.event-message-line {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.event-message-line .event-user {
+  flex: 0 0 auto;
+  max-width: 42%;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-message-line .event-action {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
 .event-ai-actions {
   display: flex;
   flex: 0 0 auto;
@@ -7253,7 +7388,12 @@ onBeforeUnmount(() => {
 .room-detail-page .event-user {
   display: block;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .room-detail-page .event-user { font-size: 13px; }
 
@@ -7298,16 +7438,25 @@ onBeforeUnmount(() => {
 .speech-mission-toggle.active { color:#4f58bd; background:#e9ebff; border-color:rgba(87,95,207,.28); box-shadow:0 5px 14px rgba(77,84,190,.12); }
 .speech-mission-board { position:absolute; z-index:20; top:44px; left:9px; right:9px; bottom:27px; display:grid; align-content:start; gap:8px; padding:10px; overflow:auto; border:1px solid rgba(91,105,205,.22); border-radius:14px; background:rgba(249,250,255,.98); box-shadow:0 16px 38px rgba(38,48,105,.18); backdrop-filter:blur(10px); }
 .speech-mission-board > header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding-bottom:7px; border-bottom:1px solid rgba(112,124,178,.13); }
-.speech-mission-board > header div { display:grid; gap:2px; }
+.speech-mission-title { display:grid; gap:2px; min-width:0; }
 .speech-mission-board > header small { color:#9aa3b6; font-size:8px; font-weight:800; overflow-wrap:anywhere; }
 .speech-mission-board > header strong { color:#35405f; font-size:14px; }
 .speech-mission-board > header time { color:#9ca6b8; font-size:8px; }
+.speech-mission-header-actions { display:grid; justify-items:end; gap:4px; min-width:0; }
+.speech-mission-header-actions select { width:min(190px,48vw); min-height:25px; padding:2px 22px 2px 7px; border:1px solid rgba(111,124,183,.18); border-radius:7px; outline:none; background:#fff; color:#65708b; font-size:8px; font-weight:800; }
+.speech-mission-header-actions select:focus { border-color:rgba(86,100,211,.45); box-shadow:0 0 0 2px rgba(86,100,211,.08); }
+.speech-mission-flow { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:7px; border:1px solid rgba(106,121,190,.14); border-radius:10px; background:linear-gradient(135deg,#f8f9ff,#f1f5fb); }
+.speech-mission-flow > span { flex:1 1 62px; min-width:0; display:grid; gap:1px; padding:4px 5px; border-radius:7px; background:rgba(255,255,255,.82); box-shadow:inset 0 0 0 1px rgba(119,132,184,.08); }
+.speech-mission-flow > span small { color:#9aa4b6; font-size:7px; font-weight:850; }
+.speech-mission-flow > span b { color:#4c5875; font-size:9px; line-height:1.25; overflow-wrap:anywhere; }
+.speech-mission-flow > i { flex:0 0 auto; color:#a8b1c5; font-size:8px; font-style:normal; font-weight:900; }
 .speech-mission-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
 .speech-mission-grid article { min-width:0; display:grid; gap:2px; padding:7px; border:1px solid rgba(116,129,184,.13); border-radius:10px; background:white; }
 .speech-mission-grid span,.speech-mission-context > span { color:#8d98ad; font-size:8px; font-weight:900; }
 .speech-mission-grid b { color:#46516d; font-size:10px; line-height:1.35; overflow-wrap:anywhere; }
 .speech-mission-grid small { color:#9aa4b6; font-size:8px; line-height:1.35; }
 .speech-mission-context { display:grid; gap:3px; padding:7px 8px; border-radius:10px; background:#f2f5fb; }
+.speech-mission-context.decision-context { background:linear-gradient(135deg,#fff8e9,#fffdf7); box-shadow:inset 3px 0 0 #e8b65b; }
 .speech-mission-context.final-text { background:#edf8f3; }
 .speech-mission-context p { margin:0; color:#5f6a82; font-size:9px; line-height:1.55; overflow-wrap:anywhere; }
 .speech-mission-meta { display:flex; flex-wrap:wrap; gap:5px; }
@@ -7509,17 +7658,17 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: none;
   margin-inline: 0;
-  grid-template-columns: minmax(440px, 490px) minmax(330px, 380px) minmax(300px, 350px) !important;
+  grid-template-columns: minmax(400px, 440px) minmax(460px, 520px) minmax(290px, 330px) !important;
   justify-content: space-between;
   align-items: start;
-  gap: 16px;
+  gap: 14px;
 }
 
 .room-detail-page .public-screen-panel {
   grid-column: 1;
   grid-row: 1;
   width: 100%;
-  max-width: 490px;
+  max-width: 440px;
   justify-self: start;
   align-self: stretch;
   overflow: hidden;
@@ -7533,7 +7682,15 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 16px;
   width: 100%;
-  max-width: 380px;
+  max-width: 520px;
+}
+
+@media (min-width: 1201px) {
+  .room-detail-page .room-middle-preference-hub {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+  }
 }
 
 .room-detail-page .agent-decision-panel,
@@ -7552,7 +7709,7 @@ onBeforeUnmount(() => {
   justify-self: end;
   gap: 14px;
   width: 100%;
-  max-width: 350px;
+  max-width: 330px;
 }
 .capture-workspace-head,
 .capture-card > header {

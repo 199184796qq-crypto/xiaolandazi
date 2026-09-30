@@ -1,6 +1,9 @@
 package strategycenter
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWelcomeNamedProbabilityDropsAsEntryFlowRises(t *testing.T) {
 	store := New()
@@ -123,5 +126,87 @@ func TestAllowedHonorsEnabledConfiguredRules(t *testing.T) {
 	}
 	if store.Allowed(0, "resume", "SWITCH_PLAN") {
 		t.Fatal("disabled SWITCH_PLAN must not be allowed")
+	}
+}
+
+func TestResumeDiversityPenalizesRecentRepeatAndBoostsCoverageDebt(t *testing.T) {
+	store := New()
+	roomID := int64(15)
+	stageID := "live:15:stage-a"
+	startedAt := time.Date(2026, 9, 29, 18, 0, 0, 0, time.UTC)
+	candidates := []string{"DIRECT", "BRIDGE", "FUSION_SKIP"}
+
+	first := store.PickForRoom(roomID, stageID, 0, "resume", candidates, Signals{}, "first")
+	if first.Key == "" {
+		t.Fatal("first resume selection missing")
+	}
+	store.RecordSelection(roomID, stageID, startedAt, first)
+
+	second := store.PickForRoom(roomID, stageID, 0, "resume", candidates, Signals{}, "second")
+	if len(second.Candidates) != len(candidates) {
+		t.Fatalf("resume diversity must not add/remove semantic candidates, got %#v", second.Candidates)
+	}
+	seen := map[string]Candidate{}
+	for _, candidate := range second.Candidates {
+		seen[candidate.Key] = candidate
+	}
+	recent := seen[first.Key]
+	if recent.RepeatPenalty >= 1 {
+		t.Fatalf("recently selected strategy must be penalized, first=%s candidate=%#v", first.Key, recent)
+	}
+	boosted := false
+	for _, key := range candidates {
+		if key == first.Key {
+			continue
+		}
+		candidate := seen[key]
+		if candidate.CoverageDebt >= 1 && candidate.DiversityBoost > 1 && candidate.Weight > candidate.BaseWeight {
+			boosted = true
+		}
+	}
+	if !boosted {
+		t.Fatalf("at least one eligible-but-missed strategy should receive coverage boost: %#v", second.Candidates)
+	}
+}
+
+func TestResumeDiversityStatsTrackEligibilitySelectionAndResetByStage(t *testing.T) {
+	store := New()
+	roomID := int64(16)
+	stageA := "live:16:stage-a"
+	startedAt := time.Date(2026, 9, 29, 18, 0, 0, 0, time.UTC)
+	candidates := []string{"DIRECT", "BRIDGE"}
+
+	selection := store.PickForRoom(roomID, stageA, 0, "resume", candidates, Signals{}, "stats")
+	store.RecordSelection(roomID, stageA, startedAt, selection)
+	stats := store.StageStats(roomID)
+	byKey := map[string]ProbabilityStat{}
+	for _, item := range stats.Items {
+		if item.Category == "resume" {
+			byKey[item.Key] = item
+		}
+	}
+	if len(byKey) != 2 {
+		t.Fatalf("resume stats=%#v", byKey)
+	}
+	for _, key := range candidates {
+		item := byKey[key]
+		if item.EligibleCount != 1 {
+			t.Fatalf("%s eligible_count=%d want 1", key, item.EligibleCount)
+		}
+		if key == selection.Key {
+			if item.SelectedCount != 1 || item.CoverageDebt != 0 || item.LastSelectedAt.IsZero() {
+				t.Fatalf("selected stat unexpected for %s: %#v", key, item)
+			}
+		} else if item.SelectedCount != 0 || item.CoverageDebt != 1 || item.ConsecutiveMiss != 1 {
+			t.Fatalf("missed stat unexpected for %s: %#v", key, item)
+		}
+	}
+
+	stageB := "live:16:stage-b"
+	fresh := store.PickForRoom(roomID, stageB, 0, "resume", candidates, Signals{}, "fresh")
+	for _, candidate := range fresh.Candidates {
+		if candidate.CoverageDebt != 0 || candidate.RepeatPenalty != 1 || candidate.DiversityBoost != 1 {
+			t.Fatalf("new live stage must reset diversity runtime state: %#v", candidate)
+		}
 	}
 }

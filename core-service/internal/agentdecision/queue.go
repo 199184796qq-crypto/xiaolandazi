@@ -33,53 +33,82 @@ const (
 	StatusClaimed Status = "CLAIMED"
 )
 
+type QuestionDebt struct {
+	Topic           string    `json:"topic,omitempty"`
+	FirstSeenAt     time.Time `json:"first_seen_at,omitempty"`
+	RepeatCount     int       `json:"repeat_count,omitempty"`
+	UniqueUsers     int       `json:"unique_users,omitempty"`
+	WaitingSeconds  int       `json:"waiting_seconds,omitempty"`
+	BusinessValue   float64   `json:"business_value,omitempty"`
+	CurrentPriority float64   `json:"current_priority,omitempty"`
+}
+
+type InteractionDecision struct {
+	Handle           bool          `json:"handle"`
+	PrimaryEvent     string        `json:"primary_event,omitempty"`
+	MergedEventIDs   []int64       `json:"merged_event_ids,omitempty"`
+	EventValue       float64       `json:"event_value,omitempty"`
+	ValueLevel       string        `json:"value_level,omitempty"`
+	Reason           string        `json:"reason,omitempty"`
+	DeadlineAt       time.Time     `json:"deadline_at,omitempty"`
+	BudgetLevel      string        `json:"budget_level,omitempty"`
+	BudgetAllowed    bool          `json:"budget_allowed"`
+	Heat             string        `json:"heat,omitempty"`
+	PreferenceFactor float64       `json:"preference_factor,omitempty"`
+	QuestionDebt     *QuestionDebt `json:"question_debt,omitempty"`
+}
+
 type Candidate struct {
-	Source               Source `json:"source"`
-	Topic                string `json:"topic,omitempty"`
-	Question             string `json:"question,omitempty"`
-	Title                string `json:"title,omitempty"`
-	Summary              string `json:"summary,omitempty"`
-	ReplyHint            string `json:"reply_hint,omitempty"`
-	MissionKind          string `json:"mission_kind,omitempty"`
-	MissionEventCount    int    `json:"mission_event_count,omitempty"`
-	MissionWindowSeconds int    `json:"mission_window_seconds,omitempty"`
-	Priority             int    `json:"priority,omitempty"`
-	EventID              int64  `json:"event_id,omitempty"`
-	UserID               string `json:"user_id,omitempty"`
-	ForceReopen          bool   `json:"force_reopen,omitempty"`
-	ManualAction         string `json:"manual_action,omitempty"`
-	ManualOrigin         string `json:"manual_origin,omitempty"`
-	ExecutionMode        string `json:"execution_mode,omitempty"`
-	FixedText            string `json:"fixed_text,omitempty"`
-	TTLSeconds           int    `json:"ttl_seconds,omitempty"`
+	Source               Source              `json:"source"`
+	Topic                string              `json:"topic,omitempty"`
+	Question             string              `json:"question,omitempty"`
+	Title                string              `json:"title,omitempty"`
+	Summary              string              `json:"summary,omitempty"`
+	ReplyHint            string              `json:"reply_hint,omitempty"`
+	MissionKind          string              `json:"mission_kind,omitempty"`
+	MissionEventCount    int                 `json:"mission_event_count,omitempty"`
+	MissionWindowSeconds int                 `json:"mission_window_seconds,omitempty"`
+	Priority             int                 `json:"priority,omitempty"`
+	EventID              int64               `json:"event_id,omitempty"`
+	UserID               string              `json:"user_id,omitempty"`
+	Nicknames            []string            `json:"nicknames,omitempty"`
+	InteractionDecision  InteractionDecision `json:"interaction_decision,omitempty"`
+	ForceReopen          bool                `json:"force_reopen,omitempty"`
+	ManualAction         string              `json:"manual_action,omitempty"`
+	ManualOrigin         string              `json:"manual_origin,omitempty"`
+	ExecutionMode        string              `json:"execution_mode,omitempty"`
+	FixedText            string              `json:"fixed_text,omitempty"`
+	TTLSeconds           int                 `json:"ttl_seconds,omitempty"`
 }
 
 type Item struct {
-	ID                   string     `json:"id"`
-	RoomID               int64      `json:"room_id"`
-	Topic                string     `json:"topic"`
-	Title                string     `json:"title"`
-	Summary              string     `json:"summary,omitempty"`
-	ReplyHint            string     `json:"reply_hint,omitempty"`
-	MissionKind          string     `json:"mission_kind,omitempty"`
-	MissionEventCount    int        `json:"mission_event_count,omitempty"`
-	MissionWindowSeconds int        `json:"mission_window_seconds,omitempty"`
-	Priority             int        `json:"priority"`
-	Status               Status     `json:"status"`
-	Sources              []Source   `json:"sources"`
-	MergedCount          int        `json:"merged_count"`
-	SampleQuestions      []string   `json:"sample_questions,omitempty"`
-	LinkedEventIDs       []int64    `json:"linked_event_ids,omitempty"`
-	UserIDs              []string   `json:"user_ids,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
-	LastSeenAt           time.Time  `json:"last_seen_at"`
-	ExpiresAt            time.Time  `json:"expires_at"`
-	ClaimedAt            *time.Time `json:"claimed_at,omitempty"`
-	ManualPromoted       bool       `json:"manual_promoted"`
-	ManualAction         string     `json:"manual_action,omitempty"`
-	ManualOrigin         string     `json:"manual_origin,omitempty"`
-	ExecutionMode        string     `json:"execution_mode,omitempty"`
-	FixedText            string     `json:"fixed_text,omitempty"`
+	ID                   string              `json:"id"`
+	RoomID               int64               `json:"room_id"`
+	Topic                string              `json:"topic"`
+	Title                string              `json:"title"`
+	Summary              string              `json:"summary,omitempty"`
+	ReplyHint            string              `json:"reply_hint,omitempty"`
+	MissionKind          string              `json:"mission_kind,omitempty"`
+	MissionEventCount    int                 `json:"mission_event_count,omitempty"`
+	MissionWindowSeconds int                 `json:"mission_window_seconds,omitempty"`
+	Priority             int                 `json:"priority"`
+	Status               Status              `json:"status"`
+	Sources              []Source            `json:"sources"`
+	MergedCount          int                 `json:"merged_count"`
+	SampleQuestions      []string            `json:"sample_questions,omitempty"`
+	LinkedEventIDs       []int64             `json:"linked_event_ids,omitempty"`
+	UserIDs              []string            `json:"user_ids,omitempty"`
+	Nicknames            []string            `json:"nicknames,omitempty"`
+	InteractionDecision  InteractionDecision `json:"interaction_decision,omitempty"`
+	CreatedAt            time.Time           `json:"created_at"`
+	LastSeenAt           time.Time           `json:"last_seen_at"`
+	ExpiresAt            time.Time           `json:"expires_at"`
+	ClaimedAt            *time.Time          `json:"claimed_at,omitempty"`
+	ManualPromoted       bool                `json:"manual_promoted"`
+	ManualAction         string              `json:"manual_action,omitempty"`
+	ManualOrigin         string              `json:"manual_origin,omitempty"`
+	ExecutionMode        string              `json:"execution_mode,omitempty"`
+	FixedText            string              `json:"fixed_text,omitempty"`
 }
 
 type RecentAnswer struct {
@@ -198,6 +227,12 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		input.MissionWindowSeconds = 0
 	}
 	input.UserID = strings.TrimSpace(input.UserID)
+	cleanNicknames := make([]string, 0, len(input.Nicknames))
+	for _, nickname := range input.Nicknames {
+		appendUniqueString(&cleanNicknames, nickname, 16)
+	}
+	input.Nicknames = cleanNicknames
+	input.InteractionDecision = cloneInteractionDecision(input.InteractionDecision)
 	input.Topic = normalizeTopic(input.Topic, input.Question)
 	input.ManualAction = strings.ToLower(strings.TrimSpace(input.ManualAction))
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
@@ -295,6 +330,7 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		ManualOrigin:         input.ManualOrigin,
 		ExecutionMode:        input.ExecutionMode,
 		FixedText:            input.FixedText,
+		InteractionDecision:  cloneInteractionDecision(input.InteractionDecision),
 	}
 	if input.Source == SourceManual {
 		item.ManualPromoted = true
@@ -302,6 +338,9 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	appendUniqueString(&item.SampleQuestions, input.Question, 8)
 	appendUniqueInt64(&item.LinkedEventIDs, input.EventID, 16)
 	appendUniqueString(&item.UserIDs, input.UserID, 16)
+	for _, nickname := range input.Nicknames {
+		appendUniqueString(&item.Nicknames, nickname, 16)
+	}
 	state.items = append(state.items, item)
 	q.sortLocked(state)
 
@@ -612,6 +651,10 @@ func (q *Queue) mergeLocked(item *Item, input Candidate, now time.Time) {
 	appendUniqueString(&item.SampleQuestions, input.Question, 8)
 	appendUniqueInt64(&item.LinkedEventIDs, input.EventID, 16)
 	appendUniqueString(&item.UserIDs, input.UserID, 16)
+	for _, nickname := range input.Nicknames {
+		appendUniqueString(&item.Nicknames, nickname, 16)
+	}
+	mergeInteractionDecision(&item.InteractionDecision, input.InteractionDecision)
 	if input.Source == SourceManual {
 		if input.ManualAction == "quick" {
 			item.ManualAction = "quick"
@@ -628,6 +671,36 @@ func (q *Queue) mergeLocked(item *Item, input Candidate, now time.Time) {
 		repetitionBoost := minInt(item.MergedCount-1, 6) * 5
 		if base+repetitionBoost > item.Priority {
 			item.Priority = base + repetitionBoost
+		}
+	}
+}
+
+func mergeInteractionDecision(current *InteractionDecision, next InteractionDecision) {
+	if current == nil {
+		return
+	}
+	for _, eventID := range next.MergedEventIDs {
+		appendUniqueInt64(&current.MergedEventIDs, eventID, 32)
+	}
+	if next.EventValue >= current.EventValue {
+		mergedIDs := append([]int64(nil), current.MergedEventIDs...)
+		*current = cloneInteractionDecision(next)
+		for _, eventID := range mergedIDs {
+			appendUniqueInt64(&current.MergedEventIDs, eventID, 32)
+		}
+	}
+	if current.QuestionDebt != nil && next.QuestionDebt != nil {
+		if next.QuestionDebt.RepeatCount > current.QuestionDebt.RepeatCount {
+			current.QuestionDebt.RepeatCount = next.QuestionDebt.RepeatCount
+		}
+		if next.QuestionDebt.UniqueUsers > current.QuestionDebt.UniqueUsers {
+			current.QuestionDebt.UniqueUsers = next.QuestionDebt.UniqueUsers
+		}
+		if next.QuestionDebt.WaitingSeconds > current.QuestionDebt.WaitingSeconds {
+			current.QuestionDebt.WaitingSeconds = next.QuestionDebt.WaitingSeconds
+		}
+		if next.QuestionDebt.CurrentPriority > current.QuestionDebt.CurrentPriority {
+			current.QuestionDebt.CurrentPriority = next.QuestionDebt.CurrentPriority
 		}
 	}
 }
@@ -767,11 +840,22 @@ func cloneItem(item Item) Item {
 	item.SampleQuestions = append([]string(nil), item.SampleQuestions...)
 	item.LinkedEventIDs = append([]int64(nil), item.LinkedEventIDs...)
 	item.UserIDs = append([]string(nil), item.UserIDs...)
+	item.Nicknames = append([]string(nil), item.Nicknames...)
+	item.InteractionDecision = cloneInteractionDecision(item.InteractionDecision)
 	if item.ClaimedAt != nil {
 		copy := *item.ClaimedAt
 		item.ClaimedAt = &copy
 	}
 	return item
+}
+
+func cloneInteractionDecision(input InteractionDecision) InteractionDecision {
+	input.MergedEventIDs = append([]int64(nil), input.MergedEventIDs...)
+	if input.QuestionDebt != nil {
+		copyDebt := *input.QuestionDebt
+		input.QuestionDebt = &copyDebt
+	}
+	return input
 }
 
 func cloneRecent(value RecentAnswer) RecentAnswer {

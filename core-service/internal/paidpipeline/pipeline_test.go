@@ -1,6 +1,7 @@
 package paidpipeline
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -261,5 +262,130 @@ func TestInteractionStatsInitializeAllWindowStrategies(t *testing.T) {
 	stats := policies.StageStatsForTenant(44, 14)
 	if len(stats.InteractionItems) != 5 {
 		t.Fatalf("interaction window catalog size=%d want=5: %#v", len(stats.InteractionItems), stats.InteractionItems)
+	}
+}
+
+func TestQuestionDebtGrowsForRepeatedTopicAndMultipleUsers(t *testing.T) {
+	runtime := agentwork.New()
+	decisions := agentdecision.New()
+	pipeline := New(runtime, decisions, strategycenter.New())
+	roomID := int64(71)
+	if _, err := runtime.GrantLease(roomID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Set(roomID, agentwork.StateWorking); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 29, 19, 10, 0, 0, time.UTC)
+	firstEvent := model.RoomEvent{
+		ID: 101, RoomID: roomID, EventType: "chat", UserID: "u-1", Nickname: "小陈",
+		Content: "这个多少钱？", OccurredAt: base,
+	}
+	firstSignal := basepipeline.Signal{
+		RoomID: roomID, EventID: 101, UserID: "u-1", Content: firstEvent.Content,
+		Topic: "FAMILY:价格费用", IsQuestion: true,
+	}
+	pipeline.Handle(firstEvent, firstSignal)
+	first := decisions.Snapshot(roomID).Queue
+	if len(first) != 1 || first[0].InteractionDecision.QuestionDebt == nil {
+		t.Fatalf("first question debt missing: %#v", first)
+	}
+	firstValue := first[0].InteractionDecision.EventValue
+	firstPriority := first[0].Priority
+
+	secondEvent := model.RoomEvent{
+		ID: 102, RoomID: roomID, EventType: "chat", UserID: "u-2", Nickname: "阿芳",
+		Content: "多少钱一桶？", OccurredAt: base.Add(20 * time.Second),
+	}
+	secondSignal := basepipeline.Signal{
+		RoomID: roomID, EventID: 102, UserID: "u-2", Content: secondEvent.Content,
+		Topic: "FAMILY:价格费用", IsQuestion: true,
+	}
+	pipeline.Handle(secondEvent, secondSignal)
+	queue := decisions.Snapshot(roomID).Queue
+	if len(queue) != 1 {
+		t.Fatalf("same topic should merge into one decision: %#v", queue)
+	}
+	debt := queue[0].InteractionDecision.QuestionDebt
+	if debt == nil || debt.RepeatCount != 2 || debt.UniqueUsers != 2 || debt.WaitingSeconds < 20 {
+		t.Fatalf("question debt did not grow: %#v", debt)
+	}
+	if queue[0].InteractionDecision.EventValue <= firstValue {
+		t.Fatalf("repeated question should increase event value: first=%v second=%v", firstValue, queue[0].InteractionDecision.EventValue)
+	}
+	if queue[0].Priority <= firstPriority {
+		t.Fatalf("repeated question should increase priority: first=%d second=%d", firstPriority, queue[0].Priority)
+	}
+	if len(queue[0].InteractionDecision.MergedEventIDs) != 2 {
+		t.Fatalf("merged event ids=%v want two events", queue[0].InteractionDecision.MergedEventIDs)
+	}
+}
+
+func TestInteractionBudgetReservesHighValueSlot(t *testing.T) {
+	pipeline := New(agentwork.New(), agentdecision.New(), strategycenter.New())
+	roomID := int64(72)
+	now := time.Date(2026, 9, 29, 19, 20, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		_, allowed, _ := pipeline.tryConsumeInteractionBudget(roomID, "WARM", false, now)
+		if !allowed {
+			t.Fatalf("normal slot %d should be allowed", i+1)
+		}
+	}
+	budget, allowed, _ := pipeline.tryConsumeInteractionBudget(roomID, "WARM", false, now)
+	if allowed {
+		t.Fatalf("normal event should be held after normal capacity is consumed: %#v", budget)
+	}
+	budget, allowed, _ = pipeline.tryConsumeInteractionBudget(roomID, "WARM", true, now)
+	if !allowed || budget.RemainingSlots != 0 {
+		t.Fatalf("reserved high-value slot should remain available: allowed=%v budget=%#v", allowed, budget)
+	}
+}
+
+func TestDueInteractionWindowsCompeteByEventValue(t *testing.T) {
+	runtime := agentwork.New()
+	decisions := agentdecision.New()
+	pipeline := New(runtime, decisions, strategycenter.New())
+	roomID := int64(73)
+	if _, err := runtime.GrantLease(roomID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Set(roomID, agentwork.StateWorking); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 29, 19, 30, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if _, allowed, _ := pipeline.tryConsumeInteractionBudget(roomID, "WARM", false, now); !allowed {
+			t.Fatalf("failed to pre-consume normal budget slot %d", i+1)
+		}
+	}
+	pipeline.interactionMu.Lock()
+	pipeline.interactionWindows[roomID] = map[string]*interactionWindow{
+		"reply_follow": {
+			TenantID: 14, RoomID: roomID, Key: "reply_follow", PendingCount: 3,
+			FirstPending: now.Add(-45 * time.Second), LastEventAt: now,
+			LatestEventID: 201, EventIDs: []int64{199, 200, 201},
+		},
+		"reply_like": {
+			TenantID: 14, RoomID: roomID, Key: "reply_like", PendingCount: 30,
+			FirstPending: now.Add(-60 * time.Second), LastEventAt: now,
+			LatestEventID: 301, EventIDs: []int64{301},
+		},
+	}
+	pipeline.interactionMu.Unlock()
+
+	pipeline.FlushInteractionWindows(now)
+	queue := decisions.Snapshot(roomID).Queue
+	if len(queue) != 1 || queue[0].MissionKind != "reply_follow" {
+		t.Fatalf("only higher-value due mission should pass remaining normal budget: %#v", queue)
+	}
+	pipeline.interactionMu.Lock()
+	like := pipeline.interactionWindows[roomID]["reply_like"]
+	follow := pipeline.interactionWindows[roomID]["reply_follow"]
+	pipeline.interactionMu.Unlock()
+	if follow.PendingCount != 0 || !follow.LastBudgetAllowed {
+		t.Fatalf("follow should be emitted: %#v", follow)
+	}
+	if like.PendingCount != 30 || like.LastBudgetAllowed || !strings.Contains(like.LastDecisionReason, "保护主线") {
+		t.Fatalf("lower-value like window should remain pending with budget reason: %#v", like)
 	}
 }

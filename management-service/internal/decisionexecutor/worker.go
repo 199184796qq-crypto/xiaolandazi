@@ -2,6 +2,8 @@ package decisionexecutor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,10 +31,11 @@ import (
 )
 
 const (
-	defaultInterval = 800 * time.Millisecond
-	errorBackoff    = 15 * time.Second
-	maxWorkers      = 4
-	maxSpeechRunes  = 300
+	defaultInterval        = 800 * time.Millisecond
+	errorBackoff           = 15 * time.Second
+	maxWorkers             = 4
+	maxSpeechRunes         = 300
+	addressingNameCooldown = 5 * time.Minute
 )
 
 type store interface {
@@ -45,6 +48,8 @@ type store interface {
 	ListLiveAgentPlanFacts(context.Context, int64, int64) ([]model.LiveAgentPlanFact, error)
 	ListLiveAgentPlanScripts(context.Context, int64, int64) ([]model.LiveAgentPlanScript, error)
 	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
+	GetRoomHumanBehaviorProfile(context.Context, int64, int64) (model.RoomHumanBehaviorProfile, error)
+	GetRoomAddressingPreferences(context.Context, int64, int64) (model.RoomAddressingPreferences, error)
 	RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error
 	AgentPromptValue(context.Context, string, string) string
 	RenderAgentPrompt(context.Context, string, string, map[string]string) string
@@ -79,42 +84,48 @@ type Worker struct {
 	mu         sync.Mutex
 	inFlight   map[int64]bool
 	retryAfter map[int64]time.Time
+
+	addressMu   sync.Mutex
+	recentNamed map[int64]map[string]time.Time
 }
 
 type decisionItem struct {
-	ID                     string               `json:"id"`
-	MissionID              string               `json:"mission_id,omitempty"`
-	Topic                  string               `json:"topic"`
-	Title                  string               `json:"title"`
-	Summary                string               `json:"summary"`
-	ReplyHint              string               `json:"reply_hint"`
-	SampleQuestions        []string             `json:"sample_questions"`
-	ManualAction           string               `json:"manual_action"`
-	ManualOrigin           string               `json:"manual_origin"`
-	ExecutionMode          string               `json:"execution_mode"`
-	FixedText              string               `json:"fixed_text"`
-	PreviewInstruction     string               `json:"preview_instruction,omitempty"`
-	PreviewMemoryType      string               `json:"preview_memory_type,omitempty"`
-	PreviewMemoryKey       string               `json:"preview_memory_key,omitempty"`
-	PreviewMatchedMemoryID int64                `json:"preview_matched_memory_id,omitempty"`
-	PlannedSwitchAtMS      int                  `json:"-"`
-	CurrentMainline        string               `json:"-"`
-	ResumeMainline         string               `json:"-"`
-	ResumeSegmentID        string               `json:"-"`
-	SelectedInterrupt      string               `json:"-"`
-	SelectedResume         string               `json:"-"`
-	SelectedAddressing     string               `json:"-"`
-	HumanizationStrategy   string               `json:"-"`
-	HumanizationKind       string               `json:"-"`
-	HumanizationDelivery   string               `json:"-"`
-	HumanizationApplied    bool                 `json:"-"`
-	BridgeText             string               `json:"-"`
-	MissionKind            string               `json:"mission_kind,omitempty"`
-	MissionEventCount      int                  `json:"mission_event_count,omitempty"`
-	MissionWindowSeconds   int                  `json:"mission_window_seconds,omitempty"`
-	AppliedStrategyStages  []string             `json:"-"`
-	StrategyConstraints    []strategyConstraint `json:"-"`
-	HiddenStrategyGuidance []string             `json:"-"`
+	ID                     string                                `json:"id"`
+	MissionID              string                                `json:"mission_id,omitempty"`
+	Topic                  string                                `json:"topic"`
+	Title                  string                                `json:"title"`
+	Summary                string                                `json:"summary"`
+	ReplyHint              string                                `json:"reply_hint"`
+	SampleQuestions        []string                              `json:"sample_questions"`
+	Nicknames              []string                              `json:"nicknames,omitempty"`
+	ManualAction           string                                `json:"manual_action"`
+	ManualOrigin           string                                `json:"manual_origin"`
+	ExecutionMode          string                                `json:"execution_mode"`
+	FixedText              string                                `json:"fixed_text"`
+	PreviewInstruction     string                                `json:"preview_instruction,omitempty"`
+	PreviewMemoryType      string                                `json:"preview_memory_type,omitempty"`
+	PreviewMemoryKey       string                                `json:"preview_memory_key,omitempty"`
+	PreviewMatchedMemoryID int64                                 `json:"preview_matched_memory_id,omitempty"`
+	PlannedSwitchAtMS      int                                   `json:"-"`
+	CurrentMainline        string                                `json:"-"`
+	ResumeMainline         string                                `json:"-"`
+	ResumeSegmentID        string                                `json:"-"`
+	SelectedInterrupt      string                                `json:"-"`
+	SelectedResume         string                                `json:"-"`
+	SelectedOpening        string                                `json:"-"`
+	SelectedAddressing     string                                `json:"-"`
+	HumanizationStrategy   string                                `json:"-"`
+	HumanizationKind       string                                `json:"-"`
+	HumanizationDelivery   string                                `json:"-"`
+	HumanizationApplied    bool                                  `json:"-"`
+	BridgeText             string                                `json:"-"`
+	MissionKind            string                                `json:"mission_kind,omitempty"`
+	MissionEventCount      int                                   `json:"mission_event_count,omitempty"`
+	MissionWindowSeconds   int                                   `json:"mission_window_seconds,omitempty"`
+	InteractionDecision    speechmission.InteractionDecisionPlan `json:"interaction_decision,omitempty"`
+	AppliedStrategyStages  []string                              `json:"-"`
+	StrategyConstraints    []strategyConstraint                  `json:"-"`
+	HiddenStrategyGuidance []string                              `json:"-"`
 }
 
 type strategyConstraint struct {
@@ -189,7 +200,7 @@ func speechMissionPrompt(item decisionItem) string {
 		builder.WriteString(strconv.Itoa(item.MissionWindowSeconds))
 		builder.WriteString("秒")
 	}
-	builder.WriteString("\n任务原则：这次事件只生成一段完整口播；把事件目的、打断方式、可选称呼、回归方式、主播风格和仿真人约束一次融合，不要拆成多段分别生成。")
+	builder.WriteString("\n任务原则：这次事件只生成一段完整口播；把事件目的、打断方式、回归目标、开头意图、称呼计划、主播风格和仿真人约束一次融合，不要拆成多段分别生成。")
 	return builder.String()
 }
 
@@ -200,13 +211,14 @@ func (w *Worker) strategyStageRegistry() map[string]strategyStageFunc {
 		"interaction": w.applyInteractionStrategyStage,
 		"interrupt":   w.applyInterruptStrategyStage,
 		"resume":      w.applyResumeStrategyStage,
+		"opening":     w.applyOpeningStrategyStage,
 		"addressing":  w.applyAddressingStrategyStage,
 		"humanize":    w.applyHumanizeStrategyStage,
 	}
 }
 
 func normalizeStrategyStageOrder(raw string, registry map[string]strategyStageFunc) []string {
-	defaultOrder := []string{"interaction", "interrupt", "resume", "addressing", "humanize"}
+	defaultOrder := []string{"interaction", "interrupt", "resume", "opening", "addressing", "humanize"}
 	seen := make(map[string]struct{}, len(registry))
 	result := make([]string, 0, len(registry))
 	raw = strings.NewReplacer("，", ",", "；", ",", ";", ",", "|", ",").Replace(raw)
@@ -256,7 +268,7 @@ func (w *Worker) applyStrategyPipeline(
 		return
 	}
 	registry := w.strategyStageRegistry()
-	rawOrder := w.store.AgentPromptValue(ctx, "live.strategy.pipeline.order", "interaction,interrupt,resume,addressing,humanize")
+	rawOrder := w.store.AgentPromptValue(ctx, "live.strategy.pipeline.order", "interaction,interrupt,resume,opening,addressing,humanize")
 	order := normalizeStrategyStageOrder(rawOrder, registry)
 	item.AppliedStrategyStages = item.AppliedStrategyStages[:0]
 	for _, key := range order {
@@ -292,11 +304,18 @@ func (w *Worker) applyInteractionStrategyStage(
 	if goal == "" {
 		return
 	}
+	decisionGuidance := ""
+	if item.InteractionDecision.EventValue > 0 {
+		decisionGuidance = " 该任务已经过事件价值和互动预算判断；不要在口播中透露热度、分值、预算、优先级或内部策略信息。"
+		if debt := item.InteractionDecision.QuestionDebt; debt != nil && debt.UniqueUsers >= 2 {
+			decisionGuidance += " 若语境自然，可概括为有不止一位观众关注这个问题，但不要机械报内部人数。"
+		}
+	}
 	item.addStrategyConstraint(strategyConstraint{
 		Stage:    "interaction",
 		Key:      kind,
 		Name:     item.Title,
-		Guidance: "本轮互动目标：" + goal + "；只处理本轮需要回应的事件，不机械报数，不额外扩展不存在的事实。",
+		Guidance: "本轮互动目标：" + goal + "；只处理本轮需要回应的事件，不机械报数，不额外扩展不存在的事实。" + decisionGuidance,
 		Required: true,
 	})
 	w.updateMission(item, func(m *speechmission.Mission) {
@@ -305,6 +324,7 @@ func (w *Worker) applyInteractionStrategyStage(
 			Goal:          goal,
 			EventCount:    item.MissionEventCount,
 			WindowSeconds: item.MissionWindowSeconds,
+			Decision:      item.InteractionDecision,
 			Required:      true,
 		}
 	})
@@ -322,6 +342,8 @@ func interactionMissionGoal(kind string) string {
 		return "低频自然欢迎刚进入直播间的具体观众；是否真正点名仍由称呼策略和语境决定"
 	case "welcome_batch":
 		return "自然欢迎最近进入的一批新朋友，不逐个报名字"
+	case "conversion_signal":
+		return "自然回应当前成交或下单信号，优先解决成交相关信息，但不得编造订单状态、库存、价格或承诺"
 	default:
 		return ""
 	}
@@ -360,29 +382,527 @@ func (w *Worker) applyInterruptStrategyStage(
 	}
 }
 
+func (w *Worker) applyOpeningStrategyStage(
+	_ context.Context,
+	_ model.LiveRuntimeSession,
+	_ string,
+	item *decisionItem,
+) {
+	if item == nil {
+		return
+	}
+	intent, name, guidance := openingIntentForMission(*item)
+	if intent == "" || guidance == "" {
+		return
+	}
+	item.SelectedOpening = intent
+	item.addStrategyConstraint(strategyConstraint{
+		Stage:    "opening",
+		Key:      intent,
+		Name:     name,
+		Guidance: "开头意图：" + guidance + "；这是表达意图，不是固定模板，不得机械复述本说明。",
+		Required: true,
+	})
+	w.updateMission(item, func(m *speechmission.Mission) {
+		m.Opening = speechmission.OpeningPlan{
+			Intent:   intent,
+			Name:     name,
+			Guidance: guidance,
+			Required: true,
+		}
+	})
+}
+
+func openingIntentForMission(item decisionItem) (string, string, string) {
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	switch kind {
+	case "welcome_named", "welcome_batch":
+		return "audience_welcome", "自然欢迎", "自然接住新进房事件后进入欢迎内容，可以直接进入，不要套固定欢迎开场"
+	case "reply_follow":
+		return "acknowledge_support", "回应支持", "先自然接住刚发生的关注，再把感谢融入一句完整口播，不要播报系统事件"
+	case "reply_like":
+		return "acknowledge_support", "回应支持", "先自然接住大家刚才的点赞支持，再自然回到本轮内容，不要机械报点赞数量"
+	case "reply_chat":
+		question := strings.TrimSpace(primaryQuestion(item))
+		if len(item.SampleQuestions) >= 2 || len([]rune(question)) >= 36 {
+			return "light_restate", "轻微复述", "问题较复杂时允许用很短的一句复述确认重点，然后直接回答；只复述核心意思，不逐字重复观众原话"
+		}
+		return "direct_answer", "直接回答", "直接接住当前问题进入回答；除非上下文确实需要，不要额外加固定寒暄或重复问题"
+	default:
+		if strings.TrimSpace(primaryQuestion(item)) != "" {
+			return "natural_transition", "自然进入", "根据当前上下文自然进入本轮回应，需要时可直接回答，也可以无显式开头进入内容"
+		}
+		return "", "", ""
+	}
+}
+
 func (w *Worker) applyAddressingStrategyStage(
 	ctx context.Context,
 	session model.LiveRuntimeSession,
 	seed string,
 	item *decisionItem,
 ) {
-	addressing, selectErr := w.selectCoreStrategy(ctx, session, seed, "addressing", nil)
-	if selectErr != nil || strings.TrimSpace(addressing.Name) == "" {
+	if item == nil {
 		return
 	}
-	item.SelectedAddressing = addressing.Name
+
+	// Dynamic room interaction uses the room-level "称呼习惯" only.
+	// The backend strategy-center addressing pool belongs to scripted/mainline copy generation
+	// and must not leak into real-time replies, welcomes, likes or follow acknowledgements.
+	preferences, prefErr := w.store.GetRoomAddressingPreferences(ctx, session.TenantID, session.RoomID)
+	if prefErr != nil {
+		preferences = model.RoomAddressingPreferences{NamingPreference: "natural"}
+	}
+
+	plan := w.buildAddressingPlan(session.RoomID, *item, "room_preference", "", preferences)
+	plan = applyAddressingFrequency(plan, *item, seed)
+	item.SelectedAddressing = plan.Candidate
+
+	guidance := addressingPlanGuidance(plan)
 	item.addStrategyConstraint(strategyConstraint{
-		Stage: "addressing",
-		Key:   addressing.Key,
-		Name:  addressing.Name,
-		Guidance: "称呼候选：如果当前语境自然需要称呼观众，可自然使用“" + addressing.Name +
-			"”；称呼不是必选项，不需要时必须省略，不能为了执行策略生硬插入。",
-		Required: false,
+		Stage:    "addressing",
+		Key:      plan.Key,
+		Name:     plan.Mode,
+		Guidance: guidance,
+		Required: !plan.Optional && !strings.EqualFold(plan.Mode, "NONE"),
 	})
 	w.updateMission(item, func(m *speechmission.Mission) {
-		m.Addressing = speechmission.AddressingPlan{Candidate: addressing.Name, Key: addressing.Key, Optional: true}
+		m.Addressing = plan
 	})
-	log.Printf("decision strategy tenant=%d room=%d decision=%s category=addressing candidate=%s optional=true", session.TenantID, session.RoomID, item.ID, addressing.Name)
+	log.Printf(
+		"decision dynamic addressing tenant=%d room=%d decision=%s source=room_preference mode=%s candidate=%s names=%s recent_penalty=%.2f optional=%t target_rate=%d selected_by_rate=%t",
+		session.TenantID, session.RoomID, item.ID, plan.Mode, plan.Candidate,
+		strings.Join(plan.SelectedNames, ","), plan.RecentNamePenalty, plan.Optional, plan.TargetRate, plan.SelectedByRate,
+	)
+}
+
+func addressingModeForMission(item decisionItem, candidate string) string {
+	if strings.TrimSpace(candidate) == "" {
+		return "NONE"
+	}
+	switch strings.ToLower(strings.TrimSpace(item.MissionKind)) {
+	case "welcome_batch", "reply_follow", "reply_like":
+		return "GROUP"
+	case "welcome_named":
+		return "SINGLE"
+	case "reply_chat":
+		if item.MissionEventCount > 1 || len(item.SampleQuestions) > 1 {
+			return "GROUP"
+		}
+		return "SINGLE"
+	default:
+		return "SINGLE"
+	}
+}
+
+func addressingTargetRate(preference string) int {
+	switch strings.ToLower(strings.TrimSpace(preference)) {
+	case "less":
+		return 15
+	case "more":
+		return 70
+	default:
+		return 35
+	}
+}
+
+func stableAddressingBucket(seed string) int {
+	sum := sha256.Sum256([]byte(seed))
+	return int(binary.BigEndian.Uint32(sum[:4]) % 100)
+}
+
+func choosePreferredAddressingTerm(preferredTerms, blockedTerms []string, seed string) string {
+	candidates := make([]string, 0, len(preferredTerms))
+	for _, term := range preferredTerms {
+		term = strings.TrimSpace(term)
+		if term == "" || addressingTermBlocked(term, blockedTerms) {
+			continue
+		}
+		candidates = append(candidates, term)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]
+}
+
+func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionItem, seed string) speechmission.AddressingPlan {
+	if strings.EqualFold(strings.TrimSpace(plan.Mode), "NONE") {
+		plan.Optional = true
+		plan.TargetRate = 0
+		plan.SelectedByRate = false
+		return plan
+	}
+	rate := addressingTargetRate(plan.Preference)
+	if strings.EqualFold(strings.TrimSpace(item.MissionKind), "welcome_named") {
+		rate = 100
+	}
+	plan.TargetRate = rate
+	bucketSeed := strings.Join([]string{
+		strings.TrimSpace(seed),
+		strings.TrimSpace(item.ID),
+		strings.TrimSpace(item.MissionKind),
+		strings.TrimSpace(plan.Candidate),
+	}, "|")
+	selected := stableAddressingBucket(bucketSeed) < rate
+	plan.SelectedByRate = selected
+	plan.Optional = !selected
+	if selected {
+		return plan
+	}
+	plan.Mode = "NONE"
+	plan.Candidate = ""
+	plan.GroupLabel = ""
+	plan.SelectedNames = nil
+	return plan
+}
+
+func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candidate string, preferences model.RoomAddressingPreferences) speechmission.AddressingPlan {
+	eligibleNames, recentPenalty := w.playableAddressingNames(roomID, item.Nicknames)
+	selectedNames := append([]string(nil), eligibleNames...)
+	preference := strings.ToLower(strings.TrimSpace(preferences.NamingPreference))
+	if preference != "less" && preference != "more" {
+		preference = "natural"
+	}
+	preferredTerms := cleanAddressingTerms(preferences.PreferredTerms)
+	blockedTerms := cleanAddressingTerms(preferences.BlockedTerms)
+	candidate = strings.TrimSpace(candidate)
+	if preferred := choosePreferredAddressingTerm(preferredTerms, blockedTerms, item.ID); preferred != "" {
+		candidate = preferred
+		key = "preferred"
+	} else if addressingTermBlocked(candidate, blockedTerms) {
+		candidate = ""
+	}
+	if len(selectedNames) > 2 {
+		selectedNames = selectedNames[:2]
+	}
+	mode := addressingModeForPlan(item, candidate, selectedNames)
+	if preference == "less" && isAggregateAddressingMission(item) {
+		selectedNames = nil
+		if candidate != "" {
+			mode = "GROUP"
+		} else {
+			mode = "NONE"
+		}
+	}
+	if preference == "more" && len(selectedNames) > 0 && isAggregateAddressingMission(item) {
+		if candidate != "" {
+			mode = "MIXED"
+		} else {
+			mode = "SAMPLE"
+		}
+	}
+	switch mode {
+	case "NONE", "GROUP":
+		selectedNames = nil
+	case "SINGLE":
+		if len(selectedNames) > 1 {
+			selectedNames = selectedNames[:1]
+		}
+	}
+	maxNamedCount := 2
+	if preference == "less" {
+		maxNamedCount = 1
+	}
+	if key = strings.TrimSpace(key); key == "" {
+		key = strings.ToLower(mode)
+	}
+	return speechmission.AddressingPlan{
+		Mode:              mode,
+		Candidate:         candidate,
+		Key:               key,
+		Preference:        preference,
+		NamedCandidates:   eligibleNames,
+		SelectedNames:     selectedNames,
+		PreferredTerms:    preferredTerms,
+		BlockedTerms:      blockedTerms,
+		GroupLabel:        candidate,
+		MaxNamedCount:     maxNamedCount,
+		RecentNamePenalty: recentPenalty,
+		Optional:          true,
+	}
+}
+
+func cleanAddressingTerms(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func addressingTermBlocked(value string, blocked []string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, raw := range blocked {
+		term := strings.ToLower(strings.TrimSpace(raw))
+		if term != "" && (value == term || strings.Contains(value, term)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAggregateAddressingMission(item decisionItem) bool {
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	return item.MissionEventCount > 1 || len(item.SampleQuestions) > 1 ||
+		kind == "welcome_batch" || kind == "reply_follow"
+}
+
+func addressingModeForPlan(item decisionItem, candidate string, selectedNames []string) string {
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	hasGroupLabel := strings.TrimSpace(candidate) != ""
+	hasNames := len(selectedNames) > 0
+	switch kind {
+	case "welcome_batch", "reply_follow":
+		if item.MissionEventCount > 1 {
+			if hasNames && hasGroupLabel {
+				return "MIXED"
+			}
+			if hasNames {
+				return "SAMPLE"
+			}
+			if hasGroupLabel {
+				return "GROUP"
+			}
+			return "NONE"
+		}
+		if hasNames || hasGroupLabel {
+			return "SINGLE"
+		}
+		return "NONE"
+	case "reply_like":
+		if hasGroupLabel {
+			return "GROUP"
+		}
+		return "NONE"
+	case "welcome_named":
+		if hasNames || hasGroupLabel {
+			return "SINGLE"
+		}
+		return "NONE"
+	case "reply_chat":
+		if item.MissionEventCount > 1 || len(item.SampleQuestions) > 1 {
+			if hasGroupLabel {
+				return "GROUP"
+			}
+			return "NONE"
+		}
+		if hasNames || hasGroupLabel {
+			return "SINGLE"
+		}
+		return "NONE"
+	default:
+		if hasNames || hasGroupLabel {
+			return "SINGLE"
+		}
+		return "NONE"
+	}
+}
+
+func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, float64) {
+	if w == nil || len(raw) == 0 {
+		return nil, 0
+	}
+	now := time.Now().UTC()
+	if w.now != nil {
+		now = w.now().UTC()
+	}
+	cleaned := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, rawName := range raw {
+		name, ok := normalizePlayableNickname(rawName)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		cleaned = append(cleaned, name)
+	}
+	if len(cleaned) == 0 {
+		return nil, 0
+	}
+
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	recent := w.recentNamed[roomID]
+	for name, usedAt := range recent {
+		if now.Sub(usedAt) >= addressingNameCooldown {
+			delete(recent, name)
+		}
+	}
+	result := make([]string, 0, len(cleaned))
+	suppressed := 0
+	for _, name := range cleaned {
+		if usedAt, exists := recent[name]; exists && now.Sub(usedAt) < addressingNameCooldown {
+			suppressed++
+			continue
+		}
+		result = append(result, name)
+	}
+	penalty := 0.0
+	if total := len(result) + suppressed; total > 0 {
+		penalty = float64(suppressed) / float64(total)
+	}
+	return result, penalty
+}
+
+func (w *Worker) recordUsedAddressingNames(roomID int64, names []string, finalText string) {
+	if w == nil || roomID <= 0 || len(names) == 0 {
+		return
+	}
+	finalText = strings.TrimSpace(finalText)
+	if finalText == "" {
+		return
+	}
+	now := time.Now().UTC()
+	if w.now != nil {
+		now = w.now().UTC()
+	}
+	used := make([]string, 0, len(names))
+	for _, rawName := range names {
+		name, ok := normalizePlayableNickname(rawName)
+		if !ok || !strings.Contains(finalText, name) {
+			continue
+		}
+		used = append(used, name)
+	}
+	if len(used) == 0 {
+		return
+	}
+	w.addressMu.Lock()
+	if w.recentNamed[roomID] == nil {
+		w.recentNamed[roomID] = make(map[string]time.Time)
+	}
+	for _, name := range used {
+		w.recentNamed[roomID][name] = now
+	}
+	w.addressMu.Unlock()
+}
+
+func normalizePlayableNickname(raw string) (string, bool) {
+	value := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	runes := []rune(value)
+	if len(runes) == 0 || len(runes) > 12 {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	for _, blocked := range []string{"http", "www", ".com", "微信", "vx", "v信", "加我", "加群", "私聊", "客服", "代理", "二维码"} {
+		if strings.Contains(lower, blocked) {
+			return "", false
+		}
+	}
+	meaningful := 0
+	symbols := 0
+	for _, r := range runes {
+		switch {
+		case unicode.IsLetter(r), unicode.IsNumber(r):
+			meaningful++
+		case unicode.IsSpace(r):
+		default:
+			symbols++
+		}
+	}
+	if meaningful == 0 || symbols > 2 || symbols*3 > len(runes) {
+		return "", false
+	}
+	return value, true
+}
+
+func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
+	selected := strings.Join(plan.SelectedNames, "、")
+	groupLabel := strings.TrimSpace(plan.GroupLabel)
+	base := ""
+	switch strings.ToUpper(strings.TrimSpace(plan.Mode)) {
+	case "NONE":
+		base = "称呼计划：本轮不主动使用称呼；不要为了显得热情强塞昵称、朋友、老哥、宝子等称呼。"
+	case "GROUP":
+		if groupLabel != "" {
+			if plan.Optional {
+				base = "称呼计划：本轮面向群体；语境自然时可使用群体称呼“" + groupLabel + "”，但不要逐个报名字，也不要为了执行策略重复称呼。"
+			} else {
+				base = "称呼计划：本轮需要自然使用一次群体称呼“" + groupLabel + "”；只出现一次，不要逐个报名字，不要重复称呼。"
+			}
+		} else {
+			base = "称呼计划：本轮面向群体；使用自然群体表达，不逐个点名。"
+		}
+	case "SAMPLE":
+		if selected != "" {
+			if plan.Optional {
+				base = "称呼计划：本轮允许从可播昵称里抽样称呼“" + selected + "”，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
+			} else {
+				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 1 个，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
+			}
+		} else {
+			base = "称呼计划：本轮允许抽样称呼可播昵称；不得虚构昵称。"
+		}
+	case "MIXED":
+		if selected != "" && groupLabel != "" {
+			if plan.Optional {
+				base = "称呼计划：本轮可先自然称呼“" + selected + "”，再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
+			} else {
+				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 1 个，可再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
+			}
+		} else {
+			base = "称呼计划：本轮允许点少量可播昵称后自然带到其他观众；不得逐个报完整名单，也不得虚构昵称。"
+		}
+	default:
+		if selected != "" {
+			if plan.Optional {
+				base = "称呼计划：本轮只面向当前事件对应的单个观众；语境自然时可称呼“" + selected + "”最多 1 次，不得重复点名或虚构昵称。"
+			} else {
+				base = "称呼计划：本轮需要自然称呼观众“" + selected + "”1 次；不得重复点名或虚构昵称。"
+			}
+		} else if groupLabel != "" {
+			if plan.Optional {
+				base = "称呼计划：本轮只面向当前事件对应的单个观众；语境自然时可使用称呼“" + groupLabel + "”，不知道昵称时用泛称或直接省略。"
+			} else {
+				base = "称呼计划：本轮需要自然使用一次观众称谓“" + groupLabel + "”；它只用于叫对方，绝不能作为主播自称。"
+			}
+		} else {
+			base = "称呼计划：本轮只面向当前事件对应的单个观众；不知道昵称时直接省略称呼，不得虚构昵称。"
+		}
+	}
+	if len(plan.PreferredTerms) > 0 {
+		base += " 用户常用的观众称谓：" + strings.Join(plan.PreferredTerms, "、") + "；这些词只能用于称呼观众/对方，是二人称呼语，不代表主播身份，绝不能用于主播自称、自我介绍或说成“我是/我叫/作为某称谓”。仅在语境自然时使用，不要求每轮出现。"
+	}
+	if len(plan.BlockedTerms) > 0 {
+		base += " 用户明确不喜欢这些称呼：" + strings.Join(plan.BlockedTerms, "、") + "；本轮及最终正文禁止使用。"
+	}
+	if strings.EqualFold(plan.Preference, "less") {
+		base += " 用户偏好少点名，能不点昵称时优先不用昵称。"
+	} else if strings.EqualFold(plan.Preference, "more") {
+		base += " 用户偏好多点名；系统会按较高目标频率触发，命中的这一轮必须自然使用一次称呼，但不能生硬重复。"
+	}
+	return base
+}
+
+func maxAddressingInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func addressingGuidance(mode, candidate string) string {
+	return addressingPlanGuidance(speechmission.AddressingPlan{
+		Mode: mode, Candidate: strings.TrimSpace(candidate), GroupLabel: strings.TrimSpace(candidate), Optional: true,
+	})
 }
 
 func (w *Worker) applyResumeStrategyStage(
@@ -418,10 +938,21 @@ func (w *Worker) applyResumeStrategyStage(
 				segmentID = item.ResumeSegmentID
 			}
 			m.Resume = speechmission.ResumePlan{
-				Strategy: resume.Key, Name: resume.Name, Guidance: guidance,
-				ResumeMainline: item.ResumeMainline, ResumeSegmentID: segmentID,
-				PlannedResumeAtMS: resume.ResumeOffsetMS, ResumeReason: resume.ResumeReason,
-				ResumePreview: resume.ResumePreview, SkippedPreviews: append([]string(nil), resume.SkippedPreviews...), Required: true,
+				Strategy:              resume.Key,
+				Name:                  resume.Name,
+				Guidance:              guidance,
+				ResumeMainline:        item.ResumeMainline,
+				ResumeSegmentID:       segmentID,
+				CutAfterSegment:       strings.TrimSpace(resume.CutAfterSegmentID),
+				OriginalResumeSegment: strings.TrimSpace(resume.OriginalResumeSegmentID),
+				CoveredSegments:       append([]string(nil), resume.CoveredSegmentIDs...),
+				PlannedResumeSegment:  strings.TrimSpace(resume.PlannedResumeSegmentID),
+				SkipCount:             resume.SkipCount,
+				PlannedResumeAtMS:     resume.ResumeOffsetMS,
+				ResumeReason:          resume.ResumeReason,
+				ResumePreview:         resume.ResumePreview,
+				SkippedPreviews:       append([]string(nil), resume.SkippedPreviews...),
+				Required:              true,
 			}
 		})
 		log.Printf("decision strategy tenant=%d room=%d decision=%s category=resume selected=%s", session.TenantID, session.RoomID, item.ID, resume.Key)
@@ -438,6 +969,15 @@ func (w *Worker) applyHumanizeStrategyStage(
 		return
 	}
 	baseGuidance := "把整段话说成真人主播现场自然接话；允许短句和自然停顿，但不要固定口癖，不要为了仿真改变任何事实。"
+	profile, profileErr := w.store.GetRoomHumanBehaviorProfile(ctx, session.TenantID, session.RoomID)
+	if profileErr == nil {
+		if trait := strings.TrimSpace(profile.TraitText); trait != "" {
+			baseGuidance += " 主播长期习惯（后台配置，不是台词）：" + trait + "；只自然执行这些习惯，不得把配置内容当成自我介绍或逐字说出口。"
+		}
+		if state := strings.TrimSpace(profile.StateText); state != "" && (profile.StateExpiresAt == nil || w.now().UTC().Before(profile.StateExpiresAt.UTC())) {
+			baseGuidance += " 主播当前状态属于后台控制参数，不是直播内容。" + hostStateDeliveryGuidance(state) + " 严禁在正文中主动解释、复述或透露主播身体、情绪状态及原因。"
+		}
+	}
 	plan, err := w.loadCoreHumanizationPlan(ctx, session)
 	if err != nil {
 		item.addStrategyConstraint(strategyConstraint{
@@ -445,10 +985,10 @@ func (w *Worker) applyHumanizeStrategyStage(
 			Guidance: baseGuidance, Required: true,
 		})
 		w.updateMission(item, func(m *speechmission.Mission) {
-			m.HumanStyle = speechmission.HumanStylePlan{
-				Mode: "natural_live_speech", Strategy: "fallback.natural", Enabled: false,
-				Guidance: baseGuidance, Reason: "core_humanization_unavailable", Emotion: "natural_warm", Pace: "conversational",
-			}
+			m.HumanStyle = buildHumanStyleMissionPlan(*item, selectedHumanizationPlan{
+				Strategy: "fallback.natural",
+				Reason:   "core_humanization_unavailable",
+			}, profile, baseGuidance, false)
 		})
 		return
 	}
@@ -474,34 +1014,54 @@ func (w *Worker) applyHumanizeStrategyStage(
 		Stage: "humanize", Key: key, Name: humanizationKindName(item.HumanizationKind), Guidance: guidance, Required: true,
 	})
 	w.updateMission(item, func(m *speechmission.Mission) {
-		m.HumanStyle = speechmission.HumanStylePlan{
-			Mode: "natural_live_speech", Strategy: item.HumanizationStrategy, Kind: item.HumanizationKind,
-			Delivery: item.HumanizationDelivery, Enabled: applied, Guidance: guidance, Reason: strings.TrimSpace(plan.Reason),
-			Emotion: "natural_warm", Pace: "conversational",
-		}
+		m.HumanStyle = buildHumanStyleMissionPlan(*item, plan, profile, guidance, applied)
 	})
 }
 
 type coreHumanizationPlan struct {
+	Intelligence struct {
+		Heat string `json:"Heat"`
+	} `json:"Intelligence"`
 	Director struct {
+		Progress     string `json:"Progress"`
+		Atmosphere   string `json:"Atmosphere"`
 		Humanization struct {
-			Strategy    string `json:"Strategy"`
-			Enabled     bool   `json:"Enabled"`
-			Kind        string `json:"Kind"`
-			Delivery    string `json:"Delivery"`
-			Instruction string `json:"Instruction"`
-			Reason      string `json:"Reason"`
+			Strategy        string    `json:"Strategy"`
+			Enabled         bool      `json:"Enabled"`
+			Kind            string    `json:"Kind"`
+			Delivery        string    `json:"Delivery"`
+			Instruction     string    `json:"Instruction"`
+			AssetKey        string    `json:"AssetKey"`
+			MaxCount        int       `json:"MaxCount"`
+			Reason          string    `json:"Reason"`
+			Source          string    `json:"Source"`
+			RuleID          string    `json:"RuleID"`
+			Intensity       float64   `json:"Intensity"`
+			Channel         string    `json:"Channel"`
+			CooldownSeconds int64     `json:"CooldownSeconds"`
+			ExpiresAt       time.Time `json:"ExpiresAt"`
 		} `json:"Humanization"`
 	} `json:"Director"`
 }
 
 type selectedHumanizationPlan struct {
-	Strategy    string
-	Enabled     bool
-	Kind        string
-	Delivery    string
-	Instruction string
-	Reason      string
+	Strategy        string
+	Enabled         bool
+	Kind            string
+	Delivery        string
+	Instruction     string
+	AssetKey        string
+	MaxCount        int
+	Reason          string
+	Source          string
+	RuleID          string
+	Intensity       float64
+	Channel         string
+	CooldownSeconds int64
+	ExpiresAt       time.Time
+	Heat            string
+	Progress        string
+	Atmosphere      string
 }
 
 func (w *Worker) loadCoreHumanizationPlan(ctx context.Context, session model.LiveRuntimeSession) (selectedHumanizationPlan, error) {
@@ -528,8 +1088,73 @@ func (w *Worker) loadCoreHumanizationPlan(ctx context.Context, session model.Liv
 	value := view.Director.Humanization
 	return selectedHumanizationPlan{
 		Strategy: value.Strategy, Enabled: value.Enabled, Kind: value.Kind, Delivery: value.Delivery,
-		Instruction: value.Instruction, Reason: value.Reason,
+		Instruction: value.Instruction, AssetKey: value.AssetKey, MaxCount: value.MaxCount, Reason: value.Reason,
+		Source: value.Source, RuleID: value.RuleID, Intensity: value.Intensity, Channel: value.Channel,
+		CooldownSeconds: value.CooldownSeconds, ExpiresAt: value.ExpiresAt,
+		Heat: view.Intelligence.Heat, Progress: view.Director.Progress, Atmosphere: view.Director.Atmosphere,
 	}, nil
+}
+
+func buildHumanStyleMissionPlan(item decisionItem, plan selectedHumanizationPlan, profile model.RoomHumanBehaviorProfile, guidance string, applied bool) speechmission.HumanStylePlan {
+	maxCount := plan.MaxCount
+	if maxCount <= 0 && applied {
+		maxCount = 1
+	}
+	if !applied {
+		maxCount = 0
+	}
+	strategy := strings.TrimSpace(plan.Strategy)
+	if strategy == "" {
+		strategy = "humanization.none"
+	}
+	kind := strings.TrimSpace(plan.Kind)
+	if kind == "" {
+		kind = "NONE"
+	}
+	reason := strings.TrimSpace(plan.Reason)
+	return speechmission.HumanStylePlan{
+		Mode:     "natural_live_speech",
+		Strategy: strategy,
+		Kind:     kind,
+		Delivery: strings.TrimSpace(plan.Delivery),
+		Enabled:  applied,
+		Guidance: strings.TrimSpace(guidance),
+		Reason:   reason,
+		Emotion:  "natural_warm",
+		Pace:     "conversational",
+		Trait: speechmission.HumanTraitPlan{
+			Persona:          "natural_live_anchor",
+			Emotion:          "natural_warm",
+			Pace:             "conversational",
+			Humor:            "adaptive_restrained",
+			MaxReactionCount: 1,
+			Instruction:      strings.TrimSpace(profile.TraitText),
+		},
+		State: speechmission.HumanStatePlan{
+			Heat:        strings.TrimSpace(plan.Heat),
+			Progress:    strings.TrimSpace(plan.Progress),
+			Atmosphere:  strings.TrimSpace(plan.Atmosphere),
+			MissionKind: strings.TrimSpace(item.MissionKind),
+			HostState:   strings.TrimSpace(profile.StateText),
+			ExpiresAt:   profile.StateExpiresAt,
+		},
+		Reaction: speechmission.HumanReactionPlan{
+			Strategy:        strategy,
+			Kind:            kind,
+			Delivery:        strings.TrimSpace(plan.Delivery),
+			Instruction:     strings.TrimSpace(plan.Instruction),
+			AssetKey:        strings.TrimSpace(plan.AssetKey),
+			MaxCount:        maxCount,
+			Enabled:         applied,
+			Reason:          reason,
+			Source:          strings.TrimSpace(plan.Source),
+			RuleID:          strings.TrimSpace(plan.RuleID),
+			Intensity:       plan.Intensity,
+			Channel:         strings.TrimSpace(plan.Channel),
+			CooldownSeconds: plan.CooldownSeconds,
+			ExpiresAt:       plan.ExpiresAt,
+		},
+	}
 }
 
 func humanizationKindName(kind string) string {
@@ -567,15 +1192,16 @@ type claimResponse struct {
 
 func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...leader) *Worker {
 	w := &Worker{
-		store:      s,
-		core:       core,
-		agent:      agent,
-		tts:        tts,
-		interval:   defaultInterval,
-		now:        func() time.Time { return time.Now().UTC() },
-		missions:   speechmission.New(),
-		inFlight:   make(map[int64]bool),
-		retryAfter: make(map[int64]time.Time),
+		store:       s,
+		core:        core,
+		agent:       agent,
+		tts:         tts,
+		interval:    defaultInterval,
+		now:         func() time.Time { return time.Now().UTC() },
+		missions:    speechmission.New(),
+		inFlight:    make(map[int64]bool),
+		retryAfter:  make(map[int64]time.Time),
+		recentNamed: make(map[int64]map[string]time.Time),
 	}
 	if len(leaders) > 0 {
 		w.leader = leaders[0]
@@ -615,6 +1241,7 @@ func (w *Worker) ensureMission(session model.LiveRuntimeSession, item *decisionI
 			Title:         strings.TrimSpace(item.Title),
 			Summary:       strings.TrimSpace(item.Summary),
 			Questions:     append([]string(nil), item.SampleQuestions...),
+			Nicknames:     append([]string(nil), item.Nicknames...),
 			EventCount:    item.MissionEventCount,
 			WindowSeconds: item.MissionWindowSeconds,
 		},
@@ -649,7 +1276,7 @@ func missionStateForStrategyStage(stage string) speechmission.State {
 		return speechmission.StatePlanningInterrupt
 	case "resume":
 		return speechmission.StatePlanningResume
-	case "addressing", "humanize":
+	case "opening", "addressing", "humanize":
 		return speechmission.StatePlanningExpression
 	default:
 		return speechmission.StatePlanningExpression
@@ -676,7 +1303,7 @@ func (w *Worker) syncMissionConstraints(item *decisionItem) {
 			m.PlanFrozenAt = &now
 		}
 	})
-	w.transitionMission(item, speechmission.StateGeneratingText, "plan_frozen", "互动、打断、回归、称呼和仿真人约束已冻结，本轮生成阶段不再改写策略计划")
+	w.transitionMission(item, speechmission.StateGeneratingText, "plan_frozen", "互动、打断、回归、开头、称呼和仿真人约束已冻结，本轮生成阶段不再改写策略计划")
 }
 
 func (w *Worker) missionSnapshot(item *decisionItem) (speechmission.Mission, bool) {
@@ -940,11 +1567,20 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		if strings.TrimSpace(dispatchResult.ResumeStrategy) != "" {
 			m.Resume.Strategy = strings.TrimSpace(dispatchResult.ResumeStrategy)
 		}
+		if strings.TrimSpace(dispatchResult.ResumeSegmentID) != "" {
+			m.Resume.ActualResumeSegment = strings.TrimSpace(dispatchResult.ResumeSegmentID)
+		}
+		if dispatchResult.ActualSkipCount != nil {
+			m.Resume.SkipCount = *dispatchResult.ActualSkipCount
+		}
 		m.Resume.BridgeText = item.BridgeText
 		m.Resume.DedupTriggered = dispatchResult.DedupTriggered
 		m.Resume.DuplicateScore = dispatchResult.DuplicateScore
 	})
 	w.transitionMission(item, speechmission.StateDispatched, "core_dispatched", dispatchResult.traceNote())
+	if mission, ok := w.missionSnapshot(item); ok {
+		w.recordUsedAddressingNames(session.RoomID, mission.Addressing.SelectedNames, text)
+	}
 	sourceType := "interrupt_answer"
 	if action == "quick" {
 		sourceType = "interrupt_quick"
@@ -977,15 +1613,20 @@ type SimulationOutput struct {
 }
 
 type coreStrategySelection struct {
-	Category        string   `json:"category"`
-	Key             string   `json:"key"`
-	Name            string   `json:"name"`
-	PlannedCutMS    int      `json:"planned_cut_ms,omitempty"`
-	ResumeOffsetMS  int      `json:"resume_offset_ms,omitempty"`
-	ResumeReason    string   `json:"resume_reason,omitempty"`
-	ResumePreview   string   `json:"resume_preview,omitempty"`
-	ResumeSegmentID string   `json:"resume_segment_id,omitempty"`
-	SkippedPreviews []string `json:"skipped_previews,omitempty"`
+	Category                string   `json:"category"`
+	Key                     string   `json:"key"`
+	Name                    string   `json:"name"`
+	PlannedCutMS            int      `json:"planned_cut_ms,omitempty"`
+	ResumeOffsetMS          int      `json:"resume_offset_ms,omitempty"`
+	ResumeReason            string   `json:"resume_reason,omitempty"`
+	ResumePreview           string   `json:"resume_preview,omitempty"`
+	ResumeSegmentID         string   `json:"resume_segment_id,omitempty"`
+	CutAfterSegmentID       string   `json:"cut_after_segment_id,omitempty"`
+	OriginalResumeSegmentID string   `json:"original_resume_segment_id,omitempty"`
+	CoveredSegmentIDs       []string `json:"covered_segment_ids,omitempty"`
+	PlannedResumeSegmentID  string   `json:"planned_resume_segment_id,omitempty"`
+	SkipCount               int      `json:"skip_count,omitempty"`
+	SkippedPreviews         []string `json:"skipped_previews,omitempty"`
 }
 
 func (w *Worker) selectCoreStrategy(ctx context.Context, session model.LiveRuntimeSession, seed, category string, candidates []string) (coreStrategySelection, error) {
@@ -1125,13 +1766,52 @@ func estimatedAnswerDurationMS(item decisionItem) int {
 	}
 }
 
+func hostStateDeliveryGuidance(state string) string {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return ""
+	}
+	lower := strings.ToLower(state)
+	containsAny := func(values ...string) bool {
+		for _, value := range values {
+			if value != "" && strings.Contains(lower, strings.ToLower(value)) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case containsAny("咳嗽", "感冒", "嗓子", "喉咙", "不舒服", "生病"):
+		return "表达动作：语速稍慢、句子缩短、声音略轻、停顿更自然；必要时允许轻微清嗓或短暂停顿，但不要解释原因，也不要把身体状态说成台词。"
+	case containsAny("累", "疲惫", "困", "没精神"):
+		return "表达动作：语速略慢、句子更短、减少连续长句和高强度情绪，停顿自然；不要向观众解释主播疲惫状态。"
+	case containsAny("兴奋", "开心", "状态好", "精神好"):
+		return "表达动作：语气更有精神、更明快，但保持自然，不刻意喊叫或夸张。"
+	case containsAny("紧张", "焦虑"):
+		return "表达动作：语速稳一点、句子清楚、停顿更从容，避免连续急促表达；不要主动说明主播紧张。"
+	default:
+		return "表达动作：只根据当前状态微调语速、句长、停顿、声音力度和情绪，不改变正文事实；后台状态本身绝不能说出口。"
+	}
+}
+
 func (w *Worker) ttsInstructionForMission(item *decisionItem, base string) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 6)
 	if value := strings.TrimSpace(base); value != "" {
 		parts = append(parts, value)
 	}
-	if mission, ok := w.missionSnapshot(item); ok && strings.TrimSpace(mission.HumanStyle.Guidance) != "" {
-		parts = append(parts, "整体表达自然、温和、有真人直播临场感；语速保持自然，不要朗读腔，也不要刻意夸张情绪。")
+	if mission, ok := w.missionSnapshot(item); ok {
+		if strings.TrimSpace(mission.HumanStyle.Guidance) != "" {
+			parts = append(parts, "整体表达自然、温和、有真人直播临场感；语速保持自然，不要朗读腔，也不要刻意夸张情绪。")
+		}
+		if state := strings.TrimSpace(mission.HumanStyle.State.HostState); state != "" {
+			parts = append(parts, hostStateDeliveryGuidance(state))
+		}
+		reaction := mission.HumanStyle.Reaction
+		if reaction.Enabled && (strings.EqualFold(reaction.Channel, "TTS_STYLE") || strings.EqualFold(reaction.Channel, "MIXED")) {
+			if instruction := strings.TrimSpace(reaction.Instruction); instruction != "" {
+				parts = append(parts, instruction)
+			}
+		}
 	}
 	return strings.Join(uniqueNonEmptyStrings(parts), "；")
 }
@@ -1168,7 +1848,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "你是直播口播合成器。根据事件、现场上下文和策略黑板，一次生成一段真实、自然、可直接播出的完整口播，不编造事实。") +
-			"\n所有策略都只是生成约束，不允许逐项解释、逐段分别生成或输出多个候选。称呼只是可选约束，不自然时必须省略。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
+			"\n所有策略都只是生成约束，不允许逐项解释、逐段分别生成或输出多个候选。称呼只是可选约束，不自然时必须省略。称呼配置里的常用称谓只用于称呼观众/对方，绝不能当作主播自称、主播身份或自我介绍。主播状态只用于控制语速、句长、停顿、音色和情绪，绝不能在正文里说出“我不舒服/我咳嗽/我今天状态如何”之类状态说明。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
 		answer, err := w.agent.Complete(answerCtx, agentgateway.Request{
 			Messages: []agentgateway.Message{
 				{Role: "system", Content: answerSystemPrompt},
@@ -1366,15 +2046,17 @@ func (w *Worker) completeSimulation(
 }
 
 type dispatchResult struct {
-	MissionID      string  `json:"mission_id,omitempty"`
-	Dispatched     bool    `json:"dispatched"`
-	Action         string  `json:"action,omitempty"`
-	SwitchAtMS     *int    `json:"switch_at_ms,omitempty"`
-	ResumeOffsetMS *int    `json:"resume_offset_ms,omitempty"`
-	ResumeStrategy string  `json:"resume_strategy,omitempty"`
-	BridgeUsed     bool    `json:"bridge_used"`
-	DedupTriggered bool    `json:"dedup_triggered"`
-	DuplicateScore float64 `json:"duplicate_score,omitempty"`
+	MissionID       string  `json:"mission_id,omitempty"`
+	Dispatched      bool    `json:"dispatched"`
+	Action          string  `json:"action,omitempty"`
+	SwitchAtMS      *int    `json:"switch_at_ms,omitempty"`
+	ResumeOffsetMS  *int    `json:"resume_offset_ms,omitempty"`
+	ResumeStrategy  string  `json:"resume_strategy,omitempty"`
+	ResumeSegmentID string  `json:"resume_segment_id,omitempty"`
+	ActualSkipCount *int    `json:"actual_skip_count,omitempty"`
+	BridgeUsed      bool    `json:"bridge_used"`
+	DedupTriggered  bool    `json:"dedup_triggered"`
+	DuplicateScore  float64 `json:"duplicate_score,omitempty"`
 }
 
 func (result dispatchResult) traceNote() string {
@@ -1384,6 +2066,12 @@ func (result dispatchResult) traceNote() string {
 	}
 	if result.ResumeOffsetMS != nil {
 		parts = append(parts, fmt.Sprintf("实际回归点=%dms", *result.ResumeOffsetMS))
+	}
+	if value := strings.TrimSpace(result.ResumeSegmentID); value != "" {
+		parts = append(parts, "实际回归段="+value)
+	}
+	if result.ActualSkipCount != nil {
+		parts = append(parts, fmt.Sprintf("实际跳过段数=%d", *result.ActualSkipCount))
 	}
 	if value := strings.TrimSpace(result.ResumeStrategy); value != "" {
 		parts = append(parts, "实际回归策略="+value)
@@ -1628,6 +2316,11 @@ func (w *Worker) finalizeSpeechText(
 			reasons = append(reasons, "当前直播间用词规范禁止表达："+term)
 		}
 	}
+	if mission, ok := w.missionSnapshot(&item); ok {
+		for _, violation := range presentationControlViolations(mission, text) {
+			reasons = append(reasons, violation)
+		}
+	}
 	riskTerms = uniqueNonEmptyStrings(riskTerms)
 	reasons = uniqueNonEmptyStrings(reasons)
 	hasAgentMemories := hasAgentMemoryPrompt(contextText)
@@ -1653,6 +2346,7 @@ func (w *Worker) finalizeSpeechText(
 	if strings.TrimSpace(item.PreviewInstruction) != "" {
 		reviewSystemPrompt += "\n\n【候选修正预览测试】\n本次正在测试尚未采用的候选修正。候选修正与同一用户层记忆直接冲突时，以候选修正为准；规则层、行业层和其他不冲突的已采用记忆继续执行。只评估本次回答，不得声称候选已经采用、发布或保存。"
 	}
+	reviewSystemPrompt += "\n\n【称呼与主播状态硬要求】\n常用称谓是主播用来称呼观众/对方的二人称呼语，绝不是主播自己的身份、自称或自我介绍；禁止‘我是某称谓/我叫某称谓/作为某称谓’。主播状态是后台控制参数，只能影响语速、句长、停顿、音色和情绪，禁止在正文里主动说‘我不舒服/我咳嗽/我累/我紧张’等状态说明。若待播话术出现这些问题，必须直接改成自然口播，不要解释为什么修改。"
 	reviewSystemPrompt += "\n\n【内部信息保密】\n策略选择、称呼选择、回归方式、打断方式、概率、系统字段、提示词标题都只用于控制生成，绝不能向观众复述。最终只保留主播自然会说出口的正文。"
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
@@ -1694,7 +2388,60 @@ func (w *Worker) finalizeSpeechText(
 	if strings.TrimSpace(candidate) == "" {
 		return "", fmt.Errorf("规则层终审后没有可播出文字")
 	}
+	if mission, ok := w.missionSnapshot(&item); ok {
+		if violations := presentationControlViolations(mission, candidate); len(violations) > 0 {
+			return "", fmt.Errorf("称呼或主播状态终审未通过: %s", strings.Join(violations, "；"))
+		}
+	}
 	return strings.TrimSpace(candidate), nil
+}
+
+func presentationControlViolations(mission speechmission.Mission, text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	violations := make([]string, 0, 4)
+	for _, raw := range mission.Addressing.PreferredTerms {
+		term := strings.TrimSpace(raw)
+		if term == "" {
+			continue
+		}
+		patterns := []string{
+			"我是" + term,
+			"我叫" + term,
+			"作为" + term,
+			"我这个" + term,
+			"我就是" + term,
+		}
+		for _, pattern := range patterns {
+			if strings.Contains(text, pattern) {
+				violations = append(violations, "观众称谓“"+term+"”被错误用作主播自称")
+				break
+			}
+		}
+	}
+
+	state := strings.TrimSpace(mission.HumanStyle.State.HostState)
+	if state != "" {
+		if len([]rune(state)) >= 4 && strings.Contains(text, state) {
+			violations = append(violations, "后台主播状态被直接复述进正文")
+		}
+		stateTerms := []string{"咳嗽", "感冒", "不舒服", "嗓子不舒服", "喉咙不舒服", "疲惫", "很累", "累了", "紧张", "焦虑"}
+		selfPrefixes := []string{"我", "我有点", "我今天", "今天我", "主播我"}
+		for _, term := range stateTerms {
+			if !strings.Contains(state, term) {
+				continue
+			}
+			for _, prefix := range selfPrefixes {
+				if strings.Contains(text, prefix+term) {
+					violations = append(violations, "后台主播状态“"+term+"”被说成了直播正文")
+					break
+				}
+			}
+		}
+	}
+	return uniqueNonEmptyStrings(violations)
 }
 
 func stripInternalSpeechLeak(text string) string {

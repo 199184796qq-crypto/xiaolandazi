@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
@@ -120,6 +121,394 @@ func TestSpeechMissionPromptCarriesAggregatedInteractionContext(t *testing.T) {
 	}
 }
 
+func TestOpeningIntentSeparatesSimpleAndComplexQuestions(t *testing.T) {
+	simpleKey, _, simpleGuidance := openingIntentForMission(decisionItem{
+		MissionKind:     "reply_chat",
+		SampleQuestions: []string{"多少钱"},
+	})
+	if simpleKey != "direct_answer" || !strings.Contains(simpleGuidance, "直接接住") {
+		t.Fatalf("simple opening=%q guidance=%q", simpleKey, simpleGuidance)
+	}
+
+	complexKey, _, complexGuidance := openingIntentForMission(decisionItem{
+		MissionKind: "reply_chat",
+		SampleQuestions: []string{
+			"这个规格怎么选，家里三个人吃应该买哪种？",
+			"另外发货和售后分别是什么规则？",
+		},
+	})
+	if complexKey != "light_restate" || !strings.Contains(complexGuidance, "复述确认重点") {
+		t.Fatalf("complex opening=%q guidance=%q", complexKey, complexGuidance)
+	}
+}
+
+func TestAddressingModeUsesMissionScopeWithoutForcingNames(t *testing.T) {
+	tests := []struct {
+		name      string
+		item      decisionItem
+		candidate string
+		want      string
+	}{
+		{name: "none without candidate", item: decisionItem{MissionKind: "reply_chat"}, candidate: "", want: "NONE"},
+		{name: "single welcome", item: decisionItem{MissionKind: "welcome_named", MissionEventCount: 1}, candidate: "朋友", want: "SINGLE"},
+		{name: "batch welcome", item: decisionItem{MissionKind: "welcome_batch", MissionEventCount: 12}, candidate: "朋友们", want: "GROUP"},
+		{name: "batched chat", item: decisionItem{MissionKind: "reply_chat", MissionEventCount: 3}, candidate: "大家", want: "GROUP"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := addressingModeForMission(tt.item, tt.candidate); got != tt.want {
+				t.Fatalf("mode=%q want=%q", got, tt.want)
+			}
+		})
+	}
+
+	if guidance := addressingGuidance("NONE", ""); !strings.Contains(guidance, "不主动使用称呼") {
+		t.Fatalf("NONE guidance must forbid forced addressing: %s", guidance)
+	}
+	if guidance := addressingGuidance("GROUP", "朋友们"); !strings.Contains(guidance, "不要逐个报名字") {
+		t.Fatalf("GROUP guidance must suppress name listing: %s", guidance)
+	}
+}
+
+func TestOpeningPlanIsFrozenIntoSpeechMission(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	item := &decisionItem{
+		ID:              "decision-opening-1",
+		MissionKind:     "reply_chat",
+		SampleQuestions: []string{"这个规格怎么选？"},
+	}
+	session := model.LiveRuntimeSession{ID: 3, TenantID: 7, RoomID: 11}
+	worker.ensureMission(session, item)
+	worker.applyOpeningStrategyStage(context.Background(), session, "seed", item)
+	mission, ok := worker.MissionSnapshot(item.MissionID)
+	if !ok {
+		t.Fatal("mission snapshot missing")
+	}
+	if mission.Opening.Intent != "direct_answer" || !mission.Opening.Required {
+		t.Fatalf("unexpected opening plan: %#v", mission.Opening)
+	}
+}
+
+func TestInteractionDecisionIsFrozenIntoSpeechMission(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	item := &decisionItem{
+		ID:                   "decision-value-1",
+		MissionKind:          "reply_chat",
+		MissionEventCount:    2,
+		MissionWindowSeconds: 18,
+		InteractionDecision: speechmission.InteractionDecisionPlan{
+			Handle:           true,
+			PrimaryEvent:     "question",
+			MergedEventIDs:   []int64{101, 102},
+			EventValue:       96.5,
+			ValueLevel:       "HIGH",
+			Reason:           "重复问题进入高价值保留通道",
+			BudgetLevel:      "LOW",
+			BudgetAllowed:    true,
+			Heat:             "HOT",
+			PreferenceFactor: 1.38,
+			QuestionDebt: &speechmission.QuestionDebtPlan{
+				Topic:           "FAMILY:价格费用",
+				RepeatCount:     2,
+				UniqueUsers:     2,
+				WaitingSeconds:  18,
+				BusinessValue:   0.92,
+				CurrentPriority: 88,
+			},
+		},
+	}
+	session := model.LiveRuntimeSession{ID: 3, TenantID: 7, RoomID: 11}
+	worker.ensureMission(session, item)
+	worker.applyInteractionStrategyStage(context.Background(), session, "seed", item)
+	mission, ok := worker.MissionSnapshot(item.MissionID)
+	if !ok {
+		t.Fatal("mission snapshot missing")
+	}
+	decision := mission.Interaction.Decision
+	if decision.EventValue != 96.5 || decision.Heat != "HOT" || !decision.BudgetAllowed || decision.BudgetLevel != "LOW" {
+		t.Fatalf("interaction decision not frozen: %#v", decision)
+	}
+	if decision.QuestionDebt == nil || decision.QuestionDebt.RepeatCount != 2 || decision.QuestionDebt.UniqueUsers != 2 {
+		t.Fatalf("question debt not frozen: %#v", decision.QuestionDebt)
+	}
+	if len(decision.MergedEventIDs) != 2 {
+		t.Fatalf("merged events not frozen: %#v", decision.MergedEventIDs)
+	}
+}
+
+func TestNormalizePlayableNicknameFiltersUnsafeOrUnreadableNames(t *testing.T) {
+	accepted := []string{"小陈", "阿芳88", "回忆哥"}
+	for _, raw := range accepted {
+		if got, ok := normalizePlayableNickname(raw); !ok || got == "" {
+			t.Fatalf("expected playable nickname %q, got %q ok=%v", raw, got, ok)
+		}
+	}
+	rejected := []string{
+		"微信加我123",
+		"www.test.com",
+		"！！！！",
+		"这是一个特别特别特别特别长的昵称",
+	}
+	for _, raw := range rejected {
+		if got, ok := normalizePlayableNickname(raw); ok {
+			t.Fatalf("expected nickname %q rejected, got %q", raw, got)
+		}
+	}
+}
+
+func TestBuildAddressingPlanUsesMixedForBatchWelcome(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	worker.now = func() time.Time { return time.Date(2026, 9, 29, 18, 40, 0, 0, time.UTC) }
+	plan := worker.buildAddressingPlan(11, decisionItem{
+		MissionKind:       "welcome_batch",
+		MissionEventCount: 12,
+		Nicknames:         []string{"小陈", "阿芳", "老周"},
+	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "natural"})
+	if plan.Mode != "MIXED" {
+		t.Fatalf("mode=%q want MIXED, plan=%#v", plan.Mode, plan)
+	}
+	if len(plan.SelectedNames) != 2 || plan.SelectedNames[0] != "小陈" || plan.SelectedNames[1] != "阿芳" {
+		t.Fatalf("selected names=%v want first two playable names", plan.SelectedNames)
+	}
+	if plan.MaxNamedCount != 2 || plan.GroupLabel != "朋友们" {
+		t.Fatalf("unexpected addressing bounds: %#v", plan)
+	}
+	if guidance := addressingPlanGuidance(plan); !strings.Contains(guidance, "小陈、阿芳") || !strings.Contains(guidance, "朋友们") {
+		t.Fatalf("mixed guidance missing selected names/group: %s", guidance)
+	}
+}
+
+func TestAddressingPreferenceLessAvoidsNamesForAggregateMission(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	plan := worker.buildAddressingPlan(11, decisionItem{
+		MissionKind:       "welcome_batch",
+		MissionEventCount: 8,
+		Nicknames:         []string{"小陈", "阿芳"},
+	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "less"})
+	if plan.Mode != "GROUP" || len(plan.SelectedNames) != 0 || plan.MaxNamedCount != 1 {
+		t.Fatalf("less preference should reduce naming: %#v", plan)
+	}
+}
+
+func TestAddressingPreferenceMoreUsesMixedWhenAggregateQuestionHasNames(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	plan := worker.buildAddressingPlan(11, decisionItem{
+		MissionKind:       "reply_chat",
+		MissionEventCount: 3,
+		Nicknames:         []string{"小陈", "阿芳"},
+		SampleQuestions:   []string{"多少钱", "怎么发货"},
+	}, "friends", "朋友们", model.RoomAddressingPreferences{NamingPreference: "more"})
+	if plan.Mode != "MIXED" || len(plan.SelectedNames) != 2 {
+		t.Fatalf("more preference should use safe mixed addressing: %#v", plan)
+	}
+}
+
+func TestAddressingFrequencyDistribution(t *testing.T) {
+	cases := []struct {
+		preference string
+		minCount   int
+		maxCount   int
+	}{
+		{preference: "less", minCount: 5, maxCount: 25},
+		{preference: "natural", minCount: 25, maxCount: 45},
+		{preference: "more", minCount: 60, maxCount: 80},
+	}
+	for _, tc := range cases {
+		count := 0
+		for i := 0; i < 100; i++ {
+			plan := speechmission.AddressingPlan{
+				Mode:       "SINGLE",
+				Candidate:  "老哥",
+				GroupLabel: "老哥",
+				Preference: tc.preference,
+				Optional:   true,
+			}
+			item := decisionItem{
+				ID:          fmt.Sprintf("decision-%03d", i),
+				MissionKind: "reply_chat",
+			}
+			got := applyAddressingFrequency(plan, item, fmt.Sprintf("seed-%03d", i))
+			if got.SelectedByRate {
+				count++
+				if got.Optional || got.Mode == "NONE" {
+					t.Fatalf("%s selected round must be required: %#v", tc.preference, got)
+				}
+			}
+		}
+		t.Logf("addressing frequency %s: %d/100", tc.preference, count)
+		if count < tc.minCount || count > tc.maxCount {
+			t.Fatalf("%s frequency count=%d want within [%d,%d]", tc.preference, count, tc.minCount, tc.maxCount)
+		}
+	}
+}
+
+func TestPreferredAddressingTermsOverrideSystemCandidate(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	plan := worker.buildAddressingPlan(11, decisionItem{
+		ID:          "decision-preferred-term",
+		MissionKind: "reply_chat",
+	}, "friend", "朋友", model.RoomAddressingPreferences{
+		NamingPreference: "more",
+		PreferredTerms:   []string{"老哥", "朋友", "姐妹", "老妹"},
+		BlockedTerms:     []string{"老板", "宝子"},
+	})
+	if plan.Candidate == "" {
+		t.Fatal("preferred addressing candidate should not be empty")
+	}
+	if !containsString([]string{"老哥", "朋友", "姐妹", "老妹"}, plan.Candidate) {
+		t.Fatalf("candidate=%q not selected from preferred terms", plan.Candidate)
+	}
+	if plan.Key != "preferred" {
+		t.Fatalf("preferred term should mark key=preferred, got %q", plan.Key)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRoomAddressingPreferencesIgnoreBlockedBackendCandidate(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	plan := worker.buildAddressingPlan(11, decisionItem{
+		ID:                "dynamic-room-addressing",
+		MissionKind:       "welcome_batch",
+		MissionEventCount: 3,
+		Nicknames:         []string{"小陈"},
+	}, "backend_babies", "宝子们", model.RoomAddressingPreferences{
+		NamingPreference: "natural",
+		PreferredTerms:   []string{"朋友"},
+		BlockedTerms:     []string{"宝子"},
+	})
+	if plan.Candidate != "朋友" || plan.Key != "preferred" {
+		t.Fatalf("room preference must replace backend candidate: %#v", plan)
+	}
+	guidance := addressingPlanGuidance(plan)
+	if !strings.Contains(guidance, "朋友") || !strings.Contains(guidance, "禁止使用") || !strings.Contains(guidance, "宝子") {
+		t.Fatalf("guidance must carry room preferred and blocked terms: %s", guidance)
+	}
+}
+
+func TestAddressingPreferredTermIsAudienceOnlyGuidance(t *testing.T) {
+	guidance := addressingPlanGuidance(speechmission.AddressingPlan{
+		Mode:           "SINGLE",
+		PreferredTerms: []string{"四川老妹"},
+		Optional:       true,
+	})
+	for _, expected := range []string{"称呼观众/对方", "不代表主播身份", "主播自称"} {
+		if !strings.Contains(guidance, expected) {
+			t.Fatalf("addressing guidance missing %q: %s", expected, guidance)
+		}
+	}
+}
+
+func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
+	guidance := hostStateDeliveryGuidance("今天有点不舒服，有点咳嗽")
+	for _, expected := range []string{"语速稍慢", "句子缩短", "声音略轻", "停顿更自然"} {
+		if !strings.Contains(guidance, expected) {
+			t.Fatalf("state guidance missing %q: %s", expected, guidance)
+		}
+	}
+	for _, forbidden := range []string{"今天有点不舒服", "咳嗽", "感冒"} {
+		if strings.Contains(guidance, forbidden) {
+			t.Fatalf("raw symptom text must not be used as delivery guidance: %q in %s", forbidden, guidance)
+		}
+	}
+}
+
+func TestPresentationControlViolationsCatchSelfAddressAndStateLeak(t *testing.T) {
+	mission := speechmission.Mission{
+		Addressing: speechmission.AddressingPlan{
+			PreferredTerms: []string{"四川老妹"},
+		},
+		HumanStyle: speechmission.HumanStylePlan{
+			State: speechmission.HumanStatePlan{
+				HostState: "今天有点不舒服，有点咳嗽",
+			},
+		},
+	}
+	bad := presentationControlViolations(mission, "我是四川老妹，今天我有点咳嗽，咱们接着看。")
+	if len(bad) < 2 {
+		t.Fatalf("expected addressing and state violations, got %#v", bad)
+	}
+
+	good := presentationControlViolations(mission, "四川老妹，你看哈，这个问题我给你说清楚。")
+	if len(good) != 0 {
+		t.Fatalf("correct audience vocative must be allowed: %#v", good)
+	}
+}
+
+func TestRecentAddressingSuppressionOnlyRecordsActuallySpokenNames(t *testing.T) {
+	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	now := time.Date(2026, 9, 29, 18, 40, 0, 0, time.UTC)
+	worker.now = func() time.Time { return now }
+
+	worker.recordUsedAddressingNames(11, []string{"小陈", "阿芳"}, "小陈，欢迎你，咱们继续看今天这个产品。")
+	names, penalty := worker.playableAddressingNames(11, []string{"小陈", "阿芳"})
+	if len(names) != 1 || names[0] != "阿芳" {
+		t.Fatalf("recent-name suppression=%v want [阿芳]", names)
+	}
+	if penalty <= 0 {
+		t.Fatalf("expected positive recent-name penalty, got %v", penalty)
+	}
+
+	now = now.Add(addressingNameCooldown + time.Second)
+	names, penalty = worker.playableAddressingNames(11, []string{"小陈", "阿芳"})
+	if len(names) != 2 || penalty != 0 {
+		t.Fatalf("cooldown should expire, names=%v penalty=%v", names, penalty)
+	}
+}
+
+func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
+	plan := buildHumanStyleMissionPlan(
+		decisionItem{MissionKind: "reply_chat"},
+		selectedHumanizationPlan{
+			Strategy:    "humanization.repeat_fragment",
+			Enabled:     true,
+			Kind:        "REPEAT_FRAGMENT",
+			Delivery:    "TEXT_DIRECTIVE",
+			Instruction: "允许自然重复一个短关键词一次",
+			MaxCount:    1,
+			Reason:      "anchor style prefers occasional natural repetition",
+			Heat:        "warm",
+			Progress:    "CONVERSION",
+			Atmosphere:  "ACTIVE",
+		},
+		model.RoomHumanBehaviorProfile{TraitText: "喜欢短句", StateText: "今天声音偏轻"},
+		"保持真人直播临场感",
+		true,
+	)
+	if plan.Trait.Persona != "natural_live_anchor" || plan.Trait.MaxReactionCount != 1 || plan.Trait.Instruction != "喜欢短句" {
+		t.Fatalf("trait not frozen correctly: %#v", plan.Trait)
+	}
+	if plan.State.Heat != "warm" || plan.State.Progress != "CONVERSION" || plan.State.MissionKind != "reply_chat" || plan.State.HostState != "今天声音偏轻" {
+		t.Fatalf("state not frozen correctly: %#v", plan.State)
+	}
+	if !plan.Reaction.Enabled || plan.Reaction.Kind != "REPEAT_FRAGMENT" || plan.Reaction.MaxCount != 1 {
+		t.Fatalf("reaction not frozen correctly: %#v", plan.Reaction)
+	}
+}
+
+func TestBuildHumanStyleMissionPlanDisablesReactionInFallback(t *testing.T) {
+	plan := buildHumanStyleMissionPlan(
+		decisionItem{MissionKind: "reply_follow"},
+		selectedHumanizationPlan{Strategy: "fallback.natural", Reason: "core_humanization_unavailable"},
+		model.RoomHumanBehaviorProfile{},
+		"保持干净自然",
+		false,
+	)
+	if plan.Reaction.Enabled || plan.Reaction.MaxCount != 0 || plan.Reaction.Kind != "NONE" {
+		t.Fatalf("fallback must not invent reaction: %#v", plan.Reaction)
+	}
+	if plan.Trait.Persona == "" || plan.State.MissionKind != "reply_follow" {
+		t.Fatalf("trait/state should remain available in fallback: %#v", plan)
+	}
+}
+
 func TestStripInternalSpeechLeakRemovesControlMetadata(t *testing.T) {
 	got := stripInternalSpeechLeak("【本次称呼】宝子，这个规格你这样选就行。\n策略名称：桥接恢复\n别着急，我接着给你讲。")
 	if strings.Contains(got, "本次称呼") || strings.Contains(got, "策略名称") || strings.Contains(got, "桥接恢复") {
@@ -174,6 +563,8 @@ type fakeStore struct {
 	facts            []model.LiveAgentPlanFact
 	scripts          []model.LiveAgentPlanScript
 	publishedVersion *model.LiveAgentPlanVersion
+	humanProfile     model.RoomHumanBehaviorProfile
+	addressingPrefs  model.RoomAddressingPreferences
 }
 
 func (f *fakeStore) RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error {
@@ -231,6 +622,17 @@ func (f *fakeStore) ListActiveAgentMemories(context.Context, int64, int64) ([]mo
 	return nil, nil
 }
 
+func (f *fakeStore) GetRoomHumanBehaviorProfile(context.Context, int64, int64) (model.RoomHumanBehaviorProfile, error) {
+	return f.humanProfile, nil
+}
+
+func (f *fakeStore) GetRoomAddressingPreferences(context.Context, int64, int64) (model.RoomAddressingPreferences, error) {
+	if strings.TrimSpace(f.addressingPrefs.NamingPreference) == "" {
+		return model.RoomAddressingPreferences{NamingPreference: "natural"}, nil
+	}
+	return f.addressingPrefs, nil
+}
+
 func (f *fakeStore) AgentPromptValue(_ context.Context, _ string, fallback string) string {
 	return fallback
 }
@@ -244,12 +646,13 @@ func (f *fakeStore) RenderAgentPrompt(_ context.Context, _ string, fallback stri
 }
 
 type fakeCore struct {
-	releases   int
-	dispatches int
-	dispatch   map[string]any
-	claimRaw   string
-	runtimeRaw string
-	strategies map[string]coreStrategySelection
+	releases      int
+	dispatches    int
+	dispatch      map[string]any
+	claimRaw      string
+	runtimeRaw    string
+	strategies    map[string]coreStrategySelection
+	strategyCalls map[string]int
 }
 
 func (f *fakeCore) DoRoom(
@@ -268,6 +671,10 @@ func (f *fakeCore) DoRoom(
 		if value, ok := body.(map[string]any); ok {
 			category = strings.TrimSpace(fmt.Sprint(value["category"]))
 		}
+		if f.strategyCalls == nil {
+			f.strategyCalls = make(map[string]int)
+		}
+		f.strategyCalls[category]++
 		if selected, ok := f.strategies[category]; ok {
 			payload, _ := json.Marshal(selected)
 			raw = string(payload)
@@ -494,9 +901,8 @@ func TestProcessRoomGeneratesTTSAndDispatches(t *testing.T) {
 
 func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 	core := &fakeCore{strategies: map[string]coreStrategySelection{
-		"interrupt":  {Category: "interrupt", Key: "read_comment_softly", Name: "小声读一次弹幕"},
-		"addressing": {Category: "addressing", Key: "friend", Name: "朋友"},
-		"resume":     {Category: "resume", Key: "DIRECT", Name: "直接恢复"},
+		"interrupt": {Category: "interrupt", Key: "read_comment_softly", Name: "小声读一次弹幕"},
+		"resume":    {Category: "resume", Key: "DIRECT", Name: "直接恢复"},
 	}}
 	agent := &fakeAgent{responses: []string{"朋友，你问的是发货时间哈，一般会按当前页面说明安排。"}}
 	tts := &fakeTTS{}
@@ -505,6 +911,9 @@ func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
+	}
+	if core.strategyCalls["addressing"] != 0 {
+		t.Fatalf("dynamic room reply must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])
 	}
 	if !strings.Contains(tts.last.Instruction, "轻声接弹幕") {
 		t.Fatalf("TTS instruction did not receive interrupt style: %q", tts.last.Instruction)
@@ -527,7 +936,6 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 				PlannedCutMS: 900, ResumeOffsetMS: 2400, ResumeReason: "same_safe_boundary",
 				ResumePreview: "继续讲压榨工艺细节", ResumeSegmentID: "seg-r2",
 			},
-			"addressing": {Category: "addressing", Key: "friend", Name: "朋友"},
 		},
 	}
 	agent := &fakeAgent{responses: []string{"朋友，这个发货问题我给你说明一下，会按当前页面安排；说回刚才这个工艺，关键还是看压榨环节。"}}
@@ -566,8 +974,11 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Resume.ActualResumeAtMS != 2345 {
 		t.Fatalf("actual resume point=%d want 2345", mission.Resume.ActualResumeAtMS)
 	}
-	if mission.Addressing.Candidate != "朋友" || !mission.Addressing.Optional {
-		t.Fatalf("addressing plan=%#v", mission.Addressing)
+	if mission.Addressing.Mode != "NONE" || mission.Addressing.Candidate != "" || !mission.Addressing.Optional {
+		t.Fatalf("dynamic addressing must come only from room preferences: %#v", mission.Addressing)
+	}
+	if core.strategyCalls["addressing"] != 0 {
+		t.Fatalf("dynamic speech mission must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])
 	}
 	if mission.HumanStyle.Mode != "natural_live_speech" {
 		t.Fatalf("human style=%#v", mission.HumanStyle)
@@ -788,5 +1199,34 @@ func TestProcessRoomReleasesClaimWhenTTSFails(t *testing.T) {
 	}
 	if core.releases != 1 {
 		t.Fatalf("failed execution must release claim once, releases=%d", core.releases)
+	}
+}
+
+func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
+	missions := speechmission.New()
+	missions.Ensure(speechmission.Mission{
+		ID: "mission-human-state",
+		HumanStyle: speechmission.HumanStylePlan{
+			Guidance: "自然表达",
+			State:    speechmission.HumanStatePlan{HostState: "今天嗓子不舒服，声音轻一点"},
+			Reaction: speechmission.HumanReactionPlan{
+				Enabled:     true,
+				Channel:     "TTS_STYLE",
+				Instruction: "语速稍慢，声音略轻",
+			},
+		},
+	})
+	worker := &Worker{missions: missions}
+	item := &decisionItem{MissionID: "mission-human-state"}
+	got := worker.ttsInstructionForMission(item, "开头保持清楚")
+	for _, expected := range []string{"开头保持清楚", "语速稍慢", "句子缩短", "声音略轻"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("tts instruction missing %q: %s", expected, got)
+		}
+	}
+	for _, forbidden := range []string{"今天嗓子不舒服", "咳嗽", "感冒"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("raw host state must not leak into tts instruction: %q in %s", forbidden, got)
+		}
 	}
 }

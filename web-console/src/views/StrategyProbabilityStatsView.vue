@@ -392,9 +392,30 @@ onBeforeUnmount(() => {
               <dt>下一触发时间</dt>
               <dd>{{ formatTime(item.next_due_at) }}</dd>
             </div>
+            <div>
+              <dt>最近事件价值</dt>
+              <dd>
+                {{
+                  Number(item.last_event_value || 0) > 0
+                    ? Number(item.last_event_value || 0).toFixed(1) + ' · ' + (item.last_value_level || '—')
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>互动预算</dt>
+              <dd>
+                {{
+                  item.last_budget_level
+                    ? item.last_budget_level + ' · ' + (item.last_budget_allowed ? '已放行' : '继续聚合')
+                    : '—'
+                }}
+              </dd>
+            </div>
           </dl>
           <footer>
-            上次形成口播：{{ formatTime(item.last_emitted_at) }}
+            <span>上次形成口播：{{ formatTime(item.last_emitted_at) }}</span>
+            <small v-if="item.last_decision_reason">{{ item.last_decision_reason }}</small>
           </footer>
         </article>
       </div>
@@ -466,9 +487,38 @@ onBeforeUnmount(() => {
                 <dt>评估 / 命中</dt>
                 <dd>{{ item.samples }} / {{ item.hit_count }}</dd>
               </div>
+              <template v-if="group.category === 'resume'">
+                <div>
+                  <dt>有资格 / 已选</dt>
+                  <dd>{{ Number(item.eligible_count || 0) }} / {{ Number(item.selected_count || 0) }}</dd>
+                </div>
+                <div>
+                  <dt>连续未选 / 覆盖欠账</dt>
+                  <dd>{{ Number(item.consecutive_miss || 0) }} / {{ Number(item.coverage_debt || 0) }}</dd>
+                </div>
+                <div>
+                  <dt>有效权重</dt>
+                  <dd>{{ Number(item.effective_weight || 0) || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>重复惩罚 / 多样性</dt>
+                  <dd>
+                    {{
+                      item.samples > 0
+                        ? Number(item.repeat_penalty || 1).toFixed(2) + ' / ' + Number(item.diversity_boost || 1).toFixed(2)
+                        : '—'
+                    }}
+                  </dd>
+                </div>
+              </template>
             </dl>
             <footer>
-              {{ item.samples > 0 ? '最后评估：' + formatTime(item.last_evaluated_at) : '等待本阶段首次参与决策' }}
+              {{
+                item.samples > 0
+                  ? '最后评估：' + formatTime(item.last_evaluated_at)
+                    + (group.category === 'resume' && item.last_selected_at ? ' · 上次选中：' + formatTime(item.last_selected_at) : '')
+                  : '等待本阶段首次参与决策'
+              }}
             </footer>
           </article>
         </div>

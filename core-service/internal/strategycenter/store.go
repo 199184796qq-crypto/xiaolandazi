@@ -49,8 +49,8 @@ type RoomInteractionPreferences struct {
 	EngagementPreference string    `json:"engagement_preference"`
 	ChatPreference       string    `json:"chat_preference"`
 	ConversionPreference string    `json:"conversion_preference"`
-	AutoHeat              bool      `json:"auto_heat"`
-	UpdatedAt             time.Time `json:"updated_at,omitempty"`
+	AutoHeat             bool      `json:"auto_heat"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
 type Signals struct {
@@ -63,8 +63,12 @@ type Signals struct {
 type Candidate struct {
 	Key                  string  `json:"key"`
 	Name                 string  `json:"name"`
+	BaseWeight           int     `json:"base_weight,omitempty"`
 	Weight               int     `json:"weight"`
 	EffectiveProbability float64 `json:"effective_probability"`
+	CoverageDebt         int     `json:"coverage_debt,omitempty"`
+	RepeatPenalty        float64 `json:"repeat_penalty,omitempty"`
+	DiversityBoost       float64 `json:"diversity_boost,omitempty"`
 }
 
 type Selection struct {
@@ -98,6 +102,14 @@ type ProbabilityStat struct {
 	MinimumProbability    float64   `json:"minimum_probability"`
 	MaximumProbability    float64   `json:"maximum_probability"`
 	LastEvaluatedAt       time.Time `json:"last_evaluated_at"`
+	EligibleCount         int64     `json:"eligible_count,omitempty"`
+	SelectedCount         int64     `json:"selected_count,omitempty"`
+	ConsecutiveMiss       int       `json:"consecutive_miss,omitempty"`
+	CoverageDebt          int       `json:"coverage_debt,omitempty"`
+	RepeatPenalty         float64   `json:"repeat_penalty,omitempty"`
+	DiversityBoost        float64   `json:"diversity_boost,omitempty"`
+	EffectiveWeight       int       `json:"effective_weight,omitempty"`
+	LastSelectedAt        time.Time `json:"last_selected_at,omitempty"`
 }
 
 type StageStats struct {
@@ -127,6 +139,11 @@ type InteractionWindowStat struct {
 	LastEventAt           time.Time `json:"last_event_at"`
 	LastEmittedAt         time.Time `json:"last_emitted_at"`
 	NextDueAt             time.Time `json:"next_due_at"`
+	LastEventValue        float64   `json:"last_event_value,omitempty"`
+	LastValueLevel        string    `json:"last_value_level,omitempty"`
+	LastDecisionReason    string    `json:"last_decision_reason,omitempty"`
+	LastBudgetLevel       string    `json:"last_budget_level,omitempty"`
+	LastBudgetAllowed     bool      `json:"last_budget_allowed"`
 }
 
 type probabilityAccumulator struct {
@@ -135,12 +152,14 @@ type probabilityAccumulator struct {
 }
 
 type stageAccumulator struct {
-	roomID        int64
-	stageID       string
-	startedAt     time.Time
-	updatedAt     time.Time
-	decisionCount int64
-	items         map[string]*probabilityAccumulator
+	roomID                 int64
+	stageID                string
+	startedAt              time.Time
+	updatedAt              time.Time
+	decisionCount          int64
+	items                  map[string]*probabilityAccumulator
+	lastSelectedByCategory map[string]string
+	repeatCountByCategory  map[string]int
 }
 
 type Store struct {
@@ -259,7 +278,7 @@ func DefaultRoomInteractionPreferences(roomID int64) RoomInteractionPreferences 
 		EngagementPreference: "natural",
 		ChatPreference:       "natural",
 		ConversionPreference: "natural",
-		AutoHeat:              true,
+		AutoHeat:             true,
 	}
 }
 
@@ -440,10 +459,19 @@ func (s *Store) RuleWeight(tenantID int64, category, key string, signals Signals
 }
 
 func (s *Store) Pick(tenantID int64, category string, candidates []string, signals Signals, seed string) Selection {
+	return s.pickForRoom(0, "", tenantID, category, candidates, signals, seed)
+}
+
+func (s *Store) PickForRoom(roomID int64, stageID string, tenantID int64, category string, candidates []string, signals Signals, seed string) Selection {
+	return s.pickForRoom(roomID, strings.TrimSpace(stageID), tenantID, category, candidates, signals, seed)
+}
+
+func (s *Store) pickForRoom(roomID int64, stageID string, tenantID int64, category string, candidates []string, signals Signals, seed string) Selection {
 	category = strings.ToLower(strings.TrimSpace(category))
 	if seed == "" {
 		seed = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
+	resumeStats, lastResumeKey, resumeRepeatCount := s.resumeDiversitySnapshot(roomID, stageID)
 	policy := s.Resolve(tenantID)
 	allowed := map[string]struct{}{}
 	for _, key := range candidates {
@@ -462,21 +490,43 @@ func (s *Store) Pick(tenantID int64, category string, candidates []string, signa
 				continue
 			}
 		}
-		weight := rule.BaseProbability
-		if weight <= 0 {
+		baseWeight := rule.BaseProbability
+		if baseWeight <= 0 {
 			continue
 		}
-		weight = adjustWeight(rule.Key, weight, signals)
-		if weight <= 0 {
+		baseWeight = adjustWeight(rule.Key, baseWeight, signals)
+		if baseWeight <= 0 {
 			continue
 		}
-		weighted = append(weighted, Candidate{Key: rule.Key, Name: rule.Name, Weight: weight})
+		candidate := Candidate{Key: rule.Key, Name: rule.Name, BaseWeight: baseWeight, Weight: baseWeight}
+		if category == "resume" && roomID > 0 && stageID != "" {
+			stat := resumeStats[rule.Key]
+			candidate.CoverageDebt = stat.CoverageDebt
+			candidate.Weight, candidate.RepeatPenalty, candidate.DiversityBoost = resumeDiversityWeight(
+				baseWeight,
+				stat,
+				rule.Key == lastResumeKey,
+				resumeRepeatCount,
+			)
+		}
+		weighted = append(weighted, candidate)
 	}
 	if len(weighted) == 0 {
 		for _, key := range candidates {
 			key = strings.TrimSpace(key)
 			if key != "" {
-				weighted = append(weighted, Candidate{Key: key, Name: key, Weight: 1})
+				candidate := Candidate{Key: key, Name: key, BaseWeight: 1, Weight: 1}
+				if category == "resume" && roomID > 0 && stageID != "" {
+					stat := resumeStats[key]
+					candidate.CoverageDebt = stat.CoverageDebt
+					candidate.Weight, candidate.RepeatPenalty, candidate.DiversityBoost = resumeDiversityWeight(
+						1,
+						stat,
+						key == lastResumeKey,
+						resumeRepeatCount,
+					)
+				}
+				weighted = append(weighted, candidate)
 			}
 		}
 	}
@@ -513,6 +563,68 @@ func (s *Store) Pick(tenantID int64, category string, candidates []string, signa
 	selection.Key = weighted[len(weighted)-1].Key
 	selection.Name = weighted[len(weighted)-1].Name
 	return selection
+}
+
+func (s *Store) resumeDiversitySnapshot(roomID int64, stageID string) (map[string]ProbabilityStat, string, int) {
+	result := make(map[string]ProbabilityStat)
+	if s == nil || roomID <= 0 || strings.TrimSpace(stageID) == "" {
+		return result, "", 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stage := s.stages[roomID]
+	if stage == nil || stage.stageID != stageID {
+		return result, "", 0
+	}
+	for identity, item := range stage.items {
+		if item == nil || !strings.HasPrefix(identity, "resume:") {
+			continue
+		}
+		result[item.Key] = item.ProbabilityStat
+	}
+	return result, stage.lastSelectedByCategory["resume"], stage.repeatCountByCategory["resume"]
+}
+
+func resumeDiversityWeight(baseWeight int, stat ProbabilityStat, isRecentSame bool, repeatCount int) (int, float64, float64) {
+	if baseWeight <= 0 {
+		return 0, 1, 1
+	}
+	repeatPenalty := 1.0
+	if isRecentSame {
+		switch {
+		case repeatCount >= 3:
+			repeatPenalty = 0.35
+		case repeatCount == 2:
+			repeatPenalty = 0.5
+		default:
+			repeatPenalty = 0.7
+		}
+	}
+	debt := stat.CoverageDebt
+	if debt < 0 {
+		debt = 0
+	}
+	if debt > 5 {
+		debt = 5
+	}
+	diversityBoost := 1 + float64(debt)*0.12
+	if stat.EligibleCount >= 2 && stat.SelectedCount == 0 {
+		diversityBoost += 0.15
+	} else if stat.EligibleCount >= 4 && stat.SelectedCount*5 < stat.EligibleCount {
+		diversityBoost += 0.08
+	}
+	effective := int(math.Round(float64(baseWeight) * repeatPenalty * diversityBoost))
+	if effective < 1 {
+		effective = 1
+	}
+	maxWeight := baseWeight * 3
+	if maxWeight < 1 {
+		maxWeight = 1
+	}
+	if effective > maxWeight {
+		effective = maxWeight
+	}
+	return effective, repeatPenalty, diversityBoost
 }
 
 func (s *Store) PickAddressing(tenantID int64, seed string) Selection {
@@ -633,8 +745,61 @@ func (s *Store) RecordSelection(roomID int64, stageID string, startedAt time.Tim
 			candidate.Key == selection.Key,
 			now,
 		)
+		if strings.EqualFold(strings.TrimSpace(selection.Category), "resume") {
+			s.recordResumeDiversityLocked(stage, candidate, candidate.Key == selection.Key, now)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(selection.Category), "resume") && strings.TrimSpace(selection.Key) != "" {
+		if stage.lastSelectedByCategory == nil {
+			stage.lastSelectedByCategory = make(map[string]string)
+		}
+		if stage.repeatCountByCategory == nil {
+			stage.repeatCountByCategory = make(map[string]int)
+		}
+		if stage.lastSelectedByCategory["resume"] == selection.Key {
+			stage.repeatCountByCategory["resume"]++
+		} else {
+			stage.lastSelectedByCategory["resume"] = selection.Key
+			stage.repeatCountByCategory["resume"] = 1
+		}
 	}
 	s.publishStageLocked(roomID)
+}
+
+func (s *Store) recordResumeDiversityLocked(stage *stageAccumulator, candidate Candidate, selected bool, now time.Time) {
+	if stage == nil || strings.TrimSpace(candidate.Key) == "" {
+		return
+	}
+	identity := "resume:" + strings.TrimSpace(candidate.Key)
+	item := stage.items[identity]
+	if item == nil {
+		return
+	}
+	item.EligibleCount++
+	item.EffectiveWeight = candidate.Weight
+	item.RepeatPenalty = candidate.RepeatPenalty
+	if item.RepeatPenalty <= 0 {
+		item.RepeatPenalty = 1
+	}
+	item.DiversityBoost = candidate.DiversityBoost
+	if item.DiversityBoost <= 0 {
+		item.DiversityBoost = 1
+	}
+	if selected {
+		item.SelectedCount++
+		item.ConsecutiveMiss = 0
+		item.CoverageDebt -= 2
+		if item.CoverageDebt < 0 {
+			item.CoverageDebt = 0
+		}
+		item.LastSelectedAt = now
+		return
+	}
+	item.ConsecutiveMiss++
+	item.CoverageDebt++
+	if item.CoverageDebt > 12 {
+		item.CoverageDebt = 12
+	}
 }
 
 func (s *Store) RecordTrigger(roomID int64, stageID string, startedAt time.Time, category string, decision TriggerDecision) {
@@ -866,13 +1031,21 @@ func (s *Store) ensureStageLocked(roomID int64, stageID string, startedAt, now t
 			startedAt = now
 		}
 		stage = &stageAccumulator{
-			roomID:    roomID,
-			stageID:   stageID,
-			startedAt: startedAt.UTC(),
-			updatedAt: now,
-			items:     make(map[string]*probabilityAccumulator),
+			roomID:                 roomID,
+			stageID:                stageID,
+			startedAt:              startedAt.UTC(),
+			updatedAt:              now,
+			items:                  make(map[string]*probabilityAccumulator),
+			lastSelectedByCategory: make(map[string]string),
+			repeatCountByCategory:  make(map[string]int),
 		}
 		s.stages[roomID] = stage
+	}
+	if stage.lastSelectedByCategory == nil {
+		stage.lastSelectedByCategory = make(map[string]string)
+	}
+	if stage.repeatCountByCategory == nil {
+		stage.repeatCountByCategory = make(map[string]int)
 	}
 	stage.updatedAt = now
 	return stage

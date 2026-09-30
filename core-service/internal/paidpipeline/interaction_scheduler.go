@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/basepipeline"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/strategycenter"
 )
@@ -40,7 +42,37 @@ type interactionWindow struct {
 	LatestUserID          string
 	LatestName            string
 	LatestContent         string
+	Names                 []string
+	EventIDs              []int64
+	UserIDs               []string
+	LastEventValue        float64
+	LastValueLevel        string
+	LastDecisionReason    string
+	LastBudgetLevel       string
+	LastBudgetAllowed     bool
 }
+
+type interactionBudgetUse struct {
+	At        time.Time
+	HighValue bool
+}
+
+type interactionBudget struct {
+	Level          string
+	MaxMissions    int
+	ReservedHigh   int
+	RemainingSlots int
+}
+
+type questionDebtState struct {
+	FirstSeenAt   time.Time
+	LastSeenAt    time.Time
+	RepeatCount   int
+	Users         map[string]struct{}
+	BusinessValue float64
+}
+
+const interactionBudgetWindow = 30 * time.Second
 
 var defaultInteractionRules = map[string]interactionRule{
 	"reply_chat": {
@@ -124,6 +156,422 @@ func interactionEffectivePriority(basePriority, effectiveWeight int) int {
 	return basePriority + effectiveWeight/5
 }
 
+func normalizedInteractionHeat(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "COLD":
+		return "COLD"
+	case "BUSY":
+		return "BUSY"
+	case "HOT":
+		return "HOT"
+	case "OVERHEATED":
+		return "OVERHEATED"
+	default:
+		return "WARM"
+	}
+}
+
+func interactionBudgetForHeat(raw string) interactionBudget {
+	switch normalizedInteractionHeat(raw) {
+	case "COLD":
+		return interactionBudget{Level: "HIGH", MaxMissions: 6, ReservedHigh: 0, RemainingSlots: 6}
+	case "BUSY":
+		return interactionBudget{Level: "NORMAL", MaxMissions: 4, ReservedHigh: 1, RemainingSlots: 4}
+	case "HOT":
+		return interactionBudget{Level: "LOW", MaxMissions: 3, ReservedHigh: 1, RemainingSlots: 3}
+	case "OVERHEATED":
+		return interactionBudget{Level: "PROTECTED", MaxMissions: 2, ReservedHigh: 1, RemainingSlots: 2}
+	default:
+		return interactionBudget{Level: "NORMAL", MaxMissions: 5, ReservedHigh: 1, RemainingSlots: 5}
+	}
+}
+
+func (p *Processor) tryConsumeInteractionBudget(roomID int64, heat string, highValue bool, now time.Time) (interactionBudget, bool, string) {
+	budget := interactionBudgetForHeat(heat)
+	if p == nil || roomID <= 0 {
+		return budget, true, "互动预算未限制"
+	}
+	if now.IsZero() {
+		now = p.clock()
+	}
+	cutoff := now.Add(-interactionBudgetWindow)
+	p.interactionBudgetMu.Lock()
+	uses := p.interactionBudgetUsed[roomID]
+	kept := uses[:0]
+	normalUsed := 0
+	for _, use := range uses {
+		if use.At.Before(cutoff) {
+			continue
+		}
+		kept = append(kept, use)
+		if !use.HighValue {
+			normalUsed++
+		}
+	}
+	uses = kept
+	allowed := false
+	if highValue {
+		allowed = len(uses) < budget.MaxMissions
+	} else {
+		normalCapacity := budget.MaxMissions - budget.ReservedHigh
+		if normalCapacity < 0 {
+			normalCapacity = 0
+		}
+		allowed = len(uses) < budget.MaxMissions && normalUsed < normalCapacity
+	}
+	if allowed {
+		uses = append(uses, interactionBudgetUse{At: now, HighValue: highValue})
+	}
+	p.interactionBudgetUsed[roomID] = uses
+	budget.RemainingSlots = budget.MaxMissions - len(uses)
+	if budget.RemainingSlots < 0 {
+		budget.RemainingSlots = 0
+	}
+	p.interactionBudgetMu.Unlock()
+	if allowed {
+		if highValue && budget.ReservedHigh > 0 {
+			return budget, true, "当前事件价值高，允许占用高价值保留通道"
+		}
+		return budget, true, fmt.Sprintf("当前互动预算允许，本窗口剩余%d个任务位", budget.RemainingSlots)
+	}
+	if highValue {
+		return budget, false, "当前30秒互动预算已满，高价值任务保留在候选队列等待下一窗口"
+	}
+	return budget, false, "当前互动预算需要保护主线，普通互动继续聚合等待下一窗口"
+}
+
+func interactionPreferenceKindForMission(key string) string {
+	switch strings.TrimSpace(key) {
+	case "welcome_named", "welcome_batch":
+		return "welcome"
+	case "reply_like", "reply_follow":
+		return "engagement"
+	case "reply_chat":
+		return "chat"
+	default:
+		return "question"
+	}
+}
+
+func interactionBaseEventValue(key string) float64 {
+	switch strings.TrimSpace(key) {
+	case "reply_chat":
+		return 52
+	case "reply_follow":
+		return 48
+	case "reply_like":
+		return 24
+	case "welcome_named":
+		return 34
+	case "welcome_batch":
+		return 40
+	default:
+		return 35
+	}
+}
+
+func interactionHeatFactor(key, heat string) float64 {
+	heat = normalizedInteractionHeat(heat)
+	kind := interactionPreferenceKindForMission(key)
+	switch heat {
+	case "COLD":
+		switch kind {
+		case "welcome":
+			return 1.35
+		case "chat":
+			return 1.22
+		case "engagement":
+			return 1.15
+		default:
+			return 1.12
+		}
+	case "BUSY":
+		switch kind {
+		case "welcome":
+			return 0.82
+		case "engagement":
+			return 0.78
+		case "chat":
+			return 0.88
+		default:
+			return 1.05
+		}
+	case "HOT":
+		switch kind {
+		case "welcome":
+			return 0.58
+		case "engagement":
+			return 0.55
+		case "chat":
+			return 0.7
+		default:
+			return 1.15
+		}
+	case "OVERHEATED":
+		switch kind {
+		case "welcome":
+			return 0.38
+		case "engagement":
+			return 0.35
+		case "chat":
+			return 0.52
+		default:
+			return 1.25
+		}
+	default:
+		return 1
+	}
+}
+
+func interactionValueLevel(value float64) string {
+	switch {
+	case value >= 80:
+		return "HIGH"
+	case value >= 45:
+		return "MEDIUM"
+	default:
+		return "LOW"
+	}
+}
+
+func (p *Processor) interactionWindowDecision(rule interactionRule, window interactionWindow, effectiveWeight int, now time.Time) agentdecision.InteractionDecision {
+	heat := normalizedInteractionHeat(p.interactionSignals(window.RoomID).Heat)
+	preference := 1.0
+	if p != nil && p.policies != nil {
+		preference = p.policies.InteractionPreferenceFactor(window.RoomID, interactionPreferenceKindForMission(rule.Key))
+	}
+	count := maxInteractionInt(window.PendingCount, 1)
+	repeatFactor := 1 + float64(minInteractionInt(count-1, 6))*0.08
+	waitSeconds := 0.0
+	if !window.FirstPending.IsZero() && now.After(window.FirstPending) {
+		waitSeconds = now.Sub(window.FirstPending).Seconds()
+	}
+	waitFactor := 1.0
+	if rule.MaxWait > 0 {
+		ratio := waitSeconds / rule.MaxWait.Seconds()
+		if ratio > 2 {
+			ratio = 2
+		}
+		if ratio > 0 {
+			waitFactor += ratio * 0.22
+		}
+	}
+	recentFactor := 1.0
+	if !window.LastEmittedAt.IsZero() && rule.MinInterval > 0 && now.Sub(window.LastEmittedAt) < rule.MinInterval*2 {
+		recentFactor = 0.82
+	}
+	weightFactor := 0.75 + float64(maxInteractionInt(effectiveWeight, 1))/400
+	value := interactionBaseEventValue(rule.Key) * preference * interactionHeatFactor(rule.Key, heat) * repeatFactor * waitFactor * recentFactor * weightFactor
+	if value > 160 {
+		value = 160
+	}
+	if value < 1 {
+		value = 1
+	}
+	deadline := time.Time{}
+	if !window.FirstPending.IsZero() && rule.MaxWait > 0 {
+		deadline = window.FirstPending.Add(rule.MaxWait)
+	}
+	reason := fmt.Sprintf(
+		"%s累计%d个事件，热度=%s，用户偏好系数=%.2f，等待=%ds",
+		rule.Title, count, heat, preference, int(waitSeconds),
+	)
+	if rule.BatchThreshold > 0 && count >= rule.BatchThreshold {
+		reason += "，已达到聚合阈值"
+	} else if !deadline.IsZero() && !now.Before(deadline) {
+		reason += "，已到最晚处理时间"
+	}
+	return agentdecision.InteractionDecision{
+		Handle:           true,
+		PrimaryEvent:     rule.Key,
+		MergedEventIDs:   append([]int64(nil), window.EventIDs...),
+		EventValue:       value,
+		ValueLevel:       interactionValueLevel(value),
+		Reason:           reason,
+		DeadlineAt:       deadline,
+		BudgetAllowed:    true,
+		Heat:             heat,
+		PreferenceFactor: preference,
+	}
+}
+
+func questionBusinessValue(signal basepipeline.Signal) float64 {
+	topic := strings.ToLower(strings.TrimSpace(signal.Topic))
+	content := strings.ToLower(strings.TrimSpace(signal.Content))
+	if signal.IsOrderHint {
+		return 1
+	}
+	for _, keyword := range []string{"价格", "多少钱", "规格", "库存", "发货", "物流", "售后", "退换", "优惠", "怎么买", "下单"} {
+		if strings.Contains(topic, keyword) || strings.Contains(content, keyword) {
+			return 0.92
+		}
+	}
+	if signal.IsNegative {
+		return 0.86
+	}
+	return 0.64
+}
+
+func (p *Processor) updateQuestionDebt(event model.RoomEvent, signal basepipeline.Signal, basePriority int, now time.Time) agentdecision.QuestionDebt {
+	if now.IsZero() {
+		now = p.clock()
+	}
+	topic := strings.TrimSpace(signal.Topic)
+	if topic == "" {
+		topic = strings.TrimSpace(signal.Content)
+	}
+	if topic == "" {
+		topic = "QUESTION:UNKNOWN"
+	}
+	userID := strings.TrimSpace(signal.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(event.UserID)
+	}
+	businessValue := questionBusinessValue(signal)
+
+	p.questionMu.Lock()
+	byTopic := p.questionDebts[event.RoomID]
+	if byTopic == nil {
+		byTopic = make(map[string]*questionDebtState)
+		p.questionDebts[event.RoomID] = byTopic
+	}
+	state := byTopic[topic]
+	if state == nil || (!state.LastSeenAt.IsZero() && now.Sub(state.LastSeenAt) > 5*time.Minute) {
+		state = &questionDebtState{
+			FirstSeenAt: now,
+			Users:       make(map[string]struct{}),
+		}
+		byTopic[topic] = state
+	}
+	state.LastSeenAt = now
+	state.RepeatCount++
+	if userID != "" {
+		state.Users[userID] = struct{}{}
+	}
+	if businessValue > state.BusinessValue {
+		state.BusinessValue = businessValue
+	}
+	waitingSeconds := 0
+	if !state.FirstSeenAt.IsZero() && now.After(state.FirstSeenAt) {
+		waitingSeconds = int(now.Sub(state.FirstSeenAt).Seconds())
+	}
+	currentPriority := float64(basePriority)
+	currentPriority += float64(minInteractionInt(state.RepeatCount-1, 6)) * 7
+	currentPriority += float64(minInteractionInt(waitingSeconds/15, 6)) * 4
+	currentPriority += state.BusinessValue * 12
+	if currentPriority > 100 {
+		currentPriority = 100
+	}
+	result := agentdecision.QuestionDebt{
+		Topic:           topic,
+		FirstSeenAt:     state.FirstSeenAt,
+		RepeatCount:     state.RepeatCount,
+		UniqueUsers:     len(state.Users),
+		WaitingSeconds:  waitingSeconds,
+		BusinessValue:   state.BusinessValue,
+		CurrentPriority: currentPriority,
+	}
+	p.questionMu.Unlock()
+	return result
+}
+
+func questionHeatFactor(raw string) float64 {
+	switch normalizedInteractionHeat(raw) {
+	case "COLD":
+		return 1.08
+	case "BUSY":
+		return 1.08
+	case "HOT":
+		return 1.18
+	case "OVERHEATED":
+		return 1.28
+	default:
+		return 1
+	}
+}
+
+func (p *Processor) questionInteractionDecision(event model.RoomEvent, signal basepipeline.Signal, basePriority int, now time.Time) agentdecision.InteractionDecision {
+	heat := normalizedInteractionHeat(p.interactionSignals(event.RoomID).Heat)
+	preference := 1.0
+	if p != nil && p.policies != nil {
+		preference = p.policies.InteractionPreferenceFactor(event.RoomID, "question")
+	}
+	debt := p.updateQuestionDebt(event, signal, basePriority, now)
+	repeatFactor := 1 + float64(minInteractionInt(debt.RepeatCount-1, 6))*0.10
+	waitFactor := 1 + float64(minInteractionInt(debt.WaitingSeconds/15, 6))*0.06
+	businessFactor := 0.85 + debt.BusinessValue*0.35
+	value := 68 * preference * questionHeatFactor(heat) * repeatFactor * waitFactor * businessFactor
+	if signal.IsNegative {
+		value *= 1.12
+	}
+	if signal.IsOrderHint {
+		value *= 1.18
+	}
+	if value > 180 {
+		value = 180
+	}
+	if value < 1 {
+		value = 1
+	}
+	deadline := now.Add(20 * time.Second)
+	if interactionValueLevel(value) == "HIGH" {
+		deadline = now.Add(10 * time.Second)
+	}
+	budget := interactionBudgetForHeat(heat)
+	reason := fmt.Sprintf(
+		"观众问题进入高价值保留通道；热度=%s，重复=%d，独立用户=%d，已等待=%ds，业务价值=%.2f",
+		heat, debt.RepeatCount, debt.UniqueUsers, debt.WaitingSeconds, debt.BusinessValue,
+	)
+	return agentdecision.InteractionDecision{
+		Handle:           true,
+		PrimaryEvent:     "question",
+		MergedEventIDs:   []int64{event.ID},
+		EventValue:       value,
+		ValueLevel:       interactionValueLevel(value),
+		Reason:           reason,
+		DeadlineAt:       deadline,
+		BudgetLevel:      budget.Level,
+		BudgetAllowed:    true,
+		Heat:             heat,
+		PreferenceFactor: preference,
+		QuestionDebt:     &debt,
+	}
+}
+
+func (p *Processor) conversionInteractionDecision(event model.RoomEvent, signal basepipeline.Signal, now time.Time) agentdecision.InteractionDecision {
+	if now.IsZero() {
+		now = p.clock()
+	}
+	heat := normalizedInteractionHeat(p.interactionSignals(event.RoomID).Heat)
+	preference := 1.0
+	if p != nil && p.policies != nil {
+		preference = p.policies.InteractionPreferenceFactor(event.RoomID, "conversion")
+	}
+	value := 100 * preference
+	switch heat {
+	case "HOT":
+		value *= 1.15
+	case "OVERHEATED":
+		value *= 1.25
+	}
+	if value > 180 {
+		value = 180
+	}
+	return agentdecision.InteractionDecision{
+		Handle:           true,
+		PrimaryEvent:     "conversion",
+		MergedEventIDs:   []int64{event.ID},
+		EventValue:       value,
+		ValueLevel:       "HIGH",
+		Reason:           "检测到明确成交或下单信号，使用高价值保留通道，不与普通欢迎/点赞竞争常规预算",
+		DeadlineAt:       now.Add(8 * time.Second),
+		BudgetLevel:      interactionBudgetForHeat(heat).Level,
+		BudgetAllowed:    true,
+		Heat:             heat,
+		PreferenceFactor: preference,
+	}
+}
+
 func (p *Processor) FlushInteractionWindows(now time.Time) {
 	if p == nil || p.decisions == nil || p.runtime == nil {
 		return
@@ -134,10 +582,17 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 		now = now.UTC()
 	}
 	type dueMission struct {
-		roomID    int64
-		candidate agentdecision.Candidate
+		roomID       int64
+		key          string
+		window       *interactionWindow
+		candidate    agentdecision.Candidate
+		eventValue   float64
+		valueLevel   string
+		highValue    bool
+		budgetReason string
 	}
 	due := make([]dueMission, 0, 8)
+	selected := make([]dueMission, 0, 8)
 	roomsToPublish := make([]int64, 0, 8)
 
 	p.interactionMu.Lock()
@@ -161,24 +616,70 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 				continue
 			}
 			candidate := interactionMissionCandidate(rule, *window, now)
-			candidate.Priority = interactionEffectivePriority(rule.Priority, effectiveWeight)
 			if strings.TrimSpace(candidate.Topic) == "" {
 				continue
 			}
-			window.LastMissionEventCount = window.PendingCount
-			window.EmittedCount++
-			window.PendingCount = 0
-			window.FirstPending = time.Time{}
-			window.LastEmittedAt = now
-			due = append(due, dueMission{roomID: roomID, candidate: candidate})
+			decision := p.interactionWindowDecision(rule, *window, effectiveWeight, now)
+			candidate.InteractionDecision = decision
+			candidate.Priority = interactionEffectivePriority(rule.Priority, effectiveWeight)
+			if eventPriority := int(decision.EventValue + 0.5); eventPriority > candidate.Priority {
+				candidate.Priority = eventPriority
+			}
+			due = append(due, dueMission{
+				roomID:     roomID,
+				key:        key,
+				window:     window,
+				candidate:  candidate,
+				eventValue: decision.EventValue,
+				valueLevel: decision.ValueLevel,
+				highValue:  strings.EqualFold(decision.ValueLevel, "HIGH"),
+			})
 		}
+	}
+	sort.SliceStable(due, func(i, j int) bool {
+		if due[i].eventValue != due[j].eventValue {
+			return due[i].eventValue > due[j].eventValue
+		}
+		if due[i].candidate.Priority != due[j].candidate.Priority {
+			return due[i].candidate.Priority > due[j].candidate.Priority
+		}
+		return due[i].candidate.Topic < due[j].candidate.Topic
+	})
+	for i := range due {
+		mission := &due[i]
+		heat := mission.candidate.InteractionDecision.Heat
+		budget, allowed, reason := p.tryConsumeInteractionBudget(mission.roomID, heat, mission.highValue, now)
+		mission.candidate.InteractionDecision.BudgetLevel = budget.Level
+		mission.candidate.InteractionDecision.BudgetAllowed = allowed
+		mission.candidate.InteractionDecision.Handle = allowed
+		mission.candidate.InteractionDecision.Reason = strings.TrimSpace(
+			mission.candidate.InteractionDecision.Reason + "；" + reason,
+		)
+		mission.budgetReason = reason
+		mission.window.LastEventValue = mission.eventValue
+		mission.window.LastValueLevel = mission.valueLevel
+		mission.window.LastDecisionReason = mission.candidate.InteractionDecision.Reason
+		mission.window.LastBudgetLevel = budget.Level
+		mission.window.LastBudgetAllowed = allowed
+		if !allowed {
+			continue
+		}
+		mission.window.LastMissionEventCount = mission.window.PendingCount
+		mission.window.EmittedCount++
+		mission.window.PendingCount = 0
+		mission.window.FirstPending = time.Time{}
+		mission.window.LastEmittedAt = now
+		mission.window.EventIDs = nil
+		mission.window.UserIDs = nil
+		mission.window.Names = nil
+		selected = append(selected, *mission)
 	}
 	p.interactionMu.Unlock()
 	for _, roomID := range roomsToPublish {
 		p.publishInteractionStats(roomID, now)
 	}
 
-	for _, mission := range due {
+	for _, mission := range selected {
 		result := p.decisions.Enqueue(mission.roomID, mission.candidate)
 		if result.Suppressed {
 			continue
@@ -201,6 +702,12 @@ func (p *Processor) clearInteractionRoom(roomID int64) {
 	p.interactionMu.Lock()
 	delete(p.interactionWindows, roomID)
 	p.interactionMu.Unlock()
+	p.interactionBudgetMu.Lock()
+	delete(p.interactionBudgetUsed, roomID)
+	p.interactionBudgetMu.Unlock()
+	p.questionMu.Lock()
+	delete(p.questionDebts, roomID)
+	p.questionMu.Unlock()
 	p.publishInteractionStats(roomID, p.clock())
 }
 
@@ -219,7 +726,7 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key string) {
 	if !ok {
 		return
 	}
-	_, effectiveWeight, enabled := p.interactionRuleWeight(event.RoomID, event.TenantID, key)
+	_, _, enabled := p.interactionRuleWeight(event.RoomID, event.TenantID, key)
 	if !enabled {
 		return
 	}
@@ -249,25 +756,14 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key string) {
 	window.LatestUserID = strings.TrimSpace(event.UserID)
 	window.LatestName = strings.TrimSpace(event.Nickname)
 	window.LatestContent = strings.TrimSpace(event.Content)
+	appendInteractionName(&window.Names, event.Nickname, 12)
+	appendInteractionName(&window.UserIDs, event.UserID, 24)
+	appendInteractionEventID(&window.EventIDs, event.ID, 32)
 	due := interactionWindowDue(rule, window, now)
-	var candidate agentdecision.Candidate
-	if due {
-		candidate = interactionMissionCandidate(rule, *window, now)
-		candidate.Priority = interactionEffectivePriority(rule.Priority, effectiveWeight)
-		window.LastMissionEventCount = window.PendingCount
-		window.EmittedCount++
-		window.PendingCount = 0
-		window.FirstPending = time.Time{}
-		window.LastEmittedAt = now
-	}
 	p.interactionMu.Unlock()
 	p.publishInteractionStats(event.RoomID, now)
-	if strings.TrimSpace(candidate.Topic) == "" {
-		return
-	}
-	result := p.decisions.Enqueue(event.RoomID, candidate)
-	if !result.Suppressed {
-		p.logInteractionMission(event.RoomID, candidate)
+	if due {
+		p.FlushInteractionWindows(now)
 	}
 }
 
@@ -331,8 +827,40 @@ func interactionMissionCandidate(rule interactionRule, window interactionWindow,
 		Priority:             rule.Priority,
 		EventID:              window.LatestEventID,
 		UserID:               window.LatestUserID,
+		Nicknames:            append([]string(nil), window.Names...),
 		ForceReopen:          true,
 		TTLSeconds:           int(rule.TTL.Seconds()),
+	}
+}
+
+func appendInteractionName(values *[]string, value string, limit int) {
+	value = strings.TrimSpace(value)
+	if value == "" || values == nil {
+		return
+	}
+	for _, existing := range *values {
+		if existing == value {
+			return
+		}
+	}
+	*values = append(*values, value)
+	if limit > 0 && len(*values) > limit {
+		*values = (*values)[len(*values)-limit:]
+	}
+}
+
+func appendInteractionEventID(values *[]int64, value int64, limit int) {
+	if values == nil || value <= 0 {
+		return
+	}
+	for _, existing := range *values {
+		if existing == value {
+			return
+		}
+	}
+	*values = append(*values, value)
+	if limit > 0 && len(*values) > limit {
+		*values = (*values)[len(*values)-limit:]
 	}
 }
 
@@ -404,6 +932,11 @@ func (p *Processor) interactionStats(roomID int64, now time.Time) []strategycent
 			stat.FirstPendingAt = window.FirstPending
 			stat.LastEventAt = window.LastEventAt
 			stat.LastEmittedAt = window.LastEmittedAt
+			stat.LastEventValue = window.LastEventValue
+			stat.LastValueLevel = window.LastValueLevel
+			stat.LastDecisionReason = window.LastDecisionReason
+			stat.LastBudgetLevel = window.LastBudgetLevel
+			stat.LastBudgetAllowed = window.LastBudgetAllowed
 			if enabled {
 				if window.PendingCount > 0 {
 					stat.State = "pending"
@@ -443,6 +976,13 @@ func interactionNextDueAt(rule interactionRule, window *interactionWindow, now t
 
 func maxInteractionInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInteractionInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

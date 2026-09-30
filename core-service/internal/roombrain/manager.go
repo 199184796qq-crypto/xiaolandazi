@@ -455,12 +455,20 @@ type TimelineView struct {
 }
 
 type HumanizationView struct {
-	Strategy    string
-	Enabled     bool
-	Kind        string
-	Delivery    string
-	Instruction string
-	Reason      string
+	Strategy        string
+	Enabled         bool
+	Kind            string
+	Delivery        string
+	Instruction     string
+	AssetKey        string
+	MaxCount        int
+	Reason          string
+	Source          string
+	RuleID          string
+	Intensity       float64
+	Channel         string
+	CooldownSeconds int64
+	ExpiresAt       time.Time
 }
 
 type ResumeView struct {
@@ -599,6 +607,8 @@ func buildHumanizationContext(now time.Time, intel roomintel.Snapshot, view time
 
 	return humanization.Context{
 		Opportunity:              intel.Heat != roomintel.HeatOverheated,
+		Now:                      now,
+		Heat:                     string(intel.Heat),
 		NegativeFeedback:         intel.NegativeFeedback30s > 0,
 		Complaint:                afterSale && intel.NegativeFeedback30s > 0,
 		AfterSale:                afterSale,
@@ -751,12 +761,20 @@ func directorDTO(value director.Plan) DirectorView {
 		PromptDirectives: value.PromptDirectives,
 		StrategyTrace:    value.StrategyTrace,
 		Humanization: HumanizationView{
-			Strategy:    value.Humanization.Strategy,
-			Enabled:     value.Humanization.Enabled,
-			Kind:        string(value.Humanization.Event.Kind),
-			Delivery:    string(value.Humanization.Event.Delivery),
-			Instruction: value.Humanization.Event.Instruction,
-			Reason:      value.Humanization.Reason,
+			Strategy:        value.Humanization.Strategy,
+			Enabled:         value.Humanization.Enabled,
+			Kind:            string(value.Humanization.Event.Kind),
+			Delivery:        string(value.Humanization.Event.Delivery),
+			Instruction:     value.Humanization.Event.Instruction,
+			AssetKey:        value.Humanization.Event.AssetKey,
+			MaxCount:        value.Humanization.Event.MaxCount,
+			Reason:          value.Humanization.Reason,
+			Source:          string(value.Humanization.Event.Source),
+			RuleID:          value.Humanization.Event.RuleID,
+			Intensity:       value.Humanization.Event.Intensity,
+			Channel:         string(value.Humanization.Event.Channel),
+			CooldownSeconds: int64(value.Humanization.Event.Cooldown / time.Second),
+			ExpiresAt:       value.Humanization.Event.ExpiresAt,
 		},
 		Resume: ResumeView{
 			Strategy:           value.Resume.Strategy,

@@ -81,6 +81,10 @@ import type {
   RoomStrategyStageStats,
   RoomInteractionPreferences,
   RoomInteractionPreferencesInput,
+  RoomAddressingPreferences,
+  RoomAddressingPreferencesInput,
+  RoomHumanBehaviorProfile,
+  RoomHumanBehaviorProfileInput,
   LiveReviewResponse,
   RoomBlockedUser,
   RoomBrainView,
@@ -489,6 +493,28 @@ export function getRoomInteractionPreferences(roomId: number) {
 
 export function updateRoomInteractionPreferences(roomId: number, payload: RoomInteractionPreferencesInput) {
   return request<RoomInteractionPreferences>('/api/v1/rooms/' + roomId + '/interaction-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRoomAddressingPreferences(roomId: number) {
+  return request<RoomAddressingPreferences>('/api/v1/rooms/' + roomId + '/addressing-preferences')
+}
+
+export function updateRoomAddressingPreferences(roomId: number, payload: RoomAddressingPreferencesInput) {
+  return request<RoomAddressingPreferences>('/api/v1/rooms/' + roomId + '/addressing-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRoomHumanBehaviorProfile(roomId: number) {
+  return request<RoomHumanBehaviorProfile>('/api/v1/rooms/' + roomId + '/human-behavior-profile')
+}
+
+export function updateRoomHumanBehaviorProfile(roomId: number, payload: RoomHumanBehaviorProfileInput) {
+  return request<RoomHumanBehaviorProfile>('/api/v1/rooms/' + roomId + '/human-behavior-profile', {
     method: 'PUT',
     body: JSON.stringify(payload),
   })

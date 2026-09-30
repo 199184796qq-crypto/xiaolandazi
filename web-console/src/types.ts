@@ -594,6 +594,14 @@ export interface RoomStrategyProbabilityStat {
   minimum_probability: number
   maximum_probability: number
   last_evaluated_at: string
+  eligible_count?: number
+  selected_count?: number
+  consecutive_miss?: number
+  coverage_debt?: number
+  repeat_penalty?: number
+  diversity_boost?: number
+  effective_weight?: number
+  last_selected_at?: string
 }
 
 export interface RoomInteractionWindowStat {
@@ -613,6 +621,11 @@ export interface RoomInteractionWindowStat {
   last_event_at?: string
   last_emitted_at?: string
   next_due_at?: string
+  last_event_value?: number
+  last_value_level?: 'LOW' | 'MEDIUM' | 'HIGH' | string
+  last_decision_reason?: string
+  last_budget_level?: string
+  last_budget_allowed?: boolean
 }
 
 export interface RoomStrategyStageStats {
@@ -651,6 +664,40 @@ export interface RoomInteractionPreferencesInput {
   chat_preference: InteractionPreferenceLevel
   conversion_preference: ConversionInteractionLevel
   auto_heat: boolean
+}
+
+export interface RoomHumanBehaviorProfile {
+  tenant_id: number
+  room_id: number
+  trait_text: string
+  state_text: string
+  state_expires_at?: string
+  updated_by_user_id?: number
+  updated_at?: string
+}
+
+export interface RoomHumanBehaviorProfileInput {
+  trait_text: string
+  state_text: string
+  state_expires_at?: string
+}
+
+export type AddressingPreferenceLevel = 'less' | 'natural' | 'more'
+
+export interface RoomAddressingPreferences {
+  tenant_id: number
+  room_id: number
+  naming_preference: AddressingPreferenceLevel
+  preferred_terms: string[]
+  blocked_terms: string[]
+  updated_by_user_id?: number
+  updated_at?: string
+}
+
+export interface RoomAddressingPreferencesInput {
+  naming_preference: AddressingPreferenceLevel
+  preferred_terms: string[]
+  blocked_terms: string[]
 }
 
 export interface LiveReviewQuestionGroup {
@@ -862,6 +909,7 @@ export interface SpeechMission {
     title?: string
     summary?: string
     questions?: string[]
+    nicknames?: string[]
     event_count?: number
     window_seconds?: number
   }
@@ -876,6 +924,28 @@ export interface SpeechMission {
     goal?: string
     event_count?: number
     window_seconds?: number
+    decision: {
+      handle: boolean
+      primary_event?: string
+      merged_event_ids?: number[]
+      event_value?: number
+      value_level?: string
+      reason?: string
+      deadline_at?: string
+      budget_level?: string
+      budget_allowed: boolean
+      heat?: string
+      preference_factor?: number
+      question_debt?: {
+        topic?: string
+        first_seen_at?: string
+        repeat_count?: number
+        unique_users?: number
+        waiting_seconds?: number
+        business_value?: number
+        current_priority?: number
+      }
+    }
     required: boolean
   }
   interrupt: {
@@ -890,6 +960,12 @@ export interface SpeechMission {
     guidance?: string
     resume_mainline?: string
     resume_segment_id?: string
+    cut_after_segment?: string
+    original_resume_segment?: string
+    covered_segments?: string[]
+    planned_resume_segment?: string
+    actual_resume_segment?: string
+    skip_count?: number
     planned_resume_at_ms?: number
     actual_resume_at_ms?: number
     resume_reason?: string
@@ -900,16 +976,70 @@ export interface SpeechMission {
     bridge_text?: string
     required: boolean
   }
+  opening: {
+    intent?: string
+    name?: string
+    guidance?: string
+    required: boolean
+  }
   addressing: {
+    mode?: string
     candidate?: string
     key?: string
+    preference?: string
+    named_candidates?: string[]
+    selected_names?: string[]
+    preferred_terms?: string[]
+    blocked_terms?: string[]
+    group_label?: string
+    max_named_count?: number
+    recent_name_penalty?: number
+    target_rate?: number
+    selected_by_rate?: boolean
     optional: boolean
   }
   human_style: {
     mode?: string
+    strategy?: string
+    kind?: string
+    delivery?: string
+    enabled?: boolean
     guidance?: string
+    reason?: string
     emotion?: string
     pace?: string
+    trait?: {
+      persona?: string
+      emotion?: string
+      pace?: string
+      humor?: string
+      max_reaction_count?: number
+      instruction?: string
+    }
+    state?: {
+      heat?: string
+      progress?: string
+      atmosphere?: string
+      mission_kind?: string
+      host_state?: string
+      expires_at?: string
+    }
+    reaction?: {
+      strategy?: string
+      kind?: string
+      delivery?: string
+      instruction?: string
+      asset_key?: string
+      max_count?: number
+      enabled?: boolean
+      reason?: string
+      source?: string
+      rule_id?: string
+      intensity?: number
+      channel?: string
+      cooldown_seconds?: number
+      expires_at?: string
+    }
   }
   applied_stages?: string[]
   generated_text?: string

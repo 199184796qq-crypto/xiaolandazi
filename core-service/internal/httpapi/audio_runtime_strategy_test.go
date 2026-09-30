@@ -87,6 +87,30 @@ func TestSwitchPlanMovesToTrackEnd(t *testing.T) {
 	}
 }
 
+func TestSemanticResumeBreakpointTracksCoveredAndPlannedSegments(t *testing.T) {
+	program := audioout.RoomProgramSnapshot{
+		Timeline: []audioout.ProgramTimelineSegment{
+			{SegmentID: "seg-a", StartMS: 0, EndMS: 10000, Text: "A", SafeCut: true},
+			{SegmentID: "seg-b", StartMS: 10000, EndMS: 18000, Text: "B", SafeCut: true},
+			{SegmentID: "seg-c", StartMS: 18000, EndMS: 28000, Text: "C", SafeCut: true},
+			{SegmentID: "seg-d", StartMS: 28000, EndMS: 42000, Text: "D", SafeCut: true},
+		},
+	}
+	breakpoint := semanticResumeBreakpointFor(program, 10000, 28000)
+	if breakpoint.CutAfterSegmentID != "seg-a" {
+		t.Fatalf("cut_after_segment=%q", breakpoint.CutAfterSegmentID)
+	}
+	if breakpoint.OriginalResumeSegmentID != "seg-b" {
+		t.Fatalf("original_resume_segment=%q", breakpoint.OriginalResumeSegmentID)
+	}
+	if breakpoint.PlannedResumeSegmentID != "seg-d" {
+		t.Fatalf("planned_resume_segment=%q", breakpoint.PlannedResumeSegmentID)
+	}
+	if !slices.Equal(breakpoint.CoveredSegmentIDs, []string{"seg-b", "seg-c"}) || breakpoint.SkipCount != 2 {
+		t.Fatalf("covered=%v skip=%d", breakpoint.CoveredSegmentIDs, breakpoint.SkipCount)
+	}
+}
+
 func TestResumeDedupGateMovesDirectPastRepeatedShippingSentence(t *testing.T) {
 	program := resumeDedupTestProgram()
 	decision := applyResumeDedupGate(

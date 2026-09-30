@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Kind string
@@ -29,6 +30,54 @@ const (
 	DeliveryPauseOnly     Delivery = "PAUSE_ONLY"
 )
 
+type RuleSource string
+
+const (
+	RuleSourceTrait    RuleSource = "trait"
+	RuleSourceState    RuleSource = "state"
+	RuleSourceReaction RuleSource = "reaction"
+	RuleSourceUser     RuleSource = "user"
+)
+
+type Channel string
+
+const (
+	ChannelText           Channel = "TEXT"
+	ChannelTTSStyle       Channel = "TTS_STYLE"
+	ChannelNonverbalAudio Channel = "NONVERBAL_AUDIO"
+	ChannelMixed          Channel = "MIXED"
+)
+
+type RuleConditions struct {
+	EventTypes           []string
+	QuestionComplexities []string
+	Heat                 []string
+	Emotion              []string
+	HostState            []string
+	MainlineContains     []string
+}
+
+// Rule is the extensible Trait + State + Reaction contract. Defaults may
+// continue to use Strategy, while user/agent-generated behavior can be
+// registered without adding another hard-coded behavior enum.
+type Rule struct {
+	ID              string
+	Source          RuleSource
+	Conditions      RuleConditions
+	Intensity       float64
+	BaseWeight      int
+	Cooldown        time.Duration
+	MaxPer5M        int
+	MaxPerSession   int
+	ExpiresAt       time.Time
+	Instruction     string
+	Channel         Channel
+	Kind            Kind
+	Delivery        Delivery
+	AssetKey        string
+	PromptDirective string
+}
+
 type Capabilities struct {
 	SupportsParalinguisticMarks bool
 	HasThroatClearAsset         bool
@@ -37,6 +86,18 @@ type Capabilities struct {
 
 type Context struct {
 	Opportunity bool
+	Now         time.Time
+
+	EventType          string
+	QuestionComplexity string
+	Heat               string
+	Emotion            string
+	HostState          string
+	MainlineContext    string
+
+	RecentRuleUsage  map[string]int
+	SessionRuleUsage map[string]int
+	LastRuleUsedAt   map[string]time.Time
 
 	NegativeFeedback bool
 	Complaint        bool
@@ -68,6 +129,12 @@ type Event struct {
 	Instruction string
 	AssetKey    string
 	MaxCount    int
+	Source      RuleSource
+	RuleID      string
+	Intensity   float64
+	Channel     Channel
+	Cooldown    time.Duration
+	ExpiresAt   time.Time
 }
 
 type Plan struct {
@@ -110,6 +177,7 @@ type Strategy interface {
 type Registry struct {
 	thresholds Thresholds
 	strategies []Strategy
+	rules      []Rule
 }
 
 func NewRegistry(thresholds Thresholds, strategies ...Strategy) *Registry {
@@ -145,12 +213,88 @@ func (r *Registry) Register(strategy Strategy) {
 	})
 }
 
+func (r *Registry) RegisterRule(rule Rule) {
+	if r == nil {
+		return
+	}
+	rule.ID = strings.TrimSpace(rule.ID)
+	rule.Instruction = strings.TrimSpace(rule.Instruction)
+	if rule.ID == "" || rule.Instruction == "" {
+		return
+	}
+	if rule.Source == "" {
+		rule.Source = RuleSourceUser
+	}
+	if rule.Channel == "" {
+		rule.Channel = ChannelText
+	}
+	if rule.Kind == "" {
+		rule.Kind = Kind("CUSTOM")
+	}
+	if rule.Delivery == "" {
+		switch rule.Channel {
+		case ChannelTTSStyle:
+			rule.Delivery = DeliveryTTSMark
+		case ChannelNonverbalAudio:
+			rule.Delivery = DeliveryAudioSegment
+		default:
+			rule.Delivery = DeliveryTextDirective
+		}
+	}
+	if rule.Intensity <= 0 {
+		rule.Intensity = 0.5
+	}
+	if rule.Intensity > 1 {
+		rule.Intensity = 1
+	}
+	if rule.BaseWeight <= 0 {
+		rule.BaseWeight = 100
+	}
+	r.rules = append(r.rules, rule)
+	sort.SliceStable(r.rules, func(i, j int) bool {
+		return r.rules[i].BaseWeight > r.rules[j].BaseWeight
+	})
+}
+
 func (r *Registry) Plan(ctx Context) (Plan, error) {
 	if r == nil {
 		return Plan{}, errors.New("humanization registry is nil")
 	}
 	if ctx.MaxBehaviorsPerMinute <= 0 {
 		ctx.MaxBehaviorsPerMinute = r.thresholds.DefaultMaxPerMinute
+	}
+	if ctx.Now.IsZero() {
+		ctx.Now = time.Now().UTC()
+	}
+	if !blocked(ctx) && !rateLimited(ctx, r.thresholds) {
+		for _, rule := range r.rules {
+			if !ruleEligible(rule, ctx) {
+				continue
+			}
+			directives := []string{}
+			if directive := strings.TrimSpace(rule.PromptDirective); directive != "" {
+				directives = append(directives, directive)
+			}
+			return Plan{
+				Strategy: "humanization.rule." + rule.ID,
+				Enabled:  true,
+				Event: Event{
+					Kind:        rule.Kind,
+					Delivery:    rule.Delivery,
+					Instruction: rule.Instruction,
+					AssetKey:    strings.TrimSpace(rule.AssetKey),
+					MaxCount:    1,
+					Source:      rule.Source,
+					RuleID:      rule.ID,
+					Intensity:   rule.Intensity,
+					Channel:     rule.Channel,
+					Cooldown:    rule.Cooldown,
+					ExpiresAt:   rule.ExpiresAt,
+				},
+				PromptDirectives: directives,
+				Reason:           "matched extensible human behavior rule",
+			}, nil
+		}
 	}
 	for _, strategy := range r.strategies {
 		if !strategy.CanHandle(ctx, r.thresholds) {
@@ -167,6 +311,58 @@ func (r *Registry) Plan(ctx Context) (Plan, error) {
 		return plan, nil
 	}
 	return Plan{}, errors.New("no humanization strategy matched")
+}
+
+func ruleEligible(rule Rule, ctx Context) bool {
+	if !rule.ExpiresAt.IsZero() && !ctx.Now.Before(rule.ExpiresAt) {
+		return false
+	}
+	if rule.MaxPer5M > 0 && ctx.RecentRuleUsage[rule.ID] >= rule.MaxPer5M {
+		return false
+	}
+	if rule.MaxPerSession > 0 && ctx.SessionRuleUsage[rule.ID] >= rule.MaxPerSession {
+		return false
+	}
+	if rule.Cooldown > 0 {
+		if last := ctx.LastRuleUsedAt[rule.ID]; !last.IsZero() && ctx.Now.Sub(last) < rule.Cooldown {
+			return false
+		}
+	}
+	if !matchesRuleValue(ctx.EventType, rule.Conditions.EventTypes) ||
+		!matchesRuleValue(ctx.QuestionComplexity, rule.Conditions.QuestionComplexities) ||
+		!matchesRuleValue(ctx.Heat, rule.Conditions.Heat) ||
+		!matchesRuleValue(ctx.Emotion, rule.Conditions.Emotion) ||
+		!matchesRuleValue(ctx.HostState, rule.Conditions.HostState) {
+		return false
+	}
+	if len(rule.Conditions.MainlineContains) > 0 {
+		mainline := strings.ToLower(strings.TrimSpace(ctx.MainlineContext))
+		matched := false
+		for _, fragment := range rule.Conditions.MainlineContains {
+			fragment = strings.ToLower(strings.TrimSpace(fragment))
+			if fragment != "" && strings.Contains(mainline, fragment) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesRuleValue(value string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range allowed {
+		if value == strings.ToLower(strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 func blocked(ctx Context) bool {

@@ -90,12 +90,17 @@ type roomStrategySelectInput struct {
 
 type roomStrategySelectResponse struct {
 	strategycenter.Selection
-	PlannedCutMS    int      `json:"planned_cut_ms,omitempty"`
-	ResumeOffsetMS  int      `json:"resume_offset_ms,omitempty"`
-	ResumeReason    string   `json:"resume_reason,omitempty"`
-	ResumePreview   string   `json:"resume_preview,omitempty"`
-	ResumeSegmentID string   `json:"resume_segment_id,omitempty"`
-	SkippedPreviews []string `json:"skipped_previews,omitempty"`
+	PlannedCutMS            int      `json:"planned_cut_ms,omitempty"`
+	ResumeOffsetMS          int      `json:"resume_offset_ms,omitempty"`
+	ResumeReason            string   `json:"resume_reason,omitempty"`
+	ResumePreview           string   `json:"resume_preview,omitempty"`
+	ResumeSegmentID         string   `json:"resume_segment_id,omitempty"`
+	CutAfterSegmentID       string   `json:"cut_after_segment_id,omitempty"`
+	OriginalResumeSegmentID string   `json:"original_resume_segment_id,omitempty"`
+	CoveredSegmentIDs       []string `json:"covered_segment_ids,omitempty"`
+	PlannedResumeSegmentID  string   `json:"planned_resume_segment_id,omitempty"`
+	SkipCount               int      `json:"skip_count,omitempty"`
+	SkippedPreviews         []string `json:"skipped_previews,omitempty"`
 }
 
 func (s *Server) roomStrategyStage(ctx context.Context, roomID int64) (string, time.Time, bool) {
@@ -266,13 +271,16 @@ func (s *Server) selectRoomStrategy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	stageID, startedAt, stageActive := s.roomStrategyStage(r.Context(), roomID)
 	var selected strategycenter.Selection
 	if strings.EqualFold(strings.TrimSpace(input.Category), "addressing") {
 		selected = s.strategyPolicies.PickAddressing(tenantID, input.Seed)
+	} else if stageActive {
+		selected = s.strategyPolicies.PickForRoom(roomID, stageID, tenantID, input.Category, input.Candidates, input.Signals, input.Seed)
 	} else {
 		selected = s.strategyPolicies.Pick(tenantID, input.Category, input.Candidates, input.Signals, input.Seed)
 	}
-	if stageID, startedAt, active := s.roomStrategyStage(r.Context(), roomID); active {
+	if stageActive {
 		s.strategyPolicies.RecordSelection(roomID, stageID, startedAt, selected)
 	}
 	log.Printf("strategy select tenant=%d room=%d category=%s candidates=%v weights=%v selected=%s roll=%d/%d heat=%s entries30s=%d likes30s=%d", tenantID, roomID, selected.Category, input.Candidates, selected.Candidates, selected.Key, selected.Roll, selected.Total, input.Signals.Heat, input.Signals.Entries30s, input.Signals.Likes30s)
@@ -280,9 +288,18 @@ func (s *Server) selectRoomStrategy(w http.ResponseWriter, r *http.Request) {
 	if resumeProgram != nil && strings.EqualFold(strings.TrimSpace(input.Category), "resume") {
 		response.PlannedCutMS = plannedCutMS
 		response.ResumeOffsetMS, response.ResumeReason = resumeOffsetForStrategy(*resumeProgram, plannedCutMS, selected.Key, input.Topic)
+		breakpoint := semanticResumeBreakpointFor(*resumeProgram, plannedCutMS, response.ResumeOffsetMS)
+		response.CutAfterSegmentID = breakpoint.CutAfterSegmentID
+		response.OriginalResumeSegmentID = breakpoint.OriginalResumeSegmentID
+		response.CoveredSegmentIDs = append([]string(nil), breakpoint.CoveredSegmentIDs...)
+		response.PlannedResumeSegmentID = breakpoint.PlannedResumeSegmentID
+		response.SkipCount = breakpoint.SkipCount
+		response.ResumeSegmentID = breakpoint.PlannedResumeSegmentID
 		if point, ok := resumePointAtOrAfter(*resumeProgram, response.ResumeOffsetMS); ok {
 			response.ResumePreview = resumePreview(*resumeProgram, point)
-			response.ResumeSegmentID = point.SentenceID
+			if response.ResumeSegmentID == "" {
+				response.ResumeSegmentID = point.SentenceID
+			}
 		}
 		if response.ResumeOffsetMS > plannedCutMS {
 			for _, point := range effectiveRoomProgramSafePoints(*resumeProgram) {
