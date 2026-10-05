@@ -5245,24 +5245,50 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="strategy-benefit-formal-list">
               <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
-                <div class="strategy-benefit-formal-main">
-                  <span>{{ item.link_key || '全直播间' }}</span>
-                  <strong>{{ item.product_name || item.key }}</strong>
-                  <small>V{{ item.version_no }} · {{ item.key }}</small>
-                </div>
+                <header class="strategy-benefit-formal-card-head">
+                  <div class="strategy-benefit-formal-icon strategy-benefit-formal-link-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M10.5 13.5 13.5 10.5M7.7 16.3l-1.4 1.4a4 4 0 0 1-5.7-5.7l3.7-3.7a4 4 0 0 1 5.7 0l.7.7M16.3 7.7l1.4-1.4a4 4 0 0 1 5.7 5.7l-3.7 3.7a4 4 0 0 1-5.7 0l-.7-.7" /></svg>
+                  </div>
+                  <div class="strategy-benefit-formal-title">
+                    <span>{{ item.link_key || '全直播间' }}</span>
+                    <strong>{{ item.product_name || item.key }}</strong>
+                    <small>V{{ item.version_no }} · {{ item.link_key ? item.link_key + ':' : '' }}{{ item.key }}</small>
+                    <em :class="'is-' + item.status"><i></i>{{ benefitStatusLabel(item.status) }}</em>
+                  </div>
+                </header>
+
+                <div class="strategy-benefit-formal-rule" aria-hidden="true"></div>
+
                 <div class="strategy-benefit-formal-detail">
-                  <span v-if="item.activity_price">活动价：{{ item.activity_price }}</span>
-                  <span v-if="item.gift">福利：{{ item.gift }}</span>
-                  <span v-if="item.activity">活动：{{ item.activity }}</span>
+                  <div class="strategy-benefit-formal-detail-item">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 8-8h9v9l-8 8a2 2 0 0 1-2.8 0l-6.2-6.2A2 2 0 0 1 3 11Z" /><circle cx="15.5" cy="7.5" r="1.25" /></svg>
+                    <span>活动价：</span>
+                    <strong>{{ item.activity_price || '未设置' }}</strong>
+                  </div>
+                  <div class="strategy-benefit-formal-detail-item">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v14M4 4h16v5H4zM3 9h18v4H3zM12 4c0-2-3-3-4.5-1.5S8.5 6 12 6M12 4c0-2 3-3 4.5-1.5S15.5 6 12 6" /></svg>
+                    <span>福利：</span>
+                    <strong>{{ item.gift || '未设置' }}</strong>
+                  </div>
+                  <div class="strategy-benefit-formal-detail-item strategy-benefit-formal-detail-wide">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 12-5v12L3 13zM15 9.5 21 7v10l-6-2.5M6 14l1.5 6h3L9 14" /></svg>
+                    <span>活动：</span>
+                    <strong>{{ item.activity || '未设置' }}</strong>
+                  </div>
+                </div>
+
+                <div class="strategy-benefit-formal-rule" aria-hidden="true"></div>
+
+                <div v-if="expandedFormalBenefitIds.has(item.id)" class="strategy-benefit-formal-window">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></svg>
+                  <div>
+                    <span>有效期</span>
+                    <strong>{{ formatBenefitTime(item.starts_at) }} <i>→</i> {{ formatBenefitTime(item.ends_at) }}</strong>
+                    <small v-if="item.source_quote">依据：{{ item.source_quote }}</small>
+                    <small v-else-if="item.source_review_reason">判断：{{ item.source_review_reason }}</small>
+                  </div>
                 </div>
                 <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效期' : '展开条件与有效期' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
-                <div v-if="expandedFormalBenefitIds.has(item.id)" class="strategy-benefit-formal-window">
-                  <span>{{ formatBenefitTime(item.starts_at) }}</span>
-                  <i>→</i>
-                  <span>{{ formatBenefitTime(item.ends_at) }}</span>
-                  <small v-if="item.source_quote">依据：{{ item.source_quote }}</small>
-                </div>
-                <em :class="'is-' + item.status">{{ benefitStatusLabel(item.status) }}</em>
               </article>
             </div>
           </section>
@@ -7764,26 +7790,38 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal>header strong { color:#34405b; font-size:17px; }
 .strategy-benefit-formal>header span,.strategy-benefit-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
 .strategy-benefit-formal-empty { min-height:110px; }
-.strategy-benefit-formal-list { display:grid; gap:8px; }
-.strategy-benefit-formal-list>article { display:grid; grid-template-columns:minmax(190px,.9fr) minmax(220px,1.2fr) minmax(150px,.7fr) auto; gap:12px; align-items:center; padding:11px 12px; border:1px solid #e7ebf2; border-radius:12px; background:#fafbfe; }
-.strategy-benefit-formal-main { display:grid; gap:2px; }
-.strategy-benefit-formal-main>span { color:#6070c7; font-size:12px; font-weight:900; }
-.strategy-benefit-formal-main>strong { color:#34405a; font-size:14px; }
-.strategy-benefit-formal-main>small { color:#9aa3b3; font-size:10px; }
-.strategy-benefit-formal-detail { display:flex; gap:6px; flex-wrap:wrap; }
-.strategy-benefit-formal-detail span { padding:5px 7px; border-radius:8px; background:#f0f3f8; color:#5d687d; font-size:11px; }
-.strategy-benefit-formal-window { display:flex; align-items:center; gap:7px; color:#6f7b90; font-size:11px; }
-.strategy-benefit-formal-window i { color:#a7afbd; font-style:normal; }
-.strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:flex-start; gap:5px; padding:6px 0; border:0; background:transparent; color:#6876ce; font:inherit; font-size:11px; cursor:pointer; }
-.strategy-benefit-formal-expand svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; transition:transform .18s ease; }
+.strategy-benefit-formal-list { display:grid; gap:18px; }
+.strategy-benefit-formal-list>article { display:grid; width:min(100%,780px); justify-self:center; box-sizing:border-box; gap:18px; padding:34px 40px 26px; border:1px solid #dfe7f5; border-radius:30px; background:linear-gradient(145deg,#fff 0%,#fcfdff 100%); box-shadow:0 18px 46px rgba(74,92,155,.09); }
+.strategy-benefit-formal-card-head { display:grid; gap:20px; align-items:start; }
+.strategy-benefit-formal-icon { display:grid; width:128px; height:128px; place-items:center; border-radius:28px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
+.strategy-benefit-formal-icon svg { width:72px; height:72px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-title { display:grid; gap:7px; min-width:0; }
+.strategy-benefit-formal-title>span { color:#3e63df; font-size:26px; font-weight:900; line-height:1.25; }
+.strategy-benefit-formal-title>strong { color:#172847; font-size:42px; line-height:1.2; font-weight:900; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title>small { color:#8b9ab5; font-size:21px; line-height:1.45; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:11px; width:max-content; margin-top:7px; padding:9px 18px; border-radius:999px; font-size:21px; font-style:normal; font-weight:900; white-space:nowrap; }
+.strategy-benefit-formal-title>em i { width:15px; height:15px; border-radius:50%; background:currentColor; }
+.strategy-benefit-formal-title>em.is-active { background:#e5f8ed; color:#18865d; }
+.strategy-benefit-formal-title>em.is-draft { background:#eef2ff; color:#5f6cc9; }
+.strategy-benefit-formal-title>em.is-expired { background:#f2f3f5; color:#858d9b; }
+.strategy-benefit-formal-title>em.is-disabled { background:#fff0f0; color:#b54848; }
+.strategy-benefit-formal-rule { height:1px; background:#e5ebf5; }
+.strategy-benefit-formal-detail { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.strategy-benefit-formal-detail-item { display:grid; grid-template-columns:48px minmax(0,1fr); grid-template-rows:auto auto; column-gap:14px; align-items:end; min-width:0; min-height:112px; padding:18px 20px; border-radius:20px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
+.strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:42px; height:42px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:19px; line-height:1.35; }
+.strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:25px; line-height:1.35; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-detail-wide { grid-column:1/-1; }
+.strategy-benefit-formal-window { display:grid; grid-template-columns:54px minmax(0,1fr); gap:16px; align-items:start; color:#6f7b90; }
+.strategy-benefit-formal-window>svg { width:50px; height:50px; fill:none; stroke:#7b8baa; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-window>div { display:grid; gap:7px; min-width:0; }
+.strategy-benefit-formal-window span { color:#7e8da8; font-size:21px; line-height:1.35; }
+.strategy-benefit-formal-window strong { color:#1c3156; font-size:24px; line-height:1.45; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-window i { color:#7d8eac; font-style:normal; padding-inline:5px; }
+.strategy-benefit-formal-window small { color:#8d9bb3; font-size:17px; line-height:1.55; overflow-wrap:anywhere; }
+.strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:center; gap:10px; justify-self:center; padding:4px 10px; border:0; background:transparent; color:#4264df; font:inherit; font-size:22px; font-weight:750; cursor:pointer; }
+.strategy-benefit-formal-expand svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:2.2; transition:transform .18s ease; }
 .strategy-benefit-formal-item.expanded .strategy-benefit-formal-expand svg { transform:rotate(180deg); }
-.strategy-benefit-formal-window { flex-wrap:wrap; }
-.strategy-benefit-formal-window small { flex-basis:100%; color:#9099a9; line-height:1.45; }
-.strategy-benefit-formal-list>article>em { padding:5px 8px; border-radius:999px; font-size:11px; font-style:normal; font-weight:900; white-space:nowrap; }
-.strategy-benefit-formal-list>article>em.is-active { background:#eaf8f0; color:#2f7d5a; }
-.strategy-benefit-formal-list>article>em.is-draft { background:#eef2ff; color:#5f6cc9; }
-.strategy-benefit-formal-list>article>em.is-expired { background:#f2f3f5; color:#858d9b; }
-.strategy-benefit-formal-list>article>em.is-disabled { background:#fff0f0; color:#b54848; }
 .strategy-benefit-card { display:grid; gap:14px; padding:18px; border:1px solid #e2dfef; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
 .strategy-benefit-card>header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid #ece8f2; }
 .strategy-benefit-card>header>div { display:grid; gap:4px; }
@@ -8787,9 +8825,7 @@ onBeforeUnmount(() => {
   .strategy-plan-mini-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .strategy-product-link-grid { grid-template-columns:1fr; }
   .strategy-benefit-grid { grid-template-columns:1fr; }
-  .strategy-benefit-formal-list>article { grid-template-columns:minmax(180px,.8fr) minmax(0,1.2fr) auto; }
-  .strategy-benefit-formal-window { grid-column:2; }
-  .strategy-benefit-formal-list>article>em { grid-column:3; grid-row:1; }
+  .strategy-benefit-formal-list>article { width:min(100%,760px); }
   .strategy-anchor-style-summary { grid-template-columns:1fr; }
   .strategy-anchor-style-group-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .strategy-fullshow-grid,.strategy-fullshow-output-grid { grid-template-columns:1fr; }
@@ -8814,8 +8850,9 @@ onBeforeUnmount(() => {
   .strategy-plan-create,.strategy-script-meta { grid-template-columns:1fr; }
   .strategy-plan-card { grid-template-columns:1fr; }
   .strategy-benefit-formal>header { flex-direction:column; }
-  .strategy-benefit-formal-list>article { grid-template-columns:1fr; }
-  .strategy-benefit-formal-window,.strategy-benefit-formal-list>article>em { grid-column:auto; grid-row:auto; }
+  .strategy-benefit-formal-list>article { width:100%; padding:24px 20px 20px; border-radius:24px; }
+  .strategy-benefit-formal-detail { grid-template-columns:1fr; }
+  .strategy-benefit-formal-detail-wide { grid-column:auto; }
   .strategy-benefit-card footer { align-items:flex-start; flex-direction:column; }
   .strategy-plan-toolbar,.strategy-v2-section-head,.strategy-script-actions { align-items:flex-start; flex-direction:column; }
   .strategy-plan-toolbar { justify-content:flex-start; }
