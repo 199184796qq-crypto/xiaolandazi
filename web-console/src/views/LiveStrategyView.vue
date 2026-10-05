@@ -7790,37 +7790,37 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal>header strong { color:#34405b; font-size:17px; }
 .strategy-benefit-formal>header span,.strategy-benefit-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
 .strategy-benefit-formal-empty { min-height:110px; }
-.strategy-benefit-formal-list { display:grid; gap:18px; }
-.strategy-benefit-formal-list>article { display:grid; width:min(100%,780px); justify-self:center; box-sizing:border-box; gap:18px; padding:34px 40px 26px; border:1px solid #dfe7f5; border-radius:30px; background:linear-gradient(145deg,#fff 0%,#fcfdff 100%); box-shadow:0 18px 46px rgba(74,92,155,.09); }
-.strategy-benefit-formal-card-head { display:grid; gap:20px; align-items:start; }
-.strategy-benefit-formal-icon { display:grid; width:128px; height:128px; place-items:center; border-radius:28px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
-.strategy-benefit-formal-icon svg { width:72px; height:72px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.strategy-benefit-formal-list>article { display:grid; width:auto; justify-self:stretch; box-sizing:border-box; gap:12px; padding:16px; border:1px solid #dfe7f5; border-radius:14px; background:linear-gradient(145deg,#fff 0%,#fcfdff 100%); box-shadow:0 8px 22px rgba(74,92,155,.07); }
+.strategy-benefit-formal-card-head { display:grid; gap:12px; align-items:start; }
+.strategy-benefit-formal-icon { display:grid; width:76px; height:76px; place-items:center; border-radius:18px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
+.strategy-benefit-formal-icon svg { width:44px; height:44px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-benefit-formal-title { display:grid; gap:7px; min-width:0; }
-.strategy-benefit-formal-title>span { color:#3e63df; font-size:26px; font-weight:900; line-height:1.25; }
-.strategy-benefit-formal-title>strong { color:#172847; font-size:42px; line-height:1.2; font-weight:900; overflow-wrap:anywhere; }
-.strategy-benefit-formal-title>small { color:#8b9ab5; font-size:21px; line-height:1.45; overflow-wrap:anywhere; }
-.strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:11px; width:max-content; margin-top:7px; padding:9px 18px; border-radius:999px; font-size:21px; font-style:normal; font-weight:900; white-space:nowrap; }
-.strategy-benefit-formal-title>em i { width:15px; height:15px; border-radius:50%; background:currentColor; }
+.strategy-benefit-formal-title>span { color:#3e63df; font-size:16px; font-weight:900; line-height:1.25; }
+.strategy-benefit-formal-title>strong { color:#172847; font-size:24px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title>small { color:#8b9ab5; font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:6px; width:max-content; margin-top:3px; padding:5px 9px; border-radius:999px; font-size:13px; font-style:normal; font-weight:900; white-space:nowrap; }
+.strategy-benefit-formal-title>em i { width:7px; height:7px; border-radius:50%; background:currentColor; }
 .strategy-benefit-formal-title>em.is-active { background:#e5f8ed; color:#18865d; }
 .strategy-benefit-formal-title>em.is-draft { background:#eef2ff; color:#5f6cc9; }
 .strategy-benefit-formal-title>em.is-expired { background:#f2f3f5; color:#858d9b; }
 .strategy-benefit-formal-title>em.is-disabled { background:#fff0f0; color:#b54848; }
 .strategy-benefit-formal-rule { height:1px; background:#e5ebf5; }
 .strategy-benefit-formal-detail { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
-.strategy-benefit-formal-detail-item { display:grid; grid-template-columns:48px minmax(0,1fr); grid-template-rows:auto auto; column-gap:14px; align-items:end; min-width:0; min-height:112px; padding:18px 20px; border-radius:20px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
-.strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:42px; height:42px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:19px; line-height:1.35; }
-.strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:25px; line-height:1.35; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-detail-item { display:grid; grid-template-columns:30px minmax(0,1fr); grid-template-rows:auto auto; column-gap:8px; align-items:end; min-width:0; min-height:72px; padding:10px 11px; border-radius:11px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
+.strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:26px; height:26px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:12px; line-height:1.35; }
+.strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:14px; line-height:1.4; font-weight:650; overflow-wrap:anywhere; }
 .strategy-benefit-formal-detail-wide { grid-column:1/-1; }
-.strategy-benefit-formal-window { display:grid; grid-template-columns:54px minmax(0,1fr); gap:16px; align-items:start; color:#6f7b90; }
-.strategy-benefit-formal-window>svg { width:50px; height:50px; fill:none; stroke:#7b8baa; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-benefit-formal-window>div { display:grid; gap:7px; min-width:0; }
-.strategy-benefit-formal-window span { color:#7e8da8; font-size:21px; line-height:1.35; }
-.strategy-benefit-formal-window strong { color:#1c3156; font-size:24px; line-height:1.45; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-window { display:grid; grid-template-columns:32px minmax(0,1fr); gap:9px; align-items:start; color:#6f7b90; }
+.strategy-benefit-formal-window>svg { width:28px; height:28px; fill:none; stroke:#7b8baa; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-window>div { display:grid; gap:4px; min-width:0; }
+.strategy-benefit-formal-window span { color:#7e8da8; font-size:13px; line-height:1.35; }
+.strategy-benefit-formal-window strong { color:#1c3156; font-size:14px; line-height:1.45; font-weight:650; overflow-wrap:anywhere; }
 .strategy-benefit-formal-window i { color:#7d8eac; font-style:normal; padding-inline:5px; }
-.strategy-benefit-formal-window small { color:#8d9bb3; font-size:17px; line-height:1.55; overflow-wrap:anywhere; }
-.strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:center; gap:10px; justify-self:center; padding:4px 10px; border:0; background:transparent; color:#4264df; font:inherit; font-size:22px; font-weight:750; cursor:pointer; }
-.strategy-benefit-formal-expand svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:2.2; transition:transform .18s ease; }
+.strategy-benefit-formal-window small { color:#8d9bb3; font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
+.strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:center; gap:5px; justify-self:center; padding:3px 6px; border:0; background:transparent; color:#4264df; font:inherit; font-size:14px; font-weight:750; cursor:pointer; }
+.strategy-benefit-formal-expand svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:2.2; transition:transform .18s ease; }
 .strategy-benefit-formal-item.expanded .strategy-benefit-formal-expand svg { transform:rotate(180deg); }
 .strategy-benefit-card { display:grid; gap:14px; padding:18px; border:1px solid #e2dfef; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
 .strategy-benefit-card>header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid #ece8f2; }
@@ -8850,6 +8850,7 @@ onBeforeUnmount(() => {
   .strategy-plan-create,.strategy-script-meta { grid-template-columns:1fr; }
   .strategy-plan-card { grid-template-columns:1fr; }
   .strategy-benefit-formal>header { flex-direction:column; }
+  .strategy-benefit-formal-list { grid-template-columns:1fr; }
   .strategy-benefit-formal-list>article { width:100%; padding:24px 20px 20px; border-radius:24px; }
   .strategy-benefit-formal-detail { grid-template-columns:1fr; }
   .strategy-benefit-formal-detail-wide { grid-column:auto; }
