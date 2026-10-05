@@ -5252,7 +5252,7 @@ onBeforeUnmount(() => {
                   <div class="strategy-benefit-formal-title">
                     <span>{{ item.link_key || '全直播间' }}</span>
                     <strong>{{ item.product_name || item.key }}</strong>
-                    <small>V{{ item.version_no }} · {{ item.link_key ? item.link_key + ':' : '' }}{{ item.key }}</small>
+                    <small>V{{ item.version_no }} · {{ item.key }}</small>
                     <em :class="'is-' + item.status"><i></i>{{ benefitStatusLabel(item.status) }}</em>
                   </div>
                 </header>
