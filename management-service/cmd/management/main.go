@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -23,13 +24,20 @@ import (
 	"livecompanion/management/internal/liveruntime"
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/questioncluster"
+	"livecompanion/management/internal/semantic"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/wechatpay"
 	"livecompanion/management/internal/workinbox"
 )
 
 func main() {
 	cfg := config.Load()
+	stylePluginRegistry, loadedStylePlugins, stylePluginRoot, err := loadStylePluginRegistry(cfg.AnchorStylePluginDir)
+	if err != nil {
+		log.Fatalf("load anchor-style plugins: %v", err)
+	}
+	log.Printf("loaded %d anchor-style plugins from %s", len(loadedStylePlugins), stylePluginRoot)
 	appCtx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -52,11 +60,17 @@ func main() {
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("migrate management database: %v", err)
 	}
+	if err := store.MigrateRoomDeletions(ctx); err != nil {
+		log.Fatalf("migrate room deletions: %v", err)
+	}
 	if err := store.MigrateAdminAudit(ctx); err != nil {
 		log.Fatalf("migrate audit database: %v", err)
 	}
 	if err := store.MigrateSystemSettings(ctx); err != nil {
 		log.Fatalf("migrate system settings database: %v", err)
+	}
+	if err := store.MigrateSpeechModels(ctx); err != nil {
+		log.Fatalf("migrate speech model settings: %v", err)
 	}
 	if err := store.MigrateOrganizations(ctx); err != nil {
 		log.Fatalf("migrate organization database: %v", err)
@@ -66,6 +80,15 @@ func main() {
 	}
 	if err := store.MigrateCommercial(ctx); err != nil {
 		log.Fatalf("migrate commercial database: %v", err)
+	}
+	if err := store.MigrateWechatPay(ctx); err != nil {
+		log.Fatalf("migrate wechat payment database: %v", err)
+	}
+	if err := store.MigrateWechatRefunds(ctx); err != nil {
+		log.Fatalf("migrate wechat refund database: %v", err)
+	}
+	if err := store.MigrateBeanEconomy(ctx); err != nil {
+		log.Fatalf("migrate bean economy database: %v", err)
 	}
 	if err := store.MigrateOperatingFinance(ctx); err != nil {
 		log.Fatalf("migrate operating finance database: %v", err)
@@ -115,6 +138,9 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateLiveContentRefresh(ctx); err != nil {
+		log.Fatalf("migrate live content refresh: %v", err)
+	}
 	if err := store.MigrateSpeechAnalysis(ctx); err != nil {
 		log.Fatalf("migrate speech analysis database: %v", err)
 	}
@@ -155,6 +181,21 @@ func main() {
 	}
 	defer leaderLease.Close()
 	leaderLease.Start(appCtx)
+
+	executionLeaderLease, err := coordination.NewLeaderLease(
+		cfg.RedisHost,
+		cfg.RedisPort,
+		cfg.RedisPassword,
+		cfg.RedisDB,
+		fmt.Sprintf("livecompanion:cluster:leader:live-runtime-executor:%s", cfg.RuntimeExecutionRealm),
+		cfg.NodeID,
+		time.Duration(cfg.ReconcileLeaderTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		log.Fatalf("create runtime execution leader lease: %v", err)
+	}
+	defer executionLeaderLease.Close()
+	executionLeaderLease.Start(appCtx)
 
 	authResolver := auth.NewResolver(cfg.Env, store)
 	core := coreclient.New(cfg.CoreBaseURL, cfg.CoreToken)
@@ -200,23 +241,82 @@ func main() {
 		leaderLease,
 	)
 	api.SetWorkInbox(inbox)
+	api.SetStylePluginRegistry(stylePluginRegistry)
+	wechatService, err := wechatpay.New(ctx, cfg.WechatPay)
+	if err != nil {
+		log.Fatalf("initialize wechat pay: %v", err)
+	}
+	api.SetWechatPay(wechatService)
+	go api.RunWechatPaymentReconciliation(appCtx)
+	go api.RunWechatRefundReconciliation(appCtx)
+	api.SetXiaozhiInternalToken(cfg.XiaozhiInternalToken)
+	api.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
 	go api.RunCoreStatusWatch(appCtx)
+	go api.RunRoomDeletionCleanup(appCtx)
+	go api.RunLiveContentRefresh(appCtx)
 	runtimeReconciler := liveruntime.NewReconciler(
 		store,
 		core,
 		cfg.RuntimeReconcileWorkers,
 		cfg.RuntimeReconcileBatch,
-		leaderLease,
+		executionLeaderLease,
 	)
+	runtimeReconciler.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	runtimeReconciler.SetAuditRecorder(auditStore)
 	go runtimeReconciler.Run(appCtx)
-	agentGateway := agentgateway.NewFromEnv()
-	clusterWorker := questioncluster.New(store, core, agentGateway, leaderLease)
+	agentGateway := agentgateway.NewFromEnv().WithSpeechModels(store)
+	semanticEmbedder := semantic.NewFromEnv()
+	semanticService := semantic.NewService(semanticEmbedder, store)
+	api.SetSemanticMetricsReader(semanticService)
+	if semanticEmbedder.Enabled() {
+		log.Printf("semantic embedding enabled model=%s", semanticEmbedder.Model())
+	} else {
+		log.Printf("semantic embedding disabled")
+	}
+	clusterWorker := questioncluster.New(store, core, agentGateway, executionLeaderLease)
+	clusterWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
+	clusterWorker.SetSemanticEmbedder(semanticEmbedder)
+	clusterWorker.SetSemanticService(semanticService)
 	go clusterWorker.Run(appCtx)
-	decisionWorker := decisionexecutor.New(store, core, agentGateway, ttsgateway.NewFromEnv(), leaderLease)
+	decisionWorker := decisionexecutor.New(store, core, agentGateway, ttsgateway.NewFromEnv(), executionLeaderLease)
+	decisionWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
+	decisionWorker.SetSemanticEmbedder(semanticEmbedder)
+	decisionWorker.SetSemanticService(semanticService)
 	api.SetSpeechMissionReader(decisionWorker)
 	go decisionWorker.Run(appCtx)
+
+	// recent_speech vectors carry a short TTL. Physically purge expired rows so
+	// the semantic table does not grow forever; only the cluster leader performs
+	// the cleanup to avoid duplicate maintenance work across nodes.
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		cleanupExpiredSemantic := func() {
+			if !leaderLease.IsLeader() {
+				return
+			}
+			cleanupCtx, cancel := context.WithTimeout(appCtx, 10*time.Second)
+			defer cancel()
+			count, err := store.DeleteExpiredSemanticDocuments(cleanupCtx, time.Now().UTC())
+			if err != nil {
+				log.Printf("delete expired semantic documents: %v", err)
+				return
+			}
+			if count > 0 {
+				log.Printf("deleted %d expired semantic documents", count)
+			}
+		}
+		cleanupExpiredSemantic()
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case <-ticker.C:
+				cleanupExpiredSemantic()
+			}
+		}
+	}()
 
 	// Pending device orders hold concrete inventory immediately. Only the
 	// cluster leader releases expired holds so multiple management nodes never
@@ -248,6 +348,26 @@ func main() {
 				return
 			case <-ticker.C:
 				releaseExpired()
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case <-ticker.C:
+				if !leaderLease.IsLeader() {
+					continue
+				}
+				runCtx, cancel := context.WithTimeout(appCtx, 20*time.Second)
+				if err := store.ReleaseCommerceEarnings(runCtx); err != nil {
+					log.Printf("release commerce earnings: %v", err)
+				}
+				cancel()
 			}
 		}
 	}()

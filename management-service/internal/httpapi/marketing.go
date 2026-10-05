@@ -202,7 +202,7 @@ func readMarketingCampaignInput(
 			item.PricingMode = "discount"
 		}
 		switch item.PricingMode {
-		case "discount", "package":
+		case "discount", "package", "fixed", "free":
 		default:
 			writeError(w, http.StatusBadRequest, "营销定价模式不正确")
 			return model.MarketingCampaignInput{}, false
@@ -226,6 +226,14 @@ func readMarketingCampaignInput(
 			return model.MarketingCampaignInput{}, false
 		}
 		item.SortOrder = (index + 1) * 10
+		if item.PricingMode == "fixed" && (item.FixedPriceCents == nil || *item.FixedPriceCents > 10000000000) {
+			writeError(w, http.StatusBadRequest, "固定售价须以分填写，范围0-1亿元")
+			return input, false
+		}
+	}
+	if err := db.ValidateMarketingControls(input.Controls, input.StartsAt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return input, false
 	}
 	return input, true
 }
@@ -251,6 +259,10 @@ func (s *Server) customerShopMarketingCampaigns(w http.ResponseWriter, r *http.R
 	items, err := s.store.ListMarketingCampaigns(r.Context(), "", 0, true, "shop")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取营销活动失败")
+		return
+	}
+	if err = s.store.AnnotateCampaignEligibility(r.Context(), *actor.TenantID, items); err != nil {
+		writeError(w, 500, "读取活动资格失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

@@ -112,7 +112,7 @@ func TestInteractionSuspendsAndResumesMainline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.Suspended || snapshot.Task == nil || snapshot.Task.Kind != "interaction_tts" {
+	if !snapshot.Suspended || snapshot.Task == nil || snapshot.Task.Kind != "interaction_audio" {
 		t.Fatalf("interaction not active: %#v", snapshot)
 	}
 	interactionID := snapshot.Task.ID
@@ -125,6 +125,57 @@ func TestInteractionSuspendsAndResumesMainline(t *testing.T) {
 	}
 	if active := hub.ActiveTask(15); active == nil || active.ID != snapshot.Task.ID {
 		t.Fatalf("hub did not resume mainline: %#v", active)
+	}
+}
+
+func TestSlowestMainlinePlaybackPositionUsesLaggingActiveOutput(t *testing.T) {
+	tests := []struct {
+		name           string
+		wallClockMS    int
+		receiverMS     int
+		hasReceiver    bool
+		roomAudioMS    int
+		hasRoomAudio   bool
+		durationMS     int
+		wantPositionMS int
+	}{
+		{
+			name:        "room audio mirror lags receiver",
+			wallClockMS: 290000, receiverMS: 288000, hasReceiver: true,
+			roomAudioMS: 250000, hasRoomAudio: true, durationMS: 600000,
+			wantPositionMS: 250000,
+		},
+		{
+			name:        "receiver lags room audio mirror",
+			wallClockMS: 290000, receiverMS: 240000, hasReceiver: true,
+			roomAudioMS: 275000, hasRoomAudio: true, durationMS: 600000,
+			wantPositionMS: 240000,
+		},
+		{
+			name:        "wall clock fallback without active output",
+			wallClockMS: 42000, durationMS: 600000,
+			wantPositionMS: 42000,
+		},
+		{
+			name:        "position is clamped inside track",
+			wallClockMS: 610000, durationMS: 600000,
+			wantPositionMS: 599999,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slowestMainlinePlaybackPosition(
+				tt.wallClockMS,
+				tt.receiverMS,
+				tt.hasReceiver,
+				tt.roomAudioMS,
+				tt.hasRoomAudio,
+				tt.durationMS,
+			)
+			if got != tt.wantPositionMS {
+				t.Fatalf("position=%d want=%d", got, tt.wantPositionMS)
+			}
+		})
 	}
 }
 
@@ -219,8 +270,8 @@ func TestPublishedProgramRotatesFormalTracks(t *testing.T) {
 		VersionID: 107,
 		VersionNo: 7,
 		Tracks: []audioout.ProgramTrack{
-			{ID: "A", Label: "A稿", AudioURL: serverA.URL},
-			{ID: "B", Label: "B稿", AudioURL: serverB.URL},
+			{ID: "A", Label: "A稿", AudioURL: serverA.URL, DurationMS: 70},
+			{ID: "B", Label: "B稿", AudioURL: serverB.URL, DurationMS: 90},
 		},
 	})
 	if err != nil {

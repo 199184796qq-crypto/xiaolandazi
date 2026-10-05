@@ -82,7 +82,17 @@ func (f *Factory) Stream(
 	ctx context.Context,
 	room model.Room,
 ) (collector.StreamSource, error) {
-	return f.browser.Stream(room.ID)
+	roomURL := strings.TrimSpace(room.SourceURL)
+	if roomURL == "" {
+		externalRoomID := strings.TrimSpace(room.ExternalRoomID)
+		if externalRoomID == "" {
+			return collector.StreamSource{}, errors.New("douyin room id is empty")
+		}
+		roomURL = "https://live.douyin.com/" +
+			externalRoomID +
+			"?from=web_code_link"
+	}
+	return f.browser.RequestStream(ctx, room.ID, roomURL)
 }
 func (f *Factory) Preview(
 	ctx context.Context,
@@ -124,6 +134,7 @@ func (c *BrowserCollector) Run(
 	frameCount := 0
 	decodeErrors := 0
 	transportCh := session.Transport()
+	stateCh := session.States()
 
 	for {
 		select {
@@ -133,12 +144,20 @@ func (c *BrowserCollector) Run(
 		case <-transportCh:
 			if !transportSeen {
 				log.Printf(
-					"collector room=%d transport=playwright-wss seen=true",
+					"collector room=%d transport=douyin-wss seen=true",
 					room.ID,
 				)
 			}
 			transportSeen = true
 			transportCh = nil
+		case state := <-stateCh:
+			if strings.EqualFold(strings.TrimSpace(state.state), "ended") {
+				reason := strings.TrimSpace(state.reason)
+				if reason == "" {
+					reason = "platform_live_ended"
+				}
+				return fmt.Errorf("%w: %s", collector.ErrLiveEnded, reason)
+			}
 
 		case sessionErr := <-session.Errors():
 			if sessionErr == nil {

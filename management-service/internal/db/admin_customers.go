@@ -266,6 +266,11 @@ func (s *Store) DeleteAdminCustomer(
 		return model.AdminCustomer{}, err
 	}
 	if otherUsers == 0 {
+		// Only remove tenant-wide semantic memory when the tenant itself is going
+		// away. Deleting one customer login must never wipe shared company memory.
+		if _, err := tx.ExecContext(ctx, "DELETE FROM semantic_documents WHERE tenant_id = ?", customer.TenantID); err != nil {
+			return model.AdminCustomer{}, fmt.Errorf("delete customer semantic documents: %w", err)
+		}
 		if _, err := tx.ExecContext(
 			ctx,
 			"DELETE FROM mgmt_tenants WHERE id = ?",

@@ -351,6 +351,9 @@ func applyBeneficiaryWalletDeltaTx(
 }
 
 func accrueReferralRewardForPaidOrderTx(ctx context.Context, tx *sql.Tx, orderID int64) error {
+	if err := accrueCommerceRewardsTx(ctx, tx, orderID); err != nil {
+		return err
+	}
 	var (
 		referredTenantID   int64
 		orderNo            string
@@ -417,6 +420,14 @@ func accrueReferralRewardForPaidOrderTx(ctx context.Context, tx *sql.Tx, orderID
 	}
 
 	for _, line := range lines {
+		var snapshotMode string
+		err := tx.QueryRowContext(ctx, `SELECT JSON_UNQUOTE(JSON_EXTRACT(config_json,'$.mode')) FROM fin_order_reward_snapshots WHERE order_item_id=? AND channel='referral'`, line.ID).Scan(&snapshotMode)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && snapshotMode != "legacy" {
+			continue
+		}
 		eventType := referralEventType(line.ProductType)
 		if eventType == "" {
 			continue
@@ -558,6 +569,9 @@ func accrueReferralRewardForPaidOrderTx(ctx context.Context, tx *sql.Tx, orderID
 }
 
 func releaseMatureReferralRewardsTx(ctx context.Context, tx *sql.Tx, tenantID int64) error {
+	if err := releaseCommerceEarningsTx(ctx, tx, customerReferralBeneficiaryType, tenantID); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, amount_cents
 		FROM inc_earnings

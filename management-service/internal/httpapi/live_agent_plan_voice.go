@@ -93,6 +93,9 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+		return
+	}
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -114,6 +117,11 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 		return
 	}
 
+	if actor.IsInternalStaff() && input.Source == "clone" {
+		if !s.requireLiveSupportSelectedVoice(w, r, actor, tenantID, map[string]any{"profile_id": input.ProfileID, "voice_id": input.VoiceID}) {
+			return
+		}
+	}
 	voiceID, modelName, err := s.resolveFormalVoice(r.Context(), tenantID, input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -158,6 +166,7 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	archive, err := s.archiveFullShowVoice(
 		ctx, tenantID, actor.UserID, planID, input.RoomID, variantKey,
 		voiceID, modelName, input.Source, combined, durationMS, timeline,
+		input.Rate,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "正式声音归档失败："+err.Error())
@@ -204,6 +213,9 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
 		return
 	}
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
@@ -279,9 +291,14 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 		source = "official"
 	}
 	durationMS := int64(*asset.DurationMS)
+	var archivedRates []float64
+	if rate, ok := archivedVoiceRate(asset.Metadata); ok {
+		archivedRates = []float64{rate}
+	}
 	archive, err := s.archiveFullShowVoice(
 		r.Context(), tenantID, actor.UserID, planID, input.RoomID, variantKey,
 		voiceID, modelName, source, raw, durationMS, updatedTimeline,
+		archivedRates...,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "保存 SRT 校对结果失败："+err.Error())
@@ -616,8 +633,13 @@ func (s *Server) archiveFullShowVoice(
 	raw []byte,
 	durationMS int64,
 	timeline []model.LiveAgentPlanTimelineSegment,
+	voiceRates ...float64,
 ) (fullShowVoiceArchiveResult, error) {
 	var result fullShowVoiceArchiveResult
+	voiceRate, err := optionalArchivedVoiceRate(voiceRates)
+	if err != nil {
+		return result, err
+	}
 	if s.assetStorage == nil {
 		return result, errors.New("媒体存储尚未初始化")
 	}
@@ -698,6 +720,9 @@ func (s *Server) archiveFullShowVoice(
 		"manifest_object_key":    manifestObjectKey,
 		"timeline_precision":     "segment_pcm_exact",
 	}
+	if voiceRate > 0 {
+		manifest["voice_rate"] = voiceRate
+	}
 	manifestRaw, _ := json.MarshalIndent(manifest, "", "  ")
 	putSidecar := func(key string, raw []byte, contentType string) error {
 		if err := assetStore.Put(ctx, key, bytes.NewReader(raw), contentType); err != nil {
@@ -725,21 +750,25 @@ func (s *Server) archiveFullShowVoice(
 	}
 	digest := sha256.Sum256(raw)
 	durationValue := uint64(durationMS)
+	metadata := map[string]any{
+		"purpose": "live_agent_formal_voice_timeline", "plan_id": planID, "room_id": roomID,
+		"variant_key": variantKey, "source": source, "voice_id": voiceID, "tts_model": modelName,
+		"subtitle_object_key":    subtitleObjectKey,
+		"timeline_object_key":    timelineObjectKey,
+		"safe_points_object_key": safePointsObjectKey,
+		"manifest_object_key":    manifestObjectKey,
+		"timeline_format":        "json+srt+safe_points_v3",
+		"timeline_precision":     "segment_pcm_exact",
+	}
+	if voiceRate > 0 {
+		metadata["voice_rate"] = voiceRate
+	}
 	item, err := s.store.CreateMediaAsset(ctx, model.CreateMediaAssetInput{
 		TenantID: tenantID, AssetType: "generated_voice", OriginalName: strings.ToLower(variantKey) + "-formal.wav",
 		StorageDriver: assetStore.Driver(), StorageBucket: assetStore.Bucket(), ObjectKey: objectKey,
 		MIMEType: "audio/wav", SizeBytes: uint64(len(raw)), DurationMS: &durationValue,
 		ChecksumSHA256: hex.EncodeToString(digest[:]), CreatedByUserID: actorUserID,
-		Metadata: map[string]any{
-			"purpose": "live_agent_formal_voice_timeline", "plan_id": planID, "room_id": roomID,
-			"variant_key": variantKey, "source": source, "voice_id": voiceID, "tts_model": modelName,
-			"subtitle_object_key":    subtitleObjectKey,
-			"timeline_object_key":    timelineObjectKey,
-			"safe_points_object_key": safePointsObjectKey,
-			"manifest_object_key":    manifestObjectKey,
-			"timeline_format":        "json+srt+safe_points_v3",
-			"timeline_precision":     "segment_pcm_exact",
-		},
+		Metadata: metadata,
 	})
 	if err != nil {
 		_ = assetStore.Delete(ctx, objectKey)

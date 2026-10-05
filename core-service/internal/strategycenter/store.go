@@ -43,12 +43,12 @@ type Policy struct {
 type RoomInteractionPreferences struct {
 	TenantID             int64     `json:"tenant_id"`
 	RoomID               int64     `json:"room_id"`
-	OverallInteraction   string    `json:"overall_interaction"`
-	QuestionPreference   string    `json:"question_preference"`
-	WelcomePreference    string    `json:"welcome_preference"`
-	EngagementPreference string    `json:"engagement_preference"`
-	ChatPreference       string    `json:"chat_preference"`
-	ConversionPreference string    `json:"conversion_preference"`
+	OverallInteraction   int       `json:"overall_interaction"`
+	QuestionPreference   int       `json:"question_preference"`
+	WelcomePreference    int       `json:"welcome_preference"`
+	EngagementPreference int       `json:"engagement_preference"`
+	ChatPreference       int       `json:"chat_preference"`
+	ConversionPreference int       `json:"conversion_preference"`
 	AutoHeat             bool      `json:"auto_heat"`
 	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
@@ -239,9 +239,53 @@ func (s *Store) Load(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	preferenceRows, err := db.QueryContext(ctx, `
-		SELECT tenant_id, room_id, overall_interaction, question_preference,
-		       welcome_preference, engagement_preference, chat_preference,
-		       conversion_preference, auto_heat, updated_at
+		SELECT
+		       tenant_id,
+		       room_id,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(overall_interaction AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(overall_interaction AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(question_preference AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(question_preference AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(welcome_preference AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(welcome_preference AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(engagement_preference AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(engagement_preference AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(chat_preference AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(chat_preference AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       CASE
+		           WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) IN ('quiet','less','steady') THEN 25
+		           WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) = 'natural' THEN 50
+		           WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) IN ('active','more') THEN 75
+		           WHEN TRIM(CAST(conversion_preference AS CHAR)) REGEXP '^[0-9]+$' THEN LEAST(100, CAST(conversion_preference AS UNSIGNED))
+		           ELSE 50
+		       END,
+		       auto_heat,
+		       updated_at
 		FROM live_room_interaction_preferences
 	`)
 	if err != nil {
@@ -272,33 +316,34 @@ func (s *Store) Load(ctx context.Context, db *sql.DB) error {
 func DefaultRoomInteractionPreferences(roomID int64) RoomInteractionPreferences {
 	return RoomInteractionPreferences{
 		RoomID:               roomID,
-		OverallInteraction:   "natural",
-		QuestionPreference:   "natural",
-		WelcomePreference:    "natural",
-		EngagementPreference: "natural",
-		ChatPreference:       "natural",
-		ConversionPreference: "natural",
+		OverallInteraction:   50,
+		QuestionPreference:   50,
+		WelcomePreference:    50,
+		EngagementPreference: 50,
+		ChatPreference:       50,
+		ConversionPreference: 50,
 		AutoHeat:             true,
 	}
 }
 
-func normalizePreferenceValue(value, fallback string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return fallback
+func normalizePreferenceScore(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
 	}
 	return value
 }
 
 func normalizeRoomInteractionPreferences(roomID int64, input RoomInteractionPreferences) RoomInteractionPreferences {
-	defaults := DefaultRoomInteractionPreferences(roomID)
 	input.RoomID = roomID
-	input.OverallInteraction = normalizePreferenceValue(input.OverallInteraction, defaults.OverallInteraction)
-	input.QuestionPreference = normalizePreferenceValue(input.QuestionPreference, defaults.QuestionPreference)
-	input.WelcomePreference = normalizePreferenceValue(input.WelcomePreference, defaults.WelcomePreference)
-	input.EngagementPreference = normalizePreferenceValue(input.EngagementPreference, defaults.EngagementPreference)
-	input.ChatPreference = normalizePreferenceValue(input.ChatPreference, defaults.ChatPreference)
-	input.ConversionPreference = normalizePreferenceValue(input.ConversionPreference, defaults.ConversionPreference)
+	input.OverallInteraction = normalizePreferenceScore(input.OverallInteraction)
+	input.QuestionPreference = normalizePreferenceScore(input.QuestionPreference)
+	input.WelcomePreference = normalizePreferenceScore(input.WelcomePreference)
+	input.EngagementPreference = normalizePreferenceScore(input.EngagementPreference)
+	input.ChatPreference = normalizePreferenceScore(input.ChatPreference)
+	input.ConversionPreference = normalizePreferenceScore(input.ConversionPreference)
 	return input
 }
 
@@ -327,33 +372,47 @@ func (s *Store) RoomInteractionPreferences(roomID int64) RoomInteractionPreferen
 	return normalizeRoomInteractionPreferences(roomID, item)
 }
 
-func preferenceFactor(value string, less, more float64) float64 {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "quiet", "less", "steady":
-		return less
-	case "active", "more":
-		return more
+func preferenceFactor(score int, less, more float64) float64 {
+	score = normalizePreferenceScore(score)
+	if score == 0 {
+		return 0
+	}
+	value := float64(score)
+	switch {
+	case score <= 25:
+		return less * value / 25
+	case score <= 50:
+		return less + (1-less)*(value-25)/25
+	case score <= 75:
+		return 1 + (more-1)*(value-50)/25
 	default:
-		return 1
+		return more + (more-1)*(value-75)/25
 	}
 }
 
 func (s *Store) InteractionPreferenceFactor(roomID int64, kind string) float64 {
 	prefs := s.RoomInteractionPreferences(roomID)
 	factor := preferenceFactor(prefs.OverallInteraction, 0.78, 1.24)
+	if factor <= 0 {
+		return 0
+	}
+	kindFactor := 1.0
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "question":
-		factor *= preferenceFactor(prefs.QuestionPreference, 0.72, 1.38)
+		kindFactor = preferenceFactor(prefs.QuestionPreference, 0.72, 1.38)
 	case "welcome":
-		factor *= preferenceFactor(prefs.WelcomePreference, 0.68, 1.36)
+		kindFactor = preferenceFactor(prefs.WelcomePreference, 0.68, 1.36)
 	case "engagement":
-		factor *= preferenceFactor(prefs.EngagementPreference, 0.68, 1.32)
+		kindFactor = preferenceFactor(prefs.EngagementPreference, 0.68, 1.32)
 	case "chat":
-		factor *= preferenceFactor(prefs.ChatPreference, 0.64, 1.34)
+		kindFactor = preferenceFactor(prefs.ChatPreference, 0.64, 1.34)
 	case "conversion":
-		factor *= preferenceFactor(prefs.ConversionPreference, 0.82, 1.38)
+		kindFactor = preferenceFactor(prefs.ConversionPreference, 0.82, 1.38)
 	}
-	return factor
+	if kindFactor <= 0 {
+		return 0
+	}
+	return factor * kindFactor
 }
 
 func interactionPreferenceKind(key string) string {
@@ -373,7 +432,11 @@ func (s *Store) AdjustInteractionWeight(roomID int64, key string, weight int) in
 	if weight <= 0 {
 		return 0
 	}
-	adjusted := int(math.Round(float64(weight) * s.InteractionPreferenceFactor(roomID, interactionPreferenceKind(key))))
+	factor := s.InteractionPreferenceFactor(roomID, interactionPreferenceKind(key))
+	if factor <= 0 {
+		return 0
+	}
+	adjusted := int(math.Round(float64(weight) * factor))
 	if adjusted < 1 {
 		return 1
 	}

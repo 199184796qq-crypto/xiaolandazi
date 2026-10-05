@@ -235,7 +235,7 @@ func (s *Store) getQuotaSummary(ctx context.Context, tenantID int64) (model.Quot
 	}, nil
 }
 
-func (s *Store) GetFinanceDashboard(
+func (s *Store) getFinanceDashboardOnce(
 	ctx context.Context,
 	tenantID int64,
 	limit int,

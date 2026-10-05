@@ -23,6 +23,7 @@ import (
 	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
 	"livecompanion/core/internal/roomaudio"
+	"livecompanion/core/internal/semantic"
 	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/strategycenter"
@@ -45,6 +46,7 @@ type Server struct {
 	speechRuntime    *speechruntime.Registry
 	audioHub         *audiohub.Hub
 	roomAudio        *roomaudio.Engine
+	semanticEmbedder semantic.Embedder
 	strategyPolicies *strategycenter.Store
 	env              string
 	internalToken    string
@@ -96,6 +98,10 @@ func (s *Server) SetRoomAudioEngine(engine *roomaudio.Engine) {
 		engine = roomaudio.New()
 	}
 	s.roomAudio = engine
+}
+
+func (s *Server) SetSemanticEmbedder(embedder semantic.Embedder) {
+	s.semanticEmbedder = embedder
 }
 
 func (s *Server) SetStrategyPolicyStore(store *strategycenter.Store) {
@@ -152,6 +158,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/start", s.internal(http.HandlerFunc(s.startRoomAudioProgram)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/audio/program", s.internal(http.HandlerFunc(s.getRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/refresh", s.internal(http.HandlerFunc(s.refreshRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/refresh/cancel", s.internal(http.HandlerFunc(s.cancelRoomAudioProgramRefresh)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/refresh/renew", s.internal(http.HandlerFunc(s.renewRoomAudioProgramRefresh)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/pause", s.internal(http.HandlerFunc(s.pauseRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/resume", s.internal(http.HandlerFunc(s.resumeRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/stop", s.internal(http.HandlerFunc(s.stopRoomAudioProgram)))
@@ -250,6 +260,16 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	if collectorStats.LeaseEnabled {
 		leaseEnabled = 1
 	}
+	semanticEnabled := 0
+	semanticStats := semantic.Stats{}
+	if s.semanticEmbedder != nil {
+		if s.semanticEmbedder.Enabled() {
+			semanticEnabled = 1
+		}
+		if provider, ok := s.semanticEmbedder.(interface{ Stats() semantic.Stats }); ok {
+			semanticStats = provider.Stats()
+		}
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = fmt.Fprintf(
 		w,
@@ -286,6 +306,34 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		collectorStats.RuntimeWrites,
 		collectorStats.RuntimeErrors,
 	)
+	_, _ = fmt.Fprintf(
+		w,
+		"livecompanion_core_semantic_embedding_enabled %d\n"+
+			"livecompanion_core_semantic_embedding_requests_total %d\n"+
+			"livecompanion_core_semantic_embedding_texts_total %d\n"+
+			"livecompanion_core_semantic_embedding_failures_total %d\n"+
+			"livecompanion_core_semantic_embedding_input_tokens_total %d\n"+
+			"livecompanion_core_semantic_embedding_latency_seconds_sum %.6f\n"+
+			"livecompanion_core_semantic_embedding_latency_seconds_count %d\n",
+		semanticEnabled,
+		semanticStats.Requests,
+		semanticStats.Texts,
+		semanticStats.Failures,
+		semanticStats.InputTokens,
+		float64(semanticStats.LatencyNanos)/float64(time.Second),
+		semanticStats.Requests,
+	)
+	cumulative := uint64(0)
+	bucketLabels := [...]string{"0.05", "0.1", "0.25", "0.5", "1", "2", "+Inf"}
+	for index, count := range semanticStats.LatencyBuckets {
+		cumulative += count
+		_, _ = fmt.Fprintf(
+			w,
+			"livecompanion_core_semantic_embedding_latency_seconds_bucket{le=%q} %d\n",
+			bucketLabels[index],
+			cumulative,
+		)
+	}
 }
 
 func (s *Server) internal(next http.Handler) http.Handler {
@@ -480,16 +528,45 @@ func (s *Server) updateRoomRuntime(w http.ResponseWriter, r *http.Request) {
 	s.collectors.Reconcile(item)
 	writeJSON(w, http.StatusOK, item)
 }
-func (s *Server) cleanupDeletedRoomRuntime(ctx context.Context, roomID int64) {
+func (s *Server) cleanupDeletedRoomRuntime(ctx context.Context, roomID int64) error {
 	if roomID <= 0 {
-		return
+		return nil
 	}
+	var failures []error
 	if err := s.stopRoomAudio(ctx, roomID); err != nil {
-		log.Printf("stop room audio during delete room=%d: %v", roomID, err)
+		failures = append(failures, fmt.Errorf("stop room audio: %w", err))
+	}
+	if state := s.audioDevState(); state != nil {
+		if cleaner, ok := state.client.(interface{ ClearRoom(int64) }); ok {
+			cleaner.ClearRoom(roomID)
+		}
+	}
+	if s.media != nil {
+		if err := s.media.ClearRoom(ctx, roomID); err != nil {
+			failures = append(failures, fmt.Errorf("clear room media: %w", err))
+		}
+	}
+	if s.capture != nil {
+		s.capture.ClearRoom(roomID)
+	}
+	if s.roomAudio != nil {
+		s.roomAudio.ClearRoom(roomID)
+	}
+	if s.audioHub != nil {
+		s.audioHub.ClearRoom(roomID)
+	}
+	if s.hub != nil {
+		s.hub.ClearRoom(roomID)
+	}
+	if s.userBlocks != nil {
+		s.userBlocks.ClearRoom(roomID)
+	}
+	if s.collectors != nil {
+		s.collectors.Stop(roomID)
 	}
 	if s.events != nil {
 		if err := s.events.ClearRoom(ctx, roomID); err != nil {
-			log.Printf("clear room event cache room=%d: %v", roomID, err)
+			failures = append(failures, fmt.Errorf("clear room event cache: %w", err))
 		}
 	}
 	if s.brain != nil {
@@ -508,6 +585,7 @@ func (s *Server) cleanupDeletedRoomRuntime(ctx context.Context, roomID int64) {
 		s.agentWork.Clear(roomID)
 	}
 	s.clearRoomAudioState(roomID)
+	return errors.Join(failures...)
 }
 
 func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
@@ -520,18 +598,30 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.collectors.Stop(roomID)
-
-	if err := s.rooms.Delete(r.Context(), tenantID, roomID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "room not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "delete room failed")
+	// Check the unscoped identity before stopping runtime: a tenant mismatch must
+	// never stop another customer's room. Missing rooms still need local cleanup
+	// on retries and on replicas after the shared database row has been deleted.
+	item, err := s.rooms.Get(r.Context(), nil, roomID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "read room before deletion failed")
 		return
 	}
+	if err == nil && tenantID != nil && item.TenantID != *tenantID {
+		writeError(w, http.StatusNotFound, "room not found")
+		return
+	}
+	if err := s.rooms.Delete(r.Context(), tenantID, roomID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "delete room failed")
+			return
+		}
+	}
 
-	s.cleanupDeletedRoomRuntime(r.Context(), roomID)
+	if err := s.cleanupDeletedRoomRuntime(r.Context(), roomID); err != nil {
+		log.Printf("deleted room cleanup pending room=%d: %v", roomID, err)
+		writeError(w, http.StatusServiceUnavailable, "room deleted; runtime cleanup must be retried")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

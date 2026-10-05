@@ -19,6 +19,8 @@ type auditStatusWriter struct {
 	status int
 }
 
+func (w *auditStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *auditStatusWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
@@ -77,7 +79,9 @@ func (s *Server) adminAuditMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 
 		entry.Result = "http_" + strconv.Itoa(recorder.status)
-		if recorder.status >= 200 && recorder.status < 300 {
+		if recorder.status == http.StatusAccepted && entry.Action == "room.delete" {
+			entry.AfterState = `{"deletion_requested":true,"cleanup_pending":true}`
+		} else if recorder.status >= 200 && recorder.status < 300 {
 			applyAuditSuccessState(&entry)
 		}
 		if err := s.audit.Complete(
@@ -217,6 +221,10 @@ func shouldAuditRequest(method string, path string) bool {
 		return false
 	}
 	switch {
+	case path == "/api/v1/payments/wechat/notify" || path == "/api/v1/payments/wechat/refund-notify":
+		// Provider callbacks are authenticated by their signature, not a user
+		// cookie; settlement writes the financial receipt and audit event itself.
+		return false
 	case strings.HasSuffix(path, "/heartbeat"):
 		return false
 	case strings.HasSuffix(path, "/runtime/events"):
@@ -592,7 +600,7 @@ func (s *Server) fillAuditTarget(
 		}
 		if entry.Action == "room.delete" {
 			if actor, resolveErr := s.auth.Resolve(r); resolveErr == nil && actor.Role != "customer" {
-				entry.Reason = "customer_non_cooperating"
+				entry.Reason = "operations_permanent_delete"
 			}
 		}
 	}

@@ -404,7 +404,13 @@ onMounted(load)
 
 <template>
   <div class="management-page agent-routing-page">
-    <ModulePageNav context="workspace-auto" active-title="智能体理解配置" />
+    <ModulePageNav
+      context="workspace-auto"
+      active-title="智能体理解配置"
+      section-title="AI 与智能体"
+      section-to="/system/settings/intelligence"
+      section-icon="智"
+    />
 
     <section class="feature-workspace-hero">
       <div>
@@ -414,7 +420,7 @@ onMounted(load)
         </p>
       </div>
       <div class="routing-hero-actions">
-        <RouterLink class="ghost-button" to="/system/settings">返回系统设定</RouterLink>
+        <RouterLink class="ghost-button" to="/system/settings/intelligence">返回 AI 与智能体</RouterLink>
         <button class="ghost-button" type="button" :disabled="loading" @click="load">
           {{ loading ? '读取中…' : '刷新' }}
         </button>

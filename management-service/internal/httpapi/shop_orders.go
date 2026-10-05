@@ -147,6 +147,8 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 			Result:         "failed",
 		})
 		switch {
+		case errors.Is(err, db.ErrMarketingEligibility):
+			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, db.ErrUnsupportedShopProduct):
 			writeError(w, http.StatusBadRequest, "当前商品类型不支持")
 		case errors.Is(err, db.ErrInsufficientDeviceStock):
@@ -234,6 +236,8 @@ func (s *Server) customerShopWalletPayOrder(w http.ResponseWriter, r *http.Reque
 				Result:         "failed",
 			})
 			writeError(w, http.StatusConflict, "钱包余额不足，请先充值后再购买时长卡")
+		case errors.Is(err, db.ErrWechatPaymentInProgress):
+			writeError(w, http.StatusConflict, "微信支付正在核验，请先查询支付结果；未确认关闭前不能改用余额支付")
 		case errors.Is(err, db.ErrShopOrderCancelled):
 			writeError(w, http.StatusConflict, "订单已取消，不能继续支付")
 		case errors.Is(err, db.ErrUnsupportedShopProduct):
@@ -265,6 +269,10 @@ func (s *Server) customerShopWalletPayOrder(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) customerShopSandboxPayOrder(w http.ResponseWriter, r *http.Request) {
+	if !strings.EqualFold(strings.TrimSpace(s.env), "development") {
+		writeError(w, http.StatusForbidden, "正式环境禁止模拟支付，请使用真实支付通道")
+		return
+	}
 	actor, ok := s.requireCustomerShopActor(w, r)
 	if !ok {
 		return
@@ -322,6 +330,9 @@ func (s *Server) customerShopSandboxPayOrder(w http.ResponseWriter, r *http.Requ
 		status := http.StatusBadRequest
 		message := "模拟支付失败"
 		switch {
+		case errors.Is(err, db.ErrWechatPaymentInProgress):
+			status = http.StatusConflict
+			message = "微信支付尚未确认关闭，不能使用其他支付通道"
 		case errors.Is(err, db.ErrSandboxAmountMismatch):
 			result = "amount_mismatch"
 			status = http.StatusConflict
@@ -382,6 +393,10 @@ func (s *Server) customerShopSandboxPayOrder(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) customerShopSandboxRefundOrder(w http.ResponseWriter, r *http.Request) {
+	if !strings.EqualFold(strings.TrimSpace(s.env), "development") {
+		writeError(w, http.StatusForbidden, "正式环境禁止模拟退款；微信退款必须核实真实到账状态")
+		return
+	}
 	actor, ok := s.requireCustomerShopActor(w, r)
 	if !ok {
 		return
@@ -538,6 +553,8 @@ func (s *Server) customerShopCancelOrder(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, db.ErrShopOrderAlreadyPaid):
 			writeError(w, http.StatusConflict, "订单已支付，不能直接取消；后续请走退款流程")
+		case errors.Is(err, db.ErrWechatPaymentInProgress):
+			writeError(w, http.StatusConflict, "微信支付尚未确认关闭，请先查询支付结果，避免收款后取消订单")
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusNotFound, "订单不存在")
 		default:

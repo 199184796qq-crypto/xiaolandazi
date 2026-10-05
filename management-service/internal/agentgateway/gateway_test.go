@@ -44,6 +44,12 @@ func TestQwenProviderCompatibleRequest(t *testing.T) {
 		if payload["model"] != "qwen3.8-flash" {
 			t.Fatalf("model=%v", payload["model"])
 		}
+		if payload["reasoning_effort"] != "none" {
+			t.Fatalf("reasoning_effort=%v", payload["reasoning_effort"])
+		}
+		if _, exists := payload["enable_thinking"]; exists {
+			t.Fatal("qwen3.8 should use reasoning_effort instead of enable_thinking")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"choices\":[{\"message\":{\"content\":\"测试回答\"}}]}"))
 	}))

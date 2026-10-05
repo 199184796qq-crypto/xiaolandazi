@@ -16,6 +16,7 @@ var ErrCollectorCapacity = errors.New("collector worker pool capacity reached")
 type browserRuntime interface {
 	StartRoom(context.Context, model.Room) (*BrowserSession, error)
 	RequestPreview(context.Context, int64) ([]byte, string, error)
+	RequestStream(context.Context, int64, string) (collector.StreamSource, error)
 	Stream(int64) (collector.StreamSource, error)
 }
 
@@ -74,6 +75,18 @@ func (p *BrowserPool) Stream(roomID int64) (collector.StreamSource, error) {
 		return collector.StreamSource{}, errors.New("room collector session is not active")
 	}
 	return worker.Stream(roomID)
+}
+
+func (p *BrowserPool) RequestStream(
+	ctx context.Context,
+	roomID int64,
+	url string,
+) (collector.StreamSource, error) {
+	worker, ok := p.workerForRoom(roomID)
+	if !ok {
+		return collector.StreamSource{}, errors.New("room collector session is not active")
+	}
+	return worker.RequestStream(ctx, roomID, url)
 }
 
 func (p *BrowserPool) Close() {

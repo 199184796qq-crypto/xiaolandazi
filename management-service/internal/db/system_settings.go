@@ -68,6 +68,16 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	settings := []seededSystemSetting{
 		{Key: model.FinanceDistinctReviewerSetting, Group: "finance", Label: "强制经办人与审核人不同", Value: "true", InputType: "boolean", SortOrder: 10},
 		{Key: "site_name", Group: "brand", Label: "系统显示名称", Value: "小蓝搭子", InputType: "text", SortOrder: 10},
+		{Key: "auth_customer_side_label", Group: "brand", Label: "客户登录页英文眉标", Value: "BANBO AI LIVE", InputType: "text", SortOrder: 20},
+		{Key: "auth_customer_title_line_1", Group: "brand", Label: "客户登录页主标题第一行", Value: "AI直播搭子，", InputType: "text", SortOrder: 30},
+		{Key: "auth_customer_title_line_2", Group: "brand", Label: "客户登录页主标题第二行", Value: "让你直播不再冷场。", InputType: "text", SortOrder: 40},
+		{Key: "auth_customer_description", Group: "brand", Label: "客户登录页说明", Value: "实时感知公屏互动，AI智能辅助话术，接待与回应，让直播间始终有人陪、有人接、有人聊。", InputType: "textarea", SortOrder: 50},
+		{Key: "auth_customer_status_label", Group: "brand", Label: "客户登录页状态文案", Value: "LIVE INTELLIGENCE ONLINE", InputType: "text", SortOrder: 60},
+		{Key: "auth_internal_side_label", Group: "brand", Label: "内部登录页英文眉标", Value: "AI CONTROL CENTER", InputType: "text", SortOrder: 70},
+		{Key: "auth_internal_title_line_1", Group: "brand", Label: "内部登录页主标题第一行", Value: "数据驱动直播运维，", InputType: "text", SortOrder: 80},
+		{Key: "auth_internal_title_line_2", Group: "brand", Label: "内部登录页主标题第二行", Value: "全局尽在掌握。", InputType: "text", SortOrder: 90},
+		{Key: "auth_internal_description", Group: "brand", Label: "内部登录页说明", Value: "连接终端、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。", InputType: "textarea", SortOrder: 100},
+		{Key: "auth_internal_status_label", Group: "brand", Label: "内部登录页状态文案", Value: "LIVE INTELLIGENCE ONLINE", InputType: "text", SortOrder: 110},
 		{Key: "internal_agent_name", Group: "agent", Label: "后台智能体名称", Value: "小蓝工作搭子", InputType: "text", SortOrder: 10},
 		{Key: "client_agent_name", Group: "agent", Label: "前端智能体名称", Value: "小蓝直播搭子", InputType: "text", SortOrder: 20},
 		{Key: "device_order_hold_minutes", Group: "commerce", Label: "设备订单未支付锁库分钟数", Value: "15", InputType: "number", SortOrder: 10},
@@ -160,7 +170,7 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	if err := s.MigrateAgentPromptConfigs(ctx); err != nil {
 		return err
 	}
-	return nil
+	return s.migrateLiveContentPolicies(ctx)
 }
 
 func (s *Store) ListSystemSettings(ctx context.Context) ([]model.SystemSetting, error) {
@@ -440,6 +450,16 @@ func (s *Store) PublicSystemConfig(ctx context.Context) (model.PublicSystemConfi
 	}
 	return model.PublicSystemConfig{
 		SiteName:                    values["site_name"],
+		AuthCustomerSideLabel:       systemSettingValue(values, "auth_customer_side_label", "BANBO AI LIVE"),
+		AuthCustomerTitleLine1:      systemSettingValue(values, "auth_customer_title_line_1", "AI直播搭子，"),
+		AuthCustomerTitleLine2:      systemSettingValue(values, "auth_customer_title_line_2", "让你直播不再冷场。"),
+		AuthCustomerDescription:     systemSettingValue(values, "auth_customer_description", "实时感知公屏互动，AI智能辅助话术，接待与回应，让直播间始终有人陪、有人接、有人聊。"),
+		AuthCustomerStatusLabel:     systemSettingValue(values, "auth_customer_status_label", "LIVE INTELLIGENCE ONLINE"),
+		AuthInternalSideLabel:       systemSettingValue(values, "auth_internal_side_label", "AI CONTROL CENTER"),
+		AuthInternalTitleLine1:      systemSettingValue(values, "auth_internal_title_line_1", "数据驱动直播运维，"),
+		AuthInternalTitleLine2:      systemSettingValue(values, "auth_internal_title_line_2", "全局尽在掌握。"),
+		AuthInternalDescription:     systemSettingValue(values, "auth_internal_description", "连接终端、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。"),
+		AuthInternalStatusLabel:     systemSettingValue(values, "auth_internal_status_label", "LIVE INTELLIGENCE ONLINE"),
 		InternalAgentName:           internalAgentName,
 		ClientAgentName:             clientAgentName,
 		LivePolicyRuleTitleFontSize: boundedSystemSettingInt(values, "live_policy_rule_title_font_size", 26, 16, 40),
@@ -458,4 +478,12 @@ func (s *Store) PublicSystemConfig(ctx context.Context) (model.PublicSystemConfi
 		FooterReportURL:             values["footer_report_url"],
 		FooterExtraText:             values["footer_extra_text"],
 	}, nil
+}
+
+func systemSettingValue(values map[string]string, key, fallback string) string {
+	value := strings.TrimSpace(values[key])
+	if value == "" {
+		return fallback
+	}
+	return value
 }

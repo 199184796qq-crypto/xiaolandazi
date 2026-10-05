@@ -1,0 +1,11 @@
+{
+  "api_version": "anchor-style-plugin-instance/v1",
+  "instance_id": "natural-hesitation-demo",
+  "plugin_id": "natural-hesitation",
+  "plugin_version": "1.0.0",
+  "enabled": true,
+  "strength": 35,
+  "parameters": {
+    "max_per_1000_chars": 1
+  }
+}

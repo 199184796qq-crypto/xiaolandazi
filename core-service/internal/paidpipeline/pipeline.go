@@ -13,6 +13,7 @@ import (
 	"livecompanion/core/internal/events"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/semantic"
 	"livecompanion/core/internal/strategycenter"
 )
 
@@ -24,6 +25,7 @@ type Processor struct {
 	decisions             *agentdecision.Queue
 	policies              *strategycenter.Store
 	brain                 *roombrain.Manager
+	topicResolver         semantic.TopicResolver
 	sessions              *events.Store
 	stageMu               sync.RWMutex
 	stageAt               map[int64]time.Time
@@ -33,6 +35,9 @@ type Processor struct {
 	interactionBudgetUsed map[int64][]interactionBudgetUse
 	questionMu            sync.Mutex
 	questionDebts         map[int64]map[string]*questionDebtState
+	debtMu                sync.Mutex
+	debtRetryAfter        map[string]time.Time
+	debtLastEventID       map[string]int64
 	now                   func() time.Time
 }
 
@@ -44,7 +49,10 @@ func New(runtime *agentwork.Registry, decisions *agentdecision.Queue, policies .
 		interactionWindows:    make(map[int64]map[string]*interactionWindow),
 		interactionBudgetUsed: make(map[int64][]interactionBudgetUse),
 		questionDebts:         make(map[int64]map[string]*questionDebtState),
+		debtRetryAfter:        make(map[string]time.Time),
+		debtLastEventID:       make(map[string]int64),
 		now:                   func() time.Time { return time.Now().UTC() },
+		topicResolver:         semantic.NewTopicResolver(nil),
 	}
 	if len(policies) > 0 {
 		p.policies = policies[0]
@@ -56,6 +64,13 @@ func (p *Processor) SetBrain(brain *roombrain.Manager) {
 	if p != nil {
 		p.brain = brain
 	}
+}
+
+func (p *Processor) SetSemanticEmbedder(embedder semantic.Embedder) {
+	if p == nil {
+		return
+	}
+	p.topicResolver = semantic.NewTopicResolver(embedder)
 }
 
 func (p *Processor) SetSessions(sessions *events.Store) {
@@ -96,6 +111,23 @@ func (p *Processor) sessionStartedAt(roomID int64, fallback *time.Time) time.Tim
 	return time.Time{}
 }
 
+func (p *Processor) resolveSemanticTopic(roomID int64, text, fallback string, timeout time.Duration) string {
+	fallback = strings.TrimSpace(fallback)
+	if p == nil || p.topicResolver == nil || roomID <= 0 {
+		return fallback
+	}
+	if timeout <= 0 {
+		timeout = 120 * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	resolution := p.topicResolver.Resolve(ctx, roomID, text, fallback)
+	if key := strings.TrimSpace(resolution.ClusterKey); key != "" {
+		return key
+	}
+	return fallback
+}
+
 func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 	if p == nil || p.runtime == nil || p.decisions == nil {
 		return
@@ -126,7 +158,11 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 			priority = 70
 		}
 		if p.policies != nil {
-			priority = int(float64(priority) * p.policies.InteractionPreferenceFactor(event.RoomID, "question"))
+			factor := p.policies.InteractionPreferenceFactor(event.RoomID, "question")
+			if factor <= 0 {
+				return
+			}
+			priority = int(float64(priority) * factor)
 			if priority < 1 {
 				priority = 1
 			}
@@ -138,7 +174,12 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 		if now.IsZero() {
 			now = p.clock()
 		}
-		interactionDecision := p.questionInteractionDecision(event, signal, priority, now)
+		topic := p.resolveSemanticTopic(event.RoomID, signal.Content, signal.Topic, 120*time.Millisecond)
+		semanticSignal := signal
+		if strings.TrimSpace(topic) != "" {
+			semanticSignal.Topic = topic
+		}
+		interactionDecision := p.questionInteractionDecision(event, semanticSignal, priority, now)
 		if interactionDecision.QuestionDebt != nil {
 			if debtPriority := int(interactionDecision.QuestionDebt.CurrentPriority + 0.5); debtPriority > priority {
 				priority = debtPriority
@@ -146,11 +187,11 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 		}
 		p.decisions.Enqueue(event.RoomID, agentdecision.Candidate{
 			Source:              agentdecision.SourceAgent,
-			Topic:               signal.Topic,
+			Topic:               topic,
 			Question:            signal.Content,
 			Summary:             "观众问题已通过互动决策进入智能体候选",
 			ReplyHint:           "这是一次完整口播任务。结合当前主线、打断策略、回归策略和其它生成约束，一次生成最终可播正文。",
-			MissionKind:         "reply_chat",
+			MissionKind:         "reply_question",
 			MissionEventCount:   1,
 			Priority:            priority,
 			EventID:             signal.EventID,
@@ -163,33 +204,37 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 
 	if eventType == "chat" || eventType == "comment" {
 		if strings.TrimSpace(event.Content) != "" {
-			p.accumulateInteraction(event, "reply_chat")
+			p.accumulateInteraction(event, "reply_chat", signal.Topic)
 		}
 		return
 	}
 
 	if eventType == "member" {
 		if strings.TrimSpace(event.Nickname) != "" {
-			p.accumulateInteraction(event, "welcome_named")
+			p.accumulateInteraction(event, "welcome_named", "")
 		}
-		p.accumulateInteraction(event, "welcome_batch")
+		p.accumulateInteraction(event, "welcome_batch", "")
 		return
 	}
 
 	if eventType == "like" {
-		p.accumulateInteraction(event, "reply_like")
+		p.accumulateInteraction(event, "reply_like", "")
 		return
 	}
 
 	if eventType == "follow" {
-		p.accumulateInteraction(event, "reply_follow")
+		p.accumulateInteraction(event, "reply_follow", "")
 		return
 	}
 
 	if signal.IsOrderHint {
 		priority := 85
 		if p.policies != nil {
-			priority = int(float64(priority) * p.policies.InteractionPreferenceFactor(event.RoomID, "conversion"))
+			factor := p.policies.InteractionPreferenceFactor(event.RoomID, "conversion")
+			if factor <= 0 {
+				return
+			}
+			priority = int(float64(priority) * factor)
 			if priority < 1 {
 				priority = 1
 			}

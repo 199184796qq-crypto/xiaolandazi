@@ -6,6 +6,7 @@ import {
   getSpeechAnalysisProfiles,
 } from '../api'
 import { session } from '../session'
+import ModulePageNav from '../components/ModulePageNav.vue'
 import type { SpeechAnalysisProfile, SpeechAnalysisProfileInput } from '../types'
 
 const loading = ref(false)
@@ -134,6 +135,7 @@ onMounted(() => loadProfiles())
 
 <template>
   <main class="analysis-settings-page">
+    <ModulePageNav context="workspace-auto" active-title="直播录音分析" />
     <section class="analysis-hero">
       <div>
         <p>LIVE ANALYSIS CONFIGURATION</p>

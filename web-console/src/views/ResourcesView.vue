@@ -97,6 +97,7 @@ const customerPageSize = 20
 const resourceLedgerSearch = ref('')
 const resourceLedgerPage = ref(1)
 const resourceLedgerPageSize = 20
+const resourceLedgerOpen = ref(false)
 
 const ownResources = ref<ResourceDashboard | null>(null)
 const targetResources = ref<ResourceDashboard | null>(null)
@@ -135,6 +136,19 @@ const customerResourceTypes = ['ai_seconds']
 const currentDashboard = computed(() =>
   isAdmin.value ? targetResources.value : ownResources.value,
 )
+
+function updateOwnAISecondsBalance(balance: number) {
+  const dashboard = ownResources.value
+  if (!dashboard) return
+  ownResources.value = {
+    ...dashboard,
+    accounts: dashboard.accounts.map((account) =>
+      account.resource_type === 'ai_seconds'
+        ? { ...account, balance }
+        : account,
+    ),
+  }
+}
 
 const currentLedger = computed(() => {
   const dashboard = currentDashboard.value
@@ -220,9 +234,34 @@ function unitLabel(unit: string) {
 
 function formatQuantity(type: string, value: number) {
   if (type === 'ai_seconds') {
-    return (value / 3600).toFixed(2)
+    const hours = value / 3600
+    return (Math.abs(hours) < 0.005 ? 0 : hours).toFixed(2)
   }
   return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+function formatLedgerChange(type: string, value: number) {
+  if (type !== 'ai_seconds') {
+    const prefix = value > 0 ? '+' : ''
+    return `${prefix}${new Intl.NumberFormat('zh-CN').format(value)} 台`
+  }
+
+  const absoluteSeconds = Math.abs(value)
+  if (absoluteSeconds === 0) return '0 秒'
+
+  const prefix = value > 0 ? '+' : '−'
+  if (absoluteSeconds < 1) return `${prefix}<1 秒`
+  if (absoluteSeconds < 60) {
+    return `${prefix}${Math.round(absoluteSeconds)} 秒`
+  }
+  if (absoluteSeconds < 3600) {
+    const minutes = (absoluteSeconds / 60)
+      .toFixed(2)
+      .replace(/0+$/, '')
+      .replace(/\.$/, '')
+    return `${prefix}${minutes} 分钟`
+  }
+  return `${prefix}${(absoluteSeconds / 3600).toFixed(2)} 小时`
 }
 
 function businessLabel(type: string) {
@@ -294,10 +333,21 @@ async function activateTimeCard(item: LiveTimeCardSummary) {
   notice.value = ''
   try {
     const response = await activateLiveTimeCard(item.id)
-    liveQuotaSummary.value = response.quota
-    ownResources.value = await getCurrentResources()
-    await loadTimeCardPack(timeCardPage.value.page)
+    liveQuotaSummary.value = { ...response.quota }
+    updateOwnAISecondsBalance(response.quota.active_seconds)
+    timeCardPage.value = {
+      ...timeCardPage.value,
+      items: timeCardPage.value.items.filter((card) => card.id !== item.id),
+      total: Math.max(0, timeCardPage.value.total - 1),
+    }
     notice.value = '时长卡已启用。有效期从现在开始计算，剩余时长已进入当前 AI 时长池。'
+
+    try {
+      ownResources.value = await getCurrentResources()
+      await loadTimeCardPack(timeCardPage.value.page)
+    } catch {
+      timeCardPackError.value = '时长卡已启用，但最新余额同步失败，请稍后重试。'
+    }
   } catch (value) {
     timeCardPackError.value = value instanceof Error ? value.message : '启用时长卡失败'
   } finally {
@@ -845,42 +895,86 @@ onMounted(load)
         </div>
       </div>
 
-      <div class="resource-account-grid">
+      <div
+        class="resource-account-grid"
+        :class="{ 'customer-resource-showcase-grid': isCustomer }"
+      >
         <article
           v-for="item in orderedAccounts(currentDashboard.accounts, currentDashboard.org_type)"
           :key="item.resource_type"
           class="resource-account-card"
+          :class="{ 'customer-ai-time-card': isCustomer && item.resource_type === 'ai_seconds' }"
         >
-          <div>
-            <span>{{ resourceLabel(item.resource_type) }}</span>
-            <em>{{ item.status === 'active' ? '可用' : item.status }}</em>
-          </div>
-          <strong>
-            {{
-              isCustomer && item.resource_type === 'ai_seconds'
-                ? formatQuantity(item.resource_type, liveQuotaSummary?.active_seconds || 0)
-                : formatQuantity(item.resource_type, item.balance)
-            }}
-          </strong>
-          <small>{{ unitLabel(item.unit) }}</small>
-          <button
-            v-if="isAdmin && canAdjustSystemResource"
-            class="text-action"
-            type="button"
-            @click="openAdjust(item)"
-          >
-            {{ isMarketingTimePage ? '申请增加' : '调整' }}
-          </button>
+          <template v-if="isCustomer && item.resource_type === 'ai_seconds'">
+            <header class="resource-showcase-header">
+              <span class="resource-showcase-icon ai">AI</span>
+              <div class="resource-showcase-heading">
+                <strong>AI 时长</strong>
+                <small>用于直播期间 AI 能力使用</small>
+              </div>
+              <em>{{ item.status === 'active' ? '可用' : item.status }}</em>
+            </header>
+            <div class="resource-showcase-amount">
+              <strong>{{ formatQuantity(item.resource_type, item.balance) }}</strong>
+              <span>{{ unitLabel(item.unit) }}</span>
+            </div>
+            <img
+              class="resource-showcase-visual ai-time-visual"
+              src="/assets/resources/ai-time-assistant-3d.png"
+              alt=""
+            />
+            <p class="resource-showcase-note"><i></i>让灵感持续发生 ✦</p>
+          </template>
+          <template v-else>
+            <div>
+              <span>{{ resourceLabel(item.resource_type) }}</span>
+              <em>{{ item.status === 'active' ? '可用' : item.status }}</em>
+            </div>
+            <strong>
+              {{ formatQuantity(item.resource_type, item.balance) }}
+            </strong>
+            <small>{{ unitLabel(item.unit) }}</small>
+            <button
+              v-if="isAdmin && canAdjustSystemResource"
+              class="text-action"
+              type="button"
+              @click="openAdjust(item)"
+            >
+              {{ isMarketingTimePage ? '申请增加' : '调整' }}
+            </button>
+          </template>
         </article>
-        <article v-if="isCustomer" class="resource-account-card time-card-pack-entry" @click="openTimeCardPack">
-          <div>
-            <span>时长卡包</span>
+        <article
+          v-if="isCustomer"
+          class="resource-account-card time-card-pack-entry customer-time-card-pack"
+          role="button"
+          tabindex="0"
+          @click="openTimeCardPack"
+          @keydown.enter="openTimeCardPack"
+          @keydown.space.prevent="openTimeCardPack"
+        >
+          <header class="resource-showcase-header">
+            <span class="resource-showcase-icon pack" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Zm3 2.25h10v-1.5H7v1.5Zm0 3h6v-1.5H7v1.5Z"/></svg>
+            </span>
+            <div class="resource-showcase-heading">
+              <strong>时长卡包</strong>
+            </div>
             <em>{{ liveQuotaSummary?.reserve_time_card_count || 0 }} 张待启用</em>
+          </header>
+          <div class="resource-showcase-amount">
+            <strong>{{ timeCardPage.total }}</strong>
+            <span>张时长卡</span>
           </div>
-          <strong>{{ timeCardPage.total }}</strong>
-          <small>张时长卡</small>
-          <p>购买后先放在这里，手动启用后才进入 AI 时长池。</p>
-          <button type="button" class="time-card-pack-open" @click.stop="openTimeCardPack">打开卡包</button>
+          <img
+            class="resource-showcase-visual time-card-visual"
+            src="/assets/resources/time-card-pack-3d.png"
+            alt=""
+          />
+          <p class="resource-showcase-description">购买后先放在这里，手动启用后才进入 AI 时长池。</p>
+          <button type="button" class="time-card-pack-open" @click.stop="openTimeCardPack">
+            打开卡包 <span aria-hidden="true">→</span>
+          </button>
         </article>
       </div>
     </section>
@@ -928,78 +1022,84 @@ onMounted(load)
           <span class="section-kicker">RESOURCE LEDGER</span>
           <h3>资源流水</h3>
         </div>
-        <span>{{ filteredCurrentLedger.length }} 条</span>
+        <button
+          type="button"
+          class="resource-ledger-toggle"
+          :aria-expanded="resourceLedgerOpen"
+          @click="resourceLedgerOpen = !resourceLedgerOpen"
+        >
+          <span>{{ filteredCurrentLedger.length }} 条</span>
+          <strong>{{ resourceLedgerOpen ? '收起' : '展开' }}</strong>
+          <i :class="{ open: resourceLedgerOpen }" aria-hidden="true">⌄</i>
+        </button>
       </div>
 
-      <div class="resource-ledger-toolbar">
-        <input
-          v-model="resourceLedgerSearch"
-          type="search"
-          placeholder="搜索业务 / 原因 / 流水编号"
-          @input="resourceLedgerPage = 1"
+      <div v-if="resourceLedgerOpen" class="resource-ledger-content">
+        <div class="resource-ledger-toolbar">
+          <input
+            v-model="resourceLedgerSearch"
+            type="search"
+            placeholder="搜索业务 / 原因 / 流水编号"
+            @input="resourceLedgerPage = 1"
+          />
+        </div>
+
+        <div
+          v-if="!filteredCurrentLedger.length"
+          class="empty-state"
+        >
+          暂无资源流水。平台调整或代理分配后会自动记录。
+        </div>
+
+        <div v-else class="resource-ledger-list">
+          <article
+            v-for="item in pagedCurrentLedger"
+            :key="item.id"
+            class="resource-ledger-row"
+          >
+            <div>
+              <strong>{{ resourceLabel(item.resource_type) }}</strong>
+              <span>{{ businessLabel(item.business_type) }}</span>
+            </div>
+            <div
+              class="resource-ledger-change"
+              :class="{ negative: item.change_quantity < 0 }"
+            >
+              {{ formatLedgerChange(item.resource_type, item.change_quantity) }}
+            </div>
+            <div>
+              <span class="muted-label">余额变化</span>
+              <strong>
+                {{
+                  formatQuantity(
+                    item.resource_type,
+                    item.balance_before,
+                  )
+                }} {{ item.resource_type === 'ai_seconds' ? '小时' : '台' }}
+                →
+                {{
+                  formatQuantity(
+                    item.resource_type,
+                    item.balance_after,
+                  )
+                }} {{ item.resource_type === 'ai_seconds' ? '小时' : '台' }}
+              </strong>
+            </div>
+            <div>
+              <span class="muted-label">原因</span>
+              <strong>{{ item.reason || '—' }}</strong>
+            </div>
+            <time>{{ formatDate(item.created_at) }}</time>
+          </article>
+        </div>
+        <PaginationBar
+          :page="Math.min(resourceLedgerPage, resourceLedgerPageCount)"
+          :total-pages="resourceLedgerPageCount"
+          :total="filteredCurrentLedger.length"
+          :page-size="resourceLedgerPageSize"
+          @update:page="resourceLedgerPage = $event"
         />
       </div>
-
-      <div
-        v-if="!filteredCurrentLedger.length"
-        class="empty-state"
-      >
-        暂无资源流水。平台调整或代理分配后会自动记录。
-      </div>
-
-      <div v-else class="resource-ledger-list">
-        <article
-          v-for="item in pagedCurrentLedger"
-          :key="item.id"
-          class="resource-ledger-row"
-        >
-          <div>
-            <strong>{{ resourceLabel(item.resource_type) }}</strong>
-            <span>{{ businessLabel(item.business_type) }}</span>
-          </div>
-          <div
-            class="resource-ledger-change"
-            :class="{ negative: item.change_quantity < 0 }"
-          >
-            {{ item.change_quantity > 0 ? '+' : '' }}{{
-              formatQuantity(
-                item.resource_type,
-                item.change_quantity,
-              )
-            }} {{ item.resource_type === 'ai_seconds' ? '小时' : '台' }}
-          </div>
-          <div>
-            <span class="muted-label">余额变化</span>
-            <strong>
-              {{
-                formatQuantity(
-                  item.resource_type,
-                  item.balance_before,
-                )
-              }} {{ item.resource_type === 'ai_seconds' ? '小时' : '台' }}
-              →
-              {{
-                formatQuantity(
-                  item.resource_type,
-                  item.balance_after,
-                )
-              }} {{ item.resource_type === 'ai_seconds' ? '小时' : '台' }}
-            </strong>
-          </div>
-          <div>
-            <span class="muted-label">原因</span>
-            <strong>{{ item.reason || '—' }}</strong>
-          </div>
-          <time>{{ formatDate(item.created_at) }}</time>
-        </article>
-      </div>
-      <PaginationBar
-        :page="Math.min(resourceLedgerPage, resourceLedgerPageCount)"
-        :total-pages="resourceLedgerPageCount"
-        :total="filteredCurrentLedger.length"
-        :page-size="resourceLedgerPageSize"
-        @update:page="resourceLedgerPage = $event"
-      />
     </section>
 
     <div v-if="timeCardPackOpen" class="modal-backdrop time-card-pack-backdrop" @click.self="timeCardPackOpen = false">

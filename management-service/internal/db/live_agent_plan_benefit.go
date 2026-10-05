@@ -404,3 +404,125 @@ func (s *Store) DeleteLiveAgentPlanBenefitWithExpectedVersion(
 	}
 	return tx.Commit()
 }
+
+// disableLiveAgentPlanBenefitsForLink removes every link-scoped benefit from
+// the active domain in the same transaction as the parent product-link delete.
+// Revision rows remain audit-only and are never returned to generation.
+func disableLiveAgentPlanBenefitsForLink(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, planID int64,
+	linkKey string,
+	actorUserID int64,
+) error {
+	linkKey = strings.TrimSpace(linkKey)
+	if linkKey == "" {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, liveAgentPlanBenefitSelect+`
+		WHERE tenant_id=? AND plan_id=? AND link_key=? AND status<>'disabled'
+		FOR UPDATE
+	`, tenantID, planID, linkKey)
+	if err != nil {
+		return err
+	}
+	items := make([]model.LiveAgentPlanBenefit, 0)
+	for rows.Next() {
+		item, scanErr := scanLiveAgentPlanBenefit(rows)
+		if scanErr != nil {
+			rows.Close()
+			return scanErr
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, current := range items {
+		nextVersion := current.VersionNo + 1
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE live_agent_plan_benefits
+			SET status='disabled', source_type='system_agent_parent_delete', source_ref='', version_no=?,
+			    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+			WHERE id=? AND tenant_id=? AND plan_id=? AND status<>'disabled'
+		`, nextVersion, actorUserID, current.ID, tenantID, planID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO live_agent_plan_benefit_revisions (
+				tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
+				product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+				source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+			) VALUES (?, ?, ?, ?, 'cascade_delete', ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_parent_delete', '', ?)
+		`, tenantID, planID, current.ID, nextVersion, current.Key, current.LinkKey, current.ProductName,
+			current.ActivityPrice, current.Gift, current.Activity, current.StartsAt, current.EndsAt,
+			current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func relinkLiveAgentPlanBenefitsForLink(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, planID int64,
+	oldLinkKey, newLinkKey string,
+	actorUserID int64,
+) error {
+	oldLinkKey = strings.TrimSpace(oldLinkKey)
+	newLinkKey = strings.TrimSpace(newLinkKey)
+	if oldLinkKey == "" || newLinkKey == "" || oldLinkKey == newLinkKey {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, liveAgentPlanBenefitSelect+`
+		WHERE tenant_id=? AND plan_id=? AND link_key=? AND status<>'disabled'
+		FOR UPDATE
+	`, tenantID, planID, oldLinkKey)
+	if err != nil {
+		return err
+	}
+	items := make([]model.LiveAgentPlanBenefit, 0)
+	for rows.Next() {
+		item, scanErr := scanLiveAgentPlanBenefit(rows)
+		if scanErr != nil {
+			rows.Close()
+			return scanErr
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, current := range items {
+		nextVersion := current.VersionNo + 1
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE live_agent_plan_benefits
+			SET link_key=?, source_type='system_agent_parent_edit', source_ref='', version_no=?,
+			    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+			WHERE id=? AND tenant_id=? AND plan_id=? AND status<>'disabled'
+		`, newLinkKey, nextVersion, actorUserID, current.ID, tenantID, planID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO live_agent_plan_benefit_revisions (
+				tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
+				product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+				source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+			) VALUES (?, ?, ?, ?, 'cascade_relink', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system_agent_parent_edit', '', ?)
+		`, tenantID, planID, current.ID, nextVersion, current.Key, newLinkKey, current.ProductName,
+			current.ActivityPrice, current.Gift, current.Activity, current.StartsAt, current.EndsAt, current.Status,
+			current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID); err != nil {
+			return err
+		}
+	}
+	return nil
+}

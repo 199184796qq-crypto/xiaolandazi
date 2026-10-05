@@ -1,0 +1,8 @@
+{"scene":"question_cluster","query":"这款油多少钱一瓶？","candidate":"今天一瓶卖什么价？","same":true}
+{"scene":"question_cluster","query":"什么时候发货？","candidate":"下单后多久能寄出？","same":true}
+{"scene":"question_cluster","query":"这款油多少钱一瓶？","candidate":"发什么快递？","same":false}
+{"scene":"question_cluster","query":"怎么下单购买？","candidate":"售后能退货吗？","same":false}
+{"scene":"recent_speech","query":"这款油炒菜很香，适合日常做饭。","candidate":"平时炒菜用它，香味很足。","same":true}
+{"scene":"recent_speech","query":"下单后两天内发货。","candidate":"拍下以后四十八小时内安排寄出。","same":true}
+{"scene":"recent_speech","query":"这款油炒菜很香，适合日常做饭。","candidate":"今天我们再看看它的原料产地。","same":false}
+{"scene":"recent_speech","query":"下单后两天内发货。","candidate":"接下来介绍它的包装和规格。","same":false}

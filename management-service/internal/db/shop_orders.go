@@ -515,7 +515,7 @@ func (s *Store) CreateCustomerShopOrder(
 	payableAmount := uint64(0)
 	if marketingCampaignID > 0 {
 		listAmount = floorMarketingYuanCents(listAmount)
-		payableAmount = calculateMarketingPayableCents(listAmount, discountBPS)
+		payableAmount = marketingItemPayable(listAmount, selectedMarketingItem)
 	} else {
 		payableAmount = (listPrice * uint64(discountBPS) / 10000) * quantity
 	}
@@ -523,7 +523,10 @@ func (s *Store) CreateCustomerShopOrder(
 	if quantity > 0 {
 		unitPaidPrice = payableAmount / quantity
 	}
-	discountAmount := listAmount - payableAmount
+	discountAmount := uint64(0)
+	if listAmount > payableAmount {
+		discountAmount = listAmount - payableAmount
+	}
 	orderNo := fmt.Sprintf("ORD-%d", time.Now().UTC().UnixNano())
 	if idempotencyKey == "" {
 		idempotencyKey = fmt.Sprintf("shop-order-%d-%d", tenantID, time.Now().UTC().UnixNano())
@@ -651,6 +654,9 @@ func (s *Store) CreateCustomerShopOrder(
 		}
 	}
 
+	if err := snapshotCommerceRewardsTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
@@ -812,7 +818,7 @@ func (s *Store) createMembershipCustomerShopOrder(
 	var payableAmount uint64
 	if marketingCampaignID > 0 {
 		listAmount = floorMarketingYuanCents(rawListAmount)
-		payableAmount = calculateMarketingPayableCents(listAmount, discountBPS)
+		payableAmount = marketingItemPayable(listAmount, selectedMarketingItem)
 	} else {
 		listAmount = ((rawListAmount + 50) / 100) * 100
 		rawPayableNumerator := listAmount * uint64(discountBPS)
@@ -821,10 +827,13 @@ func (s *Store) createMembershipCustomerShopOrder(
 			payableAmount = 100
 		}
 	}
-	if payableAmount > listAmount {
+	if payableAmount > listAmount && selectedMarketingItem.PricingMode != "fixed" {
 		payableAmount = listAmount
 	}
-	discountAmount := listAmount - payableAmount
+	discountAmount := uint64(0)
+	if listAmount > payableAmount {
+		discountAmount = listAmount - payableAmount
+	}
 	totalIncludedSeconds := includedSeconds * uint64(months)
 
 	var currentMembershipID sql.NullInt64
@@ -983,6 +992,9 @@ func (s *Store) createMembershipCustomerShopOrder(
 		}
 	}
 
+	if err := snapshotCommerceRewardsTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
@@ -1030,6 +1042,9 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 	if currency != "CNY" {
 		return model.CustomerShopOrder{}, fmt.Errorf("unsupported wallet currency")
 	}
+	if err := ensureNoWechatPendingTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
 
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" {
@@ -1057,7 +1072,9 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 	`, walletID).Scan(&frozenBalance); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
-	availableBalance := walletBalance - frozenBalance
+	// balance_cents is already AVAILABLE cash: hold operations subtract it
+	// and add frozen_balance_cents atomically. Do not subtract the hold twice.
+	availableBalance := walletBalance
 	if payableAmount > uint64(^uint64(0)>>1) || availableBalance < int64(payableAmount) {
 		return model.CustomerShopOrder{}, ErrInsufficientWalletBalance
 	}
@@ -1166,6 +1183,9 @@ func (s *Store) SandboxPayCustomerShopOrder(
 	}
 	if status == "cancelled" {
 		return model.CustomerShopOrder{}, ErrShopOrderCancelled
+	}
+	if err := ensureNoWechatPendingTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
 	}
 	if orderType == "device" {
 		var expiredHoldCount int
@@ -1325,6 +1345,7 @@ func (s *Store) SandboxPayCustomerShopOrder(
 			userID,
 			orderID,
 			orderNo,
+			"sandbox",
 		); err != nil {
 			return model.CustomerShopOrder{}, err
 		}
@@ -1336,6 +1357,7 @@ func (s *Store) SandboxPayCustomerShopOrder(
 			userID,
 			orderID,
 			orderNo,
+			true,
 		); err != nil {
 			return model.CustomerShopOrder{}, err
 		}
@@ -1364,7 +1386,12 @@ func fulfillMembershipOrderTx(
 	userID int64,
 	orderID int64,
 	orderNo string,
+	paymentChannel string,
 ) error {
+	paymentChannel = strings.TrimSpace(paymentChannel)
+	if paymentChannel == "" {
+		paymentChannel = "unknown"
+	}
 	var (
 		planID         int64
 		planVersionID  int64
@@ -1420,9 +1447,13 @@ func fulfillMembershipOrderTx(
 	`, planVersionID, planID).Scan(&allowAutoRenew, &monthlyIncludedSeconds); err != nil {
 		return err
 	}
-	autoRenew := allowAutoRenew && cycle != "single_month"
+	// JSAPI is a one-off payment, not a WeChat recurring debit agreement.
+	autoRenew := allowAutoRenew && cycle != "single_month" && paymentChannel != "wechat" && paymentChannel != "marketing_free"
 
-	now := time.Now().UTC()
+	// DATETIME(3) rounds sub-millisecond input. Use its exact precision for both
+	// the stored effective_at and the immediate quota query, otherwise a rounded
+	// timestamp can be slightly in the future and omit the first month's quota.
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	entitlementStart := now
 	cycleEnd := entitlementStart.AddDate(0, months, 0)
 
@@ -1535,7 +1566,8 @@ func fulfillMembershipOrderTx(
 					'plan_version_id', ?,
 					'cycle', ?,
 					'month_index', ?,
-					'sandbox_payment', true
+					'payment_channel', ?,
+					'sandbox_payment', ?
 				)
 			)
 		`,
@@ -1551,6 +1583,8 @@ func fulfillMembershipOrderTx(
 			planVersionID,
 			cycle,
 			monthIndex+1,
+			paymentChannel,
+			paymentChannel == "sandbox",
 		)
 		if err != nil {
 			return err
@@ -2118,6 +2152,9 @@ func (s *Store) CancelCustomerShopOrder(
 	if status == "cancelled" {
 		_ = tx.Rollback()
 		return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+	}
+	if err := ensureNoWechatPendingTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
 	}
 
 	if orderType == "device" {
@@ -2749,12 +2786,15 @@ func (s *Store) createDeviceCustomerShopOrder(
 	if marketingCampaignID > 0 {
 		discountBPS = normalizeMarketingDiscountBPS(selectedMarketingItem.DiscountBPS)
 		listAmount = floorMarketingYuanCents(salePrice * quantity)
-		payableAmount = calculateMarketingPayableCents(listAmount, discountBPS)
+		payableAmount = marketingItemPayable(listAmount, selectedMarketingItem)
 		if quantity > 0 {
 			unitPaidPrice = payableAmount / quantity
 		}
 	}
-	discountAmount := listAmount - payableAmount
+	discountAmount := uint64(0)
+	if listAmount > payableAmount {
+		discountAmount = listAmount - payableAmount
+	}
 	unitListPrice := listPrice
 	if marketingCampaignID > 0 {
 		unitListPrice = salePrice
@@ -2941,6 +2981,9 @@ func (s *Store) createDeviceCustomerShopOrder(
 		return model.CustomerShopOrder{}, err
 	}
 
+	if err := snapshotCommerceRewardsTx(ctx, tx, orderID); err != nil {
+		return model.CustomerShopOrder{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
@@ -2954,6 +2997,7 @@ func fulfillDeviceOrderTx(
 	userID int64,
 	orderID int64,
 	orderNo string,
+	simulatedLogistics bool,
 ) error {
 	var (
 		orderItemID int64
@@ -3173,7 +3217,14 @@ func fulfillDeviceOrderTx(
 	}
 
 	shipmentNo := nextInventoryNo("SHP")
-	trackingNo := nextInventoryNo("SIM")
+	carrierCode := ""
+	carrierName := ""
+	trackingNo := ""
+	if simulatedLogistics {
+		carrierCode = "simulated"
+		carrierName = "模拟物流"
+		trackingNo = nextInventoryNo("SIM")
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO inv_shipments (
 			shipment_no, shipment_type, business_type, business_id, business_no,
@@ -3186,7 +3237,7 @@ func fulfillDeviceOrderTx(
 			?, 'outbound', 'order', ?, ?,
 			?, NULL, ?,
 			?, ?, ?,
-			'simulated', '模拟物流', ?, 'ready_to_ship',
+			?, ?, ?, 'ready_to_ship',
 			?, ?
 		)
 	`,
@@ -3198,6 +3249,8 @@ func fulfillDeviceOrderTx(
 		shipping.RecipientName,
 		shipping.RecipientPhone,
 		shipping.FullAddress,
+		carrierCode,
+		carrierName,
 		trackingNo,
 		"设备订单支付成功自动生成待出库物流 · "+orderNo,
 		userID,

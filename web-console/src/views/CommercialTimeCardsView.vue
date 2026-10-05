@@ -15,7 +15,6 @@ import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import {
   floorToWholeYuanCents,
-  formatWholeYuanMoney,
   marketingPayableCents,
 } from '../pricingRules'
 import { session } from '../session'
@@ -117,7 +116,10 @@ function marketingTargetItem(
 }
 
 function campaignDiscountLabel(campaign: MarketingCampaign, productId: number) {
-  const bps = marketingTargetItem(campaign, productId)?.discount_bps ?? 10000
+  const target=marketingTargetItem(campaign,productId)
+  if(target?.pricing_mode==='fixed') return '固定售价'
+  if(target?.pricing_mode==='free') return '免费领取'
+  const bps = target?.discount_bps ?? 10000
   if (bps <= 0) return '赠送'
   if (bps >= 10000) return '原价'
   const zhe = bps / 1000
@@ -127,6 +129,8 @@ function campaignDiscountLabel(campaign: MarketingCampaign, productId: number) {
 function campaignActualValue(item: CommercialTimeCardProduct, campaign: MarketingCampaign) {
   const target = marketingTargetItem(campaign, item.id)
   if (!target) return 0
+  if(target.pricing_mode==='fixed') return target.fixed_price_cents ?? 0
+  if(target.pricing_mode==='free') return 0
   const price = displayVersion(item)?.price_cents ?? 0
   return marketingPayableCents(
     floorToWholeYuanCents(price * Math.max(1, target.quantity || 1)),
@@ -135,7 +139,7 @@ function campaignActualValue(item: CommercialTimeCardProduct, campaign: Marketin
 }
 
 function formatMarketingMoney(cents: number) {
-  return formatWholeYuanMoney(cents)
+  return '¥'+(cents/100).toFixed(2)
 }
 
 const filteredItems = computed(() => {
@@ -337,7 +341,7 @@ async function save() {
 
 async function publish(item: CommercialTimeCardProduct) {
   if (!item.draft_version) return
-  if (!(await confirmAction({ title: '发布时长卡', message: '确认发布“' + item.name + '”的当前草稿？发布后终端商城会读取新版本。', confirmText: '确认发布' }))) return
+  if (!(await confirmAction({ title: '发布时长卡', message: '确认发布“' + item.name + '”的当前草稿？发布后小蓝商城会读取新版本。', confirmText: '确认发布' }))) return
   publishingId.value = item.id
   error.value = ''
   try {
@@ -356,7 +360,7 @@ async function toggleListing(item: CommercialTimeCardProduct) {
   if (nextStatus === 'inactive') {
     const confirmed = await confirmAction({
       title: '下架时长卡',
-      message: '下架“' + item.name + '”后终端商城将停止销售，历史订单和已到账时长不受影响。',
+      message: '下架“' + item.name + '”后小蓝商城将停止销售，历史订单和已到账时长不受影响。',
       confirmText: '确认下架',
     })
     if (!confirmed) return
@@ -417,7 +421,7 @@ onMounted(load)
       <div>
         <p class="section-kicker">TIME CARD CATALOG</p>
         <h2>时长卡运营</h2>
-        <p>由营销运维部维护终端可购买的时长卡、价格、有效期和上下架；终端商城只读取已发布商品。</p>
+        <p>由营销运维部维护终端可购买的时长卡、价格、有效期和上下架；小蓝商城只读取已发布商品。</p>
       </div>
       <button v-if="canManage" class="primary-button" type="button" @click="openCreate">
         ＋ 新建时长卡
@@ -589,7 +593,7 @@ onMounted(load)
           <p class="section-kicker">OFF-SHELF & VERSION QUEUE</p>
           <h3>下架 / 草稿 / 归档</h3>
         </div>
-        <span>这里集中处理未在终端商城销售的时长卡和待发布版本。</span>
+        <span>这里集中处理未在小蓝商城销售的时长卡和待发布版本。</span>
       </div>
 
       <DataListControls

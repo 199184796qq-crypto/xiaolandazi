@@ -51,10 +51,11 @@ type Manager struct {
 	resolver    StreamResolver
 	maxSessions int
 
-	mu       sync.Mutex
-	sessions map[int64]*session
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	mu           sync.Mutex
+	sessions     map[int64]*session
+	deletedRooms map[int64]struct{}
+	stop         chan struct{}
+	wg           sync.WaitGroup
 }
 
 func (m *Manager) Stats() Stats {
@@ -191,6 +192,9 @@ func (m *Manager) ensureSession(
 ) (*session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, deleted := m.deletedRooms[room.ID]; deleted {
+		return nil, errors.New("room has been permanently deleted")
+	}
 
 	if current := m.sessions[room.ID]; current != nil {
 		select {

@@ -33,7 +33,7 @@ func (s *Server) resolveLiveAgentPlanTenant(
 	requestedTenantID int64,
 	write bool,
 ) (int64, bool) {
-	if actor.TenantID != nil {
+	if actor.Role == "customer" && actor.TenantID != nil {
 		tenantID := *actor.TenantID
 		if requestedTenantID > 0 && requestedTenantID != tenantID {
 			writeError(w, http.StatusForbidden, "不能访问其他终端的直播智能体方案")
@@ -41,35 +41,40 @@ func (s *Server) resolveLiveAgentPlanTenant(
 		}
 		return tenantID, true
 	}
-	if actor.IsPlatformAdmin() {
-		if requestedTenantID <= 0 {
-			writeError(w, http.StatusBadRequest, "请选择要测试的终端 tenant_id")
-			return 0, false
-		}
-		return requestedTenantID, true
-	}
 	if !actor.IsInternalStaff() {
 		writeError(w, http.StatusForbidden, "当前账号没有直播智能体方案权限")
 		return 0, false
 	}
-	access, err := s.staffAccessForActor(r, actor)
-	if err != nil {
-		writeError(w, http.StatusForbidden, "读取内部权限失败")
+	roomID, valid := liveSupportScopeRoomID(r)
+	if !valid {
+		writeError(w, http.StatusForbidden, "请选择已获得客户授权的直播间")
 		return 0, false
 	}
-	allowed := staffHasPermission(access, "liveops.configure")
-	if !write {
-		allowed = allowed || staffHasPermission(access, "liveops.view_all")
-	}
-	if !allowed {
-		writeError(w, http.StatusForbidden, "当前岗位没有直播智能体方案权限")
+	tenantID, err := s.store.GetLiveSupportAuthorizedTenant(r.Context(), roomID, actor.UserID, model.LiveSupportCapabilityL3Policy)
+	if err != nil || (requestedTenantID > 0 && tenantID != requestedTenantID) {
+		writeError(w, http.StatusForbidden, "该直播间未授权，或不属于所选客户")
 		return 0, false
 	}
-	if requestedTenantID <= 0 {
-		writeError(w, http.StatusBadRequest, "请选择终端 tenant_id")
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return 0, false
 	}
-	return requestedTenantID, true
+	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
+		writeError(w, http.StatusNotFound, "客户直播间不存在或已删除")
+		return 0, false
+	}
+	if raw := strings.TrimSpace(r.PathValue("planID")); raw != "" {
+		planID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || planID <= 0 {
+			writeError(w, http.StatusBadRequest, "直播智能体方案 ID 无效")
+			return 0, false
+		}
+		// Some preview endpoints persist generated assets despite their read
+		// flag. Treat every non-GET request as a mutation of the plan's scope.
+		if !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, write || r.Method != http.MethodGet) {
+			return 0, false
+		}
+	}
+	return tenantID, true
 }
 
 func (s *Server) liveAgentPlanList(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +90,21 @@ func (s *Server) liveAgentPlanList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
 		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		filtered := make([]model.LiveAgentPlan, 0, len(items))
+		for _, item := range items {
+			allowed, err := s.store.CanAccessLiveSupportPlan(r.Context(), tenantID, roomID, item.ID, actor.UserID, false)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "校验方案授权范围失败")
+				return
+			}
+			if allowed {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -117,6 +137,14 @@ func (s *Server) liveAgentPlanCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "创建直播智能体方案失败")
 		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		item, err = s.store.BindRoomToLiveAgentPlan(r.Context(), tenantID, item.ID, roomID, actor.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "创建方案成功但绑定授权直播间失败")
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -222,6 +250,9 @@ func (s *Server) liveAgentPlanCurrentForRoom(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	item, err := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeJSON(w, http.StatusOK, map[string]any{"plan": nil})
@@ -247,7 +278,16 @@ func (s *Server) liveAgentPlansForRoom(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.store.ListLiveAgentPlansForRoom(r.Context(), tenantID, roomID)
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
+	var items []model.LiveAgentPlan
+	var err error
+	if r.URL.Query().Get("published_only") == "1" {
+		items, err = s.store.ListPublishedLiveAgentPlansForRoom(r.Context(), tenantID, roomID)
+	} else {
+		items, err = s.store.ListLiveAgentPlansForRoom(r.Context(), tenantID, roomID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播间已绑定方案失败")
 		return
@@ -275,6 +315,9 @@ func (s *Server) liveAgentPlanBindRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
 		return
 	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, input.RoomID); err != nil {
@@ -309,6 +352,9 @@ func (s *Server) liveAgentPlanUnbindRoom(w http.ResponseWriter, r *http.Request)
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
 	if selected, selectedErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); selectedErr == nil && selected.ID == planID {

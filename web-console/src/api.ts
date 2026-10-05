@@ -1,4 +1,5 @@
 import { showPermissionToast } from './uiFeedback'
+import { liveSupportRoomForRequest } from './liveSupportAccess'
 import type {
   AccountDashboard,
   AccountProfile,
@@ -23,6 +24,9 @@ import type {
   SandboxPayOrderInput,
   SandboxRefundOrderInput,
   RefundRecord,
+  RechargeRecord,
+  WechatCashRefund,
+  WechatRefundWallet,
   FeatureRecord,
   FeatureRecordInput,
   MarketingCampaign,
@@ -71,6 +75,15 @@ import type {
   AgentContract,
   CreateRoomPayload,
   FinanceDashboard,
+  BeanWalletDashboard,
+  BeanPurchaseOrder,
+  BeanChargeQuote,
+  BeanCommercialDashboard,
+  BeanCommerceSettingsInput,
+  BeanPricingRule,
+  BeanPricingRuleInput,
+  BeanFinanceDashboard,
+  BeanConversionRequest,
   BeneficiaryWalletDashboard,
   WithdrawalRequest,
   Room,
@@ -114,6 +127,9 @@ import type {
   LiveStrategyCenterConfig,
   LiveStrategyCenterInput,
   LiveAgentPlan,
+  LiveAgentPlanStyleOverlayProfile,
+  LiveAnchorStyleOverlayItem,
+  AnchorStylePluginCatalog,
   LiveAgentPlanFact,
   LiveAgentPlanFactCandidate,
   AdoptLiveAgentPlanFactsOutput,
@@ -124,8 +140,15 @@ import type {
   LiveAgentPlanProductLinkCandidate,
   AdoptLiveAgentPlanProductLinksOutput,
   LiveAgentPlanScript,
+  LiveAgentPlanScriptAnalysis,
+  LiveAgentFullShowVariant,
   LiveAgentPlanScriptReference,
   LiveAgentPlanScriptAnalysisPreviewResponse,
+  LiveAnchorStyle,
+  LiveAnchorStyleSample,
+  LiveAnchorStyleTraining,
+  LiveAnchorStylePluginSetting,
+  LiveAnchorStyleAnalysisQC,
   LiveAgentPlanImageRecognitionPreviewResponse,
   LiveAgentFullShowPreviewInput,
   LiveAgentFullShowPreviewResponse,
@@ -166,6 +189,7 @@ import type {
   LiveSupportTrainingDraft,
   MediaAsset,
   VoiceProfile,
+  VoiceModelBinding,
   OfficialVoice,
   VoicePreviewResponse,
   InvitationDashboard,
@@ -208,6 +232,8 @@ interface ListResponse<T> {
 
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
+  const supportRoomId = liveSupportRoomForRequest(url)
+  if (supportRoomId) headers.set('X-Live-Support-Room-ID', String(supportRoomId))
   if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
@@ -447,7 +473,7 @@ export function createRoom(payload: CreateRoomPayload) {
 }
 
 export function deleteRoom(roomId: number) {
-  return request<void>('/api/v1/rooms/' + roomId, {
+  return request<void | { status: 'deletion_pending'; room_id: number; message: string }>('/api/v1/rooms/' + roomId, {
     method: 'DELETE',
   })
 }
@@ -805,9 +831,12 @@ export function getRoomLiveAgentPlan(roomId: number) {
   return request<{ plan?: LiveAgentPlan | null }>('/api/v1/rooms/' + roomId + '/live-agent-plan')
 }
 
-export function getRoomLiveAgentPlans(roomId: number) {
-  return request<{ items: LiveAgentPlan[] }>('/api/v1/rooms/' + roomId + '/live-agent-plans')
+export function getRoomLiveAgentPlans(roomId: number, publishedOnly = false) {
+  const query = publishedOnly ? '?published_only=1' : ''
+  return request<{ items: LiveAgentPlan[] }>('/api/v1/rooms/' + roomId + '/live-agent-plans' + query)
 }
+
+export const getRoomCustomerContact = (roomId: number) => request<{ tenant_id: number; name: string; phone: string }>(`/api/v1/rooms/${roomId}/customer-contact`, { cache: 'no-store' })
 
 export function bindRoomLiveAgentPlan(planId: number, roomId: number, tenantId?: number) {
   return request<LiveAgentPlan>('/api/v1/live-agent-plans/' + planId + '/room-bindings', {
@@ -848,16 +877,26 @@ export function adoptLiveAgentPlanFacts(
 export function updateLiveAgentPlanFact(
   planId: number,
   factId: number,
-  input: { category: string; key: string; value: string },
+  input: {
+    expected_version_no?: number
+    category: string
+    key: string
+    value: string
+    forbidden_wording?: string
+    safe_rewrite?: string
+  },
   tenantId?: number,
 ) {
   return request<LiveAgentPlanFact>('/api/v1/live-agent-plans/' + planId + '/facts/' + factId, {
     method: 'PATCH',
     body: JSON.stringify({
       tenant_id: tenantId,
+      expected_version_no: input.expected_version_no,
       category: input.category,
       key: input.key,
       value: input.value,
+      forbidden_wording: input.forbidden_wording,
+      safe_rewrite: input.safe_rewrite,
     }),
   })
 }
@@ -948,6 +987,7 @@ export function updateLiveAgentPlanProductLink(
   planId: number,
   productLinkId: number,
   input: {
+    expected_version_no?: number
     link_key: string
     product_name: string
     spec?: string
@@ -1215,6 +1255,8 @@ export function uploadLiveAgentCustomMainline(
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload')
     xhr.withCredentials = true
+    const supportRoomId = liveSupportRoomForRequest('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload')
+    if (supportRoomId) xhr.setRequestHeader('X-Live-Support-Room-ID', String(supportRoomId))
     xhr.upload.addEventListener('progress', (event) => {
       if (!event.lengthComputable) return
       onProgress?.(event.loaded, event.total)
@@ -1396,6 +1438,240 @@ export function getLiveVoiceProfiles() {
   return request<VoiceProfile[]>('/api/v1/live/voice-profiles')
 }
 
+export function previewAnalyzeLiveAgentAnchorStyle(planId: number, text: string, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAgentPlanScriptAnalysisPreviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style/analyze-preview' + query,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    },
+  )
+}
+
+export function confirmLiveAgentPlanScriptAnalysis(planId: number, scriptId: number, sourceText: string, analysis: LiveAgentPlanScriptAnalysis, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAgentPlanScript>('/api/v1/live-agent-plans/' + planId + '/scripts/' + scriptId + '/analysis-confirm' + query, {
+    method: 'POST', body: JSON.stringify({ source_text: sourceText, analysis }),
+  })
+}
+
+export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: number; room_id: number; topic: string; target_chars: number; expansion_freedom: number; source_text: string; anchor_style: LiveAgentPlanScriptAnalysis['anchor_style']; selected_facts?: string[]; transient_overlays?: LiveAnchorStyleOverlayItem[] }) {
+  return request<{
+    text: string
+    target_chars: number
+    min_chars: number
+    max_chars: number
+    actual_chars: number
+    persisted: false
+    audit: LiveAgentFullShowVariant['audit']
+    style_check: { passed: boolean; checked: number; missing: string[] }
+    style_coverage_warnings?: string[]
+    runtime_budget?: { version: string; heat: number; target_chars: number; sentence_chars_min: number; sentence_chars_max: number; total_habit_max: number }
+    runtime_evaluation?: { passed: boolean; style_score: number; lexical_score: number; rhythm_score: number; copy_containment_pct: number; longest_shared_runes: number; issues: Array<{ severity: string; code: string; message: string }> }
+    style_purity?: { passed: boolean; issues: Array<{ location: string; category: string; text: string; reason: string }> }
+    style_vector_evaluation?: { available: boolean; shadow_only: true; model?: string; similarity?: number; score?: number; error?: string }
+    overlay_qc?: { available: boolean; passed: boolean; adherence_score: number; overuse_risk: number; issue_codes: string[]; summary: string; model?: string; latency_ms?: number; error?: string; repair_attempted: boolean }
+    protocol: string
+    repair_attempted: boolean
+    generation_mode?: 'time_driven_segments' | string
+    segment_count?: number
+    model?: string
+    latency_ms?: number
+    transient_overlay_count?: number
+  }>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style/test', { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function getLiveAgentPlanStyleOverlays(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAgentPlanStyleOverlayProfile>('/api/v1/live-agent-plans/' + planId + '/style-overlays' + query, { cache: 'no-store' })
+}
+
+export function interpretLiveAgentPlanStyleOverlay(planId: number, input: { source_text: string; explanation_text?: string; strength: number }, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ item: LiveAnchorStyleOverlayItem; provider: string; model: string; latency_ms: number; memory_matches: number }>(
+    '/api/v1/live-agent-plans/' + planId + '/style-overlays/interpret' + query,
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function learnLiveAgentPlanStyleOverlay(
+  planId: number,
+  input: { sample_text: string; generated_text: string; feedback_text: string; strength: number },
+  tenantId?: number,
+) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ item: LiveAnchorStyleOverlayItem; diagnosis: string; provider: string; model: string; latency_ms: number; requires_test: true; auto_saved: false }>(
+    '/api/v1/live-agent-plans/' + planId + '/style-overlays/learn' + query,
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function saveLiveAgentPlanStyleOverlays(planId: number, profile: LiveAgentPlanStyleOverlayProfile, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ profile: LiveAgentPlanStyleOverlayProfile; semantic_indexed: boolean }>(
+    '/api/v1/live-agent-plans/' + planId + '/style-overlays' + query,
+    { method: 'PUT', body: JSON.stringify({ expected_revision: profile.revision, items: profile.items }) },
+  )
+}
+
+export function getAnchorStylePluginCatalog() {
+  return request<AnchorStylePluginCatalog>('/api/v1/live/style-plugins', { cache: 'no-store' })
+}
+
+export function listLiveAnchorStyles(tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAnchorStyle[] }>('/api/v1/live-anchor-styles' + query, { cache: 'no-store' })
+}
+
+export function createLiveAnchorStyle(input: { name: string; description?: string; tenant_id?: number }) {
+  return request<LiveAnchorStyle>('/api/v1/live-anchor-styles', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function getLiveAnchorStyle(styleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyle>('/api/v1/live-anchor-styles/' + styleId + query, { cache: 'no-store' })
+}
+
+export function updateLiveAnchorStyle(styleId: number, input: { name: string; description?: string; profile?: LiveAgentPlanScriptAnalysis['anchor_style'] }, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyle>('/api/v1/live-anchor-styles/' + styleId + query, { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function deleteLiveAnchorStyle(styleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + query, { method: 'DELETE' })
+}
+
+export function listLiveAnchorStyleSamples(styleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAnchorStyleSample[] }>('/api/v1/live-anchor-styles/' + styleId + '/samples' + query, { cache: 'no-store' })
+}
+
+export function createLiveAnchorStyleSample(styleId: number, input: { title: string; source_type?: string; original_name?: string; raw_text: string; readable_text?: string }, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyleSample>('/api/v1/live-anchor-styles/' + styleId + '/samples' + query, { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function deleteLiveAnchorStyleSample(styleId: number, sampleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + '/samples/' + sampleId + query, { method: 'DELETE' })
+}
+
+export function analyzeLiveAnchorStyleSample(styleId: number, sampleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ sample: LiveAnchorStyleSample; style: LiveAnchorStyle; analysis: LiveAgentPlanScriptAnalysis['anchor_style']; style_qc?: LiveAnchorStyleAnalysisQC; provider?: string; model?: string; latency_ms?: number }>(
+    '/api/v1/live-anchor-styles/' + styleId + '/samples/' + sampleId + '/analyze' + query,
+    { method: 'POST' },
+  )
+}
+
+export function listLiveAnchorStyleTrainings(styleId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAnchorStyleTraining[] }>('/api/v1/live-anchor-styles/' + styleId + '/trainings' + query, { cache: 'no-store' })
+}
+
+export function saveLiveAnchorStyleTraining(styleId: number, input: Partial<LiveAnchorStyleTraining> & { request_text: string }, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyleTraining>('/api/v1/live-anchor-styles/' + styleId + '/trainings' + query, { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateLiveAnchorStyleTraining(styleId: number, trainingId: number, input: Partial<LiveAnchorStyleTraining> & { request_text: string }, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyleTraining>('/api/v1/live-anchor-styles/' + styleId + '/trainings/' + trainingId + query, { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function deleteLiveAnchorStyleTraining(styleId: number, trainingId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + '/trainings/' + trainingId + query, { method: 'DELETE' })
+}
+
+export function upsertLiveAnchorStylePlugin(styleId: number, input: LiveAnchorStylePluginSetting, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ items: LiveAnchorStylePluginSetting[] }>('/api/v1/live-anchor-styles/' + styleId + '/plugins' + query, { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function deleteLiveAnchorStylePlugin(styleId: number, pluginId: string, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + '/plugins/' + encodeURIComponent(pluginId) + query, { method: 'DELETE' })
+}
+
+export function bindLiveAnchorStyleToPlan(styleId: number, planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ bound: boolean; style_id: number; plan_id: number }>('/api/v1/live-anchor-styles/' + styleId + '/bind-plan' + query, { method: 'POST', body: JSON.stringify({ plan_id: planId }) })
+}
+
+export function activateLiveAgentPlanStylePlugin(
+  planId: number,
+  input: { expected_revision: number; plugin_id: string; plugin_version: string; strength: number; parameters?: Record<string, unknown> },
+  tenantId?: number,
+) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ profile: LiveAgentPlanStyleOverlayProfile; semantic_indexed: boolean; item: LiveAnchorStyleOverlayItem }>(
+    '/api/v1/live-agent-plans/' + planId + '/style-plugins/activate' + query,
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function getLiveVoiceProfileQuota() {
+  return request<{ limit: number; used: number; remaining: number }>('/api/v1/live/voice-profiles/quota')
+}
+
+export function deleteLiveVoiceProfile(profileId: number) {
+  return request<void>('/api/v1/live/voice-profiles/' + profileId, { method: 'DELETE' })
+}
+
+export function getLiveVoiceModelBindings(profileId?: number) {
+  const query = profileId ? '?profile_id=' + encodeURIComponent(String(profileId)) : ''
+  return request<VoiceModelBinding[]>('/api/v1/live/voice-model-bindings' + query)
+}
+
+export function cloneLiveVoiceModelBinding(profileId: number, payload: { model: string }) {
+  return request<VoiceModelBinding>('/api/v1/live/voice-profiles/' + profileId + '/bindings/clone', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewLiveVoiceModelBinding(bindingId: number, text = '') {
+  return request<VoicePreviewResponse>('/api/v1/live/voice-model-bindings/' + bindingId + '/preview', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+}
+
+export function publishLiveAgentVoiceBinding(roomId: number, bindingId: number) {
+  return request<LiveAgentPlanVersion>(
+    '/api/v1/rooms/' + roomId + '/live-agent-plan/published-version/voice-binding',
+    {
+      method: 'POST',
+      body: JSON.stringify({ binding_id: bindingId }),
+    },
+  )
+}
+
+export function publishLiveAgentVoiceRate(roomId: number, rate: number) {
+  return request<LiveAgentPlanVersion>(
+    '/api/v1/rooms/' + roomId + '/live-agent-plan/published-version/voice-rate',
+    {
+      method: 'POST',
+      body: JSON.stringify({ rate }),
+    },
+  )
+}
+
+export function publishLiveAgentEmotion(roomId: number, enabled: boolean) {
+  return request<LiveAgentPlanVersion>(
+    '/api/v1/rooms/' + roomId + '/live-agent-plan/published-version/emotion',
+    {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    },
+  )
+}
+
 export function createLiveVoiceProfile(payload: {
   agent_id?: number
   name: string
@@ -1423,7 +1699,12 @@ export function previewLiveOfficialVoice(voiceId: string, text = '', tenantId?: 
   )
 }
 
-export function cloneLiveVoiceProfile(payload: { name: string; sample_asset_id: number }) {
+export function cloneLiveVoiceProfile(payload: {
+  name: string
+  sample_asset_id: number
+  model?: string
+  avatar_key?: string
+}) {
   return request<VoiceProfile>('/api/v1/live/voice-profiles/clone', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -2236,6 +2517,24 @@ export function getFinanceDashboard(limit = 50) {
   )
 }
 
+export function getCustomerBeanWallet() {
+  return request<BeanWalletDashboard>('/api/v1/finance/beans')
+}
+
+export function purchaseCustomerBeans(amountCents: number, idempotencyKey: string) {
+  return request<BeanPurchaseOrder>('/api/v1/finance/beans/purchases', {
+    method: 'POST',
+    body: JSON.stringify({ amount_cents: amountCents, idempotency_key: idempotencyKey }),
+  })
+}
+
+export function quoteCustomerBeans(actionCode: string, units: number) {
+  return request<BeanChargeQuote>('/api/v1/finance/beans/quote', {
+    method: 'POST',
+    body: JSON.stringify({ action_code: actionCode, units }),
+  })
+}
+
 export function getReferralWallet(limit = 100) {
   return request<BeneficiaryWalletDashboard>(
     '/api/v1/finance/referral-wallet?limit=' + encodeURIComponent(String(limit)),
@@ -2982,6 +3281,69 @@ export function rejectStaffFinanceTask(taskId: number) {
   )
 }
 
+export const getWechatRefundWallet = () => request<WechatRefundWallet>('/api/v1/wallet/wechat-refunds')
+export const getFinanceWechatRefunds = () => request<{ items: WechatCashRefund[] }>('/api/v1/finance/wechat-refunds')
+export const queryFinanceWechatRefund = (id: number) => request<WechatCashRefund>(`/api/v1/finance/wechat-refunds/${id}/query`, { method: 'POST', body: '{}' })
+export const createWechatCashRefund = (amountCents: number, idempotencyKey: string) => request<WechatCashRefund>('/api/v1/wallet/wechat-refunds', { method: 'POST', body: JSON.stringify({ amount_cents: amountCents, idempotency_key: idempotencyKey }) })
+export const queryWechatCashRefund = (id: number) => request<WechatCashRefund>(`/api/v1/wallet/wechat-refunds/${id}/query`, { method: 'POST', body: '{}' })
+export const createWechatRecharge = (amountCents: number, idempotencyKey: string) =>
+  request<RechargeRecord>('/api/v1/wallet/recharges', { method: 'POST', body: JSON.stringify({ amount_cents: amountCents, idempotency_key: idempotencyKey, payment_method: 'wechat_native' }) })
+export const getWechatRecharge = (id: number) => request<RechargeRecord>(`/api/v1/wallet/recharges/${id}`)
+export const prepayWechatNativeRecharge = (id: number) => request<{ recharge: RechargeRecord; payment_no?: string; code_url?: string; qr_code_data_url?: string; expires_at?: string }>(`/api/v1/wallet/recharges/${id}/wechat-native-prepay`, { method: 'POST', body: '{}' })
+export const queryWechatRecharge = (id: number) =>
+  request<{ recharge: RechargeRecord; trade_state: string }>(`/api/v1/wallet/recharges/${id}/wechat-query`, { method: 'POST', body: '{}' })
+
+export function getCommercialBeans() {
+  return request<BeanCommercialDashboard>('/api/v1/commercial/beans')
+}
+
+export function updateCommercialBeanSettings(payload: BeanCommerceSettingsInput) {
+  return request<BeanCommercialDashboard['settings']>('/api/v1/commercial/beans/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createCommercialBeanRule(payload: BeanPricingRuleInput) {
+  return request<BeanPricingRule>('/api/v1/commercial/beans/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateCommercialBeanRule(ruleId: number, payload: BeanPricingRuleInput) {
+  return request<BeanPricingRule>('/api/v1/commercial/beans/rules/' + ruleId, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getStaffBeanWallet() {
+  return request<BeanWalletDashboard>('/api/v1/staff/beans/me')
+}
+
+export function createStaffBeanConversion(beanAmount: number) {
+  return request<BeanConversionRequest>('/api/v1/staff/beans/conversions', {
+    method: 'POST',
+    body: JSON.stringify({ bean_amount: beanAmount }),
+  })
+}
+
+export function getFinanceBeans() {
+  return request<BeanFinanceDashboard>('/api/v1/finance/beans/overview')
+}
+
+export function transitionBeanConversion(
+  conversionId: number,
+  action: 'approve' | 'reject' | 'pay',
+  reason = '',
+) {
+  return request<BeanConversionRequest>(
+    '/api/v1/finance/beans/conversions/' + conversionId + '/' + action,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+  )
+}
+
 
 export function getCommercialTimeCards() {
   return request<ListResponse<CommercialTimeCardProduct>>('/api/v1/commercial/time-cards')
@@ -3243,6 +3605,31 @@ export function createInventoryDevice(payload: InventoryCreateDeviceInput) {
     body: JSON.stringify(payload),
   })
 }
+
+export interface InventoryStockProduct {
+  product_id: number; name: string; sku_code: string
+  total: number; available: number; transit: number; repair: number; scrap: number; delivered: number
+}
+export interface InventoryStockPage<T> { items: T[]; total: number; page: number; page_size: number }
+export function getInventoryStockProducts(q = '', page = 1, page_size = 12) {
+  return request<InventoryStockPage<InventoryStockProduct>>('/api/v1/inventory/stock-products?' + new URLSearchParams({ q, page: String(page), page_size: String(page_size) }))
+}
+export function getInventoryStockDevices(sku_code: string, q = '', status = 'all', page = 1, page_size = 20) {
+  return request<InventoryStockPage<InventoryDevice>>('/api/v1/inventory/stock-devices?' + new URLSearchParams({ sku_code, q, status, page: String(page), page_size: String(page_size) }))
+}
+export function checkInventoryBatch(sku_code: string, batch_no: string) {
+  return request<{ exists: boolean; batch_no: string }>('/api/v1/inventory/batches/check?' + new URLSearchParams({ sku_code, batch_no }))
+}
+
+export const getDefaultDeviceName = () => request<{ device_name: string }>('/api/v1/live/devices/default-name')
+export const claimLiveDevice = (binding_code: string, device_name: string) => request<LiveDevice>('/api/v1/live/devices/claim', { method: 'POST', body: JSON.stringify({ binding_code, device_name }) })
+export const renameLiveDevice = (id: number, device_name: string) => request<LiveDevice>('/api/v1/live/devices/' + id, { method: 'PATCH', body: JSON.stringify({ device_name }) })
+export const unbindLiveDevice = (id: number) => request<LiveDevice>('/api/v1/live/devices/' + id + '/bind', { method: 'DELETE' })
+export type DeviceAddressingMode = 'auto' | 'female' | 'male' | 'child' | 'neutral'
+export const getDeviceAddressing = (id: number) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing')
+export const saveDeviceAddressing = (id: number, mode: DeviceAddressingMode) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing', { method: 'PUT', body: JSON.stringify({ mode }) })
+export const configureDeviceHardware = (id: number, hardware_mac: string, claim_enabled: boolean, reason: string) => request<{ ok: boolean }>('/api/v1/inventory/devices/' + id + '/hardware', { method: 'PUT', body: JSON.stringify({ hardware_mac, claim_enabled, reason }) })
+export const releaseDeviceOwnership = (id: number, reason: string) => request<{ ok: boolean }>('/api/v1/inventory/devices/' + id + '/release-ownership', { method: 'POST', body: JSON.stringify({ reason }) })
 
 export function transitionInventoryDevice(
   deviceId: number,

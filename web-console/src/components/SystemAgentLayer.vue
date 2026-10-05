@@ -55,6 +55,7 @@ import {
   getRoomAgentDecisions,
   getLiveVoiceProfiles,
   getRooms,
+  getRoom,
   interpretLiveStrategyIntent,
   previewRecognizeLiveAgentPlanImage,
   enqueueRoomManualAgentDecision,
@@ -716,6 +717,7 @@ const isInternalAgentProfile = computed(() =>
 const navigationTargets = computed(() => resolveAgentNavigationTargets(session.bootstrap))
 const currentDomain = computed<AgentDomain>(() => {
   if (route.name === 'room-detail') return 'live-room'
+  if (route.name === 'live-room-support-strategy') return 'live-strategy'
   if (route.name === 'live-strategy') {
     if (actor.value?.role === 'customer') return 'live-strategy'
     if (isInternalAgentProfile.value) {
@@ -742,6 +744,7 @@ function conversationScopeForDomain(domain: AgentDomain) {
     return roomId > 0 ? 'live-room:room:' + roomId : 'live-room:room:none'
   }
   if (domain === 'live-strategy') {
+    if (route.name === 'live-room-support-strategy') return 'live-strategy:support-room:' + String(route.params.roomId)
     const roomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
     return roomId > 0 ? 'live-strategy:room:' + roomId : 'live-strategy:room:none'
   }
@@ -926,8 +929,7 @@ async function agentImageAttachmentToFile(image: AgentImageAttachment) {
 }
 
 async function resolveLiveStrategyTenantID(roomId: number) {
-  const response = await getRooms()
-  return response.items.find((item) => item.id === roomId)?.tenant_id
+  return (await getRoom(roomId)).tenant_id
 }
 
 async function recognizeLiveStrategyImages(
@@ -1787,7 +1789,6 @@ function collapse() {
 
 function openDrawer() {
   drawerOpen.value = true
-  expanded.value = true
   activeComposer.value = 'drawer'
   void nextTick(async () => {
     await scrollChatToBottom()
@@ -1798,8 +1799,10 @@ function openDrawer() {
 function toggleDrawer() {
   if (drawerOpen.value) {
     drawerOpen.value = false
-    activeComposer.value = 'dock'
-    void nextTick(() => inputEl.value?.focus())
+    activeComposer.value = expanded.value ? 'dock' : null
+    if (expanded.value) {
+      void nextTick(() => inputEl.value?.focus())
+    }
     return
   }
   openDrawer()
@@ -2147,6 +2150,7 @@ function notifyAdminPolicyUpdated(layer: 'L1' | 'L2', industryCode = '') {
 }
 
 async function resolveLiveStrategyRoomID() {
+  if (route.name === 'live-room-support-strategy') return Number(route.params.roomId || 0)
   const stored = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
   if (stored > 0) return stored
 
@@ -4020,7 +4024,7 @@ function isClientBoundaryIntent(value: string) {
     'systemprompt',
     '隐藏工具',
     '内部工具',
-    '系统设定',
+    '系统设置',
     '财务与结算',
     '后台财务',
     '权限审计',

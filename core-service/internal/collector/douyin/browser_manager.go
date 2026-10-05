@@ -56,6 +56,12 @@ type previewResult struct {
 	contentType string
 	err         error
 }
+
+type streamResult struct {
+	source collector.StreamSource
+	err    error
+}
+
 type workerProcess struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -154,6 +160,10 @@ type BrowserManager struct {
 	previewSeq     uint64
 	previewWaiters map[string]chan previewResult
 
+	streamRequestMu      sync.Mutex
+	streamRequestSeq     uint64
+	streamRequestWaiters map[string]chan streamResult
+
 	streamMu sync.RWMutex
 	streams  map[int64]collector.StreamSource
 
@@ -166,11 +176,12 @@ type BrowserManager struct {
 
 func NewBrowserManager(configuredPath string, headless bool) *BrowserManager {
 	return &BrowserManager{
-		configuredPath: strings.TrimSpace(configuredPath),
-		headless:       headless,
-		sessions:       make(map[int64]*roomSession),
-		previewWaiters: make(map[string]chan previewResult),
-		streams:        make(map[int64]collector.StreamSource),
+		configuredPath:       strings.TrimSpace(configuredPath),
+		headless:             headless,
+		sessions:             make(map[int64]*roomSession),
+		previewWaiters:       make(map[string]chan previewResult),
+		streamRequestWaiters: make(map[string]chan streamResult),
+		streams:              make(map[int64]collector.StreamSource),
 	}
 }
 
@@ -344,6 +355,114 @@ func (m *BrowserManager) failPreviewWaiters(err error) {
 		}
 	}
 }
+
+func (m *BrowserManager) RequestStream(
+	ctx context.Context,
+	roomID int64,
+	url string,
+) (collector.StreamSource, error) {
+	if err := ctx.Err(); err != nil {
+		return collector.StreamSource{}, err
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return collector.StreamSource{}, errors.New("live room url is empty")
+	}
+
+	m.mu.Lock()
+	_, active := m.sessions[roomID]
+	worker := m.worker
+	m.mu.Unlock()
+	if !active {
+		return collector.StreamSource{}, errors.New("room collector session is not active")
+	}
+	if worker == nil {
+		return collector.StreamSource{}, ErrWorkerClosed
+	}
+
+	m.clearStream(roomID)
+
+	m.streamRequestMu.Lock()
+	m.streamRequestSeq++
+	requestID := fmt.Sprintf("stream-%d-%d", roomID, m.streamRequestSeq)
+	waiter := make(chan streamResult, 1)
+	m.streamRequestWaiters[requestID] = waiter
+	m.streamRequestMu.Unlock()
+
+	defer func() {
+		m.streamRequestMu.Lock()
+		delete(m.streamRequestWaiters, requestID)
+		m.streamRequestMu.Unlock()
+	}()
+
+	if err := m.writeCommand(workerCommand{
+		Op:        "resolve_stream",
+		RoomID:    roomID,
+		URL:       url,
+		RequestID: requestID,
+	}); err != nil {
+		return collector.StreamSource{}, err
+	}
+
+	select {
+	case result := <-waiter:
+		if result.err != nil {
+			return collector.StreamSource{}, result.err
+		}
+		if strings.TrimSpace(result.source.URL) == "" {
+			return collector.StreamSource{}, errors.New("live stream source is empty")
+		}
+		return result.source, nil
+	case <-ctx.Done():
+		return collector.StreamSource{}, ctx.Err()
+	case <-worker.done:
+		if err := worker.getErr(); err != nil {
+			return collector.StreamSource{}, fmt.Errorf("%w: %v", ErrWorkerClosed, err)
+		}
+		return collector.StreamSource{}, ErrWorkerClosed
+	case <-time.After(7 * time.Second):
+		return collector.StreamSource{}, errors.New("live stream source discovery timeout")
+	}
+}
+
+func (m *BrowserManager) resolveStreamRequest(
+	requestID string,
+	result streamResult,
+) {
+	if requestID == "" {
+		return
+	}
+
+	m.streamRequestMu.Lock()
+	waiter := m.streamRequestWaiters[requestID]
+	m.streamRequestMu.Unlock()
+	if waiter == nil {
+		return
+	}
+
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func (m *BrowserManager) failStreamRequestWaiters(err error) {
+	m.streamRequestMu.Lock()
+	waiters := make([]chan streamResult, 0, len(m.streamRequestWaiters))
+	for requestID, waiter := range m.streamRequestWaiters {
+		waiters = append(waiters, waiter)
+		delete(m.streamRequestWaiters, requestID)
+	}
+	m.streamRequestMu.Unlock()
+
+	for _, waiter := range waiters {
+		select {
+		case waiter <- streamResult{err: err}:
+		default:
+		}
+	}
+}
+
 func (m *BrowserManager) Stream(roomID int64) (collector.StreamSource, error) {
 	m.streamMu.RLock()
 	source, ok := m.streams[roomID]
@@ -576,14 +695,25 @@ func (m *BrowserManager) readWorkerStdout(
 			)
 
 		case "stream_candidate":
-			m.setStreamCandidate(
-				message.RoomID,
-				collector.StreamSource{
-					Protocol:     message.Protocol,
-					URL:          message.URL,
-					ContentType:  message.ContentType,
-					ResourceType: message.ResourceType,
-				},
+			source := collector.StreamSource{
+				Protocol:     message.Protocol,
+				URL:          message.URL,
+				ContentType:  message.ContentType,
+				ResourceType: message.ResourceType,
+			}
+			m.setStreamCandidate(message.RoomID, source)
+			m.streamMu.RLock()
+			resolved := m.streams[message.RoomID]
+			m.streamMu.RUnlock()
+			m.resolveStreamRequest(
+				message.RequestID,
+				streamResult{source: resolved},
+			)
+
+		case "stream_error":
+			m.resolveStreamRequest(
+				message.RequestID,
+				streamResult{err: errors.New(message.Error)},
 			)
 		case "transport_live":
 			if session := m.getSession(message.RoomID); session != nil {
@@ -645,10 +775,11 @@ func (m *BrowserManager) readWorkerStdout(
 			)
 
 		case "room_error":
-			m.sendRoomError(
-				message.RoomID,
-				errors.New(message.Error),
-			)
+			roomErr := collector.ErrOffline
+			if detail := strings.TrimSpace(message.Error); detail != "" {
+				roomErr = fmt.Errorf("%w: %s", collector.ErrOffline, detail)
+			}
+			m.sendRoomError(message.RoomID, roomErr)
 
 		case "worker_error":
 			log.Printf("collector worker error: %s", message.Error)
@@ -701,6 +832,7 @@ func (m *BrowserManager) waitWorker(worker *workerProcess) {
 	}
 
 	m.failPreviewWaiters(workerErr)
+	m.failStreamRequestWaiters(workerErr)
 	log.Printf("collector worker exited: %v", err)
 }
 

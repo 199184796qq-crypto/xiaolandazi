@@ -75,15 +75,30 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 			"rate":        request.Rate,
 		},
 	}
+	endpoint := p.ttsBaseURL + "/services/audio/tts/SpeechSynthesizer"
+	if qwenUsesMultimodalGeneration(request.Model) {
+		payload = map[string]any{
+			"model": request.Model,
+			"input": map[string]any{
+				"text":  request.Text,
+				"voice": request.VoiceID,
+			},
+		}
+		endpoint = p.ttsBaseURL + "/services/aigc/multimodal-generation/generation"
+	}
 	input := payload["input"].(map[string]any)
 	if instruction := strings.TrimSpace(request.Instruction); instruction != "" && qwenSupportsInstructionControl(request.Model) {
-		input["instruction"] = instruction
+		if qwenUsesMultimodalGeneration(request.Model) {
+			input["instructions"] = instruction
+		} else {
+			input["instruction"] = instruction
+		}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return SynthesizeResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.ttsBaseURL+"/services/audio/tts/SpeechSynthesizer", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return SynthesizeResponse{}, err
 	}
@@ -129,6 +144,10 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 	return SynthesizeResponse{AudioURL: audioURL, Provider: ProviderQwen, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}, nil
 }
 
+func qwenUsesMultimodalGeneration(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "qwen3-tts-") || strings.HasPrefix(model, "qwen-tts-")
+}
 func qwenSupportsInstructionControl(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch model {
@@ -139,21 +158,64 @@ func qwenSupportsInstructionControl(model string) bool {
 	}
 }
 
+func qwenAudioCloneModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "qwen-audio-")
+}
+
+func qwenAudioVoicePrefix(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			if b.Len() >= 10 {
+				break
+			}
+		}
+	}
+	if b.Len() == 0 {
+		return "xiaolan"
+	}
+	return b.String()
+}
+
 func (p *qwenProvider) CloneVoice(ctx context.Context, request CloneRequest) (CloneResponse, error) {
 	if p.apiKey == "" {
 		return CloneResponse{}, errors.New("DASHSCOPE_API_KEY not configured")
 	}
-	if strings.TrimSpace(request.PreferredName) == "" || strings.TrimSpace(request.AudioData) == "" || strings.TrimSpace(request.TargetModel) == "" {
-		return CloneResponse{}, errors.New("preferred_name, audio and target_model are required")
+	if strings.TrimSpace(request.PreferredName) == "" || strings.TrimSpace(request.TargetModel) == "" {
+		return CloneResponse{}, errors.New("preferred_name and target_model are required")
 	}
-	payload := map[string]any{
-		"model": "qwen-voice-enrollment",
-		"input": map[string]any{
-			"action":         "create",
-			"target_model":   request.TargetModel,
-			"preferred_name": request.PreferredName,
-			"audio":          map[string]any{"data": request.AudioData},
-		},
+	var payload map[string]any
+	if qwenAudioCloneModel(request.TargetModel) {
+		audioURL := strings.TrimSpace(request.AudioURL)
+		if audioURL == "" {
+			return CloneResponse{}, errors.New("audio_url is required for qwen-audio voice cloning")
+		}
+		payload = map[string]any{
+			"model": "voice-enrollment",
+			"input": map[string]any{
+				"action":       "create_voice",
+				"target_model": request.TargetModel,
+				"prefix":       qwenAudioVoicePrefix(request.PreferredName),
+				"url":          audioURL,
+			},
+		}
+	} else {
+		audioData := strings.TrimSpace(request.AudioData)
+		if audioData == "" {
+			return CloneResponse{}, errors.New("audio data is required for qwen-tts voice cloning")
+		}
+		payload = map[string]any{
+			"model": "qwen-voice-enrollment",
+			"input": map[string]any{
+				"action":         "create",
+				"target_model":   request.TargetModel,
+				"preferred_name": request.PreferredName,
+				"audio":          map[string]any{"data": audioData},
+			},
+		}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -175,7 +237,14 @@ func (p *qwenProvider) CloneVoice(ctx context.Context, request CloneRequest) (Cl
 		return CloneResponse{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return CloneResponse{}, fmt.Errorf("qwen voice clone provider http %d", resp.StatusCode)
+		message := strings.TrimSpace(string(body))
+		if len(message) > 1200 {
+			message = message[:1200]
+		}
+		if message == "" {
+			return CloneResponse{}, fmt.Errorf("qwen voice clone provider http %d", resp.StatusCode)
+		}
+		return CloneResponse{}, fmt.Errorf("qwen voice clone provider http %d: %s", resp.StatusCode, message)
 	}
 	var result struct {
 		Output struct {

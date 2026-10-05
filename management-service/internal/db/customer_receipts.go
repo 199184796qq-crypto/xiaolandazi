@@ -370,6 +370,9 @@ func postReceiptOrderTx(ctx context.Context, tx *sql.Tx, v *model.CustomerReceip
 	if state != "pending" || currency != "CNY" || amount != v.AmountCents {
 		return errors.New("订单状态或应付金额不匹配；已支付、取消或部分收款不能重复入账")
 	}
+	if err := ensureNoWechatPendingTx(ctx, tx, id); err != nil {
+		return err
+	}
 	if kind == "device" {
 		var expired int
 		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM biz_order_devices WHERE order_id=? AND status='payment_hold' AND hold_expires_at<=UTC_TIMESTAMP(3)", id).Scan(&expired); err != nil {
@@ -399,16 +402,19 @@ func postReceiptOrderTx(ctx context.Context, tx *sql.Tx, v *model.CustomerReceip
 	case "time_card":
 		err = fulfillTimeCardOrderTx(ctx, tx, v.TenantID, reviewer, id, no)
 	case "membership":
-		err = fulfillMembershipOrderTx(ctx, tx, v.TenantID, reviewer, id, no)
+		err = fulfillMembershipOrderTx(ctx, tx, v.TenantID, reviewer, id, no, v.Channel)
 	case "device":
-		err = fulfillDeviceOrderTx(ctx, tx, v.TenantID, reviewer, id, no)
+		err = fulfillDeviceOrderTx(ctx, tx, v.TenantID, reviewer, id, no, false)
 	default:
 		err = ErrUnsupportedShopProduct
 	}
 	if err != nil {
 		return err
 	}
-	return consumeMarketingCampaignOrderTx(ctx, tx, id)
+	if err := consumeMarketingCampaignOrderTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return accrueReferralRewardForPaidOrderTx(ctx, tx, id)
 }
 func (s *Store) ResubmitCustomerReceipt(ctx context.Context, sc model.CustomerBusinessScope, id int64, version int, evidence string) (model.CustomerReceipt, error) {
 	evidence = strings.TrimSpace(evidence)

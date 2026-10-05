@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -176,7 +177,12 @@ func (s *Store) UpdateLiveAgentPlanScript(
 	tenantID, planID, scriptID, actorUserID int64,
 	input model.SaveLiveAgentPlanScriptInput,
 ) (model.LiveAgentPlanScript, error) {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.LiveAgentPlanScript{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_scripts
 		SET title=?, readable_text=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
@@ -187,6 +193,16 @@ func (s *Store) UpdateLiveAgentPlanScript(
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return model.LiveAgentPlanScript{}, ErrLiveAgentPlanScriptNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents
+		WHERE tenant_id=? AND plan_id=? AND content_type='material_chunk'
+		  AND source_id LIKE ?
+	`, tenantID, planID, fmt.Sprintf("script:%d:chunk:%%", scriptID)); err != nil {
+		return model.LiveAgentPlanScript{}, fmt.Errorf("invalidate edited material vectors: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.LiveAgentPlanScript{}, err
 	}
 	return s.GetLiveAgentPlanScript(ctx, tenantID, planID, scriptID)
 }

@@ -1,8 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { createRoom, getLiveDevices, getRooms } from '$lib/api';
+  import {
+    activateLiveTimeCard,
+    createRoom,
+    getLiveDevices,
+    getLiveQuotaSummary,
+    getLiveTimeCards,
+    getRooms,
+  } from '$lib/api';
   import { session } from '$lib/session';
-  import type { LiveDevice, Room } from '$lib/types';
+  import type { LiveDevice, LiveQuotaSummary, LiveTimeCardPage, LiveTimeCardSummary, Room } from '$lib/types';
 
   let rooms: Room[] = [];
   let devices: LiveDevice[] = [];
@@ -13,6 +20,21 @@
   let savingRoom = false;
   let roomName = '';
   let roomSource = '';
+  let liveQuotaSummary: LiveQuotaSummary | null = null;
+  let quotaLoading = true;
+  let quotaError = '';
+  let timeCardPackOpen = false;
+  let timeCardPackLoading = false;
+  let timeCardPackError = '';
+  let timeCardPackNotice = '';
+  let timeCardActivatingID: number | null = null;
+  const timeCardPackPageSize = 4;
+  let timeCardPage: LiveTimeCardPage = {
+    items: [],
+    page: 1,
+    page_size: timeCardPackPageSize,
+    total: 0,
+  };
 
   onMount(async () => {
     const hour = new Date().getHours();
@@ -21,6 +43,8 @@
     else if (hour >= 13 && hour < 18) greeting = '下午好';
     else if (hour >= 18 || hour < 1) greeting = '晚上好';
     else greeting = '夜深了';
+
+    void loadAITime();
 
     try {
       const [roomResult, deviceResult] = await Promise.all([
@@ -45,6 +69,7 @@
     0,
   );
   $: greetingIcon = greeting === '早上好' || greeting === '中午好' || greeting === '下午好' ? 'sun' : 'moon';
+  $: timeCardTotalPages = Math.max(1, Math.ceil(timeCardPage.total / timeCardPackPageSize));
 
   function roomStatusLabel(room: Room) {
     if (room.status === 'live' || room.status === 'running') return '直播中';
@@ -94,6 +119,89 @@
 
   function closeAddRoomFromMask(event: MouseEvent) {
     if (event.target === event.currentTarget) showAddRoom = false;
+  }
+
+  function formatAITime(seconds?: number) {
+    const total = Math.max(0, Math.floor(Number(seconds || 0)));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    if (hours > 0) return `${hours}小时${minutes > 0 ? `${minutes}分` : ''}`;
+    if (minutes > 0) return `${minutes}分钟`;
+    return `${total}秒`;
+  }
+
+  function formatTimeCardHours(seconds: number) {
+    const hours = Math.max(0, Number(seconds || 0)) / 3600;
+    return Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  }
+
+  function formatTimeCardDate(value?: string) {
+    if (!value) return '—';
+    return new Date(value).toLocaleString('zh-CN', { hour12: false });
+  }
+
+  function timeCardCanActivate(item: LiveTimeCardSummary) {
+    return item.status === 'unactivated' && item.remaining_seconds > 0;
+  }
+
+  async function loadAITime() {
+    quotaLoading = true;
+    quotaError = '';
+    try {
+      liveQuotaSummary = await getLiveQuotaSummary();
+    } catch (err) {
+      quotaError = err instanceof Error ? err.message : '读取 AI 时长失败';
+    } finally {
+      quotaLoading = false;
+    }
+  }
+
+  async function loadTimeCardPack(page = timeCardPage.page || 1) {
+    timeCardPackLoading = true;
+    timeCardPackError = '';
+    try {
+      timeCardPage = await getLiveTimeCards(page, timeCardPackPageSize);
+    } catch (err) {
+      timeCardPackError = err instanceof Error ? err.message : '读取时长卡包失败';
+    } finally {
+      timeCardPackLoading = false;
+    }
+  }
+
+  async function openTimeCardPack() {
+    timeCardPackOpen = true;
+    timeCardPackNotice = '';
+    await loadTimeCardPack(1);
+  }
+
+  async function activateTimeCard(item: LiveTimeCardSummary) {
+    if (!timeCardCanActivate(item) || timeCardActivatingID !== null) return;
+    timeCardActivatingID = item.id;
+    timeCardPackError = '';
+    timeCardPackNotice = '';
+    try {
+      const response = await activateLiveTimeCard(item.id);
+      liveQuotaSummary = { ...response.quota };
+      timeCardPackNotice = '启用成功，卡内剩余时长已充入 AI 时长池。';
+      const targetPage = timeCardPage.items.length === 1 && timeCardPage.page > 1
+        ? timeCardPage.page - 1
+        : timeCardPage.page;
+      await loadTimeCardPack(targetPage);
+    } catch (err) {
+      timeCardPackError = err instanceof Error ? err.message : '启用时长卡失败';
+    } finally {
+      timeCardActivatingID = null;
+    }
+  }
+
+  function changeTimeCardPackPage(page: number) {
+    if (timeCardPackLoading) return;
+    const target = Math.max(1, Math.min(timeCardTotalPages, page));
+    if (target !== timeCardPage.page) void loadTimeCardPack(target);
+  }
+
+  function closeTimeCardPackFromMask(event: MouseEvent) {
+    if (event.target === event.currentTarget) timeCardPackOpen = false;
   }
 </script>
 
@@ -226,29 +334,29 @@
           <article class="home-device-card">
             <header>
               <span class:online={device.connection_status === 'online' || device.connection_status === 'connected'}></span>
-              <em>{deviceConnectionLabel(device)}</em>
+              <em>{device.display_status || deviceConnectionLabel(device)}</em>
             </header>
             <div class="home-card-icon device">盒</div>
             <div class="home-card-main">
-              <h3>{device.sn || ('设备 ' + device.id)}</h3>
+              <h3>{device.device_name || '小蓝直播助手'}</h3>
               <p>{device.sku_code || '直播搭子设备'}</p>
             </div>
             <footer>
               <span>{device.room_id ? ('已绑房间 #' + device.room_id) : '暂未绑定直播间'}</span>
-              <strong>{deviceWorkLabel(device)}</strong>
+              <a href="/devices">管理设备</a>
             </footer>
           </article>
         {/each}
 
-        <a class="home-add-card" href="/shop">
+        <a class="home-add-card" href="/devices">
           <span>＋</span>
           <strong>添加设备</strong>
-          <small>添加或购买直播设备</small>
+          <small>输入6位绑定码添加设备</small>
         </a>
       </div>
     {:else}
       <div class="home-empty-center">
-        <a class="home-add-card is-empty" href="/shop">
+        <a class="home-add-card is-empty" href="/devices">
           <span>＋</span>
           <strong>添加设备</strong>
           <small>添加你的第一台设备</small>
@@ -256,9 +364,50 @@
       </div>
     {/if}
   </section>
-</section>
 
-<a class="home-agent-fab" href="/agent" aria-label="打开智能体">✦</a>
+  <section class="home-zone home-ai-zone">
+    <header class="home-zone-head">
+      <div>
+        <span>AI TIME</span>
+        <h2>AI 时长</h2>
+      </div>
+      <b>实时余额</b>
+    </header>
+
+    <div class="home-ai-card">
+      <div class="home-ai-balance">
+        <span class="home-ai-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5"></circle>
+            <path d="M12 7.5v5l3.5 2"></path>
+          </svg>
+        </span>
+        <div>
+          <small>当前剩余总时长</small>
+          {#if quotaLoading}
+            <strong class="is-loading">读取中…</strong>
+          {:else if liveQuotaSummary}
+            <strong>{formatAITime(liveQuotaSummary.active_seconds)}</strong>
+          {:else}
+            <strong>暂不可用</strong>
+          {/if}
+        </div>
+      </div>
+
+      <button class="home-time-card-entry" type="button" on:click={openTimeCardPack}>
+        <span class="time-card-stack" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>
+          <strong>时长卡包</strong>
+          <small>{liveQuotaSummary?.reserve_time_card_count || 0} 张待启用</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+    </div>
+    {#if quotaError}
+      <button class="home-ai-error" type="button" on:click={loadAITime}>{quotaError}，点击重试</button>
+    {/if}
+  </section>
+</section>
 
 {#if showAddRoom}
   <div class="mobile-sheet-mask" role="presentation" on:click={closeAddRoomFromMask}>
@@ -282,6 +431,68 @@
         {savingRoom ? '添加中…' : '确认添加'}
       </button>
     </form>
+  </div>
+{/if}
+
+{#if timeCardPackOpen}
+  <div class="mobile-sheet-mask" role="presentation" on:click={closeTimeCardPackFromMask}>
+    <div class="mobile-sheet time-card-sheet" role="dialog" aria-modal="true" aria-label="时长卡包">
+      <header>
+        <div>
+          <span>TIME CARD WALLET</span>
+          <h2>时长卡包</h2>
+        </div>
+        <button type="button" aria-label="关闭时长卡包" on:click={() => (timeCardPackOpen = false)}>×</button>
+      </header>
+
+      <p class="time-card-tip">选择一张卡启用，卡内时长会立即充入当前 AI 时长池，有效期从启用时开始计算。</p>
+      {#if timeCardPackNotice}<p class="time-card-notice" aria-live="polite">{timeCardPackNotice}</p>{/if}
+      {#if timeCardPackError}<p class="time-card-error" aria-live="polite">{timeCardPackError}</p>{/if}
+
+      {#if timeCardPackLoading && !timeCardPage.items.length}
+        <div class="time-card-empty">正在打开卡包…</div>
+      {:else if !timeCardPage.items.length}
+        <div class="time-card-empty">
+          <strong>暂无未使用时长卡</strong>
+          <span>可前往商城购买新的时长卡</span>
+          <a href="/shop">去商城看看</a>
+        </div>
+      {:else}
+        <div class="time-card-list" aria-busy={timeCardPackLoading}>
+          {#each timeCardPage.items as item}
+            <article class="time-card-item">
+              <div class="time-card-face">
+                <span>{item.product_name}</span>
+                <div><strong>{formatTimeCardHours(item.original_seconds)}</strong><small>小时</small></div>
+                <em>{item.asset_no}</em>
+              </div>
+              <div class="time-card-detail">
+                <dl>
+                  <div><dt>购买时间</dt><dd>{formatTimeCardDate(item.purchased_at)}</dd></div>
+                  <div><dt>使用有效期</dt><dd>启用后 {item.validity_days} 天</dd></div>
+                  {#if item.activation_deadline_at}
+                    <div><dt>最晚启用</dt><dd>{formatTimeCardDate(item.activation_deadline_at)}</dd></div>
+                  {/if}
+                </dl>
+                {#if timeCardCanActivate(item)}
+                  <button type="button" disabled={timeCardActivatingID !== null} on:click={() => activateTimeCard(item)}>
+                    {timeCardActivatingID === item.id ? '正在启用…' : '使用这张'}
+                  </button>
+                {/if}
+              </div>
+            </article>
+          {/each}
+        </div>
+      {/if}
+
+      {#if timeCardPage.total > timeCardPackPageSize}
+        <footer class="time-card-pagination">
+          <button type="button" disabled={timeCardPage.page <= 1 || timeCardPackLoading} on:click={() => changeTimeCardPackPage(timeCardPage.page - 1)}>←</button>
+          <strong>{timeCardPage.page} / {timeCardTotalPages}</strong>
+          <button type="button" disabled={timeCardPage.page >= timeCardTotalPages || timeCardPackLoading} on:click={() => changeTimeCardPackPage(timeCardPage.page + 1)}>→</button>
+        </footer>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -353,7 +564,7 @@
   .home-card-main h3{margin:0;color:#26334d;font-size:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .home-card-main p{margin:6px 0 0;color:#8b95a8;font-size:12px}
   .home-room-card footer,.home-device-card footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:17px;padding-top:13px;border-top:1px solid #ebeff6;color:#929bad;font-size:11px}
-  .home-room-card footer strong,.home-device-card footer strong{color:#596ad0;font-size:11px}
+  .home-room-card footer strong,.home-device-card footer a{color:#596ad0;font-size:11px}
   .home-add-card{display:grid;place-items:center;align-content:center;gap:7px;padding:22px;border:1.5px dashed #b9c3e6;background:linear-gradient(145deg,#f8f9ff,#f0f3ff);color:#5a6cd3;text-align:center}
   .home-add-card span{display:grid;width:52px;height:52px;place-items:center;border-radius:50%;background:#5b6ddd;color:#fff;font-size:29px;font-weight:400;box-shadow:0 9px 22px rgba(82,100,210,.24)}
   .home-add-card strong{margin-top:7px;font-size:17px}
@@ -361,6 +572,26 @@
   .home-empty-center{display:grid;place-items:center;min-height:238px}
   .home-add-card.is-empty{width:min(82%,340px);min-height:218px}
   .home-loading-card{display:grid;min-height:218px;place-items:center;border:1px solid #e7ebf3;border-radius:24px;background:#fff;color:#8b95a8;font-size:13px}
+  .home-ai-zone{padding-top:24px}
+  .home-ai-card{overflow:hidden;border:1px solid #d7dcf7;border-radius:25px;background:linear-gradient(145deg,#f1f0ff 0%,#e8eaff 48%,#f4f7ff 100%);box-shadow:0 14px 34px rgba(74,76,155,.11)}
+  .home-ai-balance{position:relative;display:flex;align-items:center;gap:15px;min-height:132px;padding:22px;background:radial-gradient(circle at 92% 8%,rgba(140,123,240,.20),transparent 42%)}
+  .home-ai-balance::after{content:"AI";position:absolute;right:20px;top:12px;color:rgba(91,93,195,.08);font-size:66px;font-weight:950;letter-spacing:-5px}
+  .home-ai-icon{z-index:1;display:grid;flex:0 0 auto;width:54px;height:54px;place-items:center;border-radius:18px;background:linear-gradient(145deg,#7372df,#555cca);color:#fff;box-shadow:0 10px 24px rgba(83,84,193,.24)}
+  .home-ai-icon svg{width:29px;height:29px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .home-ai-balance>div{z-index:1;display:grid;gap:5px}
+  .home-ai-balance small{color:#7f83a0;font-size:12px;font-weight:800}
+  .home-ai-balance strong{color:#31355f;font-size:29px;letter-spacing:-1px;line-height:1.15}
+  .home-ai-balance strong.is-loading{font-size:20px;color:#777c9d}
+  .home-time-card-entry{display:flex;width:100%;align-items:center;gap:13px;padding:15px 18px;border:0;border-top:1px solid rgba(126,128,196,.14);background:rgba(255,255,255,.54);color:#2f3657;text-align:left}
+  .home-time-card-entry>span:nth-child(2){display:grid;flex:1;gap:3px}
+  .home-time-card-entry strong{font-size:15px}
+  .home-time-card-entry small{color:#898fa8;font-size:11px}
+  .home-time-card-entry>b{color:#6871ce;font-size:27px;font-weight:500}
+  .time-card-stack{position:relative;width:38px;height:34px;flex:0 0 38px}
+  .time-card-stack i{position:absolute;left:3px;top:7px;width:31px;height:21px;border-radius:6px;background:#8d91ea;box-shadow:0 4px 8px rgba(78,81,176,.15);transform:rotate(-8deg)}
+  .time-card-stack i:nth-child(2){background:#7379dc;transform:rotate(0)}
+  .time-card-stack i:nth-child(3){background:linear-gradient(135deg,#646bd3,#9197f1);transform:translate(3px,3px) rotate(7deg)}
+  .home-ai-error{width:100%;margin-top:8px;padding:9px 12px;border:0;border-radius:12px;background:#fff0f1;color:#b74e58;font-size:12px}
   .mobile-sheet-mask{position:fixed;inset:0;z-index:80;display:flex;align-items:flex-end;justify-content:center;background:rgba(17,25,40,.34);backdrop-filter:blur(4px)}
   .mobile-sheet{width:min(100%,540px);display:grid;gap:15px;padding:18px 18px calc(20px + env(safe-area-inset-bottom));border-radius:25px 25px 0 0;background:#fff;box-shadow:0 -18px 50px rgba(26,38,74,.18)}
   .mobile-sheet header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -373,12 +604,35 @@
   .mobile-sheet input:focus{border-color:#8291e4;box-shadow:0 0 0 3px rgba(93,111,216,.08)}
   .sheet-primary{min-height:50px;border:0;border-radius:14px;background:#596bdc;color:#fff;font-weight:900;box-shadow:0 12px 24px rgba(80,99,210,.22)}
   .sheet-primary:disabled{opacity:.48}
-  .home-agent-fab{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));z-index:42;display:grid;width:66px;height:66px;place-items:center;transform:translateX(-50%) translateY(0) scale(1);border:2px solid rgba(255,255,255,.78);border-radius:50%;color:#fff;background:radial-gradient(circle at 35% 30%,#a9baff 0,#7587f5 34%,#4c5fd7 76%,#3745a4 100%);box-shadow:0 12px 30px rgba(76,95,215,.34),0 0 0 0 rgba(92,111,226,.16),inset 0 0 0 1px rgba(255,255,255,.45);font-size:28px;will-change:transform,box-shadow;animation:agent-breathe-float 3.2s ease-in-out infinite}
-  @keyframes agent-breathe-float{
-    0%,100%{transform:translateX(-50%) translateY(0) scale(1);box-shadow:0 12px 30px rgba(76,95,215,.34),0 0 0 0 rgba(92,111,226,.16),inset 0 0 0 1px rgba(255,255,255,.45)}
-    45%{transform:translateX(-50%) translateY(-6px) scale(1.045);box-shadow:0 18px 34px rgba(76,95,215,.4),0 0 0 10px rgba(92,111,226,.05),inset 0 0 0 1px rgba(255,255,255,.55)}
-    72%{transform:translateX(-50%) translateY(-2px) scale(1.015);box-shadow:0 14px 31px rgba(76,95,215,.36),0 0 0 5px rgba(92,111,226,.08),inset 0 0 0 1px rgba(255,255,255,.5)}
-  }
+  .time-card-sheet{max-height:min(88vh,760px);overflow-y:auto;align-content:start}
+  .time-card-tip{margin:0;padding:11px 12px;border-radius:12px;background:#f3f4ff;color:#727a9b;font-size:11px;line-height:1.6}
+  .time-card-notice,.time-card-error{margin:0;padding:10px 12px;border-radius:12px;font-size:12px;font-weight:750}
+  .time-card-notice{background:#eaf8f1;color:#25815e}
+  .time-card-error{background:#fff0f1;color:#b74e58}
+  .time-card-empty{display:grid;min-height:210px;place-items:center;align-content:center;gap:8px;border:1px dashed #dce1ef;border-radius:18px;background:#fafbff;color:#8a93a6;text-align:center;font-size:12px}
+  .time-card-empty strong{color:#4b5570;font-size:15px}
+  .time-card-empty a{margin-top:5px;padding:8px 14px;border-radius:999px;background:#626dd7;color:#fff;font-weight:850}
+  .time-card-list{display:grid;gap:12px;transition:opacity .2s}
+  .time-card-list[aria-busy="true"]{opacity:.6;pointer-events:none}
+  .time-card-item{display:grid;grid-template-columns:116px minmax(0,1fr);gap:13px;padding:12px;border:1px solid #e0e3f1;border-radius:19px;background:#fbfbff;box-shadow:0 8px 22px rgba(70,76,139,.07)}
+  .time-card-face{position:relative;display:flex;min-height:142px;overflow:hidden;flex-direction:column;justify-content:space-between;padding:13px 11px;border-radius:14px;background:linear-gradient(145deg,#686bd2,#9097ef);color:#fff;box-shadow:0 8px 18px rgba(83,87,190,.2)}
+  .time-card-face::after{content:"";position:absolute;right:-27px;top:-35px;width:90px;height:90px;border:16px solid rgba(255,255,255,.1);border-radius:50%}
+  .time-card-face>span{z-index:1;overflow:hidden;font-size:10px;font-weight:850;white-space:nowrap;text-overflow:ellipsis}
+  .time-card-face>div{z-index:1;display:flex;align-items:flex-end;gap:3px}
+  .time-card-face strong{font-size:32px;line-height:.9;letter-spacing:-1px}
+  .time-card-face small{font-size:10px}
+  .time-card-face em{z-index:1;overflow:hidden;opacity:.72;font-size:8px;font-style:normal;white-space:nowrap;text-overflow:ellipsis}
+  .time-card-detail{display:flex;min-width:0;flex-direction:column;justify-content:space-between;gap:10px}
+  .time-card-detail dl{display:grid;gap:7px;margin:0}
+  .time-card-detail dl div{display:grid;gap:2px}
+  .time-card-detail dt{color:#9299aa;font-size:9px}
+  .time-card-detail dd{overflow:hidden;margin:0;color:#505971;font-size:10px;white-space:nowrap;text-overflow:ellipsis}
+  .time-card-detail button{min-height:36px;border:0;border-radius:11px;background:#616bd5;color:#fff;font-size:12px;font-weight:900;box-shadow:0 8px 16px rgba(82,91,196,.18)}
+  .time-card-detail button:disabled{opacity:.5}
+  .time-card-pagination{display:flex;align-items:center;justify-content:center;gap:18px;padding-top:2px}
+  .time-card-pagination button{width:38px;height:36px;border:1px solid #dce1ef;border-radius:11px;background:#f8f9fd;color:#5964c9;font-size:17px}
+  .time-card-pagination button:disabled{opacity:.38}
+  .time-card-pagination strong{color:#737b91;font-size:11px}
   @media(max-width:390px){
     .customer-home-hero{min-height:206px;padding:24px 21px}
     .home-hero-copy{width:66%}
@@ -387,5 +641,5 @@
     .home-profile-avatar{width:60px;height:60px}
     .home-live-summary{padding:8px 11px}.home-live-summary strong{font-size:11px}
   }
-  @media (prefers-reduced-motion:reduce){.home-agent-fab,.home-profile-avatar,.home-profile-orbit::before,.home-profile-orbit::after{animation:none}}
+  @media (prefers-reduced-motion:reduce){.home-profile-avatar,.home-profile-orbit::before,.home-profile-orbit::after{animation:none}}
 </style>

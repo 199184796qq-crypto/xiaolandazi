@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,14 +20,22 @@ import (
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/workinbox"
+	"livecompanion/management/pkg/styleplugin"
 )
 
 type SpeechMissionReader interface {
 	MissionSnapshot(string) (speechmission.Mission, bool)
 	RoomMissionSnapshots(int64) []speechmission.Mission
+}
+
+type SemanticMetricsReader interface {
+	Enabled() bool
+	Model() string
+	Stats() semantic.Stats
 }
 
 type Server struct {
@@ -39,15 +48,22 @@ type Server struct {
 		IsLeader() bool
 		Owner() string
 	}
-	mailer         *mailer.Client
-	env            string
-	avatarDir      string
-	publicWebURL   string
-	assetStorage   *assetstorage.Registry
-	assetURLTTL    time.Duration
-	coreStatusMu   sync.RWMutex
-	coreStatus     coreRuntimeStatus
-	speechMissions SpeechMissionReader
+	mailer               *mailer.Client
+	env                  string
+	executionRealm       string
+	avatarDir            string
+	publicWebURL         string
+	assetStorage         *assetstorage.Registry
+	assetURLTTL          time.Duration
+	coreStatusMu         sync.RWMutex
+	coreStatus           coreRuntimeStatus
+	speechMissions       SpeechMissionReader
+	semanticMetrics      SemanticMetricsReader
+	xiaozhiInternalToken string
+	deviceClaims         deviceClaimLimiter
+	deviceBusinessLimits deviceBusinessLimiter
+	wechatPay            WechatPaymentProvider
+	stylePlugins         *styleplugin.Registry
 }
 
 func New(
@@ -67,16 +83,17 @@ func New(
 	},
 ) *Server {
 	server := &Server{
-		store:        store,
-		auth:         authResolver,
-		core:         core,
-		audit:        auditStore,
-		mailer:       mailerClient,
-		env:          env,
-		avatarDir:    avatarDir,
-		publicWebURL: strings.TrimRight(publicWebURL, "/"),
-		assetStorage: assetStorage,
-		assetURLTTL:  assetURLTTL,
+		store:          store,
+		auth:           authResolver,
+		core:           core,
+		audit:          auditStore,
+		mailer:         mailerClient,
+		env:            env,
+		executionRealm: "prod",
+		avatarDir:      avatarDir,
+		publicWebURL:   strings.TrimRight(publicWebURL, "/"),
+		assetStorage:   assetStorage,
+		assetURLTTL:    assetURLTTL,
 	}
 	if len(leaders) > 0 {
 		server.leader = leaders[0]
@@ -88,9 +105,25 @@ func (s *Server) SetSpeechMissionReader(reader SpeechMissionReader) {
 	s.speechMissions = reader
 }
 
+func (s *Server) SetSemanticMetricsReader(reader SemanticMetricsReader) {
+	s.semanticMetrics = reader
+}
+
+func (s *Server) SetExecutionRealm(realm string) {
+	s.executionRealm = model.NormalizeExecutionRealm(realm)
+}
+
+func (s *Server) SetStylePluginRegistry(registry *styleplugin.Registry) {
+	s.stylePlugins = registry
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerDeviceProvisioningRoutes(mux)
 	s.registerWorkInboxRoutes(mux)
+	s.registerLiveContentPolicyRoutes(mux)
+	s.registerLiveAgentPlanStyleOverlayRoutes(mux)
+	s.registerLiveAnchorStyleRoutes(mux)
 
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
@@ -115,6 +148,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tenants", s.listTenants)
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
+	mux.HandleFunc("GET /api/v1/system/speech-models", s.systemSpeechModelsGet)
+	mux.HandleFunc("PUT /api/v1/system/speech-models", s.systemSpeechModelsSave)
+	mux.HandleFunc("POST /api/v1/system/speech-models/test", s.systemSpeechModelsTest)
+	mux.HandleFunc("POST /api/v1/system/speech-models/models", s.systemSpeechModelsList)
 	mux.HandleFunc("PUT /api/v1/system/settings", s.systemUpdateSettings)
 	mux.HandleFunc("PUT /api/v1/system/agent-prompts", s.systemUpdateAgentPromptConfigs)
 	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/publish", s.systemPublishAgentPromptConfig)
@@ -170,6 +207,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/account/ui-preferences", s.updateUserUIPreferences)
 	mux.HandleFunc("GET /api/v1/finance/dashboard", s.financeDashboard)
 	mux.HandleFunc("POST /api/v1/finance/recharge-request", s.financeCreateRechargeRequest)
+	mux.HandleFunc("GET /api/v1/finance/beans", s.customerBeanWallet)
+	mux.HandleFunc("POST /api/v1/finance/beans/purchases", s.customerPurchaseBeans)
+	mux.HandleFunc("POST /api/v1/finance/beans/quote", s.customerQuoteBeans)
 	mux.HandleFunc("GET /api/v1/finance/referral-wallet", s.customerReferralWallet)
 	mux.HandleFunc("POST /api/v1/finance/referral-withdrawals", s.customerCreateReferralWithdrawal)
 	mux.HandleFunc("GET /api/v1/finance/withdrawals", s.customerWalletWithdrawals)
@@ -228,6 +268,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/commercial/time-cards/{productID}/publish", s.commercialPublishTimeCard)
 	mux.HandleFunc("PATCH /api/v1/commercial/time-cards/{productID}/listing", s.commercialSetTimeCardListing)
 	mux.HandleFunc("DELETE /api/v1/commercial/time-cards/{productID}", s.commercialArchiveTimeCard)
+	mux.HandleFunc("GET /api/v1/commercial/beans", s.commercialBeansDashboard)
+	mux.HandleFunc("PUT /api/v1/commercial/beans/settings", s.commercialUpdateBeanSettings)
+	mux.HandleFunc("POST /api/v1/commercial/beans/rules", s.commercialCreateBeanRule)
+	mux.HandleFunc("PUT /api/v1/commercial/beans/rules/{ruleID}", s.commercialUpdateBeanRule)
 	mux.HandleFunc("GET /api/v1/commercial/device-products", s.commercialListDeviceProducts)
 	mux.HandleFunc("GET /api/v1/commercial/device-sku-types", s.commercialListDeviceSKUTypes)
 	mux.HandleFunc("POST /api/v1/commercial/device-products", s.commercialCreateDeviceProduct)
@@ -246,6 +290,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/commercial/incentives", s.commercialCreateIncentiveProgram)
 	mux.HandleFunc("PUT /api/v1/commercial/incentives/{programID}/draft", s.commercialSaveIncentiveDraft)
 	mux.HandleFunc("POST /api/v1/commercial/incentives/{programID}/publish", s.commercialPublishIncentive)
+	mux.HandleFunc("GET /api/v1/finance/commerce-rules", s.financeListCommerceRules)
+	mux.HandleFunc("POST /api/v1/finance/commerce-rules/drafts", s.financeSaveCommerceDraft)
+	mux.HandleFunc("POST /api/v1/finance/commerce-rules/{ruleID}/publish", s.financePublishCommerceRule)
+	mux.HandleFunc("GET /api/v1/sales/commission-wallet", s.salesCommissionWallet)
+	mux.HandleFunc("POST /api/v1/sales/commission-withdrawals", s.salesCreateCommissionWithdrawal)
+	mux.HandleFunc("GET /api/v1/finance/sales-withdrawals", s.financeListSalesCommissionWithdrawals)
+	mux.HandleFunc("POST /api/v1/finance/sales-withdrawals/{withdrawalID}/approve", s.financeApproveSalesCommissionWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/sales-withdrawals/{withdrawalID}/reject", s.financeRejectSalesCommissionWithdrawal)
+	mux.HandleFunc("POST /api/v1/finance/sales-withdrawals/{withdrawalID}/pay", s.financePaySalesCommissionWithdrawal)
 	mux.HandleFunc("GET /api/v1/finance/settlements", s.financeSettlementDashboard)
 	mux.HandleFunc("POST /api/v1/finance/settlements/batches", s.financeCreateSettlementBatch)
 	mux.HandleFunc("POST /api/v1/finance/settlements/batches/{batchID}/approve", s.financeApproveSettlementBatch)
@@ -261,10 +314,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/finance/customer-withdrawals/{withdrawalID}/pay", s.financePayCustomerWalletWithdrawal)
 	mux.HandleFunc("GET /api/v1/finance/operating", s.financeOperatingOverview)
 	mux.HandleFunc("POST /api/v1/finance/token-purchases", s.financeCreateTokenPurchase)
+	mux.HandleFunc("GET /api/v1/finance/beans/overview", s.financeBeansDashboard)
+	mux.HandleFunc("POST /api/v1/finance/beans/conversions/{conversionID}/{action}", s.financeTransitionBeanConversion)
+	mux.HandleFunc("GET /api/v1/staff/beans/me", s.staffOwnBeanWallet)
+	mux.HandleFunc("POST /api/v1/staff/beans/conversions", s.staffCreateBeanConversion)
 	mux.HandleFunc("GET /api/v1/shop/memberships", s.customerShopMemberships)
 	mux.HandleFunc("GET /api/v1/shop/time-cards", s.customerShopTimeCards)
 	mux.HandleFunc("GET /api/v1/shop/devices", s.customerShopDevices)
 	mux.HandleFunc("GET /api/v1/shop/marketing-campaigns", s.customerShopMarketingCampaigns)
+	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/free-claim", s.customerClaimFreeMarketingOrder)
 	mux.HandleFunc("GET /api/v1/shop/orders", s.customerShopListOrders)
 	mux.HandleFunc("POST /api/v1/shop/orders", s.customerShopCreateOrder)
 	mux.HandleFunc("GET /api/v1/shop/orders/{orderID}", s.customerShopGetOrder)
@@ -272,6 +330,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/wallet-pay", s.customerShopWalletPayOrder)
 	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/sandbox-refund", s.customerShopSandboxRefundOrder)
 	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/cancel", s.customerShopCancelOrder)
+	s.registerWechatPaymentRoutes(mux)
 	mux.HandleFunc("GET /api/v1/after-sales/requests", s.afterSalesListRequests)
 	mux.HandleFunc("POST /api/v1/after-sales/requests", s.afterSalesCreateRequest)
 	mux.HandleFunc("GET /api/v1/after-sales/requests/{rmaID}/events", s.afterSalesRequestEvents)
@@ -279,6 +338,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/inventory/device-products", s.inventoryListDeviceProducts)
 	mux.HandleFunc("GET /api/v1/inventory/agents", s.inventoryListAgents)
 	mux.HandleFunc("GET /api/v1/inventory/devices", s.inventoryListDevices)
+	mux.HandleFunc("GET /api/v1/inventory/stock-products", s.inventoryStockProducts)
+	mux.HandleFunc("GET /api/v1/inventory/stock-devices", s.inventoryStockDevices)
+	mux.HandleFunc("GET /api/v1/inventory/batches/check", s.inventoryCheckBatch)
 	mux.HandleFunc("POST /api/v1/inventory/devices", s.inventoryCreateDevice)
 	mux.HandleFunc("POST /api/v1/inventory/inbounds", s.inventoryBatchInbound)
 	mux.HandleFunc("POST /api/v1/inventory/devices/{deviceID}/transition", s.inventoryTransitionDevice)
@@ -316,6 +378,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms", s.listRooms)
 	mux.HandleFunc("POST /api/v1/rooms", s.createRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}", s.getRoom)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/customer-contact", s.roomCustomerContact)
 	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/monitor", s.updateRoomMonitor)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}", s.deleteRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/events", s.listEvents)
@@ -377,12 +440,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/media-assets/{assetID}/content", s.liveMediaAssetContent)
 	mux.HandleFunc("DELETE /api/v1/live/media-assets/{assetID}", s.liveDeleteMediaAsset)
 	mux.HandleFunc("GET /api/v1/live/voice-profiles", s.liveListVoiceProfiles)
+	mux.HandleFunc("GET /api/v1/live/voice-profiles/quota", s.liveVoiceProfileQuota)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles", s.liveCreateVoiceProfile)
 	mux.HandleFunc("PUT /api/v1/live/voice-profiles/{profileID}", s.liveUpdateVoiceProfile)
+	mux.HandleFunc("DELETE /api/v1/live/voice-profiles/{profileID}", s.liveDeleteVoiceProfile)
 	mux.HandleFunc("GET /api/v1/live/official-voices", s.liveOfficialVoices)
 	mux.HandleFunc("POST /api/v1/live/official-voices/{voiceID}/preview", s.liveOfficialVoicePreview)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/clone", s.liveCloneVoiceProfile)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/preview", s.liveVoiceProfilePreview)
+	mux.HandleFunc("GET /api/v1/live/voice-model-bindings", s.liveListVoiceModelBindings)
+	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/bindings/clone", s.liveCloneVoiceModelBinding)
+	mux.HandleFunc("POST /api/v1/live/voice-model-bindings/{bindingID}/preview", s.liveVoiceModelBindingPreview)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/chat", s.liveAgentChat)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/interpret", s.liveStrategyIntentInterpret)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent/actions/execute", s.liveStrategyExecuteAction)
@@ -445,6 +513,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts", s.liveAgentPlanScriptCreate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/analyze-preview", s.liveAgentPlanScriptAnalyzePreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/{scriptID}/analyze", s.liveAgentPlanScriptAnalyze)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/{scriptID}/analysis-confirm", s.liveAgentPlanScriptAnalysisConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style/test", s.liveAgentPlanAnchorStyleTest)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/recognize-image-preview", s.liveAgentPlanScriptRecognizeImagePreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/preview", s.liveAgentPlanFullShowPreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/audit-preview", s.liveAgentPlanFullShowAuditPreview)
@@ -458,6 +528,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/versions", s.liveAgentPlanVersionCreate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/versions/{versionID}/publish", s.liveAgentPlanVersionPublish)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan/published-version", s.liveAgentPlanPublishedVersionForRoom)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/live-agent-plan/published-version/voice-binding", s.liveAgentPlanPublishRoomVoiceBinding)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/live-agent-plan/published-version/voice-rate", s.liveAgentPlanPublishRoomVoiceRate)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/live-agent-plan/published-version/emotion", s.liveAgentPlanPublishRoomEmotion)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/scripts/{scriptID}", s.liveAgentPlanScriptUpdate)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/script-references", s.liveAgentPlanScriptReferenceList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/script-references", s.liveAgentPlanScriptReferenceCreate)
@@ -512,6 +585,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"db_idle":             dbStats.Idle,
 		"db_wait_count":       dbStats.WaitCount,
 		"audit_authority":     "mysql",
+		"execution_realm":     model.NormalizeExecutionRealm(s.executionRealm),
+	}
+	if s.semanticMetrics != nil {
+		payload["semantic_embedding_enabled"] = s.semanticMetrics.Enabled()
+		payload["semantic_embedding_model"] = s.semanticMetrics.Model()
 	}
 	if s.leader != nil {
 		payload["node_id"] = s.leader.Owner()
@@ -542,6 +620,74 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		dbStats.WaitCount,
 		leader,
 	)
+	semanticEnabled := 0
+	semanticStats := semantic.Stats{}
+	if s.semanticMetrics != nil {
+		if s.semanticMetrics.Enabled() {
+			semanticEnabled = 1
+		}
+		semanticStats = s.semanticMetrics.Stats()
+	}
+	_, _ = fmt.Fprintf(
+		w,
+		"livecompanion_management_semantic_embedding_enabled %d\n"+
+			"livecompanion_management_semantic_embedding_requests_total %d\n"+
+			"livecompanion_management_semantic_embedding_texts_total %d\n"+
+			"livecompanion_management_semantic_embedding_failures_total %d\n"+
+			"livecompanion_management_semantic_embedding_input_tokens_total %d\n"+
+			"livecompanion_management_semantic_embedding_latency_seconds_sum %.6f\n"+
+			"livecompanion_management_semantic_embedding_latency_seconds_count %d\n",
+		semanticEnabled,
+		semanticStats.Requests,
+		semanticStats.Texts,
+		semanticStats.Failures,
+		semanticStats.InputTokens,
+		float64(semanticStats.LatencyNanos)/float64(time.Second),
+		semanticStats.Requests,
+	)
+	cumulative := uint64(0)
+	bucketLabels := [...]string{"0.05", "0.1", "0.25", "0.5", "1", "2", "+Inf"}
+	for index, count := range semanticStats.LatencyBuckets {
+		cumulative += count
+		_, _ = fmt.Fprintf(
+			w,
+			"livecompanion_management_semantic_embedding_latency_seconds_bucket{le=%q} %d\n",
+			bucketLabels[index],
+			cumulative,
+		)
+	}
+	if reader, ok := s.semanticMetrics.(interface {
+		OperationStats() semantic.OperationStats
+	}); ok {
+		operations := reader.OperationStats().ByContent
+		for _, contentType := range []string{
+			semantic.ContentTypeQuestionCluster,
+			semantic.ContentTypeCorrection,
+			semantic.ContentTypeReferenceAnswer,
+			semantic.ContentTypeMaterialChunk,
+			semantic.ContentTypeRecentSpeech,
+		} {
+			stats := operations[contentType]
+			_, _ = fmt.Fprintf(w,
+				"livecompanion_management_semantic_resolve_documents_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_cache_hits_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_index_writes_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_searches_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_search_candidates_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_retrievals_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_retrieval_hits_total{content_type=%q} %d\n"+
+					"livecompanion_management_semantic_failures_total{content_type=%q} %d\n",
+				contentType, stats.ResolveDocuments,
+				contentType, stats.CacheHits,
+				contentType, stats.IndexWrites,
+				contentType, stats.Searches,
+				contentType, stats.SearchCandidates,
+				contentType, stats.Retrievals,
+				contentType, stats.RetrievalHits,
+				contentType, stats.Failures,
+			)
+		}
+	}
 }
 
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
@@ -770,46 +916,23 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		cooperation, err := s.store.GetCustomerCooperationInfo(r.Context(), tenantID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "读取商户合作状态失败")
-			return
-		}
-		if !cooperation.IsNonCooperating() {
-			writeError(w, http.StatusForbidden, "合作中的商户直播间禁止运维删除")
-			return
-		}
 	}
 
-	query := url.Values{}
-	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-	resp, err := s.core.DoRoom(
-		r.Context(),
-		tenantID,
-		roomID,
-		http.MethodDelete,
-		fmt.Sprintf("/internal/v1/rooms/%d", roomID),
-		query,
-		nil,
-	)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "核心服务暂不可用")
+	// Persist the deletion intent before touching Core. If either service fails,
+	// the worker continues cleanup after restart; no room restoration is offered.
+	if err := s.store.QueueRoomDeletion(r.Context(), tenantID, roomID, actor.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存直播间删除任务失败")
 		return
 	}
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-		var cleanupErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			cleanupErr = s.store.CleanupDeletedRoomDerivedState(r.Context(), tenantID, roomID)
-			if cleanupErr == nil {
-				break
-			}
-			time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
-		}
-		if cleanupErr != nil {
-			log.Printf("cleanup deleted room derived state tenant=%d room=%d: %v", tenantID, roomID, cleanupErr)
-		}
+	if err := s.finishRoomDeletion(r.Context(), tenantID, roomID); err != nil {
+		log.Printf("room deletion pending tenant=%d room=%d: %v", tenantID, roomID, err)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status": "deletion_pending", "room_id": roomID,
+			"message": "删除任务已受理，资源清理将在后台自动重试，直播间不可恢复",
+		})
+		return
 	}
-	s.copyCoreResponse(w, resp)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -1059,8 +1182,24 @@ func (s *Server) tenantForRoom(
 	actor model.Actor,
 	roomID int64,
 ) (int64, bool) {
+	allowDeleting := r.Method == http.MethodDelete && r.URL.Path == fmt.Sprintf("/api/v1/rooms/%d", roomID)
+	checkDeletion := func(tenantID int64) bool {
+		if allowDeleting {
+			return true
+		}
+		deleted, err := s.store.IsRoomDeletionRequested(r.Context(), tenantID, roomID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "读取直播间生命周期失败")
+			return false
+		}
+		if deleted {
+			writeError(w, http.StatusGone, "直播间已进入永久删除流程")
+			return false
+		}
+		return true
+	}
 	if actor.TenantID != nil {
-		return *actor.TenantID, true
+		return *actor.TenantID, checkDeletion(*actor.TenantID)
 	}
 
 	hasCrossTenantAccess := actor.IsPlatformAdmin()
@@ -1077,6 +1216,18 @@ func (s *Server) tenantForRoom(
 	if !hasCrossTenantAccess {
 		writeError(w, http.StatusForbidden, "当前账号没有该终端直播运维权限")
 		return 0, false
+	}
+	if allowDeleting {
+		tenantID, err := s.store.ResolveRoomTenantForDeletion(r.Context(), roomID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "直播间不存在")
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "读取直播间信息失败")
+			}
+			return 0, false
+		}
+		return tenantID, true
 	}
 
 	resp, err := s.core.Do(
@@ -1104,7 +1255,7 @@ func (s *Server) tenantForRoom(
 		writeError(w, http.StatusBadGateway, "核心服务返回了无效房间数据")
 		return 0, false
 	}
-	return room.TenantID, true
+	return room.TenantID, checkDeletion(room.TenantID)
 }
 
 func (s *Server) roomScopeQuery(

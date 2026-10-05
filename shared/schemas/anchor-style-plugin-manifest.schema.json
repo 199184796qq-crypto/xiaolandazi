@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livecompanion.local/schemas/anchor-style-plugin-manifest.schema.json",
+  "title": "Anchor Style Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "api_version",
+    "id",
+    "version",
+    "name",
+    "description",
+    "mode",
+    "category",
+    "scenes",
+    "safety",
+    "compiler"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "api_version": { "const": "anchor-style-plugin/v1" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "mode": { "enum": ["declarative", "trusted_executor"] },
+    "category": {
+      "enum": [
+        "delivery",
+        "rhythm",
+        "lexical",
+        "local_flow",
+        "humor",
+        "interaction_delivery",
+        "storytelling"
+      ]
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["mainline", "interaction", "refresh", "serious"] }
+    },
+    "parameters": {
+      "type": "object",
+      "default": {},
+      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$" },
+      "additionalProperties": { "$ref": "#/$defs/parameter" }
+    },
+    "requires": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+    },
+    "conflicts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+    },
+    "safety": { "$ref": "#/$defs/safety" },
+    "compiler": { "$ref": "#/$defs/compiler" },
+    "runtime": { "$ref": "#/$defs/runtime" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "trusted_executor" } },
+        "required": ["mode"]
+      },
+      "then": { "required": ["runtime"] },
+      "else": { "not": { "required": ["runtime"] } }
+    },
+    {
+      "if": {
+        "properties": {
+          "safety": {
+            "properties": {
+              "may_emit_intentional_false_derived_value": { "const": true }
+            },
+            "required": ["may_emit_intentional_false_derived_value"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": { "const": "trusted_executor" },
+          "safety": {
+            "properties": {
+              "may_change_source_fact": { "const": false },
+              "atomic_output_required": { "const": true },
+              "interruptible": { "const": false },
+              "allowed_fact_kinds": { "contains": { "const": "derived_arithmetic" } }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "description"],
+      "properties": {
+        "type": { "enum": ["integer", "number", "boolean", "string", "string_array"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "required": { "type": "boolean" },
+        "default": {},
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "min_items": { "type": "integer", "minimum": 0 },
+        "max_items": { "type": "integer", "minimum": 0 },
+        "enum": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "may_emit_intentional_false_derived_value",
+        "may_change_source_fact",
+        "atomic_output_required",
+        "interruptible"
+      ],
+      "properties": {
+        "may_emit_intentional_false_derived_value": { "type": "boolean" },
+        "may_change_source_fact": { "const": false },
+        "atomic_output_required": { "type": "boolean" },
+        "interruptible": { "type": "boolean" },
+        "allowed_fact_kinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["none", "derived_arithmetic"] }
+        },
+        "forbidden_scenes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["serious"] }
+        }
+      }
+    },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_capability"],
+      "properties": {
+        "recognized_intents": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "output_capability": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+        },
+        "instructions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mainline": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "interaction": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "refresh": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "serious": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        },
+        "micro_actions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "audience_address",
+              "self_reference",
+              "state_information",
+              "direct_answer",
+              "short_confirmation",
+              "rephrase",
+              "supplement",
+              "bridge",
+              "question",
+              "scene_detail",
+              "reaction",
+              "conclusion",
+              "reason",
+              "example",
+              "self_correction",
+              "close"
+            ]
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executor"],
+      "properties": {
+        "executor": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+        }
+      }
+    }
+  }
+}

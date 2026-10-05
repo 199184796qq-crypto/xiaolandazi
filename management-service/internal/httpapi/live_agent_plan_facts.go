@@ -23,6 +23,12 @@ func validateLiveAgentPlanFactCandidate(candidate model.LiveAgentPlanFactCandida
 	if utf8.RuneCountInString(candidate.Value) > 4000 {
 		return errors.New("事实内容不能超过 4000 字")
 	}
+	if utf8.RuneCountInString(candidate.ForbiddenWording) > 4000 {
+		return errors.New("不允许直接说的内容不能超过 4000 字")
+	}
+	if utf8.RuneCountInString(candidate.SafeRewrite) > 4000 {
+		return errors.New("建议替代表达不能超过 4000 字")
+	}
 	if utf8.RuneCountInString(candidate.SourceQuote) > 2000 {
 		return errors.New("原文依据不能超过 2000 字")
 	}
@@ -121,6 +127,8 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 		}
 		candidate.Key = strings.TrimSpace(candidate.Key)
 		candidate.Value = strings.TrimSpace(candidate.Value)
+		candidate.ForbiddenWording = strings.TrimSpace(candidate.ForbiddenWording)
+		candidate.SafeRewrite = strings.TrimSpace(candidate.SafeRewrite)
 		candidate.ReviewBucket = strings.TrimSpace(candidate.ReviewBucket)
 		if candidate.ReviewBucket == "" {
 			candidate.ReviewBucket = "discuss"
@@ -207,9 +215,11 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	candidate := model.LiveAgentPlanFactCandidate{
-		Category: strings.TrimSpace(input.Category),
-		Key:      strings.TrimSpace(input.Key),
-		Value:    strings.TrimSpace(input.Value),
+		Category:         strings.TrimSpace(input.Category),
+		Key:              strings.TrimSpace(input.Key),
+		Value:            strings.TrimSpace(input.Value),
+		ForbiddenWording: strings.TrimSpace(input.ForbiddenWording),
+		SafeRewrite:      strings.TrimSpace(input.SafeRewrite),
 	}
 	if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -219,14 +229,19 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	updated, err := s.store.UpdateLiveAgentPlanFact(
-		r.Context(), tenantID, planID, factID, actor.UserID, candidate.Category, candidate.Key, candidate.Value,
+	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(
+		r.Context(), tenantID, planID, factID, actor.UserID, input.ExpectedVersionNo,
+		candidate.Category, candidate.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite,
 	)
 	if errors.Is(err, appdb.ErrLiveAgentPlanFactNotFound) {
 		writeError(w, http.StatusNotFound, "正式事实不存在")
 		return
 	}
 	if err != nil {
+		if errors.Is(err, appdb.ErrLiveAgentPlanFactVersionConflict) {
+			writeError(w, http.StatusConflict, "事实依据已被其他操作修改，请刷新后重试")
+			return
+		}
 		if strings.Contains(err.Error(), "same fact key already exists") {
 			writeError(w, http.StatusConflict, "同分类下已经存在相同事实名称")
 			return

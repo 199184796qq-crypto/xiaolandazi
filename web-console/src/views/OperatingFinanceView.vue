@@ -91,6 +91,8 @@ function money(cents: number) {
 
 function categoryLabel(value: string) {
   const map: Record<string, string> = {
+	customer_order_payment: '客户订单收款',
+	unapplied_wechat_payment: '微信收款异常（待核查）',
     device_purchase: '设备采购',
     logistics: '物流费用',
     scrap_disposal: '报废处置',
@@ -223,6 +225,8 @@ onMounted(loadData)
         />
         <select v-model="category" class="text-input" @change="entryPage = 1">
           <option value="all">全部业务</option>
+		  <option value="customer_order_payment">客户订单收款</option>
+		  <option value="unapplied_wechat_payment">微信收款异常（待核查）</option>
           <option value="device_purchase">设备采购</option>
           <option value="logistics">物流费用</option>
           <option value="scrap_disposal">报废处置</option>

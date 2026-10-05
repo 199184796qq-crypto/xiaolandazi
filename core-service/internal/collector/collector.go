@@ -8,7 +8,10 @@ import (
 	"livecompanion/core/internal/model"
 )
 
-var ErrOffline = errors.New("collector reports room offline")
+var (
+	ErrOffline   = errors.New("collector reports room offline")
+	ErrLiveEnded = errors.New("collector reports platform live ended")
+)
 
 type EmitFunc func(context.Context, model.CreateEventInput) error
 type LiveFunc func(context.Context) error

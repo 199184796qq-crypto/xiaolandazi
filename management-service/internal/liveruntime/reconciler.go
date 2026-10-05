@@ -2,6 +2,7 @@ package liveruntime
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ type Reconciler struct {
 	interval               time.Duration
 	workers                int
 	batchSize              int
+	executionRealm         string
 	legacyLeaseCleanupDone bool
 }
 
@@ -63,6 +65,7 @@ const (
 	liveRuntimeStartGracePeriod = 20 * time.Second
 	liveRuntimeReconcileTimeout = 8 * time.Second
 	liveRuntimeTenantTimeout    = 6 * time.Second
+	liveRuntimeDeviceStopAfter  = 60 * time.Second
 )
 
 type coreAgentRuntimeState struct {
@@ -89,11 +92,12 @@ func NewReconciler(
 		batchSize = 500
 	}
 	result := &Reconciler{
-		store:     store,
-		core:      core,
-		interval:  10 * time.Second,
-		workers:   workers,
-		batchSize: batchSize,
+		store:          store,
+		core:           core,
+		interval:       5 * time.Second,
+		workers:        workers,
+		batchSize:      batchSize,
+		executionRealm: "prod",
 	}
 	if len(leaders) > 0 {
 		result.leader = leaders[0]
@@ -108,6 +112,13 @@ func (r *Reconciler) SetAuditRecorder(recorder interface {
 		return
 	}
 	r.audit = recorder
+}
+
+func (r *Reconciler) SetExecutionRealm(realm string) {
+	if r == nil {
+		return
+	}
+	r.executionRealm = model.NormalizeExecutionRealm(realm)
 }
 
 func (r *Reconciler) Run(ctx context.Context) {
@@ -139,7 +150,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	if r.leader != nil && !r.leader.IsLeader() {
 		return
 	}
-	if !r.legacyLeaseCleanupDone {
+	if model.NormalizeExecutionRealm(r.executionRealm) == "prod" && !r.legacyLeaseCleanupDone {
 		count, err := r.store.CancelAllLegacyLiveQuotaLeases(ctx, time.Now().UTC())
 		if err != nil {
 			log.Printf("billing manager legacy lease cleanup: %v", err)
@@ -155,6 +166,13 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		log.Printf("live runtime list sessions: %v", err)
 		return
 	}
+	filteredSessions := sessions[:0]
+	for _, session := range sessions {
+		if session.BelongsToExecutionRealm(r.executionRealm) {
+			filteredSessions = append(filteredSessions, session)
+		}
+	}
+	sessions = filteredSessions
 	if len(sessions) == 0 {
 		return
 	}
@@ -225,6 +243,125 @@ func waitReconcileWorkers(ctx context.Context, wg *sync.WaitGroup) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+func deviceOfflineStopDeadline(
+	sessionStartedAt time.Time,
+	presence appdb.LiveDevicePresence,
+	now time.Time,
+) (time.Time, bool) {
+	disconnectedAt := sessionStartedAt
+	if presence.Exists {
+		if strings.EqualFold(strings.TrimSpace(presence.ConnectionStatus), "online") && presence.LastHeartbeatAt != nil {
+			disconnectedAt = *presence.LastHeartbeatAt
+		} else if !presence.ConnectionUpdatedAt.IsZero() {
+			disconnectedAt = presence.ConnectionUpdatedAt
+		} else if presence.LastHeartbeatAt != nil {
+			disconnectedAt = *presence.LastHeartbeatAt
+		}
+	}
+	if disconnectedAt.IsZero() {
+		disconnectedAt = now
+	}
+	deadline := disconnectedAt.Add(liveRuntimeDeviceStopAfter)
+	return deadline, !now.Before(deadline)
+}
+
+func (r *Reconciler) runtimeDevicePresence(
+	ctx context.Context,
+	session model.LiveRuntimeSession,
+) (appdb.LiveDevicePresence, *int64, error) {
+	deviceID := session.DeviceID
+	if deviceID == nil {
+		device, err := r.store.GetBoundLiveDeviceByRoom(ctx, session.TenantID, session.RoomID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return appdb.LiveDevicePresence{}, nil, nil
+		}
+		if err != nil {
+			return appdb.LiveDevicePresence{}, nil, err
+		}
+		value := device.ID
+		deviceID = &value
+	}
+	presence, err := r.store.GetLiveDevicePresence(ctx, session.TenantID, *deviceID)
+	return presence, deviceID, err
+}
+
+// stopForDeviceOffline is fail-closed for billing: after 60 continuous seconds
+// without a device heartbeat, metering is closed even when the Core stop call
+// is temporarily unavailable. Recently stopped device_offline rows remain in
+// the reconcile set so Core shutdown is retried independently.
+func (r *Reconciler) stopForDeviceOffline(
+	ctx context.Context,
+	session model.LiveRuntimeSession,
+	state coreRoomState,
+	now time.Time,
+) bool {
+	presence, deviceID, err := r.runtimeDevicePresence(ctx, session)
+	if err != nil {
+		log.Printf("billing manager device presence tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
+		return false
+	}
+	if deviceID == nil {
+		return false
+	}
+	deadline, due := deviceOfflineStopDeadline(session.StartedAt, presence, now)
+	if !due {
+		return false
+	}
+
+	finalSeconds := state.AgentWorkingSeconds
+	coreBootID := state.CoreBootID
+	stopped, stopErr := r.stopCoreAgentRuntime(ctx, session.TenantID, session.RoomID, "device_offline")
+	if stopErr != nil {
+		log.Printf("billing manager device-offline core stop deferred tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, *deviceID, session.ID, stopErr)
+	} else {
+		coreBootID = stopped.BootID
+		if stopped.WorkingSeconds > finalSeconds {
+			finalSeconds = stopped.WorkingSeconds
+		}
+	}
+
+	closed, settleErr := r.store.StopLiveRuntimeSessionMeterSystem(
+		ctx,
+		session.ID,
+		"device_offline",
+		finalSeconds,
+		now,
+	)
+	if settleErr != nil {
+		log.Printf("billing manager device-offline settle tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, *deviceID, session.ID, settleErr)
+		return false
+	}
+	log.Printf(
+		"billing manager hard stop tenant=%d room=%d device=%d session=%d reason=device_offline deadline=%s billed=%d core_stop_ok=%t",
+		session.TenantID,
+		session.RoomID,
+		*deviceID,
+		session.ID,
+		deadline.UTC().Format(time.RFC3339),
+		closed.TotalBilledSeconds,
+		stopErr == nil,
+	)
+	r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", "device_offline", coreBootID, finalSeconds)
+	return true
+}
+
+func (r *Reconciler) retryDeviceOfflineCoreStop(
+	ctx context.Context,
+	session model.LiveRuntimeSession,
+	state coreRoomState,
+) {
+	if !strings.EqualFold(strings.TrimSpace(session.StopReason), "device_offline") {
+		return
+	}
+	coreState := strings.ToLower(strings.TrimSpace(state.AgentState))
+	if coreState != "working" && coreState != "starting" && coreState != "stopping" {
+		return
+	}
+	if _, err := r.stopCoreAgentRuntime(ctx, session.TenantID, session.RoomID, "device_offline"); err != nil {
+		log.Printf("billing manager retry device-offline core stop tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
 	}
 }
 
@@ -307,40 +444,25 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 			job.State.AgentWorkingSeconds = fresh.WorkingSeconds
 			job.State.AgentUpdatedAt = fresh.UpdatedAt
 		}
+		if session.Status == "stopped" {
+			r.retryDeviceOfflineCoreStop(ctx, session, job.State)
+			continue
+		}
 
 		if session.Status == "paused" {
-			// Paused == unregistered from active consumption. Resume changes the
-			// durable row back to running and it automatically re-enters this loop.
+			// Paused does not consume quota, but a hardware-bound session must still
+			// close after the same 60-second disconnect rule.
+			_ = r.stopForDeviceOffline(ctx, session, job.State, now)
 			continue
 		}
 		if session.Status != "running" {
 			continue
 		}
 
-		roomLive := strings.EqualFold(strings.TrimSpace(job.State.Status), "live")
-		if !roomLive {
-			stopped, stopErr := r.stopCoreAgentRuntime(ctx, tenantID, session.RoomID, "live_finished")
-			if stopErr != nil {
-				log.Printf("billing manager stop offline room tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, stopErr)
-				continue
-			}
-			finalSeconds := job.State.AgentWorkingSeconds
-			if stopped.WorkingSeconds > finalSeconds {
-				finalSeconds = stopped.WorkingSeconds
-			}
-			if _, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, "room_offline", finalSeconds, now); err != nil {
-				log.Printf("billing manager settle offline room tenant=%d room=%d session=%d: %v", tenantID, session.RoomID, session.ID, err)
-				continue
-			}
-			r.recordSystemAudit(ctx, session, "agent.runtime.auto_stop", "room_offline", stopped.BootID, finalSeconds)
-			continue
-		}
-
-		if job.State.SessionResumePending {
-			// The live-session identity is unresolved; do not invent paid usage
-			// until the operator chooses merge/fresh semantics.
-			continue
-		}
+		// Core owns live-finished confirmation. A transient collector state such
+		// as connecting/offline/error is not enough for Management to stop the
+		// durable runtime session. Management only finalizes after Core reports
+		// an authoritative Agent stop reason.
 
 		if job.State.AgentState != "working" {
 			fresh, freshErr := r.getCoreAgentRuntime(ctx, tenantID, session.RoomID)
@@ -394,6 +516,16 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 					continue
 				}
 			}
+		}
+
+		if r.stopForDeviceOffline(ctx, session, job.State, now) {
+			continue
+		}
+
+		if job.State.SessionResumePending {
+			// The live-session identity is unresolved; do not invent paid usage
+			// until the operator chooses merge/fresh semantics.
+			continue
 		}
 
 		metered, meterErr := r.store.ReconcileLiveRuntimeMeter(

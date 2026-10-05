@@ -15,6 +15,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/semantic"
 )
 
 const (
@@ -39,12 +40,15 @@ type leader interface {
 }
 
 type Worker struct {
-	store    sessionStore
-	core     *coreclient.Client
-	agent    completer
-	leader   leader
-	interval time.Duration
-	now      func() time.Time
+	store            sessionStore
+	core             *coreclient.Client
+	agent            completer
+	leader           leader
+	interval         time.Duration
+	executionRealm   string
+	now              func() time.Time
+	semanticEmbedder semantic.Embedder
+	semanticService  *semantic.Service
 
 	mu              sync.Mutex
 	inFlight        map[int64]bool
@@ -96,6 +100,7 @@ func New(
 		core:            core,
 		agent:           agent,
 		interval:        defaultInterval,
+		executionRealm:  "prod",
 		now:             func() time.Time { return time.Now().UTC() },
 		inFlight:        map[int64]bool{},
 		lastProcessedID: map[int64]int64{},
@@ -104,6 +109,27 @@ func New(
 		w.leader = leaders[0]
 	}
 	return w
+}
+
+func (w *Worker) SetExecutionRealm(realm string) {
+	if w == nil {
+		return
+	}
+	w.executionRealm = model.NormalizeExecutionRealm(realm)
+}
+
+func (w *Worker) SetSemanticEmbedder(embedder semantic.Embedder) {
+	if w == nil {
+		return
+	}
+	w.semanticEmbedder = embedder
+}
+
+func (w *Worker) SetSemanticService(service *semantic.Service) {
+	if w == nil {
+		return
+	}
+	w.semanticService = service
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -162,6 +188,9 @@ func (w *Worker) runCycle(ctx context.Context) {
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	for _, session := range sessions {
+		if !session.BelongsToExecutionRealm(w.executionRealm) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(session.Status), "running") {
 			continue
 		}
@@ -208,6 +237,21 @@ func (w *Worker) refineRoom(ctx context.Context, session model.LiveRuntimeSessio
 	}
 	if w.alreadyProcessed(session.RoomID, maxEventID) {
 		return nil
+	}
+
+	var narrowed map[string]struct{}
+	var semanticErr error
+	if w.semanticService != nil && w.semanticService.Enabled() {
+		narrowed, semanticErr = semanticCandidateTopicsWithService(
+			ctx, w.semanticService, session.TenantID, session.RoomID, brain.Intelligence.TopTopics, eligible,
+		)
+	} else {
+		narrowed, semanticErr = semanticCandidateTopics(ctx, w.semanticEmbedder, brain.Intelligence.TopTopics, eligible)
+	}
+	if semanticErr != nil {
+		log.Printf("question cluster embedding prefilter degraded tenant=%d room=%d: %v", session.TenantID, session.RoomID, semanticErr)
+	} else if len(narrowed) >= minEligibleBucketCount {
+		eligible = narrowed
 	}
 
 	inputJSON, err := buildModelInput(brain.Intelligence.TopTopics, eligible, w.now())
@@ -454,6 +498,126 @@ func validateGroups(
 		})
 	}
 	return out
+}
+
+// This is a recall-oriented prefilter. The downstream LLM still validates actual merges.
+const (
+	semanticClusterCandidateThreshold = 0.40
+	semanticClusterDocumentTTL        = 24 * time.Hour
+)
+
+func topicSemanticText(topic topicBucket) string {
+	parts := []string{strings.TrimPrefix(strings.TrimSpace(topic.Topic), "Q:")}
+	for _, sample := range topic.SampleQuestions {
+		if sample = strings.TrimSpace(sample); sample != "" {
+			parts = append(parts, sample)
+		}
+	}
+	for _, question := range topic.Questions {
+		if value := strings.TrimSpace(question.Content); value != "" {
+			parts = append(parts, value)
+		}
+		if len(parts) >= 6 {
+			break
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func semanticCandidateTopicsWithService(
+	ctx context.Context,
+	service *semantic.Service,
+	tenantID, roomID int64,
+	topics []topicBucket,
+	eligible map[string]struct{},
+) (map[string]struct{}, error) {
+	if service == nil || !service.Enabled() || tenantID <= 0 || roomID <= 0 || len(eligible) < minEligibleBucketCount {
+		return nil, nil
+	}
+	selectedTopics := make([]topicBucket, 0, len(eligible))
+	documents := make([]semantic.Document, 0, len(eligible))
+	expiresAt := time.Now().UTC().Add(semanticClusterDocumentTTL)
+	for _, topic := range topics {
+		name := strings.TrimSpace(topic.Topic)
+		if _, ok := eligible[name]; !ok {
+			continue
+		}
+		text := topicSemanticText(topic)
+		hash := semantic.HashText(name)
+		if len(hash) > 16 {
+			hash = hash[:16]
+		}
+		selectedTopics = append(selectedTopics, topic)
+		documents = append(documents, semantic.Document{
+			TenantID:      tenantID,
+			RoomID:        roomID,
+			ContentType:   semantic.ContentTypeQuestionCluster,
+			SourceID:      "topic:" + hash,
+			SourceVersion: 0,
+			Status:        "active",
+			Text:          text,
+			ExpiresAt:     &expiresAt,
+		})
+	}
+	if len(documents) < minEligibleBucketCount {
+		return nil, nil
+	}
+	vectors, err := service.Resolve(ctx, documents)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != len(documents) {
+		return nil, fmt.Errorf("question cluster semantic vectors=%d want=%d", len(vectors), len(documents))
+	}
+	candidates := make(map[string]struct{})
+	for left := 0; left < len(vectors); left++ {
+		for right := left + 1; right < len(vectors); right++ {
+			if semantic.CosineSimilarity(vectors[left], vectors[right]) < semanticClusterCandidateThreshold {
+				continue
+			}
+			candidates[strings.TrimSpace(selectedTopics[left].Topic)] = struct{}{}
+			candidates[strings.TrimSpace(selectedTopics[right].Topic)] = struct{}{}
+		}
+	}
+	service.RecordRetrieval(semantic.ContentTypeQuestionCluster, len(candidates) >= minEligibleBucketCount)
+	return candidates, nil
+}
+
+func semanticCandidateTopics(ctx context.Context, embedder semantic.Embedder, topics []topicBucket, eligible map[string]struct{}) (map[string]struct{}, error) {
+	if embedder == nil || !embedder.Enabled() || len(eligible) < minEligibleBucketCount {
+		return nil, nil
+	}
+	selectedTopics := make([]topicBucket, 0, len(eligible))
+	texts := make([]string, 0, len(eligible))
+	for _, topic := range topics {
+		name := strings.TrimSpace(topic.Topic)
+		if _, ok := eligible[name]; !ok {
+			continue
+		}
+		selectedTopics = append(selectedTopics, topic)
+		texts = append(texts, topicSemanticText(topic))
+	}
+	if len(texts) < minEligibleBucketCount {
+		return nil, nil
+	}
+	vectors, err := embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != len(texts) {
+		return nil, fmt.Errorf("question cluster semantic vectors=%d want=%d", len(vectors), len(texts))
+	}
+	candidates := make(map[string]struct{})
+	for left := 0; left < len(vectors); left++ {
+		for right := left + 1; right < len(vectors); right++ {
+			if semantic.CosineSimilarity(vectors[left], vectors[right]) < semanticClusterCandidateThreshold {
+				continue
+			}
+			candidates[strings.TrimSpace(selectedTopics[left].Topic)] = struct{}{}
+			candidates[strings.TrimSpace(selectedTopics[right].Topic)] = struct{}{}
+		}
+	}
+	return candidates, nil
 }
 
 func stripJSONFence(value string) string {

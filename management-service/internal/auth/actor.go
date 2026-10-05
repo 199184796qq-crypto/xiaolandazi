@@ -230,6 +230,16 @@ func (r *Resolver) Resolve(req *http.Request) (model.Actor, error) {
 	return actorFromUser(user), nil
 }
 
+// SessionKey returns an opaque hash for session-bound integrations. Callers must
+// resolve the authenticated actor first. The raw login cookie is never exposed.
+func (r *Resolver) SessionKey(req *http.Request) string {
+	cookie, err := req.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return ""
+	}
+	return hashToken(cookie.Value)
+}
+
 func (r *Resolver) Login(
 	ctx context.Context,
 	w http.ResponseWriter,

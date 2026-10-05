@@ -17,7 +17,6 @@ import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import {
   floorToWholeYuanCents,
-  formatWholeYuanMoney,
   marketingPayableCents,
 } from '../pricingRules'
 import { session } from '../session'
@@ -134,7 +133,10 @@ function marketingTargetItem(
 }
 
 function campaignDiscountLabel(campaign: MarketingCampaign, productId: number) {
-  const bps = marketingTargetItem(campaign, productId)?.discount_bps ?? 10000
+  const target=marketingTargetItem(campaign,productId)
+  if(target?.pricing_mode==='fixed') return '固定售价'
+  if(target?.pricing_mode==='free') return '免费领取'
+  const bps = target?.discount_bps ?? 10000
   if (bps <= 0) return '赠送'
   if (bps >= 10000) return '原价'
   const zhe = bps / 1000
@@ -144,6 +146,8 @@ function campaignDiscountLabel(campaign: MarketingCampaign, productId: number) {
 function campaignActualValue(item: CommercialDeviceProduct, campaign: MarketingCampaign) {
   const target = marketingTargetItem(campaign, item.id)
   if (!target) return 0
+  if(target.pricing_mode==='fixed') return target.fixed_price_cents ?? 0
+  if(target.pricing_mode==='free') return 0
   const version = displayVersion(item)
   const price = version?.sale_price_cents || version?.list_price_cents || 0
   return marketingPayableCents(
@@ -153,7 +157,7 @@ function campaignActualValue(item: CommercialDeviceProduct, campaign: MarketingC
 }
 
 function formatMarketingMoney(cents: number) {
-  return formatWholeYuanMoney(cents)
+  return '¥'+(cents/100).toFixed(2)
 }
 
 const filteredItems = computed(() => {
@@ -355,7 +359,7 @@ async function publish(item: CommercialDeviceProduct) {
   if (!canManageListing.value || !item.draft_version) return
   if (!(await confirmAction({
     title: '发布设备商品',
-    message: '确认发布“' + item.name + '”的当前草稿？发布后终端商城会读取该价格和库存 SKU。',
+    message: '确认发布“' + item.name + '”的当前草稿？发布后小蓝商城会读取该价格和库存 SKU。',
     confirmText: '确认发布',
   }))) return
   publishingId.value = item.id
@@ -376,7 +380,7 @@ async function toggleListing(item: CommercialDeviceProduct) {
   if (nextStatus === 'inactive') {
     const confirmed = await confirmAction({
       title: '下架设备商品',
-      message: '下架“' + item.name + '”后终端商城将停止销售，但仓库库存和历史订单不会删除。',
+      message: '下架“' + item.name + '”后小蓝商城将停止销售，但仓库库存和历史订单不会删除。',
       confirmText: '确认下架',
     })
     if (!confirmed) return
@@ -722,7 +726,7 @@ onMounted(load)
           <label>
             <span>销售价（元） *</span>
             <input v-model.number="form.sale_price_yuan" type="number" min="0.01" step="0.01" />
-            <small class="field-help">终端商城的设备正常售价；会员折扣在此价格基础上计算。</small>
+            <small class="field-help">小蓝商城的设备正常售价；会员折扣在此价格基础上计算。</small>
           </label>
           <label class="device-sales-stock-field">
             <span>销售库存 *</span>

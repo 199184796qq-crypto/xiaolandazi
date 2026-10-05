@@ -3,6 +3,7 @@ package httpapi
 import (
 	"database/sql"
 	"errors"
+	appdb "livecompanion/management/internal/db"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,6 +76,14 @@ func (s *Server) inventoryCreateDevice(w http.ResponseWriter, r *http.Request) {
 	input.BatchNo = strings.TrimSpace(input.BatchNo)
 	input.QualityStatus = strings.TrimSpace(input.QualityStatus)
 	input.Reason = strings.TrimSpace(input.Reason)
+	if input.HardwareMAC != "" {
+		mac, err := model.NormalizeHardwareMAC(input.HardwareMAC)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		input.HardwareMAC = mac
+	}
 
 	if len(input.SN) < 3 || len(input.SN) > 128 {
 		writeError(w, http.StatusBadRequest, "设备 SN 需为 3-128 个字符")
@@ -102,7 +111,7 @@ func (s *Server) inventoryCreateDevice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case isDuplicateDBError(err):
-			writeError(w, http.StatusConflict, "设备 SN 已存在")
+			writeError(w, http.StatusConflict, "设备 SN 或 MAC 已存在")
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusBadRequest, "仓库不存在")
 		default:
@@ -163,8 +172,10 @@ func (s *Server) inventoryBatchInbound(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.CreateBatchInbound(r.Context(), actor.UserID, input)
 	if err != nil {
 		switch {
+		case errors.Is(err, appdb.ErrInventoryBatchExists):
+			writeError(w, http.StatusConflict, err.Error())
 		case isDuplicateDBError(err):
-			writeError(w, http.StatusConflict, "入库失败：存在重复 SN")
+			writeError(w, http.StatusConflict, "入库失败：存在重复 SN 或 MAC")
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusBadRequest, "设备名称或仓库不存在")
 		default:

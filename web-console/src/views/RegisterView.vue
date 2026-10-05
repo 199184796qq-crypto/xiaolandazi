@@ -7,6 +7,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getInvitePreview, register } from '../api'
 import { applySession } from '../session'
 import type { InvitePreview } from '../types'
+import { useAuthHomepageCopy } from '../authHomepageCopy'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +26,7 @@ const captcha = ref('')
 const captchaNonce = ref(Date.now())
 const submitting = ref(false)
 const error = useFeedbackErrorRef()
+const authCopy = useAuthHomepageCopy()
 
 const captchaSrc = computed(
   () => '/api/v1/auth/captcha?t=' + captchaNonce.value,
@@ -254,10 +256,10 @@ if (inviteCode.value) {
       <div class="auth-tech-ring auth-tech-ring-two"></div>
 
       <div class="auth-side-content">
-        <span class="auth-side-label">BANBO AI LIVE</span>
+        <span class="auth-side-label">{{ authCopy.customerSideLabel }}</span>
         <h2 class="customer-tagline">
-          <span>AI直播搭子，</span>
-          <span>让你直播不再冷场。</span>
+          <span>{{ authCopy.customerTitleLine1 }}</span>
+          <span>{{ authCopy.customerTitleLine2 }}</span>
         </h2>
         <p>
           邀请注册会自动记录终端来源、推荐人和代理归属，
@@ -268,7 +270,7 @@ if (inviteCode.value) {
           <span></span>
           <span></span>
           <span></span>
-          <em>LIVE INTELLIGENCE ONLINE</em>
+          <em>{{ authCopy.customerStatusLabel }}</em>
         </div>
       </div>
     </aside>

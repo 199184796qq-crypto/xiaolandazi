@@ -4,16 +4,20 @@ import {
   createLiveRoomSupportRequest,
   getLiveRoomSupportRequests,
   getLiveSupportStaff,
+  getLiveRoomSupportAuthorizations,
+  updateLiveRoomSupportAuthorizations,
 } from '../api'
 import type {
   LiveSupportRequest,
   LiveSupportStaff,
+  LiveSupportAuthorization,
 } from '../types'
 
 const props = defineProps<{ roomId: number | null }>()
 
 const staff = ref<LiveSupportStaff[]>([])
 const requests = ref<LiveSupportRequest[]>([])
+const authorizations = ref<LiveSupportAuthorization[]>([])
 const error = ref('')
 const success = ref('')
 const loading = ref(false)
@@ -27,6 +31,9 @@ const fullSupportCapabilities = ['l3_policy', 'anchor_training', 'voice_clone'] 
 const selectedStaff = computed(
   () => staff.value.find((item) => item.user_id === selectedStaffId.value) || null,
 )
+const selectedStaffAuthorized = computed(() => authorizations.value.some((item) =>
+  item.room_id === props.roomId && item.staff_user_id === selectedStaffId.value && item.status === 'active',
+))
 
 const selectedRequest = computed(() =>
   requests.value
@@ -47,19 +54,22 @@ async function load() {
   if (!props.roomId) {
     staff.value = []
     requests.value = []
+    authorizations.value = []
     return
   }
   loading.value = true
   error.value = ''
   try {
-    const [staffResponse, requestResponse] = await Promise.all([
+    const [staffResponse, requestResponse, authorizationResponse] = await Promise.all([
       getLiveSupportStaff(),
       getLiveRoomSupportRequests(props.roomId),
+      getLiveRoomSupportAuthorizations(props.roomId),
     ])
     staff.value = (staffResponse.items || []).filter((item) =>
       fullSupportCapabilities.every((capability) => item.allowed_capabilities?.includes(capability)),
     )
     requests.value = requestResponse.items || []
+    authorizations.value = authorizationResponse.items || []
     if (staff.value.length) {
       const previousIndex = Math.max(0, staff.value.findIndex((item) => item.user_id === selectedStaffId.value))
       chooseStaff(staff.value[previousIndex] || staff.value[0], previousIndex)
@@ -115,6 +125,24 @@ async function submitRequest() {
   }
 }
 
+async function revokeAuthorization() {
+  const roomId = props.roomId
+  const staffId = selectedStaffId.value
+  if (!roomId || !staffId || saving.value) return
+  saving.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    await updateLiveRoomSupportAuthorizations(roomId, staffId, [])
+    success.value = '已撤销当前直播间授权，协助员无法继续查看或修改。'
+    await load()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '撤销授权失败'
+  } finally {
+    saving.value = false
+  }
+}
+
 watch(() => props.roomId, () => void load())
 onMounted(() => void load())
 </script>
@@ -133,6 +161,7 @@ onMounted(() => void load())
 
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-if="success" class="support-success">{{ success }}</p>
+    <p class="support-scope-note">仅授权当前直播间的智能体配置及绑定关系，可随时撤销。</p>
 
     <div v-if="staff.length" class="support-carousel-shell">
       <button type="button" class="support-carousel-arrow" :disabled="selectedIndex <= 0" aria-label="上一位协助员" @click="scrollToStaff(selectedIndex - 1)">‹</button>
@@ -171,7 +200,7 @@ onMounted(() => void load())
       v-if="staff.length"
       type="button"
       class="support-apply-button"
-      :disabled="!roomId || !selectedStaff || saving || selectedRequest?.status === 'pending' || selectedRequest?.status === 'accepted'"
+      :disabled="!roomId || !selectedStaff || saving || selectedRequest?.status === 'pending' || selectedStaffAuthorized"
       @click="submitRequest"
     >
       {{
@@ -179,16 +208,19 @@ onMounted(() => void load())
           ? '申请提交中…'
           : selectedRequest?.status === 'pending'
             ? '申请已提交'
-            : selectedRequest?.status === 'accepted'
+            : selectedStaffAuthorized
               ? '已授权'
-              : '申请协助'
+              : '授权当前直播间并申请协助'
       }}
     </button>
+    <button v-if="selectedStaffAuthorized" type="button" class="support-revoke-button" :disabled="saving" @click="revokeAuthorization">{{ saving ? '处理中…' : '撤销当前直播间授权' }}</button>
   </section>
 </template>
 
 <style scoped>
 .support-picker{display:grid;gap:18px;min-width:0}
+.support-scope-note{margin:0;color:#7c879b;font-size:13px;line-height:1.6}
+.support-revoke-button{min-height:40px;border:1px solid #edbdc3;border-radius:12px;background:#fff5f6;color:#b64f5a;font-size:14px;cursor:pointer}
 .support-picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .support-picker-head>div{display:grid;gap:4px}
 .support-picker-head strong{font-size:24px;color:#1d2940;line-height:1.2}

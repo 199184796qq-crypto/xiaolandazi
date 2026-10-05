@@ -95,6 +95,43 @@ func TestTenantSystemAddressingFollowsLatestGlobalAddressing(t *testing.T) {
 	}
 }
 
+func TestInteractionPreferenceZeroDisablesAutomaticCategory(t *testing.T) {
+	store := New()
+	roomID := int64(15)
+	store.PutRoomInteractionPreferences(roomID, RoomInteractionPreferences{
+		RoomID:               roomID,
+		OverallInteraction:   50,
+		QuestionPreference:   0,
+		WelcomePreference:    50,
+		EngagementPreference: 50,
+		ChatPreference:       50,
+		ConversionPreference: 50,
+		AutoHeat:             true,
+	})
+	if got := store.InteractionPreferenceFactor(roomID, "question"); got != 0 {
+		t.Fatalf("question preference 0 must disable automatic interaction, factor=%v", got)
+	}
+	if got := store.AdjustInteractionWeight(roomID, "reply_chat", 50); got <= 0 {
+		t.Fatalf("chat should remain enabled when only question is 0, weight=%d", got)
+	}
+
+	store.PutRoomInteractionPreferences(roomID, RoomInteractionPreferences{
+		RoomID:               roomID,
+		OverallInteraction:   0,
+		QuestionPreference:   100,
+		WelcomePreference:    100,
+		EngagementPreference: 100,
+		ChatPreference:       100,
+		ConversionPreference: 100,
+		AutoHeat:             true,
+	})
+	for _, kind := range []string{"question", "welcome", "engagement", "chat", "conversion"} {
+		if got := store.InteractionPreferenceFactor(roomID, kind); got != 0 {
+			t.Fatalf("overall preference 0 must disable %s, factor=%v", kind, got)
+		}
+	}
+}
+
 func TestRuleWeightReturnsConfiguredAndRuntimeAdjustedWeight(t *testing.T) {
 	store := New()
 	configured, effective, enabled := store.RuleWeight(0, "interaction", "reply_like", Signals{Likes30s: 300})

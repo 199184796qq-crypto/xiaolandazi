@@ -64,12 +64,25 @@ func (s *OSS) Put(_ context.Context, objectKey string, source io.Reader, content
 	return s.bucket.PutObject(objectKey, source, options...)
 }
 
-func (s *OSS) Open(_ context.Context, objectKey string) (io.ReadCloser, error) {
-	return s.bucket.GetObject(objectKey)
+// Device recordings and snapshots are private even if a bucket policy changes.
+func (s *OSS) PutPrivate(ctx context.Context, objectKey string, source io.Reader, contentType string) error {
+	return s.bucket.PutObject(objectKey, source, oss.ContentType(contentType), oss.ObjectACL(oss.ACLPrivate), oss.WithContext(ctx))
 }
 
-func (s *OSS) Delete(_ context.Context, objectKey string) error {
-	return s.bucket.DeleteObject(objectKey)
+func (s *OSS) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	return s.bucket.GetObject(objectKey, oss.WithContext(ctx))
+}
+
+func (s *OSS) Delete(ctx context.Context, objectKey string) error {
+	return s.bucket.DeleteObject(objectKey, oss.WithContext(ctx))
+}
+
+func (s *OSS) InternalSignedURL(_ context.Context, objectKey string, expiry time.Duration) (string, error) {
+	seconds := int64(expiry.Seconds())
+	if seconds <= 0 {
+		seconds = 900
+	}
+	return s.bucket.SignURL(objectKey, oss.HTTPGet, seconds)
 }
 
 func (s *OSS) SignedURL(_ context.Context, objectKey string, expiry time.Duration) (string, error) {

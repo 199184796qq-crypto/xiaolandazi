@@ -31,6 +31,9 @@ func (s *Server) liveRoomSpeechMissions(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	if s.speechMissions == nil {
 		writeError(w, http.StatusServiceUnavailable, "策略黑板暂时不可用")
 		return
@@ -65,6 +68,9 @@ func (s *Server) liveRoomSpeechMission(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
 	if s.speechMissions == nil {

@@ -10,6 +10,7 @@ import {
 } from '../api'
 import DataListControls from '../components/DataListControls.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import CommerceRulesPanel from '../components/CommerceRulesPanel.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type {
@@ -394,6 +395,7 @@ onMounted(load)
   <div class="management-page incentive-program-page">
     <ModulePageNav :context="navContext" :active-title="pageTitle" :active-nav-title="pageTitle" />
 
+    <CommerceRulesPanel v-if="props.mode === 'settlement'" />
     <section class="feature-workspace-hero">
       <div>
         <p class="section-kicker">{{ kicker }}</p>

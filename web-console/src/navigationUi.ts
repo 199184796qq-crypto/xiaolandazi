@@ -1,5 +1,6 @@
 import { moduleEntries, moduleUiMap, type HubKey } from './moduleUi'
 import type { Bootstrap } from './types'
+import { canAccessSystemSettings } from './systemSettingsCatalog'
 
 export type WorkspaceNavKey =
   | 'workspace-auto'
@@ -58,12 +59,19 @@ function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null
   if (key === 'live' && to.startsWith('/operations/live/marketing')) {
     return (
       hasStaffPermission(bootstrap, 'commercial.marketing.view') ||
+      hasStaffPermission(bootstrap, 'commercial.beans.view') ||
       hasStaffPermission(bootstrap, 'commercial.time_card.view') ||
       hasStaffPermission(bootstrap, 'commercial.device.view')
     )
   }
   if (key === 'activityMarketing' && to.startsWith('/commercial/marketing/channels')) {
     return hasStaffPermission(bootstrap, 'invitations.view_all')
+  }
+  if (key === 'activityMarketing' && to.startsWith('/commercial/beans')) {
+    return hasStaffPermission(bootstrap, 'commercial.beans.view')
+  }
+  if (key === 'finance' && to.startsWith('/staff/finance/beans')) {
+    return hasStaffPermission(bootstrap, 'finance.beans.view')
   }
   if (key === 'activityMarketing' && to.startsWith('/commercial/marketing')) {
     return hasStaffPermission(bootstrap, 'commercial.marketing.view')
@@ -114,7 +122,7 @@ function hasStaffPermission(bootstrap: Bootstrap | null | undefined, code: strin
 function adminEntries(): NavigationLink[] {
   return [
     { title: '系统总览', to: '/overview', icon: '总' },
-    { title: '系统设定', to: '/system/settings', icon: '设' },
+    { title: '系统设置', to: '/system/settings', icon: '设' },
     { title: '组织架构', to: '/staff', icon: '部' },
     { title: '直播运维', to: '/operations/live', icon: '播' },
     { title: '活动营销', to: '/operations/live/marketing', icon: '营' },
@@ -130,9 +138,8 @@ function adminEntries(): NavigationLink[] {
 function customerEntries(): NavigationLink[] {
   return [
     { title: '直播运维', to: '/', icon: '播' },
-    { title: '运维协助', to: '/support', icon: '助' },
     { title: 'AI 时长', to: '/resources/workspace', icon: '时' },
-    { title: '终端商城', to: '/shop', icon: '商' },
+    { title: '小蓝商城', to: '/shop', icon: '商' },
     { title: '售后维修', to: '/after-sales', icon: '修' },
     { title: '邀请与推荐', to: '/invitations', icon: '邀' },
     { title: '我的钱包', to: '/finance', icon: '财' },
@@ -176,10 +183,10 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
     )
 
   if (groupCode === 'management') {
-    return [
+    return withSystemSettings([
       { title: '系统总览', to: '/overview', icon: '总' },
       { title: '组织架构', to: '/staff', icon: '部' },
-    ]
+    ], bootstrap)
   }
 
   if (groupCode === 'finance') {
@@ -188,7 +195,7 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
     }
     entries.push({ title: '财务与结算', to: '/staff/finance', icon: '财' })
     if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
-    return entries
+    return withSystemSettings(entries, bootstrap)
   }
 
   if (groupCode === 'sales') {
@@ -199,7 +206,7 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
       entries.push({ title: '销售体系', to: '/sales', icon: '销' })
     }
     if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
-    return entries
+    return withSystemSettings(entries, bootstrap)
   }
 
   if (groupCode === 'live_operations') {
@@ -208,7 +215,7 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
       { title: '活动营销', to: '/operations/live/marketing', icon: '营' },
     )
     if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
-    return entries
+    return withSystemSettings(entries, bootstrap)
   }
 
   if (groupCode === 'warehouse_after_sales') {
@@ -217,7 +224,7 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
       { title: '物流与售后', to: '/staff/after-sales', icon: '修' },
     )
     if (isPrimaryGroupManager) entries.push({ title: '组织架构', to: '/staff', icon: '部' })
-    return entries
+    return withSystemSettings(entries, bootstrap)
   }
 
   if (hasStaffPermission(bootstrap, 'system.architecture.view')) {
@@ -244,6 +251,19 @@ function staffEntries(bootstrap: Bootstrap | null | undefined): NavigationLink[]
     entries.push({ title: '组织架构', to: '/staff', icon: '部' })
   }
 
+  return withSystemSettings(entries, bootstrap)
+}
+
+function withSystemSettings(
+  entries: NavigationLink[],
+  bootstrap: Bootstrap | null | undefined,
+) {
+  if (
+    canAccessSystemSettings(bootstrap) &&
+    !entries.some((entry) => entry.to === '/system/settings')
+  ) {
+    entries.push({ title: '系统设置', to: '/system/settings', icon: '设' })
+  }
   return entries
 }
 
@@ -480,7 +500,12 @@ export function resolveNavigationContext(
       })
       .map((entry) => ({
         title: entry.title,
-        to: entry.to,
+        to:
+          bootstrap?.actor.role === 'customer' &&
+          key === 'live' &&
+          entry.to === '/operations/support'
+            ? '/support'
+            : entry.to,
         icon: entry.icon,
       })),
   }

@@ -15,7 +15,7 @@
   });
 
   function amount(item: ShopOrder) {
-    const cents = item.paid_amount_cents ?? item.total_amount_cents ?? 0;
+    const cents = item.paid_amount_cents || item.payable_amount_cents || item.total_amount_cents || 0;
     return '¥' + (cents / 100).toFixed(2);
   }
 </script>
@@ -30,6 +30,9 @@
         <article class="list-card">
           <div><strong>{item.order_no || '订单 #' + item.id}</strong><p>{item.status} · {item.created_at ? new Date(item.created_at).toLocaleDateString() : ''}</p></div>
           <b>{amount(item)}</b>
+          {#if item.status === 'pending' && (item.order_type === 'membership' || item.order_type === 'time_card')}
+            <a href={`/shop/checkout?order=${item.id}`}>继续支付</a>
+          {/if}
         </article>
       {:else}
         <div class="empty-card">还没有订单。需要会员、时长或设备时可以去商城看看。</div>

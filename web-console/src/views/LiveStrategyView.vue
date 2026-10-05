@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
+import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
 import {
   activateLiveAgentConfigVersion,
@@ -25,10 +26,6 @@ import {
   getLiveAgentPlanBenefits,
   getLiveAgentPlanFacts,
   getLiveAgentPlanProductLinks,
-  getLiveAgentPlanScriptReferences,
-  createLiveAgentPlanScriptReference,
-  updateLiveAgentPlanScriptReference,
-  deleteLiveAgentPlanScriptReference,
   getLiveAgentPlanScripts,
   getAgentMemories,
   getRoomLiveAgentPlans,
@@ -41,21 +38,44 @@ import {
   getUserUIPreferences,
   getLiveRoomPolicyContext,
   getRooms,
+  getRoom,
   deactivateAgentMemory,
   deleteLiveAgentPlanFact,
+  deleteLiveAgentPlanProductLink,
   publishLiveRoomPolicyVersion,
   auditLiveAgentFullShowPreview,
   regenerateLiveAgentFullShowVariant,
   generateLiveAgentFullShowVariantVoice,
   rebuildLiveAgentFullShowVariantSubtitles,
   rebuildLiveAgentCustomMainline,
-  analyzeLiveAgentPlanScript,
+  confirmLiveAgentPlanScriptAnalysis,
+  getLiveAgentPlanStyleOverlays,
+  getAnchorStylePluginCatalog,
+  activateLiveAgentPlanStylePlugin,
+  interpretLiveAgentPlanStyleOverlay,
+  learnLiveAgentPlanStyleOverlay,
+  saveLiveAgentPlanStyleOverlays,
+  testLiveAgentAnchorStyle,
+  previewAnalyzeLiveAgentAnchorStyle,
+  listLiveAnchorStyles,
+  createLiveAnchorStyle,
+  getLiveAnchorStyle,
+  updateLiveAnchorStyle,
+  deleteLiveAnchorStyle,
+  listLiveAnchorStyleSamples,
+  createLiveAnchorStyleSample,
+  deleteLiveAnchorStyleSample,
+  analyzeLiveAnchorStyleSample,
+  upsertLiveAnchorStylePlugin,
+  deleteLiveAnchorStylePlugin,
+  bindLiveAnchorStyleToPlan,
   previewAnalyzeLiveAgentPlanScript,
   previewGenerateLiveAgentFullShow,
   previewRecognizeLiveAgentPlanImage,
   publishLiveAgentPlanVersion,
   updateLiveAgentPlan,
   updateLiveAgentPlanFact,
+  updateLiveAgentPlanProductLink,
   updateLiveAgentPlanScript,
   updateLiveAgentSettings,
   updateLiveAddressingStrategy,
@@ -64,11 +84,14 @@ import {
   uploadLiveMediaAsset,
 } from '../api'
 import { session } from '../session'
+import '../styles/workflow-guidance.css'
+import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
+import { getLiveContentMode, setLiveContentMode } from '../liveContentMode'
+import { canSelectLiveContentMode, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
 import type {
   AgentMemoryItem,
   LiveAgentConfigInput,
   LiveAgentPlan,
-  LiveAgentPlanAnchorStyleDimension,
   LiveAgentPlanBenefit,
   LiveAgentPlanBenefitCandidate,
   LiveAgentPlanFact,
@@ -76,8 +99,15 @@ import type {
   LiveAgentPlanProductLink,
   LiveAgentPlanProductLinkCandidate,
   LiveAgentPlanScript,
-  LiveAgentPlanScriptReference,
   LiveAgentPlanScriptAnalysis,
+  LiveAgentPlanAnchorStyleProfile,
+  LiveAnchorStyle,
+  LiveAnchorStyleSample,
+  LiveAnchorStyleAnalysisQC,
+  LiveAgentPlanStyleOverlayProfile,
+  LiveAnchorStyleOverlayItem,
+  AnchorStylePluginCatalog,
+  AnchorStylePluginCatalogItem,
   LiveAgentFullShowGenerationContext,
   LiveAgentFullShowPreviewResponse,
   LiveAgentFullShowVariant,
@@ -108,7 +138,7 @@ const props = withDefaults(defineProps<{
 
 const rooms = ref<Room[]>([])
 const activeRoomId = ref<number | null>(props.supportRoomId || null)
-const planRelationsCollapsed = ref(true)
+const endSupportScope = props.supportSession ? beginLiveSupportScope(props.supportRoomId) : null
 
 function liveStrategyPreferenceKey(name: string) {
   const userID = Number(session.bootstrap?.actor.user_id || 0)
@@ -120,9 +150,6 @@ function restoreLiveStrategyPreferencesLocal() {
   const roomRaw = window.localStorage.getItem(liveStrategyPreferenceKey('selected-room'))
   const parsedRoom = Number(roomRaw || 0)
   if (parsedRoom > 0) activeRoomId.value = parsedRoom
-  const collapsedRaw = window.localStorage.getItem(liveStrategyPreferenceKey('plan-panel-collapsed'))
-  if (collapsedRaw === '0') planRelationsCollapsed.value = false
-  if (collapsedRaw === '1') planRelationsCollapsed.value = true
 }
 
 function persistSelectedRoomLocal(roomID: number | null) {
@@ -132,15 +159,8 @@ function persistSelectedRoomLocal(roomID: number | null) {
   else window.localStorage.removeItem(key)
 }
 
-function persistPlanPanelLocal() {
-  if (props.supportSession) return
-  window.localStorage.setItem(
-    liveStrategyPreferenceKey('plan-panel-collapsed'),
-    planRelationsCollapsed.value ? '1' : '0',
-  )
-}
-
 function selectLiveStrategyRoom(roomID: number) {
+  if (props.supportSession && roomID !== props.supportRoomId) return
   if (activeRoomId.value === roomID) return
   activeRoomId.value = roomID
   persistSelectedRoomLocal(roomID)
@@ -149,21 +169,11 @@ function selectLiveStrategyRoom(roomID: number) {
   }
 }
 
-function togglePlanRelations() {
-  planRelationsCollapsed.value = !planRelationsCollapsed.value
-  persistPlanPanelLocal()
-  if (!props.supportSession) {
-    void updateUserUIPreferences({
-      live_plan_panel_collapsed: planRelationsCollapsed.value,
-    }).catch(() => undefined)
-  }
-}
 type StrategyMode =
   | 'script'
   | 'products'
   | 'benefits'
   | 'knowledge'
-  | 'rhythm'
   | 'memory'
   | 'addressing'
   | 'anchor'
@@ -172,7 +182,8 @@ type StrategyMode =
   | 'plan'
   | 'basic'
   | 'strategy'
-const activeMode = ref<StrategyMode>('script')
+// “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在主播风格。
+const activeMode = ref<StrategyMode>('anchor')
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -198,9 +209,9 @@ const addressingNotice = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const livePlans = ref<LiveAgentPlan[]>([])
 const boundRoomPlans = ref<LiveAgentPlan[]>([])
+const publishedRoomPlans = ref<LiveAgentPlan[]>([])
 const roomRuntimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const currentRoomPlanId = ref<number | null>(null)
-const bindPlanId = ref<number | null>(null)
 const planBusy = ref(false)
 const newPlanName = ref('')
 const newPlanDescription = ref('')
@@ -233,29 +244,21 @@ const rhythmDraftText = ref('')
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
-const formalScriptReferences = ref<LiveAgentPlanScriptReference[]>([])
-const oralSampleFileInput = ref<HTMLInputElement | null>(null)
-const selectedOralSampleId = ref<number | null>(null)
-const oralSampleCreating = ref(false)
-const oralSampleBusy = ref(false)
-const oralSampleAnalyzing = ref(false)
-const oralSampleNotice = ref('')
-const oralSampleSourceType = ref<'manual' | 'upload'>('manual')
-const oralSampleSourceRef = ref('')
-const oralSampleDraft = ref({
-  title: '',
-  content_text: '',
-})
-const oralSampleAnalysis = ref<LiveAgentPlanScriptAnalysis | null>(null)
+const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
-const adoptingFacts = ref(false)
 const editingFormalFactId = ref<number | null>(null)
-const formalFactEditDraft = ref({ category: 'other', key: '', value: '' })
+const formalFactEditDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
+const creatingFormalFact = ref(false)
+const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const mutatingFormalFactId = ref<number | null>(null)
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
 let scriptAnalysisProgressTimer: number | null = null
 const memories = ref<AgentMemoryItem[]>([])
+const interactionMemories = computed(() => memories.value.filter((item) => {
+	const type = String(item.memory_type || '').trim().toLowerCase()
+	return type === 'semantic' || type === 'interaction'
+}))
 const editingMemoryId = ref<number | null>(null)
 const memoryEditSessionId = ref<number | null>(null)
 const memoryEditFeedback = ref('')
@@ -272,18 +275,42 @@ const currentPlan = computed(
 )
 const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id || 0)
 const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
-const unboundPlans = computed(() => livePlans.value.filter((item) => !boundPlanIdSet.value.has(item.id)))
+const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
 const currentPlanIsBound = computed(() => !!currentPlan.value && boundPlanIdSet.value.has(currentPlan.value.id))
+const currentPlanIsPublished = computed(
+  () => !!currentPlan.value && publishedPlanIdSet.value.has(currentPlan.value.id),
+)
+const orderedRoomPlans = computed(() => [...livePlans.value].sort((left, right) => {
+  const rank = (plan: LiveAgentPlan) => {
+    if (runtimePlanId.value === plan.id) return 0
+    if (publishedPlanIdSet.value.has(plan.id)) return 1
+    if (boundPlanIdSet.value.has(plan.id)) return 2
+    return 3
+  }
+  return rank(left) - rank(right) || left.name.localeCompare(right.name, 'zh-CN')
+}))
+
+function planRoomRelationLabel(plan: LiveAgentPlan) {
+  if (runtimePlanId.value === plan.id && publishedPlanIdSet.value.has(plan.id)) return '正在使用 · 已发布'
+  if (publishedPlanIdSet.value.has(plan.id)) return '已发布'
+  if (boundPlanIdSet.value.has(plan.id)) return '已绑定 · 未发布'
+  return '未绑定'
+}
 const activeScript = computed(
   () => planScripts.value.find((item) => item.id === selectedScriptId.value) || null,
 )
-const selectedOralSample = computed(
-  () => formalScriptReferences.value.find((item) => item.id === selectedOralSampleId.value) || null,
-)
-const oralSampleCharacterCount = computed(() => oralSampleDraft.value.content_text.trim().length)
 const currentAnalysis = computed(() => analysisDraft.value || activeScript.value?.analysis || null)
 const productLinks = computed<LiveAgentPlanProductLinkCandidate[]>(() => currentAnalysis.value?.product_links || [])
-const activeFormalBenefits = computed(() => formalBenefits.value.filter((item) => item.status === 'active'))
+const activeFormalBenefits = computed(() => {
+  const now = benefitClock.value
+  const liveLinkKeys = new Set(formalProductLinks.value.filter((item) => item.status === 'active').map((item) => item.link_key))
+  return formalBenefits.value.filter((item) => {
+    if (item.status !== 'active') return false
+    if (item.starts_at && new Date(item.starts_at).getTime() > now) return false
+    if (item.ends_at && new Date(item.ends_at).getTime() < now) return false
+    return !item.link_key || liveLinkKeys.has(item.link_key)
+  })
+})
 const activityBenefits = computed<LiveAgentPlanBenefitCandidate[]>(() => productLinks.value
   .filter((item) => item.activity_price || item.gift || item.activity)
   .map((item) => ({
@@ -297,33 +324,435 @@ const activityBenefits = computed<LiveAgentPlanBenefitCandidate[]>(() => product
     review_reason: item.review_reason || '',
     source_quotes: item.source_quotes || [],
   })))
-const linkCompleteness = computed(() => currentAnalysis.value?.completeness || {
-  detected_link_keys: [],
-  covered_link_keys: [],
-  missing_link_keys: [],
-  link_coverage_pct: 100,
-})
-const anchorStyleProfile = computed(() => currentAnalysis.value?.anchor_style || null)
-const selectedAnchorStyleGroup = ref<'language' | 'structure' | 'interaction' | 'emotion'>('language')
-const anchorStyleGroups = computed(() => {
-  const dimensions = anchorStyleProfile.value?.dimensions || []
-  const definitions = [
-    { key: 'language', label: '语言习惯', description: '句子、称呼、连接词、强调和用词倾向' },
-    { key: 'structure', label: '节奏与结构', description: '开场、讲品路径、重复、参数、价格、链接和收尾' },
-    { key: 'interaction', label: '互动与转场', description: 'CTA、弹幕互动、答疑、回主线和转场方式' },
-    { key: 'emotion', label: '情绪与声音表达', description: '情绪曲线、停顿断句和真人化表达' },
-  ] as const
-  return definitions.map((definition) => ({
-    ...definition,
-    dimensions: dimensions.filter((dimension: LiveAgentPlanAnchorStyleDimension) => dimension.group === definition.key),
-  }))
-})
-const selectedAnchorStyleGroupDetail = computed(
-  () => anchorStyleGroups.value.find((group) => group.key === selectedAnchorStyleGroup.value) || anchorStyleGroups.value[0],
-)
-const highConfidenceStyleCount = computed(
-  () => (anchorStyleProfile.value?.dimensions || []).filter((dimension) => dimension.confidence === 'high').length,
-)
+const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
+const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
+const selectedReusableAnchorStyleId = ref<number | null>(null)
+const selectedReusableAnchorStyle = ref<LiveAnchorStyle | null>(null)
+const reusableAnchorStyleSamples = ref<LiveAnchorStyleSample[]>([])
+const reusableAnchorStyleTab = ref<'samples' | 'analysis' | 'testing' | 'personalization'>('samples')
+const reusableAnchorStyleBusy = ref(false)
+const reusableAnchorStyleNotice = ref('')
+const reusableAnchorStyleError = ref('')
+const reusableAnchorStyleDraft = ref({ name: '', description: '' })
+const reusableAnchorStyleSampleDraft = ref({ title: '', raw_text: '' })
+const reusableAnchorStyleAnalysisStage = ref('')
+const reusableAnchorStyleLongTestRunning = ref(false)
+const reusableAnchorStyleLongTestText = ref('')
+const reusableAnchorStyleLongTestSegments = ref(0)
+const reusableAnchorStyleLongTestMinutes = ref(30)
+const reusableAnchorStyleProfile = computed(() => selectedReusableAnchorStyle.value?.profile || null)
+const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dimensions?.length
+  ? reusableAnchorStyleProfile.value
+  : currentAnalysis.value?.anchor_style?.dimensions?.length
+    ? currentAnalysis.value.anchor_style
+    : savedStyleScript.value?.analysis.anchor_style || null)
+const anchorStyleSourceText = ref('')
+const anchorStyleSampleExpanded = ref(true)
+const anchorStyleTestBusy = ref(false)
+const anchorStyleTestTopic = ref('本轮主线介绍当前商品的核心价值，并从一个正式事实自然展开')
+const anchorStyleTestTargetChars = ref(500)
+const anchorStyleTestResult = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>> | null>(null)
+const anchorStyleTestError = ref('')
+const anchorStyleAnalysisQC = ref<LiveAnchorStyleAnalysisQC | null>(null)
+const anchorStyleCorrectionFeedback = ref('')
+const anchorStyleCorrectionCandidates = ref<LiveAnchorStyleOverlayItem[]>([])
+const anchorStyleCorrectionHistory = ref<Array<{ feedback: string; diagnosis: string; model: string }>>([])
+const anchorStyleCorrectionBusy = ref(false)
+const anchorStyleCorrectionError = ref('')
+const styleOverlayProfile = ref<LiveAgentPlanStyleOverlayProfile | null>(null)
+const styleOverlaySource = ref('')
+const styleOverlayExplanation = ref('')
+const styleOverlayStrength = ref(50)
+const styleOverlayBusy = ref(false)
+const styleOverlayError = ref('')
+const styleOverlayNotice = ref('')
+const styleOverlayPending = ref<LiveAnchorStyleOverlayItem | null>(null)
+const styleOverlayMemoryMatches = ref(0)
+const stylePluginCatalog = ref<AnchorStylePluginCatalog | null>(null)
+const stylePluginBusyID = ref('')
+const anchorDelivery = computed(() => anchorStyleProfile.value?.delivery_spec)
+const anchorRulebook = computed(() => anchorDelivery.value?.version === 'anchor-delivery/v1' ? anchorDelivery.value.rulebook || '' : '')
+const enabledStyleOverlayCount = computed(() => styleOverlayProfile.value?.items.filter((item) => item.enabled).length || 0)
+const activeStylePluginIDs = computed(() => new Set((styleOverlayProfile.value?.items || []).flatMap((item) => item.plugin?.plugin_id ? [item.plugin.plugin_id] : [])))
+const canRunAnchorStyleTest = computed(() => Boolean(anchorRulebook.value) || enabledStyleOverlayCount.value > 0)
+const anchorCopyNotice = ref('')
+async function copyAnchorRulebook() {
+  try {
+    await navigator.clipboard.writeText(anchorRulebook.value)
+    anchorCopyNotice.value = '口播规范已复制'
+  } catch { anchorCopyNotice.value = '复制失败，请展开规范后手动选择复制' }
+}
+
+function styleOverlayStrengthLabel(value: number) {
+  if (value <= 35) return '轻微'
+  if (value <= 70) return '适中'
+  return '明显'
+}
+
+function styleOverlayApplicationLabel(value: string) {
+  if (value === 'always') return '持续习惯'
+  if (value === 'occasional') return '偶尔出现'
+  return '按场景出现'
+}
+
+async function loadStyleOverlays() {
+  const planId = currentRoomPlanId.value
+  const tenantId = activeRoom.value?.tenant_id
+  styleOverlayProfile.value = null
+  stylePluginCatalog.value = null
+  styleOverlayPending.value = null
+  styleOverlayError.value = ''
+  styleOverlayNotice.value = ''
+  if (!planId) return
+  try {
+    const [result, catalog] = await Promise.all([
+      getLiveAgentPlanStyleOverlays(planId, tenantId),
+      getAnchorStylePluginCatalog(),
+    ])
+    if (planId === currentRoomPlanId.value) {
+      styleOverlayProfile.value = result
+      stylePluginCatalog.value = catalog
+    }
+  } catch (err) {
+    if (planId === currentRoomPlanId.value) styleOverlayError.value = err instanceof Error ? err.message : '读取叠加风格失败'
+  }
+}
+
+async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
+  const tenantID = activeRoom.value?.tenant_id
+  try {
+    const result = await listLiveAnchorStyles(tenantID)
+    reusableAnchorStyles.value = result.items || []
+    const nextID = preferredID || selectedReusableAnchorStyleId.value || result.items?.[0]?.id || null
+    if (!nextID) {
+      selectedReusableAnchorStyleId.value = null
+      selectedReusableAnchorStyle.value = null
+      reusableAnchorStyleSamples.value = []
+      return
+    }
+    await selectReusableAnchorStyle(nextID, false)
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格失败'
+  }
+}
+
+async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const tenantID = activeRoom.value?.tenant_id
+    const [style, samples] = await Promise.all([
+      getLiveAnchorStyle(styleID, tenantID),
+      listLiveAnchorStyleSamples(styleID, tenantID),
+    ])
+    if (!stylePluginCatalog.value) {
+      try { stylePluginCatalog.value = await getAnchorStylePluginCatalog() } catch { /* 插件目录不可用时仍可查看和训练主播 */ }
+    }
+    selectedReusableAnchorStyleId.value = styleID
+    selectedReusableAnchorStyle.value = style
+    reusableAnchorStyleSamples.value = samples.items || []
+    reusableAnchorStyleDraft.value = { name: style.name, description: style.description || '' }
+    reusableAnchorStyleTab.value = reusableAnchorStyleTab.value || 'samples'
+    if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案绑定都会使用这套风格。`
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格详情失败'
+  } finally {
+    reusableAnchorStyleBusy.value = false
+  }
+}
+
+async function createReusableAnchorStyle() {
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const style = await createLiveAnchorStyle({ name: '新主播', description: '请添加这个主播的表达样本和风格说明。', tenant_id: activeRoom.value?.tenant_id })
+    reusableAnchorStyles.value = [style, ...reusableAnchorStyles.value]
+    await selectReusableAnchorStyle(style.id)
+    reusableAnchorStyleTab.value = 'samples'
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '新建主播失败'
+  } finally { reusableAnchorStyleBusy.value = false }
+}
+
+async function saveReusableAnchorStyleInfo() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || !reusableAnchorStyleDraft.value.name.trim()) return
+  reusableAnchorStyleBusy.value = true
+  try {
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name: reusableAnchorStyleDraft.value.name.trim(),
+      description: reusableAnchorStyleDraft.value.description.trim(),
+      profile: style.profile,
+    }, activeRoom.value?.tenant_id)
+    selectedReusableAnchorStyle.value = updated
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
+    reusableAnchorStyleNotice.value = '主播名称和介绍已保存。'
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
+  finally { reusableAnchorStyleBusy.value = false }
+}
+
+async function deleteReusableAnchorStyle() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style) return
+  if (!window.confirm(`确定删除主播“${style.name}”吗？删除后该主播的样本、训练记录和绑定关系都会移除。`)) return
+  if (!window.confirm('请再次确认：这不是移出列表，而是永久删除这名主播的风格资料。')) return
+  try {
+    await deleteLiveAnchorStyle(style.id, activeRoom.value?.tenant_id)
+    reusableAnchorStyles.value = reusableAnchorStyles.value.filter((item) => item.id !== style.id)
+    selectedReusableAnchorStyleId.value = null
+    selectedReusableAnchorStyle.value = null
+    await loadReusableAnchorStyleWorkspace()
+    reusableAnchorStyleNotice.value = '主播风格已删除。'
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播风格失败' }
+}
+
+async function addReusableAnchorStyleSample() {
+  const style = selectedReusableAnchorStyle.value
+  const text = reusableAnchorStyleSampleDraft.value.raw_text.trim()
+  if (!style || !text) { reusableAnchorStyleError.value = '请先粘贴一份主播真实话术。'; return }
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const sample = await createLiveAnchorStyleSample(style.id, {
+      title: reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`,
+      source_type: 'paste', raw_text: text, readable_text: text,
+    }, activeRoom.value?.tenant_id)
+    reusableAnchorStyleSamples.value = [sample, ...reusableAnchorStyleSamples.value]
+    reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
+    reusableAnchorStyleNotice.value = '样本已保存。请点击“分析这份样本”，系统只提取主播怎么说。'
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播样本失败' }
+  finally { reusableAnchorStyleBusy.value = false }
+}
+
+async function importReusableAnchorStyleSamples(event: Event) {
+  const style = selectedReusableAnchorStyle.value
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!style || !files.length) return
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    for (const file of files) {
+      const text = (await file.text()).trim()
+      if (!text) continue
+      const sample = await createLiveAnchorStyleSample(style.id, {
+        title: file.name.replace(/\.(txt|md)$/i, '') || '导入样本', source_type: 'upload', original_name: file.name,
+        raw_text: text, readable_text: text,
+      }, activeRoom.value?.tenant_id)
+      reusableAnchorStyleSamples.value.unshift(sample)
+    }
+    reusableAnchorStyleNotice.value = `已导入 ${files.length} 份样本，请逐份点击分析。`
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '导入主播样本失败' }
+  finally { reusableAnchorStyleBusy.value = false }
+}
+
+async function analyzeReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || reusableAnchorStyleBusy.value) return
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  reusableAnchorStyleAnalysisStage.value = '正在读取样本，观察称呼、口头禅和句子节奏…'
+  sample.analysis_status = 'analyzing'
+  try {
+    const result = await analyzeLiveAnchorStyleSample(style.id, sample.id, activeRoom.value?.tenant_id)
+    selectedReusableAnchorStyle.value = result.style
+    reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.map((item) => item.id === result.sample.id ? result.sample : item)
+    reusableAnchorStyleTab.value = 'analysis'
+    reusableAnchorStyleNotice.value = `“${sample.title}”分析完成${result.style_qc?.available ? (result.style_qc.passed ? '，同步质检通过。' : '，同步质检提示了风格边界问题，请查看结果。') : '。'}`
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '主播风格分析失败，请检查样本后重试'
+    window.alert(reusableAnchorStyleError.value)
+    sample.analysis_status = 'failed'
+  } finally { reusableAnchorStyleBusy.value = false; reusableAnchorStyleAnalysisStage.value = '' }
+}
+
+async function deleteReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || !window.confirm(`删除样本“${sample.title}”吗？`)) return
+  try {
+    await deleteLiveAnchorStyleSample(style.id, sample.id, activeRoom.value?.tenant_id)
+    reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.filter((item) => item.id !== sample.id)
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播样本失败' }
+}
+
+async function bindReusableAnchorStyle() {
+  const style = selectedReusableAnchorStyle.value
+  const planID = currentRoomPlanId.value
+  if (!style || !planID) { reusableAnchorStyleError.value = '请先选择智能体方案和主播风格。'; return }
+  try {
+    await bindLiveAnchorStyleToPlan(style.id, planID, activeRoom.value?.tenant_id)
+    reusableAnchorStyleNotice.value = `主播“${style.name}”已作为当前智能体方案的主播风格。`
+    await loadReusableAnchorStyleWorkspace(style.id)
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '绑定主播风格失败' }
+}
+
+async function runReusableLongTest() {
+  if (reusableAnchorStyleLongTestRunning.value || !selectedReusableAnchorStyle.value || !currentRoomPlanId.value || !activeRoomId.value) return
+  const style = selectedReusableAnchorStyle.value.profile
+  const sampleText = reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || currentAnchorStyleSampleText(style)
+  if (!style?.dimensions?.length || !sampleText) { reusableAnchorStyleError.value = '请先分析至少一份主播样本，再进行长时间测试。'; return }
+  reusableAnchorStyleLongTestRunning.value = true
+  reusableAnchorStyleLongTestText.value = ''
+  reusableAnchorStyleLongTestSegments.value = 0
+  reusableAnchorStyleError.value = ''
+  try {
+    const totalSegments = Math.max(1, Math.ceil(Math.max(5, reusableAnchorStyleLongTestMinutes.value) / 5))
+    for (let index = 0; index < totalSegments && reusableAnchorStyleLongTestRunning.value; index += 1) {
+      const previousTail = reusableAnchorStyleLongTestText.value.slice(-120)
+      const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。${previousTail ? `上一段最后几句仅供衔接参考：${previousTail}` : ''}`.slice(0, 280)
+      const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
+        room_id: activeRoomId.value, topic: continuityTopic,
+        target_chars: Math.min(1800, Math.max(300, anchorStyleTestTargetChars.value)),
+        expansion_freedom: fullShowExpansionFreedom.value, source_text: sampleText, anchor_style: style,
+        selected_facts: selectedFactKeys.value,
+        transient_overlays: anchorStyleCorrectionCandidates.value,
+      })
+      reusableAnchorStyleLongTestText.value += (reusableAnchorStyleLongTestText.value ? '\n\n' : '') + result.text
+      reusableAnchorStyleLongTestSegments.value += 1
+    }
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败' }
+  finally { reusableAnchorStyleLongTestRunning.value = false }
+}
+
+function stopReusableLongTest() { reusableAnchorStyleLongTestRunning.value = false }
+
+async function toggleReusableAnchorPlugin(item: AnchorStylePluginCatalogItem) {
+  const style = selectedReusableAnchorStyle.value
+  if (!style) return
+  const existing = style.plugin_settings?.find((entry) => entry.plugin_id === item.manifest.id)
+  try {
+    if (existing?.enabled) {
+      await deleteLiveAnchorStylePlugin(style.id, item.manifest.id, activeRoom.value?.tenant_id)
+      style.plugin_settings = style.plugin_settings.filter((entry) => entry.plugin_id !== item.manifest.id)
+    } else {
+      const result = await upsertLiveAnchorStylePlugin(style.id, {
+        plugin_id: item.manifest.id,
+        plugin_version: item.manifest.version,
+        enabled: true,
+        parameters: existing?.parameters || stylePluginDefaultParameters(item),
+      }, activeRoom.value?.tenant_id)
+      style.plugin_settings = result.items
+    }
+    if (currentRoomPlanId.value && styleOverlayProfile.value && item.activation_supported) {
+      if (!existing?.enabled) {
+        await activateStylePlugin(item)
+      } else {
+        const remaining = styleOverlayProfile.value.items.filter((entry) => entry.plugin?.plugin_id !== item.manifest.id)
+        await persistStyleOverlayItems(remaining, `已停用“${item.manifest.name}”，当前方案不会再叠加这项能力。`)
+      }
+    }
+    reusableAnchorStyleNotice.value = `${item.manifest.name}已${existing?.enabled ? '停用' : '启用'}，测试生成时会读取这项设置。`
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存个性插件失败' }
+}
+
+function stylePluginDefaultParameters(item: AnchorStylePluginCatalogItem) {
+  return Object.fromEntries(Object.entries(item.manifest.parameters || {}).flatMap(([name, definition]) => (
+    definition.default === undefined ? [] : [[name, definition.default]]
+  )))
+}
+
+async function activateStylePlugin(item: AnchorStylePluginCatalogItem) {
+  const planId = currentRoomPlanId.value
+  const profile = styleOverlayProfile.value
+  if (!planId || !profile || !item.activation_supported || stylePluginBusyID.value) return
+  stylePluginBusyID.value = item.manifest.id
+  styleOverlayError.value = ''
+  styleOverlayNotice.value = ''
+  try {
+    const result = await activateLiveAgentPlanStylePlugin(planId, {
+      expected_revision: profile.revision,
+      plugin_id: item.manifest.id,
+      plugin_version: item.manifest.version,
+      strength: 50,
+      parameters: stylePluginDefaultParameters(item),
+    }, activeRoom.value?.tenant_id)
+    if (planId !== currentRoomPlanId.value) return
+    styleOverlayProfile.value = result.profile
+    styleOverlayNotice.value = `插件“${item.manifest.name}”已加入主播并热生效。`
+  } catch (err) {
+    styleOverlayError.value = err instanceof Error ? err.message : '启用主播风格插件失败'
+  } finally {
+    stylePluginBusyID.value = ''
+  }
+}
+
+async function interpretStyleOverlay() {
+  const planId = currentRoomPlanId.value
+  const source = styleOverlaySource.value.trim()
+  if (styleOverlayBusy.value) return
+  if (!planId) {
+    styleOverlayError.value = '请先选择直播方案'
+    return
+  }
+  if (!styleOverlayProfile.value) {
+    styleOverlayError.value = '主播风格正在加载，请稍后再试'
+    return
+  }
+  if (!source) {
+    styleOverlayError.value = '请先在“希望主播增加什么习惯”中输入内容；灰色示例文字不是已输入内容。'
+    return
+  }
+  styleOverlayBusy.value = true
+  styleOverlayError.value = ''
+  styleOverlayNotice.value = ''
+  styleOverlayPending.value = null
+  try {
+    const result = await interpretLiveAgentPlanStyleOverlay(planId, {
+      source_text: source,
+      explanation_text: styleOverlayExplanation.value.trim() || undefined,
+      strength: styleOverlayStrength.value,
+    }, activeRoom.value?.tenant_id)
+    if (planId !== currentRoomPlanId.value) return
+    styleOverlayPending.value = result.item
+    styleOverlayMemoryMatches.value = result.memory_matches
+    styleOverlayNotice.value = `已由 ${result.model} 完成理解，请确认系统理解后再加入主播。`
+  } catch (err) {
+    styleOverlayError.value = err instanceof Error ? err.message : '叠加风格理解失败'
+  } finally {
+    styleOverlayBusy.value = false
+  }
+}
+
+async function persistStyleOverlayItems(items: LiveAnchorStyleOverlayItem[], success: string) {
+  const planId = currentRoomPlanId.value
+  const profile = styleOverlayProfile.value
+  if (!planId || !profile || styleOverlayBusy.value) return false
+  styleOverlayBusy.value = true
+  styleOverlayError.value = ''
+  styleOverlayNotice.value = ''
+  try {
+    const result = await saveLiveAgentPlanStyleOverlays(planId, { ...profile, items }, activeRoom.value?.tenant_id)
+    if (planId !== currentRoomPlanId.value) return false
+    styleOverlayProfile.value = result.profile
+    styleOverlayNotice.value = success + (result.semantic_indexed ? '；已存入当前客户的风格理解记忆。' : '；向量服务不可用时不影响规则执行。')
+    return true
+  } catch (err) {
+    styleOverlayError.value = err instanceof Error ? err.message : '保存叠加风格失败'
+    return false
+  } finally {
+    styleOverlayBusy.value = false
+  }
+}
+
+async function confirmStyleOverlay() {
+  if (!styleOverlayPending.value || !styleOverlayProfile.value) return
+  const saved = await persistStyleOverlayItems([...styleOverlayProfile.value.items, styleOverlayPending.value], '叠加风格已保存并热生效')
+  if (!saved) return
+  styleOverlayPending.value = null
+  styleOverlaySource.value = ''
+  styleOverlayExplanation.value = ''
+}
+
+async function toggleStyleOverlay(item: LiveAnchorStyleOverlayItem) {
+  if (!styleOverlayProfile.value) return
+  await persistStyleOverlayItems(styleOverlayProfile.value.items.map((current) => current.id === item.id ? { ...current, enabled: !current.enabled } : current), item.enabled ? '叠加风格已暂停' : '叠加风格已启用')
+}
+
+async function removeStyleOverlay(item: LiveAnchorStyleOverlayItem) {
+  if (!styleOverlayProfile.value) return
+  await persistStyleOverlayItems(styleOverlayProfile.value.items.filter((current) => current.id !== item.id), '叠加风格已移除')
+}
 const fullShowDuration = ref(90)
 const fullShowDurationProgress = computed(() => ((fullShowDuration.value - 30) / 90) * 100)
 const fullShowDurationLabel = computed(() => {
@@ -334,6 +763,13 @@ const fullShowDurationLabel = computed(() => {
 })
 const fullShowRoundMinutes = ref(7)
 const fullShowVariantCount = ref(5)
+const fullShowExpansionFreedom = ref(65)
+const fullShowExpansionLabel = computed(() => {
+  if (fullShowExpansionFreedom.value <= 25) return '保守扩展'
+  if (fullShowExpansionFreedom.value <= 55) return '平衡扩展'
+  if (fullShowExpansionFreedom.value <= 80) return '开放扩展'
+  return '边缘合规'
+})
 const fullShowUseAnchorStyle = ref(true)
 const fullShowUseDynamicFacts = ref(true)
 const fullShowGenerateTTS = ref(true)
@@ -406,6 +842,71 @@ const fullShowVoiceStates = ref<Record<string, FullShowVoiceState>>({})
 const fullShowVoicePlaybackMS = ref<Record<string, number>>({})
 const fullShowVoiceDetail = ref<{ key: string; mode: '' | 'srt' | 'safe' }>({ key: '', mode: '' })
 const fullShowOutputMode = ref<'generated' | 'custom'>('generated')
+const contentModeAccess = ref<LiveContentModeAccess | null>(null)
+const contentModeLoading = ref(false)
+const contentModeSaving = ref(false)
+const contentModeError = ref('')
+const contentModeNotice = ref('')
+const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_mode === 'user_audio')
+const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
+let contentModeLoadNo = 0
+let contentModeRefreshTimer: number | undefined
+let contentModeDisposed = false
+
+async function refreshContentMode(reset = false) {
+  if (contentModeDisposed) return
+  const roomId = activeRoomId.value
+  const token = ++contentModeLoadNo
+  if (reset) contentModeAccess.value = null
+  contentModeError.value = ''
+  if (!roomId) { contentModeLoading.value = false; return }
+  contentModeLoading.value = true
+  try {
+    const value = await getLiveContentMode(roomId)
+    if (token !== contentModeLoadNo || activeRoomId.value !== roomId) return
+    const previousMode = contentModeAccess.value?.content_mode
+    contentModeAccess.value = value
+    if (previousMode !== value.content_mode) {
+      fullShowOutputMode.value = value.content_mode === 'user_audio' ? 'custom' : 'generated'
+    }
+  } catch (err) {
+    if (token !== contentModeLoadNo) return
+    contentModeAccess.value = null
+    contentModeError.value = err instanceof Error ? err.message : '读取直播模式失败'
+  } finally {
+    if (token === contentModeLoadNo) contentModeLoading.value = false
+  }
+}
+
+async function chooseContentMode(mode: LiveContentMode) {
+  const roomId = activeRoomId.value
+  if (!roomId || contentModeLoading.value || contentModeSaving.value || fullShowGenerating.value) return
+  if (!canSelectLiveContentMode(contentModeAccess.value, mode)) return
+  if (contentModeAccess.value?.content_mode === mode) return
+  const token = ++contentModeLoadNo
+  contentModeSaving.value = true
+  contentModeError.value = ''
+  contentModeNotice.value = ''
+  try {
+    const value = await setLiveContentMode(roomId, mode)
+    if (token !== contentModeLoadNo || roomId !== activeRoomId.value) return
+    contentModeAccess.value = value
+    selectFullShowOutputMode(value.content_mode === 'user_audio' ? 'custom' : 'generated')
+    contentModeNotice.value = '已保存当前直播间的内容模式；文案和声音仍需确认并发布后使用。'
+  } catch (err) {
+    if (token !== contentModeLoadNo) return
+    contentModeError.value = err instanceof Error ? err.message : '切换直播模式失败'
+    contentModeAccess.value = null
+  } finally {
+    if (token === contentModeLoadNo) contentModeSaving.value = false
+  }
+}
+
+function handleContentPolicyUpdated(event: Event) {
+  if (contentModeSaving.value) return
+  const roomId = Number((event as CustomEvent<{ room_id?: number }>).detail?.room_id || 0)
+  if (!roomId || roomId === activeRoomId.value) void refreshContentMode()
+}
 const fullShowSubtitleDrafts = ref<Record<string, LiveAgentPlanTimelineSegment[]>>({})
 const fullShowSubtitleSavingKey = ref('')
 const fullShowSubtitleError = ref('')
@@ -416,8 +917,17 @@ const customMainlineUploadProgress = ref(0)
 const customMainlineStage = ref<'idle' | 'uploading' | 'analyzing' | 'ready' | 'saving' | 'failed'>('idle')
 const customMainlineDraft = ref<LiveAgentCustomMainlineResponse | null>(null)
 const customMainlineTimeline = ref<LiveAgentPlanTimelineSegment[]>([])
+const customMainlineTranscript = ref('')
+const customMainlineSaveNotice = ref('')
 const customMainlineError = ref('')
 const customMainlineCloneBusy = ref(false)
+const originalAiCandidateKey = ref('')
+const originalAiSrtProgress = ref<{
+  status: 'idle' | 'generating' | 'done' | 'failed'
+  percent: number
+  stage: string
+  error: string
+}>({ status: 'idle', percent: 0, stage: '', error: '' })
 let customMainlineAbort: AbortController | null = null
 const fullShowVoiceTimers = new Map<string, number>()
 const fullShowSetListening = ref(false)
@@ -443,9 +953,14 @@ const fullShowWorkspaceDirty = computed(
 )
 const fullShowRoundCount = computed(() => Math.max(1, Math.ceil(fullShowDuration.value / fullShowRoundMinutes.value)))
 const selectedFullShowVariant = computed<LiveAgentFullShowVariant | null>(() => {
-  const variants = fullShowResult.value?.variants || []
+  const variants = (fullShowResult.value?.variants || []).filter(
+    (item) => fullShowOutputMode.value === 'custom' || item.variant_key !== 'CUSTOM',
+  )
   return variants.find((item) => item.variant_key === selectedFullShowVariantKey.value) || variants[0] || null
 })
+const aiFullShowVariants = computed(() =>
+  (fullShowResult.value?.variants || []).filter((item) => item.variant_key !== 'CUSTOM'),
+)
 const fullShowEditing = computed(
   () => Boolean(selectedFullShowVariant.value && fullShowEditingVariantKey.value === selectedFullShowVariant.value.variant_key),
 )
@@ -501,6 +1016,7 @@ const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
     provider: String(voice.provider || systemDefaultVoice.provider).trim(),
     voice_id: String(voice.voice_id || systemDefaultVoice.voice_id).trim(),
     profile_id: Number(voice.profile_id || 0) || undefined,
+    binding_id: Number(voice.binding_id || 0) || undefined,
     model: String(voice.model || systemDefaultVoice.model).trim(),
     rate: Number(voice.rate || 1) || 1,
     emotion: String(voice.emotion || '').trim() || undefined,
@@ -521,6 +1037,7 @@ function fullShowVoiceIdentityKey(identity: LiveAgentVoiceIdentity) {
     identity.provider,
     identity.voice_id,
     String(identity.profile_id || 0),
+    String(identity.binding_id || 0),
     identity.model,
     identity.version,
   ].join('|')
@@ -529,7 +1046,9 @@ const currentVoiceIdentityKey = computed(() => fullShowVoiceIdentityKey(currentV
 const fullShowVoiceIdentityConsistent = computed(() =>
   fullShowFormalVariantKeys.value.every((key) => {
     const state = fullShowVoiceState(key)
-    return Boolean(state.audio_url) && state.voice_identity_key === currentVoiceIdentityKey.value
+    // Uploaded mainlines retain their recorded voice independently of the
+    // selected interactive voice. The server verifies the actual asset purpose.
+    return Boolean(state.audio_url) && (isUserAudioContentMode.value || state.voice_identity_key === currentVoiceIdentityKey.value)
   }),
 )
 const fullShowGuideCurrentStep = computed(() => {
@@ -544,7 +1063,7 @@ const fullShowGuideSteps = computed(() => [
   {
     index: 1,
     title: '准备生成依据',
-    description: '确认商品、活动、正式事实、口播样稿和主播风格',
+    description: '确认商品、活动、事实依据和主播风格',
     status: fullShowGuideCurrentStep.value > 1 ? 'done' : 'active',
   },
   {
@@ -606,7 +1125,6 @@ const fullShowSourceSummary = computed(() => {
       facts: snapshot.formal_facts?.length || 0,
       products: snapshot.product_links?.length || 0,
       benefits: snapshot.benefits?.length || 0,
-      samples: snapshot.script_references?.length || 0,
       style: snapshot.anchor_style?.dimensions?.length || 0,
     }
   }
@@ -614,7 +1132,6 @@ const fullShowSourceSummary = computed(() => {
     facts: formalFacts.value.length,
     products: formalProductLinks.value.length,
     benefits: activeFormalBenefits.value.length,
-    samples: formalScriptReferences.value.length,
     style: anchorStyleProfile.value?.dimensions?.length || 0,
   }
 })
@@ -628,40 +1145,6 @@ const fullShowRoundPreview = computed(() => {
     startMinute: index * fullShowRoundMinutes.value,
   }))
 })
-const selectedFactReviewBucket = ref<'adoptable' | 'conflict' | 'discuss' | 'violation'>('adoptable')
-const factReviewGroups = computed(() => {
-  const facts = currentAnalysis.value?.facts || []
-  const definitions = [
-    { key: 'adoptable', label: '可采纳事实', className: 'adoptable' },
-    { key: 'conflict', label: '矛盾事实', className: 'conflict' },
-    { key: 'discuss', label: '待商量事实', className: 'discuss' },
-    { key: 'violation', label: '严重违规事实', className: 'violation' },
-  ] as const
-  return definitions.map((definition) => ({
-    ...definition,
-    facts: facts.filter((fact: LiveAgentPlanFactCandidate) => {
-      const bucket = String(fact.review_bucket || 'discuss').toLowerCase()
-      return bucket === definition.key
-    }),
-  }))
-})
-const selectedFactReviewGroup = computed(
-  () => factReviewGroups.value.find((group) => group.key === selectedFactReviewBucket.value) || factReviewGroups.value[0],
-)
-const currentSelectableFacts = computed(
-  () => (selectedFactReviewGroup.value?.facts || []).filter(
-    (fact) => fact.review_bucket !== 'violation' && !formalFactSignatureSet.value.has(factSelectionKey(fact)),
-  ),
-)
-const selectedCurrentFacts = computed(
-  () => currentSelectableFacts.value.filter((fact) => selectedFactKeys.value.includes(factSelectionKey(fact))),
-)
-const allCurrentFactsSelected = computed(
-  () => currentSelectableFacts.value.length > 0 && selectedCurrentFacts.value.length === currentSelectableFacts.value.length,
-)
-const formalFactSignatureSet = computed(
-  () => new Set(formalFacts.value.map((fact) => factSelectionKey(fact))),
-)
 
 function formatKnowledgeDraft(analysis: LiveAgentPlanScriptAnalysis) {
   if (!analysis.facts?.length) return ''
@@ -686,37 +1169,6 @@ function formatRhythmDraft(analysis: LiveAgentPlanScriptAnalysis) {
     if (node.duration_seconds) lines.push(`建议时长：${node.duration_seconds}秒`)
     return lines.join('\n')
   }).join('\n\n')
-}
-
-function factSelectionKey(fact: { category: string; key: string; value: string }) {
-  return [fact.category || 'other', fact.key.trim(), fact.value.trim()].join('::')
-}
-
-function isFactSelected(fact: LiveAgentPlanFactCandidate) {
-  return selectedFactKeys.value.includes(factSelectionKey(fact))
-}
-
-function toggleFactSelection(fact: LiveAgentPlanFactCandidate, checked: boolean) {
-  if (fact.review_bucket === 'violation') return
-  const key = factSelectionKey(fact)
-  const next = new Set(selectedFactKeys.value)
-  if (checked) next.add(key)
-  else next.delete(key)
-  selectedFactKeys.value = Array.from(next)
-}
-
-function toggleAllCurrentFacts(checked: boolean) {
-  const next = new Set(selectedFactKeys.value)
-  for (const fact of currentSelectableFacts.value) {
-    const key = factSelectionKey(fact)
-    if (checked) next.add(key)
-    else next.delete(key)
-  }
-  selectedFactKeys.value = Array.from(next)
-}
-
-function isFactAdopted(fact: LiveAgentPlanFactCandidate) {
-  return formalFactSignatureSet.value.has(factSelectionKey(fact))
 }
 
 function benefitStatusLabel(status: string) {
@@ -776,19 +1228,17 @@ const roomPolicyActive = computed(
 )
 
 const activeModeLabel = computed(() => {
-  if (activeMode.value === 'script') return '直播素材'
   if (activeMode.value === 'products') return '商品链接'
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
-  if (activeMode.value === 'rhythm') return '口播样稿'
   if (activeMode.value === 'memory') return '互动策略'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
   if (activeMode.value === 'basic') return '基础设置'
   if (activeMode.value === 'strategy') return '用户层策略'
-  if (activeMode.value === 'anchor') return '主播风格'
+  if (activeMode.value === 'anchor') return '口播风格'
   if (activeMode.value === 'fullshow') return '直播智能体生成'
-  return '声音'
+  return '主播声音'
 })
 
 function previewFullShowPlan() {
@@ -797,6 +1247,7 @@ function previewFullShowPlan() {
 }
 
 function startFullShowVariantEdit() {
+  if (isUserAudioContentMode.value) return
   const variant = selectedFullShowVariant.value
   if (!variant) return
   fullShowEditingVariantKey.value = variant.variant_key
@@ -1008,6 +1459,12 @@ function selectFullShowOutputMode(mode: 'generated' | 'custom') {
     customMainlineAbort?.abort()
   }
   fullShowOutputMode.value = mode
+  if (mode === 'generated' && selectedFullShowVariantKey.value === 'CUSTOM') {
+    selectedFullShowVariantKey.value = aiFullShowVariants.value[0]?.variant_key || 'A'
+  }
+  if (mode === 'generated' && isUserAudioContentMode.value && !contentModeSaving.value) {
+    void chooseContentMode('ai_pregenerated')
+  }
   customMainlineError.value = ''
 }
 
@@ -1034,12 +1491,14 @@ async function saveFullShowSubtitleText(key: string) {
   fullShowSubtitleSavingKey.value = key
   fullShowSubtitleError.value = ''
   try {
-    const response = await rebuildLiveAgentFullShowVariantSubtitles(planId, key, {
-      tenant_id: room.tenant_id,
+    const input = {
       room_id: room.id,
       audio_asset_id: state.audio_asset_id,
       timeline: draft.map((item) => ({ ...item })),
-    })
+    }
+    const response = isUserAudioContentMode.value
+      ? await rebuildLiveAgentCustomMainline(planId, input)
+      : await rebuildLiveAgentFullShowVariantSubtitles(planId, key, { ...input, tenant_id: room.tenant_id })
     updateFullShowVoiceState(key, {
       audio_url: response.audio_url,
       audio_asset_id: response.audio_asset_id,
@@ -1070,7 +1529,9 @@ async function saveFullShowSubtitleText(key: string) {
     }
     fullShowSavedVersion.value = null
     fullShowVersionError.value = ''
-    fullShowNotice.value = key + '稿 SRT 文字已保存；时间位置保持不变，声音资产已生成新副本。'
+    fullShowNotice.value = isUserAudioContentMode.value
+      ? key + '稿 SRT 文字已保存；原始录音和时间位置保持不变。'
+      : key + '稿 SRT 文字已保存；时间位置保持不变，声音资产已生成新副本。'
   } catch (err) {
     fullShowSubtitleError.value = err instanceof Error ? err.message : '保存 SRT 文字失败'
   } finally {
@@ -1167,11 +1628,11 @@ async function handleCustomMainlineFile(event: Event) {
     customMainlineDurationMS.value = 0
     return
   }
-  if (file.size > 50 * 1024 * 1024) {
+  if (file.size > 200 * 1024 * 1024) {
     customMainlineFile.value = null
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
-    customMainlineError.value = '自定义音稿最大支持 50MB。'
+    customMainlineError.value = '自定义音稿最大支持 200MB。'
     input.value = ''
     return
   }
@@ -1185,6 +1646,12 @@ async function handleCustomMainlineFile(event: Event) {
 }
 
 async function uploadCustomMainline() {
+  if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
+  selectFullShowOutputMode('custom')
+  if (!contentModeReady.value || !isUserAudioContentMode.value) {
+    customMainlineError.value = '当前直播间暂不能使用原始音，请刷新页面后重试。'
+    return
+  }
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   const file = customMainlineFile.value
@@ -1213,6 +1680,10 @@ async function uploadCustomMainline() {
     )
     customMainlineDraft.value = response
     customMainlineTimeline.value = (response.timeline || []).map((item) => ({ ...item }))
+    customMainlineTranscript.value = String(
+      response.transcript || (response.timeline || []).map((item) => item.text).filter(Boolean).join('\n'),
+    ).trim()
+    customMainlineSaveNotice.value = ''
     customMainlineUploadProgress.value = 100
     customMainlineStage.value = 'ready'
     if (response.clone_error) {
@@ -1230,18 +1701,71 @@ async function uploadCustomMainline() {
   }
 }
 
+function buildOriginalTimeline(
+  transcript: string,
+  timeline: LiveAgentPlanTimelineSegment[],
+  durationMS: number,
+) {
+  const text = String(transcript || '').trim()
+  const source = (timeline || []).map((item, index) => ({
+    ...item,
+    segment_id: String(item.segment_id || 'ORIGINAL-' + String(index + 1)),
+    index: Number(item.index || index + 1),
+  }))
+  if (!text) return []
+  if (!source.length) {
+    return [{ segment_id: 'ORIGINAL-1', index: 1, start_ms: 0, end_ms: Number(durationMS || 0), text, safe_cut: true }]
+  }
+  const paragraphs = text.split(/\n+/).map((item) => item.trim()).filter(Boolean)
+  if (paragraphs.length === source.length) return source.map((item, index) => ({ ...item, text: paragraphs[index] }))
+  const characters = text.replace(/\s+/g, ' ').trim().match(/\S\s*/gu) || []
+  const count = Math.min(source.length, characters.length)
+  const selected = source.slice(0, count)
+  const weights = selected.map((item) => Math.max(1, Array.from(String(item.text || '')).length))
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0)
+  let usedWeight = 0
+  let cursor = 0
+  return selected.map((item, index) => {
+    usedWeight += weights[index]
+    const remaining = count - index - 1
+    const minimumEnd = cursor + 1
+    const maximumEnd = characters.length - remaining
+    let end = index === count - 1 ? characters.length : Math.round((characters.length * usedWeight) / totalWeight)
+    end = Math.max(minimumEnd, Math.min(maximumEnd, end))
+    if (index < count - 1) {
+      for (let candidate = end; candidate < Math.min(maximumEnd, end + 32); candidate += 1) {
+        if (/[。！？!?；;]/.test(characters[candidate] || '')) { end = candidate + 1; break }
+      }
+    }
+    const segmentText = characters.slice(cursor, end).join('').trim()
+    cursor = end
+    return {
+      ...item,
+      index: index + 1,
+      end_ms: index === count - 1 ? Number(durationMS || source[source.length - 1]?.end_ms || item.end_ms || 0) : Number(item.end_ms || 0),
+      text: segmentText,
+    }
+  })
+}
+
 async function rebuildCustomMainline() {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   const draft = customMainlineDraft.value
   if (!planId || !room || !draft) return
+  const transcript = customMainlineTranscript.value.trim()
+  if (!transcript) {
+    customMainlineError.value = '原始话术不能为空。'
+    customMainlineSaveNotice.value = ''
+    return
+  }
   customMainlineStage.value = 'saving'
   customMainlineError.value = ''
   try {
     const response = await rebuildLiveAgentCustomMainline(planId, {
       room_id: room.id,
       audio_asset_id: draft.audio_asset_id,
-      timeline: customMainlineTimeline.value.map((item) => ({ ...item })),
+      timeline: buildOriginalTimeline(transcript, customMainlineTimeline.value, draft.duration_ms),
     })
     customMainlineDraft.value = {
       ...response,
@@ -1250,10 +1774,34 @@ async function rebuildCustomMainline() {
       clone_error: response.clone_error || draft.clone_error,
     }
     customMainlineTimeline.value = response.timeline.map((item) => ({ ...item }))
+    customMainlineTranscript.value = String(
+      response.transcript || response.timeline.map((item) => item.text).filter(Boolean).join('\n'),
+    ).trim()
+    if (fullShowResult.value) {
+      fullShowResult.value = {
+        ...fullShowResult.value,
+        variants: fullShowResult.value.variants.map((variant) =>
+          variant.variant_key === 'CUSTOM'
+            ? { ...variant, text: customMainlineTranscript.value }
+            : variant,
+        ),
+      }
+    }
+    if (fullShowVoiceStates.value.CUSTOM) {
+      updateFullShowVoiceState('CUSTOM', {
+        timeline: response.timeline.map((item) => ({ ...item })),
+        srt: response.srt,
+        safe_points: response.safe_points.map((item) => ({ ...item })),
+        asset_manifest: { ...response.asset_manifest },
+      })
+    }
+    fullShowSavedVersion.value = null
     customMainlineStage.value = 'ready'
+    customMainlineSaveNotice.value = '原始话术已保存，SRT 已按原声音时间同步更新。'
   } catch (err) {
     customMainlineStage.value = 'failed'
     customMainlineError.value = err instanceof Error ? err.message : '保存校对并重建 SRT 失败'
+    customMainlineSaveNotice.value = ''
   }
 }
 
@@ -1267,7 +1815,7 @@ async function retryCustomMainlineClone() {
       name: (customMainlineFile.value?.name || '自定义主线') + ' · 自定义音色',
       sample_asset_id: draft.audio_asset_id,
     })
-    const model = String(profile.config?.target_model || 'qwen3-tts-vc-2026-01-22')
+    const model = String(profile.config?.target_model || 'qwen-audio-3.0-tts-plus')
     customMainlineDraft.value = {
       ...draft,
       voice_profile: profile,
@@ -1278,6 +1826,7 @@ async function retryCustomMainlineClone() {
         provider: profile.provider,
         voice_id: profile.voice_id,
         profile_id: profile.id,
+        binding_id: Number(profile.config?.binding_id || 0) || undefined,
         model,
         rate: 1,
       },
@@ -1290,21 +1839,54 @@ async function retryCustomMainlineClone() {
   }
 }
 
-function applyCustomMainlineAsFormal() {
+async function applyCustomMainlineAsFormal() {
+  if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
+  selectFullShowOutputMode('custom')
+  if (!contentModeReady.value || !isUserAudioContentMode.value) return
   const draft = customMainlineDraft.value
-  const result = fullShowResult.value
   const identity = draft?.voice_identity
-  if (!draft || !result || !identity || !customMainlineCanApply.value) {
+  if (!draft || !identity || !currentPlan.value || !activeRoom.value || !customMainlineCanApply.value) {
     customMainlineError.value = '自定义音稿、SRT 和自定义音色都准备完成后才能替换主线。'
     return
+  }
+  // Uploaded recordings can form a complete workspace without first buying an
+  // unrelated AI-generated script preview.
+  const result: LiveAgentFullShowPreviewResponse = fullShowResult.value || {
+    variants: [], persisted: false, preview: true,
+    context: {
+      plan_id: currentPlan.value.id,
+      plan_name: currentPlan.value.name,
+      plan_description: currentPlan.value.description,
+      room_id: activeRoom.value.id,
+      policy_rule_count: 0,
+      formal_facts: formalFacts.value.map((item) => ({ category: item.category, key: item.key, value: item.value, forbidden_wording: item.forbidden_wording, safe_rewrite: item.safe_rewrite, version: item.version_no })),
+      benefits: activeFormalBenefits.value,
+      product_links: formalProductLinks.value,
+      script_references: [],
+      rhythm_nodes: [],
+      anchor_style: anchorStyleProfile.value || { summary: '', dimensions: [], reusable_rules: [], candidate_patterns: [], excluded_from_style: [] },
+      style_overlay_prompt: '',
+      style_overlay_count: 0,
+      duration_minutes: fullShowDuration.value,
+      round_minutes: fullShowRoundMinutes.value,
+      round_count: fullShowRoundCount.value,
+      variant_count: 1,
+      use_anchor_style: true,
+      use_dynamic_facts: true,
+      generate_tts_hints: false,
+      avoid_recent: true,
+      draft_product_source: false,
+      draft_rhythm_source: false,
+      draft_style_source: false,
+    },
   }
   const variants = result.variants.filter((item) => item.variant_key !== 'CUSTOM')
   const customVariant: LiveAgentFullShowVariant = {
     index: variants.length + 1,
     variant_key: 'CUSTOM',
-    title: '自定义音稿',
-    opening_angle: '真人自定义主线',
-    text: draft.transcript,
+    title: '原始音话术',
+    opening_angle: '上传原始声音',
+    text: customMainlineTranscript.value.trim() || draft.transcript,
     estimated_minutes: Math.max(1, Math.ceil(draft.duration_ms / 60000)),
     covered_fact_keys: [],
     covered_link_keys: [],
@@ -1347,8 +1929,230 @@ function applyCustomMainlineAsFormal() {
   fullShowSavedVersion.value = null
   fullShowVersionError.value = ''
   fullShowPreviewReady.value = true
-  fullShowNotice.value = '自定义音稿已替换为正式主线；发布后 Core 会直接播放这条原始音频。'
-  fullShowOutputMode.value = 'generated'
+  originalAiSrtProgress.value = { status: 'idle', percent: 0, stage: '', error: '' }
+  fullShowNotice.value = `已采用上传的原始声音；原始音频会持续保留，也可以使用当前选中的声音生成 AI 版本。`
+  fullShowOutputMode.value = 'custom'
+}
+
+function originalSourceManifest() {
+  const draft = customMainlineDraft.value
+  if (!draft) return null
+  return {
+    audio_url: draft.audio_url,
+    audio_asset_id: Number(draft.audio_asset_id || 0),
+    duration_ms: Number(draft.duration_ms || 0),
+    transcript: customMainlineTranscript.value.trim() || draft.transcript,
+    timeline: draft.timeline.map((item) => ({ ...item })),
+    srt: draft.srt,
+    safe_points: draft.safe_points.map((item) => ({ ...item })),
+    asset_manifest: JSON.parse(JSON.stringify(draft.asset_manifest || {})),
+    voice_identity: draft.voice_identity ? JSON.parse(JSON.stringify(draft.voice_identity)) : {},
+  }
+}
+
+const liveAgentVersionRequestLimitBytes = 64 * 1024
+const liveAgentVersionSafePayloadBytes = 60 * 1024
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return window.btoa(binary)
+}
+
+function base64ToBytes(value: string) {
+  const binary = window.atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
+async function compressVersionJSON(value: Record<string, unknown>) {
+  if (typeof CompressionStream !== 'function') return ''
+  const stream = new Blob([JSON.stringify(value)]).stream().pipeThrough(new CompressionStream('gzip'))
+  const compressed = new Uint8Array(await new Response(stream).arrayBuffer())
+  return bytesToBase64(compressed)
+}
+
+async function decompressVersionJSON(value: string) {
+  if (!value || typeof DecompressionStream !== 'function') return null
+  const bytes = base64ToBytes(value)
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+  return JSON.parse(await new Response(stream).text()) as Record<string, unknown>
+}
+
+async function compactOriginalSourceManifest() {
+  const source = originalSourceManifest()
+  if (!source) return null
+  const { transcript, timeline, srt, safe_points, ...reference } = source
+  try {
+    const data = await compressVersionJSON({ transcript, timeline, srt, safe_points })
+    if (!data) return source
+    return {
+      ...reference,
+      compact_bundle: {
+        version: 'original-source-v1',
+        encoding: 'gzip-base64',
+        data,
+      },
+    }
+  } catch {
+    return source
+  }
+}
+
+async function expandOriginalSourceManifest(source: Record<string, unknown>) {
+  const bundle = asRecord(source.compact_bundle)
+  if (bundle.encoding !== 'gzip-base64' || typeof bundle.data !== 'string') return source
+  try {
+    const expanded = await decompressVersionJSON(bundle.data)
+    return expanded ? { ...source, ...expanded } : source
+  } catch {
+    return source
+  }
+}
+
+async function generateOriginalAiVoice() {
+  const draft = customMainlineDraft.value
+  const planId = currentRoomPlanId.value
+  const room = activeRoom.value
+  const text = customMainlineTranscript.value.trim() || draft?.transcript || ''
+  if (!draft || !planId || !room || !text) {
+    customMainlineError.value = '请先完成原始声音上传和话术校对。'
+    return
+  }
+  if (!fullShowResult.value) await applyCustomMainlineAsFormal()
+  if (!fullShowResult.value) return
+  if (contentModeAccess.value?.content_mode === 'user_audio') await chooseContentMode('ai_pregenerated')
+  selectFullShowOutputMode('custom')
+  if (contentModeAccess.value?.content_mode === 'user_audio') {
+    customMainlineError.value = '当前直播间暂不能切换为 AI 声音模式。'
+    return
+  }
+  const identity = roomVoiceIdentity.value
+  const targetKey = aiFullShowVariants.value.find((item) => item.variant_key === 'A')?.variant_key || 'A'
+  const existing = fullShowVoiceState(targetKey)
+  const sourceVariant = aiFullShowVariants.value.find((item) => item.variant_key === targetKey)
+  const variant: LiveAgentFullShowVariant = {
+    index: sourceVariant?.index || 1,
+    variant_key: targetKey,
+    title: '原始话术 AI 声音版',
+    opening_angle: '原始话术',
+    text,
+    estimated_minutes: Math.max(1, Math.ceil(draft.duration_ms / 60000)),
+    covered_fact_keys: sourceVariant?.covered_fact_keys || [],
+    covered_link_keys: sourceVariant?.covered_link_keys || [],
+    tts_hints: sourceVariant?.tts_hints || [],
+    audit: sourceVariant?.audit || { passed: true, issues: [], fact_coverage_pct: 0, link_coverage_pct: 0, similarity_pct: 0 },
+  }
+  const base = fullShowResult.value
+  if (base) {
+    fullShowResult.value = {
+      ...base,
+      variants: [...base.variants.filter((item) => item.variant_key !== targetKey), variant]
+        .sort((left, right) => left.index - right.index),
+    }
+  }
+  originalAiCandidateKey.value = targetKey
+  originalAiSrtProgress.value = { status: 'idle', percent: 0, stage: '', error: '' }
+  customMainlineError.value = ''
+  startFullShowVoiceProgress(targetKey)
+  try {
+    const response = await generateLiveAgentFullShowVariantVoice(planId, targetKey, {
+      tenant_id: room.tenant_id,
+      room_id: room.id,
+      text,
+      source: String(identity.source || 'official'),
+      voice_id: String(identity.voice_id || ''),
+      profile_id: Number(identity.profile_id || 0) || undefined,
+      rate: identity.rate || 1,
+    })
+    stopFullShowVoiceTimer(targetKey)
+    updateFullShowVoiceState(targetKey, {
+      ...existing,
+      status: 'candidate',
+      progress: 100,
+      candidate_url: response.audio_url,
+      candidate_asset_id: Number(response.audio_asset_id || 0),
+      candidate_duration_ms: Number(response.duration_ms || 0),
+      candidate_timeline: response.timeline || [],
+      candidate_srt: response.srt || '',
+      candidate_safe_points: response.safe_points || [],
+      candidate_asset_manifest: response.asset_manifest || {},
+      candidate_voice_identity: identity.name,
+      candidate_voice_identity_version: identity.version,
+      candidate_voice_identity_key: fullShowVoiceIdentityKey(identity),
+      error: '',
+    })
+    fullShowNotice.value = 'AI 候选声音已生成，请试听后点击“采用 AI 声音”。原始声音仍完整保留。'
+  } catch (err) {
+    stopFullShowVoiceTimer(targetKey)
+    const message = err instanceof Error ? err.message : 'AI 声音生成失败'
+    updateFullShowVoiceState(targetKey, { status: 'failed', error: message })
+    customMainlineError.value = message
+  }
+}
+
+async function acceptOriginalAiVoice() {
+  const planId = currentRoomPlanId.value
+  const room = activeRoom.value
+  const key = originalAiCandidateKey.value
+  const state = key ? fullShowVoiceState(key) : null
+  if (!planId || !room || !key || !state?.candidate_asset_id || !state.candidate_timeline.length) {
+    customMainlineError.value = 'AI 候选声音还没有完整时间轴，暂时不能采用。'
+    return
+  }
+  originalAiSrtProgress.value = { status: 'generating', percent: 12, stage: '正在读取 AI 声音时间轴', error: '' }
+  const timer = window.setInterval(() => {
+    const current = originalAiSrtProgress.value
+    if (current.status !== 'generating') return
+    const percent = Math.min(88, current.percent + 6)
+    originalAiSrtProgress.value = {
+      ...current,
+      percent,
+      stage: percent < 42 ? '正在读取 AI 声音时间轴' : percent < 76 ? '正在生成对应 SRT' : '正在校验字幕时间',
+    }
+  }, 180)
+  try {
+    const response = await rebuildLiveAgentFullShowVariantSubtitles(planId, key, {
+      tenant_id: room.tenant_id,
+      room_id: room.id,
+      audio_asset_id: state.candidate_asset_id,
+      timeline: state.candidate_timeline.map((item) => ({ ...item })),
+    })
+    updateFullShowVoiceState(key, {
+      candidate_timeline: response.timeline || state.candidate_timeline,
+      candidate_srt: response.srt || state.candidate_srt,
+      candidate_safe_points: response.safe_points || state.candidate_safe_points,
+      candidate_asset_manifest: {
+        ...(response.asset_manifest || state.candidate_asset_manifest),
+        original_source: originalSourceManifest(),
+      },
+    })
+    adoptFullShowVoiceCandidate(key)
+    fullShowFormalVariantKeys.value = [key]
+    selectedFullShowVariantKey.value = key
+    fullShowWorkspaceVoiceIdentity.value = { ...roomVoiceIdentity.value }
+    fullShowSavedVersion.value = null
+    originalAiSrtProgress.value = { status: 'done', percent: 100, stage: 'SRT 已生成，可以展开查看', error: '' }
+    fullShowNotice.value = '已采用 AI 声音并完成对应 SRT；上传的原始声音仍完整保留，可随时切回。'
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '生成对应 SRT 失败'
+    originalAiSrtProgress.value = { status: 'failed', percent: 0, stage: 'SRT 生成失败', error: message }
+    customMainlineError.value = message
+  } finally {
+    window.clearInterval(timer)
+  }
+}
+
+function discardOriginalAiVoice() {
+  if (originalAiCandidateKey.value) discardFullShowVoiceCandidate(originalAiCandidateKey.value)
+  originalAiCandidateKey.value = ''
+  originalAiSrtProgress.value = { status: 'idle', percent: 0, stage: '', error: '' }
+  fullShowNotice.value = '已放弃本次 AI 声音，原始声音保持不变。'
 }
 
 function stopFullShowVoiceTimer(key: string) {
@@ -1398,6 +2202,10 @@ function startFullShowVoiceProgress(key: string) {
 }
 
 async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, regenerate = false) {
+  if (!contentModeReady.value || isUserAudioContentMode.value) {
+    fullShowNotice.value = '原始录音主线保留上传的声音；需要更换时请重新上传录音。'
+    return
+  }
   if (!isFullShowFormalVariant(variant.variant_key)) {
     fullShowNotice.value = '请先把这篇稿件选为正式稿，再生成声音。'
     return
@@ -1486,6 +2294,7 @@ async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, r
 }
 
 function adoptFullShowVoiceCandidate(key: string) {
+  if (!contentModeReady.value || isUserAudioContentMode.value) return
   const state = fullShowVoiceState(key)
   if (!state.candidate_url) return
   updateFullShowVoiceState(key, {
@@ -1584,7 +2393,7 @@ async function previewFormalVoiceSet() {
       fullShowSetResolve = done
       audio.onended = done
       audio.onerror = done
-      audio.src = item.url
+      audio.src = liveSupportMediaPlaybackURL(item.url)
       audio.load()
       void audio.play().catch(done)
     })
@@ -1631,10 +2440,22 @@ function resetFullShowWorkspaceState() {
   fullShowVoiceStates.value = {}
   fullShowVoicePlaybackMS.value = {}
   fullShowVoiceDetail.value = { key: '', mode: '' }
-  fullShowOutputMode.value = 'generated'
+  fullShowOutputMode.value = isUserAudioContentMode.value ? 'custom' : 'generated'
   fullShowSubtitleDrafts.value = {}
   fullShowSubtitleSavingKey.value = ''
   fullShowSubtitleError.value = ''
+  customMainlineFile.value = null
+  customMainlineVoiceSample.value = null
+  customMainlineDurationMS.value = 0
+  customMainlineUploadProgress.value = 0
+  customMainlineStage.value = 'idle'
+  customMainlineDraft.value = null
+  customMainlineTimeline.value = []
+  customMainlineTranscript.value = ''
+  customMainlineSaveNotice.value = ''
+  customMainlineError.value = ''
+  originalAiCandidateKey.value = ''
+  originalAiSrtProgress.value = { status: 'idle', percent: 0, stage: '', error: '' }
   fullShowSavedVersion.value = null
   fullShowWorkspaceBaseVersion.value = null
   fullShowWorkspaceSource.value = ''
@@ -1647,13 +2468,14 @@ function resetFullShowWorkspaceState() {
   fullShowDuration.value = 90
   fullShowRoundMinutes.value = 7
   fullShowVariantCount.value = 5
+  fullShowExpansionFreedom.value = 65
   fullShowUseAnchorStyle.value = true
   fullShowUseDynamicFacts.value = true
   fullShowGenerateTTS.value = true
   fullShowAvoidRecent.value = true
 }
 
-function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 'draft' | 'published') {
+async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 'draft' | 'published') {
   fullShowWorkspaceHydrating.value = true
   try {
     const rawContext = version.generation_context as unknown as LiveAgentFullShowGenerationContext
@@ -1663,6 +2485,30 @@ function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 
       plan_name: String(rawContext?.plan_name || currentPlan.value?.name || ''),
       plan_description: String(rawContext?.plan_description || currentPlan.value?.description || ''),
       room_id: Number(rawContext?.room_id || version.room_id),
+      policy_rule_count: Number(rawContext?.policy_rule_count || 0),
+      style_overlay_prompt: String(rawContext?.style_overlay_prompt || ''),
+      style_overlay_count: Number(rawContext?.style_overlay_count || 0),
+      fact_expansion: rawContext?.fact_expansion,
+      formal_facts: Array.isArray(rawContext?.formal_facts) ? rawContext.formal_facts : [],
+      product_links: Array.isArray(rawContext?.product_links) ? rawContext.product_links : [],
+      benefits: Array.isArray(rawContext?.benefits) ? rawContext.benefits : [],
+      script_references: Array.isArray(rawContext?.script_references) ? rawContext.script_references : [],
+      rhythm_nodes: Array.isArray(rawContext?.rhythm_nodes) ? rawContext.rhythm_nodes : [],
+      anchor_style: {
+        summary: String(rawContext?.anchor_style?.summary || ''),
+        dimensions: Array.isArray(rawContext?.anchor_style?.dimensions)
+          ? rawContext.anchor_style.dimensions
+          : [],
+        reusable_rules: Array.isArray(rawContext?.anchor_style?.reusable_rules)
+          ? rawContext.anchor_style.reusable_rules
+          : [],
+        candidate_patterns: Array.isArray(rawContext?.anchor_style?.candidate_patterns)
+          ? rawContext.anchor_style.candidate_patterns
+          : [],
+        excluded_from_style: Array.isArray(rawContext?.anchor_style?.excluded_from_style)
+          ? rawContext.anchor_style.excluded_from_style
+          : [],
+      },
       duration_minutes: version.duration_minutes,
       round_minutes: version.round_minutes,
       round_count: Math.max(1, Math.ceil(version.duration_minutes / Math.max(1, version.round_minutes))),
@@ -1700,6 +2546,7 @@ function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 
     fullShowDuration.value = version.duration_minutes
     fullShowRoundMinutes.value = version.round_minutes
     fullShowVariantCount.value = Math.min(5, Math.max(3, variants.length))
+    fullShowExpansionFreedom.value = Math.min(100, Math.max(0, Number(context.fact_expansion?.freedom ?? 65)))
     fullShowWorkspaceLegacyPartial.value =
       Number(rawContext?.variant_count || version.variants.length) > version.variants.length
     fullShowUseAnchorStyle.value = context.use_anchor_style
@@ -1733,10 +2580,46 @@ function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 
         generation_no: Number(item.generation_no || 1),
         voice_identity: version.voice_identity.name,
         voice_identity_version: version.voice_identity.version,
-        voice_identity_key: restoredIdentityKey,
+        voice_identity_key: item.voice_identity_key || restoredIdentityKey,
       }
     }
     fullShowVoiceStates.value = restoredStates
+    const originalOwner = version.variants.find((item) =>
+      Object.keys(asRecord(asRecord(item.asset_manifest).original_source)).length > 0,
+    ) || version.variants.find((item) => item.variant_key === 'CUSTOM')
+    const archivedOriginal = await expandOriginalSourceManifest(
+      asRecord(asRecord(originalOwner?.asset_manifest).original_source),
+    )
+    const original = Object.keys(archivedOriginal).length ? archivedOriginal : asRecord(originalOwner)
+    const originalAssetID = Number(original.audio_asset_id || 0)
+    const originalAudioURL = String(original.audio_url || '')
+    if (originalAssetID > 0 && originalAudioURL) {
+      const originalTimeline = Array.isArray(original.timeline)
+        ? (original.timeline as LiveAgentPlanTimelineSegment[]).map((item) => ({ ...item }))
+        : []
+      const originalSafePoints = Array.isArray(original.safe_points)
+        ? (original.safe_points as LiveAgentPlanSafePoint[]).map((item) => ({ ...item }))
+        : []
+      const archivedIdentity = asRecord(original.voice_identity)
+      customMainlineDraft.value = {
+        audio_asset_id: originalAssetID,
+        audio_url: originalAudioURL,
+        duration_ms: Number(original.duration_ms || original.audio_duration_ms || 0),
+        transcript: String(original.transcript || originalOwner?.text || ''),
+        timeline: originalTimeline,
+        srt: String(original.srt || ''),
+        safe_points: originalSafePoints,
+        asset_manifest: asRecord(original.asset_manifest),
+        voice_identity: Object.keys(archivedIdentity).length
+          ? (archivedIdentity as unknown as LiveAgentVoiceIdentity)
+          : { ...version.voice_identity },
+      }
+      customMainlineTimeline.value = originalTimeline
+      customMainlineTranscript.value = String(
+        original.transcript || originalOwner?.text || originalTimeline.map((item) => item.text).filter(Boolean).join('\n'),
+      ).trim()
+      customMainlineStage.value = 'ready'
+    }
     fullShowWorkspaceBaseVersion.value = version
     fullShowWorkspaceSource.value = source
     fullShowSavedVersion.value = version
@@ -1765,7 +2648,7 @@ async function loadFullShowWorkspace() {
       fullShowNotice.value = '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
       return
     }
-    restoreFullShowWorkspaceVersion(workspace.version, workspace.source)
+    await restoreFullShowWorkspaceVersion(workspace.version, workspace.source)
     if (workspace.inherited) {
       fullShowWorkspaceInherited.value = true
       fullShowSavedVersion.value = null
@@ -1780,78 +2663,166 @@ async function loadFullShowWorkspace() {
   }
 }
 
-async function saveFullShowVersion() {
+function cloneVersionJSON<T>(value: T, fallback: T): T {
+  try { return JSON.parse(JSON.stringify(value ?? fallback)) as T } catch { return fallback }
+}
+
+function cleanVersionVoiceIdentity(identity: LiveAgentVoiceIdentity) {
+  const rate = Number(identity.rate)
+  return {
+    name: String(identity.name || ''),
+    version: String(identity.version || ''),
+    source: String(identity.source || ''),
+    provider: String(identity.provider || ''),
+    voice_id: String(identity.voice_id || ''),
+    profile_id: Number(identity.profile_id || 0) || undefined,
+    binding_id: Number(identity.binding_id || 0) || undefined,
+    model: String(identity.model || ''),
+    rate: Number.isFinite(rate) && rate > 0 ? rate : 1,
+  }
+}
+
+function cleanVersionTimeline(timeline: LiveAgentPlanTimelineSegment[]) {
+  return (timeline || []).map((item, index) => ({
+    segment_id: String(item.segment_id || ''),
+    index: Number(item.index ?? index),
+    start_ms: Number(item.start_ms || 0),
+    end_ms: Number(item.end_ms || 0),
+    text: String(item.text || ''),
+    safe_cut: Boolean(item.safe_cut),
+  }))
+}
+
+function cleanVersionSafePoints(points: LiveAgentPlanSafePoint[]) {
+  return (points || []).map((item) => ({
+    id: String(item.id || ''),
+    cut_ms: Number(item.cut_ms || 0),
+    score: Number(item.score || 0),
+    grade: String(item.grade || ''),
+    kind: String(item.kind || ''),
+    sentence_id: String(item.sentence_id || ''),
+    left_preview: String(item.left_preview || ''),
+    next_preview: String(item.next_preview || ''),
+    topics: Array.isArray(item.topics) ? item.topics.map((topic) => String(topic)) : [],
+  }))
+}
+
+async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   const result = fullShowResult.value
-  if (!planId || !room || !result || fullShowVersionSaving.value) return
+  if (!planId || !room || !result || fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
+  if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value) {
+    fullShowVersionError.value = '请先确认当前直播间的可用内容模式。'
+    return null
+  }
   if (!fullShowFormalVariantKeys.value.length) {
     fullShowVersionError.value = '请先选择至少一套正式稿。'
-    return
+    return null
   }
   if (!fullShowAllFormalVoicesReady.value) {
     fullShowVersionError.value = '还有正式稿没有生成声音，不能保存版本。'
-    return
+    return null
   }
   if (!fullShowVoiceIdentityConsistent.value) {
     fullShowVersionError.value = '正式稿声音身份不一致，请用当前声音身份重新生成不一致的稿件。'
-    return
+    return null
   }
-  const variants = result.variants.map((variant) => {
+  const originalSource = await compactOriginalSourceManifest()
+  const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
+  const variants = result.variants.filter((variant) =>
+    fullShowFormalVariantKeys.value.includes(variant.variant_key),
+  ).map((variant) => {
     const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
     const voice = fullShowVoiceState(variant.variant_key)
+    const assetManifest = isFormal
+      ? {
+          ...cloneVersionJSON(voice.asset_manifest || {}, {}),
+          ...(originalSource && variant.variant_key === originalSourceOwnerKey
+            ? { original_source: originalSource }
+            : {}),
+        }
+      : {}
     return {
-      index: variant.index,
+      index: Math.max(1, Math.round(Number(variant.index || 1))),
       variant_key: variant.variant_key,
       is_formal: isFormal,
       title: variant.title,
       opening_angle: variant.opening_angle,
       text: variant.text,
-      estimated_minutes: variant.estimated_minutes,
+      estimated_minutes: Math.max(1, Math.round(Number(variant.estimated_minutes || 1))),
       covered_fact_keys: variant.covered_fact_keys || [],
       covered_link_keys: variant.covered_link_keys || [],
-      tts_hints: variant.tts_hints || [],
-      audit: variant.audit,
+      tts_hints: (variant.tts_hints || []).map((item) => ({
+        segment: String(item.segment || ''),
+        instruction: String(item.instruction || ''),
+        rate: Number.isFinite(Number(item.rate)) ? Number(item.rate) : undefined,
+      })),
+      audit: {
+        passed: Boolean(variant.audit?.passed),
+        issues: (variant.audit?.issues || []).map((item) => ({
+          severity: String(item.severity || ''),
+          code: String(item.code || ''),
+          message: String(item.message || ''),
+        })),
+        fact_coverage_pct: Math.round(Number(variant.audit?.fact_coverage_pct || 0)),
+        link_coverage_pct: Math.round(Number(variant.audit?.link_coverage_pct || 0)),
+        similarity_pct: Math.round(Number(variant.audit?.similarity_pct || 0)),
+      },
       audio_url: isFormal ? voice.audio_url : '',
-      audio_asset_id: isFormal ? voice.audio_asset_id || undefined : undefined,
-      audio_duration_ms: isFormal ? voice.duration_ms || undefined : undefined,
-      timeline: isFormal ? voice.timeline : [],
+      audio_asset_id: isFormal ? Math.round(Number(voice.audio_asset_id || 0)) || undefined : undefined,
+      audio_duration_ms: isFormal ? Math.round(Number(voice.duration_ms || 0)) || undefined : undefined,
+      timeline: isFormal ? cleanVersionTimeline(voice.timeline) : [],
       srt: isFormal ? voice.srt : '',
-      safe_points: isFormal ? voice.safe_points : [],
-      asset_manifest: isFormal ? voice.asset_manifest : {},
-      generation_no: isFormal ? voice.generation_no : 0,
-      voice_identity_key: '',
+      safe_points: isFormal ? cleanVersionSafePoints(voice.safe_points) : [],
+      asset_manifest: assetManifest,
+      generation_no: isFormal ? Math.max(1, Math.round(Number(voice.generation_no || 1))) : 0,
+      voice_identity_key: isFormal ? voice.voice_identity_key : '',
     }
   })
   fullShowVersionSaving.value = true
   try {
-    const saved = await createLiveAgentPlanVersion(planId, {
-      tenant_id: room.tenant_id,
-      room_id: room.id,
-      duration_minutes: fullShowDuration.value,
-      round_minutes: fullShowRoundMinutes.value,
-      voice_identity: currentVoiceIdentity.value,
+    const payload = {
+      tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
+      room_id: Math.round(Number(room.id || 0)),
+      duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
+      round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
+      voice_identity: cleanVersionVoiceIdentity(currentVoiceIdentity.value),
       variants,
       generation_context: {
-        ...JSON.parse(JSON.stringify(result.context)),
-        duration_minutes: fullShowDuration.value,
-        round_minutes: fullShowRoundMinutes.value,
+        content_mode: contentModeAccess.value?.content_mode,
+        duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
+        round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
         round_count: Math.max(1, Math.ceil(fullShowDuration.value / Math.max(1, fullShowRoundMinutes.value))),
-        variant_count: result.variants.length,
+        variant_count: variants.length,
+        expansion_freedom: fullShowExpansionFreedom.value,
         use_anchor_style: fullShowUseAnchorStyle.value,
         use_dynamic_facts: fullShowUseDynamicFacts.value,
         generate_tts_hints: fullShowGenerateTTS.value,
         avoid_recent: fullShowAvoidRecent.value,
       } as Record<string, unknown>,
-    })
+    }
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength
+    if (payloadBytes > liveAgentVersionSafePayloadBytes) {
+      throw new Error(
+        `当前版本保存数据为 ${Math.ceil(payloadBytes / 1024)}KB，超过接口可安全接收的 60KB（上限 64KB）。请减少正式话术数量或缩短话术后再保存；原始声音不会被删除。`,
+      )
+    }
+    const saved = await createLiveAgentPlanVersion(planId, payload)
     fullShowSavedVersion.value = saved
     fullShowWorkspaceBaseVersion.value = saved
     fullShowWorkspaceSource.value = 'draft'
-    fullShowNotice.value = `已保存直播智能体 V${saved.version_no}，当前还是待发布版本，不会影响直播间正在运行的版本。`
+    fullShowWorkspaceInherited.value = false
+    fullShowNotice.value = `已保存“${room.name}”直播智能体 V${saved.version_no}，当前还是待发布版本，不会影响直播间正在运行的版本。`
     await refreshFullShowVersionHistory()
+    return saved
   } catch (err) {
-    fullShowVersionError.value = err instanceof Error ? err.message : '保存直播智能体版本失败'
+    const message = err instanceof Error ? err.message : '保存直播智能体版本失败'
+    fullShowVersionError.value = message.includes('保存智能体版本格式错误')
+      ? `保存请求未通过接口格式校验。这不是声音、SRT 或语义分析失败；接口最多接收 ${Math.round(liveAgentVersionRequestLimitBytes / 1024)}KB，请刷新页面后重新保存。`
+      : message
+    return null
   } finally {
     fullShowVersionSaving.value = false
   }
@@ -1860,9 +2831,24 @@ async function saveFullShowVersion() {
 async function publishFullShowVersion() {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
-  const version = fullShowSavedVersion.value
-  if (!planId || !room || !version || fullShowVersionPublishing.value) return
+  const result = fullShowResult.value
+  if (!planId || !room || !result || fullShowVersionPublishing.value || fullShowVersionSaving.value) return
   fullShowVersionError.value = ''
+  const version = fullShowSavedVersion.value
+  if (!version || version.lifecycle_status === 'published') {
+    fullShowVersionError.value = version?.lifecycle_status === 'published'
+      ? '当前版本已经发布；有修改时请先点击 S5 保存新版本，再点击 S6 发布。'
+      : '请先点击 S5 保存新版本；保存成功后再点击 S6 发布到直播间。'
+    return
+  }
+  if (!fullShowFormalVariantKeys.value.length) {
+    fullShowVersionError.value = '请先选择至少一套正式稿。'
+    return
+  }
+  if (!fullShowAllFormalVoicesReady.value) {
+    fullShowVersionError.value = '还有正式稿没有生成声音，不能发布。'
+    return
+  }
   if (!fullShowVoiceIdentityConsistent.value) {
     fullShowVersionError.value = '当前声音身份与已生成正式稿不一致，不能发布。'
     return
@@ -1876,8 +2862,9 @@ async function publishFullShowVersion() {
     fullShowSavedVersion.value = published
     fullShowWorkspaceBaseVersion.value = published
     fullShowWorkspaceSource.value = 'published'
-    fullShowNotice.value = `直播智能体 V${published.version_no} 已发布到“${room.name}”。发布不会自动开播，回直播间点击开始后再运行这套版本。`
-    await refreshFullShowVersionHistory()
+    fullShowWorkspaceInherited.value = false
+    fullShowNotice.value = `已将直播智能体 V${published.version_no} 发布到“${room.name}”。发布不会自动开播，回直播间点击开始后再运行这套版本。`
+    await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()])
   } catch (err) {
     fullShowVersionError.value = err instanceof Error ? err.message : '发布直播智能体版本失败'
   } finally {
@@ -1886,6 +2873,7 @@ async function publishFullShowVersion() {
 }
 
 async function saveFullShowVariantEdit() {
+  if (isUserAudioContentMode.value) return
   const result = fullShowResult.value
   const variant = selectedFullShowVariant.value
   const planId = currentRoomPlanId.value
@@ -1941,6 +2929,7 @@ async function saveFullShowVariantEdit() {
 }
 
 async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
+  if (!contentModeReady.value || isUserAudioContentMode.value) return
   const result = fullShowResult.value
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
@@ -1958,13 +2947,14 @@ async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
       room_id: room.id,
       duration_minutes: fullShowDuration.value,
       round_minutes: fullShowRoundMinutes.value,
+      expansion_freedom: fullShowExpansionFreedom.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
       avoid_recent: fullShowAvoidRecent.value,
       product_links: analysis?.product_links || [],
       rhythm_nodes: analysis?.rhythm_nodes || [],
-      anchor_style: analysis?.anchor_style || {
+      anchor_style: anchorStyleProfile.value || {
         summary: '',
         dimensions: [],
         reusable_rules: [],
@@ -2030,7 +3020,7 @@ function startFullShowGenerationProgress(mode = '文字预览') {
       )
     }
     let stage = '编译生成依据'
-    let detail = '正在汇总规则层、行业层、正式事实、商品链接、活动福利、口播样稿和主播风格'
+    let detail = '正在汇总规则层、行业层、事实依据、商品链接、活动福利和主播风格'
     if (next >= 30 && next < 72) {
       stage = '生成变化稿'
       detail = `正在生成 ${fullShowVariantCount.value} 套可播变化稿，并控制事实边界与近期重复`
@@ -2076,6 +3066,12 @@ function failFullShowGenerationProgress(detail: string) {
 
 async function generateFullShowPreview() {
   if (fullShowGenerating.value) return
+  if (contentModeAccess.value?.content_mode === 'user_audio') await chooseContentMode('ai_pregenerated')
+  selectFullShowOutputMode('generated')
+  if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value || isUserAudioContentMode.value) {
+    fullShowError.value = '当前直播间暂不能切换到 AI 话术模式，请刷新后重试。'
+    return
+  }
   const planId = currentRoomPlanId.value
   if (!planId) {
     fullShowError.value = '当前直播间还没有绑定直播方案'
@@ -2098,13 +3094,14 @@ async function generateFullShowPreview() {
       duration_minutes: fullShowDuration.value,
       round_minutes: fullShowRoundMinutes.value,
       variant_count: fullShowVariantCount.value,
+      expansion_freedom: fullShowExpansionFreedom.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
       avoid_recent: fullShowAvoidRecent.value,
       product_links: analysis?.product_links || [],
       rhythm_nodes: analysis?.rhythm_nodes || [],
-      anchor_style: analysis?.anchor_style || {
+      anchor_style: anchorStyleProfile.value || {
         summary: '',
         dimensions: [],
         reusable_rules: [],
@@ -2190,28 +3187,33 @@ async function refreshCurrentRoomPlan(preserveEditing = true) {
   const roomId = activeRoomId.value
   if (!roomId) {
     boundRoomPlans.value = []
+    publishedRoomPlans.value = []
     roomRuntimeSnapshot.value = null
     currentRoomPlanId.value = null
     return
   }
   try {
-    const [boundResult, runtime] = await Promise.all([
+    const [boundResult, publishedResult, runtime] = await Promise.all([
       getRoomLiveAgentPlans(roomId),
+      getRoomLiveAgentPlans(roomId, true),
       getLiveRuntime(roomId),
     ])
     boundRoomPlans.value = boundResult.items || []
+    publishedRoomPlans.value = publishedResult.items || []
     roomRuntimeSnapshot.value = runtime
-    const boundIds = new Set(boundRoomPlans.value.map((item) => item.id))
+    const availableIds = new Set(livePlans.value.map((item) => item.id))
     const runtimeId = runtime.agent_plan_id || 0
-    if (runtimeId && boundIds.has(runtimeId)) {
+    if (preserveEditing && currentRoomPlanId.value && availableIds.has(currentRoomPlanId.value)) {
+      return
+    } else if (runtimeId && availableIds.has(runtimeId)) {
       currentRoomPlanId.value = runtimeId
-    } else if (boundRoomPlans.value.length === 1) {
-      currentRoomPlanId.value = boundRoomPlans.value[0].id
-    } else if (!preserveEditing || !currentRoomPlanId.value || !boundIds.has(currentRoomPlanId.value)) {
-      currentRoomPlanId.value = null
+    } else {
+      currentRoomPlanId.value =
+        publishedRoomPlans.value[0]?.id || boundRoomPlans.value[0]?.id || livePlans.value[0]?.id || null
     }
   } catch (err) {
     boundRoomPlans.value = []
+    publishedRoomPlans.value = []
     roomRuntimeSnapshot.value = null
     currentRoomPlanId.value = null
     if (!settingsError.value) {
@@ -2228,11 +3230,11 @@ async function refreshPlanScripts() {
     formalFacts.value = []
     formalBenefits.value = []
     formalProductLinks.value = []
-    formalScriptReferences.value = []
     return
   }
   try {
     const result = await getLiveAgentPlanScripts(planId, activeRoom.value?.tenant_id)
+    if (planId !== currentRoomPlanId.value) return
     planScripts.value = result.items || []
     if (!selectedScriptId.value || !planScripts.value.some((item) => item.id === selectedScriptId.value)) {
       const first = planScripts.value[0] || null
@@ -2244,219 +3246,10 @@ async function refreshPlanScripts() {
       refreshFormalFacts(),
       refreshFormalBenefits(),
       refreshFormalProductLinks(),
-      refreshFormalScriptReferences(),
     ])
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '读取直播话术失败'
   }
-}
-
-async function refreshFormalScriptReferences() {
-  const planId = currentRoomPlanId.value
-  if (!planId) {
-    formalScriptReferences.value = []
-    selectedOralSampleId.value = null
-    return
-  }
-  try {
-    const result = await getLiveAgentPlanScriptReferences(planId, activeRoom.value?.tenant_id)
-    formalScriptReferences.value = result.items || []
-    if (!oralSampleCreating.value) {
-      const selected = formalScriptReferences.value.find((item) => item.id === selectedOralSampleId.value)
-        || formalScriptReferences.value[0]
-        || null
-      if (selected) {
-        selectOralSample(selected)
-      } else {
-        selectedOralSampleId.value = null
-        oralSampleDraft.value = { title: '', content_text: '' }
-        oralSampleAnalysis.value = null
-      }
-    }
-  } catch (err) {
-    if (!settingsError.value) {
-      settingsError.value = err instanceof Error ? err.message : '读取口播样稿失败'
-    }
-  }
-}
-
-function selectOralSample(item: LiveAgentPlanScriptReference) {
-  oralSampleCreating.value = false
-  selectedOralSampleId.value = item.id
-  oralSampleDraft.value = {
-    title: item.title || '',
-    content_text: item.content_text || '',
-  }
-  oralSampleSourceType.value = item.source_type === 'upload' ? 'upload' : 'manual'
-  oralSampleSourceRef.value = item.source_ref || ''
-  oralSampleAnalysis.value = null
-  oralSampleNotice.value = ''
-}
-
-function beginNewOralSample() {
-  oralSampleCreating.value = true
-  selectedOralSampleId.value = null
-  oralSampleDraft.value = { title: '', content_text: '' }
-  oralSampleSourceType.value = 'manual'
-  oralSampleSourceRef.value = ''
-  oralSampleAnalysis.value = null
-  oralSampleNotice.value = '已新建空白样稿，可以直接粘贴一篇完整口播稿，或从文件导入。'
-}
-
-function openOralSampleFilePicker() {
-  oralSampleFileInput.value?.click()
-}
-
-async function handleOralSampleFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  const lower = file.name.toLowerCase()
-  if (!['.txt', '.md', '.markdown', '.srt', '.vtt'].some((suffix) => lower.endsWith(suffix))) {
-    oralSampleNotice.value = '当前支持 TXT、MD、Markdown、SRT、VTT 文本稿。'
-    return
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    oralSampleNotice.value = '口播样稿文件不能超过 5MB。'
-    return
-  }
-  try {
-    const text = await file.text()
-    if (!text.trim()) {
-      oralSampleNotice.value = '这个文件没有可读取的文字内容。'
-      return
-    }
-    if (!oralSampleCreating.value && !selectedOralSample.value) beginNewOralSample()
-    oralSampleDraft.value.content_text = text
-    if (!oralSampleDraft.value.title.trim()) {
-      oralSampleDraft.value.title = file.name.replace(/\.(txt|md|markdown|srt|vtt)$/i, '')
-    }
-    oralSampleSourceType.value = 'upload'
-    oralSampleSourceRef.value = file.name
-    oralSampleAnalysis.value = null
-    oralSampleNotice.value = '已导入“' + file.name + '”，保存后才会进入当前方案的口播样稿库。'
-  } catch (err) {
-    oralSampleNotice.value = err instanceof Error ? err.message : '读取样稿文件失败'
-  }
-}
-
-async function saveOralSample() {
-  const planId = currentRoomPlanId.value
-  const title = oralSampleDraft.value.title.trim()
-  const content = oralSampleDraft.value.content_text.trim()
-  if (!planId || oralSampleBusy.value) return
-  if (!title) {
-    oralSampleNotice.value = '请先填写样稿名称。'
-    return
-  }
-  if (!content) {
-    oralSampleNotice.value = '请粘贴或导入一篇完整口播样稿。'
-    return
-  }
-  oralSampleBusy.value = true
-  settingsError.value = ''
-  oralSampleNotice.value = ''
-  try {
-    const existing = selectedOralSample.value
-    let saved: LiveAgentPlanScriptReference
-    if (existing && !oralSampleCreating.value) {
-      saved = await updateLiveAgentPlanScriptReference(
-        planId,
-        existing.id,
-        {
-          expected_version_no: existing.version_no,
-          reference_key: existing.reference_key,
-          title,
-          content_text: content,
-          goal: existing.goal,
-          transition: existing.transition,
-          execution_mode: 'intent',
-        },
-        activeRoom.value?.tenant_id,
-      )
-    } else {
-      saved = await createLiveAgentPlanScriptReference(
-        planId,
-        {
-          reference_key: 'oral-sample-' + Date.now(),
-          title,
-          content_text: content,
-          execution_mode: 'intent',
-          source_type: oralSampleSourceType.value,
-          source_ref: oralSampleSourceRef.value || undefined,
-          source_quote: content.slice(0, 500),
-        },
-        activeRoom.value?.tenant_id,
-      )
-    }
-    oralSampleCreating.value = false
-    selectedOralSampleId.value = saved.id
-    await refreshFormalScriptReferences()
-    const refreshed = formalScriptReferences.value.find((item) => item.id === saved.id)
-    if (refreshed) selectOralSample(refreshed)
-    oralSampleNotice.value = '已保存到当前方案。直播智能体生成完整口播时会把这篇样稿作为结构和表达参考。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '保存口播样稿失败'
-  } finally {
-    oralSampleBusy.value = false
-  }
-}
-
-async function deleteSelectedOralSample() {
-  const planId = currentRoomPlanId.value
-  const item = selectedOralSample.value
-  if (!planId || !item || oralSampleBusy.value) return
-  if (!window.confirm('确定删除口播样稿“' + item.title + '”吗？删除后新的直播话术不再参考它，历史版本仍保留。')) {
-    return
-  }
-  oralSampleBusy.value = true
-  settingsError.value = ''
-  try {
-    await deleteLiveAgentPlanScriptReference(
-      planId,
-      item.id,
-      item.version_no,
-      activeRoom.value?.tenant_id,
-    )
-    selectedOralSampleId.value = null
-    oralSampleAnalysis.value = null
-    await refreshFormalScriptReferences()
-    oralSampleNotice.value = '样稿已删除，后续生成不再参考这篇内容。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '删除口播样稿失败'
-  } finally {
-    oralSampleBusy.value = false
-  }
-}
-
-async function analyzeOralSampleStructure() {
-  const planId = currentRoomPlanId.value
-  const text = oralSampleDraft.value.content_text.trim()
-  if (!planId || !text || oralSampleAnalyzing.value) return
-  oralSampleAnalyzing.value = true
-  oralSampleNotice.value = ''
-  try {
-    const result = await previewAnalyzeLiveAgentPlanScript(planId, text, activeRoom.value?.tenant_id)
-    oralSampleAnalysis.value = result.analysis
-    oralSampleNotice.value = '结构分析完成。这里只识别这篇样稿的讲解顺序、转场和表达组织，不会把样稿里的商品信息写入正式事实。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '分析口播样稿结构失败'
-  } finally {
-    oralSampleAnalyzing.value = false
-  }
-}
-
-function oralSampleSourceLabel(item: LiveAgentPlanScriptReference) {
-  if (item.source_type === 'upload') return item.source_ref ? '文件 · ' + item.source_ref : '文件导入'
-  if (item.source_type === 'agent') return '智能体整理'
-  return '手工录入'
-}
-
-function formatOralSampleUpdatedAt(value: string) {
-  const time = new Date(value)
-  if (Number.isNaN(time.getTime())) return ''
-  return time.toLocaleString('zh-CN', { hour12: false })
 }
 
 async function refreshFormalFacts() {
@@ -2485,17 +3278,72 @@ const formalFactCategoryOptions = [
 ]
 
 function startFormalFactEdit(item: LiveAgentPlanFact) {
+	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
   formalFactEditDraft.value = {
     category: item.category || 'other',
     key: item.key,
     value: item.value,
+		forbidden_wording: item.forbidden_wording || '',
+		safe_rewrite: item.safe_rewrite || '',
   }
 }
 
 function cancelFormalFactEdit() {
   editingFormalFactId.value = null
-  formalFactEditDraft.value = { category: 'other', key: '', value: '' }
+  formalFactEditDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
+}
+
+function beginCreateFormalFact() {
+	cancelFormalFactEdit()
+	creatingFormalFact.value = true
+	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
+}
+
+function cancelCreateFormalFact() {
+	creatingFormalFact.value = false
+	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
+}
+
+async function createFormalFact() {
+	const planId = currentRoomPlanId.value
+	if (!planId || mutatingFormalFactId.value) return
+	const draft = formalFactCreateDraft.value
+	const key = draft.key.trim()
+	const value = draft.value.trim()
+	if (!key || !value) {
+		settingsError.value = '事实名称和事实内容不能为空'
+		return
+	}
+	mutatingFormalFactId.value = -1
+	settingsError.value = ''
+	try {
+		const result = await adoptLiveAgentPlanFacts(
+			planId,
+			[{
+				category: draft.category,
+				key,
+				value,
+				forbidden_wording: draft.forbidden_wording.trim(),
+				safe_rewrite: draft.safe_rewrite.trim(),
+				status: 'pending',
+				review_bucket: 'adoptable',
+				source_quote: '',
+			}],
+			activeRoom.value?.tenant_id,
+			'manual:fact-editor',
+		)
+		if (!result.adopted && result.conflicts) {
+			throw new Error(result.results?.[0]?.message || '同分类下已经存在相同事实名称')
+		}
+		await refreshFormalFacts()
+		cancelCreateFormalFact()
+		scriptNotice.value = '事实依据已保存，主线口播与互动回答会共同使用。'
+	} catch (err) {
+		settingsError.value = err instanceof Error ? err.message : '新增事实依据失败'
+	} finally {
+		mutatingFormalFactId.value = null
+	}
 }
 
 async function saveFormalFactEdit(item: LiveAgentPlanFact) {
@@ -2514,9 +3362,12 @@ async function saveFormalFactEdit(item: LiveAgentPlanFact) {
       planId,
       item.id,
       {
+			expected_version_no: item.version_no,
         category: formalFactEditDraft.value.category,
         key,
         value,
+			forbidden_wording: formalFactEditDraft.value.forbidden_wording.trim(),
+			safe_rewrite: formalFactEditDraft.value.safe_rewrite.trim(),
       },
       activeRoom.value?.tenant_id,
     )
@@ -2582,6 +3433,37 @@ async function refreshFormalProductLinks() {
   }
 }
 
+async function saveProductLinkField(
+  item: LiveAgentPlanProductLink,
+  field: 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience',
+  value: string,
+) {
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新编辑')
+  const updated = await updateLiveAgentPlanProductLink(planId, item.id, {
+    expected_version_no: item.version_no,
+    link_key: item.link_key,
+    product_name: item.product_name || '',
+    spec: item.spec || '',
+    daily_price: item.daily_price || '',
+    quantity: item.quantity || '',
+    audience: item.audience || '',
+    [field]: value,
+  }, item.tenant_id)
+  if (currentRoomPlanId.value === planId) {
+    formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
+  }
+}
+
+async function removeProductLink(item: LiveAgentPlanProductLink) {
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+  await deleteLiveAgentPlanProductLink(planId, item.id, item.tenant_id)
+  if (currentRoomPlanId.value === planId) {
+    formalProductLinks.value = formalProductLinks.value.filter((link) => link.id !== item.id)
+  }
+}
+
 async function adoptProductLinkCandidate(candidate: LiveAgentPlanProductLinkCandidate) {
   const planId = currentRoomPlanId.value
   if (!planId || adoptingProductLinkKey.value) return
@@ -2639,35 +3521,6 @@ async function adoptBenefitCandidate(candidate: LiveAgentPlanBenefitCandidate) {
     settingsError.value = err instanceof Error ? err.message : '采纳活动福利失败'
   } finally {
     adoptingBenefitKey.value = ''
-  }
-}
-
-async function adoptSelectedFacts() {
-  const planId = currentRoomPlanId.value
-  if (!planId || !selectedCurrentFacts.value.length || adoptingFacts.value) return
-  adoptingFacts.value = true
-  settingsError.value = ''
-  try {
-    const sourceRef = selectedScriptId.value
-      ? 'script:' + selectedScriptId.value + ':analysis'
-      : 'script:draft:analysis'
-    const result = await adoptLiveAgentPlanFacts(
-      planId,
-      selectedCurrentFacts.value,
-      activeRoom.value?.tenant_id,
-      sourceRef,
-    )
-    await refreshFormalFacts()
-    selectedFactKeys.value = []
-    const parts = ['已采纳 ' + result.adopted + ' 条']
-    if (result.skipped) parts.push('已存在 ' + result.skipped + ' 条')
-    if (result.conflicts) parts.push('冲突 ' + result.conflicts + ' 条')
-    if (result.blocked) parts.push('阻止 ' + result.blocked + ' 条')
-    scriptNotice.value = parts.join('，') + '。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '采纳事实到直播方案失败'
-  } finally {
-    adoptingFacts.value = false
   }
 }
 
@@ -2770,7 +3623,7 @@ async function deleteMemory(item: AgentMemoryItem) {
 
 async function handlePlanSwitch(event: Event) {
   const id = Number((event.target as HTMLSelectElement).value || 0)
-  const plan = boundRoomPlans.value.find((item) => item.id === id)
+  const plan = livePlans.value.find((item) => item.id === id)
   if (!plan || plan.id === currentRoomPlanId.value) return
   deleteConfirmPlanId.value = null
   currentRoomPlanId.value = plan.id
@@ -2778,6 +3631,18 @@ async function handlePlanSwitch(event: Event) {
   if (showPlanManager.value && planManagerMode.value === 'edit') {
     loadCurrentPlanIntoManager()
   }
+}
+
+async function openCurrentPlanPublishing() {
+  const plan = currentPlan.value
+  if (!plan || !currentPlanIsBound.value) return
+  activeMode.value = 'fullshow'
+  if (!fullShowResult.value) await loadFullShowWorkspace()
+  if (!fullShowResult.value) {
+    fullShowVersionError.value = '这个方案还没有可发布的智能体版本，请先完成文稿确认和声音生成。'
+    return
+  }
+  await publishFullShowVersion()
 }
 
 function loadCurrentPlanIntoManager() {
@@ -2844,6 +3709,7 @@ function normalizeReadableScript(value: string) {
 }
 
 function startNewPlanScript() {
+  anchorStyleSourceText.value = ''
   selectedScriptId.value = null
   scriptTitle.value = ''
   scriptRawText.value = ''
@@ -2858,6 +3724,7 @@ function startNewPlanScript() {
 }
 
 function selectPlanScript(item: LiveAgentPlanScript) {
+  anchorStyleSourceText.value = item.readable_text.trim()
   selectedScriptId.value = item.id
   scriptTitle.value = item.title
   scriptRawText.value = item.raw_text
@@ -2989,6 +3856,7 @@ async function savePlanScript(showNotice = true) {
 async function analyzeCurrentPlanScript() {
   if (scriptAnalyzing.value) return
   const returnMode = activeMode.value
+	const styleOnly = returnMode === 'anchor'
   const planId = currentRoomPlanId.value
   const text = scriptReadableText.value.trim()
   if (!planId || !currentPlan.value) {
@@ -3003,28 +3871,37 @@ async function analyzeCurrentPlanScript() {
   scriptAnalyzing.value = true
   settingsError.value = ''
   scriptNotice.value = ''
+	if (styleOnly) anchorStyleAnalysisQC.value = null
   scriptAnalysisProgress.value = 8
   scriptAnalysisStage.value = '正在读取当前文本框内容'
   try {
     scriptAnalysisProgress.value = 22
-    scriptAnalysisStage.value = '正在识别商品链接、活动福利、事实、口播结构与主播风格'
+		scriptAnalysisStage.value = styleOnly
+			? '只提取称呼、原词、句式、停顿与局部表达推进'
+			: '正在识别商品链接、活动福利、事实、口播结构与主播风格'
     startScriptAnalysisProgressTimer()
-    const result = await previewAnalyzeLiveAgentPlanScript(
-      planId,
-      text,
-      activeRoom.value?.tenant_id,
-    )
+		const result = styleOnly
+			? await previewAnalyzeLiveAgentAnchorStyle(planId, text, activeRoom.value?.tenant_id)
+			: await previewAnalyzeLiveAgentPlanScript(planId, text, activeRoom.value?.tenant_id)
+    if (planId !== currentRoomPlanId.value || text !== scriptReadableText.value.trim()) {
+      throw new Error('方案或素材已变化，已忽略旧素材的分析结果，请重新分析。')
+    }
     stopScriptAnalysisProgressTimer()
     scriptAnalysisProgress.value = 95
     scriptAnalysisStage.value = '正在整理分析结果'
     analysisDraft.value = result.analysis
-    selectedFactKeys.value = []
-    knowledgeDraftText.value = formatKnowledgeDraft(result.analysis)
-    rhythmDraftText.value = formatRhythmDraft(result.analysis)
-    if (!(result.analysis.product_links || []).length
-      && !knowledgeDraftText.value.trim()
-      && !rhythmDraftText.value.trim()
-      && !(result.analysis.anchor_style?.dimensions || []).length) {
+    anchorStyleSourceText.value = text
+    anchorStyleTestResult.value = null
+		if (!styleOnly) {
+			selectedFactKeys.value = []
+			knowledgeDraftText.value = formatKnowledgeDraft(result.analysis)
+			rhythmDraftText.value = formatRhythmDraft(result.analysis)
+		}
+		if (styleOnly) anchorStyleAnalysisQC.value = result.style_qc || null
+		if (!(result.analysis.product_links || []).length
+			&& (styleOnly || !knowledgeDraftText.value.trim())
+			&& (styleOnly || !rhythmDraftText.value.trim())
+			&& !(result.analysis.anchor_style?.dimensions || []).length) {
       throw new Error('智能分析返回了空结果，请重新分析')
     }
     scriptAnalysisProgress.value = 100
@@ -3035,13 +3912,20 @@ async function analyzeCurrentPlanScript() {
     ).length
     const linkCoverage = result.analysis.completeness?.link_coverage_pct ?? 100
     const styleDimensionCount = result.analysis.anchor_style?.dimensions?.length || 0
-    scriptNotice.value = '素材归位完成：商品链接 ' + linkCount + ' 个、活动福利 ' + benefitCount
-      + ' 个、事实依据 ' + result.analysis.facts.length + ' 条、口播结构 ' + result.analysis.rhythm_nodes.length
-      + ' 个、主播风格 ' + styleDimensionCount + ' 个维度；链接覆盖 ' + linkCoverage
-      + '%。本次仅生成页面草稿，没有保存任何内容。'
-    activeMode.value = returnMode === 'anchor'
-      ? 'anchor'
-      : (linkCount ? 'products' : (result.analysis.facts.length ? 'knowledge' : 'rhythm'))
+		if (styleOnly) {
+			const seconds = result.latency_ms ? (result.latency_ms / 1000).toFixed(1) : '—'
+			const qcLabel = result.style_qc?.available
+				? (result.style_qc.passed ? 'Qwen同步质检通过' : 'Qwen同步质检未通过')
+				: 'Qwen同步质检暂不可用'
+			scriptNotice.value = `主播风格独立分析完成：${styleDimensionCount} 个固定维度、${result.analysis.anchor_style?.delivery_spec?.literal_habits?.length || 0} 个有原文证据的习惯；${qcLabel}；总耗时 ${seconds} 秒。未分析商品事实、销售步骤、互动打断或回归策略。`
+			activeMode.value = 'anchor'
+		} else {
+			scriptNotice.value = '素材归位完成：商品链接 ' + linkCount + ' 个、活动福利 ' + benefitCount
+				+ ' 个、事实依据 ' + result.analysis.facts.length + ' 条'
+				+ '、主播风格 ' + styleDimensionCount + ' 个维度；链接覆盖 ' + linkCoverage
+				+ '%。本次仅生成页面草稿，没有保存任何内容。'
+			activeMode.value = linkCount ? 'products' : (result.analysis.facts.length ? 'knowledge' : 'anchor')
+		}
     window.setTimeout(() => {
       if (!scriptAnalyzing.value && scriptAnalysisProgress.value === 100) {
         scriptAnalysisProgress.value = 0
@@ -3074,9 +3958,16 @@ async function applyAnchorStyleHot() {
   settingsError.value = ''
   scriptNotice.value = ''
   try {
+    if (anchorStyleSourceText.value && anchorStyleSourceText.value !== scriptReadableText.value.trim()) {
+      throw new Error('素材已修改，请重新分析和测试后再保存风格。')
+    }
+    const confirmedAnalysis = currentAnalysis.value
+    if (!confirmedAnalysis?.anchor_style?.dimensions?.length) {
+      throw new Error('请先分析当前素材，检查规则并测试文案后再保存。')
+    }
     const savedScript = await savePlanScript(false)
     if (!savedScript) return
-    const updated = await analyzeLiveAgentPlanScript(planId, savedScript.id, activeRoom.value?.tenant_id)
+    const updated = await confirmLiveAgentPlanScriptAnalysis(planId, savedScript.id, scriptReadableText.value, confirmedAnalysis, activeRoom.value?.tenant_id)
     const index = planScripts.value.findIndex((entry) => entry.id === updated.id)
     if (index >= 0) planScripts.value.splice(index, 1, updated)
     else planScripts.value.unshift(updated)
@@ -3106,11 +3997,6 @@ function reviewBucketLabel(bucket?: string) {
   return '待商量'
 }
 
-function styleConfidenceLabel(confidence?: string) {
-  if (confidence === 'high') return '高置信'
-  if (confidence === 'medium') return '中置信'
-  return '低置信'
-}
 
 function memoryTypeLabel(type: string) {
   if (type === 'fact') return '事实纠正'
@@ -3143,7 +4029,7 @@ async function createPlanForCurrentRoom() {
     await refreshPlanScripts()
     messages.value.push({
       role: 'agent',
-      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。绑定只表示这个直播间可以使用它；直播时是否切到这个方案由“切换使用”单独控制。`,
+      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。当前状态为“已绑定 · 未发布”，发布后才会出现在直播间大屏的方案列表中。`,
     })
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '创建智能体直播方案失败'
@@ -3278,13 +4164,6 @@ async function unbindPlanFromCurrentRoom(plan: LiveAgentPlan) {
   }
 }
 
-async function bindSelectedPlanToCurrentRoom() {
-  const plan = livePlans.value.find((item) => item.id === bindPlanId.value)
-  if (!plan) return
-  await bindPlanToCurrentRoom(plan)
-  bindPlanId.value = null
-}
-
 async function loadAgentSettings() {
   settingsError.value = ''
 
@@ -3292,13 +4171,13 @@ async function loadAgentSettings() {
 
   try {
     const [roomData, uiPreferences] = await Promise.all([
-      getRooms(props.supportSession ? props.supportTenantId : undefined),
+      props.supportSession
+        ? getRoom(props.supportRoomId).then((room) => ({ items: [room] }))
+        : getRooms(),
       props.supportSession ? Promise.resolve(null) : getUserUIPreferences().catch(() => null),
     ])
     rooms.value = roomData.items
     if (uiPreferences) {
-      planRelationsCollapsed.value = uiPreferences.live_plan_panel_collapsed
-      persistPlanPanelLocal()
       if (
         uiPreferences.selected_live_room_id &&
         rooms.value.some(room => room.id === uiPreferences.selected_live_room_id)
@@ -3321,6 +4200,11 @@ async function loadAgentSettings() {
     persistSelectedRoomLocal(activeRoomId.value)
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '读取直播间失败'
+    if (props.supportSession) {
+      rooms.value = []
+      activeRoomId.value = null
+      return
+    }
   }
 
   if (!props.supportSession) {
@@ -3342,13 +4226,159 @@ async function loadAgentSettings() {
       }
     }
   } else {
-    messages.value = [{ role: 'agent', text: '已进入客户授权协助模式。可以直接维护该客户全部直播间的智能体方案和方案绑定。' }]
+    messages.value = [{ role: 'agent', text: '已进入客户授权协助模式，仅可维护当前已授权直播间的智能体方案和绑定关系。' }]
   }
 
   await refreshRoomPolicy()
-  if (!props.supportSession) await refreshAgentVersions()
-  await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
+  await refreshAgentVersions()
+  await refreshLivePlans()
+  await refreshCurrentRoomPlan()
   await Promise.all([refreshPlanScripts(), refreshMemories()])
+}
+
+async function executeAnchorStyleTest(options?: { lockedSampleText?: string; learnedRegeneration?: boolean }) {
+  const planId = currentRoomPlanId.value
+  const room = activeRoom.value
+  const sampledStyle = anchorRulebook.value ? anchorStyleProfile.value : null
+  if (!planId) {
+    anchorStyleTestError.value = '当前直播方案已变化，请刷新后重新测试。'
+    return false
+  }
+  if (!room) {
+    anchorStyleTestError.value = '当前直播间已变化，请刷新后重新测试。'
+    return false
+  }
+  if (!sampledStyle && enabledStyleOverlayCount.value === 0) {
+    anchorStyleTestError.value = '当前没有可用于测试的主播样本或叠加风格。'
+    return false
+  }
+  if (anchorStyleTestBusy.value) {
+    anchorStyleTestError.value = '上一轮测试仍在生成，请完成后再试。'
+    return false
+  }
+  if (!options?.learnedRegeneration && sampledStyle && !selectedReusableAnchorStyle.value && anchorStyleSourceText.value && anchorStyleSourceText.value !== scriptReadableText.value.trim()) {
+    anchorStyleTestError.value = '素材已修改，请先重新分析。'
+    return false
+  }
+  const style: LiveAgentPlanAnchorStyleProfile = sampledStyle || {
+    dimensions: [],
+    reusable_rules: [],
+    candidate_patterns: [],
+    excluded_from_style: [],
+  }
+  const scope = `${room.id}:${planId}`
+  anchorStyleTestBusy.value = true
+  anchorStyleTestError.value = ''
+  anchorStyleTestResult.value = null
+  try {
+    // A feedback-learning request can take several seconds. During that time the
+    // editable source state may be normalized or refreshed by another watcher.
+    // Regenerate against the exact sample snapshot that produced the learned
+    // candidate instead of silently failing the ordinary "source changed" guard.
+    const sourceText = options?.lockedSampleText ?? currentAnchorStyleSampleText(sampledStyle)
+    const result = await testLiveAgentAnchorStyle(planId, {
+      tenant_id: room.tenant_id,
+      room_id: room.id,
+      topic: anchorStyleTestTopic.value,
+      target_chars: Math.max(100, Math.min(3000, Math.round(Number(anchorStyleTestTargetChars.value) || 500))),
+      expansion_freedom: fullShowExpansionFreedom.value,
+      source_text: sourceText,
+      anchor_style: style,
+      selected_facts: selectedFactKeys.value,
+      transient_overlays: anchorStyleCorrectionCandidates.value,
+    })
+    if (`${activeRoomId.value}:${currentRoomPlanId.value}` === scope) anchorStyleTestResult.value = result
+    return true
+  } catch (err) {
+    if (`${activeRoomId.value}:${currentRoomPlanId.value}` === scope) anchorStyleTestError.value = err instanceof Error ? err.message : '风格测试失败'
+    return false
+  } finally { anchorStyleTestBusy.value = false }
+}
+
+async function runAnchorStyleTest() {
+  await executeAnchorStyleTest()
+}
+
+function currentAnchorStyleSampleText(sampledStyle: LiveAgentPlanAnchorStyleProfile | null = anchorRulebook.value ? anchorStyleProfile.value : null) {
+  if (!sampledStyle) return ''
+  if (selectedReusableAnchorStyle.value) {
+    return reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || ''
+  }
+  return currentAnalysis.value?.anchor_style?.dimensions?.length
+    ? (anchorStyleSourceText.value || scriptReadableText.value)
+    : savedStyleScript.value?.readable_text || ''
+}
+
+async function learnAndRegenerateAnchorStyle() {
+  const planId = currentRoomPlanId.value
+  const result = anchorStyleTestResult.value
+  const feedback = anchorStyleCorrectionFeedback.value.trim()
+  const sampleText = currentAnchorStyleSampleText()
+  if (!planId || !result || !feedback || anchorStyleCorrectionBusy.value) return
+  if (!sampleText) {
+    anchorStyleCorrectionError.value = '要做“哪里不像”的对比学习，需要先粘贴并分析一份真实主播样本。'
+    return
+  }
+  if (anchorStyleCorrectionCandidates.value.length >= 6) {
+    anchorStyleCorrectionError.value = '本轮已累计6条调整。请先保存或放弃，再开始下一轮。'
+    return
+  }
+  anchorStyleCorrectionBusy.value = true
+  anchorStyleCorrectionError.value = ''
+  try {
+    const learned = await learnLiveAgentPlanStyleOverlay(planId, {
+      sample_text: sampleText,
+      generated_text: result.text,
+      feedback_text: feedback,
+      strength: 50,
+    }, activeRoom.value?.tenant_id)
+    anchorStyleCorrectionCandidates.value = [...anchorStyleCorrectionCandidates.value, learned.item]
+    anchorStyleCorrectionHistory.value = [...anchorStyleCorrectionHistory.value, {
+      feedback,
+      diagnosis: learned.diagnosis,
+      model: learned.model,
+    }]
+    anchorStyleCorrectionFeedback.value = ''
+    const regenerated = await executeAnchorStyleTest({
+      lockedSampleText: sampleText,
+      learnedRegeneration: true,
+    })
+    if (!regenerated) {
+      throw new Error(anchorStyleTestError.value || '反馈已经学习，但自动重新生成未启动，请重试。')
+    }
+  } catch (err) {
+    anchorStyleCorrectionError.value = err instanceof Error ? err.message : '学习并重新生成失败'
+  } finally {
+    anchorStyleCorrectionBusy.value = false
+  }
+}
+
+async function saveAnchorStyleCorrections() {
+  const profile = styleOverlayProfile.value
+  if (!profile || !anchorStyleCorrectionCandidates.value.length || anchorStyleCorrectionBusy.value) return
+  anchorStyleCorrectionBusy.value = true
+  anchorStyleCorrectionError.value = ''
+  try {
+    const saved = await persistStyleOverlayItems(
+      [...profile.items, ...anchorStyleCorrectionCandidates.value],
+      '本轮风格调整已保存并热生效',
+    )
+    if (!saved) return
+    anchorStyleCorrectionCandidates.value = []
+    anchorStyleCorrectionHistory.value = []
+    anchorStyleCorrectionFeedback.value = ''
+  } finally {
+    anchorStyleCorrectionBusy.value = false
+  }
+}
+
+function discardAnchorStyleCorrections() {
+  anchorStyleCorrectionCandidates.value = []
+  anchorStyleCorrectionHistory.value = []
+  anchorStyleCorrectionFeedback.value = ''
+  anchorStyleCorrectionError.value = ''
+  anchorStyleTestResult.value = null
+  styleOverlayNotice.value = '本轮未保存的风格调整已放弃，已保存的主播风格没有改变。'
 }
 
 const addressingSystemOptions = computed(() => addressingStrategy.value.addressing.filter((item) => item.system_default))
@@ -3375,7 +4405,7 @@ function removeAddressingOption(option: LiveAddressingOption) {
 }
 
 async function saveAddressingStrategy() {
-  if (addressingSaving.value) return
+  if (props.supportSession || addressingSaving.value) return
   addressingError.value = ''
   addressingNotice.value = ''
   if (
@@ -3427,7 +4457,9 @@ async function handleLiveVoiceChanged() {
   if (fullShowResult.value) {
     fullShowSavedVersion.value = null
     fullShowVersionError.value = ''
-    fullShowNotice.value = '直播间声音身份已变更；原有正式声音仍保留供对比，但需要按新声音身份重新生成后才能保存发布。'
+    fullShowNotice.value = isUserAudioContentMode.value
+      ? '互动音色已变更；原始录音主线保持不变，无需重新生成录音，可保存发布。'
+      : '直播间声音身份已变更；原有正式声音仍保留供对比，但需要按新声音身份重新生成后才能保存发布。'
   }
   await refreshAgentVersions()
 }
@@ -3620,7 +4652,6 @@ function handlePlanModuleUpdated(event: Event) {
       module === 'products' ||
       module === 'benefits' ||
       module === 'knowledge' ||
-      module === 'rhythm' ||
       module === 'memory' ||
       module === 'anchor' ||
       module === 'voice' ||
@@ -3644,12 +4675,12 @@ function handlePlanModuleUpdated(event: Event) {
     void refreshFormalBenefits()
     return
   }
-  if (detail.module === 'rhythm') {
-    void refreshFormalScriptReferences()
-  }
 }
 
 watch(activeRoomId, async () => {
+  contentModeSaving.value = false
+  contentModeNotice.value = ''
+  void refreshContentMode(true)
   currentRoomPlanId.value = null
   selectedScriptId.value = null
   await Promise.all([refreshRoomPolicy(), refreshCurrentRoomPlan(false), refreshMemories()])
@@ -3669,6 +4700,8 @@ watch(
 watch(
   activeMode,
   (mode) => {
+    if (mode === 'fullshow' && !contentModeSaving.value) void refreshContentMode(true)
+    if (mode === 'anchor') void loadReusableAnchorStyleWorkspace()
     window.localStorage.setItem('system-agent-live-mode', mode)
     notifySystemAgentContext()
   },
@@ -3676,11 +4709,21 @@ watch(
 )
 
 watch([activeRoomId, currentRoomPlanId], () => {
-  oralSampleCreating.value = false
-  selectedOralSampleId.value = null
-  oralSampleDraft.value = { title: '', content_text: '' }
-  oralSampleAnalysis.value = null
-  oralSampleNotice.value = ''
+  analysisDraft.value = null
+  planScripts.value = []
+  selectedScriptId.value = null
+  scriptReadableText.value = ''
+  scriptRawText.value = ''
+  anchorStyleTestResult.value = null
+  anchorStyleTestError.value = ''
+	anchorStyleAnalysisQC.value = null
+  anchorStyleCorrectionFeedback.value = ''
+  anchorStyleCorrectionCandidates.value = []
+  anchorStyleCorrectionHistory.value = []
+  anchorStyleCorrectionError.value = ''
+  anchorStyleSourceText.value = ''
+  void loadStyleOverlays()
+  void loadReusableAnchorStyleWorkspace()
   void loadFullShowWorkspace()
   void refreshFullShowVersionHistory()
   notifySystemAgentContext()
@@ -3691,6 +4734,7 @@ watch(
     fullShowDuration,
     fullShowRoundMinutes,
     fullShowVariantCount,
+    fullShowExpansionFreedom,
     fullShowUseAnchorStyle,
     fullShowUseDynamicFacts,
     fullShowGenerateTTS,
@@ -3705,10 +4749,23 @@ watch(
 
 onMounted(async () => {
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
+  window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
   await loadAgentSettings()
+  if (contentModeDisposed) return
+  await refreshContentMode(true)
+  if (contentModeDisposed) return
+  contentModeRefreshTimer = window.setInterval(() => {
+    benefitClock.value = Date.now()
+    if (activeMode.value === 'fullshow' && !contentModeSaving.value && !contentModeLoading.value) void refreshContentMode()
+  }, 30000)
 })
 
 onBeforeUnmount(() => {
+  contentModeDisposed = true
+  contentModeLoadNo++
+  if (contentModeRefreshTimer !== undefined) window.clearInterval(contentModeRefreshTimer)
+  window.removeEventListener('live-content-policy-updated', handleContentPolicyUpdated)
+  endSupportScope?.()
   window.removeEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   stopFullShowGenerationProgressTimer()
   stopFormalVoiceSet()
@@ -3746,85 +4803,53 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="live-strategy-agent">
-        <section class="strategy-room-plan-relations" :class="{ collapsed: planRelationsCollapsed }">
-          <div class="strategy-room-plan-relations-head">
-            <div>
-              <strong>{{ activeRoom?.name || '当前直播间' }} · 方案绑定关系</strong>
-              <small v-if="planRelationsCollapsed">
-                已绑定 {{ boundRoomPlans.length }} 个方案
-                <template v-if="runtimePlanId"> · 当前直播使用 {{ boundRoomPlans.find(item => item.id === runtimePlanId)?.name || '已选方案' }}</template>
-              </small>
-              <small v-else>绑定表示“这个房间可以使用”；直播时只会运行一个方案，可随时热切换。</small>
-            </div>
-            <div class="strategy-room-plan-relations-controls">
-              <div v-if="!planRelationsCollapsed && unboundPlans.length" class="strategy-room-plan-bind-box">
-              <select v-model="bindPlanId" :disabled="planBusy">
-                <option :value="null">选择其它方案</option>
-                <option v-for="plan in unboundPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
-              </select>
-              <button type="button" :disabled="planBusy || !bindPlanId" @click="bindSelectedPlanToCurrentRoom">绑定方案</button>
-              </div>
-              <button
-                type="button"
-                class="strategy-room-plan-collapse-button"
-                :aria-expanded="!planRelationsCollapsed"
-                :title="planRelationsCollapsed ? '展开方案绑定关系' : '折叠方案绑定关系'"
-                @click="togglePlanRelations"
-              >{{ planRelationsCollapsed ? '⌄' : '⌃' }}</button>
-            </div>
-          </div>
-          <div v-if="!planRelationsCollapsed && boundRoomPlans.length" class="strategy-room-plan-binding-list">
-            <article v-for="plan in boundRoomPlans" :key="plan.id" :class="{ runtime: runtimePlanId === plan.id }">
-              <div>
-                <strong>{{ plan.name }}</strong>
-                <span>{{ runtimePlanId === plan.id ? '当前直播使用中' : '已绑定，可切换使用' }}</span>
-              </div>
-              <div class="strategy-room-plan-binding-actions">
-                <button type="button" :disabled="planBusy || currentRoomPlanId === plan.id" @click="currentRoomPlanId = plan.id; refreshPlanScripts()">
-                  {{ currentRoomPlanId === plan.id ? '正在编辑' : '编辑' }}
-                </button>
-                <button type="button" class="primary" :disabled="planBusy || runtimePlanId === plan.id" @click="usePlanForCurrentRoom(plan)">
-                  {{ runtimePlanId === plan.id ? '使用中' : '切换使用' }}
-                </button>
-                <button type="button" class="danger" :disabled="planBusy" @click="unbindPlanFromCurrentRoom(plan)">取消绑定</button>
-              </div>
-            </article>
-          </div>
-          <div v-else-if="!planRelationsCollapsed" class="strategy-room-plan-empty-binding">当前直播间还没有绑定方案。可新建方案，或从右侧选择已有方案进行绑定。</div>
-        </section>
-
         <header class="strategy-agent-head strategy-plan-container-head">
           <div>
-            <select
-              class="strategy-plan-title-switch"
-              :value="currentRoomPlanId || ''"
-              :disabled="planBusy || !boundRoomPlans.length"
-              @change="handlePlanSwitch"
-            >
-              <option value="" disabled>选择当前房间已绑定方案</option>
-              <option v-for="plan in boundRoomPlans" :key="plan.id" :value="plan.id">
-                {{ plan.name }}
-              </option>
-            </select>
+            <div class="strategy-plan-selector-row">
+              <select
+                class="strategy-plan-title-switch"
+                :value="currentRoomPlanId || ''"
+                :disabled="planBusy || !livePlans.length"
+                @change="handlePlanSwitch"
+              >
+                <option value="" disabled>选择智能体直播方案</option>
+                <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">
+                  {{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}
+                </option>
+              </select>
+              <button
+                v-if="currentPlan && currentPlanIsBound"
+                class="strategy-plan-relation-button danger"
+                type="button"
+                :disabled="planBusy"
+                @click="unbindPlanFromCurrentRoom(currentPlan)"
+              >解除绑定</button>
+              <button
+                v-else-if="currentPlan"
+                class="strategy-plan-relation-button"
+                type="button"
+                :disabled="planBusy || !activeRoom"
+                @click="bindPlanToCurrentRoom(currentPlan)"
+              >绑定直播间</button>
+              <button
+                v-if="currentPlan && currentPlanIsBound && !currentPlanIsPublished"
+                class="strategy-plan-relation-button publish"
+                type="button"
+                :disabled="planBusy || fullShowVersionPublishing || fullShowVersionSaving"
+                @click="openCurrentPlanPublishing"
+              >{{ fullShowVersionPublishing || fullShowVersionSaving ? '保存并发布中…' : '发布到直播间' }}</button>
+            </div>
             <p class="strategy-plan-current-line">
               <template v-if="currentPlan">
                 当前编辑方案：{{ currentPlan.name }}
                 · 已用于 {{ currentPlan.room_count || 0 }} 个直播间
-                <template v-if="runtimePlanId === currentPlan.id"> · 当前直播使用中</template>
-                <template v-else-if="currentPlanIsBound"> · 当前房间已绑定</template>
+                · {{ planRoomRelationLabel(currentPlan) }}
               </template>
               <template v-else>
-                {{ boundRoomPlans.length
-                  ? `当前房间已绑定 ${boundRoomPlans.length} 个方案，请选择要编辑的方案`
-                  : '当前房间还没有绑定直播方案' }}
+                当前还没有可编辑的直播方案
               </template>
             </p>
             <div class="strategy-plan-toolbar">
-              <span
-                v-if="currentPlanIsBound"
-                class="strategy-plan-active-pill"
-                :class="{ runtime: runtimePlanId === currentPlan?.id }"
-              >{{ runtimePlanId === currentPlan?.id ? '直播使用中' : '已绑定当前房间' }}</span>
               <button
                 class="strategy-version-button primary strategy-new-plan-button"
                 :class="{ expanded: showPlanManager && planManagerMode === 'create' }"
@@ -3893,67 +4918,38 @@ onBeforeUnmount(() => {
         <div class="strategy-workflow-layout" :class="'workflow-mode-' + activeMode">
           <nav class="strategy-mode-tabs strategy-mode-tabs-v2 strategy-workflow-nav" aria-label="直播方案流程">
             <div class="strategy-workflow-inputs">
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'script' }" @click="activeMode = 'script'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m5 18 5-5 3 3 2-2 4 4"/></svg>
-              </span>
-              <span class="strategy-workflow-label">直播素材</span>
-            </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'products' }" @click="activeMode = 'products'">
+            <button class="strategy-workflow-step workflow-step-products" :class="{ active: activeMode === 'products' }" @click="activeMode = 'products'">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.2-1.2"/></svg>
               </span>
               <span class="strategy-workflow-label">商品链接</span>
             </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'benefits' }" @click="activeMode = 'benefits'">
+            <button class="strategy-workflow-step workflow-step-benefits" :class="{ active: activeMode === 'benefits' }" @click="activeMode = 'benefits'">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M7.5 8C5.5 8 5 6.8 5 5.8 5 4.8 5.8 4 6.8 4c2.2 0 5.2 4 5.2 4M16.5 8C18.5 8 19 6.8 19 5.8 19 4.8 18.2 4 17.2 4 15 4 12 8 12 8"/></svg>
               </span>
-              <span class="strategy-workflow-label">活动福利</span>
+              <span class="strategy-workflow-label">福利活动</span>
             </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'knowledge' }" @click="activeMode = 'knowledge'">
+            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" @click="activeMode = 'knowledge'">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
               </span>
               <span class="strategy-workflow-label">事实依据</span>
             </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'rhythm' }" @click="activeMode = 'rhythm'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M7 9h10M7 13h7"/></svg>
-              </span>
-              <span class="strategy-workflow-label">口播样稿</span>
-            </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'memory' }" @click="activeMode = 'memory'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M4 5h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M17 9h3a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v3l-4-3h-2"/></svg>
-              </span>
-              <span class="strategy-workflow-label">互动策略</span>
-            </button>
-            <button
-              v-if="!props.supportSession"
-              class="strategy-workflow-step"
-              :class="{ active: activeMode === 'addressing' }"
-              @click="activeMode = 'addressing'"
-            >
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-4 2.2-6 6-6s6 2 6 6"/><path d="M16 6h5M16 10h4M16 14h3"/></svg>
-              </span>
-              <span class="strategy-workflow-label">称呼策略</span>
-            </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
+            <button class="strategy-workflow-step workflow-step-anchor" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3"/><path d="M4 20c0-4 2.5-6 6-6s6 2 6 6"/><path d="m18 4 .6 1.4L20 6l-1.4.6L18 8l-.6-1.4L16 6l1.4-.6z"/></svg>
               </span>
               <span class="strategy-workflow-label">主播风格</span>
             </button>
-            <button class="strategy-workflow-step" :class="{ active: activeMode === 'voice' }" @click="activeMode = 'voice'">
+            <button class="strategy-workflow-step workflow-step-voice" :class="{ active: activeMode === 'voice' }" @click="activeMode = 'voice'">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
               </span>
               <span class="strategy-workflow-label">声音</span>
             </button>
               <button
-                class="strategy-workflow-output"
+                class="strategy-workflow-output workflow-step-fullshow"
                 :class="{ active: activeMode === 'fullshow' }"
                 @click="activeMode = 'fullshow'"
               >
@@ -4009,11 +5005,11 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
+    <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
           <div class="strategy-v2-section-head">
             <div>
               <h3>直播素材</h3>
-              <p class="strategy-script-intro">这是当前直播方案的原始资料入口。素材本身不等于正式事实；智能分析只负责识别内容并把候选信息分别归位到商品链接、活动福利、事实依据、口播结构和主播风格。</p>
+              <p class="strategy-script-intro">这是当前直播方案的原始资料入口。素材本身不等于正式事实；智能分析只负责识别内容并把候选信息分别归位到商品链接、活动福利、事实依据和主播风格。</p>
             </div>
           </div>
           <div class="strategy-script-simple-upload">
@@ -4046,6 +5042,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
+          <div v-if="scriptNotice" class="notice-banner">{{ scriptNotice }}</div>
           <div
             v-if="scriptAnalyzing || scriptAnalysisProgress > 0"
             class="strategy-analysis-progress"
@@ -4093,10 +5090,6 @@ onBeforeUnmount(() => {
                   <strong>{{ currentAnalysis.facts.length }}</strong>
                   <span>事实依据</span>
                 </button>
-                <button type="button" @click="activeMode = 'rhythm'">
-                  <strong>{{ currentAnalysis.rhythm_nodes.length }}</strong>
-                  <span>口播结构</span>
-                </button>
                 <button type="button" @click="activeMode = 'anchor'">
                   <strong>{{ currentAnalysis.anchor_style?.dimensions?.length || 0 }}</strong>
                   <span>主播风格</span>
@@ -4106,77 +5099,22 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <section v-else-if="activeMode === 'products'" class="strategy-v2-workspace">
-          <div class="strategy-v2-section-head">
-            <div>
-              <h3>商品链接</h3>
-              <p class="strategy-product-intro">这里回答“当前直播间卖什么”。素材分析先形成候选，正式商品链接后续统一通过智能体添加、修改、删除并明确采纳后进入版本。</p>
-            </div>
-            <button class="strategy-version-button" type="button" @click="activeMode = 'script'">返回直播素材</button>
-          </div>
-
+        <section v-else-if="activeMode === 'products'" class="strategy-v2-workspace strategy-products-workspace">
           <section class="strategy-product-formal">
             <header>
               <div>
                 <strong>已采纳商品链接</strong>
                 <span>当前正式 {{ formalProductLinks.length }} 个</span>
               </div>
-              <small>正式商品链接只保存稳定商品信息；活动价、赠品、限时权益统一由“活动福利”管理。</small>
             </header>
             <div v-if="!formalProductLinks.length" class="strategy-v2-empty strategy-product-formal-empty">
               <strong>还没有正式商品链接</strong>
-              <span>从下方素材候选采纳，或后续直接对系统智能体说“新增1号链接 / 修改2号链接 / 停用3号链接”。</span>
+              <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <div v-else class="strategy-product-formal-list">
-              <article v-for="item in formalProductLinks" :key="item.id">
-                <div class="strategy-product-formal-main">
-                  <span>{{ item.link_key }}</span>
-                  <strong>{{ item.product_name }}</strong>
-                  <small>V{{ item.version_no }} · {{ item.status === 'active' ? '生效中' : item.status }}</small>
-                </div>
-                <div class="strategy-product-formal-detail">
-                  <span>规格：{{ item.spec || '—' }}</span>
-                  <span>日常价：{{ item.daily_price || '—' }}</span>
-                  <span>数量：{{ item.quantity || '—' }}</span>
-                  <span>适用：{{ item.audience || '—' }}</span>
-                </div>
-              </article>
-            </div>
+            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :remove-item="removeProductLink" />
           </section>
 
-          <div class="strategy-link-coverage">
-            <div>
-              <span>原文检测</span>
-              <strong>{{ linkCompleteness.detected_link_keys?.length || 0 }}</strong>
-              <small>个链接</small>
-            </div>
-            <div>
-              <span>素材候选</span>
-              <strong>{{ productLinks.length }}</strong>
-              <small>个链接</small>
-            </div>
-            <div>
-              <span>正式已采纳</span>
-              <strong>{{ formalProductLinks.length }}</strong>
-              <small>个链接</small>
-            </div>
-            <div>
-              <span>链接覆盖率</span>
-              <strong>{{ linkCompleteness.link_coverage_pct ?? 100 }}%</strong>
-              <small>程序校验</small>
-            </div>
-            <div v-if="linkCompleteness.missing_link_keys?.length" class="is-warning">
-              <span>仍待补齐</span>
-              <strong>{{ linkCompleteness.missing_link_keys.length }}</strong>
-              <small>{{ linkCompleteness.missing_link_keys.join('、') }}</small>
-            </div>
-          </div>
-
-          <div v-if="!productLinks.length" class="strategy-v2-empty">
-            <strong>当前没有识别到商品链接</strong>
-            <span>可以直接在右侧智能体输入框粘贴商品链接截图，系统会自动识别商品名称、规格、价格等信息；也可以输入“1号链接 / 一号链接 / 2号商品”等文字让系统提取。</span>
-          </div>
-          <div v-else class="strategy-product-link-grid">
+          <div class="strategy-product-link-grid">
             <article
               v-for="link in productLinks"
               :key="link.link_key"
@@ -4226,7 +5164,7 @@ onBeforeUnmount(() => {
               <h3>活动福利</h3>
               <p>这里专门承接活动价、赠品、满减、限时权益等有时效的内容。活动福利和稳定事实分开管理，过期后不能继续被直播智能体引用。</p>
             </div>
-            <button class="strategy-version-button" type="button" @click="activeMode = 'script'">返回直播素材</button>
+            <button class="strategy-version-button" type="button" @click="activeMode = 'anchor'">返回主播风格</button>
           </div>
 
           <section class="strategy-benefit-formal">
@@ -4235,7 +5173,6 @@ onBeforeUnmount(() => {
                 <strong>已采纳活动福利</strong>
                 <span>正式活动 {{ formalBenefits.length }} 条</span>
               </div>
-              <small>只有“生效中”且在有效期内的活动，后续才允许进入直播智能体生成。</small>
             </header>
             <div v-if="!formalBenefits.length" class="strategy-v2-empty strategy-benefit-formal-empty">
               <strong>还没有正式活动福利</strong>
@@ -4263,11 +5200,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <div v-if="!activityBenefits.length" class="strategy-v2-empty">
-            <strong>当前素材还没有识别到活动福利候选</strong>
-            <span>后续可以直接对系统智能体说“新增一个活动”“把1号链接活动价改成69.9”“这个活动今晚结束”，由智能体生成变更卡并提交采纳。</span>
-          </div>
-          <div v-else class="strategy-benefit-grid">
+          <div class="strategy-benefit-grid">
             <article
               v-for="benefit in activityBenefits"
               :key="benefit.key"
@@ -4311,99 +5244,11 @@ onBeforeUnmount(() => {
           <div class="strategy-v2-section-head">
             <div>
               <h3>事实依据</h3>
-              <p>这里回答“什么是真的”。素材分析只产生候选，用户采纳后才进入正式事实；活动价、限时赠品等时效内容应进入“活动福利”。</p>
             </div>
-            <button class="strategy-version-button" type="button" @click="activeMode = 'script'">返回直播素材</button>
-          </div>
-          <div class="strategy-fact-review-cards">
-            <button
-              v-for="group in factReviewGroups"
-              :key="group.key"
-              type="button"
-              class="strategy-fact-review-card"
-              :class="[
-                'is-' + group.className,
-                { active: selectedFactReviewBucket === group.key },
-              ]"
-              @click="selectedFactReviewBucket = group.key"
-            >
-              <span>{{ group.label }}</span>
-              <strong>{{ group.facts.length }}</strong>
-              <small>条</small>
-            </button>
-          </div>
-
-          <section
-            v-if="selectedFactReviewGroup"
-            class="strategy-fact-review-detail"
-            :class="'is-' + selectedFactReviewGroup.className"
-          >
-            <header class="strategy-fact-review-detail-head">
-              <div>
-                <strong>{{ selectedFactReviewGroup.label }}</strong>
-                <span>共 {{ selectedFactReviewGroup.facts.length }} 条</span>
-              </div>
-              <div class="strategy-fact-adopt-actions">
-                <label>
-                  <input
-                    type="checkbox"
-                    :checked="allCurrentFactsSelected"
-                    :disabled="!currentSelectableFacts.length"
-                    @change="toggleAllCurrentFacts(($event.target as HTMLInputElement).checked)"
-                  />
-                  <span>全选当前分类</span>
-                </label>
-                <span>已选 {{ selectedCurrentFacts.length }} 条</span>
-                <button
-                  class="primary-button"
-                  type="button"
-                  :disabled="!selectedCurrentFacts.length || adoptingFacts"
-                  @click="adoptSelectedFacts"
-                >
-                  {{ adoptingFacts ? '采纳中…' : '采纳' }}
-                </button>
-              </div>
-            </header>
-            <div class="strategy-fact-table-wrap">
-              <table class="strategy-fact-table">
-                <thead>
-                  <tr>
-                    <th>选择</th>
-                    <th>分类</th>
-                    <th>事实名称</th>
-                    <th>事实内容</th>
-                    <th>原文依据</th>
-                    <th>判断说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-if="!selectedFactReviewGroup.facts.length">
-                    <td colspan="6" class="strategy-fact-empty">当前没有{{ selectedFactReviewGroup.label }}</td>
-                  </tr>
-                  <tr
-                    v-for="(fact, index) in selectedFactReviewGroup.facts"
-                    :key="selectedFactReviewGroup.key + ':' + index + ':' + fact.category + ':' + fact.key + ':' + fact.value"
-                  >
-                    <td class="strategy-fact-select-cell">
-                      <input
-                        type="checkbox"
-                        :checked="isFactSelected(fact)"
-                        :disabled="fact.review_bucket === 'violation' || isFactAdopted(fact)"
-                        @change="toggleFactSelection(fact, ($event.target as HTMLInputElement).checked)"
-                      />
-                      <small v-if="isFactAdopted(fact)">已采纳</small>
-                      <small v-else-if="fact.review_bucket === 'violation'" class="is-danger">不可采纳</small>
-                    </td>
-                    <td>{{ factCategoryLabel(fact.category) }}</td>
-                    <td>{{ fact.key }}</td>
-                    <td>{{ fact.value }}</td>
-                    <td>{{ fact.source_quote || '—' }}</td>
-                    <td>{{ fact.review_reason || fact.note || '—' }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="strategy-fact-head-actions">
+              <button class="primary-button" type="button" :disabled="!currentPlan" @click="beginCreateFormalFact">＋ 新增事实依据</button>
             </div>
-          </section>
+          </div>
 
           <section class="strategy-formal-facts">
             <header class="strategy-formal-facts-head">
@@ -4412,12 +5257,21 @@ onBeforeUnmount(() => {
                 <strong>当前方案已采纳事实</strong>
                 <small>{{ currentPlan?.name || '未选择方案' }} · {{ formalFacts.length }} 条</small>
               </div>
-              <span>这里才是直播智能体实际使用的正式事实；修改、删除都会记录版本历史。</span>
+              <span>以下内容同时供主线口播和互动回答使用；修改、删除都会记录版本历史。</span>
             </header>
+
+            <div v-if="creatingFormalFact" class="strategy-formal-fact-create">
+              <label><span>事实分类</span><select v-model="formalFactCreateDraft.category"><option v-for="option in formalFactCategoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+              <label><span>事实名称</span><input v-model="formalFactCreateDraft.key" maxlength="255" placeholder="例如：适用人群" /></label>
+              <label class="is-wide"><span>事实内容（可以说）</span><textarea v-model="formalFactCreateDraft.value" rows="3" maxlength="4000" placeholder="例如：本品为非转基因菜籽油"></textarea></label>
+              <label><span>不要这样说（选填）</span><textarea v-model="formalFactCreateDraft.forbidden_wording" rows="3" maxlength="4000" placeholder="一行一句，例如：老人小孩吃了更好"></textarea></label>
+              <label><span>改成这样说（选填）</span><textarea v-model="formalFactCreateDraft.safe_rewrite" rows="3" maxlength="4000" placeholder="例如：家里日常做饭可以按页面信息选择"></textarea></label>
+              <div class="strategy-formal-fact-create-actions"><button class="primary-button" type="button" :disabled="mutatingFormalFactId === -1" @click="createFormalFact">{{ mutatingFormalFactId === -1 ? '保存中…' : '保存事实依据' }}</button><button type="button" :disabled="mutatingFormalFactId === -1" @click="cancelCreateFormalFact">取消</button></div>
+            </div>
 
             <div v-if="!formalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
               <strong>当前方案还没有正式事实</strong>
-              <span>从上面的素材候选采纳后，会固定显示在这里。</span>
+              <span>可以从上面的素材候选采纳，也可以点击“新增事实依据”直接录入。</span>
             </div>
 
             <div v-else class="strategy-formal-facts-table-wrap">
@@ -4426,7 +5280,9 @@ onBeforeUnmount(() => {
                   <tr>
                     <th>分类</th>
                     <th>事实名称</th>
-                    <th>事实内容</th>
+                    <th>事实内容（可以说）</th>
+                    <th>不要这样说</th>
+                    <th>改成这样说</th>
                     <th>版本</th>
                     <th>操作</th>
                   </tr>
@@ -4451,6 +5307,8 @@ onBeforeUnmount(() => {
                       <td>
                         <textarea v-model="formalFactEditDraft.value" rows="3" maxlength="4000"></textarea>
                       </td>
+                      <td><textarea v-model="formalFactEditDraft.forbidden_wording" rows="3" maxlength="4000" placeholder="选填，一行一句"></textarea></td>
+                      <td><textarea v-model="formalFactEditDraft.safe_rewrite" rows="3" maxlength="4000" placeholder="选填，写建议说法"></textarea></td>
                       <td class="strategy-formal-fact-version">
                         V{{ item.version_no }}
                         <small>保存后升级版本</small>
@@ -4475,9 +5333,11 @@ onBeforeUnmount(() => {
                       <td><span class="strategy-formal-fact-category">{{ factCategoryLabel(item.category) }}</span></td>
                       <td><strong>{{ item.key }}</strong></td>
                       <td class="strategy-formal-fact-value">{{ item.value }}</td>
+                      <td class="strategy-formal-fact-boundary">{{ item.forbidden_wording || '—' }}</td>
+                      <td class="strategy-formal-fact-rewrite">{{ item.safe_rewrite || '—' }}</td>
                       <td class="strategy-formal-fact-version">
                         V{{ item.version_no }}
-                        <small>{{ item.source_type === 'manual_edit' ? '人工修改' : '采纳生成' }}</small>
+                        <small>{{ item.source_type === 'manual_create' ? '人工新增' : (item.source_type === 'manual_edit' ? '人工修改' : '采纳生成') }}</small>
                       </td>
                       <td>
                         <div class="strategy-formal-fact-actions">
@@ -4506,180 +5366,11 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-else-if="activeMode === 'rhythm'" class="strategy-v2-workspace strategy-oral-sample-workspace">
-          <div class="strategy-v2-section-head">
-            <div>
-              <h3>口播样稿</h3>
-            </div>
-            <div class="strategy-oral-sample-head-actions">
-              <input
-                ref="oralSampleFileInput"
-                class="strategy-hidden-file-input"
-                type="file"
-                accept=".txt,.md,.markdown,.srt,.vtt,text/plain,text/markdown"
-                @change="handleOralSampleFileChange"
-              />
-              <button
-                class="strategy-version-button"
-                type="button"
-                :disabled="!currentPlan"
-                @click="beginNewOralSample(); openOralSampleFilePicker()"
-              >导入文本稿</button>
-              <button
-                class="primary-button"
-                type="button"
-                :disabled="!currentPlan"
-                @click="beginNewOralSample"
-              >＋ 新建样稿</button>
-            </div>
-          </div>
-
-          <div class="strategy-oral-sample-rule">
-            <strong>使用边界</strong>
-            <span>只学习整篇样稿“怎么组织、怎么衔接、怎么说”，事实仍以当前方案的正式事实、商品链接和有效活动为准。</span>
-          </div>
-
-          <section v-if="currentPlan" class="strategy-oral-sample-layout">
-            <aside class="strategy-oral-sample-sidebar">
-              <header>
-                <div>
-                  <strong>样稿库</strong>
-                  <span>{{ formalScriptReferences.length }} 篇</span>
-                </div>
-                <small>{{ currentPlan.name }}</small>
-              </header>
-
-              <button
-                v-for="item in formalScriptReferences"
-                :key="item.id"
-                class="strategy-oral-sample-card"
-                :class="{ active: !oralSampleCreating && selectedOralSampleId === item.id }"
-                type="button"
-                @click="selectOralSample(item)"
-              >
-                <span class="strategy-oral-sample-card-title">{{ item.title }}</span>
-                <span class="strategy-oral-sample-card-preview">
-                  {{ item.content_text.slice(0, 86) }}{{ item.content_text.length > 86 ? '…' : '' }}
-                </span>
-                <span class="strategy-oral-sample-card-meta">
-                  <b>V{{ item.version_no }}</b>
-                  <i>{{ item.content_text.length.toLocaleString() }} 字</i>
-                  <i>{{ oralSampleSourceLabel(item) }}</i>
-                </span>
-                <small>{{ formatOralSampleUpdatedAt(item.updated_at) }}</small>
-              </button>
-
-              <div v-if="!formalScriptReferences.length" class="strategy-oral-sample-sidebar-empty">
-                <strong>还没有口播样稿</strong>
-                <span>可以新建空白样稿，也可以直接导入以前的完整逐字稿。</span>
-              </div>
-            </aside>
-
-            <main class="strategy-oral-sample-editor">
-              <template v-if="oralSampleCreating || selectedOralSample">
-                <header class="strategy-oral-sample-editor-head">
-                  <div>
-                    <span>{{ oralSampleCreating ? 'NEW SAMPLE' : 'FULL SCRIPT' }}</span>
-                    <strong>{{ oralSampleCreating ? '新建口播样稿' : '完整样稿原文' }}</strong>
-                  </div>
-                  <div>
-                    <button
-                      type="button"
-                      :disabled="oralSampleAnalyzing || !oralSampleDraft.content_text.trim()"
-                      @click="analyzeOralSampleStructure"
-                    >{{ oralSampleAnalyzing ? '分析中…' : '智能分析结构' }}</button>
-                    <button
-                      class="primary-button"
-                      type="button"
-                      :disabled="oralSampleBusy"
-                      @click="saveOralSample"
-                    >{{ oralSampleBusy ? '保存中…' : '保存样稿' }}</button>
-                    <button
-                      v-if="selectedOralSample && !oralSampleCreating"
-                      class="is-danger"
-                      type="button"
-                      :disabled="oralSampleBusy"
-                      @click="deleteSelectedOralSample"
-                    >删除</button>
-                  </div>
-                </header>
-
-                <label class="strategy-oral-sample-title-field">
-                  <span>样稿名称</span>
-                  <input
-                    v-model="oralSampleDraft.title"
-                    maxlength="160"
-                    placeholder="例如：菜籽油老主播完整口播01"
-                  />
-                </label>
-
-                <div class="strategy-oral-sample-document">
-                  <header>
-                    <div>
-                      <strong>全文</strong>
-                      <span>{{ oralSampleCharacterCount.toLocaleString() }} 字</span>
-                    </div>
-                    <small>{{ oralSampleSourceType === 'upload' ? ('文件导入 · ' + (oralSampleSourceRef || '文本稿')) : '直接粘贴 / 编辑' }}</small>
-                  </header>
-                  <textarea
-                    v-model="oralSampleDraft.content_text"
-                    rows="28"
-                    placeholder="在这里粘贴完整口播样稿。可以从开场一直到结尾，保留原来的口语、重复、转场、CTA 和节奏。"
-                    @input="oralSampleAnalysis = null"
-                  ></textarea>
-                </div>
-
-                <p v-if="oralSampleNotice" class="strategy-oral-sample-notice">{{ oralSampleNotice }}</p>
-
-                <section class="strategy-oral-sample-analysis">
-                  <header>
-                    <div>
-                      <span>AI STRUCTURE</span>
-                      <strong>样稿结构分析</strong>
-                    </div>
-                    <small>分析结果只帮助智能体理解这篇稿子的组织方式，不写入正式事实。</small>
-                  </header>
-                  <div v-if="!oralSampleAnalysis" class="strategy-oral-sample-analysis-empty">
-                    <strong>还没有分析这篇样稿</strong>
-                    <span>点击“智能分析结构”，系统会识别开场、展开、卖点组织、转场、CTA 和收尾等段落。</span>
-                  </div>
-                  <template v-else>
-                    <p v-if="oralSampleAnalysis.summary" class="strategy-oral-sample-analysis-summary">
-                      {{ oralSampleAnalysis.summary }}
-                    </p>
-                    <div class="strategy-oral-sample-structure-list">
-                      <article v-for="node in oralSampleAnalysis.rhythm_nodes" :key="node.order + '-' + node.title">
-                        <span>{{ String(node.order).padStart(2, '0') }}</span>
-                        <div>
-                          <strong>{{ node.title }}</strong>
-                          <p v-if="node.goal">{{ node.goal }}</p>
-                          <small v-if="node.must_cover?.length">重点：{{ node.must_cover.join(' · ') }}</small>
-                          <small v-if="node.transition">转场：{{ node.transition }}</small>
-                        </div>
-                      </article>
-                    </div>
-                  </template>
-                </section>
-              </template>
-
-              <div v-else class="strategy-oral-sample-editor-empty">
-                <strong>选择一篇样稿查看全文</strong>
-                <span>也可以点击“新建样稿”或“导入文本稿”添加以前完整的直播口播。</span>
-              </div>
-            </main>
-          </section>
-
-          <div v-else class="strategy-v2-empty">
-            <strong>先选择或创建直播智能体方案</strong>
-            <span>口播样稿跟随直播方案保存，选中方案后才可以建立样稿库。</span>
-          </div>
-        </section>
-
         <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
           <div class="strategy-v2-section-head interaction-strategy-head">
             <div>
-              <h3>互动偏好</h3>
-              <p>只需要告诉小蓝你更想回应什么。直播间人少会更积极，人多会自动聚合，并优先处理重要问题。</p>
+              <h3>互动策略</h3>
+              <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
           <RoomInteractionPreferences v-if="activeRoomId" :room-id="activeRoomId" />
@@ -4690,16 +5381,16 @@ onBeforeUnmount(() => {
           <div class="strategy-v2-section-head interaction-rules-head">
             <div>
               <h3>已采用的互动规则</h3>
-              <p>这里保留你通过智能体确认过的特殊要求，例如“人多时不要逐个点名”或“这类问题优先回答”。</p>
+              <p>这里保留互动规范，例如“人多时不要逐个点名”“售后问题必须优先回答”。它不能新增商品事实，也不能覆盖事实依据。</p>
             </div>
             <button class="strategy-version-button" type="button" @click="refreshMemories">刷新规则</button>
           </div>
-          <div v-if="!memories.length" class="strategy-v2-empty">
+          <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>
           </div>
           <div v-else class="strategy-memory-list">
-            <article v-for="item in memories" :key="item.id" :class="{ editing: editingMemoryId === item.id }">
+            <article v-for="item in interactionMemories" :key="item.id" :class="{ editing: editingMemoryId === item.id }">
               <span>{{ memoryTypeLabel(item.memory_type) }}</span>
               <div>
                 <strong>{{ item.target || item.memory_key }}</strong>
@@ -4726,7 +5417,7 @@ onBeforeUnmount(() => {
                   <textarea
                     v-model="memoryEditFeedback"
                     rows="3"
-                    placeholder="直接说明要改哪里，例如：产地统一回答绵阳游仙区，不要再写成其它地区。"
+                    placeholder="直接说明互动规范，例如：售后问题必须优先回答，但答案内容仍以事实依据为准。"
                   ></textarea>
                 </label>
                 <div class="strategy-memory-edit-actions">
@@ -4753,7 +5444,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="activeMode === 'addressing'" class="strategy-v2-workspace addressing-workspace">
+        <section v-else-if="activeMode === 'addressing' && !props.supportSession" class="strategy-v2-workspace addressing-workspace">
           <div class="strategy-v2-section-head">
             <div>
               <h3>称呼策略</h3>
@@ -4878,10 +5569,12 @@ onBeforeUnmount(() => {
               <div>
                 <span>
                   {{ runtimePlanId === plan.id
-                    ? '当前直播使用中'
-                    : boundPlanIdSet.has(plan.id)
-                      ? '已绑定当前直播间'
-                      : '未绑定当前直播间' }}
+                    ? '当前直播使用中 · 已发布'
+                    : publishedPlanIdSet.has(plan.id)
+                      ? '已发布当前直播间'
+                      : boundPlanIdSet.has(plan.id)
+                        ? '已绑定 · 未发布'
+                        : '未绑定当前直播间' }}
                 </span>
                 <strong>{{ plan.name }}</strong>
                 <p>{{ plan.description || '暂无方案说明' }}</p>
@@ -4895,7 +5588,7 @@ onBeforeUnmount(() => {
                   @click="currentRoomPlanId = plan.id; refreshPlanScripts()"
                 >{{ currentRoomPlanId === plan.id ? '正在编辑' : '编辑方案' }}</button>
                 <button
-                  v-if="boundPlanIdSet.has(plan.id)"
+                  v-if="publishedPlanIdSet.has(plan.id)"
                   type="button"
                   class="primary"
                   :disabled="planBusy || runtimePlanId === plan.id"
@@ -4994,6 +5687,126 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
+          <div class="reusable-anchor-style-workspace">
+            <aside class="reusable-anchor-style-sidebar">
+              <div class="reusable-anchor-style-sidebar-head">
+                <div><span>主播库</span><strong>已保存的主播风格</strong></div>
+                <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy" @click="createReusableAnchorStyle">＋新建主播</button>
+              </div>
+              <p class="reusable-anchor-style-help">选中后，测试文案和当前智能体方案都会按这名主播的说话方式生成。</p>
+              <div v-if="!reusableAnchorStyles.length" class="reusable-anchor-style-empty">还没有保存主播。先新建主播，再导入一份或多份真实话术。</div>
+              <button
+                v-for="style in reusableAnchorStyles"
+                :key="style.id"
+                type="button"
+                class="reusable-anchor-style-card"
+                :class="{ selected: selectedReusableAnchorStyleId === style.id }"
+                @click="selectReusableAnchorStyle(style.id)"
+              >
+                <span class="reusable-anchor-style-card-radio">{{ selectedReusableAnchorStyleId === style.id ? '✓' : '' }}</span>
+                <span><strong>{{ style.name }}</strong><small>{{ style.description || '还没有填写风格介绍' }}</small><em>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</em></span>
+              </button>
+              <button v-if="selectedReusableAnchorStyle" type="button" class="reusable-anchor-style-bind" :disabled="!currentRoomPlanId" @click="bindReusableAnchorStyle">
+                {{ currentRoomPlanId ? '设为当前智能体主播' : '先选择智能体方案' }}
+              </button>
+              <button v-if="selectedReusableAnchorStyle" type="button" class="reusable-anchor-style-settings-link" @click="reusableAnchorStyleTab = 'personalization'">⚙ 当前系统的个性插件</button>
+            </aside>
+
+            <div class="reusable-anchor-style-main">
+              <div class="reusable-anchor-style-main-head">
+                <div>
+                  <span>REUSABLE PRESENTER PROFILE</span>
+                  <h3>{{ selectedReusableAnchorStyle?.name || '主播风格' }}</h3>
+                  <p>{{ selectedReusableAnchorStyle?.description || '把不同商品话术中的“怎么说”沉淀为可复用主播。' }}</p>
+                </div>
+                <div class="reusable-anchor-style-main-actions" v-if="selectedReusableAnchorStyle">
+                  <button type="button" class="strategy-version-button" @click="saveReusableAnchorStyleInfo">保存名称与介绍</button>
+                  <button type="button" class="danger-button" @click="deleteReusableAnchorStyle">删除主播</button>
+                </div>
+              </div>
+              <div v-if="reusableAnchorStyleError" class="inline-error">{{ reusableAnchorStyleError }}</div>
+              <div v-if="reusableAnchorStyleNotice" class="notice-banner">{{ reusableAnchorStyleNotice }}</div>
+              <div v-if="selectedReusableAnchorStyle" class="reusable-anchor-style-edit-row">
+                <input v-model="reusableAnchorStyleDraft.name" maxlength="80" placeholder="主播名称，例如：四川老乡主播" />
+                <input v-model="reusableAnchorStyleDraft.description" maxlength="500" placeholder="一句话介绍这个主播的说话感觉" />
+              </div>
+              <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle">
+                <button type="button" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">主播风格样本话术</button>
+                <button type="button" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">风格分析结果</button>
+                <button type="button" :class="{ active: reusableAnchorStyleTab === 'testing' }" @click="reusableAnchorStyleTab = 'testing'">测试与训练</button>
+                <button type="button" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">个性化挂载</button>
+              </nav>
+
+              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel">
+                <div class="reusable-anchor-style-panel-title"><div><strong>导入这个主播不同场景的话术</strong><small>可以分别放菜籽油、衣服、闲聊等样本。系统只学习口语、称呼、口头禅和局部推进，不学习商品事实。</small></div></div>
+                <div class="reusable-anchor-style-sample-compose">
+                  <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="120" placeholder="样本标题，例如：菜籽油主线" />
+                  <textarea v-model="reusableAnchorStyleSampleDraft.raw_text" rows="7" maxlength="30000" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴。"></textarea>
+                  <div class="reusable-anchor-style-sample-compose-actions"><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample">保存这份样本</button><label class="strategy-version-button reusable-anchor-style-file-button">导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label></div>
+                </div>
+                <div v-if="reusableAnchorStyleAnalysisStage" class="reusable-anchor-style-thinking"><span class="thinking-dot"></span><strong>{{ reusableAnchorStyleAnalysisStage }}</strong><small>正在调用风格分析与同步质检，请不要重复点击。</small></div>
+                <div class="reusable-anchor-style-sample-list">
+                  <article v-for="sample in reusableAnchorStyleSamples" :key="sample.id">
+                    <header><div><strong>{{ sample.title }}</strong><small>{{ sample.readable_text.length }} 字 · {{ sample.analysis_status === 'analyzed' ? '已分析' : sample.analysis_status === 'analyzing' ? '分析中' : sample.analysis_status === 'failed' ? '分析失败' : '待分析' }}</small></div><div><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || sample.analysis_status === 'analyzing'" @click="analyzeReusableAnchorStyleSample(sample)">{{ sample.analysis_status === 'analyzed' ? '重新分析' : '分析这份样本' }}</button><button type="button" class="strategy-version-button" @click="deleteReusableAnchorStyleSample(sample)">删除</button></div></header>
+                    <details><summary>查看原始样本</summary><pre>{{ sample.readable_text }}</pre></details>
+                    <p v-if="sample.error_message" class="inline-error">{{ sample.error_message }}</p>
+                  </article>
+                </div>
+              </div>
+
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel">
+                <div class="reusable-anchor-style-panel-title"><div><strong>风格分析结果</strong><small>下面的内容是跨商品可复用的“怎么说”，事实、价格、链接和互动策略不在这里。</small></div><span>{{ selectedReusableAnchorStyle.sample_count }} 份样本已纳入</span></div>
+                <div v-if="!selectedReusableAnchorStyle.profile.dimensions?.length" class="reusable-anchor-style-empty">还没有分析结果。请回到“主播风格样本话术”分析至少一份样本。</div>
+                <template v-else>
+                  <section class="reusable-anchor-style-rulebook reusable-anchor-style-meta-prompt-only">
+                    <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。</small></header>
+                    <pre>{{ selectedReusableAnchorStyle.profile.delivery_spec?.rulebook || selectedReusableAnchorStyle.profile.reusable_rules.join('\n') }}</pre>
+                  </section>
+                </template>
+              </div>
+
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel">
+                <div class="reusable-anchor-style-panel-title"><div><strong>测试与训练</strong><small>每次先生成一小段；不满意可写差异继续校正。测试不会发布，也不会自动备份版本或改当前直播。</small></div></div>
+                <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
+                  <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
+                  <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
+                  <label>热度/扩展授权：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
+                </div>
+                <div class="reusable-anchor-style-fact-picker"><span>可选事实（只决定说哪些事实，不改变主播风格）</span><button v-for="fact in formalFacts.slice(0, 12)" :key="fact.key" type="button" :class="{ selected: selectedFactKeys.includes(fact.key) }" @click="selectedFactKeys = selectedFactKeys.includes(fact.key) ? selectedFactKeys.filter((key) => key !== fact.key) : [...selectedFactKeys, fact.key]">{{ fact.key }}</button></div>
+                <div class="reusable-anchor-style-test-actions"><button class="primary-button" type="button" :disabled="anchorStyleTestBusy || !selectedReusableAnchorStyle.profile.dimensions?.length || !currentPlan" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成中…' : '生成一小段测试文案' }}</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleLongTestRunning" @click="runReusableLongTest">{{ reusableAnchorStyleLongTestRunning ? '长时间测试中…' : '长时间主播测试' }}</button><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="strategy-version-button" @click="stopReusableLongTest">停止</button><label v-if="!reusableAnchorStyleLongTestRunning">测试时长（分钟）<input v-model.number="reusableAnchorStyleLongTestMinutes" type="number" min="5" max="240" step="5" /></label></div>
+                <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
+                <pre v-if="anchorStyleTestResult" class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult.text }}</pre>
+                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>客观风格评分：{{ anchorStyleTestResult.runtime_evaluation?.style_score ?? '—' }}</span><span>用词：{{ anchorStyleTestResult.runtime_evaluation?.lexical_score ?? '—' }}</span><span>节奏：{{ anchorStyleTestResult.runtime_evaluation?.rhythm_score ?? '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <section v-if="anchorStyleTestResult" class="strategy-style-correction-loop reusable-anchor-style-training-loop">
+                  <header><div><span>ITERATIVE CALIBRATION</span><strong>哪里不像，就继续告诉系统</strong></div><em>{{ anchorStyleCorrectionCandidates.length }} 条未保存调整</em></header>
+                  <p>直接写这版和真实主播哪里不同，也可以粘贴其他 AI 的差异分析。系统只提取可复用的说话方式，重新生成一小段给你比较；满意前不会改变正式主播风格。</p>
+                  <div v-if="anchorStyleCorrectionHistory.length" class="strategy-style-correction-history">
+                    <article v-for="(entry, index) in anchorStyleCorrectionHistory" :key="`${index}:${entry.feedback}`">
+                      <span>第 {{ index + 1 }} 轮 · {{ entry.model }}</span>
+                      <p><b>你的反馈：</b>{{ entry.feedback }}</p>
+                      <p><b>系统归纳：</b>{{ entry.diagnosis }}</p>
+                    </article>
+                  </div>
+                  <label><span>这版哪里还不像</span><textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300" placeholder="例如：说得太完整太顺了，原主播更喜欢短句，偶尔回头补一句。也可以粘贴其他 AI 的分析。"></textarea></label>
+                  <div class="strategy-style-correction-actions">
+                    <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">{{ anchorStyleCorrectionBusy ? '正在学习并重生成…' : '学习这条反馈并重新生成' }}</button>
+                    <button v-if="anchorStyleCorrectionCandidates.length" class="primary-button" type="button" :disabled="anchorStyleCorrectionBusy || styleOverlayBusy" @click="saveAnchorStyleCorrections">满意，保存这些调整</button>
+                    <button v-if="anchorStyleCorrectionCandidates.length" class="strategy-version-button" type="button" :disabled="anchorStyleCorrectionBusy" @click="discardAnchorStyleCorrections">放弃本轮调整</button>
+                  </div>
+                  <small v-if="!anchorRulebook">需要先分析真实主播样本，系统才能判断“哪里不像”。</small>
+                  <div v-if="anchorStyleCorrectionError" class="inline-error">{{ anchorStyleCorrectionError }}</div>
+                </section>
+                <div v-if="reusableAnchorStyleLongTestText" class="reusable-anchor-style-long-test"><header><strong>长时间测试结果</strong><span>已生成 {{ reusableAnchorStyleLongTestSegments }} 段</span></header><pre>{{ reusableAnchorStyleLongTestText }}</pre></div>
+              </div>
+
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'personalization'" class="reusable-anchor-style-tab-panel">
+                <div class="reusable-anchor-style-panel-title"><div><strong>个性化挂载</strong><small>插件是主播的表达叠加能力，例如偶尔幽默、偶尔自我纠正、轻微口结。启用后参与测试生成，不改变事实库和互动策略。</small></div></div>
+                <div v-if="stylePluginCatalog?.items.length" class="reusable-anchor-style-plugin-grid"><article v-for="pluginItem in stylePluginCatalog.items" :key="pluginItem.manifest.id"><div><strong>{{ pluginItem.manifest.name }}</strong><small>{{ pluginItem.manifest.description }}</small></div><button type="button" :disabled="!pluginItem.activation_supported" @click="toggleReusableAnchorPlugin(pluginItem)">{{ selectedReusableAnchorStyle.plugin_settings?.some((setting) => setting.plugin_id === pluginItem.manifest.id && setting.enabled) ? '已启用 · 点击卸载' : '启用这个插件' }}</button></article></div>
+                <div v-else class="reusable-anchor-style-empty">当前方案还没有读取插件目录，请先选择一个直播方案。</div>
+              </div>
+            </div>
+          </div>
+          <details class="reusable-anchor-style-legacy"><summary>兼容旧版：当前直播方案素材分析与叠加风格</summary>
           <div class="strategy-v2-section-head">
             <div>
               <h3>主播风格</h3>
@@ -5003,7 +5816,7 @@ onBeforeUnmount(() => {
               <button
                 class="strategy-version-button"
                 type="button"
-                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying || !scriptReadableText.trim()"
+                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying"
                 @click="analyzeCurrentPlanScript"
               >
                 {{ scriptAnalyzing ? '分析中…' : '重新分析当前素材' }}
@@ -5011,128 +5824,218 @@ onBeforeUnmount(() => {
               <button
                 class="primary-button"
                 type="button"
-                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying || !scriptReadableText.trim()"
+                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying || !scriptReadableText.trim() || !anchorRulebook"
                 @click="applyAnchorStyleHot"
               >
-                {{ anchorStyleApplying ? '保存生效中…' : '保存风格并热生效' }}
+                {{ anchorStyleApplying ? '保存生效中…' : '保存口播规范并生效' }}
               </button>
             </div>
           </div>
+
+          <section class="strategy-anchor-core-panel">
+            <header><strong>主流程：粘贴主播原文 → 分析 → 生成测试文案 → 反馈校正</strong><button class="strategy-version-button" @click="anchorStyleSampleExpanded = !anchorStyleSampleExpanded">{{ anchorStyleSampleExpanded ? '收起主播原文' : '展开并粘贴主播原文' }}</button></header>
+            <p>这里才是主播样本入口。下面的“额外习惯”不是样本分析；它只用于你主动追加一句长期要求。</p>
+            <template v-if="anchorStyleSampleExpanded">
+              <label>主播真实口播原文（必填）<textarea v-model="scriptReadableText" rows="8" maxlength="60000" placeholder="请在这里粘贴一份或多份主播真实说过的话。粘贴后，下方会显示实际字数。" @input="syncSimpleScriptText"></textarea></label>
+              <small>当前已输入 {{ scriptReadableText.trim().length }} 字；灰色提示文字不计入输入。</small>
+              <button class="primary-button" :disabled="scriptAnalyzing" @click="analyzeCurrentPlanScript">{{ scriptAnalyzing ? '分析规则中…' : '开始分析主播样本' }}</button>
+              <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
+            </template>
+            <small v-if="savedStyleScript && !currentAnalysis?.anchor_style?.dimensions?.length">当前显示当前方案已保存素材「{{ savedStyleScript.title || '主播素材' }}」的风格；不会因新建未分析素材而隐藏。</small>
+          </section>
+
+          <section class="strategy-style-overlay-panel">
+            <header>
+              <div>
+                <span>PERSONA LAYERS</span>
+                <strong>可选：额外习惯</strong>
+                <p>这不是主播原文分析。只有想主动增加“偶尔幽默”“先说重点”等长期要求时才填写。</p>
+              </div>
+              <em>{{ styleOverlayProfile?.items.filter((item) => item.enabled).length || 0 }} 条生效</em>
+            </header>
+
+            <details class="strategy-style-plugin-library">
+              <summary>
+                <div><span>ADVANCED</span><strong>高级：主播能力插件</strong><p>一般不需要操作；只有希望直接叠加预制能力时再展开。</p></div>
+                <em>{{ stylePluginCatalog?.items.length || 0 }} 个能力</em>
+              </summary>
+              <div v-if="stylePluginCatalog?.items.length" class="strategy-style-plugin-grid">
+                <article v-for="pluginItem in stylePluginCatalog.items" :key="`${pluginItem.manifest.id}@${pluginItem.manifest.version}`" :class="{ locked: !pluginItem.activation_supported }">
+                  <div class="strategy-style-plugin-title"><div><span>{{ pluginItem.manifest.mode === 'declarative' ? '声明式' : '可信执行器' }} · v{{ pluginItem.manifest.version }}</span><strong>{{ pluginItem.manifest.name }}</strong></div><code>{{ pluginItem.manifest.id }}</code></div>
+                  <p>{{ pluginItem.manifest.description }}</p>
+                  <small>场景：{{ pluginItem.manifest.scenes.join('、') }} · 参数 {{ Object.keys(pluginItem.manifest.parameters || {}).length }} 项</small>
+                  <small v-if="pluginItem.activation_reason" class="strategy-style-plugin-reason">{{ pluginItem.activation_reason }}</small>
+                  <button
+                    type="button"
+                    :disabled="!pluginItem.activation_supported || activeStylePluginIDs.has(pluginItem.manifest.id) || Boolean(stylePluginBusyID) || !styleOverlayProfile"
+                    @click="activateStylePlugin(pluginItem)"
+                  >
+                    {{ activeStylePluginIDs.has(pluginItem.manifest.id) ? '已加入主播' : stylePluginBusyID === pluginItem.manifest.id ? '启用中…' : pluginItem.activation_supported ? '加入当前主播' : '执行链待接入' }}
+                  </button>
+                </article>
+              </div>
+              <div v-else class="strategy-style-overlay-empty">服务器尚未加载主播风格插件目录。</div>
+            </details>
+
+            <div v-if="styleOverlayProfile?.items.length" class="strategy-style-overlay-list">
+              <article v-for="item in styleOverlayProfile.items" :key="item.id" :class="{ disabled: !item.enabled }">
+                <div class="strategy-style-overlay-card-head">
+                  <div>
+                    <span>{{ item.plugin ? `插件 ${item.plugin.plugin_id} · ` : '' }}{{ styleOverlayApplicationLabel(item.rule.application) }} · {{ styleOverlayStrengthLabel(item.rule.strength) }}</span>
+                    <strong>{{ item.rule.label }}</strong>
+                  </div>
+                  <div>
+                    <button type="button" :disabled="styleOverlayBusy" @click="toggleStyleOverlay(item)">{{ item.enabled ? '暂停' : '启用' }}</button>
+                    <button type="button" :disabled="styleOverlayBusy" @click="removeStyleOverlay(item)">删除</button>
+                  </div>
+                </div>
+                <p>{{ item.rule.mainline_instruction }}</p>
+                <small>短互动：{{ item.rule.interaction_instruction }}</small>
+                <small>严肃场景：{{ item.rule.serious_instruction }}</small>
+                <small v-if="item.rule.mainline_max_per_1000_chars">频率：每1000字 {{ item.rule.mainline_min_per_1000_chars || 0 }}～{{ item.rule.mainline_max_per_1000_chars }} 次；短答最多 {{ item.rule.interaction_max_occurrences || 0 }} 次</small>
+                <details>
+                  <summary>查看原始表达与理解依据</summary>
+                  <p>原话：{{ item.source_text }}</p>
+                  <p v-if="item.explanation_text">补充解释：{{ item.explanation_text }}</p>
+                  <p>避免：{{ item.rule.avoid.join('、') || '无额外项' }} · 理解置信度 {{ item.rule.confidence }}/100</p>
+                </details>
+              </article>
+            </div>
+            <div v-else class="strategy-style-overlay-empty">还没有叠加风格。可以输入“喜欢时不时幽默一下”“先说重点再解释”等自然语言。</div>
+
+            <div class="strategy-style-overlay-compose">
+              <label>
+                <span>希望主播增加什么习惯</span>
+                <textarea v-model="styleOverlaySource" rows="2" maxlength="300" placeholder="请填写一条额外习惯，例如：偶尔幽默一下，但不要每段都讲笑话。"></textarea>
+              </label>
+              <label>
+                <span>补充我的意思 <small>选填；系统理解不准时再填写</small></span>
+                <textarea v-model="styleOverlayExplanation" rows="2" maxlength="600" placeholder="例如：一千字两三次，短回答不强求，只做自然接话或轻微自嘲。"></textarea>
+              </label>
+              <label class="strategy-style-overlay-strength">
+                <span>叠加强度：{{ styleOverlayStrengthLabel(styleOverlayStrength) }}</span>
+                <input v-model.number="styleOverlayStrength" type="range" min="10" max="90" step="5" />
+              </label>
+              <button class="primary-button" type="button" :disabled="!currentPlan || !styleOverlayProfile || styleOverlayBusy" @click="interpretStyleOverlay">
+                {{ styleOverlayBusy ? '正在理解…' : '智能理解' }}
+              </button>
+            </div>
+
+            <div v-if="styleOverlayPending" class="strategy-style-overlay-preview">
+              <header><div><span>系统理解</span><strong>{{ styleOverlayPending.rule.label }}</strong></div><em>置信度 {{ styleOverlayPending.rule.confidence }}/100</em></header>
+              <p><b>长主线：</b>{{ styleOverlayPending.rule.mainline_instruction }}</p>
+              <p><b>短互动：</b>{{ styleOverlayPending.rule.interaction_instruction }}</p>
+              <p><b>严肃场景：</b>{{ styleOverlayPending.rule.serious_instruction }}</p>
+              <p v-if="styleOverlayPending.rule.mainline_max_per_1000_chars"><b>次数预算：</b>每1000字 {{ styleOverlayPending.rule.mainline_min_per_1000_chars || 0 }}～{{ styleOverlayPending.rule.mainline_max_per_1000_chars }} 次，短答最多 {{ styleOverlayPending.rule.interaction_max_occurrences || 0 }} 次。</p>
+              <small>参考了 {{ styleOverlayMemoryMatches }} 条当前客户已确认的相似理解；用户补充解释始终优先。</small>
+              <div><button type="button" class="strategy-version-button" @click="styleOverlayPending = null">重新描述</button><button type="button" class="primary-button" :disabled="styleOverlayBusy" @click="confirmStyleOverlay">确认加入主播</button></div>
+            </div>
+            <div v-if="styleOverlayError" class="inline-error">{{ styleOverlayError }}</div>
+            <div v-if="styleOverlayNotice" class="notice-banner">{{ styleOverlayNotice }}</div>
+            <small>叠加风格保存到当前直播方案；直播间“主播状态”只保留本场临时变化，不再维护另一套长期习惯。</small>
+          </section>
+          <div v-if="scriptNotice" class="notice-banner">{{ scriptNotice }}</div>
+			<div v-if="anchorStyleAnalysisQC" class="notice-banner" :class="{ 'inline-error': !anchorStyleAnalysisQC.passed }">
+				<strong>Qwen 同步质检：{{ anchorStyleAnalysisQC.passed ? '通过' : '未通过' }}</strong>
+				<span v-if="anchorStyleAnalysisQC.available">证据覆盖 {{ anchorStyleAnalysisQC.coverage_score }}/100 · 风格纯度 {{ anchorStyleAnalysisQC.purity_score }}/100 · {{ anchorStyleAnalysisQC.summary }}</span>
+				<span v-else>{{ anchorStyleAnalysisQC.error || '质检服务暂不可用；当前分析仅供查看。' }}</span>
+			</div>
 
           <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
           <div v-if="scriptAnalyzing" class="strategy-analysis-progress" role="status" aria-live="polite">
             <div class="strategy-analysis-progress-head">
               <strong>{{ scriptAnalysisStage || '正在分析主播风格' }}</strong>
-              <span>{{ scriptAnalysisProgress }}%</span>
+              <span>等待模型返回并校验规范</span>
             </div>
             <div class="strategy-analysis-progress-track">
-              <span :style="{ width: scriptAnalysisProgress + '%' }"></span>
+              <span class="anchor-analysis-indeterminate"></span>
             </div>
           </div>
 
           <div v-if="!anchorStyleProfile?.dimensions?.length" class="strategy-v2-empty">
-            <strong>还没有主播风格分析结果</strong>
-            <span>先在“直播素材”里上传或粘贴文本素材并执行智能归位，系统会同时生成 24 个主播风格候选维度。</span>
+            <strong>还没有主播口播规范</strong>
+            <span v-if="enabledStyleOverlayCount">已启用 {{ enabledStyleOverlayCount }} 条叠加风格，可以先直接生成测试文案；以后仍可粘贴真人样本作为底层风格。</span>
+            <span v-else>粘贴主播真实口播，系统提取本人的表达习惯、核对原词并生成可执行规范；也可以先添加叠加风格，从零搭建。</span>
           </div>
           <template v-else>
             <section class="strategy-anchor-style-summary">
               <div>
-                <span>整体画像</span>
-                <strong>{{ anchorStyleProfile.summary || '已完成主播风格结构化分析。' }}</strong>
-                <small>当前来自单篇话术的自动分析全部是候选风格，不会自动保存成稳定规则。</small>
+                <span>分析结果统计</span>
+                <strong>{{ anchorStyleProfile.summary || '已完成样本分析' }}</strong>
+                <small>统计由程序依据本次样本计算。规范只约束怎么说，不复制商品事实；单篇样本不能代表主播的所有场景。</small>
               </div>
               <div class="strategy-anchor-style-metrics">
-                <div><strong>{{ anchorStyleProfile.dimensions.length }}</strong><span>分析维度</span></div>
-                <div><strong>{{ highConfidenceStyleCount }}</strong><span>高置信</span></div>
-                <div><strong>{{ anchorStyleProfile.reusable_rules?.length || 0 }}</strong><span>可复用候选</span></div>
-                <div><strong>{{ anchorStyleProfile.candidate_patterns?.length || 0 }}</strong><span>继续观察</span></div>
+                <div><strong>{{ anchorDelivery?.sample_chars || '—' }}</strong><span>样本字数</span></div>
+                <div><strong>{{ anchorDelivery?.sentence_count || '—' }}</strong><span>标点分句</span></div>
+                <div><strong>{{ anchorDelivery?.literal_habits?.length ?? '—' }}</strong><span>原词习惯</span></div>
+                <div><strong>{{ anchorDelivery?.instructions?.length || '—' }}</strong><span>执行规则</span></div>
               </div>
             </section>
-
-            <div class="strategy-anchor-style-group-cards">
-              <button
-                v-for="group in anchorStyleGroups"
-                :key="group.key"
-                type="button"
-                :class="{ active: selectedAnchorStyleGroup === group.key }"
-                @click="selectedAnchorStyleGroup = group.key"
-              >
-                <span>{{ group.label }}</span>
-                <strong>{{ group.dimensions.length }}</strong>
-                <small>{{ group.description }}</small>
-              </button>
-            </div>
-
-            <section v-if="selectedAnchorStyleGroupDetail" class="strategy-anchor-style-detail">
-              <header>
-                <div>
-                  <strong>{{ selectedAnchorStyleGroupDetail.label }}</strong>
-                  <span>{{ selectedAnchorStyleGroupDetail.description }}</span>
-                </div>
-                <small>单篇样本 → 候选风格</small>
-              </header>
-              <div class="strategy-anchor-style-table-wrap">
-                <table class="strategy-anchor-style-table">
-                  <thead>
-                    <tr>
-                      <th>维度</th>
-                      <th>倾向</th>
-                      <th>可复用规则</th>
-                      <th>原文证据</th>
-                      <th>置信度</th>
-                      <th>状态</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="dimension in selectedAnchorStyleGroupDetail.dimensions" :key="dimension.key">
-                      <td><strong>{{ dimension.label }}</strong></td>
-                      <td>{{ dimension.level || '样本不足' }}</td>
-                      <td>{{ dimension.rule || '暂不形成判断' }}</td>
-                      <td>
-                        <div class="strategy-anchor-style-evidence">
-                          <span v-if="!dimension.evidence_quotes?.length">—</span>
-                          <span v-for="(quote, index) in dimension.evidence_quotes || []" :key="dimension.key + ':e:' + index">{{ quote }}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <span class="strategy-anchor-confidence" :class="'is-' + (dimension.confidence || 'low')">
-                          {{ styleConfidenceLabel(dimension.confidence) }}
-                        </span>
-                      </td>
-                      <td><span class="strategy-anchor-candidate-pill">候选</span></td>
-                    </tr>
-                  </tbody>
-                </table>
+            <details v-if="anchorRulebook" class="strategy-anchor-rulebook">
+              <summary><strong>主播口播规范</strong><span>展开查看 · 可复制 · 测试、主线与互动共用</span></summary>
+              <div class="strategy-anchor-rulebook-body">
+                <button class="strategy-version-button" @click="copyAnchorRulebook">复制口播规范</button>
+                <small role="status">{{ anchorCopyNotice }}</small>
+                <pre>{{ anchorRulebook }}</pre>
               </div>
-            </section>
-
-            <div class="strategy-anchor-style-rule-grid">
-              <section>
-                <header><strong>可复用候选规则</strong><span>{{ anchorStyleProfile.reusable_rules?.length || 0 }} 条</span></header>
-                <div v-if="!anchorStyleProfile.reusable_rules?.length" class="strategy-anchor-style-empty-line">当前样本还没有足够明确的可复用规则</div>
-                <p v-for="(rule, index) in anchorStyleProfile.reusable_rules || []" :key="'rule:' + index">{{ rule }}</p>
-              </section>
-              <section>
-                <header><strong>继续观察</strong><span>{{ anchorStyleProfile.candidate_patterns?.length || 0 }} 条</span></header>
-                <div v-if="!anchorStyleProfile.candidate_patterns?.length" class="strategy-anchor-style-empty-line">暂无需要继续观察的模式</div>
-                <p v-for="(rule, index) in anchorStyleProfile.candidate_patterns || []" :key="'candidate:' + index">{{ rule }}</p>
-              </section>
-            </div>
-
-            <section class="strategy-anchor-style-excluded">
-              <header><strong>明确不进入主播风格</strong><span>防止把商品事实学成风格</span></header>
-              <div>
-                <span v-for="(item, index) in anchorStyleProfile.excluded_from_style || []" :key="'excluded:' + index">{{ item }}</span>
-                <span v-if="!anchorStyleProfile.excluded_from_style?.length">具体商品、价格、规格、链接、产地、履约和活动事实</span>
-              </div>
-            </section>
+            </details>
+            <div v-else class="notice-banner">这是旧版分析结果。请点击“重新分析当前素材”，生成新版可执行的主播口播规范；旧内容不会自动改写。</div>
           </template>
+          <section v-if="canRunAnchorStyleTest" class="strategy-anchor-core-panel">
+            <header><strong>用当前风格生成测试文案</strong><button class="primary-button" :disabled="!canRunAnchorStyleTest || anchorStyleTestBusy || scriptAnalyzing" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成并自动校验中…' : '生成测试文案' }}</button></header>
+            <div class="strategy-anchor-test-settings">
+              <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：欢迎新观众并介绍当前商品"></label>
+              <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
+              <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
+            </div>
+            <p>{{ anchorRulebook ? '使用样本口播规范与已启用的叠加风格共同测试；' : '本次没有真人样本，只测试已启用的叠加风格；' }}系统按时间单元逐段生成，前段长短会自动结转，临近结束按剩余字数收束。测试不发布、不生成声音，也不改变当前直播。</p>
+            <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
+            <template v-if="anchorStyleTestResult">
+              <p class="strategy-anchor-test-text">{{ anchorStyleTestResult.text }}</p>
+              <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
+              <small v-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
+              <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
+              <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词软检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。风格偏差只提示，不会让整篇文案消失。</small>
+              <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">影子评测：客观风格 {{ anchorStyleTestResult.runtime_evaluation.style_score }}/100（用词 {{ anchorStyleTestResult.runtime_evaluation.lexical_score }}、节奏 {{ anchorStyleTestResult.runtime_evaluation.rhythm_score }}），与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。当前只记录和展示，不自动放行或拦截。</small>
+              <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
+              <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
+              <small v-if="anchorStyleTestResult.overlay_qc?.available" :class="{ 'inline-error': !anchorStyleTestResult.overlay_qc.passed }">Qwen 同步质检：{{ anchorStyleTestResult.overlay_qc.passed ? '通过' : '发现风格偏差' }} · 执行度 {{ anchorStyleTestResult.overlay_qc.adherence_score }}/100 · 过量风险 {{ anchorStyleTestResult.overlay_qc.overuse_risk }}/100。质检只观察和提示，不会擅自重写整篇。{{ anchorStyleTestResult.overlay_qc.summary }}</small>
+              <small v-else-if="enabledStyleOverlayCount" class="inline-error">Qwen 同步质检暂不可用：{{ anchorStyleTestResult.overlay_qc?.error || '未返回质检结果' }}。本次文案仅供查看，不应据此确认风格。</small>
+              <section class="strategy-style-correction-loop">
+                <header><div><span>ITERATIVE CALIBRATION</span><strong>哪里不像，就继续告诉系统</strong></div><em>{{ anchorStyleCorrectionCandidates.length }} 条未保存调整</em></header>
+                <p>直接写你的感觉，也可以粘贴其他 AI 给出的差异分析。系统只提取可复用的说话方式，重新生成给你看；满意前不会改变正式主播。</p>
+                <div v-if="anchorStyleCorrectionHistory.length" class="strategy-style-correction-history">
+                  <article v-for="(entry, index) in anchorStyleCorrectionHistory" :key="`${index}:${entry.feedback}`">
+                    <span>第 {{ index + 1 }} 轮 · {{ entry.model }}</span>
+                    <p><b>你的反馈：</b>{{ entry.feedback }}</p>
+                    <p><b>系统归纳：</b>{{ entry.diagnosis }}</p>
+                  </article>
+                </div>
+                <label>
+                  <span>这版哪里还不像</span>
+                  <textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300" placeholder="例如：说得太完整太顺了，原主播更喜欢短句，偶尔回头补一句。也可以粘贴其他 AI 的分析。"></textarea>
+                </label>
+                <div class="strategy-style-correction-actions">
+                  <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">
+                    {{ anchorStyleCorrectionBusy ? '正在学习并重生成…' : '学习这条反馈并重新生成' }}
+                  </button>
+                  <button v-if="anchorStyleCorrectionCandidates.length" class="primary-button" type="button" :disabled="anchorStyleCorrectionBusy || styleOverlayBusy" @click="saveAnchorStyleCorrections">满意，保存这些调整</button>
+                  <button v-if="anchorStyleCorrectionCandidates.length" class="strategy-version-button" type="button" :disabled="anchorStyleCorrectionBusy" @click="discardAnchorStyleCorrections">放弃本轮调整</button>
+                </div>
+                <small v-if="!anchorRulebook">需要先粘贴并分析真实主播样本，系统才能判断“哪里不像”。</small>
+                <div v-if="anchorStyleCorrectionError" class="inline-error">{{ anchorStyleCorrectionError }}</div>
+              </section>
+            </template>
+          </section>
+          </details>
         </section>
 
         <LiveVoiceCenter
           v-else-if="activeMode === 'voice'"
           :room-id="activeRoomId"
           :room-name="activeRoom?.name"
+          :support-session="props.supportSession"
           @changed="handleLiveVoiceChanged"
         />
 
@@ -5141,16 +6044,66 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <div class="strategy-v2-section-head strategy-fullshow-head">
+          <div class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
             <div class="strategy-fullshow-title-block">
               <h3>直播智能体生成</h3>
               <div class="strategy-fullshow-title-action">
-                <button class="primary-button" type="button" :disabled="fullShowGenerating || !currentPlan" @click="generateFullShowPreview">
-                  {{ fullShowGenerating ? '生成中…' : '生成直播智能体预览' }}
+                <button class="primary-button" type="button" :disabled="fullShowGenerating || !currentPlan || !contentModeReady || contentModeLoading || contentModeSaving" @click="generateFullShowPreview">
+                  {{ fullShowGenerating ? 'S1 生成中…' : 'S1 生成直播智能体预览' }}
                 </button>
               </div>
               <p>已有方案会优先恢复最近待发布草稿，没有草稿时恢复当前已发布版本作为编辑副本；修改后保存为新版本，不覆盖历史版本。</p>
             </div>
+          </div>
+
+          <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
+            {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
+          </div>
+
+          <section v-if="fullShowResult" class="strategy-fullshow-main-actions">
+            <div class="strategy-fullshow-main-actions-copy">
+              <span>版本操作</span>
+              <strong>{{ activeRoom?.name || '当前直播间' }}</strong>
+              <small>
+                S5 只保存待发布新版本；保存成功后，再用 S6 把这个版本发布到当前直播间。
+              </small>
+            </div>
+            <div class="strategy-fullshow-main-actions-buttons">
+              <button
+                type="button"
+                :disabled="
+                  fullShowVersionSaving ||
+                  fullShowVersionPublishing
+                "
+                @click="saveFullShowVersion"
+              >
+                <span>{{ fullShowVersionSaving ? 'S5 保存中…' : 'S5 保存新版本' }}</span>
+                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('已保存 V' + fullShowSavedVersion.version_no + '，可以发布') : '只保存，不发布直播间' }}</small>
+              </button>
+              <button
+                class="primary"
+                type="button"
+                :disabled="
+                  fullShowVersionSaving ||
+                  fullShowVersionPublishing
+                "
+                @click="publishFullShowVersion"
+              >
+                <span>
+                  {{
+                    fullShowVersionPublishing
+                      ? 'S6 发布中…'
+                      : fullShowSavedVersion?.lifecycle_status === 'published'
+                        ? '已发布到直播间'
+                        : 'S6 发布到直播间'
+                  }}
+                </span>
+                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('发布已保存的 V' + fullShowSavedVersion.version_no) : '请先完成 S5 保存' }}</small>
+              </button>
+            </div>
+          </section>
+          <div v-if="fullShowVersionError" class="inline-error strategy-fullshow-action-error" role="alert">
+            {{ fullShowVersionError }}
           </div>
 
           <section v-if="fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
@@ -5175,7 +6128,7 @@ onBeforeUnmount(() => {
                 · 文案、时长、正式稿、声音和时间轴已恢复
               </span>
               <span v-if="fullShowWorkspaceInherited" class="strategy-fullshow-restore-legacy">
-                当前只是继承编辑副本；如需用于当前直播间，请先保存为新版本，再发布到当前直播间。
+                当前是继承编辑副本；请先点击 S5 保存为当前直播间的新版本，再点击 S6 发布到这个直播间。
               </span>
               <span v-if="fullShowWorkspaceLegacyPartial" class="strategy-fullshow-restore-legacy">
                 这是旧版历史数据：当时只保存了正式稿，未入选草稿没有历史快照；本次之后的新版本会保存全部稿件。
@@ -5188,14 +6141,14 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section class="strategy-fullshow-guide">
-            <div class="strategy-fullshow-guide-title">
+          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-guide" open>
+            <summary class="strategy-fullshow-guide-title">
               <div>
                 <strong>生成指导步骤</strong>
                 <span>{{ fullShowGuideNextAction }}</span>
               </div>
               <em>当前第 {{ fullShowGuideCurrentStep }} 步 / 5</em>
-            </div>
+            </summary>
             <div class="strategy-fullshow-guide-steps">
               <template v-for="step in fullShowGuideSteps" :key="step.index">
                 <article :class="['is-' + step.status]">
@@ -5211,7 +6164,7 @@ onBeforeUnmount(() => {
                 <span v-if="step.index < fullShowGuideSteps.length" class="strategy-fullshow-guide-arrow">→</span>
               </template>
             </div>
-          </section>
+          </details>
 
           <section
             v-if="fullShowGenerationProgress.visible"
@@ -5244,7 +6197,7 @@ onBeforeUnmount(() => {
           <div v-if="fullShowNotice" class="strategy-script-notice">{{ fullShowNotice }}</div>
           <div v-if="fullShowError" class="inline-error strategy-inline-error">{{ fullShowError }}</div>
 
-          <div class="strategy-fullshow-grid">
+          <div v-if="!isUserAudioContentMode" class="strategy-fullshow-grid">
             <section class="strategy-fullshow-panel strategy-fullshow-config">
               <header>
                 <div>
@@ -5257,7 +6210,7 @@ onBeforeUnmount(() => {
                     type="button"
                     @click="previewFullShowPlan"
                   >
-                    生成轮次安排
+                    S2 生成轮次安排
                   </button>
                 </div>
               </header>
@@ -5283,6 +6236,30 @@ onBeforeUnmount(() => {
                     <span>120分钟</span>
                   </div>
                 </div>
+              </div>
+
+              <div class="strategy-fullshow-field">
+                <div class="strategy-fullshow-field-title">
+                  <span>内容扩展授权</span>
+                  <strong>{{ fullShowExpansionLabel }} · {{ fullShowExpansionFreedom }}/100</strong>
+                </div>
+                <div class="strategy-fullshow-duration-slider">
+                  <input
+                    v-model.number="fullShowExpansionFreedom"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    :style="{ '--duration-progress': fullShowExpansionFreedom + '%' }"
+                  />
+                  <div class="strategy-fullshow-duration-ticks">
+                    <span>保守</span>
+                    <span>平衡</span>
+                    <span>开放</span>
+                    <span>边缘合规</span>
+                  </div>
+                </div>
+                <small>法律、平台规则和你明确锁定的内容始终不动；数值越高，越允许场景、类比、故事化、常识推演和更强促单。触碰审核边缘时优先换成合规说法，不直接删掉。</small>
               </div>
 
               <div class="strategy-fullshow-inline-fields">
@@ -5327,9 +6304,6 @@ onBeforeUnmount(() => {
                 <button type="button" @click="activeMode = 'benefits'">
                   <span>活动福利</span><strong>{{ fullShowSourceSummary.benefits }}</strong><small>只统计已经正式生效的活动</small>
                 </button>
-                <button type="button" @click="activeMode = 'rhythm'">
-                  <span>口播样稿</span><strong>{{ fullShowSourceSummary.samples }}</strong><small>参考整篇结构、节奏与表达，不替代正式事实</small>
-                </button>
                 <button type="button" @click="activeMode = 'anchor'">
                   <span>主播风格</span><strong>{{ fullShowSourceSummary.style }}</strong><small>控制怎么说，不携带商品事实</small>
                 </button>
@@ -5343,14 +6317,14 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <section class="strategy-fullshow-panel strategy-fullshow-timeline">
-            <header>
+          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-panel strategy-fullshow-timeline">
+            <summary>
               <div>
                 <span>03</span>
                 <strong>整场轮次安排</strong>
               </div>
               <small>{{ fullShowDuration }} 分钟 · 约 {{ fullShowRoundCount }} 轮 · 每轮约 {{ fullShowRoundMinutes }} 分钟</small>
-            </header>
+            </summary>
 
             <div v-if="!fullShowPreviewReady" class="strategy-fullshow-empty">
               <strong>先整理整场结构</strong>
@@ -5373,20 +6347,21 @@ onBeforeUnmount(() => {
                 还有 {{ fullShowRoundCount - fullShowRoundPreview.length }} 轮将按同样规则继续变化生成
               </div>
             </div>
-          </section>
+          </details>
 
           <div class="strategy-fullshow-grid strategy-fullshow-output-grid">
             <section class="strategy-fullshow-panel strategy-fullshow-output">
               <header>
                 <div class="strategy-fullshow-output-title">
-                  <span>04</span>
+                  <span>S3</span>
+                  <strong class="strategy-fullshow-output-section-name">话术处理区</strong>
                   <button
                     type="button"
                     class="strategy-fullshow-output-mode"
                     :class="{ active: fullShowOutputMode === 'generated' }"
                     @click="selectFullShowOutputMode('generated')"
                   >
-                    完整主线稿
+                    AI话术
                   </button>
                   <button
                     type="button"
@@ -5394,7 +6369,7 @@ onBeforeUnmount(() => {
                     :class="{ active: fullShowOutputMode === 'custom' }"
                     @click="openCustomMainline"
                   >
-                    自定义音稿
+                    原始音
                   </button>
                 </div>
                 <div
@@ -5417,8 +6392,9 @@ onBeforeUnmount(() => {
                       accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,audio/*"
                       @change="handleCustomMainlineFile"
                     />
-                    <strong>{{ customMainlineFile ? customMainlineFile.name : '选择音频上传' }}</strong>
-                    <span>最大 50MB · WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
+                    <strong>{{ customMainlineFile ? customMainlineFile.name : (customMainlineDraft ? '重新上传原始声音' : '选择原始声音上传') }}</strong>
+                    <span>单文件最大 200MB · WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
+                    <span>上传后自动转换为直播播放格式（24kHz · 单声道 · 16bit PCM），无需手工转换。</span>
                   </label>
                   <div v-if="customMainlineFile" class="strategy-custom-mainline-file-meta">
                     <span>{{ (customMainlineFile.size / 1024 / 1024).toFixed(2) }} MB</span>
@@ -5459,13 +6435,13 @@ onBeforeUnmount(() => {
                 <template v-if="customMainlineDraft">
                   <div class="strategy-custom-mainline-summary">
                     <div>
-                      <strong>主线音频</strong>
+                      <strong>原始声音</strong>
                       <span>{{ formatFullShowTimelineMS(customMainlineDraft.duration_ms) }}</span>
                     </div>
                     <div :class="{ ready: Boolean(customMainlineDraft.voice_identity?.voice_id) }">
-                      <strong>自定义音色</strong>
+                      <strong>原始声音身份</strong>
                       <span v-if="customMainlineDraft.voice_identity">
-                        {{ customMainlineDraft.voice_identity.name }} · 已自动生成
+                        {{ customMainlineDraft.voice_identity.name }} · 已自动生成 · 回答/抢答跟随此音色
                       </span>
                       <span v-else>尚未生成</span>
                       <button
@@ -5479,31 +6455,24 @@ onBeforeUnmount(() => {
                     </div>
                   </div>
 
-                  <audio controls preload="metadata" :src="customMainlineDraft.audio_url"></audio>
+                  <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
 
                   <section class="strategy-custom-mainline-segments">
                     <header>
                       <div>
-                        <strong>文稿与 SRT</strong>
-                        <span>识别后按声音时间生成字幕；可直接校对文字，保存后同步重建 SRT。</span>
+                        <strong>原始话术</strong>
+                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
                       </div>
                       <button
                         type="button"
-                        :disabled="customMainlineStage === 'saving'"
+                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
                         @click="rebuildCustomMainline"
                       >
-                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存校对' }}
+                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
                       </button>
                     </header>
-                    <div class="strategy-custom-mainline-segment-list">
-                      <article v-for="segment in customMainlineTimeline" :key="segment.segment_id">
-                        <div>
-                          <b>字幕 {{ segment.index }}</b>
-                          <time>{{ formatFullShowTimelineMS(segment.start_ms) }}–{{ formatFullShowTimelineMS(segment.end_ms) }}</time>
-                        </div>
-                        <textarea v-model="segment.text" rows="2"></textarea>
-                      </article>
-                    </div>
+                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
+                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                   </section>
 
                   <details class="strategy-custom-mainline-srt">
@@ -5513,18 +6482,79 @@ onBeforeUnmount(() => {
 
                   <footer class="strategy-custom-mainline-footer">
                     <div>
-                      <span v-if="customMainlineCanApply">✓ 音频 / 文稿 / SRT / 自定义音色已齐全</span>
-                      <span v-else>请先完成自定义音色，再替换正式主线。</span>
+                      <span v-if="customMainlineCanApply">✓ 原始声音、原始话术与 SRT 已保留</span>
+                      <span v-else>请先完成原始声音处理。</span>
                     </div>
                     <button
-                      class="primary"
                       type="button"
                       :disabled="!customMainlineCanApply"
                       @click="applyCustomMainlineAsFormal"
                     >
-                      替换为正式主线
+                      使用原始音
+                    </button>
+                    <button
+                      class="primary"
+                      type="button"
+                      :disabled="!customMainlineCanApply || Boolean(originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating')"
+                      @click="generateOriginalAiVoice"
+                    >
+                      {{ originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating' ? 'AI 声音生成中…' : 'AI 生成声音' }}
                     </button>
                   </footer>
+
+                  <div
+                    v-if="originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating'"
+                    class="strategy-fullshow-voice-progress strategy-original-ai-progress"
+                  >
+                    <div>
+                      <span>正在使用当前选中的声音生成 AI 版本</span>
+                      <strong>{{ fullShowVoiceState(originalAiCandidateKey).progress }}%</strong>
+                    </div>
+                    <div class="strategy-fullshow-voice-progress-track">
+                      <i :style="{ width: fullShowVoiceState(originalAiCandidateKey).progress + '%' }"></i>
+                    </div>
+                    <small>原始声音和原始话术不会删除。</small>
+                  </div>
+
+                  <div
+                    v-if="originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).candidate_url"
+                    class="strategy-fullshow-voice-candidate strategy-original-ai-candidate"
+                  >
+                    <div>
+                      <strong>AI 候选声音</strong>
+                      <span>先试听，采用后系统会按这段声音的真实时间轴生成对应 SRT；原始声音仍会保留。</span>
+                    </div>
+                    <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(fullShowVoiceState(originalAiCandidateKey).candidate_url)"></audio>
+                    <footer>
+                      <button type="button" :disabled="originalAiSrtProgress.status === 'generating'" @click="discardOriginalAiVoice">放弃本次生成</button>
+                      <button class="primary" type="button" :disabled="originalAiSrtProgress.status === 'generating'" @click="acceptOriginalAiVoice">
+                        {{ originalAiSrtProgress.status === 'generating' ? '正在生成 SRT…' : '采用 AI 声音' }}
+                      </button>
+                    </footer>
+                  </div>
+
+                  <section
+                    v-if="originalAiSrtProgress.status !== 'idle'"
+                    class="strategy-original-srt-progress"
+                    :class="originalAiSrtProgress.status"
+                    aria-live="polite"
+                  >
+                    <div>
+                      <strong>{{ originalAiSrtProgress.stage }}</strong>
+                      <span>{{ originalAiSrtProgress.percent }}%</span>
+                    </div>
+                    <div class="strategy-original-srt-progress-track">
+                      <i :style="{ width: originalAiSrtProgress.percent + '%' }"></i>
+                    </div>
+                    <p v-if="originalAiSrtProgress.error">{{ originalAiSrtProgress.error }}</p>
+                    <details
+                      v-if="originalAiSrtProgress.status === 'done' && originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).srt"
+                      class="strategy-original-srt-result"
+                    >
+                      <summary>打开 AI 声音对应的 SRT</summary>
+                      <pre>{{ fullShowVoiceState(originalAiCandidateKey).srt }}</pre>
+                    </details>
+                  </section>
                 </template>
               </section>
               <div v-else-if="!fullShowResult" class="strategy-fullshow-output-empty">
@@ -5545,7 +6575,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="strategy-fullshow-variant-tabs">
                   <button
-                    v-for="variant in fullShowResult.variants"
+                    v-for="variant in aiFullShowVariants"
                     :key="variant.variant_key"
                     type="button"
                     :class="{
@@ -5586,17 +6616,7 @@ onBeforeUnmount(() => {
                       </div>
                       <div class="strategy-fullshow-script-actions">
                         <button
-                          class="formal"
-                          type="button"
-                          :class="{ selected: isFullShowFormalVariant(selectedFullShowVariant.variant_key) }"
-                          :disabled="!selectedFullShowVariant.audit?.passed || fullShowEditing"
-                          :title="selectedFullShowVariant.audit?.passed ? '决定这套稿件是否进入声音生成' : '请先修复并复核通过'"
-                          @click="toggleFullShowFormalVariant(selectedFullShowVariant)"
-                        >
-                          {{ isFullShowFormalVariant(selectedFullShowVariant.variant_key) ? '取消正式稿' : '选为正式稿' }}
-                        </button>
-                        <button
-                          v-if="!fullShowEditing"
+                          v-if="!isUserAudioContentMode && !fullShowEditing"
                           type="button"
                           :disabled="Boolean(fullShowRegeneratingVariantKey)"
                           @click="regenerateFullShowVariant(selectedFullShowVariant)"
@@ -5604,11 +6624,22 @@ onBeforeUnmount(() => {
                           {{
                             fullShowRegeneratingVariantKey === selectedFullShowVariant.variant_key
                               ? '正在重新生成…'
-                              : '重新生成本稿'
+                              : '重新生成话术'
                           }}
                         </button>
-                        <button v-if="!fullShowEditing" type="button" @click="startFullShowVariantEdit">修改本稿</button>
-                        <template v-else>
+                        <button v-if="!isUserAudioContentMode && !fullShowEditing" type="button" @click="startFullShowVariantEdit">修改话术</button>
+                        <button
+                          v-if="!fullShowEditing"
+                          class="formal"
+                          type="button"
+                          :class="{ selected: isFullShowFormalVariant(selectedFullShowVariant.variant_key) }"
+                          :disabled="!selectedFullShowVariant.audit?.passed"
+                          :title="selectedFullShowVariant.audit?.passed ? '决定这套话术是否进入声音生成' : '请先修复并复核通过'"
+                          @click="toggleFullShowFormalVariant(selectedFullShowVariant)"
+                        >
+                          {{ isFullShowFormalVariant(selectedFullShowVariant.variant_key) ? '取消正式话术' : '选为正式话术' }}
+                        </button>
+                        <template v-if="!isUserAudioContentMode && fullShowEditing">
                           <button type="button" :disabled="fullShowEditSaving" @click="cancelFullShowVariantEdit">取消</button>
                           <button class="primary" type="button" :disabled="fullShowEditSaving" @click="saveFullShowVariantEdit">
                             {{ fullShowEditSaving ? '复核中…' : '保存修改并复核' }}
@@ -5631,7 +6662,7 @@ onBeforeUnmount(() => {
                     </ul>
                   </div>
 
-                  <div v-if="fullShowEditing" class="strategy-fullshow-script-editor">
+                  <div v-if="!isUserAudioContentMode && fullShowEditing" class="strategy-fullshow-script-editor">
                     <div class="strategy-fullshow-script-editor-tip">
                       <strong>正在修改 {{ selectedFullShowVariant.variant_key }}稿</strong>
                       <span>这里只改当前稿；选中文字后可右键“添加为事实”。保存后系统会立即重新检查价格、规格、链接、库存数字、篇幅和与其它稿件的相似度。</span>
@@ -5720,8 +6751,9 @@ onBeforeUnmount(() => {
                   >
                     <header>
                       <div>
-                        <strong>生成声音</strong>
-                        <span>声音身份：{{ currentVoiceIdentity.name }} {{ currentVoiceIdentity.version }} · {{ currentFullShowVoiceName }}</span>
+                          <strong>S4 {{ isUserAudioContentMode ? '原始声音' : '生成 / 试听声音' }}</strong>
+                        <span v-if="isUserAudioContentMode">主线保留上传原声 · 互动音色：{{ currentVoiceIdentity.name }} {{ currentVoiceIdentity.version }}</span>
+                        <span v-else>声音身份：{{ currentVoiceIdentity.name }} {{ currentVoiceIdentity.version }} · {{ currentFullShowVoiceName }}</span>
                       </div>
                       <button
                         type="button"
@@ -5767,11 +6799,13 @@ onBeforeUnmount(() => {
                       class="strategy-fullshow-voice-empty"
                     >
                       <div>
-                        <strong>还没有生成这篇稿子的声音</strong>
-                        <span>点击后只生成 {{ selectedFullShowVariant.variant_key }}稿，不会批量生成其它正式稿。</span>
+                        <strong>{{ isUserAudioContentMode ? '还没有可用的原始录音' : '还没有生成这篇稿子的声音' }}</strong>
+                        <span v-if="isUserAudioContentMode">上传原始录音并设为正式主线，不会通过 AI 替换录音声音。</span>
+                        <span v-else>点击后只生成 {{ selectedFullShowVariant.variant_key }}稿，不会批量生成其它正式稿。</span>
                       </div>
+                      <button v-if="isUserAudioContentMode" type="button" @click="openCustomMainline">上传原始录音</button>
                       <button
-                        v-if="String(currentRoomSelectedVoice.source || '')"
+                        v-else-if="String(currentRoomSelectedVoice.source || '')"
                         type="button"
                         @click="generateFullShowVariantVoice(selectedFullShowVariant)"
                       >
@@ -5790,6 +6824,7 @@ onBeforeUnmount(() => {
                           <span>当前页面试听版本 · 正式发布前不会发送给 Core</span>
                         </div>
                         <button
+                          v-if="!isUserAudioContentMode"
                           type="button"
                           :disabled="fullShowVoiceState(selectedFullShowVariant.variant_key).status === 'generating'"
                           @click="generateFullShowVariantVoice(selectedFullShowVariant, true)"
@@ -5800,7 +6835,7 @@ onBeforeUnmount(() => {
                       <audio
                         controls
                         preload="metadata"
-                        :src="fullShowVoiceState(selectedFullShowVariant.variant_key).audio_url"
+                        :src="liveSupportMediaPlaybackURL(fullShowVoiceState(selectedFullShowVariant.variant_key).audio_url)"
                         @timeupdate="updateFullShowVoicePlayback(selectedFullShowVariant.variant_key, $event)"
                         @seeked="updateFullShowVoicePlayback(selectedFullShowVariant.variant_key, $event)"
                       ></audio>
@@ -5881,14 +6916,14 @@ onBeforeUnmount(() => {
                     </div>
 
                     <div
-                      v-if="fullShowVoiceState(selectedFullShowVariant.variant_key).candidate_url"
+                      v-if="!isUserAudioContentMode && fullShowVoiceState(selectedFullShowVariant.variant_key).candidate_url"
                       class="strategy-fullshow-voice-candidate"
                     >
                       <div>
                         <strong>新生成候选声音</strong>
                         <span>先试听；满意再替换当前声音，不满意直接放弃。</span>
                       </div>
-                      <audio controls preload="metadata" :src="fullShowVoiceState(selectedFullShowVariant.variant_key).candidate_url"></audio>
+                      <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(fullShowVoiceState(selectedFullShowVariant.variant_key).candidate_url)"></audio>
                       <small v-if="fullShowVoiceState(selectedFullShowVariant.variant_key).candidate_timeline.length">
                         新声音已建立精确声音时间轴；采用后会替换当前时间轴。
                       </small>
@@ -5921,13 +6956,13 @@ onBeforeUnmount(() => {
             </section>
 
             <section class="strategy-fullshow-panel strategy-fullshow-runtime">
-              <header><div><span>05</span><strong>生成检查</strong></div><small>{{ fullShowResult ? (fullShowAuditPassedCount + '/' + fullShowResult.variants.length + ' 通过') : '等待生成' }}</small></header>
+              <header><div><span>✓</span><strong>生成检查</strong></div><small>{{ fullShowResult ? (fullShowAuditPassedCount + '/' + fullShowResult.variants.length + ' 通过') : '等待生成' }}</small></header>
               <div v-if="fullShowResult" class="strategy-fullshow-compile-summary">
                 <div><span>规则 / 行业</span><strong>{{ fullShowResult.context.policy_rule_count }}</strong></div>
+                <div><span>统一可生成事实</span><strong>{{ fullShowResult.context.authorized_facts?.length || 0 }}</strong></div>
                 <div><span>正式事实</span><strong>{{ fullShowResult.context.formal_facts.length }}</strong></div>
                 <div><span>有效活动</span><strong>{{ fullShowResult.context.benefits.length }}</strong></div>
                 <div><span>可用商品</span><strong>{{ fullShowResult.context.product_links.length }}</strong></div>
-                <div><span>口播样稿</span><strong>{{ fullShowResult.context.script_references.length }}</strong></div>
                 <div><span>风格规则</span><strong>{{ fullShowResult.context.anchor_style.dimensions.length }}</strong></div>
               </div>
               <div class="strategy-fullshow-runtime-list">
@@ -5941,7 +6976,7 @@ onBeforeUnmount(() => {
 
           <section v-if="fullShowResult" class="strategy-fullshow-panel strategy-fullshow-publish">
             <header>
-              <div><span>06</span><strong>保存版本并发布</strong></div>
+                <div><span>状态</span><strong>版本与发布状态</strong></div>
               <small>
                 {{
                   fullShowSavedVersion
@@ -5961,11 +6996,11 @@ onBeforeUnmount(() => {
                 <strong>{{ fullShowVoiceReadyCount }}/{{ fullShowFormalSelectedCount }}</strong>
               </div>
               <div :class="{ ok: fullShowVoiceIdentityConsistent }">
-                <span>声音身份</span>
-                <strong>{{ fullShowVoiceIdentityConsistent ? '一致' : '需重新生成' }}</strong>
+                <span>{{ isUserAudioContentMode ? '录音主线' : '声音身份' }}</span>
+                <strong>{{ isUserAudioContentMode ? (fullShowVoiceIdentityConsistent ? '原声保留' : '待上传录音') : (fullShowVoiceIdentityConsistent ? '一致' : '需重新生成') }}</strong>
               </div>
               <div :class="{ ok: Boolean(currentVoiceIdentity.voice_id) }">
-                <span>当前身份</span>
+                <span>{{ isUserAudioContentMode ? '互动音色' : '当前身份' }}</span>
                 <strong>{{ currentVoiceIdentity.name }} {{ currentVoiceIdentity.version }}</strong>
               </div>
             </div>
@@ -5973,36 +7008,6 @@ onBeforeUnmount(() => {
             <div class="strategy-fullshow-publish-note">
               <strong>发布不会自动开播</strong>
               <span>保存先生成不可覆盖的新版本；发布后只把该版本设为当前直播间待运行版本，回直播间点击“开始”后再由 Core 加载运行。</span>
-            </div>
-
-            <div v-if="fullShowVersionError" class="inline-error">{{ fullShowVersionError }}</div>
-
-            <div class="strategy-fullshow-publish-actions">
-              <button
-                type="button"
-                :disabled="fullShowVersionSaving || !fullShowAllFormalVoicesReady || !fullShowVoiceIdentityConsistent"
-                @click="saveFullShowVersion"
-              >
-                {{ fullShowVersionSaving ? '保存中…' : '保存为新版本' }}
-              </button>
-              <button
-                class="primary"
-                type="button"
-                :disabled="
-                  fullShowVersionPublishing ||
-                  !fullShowSavedVersion ||
-                  fullShowSavedVersion.lifecycle_status === 'published'
-                "
-                @click="publishFullShowVersion"
-              >
-                {{
-                  fullShowVersionPublishing
-                    ? '发布中…'
-                    : fullShowSavedVersion?.lifecycle_status === 'published'
-                      ? '已发布到直播间'
-                      : '发布到直播间'
-                }}
-              </button>
             </div>
 
             <div v-if="fullShowSavedVersion" class="strategy-fullshow-saved-version">
@@ -6084,6 +7089,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.strategy-content-mode-panel{display:grid;gap:14px;padding:18px 20px;border:1px solid #dce3f4;border-radius:18px;background:linear-gradient(125deg,#fff,#f6f8ff)}
+.strategy-content-mode-panel>header{display:flex;align-items:center;justify-content:space-between;gap:14px}.strategy-content-mode-panel>header strong{font-size:19px;color:#283750}.strategy-content-mode-panel>header span{font-size:13px;color:#8090a7}
+.strategy-content-mode-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.strategy-content-mode-options>button{position:relative;display:grid;gap:8px;align-content:start;min-height:100px;padding:16px;border:1px solid #dce2ef;border-radius:14px;background:#fff;text-align:left;font:inherit;cursor:pointer}.strategy-content-mode-options>button strong{color:#364764;font-size:16px;line-height:1.6}.strategy-content-mode-options>button span{color:#7c89a0;font-size:14px;line-height:1.6}.strategy-content-mode-options>button.active{border-color:#6879df;background:#f0f3ff;box-shadow:0 4px 16px #5666c215}.strategy-content-mode-options>button.active strong{color:#485bcc}.strategy-content-mode-options>button:disabled{cursor:default;opacity:.65}.strategy-content-mode-options>button em{color:#2c855d;font-style:normal;font-size:12px;font-weight:700}.strategy-content-mode-help{margin:0;color:#66778f;font-size:14px;line-height:1.8}.strategy-content-mode-help button,.strategy-content-mode-panel .inline-error button{margin-left:10px;border:0;background:transparent;color:#5366ce;font:inherit;cursor:pointer}
 .live-strategy-page {
   min-width:0;
   max-width:100%;
@@ -6127,10 +7135,36 @@ onBeforeUnmount(() => {
 .strategy-plan-card button:disabled { cursor:default; opacity:.58; }
 .strategy-plan-empty { padding:28px; border:1px dashed rgba(100,113,166,.22); border-radius:16px; text-align:center; color:#8a95aa; }
 .strategy-plan-container-head { align-items:center; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
-.strategy-plan-title-switch { display:block; width:min(480px,54vw); min-height:42px; margin-top:0; border:0; padding:0 40px 0 0; background:transparent; color:#202c43; font:inherit; font-size:26px; font-weight:900; line-height:1.2; cursor:pointer; }
-.strategy-plan-current-line { margin:2px 0 0!important; color:#7f899d!important; font-size:14px; line-height:1.45!important; }
-.strategy-plan-title-switch:focus { outline:none; }
+.strategy-plan-selector-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.strategy-plan-title-switch {
+  display:block;
+  width:min(660px,58vw);
+  min-height:58px;
+  margin-top:0;
+  appearance:none;
+  border:1px solid rgba(99,114,208,.24);
+  border-radius:17px;
+  padding:0 58px 0 20px;
+  background:
+    linear-gradient(45deg,transparent 50%,#596bc9 50%) calc(100% - 25px) 25px/7px 7px no-repeat,
+    linear-gradient(135deg,#ffffff 0%,#f3f6ff 60%,#e9eeff 100%);
+  color:#202c43;
+  font:inherit;
+  font-size:24px;
+  font-weight:900;
+  line-height:1.2;
+  cursor:pointer;
+  box-shadow:0 10px 24px rgba(70,84,157,.11),inset 0 1px 0 rgba(255,255,255,.95);
+  transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease,background .18s ease;
+}
+.strategy-plan-current-line { margin:5px 0 0!important; color:#68758f!important; font-size:16px; font-weight:750; line-height:1.5!important; }
+.strategy-plan-title-switch:hover { border-color:rgba(86,102,205,.46); background-color:#f4f6ff; box-shadow:0 13px 30px rgba(70,84,157,.16),inset 0 1px 0 rgba(255,255,255,.98); transform:translateY(-1px); }
+.strategy-plan-title-switch:focus { outline:none; border-color:#7c8be3; box-shadow:0 0 0 4px rgba(91,108,211,.12),0 13px 30px rgba(70,84,157,.15); }
 .strategy-plan-title-switch:disabled { cursor:default; opacity:.72; }
+.strategy-plan-relation-button { min-height:38px; padding:0 15px; border:1px solid #cbd4ff; border-radius:11px; background:#eef1ff; color:#4b5dcc; font-size:14px; font-weight:900; cursor:pointer; white-space:nowrap; }
+.strategy-plan-relation-button.publish { border-color:#6576dd; background:linear-gradient(135deg,#5a6fd7,#6d79de); color:#fff; box-shadow:0 8px 18px rgba(78,94,199,.2); }
+.strategy-plan-relation-button.danger { border-color:#efcbd1; background:#fff3f5; color:#bb5360; }
+.strategy-plan-relation-button:disabled { cursor:default; opacity:.55; }
 .strategy-plan-container-note { max-width:920px; margin-top:5px!important; color:#8b95a8!important; font-size:12px; line-height:1.55!important; }
 .strategy-plan-toolbar { display:flex; align-items:center; justify-content:flex-start; gap:9px; flex-wrap:wrap; margin-top:12px; }
 .strategy-plan-active-pill { padding:7px 11px; border-radius:999px; background:#eaf9f0; color:#16875a; font-size:12px; font-weight:900; }
@@ -6623,25 +7657,14 @@ onBeforeUnmount(() => {
 .strategy-link-coverage .is-warning strong { color:#b36b18; }
 .strategy-link-coverage .is-warning small { color:#a06a24; }
 .strategy-product-link-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-.strategy-product-formal { display:grid; gap:12px; padding:16px; border:1px solid #dde4f0; border-radius:16px; background:#fff; }
-.strategy-product-formal>header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:10px; border-bottom:1px solid #edf0f5; }
-.strategy-product-formal>header>div { display:flex; align-items:baseline; gap:10px; }
-.strategy-product-formal>header strong { color:#34405b; font-size:17px; }
-.strategy-product-formal>header span,.strategy-product-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
+.strategy-product-formal { display:grid; gap:16px; min-width:0; padding:18px; border:1px solid #e0e5fb; border-radius:18px; background:rgba(255,255,255,.95); box-shadow:0 14px 36px rgba(78,91,171,.06); }
+.strategy-product-formal>header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:12px; border-bottom:1px solid #e9ecf7; }
+.strategy-product-formal>header>div { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+.strategy-product-formal>header strong { color:#172440; font-size:18px; font-weight:900; }
+.strategy-product-formal>header span,.strategy-product-formal>header small { color:#8a94a7; font-size:15px; line-height:1.5; }
 .strategy-product-formal-empty { min-height:110px; }
 .strategy-product-intro { font-size:14px!important; line-height:1.55!important; }
-.strategy-product-formal-list { display:grid; gap:10px; }
-.strategy-product-formal-list>article { position:relative; display:grid; grid-template-columns:minmax(190px,.7fr) minmax(0,1.3fr); gap:14px; align-items:center; padding:13px 14px 13px 17px; border:1px solid #d9e1f4; border-radius:13px; background:linear-gradient(135deg,#f7f9ff 0%,#eef3ff 100%); box-shadow:0 6px 16px rgba(67,82,158,.055); overflow:hidden; }
-.strategy-product-formal-list>article::before { content:''; position:absolute; inset:0 auto 0 0; width:4px; background:#7183e8; }
-.strategy-product-formal-list>article:nth-child(even) { border-color:#dedcf4; background:linear-gradient(135deg,#faf8ff 0%,#f1eefb 100%); box-shadow:0 6px 16px rgba(100,77,145,.05); }
-.strategy-product-formal-list>article:nth-child(even)::before { background:#9a78d7; }
-.strategy-product-formal-list>article:hover { border-color:#bfcaf0; box-shadow:0 9px 22px rgba(67,82,158,.09); transform:translateY(-1px); }
-.strategy-product-formal-main { display:grid; gap:2px; }
-.strategy-product-formal-main>span { color:#5366d2; font-size:13px; font-weight:950; }
-.strategy-product-formal-main>strong { color:#34405a; font-size:14px; }
-.strategy-product-formal-main>small { color:#9aa3b3; font-size:10px; }
-.strategy-product-formal-detail { display:flex; gap:6px; flex-wrap:wrap; }
-.strategy-product-formal-detail span { padding:5px 8px; border:1px solid rgba(200,209,232,.75); border-radius:8px; background:rgba(255,255,255,.72); color:#5b667c; font-size:11px; }
+@media(max-width:600px) { .strategy-product-formal { padding:12px; } }
 .strategy-product-link-card { display:grid; gap:14px; padding:18px; border:1px solid #dfe5f0; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
 .strategy-product-link-card>header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid #e9edf4; }
 .strategy-product-link-card>header>div { display:grid; gap:4px; }
@@ -6759,19 +7782,35 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-head strong { color:#2f3b56; font-size:20px; font-weight:950; }
 .strategy-formal-facts-head small,.strategy-formal-facts-head>span { color:#8a95a8; font-size:12px; line-height:1.55; }
 .strategy-formal-facts-head>span { max-width:520px; text-align:right; }
+.strategy-fact-head-actions { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.strategy-fact-boundary-guide { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:0 0 14px; }
+.strategy-fact-boundary-guide>div { display:grid; gap:4px; padding:12px 14px; border:1px solid #e0e6f2; border-radius:12px; background:#f8faff; }
+.strategy-fact-boundary-guide strong { color:#42518f; font-size:13px; }
+.strategy-fact-boundary-guide span { color:#7b879b; font-size:12px; line-height:1.55; }
+.strategy-formal-fact-create { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:14px; border:1px solid #dce4f2; border-radius:14px; background:#f8faff; }
+.strategy-formal-fact-create label { display:grid; gap:5px; }
+.strategy-formal-fact-create label.is-wide { grid-column:1 / -1; }
+.strategy-formal-fact-create label>span { color:#59667d; font-size:12px; font-weight:850; }
+.strategy-formal-fact-create input,.strategy-formal-fact-create select,.strategy-formal-fact-create textarea { width:100%; border:1px solid #ccd5e5; border-radius:9px; background:#fff; color:#34405a; font:inherit; outline:none; padding:8px 9px; }
+.strategy-formal-fact-create textarea { resize:vertical; }
+.strategy-formal-fact-create-actions { display:flex; gap:8px; align-items:center; grid-column:1 / -1; }
 .strategy-formal-facts-empty { min-height:120px; }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e3e8f1; border-radius:14px; }
-.strategy-formal-facts-table { width:100%; min-width:900px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-facts-table { width:100%; min-width:1280px; border-collapse:collapse; table-layout:fixed; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:13px 14px; border-bottom:1px solid #edf0f5; color:#3d4961; font-size:14px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
 .strategy-formal-facts-table th { background:#f3f6fb; color:#647188; font-size:13px; font-weight:900; }
 .strategy-formal-facts-table tr:last-child td { border-bottom:0; }
-.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:14%; }
-.strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:19%; }
-.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:42%; }
-.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:10%; }
-.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:15%; }
+.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:10%; }
+.strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:14%; }
+.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:27%; }
+.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:17%; }
+.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:17%; }
+.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:7%; }
+.strategy-formal-facts-table th:nth-child(7),.strategy-formal-facts-table td:nth-child(7) { width:8%; }
 .strategy-formal-fact-category { display:inline-flex; padding:5px 8px; border-radius:8px; background:#eef2fb; color:#5c6dbb; font-size:12px; font-weight:900; }
 .strategy-formal-fact-value { color:#34405a!important; }
+.strategy-formal-fact-boundary { color:#a25a5a!important; background:#fffafa; }
+.strategy-formal-fact-rewrite { color:#4b6d63!important; background:#fafffc; }
 .strategy-formal-fact-version { color:#596985!important; font-weight:900; white-space:nowrap; }
 .strategy-formal-fact-version small { display:block; margin-top:2px; color:#99a2b2; font-size:10px; font-weight:700; }
 .strategy-formal-facts-table input,.strategy-formal-facts-table select,.strategy-formal-facts-table textarea { width:100%; border:1px solid #ccd5e5; border-radius:9px; background:#fff; color:#34405a; font:inherit; outline:none; }
@@ -6852,6 +7891,35 @@ onBeforeUnmount(() => {
 .strategy-memory-edit-error { color:#bd4f5a!important; font-size:12px!important; }
 
 .strategy-anchor-style-workspace { gap:20px; }
+.reusable-anchor-style-workspace{display:grid;grid-template-columns:285px minmax(0,1fr);gap:18px;align-items:start}.reusable-anchor-style-sidebar{display:grid;gap:12px;position:sticky;top:16px;padding:16px;border:1px solid #dbe2f1;border-radius:18px;background:#f8faff}.reusable-anchor-style-sidebar-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.reusable-anchor-style-sidebar-head>div{display:grid;gap:3px}.reusable-anchor-style-sidebar-head span{color:#6877d4;font-size:11px;font-weight:900;letter-spacing:.1em}.reusable-anchor-style-sidebar-head strong{color:#324362;font-size:17px}.reusable-anchor-style-sidebar-head .primary-button{padding:8px 10px;font-size:12px}.reusable-anchor-style-help{margin:0;color:#77839a;font-size:12px;line-height:1.6}.reusable-anchor-style-card{display:grid;grid-template-columns:25px minmax(0,1fr);gap:8px;text-align:left;padding:11px 10px;border:1px solid #dfe5f1;border-radius:12px;background:#fff;color:#43516d;cursor:pointer}.reusable-anchor-style-card.selected{border-color:#6575dc;background:#f0f2ff;box-shadow:0 5px 15px rgba(75,89,190,.12)}.reusable-anchor-style-card-radio{display:grid;place-items:center;width:21px;height:21px;border:1px solid #c6cee1;border-radius:50%;color:#fff;background:#fff;font-weight:900}.reusable-anchor-style-card.selected .reusable-anchor-style-card-radio{border-color:#6172d6;background:#6172d6}.reusable-anchor-style-card>span:last-child{display:grid;gap:3px;min-width:0}.reusable-anchor-style-card strong{font-size:14px}.reusable-anchor-style-card small{overflow:hidden;color:#7c879a;font-size:11px;line-height:1.4;text-overflow:ellipsis;white-space:nowrap}.reusable-anchor-style-card em{color:#9aa3b4;font-size:10px;font-style:normal}.reusable-anchor-style-bind{padding:10px;border:1px solid #6474d8;border-radius:10px;background:#6474d8;color:#fff;font-weight:900;cursor:pointer}.reusable-anchor-style-bind:disabled{opacity:.5;cursor:not-allowed}.reusable-anchor-style-empty{padding:24px 14px;border:1px dashed #cfd8ea;border-radius:12px;background:#fff;color:#8994a9;font-size:13px;line-height:1.65;text-align:center}.reusable-anchor-style-main{display:grid;gap:14px;min-width:0}.reusable-anchor-style-main-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;padding:2px 0}.reusable-anchor-style-main-head>div:first-child{display:grid;gap:5px}.reusable-anchor-style-main-head span{color:#6577d8;font-size:11px;font-weight:950;letter-spacing:.12em}.reusable-anchor-style-main-head h3{margin:0;color:#293a5c;font-size:26px}.reusable-anchor-style-main-head p{margin:0;color:#79859b;font-size:14px}.reusable-anchor-style-main-actions{display:flex;gap:8px;flex-wrap:wrap}.danger-button{padding:9px 13px;border:1px solid #efc6c6;border-radius:9px;background:#fff7f7;color:#b54d55;font-weight:850;cursor:pointer}.reusable-anchor-style-edit-row{display:grid;grid-template-columns:220px minmax(0,1fr);gap:10px}.reusable-anchor-style-edit-row input,.reusable-anchor-style-sample-compose input,.reusable-anchor-style-sample-compose textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d4dceb;border-radius:10px;background:#fff;color:#35425e;font:inherit;outline:none}.reusable-anchor-style-sample-compose textarea{resize:vertical;line-height:1.6}.reusable-anchor-style-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:5px;border-bottom:1px solid #dfe5f1}.reusable-anchor-style-tabs button{padding:10px 14px;border:0;border-radius:9px;background:transparent;color:#6c7892;font:inherit;font-size:14px;font-weight:850;cursor:pointer}.reusable-anchor-style-tabs button.active{background:#e9ecff;color:#5164c9}.reusable-anchor-style-tab-panel{display:grid;gap:14px;padding:18px;border:1px solid #dbe2f1;border-radius:16px;background:linear-gradient(135deg,#fff,#f7f8ff)}.reusable-anchor-style-panel-title{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.reusable-anchor-style-panel-title>div{display:grid;gap:4px}.reusable-anchor-style-panel-title strong{color:#344362;font-size:19px}.reusable-anchor-style-panel-title small{color:#7b879c;line-height:1.6}.reusable-anchor-style-panel-title>span{color:#6674c9;font-size:12px;font-weight:850}.reusable-anchor-style-sample-compose{display:grid;gap:10px;padding:14px;border:1px solid #e1e6f1;border-radius:13px;background:#fbfcff}.reusable-anchor-style-sample-compose .primary-button{justify-self:start}.reusable-anchor-style-sample-list{display:grid;gap:10px}.reusable-anchor-style-sample-list article{display:grid;gap:9px;padding:13px;border:1px solid #e1e6f1;border-radius:13px;background:#fff}.reusable-anchor-style-sample-list header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.reusable-anchor-style-sample-list header>div:first-child{display:grid;gap:3px}.reusable-anchor-style-sample-list header small{color:#8a95a9;font-size:11px}.reusable-anchor-style-sample-list header>div:last-child{display:flex;gap:6px;flex-wrap:wrap}.reusable-anchor-style-sample-list button{padding:7px 10px;font-size:11px}.reusable-anchor-style-sample-list details{border-top:1px dashed #e0e5ef;padding-top:8px}.reusable-anchor-style-sample-list summary{color:#6574be;font-size:12px;font-weight:850;cursor:pointer}.reusable-anchor-style-sample-list pre,.reusable-anchor-style-generated-text,.reusable-anchor-style-long-test pre{max-height:360px;margin:8px 0 0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;border-radius:10px;background:#f7f8fc;color:#4b5871;font:inherit;line-height:1.65}.reusable-anchor-style-thinking{display:flex;align-items:center;gap:10px;padding:13px;border-radius:11px;background:#eef1ff;color:#5a6bd0}.thinking-dot{width:10px;height:10px;border-radius:50%;background:#6475dc;box-shadow:0 0 0 0 rgba(100,117,220,.45);animation:thinking-pulse 1.2s infinite}@keyframes thinking-pulse{70%{box-shadow:0 0 0 10px rgba(100,117,220,0)}}.reusable-anchor-style-thinking small{margin-left:auto;color:#7d89a1}.reusable-anchor-style-analysis-summary{display:grid;gap:7px;padding:15px;border-radius:12px;background:#eef1ff;color:#4659be}.reusable-anchor-style-analysis-summary span{color:#77839a;font-size:12px}.reusable-anchor-style-dimension-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.reusable-anchor-style-dimension-grid article{display:grid;gap:5px;padding:12px;border:1px solid #e0e6f1;border-radius:11px;background:#fff}.reusable-anchor-style-dimension-grid article span{color:#6474c7;font-size:12px;font-weight:900}.reusable-anchor-style-dimension-grid article strong{color:#3c4965;font-size:13px;line-height:1.55}.reusable-anchor-style-dimension-grid article small{color:#8993a6;font-size:11px;line-height:1.5}.reusable-anchor-style-rulebook{border:1px solid #dfe5f1;border-radius:11px;background:#fff}.reusable-anchor-style-rulebook summary{padding:11px;color:#5d6dbe;font-weight:850;cursor:pointer}.reusable-anchor-style-rulebook pre{margin:0;padding:13px;white-space:pre-wrap;color:#59667c;line-height:1.65}.reusable-anchor-style-test-settings{grid-template-columns:minmax(0,1fr) 160px minmax(180px,260px)}.reusable-anchor-style-test-settings label{display:grid;gap:6px;color:#5d6981;font-size:12px;font-weight:850}.reusable-anchor-style-test-settings input{padding:9px;border:1px solid #d4dceb;border-radius:9px;background:#fff;color:#35425e;font:inherit}.reusable-anchor-style-fact-picker{display:flex;gap:7px;align-items:center;flex-wrap:wrap;color:#76839a;font-size:12px}.reusable-anchor-style-fact-picker button{padding:6px 9px;border:1px solid #d7deed;border-radius:8px;background:#fff;color:#62708b;font-size:11px;cursor:pointer}.reusable-anchor-style-fact-picker button.selected{border-color:#6475d8;background:#eef0ff;color:#5063c6}.reusable-anchor-style-test-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.reusable-anchor-style-test-actions label{display:flex;align-items:center;gap:6px;color:#7a869b;font-size:12px}.reusable-anchor-style-test-actions input{width:80px;padding:6px;border:1px solid #d4dceb;border-radius:7px}.reusable-anchor-style-generated-text{max-height:480px;background:#fff;border:1px solid #dfe5f1;color:#35415d;font-size:15px}.reusable-anchor-style-score-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#61708b;font-size:12px}.reusable-anchor-style-score-row button{margin-left:auto}.reusable-anchor-style-long-test{display:grid;gap:7px}.reusable-anchor-style-long-test header,.reusable-anchor-style-training-list header{display:flex;justify-content:space-between;gap:10px;align-items:center}.reusable-anchor-style-long-test header span,.reusable-anchor-style-training-list header small{color:#8a95a9;font-size:11px}.reusable-anchor-style-training-list{display:grid;gap:9px}.reusable-anchor-style-training-list article{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 12px;border:1px solid #e0e5ef;border-radius:10px;background:#fff}.reusable-anchor-style-training-list article>div:first-child{display:grid;gap:3px}.reusable-anchor-style-training-list article small{color:#8a95a9;font-size:11px}.reusable-anchor-style-training-list article>div:last-child{display:flex;gap:6px}.reusable-anchor-style-training-list button{padding:6px 9px;font-size:11px}.reusable-anchor-style-plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.reusable-anchor-style-plugin-grid article{display:grid;gap:8px;padding:13px;border:1px solid #e0e6f1;border-radius:12px;background:#fff}.reusable-anchor-style-plugin-grid article>div{display:grid;gap:4px}.reusable-anchor-style-plugin-grid article strong{color:#3a4865}.reusable-anchor-style-plugin-grid article small{color:#7a869b;line-height:1.5}.reusable-anchor-style-plugin-grid button{justify-self:start;padding:7px 10px;border:1px solid #cfd8eb;border-radius:8px;background:#fff;color:#596ac5;font-weight:850;cursor:pointer}.reusable-anchor-style-legacy{margin-top:2px;padding-top:10px;border-top:1px dashed #d8deeb}.reusable-anchor-style-legacy>summary{color:#8691a6;font-size:12px;font-weight:850;cursor:pointer}.reusable-anchor-style-legacy[open]{display:grid;gap:18px}@media(max-width:980px){.reusable-anchor-style-workspace{grid-template-columns:1fr}.reusable-anchor-style-sidebar{position:static}.reusable-anchor-style-test-settings,.reusable-anchor-style-edit-row{grid-template-columns:1fr}.reusable-anchor-style-dimension-grid,.reusable-anchor-style-plugin-grid{grid-template-columns:1fr}}
+.strategy-anchor-rulebook { border:1px solid #dce2f0; border-radius:18px; background:linear-gradient(135deg,#fff,#f4f6ff); overflow:hidden; }
+.strategy-anchor-rulebook summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:20px; cursor:pointer; color:#39456b; }
+.strategy-anchor-rulebook summary strong { font-size:21px; }
+.strategy-anchor-rulebook summary span { color:#6675b5; font-size:15px; }
+.strategy-anchor-rulebook-body { padding:0 20px 20px; }
+.strategy-anchor-rulebook-body small { margin-left:12px; color:#6675b5; }
+.strategy-anchor-rulebook pre { white-space:pre-wrap; overflow-wrap:anywhere; font-family:inherit; line-height:1.8; font-size:16px; color:#39456b; padding:18px; background:#fff; border-radius:12px; border:1px solid #e1e6f2; }
+.anchor-analysis-indeterminate { width:45%; animation:anchor-analyzing 1.5s ease-in-out infinite alternate; }
+@keyframes anchor-analyzing { from { transform:translateX(0); } to { transform:translateX(100%); } }
+@media (prefers-reduced-motion:reduce) { .anchor-analysis-indeterminate { animation:none; } }
+.strategy-anchor-core-panel { display:grid; gap:14px; padding:22px; border:1px solid #dce2f6; border-radius:18px; background:linear-gradient(135deg,#fff,#f2f5ff); }
+.strategy-anchor-core-panel header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.strategy-anchor-core-panel header strong { font-size:21px; color:#33436c; }
+.strategy-anchor-core-panel p { margin:0; font-size:17px; line-height:1.8; color:#65728c; }
+.strategy-anchor-core-panel small { font-size:15px; line-height:1.7; color:#71809c; }
+.strategy-anchor-core-panel label { display:grid; gap:10px; font-size:17px; font-weight:700; color:#415174; }
+.strategy-anchor-test-settings { display:grid; grid-template-columns:minmax(0,1fr) minmax(150px,220px); gap:14px; align-items:end; }
+.strategy-anchor-core-panel textarea,.strategy-anchor-core-panel input { width:100%; box-sizing:border-box; padding:14px; border:1px solid #d3dcf2; border-radius:12px; font:inherit; line-height:1.8; background:#fff; color:#2e3a54; }
+.strategy-anchor-core-panel .strategy-anchor-test-text { white-space:pre-wrap; color:#273756; padding:18px; border-radius:12px; background:#fff; border:1px solid #e0e6f7; font-size:19px; }
+@media(max-width:760px){.strategy-anchor-test-settings{grid-template-columns:1fr}}
+.strategy-style-correction-loop{display:grid;gap:12px;margin-top:8px;padding:18px;border:1px solid #bfc9ee;border-radius:15px;background:linear-gradient(135deg,#fff 0%,#f5f3ff 100%)}.strategy-style-correction-loop>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.strategy-style-correction-loop>header>div{display:grid;gap:3px}.strategy-style-correction-loop>header span{color:#6675d7;font-size:10px;font-weight:950;letter-spacing:.12em}.strategy-anchor-core-panel .strategy-style-correction-loop>header strong{font-size:18px;color:#30436c}.strategy-style-correction-loop>header em{padding:5px 8px;border-radius:999px;background:#eceffd;color:#6070c8;font-size:11px;font-style:normal;font-weight:900;white-space:nowrap}.strategy-anchor-core-panel .strategy-style-correction-loop>p{font-size:13px;line-height:1.65;color:#6c7890}.strategy-style-correction-loop textarea{min-height:92px}.strategy-style-correction-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.strategy-style-correction-history{display:grid;gap:8px}.strategy-style-correction-history article{display:grid;gap:4px;padding:10px 12px;border-left:3px solid #8998e7;border-radius:8px;background:#fff}.strategy-style-correction-history span{color:#7280c5;font-size:10px;font-weight:900}.strategy-anchor-core-panel .strategy-style-correction-history p{font-size:12px;line-height:1.55;color:#68758d}
+.strategy-style-overlay-panel{display:grid;gap:16px;padding:22px;border:1px solid #d8dff4;border-radius:20px;background:linear-gradient(140deg,#fff 0%,#f4f5ff 62%,#f7f2ff 100%)}
+.strategy-style-overlay-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.strategy-style-overlay-panel>header>div{display:grid;gap:5px}.strategy-style-overlay-panel>header span{color:#6e71d8;font-size:12px;font-weight:950;letter-spacing:.12em}.strategy-style-overlay-panel>header strong{color:#2c3d66;font-size:24px}.strategy-style-overlay-panel>header p{margin:0;color:#6b7892;line-height:1.65}.strategy-style-overlay-panel>header em{padding:7px 11px;border-radius:999px;background:#eaf8f2;color:#2f8a64;font-size:12px;font-style:normal;font-weight:900;white-space:nowrap}
+.strategy-style-plugin-library{display:grid;gap:12px;padding:14px 16px;border:1px solid #dbe2f2;border-radius:15px;background:rgba(255,255,255,.72)}.strategy-style-plugin-library>summary{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;cursor:pointer;list-style:none}.strategy-style-plugin-library>summary::-webkit-details-marker{display:none}.strategy-style-plugin-library>summary>div{display:grid;gap:3px}.strategy-style-plugin-library>summary span{color:#596dd2;font-size:10px;font-weight:950;letter-spacing:.12em}.strategy-style-plugin-library>summary strong{color:#314466;font-size:15px}.strategy-style-plugin-library>summary p{margin:0;color:#78849a;font-size:12px;line-height:1.55}.strategy-style-plugin-library>summary em{color:#66738d;font-size:11px;font-style:normal;font-weight:850;white-space:nowrap}.strategy-style-plugin-library[open] .strategy-style-plugin-grid,.strategy-style-plugin-library[open] .strategy-style-overlay-empty{margin-top:12px}.strategy-style-plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.strategy-style-plugin-grid article{display:grid;align-content:start;gap:7px;padding:13px;border:1px solid #dce3ef;border-radius:12px;background:#fff}.strategy-style-plugin-grid article.locked{background:#f7f8fb}.strategy-style-plugin-title{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.strategy-style-plugin-title>div{display:grid;gap:2px}.strategy-style-plugin-title span{color:#6978cb;font-size:10px;font-weight:900}.strategy-style-plugin-title strong{color:#354662;font-size:15px}.strategy-style-plugin-title code{padding:3px 6px;border-radius:6px;background:#f1f3fa;color:#75809a;font-size:10px}.strategy-style-plugin-grid p{margin:0;color:#59677e;font-size:12px;line-height:1.55}.strategy-style-plugin-grid small{color:#8791a5;line-height:1.4}.strategy-style-plugin-grid .strategy-style-plugin-reason{color:#a27842}.strategy-style-plugin-grid button{justify-self:start;padding:7px 10px;border:1px solid #cfd8eb;border-radius:8px;background:#fff;color:#5366bd;font-size:11px;font-weight:900;cursor:pointer}.strategy-style-plugin-grid button:disabled{cursor:not-allowed;color:#99a2b5;background:#f4f5f8}
+.strategy-style-overlay-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.strategy-style-overlay-list article{display:grid;align-content:start;gap:7px;padding:16px;border:1px solid #dde3f1;border-radius:15px;background:#fff;box-shadow:0 8px 20px rgba(49,63,108,.05)}.strategy-style-overlay-list article.disabled{opacity:.58;background:#f7f8fb}.strategy-style-overlay-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.strategy-style-overlay-card-head>div:first-child{display:grid;gap:3px}.strategy-style-overlay-card-head span{color:#6b74cf;font-size:11px;font-weight:900}.strategy-style-overlay-card-head strong{color:#2f405f;font-size:18px}.strategy-style-overlay-card-head>div:last-child{display:flex;gap:6px}.strategy-style-overlay-card-head button{padding:5px 8px;border:1px solid #dce2ee;border-radius:8px;background:#fff;color:#67738a;font-size:11px;font-weight:850;cursor:pointer}.strategy-style-overlay-list p{margin:0;color:#46546e;line-height:1.6}.strategy-style-overlay-list small{color:#7b879d;line-height:1.5}.strategy-style-overlay-list details{margin-top:4px;padding-top:7px;border-top:1px dashed #e0e5ee}.strategy-style-overlay-list summary{color:#6b75a8;font-size:12px;font-weight:850;cursor:pointer}.strategy-style-overlay-list details p{margin-top:6px;font-size:12px;color:#778298}
+.strategy-style-overlay-empty{padding:18px;border:1px dashed #ccd5e8;border-radius:13px;background:rgba(255,255,255,.65);color:#8792a6;text-align:center;line-height:1.6}.strategy-style-overlay-compose{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:end}.strategy-style-overlay-compose label{display:grid;gap:7px;color:#405170;font-weight:850}.strategy-style-overlay-compose label span small{color:#929bac;font-weight:650}.strategy-style-overlay-compose textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8dfed;border-radius:11px;background:#fff;color:#34425d;font:inherit;line-height:1.55;resize:vertical}.strategy-style-overlay-strength{grid-column:1/-1}.strategy-style-overlay-strength input{width:100%;accent-color:#6679ea}.strategy-style-overlay-compose>.primary-button{justify-self:start}
+.strategy-style-overlay-preview{display:grid;gap:9px;padding:17px;border:1px solid #9eaaed;border-radius:15px;background:#fff;box-shadow:0 10px 25px rgba(75,88,176,.09)}.strategy-style-overlay-preview header{display:flex;justify-content:space-between;gap:12px}.strategy-style-overlay-preview header>div{display:grid;gap:3px}.strategy-style-overlay-preview header span{color:#6976dc;font-size:11px;font-weight:950;letter-spacing:.1em}.strategy-style-overlay-preview header strong{color:#293e69;font-size:19px}.strategy-style-overlay-preview header em{color:#5a6991;font-size:12px;font-style:normal;font-weight:850}.strategy-style-overlay-preview p{margin:0;color:#53627c;line-height:1.55}.strategy-style-overlay-preview small{color:#818ba0}.strategy-style-overlay-preview>div:last-child{display:flex;justify-content:flex-end;gap:8px}
+@media(max-width:760px){.strategy-style-overlay-panel{padding:16px}.strategy-style-overlay-panel>header,.strategy-style-plugin-library>summary,.strategy-style-overlay-card-head,.strategy-style-overlay-preview header{align-items:stretch;flex-direction:column}.strategy-style-plugin-grid,.strategy-style-overlay-list,.strategy-style-overlay-compose{grid-template-columns:1fr}.strategy-style-overlay-strength{grid-column:auto}.strategy-style-overlay-card-head>div:last-child{justify-content:flex-start}}
 .strategy-anchor-style-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:20px; align-items:center; padding:20px; border:1px solid #dce2f0; border-radius:18px; background:linear-gradient(135deg,#fff,#f4f6ff); }
 .strategy-anchor-style-summary>div:first-child { display:grid; gap:7px; min-width:0; }
 .strategy-anchor-style-summary>div:first-child>span { color:#6775d3; font-size:13px; font-weight:900; }
@@ -6903,7 +7971,17 @@ onBeforeUnmount(() => {
 .strategy-anchor-style-excluded>div { display:flex; flex-wrap:wrap; gap:8px; }
 .strategy-anchor-style-excluded>div span { padding:6px 9px; border-radius:9px; background:#fff; color:#876b3e; font-size:13px; line-height:1.45; }
 
-.strategy-fullshow-workspace { gap:20px; }
+.strategy-fullshow-workspace {
+  grid-template-columns:minmax(0,1fr);
+  gap:20px;
+  min-width:0;
+  max-width:100%;
+}
+.strategy-fullshow-workspace>* {
+  min-width:0;
+  max-width:100%;
+  box-sizing:border-box;
+}
 .strategy-fullshow-head {
   position:relative;
   align-items:flex-start;
@@ -6925,6 +8003,103 @@ onBeforeUnmount(() => {
   height:100%;
   background:linear-gradient(180deg,#7d8bf2 0%,#5366db 100%);
   opacity:.9;
+}
+.strategy-fullshow-main-actions {
+  display:grid;
+  grid-template-columns:minmax(220px,1fr) minmax(0,520px);
+  gap:18px;
+  align-items:center;
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  padding:15px 16px;
+  border:1px solid #d7def2;
+  border-radius:16px;
+  background:
+    linear-gradient(135deg,rgba(255,255,255,.96),rgba(243,246,255,.96)),
+    #fff;
+  box-shadow:0 9px 24px rgba(67,82,155,.07);
+}
+.strategy-fullshow-main-actions-copy {
+  display:grid;
+  gap:4px;
+  min-width:0;
+}
+.strategy-fullshow-main-actions-copy>span {
+  color:#7a86a5;
+  font-size:10px;
+  font-weight:950;
+  letter-spacing:.11em;
+}
+.strategy-fullshow-main-actions-copy>strong {
+  overflow:hidden;
+  color:#35425e;
+  font-size:16px;
+  font-weight:950;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.strategy-fullshow-main-actions-copy>small {
+  color:#8994aa;
+  font-size:11px;
+  line-height:1.5;
+}
+.strategy-fullshow-main-actions-buttons {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+  justify-self:end;
+  width:100%;
+  min-width:0;
+  max-width:520px;
+}
+.strategy-fullshow-main-actions-buttons button {
+  display:grid;
+  align-content:center;
+  justify-items:start;
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  min-height:60px;
+  padding:10px 16px;
+  border:1px solid #cbd4ee;
+  border-radius:14px;
+  background:linear-gradient(180deg,#fff,#f7f9ff);
+  color:#5363c9;
+  text-align:left;
+  cursor:pointer;
+  box-shadow:0 6px 15px rgba(71,87,170,.06);
+  transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease;
+}
+.strategy-fullshow-main-actions-buttons button:hover:not(:disabled) {
+  transform:translateY(-1px);
+  border-color:#9eaaf0;
+  box-shadow:0 10px 22px rgba(71,87,170,.12);
+}
+.strategy-fullshow-main-actions-buttons button>span {
+  font-size:13px;
+  font-weight:950;
+}
+.strategy-fullshow-main-actions-buttons button>small {
+  margin-top:3px;
+  color:#929bb1;
+  font-size:10px;
+  font-weight:750;
+}
+.strategy-fullshow-main-actions-buttons button.primary {
+  border-color:#6374e0;
+  background:linear-gradient(135deg,#7081ee 0%,#5265d8 100%);
+  color:#fff;
+  box-shadow:0 10px 24px rgba(72,88,198,.22);
+}
+.strategy-fullshow-main-actions-buttons button.primary>small {
+  color:rgba(255,255,255,.76);
+}
+.strategy-fullshow-main-actions-buttons button:disabled {
+  cursor:not-allowed;
+  opacity:.5;
+  transform:none;
+  box-shadow:none;
 }
 .strategy-fullshow-restore-banner { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:13px 16px; border:1px solid #cfd7ff; border-radius:14px; background:linear-gradient(135deg,#f5f7ff 0%,#eef2ff 100%); box-shadow:0 7px 20px rgba(77,92,190,.08); }
 .strategy-fullshow-restore-banner>div:first-child { display:grid; gap:4px; min-width:0; }
@@ -7016,13 +8191,13 @@ onBeforeUnmount(() => {
 .strategy-fullshow-title-action .primary-button:hover:not(:disabled)::after { transform:translateX(125%); }
 .strategy-fullshow-title-action .primary-button:active:not(:disabled) { transform:translateY(0); }
 .strategy-fullshow-title-action .primary-button:disabled { opacity:.58; box-shadow:none; cursor:not-allowed; }
-.strategy-fullshow-guide { display:grid; gap:12px; padding:16px 18px; border:1px solid #dfe4f5; border-radius:16px; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
-.strategy-fullshow-guide-title { display:flex; align-items:center; justify-content:space-between; gap:18px; }
+.strategy-fullshow-guide { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; min-width:0; padding:16px 18px; border:1px solid #dfe4f5; border-radius:16px; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
+.strategy-fullshow-guide-title { display:flex; align-items:center; justify-content:space-between; gap:18px; min-width:0; max-width:100%; box-sizing:border-box; }
 .strategy-fullshow-guide-title>div { display:grid; gap:4px; min-width:0; }
 .strategy-fullshow-guide-title strong { color:#3d4862; font-size:15px; }
 .strategy-fullshow-guide-title span { color:#657189; font-size:12px; line-height:1.5; }
 .strategy-fullshow-guide-title em { flex:0 0 auto; padding:5px 9px; border-radius:999px; background:#eef1ff; color:#5c69d4; font-size:11px; font-style:normal; font-weight:900; }
-.strategy-fullshow-guide-steps { display:flex; align-items:stretch; gap:8px; min-width:0; overflow-x:auto; padding-bottom:2px; }
+.strategy-fullshow-guide-steps { display:flex; align-items:stretch; gap:8px; width:100%; min-width:0; max-width:100%; overflow-x:auto; box-sizing:border-box; padding-bottom:2px; }
 .strategy-fullshow-guide-steps article { display:grid; grid-template-columns:34px minmax(150px,1fr) auto; gap:10px; align-items:center; min-width:220px; flex:1 1 0; padding:11px 12px; border:1px solid #e3e7f0; border-radius:13px; background:#fff; }
 .strategy-fullshow-guide-steps article>i { display:grid; width:32px; height:32px; place-items:center; border-radius:10px; background:#f0f2f7; color:#7f899a; font-size:12px; font-style:normal; font-weight:950; }
 .strategy-fullshow-guide-steps article>div { display:grid; gap:3px; min-width:0; }
@@ -7579,6 +8754,8 @@ onBeforeUnmount(() => {
   .strategy-fullshow-title-block p { font-size:14px; line-height:1.7; }
   .strategy-fullshow-title-action { width:100%; }
   .strategy-fullshow-title-action .primary-button { width:100%; max-width:360px; min-width:0; }
+  .strategy-fullshow-main-actions { grid-template-columns:minmax(0,1fr); }
+  .strategy-fullshow-main-actions-buttons { justify-self:stretch; width:100%; max-width:none; }
   .strategy-fullshow-source-cards,.strategy-fullshow-inline-fields { grid-template-columns:1fr; }
   .strategy-fullshow-duration { grid-template-columns:1fr; }
   .strategy-fullshow-variant-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -7712,7 +8889,7 @@ onBeforeUnmount(() => {
   min-width:0!important;
   overflow:hidden!important;
   color:inherit!important;
-  font-size:12px!important;
+  font-size:13px!important;
   font-weight:900!important;
   line-height:1.25!important;
   text-align:left!important;
@@ -7762,7 +8939,7 @@ onBeforeUnmount(() => {
 .strategy-workflow-output-copy strong {
   display:block;
   color:#fff!important;
-  font-size:12px!important;
+  font-size:13px!important;
   font-weight:950!important;
   line-height:1.25!important;
   white-space:nowrap!important;
@@ -7775,7 +8952,7 @@ onBeforeUnmount(() => {
   .strategy-workflow-nav { width:100%!important; padding:13px 10px 15px!important; }
   .strategy-workflow-step,.strategy-workflow-output { min-height:56px!important; padding:9px 14px 9px 17px!important; gap:5px!important; }
   .strategy-workflow-icon,.strategy-workflow-output-mark { width:27px!important; height:27px!important; flex-basis:27px!important; }
-  .strategy-workflow-label,.strategy-workflow-output-copy strong { font-size:11px!important; }
+  .strategy-workflow-label,.strategy-workflow-output-copy strong { font-size:12px!important; }
 }
 @media (max-width: 760px) {
   .strategy-workflow-nav { padding:10px 7px 12px!important; overflow-x:auto!important; }
@@ -7953,4 +9130,10 @@ onBeforeUnmount(() => {
 .addressing-workspace{display:grid;gap:16px}.addressing-notice{padding:11px 13px;border-radius:12px;background:#edf9f4;color:#347a61;font-size:12px;font-weight:800}.addressing-mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.addressing-mode-grid>button{display:grid;gap:6px;padding:16px 18px;border:1px solid rgba(95,111,174,.16);border-radius:16px;background:#fafbfe;color:#556078;text-align:left;transition:.18s ease}.addressing-mode-grid>button strong{font-size:15px;color:#38435a}.addressing-mode-grid>button span{font-size:11px;color:#8c96a8;line-height:1.55}.addressing-mode-grid>button.active{border-color:rgba(91,111,211,.46);background:linear-gradient(145deg,#f2f5ff,#e8edff);box-shadow:0 0 0 3px rgba(91,111,211,.07),0 10px 24px rgba(71,90,177,.08)}.addressing-system-card,.addressing-custom-card{padding:16px;border:1px solid rgba(94,109,169,.13);border-radius:16px;background:rgba(255,255,255,.9)}.addressing-system-card>header,.addressing-custom-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.addressing-system-card header>div,.addressing-custom-card header>div{display:grid;gap:3px}.addressing-system-card header span,.addressing-custom-card header span{color:#8d97aa;font-size:9px;font-weight:900;letter-spacing:.1em}.addressing-system-card header strong,.addressing-custom-card header strong{color:#38435a;font-size:15px}.addressing-system-card header>b{padding:5px 9px;border-radius:999px;background:#e7f7ef;color:#2f8a65;font-size:10px}.addressing-chip-list{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.addressing-chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e1e5ee;border-radius:12px;background:#f8f9fc}.addressing-chip strong{color:#455168;font-size:12px}.addressing-chip span{color:#7180a2;font-size:10px;font-weight:900}.addressing-custom-card.inactive{opacity:.72}.addressing-custom-list{display:grid;gap:9px;margin-top:14px}.addressing-custom-list>article{display:grid;grid-template-columns:90px minmax(180px,1fr) 150px auto;align-items:end;gap:10px;padding:12px;border:1px solid #e3e7f0;border-radius:13px;background:#fafbfe}.addressing-enable,.addressing-name-field,.addressing-probability-field{display:grid;gap:6px}.addressing-enable{grid-template-columns:auto 1fr;align-items:center;align-self:center}.addressing-enable input{width:18px;height:18px}.addressing-name-field>span,.addressing-probability-field>span,.addressing-enable>span{color:#6d7890;font-size:10px;font-weight:850}.addressing-name-field input,.addressing-probability-field input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 10px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#39445a;font:inherit}.addressing-probability-field>div{display:flex;align-items:center;gap:6px}.addressing-probability-field input{width:92px}.addressing-probability-field b{color:#74809a;font-size:11px}.addressing-remove{min-height:38px;padding:0 11px;border:0;border-radius:10px;background:#fff0f1;color:#bd5662;font-size:11px;font-weight:850}.addressing-total{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f4;color:#5b667d}.addressing-total strong{font-size:16px;color:#3f8a69}.addressing-total.invalid strong{color:#c3505b}.addressing-review-tip{margin:8px 0 0;color:#9099aa;font-size:10px;line-height:1.6}.addressing-empty{margin-top:12px}@media(max-width:900px){.addressing-mode-grid{grid-template-columns:1fr}.addressing-custom-list>article{grid-template-columns:80px 1fr 130px}.addressing-remove{grid-column:2/-1;justify-self:end}}
 .addressing-custom-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.addressing-save-button{min-width:112px}.addressing-custom-actions .strategy-version-button,.addressing-custom-actions .primary-button{white-space:nowrap}
 .strategy-anchor-style-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.strategy-anchor-style-actions button{white-space:nowrap}
+.strategy-workflow-nav .strategy-workflow-inputs { display:flex!important; }
+.strategy-workflow-nav .strategy-workflow-step,.strategy-workflow-nav .strategy-workflow-output { min-height:72px!important; }
+.strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:16px!important; font-weight:900!important; }
+@media(max-width:1200px) { .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:15px!important; } }
+.reusable-anchor-style-settings-link{padding:8px;border:0;background:transparent;color:#6574be;font-size:12px;font-weight:850;text-align:left;cursor:pointer}
+.reusable-anchor-style-sample-compose-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.reusable-anchor-style-file-button{display:inline-flex;align-items:center;cursor:pointer}.reusable-anchor-style-file-button input{display:none}
 </style>

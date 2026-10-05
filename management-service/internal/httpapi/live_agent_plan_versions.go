@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func liveAgentVoiceIdentityKey(identity model.LiveAgentVoiceIdentity) string {
 		strings.TrimSpace(identity.Provider),
 		strings.TrimSpace(identity.VoiceID),
 		strconv.FormatInt(identity.ProfileID, 10),
+		strconv.FormatInt(identity.BindingID, 10),
 		strings.TrimSpace(identity.Model),
 		strings.TrimSpace(identity.Version),
 	}, "|")
@@ -88,7 +90,6 @@ func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionIn
 	if len(input.Variants) > 10 {
 		return errors.New("单个版本最多保存 10 套稿件")
 	}
-	identityKey := liveAgentVoiceIdentityKey(input.VoiceIdentity)
 	seen := make(map[string]struct{}, len(input.Variants))
 	formalCount := 0
 	for index := range input.Variants {
@@ -132,10 +133,6 @@ func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionIn
 		if err := validateLiveAgentVariantSchedulingAssets(*variant); err != nil {
 			return err
 		}
-		if variant.VoiceIdentityKey != "" && variant.VoiceIdentityKey != identityKey {
-			return errors.New(variant.VariantKey + "稿声音身份与当前版本不一致")
-		}
-		variant.VoiceIdentityKey = identityKey
 	}
 	if formalCount == 0 {
 		return errors.New("请至少选择一套正式稿并生成声音")
@@ -283,9 +280,35 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+		return
+	}
+	if err := s.applyLiveContentModeVersion(r.Context(), tenantID, input.RoomID, &input); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if err := s.validateLiveAgentVersionAssets(r.Context(), tenantID, input.Variants); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if actor.IsInternalStaff() {
+		voice := map[string]any{"profile_id": input.VoiceIdentity.ProfileID, "binding_id": input.VoiceIdentity.BindingID, "voice_id": input.VoiceIdentity.VoiceID}
+		if !s.requireLiveSupportSelectedVoice(w, r, actor, tenantID, voice) {
+			return
+		}
+		for _, variant := range input.Variants {
+			if variant.AudioAssetID <= 0 {
+				continue
+			}
+			asset, err := s.store.GetMediaAsset(r.Context(), tenantID, variant.AudioAssetID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "音频资产不存在")
+				return
+			}
+			if !s.requireLiveSupportMedia(w, r, actor, asset) {
+				return
+			}
+		}
 	}
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
@@ -421,6 +444,12 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 	}
 	version, source := selectLiveAgentPlanWorkspaceVersion(items)
 	if version == nil {
+		// A room grant does not authorize reading another room's saved runtime
+		// configuration, even when both rooms share a plan.
+		if actor.IsInternalStaff() {
+			writeJSON(w, http.StatusOK, map[string]any{"version": nil, "source": "", "inherited": false})
+			return
+		}
 		planItems, planErr := s.store.ListLiveAgentPlanVersionsForPlan(r.Context(), tenantID, planID)
 		if planErr != nil {
 			writeError(w, http.StatusInternalServerError, "读取直播智能体方案版本失败")
@@ -472,6 +501,9 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+		return
+	}
 	pending, err := s.store.GetLiveAgentPlanVersion(r.Context(), tenantID, planID, versionID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
 		writeError(w, http.StatusNotFound, "待发布智能体版本不存在")
@@ -483,6 +515,10 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	}
 	if pending.RoomID != input.RoomID {
 		writeError(w, http.StatusBadRequest, "待发布版本不属于当前直播间")
+		return
+	}
+	if err := s.validateLiveContentVersion(r.Context(), tenantID, input.RoomID, pending); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	check := model.CreateLiveAgentPlanVersionInput{
@@ -517,6 +553,227 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, item)
 }
 
+func liveAgentEmotionEnabled(identity model.LiveAgentVoiceIdentity) bool {
+	if identity.EmotionEnabled == nil {
+		return true
+	}
+	return *identity.EmotionEnabled
+}
+
+type publishRoomEmotionInput struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (s *Server) liveAgentPlanPublishRoomEmotion(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
+	var input publishRoomEmotionInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "情感开关参数格式错误")
+		return
+	}
+	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
+		writeError(w, http.StatusConflict, "当前直播间还没有已发布智能体版本")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前已发布智能体版本失败")
+		return
+	}
+	identity := published.VoiceIdentity
+	enabled := input.Enabled
+	identity.EmotionEnabled = &enabled
+	inputVersion := model.CreateLiveAgentPlanVersionInput{
+		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
+		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
+		GenerationContext: published.GenerationContext,
+	}
+	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	created, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, actor.UserID, inputVersion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "保存新的实时情感版本失败")
+		return
+	}
+	result, err := s.store.PublishLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, roomID, created.ID, actor.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "发布新的实时情感版本失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type publishRoomVoiceRateInput struct {
+	Rate float64 `json:"rate"`
+}
+
+func normalizePublishedVoiceRate(rate float64) (float64, bool) {
+	for _, allowed := range []float64{0.8, 0.9, 1.0, 1.1, 1.2} {
+		if math.Abs(rate-allowed) < 0.0001 {
+			return allowed, true
+		}
+	}
+	return 0, false
+}
+
+func (s *Server) liveAgentPlanPublishRoomVoiceRate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
+	var input publishRoomVoiceRateInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "语速参数格式错误")
+		return
+	}
+	rate, valid := normalizePublishedVoiceRate(input.Rate)
+	if !valid {
+		writeError(w, http.StatusBadRequest, "语速仅支持 0.8、0.9、1.0、1.1、1.2")
+		return
+	}
+	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
+		writeError(w, http.StatusConflict, "当前直播间还没有已发布智能体版本")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前已发布智能体版本失败")
+		return
+	}
+	identity := published.VoiceIdentity
+	identity.Rate = rate
+	inputVersion := model.CreateLiveAgentPlanVersionInput{
+		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
+		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
+		GenerationContext: published.GenerationContext,
+	}
+	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	created, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, actor.UserID, inputVersion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "保存新的实时语速版本失败")
+		return
+	}
+	result, err := s.store.PublishLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, roomID, created.ID, actor.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "发布新的实时语速版本失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type publishRoomVoiceBindingInput struct {
+	BindingID int64 `json:"binding_id"`
+}
+
+func (s *Server) liveAgentPlanPublishRoomVoiceBinding(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	roomID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
+	var input publishRoomVoiceBindingInput
+	if err := readJSON(w, r, &input); err != nil || input.BindingID <= 0 {
+		writeError(w, http.StatusBadRequest, "请选择要发布的声音模型")
+		return
+	}
+	binding, err := s.store.GetVoiceModelBinding(r.Context(), tenantID, input.BindingID)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(binding.Status), "ready") || strings.TrimSpace(binding.VoiceID) == "" {
+		writeError(w, http.StatusBadRequest, "声音模型绑定不存在或尚未准备好")
+		return
+	}
+	profile, err := s.store.GetVoiceProfile(r.Context(), tenantID, binding.ProfileID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "声音档案不存在")
+		return
+	}
+	if !s.requireLiveSupportVoice(w, r, actor, tenantID, profile, false) {
+		return
+	}
+	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
+		writeError(w, http.StatusConflict, "当前直播间还没有已发布智能体版本")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前已发布智能体版本失败")
+		return
+	}
+	rate := published.VoiceIdentity.Rate
+	if rate < 0.5 || rate > 2 {
+		rate = binding.Rate
+	}
+	if rate < 0.5 || rate > 2 {
+		rate = 1
+	}
+	identity := model.LiveAgentVoiceIdentity{
+		Name: profile.Name, Version: "V1", Source: "clone", Provider: binding.Provider,
+		VoiceID: binding.VoiceID, ProfileID: profile.ID, BindingID: binding.ID,
+		Model: binding.Model, Rate: rate,
+		EmotionEnabled: published.VoiceIdentity.EmotionEnabled,
+		Emotion:        published.VoiceIdentity.Emotion,
+		Style:          published.VoiceIdentity.Style,
+	}
+	inputVersion := model.CreateLiveAgentPlanVersionInput{
+		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
+		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
+		GenerationContext: published.GenerationContext,
+	}
+	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	created, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, actor.UserID, inputVersion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "保存新的实时声音版本失败")
+		return
+	}
+	result, err := s.store.PublishLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, roomID, created.ID, actor.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "发布新的实时声音版本失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 func (s *Server) liveAgentPlanPublishedVersionForRoom(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -528,6 +785,9 @@ func (s *Server) liveAgentPlanPublishedVersionForRoom(w http.ResponseWriter, r *
 	}
 	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
 	item, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { claimFreeMarketingOrder } from '../commerce'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
@@ -19,7 +20,6 @@ import PaginationBar from '../components/PaginationBar.vue'
 import RegionSelect from '../components/RegionSelect.vue'
 import {
   floorToWholeYuanCents,
-  formatWholeYuanMoney,
   marketingPayableCents,
 } from '../pricingRules'
 import type {
@@ -160,6 +160,8 @@ function marketingItemBaseCents(item: MarketingCampaignItem) {
 }
 
 function marketingItemPayableCents(item: MarketingCampaignItem) {
+  if(item.pricing_mode==='fixed') return item.fixed_price_cents ?? 0
+  if(item.pricing_mode==='free') return 0
   return marketingPayableCents(
     marketingItemBaseCents(item),
     normalizeMarketingDiscountBps(item.discount_bps),
@@ -167,7 +169,7 @@ function marketingItemPayableCents(item: MarketingCampaignItem) {
 }
 
 function formatMarketingMoney(cents: number) {
-  return formatWholeYuanMoney(cents)
+  return formatMoney(cents)
 }
 
 function marketingPlanBaseCents(plan: MarketingCampaign) {
@@ -395,7 +397,7 @@ async function load() {
   try {
     await Promise.all([loadProducts(), loadOrders()])
   } catch (value) {
-    error.value = value instanceof Error ? value.message : '读取终端商城数据失败'
+    error.value = value instanceof Error ? value.message : '读取小蓝商城数据失败'
   } finally {
     loading.value = false
   }
@@ -532,6 +534,9 @@ function openRefund(order: CustomerShopOrder) {
 
 async function submitPayment(result: 'success' | 'failure' = simulateResult.value) {
   if (!selectedOrder.value) return
+  if(selectedOrder.value.payable_amount_cents === 0){
+    paying.value=true;paymentError.value='';try{selectedOrder.value=(await claimFreeMarketingOrder(selectedOrder.value.id)).order;await loadOrders();successMessage.value='领取成功，权益已发放。';modal.value='order'}catch(e){paymentError.value=e instanceof Error?e.message:'领取失败'}finally{paying.value=false};return
+  }
   if (selectedOrder.value.order_type === 'time_card') {
     paying.value = true
     paymentError.value = ''
@@ -677,12 +682,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="management-page customer-shop-page">
-    <ModulePageNav context="workspace-customer" active-title="终端商城" />
+    <ModulePageNav context="workspace-customer" active-title="小蓝商城" />
 
     <section class="customer-shop-hero customer-shop-hero-compact">
       <div class="customer-shop-hero-copy">
         <p class="section-kicker">CUSTOMER STORE</p>
-        <h2>终端商城</h2>
+        <h2>小蓝商城</h2>
       </div>
     </section>
 
@@ -690,7 +695,7 @@ onBeforeUnmount(() => {
     <p v-if="successMessage" class="inline-success shop-success-message">
       {{ successMessage }}
     </p>
-    <div v-if="loading" class="panel-loading">正在读取终端商城商品...</div>
+    <div v-if="loading" class="panel-loading">正在读取小蓝商城商品...</div>
 
     <section v-if="!loading && visibleMarketingPlans.length" class="shop-marketing-section">
       <header class="shop-category-head">
@@ -707,7 +712,7 @@ onBeforeUnmount(() => {
             <div>
               <span>{{ plan.items.length }} 项营销内容</span>
               <h3>{{ plan.name }}</h3>
-              <p v-if="plan.description">{{ plan.description }}</p>
+              <p v-if="plan.description">{{ plan.description }}</p><p v-if="plan.controls?.audience && plan.controls.audience!=='all'">新开户专享 · 每人限领一次</p><p v-if="plan.eligible===false">{{plan.ineligible_reason}}</p>
             </div>
             <strong class="shop-marketing-total">{{ formatMarketingMoney(marketingPlanPayableCents(plan)) }}</strong>
           </header>
@@ -735,11 +740,11 @@ onBeforeUnmount(() => {
                 <small>{{ marketingItemDetail(item) }}</small>
               </div>
               <div class="shop-marketing-item-discount" :class="{ gift: item.discount_bps === 0 }">
-                {{ marketingDiscountLabel(item.discount_bps) }}
+                {{ item.pricing_mode==='fixed'?'固定售价':item.pricing_mode==='free'?'免费领取':marketingDiscountLabel(item.discount_bps) }}
               </div>
               <div class="shop-marketing-item-price">
                 <del>{{ formatMarketingMoney(marketingItemBaseCents(item)) }}</del>
-                <strong>{{ item.discount_bps === 0 ? '赠送' : formatMarketingMoney(marketingItemPayableCents(item)) }}</strong>
+                <strong>{{ marketingItemPayableCents(item) === 0 ? '免费领取' : formatMarketingMoney(marketingItemPayableCents(item)) }}</strong>
               </div>
             </div>
           </div>
@@ -747,26 +752,44 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section v-if="!loading && products.length" class="customer-shop-grid">
+    <section v-if="!loading && products.length" class="customer-shop-grid time-card-shop-grid">
       <article
         v-for="product in pagedProducts"
         :key="product.id"
-        class="time-card-product"
+        class="time-card-product time-card-showcase"
       >
         <header class="time-card-product-head">
-          <div>
-            <span class="time-card-product-badge">{{ badge(product) }}</span>
+          <div class="time-card-title-copy">
+            <span class="time-card-product-badge">
+              <span class="time-card-badge-gem" aria-hidden="true">◆</span>
+              {{ badge(product) }}
+            </span>
             <h3>{{ product.name }}</h3>
+            <p class="time-card-description">
+              {{ product.description || '适合灵活补充 AI 算力，即买即用。' }}
+            </p>
+            <div class="time-card-feature-chips" aria-label="商品特点">
+              <span><b>✓</b>灵活体验</span>
+              <span><b>✓</b>即买即用</span>
+              <span><b>✓</b>高性价比</span>
+            </div>
           </div>
-          <div class="time-card-hours">
-            <strong>{{ hours(product).toLocaleString('zh-CN') }}</strong>
-            <span>小时</span>
+          <div class="time-card-artwork" aria-hidden="true">
+            <span class="time-card-hours-script">
+              {{ hours(product).toLocaleString('zh-CN') }} hours
+            </span>
+            <div class="time-card-clock">
+              <i class="clock-tick clock-tick-top"></i>
+              <i class="clock-tick clock-tick-right"></i>
+              <i class="clock-tick clock-tick-bottom"></i>
+              <i class="clock-tick clock-tick-left"></i>
+              <b class="clock-hand clock-hand-hour"></b>
+              <b class="clock-hand clock-hand-minute"></b>
+              <em class="clock-center"></em>
+            </div>
+            <span class="time-card-lightning">⚡</span>
           </div>
         </header>
-
-        <p class="time-card-description">
-          {{ product.description || '时长卡商品' }}
-        </p>
 
         <div class="time-card-price-block">
           <div class="time-card-sale-price">
@@ -781,29 +804,36 @@ onBeforeUnmount(() => {
             </del>
             <strong v-else>{{ formatMoney(product.original_price_cents) }}</strong>
           </div>
+          <span class="time-card-value-badge">超值{{ badge(product) }}</span>
         </div>
 
         <div class="time-card-meta">
           <div>
+            <i aria-hidden="true">%</i>
             <span>当前折扣</span>
             <strong>{{ discountLabel(product) }}</strong>
           </div>
           <div>
+            <i aria-hidden="true">¥</i>
             <span>立省</span>
             <strong>{{ formatMoney(savings(product)) }}</strong>
           </div>
           <div>
+            <i aria-hidden="true">▣</i>
             <span>首次使用后有效</span>
             <strong>{{ product.validity_days }} 天</strong>
           </div>
         </div>
 
         <small class="time-card-activation-note">
-          购买后不会立即开始倒计时；首次实际使用时自动激活。
-          <template v-if="product.activation_deadline_days > 0">
-            需在购买后 {{ product.activation_deadline_days }} 天内激活。
-          </template>
-          <template v-else>未激活前可长期储备。</template>
+          <i aria-hidden="true">i</i>
+          <span>
+            购买后不会立即开始倒计时；首次实际使用时自动激活。
+            <template v-if="product.activation_deadline_days > 0">
+              需在购买后 {{ product.activation_deadline_days }} 天内激活。
+            </template>
+            <template v-else>未激活前可长期储备。</template>
+          </span>
         </small>
 
         <div
@@ -818,22 +848,20 @@ onBeforeUnmount(() => {
               class="shop-product-marketing-option"
             >
               <small>
-                {{ entry.plan.name }} · {{ marketingDiscountLabel(entry.item.discount_bps) }}
+                {{ entry.plan.name }} · {{ entry.item.pricing_mode==='fixed'?'固定售价':entry.item.pricing_mode==='free'?'免费领取':marketingDiscountLabel(entry.item.discount_bps) }}
                 · {{ entry.item.quantity || 1 }}份
               </small>
               <button
                 type="button"
                 class="shop-marketing-buy-link"
-                :disabled="creatingOrder === product.id"
+                :disabled="creatingOrder === product.id || entry.plan.eligible === false"
                 @click="buy(product, entry.plan.id, entry.item.quantity || 1)"
               >
-                活动价 {{ formatMarketingMoney(marketingItemPayableCents(entry.item)) }} · 购买
+                {{ entry.plan.eligible === false ? entry.plan.ineligible_reason : marketingItemPayableCents(entry.item) === 0 ? '免费领取' : '活动价 '+formatMarketingMoney(marketingItemPayableCents(entry.item))+' · 购买' }}
               </button>
             </div>
           </div>
         </div>
-
-        <small class="time-card-version">商品版本 V{{ product.version_no }}</small>
 
         <button
           class="time-card-buy-button enabled"
@@ -841,7 +869,8 @@ onBeforeUnmount(() => {
           :disabled="creatingOrder === product.id"
           @click="buy(product)"
         >
-          {{ creatingOrder === product.id ? '正在创建订单...' : '立即购买' }}
+          <span>{{ creatingOrder === product.id ? '正在创建订单...' : '立即购买' }}</span>
+          <i aria-hidden="true">›</i>
         </button>
       </article>
     </section>
@@ -941,7 +970,7 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="shop-marketing-buy-link"
-                  :disabled="(entry.item.quantity || 1) > product.available_stock"
+                  :disabled="(entry.item.quantity || 1) > product.available_stock || entry.plan.eligible === false"
                   @click="openDevicePurchase(product, entry.plan, entry.item)"
                 >
                   活动价 {{ formatMarketingMoney(marketingItemPayableCents(entry.item)) }} · 购买
@@ -949,8 +978,6 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-
-          <small class="time-card-version">商品版本 V{{ product.version_no }}</small>
 
           <button
             class="time-card-buy-button enabled"
@@ -984,7 +1011,7 @@ onBeforeUnmount(() => {
     <section class="settings-card shop-orders-panel">
       <header class="inventory-section-head">
         <div>
-          <strong>我的终端商城订单</strong>
+          <strong>我的小蓝商城订单</strong>
           <span>订单金额为下单时快照，后台后续改价不会影响已经生成的订单。</span>
         </div>
         <button class="ghost-button" type="button" :disabled="ordersLoading" @click="loadOrders">
@@ -1011,7 +1038,7 @@ onBeforeUnmount(() => {
           <tbody>
             <tr v-for="order in pagedOrders" :key="order.id">
               <td><strong>{{ order.order_no }}</strong></td>
-              <td>{{ order.items[0]?.product_name || '终端商城商品' }}</td>
+              <td>{{ order.items[0]?.product_name || '小蓝商城商品' }}</td>
               <td>{{ orderSpec(order) }}</td>
               <td>{{ formatMoney(order.list_amount_cents) }}</td>
               <td>{{ formatMoney(order.discount_amount_cents) }}</td>
@@ -1057,7 +1084,7 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
       </div>
-      <div v-else class="empty-state">还没有终端商城订单。</div>
+      <div v-else class="empty-state">还没有小蓝商城订单。</div>
       <PaginationBar
         :page="Math.min(orderPage, orderPageCount)"
         :total-pages="orderPageCount"
@@ -1197,7 +1224,7 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <span>商品</span>
-            <strong>{{ selectedOrder.items[0]?.product_name || '终端商城商品' }}</strong>
+            <strong>{{ selectedOrder.items[0]?.product_name || '小蓝商城商品' }}</strong>
           </div>
           <div>
             <span>{{ selectedOrder.order_type === 'device' ? '购买数量' : '购买时长' }}</span>
@@ -1210,7 +1237,8 @@ onBeforeUnmount(() => {
         </section>
 
         <template v-if="modal === 'payment'">
-          <template v-if="selectedOrder.order_type === 'time_card'">
+          <template v-if="selectedOrder.payable_amount_cents === 0"><p v-if="paymentError" class="inline-error">{{paymentError}}</p><button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">{{paying?'领取中':'确认免费领取'}}</button></template>
+          <template v-else-if="selectedOrder.order_type === 'time_card'">
             <div class="sandbox-payment-warning time-card-wallet-payment-note">
               <strong>使用钱包余额购买</strong>
               <p>请先充值钱包余额，再购买时长卡。支付成功后，卡片只会进入“AI 时长 → 时长卡包”，不会立即计入 AI 时长。</p>

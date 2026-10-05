@@ -495,6 +495,16 @@ export interface SystemSettingsDashboard {
 
 export interface PublicSystemConfig {
   site_name: string
+  auth_customer_side_label: string
+  auth_customer_title_line_1: string
+  auth_customer_title_line_2: string
+  auth_customer_description: string
+  auth_customer_status_label: string
+  auth_internal_side_label: string
+  auth_internal_title_line_1: string
+  auth_internal_title_line_2: string
+  auth_internal_description: string
+  auth_internal_status_label: string
   internal_agent_name: string
   client_agent_name: string
   live_policy_rule_title_font_size: number
@@ -517,6 +527,7 @@ export interface PublicSystemConfig {
 export interface Room {
   id: number
   tenant_id: number
+  customer_name?: string
   platform: string
   external_room_id: string
   source_url?: string
@@ -638,31 +649,29 @@ export interface RoomStrategyStageStats {
   interaction_items: RoomInteractionWindowStat[]
 }
 
-export type InteractionPreferenceLevel = 'less' | 'natural' | 'more'
-export type OverallInteractionLevel = 'quiet' | 'natural' | 'active'
-export type ConversionInteractionLevel = 'steady' | 'natural' | 'active'
+export type InteractionPreferenceScore = number
 
 export interface RoomInteractionPreferences {
   tenant_id: number
   room_id: number
-  overall_interaction: OverallInteractionLevel
-  question_preference: InteractionPreferenceLevel
-  welcome_preference: InteractionPreferenceLevel
-  engagement_preference: InteractionPreferenceLevel
-  chat_preference: InteractionPreferenceLevel
-  conversion_preference: ConversionInteractionLevel
+  overall_interaction: InteractionPreferenceScore
+  question_preference: InteractionPreferenceScore
+  welcome_preference: InteractionPreferenceScore
+  engagement_preference: InteractionPreferenceScore
+  chat_preference: InteractionPreferenceScore
+  conversion_preference: InteractionPreferenceScore
   auto_heat: boolean
   updated_by_user_id?: number
   updated_at?: string
 }
 
 export interface RoomInteractionPreferencesInput {
-  overall_interaction: OverallInteractionLevel
-  question_preference: InteractionPreferenceLevel
-  welcome_preference: InteractionPreferenceLevel
-  engagement_preference: InteractionPreferenceLevel
-  chat_preference: InteractionPreferenceLevel
-  conversion_preference: ConversionInteractionLevel
+  overall_interaction: InteractionPreferenceScore
+  question_preference: InteractionPreferenceScore
+  welcome_preference: InteractionPreferenceScore
+  engagement_preference: InteractionPreferenceScore
+  chat_preference: InteractionPreferenceScore
+  conversion_preference: InteractionPreferenceScore
   auto_heat: boolean
 }
 
@@ -1255,6 +1264,8 @@ export interface CreateRoomPayload {
 }
 
 export interface LiveDevice {
+	device_name: string
+	display_status: string
   id: number
   sn: string
   sku_code: string
@@ -1414,6 +1425,8 @@ export interface LiveAgentPlanFactCandidate {
   category: 'product' | 'link' | 'trade' | 'fulfillment' | 'identity_location' | 'other' | string
   key: string
   value: string
+  forbidden_wording?: string
+  safe_rewrite?: string
   status: 'pending' | 'confirmed' | 'disabled' | string
   review_bucket?: 'adoptable' | 'conflict' | 'discuss' | 'violation' | string
   review_reason?: string
@@ -1510,11 +1523,177 @@ export interface LiveAgentPlanAnchorStyleDimension {
 }
 
 export interface LiveAgentPlanAnchorStyleProfile {
+	 delivery_spec?: {
+    version: string
+    instructions: string[]
+    literal_habits: { kind: string; text: string; position: string; when: string; avoid?: string; count: number }[]
+    rulebook: string
+    sample_chars: number
+    sentence_count: number
+    average_sentence_chars: number
+    source_sha256: string
+  }
   summary?: string
   dimensions: LiveAgentPlanAnchorStyleDimension[]
   reusable_rules: string[]
   candidate_patterns: string[]
   excluded_from_style: string[]
+}
+
+export interface LiveAnchorStyle {
+  id: number
+  tenant_id: number
+  name: string
+  description?: string
+  status: string
+  profile: LiveAgentPlanAnchorStyleProfile
+  plugin_settings: LiveAnchorStylePluginSetting[]
+  sample_count: number
+  training_count: number
+  bound_plan_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAnchorStyleSample {
+  id: number
+  style_id: number
+  title: string
+  source_type: string
+  original_name?: string
+  raw_text: string
+  readable_text: string
+  analysis_status: 'pending' | 'analyzing' | 'analyzed' | 'failed' | string
+  analysis: LiveAgentPlanAnchorStyleProfile
+  provider?: string
+  model?: string
+  latency_ms?: number
+  progress: number
+  stage?: string
+  error_message?: string
+  analyzed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAnchorStyleTraining {
+  id: number
+  style_id: number
+  request_text: string
+  target_chars: number
+  heat: number
+  expansion_freedom: number
+  selected_facts: string[]
+  generated_text: string
+  score?: Record<string, unknown>
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface LiveAnchorStylePluginSetting {
+  id?: number
+  style_id?: number
+  plugin_id: string
+  plugin_version: string
+  enabled: boolean
+  parameters?: Record<string, unknown>
+  updated_at?: string
+}
+
+export interface LiveAnchorStyleOverlayRule {
+  version: 'anchor-style-overlay/v1' | string
+  category: 'humor' | 'tone' | 'rhythm' | 'structure' | 'lexical' | 'storytelling' | 'interaction_delivery' | 'delivery_other' | string
+  label: string
+  application: 'always' | 'occasional' | 'conditional' | string
+  strength: number
+  mainline_instruction: string
+  interaction_instruction: string
+  serious_instruction: string
+  mainline_min_per_1000_chars?: number
+  mainline_max_per_1000_chars?: number
+  interaction_max_occurrences?: number
+  micro_actions?: string[]
+  avoid: string[]
+  confidence: number
+}
+
+export interface LiveAnchorStyleOverlayItem {
+  id: string
+  source_text: string
+  explanation_text?: string
+  enabled: boolean
+  rule: LiveAnchorStyleOverlayRule
+  interpretation_source?: string
+  learning_basis?: 'sample_evidence' | 'human_feedback' | string
+  evidence_quotes?: string[]
+  plugin?: {
+    instance_id: string
+    plugin_id: string
+    plugin_version: string
+    parameters?: Record<string, unknown>
+  }
+}
+
+export interface LiveAgentPlanStyleOverlayProfile {
+  tenant_id: number
+  plan_id: number
+  items: LiveAnchorStyleOverlayItem[]
+  revision: number
+  updated_by_user_id?: number
+  updated_at?: string
+}
+
+export interface AnchorStylePluginParameterDefinition {
+  type: 'integer' | 'number' | 'boolean' | 'string' | 'string_array' | string
+  description: string
+  required?: boolean
+  default?: unknown
+  minimum?: number
+  maximum?: number
+  min_items?: number
+  max_items?: number
+  enum?: string[]
+}
+
+export interface AnchorStylePluginManifest {
+  api_version: 'anchor-style-plugin/v1' | string
+  id: string
+  version: string
+  name: string
+  description: string
+  mode: 'declarative' | 'trusted_executor' | string
+  category: string
+  scenes: string[]
+  parameters?: Record<string, AnchorStylePluginParameterDefinition>
+  requires?: string[]
+  conflicts?: string[]
+  safety: {
+    may_emit_intentional_false_derived_value: boolean
+    may_change_source_fact: false
+    atomic_output_required: boolean
+    interruptible: boolean
+    allowed_fact_kinds?: string[]
+    forbidden_scenes?: string[]
+  }
+  compiler: {
+    recognized_intents?: string[]
+    output_capability: string
+    instructions?: Record<string, string>
+    micro_actions?: string[]
+  }
+  runtime?: { executor: string }
+}
+
+export interface AnchorStylePluginCatalogItem {
+  manifest: AnchorStylePluginManifest
+  activation_supported: boolean
+  activation_reason?: string
+}
+
+export interface AnchorStylePluginCatalog {
+  available: boolean
+  items: AnchorStylePluginCatalogItem[]
 }
 
 export interface LiveAgentPlanRhythmNode {
@@ -1544,7 +1723,22 @@ export interface LiveAgentPlanScriptAnalysisPreviewResponse {
   provider?: string
   model?: string
   latency_ms?: number
+	analysis_latency_ms?: number
+	pipeline?: 'anchor_style_only' | string
+	style_qc?: LiveAnchorStyleAnalysisQC
   persisted: false
+}
+
+export interface LiveAnchorStyleAnalysisQC {
+	available: boolean
+	passed: boolean
+	coverage_score: number
+	purity_score: number
+	issue_codes: string[]
+	summary: string
+	model?: string
+	latency_ms?: number
+	error?: string
 }
 
 export interface LiveAgentPlanImageRecognitionPreviewResponse {
@@ -1565,9 +1759,12 @@ export interface LiveAgentPlanImageRecognitionPreviewResponse {
 }
 
 export interface LiveAgentFullShowContextFact {
+  source_id?: number
   category: string
   key: string
   value: string
+  forbidden_wording?: string
+  safe_rewrite?: string
   version: number
 }
 
@@ -1581,6 +1778,36 @@ export interface LiveAgentFullShowContextScriptReference {
   version: number
 }
 
+export interface LiveFactExpansionPolicy {
+  version: string
+  user_authorized: boolean
+  freedom: number
+  level: 'conservative' | 'balanced' | 'open' | 'edge_compliant' | string
+  allowed: string[]
+  always_locked: string[]
+  boundary_rewrite_first: boolean
+}
+
+export interface LiveAgentGenerationFact {
+  fact_id: string
+  source_kind: 'product' | 'benefit' | 'supplemental_fact' | string
+  source_id?: number
+  source_key: string
+  scope_kind: 'plan' | 'product_link' | string
+  link_key?: string
+  product_name?: string
+  predicate: string
+  label: string
+  value: string
+  valid_from?: string
+  valid_until?: string
+  forbidden_wording?: string
+  safe_rewrite?: string
+  status: string
+  version: number
+  can_generate: boolean
+}
+
 export interface LiveAgentFullShowGenerationContext {
   plan_id: number
   plan_name: string
@@ -1591,9 +1818,14 @@ export interface LiveAgentFullShowGenerationContext {
   formal_facts: LiveAgentFullShowContextFact[]
   benefits: LiveAgentPlanBenefit[]
   product_links: LiveAgentPlanProductLink[]
+  fact_manifest_version?: string
+  authorized_facts?: LiveAgentGenerationFact[]
   script_references: LiveAgentFullShowContextScriptReference[]
   rhythm_nodes: LiveAgentPlanRhythmNode[]
   anchor_style: LiveAgentPlanAnchorStyleProfile
+  style_overlay_prompt?: string
+  style_overlay_count: number
+  fact_expansion?: LiveFactExpansionPolicy
   duration_minutes: number
   round_minutes: number
   round_count: number
@@ -1656,6 +1888,7 @@ export interface LiveAgentFullShowPreviewInput {
   duration_minutes: number
   round_minutes: number
   variant_count: number
+  expansion_freedom: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean
   generate_tts_hints: boolean
@@ -1685,6 +1918,7 @@ export interface LiveAgentFullShowRegenerateInput {
   room_id?: number
   duration_minutes: number
   round_minutes: number
+  expansion_freedom: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean
   generate_tts_hints: boolean
@@ -1711,9 +1945,11 @@ export interface LiveAgentVoiceIdentity {
   provider: string
   voice_id: string
   profile_id?: number
+  binding_id?: number
   model: string
   rate?: number
   emotion?: string
+  emotion_enabled?: boolean
   style?: Record<string, unknown>
 }
 
@@ -1829,6 +2065,8 @@ export interface LiveAgentPlanFact {
   category: string
   key: string
   value: string
+  forbidden_wording?: string
+  safe_rewrite?: string
   source_quote?: string
   source_review_bucket?: string
   source_review_reason?: string
@@ -2429,6 +2667,22 @@ export interface VoiceProfile {
   updated_at: string
 }
 
+export interface VoiceModelBinding {
+  id: number
+  tenant_id: number
+  profile_id: number
+  sample_asset_id: number
+  provider: string
+  model: string
+  voice_id: string
+  rate: number
+  status: 'ready' | 'failed' | 'disabled' | string
+  config?: Record<string, unknown>
+  created_by_user_id?: number
+  created_at: string
+  updated_at: string
+}
+
 export interface OfficialVoice {
   id: string
   name: string
@@ -2660,11 +2914,22 @@ export interface RefundRecord {
   created_at: string
 }
 
+export interface WechatCashRefund {
+  tenant_id?: number; tenant_name?: string;
+  id: number; refund_no: string; amount_cents: number; refunded_cents: number;
+  released_cents: number; frozen_cents: number; status: string; created_at: string;
+  items: { id: number; refund_no: string; recharge_no: string; amount_cents: number; status: string; received_account: string; message: string }[];
+}
+export interface WechatRefundWallet {
+  available_cents: number; frozen_cents: number; refundable_cents: number; records: WechatCashRefund[];
+}
 export interface FinanceDashboard {
   cash_balance_cents: number
   reward_balance_cents: number
   commission_balance_cents: number
   commission_frozen_cents: number
+  bean_balance: number
+  bean_frozen: number
   total_balance_cents: number
   month_spent_cents: number
   available_seconds: number
@@ -2674,6 +2939,134 @@ export interface FinanceDashboard {
   purchases: PurchaseRecord[]
   refunds: RefundRecord[]
   payments: SandboxPaymentRecord[]
+}
+
+export interface BeanWallet {
+  id: number
+  owner_type: 'customer' | 'staff' | 'platform'
+  owner_id: number
+  available_beans: number
+  frozen_beans: number
+  status: string
+  version: number
+  updated_at: string
+}
+
+export interface BeanLedgerEntry {
+  id: number
+  external_id: string
+  wallet_id: number
+  available_delta: number
+  frozen_delta: number
+  available_before: number
+  available_after: number
+  frozen_before: number
+  frozen_after: number
+  business_type: string
+  reference_type: string
+  reference_id?: number
+  reason: string
+  created_at: string
+}
+
+export interface BeanCommerceSettings {
+  purchase_beans_per_yuan: number
+  minimum_purchase_cents: number
+  staff_cash_fen_per_100_beans: number
+  minimum_staff_conversion_beans: number
+  enabled: boolean
+  version: number
+  updated_by_user_id: number
+  updated_at: string
+}
+
+export interface BeanPricingRule {
+  id: number
+  action_code: string
+  action_name: string
+  category: string
+  description: string
+  charge_mode: 'fixed' | 'per_unit'
+  beans_per_unit: number
+  unit_size: number
+  minimum_charge_beans: number
+  maximum_charge_beans: number
+  staff_reward_bps: number
+  enabled: boolean
+  version: number
+  updated_by_user_id: number
+  updated_at: string
+}
+
+export type BeanPricingRuleInput = Omit<BeanPricingRule, 'id' | 'updated_by_user_id' | 'updated_at'>
+export type BeanCommerceSettingsInput = Omit<BeanCommerceSettings, 'updated_by_user_id' | 'updated_at'>
+
+export interface BeanPurchaseOrder {
+  id: number
+  purchase_no: string
+  tenant_id: number
+  cash_amount_cents: number
+  beans_per_yuan_snapshot: number
+  credited_beans: number
+  status: string
+  operator_user_id: number
+  created_at: string
+}
+
+export interface BeanChargeQuote {
+  action_code: string
+  action_name: string
+  units: number
+  quoted_beans: number
+  rule_id: number
+  rule_version: number
+  pricing_enabled: boolean
+}
+
+export interface BeanConversionRequest {
+  id: number
+  conversion_no: string
+  user_id: number
+  user_name: string
+  bean_amount: number
+  cash_amount_cents: number
+  cash_fen_per_100_beans_snapshot: number
+  status: string
+  reject_reason: string
+  requested_at: string
+  approved_at?: string
+  paid_at?: string
+}
+
+export interface BeanWalletDashboard {
+  wallet: BeanWallet
+  ledger: BeanLedgerEntry[]
+  purchases?: BeanPurchaseOrder[]
+  conversions?: BeanConversionRequest[]
+  settings: BeanCommerceSettings
+}
+
+export interface BeanCommercialSummary {
+  customer_available_beans: number
+  customer_frozen_beans: number
+  staff_available_beans: number
+  staff_frozen_beans: number
+  purchased_beans: number
+  purchase_cash_cents: number
+  charged_beans: number
+  pending_conversion_cents: number
+}
+
+export interface BeanCommercialDashboard {
+  settings: BeanCommerceSettings
+  rules: BeanPricingRule[]
+  summary: BeanCommercialSummary
+}
+
+export interface BeanFinanceDashboard {
+  summary: BeanCommercialSummary
+  conversions: BeanConversionRequest[]
+  recent_ledger: BeanLedgerEntry[]
 }
 
 export interface BeneficiaryWallet {
@@ -2751,7 +3144,10 @@ export interface CommercialMembershipVersion {
   created_at: string
 }
 
+export interface MarketingCampaignControls { audience: 'all' | 'new_since_start' | 'new_within_days'; new_account_days: number; max_claims: number; max_units: number; benefit_key: string; require_phone: boolean }
+
 export interface MarketingCampaignItem {
+  fixed_price_cents?: number
   id?: number
   campaign_id?: number
   target_type: 'membership' | 'time_card' | 'device_product' | string
@@ -2764,6 +3160,9 @@ export interface MarketingCampaignItem {
 }
 
 export interface MarketingCampaign {
+  controls?: MarketingCampaignControls
+  eligible?: boolean
+  ineligible_reason?: string
   id: number
   code: string
   name: string
@@ -2787,6 +3186,7 @@ export interface MarketingCampaign {
 }
 
 export interface MarketingCampaignInput {
+  controls?: MarketingCampaignControls
   code: string
   name: string
   description: string
@@ -3163,6 +3563,9 @@ export interface InventoryDeviceSKUType {
 }
 
 export interface InventoryBatchInboundInput {
+	batch_prefix?: string
+	batch_suffix?: string
+	hardware_macs?: string[]
   product_id: number
   batch_no: string
   purchase_no: string
@@ -3194,6 +3597,8 @@ export interface InventoryBatchInboundResult {
 }
 
 export interface InventoryDevice {
+	claim_enabled?: boolean
+	hardware_mac?: string
   id: number
   sn: string
   sku_code: string
@@ -3354,6 +3759,7 @@ export interface AfterSalesRequestInput {
 }
 
 export interface InventoryCreateDeviceInput {
+	hardware_mac?: string
   sn: string
   sku_code: string
   batch_no: string

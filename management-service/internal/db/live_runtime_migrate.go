@@ -21,6 +21,27 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			return fmt.Errorf("apply live runtime schema: %w", err)
 		}
 	}
+	for _, column := range []struct {
+		table string
+		name  string
+		sql   string
+	}{
+		{"live_agent_plan_facts", "forbidden_wording", "ALTER TABLE live_agent_plan_facts ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
+		{"live_agent_plan_facts", "safe_rewrite", "ALTER TABLE live_agent_plan_facts ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
+		{"live_agent_plan_fact_revisions", "forbidden_wording", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
+		{"live_agent_plan_fact_revisions", "safe_rewrite", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
+	} {
+		exists, err := s.columnExists(ctx, column.table, column.name)
+		if err != nil {
+			return fmt.Errorf("check %s.%s: %w", column.table, column.name, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, column.sql); err != nil {
+			return fmt.Errorf("add %s.%s: %w", column.table, column.name, err)
+		}
+	}
 	columns := []struct {
 		name string
 		sql  string
@@ -43,6 +64,30 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			return fmt.Errorf("add live learning column %s: %w", column.name, err)
 		}
 	}
+	runtimeRealmExists, err := s.columnExists(ctx, "live_runtime_sessions", "execution_realm")
+	if err != nil {
+		return fmt.Errorf("check live runtime execution realm column: %w", err)
+	}
+	if !runtimeRealmExists {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_runtime_sessions ADD COLUMN execution_realm VARCHAR(96) NOT NULL DEFAULT 'prod' AFTER device_id"); err != nil {
+			return fmt.Errorf("add live runtime execution realm column: %w", err)
+		}
+	}
+	executionIndexColumns, err := s.indexColumns(ctx, "live_runtime_sessions", "idx_live_runtime_execution")
+	if err != nil {
+		return fmt.Errorf("check live runtime execution realm index: %w", err)
+	}
+	if strings.Join(executionIndexColumns, ",") != "execution_realm,status,started_at" {
+		if len(executionIndexColumns) > 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_runtime_sessions DROP INDEX idx_live_runtime_execution"); err != nil {
+				return fmt.Errorf("drop legacy live runtime execution realm index: %w", err)
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_runtime_sessions ADD KEY idx_live_runtime_execution (execution_realm, status, started_at)"); err != nil {
+			return fmt.Errorf("add live runtime execution realm index: %w", err)
+		}
+	}
+
 	reservedExists, err := s.columnExists(ctx, "quota_buckets", "reserved_seconds")
 	if err != nil {
 		return fmt.Errorf("check quota reserved column: %w", err)
@@ -95,6 +140,22 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		}
 		if _, err := s.db.ExecContext(ctx, "ALTER TABLE live_agent_plan_room_bindings ADD UNIQUE KEY uk_live_agent_plan_active_room (tenant_id, plan_id, active_room_id)"); err != nil {
 			return fmt.Errorf("add multi-plan room unique key: %w", err)
+		}
+	}
+	semanticIndexColumns, err := s.indexColumns(ctx, "semantic_documents", "uk_semantic_document_source")
+	if err != nil {
+		return fmt.Errorf("check semantic source unique key: %w", err)
+	}
+	if strings.Join(semanticIndexColumns, ",") != "tenant_id,room_id,plan_id,content_type,source_id,source_version,embedding_model" {
+		const addScopedSemanticIndex = "ADD UNIQUE KEY uk_semantic_document_source (tenant_id, room_id, plan_id, content_type, source_id, source_version, embedding_model)"
+		if len(semanticIndexColumns) > 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE semantic_documents DROP INDEX uk_semantic_document_source, "+addScopedSemanticIndex); err != nil {
+				return fmt.Errorf("replace legacy semantic source unique key: %w", err)
+			}
+		} else {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE semantic_documents "+addScopedSemanticIndex); err != nil {
+				return fmt.Errorf("add scoped semantic source unique key: %w", err)
+			}
 		}
 	}
 

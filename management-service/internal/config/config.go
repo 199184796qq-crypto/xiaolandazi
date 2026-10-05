@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"livecompanion/management/internal/wechatpay"
 )
 
 type Config struct {
@@ -33,9 +35,11 @@ type Config struct {
 	OSSURLExpirySeconds       int
 	CoreBaseURL               string
 	CoreToken                 string
+	XiaozhiInternalToken      string
 	RuntimeReconcileWorkers   int
 	RuntimeReconcileBatch     int
 	NodeID                    string
+	RuntimeExecutionRealm     string
 	ReconcileLeaderTTLSeconds int
 	DevTenantCode             string
 	DevTenantName             string
@@ -47,12 +51,16 @@ type Config struct {
 	SMTPFromEmail             string
 	SMTPFromName              string
 	SMTPTLSMode               string
+	AnchorStylePluginDir      string
+	WechatPay                 wechatpay.Config
 }
 
 func Load() Config {
+	appEnv := envOrDefault("APP_ENV", "development")
+	publicWebURL := envOrDefault("PUBLIC_WEB_BASE_URL", "http://127.0.0.1:5173")
 	return Config{
 		Addr:                      envOrDefault("MGMT_ADDR", "127.0.0.1:8080"),
-		Env:                       envOrDefault("APP_ENV", "development"),
+		Env:                       appEnv,
 		DBHost:                    envOrDefault("DB_HOST", "127.0.0.1"),
 		DBPort:                    envOrDefault("DB_PORT", "3306"),
 		DBName:                    envOrDefault("DB_NAME", "livecompanion"),
@@ -76,13 +84,15 @@ func Load() Config {
 		OSSURLExpirySeconds:       envPositiveInt("OSS_URL_EXPIRY_SECONDS", 900),
 		CoreBaseURL:               envOrDefault("CORE_BASE_URLS", envOrDefault("CORE_BASE_URL", "http://127.0.0.1:8081")),
 		CoreToken:                 envOrDefault("CORE_INTERNAL_TOKEN", "local-core-dev-token"),
+		XiaozhiInternalToken:      strings.TrimSpace(os.Getenv("XIAOZHI_INTERNAL_TOKEN")),
 		RuntimeReconcileWorkers:   envPositiveInt("LIVE_RUNTIME_RECONCILE_WORKERS", 16),
 		RuntimeReconcileBatch:     envPositiveInt("LIVE_RUNTIME_RECONCILE_BATCH", 500),
 		NodeID:                    envOrDefault("MGMT_NODE_ID", defaultNodeID("management")),
+		RuntimeExecutionRealm:     envOrDefault("LIVE_RUNTIME_EXECUTION_REALM", defaultExecutionRealm(appEnv)),
 		ReconcileLeaderTTLSeconds: envPositiveInt("MGMT_RECONCILE_LEADER_TTL_SECONDS", 15),
 		DevTenantCode:             envOrDefault("DEV_TENANT_CODE", "demo"),
 		DevTenantName:             envOrDefault("DEV_TENANT_NAME", "演示终端"),
-		PublicWebURL:              envOrDefault("PUBLIC_WEB_BASE_URL", "http://127.0.0.1:5173"),
+		PublicWebURL:              publicWebURL,
 		SMTPHost:                  strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:                  envOrDefault("SMTP_PORT", "587"),
 		SMTPUsername:              strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
@@ -90,7 +100,28 @@ func Load() Config {
 		SMTPFromEmail:             strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")),
 		SMTPFromName:              envOrDefault("SMTP_FROM_NAME", "伴播搭子"),
 		SMTPTLSMode:               envOrDefault("SMTP_TLS_MODE", "starttls"),
+		AnchorStylePluginDir:      envOrDefault("ANCHOR_STYLE_PLUGIN_DIR", "plugins/anchor-style"),
+		WechatPay: wechatpay.Config{
+			Enabled:                   strings.EqualFold(strings.TrimSpace(os.Getenv("WECHAT_PAY_ENABLED")), "true"),
+			AppID:                     strings.TrimSpace(os.Getenv("WECHAT_PAY_APP_ID")),
+			MchID:                     strings.TrimSpace(os.Getenv("WECHAT_PAY_MCH_ID")),
+			MerchantCertificateSerial: strings.TrimSpace(os.Getenv("WECHAT_PAY_MERCHANT_CERT_SERIAL_NO")),
+			MerchantPrivateKeyPath:    strings.TrimSpace(os.Getenv("WECHAT_PAY_MERCHANT_PRIVATE_KEY_PATH")),
+			APIV3Key:                  os.Getenv("WECHAT_PAY_API_V3_KEY"),
+			WechatPayPublicKeyID:      strings.TrimSpace(os.Getenv("WECHAT_PAY_PUBLIC_KEY_ID")),
+			WechatPayPublicKeyPath:    strings.TrimSpace(os.Getenv("WECHAT_PAY_PUBLIC_KEY_PATH")),
+			OfficialAccountAppSecret:  os.Getenv("WECHAT_OFFICIAL_ACCOUNT_APP_SECRET"),
+			NotifyURL:                 envOrDefault("WECHAT_PAY_NOTIFY_URL", strings.TrimRight(publicWebURL, "/")+"/api/v1/payments/wechat/notify"),
+			OAuthCallbackURL:          envOrDefault("WECHAT_PAY_OAUTH_CALLBACK_URL", strings.TrimRight(publicWebURL, "/")+"/api/v1/payments/wechat/oauth/callback"),
+		},
 	}
+}
+
+func defaultExecutionRealm(appEnv string) string {
+	if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+		return "prod"
+	}
+	return "dev-local"
 }
 
 func defaultNodeID(prefix string) string {

@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"livecompanion/management/internal/model"
 )
 
-var ErrLiveAgentPlanNotFound = errors.New("live agent plan not found")
+var (
+	ErrLiveAgentPlanNotFound     = errors.New("live agent plan not found")
+	ErrLiveAgentPlanNotPublished = errors.New("live agent plan not published for room")
+)
 
 func (s *Store) CreateLiveAgentPlan(
 	ctx context.Context,
@@ -176,6 +180,12 @@ func (s *Store) ArchiveLiveAgentPlan(ctx context.Context, tenantID, planID int64
 	`, tenantID, planID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents
+		WHERE tenant_id=? AND plan_id=?
+	`, tenantID, planID); err != nil {
+		return fmt.Errorf("delete archived plan semantic documents: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -264,6 +274,76 @@ func (s *Store) ListLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID 
 	return items, nil
 }
 
+// ListPublishedLiveAgentPlansForRoom returns only plans that are both bound to
+// the room and have a published version for that room. A room may keep several
+// published plans so operators can switch between them without republishing.
+func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID int64) ([]model.LiveAgentPlan, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT plan.id
+		FROM live_agent_plan_room_bindings binding
+		INNER JOIN live_agent_plans plan ON plan.id=binding.plan_id AND plan.tenant_id=binding.tenant_id
+		WHERE binding.tenant_id=? AND binding.room_id=?
+			AND binding.status='active' AND plan.status='active'
+			AND EXISTS (
+				SELECT 1
+				FROM live_agent_plan_versions version
+				WHERE version.tenant_id=binding.tenant_id
+					AND version.room_id=binding.room_id
+					AND version.plan_id=binding.plan_id
+					AND version.lifecycle_status='published'
+			)
+		ORDER BY
+			CASE WHEN binding.plan_id=(
+				SELECT selection.plan_id
+				FROM live_agent_room_plan_selections selection
+				WHERE selection.tenant_id=binding.tenant_id AND selection.room_id=binding.room_id
+				LIMIT 1
+			) THEN 0 ELSE 1 END,
+			binding.bound_at DESC, binding.id DESC
+	`, tenantID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]model.LiveAgentPlan, 0, len(ids))
+	for _, id := range ids {
+		item, err := s.GetLiveAgentPlan(ctx, tenantID, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Store) IsLiveAgentPlanPublishedForRoom(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM live_agent_plan_versions
+		WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published'
+		LIMIT 1
+	`, tenantID, roomID, planID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) IsRoomBoundToLiveAgentPlan(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx, `
@@ -290,6 +370,13 @@ func (s *Store) SelectLiveAgentPlanForRoom(ctx context.Context, tenantID, planID
 	}
 	if !bound {
 		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
+	}
+	published, err := s.IsLiveAgentPlanPublishedForRoom(ctx, tenantID, roomID, planID)
+	if err != nil {
+		return model.LiveAgentPlan{}, err
+	}
+	if !published {
+		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotPublished
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO live_agent_room_plan_selections (

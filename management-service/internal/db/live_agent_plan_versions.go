@@ -232,7 +232,7 @@ func (s *Store) ListLiveAgentPlanVersions(
 	rows, err := s.db.QueryContext(
 		ctx,
 		liveAgentPlanVersionSelect+`
-		WHERE tenant_id=? AND plan_id=? AND room_id=?
+		WHERE tenant_id=? AND plan_id=? AND room_id=? AND lifecycle_status NOT IN ('prepared','abandoned')
 		ORDER BY version_no DESC
 	`,
 		tenantID,
@@ -261,7 +261,7 @@ func (s *Store) ListLiveAgentPlanVersionsForPlan(
 	rows, err := s.db.QueryContext(
 		ctx,
 		liveAgentPlanVersionSelect+`
-		WHERE tenant_id=? AND plan_id=?
+		WHERE tenant_id=? AND plan_id=? AND lifecycle_status NOT IN ('prepared','abandoned')
 		ORDER BY updated_at DESC, id DESC
 	`,
 		tenantID,
@@ -294,7 +294,7 @@ func (s *Store) PublishLiveAgentPlanVersion(
 
 	_, err = scanLiveAgentPlanVersion(tx.QueryRowContext(
 		ctx,
-		liveAgentPlanVersionSelect+` WHERE tenant_id=? AND plan_id=? AND room_id=? AND id=? FOR UPDATE`,
+		liveAgentPlanVersionSelect+` WHERE tenant_id=? AND plan_id=? AND room_id=? AND id=? AND lifecycle_status NOT IN ('prepared','abandoned') FOR UPDATE`,
 		tenantID,
 		planID,
 		roomID,
@@ -348,14 +348,39 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 	item, err := scanLiveAgentPlanVersion(s.db.QueryRowContext(
 		ctx,
 		liveAgentPlanVersionSelect+`
-		INNER JOIN live_agent_room_plan_publications pub
-		        ON pub.version_id=live_agent_plan_versions.id
-		WHERE pub.tenant_id=? AND pub.room_id=?
+		INNER JOIN live_agent_room_plan_selections selection
+		        ON selection.tenant_id=live_agent_plan_versions.tenant_id
+		       AND selection.room_id=live_agent_plan_versions.room_id
+		       AND selection.plan_id=live_agent_plan_versions.plan_id
+		WHERE selection.tenant_id=? AND selection.room_id=?
 		  AND live_agent_plan_versions.lifecycle_status='published'
+		ORDER BY live_agent_plan_versions.version_no DESC, live_agent_plan_versions.id DESC
+		LIMIT 1
 	`,
 		tenantID,
 		roomID,
 	))
+	if errors.Is(err, sql.ErrNoRows) {
+		// Backward compatibility for rooms published before explicit plan
+		// selection was introduced.
+		item, err = scanLiveAgentPlanVersion(s.db.QueryRowContext(
+			ctx,
+			liveAgentPlanVersionSelect+`
+			INNER JOIN live_agent_room_plan_publications pub
+			        ON pub.version_id=live_agent_plan_versions.id
+			INNER JOIN live_agent_plan_room_bindings binding
+			        ON binding.tenant_id=live_agent_plan_versions.tenant_id
+			       AND binding.room_id=live_agent_plan_versions.room_id
+			       AND binding.plan_id=live_agent_plan_versions.plan_id
+			WHERE pub.tenant_id=? AND pub.room_id=?
+			  AND binding.status='active'
+			  AND live_agent_plan_versions.lifecycle_status='published'
+			LIMIT 1
+		`,
+			tenantID,
+			roomID,
+		))
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanVersionNotFound
 	}

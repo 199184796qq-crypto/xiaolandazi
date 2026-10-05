@@ -137,6 +137,14 @@ func (s *Server) liveBindDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请选择要绑定的直播间")
 		return
 	}
+	input.BindingRole = strings.ToLower(strings.TrimSpace(input.BindingRole))
+	if input.BindingRole == "" {
+		input.BindingRole = "primary"
+	}
+	if input.BindingRole != "primary" && input.BindingRole != "listener" {
+		writeError(w, http.StatusBadRequest, "设备角色仅支持主设备或监听设备")
+		return
+	}
 
 	tenantID := int64(0)
 	if actor.TenantID != nil {
@@ -496,6 +504,9 @@ func (s *Server) liveRuntimeMode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	var input struct {
 		Mode string `json:"mode"`
 	}
@@ -542,6 +553,9 @@ func (s *Server) liveRuntimePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	var input struct {
 		PlanID int64 `json:"plan_id"`
 	}
@@ -560,6 +574,10 @@ func (s *Server) liveRuntimePlan(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.store.SelectLiveAgentPlanForRoom(r.Context(), tenantID, input.PlanID, roomID, actor.UserID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusConflict, "这个方案还没有绑定到当前直播间，请先绑定后再切换使用")
+		return
+	}
+	if errors.Is(err, appdb.ErrLiveAgentPlanNotPublished) {
+		writeError(w, http.StatusConflict, "这个方案还没有发布到当前直播间，请先发布后再切换使用")
 		return
 	}
 	if err != nil {
@@ -651,16 +669,34 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		switch existing.Status {
 		case "running":
 			if agentRuntime.State == "working" && agentRuntime.BootID != "" {
+				if !existing.BelongsToExecutionRealm(s.executionRealm) {
+					adopted, adoptErr := s.store.SetLiveRuntimeExecutionRealm(
+						r.Context(), tenantID, existing.ID, s.executionRealm, time.Now().UTC(),
+					)
+					if adoptErr != nil {
+						writeError(w, http.StatusInternalServerError, "接管当前AI运行实例失败")
+						return
+					}
+					existing = adopted
+				}
 				writeJSON(w, http.StatusOK, existing)
 				return
 			}
-			// A stale durable registration can remain after a Core reset. An explicit
-			// Start click closes it and starts a fresh room-local Agent runtime.
+			if !existing.BelongsToExecutionRealm(s.executionRealm) {
+				writeError(w, http.StatusConflict, "当前直播间AI正在另一运行端工作，请先在对应运行端停止后再启动")
+				return
+			}
+			// A stale durable registration can remain after a Core reset. Only the
+			// execution realm that owns this session may close it as a Core reset.
 			if _, abortErr := s.store.AbortLiveRuntimeSession(r.Context(), existing.ID, "core_runtime_reset", time.Now().UTC()); abortErr != nil {
 				writeError(w, http.StatusInternalServerError, "清理旧AI运行状态失败")
 				return
 			}
 		case "paused":
+			if !existing.BelongsToExecutionRealm(s.executionRealm) {
+				writeError(w, http.StatusConflict, "当前直播间AI暂停状态属于另一运行端，请先在对应运行端处理")
+				return
+			}
 			// "开始" 与 "继续" 是两套语义：明确点“开始”时丢弃暂停游标，
 			// 重新创建运行会话并从当前发布版本的第一稿开头播放。
 			if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
@@ -676,12 +712,31 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Web and mobile clients do not need to repeat the device id. When a room has
+	// an active hardware binding, attach it to the durable runtime automatically
+	// so disconnect protection and billing shutdown always have a device target.
+	runtimeDeviceID := input.DeviceID
+	if runtimeDeviceID == nil {
+		device, deviceErr := s.store.GetBoundLiveDeviceByRoom(r.Context(), tenantID, roomID)
+		switch {
+		case deviceErr == nil:
+			value := device.ID
+			runtimeDeviceID = &value
+		case errors.Is(deviceErr, sql.ErrNoRows):
+			// Rooms without a hardware binding may still run through web/mobile audio.
+		default:
+			writeError(w, http.StatusInternalServerError, "读取直播间绑定设备失败")
+			return
+		}
+	}
+
 	session, err := s.store.StartLiveRuntimeSession(
 		r.Context(),
 		tenantID,
 		roomID,
 		actor.UserID,
-		input.DeviceID,
+		runtimeDeviceID,
+		s.executionRealm,
 		time.Now().UTC(),
 	)
 	if err != nil {
@@ -692,6 +747,8 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
 		case errors.Is(err, appdb.ErrLiveDeviceNotBound):
 			writeError(w, http.StatusConflict, "请先给直播间绑定工作设备")
+		case errors.Is(err, appdb.ErrLiveDeviceOffline):
+			writeError(w, http.StatusConflict, "绑定设备当前离线，请设备联网后再启动")
 		default:
 			writeError(w, http.StatusInternalServerError, "启动AI直播伴播失败")
 		}
@@ -765,8 +822,13 @@ func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
 	}
-	if _, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); err != nil {
+	sessionState, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if err != nil {
 		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		return
+	}
+	if !sessionState.BelongsToExecutionRealm(s.executionRealm) {
+		writeError(w, http.StatusConflict, "当前直播间AI由另一运行端控制")
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
@@ -842,6 +904,10 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
 		return
 	}
+	if !existing.BelongsToExecutionRealm(s.executionRealm) {
+		writeError(w, http.StatusConflict, "当前直播间AI暂停状态属于另一运行端")
+		return
+	}
 
 	// ResumeLiveRuntimeSession performs the single account-pool availability
 	// check. Returning to running is the durable registration with the billing
@@ -910,8 +976,13 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
 	}
-	if _, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); err != nil {
+	sessionState, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
+	if err != nil {
 		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		return
+	}
+	if !sessionState.BelongsToExecutionRealm(s.executionRealm) {
+		writeError(w, http.StatusConflict, "当前直播间AI由另一运行端控制")
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
@@ -1027,6 +1098,13 @@ func (s *Server) getCoreRoomState(
 	ctx context.Context,
 	tenantID, roomID int64,
 ) (coreRoomRuntimeState, error) {
+	deleted, err := s.store.IsRoomDeletionRequested(ctx, tenantID, roomID)
+	if err != nil {
+		return coreRoomRuntimeState{}, err
+	}
+	if deleted {
+		return coreRoomRuntimeState{}, sql.ErrNoRows
+	}
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
 
@@ -1247,6 +1325,9 @@ func (s *Server) requestCorePublishedPlanProgramStart(
 	if version.ID <= 0 || version.VersionNo <= 0 || version.RoomID != roomID {
 		return errors.New("published live agent plan version is invalid")
 	}
+	if err := s.validateLiveContentVersion(ctx, tenantID, roomID, version); err != nil {
+		return err
+	}
 	// "开始" must always create a fresh playback cursor. Clear any stale
 	// paused/running program before loading the current published version.
 	if err := s.requestCorePublishedPlanProgramControl(ctx, tenantID, roomID, "stop"); err != nil {
@@ -1271,9 +1352,19 @@ func (s *Server) requestCorePublishedPlanProgramStart(
 			if s.assetURLTTL > expiry {
 				expiry = s.assetURLTTL
 			}
-			if signedURL, signErr := assetStore.SignedURL(ctx, asset.ObjectKey, expiry); signErr != nil {
+			var signedURL string
+			var signErr error
+			if internalSigner, ok := assetStore.(interface {
+				InternalSignedURL(context.Context, string, time.Duration) (string, error)
+			}); ok {
+				signedURL, signErr = internalSigner.InternalSignedURL(ctx, asset.ObjectKey, expiry)
+			} else {
+				signedURL, signErr = assetStore.SignedURL(ctx, asset.ObjectKey, expiry)
+			}
+			if signErr != nil {
 				return fmt.Errorf("%s稿声音地址签发失败: %w", strings.TrimSpace(variant.VariantKey), signErr)
-			} else if strings.TrimSpace(signedURL) != "" {
+			}
+			if strings.TrimSpace(signedURL) != "" {
 				audioURL = strings.TrimSpace(signedURL)
 			}
 		}

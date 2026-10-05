@@ -8,7 +8,6 @@ import PaginationBar from '../components/PaginationBar.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import {
   floorToWholeYuanCents,
-  formatWholeYuanMoney,
   marketingPayableCents,
   wholeYuanPerHour,
 } from '../pricingRules'
@@ -210,7 +209,7 @@ const simulationPlanListCents = computed(
   ),
 )
 const simulationPlanPriceCents = computed(
-  () => marketingPayableCents(
+  () => simulationPlanCampaignItem.value?.pricing_mode === 'fixed' ? simulationPlanCampaignItem.value.fixed_price_cents ?? 0 : simulationPlanCampaignItem.value?.pricing_mode === 'free' ? 0 : marketingPayableCents(
     simulationPlanListCents.value,
     simulationPlanDiscountBps.value,
   ),
@@ -555,6 +554,8 @@ function marketingCampaignPrice(plan: CommercialMembershipPlan, campaign: Market
   const monthlyPrice = version?.price_cents ?? 0
   const item = membershipCampaignItem(campaign, plan.id)
   if (!item) return 0
+  if(item.pricing_mode==='fixed') return item.fixed_price_cents ?? 0
+  if(item.pricing_mode==='free') return 0
   const months = Math.max(1, item.package_months || 1)
   const safeDiscount = normalizeDiscountBps(item.discount_bps)
   return marketingPayableCents(
@@ -564,9 +565,12 @@ function marketingCampaignPrice(plan: CommercialMembershipPlan, campaign: Market
 }
 
 function formatMarketingMoney(cents: number) {
-  return formatWholeYuanMoney(cents)
+  return '¥'+(cents/100).toFixed(2)
 }
 
+function campaignPricingLabel(item?: MarketingCampaignItem) {
+  return item?.pricing_mode==='fixed'?'固定售价':item?.pricing_mode==='free'?'免费领取':formatDiscount(item?.discount_bps??10000)
+}
 function activeMarketingCampaigns(plan: CommercialMembershipPlan) {
   return (plan.marketing_campaigns ?? []).filter(
     (campaign) =>
@@ -745,7 +749,7 @@ onMounted(loadPlans)
                 <strong>
                   {{ campaignPackageLabel(membershipCampaignItem(campaign, plan.id)) }}
                   ·
-                  {{ formatDiscount(membershipCampaignItem(campaign, plan.id)?.discount_bps ?? 10000) }}
+                  {{ campaignPricingLabel(membershipCampaignItem(campaign, plan.id)) }}
                 </strong>
                 <small>
                   {{ membershipCampaignItem(campaign, plan.id)?.package_months ?? 1 }}个月实付
@@ -779,7 +783,7 @@ onMounted(loadPlans)
                   <small>
                     {{ campaign.status === 'active' ? '生效中' : '已停用' }}
                     · {{ campaignPackageLabel(membershipCampaignItem(campaign, plan.id)) }}
-                    · {{ formatDiscount(membershipCampaignItem(campaign, plan.id)?.discount_bps ?? 10000) }}
+                    · {{ campaignPricingLabel(membershipCampaignItem(campaign, plan.id)) }}
                     · 实际价值 {{ formatMarketingMoney(marketingCampaignPrice(plan, campaign)) }}
                   </small>
                 </div>
@@ -943,7 +947,7 @@ onMounted(loadPlans)
               >
                 {{ campaign.name }}
                 · {{ campaignPackageLabel(membershipCampaignItem(campaign, selectedTargetPlan?.id ?? 0)) }}
-                · {{ formatDiscount(membershipCampaignItem(campaign, selectedTargetPlan?.id ?? 0)?.discount_bps ?? 10000) }}
+                · {{ campaignPricingLabel(membershipCampaignItem(campaign, selectedTargetPlan?.id ?? 0)) }}
               </option>
             </select>
           </label>

@@ -5,6 +5,7 @@ import type {
   PublicSystemConfig,
   SalesCustomer,
   SalesPerformanceResponse,
+  SalesCommissionDashboard,
 } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -59,9 +60,12 @@ export const getSalesCustomers = () => request<ListResponse<SalesCustomer>>('/ap
 
 export function getSalesPerformance(period = new Date().toISOString().slice(0, 7)) {
   return request<SalesPerformanceResponse>(
-    '/api/v1/admin/sales/performance?period=' + encodeURIComponent(period) + '&page=1&page_size=50',
+    '/api/v1/sales/performance?period=' + encodeURIComponent(period),
   );
 }
+
+export const getSalesCommissionWallet = (period: string) => request<SalesCommissionDashboard>('/api/v1/sales/commission-wallet?period=' + encodeURIComponent(period));
+export const createSalesCommissionWithdrawal = (amountCents: number) => request('/api/v1/sales/commission-withdrawals', { method: 'POST', body: JSON.stringify({ amount_cents: amountCents }) });
 
 export function chatInternalAgent(
   message: string,

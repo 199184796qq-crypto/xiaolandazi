@@ -16,6 +16,7 @@ var (
 	ErrCustomerWithdrawalAmount       = errors.New("customer withdrawal amount invalid")
 	ErrCustomerWithdrawalInsufficient = errors.New("customer withdrawal balance insufficient")
 	ErrCustomerWithdrawalState        = errors.New("customer withdrawal state invalid")
+	ErrCashWithdrawalUseRefund        = errors.New("cash recharge principal must use original-route refund")
 )
 
 func customerWalletBeneficiaryType(accountType string) string {
@@ -108,6 +109,9 @@ func (s *Store) CreateCustomerWalletWithdrawal(
 	accountType string,
 	amountCents int64,
 ) (model.WithdrawalRequest, error) {
+	if strings.TrimSpace(accountType) == "cash" {
+		return model.WithdrawalRequest{}, ErrCashWithdrawalUseRefund
+	}
 	beneficiaryType := customerWalletBeneficiaryType(accountType)
 	if beneficiaryType == "" {
 		return model.WithdrawalRequest{}, ErrCustomerWithdrawalAccount

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/decisionexecutor"
 )
 
@@ -71,7 +70,7 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
-	worker := decisionexecutor.New(s.store, nil, agentgateway.NewFromEnv(), nil)
+	worker := decisionexecutor.New(s.store, nil, s.speechGateway(), nil)
 	result, err := worker.SimulateAnswer(ctx, tenantID, roomID, input.Question)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())

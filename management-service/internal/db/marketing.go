@@ -146,7 +146,7 @@ func normalizeMarketingCampaignItem(item model.MarketingCampaignItem) (model.Mar
 		item.PricingMode = "discount"
 	}
 	switch item.PricingMode {
-	case "discount", "package":
+	case "discount", "package", "fixed", "free":
 	default:
 		return model.MarketingCampaignItem{}, false
 	}
@@ -159,6 +159,12 @@ func normalizeMarketingCampaignItem(item model.MarketingCampaignItem) (model.Mar
 		}
 	} else {
 		item.PackageMonths = 1
+	}
+	if item.PricingMode == "fixed" && (item.FixedPriceCents == nil || *item.FixedPriceCents > 10000000000) {
+		return model.MarketingCampaignItem{}, false
+	}
+	if item.PricingMode != "fixed" {
+		item.FixedPriceCents = nil
 	}
 	if item.Quantity == 0 {
 		item.Quantity = 1

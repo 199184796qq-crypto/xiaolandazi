@@ -1,0 +1,11 @@
+{
+  "api_version": "anchor-style-plugin-instance/v1",
+  "instance_id": "natural-reduplication-demo",
+  "plugin_id": "natural-reduplication",
+  "plugin_version": "1.0.0",
+  "enabled": true,
+  "strength": 40,
+  "parameters": {
+    "max_per_1000_chars": 2
+  }
+}

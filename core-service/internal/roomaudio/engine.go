@@ -121,9 +121,10 @@ type roomState struct {
 }
 
 type Engine struct {
-	mu    sync.RWMutex
-	rooms map[int64]*roomState
-	now   func() time.Time
+	mu           sync.RWMutex
+	rooms        map[int64]*roomState
+	deletedRooms map[int64]struct{}
+	now          func() time.Time
 }
 
 func New() *Engine {
@@ -166,6 +167,10 @@ func (e *Engine) StartMainline(roomID int64, segmentID string) (Snapshot, error)
 		return Snapshot{}, errors.New("room_id must be positive")
 	}
 	e.mu.Lock()
+	if _, deleted := e.deletedRooms[roomID]; deleted {
+		e.mu.Unlock()
+		return Snapshot{}, errors.New("room has been permanently deleted")
+	}
 	state := e.ensureRoomLocked(roomID)
 	state.phase = PhaseMainline
 	state.activeSource = SourceMainline
@@ -188,6 +193,10 @@ func (e *Engine) SetMainlineTimeline(roomID int64, timeline []SpeechSegment) {
 		return
 	}
 	e.mu.Lock()
+	if _, deleted := e.deletedRooms[roomID]; deleted {
+		e.mu.Unlock()
+		return
+	}
 	state := e.ensureRoomLocked(roomID)
 	state.mainlineTimeline = cloneSpeechTimeline(timeline)
 	state.updatedAt = e.now().UTC()
@@ -199,6 +208,10 @@ func (e *Engine) SetInterruptTimeline(roomID int64, timeline []SpeechSegment) {
 		return
 	}
 	e.mu.Lock()
+	if _, deleted := e.deletedRooms[roomID]; deleted {
+		e.mu.Unlock()
+		return
+	}
 	state := e.ensureRoomLocked(roomID)
 	state.interruptTimeline = cloneSpeechTimeline(timeline)
 	state.interruptCursorMS = 0
@@ -316,6 +329,10 @@ func (e *Engine) PublishPCMAt(roomID int64, source Source, pcm []byte, segmentID
 		return Frame{}, errors.New("pcm frame must be exactly 20ms s16le mono 24khz")
 	}
 	e.mu.Lock()
+	if _, deleted := e.deletedRooms[roomID]; deleted {
+		e.mu.Unlock()
+		return Frame{}, errors.New("room has been permanently deleted")
+	}
 	state := e.ensureRoomLocked(roomID)
 	if state.phase == PhasePaused {
 		e.mu.Unlock()
@@ -377,6 +394,10 @@ func (e *Engine) Subscribe(roomID int64) (<-chan Frame, func(), error) {
 	}
 	ch := make(chan Frame, 64)
 	e.mu.Lock()
+	if _, deleted := e.deletedRooms[roomID]; deleted {
+		e.mu.Unlock()
+		return nil, nil, errors.New("room has been permanently deleted")
+	}
 	state := e.ensureRoomLocked(roomID)
 	state.subscribers[ch] = struct{}{}
 	e.mu.Unlock()

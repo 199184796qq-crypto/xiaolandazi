@@ -366,6 +366,13 @@ func (s *Store) PayReferralWithdrawal(ctx context.Context, withdrawalID int64, p
 	`, withdrawalID, customerReferralBeneficiaryType).Scan(&beneficiaryID, &amount, &status); err != nil {
 		return model.WithdrawalRequest{}, err
 	}
+	wallet, err := ensureBeneficiaryWalletTx(ctx, tx, customerReferralBeneficiaryType, beneficiaryID)
+	if err != nil {
+		return model.WithdrawalRequest{}, err
+	}
+	if wallet.AvailableBalanceCents < 0 {
+		return model.WithdrawalRequest{}, ErrReferralWithdrawalInsufficient
+	}
 	if status != "approved" {
 		return model.WithdrawalRequest{}, ErrReferralWithdrawalState
 	}

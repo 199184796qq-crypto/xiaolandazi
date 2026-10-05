@@ -1,0 +1,39 @@
+{
+  "$schema": "../../../shared/schemas/anchor-style-plugin-manifest.schema.json",
+  "api_version": "anchor-style-plugin/v1",
+  "id": "self-correction",
+  "version": "1.0.0",
+  "name": "自然改口",
+  "description": "偶尔对表达方式做一次自然改口，不改变任何商品事实和数字。",
+  "mode": "declarative",
+  "category": "delivery",
+  "scenes": ["mainline", "interaction", "refresh"],
+  "parameters": {
+    "max_per_1000_chars": {
+      "type": "integer",
+      "description": "每1000字最多出现的自然改口次数。",
+      "default": 2,
+      "minimum": 0,
+      "maximum": 4
+    }
+  },
+  "conflicts": ["strict-literal-delivery"],
+  "safety": {
+    "may_emit_intentional_false_derived_value": false,
+    "may_change_source_fact": false,
+    "atomic_output_required": false,
+    "interruptible": true,
+    "allowed_fact_kinds": ["none"],
+    "forbidden_scenes": ["serious"]
+  },
+  "compiler": {
+    "recognized_intents": ["偶尔说错话再纠正", "偶尔改口", "别说得太顺"],
+    "output_capability": "self_correction",
+    "instructions": {
+      "mainline": "偶尔对刚说过的措辞做轻微改口，并立刻说清楚；只能修正表达方式，不得改变已核定内容。",
+      "interaction": "短答最多出现一次轻微改口，只改措辞，不改已核定内容。",
+      "refresh": "低频使用自然改口，避免每段固定出现。"
+    },
+    "micro_actions": ["state_information", "self_correction", "supplement"]
+  }
+}

@@ -41,9 +41,8 @@ func TestStaffRolesContainGroupCode(t *testing.T) {
 
 func TestLiveOperationsRolesDoNotGrantUnrelatedTopLevelPermissions(t *testing.T) {
 	forbidden := map[string]bool{
-		"customer.view_all":    true,
-		"agent.view_all":       true,
-		"system.settings.view": true,
+		"customer.view_all": true,
+		"agent.view_all":    true,
 	}
 
 	for _, role := range staffRoleSeeds {
@@ -58,12 +57,36 @@ func TestLiveOperationsRolesDoNotGrantUnrelatedTopLevelPermissions(t *testing.T)
 	}
 }
 
-func TestSystemSettingsAreReservedForPlatformAdmin(t *testing.T) {
+func TestSystemSettingsPermissionsFollowDepartmentResponsibility(t *testing.T) {
+	wantView := map[string]bool{
+		"management_manager":            true,
+		"management_staff":              true,
+		"finance_manager":               true,
+		"finance_operator":              true,
+		"finance_reviewer":              true,
+		"sales_manager":                 true,
+		"live_operations_manager":       true,
+		"live_operations_staff":         true,
+		"warehouse_after_sales_manager": true,
+		"warehouse_after_sales_staff":   true,
+	}
+
 	for _, role := range staffRoleSeeds {
+		permissions := map[string]bool{}
 		for _, permission := range role.Permissions {
-			if permission == "system.settings.view" || permission == "system.settings.liveops.manage" || permission == "system.settings.inventory.manage" {
-				t.Fatalf("role %s must not grant system settings permission %s", role.Code, permission)
-			}
+			permissions[permission] = true
+		}
+		if permissions["system.settings.view"] != wantView[role.Code] {
+			t.Fatalf("role %s system.settings.view=%t want %t", role.Code, permissions["system.settings.view"], wantView[role.Code])
+		}
+		if permissions["system.settings.liveops.manage"] != (role.Code == "live_operations_manager") {
+			t.Fatalf("role %s has unexpected liveops settings management=%t", role.Code, permissions["system.settings.liveops.manage"])
+		}
+		if permissions["system.settings.agent_routing.manage"] != (role.Code == "live_operations_manager") {
+			t.Fatalf("role %s has unexpected agent routing management=%t", role.Code, permissions["system.settings.agent_routing.manage"])
+		}
+		if permissions["system.settings.inventory.manage"] != (role.Code == "warehouse_after_sales_manager") {
+			t.Fatalf("role %s has unexpected inventory settings management=%t", role.Code, permissions["system.settings.inventory.manage"])
 		}
 	}
 }

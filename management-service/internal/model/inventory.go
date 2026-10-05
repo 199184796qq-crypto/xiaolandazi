@@ -19,6 +19,8 @@ type WarehouseInput struct {
 }
 
 type Device struct {
+	HardwareMAC        string    `json:"hardware_mac,omitempty"`
+	ClaimEnabled       bool      `json:"claim_enabled"`
 	ID                 int64     `json:"id"`
 	SN                 string    `json:"sn"`
 	SKUCode            string    `json:"sku_code"`
@@ -124,6 +126,7 @@ type InventorySummary struct {
 }
 
 type CreateDeviceInput struct {
+	HardwareMAC   string `json:"hardware_mac,omitempty"`
 	SN            string `json:"sn"`
 	SKUCode       string `json:"sku_code"`
 	BatchNo       string `json:"batch_no"`
@@ -153,6 +156,9 @@ type InventoryDeviceSKUType struct {
 }
 
 type BatchInboundInput struct {
+	BatchPrefix         string   `json:"batch_prefix,omitempty"`
+	BatchSuffix         string   `json:"batch_suffix,omitempty"`
+	HardwareMACs        []string `json:"hardware_macs,omitempty"`
 	ProductID           int64    `json:"product_id"`
 	BatchNo             string   `json:"batch_no"`
 	PurchaseNo          string   `json:"purchase_no"`

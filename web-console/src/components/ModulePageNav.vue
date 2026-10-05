@@ -31,22 +31,40 @@ const props = withDefaults(
 
 const route = useRoute()
 
+const settingsRouteContext = computed(() => {
+  if (route.meta.systemSettingsEntry !== true) return null
+  if (route.path.includes('/system/settings/intelligence/')) return { title: 'AI 与智能体', to: '/system/settings/intelligence', icon: '智' }
+  if (route.path.includes('/system/settings/live/')) return { title: '直播业务', to: '/system/settings/live', icon: '播' }
+  if (route.path.includes('/system/settings/commerce/')) return { title: '商品、计费与财务', to: '/system/settings/commerce', icon: '商' }
+  if (route.path.includes('/system/settings/inventory/')) return { title: '设备与仓储', to: '/system/settings/inventory', icon: '库' }
+  if (route.path.includes('/system/settings/access/')) return { title: '权限、流程与审计', to: '/system/settings/access', icon: '权' }
+  return null
+})
+
 const contextKey = computed<NavigationContextKey>(
   () => props.context || props.hub || 'workspace-auto',
 )
 
-const config = computed(() =>
-  resolveNavigationContext(contextKey.value, session.bootstrap),
-)
+const config = computed(() => {
+  const base = resolveNavigationContext(contextKey.value, session.bootstrap)
+  if (!settingsRouteContext.value) return base
+  return {
+    ...base,
+    rootTitle: '系统设置',
+    rootTo: '/system/settings',
+    kicker: 'SYSTEM CONFIGURATION',
+    entries: [],
+  }
+})
 
 const resolvedSectionTitle = computed(
-  () => props.sectionTitle || config.value.sectionTitle || '',
+  () => settingsRouteContext.value?.title || props.sectionTitle || config.value.sectionTitle || '',
 )
 const resolvedSectionTo = computed(
-  () => props.sectionTo || config.value.sectionTo || '',
+  () => settingsRouteContext.value?.to || props.sectionTo || config.value.sectionTo || '',
 )
 const resolvedSectionIcon = computed(
-  () => props.sectionIcon || config.value.sectionIcon || '',
+  () => settingsRouteContext.value?.icon || props.sectionIcon || config.value.sectionIcon || '',
 )
 const activeNavTitle = computed(
   () => props.activeNavTitle || props.activeTitle,

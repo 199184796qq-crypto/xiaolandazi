@@ -235,6 +235,7 @@ onMounted(load)
         :search-placeholder="focus === 'events' ? '直播间 / 事件类型 / 内容' : '直播间名称 / 房间号 / 平台'"
         :status-options="focus === 'monitor' ? statusOptions : []"
         :sort-options="focus === 'monitor' ? monitorSortOptions : eventSortOptions"
+        :show-view-toggle="false"
       />
 
       <p v-if="error" class="inline-error">{{ error }}</p>

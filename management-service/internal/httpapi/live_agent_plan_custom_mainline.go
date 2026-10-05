@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,7 +22,7 @@ import (
 	assetstorage "livecompanion/management/internal/storage"
 )
 
-const maxCustomMainlineBytes int64 = 50 << 20
+const maxCustomMainlineBytes int64 = 200 << 20
 
 type customMainlineDraftResponse struct {
 	AudioAssetID  int64                                `json:"audio_asset_id"`
@@ -67,6 +68,9 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) || !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, true) {
+		return
+	}
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); err != nil {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return
@@ -79,7 +83,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 	}
 	defer file.Close()
 	if header.Size <= 0 || header.Size > maxCustomMainlineBytes {
-		writeError(w, http.StatusBadRequest, "自定义主线音频必须小于等于 50MB")
+		writeError(w, http.StatusBadRequest, "自定义主线音频必须小于等于 200MB")
 		return
 	}
 	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(header.Filename)))
@@ -103,13 +107,39 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	audioObjectKey, err := newMediaObjectKey(tenantID, "audio", "custom-mainline"+extension)
+	sourcePath, err := copyAudioReaderToTemp(file, extension)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
+		return
+	}
+	defer os.Remove(sourcePath)
+
+	normalizedPath, err := normalizeAudioToCoreWAV(r.Context(), sourcePath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer os.Remove(normalizedPath)
+	normalizedInfo, err := os.Stat(normalizedPath)
+	if err != nil || normalizedInfo.Size() <= 44 {
+		writeError(w, http.StatusInternalServerError, "读取规范化后的自定义音稿失败")
+		return
+	}
+
+	audioObjectKey, err := newMediaObjectKey(tenantID, "audio", "custom-mainline.wav")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "生成自定义音稿对象编号失败")
 		return
 	}
+	normalizedFile, err := os.Open(normalizedPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "打开规范化后的自定义音稿失败")
+		return
+	}
 	hasher := sha256.New()
-	if err := ossStore.Put(r.Context(), audioObjectKey, io.TeeReader(file, hasher), contentType); err != nil {
+	putErr := ossStore.Put(r.Context(), audioObjectKey, io.TeeReader(normalizedFile, hasher), "audio/wav")
+	_ = normalizedFile.Close()
+	if putErr != nil {
 		writeError(w, http.StatusBadGateway, "上传自定义音稿失败")
 		return
 	}
@@ -151,12 +181,12 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 	asset, err := s.store.CreateMediaAsset(r.Context(), model.CreateMediaAssetInput{
 		TenantID:        tenantID,
 		AssetType:       "audio",
-		OriginalName:    filepath.Base(header.Filename),
+		OriginalName:    strings.TrimSuffix(filepath.Base(header.Filename), extension) + ".wav",
 		StorageDriver:   ossStore.Driver(),
 		StorageBucket:   ossStore.Bucket(),
 		ObjectKey:       audioObjectKey,
-		MIMEType:        contentType,
-		SizeBytes:       uint64(header.Size),
+		MIMEType:        "audio/wav",
+		SizeBytes:       uint64(normalizedInfo.Size()),
 		DurationMS:      &durationValue,
 		ChecksumSHA256:  hex.EncodeToString(hasher.Sum(nil)),
 		CreatedByUserID: actor.UserID,
@@ -164,6 +194,10 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			"purpose":                "live_agent_custom_mainline_audio",
 			"plan_id":                planID,
 			"room_id":                roomID,
+			"source_original_name":   filepath.Base(header.Filename),
+			"source_content_type":    contentType,
+			"source_size_bytes":      header.Size,
+			"playback_format":        "pcm_s16le_24k_mono",
 			"subtitle_object_key":    bundle["srt_object_key"],
 			"timeline_object_key":    bundle["timeline_object_key"],
 			"safe_points_object_key": bundle["safe_points_object_key"],
@@ -205,18 +239,28 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		}
 	}
 	if len(cloneRaw) == 0 {
-		if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
-			raw, readErr := io.ReadAll(io.LimitReader(file, maxCustomMainlineBytes+1))
-			if readErr == nil && len(raw) > 0 && int64(len(raw)) <= maxCustomMainlineBytes {
-				cloneRaw = raw
-				cloneContentType = contentType
-			}
+		if raw, sampleErr := extractCloneSampleFromAudioPath(r.Context(), normalizedPath); sampleErr == nil {
+			cloneRaw = raw
+			cloneContentType = "audio/wav"
 		}
 	}
 	if len(cloneRaw) > 0 {
 		preferredName := fmt.Sprintf("v%d%d", actor.UserID%10000, time.Now().Unix()%100000000)
 		dataURI := "data:" + cloneContentType + ";base64," + base64.StdEncoding.EncodeToString(cloneRaw)
-		voiceID, cloneErr := cloneVoiceProfile(r.Context(), preferredName, dataURI)
+		tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, actor.UserID, time.Now().UnixNano())
+		cloneErr := ossStore.Put(r.Context(), tempObjectKey, bytes.NewReader(cloneRaw), cloneContentType)
+		var sampleURL string
+		if cloneErr == nil {
+			defer ossStore.Delete(r.Context(), tempObjectKey)
+			sampleURL, cloneErr = ossStore.SignedURL(r.Context(), tempObjectKey, 15*time.Minute)
+			if cloneErr == nil && strings.TrimSpace(sampleURL) == "" {
+				cloneErr = errors.New("生成声音复刻公网样本地址失败")
+			}
+		}
+		var voiceID string
+		if cloneErr == nil {
+			voiceID, cloneErr = cloneVoiceProfile(r.Context(), preferredName, sampleURL, dataURI, qwenCloneTTSModel)
+		}
 		if cloneErr != nil {
 			response.CloneError = cloneErr.Error()
 		} else {
@@ -235,18 +279,28 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			if saveErr != nil {
 				response.CloneError = saveErr.Error()
 			} else {
-				response.VoiceProfile = &profile
-				identity := model.LiveAgentVoiceIdentity{
-					Name:      profile.Name,
-					Version:   "V1",
-					Source:    "clone",
-					Provider:  profile.Provider,
-					VoiceID:   profile.VoiceID,
-					ProfileID: profile.ID,
-					Model:     qwenCloneTTSModel,
-					Rate:      1,
+				binding, bindingErr := s.store.CreateVoiceModelBinding(r.Context(), tenantID, actor.UserID, model.VoiceModelBindingInput{
+					ProfileID: profile.ID, SampleAssetID: asset.ID, Provider: "qwen_audio",
+					Model: qwenCloneTTSModel, VoiceID: profile.VoiceID, Rate: 1, Status: "ready",
+					Config: map[string]any{"source": "custom_mainline_auto_clone"},
+				})
+				if bindingErr != nil {
+					response.CloneError = bindingErr.Error()
+				} else {
+					response.VoiceProfile = &profile
+					identity := model.LiveAgentVoiceIdentity{
+						Name:      profile.Name,
+						Version:   "V1",
+						Source:    "clone",
+						Provider:  profile.Provider,
+						VoiceID:   profile.VoiceID,
+						ProfileID: profile.ID,
+						BindingID: binding.ID,
+						Model:     qwenCloneTTSModel,
+						Rate:      1,
+					}
+					response.VoiceIdentity = &identity
 				}
-				response.VoiceIdentity = &identity
 			}
 		}
 	}
@@ -273,6 +327,9 @@ func (s *Server) liveAgentPlanCustomMainlineRebuild(w http.ResponseWriter, r *ht
 	}
 	tenantID, ok := s.tenantForRoom(w, r, actor, input.RoomID)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) || !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, true) {
 		return
 	}
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); err != nil {

@@ -13,6 +13,7 @@ import (
 	"livecompanion/core/internal/basepipeline"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/strategycenter"
+	"livecompanion/core/internal/timeline"
 )
 
 type interactionRule struct {
@@ -50,6 +51,8 @@ type interactionWindow struct {
 	LastDecisionReason    string
 	LastBudgetLevel       string
 	LastBudgetAllowed     bool
+	TopicHint             string
+	RetryAfter            time.Time
 }
 
 type interactionBudgetUse struct {
@@ -114,6 +117,7 @@ func (p *Processor) Run(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			p.FlushInteractionWindows(now.UTC())
+			p.FlushDebtBacklog(now.UTC())
 		}
 	}
 }
@@ -186,7 +190,7 @@ func interactionBudgetForHeat(raw string) interactionBudget {
 	}
 }
 
-func (p *Processor) tryConsumeInteractionBudget(roomID int64, heat string, highValue bool, now time.Time) (interactionBudget, bool, string) {
+func (p *Processor) interactionBudgetDecision(roomID int64, heat string, highValue bool, now time.Time, commit bool) (interactionBudget, bool, string) {
 	budget := interactionBudgetForHeat(heat)
 	if p == nil || roomID <= 0 {
 		return budget, true, "互动预算未限制"
@@ -219,7 +223,7 @@ func (p *Processor) tryConsumeInteractionBudget(roomID int64, heat string, highV
 		}
 		allowed = len(uses) < budget.MaxMissions && normalUsed < normalCapacity
 	}
-	if allowed {
+	if allowed && commit {
 		uses = append(uses, interactionBudgetUse{At: now, HighValue: highValue})
 	}
 	p.interactionBudgetUsed[roomID] = uses
@@ -238,6 +242,18 @@ func (p *Processor) tryConsumeInteractionBudget(roomID int64, heat string, highV
 		return budget, false, "当前30秒互动预算已满，高价值任务保留在候选队列等待下一窗口"
 	}
 	return budget, false, "当前互动预算需要保护主线，普通互动继续聚合等待下一窗口"
+}
+
+func (p *Processor) tryConsumeInteractionBudget(roomID int64, heat string, highValue bool, now time.Time) (interactionBudget, bool, string) {
+	return p.interactionBudgetDecision(roomID, heat, highValue, now, true)
+}
+
+func (p *Processor) checkInteractionBudget(roomID int64, heat string, highValue bool, now time.Time) (interactionBudget, bool, string) {
+	return p.interactionBudgetDecision(roomID, heat, highValue, now, false)
+}
+
+func (p *Processor) recordInteractionBudgetUse(roomID int64, heat string, highValue bool, now time.Time) {
+	_, _, _ = p.interactionBudgetDecision(roomID, heat, highValue, now, true)
 }
 
 func interactionPreferenceKindForMission(key string) string {
@@ -584,58 +600,62 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 	type dueMission struct {
 		roomID       int64
 		key          string
-		window       *interactionWindow
+		topicHint    string
+		pendingCount int
 		candidate    agentdecision.Candidate
 		eventValue   float64
 		valueLevel   string
 		highValue    bool
-		budgetReason string
 	}
 	due := make([]dueMission, 0, 8)
-	selected := make([]dueMission, 0, 8)
-	roomsToPublish := make([]int64, 0, 8)
+	roomsToPublish := make(map[int64]struct{}, 8)
 
 	p.interactionMu.Lock()
 	for roomID, byKey := range p.interactionWindows {
-		roomsToPublish = append(roomsToPublish, roomID)
+		roomsToPublish[roomID] = struct{}{}
 		if p.runtime.Get(roomID).State != agentwork.StateWorking {
 			continue
 		}
 		for key, window := range byKey {
 			rule, ok := defaultInteractionRules[key]
-			if !ok {
+			if !ok || window == nil {
 				continue
 			}
 			_, effectiveWeight, enabled := p.interactionRuleWeight(roomID, window.TenantID, key)
 			if !enabled {
 				window.PendingCount = 0
 				window.FirstPending = time.Time{}
+				window.RetryAfter = time.Time{}
 				continue
 			}
 			if !interactionWindowDue(rule, window, now) {
 				continue
 			}
-			candidate := interactionMissionCandidate(rule, *window, now)
+			snapshot := *window
+			candidate := interactionMissionCandidate(rule, snapshot, now)
 			if strings.TrimSpace(candidate.Topic) == "" {
 				continue
 			}
-			decision := p.interactionWindowDecision(rule, *window, effectiveWeight, now)
+			decision := p.interactionWindowDecision(rule, snapshot, effectiveWeight, now)
 			candidate.InteractionDecision = decision
 			candidate.Priority = interactionEffectivePriority(rule.Priority, effectiveWeight)
 			if eventPriority := int(decision.EventValue + 0.5); eventPriority > candidate.Priority {
 				candidate.Priority = eventPriority
 			}
 			due = append(due, dueMission{
-				roomID:     roomID,
-				key:        key,
-				window:     window,
-				candidate:  candidate,
-				eventValue: decision.EventValue,
-				valueLevel: decision.ValueLevel,
-				highValue:  strings.EqualFold(decision.ValueLevel, "HIGH"),
+				roomID:       roomID,
+				key:          key,
+				topicHint:    snapshot.TopicHint,
+				pendingCount: snapshot.PendingCount,
+				candidate:    candidate,
+				eventValue:   decision.EventValue,
+				valueLevel:   decision.ValueLevel,
+				highValue:    strings.EqualFold(decision.ValueLevel, "HIGH"),
 			})
 		}
 	}
+	p.interactionMu.Unlock()
+
 	sort.SliceStable(due, func(i, j int) bool {
 		if due[i].eventValue != due[j].eventValue {
 			return due[i].eventValue > due[j].eventValue
@@ -645,46 +665,94 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 		}
 		return due[i].candidate.Topic < due[j].candidate.Topic
 	})
+
 	for i := range due {
 		mission := &due[i]
+		if mission.key == "reply_chat" && p.topicResolver != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			resolution := p.topicResolver.Resolve(ctx, mission.roomID, mission.candidate.Question, mission.topicHint)
+			cancel()
+			if strings.TrimSpace(resolution.ClusterKey) != "" {
+				mission.candidate.Topic = resolution.ClusterKey
+				mission.candidate.InteractionDecision.Reason = strings.TrimSpace(
+					mission.candidate.InteractionDecision.Reason +
+						fmt.Sprintf("；语义主题=%s，来源=%s，相似度=%.2f", resolution.ClusterKey, resolution.Source, resolution.Similarity),
+				)
+			}
+		}
+
 		heat := mission.candidate.InteractionDecision.Heat
-		budget, allowed, reason := p.tryConsumeInteractionBudget(mission.roomID, heat, mission.highValue, now)
+		budget, allowed, reason := p.checkInteractionBudget(mission.roomID, heat, mission.highValue, now)
 		mission.candidate.InteractionDecision.BudgetLevel = budget.Level
 		mission.candidate.InteractionDecision.BudgetAllowed = allowed
 		mission.candidate.InteractionDecision.Handle = allowed
 		mission.candidate.InteractionDecision.Reason = strings.TrimSpace(
 			mission.candidate.InteractionDecision.Reason + "；" + reason,
 		)
-		mission.budgetReason = reason
-		mission.window.LastEventValue = mission.eventValue
-		mission.window.LastValueLevel = mission.valueLevel
-		mission.window.LastDecisionReason = mission.candidate.InteractionDecision.Reason
-		mission.window.LastBudgetLevel = budget.Level
-		mission.window.LastBudgetAllowed = allowed
+
+		p.interactionMu.Lock()
+		if current := p.interactionWindows[mission.roomID][mission.key]; current != nil {
+			current.LastEventValue = mission.eventValue
+			current.LastValueLevel = mission.valueLevel
+			current.LastDecisionReason = mission.candidate.InteractionDecision.Reason
+			current.LastBudgetLevel = budget.Level
+			current.LastBudgetAllowed = allowed
+		}
+		p.interactionMu.Unlock()
 		if !allowed {
 			continue
 		}
-		mission.window.LastMissionEventCount = mission.window.PendingCount
-		mission.window.EmittedCount++
-		mission.window.PendingCount = 0
-		mission.window.FirstPending = time.Time{}
-		mission.window.LastEmittedAt = now
-		mission.window.EventIDs = nil
-		mission.window.UserIDs = nil
-		mission.window.Names = nil
-		selected = append(selected, *mission)
-	}
-	p.interactionMu.Unlock()
-	for _, roomID := range roomsToPublish {
-		p.publishInteractionStats(roomID, now)
-	}
 
-	for _, mission := range selected {
 		result := p.decisions.Enqueue(mission.roomID, mission.candidate)
 		if result.Suppressed {
+			retryAt := now.Add(10 * time.Second)
+			if result.RecentlyAnswered != nil && result.RecentlyAnswered.CooldownUntil.After(retryAt) {
+				retryAt = result.RecentlyAnswered.CooldownUntil
+			}
+			p.interactionMu.Lock()
+			if current := p.interactionWindows[mission.roomID][mission.key]; current != nil {
+				current.RetryAfter = retryAt
+				current.LastDecisionReason = strings.TrimSpace(
+					current.LastDecisionReason + "；同语义主题仍在冷却，窗口保留到冷却结束后重试",
+				)
+			}
+			p.interactionMu.Unlock()
 			continue
 		}
+		if result.Item == nil {
+			continue
+		}
+		if !result.Merged {
+			p.recordInteractionBudgetUse(mission.roomID, heat, mission.highValue, now)
+		}
+
+		p.interactionMu.Lock()
+		if current := p.interactionWindows[mission.roomID][mission.key]; current != nil {
+			consumed := mission.pendingCount
+			if consumed > current.PendingCount {
+				consumed = current.PendingCount
+			}
+			current.LastMissionEventCount = consumed
+			current.EmittedCount++
+			current.LastEmittedAt = now
+			current.RetryAfter = time.Time{}
+			current.PendingCount -= consumed
+			if current.PendingCount <= 0 {
+				current.PendingCount = 0
+				current.FirstPending = time.Time{}
+				current.EventIDs = nil
+				current.UserIDs = nil
+				current.Names = nil
+			} else {
+				current.FirstPending = now
+			}
+		}
+		p.interactionMu.Unlock()
 		p.logInteractionMission(mission.roomID, mission.candidate)
+	}
+
+	for roomID := range roomsToPublish {
+		p.publishInteractionStats(roomID, now)
 	}
 }
 
@@ -708,6 +776,15 @@ func (p *Processor) clearInteractionRoom(roomID int64) {
 	p.questionMu.Lock()
 	delete(p.questionDebts, roomID)
 	p.questionMu.Unlock()
+	p.debtMu.Lock()
+	delete(p.debtRetryAfter, debtBacklogKey(roomID, string(timeline.DebtQuestion)))
+	delete(p.debtRetryAfter, debtBacklogKey(roomID, string(timeline.DebtInteraction)))
+	delete(p.debtLastEventID, debtBacklogKey(roomID, string(timeline.DebtQuestion)))
+	delete(p.debtLastEventID, debtBacklogKey(roomID, string(timeline.DebtInteraction)))
+	p.debtMu.Unlock()
+	if p.topicResolver != nil {
+		p.topicResolver.ResetRoom(roomID)
+	}
 	p.publishInteractionStats(roomID, p.clock())
 }
 
@@ -718,7 +795,7 @@ func (p *Processor) RefreshInteractionStats(roomID int64) {
 	p.publishInteractionStats(roomID, p.clock())
 }
 
-func (p *Processor) accumulateInteraction(event model.RoomEvent, key string) {
+func (p *Processor) accumulateInteraction(event model.RoomEvent, key, topicHint string) {
 	if p == nil || event.RoomID <= 0 {
 		return
 	}
@@ -756,6 +833,9 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key string) {
 	window.LatestUserID = strings.TrimSpace(event.UserID)
 	window.LatestName = strings.TrimSpace(event.Nickname)
 	window.LatestContent = strings.TrimSpace(event.Content)
+	if topicHint = strings.TrimSpace(topicHint); topicHint != "" {
+		window.TopicHint = topicHint
+	}
 	appendInteractionName(&window.Names, event.Nickname, 12)
 	appendInteractionName(&window.UserIDs, event.UserID, 24)
 	appendInteractionEventID(&window.EventIDs, event.ID, 32)
@@ -768,6 +848,9 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key string) {
 }
 
 func interactionWindowDue(rule interactionRule, window *interactionWindow, now time.Time) bool {
+	if window != nil && !window.RetryAfter.IsZero() && now.Before(window.RetryAfter) {
+		return false
+	}
 	if window == nil || window.PendingCount < maxInteractionInt(rule.MinPending, 1) || window.FirstPending.IsZero() {
 		return false
 	}
@@ -788,12 +871,14 @@ func interactionMissionCandidate(rule interactionRule, window interactionWindow,
 	count := maxInteractionInt(window.PendingCount, 1)
 	question := ""
 	summary := ""
+	title := rule.Title
 	switch rule.Key {
 	case "reply_chat":
 		question = strings.TrimSpace(window.LatestContent)
 		if question == "" {
 			question = "自然回应直播间刚刚出现的有效弹幕"
 		}
+		title = compactInteractionMissionTitle(question, 22)
 		summary = fmt.Sprintf("互动时间窗触发：累计%d条有效弹幕，需要自然回应一次", count)
 	case "reply_follow":
 		question = "自然感谢刚刚新增的关注，不要机械报数"
@@ -817,7 +902,7 @@ func interactionMissionCandidate(rule interactionRule, window interactionWindow,
 	return agentdecision.Candidate{
 		Source:               agentdecision.SourceAgent,
 		Topic:                rule.Topic,
-		Title:                rule.Title,
+		Title:                title,
 		Question:             question,
 		Summary:              summary,
 		ReplyHint:            "这是一次完整口播任务。后续必须结合打断前主线、回归主线和其它策略约束，一次生成完整可播正文。",
@@ -828,9 +913,20 @@ func interactionMissionCandidate(rule interactionRule, window interactionWindow,
 		EventID:              window.LatestEventID,
 		UserID:               window.LatestUserID,
 		Nicknames:            append([]string(nil), window.Names...),
-		ForceReopen:          true,
 		TTLSeconds:           int(rule.TTL.Seconds()),
 	}
+}
+
+func compactInteractionMissionTitle(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "回复弹幕"
+	}
+	runes := []rune(text)
+	if limit <= 0 || len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func appendInteractionName(values *[]string, value string, limit int) {
@@ -871,9 +967,11 @@ func (p *Processor) logInteractionMission(roomID int64, candidate agentdecision.
 	// Keep this log compact: it is the audit point that proves an interaction
 	// event left the scheduler and became a real speech mission.
 	log.Printf(
-		"interaction mission room=%d kind=%s events=%d window=%ds topic=%s",
+		"interaction mission room=%d kind=%s trigger=%s source_event=%d events=%d window=%ds topic=%s",
 		roomID,
 		candidate.MissionKind,
+		candidate.InteractionDecision.PrimaryEvent,
+		candidate.EventID,
 		candidate.MissionEventCount,
 		candidate.MissionWindowSeconds,
 		candidate.Topic,

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/roomaudio"
+	"livecompanion/core/internal/semantic"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/strategycenter"
 )
@@ -20,6 +23,7 @@ import (
 type roomAudioInteractionInput struct {
 	DecisionID           string `json:"decision_id"`
 	MissionID            string `json:"mission_id,omitempty"`
+	MissionKind          string `json:"mission_kind,omitempty"`
 	SessionID            string `json:"session_id,omitempty"`
 	Action               string `json:"action"`
 	AudioURL             string `json:"audio_url"`
@@ -361,6 +365,134 @@ func resumeDuplicateScore(replyText, preview string) (float64, string) {
 	return best, bestTail
 }
 
+const (
+	// Live qwen3.7-text-embedding-flash Chinese paraphrases are commonly 0.65-0.82.
+	semanticResumeTriggerThreshold   = 0.66
+	semanticResumeCandidateThreshold = 0.58
+)
+
+func semanticResumeDuplicateScores(ctx context.Context, embedder semantic.Embedder, replyText string, previews []string) ([]float64, []string, error) {
+	scores := make([]float64, len(previews))
+	bestTails := make([]string, len(previews))
+	if embedder == nil || !embedder.Enabled() || len(previews) == 0 {
+		return scores, bestTails, semantic.ErrDisabled
+	}
+	tails := lastResumeSentences(replyText, 2)
+	if len(tails) == 0 {
+		return scores, bestTails, nil
+	}
+	if len(tails) == 2 {
+		tails = append(tails, strings.Join(tails, " "))
+	}
+	texts := append([]string(nil), tails...)
+	previewVectorIndexes := make([]int, len(previews))
+	for index := range previewVectorIndexes {
+		previewVectorIndexes[index] = -1
+	}
+	for index, preview := range previews {
+		preview = strings.TrimSpace(preview)
+		if preview == "" {
+			continue
+		}
+		previewVectorIndexes[index] = len(texts)
+		texts = append(texts, preview)
+	}
+	if len(texts) == len(tails) {
+		return scores, bestTails, nil
+	}
+	vectors, err := embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(vectors) != len(texts) {
+		return nil, nil, fmt.Errorf("semantic vector count=%d want=%d", len(vectors), len(texts))
+	}
+	for previewIndex, vectorIndex := range previewVectorIndexes {
+		if vectorIndex < 0 {
+			continue
+		}
+		for tailIndex := range tails {
+			score := semantic.CosineSimilarity(vectors[tailIndex], vectors[vectorIndex])
+			if score > scores[previewIndex] {
+				scores[previewIndex] = score
+				bestTails[previewIndex] = tails[tailIndex]
+			}
+		}
+	}
+	return scores, bestTails, nil
+}
+
+func applyResumeDedupGateWithSemantic(ctx context.Context, embedder semantic.Embedder, program audioout.RoomProgramSnapshot, replyText string, originalMS int, strategy string) resumeDedupDecision {
+	decision := applyResumeDedupGate(program, replyText, originalMS, strategy)
+	if decision.Triggered || embedder == nil || !embedder.Enabled() {
+		return decision
+	}
+	points := effectiveRoomProgramSafePoints(program)
+	sort.SliceStable(points, func(i, j int) bool { return points[i].CutMS < points[j].CutMS })
+	candidatePoints := make([]audioout.ProgramSafePoint, 0, len(points))
+	previews := make([]string, 0, len(points))
+	for _, point := range points {
+		if point.CutMS < originalMS {
+			continue
+		}
+		candidatePoints = append(candidatePoints, point)
+		previews = append(previews, resumePreview(program, point))
+	}
+	if len(candidatePoints) == 0 || candidatePoints[0].CutMS != originalMS {
+		return decision
+	}
+	scores, bestTails, err := semanticResumeDuplicateScores(ctx, embedder, replyText, previews)
+	if err != nil {
+		if !errors.Is(err, semantic.ErrDisabled) {
+			log.Printf("core semantic resume dedup degraded: %v", err)
+		}
+		return decision
+	}
+	if len(scores) == 0 || scores[0] < semanticResumeTriggerThreshold {
+		return decision
+	}
+
+	decision.Triggered = true
+	decision.Score = scores[0]
+	decision.ReplyTail = bestTails[0]
+	decision.Reason = "semantic_reply_tail_overlaps_resume_preview"
+	decision.OriginalPointID = candidatePoints[0].ID
+	decision.FinalPointID = candidatePoints[0].ID
+	decision.OriginalPreview = previews[0]
+	strategy = strings.ToUpper(strings.TrimSpace(strategy))
+	skipped := 0
+	for index := 1; index < len(candidatePoints); index++ {
+		candidate := candidatePoints[index]
+		candidatePreview := previews[index]
+		skipped++
+		lexicalScore, _ := resumeDuplicateScore(replyText, candidatePreview)
+		semanticScore := scores[index]
+		if strings.TrimSpace(candidatePreview) == "" || (lexicalScore < 0.42 && semanticScore < semanticResumeCandidateThreshold) {
+			decision.FinalMS = candidate.CutMS
+			decision.FinalPointID = candidate.ID
+			decision.FinalPreview = candidatePreview
+			decision.SkippedPoints = skipped
+			if strategy != "SWITCH_PLAN" {
+				if skipped >= 2 || strategy == "CROSS_RESUME" {
+					decision.FinalStrategy = "CROSS_RESUME"
+				} else {
+					decision.FinalStrategy = "FUSION_SKIP"
+				}
+			}
+			return decision
+		}
+	}
+	if program.Task != nil && program.Task.DurationMS > originalMS {
+		decision.FinalMS = program.Task.DurationMS
+		decision.FinalPointID = "TRACK_END"
+		decision.FinalPreview = ""
+		decision.SkippedPoints = skipped
+		decision.FinalStrategy = "SWITCH_PLAN"
+		decision.Reason = "semantic_reply_tail_overlaps_remaining_track"
+	}
+	return decision
+}
+
 func applyResumeDedupGate(program audioout.RoomProgramSnapshot, replyText string, originalMS int, strategy string) resumeDedupDecision {
 	strategy = strings.ToUpper(strings.TrimSpace(strategy))
 	decision := resumeDedupDecision{
@@ -508,6 +640,13 @@ func resolveQuickRoomProgramSafeCut(program audioout.RoomProgramSnapshot, prefer
 		return point.CutMS, true
 	}
 	return 0, false
+}
+
+const maxInteractionSwitchLeadMS = 35000
+
+func validInteractionSwitchLead(currentMS, switchMS int) bool {
+	leadMS := switchMS - currentMS
+	return leadMS > 0 && leadMS <= maxInteractionSwitchLeadMS
 }
 
 func chooseRoomProgramSafePointWindow(
@@ -762,6 +901,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	input.Question = strings.TrimSpace(input.Question)
 	input.ReplyText = strings.TrimSpace(input.ReplyText)
 	input.MissionID = strings.TrimSpace(input.MissionID)
+	input.MissionKind = strings.ToLower(strings.TrimSpace(input.MissionKind))
 	if input.MissionID == "" {
 		input.MissionID = input.DecisionID
 	}
@@ -914,7 +1054,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			if selected.Key != "" {
 				bridgeUsed = strings.EqualFold(selected.Key, "BRIDGE") && strings.EqualFold(requested, "BRIDGE")
 				resumeTo, reason := resumeOffsetForStrategy(program, *switchAtMS, selected.Key, input.Topic)
-				dedup := applyResumeDedupGate(program, input.ReplyText, resumeTo, selected.Key)
+				dedup := applyResumeDedupGateWithSemantic(r.Context(), s.semanticEmbedder, program, input.ReplyText, resumeTo, selected.Key)
 				resumeDedupTriggered = dedup.Triggered
 				resumeDuplicateScore = dedup.Score
 				resumeMode = dedup.FinalStrategy
@@ -960,6 +1100,14 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if switchAtMS != nil {
+			if !validInteractionSwitchLead(currentMS, *switchAtMS) {
+				log.Printf(
+					"core audio interaction rejected unsafe switch lead room=%d action=%s current_ms=%d switch_ms=%d lead_ms=%d",
+					roomID, input.Action, currentMS, *switchAtMS, *switchAtMS-currentMS,
+				)
+				writeError(w, http.StatusConflict, "安全句末切点已失效，继续排队")
+				return
+			}
 			log.Printf(
 				"core audio interaction plan room=%d action=%s current_ms=%d switch_ms=%d lead_ms=%d",
 				roomID, input.Action, currentMS, *switchAtMS, *switchAtMS-currentMS,
@@ -1075,6 +1223,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		state.interactions[task.ID] = &audioInteractionMeta{
 			RoomID:               roomID,
 			MissionID:            input.MissionID,
+			MissionKind:          input.MissionKind,
 			HumanizationStrategy: input.HumanizationStrategy,
 			HumanizationKind:     input.HumanizationKind,
 			HumanizationApplied:  input.HumanizationApplied,

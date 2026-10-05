@@ -37,7 +37,7 @@ func (s *Server) liveAgentConfigVersions(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -45,6 +45,17 @@ func (s *Server) liveAgentConfigVersions(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取智能体配置版本失败")
 		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		filtered := make([]model.AgentConfigVersion, 0, len(items))
+		for _, item := range items {
+			if item.LifecycleStatus != "active" {
+				continue
+			}
+			filtered = append(filtered, supportConfigProjection(item, roomID))
+		}
+		items = filtered
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -54,7 +65,7 @@ func (s *Server) liveCreateAgentConfigDraft(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -63,10 +74,38 @@ func (s *Server) liveCreateAgentConfigDraft(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "智能体配置格式错误")
 		return
 	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		if len(input.Layer1)+len(input.Layer2)+len(input.Layer3)+len(input.Persona)+len(input.ModelConfig)+len(input.StyleProfile)+len(input.SafetyConfig) != 0 || len(input.SpeechConfig) != 1 {
+			writeError(w, http.StatusForbidden, "授权协助只能保存当前直播间的声音设置")
+			return
+		}
+		rooms := asSupportMap(input.SpeechConfig["rooms"])
+		if len(rooms) != 1 || asSupportMap(rooms[strconv.FormatInt(roomID, 10)]) == nil {
+			writeError(w, http.StatusForbidden, "声音设置超出当前直播间授权范围")
+			return
+		}
+		room := asSupportMap(rooms[strconv.FormatInt(roomID, 10)])
+		if len(room) != 1 || asSupportMap(room["selected_voice"]) == nil {
+			writeError(w, http.StatusForbidden, "授权声音配置只支持当前直播间的选中声音")
+			return
+		}
+		if !s.requireLiveSupportSelectedVoice(w, r, actor, tenantID, asSupportMap(room["selected_voice"])) {
+			return
+		}
+	}
 	item, err := s.store.CreateLiveAgentConfigDraft(r.Context(), tenantID, actor.UserID, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "保存智能体配置草稿失败")
 		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		if err := s.store.RegisterLiveSupportConfigVersion(r.Context(), item.ID, tenantID, roomID, actor.UserID, model.LiveSupportCapabilityL3Policy); err != nil {
+			writeError(w, http.StatusInternalServerError, "登记直播间声音草稿失败")
+			return
+		}
+		item = supportConfigProjection(item, roomID)
 	}
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -76,12 +115,22 @@ func (s *Server) liveActivateAgentConfigVersion(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
 	versionID, ok := namedPathID(w, r, "versionID", "配置版本")
 	if !ok {
+		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		activeID, err := s.store.ActivateLiveSupportSpeechConfig(r.Context(), tenantID, roomID, versionID, actor.UserID)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "不能发布该声音草稿：授权已撤回或草稿不属于当前直播间")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"active_version_id": activeID})
 		return
 	}
 	if err := s.store.ActivateLiveAgentConfigVersion(r.Context(), tenantID, versionID, actor.UserID); err != nil {
@@ -100,7 +149,7 @@ func (s *Server) liveListMediaAssets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -108,6 +157,16 @@ func (s *Server) liveListMediaAssets(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取媒体资产失败")
 		return
+	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		filtered := make([]model.MediaAsset, 0, len(items))
+		for _, item := range items {
+			if s.liveSupportMediaAllowed(r.Context(), roomID, item) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -117,7 +176,7 @@ func (s *Server) liveGetMediaAsset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -134,6 +193,9 @@ func (s *Server) liveGetMediaAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取媒体资产失败")
 		return
 	}
+	if !s.requireLiveSupportMedia(w, r, actor, item) {
+		return
+	}
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -142,7 +204,7 @@ func (s *Server) liveUploadMediaAsset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -190,6 +252,12 @@ func (s *Server) liveUploadMediaAsset(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		metadata["room_id"] = roomID
+		metadata["support_room_id"] = roomID
+		metadata["staff_user_id"] = actor.UserID
+	}
 	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
 	if contentType == "" || contentType == "application/octet-stream" {
 		buffer := make([]byte, 512)
@@ -241,7 +309,7 @@ func (s *Server) liveMediaAssetContent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -256,6 +324,9 @@ func (s *Server) liveMediaAssetContent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "读取媒体资产失败")
+		return
+	}
+	if !s.requireLiveSupportMedia(w, r, actor, item) {
 		return
 	}
 	assetStore, err := s.assetStorage.For(item.StorageDriver)
@@ -284,7 +355,7 @@ func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -299,6 +370,13 @@ func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "读取媒体资产失败")
+		return
+	}
+	if !s.requireLiveSupportMedia(w, r, actor, item) {
+		return
+	}
+	if actor.IsInternalStaff() {
+		writeError(w, http.StatusForbidden, "媒体资产可能由多个方案使用，请由客户删除")
 		return
 	}
 	if err := s.store.DeleteMediaAsset(r.Context(), tenantID, assetID); err != nil {
@@ -325,7 +403,7 @@ func (s *Server) liveListVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
@@ -334,7 +412,45 @@ func (s *Server) liveListVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取声音克隆档案失败")
 		return
 	}
+	if actor.IsInternalStaff() {
+		roomID, _ := liveSupportScopeRoomID(r)
+		filtered := make([]model.VoiceProfile, 0, len(items))
+		for _, item := range items {
+			if s.liveSupportVoiceAllowed(r.Context(), tenantID, roomID, item) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) liveVoiceProfileQuota(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
+	if !ok {
+		return
+	}
+	limit, err := s.store.GetEffectiveCustomerRoomLimit(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取直播间权限数量失败")
+		return
+	}
+	used, err := s.store.CountActiveVoiceProfiles(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取自定义声音数量失败")
+		return
+	}
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{
+		"limit": limit, "used": used, "remaining": remaining,
+	})
 }
 
 func (s *Server) liveCreateVoiceProfile(w http.ResponseWriter, r *http.Request) {
@@ -349,16 +465,48 @@ func (s *Server) liveUpdateVoiceProfile(w http.ResponseWriter, r *http.Request) 
 	s.liveSaveVoiceProfile(w, r, profileID)
 }
 
+func (s *Server) liveDeleteVoiceProfile(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
+	if !ok {
+		return
+	}
+	profileID, ok := namedPathID(w, r, "profileID", "声音档案")
+	if !ok {
+		return
+	}
+	if actor.IsInternalStaff() {
+		writeError(w, http.StatusForbidden, "共享声音库的删除操作须由客户完成")
+		return
+	}
+	if err := s.store.DisableVoiceProfile(r.Context(), tenantID, profileID, actor.UserID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "自定义声音不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "删除自定义声音失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) liveSaveVoiceProfile(w http.ResponseWriter, r *http.Request, profileID int64) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
 		return
 	}
-	tenantID, ok := actorTenantID(w, actor)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
 	}
 	var input model.VoiceProfileInput
+	if actor.IsInternalStaff() {
+		writeError(w, http.StatusForbidden, "共享声音档案的修改须由客户完成；授权协助可创建新声音")
+		return
+	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "声音克隆档案格式错误")
 		return
@@ -370,6 +518,18 @@ func (s *Server) liveSaveVoiceProfile(w http.ResponseWriter, r *http.Request, pr
 	if input.Name == "" || input.Provider == "" {
 		writeError(w, http.StatusBadRequest, "声音名称和服务商不能为空")
 		return
+	}
+	if profileID == 0 && input.CloneStatus != "disabled" {
+		limit, limitErr := s.store.GetEffectiveCustomerRoomLimit(r.Context(), tenantID)
+		used, usedErr := s.store.CountActiveVoiceProfiles(r.Context(), tenantID)
+		if limitErr != nil || usedErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取自定义声音额度失败")
+			return
+		}
+		if used >= limit {
+			writeError(w, http.StatusConflict, fmt.Sprintf("自定义声音已达到直播间权限上限（%d 个），请先删除一个已有声音再生成", limit))
+			return
+		}
 	}
 	switch input.CloneStatus {
 	case "", "pending", "training", "ready", "failed", "disabled":

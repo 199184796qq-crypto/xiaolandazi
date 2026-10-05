@@ -1,0 +1,56 @@
+{
+  "$schema": "../../../shared/schemas/anchor-style-plugin-manifest.schema.json",
+  "api_version": "anchor-style-plugin/v1",
+  "id": "numeric-repair",
+  "version": "1.0.0",
+  "name": "偶发计算改口",
+  "description": "仅对系统计算出的派生数值制造一次轻微口误，并在同一个不可打断单元内立即说出正确结果。",
+  "mode": "trusted_executor",
+  "category": "delivery",
+  "scenes": ["mainline", "refresh"],
+  "parameters": {
+    "max_per_1000_chars": {
+      "type": "integer",
+      "description": "每1000字最多触发次数。0表示关闭。",
+      "default": 1,
+      "minimum": 0,
+      "maximum": 2
+    },
+    "correction_distance_chars": {
+      "type": "integer",
+      "description": "错误值与纠正值之间允许的最大汉字距离。",
+      "default": 20,
+      "minimum": 4,
+      "maximum": 30
+    },
+    "repair_phrase": {
+      "type": "string",
+      "description": "纠正时使用的短改口方式。",
+      "default": "不对，我重新算一下",
+      "enum": ["不对，我重新算一下", "等一下，刚才算岔了", "我改一下，应该是"]
+    },
+    "serious_scene_disabled": {
+      "type": "boolean",
+      "description": "投诉、售后、事实澄清等严肃场景强制关闭。",
+      "default": true
+    }
+  },
+  "requires": ["verified-calculator", "atomic-audio-segment", "atomic-subtitle-segment"],
+  "conflicts": ["strict-literal-delivery"],
+  "safety": {
+    "may_emit_intentional_false_derived_value": true,
+    "may_change_source_fact": false,
+    "atomic_output_required": true,
+    "interruptible": false,
+    "allowed_fact_kinds": ["derived_arithmetic"],
+    "forbidden_scenes": ["serious"]
+  },
+  "compiler": {
+    "recognized_intents": ["偶尔算错后纠正", "偶尔口算错一下再改口", "算岔了马上改回来"],
+    "output_capability": "numeric_repair",
+    "micro_actions": ["state_information", "self_correction", "conclusion"]
+  },
+  "runtime": {
+    "executor": "numeric_repair_v1"
+  }
+}

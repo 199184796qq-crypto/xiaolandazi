@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/mail"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-sql-driver/mysql"
 
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/model"
@@ -313,6 +316,13 @@ func (s *Server) financeDashboard(w http.ResponseWriter, r *http.Request) {
 
 	item, err := s.store.GetFinanceDashboard(r.Context(), *actor.TenantID, limit)
 	if err != nil {
+		var sqlErr *mysql.MySQLError
+		var code uint16
+		if errors.As(err, &sqlErr) {
+			code = sqlErr.Number
+		}
+		// Deliberately omit raw SQL/error payloads and customer/credential values.
+		log.Printf("finance dashboard read unavailable: mysql_code=%d context_cancelled=%t", code, r.Context().Err() != nil)
 		writeError(w, http.StatusInternalServerError, "读取财务信息失败")
 		return
 	}
@@ -324,6 +334,13 @@ func (s *Server) financeDashboard(w http.ResponseWriter, r *http.Request) {
 	item.CommissionBalanceCents = referralWallet.Wallet.AvailableBalanceCents
 	item.CommissionFrozenCents = referralWallet.Wallet.FrozenBalanceCents
 	item.TotalBalanceCents += referralWallet.Wallet.AvailableBalanceCents
+	beanWallet, err := s.store.CustomerBeanWallet(r.Context(), *actor.TenantID, 1)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取小蓝豆余额失败")
+		return
+	}
+	item.BeanBalance = beanWallet.Wallet.AvailableBeans
+	item.BeanFrozen = beanWallet.Wallet.FrozenBeans
 	writeJSON(w, http.StatusOK, item)
 }
 

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 )
 
 var salesTestEnvFile = flag.String("sales-test-env-file", "", "Explicit opt-in environment file for an isolated sales integration schema; never tests against the configured business schema")
+var salesTestDBAddress = flag.String("sales-test-db-address", "", "Optional host:port for an explicit SSH tunnel; schema/table isolation remains mandatory")
 
 // No business schema is selected or mutated. A fresh random schema is always
 // created and dropped, even when an assertion fails. Do not accept a schema name.
@@ -41,6 +43,16 @@ func salesIsolatedMySQL(t *testing.T) *Store {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "="); ok {
+			v = strings.TrimSpace(v)
+			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+				decoded, err := strconv.Unquote(v)
+				if err != nil {
+					t.Fatal("invalid quoted integration configuration")
+				}
+				v = decoded
+			} else if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+				v = v[1 : len(v)-1]
+			}
 			values[strings.TrimSpace(k)] = v
 		}
 	}
@@ -59,6 +71,12 @@ func salesIsolatedMySQL(t *testing.T) *Store {
 		port = "3306"
 	}
 	cfg.Addr = net.JoinHostPort(values["DB_HOST"], port)
+	if *salesTestDBAddress != "" {
+		if _, _, err := net.SplitHostPort(*salesTestDBAddress); err != nil {
+			t.Fatal("invalid integration tunnel address")
+		}
+		cfg.Addr = *salesTestDBAddress
+	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
 	cfg.Timeout = 5 * time.Second
@@ -137,7 +155,12 @@ func salesIsolatedMySQL(t *testing.T) *Store {
 			exec(strings.TrimSuffix(strings.TrimSpace(statement), ";"))
 		}
 	}
-	exec(`CREATE TABLE mkt_campaign_usage(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,order_id BIGINT UNSIGNED,campaign_id BIGINT UNSIGNED,campaign_item_id BIGINT UNSIGNED NULL,quantity INT,status VARCHAR(32))`)
+	exec(`CREATE TABLE mkt_campaign_usage(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,order_id BIGINT UNSIGNED,campaign_id BIGINT UNSIGNED,campaign_item_id BIGINT UNSIGNED NULL,tenant_id BIGINT UNSIGNED DEFAULT 0,quantity INT,discount_amount_cents BIGINT UNSIGNED DEFAULT 0,status VARCHAR(32),created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3))`)
+	for _, statement := range strings.Split(strings.ReplaceAll(commerceRulesSchema, "\r\n", "\n"), "\n-- +statement\n") {
+		if strings.TrimSpace(statement) != "" {
+			exec(statement)
+		}
+	}
 	exec(`INSERT INTO mgmt_tenants(id,org_type,level,code,name,status) VALUES(1,'platform',0,'platform','Test platform','active')`)
 	exec(`INSERT INTO mgmt_users(id,username,display_name,phone,role,status) VALUES(101,'seller_a','Seller A','test-101','sales_staff','active'),(102,'seller_b','Seller B','test-102','sales_staff','active'),(103,'seller_c','Seller C','test-103','sales_staff','active'),(900,'manager','Manager','test-900','platform_admin','active')`)
 	exec(`INSERT INTO crm_sales_staff(id,user_id,employee_code,status) VALUES(1,101,'A','active'),(2,102,'B','active'),(3,103,'C','active')`)

@@ -1,32 +1,35 @@
 package collector
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
-func TestOfflineConfirmationRequiresTwoConsecutiveNoActivityFailures(t *testing.T) {
-	suspected, confirmed := nextOfflineConfirmation(false, false)
-	if !suspected || confirmed {
-		t.Fatalf("first offline: suspected=%v confirmed=%v", suspected, confirmed)
+func TestOfflineConfirmationRequiresFullSixtySecondWindow(t *testing.T) {
+	now := time.Date(2026, 9, 30, 17, 0, 0, 0, time.UTC)
+	suspectedAt, confirmed := nextOfflineConfirmation(time.Time{}, now)
+	if suspectedAt.IsZero() || confirmed {
+		t.Fatalf("first offline: suspected_at=%v confirmed=%v", suspectedAt, confirmed)
 	}
 
-	suspected, confirmed = nextOfflineConfirmation(suspected, false)
-	if suspected || !confirmed {
-		t.Fatalf("second offline: suspected=%v confirmed=%v", suspected, confirmed)
+	suspectedAt, confirmed = nextOfflineConfirmation(suspectedAt, now.Add(59*time.Second))
+	if confirmed {
+		t.Fatalf("59 seconds must remain reconnecting: suspected_at=%v", suspectedAt)
+	}
+
+	_, confirmed = nextOfflineConfirmation(suspectedAt, now.Add(60*time.Second))
+	if !confirmed {
+		t.Fatal("60 seconds without live evidence must confirm offline")
 	}
 }
 
-func TestOfflineConfirmationClearsAfterRealActivity(t *testing.T) {
-	suspected, confirmed := nextOfflineConfirmation(false, false)
-	if !suspected || confirmed {
-		t.Fatalf("first offline: suspected=%v confirmed=%v", suspected, confirmed)
-	}
+func TestOfflineConfirmationRestartsAfterLiveEvidenceReset(t *testing.T) {
+	now := time.Date(2026, 9, 30, 17, 0, 0, 0, time.UTC)
+	first, _ := nextOfflineConfirmation(time.Time{}, now)
 
-	suspected, confirmed = nextOfflineConfirmation(suspected, true)
-	if !suspected || confirmed {
-		t.Fatalf("offline after recovered activity should restart confirmation: suspected=%v confirmed=%v", suspected, confirmed)
-	}
-
-	suspected, confirmed = nextOfflineConfirmation(false, true)
-	if !suspected || confirmed {
-		t.Fatalf("activity followed by later timeout should be first suspicion: suspected=%v confirmed=%v", suspected, confirmed)
+	// Manager resets the timestamp to zero whenever live evidence returns.
+	restarted, confirmed := nextOfflineConfirmation(time.Time{}, now.Add(30*time.Second))
+	if confirmed || restarted.Equal(first) {
+		t.Fatalf("restarted window=%v first=%v confirmed=%v", restarted, first, confirmed)
 	}
 }

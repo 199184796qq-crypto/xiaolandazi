@@ -2,7 +2,8 @@
 param(
   [string]$MainUrl = 'https://www.xiaolandaizi.cn',
   [string]$SalesUrl = 'https://sales.xiaolandaizi.cn',
-  [switch]$SkipSales
+  [switch]$SkipSales,
+  [switch]$SkipXiaozhi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,18 @@ Write-Host '[smoke] management API ok'
 $CoreHealth = Invoke-WebRequest -UseBasicParsing -Uri ($MainUrl.TrimEnd('/') + '/core-audio/healthz') -TimeoutSec 15
 if ([int]$CoreHealth.StatusCode -ne 200) { throw 'Core proxy smoke test failed.' }
 Write-Host '[smoke] core proxy ok'
+
+if (-not $SkipXiaozhi) {
+  $XiaozhiHealth = Invoke-RestMethod -Uri ($MainUrl.TrimEnd('/') + '/xiaozhi/healthz') -TimeoutSec 15
+  if ($XiaozhiHealth.status -ne 'ok' -or -not $XiaozhiHealth.ffmpeg_available) { throw 'Xiaozhi public health smoke test failed.' }
+
+  $XiaozhiHeaders = @{ 'Device-Id' = '02:00:00:00:ff:fe'; 'Client-Id' = 'production-smoke' }
+  $XiaozhiBody = '{"application":{"version":"production-smoke"}}'
+  $XiaozhiOTA = Invoke-RestMethod -Method Post -Uri ($MainUrl.TrimEnd('/') + '/xiaozhi/ota/') -Headers $XiaozhiHeaders -ContentType 'application/json' -Body $XiaozhiBody -TimeoutSec 15
+  if ($XiaozhiOTA.websocket.url -ne ($MainUrl.TrimEnd('/').Replace('https://', 'wss://') + '/xiaozhi/v1/')) { throw 'Xiaozhi OTA websocket URL smoke test failed.' }
+  if ([string]::IsNullOrWhiteSpace([string]$XiaozhiOTA.websocket.token) -or [int]$XiaozhiOTA.websocket.version -ne 1) { throw 'Xiaozhi OTA auth/version smoke test failed.' }
+  Write-Host '[smoke] xiaozhi health + OTA ok'
+}
 
 if (-not $SkipSales) {
   Assert-AppMarker -Url ($SalesUrl.TrimEnd('/') + '/') -UserAgent $MobileUA -Expected 'sales-mobile'

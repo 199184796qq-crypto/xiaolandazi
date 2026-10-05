@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"time"
 
 	"livecompanion/management/internal/model"
@@ -14,30 +13,33 @@ func defaultRoomInteractionPreferences(tenantID, roomID int64) model.RoomInterac
 	return model.RoomInteractionPreferences{
 		TenantID:             tenantID,
 		RoomID:               roomID,
-		OverallInteraction:   "natural",
-		QuestionPreference:   "natural",
-		WelcomePreference:    "natural",
-		EngagementPreference: "natural",
-		ChatPreference:       "natural",
-		ConversionPreference: "natural",
-		AutoHeat:              true,
+		OverallInteraction:   50,
+		QuestionPreference:   50,
+		WelcomePreference:    50,
+		EngagementPreference: 50,
+		ChatPreference:       50,
+		ConversionPreference: 50,
+		AutoHeat:             true,
 	}
 }
 
-func normalizeRoomInteractionPreferencesInput(input model.RoomInteractionPreferencesInput) model.RoomInteractionPreferencesInput {
-	normalize := func(value string) string {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value == "" {
-			return "natural"
-		}
-		return value
+func clampInteractionPreference(value int) int {
+	if value < 0 {
+		return 0
 	}
-	input.OverallInteraction = normalize(input.OverallInteraction)
-	input.QuestionPreference = normalize(input.QuestionPreference)
-	input.WelcomePreference = normalize(input.WelcomePreference)
-	input.EngagementPreference = normalize(input.EngagementPreference)
-	input.ChatPreference = normalize(input.ChatPreference)
-	input.ConversionPreference = normalize(input.ConversionPreference)
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func normalizeRoomInteractionPreferencesInput(input model.RoomInteractionPreferencesInput) model.RoomInteractionPreferencesInput {
+	input.OverallInteraction = clampInteractionPreference(input.OverallInteraction)
+	input.QuestionPreference = clampInteractionPreference(input.QuestionPreference)
+	input.WelcomePreference = clampInteractionPreference(input.WelcomePreference)
+	input.EngagementPreference = clampInteractionPreference(input.EngagementPreference)
+	input.ChatPreference = clampInteractionPreference(input.ChatPreference)
+	input.ConversionPreference = clampInteractionPreference(input.ConversionPreference)
 	return input
 }
 

@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { getPublicSystemConfig, login, logout } from '$lib/api';
   import { applySession } from '$lib/session';
+  import { paymentLoginReturn } from '$lib/wechatPay';
 
   let username = '';
   let password = '';
@@ -43,7 +44,12 @@
         throw new Error('这个入口仅供终端用户登录');
       }
       applySession(bootstrap);
-      await goto('/');
+      let target = '/';
+      try {
+        target = paymentLoginReturn(sessionStorage.getItem('wechat-payment-return') || '') || '/';
+        sessionStorage.removeItem('wechat-payment-return');
+      } catch { /* default home destination */ }
+      await goto(target);
     } catch (value) {
       error = value instanceof Error ? value.message : '登录失败';
       refreshCaptcha();
@@ -87,5 +93,11 @@
     <button class="primary-action" type="submit" disabled={submitting}>
       {submitting ? '登录中…' : '登录'}
     </button>
+    <div class="register-entry"><span>收到好友邀请码？</span><a href="/register">注册新账号</a></div>
   </form>
 </main>
+
+<style>
+  .register-entry{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:14px;color:#8b94a7;font-size:12px}
+  .register-entry a{color:#5e6bd2;font-weight:900}
+</style>

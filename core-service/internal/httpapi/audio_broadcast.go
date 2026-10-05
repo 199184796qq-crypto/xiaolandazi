@@ -239,7 +239,7 @@ func (s *Server) syncAudioRoom(w http.ResponseWriter, r *http.Request) {
 		payload["program_id"] = task.ProgramID
 		payload["sequence"] = task.Sequence
 		payload["slot"] = task.Slot
-		payload["suspended"] = task.ProgramID != "" && task.Kind == "interaction_tts"
+		payload["suspended"] = task.ProgramID != "" && (task.Kind == "interaction_audio" || task.Kind == "interaction_tts")
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -315,7 +315,8 @@ func (s *Server) reportAudioTaskEvent(w http.ResponseWriter, r *http.Request) {
 	// so feed those events into the same interaction state machine used by the
 	// legacy callback path. This makes actual PLAYING/COMPLETED authoritative.
 	if snapshot, exists := hub.Snapshot(r.PathValue("taskID")); exists &&
-		strings.EqualFold(strings.TrimSpace(snapshot.Task.Kind), "interaction_tts") {
+		(strings.EqualFold(strings.TrimSpace(snapshot.Task.Kind), "interaction_audio") ||
+			strings.EqualFold(strings.TrimSpace(snapshot.Task.Kind), "interaction_tts")) {
 		if state := s.audioDevState(); state != nil {
 			occurredAt := event.OccurredAt
 			if occurredAt.IsZero() {

@@ -34,6 +34,14 @@ func (r *testBrowserRuntime) Stream(
 	return collector.StreamSource{}, errors.New("not implemented")
 }
 
+func (r *testBrowserRuntime) RequestStream(
+	context.Context,
+	int64,
+	string,
+) (collector.StreamSource, error) {
+	return collector.StreamSource{}, errors.New("not implemented")
+}
+
 func TestBrowserCollectorMarksLiveAfterDecodedPublicScreenFrame(t *testing.T) {
 	room := model.Room{ID: 10, TenantID: 14}
 	roomState := &roomSession{
@@ -172,6 +180,46 @@ func TestBrowserCollectorTimesOutWhenTransportHasNoPublicScreenFrames(t *testing
 		}
 	case <-time.After(time.Second):
 		t.Fatal("collector did not timeout without public-screen frames")
+	}
+}
+
+func TestBrowserCollectorStopsImmediatelyOnPlatformEndedState(t *testing.T) {
+	room := model.Room{ID: 12, TenantID: 14}
+	roomState := &roomSession{
+		frames:    make(chan []byte, 2),
+		errors:    make(chan error, 1),
+		transport: make(chan struct{}),
+		states:    make(chan roomStateSignal, 2),
+	}
+	manager := NewBrowserManager("", true)
+	manager.sessions[room.ID] = roomState
+	runner := &BrowserCollector{
+		browser: &testBrowserRuntime{session: &BrowserSession{
+			manager: manager,
+			roomID:  room.ID,
+			session: roomState,
+		}},
+		frameTimeout: time.Second,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Run(
+			context.Background(),
+			room,
+			func(context.Context) error { return nil },
+			func(context.Context, model.CreateEventInput) error { return nil },
+		)
+	}()
+
+	roomState.sendState("ended", "page_live_ended_text")
+	select {
+	case err := <-done:
+		if !errors.Is(err, collector.ErrLiveEnded) {
+			t.Fatalf("collector exit error = %v, want ErrLiveEnded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collector did not stop on explicit platform-ended state")
 	}
 }
 

@@ -1,0 +1,38 @@
+{
+  "$schema": "../../../shared/schemas/anchor-style-plugin-manifest.schema.json",
+  "api_version": "anchor-style-plugin/v1",
+  "id": "thinking-tempo",
+  "version": "1.0.0",
+  "name": "思考式慢说",
+  "description": "在解释较密集或转场时偶尔放慢局部节奏，用短停顿和分句表现自然思考。",
+  "mode": "declarative",
+  "category": "rhythm",
+  "scenes": ["mainline", "interaction", "refresh"],
+  "parameters": {
+    "max_per_1000_chars": {
+      "type": "integer",
+      "description": "每1000字最多出现的思考式慢说单元次数。",
+      "default": 2,
+      "minimum": 0,
+      "maximum": 4
+    }
+  },
+  "safety": {
+    "may_emit_intentional_false_derived_value": false,
+    "may_change_source_fact": false,
+    "atomic_output_required": false,
+    "interruptible": true,
+    "allowed_fact_kinds": ["none"],
+    "forbidden_scenes": ["serious"]
+  },
+  "compiler": {
+    "recognized_intents": ["思考时说慢一点", "偶尔边想边说", "解释时有停顿"],
+    "output_capability": "thinking_tempo",
+    "instructions": {
+      "mainline": "在解释较密集或自然转场的单元中偶尔加入短停顿，把一个长句拆成两三小句并降低局部信息密度；不得表现成对已核定内容没有把握。",
+      "interaction": "需要组织表达时可先短停顿再直接回答，整体仍保持简洁。",
+      "refresh": "只在局部单元使用思考式慢节奏，前后仍回到主播正常速度。"
+    },
+    "micro_actions": ["state_information", "bridge", "supplement"]
+  }
+}

@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import ts from 'typescript'
+
+const source = readFileSync(new URL('../src/inventoryImport.ts', import.meta.url), 'utf8')
+const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } })
+const { parseInventoryImport: parse, splitInventoryCodes: split, validateInventoryCodes: validate, mergeInventoryCodes: merge } = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(outputText))
+const paired = { sns: ['001', '002'], macs: ['1c:29:04:31:0e:b8', '1c:29:04:31:0e:b9'] }
+assert.deepEqual(parse('\uFEFFSN,MAC\r\n001,1C2904310EB8\r\n002,1c-29-04-31-0e-b9\r\n'), paired)
+assert.deepEqual(parse('"MAC","SN"\n"1c:29:04:31:0e:b8","001"\n"1c29.0431.0eb9","002"'), paired)
+assert.deepEqual(parse('设备SN\tMAC地址\n001\t1c:29:04:31:0e:b8\n002\t1c:29:04:31:0e:b9', 'devices.tsv'), paired)
+assert.deepEqual(parse('SN;MAC\n001;1c:29:04:31:0e:b8\n002;1c:29:04:31:0e:b9'), paired)
+assert.deepEqual(parse('SN,MAC\n001,\n002,'), { sns: ['001', '002'], macs: [] })
+assert.deepEqual(parse('SN\n001\n002'), { sns: ['001', '002'], macs: [] })
+assert.deepEqual(parse('001 002\n003，004;005', 'legacy.txt'), { sns: ['001', '002', '003', '004', '005'], macs: [] })
+assert.deepEqual(split('A,B C\nD，E；F;G\tH'), ['A','B','C','D','E','F','G','H'])
+for (const content of ['SN,MAC', 'SN,MAC\nA,1c:29:04:31:0e:b8\nB,', 'SN,MAC\n,1c:29:04:31:0e:b8', 'SN,MAC\nA,invalid', 'SN,MAC\nA,1c:29:04:31:0e:b8\na,1c:29:04:31:0e:b9', 'SN,MAC\nA,1c:29:04:31:0e:b8\nB,1C2904310EB8', 'MAC\n1c:29:04:31:0e:b8', 'SN,SN\nA,B', 'SN,MAC\n"A,B",1c:29:04:31:0e:b8', 'SN,MAC\n"unclosed']) assert.throws(() => parse(content))
+assert.throws(() => validate(['A','B'], ['1c:29:04:31:0e:b8']))
+assert.throws(() => merge({ sns: ['X'], macs: [] }, paired))
+assert.throws(() => merge(paired, paired))
+assert.deepEqual(merge({ sns: [], macs: [] }, paired), paired)
+const template = readFileSync(new URL('../public/templates/inventory-devices.csv', import.meta.url), 'utf8')
+assert.equal(template, '\uFEFFSN,MAC\r\n')
+assert.throws(() => parse(template), /只有表头/)
+assert.deepEqual(parse(template + '001,1c:29:04:31:0e:b8\r\n002,1c:29:04:31:0e:b9\r\n'), paired)
+const view = readFileSync(new URL('../src/views/InventoryLifecycleView.vue', import.meta.url), 'utf8')
+assert.match(view, /height: 38px; min-height: 38px; max-height: 38px/)
+assert.match(view, /inventory-inbound-basics > label[^}]+display: flex; flex-direction: column; align-self: start/)
+assert.match(view, /href="\/templates\/inventory-devices.csv"/)
+assert.ok(!view.includes('条已自动去重'))
+console.log('Inventory import: CSV/TXT/TSV, pairing, separators, duplicates and atomic append passed')

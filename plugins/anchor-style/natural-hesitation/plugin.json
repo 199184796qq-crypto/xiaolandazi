@@ -1,0 +1,38 @@
+{
+  "$schema": "../../../shared/schemas/anchor-style-plugin-manifest.schema.json",
+  "api_version": "anchor-style-plugin/v1",
+  "id": "natural-hesitation",
+  "version": "1.0.0",
+  "name": "自然口结与停顿",
+  "description": "在低频、非关键位置加入极短起音重复或犹豫停顿，让表达保留真人临场感。",
+  "mode": "declarative",
+  "category": "delivery",
+  "scenes": ["mainline", "interaction", "refresh"],
+  "parameters": {
+    "max_per_1000_chars": {
+      "type": "integer",
+      "description": "每1000字最多出现的自然口结或犹豫停顿次数。",
+      "default": 1,
+      "minimum": 0,
+      "maximum": 3
+    }
+  },
+  "safety": {
+    "may_emit_intentional_false_derived_value": false,
+    "may_change_source_fact": false,
+    "atomic_output_required": false,
+    "interruptible": true,
+    "allowed_fact_kinds": ["none"],
+    "forbidden_scenes": ["serious"]
+  },
+  "compiler": {
+    "recognized_intents": ["偶尔口结", "偶尔卡一下", "说话不要太顺", "有一点真人犹豫"],
+    "output_capability": "natural_hesitation",
+    "instructions": {
+      "mainline": "偶尔在普通过渡词或非关键措辞处出现一次极短起音重复或犹豫停顿，随后顺畅说完；不得作用于已核定关键原词，也不得让听众误解句义。",
+      "interaction": "短答至多出现一次极短犹豫，先保证回答清楚；不在严肃答复中使用。",
+      "refresh": "低频加入极短犹豫或起音重复，不能固定在每段相同位置。"
+    },
+    "micro_actions": ["state_information", "reaction", "supplement"]
+  }
+}

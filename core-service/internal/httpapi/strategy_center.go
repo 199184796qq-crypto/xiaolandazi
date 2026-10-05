@@ -66,7 +66,7 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 	input.RoomID = roomID
 	item := s.strategyPolicies.PutRoomInteractionPreferences(roomID, input)
 	log.Printf(
-		"room interaction preferences updated room=%d tenant=%d overall=%s question=%s welcome=%s engagement=%s chat=%s conversion=%s",
+		"room interaction preferences updated room=%d tenant=%d overall=%d question=%d welcome=%d engagement=%d chat=%d conversion=%d",
 		roomID,
 		tenantID,
 		item.OverallInteraction,

@@ -1,3 +1,12 @@
+CREATE TABLE IF NOT EXISTS inv_batch_registry (
+    sku_code VARCHAR(96) NOT NULL,
+    batch_no VARCHAR(96) NOT NULL,
+    document_id BIGINT UNSIGNED NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (sku_code, batch_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS inv_warehouses (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     code VARCHAR(64) NOT NULL,

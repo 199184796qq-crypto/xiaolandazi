@@ -337,14 +337,8 @@ func TestDevAudioInteractionWritesTimelinePins(t *testing.T) {
 	if playingRec.Code != http.StatusOK {
 		t.Fatalf("playing callback=%d body=%s", playingRec.Code, playingRec.Body.String())
 	}
-	if len(brain.pins) != 1 || brain.pins[0].Kind != timeline.PinAnswer {
-		t.Fatalf("answer pins=%#v", brain.pins)
-	}
-	if brain.pins[0].Topic != "PRICE" || brain.pins[0].Strategy != "interaction.fusion_skip" {
-		t.Fatalf("answer pin=%#v", brain.pins[0])
-	}
-	if brain.spends[0] != timeline.DebtQuestion {
-		t.Fatalf("answer spend=%q", brain.spends[0])
+	if len(brain.pins) != 0 || len(brain.spends) != 0 {
+		t.Fatalf("PLAYING must not complete answer debt pins=%#v spends=%#v", brain.pins, brain.spends)
 	}
 
 	completed := httptest.NewRequest(
@@ -367,6 +361,15 @@ func TestDevAudioInteractionWritesTimelinePins(t *testing.T) {
 	if completedRec.Code != http.StatusOK {
 		t.Fatalf("completed callback=%d body=%s", completedRec.Code, completedRec.Body.String())
 	}
+	if len(brain.pins) != 2 || brain.pins[0].Kind != timeline.PinAnswer {
+		t.Fatalf("completed answer pins=%#v", brain.pins)
+	}
+	if brain.pins[0].Topic != "PRICE" || brain.pins[0].Strategy != "interaction.fusion_skip" {
+		t.Fatalf("answer pin=%#v", brain.pins[0])
+	}
+	if brain.spends[0] != timeline.DebtQuestion {
+		t.Fatalf("answer spend=%q", brain.spends[0])
+	}
 	if len(brain.pins) != 2 || brain.pins[1].Kind != timeline.PinResume {
 		t.Fatalf("resume pins=%#v", brain.pins)
 	}
@@ -375,6 +378,27 @@ func TestDevAudioInteractionWritesTimelinePins(t *testing.T) {
 	}
 	if brain.spends[1] != "" {
 		t.Fatalf("resume should not spend debt: %q", brain.spends[1])
+	}
+}
+
+func TestInteractionDebtForMissionKind(t *testing.T) {
+	cases := []struct {
+		kind  string
+		topic string
+		want  timeline.DebtKind
+	}{
+		{kind: "reply_question", topic: "FAMILY:价格费用", want: timeline.DebtQuestion},
+		{kind: "reply_chat", topic: "CHAT:abc", want: timeline.DebtInteraction},
+		{kind: "welcome_named", topic: "INTERACTION:WELCOME", want: timeline.DebtInteraction},
+		{kind: "reply_like", want: timeline.DebtLikeCTA},
+		{kind: "reply_follow", want: timeline.DebtFollowCTA},
+		{kind: "conversion_signal", topic: "SIGNAL:ORDER", want: timeline.DebtConversion},
+	}
+	for _, tc := range cases {
+		got, _ := interactionDebtForMission(tc.kind, tc.topic)
+		if got != tc.want {
+			t.Fatalf("kind=%s topic=%s got=%s want=%s", tc.kind, tc.topic, got, tc.want)
+		}
 	}
 }
 

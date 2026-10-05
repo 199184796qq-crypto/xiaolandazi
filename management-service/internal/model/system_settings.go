@@ -94,6 +94,16 @@ type SystemSettingsDashboard struct {
 
 type PublicSystemConfig struct {
 	SiteName                    string `json:"site_name"`
+	AuthCustomerSideLabel       string `json:"auth_customer_side_label"`
+	AuthCustomerTitleLine1      string `json:"auth_customer_title_line_1"`
+	AuthCustomerTitleLine2      string `json:"auth_customer_title_line_2"`
+	AuthCustomerDescription     string `json:"auth_customer_description"`
+	AuthCustomerStatusLabel     string `json:"auth_customer_status_label"`
+	AuthInternalSideLabel       string `json:"auth_internal_side_label"`
+	AuthInternalTitleLine1      string `json:"auth_internal_title_line_1"`
+	AuthInternalTitleLine2      string `json:"auth_internal_title_line_2"`
+	AuthInternalDescription     string `json:"auth_internal_description"`
+	AuthInternalStatusLabel     string `json:"auth_internal_status_label"`
 	InternalAgentName           string `json:"internal_agent_name"`
 	ClientAgentName             string `json:"client_agent_name"`
 	LivePolicyRuleTitleFontSize int    `json:"live_policy_rule_title_font_size"`

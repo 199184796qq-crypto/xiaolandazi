@@ -49,6 +49,12 @@ func (s *Server) customerShopMemberships(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "读取会员商品失败")
 		return
 	}
+	for i := range items {
+		if err = s.store.AnnotateCampaignEligibility(r.Context(), *actor.TenantID, items[i].MarketingCampaigns); err != nil {
+			writeError(w, http.StatusInternalServerError, "读取活动资格失败")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 

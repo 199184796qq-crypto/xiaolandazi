@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getLiveAgentSettings,
+  getLiveOpsSupportAuthorizations,
   getLiveAgentPlans,
   createLiveAgentPlan,
   getRoomLiveAgentPlans,
@@ -29,6 +30,9 @@ import {
   getRoomSpeechRuntime,
   getRoomSpeechMissions,
   getRoomGeneratedSpeechHistory,
+  getRoomPublishedLiveAgentPlanVersion,
+  publishLiveAgentVoiceRate,
+  publishLiveAgentEmotion,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
@@ -49,6 +53,8 @@ import {
   getRoomSpeechAnalysisReportText,
 } from '../api'
 import { session } from '../session'
+import { beginLiveSupportScope, hasRoomStrategyAuthorization, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
+import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
 import { coreRuntime } from '../coreRuntime'
 import { getSharedAudioContext, unlockSharedAudioContext } from '../audioRuntime'
 import ModulePageNav from '../components/ModulePageNav.vue'
@@ -78,6 +84,8 @@ import type {
 } from '../types'
 
 const route = useRoute()
+// All roles share the customer room dashboard. Legacy diagnostic surfaces are
+// not enabled just because a staff member entered a customer's room.
 const legacyAgentSurfaceEnabled = false
 const roomId = Number(route.params.id)
 
@@ -89,6 +97,34 @@ const isInternalViewer = computed(() =>
 const coreActionsAvailable = computed(() => coreRuntime.phase === 'online')
 
 const room = ref<Room | null>(null)
+const roomStrategyAuthorized = ref(false)
+const canConfigureRoomStrategy = computed(() => session.bootstrap?.actor.role === 'customer' || roomStrategyAuthorized.value)
+let endRoomSupportScope: (() => void) | null = null
+let authorizationTimer: number | undefined
+
+async function refreshRoomStrategyAuthorization() {
+  if (!isInternalViewer.value) return
+  let authorized = false
+  if (session.bootstrap?.actor.role === 'platform_admin' || canDelegateLivePolicyL3(session.bootstrap)) {
+    try {
+      const response = await getLiveOpsSupportAuthorizations()
+      authorized = hasRoomStrategyAuthorization(response.items || [], session.bootstrap?.actor.user_id || 0, roomId)
+    } catch {
+      authorized = false
+    }
+  }
+  if (pageUnmounted) return
+  roomStrategyAuthorized.value = authorized
+  if (authorized && !endRoomSupportScope) {
+    endRoomSupportScope = beginLiveSupportScope(roomId)
+    await Promise.all([loadLiveAgentPlansForRoom(), loadPublishedSpeechRate()])
+  } else if (!authorized) {
+    endRoomSupportScope?.()
+    endRoomSupportScope = null
+    liveAgentPlans.value = []
+    if (publicScreenMode.value === 'preferences') publicScreenMode.value = 'events'
+  }
+}
 
 function roomDetailCacheKey() {
   return 'livecompanion.room-detail-cache.v1:' + roomId
@@ -277,8 +313,19 @@ type FlowSample = { at: number; type: string; weight: number }
 const flowSamples = ref<FlowSample[]>([])
 const runtimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const runtimeError = ref('')
+const runtimeActionDialog = ref<{ title: string; message: string } | null>(null)
 const runtimeControlBusy = ref(false)
 const runtimeModeBusy = ref(false)
+
+function openRuntimeActionError(title: string, error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : String(error || '').trim() || fallback
+  runtimeActionDialog.value = { title, message }
+}
+
+function closeRuntimeActionError() {
+  runtimeActionDialog.value = null
+}
+
 const captureSnapshot = ref<RoomCaptureSnapshot | null>(null)
 const captureBusy = ref(false)
 const captureError = ref('')
@@ -339,6 +386,15 @@ const generatedSpeechHistory = ref<GeneratedSpeechHistoryPage>({
   runtime_session_id: 0,
 })
 let speechHistorySearchTimer: number | undefined
+const liveSpeechRate = ref(1)
+const liveSpeechRateSaved = ref(1)
+const liveSpeechRateBusy = ref(false)
+const liveSpeechRateError = ref('')
+const liveSpeechRateOptions = [0.8, 0.9, 1, 1.1, 1.2] as const
+const liveEmotionEnabled = ref(true)
+const liveEmotionSaved = ref(true)
+const liveEmotionBusy = ref(false)
+const liveEmotionError = ref('')
 const speechHistoryTotalPages = computed(() =>
   Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
 )
@@ -928,6 +984,7 @@ function openGeneratedSpeechCorrection(input: {
   sourceLabel: string
   time?: string
 }) {
+  if (!canConfigureRoomStrategy.value) return
   const reply = input.reply.trim()
   if (!reply) return
   const decisionId = (input.decisionId || '').trim()
@@ -964,6 +1021,76 @@ function correctGeneratedSpeechHistoryItem(item: GeneratedSpeechHistoryItem) {
     sourceLabel: generatedSpeechSourceLabel(item.source_type),
     time: formatTime(item.created_at),
   })
+}
+
+function normalizeRoomSpeechRate(value: unknown) {
+  const rate = Number(value || 1)
+  return liveSpeechRateOptions.includes(rate as 0.8 | 0.9 | 1 | 1.1 | 1.2) ? rate : 1
+}
+
+async function loadPublishedSpeechRate() {
+  if (!canConfigureRoomStrategy.value) return
+  try {
+    const result = await getRoomPublishedLiveAgentPlanVersion(roomId)
+    const rate = normalizeRoomSpeechRate(result.version?.voice_identity?.rate)
+    liveSpeechRate.value = rate
+    liveSpeechRateSaved.value = rate
+    liveSpeechRateError.value = ''
+    const emotionEnabled = result.version?.voice_identity?.emotion_enabled !== false
+    liveEmotionEnabled.value = emotionEnabled
+    liveEmotionSaved.value = emotionEnabled
+    liveEmotionError.value = ''
+  } catch {
+    liveSpeechRate.value = 1
+    liveSpeechRateSaved.value = 1
+    liveEmotionEnabled.value = true
+    liveEmotionSaved.value = true
+  }
+}
+
+async function changeLiveSpeechRate(event: Event) {
+  if (!canConfigureRoomStrategy.value || liveSpeechRateBusy.value) return
+  const target = event.target as HTMLSelectElement
+  const nextRate = normalizeRoomSpeechRate(target.value)
+  const previousRate = liveSpeechRateSaved.value
+  if (nextRate === previousRate) {
+    liveSpeechRate.value = previousRate
+    return
+  }
+  liveSpeechRateBusy.value = true
+  liveSpeechRateError.value = ''
+  try {
+    const version = await publishLiveAgentVoiceRate(roomId, nextRate)
+    const savedRate = normalizeRoomSpeechRate(version.voice_identity?.rate || nextRate)
+    liveSpeechRate.value = savedRate
+    liveSpeechRateSaved.value = savedRate
+  } catch (err) {
+    liveSpeechRate.value = previousRate
+    target.value = String(previousRate)
+    liveSpeechRateError.value = err instanceof Error ? err.message : '语速保存失败'
+  } finally {
+    liveSpeechRateBusy.value = false
+  }
+}
+
+async function toggleLiveEmotion() {
+  if (!canConfigureRoomStrategy.value || liveEmotionBusy.value) return
+  const previous = liveEmotionSaved.value
+  const next = !previous
+  liveEmotionEnabled.value = next
+  liveEmotionBusy.value = true
+  liveEmotionError.value = ''
+  try {
+    const version = await publishLiveAgentEmotion(roomId, next)
+    const saved = version.voice_identity?.emotion_enabled !== false
+    liveEmotionEnabled.value = saved
+    liveEmotionSaved.value = saved
+  } catch (err) {
+    liveEmotionEnabled.value = previous
+    liveEmotionError.value = err instanceof Error ? err.message : '情感设置保存失败'
+  } finally {
+    liveEmotionBusy.value = false
+  }
 }
 
 async function loadGeneratedSpeechHistory(page = generatedSpeechHistory.value.page || 1) {
@@ -1019,20 +1146,24 @@ const aiRunning = computed(() => aiRuntimeStatus.value === 'working')
 const aiPaused = computed(() => aiRuntimeStatus.value === 'paused')
 const aiActive = computed(() => aiRuntimeStatus.value === 'working' || aiRuntimeStatus.value === 'paused')
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
-type DeviceVisualState = 'working' | 'paused' | 'offline'
+type DeviceVisualState = 'working' | 'standby' | 'paused' | 'offline'
 const deviceControlBusy = ref(false)
 const deviceControlError = ref('')
 
 async function loadLiveAgentPlansForRoom() {
+  if (!canConfigureRoomStrategy.value) {
+    liveAgentPlans.value = []
+    return
+  }
   const currentRoom = room.value
   if (!currentRoom) return
   agentPlanError.value = ''
   try {
-    const result = await getRoomLiveAgentPlans(roomId)
+    const result = await getRoomLiveAgentPlans(roomId, true)
     liveAgentPlans.value = (result.items || []).filter((item) => item.status !== 'archived')
   } catch (err) {
     liveAgentPlans.value = []
-    agentPlanError.value = err instanceof Error ? err.message : '读取当前直播间已绑定方案失败'
+    agentPlanError.value = err instanceof Error ? err.message : '读取当前直播间已发布方案失败'
   }
 }
 
@@ -1042,6 +1173,9 @@ const liveAgentPlanSelectValue = computed(() => {
   const selectedId = selectedLiveAgentPlanId.value
   if (!selectedId) return ''
   return liveAgentPlans.value.some((item) => item.id === selectedId) ? String(selectedId) : ''
+})
+watch(selectedLiveAgentPlanId, () => {
+  if (!pageUnmounted) void loadPublishedSpeechRate()
 })
 
 async function createDefaultLiveAgentPlan() {
@@ -1066,7 +1200,7 @@ async function createDefaultLiveAgentPlan() {
 }
 
 async function changeLiveAgentPlan(event: Event) {
-  if (!room.value || !coreActionsAvailable.value || agentPlanBusy.value) return
+  if (!canConfigureRoomStrategy.value || !room.value || !coreActionsAvailable.value || agentPlanBusy.value) return
   const target = event.target as HTMLSelectElement
   const rawValue = target.value
   const previous = liveAgentPlanSelectValue.value
@@ -1101,16 +1235,17 @@ async function changeLiveAgentPlan(event: Event) {
 async function setCompanionMode(mode: 'control' | 'anchor') {
   if (!coreActionsAvailable.value || runtimeModeBusy.value || aiRuntimeMode.value === mode) return
   if (mode === 'anchor' && !selectedLiveAgentPlanId.value) {
-    runtimeError.value = '主播模式需要先选择智能体直播方案'
+    openRuntimeActionError('无法切换到主播模式', null, '主播模式需要先选择智能体直播方案')
     return
   }
   runtimeModeBusy.value = true
   runtimeError.value = ''
+  closeRuntimeActionError()
   try {
     await setLiveRuntimeMode(roomId, mode)
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '切换直播搭子模式失败'
+    openRuntimeActionError('无法切换工作模式', err, '切换直播搭子模式失败')
   } finally {
     runtimeModeBusy.value = false
   }
@@ -1119,20 +1254,23 @@ async function setCompanionMode(mode: 'control' | 'anchor') {
 const deviceVisualState = computed<DeviceVisualState>(() => {
   const device = boundDevice.value
   if (!device || device.connection_status !== 'online') return 'offline'
-  if (device.work_status === 'paused') return 'paused'
-  return 'working'
+  if (aiPaused.value || device.work_status === 'paused') return 'paused'
+  if (aiRunning.value) return 'working'
+  return 'standby'
 })
 
 const deviceStatusText = computed(() => {
   const prefix = boundDevice.value?.sn || '小蓝盒子'
   if (deviceVisualState.value === 'working') return prefix + ' · 已连接，工作中'
   if (deviceVisualState.value === 'paused') return prefix + ' · 已连接，已暂停'
+  if (deviceVisualState.value === 'standby') return prefix + ' · 已连接，连续待机'
   return prefix + ' · 离线'
 })
 
 const deviceStatusLabel = computed(() => {
   if (deviceVisualState.value === 'working') return '已连接'
   if (deviceVisualState.value === 'paused') return '已暂停'
+  if (deviceVisualState.value === 'standby') return '连续待机'
   return '离线'
 })
 
@@ -1413,6 +1551,13 @@ function interactionExecutionTypeLabel(item: AgentDecisionItem) {
 
 function interactionExecutionDetail(item: AgentDecisionItem) {
   return item.summary || item.reply_hint || item.sample_questions?.[0] || item.title || '等待执行'
+}
+
+function compactInteractionTitle(value: unknown, limit = 22) {
+  const chars = Array.from(String(value || '').trim())
+  if (!chars.length) return '弹幕互动'
+  if (chars.length <= limit) return chars.join('')
+  return chars.slice(0, limit).join('') + '…'
 }
 
 function interactionExecutionCountdown(item: AgentDecisionItem) {
@@ -2695,7 +2840,7 @@ async function playLocalAudioTask(task: LocalAudioTask) {
     await ensureLocalAudioUnlocked()
     if (generation !== localAudioPlaybackGeneration) return
 
-    const audio = new Audio(task.audio_url)
+    const audio = new Audio(liveSupportMediaPlaybackURL(task.audio_url))
     audio.preload = 'auto'
     audio.autoplay = false
     audio.muted = false
@@ -2967,9 +3112,13 @@ async function connectLocalAudioReceiver() {
 
 async function startCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || aiActive.value) return
-  if (!(await ensureLocalAudioUnlocked())) return
+  closeRuntimeActionError()
+  if (!(await ensureLocalAudioUnlocked())) {
+    openRuntimeActionError('无法启动直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击开始')
+    return
+  }
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
-    runtimeError.value = '主播模式需要先选择智能体直播方案'
+    openRuntimeActionError('无法启动直播搭子', null, '主播模式需要先选择智能体直播方案')
     return
   }
   runtimeControlBusy.value = true
@@ -2993,7 +3142,7 @@ async function startCompanionRuntime() {
         return
       }
     }
-    runtimeError.value = message
+    openRuntimeActionError('无法启动直播搭子', message, '启动直播搭子失败')
   } finally {
     runtimeControlBusy.value = false
   }
@@ -3003,12 +3152,13 @@ async function pauseCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiRunning.value) return
   runtimeControlBusy.value = true
   runtimeError.value = ''
+  closeRuntimeActionError()
   try {
     await pauseLiveRuntime(roomId)
     flushCompositeAudioQueue()
     await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '暂停主播模式失败'
+    openRuntimeActionError('无法暂停直播搭子', err, '暂停主播模式失败')
   } finally {
     runtimeControlBusy.value = false
   }
@@ -3016,7 +3166,11 @@ async function pauseCompanionRuntime() {
 
 async function resumeCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiPaused.value) return
-  if (!(await ensureLocalAudioUnlocked())) return
+  closeRuntimeActionError()
+  if (!(await ensureLocalAudioUnlocked())) {
+    openRuntimeActionError('无法继续直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击继续')
+    return
+  }
   await connectLocalAudioReceiver()
   runtimeControlBusy.value = true
   runtimeError.value = ''
@@ -3024,7 +3178,7 @@ async function resumeCompanionRuntime() {
     await resumeLiveRuntime(roomId)
     await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '继续主播模式失败'
+    openRuntimeActionError('无法继续直播搭子', err, '继续主播模式失败')
   } finally {
     runtimeControlBusy.value = false
   }
@@ -3034,6 +3188,7 @@ async function stopCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiActive.value) return
   runtimeControlBusy.value = true
   runtimeError.value = ''
+  closeRuntimeActionError()
   try {
     await stopLiveRuntime(roomId)
     stopCompositeAudioReceiver()
@@ -3045,7 +3200,7 @@ async function stopCompanionRuntime() {
     localAudioError.value = ''
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '结束直播搭子失败'
+    openRuntimeActionError('无法停止直播搭子', err, '结束直播搭子失败')
   } finally {
     runtimeControlBusy.value = false
   }
@@ -3086,6 +3241,7 @@ async function chooseSessionContinuation(action: 'merge' | 'fresh') {
   const shouldStartAfterDecision = pendingStartAfterSessionDecision.value
   sessionDecisionBusy.value = true
   runtimeError.value = ''
+  closeRuntimeActionError()
   try {
     const nextStats = await resolveRoomSessionDecision(roomId, action)
     sessionStats.value = nextStats
@@ -3115,7 +3271,7 @@ async function chooseSessionContinuation(action: 'merge' | 'fresh') {
       await startCompanionRuntime()
     }
   } catch (err) {
-    runtimeError.value = err instanceof Error ? err.message : '处理直播续接失败'
+    openRuntimeActionError('无法处理直播续接', err, '处理直播续接失败')
   } finally {
     sessionDecisionBusy.value = false
   }
@@ -3144,7 +3300,7 @@ function startSpeechRuntimePolling() {
   speechPollTimer = window.setInterval(() => {
     if (!coreActionsAvailable.value) return
     void refreshSpeechRuntime()
-    if (isInternalViewer.value) void refreshSpeechMissions()
+    if (legacyAgentSurfaceEnabled && isInternalViewer.value) void refreshSpeechMissions()
   }, 1000)
 }
 
@@ -3453,7 +3609,7 @@ async function refreshSpeechRuntime() {
 }
 
 async function refreshSpeechMissions() {
-  if (!isInternalViewer.value) return
+  if (!legacyAgentSurfaceEnabled || !isInternalViewer.value) return
   try {
     const result = await getRoomSpeechMissions(roomId)
     updatePreservingPageBottom(() => {
@@ -3520,7 +3676,7 @@ async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAc
   try {
     const result = await enqueueRoomManualAgentDecision(roomId, {
       question: String(event.content || '').trim(),
-      title: '单条弹幕',
+      title: compactInteractionTitle(event.content),
       summary: action === 'quick'
         ? '人工从实时公屏发起抢答，立即生成并播出'
         : '人工从实时公屏加入待打断队列，由监控Agent安排回答时机',
@@ -4029,6 +4185,8 @@ function handleLocalAudioUserGesture() {
 }
 
 onMounted(() => {
+  void refreshRoomStrategyAuthorization()
+  authorizationTimer = window.setInterval(() => void refreshRoomStrategyAuthorization(), 15000)
   restorePublicScreenHeight()
   restoreAgentPanelLayout()
   restoreEventBucketHeight()
@@ -4058,6 +4216,7 @@ onMounted(() => {
   mascotActionTimer = window.setTimeout(runMascotAction, 1200 + Math.random() * 1400)
   void nextTick(scheduleBlockedDrawerHandleLayout)
   load()
+  void loadPublishedSpeechRate()
 })
 
 watch([blockedDrawerOpen, () => blockedUsers.value.length], () => {
@@ -4106,6 +4265,8 @@ watch(
   },
 )
 onBeforeUnmount(() => {
+	endRoomSupportScope?.()
+	if (authorizationTimer !== undefined) window.clearInterval(authorizationTimer)
 	pageUnmounted = true
 	stopBrowserVideoShare()
 	stopPublicScreenTransport()
@@ -4247,19 +4408,18 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <span>直播搭子</span>
-          <label class="companion-plan-select" aria-label="智能体直播方案">
+          <label v-if="canConfigureRoomStrategy" class="companion-plan-select" aria-label="智能体直播方案">
             <select
               :value="liveAgentPlanSelectValue"
               :disabled="!coreActionsAvailable || agentPlanBusy"
               @change="changeLiveAgentPlan"
             >
               <option value="" disabled>
-                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择已绑定方案' : '暂无已绑定方案') }}
+                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择已发布方案' : '暂无已发布方案') }}
               </option>
               <option v-for="plan in liveAgentPlans" :key="plan.id" :value="String(plan.id)">
                 {{ plan.name }}
               </option>
-              <option value="__create_default__">＋ 自动创建默认方案</option>
             </select>
           </label>
           <small v-if="agentPlanError" class="companion-plan-error">{{ agentPlanError }}</small>
@@ -4478,7 +4638,7 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
-        <div v-if="!isInternalViewer" class="speech-runtime-unified">
+        <div class="speech-runtime-unified">
           <div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">
             <div class="speech-mainline-caption-stack">
               <div
@@ -4498,7 +4658,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div
-          v-if="isInternalViewer"
+          v-if="legacyAgentSurfaceEnabled"
           class="speech-runtime-track-grid"
           :class="[
             'layout-' + speechTrackLayoutState,
@@ -4564,28 +4724,56 @@ onBeforeUnmount(() => {
               <time v-if="interruptSpeech.updated_at">更新 {{ formatTime(interruptSpeech.updated_at) }}</time>
               <div class="speech-interrupt-actions">
                 <button
+                  v-if="canConfigureRoomStrategy"
                   type="button"
                   :disabled="!(interruptSpeech.reply_text || interruptSpeech.text)"
                   @click="correctCurrentGeneratedSpeech"
                 >
                   纠正
                 </button>
-                <button type="button" class="history" @click="openGeneratedSpeechHistory">回答历史</button>
               </div>
             </div>
           </article>
         </div>
+
+        <div class="speech-runtime-footer-tools">
+          <label v-if="canConfigureRoomStrategy" class="speech-rate-control">
+            <span>语速</span>
+            <select v-model.number="liveSpeechRate" :disabled="liveSpeechRateBusy" @change="changeLiveSpeechRate">
+              <option v-for="rate in liveSpeechRateOptions" :key="rate" :value="rate">{{ rate.toFixed(1) }}</option>
+            </select>
+          </label>
+          <div v-if="canConfigureRoomStrategy" class="speech-emotion-control">
+            <span>情感</span>
+            <button
+              type="button"
+              class="speech-emotion-toggle"
+              :class="{ enabled: liveEmotionEnabled }"
+              :disabled="liveEmotionBusy"
+              :aria-pressed="liveEmotionEnabled"
+              @click="toggleLiveEmotion"
+            >
+              <i aria-hidden="true"></i>
+              <strong>{{ liveEmotionEnabled ? '开' : '关' }}</strong>
+            </button>
+          </div>
+          <button type="button" class="speech-answer-library-button" @click="openGeneratedSpeechHistory">
+            本场回答库
+          </button>
+          <small v-if="liveSpeechRateError" class="speech-rate-error">{{ liveSpeechRateError }}</small>
+          <small v-if="liveEmotionError" class="speech-rate-error">{{ liveEmotionError }}</small>
+        </div>
       </section>
 
       <div v-if="speechHistoryOpen" class="speech-history-mask" @click.self="closeGeneratedSpeechHistory">
-        <section class="speech-history-dialog" role="dialog" aria-modal="true" aria-label="回答历史">
+        <section class="speech-history-dialog" role="dialog" aria-modal="true" aria-label="本场回答库">
           <header class="speech-history-head">
             <div>
-              <span>ANSWER HISTORY</span>
-              <strong>回答历史</strong>
-              <small>本场直播所有已生成并成功下发的话术</small>
+              <span>SESSION ANSWER LIBRARY</span>
+              <strong>本场回答库</strong>
+              <small>本场问题与实际生成、成功下发的回答</small>
             </div>
-            <button type="button" class="speech-history-close" aria-label="关闭回答历史" @click="closeGeneratedSpeechHistory">×</button>
+            <button type="button" class="speech-history-close" aria-label="关闭本场回答库" @click="closeGeneratedSpeechHistory">×</button>
           </header>
 
           <div class="speech-history-search">
@@ -4602,7 +4790,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="speechHistoryError" class="speech-history-error">{{ speechHistoryError }}</div>
-          <div v-else-if="speechHistoryLoading && !generatedSpeechHistory.items.length" class="speech-history-empty">正在读取本场回答历史…</div>
+          <div v-else-if="speechHistoryLoading && !generatedSpeechHistory.items.length" class="speech-history-empty">正在读取本场回答库…</div>
           <div v-else-if="!generatedSpeechHistory.items.length" class="speech-history-empty">本场还没有已生成并成功下发的话术。</div>
           <div v-else class="speech-history-list">
             <article v-for="item in generatedSpeechHistory.items" :key="item.id" class="speech-history-item">
@@ -4617,7 +4805,7 @@ onBeforeUnmount(() => {
               <p v-if="item.question_text" class="speech-history-question"><strong>关联问题：</strong>{{ item.question_text }}</p>
               <p class="speech-history-reply">{{ item.generated_text }}</p>
               <div class="speech-history-item-actions">
-                <button type="button" @click="correctGeneratedSpeechHistoryItem(item)">纠正</button>
+                <button v-if="canConfigureRoomStrategy" type="button" @click="correctGeneratedSpeechHistoryItem(item)">纠正</button>
               </div>
             </article>
           </div>
@@ -4670,7 +4858,7 @@ onBeforeUnmount(() => {
             <button type="button" :class="{ active: publicScreenMode === 'events' }" @click="publicScreenMode = 'events'">实时公屏</button>
             <button type="button" :class="{ active: publicScreenMode === 'bucket' }" @click="publicScreenMode = 'bucket'">事件聚合</button>
             <button type="button" :class="{ active: publicScreenMode === 'execution' }" @click="publicScreenMode = 'execution'">互动执行</button>
-            <button type="button" class="mobile-preferences-tab" :class="{ active: publicScreenMode === 'preferences' }" @click="publicScreenMode = 'preferences'">互动偏好</button>
+            <button v-if="canConfigureRoomStrategy" type="button" class="mobile-preferences-tab" :class="{ active: publicScreenMode === 'preferences' }" @click="publicScreenMode = 'preferences'">互动偏好</button>
           </div>
 
           <div v-if="publicScreenMode === 'events'" class="event-tabs">
@@ -4885,7 +5073,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <RoomPreferenceHub
-            v-if="publicScreenMode === 'preferences'"
+            v-if="canConfigureRoomStrategy && publicScreenMode === 'preferences'"
             class="mobile-public-preference-hub"
             :room-id="roomId"
             compact
@@ -4905,12 +5093,13 @@ onBeforeUnmount(() => {
 
         <div class="live-control-stack">
           <RoomPreferenceHub
+            v-if="canConfigureRoomStrategy"
             class="room-middle-preference-hub"
             :room-id="roomId"
             compact
           />
           <section
-            v-if="isInternalViewer"
+            v-if="legacyAgentSurfaceEnabled"
             ref="agentDecisionPanelEl"
             class="agent-decision-panel"
             :class="{ 'is-resizing': agentPanelResizing }"
@@ -5160,7 +5349,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
           <section
-            v-if="isInternalViewer"
+            v-if="legacyAgentSurfaceEnabled"
             ref="eventBucketPanelEl"
             class="semantic-bucket-panel event-bucket-panel"
             :class="{
@@ -5803,11 +5992,106 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </template>
+
+    <Teleport to="body">
+      <div
+        v-if="runtimeActionDialog"
+        class="runtime-action-dialog-backdrop"
+        tabindex="-1"
+        @click.self="closeRuntimeActionError"
+        @keydown.esc.stop="closeRuntimeActionError"
+      >
+        <section
+          class="runtime-action-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="runtime-action-dialog-title"
+          aria-describedby="runtime-action-dialog-message"
+        >
+          <span class="runtime-action-dialog-icon" aria-hidden="true">!</span>
+          <div>
+            <small>操作未完成</small>
+            <strong id="runtime-action-dialog-title">{{ runtimeActionDialog.title }}</strong>
+            <p id="runtime-action-dialog-message">{{ runtimeActionDialog.message }}</p>
+          </div>
+          <button type="button" autofocus @click="closeRuntimeActionError">我知道了</button>
+        </section>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .room-detail-page { overflow-anchor:none; }
+.runtime-action-dialog-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:2400;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:rgba(23,31,56,.42);
+  backdrop-filter:blur(5px);
+}
+.runtime-action-dialog {
+  display:grid;
+  grid-template-columns:52px minmax(0,1fr);
+  gap:15px 16px;
+  width:min(460px,calc(100vw - 32px));
+  box-sizing:border-box;
+  padding:22px;
+  border:1px solid rgba(222,99,108,.24);
+  border-radius:20px;
+  background:linear-gradient(145deg,#fff 0%,#fff8f8 100%);
+  box-shadow:0 24px 70px rgba(27,35,66,.28),inset 0 1px 0 rgba(255,255,255,.96);
+  animation:runtimeActionDialogIn .18s ease-out;
+}
+.runtime-action-dialog-icon {
+  display:grid;
+  width:52px;
+  height:52px;
+  place-items:center;
+  border-radius:16px;
+  background:linear-gradient(145deg,#fff0f1,#ffe0e3);
+  color:#c94e59;
+  font-size:28px;
+  font-weight:950;
+  box-shadow:inset 0 0 0 1px rgba(213,77,89,.15);
+}
+.runtime-action-dialog>div { display:grid; gap:5px; min-width:0; }
+.runtime-action-dialog small { color:#c05059; font-size:11px; font-weight:900; letter-spacing:.08em; }
+.runtime-action-dialog strong { color:#2d3853; font-size:19px; line-height:1.35; }
+.runtime-action-dialog p { margin:2px 0 0; color:#68758d; font-size:14px; line-height:1.7; overflow-wrap:anywhere; }
+.runtime-action-dialog button {
+  grid-column:1/-1;
+  justify-self:end;
+  min-width:112px;
+  min-height:42px;
+  padding:0 20px;
+  border:0;
+  border-radius:12px;
+  background:linear-gradient(135deg,#6c79e9,#5364d5);
+  color:#fff;
+  font:inherit;
+  font-size:14px;
+  font-weight:900;
+  cursor:pointer;
+  box-shadow:0 9px 20px rgba(76,91,194,.22);
+}
+.runtime-action-dialog button:hover { filter:brightness(1.04); }
+.runtime-action-dialog button:focus-visible { outline:3px solid rgba(91,108,221,.28); outline-offset:3px; }
+@keyframes runtimeActionDialogIn {
+  from { opacity:0; transform:translateY(8px) scale(.98); }
+  to { opacity:1; transform:translateY(0) scale(1); }
+}
+@media (max-width:520px) {
+  .runtime-action-dialog { grid-template-columns:44px minmax(0,1fr); padding:18px; }
+  .runtime-action-dialog-icon { width:44px; height:44px; border-radius:14px; font-size:24px; }
+  .runtime-action-dialog button { width:100%; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .runtime-action-dialog { animation:none; }
+}
 .room-detail-page .room-control-grid {
   grid-template-columns: minmax(250px, 0.72fr) minmax(520px, 1.7fr) minmax(250px, 0.72fr);
   align-items: end;
@@ -5866,6 +6150,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1100px) { .live-review-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 
 .room-detail-page .anchor-transcript-strip.speech-runtime-panel {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
@@ -6214,8 +6499,26 @@ onBeforeUnmount(() => {
 .speech-runtime-unified .speech-mainline-live-caption{min-height:94px}
 .speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}
 .speech-runtime-unified-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:38px;overflow:hidden}.speech-runtime-unified-wave i{display:block;width:3px;height:var(--wave-height);max-height:32px;border-radius:999px;background:#6978dd;opacity:.45;transform:scaleY(.45);transform-origin:center;transition:.18s ease}.speech-runtime-unified-wave.active i{opacity:.9;animation:speech-wave-pulse .78s ease-in-out infinite alternate;animation-delay:var(--wave-delay)}
+.speech-runtime-footer-tools{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 3px;color:#aebbd0}
+.speech-rate-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
+.speech-rate-control>span{color:#8fa1bb}
+.speech-rate-control select{height:32px;min-width:74px;padding:0 28px 0 10px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#f2f6ff;background:#18243a;font:inherit;font-size:12px;font-weight:900;outline:none;cursor:pointer}
+.speech-rate-control select:hover,.speech-rate-control select:focus{border-color:rgba(89,209,178,.55);background:#1c2b43}
+.speech-rate-control select:disabled{opacity:.55;cursor:wait}
+.speech-emotion-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
+.speech-emotion-control>span{color:#8fa1bb}
+.speech-emotion-toggle{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font:inherit;font-size:12px;font-weight:900;cursor:pointer;transition:.16s ease}
+.speech-emotion-toggle i{position:relative;display:block;width:28px;height:16px;border-radius:999px;background:#3c4a61;transition:.16s ease}
+.speech-emotion-toggle i::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#cbd5e5;transition:.16s ease}
+.speech-emotion-toggle.enabled{color:#e9fff9;border-color:rgba(89,209,178,.55);background:rgba(52,185,151,.1)}
+.speech-emotion-toggle.enabled i{background:#2fbf99}
+.speech-emotion-toggle.enabled i::after{left:14px;background:#fff}
+.speech-emotion-toggle:disabled{opacity:.55;cursor:wait}
+.speech-answer-library-button{height:32px;padding:0 12px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#dbe5f5;background:rgba(255,255,255,.045);font-size:12px;font-weight:850;cursor:pointer;transition:border-color .16s ease,background .16s ease,color .16s ease}
+.speech-answer-library-button:hover{color:#fff;border-color:rgba(89,209,178,.5);background:rgba(52,185,151,.1)}
+.speech-rate-error{max-width:360px;color:#ff9b9b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (hover:none){.public-question-actions{opacity:1;transform:none}}
-@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}}
+@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}.speech-runtime-footer-tools{flex-wrap:wrap}.speech-rate-error{flex-basis:100%;max-width:100%}}
 
 .speech-track-head-actions {
   display: flex;
@@ -7468,6 +7771,11 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 5px rgba(34, 197, 94, .12);
 }
 .xiaozhi-device-card .device-runtime-status.state-working strong { color: #169447; }
+.xiaozhi-device-card .device-runtime-status.state-standby i {
+  background: #38bdf8;
+  box-shadow: 0 0 0 5px rgba(56, 189, 248, .13);
+}
+.xiaozhi-device-card .device-runtime-status.state-standby strong { color: #1684b6; }
 .xiaozhi-device-card .device-runtime-status.state-paused i {
   background: #f59e0b;
   box-shadow: 0 0 0 5px rgba(245, 158, 11, .13);

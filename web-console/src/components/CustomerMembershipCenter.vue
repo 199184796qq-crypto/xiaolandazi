@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { claimFreeMarketingOrder } from '../commerce'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   floorToWholeYuanCents,
@@ -112,11 +113,11 @@ function membershipCampaignItem(
 
 function campaignFor(offer: CustomerMembershipOffer, cycle = selectedCycle.value) {
   const campaigns = (offer.marketing_campaigns ?? []).filter(
-    (campaign) => campaign.status === 'active' && Boolean(membershipCampaignItem(campaign, offer.id)),
+    (campaign) => campaign.status === 'active' && campaign.eligible !== false && Boolean(membershipCampaignItem(campaign, offer.id)),
   )
   if (cycle === 'base') {
     return campaigns
-      .filter((campaign) => membershipCampaignItem(campaign, offer.id)?.pricing_mode === 'discount')
+      .filter((campaign) => membershipCampaignItem(campaign, offer.id)?.pricing_mode !== 'package')
       .sort((a, b) => {
         const aDiscount = membershipCampaignItem(a, offer.id)?.discount_bps ?? 10000
         const bDiscount = membershipCampaignItem(b, offer.id)?.discount_bps ?? 10000
@@ -148,9 +149,9 @@ function pricingFor(offer: CustomerMembershipOffer, cycle = selectedCycle.value)
     Math.max(normalizeDiscountBps(campaignItem?.discount_bps ?? 10000), 0),
     10000,
   )
-  const rawListCents = offer.monthly_price_cents * months
+  const rawListCents = offer.monthly_price_cents * months * Math.max(1,campaignItem?.quantity || 1)
   const listCents = floorToWholeYuanCents(rawListCents)
-  const payableCents = marketingPayableCents(listCents, discountBps)
+  const payableCents = campaignItem?.pricing_mode==='fixed' ? campaignItem.fixed_price_cents??0 : campaignItem?.pricing_mode==='free' ? 0 : marketingPayableCents(listCents, discountBps)
   return {
     months,
     discountBps,
@@ -175,9 +176,9 @@ function bestDiscountForCycle(cycle: string) {
 }
 
 function formatMoney(cents: number) {
-  const yuan = floorToWholeYuanCents(cents) / 100
+  const yuan = cents / 100
   return '¥' + yuan.toLocaleString('zh-CN', {
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 2,
   })
 }
 
@@ -295,7 +296,7 @@ async function purchaseMembership(offer: CustomerMembershipOffer) {
       idempotency_key: newKey('membership-order'),
     })
 
-    const result = await sandboxPayCustomerShopOrder(order.id, {
+    const result = order.payable_amount_cents===0 ? await claimFreeMarketingOrder(order.id) : await sandboxPayCustomerShopOrder(order.id, {
       amount_cents: order.payable_amount_cents,
       simulate_result: 'success',
       idempotency_key: newKey('membership-pay'),
@@ -1207,4 +1208,3 @@ onBeforeUnmount(() => {
   }
 }
 </style>
-

@@ -24,7 +24,50 @@ var (
 	ErrLiveBindingBusy           = errors.New("live device or room is running")
 )
 
-const liveDeviceHeartbeatTimeout = 20 * time.Second
+const (
+	liveDeviceHeartbeatTimeout = 20 * time.Second
+	liveDeviceAgentStopTimeout = 60 * time.Second
+)
+
+// LiveDevicePresence is the durable transport heartbeat used by the billing
+// reconciler. The UI may show a device offline sooner, but paid Agent runtime
+// is stopped only after the full disconnect grace period has elapsed.
+type LiveDevicePresence struct {
+	Exists              bool
+	ConnectionStatus    string
+	LastHeartbeatAt     *time.Time
+	ConnectionUpdatedAt time.Time
+}
+
+func (s *Store) GetLiveDevicePresence(
+	ctx context.Context,
+	tenantID, deviceID int64,
+) (LiveDevicePresence, error) {
+	var result LiveDevicePresence
+	var heartbeat sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT connection_status, last_heartbeat_at, updated_at
+		FROM live_device_runtime_state
+		WHERE tenant_id=? AND device_id=?
+		LIMIT 1
+	`, tenantID, deviceID).Scan(
+		&result.ConnectionStatus,
+		&heartbeat,
+		&result.ConnectionUpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, nil
+	}
+	if err != nil {
+		return LiveDevicePresence{}, err
+	}
+	result.Exists = true
+	if heartbeat.Valid {
+		value := heartbeat.Time
+		result.LastHeartbeatAt = &value
+	}
+	return result, nil
+}
 
 type quotaBucketLock struct {
 	ID        int64
@@ -845,8 +888,9 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 			COALESCE(rs.connection_status, 'offline'),
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at
+			rs.last_heartbeat_at, COALESCE(p.device_name,'')
 		FROM inv_devices d
+		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		LEFT JOIN live_device_room_bindings b
 		  ON b.device_id=d.id AND b.status='active'
 		LEFT JOIN live_device_runtime_state rs
@@ -854,6 +898,7 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 		WHERE (?=0 OR d.current_customer_id=?)
 		  AND d.current_customer_id IS NOT NULL
 		  AND d.lifecycle_status <> 'SCRAPPED'
+		  AND (p.device_id IS NULL OR p.claimed_tenant_id=d.current_customer_id)
 		ORDER BY d.current_customer_id ASC, d.id DESC
 	`, tenantID, tenantID)
 	if err != nil {
@@ -879,6 +924,7 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 			&item.WorkStatus,
 			&item.StopReason,
 			&heartbeat,
+			&item.DeviceName,
 		); err != nil {
 			return nil, err
 		}
@@ -893,9 +939,64 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 			value := heartbeat.Time
 			item.LastHeartbeatAt = &value
 		}
+		decorateLiveDevice(&item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// ListPrimaryRoomDeviceOnline reports room presence using the primary device
+// only. Listener heartbeats deliberately never make a room look connected.
+func (s *Store) ListPrimaryRoomDeviceOnline(ctx context.Context, tenantIDs []int64) (map[int64]map[int64]bool, error) {
+	result := make(map[int64]map[int64]bool)
+	seen := make(map[int64]struct{})
+	args := make([]any, 0, len(tenantIDs))
+	placeholders := make([]string, 0, len(tenantIDs))
+	for _, tenantID := range tenantIDs {
+		if tenantID <= 0 {
+			continue
+		}
+		if _, ok := seen[tenantID]; ok {
+			continue
+		}
+		seen[tenantID] = struct{}{}
+		args = append(args, tenantID)
+		placeholders = append(placeholders, "?")
+	}
+	if len(placeholders) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT b.tenant_id, b.room_id,
+		       COALESCE(rs.connection_status, 'offline'), rs.last_heartbeat_at
+		FROM live_device_room_bindings b
+		INNER JOIN inv_devices d ON d.id=b.device_id AND d.current_customer_id=b.tenant_id
+		LEFT JOIN device_hardware_profiles p ON p.device_id=b.device_id
+		LEFT JOIN live_device_runtime_state rs
+		  ON rs.device_id=b.device_id AND rs.tenant_id=b.tenant_id
+		WHERE b.status='active' AND b.binding_role='primary'
+		  AND b.tenant_id IN (`+strings.Join(placeholders, ",")+`)
+		  AND (p.device_id IS NULL OR p.claimed_tenant_id=d.current_customer_id)
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now()
+	for rows.Next() {
+		var tenantID, roomID int64
+		var connection string
+		var heartbeat sql.NullTime
+		if err := rows.Scan(&tenantID, &roomID, &connection, &heartbeat); err != nil {
+			return nil, err
+		}
+		if result[tenantID] == nil {
+			result[tenantID] = make(map[int64]bool)
+		}
+		result[tenantID][roomID] = strings.EqualFold(connection, "online") &&
+			heartbeat.Valid && now.Sub(heartbeat.Time) <= liveDeviceHeartbeatTimeout
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (model.LiveDevice, error) {
@@ -909,13 +1010,15 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 			COALESCE(rs.connection_status, 'offline'),
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at
+			rs.last_heartbeat_at, COALESCE(p.device_name,'')
 		FROM inv_devices d
+		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		LEFT JOIN live_device_room_bindings b
 		  ON b.device_id=d.id AND b.status='active'
 		LEFT JOIN live_device_runtime_state rs
 		  ON rs.device_id=d.id
 		WHERE d.id=? AND d.current_customer_id=?
+		  AND (p.device_id IS NULL OR p.claimed_tenant_id=d.current_customer_id)
 		LIMIT 1
 	`, deviceID, tenantID).Scan(
 		&item.ID,
@@ -929,6 +1032,7 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 		&item.WorkStatus,
 		&item.StopReason,
 		&heartbeat,
+		&item.DeviceName,
 	)
 	if err != nil {
 		return model.LiveDevice{}, err
@@ -941,6 +1045,7 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 		value := heartbeat.Time
 		item.LastHeartbeatAt = &value
 	}
+	decorateLiveDevice(&item)
 	return item, nil
 }
 
@@ -954,13 +1059,16 @@ func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID i
 			COALESCE(rs.connection_status, 'offline'),
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at
+			rs.last_heartbeat_at, COALESCE(p.device_name,'')
 		FROM live_device_room_bindings b
 		INNER JOIN inv_devices d ON d.id=b.device_id
+		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		LEFT JOIN live_device_runtime_state rs ON rs.device_id=b.device_id
 		WHERE b.tenant_id=? AND b.room_id=? AND b.status='active'
+		  AND b.binding_role='primary'
 		  AND d.current_customer_id=?
-		ORDER BY CASE WHEN b.binding_role='primary' THEN 0 ELSE 1 END, b.id DESC
+		  AND (p.device_id IS NULL OR p.claimed_tenant_id=d.current_customer_id)
+		ORDER BY b.id DESC
 		LIMIT 1
 	`, tenantID, roomID, tenantID).Scan(
 		&item.ID,
@@ -974,6 +1082,7 @@ func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID i
 		&item.WorkStatus,
 		&item.StopReason,
 		&heartbeat,
+		&item.DeviceName,
 	)
 	if err != nil {
 		return model.LiveDevice{}, err
@@ -982,6 +1091,7 @@ func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID i
 		value := heartbeat.Time
 		item.LastHeartbeatAt = &value
 	}
+	decorateLiveDevice(&item)
 	return item, nil
 }
 
@@ -994,12 +1104,18 @@ func (s *Store) BindLiveDevice(
 	if role == "" {
 		role = "primary"
 	}
+	if role != "primary" && role != "listener" {
+		return model.LiveDevice{}, errors.New("绑定角色仅支持主设备或监听设备")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.LiveDevice{}, err
 	}
 	defer tx.Rollback()
+	if err := lockUsableRoomTx(ctx, tx, tenantID, roomID); err != nil {
+		return model.LiveDevice{}, err
+	}
 
 	// Serialize room/device binding changes inside one tenant so concurrent
 	// operators cannot create two active primary bindings for the same room.
@@ -1015,10 +1131,10 @@ func (s *Store) BindLiveDevice(
 		SELECT id
 		FROM live_runtime_sessions
 		WHERE tenant_id=? AND status='running'
-		  AND (room_id=? OR device_id=?)
+		  AND (room_id=? OR device_id=? OR room_id IN (SELECT room_id FROM live_device_room_bindings WHERE device_id=? AND status='active'))
 		LIMIT 1
 		FOR UPDATE
-	`, tenantID, roomID, deviceID).Scan(&runningSessionID)
+	`, tenantID, roomID, deviceID, deviceID).Scan(&runningSessionID)
 	if err == nil {
 		return model.LiveDevice{}, ErrLiveBindingBusy
 	}
@@ -1039,80 +1155,151 @@ func (s *Store) BindLiveDevice(
 	if !customerID.Valid || customerID.Int64 != tenantID || lifecycle == "SCRAPPED" {
 		return model.LiveDevice{}, sql.ErrNoRows
 	}
+	var claimed sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT claimed_tenant_id FROM device_hardware_profiles WHERE device_id=?`, deviceID).Scan(&claimed)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.LiveDevice{}, err
+	}
+	if err == nil && (!claimed.Valid || claimed.Int64 != tenantID) {
+		return model.LiveDevice{}, sql.ErrNoRows
+	}
 
 	now := time.Now().UTC()
 
-	// Remember every binding that will be displaced so its runtime state and
-	// audit trail can be closed explicitly instead of leaving stale relations.
-	displaced := make(map[int64]int64)
-	rows, err := tx.QueryContext(ctx, `
-		SELECT device_id, room_id
+	var currentBindingID int64
+	var currentRoomID int64
+	var currentRole string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, room_id, binding_role
 		FROM live_device_room_bindings
-		WHERE tenant_id=? AND status='active'
-		  AND (device_id=? OR (?='primary' AND room_id=? AND binding_role='primary'))
-		FOR UPDATE
-	`, tenantID, deviceID, role, roomID)
-	if err != nil {
-		return model.LiveDevice{}, err
-	}
-	for rows.Next() {
-		var displacedDeviceID, displacedRoomID int64
-		if err := rows.Scan(&displacedDeviceID, &displacedRoomID); err != nil {
-			rows.Close()
-			return model.LiveDevice{}, err
-		}
-		displaced[displacedDeviceID] = displacedRoomID
-	}
-	if err := rows.Close(); err != nil {
-		return model.LiveDevice{}, err
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE live_device_room_bindings
-		SET status='inactive', unbound_at=?, ended_by_user_id=?, updated_at=?
 		WHERE tenant_id=? AND device_id=? AND status='active'
-	`, now, userID, now, tenantID, deviceID); err != nil {
+		ORDER BY id DESC LIMIT 1
+		FOR UPDATE
+	`, tenantID, deviceID).Scan(&currentBindingID, &currentRoomID, &currentRole)
+	hasCurrentBinding := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return model.LiveDevice{}, err
 	}
-	if role == "primary" {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE live_device_room_bindings
-			SET status='inactive', unbound_at=?, ended_by_user_id=?, updated_at=?
-			WHERE tenant_id=? AND room_id=? AND binding_role='primary' AND status='active'
-		`, now, userID, now, tenantID, roomID); err != nil {
-			return model.LiveDevice{}, err
-		}
+
+	var targetPrimaryBindingID, targetPrimaryDeviceID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, device_id
+		FROM live_device_room_bindings
+		WHERE tenant_id=? AND room_id=? AND binding_role='primary' AND status='active'
+		ORDER BY id DESC LIMIT 1
+		FOR UPDATE
+	`, tenantID, roomID).Scan(&targetPrimaryBindingID, &targetPrimaryDeviceID)
+	hasTargetPrimary := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.LiveDevice{}, err
 	}
 
-	for displacedDeviceID, displacedRoomID := range displaced {
-		if displacedDeviceID == deviceID && displacedRoomID == roomID {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE live_device_runtime_state
-			SET current_room_id=NULL, work_status='idle', stop_reason='rebound', updated_at=?
-			WHERE device_id=? AND tenant_id=?
-		`, now, displacedDeviceID, tenantID); err != nil {
-			return model.LiveDevice{}, err
-		}
-		detail, _ := json.Marshal(map[string]any{"room_id": displacedRoomID})
-		if _, err := tx.ExecContext(ctx, `
+	sameRoom := hasCurrentBinding && currentRoomID == roomID
+	finalRole := resolveLiveBindingRole(role, hasTargetPrimary, targetPrimaryDeviceID == deviceID, sameRoom)
+
+	insertRoleEvent := func(eventDeviceID, eventRoomID int64, eventCode, title, eventRole string) error {
+		detail, _ := json.Marshal(map[string]any{"room_id": eventRoomID, "binding_role": eventRole})
+		_, err := tx.ExecContext(ctx, `
 			INSERT INTO live_runtime_events (
 				tenant_id, room_id, device_id, actor_type, actor_user_id,
 				event_code, title, detail_json, occurred_at
-			) VALUES (?, ?, ?, 'user', ?, 'DEVICE_UNBOUND', '设备已解除直播间绑定', ?, ?)
-		`, tenantID, displacedRoomID, displacedDeviceID, userID, detail, now); err != nil {
-			return model.LiveDevice{}, err
+			) VALUES (?, ?, ?, 'user', ?, ?, ?, ?, ?)
+		`, tenantID, eventRoomID, eventDeviceID, userID, eventCode, title, detail, now)
+		return err
+	}
+	promoteListener := func(promoteRoomID, excludingDeviceID int64) error {
+		var bindingID, promotedDeviceID int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, device_id
+			FROM live_device_room_bindings
+			WHERE tenant_id=? AND room_id=? AND binding_role='listener'
+			  AND status='active' AND device_id<>?
+			ORDER BY id DESC LIMIT 1
+			FOR UPDATE
+		`, tenantID, promoteRoomID, excludingDeviceID).Scan(&bindingID, &promotedDeviceID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
 		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_device_room_bindings
+			SET binding_role='primary', updated_at=?
+			WHERE id=? AND tenant_id=? AND status='active'
+		`, now, bindingID, tenantID); err != nil {
+			return err
+		}
+		return insertRoleEvent(promotedDeviceID, promoteRoomID, "DEVICE_ROLE_CHANGED", "监听设备已自动设为主设备", "primary")
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO live_device_room_bindings (
-			tenant_id, device_id, room_id, binding_role, status,
-			bound_at, created_by_user_id, created_at, updated_at
-		) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
-	`, tenantID, deviceID, roomID, role, now, userID, now, now); err != nil {
-		return model.LiveDevice{}, err
+	if sameRoom {
+		if currentRole == finalRole {
+			if err := tx.Commit(); err != nil {
+				return model.LiveDevice{}, err
+			}
+			return s.GetLiveDevice(ctx, tenantID, deviceID)
+		}
+		if finalRole == "primary" && hasTargetPrimary && targetPrimaryDeviceID != deviceID {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE live_device_room_bindings
+				SET binding_role='listener', updated_at=?
+				WHERE id=? AND tenant_id=? AND status='active'
+			`, now, targetPrimaryBindingID, tenantID); err != nil {
+				return model.LiveDevice{}, err
+			}
+			if err := insertRoleEvent(targetPrimaryDeviceID, roomID, "DEVICE_ROLE_CHANGED", "主设备已切换为监听设备", "listener"); err != nil {
+				return model.LiveDevice{}, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_device_room_bindings
+			SET binding_role=?, updated_at=?
+			WHERE id=? AND tenant_id=? AND status='active'
+		`, finalRole, now, currentBindingID, tenantID); err != nil {
+			return model.LiveDevice{}, err
+		}
+		if err := insertRoleEvent(deviceID, roomID, "DEVICE_ROLE_CHANGED", "设备角色已切换", finalRole); err != nil {
+			return model.LiveDevice{}, err
+		}
+	} else {
+		if hasCurrentBinding {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE live_device_room_bindings
+				SET status='inactive', unbound_at=?, ended_by_user_id=?, updated_at=?
+				WHERE id=? AND tenant_id=? AND status='active'
+			`, now, userID, now, currentBindingID, tenantID); err != nil {
+				return model.LiveDevice{}, err
+			}
+			if err := insertRoleEvent(deviceID, currentRoomID, "DEVICE_UNBOUND", "设备已解除直播间绑定", currentRole); err != nil {
+				return model.LiveDevice{}, err
+			}
+			if currentRole == "primary" {
+				if err := promoteListener(currentRoomID, deviceID); err != nil {
+					return model.LiveDevice{}, err
+				}
+			}
+		}
+		if finalRole == "primary" && hasTargetPrimary && targetPrimaryDeviceID != deviceID {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE live_device_room_bindings
+				SET binding_role='listener', updated_at=?
+				WHERE id=? AND tenant_id=? AND status='active'
+			`, now, targetPrimaryBindingID, tenantID); err != nil {
+				return model.LiveDevice{}, err
+			}
+			if err := insertRoleEvent(targetPrimaryDeviceID, roomID, "DEVICE_ROLE_CHANGED", "主设备已切换为监听设备", "listener"); err != nil {
+				return model.LiveDevice{}, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO live_device_room_bindings (
+				tenant_id, device_id, room_id, binding_role, status,
+				bound_at, created_by_user_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+		`, tenantID, deviceID, roomID, finalRole, now, userID, now, now); err != nil {
+			return model.LiveDevice{}, err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -1130,23 +1317,31 @@ func (s *Store) BindLiveDevice(
 		return model.LiveDevice{}, err
 	}
 
-	detail, _ := json.Marshal(map[string]any{
-		"room_id":      roomID,
-		"binding_role": role,
-	})
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO live_runtime_events (
-			tenant_id, room_id, device_id, actor_type, actor_user_id,
-			event_code, title, detail_json, occurred_at
-		) VALUES (?, ?, ?, 'user', ?, 'DEVICE_BOUND', '设备已绑定直播间', ?, ?)
-	`, tenantID, roomID, deviceID, userID, detail, now); err != nil {
-		return model.LiveDevice{}, err
+	if !sameRoom {
+		if err := insertRoleEvent(deviceID, roomID, "DEVICE_BOUND", "设备已绑定直播间", finalRole); err != nil {
+			return model.LiveDevice{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return model.LiveDevice{}, err
 	}
 	return s.GetLiveDevice(ctx, tenantID, deviceID)
+}
+
+func resolveLiveBindingRole(requestedRole string, hasPrimary, primaryIsDevice, sameRoom bool) string {
+	if !hasPrimary || primaryIsDevice {
+		// A room with devices always keeps one primary. The existing primary
+		// cannot demote itself without promoting another listener first.
+		return "primary"
+	}
+	if requestedRole == "primary" && !sameRoom {
+		// Adding or moving a device into a room that already has a primary is
+		// always a listener operation. An explicit promotion is only accepted
+		// after the device is already bound to that room as a listener.
+		return "listener"
+	}
+	return requestedRole
 }
 
 func (s *Store) HeartbeatLiveDevice(
@@ -1255,7 +1450,7 @@ func (s *Store) ControlLiveDevice(
 		FROM live_device_room_bindings b
 		INNER JOIN inv_devices d ON d.id=b.device_id
 		WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
-		  AND b.status='active' AND d.current_customer_id=?
+		  AND b.status='active' AND b.binding_role='primary' AND d.current_customer_id=?
 		LIMIT 1
 		FOR UPDATE
 	`, tenantID, roomID, deviceID, tenantID).Scan(&boundDeviceID)
@@ -1368,13 +1563,18 @@ func (s *Store) StartLiveRuntimeSession(
 	ctx context.Context,
 	tenantID, roomID, userID int64,
 	deviceID *int64,
+	executionRealm string,
 	now time.Time,
 ) (model.LiveRuntimeSession, error) {
+	executionRealm = model.NormalizeExecutionRealm(executionRealm)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	defer tx.Rollback()
+	if err := lockUsableRoomTx(ctx, tx, tenantID, roomID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 
 	var existing int64
 	err = tx.QueryRowContext(ctx, `
@@ -1392,26 +1592,33 @@ func (s *Store) StartLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 
-	// Device is an optional audio-distribution endpoint. Core collection and the
-	// paid intelligent-agent runtime can work without a device bound. If a device
-	// is explicitly requested, only verify ownership/binding; device heartbeat is
-	// not the switch for the AI layer.
+	// Device is optional for rooms that intentionally have no hardware endpoint.
+	// Once a device is selected, it becomes a hard runtime dependency: startup
+	// requires a recent heartbeat and a 60-second disconnect stops the Agent.
 	if deviceID != nil {
 		var found int64
+		var connection string
+		var heartbeat sql.NullTime
 		err = tx.QueryRowContext(ctx, `
-			SELECT b.device_id
+			SELECT b.device_id, COALESCE(rs.connection_status, 'offline'), rs.last_heartbeat_at
 			FROM live_device_room_bindings b
 			INNER JOIN inv_devices d ON d.id=b.device_id
+			LEFT JOIN live_device_runtime_state rs
+			  ON rs.device_id=b.device_id AND rs.tenant_id=b.tenant_id
 			WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
-			  AND b.status='active' AND d.current_customer_id=?
+			  AND b.status='active' AND b.binding_role='primary' AND d.current_customer_id=?
 			LIMIT 1
 			FOR UPDATE
-		`, tenantID, roomID, *deviceID, tenantID).Scan(&found)
+		`, tenantID, roomID, *deviceID, tenantID).Scan(&found, &connection, &heartbeat)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
 			}
 			return model.LiveRuntimeSession{}, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(connection), "online") ||
+			!heartbeat.Valid || heartbeat.Time.Before(now.Add(-liveDeviceAgentStopTimeout)) {
+			return model.LiveRuntimeSession{}, ErrLiveDeviceOffline
 		}
 	}
 
@@ -1433,11 +1640,11 @@ func (s *Store) StartLiveRuntimeSession(
 	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO live_runtime_sessions (
-			external_id, tenant_id, room_id, device_id, status,
+			external_id, tenant_id, room_id, device_id, execution_realm, status,
 			started_by_user_id, started_at, last_billed_at,
 			total_billed_seconds, version
-		) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 0, 1)
-	`, externalID, tenantID, roomID, deviceID, userID, now, now)
+		) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, 0, 1)
+	`, externalID, tenantID, roomID, deviceID, executionRealm, userID, now, now)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -1468,7 +1675,7 @@ func (s *Store) GetLiveRuntimeSession(
 	return scanLiveRuntimeSession(s.db.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -1485,7 +1692,7 @@ func (s *Store) GetLiveRuntimeByRoom(
 	return scanLiveRuntimeSession(s.db.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -1495,6 +1702,34 @@ func (s *Store) GetLiveRuntimeByRoom(
 		ORDER BY CASE s.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, s.id DESC
 		LIMIT 1
 	`, tenantID, roomID))
+}
+
+func (s *Store) SetLiveRuntimeExecutionRealm(
+	ctx context.Context,
+	tenantID, sessionID int64,
+	executionRealm string,
+	now time.Time,
+) (model.LiveRuntimeSession, error) {
+	executionRealm = model.NormalizeExecutionRealm(executionRealm)
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE live_runtime_sessions
+		SET execution_realm=?, version=version+1, updated_at=?
+		WHERE id=? AND tenant_id=? AND status IN ('running','paused')
+	`, executionRealm, now, sessionID, tenantID)
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if affected == 0 {
+		return model.LiveRuntimeSession{}, sql.ErrNoRows
+	}
+	return s.GetLiveRuntimeSession(ctx, tenantID, sessionID)
 }
 
 func scanLiveRuntimeSession(scanner interface{ Scan(...any) error }) (model.LiveRuntimeSession, error) {
@@ -1508,6 +1743,7 @@ func scanLiveRuntimeSession(scanner interface{ Scan(...any) error }) (model.Live
 		&item.RoomID,
 		&deviceID,
 		&item.DeviceSN,
+		&item.ExecutionRealm,
 		&item.Status,
 		&item.StopReason,
 		&startedBy,
@@ -1524,6 +1760,9 @@ func scanLiveRuntimeSession(scanner interface{ Scan(...any) error }) (model.Live
 	if deviceID.Valid {
 		value := deviceID.Int64
 		item.DeviceID = &value
+		if _, err := model.NormalizeHardwareMAC(item.DeviceSN); err == nil {
+			item.DeviceSN = fmt.Sprintf("XL%06d", value)
+		}
 	}
 	if startedBy.Valid {
 		value := startedBy.Int64
@@ -1576,7 +1815,7 @@ func (s *Store) ListRunningLiveRuntimeSessions(ctx context.Context) ([]model.Liv
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -1610,7 +1849,7 @@ func (s *Store) ListLiveRuntimeReconcileSessions(ctx context.Context) ([]model.L
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -1619,7 +1858,7 @@ func (s *Store) ListLiveRuntimeReconcileSessions(ctx context.Context) ([]model.L
 		WHERE s.status IN ('running','paused')
 		   OR (
 			s.status='stopped'
-			AND s.stop_reason IN ('core_restart','core_runtime_reset')
+			AND s.stop_reason IN ('core_restart','core_runtime_reset','device_offline')
 			AND s.ended_at IS NOT NULL
 			AND s.ended_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 15 MINUTE)
 			AND s.id=(
@@ -1907,10 +2146,10 @@ func (s *Store) ReconcileLiveRuntimeSession(
 			FOR UPDATE
 		`, *session.DeviceID, session.TenantID).Scan(&connection, &heartbeat)
 		if err != nil || connection != "online" || !heartbeat.Valid ||
-			heartbeat.Time.Before(now.Add(-liveDeviceHeartbeatTimeout)) {
+			heartbeat.Time.Before(now.Add(-liveDeviceAgentStopTimeout)) {
 			stopReason = "device_offline"
 			if heartbeat.Valid {
-				deviceStopAt := heartbeat.Time.Add(liveDeviceHeartbeatTimeout)
+				deviceStopAt := heartbeat.Time.Add(liveDeviceAgentStopTimeout)
 				if deviceStopAt.Before(settleAt) {
 					settleAt = deviceStopAt
 				}
@@ -2654,7 +2893,7 @@ func lockRunningSessionByRoom(
 	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -2675,7 +2914,7 @@ func lockPausedSessionByRoom(
 	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -2696,7 +2935,7 @@ func lockActiveSessionByRoom(
 	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version
@@ -2717,7 +2956,7 @@ func lockLiveRuntimeSession(
 	return scanLiveRuntimeSession(tx.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.external_id, s.tenant_id, s.room_id, s.device_id,
-			COALESCE(d.sn, ''), s.status, s.stop_reason,
+			COALESCE(d.sn, ''), s.execution_realm, s.status, s.stop_reason,
 			s.started_by_user_id, s.stopped_by_user_id,
 			s.started_at, s.last_billed_at, s.ended_at,
 			s.total_billed_seconds, s.version

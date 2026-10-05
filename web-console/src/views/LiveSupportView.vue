@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   acceptLiveOpsSupportRequest,
@@ -7,10 +8,10 @@ import {
   rejectLiveOpsSupportRequest,
 } from '../api'
 import type { LiveSupportRequest } from '../types'
-import LiveStrategyView from './LiveStrategyView.vue'
+
+const router = useRouter()
 
 const requests = ref<LiveSupportRequest[]>([])
-const connectedRequest = ref<LiveSupportRequest | null>(null)
 const loading = ref(false)
 const busyRequestId = ref<number | null>(null)
 const error = ref('')
@@ -43,11 +44,6 @@ async function load() {
   try {
     const result = await getLiveOpsSupportRequests()
     requests.value = result.items || []
-    if (connectedRequest.value) {
-      const fresh = requests.value.find((item) => item.id === connectedRequest.value?.id)
-      if (!fresh || fresh.status !== 'accepted') connectedRequest.value = null
-      else connectedRequest.value = fresh
-    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '读取运维协助申请失败'
   } finally {
@@ -71,8 +67,7 @@ async function connectRequest(item: LiveSupportRequest) {
       error.value = '这条协助申请当前不能连接。'
       return
     }
-    connectedRequest.value = target
-    notice.value = '已连接客户 #' + target.tenant_id + '。当前页面按客户视角加载全部直播间与智能体方案。'
+    await router.push('/operations/live/rooms/' + target.room_id + '/strategy')
   } catch (err) {
     error.value = err instanceof Error ? err.message : '连接客户协助工作台失败'
   } finally {
@@ -95,53 +90,24 @@ async function rejectRequest(item: LiveSupportRequest) {
   }
 }
 
-function disconnect() {
-  connectedRequest.value = null
-  notice.value = ''
-}
-
 onMounted(() => void load())
 </script>
 
 <template>
   <div class="live-support-session-page">
-    <template v-if="connectedRequest">
-      <header class="live-support-session-bar">
-        <div>
-          <span>OPERATIONS SUPPORT CONNECTED</span>
-          <strong>正在协助客户 #{{ connectedRequest.tenant_id }}</strong>
-          <small>
-            从“{{ connectedRequest.room_name || ('直播间 #' + connectedRequest.room_id) }}”发起授权；
-            已进入该客户完整直播智能体工作台，可切换其全部直播间。
-          </small>
-        </div>
-        <button type="button" @click="disconnect">结束查看</button>
-      </header>
-
-      <p v-if="error" class="live-support-message error">{{ error }}</p>
-      <p v-if="notice" class="live-support-message success">{{ notice }}</p>
-
-      <LiveStrategyView
-        support-session
-        :support-tenant-id="connectedRequest.tenant_id"
-        :support-room-id="connectedRequest.room_id"
-      />
-    </template>
-
-    <template v-else>
-      <section class="live-support-request-head">
+    <section class="live-support-request-head">
         <div>
           <span>OPERATIONS SUPPORT</span>
           <h2>运维协助申请</h2>
-          <p>客户提交申请后，点击“连接”即接受完整协助授权，并进入与客户一致的直播智能体方案界面。</p>
+          <p>客户提交当前直播间的协助申请后，接受申请即可进入该直播间的智能体方案界面。授权不扩展到客户的其它直播间。</p>
         </div>
         <button type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新申请' }}</button>
-      </section>
+    </section>
 
-      <p v-if="error" class="live-support-message error">{{ error }}</p>
-      <p v-if="notice" class="live-support-message success">{{ notice }}</p>
+    <p v-if="error" class="live-support-message error">{{ error }}</p>
+    <p v-if="notice" class="live-support-message success">{{ notice }}</p>
 
-      <section class="live-support-request-list">
+    <section class="live-support-request-list">
         <div v-if="!loading && !activeRequests.length" class="live-support-request-empty">
           <strong>当前没有待处理或已授权的协助申请</strong>
           <span>客户选择运维人员并提交授权后，会出现在这里。</span>
@@ -158,7 +124,7 @@ onMounted(() => void load())
               <em :class="item.status">{{ statusLabel(item.status) }}</em>
             </header>
             <p>
-              授权后可维护该客户全部直播间的智能体方案、方案内容以及直播间与方案的绑定关系。
+              仅维护此直播间已授权的智能体方案、方案内容以及直播间与方案的绑定关系。
             </p>
             <small>
               申请时间 {{ formatTime(item.requested_at) }}
@@ -182,8 +148,7 @@ onMounted(() => void load())
             >拒绝</button>
           </div>
         </article>
-      </section>
-    </template>
+    </section>
   </div>
 </template>
 

@@ -478,11 +478,11 @@ func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
 			Progress:    "CONVERSION",
 			Atmosphere:  "ACTIVE",
 		},
-		model.RoomHumanBehaviorProfile{TraitText: "喜欢短句", StateText: "今天声音偏轻"},
+		model.RoomHumanBehaviorProfile{TraitText: "旧版直播间习惯不再参与生成", StateText: "今天声音偏轻"},
 		"保持真人直播临场感",
 		true,
 	)
-	if plan.Trait.Persona != "natural_live_anchor" || plan.Trait.MaxReactionCount != 1 || plan.Trait.Instruction != "喜欢短句" {
+	if plan.Trait.Persona != "natural_live_anchor" || plan.Trait.MaxReactionCount != 1 || plan.Trait.Instruction != "" {
 		t.Fatalf("trait not frozen correctly: %#v", plan.Trait)
 	}
 	if plan.State.Heat != "warm" || plan.State.Progress != "CONVERSION" || plan.State.MissionKind != "reply_chat" || plan.State.HostState != "今天声音偏轻" {
@@ -646,13 +646,15 @@ func (f *fakeStore) RenderAgentPrompt(_ context.Context, _ string, fallback stri
 }
 
 type fakeCore struct {
-	releases      int
-	dispatches    int
-	dispatch      map[string]any
-	claimRaw      string
-	runtimeRaw    string
-	strategies    map[string]coreStrategySelection
-	strategyCalls map[string]int
+	releases       int
+	dispatches     int
+	dispatch       map[string]any
+	dispatchStatus int
+	dispatchRaw    string
+	claimRaw       string
+	runtimeRaw     string
+	strategies     map[string]coreStrategySelection
+	strategyCalls  map[string]int
 }
 
 func (f *fakeCore) DoRoom(
@@ -696,6 +698,14 @@ func (f *fakeCore) DoRoom(
 		}
 	case strings.Contains(path, "/audio/interaction"):
 		f.dispatches++
+		if f.dispatchStatus != 0 {
+			status = f.dispatchStatus
+			raw = f.dispatchRaw
+			if strings.TrimSpace(raw) == "" {
+				raw = `{"error":"dispatch failed"}`
+			}
+			break
+		}
 		if value, ok := body.(map[string]any); ok {
 			f.dispatch = value
 			payload := map[string]any{
@@ -1304,6 +1314,27 @@ func TestProcessRoomReleasesClaimWhenTTSFails(t *testing.T) {
 	}
 	if core.releases != 1 {
 		t.Fatalf("failed execution must release claim once, releases=%d", core.releases)
+	}
+}
+
+func TestProcessRoomReleasesClaimWhenSafeCutExpires(t *testing.T) {
+	core := &fakeCore{
+		dispatchStatus: http.StatusConflict,
+		dispatchRaw:    `{"error":"安全句末切点已失效，继续排队"}`,
+	}
+	agent := &fakeAgent{}
+	tts := &fakeTTS{}
+	worker := New(readyVoiceStore(), core, agent, tts)
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+
+	if err := worker.processRoom(context.Background(), session); err == nil {
+		t.Fatal("expected expired safe-cut dispatch failure")
+	}
+	if core.dispatches != 1 {
+		t.Fatalf("dispatches=%d want 1", core.dispatches)
+	}
+	if core.releases != 1 {
+		t.Fatalf("failed dispatch must release claim for queue retry, releases=%d", core.releases)
 	}
 }
 

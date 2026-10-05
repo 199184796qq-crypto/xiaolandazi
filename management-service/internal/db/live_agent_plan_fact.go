@@ -13,7 +13,8 @@ var ErrLiveAgentPlanFactNotFound = errors.New("live agent plan fact not found")
 var ErrLiveAgentPlanFactVersionConflict = errors.New("live agent plan fact version conflict")
 
 const liveAgentPlanFactSelect = `
-	SELECT id, tenant_id, plan_id, category, fact_key, fact_value, source_quote,
+	SELECT id, tenant_id, plan_id, category, fact_key, fact_value,
+		COALESCE(forbidden_wording, ''), COALESCE(safe_rewrite, ''), source_quote,
 		source_review_bucket, source_review_reason, source_type, source_ref,
 		status, version_no, created_by_user_id, updated_by_user_id, created_at, updated_at
 	FROM live_agent_plan_facts
@@ -29,6 +30,7 @@ func scanLiveAgentPlanFact(row interface {
 	)
 	err := row.Scan(
 		&item.ID, &item.TenantID, &item.PlanID, &item.Category, &item.Key, &item.Value,
+		&item.ForbiddenWording, &item.SafeRewrite,
 		&item.SourceQuote, &item.SourceReviewBucket, &item.SourceReviewReason,
 		&item.SourceType, &item.SourceRef, &item.Status, &item.VersionNo,
 		&createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt,
@@ -93,6 +95,12 @@ func (s *Store) AdoptLiveAgentPlanFact(
 	}
 	key := strings.TrimSpace(candidate.Key)
 	value := strings.TrimSpace(candidate.Value)
+	forbiddenWording := strings.TrimSpace(candidate.ForbiddenWording)
+	safeRewrite := strings.TrimSpace(candidate.SafeRewrite)
+	sourceType := "analysis_adoption"
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(sourceRef)), "manual:") {
+		sourceType = "manual_create"
+	}
 	result := model.LiveAgentPlanFactAdoptionResult{Candidate: candidate}
 
 	var planExists int
@@ -116,12 +124,12 @@ func (s *Store) AdoptLiveAgentPlanFact(
 			nextVersion := existing.VersionNo + 1
 			_, txErr = tx.ExecContext(ctx, `
 				UPDATE live_agent_plan_facts
-				SET fact_value=?, source_quote=?, source_review_bucket=?, source_review_reason=?,
-				    source_type='analysis_adoption', source_ref=?, status='active', version_no=?,
+				SET fact_value=?, forbidden_wording=?, safe_rewrite=?, source_quote=?, source_review_bucket=?, source_review_reason=?,
+				    source_type=?, source_ref=?, status='active', version_no=?,
 				    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 				WHERE id=? AND tenant_id=? AND plan_id=?
-			`, value, strings.TrimSpace(candidate.SourceQuote), strings.TrimSpace(candidate.ReviewBucket),
-				strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), nextVersion,
+			`, value, forbiddenWording, safeRewrite, strings.TrimSpace(candidate.SourceQuote), strings.TrimSpace(candidate.ReviewBucket),
+				strings.TrimSpace(candidate.ReviewReason), sourceType, strings.TrimSpace(sourceRef), nextVersion,
 				actorUserID, existing.ID, tenantID, planID)
 			if txErr != nil {
 				return result, txErr
@@ -129,11 +137,11 @@ func (s *Store) AdoptLiveAgentPlanFact(
 			_, txErr = tx.ExecContext(ctx, `
 				INSERT INTO live_agent_plan_fact_revisions (
 					tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-					source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?)
-			`, tenantID, planID, existing.ID, nextVersion, category, key, value,
+					forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, tenantID, planID, existing.ID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
 				strings.TrimSpace(candidate.SourceQuote), strings.TrimSpace(candidate.ReviewBucket),
-				strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), actorUserID)
+				strings.TrimSpace(candidate.ReviewReason), sourceType, strings.TrimSpace(sourceRef), actorUserID)
 			if txErr != nil {
 				return result, txErr
 			}
@@ -151,7 +159,9 @@ func (s *Store) AdoptLiveAgentPlanFact(
 			result.Saved = &saved
 			return result, nil
 		}
-		if strings.TrimSpace(existing.Value) == value {
+		if strings.TrimSpace(existing.Value) == value &&
+			strings.TrimSpace(existing.ForbiddenWording) == forbiddenWording &&
+			strings.TrimSpace(existing.SafeRewrite) == safeRewrite {
 			result.Status = "unchanged"
 			result.Message = "直播方案中已存在相同事实"
 			return result, nil
@@ -171,13 +181,13 @@ func (s *Store) AdoptLiveAgentPlanFact(
 	defer tx.Rollback()
 	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_facts (
-			tenant_id, plan_id, category, fact_key, fact_value, source_quote,
+			tenant_id, plan_id, category, fact_key, fact_value, forbidden_wording, safe_rewrite, source_quote,
 			source_review_bucket, source_review_reason, source_type, source_ref,
 			status, version_no, created_by_user_id, updated_by_user_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, 'active', 1, ?, ?)
-	`, tenantID, planID, category, key, value, strings.TrimSpace(candidate.SourceQuote),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
+	`, tenantID, planID, category, key, value, forbiddenWording, safeRewrite, strings.TrimSpace(candidate.SourceQuote),
 		strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason),
-		strings.TrimSpace(sourceRef), actorUserID, actorUserID)
+		sourceType, strings.TrimSpace(sourceRef), actorUserID, actorUserID)
 	if err != nil {
 		return result, err
 	}
@@ -188,11 +198,11 @@ func (s *Store) AdoptLiveAgentPlanFact(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?)
-	`, tenantID, planID, factID, category, key, value, strings.TrimSpace(candidate.SourceQuote),
+			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, tenantID, planID, factID, category, key, value, forbiddenWording, safeRewrite, strings.TrimSpace(candidate.SourceQuote),
 		strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason),
-		strings.TrimSpace(sourceRef), actorUserID)
+		sourceType, strings.TrimSpace(sourceRef), actorUserID)
 	if err != nil {
 		return result, err
 	}
@@ -214,15 +224,15 @@ func (s *Store) AdoptLiveAgentPlanFact(
 func (s *Store) UpdateLiveAgentPlanFact(
 	ctx context.Context,
 	tenantID, planID, factID, actorUserID int64,
-	category, key, value string,
+	category, key, value, forbiddenWording, safeRewrite string,
 ) (model.LiveAgentPlanFact, error) {
-	return s.UpdateLiveAgentPlanFactWithExpectedVersion(ctx, tenantID, planID, factID, actorUserID, 0, category, key, value)
+	return s.UpdateLiveAgentPlanFactWithExpectedVersion(ctx, tenantID, planID, factID, actorUserID, 0, category, key, value, forbiddenWording, safeRewrite)
 }
 
 func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	ctx context.Context,
 	tenantID, planID, factID, actorUserID, expectedVersionNo int64,
-	category, key, value string,
+	category, key, value, forbiddenWording, safeRewrite string,
 ) (model.LiveAgentPlanFact, error) {
 	category = strings.TrimSpace(category)
 	if category == "" {
@@ -230,6 +240,8 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	}
 	key = strings.TrimSpace(key)
 	value = strings.TrimSpace(value)
+	forbiddenWording = strings.TrimSpace(forbiddenWording)
+	safeRewrite = strings.TrimSpace(safeRewrite)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -269,10 +281,10 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_facts
-		SET category=?, fact_key=?, fact_value=?, source_type='manual_edit', source_ref='',
+		SET category=?, fact_key=?, fact_value=?, forbidden_wording=?, safe_rewrite=?, source_type='manual_edit', source_ref='',
 		    version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
-	`, category, key, value, nextVersion, actorUserID, factID, tenantID, planID)
+	`, category, key, value, forbiddenWording, safeRewrite, nextVersion, actorUserID, factID, tenantID, planID)
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}
@@ -280,9 +292,9 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, 'manual_edit', '', ?)
-	`, tenantID, planID, factID, nextVersion, category, key, value,
+			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', '', ?)
+	`, tenantID, planID, factID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
@@ -338,9 +350,10 @@ func (s *Store) DeleteLiveAgentPlanFactWithExpectedVersion(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?)
+			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
+		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?)
 	`, tenantID, planID, factID, nextVersion, current.Category, current.Key, current.Value,
+		current.ForbiddenWording, current.SafeRewrite,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
 		return err

@@ -47,7 +47,7 @@ server {
 
     ssl_certificate __MAIN_CERT__;
     ssl_certificate_key __MAIN_KEY__;
-    client_max_body_size 100m;
+    client_max_body_size 220m;
 
     root $xiaolan_main_web_root;
     index index.html;
@@ -81,6 +81,43 @@ server {
         proxy_send_timeout 3600s;
     }
 
+    location = /xiaozhi/healthz {
+        proxy_pass http://127.0.0.1:8083/healthz;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /xiaozhi/ota/ {
+        proxy_pass http://127.0.0.1:8083/xiaozhi/ota/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
+    location /xiaozhi/v1/ {
+        proxy_pass http://127.0.0.1:8083/xiaozhi/v1/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     location / {
         add_header Vary User-Agent always;
         try_files $uri $uri/ /index.html;
@@ -95,7 +132,7 @@ server {
 
     ssl_certificate __SALES_CERT__;
     ssl_certificate_key __SALES_KEY__;
-    client_max_body_size 100m;
+    client_max_body_size 220m;
     add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
 
     root /opt/xiaolan/current/web-sales;

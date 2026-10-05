@@ -7,21 +7,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 )
 
 type QwenConfig struct {
-	BaseURL string
-	APIKey  string
-	Client  *http.Client
+	MaxTokenField string
+	BaseURL       string
+	APIKey        string
+	Client        *http.Client
 }
 
 type qwenProvider struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	maxTokenField string
+	providerName  string
+	portable      bool
+	baseURL       string
+	apiKey        string
+	client        *http.Client
 }
 
 type qwenChatResponse struct {
@@ -61,14 +66,48 @@ func NewQwenProvider(config QwenConfig) Provider {
 		client = &http.Client{}
 	}
 	return &qwenProvider{
-		baseURL: strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
-		apiKey:  strings.TrimSpace(config.APIKey),
-		client:  client,
+		maxTokenField: config.MaxTokenField,
+		providerName:  ProviderQwen,
+		baseURL:       strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
+		apiKey:        strings.TrimSpace(config.APIKey),
+		client:        client,
 	}
 }
 
 func (p *qwenProvider) Name() string {
-	return ProviderQwen
+	return p.providerName
+}
+
+// Compatible endpoints use the same transport without Qwen-specific options.
+// Vendors with a different API must register their own Provider adapter.
+func NewCompatibleProvider(config QwenConfig) Provider {
+	p := NewQwenProvider(config).(*qwenProvider)
+	p.providerName, p.portable = "compatible", true
+	return p
+}
+
+func officialDeepSeekEndpoint(baseURL, model string) bool {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-") {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), "api.deepseek.com")
+}
+
+// applyCompatibleRequestOptions keeps the generic OpenAI transport portable,
+// while translating the few controls that an official vendor endpoint needs.
+// DeepSeek V4 enables high-effort thinking by default. For speech generation we
+// explicitly opt out, otherwise a modest max_tokens budget can be consumed by
+// reasoning_content and leave message.content empty.
+func applyCompatibleRequestOptions(payload map[string]any, baseURL, model string, enableThinking bool) {
+	delete(payload, "enable_thinking")
+	delete(payload, "reasoning_effort")
+	if officialDeepSeekEndpoint(baseURL, model) && !enableThinking {
+		payload["thinking"] = map[string]string{"type": "disabled"}
+	}
 }
 
 func (p *qwenProvider) ListModels(ctx context.Context) ([]ModelDescriptor, error) {
@@ -112,7 +151,7 @@ func (p *qwenProvider) ListModels(ctx context.Context) ([]ModelDescriptor, error
 			continue
 		}
 		seen[id] = struct{}{}
-		items = append(items, ModelDescriptor{Provider: ProviderQwen, ID: id})
+		items = append(items, ModelDescriptor{Provider: p.Name(), ID: id})
 	}
 	return items, nil
 }
@@ -166,6 +205,22 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		"enable_thinking": request.EnableThinking,
 		"stream":          false,
 		"max_tokens":      request.MaxTokens,
+	}
+	// Qwen 3.8 defaults to its highest reasoning effort. Short classification
+	// and quality-review calls explicitly opt out when thinking is disabled;
+	// otherwise a small gate can take minutes and consume a large hidden budget.
+	// This is only emitted by the native DashScope adapter, never by the generic
+	// OpenAI-compatible transport below.
+	if !request.EnableThinking && strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "qwen3.8") {
+		delete(payload, "enable_thinking")
+		payload["reasoning_effort"] = "none"
+	}
+	if p.portable {
+		applyCompatibleRequestOptions(payload, p.baseURL, request.Model, request.EnableThinking)
+		if p.maxTokenField == "max_completion_tokens" {
+			delete(payload, "max_tokens")
+			payload["max_completion_tokens"] = request.MaxTokens
+		}
 	}
 	if request.ResponseFormat == ResponseJSON {
 		payload["response_format"] = map[string]string{"type": "json_object"}
@@ -230,7 +285,7 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		responseBody = fallbackBody
 	}
 	if statusCode != http.StatusOK {
-		return Response{}, fmt.Errorf("qwen provider http %d: %s", statusCode, strings.TrimSpace(string(responseBody)))
+		return Response{}, fmt.Errorf("%s provider http %d", p.Name(), statusCode)
 	}
 
 	var decoded qwenChatResponse
@@ -246,7 +301,7 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 	}
 	return Response{
 		Text:         text,
-		Provider:     ProviderQwen,
+		Provider:     p.Name(),
 		Model:        request.Model,
 		LatencyMS:    latencyMS,
 		InputTokens:  decoded.Usage.PromptTokens,

@@ -124,15 +124,15 @@ func (s *Server) requireCustomerPolicyRoomID(
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
-	authorized, err := s.store.HasLiveSupportTenantAuthorization(
-		r.Context(), tenantID, actor.UserID, model.LiveSupportCapabilityL3Policy,
+	authorized, err := s.store.HasLiveSupportAuthorization(
+		r.Context(), tenantID, roomID, actor.UserID, model.LiveSupportCapabilityL3Policy,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "校验客户授权失败")
 		return model.Actor{}, 0, 0, false
 	}
 	if !authorized {
-		writeError(w, http.StatusForbidden, "客户尚未授权你维护该终端的直播智能体")
+		writeError(w, http.StatusForbidden, "客户尚未授权你维护该直播间的直播智能体，或授权已经撤回")
 		return model.Actor{}, 0, 0, false
 	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {

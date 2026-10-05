@@ -1,0 +1,38 @@
+{
+  "$schema": "../../../shared/schemas/anchor-style-plugin-manifest.schema.json",
+  "api_version": "anchor-style-plugin/v1",
+  "id": "natural-reduplication",
+  "version": "1.0.0",
+  "name": "自然叠词",
+  "description": "偶尔使用一次自然叠词或轻重复，模拟真人边想边说的局部节奏。",
+  "mode": "declarative",
+  "category": "rhythm",
+  "scenes": ["mainline", "interaction", "refresh"],
+  "parameters": {
+    "max_per_1000_chars": {
+      "type": "integer",
+      "description": "每1000字最多出现的叠词或轻重复次数。",
+      "default": 2,
+      "minimum": 0,
+      "maximum": 4
+    }
+  },
+  "safety": {
+    "may_emit_intentional_false_derived_value": false,
+    "may_change_source_fact": false,
+    "atomic_output_required": false,
+    "interruptible": true,
+    "allowed_fact_kinds": ["none"],
+    "forbidden_scenes": ["serious"]
+  },
+  "compiler": {
+    "recognized_intents": ["偶尔有叠词", "词语会重复一下", "像真人一样轻微重复"],
+    "output_capability": "natural_reduplication",
+    "instructions": {
+      "mainline": "偶尔在不承载已核定内容的普通口语词上使用一次自然叠词或轻重复；不得作用于任何已核定关键原词，也不得改变句义。",
+      "interaction": "只在轻松短答中低频使用一次叠词，不妨碍核心回答。",
+      "refresh": "叠词只作为局部节奏变化，避免在相邻单元连续出现。"
+    },
+    "micro_actions": ["reaction", "rephrase", "supplement"]
+  }
+}

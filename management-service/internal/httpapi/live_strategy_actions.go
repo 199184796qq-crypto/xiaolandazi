@@ -102,6 +102,11 @@ func (s *Server) liveStrategyExecuteAction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	payload.RoomID = roomID
+	for _, planID := range []int64{payload.PlanID, payload.TargetPlanID} {
+		if planID > 0 && !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, true) {
+			return
+		}
+	}
 
 	var result systemAgentChatOutput
 	switch actionType {
@@ -175,6 +180,9 @@ func (s *Server) requireLiveStrategyAgentWrite(
 
 	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
 	if !ok {
+		return model.Actor{}, 0, 0, false
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return model.Actor{}, 0, 0, false
 	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
@@ -491,7 +499,10 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 	if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
 		return liveStrategyFailed("invalid_fact", err.Error(), nil)
 	}
-	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(r.Context(), tenantID, p.PlanID, current.ID, actor.UserID, current.VersionNo, current.Category, current.Key, value)
+	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(
+		r.Context(), tenantID, p.PlanID, current.ID, actor.UserID, current.VersionNo,
+		current.Category, current.Key, value, current.ForbiddenWording, current.SafeRewrite,
+	)
 	if errors.Is(err, appdb.ErrLiveAgentPlanFactVersionConflict) {
 		return liveStrategyFailed("stale_confirmation", "这条事实已经产生新版本，请重新发起修改。", nil)
 	}
@@ -705,6 +716,9 @@ func (s *Server) executeLiveStrategySwitchPlan(r *http.Request, actor model.Acto
 		return liveStrategyFailed("no_change", "当前直播间已经在使用“"+plan.Name+"”。", nil)
 	}
 	selected, err := s.store.SelectLiveAgentPlanForRoom(r.Context(), tenantID, plan.ID, p.RoomID, actor.UserID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanNotPublished) {
+		return liveStrategyFailed("plan_not_published", "目标方案还没有发布到当前直播间，请先发布后再切换。", nil)
+	}
 	if err != nil {
 		return liveStrategyFailed("plan_switch_failed", "切换运行方案失败，请刷新后重试。", nil)
 	}

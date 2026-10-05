@@ -6,6 +6,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { login, loginWithSMS, sendSMSLoginCode } from '../api'
 import { applySession } from '../session'
+import { useAuthHomepageCopy } from '../authHomepageCopy'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,6 +29,7 @@ const smsSending = ref(false)
 const smsCountdown = ref(0)
 let smsTimer: number | undefined
 const error = useFeedbackErrorRef()
+const authCopy = useAuthHomepageCopy()
 
 const isInternalIntent = computed(() => {
   const portal = String(route.query.portal || '').trim().toLowerCase()
@@ -39,13 +41,23 @@ const isInternalIntent = computed(() => {
 })
 
 const sideLabel = computed(() =>
-  isInternalIntent.value ? 'AI CONTROL CENTER' : 'BANBO AI LIVE',
+  isInternalIntent.value ? authCopy.value.internalSideLabel : authCopy.value.customerSideLabel,
 )
 
 const sideDescription = computed(() =>
   isInternalIntent.value
-    ? '连接终端、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。'
-    : '实时感知公屏互动，AI智能辅助话术，接待与回应，让直播间始终有人陪、有人接、有人聊。',
+    ? authCopy.value.internalDescription
+    : authCopy.value.customerDescription,
+)
+
+const sideTitleLine1 = computed(() =>
+  isInternalIntent.value ? authCopy.value.internalTitleLine1 : authCopy.value.customerTitleLine1,
+)
+const sideTitleLine2 = computed(() =>
+  isInternalIntent.value ? authCopy.value.internalTitleLine2 : authCopy.value.customerTitleLine2,
+)
+const sideStatusLabel = computed(() =>
+  isInternalIntent.value ? authCopy.value.internalStatusLabel : authCopy.value.customerStatusLabel,
 )
 
 const captchaSrc = computed(
@@ -404,14 +416,8 @@ async function submit() {
       <div class="auth-side-content">
         <span class="auth-side-label">{{ sideLabel }}</span>
         <h2 class="customer-tagline">
-          <template v-if="isInternalIntent">
-            <span>数据驱动直播运维，</span>
-            <span>全局尽在掌握。</span>
-          </template>
-          <template v-else>
-            <span>AI直播搭子，</span>
-            <span>让你直播不再冷场。</span>
-          </template>
+          <span>{{ sideTitleLine1 }}</span>
+          <span>{{ sideTitleLine2 }}</span>
         </h2>
         <p>{{ sideDescription }}</p>
 
@@ -419,7 +425,7 @@ async function submit() {
           <span></span>
           <span></span>
           <span></span>
-          <em>LIVE INTELLIGENCE ONLINE</em>
+          <em>{{ sideStatusLabel }}</em>
         </div>
       </div>
     </aside>

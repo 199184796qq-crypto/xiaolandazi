@@ -413,6 +413,9 @@ func (s *Server) roomLiveStrategyWeight(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	allowed := actor.IsPlatformAdmin()
 	if !allowed && actor.IsInternalStaff() {
 		if access, err := s.store.GetStaffAccess(r.Context(), actor.UserID); err == nil {

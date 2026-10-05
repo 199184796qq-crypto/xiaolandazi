@@ -75,15 +75,17 @@ type NormalizeLiveAgentPlanTextOutput struct {
 }
 
 type LiveAgentPlanFactCandidate struct {
-	Category     string `json:"category"`
-	Key          string `json:"key"`
-	Value        string `json:"value"`
-	Status       string `json:"status"`
-	ReviewBucket string `json:"review_bucket,omitempty"`
-	ReviewReason string `json:"review_reason,omitempty"`
-	SourceQuote  string `json:"source_quote,omitempty"`
-	Confidence   string `json:"confidence,omitempty"`
-	Note         string `json:"note,omitempty"`
+	Category         string `json:"category"`
+	Key              string `json:"key"`
+	Value            string `json:"value"`
+	ForbiddenWording string `json:"forbidden_wording,omitempty"`
+	SafeRewrite      string `json:"safe_rewrite,omitempty"`
+	Status           string `json:"status"`
+	ReviewBucket     string `json:"review_bucket,omitempty"`
+	ReviewReason     string `json:"review_reason,omitempty"`
+	SourceQuote      string `json:"source_quote,omitempty"`
+	Confidence       string `json:"confidence,omitempty"`
+	Note             string `json:"note,omitempty"`
 }
 
 type LiveAgentPlanProductLinkCandidate struct {
@@ -191,11 +193,83 @@ type LiveAgentPlanAnchorStyleDimension struct {
 }
 
 type LiveAgentPlanAnchorStyleProfile struct {
+	Delivery          *LiveAnchorDeliverySpec             `json:"delivery_spec,omitempty"`
 	Summary           string                              `json:"summary,omitempty"`
 	Dimensions        []LiveAgentPlanAnchorStyleDimension `json:"dimensions"`
 	ReusableRules     []string                            `json:"reusable_rules"`
 	CandidatePatterns []string                            `json:"candidate_patterns"`
 	ExcludedFromStyle []string                            `json:"excluded_from_style"`
+}
+
+// Versioned, vendor-neutral output contract consumed by every generation path.
+type LiveAnchorDeliverySpec struct {
+	Version              string                   `json:"version"`
+	Instructions         []string                 `json:"instructions"`
+	Habits               []LiveAnchorLiteralHabit `json:"literal_habits"`
+	Rulebook             string                   `json:"rulebook,omitempty"`
+	SampleChars          int                      `json:"sample_chars"`
+	SentenceCount        int                      `json:"sentence_count"`
+	AverageSentenceChars int                      `json:"average_sentence_chars"`
+	SourceSHA256         string                   `json:"source_sha256,omitempty"`
+}
+
+type LiveAnchorLiteralHabit struct {
+	Kind     string `json:"kind"`
+	Text     string `json:"text"`
+	Position string `json:"position"`
+	When     string `json:"when"`
+	Avoid    string `json:"avoid,omitempty"`
+	Count    int    `json:"count"`
+}
+
+const LiveAnchorStyleOverlayVersion = "anchor-style-overlay/v1"
+
+// LiveAnchorStyleOverlayRule is a vendor-neutral, code-validated rendering of
+// one user-authored persona addition. The source sentence is never executed as
+// a prompt; generation paths consume only this bounded rule.
+type LiveAnchorStyleOverlayRule struct {
+	Version                   string   `json:"version"`
+	Category                  string   `json:"category"`
+	Label                     string   `json:"label"`
+	Application               string   `json:"application"`
+	Strength                  int      `json:"strength"`
+	MainlineInstruction       string   `json:"mainline_instruction"`
+	InteractionInstruction    string   `json:"interaction_instruction"`
+	SeriousInstruction        string   `json:"serious_instruction"`
+	MainlineMinPer1000Chars   int      `json:"mainline_min_per_1000_chars,omitempty"`
+	MainlineMaxPer1000Chars   int      `json:"mainline_max_per_1000_chars,omitempty"`
+	InteractionMaxOccurrences int      `json:"interaction_max_occurrences,omitempty"`
+	MicroActions              []string `json:"micro_actions,omitempty"`
+	Avoid                     []string `json:"avoid"`
+	Confidence                int      `json:"confidence"`
+}
+
+type LiveAnchorStyleOverlayItem struct {
+	ID                   string                        `json:"id"`
+	SourceText           string                        `json:"source_text"`
+	ExplanationText      string                        `json:"explanation_text,omitempty"`
+	Enabled              bool                          `json:"enabled"`
+	Rule                 LiveAnchorStyleOverlayRule    `json:"rule"`
+	InterpretationSource string                        `json:"interpretation_source,omitempty"`
+	LearningBasis        string                        `json:"learning_basis,omitempty"`
+	EvidenceQuotes       []string                      `json:"evidence_quotes,omitempty"`
+	Plugin               *LiveAnchorStylePluginBinding `json:"plugin,omitempty"`
+}
+
+type LiveAnchorStylePluginBinding struct {
+	InstanceID    string         `json:"instance_id"`
+	PluginID      string         `json:"plugin_id"`
+	PluginVersion string         `json:"plugin_version"`
+	Parameters    map[string]any `json:"parameters,omitempty"`
+}
+
+type LiveAgentPlanStyleOverlayProfile struct {
+	TenantID        int64                        `json:"tenant_id"`
+	PlanID          int64                        `json:"plan_id"`
+	Items           []LiveAnchorStyleOverlayItem `json:"items"`
+	Revision        int64                        `json:"revision"`
+	UpdatedByUserID *int64                       `json:"updated_by_user_id,omitempty"`
+	UpdatedAt       *time.Time                   `json:"updated_at,omitempty"`
 }
 
 type LiveAgentPlanRhythmNode struct {
@@ -272,6 +346,8 @@ type LiveAgentPlanFact struct {
 	Category           string    `json:"category"`
 	Key                string    `json:"key"`
 	Value              string    `json:"value"`
+	ForbiddenWording   string    `json:"forbidden_wording,omitempty"`
+	SafeRewrite        string    `json:"safe_rewrite,omitempty"`
 	SourceQuote        string    `json:"source_quote,omitempty"`
 	SourceReviewBucket string    `json:"source_review_bucket,omitempty"`
 	SourceReviewReason string    `json:"source_review_reason,omitempty"`
@@ -353,10 +429,13 @@ type AdoptLiveAgentPlanFactsInput struct {
 }
 
 type UpdateLiveAgentPlanFactInput struct {
-	TenantID int64  `json:"tenant_id,omitempty"`
-	Category string `json:"category"`
-	Key      string `json:"key"`
-	Value    string `json:"value"`
+	TenantID          int64  `json:"tenant_id,omitempty"`
+	ExpectedVersionNo int64  `json:"expected_version_no,omitempty"`
+	Category          string `json:"category"`
+	Key               string `json:"key"`
+	Value             string `json:"value"`
+	ForbiddenWording  string `json:"forbidden_wording,omitempty"`
+	SafeRewrite       string `json:"safe_rewrite,omitempty"`
 }
 
 type LiveAgentPlanFactAdoptionResult struct {
@@ -414,6 +493,7 @@ type LiveAgentFullShowPreviewInput struct {
 	DurationMinutes  int                                 `json:"duration_minutes"`
 	RoundMinutes     int                                 `json:"round_minutes"`
 	VariantCount     int                                 `json:"variant_count"`
+	ExpansionFreedom *int                                `json:"expansion_freedom,omitempty"`
 	UseAnchorStyle   bool                                `json:"use_anchor_style"`
 	UseDynamicFacts  bool                                `json:"use_dynamic_facts"`
 	GenerateTTSHints bool                                `json:"generate_tts_hints"`
@@ -424,11 +504,55 @@ type LiveAgentFullShowPreviewInput struct {
 	RecentTexts      []string                            `json:"recent_texts,omitempty"`
 }
 
+const LiveFactExpansionPolicyVersion = "live-fact-expansion/v1"
+
+// LiveFactExpansionPolicy is a user authorization boundary, not a model
+// temperature. Law/platform policy and explicitly locked source facts always
+// take precedence; the remaining semantic space may be expanded up to Freedom.
+type LiveFactExpansionPolicy struct {
+	Version              string   `json:"version"`
+	UserAuthorized       bool     `json:"user_authorized"`
+	Freedom              int      `json:"freedom"`
+	Level                string   `json:"level"`
+	Allowed              []string `json:"allowed"`
+	AlwaysLocked         []string `json:"always_locked"`
+	BoundaryRewriteFirst bool     `json:"boundary_rewrite_first"`
+}
+
 type LiveAgentFullShowContextFact struct {
-	Category string `json:"category"`
-	Key      string `json:"key"`
-	Value    string `json:"value"`
-	Version  int64  `json:"version"`
+	SourceID         int64  `json:"source_id,omitempty"`
+	Category         string `json:"category"`
+	Key              string `json:"key"`
+	Value            string `json:"value"`
+	ForbiddenWording string `json:"forbidden_wording,omitempty"`
+	SafeRewrite      string `json:"safe_rewrite,omitempty"`
+	Version          int64  `json:"version"`
+}
+
+const LiveGenerationFactManifestVersion = "live-generation-facts/v1"
+
+// LiveAgentGenerationFact is the common fact contract consumed by speech
+// generation. Product cards, active benefits and supplemental evidence remain
+// separate domain records, but are projected into this single read model so a
+// renderer never has to guess whether a value is an authorized fact.
+type LiveAgentGenerationFact struct {
+	FactID           string     `json:"fact_id"`
+	SourceKind       string     `json:"source_kind"`
+	SourceID         int64      `json:"source_id,omitempty"`
+	SourceKey        string     `json:"source_key"`
+	ScopeKind        string     `json:"scope_kind"`
+	LinkKey          string     `json:"link_key,omitempty"`
+	ProductName      string     `json:"product_name,omitempty"`
+	Predicate        string     `json:"predicate"`
+	Label            string     `json:"label"`
+	Value            string     `json:"value"`
+	ValidFrom        *time.Time `json:"valid_from,omitempty"`
+	ValidUntil       *time.Time `json:"valid_until,omitempty"`
+	ForbiddenWording string     `json:"forbidden_wording,omitempty"`
+	SafeRewrite      string     `json:"safe_rewrite,omitempty"`
+	Status           string     `json:"status"`
+	Version          int64      `json:"version"`
+	CanGenerate      bool       `json:"can_generate"`
 }
 
 type LiveAgentFullShowContextScriptReference struct {
@@ -441,30 +565,82 @@ type LiveAgentFullShowContextScriptReference struct {
 	Version       int64  `json:"version"`
 }
 
+const LiveSpeechExpansionVersion = "live-speech-expansion/v1"
+
+// LiveSpeechExpansionRoomState is an internal driver input. In fixed preview it
+// is simulated; in a live room the same fields are filled from Core. These
+// values are never audience-facing facts and must not be spoken as claims.
+type LiveSpeechExpansionRoomState struct {
+	Scenario           string  `json:"scenario"`
+	Heat               string  `json:"heat"`
+	OnlineCount        int     `json:"online_count"`
+	EntriesPerMinute   int     `json:"entries_per_minute"`
+	ChatsPerMinute     int     `json:"chats_per_minute"`
+	QuestionPressure   float64 `json:"question_pressure"`
+	AudienceTurnover5m float64 `json:"audience_turnover_5m"`
+	ConversionSignal   float64 `json:"conversion_signal"`
+}
+
+// LiveSpeechExpansionStep is one virtual-clock unit. It describes discourse
+// work, not new business content. FactKeys, BenefitKeys and LinkKeys can only
+// point at already-authorized data in the generation context.
+type LiveSpeechExpansionStep struct {
+	Index                  int                          `json:"index"`
+	StartSecond            int                          `json:"start_second"`
+	EndSecond              int                          `json:"end_second"`
+	CycleIndex             int                          `json:"cycle_index"`
+	Stage                  string                       `json:"stage"`
+	Goal                   string                       `json:"goal"`
+	TargetChars            int                          `json:"target_chars"`
+	ExpressionMoves        []string                     `json:"expression_moves"`
+	FactKeys               []string                     `json:"fact_keys,omitempty"`
+	BenefitKeys            []string                     `json:"benefit_keys,omitempty"`
+	LinkKeys               []string                     `json:"link_keys,omitempty"`
+	StyleCapabilities      []string                     `json:"style_capabilities,omitempty"`
+	InteractionOpportunity bool                         `json:"interaction_opportunity"`
+	Room                   LiveSpeechExpansionRoomState `json:"room"`
+}
+
+type LiveSpeechExpansionPlan struct {
+	Version         string                    `json:"version"`
+	Mode            string                    `json:"mode"`
+	VariantKey      string                    `json:"variant_key"`
+	DurationSeconds int                       `json:"duration_seconds"`
+	TargetChars     int                       `json:"target_chars"`
+	Steps           []LiveSpeechExpansionStep `json:"steps"`
+}
+
 type LiveAgentFullShowGenerationContext struct {
-	PlanID             int64                                     `json:"plan_id"`
-	PlanName           string                                    `json:"plan_name"`
-	PlanDescription    string                                    `json:"plan_description,omitempty"`
-	RoomID             int64                                     `json:"room_id,omitempty"`
-	IndustryCode       string                                    `json:"industry_code,omitempty"`
-	PolicyRuleCount    int                                       `json:"policy_rule_count"`
-	FormalFacts        []LiveAgentFullShowContextFact            `json:"formal_facts"`
-	Benefits           []LiveAgentPlanBenefit                    `json:"benefits"`
-	ProductLinks       []LiveAgentPlanProductLink                `json:"product_links"`
-	ScriptReferences   []LiveAgentFullShowContextScriptReference `json:"script_references"`
-	RhythmNodes        []LiveAgentPlanRhythmNode                 `json:"rhythm_nodes"`
-	AnchorStyle        LiveAgentPlanAnchorStyleProfile           `json:"anchor_style"`
-	DurationMinutes    int                                       `json:"duration_minutes"`
-	RoundMinutes       int                                       `json:"round_minutes"`
-	RoundCount         int                                       `json:"round_count"`
-	VariantCount       int                                       `json:"variant_count"`
-	UseAnchorStyle     bool                                      `json:"use_anchor_style"`
-	UseDynamicFacts    bool                                      `json:"use_dynamic_facts"`
-	GenerateTTSHints   bool                                      `json:"generate_tts_hints"`
-	AvoidRecent        bool                                      `json:"avoid_recent"`
-	DraftProductSource bool                                      `json:"draft_product_source"`
-	DraftRhythmSource  bool                                      `json:"draft_rhythm_source"`
-	DraftStyleSource   bool                                      `json:"draft_style_source"`
+	PlanID              int64                                     `json:"plan_id"`
+	PlanName            string                                    `json:"plan_name"`
+	PlanDescription     string                                    `json:"plan_description,omitempty"`
+	RoomID              int64                                     `json:"room_id,omitempty"`
+	IndustryCode        string                                    `json:"industry_code,omitempty"`
+	PolicyRuleCount     int                                       `json:"policy_rule_count"`
+	FormalFacts         []LiveAgentFullShowContextFact            `json:"formal_facts"`
+	Benefits            []LiveAgentPlanBenefit                    `json:"benefits"`
+	ProductLinks        []LiveAgentPlanProductLink                `json:"product_links"`
+	FactManifestVersion string                                    `json:"fact_manifest_version"`
+	AuthorizedFacts     []LiveAgentGenerationFact                 `json:"authorized_facts"`
+	ScriptReferences    []LiveAgentFullShowContextScriptReference `json:"script_references"`
+	RhythmNodes         []LiveAgentPlanRhythmNode                 `json:"rhythm_nodes"`
+	AnchorStyle         LiveAgentPlanAnchorStyleProfile           `json:"anchor_style"`
+	StyleOverlayPrompt  string                                    `json:"style_overlay_prompt,omitempty"`
+	StyleOverlayCount   int                                       `json:"style_overlay_count"`
+	FactExpansion       LiveFactExpansionPolicy                   `json:"fact_expansion"`
+	ExpansionMode       string                                    `json:"expansion_mode,omitempty"`
+	ExpansionPlans      []LiveSpeechExpansionPlan                 `json:"expansion_plans,omitempty"`
+	DurationMinutes     int                                       `json:"duration_minutes"`
+	RoundMinutes        int                                       `json:"round_minutes"`
+	RoundCount          int                                       `json:"round_count"`
+	VariantCount        int                                       `json:"variant_count"`
+	UseAnchorStyle      bool                                      `json:"use_anchor_style"`
+	UseDynamicFacts     bool                                      `json:"use_dynamic_facts"`
+	GenerateTTSHints    bool                                      `json:"generate_tts_hints"`
+	AvoidRecent         bool                                      `json:"avoid_recent"`
+	DraftProductSource  bool                                      `json:"draft_product_source"`
+	DraftRhythmSource   bool                                      `json:"draft_rhythm_source"`
+	DraftStyleSource    bool                                      `json:"draft_style_source"`
 }
 
 type LiveAgentFullShowTTSHint struct {
@@ -511,16 +687,18 @@ type LiveAgentFullShowPreviewResponse struct {
 }
 
 type LiveAgentVoiceIdentity struct {
-	Name      string         `json:"name"`
-	Version   string         `json:"version"`
-	Source    string         `json:"source"`
-	Provider  string         `json:"provider"`
-	VoiceID   string         `json:"voice_id"`
-	ProfileID int64          `json:"profile_id,omitempty"`
-	Model     string         `json:"model"`
-	Rate      float64        `json:"rate,omitempty"`
-	Emotion   string         `json:"emotion,omitempty"`
-	Style     map[string]any `json:"style,omitempty"`
+	Name           string         `json:"name"`
+	Version        string         `json:"version"`
+	Source         string         `json:"source"`
+	Provider       string         `json:"provider"`
+	VoiceID        string         `json:"voice_id"`
+	ProfileID      int64          `json:"profile_id,omitempty"`
+	BindingID      int64          `json:"binding_id,omitempty"`
+	Model          string         `json:"model"`
+	Rate           float64        `json:"rate,omitempty"`
+	EmotionEnabled *bool          `json:"emotion_enabled,omitempty"`
+	Emotion        string         `json:"emotion,omitempty"`
+	Style          map[string]any `json:"style,omitempty"`
 }
 
 type LiveAgentPlanTimelineSegment struct {

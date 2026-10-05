@@ -38,3 +38,28 @@ func TestValidateLivePolicyFontSetting(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAuthHomepageSetting(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+		valid bool
+	}{
+		{"auth_customer_side_label", "BANBO AI LIVE", true},
+		{"auth_customer_title_line_1", "AI直播搭子，", true},
+		{"auth_customer_description", "实时感知公屏互动。", true},
+		{"auth_customer_description", " ", false},
+		{"auth_internal_title_line_2", "", false},
+		{"auth_customer_title_line_1", string(make([]rune, 49)), false},
+		{"site_name", "", true},
+	}
+	for _, test := range tests {
+		err := validateAuthHomepageSetting(test.key, test.value)
+		if test.valid && err != nil {
+			t.Fatalf("%s should be valid: %v", test.key, err)
+		}
+		if !test.valid && err == nil {
+			t.Fatalf("%s should be invalid", test.key)
+		}
+	}
+}

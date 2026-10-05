@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { getCommerceRules, rewardText, type CommerceRule } from '../commerce'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import {
   floorToWholeYuanCents,
-  formatWholeYuanMoney,
   marketingPayableCents,
   wholeYuanPerHour,
 } from '../pricingRules'
@@ -34,7 +34,7 @@ const displayLocationOptions: Array<{
   label: string
   description: string
 }> = [
-  { code: 'shop', label: '终端商城', description: '在终端商城的营销活动区域和对应商品中展示。' },
+  { code: 'shop', label: '小蓝商城', description: '在小蓝商城的营销活动区域和对应商品中展示。' },
   { code: 'membership', label: '会员中心', description: '只在客户会员中心的会员周期与优惠中展示。' },
   { code: 'backoffice', label: '仅后台', description: '保留活动和价格规则，但客户端任何位置都不展示。' },
 ]
@@ -47,7 +47,8 @@ interface MarketingItemForm {
   local_id: string
   target_type: TargetType
   target_id: number
-  pricing_mode: 'discount' | 'package'
+  pricing_mode: 'discount' | 'package' | 'fixed' | 'free'
+  fixed_yuan: number
   package_months: number
   discount_zhe: number
   quantity: number
@@ -64,6 +65,7 @@ const campaigns = ref<MarketingCampaign[]>([])
 const memberships = ref<CommercialMembershipPlan[]>([])
 const timeCards = ref<CommercialTimeCardProduct[]>([])
 const devices = ref<CommercialDeviceProduct[]>([])
+const commissionRules = ref<CommerceRule[]>([])
 const loading = ref(true)
 const saving = ref(false)
 const editorOpen = ref(false)
@@ -77,9 +79,10 @@ const collapsedPlanIds = ref<Set<number>>(new Set())
 const expandedTargetKeys = ref<Set<string>>(new Set())
 
 const form = reactive({
+  controls: { audience: 'all', new_account_days: 7, max_claims: 0, max_units: 0, benefit_key: '', require_phone: false } as import('../types').MarketingCampaignControls,
   name: '',
   description: '',
-  status: 'active' as 'active' | 'inactive',
+  status: 'inactive' as 'active' | 'inactive',
   sort_order: 10,
   starts_at: '',
   ends_at: '',
@@ -213,8 +216,8 @@ function itemCalculationText(item: MarketingCampaignItem) {
     ? Math.max(1, item.package_months || 1)
     : 1
   const base = formatMoney(basePriceCents(item))
-  const discount = formatDiscount(item.discount_bps)
-  const payable = item.discount_bps === 0 ? '赠送' : formatMoney(payableCents(item))
+  const discount = itemPricingLabel(item)
+  const payable = payableCents(item) === 0 ? '免费领取' : formatMoney(payableCents(item))
   const unitNote =
     item.target_type === 'membership'
       ? months + ' 个月'
@@ -224,6 +227,34 @@ function itemCalculationText(item: MarketingCampaignItem) {
   return base + ' · ' + unitNote + ' · ' + discount + ' → ' + payable
 }
 
+function itemPricingLabel(item: MarketingCampaignItem) {
+  return item.pricing_mode === 'fixed' ? '固定售价' : item.pricing_mode === 'free' ? '免费领取' : formatDiscount(item.discount_bps)
+}
+function participation(plan: MarketingPlanView, item: MarketingCampaignItem, channel: 'sales'|'referral') {
+  const version = item.target_type === 'membership' ? membershipVersion(item.target_id) : item.target_type === 'time_card' ? timeCardVersion(item.target_id) : deviceVersion(item.target_id)
+    if (payableCents(item) === 0) return '免费订单不计提'
+  const type = item.target_type === 'device_product' ? 'device' : item.target_type
+  const rows = commissionRules.value.filter(r=>r.channel===channel&&r.status==='published')
+  const rule = rows.find(r=>r.scope_type==='campaign'&&r.target_id===plan.id) ||
+    rows.find(r=>r.scope_type==='product'&&r.product_type===type&&r.target_id===item.target_id) ||
+    rows.find(r=>r.scope_type==='category'&&r.product_type===type) || rows.find(r=>r.scope_type==='default')
+  if(rule) return rewardText(rule)
+  const flags=version as {participates_sales_commission?:boolean;participates_referral?:boolean}|undefined
+  const enabled=item.target_type==='membership' ? channel==='referral' : channel==='sales'?flags?.participates_sales_commission:flags?.participates_referral
+  return enabled ? '沿用已有规则' : '商品未开启参与'
+}
+function limitSummary(plan: MarketingPlanView) {
+  const c=plan.controls
+  if(!c) return '所有用户 · 不限次数'
+  const audience=c.audience==='new_since_start'?'活动开始后新开户':c.audience==='new_within_days'?'开户'+c.new_account_days+'天内':'所有用户'
+  return audience+' · '+(c.audience!=='all'||c.max_claims?('限领'+(c.audience!=='all'?1:c.max_claims)+'次'):'不限次数')+' · '+(c.max_units?'累计'+c.max_units+'份':'不限份数')
+}
+function applyAudienceDefaults() {
+  if (form.controls.audience !== 'all') {
+    form.controls.max_claims = 1
+    form.controls.require_phone = true
+  }
+}
 function makeLocalId() {
   return 'mi-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
 }
@@ -242,6 +273,7 @@ function addTarget(type: TargetType = 'membership') {
     pricing_mode: 'discount',
     package_months: 1,
     discount_zhe: 10,
+    fixed_yuan: 1,
     quantity: 1,
   })
 }
@@ -305,7 +337,8 @@ function itemFromForm(item: MarketingItemForm): MarketingCampaignItem {
   return {
     target_type: item.target_type,
     target_id: item.target_id,
-    pricing_mode: packageMode ? 'package' : 'discount',
+    pricing_mode: item.pricing_mode,
+    fixed_price_cents: item.pricing_mode === 'fixed' ? Math.round(item.fixed_yuan * 100) : undefined,
     package_months: packageMode
       ? Math.max(1, Math.round(item.package_months || 1))
       : 1,
@@ -336,7 +369,7 @@ function formatDiscount(value: number) {
 }
 
 function formatMoney(cents: number) {
-  return formatWholeYuanMoney(cents)
+  return '¥' + (cents / 100).toFixed(2)
 }
 
 function basePriceCents(item: MarketingCampaignItem) {
@@ -357,6 +390,8 @@ function basePriceCents(item: MarketingCampaignItem) {
 }
 
 function payableCents(item: MarketingCampaignItem) {
+  if (item.pricing_mode === 'fixed') return item.fixed_price_cents ?? 0
+  if (item.pricing_mode === 'free') return 0
   return marketingPayableCents(basePriceCents(item), normalizeDiscountBps(item.discount_bps))
 }
 
@@ -443,9 +478,10 @@ function formatCampaignTime(value?: string) {
 }
 
 function resetForm() {
+  form.controls = { audience: 'all', new_account_days: 7, max_claims: 0, max_units: 0, benefit_key: '', require_phone: false }
   form.name = ''
   form.description = ''
-  form.status = 'active'
+  form.status = 'inactive'
   form.sort_order = (plans.value.length + 1) * 10
   form.starts_at = ''
   form.ends_at = ''
@@ -464,6 +500,7 @@ function openCreate() {
 
 function openEdit(plan: MarketingPlanView) {
   editingId.value = plan.id
+  form.controls = { audience: 'all', new_account_days: 7, max_claims: 0, max_units: 0, benefit_key: '', require_phone: false, ...plan.controls }
   form.name = plan.name
   form.description = plan.description
   form.status = plan.status === 'active' ? 'active' : 'inactive'
@@ -477,10 +514,8 @@ function openEdit(plan: MarketingPlanView) {
       local_id: makeLocalId(),
       target_type: item.target_type as TargetType,
       target_id: item.target_id,
-      pricing_mode:
-        item.target_type === 'membership' && item.pricing_mode === 'package'
-          ? 'package'
-          : 'discount',
+      pricing_mode: item.pricing_mode as MarketingItemForm['pricing_mode'],
+      fixed_yuan: (item.fixed_price_cents ?? 100) / 100,
       package_months:
         item.target_type === 'membership' && item.pricing_mode === 'package'
           ? Math.max(1, item.package_months || 1)
@@ -503,12 +538,14 @@ async function load() {
     getCommercialMemberships(),
     getCommercialTimeCards(),
     getCommercialDeviceProducts(),
+    getCommerceRules(),
   ])
   if (results[0].status === 'fulfilled') campaigns.value = results[0].value.items
   else error.value = '读取营销计划失败'
   if (results[1].status === 'fulfilled') memberships.value = results[1].value.items
   if (results[2].status === 'fulfilled') timeCards.value = results[2].value.items
   if (results[3].status === 'fulfilled') devices.value = results[3].value.items
+  if (results[4].status === 'fulfilled') commissionRules.value = results[4].value.items
   loading.value = false
 }
 
@@ -570,6 +607,7 @@ async function save() {
     ? plans.value.find((item) => item.id === editingId.value)
     : undefined
   const input = {
+    controls: { ...form.controls },
     code: currentPlan?.code || makeCode(),
     name: form.name.trim(),
     description: form.description.trim(),
@@ -601,6 +639,7 @@ async function save() {
 async function toggleStatus(plan: MarketingPlanView) {
   const next = plan.status === 'active' ? 'inactive' : 'active'
   await updateCommercialMarketingCampaign(plan.id, {
+    controls: plan.controls,
     code: plan.code,
     name: plan.name,
     description: plan.description,
@@ -644,8 +683,8 @@ onMounted(load)
         <p class="section-kicker">ACTIVITY MARKETING · PLAN</p>
         <h2>营销活动</h2>
         <p>
-          先建立营销计划，再往计划中添加多个会员、时长卡或设备商品。每个标的独立设置折扣，
-          0 折就是赠送；系统自动汇总原始价值、活动实际价值和优惠金额。
+          先建立营销计划，再添加会员、时长卡或设备商品；可设置折扣、指定实际售价或免费赠送。
+          同时设置参与人群与限领份数，系统自动汇总价值和优惠金额。
         </p>
       </div>
       <div class="marketing-hero-actions">
@@ -673,7 +712,7 @@ onMounted(load)
           </select>
           <select v-model="placementFilter">
             <option value="all">全部展示场地</option>
-            <option value="shop">终端商城</option>
+            <option value="shop">小蓝商城</option>
             <option value="membership">会员中心</option>
             <option value="backoffice">仅后台</option>
           </select>
@@ -717,6 +756,7 @@ onMounted(load)
           </header>
 
           <div v-show="isPlanOpen(plan.id)" class="marketing-plan-body">
+            <p class="marketing-limit-summary">{{ limitSummary(plan) }}</p>
             <div class="marketing-plan-items">
               <article
                 v-for="(item, index) in plan.items"
@@ -744,15 +784,15 @@ onMounted(load)
                       <strong>{{ formatMoney(basePriceCents(item)) }}</strong>
                     </div>
                     <div>
-                      <span>活动打折</span>
-                      <strong class="discount" :class="{ gift: item.discount_bps === 0 }">
-                        {{ formatDiscount(item.discount_bps) }}
+                      <span>定价方式</span>
+                      <strong class="discount" :class="{ gift: payableCents(item) === 0 }">
+                        {{ itemPricingLabel(item) }}
                       </strong>
                     </div>
                     <div>
-                      <span>折后价格</span>
+                      <span>实际销售价格</span>
                       <strong class="payable">
-                        {{ item.discount_bps === 0 ? '赠送' : formatMoney(payableCents(item)) }}
+                        {{ payableCents(item) === 0 ? '免费领取' : formatMoney(payableCents(item)) }}
                       </strong>
                     </div>
                     <div>
@@ -768,6 +808,8 @@ onMounted(load)
                   </div>
                   <div class="marketing-item-detail-tags">
                     <span>数量 {{ Math.max(1, item.quantity || 1) }}</span>
+                    <span>销售提成：{{ participation(plan,item,'sales') }}</span>
+                    <span>用户分佣：{{ participation(plan,item,'referral') }}</span>
                     <span v-if="item.target_type === 'membership'">周期 {{ packageLabel(item) }}</span>
                     <span v-if="itemHours(item) > 0">权益 {{ itemHours(item).toFixed(1) }} 小时</span>
                     <span v-if="hourlyPrice(item)">折后 {{ hourlyPrice(item) }}</span>
@@ -847,7 +889,7 @@ onMounted(load)
                   </button>
                 </div>
                 <small class="marketing-placement-help">
-                  终端商城和会员中心可以同时选择；“仅后台”与前台展示场地互斥。以后新增展示位置只扩展这里，不改活动价格结构。
+                  小蓝商城和会员中心可以同时选择；“仅后台”与前台展示场地互斥。以后新增展示位置只扩展这里，不改活动价格结构。
                 </small>
               </div>
 
@@ -869,6 +911,17 @@ onMounted(load)
               </label>
             </div>
 
+            <section class="marketing-target-editor">
+              <header><strong>参与资格与限领</strong><span>新开户自动限领一次；账户、手机号双重校验</span></header>
+              <div class="marketing-editor-grid">
+                <label><span>参与人群</span><select v-model="form.controls.audience" @change="applyAudienceDefaults"><option value="all">所有用户</option><option value="new_since_start">活动开始后新开户</option><option value="new_within_days">开户后指定天数内</option></select></label>
+                <label v-if="form.controls.audience === 'new_within_days'"><span>开户后天数</span><input v-model.number="form.controls.new_account_days" type="number" min="1" max="365" required /></label>
+                <label><span>每用户领取次数（0不限；新开户固定1次）</span><input v-model.number="form.controls.max_claims" type="number" min="0" :disabled="form.controls.audience !== 'all'" :placeholder="form.controls.audience !== 'all' ? '固定1次' : '0不限'" /></label>
+                <label><span>每用户累计商品份数（0不限）</span><input v-model.number="form.controls.max_units" type="number" min="0" /></label>
+                <label><span>共享权益标识</span><input v-model="form.controls.benefit_key" placeholder="新人默认 new-account-welcome" /><small>同标识的多个活动共享限领，避免重复领新人礼包。</small></label>
+                <label><span>绑定手机号</span><input v-model="form.controls.require_phone" type="checkbox" :disabled="form.controls.audience !== 'all'" /><small>新人活动强制要求绑定手机号。</small></label>
+              </div>
+            </section>
             <section class="marketing-target-editor">
               <header>
                 <div>
@@ -901,11 +954,12 @@ onMounted(load)
                       </select>
                     </label>
 
-                    <label v-if="item.target_type === 'membership'">
+                    <label>
                       <span>营销方式</span>
                       <select v-model="item.pricing_mode">
                         <option value="discount">普通折扣</option>
-                        <option value="package">周期套餐</option>
+                        <option v-if="item.target_type === 'membership'" value="package">周期套餐</option>
+                        <option value="fixed">指定实际售价</option><option value="free">免费领取</option>
                       </select>
                     </label>
 
@@ -937,7 +991,8 @@ onMounted(load)
                       </div>
                     </label>
 
-                    <label>
+                    <label v-if="item.pricing_mode === 'fixed'"><span>整包实际售价（元）</span><input v-model.number="item.fixed_yuan" type="number" min="0" max="100000000" step="0.01" required /></label>
+                    <label v-if="item.pricing_mode === 'discount' || item.pricing_mode === 'package'">
                       <span>折扣 *</span>
                       <div class="input-with-suffix">
                         <input v-model.number="item.discount_zhe" type="number" min="0" max="10" step="0.1" />
@@ -955,7 +1010,7 @@ onMounted(load)
                   <div class="marketing-target-preview">
                     <span>原值 {{ formatMoney(basePriceCents(itemFromForm(item))) }}</span>
                     <strong>
-                      {{ item.discount_zhe === 0 ? '赠送' : '实付 ' + formatMoney(payableCents(itemFromForm(item))) }}
+                      {{ payableCents(itemFromForm(item)) === 0 ? '免费领取' : '实付 ' + formatMoney(payableCents(itemFromForm(item))) }}
                     </strong>
                     <small v-if="hourlyPrice(itemFromForm(item))">
                       {{ itemHours(itemFromForm(item)).toFixed(1) }} 小时 · {{ hourlyPrice(itemFromForm(item)) }}

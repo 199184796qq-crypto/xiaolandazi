@@ -66,6 +66,38 @@ func TestPaidPipelineOnlyQueuesWhileRuntimeWorking(t *testing.T) {
 	}
 }
 
+func TestQuestionPreferenceZeroDoesNotAutoQueueQuestion(t *testing.T) {
+	runtime := agentwork.New()
+	decisions := agentdecision.New()
+	policies := strategycenter.New()
+	roomID := int64(23)
+	policies.PutRoomInteractionPreferences(roomID, strategycenter.RoomInteractionPreferences{
+		RoomID:               roomID,
+		OverallInteraction:   50,
+		QuestionPreference:   0,
+		WelcomePreference:    50,
+		EngagementPreference: 50,
+		ChatPreference:       50,
+		ConversionPreference: 50,
+		AutoHeat:             true,
+	})
+	pipeline := New(runtime, decisions, policies)
+	if _, err := runtime.GrantLease(roomID, 60); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Set(roomID, agentwork.StateWorking); err != nil {
+		t.Fatal(err)
+	}
+	pipeline.Handle(model.RoomEvent{
+		ID: 101, RoomID: roomID, EventType: "chat", Content: "多少钱？", OccurredAt: time.Now().UTC(),
+	}, basepipeline.Signal{
+		RoomID: roomID, EventID: 101, Content: "多少钱？", Topic: "FAMILY:价格费用", IsQuestion: true,
+	})
+	if got := decisions.Snapshot(roomID).Queue; len(got) != 0 {
+		t.Fatalf("question preference 0 must not auto queue, got %#v", got)
+	}
+}
+
 func TestControlModeAlsoAutoQueuesQuestions(t *testing.T) {
 	runtime := agentwork.New()
 	decisions := agentdecision.New()

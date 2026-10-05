@@ -124,3 +124,32 @@ func TestNormalizePlanScriptAnalysisJSONFlattensNestedQuoteArrays(t *testing.T) 
 		t.Fatalf("reusable_rules=%v", got.AnchorStyle.ReusableRules)
 	}
 }
+
+func TestNormalizePlanScriptAnalysisJSONDropsObjectInstructions(t *testing.T) {
+	raw := `{
+  "product_links": [],
+  "facts": [],
+  "rhythm_nodes": [],
+  "anchor_style": {
+    "dimensions": [],
+    "reusable_rules": [],
+    "candidate_patterns": [],
+    "excluded_from_style": [],
+    "delivery_spec": {
+      "version": "anchor-delivery/v1",
+      "instructions": ["保留的字符串规则", {"scene":"mainline","rule":"模型错误展开的对象"}],
+      "literal_habits": []
+    }
+  }
+}`
+	var got model.LiveAgentPlanScriptAnalysis
+	if err := json.Unmarshal([]byte(normalizePlanScriptAnalysisJSON(raw)), &got); err != nil {
+		t.Fatalf("normalized analysis should decode: %v", err)
+	}
+	if got.AnchorStyle.Delivery == nil {
+		t.Fatal("delivery_spec missing")
+	}
+	if !slices.Equal(got.AnchorStyle.Delivery.Instructions, []string{"保留的字符串规则"}) {
+		t.Fatalf("instructions=%v", got.AnchorStyle.Delivery.Instructions)
+	}
+}

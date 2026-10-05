@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	defaultReceiverTTL = 45 * time.Second
-	maxAudioProbeBytes = 32 << 20
+	defaultReceiverTTL       = 45 * time.Second
+	maxAudioProbeBytes       = 32 << 20
+	maxAudioHeaderProbeBytes = 64 << 10
 )
 
 type Task struct {
@@ -86,16 +87,17 @@ type taskState struct {
 }
 
 type Hub struct {
-	mu          sync.RWMutex
-	tasks       map[string]*taskState
-	roomLatest  map[int64]string
-	subscribers map[int64]map[chan Task]struct{}
-	controls    map[int64]map[chan ControlEvent]struct{}
-	receivers   map[string]*Receiver
-	receiverTTL time.Duration
-	sequence    atomic.Uint64
-	httpClient  *http.Client
-	now         func() time.Time
+	mu           sync.RWMutex
+	tasks        map[string]*taskState
+	roomLatest   map[int64]string
+	subscribers  map[int64]map[chan Task]struct{}
+	controls     map[int64]map[chan ControlEvent]struct{}
+	receivers    map[string]*Receiver
+	deletedRooms map[int64]struct{}
+	receiverTTL  time.Duration
+	sequence     atomic.Uint64
+	httpClient   *http.Client
+	now          func() time.Time
 }
 
 func New() *Hub {
@@ -178,6 +180,10 @@ func (h *Hub) RegisterReceiver(input Receiver) (Receiver, error) {
 	input.Online = true
 
 	h.mu.Lock()
+	if _, deleted := h.deletedRooms[input.RoomID]; deleted {
+		h.mu.Unlock()
+		return Receiver{}, errors.New("room has been permanently deleted")
+	}
 	h.pruneReceiversLocked(now)
 	if existing := h.receivers[input.ReceiverID]; existing != nil && existing.RoomID == input.RoomID {
 		input.RegisteredAt = existing.RegisteredAt
@@ -267,7 +273,7 @@ func (h *Hub) CreateExternalTask(ctx context.Context, roomID int64, sessionID, l
 		ID:         fmt.Sprintf("core-audio-%d-%d-%06d", roomID, now.UnixMilli(), sequence),
 		RoomID:     roomID,
 		SessionID:  sessionID,
-		Kind:       "interaction_tts",
+		Kind:       "interaction_audio",
 		Label:      strings.TrimSpace(label),
 		AudioURL:   audioURL,
 		MimeType:   mimeType,
@@ -305,6 +311,10 @@ func (h *Hub) Publish(task Task) (Task, error) {
 	}
 
 	h.mu.Lock()
+	if _, deleted := h.deletedRooms[task.RoomID]; deleted {
+		h.mu.Unlock()
+		return Task{}, errors.New("room has been permanently deleted")
+	}
 	if previousID := h.roomLatest[task.RoomID]; previousID != "" {
 		if previous := h.tasks[previousID]; previous != nil && !previous.terminal {
 			h.mu.Unlock()
@@ -313,18 +323,13 @@ func (h *Hub) Publish(task Task) (Task, error) {
 	}
 	h.tasks[task.ID] = state
 	h.roomLatest[task.RoomID] = task.ID
-	subs := make([]chan Task, 0, len(h.subscribers[task.RoomID]))
 	for ch := range h.subscribers[task.RoomID] {
-		subs = append(subs, ch)
-	}
-	h.mu.Unlock()
-
-	for _, ch := range subs {
 		select {
 		case ch <- task:
 		default:
 		}
 	}
+	h.mu.Unlock()
 
 	delay := time.Until(task.StartedAt.Add(time.Duration(task.DurationMS) * time.Millisecond))
 	if delay < 0 {
@@ -364,6 +369,11 @@ func (h *Hub) Subscribe(roomID int64) (<-chan Task, *Task, func()) {
 	ch := make(chan Task, 32)
 	now := h.now().UTC()
 	h.mu.Lock()
+	if _, deleted := h.deletedRooms[roomID]; deleted {
+		close(ch)
+		h.mu.Unlock()
+		return ch, nil, func() {}
+	}
 	if h.subscribers[roomID] == nil {
 		h.subscribers[roomID] = make(map[chan Task]struct{})
 	}
@@ -389,6 +399,11 @@ func (h *Hub) Subscribe(roomID int64) (<-chan Task, *Task, func()) {
 func (h *Hub) SubscribeControls(roomID int64) (<-chan ControlEvent, func()) {
 	ch := make(chan ControlEvent, 32)
 	h.mu.Lock()
+	if _, deleted := h.deletedRooms[roomID]; deleted {
+		close(ch)
+		h.mu.Unlock()
+		return ch, func() {}
+	}
 	if h.controls[roomID] == nil {
 		h.controls[roomID] = make(map[chan ControlEvent]struct{})
 	}
@@ -427,12 +442,8 @@ func (h *Hub) BroadcastControl(event ControlEvent) {
 		event.OccurredAt = event.OccurredAt.UTC()
 	}
 	h.mu.RLock()
-	subs := make([]chan ControlEvent, 0, len(h.controls[event.RoomID]))
+	defer h.mu.RUnlock()
 	for ch := range h.controls[event.RoomID] {
-		subs = append(subs, ch)
-	}
-	h.mu.RUnlock()
-	for _, ch := range subs {
 		select {
 		case ch <- event:
 		default:
@@ -531,6 +542,40 @@ func (h *Hub) Metrics() Metrics {
 
 func (h *Hub) ProbeExternalWAV(ctx context.Context, audioURL string) (int, string, error) {
 	return h.probeDuration(ctx, audioURL)
+}
+
+func (h *Hub) ProbeExternalWAVHeader(ctx context.Context, audioURL string) (string, error) {
+	h.mu.RLock()
+	client := h.httpClient
+	h.mu.RUnlock()
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("prepare audio header probe: %w", err)
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", maxAudioHeaderProbeBytes-1))
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("download audio header: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return "", fmt.Errorf("audio source http %d", resp.StatusCode)
+	}
+	header, err := io.ReadAll(io.LimitReader(resp.Body, maxAudioHeaderProbeBytes))
+	if err != nil {
+		return "", fmt.Errorf("read audio header: %w", err)
+	}
+	if len(header) < 12 || string(header[:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return "", errors.New("audio source is not a RIFF/WAVE file")
+	}
+	mimeType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		mimeType = "audio/wav"
+	}
+	return mimeType, nil
 }
 
 func WAVDurationMS(audio []byte) (int, error) {

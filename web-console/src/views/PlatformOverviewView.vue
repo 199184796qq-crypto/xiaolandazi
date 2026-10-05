@@ -154,7 +154,7 @@ onMounted(load)
           <p>系统总览、组织、员工、角色、权限和审批规则。</p>
           <div class="admin-domain-links">
             <RouterLink to="/overview">系统总览</RouterLink>
-            <RouterLink v-if="canDrillAcrossDepartments" to="/system/settings">系统设定</RouterLink>
+            <RouterLink v-if="canDrillAcrossDepartments" to="/system/settings">系统设置</RouterLink>
             <RouterLink to="/staff">组织架构</RouterLink>
           </div>
           <div class="admin-domain-subfunctions">

@@ -21,10 +21,10 @@ if (-not $ReleaseId) {
   if (@(& git -C $RepoRoot status --porcelain).Count -gt 0) { $ReleaseId += '-dirty' }
 }
 
-$BuildArgs = @('-ReleaseId', $ReleaseId)
-if ($AllowDirty) { $BuildArgs += '-AllowDirty' }
-if ($SkipTests) { $BuildArgs += '-SkipTests' }
-$BuildOutput = @(& (Join-Path $PSScriptRoot 'build-production-release.ps1') @BuildArgs)
+$BuildParams = @{ ReleaseId = $ReleaseId }
+if ($AllowDirty) { $BuildParams.AllowDirty = $true }
+if ($SkipTests) { $BuildParams.SkipTests = $true }
+$BuildOutput = @(& (Join-Path $PSScriptRoot 'build-production-release.ps1') @BuildParams)
 $ArchiveLine = $BuildOutput | Where-Object { $_ -is [string] -and $_.StartsWith('__XIAOLAN_ARCHIVE__=') } | Select-Object -Last 1
 if (-not $ArchiveLine) { throw 'Build completed without returning a release archive path.' }
 $ArchivePath = $ArchiveLine.Substring('__XIAOLAN_ARCHIVE__='.Length)
@@ -49,9 +49,9 @@ if ($LASTEXITCODE -ne 0) {
   throw 'Server deployment failed.'
 }
 
-$SmokeArgs = @()
-if ($SkipSalesSmoke) { $SmokeArgs += '-SkipSales' }
-& (Join-Path $PSScriptRoot 'test-production.ps1') @SmokeArgs
+$SmokeParams = @{}
+if ($SkipSalesSmoke) { $SmokeParams.SkipSales = $true }
+& (Join-Path $PSScriptRoot 'test-production.ps1') @SmokeParams
 if ($LASTEXITCODE -ne 0) { throw 'Production smoke test failed.' }
 
 Write-Host "[deploy] production release delivered: $ReleaseId"

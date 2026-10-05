@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS live_runtime_sessions (
     tenant_id BIGINT UNSIGNED NOT NULL,
     room_id BIGINT UNSIGNED NOT NULL,
     device_id BIGINT UNSIGNED NULL,
+    execution_realm VARCHAR(96) NOT NULL DEFAULT 'prod',
     status VARCHAR(32) NOT NULL DEFAULT 'running',
     stop_reason VARCHAR(64) NOT NULL DEFAULT '',
     started_by_user_id BIGINT UNSIGNED NULL,
@@ -55,7 +56,8 @@ CREATE TABLE IF NOT EXISTS live_runtime_sessions (
     UNIQUE KEY uk_live_runtime_external (external_id),
     KEY idx_live_runtime_tenant_status (tenant_id, status, started_at),
     KEY idx_live_runtime_room_status (room_id, status, started_at),
-    KEY idx_live_runtime_device_status (device_id, status, started_at)
+    KEY idx_live_runtime_device_status (device_id, status, started_at),
+    KEY idx_live_runtime_execution (execution_realm, status, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_quota_leases (
@@ -213,12 +215,12 @@ CREATE TABLE IF NOT EXISTS live_strategy_center_configs (
 CREATE TABLE IF NOT EXISTS live_room_interaction_preferences (
     tenant_id BIGINT UNSIGNED NOT NULL,
     room_id BIGINT UNSIGNED NOT NULL,
-    overall_interaction VARCHAR(24) NOT NULL DEFAULT 'natural',
-    question_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
-    welcome_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
-    engagement_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
-    chat_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
-    conversion_preference VARCHAR(24) NOT NULL DEFAULT 'natural',
+    overall_interaction TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    question_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    welcome_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    engagement_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    chat_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    conversion_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
     auto_heat TINYINT(1) NOT NULL DEFAULT 1,
     updated_by_user_id BIGINT UNSIGNED NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -227,6 +229,59 @@ CREATE TABLE IF NOT EXISTS live_room_interaction_preferences (
     KEY idx_live_room_interaction_preferences_room (room_id),
     KEY idx_live_room_interaction_preferences_updated_by (updated_by_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+UPDATE live_room_interaction_preferences
+SET
+    overall_interaction = CASE
+        WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(overall_interaction AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(overall_interaction AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(overall_interaction AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END,
+    question_preference = CASE
+        WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(question_preference AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(question_preference AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(question_preference AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END,
+    welcome_preference = CASE
+        WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(welcome_preference AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(welcome_preference AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(welcome_preference AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END,
+    engagement_preference = CASE
+        WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(engagement_preference AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(engagement_preference AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(engagement_preference AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END,
+    chat_preference = CASE
+        WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(chat_preference AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(chat_preference AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(chat_preference AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END,
+    conversion_preference = CASE
+        WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) IN ('quiet','less','steady') THEN '25'
+        WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) = 'natural' THEN '50'
+        WHEN LOWER(TRIM(CAST(conversion_preference AS CHAR))) IN ('active','more') THEN '75'
+        WHEN TRIM(CAST(conversion_preference AS CHAR)) REGEXP '^[0-9]+$' THEN CAST(LEAST(100, CAST(conversion_preference AS UNSIGNED)) AS CHAR)
+        ELSE '50'
+    END
+-- +statement
+ALTER TABLE live_room_interaction_preferences
+    MODIFY COLUMN overall_interaction TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    MODIFY COLUMN question_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    MODIFY COLUMN welcome_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    MODIFY COLUMN engagement_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    MODIFY COLUMN chat_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    MODIFY COLUMN conversion_preference TINYINT UNSIGNED NOT NULL DEFAULT 50
 -- +statement
 CREATE TABLE IF NOT EXISTS live_room_addressing_preferences (
     tenant_id BIGINT UNSIGNED NOT NULL,
@@ -387,6 +442,64 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     KEY idx_voice_profiles_agent (agent_id, clone_status),
     KEY idx_voice_profiles_voice (provider, voice_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS voice_model_bindings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    profile_id BIGINT UNSIGNED NOT NULL,
+    sample_asset_id BIGINT UNSIGNED NOT NULL,
+    provider VARCHAR(64) NOT NULL,
+    model VARCHAR(128) NOT NULL,
+    voice_id VARCHAR(255) NOT NULL,
+    rate DOUBLE NOT NULL DEFAULT 1,
+    status VARCHAR(32) NOT NULL DEFAULT 'ready',
+    config_json JSON NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_voice_model_bindings_profile (tenant_id, profile_id, status, id),
+    KEY idx_voice_model_bindings_model (tenant_id, model, status, id),
+    KEY idx_voice_model_bindings_voice (provider, voice_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+INSERT INTO voice_model_bindings (
+    tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+    rate, status, config_json, created_by_user_id
+)
+SELECT
+    vp.tenant_id,
+    vp.id,
+    vp.sample_asset_id,
+    CASE
+        WHEN LOWER(TRIM(vp.provider)) IN ('aliyun_qwen_clone','aliyun_qwen','qwen','dashscope','qwen_audio','qwen_audio_3_0')
+            THEN 'qwen_audio'
+        ELSE vp.provider
+    END,
+    COALESCE(
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(vp.config_json, '$.target_model')), ''),
+        'qwen-audio-3.0-tts-plus'
+    ),
+    vp.voice_id,
+    CASE
+        WHEN CAST(COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(vp.config_json, '$.rate')), ''), '1') AS DECIMAL(6,3)) BETWEEN 0.5 AND 2
+            THEN CAST(COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(vp.config_json, '$.rate')), ''), '1') AS DECIMAL(6,3))
+        ELSE 1
+    END,
+    'ready',
+    JSON_OBJECT('source', 'legacy_voice_profile_backfill'),
+    COALESCE(vp.updated_by_user_id, vp.created_by_user_id)
+FROM voice_profiles vp
+WHERE vp.sample_asset_id IS NOT NULL
+  AND TRIM(vp.voice_id) <> ''
+  AND LOWER(TRIM(vp.clone_status)) = 'ready'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM voice_model_bindings b
+      WHERE b.tenant_id = vp.tenant_id
+        AND b.profile_id = vp.id
+        AND b.voice_id = vp.voice_id
+  )
 -- +statement
 INSERT INTO live_agent_profiles (
     tenant_id, name, status, created_by_user_id, updated_by_user_id
@@ -818,6 +931,37 @@ CREATE TABLE IF NOT EXISTS live_generated_speech_history (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 -- +statement
+CREATE TABLE IF NOT EXISTS semantic_documents (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    plan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    content_type VARCHAR(48) NOT NULL,
+    source_id VARCHAR(160) NOT NULL,
+    source_version BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    content_text MEDIUMTEXT NOT NULL,
+    text_hash CHAR(64) NOT NULL,
+    embedding_model VARCHAR(128) NOT NULL,
+    embedding_dimensions INT UNSIGNED NOT NULL,
+    embedding_blob MEDIUMBLOB NOT NULL,
+    expires_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_semantic_document_source (
+        tenant_id, room_id, plan_id, content_type, source_id, source_version, embedding_model
+    ),
+    KEY idx_semantic_document_room (
+        tenant_id, room_id, content_type, status, updated_at
+    ),
+    KEY idx_semantic_document_plan (
+        tenant_id, plan_id, content_type, status, updated_at
+    ),
+    KEY idx_semantic_document_expiry (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plans (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,
@@ -968,6 +1112,19 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_scripts (
     KEY idx_live_agent_plan_scripts_asset (source_asset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_style_overlays (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    items_json JSON NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    updated_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, plan_id),
+    KEY idx_live_agent_plan_style_overlays_plan (plan_id),
+    KEY idx_live_agent_plan_style_overlays_updated_by (updated_by_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plan_facts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,
@@ -975,6 +1132,8 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_facts (
     category VARCHAR(48) NOT NULL DEFAULT 'other',
     fact_key VARCHAR(255) NOT NULL,
     fact_value TEXT NOT NULL,
+    forbidden_wording TEXT NULL,
+    safe_rewrite TEXT NULL,
     source_quote TEXT NOT NULL,
     source_review_bucket VARCHAR(24) NOT NULL DEFAULT 'adoptable',
     source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
@@ -1001,6 +1160,8 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_fact_revisions (
     category VARCHAR(48) NOT NULL,
     fact_key VARCHAR(255) NOT NULL,
     fact_value TEXT NOT NULL,
+    forbidden_wording TEXT NULL,
+    safe_rewrite TEXT NULL,
     source_quote TEXT NOT NULL,
     source_review_bucket VARCHAR(24) NOT NULL DEFAULT '',
     source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
@@ -1168,4 +1329,90 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_script_reference_revisions (
     PRIMARY KEY (id),
     UNIQUE KEY uk_live_agent_plan_script_reference_revision (reference_id, version_no),
     KEY idx_live_agent_plan_script_reference_revisions_plan (tenant_id, plan_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_styles (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    description VARCHAR(2000) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    profile_json MEDIUMTEXT NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_anchor_styles_tenant (tenant_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_samples (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    source_type VARCHAR(32) NOT NULL DEFAULT 'paste',
+    original_name VARCHAR(255) NOT NULL DEFAULT '',
+    raw_text MEDIUMTEXT NOT NULL,
+    readable_text MEDIUMTEXT NOT NULL,
+    analysis_status VARCHAR(32) NOT NULL DEFAULT 'not_analyzed',
+    analysis_json MEDIUMTEXT NOT NULL,
+    provider VARCHAR(64) NOT NULL DEFAULT '',
+    model VARCHAR(128) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    progress INT NOT NULL DEFAULT 0,
+    stage VARCHAR(255) NOT NULL DEFAULT '',
+    error_message VARCHAR(1000) NOT NULL DEFAULT '',
+    analyzed_at DATETIME(3) NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_anchor_style_samples_style (tenant_id, style_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_trainings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    request_text VARCHAR(2000) NOT NULL,
+    target_chars INT NOT NULL DEFAULT 500,
+    heat INT NOT NULL DEFAULT 50,
+    expansion_freedom INT NOT NULL DEFAULT 50,
+    selected_facts_json MEDIUMTEXT NOT NULL,
+    generated_text MEDIUMTEXT NOT NULL,
+    score_json MEDIUMTEXT NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_anchor_style_trainings_style (tenant_id, style_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_plugins (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    plugin_id VARCHAR(160) NOT NULL,
+    plugin_version VARCHAR(64) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    parameters_json MEDIUMTEXT NOT NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_anchor_style_plugin (style_id, plugin_id, plugin_version),
+    KEY idx_live_anchor_style_plugins_style (tenant_id, style_id, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_plan_bindings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    bound_by_user_id BIGINT UNSIGNED NULL,
+    bound_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_anchor_style_plan (tenant_id, plan_id),
+    KEY idx_live_anchor_style_plan_style (tenant_id, style_id, plan_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

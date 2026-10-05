@@ -53,3 +53,8 @@ data/exports/
 /collector-worker/*.tar.gz
 /暂停
 /结束
+
+# Local deployment packages, diagnostic output and compiled executables.
+/artifacts/
+/work/
+*.exe

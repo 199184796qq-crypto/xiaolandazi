@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import LiveContentPolicyPanel from '../components/LiveContentPolicyPanel.vue'
 import {
   createSystemDictionaryItem,
   createSystemWarehouse,
@@ -22,6 +23,11 @@ import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 import PaginationBar from '../components/PaginationBar.vue'
 import { financeReviewSettingKey } from '../financeReviewPolicy'
+import {
+  findSystemSettingsCategory,
+  visibleSystemSettingsGroups,
+  type SystemSettingsCategoryKey,
+} from '../systemSettingsCatalog'
 import type {
   InventoryWarehouse,
   AgentPromptHistory,
@@ -37,6 +43,10 @@ import type {
 } from '../types'
 
 type DictionaryCategory = 'logistics_provider' | 'product_unit'
+
+const props = withDefaults(defineProps<{ category?: SystemSettingsCategoryKey }>(), {
+  category: 'general',
+})
 
 const loading = ref(false)
 const saving = ref(false)
@@ -102,6 +112,17 @@ const newWarehouse = reactive<SystemWarehouseInput>({
 
 const isPlatformAdmin = computed(() => session.bootstrap?.actor.role === 'platform_admin')
 const agentRoutingConfigKey = 'agent.routing.live_room'
+const categoryConfig = computed(() =>
+  findSystemSettingsCategory(props.category) || findSystemSettingsCategory('general')!,
+)
+const visibleConfigGroups = computed(() =>
+  visibleSystemSettingsGroups(categoryConfig.value, session.bootstrap),
+)
+const showGeneralSettings = computed(() => props.category === 'general')
+const showIntelligenceSettings = computed(() => props.category === 'intelligence')
+const showLiveSettings = computed(() => props.category === 'live')
+const showCommerceSettings = computed(() => props.category === 'commerce')
+const showInventorySettings = computed(() => props.category === 'inventory')
 
 function hasPermission(code: string) {
   if (isPlatformAdmin.value) return true
@@ -111,7 +132,6 @@ function hasPermission(code: string) {
 
 const canViewGlobal = computed(() => isPlatformAdmin.value)
 const canManageAgentPrompts = computed(() => isPlatformAdmin.value || Boolean(session.bootstrap?.staff_access?.is_super_admin))
-const canManageAgentRouting = computed(() => hasPermission('system.settings.agent_routing.manage'))
 const agentPromptItems = computed(() =>
   (dashboard.value?.agent_prompt_configs || []).filter((item) => item.key !== agentRoutingConfigKey),
 )
@@ -299,14 +319,36 @@ function syncDashboard(value: SystemSettingsDashboard) {
   }
 }
 
+const shouldLoadDashboard = computed(() =>
+  (showGeneralSettings.value && canViewGlobal.value) ||
+  (showIntelligenceSettings.value && canManageAgentPrompts.value) ||
+  (showLiveSettings.value && (canViewGlobal.value || canViewMembershipLimits.value)) ||
+  (showCommerceSettings.value && canViewGlobal.value) ||
+  (showInventorySettings.value && canViewInventorySettings.value),
+)
+
+function emptyDashboard(): SystemSettingsDashboard {
+  return {
+    settings: [],
+    dictionaries: {},
+    warehouses: [],
+    membership_room_limits: [],
+    agent_prompt_configs: [],
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const [settings, industryData, liveStrategy] = await Promise.all([
-      getSystemSettingsDashboard(),
-      canViewIndustry.value ? getLivePolicyIndustries() : Promise.resolve({ items: [] as LivePolicyIndustry[] }),
-      canManageStrategyCenter.value ? getSystemLiveStrategyCenter() : Promise.resolve(null),
+      shouldLoadDashboard.value ? getSystemSettingsDashboard() : Promise.resolve(emptyDashboard()),
+      showLiveSettings.value && canViewIndustry.value
+        ? getLivePolicyIndustries()
+        : Promise.resolve({ items: [] as LivePolicyIndustry[] }),
+      showIntelligenceSettings.value && canManageStrategyCenter.value
+        ? getSystemLiveStrategyCenter()
+        : Promise.resolve(null),
     ])
     syncDashboard(settings)
     syncIndustries(industryData.items)
@@ -315,43 +357,99 @@ async function load() {
       strategyDraft.value = cloneStrategyCenter(liveStrategy)
     }
   } catch (value) {
-    error.value = value instanceof Error ? value.message : '读取系统设定失败'
+    error.value = value instanceof Error ? value.message : '读取系统设置失败'
   } finally {
     loading.value = false
   }
 }
 
-async function saveGlobalSettings() {
+const globalDisplaySettingKeys = new Set([
+  'site_name',
+  'auth_customer_side_label',
+  'auth_customer_title_line_1',
+  'auth_customer_title_line_2',
+  'auth_customer_description',
+  'auth_customer_status_label',
+  'auth_internal_side_label',
+  'auth_internal_title_line_1',
+  'auth_internal_title_line_2',
+  'auth_internal_description',
+  'auth_internal_status_label',
+  'internal_agent_name',
+  'client_agent_name',
+  'footer_enabled',
+  'footer_copyright',
+  'footer_icp_text',
+  'footer_icp_url',
+  'footer_police_text',
+  'footer_police_url',
+  'footer_report_text',
+  'footer_report_url',
+  'footer_extra_text',
+])
+
+const authHomepageSettingRules = [
+  { key: 'auth_customer_side_label', label: '客户登录页英文眉标', max: 64 },
+  { key: 'auth_customer_title_line_1', label: '客户登录页主标题第一行', max: 48 },
+  { key: 'auth_customer_title_line_2', label: '客户登录页主标题第二行', max: 48 },
+  { key: 'auth_customer_description', label: '客户登录页说明', max: 240 },
+  { key: 'auth_customer_status_label', label: '客户登录页状态文案', max: 64 },
+  { key: 'auth_internal_side_label', label: '内部登录页英文眉标', max: 64 },
+  { key: 'auth_internal_title_line_1', label: '内部登录页主标题第一行', max: 48 },
+  { key: 'auth_internal_title_line_2', label: '内部登录页主标题第二行', max: 48 },
+  { key: 'auth_internal_description', label: '内部登录页说明', max: 240 },
+  { key: 'auth_internal_status_label', label: '内部登录页状态文案', max: 64 },
+]
+
+async function saveGlobalSettings(scope: 'display' | 'commerce' = 'display') {
   if (!dashboard.value || saving.value) return
-  const internalAgentName = (settingsDraft.internal_agent_name || '').trim()
-  const clientAgentName = (settingsDraft.client_agent_name || '').trim()
-  if (!internalAgentName || !clientAgentName) {
-    error.value = '后台智能体名称和前端智能体名称都不能为空'
-    return
-  }
-  if ([internalAgentName, clientAgentName].some((name) => [...name].length > 32)) {
-    error.value = '智能体名称不能超过 32 个字符'
-    return
-  }
-  settingsDraft.internal_agent_name = internalAgentName
-  settingsDraft.client_agent_name = clientAgentName
-  const holdMinutes = Number(settingsDraft.device_order_hold_minutes || 15)
-  if (!Number.isInteger(holdMinutes) || holdMinutes < 1 || holdMinutes > 120) {
-    error.value = '设备订单未支付锁库时间必须是 1 到 120 分钟的整数'
-    return
+  if (scope === 'display') {
+    const internalAgentName = (settingsDraft.internal_agent_name || '').trim()
+    const clientAgentName = (settingsDraft.client_agent_name || '').trim()
+    if (!internalAgentName || !clientAgentName) {
+      error.value = '后台智能体名称和前端智能体名称都不能为空'
+      return
+    }
+    if ([internalAgentName, clientAgentName].some((name) => [...name].length > 32)) {
+      error.value = '智能体名称不能超过 32 个字符'
+      return
+    }
+    settingsDraft.internal_agent_name = internalAgentName
+    settingsDraft.client_agent_name = clientAgentName
+    for (const rule of authHomepageSettingRules) {
+      const value = (settingsDraft[rule.key] || '').trim()
+      if (!value) {
+        error.value = `${rule.label}不能为空`
+        return
+      }
+      if ([...value].length > rule.max) {
+        error.value = `${rule.label}不能超过 ${rule.max} 个字符`
+        return
+      }
+      settingsDraft[rule.key] = value
+    }
+  } else {
+    const holdMinutes = Number(settingsDraft.device_order_hold_minutes || 15)
+    if (!Number.isInteger(holdMinutes) || holdMinutes < 1 || holdMinutes > 120) {
+      error.value = '设备订单未支付锁库时间必须是 1 到 120 分钟的整数'
+      return
+    }
   }
   saving.value = true
   error.value = ''
   notice.value = ''
   try {
+    const allowedKeys = scope === 'display' ? globalDisplaySettingKeys : new Set(['device_order_hold_minutes'])
     const result = await updateSystemSettings(
-      dashboard.value.settings.filter((item) => item.key !== financeReviewSettingKey).map((item) => ({
+      dashboard.value.settings.filter((item) => allowedKeys.has(item.key)).map((item) => ({
         key: item.key,
         value: settingsDraft[item.key] ?? '',
       })),
     )
     syncDashboard(result)
-    notice.value = '全局系统文字已保存并立即生效。'
+    notice.value = scope === 'display'
+      ? '基础与品牌配置已保存并立即生效。'
+      : '订单锁库规则已保存并立即生效。'
     window.dispatchEvent(new CustomEvent('system-config-updated'))
   } catch (value) {
     error.value = value instanceof Error ? value.message : '保存系统设置失败'
@@ -756,13 +854,19 @@ onMounted(load)
 
 <template>
   <div class="management-page system-settings-page">
-    <ModulePageNav :context="isPlatformAdmin ? 'workspace-admin' : 'workspace-staff'" active-title="系统设定" />
+    <ModulePageNav
+      :context="isPlatformAdmin ? 'workspace-admin' : 'workspace-staff'"
+      :active-title="categoryConfig.title"
+      section-title="系统设置"
+      section-to="/system/settings"
+      section-icon="设"
+    />
 
     <section class="feature-workspace-hero">
       <div>
-        <p class="section-kicker">SYSTEM SETTINGS</p>
-        <h2>系统设定</h2>
-        <p>这里是统一配置入口；每个部门只看到自己有权限查看或维护的配置。</p>
+        <p class="section-kicker">{{ categoryConfig.kicker }}</p>
+        <h2>{{ categoryConfig.title }}</h2>
+        <p>{{ categoryConfig.description }}</p>
       </div>
       <button class="ghost-button" type="button" :disabled="loading" @click="load">
         {{ loading ? '读取中...' : '刷新数据' }}
@@ -772,7 +876,27 @@ onMounted(load)
     <p v-if="error" class="auth-error">{{ error }}</p>
     <p v-if="notice" class="settings-success">{{ notice }}</p>
 
-    <section v-if="canViewGlobal" id="finance-review-policy" class="system-settings-card finance-review-settings">
+    <section v-for="group in visibleConfigGroups" :key="group.key" class="settings-config-group">
+      <header>
+        <div>
+          <h3>{{ group.title }}</h3>
+          <p>{{ group.description }}</p>
+        </div>
+      </header>
+      <div class="settings-config-entry-grid">
+        <RouterLink v-for="entry in group.entries" :key="entry.key" :to="entry.to" class="settings-config-entry">
+          <i>{{ entry.icon }}</i>
+          <div>
+            <strong>{{ entry.title }}</strong>
+            <p>{{ entry.description }}</p>
+          </div>
+          <span v-if="entry.badge">{{ entry.badge }}</span>
+          <b>›</b>
+        </RouterLink>
+      </div>
+    </section>
+
+    <section v-if="showCommerceSettings && canViewGlobal" id="finance-review-policy" class="system-settings-card finance-review-settings">
       <header><div><h3>财务审核规则</h3><p>适用于收款审核及充值、退款、奖励、AI 时长审批。仅控制是否必须分人，不取消权限和实际入账校验。</p></div><button type="button" class="primary-button" :disabled="loading || savingFinancePolicy || !dashboard" @click="saveFinancePolicy">{{ savingFinancePolicy ? '保存中…' : '保存审核规则' }}</button></header>
       <div class="system-settings-form">
         <label class="system-setting-wide finance-review-toggle"><input type="checkbox" :checked="settingsDraft[financeReviewSettingKey] !== 'false'" :disabled="loading || savingFinancePolicy" @change="settingsDraft[financeReviewSettingKey] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'"/><span>强制经办人与审核人不同</span></label>
@@ -780,25 +904,82 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canViewGlobal" class="system-settings-card">
+    <section v-if="showGeneralSettings && canViewGlobal" id="global-display" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">GLOBAL TEXT</span>
           <h3>全局文字</h3>
-          <p>配置整个系统统一显示的品牌名称、前后台智能体名称和页面底部文字。</p>
+          <p>配置登录首页宣传文案、系统品牌名称、前后台智能体名称和页面底部文字。</p>
         </div>
-        <button class="primary-button" type="button" :disabled="saving || loading" @click="saveGlobalSettings">
+        <button class="primary-button" type="button" :disabled="saving || loading" @click="saveGlobalSettings('display')">
           {{ saving ? '保存中...' : '保存全局配置' }}
         </button>
       </header>
 
-      <div v-if="loading && !dashboard" class="panel-loading">正在读取系统设定...</div>
+      <div v-if="loading && !dashboard" class="panel-loading">正在读取系统设置...</div>
 
       <div v-else class="system-settings-form">
         <label class="system-setting-wide">
           <span>系统显示名称</span>
           <input v-model="settingsDraft.site_name" type="text" placeholder="例如 小蓝搭子" />
         </label>
+
+        <div class="system-setting-subsection system-setting-wide">
+          <strong>客户与代理登录首页</strong>
+          <p>对应客户、代理登录页右侧大图区域；注册页同步复用英文眉标和两行主标题。</p>
+        </div>
+
+        <label>
+          <span>英文眉标</span>
+          <input v-model="settingsDraft.auth_customer_side_label" type="text" maxlength="64" placeholder="BANBO AI LIVE" />
+        </label>
+        <label>
+          <span>底部状态文案</span>
+          <input v-model="settingsDraft.auth_customer_status_label" type="text" maxlength="64" placeholder="LIVE INTELLIGENCE ONLINE" />
+        </label>
+        <label>
+          <span>主标题第一行</span>
+          <input v-model="settingsDraft.auth_customer_title_line_1" type="text" maxlength="48" placeholder="AI直播搭子，" />
+        </label>
+        <label>
+          <span>主标题第二行</span>
+          <input v-model="settingsDraft.auth_customer_title_line_2" type="text" maxlength="48" placeholder="让你直播不再冷场。" />
+        </label>
+        <label class="system-setting-wide">
+          <span>说明文字</span>
+          <textarea v-model="settingsDraft.auth_customer_description" maxlength="240" rows="3" placeholder="登录首页主标题下方的说明文字"></textarea>
+        </label>
+
+        <div class="system-setting-subsection system-setting-wide">
+          <strong>内部员工登录首页</strong>
+          <p>使用内部员工入口时显示，和客户侧文案分开维护。</p>
+        </div>
+
+        <label>
+          <span>英文眉标</span>
+          <input v-model="settingsDraft.auth_internal_side_label" type="text" maxlength="64" placeholder="AI CONTROL CENTER" />
+        </label>
+        <label>
+          <span>底部状态文案</span>
+          <input v-model="settingsDraft.auth_internal_status_label" type="text" maxlength="64" placeholder="LIVE INTELLIGENCE ONLINE" />
+        </label>
+        <label>
+          <span>主标题第一行</span>
+          <input v-model="settingsDraft.auth_internal_title_line_1" type="text" maxlength="48" placeholder="数据驱动直播运维，" />
+        </label>
+        <label>
+          <span>主标题第二行</span>
+          <input v-model="settingsDraft.auth_internal_title_line_2" type="text" maxlength="48" placeholder="全局尽在掌握。" />
+        </label>
+        <label class="system-setting-wide">
+          <span>说明文字</span>
+          <textarea v-model="settingsDraft.auth_internal_description" maxlength="240" rows="3" placeholder="内部员工登录首页主标题下方的说明文字"></textarea>
+        </label>
+
+        <div class="system-setting-subsection system-setting-wide">
+          <strong>智能体与全局页脚</strong>
+          <p>统一控制系统内的智能体称呼、页脚、备案与举报信息。</p>
+        </div>
 
         <label class="system-setting-wide">
           <span>后台智能体名称</span>
@@ -881,17 +1062,7 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canManageAgentRouting" class="system-settings-card">
-      <header>
-        <div>
-          <h3>智能体理解配置</h3>
-          <p>统一配置程序理解 / 大模型理解 / 自动理解，并按系统、会员、客户分层控制模型、上下文、预算和降级；高级意图词库仍可版本化维护。</p>
-        </div>
-        <RouterLink class="primary-button" to="/system/settings/agent-routing">进入理解配置</RouterLink>
-      </header>
-    </section>
-
-    <section v-if="canManageAgentPrompts" class="system-settings-card agent-prompt-settings">
+    <section v-if="showIntelligenceSettings && canManageAgentPrompts" id="agent-prompts" class="system-settings-card agent-prompt-settings">
       <header>
         <div>
           <span class="section-kicker">MODEL & AGENT CONFIG</span>
@@ -959,7 +1130,8 @@ onMounted(load)
       <div v-else class="panel-loading">暂无模型配置，刷新后重试。</div>
     </section>
 
-    <section v-if="canManageStrategyCenter" class="system-settings-card live-strategy-center-card">
+    <LiveContentPolicyPanel v-if="showIntelligenceSettings && isPlatformAdmin" />
+    <section v-if="showIntelligenceSettings && canManageStrategyCenter" id="strategy-center" class="system-settings-card live-strategy-center-card">
       <header>
         <div>
           <span class="section-kicker">LIVE STRATEGY CENTER</span>
@@ -1049,7 +1221,7 @@ onMounted(load)
       <div v-else class="panel-loading">正在读取直播策略中心…</div>
     </section>
 
-    <section v-if="canViewGlobal" class="system-settings-card">
+    <section v-if="showLiveSettings && canViewGlobal" id="live-typography" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">LIVE POLICY TYPOGRAPHY</span>
@@ -1166,14 +1338,14 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canViewGlobal" class="system-settings-card">
+    <section v-if="showCommerceSettings && canViewGlobal" id="device-stock-hold" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">COMMERCE STOCK RULE</span>
           <h3>交易库存规则</h3>
           <p>设备订单生成后立即锁定真实设备，未支付超时后自动取消订单并恢复销售库存。</p>
         </div>
-        <button class="primary-button" type="button" :disabled="saving || loading" @click="saveGlobalSettings">
+        <button class="primary-button" type="button" :disabled="saving || loading" @click="saveGlobalSettings('commerce')">
           {{ saving ? '保存中...' : '保存库存规则' }}
         </button>
       </header>
@@ -1192,7 +1364,7 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canViewIndustry" class="system-settings-card">
+    <section v-if="showLiveSettings && canViewIndustry" id="live-industries" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">LIVE INDUSTRY DIRECTORY</span>
@@ -1258,7 +1430,7 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canViewMembershipLimits" class="system-settings-card">
+    <section v-if="showLiveSettings && canViewMembershipLimits" id="membership-room-limits" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">MEMBERSHIP ROOM POLICY</span>
@@ -1319,7 +1491,7 @@ onMounted(load)
       </div>
     </section>
 
-    <section v-if="canViewInventorySettings" class="system-settings-card">
+    <section v-if="showInventorySettings && canViewInventorySettings" id="warehouses" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">WAREHOUSE MASTER DATA</span>
@@ -1415,7 +1587,7 @@ onMounted(load)
       />
     </section>
 
-    <section v-if="canViewInventorySettings" class="system-settings-card">
+    <section v-if="showInventorySettings && canViewInventorySettings" id="inventory-dictionaries" class="system-settings-card">
       <header>
         <div>
           <span class="section-kicker">SYSTEM DICTIONARY</span>
@@ -1521,6 +1693,21 @@ onMounted(load)
 .finance-review-settings .finance-review-toggle input {width:20px;height:20px;min-height:20px;accent-color:#326bd8}
 .finance-review-settings button:hover {box-shadow:0 0 0 3px #4285ff22;border-color:#65a1ff}
 .system-settings-page { display: grid; gap: 16px; }
+.settings-config-group { overflow: hidden; border: 1px solid #e2e7f0; border-radius: 18px; background: #fff; box-shadow: 0 10px 28px rgba(43, 56, 91, .045); }
+.settings-config-group > header { padding: 15px 18px 10px; }
+.settings-config-group > header h3, .settings-config-group > header p { margin: 0; }
+.settings-config-group > header h3 { color: #2b354b; font-size: 16px; }
+.settings-config-group > header p { margin-top: 4px; color: #8993a6; font-size: 11px; line-height: 1.6; }
+.settings-config-entry-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0 14px 14px; }
+.settings-config-entry { position: relative; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto 12px; align-items: center; gap: 10px; min-height: 82px; box-sizing: border-box; padding: 12px; border: 1px solid #e6eaf2; border-radius: 13px; color: inherit; background: #fafbfe; text-decoration: none; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
+.settings-config-entry:hover { transform: translateY(-1px); border-color: #aebaf0; background: #f5f7ff; }
+.settings-config-entry > i { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; color: #fff; background: linear-gradient(145deg, #7486e9, #5669d3); font-style: normal; font-weight: 900; }
+.settings-config-entry > div { min-width: 0; }
+.settings-config-entry strong, .settings-config-entry p { margin: 0; }
+.settings-config-entry strong { color: #344057; font-size: 13px; }
+.settings-config-entry p { display: -webkit-box; overflow: hidden; margin-top: 4px; color: #8490a3; font-size: 10px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.settings-config-entry > span { padding: 4px 7px; border-radius: 999px; color: #6573a3; background: #edf0fa; font-size: 9px; white-space: nowrap; }
+.settings-config-entry > b { color: #8996bd; font-size: 18px; }
 .system-settings-card { overflow: hidden; border: 1px solid #e3e8f0; border-radius: 18px; background: #fff; box-shadow: 0 12px 34px rgba(43, 56, 91, .055); }
 .system-settings-card > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #edf0f5; }
 .system-settings-card > header h3, .system-settings-card > header p { margin: 0; }
@@ -1529,9 +1716,12 @@ onMounted(load)
 .system-settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; padding: 18px 20px; }
 .system-settings-form label { display: grid; gap: 7px; }
 .system-settings-form label > span { color: #566176; font-size: 12px; font-weight: 800; }
-.system-settings-form input[type="text"], .system-settings-form input[type="url"] { min-height: 42px; box-sizing: border-box; border: 1px solid #dfe4ed; border-radius: 10px; padding: 9px 11px; color: #354155; background: #fbfcfe; outline: none; font: inherit; }
+.system-settings-form input[type="text"], .system-settings-form input[type="url"], .system-settings-form textarea { min-height: 42px; box-sizing: border-box; border: 1px solid #dfe4ed; border-radius: 10px; padding: 9px 11px; color: #354155; background: #fbfcfe; outline: none; font: inherit; resize: vertical; }
 .system-settings-form input:focus { border-color: #91a4f3; box-shadow: 0 0 0 3px rgba(80, 103, 221, .08); }
 .system-setting-wide { grid-column: 1 / -1; }
+.system-setting-subsection { display: grid; gap: 4px; margin-top: 4px; padding: 13px 15px; border: 1px solid #e2e7f3; border-radius: 12px; background: linear-gradient(135deg, #f8faff, #f4f7ff); }
+.system-setting-subsection strong { color: #273653; font-size: 15px; font-weight: 900; }
+.system-setting-subsection p { margin: 0; color: #71809b; font-size: 12px; line-height: 1.6; }
 .system-setting-toggle { display: flex !important; grid-column: 1 / -1; align-items: center; justify-content: space-between; padding: 10px 12px; border: 1px solid #e3e7ef; border-radius: 10px; background: #f8f9fc; }
 .system-setting-toggle input { width: 18px; height: 18px; }
 .system-footer-preview { display: grid; gap: 8px; margin: 0 20px 20px; padding: 14px 16px; border: 1px dashed #dce2eb; border-radius: 12px; background: #fafbfe; }
@@ -1576,6 +1766,7 @@ onMounted(load)
 .membership-room-limit-input input { width: 110px !important; }
 .membership-room-limit-input span { color: #7c879a; font-size: 12px; }
 @media (max-width: 820px) {
+  .settings-config-entry-grid { grid-template-columns: 1fr; }
   .membership-room-policy-summary { grid-template-columns: 1fr; }
   .system-settings-form { grid-template-columns: 1fr; }
   .system-setting-wide, .system-setting-toggle { grid-column: auto; }

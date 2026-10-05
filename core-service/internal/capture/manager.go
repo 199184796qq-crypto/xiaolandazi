@@ -226,8 +226,7 @@ func (m *Manager) StartAudio(ctx context.Context, room model.Room) (Snapshot, er
 	}
 
 	m.mu.Lock()
-	state = m.stateLocked(room.ID)
-	if state.recording != nil && (state.recording.status.Status == RecordingRecording || state.recording.status.Status == RecordingFinalizing) {
+	if m.rooms[room.ID] != state || (state.recording != nil && (state.recording.status.Status == RecordingRecording || state.recording.status.Status == RecordingFinalizing)) {
 		m.mu.Unlock()
 		_, _ = io.WriteString(stdin, "q\n")
 		_ = cmd.Wait()
@@ -355,8 +354,8 @@ func (m *Manager) waitRecording(roomID int64, rec *recording) {
 	}
 
 	m.mu.Lock()
-	state := m.stateLocked(roomID)
-	if state.recording != rec {
+	state := m.rooms[roomID]
+	if state == nil || state.recording != rec {
 		m.mu.Unlock()
 		close(rec.done)
 		return

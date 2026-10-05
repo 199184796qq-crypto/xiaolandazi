@@ -57,6 +57,7 @@ Write-Host "[release] id=$ReleaseId sha=$GitSha dirty=$IsDirty"
 if (-not $SkipTests) {
   Invoke-External (Join-Path $RepoRoot 'core-service') { go test ./... } 'core-service tests'
   Invoke-External (Join-Path $RepoRoot 'management-service') { go test ./... } 'management-service tests'
+  Invoke-External (Join-Path $RepoRoot 'xiaozhi-gateway') { go test ./... } 'xiaozhi-gateway tests'
   Invoke-External $RepoRoot { pnpm --dir customer-mobile check } 'customer-mobile check'
   Invoke-External $RepoRoot { pnpm --dir sales-mobile check } 'sales-mobile check'
 }
@@ -75,6 +76,7 @@ foreach ($required in @(
 
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'bin') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'collector-worker\node_modules') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'plugins') | Out-Null
 
 $OldGoos = $env:GOOS
 $OldGoarch = $env:GOARCH
@@ -89,6 +91,9 @@ try {
   Invoke-External (Join-Path $RepoRoot 'management-service') {
     go build -trimpath -ldflags '-s -w' -o (Join-Path $ReleaseDir 'bin\management-service') ./cmd/management
   } 'management-service linux build'
+  Invoke-External (Join-Path $RepoRoot 'xiaozhi-gateway') {
+    go build -trimpath -ldflags '-s -w' -o (Join-Path $ReleaseDir 'bin\xiaozhi-gateway') ./cmd/xiaozhi
+  } 'xiaozhi-gateway linux build'
 } finally {
   $env:GOOS = $OldGoos
   $env:GOARCH = $OldGoarch
@@ -99,14 +104,22 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot 'web-console\dist') -Destination (Jo
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'web-console\dist') -Destination (Join-Path $ReleaseDir 'web') -Recurse
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'customer-mobile\build') -Destination (Join-Path $ReleaseDir 'web-customer') -Recurse
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'sales-mobile\build') -Destination (Join-Path $ReleaseDir 'web-sales') -Recurse
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'plugins\anchor-style') -Destination (Join-Path $ReleaseDir 'plugins\anchor-style') -Recurse
 
 $CollectorDir = Join-Path $ReleaseDir 'collector-worker'
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'collector-worker\worker.mjs') -Destination $CollectorDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'collector-worker\package.json') -Destination $CollectorDir
-$PlaywrightPackageJson = ((& node -e "console.log(require.resolve('playwright-core/package.json',{paths:[process.argv[1]]}))" (Join-Path $RepoRoot 'collector-worker')) | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PlaywrightPackageJson)) { throw 'Cannot resolve playwright-core for collector-worker.' }
-$PlaywrightRoot = Split-Path $PlaywrightPackageJson -Parent
+$PlaywrightRoot = Join-Path $RepoRoot 'collector-worker\node_modules\playwright-core'
+if (-not (Test-Path (Join-Path $PlaywrightRoot 'package.json'))) {
+  $PlaywrightPackageJson = ((& node -e "console.log(require.resolve('playwright-core/package.json',{paths:[process.argv[1]]}))" (Join-Path $RepoRoot 'collector-worker')) | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $PlaywrightPackageJson) { throw 'Cannot resolve playwright-core for collector-worker.' }
+  $PlaywrightRoot = Split-Path $PlaywrightPackageJson -Parent
+}
+if (-not (Test-Path (Join-Path $PlaywrightRoot 'package.json'))) { throw 'Cannot resolve playwright-core for collector-worker.' }
 Copy-Item -LiteralPath $PlaywrightRoot -Destination (Join-Path $CollectorDir 'node_modules\playwright-core') -Recurse
+
+New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'systemd') | Out-Null
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'deploy\systemd\xiaolan-xiaozhi.service') -Destination (Join-Path $ReleaseDir 'systemd\xiaolan-xiaozhi.service')
 
 $Metadata = [ordered]@{
   release_id = $ReleaseId

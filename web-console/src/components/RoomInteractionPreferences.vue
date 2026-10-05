@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { getRoomInteractionPreferences, updateRoomInteractionPreferences } from '../api'
+import PreferenceSlider from './ui/PreferenceSlider.vue'
 import type {
-  ConversionInteractionLevel,
-  InteractionPreferenceLevel,
-  OverallInteractionLevel,
   RoomInteractionPreferences,
   RoomInteractionPreferencesInput,
 } from '../types'
@@ -32,45 +30,38 @@ const preferenceCommand = ref('')
 const value = ref<RoomInteractionPreferences>({
   tenant_id: 0,
   room_id: props.roomId,
-  overall_interaction: 'natural',
-  question_preference: 'natural',
-  welcome_preference: 'natural',
-  engagement_preference: 'natural',
-  chat_preference: 'natural',
-  conversion_preference: 'natural',
+  overall_interaction: 50,
+  question_preference: 50,
+  welcome_preference: 50,
+  engagement_preference: 50,
+  chat_preference: 50,
+  conversion_preference: 50,
   auto_heat: true,
 })
 
-const commonOptions: Array<{ value: InteractionPreferenceLevel; label: string }> = [
-  { value: 'less', label: '少一些' },
-  { value: 'natural', label: '自然' },
-  { value: 'more', label: '多一些' },
-]
-
-const overallOptions: Array<{ value: OverallInteractionLevel; label: string }> = [
-  { value: 'quiet', label: '少一些' },
-  { value: 'natural', label: '自然' },
-  { value: 'active', label: '多一些' },
-]
-
-const conversionOptions: Array<{ value: ConversionInteractionLevel; label: string }> = [
-  { value: 'steady', label: '少一些' },
-  { value: 'natural', label: '自然' },
-  { value: 'active', label: '多一些' },
-]
+type PreferenceKey = keyof Pick<
+  RoomInteractionPreferencesInput,
+  'overall_interaction'
+  | 'question_preference'
+  | 'welcome_preference'
+  | 'engagement_preference'
+  | 'chat_preference'
+  | 'conversion_preference'
+>
 
 const rows = computed(() => [
-  { key: 'question_preference', label: '回答问题', desc: '优先回复用户问题', icon: '▣', tone: 'violet', options: commonOptions },
-  { key: 'welcome_preference', label: '欢迎新人', desc: '新人进入时的互动', icon: '+', tone: 'amber', options: commonOptions },
-  { key: 'engagement_preference', label: '点赞关注', desc: '感谢点赞和关注', icon: '♥', tone: 'rose', options: commonOptions },
-  { key: 'chat_preference', label: '聊天互动', desc: '普通聊天和非问题弹幕', icon: '•••', tone: 'sky', options: commonOptions },
-  { key: 'conversion_preference', label: '成交互动', desc: '价格 / 库存 / 购买信号', icon: '▰', tone: 'mint', options: conversionOptions },
+  { key: 'question_preference' as PreferenceKey, label: '回答问题', desc: '优先回复用户问题', icon: '▣', tone: 'violet' },
+  { key: 'welcome_preference' as PreferenceKey, label: '欢迎新人', desc: '新人进入时的互动', icon: '+', tone: 'amber' },
+  { key: 'engagement_preference' as PreferenceKey, label: '点赞关注', desc: '感谢点赞和关注', icon: '♥', tone: 'rose' },
+  { key: 'chat_preference' as PreferenceKey, label: '聊天互动', desc: '普通聊天和非问题弹幕', icon: '•••', tone: 'sky' },
+  { key: 'conversion_preference' as PreferenceKey, label: '成交互动', desc: '价格 / 库存 / 购买信号', icon: '▰', tone: 'mint' },
 ])
 
-function predictionLevel(raw: string) {
-  if (raw === 'less' || raw === 'quiet' || raw === 'steady') return '偏少'
-  if (raw === 'more' || raw === 'active') return '偏多'
-  return '自然'
+function predictionLevel(score: number) {
+  if (score === 0) return '关闭'
+  if (score <= 30) return '偏少'
+  if (score <= 70) return '自然'
+  return '偏多'
 }
 
 const predictionItems = computed(() => [
@@ -121,15 +112,7 @@ async function persist(key: string) {
   }
 }
 
-function chooseOverall(next: OverallInteractionLevel) {
-  if (value.value.overall_interaction === next) return
-  value.value.overall_interaction = next
-  void persist('overall_interaction')
-}
-
-function chooseRow(key: string, next: string) {
-  if ((value.value as unknown as Record<string, unknown>)[key] === next) return
-  ;(value.value as unknown as Record<string, unknown>)[key] = next
+function finishSlider(key: PreferenceKey) {
   void persist(key)
 }
 
@@ -143,23 +126,34 @@ function applyNaturalPreferenceCommand() {
   if (!text) return
   let matched = false
   const has = (...terms: string[]) => terms.some((term) => text.includes(term))
-  const set = (key: keyof RoomInteractionPreferencesInput, next: string) => {
-    ;(value.value as unknown as Record<string, unknown>)[key] = next
+  const set = (key: PreferenceKey, next: number) => {
+    value.value[key] = next
     matched = true
   }
 
-  if (has('安静一点', '少互动', '互动少一点')) set('overall_interaction', 'quiet')
-  if (has('热情一点', '多互动', '积极互动')) set('overall_interaction', 'active')
-  if (has('多回答', '多答问题', '优先回答')) set('question_preference', 'more')
-  if (has('少回答', '少答问题')) set('question_preference', 'less')
-  if (has('多欢迎', '多迎新', '新人多欢迎')) set('welcome_preference', 'more')
-  if (has('少欢迎', '别总欢迎', '不要一直欢迎')) set('welcome_preference', 'less')
-  if (has('点赞不用', '少感谢点赞', '点赞少一点', '不用感谢点赞')) set('engagement_preference', 'less')
-  if (has('多感谢点赞', '多感谢关注', '点赞多互动')) set('engagement_preference', 'more')
-  if (has('多聊天', '多聊两句')) set('chat_preference', 'more')
-  if (has('少聊天', '别闲聊')) set('chat_preference', 'less')
-  if (has('成交积极', '多促单', '多逼单')) set('conversion_preference', 'active')
-  if (has('成交稳一点', '少逼单', '别一直促单')) set('conversion_preference', 'steady')
+  if (has('完全不互动', '关闭互动', '不要互动')) set('overall_interaction', 0)
+  else if (has('安静一点', '少互动', '互动少一点')) set('overall_interaction', 25)
+  if (has('热情一点', '多互动', '积极互动')) set('overall_interaction', 75)
+
+  if (has('不要回答问题', '关闭回答问题', '问题不互动')) set('question_preference', 0)
+  else if (has('多回答', '多答问题', '优先回答')) set('question_preference', 75)
+  else if (has('少回答', '少答问题')) set('question_preference', 25)
+
+  if (has('不要欢迎新人', '关闭欢迎新人', '新人不欢迎')) set('welcome_preference', 0)
+  else if (has('多欢迎', '多迎新', '新人多欢迎')) set('welcome_preference', 75)
+  else if (has('少欢迎', '别总欢迎', '不要一直欢迎')) set('welcome_preference', 25)
+
+  if (has('点赞不用', '不用感谢点赞', '关闭点赞互动')) set('engagement_preference', 0)
+  else if (has('少感谢点赞', '点赞少一点')) set('engagement_preference', 25)
+  else if (has('多感谢点赞', '多感谢关注', '点赞多互动')) set('engagement_preference', 75)
+
+  if (has('不要聊天', '关闭聊天', '不闲聊')) set('chat_preference', 0)
+  else if (has('多聊天', '多聊两句')) set('chat_preference', 75)
+  else if (has('少聊天', '别闲聊')) set('chat_preference', 25)
+
+  if (has('不促单', '关闭成交互动', '成交不互动')) set('conversion_preference', 0)
+  else if (has('成交积极', '多促单', '多逼单')) set('conversion_preference', 75)
+  else if (has('成交稳一点', '少逼单', '别一直促单')) set('conversion_preference', 25)
   if (has('人少', '人多', '热度', '人气', '自动调整')) {
     value.value.auto_heat = true
     matched = true
@@ -182,7 +176,7 @@ onMounted(() => void load())
     <header v-if="!embedded" class="preference-header">
       <div class="preference-heading">
         <strong>互动偏好</strong>
-        <span>你决定更想回应什么，小蓝会按直播间热度自动调整节奏。</span>
+        <span>你决定更想回应什么；滑到最左侧 0 时，该项绝对不自动互动。</span>
       </div>
       <div class="smart-badge" :class="{ active: value.auto_heat }">
         <i></i>
@@ -201,16 +195,13 @@ onMounted(() => void load())
             <span>控制整体互动频率</span>
           </div>
         </div>
-        <div class="interaction-segments">
-          <button
-            v-for="option in overallOptions"
-            :key="option.value"
-            type="button"
-            :class="{ active: value.overall_interaction === option.value }"
-            :disabled="loading || Boolean(savingKey)"
-            @click="chooseOverall(option.value)"
-          >{{ option.label }}</button>
-        </div>
+        <PreferenceSlider
+          v-model="value.overall_interaction"
+          :compact="compact"
+          :disabled="loading || Boolean(savingKey)"
+          aria-label="整体互动频率"
+          @commit="finishSlider('overall_interaction')"
+        />
       </article>
 
       <article v-for="row in rows" :key="row.key" class="preference-row">
@@ -221,16 +212,13 @@ onMounted(() => void load())
             <span>{{ row.desc }}</span>
           </div>
         </div>
-        <div class="interaction-segments">
-          <button
-            v-for="option in row.options"
-            :key="option.value"
-            type="button"
-            :class="{ active: (value as any)[row.key] === option.value }"
-            :disabled="loading || Boolean(savingKey)"
-            @click="chooseRow(row.key, option.value)"
-          >{{ option.label }}</button>
-        </div>
+        <PreferenceSlider
+          v-model="value[row.key]"
+          :compact="compact"
+          :disabled="loading || Boolean(savingKey)"
+          :aria-label="row.label"
+          @commit="finishSlider(row.key)"
+        />
       </article>
     </div>
 
@@ -298,7 +286,7 @@ onMounted(() => void load())
 .smart-badge.active i{background:#37b87c;box-shadow:0 0 0 5px rgba(55,184,124,.12)}
 .interaction-pref-error{padding:10px 12px;border:1px solid #f3ced3;border-radius:11px;background:#fff2f3;color:#b34450;font-size:13px;font-weight:850}
 .preference-list{display:grid;gap:8px}
-.preference-row{display:grid;grid-template-columns:minmax(210px,1fr) minmax(255px,300px);align-items:center;gap:16px;padding:10px 12px;border:1px solid #e9edf7;border-radius:13px;background:linear-gradient(90deg,#f7f9fe 0%,#fbfcff 56%,#fff 100%);transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+.preference-row{display:grid;grid-template-columns:minmax(210px,1fr) minmax(300px,460px);align-items:center;gap:18px;padding:9px 12px;border:1px solid #e9edf7;border-radius:13px;background:linear-gradient(90deg,#f7f9fe 0%,#fbfcff 56%,#fff 100%);transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
 .preference-row:hover{border-color:#d4dcf3;box-shadow:0 7px 18px rgba(79,99,164,.07);transform:translateY(-1px)}
 .preference-row-main{display:grid;grid-template-columns:46px minmax(0,1fr);align-items:center;gap:12px;min-width:0}
 .preference-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:12px;font-size:19px;font-weight:950;letter-spacing:-2px}
@@ -306,11 +294,6 @@ onMounted(() => void load())
 .interaction-pref-copy{display:grid;gap:3px;min-width:0}
 .interaction-pref-copy strong{color:#172b53;font-size:17px;font-weight:950;line-height:1.25}
 .interaction-pref-copy span{color:#62718d;font-size:13px;font-weight:750;line-height:1.35}
-.interaction-segments{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:3px;border:1px solid #e3e8f3;border-radius:12px;background:#f8faff}
-.interaction-segments button{min-width:0;min-height:38px;padding:0 7px;border:1px solid transparent;border-radius:9px;background:#fff;color:#263a62;font-size:14px;font-weight:900;white-space:nowrap;cursor:pointer;box-shadow:0 1px 3px rgba(56,75,132,.06);transition:.16s ease}
-.interaction-segments button:hover:not(:disabled){border-color:#b8c4f4;color:#5264dc;transform:translateY(-1px)}
-.interaction-segments button.active{border-color:#6174ee;background:linear-gradient(180deg,#6378f5 0%,#5065df 100%);color:#fff;box-shadow:0 6px 14px rgba(75,94,221,.25)}
-.interaction-segments button:disabled{cursor:not-allowed;opacity:.58}
 .ai-prediction-strip{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:14px;padding:10px 12px;border:1px solid #dfe5f5;border-radius:13px;background:linear-gradient(100deg,#fbfcff,#f7f9ff)}
 .ai-prediction-title{display:flex;align-items:center;gap:10px;padding-right:14px;border-right:1px solid #dce3f2}
 .ai-prediction-title>div{display:grid;gap:2px}
@@ -344,14 +327,12 @@ onMounted(() => void load())
 .interaction-preferences.compact .smart-badge{min-height:32px;padding:0 9px;font-size:11px}
 .interaction-preferences.compact .smart-badge i{width:8px;height:8px}
 .interaction-preferences.compact .preference-list{gap:6px}
-.interaction-preferences.compact .preference-row{grid-template-columns:minmax(0,1fr) minmax(168px,48%);gap:8px;padding:8px;border-radius:11px}
+.interaction-preferences.compact .preference-row{grid-template-columns:minmax(132px,42%) minmax(0,1fr);gap:10px;padding:8px 9px;border-radius:11px}
 .interaction-preferences.compact .preference-row-main{grid-template-columns:36px minmax(0,1fr);gap:8px}
 .interaction-preferences.compact .preference-icon{width:36px;height:36px;border-radius:10px;font-size:15px}
 .interaction-preferences.compact .interaction-pref-copy{gap:1px}
-.interaction-preferences.compact .interaction-pref-copy strong{font-size:14px}
-.interaction-preferences.compact .interaction-pref-copy span{font-size:10.5px;line-height:1.25}
-.interaction-preferences.compact .interaction-segments{gap:3px;padding:2px;border-radius:9px}
-.interaction-preferences.compact .interaction-segments button{min-height:32px;padding:0 3px;border-radius:7px;font-size:11.5px}
+.interaction-preferences.compact .interaction-pref-copy strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.interaction-preferences.compact .interaction-pref-copy span{font-size:10.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .interaction-preferences.compact .ai-prediction-strip{grid-template-columns:1fr;gap:8px;padding:9px 10px}
 .interaction-preferences.compact .ai-prediction-title{padding-right:0;padding-bottom:7px;border-right:0;border-bottom:1px solid #e4e8f3}
 .interaction-preferences.compact .ai-prediction-title small{white-space:normal}
@@ -368,7 +349,6 @@ onMounted(() => void load())
   .interaction-preferences{padding:14px;border-radius:16px}
   .preference-header{grid-template-columns:1fr}.smart-badge{justify-self:start}
   .preference-row{grid-template-columns:1fr;gap:9px}
-  .interaction-segments button{min-height:40px}
   .ai-prediction-strip{grid-template-columns:1fr}.ai-prediction-title{padding:0 0 8px;border-right:0;border-bottom:1px solid #e2e7f2}
   .prediction-items{grid-template-columns:1fr}
 }

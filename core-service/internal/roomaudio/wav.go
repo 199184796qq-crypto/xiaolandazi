@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
+
+var ErrPCMNormalizationRequired = errors.New("audio source requires pcm normalization")
 
 func StreamWAVPCM(ctx context.Context, reader io.Reader, startMS int, onFrame func([]byte, int) error) error {
 	if reader == nil {
@@ -23,7 +26,7 @@ func StreamWAVPCM(ctx context.Context, reader io.Reader, startMS int, onFrame fu
 		return err
 	}
 	if string(header[:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
-		return errors.New("audio source is not a RIFF/WAVE file")
+		return fmt.Errorf("%w: audio source is not a RIFF/WAVE file", ErrPCMNormalizationRequired)
 	}
 
 	var (
@@ -55,7 +58,7 @@ func StreamWAVPCM(ctx context.Context, reader io.Reader, startMS int, onFrame fu
 			sampleRate := binary.LittleEndian.Uint32(payload[4:8])
 			bitsPerSample := binary.LittleEndian.Uint16(payload[14:16])
 			if audioFormat != 1 || channels != Channels || sampleRate != SampleRate || bitsPerSample != BytesPerSample*8 {
-				return errors.New("wav must be pcm s16le mono 24khz")
+				return fmt.Errorf("%w: wav must be pcm s16le mono 24khz", ErrPCMNormalizationRequired)
 			}
 			formatSeen = true
 		case "data":

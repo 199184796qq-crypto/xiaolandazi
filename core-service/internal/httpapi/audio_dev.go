@@ -28,6 +28,32 @@ type audioInteractionCompleter interface {
 	CompleteProgramInteraction(context.Context, int64, string) (audioout.RoomProgramSnapshot, error)
 }
 
+func interactionDebtForMission(missionKind, topic string) (timeline.DebtKind, time.Duration) {
+	switch strings.ToLower(strings.TrimSpace(missionKind)) {
+	case "reply_question":
+		return timeline.DebtQuestion, 2 * time.Minute
+	case "reply_chat", "welcome_named", "welcome_batch":
+		return timeline.DebtInteraction, 2 * time.Minute
+	case "reply_like":
+		return timeline.DebtLikeCTA, 90 * time.Second
+	case "reply_follow":
+		return timeline.DebtFollowCTA, 90 * time.Second
+	case "conversion_signal":
+		return timeline.DebtConversion, 2 * time.Minute
+	}
+	normalizedTopic := strings.ToUpper(strings.TrimSpace(topic))
+	switch {
+	case strings.HasPrefix(normalizedTopic, "SIGNAL:ORDER"):
+		return timeline.DebtConversion, 2 * time.Minute
+	case strings.HasPrefix(normalizedTopic, "INTERACTION:"):
+		return timeline.DebtInteraction, 2 * time.Minute
+	case normalizedTopic != "":
+		return timeline.DebtQuestion, 2 * time.Minute
+	default:
+		return "", 0
+	}
+}
+
 type audioDevState struct {
 	client       audioTaskClient
 	callbackBase string
@@ -41,6 +67,7 @@ type audioDevState struct {
 type audioInteractionMeta struct {
 	RoomID               int64
 	MissionID            string
+	MissionKind          string
 	HumanizationStrategy string
 	HumanizationKind     string
 	HumanizationApplied  bool
@@ -448,13 +475,13 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		if meta.Record != nil {
 			meta.Record.Status = event.Status
 		}
-		if (event.Status == "PLAYING" || event.Status == "PROGRESS") && !meta.AnswerPinned {
+		if (event.Status == "PLAYING" || event.Status == "PROGRESS") && meta.Record != nil && meta.Record.StartedAt == nil {
+			at := event.OccurredAt
+			meta.Record.StartedAt = &at
+		}
+		if event.Status == "COMPLETED" && !meta.AnswerPinned {
 			meta.AnswerPinned = true
 			pinAnswer = true
-			if meta.Record != nil && meta.Record.StartedAt == nil {
-				at := event.OccurredAt
-				meta.Record.StartedAt = &at
-			}
 		}
 		if event.Status == "COMPLETED" && !meta.ResumePinned {
 			meta.ResumePinned = true
@@ -552,16 +579,12 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 				"resume_mode":   meta.ResumeMode,
 				"resume_unit":   meta.ResumeUnit,
 				"bridge_digest": meta.BridgeDigest,
+				"mission_kind":  meta.MissionKind,
 			}
 			if len(meta.SkipUnits) > 0 {
 				metadata["skip_units"] = strings.Join(meta.SkipUnits, ",")
 			}
-			spend := timeline.DebtKind("")
-			cooldown := time.Duration(0)
-			if meta.Topic != "" {
-				spend = timeline.DebtQuestion
-				cooldown = 2 * time.Minute
-			}
+			spend, cooldown := interactionDebtForMission(meta.MissionKind, meta.Topic)
 			s.brain.RecordPin(meta.RoomID, timeline.Pin{
 				At:         event.OccurredAt,
 				Kind:       timeline.PinAnswer,

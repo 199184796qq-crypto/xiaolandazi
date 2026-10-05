@@ -996,7 +996,7 @@ func (s *Server) agentLearningTestSession(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 50*time.Second)
 	defer cancel()
-	worker := decisionexecutor.New(s.store, nil, agentgateway.NewFromEnv(), nil)
+	worker := decisionexecutor.New(s.store, nil, s.speechGateway(), nil)
 	roomRef := roomID
 	invocationID := s.beginAISingleUse(r.Context(), actor, &roomRef, "agent_learning_test", map[string]any{"session_id": sessionID})
 	preview, err := worker.SimulateAnswerWithPreview(

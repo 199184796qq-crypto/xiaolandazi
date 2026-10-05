@@ -1,0 +1,14 @@
+{
+  "api_version": "anchor-style-plugin-instance/v1",
+  "instance_id": "numeric-repair-demo",
+  "plugin_id": "numeric-repair",
+  "plugin_version": "1.0.0",
+  "enabled": true,
+  "strength": 35,
+  "parameters": {
+    "max_per_1000_chars": 1,
+    "correction_distance_chars": 18,
+    "repair_phrase": "等一下，刚才算岔了",
+    "serious_scene_disabled": true
+  }
+}

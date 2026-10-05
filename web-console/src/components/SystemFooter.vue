@@ -5,6 +5,16 @@ import type { PublicSystemConfig } from '../types'
 
 const config = ref<PublicSystemConfig>({
   site_name: '小蓝搭子',
+  auth_customer_side_label: 'BANBO AI LIVE',
+  auth_customer_title_line_1: 'AI直播搭子，',
+  auth_customer_title_line_2: '让你直播不再冷场。',
+  auth_customer_description: '实时感知公屏互动，AI智能辅助话术，接待与回应，让直播间始终有人陪、有人接、有人聊。',
+  auth_customer_status_label: 'LIVE INTELLIGENCE ONLINE',
+  auth_internal_side_label: 'AI CONTROL CENTER',
+  auth_internal_title_line_1: '数据驱动直播运维，',
+  auth_internal_title_line_2: '全局尽在掌握。',
+  auth_internal_description: '连接终端、直播间与实时运行状态，让每一次运营决策都有清晰的数据依据。',
+  auth_internal_status_label: 'LIVE INTELLIGENCE ONLINE',
   internal_agent_name: '小蓝工作搭子',
   client_agent_name: '小蓝直播搭子',
   live_policy_rule_title_font_size: 26,

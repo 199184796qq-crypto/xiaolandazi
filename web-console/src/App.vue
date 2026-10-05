@@ -19,6 +19,7 @@ import {
   updateAccountProfile,
 } from './api'
 import { clearSession, loadSession, session } from './session'
+import { canAccessSystemSettings } from './systemSettingsCatalog'
 import {
   coreRuntime,
   startCoreRuntimeWatch,
@@ -217,6 +218,31 @@ function navItem(
   return { label, to, icon, routeNames }
 }
 
+const systemSettingsRouteNames = [
+  'system-settings',
+  'system-settings-category',
+  'system-agent-routing',
+  'system-settings-live-analysis',
+  'system-settings-live-policy',
+  'system-settings-live-room-quotas',
+  'system-settings-commerce-memberships',
+  'system-settings-commerce-time-cards',
+  'system-settings-commerce-device-products',
+  'system-settings-commerce-marketing',
+  'system-settings-commerce-marketing-tools',
+  'system-settings-commerce-beans',
+  'system-settings-commerce-referrals',
+  'system-settings-commerce-settlement',
+  'system-settings-commerce-agent-levels',
+  'system-settings-inventory-device-products',
+  'system-settings-access-roles',
+  'system-settings-access-departments',
+  'system-settings-access-permissions',
+  'system-settings-access-employees',
+  'system-settings-access-approvals',
+  'system-settings-access-audit',
+]
+
 function navSectionIcon(section: NavSection) {
   const label = section.label
   if (label.includes('系统')) return '⌂'
@@ -247,7 +273,7 @@ const navSections = computed<NavSection[]>(() => {
         label: '系统管理',
         items: [
           navItem('系统总览', '/overview', '⌂', ['platform-overview']),
-          navItem('系统设定', '/system/settings', '设', ['system-settings', 'system-agent-routing']),
+          navItem('系统设置', '/system/settings', '设', systemSettingsRouteNames),
           navItem('组织架构', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-permissions', 'staff-approvals', 'staff-audit']),
         ],
       },
@@ -255,7 +281,7 @@ const navSections = computed<NavSection[]>(() => {
         label: '营销运维',
         items: [
           navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-analysis-settings', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
-          navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-referrals', 'invitations']),
+          navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-beans', 'commercial-referrals', 'invitations']),
         ],
       },
       {
@@ -276,7 +302,7 @@ const navSections = computed<NavSection[]>(() => {
         label: '财务管理',
         items: [
           navItem('邀请与推荐', '/staff/finance/invitations', '邀', ['staff-finance-invitations']),          navItem('客户收款确认', '/staff/finance/receipts', '款', ['staff-finance-receipts', 'staff-finance-customer-money']),
-          navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
+          navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-beans', 'commercial-settlement', 'staff-finance-settlements']),
         ],
       },
       {
@@ -332,7 +358,7 @@ const navSections = computed<NavSection[]>(() => {
     } else if (groupCode === 'finance') {
       workItems.push(
         navItem('客户收款确认', '/staff/finance/receipts', '款', ['staff-finance-receipts','staff-finance-customer-money']),
-        navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
+        navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-beans', 'commercial-settlement', 'staff-finance-settlements']),
       )
       if (isPrimaryGroupManager) addOrganization()
     } else if (groupCode === 'sales') {
@@ -359,8 +385,7 @@ const navSections = computed<NavSection[]>(() => {
       }
     } else if (groupCode === 'live_operations') {
       workItems.push(
-        navItem('运维协助', '/operations/support', '助', ['operations-support']),
-        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'operations-support', 'rooms', 'rooms-list', 'room-detail']),
         navItem(
           '活动营销',
           '/operations/live/marketing',
@@ -376,6 +401,7 @@ const navSections = computed<NavSection[]>(() => {
             'commercial-marketing-analytics',
             'commercial-time-cards',
             'commercial-device-products',
+            'commercial-beans',
             'commercial-referrals',
             ...(hasStaffPermission('invitations.view_all') ? ['invitations'] : []),
           ],
@@ -415,10 +441,10 @@ const navSections = computed<NavSection[]>(() => {
     }
 
     if (
-      hasStaffPermission('system.settings.agent_routing.manage') &&
-      !workItems.some((item) => item.to === '/system/settings/agent-routing')
+      canAccessSystemSettings(session.bootstrap) &&
+      !workItems.some((item) => item.to === '/system/settings')
     ) {
-      workItems.push(navItem('智能体理解配置', '/system/settings/agent-routing', '智', ['system-agent-routing']))
+      workItems.push(navItem('系统设置', '/system/settings', '设', systemSettingsRouteNames))
     }
 
     if (hasStaffPermission('finance.dashboard.view') && !workItems.some((item) => item.to === '/staff/finance/receipts')) {
@@ -440,10 +466,9 @@ const navSections = computed<NavSection[]>(() => {
     {
       label: '终端工作台',
       items: [
-        navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
-        navItem('运维协助', '/support', '助', ['customer-support']),
+        navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices', 'customer-support']),
         navItem('AI 时长', '/resources/workspace', '时', ['resources-workspace']),
-        navItem('终端商城', '/shop', '▤', ['shop']),
+        navItem('小蓝商城', '/shop', '▤', ['shop']),
         navItem('售后维修', '/after-sales', '修', ['after-sales-portal']),
         navItem('邀请与推荐', '/invitations', '↗', ['invitations']),
         navItem('我的钱包', '/finance', '¥', ['finance']),
@@ -454,6 +479,7 @@ const navSections = computed<NavSection[]>(() => {
 })
 
 function navActive(item: NavItem) {
+  if (route.name === 'live-room-support-strategy') return item.routeNames.includes('rooms-list')
   return item.routeNames.includes(String(route.name || ''))
 }
 
@@ -498,7 +524,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
   if (isAdmin.value) {
     return [
       navItem('系统总览', '/overview', '⌂', ['platform-overview']),
-      navItem('设定', '/system/settings', '设', ['system-settings']),
+      navItem('设置', '/system/settings', '设', systemSettingsRouteNames),
       navItem('组织', '/staff', '♜', ['staff-hub', 'staff-groups', 'staff-employees', 'staff-roles', 'staff-approvals', 'staff-audit']),
       navItem('客户', '/customers', '◎', ['customers-hub', 'customers-list']),
       navItem('营销', '/operations/live/marketing', '营', [
@@ -509,6 +535,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
         'commercial-marketing',
         'commercial-time-cards',
         'commercial-device-products',
+        'commercial-beans',
         'commercial-referrals',
       ]),
       navItem('我的', '/personal', '♙', ['personal-center', 'account', 'settings']),
@@ -545,8 +572,8 @@ const mobileNavItems = computed<NavItem[]>(() => {
     if (hasStaffPermission('system.architecture.view')) {
       items.unshift(navItem('系统', '/overview', '⌂', ['platform-overview']))
     }
-    if (hasStaffPermission('system.settings.view')) {
-      items.push(navItem('设定', '/system/settings', '设', ['system-settings']))
+    if (canAccessSystemSettings(session.bootstrap)) {
+      items.push(navItem('设置', '/system/settings', '设', systemSettingsRouteNames))
     }
     if (
       hasStaffPermission('liveops.configure') ||
@@ -562,7 +589,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
       hasStaffPermission('finance.settlement_rules.view')
     ) {
       items.push(
-        navItem('财务', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'commercial-settlement', 'staff-finance-settlements']),
+        navItem('财务', '/staff/finance', '¥', ['staff-finance-hub', 'staff-finance-accounts', 'staff-finance-approvals', 'staff-finance-ledger', 'staff-finance-history', 'staff-finance-trace', 'staff-finance-beans', 'commercial-settlement', 'staff-finance-settlements']),
       )
     }
     if (hasStaffPermission('customer.view_all')) {
@@ -570,6 +597,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
     }
     if (
       hasStaffPermission('commercial.marketing.view') ||
+      hasStaffPermission('commercial.beans.view') ||
       hasStaffPermission('commercial.referral.view')
     ) {
       items.push(
@@ -577,7 +605,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
           '营销',
           '/operations/live/marketing',
           '营',
-          ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-time-cards', 'commercial-device-products', 'commercial-referrals'],
+          ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-time-cards', 'commercial-device-products', 'commercial-beans', 'commercial-referrals'],
         ),
       )
     }
@@ -596,7 +624,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
 
   return [
     navItem('直播运维', '/', '▣', ['rooms', 'rooms-list', 'room-detail', 'live-strategy', 'live-devices']),
-    navItem('终端商城', '/shop', '▤', ['shop']),
+    navItem('小蓝商城', '/shop', '▤', ['shop']),
     navItem('财务', '/finance', '¥', ['finance']),
     navItem('售后', '/after-sales', '修', ['after-sales-portal']),
     navItem('我的', '/personal', '♙', ['personal-center', 'account', 'settings']),

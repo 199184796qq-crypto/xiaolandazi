@@ -13,6 +13,9 @@ var commercialSchema string
 //go:embed beneficiary_wallet_schema.sql
 var beneficiaryWalletSchema string
 
+//go:embed commerce_rules_schema.sql
+var commerceRulesSchema string
+
 // MigrateCommercial creates the stable commercial foundation used by
 // memberships, wallet, quota, referral, internal sales commission and
 // external-agent settlement.
@@ -25,6 +28,11 @@ var beneficiaryWalletSchema string
 //   - mutable commercial configuration is versioned
 //   - source, internal sales, external agent and customer referral are separate
 func (s *Store) MigrateCommercial(ctx context.Context) error {
+	for _, raw := range strings.Split(strings.ReplaceAll(commerceRulesSchema, "\r\n", "\n"), "\n-- +statement\n") {
+		if _, err := s.db.ExecContext(ctx, strings.TrimSpace(raw)); err != nil {
+			return fmt.Errorf("apply commerce rules schema: %w", err)
+		}
+	}
 	schema := strings.ReplaceAll(commercialSchema, "\r\n", "\n")
 	for _, raw := range strings.Split(schema, "\n-- +statement\n") {
 		statement := strings.TrimSpace(raw)

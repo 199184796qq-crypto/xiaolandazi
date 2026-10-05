@@ -223,27 +223,46 @@ onMounted(load)
 
     <template v-if="dashboard">
       <section class="invitation-code-panel">
-        <article class="settings-card invite-code-card">
-          <div class="settings-card-header">
+        <article class="settings-card invite-code-card invite-showcase-card">
+          <header class="invite-showcase-header">
             <div>
               <span class="section-kicker">MY INVITE CODE</span>
               <h3>我的邀请码</h3>
+              <p>邀请好友一起使用，解锁更多精彩功能</p>
             </div>
             <span
               class="invite-status-corner"
               :class="{ inactive: dashboard.my_code.status !== 'active' }"
             >
-              {{ dashboard.my_code.status === 'active' ? '可用' : '停用' }}
+              <i></i>{{ dashboard.my_code.status === 'active' ? '可用' : '停用' }}
             </span>
+          </header>
+
+          <img
+            class="invite-showcase-visual"
+            src="/assets/invitations/invite-envelope-3d.png"
+            alt=""
+          />
+
+          <div class="invite-code-ticket">
+            <strong>{{ dashboard.my_code.code }}</strong>
+            <button
+              type="button"
+              :aria-label="copied === 'code' ? '邀请码已复制' : '复制邀请码'"
+              @click="copyText(dashboard.my_code.code, 'code')"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7V5.8A2.8 2.8 0 0 1 10.8 3h7.4A2.8 2.8 0 0 1 21 5.8v7.4a2.8 2.8 0 0 1-2.8 2.8H17v1.2a2.8 2.8 0 0 1-2.8 2.8H6.8A2.8 2.8 0 0 1 4 17.2V9.8A2.8 2.8 0 0 1 6.8 7H8Zm3 3H6.8c-.44 0-.8.36-.8.8v6.4c0 .44.36.8.8.8h6.4c.44 0 .8-.36.8-.8V13h-3v-3Zm0-2v5h7.2c.44 0 .8-.36.8-.8V5.8c0-.44-.36-.8-.8-.8h-6.4c-.44 0-.8.36-.8.8V8Z"/></svg>
+            </button>
           </div>
 
-          <div class="invite-code-display">
-            <strong>{{ dashboard.my_code.code }}</strong>
-            <span>已注册 {{ dashboard.my_code.used_count }} 个账号</span>
+          <div class="invite-used-summary">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm-8 8.4C4 16.86 7.58 14 12 14s8 2.86 8 6.4V22H4v-1.6Z"/></svg>
+            <span>已注册 <strong>{{ dashboard.my_code.used_count }}</strong> 个账号</span>
           </div>
 
           <div class="invite-policy-summary">
             <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 5v4.58l3.2 1.85-1 1.74L11 12.74V7h2Z"/></svg>
               使用上限：
               {{
                 dashboard.my_code.max_uses
@@ -252,6 +271,7 @@ onMounted(load)
               }}
             </span>
             <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v2h6V2h2v2h2.2A2.8 2.8 0 0 1 22 6.8v12.4a2.8 2.8 0 0 1-2.8 2.8H4.8A2.8 2.8 0 0 1 2 19.2V6.8A2.8 2.8 0 0 1 4.8 4H7V2Zm12.2 8H4.8a.8.8 0 0 0-.8.8v8.4c0 .44.36.8.8.8h14.4a.8.8 0 0 0 .8-.8v-8.4a.8.8 0 0 0-.8-.8Z"/></svg>
               有效期：
               {{ formatDate(dashboard.my_code.expires_at) }}
             </span>
@@ -259,26 +279,29 @@ onMounted(load)
 
           <div class="invite-copy-actions invite-copy-actions-wrap">
             <button
-              class="ghost-button"
+              class="invite-showcase-action"
               type="button"
               @click="copyText(dashboard.my_code.code, 'code')"
             >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7V5.8A2.8 2.8 0 0 1 10.8 3h7.4A2.8 2.8 0 0 1 21 5.8v7.4a2.8 2.8 0 0 1-2.8 2.8H17v1.2a2.8 2.8 0 0 1-2.8 2.8H6.8A2.8 2.8 0 0 1 4 17.2V9.8A2.8 2.8 0 0 1 6.8 7H8Zm3 3H6.8c-.44 0-.8.36-.8.8v6.4c0 .44.36.8.8.8h6.4c.44 0 .8-.36.8-.8V13h-3v-3Z"/></svg>
               {{ copied === 'code' ? '已复制' : '复制邀请码' }}
             </button>
             <button
-              class="primary-button"
+              class="invite-showcase-action primary"
               type="button"
               :disabled="dashboard.my_code.status !== 'active'"
               @click="copyText(registrationUrl, 'link')"
             >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.1 13.3a4 4 0 0 1 0-5.66l2.83-2.83a4 4 0 0 1 5.66 5.66l-1.42 1.41-1.41-1.41 1.41-1.42a2 2 0 1 0-2.83-2.83L9.51 9.05a2 2 0 0 0 0 2.83l-1.41 1.42Zm7.8-2.6a4 4 0 0 1 0 5.66l-2.83 2.83a4 4 0 0 1-5.66-5.66l1.42-1.41 1.41 1.41-1.41 1.42a2 2 0 1 0 2.83 2.83l2.83-2.83a2 2 0 0 0 0-2.83l1.41-1.42Z"/></svg>
               {{ copied === 'link' ? '已复制链接' : '复制邀请链接' }}
             </button>
             <button
-              class="ghost-button"
+              class="invite-showcase-action"
               type="button"
               :disabled="updatingOwn"
               @click="toggleOwnCode"
             >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM8 8h2v8H8V8Zm6 0h2v8h-2V8Z"/></svg>
               {{
                 updatingOwn
                   ? '处理中...'
@@ -289,9 +312,13 @@ onMounted(load)
             </button>
           </div>
 
-          <p class="invite-card-note">
-            注册入口：{{ registrationUrl }}
-          </p>
+          <div class="invite-card-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.1 13.3a4 4 0 0 1 0-5.66l2.83-2.83a4 4 0 0 1 5.66 5.66l-1.42 1.41-1.41-1.41 1.41-1.42a2 2 0 1 0-2.83-2.83L9.51 9.05a2 2 0 0 0 0 2.83l-1.41 1.42Zm7.8-2.6a4 4 0 0 1 0 5.66l-2.83 2.83a4 4 0 0 1-5.66-5.66l1.42-1.41 1.41 1.41-1.41 1.42a2 2 0 1 0 2.83 2.83l2.83-2.83a2 2 0 0 0 0-2.83l1.41-1.42Z"/></svg>
+            <span>{{ registrationUrl }}</span>
+            <button type="button" @click="copyText(registrationUrl, 'link')">
+              {{ copied === 'link' ? '已复制' : '复制' }}
+            </button>
+          </div>
         </article>
 
       </section>

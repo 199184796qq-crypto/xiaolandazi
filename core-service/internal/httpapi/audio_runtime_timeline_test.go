@@ -58,3 +58,35 @@ func TestResolveQuickRoomProgramSafeCutLeavesVisibleLead(t *testing.T) {
 		t.Fatalf("cut=%d, want 9800 so the UI has visible lead before stop", cut)
 	}
 }
+
+func TestResolveRoomProgramSafeCutAfterGenerationRejectsFarPreferredPoint(t *testing.T) {
+	program := audioout.RoomProgramSnapshot{
+		Task: &audioout.SpeechTask{DurationMS: 600000},
+		SafePoints: []audioout.ProgramSafePoint{
+			{ID: "SP-near", CutMS: 310000, Grade: "A", Score: 95},
+			{ID: "SP-far", CutMS: 369320, Grade: "A", Score: 99},
+		},
+	}
+	cut, ok := resolveRoomProgramSafeCutAfterGeneration(program, 369320, 288126)
+	if !ok || cut != 310000 {
+		t.Fatalf("cut=%d ok=%v want nearby 310000 instead of far preferred point", cut, ok)
+	}
+	if !validInteractionSwitchLead(288126, cut) {
+		t.Fatalf("selected cut lead=%d must stay inside production switch window", cut-288126)
+	}
+}
+
+func TestResolveRoomProgramSafeCutAfterGenerationDoesNotReturnUnsafeLead(t *testing.T) {
+	program := audioout.RoomProgramSnapshot{
+		Task: &audioout.SpeechTask{DurationMS: 600000},
+		SafePoints: []audioout.ProgramSafePoint{
+			{ID: "SP-far", CutMS: 369320, Grade: "A", Score: 99},
+		},
+	}
+	if cut, ok := resolveRoomProgramSafeCutAfterGeneration(program, 369320, 288126); ok {
+		t.Fatalf("cut=%d ok=%v want queue retry when every cut is too far ahead", cut, ok)
+	}
+	if validInteractionSwitchLead(288126, 369320) {
+		t.Fatal("86-second production lead must be rejected")
+	}
+}

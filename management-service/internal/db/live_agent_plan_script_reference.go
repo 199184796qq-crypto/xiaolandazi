@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"livecompanion/management/internal/model"
@@ -152,6 +153,12 @@ func (s *Store) CreateLiveAgentPlanScriptReference(
 		if txErr != nil {
 			return model.LiveAgentPlanScriptReference{}, txErr
 		}
+		if _, txErr = tx.ExecContext(ctx, `
+			DELETE FROM semantic_documents WHERE tenant_id=? AND plan_id=?
+			  AND content_type='reference_answer' AND source_id=?
+		`, tenantID, planID, fmt.Sprintf("reference:%d", current.ID)); txErr != nil {
+			return model.LiveAgentPlanScriptReference{}, fmt.Errorf("invalidate readopted reference vector: %w", txErr)
+		}
 		if txErr = tx.Commit(); txErr != nil {
 			return model.LiveAgentPlanScriptReference{}, txErr
 		}
@@ -267,6 +274,12 @@ func (s *Store) UpdateLiveAgentPlanScriptReference(
 	if err != nil {
 		return model.LiveAgentPlanScriptReference{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents WHERE tenant_id=? AND plan_id=?
+		  AND content_type='reference_answer' AND source_id=?
+	`, tenantID, planID, fmt.Sprintf("reference:%d", referenceID)); err != nil {
+		return model.LiveAgentPlanScriptReference{}, fmt.Errorf("invalidate edited reference vector: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveAgentPlanScriptReference{}, err
 	}
@@ -315,6 +328,12 @@ func (s *Store) DeleteLiveAgentPlanScriptReferenceWithExpectedVersion(
 		current.Goal, current.Transition, current.ExecutionMode, current.SourceQuote, actorUserID)
 	if err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents
+		WHERE tenant_id=? AND plan_id=? AND content_type='reference_answer' AND source_id=?
+	`, tenantID, planID, fmt.Sprintf("reference:%d", referenceID)); err != nil {
+		return fmt.Errorf("delete script reference semantic documents: %w", err)
 	}
 	return tx.Commit()
 }

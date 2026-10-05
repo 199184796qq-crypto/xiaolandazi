@@ -247,7 +247,7 @@ func (s *Store) ListVoiceProfiles(ctx context.Context, tenantID int64) ([]model.
 		       sample_asset_id, clone_status, CAST(config_json AS CHAR), is_default,
 		       created_by_user_id, updated_by_user_id, created_at, updated_at
 		FROM voice_profiles
-		WHERE tenant_id=?
+		WHERE tenant_id=? AND clone_status<>'disabled'
 		ORDER BY is_default DESC, id DESC
 	`, tenantID)
 	if err != nil {
@@ -265,6 +265,47 @@ func (s *Store) ListVoiceProfiles(ctx context.Context, tenantID int64) ([]model.
 	return items, rows.Err()
 }
 
+func (s *Store) CountActiveVoiceProfiles(ctx context.Context, tenantID int64) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM voice_profiles
+		WHERE tenant_id=? AND clone_status<>'disabled'
+	`, tenantID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DisableVoiceProfile(ctx context.Context, tenantID, profileID, userID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE voice_profiles
+		SET clone_status='disabled', is_default=0, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+		WHERE id=? AND tenant_id=? AND clone_status<>'disabled'
+	`, userID, profileID, tenantID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE voice_model_bindings
+		SET status='disabled', updated_at=CURRENT_TIMESTAMP(3)
+		WHERE tenant_id=? AND profile_id=? AND status<>'disabled'
+	`, tenantID, profileID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) GetVoiceProfile(ctx context.Context, tenantID, profileID int64) (model.VoiceProfile, error) {
 	return scanVoiceProfile(s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, agent_id, name, provider, voice_id,
@@ -274,6 +315,133 @@ func (s *Store) GetVoiceProfile(ctx context.Context, tenantID, profileID int64) 
 		WHERE id=? AND tenant_id=?
 		LIMIT 1
 	`, profileID, tenantID))
+}
+
+func (s *Store) CreateVoiceModelBinding(
+	ctx context.Context,
+	tenantID, userID int64,
+	input model.VoiceModelBindingInput,
+) (model.VoiceModelBinding, error) {
+	input.Provider = strings.TrimSpace(input.Provider)
+	input.Model = strings.TrimSpace(input.Model)
+	input.VoiceID = strings.TrimSpace(input.VoiceID)
+	input.Status = strings.TrimSpace(input.Status)
+	if input.Status == "" {
+		input.Status = "ready"
+	}
+	if input.Rate == 0 {
+		input.Rate = 1
+	}
+	configJSON, err := json.Marshal(defaultJSONMap(input.Config))
+	if err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	var profileCount, sampleCount int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM voice_profiles WHERE id=? AND tenant_id=?
+	`, input.ProfileID, tenantID).Scan(&profileCount); err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	if profileCount == 0 {
+		return model.VoiceModelBinding{}, sql.ErrNoRows
+	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM media_assets WHERE id=? AND tenant_id=? AND status='active'
+	`, input.SampleAssetID, tenantID).Scan(&sampleCount); err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	if sampleCount == 0 {
+		return model.VoiceModelBinding{}, sql.ErrNoRows
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO voice_model_bindings (
+			tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+			rate, status, config_json, created_by_user_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)
+	`,
+		tenantID, input.ProfileID, input.SampleAssetID, input.Provider, input.Model, input.VoiceID,
+		input.Rate, input.Status, string(configJSON), userID,
+	)
+	if err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	return s.GetVoiceModelBinding(ctx, tenantID, id)
+}
+
+func (s *Store) GetVoiceModelBinding(ctx context.Context, tenantID, bindingID int64) (model.VoiceModelBinding, error) {
+	return scanVoiceModelBinding(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+		       rate, status, CAST(config_json AS CHAR), created_by_user_id, created_at, updated_at
+		FROM voice_model_bindings
+		WHERE id=? AND tenant_id=?
+		LIMIT 1
+	`, bindingID, tenantID))
+}
+
+func (s *Store) ListVoiceModelBindings(ctx context.Context, tenantID, profileID int64) ([]model.VoiceModelBinding, error) {
+	query := `
+		SELECT id, tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+		       rate, status, CAST(config_json AS CHAR), created_by_user_id, created_at, updated_at
+		FROM voice_model_bindings
+		WHERE tenant_id=? AND status<>'disabled'
+	`
+	args := []any{tenantID}
+	if profileID > 0 {
+		query += " AND profile_id=?"
+		args = append(args, profileID)
+	}
+	query += " ORDER BY id DESC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.VoiceModelBinding, 0)
+	for rows.Next() {
+		item, err := scanVoiceModelBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+type voiceModelBindingScanner interface {
+	Scan(...any) error
+}
+
+func scanVoiceModelBinding(scanner voiceModelBindingScanner) (model.VoiceModelBinding, error) {
+	var item model.VoiceModelBinding
+	var configRaw string
+	var createdBy sql.NullInt64
+	if err := scanner.Scan(
+		&item.ID,
+		&item.TenantID,
+		&item.ProfileID,
+		&item.SampleAssetID,
+		&item.Provider,
+		&item.Model,
+		&item.VoiceID,
+		&item.Rate,
+		&item.Status,
+		&configRaw,
+		&createdBy,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return model.VoiceModelBinding{}, err
+	}
+	if createdBy.Valid {
+		value := createdBy.Int64
+		item.CreatedByUserID = &value
+	}
+	_ = json.Unmarshal([]byte(configRaw), &item.Config)
+	return item, nil
 }
 
 type voiceProfileScanner interface {

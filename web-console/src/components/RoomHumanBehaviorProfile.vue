@@ -16,31 +16,10 @@ const saving = ref(false)
 const notice = ref('')
 const error = ref('')
 const stateDuration = ref<'session' | '30m' | '2h' | 'today'>('session')
-type BehaviorPickerTarget = 'trait' | 'state'
 const pickerOpen = ref(false)
-const pickerTarget = ref<BehaviorPickerTarget>('trait')
 const pickerSelection = ref<string[]>([])
 const pickerCustomItems = ref<string[]>([])
 const pickerError = ref('')
-
-const defaultTraitItems = [
-  '喜欢短句',
-  '说话偏慢',
-  '说话偏快',
-  '喜欢先重复一下观众的问题',
-  '回答前会先确认一下问题',
-  '转场前喜欢先总结一句',
-  '喜欢先说重点再补充',
-  '喜欢先解释原因再给结论',
-  '少用长句',
-  '少用夸张语气',
-  '语气自然一点',
-  '语气热情一点',
-  '喜欢偶尔说“你看哈”',
-  '喜欢偶尔说“对吧”',
-  '喜欢偶尔说“是不是”',
-  '回答完喜欢自然接回主线',
-]
 
 const defaultStateItems = [
   '今天嗓子有点不舒服',
@@ -57,11 +36,9 @@ const defaultStateItems = [
   '今天想说慢一点',
 ]
 
-const pickerTitle = computed(() => pickerTarget.value === 'trait' ? '选择主播长期习惯' : '选择今天的状态')
-const pickerOptions = computed(() => pickerTarget.value === 'trait' ? defaultTraitItems : defaultStateItems)
-const pickerHint = computed(() => pickerTarget.value === 'trait'
-  ? '勾选后点确定，会自动填入主播习惯；你自己写的内容会保留。'
-  : '这些只是后台控制参数，不会直接作为直播台词说出来。')
+const pickerTitle = '选择今天的状态'
+const pickerOptions = computed(() => defaultStateItems)
+const pickerHint = '这些只是后台控制参数，不会直接作为直播台词说出来。'
 
 function behaviorItems(raw: string) {
   const seen = new Set<string>()
@@ -76,11 +53,9 @@ function behaviorItems(raw: string) {
     .slice(0, 12)
 }
 
-function openPicker(target: BehaviorPickerTarget) {
-  pickerTarget.value = target
+function openPicker() {
   pickerError.value = ''
-  const raw = target === 'trait' ? value.value.trait_text : value.value.state_text
-  const current = behaviorItems(raw)
+  const current = behaviorItems(value.value.state_text)
   const defaults = new Set(pickerOptions.value)
   pickerSelection.value = current.filter((item) => defaults.has(item))
   pickerCustomItems.value = current.filter((item) => !defaults.has(item))
@@ -113,11 +88,7 @@ function togglePickerItem(item: string) {
 
 function confirmPicker() {
   const merged = behaviorItems([...pickerCustomItems.value, ...pickerSelection.value].join('；'))
-  if (pickerTarget.value === 'trait') {
-    value.value.trait_text = merged.join('；')
-  } else {
-    value.value.state_text = merged.join('；')
-  }
+  value.value.state_text = merged.join('；')
   closePicker()
 }
 
@@ -154,7 +125,9 @@ async function save() {
   error.value = ''
   try {
     value.value = await updateRoomHumanBehaviorProfile(props.roomId, {
-      trait_text: value.value.trait_text.trim(),
+      // Long-term habits moved to plan-level anchor style overlays. Clear the
+      // legacy room field whenever this temporary state is saved.
+      trait_text: '',
       state_text: value.value.state_text.trim(),
       state_expires_at: expiryISO(),
     })
@@ -180,35 +153,12 @@ onMounted(() => void load())
     <header v-if="!embedded">
       <div>
         <strong>主播状态</strong>
-        <span>用自然语言告诉小蓝你平时怎么说、今天是什么状态。</span>
+        <span>只设置本场临时状态；长期表达习惯统一在“主播风格”中配置。</span>
       </div>
       <em>{{ loading ? '读取中' : saving ? '保存中' : notice || '热生效' }}</em>
     </header>
 
     <div v-if="error" class="profile-error">{{ error }}</div>
-
-    <label class="profile-field">
-      <span>
-        <b>主播习惯</b>
-        <small>长期保留</small>
-      </span>
-      <div class="behavior-input-wrap">
-        <textarea
-          v-model="value.trait_text"
-          :disabled="loading || saving"
-          maxlength="1000"
-          placeholder="例如：我说话偏慢，喜欢短句，偶尔说“你看哈”，转场前喜欢先总结一句。"
-        />
-        <button
-          type="button"
-          class="behavior-picker-trigger"
-          title="从默认主播习惯中选择"
-          aria-label="选择主播习惯"
-          :disabled="loading || saving"
-          @click="openPicker('trait')"
-        ><span></span><span></span><span></span></button>
-      </div>
-    </label>
 
     <label class="profile-field">
       <span>
@@ -228,7 +178,7 @@ onMounted(() => void load())
           title="从默认状态中选择"
           aria-label="选择今天的状态"
           :disabled="loading || saving"
-          @click="openPicker('state')"
+          @click="openPicker"
         ><span></span><span></span><span></span></button>
       </div>
     </label>
@@ -280,7 +230,7 @@ onMounted(() => void load())
             </button>
           </div>
 
-          <div v-if="pickerTarget === 'state'" class="behavior-picker-note">
+          <div class="behavior-picker-note">
             状态只控制语速、句长、停顿、声音力度和情绪，不会直接念成“我咳嗽了”“我不舒服”等台词。
           </div>
 

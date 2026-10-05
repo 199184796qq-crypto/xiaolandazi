@@ -28,6 +28,7 @@ type Message struct {
 }
 
 type Request struct {
+	Stage          string
 	Provider       string
 	Model          string
 	Messages       []Message
@@ -62,6 +63,7 @@ type Provider interface {
 }
 
 type Gateway struct {
+	speechModels    SpeechModelResolver
 	mu              sync.RWMutex
 	providers       map[string]Provider
 	aliases         map[string]string
@@ -84,11 +86,14 @@ func NewFromEnv() *Gateway {
 		providerName = ProviderQwen
 	}
 	model := strings.TrimSpace(os.Getenv("LIVE_AGENT_MODEL"))
-	if model == "" {
+	if model == "" && providerName != "compatible" {
 		model = DefaultQwenModel
 	}
 	gateway := New(providerName, model)
 	gateway.Register(NewQwenProvider(QwenConfigFromEnv()), "qwen_dashscope", "dashscope")
+	if strings.TrimSpace(os.Getenv("AGENT_COMPATIBLE_BASE_URL")) != "" {
+		gateway.Register(NewCompatibleProvider(QwenConfig{BaseURL: os.Getenv("AGENT_COMPATIBLE_BASE_URL"), APIKey: os.Getenv("AGENT_COMPATIBLE_API_KEY")}))
+	}
 	return gateway
 }
 
@@ -116,11 +121,35 @@ func (g *Gateway) Complete(ctx context.Context, request Request) (Response, erro
 	if g == nil {
 		return Response{}, errors.New("agent gateway is nil")
 	}
+	if response, handled, err := g.completeSpeechModel(ctx, request); handled {
+		return response, err
+	}
 	providerName := normalizeName(request.Provider)
+	// Stage overrides are operator-owned. Repairs pin the response's model and
+	// provider explicitly, so a retry cannot silently switch models.
+	stageKey := ""
+	switch request.Stage {
+	case "style_analysis":
+		stageKey = "ANCHOR_ANALYSIS"
+	case "speech_generation":
+		stageKey = "ANCHOR_GENERATION"
+	}
+	if providerName == "" && stageKey != "" {
+		providerName = normalizeName(os.Getenv(stageKey + "_PROVIDER"))
+	}
 	if providerName == "" {
 		providerName = g.defaultProvider
 	}
 	model := strings.TrimSpace(request.Model)
+	if model == "" && stageKey != "" {
+		model = strings.TrimSpace(os.Getenv(stageKey + "_MODEL"))
+	}
+	if model == "" && providerName == g.defaultProvider {
+		model = g.defaultModel
+	}
+	if providerName == "compatible" && model == "" {
+		return Response{}, errors.New("compatible provider requires an explicit stage model")
+	}
 	if model == "" {
 		model = g.defaultModel
 	}

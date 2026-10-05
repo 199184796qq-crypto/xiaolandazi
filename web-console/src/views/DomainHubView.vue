@@ -106,13 +106,22 @@ const quickEntries = computed(() => {
       Boolean(entry.to && entry.to.startsWith('/resources/workspace')),
     )
   }
-  return entries.filter((entry) => canShowEntry(entry.to))
+  return entries
+    .filter((entry) => canShowEntry(entry.to))
+    .map((entry) =>
+      props.hub === 'live' &&
+      session.bootstrap?.actor.role === 'customer' &&
+      entry.to === '/operations/support'
+        ? { ...entry, to: '/support' }
+        : entry,
+    )
 })
 const entryEnglishTitles: Record<string, string> = {
   '直播间': 'LIVE ROOMS',
   '直播间数量': 'ROOM QUOTAS',
   '直播策略': 'LIVE STRATEGY',
   '设备绑定': 'DEVICE BINDING',
+  '运维协助': 'OPERATIONS SUPPORT',
   '活动营销': 'ACTIVITY MARKETING',
   '营销活动': 'MARKETING CAMPAIGNS',
   '营销设计': 'MARKETING DESIGN',

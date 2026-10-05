@@ -3,7 +3,10 @@
   import { page } from '$app/stores';
   import {
     chatClientAgent,
+    adoptAgentLearningSession,
     classifyLiveRoomAgentMessage,
+    createAgentLearningSession,
+    createAgentLearningTurn,
     enqueueRoomManualAgentDecision,
     getLiveDevices,
     getLiveRuntime,
@@ -24,10 +27,12 @@
   import {
     closeLocalFloatingAudioForDifferentRoom,
     customerAudioMuted,
+    floatingAudioState,
     flushRoomCompositeAudio,
     startRoomCompositeAudio,
     stopRoomCompositeAudio,
     toggleCustomerAudioMuted,
+    unlockCustomerAudio,
     updateFloatingAudioSession,
   } from '$lib/audioRuntime';
   import type { LiveAgentPlan, LiveDevice, LiveRuntimeSnapshot, Room, RoomEvent } from '$lib/types';
@@ -41,6 +46,12 @@
       text: string;
       status?: 'pending' | 'sending' | 'sent';
       selected?: LiveRoomAnswerMode;
+    };
+    correctionChoice?: {
+      sessionId: number;
+      text: string;
+      status: 'pending' | 'saving' | 'adopted';
+      versionNo?: number;
     };
   };
 
@@ -65,12 +76,31 @@
   let sessionDecisionOpen = false;
   let sessionDecisionBusy = false;
   let pendingStartAfterSessionDecision = false;
+  let swipedEventId = 0;
+  let barrageSwipe:
+    | { eventId: number; startX: number; startY: number }
+    | null = null;
+  let eventDecisionStates: Record<
+    number,
+    { busy?: LiveRoomAnswerMode; submitted?: LiveRoomAnswerMode; message?: string; error?: string }
+  > = {};
+  let correctionSession:
+    | {
+        eventId: number;
+        question: string;
+        target: string;
+        backendSessionId?: number;
+        latestReply?: string;
+      }
+    | null = null;
 
   const BARRAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
   const BARRAGE_HISTORY_PAGE_SIZE = 300;
   const BARRAGE_HISTORY_MAX_PAGES = 70;
 
   let orbPressed = false;
+  let agentDocked = true;
+  let agentIdleTimer: number | undefined;
   let listening = false;
   let holdTimer: number | undefined;
   let recognition: any = null;
@@ -96,6 +126,7 @@
   $: audioPlaying = runtime?.agent_state === 'working';
   $: agentActive = runtime?.agent_state === 'working' || runtime?.agent_state === 'paused';
   $: displayedMode = agentActive ? (runtime?.agent_mode || selectedMode) : selectedMode;
+  $: if ($floatingAudioState.connected && audioError) audioError = '';
 
   onMount(async () => {
     if (!Number.isFinite(roomId) || roomId <= 0) {
@@ -131,6 +162,7 @@
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     if (eventTimer !== undefined) window.clearInterval(eventTimer);
     if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+    if (agentIdleTimer !== undefined) window.clearTimeout(agentIdleTimer);
     try { recognition?.stop?.(); } catch {}
     try {
       if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
@@ -145,7 +177,7 @@
       const [roomValue, runtimeValue, planValue, deviceValues] = await Promise.all([
         getRoom(roomId),
         getLiveRuntime(roomId),
-        getRoomLiveAgentPlans(roomId),
+        getRoomLiveAgentPlans(roomId, true),
         getLiveDevices().catch(() => []),
       ]);
       room = roomValue;
@@ -153,9 +185,7 @@
       roomDevice =
         (deviceValues || []).find(
           (item) => Number(item.room_id || 0) === roomId && item.binding_role === 'primary',
-        ) ||
-        (deviceValues || []).find((item) => Number(item.room_id || 0) === roomId) ||
-        null;
+        ) || null;
       plans = (planValue.items || []).filter((item) => item.status !== 'archived');
       selectedPlanId = Number(runtimeValue.agent_plan_id || 0);
       if (runtimeValue.agent_state !== 'stopped') {
@@ -195,9 +225,7 @@
       roomDevice =
         (deviceValues || []).find(
           (item) => Number(item.room_id || 0) === roomId && item.binding_role === 'primary',
-        ) ||
-        (deviceValues || []).find((item) => Number(item.room_id || 0) === roomId) ||
-        null;
+        ) || null;
       if (runtimeValue.agent_state !== 'stopped') {
         selectedMode = runtimeValue.agent_mode === 'control' ? 'control' : 'anchor';
         updateFloatingAudioSession(
@@ -290,6 +318,238 @@
     } catch {}
     finally {
       barrageRefreshing = false;
+    }
+  }
+
+  function eventDecisionState(eventId: number) {
+    return eventDecisionStates[eventId] || {};
+  }
+
+  function setEventDecisionState(
+    eventId: number,
+    patch: { busy?: LiveRoomAnswerMode; submitted?: LiveRoomAnswerMode; message?: string; error?: string },
+  ) {
+    eventDecisionStates = {
+      ...eventDecisionStates,
+      [eventId]: { ...eventDecisionState(eventId), ...patch },
+    };
+  }
+
+  function eventDecisionLabel(eventId: number, action: LiveRoomAnswerMode) {
+    const state = eventDecisionState(eventId);
+    if (state.busy === action) return action === 'quick' ? '抢答中…' : '提交中…';
+    if (state.submitted === action) return action === 'quick' ? '已抢答' : '已回答';
+    return action === 'quick' ? '抢答' : '回答';
+  }
+
+  function eventDecisionDisabled(eventId: number, action: LiveRoomAnswerMode) {
+    const state = eventDecisionState(eventId);
+    if (runtime?.agent_state !== 'working' || state.busy) return true;
+    if (state.submitted === 'quick') return true;
+    if (action === 'answer' && state.submitted === 'answer') return true;
+    return false;
+  }
+
+  function beginBarrageSwipe(event: PointerEvent, item: RoomEvent) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    barrageSwipe = { eventId: item.id, startX: event.clientX, startY: event.clientY };
+  }
+
+  function endBarrageSwipe(event: PointerEvent, item: RoomEvent) {
+    const gesture = barrageSwipe;
+    barrageSwipe = null;
+    if (!gesture || gesture.eventId !== item.id) return;
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    if (Math.abs(deltaX) < 28 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+    swipedEventId = deltaX < 0 ? item.id : 0;
+  }
+
+  function cancelBarrageSwipe() {
+    barrageSwipe = null;
+  }
+
+  async function ensureAudioForBarrageAction(eventId: number) {
+    try {
+      await unlockCustomerAudio();
+      if (!$floatingAudioState.connected) {
+        await startRoomCompositeAudio(roomId, room?.name || '');
+      }
+      audioError = '';
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '声音连接失败';
+      audioError = message;
+      setEventDecisionState(eventId, { error: message, message: '', busy: undefined });
+      return false;
+    }
+  }
+
+  async function submitBarrageDecision(event: RoomEvent, action: LiveRoomAnswerMode) {
+    if (eventDecisionState(event.id).busy) return;
+    if (runtime?.agent_state !== 'working') {
+      setEventDecisionState(event.id, { error: '请先启动直播搭子。', message: '' });
+      return;
+    }
+    const stats = await getRoomSessionStats(roomId).catch(() => null);
+    if (stats?.resume_pending) {
+      setEventDecisionState(event.id, { error: '请先选择续接上一场或作为新直播。', message: '' });
+      return;
+    }
+    if (!(await ensureAudioForBarrageAction(event.id))) return;
+
+    setEventDecisionState(event.id, { busy: action, error: '', message: '' });
+    swipedEventId = 0;
+    try {
+      const result = await enqueueRoomManualAgentDecision(roomId, {
+        question: String(event.content || '').trim(),
+        title: '单条弹幕：' + String(event.content || '').trim().slice(0, 36),
+        summary:
+          action === 'quick'
+            ? '人工从实时公屏发起抢答，立即生成并播出'
+            : '人工从实时公屏加入待打断队列，由监控Agent安排回答时机',
+        event_id: event.id,
+        user_id: event.user_id || '',
+        force_reopen: action === 'quick',
+        manual_action: action,
+      });
+      const submitted =
+        action === 'quick' ? 'quick' : (eventDecisionState(event.id).submitted || 'answer');
+      let message = action === 'quick' ? '已提交抢答' : '已进入待打断队列';
+      if (result.merged && action === 'quick') message = '已提升为抢答优先';
+      else if (result.merged) message = '已融合到待回答任务';
+      else if (result.suppressed) message = '同类问题刚回答过，可点抢答强制执行';
+      setEventDecisionState(event.id, {
+        busy: undefined,
+        submitted,
+        message,
+        error: '',
+      });
+    } catch (err) {
+      setEventDecisionState(event.id, {
+        busy: undefined,
+        error: err instanceof Error ? err.message : '提交回答失败',
+      });
+    }
+  }
+
+  function beginBarrageCorrection(event: RoomEvent) {
+    const question = String(event.content || '').trim();
+    if (!question) return;
+    swipedEventId = 0;
+    correctionSession = {
+      eventId: event.id,
+      question,
+      target: question,
+    };
+    drawerOpen = true;
+    keepAgentAwake();
+    agentInput = '';
+    agentMessages = [
+      ...agentMessages,
+      {
+        role: 'agent',
+        text:
+          '正在纠正这条弹幕相关的回答规则：\n“' +
+          question +
+          '”\n\n直接告诉我哪里不对，或者正确应该怎么说。',
+      },
+    ];
+    void tick().then(() => chatEl?.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' }));
+  }
+
+  function cancelBarrageCorrection() {
+    if (!correctionSession) return;
+    correctionSession = null;
+    agentMessages = [
+      ...agentMessages,
+      { role: 'agent', text: '已退出这次纠正，未采用的内容不会写入当前直播间记忆。' },
+    ];
+  }
+
+  async function sendBarrageCorrectionFeedback(value: string) {
+    const active = correctionSession;
+    const feedback = value.trim();
+    if (!active || !feedback || agentBusy) return;
+    agentMessages = [...agentMessages, { role: 'user', text: feedback }];
+    drawerOpen = true;
+    agentBusy = true;
+    await tick();
+    chatEl?.scrollTo({ top: chatEl.scrollHeight });
+    try {
+      let sessionId = active.backendSessionId;
+      if (!sessionId) {
+        const created = await createAgentLearningSession(roomId, {
+          source_type: 'question_correction',
+          source_ref: 'room_event:' + active.eventId,
+          question: active.question,
+          original_reply: active.latestReply || '',
+          target: active.target,
+        });
+        sessionId = created.id;
+        active.backendSessionId = sessionId;
+      }
+      const output = await createAgentLearningTurn(roomId, sessionId, feedback);
+      const visibleReply = String(output.result.result_text || '').trim();
+      active.target = output.result.target || active.target;
+      active.latestReply = visibleReply;
+      correctionSession = { ...active };
+      agentMessages = [
+        ...agentMessages,
+        {
+          role: 'agent',
+          text: visibleReply || '已生成修正结果。',
+          correctionChoice: {
+            sessionId,
+            text: visibleReply,
+            status: 'pending',
+          },
+        },
+      ];
+    } catch (err) {
+      agentMessages = [
+        ...agentMessages,
+        { role: 'agent', text: err instanceof Error ? err.message : '生成修正结果失败，请稍后再试。' },
+      ];
+    } finally {
+      agentBusy = false;
+      await tick();
+      chatEl?.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
+    }
+  }
+
+  async function adoptBarrageCorrection(message: ChatMessage) {
+    const choice = message.correctionChoice;
+    if (!choice || choice.status !== 'pending' || agentBusy) return;
+    choice.status = 'saving';
+    agentMessages = [...agentMessages];
+    agentBusy = true;
+    try {
+      const adopted = await adoptAgentLearningSession(roomId, choice.sessionId);
+      choice.status = 'adopted';
+      choice.versionNo = adopted.version.version_no;
+      correctionSession = null;
+      agentMessages = [
+        ...agentMessages,
+        {
+          role: 'agent',
+          text:
+            '已采用并立即生效。V' +
+            adopted.version.version_no +
+            '。当前直播间从下一次回答开始按这个意思处理。',
+        },
+      ];
+    } catch (err) {
+      choice.status = 'pending';
+      agentMessages = [
+        ...agentMessages,
+        { role: 'agent', text: err instanceof Error ? err.message : '采用失败，请稍后再试。' },
+      ];
+    } finally {
+      agentBusy = false;
+      agentMessages = [...agentMessages];
+      await tick();
+      chatEl?.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
     }
   }
 
@@ -437,7 +697,26 @@
     }
   }
 
+  function scheduleAgentDock() {
+    if (agentIdleTimer !== undefined) window.clearTimeout(agentIdleTimer);
+    agentIdleTimer = window.setTimeout(() => {
+      if (listening || agentBusy || voiceTranscribing) {
+        scheduleAgentDock();
+        return;
+      }
+      drawerOpen = false;
+      voiceComposerVisible = false;
+      agentDocked = true;
+    }, 60_000);
+  }
+
+  function keepAgentAwake() {
+    agentDocked = false;
+    scheduleAgentDock();
+  }
+
   function beginAgentHold(event?: PointerEvent) {
+    keepAgentAwake();
     try {
       const target = event?.currentTarget as HTMLElement | null;
       if (target && event) target.setPointerCapture(event.pointerId);
@@ -464,6 +743,7 @@
       stopListening();
     }
     orbPressed = false;
+    scheduleAgentDock();
   }
 
   function stopMediaStreamTracks() {
@@ -790,6 +1070,11 @@
   }
 
   async function sendAgentMessage(value: string) {
+    keepAgentAwake();
+    if (correctionSession) {
+      await sendBarrageCorrectionFeedback(value);
+      return;
+    }
     const history = [...agentMessages];
     agentMessages = [...agentMessages, { role: 'user', text: value }];
     drawerOpen = true;
@@ -853,7 +1138,11 @@
 
   function deviceVisualLabel(device: LiveDevice | null) {
     const state = deviceVisualState(device);
-    if (state === 'online') return '正常';
+    if (state === 'online') {
+      if (runtime?.agent_state === 'working') return '工作中';
+      if (runtime?.agent_state === 'paused') return '已暂停';
+      return '连续待机';
+    }
     if (state === 'fault') return '故障';
     return '离线';
   }
@@ -877,7 +1166,10 @@
   }
 
   function closeDrawerFromMask(event: MouseEvent) {
-    if (event.target === event.currentTarget) drawerOpen = false;
+    if (event.target === event.currentTarget) {
+      drawerOpen = false;
+      scheduleAgentDock();
+    }
   }
 </script>
 
@@ -1005,7 +1297,7 @@
           >中控模式</button>
         </div>
       {/if}
-      {#if audioError}<div class="audio-error">{audioError}，点“开始”重新连接声音。</div>{/if}
+      {#if audioError}<div class="audio-error">{audioError}，恢复前台后会自动重连；如浏览器仍拦截声音，轻触页面即可恢复。</div>{/if}
 
       <div class="room-controls">
         <button
@@ -1046,7 +1338,7 @@
         <strong>直播间智能体方案</strong>
       </div>
       <select bind:value={selectedPlanId} on:change={changePlan} disabled={controlBusy || plans.length === 0}>
-        {#if plans.length === 0}<option value={0}>还没有绑定方案</option>{/if}
+        {#if plans.length === 0}<option value={0}>还没有发布方案</option>{/if}
         {#each plans as plan}
           <option value={plan.id}>{plan.name}</option>
         {/each}
@@ -1068,11 +1360,41 @@
           <div class="barrage-empty">等待直播间弹幕…</div>
         {:else}
           {#each chatEvents as event}
-            <article>
-              <time datetime={event.occurred_at}>{formatEventClock(event.occurred_at)}</time>
-              <strong>{event.nickname || '游客'}</strong>
-              <p>{event.content}</p>
-            </article>
+            <div
+              class="barrage-swipe-row"
+              class:open={swipedEventId === event.id}
+              role="group"
+              aria-label={'弹幕操作：' + (event.nickname || '游客')}
+              on:pointerdown={(pointerEvent) => beginBarrageSwipe(pointerEvent, event)}
+              on:pointerup={(pointerEvent) => endBarrageSwipe(pointerEvent, event)}
+              on:pointercancel={cancelBarrageSwipe}
+            >
+              <div class="barrage-actions" role="group" aria-label="弹幕操作按钮" on:pointerdown|stopPropagation>
+                <button type="button" class="correct" on:click={() => beginBarrageCorrection(event)}>纠正</button>
+                <button
+                  type="button"
+                  class="quick"
+                  disabled={eventDecisionDisabled(event.id, 'quick')}
+                  on:click={() => submitBarrageDecision(event, 'quick')}
+                >{eventDecisionLabel(event.id, 'quick')}</button>
+                <button
+                  type="button"
+                  class="answer"
+                  disabled={eventDecisionDisabled(event.id, 'answer')}
+                  on:click={() => submitBarrageDecision(event, 'answer')}
+                >{eventDecisionLabel(event.id, 'answer')}</button>
+              </div>
+              <article class:open={swipedEventId === event.id}>
+                <time datetime={event.occurred_at}>{formatEventClock(event.occurred_at)}</time>
+                <strong>{event.nickname || '游客'}</strong>
+                <p>{event.content}</p>
+                {#if eventDecisionState(event.id).message}
+                  <small class="barrage-action-feedback ok">{eventDecisionState(event.id).message}</small>
+                {:else if eventDecisionState(event.id).error}
+                  <small class="barrage-action-feedback error">{eventDecisionState(event.id).error}</small>
+                {/if}
+              </article>
+            </div>
           {/each}
         {/if}
       </div>
@@ -1101,6 +1423,7 @@
 <button
   bind:this={agentOrbEl}
   class="room-agent-orb"
+  class:docked={agentDocked}
   class:listening
   type="button"
   aria-label={listening ? '正在听你说话' : '长按和智能体说话'}
@@ -1137,16 +1460,25 @@
 {/if}
 
 {#if drawerOpen}
-  <div class="agent-drawer-mask" role="presentation" on:click={closeDrawerFromMask}>
+  <div class="agent-drawer-mask" role="presentation" on:click={closeDrawerFromMask} on:pointerdown={keepAgentAwake}>
     <section class="agent-drawer">
       <header>
         <div>
           <span>LIVE COMPANION</span>
           <h2>直播智能体</h2>
         </div>
-        <button type="button" aria-label="关闭对话" on:click={() => (drawerOpen = false)}>×</button>
+        <button type="button" aria-label="关闭对话" on:click={() => { drawerOpen = false; scheduleAgentDock(); }}>×</button>
       </header>
       <div class="drawer-chat" bind:this={chatEl}>
+        {#if correctionSession}
+          <div class="mobile-correction-active">
+            <div>
+              <span>正在纠正</span>
+              <strong>{correctionSession.target}</strong>
+            </div>
+            <button type="button" on:click={cancelBarrageCorrection}>结束纠正</button>
+          </div>
+        {/if}
         {#if agentMessages.length === 0}
           <div class="drawer-empty">长按下面的小球说话，或者直接输入。</div>
         {/if}
@@ -1179,6 +1511,23 @@
                 {/if}
               </div>
             {/if}
+            {#if message.correctionChoice}
+              <div class="mobile-correction-choice">
+                <span>修正候选</span>
+                <p>{message.correctionChoice.text}</p>
+                <button
+                  type="button"
+                  disabled={message.correctionChoice.status !== 'pending' || agentBusy}
+                  on:click={() => adoptBarrageCorrection(message)}
+                >
+                  {message.correctionChoice.status === 'saving'
+                    ? '采用中…'
+                    : message.correctionChoice.status === 'adopted'
+                      ? '已采用 V' + (message.correctionChoice.versionNo || '')
+                      : '采用并立即生效'}
+                </button>
+              </div>
+            {/if}
           </article>
         {/each}
         {#if agentBusy}
@@ -1186,7 +1535,7 @@
         {/if}
       </div>
       <form class="drawer-composer" on:submit|preventDefault={sendDrawerText}>
-        <input bind:value={agentInput} placeholder="继续跟智能体说…" />
+        <input bind:value={agentInput} on:input={keepAgentAwake} placeholder="继续跟智能体说…" />
         <button type="submit" disabled={!agentInput.trim() || agentBusy}>发送</button>
       </form>
     </section>
@@ -1255,22 +1604,26 @@
   .device-led{position:absolute;right:4px;bottom:3px;width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px rgba(255,255,255,.7)}
   .plan-select-card select{width:100%;min-height:48px;padding:0 40px 0 13px;border:1px solid #cad4ea;border-radius:14px;background:#fff;color:#2f3d59;outline:none;font-weight:800}.plan-select-card small{color:#8792a7;font-size:10px}
   .barrage-card{padding:15px}.barrage-card header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:10px}.barrage-card header h2{margin:3px 0 0;font-size:18px}.barrage-card header b{padding:5px 8px;border-radius:999px;background:#e8edff;color:#5a6ed7;font-size:10px}
-  .barrage-list{height:760px;overflow-y:auto;scrollbar-width:none;padding:4px 1px}.barrage-list::-webkit-scrollbar{display:none}.barrage-list article{display:grid;grid-template-columns:42px auto 1fr;min-height:38px;box-sizing:border-box;align-items:center;gap:7px;padding:8px 2px;border-bottom:1px solid rgba(218,225,238,.75)}.barrage-list article:last-child{border-bottom:0}.barrage-list time{color:#9aa4b5;font-size:10px;font-variant-numeric:tabular-nums}.barrage-list strong{color:#596bd0;font-size:11px;white-space:nowrap}.barrage-list p{margin:0;color:#3c485f;font-size:12px;line-height:1.5}.barrage-empty{display:grid;height:100%;place-items:center;color:#96a0b2;font-size:12px}
-  .room-agent-orb{position:fixed;left:50%;bottom:calc(77px + env(safe-area-inset-bottom));z-index:44;display:grid;width:68px;height:68px;place-items:center;transform:translateX(-50%);border:2px solid rgba(255,255,255,.82);border-radius:50%;background:radial-gradient(circle at 35% 30%,#acbbff 0,#7587f4 34%,#4c5ed6 76%,#37449f 100%);color:#fff;box-shadow:0 14px 34px rgba(75,94,208,.36),inset 0 0 0 1px rgba(255,255,255,.45);animation:orbFloat 3.1s ease-in-out infinite;transition:width .22s ease,height .22s ease,bottom .22s ease,box-shadow .22s ease,background .22s ease;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none;-webkit-tap-highlight-color:transparent}
+  .barrage-list{height:760px;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;padding:4px 1px}.barrage-list::-webkit-scrollbar{display:none}.barrage-swipe-row{position:relative;overflow:hidden;touch-action:pan-y;background:#eef2fb}.barrage-actions{position:absolute;right:0;top:0;bottom:0;display:grid;grid-template-columns:repeat(3,66px);width:198px}.barrage-actions button{border:0;color:#fff;font-size:11px;font-weight:900}.barrage-actions button.correct{background:#7b87a8}.barrage-actions button.quick{background:#e76f78}.barrage-actions button.answer{background:#6074df}.barrage-actions button:disabled{opacity:.48}.barrage-list article{position:relative;z-index:1;display:grid;grid-template-columns:42px auto 1fr;min-height:38px;box-sizing:border-box;align-items:center;gap:7px;padding:8px 2px;border-bottom:1px solid rgba(218,225,238,.75);background:linear-gradient(150deg,#f8faff,#eef3fb);transition:transform .2s ease;will-change:transform}.barrage-list article.open{transform:translateX(-198px)}.barrage-swipe-row:last-child article{border-bottom:0}.barrage-list time{color:#9aa4b5;font-size:10px;font-variant-numeric:tabular-nums}.barrage-list strong{color:#596bd0;font-size:11px;white-space:nowrap}.barrage-list p{margin:0;color:#3c485f;font-size:12px;line-height:1.5}.barrage-action-feedback{grid-column:2 / -1;margin-top:-2px;font-size:9px;line-height:1.35}.barrage-action-feedback.ok{color:#319173}.barrage-action-feedback.error{color:#c45461}.barrage-empty{display:grid;height:100%;place-items:center;color:#96a0b2;font-size:12px}
+  .room-agent-orb{position:fixed;left:50%;bottom:calc(112px + env(safe-area-inset-bottom));z-index:57;display:grid;width:68px;height:68px;place-items:center;transform:translateX(-50%);border:2px solid rgba(255,255,255,.82);border-radius:50%;background:radial-gradient(circle at 35% 30%,#acbbff 0,#7587f4 34%,#4c5ed6 76%,#37449f 100%);color:#fff;box-shadow:0 14px 34px rgba(75,94,208,.36),inset 0 0 0 1px rgba(255,255,255,.45);animation:orbFloat 3.1s ease-in-out infinite;transition:left .34s cubic-bezier(.22,.82,.32,1),bottom .34s ease,width .22s ease,height .22s ease,box-shadow .22s ease,background .22s ease;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none;-webkit-tap-highlight-color:transparent}
+  .room-agent-orb.docked{left:min(100%,calc(50% + 270px));bottom:calc(102px + env(safe-area-inset-bottom));animation:dockedPulse 3.4s ease-in-out infinite;box-shadow:0 9px 26px rgba(75,94,208,.3),inset 0 0 0 1px rgba(255,255,255,.45)}
   .room-agent-orb *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none;pointer-events:none}
-  .agent-star{font-size:28px}.room-agent-orb.listening{width:116px;height:116px;bottom:calc(62px + env(safe-area-inset-bottom));animation:recordingBreath 1.6s ease-in-out infinite;background:radial-gradient(circle at 35% 28%,#b9c5ff 0,#7185f3 28%,#5368df 60%,#3648ad 100%);box-shadow:0 0 0 12px rgba(91,111,222,.08),0 20px 48px rgba(57,73,170,.42),inset 0 0 0 1px rgba(255,255,255,.56)}
+  .agent-star{font-size:28px}.room-agent-orb.listening{left:50%;width:116px;height:116px;bottom:calc(110px + env(safe-area-inset-bottom));animation:recordingBreath 1.6s ease-in-out infinite;background:radial-gradient(circle at 35% 28%,#b9c5ff 0,#7185f3 28%,#5368df 60%,#3648ad 100%);box-shadow:0 0 0 12px rgba(91,111,222,.08),0 20px 48px rgba(57,73,170,.42),inset 0 0 0 1px rgba(255,255,255,.56)}
   @keyframes orbFloat{0%,100%{transform:translateX(-50%) translateY(0) scale(1)}50%{transform:translateX(-50%) translateY(-6px) scale(1.04)}}
+  @keyframes dockedPulse{0%,100%{transform:translateX(-50%) scale(.96)}50%{transform:translateX(-56%) scale(1)}}
   @keyframes recordingBreath{0%,100%{transform:translateX(-50%) scale(1);filter:brightness(1)}50%{transform:translateX(-50%) scale(1.045);filter:brightness(1.08)}}
   .recording-glow{position:absolute;inset:10px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.22),rgba(255,255,255,0) 68%);animation:recordingGlow 1.15s ease-in-out infinite}@keyframes recordingGlow{0%,100%{opacity:.48;transform:scale(.9)}50%{opacity:1;transform:scale(1.08)}}
   .voice-ring{position:absolute;inset:-12px;border:3px solid rgba(117,137,255,.4);border-radius:50%;animation:voiceRing 1.65s ease-out infinite;will-change:transform,opacity}.voice-ring.two{animation-delay:.52s}.voice-ring.three{animation-delay:1.04s}@keyframes voiceRing{0%{transform:scale(.78);opacity:.82}55%{opacity:.36}100%{transform:scale(1.72);opacity:0}}
   .room-agent-orb.listening .mic-icon{width:25px;height:33px;border-width:4px;border-radius:14px;z-index:2}.room-agent-orb.listening .mic-stem{width:34px;height:17px;bottom:27px;border-width:4px;border-top:0;border-radius:0 0 17px 17px;z-index:2}.room-agent-orb.listening .mic-stem::after{bottom:-12px;width:4px;height:12px}
   .mic-icon{width:18px;height:23px;border:3px solid #fff;border-radius:10px;font-size:0}.mic-stem{position:absolute;width:24px;height:12px;bottom:16px;border:3px solid #fff;border-top:0;border-radius:0 0 12px 12px}.mic-stem::after{content:"";position:absolute;left:50%;bottom:-8px;width:3px;height:8px;transform:translateX(-50%);background:#fff;border-radius:2px}
-  .listening-caption{position:fixed;left:50%;bottom:calc(202px + env(safe-area-inset-bottom));z-index:46;transform:translateX(-50%);padding:8px 14px;border-radius:999px;background:rgba(30,41,73,.9);color:#fff;font-size:11px;font-weight:800;letter-spacing:.02em;white-space:nowrap;box-shadow:0 8px 24px rgba(23,33,69,.18)}
-  .voice-floating-composer{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));z-index:48;width:min(calc(100% - 30px),510px);transform:translateX(-50%);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px;border:1px solid #d8e0ef;border-radius:18px;background:rgba(255,255,255,.96);backdrop-filter:blur(18px);box-shadow:0 15px 38px rgba(48,62,114,.16)}.voice-floating-composer input{min-width:0;border:0;outline:none;background:transparent;padding:0 8px;color:#33405a}.voice-floating-composer button,.drawer-composer button{border:0;border-radius:12px;background:#5669df;color:#fff;padding:0 16px;font-weight:900}.voice-floating-composer button:disabled,.drawer-composer button:disabled{opacity:.45}
+  .listening-caption{position:fixed;left:50%;bottom:calc(244px + env(safe-area-inset-bottom));z-index:59;transform:translateX(-50%);padding:8px 14px;border-radius:999px;background:rgba(30,41,73,.9);color:#fff;font-size:11px;font-weight:800;letter-spacing:.02em;white-space:nowrap;box-shadow:0 8px 24px rgba(23,33,69,.18)}
+  .voice-floating-composer{position:fixed;left:50%;bottom:calc(185px + env(safe-area-inset-bottom));z-index:59;width:min(calc(100% - 30px),510px);transform:translateX(-50%);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px;border:1px solid #d8e0ef;border-radius:18px;background:rgba(255,255,255,.96);backdrop-filter:blur(18px);box-shadow:0 15px 38px rgba(48,62,114,.16)}.voice-floating-composer input{min-width:0;border:0;outline:none;background:transparent;padding:0 8px;color:#33405a}.voice-floating-composer button,.drawer-composer button{border:0;border-radius:12px;background:#5669df;color:#fff;padding:0 16px;font-weight:900}.voice-floating-composer button:disabled,.drawer-composer button:disabled{opacity:.45}
   .agent-drawer-mask{position:fixed;inset:0;z-index:60;background:rgba(18,27,47,.3);backdrop-filter:blur(3px)}
-  .agent-drawer{position:fixed;left:50%;top:max(58px,env(safe-area-inset-top));bottom:calc(68px + env(safe-area-inset-bottom));width:min(calc(100% - 20px),520px);transform:translateX(-50%);display:grid;grid-template-rows:auto 1fr auto;border:1px solid #dbe2ef;border-radius:25px;background:#f7f9fe;box-shadow:0 24px 60px rgba(31,44,83,.25);overflow:hidden;animation:drawerIn .22s ease-out}@keyframes drawerIn{from{opacity:0;transform:translateX(-50%) translateY(18px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+  .agent-drawer{position:fixed;left:50%;top:max(58px,env(safe-area-inset-top));bottom:calc(100px + env(safe-area-inset-bottom));width:min(calc(100% - 20px),520px);transform:translateX(-50%);display:grid;grid-template-rows:auto 1fr auto;border:1px solid #dbe2ef;border-radius:25px;background:#f7f9fe;box-shadow:0 24px 60px rgba(31,44,83,.25);overflow:hidden;animation:drawerIn .22s ease-out}@keyframes drawerIn{from{opacity:0;transform:translateX(-50%) translateY(18px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
   .agent-drawer>header{display:flex;align-items:center;justify-content:space-between;padding:15px 16px 12px;border-bottom:1px solid #e6eaf2;background:rgba(255,255,255,.88)}.agent-drawer>header span{color:#7180d5;font-size:9px;font-weight:900;letter-spacing:.12em}.agent-drawer>header h2{margin:3px 0 0;font-size:18px}.agent-drawer>header button{width:36px;height:36px;border:0;border-radius:11px;background:#eef1f6;color:#667187;font-size:24px}
   .drawer-chat{overflow-y:auto;padding:14px}.drawer-chat article{width:86%;margin-bottom:10px;padding:11px 12px;border:1px solid #e6eaf2;border-radius:16px 16px 16px 5px;background:#fff}.drawer-chat article.mine{margin-left:auto;border-color:#596bda;border-radius:16px 16px 5px 16px;background:#596bda;color:#fff}.drawer-chat small{font-size:9px;opacity:.65}.drawer-chat p{margin:5px 0 0;font-size:13px;line-height:1.55}.drawer-empty{display:grid;height:100%;place-items:center;color:#929caf;font-size:12px}
+  .mobile-correction-active{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;padding:10px 11px;border:1px solid #cfd8f6;border-radius:14px;background:#eef2ff}.mobile-correction-active>div{display:grid;gap:2px;min-width:0}.mobile-correction-active span{color:#6678d8;font-size:9px;font-weight:900}.mobile-correction-active strong{overflow:hidden;color:#33415f;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.mobile-correction-active button{flex:0 0 auto;border:1px solid #c8d0e8;border-radius:10px;background:#fff;color:#66728b;padding:7px 9px;font-size:10px;font-weight:850}
+  .mobile-correction-choice{display:grid;gap:8px;margin-top:9px;padding:10px;border:1px solid #d8def5;border-radius:13px;background:#f4f6ff}.mobile-correction-choice>span{color:#6272d7;font-size:10px;font-weight:900}.mobile-correction-choice>p{margin:0!important;padding:9px 10px;border-radius:10px;background:#fff;color:#263551!important;font-size:13px!important;line-height:1.6!important}.mobile-correction-choice>button{min-height:39px;border:0;border-radius:11px;background:#586bdd;color:#fff;font:inherit;font-weight:900}.mobile-correction-choice>button:disabled{opacity:.55}
   .mobile-speech-choice{display:grid;gap:8px;margin-top:9px;padding:10px;border:1px solid #dce3f7;border-radius:13px;background:linear-gradient(145deg,#f9faff,#eef2ff)}.mobile-speech-choice>span{color:#5969d5;font-size:10px;font-weight:900}.mobile-speech-choice>p{margin:0!important;padding:9px 10px;border-radius:10px;background:#fff;color:#263551!important;font-size:13px!important;line-height:1.6!important}.mobile-speech-choice>div{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mobile-speech-choice button{min-height:39px;border:1px solid #bfc9f4;border-radius:11px;background:#fff;color:#5062d3;font:inherit;font-weight:900}.mobile-speech-choice button:first-child{border-color:#586bdd;background:#586bdd;color:#fff}.mobile-speech-choice button:disabled{opacity:.55}.mobile-speech-choice>small{color:#7d88a5;font-size:9px;font-weight:800;opacity:1}
   .drawer-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-top:1px solid #e5e9f2;background:#fff}.drawer-composer input{min-width:0;min-height:45px;border:1px solid #dfe5ef;border-radius:12px;padding:0 12px;outline:none}
   @media(prefers-reduced-motion:reduce){.room-agent-orb,.voice-ring,.recording-glow,.audio-wave.active span{animation:none}}

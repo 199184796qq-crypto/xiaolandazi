@@ -91,6 +91,9 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 
 	var input liveAgentChatInput
 	if err := readAgentJSON(w, r, &input); err != nil {

@@ -74,6 +74,8 @@ func (s *Server) customerCreateWalletWithdrawal(w http.ResponseWriter, r *http.R
 		switch {
 		case errors.Is(err, storedb.ErrCustomerWithdrawalAccount):
 			writeError(w, http.StatusBadRequest, "提现账户类型无效")
+		case errors.Is(err, storedb.ErrCashWithdrawalUseRefund):
+			writeError(w, http.StatusConflict, "充值本金请使用钱包中的“余额退回”，按原微信付款账户退回；奖励与返佣仍可申请提现")
 		case errors.Is(err, storedb.ErrCustomerWithdrawalAmount):
 			writeError(w, http.StatusBadRequest, "提现金额必须大于 0")
 		case errors.Is(err, storedb.ErrCustomerWithdrawalInsufficient):

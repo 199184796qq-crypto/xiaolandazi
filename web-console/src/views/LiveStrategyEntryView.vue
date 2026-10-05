@@ -5,12 +5,12 @@ import { session } from '../session'
 import LivePolicyAdminView from './LivePolicyAdminView.vue'
 import LivePolicyLearningView from './LivePolicyLearningView.vue'
 import LiveStrategyView from './LiveStrategyView.vue'
-import LiveSupportView from './LiveSupportView.vue'
+import ModulePageNav from '../components/ModulePageNav.vue'
 
 const isCustomer = computed(() => session.bootstrap?.actor.role === 'customer')
 const storedMode = window.localStorage.getItem('system-agent-live-strategy-internal-mode')
-const internalMode = ref<'policy' | 'support' | 'learning'>(
-  storedMode === 'support' || storedMode === 'learning' ? storedMode : 'policy',
+const internalMode = ref<'policy' | 'learning'>(
+  storedMode === 'learning' ? storedMode : 'policy',
 )
 
 watch(
@@ -28,6 +28,7 @@ watch(
 <template>
   <LiveStrategyView v-if="isCustomer" />
   <div v-else class="live-strategy-entry-page">
+    <ModulePageNav context="workspace-auto" active-title="系统与行业规则" />
 
     <div class="live-strategy-entry-tabs">
       <button
@@ -39,13 +40,6 @@ watch(
       </button>
       <button
         type="button"
-        :class="{ active: internalMode === 'support' }"
-        @click="internalMode = 'support'"
-      >
-        客户授权协助
-      </button>
-      <button
-        type="button"
         :class="{ active: internalMode === 'learning' }"
         @click="internalMode = 'learning'"
       >
@@ -53,7 +47,6 @@ watch(
       </button>
     </div>
     <LivePolicyAdminView v-if="internalMode === 'policy'" embedded />
-    <LiveSupportView v-else-if="internalMode === 'support'" embedded />
     <LivePolicyLearningView v-else />
   </div>
 </template>

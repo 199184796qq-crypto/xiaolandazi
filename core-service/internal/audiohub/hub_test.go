@@ -98,6 +98,29 @@ func TestReceiverCompletionDoesNotControlTaskLifecycle(t *testing.T) {
 	}
 }
 
+func TestProbeExternalWAVHeaderUsesRangeAndDoesNotNeedWholeFile(t *testing.T) {
+	requestedRange := ""
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedRange = r.Header.Get("Range")
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(testWAV(120))
+	}))
+	defer source.Close()
+
+	hub := New()
+	mimeType, err := hub.ProbeExternalWAVHeader(context.Background(), source.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedRange == "" {
+		t.Fatal("expected lightweight header probe to request a byte range")
+	}
+	if mimeType != "audio/wav" {
+		t.Fatalf("mimeType=%q", mimeType)
+	}
+}
+
 func TestControlBroadcastReachesRoomSubscribers(t *testing.T) {
 	hub := New()
 	controls, cancel := hub.SubscribeControls(33)

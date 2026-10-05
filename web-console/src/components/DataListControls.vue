@@ -7,6 +7,7 @@ interface Option {
 withDefaults(
   defineProps<{
     viewMode: 'card' | 'table'
+    showViewToggle?: boolean
     search: string
     searchPlaceholder?: string
     status?: string
@@ -17,6 +18,7 @@ withDefaults(
   }>(),
   {
     searchPlaceholder: '搜索',
+    showViewToggle: true,
     status: 'all',
     statusOptions: () => [],
     sort: '',
@@ -83,7 +85,7 @@ const emit = defineEmits<{
       </label>
     </div>
 
-    <div class="data-view-toggle" aria-label="展示模式">
+    <div v-if="showViewToggle" class="data-view-toggle" aria-label="展示模式">
       <button
         type="button"
         :class="{ active: viewMode === 'card' }"

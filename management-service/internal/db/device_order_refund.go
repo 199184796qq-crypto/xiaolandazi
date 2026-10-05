@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -293,6 +294,34 @@ func reverseOrderIncentivesForRefundTx(
 	refundAmount uint64,
 	paidAmount uint64,
 ) error {
+	// Wallet before earnings: same lock order as maturity release and withdrawal.
+	beneficiaries, err := tx.QueryContext(ctx, `SELECT DISTINCT beneficiary_type,beneficiary_id FROM inc_earnings WHERE source_order_id=? AND (beneficiary_type='customer_referrer' OR LEFT(earning_type,9)='commerce_') ORDER BY beneficiary_type,beneficiary_id`, sourceOrderID)
+	if err != nil {
+		return err
+	}
+	type b struct {
+		kind string
+		id   int64
+	}
+	bs := []b{}
+	for beneficiaries.Next() {
+		var x b
+		if err = beneficiaries.Scan(&x.kind, &x.id); err != nil {
+			beneficiaries.Close()
+			return err
+		}
+		bs = append(bs, x)
+	}
+	err = beneficiaries.Err()
+	beneficiaries.Close()
+	if err != nil {
+		return err
+	}
+	for _, x := range bs {
+		if _, err = ensureBeneficiaryWalletTx(ctx, tx, x.kind, x.id); err != nil {
+			return err
+		}
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, beneficiary_type, beneficiary_id, earning_type,
 		       program_version_id, rule_id, currency,
@@ -372,7 +401,36 @@ func reverseOrderIncentivesForRefundTx(
 			continue
 		}
 
-		if item.BeneficiaryType != customerReferralBeneficiaryType {
+		commerce := strings.HasPrefix(item.EarningType, "commerce_")
+		if commerce {
+			var existing int64
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(-SUM(amount_cents),0) FROM inc_earnings WHERE reversal_of_earning_id=?`, item.ID).Scan(&existing); err != nil {
+				return err
+			}
+			var cumulative uint64
+			if err := tx.QueryRowContext(ctx, `SELECT refunded_amount_cents FROM biz_orders WHERE id=?`, sourceOrderID).Scan(&cumulative); err != nil {
+				return err
+			}
+			if cumulative < refundAmount {
+				cumulative = refundAmount
+			}
+			target := item.AmountCents
+			if cumulative < paidAmount && paidAmount > 0 {
+				target = int64(commissionMulDiv(uint64(item.AmountCents), cumulative, paidAmount))
+			}
+			reverseAmount = target - existing
+			remaining := item.AmountCents - existing
+			if remaining < 0 {
+				remaining = 0
+			}
+			if reverseAmount > remaining {
+				reverseAmount = remaining
+			}
+			if reverseAmount <= 0 {
+				continue
+			}
+		}
+		if item.BeneficiaryType != customerReferralBeneficiaryType && !commerce {
 			switch item.Status {
 			case "pending", "available":
 				if fullRefund {
@@ -392,7 +450,7 @@ func reverseOrderIncentivesForRefundTx(
 		idempotencyKey := fmt.Sprintf("refund-earning-reversal-%d-%d", refundID, item.ID)
 		reversalStatus := "available"
 		var reversalAvailableAt any = time.Now().UTC()
-		if item.BeneficiaryType == customerReferralBeneficiaryType && item.Status == "pending" && item.AvailableAt.Valid {
+		if (item.BeneficiaryType == customerReferralBeneficiaryType || commerce) && item.Status == "pending" && item.AvailableAt.Valid {
 			reversalStatus = "pending"
 			reversalAvailableAt = item.AvailableAt.Time
 		}
@@ -443,7 +501,7 @@ func reverseOrderIncentivesForRefundTx(
 		if err != nil {
 			return err
 		}
-		if affected > 0 && item.BeneficiaryType == customerReferralBeneficiaryType && reverseAmount != 0 {
+		if affected > 0 && (item.BeneficiaryType == customerReferralBeneficiaryType || commerce) && reverseAmount != 0 {
 			reversalID, err := result.LastInsertId()
 			if err != nil {
 				return err
@@ -458,7 +516,7 @@ func reverseOrderIncentivesForRefundTx(
 			if err := applyBeneficiaryWalletDeltaTx(
 				ctx,
 				tx,
-				customerReferralBeneficiaryType,
+				item.BeneficiaryType,
 				item.BeneficiaryID,
 				fmt.Sprintf("referral-reversal-%d-%d", refundID, item.ID),
 				"referral_refund_reversal",

@@ -481,23 +481,23 @@ func (m *Manager) Close() {
 	}
 }
 
-const offlineConfirmRetryDelay = 3 * time.Second
+const (
+	offlineConfirmRetryDelay  = 3 * time.Second
+	offlineConfirmationWindow = 60 * time.Second
+)
 
-func nextOfflineConfirmation(suspected bool, hadRealActivity bool) (nextSuspected bool, confirmed bool) {
-	if hadRealActivity {
-		return true, false
+func nextOfflineConfirmation(suspectedAt, now time.Time) (time.Time, bool) {
+	if suspectedAt.IsZero() {
+		return now.UTC(), false
 	}
-	if suspected {
-		return false, true
-	}
-	return true, false
+	return suspectedAt, !now.UTC().Before(suspectedAt.Add(offlineConfirmationWindow))
 }
 
 func (m *Manager) run(ctx context.Context, room model.Room) {
 	backoff := 5 * time.Second
 	currentPlatformRoomID, hasCachedEvents := m.cachedPlatformRoomID(room.ID)
 	sessionEnded := false
-	offlineSuspected := false
+	offlineSuspectedAt := time.Time{}
 
 	for {
 		if ctx.Err() != nil {
@@ -515,10 +515,8 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 			log.Printf("collector room=%d create runner: %v", room.ID, err)
 			return
 		}
-		attemptLive := false
-		hadRealActivity := false
 		live := func(_ context.Context) error {
-			attemptLive = true
+			offlineSuspectedAt = time.Time{}
 			m.runtimeUpdater.Touch(room)
 			return nil
 		}
@@ -550,8 +548,7 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		}
 
 		emit := func(_ context.Context, input model.CreateEventInput) error {
-			hadRealActivity = true
-			offlineSuspected = false
+			offlineSuspectedAt = time.Time{}
 			ensureSession(input)
 			if input.EventType == "room" {
 				m.applyRoomMetrics(room, input)
@@ -582,14 +579,33 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		}
 
 		err = runner.Run(ctx, room, live, emit)
-		if errors.Is(err, ErrOffline) {
-			nextSuspected, confirmed := nextOfflineConfirmation(offlineSuspected, hadRealActivity)
-			offlineSuspected = nextSuspected
+		if errors.Is(err, ErrLiveEnded) {
+			if currentPlatformRoomID != "" && !sessionEnded {
+				m.eventPipeline.Enqueue(room, model.CreateEventInput{
+					EventType:  "session_end",
+					OccurredAt: time.Now().UTC(),
+				}, false, false)
+				sessionEnded = true
+			}
+			m.eventPipeline.CloseRoom(room.ID)
+			m.runtimeUpdater.ClearRoom(room.ID)
+			if ctx.Err() != nil {
+				return
+			}
+			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "offline")
+			log.Printf("collector room=%d runner=%s platform live ended: %v", room.ID, runner.Name(), err)
+			backoff = 30 * time.Second
+		} else if errors.Is(err, ErrOffline) {
+			now := time.Now().UTC()
+			var confirmed bool
+			offlineSuspectedAt, confirmed = nextOfflineConfirmation(offlineSuspectedAt, now)
 			if !confirmed {
 				log.Printf(
-					"collector room=%d runner=%s suspected offline; keeping live session and retrying confirmation",
+					"collector room=%d runner=%s connectivity lost for %s; keeping live session during %s confirmation window",
 					room.ID,
 					runner.Name(),
+					now.Sub(offlineSuspectedAt).Round(time.Second),
+					offlineConfirmationWindow,
 				)
 				m.eventPipeline.CloseRoom(room.ID)
 				if ctx.Err() != nil {
@@ -604,31 +620,27 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 				}
 				continue
 			}
-			if attemptLive && currentPlatformRoomID != "" {
+			if currentPlatformRoomID != "" && !sessionEnded {
 				m.eventPipeline.Enqueue(room, model.CreateEventInput{
 					EventType:  "session_end",
-					OccurredAt: time.Now().UTC(),
+					OccurredAt: now,
 				}, false, false)
 				sessionEnded = true
 			}
-		}
-		m.eventPipeline.CloseRoom(room.ID)
-		// Only a confirmed offline/error may clear the coalesced live state.
-		// A single no-frame timeout is treated as a transient collector wobble.
-		m.runtimeUpdater.ClearRoom(room.ID)
-		// Keep the last successful session cache. It is only replaced after a
-		// future real event proves that Douyin's platform room_id has changed.
-		if ctx.Err() != nil {
-			return
-		}
-
-		if errors.Is(err, ErrOffline) {
-			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "offline")
-			if err != nil {
-				log.Printf("collector room=%d runner=%s offline: %v", room.ID, runner.Name(), err)
+			m.eventPipeline.CloseRoom(room.ID)
+			m.runtimeUpdater.ClearRoom(room.ID)
+			if ctx.Err() != nil {
+				return
 			}
+			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "offline")
+			log.Printf("collector room=%d runner=%s offline confirmed after %s: %v", room.ID, runner.Name(), offlineConfirmationWindow, err)
 			backoff = 30 * time.Second
 		} else {
+			m.eventPipeline.CloseRoom(room.ID)
+			m.runtimeUpdater.ClearRoom(room.ID)
+			if ctx.Err() != nil {
+				return
+			}
 			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "error")
 			if err != nil {
 				log.Printf("collector room=%d runner=%s error: %v", room.ID, runner.Name(), err)

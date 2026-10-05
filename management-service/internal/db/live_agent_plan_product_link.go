@@ -261,6 +261,9 @@ func (s *Store) UpdateLiveAgentPlanProductLink(
 	if err != nil {
 		return model.LiveAgentPlanProductLink{}, err
 	}
+	if err := relinkLiveAgentPlanBenefitsForLink(ctx, tx, tenantID, planID, current.LinkKey, linkKey, actorUserID); err != nil {
+		return model.LiveAgentPlanProductLink{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveAgentPlanProductLink{}, err
 	}
@@ -297,6 +300,9 @@ func (s *Store) DeleteLiveAgentPlanProductLinkWithExpectedVersion(ctx context.Co
 		VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_delete', '', ?)
 	`, tenantID, planID, productLinkID, nextVersion, current.LinkKey, current.ProductName, current.Spec, current.DailyPrice, current.Quantity, current.Audience, current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
+		return err
+	}
+	if err := disableLiveAgentPlanBenefitsForLink(ctx, tx, tenantID, planID, current.LinkKey, actorUserID); err != nil {
 		return err
 	}
 	return tx.Commit()

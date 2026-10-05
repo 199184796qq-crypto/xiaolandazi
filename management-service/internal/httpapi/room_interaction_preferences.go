@@ -11,41 +11,21 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-func validInteractionPreference(value string, allowed ...string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
-}
-
 func validateRoomInteractionPreferences(input *model.RoomInteractionPreferencesInput) error {
 	if input == nil {
 		return fmt.Errorf("互动偏好不能为空")
 	}
-	input.OverallInteraction = strings.ToLower(strings.TrimSpace(input.OverallInteraction))
-	input.QuestionPreference = strings.ToLower(strings.TrimSpace(input.QuestionPreference))
-	input.WelcomePreference = strings.ToLower(strings.TrimSpace(input.WelcomePreference))
-	input.EngagementPreference = strings.ToLower(strings.TrimSpace(input.EngagementPreference))
-	input.ChatPreference = strings.ToLower(strings.TrimSpace(input.ChatPreference))
-	input.ConversionPreference = strings.ToLower(strings.TrimSpace(input.ConversionPreference))
-	if !validInteractionPreference(input.OverallInteraction, "quiet", "natural", "active") {
-		return fmt.Errorf("整体互动设置无效")
-	}
-	for label, value := range map[string]string{
+	for label, value := range map[string]int{
+		"整体互动": input.OverallInteraction,
 		"回答问题": input.QuestionPreference,
 		"欢迎新人": input.WelcomePreference,
 		"点赞关注": input.EngagementPreference,
 		"聊天互动": input.ChatPreference,
+		"成交互动": input.ConversionPreference,
 	} {
-		if !validInteractionPreference(value, "less", "natural", "more") {
-			return fmt.Errorf("%s设置无效", label)
+		if value < 0 || value > 100 {
+			return fmt.Errorf("%s必须在 0 到 100 之间", label)
 		}
-	}
-	if !validInteractionPreference(input.ConversionPreference, "steady", "natural", "active") {
-		return fmt.Errorf("成交互动设置无效")
 	}
 	return nil
 }
@@ -61,6 +41,9 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 	}
 	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
 

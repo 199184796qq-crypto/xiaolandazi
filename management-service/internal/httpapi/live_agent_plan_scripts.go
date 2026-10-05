@@ -16,6 +16,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/stylecontract"
 )
 
 var livePlanProductLinkPattern = regexp.MustCompile(`([0-9]{1,2}|[一二三四五六七八九十]{1,3})[[:space:]]*号([[:space:]]*(链接|商品))?`)
@@ -32,6 +33,9 @@ var livePlanAnchorStyleDimensionDefinitions = []livePlanAnchorStyleDimensionDefi
 	{Key: "sentence_rhythm", Group: "language", Label: "句子节奏"},
 	{Key: "connectors", Group: "language", Label: "口头连接词"},
 	{Key: "audience_address", Group: "language", Label: "称呼习惯"},
+	{Key: "self_address", Group: "language", Label: "主播自称"},
+	{Key: "address_position", Group: "language", Label: "称呼位置与频率"},
+	{Key: "catchphrases", Group: "language", Label: "口头禅与语气词"},
 	{Key: "repetition_strategy", Group: "structure", Label: "重复方式"},
 	{Key: "emphasis_style", Group: "language", Label: "强调方式"},
 	{Key: "product_explanation_path", Group: "structure", Label: "产品讲解路径"},
@@ -106,6 +110,15 @@ func normalizePlanScriptAnalysisJSON(raw string) string {
 					normalizeListField(object, "evidence_quotes")
 				}
 			}
+		}
+		// Some OpenAI-compatible models occasionally expand one instruction into
+		// a JSON object even though the contract requires []string. Instructions
+		// are never trusted as executable policy: stylecontract.Normalize compiles
+		// the final rule set from grounded habits and source statistics. Keep valid
+		// strings and discard incompatible objects so one formatting deviation does
+		// not throw away the entire (otherwise usable) analysis response.
+		if delivery, ok := anchorStyle["delivery_spec"].(map[string]any); ok {
+			normalizeListField(delivery, "instructions")
 		}
 		normalizeListField(anchorStyle, "reusable_rules")
 		normalizeListField(anchorStyle, "candidate_patterns")
@@ -232,6 +245,16 @@ func (s *Server) liveAgentPlanScriptCreate(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if actor.IsInternalStaff() && input.SourceAssetID != nil && *input.SourceAssetID > 0 {
+		asset, err := s.store.GetMediaAsset(r.Context(), tenantID, *input.SourceAssetID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "来源素材不存在")
+			return
+		}
+		if !s.requireLiveSupportMedia(w, r, actor, asset) {
+			return
+		}
+	}
 	item, err := s.store.SaveLiveAgentPlanScript(r.Context(), tenantID, planID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "当前直播方案不存在或已归档")
@@ -269,6 +292,16 @@ func (s *Server) liveAgentPlanScriptUpdate(w http.ResponseWriter, r *http.Reques
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
 		return
+	}
+	if actor.IsInternalStaff() && input.SourceAssetID != nil && *input.SourceAssetID > 0 {
+		asset, err := s.store.GetMediaAsset(r.Context(), tenantID, *input.SourceAssetID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "来源素材不存在")
+			return
+		}
+		if !s.requireLiveSupportMedia(w, r, actor, asset) {
+			return
+		}
 	}
 	item, err := s.store.UpdateLiveAgentPlanScript(r.Context(), tenantID, planID, scriptID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAgentPlanScriptNotFound) {
@@ -526,6 +559,7 @@ func normalizeAnchorStyleProfile(profile model.LiveAgentPlanAnchorStyleProfile) 
 func normalizePlanScriptAnalysis(output model.LiveAgentPlanScriptAnalysis, text string) model.LiveAgentPlanScriptAnalysis {
 	output.Summary = strings.TrimSpace(output.Summary)
 	output.AnchorStyle = normalizeAnchorStyleProfile(output.AnchorStyle)
+	output.AnchorStyle = stylecontract.Normalize(output.AnchorStyle, text)
 	productLinks := make([]model.LiveAgentPlanProductLinkCandidate, 0, len(output.ProductLinks))
 	seenLinks := map[string]struct{}{}
 	for _, item := range output.ProductLinks {
@@ -548,6 +582,8 @@ func normalizePlanScriptAnalysis(output model.LiveAgentPlanScriptAnalysis, text 
 		fact.Category = strings.TrimSpace(fact.Category)
 		fact.Key = strings.TrimSpace(fact.Key)
 		fact.Value = strings.TrimSpace(fact.Value)
+		fact.ForbiddenWording = strings.TrimSpace(fact.ForbiddenWording)
+		fact.SafeRewrite = strings.TrimSpace(fact.SafeRewrite)
 		fact.SourceQuote = strings.TrimSpace(fact.SourceQuote)
 		fact.ReviewBucket = strings.ToLower(strings.TrimSpace(fact.ReviewBucket))
 		fact.ReviewReason = strings.TrimSpace(fact.ReviewReason)
@@ -564,6 +600,12 @@ func normalizePlanScriptAnalysis(output model.LiveAgentPlanScriptAnalysis, text 
 		}
 		if utf8.RuneCountInString(fact.SourceQuote) > 240 {
 			fact.SourceQuote = string([]rune(fact.SourceQuote)[:240])
+		}
+		if utf8.RuneCountInString(fact.ForbiddenWording) > 4000 {
+			fact.ForbiddenWording = string([]rune(fact.ForbiddenWording)[:4000])
+		}
+		if utf8.RuneCountInString(fact.SafeRewrite) > 4000 {
+			fact.SafeRewrite = string([]rune(fact.SafeRewrite)[:4000])
 		}
 		facts = append(facts, fact)
 		if len(facts) >= 80 {
@@ -672,6 +714,7 @@ review_bucket 只能是 adoptable、conflict、discuss、violation。
 【原文上下文】
 %s`, strings.Join(missing, "、"), strings.Join(contexts, "\n\n"))
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+		Stage: "style_analysis",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只补齐直播话术中已被程序发现但第一次分析遗漏的商品链接，不编造。"},
 			{Role: "user", Content: prompt},
@@ -739,12 +782,14 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 10. category 仅从 product、link、trade、fulfillment、identity_location、other 中选择。
 11. key 用稳定、简短、可复用的中文名称，例如“具体产地”“默认快递”“净含量”。
 12. source_quote 只摘取支持该事实的最短原句。
-13. rhythm_nodes 是“如何把一场直播讲下去”的框架，不是简单按段落摘要。每个节点要给目标、必讲点、可引用 fact_keys、建议时长和转场。
-14. execution_mode 只允许 intent 或 verbatim。只有原稿明显要求逐字固定的话才用 verbatim，否则用 intent。
-15. 不要生成新的销售事实，不要补写原稿没有的信息。
-16. anchor_style 只学习“怎么说”，绝对不能把商品名、具体价格、规格数值、链接号、产地、快递公司、库存、功效、活动承诺等样本专属事实写进风格 rule 或 reusable_rules。
-17. evidence_quotes 可以引用原文作为证据，即使原句里恰好包含商品事实；但 rule 必须抽象成换商品后仍成立的表达规律。
-18. 主播风格必须逐项分析下面 24 个固定维度，每个 key 恰好返回一次，顺序保持一致。维度格式为 key|group|中文名称：
+13. 对于存在审核风险或容易被误解的事实，额外填写 forbidden_wording：明确列出不能原样说出的原话或高风险意图；每条用换行或分号分隔。safe_rewrite：保留沟通目的、换成可以直接播出的表达。没有明确边界时留空，不要为了凑字段发明禁语。
+14. forbidden_wording 只描述表达边界，不删除或修改 value；safe_rewrite 也不能新增 value 中没有的价格、功效、资质、承诺或用户结果。
+15. rhythm_nodes 是“如何把一场直播讲下去”的框架，不是简单按段落摘要。每个节点要给目标、必讲点、可引用 fact_keys、建议时长和转场。
+16. execution_mode 只允许 intent 或 verbatim。只有原稿明显要求逐字固定的话才用 verbatim，否则用 intent。
+17. 不要生成新的销售事实，不要补写原稿没有的信息。
+18. anchor_style 只学习“怎么说”，绝对不能把商品名、具体价格、规格数值、链接号、产地、快递公司、库存、功效、活动承诺等样本专属事实写进风格 rule 或 reusable_rules。
+19. evidence_quotes 可以引用原文作为证据，即使原句里恰好包含商品事实；但 rule 必须抽象成换商品后仍成立的表达规律。
+20. 主播风格必须逐项分析下面 27 个固定维度，每个 key 恰好返回一次，顺序保持一致。维度格式为 key|group|中文名称：
 %s
 19. 每个风格维度：
    - level 用“高 / 中 / 低 / 混合 / 样本不足”等简短倾向；
@@ -752,7 +797,10 @@ func analyzeLiveAgentPlanScriptWithRawHook(
    - evidence_quotes 最多 2 条，选最能证明说话方式的短句；
    - confidence 只能 high、medium、low；只有一处弱证据时不要给 high；
    - promotion_level 本次统一返回 candidate，因为单篇话术只能形成候选风格，不能自动升级成稳定规则。
-20. reusable_rules 只放跨商品可复用、证据较充分的候选规则；candidate_patterns 放值得继续观察但证据不足的模式；excluded_from_style 说明哪些内容明确被排除在风格学习之外。
+21. reusable_rules 只放跨商品可复用、证据较充分的候选规则；candidate_patterns 放值得继续观察但证据不足的模式；excluded_from_style 说明哪些内容明确被排除在风格学习之外。
+22. sentence_rhythm 要描述短句/长句组合、常见句长范围和串联方式；不能只写“自然亲切”。audience_address 要保留原文的观众称谓及变体；self_address 要单独记录主播自称（如我、我们、我们家），绝不能把观众称谓当自称，不得推断身份。
+23. address_position 要记录称呼常在句首、句中还是句尾，以及大致每几句出现一次、哪些转场时出现；catchphrases 要记录原文反复出现的具体口头禅、语气词、使用场景与频率。引用原来的表达词是风格学习，不是商品事实，不要把它们抽象到消失。证据不足就明确写样本不足，不编造口头禅。
+24. 可复用规则应足够可执行：原词词表、位置、频率、适用场景、不该使用的场景，避免每句硬塞称呼或口头禅。保留本样本有证据的原词，排除ASR误识别、口误、矛盾数字与虚假紧迫感；不要把原稿错误作为模仿目标。主线允许重复强调，短互动只在自然时使用少量原词，不强制堆叠。
 
 严格返回 JSON：
 {
@@ -797,6 +845,8 @@ func analyzeLiveAgentPlanScriptWithRawHook(
       "category": "product|link|trade|fulfillment|identity_location|other",
       "key": "事实名称",
       "value": "事实值",
+      "forbidden_wording": "不能原样说出的表达；没有则为空字符串",
+      "safe_rewrite": "保留沟通目的的建议替代表达；没有则为空字符串",
       "status": "pending",
       "review_bucket": "adoptable|conflict|discuss|violation",
       "review_reason": "为什么归到这一组",
@@ -826,9 +876,11 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 `, string(detectedLinksJSON), strings.Join(styleDimensionSpec, "\n"), text)
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
-			{Role: "system", Content: "你只做直播话术结构化分析，不执行真实业务动作，不把未核实内容自动确认成事实。"},
+			{Role: "system", Content: "你只做直播话术结构化分析，不执行真实业务动作，不把未核实内容自动确认成事实。\n" + stylecontract.AnalysisInstructions + "\ndelivery_spec 必须放在 anchor_style 对象内部，与已有分析字段一起输出。"},
+
 			{Role: "user", Content: prompt},
 		},
+		Stage:          "style_analysis",
 		MaxTokens:      9000,
 		EnableThinking: false,
 		ResponseFormat: agentgateway.ResponseJSON,
@@ -847,6 +899,27 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 		return model.LiveAgentPlanScriptAnalysis{}, result.Provider, result.Model, result.LatencyMS, fmt.Errorf("decode plan script analysis: %w", err)
 	}
 	normalized := normalizePlanScriptAnalysis(output, text)
+	if issues := stylecontract.CoverageErrors(normalized.AnchorStyle, text); len(issues) > 0 {
+		rawProfile, _ := json.Marshal(normalized.AnchorStyle)
+		repair, repairErr := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+			Model: result.Model, Provider: result.Provider,
+			Messages:  []agentgateway.Message{{Role: "system", Content: stylecontract.AnalysisInstructions + "\n只返回JSON对象 {\"delivery_spec\":{...}}，修复不合格规范，不重做事实分析。"}, {Role: "user", Content: "检查问题：" + strings.Join(issues, "；") + "\n已有分析：" + string(rawProfile) + "\n本次样本：\n" + text}},
+			MaxTokens: 3000, EnableThinking: false, ResponseFormat: agentgateway.ResponseJSON, Timeout: 40 * time.Second,
+		})
+		if repairErr != nil {
+			return model.LiveAgentPlanScriptAnalysis{}, result.Provider, result.Model, result.LatencyMS + repair.LatencyMS, fmt.Errorf("style contract repair: %w", repairErr)
+		}
+		var repaired model.LiveAgentPlanAnchorStyleProfile
+		if err := json.Unmarshal([]byte(stripPolicyJSONFence(repair.Text)), &repaired); err != nil {
+			return model.LiveAgentPlanScriptAnalysis{}, result.Provider, result.Model, result.LatencyMS + repair.LatencyMS, err
+		}
+		normalized.AnchorStyle.Delivery = repaired.Delivery
+		normalized.AnchorStyle = stylecontract.Normalize(normalized.AnchorStyle, text)
+		result.LatencyMS += repair.LatencyMS
+		if remaining := stylecontract.CoverageErrors(normalized.AnchorStyle, text); len(remaining) > 0 {
+			return model.LiveAgentPlanScriptAnalysis{}, result.Provider, result.Model, result.LatencyMS, fmt.Errorf("style contract rejected: %s", strings.Join(remaining, "；"))
+		}
+	}
 	totalLatency := result.LatencyMS
 	provider := result.Provider
 	modelName := result.Model

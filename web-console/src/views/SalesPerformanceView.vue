@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { getAdminSalesPerformance, getMySalesPerformance } from '../api'
 import DataListControls from '../components/DataListControls.vue'
 import ModulePageNav from '../components/ModulePageNav.vue'
+import SalesCommissionWallet from '../components/SalesCommissionWallet.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import { session } from '../session'
 import type {
@@ -116,6 +117,7 @@ onMounted(() => void load(false))
     </section>
 
 
+    <SalesCommissionWallet v-if="isSelfSales" :period="period" />
     <section class="settings-card feature-workspace-panel">
       <DataListControls
         v-if="!isSelfSales"

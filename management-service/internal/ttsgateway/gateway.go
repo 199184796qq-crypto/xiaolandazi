@@ -34,6 +34,7 @@ type CloneRequest struct {
 	Provider      string
 	PreferredName string
 	AudioData     string
+	AudioURL      string
 	TargetModel   string
 }
 

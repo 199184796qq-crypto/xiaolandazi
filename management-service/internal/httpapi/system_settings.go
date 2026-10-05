@@ -89,6 +89,30 @@ func validateLivePolicyFontSetting(key, raw string) error {
 	return nil
 }
 
+func validateAuthHomepageSetting(key, raw string) error {
+	maxRunes := 0
+	switch key {
+	case "auth_customer_side_label", "auth_customer_status_label",
+		"auth_internal_side_label", "auth_internal_status_label":
+		maxRunes = 64
+	case "auth_customer_title_line_1", "auth_customer_title_line_2",
+		"auth_internal_title_line_1", "auth_internal_title_line_2":
+		maxRunes = 48
+	case "auth_customer_description", "auth_internal_description":
+		maxRunes = 240
+	default:
+		return nil
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fmt.Errorf("%s 不能为空", key)
+	}
+	if utf8.RuneCountInString(value) > maxRunes {
+		return fmt.Errorf("%s 不能超过 %d 个字符", key, maxRunes)
+	}
+	return nil
+}
+
 func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requirePlatformAdmin(w, r)
 	if !ok {
@@ -113,6 +137,10 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := validateLivePolicyFontSetting(item.Key, item.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := validateAuthHomepageSetting(item.Key, item.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

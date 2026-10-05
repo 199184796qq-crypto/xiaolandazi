@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getSalesWithdrawals,reviewSalesWithdrawal } from '../commerce'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction } from '../uiFeedback'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -8,6 +9,8 @@ import {
   approveSettlementBatch,
   createSettlementBatch,
   getFinanceCustomerWithdrawals,
+  getFinanceWechatRefunds,
+  queryFinanceWechatRefund,
   getFinanceSettlementDashboard,
   getReferralWithdrawals,
   payCustomerWalletWithdrawal,
@@ -25,6 +28,7 @@ import type {
   IncentiveEarning,
   SettlementBatch,
   WithdrawalRequest,
+  WechatCashRefund,
 } from '../types'
 
 const loading = ref(false)
@@ -33,7 +37,8 @@ const error = useFeedbackErrorRef()
 const earnings = ref<IncentiveEarning[]>([])
 const batches = ref<SettlementBatch[]>([])
 const withdrawals = ref<WithdrawalRequest[]>([])
-const tab = ref<'earnings' | 'batches' | 'withdrawals'>('earnings')
+const cashRefunds = ref<WechatCashRefund[]>([])
+const tab = ref<'earnings' | 'batches' | 'withdrawals' | 'refunds'>('earnings')
 const modalOpen = ref(false)
 const earningsPage = ref(1)
 const batchesPage = ref(1)
@@ -119,6 +124,7 @@ function withdrawalTypeLabel(value: string) {
 function earningTypeLabel(value: string) {
   const map: Record<string, string> = {
     referral_reward: '推荐奖励',
+    commerce_sales: '成交销售提成', commerce_referral: '成交用户分佣', commerce_sales_refund_reversal: '销售提成退款冲回',commerce_referral_refund_reversal:'用户分佣退款冲回',
     sales_commission: '销售提成',
     agent_settlement: '代理返佣',
     reversal: '冲回',
@@ -215,6 +221,7 @@ async function approveWithdrawal(item: WithdrawalRequest) {
   error.value = ''
   try {
     if (item.beneficiary_type === 'customer_referrer') await approveReferralWithdrawal(item.id)
+    else if (item.beneficiary_type === 'sales_staff') await reviewSalesWithdrawal(item.id,'approve')
     else await approveCustomerWalletWithdrawal(item.id)
     await load()
   } catch (value) {
@@ -228,6 +235,7 @@ async function rejectWithdrawal(item: WithdrawalRequest) {
   error.value = ''
   try {
     if (item.beneficiary_type === 'customer_referrer') await rejectReferralWithdrawal(item.id, reason)
+    else if (item.beneficiary_type === 'sales_staff') await reviewSalesWithdrawal(item.id,'reject',reason)
     else await rejectCustomerWalletWithdrawal(item.id, reason)
     await load()
   } catch (value) {
@@ -240,6 +248,7 @@ async function payWithdrawal(item: WithdrawalRequest) {
   error.value = ''
   try {
     if (item.beneficiary_type === 'customer_referrer') await payReferralWithdrawal(item.id)
+    else if (item.beneficiary_type === 'sales_staff') await reviewSalesWithdrawal(item.id,'pay')
     else await payCustomerWalletWithdrawal(item.id)
     await load()
   } catch (value) {
@@ -251,16 +260,20 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [data, customerWithdrawalData, referralWithdrawalData] = await Promise.all([
+    const [data, customerWithdrawalData, referralWithdrawalData, refundData, salesWithdrawalData] = await Promise.all([
       getFinanceSettlementDashboard(),
       getFinanceCustomerWithdrawals('all'),
       getReferralWithdrawals('all'),
+      getFinanceWechatRefunds(),
+      getSalesWithdrawals(),
     ])
     earnings.value = data.earnings
     batches.value = data.batches
+    cashRefunds.value = refundData.items
     withdrawals.value = [
       ...(customerWithdrawalData.items || []),
       ...(referralWithdrawalData.items || []),
+      ...(salesWithdrawalData.items || []),
     ].sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime())
   } catch (value) {
     error.value = value instanceof Error ? value.message : '读取收益结算失败'
@@ -269,6 +282,16 @@ async function load() {
   }
 }
 
+async function queryCashRefund(id: number) {
+  if (saving.value) return
+  saving.value = true
+  try { await queryFinanceWechatRefund(id); await load() }
+  catch (value) { error.value = value instanceof Error ? value.message : '退款核验暂不可用' }
+  finally { saving.value = false }
+}
+function refundStatus(value: string) {
+  return ({ queued: '待受理 / 待核验', processing: '原路退回中', abnormal: '异常待人工处理，保持冻结', closed: '已关闭并解冻', success: '微信已确认成功', partially_refunded: '部分成功，其余已解冻' } as Record<string,string>)[value] || value
+}
 onMounted(load)
 </script>
 
@@ -305,6 +328,7 @@ onMounted(load)
         <button type="button" :class="{ active: tab === 'withdrawals' }" @click="tab = 'withdrawals'">
           提现申请
         </button>
+        <button type="button" :class="{ active: tab === 'refunds' }" @click="tab = 'refunds'">充值本金退回</button>
       </div>
 
       <div v-if="loading" class="panel-loading">正在读取收益结算...</div>
@@ -419,6 +443,12 @@ onMounted(load)
         />
       </div>
 
+      <div v-else-if="tab === 'refunds'" class="data-table-wrap">
+        <p>仅按微信签名通知或查单结果结算，不能手工标记打款。异常退款请到微信商户平台按子退款单号核对处理，期间不能解冻。</p>
+        <table class="data-table"><thead><tr><th>客户</th><th>退回单号</th><th>申请金额</th><th>已退回 / 冻结 / 解冻</th><th>状态及子退款单</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="item in cashRefunds" :key="item.id"><td>{{ item.tenant_name }} #{{ item.tenant_id }}</td><td>{{ item.refund_no }}</td><td>{{ formatMoney(item.amount_cents) }}</td><td>{{ formatMoney(item.refunded_cents) }} / {{ formatMoney(item.frozen_cents) }} / {{ formatMoney(item.released_cents) }}</td><td>{{ refundStatus(item.status) }}<div v-for="part in item.items" :key="part.id">{{ part.refund_no }} · {{ part.recharge_no }} · {{ refundStatus(part.status) }} · {{ part.message }}</div></td><td><button v-if="canApprove && item.frozen_cents > 0" type="button" :disabled="saving" @click="queryCashRefund(item.id)">核验微信结果</button></td></tr>
+        </tbody></table><div v-if="!cashRefunds.length" class="empty-state">暂无充值本金退回记录。</div>
+      </div>
       <div v-else class="data-table-wrap">
         <table class="data-table">
           <thead>

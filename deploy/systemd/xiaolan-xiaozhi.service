@@ -1,0 +1,20 @@
+[Unit]
+Description=Xiaolan Xiaozhi Gateway
+After=network-online.target xiaolan-core.service
+Wants=network-online.target
+Requires=xiaolan-core.service
+
+[Service]
+Type=simple
+User=ecs-user
+Group=ecs-user
+EnvironmentFile=/etc/xiaolan/xiaozhi.env
+WorkingDirectory=/opt/xiaolan
+ExecStart=/opt/xiaolan/current/bin/xiaozhi-gateway
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

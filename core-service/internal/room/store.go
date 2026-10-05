@@ -166,19 +166,14 @@ func (s *Store) Delete(ctx context.Context, tenantID *int64, roomID int64) error
 		args = append(args, *tenantID)
 	}
 
-	archiveQuery := "DELETE FROM live_room_event_archive WHERE room_id = ?"
 	blockQuery := "DELETE FROM core_room_user_blocks WHERE room_id = ?"
-	archiveArgs := []any{roomID}
 	blockArgs := []any{roomID}
 	if tenantID != nil {
-		archiveQuery += " AND tenant_id = ?"
 		blockQuery += " AND tenant_id = ?"
-		archiveArgs = append(archiveArgs, *tenantID)
 		blockArgs = append(blockArgs, *tenantID)
 	}
-	if _, err := tx.ExecContext(ctx, archiveQuery, archiveArgs...); err != nil {
-		return err
-	}
+	// Archived events are history, not an active room resource. Keep them after
+	// permanent deletion together with billing and administrative audit records.
 	if _, err := tx.ExecContext(ctx, blockQuery, blockArgs...); err != nil {
 		return err
 	}

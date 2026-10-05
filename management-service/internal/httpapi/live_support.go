@@ -85,15 +85,15 @@ func (s *Server) requireLiveSupportRoomCapability(
 	if !ok {
 		return model.Actor{}, 0, 0, false
 	}
-	authorized, err := s.store.HasLiveSupportTenantAuthorization(
-		r.Context(), tenantID, actor.UserID, capability,
+	authorized, err := s.store.HasLiveSupportAuthorization(
+		r.Context(), tenantID, roomID, actor.UserID, capability,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "校验客户授权失败")
 		return model.Actor{}, 0, 0, false
 	}
 	if !authorized {
-		writeError(w, http.StatusForbidden, "客户尚未授权你协助该终端")
+		writeError(w, http.StatusForbidden, "客户尚未授权你协助该直播间，或授权已经撤回")
 		return model.Actor{}, 0, 0, false
 	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
@@ -422,9 +422,8 @@ func (s *Server) liveOpsSupportActivateConfigVersion(w http.ResponseWriter, r *h
 		writeError(w, http.StatusConflict, "该主播训练草稿已失效或客户已生成更新草稿，请重新生成")
 		return
 	}
-	if err := s.store.ActivateLiveAgentConfigVersion(
-		r.Context(), tenantID, versionID, actor.UserID,
-	); err != nil {
+	activeVersionID, err := s.store.ActivateLiveSupportTrainingConfig(r.Context(), tenantID, roomID, versionID, actor.UserID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "发布主播训练配置失败")
 		return
 	}
@@ -438,7 +437,7 @@ func (s *Server) liveOpsSupportActivateConfigVersion(w http.ResponseWriter, r *h
 		model.LiveSupportCapabilityAnchorTraining,
 		map[string]any{"version_id": versionID},
 	)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "active", "version_id": versionID})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "active", "version_id": activeVersionID})
 }
 
 func (s *Server) liveOpsSupportMediaUpload(w http.ResponseWriter, r *http.Request) {

@@ -769,6 +769,13 @@ func (s *Store) AdoptAgentLearningSession(
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents
+		WHERE tenant_id=? AND room_id=? AND content_type='correction'
+		  AND source_id IN (?, ?)
+	`, tenantID, roomID, fmt.Sprintf("memory:%d", memoryItemID), fmt.Sprintf("memory:%d", reclassifiedFromMemoryID)); err != nil {
+		return model.AdoptAgentLearningOutput{}, fmt.Errorf("invalidate changed correction vectors: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_learning_sessions
 		SET status='adopted', memory_type=?, target=?, adopted_memory_item_id=?,
 			adopted_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
@@ -847,6 +854,12 @@ func (s *Store) RollbackAgentMemoryVersion(
 	`, targetVersionID, memoryItemID); err != nil {
 		return model.AgentMemoryItem{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents WHERE tenant_id=? AND room_id=?
+		  AND content_type='correction' AND source_id=?
+	`, tenantID, roomID, fmt.Sprintf("memory:%d", memoryItemID)); err != nil {
+		return model.AgentMemoryItem{}, fmt.Errorf("invalidate rolled-back correction vector: %w", err)
+	}
 	_ = actorUserID
 	if err := tx.Commit(); err != nil {
 		return model.AgentMemoryItem{}, err
@@ -858,7 +871,12 @@ func (s *Store) DeactivateAgentMemory(
 	ctx context.Context,
 	tenantID, roomID, memoryItemID, actorUserID int64,
 ) (model.AgentMemoryItem, error) {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.AgentMemoryItem{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_memory_items
 		SET status='inactive', updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND room_id=? AND status='active'
@@ -871,9 +889,21 @@ func (s *Store) DeactivateAgentMemory(
 		return model.AgentMemoryItem{}, err
 	}
 	if affected == 0 {
-		if _, getErr := s.GetAgentMemoryItem(ctx, tenantID, roomID, memoryItemID); getErr != nil {
+		var exists int
+		if getErr := tx.QueryRowContext(ctx, `
+			SELECT 1 FROM agent_memory_items WHERE id=? AND tenant_id=? AND room_id=?
+		`, memoryItemID, tenantID, roomID).Scan(&exists); getErr != nil {
 			return model.AgentMemoryItem{}, getErr
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM semantic_documents WHERE tenant_id=? AND room_id=?
+		  AND content_type='correction' AND source_id=?
+	`, tenantID, roomID, fmt.Sprintf("memory:%d", memoryItemID)); err != nil {
+		return model.AgentMemoryItem{}, fmt.Errorf("delete deactivated correction vector: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.AgentMemoryItem{}, err
 	}
 	_ = actorUserID
 	return s.GetAgentMemoryItem(ctx, tenantID, roomID, memoryItemID)

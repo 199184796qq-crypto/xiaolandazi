@@ -66,6 +66,33 @@ type VoiceProfileInput struct {
 	IsDefault     bool           `json:"is_default"`
 }
 
+type VoiceModelBinding struct {
+	ID              int64          `json:"id"`
+	TenantID        int64          `json:"tenant_id"`
+	ProfileID       int64          `json:"profile_id"`
+	SampleAssetID   int64          `json:"sample_asset_id"`
+	Provider        string         `json:"provider"`
+	Model           string         `json:"model"`
+	VoiceID         string         `json:"voice_id"`
+	Rate            float64        `json:"rate"`
+	Status          string         `json:"status"`
+	Config          map[string]any `json:"config,omitempty"`
+	CreatedByUserID *int64         `json:"created_by_user_id,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+type VoiceModelBindingInput struct {
+	ProfileID     int64
+	SampleAssetID int64
+	Provider      string
+	Model         string
+	VoiceID       string
+	Rate          float64
+	Status        string
+	Config        map[string]any
+}
+
 type AgentConfigVersion struct {
 	ID              int64          `json:"id"`
 	AgentID         int64          `json:"agent_id"`

@@ -28,6 +28,25 @@ func roomTenantID(room map[string]any) int64 {
 	}
 }
 
+func roomID(room map[string]any) int64 {
+	value, ok := room["id"]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case json.Number:
+		id, _ := typed.Int64()
+		return id
+	case float64:
+		return int64(typed)
+	case string:
+		id, _ := strconv.ParseInt(typed, 10, 64)
+		return id
+	default:
+		return 0
+	}
+}
+
 func applyRoomCooperation(
 	room map[string]any,
 	info model.CustomerCooperationInfo,
@@ -60,8 +79,18 @@ func (s *Server) enrichRoomMaps(
 	if err != nil {
 		return err
 	}
+	primaryOnline, err := s.store.ListPrimaryRoomDeviceOnline(ctx, tenantIDs)
+	if err != nil {
+		return err
+	}
+	customers, err := s.store.GetRoomCustomerNames(ctx, tenantIDs)
+	if err != nil {
+		return err
+	}
 	for _, room := range rooms {
 		tenantID := roomTenantID(room)
+		room["customer_name"] = customers[tenantID]
+		room["device_online"] = primaryOnline[tenantID][roomID(room)]
 		if info, ok := cooperation[tenantID]; ok {
 			applyRoomCooperation(room, info)
 			continue
@@ -93,6 +122,22 @@ func (s *Server) writeEnrichedRoomListResponse(
 		writeError(w, http.StatusBadGateway, "直播间数据格式异常")
 		return
 	}
+	roomIDs := make([]int64, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		roomIDs = append(roomIDs, roomID(item))
+	}
+	deletions, err := s.store.RequestedRoomDeletionIDs(r.Context(), roomIDs)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "读取直播间生命周期失败")
+		return
+	}
+	visible := make([]map[string]any, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		if !deletions[roomID(item)] {
+			visible = append(visible, item)
+		}
+	}
+	payload.Items = visible
 	if err := s.enrichRoomMaps(r.Context(), payload.Items); err != nil {
 		writeError(w, http.StatusInternalServerError, "读取商户合作状态失败")
 		return

@@ -33,6 +33,7 @@ const (
 	StopReasonManualPause    StopReason = "manual_pause"
 	StopReasonQuotaExhausted StopReason = "quota_exhausted"
 	StopReasonLiveFinished   StopReason = "live_finished"
+	StopReasonDeviceOffline  StopReason = "device_offline"
 	StopReasonCoreRestart    StopReason = "core_restart"
 	StopReasonSystemError    StopReason = "system_error"
 
@@ -469,6 +470,8 @@ func NormalizeStopReason(reason StopReason) StopReason {
 		return StopReasonQuotaExhausted
 	case "live_finished", "room_offline":
 		return StopReasonLiveFinished
+	case "device_offline":
+		return StopReasonDeviceOffline
 	case "core_restart", "core_runtime_reset":
 		return StopReasonCoreRestart
 	case "system_error", "core_start_failed", "core_lease_failed":

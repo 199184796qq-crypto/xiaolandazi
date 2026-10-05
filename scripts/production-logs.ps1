@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('core', 'management')][string]$Service = 'core',
+  [ValidateSet('core', 'management', 'xiaozhi')][string]$Service = 'core',
   [ValidateRange(10, 2000)][int]$Lines = 200,
   [switch]$Follow,
   [string]$HostName = $(if ($env:XIAOLAN_PROD_HOST) { $env:XIAOLAN_PROD_HOST } else { '47.114.55.117' }),
@@ -10,7 +10,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path $IdentityFile)) { throw "SSH key not found: $IdentityFile" }
-$Unit = if ($Service -eq 'core') { 'xiaolan-core.service' } else { 'xiaolan-management.service' }
+$Unit = switch ($Service) {
+  'core' { 'xiaolan-core.service' }
+  'management' { 'xiaolan-management.service' }
+  'xiaozhi' { 'xiaolan-xiaozhi.service' }
+}
 $FollowArg = if ($Follow) { '-f' } else { '' }
 $SshCommon = @('-i', $IdentityFile, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes')
 $Remote = "$UserName@$HostName"

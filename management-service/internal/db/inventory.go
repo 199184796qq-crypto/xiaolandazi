@@ -83,7 +83,10 @@ func (s *Store) MigrateInventory(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO inv_batch_registry(sku_code,batch_no) SELECT DISTINCT sku_code,batch_no FROM inv_devices WHERE batch_no<>''`); err != nil {
+		return err
+	}
+	return s.MigrateDeviceProvisioning(ctx)
 }
 
 func (s *Store) ensureInventoryColumn(
@@ -333,9 +336,10 @@ func (s *Store) ListDevices(ctx context.Context) ([]model.Device, error) {
 		       d.custody_warehouse_id, COALESCE(w.name, ''),
 		       d.current_customer_id, d.lifecycle_status, d.quality_status,
 		       d.created_by_user_id, d.updated_by_user_id,
-		       d.created_at, d.updated_at
+		       d.created_at, d.updated_at, COALESCE(p.hardware_mac,''), COALESCE(p.claim_enabled,FALSE)
 		FROM inv_devices d
 		LEFT JOIN inv_warehouses w ON w.id=d.custody_warehouse_id
+		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		ORDER BY d.id DESC
 	`)
 	if err != nil {
@@ -361,6 +365,8 @@ func (s *Store) ListDevices(ctx context.Context) ([]model.Device, error) {
 			&item.UpdatedByUserID,
 			&item.CreatedAt,
 			&item.UpdatedAt,
+			&item.HardwareMAC,
+			&item.ClaimEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -376,9 +382,10 @@ func (s *Store) GetDevice(ctx context.Context, deviceID int64) (model.Device, er
 		       d.custody_warehouse_id, COALESCE(w.name, ''),
 		       d.current_customer_id, d.lifecycle_status, d.quality_status,
 		       d.created_by_user_id, d.updated_by_user_id,
-		       d.created_at, d.updated_at
+		       d.created_at, d.updated_at, COALESCE(p.hardware_mac,''), COALESCE(p.claim_enabled,FALSE)
 		FROM inv_devices d
 		LEFT JOIN inv_warehouses w ON w.id=d.custody_warehouse_id
+		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		WHERE d.id=?
 	`, deviceID).Scan(
 		&item.ID,
@@ -395,6 +402,8 @@ func (s *Store) GetDevice(ctx context.Context, deviceID int64) (model.Device, er
 		&item.UpdatedByUserID,
 		&item.CreatedAt,
 		&item.UpdatedAt,
+		&item.HardwareMAC,
+		&item.ClaimEnabled,
 	)
 	return item, err
 }
@@ -538,6 +547,11 @@ func (s *Store) CreateBatchInbound(
 	userID int64,
 	input model.BatchInboundInput,
 ) (model.BatchInboundResult, error) {
+	batch, err := model.ComposeInventoryBatch(input.BatchPrefix, input.BatchSuffix, input.BatchNo, time.Now())
+	if err != nil {
+		return model.BatchInboundResult{}, err
+	}
+	input.BatchNo = batch
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.BatchInboundResult{}, err
@@ -564,10 +578,37 @@ func (s *Store) CreateBatchInbound(
 		return model.BatchInboundResult{}, err
 	}
 
+	var existingBatch int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM inv_devices WHERE sku_code=? AND batch_no=?`, product.SKUCode, batch).Scan(&existingBatch); err != nil {
+		return model.BatchInboundResult{}, err
+	}
+	if existingBatch > 0 {
+		return model.BatchInboundResult{}, ErrInventoryBatchExists
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO inv_batch_registry(sku_code,batch_no,created_by_user_id) VALUES (?,?,?)`, product.SKUCode, batch, userID); err != nil {
+		if isDuplicateInventoryError(err) {
+			return model.BatchInboundResult{}, ErrInventoryBatchExists
+		}
+		return model.BatchInboundResult{}, err
+	}
 	seen := make(map[string]bool, len(input.SNs))
+	if len(input.HardwareMACs) > 0 && len(input.HardwareMACs) != len(input.SNs) {
+		return model.BatchInboundResult{}, fmt.Errorf("每个 SN 必须对应一个 MAC")
+	}
+	macBySN := make(map[string]string, len(input.SNs))
 	sns := make([]string, 0, len(input.SNs))
-	for _, raw := range input.SNs {
+	for index, raw := range input.SNs {
 		sn := strings.TrimSpace(raw)
+		if len(input.HardwareMACs) > 0 {
+			if sn == "" || seen[sn] {
+				return model.BatchInboundResult{}, fmt.Errorf("SN 不能为空或重复")
+			}
+			mac, err := model.NormalizeHardwareMAC(input.HardwareMACs[index])
+			if err != nil {
+				return model.BatchInboundResult{}, err
+			}
+			macBySN[sn] = mac
+		}
 		if sn == "" || seen[sn] {
 			continue
 		}
@@ -599,6 +640,9 @@ func (s *Store) CreateBatchInbound(
 		userID,
 	)
 	if err != nil {
+		return model.BatchInboundResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE inv_batch_registry SET document_id=? WHERE sku_code=? AND batch_no=?`, docID, product.SKUCode, batch); err != nil {
 		return model.BatchInboundResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -650,6 +694,9 @@ func (s *Store) CreateBatchInbound(
 			return model.BatchInboundResult{}, err
 		}
 		deviceIDs = append(deviceIDs, deviceID)
+		if err := registerDeviceHardwareTx(ctx, tx, deviceID, macBySN[sn]); err != nil {
+			return model.BatchInboundResult{}, err
+		}
 		if err := insertStockItemAndLedgerTx(
 			ctx,
 			tx,
@@ -776,6 +823,9 @@ func (s *Store) CreateDevice(
 		userID,
 	)
 	if err != nil {
+		return model.Device{}, err
+	}
+	if err := registerDeviceHardwareTx(ctx, tx, deviceID, input.HardwareMAC); err != nil {
 		return model.Device{}, err
 	}
 	if err := insertStockItemAndLedgerTx(

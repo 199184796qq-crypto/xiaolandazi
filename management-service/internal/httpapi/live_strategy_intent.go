@@ -255,6 +255,9 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
+		return
+	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
 		writeError(w, http.StatusNotFound, "直播间不存在或不属于当前账号范围")
 		return

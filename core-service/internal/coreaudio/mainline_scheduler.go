@@ -59,7 +59,14 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 		c.mu.RUnlock()
 		return
 	}
+	// Do not create additional old-playlist work after accepting a refresh.
+	// Any work already selected at acceptance is explicitly protected.
+	if program.PendingRefresh != nil && program.PendingRefresh.ProtectedNextIndex < 0 {
+		c.mu.RUnlock()
+		return
+	}
 	currentTrack := program.TrackIndex
+	generation := program.Generation
 	c.mu.RUnlock()
 
 	nextIndex, score, reason := c.selectNextMainlineTrack(program, currentTrack)
@@ -68,7 +75,7 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 	}
 
 	c.mu.Lock()
-	if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.CurrentTaskID != taskID {
+	if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.Transitioning || program.Generation != generation || program.CurrentTaskID != taskID {
 		c.mu.Unlock()
 		return
 	}
@@ -77,12 +84,13 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 	program.PlannedNextScore = score
 	program.PlannedNextReason = reason
 	nextID := program.Tracks[nextIndex].ID
+	currentID := program.Tracks[currentTrack].ID
 	c.mu.Unlock()
 
 	log.Printf(
 		"[MAINLINE_AGENT] room=%d current=%s next=%s score=%d reason=%s",
 		program.RoomID,
-		program.Tracks[currentTrack].ID,
+		currentID,
 		nextID,
 		score,
 		reason,
@@ -91,14 +99,12 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 }
 
 func (c *Client) selectNextMainlineTrack(program *programState, currentIndex int) (int, int, string) {
-	if program == nil || len(program.Tracks) == 0 {
+	if program == nil {
 		return -1, 0, ""
-	}
-	if len(program.Tracks) == 1 {
-		return 0, 0, "single-track"
 	}
 
 	c.mu.RLock()
+	tracks := append([]programTrack(nil), program.Tracks...)
 	provider := c.mainlineSignals
 	history := append([]string(nil), program.RecentTrackIDs...)
 	playCounts := make(map[string]int, len(program.TrackPlayCount))
@@ -111,14 +117,20 @@ func (c *Client) selectNextMainlineTrack(program *programState, currentIndex int
 	}
 	sequence := program.Sequence
 	c.mu.RUnlock()
+	if len(tracks) == 0 {
+		return -1, 0, ""
+	}
+	if len(tracks) == 1 {
+		return 0, 0, "single-track"
+	}
 
 	signals := MainlineAgentSignals{}
 	if provider != nil {
 		signals = provider(program.RoomID)
 	}
 	now := c.now().UTC()
-	scored := make([]scoredMainlineTrack, 0, len(program.Tracks))
-	for index, track := range program.Tracks {
+	scored := make([]scoredMainlineTrack, 0, len(tracks))
+	for index, track := range tracks {
 		if index == currentIndex {
 			continue
 		}
@@ -195,7 +207,7 @@ func (c *Client) selectNextMainlineTrack(program *programState, currentIndex int
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].Score == scored[j].Score {
-			return program.Tracks[scored[i].Index].ID < program.Tracks[scored[j].Index].ID
+			return tracks[scored[i].Index].ID < tracks[scored[j].Index].ID
 		}
 		return scored[i].Score > scored[j].Score
 	})
@@ -248,10 +260,17 @@ func containsAnyMainline(text string, values ...string) bool {
 }
 
 func (c *Client) prefetchMainlineTrack(program *programState, sourceTaskID string, trackIndex int) {
-	if c == nil || program == nil || trackIndex < 0 || trackIndex >= len(program.Tracks) {
+	if c == nil || program == nil {
+		return
+	}
+	c.mu.RLock()
+	if trackIndex < 0 || trackIndex >= len(program.Tracks) || program.CurrentTaskID != sourceTaskID {
+		c.mu.RUnlock()
 		return
 	}
 	track := program.Tracks[trackIndex]
+	generation := program.Generation
+	c.mu.RUnlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -273,7 +292,7 @@ func (c *Client) prefetchMainlineTrack(program *programState, sourceTaskID strin
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.programs[program.RoomID] != program || !program.Running || program.CurrentTaskID != sourceTaskID || program.PlannedNextTrack != trackIndex {
+		if c.programs[program.RoomID] != program || !program.Running || program.Generation != generation || program.CurrentTaskID != sourceTaskID || program.PlannedNextTrack != trackIndex {
 			return
 		}
 		program.PrefetchedTrack = trackIndex

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -96,4 +97,55 @@ func TestWaitReconcileWorkersReturnsWhenWorkersFinish(t *testing.T) {
 	if !waitReconcileWorkers(ctx, &wg) {
 		t.Fatal("completed worker group was treated as timed out")
 	}
+}
+
+func TestDeviceOfflineStopDeadlineRequiresSixtyContinuousSeconds(t *testing.T) {
+	now := time.Date(2026, 10, 3, 0, 30, 0, 0, time.UTC)
+	startedAt := now.Add(-10 * time.Minute)
+
+	for _, test := range []struct {
+		name     string
+		presence appdb.LiveDevicePresence
+		wantDue  bool
+	}{
+		{
+			name: "recent online heartbeat",
+			presence: appdb.LiveDevicePresence{
+				Exists: true, ConnectionStatus: "online", LastHeartbeatAt: timePtr(now.Add(-59 * time.Second)),
+			},
+			wantDue: false,
+		},
+		{
+			name: "online heartbeat expired",
+			presence: appdb.LiveDevicePresence{
+				Exists: true, ConnectionStatus: "online", LastHeartbeatAt: timePtr(now.Add(-60 * time.Second)),
+			},
+			wantDue: true,
+		},
+		{
+			name: "explicit offline still in grace",
+			presence: appdb.LiveDevicePresence{
+				Exists: true, ConnectionStatus: "offline", ConnectionUpdatedAt: now.Add(-30 * time.Second),
+			},
+			wantDue: false,
+		},
+		{
+			name: "explicit offline grace expired",
+			presence: appdb.LiveDevicePresence{
+				Exists: true, ConnectionStatus: "offline", ConnectionUpdatedAt: now.Add(-61 * time.Second),
+			},
+			wantDue: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, due := deviceOfflineStopDeadline(startedAt, test.presence, now)
+			if due != test.wantDue {
+				t.Fatalf("due=%v want %v", due, test.wantDue)
+			}
+		})
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }

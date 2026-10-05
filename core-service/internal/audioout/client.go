@@ -87,6 +87,32 @@ type StartProgramInput struct {
 	Tracks    []ProgramTrack `json:"tracks"`
 }
 
+type RefreshProgramInput struct {
+	RoomID             int64          `json:"-"`
+	JobID              string         `json:"job_id"`
+	ExpectedProgramID  string         `json:"expected_program_id"`
+	ExpectedVersionID  int64          `json:"expected_version_id"`
+	ExpectedGeneration uint64         `json:"expected_generation"`
+	Generation         uint64         `json:"generation"`
+	NewVersionID       int64          `json:"new_version_id"`
+	NewVersionNo       int64          `json:"new_version_no"`
+	ValidUntil         time.Time      `json:"valid_until"`
+	Tracks             []ProgramTrack `json:"tracks"`
+}
+
+type CancelProgramRefreshInput struct {
+	RoomID            int64  `json:"-"`
+	JobID             string `json:"job_id"`
+	ExpectedProgramID string `json:"expected_program_id"`
+}
+
+type RenewProgramRefreshInput struct {
+	RoomID            int64     `json:"-"`
+	JobID             string    `json:"job_id"`
+	ExpectedProgramID string    `json:"expected_program_id"`
+	ValidUntil        time.Time `json:"valid_until"`
+}
+
 type SpeechTask struct {
 	ID         string    `json:"speech_task_id"`
 	RoomID     int64     `json:"room_id"`
@@ -106,6 +132,10 @@ type SpeechTask struct {
 
 type RoomProgramSnapshot struct {
 	ProgramID          string                   `json:"program_id,omitempty"`
+	Generation         uint64                   `json:"generation"`
+	PendingGeneration  uint64                   `json:"pending_generation,omitempty"`
+	PendingJobID       string                   `json:"pending_job_id,omitempty"`
+	LastAppliedJobID   string                   `json:"last_applied_job_id,omitempty"`
 	RoomID             int64                    `json:"room_id"`
 	VersionID          int64                    `json:"version_id,omitempty"`
 	VersionNo          int64                    `json:"version_no,omitempty"`

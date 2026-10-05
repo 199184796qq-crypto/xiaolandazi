@@ -36,6 +36,7 @@ import (
 	roomstore "livecompanion/core/internal/room"
 	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/roombrain"
+	"livecompanion/core/internal/semantic"
 	"livecompanion/core/internal/speechanalysis"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/strategycenter"
@@ -253,8 +254,10 @@ func main() {
 	if err := strategyPolicies.Load(startupCtx, database); err != nil {
 		log.Printf("hydrate live strategy policies: %v", err)
 	}
+	semanticEmbedder := semantic.NewFromEnv()
 	paidAgents := paidpipeline.New(agentWork, agentDecisions, strategyPolicies)
 	paidAgents.SetBrain(brain)
+	paidAgents.SetSemanticEmbedder(semanticEmbedder)
 	paidAgents.SetSessions(events)
 	if existingRooms, listErr := rooms.List(startupCtx, nil); listErr == nil {
 		for _, existingRoom := range existingRooms {
@@ -440,6 +443,12 @@ func main() {
 	})
 	api.SetAudioHub(audioHub)
 	api.SetRoomAudioEngine(roomAudioEngine)
+	api.SetSemanticEmbedder(semanticEmbedder)
+	if semanticEmbedder.Enabled() {
+		log.Printf("semantic embedding enabled model=%s", semanticEmbedder.Model())
+	} else {
+		log.Printf("semantic embedding disabled")
+	}
 	api.SetStrategyPolicyStore(strategyPolicies)
 	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
 	api.SetCaptureManager(captureManager)

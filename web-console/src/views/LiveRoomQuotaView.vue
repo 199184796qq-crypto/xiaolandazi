@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { adjustLiveOpsRoomQuota, getLiveOpsRoomQuotas } from '../api'
 
 import PaginationBar from '../components/PaginationBar.vue'
+import ModulePageNav from '../components/ModulePageNav.vue'
 import { session } from '../session'
 import type { LiveOpsRoomQuotaSummary } from '../types'
 import { useFeedbackErrorRef } from '../uiFeedback'
@@ -127,7 +128,7 @@ onMounted(load)
 
 <template>
   <div class="room-quota-page">
-
+    <ModulePageNav context="workspace-auto" active-title="客户直播间额度" />
 
     <section class="room-quota-hero">
       <div class="room-quota-hero-icon">额</div>

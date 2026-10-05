@@ -73,6 +73,44 @@ func TestQwenProviderSynthesizeURL(t *testing.T) {
 	}
 }
 
+func TestQwenProviderUsesMultimodalGenerationForQwen3VoiceClone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/services/aigc/multimodal-generation/generation" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		input, _ := payload["input"].(map[string]any)
+		if input["text"] != "hello" || input["voice"] != "voice-clone" {
+			t.Fatalf("input=%#v", input)
+		}
+		if _, exists := input["format"]; exists {
+			t.Fatalf("qwen3 payload must not include format: %#v", input)
+		}
+		if _, exists := input["sample_rate"]; exists {
+			t.Fatalf("qwen3 payload must not include sample_rate: %#v", input)
+		}
+		if _, exists := input["rate"]; exists {
+			t.Fatalf("qwen3 payload must not include rate: %#v", input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"output\":{\"audio\":{\"url\":\"http://example/clone.wav\"}}}"))
+	}))
+	defer server.Close()
+
+	p := NewQwenProvider(QwenConfig{APIKey: "secret", TTSBaseURL: server.URL, CustomizationURL: server.URL, Client: server.Client()})
+	out, err := p.SynthesizeURL(t.Context(), SynthesizeRequest{
+		Model: "qwen3-tts-vc-2026-01-22", VoiceID: "voice-clone", Text: "hello", Rate: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.AudioURL != "http://example/clone.wav" {
+		t.Fatalf("url=%s", out.AudioURL)
+	}
+}
 func TestQwenProviderSendsInstructionForSupportedModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any

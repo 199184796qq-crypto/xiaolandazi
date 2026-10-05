@@ -80,3 +80,9 @@ export interface AgentChatResponse {
   model?: string;
   latency_ms?: number;
 }
+
+export interface SalesCommissionDashboard {
+  wallet: { available_balance_cents: number; frozen_balance_cents: number };
+  earnings: Array<{ id: number; order_no: string; product_name: string; rule_name: string; rule_version_id: number; amount_cents: number; status: string; available_at?: string; created_at: string }>;
+  withdrawals: Array<{ id: number; withdrawal_no: string; amount_cents: number; status: string; requested_at: string; reject_reason: string }>;
+}

@@ -1,0 +1,14 @@
+{
+  "api_version": "anchor-style-plugin-instance/v1",
+  "instance_id": "numeric-repair-invalid",
+  "plugin_id": "numeric-repair",
+  "plugin_version": "1.0.0",
+  "enabled": true,
+  "strength": 35,
+  "parameters": {
+    "max_per_1000_chars": 8,
+    "correction_distance_chars": 200,
+    "repair_phrase": "随便说个新价格",
+    "serious_scene_disabled": false
+  }
+}

@@ -328,6 +328,7 @@ func TestNormalizeStopReasonAcceptsHistoricalValues(t *testing.T) {
 		"manual_pause":       StopReasonManualPause,
 		"quota_unavailable":  StopReasonQuotaExhausted,
 		"room_offline":       StopReasonLiveFinished,
+		"device_offline":     StopReasonDeviceOffline,
 		"core_runtime_reset": StopReasonCoreRestart,
 		"core_start_failed":  StopReasonSystemError,
 	}

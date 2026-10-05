@@ -257,6 +257,27 @@ func (b *Broker) UnregisterReceiver(receiverID string, roomID int64) error {
 	return nil
 }
 
+func (b *Broker) BindReceiver(receiverID string, roomID int64) (ReceiverRegistration, error) {
+	receiverID = strings.TrimSpace(receiverID)
+	if receiverID == "" || roomID <= 0 {
+		return ReceiverRegistration{}, errors.New("receiver_id and room_id are required")
+	}
+	now := time.Now().UTC()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pruneStaleReceiversLocked(now)
+	receiver := b.receivers[receiverID]
+	if receiver == nil {
+		return ReceiverRegistration{}, errors.New("receiver is not registered")
+	}
+	receiver.RoomID = roomID
+	receiver.LastSeenAt = now
+	receiver.Online = true
+	copy := *receiver
+	copy.Capabilities = append([]string(nil), receiver.Capabilities...)
+	return copy, nil
+}
+
 func (b *Broker) ReceiverForRoom(receiverID string, roomID int64) (ReceiverRegistration, bool) {
 	now := time.Now().UTC()
 	b.mu.Lock()
@@ -1219,7 +1240,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/receivers/register", s.registerReceiver)
 	mux.HandleFunc("POST /v1/receivers/{receiverID}/heartbeat", s.heartbeatReceiver)
 	mux.HandleFunc("POST /v1/receivers/{receiverID}/unregister", s.unregisterReceiver)
+	mux.HandleFunc("POST /v1/receivers/{receiverID}/bind", s.bindReceiver)
 	mux.HandleFunc("GET /v1/rooms/{roomID}/receivers", s.roomReceivers)
+	mux.HandleFunc("GET /v1/receivers/{receiverID}", s.receiverStatus)
 	mux.Handle("POST /internal/v1/rooms/{roomID}/sessions/{sessionID}/tasks/test-tone", s.internal(http.HandlerFunc(s.createTestTask)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/sessions/{sessionID}/tasks/external-wav", s.internal(http.HandlerFunc(s.createExternalWAVTask)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/program/test-loop/start", s.internal(http.HandlerFunc(s.startTestProgram)))
@@ -1337,6 +1360,39 @@ func (s *server) unregisterReceiver(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"unregistered": true})
 }
 
+func (s *server) unregisterReceiver(w http.ResponseWriter, r *http.Request) {
+	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
+	var input struct {
+		RoomID int64 `json:"room_id"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	if err := s.broker.UnregisterReceiver(receiverID, input.RoomID); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"unregistered": true})
+}
+
+func (s *server) bindReceiver(w http.ResponseWriter, r *http.Request) {
+	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
+	var input struct {
+		RoomID int64 `json:"room_id"`
+	}
+	if err := readJSON(w, r, &input); err != nil || input.RoomID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid room_id"})
+		return
+	}
+	registration, err := s.broker.BindReceiver(receiverID, input.RoomID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, registration)
+}
+
 func (s *server) roomReceivers(w http.ResponseWriter, r *http.Request) {
 	roomID, err := parsePositivePathInt(r, "roomID")
 	if err != nil {
@@ -1344,6 +1400,21 @@ func (s *server) roomReceivers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": s.broker.ListReceivers(roomID)})
+}
+func (s *server) receiverStatus(w http.ResponseWriter, r *http.Request) {
+	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
+	if receiverID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "receiver_id is required"})
+		return
+	}
+	items := s.broker.ListReceivers(0)
+	for _, item := range items {
+		if item.ReceiverID == receiverID {
+			writeJSON(w, http.StatusOK, item)
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{"error": "receiver not found"})
 }
 
 func (s *server) createTestTask(w http.ResponseWriter, r *http.Request) {

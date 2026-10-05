@@ -97,6 +97,8 @@ type RefundRecord struct {
 type FinanceDashboard struct {
 	CashBalanceCents       int64                  `json:"cash_balance_cents"`
 	RewardBalanceCents     int64                  `json:"reward_balance_cents"`
+	BeanBalance            uint64                 `json:"bean_balance"`
+	BeanFrozen             uint64                 `json:"bean_frozen"`
 	CommissionBalanceCents int64                  `json:"commission_balance_cents"`
 	CommissionFrozenCents  int64                  `json:"commission_frozen_cents"`
 	TotalBalanceCents      int64                  `json:"total_balance_cents"`

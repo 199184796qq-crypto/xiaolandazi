@@ -30,6 +30,11 @@ mv -Tf "$TMP_LINK" "$CURRENT"
 
 systemctl restart xiaolan-core.service
 systemctl restart xiaolan-management.service
+if [[ -x "$TARGET/bin/xiaozhi-gateway" ]]; then
+  systemctl restart xiaolan-xiaozhi.service
+else
+  systemctl stop xiaolan-xiaozhi.service 2>/dev/null || true
+fi
 
 for url in http://127.0.0.1:8081/healthz http://127.0.0.1:8080/healthz; do
   ok=0
@@ -40,4 +45,15 @@ for url in http://127.0.0.1:8081/healthz http://127.0.0.1:8080/healthz; do
   [[ "$ok" -eq 1 ]] || { echo "rollback health failed: $url" >&2; exit 4; }
 done
 
+if [[ -x "$TARGET/bin/xiaozhi-gateway" ]]; then
+  ok=0
+  for _ in $(seq 1 30); do
+    if curl -fsS --max-time 2 http://127.0.0.1:8083/healthz >/dev/null; then ok=1; break; fi
+    sleep 1
+  done
+  [[ "$ok" -eq 1 ]] || { echo "rollback health failed: http://127.0.0.1:8083/healthz" >&2; exit 4; }
+fi
+
 echo "rollback ok: $(basename "$TARGET")"
+
+

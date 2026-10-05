@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,6 +36,11 @@ func campaignTimeString(value sql.NullTime) string {
 }
 
 func normalizeMarketingCampaignInput(input model.MarketingCampaignInput) (model.MarketingCampaignInput, error) {
+	var controlsErr error
+	input.Controls, controlsErr = normalizeCampaignControls(input.Controls, strings.TrimSpace(input.StartsAt))
+	if controlsErr != nil {
+		return input, controlsErr
+	}
 	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
@@ -56,11 +62,17 @@ func normalizeMarketingCampaignInput(input model.MarketingCampaignInput) (model.
 	if len(input.Items) == 0 {
 		return model.MarketingCampaignInput{}, errors.New("marketing campaign requires items")
 	}
+	seenTargets := map[string]bool{}
 	for i := range input.Items {
 		item, ok := normalizeMarketingCampaignItem(input.Items[i])
 		if !ok {
 			return model.MarketingCampaignInput{}, errors.New("invalid marketing campaign item")
 		}
+		key := fmt.Sprintf("%s:%d", item.TargetType, item.TargetID)
+		if seenTargets[key] {
+			return input, errors.New("同一活动不能重复添加相同商品")
+		}
+		seenTargets[key] = true
 		item.SortOrder = (i + 1) * 10
 		input.Items[i] = item
 	}
@@ -127,6 +139,9 @@ func insertMarketingCampaignItemsTx(
 		}
 		itemID, err := result.LastInsertId()
 		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mkt_campaign_item_options(campaign_item_id,fixed_price_cents) VALUES (?,?)`, itemID, item.FixedPriceCents); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -296,6 +311,9 @@ func (s *Store) listNormalizedMarketingCampaigns(ctx context.Context) ([]model.M
 		items[i].PackageMonths = first.PackageMonths
 		items[i].DiscountBPS = first.DiscountBPS
 	}
+	if err := s.loadCampaignControls(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -353,6 +371,9 @@ func (s *Store) CreateMarketingCampaign(
 	}
 	campaignID, err := result.LastInsertId()
 	if err != nil {
+		return model.MarketingCampaign{}, err
+	}
+	if err := saveCampaignControlsTx(ctx, tx, campaignID, input.Controls); err != nil {
 		return model.MarketingCampaign{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -495,6 +516,35 @@ func (s *Store) UpdateMarketingCampaign(
 	}
 	preserveItems := historicalUsage > 0
 	if preserveItems {
+		var raw string
+		var controls model.MarketingCampaignControls
+		err := tx.QueryRowContext(ctx, `SELECT CAST(controls_json AS CHAR) FROM mkt_campaign_controls WHERE campaign_id=?`, campaignID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return model.MarketingCampaign{}, err
+		}
+		if err == nil {
+			if err = json.Unmarshal([]byte(raw), &controls); err != nil {
+				return model.MarketingCampaign{}, err
+			}
+		}
+		if controls.Audience == "" {
+			controls.Audience = "all"
+		}
+		if controls != input.Controls {
+			return model.MarketingCampaign{}, ErrMarketingCampaignHistoryLocked
+		}
+		for _, item := range input.Items {
+			var fixed sql.NullInt64
+			err = tx.QueryRowContext(ctx, `SELECT o.fixed_price_cents FROM mkt_campaign_items i LEFT JOIN mkt_campaign_item_options o ON o.campaign_item_id=i.id WHERE i.campaign_id=? AND i.target_type=? AND i.target_id=? ORDER BY i.id LIMIT 1`, campaignID, item.TargetType, item.TargetID).Scan(&fixed)
+			if err != nil {
+				return model.MarketingCampaign{}, err
+			}
+			if (item.FixedPriceCents == nil) != (!fixed.Valid) || (fixed.Valid && uint64(fixed.Int64) != *item.FixedPriceCents) {
+				return model.MarketingCampaign{}, ErrMarketingCampaignHistoryLocked
+			}
+		}
+	}
+	if preserveItems {
 		matches, err := marketingCampaignItemsMatchTx(ctx, tx, campaignID, input.Items)
 		if err != nil {
 			return model.MarketingCampaign{}, err
@@ -538,6 +588,12 @@ func (s *Store) UpdateMarketingCampaign(
 		return model.MarketingCampaign{}, err
 	}
 	if !preserveItems {
+		if err := saveCampaignControlsTx(ctx, tx, campaignID, input.Controls); err != nil {
+			return model.MarketingCampaign{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE o FROM mkt_campaign_item_options o JOIN mkt_campaign_items i ON i.id=o.campaign_item_id WHERE i.campaign_id=?`, campaignID); err != nil {
+			return model.MarketingCampaign{}, err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM mkt_campaign_items
 			WHERE campaign_id=?
@@ -608,6 +664,9 @@ func reserveMarketingCampaignOrderTx(
 	listAmountCents uint64,
 	payableAmountCents uint64,
 ) error {
+	if err := reserveCampaignClaimTx(ctx, tx, tenantID, orderID, campaign, item); err != nil {
+		return err
+	}
 	if campaign.ID <= 0 || item.ID <= 0 {
 		return errors.New("invalid marketing campaign snapshot")
 	}
@@ -700,6 +759,9 @@ func consumeMarketingCampaignOrderTx(
 	tx *sql.Tx,
 	orderID int64,
 ) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE mkt_claim_reservations SET status='consumed' WHERE order_id=? AND status='pending'`, orderID); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, campaign_id, campaign_item_id, quantity
 		FROM mkt_campaign_usage
@@ -779,6 +841,9 @@ func releaseMarketingCampaignOrderTx(
 	orderID int64,
 	status string,
 ) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE mkt_claim_reservations SET status='released' WHERE order_id=? AND status='pending'`, orderID); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, campaign_id, campaign_item_id, quantity
 		FROM mkt_campaign_usage

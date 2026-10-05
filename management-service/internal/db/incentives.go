@@ -524,6 +524,7 @@ func (s *Store) CreateSettlementBatch(
 		WHERE beneficiary_type=?
 		  AND beneficiary_id=?
 		  AND status='available'
+		  AND LEFT(earning_type,9)<>'commerce_'
 		  AND created_at >= ?
 		  AND created_at < ?
 		ORDER BY id ASC

@@ -31,6 +31,8 @@ import AgentLevelsView from './views/AgentLevelsView.vue'
 import AgentContractsView from './views/AgentContractsView.vue'
 import CommercialTimeCardsView from './views/CommercialTimeCardsView.vue'
 import CommercialDeviceProductsView from './views/CommercialDeviceProductsView.vue'
+import BeanOperationsView from './views/BeanOperationsView.vue'
+import BeanFinanceView from './views/BeanFinanceView.vue'
 import MarketingDesignView from './views/MarketingDesignView.vue'
 import MarketingOperationsView from './views/MarketingOperationsView.vue'
 import LiveOperationsView from './views/LiveOperationsView.vue'
@@ -48,7 +50,13 @@ import IncentiveProgramsView from './views/IncentiveProgramsView.vue'
 import SettlementBatchesView from './views/SettlementBatchesView.vue'
 import OperatingFinanceView from './views/OperatingFinanceView.vue'
 import AfterSalesPortalView from './views/AfterSalesPortalView.vue'
+import SystemSettingsHubView from './views/SystemSettingsHubView.vue'
 import SystemSettingsView from './views/SystemSettingsView.vue'
+import {
+  canAccessSystemSettings,
+  findSystemSettingsCategory,
+  visibleSystemSettingsGroups,
+} from './systemSettingsCatalog'
 import { loadSession, session } from './session'
 
 function isInternalRole(role?: string) {
@@ -130,6 +138,7 @@ const departmentRouteOwners: Record<string, string> = {
   'sales-customer-money': 'sales',
   'sales-support': 'sales',
   'operations-support': 'live_operations',
+  'live-room-support-strategy': 'live_operations',
   'platform-overview': 'management',
 
   'staff-finance-hub': 'finance',
@@ -140,6 +149,7 @@ const departmentRouteOwners: Record<string, string> = {
   'staff-finance-trace': 'finance',
   'staff-finance-settlements': 'finance',
   'staff-finance-operating': 'finance',
+  'staff-finance-beans': 'finance',
   'commercial-settlement': 'finance',
 
   'customers-hub': 'sales',
@@ -175,6 +185,7 @@ const departmentRouteOwners: Record<string, string> = {
   'commercial-membership-simulator': 'live_operations',
   'commercial-time-cards': 'live_operations',
   'commercial-device-products': 'live_operations',
+  'commercial-beans': 'live_operations',
   'commercial-marketing': 'live_operations',
   'commercial-marketing-tools': 'live_operations',
   'commercial-marketing-channels': 'live_operations',
@@ -196,6 +207,11 @@ function isCrossDepartmentRoute(routeName: string, primaryGroupCode?: string) {
 
 export const router = createRouter({
   history: createWebHistory(),
+  scrollBehavior(_to, _from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (_to.hash) return { el: _to.hash, top: 112, behavior: 'smooth' }
+    return { left: 0, top: 0 }
+  },
   routes: [
     { path: '/work/inbox', name: 'work-inbox', component: WorkInboxView },
     {path:'/staff/finance/invitations',name:'staff-finance-invitations',component:()=>import('./views/FinanceInvitationsView.vue'),meta:{internalStaffOnly:true,staffPermission:'finance.dashboard.view'}},
@@ -229,14 +245,149 @@ export const router = createRouter({
     {
       path: '/system/settings',
       name: 'system-settings',
-      component: SystemSettingsView,
-      meta: { platformAdminOnly: true },
+      component: SystemSettingsHubView,
+      meta: { internalStaffOnly: true, staffPermission: 'system.settings.view' },
     },
     {
       path: '/system/settings/agent-routing',
       name: 'system-agent-routing',
       component: () => import('./views/AgentRoutingSettingsView.vue'),
       meta: { staffPermission: 'system.settings.agent_routing.manage' },
+    },
+    {
+      path: '/system/settings/intelligence/speech-models',
+      name: 'system-speech-models',
+      component: () => import('./views/SpeechModelsView.vue'),
+      meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
+    },
+    {
+      path: '/system/settings/:category(general|intelligence|live|commerce|inventory|access)',
+      name: 'system-settings-category',
+      component: SystemSettingsView,
+      props: true,
+      meta: { internalStaffOnly: true, staffPermission: 'system.settings.view' },
+    },
+    {
+      path: '/system/settings/intelligence/live-analysis',
+      name: 'system-settings-live-analysis',
+      component: LiveAnalysisSettingsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'liveanalysis.view' },
+    },
+    {
+      path: '/system/settings/live/policy',
+      name: 'system-settings-live-policy',
+      component: LiveStrategyEntryView,
+      meta: { systemSettingsEntry: true, staffPermission: 'livepolicy.view' },
+    },
+    {
+      path: '/system/settings/live/room-quotas',
+      name: 'system-settings-live-room-quotas',
+      component: LiveRoomQuotaView,
+      meta: { systemSettingsEntry: true, staffPermission: 'liveops.room_quota.view' },
+    },
+    {
+      path: '/system/settings/commerce/memberships',
+      name: 'system-settings-commerce-memberships',
+      component: CommercialMembershipsView,
+      props: { focus: 'plans' },
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.membership.view' },
+    },
+    {
+      path: '/system/settings/commerce/time-cards',
+      name: 'system-settings-commerce-time-cards',
+      component: CommercialTimeCardsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.time_card.view' },
+    },
+    {
+      path: '/system/settings/commerce/device-products',
+      name: 'system-settings-commerce-device-products',
+      component: CommercialDeviceProductsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.device.view' },
+    },
+    {
+      path: '/system/settings/commerce/marketing',
+      name: 'system-settings-commerce-marketing',
+      component: MarketingDesignView,
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.marketing.view' },
+    },
+    {
+      path: '/system/settings/commerce/marketing-tools',
+      name: 'system-settings-commerce-marketing-tools',
+      component: MarketingOperationsView,
+      props: { mode: 'tools' },
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.marketing.view' },
+    },
+    {
+      path: '/system/settings/commerce/beans',
+      name: 'system-settings-commerce-beans',
+      component: BeanOperationsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.beans.view' },
+    },
+    {
+      path: '/system/settings/commerce/referrals',
+      name: 'system-settings-commerce-referrals',
+      component: IncentiveProgramsView,
+      props: { mode: 'referral' },
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.referral.view' },
+    },
+    {
+      path: '/system/settings/commerce/settlement',
+      name: 'system-settings-commerce-settlement',
+      component: IncentiveProgramsView,
+      props: { mode: 'settlement' },
+      meta: { systemSettingsEntry: true, staffPermission: 'finance.settlement_rules.view' },
+    },
+    {
+      path: '/system/settings/commerce/agent-levels',
+      name: 'system-settings-commerce-agent-levels',
+      component: AgentLevelsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'agent.view_all' },
+    },
+    {
+      path: '/system/settings/inventory/device-products',
+      name: 'system-settings-inventory-device-products',
+      component: CommercialDeviceProductsView,
+      meta: { systemSettingsEntry: true, staffPermission: 'commercial.device.view' },
+    },
+    {
+      path: '/system/settings/access/roles',
+      name: 'system-settings-access-roles',
+      component: StaffOrganizationView,
+      props: { initialTab: 'roles' },
+      meta: { systemSettingsEntry: true, staffPermission: 'staff.role.view' },
+    },
+    {
+      path: '/system/settings/access/departments',
+      name: 'system-settings-access-departments',
+      component: StaffOrganizationView,
+      props: { initialTab: 'employees', groupsOnly: true },
+      meta: { systemSettingsEntry: true, staffPermission: 'staff.group.view' },
+    },
+    {
+      path: '/system/settings/access/permissions',
+      name: 'system-settings-access-permissions',
+      component: StaffPermissionCenterView,
+      meta: { systemSettingsEntry: true, staffPermission: 'staff.role.manage' },
+    },
+    {
+      path: '/system/settings/access/employees',
+      name: 'system-settings-access-employees',
+      component: StaffOrganizationView,
+      props: { initialTab: 'employees' },
+      meta: { systemSettingsEntry: true, staffPermission: 'staff.employee.view' },
+    },
+    {
+      path: '/system/settings/access/approvals',
+      name: 'system-settings-access-approvals',
+      component: StaffOrganizationView,
+      props: { initialTab: 'approvals' },
+      meta: { systemSettingsEntry: true, staffPermission: 'finance.dashboard.view' },
+    },
+    {
+      path: '/system/settings/access/audit',
+      name: 'system-settings-access-audit',
+      component: AuditLogView,
+      meta: { systemSettingsEntry: true, staffPermission: 'audit.view' },
     },
     {
       path: '/staff',
@@ -352,6 +503,12 @@ export const router = createRouter({
       meta: { staffPermission: 'finance.operating.view' },
     },
     {
+      path: '/staff/finance/beans',
+      name: 'staff-finance-beans',
+      component: BeanFinanceView,
+      meta: { staffPermission: 'finance.beans.view' },
+    },
+    {
       path: '/agent/overview',
       name: 'agent-overview',
       component: AgentOverviewView,
@@ -372,6 +529,7 @@ export const router = createRouter({
       meta: {
         staffPermissionsAny: [
           'commercial.marketing.view',
+          'commercial.beans.view',
           'commercial.membership.view',
           'commercial.ai_time.view',
           'commercial.time_card.view',
@@ -405,6 +563,12 @@ export const router = createRouter({
       component: LiveOperationsView,
       props: { focus: 'events' },
       meta: { staffPermissionsAny: ['liveops.view_all', 'liveops.configure'] },
+    },
+    {
+      path: '/operations/live/rooms/:roomId/strategy',
+      name: 'live-room-support-strategy',
+      component: () => import('./views/LiveRoomSupportView.vue'),
+      meta: { staffPermission: 'livepolicy.manage_l3_authorized' },
     },
     {
       path: '/operations/live/strategy',
@@ -588,6 +752,12 @@ export const router = createRouter({
       meta: { staffPermission: 'commercial.time_card.view' },
     },
     {
+      path: '/commercial/beans',
+      name: 'commercial-beans',
+      component: BeanOperationsView,
+      meta: { staffPermission: 'commercial.beans.view' },
+    },
+    {
       path: '/commercial/device-products',
       name: 'commercial-device-products',
       component: CommercialDeviceProductsView,
@@ -767,6 +937,20 @@ router.beforeEach(async (to) => {
     return { path: '/personal', replace: true }
   }
 
+  if (
+    (to.name === 'system-settings' || to.name === 'system-settings-category' || to.meta.systemSettingsEntry === true) &&
+    !canAccessSystemSettings(bootstrap)
+  ) {
+    return defaultAuthenticatedRoute()
+  }
+
+  if (to.name === 'system-settings-category') {
+    const category = findSystemSettingsCategory(String(to.params.category || ''))
+    if (!category || visibleSystemSettingsGroups(category, bootstrap).length === 0) {
+      return { name: 'system-settings', replace: true }
+    }
+  }
+
   const primaryGroupCode = bootstrap.staff_access?.primary_group_code
 
   if (
@@ -780,6 +964,10 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.platformAdminOnly === true && role !== 'platform_admin') {
+    return defaultAuthenticatedRoute()
+  }
+
+  if (to.meta.superAdminOnly === true && role !== 'platform_admin' && !bootstrap.staff_access?.is_super_admin) {
     return defaultAuthenticatedRoute()
   }
 

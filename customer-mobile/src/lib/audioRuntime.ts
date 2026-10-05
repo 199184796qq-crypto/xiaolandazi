@@ -35,6 +35,11 @@ let muted = initialMuted;
 let outputGain: GainNode | null = null;
 let outputGainContext: AudioContext | null = null;
 const sources = new Set<AudioBufferSourceNode>();
+let lifecycleRecoveryInstalled = false;
+let wasBackgrounded = false;
+let recoveryTimer: number | undefined;
+let recoveryPromise: Promise<void> | null = null;
+let stopEpoch = 0;
 
 function holder() {
   return window as AudioHolder;
@@ -164,6 +169,10 @@ async function pump(stream: ReadableStream<Uint8Array>, ownGeneration: number, s
     }
   } finally {
     try { reader.releaseLock(); } catch {}
+    if (!signal.aborted && ownGeneration === generation) {
+      floatingAudioState.update((current) => ({ ...current, connected: false }));
+      queueActiveAudioRecovery(650);
+    }
   }
 }
 
@@ -234,11 +243,95 @@ export async function closeLocalFloatingAudioForDifferentRoom(nextRoomId: number
   await closeLocalFloatingAudio();
 }
 
+function installAudioLifecycleRecovery() {
+  if (lifecycleRecoveryInstalled || typeof window === 'undefined') return;
+  lifecycleRecoveryInstalled = true;
+
+  const markBackgrounded = () => {
+    wasBackgrounded = true;
+  };
+  const recoverIfNeeded = () => {
+    if (document.visibilityState === 'hidden') return;
+    const state = get(floatingAudioState);
+    const context = getCustomerAudioContext(false);
+    if (
+      state.state !== 'working' ||
+      !state.roomId ||
+      (!wasBackgrounded && state.connected && context?.state === 'running')
+    ) {
+      return;
+    }
+    wasBackgrounded = false;
+    queueActiveAudioRecovery(80);
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') markBackgrounded();
+    else recoverIfNeeded();
+  });
+  window.addEventListener('pagehide', markBackgrounded);
+  window.addEventListener('pageshow', recoverIfNeeded);
+  window.addEventListener('focus', recoverIfNeeded);
+
+  const recoverFromGesture = () => {
+    const state = get(floatingAudioState);
+    if (state.state !== 'working' || !state.roomId) return;
+    const context = getCustomerAudioContext(true);
+    if (state.connected && context?.state === 'running') return;
+
+    // Mobile Safari/Chrome may only allow AudioContext.resume() while the
+    // user-activation token is still alive, so call resume directly here
+    // instead of deferring it through a timer.
+    const resume = context?.state === 'suspended' ? context.resume() : Promise.resolve();
+    void resume
+      .then(() => recoverActiveRoomCompositeAudio())
+      .catch(() => {
+        floatingAudioState.update((current) => ({ ...current, connected: false }));
+      });
+  };
+  window.addEventListener('pointerdown', recoverFromGesture, true);
+  window.addEventListener('touchend', recoverFromGesture, true);
+}
+
+function queueActiveAudioRecovery(delayMS = 0) {
+  if (typeof window === 'undefined') return;
+  if (recoveryTimer !== undefined) window.clearTimeout(recoveryTimer);
+  recoveryTimer = window.setTimeout(() => {
+    recoveryTimer = undefined;
+    void recoverActiveRoomCompositeAudio();
+  }, Math.max(0, delayMS));
+}
+
+export async function recoverActiveRoomCompositeAudio() {
+  if (typeof window === 'undefined' || document.visibilityState === 'hidden') return;
+  const state = get(floatingAudioState);
+  if (!state.roomId || state.state !== 'working') return;
+  if (recoveryPromise) return recoveryPromise;
+
+  const recoveryStopEpoch = stopEpoch;
+  recoveryPromise = (async () => {
+    try {
+      const context = getCustomerAudioContext(true);
+      if (context?.state === 'suspended') await context.resume();
+      if (recoveryStopEpoch !== stopEpoch) return;
+      await startRoomCompositeAudio(state.roomId, state.roomName);
+      if (recoveryStopEpoch !== stopEpoch) await stopRoomCompositeAudio(false);
+    } catch {
+      floatingAudioState.update((current) => ({ ...current, connected: false }));
+    }
+  })().finally(() => {
+    recoveryPromise = null;
+  });
+  return recoveryPromise;
+}
+
 export async function startRoomCompositeAudio(roomId: number, roomName = '') {
+  installAudioLifecycleRecovery();
   await unlockCustomerAudio();
   await registerReceiver(roomId);
   controller?.abort();
   flushQueue();
+  floatingAudioState.update((current) => ({ ...current, connected: false }));
   const ownGeneration = ++generation;
   const ownController = new AbortController();
   controller = ownController;
@@ -247,7 +340,7 @@ export async function startRoomCompositeAudio(roomId: number, roomName = '') {
     signal: ownController.signal,
   });
   if (!response.ok || !response.body) throw new Error('房间声音流连接失败 HTTP ' + response.status);
-  void pump(response.body, ownGeneration, ownController.signal);
+  void pump(response.body, ownGeneration, ownController.signal).catch(() => undefined);
   floatingAudioState.update((current) => ({
     ...current,
     roomId,
@@ -264,6 +357,7 @@ export function flushRoomCompositeAudio() {
 }
 
 export async function stopRoomCompositeAudio(unregister = true) {
+  stopEpoch += 1;
   generation += 1;
   controller?.abort();
   controller = null;
@@ -272,6 +366,12 @@ export async function stopRoomCompositeAudio(unregister = true) {
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = undefined;
   }
+  if (recoveryTimer !== undefined) {
+    window.clearTimeout(recoveryTimer);
+    recoveryTimer = undefined;
+  }
+  recoveryPromise = null;
+  wasBackgrounded = false;
   const roomId = registeredRoomId;
   registeredRoomId = 0;
   floatingAudioState.update((current) => ({

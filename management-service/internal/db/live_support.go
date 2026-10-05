@@ -213,21 +213,24 @@ func (s *Store) HasLiveSupportAuthorization(
 	tenantID, roomID, staffUserID int64,
 	capability string,
 ) (bool, error) {
-	if capability == model.LiveSupportCapabilityL3Policy {
-		access, err := s.GetStaffAccess(ctx, staffUserID)
-		if err != nil {
-			return false, err
-		}
-		if !access.CanDelegateLivePolicyL3() {
-			return false, nil
-		}
+	if tenantID <= 0 || roomID <= 0 || staffUserID <= 0 || !validLiveSupportCapability(capability) {
+		return false, nil
+	}
+	access, err := s.GetStaffAccess(ctx, staffUserID)
+	if err != nil {
+		return false, err
+	}
+	if !access.CanUseLiveSupportCapability(capability) {
+		return false, nil
 	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM live_support_authorizations
-		WHERE tenant_id=? AND room_id=? AND staff_user_id=?
-		  AND capability=? AND status='active'
+		FROM live_support_authorizations a
+		INNER JOIN mgmt_users u ON u.id=a.staff_user_id AND u.status='active'
+		INNER JOIN mgmt_tenants t ON t.id=a.tenant_id AND t.status='active'
+		WHERE a.tenant_id=? AND a.room_id=? AND a.staff_user_id=?
+		  AND a.capability=? AND a.status='active' AND a.revoked_at IS NULL
 	`, tenantID, roomID, staffUserID, capability).Scan(&count)
 	return count > 0, err
 }
@@ -254,7 +257,7 @@ func (s *Store) GetLiveSupportAuthorizedTenant(
 		SELECT tenant_id
 		FROM live_support_authorizations
 		WHERE room_id=? AND staff_user_id=?
-		  AND capability=? AND status='active'
+		  AND capability=? AND status='active' AND revoked_at IS NULL
 		LIMIT 1
 	`, roomID, staffUserID, capability).Scan(&tenantID)
 	return tenantID, err
@@ -376,12 +379,16 @@ func (s *Store) SetLiveSupportAuthorizations(
 	if err != nil {
 		return nil, err
 	}
-	eligible, err := s.IsEligibleLiveSupportStaff(ctx, staffUserID)
-	if err != nil {
-		return nil, err
-	}
-	if !eligible {
-		return nil, fmt.Errorf("staff user is not eligible for live support")
+	// The customer can always revoke a former employee's grants, including
+	// after the employee has been disabled or moved out of operations.
+	if len(normalized) > 0 {
+		eligible, err := s.IsEligibleLiveSupportStaff(ctx, staffUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !eligible {
+			return nil, fmt.Errorf("staff user is not eligible for live support")
+		}
 	}
 
 	desired := make(map[string]struct{}, len(normalized))
@@ -403,6 +410,20 @@ func (s *Store) SetLiveSupportAuthorizations(
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	// Lock/cancel requests before touching grants, in the same order used by
+	// acceptance. Otherwise an old pending request could resurrect a revoked
+	// authorization after the customer has withdrawn consent.
+	if len(normalized) == 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_support_requests
+			SET status='cancelled', decision_note='客户已撤回协助授权',
+			    decided_by_user_id=?, decided_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
+			WHERE tenant_id=? AND room_id=? AND staff_user_id=? AND status='pending'
+		`, actorUserID, tenantID, roomID, staffUserID); err != nil {
+			return nil, err
+		}
+	}
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT capability

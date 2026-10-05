@@ -9,6 +9,16 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+func validAddressingPreference(value string, allowed ...string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func validateAddressingTerms(label string, values []string) ([]string, error) {
 	result := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -38,7 +48,7 @@ func validateRoomAddressingPreferences(input *model.RoomAddressingPreferencesInp
 		return fmt.Errorf("称呼习惯不能为空")
 	}
 	input.NamingPreference = strings.ToLower(strings.TrimSpace(input.NamingPreference))
-	if !validInteractionPreference(input.NamingPreference, "less", "natural", "more") {
+	if !validAddressingPreference(input.NamingPreference, "less", "natural", "more") {
 		return fmt.Errorf("点名偏好设置无效")
 	}
 	preferred, err := validateAddressingTerms("常用称呼", input.PreferredTerms)
@@ -65,6 +75,9 @@ func (s *Server) roomAddressingPreferences(w http.ResponseWriter, r *http.Reques
 	}
 	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
 	if !ok {
+		return
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
 
