@@ -21,60 +21,70 @@ type liveStrategyExecuteRequest struct {
 }
 
 type liveStrategyExecutePayload struct {
-	PlanID             int64  `json:"plan_id,omitempty"`
-	RoomID             int64  `json:"room_id,omitempty"`
-	ProductLinkID      int64  `json:"product_link_id,omitempty"`
-	BenefitID          int64  `json:"benefit_id,omitempty"`
-	FactID             int64  `json:"fact_id,omitempty"`
-	CurrentVersionNo   int64  `json:"current_version_no,omitempty"`
-	LinkKey            string `json:"link_key,omitempty"`
-	ProductName        string `json:"product_name,omitempty"`
-	Spec               string `json:"spec,omitempty"`
-	DailyPrice         string `json:"daily_price,omitempty"`
-	Quantity           string `json:"quantity,omitempty"`
-	Audience           string `json:"audience,omitempty"`
-	BenefitKey         string `json:"benefit_key,omitempty"`
-	ActivityPrice      string `json:"activity_price,omitempty"`
-	Gift               string `json:"gift,omitempty"`
-	Activity           string `json:"activity,omitempty"`
-	StartsAt           string `json:"starts_at,omitempty"`
-	EndsAt             string `json:"ends_at,omitempty"`
-	ReviewBucket       string `json:"review_bucket,omitempty"`
-	ReviewReason       string `json:"review_reason,omitempty"`
-	FactCategory       string `json:"fact_category,omitempty"`
-	FactKey            string `json:"fact_key,omitempty"`
-	FactValue          string `json:"fact_value,omitempty"`
-	CurrentFactValue   string `json:"current_fact_value,omitempty"`
-	ScriptReferenceID  int64  `json:"script_reference_id,omitempty"`
-	ScriptReferenceKey string `json:"script_reference_key,omitempty"`
-	ScriptTitle        string `json:"script_title,omitempty"`
-	ScriptText         string `json:"script_text,omitempty"`
-	CurrentScriptText  string `json:"current_script_text,omitempty"`
-	ScriptGoal         string `json:"script_goal,omitempty"`
-	ScriptTransition   string `json:"script_transition,omitempty"`
-	ExecutionMode      string `json:"execution_mode,omitempty"`
-	TargetPlanID       int64  `json:"target_plan_id,omitempty"`
-	TargetPlanName     string `json:"target_plan_name,omitempty"`
-	CurrentPlanID      int64  `json:"current_plan_id,omitempty"`
-	SourceText         string `json:"source_text,omitempty"`
+	PlanID                   int64  `json:"plan_id,omitempty"`
+	RoomID                   int64  `json:"room_id,omitempty"`
+	ProductLinkID            int64  `json:"product_link_id,omitempty"`
+	BenefitID                int64  `json:"benefit_id,omitempty"`
+	FactID                   int64  `json:"fact_id,omitempty"`
+	CurrentVersionNo         int64  `json:"current_version_no,omitempty"`
+	LinkKey                  string `json:"link_key,omitempty"`
+	ProductName              string `json:"product_name,omitempty"`
+	Spec                     string `json:"spec,omitempty"`
+	DailyPrice               string `json:"daily_price,omitempty"`
+	Quantity                 string `json:"quantity,omitempty"`
+	Audience                 string `json:"audience,omitempty"`
+	ProductAttributeID       int64  `json:"product_attribute_id,omitempty"`
+	AttributeCode            string `json:"attribute_code,omitempty"`
+	AttributeLabel           string `json:"attribute_label,omitempty"`
+	AttributeValue           string `json:"attribute_value,omitempty"`
+	AttributeUnit            string `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int    `json:"attribute_display_priority,omitempty"`
+	BenefitKey               string `json:"benefit_key,omitempty"`
+	ActivityPrice            string `json:"activity_price,omitempty"`
+	Gift                     string `json:"gift,omitempty"`
+	Activity                 string `json:"activity,omitempty"`
+	StartsAt                 string `json:"starts_at,omitempty"`
+	EndsAt                   string `json:"ends_at,omitempty"`
+	ReviewBucket             string `json:"review_bucket,omitempty"`
+	ReviewReason             string `json:"review_reason,omitempty"`
+	FactCategory             string `json:"fact_category,omitempty"`
+	FactKey                  string `json:"fact_key,omitempty"`
+	FactValue                string `json:"fact_value,omitempty"`
+	CurrentFactValue         string `json:"current_fact_value,omitempty"`
+	ScriptReferenceID        int64  `json:"script_reference_id,omitempty"`
+	ScriptReferenceKey       string `json:"script_reference_key,omitempty"`
+	ScriptTitle              string `json:"script_title,omitempty"`
+	ScriptText               string `json:"script_text,omitempty"`
+	CurrentScriptText        string `json:"current_script_text,omitempty"`
+	ScriptGoal               string `json:"script_goal,omitempty"`
+	ScriptTransition         string `json:"script_transition,omitempty"`
+	ExecutionMode            string `json:"execution_mode,omitempty"`
+	TargetPlanID             int64  `json:"target_plan_id,omitempty"`
+	TargetPlanName           string `json:"target_plan_name,omitempty"`
+	CurrentPlanID            int64  `json:"current_plan_id,omitempty"`
+	SourceText               string `json:"source_text,omitempty"`
 }
 
 var liveStrategyExecutableActions = map[string]struct{}{
-	"add_live_product":                      {},
-	"confirm_live_product_update":           {},
-	"confirm_live_product_disable":          {},
-	"add_live_benefit":                      {},
-	"confirm_live_benefit_update":           {},
-	"confirm_live_benefit_disable":          {},
-	"add_live_fact":                         {},
-	"confirm_live_fact_update":              {},
-	"confirm_live_fact_disable":             {},
-	"add_live_script_reference":             {},
-	"confirm_live_script_reference_update":  {},
-	"confirm_live_script_reference_disable": {},
-	"confirm_live_plan_bind":                {},
-	"confirm_live_plan_unbind":              {},
-	"confirm_live_plan_switch":              {},
+	"add_live_product":                       {},
+	"add_live_product_attribute":             {},
+	"confirm_live_product_attribute_update":  {},
+	"confirm_live_product_attribute_disable": {},
+	"confirm_live_product_update":            {},
+	"confirm_live_product_disable":           {},
+	"add_live_benefit":                       {},
+	"confirm_live_benefit_update":            {},
+	"confirm_live_benefit_disable":           {},
+	"add_live_fact":                          {},
+	"confirm_live_fact_update":               {},
+	"confirm_live_fact_disable":              {},
+	"add_live_script_reference":              {},
+	"confirm_live_script_reference_update":   {},
+	"confirm_live_script_reference_disable":  {},
+	"confirm_live_plan_bind":                 {},
+	"confirm_live_plan_unbind":               {},
+	"confirm_live_plan_switch":               {},
 }
 
 func (s *Server) liveStrategyExecuteAction(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +122,12 @@ func (s *Server) liveStrategyExecuteAction(w http.ResponseWriter, r *http.Reques
 	switch actionType {
 	case "add_live_product":
 		result = s.executeLiveStrategyAddProduct(r, actor, tenantID, payload)
+	case "add_live_product_attribute":
+		result = s.executeLiveStrategyAddProductAttribute(r, actor, tenantID, payload)
+	case "confirm_live_product_attribute_update":
+		result = s.executeLiveStrategyUpdateProductAttribute(r, actor, tenantID, payload)
+	case "confirm_live_product_attribute_disable":
+		result = s.executeLiveStrategyDisableProductAttribute(r, actor, tenantID, payload)
 	case "confirm_live_product_update":
 		result = s.executeLiveStrategyUpdateProduct(r, actor, tenantID, payload)
 	case "confirm_live_product_disable":
@@ -262,6 +278,138 @@ func (s *Server) executeLiveStrategyAddProduct(r *http.Request, actor model.Acto
 		return liveStrategyFailed("product_add_failed", msg, nil)
 	}
 	return liveStrategySucceeded("product_added", "已确认添加“"+candidate.LinkKey+" · "+candidate.ProductName+"”，正式版本为 V"+strconv.FormatInt(result.Saved.VersionNo, 10)+"。", map[string]any{"module": "products", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo})
+}
+
+func (s *Server) liveStrategyProductAttributeTarget(r *http.Request, tenantID int64, p liveStrategyExecutePayload) (model.LiveAgentPlanProductLink, *model.LiveAgentPlanProductAttribute, error) {
+	items, err := s.store.ListLiveAgentPlanProductLinks(r.Context(), tenantID, p.PlanID)
+	if err != nil {
+		return model.LiveAgentPlanProductLink{}, nil, err
+	}
+	for _, item := range items {
+		if item.ID != p.ProductLinkID && (p.LinkKey == "" || item.LinkKey != strings.TrimSpace(p.LinkKey)) {
+			continue
+		}
+		for index := range item.Attributes {
+			attribute := &item.Attributes[index]
+			if p.ProductAttributeID > 0 && attribute.ID == p.ProductAttributeID {
+				return item, attribute, nil
+			}
+			if p.AttributeCode != "" && strings.EqualFold(attribute.Code, strings.TrimSpace(p.AttributeCode)) {
+				return item, attribute, nil
+			}
+			if p.AttributeLabel != "" && strings.TrimSpace(attribute.Label) == strings.TrimSpace(p.AttributeLabel) {
+				return item, attribute, nil
+			}
+		}
+	}
+	return model.LiveAgentPlanProductLink{}, nil, appdb.ErrLiveAgentPlanProductAttributeNotFound
+}
+
+func (s *Server) executeLiveStrategyAddProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
+	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请重新发起。", nil)
+	}
+	if p.ProductLinkID <= 0 && strings.TrimSpace(p.LinkKey) == "" {
+		return liveStrategyFailed("product_required", "请先确定个性属性属于哪个商品链接。", nil)
+	}
+	input := model.CreateLiveAgentPlanProductAttributeInput{
+		Code: strings.TrimSpace(p.AttributeCode), Label: strings.TrimSpace(p.AttributeLabel), Value: strings.TrimSpace(p.AttributeValue),
+		Unit: strings.TrimSpace(p.AttributeUnit), DisplayType: strings.TrimSpace(p.AttributeDisplayType), DisplayPriority: p.AttributeDisplayPriority, SourceQuote: strings.TrimSpace(p.SourceText),
+	}
+	candidate := model.LiveAgentPlanProductAttributeCandidate{Code: input.Code, Label: input.Label, Value: input.Value, Unit: input.Unit, DisplayType: input.DisplayType, DisplayPriority: input.DisplayPriority, SourceQuote: input.SourceQuote}
+	if err := validateLiveAgentPlanProductAttribute(candidate); err != nil {
+		return liveStrategyFailed("invalid_product_attribute", err.Error(), nil)
+	}
+	items, err := s.store.ListLiveAgentPlanProductLinks(r.Context(), tenantID, p.PlanID)
+	if err != nil {
+		return liveStrategyFailed("product_lookup_failed", "读取当前商品链接失败。", nil)
+	}
+	var link *model.LiveAgentPlanProductLink
+	for index := range items {
+		if (p.ProductLinkID > 0 && items[index].ID == p.ProductLinkID) || (p.ProductLinkID <= 0 && items[index].LinkKey == strings.TrimSpace(p.LinkKey)) {
+			link = &items[index]
+			break
+		}
+	}
+	if link == nil {
+		return liveStrategyFailed("product_not_found", "当前方案里没有找到这个商品链接。", nil)
+	}
+	for _, existing := range link.Attributes {
+		if strings.EqualFold(existing.Code, input.Code) && existing.Status == "active" {
+			return liveStrategyFailed("attribute_conflict", "这个商品已经有同名个性属性，请使用修改属性。", nil)
+		}
+	}
+	saved, err := s.store.CreateLiveAgentPlanProductAttribute(r.Context(), tenantID, p.PlanID, link.ID, actor.UserID, input)
+	if err != nil {
+		return liveStrategyFailed("product_attribute_add_failed", "新增商品个性属性失败，请刷新后重试。", nil)
+	}
+	return liveStrategySucceeded("product_attribute_added", "已确认添加“"+link.LinkKey+" · "+saved.Label+"”，正式版本为 V"+strconv.FormatInt(saved.VersionNo, 10)+"，会进入后续话术事实。", map[string]any{"module": "products", "plan_id": p.PlanID, "product_link_id": link.ID, "product_attribute_id": saved.ID, "version_no": saved.VersionNo})
+}
+
+func (s *Server) executeLiveStrategyUpdateProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
+	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请重新发起修改。", nil)
+	}
+	link, current, err := s.liveStrategyProductAttributeTarget(r, tenantID, p)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeNotFound) || current == nil {
+		return liveStrategyFailed("product_attribute_not_found", "没有找到这条商品个性属性，请刷新后重新发起。", nil)
+	}
+	if err != nil {
+		return liveStrategyFailed("product_attribute_lookup_failed", "读取商品个性属性失败。", nil)
+	}
+	input := model.UpdateLiveAgentPlanProductAttributeInput{ExpectedVersionNo: current.VersionNo, Code: current.Code, Label: current.Label, Value: current.Value, Unit: current.Unit, DisplayType: current.DisplayType, DisplayPriority: current.DisplayPriority}
+	if strings.TrimSpace(p.AttributeCode) != "" {
+		input.Code = strings.TrimSpace(p.AttributeCode)
+	}
+	if strings.TrimSpace(p.AttributeLabel) != "" {
+		input.Label = strings.TrimSpace(p.AttributeLabel)
+	}
+	if p.AttributeValue != "" {
+		input.Value = strings.TrimSpace(p.AttributeValue)
+	}
+	if p.AttributeUnit != "" {
+		input.Unit = strings.TrimSpace(p.AttributeUnit)
+	}
+	if p.AttributeDisplayType != "" {
+		input.DisplayType = strings.TrimSpace(p.AttributeDisplayType)
+	}
+	if p.AttributeDisplayPriority > 0 {
+		input.DisplayPriority = p.AttributeDisplayPriority
+	}
+	candidate := model.LiveAgentPlanProductAttributeCandidate{Code: input.Code, Label: input.Label, Value: input.Value, Unit: input.Unit, DisplayType: input.DisplayType, DisplayPriority: input.DisplayPriority}
+	if err := validateLiveAgentPlanProductAttribute(candidate); err != nil {
+		return liveStrategyFailed("invalid_product_attribute", err.Error(), nil)
+	}
+	updated, err := s.store.UpdateLiveAgentPlanProductAttribute(r.Context(), tenantID, p.PlanID, link.ID, current.ID, actor.UserID, input)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeVersionConflict) {
+		return liveStrategyFailed("stale_confirmation", "这条商品个性属性已经产生新版本，请重新发起修改。", nil)
+	}
+	if err != nil {
+		return liveStrategyFailed("product_attribute_update_failed", "修改商品个性属性失败，请刷新后重试。", nil)
+	}
+	return liveStrategySucceeded("product_attribute_updated", "已确认修改“"+link.LinkKey+" · "+updated.Label+"”，正式版本更新为 V"+strconv.FormatInt(updated.VersionNo, 10)+"。", map[string]any{"module": "products", "plan_id": p.PlanID, "product_link_id": link.ID, "product_attribute_id": updated.ID, "version_no": updated.VersionNo})
+}
+
+func (s *Server) executeLiveStrategyDisableProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
+	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
+	}
+	link, current, err := s.liveStrategyProductAttributeTarget(r, tenantID, p)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeNotFound) || current == nil {
+		return liveStrategyFailed("product_attribute_not_found", "没有找到这条商品个性属性，请刷新后重新发起。", nil)
+	}
+	if err != nil {
+		return liveStrategyFailed("product_attribute_lookup_failed", "读取商品个性属性失败。", nil)
+	}
+	if p.CurrentVersionNo > 0 && p.CurrentVersionNo != current.VersionNo {
+		return liveStrategyFailed("stale_confirmation", "这条商品个性属性已经产生新版本，请重新发起删除。", nil)
+	}
+	if err := s.store.DeleteLiveAgentPlanProductAttribute(r.Context(), tenantID, p.PlanID, link.ID, current.ID, actor.UserID); errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeNotFound) {
+		return liveStrategyFailed("stale_confirmation", "这条商品个性属性已经变化或被删除，请刷新后重试。", nil)
+	} else if err != nil {
+		return liveStrategyFailed("product_attribute_disable_failed", "删除商品个性属性失败，请稍后重试。", nil)
+	}
+	return liveStrategySucceeded("product_attribute_disabled", "已确认删除“"+link.LinkKey+" · "+current.Label+"”，它不会再进入话术生成。", map[string]any{"module": "products", "plan_id": p.PlanID, "product_link_id": link.ID, "product_attribute_id": current.ID})
 }
 
 func (s *Server) executeLiveStrategyUpdateProduct(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {

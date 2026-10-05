@@ -62,6 +62,7 @@ func TestCompileFullShowContextSeparatesFormalFactsFromDraftStructure(t *testing
 
 	got := compileFullShowContext(plan, facts, nil, []model.LiveAgentPlanProductLink{{
 		LinkKey: "1号链接", ProductName: "黄菜籽油", Spec: "5L", DailyPrice: "130元", Status: "active",
+		Attributes: []model.LiveAgentPlanProductAttribute{{ID: 81, Code: "pressing_process", Label: "压榨工艺", Value: "传统熟榨", Status: "active", VersionNo: 2}},
 	}}, []model.LiveAgentPlanScriptReference{{
 		ReferenceKey: "开场", Title: "开场参考", ContentText: "姐妹们先别急着划走", ExecutionMode: "verbatim", Status: "active", VersionNo: 2,
 	}}, input)
@@ -74,8 +75,17 @@ func TestCompileFullShowContextSeparatesFormalFactsFromDraftStructure(t *testing
 	if len(got.ProductLinks) != 1 || got.ProductLinks[0].LinkKey != "1号链接" {
 		t.Fatalf("product links=%+v", got.ProductLinks)
 	}
-	if got.FactManifestVersion != model.LiveGenerationFactManifestVersion || len(got.AuthorizedFacts) != 4 {
+	if got.FactManifestVersion != model.LiveGenerationFactManifestVersion || len(got.AuthorizedFacts) != 5 {
 		t.Fatalf("unified generation facts missing: version=%s facts=%+v", got.FactManifestVersion, got.AuthorizedFacts)
+	}
+	foundPersonalizedAttribute := false
+	for _, fact := range got.AuthorizedFacts {
+		if fact.Predicate == "attribute.pressing_process" && fact.Label == "压榨工艺" && fact.Value == "传统熟榨" {
+			foundPersonalizedAttribute = true
+		}
+	}
+	if !foundPersonalizedAttribute {
+		t.Fatalf("personalized product attribute did not enter generation facts: %+v", got.AuthorizedFacts)
 	}
 	if len(got.ScriptReferences) != 0 {
 		t.Fatalf("script references must not enter generation context: %+v", got.ScriptReferences)

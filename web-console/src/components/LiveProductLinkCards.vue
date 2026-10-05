@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import type { LiveAgentPlanBenefit, LiveAgentPlanProductLink } from '../types'
+import type { LiveAgentPlanBenefit, LiveAgentPlanProductAttribute, LiveAgentPlanProductLink } from '../types'
 
 type ProductField = 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience'
+type ProductAttributeDraft = { code: string; label: string; value: string; unit?: string; display_type?: string; display_priority?: number }
 const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
   saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
+	addAttribute: (item: LiveAgentPlanProductLink, draft: ProductAttributeDraft) => Promise<void>
+	saveAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute, draft: ProductAttributeDraft) => Promise<void>
+	removeAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) => Promise<void>
 }>()
 const fields: { key: ProductField; label: string; path: string }[] = [
   { key: 'spec', label: '规格', path: 'm12 3 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8M7.5 5.5l9 5V14' },
@@ -19,6 +23,12 @@ const labels: Record<ProductField, string> = { link_key: '链接编号', product
 const edit = ref<{ item: LiveAgentPlanProductLink; field: ProductField; draft: string } | null>(null)
 const busy = ref(false)
 const message = ref<{ id: number; text: string; error?: boolean } | null>(null)
+const expandedItems = ref<Set<number>>(new Set())
+const attributeEdit = ref<{
+	itemId: number
+	attribute: LiveAgentPlanProductAttribute | null
+	draft: ProductAttributeDraft
+} | null>(null)
 const vFocus = { mounted: (element: HTMLInputElement | HTMLTextAreaElement) => { element.focus(); element.select() } }
 
 function isEditing(item: LiveAgentPlanProductLink, field: ProductField) {
@@ -69,6 +79,95 @@ function cancelEdit() {
   message.value = null
 }
 
+function toggleAttributes(item: LiveAgentPlanProductLink) {
+	const next = new Set(expandedItems.value)
+	if (next.has(item.id)) {
+		next.delete(item.id)
+		if (attributeEdit.value?.itemId === item.id) attributeEdit.value = null
+	} else {
+		next.add(item.id)
+	}
+	expandedItems.value = next
+}
+
+function attributeValue(attribute: LiveAgentPlanProductAttribute) {
+	return attribute.value + (attribute.unit || '')
+}
+
+function startAddAttribute(item: LiveAgentPlanProductLink) {
+	if (busy.value) return
+	const next = new Set(expandedItems.value)
+	next.add(item.id)
+	expandedItems.value = next
+	attributeEdit.value = {
+		itemId: item.id,
+		attribute: null,
+		draft: { code: '', label: '', value: '', unit: '', display_type: 'text', display_priority: ((item.attributes || []).length + 1) * 10 },
+	}
+	message.value = null
+}
+
+function startEditAttribute(item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) {
+	if (busy.value) return
+	attributeEdit.value = {
+		itemId: item.id,
+		attribute: { ...attribute },
+		draft: {
+			code: attribute.code,
+			label: attribute.label,
+			value: attribute.value,
+			unit: attribute.unit || '',
+			display_type: attribute.display_type || 'text',
+			display_priority: attribute.display_priority,
+		},
+	}
+	message.value = null
+}
+
+function cancelAttributeEdit() {
+	if (!busy.value) attributeEdit.value = null
+}
+
+async function submitAttribute(item: LiveAgentPlanProductLink) {
+	const current = attributeEdit.value
+	if (busy.value || !current || current.itemId !== item.id) return
+	const label = current.draft.label.trim()
+	const value = current.draft.value.trim()
+	if (!label || !value) {
+		message.value = { id: item.id, text: '个性属性名称和值不能为空', error: true }
+		return
+	}
+	const code = (current.draft.code.trim() || label.replace(/\s+/g, '_')).toLowerCase()
+	const draft = { ...current.draft, code, label, value, unit: current.draft.unit?.trim() || '' }
+	busy.value = true
+	message.value = { id: item.id, text: '正在保存个性属性…' }
+	try {
+		if (current.attribute) await props.saveAttribute(item, current.attribute, draft)
+		else await props.addAttribute(item, draft)
+		attributeEdit.value = null
+		message.value = { id: item.id, text: '个性属性已保存，并会进入话术事实' }
+	} catch (error) {
+		message.value = { id: item.id, text: error instanceof Error ? error.message : '保存个性属性失败', error: true }
+	} finally {
+		busy.value = false
+	}
+}
+
+async function deleteAttribute(item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) {
+	if (busy.value || !window.confirm(`确定删除个性属性“${attribute.label}”吗？删除后不会再进入话术生成。`)) return
+	busy.value = true
+	message.value = { id: item.id, text: '正在删除个性属性…' }
+	try {
+		await props.removeAttribute(item, attribute)
+		if (attributeEdit.value?.attribute?.id === attribute.id) attributeEdit.value = null
+		message.value = { id: item.id, text: '个性属性已删除干净' }
+	} catch (error) {
+		message.value = { id: item.id, text: error instanceof Error ? error.message : '删除个性属性失败', error: true }
+	} finally {
+		busy.value = false
+	}
+}
+
 function linkedBenefits(item: LiveAgentPlanProductLink) {
   return (props.benefits || []).filter((benefit) => benefit.status === 'active' && benefit.link_key === item.link_key)
 }
@@ -99,6 +198,8 @@ async function deleteItem(item: LiveAgentPlanProductLink) {
 
 watch(() => props.items.map((item) => item.id), (ids) => {
   if (edit.value && !ids.includes(edit.value.item.id)) edit.value = null
+	if (attributeEdit.value && !ids.includes(attributeEdit.value.itemId)) attributeEdit.value = null
+	expandedItems.value = new Set([...expandedItems.value].filter((id) => ids.includes(id)))
 })
 </script>
 
@@ -129,6 +230,30 @@ watch(() => props.items.map((item) => item.id), (ids) => {
           </dd>
         </div>
       </dl>
+	  <section class="product-personalized" :class="{ expanded: expandedItems.has(item.id) }">
+		<button type="button" class="product-personalized-toggle" :aria-expanded="expandedItems.has(item.id)" :aria-controls="'product-attributes-' + item.id" @click="toggleAttributes(item)">
+		  <span><b>个性属性</b><small>{{ (item.attributes || []).length ? `${item.attributes.length} 项 · 按商品品类反推` : '暂无 · 可手动添加' }}</small></span>
+		  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+		</button>
+		<div v-if="expandedItems.has(item.id)" :id="'product-attributes-' + item.id" class="product-personalized-body">
+		  <div v-if="!(item.attributes || []).length && attributeEdit?.itemId !== item.id" class="product-attribute-empty">这个商品还没有个性属性。可添加本品类独有、并能作为话术事实的信息。</div>
+		  <dl v-if="(item.attributes || []).length" class="product-attribute-list">
+			<div v-for="attribute in item.attributes" :key="attribute.id">
+			  <dt>{{ attribute.label }}</dt>
+			  <dd><span>{{ attributeValue(attribute) }}</span><div><button type="button" class="product-edit" :disabled="busy" :aria-label="'修改个性属性' + attribute.label" @click="startEditAttribute(item, attribute)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button><button type="button" class="product-attribute-delete" :disabled="busy" :aria-label="'删除个性属性' + attribute.label" @click="deleteAttribute(item, attribute)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" /></svg></button></div></dd>
+			</div>
+		  </dl>
+		  <form v-if="attributeEdit?.itemId === item.id" class="product-attribute-form" @submit.prevent="submitAttribute(item)">
+			<strong>{{ attributeEdit.attribute ? '修改个性属性' : '添加个性属性' }}</strong>
+			<label><span>属性名称</span><input v-model="attributeEdit.draft.label" v-focus :disabled="busy" maxlength="96" placeholder="如：压榨工艺、面料、功率" /></label>
+			<label><span>属性值</span><textarea v-model="attributeEdit.draft.value" :disabled="busy" maxlength="2000" rows="2" placeholder="填写可核实、可用于话术的商品事实" /></label>
+			<label class="product-attribute-unit"><span>单位（可选）</span><input v-model="attributeEdit.draft.unit" :disabled="busy" maxlength="48" placeholder="如 L、W、%" /></label>
+			<div><button type="button" :disabled="busy" @click="cancelAttributeEdit">取消</button><button type="submit" class="primary" :disabled="busy">保存属性</button></div>
+		  </form>
+		  <button v-else type="button" class="product-attribute-add" :disabled="busy" @click="startAddAttribute(item)">＋ 添加个性属性</button>
+		  <p>仅个性属性放在这里；规格、价格、数量、适用仍在上方通用字段。保存后自动成为话术事实。</p>
+		</div>
+	  </section>
       <section v-if="linkedBenefits(item).length" class="product-benefits" aria-label="当前有效福利事实">
         <header><strong>当前福利事实</strong><span>会随商品事实一起进入话术生成</span></header>
         <div v-for="benefit in linkedBenefits(item)" :key="benefit.id">
@@ -137,7 +262,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         </div>
       </section>
       <footer class="product-card-footer">
-        <span role="status" :class="{ error: message?.id === item.id && message.error }">{{ message?.id === item.id ? message.text : '点击笔修改，自动保存' }}</span>
+        <span role="status" :class="{ error: message?.id === item.id && message.error }">{{ message?.id === item.id ? message.text : '通用字段常显，个性属性可展开' }}</span>
         <button type="button" class="product-delete" :disabled="busy" :aria-label="'删除' + item.link_key" @mousedown.prevent @click="deleteItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>删除</button>
       </footer>
     </article>
@@ -165,6 +290,35 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 .product-details dt svg { width:20px; height:20px; flex:0 0 20px; }
 .product-details dd { display:flex; align-items:flex-start; gap:3px; min-width:0; margin:0; color:#24334f; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 .product-details dd>span { flex:1; min-width:0; padding:4px 6px; border-radius:7px; background:rgba(229,234,252,.55); }
+.product-personalized { overflow:hidden; border:1px solid #e5e9f5; border-radius:11px; background:#fbfcff; }
+.product-personalized.expanded { border-color:color-mix(in srgb,var(--accent) 28%,#e5e9f5); }
+.product-personalized-toggle { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; padding:10px 11px; border:0; background:transparent; color:#34415c; text-align:left; cursor:pointer; }
+.product-personalized-toggle>span { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.product-personalized-toggle b { color:var(--accent); font-size:12px; white-space:nowrap; }
+.product-personalized-toggle small { overflow:hidden; color:#8791a5; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.product-personalized-toggle>svg { width:18px; height:18px; flex:0 0 18px; transition:transform .18s ease; }
+.product-personalized.expanded .product-personalized-toggle>svg { transform:rotate(180deg); }
+.product-personalized-body { display:grid; gap:8px; padding:0 10px 10px; border-top:1px solid #edf0f7; }
+.product-attribute-empty { margin-top:9px; padding:9px; border-radius:8px; background:#f5f7fc; color:#778297; font-size:11px; line-height:1.55; }
+.product-attribute-list { display:grid; gap:6px; margin:9px 0 0; }
+.product-attribute-list>div { display:grid; grid-template-columns:minmax(76px,.4fr) minmax(0,1fr); gap:8px; align-items:center; min-height:38px; padding:6px 8px; border-radius:8px; background:var(--tint); }
+.product-attribute-list dt { color:#56627a; font-size:11px; overflow-wrap:anywhere; }
+.product-attribute-list dd { display:flex; align-items:center; justify-content:space-between; gap:5px; min-width:0; margin:0; color:#24334f; font-size:12px; font-weight:650; }
+.product-attribute-list dd>span { min-width:0; overflow-wrap:anywhere; }
+.product-attribute-list dd>div { display:flex; flex:0 0 auto; }
+.product-attribute-delete { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:4px; border:0; border-radius:6px; background:transparent; cursor:pointer; }
+.product-attribute-delete svg { width:15px; height:15px; stroke:#c85b6b; }
+.product-attribute-delete:hover { background:#ffedf0; }
+.product-attribute-form { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; padding:10px; border:1px solid color-mix(in srgb,var(--accent) 25%,#e2e6f2); border-radius:9px; background:#fff; }
+.product-attribute-form>strong,.product-attribute-form>label:nth-of-type(2),.product-attribute-form>div { grid-column:1/-1; }
+.product-attribute-form>strong { color:var(--accent); font-size:12px; }
+.product-attribute-form label { display:grid; gap:4px; color:#667087; font-size:10px; }
+.product-attribute-form input,.product-attribute-form textarea { padding:6px 7px; }
+.product-attribute-form>div { display:flex; justify-content:flex-end; gap:7px; }
+.product-attribute-form>div button,.product-attribute-add { padding:6px 9px; border:1px solid #dce2ef; border-radius:7px; background:#fff; color:#5e6980; font:inherit; font-size:11px; cursor:pointer; }
+.product-attribute-form>div button.primary { border-color:var(--accent); background:var(--accent); color:#fff; }
+.product-attribute-add { justify-self:start; border-color:color-mix(in srgb,var(--accent) 35%,#dce2ef); color:var(--accent); }
+.product-personalized-body>p { margin:0; color:#9099aa; font-size:10px; line-height:1.5; }
 .product-benefits { display:grid; gap:7px; padding:10px; border:1px solid color-mix(in srgb,var(--accent) 18%,#e5eaf5); border-radius:11px; background:color-mix(in srgb,var(--tint) 58%,#fff); }
 .product-benefits>header { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
 .product-benefits>header strong { color:var(--accent); font-size:12px; }

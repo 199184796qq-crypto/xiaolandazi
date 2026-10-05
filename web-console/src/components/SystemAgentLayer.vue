@@ -120,6 +120,9 @@ type SuggestionKind = 'department' | 'capability' | 'navigation' | 'image'
 
 const unifiedLiveStrategyActionTypes = new Set([
   'add_live_product',
+	'add_live_product_attribute',
+	'confirm_live_product_attribute_update',
+	'confirm_live_product_attribute_disable',
   'confirm_live_product_update',
   'confirm_live_product_disable',
   'add_live_benefit',
@@ -1019,6 +1022,9 @@ function restoreAgentChatHistory(userId: number) {
       action:
         item.action?.type === 'add_live_image_product' ||
         item.action?.type === 'add_live_product' ||
+		item.action?.type === 'add_live_product_attribute' ||
+		item.action?.type === 'confirm_live_product_attribute_update' ||
+		item.action?.type === 'confirm_live_product_attribute_disable' ||
         item.action?.type === 'add_live_benefit' ||
         item.action?.type === 'confirm_live_product_link_correction' ||
         item.action?.type === 'clarify_live_product_update' ||
@@ -1083,6 +1089,9 @@ function persistAgentChatHistory(userId: number) {
     action:
       item.action?.type === 'add_live_image_product' ||
       item.action?.type === 'add_live_product' ||
+	  item.action?.type === 'add_live_product_attribute' ||
+	  item.action?.type === 'confirm_live_product_attribute_update' ||
+	  item.action?.type === 'confirm_live_product_attribute_disable' ||
       item.action?.type === 'add_live_benefit' ||
       item.action?.type === 'confirm_live_product_link_correction' ||
       item.action?.type === 'clarify_live_product_update' ||
@@ -2038,6 +2047,9 @@ function latestPendingLiveStrategyAction() {
     'confirm_live_product_link_correction',
     'add_live_image_product',
     'add_live_product',
+	'add_live_product_attribute',
+	'confirm_live_product_attribute_update',
+	'confirm_live_product_attribute_disable',
     'add_live_benefit',
     'clarify_live_product_update',
     'confirm_live_product_update',
@@ -2686,6 +2698,82 @@ async function prepareLiveProductIntentAction(
   }
 }
 
+async function prepareLiveProductAttributeIntentAction(
+  planId: number,
+  roomId: number,
+  sourceText: string,
+  result: LiveStrategyIntentResponse,
+) {
+  const linkKey = intentString(result.target?.link_key)
+  const targetAttributeID = Number(result.target?.product_attribute_id || 0)
+  const targetCode = intentString(result.target?.attribute_code)
+  const targetLabel = intentString(result.target?.attribute_label)
+  const changes = result.changes || {}
+  const current = await getLiveAgentPlanProductLinks(planId)
+  const existingProduct = (current.items || []).find((item) => item.link_key === linkKey)
+  if (!existingProduct) {
+    return { text: '当前方案里没有“' + (linkKey || '这个') + '”商品链接，无法维护个性属性。' }
+  }
+  const attributes = existingProduct.attributes || []
+  const existing = targetAttributeID > 0
+    ? attributes.find((item) => item.id === targetAttributeID)
+    : attributes.find((item) => (targetCode && item.code === targetCode) || (targetLabel && item.label === targetLabel))
+  const label = intentString(changes.attribute_label) || targetLabel || existing?.label || ''
+  const code = intentString(changes.attribute_code) || targetCode || existing?.code || label.toLowerCase().replace(/\s+/g, '_')
+  const value = intentString(changes.attribute_value)
+  const unit = intentString(changes.attribute_unit) || existing?.unit || ''
+  const displayType = intentString(changes.attribute_display_type) || existing?.display_type || 'text'
+  const displayPriority = Number(changes.attribute_display_priority || existing?.display_priority || 10)
+
+  if (result.intent === 'product_attribute.add') {
+    if (!label || !value) return { text: result.reply || '新增个性属性还缺少属性名称或属性值，请补充后再继续。' }
+    if (existing) return { text: '“' + linkKey + '”已经有“' + existing.label + '”，如果要改请说修改这个属性。' }
+    return {
+      text: '我已经整理好“' + linkKey + '”的个性属性，确认后写入商品卡并进入话术事实。',
+      action: {
+        type: 'add_live_product_attribute',
+        title: '确认添加个性属性',
+        summary: '尚未写入。确认后作为该商品的子项保存，并进入后续话术生成。',
+        risk_level: 'low',
+        requires_confirmation: true,
+        payload: { plan_id: planId, room_id: roomId, product_link_id: existingProduct.id, link_key: linkKey, attribute_code: code, attribute_label: label, attribute_value: value, attribute_unit: unit, attribute_display_type: displayType, attribute_display_priority: displayPriority, source_text: sourceText },
+      } as SystemAgentActionPreview,
+    }
+  }
+  if (!existing) return { text: '当前商品卡里没有找到这个个性属性，请说明属性名称，或先添加属性。' }
+  if (result.intent === 'product_attribute.disable') {
+    return {
+      text: '我已经定位到“' + linkKey + ' · ' + existing.label + '”，删除后它不会再进入话术生成，请确认。',
+      action: {
+        type: 'confirm_live_product_attribute_disable',
+        title: '确认删除个性属性',
+        summary: '只删除这个商品子项；商品卡和其它通用字段不受影响。',
+        risk_level: 'medium',
+        requires_confirmation: true,
+        payload: { plan_id: planId, room_id: roomId, product_link_id: existingProduct.id, product_attribute_id: existing.id, link_key: linkKey, attribute_label: existing.label, current_version_no: existing.version_no, source_text: sourceText },
+      } as SystemAgentActionPreview,
+    }
+  }
+  if (result.intent !== 'product_attribute.update') return null
+  if (!label && !value) return { text: result.reply || '请说明要修改的属性名称或属性值。' }
+  const nextLabel = label || existing.label
+  const nextValue = value || existing.value
+  if (nextLabel === existing.label && nextValue === existing.value && unit === (existing.unit || '') && displayType === existing.display_type) {
+    return { text: '模型理解出的新值和当前个性属性一致，没有生成新版本。' }
+  }
+  return {
+    text: '我已经整理好“' + linkKey + ' · ' + existing.label + '”的修改内容，确认后写入新版本。',
+    action: {
+      type: 'confirm_live_product_attribute_update',
+      title: '确认修改个性属性',
+      summary: '确认后只更新这个商品子项，并保留历史版本。',
+      risk_level: 'low',
+      requires_confirmation: true,
+      payload: { plan_id: planId, room_id: roomId, product_link_id: existingProduct.id, product_attribute_id: existing.id, link_key: linkKey, attribute_code: code, attribute_label: nextLabel, attribute_value: nextValue, attribute_unit: unit, attribute_display_type: displayType, attribute_display_priority: displayPriority, current_version_no: existing.version_no, source_text: sourceText },
+    } as SystemAgentActionPreview,
+  }
+}
+
 async function prepareLiveBenefitIntentAction(
   planId: number,
   roomId: number,
@@ -3212,6 +3300,18 @@ async function handleUnifiedLiveStrategyIntent(
   if (result.kind === 'clarify') {
     pushAgentMessage(domain, result.reply || '我还不能唯一确定你的意思，请再补充一点。')
     return true
+  }
+  if (result.intent.startsWith('product_attribute.')) {
+    if (!planId) {
+      pushAgentMessage(domain, '我已经理解成商品个性属性操作，但当前还没有选中的直播智能体方案。请先选择方案。')
+      return true
+    }
+    const prepared = await prepareLiveProductAttributeIntentAction(planId, roomId, sourceText, result)
+    if (prepared) {
+      focusLivePlanModule(planId, 'products')
+      pushAgentMessage(domain, prepared.text, prepared.action)
+      return true
+    }
   }
   if (result.intent.startsWith('product.')) {
     if (!planId) {

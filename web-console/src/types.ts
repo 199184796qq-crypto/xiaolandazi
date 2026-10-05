@@ -214,6 +214,7 @@ export interface SystemAgentActionPayload {
   current_plan_id?: number
   room_id?: number
   product_link_id?: number
+	product_attribute_id?: number
   benefit_id?: number
   fact_id?: number
   current_version_no?: number
@@ -225,6 +226,12 @@ export interface SystemAgentActionPayload {
   daily_price?: string
   quantity?: string
   audience?: string
+	attribute_code?: string
+	attribute_label?: string
+	attribute_value?: string
+	attribute_unit?: string
+	attribute_display_type?: string
+	attribute_display_priority?: number
   current_product_name?: string
   current_link_key?: string
   current_spec?: string
@@ -1449,6 +1456,17 @@ export interface LiveAgentPlanProductLinkCandidate {
   review_reason?: string
   source_quotes?: string[]
   confidence?: 'high' | 'medium' | 'low' | string
+	attributes?: LiveAgentPlanProductAttributeCandidate[]
+}
+
+export interface LiveAgentPlanProductAttributeCandidate {
+	code: string
+	label: string
+	value: string
+	unit?: string
+	display_type?: 'text' | 'tags' | 'price' | string
+	display_priority?: number
+	source_quote?: string
 }
 
 export interface LiveAgentPlanBenefitCandidate {
@@ -1486,6 +1504,29 @@ export interface LiveAgentPlanProductLink {
   updated_by_user_id?: number
   created_at: string
   updated_at: string
+	attributes: LiveAgentPlanProductAttribute[]
+}
+
+export interface LiveAgentPlanProductAttribute {
+	id: number
+	tenant_id: number
+	plan_id: number
+	product_link_id: number
+	code: string
+	label: string
+	value: string
+	unit?: string
+	display_type: 'text' | 'tags' | 'price' | string
+	display_priority: number
+	source_quote?: string
+	source_type: string
+	source_ref?: string
+	status: string
+	version_no: number
+	created_by_user_id?: number
+	updated_by_user_id?: number
+	created_at: string
+	updated_at: string
 }
 
 export interface LiveAgentPlanProductLinkAdoptionResult {

@@ -73,6 +73,22 @@ func TestProgramLiveStrategyProductSpec(t *testing.T) {
 	}
 }
 
+func TestProgramLiveStrategyProductAttributeCRUD(t *testing.T) {
+	ctx := LiveStrategyProgramContext{CurrentMode: "products", Products: []LiveStrategyProduct{{LinkKey: "1号链接", Attributes: []LiveStrategyProductAttribute{{ID: 7, Code: "pressing_process", Label: "压榨工艺", Value: "传统熟榨"}}}}}
+	add := ProgramInterpretLiveStrategy("给1号链接添加个性属性：原料=非转基因菜籽", ctx)
+	if add.Intent != "product_attribute.add" || add.Changes["attribute_label"] != "原料" || add.Changes["attribute_value"] != "非转基因菜籽" {
+		t.Fatalf("add attribute intent=%+v", add)
+	}
+	update := ProgramInterpretLiveStrategy("修改1号链接个性属性压榨工艺为小榨熟香", ctx)
+	if update.Intent != "product_attribute.update" || update.Changes["attribute_value"] != "小榨熟香" {
+		t.Fatalf("update attribute intent=%+v", update)
+	}
+	remove := ProgramInterpretLiveStrategy("删除1号链接个性属性压榨工艺", ctx)
+	if remove.Intent != "product_attribute.disable" || remove.Target["attribute_label"] != "压榨工艺" {
+		t.Fatalf("disable attribute intent=%+v", remove)
+	}
+}
+
 func TestProgramLiveStrategyFactAdd(t *testing.T) {
 	out := ProgramInterpretLiveStrategy("添加事实 发货物流-快递方式：顺丰", LiveStrategyProgramContext{CurrentMode: "knowledge"})
 	if out.Kind != KindCommand || out.Intent != "fact.add" {

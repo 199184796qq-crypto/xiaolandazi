@@ -26,6 +26,9 @@ type liveStrategyIntentInput struct {
 
 type liveStrategyIntentTarget struct {
 	LinkKey            string `json:"link_key,omitempty"`
+	ProductAttributeID int64  `json:"product_attribute_id,omitempty"`
+	AttributeCode      string `json:"attribute_code,omitempty"`
+	AttributeLabel     string `json:"attribute_label,omitempty"`
 	BenefitKey         string `json:"benefit_key,omitempty"`
 	FactCategory       string `json:"fact_category,omitempty"`
 	FactKey            string `json:"fact_key,omitempty"`
@@ -36,18 +39,24 @@ type liveStrategyIntentTarget struct {
 }
 
 type liveStrategyIntentChanges struct {
-	ProductName   string `json:"product_name,omitempty"`
-	Spec          string `json:"spec,omitempty"`
-	DailyPrice    string `json:"daily_price,omitempty"`
-	Quantity      string `json:"quantity,omitempty"`
-	Audience      string `json:"audience,omitempty"`
-	ActivityPrice string `json:"activity_price,omitempty"`
-	Gift          string `json:"gift,omitempty"`
-	Activity      string `json:"activity,omitempty"`
-	StartsAt      string `json:"starts_at,omitempty"`
-	EndsAt        string `json:"ends_at,omitempty"`
-	FactValue     string `json:"fact_value,omitempty"`
-	ScriptText    string `json:"script_text,omitempty"`
+	ProductName              string `json:"product_name,omitempty"`
+	Spec                     string `json:"spec,omitempty"`
+	DailyPrice               string `json:"daily_price,omitempty"`
+	Quantity                 string `json:"quantity,omitempty"`
+	Audience                 string `json:"audience,omitempty"`
+	AttributeCode            string `json:"attribute_code,omitempty"`
+	AttributeLabel           string `json:"attribute_label,omitempty"`
+	AttributeValue           string `json:"attribute_value,omitempty"`
+	AttributeUnit            string `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int    `json:"attribute_display_priority,omitempty"`
+	ActivityPrice            string `json:"activity_price,omitempty"`
+	Gift                     string `json:"gift,omitempty"`
+	Activity                 string `json:"activity,omitempty"`
+	StartsAt                 string `json:"starts_at,omitempty"`
+	EndsAt                   string `json:"ends_at,omitempty"`
+	FactValue                string `json:"fact_value,omitempty"`
+	ScriptText               string `json:"script_text,omitempty"`
 }
 
 type liveStrategyIntentModelOutput struct {
@@ -80,13 +89,22 @@ type liveStrategyIntentOutput struct {
 }
 
 type liveStrategyIntentProductContext struct {
-	LinkKey     string `json:"link_key"`
-	ProductName string `json:"product_name,omitempty"`
-	Spec        string `json:"spec,omitempty"`
-	DailyPrice  string `json:"daily_price,omitempty"`
-	Quantity    string `json:"quantity,omitempty"`
-	Audience    string `json:"audience,omitempty"`
-	VersionNo   int64  `json:"version_no"`
+	LinkKey     string                                      `json:"link_key"`
+	ProductName string                                      `json:"product_name,omitempty"`
+	Spec        string                                      `json:"spec,omitempty"`
+	DailyPrice  string                                      `json:"daily_price,omitempty"`
+	Quantity    string                                      `json:"quantity,omitempty"`
+	Audience    string                                      `json:"audience,omitempty"`
+	VersionNo   int64                                       `json:"version_no"`
+	Attributes  []liveStrategyIntentProductAttributeContext `json:"attributes,omitempty"`
+}
+
+type liveStrategyIntentProductAttributeContext struct {
+	ID    int64  `json:"id"`
+	Code  string `json:"code"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Unit  string `json:"unit,omitempty"`
 }
 
 type liveStrategyIntentBenefitContext struct {
@@ -145,6 +163,7 @@ func normalizeLiveStrategyIntent(value string) string {
 	case "chat":
 		return "chat"
 	case "product.add", "product.update", "product.disable",
+		"product_attribute.add", "product_attribute.update", "product_attribute.disable",
 		"benefit.add", "benefit.update", "benefit.disable",
 		"fact.add", "fact.update", "fact.disable",
 		"script.add", "script.update", "script.disable",
@@ -172,6 +191,9 @@ func liveStrategyProgramOutput(value agentunderstanding.UnifiedIntent) liveStrat
 	}
 	if target := value.Target; target != nil {
 		result.Target.LinkKey = intentMapString(target, "link_key")
+		result.Target.ProductAttributeID = intentMapInt64(target, "product_attribute_id")
+		result.Target.AttributeCode = intentMapString(target, "attribute_code")
+		result.Target.AttributeLabel = intentMapString(target, "attribute_label")
 		result.Target.BenefitKey = intentMapString(target, "benefit_key")
 		result.Target.FactCategory = intentMapString(target, "fact_category")
 		result.Target.FactKey = intentMapString(target, "fact_key")
@@ -186,6 +208,12 @@ func liveStrategyProgramOutput(value agentunderstanding.UnifiedIntent) liveStrat
 		result.Changes.DailyPrice = intentMapString(changes, "daily_price")
 		result.Changes.Quantity = intentMapString(changes, "quantity")
 		result.Changes.Audience = intentMapString(changes, "audience")
+		result.Changes.AttributeCode = intentMapString(changes, "attribute_code")
+		result.Changes.AttributeLabel = intentMapString(changes, "attribute_label")
+		result.Changes.AttributeValue = intentMapString(changes, "attribute_value")
+		result.Changes.AttributeUnit = intentMapString(changes, "attribute_unit")
+		result.Changes.AttributeDisplayType = intentMapString(changes, "attribute_display_type")
+		result.Changes.AttributeDisplayPriority = int(intentMapInt64(changes, "attribute_display_priority"))
 		result.Changes.ActivityPrice = intentMapString(changes, "activity_price")
 		result.Changes.Gift = intentMapString(changes, "gift")
 		result.Changes.Activity = intentMapString(changes, "activity")
@@ -337,11 +365,17 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		for _, item := range productItems {
-			products = append(products, liveStrategyIntentProductContext{
+			contextItem := liveStrategyIntentProductContext{
 				LinkKey: item.LinkKey, ProductName: item.ProductName, Spec: item.Spec,
 				DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
 				VersionNo: item.VersionNo,
-			})
+			}
+			for _, attribute := range item.Attributes {
+				contextItem.Attributes = append(contextItem.Attributes, liveStrategyIntentProductAttributeContext{
+					ID: attribute.ID, Code: attribute.Code, Label: attribute.Label, Value: attribute.Value, Unit: attribute.Unit,
+				})
+			}
+			products = append(products, contextItem)
 		}
 
 		benefitItems, err := s.store.ListLiveAgentPlanBenefits(r.Context(), tenantID, input.PlanID)
@@ -420,10 +454,16 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 		Now:         now,
 	}
 	for _, item := range products {
-		programContext.Products = append(programContext.Products, agentunderstanding.LiveStrategyProduct{
+		product := agentunderstanding.LiveStrategyProduct{
 			LinkKey: item.LinkKey, ProductName: item.ProductName, Spec: item.Spec,
 			DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
-		})
+		}
+		for _, attribute := range item.Attributes {
+			product.Attributes = append(product.Attributes, agentunderstanding.LiveStrategyProductAttribute{
+				ID: attribute.ID, Code: attribute.Code, Label: attribute.Label, Value: attribute.Value, Unit: attribute.Unit,
+			})
+		}
+		programContext.Products = append(programContext.Products, product)
 	}
 	for _, item := range benefits {
 		if item.Status == "disabled" {
@@ -484,11 +524,11 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 【输出】只输出 JSON，不要 Markdown：
 {
   "kind": "chat|command|clarify",
-  "intent": "chat|product.add|product.update|product.disable|benefit.add|benefit.update|benefit.disable|fact.add|fact.update|fact.disable|script.add|script.update|script.disable|plan.bind|plan.unbind|plan.switch|unknown",
+  "intent": "chat|product.add|product.update|product.disable|product_attribute.add|product_attribute.update|product_attribute.disable|benefit.add|benefit.update|benefit.disable|fact.add|fact.update|fact.disable|script.add|script.update|script.disable|plan.bind|plan.unbind|plan.switch|unknown",
   "reply": "普通聊天时直接回复；需要澄清时给一句简短问题；command 时可留空",
-  "target": {"link_key":"", "benefit_key":"", "fact_category":"", "fact_key":"", "script_reference_key":"", "script_title":"", "plan_id":0, "plan_name":""},
+  "target": {"link_key":"", "product_attribute_id":0, "attribute_code":"", "attribute_label":"", "benefit_key":"", "fact_category":"", "fact_key":"", "script_reference_key":"", "script_title":"", "plan_id":0, "plan_name":""},
   "changes": {
-    "product_name":"", "spec":"", "daily_price":"", "quantity":"", "audience":"",
+    "product_name":"", "spec":"", "daily_price":"", "quantity":"", "audience":"", "attribute_code":"", "attribute_label":"", "attribute_value":"", "attribute_unit":"", "attribute_display_type":"text", "attribute_display_priority":0,
     "activity_price":"", "gift":"", "activity":"", "starts_at":"", "ends_at":"",
     "fact_value":"", "script_text":""
   },
@@ -499,7 +539,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 【核心规则】
 1. 当前模块只是上下文提示，不等于用户每句话都是修改命令。普通聊天必须 kind=chat、intent=chat。
 2. “1号链接活动”“1号链接的福利”表示以1号链接定位活动福利；如果修改的是赠品、活动价、活动内容、开始/结束/截止时间，必须是 benefit.*，不是 product.*。
-3. 只有修改商品名称、规格、日常价、数量、适用人群等稳定商品资料时才是 product.*。
+3. 只有修改商品名称、规格、日常价、数量、适用人群等稳定商品资料时才是 product.*；修改品类特有的“个性属性/商品属性”时使用 product_attribute.*，不要把它误判成普通事实或商品规格。
 4. update 的 changes 只放用户明确想改的字段，禁止为了凑完整对象复制旧值。
 5. 用户说“现在/立即/马上/立即生效”作为开始时间时，将 starts_at 解析成当前时间，格式 YYYY-MM-DD HH:mm。其它相对时间也尽量结合当前时间解析；无法可靠确定就放进 missing 并 kind=clarify。
 6. 用户说“修改活动”但没说字段时，benefit.update + kind=clarify；用户说“修改1号链接”且上下文无法判断是商品还是活动时，kind=clarify、intent=unknown。

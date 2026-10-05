@@ -61,7 +61,13 @@ func (s *Store) ListLiveAgentPlanProductLinks(ctx context.Context, tenantID, pla
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func (s *Store) getLiveAgentPlanProductLinkByKey(ctx context.Context, tenantID, planID int64, linkKey string) (model.LiveAgentPlanProductLink, error) {
@@ -71,15 +77,39 @@ func (s *Store) getLiveAgentPlanProductLinkByKey(ctx context.Context, tenantID, 
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.LiveAgentPlanProductLink{}, ErrLiveAgentPlanProductLinkNotFound
 	}
-	return item, err
+	if err != nil {
+		return item, err
+	}
+	items := []model.LiveAgentPlanProductLink{item}
+	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, items); err != nil {
+		return model.LiveAgentPlanProductLink{}, err
+	}
+	return items[0], nil
 }
 
 func sameProductLinkContent(existing model.LiveAgentPlanProductLink, candidate model.LiveAgentPlanProductLinkCandidate) bool {
-	return strings.TrimSpace(existing.ProductName) == strings.TrimSpace(candidate.ProductName) &&
+	commonMatches := strings.TrimSpace(existing.ProductName) == strings.TrimSpace(candidate.ProductName) &&
 		strings.TrimSpace(existing.Spec) == strings.TrimSpace(candidate.Spec) &&
 		strings.TrimSpace(existing.DailyPrice) == strings.TrimSpace(candidate.DailyPrice) &&
 		strings.TrimSpace(existing.Quantity) == strings.TrimSpace(candidate.Quantity) &&
 		strings.TrimSpace(existing.Audience) == strings.TrimSpace(candidate.Audience)
+	if !commonMatches || len(candidate.Attributes) == 0 {
+		return commonMatches
+	}
+	if len(existing.Attributes) != len(candidate.Attributes) {
+		return false
+	}
+	values := make(map[string]string, len(existing.Attributes))
+	for _, item := range existing.Attributes {
+		values[strings.ToLower(strings.TrimSpace(item.Code))] = strings.TrimSpace(item.Label) + "\x00" + strings.TrimSpace(item.Value) + "\x00" + strings.TrimSpace(item.Unit)
+	}
+	for index, raw := range candidate.Attributes {
+		item := normalizeProductAttributeCandidate(raw, (index+1)*10)
+		if values[item.Code] != item.Label+"\x00"+item.Value+"\x00"+item.Unit {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) AdoptLiveAgentPlanProductLink(
@@ -131,6 +161,9 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			if txErr != nil {
 				return result, txErr
 			}
+			if txErr = adoptLiveAgentPlanProductAttributes(ctx, tx, tenantID, planID, existing.ID, actorUserID, candidate.Attributes, sourceRef); txErr != nil {
+				return result, txErr
+			}
 			if txErr = tx.Commit(); txErr != nil {
 				return result, txErr
 			}
@@ -138,6 +171,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			if txErr != nil {
 				return result, txErr
 			}
+			links := []model.LiveAgentPlanProductLink{saved}
+			if txErr = s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, links); txErr != nil {
+				return result, txErr
+			}
+			saved = links[0]
 			result.Status = "adopted"
 			result.Message = "已重新采纳为当前直播方案正式商品链接"
 			result.Saved = &saved
@@ -194,6 +232,9 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 	if err != nil {
 		return result, err
 	}
+	if err := adoptLiveAgentPlanProductAttributes(ctx, tx, tenantID, planID, productLinkID, actorUserID, candidate.Attributes, sourceRef); err != nil {
+		return result, err
+	}
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
@@ -202,6 +243,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 	if err != nil {
 		return result, err
 	}
+	links := []model.LiveAgentPlanProductLink{saved}
+	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, links); err != nil {
+		return result, err
+	}
+	saved = links[0]
 	result.Status = "adopted"
 	result.Message = "已采纳为当前直播方案正式商品链接"
 	result.Saved = &saved
@@ -267,7 +313,15 @@ func (s *Store) UpdateLiveAgentPlanProductLink(
 	if err := tx.Commit(); err != nil {
 		return model.LiveAgentPlanProductLink{}, err
 	}
-	return scanLiveAgentPlanProductLink(s.db.QueryRowContext(ctx, liveAgentPlanProductLinkSelect+` WHERE id=? AND tenant_id=? AND plan_id=?`, productLinkID, tenantID, planID))
+	updated, err := scanLiveAgentPlanProductLink(s.db.QueryRowContext(ctx, liveAgentPlanProductLinkSelect+` WHERE id=? AND tenant_id=? AND plan_id=?`, productLinkID, tenantID, planID))
+	if err != nil {
+		return model.LiveAgentPlanProductLink{}, err
+	}
+	links := []model.LiveAgentPlanProductLink{updated}
+	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, links); err != nil {
+		return model.LiveAgentPlanProductLink{}, err
+	}
+	return links[0], nil
 }
 
 func (s *Store) DeleteLiveAgentPlanProductLink(ctx context.Context, tenantID, planID, productLinkID, actorUserID int64) error {
@@ -303,6 +357,9 @@ func (s *Store) DeleteLiveAgentPlanProductLinkWithExpectedVersion(ctx context.Co
 		return err
 	}
 	if err := disableLiveAgentPlanBenefitsForLink(ctx, tx, tenantID, planID, current.LinkKey, actorUserID); err != nil {
+		return err
+	}
+	if err := disableLiveAgentPlanProductAttributesForLink(ctx, tx, tenantID, planID, productLinkID, actorUserID); err != nil {
 		return err
 	}
 	return tx.Commit()

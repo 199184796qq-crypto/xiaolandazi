@@ -20,6 +20,7 @@ import {
   createLiveAgentPlanVersion,
   createLiveAgentPlanScript,
   createLiveAgentPlan,
+	createLiveAgentPlanProductAttribute,
   getLiveAgentPlanWorkspace,
   getLiveAgentPlanVersions,
   getLiveAgentPlans,
@@ -42,6 +43,7 @@ import {
   deactivateAgentMemory,
   deleteLiveAgentPlanFact,
   deleteLiveAgentPlanProductLink,
+	deleteLiveAgentPlanProductAttribute,
   publishLiveRoomPolicyVersion,
   auditLiveAgentFullShowPreview,
   regenerateLiveAgentFullShowVariant,
@@ -76,6 +78,7 @@ import {
   updateLiveAgentPlan,
   updateLiveAgentPlanFact,
   updateLiveAgentPlanProductLink,
+	updateLiveAgentPlanProductAttribute,
   updateLiveAgentPlanScript,
   updateLiveAgentSettings,
   updateLiveAddressingStrategy,
@@ -98,6 +101,7 @@ import type {
   LiveAgentPlanFactCandidate,
   LiveAgentPlanProductLink,
   LiveAgentPlanProductLinkCandidate,
+	LiveAgentPlanProductAttribute,
   LiveAgentPlanScript,
   LiveAgentPlanScriptAnalysis,
   LiveAgentPlanAnchorStyleProfile,
@@ -244,6 +248,7 @@ const rhythmDraftText = ref('')
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
+const expandedFormalBenefitIds = ref<Set<number>>(new Set())
 const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
@@ -324,6 +329,13 @@ const activityBenefits = computed<LiveAgentPlanBenefitCandidate[]>(() => product
     review_reason: item.review_reason || '',
     source_quotes: item.source_quotes || [],
   })))
+
+function toggleFormalBenefit(id: number) {
+	const next = new Set(expandedFormalBenefitIds.value)
+	if (next.has(id)) next.delete(id)
+	else next.add(id)
+	expandedFormalBenefitIds.value = next
+}
 const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
 const selectedReusableAnchorStyleId = ref<number | null>(null)
@@ -1712,6 +1724,7 @@ function buildOriginalTimeline(
     segment_id: String(item.segment_id || 'ORIGINAL-' + String(index + 1)),
     index: Number(item.index || index + 1),
   }))
+
   if (!text) return []
   if (!source.length) {
     return [{ segment_id: 'ORIGINAL-1', index: 1, start_ms: 0, end_ms: Number(durationMS || 0), text, safe_cut: true }]
@@ -3464,6 +3477,52 @@ async function removeProductLink(item: LiveAgentPlanProductLink) {
   }
 }
 
+type ProductAttributeDraft = {
+	code: string
+	label: string
+	value: string
+	unit?: string
+	display_type?: string
+	display_priority?: number
+}
+
+function replaceProductAttribute(productLinkId: number, attribute: LiveAgentPlanProductAttribute) {
+	formalProductLinks.value = formalProductLinks.value.map((link) => {
+		if (link.id !== productLinkId) return link
+		const attributes = [...(link.attributes || []).filter((item) => item.id !== attribute.id), attribute]
+		attributes.sort((left, right) => left.display_priority - right.display_priority || left.id - right.id)
+		return { ...link, attributes }
+	})
+}
+
+async function addProductAttribute(item: LiveAgentPlanProductLink, draft: ProductAttributeDraft) {
+	const planId = currentRoomPlanId.value
+	if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+	const created = await createLiveAgentPlanProductAttribute(planId, item.id, draft, item.tenant_id)
+	if (currentRoomPlanId.value === planId) replaceProductAttribute(item.id, created)
+}
+
+async function saveProductAttribute(item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute, draft: ProductAttributeDraft) {
+	const planId = currentRoomPlanId.value
+	if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+	const updated = await updateLiveAgentPlanProductAttribute(planId, item.id, attribute.id, {
+		...draft,
+		expected_version_no: attribute.version_no,
+	}, item.tenant_id)
+	if (currentRoomPlanId.value === planId) replaceProductAttribute(item.id, updated)
+}
+
+async function removeProductAttribute(item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) {
+	const planId = currentRoomPlanId.value
+	if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+	await deleteLiveAgentPlanProductAttribute(planId, item.id, attribute.id, item.tenant_id)
+	if (currentRoomPlanId.value === planId) {
+		formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id
+			? { ...link, attributes: (link.attributes || []).filter((entry) => entry.id !== attribute.id) }
+			: link)
+	}
+}
+
 async function adoptProductLinkCandidate(candidate: LiveAgentPlanProductLinkCandidate) {
   const planId = currentRoomPlanId.value
   if (!planId || adoptingProductLinkKey.value) return
@@ -5111,7 +5170,7 @@ onBeforeUnmount(() => {
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :remove-item="removeProductLink" />
+            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :remove-item="removeProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" />
           </section>
 
           <div class="strategy-product-link-grid">
@@ -5138,6 +5197,12 @@ onBeforeUnmount(() => {
                 <div><dt>适用</dt><dd>{{ link.audience || '—' }}</dd></div>
                 <div><dt>判断说明</dt><dd>{{ link.review_reason || '—' }}</dd></div>
               </dl>
+              <details v-if="link.attributes?.length" class="strategy-product-link-attributes">
+                <summary>个性属性（{{ link.attributes.length }} 项）<span>展开反推结果</span></summary>
+                <dl>
+                  <div v-for="attribute in link.attributes" :key="attribute.code"><dt>{{ attribute.label }}</dt><dd>{{ attribute.value }}{{ attribute.unit || '' }}</dd></div>
+                </dl>
+              </details>
               <section class="strategy-product-link-evidence">
                 <b>原文依据</b>
                 <p v-if="!link.source_quotes?.length">—</p>
@@ -5179,7 +5244,7 @@ onBeforeUnmount(() => {
               <span>从下方素材候选采纳，或后续直接对系统智能体说“新增活动 / 修改活动 / 停用活动”。</span>
             </div>
             <div v-else class="strategy-benefit-formal-list">
-              <article v-for="item in formalBenefits" :key="item.id">
+              <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
                 <div class="strategy-benefit-formal-main">
                   <span>{{ item.link_key || '全直播间' }}</span>
                   <strong>{{ item.product_name || item.key }}</strong>
@@ -5190,10 +5255,12 @@ onBeforeUnmount(() => {
                   <span v-if="item.gift">福利：{{ item.gift }}</span>
                   <span v-if="item.activity">活动：{{ item.activity }}</span>
                 </div>
-                <div class="strategy-benefit-formal-window">
+                <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效期' : '展开条件与有效期' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
+                <div v-if="expandedFormalBenefitIds.has(item.id)" class="strategy-benefit-formal-window">
                   <span>{{ formatBenefitTime(item.starts_at) }}</span>
                   <i>→</i>
                   <span>{{ formatBenefitTime(item.ends_at) }}</span>
+                  <small v-if="item.source_quote">依据：{{ item.source_quote }}</small>
                 </div>
                 <em :class="'is-' + item.status">{{ benefitStatusLabel(item.status) }}</em>
               </article>
@@ -7678,6 +7745,13 @@ onBeforeUnmount(() => {
 .strategy-product-link-card dl>div { display:grid; gap:3px; padding:10px 12px; border-radius:11px; background:#f8f9fc; }
 .strategy-product-link-card dt { color:#8a94a7; font-size:13px; font-weight:800; }
 .strategy-product-link-card dd { margin:0; color:#34405a; font-size:17px; line-height:1.5; word-break:break-word; }
+.strategy-product-link-attributes { border:1px solid #e4e8f3; border-radius:11px; background:#fbfcff; overflow:hidden; }
+.strategy-product-link-attributes summary { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 11px; color:#5667ca; font-size:12px; font-weight:850; cursor:pointer; }
+.strategy-product-link-attributes summary span { color:#929bad; font-size:10px; font-weight:500; }
+.strategy-product-link-attributes>dl { padding:0 10px 10px; }
+.strategy-product-link-attributes>dl>div { padding:8px 10px; background:#f2f4fc; }
+.strategy-product-link-attributes>dl dt { font-size:11px; }
+.strategy-product-link-attributes>dl dd { font-size:13px; }
 .strategy-product-link-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:2px; color:#778296; font-size:12px; line-height:1.55; }
 .strategy-product-link-footer button { min-width:108px; min-height:36px; padding:7px 12px; }
 .strategy-product-link-evidence { display:grid; gap:7px; padding-top:4px; }
@@ -7691,7 +7765,7 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal>header span,.strategy-benefit-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
 .strategy-benefit-formal-empty { min-height:110px; }
 .strategy-benefit-formal-list { display:grid; gap:8px; }
-.strategy-benefit-formal-list>article { display:grid; grid-template-columns:minmax(190px,.9fr) minmax(220px,1.2fr) minmax(260px,1fr) auto; gap:12px; align-items:center; padding:11px 12px; border:1px solid #e7ebf2; border-radius:12px; background:#fafbfe; }
+.strategy-benefit-formal-list>article { display:grid; grid-template-columns:minmax(190px,.9fr) minmax(220px,1.2fr) minmax(150px,.7fr) auto; gap:12px; align-items:center; padding:11px 12px; border:1px solid #e7ebf2; border-radius:12px; background:#fafbfe; }
 .strategy-benefit-formal-main { display:grid; gap:2px; }
 .strategy-benefit-formal-main>span { color:#6070c7; font-size:12px; font-weight:900; }
 .strategy-benefit-formal-main>strong { color:#34405a; font-size:14px; }
@@ -7700,6 +7774,11 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal-detail span { padding:5px 7px; border-radius:8px; background:#f0f3f8; color:#5d687d; font-size:11px; }
 .strategy-benefit-formal-window { display:flex; align-items:center; gap:7px; color:#6f7b90; font-size:11px; }
 .strategy-benefit-formal-window i { color:#a7afbd; font-style:normal; }
+.strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:flex-start; gap:5px; padding:6px 0; border:0; background:transparent; color:#6876ce; font:inherit; font-size:11px; cursor:pointer; }
+.strategy-benefit-formal-expand svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; transition:transform .18s ease; }
+.strategy-benefit-formal-item.expanded .strategy-benefit-formal-expand svg { transform:rotate(180deg); }
+.strategy-benefit-formal-window { flex-wrap:wrap; }
+.strategy-benefit-formal-window small { flex-basis:100%; color:#9099a9; line-height:1.45; }
 .strategy-benefit-formal-list>article>em { padding:5px 8px; border-radius:999px; font-size:11px; font-style:normal; font-weight:900; white-space:nowrap; }
 .strategy-benefit-formal-list>article>em.is-active { background:#eaf8f0; color:#2f7d5a; }
 .strategy-benefit-formal-list>article>em.is-draft { background:#eef2ff; color:#5f6cc9; }

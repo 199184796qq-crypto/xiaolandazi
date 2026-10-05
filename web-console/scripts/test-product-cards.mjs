@@ -19,7 +19,7 @@ try {
   assert.equal(await cards.count(), 2)
   assert.equal(await cards.first().getByRole('button', { name: /^修改/ }).count(), 6)
   const size = await cards.first().boundingBox()
-  assert.ok(size.width < 460 && size.height < 420, `compact dimensions ${JSON.stringify(size)}`)
+  assert.ok(size.width < 460 && size.height < 470, `compact dimensions ${JSON.stringify(size)}`)
   await cards.first().hover()
   await page.waitForTimeout(250)
   assert.ok(await cards.first().evaluate(element => getComputedStyle(element).transform !== 'none'))
@@ -89,6 +89,24 @@ try {
   const deleted = await page.evaluate(() => window.fixture.calls.at(-1))
   assert.equal(deleted.method, 'DELETE')
   assert.equal(deleted.url, '/api/v1/live-agent-plans/20/product-links/2?tenant_id=14')
+
+  // Common facts stay visible; category-specific facts are behind the arrow and support child CRUD.
+  await cards.first().getByRole('button', { name: /个性属性/ }).click()
+  await cards.first().getByText('压榨工艺', { exact: true }).waitFor()
+  assert.equal(await cards.first().getByText('传统熟榨', { exact: true }).count(), 1)
+  await cards.first().getByRole('button', { name: /添加个性属性/ }).click()
+  await cards.first().getByLabel('属性名称').fill('原料产地')
+  await cards.first().getByLabel('属性值').fill('四川')
+  await cards.first().getByRole('button', { name: '保存属性', exact: true }).click()
+  await cards.first().getByText('个性属性已保存，并会进入话术事实', { exact: true }).waitFor()
+  assert.equal(await cards.first().getByText('原料产地', { exact: true }).count(), 1)
+  await cards.first().getByRole('button', { name: '修改个性属性压榨工艺', exact: true }).click()
+  await cards.first().getByLabel('属性值').fill('小榨熟香工艺')
+  await cards.first().getByRole('button', { name: '保存属性', exact: true }).click()
+  await cards.first().getByText('小榨熟香工艺', { exact: true }).waitFor()
+  await cards.first().getByRole('button', { name: '删除个性属性原料', exact: true }).click()
+  await cards.first().getByText('个性属性已删除干净', { exact: true }).waitFor()
+  assert.equal(await cards.first().getByText('原料', { exact: true }).count(), 0)
   assert.deepEqual(errors, [])
 
   // Narrow screens must not overflow.
@@ -99,7 +117,7 @@ try {
   await page.screenshot({ path: artifacts + '/product-cards-mobile.png', fullPage: true })
   await page.setViewportSize({ width: 1680, height: 1000 })
   await page.screenshot({ path: artifacts + '/product-cards-compact.png', fullPage: true })
-  console.log('PASS: compact layout, hover glow, six editable fields, automatic save, version guards, retry, confirmed deletion, mobile layout')
+  console.log('PASS: compact layout, common fields, expandable personalized attributes with child CRUD, automatic save, version guards, deletion, mobile layout')
 } finally {
   await browser.close()
   await server.close()

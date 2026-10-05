@@ -139,7 +139,11 @@ func compileAuthorizedGenerationFacts(
 	benefits []model.LiveAgentPlanBenefit,
 	productLinks []model.LiveAgentPlanProductLink,
 ) []model.LiveAgentGenerationFact {
-	result := make([]model.LiveAgentGenerationFact, 0, len(formalFacts)+len(benefits)*3+len(productLinks)*5)
+	attributeCount := 0
+	for _, link := range productLinks {
+		attributeCount += len(link.Attributes)
+	}
+	result := make([]model.LiveAgentGenerationFact, 0, len(formalFacts)+len(benefits)*3+len(productLinks)*5+attributeCount)
 	appendFact := func(item model.LiveAgentGenerationFact) {
 		item.Value = strings.TrimSpace(item.Value)
 		if item.Value == "" {
@@ -175,6 +179,21 @@ func compileAuthorizedGenerationFacts(
 				SourceKind: "product", SourceID: link.ID, SourceKey: link.LinkKey, ScopeKind: "product_link",
 				LinkKey: link.LinkKey, ProductName: strings.TrimSpace(link.ProductName), Predicate: field.predicate,
 				Label: field.label, Value: field.value(link), Version: link.VersionNo,
+			})
+		}
+		for _, attribute := range link.Attributes {
+			if strings.ToLower(strings.TrimSpace(attribute.Status)) != "active" {
+				continue
+			}
+			value := strings.TrimSpace(attribute.Value)
+			if unit := strings.TrimSpace(attribute.Unit); value != "" && unit != "" {
+				value += unit
+			}
+			appendFact(model.LiveAgentGenerationFact{
+				FactID:     fmt.Sprintf("product_attribute:%d:%s:v%d", attribute.ID, strings.TrimSpace(attribute.Code), attribute.VersionNo),
+				SourceKind: "product", SourceID: attribute.ID, SourceKey: link.LinkKey, ScopeKind: "product_link",
+				LinkKey: link.LinkKey, ProductName: strings.TrimSpace(link.ProductName), Predicate: "attribute." + strings.TrimSpace(attribute.Code),
+				Label: strings.TrimSpace(attribute.Label), Value: value, Version: attribute.VersionNo,
 			})
 		}
 	}

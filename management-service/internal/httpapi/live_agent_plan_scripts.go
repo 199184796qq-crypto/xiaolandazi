@@ -461,6 +461,44 @@ func normalizeProductLinkCandidate(item model.LiveAgentPlanProductLinkCandidate)
 		}
 	}
 	item.SourceQuotes = quotes
+	attributes := make([]model.LiveAgentPlanProductAttributeCandidate, 0, len(item.Attributes))
+	seenAttributes := make(map[string]struct{}, len(item.Attributes))
+	for index, attribute := range item.Attributes {
+		attribute.Code = strings.ToLower(strings.TrimSpace(attribute.Code))
+		attribute.Label = strings.TrimSpace(attribute.Label)
+		attribute.Value = strings.TrimSpace(attribute.Value)
+		attribute.Unit = strings.TrimSpace(attribute.Unit)
+		attribute.DisplayType = strings.ToLower(strings.TrimSpace(attribute.DisplayType))
+		attribute.SourceQuote = strings.TrimSpace(attribute.SourceQuote)
+		if attribute.Code == "" || attribute.Label == "" || attribute.Value == "" {
+			continue
+		}
+		switch attribute.Code {
+		case "link_key", "product_name", "spec", "daily_price", "quantity", "audience":
+			continue
+		}
+		if _, exists := seenAttributes[attribute.Code]; exists {
+			continue
+		}
+		seenAttributes[attribute.Code] = struct{}{}
+		if attribute.DisplayType != "tags" && attribute.DisplayType != "price" {
+			attribute.DisplayType = "text"
+		}
+		if attribute.DisplayPriority == 0 {
+			attribute.DisplayPriority = (index + 1) * 10
+		}
+		if utf8.RuneCountInString(attribute.Value) > 2000 {
+			attribute.Value = string([]rune(attribute.Value)[:2000])
+		}
+		if utf8.RuneCountInString(attribute.SourceQuote) > 320 {
+			attribute.SourceQuote = string([]rune(attribute.SourceQuote)[:320])
+		}
+		attributes = append(attributes, attribute)
+		if len(attributes) >= 40 {
+			break
+		}
+	}
+	item.Attributes = attributes
 	return item
 }
 
@@ -687,6 +725,7 @@ func repairMissingProductLinks(
 只分析下面列出的链接，不分析其它内容，不新增原文没有的信息。
 每个链接必须返回一个对象；没有明确字段就留空字符串。
 review_bucket 只能是 adoptable、conflict、discuss、violation。
+通用字段固定放在 spec、daily_price、quantity、audience；只有当前品类独有且原文明确出现的事实才放 attributes。不得猜测，不得重复通用字段。
 
 必须补齐的链接：%s
 
@@ -703,6 +742,9 @@ review_bucket 只能是 adoptable、conflict、discuss、violation。
       "gift": "赠品",
       "activity": "活动口径",
       "audience": "适用人群/场景",
+	  "attributes": [
+	    {"code": "品类内稳定编码", "label": "属性名称", "value": "属性值", "unit": "可选单位", "display_type": "text|tags|price", "display_priority": 10, "source_quote": "最短原文证据"}
+	  ],
       "review_bucket": "adoptable|conflict|discuss|violation",
       "review_reason": "判断原因",
       "source_quotes": ["原文证据"],
@@ -768,6 +810,7 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 重要规则：
 1. 程序已经扫描出原文中出现的商品链接编号：%s。product_links 必须逐个覆盖这些链接；每个链接只返回一个对象，不能因为原文很长而省略。
 2. 商品链接单独结构化，不要只把“1号链接商品”“2号链接商品”混进普通 facts。对每个链接尽量提取：商品名称、规格、日常价、活动价、数量/组合、赠品、活动口径、适用人群/场景、原文证据。
+3. 商品卡采用“通用字段 + 个性属性”：spec、daily_price、quantity、audience 是所有商品共用字段；attributes 只放当前品类特有且原文明确出现的属性（例如食用油的压榨工艺/原料，服装的面料/版型，家电的功率/能效）。属性 code 要短且稳定，同义属性使用同一 code。不得猜测属性，不得把通用字段或福利活动重复放入 attributes。
 3. 同一链接如果出现互相冲突的商品、规格、价格或权益，review_bucket 必须标 conflict，并在 review_reason 里指出冲突。
 4. 事实与风格严格分离。本次只提取话术中明确出现或可直接支持的事实，不要把表达风格当事实。
 5. 原稿里说过不等于已经验证为真，所以所有 facts.status 必须返回 pending；不得自动确认。
@@ -834,6 +877,17 @@ func analyzeLiveAgentPlanScriptWithRawHook(
       "gift": "赠品",
       "activity": "活动口径",
       "audience": "适用人群/使用场景",
+	  "attributes": [
+	    {
+	      "code": "品类内稳定编码",
+	      "label": "属性名称",
+	      "value": "原文明示的属性值",
+	      "unit": "可选单位",
+	      "display_type": "text|tags|price",
+	      "display_priority": 10,
+	      "source_quote": "支持该属性的最短原句"
+	    }
+	  ],
       "review_bucket": "adoptable|conflict|discuss|violation",
       "review_reason": "判断原因",
       "source_quotes": ["支持该链接信息的原文证据"],

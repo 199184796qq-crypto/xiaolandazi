@@ -138,6 +138,7 @@ import type {
   AdoptLiveAgentPlanBenefitsOutput,
   LiveAgentPlanProductLink,
   LiveAgentPlanProductLinkCandidate,
+	LiveAgentPlanProductAttribute,
   AdoptLiveAgentPlanProductLinksOutput,
   LiveAgentPlanScript,
   LiveAgentPlanScriptAnalysis,
@@ -1018,7 +1019,61 @@ export function deleteLiveAgentPlanProductLink(
   return request<void>(
     '/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + query,
     { method: 'DELETE' },
-  )
+)
+}
+
+export function createLiveAgentPlanProductAttribute(
+	planId: number,
+	productLinkId: number,
+	input: {
+		code: string
+		label: string
+		value: string
+		unit?: string
+		display_type?: string
+		display_priority?: number
+		source_quote?: string
+	},
+	tenantId?: number,
+) {
+	return request<LiveAgentPlanProductAttribute>(
+		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/attributes',
+		{ method: 'POST', body: JSON.stringify({ tenant_id: tenantId, ...input }) },
+	)
+}
+
+export function updateLiveAgentPlanProductAttribute(
+	planId: number,
+	productLinkId: number,
+	attributeId: number,
+	input: {
+		expected_version_no?: number
+		code: string
+		label: string
+		value: string
+		unit?: string
+		display_type?: string
+		display_priority?: number
+	},
+	tenantId?: number,
+) {
+	return request<LiveAgentPlanProductAttribute>(
+		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/attributes/' + attributeId,
+		{ method: 'PATCH', body: JSON.stringify({ tenant_id: tenantId, ...input }) },
+	)
+}
+
+export function deleteLiveAgentPlanProductAttribute(
+	planId: number,
+	productLinkId: number,
+	attributeId: number,
+	tenantId?: number,
+) {
+	const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+	return request<void>(
+		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/attributes/' + attributeId + query,
+		{ method: 'DELETE' },
+	)
 }
 
 export function getLiveAgentPlanScripts(planId: number, tenantId?: number) {
@@ -1749,6 +1804,9 @@ export interface LiveStrategyIntentResponse {
     | 'product.add'
     | 'product.update'
     | 'product.disable'
+	  | 'product_attribute.add'
+	  | 'product_attribute.update'
+	  | 'product_attribute.disable'
     | 'benefit.add'
     | 'benefit.update'
     | 'benefit.disable'
@@ -1765,6 +1823,9 @@ export interface LiveStrategyIntentResponse {
   reply?: string
   target?: {
     link_key?: string
+	product_attribute_id?: number
+	attribute_code?: string
+	attribute_label?: string
     benefit_key?: string
     fact_category?: string
     fact_key?: string
@@ -1779,6 +1840,12 @@ export interface LiveStrategyIntentResponse {
     daily_price?: string
     quantity?: string
     audience?: string
+	attribute_code?: string
+	attribute_label?: string
+	attribute_value?: string
+	attribute_unit?: string
+	attribute_display_type?: string
+	attribute_display_priority?: number
     activity_price?: string
     gift?: string
     activity?: string

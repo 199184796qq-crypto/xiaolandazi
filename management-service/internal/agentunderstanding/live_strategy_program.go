@@ -15,6 +15,15 @@ type LiveStrategyProduct struct {
 	DailyPrice  string
 	Quantity    string
 	Audience    string
+	Attributes  []LiveStrategyProductAttribute
+}
+
+type LiveStrategyProductAttribute struct {
+	ID    int64
+	Code  string
+	Label string
+	Value string
+	Unit  string
 }
 
 type LiveStrategyBenefit struct {
@@ -104,6 +113,9 @@ func ProgramInterpretLiveStrategy(message string, ctx LiveStrategyProgramContext
 	if out, ok := programInterpretBenefit(message, compact, ctx); ok {
 		return out
 	}
+	if out, ok := programInterpretProductAttribute(message, compact, ctx); ok {
+		return out
+	}
 	if out, ok := programInterpretProduct(message, compact, ctx); ok {
 		return out
 	}
@@ -119,6 +131,80 @@ func ProgramInterpretLiveStrategy(message string, ctx LiveStrategyProgramContext
 	base.Confidence = 0.55
 	base.Reply = "这句话没有匹配到需要写入的业务动作。你可以继续聊天，或直接说明要新增、修改、停用哪一项。"
 	return base
+}
+
+func extractProductAttribute(message string) (string, string) {
+	marker := ""
+	for _, candidate := range []string{"个性属性", "商品属性", "产品属性", "属性"} {
+		if strings.Contains(message, candidate) {
+			marker = candidate
+			break
+		}
+	}
+	if marker == "" {
+		return "", ""
+	}
+	rest := strings.TrimSpace(message[strings.Index(message, marker)+len(marker):])
+	rest = strings.TrimLeft(rest, " ：:，,、")
+	separator := ""
+	for _, candidate := range []string{"为", "=", ":", "："} {
+		if index := strings.Index(rest, candidate); index > 0 {
+			separator = candidate
+			break
+		}
+	}
+	if separator == "" {
+		return strings.TrimSpace(strings.Trim(rest, "，,；;。")), ""
+	}
+	parts := strings.SplitN(rest, separator, 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	label := strings.TrimSpace(strings.Trim(parts[0], "，,；;。"))
+	value := strings.TrimSpace(strings.Trim(parts[1], "，,；;。"))
+	return label, value
+}
+
+func programInterpretProductAttribute(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
+	if !containsAnyProgram(compact, "个性属性", "商品属性", "产品属性") && !strings.Contains(compact, "属性") {
+		return UnifiedIntent{}, false
+	}
+	action := mutationVerb(compact)
+	if action == "" {
+		return UnifiedIntent{}, false
+	}
+	linkKey := extractLinkKey(message)
+	if linkKey == "" && len(ctx.Products) == 1 && ctx.CurrentMode == "products" {
+		linkKey = ctx.Products[0].LinkKey
+	}
+	if linkKey == "" {
+		out := programIntent(KindClarify, "product_attribute."+action, 0.65)
+		out.Missing = []string{"商品链接"}
+		out.Reply = "请说明要处理几号商品链接的个性属性。"
+		return out, true
+	}
+	label, value := extractProductAttribute(message)
+	if label == "" {
+		out := programIntent(KindClarify, "product_attribute."+action, 0.72)
+		out.Target["link_key"] = linkKey
+		out.Missing = []string{"个性属性名称"}
+		out.Reply = "请说明属性名称，例如“压榨工艺”或“面料”。"
+		return out, true
+	}
+	out := programIntent(KindCommand, "product_attribute."+action, 0.96)
+	out.Target["link_key"] = linkKey
+	out.Target["attribute_label"] = label
+	out.Changes["attribute_label"] = label
+	if value != "" {
+		out.Changes["attribute_value"] = value
+	}
+	if action != "disable" && value == "" {
+		out.Kind = KindClarify
+		out.Confidence = 0.74
+		out.Missing = []string{"属性值"}
+		out.Reply = "请说明“" + label + "”的属性值，例如“压榨工艺为传统熟榨”。"
+	}
+	return out, true
 }
 
 func programIntent(kind, intent string, confidence float64) UnifiedIntent {
@@ -283,7 +369,7 @@ func programAnswerFactQuery(message, compact string, ctx LiveStrategyProgramCont
 }
 
 func programAnswerProductQuery(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
-	if !containsAnyProgram(compact, "商品", "链接", "规格", "日常价", "原价", "价格", "多少钱", "数量", "适用人群", "适用对象") {
+	if !containsAnyProgram(compact, "商品", "链接", "规格", "日常价", "原价", "价格", "多少钱", "数量", "适用人群", "适用对象", "属性") {
 		return UnifiedIntent{}, false
 	}
 	linkKey := extractLinkKey(message)
@@ -320,6 +406,16 @@ func programAnswerProductQuery(message, compact string, ctx LiveStrategyProgramC
 	}
 	if containsAnyProgram(compact, "适用人群", "适用对象") {
 		parts = appendProgramAnswerPart(parts, "适用人群", product.Audience)
+	}
+	if strings.Contains(compact, "属性") {
+		for _, attribute := range product.Attributes {
+			parts = appendProgramAnswerPart(parts, attribute.Label, attribute.Value+attribute.Unit)
+		}
+	}
+	if strings.Contains(compact, "属性") && len(parts) == 0 {
+		out := programIntent(KindChat, "chat", 0.99)
+		out.Reply = linkKey + "当前还没有已确认的个性属性，我不会根据常识猜测。"
+		return out, true
 	}
 	if len(parts) == 0 {
 		parts = appendProgramAnswerPart(parts, "商品名称", product.ProductName)

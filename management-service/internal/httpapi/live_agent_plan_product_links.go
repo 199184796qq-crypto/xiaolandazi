@@ -40,10 +40,50 @@ func validateLiveAgentPlanProductLinkCandidate(candidate model.LiveAgentPlanProd
 			return errors.New("商品来源依据单条不能超过2000字")
 		}
 	}
+	if len(candidate.Attributes) > 40 {
+		return errors.New("单个商品的个性属性最多40项")
+	}
+	seenAttributes := make(map[string]struct{}, len(candidate.Attributes))
+	for _, attribute := range candidate.Attributes {
+		if err := validateLiveAgentPlanProductAttribute(attribute); err != nil {
+			return err
+		}
+		code := strings.ToLower(strings.TrimSpace(attribute.Code))
+		if _, exists := seenAttributes[code]; exists {
+			return errors.New("商品个性属性编码不能重复")
+		}
+		seenAttributes[code] = struct{}{}
+	}
 	switch strings.TrimSpace(candidate.ReviewBucket) {
 	case "", "adoptable", "conflict", "discuss", "violation":
 	default:
 		return errors.New("商品审核分类无效")
+	}
+	return nil
+}
+
+func validateLiveAgentPlanProductAttribute(attribute model.LiveAgentPlanProductAttributeCandidate) error {
+	code := strings.ToLower(strings.TrimSpace(attribute.Code))
+	if code == "" || strings.TrimSpace(attribute.Label) == "" || strings.TrimSpace(attribute.Value) == "" {
+		return errors.New("商品个性属性的编码、名称和值不能为空")
+	}
+	if utf8.RuneCountInString(code) > 96 || utf8.RuneCountInString(attribute.Label) > 96 {
+		return errors.New("商品个性属性编码或名称过长")
+	}
+	if utf8.RuneCountInString(attribute.Value) > 2000 || utf8.RuneCountInString(attribute.SourceQuote) > 2000 {
+		return errors.New("商品个性属性值或来源依据不能超过2000字")
+	}
+	if utf8.RuneCountInString(attribute.Unit) > 48 {
+		return errors.New("商品个性属性单位不能超过48字")
+	}
+	switch code {
+	case "link_key", "product_name", "spec", "daily_price", "quantity", "audience":
+		return errors.New("商品个性属性不能与通用字段重复")
+	}
+	switch strings.ToLower(strings.TrimSpace(attribute.DisplayType)) {
+	case "", "text", "tags", "price":
+	default:
+		return errors.New("商品个性属性展示类型无效")
 	}
 	return nil
 }
@@ -130,6 +170,14 @@ func (s *Server) liveAgentPlanProductLinkAdopt(w http.ResponseWriter, r *http.Re
 		candidate.Quantity = strings.TrimSpace(candidate.Quantity)
 		candidate.Audience = strings.TrimSpace(candidate.Audience)
 		candidate.ReviewBucket = strings.TrimSpace(candidate.ReviewBucket)
+		for index := range candidate.Attributes {
+			candidate.Attributes[index].Code = strings.ToLower(strings.TrimSpace(candidate.Attributes[index].Code))
+			candidate.Attributes[index].Label = strings.TrimSpace(candidate.Attributes[index].Label)
+			candidate.Attributes[index].Value = strings.TrimSpace(candidate.Attributes[index].Value)
+			candidate.Attributes[index].Unit = strings.TrimSpace(candidate.Attributes[index].Unit)
+			candidate.Attributes[index].DisplayType = strings.ToLower(strings.TrimSpace(candidate.Attributes[index].DisplayType))
+			candidate.Attributes[index].SourceQuote = strings.TrimSpace(candidate.Attributes[index].SourceQuote)
+		}
 		if candidate.ReviewBucket == "" {
 			candidate.ReviewBucket = "discuss"
 		}
@@ -169,6 +217,149 @@ func (s *Server) liveAgentPlanProductLinkAdopt(w http.ResponseWriter, r *http.Re
 		output.Results = append(output.Results, result)
 	}
 	writeJSON(w, http.StatusOK, output)
+}
+
+func liveAgentPlanProductAttributePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	value := strings.TrimSpace(r.PathValue("attributeID"))
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "商品个性属性编号无效")
+		return 0, false
+	}
+	return id, true
+}
+
+func (s *Server) liveAgentPlanProductAttributeCreate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	productLinkID, ok := liveAgentPlanProductLinkPathID(w, r)
+	if !ok {
+		return
+	}
+	var input model.CreateLiveAgentPlanProductAttributeInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "新增商品个性属性格式错误")
+		return
+	}
+	candidate := model.LiveAgentPlanProductAttributeCandidate{Code: input.Code, Label: input.Label, Value: input.Value, Unit: input.Unit, DisplayType: input.DisplayType, DisplayPriority: input.DisplayPriority, SourceQuote: input.SourceQuote}
+	if err := validateLiveAgentPlanProductAttribute(candidate); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
+	input.Label, input.Value, input.Unit = strings.TrimSpace(input.Label), strings.TrimSpace(input.Value), strings.TrimSpace(input.Unit)
+	input.DisplayType, input.SourceQuote = strings.ToLower(strings.TrimSpace(input.DisplayType)), strings.TrimSpace(input.SourceQuote)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
+	if !ok {
+		return
+	}
+	item, err := s.store.CreateLiveAgentPlanProductAttribute(r.Context(), tenantID, planID, productLinkID, actor.UserID, input)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductLinkNotFound) {
+		writeError(w, http.StatusNotFound, "正式商品链接不存在")
+		return
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "same product attribute code already exists") {
+			writeError(w, http.StatusConflict, "当前商品已存在相同属性编码")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "新增商品个性属性失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) liveAgentPlanProductAttributeUpdate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	productLinkID, ok := liveAgentPlanProductLinkPathID(w, r)
+	if !ok {
+		return
+	}
+	attributeID, ok := liveAgentPlanProductAttributePathID(w, r)
+	if !ok {
+		return
+	}
+	var input model.UpdateLiveAgentPlanProductAttributeInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "修改商品个性属性格式错误")
+		return
+	}
+	candidate := model.LiveAgentPlanProductAttributeCandidate{Code: input.Code, Label: input.Label, Value: input.Value, Unit: input.Unit, DisplayType: input.DisplayType, DisplayPriority: input.DisplayPriority}
+	if err := validateLiveAgentPlanProductAttribute(candidate); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
+	input.Label, input.Value, input.Unit = strings.TrimSpace(input.Label), strings.TrimSpace(input.Value), strings.TrimSpace(input.Unit)
+	input.DisplayType = strings.ToLower(strings.TrimSpace(input.DisplayType))
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
+	if !ok {
+		return
+	}
+	item, err := s.store.UpdateLiveAgentPlanProductAttribute(r.Context(), tenantID, planID, productLinkID, attributeID, actor.UserID, input)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeNotFound) {
+		writeError(w, http.StatusNotFound, "商品个性属性不存在")
+		return
+	}
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeVersionConflict) {
+		writeError(w, http.StatusConflict, "商品个性属性已经产生新版本，请刷新后重新修改")
+		return
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "same product attribute code already exists") {
+			writeError(w, http.StatusConflict, "当前商品已存在相同属性编码")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "修改商品个性属性失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) liveAgentPlanProductAttributeDelete(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	productLinkID, ok := liveAgentPlanProductLinkPathID(w, r)
+	if !ok {
+		return
+	}
+	attributeID, ok := liveAgentPlanProductAttributePathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
+	if !ok {
+		return
+	}
+	err := s.store.DeleteLiveAgentPlanProductAttribute(r.Context(), tenantID, planID, productLinkID, attributeID, actor.UserID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanProductAttributeNotFound) {
+		writeError(w, http.StatusNotFound, "商品个性属性不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "删除商品个性属性失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func liveAgentPlanProductLinkPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

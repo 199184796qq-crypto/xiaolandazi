@@ -89,19 +89,33 @@ type LiveAgentPlanFactCandidate struct {
 }
 
 type LiveAgentPlanProductLinkCandidate struct {
-	LinkKey       string   `json:"link_key"`
-	ProductName   string   `json:"product_name,omitempty"`
-	Spec          string   `json:"spec,omitempty"`
-	DailyPrice    string   `json:"daily_price,omitempty"`
-	ActivityPrice string   `json:"activity_price,omitempty"`
-	Quantity      string   `json:"quantity,omitempty"`
-	Gift          string   `json:"gift,omitempty"`
-	Activity      string   `json:"activity,omitempty"`
-	Audience      string   `json:"audience,omitempty"`
-	ReviewBucket  string   `json:"review_bucket,omitempty"`
-	ReviewReason  string   `json:"review_reason,omitempty"`
-	SourceQuotes  []string `json:"source_quotes,omitempty"`
-	Confidence    string   `json:"confidence,omitempty"`
+	LinkKey       string                                   `json:"link_key"`
+	ProductName   string                                   `json:"product_name,omitempty"`
+	Spec          string                                   `json:"spec,omitempty"`
+	DailyPrice    string                                   `json:"daily_price,omitempty"`
+	ActivityPrice string                                   `json:"activity_price,omitempty"`
+	Quantity      string                                   `json:"quantity,omitempty"`
+	Gift          string                                   `json:"gift,omitempty"`
+	Activity      string                                   `json:"activity,omitempty"`
+	Audience      string                                   `json:"audience,omitempty"`
+	ReviewBucket  string                                   `json:"review_bucket,omitempty"`
+	ReviewReason  string                                   `json:"review_reason,omitempty"`
+	SourceQuotes  []string                                 `json:"source_quotes,omitempty"`
+	Confidence    string                                   `json:"confidence,omitempty"`
+	Attributes    []LiveAgentPlanProductAttributeCandidate `json:"attributes,omitempty"`
+}
+
+// LiveAgentPlanProductAttributeCandidate contains category-specific product
+// information inferred from source material. Common fields stay on the product
+// link; only facts that do not fit the common schema belong here.
+type LiveAgentPlanProductAttributeCandidate struct {
+	Code            string `json:"code"`
+	Label           string `json:"label"`
+	Value           string `json:"value"`
+	Unit            string `json:"unit,omitempty"`
+	DisplayType     string `json:"display_type,omitempty"`
+	DisplayPriority int    `json:"display_priority,omitempty"`
+	SourceQuote     string `json:"source_quote,omitempty"`
 }
 
 type LiveAgentPlanBenefitCandidate struct {
@@ -119,26 +133,71 @@ type LiveAgentPlanBenefitCandidate struct {
 }
 
 type LiveAgentPlanProductLink struct {
-	ID                 int64     `json:"id"`
-	TenantID           int64     `json:"tenant_id"`
-	PlanID             int64     `json:"plan_id"`
-	LinkKey            string    `json:"link_key"`
-	ProductName        string    `json:"product_name,omitempty"`
-	Spec               string    `json:"spec,omitempty"`
-	DailyPrice         string    `json:"daily_price,omitempty"`
-	Quantity           string    `json:"quantity,omitempty"`
-	Audience           string    `json:"audience,omitempty"`
-	SourceQuote        string    `json:"source_quote,omitempty"`
-	SourceReviewBucket string    `json:"source_review_bucket,omitempty"`
-	SourceReviewReason string    `json:"source_review_reason,omitempty"`
-	SourceType         string    `json:"source_type"`
-	SourceRef          string    `json:"source_ref,omitempty"`
-	Status             string    `json:"status"`
-	VersionNo          int64     `json:"version_no"`
-	CreatedByUserID    *int64    `json:"created_by_user_id,omitempty"`
-	UpdatedByUserID    *int64    `json:"updated_by_user_id,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 int64                           `json:"id"`
+	TenantID           int64                           `json:"tenant_id"`
+	PlanID             int64                           `json:"plan_id"`
+	LinkKey            string                          `json:"link_key"`
+	ProductName        string                          `json:"product_name,omitempty"`
+	Spec               string                          `json:"spec,omitempty"`
+	DailyPrice         string                          `json:"daily_price,omitempty"`
+	Quantity           string                          `json:"quantity,omitempty"`
+	Audience           string                          `json:"audience,omitempty"`
+	SourceQuote        string                          `json:"source_quote,omitempty"`
+	SourceReviewBucket string                          `json:"source_review_bucket,omitempty"`
+	SourceReviewReason string                          `json:"source_review_reason,omitempty"`
+	SourceType         string                          `json:"source_type"`
+	SourceRef          string                          `json:"source_ref,omitempty"`
+	Status             string                          `json:"status"`
+	VersionNo          int64                           `json:"version_no"`
+	CreatedByUserID    *int64                          `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID    *int64                          `json:"updated_by_user_id,omitempty"`
+	CreatedAt          time.Time                       `json:"created_at"`
+	UpdatedAt          time.Time                       `json:"updated_at"`
+	Attributes         []LiveAgentPlanProductAttribute `json:"attributes"`
+}
+
+type LiveAgentPlanProductAttribute struct {
+	ID              int64     `json:"id"`
+	TenantID        int64     `json:"tenant_id"`
+	PlanID          int64     `json:"plan_id"`
+	ProductLinkID   int64     `json:"product_link_id"`
+	Code            string    `json:"code"`
+	Label           string    `json:"label"`
+	Value           string    `json:"value"`
+	Unit            string    `json:"unit,omitempty"`
+	DisplayType     string    `json:"display_type"`
+	DisplayPriority int       `json:"display_priority"`
+	SourceQuote     string    `json:"source_quote,omitempty"`
+	SourceType      string    `json:"source_type"`
+	SourceRef       string    `json:"source_ref,omitempty"`
+	Status          string    `json:"status"`
+	VersionNo       int64     `json:"version_no"`
+	CreatedByUserID *int64    `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID *int64    `json:"updated_by_user_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type CreateLiveAgentPlanProductAttributeInput struct {
+	TenantID        int64  `json:"tenant_id,omitempty"`
+	Code            string `json:"code"`
+	Label           string `json:"label"`
+	Value           string `json:"value"`
+	Unit            string `json:"unit,omitempty"`
+	DisplayType     string `json:"display_type,omitempty"`
+	DisplayPriority int    `json:"display_priority,omitempty"`
+	SourceQuote     string `json:"source_quote,omitempty"`
+}
+
+type UpdateLiveAgentPlanProductAttributeInput struct {
+	TenantID          int64  `json:"tenant_id,omitempty"`
+	ExpectedVersionNo int64  `json:"expected_version_no,omitempty"`
+	Code              string `json:"code"`
+	Label             string `json:"label"`
+	Value             string `json:"value"`
+	Unit              string `json:"unit,omitempty"`
+	DisplayType       string `json:"display_type,omitempty"`
+	DisplayPriority   int    `json:"display_priority,omitempty"`
 }
 
 type AdoptLiveAgentPlanProductLinksInput struct {
