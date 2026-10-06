@@ -146,6 +146,61 @@ func TestNormalizeDerivesRepeatedSentenceFinalParticles(t *testing.T) {
 	}
 }
 
+func TestNormalizeDerivesStableLiveAudienceAndSelfAddresses(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们，我们家先把这一段说明白啊。", 8) +
+		"叔叔阿姨们也听一下。新粉先看重点，老粉接着听，钻石老乡也在，我们自家再补一句。"
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{
+		Version: Version,
+	}}, source)
+	if !Valid(profile) {
+		t.Fatalf("derived live style contract should be valid: %+v", profile.Delivery)
+	}
+	habits := map[string]model.LiveAnchorLiteralHabit{}
+	for _, habit := range profile.Delivery.Habits {
+		habits[habit.Kind+":"+habit.Text] = habit
+	}
+	for _, expected := range []string{
+		"audience_address:哥哥姐姐们",
+		"audience_address:叔叔阿姨们",
+		"audience_address:新粉",
+		"audience_address:老粉",
+		"audience_address:老乡",
+		"self_address:我们家",
+		"self_address:我们自家",
+	} {
+		if _, ok := habits[expected]; !ok {
+			t.Fatalf("stable live lexical habit was omitted: %s\n%+v", expected, profile.Delivery.Habits)
+		}
+	}
+	if got := habits["audience_address:哥哥姐姐们"].Count; got != 8 {
+		t.Fatalf("audience address count=%d, want 8", got)
+	}
+	if got := habits["self_address:我们家"].Count; got != 8 {
+		t.Fatalf("self address count=%d, want 8", got)
+	}
+	rendered := Render(profile)
+	for _, forbidden := range []string{"样本没有稳定观众称呼", "样本没有稳定主播方自指"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("false negative rule survived: %q\n%s", forbidden, rendered)
+		}
+	}
+	for _, expected := range []string{"观众称呼", "主播方自称/自指", "跨商家、跨主播", "按样本密度"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("live address rule missing %q:\n%s", expected, rendered)
+		}
+	}
+}
+
+func TestNormalizeDoesNotInventLiveAddressesForQuietSample(t *testing.T) {
+	source := "先说明现象，再解释原因，最后总结。"
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, source)
+	for _, habit := range profile.Delivery.Habits {
+		if habit.Kind == "audience_address" || habit.Kind == "self_address" {
+			t.Fatalf("invented live address for quiet sample: %+v", habit)
+		}
+	}
+}
+
 func TestCompilerAdmitsOnlyGroundedPureExpressionDimensions(t *testing.T) {
 	source := "先把重点说清楚。为什么这么讲？我再换个顺序说一遍。最后把重点收回来。"
 	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{

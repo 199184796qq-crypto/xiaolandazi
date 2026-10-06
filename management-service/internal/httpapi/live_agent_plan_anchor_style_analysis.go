@@ -81,7 +81,7 @@ func anchorStyleOnlyAnalysisPrompt(text string) string {
 4. dimensions 只返回证据最明确的6到14项；不要为了填满维度而猜测。key只能从下列清单选择：
 %s
 5. 每个维度的 rule 必须换商品后仍成立，最多80字；evidence_quotes最多2条原文短证据；confidence只能high、medium、low。
-6. delivery_spec.literal_habits只放原文真实出现的固定原词。kind只能是self_address、audience_address、particle、connector、catchphrase；text必须逐字来自原文；position只能句首、句中、句尾、混合。
+6. delivery_spec.literal_habits只放原文真实出现的固定原词。kind只能是self_address、audience_address、particle、connector、catchphrase；text必须逐字来自原文；position只能句首、句中、句尾、混合。原文重复出现的观众称呼和主播方/商家方自指必须分别提取，即使它们所在的完整句子包含业务内容，也只截取称呼或自指原词，不得整类漏掉。
 7. when和avoid只描述表达场景，不得夹带业务内容。不要估算count，统一填0，程序会按原文重算。
 8. delivery_spec.instructions固定返回空数组；最终执行规则由程序根据原词和客观统计编译，模型不得自行编写。
 

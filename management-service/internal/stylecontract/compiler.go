@@ -117,7 +117,7 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 		rules = append(rules, "样本没有稳定观众称呼时，不为制造热情而临时发明称呼。")
 	}
 	if len(habitsOfKind(spec, "self_address")) > 0 {
-		rules = append(rules, "主播方自指只沿用有重复证据的第一方原词；不得把团队成员、亲属或第三人称身份改成主播自称。")
+		rules = append(rules, "主播方自指按样本密度沿用有原文证据的第一方原词；仅在当前主播方或商家方主体一致时使用，跨主体必须替换，不得把团队成员、亲属或第三人称身份改成主播自称。")
 	} else {
 		rules = append(rules, "样本没有稳定主播方自指时，用自然省略主语的表达，不补造主播身份。")
 	}

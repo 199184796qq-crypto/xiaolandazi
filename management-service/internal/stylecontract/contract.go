@@ -1,6 +1,8 @@
 // Package stylecontract defines the model-independent boundary between style
 // analysis and speech generation. Models infer rules; code validates and renders
-// those rules. No merchant, product, audience nickname or catchphrase is preset.
+// those rules. No merchant/product vocabulary or merchant-specific nickname is
+// preset. A small source-grounded Mandarin live-address grammar prevents a model
+// omission from erasing repeated audience addresses or first-party self-reference.
 package stylecontract
 
 import (
@@ -19,7 +21,7 @@ const AnalysisInstructions = `【跨模型口播规范协议 anchor-delivery/v1�
 你必须根据本次样本独立生成 delivery_spec，不复用示例主播或其它方案的词表。
 literal_habits 提取真实出现的原词，kind 只允许 self_address、audience_address、particle、connector、catchphrase。
 逐项区分主播自称和观众称呼；保留完整原词及变体，不能把原词泛化成同义词或仅写“语气词”。
-于是“我们家/我们这边”这类稳定的主播方、店铺方第一方自指可以归入 self_address，但团队成员、亲属或第三人称称谓不能因为出现在稿件里就当作主播自称。
+于是“我们家/我们这边”这类稳定的主播方、店铺方第一方自指可以归入 self_address，但团队成员、亲属或第三人称称谓不能因为出现在稿件里就当作主播自称。重复出现的观众称呼和第一方自指不得因为所在句包含销售内容而整类遗漏；只截取称呼或自指原词。
 高频句末语气词不得遗漏；同时提取常用连接词、口头禅、称呼位置。样本没有的不能凭行业习惯补充。
 text 是原文原词；position 是句首/句中/句尾/混合；when 是适用场景；avoid 是不宜使用的场景；count 不必估算，程序会依据原文重新计算。
 instructions 返回8到16条可直接约束另一个生成模型的规则，每条描述具体句式、位置、密度、转场或禁忌，不要空泛形容词。
@@ -33,6 +35,8 @@ instructions 只描述称呼/自称位置、长短句组合、连接与转折、
 
 var commercial = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?\s*(?:元|块|斤|公斤|克|升|毫升|桶|件|盒|袋))|([0-9一二三四五六七八九十]+\s*号\s*(?:链接|商品))`)
 var sentenceBreak = regexp.MustCompile(`[。！？!?；;\n]+`)
+var liveAudienceAddress = regexp.MustCompile(`哥哥姐姐们|哥哥姐们|叔叔阿姨们|新粉丝们|老粉丝们|家人们|朋友们|姐妹们|兄弟们|粉丝们|乡亲们|哥哥们|姐姐们|叔叔们|阿姨们|新粉丝|老粉丝|新粉|老粉|老乡|乡亲`)
+var liveSelfAddress = regexp.MustCompile(`我们自家|咱们自家|我们家|咱们家|我们这边|咱们这边|我们这儿|咱们这儿|我们这里|咱们这里`)
 
 func trim(s string, limit int) string {
 	s = strings.TrimSpace(s)
@@ -41,6 +45,108 @@ func trim(s string, limit int) string {
 		s = string(r[:limit])
 	}
 	return s
+}
+
+func literalHabitTextAllowed(kind, text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	// Audience and self-address are lexical identity markers. A word such as
+	// “老粉” may also participate in social proof in another sentence, but the
+	// grounded word itself must not be discarded when its declared role is an
+	// address. Concrete product, price and business-action wording remains barred.
+	if kind == "audience_address" || kind == "self_address" {
+		if commercial.MatchString(text) || styleBusinessFactPattern.MatchString(text) || styleBusinessActionPattern.MatchString(text) || stylePromisePattern.MatchString(text) || styleSyntheticStatePattern.MatchString(text) || styleConversionLogicPattern.MatchString(text) || styleContentExamplePattern.MatchString(text) {
+			return false
+		}
+		return !strings.ContainsAny(text, "。！？!?；;\n\r")
+	}
+	return pureStyleText(text)
+}
+
+func literalHabitPosition(source, text string) string {
+	start, middle, end := false, false, false
+	for offset := 0; offset < len(source); {
+		index := strings.Index(source[offset:], text)
+		if index < 0 {
+			break
+		}
+		index += offset
+		before := strings.TrimRight(source[:index], " \t\"'“‘（(")
+		after := strings.TrimLeft(source[index+len(text):], " \t\"'”’）)")
+		atStart := before == ""
+		if !atStart {
+			previous, _ := utf8.DecodeLastRuneInString(before)
+			atStart = strings.ContainsRune("，。！？!?；;：:\n\r", previous)
+		}
+		atEnd := after == ""
+		if !atEnd {
+			next, _ := utf8.DecodeRuneInString(after)
+			atEnd = strings.ContainsRune("，。！？!?；;：:\n\r", next)
+		}
+		if atStart {
+			start = true
+		} else if atEnd {
+			end = true
+		} else {
+			middle = true
+		}
+		offset = index + len(text)
+	}
+	if start && !middle && !end {
+		return "句首"
+	}
+	if end && !start && !middle {
+		return "句尾"
+	}
+	if middle && !start && !end {
+		return "句中"
+	}
+	return "混合"
+}
+
+func deriveRepeatedLiveHabits(source, kind string, pattern *regexp.Regexp, limit int) []model.LiveAnchorLiteralHabit {
+	matches := pattern.FindAllString(source, -1)
+	// Repeated evidence is assessed at category level. Once the speaker clearly
+	// has a stable address/self-reference system, a real one-off variant is kept
+	// as a variant instead of being falsely declared absent.
+	if len(matches) < 2 {
+		return nil
+	}
+	counts := map[string]int{}
+	first := map[string]int{}
+	for index, text := range matches {
+		counts[text]++
+		if _, exists := first[text]; !exists {
+			first[text] = index
+		}
+	}
+	items := make([]model.LiveAnchorLiteralHabit, 0, len(counts))
+	for text, count := range counts {
+		habit := model.LiveAnchorLiteralHabit{Kind: kind, Text: text, Count: count, Position: literalHabitPosition(source, text)}
+		if kind == "audience_address" {
+			habit.When = "直播中自然提醒、转场或面向对应观众群体时按样本密度使用"
+			habit.Avoid = "投诉、严肃说明、对观众身份不确定或相邻分句已经称呼时避免使用"
+		} else {
+			habit.When = "说明当前主播方、商家方或已有事实时按样本密度使用"
+			habit.Avoid = "跨商家、跨主播或当前主体不一致时须替换为当前主体，不得照搬身份"
+		}
+		items = append(items, habit)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Count != items[j].Count {
+			return items[i].Count > items[j].Count
+		}
+		if first[items[i].Text] != first[items[j].Text] {
+			return first[items[i].Text] < first[items[j].Text]
+		}
+		return utf8.RuneCountInString(items[i].Text) > utf8.RuneCountInString(items[j].Text)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
 }
 
 // Normalize discards unsupported vocabulary and derives counts from the actual
@@ -67,7 +173,7 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 		}
 		h.Text = trim(h.Text, 24)
 		key := h.Kind + ":" + h.Text
-		if !pureStyleText(h.Text) || seen[key] || !strings.Contains(source, h.Text) {
+		if !literalHabitTextAllowed(h.Kind, h.Text) || seen[key] || !strings.Contains(source, h.Text) {
 			continue
 		}
 		switch h.Position {
@@ -90,9 +196,22 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 		spec.Habits = append(spec.Habits, h)
 		// Leave room for source-derived terminal particles. Those counts are
 		// deterministic and should not be crowded out by a verbose model list.
-		if len(spec.Habits) == 24 {
+		if len(spec.Habits) == 20 {
 			break
 		}
+	}
+	// Live address and first-party identity are as characteristic as particles.
+	// Recover source-grounded terms deterministically when the model omits them.
+	for _, derived := range append(
+		deriveRepeatedLiveHabits(source, "audience_address", liveAudienceAddress, 8),
+		deriveRepeatedLiveHabits(source, "self_address", liveSelfAddress, 6)...,
+	) {
+		key := derived.Kind + ":" + derived.Text
+		if seen[key] || len(spec.Habits) >= 28 {
+			continue
+		}
+		seen[key] = true
+		spec.Habits = append(spec.Habits, derived)
 	}
 	// Sentence-final particles are an observable property of the source, not a
 	// semantic guess. Derive repeated ones in Go so a model omission cannot make
