@@ -579,6 +579,45 @@ func extractField(value string, labels ...string) string {
 	return ""
 }
 
+func extractBenefitProductNameChange(message string, matching []LiveStrategyBenefit) string {
+	if value := extractField(message, "商品名称", "商品名", "福利名称", "福利标题", "活动名称", "活动标题"); value != "" {
+		return value
+	}
+	for _, item := range matching {
+		oldName := strings.TrimSpace(item.ProductName)
+		if oldName == "" {
+			continue
+		}
+		index := strings.Index(message, oldName)
+		if index < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(message[index+len(oldName):])
+		for _, middle := range []string{"的商品名称", "的福利名称", "的福利标题", "的活动名称", "的活动标题", "商品名称", "福利名称", "福利标题", "活动名称", "活动标题", "的福利", "的活动"} {
+			if strings.HasPrefix(rest, middle) {
+				rest = strings.TrimSpace(strings.TrimPrefix(rest, middle))
+				break
+			}
+		}
+		for _, prefix := range []string{"修改为", "调整为", "设置为", "改成", "改为", "换成", "更名为", "设为"} {
+			if strings.HasPrefix(rest, prefix) {
+				rest = strings.TrimSpace(strings.TrimPrefix(rest, prefix))
+				break
+			}
+		}
+		if rest == "" || rest == strings.TrimSpace(message[index+len(oldName):]) {
+			continue
+		}
+		if cut := strings.IndexAny(rest, "，,；;。！？!?\n\r"); cut >= 0 {
+			rest = rest[:cut]
+		}
+		if rest != "" {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
 func normalizeProgramTime(value string, now time.Time) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -655,22 +694,6 @@ func programInterpretProduct(message, compact string, ctx LiveStrategyProgramCon
 }
 
 func programInterpretBenefit(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
-	hasBenefit := containsAnyProgram(compact, "活动", "福利", "优惠", "赠品", "满减", "秒杀", "折扣", "优惠券")
-	hasField := containsAnyProgram(compact, "活动价", "优惠价", "秒杀价", "到手价", "赠品", "活动内容", "活动规则", "开始时间", "生效时间", "结束时间", "失效时间", "截止时间")
-	if !hasBenefit && !hasField && ctx.CurrentMode != "benefits" {
-		return UnifiedIntent{}, false
-	}
-	// "修改1号链接" by itself is ambiguous and must not be stolen by benefit context.
-	if !hasBenefit && !hasField && extractLinkKey(message) != "" {
-		return UnifiedIntent{}, false
-	}
-	action := mutationVerb(compact)
-	if action == "" && hasField {
-		action = "update"
-	}
-	if action == "" {
-		return UnifiedIntent{}, false
-	}
 	linkKey := extractLinkKey(message)
 	matching := make([]LiveStrategyBenefit, 0)
 	for _, item := range ctx.Benefits {
@@ -682,10 +705,26 @@ func programInterpretBenefit(message, compact string, ctx LiveStrategyProgramCon
 		linkKey = ctx.Benefits[0].LinkKey
 		matching = ctx.Benefits[:1]
 	}
-
+	productNameChange := extractBenefitProductNameChange(message, matching)
+	hasBenefit := containsAnyProgram(compact, "活动", "福利", "优惠", "赠品", "满减", "秒杀", "折扣", "优惠券")
+	hasField := productNameChange != "" || containsAnyProgram(compact, "商品名称", "商品名", "福利名称", "福利标题", "活动名称", "活动标题", "活动价", "优惠价", "秒杀价", "到手价", "赠品", "活动内容", "活动规则", "开始时间", "生效时间", "结束时间", "失效时间", "截止时间")
+	if !hasBenefit && !hasField && ctx.CurrentMode != "benefits" {
+		return UnifiedIntent{}, false
+	}
+	// "修改1号链接" by itself is ambiguous and must not be stolen by benefit context.
+	if !hasBenefit && !hasField && linkKey != "" {
+		return UnifiedIntent{}, false
+	}
+	action := mutationVerb(compact)
+	if action == "" && hasField {
+		action = "update"
+	}
+	if action == "" {
+		return UnifiedIntent{}, false
+	}
 	changes := map[string]any{}
-	if value := extractField(message, "商品名称", "商品名"); value != "" {
-		changes["product_name"] = value
+	if productNameChange != "" {
+		changes["product_name"] = productNameChange
 	}
 	if value := extractField(message, "活动价", "优惠价", "秒杀价", "到手价"); value != "" {
 		changes["activity_price"] = value
@@ -747,7 +786,7 @@ func programInterpretBenefit(message, compact string, ctx LiveStrategyProgramCon
 			out.Target["benefit_key"] = matching[0].Key
 		}
 		out.Missing = []string{"修改字段"}
-		out.Reply = "请说明要修改活动价、赠品、活动内容、开始时间还是结束时间。"
+		out.Reply = "请说明要修改商品名称、活动价、赠品、活动内容、开始时间还是结束时间。"
 		return out, true
 	}
 	out := programIntent(KindCommand, "benefit."+action, 0.99)

@@ -49,6 +49,23 @@ func TestProgramLiveStrategyBenefitStartNow(t *testing.T) {
 	}
 }
 
+func TestProgramLiveStrategyBenefitProductNameRename(t *testing.T) {
+	ctx := LiveStrategyProgramContext{
+		CurrentMode: "benefits",
+		Benefits: []LiveStrategyBenefit{{Key: "1号链接:current-benefit", LinkKey: "1号链接", ProductName: "试用装2斤"}},
+	}
+	out := ProgramInterpretLiveStrategy("把1号链接的试用装2斤改成试用装5斤", ctx)
+	if out.Kind != KindCommand || out.Intent != "benefit.update" {
+		t.Fatalf("unexpected intent: %#v", out)
+	}
+	if got := out.Changes["product_name"]; got != "试用装5斤" {
+		t.Fatalf("product_name=%v", got)
+	}
+	if got := out.Target["benefit_key"]; got != "1号链接:current-benefit" {
+		t.Fatalf("benefit target=%v", got)
+	}
+}
+
 func TestProgramLiveStrategyAmbiguousLinkUpdate(t *testing.T) {
 	out := ProgramInterpretLiveStrategy("修改1号链接", LiveStrategyProgramContext{
 		CurrentMode: "benefits",

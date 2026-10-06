@@ -76,6 +76,7 @@ import {
   previewRecognizeLiveAgentPlanImage,
   publishLiveAgentPlanVersion,
   updateLiveAgentPlan,
+  updateLiveAgentPlanBenefit,
   updateLiveAgentPlanFact,
   updateLiveAgentPlanProductLink,
 	updateLiveAgentPlanProductAttribute,
@@ -249,6 +250,16 @@ const formalFacts = ref<LiveAgentPlanFact[]>([])
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
 const expandedFormalBenefitIds = ref<Set<number>>(new Set())
+type FormalBenefitField = 'link_key' | 'product_name' | 'activity_price' | 'gift' | 'activity' | 'starts_at' | 'ends_at'
+const editingFormalBenefit = ref<{ itemId: number; field: FormalBenefitField; draft: string } | null>(null)
+const mutatingFormalBenefitId = ref<number | null>(null)
+const formalBenefitMessage = ref<{ id: number; text: string; error?: boolean } | null>(null)
+const vFocus = {
+  mounted: (element: HTMLInputElement | HTMLTextAreaElement) => {
+    element.focus()
+    element.select()
+  },
+}
 const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
@@ -335,6 +346,77 @@ function toggleFormalBenefit(id: number) {
 	if (next.has(id)) next.delete(id)
 	else next.add(id)
 	expandedFormalBenefitIds.value = next
+}
+
+function formalBenefitFieldValue(item: LiveAgentPlanBenefit, field: FormalBenefitField) {
+  if (field !== 'starts_at' && field !== 'ends_at') return String(item[field] || '')
+  const value = item[field]
+  if (!value) return ''
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+}
+
+function isEditingFormalBenefit(item: LiveAgentPlanBenefit, field: FormalBenefitField) {
+  return editingFormalBenefit.value?.itemId === item.id && editingFormalBenefit.value.field === field
+}
+
+function startFormalBenefitEdit(item: LiveAgentPlanBenefit, field: FormalBenefitField) {
+  if (mutatingFormalBenefitId.value) return
+  editingFormalBenefit.value = { itemId: item.id, field, draft: formalBenefitFieldValue(item, field) }
+  formalBenefitMessage.value = null
+}
+
+function cancelFormalBenefitEdit() {
+  if (!mutatingFormalBenefitId.value) editingFormalBenefit.value = null
+}
+
+async function saveFormalBenefitEdit(item: LiveAgentPlanBenefit) {
+  if (mutatingFormalBenefitId.value) return false
+  const current = editingFormalBenefit.value
+  if (!current || current.itemId !== item.id) return true
+  const value = current.draft.trim()
+  if (current.field === 'product_name' && !value) {
+    formalBenefitMessage.value = { id: item.id, text: '商品名称不能为空', error: true }
+    return false
+  }
+  const previous = formalBenefitFieldValue(item, current.field)
+  if (value === previous) {
+    editingFormalBenefit.value = null
+    return true
+  }
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) {
+    formalBenefitMessage.value = { id: item.id, text: '当前方案已切换，请重新编辑', error: true }
+    return false
+  }
+  mutatingFormalBenefitId.value = item.id
+  formalBenefitMessage.value = { id: item.id, text: '正在保存…' }
+  try {
+    const updated = await updateLiveAgentPlanBenefit(planId, item.id, {
+      expected_version_no: item.version_no,
+      key: item.key,
+      link_key: current.field === 'link_key' ? value : item.link_key,
+      product_name: current.field === 'product_name' ? value : item.product_name,
+      activity_price: current.field === 'activity_price' ? value : item.activity_price,
+      gift: current.field === 'gift' ? value : item.gift,
+      activity: current.field === 'activity' ? value : item.activity,
+      starts_at: current.field === 'starts_at' ? value : formalBenefitFieldValue(item, 'starts_at'),
+      ends_at: current.field === 'ends_at' ? value : formalBenefitFieldValue(item, 'ends_at'),
+    }, item.tenant_id)
+    if (currentRoomPlanId.value === planId) {
+      formalBenefits.value = formalBenefits.value.map((entry) => entry.id === item.id ? updated : entry)
+    }
+    editingFormalBenefit.value = null
+    formalBenefitMessage.value = { id: item.id, text: '已自动保存' }
+    return true
+  } catch (error) {
+    formalBenefitMessage.value = { id: item.id, text: error instanceof Error ? error.message : '保存失败，请重试', error: true }
+    return false
+  } finally {
+    mutatingFormalBenefitId.value = null
+  }
 }
 const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
@@ -5250,8 +5332,16 @@ onBeforeUnmount(() => {
                     <svg viewBox="0 0 24 24"><path d="M10.5 13.5 13.5 10.5M7.7 16.3l-1.4 1.4a4 4 0 0 1-5.7-5.7l3.7-3.7a4 4 0 0 1 5.7 0l.7.7M16.3 7.7l1.4-1.4a4 4 0 0 1 5.7 5.7l-3.7 3.7a4 4 0 0 1-5.7 0l-.7-.7" /></svg>
                   </div>
                   <div class="strategy-benefit-formal-title">
-                    <span>{{ item.link_key || '全直播间' }}</span>
-                    <strong>{{ item.product_name || item.key }}</strong>
+                    <div class="strategy-benefit-formal-title-line">
+                      <input v-if="isEditingFormalBenefit(item, 'link_key') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="64" aria-label="编辑福利链接编号" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                      <span v-else>{{ item.link_key || '全直播间' }}</span>
+                      <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改福利链接编号" title="修改链接编号" @mousedown.prevent @click="startFormalBenefitEdit(item, 'link_key')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                    </div>
+                    <div class="strategy-benefit-formal-title-line strategy-benefit-formal-product-title">
+                      <input v-if="isEditingFormalBenefit(item, 'product_name') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="255" aria-label="编辑福利商品名称" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                      <strong v-else>{{ item.product_name || item.key }}</strong>
+                      <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改福利商品名称" title="修改商品名称" @mousedown.prevent @click="startFormalBenefitEdit(item, 'product_name')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                    </div>
                     <small>V{{ item.version_no }} · {{ item.key }}</small>
                     <em :class="'is-' + item.status"><i></i>{{ benefitStatusLabel(item.status) }}</em>
                   </div>
@@ -5263,17 +5353,23 @@ onBeforeUnmount(() => {
                   <div class="strategy-benefit-formal-detail-item">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 8-8h9v9l-8 8a2 2 0 0 1-2.8 0l-6.2-6.2A2 2 0 0 1 3 11Z" /><circle cx="15.5" cy="7.5" r="1.25" /></svg>
                     <span>活动价：</span>
-                    <strong>{{ item.activity_price || '未设置' }}</strong>
+                    <input v-if="isEditingFormalBenefit(item, 'activity_price') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="255" aria-label="编辑活动价" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                    <strong v-else>{{ item.activity_price || '未设置' }}</strong>
+                    <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改活动价" title="修改活动价" @mousedown.prevent @click="startFormalBenefitEdit(item, 'activity_price')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                   </div>
                   <div class="strategy-benefit-formal-detail-item">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v14M4 4h16v5H4zM3 9h18v4H3zM12 4c0-2-3-3-4.5-1.5S8.5 6 12 6M12 4c0-2 3-3 4.5-1.5S15.5 6 12 6" /></svg>
                     <span>福利：</span>
-                    <strong>{{ item.gift || '未设置' }}</strong>
+                    <input v-if="isEditingFormalBenefit(item, 'gift') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="2000" aria-label="编辑福利内容" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                    <strong v-else>{{ item.gift || '未设置' }}</strong>
+                    <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改福利内容" title="修改福利内容" @mousedown.prevent @click="startFormalBenefitEdit(item, 'gift')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                   </div>
                   <div class="strategy-benefit-formal-detail-item strategy-benefit-formal-detail-wide">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 12-5v12L3 13zM15 9.5 21 7v10l-6-2.5M6 14l1.5 6h3L9 14" /></svg>
                     <span>活动：</span>
-                    <strong>{{ item.activity || '未设置' }}</strong>
+                    <input v-if="isEditingFormalBenefit(item, 'activity') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="2000" aria-label="编辑活动内容" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                    <strong v-else>{{ item.activity || '未设置' }}</strong>
+                    <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改活动内容" title="修改活动内容" @mousedown.prevent @click="startFormalBenefitEdit(item, 'activity')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                   </div>
                 </div>
 
@@ -5283,11 +5379,24 @@ onBeforeUnmount(() => {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></svg>
                   <div>
                     <span>有效期</span>
-                    <strong>{{ formatBenefitTime(item.starts_at) }} <i>→</i> {{ formatBenefitTime(item.ends_at) }}</strong>
+                    <strong class="strategy-benefit-formal-time-range">
+                      <span class="strategy-benefit-formal-time-value">
+                        <input v-if="isEditingFormalBenefit(item, 'starts_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" placeholder="YYYY-MM-DD HH:mm" aria-label="编辑开始时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                        <template v-else>{{ formatBenefitTime(item.starts_at) }}</template>
+                        <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改开始时间" title="修改开始时间" @mousedown.prevent @click="startFormalBenefitEdit(item, 'starts_at')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                      </span>
+                      <i>→</i>
+                      <span class="strategy-benefit-formal-time-value">
+                        <input v-if="isEditingFormalBenefit(item, 'ends_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" placeholder="YYYY-MM-DD HH:mm" aria-label="编辑结束时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                        <template v-else>{{ formatBenefitTime(item.ends_at) }}</template>
+                        <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改结束时间" title="修改结束时间" @mousedown.prevent @click="startFormalBenefitEdit(item, 'ends_at')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                      </span>
+                    </strong>
                     <small v-if="item.source_quote">依据：{{ item.source_quote }}</small>
                     <small v-else-if="item.source_review_reason">判断：{{ item.source_review_reason }}</small>
                   </div>
                 </div>
+                <p v-if="formalBenefitMessage?.id === item.id" class="strategy-benefit-edit-message" :class="{ error: formalBenefitMessage.error }" role="status">{{ formalBenefitMessage.text }}</p>
                 <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效期' : '展开条件与有效期' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
               </article>
             </div>
@@ -7796,8 +7905,10 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal-icon { display:grid; width:76px; height:76px; place-items:center; border-radius:18px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
 .strategy-benefit-formal-icon svg { width:44px; height:44px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-benefit-formal-title { display:grid; gap:7px; min-width:0; }
-.strategy-benefit-formal-title>span { color:#3e63df; font-size:16px; font-weight:900; line-height:1.25; }
-.strategy-benefit-formal-title>strong { color:#172847; font-size:24px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title-line { display:flex; align-items:center; gap:5px; min-width:0; }
+.strategy-benefit-formal-title-line>span { min-width:0; color:#3e63df; font-size:16px; font-weight:900; line-height:1.25; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title-line>strong { min-width:0; color:#172847; font-size:24px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title-line input { min-width:0; flex:1; box-sizing:border-box; padding:4px 6px; border:1px solid #91a3eb; border-radius:6px; background:#fff; color:#172847; font:inherit; font-size:inherit; line-height:1.35; }
 .strategy-benefit-formal-title>small { color:#8b9ab5; font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
 .strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:6px; width:max-content; margin-top:3px; padding:5px 9px; border-radius:999px; font-size:13px; font-style:normal; font-weight:900; white-space:nowrap; }
 .strategy-benefit-formal-title>em i { width:7px; height:7px; border-radius:50%; background:currentColor; }
@@ -7807,18 +7918,30 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal-title>em.is-disabled { background:#fff0f0; color:#b54848; }
 .strategy-benefit-formal-rule { height:1px; background:#e5ebf5; }
 .strategy-benefit-formal-detail { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
-.strategy-benefit-formal-detail-item { display:grid; grid-template-columns:30px minmax(0,1fr); grid-template-rows:auto auto; column-gap:8px; align-items:end; min-width:0; min-height:72px; padding:10px 11px; border-radius:11px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
+.strategy-benefit-formal-detail-item { position:relative; display:grid; grid-template-columns:30px minmax(0,1fr); grid-template-rows:auto auto; column-gap:8px; align-items:end; min-width:0; min-height:72px; padding:10px 34px 10px 11px; border-radius:11px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
 .strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:26px; height:26px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:12px; line-height:1.35; }
 .strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:14px; line-height:1.4; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-detail-item>input { grid-column:2; min-width:0; box-sizing:border-box; width:100%; padding:3px 5px; border:1px solid #91a3eb; border-radius:5px; background:#fff; color:#192d51; font:inherit; font-size:14px; line-height:1.4; }
+.strategy-benefit-edit { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; flex:0 0 22px; padding:3px; border:0; border-radius:5px; background:transparent; color:#526be0; cursor:pointer; }
+.strategy-benefit-edit svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-edit:hover { background:#e7edff; }
+.strategy-benefit-edit:disabled { cursor:wait; opacity:.5; }
+.strategy-benefit-formal-detail-item>.strategy-benefit-edit { position:absolute; top:7px; right:7px; }
 .strategy-benefit-formal-detail-wide { grid-column:1/-1; }
 .strategy-benefit-formal-window { display:grid; grid-template-columns:32px minmax(0,1fr); gap:9px; align-items:start; color:#6f7b90; }
 .strategy-benefit-formal-window>svg { width:28px; height:28px; fill:none; stroke:#7b8baa; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-benefit-formal-window>div { display:grid; gap:4px; min-width:0; }
-.strategy-benefit-formal-window span { color:#7e8da8; font-size:13px; line-height:1.35; }
+.strategy-benefit-formal-window>div>span { color:#7e8da8; font-size:13px; line-height:1.35; }
 .strategy-benefit-formal-window strong { color:#1c3156; font-size:14px; line-height:1.45; font-weight:650; overflow-wrap:anywhere; }
 .strategy-benefit-formal-window i { color:#7d8eac; font-style:normal; padding-inline:5px; }
 .strategy-benefit-formal-window small { color:#8d9bb3; font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
+.strategy-benefit-formal-time-range { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.strategy-benefit-formal-time-value { display:inline-flex; align-items:center; gap:2px; color:#1c3156; font-size:14px; font-weight:650; }
+.strategy-benefit-formal-time-value input { width:142px; box-sizing:border-box; padding:3px 5px; border:1px solid #91a3eb; border-radius:5px; background:#fff; color:#1c3156; font:inherit; font-size:12px; font-weight:650; }
+.strategy-benefit-formal-time-value .strategy-benefit-edit { width:20px; height:20px; flex-basis:20px; }
+.strategy-benefit-edit-message { margin:0; color:#5e70cf; font-size:11px; line-height:1.45; text-align:center; }
+.strategy-benefit-edit-message.error { color:#c84858; }
 .strategy-benefit-formal-expand { display:inline-flex; align-items:center; justify-content:center; gap:5px; justify-self:center; padding:3px 6px; border:0; background:transparent; color:#4264df; font:inherit; font-size:14px; font-weight:750; cursor:pointer; }
 .strategy-benefit-formal-expand svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:2.2; transition:transform .18s ease; }
 .strategy-benefit-formal-item.expanded .strategy-benefit-formal-expand svg { transform:rotate(180deg); }
@@ -8851,7 +8974,7 @@ onBeforeUnmount(() => {
   .strategy-plan-card { grid-template-columns:1fr; }
   .strategy-benefit-formal>header { flex-direction:column; }
   .strategy-benefit-formal-list { grid-template-columns:1fr; }
-  .strategy-benefit-formal-list>article { width:100%; padding:24px 20px 20px; border-radius:24px; }
+  .strategy-benefit-formal-list>article { width:100%; padding:16px; border-radius:14px; }
   .strategy-benefit-formal-detail { grid-template-columns:1fr; }
   .strategy-benefit-formal-detail-wide { grid-column:auto; }
   .strategy-benefit-card footer { align-items:flex-start; flex-direction:column; }
