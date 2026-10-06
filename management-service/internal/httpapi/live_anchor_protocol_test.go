@@ -87,6 +87,57 @@ func TestProviderFailureRetriesThenUsesNeutralFallback(t *testing.T) {
 	}
 }
 
+func TestForceSafeAnchorStyleTermsOnlyAddsStableNonSemanticHabits(t *testing.T) {
+	state := stylecontract.RollingWindowState{
+		Runtime: stylecontract.RuntimeEvaluation{HabitGroups: []stylecontract.RuntimeHabitEvaluation{
+			{Kind: "audience_address", Stability: "stable"},
+			{Kind: "particle", Stability: "stable"},
+			{Kind: "catchphrase", Stability: "stable"},
+		}},
+		Needs: []stylecontract.RollingHabitDelta{
+			{Kind: "audience_address", Term: "哥哥姐姐们", Delta: 1},
+			{Kind: "particle", Term: "啊", Delta: 1},
+			{Kind: "catchphrase", Term: "全网第一", Delta: 1},
+		},
+	}
+	patched, additions := forceSafeAnchorStyleTerms("先把已经确认的信息说明白。", state, 80)
+	if !strings.HasPrefix(patched, "哥哥姐姐们，") || !strings.Contains(patched, "啊。") {
+		t.Fatalf("safe stable habits were not patched: %q additions=%v", patched, additions)
+	}
+	if strings.Contains(patched, "全网第一") {
+		t.Fatalf("meaning-bearing catchphrase was mechanically injected: %q", patched)
+	}
+}
+
+func TestApprovedFactTemplateFallbackUsesOnlyAssignedFact(t *testing.T) {
+	generation := model.LiveAgentFullShowGenerationContext{AuthorizedFacts: []model.LiveAgentGenerationFact{
+		{FactID: "product:1:spec", ProductName: "一号商品", Label: "规格", Value: "5L", CanGenerate: true},
+		{FactID: "product:2:price", ProductName: "二号商品", Label: "价格", Value: "99元", CanGenerate: true},
+	}}
+	text, ok := approvedFactTemplateFallback(generation, model.LiveSpeechExpansionStep{PrimaryFactID: "product:1:spec"}, 60, 120)
+	if !ok || !strings.Contains(text, "一号商品") || !strings.Contains(text, "5L") || strings.Contains(text, "99元") {
+		t.Fatalf("fact template escaped assigned scope: ok=%v text=%q", ok, text)
+	}
+}
+
+func TestFailedMiddleSegmentIsSkippedAndNextSegmentCarriesLength(t *testing.T) {
+	bad := strings.Repeat("库存还剩9999件。", 20)
+	good := strings.Repeat("先把重点自然说明白。", 20)
+	g := &styleTestFixtureGateway{outputs: []string{bad, bad, bad, good}}
+	observer := &anchorStyleGenerationObserver{}
+	generation := model.LiveAgentFullShowGenerationContext{ExpansionPlans: []model.LiveSpeechExpansionPlan{{Steps: []model.LiveSpeechExpansionStep{
+		{Index: 1, StartSecond: 0, EndSecond: 30, TargetChars: 100},
+		{Index: 2, StartSecond: 30, EndSecond: 60, TargetChars: 100},
+	}}}}
+	text, _, _, audit, repaired, _, err := generateAnchorStyleTestContinuing(context.Background(), g, generation, "", "解释", 200, nil, observer)
+	if err != nil || !audit.Passed || !repaired || text != good || len(g.calls) != 4 {
+		t.Fatalf("skip/recovery failed: err=%v audit=%+v repaired=%v calls=%d text=%q", err, audit, repaired, len(g.calls), text)
+	}
+	if len(observer.SkippedSegments) != 1 || observer.SkippedSegments[0] != 1 || strings.Contains(text, "9999") {
+		t.Fatalf("failed segment leaked or was not recorded: observer=%+v text=%q", observer, text)
+	}
+}
+
 func TestOverlayOnlyPreviewDoesNotRequireSampleStyle(t *testing.T) {
 	output := strings.Repeat("先和大家轻松聊一句，再把重点自然说明白。", 12)
 	g := &styleTestFixtureGateway{outputs: []string{output}}

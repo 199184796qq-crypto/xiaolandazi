@@ -172,10 +172,15 @@ func neutralAnchorStyleFallback(minChars, maxChars int) string {
 	if maxChars < minChars {
 		maxChars = minChars
 	}
-	unit := "先把当前重点说明白，已经确认的内容按实际情况讲清楚，后面接着往下说。"
+	units := []string{
+		"这个重点大家可以先留意一下，具体怎么选，还是按自己的实际需要来。",
+		"先别急着下结论，把已经确认的信息看清楚，再判断适不适合自己。",
+		"每个人平时的使用习惯不一样，合适的就继续了解，不合适也不用勉强。",
+		"相关内容都按实际情况来讲，大家把自己最在意的地方先看明白就行。",
+	}
 	var b strings.Builder
-	for utf8.RuneCountInString(b.String()) < minChars {
-		b.WriteString(unit)
+	for index := 0; utf8.RuneCountInString(b.String()) < minChars; index++ {
+		b.WriteString(units[index%len(units)])
 	}
 	text := strings.TrimSpace(b.String())
 	if utf8.RuneCountInString(text) > maxChars {
@@ -185,6 +190,58 @@ func neutralAnchorStyleFallback(minChars, maxChars int) string {
 		text = string([]rune(text)[:maxChars])
 	}
 	return strings.TrimSpace(text)
+}
+
+// approvedFactTemplateFallback is allowed to be forceful because every
+// content-bearing phrase comes from the current segment's authorized fact IDs.
+// It never derives a new number, benefit, guarantee, or commercial claim.
+func approvedFactTemplateFallback(generation model.LiveAgentFullShowGenerationContext, step model.LiveSpeechExpansionStep, minChars, maxChars int) (string, bool) {
+	assigned := stringKeySet(append(append([]string(nil), step.PrimaryFactID), step.SupportFactIDs...))
+	if len(assigned) == 0 {
+		return "", false
+	}
+	parts := []string{}
+	seen := map[string]bool{}
+	for _, fact := range generation.AuthorizedFacts {
+		if !assigned[strings.TrimSpace(fact.FactID)] || !fact.CanGenerate || strings.TrimSpace(fact.Value) == "" {
+			continue
+		}
+		value := strings.TrimSpace(fact.SafeRewrite)
+		if value == "" {
+			value = strings.TrimSpace(fact.Value)
+		}
+		label := strings.TrimSpace(fact.Label)
+		product := strings.TrimSpace(fact.ProductName)
+		statement := value
+		if label != "" && !strings.Contains(value, label) {
+			statement = label + "：" + value
+		}
+		if product != "" && !strings.Contains(statement, product) {
+			statement = product + "，" + statement
+		}
+		statement = strings.TrimRight(statement, "。！？!?；;，,") + "。"
+		if seen[statement] {
+			continue
+		}
+		seen[statement] = true
+		parts = append(parts, statement)
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	text := strings.Join(parts, "")
+	if utf8.RuneCountInString(text) < minChars {
+		bridge := neutralAnchorStyleFallback(minChars-utf8.RuneCountInString(text), maxChars-utf8.RuneCountInString(text))
+		text += bridge
+	}
+	if utf8.RuneCountInString(text) > maxChars {
+		if trimmed, ok := trimAnchorStyleCandidate(text, minChars, maxChars); ok {
+			text = trimmed
+		} else {
+			return "", false
+		}
+	}
+	return strings.TrimSpace(text), utf8.RuneCountInString(text) >= minChars && utf8.RuneCountInString(text) <= maxChars
 }
 
 // hardAnchorStyleIssues are identity/fact-boundary violations. A candidate
@@ -204,6 +261,73 @@ func hardAnchorStyleIssues(issues []string) bool {
 		}
 	}
 	return false
+}
+
+// forceSafeAnchorStyleTerms is the deterministic last mile for style only.
+// It may add well-evidenced address/self-reference/particle habits at safe
+// sentence boundaries, but it never adds a product, price, promise, audience
+// event, or other business fact. Meaning-bearing catchphrases, connectors and
+// dialect markers remain model work and are never mechanically injected.
+func forceSafeAnchorStyleTerms(text string, state stylecontract.RollingWindowState, maxChars int) (string, []string) {
+	text = strings.TrimSpace(text)
+	if text == "" || maxChars <= 0 {
+		return text, nil
+	}
+	stableKinds := map[string]bool{}
+	for _, group := range state.Runtime.HabitGroups {
+		if group.Stability == "stable" {
+			stableKinds[group.Kind] = true
+		}
+	}
+	added := []string{}
+	particleOffset := 0
+	room := func(value string) bool { return utf8.RuneCountInString(text)+utf8.RuneCountInString(value) <= maxChars }
+	for _, need := range state.Needs {
+		if len(added) >= 4 || need.Delta <= 0 || strings.TrimSpace(need.Term) == "" || !stableKinds[need.Kind] {
+			continue
+		}
+		term := strings.TrimSpace(need.Term)
+		switch need.Kind {
+		case "audience_address":
+			insert := term + "，"
+			if room(insert) {
+				text = insert + text
+				added = append(added, need.Kind+":"+term)
+			}
+		case "self_address":
+			insert := term + "再把这点说清楚，"
+			if room(insert) {
+				text = insert + text
+				added = append(added, need.Kind+":"+term)
+			}
+		case "audience_pronoun":
+			insert := term + "先留意这一点，"
+			if room(insert) {
+				text = insert + text
+				added = append(added, need.Kind+":"+term)
+			}
+		case "particle":
+			if !room(term) {
+				continue
+			}
+			for _, punctuation := range []string{"。", "！", "？"} {
+				position := strings.Index(text[particleOffset:], punctuation)
+				if position < 0 {
+					continue
+				}
+				position += particleOffset
+				prefix := text[:position]
+				if strings.HasSuffix(prefix, term) {
+					continue
+				}
+				text = prefix + term + text[position:]
+				added = append(added, need.Kind+":"+term)
+				particleOffset = position + len(term) + len(punctuation)
+				break
+			}
+		}
+	}
+	return text, added
 }
 
 type anchorStyleTestGateError struct {
@@ -483,7 +607,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	observer.Progress("正在规划接下来最多8个小段；第一段通过校验后立即显示，不等待整轮完成。")
 	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
 	if err != nil {
-		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments}
+		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "skipped_segments": observer.SkippedSegments, "style_patched_segments": observer.PatchedSegments, "fact_template_segments": observer.FactTemplateSegments}
 		var gateErr *anchorStyleTestGateError
 		if errors.As(err, &gateErr) {
 			failureMetadata["actual_chars"] = gateErr.ActualChars
@@ -501,7 +625,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	}
 	observer.Progress("正文已返回，正在核对风格并整理本次生成说明。")
 	if observer.DegradedStyle {
-		observer.Progress(fmt.Sprintf("有%d个小段经过安全兜底或降级放行；事实边界保持有效，主播风格将在后续小段继续校正。", len(observer.FallbackSegments)))
+		observer.Progress(fmt.Sprintf("有%d个小段经过程序补正、确认事实保底、跳过或降级放行；事实边界保持有效，主播风格将在后续小段继续校正。", len(observer.DegradedSegments)))
 	}
 	overlayQC := liveAnchorStyleOverlayQC{Available: false, Passed: false, Error: "没有启用叠加风格，本次无需叠加风格质检"}
 	if generation.StyleOverlayCount > 0 {
@@ -538,14 +662,14 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "skipped_segments": observer.SkippedSegments, "style_patched_segments": observer.PatchedSegments, "fact_template_segments": observer.FactTemplateSegments, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
 	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	log.Printf("anchor style test completed plan=%d room=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d segments=%d degraded_style=%t degraded_segments=%v fallback_segments=%v", planID, input.RoomID, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, segmentCount, observer.DegradedStyle, observer.DegradedSegments, observer.FallbackSegments)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
+	log.Printf("anchor style test completed plan=%d room=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d segments=%d degraded_style=%t degraded_segments=%v patched_segments=%v fact_template_segments=%v skipped_segments=%v fallback_segments=%v", planID, input.RoomID, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, segmentCount, observer.DegradedStyle, observer.DegradedSegments, observer.PatchedSegments, observer.FactTemplateSegments, observer.SkippedSegments, observer.FallbackSegments)
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "skipped_segments": observer.SkippedSegments, "style_patched_segments": observer.PatchedSegments, "fact_template_segments": observer.FactTemplateSegments, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -819,6 +943,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 	totalCalls := 0
 	repaired := false
 	degradedStyle := false
+	forceHorizonPlan := false
 	horizonReceipts := make([]speechexpander.ContentDecisionReceipt, len(steps))
 	generationStartedAt := time.Now()
 
@@ -845,7 +970,8 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		}
 		brainPromptJSON, _ := json.Marshal(brainPromptContext)
 		var decision speechexpander.ContentDecisionReceipt
-		if observer != nil && observer.Strategy != nil && index%mainlinePlanningHorizon == 0 {
+		if observer != nil && observer.Strategy != nil && (index%mainlinePlanningHorizon == 0 || forceHorizonPlan) {
+			forceHorizonPlan = false
 			horizonEnd := min(len(steps), index+mainlinePlanningHorizon)
 			if observer.Progress != nil {
 				observer.Progress(fmt.Sprintf("正在一次安排接下来%d个小段；每段通过校验后立即追加。", horizonEnd-index))
@@ -878,10 +1004,13 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		}
 		var candidate string
 		var segmentAudit model.LiveAgentFullShowAudit
+		var styleGateState stylecontract.RollingWindowState
 		var styleGateIssues []string
 		accepted := false
 		segmentDegraded := false
 		usedFallback := false
+		usedStylePatch := false
+		usedFactTemplate := false
 		for attempt := 0; attempt < 3; attempt++ {
 			if observer != nil && observer.Progress != nil {
 				message := fmt.Sprintf("正在写第%d小段，完成后立即追加。", index+1)
@@ -922,6 +1051,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			segmentAudit = auditFullShowVariants(segmentAuditContext, []model.LiveAgentFullShowVariant{{Text: candidate}}, nil)[0].Audit
 			prospectiveHistory := strings.TrimSpace(strings.TrimSpace(styleHistory) + "\n\n" + candidate)
 			styleState, currentStyleIssues := stylecontract.StrictFidelityIssues(generation.AnchorStyle, prospectiveHistory, resolvedAnchorStyleMatchIntensity(generation))
+			styleGateState = styleState
 			styleGateIssues = currentStyleIssues
 			actual := utf8.RuneCountInString(candidate)
 			if actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(structureIssues) == 0 && len(styleGateIssues) == 0 {
@@ -975,6 +1105,25 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 				accepted = ledger.CommittedChars()+separator+actual >= minChars
 			}
 		}
+		// The model had three chances. Before degrading or skipping, patch only
+		// stable, non-semantic style markers in code and rerun every gate.
+		if !accepted && segmentAudit.Passed && len(finalStructureIssues) == 0 && len(styleGateIssues) > 0 && !hardAnchorStyleIssues(styleGateIssues) {
+			if patched, additions := forceSafeAnchorStyleTerms(candidate, styleGateState, spec.MaxChars); len(additions) > 0 {
+				candidate = patched
+				usedStylePatch = true
+				repaired = true
+				patchContext := generation
+				patchContext.UseAnchorStyle = false
+				patchContext.RoundMinutes = 1
+				segmentAudit = auditFullShowVariants(patchContext, []model.LiveAgentFullShowVariant{{Text: candidate}}, nil)[0].Audit
+				finalStructureIssues = anchorStyleSegmentStructureIssues(spec, candidate)
+				finalStructureIssues = append(finalStructureIssues, ledger.AntiChecklistIssues(spec, candidate)...)
+				patchedHistory := strings.TrimSpace(strings.TrimSpace(styleHistory) + "\n\n" + candidate)
+				styleGateState, styleGateIssues = stylecontract.StrictFidelityIssues(generation.AnchorStyle, patchedHistory, resolvedAnchorStyleMatchIntensity(generation))
+				actual := utf8.RuneCountInString(candidate)
+				accepted = actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(finalStructureIssues) == 0 && len(styleGateIssues) == 0
+			}
+		}
 		// Style density/distribution is a soft signal. If facts, structure and
 		// length are sound but the local style window still misses its target,
 		// accept the segment as degraded instead of blocking the live stream.
@@ -987,9 +1136,51 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 				repaired = true
 			}
 		}
-		// After repeated model/repair failure, use a deterministic, fact-free
-		// bridge. It is audited like any other segment; if even this cannot
-		// pass, fail the current request rather than emitting unsafe text.
+		// If the model candidate still cannot be used, build a segment only
+		// from facts explicitly assigned to this unit. This is deterministic
+		// content recovery, not factual inference.
+		if !accepted {
+			if templated, ok := approvedFactTemplateFallback(generation, step, spec.MinChars, spec.MaxChars); ok {
+				candidate = templated
+				usedFactTemplate = true
+				repaired = true
+				templateContext := generation
+				templateContext.UseAnchorStyle = false
+				templateContext.RoundMinutes = 1
+				segmentAudit = auditFullShowVariants(templateContext, []model.LiveAgentFullShowVariant{{Text: candidate}}, nil)[0].Audit
+				finalStructureIssues = anchorStyleSegmentStructureIssues(spec, candidate)
+				finalStructureIssues = append(finalStructureIssues, ledger.AntiChecklistIssues(spec, candidate)...)
+				templateHistory := strings.TrimSpace(strings.TrimSpace(styleHistory) + "\n\n" + candidate)
+				styleGateState, styleGateIssues = stylecontract.StrictFidelityIssues(generation.AnchorStyle, templateHistory, resolvedAnchorStyleMatchIntensity(generation))
+				actual := utf8.RuneCountInString(candidate)
+				if actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(finalStructureIssues) == 0 && !hardAnchorStyleIssues(styleGateIssues) {
+					accepted = true
+					degradedStyle = len(styleGateIssues) > 0 || degradedStyle
+					segmentDegraded = len(styleGateIssues) > 0
+				}
+			}
+		}
+		// A failed middle unit is skipped and the next horizon is replanned.
+		// This is better live behavior than speaking a repetitive placeholder:
+		// already-streamed text stays intact and the remaining length debt is
+		// naturally carried into later units by the ledger.
+		if !accepted && index < len(steps)-1 {
+			degradedStyle = true
+			forceHorizonPlan = true
+			if observer != nil {
+				observer.DegradedStyle = true
+				observer.DegradedSegments = append(observer.DegradedSegments, index+1)
+				observer.SkippedSegments = append(observer.SkippedSegments, index+1)
+				if observer.Progress != nil {
+					observer.Progress(fmt.Sprintf("第%d小段连续校验未通过，已跳过并重新规划后续；已显示的正文不回滚。", index+1))
+				}
+			}
+			log.Printf("[CONTINUOUS_SPEECH] plan=%d room=%d unit=%d/%d skipped=true reason=retry_exhausted", generation.PlanID, generation.RoomID, spec.Index, spec.Count)
+			continue
+		}
+		// At the final unit there is no later segment to carry the length debt,
+		// so use a deterministic, fact-free bridge. It is audited like any
+		// other segment and is explicitly surfaced as a fallback.
 		if !accepted {
 			candidate = neutralAnchorStyleFallback(spec.MinChars, spec.MaxChars)
 			fallbackContext := generation
@@ -1017,6 +1208,9 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		if usedFallback {
 			decision.Source = "fallback_after_retries"
 			decision.Reason = "连续校验未通过，使用安全中性承接，等待下一时间单元重新规划"
+		} else if usedFactTemplate {
+			decision.Source = "authorized_fact_template"
+			decision.Reason = "模型连续校验未通过，已仅用本段确认事实生成保底表达"
 		}
 		segmentID := ledger.Enqueue(spec, candidate)
 		if !ledger.Commit(segmentID) {
@@ -1029,6 +1223,12 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			}
 			if usedFallback {
 				observer.FallbackSegments = append(observer.FallbackSegments, index+1)
+			}
+			if usedStylePatch {
+				observer.PatchedSegments = append(observer.PatchedSegments, index+1)
+			}
+			if usedFactTemplate {
+				observer.FactTemplateSegments = append(observer.FactTemplateSegments, index+1)
 			}
 			if observer.FirstSegmentMS == 0 {
 				observer.FirstSegmentMS = time.Since(generationStartedAt).Milliseconds()
@@ -1078,7 +1278,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		if len(generation.ExpansionPlans) > 0 && strings.TrimSpace(generation.ExpansionPlans[0].VariantKey) != "" {
 			variantKey = generation.ExpansionPlans[0].VariantKey
 		}
-		log.Printf("[CONTINUOUS_SPEECH] plan=%d room=%d variant=%s unit=%d/%d role=%s primary_fact=%q reentry=%t interaction=%s target=%d actual=%d constraint=%s repaired=%t degraded_style=%t fallback=%t", generation.PlanID, generation.RoomID, variantKey, spec.Index, spec.Count, spec.SegmentRole, spec.PrimaryFactKey, spec.NewcomerReentryAllowed, spec.InteractionMode, spec.TargetChars, utf8.RuneCountInString(candidate), spec.ConstraintLevel, repaired && !wasRepaired, degradedStyle, usedFallback)
+		log.Printf("[CONTINUOUS_SPEECH] plan=%d room=%d variant=%s unit=%d/%d role=%s primary_fact=%q reentry=%t interaction=%s target=%d actual=%d constraint=%s repaired=%t style_patch=%t fact_template=%t degraded_style=%t fallback=%t", generation.PlanID, generation.RoomID, variantKey, spec.Index, spec.Count, spec.SegmentRole, spec.PrimaryFactKey, spec.NewcomerReentryAllowed, spec.InteractionMode, spec.TargetChars, utf8.RuneCountInString(candidate), spec.ConstraintLevel, repaired && !wasRepaired, usedStylePatch, usedFactTemplate, degradedStyle, usedFallback)
 	}
 
 	text := strings.TrimSpace(ledger.CommittedText())
