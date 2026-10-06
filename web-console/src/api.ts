@@ -1551,6 +1551,10 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     planning_call_count?: number
     render_call_count?: number
     repair_call_count?: number
+    style_degraded?: boolean
+    degraded_segments?: number[]
+    fallback_used?: boolean
+    fallback_segments?: number[]
     transient_overlay_count?: number
   }>(
     '/api/v1/live-agent-plans/' + planId + '/anchor-style/test', { method: 'POST', body: JSON.stringify(input), headers: onPreviewEvent ? { Accept: 'text/event-stream' } : undefined }, onPreviewEvent,

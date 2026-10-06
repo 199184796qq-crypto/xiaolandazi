@@ -161,6 +161,51 @@ func trimAnchorStyleCandidate(text string, minChars, maxChars int) (string, bool
 	return text, false
 }
 
+// neutralAnchorStyleFallback keeps the stream moving after the model has
+// exhausted its local repair budget. It deliberately contains no product
+// facts, prices, inventory, links, guarantees, or audience claims; the next
+// horizon can pick the business thread back up without inventing anything.
+func neutralAnchorStyleFallback(minChars, maxChars int) string {
+	if minChars < 40 {
+		minChars = 40
+	}
+	if maxChars < minChars {
+		maxChars = minChars
+	}
+	unit := "先把当前重点说明白，已经确认的内容按实际情况讲清楚，后面接着往下说。"
+	var b strings.Builder
+	for utf8.RuneCountInString(b.String()) < minChars {
+		b.WriteString(unit)
+	}
+	text := strings.TrimSpace(b.String())
+	if utf8.RuneCountInString(text) > maxChars {
+		if trimmed, ok := trimAnchorStyleCandidate(text, minChars, maxChars); ok {
+			return trimmed
+		}
+		text = string([]rune(text)[:maxChars])
+	}
+	return strings.TrimSpace(text)
+}
+
+// hardAnchorStyleIssues are identity/fact-boundary violations. A candidate
+// with only density or distribution drift may be accepted as degraded after
+// retries, but these issues must always go through the neutral fallback.
+func hardAnchorStyleIssues(issues []string) bool {
+	for _, issue := range issues {
+		if strings.Contains(issue, "主体从第一方漂成") ||
+			strings.Contains(issue, "样本没有的主播方自指") ||
+			strings.Contains(issue, "主播身份") ||
+			strings.Contains(issue, "样本没有的方言词") ||
+			strings.Contains(issue, "禁止") ||
+			strings.Contains(issue, "过度") ||
+			strings.Contains(issue, "超过预算") ||
+			strings.Contains(issue, "超过整段上限") {
+			return true
+		}
+	}
+	return false
+}
+
 type anchorStyleTestGateError struct {
 	ActualChars int
 	MinChars    int
@@ -438,7 +483,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	observer.Progress("正在规划接下来最多8个小段；第一段通过校验后立即显示，不等待整轮完成。")
 	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
 	if err != nil {
-		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS}
+		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments}
 		var gateErr *anchorStyleTestGateError
 		if errors.As(err, &gateErr) {
 			failureMetadata["actual_chars"] = gateErr.ActualChars
@@ -450,11 +495,14 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 			failureMetadata["attempts"] = gateErr.Attempts
 		}
 		s.finishAISingleUse(r.Context(), invocationID, "failed", result.Provider, result.Model, result.LatencyMS, failureMetadata)
-		log.Printf("anchor style test rejected plan=%d room=%d provider=%s model=%s latency_ms=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d err=%v", planID, input.RoomID, result.Provider, result.Model, result.LatencyMS, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, err)
+		log.Printf("anchor style test rejected plan=%d room=%d provider=%s model=%s latency_ms=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d degraded_style=%t fallback_segments=%v err=%v", planID, input.RoomID, result.Provider, result.Model, result.LatencyMS, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, observer.DegradedStyle, observer.FallbackSegments, err)
 		writeError(w, http.StatusBadGateway, "后续小段生成或校验未完成，已显示的正文保留供你查看，请重试。")
 		return
 	}
 	observer.Progress("正文已返回，正在核对风格并整理本次生成说明。")
+	if observer.DegradedStyle {
+		observer.Progress(fmt.Sprintf("有%d个小段经过安全兜底或降级放行；事实边界保持有效，主播风格将在后续小段继续校正。", len(observer.FallbackSegments)))
+	}
 	overlayQC := liveAnchorStyleOverlayQC{Available: false, Passed: false, Error: "没有启用叠加风格，本次无需叠加风格质检"}
 	if generation.StyleOverlayCount > 0 {
 		qcInvocationID := s.beginAISingleUse(r.Context(), actor, nil, "live_style_overlay_qc", map[string]any{"plan_id": planID, "room_id": input.RoomID, "phase": "initial"})
@@ -490,14 +538,14 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
 	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	log.Printf("anchor style test completed plan=%d room=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d segments=%d", planID, input.RoomID, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, segmentCount)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
+	log.Printf("anchor style test completed plan=%d room=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d segments=%d degraded_style=%t degraded_segments=%v fallback_segments=%v", planID, input.RoomID, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, segmentCount, observer.DegradedStyle, observer.DegradedSegments, observer.FallbackSegments)
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -770,6 +818,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 	var totalLatency int64
 	totalCalls := 0
 	repaired := false
+	degradedStyle := false
 	horizonReceipts := make([]speechexpander.ContentDecisionReceipt, len(steps))
 	generationStartedAt := time.Now()
 
@@ -831,6 +880,8 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		var segmentAudit model.LiveAgentFullShowAudit
 		var styleGateIssues []string
 		accepted := false
+		segmentDegraded := false
+		usedFallback := false
 		for attempt := 0; attempt < 3; attempt++ {
 			if observer != nil && observer.Progress != nil {
 				message := fmt.Sprintf("正在写第%d小段，完成后立即追加。", index+1)
@@ -851,7 +902,16 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			result = response
 			result.LatencyMS = totalLatency
 			if err != nil {
-				return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, err
+				// A provider timeout/error is retryable within this segment. Once
+				// the three-attempt budget is exhausted, the neutral fallback below
+				// keeps the already-streamed prefix intact and avoids fabricating a
+				// business fact just to fill the gap.
+				if attempt < 2 {
+					repaired = true
+					continue
+				}
+				candidate = ""
+				continue
 			}
 			candidate = strings.TrimSpace(response.Text)
 			structureIssues := anchorStyleSegmentStructureIssues(spec, candidate)
@@ -915,17 +975,61 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 				accepted = ledger.CommittedChars()+separator+actual >= minChars
 			}
 		}
+		// Style density/distribution is a soft signal. If facts, structure and
+		// length are sound but the local style window still misses its target,
+		// accept the segment as degraded instead of blocking the live stream.
+		if !accepted && segmentAudit.Passed && len(finalStructureIssues) == 0 && len(styleGateIssues) > 0 && !hardAnchorStyleIssues(styleGateIssues) {
+			actual := utf8.RuneCountInString(candidate)
+			if actual >= spec.MinChars && actual <= spec.MaxChars {
+				accepted = true
+				degradedStyle = true
+				segmentDegraded = true
+				repaired = true
+			}
+		}
+		// After repeated model/repair failure, use a deterministic, fact-free
+		// bridge. It is audited like any other segment; if even this cannot
+		// pass, fail the current request rather than emitting unsafe text.
+		if !accepted {
+			candidate = neutralAnchorStyleFallback(spec.MinChars, spec.MaxChars)
+			fallbackContext := generation
+			fallbackContext.UseAnchorStyle = false
+			fallbackContext.RoundMinutes = 1
+			segmentAudit = auditFullShowVariants(fallbackContext, []model.LiveAgentFullShowVariant{{Text: candidate}}, nil)[0].Audit
+			finalStructureIssues = anchorStyleSegmentStructureIssues(spec, candidate)
+			finalStructureIssues = append(finalStructureIssues, ledger.AntiChecklistIssues(spec, candidate)...)
+			actual := utf8.RuneCountInString(candidate)
+			if actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(finalStructureIssues) == 0 {
+				accepted = true
+				usedFallback = true
+				degradedStyle = true
+				segmentDegraded = true
+				repaired = true
+				styleGateIssues = nil
+			}
+		}
 		if !accepted {
 			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, &anchorStyleTestGateError{
 				ActualChars: utf8.RuneCountInString(candidate), MinChars: spec.MinChars, MaxChars: spec.MaxChars,
 				StyleIssues: append([]string(nil), styleGateIssues...), AuditIssues: append([]model.LiveAgentFullShowAuditIssue(nil), segmentAudit.Issues...), Attempts: totalCalls,
 			}
 		}
+		if usedFallback {
+			decision.Source = "fallback_after_retries"
+			decision.Reason = "连续校验未通过，使用安全中性承接，等待下一时间单元重新规划"
+		}
 		segmentID := ledger.Enqueue(spec, candidate)
 		if !ledger.Commit(segmentID) {
 			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, errors.New("提交时间单元失败")
 		}
 		if observer != nil {
+			if segmentDegraded {
+				observer.DegradedStyle = true
+				observer.DegradedSegments = append(observer.DegradedSegments, index+1)
+			}
+			if usedFallback {
+				observer.FallbackSegments = append(observer.FallbackSegments, index+1)
+			}
 			if observer.FirstSegmentMS == 0 {
 				observer.FirstSegmentMS = time.Since(generationStartedAt).Milliseconds()
 			}
@@ -974,7 +1078,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		if len(generation.ExpansionPlans) > 0 && strings.TrimSpace(generation.ExpansionPlans[0].VariantKey) != "" {
 			variantKey = generation.ExpansionPlans[0].VariantKey
 		}
-		log.Printf("[CONTINUOUS_SPEECH] plan=%d room=%d variant=%s unit=%d/%d role=%s primary_fact=%q reentry=%t interaction=%s target=%d actual=%d constraint=%s repaired=%t", generation.PlanID, generation.RoomID, variantKey, spec.Index, spec.Count, spec.SegmentRole, spec.PrimaryFactKey, spec.NewcomerReentryAllowed, spec.InteractionMode, spec.TargetChars, utf8.RuneCountInString(candidate), spec.ConstraintLevel, repaired && !wasRepaired)
+		log.Printf("[CONTINUOUS_SPEECH] plan=%d room=%d variant=%s unit=%d/%d role=%s primary_fact=%q reentry=%t interaction=%s target=%d actual=%d constraint=%s repaired=%t degraded_style=%t fallback=%t", generation.PlanID, generation.RoomID, variantKey, spec.Index, spec.Count, spec.SegmentRole, spec.PrimaryFactKey, spec.NewcomerReentryAllowed, spec.InteractionMode, spec.TargetChars, utf8.RuneCountInString(candidate), spec.ConstraintLevel, repaired && !wasRepaired, degradedStyle, usedFallback)
 	}
 
 	text := strings.TrimSpace(ledger.CommittedText())
@@ -990,7 +1094,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 	audit := auditFullShowVariants(auditContext, []model.LiveAgentFullShowVariant{{Text: text}}, nil)[0].Audit
 	actualChars := utf8.RuneCountInString(text)
 	_, finalStyleIssues := stylecontract.StrictFidelityIssues(generation.AnchorStyle, anchorStyleHistory(previous, text), resolvedAnchorStyleMatchIntensity(generation))
-	if actualChars >= minChars && actualChars <= maxChars && audit.Passed && len(finalStyleIssues) == 0 {
+	if actualChars >= minChars && actualChars <= maxChars && audit.Passed && (len(finalStyleIssues) == 0 || (degradedStyle && !hardAnchorStyleIssues(finalStyleIssues))) {
 		return text, result, check, audit, repaired, nil
 	}
 	return "", result, check, audit, repaired, &anchorStyleTestGateError{

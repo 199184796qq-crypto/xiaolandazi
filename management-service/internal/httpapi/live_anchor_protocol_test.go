@@ -19,6 +19,13 @@ func (g *styleTestFixtureGateway) Complete(_ context.Context, r agentgateway.Req
 	g.calls = append(g.calls, r)
 	return agentgateway.Response{Text: g.outputs[len(g.calls)-1], Provider: "fixture-vendor", Model: "fixture-model", LatencyMS: 1}, nil
 }
+
+type failingStyleTestGateway struct{ calls int }
+
+func (g *failingStyleTestGateway) Complete(_ context.Context, _ agentgateway.Request) (agentgateway.Response, error) {
+	g.calls++
+	return agentgateway.Response{Provider: "fixture-vendor", Model: "fixture-model", LatencyMS: 1}, errors.New("fixture provider timeout")
+}
 func TestShortSampleDoesNotForceDensityRepair(t *testing.T) {
 	source := strings.Repeat("我慢慢讲呀，先把这个说明白。", 16)
 	profile := stylecontract.Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version, Instructions: []string{"短句解释", "原词自称", "句尾语气", "自然转场", "准确回答", "不编造", "不促销", "不喊叫"}, Habits: []model.LiveAnchorLiteralHabit{{Kind: "particle", Text: "呀"}, {Kind: "self_address", Text: "我"}}}}, source)
@@ -47,18 +54,36 @@ func TestShortSampleLowStyleDoesNotBlockPreview(t *testing.T) {
 	}
 }
 
-func TestPersistentHardFactFailureNeverReturnsSuccessfulPreview(t *testing.T) {
+func TestPersistentHardFactFailureFallsBackWithoutUnsafeText(t *testing.T) {
 	source := strings.Repeat("先慢慢解释呀，接着再说明呀。", 15)
 	profile := stylecontract.Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version, Instructions: []string{"规则甲", "规则乙", "规则丙", "规则丁", "规则戊", "规则己", "规则庚", "规则辛"}, Habits: []model.LiveAnchorLiteralHabit{{Kind: "particle", Text: "呀"}}}}, source)
 	bad := strings.Repeat("库存还剩9999件。", 25)
 	g := &styleTestFixtureGateway{outputs: []string{bad, bad, bad}}
-	text, _, _, _, _, err := generateAnchorStyleTest(context.Background(), g, model.LiveAgentFullShowGenerationContext{AnchorStyle: profile, UseAnchorStyle: true}, "", "解释", 220)
-	if err == nil || text != "" || len(g.calls) != 3 {
-		t.Fatal("nonconforming text escaped gate")
+	observer := &anchorStyleGenerationObserver{}
+	text, _, _, audit, repaired, _, err := generateAnchorStyleTestContinuing(context.Background(), g, model.LiveAgentFullShowGenerationContext{AnchorStyle: profile, UseAnchorStyle: true}, "", "解释", 220, nil, observer)
+	if err != nil || text == "" || !audit.Passed || !repaired || len(g.calls) != 3 {
+		t.Fatalf("unsafe fallback behavior: err=%v text=%q audit=%+v repaired=%v calls=%d", err, text, audit, repaired, len(g.calls))
+	}
+	if !observer.DegradedStyle || len(observer.FallbackSegments) != 1 || strings.Contains(text, "9999") {
+		t.Fatalf("fallback was not marked or retained unsafe claim: observer=%+v text=%q", observer, text)
 	}
 	var gateErr *anchorStyleTestGateError
-	if !errors.As(err, &gateErr) || gateErr.Attempts != 3 || gateErr.ActualChars == 0 {
-		t.Fatalf("missing gate diagnostics: %T %v", err, err)
+	if errors.As(err, &gateErr) {
+		t.Fatalf("fallback should complete the segment, got gate error: %v", gateErr)
+	}
+}
+
+func TestProviderFailureRetriesThenUsesNeutralFallback(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们啊，我们家把重点讲清楚哟。", 20)
+	profile := stylecontract.Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version}}, source)
+	g := &failingStyleTestGateway{}
+	observer := &anchorStyleGenerationObserver{}
+	text, _, _, audit, repaired, _, err := generateAnchorStyleTestContinuing(context.Background(), g, model.LiveAgentFullShowGenerationContext{AnchorStyle: profile, UseAnchorStyle: true}, "", "解释", 220, nil, observer)
+	if err != nil || text == "" || !audit.Passed || !repaired || g.calls != 3 {
+		t.Fatalf("provider failures did not fall back safely: err=%v text=%q audit=%+v repaired=%v calls=%d", err, text, audit, repaired, g.calls)
+	}
+	if !observer.DegradedStyle || len(observer.FallbackSegments) != 1 || strings.Contains(text, "timeout") {
+		t.Fatalf("provider fallback metadata/text invalid: observer=%+v text=%q", observer, text)
 	}
 }
 

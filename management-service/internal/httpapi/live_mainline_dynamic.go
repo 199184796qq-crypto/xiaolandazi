@@ -13,13 +13,16 @@ import (
 )
 
 type anchorStyleGenerationObserver struct {
-	Strategy       *speechexpander.ResolvedContentStrategy
-	Progress       func(string)
-	Segment        func(string, int)
-	PlanningCalls  int
-	RenderCalls    int
-	RepairCalls    int
-	FirstSegmentMS int64
+	Strategy         *speechexpander.ResolvedContentStrategy
+	Progress         func(string)
+	Segment          func(string, int)
+	PlanningCalls    int
+	RenderCalls      int
+	RepairCalls      int
+	FirstSegmentMS   int64
+	DegradedStyle    bool
+	DegradedSegments []int
+	FallbackSegments []int
 }
 
 const mainlinePlanningHorizon = 8
