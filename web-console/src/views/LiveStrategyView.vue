@@ -6074,7 +6074,7 @@ onBeforeUnmount(() => {
                   <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
                 </section>
                 <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
-                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>客观风格评分：{{ anchorStyleTestResult.runtime_evaluation?.style_score ?? '—' }}</span><span>用词：{{ anchorStyleTestResult.runtime_evaluation?.lexical_score ?? '—' }}</span><span>节奏：{{ anchorStyleTestResult.runtime_evaluation?.rhythm_score ?? '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字风格窗口：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
                 <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
                   <header><strong>本次话术安排</strong><small>每写一小段，模型都会根据前文重新安排；选择不合适或超时，由系统兜底。这些说明不会读进直播间。</small></header>
                   <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
@@ -6235,12 +6235,12 @@ onBeforeUnmount(() => {
                 </details>
               </article>
             </div>
-            <div v-else class="strategy-style-overlay-empty">还没有叠加风格。可以输入“喜欢时不时幽默一下”“先说重点再解释”等自然语言。</div>
+            <div v-else class="strategy-style-overlay-empty">还没有风格或策略外挂。可以输入“喜欢时不时幽默一下”“喜欢用数字比价”“喜欢把核心事实隔一段换个动作讲回来”等自然语言。</div>
 
             <div class="strategy-style-overlay-compose">
               <label>
-                <span>希望主播增加什么习惯</span>
-                <textarea v-model="styleOverlaySource" rows="2" maxlength="300" placeholder="请填写一条额外习惯，例如：偶尔幽默一下，但不要每段都讲笑话。"></textarea>
+                <span>希望增加什么风格或本场策略</span>
+                <textarea v-model="styleOverlaySource" rows="2" maxlength="300" placeholder="例如：偶尔幽默一下；或喜欢用已确认数字做比价，但不要自己编数字。"></textarea>
               </label>
               <label>
                 <span>补充我的意思 <small>选填；系统理解不准时再填写</small></span>
@@ -6262,11 +6262,11 @@ onBeforeUnmount(() => {
               <p><b>严肃场景：</b>{{ styleOverlayPending.rule.serious_instruction }}</p>
               <p v-if="styleOverlayPending.rule.mainline_max_per_1000_chars"><b>次数预算：</b>每1000字 {{ styleOverlayPending.rule.mainline_min_per_1000_chars || 0 }}～{{ styleOverlayPending.rule.mainline_max_per_1000_chars }} 次，短答最多 {{ styleOverlayPending.rule.interaction_max_occurrences || 0 }} 次。</p>
               <small>参考了 {{ styleOverlayMemoryMatches }} 条当前客户已确认的相似理解；用户补充解释始终优先。</small>
-              <div><button type="button" class="strategy-version-button" @click="styleOverlayPending = null">重新描述</button><button type="button" class="primary-button" :disabled="styleOverlayBusy" @click="confirmStyleOverlay">确认加入主播</button></div>
+              <div><button type="button" class="strategy-version-button" @click="styleOverlayPending = null">重新描述</button><button type="button" class="primary-button" :disabled="styleOverlayBusy" @click="confirmStyleOverlay">确认加入当前方案</button></div>
             </div>
             <div v-if="styleOverlayError" class="inline-error">{{ styleOverlayError }}</div>
             <div v-if="styleOverlayNotice" class="notice-banner">{{ styleOverlayNotice }}</div>
-            <small>叠加风格保存到当前直播方案；直播间“主播状态”只保留本场临时变化，不再维护另一套长期习惯。</small>
+            <small>底层主播风格来自真人样本；这里保存的是当前直播方案的风格或策略外挂。数字比价、连续算账、事实回环不会反写成主播永久风格。</small>
           </section>
           <div v-if="scriptNotice" class="notice-banner">{{ scriptNotice }}</div>
 			<div v-if="anchorStyleAnalysisQC" class="notice-banner" :class="{ 'inline-error': !anchorStyleAnalysisQC.passed }">
@@ -6322,7 +6322,7 @@ onBeforeUnmount(() => {
               <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
               <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
             </div>
-            <p>{{ anchorRulebook ? '使用样本口播规范与已启用的叠加风格共同测试；' : '本次没有真人样本，只测试已启用的叠加风格；' }}系统按时间单元逐段生成，前段长短会自动结转，临近结束按剩余字数收束。测试不发布、不生成声音，也不改变当前直播。</p>
+            <p>{{ anchorRulebook ? '使用样本底层风格与已启用的方案外挂共同测试；' : '本次没有真人样本，只测试已启用的方案外挂；' }}系统按时间单元逐段生成，主播风格按最近1000字滚动追踪，单个短段不做机械词频打卡。测试不发布、不生成声音，也不改变当前直播。</p>
             <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
             <section v-if="anchorStyleOutputOpen && !anchorStyleTestResult" aria-live="polite"><p>{{ anchorStyleGenerationProgress }}</p><pre class="reusable-anchor-style-generated-text">{{ anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre></section>
             <template v-if="anchorStyleTestResult">
@@ -6333,7 +6333,8 @@ onBeforeUnmount(() => {
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
               <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词软检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。风格偏差只提示，不会让整篇文案消失。</small>
               <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">影子评测：客观风格 {{ anchorStyleTestResult.runtime_evaluation.style_score }}/100（用词 {{ anchorStyleTestResult.runtime_evaluation.lexical_score }}、节奏 {{ anchorStyleTestResult.runtime_evaluation.rhythm_score }}），与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。当前只记录和展示，不自动放行或拦截。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.style_window">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `统计落实率 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定落实率' }}。窗口只追踪称呼、自指、语气词、观众指代与句式节奏；数字比价、算账和重复回环由策略外挂控制。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">防照抄评测：与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。</small>
               <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
               <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
               <small v-if="anchorStyleTestResult.overlay_qc?.available" :class="{ 'inline-error': !anchorStyleTestResult.overlay_qc.passed }">Qwen 同步质检：{{ anchorStyleTestResult.overlay_qc.passed ? '通过' : '发现风格偏差' }} · 执行度 {{ anchorStyleTestResult.overlay_qc.adherence_score }}/100 · 过量风险 {{ anchorStyleTestResult.overlay_qc.overuse_risk }}/100。质检只观察和提示，不会擅自重写整篇。{{ anchorStyleTestResult.overlay_qc.summary }}</small>

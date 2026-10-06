@@ -25,7 +25,8 @@ func styleOverlayLearnPrompt(sampleText, generatedText, feedbackText string, str
 只比较“怎么说”：称呼、自称、口语颗粒、句长、重复方式、语气、两三句话的局部推进、自然反应、改口方式。
 不要比较或迁移商品、价格、规格、链接、产地、功效、库存、物流、售后承诺、促单逻辑，也不要设计打断与回归策略。
 人工反馈优先，但必须把它编译成对任意商品可复用的表达规则。若反馈要求改动事实或互动策略，仍只提取其中可复用的表达部分。
-application 只能是 always、occasional、conditional。category 只能是 humor、tone、rhythm、structure、lexical、storytelling、interaction_delivery、delivery_other。
+application 只能是 always、occasional、conditional。category 只能是 humor、tone、rhythm、structure、lexical、storytelling、interaction_delivery、delivery_other、strategy_numeric_comparison、strategy_fact_recurrence。
+数字比价、连续算账必须归入strategy_numeric_comparison；隔段换动作重讲已确认核心事实必须归入strategy_fact_recurrence。它们是方案级策略外挂，不得写入具体数值、商品断言或虚构事实。
 micro_actions 只能从 audience_address、self_reference、state_information、direct_answer、short_confirmation、rephrase、supplement、bridge、question、scene_detail、reaction、conclusion、reason、example、self_correction、close 中选择，最多8项。
 evidence_quotes 只能逐字摘录真实主播样本中能证明这条表达规律的短句，最多6条；没有直接证据就返回空数组。
 严肃场景必须明确收敛方式。strength 必须原样使用%d。

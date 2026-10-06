@@ -32,6 +32,18 @@ func TestStyleOverlayInterpretPromptMakesExplanationAuthoritative(t *testing.T) 
 	}
 }
 
+func TestExplicitPlanStrategyOverlayRouting(t *testing.T) {
+	if got := explicitStyleStrategyCategory("喜欢用数字比价，边讲边算", ""); got != "strategy_numeric_comparison" {
+		t.Fatalf("numeric strategy category=%q", got)
+	}
+	if got := explicitStyleStrategyCategory("核心信息隔一段再讲，换个动作讲回来", ""); got != "strategy_fact_recurrence" {
+		t.Fatalf("recurrence strategy category=%q", got)
+	}
+	if got := explicitStyleStrategyCategory("偶尔幽默一下", ""); got != "" {
+		t.Fatalf("ordinary style was misrouted: %q", got)
+	}
+}
+
 func TestStyleOverlayMemoryDocumentsOnlyKeepEnabledConfirmedRules(t *testing.T) {
 	rule := validStyleOverlayRuleFixture()
 	profile := model.LiveAgentPlanStyleOverlayProfile{TenantID: 7, PlanID: 9, Revision: 4, Items: []model.LiveAnchorStyleOverlayItem{

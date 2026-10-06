@@ -450,6 +450,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	}
 	runtimeBudget := stylecontract.CompileRuntimeBudget(style, stylecontract.RuntimeOptions{TargetChars: input.TargetChars, Heat: anchorStylePreviewHeat, Scene: stylecontract.RuntimeSceneMainline})
 	runtimeEvaluation := stylecontract.EvaluateRuntimeCandidate(runtimeBudget, input.SourceText, text)
+	styleWindow := stylecontract.EvaluateRollingWindow(style, input.SourceText, anchorStyleHistory(input.Continuation, text), anchorStylePreviewHeat)
 	vectorEvaluation := stylecontract.StyleVectorEvaluation{ShadowOnly: true, Error: "base sample style unavailable; overlay-only preview"}
 	if stylecontract.Valid(style) {
 		vectorEvaluation.Error = "style embedding unavailable"
@@ -468,13 +469,13 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "runtime_style_score": runtimeEvaluation.StyleScore, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
 	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -611,6 +612,7 @@ func anchorStyleSegmentPrompt(
 	step model.LiveSpeechExpansionStep,
 	spec speechruntime.SegmentSpec,
 	mainlineMemory string,
+	styleWindowGuidance string,
 ) string {
 	segmentContext := scopeAnchorStyleSegmentContext(generation, step)
 	segmentContext.ExpansionPlans = []model.LiveSpeechExpansionPlan{{
@@ -635,6 +637,8 @@ func anchorStyleSegmentPrompt(
 只返回本段可直接朗读的正文，不要标题、编号、分析或字数说明。
 
 【主播表达规范】
+%s
+【主播风格滑动窗口】
 %s
 【方案级叠加风格】
 %s
@@ -665,7 +669,24 @@ func anchorStyleSegmentPrompt(
 10. 本段只执行step.style_capabilities中列出的偶发表达能力；为空就不要强塞口结、叠词、改口或慢思考。
 11. finish_mode=continue时只收住当前句，不做整轮结束；prepare_close时开始收束；close时自然结束本轮。
  12. avoid_recent是本段必须认真执行的去机械化提醒；重要事实可以重复，但要更换事实角度、话语动作和链接组合，不能只替换连接词。
- 13. 主播时间记忆只用于承接语气、已讲内容和节奏；正式事实仍以授权事实、商品链接和活动数据为准，不得把记忆中的猜测当成事实。`, spec.Index, spec.Count, spec.TargetChars, spec.MinChars, spec.MaxChars, spec.RemainingChars, lengthRule, styleText, generation.StyleOverlayPrompt, string(contextJSON), string(specJSON), policyText, topic, spec.PreviousTail, mainlineMemory)
+ 13. 主播时间记忆只用于承接语气、已讲内容和节奏；正式事实仍以授权事实、商品链接和活动数据为准，不得把记忆中的猜测当成事实。
+ 14. 稳定主播风格按最近1000字统计，不要求本段独自覆盖整套词频。窗口提示只表示累计欠缺或偏多；要分散到后续合适语境，不能为了补次数破坏自然度。
+ 15. 数字比价、连续算账、事实回环和促单强弱只有在“方案级叠加风格”明确启用或本段业务任务明确要求时执行；不得从主播样本自动继承。没有库存、倒计时事实不等于反向劝退，行动段不得擅自说“不用赶、想好再回来、先收藏”。`, spec.Index, spec.Count, spec.TargetChars, spec.MinChars, spec.MaxChars, spec.RemainingChars, lengthRule, styleText, styleWindowGuidance, generation.StyleOverlayPrompt, string(contextJSON), string(specJSON), policyText, topic, spec.PreviousTail, mainlineMemory)
+}
+
+func anchorStyleHistory(previous *speechruntime.Continuation, committed string) string {
+	parts := []string{}
+	if previous != nil {
+		for _, unit := range previous.RecentUnits {
+			if value := strings.TrimSpace(unit.TextTail); value != "" {
+				parts = append(parts, value)
+			}
+		}
+	}
+	if value := strings.TrimSpace(committed); value != "" {
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // generateAnchorStyleTest is time driven: each virtual-clock step generates one
@@ -763,7 +784,9 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			}
 		}
 		spec := ledger.Next(step, index, len(steps))
-		basePrompt := anchorStyleSegmentPrompt(generation, policyText, topic, step, spec, string(brainPromptJSON))
+		styleHistory := anchorStyleHistory(previous, ledger.CommittedText())
+		styleWindowGuidance := stylecontract.RenderRollingWindowGuidance(generation.AnchorStyle, styleHistory, spec.TargetChars, anchorStylePreviewHeat)
+		basePrompt := anchorStyleSegmentPrompt(generation, policyText, topic, step, spec, string(brainPromptJSON), styleWindowGuidance)
 		request := agentgateway.Request{
 			Stage: "speech_generation",
 			Messages: []agentgateway.Message{

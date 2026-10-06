@@ -96,3 +96,19 @@ func TestRuntimeEvaluationRejectsCopyAndHabitStacking(t *testing.T) {
 		t.Fatalf("habit stacking did not produce a specific issue: %+v", stackResult)
 	}
 }
+
+func TestRuntimeEvaluationRejectsInventedSelfAddressVariant(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们啊，我们家把内容慢慢讲清楚哟。", 16)
+	profile := runtimeFixture(source)
+	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: 180, Heat: 70, Scene: RuntimeSceneMainline})
+	result := EvaluateRuntimeCandidate(budget, source, "哥哥姐姐们，咱家把当前内容慢慢说明白啊。没有确认的部分先不往外猜，已经确认的部分接着给大家讲清楚哟。")
+	found := false
+	for _, issue := range result.Issues {
+		if issue.Code == "ungrounded_self_address" {
+			found = true
+		}
+	}
+	if result.Passed || !found {
+		t.Fatalf("invented self-address variant escaped: %+v", result)
+	}
+}

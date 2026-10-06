@@ -19,7 +19,8 @@ const MaxItems = 12
 var allowedCategories = map[string]bool{
 	"humor": true, "tone": true, "rhythm": true, "structure": true,
 	"lexical": true, "storytelling": true, "interaction_delivery": true,
-	"delivery_other": true,
+	"delivery_other": true, "strategy_numeric_comparison": true,
+	"strategy_fact_recurrence": true,
 }
 
 var allowedApplications = map[string]bool{
@@ -120,6 +121,13 @@ func NormalizeRule(input model.LiveAnchorStyleOverlayRule) (model.LiveAnchorStyl
 	seriousForPurity := strings.NewReplacer("投诉", "", "售后", "", "事实澄清", "", "事实核对", "").Replace(input.SeriousInstruction)
 	phrases := []string{input.Label, input.MainlineInstruction, input.InteractionInstruction, seriousForPurity}
 	phrases = append(phrases, input.Avoid...)
+	if input.Category == "strategy_numeric_comparison" {
+		// This strategy is allowed to name the operation, never concrete values.
+		// Strip only meta-language before the normal fact/policy purity scan.
+		for index := range phrases {
+			phrases[index] = strings.NewReplacer("数字比价", "表达动作", "比价", "表达动作", "连续算账", "表达动作", "算账", "表达动作", "价格", "当前正式数值", "单价", "当前正式数值", "组合价", "当前正式数值").Replace(phrases[index])
+		}
+	}
 	purity := stylecontract.AssessPurity(model.LiveAgentPlanAnchorStyleProfile{ReusableRules: phrases})
 	if !purity.Passed {
 		return model.LiveAnchorStyleOverlayRule{}, fmt.Errorf("叠加风格混入商品事实或内容策略：%s", purity.Issues[0].Reason)
@@ -209,7 +217,7 @@ func Render(profile model.LiveAgentPlanStyleOverlayProfile) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return "【方案级叠加风格】\n以下规则只控制表达方式，不是事实、销售策略或互动打断策略；不得覆盖正式事实及L1/L2。\n" + strings.Join(lines, "\n")
+	return "【方案级风格与策略外挂】\n以下规则叠加在稳定主播风格之上。表达规则不新增事实；数字比价与事实回环策略也只能使用当前授权事实，不得覆盖正式事实及L1/L2。\n" + strings.Join(lines, "\n")
 }
 
 func applicationLabel(value string) string {

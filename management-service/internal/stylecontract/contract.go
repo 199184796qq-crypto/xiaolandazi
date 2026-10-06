@@ -19,7 +19,7 @@ import (
 const Version = "anchor-delivery/v1"
 const AnalysisInstructions = `【跨模型口播规范协议 anchor-delivery/v1】
 你必须根据本次样本独立生成 delivery_spec，不复用示例主播或其它方案的词表。
-literal_habits 提取真实出现的原词，kind 只允许 self_address、audience_address、particle、connector、catchphrase。
+literal_habits 提取真实出现的原词，kind 只允许 self_address、audience_address、audience_pronoun、particle、connector、catchphrase。
 逐项区分主播自称和观众称呼；保留完整原词及变体，不能把原词泛化成同义词或仅写“语气词”。
 于是“我们家/我们这边”这类稳定的主播方、店铺方第一方自指可以归入 self_address，但团队成员、亲属或第三人称称谓不能因为出现在稿件里就当作主播自称。重复出现的观众称呼和第一方自指不得因为所在句包含销售内容而整类遗漏；只截取称呼或自指原词。
 高频句末语气词不得遗漏；同时提取常用连接词、口头禅、称呼位置。样本没有的不能凭行业习惯补充。
@@ -36,7 +36,8 @@ instructions 只描述称呼/自称位置、长短句组合、连接与转折、
 var commercial = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?\s*(?:元|块|斤|公斤|克|升|毫升|桶|件|盒|袋))|([0-9一二三四五六七八九十]+\s*号\s*(?:链接|商品))`)
 var sentenceBreak = regexp.MustCompile(`[。！？!?；;\n]+`)
 var liveAudienceAddress = regexp.MustCompile(`哥哥姐姐们|哥哥姐们|叔叔阿姨们|新粉丝们|老粉丝们|家人们|朋友们|姐妹们|兄弟们|粉丝们|乡亲们|哥哥们|姐姐们|叔叔们|阿姨们|新粉丝|老粉丝|新粉|老粉|老乡|乡亲`)
-var liveSelfAddress = regexp.MustCompile(`我们自家|咱们自家|我们家|咱们家|我们这边|咱们这边|我们这儿|咱们这儿|我们这里|咱们这里`)
+var liveAudiencePronoun = regexp.MustCompile(`你们|您|大家`)
+var liveSelfAddress = regexp.MustCompile(`我们自家|咱们自家|我们家|咱们家|我们这边|咱们这边|我们这儿|咱们这儿|我们这里|咱们这里|咱家|我家`)
 
 func trim(s string, limit int) string {
 	s = strings.TrimSpace(s)
@@ -56,7 +57,7 @@ func literalHabitTextAllowed(kind, text string) bool {
 	// “老粉” may also participate in social proof in another sentence, but the
 	// grounded word itself must not be discarded when its declared role is an
 	// address. Concrete product, price and business-action wording remains barred.
-	if kind == "audience_address" || kind == "self_address" {
+	if kind == "audience_address" || kind == "audience_pronoun" || kind == "self_address" {
 		if commercial.MatchString(text) || styleBusinessFactPattern.MatchString(text) || styleBusinessActionPattern.MatchString(text) || stylePromisePattern.MatchString(text) || styleSyntheticStatePattern.MatchString(text) || styleConversionLogicPattern.MatchString(text) || styleContentExamplePattern.MatchString(text) {
 			return false
 		}
@@ -128,6 +129,9 @@ func deriveRepeatedLiveHabits(source, kind string, pattern *regexp.Regexp, limit
 		if kind == "audience_address" {
 			habit.When = "直播中自然提醒、转场或面向对应观众群体时按样本密度使用"
 			habit.Avoid = "投诉、严肃说明、对观众身份不确定或相邻分句已经称呼时避免使用"
+		} else if kind == "audience_pronoun" {
+			habit.When = "面向观众解释、提问或给出行动建议时按样本比例自然使用"
+			habit.Avoid = "严肃说明中避免反复点名；不得把泛指代词改造成不存在的观众身份"
 		} else {
 			habit.When = "说明当前主播方、商家方或已有事实时按样本密度使用"
 			habit.Avoid = "跨商家、跨主播或当前主体不一致时须替换为当前主体，不得照搬身份"
@@ -167,7 +171,7 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 	seen := map[string]bool{}
 	for _, h := range input.Habits {
 		switch h.Kind {
-		case "self_address", "audience_address", "particle", "connector", "catchphrase":
+		case "self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase":
 		default:
 			continue
 		}
@@ -189,7 +193,7 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 		// A single mention of a person or audience label is too weak to become a
 		// reusable identity habit. It may be a team member, quoted customer or an
 		// accidental one-off address. Repeated evidence is required for runtime.
-		if (h.Kind == "self_address" || h.Kind == "audience_address") && h.Count < 2 {
+		if (h.Kind == "self_address" || h.Kind == "audience_address" || h.Kind == "audience_pronoun") && h.Count < 2 {
 			continue
 		}
 		seen[key] = true
@@ -203,7 +207,10 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 	// Live address and first-party identity are as characteristic as particles.
 	// Recover source-grounded terms deterministically when the model omits them.
 	for _, derived := range append(
-		deriveRepeatedLiveHabits(source, "audience_address", liveAudienceAddress, 8),
+		append(
+			deriveRepeatedLiveHabits(source, "audience_address", liveAudienceAddress, 8),
+			deriveRepeatedLiveHabits(source, "audience_pronoun", liveAudiencePronoun, 6)...,
+		),
 		deriveRepeatedLiveHabits(source, "self_address", liveSelfAddress, 6)...,
 	) {
 		key := derived.Kind + ":" + derived.Text
@@ -351,8 +358,8 @@ func Render(profile model.LiveAgentPlanAnchorStyleProfile) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("主播口播规范 · " + Version + "\n\n【执行边界】\n只模仿表达，不复制样本商品事实。正式事实与业务规则优先。不得虚构主播身份、观众发言、库存或已执行的业务动作。原词不足时不要发明新口头禅。所有规则只供静默执行，正文不得向观众播报规则、事实边界、审核过程或写作过程。事实有限时允许围绕同一正式事实做多轮口语展开和非连续回环，每次应改变表达动作；内容扩展范围由生成上下文中的fact_expansion用户授权决定，不由主播风格规则擅自放宽或收紧。\n")
-	labels := map[string]string{"self_address": "主播方自称/自指", "audience_address": "观众称呼", "particle": "语气词", "connector": "连接词", "catchphrase": "口头禅"}
+	b.WriteString("主播口播规范 · " + Version + "\n\n【执行边界】\n只模仿跨场次稳定的表达统计，不复制样本商品事实或本场销售策略。正式事实、时间调度、商品讲解顺序与方案级策略外挂优先。不得虚构主播身份、观众发言、库存或已执行的业务动作。原词不足时不要发明新口头禅。所有规则只供静默执行，正文不得向观众播报规则、事实边界、审核过程或写作过程。数字比价、连续算账、事实回环、促单强弱等属于可叠加策略，不由底层主播风格擅自继承。\n")
+	labels := map[string]string{"self_address": "主播方自称/自指", "audience_address": "观众称呼", "audience_pronoun": "观众指代", "particle": "语气词", "connector": "连接词", "catchphrase": "口头禅"}
 	b.WriteString("\n【本样本原词与使用规范】\n")
 	if len(d.Habits) == 0 {
 		b.WriteString("未发现有充分证据的固定词表，不强制添加称呼或语气词。\n")
@@ -399,14 +406,14 @@ func CheckLongText(profile model.LiveAgentPlanAnchorStyleProfile, text string) C
 			break
 		}
 		// Address variants are alternatives, not mandatory words to stack.
-		if h.Kind == "self_address" || h.Kind == "audience_address" {
+		if h.Kind == "self_address" || h.Kind == "audience_address" || h.Kind == "audience_pronoun" {
 			if kinds[h.Kind] > 0 || h.Count < 3 || float64(h.Count)*float64(utf8.RuneCountInString(text))/float64(d.SampleChars) < 1.2 {
 				continue
 			}
 			kinds[h.Kind]++
 			check.Checked++
 			found := strings.Contains(text, h.Text)
-			if h.Kind == "audience_address" {
+			if h.Kind == "audience_address" || h.Kind == "audience_pronoun" {
 				for _, alternative := range habits {
 					if alternative.Kind == h.Kind && strings.Contains(text, alternative.Text) {
 						found = true

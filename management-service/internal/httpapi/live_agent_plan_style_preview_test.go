@@ -146,6 +146,9 @@ func TestAnchorStyleGenerationUsesOrderedTimeUnitsAndCarriesLengthDebt(t *testin
 		if !strings.Contains(call.Messages[1].Content, "主播时间记忆（仅用于连续承接，不是事实来源）") || !strings.Contains(call.Messages[1].Content, `"memory"`) {
 			t.Fatalf("call %d did not receive the shadow mainline context", index+1)
 		}
+		if !strings.Contains(call.Messages[1].Content, "主播风格滑动窗口") || !strings.Contains(call.Messages[1].Content, "最近1000字统计") {
+			t.Fatalf("call %d did not receive rolling style guidance", index+1)
+		}
 	}
 }
 

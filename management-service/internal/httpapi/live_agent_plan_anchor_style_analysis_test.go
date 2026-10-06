@@ -11,12 +11,12 @@ import (
 
 func TestAnchorStyleOnlyDimensionsExcludeBusinessAndInterruptionStrategy(t *testing.T) {
 	spec := anchorStyleOnlyDimensionsSpec()
-	for _, forbidden := range []string{"price_expression", "link_handoff", "cta_style", "mainline_resume", "product_explanation_path"} {
+	for _, forbidden := range []string{"price_expression", "repetition_strategy", "link_handoff", "cta_style", "mainline_resume", "product_explanation_path"} {
 		if strings.Contains(spec, forbidden) {
 			t.Fatalf("business or interruption dimension leaked into style-only prompt: %s", forbidden)
 		}
 	}
-	for _, required := range []string{"sentence_rhythm", "audience_address", "self_address", "catchphrases", "pause_chunking"} {
+	for _, required := range []string{"sentence_rhythm", "audience_address", "audience_pronouns", "self_address", "dialect_markers", "catchphrases", "pause_chunking"} {
 		if !strings.Contains(spec, required) {
 			t.Fatalf("style dimension missing: %s", required)
 		}

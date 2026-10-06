@@ -114,7 +114,7 @@ func CompileRuntimeBudget(profile model.LiveAgentPlanAnchorStyleProfile, options
 	for _, habit := range delivery.Habits {
 		byKind[habit.Kind] = append(byKind[habit.Kind], habit)
 	}
-	order := []string{"self_address", "audience_address", "particle", "connector", "catchphrase"}
+	order := []string{"self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase"}
 	for _, kind := range order {
 		habits := byKind[kind]
 		if len(habits) == 0 {
@@ -185,6 +185,7 @@ func runtimeKindLabel(kind string) string {
 	labels := map[string]string{
 		"self_address":     "主播自称",
 		"audience_address": "观众称呼",
+		"audience_pronoun": "观众指代",
 		"particle":         "句末语气词",
 		"connector":        "口头连接词",
 		"catchphrase":      "口头禅",
@@ -362,6 +363,23 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 		}
 	}
 	evaluation.CandidateChars = utf8.RuneCountInString(strings.TrimSpace(candidate))
+	allowedSelf := map[string]bool{}
+	for _, group := range budget.HabitGroups {
+		if group.Kind != "self_address" {
+			continue
+		}
+		for _, term := range group.Terms {
+			allowedSelf[term.Text] = true
+		}
+	}
+	seenUngroundedSelf := map[string]bool{}
+	for _, term := range liveSelfAddress.FindAllString(candidate, -1) {
+		if allowedSelf[term] || seenUngroundedSelf[term] {
+			continue
+		}
+		seenUngroundedSelf[term] = true
+		addIssue("error", "ungrounded_self_address", fmt.Sprintf("候选使用了样本没有的主播方自指%q，应沿用有证据原词或省略主语", term))
+	}
 	sentenceCount := 0
 	for _, sentence := range sentenceBreak.Split(candidate, -1) {
 		if strings.TrimSpace(sentence) != "" {

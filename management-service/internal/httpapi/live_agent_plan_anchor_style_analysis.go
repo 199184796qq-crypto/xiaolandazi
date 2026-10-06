@@ -35,7 +35,6 @@ var anchorStyleOnlyDimensionKeys = map[string]bool{
 	"self_address":          true,
 	"address_position":      true,
 	"catchphrases":          true,
-	"repetition_strategy":   true,
 	"emphasis_style":        true,
 	"storytelling":          true,
 	"interaction_style":     true,
@@ -49,6 +48,8 @@ var anchorStyleOnlyDimensionKeys = map[string]bool{
 	"tone_tendency":         true,
 	"closing_style":         true,
 	"variation_freedom":     true,
+	"audience_pronouns":     true,
+	"dialect_markers":       true,
 }
 
 var allowedAnchorStyleAnalysisQCIssues = map[string]bool{
@@ -77,11 +78,12 @@ func anchorStyleOnlyAnalysisPrompt(text string) string {
 严格边界：
 1. 不提取或复述商品、品牌、价格、规格、链接、产地、库存、物流、售后、功效、活动、口碑、承诺、促单、购买状态。
 2. 不学习整场销售步骤、产品讲解顺序、互动打断、打断后的回归策略，也不判断事实真假。
-3. 只观察称呼、自称、原词口头禅、句末语气词、连接词、长短句组合、停顿断句、强调与重复方式、局部两三句如何推进、问答表达和情绪强弱。
+3. 只观察称呼、自称、面向观众的代词、原词口头禅、句末语气词、方言口语标记、连接词、长短句组合、停顿断句、问答表达和情绪强弱。
+3.1 数字比价、连续算账、事实重复回环、商品讲解顺序、促单强弱是本场策略，不属于底层主播风格；即使样本高频出现，也不得写入dimensions或delivery_spec，后续由方案级策略外挂承接。
 4. dimensions 只返回证据最明确的6到14项；不要为了填满维度而猜测。key只能从下列清单选择：
 %s
 5. 每个维度的 rule 必须换商品后仍成立，最多80字；evidence_quotes最多2条原文短证据；confidence只能high、medium、low。
-6. delivery_spec.literal_habits只放原文真实出现的固定原词。kind只能是self_address、audience_address、particle、connector、catchphrase；text必须逐字来自原文；position只能句首、句中、句尾、混合。原文重复出现的观众称呼和主播方/商家方自指必须分别提取，即使它们所在的完整句子包含业务内容，也只截取称呼或自指原词，不得整类漏掉。
+6. delivery_spec.literal_habits只放原文真实出现的固定原词。kind只能是self_address、audience_address、audience_pronoun、particle、connector、catchphrase；text必须逐字来自原文；position只能句首、句中、句尾、混合。原文重复出现的观众称呼、你们/您/大家等观众指代和主播方/商家方自指必须分别提取，即使它们所在的完整句子包含业务内容，也只截取原词，不得整类漏掉。
 7. when和avoid只描述表达场景，不得夹带业务内容。不要估算count，统一填0，程序会按原文重算。
 8. delivery_spec.instructions固定返回空数组；最终执行规则由程序根据原词和客观统计编译，模型不得自行编写。
 

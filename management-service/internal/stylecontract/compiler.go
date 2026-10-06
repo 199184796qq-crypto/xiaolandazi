@@ -30,7 +30,6 @@ func sourcePunctuationCount(source string, marks string) int {
 var executableDimensionKeys = map[string]bool{
 	"sentence_rhythm":       true,
 	"address_position":      true,
-	"repetition_strategy":   true,
 	"emphasis_style":        true,
 	"qa_structure":          true,
 	"transition_style":      true,
@@ -41,6 +40,8 @@ var executableDimensionKeys = map[string]bool{
 	"tone_tendency":         true,
 	"closing_style":         true,
 	"variation_freedom":     true,
+	"audience_pronouns":     true,
+	"dialect_markers":       true,
 }
 
 // groundedDimensionInstructions admits only a small, evidence-backed subset of
@@ -48,7 +49,7 @@ var executableDimensionKeys = map[string]bool{
 // observation belongs to this anchor; the purity gate prevents product facts,
 // sales logic and interrupt strategy from entering the style layer.
 func groundedDimensionInstructions(dimensions []model.LiveAgentPlanAnchorStyleDimension, source string) []string {
-	rules := make([]string, 0, 4)
+	rules := make([]string, 0, 8)
 	seen := map[string]bool{}
 	for _, dimension := range dimensions {
 		if !executableDimensionKeys[strings.TrimSpace(dimension.Key)] {
@@ -75,7 +76,7 @@ func groundedDimensionInstructions(dimensions []model.LiveAgentPlanAnchorStyleDi
 		}
 		seen[rule] = true
 		rules = append(rules, rule)
-		if len(rules) == 4 {
+		if len(rules) == 8 {
 			break
 		}
 	}
@@ -97,7 +98,7 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 	rules := []string{
 		fmt.Sprintf("主线平均分句以%d字为中心，大多数分句控制在%d到%d字；一个分句只承担一个表达重点。", average, low, high),
 		"保留长短句交替：解释句之后允许接一条短确认句或转折句，不把所有内容切成等长短句。",
-		"同一正式事实允许在不同口播轮次回环出现；每次至少改变一种表达动作，例如直述、拆成短句、问后自答、换序重述、短确认或回顾承接。内容能扩展到什么程度由生成上下文中的fact_expansion用户授权决定，主播风格本身不扩大也不收窄该权限。",
+		"底层主播风格只约束跨场次稳定的语言统计；数字比较、口头计算、事实回环和经营推进交给方案级策略外挂与时间调度，不从一份样本自动固化。",
 	}
 	rules = append(rules, groundedDimensionInstructions(dimensions, source)...)
 
@@ -115,6 +116,9 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 		rules = append(rules, fmt.Sprintf("观众称呼只在%s等样本位置自然出现；同类称呼是替代关系，不连续堆叠。", strings.Join(positionNames, "、")))
 	} else {
 		rules = append(rules, "样本没有稳定观众称呼时，不为制造热情而临时发明称呼。")
+	}
+	if len(habitsOfKind(spec, "audience_pronoun")) > 0 {
+		rules = append(rules, "面向观众解释和提问时，按运行预算保持样本中的你们、您、大家等指代比例；不得全部替换成书面化省略主语。")
 	}
 	if len(habitsOfKind(spec, "self_address")) > 0 {
 		rules = append(rules, "主播方自指按样本密度沿用有原文证据的第一方原词；仅在当前主播方或商家方主体一致时使用，跨主体必须替换，不得把团队成员、亲属或第三人称身份改成主播自称。")
@@ -148,8 +152,8 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 		"短互动先直接回答核心问题，再选择最多一到两个合适风格标记自然承接，不复刻整段主线节奏。",
 		"严肃答复、投诉和边界说明使用克制短句，关闭亲昵称呼、促销语气和不必要的句末语气词。",
 	)
-	if len(rules) > 16 {
-		rules = rules[:16]
+	if len(rules) > 22 {
+		rules = rules[:22]
 	}
 	return rules
 }

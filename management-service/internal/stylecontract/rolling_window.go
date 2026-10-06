@@ -1,0 +1,155 @@
+package stylecontract
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"unicode/utf8"
+
+	"livecompanion/management/internal/model"
+)
+
+// RollingWindowChars is deliberately much larger than one generated speech
+// unit. A speaker style is a distribution over sustained delivery, not a
+// checklist that every 100-200 character segment must satisfy by itself.
+const RollingWindowChars = 1000
+
+type RollingHabitDelta struct {
+	Kind         string   `json:"kind"`
+	Term         string   `json:"term,omitempty"`
+	Alternatives []string `json:"alternatives,omitempty"`
+	Actual       int      `json:"actual"`
+	Target       int      `json:"target"`
+	Delta        int      `json:"delta"`
+	Direction    string   `json:"direction"`
+}
+
+type RollingWindowState struct {
+	Version      string              `json:"version"`
+	WindowTarget int                 `json:"window_target"`
+	WindowChars  int                 `json:"window_chars"`
+	Ready        bool                `json:"ready"`
+	StyleScore   int                 `json:"style_score"`
+	TermScore    int                 `json:"term_score"`
+	Runtime      RuntimeEvaluation   `json:"runtime"`
+	Needs        []RollingHabitDelta `json:"needs"`
+	Overused     []RollingHabitDelta `json:"overused"`
+}
+
+func trailingWindow(text string, limit int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if limit <= 0 || len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[len(runes)-limit:])
+}
+
+func actualTermCount(kind, text, term string, alternatives []RuntimeHabitTerm) int {
+	if kind == "particle" {
+		return particleCount(text, term)
+	}
+	actual := strings.Count(text, term)
+	// Keep shorter self/address variants from double-counting a longer variant.
+	for _, longer := range alternatives {
+		if utf8.RuneCountInString(longer.Text) <= utf8.RuneCountInString(term) || !strings.Contains(longer.Text, term) {
+			continue
+		}
+		actual -= strings.Count(text, longer.Text) * strings.Count(longer.Text, term)
+	}
+	return max(actual, 0)
+}
+
+func rollingTermDeltas(budget RuntimeBudget, text string) (int, []RollingHabitDelta, []RollingHabitDelta) {
+	weighted, totalWeight := 0, 0
+	needs, overused := []RollingHabitDelta{}, []RollingHabitDelta{}
+	for _, group := range budget.HabitGroups {
+		alternatives := make([]string, 0, len(group.Terms))
+		for _, term := range group.Terms {
+			alternatives = append(alternatives, term.Text)
+		}
+		for _, term := range group.Terms {
+			if term.SourceCount <= 0 || term.TargetCount <= 0 {
+				continue
+			}
+			actual := actualTermCount(group.Kind, text, term.Text, group.Terms)
+			low, high := max(0, term.TargetCount-1), term.TargetCount+1
+			score := rangeScore(actual, low, high)
+			weighted += score * term.SourceCount
+			totalWeight += term.SourceCount
+			if actual < low {
+				needs = append(needs, RollingHabitDelta{Kind: group.Kind, Term: term.Text, Alternatives: alternatives, Actual: actual, Target: term.TargetCount, Delta: low - actual, Direction: "under"})
+			} else if actual > high {
+				overused = append(overused, RollingHabitDelta{Kind: group.Kind, Term: term.Text, Alternatives: alternatives, Actual: actual, Target: term.TargetCount, Delta: actual - high, Direction: "over"})
+			}
+		}
+	}
+	if totalWeight == 0 {
+		return 100, needs, overused
+	}
+	sort.SliceStable(needs, func(i, j int) bool { return needs[i].Delta > needs[j].Delta })
+	sort.SliceStable(overused, func(i, j int) bool { return overused[i].Delta > overused[j].Delta })
+	return weighted / totalWeight, needs, overused
+}
+
+// EvaluateRollingWindow scores only the most recent 1000 characters. Before
+// the window is full the state is explicitly marked accumulating, so callers
+// do not mistake two short segments for a reliable description of the voice.
+func EvaluateRollingWindow(profile model.LiveAgentPlanAnchorStyleProfile, source, generated string, heat int) RollingWindowState {
+	window := trailingWindow(generated, RollingWindowChars)
+	chars := utf8.RuneCountInString(window)
+	state := RollingWindowState{Version: "anchor-style-window/v1", WindowTarget: RollingWindowChars, WindowChars: chars, Ready: chars >= RollingWindowChars}
+	if !Valid(profile) || chars == 0 {
+		return state
+	}
+	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: chars, Heat: heat, Scene: RuntimeSceneMainline})
+	state.Runtime = EvaluateRuntimeCandidate(budget, source, window)
+	state.TermScore, state.Needs, state.Overused = rollingTermDeltas(budget, window)
+	state.StyleScore = (state.Runtime.StyleScore*60 + state.TermScore*40) / 100
+	return state
+}
+
+// RenderRollingWindowGuidance converts accumulated delivery into a small debt
+// signal for the next segment. It never assigns a hard quota to the next unit.
+func RenderRollingWindowGuidance(profile model.LiveAgentPlanAnchorStyleProfile, generated string, nextChars, heat int) string {
+	if !Valid(profile) {
+		return "未提供可统计的真人主播底层风格；当前小段只执行时间任务和已启用的方案级策略外挂。"
+	}
+	window := trailingWindow(generated, RollingWindowChars)
+	currentChars := utf8.RuneCountInString(window)
+	projected := min(RollingWindowChars, max(20, currentChars+max(nextChars, 0)))
+	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: projected, Heat: heat, Scene: RuntimeSceneMainline})
+	_, needs, overused := rollingTermDeltas(budget, window)
+	var b strings.Builder
+	fmt.Fprintf(&b, "主播风格滑动窗口：已累计%d/%d字；这是跨小段统计指导，不是本段逐项打卡。", currentChars, RollingWindowChars)
+	if currentChars >= RollingWindowChars {
+		b.WriteString("当前按最近1000字滚动统计。")
+	}
+	if len(needs) > 0 {
+		b.WriteString("后续可在合适语境自然补足：")
+		for index, item := range needs {
+			if index >= 6 {
+				break
+			}
+			if index > 0 {
+				b.WriteString("、")
+			}
+			fmt.Fprintf(&b, "%s%q约%d次", runtimeKindLabel(item.Kind), item.Term, item.Delta)
+		}
+		b.WriteString("。")
+	}
+	if len(overused) > 0 {
+		b.WriteString("近期偏多，下一两段先少用：")
+		for index, item := range overused {
+			if index >= 4 {
+				break
+			}
+			if index > 0 {
+				b.WriteString("、")
+			}
+			fmt.Fprintf(&b, "%q", item.Term)
+		}
+		b.WriteString("。")
+	}
+	b.WriteString("只在句意合适时补，不堆在同一句，不改变本段事实和业务任务；数字比价、连续算账、事实回环不属于本窗口。")
+	return b.String()
+}

@@ -201,11 +201,12 @@ func TestNormalizeDoesNotInventLiveAddressesForQuietSample(t *testing.T) {
 	}
 }
 
-func TestCompilerAdmitsOnlyGroundedPureExpressionDimensions(t *testing.T) {
-	source := "先把重点说清楚。为什么这么讲？我再换个顺序说一遍。最后把重点收回来。"
+func TestCompilerAdmitsOnlyGroundedStableExpressionDimensions(t *testing.T) {
+	source := "先把重点说清楚。为什么这么讲？我再换个顺序说一遍。最后把重点收回来，没得问题。"
 	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{
 		Dimensions: []model.LiveAgentPlanAnchorStyleDimension{
 			{Key: "repetition_strategy", Rule: "同一重点先直述，再问后自答，隔开后换序重述", Level: "高", Confidence: "high", EvidenceQuotes: []string{"为什么这么讲？"}},
+			{Key: "dialect_markers", Rule: "偶尔使用样本已有的接地气方言标记，不额外发明地域身份", Level: "高", Confidence: "high", EvidenceQuotes: []string{"没得问题"}},
 			{Key: "transition_style", Rule: "每段都假装收到弹幕再转场", Level: "高", Confidence: "high", EvidenceQuotes: []string{"最后把重点收回来"}},
 			{Key: "sentence_rhythm", Rule: "连续使用等长短句", Level: "高", Confidence: "high", EvidenceQuotes: []string{"原文没有的证据"}},
 			{Key: "interaction_style", Rule: "主动决定何时打断主线", Level: "高", Confidence: "high", EvidenceQuotes: []string{"先把重点说清楚"}},
@@ -213,22 +214,43 @@ func TestCompilerAdmitsOnlyGroundedPureExpressionDimensions(t *testing.T) {
 		Delivery: &model.LiveAnchorDeliverySpec{Version: Version},
 	}, source)
 	rendered := Render(profile)
-	if !strings.Contains(rendered, "同一重点先直述，再问后自答，隔开后换序重述") {
-		t.Fatalf("grounded repetition rule missing:\n%s", rendered)
+	if !strings.Contains(rendered, "偶尔使用样本已有的接地气方言标记") {
+		t.Fatalf("grounded stable language rule missing:\n%s", rendered)
 	}
-	for _, forbidden := range []string{"假装收到弹幕", "连续使用等长短句", "主动决定何时打断主线"} {
+	for _, forbidden := range []string{"同一重点先直述", "假装收到弹幕", "连续使用等长短句", "主动决定何时打断主线"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("untrusted dimension entered rulebook: %q\n%s", forbidden, rendered)
 		}
 	}
 }
 
-func TestCompilerAllowsControlledFactRecurrence(t *testing.T) {
+func TestCompilerKeepsFactRecurrenceOutOfStableStyle(t *testing.T) {
 	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, "先说明，再换个说法，最后收回来。")
 	rendered := Render(profile)
-	for _, expected := range []string{"不同口播轮次回环出现", "问后自答", "fact_expansion用户授权决定", "事实有限时允许围绕同一正式事实做多轮口语展开"} {
-		if !strings.Contains(rendered, expected) {
-			t.Fatalf("controlled expansion rule missing %q:\n%s", expected, rendered)
+	for _, forbidden := range []string{"不同口播轮次回环出现", "问后自答", "fact_expansion用户授权决定"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("show strategy leaked into stable style %q:\n%s", forbidden, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "方案级策略外挂") {
+		t.Fatalf("stable/strategy boundary missing:\n%s", rendered)
+	}
+}
+
+func TestNormalizeDerivesAudiencePronounsAsIndependentStatistics(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们，你们先听我们家说清楚啊，大家有问题可以问，给您慢慢讲哟。", 12)
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, source)
+	want := map[string]bool{"你们": false, "您": false, "大家": false}
+	for _, habit := range profile.Delivery.Habits {
+		if habit.Kind == "audience_pronoun" {
+			if _, ok := want[habit.Text]; ok {
+				want[habit.Text] = true
+			}
+		}
+	}
+	for term, found := range want {
+		if !found {
+			t.Fatalf("audience pronoun %q was not compiled independently: %+v", term, profile.Delivery.Habits)
 		}
 	}
 }
