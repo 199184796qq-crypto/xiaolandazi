@@ -3,6 +3,7 @@ package stylecontract
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -114,7 +115,7 @@ func CompileRuntimeBudget(profile model.LiveAgentPlanAnchorStyleProfile, options
 	for _, habit := range delivery.Habits {
 		byKind[habit.Kind] = append(byKind[habit.Kind], habit)
 	}
-	order := []string{"self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase"}
+	order := []string{"self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase", "dialect_marker"}
 	for _, kind := range order {
 		habits := byKind[kind]
 		if len(habits) == 0 {
@@ -189,6 +190,7 @@ func runtimeKindLabel(kind string) string {
 		"particle":         "句末语气词",
 		"connector":        "口头连接词",
 		"catchphrase":      "口头禅",
+		"dialect_marker":   "方言标记",
 	}
 	if value := labels[kind]; value != "" {
 		return value
@@ -222,6 +224,7 @@ type RuntimeHabitEvaluation struct {
 	MinCount     int      `json:"min_count"`
 	MaxCount     int      `json:"max_count"`
 	Score        int      `json:"score"`
+	Distribution int      `json:"distribution_score"`
 }
 
 type RuntimeEvaluationIssue struct {
@@ -236,6 +239,7 @@ type RuntimeEvaluation struct {
 	AverageSentenceChars int                      `json:"average_sentence_chars"`
 	StyleScore           int                      `json:"style_score"`
 	LexicalScore         int                      `json:"lexical_score"`
+	DistributionScore    int                      `json:"distribution_score"`
 	RhythmScore          int                      `json:"rhythm_score"`
 	CopyContainmentPct   int                      `json:"copy_containment_pct"`
 	LongestSharedRunes   int                      `json:"longest_shared_runes"`
@@ -352,6 +356,38 @@ func rangeScore(actual, low, high int) int {
 	return clampInt(high*100/actual, 0, 100)
 }
 
+// jensenShannonScore compares the relative mix of variants independently from
+// their total density. It is symmetric, bounded, and penalizes both replacing
+// a dominant source marker and over-concentrating on a minor one.
+func jensenShannonScore(source, actual []float64) int {
+	if len(source) == 0 || len(source) != len(actual) {
+		return 100
+	}
+	sourceTotal, actualTotal := 0.0, 0.0
+	for index := range source {
+		sourceTotal += source[index]
+		actualTotal += actual[index]
+	}
+	if sourceTotal == 0 {
+		return 100
+	}
+	if actualTotal == 0 {
+		return 0
+	}
+	divergence := 0.0
+	for index := range source {
+		p, q := source[index]/sourceTotal, actual[index]/actualTotal
+		m := (p + q) / 2
+		if p > 0 {
+			divergence += 0.5 * p * math.Log2(p/m)
+		}
+		if q > 0 {
+			divergence += 0.5 * q * math.Log2(q/m)
+		}
+	}
+	return clampInt(int(math.Round((1-divergence)*100)), 0, 100)
+}
+
 // EvaluateRuntimeCandidate checks objective style budgets and source copying.
 // Fact grounding remains a separate hard gate owned by the generation context.
 func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) RuntimeEvaluation {
@@ -364,12 +400,15 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 	}
 	evaluation.CandidateChars = utf8.RuneCountInString(strings.TrimSpace(candidate))
 	allowedSelf := map[string]bool{}
+	allowedDialect := map[string]bool{}
 	for _, group := range budget.HabitGroups {
-		if group.Kind != "self_address" {
-			continue
-		}
 		for _, term := range group.Terms {
-			allowedSelf[term.Text] = true
+			if group.Kind == "self_address" {
+				allowedSelf[term.Text] = true
+			}
+			if group.Kind == "dialect_marker" {
+				allowedDialect[term.Text] = true
+			}
 		}
 	}
 	seenUngroundedSelf := map[string]bool{}
@@ -379,6 +418,22 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 		}
 		seenUngroundedSelf[term] = true
 		addIssue("error", "ungrounded_self_address", fmt.Sprintf("候选使用了样本没有的主播方自指%q，应沿用有证据原词或省略主语", term))
+	}
+	if budget.Heat >= 90 && len(allowedSelf) > 0 {
+		identityDrift := regexp.MustCompile(`(?:^|[。！？!?；;\n\r])\s*(他们家|他家|她家)`)
+		if match := identityDrift.FindStringSubmatch(candidate); len(match) > 1 {
+			addIssue("error", "speaker_identity_drift", fmt.Sprintf("主播主体从第一方漂成了%q；若仍在讲当前商家，应改回样本中的第一方自指", match[1]))
+		}
+	}
+	if budget.Heat >= 90 {
+		seenDialect := map[string]bool{}
+		for _, term := range liveDialectMarker.FindAllString(candidate, -1) {
+			if allowedDialect[term] || seenDialect[term] {
+				continue
+			}
+			seenDialect[term] = true
+			addIssue("error", "unsupported_dialect_marker", fmt.Sprintf("候选加入了样本没有的方言词%q；高还原档只能使用样本有证据的地域原词", term))
+		}
 	}
 	sentenceCount := 0
 	for _, sentence := range sentenceBreak.Split(candidate, -1) {
@@ -396,19 +451,27 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 		}
 	}
 
-	weightedScore, totalWeight, totalActual := 0, 0, 0
+	weightedScore, distributionWeighted, totalWeight, totalActual := 0, 0, 0, 0
 	for _, group := range budget.HabitGroups {
 		alternatives := make([]string, 0, len(group.Terms))
+		sourceMix := make([]float64, 0, len(group.Terms))
+		actualMix := make([]float64, 0, len(group.Terms))
+		actual := 0
 		for _, term := range group.Terms {
 			alternatives = append(alternatives, term.Text)
+			sourceMix = append(sourceMix, float64(term.SourceCount))
+			termActual := actualTermCount(group.Kind, candidate, term.Text, group.Terms)
+			actualMix = append(actualMix, float64(termActual))
+			actual += termActual
 		}
-		actual := countAnyNonOverlapping(candidate, alternatives)
 		score := rangeScore(actual, group.MinCount, group.MaxCount)
+		distribution := jensenShannonScore(sourceMix, actualMix)
 		weight := max(group.SourceCount, 1)
 		weightedScore += score * weight
+		distributionWeighted += distribution * weight
 		totalWeight += weight
 		totalActual += actual
-		evaluation.HabitGroups = append(evaluation.HabitGroups, RuntimeHabitEvaluation{Kind: group.Kind, Alternatives: alternatives, ActualCount: actual, MinCount: group.MinCount, MaxCount: group.MaxCount, Score: score})
+		evaluation.HabitGroups = append(evaluation.HabitGroups, RuntimeHabitEvaluation{Kind: group.Kind, Alternatives: alternatives, ActualCount: actual, MinCount: group.MinCount, MaxCount: group.MaxCount, Score: score, Distribution: distribution})
 		if actual > group.MaxCount {
 			addIssue("error", "habit_overuse", fmt.Sprintf("%s使用%d次，超过预算上限%d次", runtimeKindLabel(group.Kind), actual, group.MaxCount))
 		} else if actual < group.MinCount {
@@ -417,8 +480,11 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 	}
 	if totalWeight == 0 {
 		evaluation.LexicalScore = 100
+		evaluation.DistributionScore = 100
 	} else {
-		evaluation.LexicalScore = weightedScore / totalWeight
+		densityScore := weightedScore / totalWeight
+		evaluation.DistributionScore = distributionWeighted / totalWeight
+		evaluation.LexicalScore = (densityScore*70 + evaluation.DistributionScore*30) / 100
 	}
 	if totalActual > budget.TotalHabitMax {
 		addIssue("error", "habit_total_overuse", fmt.Sprintf("有证据原词合计%d次，超过整段上限%d次", totalActual, budget.TotalHabitMax))

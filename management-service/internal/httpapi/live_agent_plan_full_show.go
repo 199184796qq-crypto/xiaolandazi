@@ -60,7 +60,7 @@ func normalizeFullShowPreviewInput(input *model.LiveAgentFullShowPreviewInput) e
 		return errors.New("内容扩展授权只允许 0 到 100")
 	}
 	if *input.StyleMatchIntensity < 1 || *input.StyleMatchIntensity > 100 {
-		return errors.New("主播风格相似度只允许 1 到 100")
+		return errors.New("主播风格还原强度只允许 1 到 100")
 	}
 	if len(input.ProductLinks) > 20 {
 		return errors.New("商品链接草稿最多 20 个")
@@ -417,7 +417,7 @@ func generateFullShowVariantsOneShotLegacy(
 3. benefits 只包含编译时仍有效且仍关联现存商品卡的活动事实。活动价、赠品、满减、限时权益只能使用其中已有内容，不得把日常价说成活动价，也不得把一个链接的福利挪给另一个链接。
 4. product_links.room_roles 是商品在直播间里的长期经营定位，只用于安排主次、返场和商品承接。主推、引流、福利、利润、搭配、普通都不是可朗读事实；不得直接播报这些标签，也不得由“福利/利润”推导免费、亏本、优惠或利润承诺。具体讲解方案可以变化，但不能反向篡改商品定位。
 5. rhythm_nodes 和 anchor_style 只控制“怎么组织、怎么说”，不能覆盖事实依据。style_match_intensity只控制主播表达还原度；调高它不得扩大事实、数字或策略权限。
-6. fact_expansion 是另一项独立的用户内容扩展授权。它只决定围绕正式事实可展开多少场景、类比、故事框架与常识性解释，不得改变主播风格相似度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
+6. fact_expansion 是另一项独立的用户内容扩展授权。它只决定围绕正式事实可展开多少场景、类比、故事框架与常识性解释，不得改变主播风格还原强度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
 7. 如果 use_dynamic_facts=true，库存、实时在线、当前剩余量等必须保留成自然的运行时插槽，例如“库存我看一下后台实时数量再告诉大家”，绝对不能编具体数字。
 8. 所有具体数字、价格、规格、数量、年限、评分、功效结论、资质、社会证明和真实人物证言必须有正式来源；数字保持来源写法，不自行换算。
 9. 碰到审核边缘时执行 boundary_rewrite_first：保留原来的沟通目的，优先采用 safe_rewrite 或换成合法合规的说法，不要因为存在边界风险就整段沉默、只念事实或拒绝扩展。

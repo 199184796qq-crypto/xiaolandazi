@@ -27,3 +27,21 @@ func TestRollingWindowWaitsForSustainedTextAndTracksTermDistribution(t *testing.
 		}
 	}
 }
+
+func TestHundredPercentFidelityBecomesAnEightyFivePointReleaseGate(t *testing.T) {
+	unit := "哥哥姐姐们，你们听我们家慢慢说啊，大家先把重点听明白哟。"
+	source := strings.Repeat(unit, 45)
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, source)
+	good, goodIssues := StrictFidelityIssues(profile, strings.Repeat(unit, 55), 100)
+	if !good.Strict || good.TargetScore != 85 || !good.Passed || len(goodIssues) != 0 {
+		t.Fatalf("matching delivery did not pass strict target: state=%+v issues=%v", good, goodIssues)
+	}
+	bad, badIssues := StrictFidelityIssues(profile, strings.Repeat("先说明当前内容，再继续补充相关信息。", 80), 100)
+	if !bad.Strict || bad.TargetScore != 85 || bad.Passed || len(badIssues) == 0 {
+		t.Fatalf("low-style delivery escaped strict target: state=%+v issues=%v", bad, badIssues)
+	}
+	advisory, advisoryIssues := StrictFidelityIssues(profile, strings.Repeat("先说明当前内容。", 80), 85)
+	if advisory.Strict || len(advisoryIssues) != 0 {
+		t.Fatalf("non-strict setting unexpectedly blocked: state=%+v issues=%v", advisory, advisoryIssues)
+	}
+}

@@ -19,7 +19,7 @@ import (
 const Version = "anchor-delivery/v1"
 const AnalysisInstructions = `【跨模型口播规范协议 anchor-delivery/v1】
 你必须根据本次样本独立生成 delivery_spec，不复用示例主播或其它方案的词表。
-literal_habits 提取真实出现的原词，kind 只允许 self_address、audience_address、audience_pronoun、particle、connector、catchphrase。
+literal_habits 提取真实出现的原词，kind 只允许 self_address、audience_address、audience_pronoun、particle、connector、catchphrase、dialect_marker。
 逐项区分主播自称和观众称呼；保留完整原词及变体，不能把原词泛化成同义词或仅写“语气词”。
 于是“我们家/我们这边”这类稳定的主播方、店铺方第一方自指可以归入 self_address，但团队成员、亲属或第三人称称谓不能因为出现在稿件里就当作主播自称。重复出现的观众称呼和第一方自指不得因为所在句包含销售内容而整类遗漏；只截取称呼或自指原词。
 高频句末语气词不得遗漏；同时提取常用连接词、口头禅、称呼位置。样本没有的不能凭行业习惯补充。
@@ -38,6 +38,7 @@ var sentenceBreak = regexp.MustCompile(`[。！？!?；;\n]+`)
 var liveAudienceAddress = regexp.MustCompile(`哥哥姐姐们|哥哥姐们|叔叔阿姨们|新粉丝们|老粉丝们|家人们|朋友们|姐妹们|兄弟们|粉丝们|乡亲们|哥哥们|姐姐们|叔叔们|阿姨们|新粉丝|老粉丝|新粉|老粉|老乡|乡亲`)
 var liveAudiencePronoun = regexp.MustCompile(`你们|您|大家`)
 var liveSelfAddress = regexp.MustCompile(`我们自家|咱们自家|我们家|咱们家|我们这边|咱们这边|我们这儿|咱们这儿|我们这里|咱们这里|咱家|我家`)
+var liveDialectMarker = regexp.MustCompile(`跟到|晓得|啥子|巴适|屋头|锅头|没得|一哈|紧到|要得|莫得|啷个|咋个|撒子|娃儿|雄起`)
 
 func trim(s string, limit int) string {
 	s = strings.TrimSpace(s)
@@ -171,7 +172,7 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 	seen := map[string]bool{}
 	for _, h := range input.Habits {
 		switch h.Kind {
-		case "self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase":
+		case "self_address", "audience_address", "audience_pronoun", "particle", "connector", "catchphrase", "dialect_marker":
 		default:
 			continue
 		}
@@ -246,6 +247,24 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 			When:     "自然口语停顿、确认或句末收束时按样本密度使用",
 			Avoid:    "严肃说明、投诉或精确事实陈述时不机械添加",
 			Count:    count,
+		})
+	}
+	// Regional wording is style only when the exact marker appears in the
+	// source. It is collected after high-frequency core habits so sparse dialect
+	// can never crowd addresses, self-reference or particles out of the budget.
+	for _, text := range liveDialectMarker.FindAllString(source, -1) {
+		key := "dialect_marker:" + text
+		if seen[key] || len(spec.Habits) >= 40 {
+			continue
+		}
+		seen[key] = true
+		spec.Habits = append(spec.Habits, model.LiveAnchorLiteralHabit{
+			Kind:     "dialect_marker",
+			Text:     text,
+			Position: literalHabitPosition(source, text),
+			When:     "只在样本相同口语语境中按原有稀疏密度点缀",
+			Avoid:    "不得为了强化地域感集中堆叠，也不得添加样本没有的地域词",
+			Count:    strings.Count(source, text),
 		})
 	}
 	spec.SampleChars = utf8.RuneCountInString(strings.TrimSpace(source))
@@ -359,7 +378,7 @@ func Render(profile model.LiveAgentPlanAnchorStyleProfile) string {
 	}
 	var b strings.Builder
 	b.WriteString("主播口播规范 · " + Version + "\n\n【执行边界】\n只模仿跨场次稳定的表达统计，不复制样本商品事实或本场销售策略。正式事实、时间调度、商品讲解顺序与方案级策略外挂优先。不得虚构主播身份、观众发言、库存或已执行的业务动作。原词不足时不要发明新口头禅。所有规则只供静默执行，正文不得向观众播报规则、事实边界、审核过程或写作过程。数字比价、连续算账、事实回环、促单强弱等属于可叠加策略，不由底层主播风格擅自继承。\n")
-	labels := map[string]string{"self_address": "主播方自称/自指", "audience_address": "观众称呼", "audience_pronoun": "观众指代", "particle": "语气词", "connector": "连接词", "catchphrase": "口头禅"}
+	labels := map[string]string{"self_address": "主播方自称/自指", "audience_address": "观众称呼", "audience_pronoun": "观众指代", "particle": "语气词", "connector": "连接词", "catchphrase": "口头禅", "dialect_marker": "方言标记"}
 	b.WriteString("\n【本样本原词与使用规范】\n")
 	if len(d.Habits) == 0 {
 		b.WriteString("未发现有充分证据的固定词表，不强制添加称呼或语气词。\n")

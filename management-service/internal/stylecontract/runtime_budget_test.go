@@ -56,6 +56,14 @@ func TestCompileRuntimeBudgetScalesHeatAndScene(t *testing.T) {
 	}
 }
 
+func TestJensenShannonScorePenalizesVariantMixDrift(t *testing.T) {
+	matching := jensenShannonScore([]float64{8, 2}, []float64{8, 2})
+	drifted := jensenShannonScore([]float64{8, 2}, []float64{2, 8})
+	if matching != 100 || drifted >= 75 {
+		t.Fatalf("variant distribution drift was not separated: matching=%d drifted=%d", matching, drifted)
+	}
+}
+
 func TestRuntimeEvaluationAllowsStyleWithoutCopying(t *testing.T) {
 	source := strings.Repeat("哥哥姐姐们啊，我们家给大家说一下哟。你看嘛，我们把原因讲清楚。", 8)
 	profile := runtimeFixture(source)
@@ -110,5 +118,30 @@ func TestRuntimeEvaluationRejectsInventedSelfAddressVariant(t *testing.T) {
 	}
 	if result.Passed || !found {
 		t.Fatalf("invented self-address variant escaped: %+v", result)
+	}
+}
+
+func TestRuntimeEvaluationRejectsDialectOverrunAndSpeakerIdentityDrift(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们啊，我们家把内容慢慢讲清楚哟。", 20) + "这个说法没得问题。"
+	profile := runtimeFixture(source)
+	profile = Normalize(profile, source)
+	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: 220, Heat: 100, Scene: RuntimeSceneMainline})
+	candidate := "他们家先把这个事情讲清楚啊。哥哥姐姐们，你们晓得是啥子意思就行，屋头平时怎么用，再跟到自己的需要慢慢看哟。我们家只说已经确认的部分，没有依据的内容不往外猜。"
+	result := EvaluateRuntimeCandidate(budget, source, candidate)
+	codes := map[string]bool{}
+	for _, issue := range result.Issues {
+		codes[issue.Code] = true
+	}
+	if !codes["speaker_identity_drift"] || !codes["unsupported_dialect_marker"] {
+		t.Fatalf("identity or dialect drift escaped: %+v", result)
+	}
+	allowedFound := false
+	for _, group := range budget.HabitGroups {
+		if group.Kind == "dialect_marker" && len(group.Terms) == 1 && group.Terms[0].Text == "没得" {
+			allowedFound = true
+		}
+	}
+	if !allowedFound {
+		t.Fatalf("source-grounded sparse dialect was not preserved: %+v", budget.HabitGroups)
 	}
 }

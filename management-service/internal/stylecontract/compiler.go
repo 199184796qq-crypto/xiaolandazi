@@ -140,6 +140,11 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 	} else {
 		rules = append(rules, "样本没有稳定中性口头禅时，不从行业惯例补充口头禅。")
 	}
+	if len(habitsOfKind(spec, "dialect_marker")) > 0 {
+		rules = append(rules, "方言只按样本原词和原有稀疏密度点缀；不得把少量地域标记扩写成满篇方言，也不得发明样本没有的地域词。")
+	} else {
+		rules = append(rules, "样本没有可量化的方言原词时，不为强化地域身份额外添加方言词。")
+	}
 
 	questions := sourcePunctuationCount(source, "？?")
 	if questions > 0 {

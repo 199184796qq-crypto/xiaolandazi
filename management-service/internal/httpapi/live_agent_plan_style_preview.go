@@ -166,13 +166,14 @@ type anchorStyleTestGateError struct {
 	MinChars    int
 	MaxChars    int
 	Missing     []string
+	StyleIssues []string
 	AuditIssues []model.LiveAgentFullShowAuditIssue
 	Attempts    int
 }
 
 func (e *anchorStyleTestGateError) Error() string {
 	issues, _ := json.Marshal(e.AuditIssues)
-	return fmt.Sprintf("测试文案%d次候选仍未通过：actual_chars=%d range=%d-%d missing=%s audit=%s", e.Attempts, e.ActualChars, e.MinChars, e.MaxChars, strings.Join(e.Missing, "、"), string(issues))
+	return fmt.Sprintf("测试文案%d次候选仍未通过：actual_chars=%d range=%d-%d missing=%s style=%s audit=%s", e.Attempts, e.ActualChars, e.MinChars, e.MaxChars, strings.Join(e.Missing, "、"), strings.Join(e.StyleIssues, "；"), string(issues))
 }
 
 type styleVectorEmbeddingService interface {
@@ -212,7 +213,7 @@ func anchorStyleTestPrompt(profile model.LiveAgentPlanAnchorStyleProfile, facts 
 	return fmt.Sprintf(`生成一份目标%d字的主播口播测试文案，正文必须在%d到%d字之间。先在内部按约%d个自然段、每段约%d字规划长度，再输出正文；段落不得带标题或编号。只返回可直接读出的正文，不要标题、分析、规则说明。
 【风格规则】%s
 【叠加风格】%s
-【本次主播风格相似度】%d/100。它只控制主播表达还原度，不扩大或缩小任何事实权限。
+【本次主播风格还原强度】%d/100。它只控制主播表达还原度，不扩大或缩小任何事实权限；90到100为高还原档，候选小段必须通过实际窗口分数验收。
 【本次运行预算】%s
 【当前统一事实上下文】%s
 【规则层约束】%s
@@ -221,7 +222,7 @@ func anchorStyleTestPrompt(profile model.LiveAgentPlanAnchorStyleProfile, facts 
 保留规则中有证据的原词口头禅、主播自称、观众称呼和称呼位置、长短句节奏；没有证据的不要发明，不要每句机械堆叠。
 主播自称和观众称呼必须分开。称呼位置/频率应自然符合规则。
 authorized_facts 是商品卡、当前有效福利和补充事实编译后的统一事实清单，只允许使用 can_generate=true 的条目；formal_facts、benefits、product_links 是兼容审计视图。不得从主播样本中继承价格、库存、试吃、销量、物流、身份、功效或客户评价，也不假装读到了真实弹幕。
-fact_expansion 是另一项独立的用户内容扩展授权，只控制围绕事实能展开多少场景、类比、故事框架与常识性解释；它不能改变主播风格相似度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按 freedom、level、allowed 扩展；遇到相同沟通意图时优先采用 formal_facts.safe_rewrite，不得把假设或故事冒充成真实用户事件。
+fact_expansion 是另一项独立的用户内容扩展授权，只控制围绕事实能展开多少场景、类比、故事框架与常识性解释；它不能改变主播风格还原强度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按 freedom、level、allowed 扩展；遇到相同沟通意图时优先采用 formal_facts.safe_rewrite，不得把假设或故事冒充成真实用户事件。
 这不是摘要任务。正式事实有限时，要把事实组织成多个自然口播回合：直述重点、拆句解释原意、问后自答、换序重述、短句确认、隔段回顾和自然承接可以组合使用；允许同一事实非连续重复，但每次至少改变一种表达动作。
 具体数字、功效结论、资质、社会证明、真实人物证言和实时状态仍必须有来源。碰到审核边缘时保留沟通目的并换成合规说法，不要整段沉默或只念事实。不得把“换个说法、再重复一遍、品牌背书、信息点、收一下、扩写、回环策略、只讲事实、按标注念、规则要求”等编稿或审核过程播给观众。
 如果当前事实上下文包含 expansion_plans，按其中唯一计划的虚拟时间 steps 依次推进并尽量接近每步 target_chars。每步只执行该步 style_capabilities 列出的偶发表达能力；为空时不要强行加入偶尔口结、叠词、改口或慢思考。steps.room 只是内部模拟参数，不能作为在线人数、进房量、评论量或真实观众行为播出；interaction_opportunity 也不能伪装成已经收到观众回应。
@@ -266,7 +267,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	styleMatchIntensity := anchorStyleDefaultMatchIntensity
 	if input.StyleMatchIntensity != nil {
 		if *input.StyleMatchIntensity < 1 || *input.StyleMatchIntensity > 100 {
-			writeError(w, http.StatusBadRequest, "主播风格相似度须为1到100")
+			writeError(w, http.StatusBadRequest, "主播风格还原强度须为1到100")
 			return
 		}
 		styleMatchIntensity = *input.StyleMatchIntensity
@@ -816,6 +817,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		}
 		var candidate string
 		var segmentAudit model.LiveAgentFullShowAudit
+		var styleGateIssues []string
 		accepted := false
 		for attempt := 0; attempt < 3; attempt++ {
 			if observer != nil && observer.Progress != nil {
@@ -840,36 +842,48 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			segmentAuditContext.UseAnchorStyle = false
 			segmentAuditContext.RoundMinutes = 1
 			segmentAudit = auditFullShowVariants(segmentAuditContext, []model.LiveAgentFullShowVariant{{Text: candidate}}, nil)[0].Audit
+			prospectiveHistory := strings.TrimSpace(strings.TrimSpace(styleHistory) + "\n\n" + candidate)
+			styleState, currentStyleIssues := stylecontract.StrictFidelityIssues(generation.AnchorStyle, prospectiveHistory, resolvedAnchorStyleMatchIntensity(generation))
+			styleGateIssues = currentStyleIssues
 			actual := utf8.RuneCountInString(candidate)
-			if actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(structureIssues) == 0 {
+			if actual >= spec.MinChars && actual <= spec.MaxChars && segmentAudit.Passed && len(structureIssues) == 0 && len(styleGateIssues) == 0 {
 				accepted = true
 				break
 			}
 			if attempt < 2 {
 				repaired = true
 				issues, _ := json.Marshal(segmentAudit.Issues)
-				direction := "扩写"
+				direction := "保持当前长度并补正"
+				if actual < spec.MinChars {
+					direction = "扩写"
+				}
 				if actual > spec.MaxChars {
 					direction = "缩短"
 				}
+				styleRepair := stylecontract.RenderStrictFidelityRepair(styleState, styleGateIssues)
 				request.Provider, request.Model = response.Provider, response.Model
 				request.Messages = []agentgateway.Message{
 					{Role: "system", Content: "你只补正当前这一小段口播，不能返回前文或整篇稿。"},
 					{Role: "user", Content: basePrompt},
 					{Role: "assistant", Content: candidate},
-					{Role: "user", Content: fmt.Sprintf("程序实测本段%d字，请%s到%d至%d字；事实审计问题=%s；连续口播结构问题=%s。只返回补正后这一小段，不要解释。", actual, direction, spec.MinChars, spec.MaxChars, string(issues), strings.Join(structureIssues, "；"))},
+					{Role: "user", Content: fmt.Sprintf("程序实测本段%d字，请%s，最终保持%d至%d字；事实审计问题=%s；连续口播结构问题=%s；%s只返回补正后这一小段，不要解释。", actual, direction, spec.MinChars, spec.MaxChars, string(issues), strings.Join(structureIssues, "；"), styleRepair)},
 				}
 			}
 		}
 		finalStructureIssues := anchorStyleSegmentStructureIssues(spec, candidate)
 		finalStructureIssues = append(finalStructureIssues, ledger.AntiChecklistIssues(spec, candidate)...)
-		if !accepted && segmentAudit.Passed && len(finalStructureIssues) == 0 {
+		if !accepted && segmentAudit.Passed && len(finalStructureIssues) == 0 && len(styleGateIssues) == 0 {
 			actual := utf8.RuneCountInString(candidate)
 			if actual > spec.MaxChars {
 				if trimmed, ok := trimAnchorStyleCandidate(candidate, spec.MinChars, spec.MaxChars); ok {
-					candidate = trimmed
-					accepted = true
-					repaired = true
+					trimmedHistory := strings.TrimSpace(strings.TrimSpace(styleHistory) + "\n\n" + trimmed)
+					_, trimmedStyleIssues := stylecontract.StrictFidelityIssues(generation.AnchorStyle, trimmedHistory, resolvedAnchorStyleMatchIntensity(generation))
+					styleGateIssues = trimmedStyleIssues
+					if len(styleGateIssues) == 0 {
+						candidate = trimmed
+						accepted = true
+						repaired = true
+					}
 				}
 			} else if spec.FinishMode != "close" && actual > 0 {
 				// A short early unit is allowed; its debt is automatically carried
@@ -886,7 +900,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		if !accepted {
 			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, &anchorStyleTestGateError{
 				ActualChars: utf8.RuneCountInString(candidate), MinChars: spec.MinChars, MaxChars: spec.MaxChars,
-				AuditIssues: append([]model.LiveAgentFullShowAuditIssue(nil), segmentAudit.Issues...), Attempts: totalCalls,
+				StyleIssues: append([]string(nil), styleGateIssues...), AuditIssues: append([]model.LiveAgentFullShowAuditIssue(nil), segmentAudit.Issues...), Attempts: totalCalls,
 			}
 		}
 		segmentID := ledger.Enqueue(spec, candidate)
@@ -954,11 +968,12 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 	auditContext.RoundMinutes = 1
 	audit := auditFullShowVariants(auditContext, []model.LiveAgentFullShowVariant{{Text: text}}, nil)[0].Audit
 	actualChars := utf8.RuneCountInString(text)
-	if actualChars >= minChars && actualChars <= maxChars && audit.Passed {
+	_, finalStyleIssues := stylecontract.StrictFidelityIssues(generation.AnchorStyle, anchorStyleHistory(previous, text), resolvedAnchorStyleMatchIntensity(generation))
+	if actualChars >= minChars && actualChars <= maxChars && audit.Passed && len(finalStyleIssues) == 0 {
 		return text, result, check, audit, repaired, nil
 	}
 	return "", result, check, audit, repaired, &anchorStyleTestGateError{
 		ActualChars: actualChars, MinChars: minChars, MaxChars: maxChars,
-		Missing: append([]string(nil), check.Missing...), AuditIssues: append([]model.LiveAgentFullShowAuditIssue(nil), audit.Issues...), Attempts: totalCalls,
+		Missing: append([]string(nil), check.Missing...), StyleIssues: append([]string(nil), finalStyleIssues...), AuditIssues: append([]model.LiveAgentFullShowAuditIssue(nil), audit.Issues...), Attempts: totalCalls,
 	}
 }

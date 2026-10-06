@@ -1531,8 +1531,8 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     style_check: { passed: boolean; checked: number; missing: string[] }
     style_coverage_warnings?: string[]
     runtime_budget?: { version: string; heat: number; target_chars: number; sentence_chars_min: number; sentence_chars_max: number; total_habit_max: number }
-    runtime_evaluation?: { passed: boolean; style_score: number; lexical_score: number; rhythm_score: number; copy_containment_pct: number; longest_shared_runes: number; issues: Array<{ severity: string; code: string; message: string }> }
-    style_window?: { version: string; window_target: number; window_chars: number; ready: boolean; style_score: number; term_score: number; needs: Array<{ kind: string; term?: string; actual: number; target: number; delta: number; direction: string }>; overused: Array<{ kind: string; term?: string; actual: number; target: number; delta: number; direction: string }> }
+    runtime_evaluation?: { passed: boolean; style_score: number; lexical_score: number; distribution_score: number; rhythm_score: number; copy_containment_pct: number; longest_shared_runes: number; issues: Array<{ severity: string; code: string; message: string }> }
+    style_window?: { version: string; window_target: number; window_chars: number; ready: boolean; strict: boolean; target_score: number; passed: boolean; style_score: number; term_score: number; needs: Array<{ kind: string; term?: string; actual: number; target: number; delta: number; direction: string }>; overused: Array<{ kind: string; term?: string; actual: number; target: number; delta: number; direction: string }> }
     style_purity?: { passed: boolean; issues: Array<{ location: string; category: string; text: string; reason: string }> }
     style_vector_evaluation?: { available: boolean; shadow_only: true; model?: string; similarity?: number; score?: number; error?: string }
     overlay_qc?: { available: boolean; passed: boolean; adherence_score: number; overuse_risk: number; issue_codes: string[]; summary: string; model?: string; latency_ms?: number; error?: string; repair_attempted: boolean }

@@ -6073,7 +6073,7 @@ onBeforeUnmount(() => {
                 <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
                   <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
                   <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
-                  <label>主播风格相似度：{{ anchorStyleMatchIntensity }}/100<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5" /></label>
+                  <label>主播风格还原强度：{{ anchorStyleMatchIntensity }}/100<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5" /></label>
                   <label>事实延展空间：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
                   <label>促单强度：{{ anchorStyleConversionIntensity }}/100<input v-model.number="anchorStyleConversionIntensity" type="range" min="0" max="100" step="5" /></label>
                 </div>
@@ -6085,7 +6085,7 @@ onBeforeUnmount(() => {
                   <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
                 </section>
                 <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
-                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字风格窗口：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">放行线：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
                 <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
                   <header><strong>本次话术安排</strong><small>每写一小段，模型都会根据前文重新安排；选择不合适或超时，由系统兜底。这些说明不会读进直播间。</small></header>
                   <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
@@ -6331,7 +6331,7 @@ onBeforeUnmount(() => {
             <div class="strategy-anchor-test-settings">
               <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：欢迎新观众并介绍当前商品"></label>
               <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
-              <label>主播风格相似度（{{ anchorStyleMatchIntensity }}/100）<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5"></label>
+              <label>主播风格还原强度（{{ anchorStyleMatchIntensity }}/100）<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5"></label>
               <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
             </div>
             <p>{{ anchorRulebook ? '使用样本底层风格与已启用的方案外挂共同测试；' : '本次没有真人样本，只测试已启用的方案外挂；' }}系统按时间单元逐段生成，主播风格按最近1000字滚动追踪，单个短段不做机械词频打卡。测试不发布、不生成声音，也不改变当前直播。</p>
@@ -6341,12 +6341,12 @@ onBeforeUnmount(() => {
               <p class="strategy-anchor-test-text">{{ anchorStyleTestResult.text }}</p>
               <AnchorTrainingReceipt :items="anchorStyleTestResult.applied_trainings" />
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
-              <small>本次独立参数：主播风格相似度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。调整任一项不会联动另一项。</small>
+              <small>本次独立参数：主播风格还原强度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。还原强度是生成目标，实际分数由下方1000字窗口独立测量；两项参数互不联动。</small>
               <small v-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
-              <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词软检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。风格偏差只提示，不会让整篇文案消失。</small>
+              <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。90–100高还原档会在每个小段提交前验收，未过放行线会定向返修，不再把低分结果当成成功。</small>
               <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.style_window">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `统计落实率 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定落实率' }}。窗口只追踪称呼、自指、语气词、观众指代与句式节奏；数字比价、算账和重复回环由策略外挂控制。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.style_window" :class="{ 'inline-error': anchorStyleTestResult.style_window.strict && !anchorStyleTestResult.style_window.passed }">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；当前放行线 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由策略外挂控制。</small>
               <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">防照抄评测：与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。</small>
               <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
               <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
@@ -6590,7 +6590,7 @@ onBeforeUnmount(() => {
 
               <div class="strategy-fullshow-field">
                 <div class="strategy-fullshow-field-title">
-                  <span>主播风格相似度</span>
+                  <span>主播风格还原强度</span>
                   <strong>{{ anchorStyleMatchIntensity }}/100 · 首次按原样本完整还原</strong>
                 </div>
                 <div class="strategy-fullshow-duration-slider">
