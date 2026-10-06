@@ -714,6 +714,7 @@ async function runReusableLongTest() {
       const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
         room_id: activeRoomId.value, topic: continuityTopic,
         target_chars: Math.min(1800, Math.max(300, anchorStyleTestTargetChars.value)),
+        style_match_intensity: anchorStyleMatchIntensity.value,
         expansion_freedom: fullShowExpansionFreedom.value, conversion_intensity: anchorStyleConversionIntensity.value,
         source_text: sampleText, anchor_style: style, continuation: reusableAnchorStyleLongTestContinuation.value,
         selected_facts: selectedFactKeys.value,
@@ -905,6 +906,7 @@ const fullShowDurationLabel = computed(() => {
 })
 const fullShowRoundMinutes = ref(7)
 const fullShowVariantCount = ref(5)
+const anchorStyleMatchIntensity = ref(100)
 const fullShowExpansionFreedom = ref(65)
 const fullShowExpansionLabel = computed(() => {
   if (fullShowExpansionFreedom.value <= 25) return '保守扩展'
@@ -2008,6 +2010,7 @@ async function applyCustomMainlineAsFormal() {
       script_references: [],
       rhythm_nodes: [],
       anchor_style: anchorStyleProfile.value || { summary: '', dimensions: [], reusable_rules: [], candidate_patterns: [], excluded_from_style: [] },
+      style_match_intensity: anchorStyleMatchIntensity.value,
       style_overlay_prompt: '',
       style_overlay_count: 0,
       duration_minutes: fullShowDuration.value,
@@ -2611,6 +2614,7 @@ function resetFullShowWorkspaceState() {
   fullShowDuration.value = 90
   fullShowRoundMinutes.value = 7
   fullShowVariantCount.value = 5
+  anchorStyleMatchIntensity.value = 100
   fullShowExpansionFreedom.value = 65
   fullShowUseAnchorStyle.value = true
   fullShowUseDynamicFacts.value = true
@@ -2689,7 +2693,8 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
     fullShowDuration.value = version.duration_minutes
     fullShowRoundMinutes.value = version.round_minutes
     fullShowVariantCount.value = Math.min(5, Math.max(3, variants.length))
-    fullShowExpansionFreedom.value = Math.min(100, Math.max(0, Number(context.fact_expansion?.freedom ?? 65)))
+    anchorStyleMatchIntensity.value = Math.min(100, Math.max(1, Number(context.style_match_intensity ?? 100)))
+    fullShowExpansionFreedom.value = Math.min(100, Math.max(0, Number(context.fact_expansion?.freedom ?? (rawContext as unknown as Record<string, unknown>)?.expansion_freedom ?? 65)))
     fullShowWorkspaceLegacyPartial.value =
       Number(rawContext?.variant_count || version.variants.length) > version.variants.length
     fullShowUseAnchorStyle.value = context.use_anchor_style
@@ -2939,6 +2944,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
         round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
         round_count: Math.max(1, Math.ceil(fullShowDuration.value / Math.max(1, fullShowRoundMinutes.value))),
         variant_count: variants.length,
+        style_match_intensity: anchorStyleMatchIntensity.value,
         expansion_freedom: fullShowExpansionFreedom.value,
         use_anchor_style: fullShowUseAnchorStyle.value,
         use_dynamic_facts: fullShowUseDynamicFacts.value,
@@ -3090,6 +3096,7 @@ async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
       room_id: room.id,
       duration_minutes: fullShowDuration.value,
       round_minutes: fullShowRoundMinutes.value,
+      style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
@@ -3237,6 +3244,7 @@ async function generateFullShowPreview() {
       duration_minutes: fullShowDuration.value,
       round_minutes: fullShowRoundMinutes.value,
       variant_count: fullShowVariantCount.value,
+      style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
@@ -4492,6 +4500,7 @@ async function executeAnchorStyleTest(options?: { lockedSampleText?: string; lea
       room_id: room.id,
       topic: anchorStyleTestTopic.value,
       target_chars: Math.max(100, Math.min(3000, Math.round(Number(anchorStyleTestTargetChars.value) || 500))),
+      style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
       conversion_intensity: anchorStyleConversionIntensity.value,
       source_text: sourceText,
@@ -4966,6 +4975,7 @@ watch(
     fullShowDuration,
     fullShowRoundMinutes,
     fullShowVariantCount,
+    anchorStyleMatchIntensity,
     fullShowExpansionFreedom,
     fullShowUseAnchorStyle,
     fullShowUseDynamicFacts,
@@ -6063,7 +6073,8 @@ onBeforeUnmount(() => {
                 <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
                   <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
                   <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
-                  <label>热度/扩展授权：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
+                  <label>主播风格相似度：{{ anchorStyleMatchIntensity }}/100<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5" /></label>
+                  <label>事实延展空间：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
                   <label>促单强度：{{ anchorStyleConversionIntensity }}/100<input v-model.number="anchorStyleConversionIntensity" type="range" min="0" max="100" step="5" /></label>
                 </div>
                 <div class="reusable-anchor-style-fact-picker"><span>可选事实（只决定说哪些事实，不改变主播风格）</span><button v-for="fact in formalFacts.slice(0, 12)" :key="fact.key" type="button" :class="{ selected: selectedFactKeys.includes(fact.key) }" @click="selectedFactKeys = selectedFactKeys.includes(fact.key) ? selectedFactKeys.filter((key) => key !== fact.key) : [...selectedFactKeys, fact.key]">{{ fact.key }}</button></div>
@@ -6320,6 +6331,7 @@ onBeforeUnmount(() => {
             <div class="strategy-anchor-test-settings">
               <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：欢迎新观众并介绍当前商品"></label>
               <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
+              <label>主播风格相似度（{{ anchorStyleMatchIntensity }}/100）<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5"></label>
               <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
             </div>
             <p>{{ anchorRulebook ? '使用样本底层风格与已启用的方案外挂共同测试；' : '本次没有真人样本，只测试已启用的方案外挂；' }}系统按时间单元逐段生成，主播风格按最近1000字滚动追踪，单个短段不做机械词频打卡。测试不发布、不生成声音，也不改变当前直播。</p>
@@ -6329,6 +6341,7 @@ onBeforeUnmount(() => {
               <p class="strategy-anchor-test-text">{{ anchorStyleTestResult.text }}</p>
               <AnchorTrainingReceipt :items="anchorStyleTestResult.applied_trainings" />
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
+              <small>本次独立参数：主播风格相似度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。调整任一项不会联动另一项。</small>
               <small v-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
               <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词软检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。风格偏差只提示，不会让整篇文案消失。</small>
@@ -6577,6 +6590,30 @@ onBeforeUnmount(() => {
 
               <div class="strategy-fullshow-field">
                 <div class="strategy-fullshow-field-title">
+                  <span>主播风格相似度</span>
+                  <strong>{{ anchorStyleMatchIntensity }}/100 · 首次按原样本完整还原</strong>
+                </div>
+                <div class="strategy-fullshow-duration-slider">
+                  <input
+                    v-model.number="anchorStyleMatchIntensity"
+                    type="range"
+                    min="1"
+                    max="100"
+                    step="5"
+                    :style="{ '--duration-progress': anchorStyleMatchIntensity + '%' }"
+                  />
+                  <div class="strategy-fullshow-duration-ticks">
+                    <span>轻度参考</span>
+                    <span>平衡</span>
+                    <span>高度还原</span>
+                    <span>原样本目标</span>
+                  </div>
+                </div>
+                <small>只控制称呼、自指、语气词、句式节奏和情绪底色；不会增加商品事实、数字、功效、库存或活动权限。</small>
+              </div>
+
+              <div class="strategy-fullshow-field">
+                <div class="strategy-fullshow-field-title">
                   <span>内容扩展授权</span>
                   <strong>{{ fullShowExpansionLabel }} · {{ fullShowExpansionFreedom }}/100</strong>
                 </div>
@@ -6596,7 +6633,7 @@ onBeforeUnmount(() => {
                     <span>边缘合规</span>
                   </div>
                 </div>
-                <small>法律、平台规则和你明确锁定的内容始终不动；数值越高，越允许场景、类比、故事化、常识推演和更强促单。触碰审核边缘时优先换成合规说法，不直接删掉。</small>
+                <small>这是独立的事实延展空间。法律、平台规则和你明确锁定的内容始终不动；数值越高，越允许场景、类比、故事化和常识推演，但不会改变主播称呼与语气密度。</small>
               </div>
 
               <div class="strategy-fullshow-inline-fields">

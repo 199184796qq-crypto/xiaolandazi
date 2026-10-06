@@ -1517,13 +1517,15 @@ export function confirmLiveAgentPlanScriptAnalysis(planId: number, scriptId: num
   })
 }
 
-export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: number; room_id: number; topic: string; target_chars: number; expansion_freedom: number; conversion_intensity?: number; source_text: string; anchor_style: LiveAgentPlanScriptAnalysis['anchor_style']; selected_facts?: string[]; transient_overlays?: LiveAnchorStyleOverlayItem[]; continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }; advisory_overrides?: string[] }, onPreviewEvent?: (event: PreviewStreamEvent) => void) {
+export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: number; room_id: number; topic: string; target_chars: number; style_match_intensity?: number; expansion_freedom: number; conversion_intensity?: number; source_text: string; anchor_style: LiveAgentPlanScriptAnalysis['anchor_style']; selected_facts?: string[]; transient_overlays?: LiveAnchorStyleOverlayItem[]; continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }; advisory_overrides?: string[] }, onPreviewEvent?: (event: PreviewStreamEvent) => void) {
   return request<{
     text: string
     target_chars: number
     min_chars: number
     max_chars: number
     actual_chars: number
+    style_match_intensity: number
+    fact_expansion_freedom: number
     persisted: false
     audit: LiveAgentFullShowVariant['audit']
     style_check: { passed: boolean; checked: number; missing: string[] }

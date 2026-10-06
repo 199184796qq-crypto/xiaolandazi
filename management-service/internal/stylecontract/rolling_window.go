@@ -120,7 +120,7 @@ func RenderRollingWindowGuidance(profile model.LiveAgentPlanAnchorStyleProfile, 
 	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: projected, Heat: heat, Scene: RuntimeSceneMainline})
 	_, needs, overused := rollingTermDeltas(budget, window)
 	var b strings.Builder
-	fmt.Fprintf(&b, "主播风格滑动窗口：已累计%d/%d字；这是跨小段统计指导，不是本段逐项打卡。", currentChars, RollingWindowChars)
+	fmt.Fprintf(&b, "目标主播风格相似度=%d/100；该参数只控制表达还原度，不改变事实延展权限。主播风格滑动窗口：已累计%d/%d字；这是跨小段统计指导，不是本段逐项打卡。", heat, currentChars, RollingWindowChars)
 	if currentChars >= RollingWindowChars {
 		b.WriteString("当前按最近1000字滚动统计。")
 	}

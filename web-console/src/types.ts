@@ -1877,6 +1877,7 @@ export interface LiveAgentFullShowGenerationContext {
   script_references: LiveAgentFullShowContextScriptReference[]
   rhythm_nodes: LiveAgentPlanRhythmNode[]
   anchor_style: LiveAgentPlanAnchorStyleProfile
+  style_match_intensity: number
   style_overlay_prompt?: string
   style_overlay_count: number
   fact_expansion?: LiveFactExpansionPolicy
@@ -1942,6 +1943,7 @@ export interface LiveAgentFullShowPreviewInput {
   duration_minutes: number
   round_minutes: number
   variant_count: number
+  style_match_intensity: number
   expansion_freedom: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean
@@ -1972,6 +1974,7 @@ export interface LiveAgentFullShowRegenerateInput {
   room_id?: number
   duration_minutes: number
   round_minutes: number
+  style_match_intensity: number
   expansion_freedom: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean

@@ -76,7 +76,14 @@ func (s *Server) liveAgentPlanScriptAnalysisConfirm(w http.ResponseWriter, r *ht
 const anchorStylePreviewDefaultTargetChars = 500
 const anchorStylePreviewMinTargetChars = 100
 const anchorStylePreviewMaxTargetChars = 3000
-const anchorStylePreviewHeat = 70
+const anchorStyleDefaultMatchIntensity = 100
+
+func resolvedAnchorStyleMatchIntensity(generation model.LiveAgentFullShowGenerationContext) int {
+	if generation.StyleMatchIntensity < 1 || generation.StyleMatchIntensity > 100 {
+		return anchorStyleDefaultMatchIntensity
+	}
+	return generation.StyleMatchIntensity
+}
 
 func anchorStyleTargetRange(targetChars int) (int, int) {
 	if targetChars <= 0 {
@@ -199,11 +206,13 @@ func anchorStyleTestPrompt(profile model.LiveAgentPlanAnchorStyleProfile, facts 
 	}
 	minChars, maxChars := anchorStyleTargetRange(targetChars)
 	paragraphs, paragraphChars := anchorStyleParagraphPlan(targetChars)
-	runtimeBudget := stylecontract.CompileRuntimeBudget(profile, stylecontract.RuntimeOptions{TargetChars: targetChars, Heat: anchorStylePreviewHeat, Scene: stylecontract.RuntimeSceneMainline})
+	styleMatchIntensity := resolvedAnchorStyleMatchIntensity(facts)
+	runtimeBudget := stylecontract.CompileRuntimeBudget(profile, stylecontract.RuntimeOptions{TargetChars: targetChars, Heat: styleMatchIntensity, Scene: stylecontract.RuntimeSceneMainline})
 	factsJSON, _ := json.Marshal(facts)
 	return fmt.Sprintf(`生成一份目标%d字的主播口播测试文案，正文必须在%d到%d字之间。先在内部按约%d个自然段、每段约%d字规划长度，再输出正文；段落不得带标题或编号。只返回可直接读出的正文，不要标题、分析、规则说明。
 【风格规则】%s
 【叠加风格】%s
+【本次主播风格相似度】%d/100。它只控制主播表达还原度，不扩大或缩小任何事实权限。
 【本次运行预算】%s
 【当前统一事实上下文】%s
 【规则层约束】%s
@@ -212,11 +221,11 @@ func anchorStyleTestPrompt(profile model.LiveAgentPlanAnchorStyleProfile, facts 
 保留规则中有证据的原词口头禅、主播自称、观众称呼和称呼位置、长短句节奏；没有证据的不要发明，不要每句机械堆叠。
 主播自称和观众称呼必须分开。称呼位置/频率应自然符合规则。
 authorized_facts 是商品卡、当前有效福利和补充事实编译后的统一事实清单，只允许使用 can_generate=true 的条目；formal_facts、benefits、product_links 是兼容审计视图。不得从主播样本中继承价格、库存、试吃、销量、物流、身份、功效或客户评价，也不假装读到了真实弹幕。
-fact_expansion 是用户明确选择的内容扩展授权：除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按 freedom、level、allowed 做场景、类比、故事框架、常识性推演、情绪和促单扩展；遇到相同沟通意图时优先采用 formal_facts.safe_rewrite，不得把假设或故事冒充成真实用户事件。
+fact_expansion 是另一项独立的用户内容扩展授权，只控制围绕事实能展开多少场景、类比、故事框架与常识性解释；它不能改变主播风格相似度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按 freedom、level、allowed 扩展；遇到相同沟通意图时优先采用 formal_facts.safe_rewrite，不得把假设或故事冒充成真实用户事件。
 这不是摘要任务。正式事实有限时，要把事实组织成多个自然口播回合：直述重点、拆句解释原意、问后自答、换序重述、短句确认、隔段回顾和自然承接可以组合使用；允许同一事实非连续重复，但每次至少改变一种表达动作。
 具体数字、功效结论、资质、社会证明、真实人物证言和实时状态仍必须有来源。碰到审核边缘时保留沟通目的并换成合规说法，不要整段沉默或只念事实。不得把“换个说法、再重复一遍、品牌背书、信息点、收一下、扩写、回环策略、只讲事实、按标注念、规则要求”等编稿或审核过程播给观众。
 如果当前事实上下文包含 expansion_plans，按其中唯一计划的虚拟时间 steps 依次推进并尽量接近每步 target_chars。每步只执行该步 style_capabilities 列出的偶发表达能力；为空时不要强行加入偶尔口结、叠词、改口或慢思考。steps.room 只是内部模拟参数，不能作为在线人数、进房量、评论量或真实观众行为播出；interaction_opportunity 也不能伪装成已经收到观众回应。
-没有正式商品事实时只生成无商品承诺的打招呼和转场测试。测试不保存、不发布、不生成声音。`, targetChars, minChars, maxChars, paragraphs, paragraphChars, styleText, facts.StyleOverlayPrompt, stylecontract.RenderRuntimeBudget(runtimeBudget), string(factsJSON), policyText, topic)
+没有正式商品事实时只生成无商品承诺的打招呼和转场测试。测试不保存、不发布、不生成声音。`, targetChars, minChars, maxChars, paragraphs, paragraphChars, styleText, facts.StyleOverlayPrompt, styleMatchIntensity, stylecontract.RenderRuntimeBudget(runtimeBudget), string(factsJSON), policyText, topic)
 }
 
 func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +242,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		RoomID              int64                                 `json:"room_id"`
 		Topic               string                                `json:"topic"`
 		TargetChars         int                                   `json:"target_chars"`
+		StyleMatchIntensity *int                                  `json:"style_match_intensity,omitempty"`
 		ExpansionFreedom    *int                                  `json:"expansion_freedom,omitempty"`
 		SourceText          string                                `json:"source_text"`
 		AnchorStyle         model.LiveAgentPlanAnchorStyleProfile `json:"anchor_style"`
@@ -252,6 +262,14 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if input.TargetChars < anchorStylePreviewMinTargetChars || input.TargetChars > anchorStylePreviewMaxTargetChars {
 		writeError(w, http.StatusBadRequest, "目标字数须为100到3000字")
 		return
+	}
+	styleMatchIntensity := anchorStyleDefaultMatchIntensity
+	if input.StyleMatchIntensity != nil {
+		if *input.StyleMatchIntensity < 1 || *input.StyleMatchIntensity > 100 {
+			writeError(w, http.StatusBadRequest, "主播风格相似度须为1到100")
+			return
+		}
+		styleMatchIntensity = *input.StyleMatchIntensity
 	}
 	if input.ExpansionFreedom != nil && (*input.ExpansionFreedom < 0 || *input.ExpansionFreedom > 100) {
 		writeError(w, http.StatusBadRequest, "内容扩展授权须为0到100")
@@ -341,6 +359,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		}
 	}
 	generation := compileFullShowContext(plan, facts, benefits, links, nil, model.LiveAgentFullShowPreviewInput{RoomID: input.RoomID, DurationMinutes: 30, RoundMinutes: 5, VariantCount: 3, ExpansionFreedom: input.ExpansionFreedom, UseAnchorStyle: true, UseDynamicFacts: true, AnchorStyle: style})
+	generation.StyleMatchIntensity = styleMatchIntensity
 	generation.IndustryCode = strings.TrimSpace(industry)
 	virtualMinutes := (input.TargetChars + 249) / 250
 	generation.ExpansionPlans = speechexpander.BuildFixedPlans(speechexpander.Input{
@@ -448,9 +467,9 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 			s.finishAISingleUse(r.Context(), qcInvocationID, "succeeded", qcResponse.Provider, qcResponse.Model, qcLatency, map[string]any{"passed": overlayQC.Passed, "adherence_score": overlayQC.AdherenceScore, "overuse_risk": overlayQC.OveruseRisk, "repair_attempted": false, "error": overlayQC.Error})
 		}
 	}
-	runtimeBudget := stylecontract.CompileRuntimeBudget(style, stylecontract.RuntimeOptions{TargetChars: input.TargetChars, Heat: anchorStylePreviewHeat, Scene: stylecontract.RuntimeSceneMainline})
+	runtimeBudget := stylecontract.CompileRuntimeBudget(style, stylecontract.RuntimeOptions{TargetChars: input.TargetChars, Heat: styleMatchIntensity, Scene: stylecontract.RuntimeSceneMainline})
 	runtimeEvaluation := stylecontract.EvaluateRuntimeCandidate(runtimeBudget, input.SourceText, text)
-	styleWindow := stylecontract.EvaluateRollingWindow(style, input.SourceText, anchorStyleHistory(input.Continuation, text), anchorStylePreviewHeat)
+	styleWindow := stylecontract.EvaluateRollingWindow(style, input.SourceText, anchorStyleHistory(input.Continuation, text), styleMatchIntensity)
 	vectorEvaluation := stylecontract.StyleVectorEvaluation{ShadowOnly: true, Error: "base sample style unavailable; overlay-only preview"}
 	if stylecontract.Valid(style) {
 		vectorEvaluation.Error = "style embedding unavailable"
@@ -469,13 +488,13 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
 	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -785,7 +804,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		}
 		spec := ledger.Next(step, index, len(steps))
 		styleHistory := anchorStyleHistory(previous, ledger.CommittedText())
-		styleWindowGuidance := stylecontract.RenderRollingWindowGuidance(generation.AnchorStyle, styleHistory, spec.TargetChars, anchorStylePreviewHeat)
+		styleWindowGuidance := stylecontract.RenderRollingWindowGuidance(generation.AnchorStyle, styleHistory, spec.TargetChars, resolvedAnchorStyleMatchIntensity(generation))
 		basePrompt := anchorStyleSegmentPrompt(generation, policyText, topic, step, spec, string(brainPromptJSON), styleWindowGuidance)
 		request := agentgateway.Request{
 			Stage: "speech_generation",

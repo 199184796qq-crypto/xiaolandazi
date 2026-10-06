@@ -568,20 +568,21 @@ type SaveLiveAgentPlanScriptInput struct {
 }
 
 type LiveAgentFullShowPreviewInput struct {
-	TenantID         int64                               `json:"tenant_id,omitempty"`
-	RoomID           int64                               `json:"room_id,omitempty"`
-	DurationMinutes  int                                 `json:"duration_minutes"`
-	RoundMinutes     int                                 `json:"round_minutes"`
-	VariantCount     int                                 `json:"variant_count"`
-	ExpansionFreedom *int                                `json:"expansion_freedom,omitempty"`
-	UseAnchorStyle   bool                                `json:"use_anchor_style"`
-	UseDynamicFacts  bool                                `json:"use_dynamic_facts"`
-	GenerateTTSHints bool                                `json:"generate_tts_hints"`
-	AvoidRecent      bool                                `json:"avoid_recent"`
-	ProductLinks     []LiveAgentPlanProductLinkCandidate `json:"product_links"`
-	RhythmNodes      []LiveAgentPlanRhythmNode           `json:"rhythm_nodes"`
-	AnchorStyle      LiveAgentPlanAnchorStyleProfile     `json:"anchor_style"`
-	RecentTexts      []string                            `json:"recent_texts,omitempty"`
+	TenantID            int64                               `json:"tenant_id,omitempty"`
+	RoomID              int64                               `json:"room_id,omitempty"`
+	DurationMinutes     int                                 `json:"duration_minutes"`
+	RoundMinutes        int                                 `json:"round_minutes"`
+	VariantCount        int                                 `json:"variant_count"`
+	StyleMatchIntensity *int                                `json:"style_match_intensity,omitempty"`
+	ExpansionFreedom    *int                                `json:"expansion_freedom,omitempty"`
+	UseAnchorStyle      bool                                `json:"use_anchor_style"`
+	UseDynamicFacts     bool                                `json:"use_dynamic_facts"`
+	GenerateTTSHints    bool                                `json:"generate_tts_hints"`
+	AvoidRecent         bool                                `json:"avoid_recent"`
+	ProductLinks        []LiveAgentPlanProductLinkCandidate `json:"product_links"`
+	RhythmNodes         []LiveAgentPlanRhythmNode           `json:"rhythm_nodes"`
+	AnchorStyle         LiveAgentPlanAnchorStyleProfile     `json:"anchor_style"`
+	RecentTexts         []string                            `json:"recent_texts,omitempty"`
 }
 
 const LiveFactExpansionPolicyVersion = "live-fact-expansion/v1"
@@ -708,6 +709,7 @@ type LiveAgentFullShowGenerationContext struct {
 	ScriptReferences     []LiveAgentFullShowContextScriptReference `json:"script_references"`
 	RhythmNodes          []LiveAgentPlanRhythmNode                 `json:"rhythm_nodes"`
 	AnchorStyle          LiveAgentPlanAnchorStyleProfile           `json:"anchor_style"`
+	StyleMatchIntensity  int                                       `json:"style_match_intensity"`
 	StyleOverlayPrompt   string                                    `json:"style_overlay_prompt,omitempty"`
 	StyleOverlayCount    int                                       `json:"style_overlay_count"`
 	FactExpansion        LiveFactExpansionPolicy                   `json:"fact_expansion"`

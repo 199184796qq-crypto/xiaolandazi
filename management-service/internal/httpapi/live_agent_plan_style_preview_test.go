@@ -9,6 +9,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/stylecontract"
 )
 
 var segmentTargetPattern = regexp.MustCompile(`本段目标(\d+)字`)
@@ -72,9 +73,24 @@ func TestAnchorStyleCoreDimensionsPreserveLiteralHabits(t *testing.T) {
 		}
 	}
 	prompt := anchorStyleTestPrompt(profile, model.LiveAgentFullShowGenerationContext{}, "正式规则", "欢迎新粉", 500)
-	for _, expected := range []string{"目标500字", "475到525字", "我们家", "哥哥姐姐们", "我再给大家说一下", "哟", "本次运行预算", "风格热度=70/100", "原文证据只证明说话方式", "这不是摘要任务", "允许同一事实非连续重复", "fact_expansion 是用户明确选择", "换个说法、再重复一遍", "虚拟时间 steps", "内部模拟参数", "没有正式商品事实时", "测试不保存、不发布、不生成声音"} {
+	for _, expected := range []string{"目标500字", "475到525字", "我们家", "哥哥姐姐们", "我再给大家说一下", "哟", "本次主播风格相似度】100/100", "本次运行预算", "风格热度=100/100", "原文证据只证明说话方式", "这不是摘要任务", "允许同一事实非连续重复", "fact_expansion 是另一项独立", "换个说法、再重复一遍", "虚拟时间 steps", "内部模拟参数", "没有正式商品事实时", "测试不保存、不发布、不生成声音"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("test prompt missing %q", expected)
+		}
+	}
+}
+
+func TestAnchorStyleSimilarityAndFactExpansionStayIndependent(t *testing.T) {
+	profile := normalizeAnchorStyleProfile(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version}})
+	profile = stylecontract.Normalize(profile, strings.Repeat("哥哥姐姐们，我们家慢慢说明白啊。", 12))
+	facts := model.LiveAgentFullShowGenerationContext{
+		AnchorStyle: profile, StyleMatchIntensity: 85,
+		FactExpansion: model.LiveFactExpansionPolicy{Freedom: 25},
+	}
+	prompt := anchorStyleTestPrompt(profile, facts, "正式规则", "自然介绍", 500)
+	for _, expected := range []string{"本次主播风格相似度】85/100", "风格热度=85/100", `"freedom":25`, "不能改变主播风格相似度"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("independent control missing %q", expected)
 		}
 	}
 }

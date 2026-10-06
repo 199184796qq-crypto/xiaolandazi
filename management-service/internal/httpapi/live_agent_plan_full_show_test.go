@@ -105,6 +105,24 @@ func TestCompileFullShowContextSeparatesFormalFactsFromDraftStructure(t *testing
 	if got.FactExpansion.Freedom != 65 || got.FactExpansion.Level != "open" || !got.FactExpansion.UserAuthorized {
 		t.Fatalf("fact expansion authorization missing: %+v", got.FactExpansion)
 	}
+	if got.StyleMatchIntensity != 100 {
+		t.Fatalf("default style similarity=%d want=100", got.StyleMatchIntensity)
+	}
+}
+
+func TestFullShowStyleSimilarityDoesNotChangeFactExpansion(t *testing.T) {
+	styleIntensity, factFreedom := 85, 25
+	input := model.LiveAgentFullShowPreviewInput{
+		DurationMinutes: 30, RoundMinutes: 5, VariantCount: 3,
+		StyleMatchIntensity: &styleIntensity, ExpansionFreedom: &factFreedom,
+	}
+	if err := normalizeFullShowPreviewInput(&input); err != nil {
+		t.Fatal(err)
+	}
+	got := compileFullShowContext(model.LiveAgentPlan{ID: 1, Name: "独立参数"}, nil, nil, nil, nil, input)
+	if got.StyleMatchIntensity != 85 || got.FactExpansion.Freedom != 25 {
+		t.Fatalf("style/fact controls were coupled: style=%d fact=%d", got.StyleMatchIntensity, got.FactExpansion.Freedom)
+	}
 }
 
 func TestCompileFullShowContextRejectsGhostAndExpiredBenefits(t *testing.T) {

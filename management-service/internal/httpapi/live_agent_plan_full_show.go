@@ -43,6 +43,10 @@ func normalizeFullShowPreviewInput(input *model.LiveAgentFullShowPreviewInput) e
 		value := factexpansion.DefaultFreedom
 		input.ExpansionFreedom = &value
 	}
+	if input.StyleMatchIntensity == nil {
+		value := anchorStyleDefaultMatchIntensity
+		input.StyleMatchIntensity = &value
+	}
 	if input.DurationMinutes < 30 || input.DurationMinutes > 240 {
 		return errors.New("直播时长只允许 30 到 240 分钟")
 	}
@@ -54,6 +58,9 @@ func normalizeFullShowPreviewInput(input *model.LiveAgentFullShowPreviewInput) e
 	}
 	if *input.ExpansionFreedom < 0 || *input.ExpansionFreedom > 100 {
 		return errors.New("内容扩展授权只允许 0 到 100")
+	}
+	if *input.StyleMatchIntensity < 1 || *input.StyleMatchIntensity > 100 {
+		return errors.New("主播风格相似度只允许 1 到 100")
 	}
 	if len(input.ProductLinks) > 20 {
 		return errors.New("商品链接草稿最多 20 个")
@@ -82,6 +89,13 @@ func fullShowExpansionFreedom(input model.LiveAgentFullShowPreviewInput) int {
 		return factexpansion.DefaultFreedom
 	}
 	return *input.ExpansionFreedom
+}
+
+func fullShowStyleMatchIntensity(input model.LiveAgentFullShowPreviewInput) int {
+	if input.StyleMatchIntensity == nil {
+		return anchorStyleDefaultMatchIntensity
+	}
+	return *input.StyleMatchIntensity
 }
 
 func generationProductLinks(items []model.LiveAgentPlanProductLink) []model.LiveAgentPlanProductLink {
@@ -335,6 +349,7 @@ func compileFullShowContextAt(
 		ScriptReferences:    nil,
 		RhythmNodes:         rhythmNodes,
 		AnchorStyle:         style,
+		StyleMatchIntensity: fullShowStyleMatchIntensity(input),
 		FactExpansion:       factexpansion.Compile(fullShowExpansionFreedom(input)),
 		ExpansionMode:       "fixed_simulation",
 		ExpansionPlans:      expansionPlans,
@@ -401,8 +416,8 @@ func generateFullShowVariantsOneShotLegacy(
 2. formal_facts、benefits、product_links 是为兼容审计保留的原始分组视图，必须与 authorized_facts 一致；如有冲突，以 authorized_facts 为准。value 是可引用事实；forbidden_wording 绝对不能原样说出；safe_rewrite 是相同沟通意图的优先替代表达。
 3. benefits 只包含编译时仍有效且仍关联现存商品卡的活动事实。活动价、赠品、满减、限时权益只能使用其中已有内容，不得把日常价说成活动价，也不得把一个链接的福利挪给另一个链接。
 4. product_links.room_roles 是商品在直播间里的长期经营定位，只用于安排主次、返场和商品承接。主推、引流、福利、利润、搭配、普通都不是可朗读事实；不得直接播报这些标签，也不得由“福利/利润”推导免费、亏本、优惠或利润承诺。具体讲解方案可以变化，但不能反向篡改商品定位。
-5. rhythm_nodes 和 anchor_style 只控制“怎么组织、怎么说”，不能覆盖事实依据。
-6. fact_expansion 是用户明确选择的内容扩展授权。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 做场景化、类比、故事框架、常识性推演、情绪和促单扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
+5. rhythm_nodes 和 anchor_style 只控制“怎么组织、怎么说”，不能覆盖事实依据。style_match_intensity只控制主播表达还原度；调高它不得扩大事实、数字或策略权限。
+6. fact_expansion 是另一项独立的用户内容扩展授权。它只决定围绕正式事实可展开多少场景、类比、故事框架与常识性解释，不得改变主播风格相似度。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
 7. 如果 use_dynamic_facts=true，库存、实时在线、当前剩余量等必须保留成自然的运行时插槽，例如“库存我看一下后台实时数量再告诉大家”，绝对不能编具体数字。
 8. 所有具体数字、价格、规格、数量、年限、评分、功效结论、资质、社会证明和真实人物证言必须有正式来源；数字保持来源写法，不自行换算。
 9. 碰到审核边缘时执行 boundary_rewrite_first：保留原来的沟通目的，优先采用 safe_rewrite 或换成合法合规的说法，不要因为存在边界风险就整段沉默、只念事实或拒绝扩展。
@@ -1009,20 +1024,21 @@ type liveAgentFullShowAuditPreviewInput struct {
 }
 
 type liveAgentFullShowRegenerateInput struct {
-	TenantID         int64                                     `json:"tenant_id,omitempty"`
-	RoomID           int64                                     `json:"room_id,omitempty"`
-	DurationMinutes  int                                       `json:"duration_minutes"`
-	RoundMinutes     int                                       `json:"round_minutes"`
-	ExpansionFreedom *int                                      `json:"expansion_freedom,omitempty"`
-	UseAnchorStyle   bool                                      `json:"use_anchor_style"`
-	UseDynamicFacts  bool                                      `json:"use_dynamic_facts"`
-	GenerateTTSHints bool                                      `json:"generate_tts_hints"`
-	AvoidRecent      bool                                      `json:"avoid_recent"`
-	ProductLinks     []model.LiveAgentPlanProductLinkCandidate `json:"product_links"`
-	RhythmNodes      []model.LiveAgentPlanRhythmNode           `json:"rhythm_nodes"`
-	AnchorStyle      model.LiveAgentPlanAnchorStyleProfile     `json:"anchor_style"`
-	Variants         []model.LiveAgentFullShowVariant          `json:"variants"`
-	RecentTexts      []string                                  `json:"recent_texts,omitempty"`
+	TenantID            int64                                     `json:"tenant_id,omitempty"`
+	RoomID              int64                                     `json:"room_id,omitempty"`
+	DurationMinutes     int                                       `json:"duration_minutes"`
+	RoundMinutes        int                                       `json:"round_minutes"`
+	ExpansionFreedom    *int                                      `json:"expansion_freedom,omitempty"`
+	StyleMatchIntensity *int                                      `json:"style_match_intensity,omitempty"`
+	UseAnchorStyle      bool                                      `json:"use_anchor_style"`
+	UseDynamicFacts     bool                                      `json:"use_dynamic_facts"`
+	GenerateTTSHints    bool                                      `json:"generate_tts_hints"`
+	AvoidRecent         bool                                      `json:"avoid_recent"`
+	ProductLinks        []model.LiveAgentPlanProductLinkCandidate `json:"product_links"`
+	RhythmNodes         []model.LiveAgentPlanRhythmNode           `json:"rhythm_nodes"`
+	AnchorStyle         model.LiveAgentPlanAnchorStyleProfile     `json:"anchor_style"`
+	Variants            []model.LiveAgentFullShowVariant          `json:"variants"`
+	RecentTexts         []string                                  `json:"recent_texts,omitempty"`
 }
 
 func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r *http.Request) {
@@ -1049,20 +1065,21 @@ func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r
 		return
 	}
 	previewInput := model.LiveAgentFullShowPreviewInput{
-		TenantID:         input.TenantID,
-		RoomID:           input.RoomID,
-		DurationMinutes:  input.DurationMinutes,
-		RoundMinutes:     input.RoundMinutes,
-		VariantCount:     len(input.Variants),
-		ExpansionFreedom: input.ExpansionFreedom,
-		UseAnchorStyle:   input.UseAnchorStyle,
-		UseDynamicFacts:  input.UseDynamicFacts,
-		GenerateTTSHints: input.GenerateTTSHints,
-		AvoidRecent:      input.AvoidRecent,
-		ProductLinks:     input.ProductLinks,
-		RhythmNodes:      input.RhythmNodes,
-		AnchorStyle:      input.AnchorStyle,
-		RecentTexts:      input.RecentTexts,
+		TenantID:            input.TenantID,
+		RoomID:              input.RoomID,
+		DurationMinutes:     input.DurationMinutes,
+		RoundMinutes:        input.RoundMinutes,
+		VariantCount:        len(input.Variants),
+		StyleMatchIntensity: input.StyleMatchIntensity,
+		ExpansionFreedom:    input.ExpansionFreedom,
+		UseAnchorStyle:      input.UseAnchorStyle,
+		UseDynamicFacts:     input.UseDynamicFacts,
+		GenerateTTSHints:    input.GenerateTTSHints,
+		AvoidRecent:         input.AvoidRecent,
+		ProductLinks:        input.ProductLinks,
+		RhythmNodes:         input.RhythmNodes,
+		AnchorStyle:         input.AnchorStyle,
+		RecentTexts:         input.RecentTexts,
 	}
 	if err := normalizeFullShowPreviewInput(&previewInput); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
