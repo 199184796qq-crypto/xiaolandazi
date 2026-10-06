@@ -1,4 +1,5 @@
 import { showPermissionToast } from './uiFeedback'
+import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStream'
 import { liveSupportRoomForRequest } from './liveSupportAccess'
 import type {
   AccountDashboard,
@@ -129,6 +130,7 @@ import type {
   LiveAgentPlan,
   LiveAgentPlanStyleOverlayProfile,
   LiveAnchorStyleOverlayItem,
+  LiveAnchorAppliedTraining,
   AnchorStylePluginCatalog,
   LiveAgentPlanFact,
   LiveAgentPlanFactCandidate,
@@ -231,7 +233,7 @@ interface ListResponse<T> {
   items: T[]
 }
 
-export async function request<T>(url: string, init?: RequestInit): Promise<T> {
+export async function request<T>(url: string, init?: RequestInit, onPreviewEvent?: (event: PreviewStreamEvent) => void): Promise<T> {
   const headers = new Headers(init?.headers)
   const supportRoomId = liveSupportRoomForRequest(url)
   if (supportRoomId) headers.set('X-Live-Support-Room-ID', String(supportRoomId))
@@ -271,6 +273,9 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
     return undefined as T
   }
 
+  if (onPreviewEvent && response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    return readPreviewStream<T>(response, onPreviewEvent)
+  }
   return response.json() as Promise<T>
 }
 
@@ -991,6 +996,7 @@ export function updateLiveAgentPlanProductLink(
     expected_version_no?: number
     link_key: string
     product_name: string
+    room_roles?: string[]
     spec?: string
     daily_price?: string
     quantity?: string
@@ -1511,7 +1517,7 @@ export function confirmLiveAgentPlanScriptAnalysis(planId: number, scriptId: num
   })
 }
 
-export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: number; room_id: number; topic: string; target_chars: number; expansion_freedom: number; source_text: string; anchor_style: LiveAgentPlanScriptAnalysis['anchor_style']; selected_facts?: string[]; transient_overlays?: LiveAnchorStyleOverlayItem[] }) {
+export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: number; room_id: number; topic: string; target_chars: number; expansion_freedom: number; conversion_intensity?: number; source_text: string; anchor_style: LiveAgentPlanScriptAnalysis['anchor_style']; selected_facts?: string[]; transient_overlays?: LiveAnchorStyleOverlayItem[]; continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }; advisory_overrides?: string[] }, onPreviewEvent?: (event: PreviewStreamEvent) => void) {
   return request<{
     text: string
     target_chars: number
@@ -1527,6 +1533,11 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     style_purity?: { passed: boolean; issues: Array<{ location: string; category: string; text: string; reason: string }> }
     style_vector_evaluation?: { available: boolean; shadow_only: true; model?: string; similarity?: number; score?: number; error?: string }
     overlay_qc?: { available: boolean; passed: boolean; adherence_score: number; overuse_risk: number; issue_codes: string[]; summary: string; model?: string; latency_ms?: number; error?: string; repair_attempted: boolean }
+    content_strategy?: { version: string; live_type: string; industry_code: string; plan_goal?: string; conversion_intensity: number; expansion_freedom: number; role_sequence: string[]; scheduling_mode?: string; actual_steps?: Array<{ index: number; role: string; primary_fact_id?: string; support_fact_ids?: string[]; source: string; reason: string }>; product_plan?: Array<{ link_key: string; product_name?: string; room_roles: string[]; emphasis: string; revisit: string; primary_angles?: string[]; transitions?: Array<{ target_link_key: string; reason: string }>; position_source: string; reason: string }>; layers: Array<{ layer: string; source: string; effects: string[] }> }
+    advisories?: Array<{ code: string; level: string; title: string; message: string; suggestion: string; user_decidable: boolean; decision_target?: string; hard_boundary: boolean }>
+    continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }
+    speech_text_only?: boolean
+    applied_trainings?: LiveAnchorAppliedTraining[]
     protocol: string
     repair_attempted: boolean
     generation_mode?: 'time_driven_segments' | string
@@ -1535,7 +1546,7 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     latency_ms?: number
     transient_overlay_count?: number
   }>(
-    '/api/v1/live-agent-plans/' + planId + '/anchor-style/test', { method: 'POST', body: JSON.stringify(input) },
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style/test', { method: 'POST', body: JSON.stringify(input), headers: onPreviewEvent ? { Accept: 'text/event-stream' } : undefined }, onPreviewEvent,
   )
 }
 
@@ -1836,6 +1847,7 @@ export interface LiveStrategyIntentResponse {
   }
   changes?: {
     product_name?: string
+    room_roles?: string[]
     spec?: string
     daily_price?: string
     quantity?: string

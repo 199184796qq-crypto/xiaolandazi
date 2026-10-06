@@ -143,6 +143,27 @@ func TestAnchorStyleGenerationUsesOrderedTimeUnitsAndCarriesLengthDebt(t *testin
 		if !strings.Contains(call.Messages[1].Content, "第"+strconv.Itoa(index+1)+"/4个小段") {
 			t.Fatalf("call %d is not an ordered time unit", index+1)
 		}
+		if !strings.Contains(call.Messages[1].Content, "主播时间记忆（仅用于连续承接，不是事实来源）") || !strings.Contains(call.Messages[1].Content, `"memory"`) {
+			t.Fatalf("call %d did not receive the shadow mainline context", index+1)
+		}
+	}
+}
+
+func TestAnchorStylePreviewCarriesActiveEngagementIntoNextUnit(t *testing.T) {
+	steps := []model.LiveSpeechExpansionStep{
+		{Index: 1, StartSecond: 0, EndSecond: 5, TargetChars: 200, Stage: "value", Goal: "先讲清重点", InteractionOpportunity: true},
+		{Index: 2, StartSecond: 5, EndSecond: 10, TargetChars: 200, Stage: "scene", Goal: "接着讲使用场景"},
+	}
+	generation := model.LiveAgentFullShowGenerationContext{
+		ExpansionMode:  "fixed_simulation",
+		ExpansionPlans: []model.LiveSpeechExpansionPlan{{Version: model.LiveSpeechExpansionVersion, Mode: "fixed_simulation", VariantKey: "A", TargetChars: 400, Steps: steps}},
+	}
+	gateway := &adaptiveSegmentGateway{}
+	if _, _, _, _, _, err := generateAnchorStyleTest(context.Background(), gateway, generation, "", "自然说明", 400); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.calls) != 2 || !strings.Contains(gateway.calls[1].Messages[1].Content, `"active_engagement"`) {
+		t.Fatalf("active engagement was not carried into the next unit: calls=%d", len(gateway.calls))
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/mainlinebrain"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 	"livecompanion/management/internal/speechexpander"
@@ -228,17 +229,20 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var input struct {
-		TenantID          int64                                 `json:"tenant_id"`
-		RoomID            int64                                 `json:"room_id"`
-		Topic             string                                `json:"topic"`
-		TargetChars       int                                   `json:"target_chars"`
-		ExpansionFreedom  *int                                  `json:"expansion_freedom,omitempty"`
-		SourceText        string                                `json:"source_text"`
-		AnchorStyle       model.LiveAgentPlanAnchorStyleProfile `json:"anchor_style"`
-		SelectedFacts     []string                              `json:"selected_facts,omitempty"`
-		TransientOverlays []model.LiveAnchorStyleOverlayItem    `json:"transient_overlays"`
+		TenantID            int64                                 `json:"tenant_id"`
+		RoomID              int64                                 `json:"room_id"`
+		Topic               string                                `json:"topic"`
+		TargetChars         int                                   `json:"target_chars"`
+		ExpansionFreedom    *int                                  `json:"expansion_freedom,omitempty"`
+		SourceText          string                                `json:"source_text"`
+		AnchorStyle         model.LiveAgentPlanAnchorStyleProfile `json:"anchor_style"`
+		SelectedFacts       []string                              `json:"selected_facts,omitempty"`
+		TransientOverlays   []model.LiveAnchorStyleOverlayItem    `json:"transient_overlays"`
+		ConversionIntensity *int                                  `json:"conversion_intensity,omitempty"`
+		Continuation        *speechruntime.Continuation           `json:"continuation,omitempty"`
+		AdvisoryOverrides   []string                              `json:"advisory_overrides,omitempty"`
 	}
-	if err := readJSON(w, r, &input); err != nil || input.RoomID <= 0 || utf8.RuneCountInString(input.Topic) > 300 || utf8.RuneCountInString(input.SourceText) > 60000 || len(input.AnchorStyle.Dimensions) > 40 || len(input.SelectedFacts) > 100 || len(input.TransientOverlays) > 6 {
+	if err := readJSON(w, r, &input); err != nil || input.RoomID <= 0 || utf8.RuneCountInString(input.Topic) > 300 || utf8.RuneCountInString(input.SourceText) > 60000 || len(input.AnchorStyle.Dimensions) > 40 || len(input.SelectedFacts) > 100 || len(input.TransientOverlays) > 6 || len(input.AdvisoryOverrides) > 20 {
 		writeError(w, http.StatusBadRequest, "请选择直播间，主题最多300字")
 		return
 	}
@@ -251,6 +255,18 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	}
 	if input.ExpansionFreedom != nil && (*input.ExpansionFreedom < 0 || *input.ExpansionFreedom > 100) {
 		writeError(w, http.StatusBadRequest, "内容扩展授权须为0到100")
+		return
+	}
+	conversionIntensity := 45
+	if input.ConversionIntensity != nil {
+		if *input.ConversionIntensity < 0 || *input.ConversionIntensity > 100 {
+			writeError(w, http.StatusBadRequest, "成交推进力度须为0到100")
+			return
+		}
+		conversionIntensity = *input.ConversionIntensity
+	}
+	if err := input.Continuation.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
@@ -325,6 +341,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		}
 	}
 	generation := compileFullShowContext(plan, facts, benefits, links, nil, model.LiveAgentFullShowPreviewInput{RoomID: input.RoomID, DurationMinutes: 30, RoundMinutes: 5, VariantCount: 3, ExpansionFreedom: input.ExpansionFreedom, UseAnchorStyle: true, UseDynamicFacts: true, AnchorStyle: style})
+	generation.IndustryCode = strings.TrimSpace(industry)
 	virtualMinutes := (input.TargetChars + 249) / 250
 	generation.ExpansionPlans = speechexpander.BuildFixedPlans(speechexpander.Input{
 		DurationMinutes: virtualMinutes,
@@ -334,10 +351,32 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		BenefitKeys:     fullShowBenefitKeys(generation),
 		LinkKeys:        fullShowLinkKeys(generation),
 	})
-	if err := s.attachPlanStyleOverlay(r.Context(), tenantID, planID, &generation); err != nil {
+	cursor := speechexpander.ContentScheduleCursor{}
+	if input.Continuation != nil {
+		cursor.CompletedUnits = input.Continuation.CompletedUnits
+		for _, unit := range input.Continuation.RecentUnits {
+			if strings.TrimSpace(unit.PrimaryFactID) != "" {
+				cursor.RecentFactIDs = append(cursor.RecentFactIDs, unit.PrimaryFactID)
+			}
+			cursor.RecentFactIDs = append(cursor.RecentFactIDs, unit.SupportFactIDs...)
+			if strings.TrimSpace(unit.ContentRole) != "" {
+				cursor.RecentRoles = append(cursor.RecentRoles, unit.ContentRole)
+			}
+		}
+	}
+	freedom := generation.FactExpansion.Freedom
+	scheduledPlans, contentStrategy := speechexpander.ScheduleContent(generation.ExpansionPlans, generation.AuthorizedFacts, speechexpander.ContentStrategyInput{
+		LiveType: "commerce", IndustryCode: generation.IndustryCode, PlanGoal: input.Topic,
+		ConversionIntensity: conversionIntensity, ExpansionFreedom: freedom, ProductLinks: generation.ProductLinks, Cursor: cursor,
+	})
+	generation.ExpansionPlans = scheduledPlans
+	overlayProfile, err := s.store.GetLiveAgentPlanStyleOverlay(r.Context(), tenantID, planID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取方案叠加风格失败")
 		return
 	}
+	applyPlanStyleOverlay(overlayProfile, &generation)
+	appliedTrainings := appliedAnchorTrainingReceipts(overlayProfile.Items, true)
 	if len(input.TransientOverlays) > 0 {
 		transient, normalizeErr := styleoverlay.NormalizeItems(input.TransientOverlays)
 		if normalizeErr != nil {
@@ -346,6 +385,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		}
 		transientPrompt := styleoverlay.Render(model.LiveAgentPlanStyleOverlayProfile{Items: transient})
 		if transientPrompt != "" {
+			appliedTrainings = append(appliedTrainings, appliedAnchorTrainingReceipts(transient, false)...)
 			if generation.StyleOverlayPrompt != "" {
 				generation.StyleOverlayPrompt += "\n"
 			}
@@ -365,7 +405,18 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 285*time.Second)
 	defer cancel()
 	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "live_anchor_style_test", map[string]any{"plan_id": planID, "room_id": input.RoomID, "target_chars": input.TargetChars})
-	text, result, checked, audited, repaired, err := generateAnchorStyleTest(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars)
+	stream := openAnchorPreviewStream(w, r)
+	if stream != nil {
+		w = stream.resultWriter()
+	}
+	observer := &anchorStyleGenerationObserver{Strategy: &contentStrategy,
+		Progress: func(message string) { stream.send("progress", map[string]any{"message": message}) },
+		Segment: func(text string, index int) {
+			stream.send("segment", map[string]any{"text": text, "segment_index": index})
+		},
+	}
+	observer.Progress("正在安排第一小段，正文返回后会立即显示。")
+	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
 	if err != nil {
 		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars}
 		var gateErr *anchorStyleTestGateError
@@ -379,9 +430,10 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		}
 		s.finishAISingleUse(r.Context(), invocationID, "failed", result.Provider, result.Model, result.LatencyMS, failureMetadata)
 		log.Printf("anchor style test rejected plan=%d room=%d provider=%s model=%s latency_ms=%d err=%v", planID, input.RoomID, result.Provider, result.Model, result.LatencyMS, err)
-		writeError(w, http.StatusBadGateway, "测试文案的小段生成或事实边界检查未完成，请重试")
+		writeError(w, http.StatusBadGateway, "后续小段生成或校验未完成，已显示的正文保留供你查看，请重试。")
 		return
 	}
+	observer.Progress("正文已返回，正在核对风格并整理本次生成说明。")
 	overlayQC := liveAnchorStyleOverlayQC{Available: false, Passed: false, Error: "没有启用叠加风格，本次无需叠加风格质检"}
 	if generation.StyleOverlayCount > 0 {
 		qcInvocationID := s.beginAISingleUse(r.Context(), actor, nil, "live_style_overlay_qc", map[string]any{"plan_id": planID, "room_id": input.RoomID, "phase": "initial"})
@@ -410,17 +462,19 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		}
 	}
 	purityReport := stylecontract.AssessPurity(style)
+	advisories := buildLiveMainlineAdvisories(generation, contentStrategy, text, audited, input.AdvisoryOverrides)
 	minChars, maxChars := anchorStyleTargetRange(input.TargetChars)
 	segmentCount := 0
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "runtime_style_score": runtimeEvaluation.StyleScore, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "runtime_style_score": runtimeEvaluation.StyleScore, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
+	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS})
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -490,6 +544,24 @@ func stringKeySet(values []string) map[string]bool {
 // even a one-primary-fact plan repeatedly regenerated the same CTA bundle.
 func scopeAnchorStyleSegmentContext(generation model.LiveAgentFullShowGenerationContext, step model.LiveSpeechExpansionStep) model.LiveAgentFullShowGenerationContext {
 	scoped := generation
+	assignedFactIDs := stringKeySet(append(append([]string(nil), step.PrimaryFactID), step.SupportFactIDs...))
+	// New purpose-driven plans select exact manifest facts. In this mode the
+	// compatibility views are intentionally hidden from the rendering model;
+	// otherwise choosing one product attribute exposes the entire product card
+	// and every small unit collapses back into a complete miniature pitch.
+	if len(assignedFactIDs) > 0 {
+		scoped.FormalFacts = nil
+		scoped.Benefits = nil
+		scoped.ProductLinks = nil
+		scoped.AuthorizedFacts = nil
+		for _, fact := range generation.AuthorizedFacts {
+			if assignedFactIDs[strings.TrimSpace(fact.FactID)] {
+				scoped.AuthorizedFacts = append(scoped.AuthorizedFacts, fact)
+			}
+		}
+		scoped.ScriptReferences = nil
+		return scoped
+	}
 	factKeys := stringKeySet(step.FactKeys)
 	benefitKeys := stringKeySet(step.BenefitKeys)
 	linkKeys := stringKeySet(step.LinkKeys)
@@ -538,6 +610,7 @@ func anchorStyleSegmentPrompt(
 	policyText, topic string,
 	step model.LiveSpeechExpansionStep,
 	spec speechruntime.SegmentSpec,
+	mainlineMemory string,
 ) string {
 	segmentContext := scopeAnchorStyleSegmentContext(generation, step)
 	segmentContext.ExpansionPlans = []model.LiveSpeechExpansionPlan{{
@@ -575,6 +648,8 @@ func anchorStyleSegmentPrompt(
 %s
 【上一小段结尾】
 %s
+【主播时间记忆（仅用于连续承接，不是事实来源）】
+%s
 
 执行要求：
 1. segment_role、opening_allowed、closing_allowed、continuation_mode是程序约束。opening才可正常开场，middle必须从上一段语义继续，closing才可完整收口。
@@ -585,10 +660,12 @@ func anchorStyleSegmentPrompt(
 6. interaction_mode=offer_without_fake_reply时最多提出一个自然问题，不得假装已经收到回答；问题之后仍要留出可被Core现有互动机制接住的自然边界。
 7. 当前step决定本段目标、优先事实和表达动作；只静默执行，绝不念出step、target_chars、fact key、换个说法、重复一遍、品牌背书、信息点、收一下、扩写或回环策略。
 8. authorized_facts 是本段唯一统一可生成事实清单；商品事实、福利事实和补充事实地位相同，只能使用 can_generate=true 的条目且不能跨链接错配。formal_facts、benefits、product_links 是兼容视图；forbidden_wording 绝对不能原样输出，表达相同意图时优先采用 safe_rewrite。其余内容按 fact_expansion 的用户授权扩展。
+9. product_links.room_roles 与本次 product_strategy 只用于后台决定商品主次、返场和承接；主推、引流、福利、利润、搭配、普通不是可朗读事实，不能直接播报，也不能据此推导免费、亏本、优惠或利润承诺。
 9. 具体数字、功效结论、资质、社会证明、真实人物证言和实时状态必须有来源；不得假装看到了真实弹幕。
 10. 本段只执行step.style_capabilities中列出的偶发表达能力；为空就不要强塞口结、叠词、改口或慢思考。
 11. finish_mode=continue时只收住当前句，不做整轮结束；prepare_close时开始收束；close时自然结束本轮。
-12. avoid_recent是本段必须认真执行的去机械化提醒；重要事实可以重复，但要更换事实角度、话语动作和链接组合，不能只替换连接词。`, spec.Index, spec.Count, spec.TargetChars, spec.MinChars, spec.MaxChars, spec.RemainingChars, lengthRule, styleText, generation.StyleOverlayPrompt, string(contextJSON), string(specJSON), policyText, topic, spec.PreviousTail)
+ 12. avoid_recent是本段必须认真执行的去机械化提醒；重要事实可以重复，但要更换事实角度、话语动作和链接组合，不能只替换连接词。
+ 13. 主播时间记忆只用于承接语气、已讲内容和节奏；正式事实仍以授权事实、商品链接和活动数据为准，不得把记忆中的猜测当成事实。`, spec.Index, spec.Count, spec.TargetChars, spec.MinChars, spec.MaxChars, spec.RemainingChars, lengthRule, styleText, generation.StyleOverlayPrompt, string(contextJSON), string(specJSON), policyText, topic, spec.PreviousTail, mainlineMemory)
 }
 
 // generateAnchorStyleTest is time driven: each virtual-clock step generates one
@@ -596,6 +673,25 @@ func anchorStyleSegmentPrompt(
 // last unit receives the exact remainder and is sent back for shortening when
 // it exceeds its local range.
 func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, generation model.LiveAgentFullShowGenerationContext, policyText, topic string, targetChars int) (string, agentgateway.Response, stylecontract.CheckResult, model.LiveAgentFullShowAudit, bool, error) {
+	var checkpoint speechruntime.Continuation
+	return generateAnchorStyleTestWithState(ctx, gateway, generation, policyText, topic, targetChars, nil, &checkpoint)
+}
+
+func generateAnchorStyleTestContinuing(ctx context.Context, gateway anchorStyleCompleter, generation model.LiveAgentFullShowGenerationContext, policyText, topic string, targetChars int, previous *speechruntime.Continuation, observers ...*anchorStyleGenerationObserver) (string, agentgateway.Response, stylecontract.CheckResult, model.LiveAgentFullShowAudit, bool, speechruntime.Continuation, error) {
+	var checkpoint speechruntime.Continuation
+	text, response, check, audit, repaired, err := generateAnchorStyleTestWithState(ctx, gateway, generation, policyText, topic, targetChars, previous, &checkpoint, observers...)
+	return text, response, check, audit, repaired, checkpoint, err
+}
+
+func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCompleter, generation model.LiveAgentFullShowGenerationContext, policyText, topic string, targetChars int, previous *speechruntime.Continuation, checkpoint *speechruntime.Continuation, observers ...*anchorStyleGenerationObserver) (string, agentgateway.Response, stylecontract.CheckResult, model.LiveAgentFullShowAudit, bool, error) {
+	var observer *anchorStyleGenerationObserver
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
+	if observer != nil && observer.Strategy != nil {
+		observer.Strategy.SchedulingMode = "model_per_segment"
+		observer.Strategy.ActualSteps = []speechexpander.ContentDecisionReceipt{}
+	}
 	minChars, maxChars := anchorStyleTargetRange(targetChars)
 	steps := []model.LiveSpeechExpansionStep{}
 	if len(generation.ExpansionPlans) > 0 {
@@ -605,7 +701,28 @@ func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, 
 		steps = []model.LiveSpeechExpansionStep{{Index: 1, StartSecond: 0, EndSecond: 45, Stage: "fact_direct", Goal: "自然讲清当前重点", TargetChars: targetChars}}
 	}
 
-	ledger := speechruntime.NewLedger(targetChars)
+	ledger := speechruntime.NewContinuingLedger(targetChars, previous)
+	brainSession := mainlinebrain.NewSessionState(
+		fmt.Sprintf("preview:%d:%d:%d", generation.PlanID, generation.RoomID, time.Now().UnixNano()),
+		mainlinebrain.ModePreview,
+		time.Now(),
+	)
+	brainStart := brainSession.StartedAt
+	if previous != nil {
+		for index, unit := range previous.RecentUnits {
+			createdAt := brainStart.Add(-time.Duration(len(previous.RecentUnits)-index) * time.Minute)
+			factIDs := append([]string(nil), unit.PrimaryFactID)
+			factIDs = append(factIDs, unit.SupportFactIDs...)
+			_ = brainSession.AddMemory(mainlinebrain.MemoryItem{
+				ID: fmt.Sprintf("continuation:%d:%d", previous.CompletedUnits-len(previous.RecentUnits)+index+1, index), Kind: "segment",
+				Topic: topic, Purpose: unit.ContentRole, Summary: unit.ContentRole, ExactText: unit.TextTail,
+				FactKeys: factIDs, CreatedAt: createdAt, LastSeenAt: createdAt,
+			})
+		}
+		if len(previous.RecentUnits) > 0 {
+			brainSession.PreviousTail = previous.RecentUnits[len(previous.RecentUnits)-1].TextTail
+		}
+	}
 	var result agentgateway.Response
 	var totalLatency int64
 	totalCalls := 0
@@ -615,9 +732,38 @@ func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, 
 		if ledger.RemainingChars() <= 0 {
 			break
 		}
-		spec := ledger.Next(step, index, len(steps))
 		wasRepaired := repaired
-		basePrompt := anchorStyleSegmentPrompt(generation, policyText, topic, step, spec)
+		virtualNow := brainStart.Add(time.Duration(step.EndSecond) * time.Second)
+		brainSession.ExpireEngagement(virtualNow)
+		brainPromptContext := struct {
+			Memory       mainlinebrain.MemorySnapshot  `json:"memory"`
+			Engagement   *mainlinebrain.Engagement     `json:"active_engagement,omitempty"`
+			PreviousTail string                        `json:"previous_tail,omitempty"`
+			CurrentTopic string                        `json:"current_topic,omitempty"`
+			Conversion   mainlinebrain.ConversionState `json:"conversion"`
+		}{
+			Memory:       brainSession.MemorySnapshot(virtualNow, mainlinebrain.DefaultMemoryPolicy()),
+			Engagement:   brainSession.Engagement,
+			PreviousTail: brainSession.PreviousTail,
+			CurrentTopic: brainSession.CurrentTopic,
+			Conversion:   brainSession.Conversion,
+		}
+		brainPromptJSON, _ := json.Marshal(brainPromptContext)
+		var decision speechexpander.ContentDecisionReceipt
+		if observer != nil && observer.Strategy != nil {
+			if observer.Progress != nil {
+				observer.Progress(fmt.Sprintf("正在安排第%d小段的讲解目的和材料。", index+1))
+			}
+			var planningResponse agentgateway.Response
+			step, decision, planningResponse = planNextMainlineSegment(ctx, gateway, generation, *observer.Strategy, step, ledger.Checkpoint(), string(brainPromptJSON), policyText, topic)
+			totalCalls++
+			totalLatency += planningResponse.LatencyMS
+			if err := ctx.Err(); err != nil {
+				return "", result, stylecontract.CheckResult{}, model.LiveAgentFullShowAudit{}, repaired, err
+			}
+		}
+		spec := ledger.Next(step, index, len(steps))
+		basePrompt := anchorStyleSegmentPrompt(generation, policyText, topic, step, spec, string(brainPromptJSON))
 		request := agentgateway.Request{
 			Stage: "speech_generation",
 			Messages: []agentgateway.Message{
@@ -630,6 +776,13 @@ func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, 
 		var segmentAudit model.LiveAgentFullShowAudit
 		accepted := false
 		for attempt := 0; attempt < 3; attempt++ {
+			if observer != nil && observer.Progress != nil {
+				message := fmt.Sprintf("正在写第%d小段，完成后立即追加。", index+1)
+				if attempt > 0 {
+					message = fmt.Sprintf("正在调整第%d小段的长度或表达，不会重写前文。", index+1)
+				}
+				observer.Progress(message)
+			}
 			response, err := gateway.Complete(ctx, request)
 			totalCalls++
 			totalLatency += response.LatencyMS
@@ -698,6 +851,48 @@ func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, 
 		if !ledger.Commit(segmentID) {
 			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, errors.New("提交时间单元失败")
 		}
+		if observer != nil {
+			if observer.Strategy != nil {
+				observer.Strategy.ActualSteps = append(observer.Strategy.ActualSteps, decision)
+			}
+			if observer.Segment != nil {
+				observer.Segment(ledger.CommittedText(), index+1)
+			}
+		}
+		primaryFacts := []string{}
+		if strings.TrimSpace(spec.PrimaryFactKey) != "" {
+			primaryFacts = append(primaryFacts, spec.PrimaryFactKey)
+		}
+		primaryFacts = append(primaryFacts, spec.FactKeys...)
+		brainTask := mainlinebrain.SegmentTask{
+			ID:              fmt.Sprintf("%s-segment-%04d", brainSession.ID, spec.Index),
+			SessionID:       brainSession.ID,
+			Sequence:        spec.Index,
+			Topic:           topic,
+			Purpose:         spec.Goal,
+			PrimaryFactKeys: primaryFacts,
+			SupportFactKeys: append(append([]string(nil), spec.BenefitKeys...), spec.LinkKeys...),
+			PreviousTail:    spec.PreviousTail,
+			TargetChars:     spec.TargetChars,
+			MinChars:        spec.MinChars,
+			MaxChars:        spec.MaxChars,
+			OpeningAllowed:  spec.OpeningAllowed,
+			ClosingAllowed:  spec.ClosingAllowed,
+			ConversionLevel: mainlinebrain.ConversionNatural,
+		}
+		if err := brainSession.AcceptSegment(brainTask, candidate, virtualNow); err != nil {
+			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, fmt.Errorf("记录主播大脑片段失败: %w", err)
+		}
+		if spec.InteractionOpportunity {
+			if err := brainSession.IssueEngagement(mainlinebrain.Engagement{
+				ID:      fmt.Sprintf("%s-engagement-%04d", brainSession.ID, spec.Index),
+				Kind:    mainlinebrain.EngagementCommentPrompt,
+				Purpose: "当前主线允许发起一次主动互动",
+				Prompt:  "本段可自然邀请观众反馈，但不能假装已经收到反馈",
+			}, virtualNow); err != nil {
+				log.Printf("[CONTINUOUS_SPEECH] engagement shadow state skipped: plan=%d room=%d unit=%d error=%v", generation.PlanID, generation.RoomID, spec.Index, err)
+			}
+		}
 		variantKey := "A"
 		if len(generation.ExpansionPlans) > 0 && strings.TrimSpace(generation.ExpansionPlans[0].VariantKey) != "" {
 			variantKey = generation.ExpansionPlans[0].VariantKey
@@ -706,6 +901,9 @@ func generateAnchorStyleTest(ctx context.Context, gateway anchorStyleCompleter, 
 	}
 
 	text := strings.TrimSpace(ledger.CommittedText())
+	if checkpoint != nil {
+		*checkpoint = ledger.Checkpoint()
+	}
 	result.Text = text
 	result.LatencyMS = totalLatency
 	check := stylecontract.CheckLongText(generation.AnchorStyle, text)

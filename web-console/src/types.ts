@@ -222,6 +222,7 @@ export interface SystemAgentActionPayload {
   corrected_command?: string
   link_key?: string
   product_name?: string
+  room_roles?: string[]
   spec?: string
   daily_price?: string
   quantity?: string
@@ -233,6 +234,7 @@ export interface SystemAgentActionPayload {
 	attribute_display_type?: string
 	attribute_display_priority?: number
   current_product_name?: string
+  current_room_roles?: string[]
   current_link_key?: string
   current_spec?: string
   current_daily_price?: string
@@ -1445,6 +1447,7 @@ export interface LiveAgentPlanFactCandidate {
 export interface LiveAgentPlanProductLinkCandidate {
   link_key: string
   product_name?: string
+  room_roles?: string[]
   spec?: string
   daily_price?: string
   activity_price?: string
@@ -1489,6 +1492,7 @@ export interface LiveAgentPlanProductLink {
   plan_id: number
   link_key: string
   product_name?: string
+  room_roles: string[]
   spec?: string
   daily_price?: string
   quantity?: string
@@ -1657,6 +1661,15 @@ export interface LiveAnchorStyleOverlayRule {
   micro_actions?: string[]
   avoid: string[]
   confidence: number
+}
+
+export interface LiveAnchorAppliedTraining {
+  id: string
+  saved: boolean
+  feedback: string
+  label: string
+  diagnosis?: string
+  mainline_instruction: string
 }
 
 export interface LiveAnchorStyleOverlayItem {

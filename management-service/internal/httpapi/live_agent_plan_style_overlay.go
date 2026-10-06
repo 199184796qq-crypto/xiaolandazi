@@ -280,6 +280,11 @@ func (s *Server) attachPlanStyleOverlay(ctx context.Context, tenantID, planID in
 	if err != nil {
 		return err
 	}
+	applyPlanStyleOverlay(profile, generation)
+	return nil
+}
+
+func applyPlanStyleOverlay(profile model.LiveAgentPlanStyleOverlayProfile, generation *model.LiveAgentFullShowGenerationContext) {
 	generation.StyleOverlayPrompt = styleoverlay.Render(profile)
 	generation.ExpansionPlans = speechexpander.AssignStyleOverlays(generation.ExpansionPlans, profile)
 	generation.StyleOverlayCount = 0
@@ -288,5 +293,4 @@ func (s *Server) attachPlanStyleOverlay(ctx context.Context, tenantID, planID in
 			generation.StyleOverlayCount++
 		}
 	}
-	return nil
 }

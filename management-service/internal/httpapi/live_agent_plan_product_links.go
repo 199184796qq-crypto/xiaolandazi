@@ -32,6 +32,9 @@ func validateLiveAgentPlanProductLinkCandidate(candidate model.LiveAgentPlanProd
 	if utf8.RuneCountInString(candidate.Audience) > 512 {
 		return errors.New("商品适用说明不能超过512字")
 	}
+	if _, err := normalizeLiveRoomProductRoleValues(candidate.RoomRoles); err != nil {
+		return err
+	}
 	if len(candidate.SourceQuotes) > 20 {
 		return errors.New("商品来源依据最多20条")
 	}
@@ -60,6 +63,29 @@ func validateLiveAgentPlanProductLinkCandidate(candidate model.LiveAgentPlanProd
 		return errors.New("商品审核分类无效")
 	}
 	return nil
+}
+
+func normalizeLiveRoomProductRoleValues(values []string) ([]string, error) {
+	allowed := make(map[string]bool, len(model.LiveRoomProductRoles))
+	for _, value := range model.LiveRoomProductRoles {
+		allowed[value] = true
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if !allowed[value] {
+			return nil, errors.New("商品直播间定位无效")
+		}
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	if seen[model.LiveRoomProductRoleOrdinary] && len(result) > 1 {
+		return nil, errors.New("普通定位不能与其它直播间定位同时选择")
+	}
+	return result, nil
 }
 
 func validateLiveAgentPlanProductAttribute(attribute model.LiveAgentPlanProductAttributeCandidate) error {
@@ -394,6 +420,7 @@ func (s *Server) liveAgentPlanProductLinkUpdate(w http.ResponseWriter, r *http.R
 	candidate := model.LiveAgentPlanProductLinkCandidate{
 		LinkKey:      strings.TrimSpace(input.LinkKey),
 		ProductName:  strings.TrimSpace(input.ProductName),
+		RoomRoles:    input.RoomRoles,
 		Spec:         strings.TrimSpace(input.Spec),
 		DailyPrice:   strings.TrimSpace(input.DailyPrice),
 		Quantity:     strings.TrimSpace(input.Quantity),
@@ -406,6 +433,9 @@ func (s *Server) liveAgentPlanProductLinkUpdate(w http.ResponseWriter, r *http.R
 	}
 	input.LinkKey = canonicalPlanProductLinkKey(candidate.LinkKey)
 	input.ProductName = candidate.ProductName
+	if input.RoomRoles != nil {
+		input.RoomRoles, _ = normalizeLiveRoomProductRoleValues(input.RoomRoles)
+	}
 	input.Spec = candidate.Spec
 	input.DailyPrice = candidate.DailyPrice
 	input.Quantity = candidate.Quantity

@@ -400,12 +400,13 @@ func generateFullShowVariantsOneShotLegacy(
 1. authorized_facts 是商品卡、当前有效福利和补充事实编译后的统一可生成事实清单，只允许使用 can_generate=true 的条目。product、benefit、supplemental_fact 都是事实来源，不得擅自补全或猜测。
 2. formal_facts、benefits、product_links 是为兼容审计保留的原始分组视图，必须与 authorized_facts 一致；如有冲突，以 authorized_facts 为准。value 是可引用事实；forbidden_wording 绝对不能原样说出；safe_rewrite 是相同沟通意图的优先替代表达。
 3. benefits 只包含编译时仍有效且仍关联现存商品卡的活动事实。活动价、赠品、满减、限时权益只能使用其中已有内容，不得把日常价说成活动价，也不得把一个链接的福利挪给另一个链接。
-4. rhythm_nodes 和 anchor_style 只控制“怎么组织、怎么说”，不能覆盖事实依据。
-5. fact_expansion 是用户明确选择的内容扩展授权。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 做场景化、类比、故事框架、常识性推演、情绪和促单扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
-6. 如果 use_dynamic_facts=true，库存、实时在线、当前剩余量等必须保留成自然的运行时插槽，例如“库存我看一下后台实时数量再告诉大家”，绝对不能编具体数字。
-7. 所有具体数字、价格、规格、数量、年限、评分、功效结论、资质、社会证明和真实人物证言必须有正式来源；数字保持来源写法，不自行换算。
-8. 碰到审核边缘时执行 boundary_rewrite_first：保留原来的沟通目的，优先采用 safe_rewrite 或换成合法合规的说法，不要因为存在边界风险就整段沉默、只念事实或拒绝扩展。
-9. “换个说法、再重复一遍、品牌背书、信息点、收一下、扩写、回环策略”等是内部编稿动作，绝对不能念给观众；直接说改写后的内容。
+4. product_links.room_roles 是商品在直播间里的长期经营定位，只用于安排主次、返场和商品承接。主推、引流、福利、利润、搭配、普通都不是可朗读事实；不得直接播报这些标签，也不得由“福利/利润”推导免费、亏本、优惠或利润承诺。具体讲解方案可以变化，但不能反向篡改商品定位。
+5. rhythm_nodes 和 anchor_style 只控制“怎么组织、怎么说”，不能覆盖事实依据。
+6. fact_expansion 是用户明确选择的内容扩展授权。除法律、平台/L1/L2绝对禁区、formal_facts.forbidden_wording 和 always_locked 外，可以按照 freedom、level、allowed 做场景化、类比、故事框架、常识性推演、情绪和促单扩展；不得把假设、泛化或故事冒充成已经发生的真实用户事件。
+7. 如果 use_dynamic_facts=true，库存、实时在线、当前剩余量等必须保留成自然的运行时插槽，例如“库存我看一下后台实时数量再告诉大家”，绝对不能编具体数字。
+8. 所有具体数字、价格、规格、数量、年限、评分、功效结论、资质、社会证明和真实人物证言必须有正式来源；数字保持来源写法，不自行换算。
+9. 碰到审核边缘时执行 boundary_rewrite_first：保留原来的沟通目的，优先采用 safe_rewrite 或换成合法合规的说法，不要因为存在边界风险就整段沉默、只念事实或拒绝扩展。
+10. “换个说法、再重复一遍、品牌背书、信息点、收一下、扩写、回环策略”等是内部编稿动作，绝对不能念给观众；直接说改写后的内容。
 
 【生成目标】
 一次生成 %d 套完整轮次口播，每套目标约 %d 分钟、约 %d 个中文字符。每套都必须是可以直接连续播的完整口语，不是提纲，不要输出舞台说明或内部系统术语。
@@ -678,11 +679,11 @@ func fullShowSimilarityPercent(left, right string) int {
 	return intersection * 100 / len(union)
 }
 
-func fullShowForbiddenFactPhrases(facts []model.LiveAgentFullShowContextFact) []string {
+func fullShowForbiddenFactPhrases(context model.LiveAgentFullShowGenerationContext) []string {
 	seen := map[string]struct{}{}
 	phrases := make([]string, 0)
-	for _, fact := range facts {
-		for _, phrase := range strings.FieldsFunc(fact.ForbiddenWording, func(r rune) bool {
+	add := func(value string) {
+		for _, phrase := range strings.FieldsFunc(value, func(r rune) bool {
 			return r == '\n' || r == '\r' || r == ';' || r == '；'
 		}) {
 			phrase = strings.Trim(strings.TrimSpace(phrase), "\"'“”‘’")
@@ -696,6 +697,15 @@ func fullShowForbiddenFactPhrases(facts []model.LiveAgentFullShowContextFact) []
 			phrases = append(phrases, phrase)
 		}
 	}
+	for _, fact := range context.FormalFacts {
+		add(fact.ForbiddenWording)
+	}
+	// Exact segment scoping may hide compatibility views from the renderer, so
+	// the hard audit also reads the unified manifest. This keeps user-authored
+	// "不要这样说" boundaries active in mainline and interaction paths.
+	for _, fact := range context.AuthorizedFacts {
+		add(fact.ForbiddenWording)
+	}
 	return phrases
 }
 
@@ -705,7 +715,7 @@ func auditFullShowVariants(
 	recentTexts []string,
 ) []model.LiveAgentFullShowVariant {
 	allowedCommercial := fullShowAllowedCommercialTokens(generationContext)
-	forbiddenFactPhrases := fullShowForbiddenFactPhrases(generationContext.FormalFacts)
+	forbiddenFactPhrases := fullShowForbiddenFactPhrases(generationContext)
 	allowedLinks := map[string]struct{}{}
 	for _, link := range generationContext.ProductLinks {
 		allowedLinks[canonicalPlanProductLinkKey(link.LinkKey)] = struct{}{}
@@ -863,6 +873,7 @@ func repairFailedFullShowVariants(
 
 【修复硬规则】
 1. authorized_facts 是商品、福利和补充事实的统一锁定依据；formal_facts、benefits、product_links 是兼容视图。不得反转、篡改、跨链接错配或伪造具体值；forbidden_wording 不得出现在正文，表达相同意图时优先使用 safe_rewrite。
+1.1 product_links.room_roles 只用于后台安排商品主次、返场和承接，不得把主推、引流、福利、利润、搭配、普通等内部标签写入观众口播，也不得从标签推导优惠或经营承诺。
 2. 每一条 error 审计问题都必须在新稿中消除，尤其是：禁止说法、新增数字、未知链接、写死库存、高相似和内部编稿动作泄漏。
 3. 价格、规格、数量、年限、评分等数字保持来源里的阿拉伯数字写法，不改成中文数字、不自行换算。
 4. use_dynamic_facts=true 时，库存只能说“我看一下后台实时数量”等自然占位表达，绝不写具体剩余数。

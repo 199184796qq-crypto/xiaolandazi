@@ -39,24 +39,25 @@ type liveStrategyIntentTarget struct {
 }
 
 type liveStrategyIntentChanges struct {
-	ProductName              string `json:"product_name,omitempty"`
-	Spec                     string `json:"spec,omitempty"`
-	DailyPrice               string `json:"daily_price,omitempty"`
-	Quantity                 string `json:"quantity,omitempty"`
-	Audience                 string `json:"audience,omitempty"`
-	AttributeCode            string `json:"attribute_code,omitempty"`
-	AttributeLabel           string `json:"attribute_label,omitempty"`
-	AttributeValue           string `json:"attribute_value,omitempty"`
-	AttributeUnit            string `json:"attribute_unit,omitempty"`
-	AttributeDisplayType     string `json:"attribute_display_type,omitempty"`
-	AttributeDisplayPriority int    `json:"attribute_display_priority,omitempty"`
-	ActivityPrice            string `json:"activity_price,omitempty"`
-	Gift                     string `json:"gift,omitempty"`
-	Activity                 string `json:"activity,omitempty"`
-	StartsAt                 string `json:"starts_at,omitempty"`
-	EndsAt                   string `json:"ends_at,omitempty"`
-	FactValue                string `json:"fact_value,omitempty"`
-	ScriptText               string `json:"script_text,omitempty"`
+	ProductName              string   `json:"product_name,omitempty"`
+	RoomRoles                []string `json:"room_roles,omitempty"`
+	Spec                     string   `json:"spec,omitempty"`
+	DailyPrice               string   `json:"daily_price,omitempty"`
+	Quantity                 string   `json:"quantity,omitempty"`
+	Audience                 string   `json:"audience,omitempty"`
+	AttributeCode            string   `json:"attribute_code,omitempty"`
+	AttributeLabel           string   `json:"attribute_label,omitempty"`
+	AttributeValue           string   `json:"attribute_value,omitempty"`
+	AttributeUnit            string   `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string   `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int      `json:"attribute_display_priority,omitempty"`
+	ActivityPrice            string   `json:"activity_price,omitempty"`
+	Gift                     string   `json:"gift,omitempty"`
+	Activity                 string   `json:"activity,omitempty"`
+	StartsAt                 string   `json:"starts_at,omitempty"`
+	EndsAt                   string   `json:"ends_at,omitempty"`
+	FactValue                string   `json:"fact_value,omitempty"`
+	ScriptText               string   `json:"script_text,omitempty"`
 }
 
 type liveStrategyIntentModelOutput struct {
@@ -91,6 +92,7 @@ type liveStrategyIntentOutput struct {
 type liveStrategyIntentProductContext struct {
 	LinkKey     string                                      `json:"link_key"`
 	ProductName string                                      `json:"product_name,omitempty"`
+	RoomRoles   []string                                    `json:"room_roles,omitempty"`
 	Spec        string                                      `json:"spec,omitempty"`
 	DailyPrice  string                                      `json:"daily_price,omitempty"`
 	Quantity    string                                      `json:"quantity,omitempty"`
@@ -204,6 +206,7 @@ func liveStrategyProgramOutput(value agentunderstanding.UnifiedIntent) liveStrat
 	}
 	if changes := value.Changes; changes != nil {
 		result.Changes.ProductName = intentMapString(changes, "product_name")
+		result.Changes.RoomRoles = intentMapStringSlice(changes, "room_roles")
 		result.Changes.Spec = intentMapString(changes, "spec")
 		result.Changes.DailyPrice = intentMapString(changes, "daily_price")
 		result.Changes.Quantity = intentMapString(changes, "quantity")
@@ -226,6 +229,29 @@ func liveStrategyProgramOutput(value agentunderstanding.UnifiedIntent) liveStrat
 		result.Intent = "chat"
 	}
 	return result
+}
+
+func intentMapStringSlice(values map[string]any, key string) []string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return nil
+	}
+	result := []string{}
+	switch typed := value.(type) {
+	case []string:
+		result = append(result, typed...)
+	case []any:
+		for _, item := range typed {
+			result = append(result, strings.TrimSpace(fmt.Sprint(item)))
+		}
+	case string:
+		result = strings.FieldsFunc(typed, func(r rune) bool { return r == ',' || r == '，' || r == '、' || r == '+' })
+	}
+	normalized, err := normalizeLiveRoomProductRoleValues(result)
+	if err != nil {
+		return nil
+	}
+	return normalized
 }
 
 func intentMapString(values map[string]any, key string) string {
@@ -367,7 +393,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 		for _, item := range productItems {
 			contextItem := liveStrategyIntentProductContext{
 				LinkKey: item.LinkKey, ProductName: item.ProductName, Spec: item.Spec,
-				DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
+				RoomRoles: item.RoomRoles, DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
 				VersionNo: item.VersionNo,
 			}
 			for _, attribute := range item.Attributes {
@@ -456,7 +482,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 	for _, item := range products {
 		product := agentunderstanding.LiveStrategyProduct{
 			LinkKey: item.LinkKey, ProductName: item.ProductName, Spec: item.Spec,
-			DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
+			RoomRoles: item.RoomRoles, DailyPrice: item.DailyPrice, Quantity: item.Quantity, Audience: item.Audience,
 		}
 		for _, attribute := range item.Attributes {
 			product.Attributes = append(product.Attributes, agentunderstanding.LiveStrategyProductAttribute{
@@ -528,7 +554,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
   "reply": "普通聊天时直接回复；需要澄清时给一句简短问题；command 时可留空",
   "target": {"link_key":"", "product_attribute_id":0, "attribute_code":"", "attribute_label":"", "benefit_key":"", "fact_category":"", "fact_key":"", "script_reference_key":"", "script_title":"", "plan_id":0, "plan_name":""},
   "changes": {
-    "product_name":"", "spec":"", "daily_price":"", "quantity":"", "audience":"", "attribute_code":"", "attribute_label":"", "attribute_value":"", "attribute_unit":"", "attribute_display_type":"text", "attribute_display_priority":0,
+    "product_name":"", "room_roles":[], "spec":"", "daily_price":"", "quantity":"", "audience":"", "attribute_code":"", "attribute_label":"", "attribute_value":"", "attribute_unit":"", "attribute_display_type":"text", "attribute_display_priority":0,
     "activity_price":"", "gift":"", "activity":"", "starts_at":"", "ends_at":"",
     "fact_value":"", "script_text":""
   },
@@ -539,7 +565,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 【核心规则】
 1. 当前模块只是上下文提示，不等于用户每句话都是修改命令。普通聊天必须 kind=chat、intent=chat。
 2. “1号链接活动”“1号链接的福利”表示以1号链接定位活动福利；如果修改的是赠品、活动价、活动内容、开始/结束/截止时间，必须是 benefit.*，不是 product.*。
-3. 只有修改商品名称、规格、日常价、数量、适用人群等稳定商品资料时才是 product.*；修改品类特有的“个性属性/商品属性”时使用 product_attribute.*，不要把它误判成普通事实或商品规格。
+3. 修改商品名称、规格、日常价、数量、适用人群、直播间定位等稳定商品资料时是 product.*；修改品类特有的“个性属性/商品属性”时使用 product_attribute.*，不要把它误判成普通事实或商品规格。直播间定位只允许 main/traffic/benefit/profit/bundle/ordinary，分别对应主推/引流/福利/利润/搭配/普通，可多选；ordinary 不能与其它项并存。用户说“去掉福利定位”时，room_roles 必须返回修改后的完整列表，而不是只返回被删除项。
 4. update 的 changes 只放用户明确想改的字段，禁止为了凑完整对象复制旧值。
 5. 用户说“现在/立即/马上/立即生效”作为开始时间时，将 starts_at 解析成当前时间，格式 YYYY-MM-DD HH:mm。其它相对时间也尽量结合当前时间解析；无法可靠确定就放进 missing 并 kind=clarify。
 6. 用户说“修改活动”但没说字段时，benefit.update + kind=clarify；用户说“修改1号链接”且上下文无法判断是商品还是活动时，kind=clarify、intent=unknown。

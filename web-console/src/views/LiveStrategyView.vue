@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
+import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
 import {
   activateLiveAgentConfigVersion,
@@ -434,6 +436,11 @@ const reusableAnchorStyleLongTestRunning = ref(false)
 const reusableAnchorStyleLongTestText = ref('')
 const reusableAnchorStyleLongTestSegments = ref(0)
 const reusableAnchorStyleLongTestMinutes = ref(30)
+const reusableAnchorStyleLongTestOpen = ref(false)
+const reusableAnchorStyleLongTestStage = ref('等待开始')
+const reusableAnchorStyleLongTestOutput = ref<HTMLElement | null>(null)
+const reusableAnchorStyleLongTestContinuation = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['continuation'] | undefined>(undefined)
+const reusableAnchorStyleLongTestAdvisories = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['advisories']>([])
 const reusableAnchorStyleProfile = computed(() => selectedReusableAnchorStyle.value?.profile || null)
 const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dimensions?.length
   ? reusableAnchorStyleProfile.value
@@ -443,14 +450,19 @@ const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dime
 const anchorStyleSourceText = ref('')
 const anchorStyleSampleExpanded = ref(true)
 const anchorStyleTestBusy = ref(false)
+const anchorStyleOutputOpen = ref(false)
+const anchorStylePartialText = ref('')
+const anchorStyleGenerationProgress = ref('')
 const anchorStyleTestTopic = ref('本轮主线介绍当前商品的核心价值，并从一个正式事实自然展开')
 const anchorStyleTestTargetChars = ref(500)
+const anchorStyleConversionIntensity = ref(55)
 const anchorStyleTestResult = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>> | null>(null)
 const anchorStyleTestError = ref('')
 const anchorStyleAnalysisQC = ref<LiveAnchorStyleAnalysisQC | null>(null)
 const anchorStyleCorrectionFeedback = ref('')
 const anchorStyleCorrectionCandidates = ref<LiveAnchorStyleOverlayItem[]>([])
 const anchorStyleCorrectionHistory = ref<Array<{ feedback: string; diagnosis: string; model: string }>>([])
+const anchorStyleAdvisoryOverrides = ref<string[]>([])
 const anchorStyleCorrectionBusy = ref(false)
 const anchorStyleCorrectionError = ref('')
 const styleOverlayProfile = ref<LiveAgentPlanStyleOverlayProfile | null>(null)
@@ -687,29 +699,65 @@ async function runReusableLongTest() {
   const sampleText = reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || currentAnchorStyleSampleText(style)
   if (!style?.dimensions?.length || !sampleText) { reusableAnchorStyleError.value = '请先分析至少一份主播样本，再进行长时间测试。'; return }
   reusableAnchorStyleLongTestRunning.value = true
+  reusableAnchorStyleLongTestOpen.value = true
   reusableAnchorStyleLongTestText.value = ''
   reusableAnchorStyleLongTestSegments.value = 0
+  reusableAnchorStyleLongTestContinuation.value = undefined
+  reusableAnchorStyleLongTestAdvisories.value = []
+  reusableAnchorStyleLongTestStage.value = '正在准备连续主线测试…'
   reusableAnchorStyleError.value = ''
   try {
     const totalSegments = Math.max(1, Math.ceil(Math.max(5, reusableAnchorStyleLongTestMinutes.value) / 5))
     for (let index = 0; index < totalSegments && reusableAnchorStyleLongTestRunning.value; index += 1) {
-      const previousTail = reusableAnchorStyleLongTestText.value.slice(-120)
-      const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。${previousTail ? `上一段最后几句仅供衔接参考：${previousTail}` : ''}`.slice(0, 280)
+      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，模型会先通过事实和风格检查再显示…`
+      const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。`.slice(0, 280)
       const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
         room_id: activeRoomId.value, topic: continuityTopic,
         target_chars: Math.min(1800, Math.max(300, anchorStyleTestTargetChars.value)),
-        expansion_freedom: fullShowExpansionFreedom.value, source_text: sampleText, anchor_style: style,
+        expansion_freedom: fullShowExpansionFreedom.value, conversion_intensity: anchorStyleConversionIntensity.value,
+        source_text: sampleText, anchor_style: style, continuation: reusableAnchorStyleLongTestContinuation.value,
         selected_facts: selectedFactKeys.value,
         transient_overlays: anchorStyleCorrectionCandidates.value,
+        advisory_overrides: anchorStyleAdvisoryOverrides.value,
       })
+      reusableAnchorStyleLongTestContinuation.value = result.continuation
+      for (const advisory of result.advisories || []) {
+        if (!reusableAnchorStyleLongTestAdvisories.value?.some((item) => item.code === advisory.code)) {
+          reusableAnchorStyleLongTestAdvisories.value = [...(reusableAnchorStyleLongTestAdvisories.value || []), advisory]
+        }
+      }
       reusableAnchorStyleLongTestText.value += (reusableAnchorStyleLongTestText.value ? '\n\n' : '') + result.text
       reusableAnchorStyleLongTestSegments.value += 1
+      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已通过检查，继续生成下一段`
+      await nextTick()
+      reusableAnchorStyleLongTestOutput.value?.scrollTo({ top: reusableAnchorStyleLongTestOutput.value.scrollHeight, behavior: 'smooth' })
     }
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败' }
+    if (reusableAnchorStyleLongTestRunning.value) reusableAnchorStyleLongTestStage.value = `测试完成，共生成 ${reusableAnchorStyleLongTestSegments.value} 段`
+    else reusableAnchorStyleLongTestStage.value = `已停止，已保留 ${reusableAnchorStyleLongTestSegments.value} 段`
+  } catch (err) {
+    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经通过检查的片段'
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败'
+  }
   finally { reusableAnchorStyleLongTestRunning.value = false }
 }
 
-function stopReusableLongTest() { reusableAnchorStyleLongTestRunning.value = false }
+function stopReusableLongTest() {
+  reusableAnchorStyleLongTestRunning.value = false
+  reusableAnchorStyleLongTestStage.value = '正在停止，当前请求完成后停止继续生成'
+}
+
+function ignoreAnchorStyleAdvisory(code: string) {
+  if (!code || anchorStyleAdvisoryOverrides.value.includes(code)) return
+  anchorStyleAdvisoryOverrides.value = [...anchorStyleAdvisoryOverrides.value, code]
+  if (anchorStyleTestResult.value?.advisories) {
+    anchorStyleTestResult.value = {
+      ...anchorStyleTestResult.value,
+      advisories: anchorStyleTestResult.value.advisories.filter((item) => item.code !== code),
+    }
+  }
+  reusableAnchorStyleLongTestAdvisories.value = (reusableAnchorStyleLongTestAdvisories.value || []).filter((item) => item.code !== code)
+  reusableAnchorStyleNotice.value = '已记录你的选择：后续测试不再重复提示这条建议。硬规则和事实禁说边界仍然有效。'
+}
 
 async function toggleReusableAnchorPlugin(item: AnchorStylePluginCatalogItem) {
   const style = selectedReusableAnchorStyle.value
@@ -3539,11 +3587,30 @@ async function saveProductLinkField(
     expected_version_no: item.version_no,
     link_key: item.link_key,
     product_name: item.product_name || '',
+    room_roles: item.room_roles || [],
     spec: item.spec || '',
     daily_price: item.daily_price || '',
     quantity: item.quantity || '',
     audience: item.audience || '',
     [field]: value,
+  }, item.tenant_id)
+  if (currentRoomPlanId.value === planId) {
+    formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
+  }
+}
+
+async function saveProductRoomRoles(item: LiveAgentPlanProductLink, roomRoles: string[]) {
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新编辑')
+  const updated = await updateLiveAgentPlanProductLink(planId, item.id, {
+    expected_version_no: item.version_no,
+    link_key: item.link_key,
+    product_name: item.product_name || '',
+    room_roles: roomRoles,
+    spec: item.spec || '',
+    daily_price: item.daily_price || '',
+    quantity: item.quantity || '',
+    audience: item.audience || '',
   }, item.tenant_id)
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
@@ -4407,10 +4474,13 @@ async function executeAnchorStyleTest(options?: { lockedSampleText?: string; lea
     candidate_patterns: [],
     excluded_from_style: [],
   }
-  const scope = `${room.id}:${planId}`
+  const scope = `${room.id}:${planId}:${selectedReusableAnchorStyleId.value || 0}`
   anchorStyleTestBusy.value = true
   anchorStyleTestError.value = ''
   anchorStyleTestResult.value = null
+  anchorStyleOutputOpen.value = true
+  anchorStylePartialText.value = ''
+  anchorStyleGenerationProgress.value = '正在连接服务器，收到正文后会立即显示…'
   try {
     // A feedback-learning request can take several seconds. During that time the
     // editable source state may be normalized or refreshed by another watcher.
@@ -4423,15 +4493,28 @@ async function executeAnchorStyleTest(options?: { lockedSampleText?: string; lea
       topic: anchorStyleTestTopic.value,
       target_chars: Math.max(100, Math.min(3000, Math.round(Number(anchorStyleTestTargetChars.value) || 500))),
       expansion_freedom: fullShowExpansionFreedom.value,
+      conversion_intensity: anchorStyleConversionIntensity.value,
       source_text: sourceText,
       anchor_style: style,
       selected_facts: selectedFactKeys.value,
       transient_overlays: anchorStyleCorrectionCandidates.value,
+      advisory_overrides: anchorStyleAdvisoryOverrides.value,
+    }, (event) => {
+      if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` !== scope) return
+      if (event.type === 'progress') anchorStyleGenerationProgress.value = event.message
+      if (event.type === 'segment') anchorStylePartialText.value = event.text
     })
-    if (`${activeRoomId.value}:${currentRoomPlanId.value}` === scope) anchorStyleTestResult.value = result
+    if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
+      anchorStyleTestResult.value = result
+      anchorStylePartialText.value = result.text
+      anchorStyleGenerationProgress.value = '生成完成'
+    }
     return true
   } catch (err) {
-    if (`${activeRoomId.value}:${currentRoomPlanId.value}` === scope) anchorStyleTestError.value = err instanceof Error ? err.message : '风格测试失败'
+    if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
+      anchorStyleTestError.value = err instanceof Error ? err.message : '风格测试失败'
+      anchorStyleGenerationProgress.value = '生成未完成，已返回的文字保留供你查看'
+    }
     return false
   } finally { anchorStyleTestBusy.value = false }
 }
@@ -4849,6 +4932,14 @@ watch(
   { immediate: true },
 )
 
+watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
+  anchorStyleOutputOpen.value = false
+  anchorStylePartialText.value = ''
+  anchorStyleGenerationProgress.value = ''
+  anchorStyleTestResult.value = null
+  anchorStyleTestError.value = ''
+})
+
 watch([activeRoomId, currentRoomPlanId], () => {
   analysisDraft.value = null
   planScripts.value = []
@@ -5252,7 +5343,7 @@ onBeforeUnmount(() => {
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :remove-item="removeProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" />
+            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" />
           </section>
 
           <div class="strategy-product-link-grid">
@@ -5973,12 +6064,44 @@ onBeforeUnmount(() => {
                   <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
                   <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
                   <label>热度/扩展授权：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
+                  <label>促单强度：{{ anchorStyleConversionIntensity }}/100<input v-model.number="anchorStyleConversionIntensity" type="range" min="0" max="100" step="5" /></label>
                 </div>
                 <div class="reusable-anchor-style-fact-picker"><span>可选事实（只决定说哪些事实，不改变主播风格）</span><button v-for="fact in formalFacts.slice(0, 12)" :key="fact.key" type="button" :class="{ selected: selectedFactKeys.includes(fact.key) }" @click="selectedFactKeys = selectedFactKeys.includes(fact.key) ? selectedFactKeys.filter((key) => key !== fact.key) : [...selectedFactKeys, fact.key]">{{ fact.key }}</button></div>
                 <div class="reusable-anchor-style-test-actions"><button class="primary-button" type="button" :disabled="anchorStyleTestBusy || !selectedReusableAnchorStyle.profile.dimensions?.length || !currentPlan" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成中…' : '生成一小段测试文案' }}</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleLongTestRunning" @click="runReusableLongTest">{{ reusableAnchorStyleLongTestRunning ? '长时间测试中…' : '长时间主播测试' }}</button><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="strategy-version-button" @click="stopReusableLongTest">停止</button><label v-if="!reusableAnchorStyleLongTestRunning">测试时长（分钟）<input v-model.number="reusableAnchorStyleLongTestMinutes" type="number" min="5" max="240" step="5" /></label></div>
                 <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
-                <pre v-if="anchorStyleTestResult" class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult.text }}</pre>
+                <section v-if="anchorStyleOutputOpen || anchorStyleTestResult" aria-live="polite" aria-label="话术生成输出">
+                  <p v-if="anchorStyleOutputOpen" class="muted-text">{{ anchorStyleGenerationProgress }}<span v-if="anchorStylePartialText"> · 已返回 {{ [...anchorStylePartialText].length }} 字</span></p>
+                  <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
+                </section>
+                <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
                 <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>客观风格评分：{{ anchorStyleTestResult.runtime_evaluation?.style_score ?? '—' }}</span><span>用词：{{ anchorStyleTestResult.runtime_evaluation?.lexical_score ?? '—' }}</span><span>节奏：{{ anchorStyleTestResult.runtime_evaluation?.rhythm_score ?? '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
+                  <header><strong>本次话术安排</strong><small>每写一小段，模型都会根据前文重新安排；选择不合适或超时，由系统兜底。这些说明不会读进直播间。</small></header>
+                  <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
+                  <template v-if="anchorStyleTestResult.content_strategy.actual_steps?.length">
+                    <p>本次实际顺序：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.actual_steps.map((step) => step.role), anchorStyleTestResult.content_strategy.live_type) }}</p>
+                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }} · {{ step.source === 'model' ? '模型安排' : '系统兜底' }}：{{ step.reason }}</p></details>
+                  </template>
+                  <p v-else>默认环节参考（不是本次实际顺序）：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.role_sequence, anchorStyleTestResult.content_strategy.live_type) }}</p>
+                  <details v-if="anchorStyleTestResult.content_strategy.product_plan?.length" open>
+                    <summary>商品讲解方向（由直播间定位生成，本次方案可变）</summary>
+                    <article v-for="item in anchorStyleTestResult.content_strategy.product_plan" :key="item.link_key">
+                      <strong>{{ item.link_key }} · {{ item.product_name || '未命名商品' }}</strong>
+                      <span>直播间定位：{{ productRoomRolesLabel(item.room_roles || []) }} · {{ productPlanDirectionLabel(item.emphasis, item.revisit) }}</span>
+                      <small>{{ item.reason }}</small>
+                      <small v-if="item.primary_angles?.length">优先角度：{{ item.primary_angles.join('、') }}</small>
+                      <small v-for="transition in (item.transitions || [])" :key="transition.target_link_key">可承接 {{ transition.target_link_key }}：{{ transition.reason }}</small>
+                    </article>
+                  </details>
+                </section>
+                <section v-if="anchorStyleTestResult?.advisories?.length" class="reusable-anchor-style-advisory-panel">
+                  <header><strong>后台校对建议</strong><small>建议不会进入主话术或 TTS；你可以保留当前表达，系统会记住本次选择。</small></header>
+                  <article v-for="item in anchorStyleTestResult.advisories" :key="item.code">
+                    <strong>{{ item.title }}</strong><span>{{ item.message }}</span><small>建议：{{ item.suggestion }}</small>
+                    <button v-if="item.user_decidable && !item.hard_boundary" type="button" class="strategy-version-button" @click="ignoreAnchorStyleAdvisory(item.code)">保留当前表达</button>
+                    <em v-else>硬边界：必须改写或补充依据</em>
+                  </article>
+                </section>
                 <section v-if="anchorStyleTestResult" class="strategy-style-correction-loop reusable-anchor-style-training-loop">
                   <header><div><span>ITERATIVE CALIBRATION</span><strong>哪里不像，就继续告诉系统</strong></div><em>{{ anchorStyleCorrectionCandidates.length }} 条未保存调整</em></header>
                   <p>直接写这版和真实主播哪里不同，也可以粘贴其他 AI 的差异分析。系统只提取可复用的说话方式，重新生成一小段给你比较；满意前不会改变正式主播风格。</p>
@@ -5998,7 +6121,16 @@ onBeforeUnmount(() => {
                   <small v-if="!anchorRulebook">需要先分析真实主播样本，系统才能判断“哪里不像”。</small>
                   <div v-if="anchorStyleCorrectionError" class="inline-error">{{ anchorStyleCorrectionError }}</div>
                 </section>
-                <div v-if="reusableAnchorStyleLongTestText" class="reusable-anchor-style-long-test"><header><strong>长时间测试结果</strong><span>已生成 {{ reusableAnchorStyleLongTestSegments }} 段</span></header><pre>{{ reusableAnchorStyleLongTestText }}</pre></div>
+                 <div v-if="reusableAnchorStyleLongTestText" class="reusable-anchor-style-long-test"><header><div><strong>长时间测试结果</strong><span>{{ reusableAnchorStyleLongTestStage }}</span></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = true">打开连续输出窗口</button></header><pre>{{ reusableAnchorStyleLongTestText }}</pre></div>
+                 <section v-if="reusableAnchorStyleLongTestAdvisories?.length" class="reusable-anchor-style-advisory-panel"><header><strong>长时间测试的后台建议</strong><small>只供校对，不会进入连续主线正文；建议会按代码去重。</small></header><article v-for="item in reusableAnchorStyleLongTestAdvisories" :key="item.code"><strong>{{ item.title }}</strong><span>{{ item.message }}</span><small>建议：{{ item.suggestion }}</small><button v-if="item.user_decidable && !item.hard_boundary" type="button" class="strategy-version-button" @click="ignoreAnchorStyleAdvisory(item.code)">保留当前表达</button><em v-else>硬边界：必须改写或补充依据</em></article></section>
+                 <div v-if="reusableAnchorStyleLongTestOpen" class="reusable-anchor-style-stream-backdrop" @click.self="reusableAnchorStyleLongTestOpen = false">
+                   <section class="reusable-anchor-style-stream-window" role="dialog" aria-modal="true" aria-label="连续主线输出窗口">
+                     <header class="reusable-anchor-style-stream-header"><div><span>LIVE MAINLINE PREVIEW</span><strong>主播主线连续输出</strong><small>{{ reusableAnchorStyleLongTestStage }}</small></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = false">关闭窗口</button></header>
+                     <div class="reusable-anchor-style-stream-metrics"><span>已生成 <b>{{ reusableAnchorStyleLongTestSegments }}</b> 段</span><span>测试时长 <b>{{ reusableAnchorStyleLongTestMinutes }}</b> 分钟</span><span>模式 <b>小段连续生成</b></span></div>
+                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过检查…' }}</pre>
+                     <footer><span>每段通过事实、字数和风格检查后才追加；本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
+                   </section>
+                 </div>
               </div>
 
               <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'personalization'" class="reusable-anchor-style-tab-panel">
@@ -6192,8 +6324,10 @@ onBeforeUnmount(() => {
             </div>
             <p>{{ anchorRulebook ? '使用样本口播规范与已启用的叠加风格共同测试；' : '本次没有真人样本，只测试已启用的叠加风格；' }}系统按时间单元逐段生成，前段长短会自动结转，临近结束按剩余字数收束。测试不发布、不生成声音，也不改变当前直播。</p>
             <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
+            <section v-if="anchorStyleOutputOpen && !anchorStyleTestResult" aria-live="polite"><p>{{ anchorStyleGenerationProgress }}</p><pre class="reusable-anchor-style-generated-text">{{ anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre></section>
             <template v-if="anchorStyleTestResult">
               <p class="strategy-anchor-test-text">{{ anchorStyleTestResult.text }}</p>
+              <AnchorTrainingReceipt :items="anchorStyleTestResult.applied_trainings" />
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
               <small v-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
@@ -9378,6 +9512,8 @@ onBeforeUnmount(() => {
 .strategy-workflow-nav .strategy-workflow-step,.strategy-workflow-nav .strategy-workflow-output { min-height:72px!important; }
 .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:16px!important; font-weight:900!important; }
 @media(max-width:1200px) { .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:15px!important; } }
+.reusable-anchor-style-advisory-panel{display:grid;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid #e4e7f3;border-radius:15px;background:linear-gradient(135deg,#fffdf5,#f8f9ff)}.reusable-anchor-style-advisory-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.reusable-anchor-style-advisory-panel>header strong{color:#4e5b80;font-size:13px}.reusable-anchor-style-advisory-panel>header small{color:#9199ac;font-size:10px;line-height:1.5}.reusable-anchor-style-advisory-panel>article{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid #ece9da;border-radius:11px;background:rgba(255,255,255,.76)}.reusable-anchor-style-advisory-panel>article strong{color:#9a6c2e;font-size:11px}.reusable-anchor-style-advisory-panel>article span,.reusable-anchor-style-advisory-panel>article small{color:#68738c;font-size:11px;line-height:1.55}.reusable-anchor-style-advisory-panel>article small{grid-column:2/-1;color:#8a93a7}.reusable-anchor-style-advisory-panel>article em{color:#be6a55;font-size:10px;font-style:normal;font-weight:800}.reusable-anchor-style-advisory-panel>article button{white-space:nowrap}@media(max-width:780px){.reusable-anchor-style-advisory-panel>header{display:grid}.reusable-anchor-style-advisory-panel>article{grid-template-columns:1fr}.reusable-anchor-style-advisory-panel>article small{grid-column:auto}}
 .reusable-anchor-style-settings-link{padding:8px;border:0;background:transparent;color:#6574be;font-size:12px;font-weight:850;text-align:left;cursor:pointer}
 .reusable-anchor-style-sample-compose-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.reusable-anchor-style-file-button{display:inline-flex;align-items:center;cursor:pointer}.reusable-anchor-style-file-button input{display:none}
+.reusable-anchor-style-long-test header>div{display:grid;gap:3px}.reusable-anchor-style-long-test header>div span{color:#8a95a9;font-size:11px}.reusable-anchor-style-stream-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:rgba(24,34,66,.42);backdrop-filter:blur(3px)}.reusable-anchor-style-stream-window{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;width:min(1080px,calc(100vw - 48px));height:min(760px,calc(100vh - 48px));overflow:hidden;border:1px solid rgba(126,143,232,.35);border-radius:20px;background:#f8faff;box-shadow:0 26px 80px rgba(22,36,93,.28)}.reusable-anchor-style-stream-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px 16px;border-bottom:1px solid #e0e6f2;background:linear-gradient(135deg,#fff,#f0f3ff)}.reusable-anchor-style-stream-header>div{display:grid;gap:5px}.reusable-anchor-style-stream-header span{color:#6275d9;font-size:11px;font-weight:950;letter-spacing:.14em}.reusable-anchor-style-stream-header strong{color:#29395c;font-size:24px}.reusable-anchor-style-stream-header small{color:#7b879d;font-size:13px}.reusable-anchor-style-stream-metrics{display:flex;gap:10px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid #e3e8f2;color:#7b879d;font-size:12px}.reusable-anchor-style-stream-metrics span{padding:7px 10px;border-radius:999px;background:#eef1fb}.reusable-anchor-style-stream-metrics b{margin-left:3px;color:#5366cd}.reusable-anchor-style-stream-output{min-height:0;margin:0;padding:22px 24px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#283653;font:17px/1.85 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;background:#fff}.reusable-anchor-style-stream-window>footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 24px;border-top:1px solid #e0e6f2;color:#7d899e;font-size:12px;background:#fafbff}.reusable-anchor-style-stream-window>footer span{line-height:1.5}@media(max-width:720px){.reusable-anchor-style-stream-backdrop{padding:10px}.reusable-anchor-style-stream-window{width:calc(100vw - 20px);height:calc(100vh - 20px)}.reusable-anchor-style-stream-header,.reusable-anchor-style-stream-window>footer{padding-left:16px;padding-right:16px}.reusable-anchor-style-stream-header strong{font-size:20px}.reusable-anchor-style-stream-output{padding:16px;font-size:15px}.reusable-anchor-style-stream-window>footer{align-items:flex-start;flex-direction:column}}
 </style>

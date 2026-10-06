@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -13,7 +14,7 @@ var ErrLiveAgentPlanProductLinkNotFound = errors.New("live agent plan product li
 var ErrLiveAgentPlanProductLinkVersionConflict = errors.New("live agent plan product link version conflict")
 
 const liveAgentPlanProductLinkSelect = `
-	SELECT id, tenant_id, plan_id, link_key, product_name, spec, daily_price, quantity, audience,
+	SELECT id, tenant_id, plan_id, link_key, product_name, room_roles_json, spec, daily_price, quantity, audience,
 	       source_quote, source_review_bucket, source_review_reason, source_type, source_ref,
 	       status, version_no, created_by_user_id, updated_by_user_id, created_at, updated_at
 	FROM live_agent_plan_product_links
@@ -24,14 +25,20 @@ func scanLiveAgentPlanProductLink(row interface {
 }) (model.LiveAgentPlanProductLink, error) {
 	var item model.LiveAgentPlanProductLink
 	var createdBy, updatedBy sql.NullInt64
+	var roomRolesJSON sql.NullString
 	err := row.Scan(
 		&item.ID, &item.TenantID, &item.PlanID, &item.LinkKey, &item.ProductName,
-		&item.Spec, &item.DailyPrice, &item.Quantity, &item.Audience, &item.SourceQuote,
+		&roomRolesJSON, &item.Spec, &item.DailyPrice, &item.Quantity, &item.Audience, &item.SourceQuote,
 		&item.SourceReviewBucket, &item.SourceReviewReason, &item.SourceType, &item.SourceRef,
 		&item.Status, &item.VersionNo, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt,
 	)
 	if err != nil {
 		return model.LiveAgentPlanProductLink{}, err
+	}
+	item.RoomRoles = []string{}
+	if roomRolesJSON.Valid && strings.TrimSpace(roomRolesJSON.String) != "" {
+		_ = json.Unmarshal([]byte(roomRolesJSON.String), &item.RoomRoles)
+		item.RoomRoles = normalizeLiveRoomProductRoles(item.RoomRoles)
 	}
 	if createdBy.Valid {
 		value := createdBy.Int64
@@ -42,6 +49,32 @@ func scanLiveAgentPlanProductLink(row interface {
 		item.UpdatedByUserID = &value
 	}
 	return item, nil
+}
+
+func normalizeLiveRoomProductRoles(values []string) []string {
+	allowed := make(map[string]bool, len(model.LiveRoomProductRoles))
+	for _, value := range model.LiveRoomProductRoles {
+		allowed[value] = true
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if !allowed[value] || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	if seen[model.LiveRoomProductRoleOrdinary] && len(result) > 1 {
+		return []string{model.LiveRoomProductRoleOrdinary}
+	}
+	return result
+}
+
+func liveRoomProductRolesJSON(values []string) string {
+	encoded, _ := json.Marshal(normalizeLiveRoomProductRoles(values))
+	return string(encoded)
 }
 
 func (s *Store) ListLiveAgentPlanProductLinks(ctx context.Context, tenantID, planID int64) ([]model.LiveAgentPlanProductLink, error) {
@@ -93,6 +126,9 @@ func sameProductLinkContent(existing model.LiveAgentPlanProductLink, candidate m
 		strings.TrimSpace(existing.DailyPrice) == strings.TrimSpace(candidate.DailyPrice) &&
 		strings.TrimSpace(existing.Quantity) == strings.TrimSpace(candidate.Quantity) &&
 		strings.TrimSpace(existing.Audience) == strings.TrimSpace(candidate.Audience)
+	if commonMatches && len(candidate.RoomRoles) > 0 {
+		commonMatches = liveRoomProductRolesJSON(existing.RoomRoles) == liveRoomProductRolesJSON(candidate.RoomRoles)
+	}
 	if !commonMatches || len(candidate.Attributes) == 0 {
 		return commonMatches
 	}
@@ -136,13 +172,18 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			defer tx.Rollback()
 			nextVersion := existing.VersionNo + 1
 			sourceQuote := strings.Join(candidate.SourceQuotes, "\n")
+			roomRoles := candidate.RoomRoles
+			if len(roomRoles) == 0 {
+				roomRoles = existing.RoomRoles
+			}
+			roomRolesJSON := liveRoomProductRolesJSON(roomRoles)
 			_, txErr = tx.ExecContext(ctx, `
 				UPDATE live_agent_plan_product_links
-				SET product_name=?, spec=?, daily_price=?, quantity=?, audience=?, source_quote=?,
+				SET product_name=?, room_roles_json=?, spec=?, daily_price=?, quantity=?, audience=?, source_quote=?,
 				    source_review_bucket=?, source_review_reason=?, source_type='analysis_adoption', source_ref=?,
 				    status='active', version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 				WHERE id=? AND tenant_id=? AND plan_id=?
-			`, strings.TrimSpace(candidate.ProductName), strings.TrimSpace(candidate.Spec), strings.TrimSpace(candidate.DailyPrice),
+			`, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec), strings.TrimSpace(candidate.DailyPrice),
 				strings.TrimSpace(candidate.Quantity), strings.TrimSpace(candidate.Audience), sourceQuote,
 				strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef),
 				nextVersion, actorUserID, existing.ID, tenantID, planID)
@@ -151,11 +192,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			}
 			_, txErr = tx.ExecContext(ctx, `
 				INSERT INTO live_agent_plan_product_link_revisions (
-					tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, spec,
+					tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, room_roles_json, spec,
 					daily_price, quantity, audience, status, source_quote, source_review_bucket,
 					source_review_reason, source_type, source_ref, actor_user_id
-				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
-			`, tenantID, planID, existing.ID, nextVersion, linkKey, strings.TrimSpace(candidate.ProductName), strings.TrimSpace(candidate.Spec),
+				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
+			`, tenantID, planID, existing.ID, nextVersion, linkKey, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec),
 				strings.TrimSpace(candidate.DailyPrice), strings.TrimSpace(candidate.Quantity), strings.TrimSpace(candidate.Audience),
 				sourceQuote, strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), actorUserID)
 			if txErr != nil {
@@ -195,6 +236,7 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 	}
 
 	sourceQuote := strings.Join(candidate.SourceQuotes, "\n")
+	roomRolesJSON := liveRoomProductRolesJSON(candidate.RoomRoles)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
@@ -203,11 +245,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 
 	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_product_links (
-			tenant_id, plan_id, link_key, product_name, spec, daily_price, quantity, audience,
+			tenant_id, plan_id, link_key, product_name, room_roles_json, spec, daily_price, quantity, audience,
 			source_quote, source_review_bucket, source_review_reason, source_type, source_ref,
 			status, version_no, created_by_user_id, updated_by_user_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, 'active', 1, ?, ?)
-	`, tenantID, planID, linkKey, strings.TrimSpace(candidate.ProductName), strings.TrimSpace(candidate.Spec),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, 'active', 1, ?, ?)
+	`, tenantID, planID, linkKey, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec),
 		strings.TrimSpace(candidate.DailyPrice), strings.TrimSpace(candidate.Quantity), strings.TrimSpace(candidate.Audience),
 		sourceQuote, strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason),
 		strings.TrimSpace(sourceRef), actorUserID, actorUserID)
@@ -221,11 +263,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_product_link_revisions (
-			tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, spec,
+			tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, room_roles_json, spec,
 			daily_price, quantity, audience, status, source_quote, source_review_bucket,
 			source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
-	`, tenantID, planID, productLinkID, linkKey, strings.TrimSpace(candidate.ProductName), strings.TrimSpace(candidate.Spec),
+		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
+	`, tenantID, planID, productLinkID, linkKey, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec),
 		strings.TrimSpace(candidate.DailyPrice), strings.TrimSpace(candidate.Quantity), strings.TrimSpace(candidate.Audience),
 		sourceQuote, strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason),
 		strings.TrimSpace(sourceRef), actorUserID)
@@ -287,21 +329,26 @@ func (s *Store) UpdateLiveAgentPlanProductLink(
 			return model.LiveAgentPlanProductLink{}, err
 		}
 	}
+	roomRoles := current.RoomRoles
+	if input.RoomRoles != nil {
+		roomRoles = normalizeLiveRoomProductRoles(input.RoomRoles)
+	}
+	roomRolesJSON := liveRoomProductRolesJSON(roomRoles)
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_product_links
-		SET link_key=?, product_name=?, spec=?, daily_price=?, quantity=?, audience=?,
+		SET link_key=?, product_name=?, room_roles_json=?, spec=?, daily_price=?, quantity=?, audience=?,
 		    source_type='system_agent_edit', source_ref='', version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
-	`, linkKey, strings.TrimSpace(input.ProductName), strings.TrimSpace(input.Spec), strings.TrimSpace(input.DailyPrice),
+	`, linkKey, strings.TrimSpace(input.ProductName), roomRolesJSON, strings.TrimSpace(input.Spec), strings.TrimSpace(input.DailyPrice),
 		strings.TrimSpace(input.Quantity), strings.TrimSpace(input.Audience), nextVersion, actorUserID, productLinkID, tenantID, planID)
 	if err != nil {
 		return model.LiveAgentPlanProductLink{}, err
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO live_agent_plan_product_link_revisions (tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, spec, daily_price, quantity, audience, status, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id)
-		VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'system_agent_edit', '', ?)
-	`, tenantID, planID, productLinkID, nextVersion, linkKey, strings.TrimSpace(input.ProductName), strings.TrimSpace(input.Spec),
+		INSERT INTO live_agent_plan_product_link_revisions (tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, room_roles_json, spec, daily_price, quantity, audience, status, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id)
+		VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'system_agent_edit', '', ?)
+	`, tenantID, planID, productLinkID, nextVersion, linkKey, strings.TrimSpace(input.ProductName), roomRolesJSON, strings.TrimSpace(input.Spec),
 		strings.TrimSpace(input.DailyPrice), strings.TrimSpace(input.Quantity), strings.TrimSpace(input.Audience), current.SourceQuote,
 		current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
@@ -350,9 +397,9 @@ func (s *Store) DeleteLiveAgentPlanProductLinkWithExpectedVersion(ctx context.Co
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO live_agent_plan_product_link_revisions (tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, spec, daily_price, quantity, audience, status, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id)
-		VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_delete', '', ?)
-	`, tenantID, planID, productLinkID, nextVersion, current.LinkKey, current.ProductName, current.Spec, current.DailyPrice, current.Quantity, current.Audience, current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
+		INSERT INTO live_agent_plan_product_link_revisions (tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, room_roles_json, spec, daily_price, quantity, audience, status, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id)
+		VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_delete', '', ?)
+	`, tenantID, planID, productLinkID, nextVersion, current.LinkKey, current.ProductName, liveRoomProductRolesJSON(current.RoomRoles), current.Spec, current.DailyPrice, current.Quantity, current.Audience, current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
 		return err
 	}

@@ -2494,6 +2494,7 @@ async function prepareLiveProductUpdateAction(planId: number, roomId: number, va
             { id: 'daily_price', label: '日常价', description: existing.daily_price || '未设置', command: '修改' + linkKey + ' 日常价：' },
             { id: 'quantity', label: '数量', description: existing.quantity || '未设置', command: '修改' + linkKey + ' 数量：' },
             { id: 'audience', label: '适用人群', description: existing.audience || '未设置', command: '修改' + linkKey + ' 适用人群：' },
+            { id: 'room_roles', label: '直播间定位', description: productRoomRoleText(existing.room_roles), command: '把' + linkKey + '的直播间定位设为' },
           ],
         },
       } as SystemAgentActionPreview,
@@ -2562,6 +2563,20 @@ function intentString(value: unknown) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function intentStringArray(value: unknown) {
+  return Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : []
+}
+
+function sameStringSet(left: string[], right: string[]) {
+  return [...left].sort().join('|') === [...right].sort().join('|')
+}
+
+function productRoomRoleText(value: unknown) {
+  const labels: Record<string, string> = { main: '主推', traffic: '引流', benefit: '福利', profit: '利润', bundle: '搭配', ordinary: '普通' }
+  const roles = intentStringArray(value)
+  return roles.length ? roles.map((role) => labels[role] || role).join('＋') : '未设置'
+}
+
 async function prepareLiveProductIntentAction(
   planId: number,
   roomId: number,
@@ -2599,6 +2614,7 @@ async function prepareLiveProductIntentAction(
           room_id: roomId,
           link_key: linkKey,
           product_name: productName,
+          room_roles: intentStringArray(changes.room_roles),
           spec: intentString(changes.spec),
           daily_price: intentString(changes.daily_price),
           quantity: intentString(changes.quantity),
@@ -2649,11 +2665,14 @@ async function prepareLiveProductIntentAction(
   const dailyPrice = intentString(changes.daily_price)
   const quantity = intentString(changes.quantity)
   const audience = intentString(changes.audience)
-  if (!productName && !spec && !dailyPrice && !quantity && !audience) {
+  const roomRolesSpecified = /直播间定位|商品定位|主推款|引流款|福利款|利润款|搭配款|普通款|定位/.test(sourceText)
+  const roomRoles = intentStringArray(changes.room_roles)
+  if (!productName && !spec && !dailyPrice && !quantity && !audience && !roomRolesSpecified) {
     return { text: result.reply || '我已经定位到“' + linkKey + '”，但还没有明确要修改哪个字段。' }
   }
   const next = {
     productName: productName || existing.product_name || '',
+    roomRoles: roomRolesSpecified ? roomRoles : (existing.room_roles || []),
     spec: spec || existing.spec || '',
     dailyPrice: dailyPrice || existing.daily_price || '',
     quantity: quantity || existing.quantity || '',
@@ -2661,6 +2680,7 @@ async function prepareLiveProductIntentAction(
   }
   const changed =
     next.productName !== (existing.product_name || '') ||
+    !sameStringSet(next.roomRoles, existing.room_roles || []) ||
     next.spec !== (existing.spec || '') ||
     next.dailyPrice !== (existing.daily_price || '') ||
     next.quantity !== (existing.quantity || '') ||
@@ -2683,11 +2703,13 @@ async function prepareLiveProductIntentAction(
         current_version_no: existing.version_no,
         link_key: linkKey,
         current_product_name: existing.product_name || '',
+        current_room_roles: existing.room_roles || [],
         current_spec: existing.spec || '',
         current_daily_price: existing.daily_price || '',
         current_quantity: existing.quantity || '',
         current_audience: existing.audience || '',
         product_name: next.productName,
+        room_roles: next.roomRoles,
         spec: next.spec,
         daily_price: next.dailyPrice,
         quantity: next.quantity,
@@ -6277,6 +6299,7 @@ async function executeAction(message: ChatMessage) {
       const next = {
         link_key: linkKey,
         product_name: String(action.payload.product_name || ''),
+        room_roles: Array.isArray(action.payload.room_roles) ? intentStringArray(action.payload.room_roles) : (existing.room_roles || []),
         spec: String(action.payload.spec || ''),
         daily_price: String(action.payload.daily_price || ''),
         quantity: String(action.payload.quantity || ''),
@@ -6284,6 +6307,7 @@ async function executeAction(message: ChatMessage) {
       }
       const changed =
         next.product_name !== (existing.product_name || '') ||
+        !sameStringSet(next.room_roles, existing.room_roles || []) ||
         next.spec !== (existing.spec || '') ||
         next.daily_price !== (existing.daily_price || '') ||
         next.quantity !== (existing.quantity || '') ||
@@ -6466,6 +6490,7 @@ async function executeAction(message: ChatMessage) {
         const updated = await updateLiveAgentPlanProductLink(planId, existing.id, {
           link_key: linkKey,
           product_name: productName || existing.product_name || '',
+          room_roles: intentStringArray(action.payload.room_roles).length ? intentStringArray(action.payload.room_roles) : (existing.room_roles || []),
           spec: String(action.payload.spec || '').trim() || existing.spec || '',
           daily_price: String(action.payload.daily_price || '').trim() || existing.daily_price || '',
           quantity: String(action.payload.quantity || '').trim() || existing.quantity || '',
@@ -6480,6 +6505,7 @@ async function executeAction(message: ChatMessage) {
           [{
             link_key: linkKey,
             product_name: productName,
+            room_roles: intentStringArray(action.payload.room_roles),
             spec: String(action.payload.spec || '').trim(),
             daily_price: String(action.payload.daily_price || '').trim(),
             quantity: String(action.payload.quantity || '').trim(),
@@ -7198,6 +7224,10 @@ async function copyCredential(credential?: InitialCredential) {
                   <dt>商品名称</dt>
                   <dd>{{ message.action.payload.product_name || '-' }}</dd>
                 </div>
+                <div v-if="message.action.payload.room_roles?.length">
+                  <dt>直播间定位</dt>
+                  <dd>{{ productRoomRoleText(message.action.payload.room_roles) }}</dd>
+                </div>
                 <div v-if="message.action.payload.daily_price">
                   <dt>价格</dt>
                   <dd>{{ message.action.payload.daily_price }}</dd>
@@ -7283,6 +7313,10 @@ async function copyCredential(credential?: InitialCredential) {
                 <div v-if="message.action.payload.current_product_name !== message.action.payload.product_name">
                   <dt>商品名称</dt>
                   <dd>{{ message.action.payload.current_product_name || '未设置' }} → {{ message.action.payload.product_name || '未设置' }}</dd>
+                </div>
+                <div v-if="productRoomRoleText(message.action.payload.current_room_roles) !== productRoomRoleText(message.action.payload.room_roles)">
+                  <dt>直播间定位</dt>
+                  <dd>{{ productRoomRoleText(message.action.payload.current_room_roles) }} → {{ productRoomRoleText(message.action.payload.room_roles) }}</dd>
                 </div>
                 <div v-if="message.action.payload.current_spec !== message.action.payload.spec">
                   <dt>规格</dt>

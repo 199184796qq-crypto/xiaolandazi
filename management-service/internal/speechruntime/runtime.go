@@ -30,6 +30,9 @@ type SegmentSpec struct {
 	EndSecond               int      `json:"end_second"`
 	SpeechAct               string   `json:"speech_act"`
 	Goal                    string   `json:"goal"`
+	ContentRole             string   `json:"content_role,omitempty"`
+	PrimaryFactID           string   `json:"primary_fact_id,omitempty"`
+	SupportFactIDs          []string `json:"support_fact_ids,omitempty"`
 	FactKeys                []string `json:"fact_keys,omitempty"`
 	BenefitKeys             []string `json:"benefit_keys,omitempty"`
 	LinkKeys                []string `json:"link_keys,omitempty"`
@@ -81,6 +84,7 @@ type Ledger struct {
 	chars               int
 	tail                string
 	lastInteractionOpen bool
+	continuation        *Continuation
 }
 
 func NewLedger(totalTarget int) *Ledger {
@@ -166,6 +170,19 @@ func (l *Ledger) coveredFactKeys(limit int) []string {
 			result = append(result, key)
 			if len(result) == limit {
 				return result
+			}
+		}
+	}
+	if l.continuation != nil {
+		for index := len(l.continuation.RecentUnits) - 1; index >= 0; index-- {
+			for _, key := range l.continuation.RecentUnits[index].FactKeys {
+				if key != "" && !seen[key] {
+					seen[key] = true
+					result = append(result, key)
+					if len(result) == limit {
+						return result
+					}
+				}
 			}
 		}
 	}
@@ -276,6 +293,23 @@ func (l *Ledger) Next(step model.LiveSpeechExpansionStep, index, count int) Segm
 		role, continuation, closingAllowed = "closing", "semantic_continuation", true
 	}
 	reentryAllowed := index == 0 || (role == "middle" && step.Stage == "reentry" && step.Room.EntriesPerMinute >= 10)
+	if l.continuation != nil {
+		openingAllowed = index == 0 && l.continuation.CompletedUnits == 0
+		closingAllowed = index == count-1 && l.continuation.Finish
+		role, continuation = "middle", "semantic_continuation"
+		if openingAllowed {
+			role, continuation = "opening", "fresh_open"
+		}
+		if closingAllowed {
+			role = "closing"
+		}
+		// A request boundary tightens the length budget, not the live show's
+		// discourse. Only the caller's final batch may close the show.
+		if !l.continuation.Finish {
+			finish = "continue"
+		}
+		reentryAllowed = openingAllowed
+	}
 	interactionMode := "none"
 	if step.InteractionOpportunity && role != "closing" {
 		interactionMode = "offer_without_fake_reply"
@@ -283,6 +317,7 @@ func (l *Ledger) Next(step model.LiveSpeechExpansionStep, index, count int) Segm
 	return SegmentSpec{
 		Index: index + 1, Count: count, StartSecond: step.StartSecond, EndSecond: step.EndSecond,
 		SpeechAct: step.Stage, Goal: step.Goal,
+		ContentRole: step.ContentRole, PrimaryFactID: step.PrimaryFactID, SupportFactIDs: append([]string(nil), step.SupportFactIDs...),
 		FactKeys: append([]string(nil), step.FactKeys...), BenefitKeys: append([]string(nil), step.BenefitKeys...), LinkKeys: append([]string(nil), step.LinkKeys...),
 		ExpressionMove: move, StyleCapabilities: append([]string(nil), step.StyleCapabilities...),
 		InteractionOpportunity: step.InteractionOpportunity,

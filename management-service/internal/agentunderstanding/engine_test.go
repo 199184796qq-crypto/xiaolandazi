@@ -52,7 +52,7 @@ func TestProgramLiveStrategyBenefitStartNow(t *testing.T) {
 func TestProgramLiveStrategyBenefitProductNameRename(t *testing.T) {
 	ctx := LiveStrategyProgramContext{
 		CurrentMode: "benefits",
-		Benefits: []LiveStrategyBenefit{{Key: "1号链接:current-benefit", LinkKey: "1号链接", ProductName: "试用装2斤"}},
+		Benefits:    []LiveStrategyBenefit{{Key: "1号链接:current-benefit", LinkKey: "1号链接", ProductName: "试用装2斤"}},
 	}
 	out := ProgramInterpretLiveStrategy("把1号链接的试用装2斤改成试用装5斤", ctx)
 	if out.Kind != KindCommand || out.Intent != "benefit.update" {
@@ -172,6 +172,31 @@ func TestProgramLiveStrategyAnswersProductPrice(t *testing.T) {
 	})
 	if out.Kind != KindChat || out.Intent != "chat" || out.Reply != "1号链接：日常价：99元。" {
 		t.Fatalf("unexpected product price answer: %#v", out)
+	}
+}
+
+func TestProgramLiveStrategyUpdatesStableRoomPosition(t *testing.T) {
+	out := ProgramInterpretLiveStrategy("把1号链接的直播间定位设为主推款和利润款", LiveStrategyProgramContext{
+		CurrentMode: "products",
+		Products:    []LiveStrategyProduct{{LinkKey: "1号链接", ProductName: "菜籽油", RoomRoles: []string{"ordinary"}}},
+	})
+	if out.Kind != KindCommand || out.Intent != "product.update" {
+		t.Fatalf("room positioning must be a product update: %#v", out)
+	}
+	roles, ok := out.Changes["room_roles"].([]string)
+	if !ok || len(roles) != 2 || roles[0] != "main" || roles[1] != "profit" {
+		t.Fatalf("unexpected room roles: %#v", out.Changes)
+	}
+}
+
+func TestProgramLiveStrategyRemovesOneRoomPosition(t *testing.T) {
+	out := ProgramInterpretLiveStrategy("去掉1号链接的福利定位", LiveStrategyProgramContext{
+		CurrentMode: "products",
+		Products:    []LiveStrategyProduct{{LinkKey: "1号链接", ProductName: "菜籽油", RoomRoles: []string{"main", "benefit"}}},
+	})
+	roles, ok := out.Changes["room_roles"].([]string)
+	if out.Kind != KindCommand || !ok || len(roles) != 1 || roles[0] != "main" {
+		t.Fatalf("removal must return the complete remaining positioning: %#v", out)
 	}
 }
 

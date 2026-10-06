@@ -11,6 +11,7 @@ import (
 type LiveStrategyProduct struct {
 	LinkKey     string
 	ProductName string
+	RoomRoles   []string
 	Spec        string
 	DailyPrice  string
 	Quantity    string
@@ -369,7 +370,7 @@ func programAnswerFactQuery(message, compact string, ctx LiveStrategyProgramCont
 }
 
 func programAnswerProductQuery(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
-	if !containsAnyProgram(compact, "商品", "链接", "规格", "日常价", "原价", "价格", "多少钱", "数量", "适用人群", "适用对象", "属性") {
+	if !containsAnyProgram(compact, "商品", "链接", "规格", "日常价", "原价", "价格", "多少钱", "数量", "适用人群", "适用对象", "属性", "直播间定位", "商品定位") {
 		return UnifiedIntent{}, false
 	}
 	linkKey := extractLinkKey(message)
@@ -407,6 +408,9 @@ func programAnswerProductQuery(message, compact string, ctx LiveStrategyProgramC
 	if containsAnyProgram(compact, "适用人群", "适用对象") {
 		parts = appendProgramAnswerPart(parts, "适用人群", product.Audience)
 	}
+	if containsAnyProgram(compact, "直播间定位", "商品定位") {
+		parts = appendProgramAnswerPart(parts, "直播间定位", liveRoomRoleLabels(product.RoomRoles))
+	}
 	if strings.Contains(compact, "属性") {
 		for _, attribute := range product.Attributes {
 			parts = appendProgramAnswerPart(parts, attribute.Label, attribute.Value+attribute.Unit)
@@ -429,6 +433,58 @@ func programAnswerProductQuery(message, compact string, ctx LiveStrategyProgramC
 		out.Reply = linkKey + "：" + strings.Join(parts, "；") + "。"
 	}
 	return out, true
+}
+
+func liveRoomRoleLabels(values []string) string {
+	labels := map[string]string{"main": "主推", "traffic": "引流", "benefit": "福利", "profit": "利润", "bundle": "搭配", "ordinary": "普通"}
+	result := []string{}
+	for _, value := range values {
+		if label := labels[strings.ToLower(strings.TrimSpace(value))]; label != "" {
+			result = append(result, label)
+		}
+	}
+	return strings.Join(result, "、")
+}
+
+func extractLiveRoomRoles(message string, current []string) ([]string, bool) {
+	roleWords := []struct{ label, value string }{
+		{"主推", "main"}, {"引流", "traffic"}, {"福利", "benefit"}, {"利润", "profit"}, {"搭配", "bundle"}, {"普通", "ordinary"},
+	}
+	hasPosition := containsAnyProgram(message, "直播间定位", "商品定位", "定位", "主推款", "引流款", "福利款", "利润款", "搭配款", "普通款")
+	if !hasPosition {
+		return nil, false
+	}
+	remove := containsAnyProgram(message, "去掉", "移除", "取消", "不要", "删除")
+	clear := containsAnyProgram(message, "清空定位", "不设置定位", "取消全部定位")
+	if clear {
+		return []string{}, true
+	}
+	mentioned := []string{}
+	for _, item := range roleWords {
+		if strings.Contains(message, item.label) {
+			mentioned = append(mentioned, item.value)
+		}
+	}
+	if len(mentioned) == 0 {
+		return nil, true
+	}
+	if remove {
+		removeSet := map[string]bool{}
+		for _, role := range mentioned {
+			removeSet[role] = true
+		}
+		result := []string{}
+		for _, role := range current {
+			if !removeSet[role] {
+				result = append(result, role)
+			}
+		}
+		return result, true
+	}
+	if len(mentioned) == 1 && mentioned[0] == "ordinary" {
+		return mentioned, true
+	}
+	return mentioned, true
 }
 
 func programAnswerBenefitQuery(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
@@ -640,12 +696,16 @@ func normalizeProgramTime(value string, now time.Time) string {
 
 func programInterpretProduct(message, compact string, ctx LiveStrategyProgramContext) (UnifiedIntent, bool) {
 	linkKey := extractLinkKey(message)
-	productField := containsAnyProgram(compact, "商品名称", "商品名", "规格", "日常价", "原价", "数量", "适用人群", "适用对象")
+	productField := containsAnyProgram(compact, "商品名称", "商品名", "规格", "日常价", "原价", "数量", "适用人群", "适用对象", "直播间定位", "商品定位", "主推款", "引流款", "福利款", "利润款", "搭配款", "普通款")
 	explicitProduct := strings.Contains(compact, "商品链接") || (strings.Contains(compact, "链接") && productField)
 	if !explicitProduct && ctx.CurrentMode != "products" {
 		return UnifiedIntent{}, false
 	}
 	action := mutationVerb(compact)
+	roomPositionField := containsAnyProgram(compact, "直播间定位", "商品定位", "主推款", "引流款", "福利款", "利润款", "搭配款", "普通款") || (strings.Contains(compact, "定位") && containsAnyProgram(compact, "主推", "引流", "福利", "利润", "搭配", "普通"))
+	if roomPositionField && (action == "" || action == "disable") {
+		action = "update"
+	}
 	if action == "" && !productField {
 		return UnifiedIntent{}, false
 	}
@@ -654,6 +714,13 @@ func programInterpretProduct(message, compact string, ctx LiveStrategyProgramCon
 	}
 	if linkKey == "" && len(ctx.Products) == 1 && ctx.CurrentMode == "products" {
 		linkKey = ctx.Products[0].LinkKey
+	}
+	var currentRoles []string
+	for _, product := range ctx.Products {
+		if product.LinkKey == linkKey {
+			currentRoles = product.RoomRoles
+			break
+		}
 	}
 	if linkKey == "" && action != "add" {
 		out := programIntent(KindClarify, "product."+action, 0.55)
@@ -678,11 +745,14 @@ func programInterpretProduct(message, compact string, ctx LiveStrategyProgramCon
 	if value := extractField(message, "适用人群", "适用对象"); value != "" {
 		changes["audience"] = value
 	}
+	if roles, mentioned := extractLiveRoomRoles(message, currentRoles); mentioned {
+		changes["room_roles"] = roles
+	}
 	if action == "update" && len(changes) == 0 {
 		out := programIntent(KindClarify, "product.update", 0.82)
 		out.Target["link_key"] = linkKey
 		out.Missing = []string{"修改字段"}
-		out.Reply = "你要修改“" + linkKey + "”，请说明是商品名称、规格、日常价、数量还是适用人群。"
+		out.Reply = "你要修改“" + linkKey + "”，请说明是商品名称、规格、日常价、数量、适用人群还是直播间定位。"
 		return out, true
 	}
 	out := programIntent(KindCommand, "product."+action, 0.98)

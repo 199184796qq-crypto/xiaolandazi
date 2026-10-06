@@ -21,49 +21,50 @@ type liveStrategyExecuteRequest struct {
 }
 
 type liveStrategyExecutePayload struct {
-	PlanID                   int64  `json:"plan_id,omitempty"`
-	RoomID                   int64  `json:"room_id,omitempty"`
-	ProductLinkID            int64  `json:"product_link_id,omitempty"`
-	BenefitID                int64  `json:"benefit_id,omitempty"`
-	FactID                   int64  `json:"fact_id,omitempty"`
-	CurrentVersionNo         int64  `json:"current_version_no,omitempty"`
-	LinkKey                  string `json:"link_key,omitempty"`
-	ProductName              string `json:"product_name,omitempty"`
-	Spec                     string `json:"spec,omitempty"`
-	DailyPrice               string `json:"daily_price,omitempty"`
-	Quantity                 string `json:"quantity,omitempty"`
-	Audience                 string `json:"audience,omitempty"`
-	ProductAttributeID       int64  `json:"product_attribute_id,omitempty"`
-	AttributeCode            string `json:"attribute_code,omitempty"`
-	AttributeLabel           string `json:"attribute_label,omitempty"`
-	AttributeValue           string `json:"attribute_value,omitempty"`
-	AttributeUnit            string `json:"attribute_unit,omitempty"`
-	AttributeDisplayType     string `json:"attribute_display_type,omitempty"`
-	AttributeDisplayPriority int    `json:"attribute_display_priority,omitempty"`
-	BenefitKey               string `json:"benefit_key,omitempty"`
-	ActivityPrice            string `json:"activity_price,omitempty"`
-	Gift                     string `json:"gift,omitempty"`
-	Activity                 string `json:"activity,omitempty"`
-	StartsAt                 string `json:"starts_at,omitempty"`
-	EndsAt                   string `json:"ends_at,omitempty"`
-	ReviewBucket             string `json:"review_bucket,omitempty"`
-	ReviewReason             string `json:"review_reason,omitempty"`
-	FactCategory             string `json:"fact_category,omitempty"`
-	FactKey                  string `json:"fact_key,omitempty"`
-	FactValue                string `json:"fact_value,omitempty"`
-	CurrentFactValue         string `json:"current_fact_value,omitempty"`
-	ScriptReferenceID        int64  `json:"script_reference_id,omitempty"`
-	ScriptReferenceKey       string `json:"script_reference_key,omitempty"`
-	ScriptTitle              string `json:"script_title,omitempty"`
-	ScriptText               string `json:"script_text,omitempty"`
-	CurrentScriptText        string `json:"current_script_text,omitempty"`
-	ScriptGoal               string `json:"script_goal,omitempty"`
-	ScriptTransition         string `json:"script_transition,omitempty"`
-	ExecutionMode            string `json:"execution_mode,omitempty"`
-	TargetPlanID             int64  `json:"target_plan_id,omitempty"`
-	TargetPlanName           string `json:"target_plan_name,omitempty"`
-	CurrentPlanID            int64  `json:"current_plan_id,omitempty"`
-	SourceText               string `json:"source_text,omitempty"`
+	PlanID                   int64    `json:"plan_id,omitempty"`
+	RoomID                   int64    `json:"room_id,omitempty"`
+	ProductLinkID            int64    `json:"product_link_id,omitempty"`
+	BenefitID                int64    `json:"benefit_id,omitempty"`
+	FactID                   int64    `json:"fact_id,omitempty"`
+	CurrentVersionNo         int64    `json:"current_version_no,omitempty"`
+	LinkKey                  string   `json:"link_key,omitempty"`
+	ProductName              string   `json:"product_name,omitempty"`
+	RoomRoles                []string `json:"room_roles,omitempty"`
+	Spec                     string   `json:"spec,omitempty"`
+	DailyPrice               string   `json:"daily_price,omitempty"`
+	Quantity                 string   `json:"quantity,omitempty"`
+	Audience                 string   `json:"audience,omitempty"`
+	ProductAttributeID       int64    `json:"product_attribute_id,omitempty"`
+	AttributeCode            string   `json:"attribute_code,omitempty"`
+	AttributeLabel           string   `json:"attribute_label,omitempty"`
+	AttributeValue           string   `json:"attribute_value,omitempty"`
+	AttributeUnit            string   `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string   `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int      `json:"attribute_display_priority,omitempty"`
+	BenefitKey               string   `json:"benefit_key,omitempty"`
+	ActivityPrice            string   `json:"activity_price,omitempty"`
+	Gift                     string   `json:"gift,omitempty"`
+	Activity                 string   `json:"activity,omitempty"`
+	StartsAt                 string   `json:"starts_at,omitempty"`
+	EndsAt                   string   `json:"ends_at,omitempty"`
+	ReviewBucket             string   `json:"review_bucket,omitempty"`
+	ReviewReason             string   `json:"review_reason,omitempty"`
+	FactCategory             string   `json:"fact_category,omitempty"`
+	FactKey                  string   `json:"fact_key,omitempty"`
+	FactValue                string   `json:"fact_value,omitempty"`
+	CurrentFactValue         string   `json:"current_fact_value,omitempty"`
+	ScriptReferenceID        int64    `json:"script_reference_id,omitempty"`
+	ScriptReferenceKey       string   `json:"script_reference_key,omitempty"`
+	ScriptTitle              string   `json:"script_title,omitempty"`
+	ScriptText               string   `json:"script_text,omitempty"`
+	CurrentScriptText        string   `json:"current_script_text,omitempty"`
+	ScriptGoal               string   `json:"script_goal,omitempty"`
+	ScriptTransition         string   `json:"script_transition,omitempty"`
+	ExecutionMode            string   `json:"execution_mode,omitempty"`
+	TargetPlanID             int64    `json:"target_plan_id,omitempty"`
+	TargetPlanName           string   `json:"target_plan_name,omitempty"`
+	CurrentPlanID            int64    `json:"current_plan_id,omitempty"`
+	SourceText               string   `json:"source_text,omitempty"`
 }
 
 var liveStrategyExecutableActions = map[string]struct{}{
@@ -243,6 +244,20 @@ func liveStrategySucceeded(code, reply string, data any) systemAgentChatOutput {
 	}
 }
 
+func liveRoomRolesEqual(left, right []string) bool {
+	leftValues, leftErr := normalizeLiveRoomProductRoleValues(left)
+	rightValues, rightErr := normalizeLiveRoomProductRoleValues(right)
+	if leftErr != nil || rightErr != nil || len(leftValues) != len(rightValues) {
+		return false
+	}
+	for index := range leftValues {
+		if leftValues[index] != rightValues[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func writeLiveStrategyActionFailure(w http.ResponseWriter, code, reply string, data any) {
 	writeAgentChatOutput(w, http.StatusOK, liveStrategyFailed(code, reply, data))
 }
@@ -253,7 +268,8 @@ func (s *Server) executeLiveStrategyAddProduct(r *http.Request, actor model.Acto
 	}
 	candidate := model.LiveAgentPlanProductLinkCandidate{
 		LinkKey: canonicalPlanProductLinkKey(p.LinkKey), ProductName: strings.TrimSpace(p.ProductName),
-		Spec: strings.TrimSpace(p.Spec), DailyPrice: strings.TrimSpace(p.DailyPrice),
+		RoomRoles: p.RoomRoles,
+		Spec:      strings.TrimSpace(p.Spec), DailyPrice: strings.TrimSpace(p.DailyPrice),
 		Quantity: strings.TrimSpace(p.Quantity), Audience: strings.TrimSpace(p.Audience),
 		ReviewBucket: "adoptable", SourceQuotes: []string{strings.TrimSpace(p.SourceText)},
 	}
@@ -430,16 +446,20 @@ func (s *Server) executeLiveStrategyUpdateProduct(r *http.Request, actor model.A
 	if current == nil || (p.CurrentVersionNo > 0 && current.VersionNo != p.CurrentVersionNo) {
 		return liveStrategyFailed("stale_confirmation", "这条商品链接已经变化，请重新发起修改，避免覆盖新版本。", nil)
 	}
+	roomRoles := p.RoomRoles
+	if roomRoles == nil {
+		roomRoles = current.RoomRoles
+	}
 	input := model.UpdateLiveAgentPlanProductLinkInput{
 		ExpectedVersionNo: current.VersionNo,
 		LinkKey:           current.LinkKey, ProductName: strings.TrimSpace(p.ProductName), Spec: strings.TrimSpace(p.Spec),
-		DailyPrice: strings.TrimSpace(p.DailyPrice), Quantity: strings.TrimSpace(p.Quantity), Audience: strings.TrimSpace(p.Audience),
+		RoomRoles: roomRoles, DailyPrice: strings.TrimSpace(p.DailyPrice), Quantity: strings.TrimSpace(p.Quantity), Audience: strings.TrimSpace(p.Audience),
 	}
-	candidate := model.LiveAgentPlanProductLinkCandidate{LinkKey: input.LinkKey, ProductName: input.ProductName, Spec: input.Spec, DailyPrice: input.DailyPrice, Quantity: input.Quantity, Audience: input.Audience, ReviewBucket: "adoptable"}
+	candidate := model.LiveAgentPlanProductLinkCandidate{LinkKey: input.LinkKey, ProductName: input.ProductName, RoomRoles: input.RoomRoles, Spec: input.Spec, DailyPrice: input.DailyPrice, Quantity: input.Quantity, Audience: input.Audience, ReviewBucket: "adoptable"}
 	if err := validateLiveAgentPlanProductLinkCandidate(candidate); err != nil {
 		return liveStrategyFailed("invalid_product", err.Error(), nil)
 	}
-	if current.ProductName == input.ProductName && current.Spec == input.Spec && current.DailyPrice == input.DailyPrice && current.Quantity == input.Quantity && current.Audience == input.Audience {
+	if current.ProductName == input.ProductName && liveRoomRolesEqual(current.RoomRoles, input.RoomRoles) && current.Spec == input.Spec && current.DailyPrice == input.DailyPrice && current.Quantity == input.Quantity && current.Audience == input.Audience {
 		return liveStrategyFailed("no_change", "新值和当前正式商品数据一致，没有生成新版本。", nil)
 	}
 	updated, err := s.store.UpdateLiveAgentPlanProductLink(r.Context(), tenantID, p.PlanID, current.ID, actor.UserID, input)

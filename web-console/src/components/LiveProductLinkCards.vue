@@ -8,6 +8,7 @@ const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
   saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
+  saveRoomRoles: (item: LiveAgentPlanProductLink, roles: string[]) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
 	addAttribute: (item: LiveAgentPlanProductLink, draft: ProductAttributeDraft) => Promise<void>
 	saveAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute, draft: ProductAttributeDraft) => Promise<void>
@@ -23,6 +24,15 @@ const labels: Record<ProductField, string> = { link_key: '链接编号', product
 const edit = ref<{ item: LiveAgentPlanProductLink; field: ProductField; draft: string } | null>(null)
 const busy = ref(false)
 const message = ref<{ id: number; text: string; error?: boolean } | null>(null)
+const roleEditing = ref<number | null>(null)
+const roomRoleOptions = [
+  { value: 'main', label: '主推' },
+  { value: 'traffic', label: '引流' },
+  { value: 'benefit', label: '福利' },
+  { value: 'profit', label: '利润' },
+  { value: 'bundle', label: '搭配' },
+  { value: 'ordinary', label: '普通' },
+]
 const expandedItems = ref<Set<number>>(new Set())
 const attributeEdit = ref<{
 	itemId: number
@@ -77,6 +87,33 @@ function cancelEdit() {
   if (busy.value) return
   edit.value = null
   message.value = null
+}
+
+function roomRoleLabel(value: string) {
+  return roomRoleOptions.find((item) => item.value === value)?.label || value
+}
+
+async function toggleRoomRole(item: LiveAgentPlanProductLink, role: string) {
+  if (busy.value) return
+  const current = [...(item.room_roles || [])]
+  let next: string[]
+  if (current.includes(role)) {
+    next = current.filter((value) => value !== role)
+  } else if (role === 'ordinary') {
+    next = ['ordinary']
+  } else {
+    next = [...current.filter((value) => value !== 'ordinary'), role]
+  }
+  busy.value = true
+  message.value = { id: item.id, text: '正在保存直播间定位…' }
+  try {
+    await props.saveRoomRoles(item, next)
+    message.value = { id: item.id, text: '直播间定位已自动保存' }
+  } catch (error) {
+    message.value = { id: item.id, text: error instanceof Error ? error.message : '保存直播间定位失败', error: true }
+  } finally {
+    busy.value = false
+  }
 }
 
 function toggleAttributes(item: LiveAgentPlanProductLink) {
@@ -198,6 +235,7 @@ async function deleteItem(item: LiveAgentPlanProductLink) {
 
 watch(() => props.items.map((item) => item.id), (ids) => {
   if (edit.value && !ids.includes(edit.value.item.id)) edit.value = null
+	if (roleEditing.value && !ids.includes(roleEditing.value)) roleEditing.value = null
 	if (attributeEdit.value && !ids.includes(attributeEdit.value.itemId)) attributeEdit.value = null
 	expandedItems.value = new Set([...expandedItems.value].filter((id) => ids.includes(id)))
 })
@@ -220,6 +258,20 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         <button type="button" class="product-edit" :disabled="busy" :aria-label="'修改' + item.link_key + '的商品名称'" title="修改商品名称" @mousedown.prevent @click="startEdit(item, 'product_name')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
       </div>
       <small class="product-version">V{{ item.version_no }}</small>
+      <section class="product-room-position" :class="{ editing: roleEditing === item.id }">
+        <header>
+          <span><b>直播间定位</b><small>商品长期作用，方案变化时仍作为基础方向</small></span>
+          <button type="button" class="product-edit" :disabled="busy" :aria-label="'修改' + item.link_key + '的直播间定位'" title="修改直播间定位" @click="roleEditing = roleEditing === item.id ? null : item.id"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+        </header>
+        <div class="product-room-role-summary">
+          <span v-for="role in (item.room_roles || [])" :key="role">{{ roomRoleLabel(role) }}</span>
+          <em v-if="!(item.room_roles || []).length">未设置 · 生成方案时由模型动态判断</em>
+        </div>
+        <div v-if="roleEditing === item.id" class="product-room-role-editor">
+          <button v-for="option in roomRoleOptions" :key="option.value" type="button" :class="{ selected: (item.room_roles || []).includes(option.value) }" :disabled="busy" @click="toggleRoomRole(item, option.value)">{{ option.label }}</button>
+          <small>可兼任多个定位；“普通”与其它定位互斥。每次点击都会自动保存。</small>
+        </div>
+      </section>
       <dl class="product-details">
         <div v-for="field in fields" :key="field.key">
           <dt><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="field.path" /></svg><span>{{ field.label }}</span></dt>
@@ -284,6 +336,19 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 .product-name { display:flex; align-items:flex-start; gap:4px; min-width:0; margin-top:5px; }
 .product-name strong { flex:1; min-width:0; color:#172440; font-size:17px; line-height:1.5; font-weight:850; overflow-wrap:anywhere; }
 .product-version { color:#909bb3; font-size:13px; }
+.product-room-position { display:grid; gap:7px; margin-top:2px; padding:9px 10px; border:1px solid #e3e8f7; border-radius:10px; background:linear-gradient(135deg,#fafbff,#f5f7ff); }
+.product-room-position.editing { border-color:color-mix(in srgb,var(--accent) 35%,#e3e8f7); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 8%,transparent); }
+.product-room-position>header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.product-room-position>header>span { display:grid; gap:2px; min-width:0; }
+.product-room-position>header b { color:#33415d; font-size:13px; }
+.product-room-position>header small { color:#8b95aa; font-size:11px; line-height:1.4; }
+.product-room-role-summary { display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-height:25px; }
+.product-room-role-summary span { padding:4px 8px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:12px; font-weight:750; }
+.product-room-role-summary em { color:#9099aa; font-size:12px; font-style:normal; }
+.product-room-role-editor { display:flex; flex-wrap:wrap; gap:6px; padding-top:7px; border-top:1px solid #e8ecf6; }
+.product-room-role-editor button { padding:5px 9px; border:1px solid #dce2ef; border-radius:8px; background:#fff; color:#5f6b83; font:inherit; font-size:12px; cursor:pointer; }
+.product-room-role-editor button.selected { border-color:var(--accent); background:var(--tint); color:var(--accent); font-weight:750; }
+.product-room-role-editor small { flex-basis:100%; color:#8b95aa; font-size:11px; line-height:1.45; }
 .product-details { display:grid; gap:8px; margin:5px 0 0; min-width:0; }
 .product-details>div { display:grid; grid-template-columns:75px minmax(0,1fr); gap:6px; align-items:center; box-sizing:border-box; min-height:46px; padding:6px 9px; border-radius:10px; background:linear-gradient(135deg,#f7f8ff,#f2f4fc); }
 .product-details dt { display:flex; align-items:center; gap:8px; color:#34415c; font-size:13px; white-space:nowrap; }

@@ -1043,6 +1043,16 @@ CREATE TABLE IF NOT EXISTS live_agent_room_plan_publications (
     KEY idx_live_agent_room_plan_publications_plan (tenant_id, plan_id, room_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_agent_expression_boundaries (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    items_json JSON NOT NULL,
+    revision BIGINT NOT NULL DEFAULT 1,
+    updated_by_user_id BIGINT UNSIGNED NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS mgmt_user_ui_preferences (
     user_id BIGINT UNSIGNED NOT NULL,
     selected_live_room_id BIGINT UNSIGNED NULL,
@@ -1180,6 +1190,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_product_links (
     plan_id BIGINT UNSIGNED NOT NULL,
     link_key VARCHAR(64) NOT NULL,
     product_name VARCHAR(255) NOT NULL DEFAULT '',
+    room_roles_json JSON NULL,
     spec VARCHAR(255) NOT NULL DEFAULT '',
     daily_price VARCHAR(255) NOT NULL DEFAULT '',
     quantity VARCHAR(255) NOT NULL DEFAULT '',
@@ -1209,6 +1220,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_product_link_revisions (
     action VARCHAR(32) NOT NULL,
     link_key VARCHAR(64) NOT NULL,
     product_name VARCHAR(255) NOT NULL DEFAULT '',
+    room_roles_json JSON NULL,
     spec VARCHAR(255) NOT NULL DEFAULT '',
     daily_price VARCHAR(255) NOT NULL DEFAULT '',
     quantity VARCHAR(255) NOT NULL DEFAULT '',
