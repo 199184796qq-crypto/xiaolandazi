@@ -7893,14 +7893,17 @@ onBeforeUnmount(() => {
 .strategy-product-link-evidence b { color:#68748a; font-size:14px; }
 .strategy-product-link-evidence p { margin:0; padding:9px 11px; border-left:3px solid #d8deeb; background:#fafbfc; color:#59657b; font-size:15px; line-height:1.6; white-space:pre-wrap; }
 .strategy-benefit-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-.strategy-benefit-formal { display:grid; gap:12px; padding:16px; border:1px solid #dde4f0; border-radius:16px; background:#fff; }
+.strategy-benefit-formal { display:grid; gap:12px; padding:16px; border:1px solid #d8e1f2; border-radius:16px; background:linear-gradient(145deg,#f4f7ff 0%,#edf2fc 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.88); }
 .strategy-benefit-formal>header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:10px; border-bottom:1px solid #edf0f5; }
 .strategy-benefit-formal>header>div { display:flex; align-items:baseline; gap:10px; }
 .strategy-benefit-formal>header strong { color:#34405b; font-size:17px; }
 .strategy-benefit-formal>header span,.strategy-benefit-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
 .strategy-benefit-formal-empty { min-height:110px; }
 .strategy-benefit-formal-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
-.strategy-benefit-formal-list>article { display:grid; width:auto; justify-self:stretch; box-sizing:border-box; gap:12px; padding:16px; border:1px solid #dfe7f5; border-radius:14px; background:linear-gradient(145deg,#fff 0%,#fcfdff 100%); box-shadow:0 8px 22px rgba(74,92,155,.07); }
+.strategy-benefit-formal-list>article { position:relative; z-index:0; display:grid; width:auto; justify-self:stretch; box-sizing:border-box; gap:12px; padding:16px; border:1px solid #d8e1f3; border-radius:14px; background:#fff; box-shadow:0 8px 22px rgba(57,76,143,.10); transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease,background-color .22s ease; }
+.strategy-benefit-formal-list>article:hover { z-index:2; transform:translateY(-5px); border-color:#8ea5ff; background:#fff; box-shadow:0 20px 42px rgba(72,91,190,.22),0 0 0 3px rgba(91,113,244,.12),0 0 28px rgba(99,120,255,.16); }
+.strategy-benefit-formal-list>article:focus-within { z-index:2; transform:translateY(-2px); border-color:#738eff; box-shadow:0 16px 34px rgba(72,91,190,.20),0 0 0 3px rgba(91,113,244,.15); }
+@media (prefers-reduced-motion:reduce) { .strategy-benefit-formal-list>article { transition:none; } .strategy-benefit-formal-list>article:hover,.strategy-benefit-formal-list>article:focus-within { transform:none; } }
 .strategy-benefit-formal-card-head { display:grid; gap:12px; align-items:start; }
 .strategy-benefit-formal-icon { display:grid; width:76px; height:76px; place-items:center; border-radius:18px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
 .strategy-benefit-formal-icon svg { width:44px; height:44px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
