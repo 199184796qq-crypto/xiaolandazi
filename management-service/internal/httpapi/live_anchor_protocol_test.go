@@ -19,38 +19,31 @@ func (g *styleTestFixtureGateway) Complete(_ context.Context, r agentgateway.Req
 	g.calls = append(g.calls, r)
 	return agentgateway.Response{Text: g.outputs[len(g.calls)-1], Provider: "fixture-vendor", Model: "fixture-model", LatencyMS: 1}, nil
 }
-func TestHighFidelityGenerationRepairsLocalStyleDeviation(t *testing.T) {
+func TestShortSampleDoesNotForceDensityRepair(t *testing.T) {
 	source := strings.Repeat("我慢慢讲呀，先把这个说明白。", 16)
 	profile := stylecontract.Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version, Instructions: []string{"短句解释", "原词自称", "句尾语气", "自然转场", "准确回答", "不编造", "不促销", "不喊叫"}, Habits: []model.LiveAnchorLiteralHabit{{Kind: "particle", Text: "呀"}, {Kind: "self_address", Text: "我"}}}}, source)
 	ctx := model.LiveAgentFullShowGenerationContext{UseAnchorStyle: true, AnchorStyle: profile}
 	g := &styleTestFixtureGateway{outputs: []string{strings.Repeat("先给大家把这个说明白。", 20), source}}
-	text, result, check, audit, repaired, err := generateAnchorStyleTest(context.Background(), g, ctx, "事实优先", "自然解释", 225)
-	if err != nil || text == "" || !check.Passed || !audit.Passed || !repaired || result.LatencyMS != 2 {
-		t.Fatalf("failed: %v %+v %+v", err, check, audit)
+	text, result, _, audit, repaired, err := generateAnchorStyleTest(context.Background(), g, ctx, "事实优先", "自然解释", 225)
+	if err != nil || text == "" || !audit.Passed || repaired || result.LatencyMS != 1 {
+		t.Fatalf("failed: %v %+v", err, audit)
 	}
-	if len(g.calls) != 2 || g.calls[0].Stage != "speech_generation" {
-		t.Fatal("high fidelity style deviation should trigger one local repair")
+	if len(g.calls) != 1 || g.calls[0].Stage != "speech_generation" {
+		t.Fatal("short sample density should remain advisory")
 	}
 	if !strings.Contains(g.calls[0].Messages[1].Content, profile.Delivery.Rulebook) {
 		t.Fatal("test did not consume exact compiled rules")
 	}
-	if !strings.Contains(g.calls[1].Messages[len(g.calls[1].Messages)-1].Content, "高还原档风格验收未通过") {
-		t.Fatal("repair did not receive objective style debt")
-	}
 }
 
-func TestPersistentHighFidelityFailureNeverReturnsSuccessfulPreview(t *testing.T) {
+func TestShortSampleLowStyleDoesNotBlockPreview(t *testing.T) {
 	source := strings.Repeat("哥哥姐姐们啊，你们听我们家把重点讲清楚哟。", 24)
 	profile := stylecontract.Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: stylecontract.Version}}, source)
 	bad := strings.Repeat("先说明当前内容，再继续补充相关信息。", 14)
 	g := &styleTestFixtureGateway{outputs: []string{bad, bad, bad}}
 	text, _, _, _, repaired, err := generateAnchorStyleTest(context.Background(), g, model.LiveAgentFullShowGenerationContext{AnchorStyle: profile, UseAnchorStyle: true, StyleMatchIntensity: 100}, "", "解释", len([]rune(bad)))
-	if err == nil || text != "" || !repaired || len(g.calls) != 3 {
-		t.Fatalf("persistent low-style result escaped strict gate: err=%v text=%q repaired=%v calls=%d", err, text, repaired, len(g.calls))
-	}
-	var gateErr *anchorStyleTestGateError
-	if !errors.As(err, &gateErr) || len(gateErr.StyleIssues) == 0 {
-		t.Fatalf("missing objective style failure diagnostics: %T %v", err, err)
+	if err != nil || text == "" || repaired || len(g.calls) != 1 {
+		t.Fatalf("short-sample density unexpectedly blocked preview: err=%v text=%q repaired=%v calls=%d", err, text, repaired, len(g.calls))
 	}
 }
 

@@ -1571,11 +1571,12 @@ export interface LiveAgentPlanAnchorStyleProfile {
 	 delivery_spec?: {
     version: string
     instructions: string[]
-    literal_habits: { kind: string; text: string; position: string; when: string; avoid?: string; count: number }[]
+    literal_habits: { kind: string; text: string; position: string; when: string; avoid?: string; count: number; stability?: 'stable' | 'candidate' | 'noise' | string }[]
     rulebook: string
     sample_chars: number
     sentence_count: number
     average_sentence_chars: number
+    sample_confidence?: 'low' | 'medium' | 'high' | string
     source_sha256: string
   }
   summary?: string

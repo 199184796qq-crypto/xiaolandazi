@@ -45,3 +45,12 @@ func TestHundredPercentFidelityBecomesAnEightyFivePointReleaseGate(t *testing.T)
 		t.Fatalf("non-strict setting unexpectedly blocked: state=%+v issues=%v", advisory, advisoryIssues)
 	}
 }
+
+func TestShortAnchorSampleDoesNotPretendToHaveStableDensity(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们啊，我们家说明白哟。", 12)
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, source)
+	state, issues := StrictFidelityIssues(profile, strings.Repeat("哥哥姐姐们，我们家继续说清楚啊。", 40), 100)
+	if state.Strict || len(issues) != 0 {
+		t.Fatalf("short sample incorrectly became a hard density gate: state=%+v issues=%v", state, issues)
+	}
+}

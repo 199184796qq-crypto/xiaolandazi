@@ -290,16 +290,18 @@ type LiveAnchorDeliverySpec struct {
 	SampleChars          int                      `json:"sample_chars"`
 	SentenceCount        int                      `json:"sentence_count"`
 	AverageSentenceChars int                      `json:"average_sentence_chars"`
+	SampleConfidence     string                   `json:"sample_confidence,omitempty"`
 	SourceSHA256         string                   `json:"source_sha256,omitempty"`
 }
 
 type LiveAnchorLiteralHabit struct {
-	Kind     string `json:"kind"`
-	Text     string `json:"text"`
-	Position string `json:"position"`
-	When     string `json:"when"`
-	Avoid    string `json:"avoid,omitempty"`
-	Count    int    `json:"count"`
+	Kind      string `json:"kind"`
+	Text      string `json:"text"`
+	Position  string `json:"position"`
+	When      string `json:"when"`
+	Avoid     string `json:"avoid,omitempty"`
+	Count     int    `json:"count"`
+	Stability string `json:"stability,omitempty"` // stable, candidate, noise
 }
 
 const LiveAnchorStyleOverlayVersion = "anchor-style-overlay/v1"

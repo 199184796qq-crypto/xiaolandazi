@@ -38,6 +38,7 @@ var executableDimensionKeys = map[string]bool{
 	"information_density":   true,
 	"vocabulary_complexity": true,
 	"tone_tendency":         true,
+	"emotion_curve":         true,
 	"closing_style":         true,
 	"variation_freedom":     true,
 	"audience_pronouns":     true,
@@ -101,6 +102,9 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 		"底层主播风格只约束跨场次稳定的语言统计；数字比较、口头计算、事实回环和经营推进交给方案级策略外挂与时间调度，不从一份样本自动固化。",
 	}
 	rules = append(rules, groundedDimensionInstructions(dimensions, source)...)
+	if hasGroundedDimension(dimensions, "emotion_curve", source) {
+		rules = append(rules, "情绪按本主播样本的强弱与推进映射执行：保留热度、亲和、舒缓和推进的变化关系；不要把某个语气词固定解释成所有主播通用的高亢或舒缓标记。")
+	}
 
 	if habits := habitsOfKind(spec, "audience_address"); len(habits) > 0 {
 		positions := map[string]bool{}
@@ -161,4 +165,18 @@ func compilePureInstructions(spec *model.LiveAnchorDeliverySpec, source string, 
 		rules = rules[:22]
 	}
 	return rules
+}
+
+func hasGroundedDimension(dimensions []model.LiveAgentPlanAnchorStyleDimension, key, source string) bool {
+	for _, dimension := range dimensions {
+		if dimension.Key != key || (dimension.Confidence != "high" && dimension.Confidence != "medium") || !pureStyleText(dimension.Rule) {
+			continue
+		}
+		for _, quote := range dimension.EvidenceQuotes {
+			if strings.TrimSpace(quote) != "" && strings.Contains(source, quote) {
+				return true
+			}
+		}
+	}
+	return false
 }

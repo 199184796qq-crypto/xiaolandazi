@@ -136,17 +136,25 @@ func EvaluateRollingWindow(profile model.LiveAgentPlanAnchorStyleProfile, source
 	state.TermScore, state.Needs, state.Overused = rollingTermDeltas(budget, window)
 	state.StyleScore = (state.Runtime.StyleScore*60 + state.TermScore*40) / 100
 	state.TargetScore = partialFidelityTarget(FidelityTargetScore(heat), chars)
-	state.Strict = state.TargetScore > 0
+	// A short source can suggest a voice but cannot establish stable density.
+	// High-fidelity release gating therefore waits for both a full 1000-rune
+	// candidate window and a medium/high evidence sample.
+	state.Strict = state.TargetScore > 0 && state.Ready && profile.Delivery.SampleConfidence != "low"
+	if !state.Strict {
+		state.TargetScore = 0
+	}
 	state.Passed = !state.Strict || state.StyleScore >= state.TargetScore
-	if state.Strict {
-		for _, group := range state.Runtime.HabitGroups {
-			if group.MinCount > 0 && group.Score < 70 {
-				state.Passed = false
-			}
+	for _, group := range state.Runtime.HabitGroups {
+		if state.Strict && group.Stability == "stable" && group.MinCount > 0 && group.Score < 70 {
+			state.Passed = false
 		}
-		for _, issue := range state.Runtime.Issues {
-			switch issue.Code {
-			case "ungrounded_self_address", "speaker_identity_drift", "unsupported_dialect_marker", "habit_overuse", "habit_total_overuse":
+	}
+	for _, issue := range state.Runtime.Issues {
+		switch issue.Code {
+		case "ungrounded_self_address", "speaker_identity_drift", "unsupported_dialect_marker":
+			state.Passed = false
+		case "habit_overuse", "habit_total_overuse":
+			if state.Strict {
 				state.Passed = false
 			}
 		}
@@ -159,22 +167,22 @@ func EvaluateRollingWindow(profile model.LiveAgentPlanAnchorStyleProfile, source
 // the local segment needs repair and accepted earlier speech is never rewritten.
 func StrictFidelityIssues(profile model.LiveAgentPlanAnchorStyleProfile, generated string, heat int) (RollingWindowState, []string) {
 	state := EvaluateRollingWindow(profile, "", generated, heat)
-	if !state.Strict {
-		return state, nil
-	}
 	issues := []string{}
-	if state.StyleScore < state.TargetScore {
-		issues = append(issues, fmt.Sprintf("最近%d字风格落实率%d/100，当前阶段至少需要%d/100", state.WindowChars, state.StyleScore, state.TargetScore))
-	}
-	for _, group := range state.Runtime.HabitGroups {
-		if group.MinCount > 0 && group.Score < 70 {
-			issues = append(issues, fmt.Sprintf("%s分布只有%d/100（实际%d次，参考%d到%d次）", runtimeKindLabel(group.Kind), group.Score, group.ActualCount, group.MinCount, group.MaxCount))
-		}
-	}
 	for _, issue := range state.Runtime.Issues {
 		switch issue.Code {
 		case "ungrounded_self_address", "speaker_identity_drift", "unsupported_dialect_marker", "habit_overuse", "habit_total_overuse":
 			issues = append(issues, issue.Message)
+		}
+	}
+	if !state.Strict {
+		return state, issues
+	}
+	if state.StyleScore < state.TargetScore {
+		issues = append(issues, fmt.Sprintf("最近%d字风格落实率%d/100，当前阶段至少需要%d/100", state.WindowChars, state.StyleScore, state.TargetScore))
+	}
+	for _, group := range state.Runtime.HabitGroups {
+		if group.Stability == "stable" && group.MinCount > 0 && group.Score < 70 {
+			issues = append(issues, fmt.Sprintf("%s分布只有%d/100（实际%d次，参考%d到%d次）", runtimeKindLabel(group.Kind), group.Score, group.ActualCount, group.MinCount, group.MaxCount))
 		}
 	}
 	return state, issues

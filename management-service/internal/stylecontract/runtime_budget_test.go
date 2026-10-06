@@ -122,7 +122,7 @@ func TestRuntimeEvaluationRejectsInventedSelfAddressVariant(t *testing.T) {
 }
 
 func TestRuntimeEvaluationRejectsDialectOverrunAndSpeakerIdentityDrift(t *testing.T) {
-	source := strings.Repeat("哥哥姐姐们啊，我们家把内容慢慢讲清楚哟。", 20) + "这个说法没得问题。"
+	source := strings.Repeat("哥哥姐姐们啊，我们家把内容慢慢讲清楚哟。", 20) + "这个说法没得问题。另一个地方也没得问题。"
 	profile := runtimeFixture(source)
 	profile = Normalize(profile, source)
 	budget := CompileRuntimeBudget(profile, RuntimeOptions{TargetChars: 220, Heat: 100, Scene: RuntimeSceneMainline})

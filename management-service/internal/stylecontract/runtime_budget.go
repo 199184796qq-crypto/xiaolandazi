@@ -41,6 +41,7 @@ type RuntimeHabitBudget struct {
 	SourceCount int                `json:"source_count"`
 	MinCount    int                `json:"min_count"`
 	MaxCount    int                `json:"max_count"`
+	Stability   string             `json:"stability,omitempty"`
 	Terms       []RuntimeHabitTerm `json:"terms"`
 }
 
@@ -128,7 +129,14 @@ func CompileRuntimeBudget(profile model.LiveAgentPlanAnchorStyleProfile, options
 			return habits[i].Count > habits[j].Count
 		})
 		group := RuntimeHabitBudget{Kind: kind, Terms: []RuntimeHabitTerm{}}
+		group.Stability = "stable"
 		for _, habit := range habits {
+			if habit.Stability == "noise" {
+				continue
+			}
+			if habit.Stability != "stable" {
+				group.Stability = "candidate"
+			}
 			// Normalize counted variants into disjoint occurrences. For example,
 			// strings.Count("我们家", "我们") also increments the shorter term;
 			// summing both raw counts would make the runtime budget overuse self
@@ -225,6 +233,7 @@ type RuntimeHabitEvaluation struct {
 	MaxCount     int      `json:"max_count"`
 	Score        int      `json:"score"`
 	Distribution int      `json:"distribution_score"`
+	Stability    string   `json:"stability,omitempty"`
 }
 
 type RuntimeEvaluationIssue struct {
@@ -471,9 +480,13 @@ func EvaluateRuntimeCandidate(budget RuntimeBudget, source, candidate string) Ru
 		distributionWeighted += distribution * weight
 		totalWeight += weight
 		totalActual += actual
-		evaluation.HabitGroups = append(evaluation.HabitGroups, RuntimeHabitEvaluation{Kind: group.Kind, Alternatives: alternatives, ActualCount: actual, MinCount: group.MinCount, MaxCount: group.MaxCount, Score: score, Distribution: distribution})
+		evaluation.HabitGroups = append(evaluation.HabitGroups, RuntimeHabitEvaluation{Kind: group.Kind, Alternatives: alternatives, ActualCount: actual, MinCount: group.MinCount, MaxCount: group.MaxCount, Score: score, Distribution: distribution, Stability: group.Stability})
 		if actual > group.MaxCount {
-			addIssue("error", "habit_overuse", fmt.Sprintf("%s使用%d次，超过预算上限%d次", runtimeKindLabel(group.Kind), actual, group.MaxCount))
+			severity := "error"
+			if group.Stability != "stable" {
+				severity = "warning"
+			}
+			addIssue(severity, "habit_overuse", fmt.Sprintf("%s使用%d次，超过预算上限%d次", runtimeKindLabel(group.Kind), actual, group.MaxCount))
 		} else if actual < group.MinCount {
 			addIssue("warning", "habit_underuse", fmt.Sprintf("%s使用%d次，低于参考下限%d次", runtimeKindLabel(group.Kind), actual, group.MinCount))
 		}

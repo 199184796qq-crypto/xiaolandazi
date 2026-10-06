@@ -13,10 +13,16 @@ import (
 )
 
 type anchorStyleGenerationObserver struct {
-	Strategy *speechexpander.ResolvedContentStrategy
-	Progress func(string)
-	Segment  func(string, int)
+	Strategy       *speechexpander.ResolvedContentStrategy
+	Progress       func(string)
+	Segment        func(string, int)
+	PlanningCalls  int
+	RenderCalls    int
+	RepairCalls    int
+	FirstSegmentMS int64
 }
+
+const mainlinePlanningHorizon = 8
 
 func mainlineCursor(previous speechruntime.Continuation) speechexpander.ContentScheduleCursor {
 	cursor := speechexpander.ContentScheduleCursor{CompletedUnits: previous.CompletedUnits}
@@ -81,4 +87,101 @@ product_strategy 来自商品卡长期“直播间定位”与本次方案推导
 		reason = "本段使用系统兜底安排：模型选择未通过材料或格式检查。"
 	}
 	return fallback, speechexpander.ContentReceipt(fallback, previous.CompletedUnits+1, "fallback", reason), response
+}
+
+// planMainlineHorizon makes one lightweight scheduling call for several future
+// speech units. It plans no prose. Each unit is still rendered, audited and
+// committed independently, so the first accepted unit can stream immediately
+// and a later interaction may discard only the unrendered remainder.
+func planMainlineHorizon(ctx context.Context, gateway anchorStyleCompleter, generation model.LiveAgentFullShowGenerationContext, strategy speechexpander.ResolvedContentStrategy, originals []model.LiveSpeechExpansionStep, previous speechruntime.Continuation, memory, policyText, topic string) ([]model.LiveSpeechExpansionStep, []speechexpander.ContentDecisionReceipt, agentgateway.Response) {
+	if len(originals) == 0 {
+		return nil, nil, agentgateway.Response{}
+	}
+	cursor := mainlineCursor(previous)
+	fallbackType := strategy.LiveType
+	if strategy.ConversionIntensity == 0 && (fallbackType == "commerce" || fallbackType == "ecommerce") {
+		fallbackType = "conversation"
+	}
+	fallbackPlans, _ := speechexpander.ScheduleContent([]model.LiveSpeechExpansionPlan{{Steps: append([]model.LiveSpeechExpansionStep(nil), originals...)}}, generation.AuthorizedFacts, speechexpander.ContentStrategyInput{
+		LiveType: fallbackType, IndustryCode: strategy.IndustryCode, PlanGoal: topic,
+		ConversionIntensity: strategy.ConversionIntensity, ExpansionFreedom: strategy.ExpansionFreedom, ProductLinks: generation.ProductLinks, Cursor: cursor,
+	})
+	fallbacks := fallbackPlans[0].Steps
+	receipts := make([]speechexpander.ContentDecisionReceipt, len(fallbacks))
+	for index, step := range fallbacks {
+		receipts[index] = speechexpander.ContentReceipt(step, previous.CompletedUnits+index+1, "fallback", "本段使用系统兜底安排：批量规划暂未返回有效选择。")
+	}
+
+	material := speechexpander.PlanningFacts(generation.AuthorizedFacts, cursor)
+	type factSummary struct {
+		ID    string `json:"fact_id"`
+		Label string `json:"label"`
+		Value string `json:"value"`
+		Link  string `json:"link_key,omitempty"`
+	}
+	type slotSummary struct {
+		Index       int `json:"index"`
+		StartSecond int `json:"start_second"`
+		EndSecond   int `json:"end_second"`
+		TargetChars int `json:"target_chars"`
+	}
+	summaries := make([]factSummary, 0, len(material))
+	for _, fact := range material {
+		summaries = append(summaries, factSummary{fact.FactID, fact.Label, trimRunes(fact.Value, 320), fact.LinkKey})
+	}
+	slots := make([]slotSummary, 0, len(originals))
+	for index, step := range originals {
+		slots = append(slots, slotSummary{Index: index + 1, StartSecond: step.StartSecond, EndSecond: step.EndSecond, TargetChars: step.TargetChars})
+	}
+	input, _ := json.Marshal(map[string]any{
+		"live_type": strategy.LiveType, "industry": strategy.IndustryCode, "topic": topic,
+		"conversion_intensity": strategy.ConversionIntensity, "expansion_freedom": strategy.ExpansionFreedom,
+		"available_roles": speechexpander.PlanningRoles(strategy), "product_strategy": strategy.ProductPlan, "materials": summaries,
+		"accepted_history": previous, "time_memory": json.RawMessage(memory), "future_slots": slots,
+	})
+	request := agentgateway.Request{Stage: "speech_generation", ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, MaxTokens: min(1400, 320+len(originals)*140), Timeout: 10 * time.Second,
+		Messages: []agentgateway.Message{
+			{Role: "system", Content: `你是连续直播主线的短期规划器，不写正文。一次安排输入中的future_slots，正文随后仍逐段生成、验收并立即流出。
+这只是可废弃的短期路线图：发生观众互动、新事实或商品切换时，系统会丢弃尚未生成的部分重新规划。不要把它写成固定销售漏斗。
+环节是可选菜单。相邻小段应自然续接，可以围绕同一商品换角度深入，但避免连续使用完全相同的role和primary_fact_id。行业、商品直播间定位和促单强度只用于后台取舍，不能当作可朗读事实。
+只能从available_roles选role，从materials选primary_fact_id；support_fact_ids最多一项且不能跨商品。没有材料时主ID为空。不得制造库存、倒计时、观众反馈、价格、福利或履约事实。
+必须为每个future_slots索引返回且只返回一次。严格JSON：{"decisions":[{"index":1,"role":"scenario","primary_fact_id":"提供的ID","support_fact_ids":[],"reason":"一句中文调度理由"}]}`},
+			{Role: "user", Content: fmt.Sprintf("当前法律平台及L1/L2边界（不能放宽）：\n%s\n短期规划数据：\n%s", policyText, input)},
+		}}
+	plannerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	response, err := gateway.Complete(plannerCtx, request)
+	if err != nil {
+		return fallbacks, receipts, response
+	}
+	var envelope struct {
+		Decisions []struct {
+			Index int `json:"index"`
+			speechexpander.ContentDecision
+		} `json:"decisions"`
+	}
+	if json.Unmarshal([]byte(stripPolicyJSONFence(response.Text)), &envelope) != nil {
+		return fallbacks, receipts, response
+	}
+	byIndex := map[int]speechexpander.ContentDecision{}
+	for _, item := range envelope.Decisions {
+		if item.Index < 1 || item.Index > len(originals) {
+			continue
+		}
+		byIndex[item.Index] = item.ContentDecision
+	}
+	planned := append([]model.LiveSpeechExpansionStep(nil), fallbacks...)
+	for index, original := range originals {
+		choice, ok := byIndex[index+1]
+		if !ok {
+			continue
+		}
+		step, applyErr := speechexpander.ApplyContentDecision(original, choice, material, strategy)
+		if applyErr != nil {
+			continue
+		}
+		planned[index] = step
+		receipts[index] = speechexpander.ContentReceipt(step, previous.CompletedUnits+index+1, "model_horizon", trimRunes(choice.Reason, 180))
+	}
+	return planned, receipts, response
 }

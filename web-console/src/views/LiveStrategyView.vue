@@ -6062,7 +6062,7 @@ onBeforeUnmount(() => {
                 <div v-if="!selectedReusableAnchorStyle.profile.dimensions?.length" class="reusable-anchor-style-empty">还没有分析结果。请回到“主播风格样本话术”分析至少一份样本。</div>
                 <template v-else>
                   <section class="reusable-anchor-style-rulebook reusable-anchor-style-meta-prompt-only">
-                    <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。</small></header>
+                    <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。样本证据置信度：{{ selectedReusableAnchorStyle.profile.delivery_spec?.sample_confidence || '待累计' }}；短样本先看存在性，长样本才按密度约束。</small></header>
                     <pre>{{ selectedReusableAnchorStyle.profile.delivery_spec?.rulebook || selectedReusableAnchorStyle.profile.reusable_rules.join('\n') }}</pre>
                   </section>
                 </template>
@@ -6087,11 +6087,11 @@ onBeforeUnmount(() => {
                 <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
                 <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">放行线：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
                 <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
-                  <header><strong>本次话术安排</strong><small>每写一小段，模型都会根据前文重新安排；选择不合适或超时，由系统兜底。这些说明不会读进直播间。</small></header>
+                  <header><strong>本次话术安排</strong><small>系统一次规划最多8个短期小段，正文仍逐段生成、校验并立即显示；互动或事实变化时只废弃尚未生成的部分。选择不合适或超时，由系统兜底。</small></header>
                   <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
                   <template v-if="anchorStyleTestResult.content_strategy.actual_steps?.length">
                     <p>本次实际顺序：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.actual_steps.map((step) => step.role), anchorStyleTestResult.content_strategy.live_type) }}</p>
-                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }} · {{ step.source === 'model' ? '模型安排' : '系统兜底' }}：{{ step.reason }}</p></details>
+                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }} · {{ step.source.startsWith('model') ? '模型短期规划' : '系统兜底' }}：{{ step.reason }}</p></details>
                   </template>
                   <p v-else>默认环节参考（不是本次实际顺序）：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.role_sequence, anchorStyleTestResult.content_strategy.live_type) }}</p>
                   <details v-if="anchorStyleTestResult.content_strategy.product_plan?.length" open>
@@ -6342,7 +6342,8 @@ onBeforeUnmount(() => {
               <AnchorTrainingReceipt :items="anchorStyleTestResult.applied_trainings" />
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
               <small>本次独立参数：主播风格还原强度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。还原强度是生成目标，实际分数由下方1000字窗口独立测量；两项参数互不联动。</small>
-              <small v-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
+              <small v-if="anchorStyleTestResult.generation_mode === 'horizon_streaming_segments'">生成方式：每次短期规划最多8段，正文按 {{ anchorStyleTestResult.segment_count || '多个' }} 个时间单元逐段校验并流式追加；首段 {{ anchorStyleTestResult.first_segment_ms ?? '—' }}ms，规划调用 {{ anchorStyleTestResult.planning_call_count ?? 0 }} 次，正文调用 {{ anchorStyleTestResult.render_call_count ?? 0 }} 次，其中返修 {{ anchorStyleTestResult.repair_call_count ?? 0 }} 次。</small>
+              <small v-else-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
               <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。90–100高还原档会在每个小段提交前验收，未过放行线会定向返修，不再把低分结果当成成功。</small>
               <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>

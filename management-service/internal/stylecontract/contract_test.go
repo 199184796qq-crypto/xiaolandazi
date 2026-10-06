@@ -201,6 +201,53 @@ func TestNormalizeDoesNotInventLiveAddressesForQuietSample(t *testing.T) {
 	}
 }
 
+func TestSampleEvidenceSeparatesStableCandidateAndNoise(t *testing.T) {
+	short := "第一句啊。第二句哟。偶尔哈。"
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{
+		Version: Version,
+		Habits: []model.LiveAnchorLiteralHabit{
+			{Kind: "particle", Text: "哈", Position: "句尾"},
+			{Kind: "particle", Text: "啊", Position: "句尾"},
+		},
+	}}, short)
+	if profile.Delivery.SampleConfidence != "low" {
+		t.Fatalf("short sample confidence=%q", profile.Delivery.SampleConfidence)
+	}
+	for _, habit := range profile.Delivery.Habits {
+		if habit.Text == "哈" && habit.Stability != "noise" {
+			t.Fatalf("one-off marker lost its noise classification: %+v", habit)
+		}
+		if habit.Stability == "stable" {
+			t.Fatalf("short-sample marker became stable: %+v", habit)
+		}
+	}
+	long := strings.Repeat("这一句保留啊。", 240)
+	longProfile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, long)
+	if longProfile.Delivery.SampleConfidence != "high" {
+		t.Fatalf("long sample confidence=%q", longProfile.Delivery.SampleConfidence)
+	}
+	foundStable := false
+	for _, habit := range longProfile.Delivery.Habits {
+		if habit.Text == "啊" && habit.Stability == "stable" {
+			foundStable = true
+		}
+	}
+	if !foundStable {
+		t.Fatalf("repeated long-sample marker was not stable: %+v", longProfile.Delivery.Habits)
+	}
+}
+
+func TestEmotionCurveIsGroundedAsAnAnchorRule(t *testing.T) {
+	source := "先慢慢说清楚。接着把重点往前推啊。最后短句确认。"
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{
+		Dimensions: []model.LiveAgentPlanAnchorStyleDimension{{Key: "emotion_curve", Group: "emotion", Label: "情绪强度曲线", Rule: "前段克制说明，中段逐步加快，重点处用短确认收束", EvidenceQuotes: []string{"把重点往前推啊"}, Confidence: "high"}},
+		Delivery:   &model.LiveAnchorDeliverySpec{Version: Version},
+	}, source)
+	if !strings.Contains(Render(profile), "前段克制说明") {
+		t.Fatalf("grounded emotion curve missing from rulebook: %s", Render(profile))
+	}
+}
+
 func TestCompilerAdmitsOnlyGroundedStableExpressionDimensions(t *testing.T) {
 	source := "先把重点说清楚。为什么这么讲？我再换个顺序说一遍。最后把重点收回来，没得问题。"
 	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{

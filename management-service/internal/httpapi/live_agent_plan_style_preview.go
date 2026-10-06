@@ -435,21 +435,22 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 			stream.send("segment", map[string]any{"text": text, "segment_index": index})
 		},
 	}
-	observer.Progress("正在安排第一小段，正文返回后会立即显示。")
+	observer.Progress("正在规划接下来最多8个小段；第一段通过校验后立即显示，不等待整轮完成。")
 	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
 	if err != nil {
-		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars}
+		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS}
 		var gateErr *anchorStyleTestGateError
 		if errors.As(err, &gateErr) {
 			failureMetadata["actual_chars"] = gateErr.ActualChars
 			failureMetadata["min_chars"] = gateErr.MinChars
 			failureMetadata["max_chars"] = gateErr.MaxChars
 			failureMetadata["missing_habits"] = gateErr.Missing
+			failureMetadata["style_issues"] = gateErr.StyleIssues
 			failureMetadata["audit_issues"] = gateErr.AuditIssues
 			failureMetadata["attempts"] = gateErr.Attempts
 		}
 		s.finishAISingleUse(r.Context(), invocationID, "failed", result.Provider, result.Model, result.LatencyMS, failureMetadata)
-		log.Printf("anchor style test rejected plan=%d room=%d provider=%s model=%s latency_ms=%d err=%v", planID, input.RoomID, result.Provider, result.Model, result.LatencyMS, err)
+		log.Printf("anchor style test rejected plan=%d room=%d provider=%s model=%s latency_ms=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d err=%v", planID, input.RoomID, result.Provider, result.Model, result.LatencyMS, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, err)
 		writeError(w, http.StatusBadGateway, "后续小段生成或校验未完成，已显示的正文保留供你查看，请重试。")
 		return
 	}
@@ -489,13 +490,14 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	if len(generation.ExpansionPlans) > 0 {
 		segmentCount = len(generation.ExpansionPlans[0].Steps)
 	}
-	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
+	metadata := map[string]any{"audit_passed": audited.Passed, "style_check": checked, "style_purity_passed": purityReport.Passed, "style_coverage_warnings": styleCoverageWarnings, "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "runtime_style_score": runtimeEvaluation.StyleScore, "style_window_score": styleWindow.StyleScore, "style_window_chars": styleWindow.WindowChars, "style_window_ready": styleWindow.Ready, "runtime_copy_pct": runtimeEvaluation.CopyContainmentPct, "repair_attempted": repaired, "overlay_qc_passed": overlayQC.Passed, "overlay_qc_available": overlayQC.Available, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "protocol": stylecontract.Version, "content_strategy": contentStrategy, "completed_units": continuation.CompletedUnits}
 	if vectorEvaluation.Available {
 		metadata["style_vector_score"] = vectorEvaluation.Score
 	}
 	metadata["applied_training_count"] = len(appliedTrainings)
 	s.finishAISingleUse(r.Context(), invocationID, "succeeded", result.Provider, result.Model, result.LatencyMS, metadata)
-	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "time_driven_segments", "segment_count": segmentCount, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
+	log.Printf("anchor style test completed plan=%d room=%d first_segment_ms=%d planning_calls=%d render_calls=%d repair_calls=%d segments=%d", planID, input.RoomID, observer.FirstSegmentMS, observer.PlanningCalls, observer.RenderCalls, observer.RepairCalls, segmentCount)
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "target_chars": input.TargetChars, "min_chars": minChars, "max_chars": maxChars, "actual_chars": utf8.RuneCountInString(text), "style_match_intensity": styleMatchIntensity, "fact_expansion_freedom": generation.FactExpansion.Freedom, "audit": audited, "style_check": checked, "style_coverage_warnings": styleCoverageWarnings, "style_purity": purityReport, "runtime_budget": runtimeBudget, "runtime_evaluation": runtimeEvaluation, "style_window": styleWindow, "style_vector_evaluation": vectorEvaluation, "overlay_qc": overlayQC, "repair_attempted": repaired, "generation_mode": "horizon_streaming_segments", "segment_count": segmentCount, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "protocol": stylecontract.Version, "persisted": false, "transient_overlay_count": len(input.TransientOverlays), "provider": result.Provider, "model": result.Model, "latency_ms": result.LatencyMS, "continuation": continuation, "content_strategy": contentStrategy, "advisories": advisories, "speech_text_only": true, "applied_trainings": appliedTrainings})
 }
 
 type anchorStyleCompleter interface {
@@ -730,7 +732,7 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		observer = observers[0]
 	}
 	if observer != nil && observer.Strategy != nil {
-		observer.Strategy.SchedulingMode = "model_per_segment"
+		observer.Strategy.SchedulingMode = "model_horizon_streaming"
 		observer.Strategy.ActualSteps = []speechexpander.ContentDecisionReceipt{}
 	}
 	minChars, maxChars := anchorStyleTargetRange(targetChars)
@@ -768,11 +770,14 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 	var totalLatency int64
 	totalCalls := 0
 	repaired := false
+	horizonReceipts := make([]speechexpander.ContentDecisionReceipt, len(steps))
+	generationStartedAt := time.Now()
 
-	for index, step := range steps {
+	for index := 0; index < len(steps); index++ {
 		if ledger.RemainingChars() <= 0 {
 			break
 		}
+		step := steps[index]
 		wasRepaired := repaired
 		virtualNow := brainStart.Add(time.Duration(step.EndSecond) * time.Second)
 		brainSession.ExpireEngagement(virtualNow)
@@ -791,17 +796,24 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 		}
 		brainPromptJSON, _ := json.Marshal(brainPromptContext)
 		var decision speechexpander.ContentDecisionReceipt
-		if observer != nil && observer.Strategy != nil {
+		if observer != nil && observer.Strategy != nil && index%mainlinePlanningHorizon == 0 {
+			horizonEnd := min(len(steps), index+mainlinePlanningHorizon)
 			if observer.Progress != nil {
-				observer.Progress(fmt.Sprintf("正在安排第%d小段的讲解目的和材料。", index+1))
+				observer.Progress(fmt.Sprintf("正在一次安排接下来%d个小段；每段通过校验后立即追加。", horizonEnd-index))
 			}
-			var planningResponse agentgateway.Response
-			step, decision, planningResponse = planNextMainlineSegment(ctx, gateway, generation, *observer.Strategy, step, ledger.Checkpoint(), string(brainPromptJSON), policyText, topic)
+			planned, receipts, planningResponse := planMainlineHorizon(ctx, gateway, generation, *observer.Strategy, steps[index:horizonEnd], ledger.Checkpoint(), string(brainPromptJSON), policyText, topic)
+			copy(steps[index:horizonEnd], planned)
+			copy(horizonReceipts[index:horizonEnd], receipts)
 			totalCalls++
+			observer.PlanningCalls++
 			totalLatency += planningResponse.LatencyMS
 			if err := ctx.Err(); err != nil {
 				return "", result, stylecontract.CheckResult{}, model.LiveAgentFullShowAudit{}, repaired, err
 			}
+		}
+		step = steps[index]
+		if observer != nil && observer.Strategy != nil {
+			decision = horizonReceipts[index]
 		}
 		spec := ledger.Next(step, index, len(steps))
 		styleHistory := anchorStyleHistory(previous, ledger.CommittedText())
@@ -829,6 +841,12 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			}
 			response, err := gateway.Complete(ctx, request)
 			totalCalls++
+			if observer != nil {
+				observer.RenderCalls++
+				if attempt > 0 {
+					observer.RepairCalls++
+				}
+			}
 			totalLatency += response.LatencyMS
 			result = response
 			result.LatencyMS = totalLatency
@@ -908,6 +926,9 @@ func generateAnchorStyleTestWithState(ctx context.Context, gateway anchorStyleCo
 			return "", result, stylecontract.CheckResult{}, segmentAudit, repaired, errors.New("提交时间单元失败")
 		}
 		if observer != nil {
+			if observer.FirstSegmentMS == 0 {
+				observer.FirstSegmentMS = time.Since(generationStartedAt).Milliseconds()
+			}
 			if observer.Strategy != nil {
 				observer.Strategy.ActualSteps = append(observer.Strategy.ActualSteps, decision)
 			}
