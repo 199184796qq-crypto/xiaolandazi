@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { getCommerceRules, rewardText, type CommerceRule } from '../commerce'
 import ModulePageNav from '../components/ModulePageNav.vue'
 import {
@@ -16,6 +16,7 @@ import {
   getCommercialMarketingCampaigns,
   getCommercialMemberships,
   getCommercialTimeCards,
+  uploadCommercialMarketingAsset,
   updateCommercialMarketingCampaign,
 } from '../api'
 import type {
@@ -24,6 +25,7 @@ import type {
   CommercialTimeCardProduct,
   MarketingCampaign,
   MarketingCampaignItem,
+  MarketingCampaignPresentation,
 } from '../types'
 
 type TargetType = 'membership' | 'time_card' | 'device_product'
@@ -61,6 +63,37 @@ const membershipPackageOptions = [
   { months: 12, label: '包年' },
 ] as const
 
+const marketingSkinOptions: Array<{
+  key: MarketingCampaignPresentation['template_key']
+  name: string
+  description: string
+  primary: string
+  accent: string
+}> = [
+  { key: 'blue_tech', name: '蓝色科技', description: '适合时长、算力和工具活动', primary: '#356DFF', accent: '#FF586B' },
+  { key: 'festival_red', name: '节日促销', description: '适合周年庆和限时优惠', primary: '#D9363E', accent: '#FFB52E' },
+  { key: 'newcomer_gold', name: '新人礼包', description: '适合开户礼和首单福利', primary: '#9B6B18', accent: '#F3BE43' },
+  { key: 'fresh_green', name: '清新绿色', description: '适合长期权益和服务活动', primary: '#168A67', accent: '#56C98D' },
+  { key: 'minimal_light', name: '简约商务', description: '弱装饰、突出活动信息', primary: '#52617A', accent: '#7B8EAE' },
+]
+
+function defaultMarketingPresentation(): MarketingCampaignPresentation {
+  return {
+    schema_version: 1,
+    template_key: 'blue_tech',
+    display_size: 'standard',
+    background_style: 'soft_gradient',
+    primary_color: '#356DFF',
+    accent_color: '#FF586B',
+    eyebrow: '限时活动',
+    badge_text: '当前优惠',
+    cta_button_text: '立即参与',
+    show_countdown: true,
+    show_saving: true,
+    show_conditions: true,
+  }
+}
+
 const campaigns = ref<MarketingCampaign[]>([])
 const memberships = ref<CommercialMembershipPlan[]>([])
 const timeCards = ref<CommercialTimeCardProduct[]>([])
@@ -68,6 +101,8 @@ const devices = ref<CommercialDeviceProduct[]>([])
 const commissionRules = ref<CommerceRule[]>([])
 const loading = ref(true)
 const saving = ref(false)
+const skinAssetUploading = ref(false)
+const skinAssetName = ref('')
 const editorOpen = ref(false)
 const editingId = ref<number | null>(null)
 const error = useFeedbackErrorRef()
@@ -87,8 +122,44 @@ const form = reactive({
   starts_at: '',
   ends_at: '',
   display_locations: ['backoffice'] as MarketingDisplayLocation[],
+  presentation: defaultMarketingPresentation(),
   items: [] as MarketingItemForm[],
 })
+
+const presentationPreviewStyle = computed(() => ({
+  '--campaign-primary': form.presentation.primary_color,
+  '--campaign-accent': form.presentation.accent_color,
+  '--campaign-cover': form.presentation.cover_asset_id ? `url("/api/v1/marketing-assets/${form.presentation.cover_asset_id}/content")` : 'none',
+}))
+
+function chooseMarketingSkin(option: typeof marketingSkinOptions[number]) {
+  form.presentation.template_key = option.key
+  form.presentation.primary_color = option.primary
+  form.presentation.accent_color = option.accent
+}
+
+async function uploadMarketingSkinAsset(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || skinAssetUploading.value) return
+  skinAssetUploading.value = true
+  error.value = ''
+  try {
+    const asset = await uploadCommercialMarketingAsset(file)
+    form.presentation.cover_asset_id = asset.id
+    skinAssetName.value = asset.original_name
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '上传活动主视觉失败'
+  } finally {
+    skinAssetUploading.value = false
+    input.value = ''
+  }
+}
+
+function clearMarketingSkinAsset() {
+  form.presentation.cover_asset_id = undefined
+  skinAssetName.value = ''
+}
 
 const navContext = computed(() => 'activityMarketing' as const)
 
@@ -486,6 +557,8 @@ function resetForm() {
   form.starts_at = ''
   form.ends_at = ''
   form.display_locations = ['backoffice']
+  form.presentation = defaultMarketingPresentation()
+  skinAssetName.value = ''
   form.items.splice(0)
   addTarget('membership')
 }
@@ -508,6 +581,8 @@ function openEdit(plan: MarketingPlanView) {
   form.starts_at = toLocalDateTimeInput(plan.starts_at)
   form.ends_at = toLocalDateTimeInput(plan.ends_at)
   form.display_locations = normalizeDisplayLocations(plan.display_locations)
+  form.presentation = { ...defaultMarketingPresentation(), ...(plan.presentation || {}) }
+  skinAssetName.value = plan.presentation?.cover_asset_id ? `服务器图片 #${plan.presentation.cover_asset_id}` : ''
   form.items.splice(0)
   for (const item of plan.items) {
     form.items.push({
@@ -528,6 +603,16 @@ function openEdit(plan: MarketingPlanView) {
   editorOpen.value = true
   error.value = ''
   notice.value = ''
+}
+
+function openSkinEditor(plan: MarketingPlanView) {
+  openEdit(plan)
+  void nextTick(() => {
+    document.getElementById('marketing-skin-editor')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  })
 }
 
 async function load() {
@@ -617,6 +702,7 @@ async function save() {
     starts_at: startsAt,
     ends_at: endsAt,
     display_locations: [...form.display_locations],
+    presentation: { ...form.presentation },
     items: form.items.map(itemFromForm),
   }
 
@@ -649,6 +735,7 @@ async function toggleStatus(plan: MarketingPlanView) {
     starts_at: plan.starts_at || '',
     ends_at: plan.ends_at || '',
     display_locations: normalizeDisplayLocations(plan.display_locations),
+    presentation: plan.presentation,
     items: plan.items,
   })
   notice.value = next === 'active' ? '营销计划已启用。' : '营销计划已停用。'
@@ -836,6 +923,7 @@ onMounted(load)
 
           <footer v-if="canManage">
             <button class="ghost-button" type="button" @click="openEdit(plan)">编辑计划</button>
+            <button class="ghost-button marketing-skin-entry-button" type="button" @click="openSkinEditor(plan)">设置皮肤</button>
             <button class="ghost-button" type="button" @click="toggleStatus(plan)">
               {{ plan.status === 'active' ? '停用' : '启用' }}
             </button>
@@ -910,6 +998,79 @@ onMounted(load)
                 <input v-model.number="form.sort_order" type="number" step="1" />
               </label>
             </div>
+
+            <section id="marketing-skin-editor" class="marketing-skin-editor">
+              <header>
+                <div>
+                  <strong>前台活动皮肤</strong>
+                  <span>只控制展示，不会改变价格、限领、库存或订单规则。</span>
+                </div>
+                <span class="marketing-skin-version">皮肤协议 V1</span>
+              </header>
+
+              <div class="marketing-skin-layout">
+                <div class="marketing-skin-settings">
+                  <div class="marketing-skin-options">
+                    <button
+                      v-for="option in marketingSkinOptions"
+                      :key="option.key"
+                      type="button"
+                      :class="{ active: form.presentation.template_key === option.key }"
+                      @click="chooseMarketingSkin(option)"
+                    >
+                      <i :style="{ background: `linear-gradient(135deg, ${option.primary}, ${option.accent})` }"></i>
+                      <span><strong>{{ option.name }}</strong><small>{{ option.description }}</small></span>
+                    </button>
+                  </div>
+
+                  <div class="marketing-editor-grid marketing-skin-fields">
+                    <label><span>卡片尺寸</span><select v-model="form.presentation.display_size"><option value="featured">主推大卡</option><option value="standard">普通卡</option><option value="compact">紧凑卡</option></select></label>
+                    <label><span>背景效果</span><select v-model="form.presentation.background_style"><option value="soft_gradient">柔和渐变</option><option value="spotlight">聚光强调</option><option value="solid">纯色简洁</option></select></label>
+                    <label><span>主色</span><div class="marketing-color-input"><input v-model="form.presentation.primary_color" type="color" /><input v-model.trim="form.presentation.primary_color" maxlength="7" /></div></label>
+                    <label><span>强调色</span><div class="marketing-color-input"><input v-model="form.presentation.accent_color" type="color" /><input v-model.trim="form.presentation.accent_color" maxlength="7" /></div></label>
+                    <label><span>顶部短标题</span><input v-model="form.presentation.eyebrow" maxlength="32" placeholder="例如：新用户专享" /></label>
+                    <label><span>角标文案</span><input v-model="form.presentation.badge_text" maxlength="24" placeholder="例如：开户即送" /></label>
+                    <label><span>按钮文字</span><input v-model="form.presentation.cta_button_text" maxlength="16" placeholder="例如：立即领取" /></label>
+                    <div class="marketing-editor-full marketing-skin-asset-field">
+                      <span>主视觉图片（可选）</span>
+                      <div class="marketing-skin-asset-control">
+                        <label class="marketing-skin-upload-button">
+                          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="uploadMarketingSkinAsset" />
+                          {{ skinAssetUploading ? '正在上传...' : form.presentation.cover_asset_id ? '更换图片' : '上传图片' }}
+                        </label>
+                        <span v-if="form.presentation.cover_asset_id">{{ skinAssetName || `服务器图片 #${form.presentation.cover_asset_id}` }}</span>
+                        <button v-if="form.presentation.cover_asset_id" type="button" @click="clearMarketingSkinAsset">移除</button>
+                      </div>
+                      <small>浏览器只访问同源内容接口，服务器内部读取 OSS，不暴露 OSS 地址。</small>
+                    </div>
+                  </div>
+
+                  <div class="marketing-skin-switches">
+                    <label><input v-model="form.presentation.show_countdown" type="checkbox" />显示活动倒计时</label>
+                    <label><input v-model="form.presentation.show_saving" type="checkbox" />显示优惠金额</label>
+                    <label><input v-model="form.presentation.show_conditions" type="checkbox" />显示参与条件</label>
+                  </div>
+                </div>
+
+                <aside
+                  class="marketing-skin-preview"
+                  :class="[`skin-${form.presentation.template_key}`, `size-${form.presentation.display_size}`, `background-${form.presentation.background_style}`]"
+                  :style="presentationPreviewStyle"
+                >
+                  <div class="marketing-skin-preview-cover" aria-hidden="true"></div>
+                  <div class="marketing-skin-preview-top"><span>{{ form.presentation.eyebrow }}</span><b>{{ form.presentation.badge_text }}</b></div>
+                  <h4>{{ form.name || '活动名称预览' }}</h4>
+                  <p>{{ form.description || '活动说明会展示在这里，帮助用户快速理解活动价值。' }}</p>
+                  <div v-if="form.presentation.show_countdown" class="marketing-skin-preview-countdown">限时活动 · 按有效期自动展示</div>
+                  <div class="marketing-skin-preview-values">
+                    <span><small>活动价</small><strong>{{ formatMoney(formPayableCents) }}</strong></span>
+                    <span v-if="form.presentation.show_saving"><small>已优惠</small><strong>{{ formatMoney(Math.max(0, formBaseCents - formPayableCents)) }}</strong></span>
+                  </div>
+                  <small v-if="form.presentation.show_conditions" class="marketing-skin-preview-condition">参与资格与限领规则按活动配置实时判断</small>
+                  <button type="button">{{ form.presentation.cta_button_text }}</button>
+                </aside>
+              </div>
+            </section>
 
             <section class="marketing-target-editor">
               <header><strong>参与资格与限领</strong><span>新开户自动限领一次；账户、手机号双重校验</span></header>
@@ -1066,6 +1227,57 @@ onMounted(load)
   min-height:42px; border:1px solid #dfe5ee; border-radius:10px; padding:8px 11px; color:#303a4c; background:#fbfcfe; font:inherit;
 }
 .marketing-editor-grid textarea { resize: vertical; }
+.marketing-skin-editor { display:grid; gap:14px; padding:16px; border:1px solid #dde5f2; border-radius:16px; background:linear-gradient(180deg,#fbfcff,#f6f8fd); }
+.marketing-skin-entry-button { color:#536ce2 !important; border-color:#cfd8ff !important; background:#f2f5ff !important; }
+.marketing-skin-editor > header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.marketing-skin-editor > header > div { display:grid; gap:3px; }
+.marketing-skin-editor > header strong { color:#26334a; font-size:15px; }
+.marketing-skin-editor > header span { color:#8994a8; font-size:11px; }
+.marketing-skin-version { padding:5px 9px; border-radius:999px; color:#506fd1 !important; background:#edf2ff; font-weight:800; }
+.marketing-skin-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr); gap:16px; align-items:start; }
+.marketing-skin-settings { display:grid; gap:14px; min-width:0; }
+.marketing-skin-options { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
+.marketing-skin-options button { display:grid; justify-items:start; gap:7px; min-width:0; padding:9px; border:1px solid #e0e6f1; border-radius:11px; background:#fff; text-align:left; cursor:pointer; }
+.marketing-skin-options button.active { border-color:#6d82ef; box-shadow:0 0 0 2px rgba(91,112,231,.12); }
+.marketing-skin-options i { display:block; width:100%; height:24px; border-radius:7px; }
+.marketing-skin-options span { display:grid; gap:2px; min-width:0; }
+.marketing-skin-options strong { color:#34405a; font-size:11px; }
+.marketing-skin-options small { color:#919aab; font-size:9px; line-height:1.35; }
+.marketing-skin-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.marketing-color-input { display:grid; grid-template-columns:46px minmax(0,1fr); gap:7px; }
+.marketing-color-input input[type='color'] { width:46px; padding:3px; }
+.marketing-skin-asset-field { display:grid; gap:7px; }
+.marketing-skin-asset-field > span { color:#526078; font-size:11px; font-weight:750; }
+.marketing-skin-asset-field > small { color:#929cad; font-size:9px; line-height:1.45; }
+.marketing-skin-asset-control { display:flex; min-height:42px; align-items:center; gap:9px; padding:6px 8px; border:1px solid #dfe5ee; border-radius:10px; background:#fbfcfe; }
+.marketing-skin-asset-control > span { min-width:0; flex:1; overflow:hidden; color:#6d788d; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.marketing-skin-upload-button,.marketing-skin-asset-control > button { min-height:29px; padding:0 11px; border:0; border-radius:8px; color:#fff; background:#6478df; font:inherit; font-size:10px; font-weight:850; cursor:pointer; }
+.marketing-skin-upload-button { display:grid; place-items:center; }
+.marketing-skin-upload-button input { display:none; }
+.marketing-skin-asset-control > button { color:#b43e4c; background:#fff0f2; }
+.marketing-skin-switches { display:flex; flex-wrap:wrap; gap:8px; }
+.marketing-skin-switches label { display:flex; align-items:center; gap:6px; padding:7px 10px; border:1px solid #e1e6ef; border-radius:999px; color:#5f6c82; background:#fff; font-size:11px; }
+.marketing-skin-switches input { width:14px; height:14px; }
+.marketing-skin-preview { --campaign-primary:#356DFF; --campaign-accent:#FF586B; --campaign-cover:none; position:relative; display:grid; gap:10px; min-height:330px; overflow:hidden; padding:20px; border:1px solid color-mix(in srgb,var(--campaign-primary) 32%,#dfe5ef); border-radius:20px; background:linear-gradient(145deg,color-mix(in srgb,var(--campaign-primary) 10%,white),#fff 55%,color-mix(in srgb,var(--campaign-accent) 10%,white)); box-shadow:0 14px 34px color-mix(in srgb,var(--campaign-primary) 13%,transparent); }
+.marketing-skin-preview.background-solid { background:color-mix(in srgb,var(--campaign-primary) 7%,white); }
+.marketing-skin-preview.background-spotlight { background:radial-gradient(circle at 85% 15%,color-mix(in srgb,var(--campaign-accent) 28%,transparent),transparent 42%),linear-gradient(145deg,color-mix(in srgb,var(--campaign-primary) 13%,white),#fff 66%); }
+.marketing-skin-preview-cover { position:absolute; inset:0; opacity:.2; background-image:var(--campaign-cover); background-size:cover; background-position:center; pointer-events:none; }
+.marketing-skin-preview > *:not(.marketing-skin-preview-cover) { position:relative; z-index:1; }
+.marketing-skin-preview-top { display:flex; justify-content:space-between; align-items:center; gap:8px; color:var(--campaign-primary); font-size:11px; font-weight:850; }
+.marketing-skin-preview-top b { padding:5px 8px; border-radius:999px; color:#fff; background:var(--campaign-accent); }
+.marketing-skin-preview h4 { margin:8px 0 0; color:#18243b; font-size:24px; line-height:1.2; }
+.marketing-skin-preview p { margin:0; min-height:42px; color:#748096; font-size:12px; line-height:1.65; }
+.marketing-skin-preview-countdown { justify-self:start; padding:6px 9px; border-radius:8px; color:var(--campaign-primary); background:color-mix(in srgb,var(--campaign-primary) 10%,white); font-size:10px; font-weight:800; }
+.marketing-skin-preview-values { display:flex; gap:16px; margin-top:auto; }
+.marketing-skin-preview-values span { display:grid; gap:2px; }
+.marketing-skin-preview-values small,.marketing-skin-preview-condition { color:#8b96a9; font-size:9px; }
+.marketing-skin-preview-values strong { color:#1d2940; font-size:17px; }
+.marketing-skin-preview-condition { line-height:1.45; }
+.marketing-skin-preview > button { width:100%; min-height:42px; border:0; border-radius:12px; color:#fff; background:linear-gradient(90deg,var(--campaign-primary),var(--campaign-accent)); font:inherit; font-weight:900; }
+.marketing-skin-preview.size-compact { min-height:245px; padding:16px; }
+.marketing-skin-preview.size-compact p,.marketing-skin-preview.size-compact .marketing-skin-preview-countdown,.marketing-skin-preview.size-compact .marketing-skin-preview-condition { display:none; }
+.marketing-skin-preview.size-featured { min-height:380px; }
+.marketing-skin-preview.skin-minimal_light { box-shadow:none; }
 .marketing-filters input { width:240px; }
 .marketing-card-grid {
   display:grid;
@@ -1604,6 +1816,8 @@ onMounted(load)
   .marketing-target-editor-card { grid-template-columns:28px 1fr 30px; }
   .marketing-target-preview { grid-column:2; }
   .marketing-target-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .marketing-skin-layout { grid-template-columns:1fr; }
+  .marketing-skin-options { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
 @media (max-width:760px) {
   .marketing-hero,.marketing-workspace > header { align-items:stretch; flex-direction:column; }
@@ -1616,6 +1830,7 @@ onMounted(load)
   .marketing-item-price-grid { grid-template-columns:1fr; }
   .marketing-value-summary { grid-template-columns:1fr; }
   .marketing-target-fields { grid-template-columns:1fr; }
+  .marketing-skin-options,.marketing-skin-fields { grid-template-columns:1fr; }
   .marketing-editor-actions {
     grid-template-columns:1fr 1fr;
   }

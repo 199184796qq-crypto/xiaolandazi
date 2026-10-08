@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -90,6 +91,63 @@ func normalizeAudioToCoreWAV(ctx context.Context, inputPath string) (string, err
 	if info.Size() <= 44 {
 		_ = os.Remove(outputPath)
 		return "", fmt.Errorf("音频转换后没有可用声音")
+	}
+	return outputPath, nil
+}
+
+// concatenateCoreWAVs joins already-normalized 24kHz mono PCM WAV files in
+// upload order. It produces one immutable mainline asset so existing SRT,
+// semantic safe-point and playback paths remain identical for one or many
+// source recordings.
+func concatenateCoreWAVs(ctx context.Context, inputPaths []string) (string, error) {
+	if len(inputPaths) == 0 {
+		return "", fmt.Errorf("没有可合并的录音")
+	}
+	if len(inputPaths) == 1 {
+		return inputPaths[0], nil
+	}
+	list, err := os.CreateTemp("", "xiaolan-mainline-concat-*.txt")
+	if err != nil {
+		return "", err
+	}
+	listPath := list.Name()
+	defer os.Remove(listPath)
+	for _, inputPath := range inputPaths {
+		path := filepath.ToSlash(inputPath)
+		path = strings.ReplaceAll(path, "'", "'\\''")
+		if _, err := fmt.Fprintf(list, "file '%s'\n", path); err != nil {
+			_ = list.Close()
+			return "", err
+		}
+	}
+	if err := list.Close(); err != nil {
+		return "", err
+	}
+	output, err := os.CreateTemp("", "xiaolan-core-mainline-merged-*.wav")
+	if err != nil {
+		return "", err
+	}
+	outputPath := output.Name()
+	if err := output.Close(); err != nil {
+		_ = os.Remove(outputPath)
+		return "", err
+	}
+	_ = os.Remove(outputPath)
+	cmd := exec.CommandContext(ctx, ffmpegExecutable(), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outputPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = os.Remove(outputPath)
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", fmt.Errorf("合并多段录音失败：%s", detail)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil || info.Size() <= 44 {
+		_ = os.Remove(outputPath)
+		return "", fmt.Errorf("合并后的录音没有可用声音")
 	}
 	return outputPath, nil
 }
@@ -192,8 +250,8 @@ func normalizeUploadedVoiceSample(ctx context.Context, inputPath string) ([]byte
 	if err != nil {
 		return nil, 0, fmt.Errorf("读取声音样本时长失败：%w", err)
 	}
-	if durationMS < 5000 || durationMS > 10000 {
-		return nil, 0, fmt.Errorf("声音样本必须为 5–10 秒，当前约 %.1f 秒", float64(durationMS)/1000)
+	if durationMS < 5000 || durationMS > 60000 {
+		return nil, 0, fmt.Errorf("声音样本需为 5–60 秒，推荐 10–20 秒，当前约 %.1f 秒", float64(durationMS)/1000)
 	}
 	return raw, durationMS, nil
 }

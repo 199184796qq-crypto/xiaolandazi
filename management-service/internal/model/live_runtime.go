@@ -153,6 +153,9 @@ type LiveQuotaSummary struct {
 }
 
 type LiveRuntimeSnapshot struct {
+	Startup                *LiveRuntimeStartup     `json:"startup,omitempty"`
+	Failure                *LiveRuntimeFailure     `json:"failure,omitempty"`
+	AgentStopReason        string                  `json:"agent_stop_reason,omitempty"`
 	Session                *LiveRuntimeSession     `json:"session,omitempty"`
 	AgentState             string                  `json:"agent_state"`
 	AgentMode              string                  `json:"agent_mode"`
@@ -166,6 +169,20 @@ type LiveRuntimeSnapshot struct {
 	TimeCards              []LiveTimeCardSummary   `json:"time_cards"`
 	RoomLive               bool                    `json:"room_live"`
 	Device                 *LiveDevice             `json:"device,omitempty"`
+}
+
+type LiveRuntimeFailure struct {
+	SessionID  int64     `json:"session_id"`
+	Code       string    `json:"code"`
+	Message    string    `json:"message"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type LiveRuntimeStartup struct {
+	SessionID int64     `json:"session_id"`
+	Stage     string    `json:"stage"`
+	Percent   int       `json:"percent"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type LiveAgentSettings struct {
@@ -188,27 +205,29 @@ type LiveAgentSettingsInput struct {
 }
 
 type RoomInteractionPreferences struct {
-	TenantID             int64     `json:"tenant_id"`
-	RoomID               int64     `json:"room_id"`
-	OverallInteraction   int       `json:"overall_interaction"`
-	QuestionPreference   int       `json:"question_preference"`
-	WelcomePreference    int       `json:"welcome_preference"`
-	EngagementPreference int       `json:"engagement_preference"`
-	ChatPreference       int       `json:"chat_preference"`
-	ConversionPreference int       `json:"conversion_preference"`
-	AutoHeat             bool      `json:"auto_heat"`
-	UpdatedByUserID      *int64    `json:"updated_by_user_id,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
+	TenantID             int64                `json:"tenant_id"`
+	RoomID               int64                `json:"room_id"`
+	OverallInteraction   int                  `json:"overall_interaction"`
+	QuestionPreference   int                  `json:"question_preference"`
+	WelcomePreference    int                  `json:"welcome_preference"`
+	EngagementPreference int                  `json:"engagement_preference"`
+	ChatPreference       int                  `json:"chat_preference"`
+	ConversionPreference int                  `json:"conversion_preference"`
+	AutoHeat             bool                 `json:"auto_heat"`
+	UpdatedByUserID      *int64               `json:"updated_by_user_id,omitempty"`
+	UpdatedAt            time.Time            `json:"updated_at"`
 }
 
 type RoomInteractionPreferencesInput struct {
-	OverallInteraction   int  `json:"overall_interaction"`
-	QuestionPreference   int  `json:"question_preference"`
-	WelcomePreference    int  `json:"welcome_preference"`
-	EngagementPreference int  `json:"engagement_preference"`
-	ChatPreference       int  `json:"chat_preference"`
-	ConversionPreference int  `json:"conversion_preference"`
-	AutoHeat             bool `json:"auto_heat"`
+	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
+	OverallInteraction   int                  `json:"overall_interaction"`
+	QuestionPreference   int                  `json:"question_preference"`
+	WelcomePreference    int                  `json:"welcome_preference"`
+	EngagementPreference int                  `json:"engagement_preference"`
+	ChatPreference       int                  `json:"chat_preference"`
+	ConversionPreference int                  `json:"conversion_preference"`
+	AutoHeat             bool                 `json:"auto_heat"`
 }
 
 type RoomHumanBehaviorProfile struct {

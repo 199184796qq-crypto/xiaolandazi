@@ -36,6 +36,10 @@ func (s *Server) commercialCreateMarketingCampaign(w http.ResponseWriter, r *htt
 	}
 	item, err := s.store.CreateMarketingCampaign(r.Context(), actor.UserID, input)
 	if err != nil {
+		if errors.Is(err, db.ErrMarketingPresentationAssetNotFound) {
+			writeError(w, http.StatusBadRequest, "活动主视觉图片不存在，请重新上传")
+			return
+		}
 		if isDuplicateDBError(err) {
 			writeError(w, http.StatusConflict, "营销活动编码已存在")
 			return
@@ -73,6 +77,8 @@ func (s *Server) commercialUpdateMarketingCampaign(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusConflict, "该活动存在待支付订单，请等待支付完成、取消或超时释放后再修改")
 		case errors.Is(err, db.ErrMarketingCampaignHistoryLocked):
 			writeError(w, http.StatusConflict, "该活动已经产生订单，只能修改名称、状态和活动时间，不能再改商品组合、数量或折扣")
+		case errors.Is(err, db.ErrMarketingPresentationAssetNotFound):
+			writeError(w, http.StatusBadRequest, "活动主视觉图片不存在，请重新上传")
 		case isDuplicateDBError(err):
 			writeError(w, http.StatusConflict, "营销活动编码已存在")
 		default:
@@ -234,6 +240,12 @@ func readMarketingCampaignInput(
 	if err := db.ValidateMarketingControls(input.Controls, input.StartsAt); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return input, false
+	}
+	if input.Presentation != nil {
+		if err := db.ValidateMarketingCampaignPresentation(input.Presentation); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return input, false
+		}
 	}
 	return input, true
 }

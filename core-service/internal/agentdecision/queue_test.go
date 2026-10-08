@@ -138,6 +138,12 @@ func TestQuickAnswerIsHardFirstPendingBehindClaimed(t *testing.T) {
 	if items[1].ID != quick.ID || items[1].ManualAction != "quick" {
 		t.Fatalf("quick must be first pending regardless of numeric priority: %#v", items)
 	}
+	if next, ok := q.ClaimNext(1); ok || next != nil {
+		t.Fatal("cannot claim another answer while current one owns the room")
+	}
+	if _, ok := q.Complete(1, claimed.ID); !ok {
+		t.Fatal("current answer must complete")
+	}
 	next, ok := q.ClaimNext(1)
 	if !ok || next == nil || next.ID != quick.ID {
 		t.Fatalf("next claim must be quick answer: %#v", next)

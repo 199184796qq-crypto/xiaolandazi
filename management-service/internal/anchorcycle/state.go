@@ -1,0 +1,634 @@
+// Package anchorcycle schedules opening/body/closing runs. Only adopted
+// speech advances the cursor or changes either memory or the macro style window.
+package anchorcycle
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"hash/fnv"
+	"strconv"
+	"strings"
+	"time"
+
+	"livecompanion/management/internal/anchorstylescore"
+	"livecompanion/management/internal/contentguard"
+	"livecompanion/management/internal/model"
+)
+
+func ID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(value[:])
+}
+
+type Task struct {
+	FocusLink        string `json:"focus_link,omitempty"`
+	AllowedLinksJSON string `json:"allowed_links_json,omitempty"`
+	ProductMode      string `json:"product_mode,omitempty"`
+	ProductMaxChars  int    `json:"product_max_chars,omitempty"`
+	SellingPoint     string `json:"selling_point"`
+	Angle            string `json:"angle"`
+	Key              string `json:"key"`
+	TargetAudience   string `json:"target_audience,omitempty"`
+	PainPoint        string `json:"pain_point,omitempty"`
+}
+type Config struct {
+	WorkspaceID       string       `json:"workspace_id"`
+	Region            string       `json:"region"`
+	AgentID           string       `json:"agent_id"`
+	EnvironmentID     string       `json:"environment_id"`
+	CredentialID      string       `json:"credential_profile_id"`
+	FeedbackID        string       `json:"feedback_profile_id"`
+	Threshold         int          `json:"threshold"`
+	MaxRetries        int          `json:"max_retries"`
+	MaxChars          int          `json:"max_chars"`
+	PointGap          int          `json:"point_gap"`
+	RepairPunctuation bool         `json:"repair_punctuation"`
+	Rolling           bool         `json:"rolling"`
+	BodySegments      int          `json:"body_segments"`
+	BodyMin           int          `json:"body_min,omitempty"`
+	BodyMax           int          `json:"body_max,omitempty"`
+	CombinationGap    int          `json:"combination_gap"`
+	MaxCycles         int          `json:"max_cycles"` // Zero means until explicitly stopped.
+	TTS               *VoiceConfig `json:"tts,omitempty"`
+	ComplianceScope   string       `json:"compliance_scope,omitempty"`
+}
+type VoiceConfig struct {
+	Source          string  `json:"source"`
+	VoiceID         string  `json:"voice_id"`
+	ProfileID       int64   `json:"profile_id,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	Rate            float64 `json:"rate"`
+	BufferSeconds   int     `json:"buffer_seconds"`
+	CacheTTLSeconds int     `json:"cache_ttl_seconds,omitempty"`
+}
+type VoiceAsset struct {
+	PreviewReservedMS int64                             `json:"preview_reserved_ms,omitempty"`
+	PreviewTruncated  bool                              `json:"preview_truncated,omitempty"`
+	JobID             string                            `json:"job_id,omitempty"`
+	Status            string                            `json:"status"`
+	Error             string                            `json:"error,omitempty"`
+	LatencyMS         int64                             `json:"latency_ms"`
+	CacheID           string                            `json:"cache_id,omitempty"`
+	CacheHit          bool                              `json:"cache_hit,omitempty"`
+	CacheExpiresAt    string                            `json:"cache_expires_at,omitempty"`
+	Bundle            model.LiveAgentPlanVersionVariant `json:"bundle"`
+}
+type P0Allowance struct {
+	RuleID      string `json:"rule_id"`
+	MatchedText string `json:"matched_text"`
+	MatchKey    string `json:"match_key"`
+	Decision    string `json:"decision"`
+}
+type Candidate struct {
+	ProductAudit     *ProductAudit           `json:"product_audit,omitempty"`
+	ID               string                  `json:"id"`
+	Attempt          int                     `json:"attempt"`
+	Text             string                  `json:"text"`
+	RawText          string                  `json:"raw_text,omitempty"`
+	OutputText       string                  `json:"output_text,omitempty"`
+	PunctuationEdits []PunctuationEdit       `json:"punctuation_edits,omitempty"`
+	ScoreScope       string                  `json:"score_scope,omitempty"`
+	PostprocessMS    int64                   `json:"postprocess_ms,omitempty"`
+	Prompt           string                  `json:"prompt"`
+	Score            anchorstylescore.Result `json:"score"`
+	GenerationMS     int64                   `json:"generation_ms"`
+	EventIDs         []string                `json:"event_ids"`
+	RetryFeedback    string                  `json:"retry_feedback,omitempty"`
+	CreatedAt        string                  `json:"created_at"`
+	PriceCheck       PriceCheck              `json:"price_check,omitempty"`
+	ContentIssue     string                  `json:"content_issue,omitempty"`
+	CacheID          string                  `json:"cache_id,omitempty"`
+	P0Report         *contentguard.Report    `json:"p0_report,omitempty"`
+	P0Patch          *contentguard.Repair    `json:"p0_patch,omitempty"`
+	P0PatchError     string                  `json:"p0_patch_error,omitempty"`
+	P0RewriteNumber  int                     `json:"p0_rewrite_number,omitempty"`
+}
+type Segment struct {
+	Phase          string                         `json:"phase"`
+	CycleNumber    int                            `json:"cycle_number,omitempty"`
+	OpeningVersion string                         `json:"opening_version,omitempty"`
+	OpeningHook    *OpeningHook                   `json:"opening_hook,omitempty"`
+	Task           Task                           `json:"task"`
+	Selected       Candidate                      `json:"selected"`
+	Attempts       []Candidate                    `json:"attempts"`
+	Reason         string                         `json:"reason"`
+	Summary        string                         `json:"summary"`
+	MacroReport    anchorstylescore.RollingReport `json:"macro_report"`
+	Feedback       json.RawMessage                `json:"feedback,omitempty"`
+	Voice          *VoiceAsset                    `json:"voice,omitempty"`
+}
+type Use struct {
+	Count       int    `json:"count"`
+	LastIndex   int    `json:"last_index"`
+	LastSummary string `json:"last_summary,omitempty"`
+}
+type State struct {
+	ProductFocus              *ProductFocus                  `json:"product_focus,omitempty"`
+	AcceptedOffset            int                            `json:"accepted_offset,omitempty"`
+	Delivery                  *MainlineDelivery              `json:"mainline_delivery,omitempty"`
+	Surface                   string                         `json:"surface,omitempty"`
+	PreviewLimitMS            int64                          `json:"preview_limit_ms,omitempty"`
+	StreamControlled          bool                           `json:"stream_controlled,omitempty"`
+	DerivedSafetyAssetID      int64                          `json:"derived_safety_asset_id,omitempty"`
+	Version                   int                            `json:"version"`
+	RunID                     string                         `json:"run_id"`
+	Revision                  int64                          `json:"revision"`
+	TenantID                  int64                          `json:"tenant_id"`
+	PlanID                    int64                          `json:"plan_id"`
+	RoomID                    int64                          `json:"room_id"`
+	Phase                     string                         `json:"phase"`
+	Status                    string                         `json:"status"`
+	Cursor                    int                            `json:"cursor"`
+	TaskIndex                 int                            `json:"task_index"`
+	OpeningCount              int                            `json:"opening_count"`
+	PendingOpeningHook        *OpeningHook                   `json:"pending_opening_hook,omitempty"`
+	RecentOpeningHookIDs      []string                       `json:"recent_opening_hook_ids,omitempty"`
+	OpeningHookLibraryMD      string                         `json:"opening_hook_library_md,omitempty"`
+	OpeningHookLibrarySource  string                         `json:"opening_hook_library_source,omitempty"`
+	OpeningHookLibraryAssetID int64                          `json:"opening_hook_library_asset_id,omitempty"`
+	CycleNumber               int                            `json:"cycle_number"`
+	BodyCount                 int                            `json:"body_count"`
+	BodyTarget                int                            `json:"body_target,omitempty"`
+	PriceHook                 *PriceHook                     `json:"pending_price_hook,omitempty"`
+	Queue                     []Task                         `json:"queue"`
+	Config                    Config                         `json:"config"`
+	Session                   json.RawMessage                `json:"session"`
+	SessionID                 string                         `json:"session_id"`
+	BootstrapSent             bool                           `json:"bootstrap_sent,omitempty"`
+	StyleID                   int64                          `json:"style_asset_id"`
+	ScorecardID               int64                          `json:"scorecard_asset_id"`
+	WheelID                   int64                          `json:"wheel_asset_id"`
+	StyleMD                   string                         `json:"style_md"`
+	Facts                     string                         `json:"facts"`
+	BaselineJSON              string                         `json:"baseline_json"`
+	Attempts                  []Candidate                    `json:"attempts"`
+	Accepted                  []Segment                      `json:"accepted"`
+	Used                      map[string]Use                 `json:"used_combinations"`
+	RecentSummaries           []string                       `json:"recent_summaries"`
+	StyleWindow               string                         `json:"style_window"`
+	PendingFeedback           string                         `json:"pending_feedback"`
+	MacroReport               anchorstylescore.RollingReport `json:"macro_report"`
+	FeedbackPending           bool                           `json:"feedback_pending"`
+	LastFeedbackFingerprint   string                         `json:"last_feedback_fingerprint"`
+	LastFeedbackIndex         int                            `json:"last_feedback_index"`
+	Busy                      bool                           `json:"busy"`
+	Uncertain                 bool                           `json:"uncertain"`
+	Warnings                  []string                       `json:"warnings"`
+	Error                     string                         `json:"error,omitempty"`
+	CreatedAt                 string                         `json:"created_at"`
+	P0PolicyMD                string                         `json:"p0_policy_md,omitempty"`
+	P0PolicySource            string                         `json:"p0_policy_source,omitempty"`
+	P0MaxRewrites             int                            `json:"p0_max_rewrites,omitempty"`
+	P0RewritesUsed            int                            `json:"p0_rewrites_used,omitempty"`
+	P0PendingRepair           *contentguard.Repair           `json:"p0_pending_repair,omitempty"`
+	P0Skipped                 []P0Skip                       `json:"p0_skipped,omitempty"`
+	P0SkippedKeys             map[string]bool                `json:"p0_skipped_keys,omitempty"`
+	P0ConsecutiveSkips        int                            `json:"p0_consecutive_skips,omitempty"`
+	P0AuditPending            *Candidate                     `json:"p0_audit_pending,omitempty"`
+	P0Allowances              []P0Allowance                  `json:"p0_allowances,omitempty"`
+}
+
+// Ephemeral handoff receipts are stored with this run in Redis only.
+type MainlineDelivery struct {
+	SourceFactsSHA        string   `json:"source_facts_sha256"`
+	SourceWheelSHA        string   `json:"source_wheel_sha256"`
+	CurrentTrackDurations []int    `json:"current_track_durations,omitempty"`
+	VersionID             int64    `json:"version_id"`
+	RuntimeSessionID      int64    `json:"runtime_session_id"`
+	ProgramID             string   `json:"program_id"`
+	Generation            uint64   `json:"generation"`
+	PendingJobID          string   `json:"pending_job_id,omitempty"`
+	PendingCandidates     []string `json:"pending_candidates,omitempty"`
+	DeliveredCandidates   []string `json:"delivered_candidates,omitempty"`
+}
+
+func New(tasks []Task, cfg Config) (State, error) {
+	if len(tasks) > 500 || cfg.Threshold < 0 || cfg.Threshold > 100 || cfg.MaxRetries < 0 || cfg.MaxRetries > 5 || cfg.MaxChars < 80 || cfg.MaxChars > 1000 || cfg.PointGap < 0 || cfg.PointGap > 100 || cfg.CombinationGap < 0 || cfg.CombinationGap > 500 || cfg.BodySegments < 0 || cfg.BodySegments > 100 || cfg.MaxCycles < 0 || cfg.MaxCycles > 1000 {
+		return State{}, errors.New("大循环参数无效")
+	}
+	seen := map[string]bool{}
+	for i := range tasks {
+		if strings.TrimSpace(tasks[i].SellingPoint) == "" || strings.TrimSpace(tasks[i].Angle) == "" {
+			return State{}, errors.New("卖点角度不能为空")
+		}
+		tasks[i].Key = tasks[i].SellingPoint + "×" + tasks[i].Angle
+		if seen[tasks[i].Key] {
+			return State{}, errors.New("固定队列存在重复卖点角度")
+		}
+		seen[tasks[i].Key] = true
+	}
+	if cfg.Rolling {
+		if cfg.BodyMin == 0 && cfg.BodyMax == 0 && cfg.BodySegments == 0 {
+			cfg.BodyMin, cfg.BodyMax = 2, 6
+		}
+		if cfg.BodyMin != 0 || cfg.BodyMax != 0 {
+			if cfg.BodyMin < 2 || cfg.BodyMax > 6 || cfg.BodyMin > cfg.BodyMax {
+				return State{}, errors.New("中间讲解范围须在2到6段之间，最少不能超过最多")
+			}
+		}
+		if cfg.BodyMin == 0 && (cfg.BodySegments < 2 || cfg.BodySegments > 6) {
+			return State{}, errors.New("中间讲解段数须为2到6")
+		}
+		if len(tasks) == 0 || (cfg.BodySegments == 0 && cfg.BodyMin == 0) {
+			return State{}, errors.New("滚动模式须有卖点池，每轮中间段数至少为1")
+		}
+	} else {
+		var err error
+		tasks, err = Arrange(tasks, cfg.PointGap)
+		if err != nil {
+			return State{}, err
+		}
+	}
+	phase := "opening"
+	if len(tasks) == 0 {
+		phase = "closing"
+	}
+	s := State{Version: 3, RunID: ID(), Phase: phase, Status: "ready", CycleNumber: 1, Queue: tasks, Config: cfg, Attempts: []Candidate{}, Accepted: []Segment{}, Used: map[string]Use{}, RecentSummaries: []string{}, Warnings: []string{}, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if cfg.Rolling {
+		s.planBodyTarget()
+	}
+	return s, nil
+}
+
+// Freeze one target per cycle, not per request. A stable run/round hash spreads
+// rounds across the configured range; retries and Redis reloads never reroll it.
+func (s *State) planBodyTarget() {
+	if s.Config.BodyMin == 0 {
+		s.BodyTarget = s.Config.BodySegments // Existing fixed-length runs stay fixed.
+		return
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s.RunID + ":" + strconv.Itoa(s.CycleNumber)))
+	width := s.Config.BodyMax - s.Config.BodyMin + 1
+	target := s.Config.BodyMin + int(h.Sum32()%uint32(width))
+	if width > 1 && target == s.BodyTarget {
+		target = s.Config.BodyMin + (target-s.Config.BodyMin+1)%width
+	}
+	s.BodyTarget = target
+}
+func (s *State) BodyLimit() int {
+	if s.BodyTarget > 0 {
+		return s.BodyTarget
+	}
+	return s.Config.BodySegments
+}
+
+// Plan spacing once, then freeze the queue. Generation retries never consume
+// a slot or reschedule the queue. The opening retains the first pool task.
+func Arrange(tasks []Task, gap int) ([]Task, error) {
+	if gap == 0 || len(tasks) < 2 {
+		return append([]Task{}, tasks...), nil
+	}
+	groups := map[string][]Task{}
+	order := []string{}
+	for _, task := range tasks {
+		if _, ok := groups[task.SellingPoint]; !ok {
+			order = append(order, task.SellingPoint)
+		}
+		groups[task.SellingPoint] = append(groups[task.SellingPoint], task)
+	}
+	queue := []Task{tasks[0]}
+	groups[tasks[0].SellingPoint] = groups[tasks[0].SellingPoint][1:]
+	for len(queue) < len(tasks) {
+		blocked := map[string]bool{}
+		for _, task := range queue[max(0, len(queue)-gap):] {
+			blocked[task.SellingPoint] = true
+		}
+		chosen := ""
+		for _, point := range order {
+			if blocked[point] || len(groups[point]) == 0 {
+				continue
+			}
+			if chosen == "" || len(groups[point]) > len(groups[chosen]) {
+				chosen = point
+			}
+		}
+		if chosen == "" {
+			return nil, errors.New("卖点池无法按当前间隔排成固定队列，请扩充卖点或降低同卖点间隔")
+		}
+		queue = append(queue, groups[chosen][0])
+		groups[chosen] = groups[chosen][1:]
+	}
+	return queue, nil
+}
+func (s *State) Task() Task {
+	if s.PriceHook != nil {
+		return s.focusTask(Task{SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
+	}
+	if s.Phase == "closing" || (!s.Config.Rolling && s.Cursor >= len(s.Queue)) {
+		return s.focusTask(Task{SellingPoint: "本轮收口", Angle: "重报核心信息并自然承接", Key: "本轮收口"})
+	}
+	if s.Config.Rolling {
+		return s.focusTask(s.Queue[s.TaskIndex])
+	}
+	return s.focusTask(s.Queue[s.Cursor])
+}
+
+func (s *State) OpeningVersion() string {
+	if s.OpeningCount == 0 {
+		return "完整版"
+	}
+	return "接新版"
+}
+
+// Called only after adoption. Candidates and retries keep a frozen TaskIndex.
+// Gap N means at least N adopted paragraphs between occurrences; closings are
+// paragraphs too. Reusing a task never clears its old count or last expression.
+func (s *State) chooseNext() {
+	s.EnsureProductFocus()
+	blockedPoints := map[string]bool{}
+	for _, segment := range s.Accepted[max(0, len(s.Accepted)-s.Config.PointGap):] {
+		if segment.Phase != "closing" {
+			blockedPoints[segment.Task.SellingPoint] = true
+		}
+	}
+	chosen := -1
+	for i, task := range s.Queue {
+		if !s.productTaskEligible(task) {
+			continue
+		}
+		if s.P0SkippedKeys[task.Key] {
+			continue
+		}
+		u := s.Used[task.Key]
+		if blockedPoints[task.SellingPoint] || (u.Count > 0 && s.TotalAccepted()-u.LastIndex < s.Config.CombinationGap) {
+			continue
+		}
+		if chosen < 0 {
+			chosen = i
+			continue
+		}
+		prior := s.Used[s.Queue[chosen].Key]
+		if u.Count < prior.Count || (u.Count == prior.Count && u.LastIndex < prior.LastIndex) {
+			chosen = i
+		}
+	}
+	if chosen < 0 {
+		available := false
+		for _, task := range s.Queue {
+			if !s.productTaskEligible(task) {
+				continue
+			}
+			if !s.P0SkippedKeys[task.Key] {
+				available = true
+				break
+			}
+		}
+		if !available && len(s.P0SkippedKeys) > 0 {
+			s.Status = "compliance_blocked"
+			s.Error = "本场可用卖点×角度已被P0全部跳过，已暂停；不无限生成"
+			s.FeedbackPending = false
+			return
+		}
+		if s.Surface == "generation_preview" {
+			// The customer preview is capped by actual audio duration. When a
+			// small pool cannot satisfy the normal long-lived spacing window,
+			// reuse the least-used safe task with the existing reuse prompt so
+			// the voice queue can still reach two minutes without adding silence.
+			for i, task := range s.Queue {
+				if !s.productTaskEligible(task) {
+					continue
+				}
+				if s.P0SkippedKeys[task.Key] {
+					continue
+				}
+				if chosen < 0 || s.Used[task.Key].Count < s.Used[s.Queue[chosen].Key].Count || (s.Used[task.Key].Count == s.Used[s.Queue[chosen].Key].Count && s.Used[task.Key].LastIndex < s.Used[s.Queue[chosen].Key].LastIndex) {
+					chosen = i
+				}
+			}
+			if chosen >= 0 {
+				s.Status, s.Error, s.TaskIndex = "ready", "", chosen
+				s.Warn("试听卖点池不足，已使用不同表达继续补足2分钟声音")
+				return
+			}
+		}
+		s.Status = "spacing_blocked"
+		s.Error = "卖点池无法满足当前避重间隔，已保留采纳稿；请扩充池或结束本场后降低间隔，不会自动短期复读"
+		s.FeedbackPending = false
+		return
+	}
+	s.TaskIndex = chosen
+}
+
+func excerpt(text string, limit int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return string(runes)
+}
+func Window(text string) string {
+	return anchorstylescore.TailStyleChars(text, 1000)
+}
+func (s *State) Warn(message string) {
+	s.Warnings = append(s.Warnings, message)
+	if len(s.Warnings) > 30 {
+		s.Warnings = s.Warnings[len(s.Warnings)-30:]
+	}
+}
+
+// AddCandidate never adds rejected drafts to memory, nor evaluates a macro
+// window before adoption. At the cap, select the best of all attempts, including
+// the initial attempt; equal scores keep the earlier version.
+func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, error) {
+	if s.Phase == "ended" || s.Status == "spacing_blocked" || s.Status == "content_blocked" || s.Status == "compliance_blocked" || strings.TrimSpace(c.Text) == "" {
+		return false, errors.New("当前环节不能采纳空稿或已结束")
+	}
+	c.Attempt = len(s.Attempts) + 1
+	if err := s.CheckP0Candidate(&c); err != nil {
+		return false, err
+	}
+	if c.P0Patch != nil {
+		s.P0RewritesUsed++
+	}
+	if c.P0Report != nil && !c.P0Report.Passed {
+		s.rejectP0Candidate(c)
+		return false, nil
+	}
+	s.P0PendingRepair = nil
+	if problem := s.productCandidateIssue(c); problem != "" {
+		c.ContentIssue = problem
+		s.Attempts = append(s.Attempts, c)
+		if len(s.Attempts) > s.Config.MaxRetries {
+			s.Status = "content_blocked"
+			s.Error = "商品范围检查仍未通过，候选已保留；暂停生成，不把混讲内容转成声音"
+			s.FeedbackPending = false
+		}
+		return false, nil
+	}
+	c.PriceCheck = InspectPrice(c.Text, s.Task())
+	openingProblem := s.openingHookProblem(c.Text)
+	if s.Phase == "opening" && s.PendingOpeningHook != nil && s.PendingOpeningHook.CheckForbidden {
+		for _, hit := range c.Score.Stats.Forbidden {
+			if hit.Count > 0 {
+				openingProblem = "opening_hook_forbidden_word"
+				break
+			}
+		}
+	}
+	if openingProblem != "" {
+		c.ContentIssue = openingProblem
+		s.Attempts = append(s.Attempts, c)
+		if len(s.Attempts) > s.Config.MaxRetries {
+			s.Status = "content_blocked"
+			s.Error = "开场钩子检查仍未通过（" + openingProblem + "），已保留候选并暂停；不继续消耗请求"
+			s.FeedbackPending = false
+		}
+		return false, nil
+	}
+	if problem := s.priceObligationProblem(c.PriceCheck); problem != "" {
+		c.ContentIssue = problem
+		s.Attempts = append(s.Attempts, c)
+		if len(s.Attempts) > s.Config.MaxRetries {
+			s.Status = "content_blocked"
+			s.Error = "塑价承接仍未兑现，已保留全部候选并暂停；不会反复预告或继续请求"
+			s.FeedbackPending = false
+		}
+		return false, nil
+	}
+	s.Attempts = append(s.Attempts, c)
+	if c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) <= s.Config.MaxRetries {
+		return false, nil
+	}
+	selected := c
+	reason := "passed"
+	if c.Score.OverallScore < s.Config.Threshold {
+		reason = "retry_limit_best"
+		selected = s.Attempts[0]
+		for _, candidate := range s.Attempts[1:] {
+			if candidate.ContentIssue == "" && (selected.ContentIssue != "" || candidate.Score.OverallScore > selected.Score.OverallScore) {
+				selected = candidate
+			}
+		}
+	}
+	// A style retry may not revive a higher-scoring draft that failed an explicit
+	// next-segment promise. Invalid candidates remain in the trace only.
+	if selected.ContentIssue != "" {
+		selected = c
+	}
+	task := s.Task()
+	wasHook := s.PriceHook != nil
+	s.PriceHook = nil
+	if selected.PriceCheck.Hook != "" {
+		s.PriceHook = &PriceHook{Task: task, Promise: selected.PriceCheck.Hook, SourceText: excerpt(selected.Text, 400), CreatedIndex: s.TotalAccepted() + 1, DueIndex: s.TotalAccepted() + 2}
+	}
+	edges := anchorstylescore.AnalyzeRolling([]string{selected.Text}, 1, b, s.StyleMD).Edges
+	summary := task.Key
+	if len(edges) > 0 {
+		summary += "；开头：" + edges[0].Opening + "；结尾：" + edges[0].Ending
+	}
+	openingVersion := ""
+	if s.Phase == "opening" {
+		openingVersion = s.OpeningVersion()
+	}
+	s.Accepted = append(s.Accepted, Segment{Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
+	s.recordProductAdoption(task, spokenCandidate(selected))
+	if s.Phase == "opening" && s.PendingOpeningHook != nil {
+		s.Accepted[len(s.Accepted)-1].OpeningHook = s.PendingOpeningHook
+		s.RecentOpeningHookIDs = append(s.RecentOpeningHookIDs, s.PendingOpeningHook.ID)
+		s.RecentOpeningHookIDs = s.RecentOpeningHookIDs[max(0, len(s.RecentOpeningHookIDs)-s.PendingOpeningHook.RecentCount):]
+		s.PendingOpeningHook = nil
+	}
+	if s.Phase != "closing" && !wasHook {
+		u := s.Used[task.Key]
+		u.Count++
+		u.LastIndex = s.TotalAccepted()
+		u.LastSummary = excerpt(selected.Text, 180)
+		s.Used[task.Key] = u
+		s.Cursor++
+	}
+	if s.Phase != "closing" && wasHook && s.Config.Rolling {
+		s.Cursor++ // A continuation is a paragraph, not another pool use.
+	}
+	if s.Phase == "opening" {
+		s.OpeningCount++
+	}
+	if s.Phase == "body" && task.ProductMode != "auxiliary" {
+		s.BodyCount++
+	}
+	s.RecentSummaries = append(s.RecentSummaries, summary)
+	s.RecentSummaries = s.RecentSummaries[max(0, len(s.RecentSummaries)-3):]
+	s.StyleWindow = Window(s.StyleWindow + "\n\n" + selected.Text)
+	recent := []string{}
+	start := max(0, len(s.Accepted)-5)
+	for _, segment := range s.Accepted[start:] {
+		recent = append(recent, segment.Selected.Text)
+	}
+	s.MacroReport = anchorstylescore.AnalyzeMacro1000(s.StyleWindow, recent, s.AcceptedOffset+start+1, b, s.StyleMD)
+	s.Accepted[len(s.Accepted)-1].MacroReport = s.MacroReport
+	s.Attempts = []Candidate{}
+	s.P0RewritesUsed = 0
+	s.P0ConsecutiveSkips = 0
+	s.PendingFeedback = ""
+	s.FeedbackPending = true
+	if s.Config.Rolling {
+		if task.ProductMode == "auxiliary" {
+			s.ProductFocus.AuxiliaryActive = false
+			s.Phase = "opening"
+			s.chooseNext()
+		} else if s.Phase == "closing" {
+			if s.Config.MaxCycles > 0 && s.CycleNumber >= s.Config.MaxCycles {
+				s.Phase = "ended"
+				s.Status = "completed"
+				s.FeedbackPending = false
+			} else {
+				s.CycleNumber++
+				s.BodyCount = 0
+				s.planBodyTarget()
+				s.Phase = "opening"
+				if s.PriceHook == nil && !s.beginAuxiliary() {
+					s.chooseNext()
+				}
+			}
+		} else if s.BodyCount >= s.BodyLimit() {
+			// A hook in the final planned body paragraph may extend this round
+			// once, but never past the user's hard maximum. At maximum, the
+			// closing itself resolves it before taking any other task.
+			if s.PriceHook != nil && s.Config.BodyMax > s.BodyCount {
+				s.BodyTarget = s.BodyCount + 1
+				s.Phase = "body"
+			} else {
+				s.Phase = "closing"
+			}
+		} else {
+			s.Phase = "body"
+			if s.PriceHook == nil {
+				s.chooseNext()
+			}
+		}
+	} else if s.Phase == "closing" {
+		s.Phase = "ended"
+		s.Status = "completed"
+		s.FeedbackPending = false
+	} else if s.Cursor >= len(s.Queue) {
+		s.Phase = "closing"
+	} else {
+		s.Phase = "body"
+	}
+	return true, nil
+}
+
+// Decisions continue to be measured every adoption; repeated identical macro
+// advice is spaced by two accepted segments, avoiding cumulative overcorrection.
+func (s *State) ShouldFeedback() bool {
+	if !s.FeedbackPending || s.Phase == "ended" || len(s.MacroReport.Issues) == 0 {
+		return false
+	}
+	keys := []string{}
+	for _, issue := range s.MacroReport.Issues {
+		metric, _, _ := strings.Cut(issue.Actual, "：")
+		keys = append(keys, issue.Key+":"+metric+":"+issue.Target)
+	}
+	fingerprint := strings.Join(keys, "|")
+	if fingerprint == s.LastFeedbackFingerprint && s.TotalAccepted()-s.LastFeedbackIndex < 2 {
+		return false
+	}
+	s.LastFeedbackFingerprint = fingerprint
+	s.LastFeedbackIndex = s.TotalAccepted()
+	return true
+}

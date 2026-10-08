@@ -153,6 +153,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
 	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
+		s.refreshClaimInteractionContext(roomID, item)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"claimed": claimed,
 			"item":    item,
@@ -176,6 +177,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.agentWork.Mode(roomID) == agentwork.ModeControl {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
+		s.refreshClaimInteractionContext(roomID, item)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"claimed": claimed,
 			"item":    item,
@@ -196,7 +198,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		if currentMS <= 0 {
 			currentMS = program.Task.StartMS
 		}
-		cutMS, exists := plannedRoomProgramSafeCut(program, currentMS)
+		cutMS, exists := plannedDecisionSafeCut(program, currentMS, queue[0])
 		if !exists {
 			writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_safe_point", "item": queue[0]})
 			return
@@ -205,6 +207,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
+	s.refreshClaimInteractionContext(roomID, item)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"claimed":           claimed,
 		"item":              item,
@@ -213,6 +216,21 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		"resume_mainline":   resumeMainline,
 		"resume_segment_id": resumeSegmentID,
 	})
+}
+
+func plannedDecisionSafeCut(program audioout.RoomProgramSnapshot, currentMS int, item agentdecision.Item) (int, bool) {
+	if item.AudioPrepared {
+		// No model/TTS work remains; a nearby safe sentence end is enough.
+		return resolveRoomProgramSafeCutAfterGeneration(program, 0, currentMS)
+	}
+	if program.Task != nil && item.PreparedTaskID == program.Task.ID && validInteractionSwitchLead(currentMS, item.PreparedCutMS) {
+		for _, point := range effectiveRoomProgramSafePoints(program) {
+			if point.CutMS == item.PreparedCutMS {
+				return point.CutMS, true
+			}
+		}
+	}
+	return plannedRoomProgramSafeCut(program, currentMS)
 }
 
 func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {
@@ -325,7 +343,13 @@ func (s *Server) releaseRoomAgentDecision(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "decision id is required")
 		return
 	}
-	item, released := s.agentDecisions.Release(roomID, id)
+	var item *agentdecision.Item
+	var released bool
+	if r.URL.Query().Get("reason") == "cut_reschedule" {
+		item, released = s.agentDecisions.RescheduleCut(roomID, id)
+	} else {
+		item, released = s.agentDecisions.Release(roomID, id)
+	}
 	if !released {
 		writeError(w, http.StatusNotFound, "decision is no longer claimed")
 		return

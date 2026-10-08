@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/semantic"
 	"livecompanion/core/internal/speechruntime"
@@ -21,6 +23,8 @@ import (
 )
 
 type roomAudioInteractionInput struct {
+	ContentGoal          string `json:"content_goal,omitempty"`
+	ContentAngle         string `json:"content_angle,omitempty"`
 	DecisionID           string `json:"decision_id"`
 	MissionID            string `json:"mission_id,omitempty"`
 	MissionKind          string `json:"mission_kind,omitempty"`
@@ -339,6 +343,24 @@ func resumePreview(program audioout.RoomProgramSnapshot, point audioout.ProgramS
 	if len(parts) > 2 {
 		parts = parts[:2]
 	}
+	if len(parts) < 2 && strings.TrimSpace(program.NextTrackText) != "" {
+		start := 0
+		count := 0
+		runes := []rune(program.NextTrackText)
+		for i, char := range runes {
+			if strings.ContainsRune("。！？!?", char) {
+				parts = append(parts, string(runes[start:i+1]))
+				start = i + 1
+				count++
+				if len(parts) >= 2 {
+					break
+				}
+			}
+		}
+		if count == 0 {
+			parts = append(parts, program.NextTrackText)
+		}
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -649,6 +671,13 @@ func validInteractionSwitchLead(currentMS, switchMS int) bool {
 	return leadMS > 0 && leadMS <= maxInteractionSwitchLeadMS
 }
 
+// Resume dedup may advance to another sentence or to the next track. It must
+// never move the point at which the current mainline is actually interrupted.
+func roomInteractionCutOffsets(cutMS int) (switchAtMS, resumeOffsetMS *int) {
+	switchMS, resumeMS := cutMS, cutMS
+	return &switchMS, &resumeMS
+}
+
 func chooseRoomProgramSafePointWindow(
 	program audioout.RoomProgramSnapshot,
 	currentMS, minLeadMS, maxLeadMS, targetLeadMS int,
@@ -764,10 +793,7 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 		if snapshot.Interrupt.Status != speechruntime.StatusPlaying && snapshot.Interrupt.Status != speechruntime.StatusReady {
 			return
 		}
-		status := speechruntime.StatusCompleted
-		if waitForMainline {
-			status = speechruntime.StatusReturning
-		}
+		status := speechruntime.StatusFailed
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 			Track:          speechruntime.TrackInterrupt,
 			Status:         status,
@@ -789,10 +815,8 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 		if strings.TrimSpace(decisionID) == "" {
 			return
 		}
-		if waitForMainline {
-			s.completeInteractionAfterMainlineResume(roomID, task.ID, decisionID)
-		} else if s.agentDecisions != nil {
-			_, _ = s.agentDecisions.Complete(roomID, decisionID)
+		if s.agentDecisions != nil {
+			_, _ = s.agentDecisions.Release(roomID, decisionID)
 		}
 	})
 }
@@ -928,6 +952,9 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "待打断任务已被移除或不再执行")
 		return
 	}
+	if !s.validateInteractionDecision(w, roomID, input) {
+		return
+	}
 	if s.speechRuntime != nil {
 		if speech, speechErr := s.speechRuntime.Snapshot(roomID); speechErr == nil && speechSnapshotBusy(speech) {
 			writeError(w, http.StatusConflict, "上一条TTS尚未播放完成，请继续排队")
@@ -935,6 +962,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// Waiting TTL is checked when claiming. A claimed answer has its own
+	// execution lease, so a welcome cannot expire midway through TTS/cut wait.
+	dispatchCtx, dispatchCancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer dispatchCancel()
 	controlMode := s.agentWork.Mode(roomID) == agentwork.ModeControl
 	state := s.audioDevState()
 	if !controlMode && (state == nil || state.client == nil || !state.client.Enabled()) {
@@ -1011,14 +1042,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				writeError(w, http.StatusConflict, "当前35秒内没有安全句末切点，继续排队")
 				return
 			}
-			value := cutMS
-			switchAtMS = &value
-			resumeOffsetMS = &value
+			switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
 		} else if exists {
 			// 抢答也在完整句末切换；切点同时用于停止主线和插播后的恢复位置。
-			value := cutMS
-			switchAtMS = &value
-			resumeOffsetMS = &value
+			switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
 		} else if program.Task.DurationMS > 1 {
 			// 已处于本稿最后语义段时，抢答后直接跨到下一稿，避免回到半句和残留 1ms 杂音。
 			value := program.Task.DurationMS
@@ -1146,6 +1173,12 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		})
 	}
 
+	if s.messages != nil && s.agentDecisions != nil {
+		if item, ok := s.agentDecisions.Get(roomID, input.DecisionID); ok && item.ClaimedAt != nil {
+			raw, _ := json.Marshal(messagecaptain.Preparation{DecisionID: item.ID, ElapsedMS: int(time.Since(*item.ClaimedAt).Milliseconds())})
+			s.messages.Publish(r.Context(), messagecaptain.Message{Kind: messagecaptain.InteractionPrepared, RoomID: roomID, Payload: raw})
+		}
+	}
 	var task audioout.SpeechTask
 	if controlMode {
 		sessionID := input.SessionID
@@ -1179,7 +1212,8 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 		callbackURL := callbackBase + "/internal/v1/audio/events"
 		var snapshot audioout.RoomProgramSnapshot
-		snapshot, err = state.client.InsertTestProgramInteraction(r.Context(), audioout.InsertInteractionInput{
+		snapshot, err = state.client.InsertTestProgramInteraction(dispatchCtx, audioout.InsertInteractionInput{
+			ExpectedTaskID: program.Task.ID,
 			RoomID:         roomID,
 			SessionID:      program.Task.SessionID,
 			Label:          fmt.Sprintf("%s · %s", label, input.Topic),
@@ -1210,6 +1244,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				MissionID:      input.MissionID,
 			})
 		}
+		if errors.Is(err, audioout.ErrInteractionSwitchStale) {
+			writeError(w, http.StatusConflict, "主线已换段，请重新选择切点")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "提交插播失败: "+err.Error())
 		return
 	}
@@ -1218,6 +1256,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.agentDecisions.BindPlayback(roomID, input.DecisionID, task.ID)
 	if state != nil {
 		state.mu.Lock()
 		state.interactions[task.ID] = &audioInteractionMeta{

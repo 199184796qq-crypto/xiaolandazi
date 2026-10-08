@@ -23,6 +23,7 @@ type Config struct {
 	RedisPort                 string
 	RedisPassword             string
 	RedisDB                   int
+	AnchorCycleRedisTimeoutMS int
 	AuditLogLimit             int
 	AvatarDir                 string
 	StorageDriver             string
@@ -72,6 +73,7 @@ func Load() Config {
 		RedisPort:                 envOrDefault("REDIS_PORT", "6379"),
 		RedisPassword:             strings.TrimSpace(os.Getenv("REDIS_PASSWORD")),
 		RedisDB:                   envInt("REDIS_DB", 0),
+		AnchorCycleRedisTimeoutMS: envPositiveInt("ANCHOR_CYCLE_REDIS_TIMEOUT_MS", 5000),
 		AuditLogLimit:             envInt("MGMT_AUDIT_LOG_LIMIT", 10000),
 		AvatarDir:                 envOrDefault("MGMT_AVATAR_DIR", "data/avatars"),
 		StorageDriver:             strings.ToLower(envOrDefault("STORAGE_DRIVER", "local")),

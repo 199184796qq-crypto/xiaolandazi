@@ -4,6 +4,7 @@ import { getPublicSystemConfig } from '../api'
 import type { PublicSystemConfig } from '../types'
 
 const config = ref<PublicSystemConfig>({
+  browser_title: '小蓝搭子 · 智能直播系统',
   site_name: '小蓝搭子',
   auth_customer_side_label: 'BANBO AI LIVE',
   auth_customer_title_line_1: 'AI直播搭子，',

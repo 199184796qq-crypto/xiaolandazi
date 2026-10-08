@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -142,12 +143,18 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		HotReload          []string             `json:"hot_reload"`
 		BaseWorkingSeconds uint64               `json:"base_working_seconds"`
 		LeaseSeconds       uint64               `json:"lease_seconds"`
+		ExpectedBootID     string               `json:"expected_boot_id"`
+		ExpectedGeneration *uint64              `json:"expected_run_generation"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	command := strings.ToLower(strings.TrimSpace(input.Command))
+	if input.ExpectedGeneration != nil && (command != "stop" || input.ExpectedBootID == "" || input.Mode != "" || input.PlanID != nil || len(input.HotReload) > 0 || input.LeaseSeconds != 0) {
+		writeError(w, http.StatusBadRequest, "conditional stop requires boot id and an unmixed stop command")
+		return
+	}
 	if command != "" && input.State != "" {
 		writeError(w, http.StatusBadRequest, "command and state are mutually exclusive")
 		return
@@ -226,9 +233,17 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			if reason == "" {
 				reason = agentwork.StopReasonManual
 			}
-			snapshot, err = s.agentWork.StopAgent(roomID, reason)
+			if input.ExpectedGeneration != nil {
+				snapshot, err = s.agentWork.StopAgentIfCurrent(roomID, reason, input.ExpectedBootID, *input.ExpectedGeneration)
+			} else {
+				snapshot, err = s.agentWork.StopAgent(roomID, reason)
+			}
 		}
 		if err != nil {
+			if errors.Is(err, agentwork.ErrRuntimeReplaced) {
+				writeError(w, http.StatusConflict, "agent runtime was replaced")
+				return
+			}
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

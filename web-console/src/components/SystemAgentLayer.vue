@@ -82,6 +82,7 @@ import type {
   SystemAgentContextResponse,
 } from '../types'
 import { session } from '../session'
+import { factCategoryDefinition, factCategoryState, loadFactCategories } from '../factCategories'
 import { canDelegateLivePolicyL3 } from '../livePolicyAccess'
 import { resolveAgentNavigationTargets } from '../navigationUi'
 import { shouldRouteToSystemAgent } from '../systemAgentRouting'
@@ -119,6 +120,7 @@ type ComposerSource = 'dock' | 'drawer'
 type SuggestionKind = 'department' | 'capability' | 'navigation' | 'image'
 
 const unifiedLiveStrategyActionTypes = new Set([
+	'add_live_fact_category',
   'add_live_product',
 	'add_live_product_attribute',
 	'confirm_live_product_attribute_update',
@@ -2044,6 +2046,7 @@ function latestCurrentPendingLiveStrategyAction(types: Set<string>) {
 
 function latestPendingLiveStrategyAction() {
   const supported = new Set([
+    'add_live_fact_category',
     'confirm_live_product_link_correction',
     'add_live_image_product',
     'add_live_product',
@@ -2968,7 +2971,18 @@ async function prepareLiveFactIntentAction(
   sourceText: string,
   result: LiveStrategyIntentResponse,
 ) {
-  const category = intentString(result.target?.fact_category)
+  await loadFactCategories()
+  if (factCategoryState.error) return { text: '分类读取失败，未生成写入动作：' + factCategoryState.error }
+  const newCategory = result.changes?.new_fact_category
+  const requestedCategory = intentString(result.target?.fact_category)
+  const definition = factCategoryState.items.find(item => item.value === requestedCategory || item.label === requestedCategory || (newCategory && item.label === newCategory.label.trim()))
+  if (definition && newCategory?.family && newCategory.family !== definition.family) return { text: '已有同名分类，但所属类型不同。请使用已有分类或为新分类另取名称。' }
+  const category = definition?.value || newCategory?.label.trim() || requestedCategory
+  const categoryDraft = newCategory && !definition ? newCategory : undefined
+  const wording = {
+    ...(result.changes?.forbidden_wording !== undefined ? { forbidden_wording: result.changes.forbidden_wording.trim() } : {}),
+    ...(result.changes?.safe_rewrite !== undefined ? { safe_rewrite: result.changes.safe_rewrite.trim() } : {}),
+  }
   const factKey = intentString(result.target?.fact_key)
   const factValue = intentString(result.changes?.fact_value)
   const current = await getLiveAgentPlanFacts(planId)
@@ -3002,6 +3016,8 @@ async function prepareLiveFactIntentAction(
           fact_category: category,
           fact_key: factKey,
           fact_value: factValue,
+          ...wording,
+          new_fact_category: categoryDraft,
           source_text: sourceText,
         },
       } as SystemAgentActionPreview,
@@ -3038,10 +3054,14 @@ async function prepareLiveFactIntentAction(
   if (!existing) {
     return { text: result.reply || '我判断你要修改事实依据，但当前正式事实中还不能唯一定位目标。请补充事实名称。' }
   }
-  if (!factValue) {
+  const hasValue = result.changes?.fact_value !== undefined
+  const nextValue = hasValue ? factValue : existing.value
+  const nextForbidden = wording.forbidden_wording ?? existing.forbidden_wording ?? ''
+  const nextSafe = wording.safe_rewrite ?? existing.safe_rewrite ?? ''
+  if (!nextValue) {
     return { text: result.reply || '我已经定位到“' + existing.key + '”，但还没有明确新的事实内容。' }
   }
-  if (factValue === existing.value) {
+  if (nextValue === existing.value && nextForbidden === (existing.forbidden_wording || '') && nextSafe === (existing.safe_rewrite || '')) {
     return { text: '模型理解出的新值和当前事实“' + existing.key + '”一致，没有生成新版本。' }
   }
   return {
@@ -3049,7 +3069,7 @@ async function prepareLiveFactIntentAction(
     action: {
       type: 'confirm_live_fact_update',
       title: '确认修改事实依据',
-      summary: '只修改这条事实的内容；确认后生成正式新版本。',
+      summary: '只修改明确指定的事实内容或说法；未提及字段保留，确认后生成新版本。',
       risk_level: 'low',
       requires_confirmation: true,
       payload: {
@@ -3060,7 +3080,10 @@ async function prepareLiveFactIntentAction(
         fact_category: existing.category,
         fact_key: existing.key,
         current_fact_value: existing.value,
-        fact_value: factValue,
+        fact_value: nextValue,
+        ...wording,
+        current_forbidden_wording: existing.forbidden_wording || '',
+        current_safe_rewrite: existing.safe_rewrite || '',
         source_text: sourceText,
       },
     } as SystemAgentActionPreview,
@@ -3358,6 +3381,15 @@ async function handleUnifiedLiveStrategyIntent(
       pushAgentMessage(domain, prepared.text, prepared.action)
       return true
     }
+  }
+  if (result.intent === 'fact_category.add') {
+    const category = result.changes?.new_fact_category
+    if (!planId || !category?.label?.trim()) { pushAgentMessage(domain, '请先选中方案，并说明新分类名称。'); return true }
+    pushAgentMessage(domain, '我已理解为新建事实分类，请核对后确认。不会修改其他账号的分类。', {
+      type: 'add_live_fact_category', title: '确认添加事实分类', summary: '仅新增当前账号的分类，不添加或修改事实内容。', risk_level: 'low', requires_confirmation: true,
+      payload: { plan_id: planId, room_id: roomId, new_fact_category: category, source_text: sourceText },
+    })
+    return true
   }
   if (result.intent.startsWith('fact.')) {
     if (!planId) {
@@ -5974,6 +6006,7 @@ async function executeAction(message: ChatMessage) {
       )
       const selectedPlanId = Number(data.selected_plan_id || 0)
       if (response.state === 'succeeded') {
+        if (data.category_changed || action.type === 'add_live_fact_category') await loadFactCategories()
         if (selectedPlanId > 0) {
           liveStrategyPlanId.value = selectedPlanId
           window.localStorage.setItem('system-agent-live-plan-id', String(selectedPlanId))
@@ -7125,6 +7158,8 @@ async function copyCredential(credential?: InitialCredential) {
                     ? '活动停用确认'
                   : message.action.type === 'add_live_fact'
                     ? '事实依据候选'
+                  : message.action.type === 'add_live_fact_category'
+                    ? '事实分类候选'
                   : message.action.type === 'confirm_live_fact_update'
                     ? '事实修改确认'
                   : message.action.type === 'confirm_live_fact_disable'
@@ -7263,10 +7298,15 @@ async function copyCredential(credential?: InitialCredential) {
                   <dd>{{ message.action.payload.starts_at || '未设置' }} → {{ message.action.payload.ends_at || '未设置' }}</dd>
                 </div>
               </dl>
+              <dl v-else-if="message.action.type === 'add_live_fact_category'">
+                <div><dt>新分类</dt><dd>{{ message.action.payload.new_fact_category?.label }}</dd></div>
+                <div><dt>所属类型</dt><dd>{{ factCategoryDefinition(message.action.payload.new_fact_category?.family || 'other').label }}</dd></div>
+                <div><dt>说明</dt><dd>{{ message.action.payload.new_fact_category?.description || '未设置' }}</dd></div>
+              </dl>
               <dl v-else-if="message.action.type === 'add_live_fact' || message.action.type === 'confirm_live_fact_update' || message.action.type === 'confirm_live_fact_disable'">
                 <div>
                   <dt>事实分类</dt>
-                  <dd>{{ message.action.payload.fact_category || '-' }}</dd>
+                  <dd>{{ message.action.payload.new_fact_category?.label || factCategoryDefinition(message.action.payload.fact_category || '').label }}{{ message.action.payload.new_fact_category ? '（新建）' : '' }}</dd>
                 </div>
                 <div>
                   <dt>事实名称</dt>
@@ -7280,6 +7320,8 @@ async function copyCredential(credential?: InitialCredential) {
                   <dt>内容</dt>
                   <dd>{{ message.action.payload.fact_value || message.action.payload.current_fact_value || '-' }}</dd>
                 </div>
+                <div v-if="message.action.payload.forbidden_wording !== undefined"><dt>不能这么说</dt><dd><template v-if="message.action.type === 'confirm_live_fact_update'">{{ message.action.payload.current_forbidden_wording || '未设置' }} → </template>{{ message.action.payload.forbidden_wording || '清空' }}</dd></div>
+                <div v-if="message.action.payload.safe_rewrite !== undefined"><dt>可以这么说</dt><dd><template v-if="message.action.type === 'confirm_live_fact_update'">{{ message.action.payload.current_safe_rewrite || '未设置' }} → </template>{{ message.action.payload.safe_rewrite || '清空' }}</dd></div>
               </dl>
               <dl v-else-if="message.action.type === 'add_live_script_reference' || message.action.type === 'confirm_live_script_reference_update' || message.action.type === 'confirm_live_script_reference_disable'">
                 <div>
@@ -7433,6 +7475,8 @@ async function copyCredential(credential?: InitialCredential) {
                       ? '确认停用活动'
                     : message.action.type === 'add_live_fact'
                       ? '确认添加事实'
+                    : message.action.type === 'add_live_fact_category'
+                      ? '确认添加分类'
                     : message.action.type === 'confirm_live_fact_update'
                       ? '确认修改事实'
                     : message.action.type === 'confirm_live_fact_disable'

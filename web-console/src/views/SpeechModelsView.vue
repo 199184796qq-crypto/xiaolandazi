@@ -2,13 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { request } from '../api'
 import ModelPickerDialog from '../components/ModelPickerDialog.vue'
+import { copySpeechModel, type SpeechModelProfile as Profile } from '../speechModelCopy'
 
-interface Profile {
-  id: string; name: string; protocol: string; base_url: string; model: string
-  enabled: boolean; timeout_ms: number; max_tokens: number; system_prompt: string
-  has_api_key: boolean; api_key?: string
-  chat_token_field?: string
-}
 interface Config { profiles: Profile[]; default_id: string; revision: number }
 interface TestResult { text: string; model: string; protocol: string; latency_ms: number; input_tokens: number; output_tokens: number; total_tokens: number }
 interface AvailableModel { id: string; name: string }
@@ -49,6 +44,16 @@ async function load() {
 function add() {
   const p: Profile = { id: crypto.randomUUID(), name: '新模型', protocol: 'openai_chat', base_url: '', model: '', enabled: true, timeout_ms: 120000, max_tokens: 16000, chat_token_field: 'max_tokens', system_prompt: '', has_api_key: false, api_key: '' }
   config.value.profiles.push(p); selectedId.value = p.id; result.value = null
+}
+function copy(profile: Profile) {
+  if (loading.value || saving.value || testing.value || listing.value) return
+  error.value = ''; message.value = ''
+  try {
+    const p = copySpeechModel(profile, config.value.profiles, crypto.randomUUID())
+    config.value.profiles.push(p); selectedId.value = p.id; result.value = null
+    modelList.value = null; listError.value = ''; listedContext.value = ''; pickerOpen.value = false
+    message.value = `已复制为“${p.name}”，点击“保存全部配置”后生效；当前默认模型不变。`
+  } catch (e) { error.value = e instanceof Error ? e.message : '复制失败' }
 }
 function remove() {
   const p = selected.value; if (!p) return
@@ -114,7 +119,10 @@ onMounted(load)
     </section>
     <div class="model-layout">
       <aside class="model-list"><div class="list-head"><h3>模型配置</h3><button class="ghost-button" :disabled="loading || saving || testing || listing || config.profiles.length >= 30" @click="add">＋ 添加</button></div>
-        <button v-for="p in config.profiles" :key="p.id" class="model-item" :class="{ active: p.id === selectedId }" :disabled="loading || saving || testing || listing" @click="selectedId = p.id; result = null"><strong>{{ p.name }}</strong><span>{{ p.model || '未设置模型' }}</span><small>{{ config.default_id === p.id ? '默认模型 · ' : '' }}{{ p.enabled ? '启用' : '停用' }} · {{ p.has_api_key ? '密钥已保存' : '待配置密钥' }}</small></button>
+        <div v-for="p in config.profiles" :key="p.id" class="model-item" :class="{ active: p.id === selectedId }">
+          <button type="button" class="model-select" :disabled="loading || saving || testing || listing" @click="selectedId = p.id; result = null"><strong>{{ p.name }}</strong><span>{{ p.model || '未设置模型' }}</span><small>{{ config.default_id === p.id ? '默认模型 · ' : '' }}{{ p.enabled ? '启用' : '停用' }} · {{ p.copy_from_id ? '保存后复制密钥' : p.has_api_key ? '密钥已保存' : '待配置密钥' }}</small></button>
+          <button type="button" class="ghost-button model-copy-button" :aria-label="`复制${p.name}`" :disabled="loading || saving || testing || listing || config.profiles.length >= 30" @click="copy(p)">复制</button>
+        </div>
         <p v-if="!config.profiles.length">还没有自定义模型。添加配置不会自动切换现有模型。</p>
       </aside>
       <fieldset v-if="selected" class="model-editor" :disabled="saving || testing || loading">
@@ -150,6 +158,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.model-select{display:grid;gap:6px;text-align:left;border:0;background:transparent;padding:0;color:inherit;font:inherit;cursor:pointer;width:100%}.model-select strong{overflow-wrap:anywhere}.model-copy-button{justify-self:end;padding:5px 12px;font-size:13px}
 .model-discovery{display:grid;gap:8px;align-content:start}.model-id-heading{display:flex;align-items:center;gap:14px;min-height:26px}.model-id-heading label{font-weight:700;white-space:nowrap}.model-id-heading button{padding:3px 10px;border-radius:8px;font-size:13px;line-height:18px}.model-discovery small{color:#7a8499;line-height:1.6}.fields>label{align-content:start}
 .speech-model-page{display:grid;gap:18px;color:#28334d}.model-hero,.default-model,.model-list,.model-editor,.model-test,.empty{padding:22px;border:1px solid #dfe5f2;border-radius:20px;background:#fff;box-shadow:0 10px 28px #4254800a}.model-hero{display:flex;justify-content:space-between;align-items:center;gap:20px;background:linear-gradient(125deg,#fff,#eff2ff)}.model-hero h2{margin:6px 0;font-size:28px}.model-hero small{color:#6978cc;letter-spacing:.1em}.model-hero p,.default-model p,.model-test p,.model-list p{color:#748097;line-height:1.7;margin:8px 0 0}.actions,.editor-head,.list-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{flex-shrink:0}.default-model label,.fields label,.model-test>label{display:grid;gap:8px}.model-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px}.model-editor{margin:0;min-width:0}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:15px}.wide{grid-column:1/-1}.fields span,.model-test>label span{font-weight:700}.fields small{color:#7a8499;line-height:1.6}.fields .enabled{display:flex;align-items:center}.enabled input{width:auto}.model-item{display:grid;gap:6px;text-align:left;width:100%;border:1px solid #e1e6f1;border-radius:14px;margin-top:12px;padding:15px;background:#f8f9fd;color:inherit;cursor:pointer}.model-item.active{border-color:#9199ec;background:#eef0ff;box-shadow:0 5px 15px #636dcc1a}.model-item span,.model-item small{color:#7b849b;overflow-wrap:anywhere}.speech-model-page input,.speech-model-page select,.speech-model-page textarea{box-sizing:border-box;width:100%;padding:11px 13px;border:1px solid #d8dfed;border-radius:11px;background:white;color:inherit;font:inherit}.speech-model-page input[type=checkbox]{width:auto}.speech-model-page textarea{resize:vertical;line-height:1.7}.model-test{display:grid;gap:16px}.model-test>label{max-width:540px}.model-test>.primary-button{justify-self:start}.danger{color:#c0526a}.error,.notice{padding:14px;border-radius:12px;margin:0}.error{background:#fff0f2;color:#b34359}.notice{background:#eff9f3;color:#2c7a58}.metrics{display:flex;gap:15px;flex-wrap:wrap;color:#6978a5}.test-result pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.9;padding:18px;border-radius:12px;background:#f5f7fc}.empty{color:#8791a6}@media(max-width:900px){.model-layout{grid-template-columns:1fr}.model-hero{align-items:flex-start;flex-direction:column}.fields{grid-template-columns:1fr}.editor-head{flex-wrap:wrap}}
 </style>

@@ -85,6 +85,9 @@ func (w *contentRefreshRunner) process(ctx context.Context, job model.LiveConten
 		if err != nil {
 			return err
 		}
+		if isRealtimeScheme(base.GenerationContext) {
+			return w.cancel(ctx, job, "continuous mainline producer owns this realtime scheme")
+		}
 		input, err := w.generate(ctx, job, base, snapshot)
 		if err != nil {
 			return err

@@ -290,7 +290,7 @@ func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID
 				WHERE version.tenant_id=binding.tenant_id
 					AND version.room_id=binding.room_id
 					AND version.plan_id=binding.plan_id
-					AND version.lifecycle_status='published'
+					AND version.lifecycle_status IN ('draft','published','superseded')
 			)
 		ORDER BY
 			CASE WHEN binding.plan_id=(

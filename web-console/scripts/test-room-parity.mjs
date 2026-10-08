@@ -14,6 +14,8 @@ try {
     await page.goto('http://127.0.0.1:18601/__room-parity.html?role='+role)
     await page.locator('.speech-runtime-unified').waitFor()
     await page.getByText('正在回答保存问题哟',{exact:true}).waitFor()
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+    assert.equal(await page.evaluate(()=>window.scrollY),0,'async dashboard loading must stay at the top')
     assert.equal(await page.locator('.speech-runtime-track-grid,.agent-decision-panel,.event-bucket-panel').count(),0,'old duplicate staff-only panels removed')
     const tabs=page.locator('.public-screen-mode-switch')
     const labels=await tabs.locator('button').allTextContents()
@@ -41,6 +43,16 @@ try {
     await page.screenshot({path:'../artifacts/room-parity-'+role+'.png',fullPage:true})
     await context.close()
   }
+  const waitingContext=await browser.newContext({viewport:{width:1680,height:1000}}),waitingPage=await waitingContext.newPage(),waitingErrors=[]
+  waitingPage.on('pageerror',e=>waitingErrors.push(e.message))
+  await waitingPage.goto('http://127.0.0.1:18601/__room-parity.html?role=customer&waiting=1')
+  await waitingPage.locator('.speech-runtime-initializing').waitFor()
+  assert.ok((await waitingPage.locator('.speech-runtime-initializing-copy').textContent()).includes('正在生成首段主播声音'))
+  assert.equal(await waitingPage.getByText('等待主播文案',{exact:true}).count(),0,'blank waiting copy must be replaced by visible generation progress')
+  assert.equal(await waitingPage.locator('.speech-runtime-initializing-runner').count(),1)
+  assert.deepEqual(waitingErrors,[],'initial voice waiting state has no Vue runtime errors')
+  await waitingPage.screenshot({path:'../artifacts/room-initial-voice-progress.png',fullPage:true})
+  await waitingContext.close()
   assert.deepEqual(snapshots[1],snapshots[0],'customer and authorized staff must see identical room modules and captions')
   console.log('Room parity passed: shared caption/events/aggregation/execution, empty and queued states, 1 running + 10 pending, no duplicate legacy panels/polling, ungranted private access protected.')
 } finally {await browser.close();await server.close()}

@@ -68,9 +68,18 @@ func streamAudioURLAsCorePCM(
 	cursorMS := startMS
 	emitted := 0
 	for {
-		_, readErr := io.ReadFull(stdout, frame)
+		n, readErr := io.ReadFull(stdout, frame)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				if n > 0 {
+					clear(frame[n:])
+					if err := onFrame(append([]byte(nil), frame...), cursorMS); err != nil {
+						_ = cmd.Process.Kill()
+						_ = cmd.Wait()
+						return err
+					}
+					emitted++
+				}
 				break
 			}
 			_ = cmd.Process.Kill()

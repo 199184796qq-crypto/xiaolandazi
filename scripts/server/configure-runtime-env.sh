@@ -31,6 +31,7 @@ set_env "$CORE_ENV" SEMANTIC_TIMEOUT_MS 800
 set_env "$CORE_ENV" SEMANTIC_BATCH_SIZE 20
 set_env "$CORE_ENV" DASHSCOPE_EMBEDDING_MODEL qwen3.7-text-embedding-flash
 set_env "$MGMT_ENV" AUTH_COOKIE_SECURE true
+set_env "$MGMT_ENV" ANCHOR_STYLE_PROMPT_DIR /opt/xiaolan/current/configs/prompts/anchor-style
 set_env "$MGMT_ENV" SEMANTIC_ENABLED true
 set_env "$MGMT_ENV" SEMANTIC_TIMEOUT_MS 1200
 set_env "$MGMT_ENV" SEMANTIC_BATCH_SIZE 20

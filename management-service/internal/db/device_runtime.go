@@ -17,8 +17,20 @@ func decorateLiveDevice(d *model.LiveDevice) {
 	if d.DeviceName == "" {
 		d.DeviceName = model.DefaultDeviceName
 	}
-	if d.LastHeartbeatAt == nil || time.Since(*d.LastHeartbeatAt) > liveDeviceHeartbeatTimeout {
+	heartbeatAge := time.Duration(0)
+	if d.LastHeartbeatAt != nil {
+		heartbeatAge = time.Since(*d.LastHeartbeatAt)
+	}
+	explicitShutdown := d.StopReason == "device_shutdown"
+	switch {
+	case explicitShutdown || d.LastHeartbeatAt == nil || heartbeatAge > liveDeviceHeartbeatTimeout:
 		d.ConnectionStatus = "offline"
+	case (d.ConnectionStatus == "offline" && d.StopReason == "device_offline") ||
+		(d.ConnectionStatus == "online" && heartbeatAge > liveDeviceHeartbeatSuspectAfter):
+		// Transport loss and a late heartbeat are recoverable during the same
+		// 60-second window. Do not turn a one-second socket reconnect into a red
+		// offline card, but also do not pretend the device is fully online.
+		d.ConnectionStatus = "connecting"
 	}
 	switch {
 	case d.ConnectionStatus == "offline":

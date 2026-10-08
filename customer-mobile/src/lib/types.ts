@@ -554,4 +554,5 @@ export interface AgentDecisionSnapshot {
   simulation_results?: AgentDecisionSimulationResult[];
 }
 export interface MarketingCampaignItem {target_type:string;target_id:number;pricing_mode:string;fixed_price_cents?:number;quantity:number;package_months:number;discount_bps:number}
-export interface MarketingCampaign {id:number;name:string;description:string;items:MarketingCampaignItem[];eligible?:boolean;ineligible_reason?:string;controls?:{audience:string;max_claims:number;max_units:number}}
+export interface MarketingCampaignPresentation {schema_version:1;cover_asset_id?:number;template_key:'blue_tech'|'festival_red'|'newcomer_gold'|'fresh_green'|'minimal_light';display_size:'featured'|'standard'|'compact';background_style:'soft_gradient'|'spotlight'|'solid';primary_color:string;accent_color:string;eyebrow:string;badge_text:string;cta_button_text:string;show_countdown:boolean;show_saving:boolean;show_conditions:boolean}
+export interface MarketingCampaign {id:number;name:string;description:string;items:MarketingCampaignItem[];eligible?:boolean;ineligible_reason?:string;controls?:{audience:string;max_claims:number;max_units:number};presentation?:MarketingCampaignPresentation;starts_at?:string;ends_at?:string}

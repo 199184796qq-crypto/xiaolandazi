@@ -21,50 +21,53 @@ type liveStrategyExecuteRequest struct {
 }
 
 type liveStrategyExecutePayload struct {
-	PlanID                   int64    `json:"plan_id,omitempty"`
-	RoomID                   int64    `json:"room_id,omitempty"`
-	ProductLinkID            int64    `json:"product_link_id,omitempty"`
-	BenefitID                int64    `json:"benefit_id,omitempty"`
-	FactID                   int64    `json:"fact_id,omitempty"`
-	CurrentVersionNo         int64    `json:"current_version_no,omitempty"`
-	LinkKey                  string   `json:"link_key,omitempty"`
-	ProductName              string   `json:"product_name,omitempty"`
-	RoomRoles                []string `json:"room_roles,omitempty"`
-	Spec                     string   `json:"spec,omitempty"`
-	DailyPrice               string   `json:"daily_price,omitempty"`
-	Quantity                 string   `json:"quantity,omitempty"`
-	Audience                 string   `json:"audience,omitempty"`
-	ProductAttributeID       int64    `json:"product_attribute_id,omitempty"`
-	AttributeCode            string   `json:"attribute_code,omitempty"`
-	AttributeLabel           string   `json:"attribute_label,omitempty"`
-	AttributeValue           string   `json:"attribute_value,omitempty"`
-	AttributeUnit            string   `json:"attribute_unit,omitempty"`
-	AttributeDisplayType     string   `json:"attribute_display_type,omitempty"`
-	AttributeDisplayPriority int      `json:"attribute_display_priority,omitempty"`
-	BenefitKey               string   `json:"benefit_key,omitempty"`
-	ActivityPrice            string   `json:"activity_price,omitempty"`
-	Gift                     string   `json:"gift,omitempty"`
-	Activity                 string   `json:"activity,omitempty"`
-	StartsAt                 string   `json:"starts_at,omitempty"`
-	EndsAt                   string   `json:"ends_at,omitempty"`
-	ReviewBucket             string   `json:"review_bucket,omitempty"`
-	ReviewReason             string   `json:"review_reason,omitempty"`
-	FactCategory             string   `json:"fact_category,omitempty"`
-	FactKey                  string   `json:"fact_key,omitempty"`
-	FactValue                string   `json:"fact_value,omitempty"`
-	CurrentFactValue         string   `json:"current_fact_value,omitempty"`
-	ScriptReferenceID        int64    `json:"script_reference_id,omitempty"`
-	ScriptReferenceKey       string   `json:"script_reference_key,omitempty"`
-	ScriptTitle              string   `json:"script_title,omitempty"`
-	ScriptText               string   `json:"script_text,omitempty"`
-	CurrentScriptText        string   `json:"current_script_text,omitempty"`
-	ScriptGoal               string   `json:"script_goal,omitempty"`
-	ScriptTransition         string   `json:"script_transition,omitempty"`
-	ExecutionMode            string   `json:"execution_mode,omitempty"`
-	TargetPlanID             int64    `json:"target_plan_id,omitempty"`
-	TargetPlanName           string   `json:"target_plan_name,omitempty"`
-	CurrentPlanID            int64    `json:"current_plan_id,omitempty"`
-	SourceText               string   `json:"source_text,omitempty"`
+	ForbiddenWording         *string                      `json:"forbidden_wording,omitempty"`
+	SafeRewrite              *string                      `json:"safe_rewrite,omitempty"`
+	NewFactCategory          *liveStrategyNewFactCategory `json:"new_fact_category,omitempty"`
+	PlanID                   int64                        `json:"plan_id,omitempty"`
+	RoomID                   int64                        `json:"room_id,omitempty"`
+	ProductLinkID            int64                        `json:"product_link_id,omitempty"`
+	BenefitID                int64                        `json:"benefit_id,omitempty"`
+	FactID                   int64                        `json:"fact_id,omitempty"`
+	CurrentVersionNo         int64                        `json:"current_version_no,omitempty"`
+	LinkKey                  string                       `json:"link_key,omitempty"`
+	ProductName              string                       `json:"product_name,omitempty"`
+	RoomRoles                []string                     `json:"room_roles,omitempty"`
+	Spec                     string                       `json:"spec,omitempty"`
+	DailyPrice               string                       `json:"daily_price,omitempty"`
+	Quantity                 string                       `json:"quantity,omitempty"`
+	Audience                 string                       `json:"audience,omitempty"`
+	ProductAttributeID       int64                        `json:"product_attribute_id,omitempty"`
+	AttributeCode            string                       `json:"attribute_code,omitempty"`
+	AttributeLabel           string                       `json:"attribute_label,omitempty"`
+	AttributeValue           string                       `json:"attribute_value,omitempty"`
+	AttributeUnit            string                       `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string                       `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int                          `json:"attribute_display_priority,omitempty"`
+	BenefitKey               string                       `json:"benefit_key,omitempty"`
+	ActivityPrice            string                       `json:"activity_price,omitempty"`
+	Gift                     string                       `json:"gift,omitempty"`
+	Activity                 string                       `json:"activity,omitempty"`
+	StartsAt                 string                       `json:"starts_at,omitempty"`
+	EndsAt                   string                       `json:"ends_at,omitempty"`
+	ReviewBucket             string                       `json:"review_bucket,omitempty"`
+	ReviewReason             string                       `json:"review_reason,omitempty"`
+	FactCategory             string                       `json:"fact_category,omitempty"`
+	FactKey                  string                       `json:"fact_key,omitempty"`
+	FactValue                string                       `json:"fact_value,omitempty"`
+	CurrentFactValue         string                       `json:"current_fact_value,omitempty"`
+	ScriptReferenceID        int64                        `json:"script_reference_id,omitempty"`
+	ScriptReferenceKey       string                       `json:"script_reference_key,omitempty"`
+	ScriptTitle              string                       `json:"script_title,omitempty"`
+	ScriptText               string                       `json:"script_text,omitempty"`
+	CurrentScriptText        string                       `json:"current_script_text,omitempty"`
+	ScriptGoal               string                       `json:"script_goal,omitempty"`
+	ScriptTransition         string                       `json:"script_transition,omitempty"`
+	ExecutionMode            string                       `json:"execution_mode,omitempty"`
+	TargetPlanID             int64                        `json:"target_plan_id,omitempty"`
+	TargetPlanName           string                       `json:"target_plan_name,omitempty"`
+	CurrentPlanID            int64                        `json:"current_plan_id,omitempty"`
+	SourceText               string                       `json:"source_text,omitempty"`
 }
 
 var liveStrategyExecutableActions = map[string]struct{}{
@@ -78,6 +81,7 @@ var liveStrategyExecutableActions = map[string]struct{}{
 	"confirm_live_benefit_update":            {},
 	"confirm_live_benefit_disable":           {},
 	"add_live_fact":                          {},
+	"add_live_fact_category":                 {},
 	"confirm_live_fact_update":               {},
 	"confirm_live_fact_disable":              {},
 	"add_live_script_reference":              {},
@@ -141,6 +145,8 @@ func (s *Server) liveStrategyExecuteAction(w http.ResponseWriter, r *http.Reques
 		result = s.executeLiveStrategyDisableBenefit(r, actor, tenantID, payload)
 	case "add_live_fact":
 		result = s.executeLiveStrategyAddFact(r, actor, tenantID, payload)
+	case "add_live_fact_category":
+		result = s.executeLiveStrategyAddFactCategory(r, actor, tenantID, payload)
 	case "confirm_live_fact_update":
 		result = s.executeLiveStrategyUpdateFact(r, actor, tenantID, payload)
 	case "confirm_live_fact_disable":
@@ -615,7 +621,32 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 		Category: strings.TrimSpace(p.FactCategory), Key: strings.TrimSpace(p.FactKey), Value: strings.TrimSpace(p.FactValue),
 		Status: "confirmed", ReviewBucket: "adoptable", SourceQuote: strings.TrimSpace(p.SourceText),
 	}
-	if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
+	if p.ForbiddenWording != nil {
+		candidate.ForbiddenWording = strings.TrimSpace(*p.ForbiddenWording)
+	}
+	if p.SafeRewrite != nil {
+		candidate.SafeRewrite = strings.TrimSpace(*p.SafeRewrite)
+	}
+	catalog, _, err := s.tenantFactCategoryCatalog(r.Context(), tenantID)
+	if err != nil {
+		return liveStrategyFailed("category_lookup_failed", "读取事实分类失败。", nil)
+	}
+	newCategories := []model.LiveFactCategory{}
+	if p.NewFactCategory != nil {
+		category, isNew, categoryErr := proposedFactCategory(catalog, p.NewFactCategory)
+		if categoryErr != nil {
+			return liveStrategyFailed("invalid_category", categoryErr.Error(), nil)
+		}
+		if candidate.Category != "" && candidate.Category != category.Value && candidate.Category != category.Label {
+			return liveStrategyFailed("invalid_category", "事实分类与拟新建分类不一致。", nil)
+		}
+		candidate.Category = category.Value
+		if isNew {
+			catalog.Categories = append(catalog.Categories, category)
+			newCategories = append(newCategories, category)
+		}
+	}
+	if err := validateLiveAgentPlanFactCandidate(candidate, catalog); err != nil {
 		return liveStrategyFailed("invalid_fact", err.Error(), nil)
 	}
 	items, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, p.PlanID)
@@ -627,7 +658,7 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 			return liveStrategyFailed("stale_confirmation", "确认期间这条事实已经存在。为了避免把新增悄悄变成修改，请重新发起。", nil)
 		}
 	}
-	result, err := s.store.AdoptLiveAgentPlanFact(r.Context(), tenantID, p.PlanID, actor.UserID, candidate, "system-agent:intent-fact")
+	result, err := s.store.AdoptLiveAgentPlanFact(r.Context(), tenantID, p.PlanID, actor.UserID, candidate, "system-agent:intent-fact", newCategories...)
 	if err != nil || result.Status != "adopted" || result.Saved == nil {
 		msg := result.Message
 		if msg == "" {
@@ -638,7 +669,7 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
 		return liveStrategyFailed("runtime_sync_failed", "事实已保存，但热同步直播间失败。", map[string]any{"error": err.Error()})
 	}
-	return liveStrategySucceeded("fact_added", "已确认添加事实“"+candidate.Key+"："+candidate.Value+"”。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo})
+	return liveStrategySucceeded("fact_added", "已确认添加事实“"+candidate.Key+"："+candidate.Value+"”及指定说法。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo, "category_changed": len(newCategories) > 0})
 }
 
 func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
@@ -659,17 +690,16 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 	if current == nil || (p.CurrentVersionNo > 0 && current.VersionNo != p.CurrentVersionNo) {
 		return liveStrategyFailed("stale_confirmation", "这条事实已经变化，请重新发起修改。", nil)
 	}
-	value := strings.TrimSpace(p.FactValue)
-	if current.Value == value {
-		return liveStrategyFailed("no_change", "新值和当前事实一致，没有生成新版本。", nil)
+	candidate := liveStrategyFactUpdateCandidate(*current, p)
+	if candidate.Value == current.Value && candidate.ForbiddenWording == current.ForbiddenWording && candidate.SafeRewrite == current.SafeRewrite {
+		return liveStrategyFailed("no_change", "事实内容和两种说法均没有变化，没有生成新版本。", nil)
 	}
-	candidate := model.LiveAgentPlanFactCandidate{Category: current.Category, Key: current.Key, Value: value}
-	if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
+	if err := s.validateTenantFactCandidate(r.Context(), tenantID, candidate); err != nil {
 		return liveStrategyFailed("invalid_fact", err.Error(), nil)
 	}
 	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(
 		r.Context(), tenantID, p.PlanID, current.ID, actor.UserID, current.VersionNo,
-		current.Category, current.Key, value, current.ForbiddenWording, current.SafeRewrite,
+		current.Category, current.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite,
 	)
 	if errors.Is(err, appdb.ErrLiveAgentPlanFactVersionConflict) {
 		return liveStrategyFailed("stale_confirmation", "这条事实已经产生新版本，请重新发起修改。", nil)

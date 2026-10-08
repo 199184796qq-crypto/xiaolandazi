@@ -1,13 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	appdb "livecompanion/management/internal/db"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 
+	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 )
 
@@ -26,6 +27,9 @@ func validateRoomInteractionPreferences(input *model.RoomInteractionPreferencesI
 		if value < 0 || value > 100 {
 			return fmt.Errorf("%s必须在 0 到 100 之间", label)
 		}
+	}
+	if input.Schedule != nil {
+		return interactionpolicy.Validate(*input.Schedule)
 	}
 	return nil
 }
@@ -68,21 +72,15 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 	}
 	item, err := s.store.UpsertRoomInteractionPreferences(r.Context(), tenantID, roomID, actor.UserID, input)
 	if err != nil {
+		if errors.Is(err, appdb.ErrInteractionScheduleConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "保存互动偏好失败")
 		return
 	}
 	if s.core != nil {
-		query := url.Values{}
-		query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-		resp, pushErr := s.core.DoRoom(
-			r.Context(),
-			tenantID,
-			roomID,
-			http.MethodPut,
-			fmt.Sprintf("/internal/v1/rooms/%d/interaction-preferences", roomID),
-			query,
-			item,
-		)
+		resp, pushErr := s.core.PutRoomInteractionPreferences(r.Context(), item)
 		if pushErr != nil {
 			writeError(w, http.StatusBadGateway, "偏好已保存，但热同步 Core 失败："+pushErr.Error())
 			return

@@ -150,6 +150,7 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
+	contentMode := model.LiveContentModeFromGenerationContext(input.GenerationContext)
 	contextJSON, err := json.Marshal(input.GenerationContext)
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
@@ -161,6 +162,12 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	}
 	defer tx.Rollback()
 
+	// Serialize saves for this plan. A saved snapshot and its effective pointer
+	// must commit together; there is no separate operator publication step.
+	var lockedPlan int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&lockedPlan); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
 	var nextVersion int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(version_no), 0) + 1
@@ -172,8 +179,9 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_versions
 		SET lifecycle_status='superseded'
-		WHERE tenant_id=? AND plan_id=? AND room_id=? AND lifecycle_status='draft'
-	`, tenantID, planID, input.RoomID); err != nil {
+		WHERE tenant_id=? AND plan_id=? AND room_id=? AND lifecycle_status IN ('draft','published')
+		  AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')=?
+	`, tenantID, planID, input.RoomID, contentMode); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	result, err := tx.ExecContext(ctx, `
@@ -181,8 +189,8 @@ func (s *Store) CreateLiveAgentPlanVersion(
 			tenant_id, plan_id, room_id, version_no, lifecycle_status,
 			duration_minutes, round_minutes,
 			voice_identity_json, variants_json, generation_context_json,
-			created_by_user_id
-		) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)
+			created_by_user_id, published_by_user_id, published_at
+		) VALUES (?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
 	`,
 		tenantID,
 		planID,
@@ -194,12 +202,24 @@ func (s *Store) CreateLiveAgentPlanVersion(
 		string(variantsJSON),
 		string(contextJSON),
 		actorUserID,
+		actorUserID,
 	)
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	versionID, err := result.LastInsertId()
 	if err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_agent_room_plan_publications (tenant_id,room_id,plan_id,version_id,published_by_user_id,published_at)
+		SELECT ?,?,?,?,?,CURRENT_TIMESTAMP(3)
+		WHERE NOT EXISTS (SELECT 1 FROM live_agent_room_plan_selections selection WHERE selection.tenant_id=? AND selection.room_id=? AND selection.plan_id<>?)
+		ON DUPLICATE KEY UPDATE plan_id=VALUES(plan_id),version_id=VALUES(version_id),published_by_user_id=VALUES(published_by_user_id),published_at=VALUES(published_at)
+	`, tenantID, input.RoomID, planID, versionID, actorUserID, tenantID, input.RoomID, planID); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	if err := pruneSavedPlanVersions(ctx, tx, tenantID, planID, input.RoomID); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -292,7 +312,7 @@ func (s *Store) PublishLiveAgentPlanVersion(
 	}
 	defer tx.Rollback()
 
-	_, err = scanLiveAgentPlanVersion(tx.QueryRowContext(
+	pending, err := scanLiveAgentPlanVersion(tx.QueryRowContext(
 		ctx,
 		liveAgentPlanVersionSelect+` WHERE tenant_id=? AND plan_id=? AND room_id=? AND id=? AND lifecycle_status NOT IN ('prepared','abandoned') FOR UPDATE`,
 		tenantID,
@@ -306,12 +326,14 @@ func (s *Store) PublishLiveAgentPlanVersion(
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
+	contentMode := model.LiveContentModeFromGenerationContext(pending.GenerationContext)
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_versions
 		SET lifecycle_status='superseded'
 		WHERE tenant_id=? AND plan_id=? AND room_id=? AND lifecycle_status='published' AND id<>?
-	`, tenantID, planID, roomID, versionID); err != nil {
+		  AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')=?
+	`, tenantID, planID, roomID, versionID, contentMode); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -352,8 +374,15 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 		        ON selection.tenant_id=live_agent_plan_versions.tenant_id
 		       AND selection.room_id=live_agent_plan_versions.room_id
 		       AND selection.plan_id=live_agent_plan_versions.plan_id
+		INNER JOIN live_agent_plan_room_bindings binding
+		       ON binding.tenant_id=selection.tenant_id AND binding.room_id=selection.room_id
+		      AND binding.plan_id=selection.plan_id AND binding.status='active'
+		LEFT JOIN live_room_content_access access
+		       ON access.tenant_id=live_agent_plan_versions.tenant_id
+		      AND access.room_id=live_agent_plan_versions.room_id
 		WHERE selection.tenant_id=? AND selection.room_id=?
-		  AND live_agent_plan_versions.lifecycle_status='published'
+		  AND live_agent_plan_versions.lifecycle_status IN ('draft','published','superseded')
+		  AND (access.selected_mode IS NULL OR access.selected_mode=COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(live_agent_plan_versions.generation_context_json,'$.content_mode')),''),'ai_pregenerated'))
 		ORDER BY live_agent_plan_versions.version_no DESC, live_agent_plan_versions.id DESC
 		LIMIT 1
 	`,
@@ -366,15 +395,21 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 		item, err = scanLiveAgentPlanVersion(s.db.QueryRowContext(
 			ctx,
 			liveAgentPlanVersionSelect+`
-			INNER JOIN live_agent_room_plan_publications pub
-			        ON pub.version_id=live_agent_plan_versions.id
 			INNER JOIN live_agent_plan_room_bindings binding
 			        ON binding.tenant_id=live_agent_plan_versions.tenant_id
 			       AND binding.room_id=live_agent_plan_versions.room_id
 			       AND binding.plan_id=live_agent_plan_versions.plan_id
+			INNER JOIN live_agent_room_plan_publications pub
+			        ON pub.tenant_id=binding.tenant_id AND pub.room_id=binding.room_id AND pub.plan_id=binding.plan_id
+			LEFT JOIN live_room_content_access access
+			       ON access.tenant_id=live_agent_plan_versions.tenant_id
+			      AND access.room_id=live_agent_plan_versions.room_id
 			WHERE pub.tenant_id=? AND pub.room_id=?
 			  AND binding.status='active'
-			  AND live_agent_plan_versions.lifecycle_status='published'
+			  AND NOT EXISTS (SELECT 1 FROM live_agent_room_plan_selections selection WHERE selection.tenant_id=pub.tenant_id AND selection.room_id=pub.room_id)
+			  AND live_agent_plan_versions.lifecycle_status IN ('draft','published','superseded')
+			  AND (access.selected_mode IS NULL OR access.selected_mode=COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(live_agent_plan_versions.generation_context_json,'$.content_mode')),''),'ai_pregenerated'))
+			ORDER BY live_agent_plan_versions.version_no DESC, live_agent_plan_versions.id DESC
 			LIMIT 1
 		`,
 			tenantID,

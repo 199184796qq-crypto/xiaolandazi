@@ -19,11 +19,14 @@ type Key struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db        *sql.DB
+	lifecycle *LifecycleManager
 }
 
 func NewStore(database *sql.DB) *Store {
-	return &Store{db: database}
+	store := &Store{db: database}
+	store.lifecycle = newLifecycleManager(store.persistLifecycleStatus)
+	return store
 }
 
 func (s *Store) List(ctx context.Context, tenantID *int64) ([]model.Room, error) {
@@ -52,7 +55,7 @@ func (s *Store) List(ctx context.Context, tenantID *int64) ([]model.Room, error)
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, item)
+		items = append(items, s.decorateLifecycle(item))
 	}
 
 	return items, rows.Err()
@@ -91,7 +94,7 @@ func (s *Store) ListByKeys(ctx context.Context, keys []Key) ([]model.Room, error
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, item)
+		items = append(items, s.decorateLifecycle(item))
 	}
 	return items, rows.Err()
 }
@@ -110,7 +113,11 @@ func (s *Store) Get(ctx context.Context, tenantID *int64, roomID int64) (model.R
 		args = append(args, *tenantID)
 	}
 
-	return scanRoom(s.db.QueryRowContext(ctx, query, args...))
+	item, err := scanRoom(s.db.QueryRowContext(ctx, query, args...))
+	if err != nil {
+		return item, err
+	}
+	return s.decorateLifecycle(item), nil
 }
 
 func (s *Store) Create(ctx context.Context, input model.CreateRoomInput) (model.Room, error) {
@@ -189,14 +196,19 @@ func (s *Store) Delete(ctx context.Context, tenantID *int64, roomID int64) error
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.lifecycle.Forget(tenantID, roomID)
+	return nil
 }
 
-func (s *Store) MarkLive(ctx context.Context, tenantID int64, roomID int64) error {
+// Coalesced metrics cannot restore room status after stop/offline.
+func (s *Store) TouchLiveMetrics(ctx context.Context, tenantID int64, roomID int64) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE core_rooms
-		SET status = 'live', last_event_at = CURRENT_TIMESTAMP(3)
-		WHERE id = ? AND tenant_id = ? AND monitor_enabled = 1
+		SET last_event_at = CURRENT_TIMESTAMP(3)
+		WHERE id = ? AND tenant_id = ? AND monitor_enabled = 1 AND status = 'live'
 	`, roomID, tenantID)
 	if err != nil {
 		return err
@@ -205,9 +217,7 @@ func (s *Store) MarkLive(ctx context.Context, tenantID int64, roomID int64) erro
 	if err != nil {
 		return err
 	}
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
+	_ = affected // Late metrics after a terminal transition are a no-op.
 	return nil
 }
 
@@ -254,7 +264,7 @@ func scanRoom(scanner rowScanner) (model.Room, error) {
 	return item, nil
 }
 
-func (s *Store) SetStatus(
+func (s *Store) persistLifecycleStatus(
 	ctx context.Context,
 	tenantID int64,
 	roomID int64,
@@ -322,7 +332,6 @@ func (s *Store) UpdateRuntime(
 				sets,
 				"monitor_enabled = 0",
 				"monitor_started_at = NULL",
-				"status = 'stopped'",
 				"online_count = 0",
 			)
 		}
@@ -343,16 +352,36 @@ func (s *Store) UpdateRuntime(
 		args = append(args, *tenantID)
 	}
 
-	result, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return model.Room{}, err
+	execute := func(status string) error {
+		applyQuery := query
+		applyArgs := append([]any(nil), args...)
+		if input.MonitorEnabled != nil {
+			applyQuery = strings.Replace(query, "UPDATE core_rooms SET ", "UPDATE core_rooms SET status = ?, ", 1)
+			applyArgs = append([]any{status}, applyArgs...)
+		}
+		result, err := s.db.ExecContext(ctx, applyQuery, applyArgs...)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
+	if input.MonitorEnabled != nil {
+		current, err := s.Get(ctx, tenantID, roomID)
+		if err != nil {
+			return model.Room{}, err
+		}
+		if err = s.lifecycle.changeMonitoring(ctx, current, *input.MonitorEnabled, execute); err != nil {
+			return model.Room{}, err
+		}
+	} else if err := execute(""); err != nil {
 		return model.Room{}, err
-	}
-	if affected == 0 {
-		return model.Room{}, sql.ErrNoRows
 	}
 
 	return s.Get(ctx, tenantID, roomID)

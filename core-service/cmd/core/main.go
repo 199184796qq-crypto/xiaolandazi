@@ -421,6 +421,30 @@ func main() {
 		log.Fatalf("create core audio runtime: %v", err)
 	}
 	coreAudioClient.SetRoomAudioEngine(roomAudioEngine)
+	paidAgents.SetWarmupEligibility(func(roomID int64) bool {
+		if !collectorManager.IsServingRoom(roomID) {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		room, err := rooms.Get(ctx, nil, roomID)
+		return err == nil && strings.EqualFold(room.Status, "live")
+	})
+	paidAgents.SetTenantResolver(func(roomID int64) (int64, bool) {
+		room, err := rooms.Get(context.Background(), nil, roomID)
+		return room.TenantID, err == nil
+	})
+	paidAgents.SetContextReader(func(roomID int64) (string, string) {
+		program, err := coreAudioClient.ProgramSnapshot(context.Background(), roomID)
+		if err != nil {
+			return "", ""
+		}
+		text := program.TrackText
+		if program.CurrentSegment != nil {
+			text = program.CurrentSegment.Text
+		}
+		return text, program.TrackID
+	})
 	coreAudioClient.SetMainlineAgentSignalProvider(func(roomID int64) coreaudio.MainlineAgentSignals {
 		view, viewErr := brain.Snapshot(roomID)
 		if viewErr != nil {
@@ -451,6 +475,7 @@ func main() {
 	}
 	api.SetStrategyPolicyStore(strategyPolicies)
 	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
+	paidAgents.SetMessageCaptain(api.MessageCaptain())
 	api.SetCaptureManager(captureManager)
 	api.SetSpeechAnalysisManager(speechanalysis.NewManager())
 	api.SetRoomBrain(brain)

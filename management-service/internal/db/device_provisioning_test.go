@@ -33,16 +33,22 @@ func TestClaimCodeEncryptionAndIdentity(t *testing.T) {
 }
 func TestLiveDevicePrivacyAndStatuses(t *testing.T) {
 	now := time.Now()
-	stale := now.Add(-time.Minute)
+	reconnecting := now.Add(-30 * time.Second)
+	stale := now.Add(-61 * time.Second)
 	for _, tt := range []struct {
-		connection, work string
-		heartbeat        *time.Time
-		want             string
+		connection, work, reason string
+		heartbeat                *time.Time
+		want                     string
 	}{
-		{"online", "working", &now, "正常工作"}, {"online", "paused", &now, "已暂停"}, {"online", "idle", &now, "连续待机"},
-		{"error", "working", &now, "设备异常"}, {"connecting", "idle", &now, "连接中"}, {"online", "working", &stale, "离线"},
+		{"online", "working", "", &now, "正常工作"}, {"online", "paused", "", &now, "已暂停"}, {"online", "idle", "", &now, "连续待机"},
+		{"error", "working", "", &now, "设备异常"}, {"connecting", "idle", "", &now, "连接中"},
+		{"error", "working", "", &reconnecting, "设备异常"},
+		{"online", "working", "", &reconnecting, "连接中"},
+		{"offline", "idle", "device_offline", &now, "连接中"},
+		{"online", "working", "", &stale, "离线"},
+		{"offline", "idle", "device_shutdown", &now, "离线"},
 	} {
-		d := model.LiveDevice{ID: 25, SN: "1c:29:04:31:0e:b8", ConnectionStatus: tt.connection, WorkStatus: tt.work, LastHeartbeatAt: tt.heartbeat}
+		d := model.LiveDevice{ID: 25, SN: "1c:29:04:31:0e:b8", ConnectionStatus: tt.connection, WorkStatus: tt.work, StopReason: tt.reason, LastHeartbeatAt: tt.heartbeat}
 		decorateLiveDevice(&d)
 		if d.DisplayStatus != tt.want {
 			t.Fatal(tt, d.DisplayStatus)

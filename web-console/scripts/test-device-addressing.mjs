@@ -28,15 +28,16 @@ for (const [start, api] of [['saveAddressing', 'saveDeviceAddressing'], ['rename
   const calls = [];
   const a = { id: 1, tenant_id: 1, device_name: 'A' }, b = { id: 2, tenant_id: 1, device_name: 'B' };
   const deps = {
-    ref, computed, watch() {}, onMounted() {}, onBeforeUnmount() {},
+    ref, computed, nextTick: async () => {}, useFeedbackErrorRef: ref, watch() {}, onMounted() {}, onBeforeUnmount() {},
     session: { bootstrap: { actor: { role: 'customer' } } }, window: { confirm: () => true },
     getLiveDevices: async () => [a, b], getRooms: async () => ({ items: [] }),
     getDeviceAddressing: async () => ({ mode: 'auto' }), getDefaultDeviceName: async () => ({ device_name: 'C' }),
     ...Object.fromEntries(mutationAPIs.map((name) => [name, async () => { calls.push(name); if (name === api) await pending; return { mode: 'female' }; }])),
   };
-  const state = new Function(...Object.keys(deps), compiled + '\nreturn { saveAddressing, rename, unbind, saveBinding, addDevice, openAdd, mutationBusy, savingDeviceId, addressingModes, selectedRoomByDevice, bindingCode, deviceName, devices };')(...Object.values(deps));
+  const state = new Function(...Object.keys(deps), compiled + '\nreturn { saveAddressing, rename, unbind, saveBinding, addDevice, openAdd, mutationBusy, savingDeviceId, addressingModes, selectedRoomByDevice, bindingCode, deviceName, devices, editingNameId, editingNames };')(...Object.values(deps));
   state.devices.value = [a, b]; state.addressingModes.value = { 1: 'female', 2: 'male' };
   state.selectedRoomByDevice.value = { 1: 10, 2: 20 }; state.bindingCode.value = '123456'; state.deviceName.value = 'C';
+  state.editingNameId.value = 1; state.editingNames.value = { 1: 'New A', 2: 'New B' };
   const started = state[start](a);
   assert.equal(state.mutationBusy.value, true, `${start} acquired the global lock`);
   for (const handler of ['saveAddressing', 'rename', 'unbind', 'saveBinding', 'addDevice', 'openAdd']) await state[handler](b);

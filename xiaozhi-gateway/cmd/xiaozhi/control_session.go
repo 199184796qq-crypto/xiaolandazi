@@ -31,6 +31,7 @@ type understandingResult struct {
 }
 
 type controlMessage struct {
+	SessionID string          `json:"session_id"`
 	Type      string          `json:"type"`
 	State     string          `json:"state"`
 	RequestID string          `json:"request_id"`

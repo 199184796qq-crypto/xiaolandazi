@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/messagecaptain"
+	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/timeline"
 )
@@ -100,6 +103,31 @@ func (s *Server) SetAudioClient(client audioTaskClient, callbackBase string) {
 		interactions: make(map[string]*audioInteractionMeta),
 		history:      make(map[int64][]*audioInteractionRecord),
 	})
+	if s.messages == nil {
+		s.messages = messagecaptain.New()
+	}
+	if s.messageUnregister != nil {
+		s.messageUnregister()
+	}
+	removeCutPlanner := s.messages.Register("mainline-cut-planner", s.handleCutRequest)
+	removeLifecycle := s.messages.Register("interaction-lifecycle", func(ctx context.Context, message messagecaptain.Message) error {
+		if message.Kind != messagecaptain.AudioTerminal {
+			return nil
+		}
+		var event audioout.PlaybackEvent
+		if err := json.Unmarshal(message.Payload, &event); err != nil {
+			return err
+		}
+		if message.RoomID != event.RoomID || message.TaskID != event.SpeechTaskID {
+			return fmt.Errorf("audio message scope mismatch")
+		}
+		s.applyAudioInteractionPlaybackEvent(ctx, s.audioDevState(), event)
+		return nil
+	})
+	s.messageUnregister = func() { removeLifecycle(); removeCutPlanner() }
+	if source, ok := client.(interface{ SetMessageCaptain(*messagecaptain.Captain) }); ok {
+		source.SetMessageCaptain(s.messages)
+	}
 }
 
 func (s *Server) audioDevState() *audioDevState {
@@ -466,8 +494,19 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		return
 	}
 	state.mu.Lock()
+	previous := state.events[event.SpeechTaskID]
+	if previous.Status == "COMPLETED" || previous.Status == "FAILED" {
+		state.mu.Unlock()
+		return
+	}
 	state.events[event.SpeechTaskID] = event
 	meta := state.interactions[event.SpeechTaskID]
+	if meta != nil && meta.DecisionID != "" && s.agentDecisions != nil {
+		item, ok := s.agentDecisions.Get(meta.RoomID, meta.DecisionID)
+		if !ok || item.Status != "CLAIMED" || (item.PlaybackTaskID != "" && item.PlaybackTaskID != event.SpeechTaskID) {
+			meta = nil
+		}
+	}
 	var pinAnswer bool
 	var pinResume bool
 	var completedRecord *audioInteractionRecord
@@ -497,6 +536,12 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 	}
 	state.mu.Unlock()
 	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil {
+		if event.Status == "COMPLETED" {
+			// A receiver reports completion exactly at the media boundary. Give its
+			// device/output buffer the same guard tail used by the PCM mirror before
+			// replacing the interaction with resumed mainline audio.
+			time.Sleep(time.Duration(roomaudio.VoiceGuardTailMS) * time.Millisecond)
+		}
 		if completer, ok := state.client.(audioInteractionCompleter); ok {
 			if snapshot, resumeErr := completer.CompleteProgramInteraction(ctx, meta.RoomID, event.SpeechTaskID); resumeErr != nil {
 				log.Printf("core audio receiver-terminal resume room=%d task=%s status=%s failed: %v", meta.RoomID, event.SpeechTaskID, event.Status, resumeErr)

@@ -208,6 +208,8 @@ function isCrossDepartmentRoute(routeName: string, primaryGroupCode?: string) {
 export const router = createRouter({
   history: createWebHistory(),
   scrollBehavior(_to, _from, savedPosition) {
+    // Dashboard entry is always the overview, including browser back/forward.
+    if (_to.name === 'room-detail') return { left: 0, top: 0, behavior: 'instant' }
     if (savedPosition) return savedPosition
     if (_to.hash) return { el: _to.hash, top: 112, behavior: 'smooth' }
     return { left: 0, top: 0 }

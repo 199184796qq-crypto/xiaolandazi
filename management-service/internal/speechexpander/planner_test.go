@@ -28,6 +28,9 @@ func TestBuildFixedPlansUsesVirtualTimeAndExactCharacterBudget(t *testing.T) {
 		if plan.Steps[len(plan.Steps)-1].Stage == "reentry" {
 			t.Fatalf("closing unit restarted the show: %+v", plan.Steps[len(plan.Steps)-1])
 		}
+		if plan.Steps[0].MainlinePhase != "opening" || plan.Steps[0].ReentryLevel == "" || plan.Steps[len(plan.Steps)-1].MainlinePhase != "closing" || plan.Steps[len(plan.Steps)-1].ClosingType != "round" {
+			t.Fatalf("live skeleton phases missing: %+v", plan.Steps)
+		}
 		if total != 1250 {
 			t.Fatalf("character budget=%d", total)
 		}

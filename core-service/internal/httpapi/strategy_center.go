@@ -62,6 +62,12 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid interaction preferences")
 		return
 	}
+	if input.Schedule != nil {
+		if err := strategycenter.ValidateInteractionSchedule(*input.Schedule); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	input.TenantID = tenantID
 	input.RoomID = roomID
 	item := s.strategyPolicies.PutRoomInteractionPreferences(roomID, input)

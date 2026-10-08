@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,10 +38,13 @@ type LiveContentPolicyRecord struct {
 }
 
 type LiveContentModeAccess struct {
-	ContentMode         string   `json:"content_mode"`
-	AvailableModes      []string `json:"available_modes"`
-	DynamicAuthorized   bool     `json:"dynamic_authorized"`
-	AuthorizationSource string   `json:"authorization_source"`
+	ContentMode            string   `json:"content_mode"`
+	AvailableModes         []string `json:"available_modes"`
+	DynamicAuthorized      bool     `json:"dynamic_authorized"`
+	AuthorizationSource    string   `json:"authorization_source"`
+	AutoRefreshEnabled     bool     `json:"auto_refresh_enabled"`
+	RefreshIntervalSeconds int      `json:"refresh_interval_seconds"`
+	ReplacementPercent     int      `json:"replacement_percent"`
 }
 
 // Keep entitlement resolution separate from mode preference. Membership grants
@@ -55,6 +59,18 @@ func ResolveLiveContentMode(selected string, dynamicAllowed bool, source string)
 		result.ContentMode = LiveContentAIPregenerated
 	}
 	return result
+}
+
+func LiveContentModeFromGenerationContext(context map[string]any) string {
+	mode := strings.TrimSpace(fmt.Sprint(context["content_mode"]))
+	switch mode {
+	case LiveContentAIPregenerated, LiveContentUserAudio, LiveContentAIDynamic:
+		return mode
+	default:
+		// Versions created before the three-mode switch were fixed-generation
+		// versions. Keeping that default makes old saved content restorable.
+		return LiveContentAIPregenerated
+	}
 }
 
 func DefaultLiveContentPolicy() LiveContentPolicy {

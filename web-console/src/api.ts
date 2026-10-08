@@ -1,6 +1,7 @@
-import { showPermissionToast } from './uiFeedback'
+import { showRequestError, clearRequestError } from './uiFeedback'
 import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStream'
 import { liveSupportRoomForRequest } from './liveSupportAccess'
+import { normalizeLiveAgentPlanVersion } from './liveAgentPlanVersion'
 import type {
   AccountDashboard,
   AccountProfile,
@@ -32,6 +33,7 @@ import type {
   FeatureRecordInput,
   MarketingCampaign,
   MarketingCampaignInput,
+  MarketingPresentationAsset,
   InventoryWarehouse,
   InventoryDeviceProduct,
   InventoryDeviceSKUType,
@@ -149,6 +151,8 @@ import type {
   LiveAgentPlanScriptAnalysisPreviewResponse,
   LiveAnchorStyle,
   LiveAnchorStyleSample,
+  LiveAnchorAnalysisState,
+  AnchorAnalysisSection,
   LiveAnchorStyleTraining,
   LiveAnchorStylePluginSetting,
   LiveAnchorStyleAnalysisQC,
@@ -233,11 +237,14 @@ interface ListResponse<T> {
   items: T[]
 }
 
-export async function request<T>(url: string, init?: RequestInit, onPreviewEvent?: (event: PreviewStreamEvent) => void): Promise<T> {
-  const headers = new Headers(init?.headers)
+export type APIRequestInit = RequestInit & { suppressErrorDialog?: boolean }
+
+export async function request<T>(url: string, init?: APIRequestInit, onPreviewEvent?: (event: PreviewStreamEvent) => void): Promise<T> {
+  const { suppressErrorDialog = false, ...fetchInit } = init || {}
+  const headers = new Headers(fetchInit.headers)
   const supportRoomId = liveSupportRoomForRequest(url)
   if (supportRoomId) headers.set('X-Live-Support-Room-ID', String(supportRoomId))
-  if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
+  if (fetchInit.body !== undefined && !(fetchInit.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
@@ -245,10 +252,12 @@ export async function request<T>(url: string, init?: RequestInit, onPreviewEvent
   try {
     response = await fetch(url, {
       credentials: 'include',
-      ...init,
+      ...fetchInit,
       headers,
     })
-  } catch {
+  } catch (err) {
+    if (fetchInit.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) throw err
+    if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', '后台服务暂不可用，请稍后重试')
     throw new Error('后台服务暂不可用，请稍后重试')
   }
 
@@ -263,20 +272,35 @@ export async function request<T>(url: string, init?: RequestInit, onPreviewEvent
     } catch {
       // Keep the fallback message.
     }
-    if (response.status === 403) {
-      showPermissionToast(message)
+    // An anonymous/expired session is an expected result of the route guard's
+    // bootstrap probe. The guard shows the login page; it is not a failed action.
+    if (!suppressErrorDialog && (response.status !== 401 || url.split('?')[0] !== '/api/v1/bootstrap')) {
+      showRequestError(url, fetchInit.method || 'GET', message)
     }
     throw new Error(message)
   }
+
+  clearRequestError(url, fetchInit.method || 'GET')
 
   if (response.status === 204) {
     return undefined as T
   }
 
   if (onPreviewEvent && response.headers.get('Content-Type')?.includes('text/event-stream')) {
-    return readPreviewStream<T>(response, onPreviewEvent)
+    try {
+      return await readPreviewStream<T>(response, onPreviewEvent)
+    } catch (err) {
+      if (!suppressErrorDialog && err instanceof Error && err.name !== 'AbortError') showRequestError(url, fetchInit.method || 'GET', err.message)
+      throw err
+    }
   }
-  return response.json() as Promise<T>
+  try {
+    return await response.json() as T
+  } catch (err) {
+    const message = '后台返回数据格式错误，请重试；原有配置不变'
+    if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', message)
+    throw new Error(message)
+  }
 }
 
 export function getBootstrap() {
@@ -284,11 +308,19 @@ export function getBootstrap() {
 }
 
 export function getPublicSystemConfig() {
-  return request<PublicSystemConfig>('/api/v1/system/public-config')
+  return request<PublicSystemConfig>('/api/v1/system/public-config', { cache: 'no-store' })
 }
 
 export function getSystemSettingsDashboard() {
   return request<SystemSettingsDashboard>('/api/v1/system/settings')
+}
+
+export interface AnchorVoiceCachePolicy { retention_hours: number; default_hours: number; applies_to: string }
+export function getAnchorVoiceCachePolicy() {
+  return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy')
+}
+export function updateAnchorVoiceCachePolicy(retention_hours: number) {
+  return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy', { method: 'PUT', body: JSON.stringify({ retention_hours }) })
 }
 
 export function updateSystemSettings(settings: SystemSettingUpdate[]) {
@@ -745,10 +777,14 @@ export function uploadRoomSpeechAnalysis(
       const message = payload && 'error' in payload && payload.error
         ? payload.error
         : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传录音失败')
-      if (xhr.status === 403) showPermissionToast(message)
+      showRequestError('/api/v1/rooms/' + roomId + '/speech-analysis/upload', 'POST', message)
       reject(new Error(message))
     })
-    xhr.addEventListener('error', () => reject(new Error('上传录音失败，请检查网络后重试')))
+    xhr.addEventListener('error', () => {
+      const message = '上传录音失败，请检查网络后重试'
+      showRequestError('/api/v1/rooms/' + roomId + '/speech-analysis/upload', 'POST', message)
+      reject(new Error(message))
+    })
     xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
     if (signal) {
       if (signal.aborted) {
@@ -782,6 +818,7 @@ export async function getRoomSpeechAnalysisReportText(roomId: number) {
     } catch {
       // Ignore non-JSON error bodies.
     }
+    showRequestError(roomSpeechAnalysisReportUrl(roomId), 'GET', message)
     throw new Error(message)
   }
   return response.text()
@@ -919,6 +956,12 @@ export function getLiveAgentPlanBenefits(planId: number, tenantId?: number) {
   return request<{ items: LiveAgentPlanBenefit[] }>('/api/v1/live-agent-plans/' + planId + '/benefits' + query)
 }
 
+export function copyLiveAgentPlanBenefit(planId: number, item: LiveAgentPlanBenefit) {
+  return request<LiveAgentPlanBenefit>('/api/v1/live-agent-plans/' + planId + '/benefits/' + item.id + '/copy', {
+    method: 'POST', body: JSON.stringify({ tenant_id: item.tenant_id, expected_version_no: item.version_no }),
+  })
+}
+
 export function adoptLiveAgentPlanBenefits(
   planId: number,
   benefits: LiveAgentPlanBenefitCandidate[],
@@ -946,6 +989,7 @@ export function updateLiveAgentPlanBenefit(
     activity_price?: string
     gift?: string
     activity?: string
+    validity_mode?: 'scheduled' | 'permanent' | string
     starts_at?: string
     ends_at?: string
   },
@@ -971,6 +1015,12 @@ export function deleteLiveAgentPlanBenefit(
 export function getLiveAgentPlanProductLinks(planId: number, tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
   return request<{ items: LiveAgentPlanProductLink[] }>('/api/v1/live-agent-plans/' + planId + '/product-links' + query)
+}
+
+export function copyLiveAgentPlanProductLink(planId: number, item: LiveAgentPlanProductLink) {
+  return request<LiveAgentPlanProductLink>('/api/v1/live-agent-plans/' + planId + '/product-links/' + item.id + '/copy', {
+    method: 'POST', body: JSON.stringify({ tenant_id: item.tenant_id, expected_version_no: item.version_no }),
+  })
 }
 
 export function adoptLiveAgentPlanProductLinks(
@@ -1259,6 +1309,8 @@ export function generateLiveAgentFullShowVariantVoice(
     source: string
     voice_id?: string
     profile_id?: number
+    binding_id?: number
+    model?: string
     rate?: number
   },
 ) {
@@ -1301,14 +1353,15 @@ export function rebuildLiveAgentFullShowVariantSubtitles(
 export function uploadLiveAgentCustomMainline(
   planId: number,
   roomId: number,
-  file: File,
+  file: File | File[],
   durationMs: number,
   voiceSample?: File | null,
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ) {
   const form = new FormData()
-  form.append('file', file)
+  const files = Array.isArray(file) ? file : [file]
+  files.forEach((item) => form.append('file', item, item.name))
   if (voiceSample) form.append('voice_sample', voiceSample)
   form.append('room_id', String(roomId))
   if (durationMs > 0) form.append('duration_ms', String(Math.round(durationMs)))
@@ -1336,10 +1389,14 @@ export function uploadLiveAgentCustomMainline(
       const message = payload && 'error' in payload && payload.error
         ? payload.error
         : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传自定义音稿失败')
-      if (xhr.status === 403) showPermissionToast(message)
+      showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
       reject(new Error(message))
     })
-    xhr.addEventListener('error', () => reject(new Error('上传自定义音稿失败，请检查网络后重试')))
+    xhr.addEventListener('error', () => {
+      const message = '上传自定义音稿失败，请检查网络后重试'
+      showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
+      reject(new Error(message))
+    })
     xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
     if (signal) {
       if (signal.aborted) {
@@ -1369,11 +1426,12 @@ export function rebuildLiveAgentCustomMainline(
   )
 }
 
-export function createLiveAgentPlanVersion(planId: number, payload: CreateLiveAgentPlanVersionInput) {
+export function createLiveAgentPlanVersion(planId: number, payload: CreateLiveAgentPlanVersionInput, onEvent?: (event: PreviewStreamEvent) => void) {
   return request<LiveAgentPlanVersion>('/api/v1/live-agent-plans/' + planId + '/versions', {
     method: 'POST',
     body: JSON.stringify(payload),
-  })
+    ...(onEvent ? { headers: { Accept: 'text/event-stream' } } : {}),
+  }, onEvent).then(normalizeLiveAgentPlanVersion)
 }
 
 export function getLiveAgentPlanVersions(planId: number, roomId: number, tenantId?: number) {
@@ -1381,15 +1439,16 @@ export function getLiveAgentPlanVersions(planId: number, roomId: number, tenantI
   if (tenantId) params.set('tenant_id', String(tenantId))
   return request<{ items: LiveAgentPlanVersion[] }>(
     '/api/v1/live-agent-plans/' + planId + '/versions?' + params.toString(),
-  )
+  ).then(result => ({ ...result, items: (result.items || []).map(normalizeLiveAgentPlanVersion) }))
 }
 
-export function getLiveAgentPlanWorkspace(planId: number, roomId: number, tenantId?: number) {
+export function getLiveAgentPlanWorkspace(planId: number, roomId: number, tenantId?: number, contentMode?: string) {
   const params = new URLSearchParams({ room_id: String(roomId) })
   if (tenantId) params.set('tenant_id', String(tenantId))
+  if (contentMode) params.set('content_mode', contentMode)
   return request<LiveAgentPlanWorkspaceResponse>(
     '/api/v1/live-agent-plans/' + planId + '/workspace?' + params.toString(),
-  )
+  ).then(result => ({ ...result, version: result.version ? normalizeLiveAgentPlanVersion(result.version) : result.version }))
 }
 
 export function publishLiveAgentPlanVersion(
@@ -1403,13 +1462,13 @@ export function publishLiveAgentPlanVersion(
       method: 'POST',
       body: JSON.stringify(payload),
     },
-  )
+  ).then(normalizeLiveAgentPlanVersion)
 }
 
 export function getRoomPublishedLiveAgentPlanVersion(roomId: number) {
   return request<{ version?: LiveAgentPlanVersion | null }>(
     '/api/v1/rooms/' + roomId + '/live-agent-plan/published-version',
-  )
+  ).then(result => ({ ...result, version: result.version ? normalizeLiveAgentPlanVersion(result.version) : result.version }))
 }
 
 export function getLiveAgentSettings() {
@@ -1536,7 +1595,7 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     style_purity?: { passed: boolean; issues: Array<{ location: string; category: string; text: string; reason: string }> }
     style_vector_evaluation?: { available: boolean; shadow_only: true; model?: string; similarity?: number; score?: number; error?: string }
     overlay_qc?: { available: boolean; passed: boolean; adherence_score: number; overuse_risk: number; issue_codes: string[]; summary: string; model?: string; latency_ms?: number; error?: string; repair_attempted: boolean }
-    content_strategy?: { version: string; live_type: string; industry_code: string; plan_goal?: string; conversion_intensity: number; expansion_freedom: number; role_sequence: string[]; scheduling_mode?: string; actual_steps?: Array<{ index: number; role: string; primary_fact_id?: string; support_fact_ids?: string[]; source: string; reason: string }>; product_plan?: Array<{ link_key: string; product_name?: string; room_roles: string[]; emphasis: string; revisit: string; primary_angles?: string[]; transitions?: Array<{ target_link_key: string; reason: string }>; position_source: string; reason: string }>; layers: Array<{ layer: string; source: string; effects: string[] }> }
+    content_strategy?: { version: string; live_type: string; industry_code: string; plan_goal?: string; conversion_intensity: number; expansion_freedom: number; role_sequence: string[]; scheduling_mode?: string; action_target?: number; action_planned?: number; direct_cta_mentions?: number; actual_steps?: Array<{ index: number; role: string; primary_fact_id?: string; support_fact_ids?: string[]; source: string; reason: string; mainline_phase?: string; body_function?: string; cta_type?: string }>; product_plan?: Array<{ link_key: string; product_name?: string; room_roles: string[]; emphasis: string; revisit: string; primary_angles?: string[]; transitions?: Array<{ target_link_key: string; reason: string }>; position_source: string; reason: string }>; layers: Array<{ layer: string; source: string; effects: string[] }> }
     advisories?: Array<{ code: string; level: string; title: string; message: string; suggestion: string; user_decidable: boolean; decision_target?: string; hard_boundary: boolean }>
     continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }
     speech_text_only?: boolean
@@ -1551,6 +1610,10 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     planning_call_count?: number
     render_call_count?: number
     repair_call_count?: number
+    base_render_calls?: number
+    content_repair_calls?: number
+    style_wrapper_calls?: number
+    style_fallback_segments?: number[]
     style_degraded?: boolean
     degraded_segments?: number[]
     fallback_used?: boolean
@@ -1625,6 +1688,11 @@ export function deleteLiveAnchorStyle(styleId: number, tenantId?: number) {
   return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + query, { method: 'DELETE' })
 }
 
+export function updateLiveAnchorStyleAvatar(styleId: number, avatarType: NonNullable<LiveAnchorStyle['avatar_type']>, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<LiveAnchorStyle>('/api/v1/live-anchor-styles/' + styleId + '/avatar' + query, { method: 'PATCH', body: JSON.stringify({ avatar_type: avatarType }) })
+}
+
 export function listLiveAnchorStyleSamples(styleId: number, tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
   return request<{ items: LiveAnchorStyleSample[] }>('/api/v1/live-anchor-styles/' + styleId + '/samples' + query, { cache: 'no-store' })
@@ -1640,12 +1708,31 @@ export function deleteLiveAnchorStyleSample(styleId: number, sampleId: number, t
   return request<{ deleted: boolean }>('/api/v1/live-anchor-styles/' + styleId + '/samples/' + sampleId + query, { method: 'DELETE' })
 }
 
-export function analyzeLiveAnchorStyleSample(styleId: number, sampleId: number, tenantId?: number) {
+export function analyzeLiveAnchorStyleSample(styleId: number, sampleId: number, tenantId?: number, onEvent?: (event: PreviewStreamEvent) => void) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
-  return request<{ sample: LiveAnchorStyleSample; style: LiveAnchorStyle; analysis: LiveAgentPlanScriptAnalysis['anchor_style']; style_qc?: LiveAnchorStyleAnalysisQC; provider?: string; model?: string; latency_ms?: number }>(
+  return request<{ sample: LiveAnchorStyleSample; style: LiveAnchorStyle; overall_updated: boolean; notice: string; analysis: LiveAgentPlanScriptAnalysis['anchor_style']; style_qc?: LiveAnchorStyleAnalysisQC; provider?: string; model?: string; latency_ms?: number }>(
     '/api/v1/live-anchor-styles/' + styleId + '/samples/' + sampleId + '/analyze' + query,
-    { method: 'POST' },
+    { method: 'POST', ...(onEvent ? { headers: { Accept: 'text/event-stream' } } : {}) }, onEvent,
   )
+}
+
+function anchorAnalysisURL(styleId: number, path: string, tenantId?: number) {
+  return `/api/v1/live-anchor-styles/${styleId}/${path}` + (tenantId ? `?tenant_id=${tenantId}` : '')
+}
+export function getLiveAnchorAnalysisVersions(styleId: number, tenantId?: number) {
+  return request<LiveAnchorAnalysisState>(anchorAnalysisURL(styleId, 'analysis-versions', tenantId), { cache: 'no-store' })
+}
+export function fuseLiveAnchorAnalyses(styleId: number, tenantId: number | undefined, onEvent: (event: PreviewStreamEvent) => void) {
+  return request<{ style: LiveAnchorStyle }>(anchorAnalysisURL(styleId, 'analyze-multiple', tenantId), { method: 'POST', headers: { Accept: 'text/event-stream' } }, onEvent)
+}
+export function editLiveAnchorAnalysis(styleId: number, expectedActiveId: number, sections: AnchorAnalysisSection[], tenantId: number | undefined, onEvent: (event: PreviewStreamEvent) => void) {
+  return request<{ style: LiveAnchorStyle }>(anchorAnalysisURL(styleId, 'analysis-versions', tenantId), { method: 'POST', headers: { Accept: 'text/event-stream' }, body: JSON.stringify({ expected_active_id: expectedActiveId, sections }) }, onEvent)
+}
+export function useLiveAnchorAnalysis(styleId: number, versionId: number, expectedActiveId: number, tenantId?: number) {
+  return request<{ style: LiveAnchorStyle }>(anchorAnalysisURL(styleId, `analysis-versions/${versionId}/use`, tenantId), { method: 'POST', body: JSON.stringify({ expected_active_id: expectedActiveId }) })
+}
+export function updateLiveAnchorDescription(styleId: number, description: string, tenantId?: number) {
+  return request<LiveAnchorStyle>(anchorAnalysisURL(styleId, 'description', tenantId), { method: 'PATCH', body: JSON.stringify({ description }) })
 }
 
 export function listLiveAnchorStyleTrainings(styleId: number, tenantId?: number) {
@@ -1703,9 +1790,17 @@ export function deleteLiveVoiceProfile(profileId: number) {
   return request<void>('/api/v1/live/voice-profiles/' + profileId, { method: 'DELETE' })
 }
 
+export function renameLiveVoiceProfile(profileId: number, name: string, expectedName: string) {
+  return request<VoiceProfile>(`/api/v1/live/voice-profiles/${profileId}/name`, { method: 'PATCH', body: JSON.stringify({ name, expected_name: expectedName }) })
+}
+
 export function getLiveVoiceModelBindings(profileId?: number) {
   const query = profileId ? '?profile_id=' + encodeURIComponent(String(profileId)) : ''
   return request<VoiceModelBinding[]>('/api/v1/live/voice-model-bindings' + query)
+}
+
+export function saveLiveVoiceModelPreference(roomId: number, profileId: number, model: string) {
+  return request<VoiceProfile>(`/api/v1/rooms/${roomId}/voice-profiles/${profileId}/model-preference`, { method:'PATCH', body:JSON.stringify({model}) })
 }
 
 export function cloneLiveVoiceModelBinding(profileId: number, payload: { model: string }) {
@@ -1838,6 +1933,7 @@ export interface LiveStrategyIntentResponse {
     | 'fact.add'
     | 'fact.update'
     | 'fact.disable'
+	| 'fact_category.add'
     | 'script.add'
     | 'script.update'
     | 'script.disable'
@@ -1878,6 +1974,9 @@ export interface LiveStrategyIntentResponse {
     starts_at?: string
     ends_at?: string
     fact_value?: string
+	forbidden_wording?: string
+	safe_rewrite?: string
+	new_fact_category?: { label: string; family?: string; description?: string }
     script_text?: string
   }
   missing?: string[]
@@ -3552,6 +3651,15 @@ export function createCommercialMarketingCampaign(payload: MarketingCampaignInpu
   })
 }
 
+export function uploadCommercialMarketingAsset(file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<MarketingPresentationAsset>('/api/v1/commercial/marketing-assets', {
+    method: 'POST',
+    body,
+  })
+}
+
 export function updateCommercialMarketingCampaign(
   campaignId: number,
   payload: MarketingCampaignInput,
@@ -4113,5 +4221,298 @@ export function deleteAdminAgentContractAttachment(contractId: number, attachmen
   return request<void>(
     '/api/v1/admin/agent-contracts/' + contractId + '/attachments/' + attachmentId,
     { method: 'DELETE' },
+  )
+}
+
+export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<import('./types').AnchorStyleWorkbenchContext>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/context' + query,
+    { cache: 'no-store' },
+  )
+}
+
+export function guideSpeechMiner(
+  planId: number,
+  input: {
+    tenant_id?: number
+    message: string
+    mode?: 'fact_gaps' | 'new_selling_point' | 'audience_reverse'
+    start?: boolean
+    action?: 'answer' | 'skip' | 'complete'
+    history?: import('./types').SpeechMinerMessage[]
+    draft_facts?: import('./types').SpeechMinerFactDraft[]
+  },
+) {
+  return request<import('./types').SpeechMinerGuideResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/speech-miner/guide',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmSpeechMiner(
+  planId: number,
+  input: { tenant_id?: number; confirmed: true; session_id: string; facts: import('./types').SpeechMinerFactDraft[]; history: import('./types').SpeechMinerMessage[] },
+  onEvent?: (event: PreviewStreamEvent) => void,
+) {
+  return request<import('./types').SpeechMinerConfirmResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/speech-miner/confirm',
+    { method: 'POST', body: JSON.stringify(input), ...(onEvent ? { headers: { Accept: 'text/event-stream' } } : {}) },
+    onEvent,
+  )
+}
+
+export function compileAnchorStyleWorkbenchMeta(
+  planId: number,
+  input: { tenant_id?: number; sample_text: string; scene?: string; compiler_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleWorkbenchMeta(
+  planId: number,
+  assetId: number,
+  input: { tenant_id?: number; meta_prompt_md: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function compileAnchorStyleScorecard(
+  planId: number,
+  input: { sample_text: string; prompt_md?: string; prompt_mode?: 'project' | 'manual'; compiler_profile_id?: string; meta_prompt_asset_id: number; include_le?: boolean },
+) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/compile',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleScorecard(planId: number, assetId: number, scorecardJSON: string, includeLe = false) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify({ scorecard_json: scorecardJSON, include_le: includeLe }) },
+  )
+}
+
+export function calibrateAnchorStyleScorecard(planId: number, assetId: number, input: { sample_text?: string; include_le: boolean }) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/' + assetId + '/calibrate',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function scoreAnchorStyleSpeech(
+  planId: number,
+  input: {
+    scorecard_asset_id: number
+    meta_prompt_asset_id: number
+    generated_text: string
+    task: import('./types').AnchorStyleWheelTestResponse['task']
+  },
+) {
+  return request<import('./types').AnchorStyleSpeechScoreResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/score',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function generateAnchorStyleRollingFeedback(planId: number, input: {
+  feedback_profile_id: string
+  meta_prompt_asset_id: number
+  scorecard_asset_id: number
+  recent_texts: string[]
+  start_index: number
+}) {
+  return request<import('./types').AnchorStyleRollingFeedbackResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/rolling-feedback',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+function anchorCycleURL(planId: number, roomId: number, suffix = '') {
+  return '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/cycle' + suffix + '?room_id=' + roomId
+}
+export function getAnchorCycle(planId: number, roomId = 0) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId))
+}
+export function getOpeningHookSettings(planId: number, roomId = 0) {
+  return request<import('./anchorCycleRun').OpeningHookSettings>('/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/opening-hooks?room_id=' + roomId)
+}
+export function saveOpeningHookSettings(planId: number, roomId: number, mode: 'project' | 'manual', libraryMD: string) {
+  return request<{ asset: import('./anchorCycleRun').OpeningHookAsset }>('/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/opening-hooks?room_id=' + roomId, { method: 'PUT', body: JSON.stringify({ mode, library_md: libraryMD }) })
+}
+export function startAnchorCycle(planId: number, roomId: number, input: import('./anchorCycleRun').CycleConfig & { task_limit: number }) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId), { method: 'POST', body: JSON.stringify(input) })
+}
+export function advanceAnchorCycle(planId: number, roomId: number, runId: string, revision: number) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId) + '/advance'), { method: 'POST', body: JSON.stringify({ expected_revision: revision }) })
+}
+export function synthesizeAnchorCycleVoice(planId: number, roomId: number, runId: string, candidateId: string, retry = false) {
+  return request<import('./anchorCycleRun').CycleVoiceResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId) + '/segments/' + encodeURIComponent(candidateId) + '/voice'), { method: 'POST', body: JSON.stringify({ retry }) })
+}
+export function getAnchorCycleVoice(planId: number, roomId: number, runId: string, candidateId: string) {
+  return request<import('./anchorCycleRun').CycleVoiceResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId) + '/segments/' + encodeURIComponent(candidateId) + '/voice'))
+}
+export function endAnchorCycle(planId: number, roomId: number, runId: string) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId)), { method: 'DELETE' })
+}
+
+export function manuallyConfirmAnchorStyleWorkbenchMeta(
+  planId: number,
+  input: { tenant_id?: number; scene?: string; meta_prompt_md: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta/manual-confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function compileAnchorStyleSellingPointWheel(
+  planId: number,
+  input: { tenant_id?: number; prompt_md?: string; prompt_mode?: 'project' | 'manual'; compiler_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleSellingPointWheelResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/compile',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleSellingPointWheel(
+  planId: number,
+  assetId: number,
+  input: { tenant_id?: number; wheel_json: string },
+) {
+  return request<import('./types').AnchorStyleSellingPointWheelResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function testAnchorStyleSellingPointWheel(
+  planId: number,
+  input: { tenant_id?: number; pointer: number; max_chars: number; unlimited_chars?: boolean; generator_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleWheelTestResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/test',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function createAnchorStyleAgentStudioSession(
+  planId: number,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    agent_id: string
+    environment_id: string
+    credential_profile_id: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioSessionResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function getAnchorStyleAgentStudioCatalog(
+  planId: number,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioCatalogResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/catalog',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function runAnchorStyleAgentStudioTurn(
+  planId: number,
+  sessionId: string,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+    pointer: number
+    max_chars: number
+    unlimited_chars?: boolean
+    first_turn: boolean
+    feedback_prompt?: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioTurnResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions/' + encodeURIComponent(sessionId) + '/turns',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function reviewAnchorStyleGeneratedSpeech(
+  planId: number,
+  input: {
+    tenant_id?: number
+    supervisor_profile_id?: string
+    generated_text: string
+    recent_texts: string[]
+    task: import('./types').AnchorStyleWheelTestResponse['task']
+  },
+) {
+  return request<import('./types').AnchorStyleReviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/style-review',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function archiveAnchorStyleAgentStudioSession(
+  planId: number,
+  sessionId: string,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+  },
+) {
+  return request<{ ok: boolean; session_id: string; plan_id: number }>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions/' + encodeURIComponent(sessionId) + '/archive',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function annotateAnchorStyleRisks(planId: number, text: string, signal?: AbortSignal, tenantId?: number) {
+  return request<import('./riskHighlight').RiskAnnotations>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/risk-annotations' + (tenantId ? '?tenant_id=' + tenantId : ''),
+    { method: 'POST', body: JSON.stringify({ text }), signal },
+  )
+}
+
+export function runAnchorStyleWorkbenchStep(
+  planId: number,
+  input: {
+    tenant_id?: number
+    meta_prompt_asset_id: number
+    meta_prompt_md: string
+    monitor: import('./types').AnchorStyleWorkbenchMonitor
+    state: import('./types').AnchorStyleWorkbenchState
+    generator_profile_id?: string
+    target_chars: number
+    postprocess: boolean
+    direct_mode?: boolean
+    task_override?: import('./types').AnchorStyleWorkbenchTask
+  },
+) {
+  return request<import('./types').AnchorStyleWorkbenchStepResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/step',
+    { method: 'POST', body: JSON.stringify(input) },
   )
 }

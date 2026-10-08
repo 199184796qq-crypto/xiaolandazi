@@ -38,8 +38,28 @@ func TestInboxPermissionPlans(t *testing.T) {
 	}
 	scope = model.InboxScope{Actor: model.Actor{UserID: 103, Role: "staff"}, Access: model.StaffAccessContext{Permissions: []string{"liveops.configure"}}}
 	plans = inboxQueries(scope)
-	if len(plans) != 2 || !strings.Contains(plans[1].where, "assigned_user_id=?") {
+	if len(plans) != 4 {
+		t.Fatalf("expected risk appeal + targeted request + shared ticket + assigned ticket, got %d", len(plans))
+	}
+	var targeted, assigned *inboxQuery
+	for i := range plans {
+		switch plans[i].group.Key {
+		case "live_support_accept":
+			targeted = &plans[i]
+		case "support_process":
+			assigned = &plans[i]
+		}
+	}
+	if targeted == nil || targeted.group.SharedQueue || !strings.Contains(targeted.where, "r.staff_user_id=?") || len(targeted.args) != 1 || targeted.args[0] != int64(103) {
+		t.Fatal("employee-targeted live support request is absent or incorrectly shared")
+	}
+	if assigned == nil || !strings.Contains(assigned.where, "assigned_user_id=?") {
 		t.Fatal("operations assignment scope absent")
+	}
+	targetIdentity := InboxCacheIdentity(scope, "support")
+	scope.Actor.UserID++
+	if targetIdentity == InboxCacheIdentity(scope, "support") {
+		t.Fatal("targeted live support request cache identity leaked across employees")
 	}
 	scope.Actor.Role = "customer"
 	scope.Access.IsSuperAdmin = true

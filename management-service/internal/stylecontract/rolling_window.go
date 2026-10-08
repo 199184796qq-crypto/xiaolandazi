@@ -223,8 +223,9 @@ func RenderStrictFidelityRepair(state RollingWindowState, issues []string) strin
 	return b.String()
 }
 
-// RenderRollingWindowGuidance converts accumulated delivery into a small debt
-// signal for the next segment. It never assigns a hard quota to the next unit.
+// RenderRollingWindowGuidance is a damped controller, not a debt collector.
+// It observes a long window, leaves a dead band, cools down recently used
+// terms, and allows at most one small correction in the next segment.
 func RenderRollingWindowGuidance(profile model.LiveAgentPlanAnchorStyleProfile, generated string, nextChars, heat int) string {
 	if !Valid(profile) {
 		return "未提供可统计的真人主播底层风格；当前小段只执行时间任务和已启用的方案级策略外挂。"
@@ -242,40 +243,28 @@ func RenderRollingWindowGuidance(profile model.LiveAgentPlanAnchorStyleProfile, 
 	if currentChars >= RollingWindowChars {
 		b.WriteString("当前按最近1000字滚动统计。")
 	}
-	if len(needs) > 0 {
-		if heat >= 90 {
-			b.WriteString("后续必须在合适语境分散补足：")
-		} else {
-			b.WriteString("后续可在合适语境自然补足：")
-		}
-		for index, item := range needs {
-			limit := 6
-			if heat >= 90 {
-				limit = 10
-			}
-			if index >= limit {
-				break
-			}
-			if index > 0 {
-				b.WriteString("、")
-			}
-			fmt.Fprintf(&b, "%s%q约%d次", runtimeKindLabel(item.Kind), item.Term, item.Delta)
-		}
-		b.WriteString("。")
+	if currentChars < 400 {
+		b.WriteString("窗口仍在自然积累期，不根据当前欠量追补词频；先保持人物身份、句式和节奏自然。")
+		b.WriteString("数字比价、连续算账、事实回环不属于本窗口。")
+		return b.String()
 	}
 	if len(overused) > 0 {
-		b.WriteString("近期偏多，下一两段先少用：")
-		for index, item := range overused {
-			if index >= 4 {
+		fmt.Fprintf(&b, "本段只执行一项降温：避免再次使用%s%q；不要同时补偿其它欠量。", runtimeKindLabel(overused[0].Kind), overused[0].Term)
+	} else {
+		cooldown := trailingWindow(window, 300)
+		var correction *RollingHabitDelta
+		for index := range needs {
+			if !strings.Contains(cooldown, needs[index].Term) {
+				correction = &needs[index]
 				break
 			}
-			if index > 0 {
-				b.WriteString("、")
-			}
-			fmt.Fprintf(&b, "%q", item.Term)
 		}
-		b.WriteString("。")
+		if correction != nil {
+			fmt.Fprintf(&b, "本段最多一个微调动作：仅在句意合适时自然使用一次%s%q；不得按累计差额集中补齐。", runtimeKindLabel(correction.Kind), correction.Term)
+		} else {
+			b.WriteString("当前处于目标区间或候选原词仍在冷却期，本段保持现状，不做词频纠偏。")
+		}
 	}
-	b.WriteString("只在句意合适时补，不堆在同一句，不改变本段事实和业务任务；数字比价、连续算账、事实回环不属于本窗口。")
+	b.WriteString("不堆在同一句，不改变本段事实和业务任务；数字比价、连续算账、事实回环不属于本窗口。")
 	return b.String()
 }

@@ -96,10 +96,19 @@ func (c *Client) RefreshProgram(ctx context.Context, input audioout.RefreshProgr
 		if program.PlannedForTaskID == program.CurrentTaskID && program.PlannedNextTrack >= 0 && program.PlannedNextTrack < len(program.Tracks) {
 			protectedNext = program.PlannedNextTrack
 		}
+		if program.Sequential && program.TrackIndex+1 < len(program.Tracks) {
+			protectedNext = program.TrackIndex + 1 // Drain ALL accepted old queue items.
+		}
 		if !input.ValidUntil.After(c.now()) {
 			return audioout.RoomProgramSnapshot{}, errors.New("refresh validity expired while preparing assets")
 		}
 		program.PendingRefresh = &programRefresh{JobID: input.JobID, Generation: input.Generation, VersionID: input.NewVersionID, VersionNo: input.NewVersionNo, Tracks: tracks, ProtectedNextIndex: protectedNext, ValidUntil: input.ValidUntil}
+		if program.Sequential && program.WaitingForContent && !program.Suspended {
+			// At an already completed boundary, resume only after the new assets
+			// are validated. advanceMainline rechecks stop/pause under the lock.
+			completedTaskID := program.CurrentTaskID
+			go c.advanceMainline(program, completedTaskID)
+		}
 		if program.RefreshReceipts == nil {
 			program.RefreshReceipts = make(map[string]programRefreshReceipt)
 		}

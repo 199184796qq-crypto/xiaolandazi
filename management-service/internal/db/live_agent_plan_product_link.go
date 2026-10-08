@@ -100,6 +100,7 @@ func (s *Store) ListLiveAgentPlanProductLinks(ctx context.Context, tenantID, pla
 	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, items); err != nil {
 		return nil, err
 	}
+	items = orderCopiedCards(items, "product", func(item model.LiveAgentPlanProductLink) int64 { return item.ID }, func(item model.LiveAgentPlanProductLink) string { return item.SourceRef })
 	return items, nil
 }
 

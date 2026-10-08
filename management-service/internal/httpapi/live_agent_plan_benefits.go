@@ -33,6 +33,11 @@ func validateLiveAgentPlanBenefitCandidate(candidate model.LiveAgentPlanBenefitC
 	if utf8.RuneCountInString(candidate.Activity) > 4000 {
 		return errors.New("活动内容不能超过4000字")
 	}
+	switch strings.ToLower(strings.TrimSpace(candidate.ValidityMode)) {
+	case "", "scheduled", "permanent":
+	default:
+		return errors.New("活动有效方式无效")
+	}
 	if len(candidate.SourceQuotes) > 20 {
 		return errors.New("活动来源依据最多20条")
 	}
@@ -129,6 +134,7 @@ func (s *Server) liveAgentPlanBenefitAdopt(w http.ResponseWriter, r *http.Reques
 		candidate.ActivityPrice = strings.TrimSpace(candidate.ActivityPrice)
 		candidate.Gift = strings.TrimSpace(candidate.Gift)
 		candidate.Activity = strings.TrimSpace(candidate.Activity)
+		candidate.ValidityMode = strings.ToLower(strings.TrimSpace(candidate.ValidityMode))
 		candidate.ReviewBucket = strings.TrimSpace(candidate.ReviewBucket)
 		if candidate.ReviewBucket == "" {
 			candidate.ReviewBucket = "discuss"
@@ -199,6 +205,7 @@ func (s *Server) liveAgentPlanBenefitUpdate(w http.ResponseWriter, r *http.Reque
 		ActivityPrice: strings.TrimSpace(input.ActivityPrice),
 		Gift:          strings.TrimSpace(input.Gift),
 		Activity:      strings.TrimSpace(input.Activity),
+		ValidityMode:  strings.ToLower(strings.TrimSpace(input.ValidityMode)),
 		StartsAt:      strings.TrimSpace(input.StartsAt),
 		EndsAt:        strings.TrimSpace(input.EndsAt),
 		ReviewBucket:  "adoptable",
@@ -213,6 +220,7 @@ func (s *Server) liveAgentPlanBenefitUpdate(w http.ResponseWriter, r *http.Reque
 	input.ActivityPrice = candidate.ActivityPrice
 	input.Gift = candidate.Gift
 	input.Activity = candidate.Activity
+	input.ValidityMode = candidate.ValidityMode
 	input.StartsAt = candidate.StartsAt
 	input.EndsAt = candidate.EndsAt
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)

@@ -77,6 +77,8 @@ foreach ($required in @(
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'bin') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'collector-worker\node_modules') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'plugins') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir 'configs\prompts\anchor-style') | Out-Null
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'configs\fact-categories.json') -Destination (Join-Path $ReleaseDir 'configs\fact-categories.json')
 
 $OldGoos = $env:GOOS
 $OldGoarch = $env:GOARCH
@@ -105,6 +107,9 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot 'web-console\dist') -Destination (Jo
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'customer-mobile\build') -Destination (Join-Path $ReleaseDir 'web-customer') -Recurse
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'sales-mobile\build') -Destination (Join-Path $ReleaseDir 'web-sales') -Recurse
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'plugins\anchor-style') -Destination (Join-Path $ReleaseDir 'plugins\anchor-style') -Recurse
+. (Join-Path $PSScriptRoot 'copy-prompt-mothers.ps1')
+$PromptMotherManifest = @(Copy-PromptMotherAssets -SourceRoot (Join-Path $RepoRoot 'configs\prompts\anchor-style') -DestinationRoot (Join-Path $ReleaseDir 'configs\prompts\anchor-style'))
+$PromptMotherManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $ReleaseDir 'configs\prompts\anchor-style\MANIFEST.json') -Encoding UTF8
 
 $CollectorDir = Join-Path $ReleaseDir 'collector-worker'
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'collector-worker\worker.mjs') -Destination $CollectorDir

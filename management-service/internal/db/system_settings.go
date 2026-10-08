@@ -66,8 +66,11 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	}
 
 	settings := []seededSystemSetting{
+		{Key: AnchorGenerationSetting, Group: "intelligence", Label: "主播生成模型与阿里会话配置", Value: "{}", InputType: "json", SortOrder: 5},
+		{Key: AnchorVoiceCacheRetentionSetting, Group: "liveops", Label: "OSS声音缓存保留（小时）", Value: "5", InputType: "number", SortOrder: 10},
 		{Key: model.FinanceDistinctReviewerSetting, Group: "finance", Label: "强制经办人与审核人不同", Value: "true", InputType: "boolean", SortOrder: 10},
 		{Key: "site_name", Group: "brand", Label: "系统显示名称", Value: "小蓝搭子", InputType: "text", SortOrder: 10},
+		{Key: "browser_title", Group: "brand", Label: "浏览器标签页标题", Value: "小蓝搭子 · 智能直播系统", InputType: "text", SortOrder: 15},
 		{Key: "auth_customer_side_label", Group: "brand", Label: "客户登录页英文眉标", Value: "BANBO AI LIVE", InputType: "text", SortOrder: 20},
 		{Key: "auth_customer_title_line_1", Group: "brand", Label: "客户登录页主标题第一行", Value: "AI直播搭子，", InputType: "text", SortOrder: 30},
 		{Key: "auth_customer_title_line_2", Group: "brand", Label: "客户登录页主标题第二行", Value: "让你直播不再冷场。", InputType: "text", SortOrder: 40},
@@ -211,6 +214,11 @@ func (s *Store) UpdateSystemSettings(
 	actorUserID int64,
 ) error {
 	for _, update := range updates {
+		if strings.TrimSpace(update.Key) == AnchorVoiceCacheRetentionSetting {
+			if _, err := ParseAnchorVoiceCacheHours(update.Value); err != nil {
+				return err
+			}
+		}
 		if err := ValidateFinanceReviewSetting(update.Key, update.Value); err != nil {
 			return err
 		}
@@ -449,6 +457,7 @@ func (s *Store) PublicSystemConfig(ctx context.Context) (model.PublicSystemConfi
 		clientAgentName = "小蓝直播搭子"
 	}
 	return model.PublicSystemConfig{
+		BrowserTitle:                systemSettingValue(values, "browser_title", "小蓝搭子 · 智能直播系统"),
 		SiteName:                    values["site_name"],
 		AuthCustomerSideLabel:       systemSettingValue(values, "auth_customer_side_label", "BANBO AI LIVE"),
 		AuthCustomerTitleLine1:      systemSettingValue(values, "auth_customer_title_line_1", "AI直播搭子，"),

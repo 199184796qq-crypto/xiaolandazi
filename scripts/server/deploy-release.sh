@@ -49,11 +49,44 @@ required=(
   "systemd/xiaolan-xiaozhi.service"
   "plugins/anchor-style/self-correction/plugin.json"
   "plugins/anchor-style/numeric-repair/plugin.json"
+  "configs/fact-categories.json"
+  "configs/prompts/anchor-style/MANIFEST.json"
   "VERSION.json"
 )
 for rel in "${required[@]}"; do
   [[ -e "$STAGING/$rel" ]] || { echo "release missing $rel" >&2; exit 4; }
 done
+
+# Verify every packaged mother before activation, including new files not in a
+# hand-maintained release whitelist. Updating a prompt is part of the release.
+python3 - "$STAGING/configs/prompts/anchor-style" <<'PY'
+import hashlib, json, pathlib, sys
+root=pathlib.Path(sys.argv[1]).resolve()
+manifest=json.loads((root/'MANIFEST.json').read_text(encoding='utf-8-sig'))
+for item in manifest:
+    path=(root/item['path']).resolve()
+    if root not in path.parents or path==root/'MANIFEST.json' or not path.is_file():
+        raise SystemExit('unsafe prompt manifest path')
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=item['sha256']:
+        raise SystemExit('prompt mother hash mismatch: '+item['path'])
+if {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and p!=root/'MANIFEST.json'}!={i['path'] for i in manifest}:
+    raise SystemExit('prompt mother manifest is incomplete')
+PY
+
+# Facts are rendered and risk-reviewed from this catalog at request time. Keep
+# it in every immutable release instead of depending on a mutable server file.
+python3 - "$STAGING/configs/fact-categories.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+data=json.loads(path.read_text(encoding='utf-8-sig'))
+items=data.get('categories')
+if data.get('schema_version') != 1 or not isinstance(items, list) or not items:
+    raise SystemExit('invalid fact category catalog')
+values=[str(item.get('value','')).strip() for item in items if isinstance(item,dict)]
+required={'product','link','trade','fulfillment','identity_location','other'}
+if len(values) != len(items) or len(values) != len(set(values)) or not required.issubset(values):
+    raise SystemExit('invalid fact category catalog')
+PY
 
 grep -q 'name="xiaolan-app" content="desktop"' "$STAGING/web-desktop/index.html"
 grep -q 'name="xiaolan-app" content="customer-mobile"' "$STAGING/web-customer/index.html"
@@ -96,6 +129,8 @@ EOF
 fi
 
 install -m 0644 "$TARGET/systemd/xiaolan-xiaozhi.service" /etc/systemd/system/xiaolan-xiaozhi.service
+mkdir -p /etc/systemd/system/xiaolan-management.service.d
+printf '[Service]\nEnvironment="ANCHOR_STYLE_PROMPT_DIR=%s/current/configs/prompts/anchor-style"\n' "$ROOT" > /etc/systemd/system/xiaolan-management.service.d/30-prompt-mothers.conf
 systemctl daemon-reload
 systemctl enable xiaolan-xiaozhi.service >/dev/null
 

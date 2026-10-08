@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/anchorvoicecache"
 	auditlog "livecompanion/management/internal/audit"
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/coreclient"
@@ -48,22 +51,27 @@ type Server struct {
 		IsLeader() bool
 		Owner() string
 	}
-	mailer               *mailer.Client
-	env                  string
-	executionRealm       string
-	avatarDir            string
-	publicWebURL         string
-	assetStorage         *assetstorage.Registry
-	assetURLTTL          time.Duration
-	coreStatusMu         sync.RWMutex
-	coreStatus           coreRuntimeStatus
-	speechMissions       SpeechMissionReader
-	semanticMetrics      SemanticMetricsReader
-	xiaozhiInternalToken string
-	deviceClaims         deviceClaimLimiter
-	deviceBusinessLimits deviceBusinessLimiter
-	wechatPay            WechatPaymentProvider
-	stylePlugins         *styleplugin.Registry
+	mailer                *mailer.Client
+	env                   string
+	executionRealm        string
+	avatarDir             string
+	publicWebURL          string
+	assetStorage          *assetstorage.Registry
+	assetURLTTL           time.Duration
+	coreStatusMu          sync.RWMutex
+	coreStatus            coreRuntimeStatus
+	speechMissions        SpeechMissionReader
+	semanticMetrics       SemanticMetricsReader
+	xiaozhiInternalToken  string
+	deviceClaims          deviceClaimLimiter
+	deviceBusinessLimits  deviceBusinessLimiter
+	wechatPay             WechatPaymentProvider
+	stylePlugins          *styleplugin.Registry
+	anchorCycles          anchorcycle.Repository
+	anchorVoiceCache      anchorvoicecache.Repository
+	cycleCancels          cycleCancels
+	previewStreams        previewStreams
+	anchorProducerContext context.Context
 }
 
 func New(
@@ -148,6 +156,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tenants", s.listTenants)
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
+	mux.HandleFunc("GET /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyGet)
+	mux.HandleFunc("PUT /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyPut)
+	mux.HandleFunc("GET /api/v1/system/anchor-generation-settings", s.systemAnchorGenerationSettingsGet)
+	mux.HandleFunc("PUT /api/v1/system/anchor-generation-settings", s.systemAnchorGenerationSettingsPut)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/derived-safety/prepare", s.liveDerivedSafetyPrepare)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/fact-risk-reviews", s.liveFactRiskReviews)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/fact-risk-reviews", s.liveFactRiskReviews)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/fact-risk-reviews/semantic-review", s.liveFactRiskSemanticReview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/initialize-anchor", s.liveAnchorGenerationInitialize)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-options", s.liveRealtimeGenerationOptions)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-preview", s.anchorStyleCycleGet)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview", s.anchorStyleCycleStart)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/advance", s.anchorStyleCycleAdvance)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}", s.anchorStyleCycleEnd)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/voices/{candidateID}", s.anchorStyleCycleVoice)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/voices/{candidateID}", s.anchorStyleCycleVoiceGet)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/voices/{candidateID}/content", s.anchorStyleCycleVoiceContent)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/stream", s.streamPreviewPCM)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/playback", s.previewPlaybackControl)
 	mux.HandleFunc("GET /api/v1/system/speech-models", s.systemSpeechModelsGet)
 	mux.HandleFunc("PUT /api/v1/system/speech-models", s.systemSpeechModelsSave)
 	mux.HandleFunc("POST /api/v1/system/speech-models/test", s.systemSpeechModelsTest)
@@ -281,6 +308,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/commercial/device-products/{productID}", s.commercialArchiveDeviceProduct)
 	mux.HandleFunc("GET /api/v1/commercial/marketing-campaigns", s.commercialListMarketingCampaigns)
 	mux.HandleFunc("POST /api/v1/commercial/marketing-campaigns", s.commercialCreateMarketingCampaign)
+	mux.HandleFunc("POST /api/v1/commercial/marketing-assets", s.commercialUploadMarketingAsset)
 	mux.HandleFunc("PUT /api/v1/commercial/marketing-campaigns/{campaignID}", s.commercialUpdateMarketingCampaign)
 	mux.HandleFunc("DELETE /api/v1/commercial/marketing-campaigns/{campaignID}", s.commercialDeleteMarketingCampaign)
 	mux.HandleFunc("GET /api/v1/commercial/ai-time/agents", s.commercialAITimeAgentTargets)
@@ -322,6 +350,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/shop/time-cards", s.customerShopTimeCards)
 	mux.HandleFunc("GET /api/v1/shop/devices", s.customerShopDevices)
 	mux.HandleFunc("GET /api/v1/shop/marketing-campaigns", s.customerShopMarketingCampaigns)
+	mux.HandleFunc("GET /api/v1/marketing-assets/{assetID}/content", s.marketingAssetContent)
 	mux.HandleFunc("POST /api/v1/shop/orders/{orderID}/free-claim", s.customerClaimFreeMarketingOrder)
 	mux.HandleFunc("GET /api/v1/shop/orders", s.customerShopListOrders)
 	mux.HandleFunc("POST /api/v1/shop/orders", s.customerShopCreateOrder)
@@ -443,6 +472,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/voice-profiles/quota", s.liveVoiceProfileQuota)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles", s.liveCreateVoiceProfile)
 	mux.HandleFunc("PUT /api/v1/live/voice-profiles/{profileID}", s.liveUpdateVoiceProfile)
+	mux.HandleFunc("PATCH /api/v1/live/voice-profiles/{profileID}/name", s.liveRenameVoiceProfile)
+	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/voice-profiles/{profileID}/model-preference", s.liveVoiceModelPreference)
 	mux.HandleFunc("DELETE /api/v1/live/voice-profiles/{profileID}", s.liveDeleteVoiceProfile)
 	mux.HandleFunc("GET /api/v1/live/official-voices", s.liveOfficialVoices)
 	mux.HandleFunc("POST /api/v1/live/official-voices/{voiceID}/preview", s.liveOfficialVoicePreview)
@@ -485,6 +516,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/policy-learning/candidates", s.livePolicyLearningListCandidates)
 	mux.HandleFunc("POST /api/v1/live/policy-learning/candidates/{candidateID}/adopt", s.livePolicyLearningAdoptCandidate)
 	mux.HandleFunc("POST /api/v1/live/policy-learning/candidates/{candidateID}/reject", s.livePolicyLearningRejectCandidate)
+	mux.HandleFunc("GET /api/v1/live-agent-fact-categories", s.liveFactCategoryCatalog)
 	mux.HandleFunc("GET /api/v1/live-agent-plans", s.liveAgentPlanList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans", s.liveAgentPlanCreate)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}", s.liveAgentPlanGet)
@@ -504,6 +536,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/product-links", s.liveAgentPlanProductLinkList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-links/adopt", s.liveAgentPlanProductLinkAdopt)
 	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}", s.liveAgentPlanProductLinkUpdate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}/copy", s.liveAgentPlanProductLinkCopy)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}", s.liveAgentPlanProductLinkDelete)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}/attributes", s.liveAgentPlanProductAttributeCreate)
 	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/product-links/{productLinkID}/attributes/{attributeID}", s.liveAgentPlanProductAttributeUpdate)
@@ -511,6 +544,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/benefits", s.liveAgentPlanBenefitList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/benefits/adopt", s.liveAgentPlanBenefitAdopt)
 	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/benefits/{benefitID}", s.liveAgentPlanBenefitUpdate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/benefits/{benefitID}/copy", s.liveAgentPlanBenefitCopy)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/benefits/{benefitID}", s.liveAgentPlanBenefitDelete)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/scripts", s.liveAgentPlanScriptList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts", s.liveAgentPlanScriptCreate)
@@ -518,6 +552,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/{scriptID}/analyze", s.liveAgentPlanScriptAnalyze)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/{scriptID}/analysis-confirm", s.liveAgentPlanScriptAnalysisConfirm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style/test", s.liveAgentPlanAnchorStyleTest)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/context", s.anchorStyleWorkbenchContext)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/meta", s.anchorStyleWorkbenchMeta)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/meta/manual-confirm", s.anchorStyleWorkbenchMetaManualConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/meta/{assetID}/confirm", s.anchorStyleWorkbenchMetaConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/scorecard/compile", s.anchorStyleWorkbenchScorecardCompile)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/scorecard/{assetID}/confirm", s.anchorStyleWorkbenchScorecardConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/scorecard/{assetID}/calibrate", s.anchorStyleWorkbenchScorecardCalibrate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/score", s.anchorStyleWorkbenchScore)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/rolling-feedback", s.anchorStyleWorkbenchRollingFeedback)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle", s.anchorStyleCycleGet)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/opening-hooks", s.anchorOpeningHookGet)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/p0-audit", s.anchorP0AuditGet)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/risk-annotations", s.anchorStyleRiskAnnotations)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/anchor-style-workbench/opening-hooks", s.anchorOpeningHookSave)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle", s.anchorStyleCycleStart)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle/{runID}/advance", s.anchorStyleCycleAdvance)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle/{runID}/segments/{candidateID}/voice", s.anchorStyleCycleVoice)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle/{runID}/segments/{candidateID}/voice", s.anchorStyleCycleVoiceGet)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle/{runID}/segments/{candidateID}/voice/content", s.anchorStyleCycleVoiceContent)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle/{runID}", s.anchorStyleCycleEnd)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/selling-point-wheel/compile", s.anchorStyleWorkbenchSellingPointWheelCompile)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/selling-point-wheel/{assetID}/confirm", s.anchorStyleWorkbenchSellingPointWheelConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/selling-point-wheel/test", s.anchorStyleWorkbenchSellingPointWheelTest)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/speech-miner/guide", s.speechMinerGuide)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/fact-name-suggestion", s.suggestLiveAgentPlanFactName)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/speech-miner/confirm", s.speechMinerConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/sessions", s.anchorStyleWorkbenchAgentStudioSessionCreate)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/catalog", s.anchorStyleWorkbenchAgentStudioCatalog)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/sessions/{sessionID}/turns", s.anchorStyleWorkbenchAgentStudioTurn)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/sessions/{sessionID}/archive", s.anchorStyleWorkbenchAgentStudioSessionArchive)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/step", s.anchorStyleWorkbenchStep)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/scripts/recognize-image-preview", s.liveAgentPlanScriptRecognizeImagePreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/preview", s.liveAgentPlanFullShowPreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/full-show/audit-preview", s.liveAgentPlanFullShowAuditPreview)

@@ -30,6 +30,7 @@ import type {
   CustomerTimeCardOffer,
   MarketingCampaign,
   MarketingCampaignItem,
+  MarketingCampaignPresentation,
   SandboxPaymentRecord,
 } from '../types'
 
@@ -60,6 +61,23 @@ const devicePage = ref(1)
 const devicePageSize = 8
 const orderPage = ref(1)
 const orderPageSize = 12
+const campaignNow = ref(Date.now())
+let campaignClockTimer: number | undefined
+
+const defaultCampaignPresentation: MarketingCampaignPresentation = {
+  schema_version: 1,
+  template_key: 'blue_tech',
+  display_size: 'standard',
+  background_style: 'soft_gradient',
+  primary_color: '#356DFF',
+  accent_color: '#FF586B',
+  eyebrow: '限时活动',
+  badge_text: '当前优惠',
+  cta_button_text: '立即参与',
+  show_countdown: true,
+  show_saving: true,
+  show_conditions: true,
+}
 
 const shippingForm = reactive({
   recipient_name: '',
@@ -182,6 +200,60 @@ function marketingPlanPayableCents(plan: MarketingCampaign) {
 
 function marketingPlanSavingCents(plan: MarketingCampaign) {
   return Math.max(0, marketingPlanBaseCents(plan) - marketingPlanPayableCents(plan))
+}
+
+function campaignPresentation(plan: MarketingCampaign): MarketingCampaignPresentation {
+  return { ...defaultCampaignPresentation, ...(plan.presentation || {}) }
+}
+
+function marketingCampaignCardStyle(plan: MarketingCampaign) {
+  const presentation = campaignPresentation(plan)
+  return {
+    '--campaign-primary': presentation.primary_color,
+    '--campaign-accent': presentation.accent_color,
+    '--campaign-cover': presentation.cover_asset_id
+      ? `url("/api/v1/marketing-assets/${presentation.cover_asset_id}/content")`
+      : 'none',
+  }
+}
+
+function marketingCampaignClasses(plan: MarketingCampaign) {
+  const presentation = campaignPresentation(plan)
+  return [
+    `skin-${presentation.template_key}`,
+    `size-${presentation.display_size}`,
+    `background-${presentation.background_style}`,
+  ]
+}
+
+function marketingCountdown(plan: MarketingCampaign) {
+  const start = plan.starts_at ? new Date(plan.starts_at).getTime() : 0
+  const end = plan.ends_at ? new Date(plan.ends_at).getTime() : 0
+  const now = campaignNow.value
+  let prefix = '距离结束'
+  let remaining = end - now
+  if (start > now) {
+    prefix = '距离开始'
+    remaining = start - now
+  }
+  if (!Number.isFinite(remaining) || remaining <= 0) return ''
+  const totalSeconds = Math.floor(remaining / 1000)
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const clock = [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
+  return `${prefix} ${days > 0 ? `${days}天 ` : ''}${clock}`
+}
+
+function marketingConditionLabel(plan: MarketingCampaign) {
+  if (plan.eligible === false) return plan.ineligible_reason || '当前账号暂不符合参与条件'
+  const controls = plan.controls
+  const conditions: string[] = []
+  if (controls?.audience && controls.audience !== 'all') conditions.push('新开户专享')
+  if (controls?.max_claims === 1) conditions.push('每人限领一次')
+  else if ((controls?.max_claims || 0) > 1) conditions.push(`每人限领 ${controls?.max_claims} 次`)
+  return conditions.join(' · ') || '符合条件即可参与，具体权益以下单页为准'
 }
 
 function marketingItemDetail(item: MarketingCampaignItem) {
@@ -507,6 +579,69 @@ async function buy(
   }
 }
 
+async function buyMembership(
+  offer: CustomerMembershipOffer,
+  campaign: MarketingCampaign,
+) {
+  creatingOrder.value = offer.id
+  error.value = ''
+  successMessage.value = ''
+  try {
+    const order = await createCustomerShopOrder({
+      product_type: 'membership',
+      product_id: offer.id,
+      quantity: 1,
+      membership_cycle: `campaign:${campaign.id}`,
+      marketing_campaign_id: campaign.id,
+      marketing_placement: 'shop',
+      idempotency_key: newIdempotencyKey('marketing-membership'),
+    })
+    selectedOrder.value = order
+    paymentAmount.value = centsToInput(order.payable_amount_cents)
+    simulateResult.value = 'success'
+    paymentError.value = ''
+    modal.value = 'payment'
+    await loadOrders()
+  } catch (value) {
+    error.value = value instanceof Error ? value.message : '创建会员活动订单失败'
+  } finally {
+    creatingOrder.value = null
+  }
+}
+
+function marketingPlanActionDisabled(plan: MarketingCampaign) {
+  if (plan.eligible === false || !(plan.items?.length || 0)) return true
+  return marketingItemActionDisabled(plan, plan.items[0])
+}
+
+function marketingItemActionDisabled(plan: MarketingCampaign, item: MarketingCampaignItem) {
+  if (plan.eligible === false) return true
+  if (item.target_type !== 'device_product') return false
+  const product = deviceProducts.value.find((entry) => entry.id === item.target_id)
+  return !product || product.available_stock < Math.max(1, item.quantity || 1)
+}
+
+function triggerMarketingItem(plan: MarketingCampaign, item: MarketingCampaignItem) {
+  if (marketingItemActionDisabled(plan, item)) return
+  if (item.target_type === 'time_card') {
+    const product = products.value.find((entry) => entry.id === item.target_id)
+    if (product) void buy(product, plan.id, item.quantity || 1)
+    return
+  }
+  if (item.target_type === 'membership') {
+    const offer = membershipOffers.value.find((entry) => entry.id === item.target_id)
+    if (offer) void buyMembership(offer, plan)
+    return
+  }
+  const product = deviceProducts.value.find((entry) => entry.id === item.target_id)
+  if (product) openDevicePurchase(product, plan, item)
+}
+
+function triggerMarketingPlan(plan: MarketingCampaign) {
+  if (marketingPlanActionDisabled(plan)) return
+  triggerMarketingItem(plan, plan.items[0])
+}
+
 function openPayment(order: CustomerShopOrder) {
   selectedOrder.value = order
   paymentAmount.value = centsToInput(order.payable_amount_cents)
@@ -672,10 +807,14 @@ function handleMembershipUpdated() {
 
 onMounted(() => {
   void load()
+  campaignClockTimer = window.setInterval(() => {
+    campaignNow.value = Date.now()
+  }, 1000)
   window.addEventListener('membership-updated', handleMembershipUpdated)
 })
 
 onBeforeUnmount(() => {
+  if (campaignClockTimer !== undefined) window.clearInterval(campaignClockTimer)
   window.removeEventListener('membership-updated', handleMembershipUpdated)
 })
 </script>
@@ -707,15 +846,33 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="shop-marketing-grid">
-        <article v-for="plan in visibleMarketingPlans" :key="'marketing-' + plan.id" class="shop-marketing-card">
+        <article
+          v-for="plan in visibleMarketingPlans"
+          :key="'marketing-' + plan.id"
+          class="shop-marketing-card"
+          :class="marketingCampaignClasses(plan)"
+          :style="marketingCampaignCardStyle(plan)"
+        >
+          <div class="shop-marketing-cover" aria-hidden="true"></div>
+          <div class="shop-marketing-topline">
+            <span>{{ campaignPresentation(plan).eyebrow }}</span>
+            <b>{{ campaignPresentation(plan).badge_text }}</b>
+          </div>
           <header>
             <div>
               <span>{{ plan.items.length }} 项营销内容</span>
               <h3>{{ plan.name }}</h3>
-              <p v-if="plan.description">{{ plan.description }}</p><p v-if="plan.controls?.audience && plan.controls.audience!=='all'">新开户专享 · 每人限领一次</p><p v-if="plan.eligible===false">{{plan.ineligible_reason}}</p>
+              <p v-if="plan.description">{{ plan.description }}</p>
             </div>
             <strong class="shop-marketing-total">{{ formatMarketingMoney(marketingPlanPayableCents(plan)) }}</strong>
           </header>
+
+          <div
+            v-if="campaignPresentation(plan).show_countdown && marketingCountdown(plan)"
+            class="shop-marketing-countdown"
+          >
+            <span aria-hidden="true">◷</span>{{ marketingCountdown(plan) }}
+          </div>
 
           <div class="shop-marketing-value-row">
             <div>
@@ -726,7 +883,7 @@ onBeforeUnmount(() => {
               <span>活动实际价值</span>
               <strong>{{ formatMarketingMoney(marketingPlanPayableCents(plan)) }}</strong>
             </div>
-            <div>
+            <div v-if="campaignPresentation(plan).show_saving">
               <span>优惠 / 赠送价值</span>
               <strong>{{ formatMarketingMoney(marketingPlanSavingCents(plan)) }}</strong>
             </div>
@@ -746,8 +903,31 @@ onBeforeUnmount(() => {
                 <del>{{ formatMarketingMoney(marketingItemBaseCents(item)) }}</del>
                 <strong>{{ marketingItemPayableCents(item) === 0 ? '免费领取' : formatMarketingMoney(marketingItemPayableCents(item)) }}</strong>
               </div>
+              <button
+                v-if="plan.items.length > 1"
+                type="button"
+                class="shop-marketing-item-action"
+                :disabled="marketingItemActionDisabled(plan, item) || creatingOrder !== null"
+                @click="triggerMarketingItem(plan, item)"
+              >
+                {{ campaignPresentation(plan).cta_button_text }}
+              </button>
             </div>
           </div>
+
+          <footer class="shop-marketing-footer">
+            <small v-if="campaignPresentation(plan).show_conditions" :class="{ denied: plan.eligible === false }">
+              {{ marketingConditionLabel(plan) }}
+            </small>
+            <button
+              v-if="plan.items.length === 1"
+              type="button"
+              :disabled="marketingPlanActionDisabled(plan) || creatingOrder !== null"
+              @click="triggerMarketingPlan(plan)"
+            >
+              {{ plan.eligible === false ? '暂不可参与' : creatingOrder !== null ? '正在处理...' : campaignPresentation(plan).cta_button_text }}
+            </button>
+          </footer>
         </article>
       </div>
     </section>

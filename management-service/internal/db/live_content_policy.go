@@ -225,7 +225,78 @@ func (s *Store) GetLiveContentMode(ctx context.Context, tenantID, roomID int64) 
 	if err != nil {
 		return model.LiveContentModeAccess{}, err
 	}
-	return s.readLiveContentAccess(ctx, tenantID, roomID, p.Policy.ContentMode)
+	access, err := s.readLiveContentAccess(ctx, tenantID, roomID, p.Policy.ContentMode)
+	access.AutoRefreshEnabled = p.Policy.AutoRefreshEnabled
+	access.RefreshIntervalSeconds = p.Policy.MainlineTTLSeconds
+	access.ReplacementPercent = p.Policy.ReplacementPercent
+	return access, err
+}
+
+// SaveLiveContentRefreshPreference exposes only the two customer-owned dynamic
+// knobs. Entitlement, retry policy, buffer safety and FAQ policy remain under
+// operator control.
+func (s *Store) SaveLiveContentRefreshPreference(ctx context.Context, tenantID, roomID, userID int64, intervalSeconds, replacementPercent int) error {
+	if intervalSeconds < 1800 || intervalSeconds > 86400 {
+		return errors.New("动态更新间隔必须在30分钟到24小时之间")
+	}
+	if replacementPercent < 1 || replacementPercent > 100 {
+		return errors.New("每次更新比例必须在1到100之间")
+	}
+	record, err := s.GetLiveContentPolicy(ctx, tenantID, roomID)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := lockUsableRoomTx(ctx, tx, tenantID, roomID); err != nil {
+		return err
+	}
+	var allowed bool
+	if err := tx.QueryRowContext(ctx, `SELECT dynamic_authorized FROM live_room_content_access WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&allowed); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || !allowed {
+			return ErrContentModeNotAuthorized
+		}
+		return err
+	}
+	if !allowed {
+		return ErrContentModeNotAuthorized
+	}
+	policy := record.Policy
+	var currentRaw string
+	var revision int64
+	err = tx.QueryRowContext(ctx, `SELECT policy_json,revision FROM live_content_policies WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&currentRaw, &revision)
+	if err == nil {
+		if err := json.Unmarshal([]byte(currentRaw), &policy); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	policy.AutoRefreshEnabled = true
+	policy.MainlineTTLSeconds = intervalSeconds
+	policy.ReplacementPercent = replacementPercent
+	if policy.RefreshAheadSeconds >= intervalSeconds {
+		policy.RefreshAheadSeconds = max(60, intervalSeconds/4)
+	}
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(policy)
+	if revision == 0 {
+		_, err = tx.ExecContext(ctx, `INSERT INTO live_content_policies (tenant_id,room_id,policy_json,revision,updated_by_user_id) VALUES (?,?,?,1,?)`, tenantID, roomID, string(raw), userID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE live_content_policies SET policy_json=?,revision=revision+1,updated_by_user_id=?,updated_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND room_id=?`, string(raw), userID, tenantID, roomID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := insertLiveSupportEventTx(ctx, tx, "content_refresh.preference", tenantID, roomID, 0, userID, "", map[string]any{"refresh_interval_seconds": intervalSeconds, "replacement_percent": replacementPercent}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveLiveContentMode(ctx context.Context, tenantID, roomID, userID int64, mode string, support bool) error {
@@ -262,7 +333,30 @@ func (s *Store) SaveLiveContentMode(ctx context.Context, tenantID, roomID, userI
 	if err != nil {
 		return err
 	}
-	err = insertLiveSupportEventTx(ctx, tx, "content_mode.select", tenantID, roomID, 0, userID, "", map[string]any{"content_mode": mode})
+	// Each mode keeps its own saved/published content. Selecting a mode moves
+	// the single live publication pointer to that mode's latest confirmed
+	// version. If it has never been published, remove the pointer so entering a
+	// room can never accidentally play the previously selected mode.
+	var planID, activeVersionID int64
+	err = tx.QueryRowContext(ctx, `SELECT plan_id FROM live_agent_room_plan_selections WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&planID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_versions WHERE tenant_id=? AND plan_id=? AND room_id=? AND published_at IS NOT NULL AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')=? ORDER BY version_no DESC,id DESC LIMIT 1 FOR UPDATE`, tenantID, planID, roomID, mode).Scan(&activeVersionID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if activeVersionID > 0 {
+		_, err = tx.ExecContext(ctx, `INSERT INTO live_agent_room_plan_publications(tenant_id,room_id,plan_id,version_id,published_by_user_id,published_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE plan_id=VALUES(plan_id),version_id=VALUES(version_id),published_by_user_id=VALUES(published_by_user_id),published_at=VALUES(published_at)`, tenantID, roomID, planID, activeVersionID, userID)
+	} else {
+		_, err = tx.ExecContext(ctx, `DELETE FROM live_agent_room_plan_publications WHERE tenant_id=? AND room_id=?`, tenantID, roomID)
+	}
+	if err != nil {
+		return err
+	}
+	err = insertLiveSupportEventTx(ctx, tx, "content_mode.select", tenantID, roomID, 0, userID, "", map[string]any{"content_mode": mode, "active_version_id": activeVersionID})
 	if err != nil {
 		return err
 	}

@@ -191,11 +191,11 @@ func TestLikeInteractionEmitsByMaxWaitWithoutProbabilityRoll(t *testing.T) {
 	if got := decisions.Snapshot(roomID).Queue; len(got) != 0 {
 		t.Fatalf("like should wait for interaction window before speech mission: %#v", got)
 	}
-	pipeline.FlushInteractionWindows(base.Add(59 * time.Second))
+	pipeline.FlushInteractionWindows(base.Add(9 * time.Second))
 	if got := decisions.Snapshot(roomID).Queue; len(got) != 0 {
 		t.Fatalf("like should not emit before max wait: %#v", got)
 	}
-	pipeline.FlushInteractionWindows(base.Add(60 * time.Second))
+	pipeline.FlushInteractionWindows(base.Add(10 * time.Second))
 	got := decisions.Snapshot(roomID).Queue
 	if len(got) != 1 {
 		t.Fatalf("like must emit when max wait expires: %#v", got)
@@ -212,7 +212,7 @@ func TestLikeInteractionEmitsByMaxWaitWithoutProbabilityRoll(t *testing.T) {
 			break
 		}
 	}
-	if like == nil || like.TotalEvents != 1 || like.EmittedCount != 1 || like.PendingCount != 0 {
+	if like == nil || like.TotalEvents != 1 || like.EmittedCount != 0 || like.PendingCount != 0 {
 		t.Fatalf("unexpected like interaction stats: %#v", like)
 	}
 }
@@ -235,11 +235,11 @@ func TestNamedWelcomeUsesTimeWindowInsteadOfHeatGate(t *testing.T) {
 		Nickname: "小王", UserID: "u-2", OccurredAt: base,
 	}, basepipeline.Signal{RoomID: roomID})
 
-	pipeline.FlushInteractionWindows(base.Add(9 * time.Second))
+	pipeline.FlushInteractionWindows(base.Add(4 * time.Second))
 	if got := decisions.Snapshot(roomID).Queue; len(got) != 0 {
 		t.Fatalf("named welcome should respect its window: %#v", got)
 	}
-	pipeline.FlushInteractionWindows(base.Add(10 * time.Second))
+	pipeline.FlushInteractionWindows(base.Add(5 * time.Second))
 	got := decisions.Snapshot(roomID).Queue
 	if len(got) != 1 || got[0].MissionKind != "welcome_named" {
 		t.Fatalf("named welcome must emit at max wait without heat gate: %#v", got)
@@ -266,6 +266,17 @@ func TestInteractionWeightsDriveRuntimePriorityAndCanDisableWindow(t *testing.T)
 	policies.Put(0, policy)
 	pipeline := New(runtime, decisions, policies)
 	roomID := int64(45)
+	cfg, err := strategycenter.LoadInteractionMother()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := cfg.Events["like_follow"]
+	rule.Weight = 100
+	cfg.Events["like_follow"] = rule
+	prefs := strategycenter.DefaultRoomInteractionPreferences(roomID)
+	prefs.TenantID = 14
+	prefs.Schedule = &cfg
+	policies.PutRoomInteractionPreferences(roomID, prefs)
 	if _, err := runtime.GrantLease(roomID, 3600); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +289,7 @@ func TestInteractionWeightsDriveRuntimePriorityAndCanDisableWindow(t *testing.T)
 		t.Fatalf("disabled follow interaction should not create work: %#v", got)
 	}
 	pipeline.Handle(model.RoomEvent{ID: 2, TenantID: 14, RoomID: roomID, EventType: "like", OccurredAt: base}, basepipeline.Signal{RoomID: roomID})
-	pipeline.FlushInteractionWindows(base.Add(60 * time.Second))
+	pipeline.FlushInteractionWindows(base.Add(10 * time.Second))
 	got := decisions.Snapshot(roomID).Queue
 	if len(got) != 1 || got[0].MissionKind != "reply_like" {
 		t.Fatalf("expected weighted like mission: %#v", got)
@@ -393,7 +404,8 @@ func TestInteractionBudgetReservesHighValueSlot(t *testing.T) {
 
 func TestDueInteractionWindowsCompeteByEventValue(t *testing.T) {
 	runtime := agentwork.New()
-	decisions := agentdecision.New()
+	now := time.Date(2026, 9, 29, 19, 30, 0, 0, time.UTC)
+	decisions := agentdecision.NewWithClock(func() time.Time { return now }, time.Minute, time.Minute, 24)
 	pipeline := New(runtime, decisions, strategycenter.New())
 	roomID := int64(73)
 	if _, err := runtime.GrantLease(roomID, 3600); err != nil {
@@ -402,7 +414,6 @@ func TestDueInteractionWindowsCompeteByEventValue(t *testing.T) {
 	if _, err := runtime.Set(roomID, agentwork.StateWorking); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 29, 19, 30, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
 		if _, allowed, _ := pipeline.tryConsumeInteractionBudget(roomID, "WARM", false, now); !allowed {
 			t.Fatalf("failed to pre-consume normal budget slot %d", i+1)

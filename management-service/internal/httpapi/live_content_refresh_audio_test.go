@@ -53,10 +53,14 @@ func TestContentRefreshKeepsUnchangedAudioByteForByte(t *testing.T) {
 	}
 	_, pcm, _, _ := parseGeneratedVoiceWAV(output)
 	_, oldPCM, _, _ := parseGeneratedVoiceWAV(raw)
-	if !bytes.Equal(pcm[:2000], oldPCM[:2000]) || !bytes.Equal(pcm[4000:], oldPCM[4000:]) {
+	prefixBytes := int(timeline[start].StartMS)
+	oldSuffixBytes := int(timeline[end].StartMS)
+	newSuffixBytes := int(newTimeline[start+1].StartMS)
+	if !bytes.Equal(pcm[:prefixBytes], oldPCM[:prefixBytes]) || !bytes.Equal(pcm[newSuffixBytes:], oldPCM[oldSuffixBytes:]) {
 		t.Fatal("untouched 75% audio changed")
 	}
-	if duration != 8000 || newTimeline[len(newTimeline)-1].EndMS != 8000 {
+	wantDuration := timeline[len(timeline)-1].EndMS - (timeline[end].StartMS - timeline[start].StartMS) + 2000 + generatedVoiceSegmentHeadMS + generatedVoiceSegmentTailMS
+	if duration != wantDuration || newTimeline[len(newTimeline)-1].EndMS != wantDuration {
 		t.Fatal("rebuilt timeline invalid")
 	}
 }

@@ -22,6 +22,70 @@ type ContentDecisionReceipt struct {
 	SupportFactIDs []string `json:"support_fact_ids,omitempty"`
 	Source         string   `json:"source"`
 	Reason         string   `json:"reason"`
+	MainlinePhase  string   `json:"mainline_phase,omitempty"`
+	BodyFunction   string   `json:"body_function,omitempty"`
+	CTAType        string   `json:"cta_type,omitempty"`
+}
+
+func bodyFunctionForRole(role string) string {
+	switch role {
+	case "orient", "value", "scenario":
+		return "product"
+	case "difference":
+		return "price"
+	case "evidence":
+		return "trust"
+	case "decision":
+		return "assurance"
+	case "action":
+		return "action"
+	case "recap_bridge":
+		return "transition"
+	default:
+		return ""
+	}
+}
+
+func ctaTypeForFacts(primary model.LiveAgentGenerationFact, support []model.LiveAgentGenerationFact) string {
+	facts := append([]model.LiveAgentGenerationFact{primary}, support...)
+	for _, fact := range facts {
+		metadata := strings.ToLower(strings.Join([]string{fact.SourceKey, fact.Predicate, fact.Label, fact.Value}, " "))
+		if containsContentWord(metadata, "inventory", "stock", "quota", "库存", "余量", "名额", "剩余") {
+			return "scarcity"
+		}
+	}
+	for _, fact := range facts {
+		metadata := strings.ToLower(strings.Join([]string{fact.SourceKey, fact.Predicate, fact.Label, fact.Value}, " "))
+		if fact.ValidUntil != nil || containsContentWord(metadata, "deadline", "expires", "countdown", "截止", "有效期", "倒计时", "结束时间") {
+			return "deadline"
+		}
+	}
+	for _, fact := range facts {
+		metadata := strings.ToLower(strings.Join([]string{fact.SourceKey, fact.Predicate, fact.Label}, " "))
+		if containsContentWord(metadata, "sales", "review", "repurchase", "销量", "评价", "回购", "复购") {
+			return "social_proof"
+		}
+		if containsContentWord(metadata, "shipping_order", "queue", "排单", "发货顺序", "先后顺序") {
+			return "sequence"
+		}
+	}
+	for _, fact := range facts {
+		if contentFactFamily(fact) == "choice" || contentFactFamily(fact) == "benefit" || contentFactFamily(fact) == "assurance" {
+			return "confirm"
+		}
+	}
+	return "direct"
+}
+
+func ctaIntensityLabel(value int) string {
+	switch {
+	case value >= 85:
+		return "heavy"
+	case value >= 50:
+		return "medium"
+	default:
+		return "light"
+	}
 }
 
 // Roles are a menu, not a prescribed timeline. Type/intensity restrict the menu.
@@ -103,6 +167,7 @@ func ApplyContentDecision(step model.LiveSpeechExpansionStep, choice ContentDeci
 		}
 	}
 	step.ContentRole, step.Stage, step.Goal = role.key, role.key, role.goal
+	step.BodyFunction = bodyFunctionForRole(role.key)
 	step.PrimaryFactID, step.SupportFactIDs = "", nil
 	step.FactKeys, step.BenefitKeys, step.LinkKeys = nil, nil, nil
 	if found {
@@ -111,11 +176,22 @@ func ApplyContentDecision(step model.LiveSpeechExpansionStep, choice ContentDeci
 	for _, id := range choice.SupportFactIDs {
 		addFactRouting(&step, byID[id], false)
 	}
+	if role.key == "action" && found {
+		support := make([]model.LiveAgentGenerationFact, 0, len(choice.SupportFactIDs))
+		for _, id := range choice.SupportFactIDs {
+			support = append(support, byID[id])
+		}
+		step.CTAType = ctaTypeForFacts(primary, support)
+		step.CTAIntensity = ctaIntensityLabel(strategy.ConversionIntensity)
+	} else {
+		step.CTAType, step.CTAIntensity = "", ""
+	}
 	// Timing, plugins and passive-interruption opportunities remain program-owned.
 	return step, nil
 }
 
 func ContentReceipt(step model.LiveSpeechExpansionStep, index int, source, reason string) ContentDecisionReceipt {
 	return ContentDecisionReceipt{Index: index, Role: step.ContentRole, PrimaryFactID: step.PrimaryFactID,
-		SupportFactIDs: append([]string(nil), step.SupportFactIDs...), Source: source, Reason: strings.TrimSpace(reason)}
+		SupportFactIDs: append([]string(nil), step.SupportFactIDs...), Source: source, Reason: strings.TrimSpace(reason),
+		MainlinePhase: step.MainlinePhase, BodyFunction: step.BodyFunction, CTAType: step.CTAType}
 }

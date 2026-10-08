@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getDeviceOffers, getMembershipOffers, getTimeCardOffers, getMarketingCampaigns } from '$lib/api';
-  import type { DeviceOffer, MembershipOffer, TimeCardOffer } from '$lib/types';
+  import type { DeviceOffer, MarketingCampaign, MarketingCampaignItem, MarketingCampaignPresentation, MembershipOffer, TimeCardOffer } from '$lib/types';
 
   type ShopSection = 'membership' | 'time' | 'device';
   type SelectedOffer = { kind: 'device'; item: DeviceOffer };
@@ -14,28 +14,54 @@
   let selectedOffer: SelectedOffer | null = null;
   let loading = true;
   let error = '';
+  let campaignNow = Date.now();
 
-  onMount(async () => {
-    try {
-      const [membershipData, timeCardData, deviceData, campaignData] = await Promise.all([
-        getMembershipOffers(),
-        getTimeCardOffers(),
-        getDeviceOffers(),
-        getMarketingCampaigns(),
-      ]);
-      campaigns = campaignData.items || [];
-      memberships = membershipData.items || [];
-      cards = timeCardData.items || [];
-      devices = deviceData.items || [];
-    } catch (value) {
-      error = value instanceof Error ? value.message : '商城数据加载失败，请稍后重试';
-    } finally {
-      loading = false;
-    }
+  const defaultCampaignPresentation: MarketingCampaignPresentation = {
+    schema_version: 1,
+    template_key: 'blue_tech',
+    display_size: 'standard',
+    background_style: 'soft_gradient',
+    primary_color: '#356DFF',
+    accent_color: '#FF586B',
+    eyebrow: '限时活动',
+    badge_text: '当前优惠',
+    cta_button_text: '立即参与',
+    show_countdown: true,
+    show_saving: true,
+    show_conditions: true,
+  };
+
+  onMount(() => {
+    const timer = window.setInterval(() => campaignNow = Date.now(), 1000);
+    void (async () => {
+      try {
+        const [membershipData, timeCardData, deviceData, campaignData] = await Promise.all([
+          getMembershipOffers(),
+          getTimeCardOffers(),
+          getDeviceOffers(),
+          getMarketingCampaigns(),
+        ]);
+        campaigns = campaignData.items || [];
+        memberships = membershipData.items || [];
+        cards = timeCardData.items || [];
+        devices = deviceData.items || [];
+      } catch (value) {
+        error = value instanceof Error ? value.message : '商城数据加载失败，请稍后重试';
+      } finally {
+        loading = false;
+      }
+    })();
+    return () => window.clearInterval(timer);
   });
 
-  function campaignName(i:import('$lib/types').MarketingCampaignItem){return (i.target_type==='membership'?memberships:i.target_type==='time_card'?cards:devices).find(t=>t.id===i.target_id)?.name||'商品 #'+i.target_id}
-  function campaignPrice(i:import('$lib/types').MarketingCampaignItem){if(i.pricing_mode==='free')return 0;if(i.pricing_mode==='fixed')return i.fixed_price_cents||0;const m=memberships.find(t=>t.id===i.target_id),c=cards.find(t=>t.id===i.target_id),d=devices.find(t=>t.id===i.target_id);const base=i.target_type==='membership'?(m?.monthly_price_cents||0)*(i.package_months||1):i.target_type==='time_card'?(c?.original_price_cents||0):(d?.original_price_cents||0);return Math.floor(Math.floor(base*(i.quantity||1)/100)*i.discount_bps/10000)*100}
+  function campaignName(i:MarketingCampaignItem){return (i.target_type==='membership'?memberships:i.target_type==='time_card'?cards:devices).find(t=>t.id===i.target_id)?.name||'商品 #'+i.target_id}
+  function campaignBasePrice(i:MarketingCampaignItem){const m=memberships.find(t=>t.id===i.target_id),c=cards.find(t=>t.id===i.target_id),d=devices.find(t=>t.id===i.target_id);return (i.target_type==='membership'?(m?.monthly_price_cents||0)*(i.package_months||1):i.target_type==='time_card'?(c?.original_price_cents||0):(d?.original_price_cents||0))*(i.quantity||1)}
+  function campaignPrice(i:MarketingCampaignItem){if(i.pricing_mode==='free')return 0;if(i.pricing_mode==='fixed')return i.fixed_price_cents||0;return Math.floor(Math.floor(campaignBasePrice(i)/100)*i.discount_bps/10000)*100}
+  function campaignTotal(p:MarketingCampaign, payable=false){return (p.items||[]).reduce((sum,item)=>sum+(payable?campaignPrice(item):campaignBasePrice(item)),0)}
+  function campaignPresentation(p:MarketingCampaign):MarketingCampaignPresentation{return {...defaultCampaignPresentation,...(p.presentation||{})}}
+  function campaignStyle(p:MarketingCampaign){const presentation=campaignPresentation(p);return `--campaign-primary:${presentation.primary_color};--campaign-accent:${presentation.accent_color};--campaign-cover:${presentation.cover_asset_id?`url("/api/v1/marketing-assets/${presentation.cover_asset_id}/content")`:'none'}`}
+  function campaignCountdown(p:MarketingCampaign){const start=p.starts_at?new Date(p.starts_at).getTime():0,end=p.ends_at?new Date(p.ends_at).getTime():0;let prefix='距结束',remaining=end-campaignNow;if(start>campaignNow){prefix='距开始';remaining=start-campaignNow}if(!Number.isFinite(remaining)||remaining<=0)return '';const total=Math.floor(remaining/1000),days=Math.floor(total/86400),hours=Math.floor(total%86400/3600),minutes=Math.floor(total%3600/60),seconds=total%60;const clock=[hours,minutes,seconds].map(value=>String(value).padStart(2,'0')).join(':');return `${prefix} ${days?days+'天 ':''}${clock}`}
+  function campaignCondition(p:MarketingCampaign){if(p.eligible===false)return p.ineligible_reason||'当前账号暂不符合参与条件';const values:string[]=[];if(p.controls?.audience&&p.controls.audience!=='all')values.push('新开户专享');if(p.controls?.max_claims===1)values.push('每人限领一次');else if((p.controls?.max_claims||0)>1)values.push(`每人限领 ${p.controls?.max_claims} 次`);return values.join(' · ')||'符合条件即可参与'}
   function yuan(cents: number) {
     return new Intl.NumberFormat('zh-CN', {
       style: 'currency',
@@ -129,7 +155,44 @@
   {:else if error}
     <div class="shop-error">{error}</div>
   {:else}
-    {#if campaigns.length}<section class="shop-category"><header class="category-head"><span>营销活动</span><h2>当前优惠与新人礼包</h2></header>{#each campaigns as p}<article class="product-card" style="margin-bottom:16px"><h3>{p.name}</h3><p>{p.description}</p>{#if p.controls?.audience&&p.controls.audience!=='all'}<p>新开户专享 · 每人限领一次</p>{/if}{#each p.items as i}<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0"><div><b>{campaignName(i)} × {i.quantity}</b><p>{campaignPrice(i)===0?'免费领取':yuan(campaignPrice(i))}</p></div>{#if p.eligible===false}<small>{p.ineligible_reason}</small>{:else if i.target_type!=='device_product'}<a class="card-action" href={`/shop/checkout?type=${i.target_type}&id=${i.target_id}&campaign=${p.id}`}>{campaignPrice(i)===0?'领取':'购买'}</a>{:else}<small>设备活动请在网页商城办理</small>{/if}</div>{/each}</article>{/each}</section>{/if}
+    {#if campaigns.length}
+      <section class="shop-category campaign-category">
+        <header class="category-head"><span>营销活动</span><h2>当前优惠与新人礼包</h2></header>
+        <div class="campaign-rail" aria-label="当前营销活动，可左右滑动">
+          {#each campaigns as p}
+            <article
+              class={`campaign-card skin-${campaignPresentation(p).template_key} size-${campaignPresentation(p).display_size} background-${campaignPresentation(p).background_style}`}
+              style={campaignStyle(p)}
+            >
+              <div class="campaign-cover" aria-hidden="true"></div>
+              <div class="campaign-topline"><span>{campaignPresentation(p).eyebrow}</span><b>{campaignPresentation(p).badge_text}</b></div>
+              <header><h3>{p.name}</h3>{#if p.description}<p>{p.description}</p>{/if}</header>
+              {#if campaignPresentation(p).show_countdown && campaignCountdown(p)}<div class="campaign-countdown">◷ {campaignCountdown(p)}</div>{/if}
+              <div class="campaign-values">
+                <span><small>商品价值</small><strong>{yuan(campaignTotal(p))}</strong></span>
+                <span><small>活动价</small><strong>{campaignTotal(p,true)===0?'免费':yuan(campaignTotal(p,true))}</strong></span>
+                {#if campaignPresentation(p).show_saving}<span><small>已优惠</small><strong>{yuan(Math.max(0,campaignTotal(p)-campaignTotal(p,true)))}</strong></span>{/if}
+              </div>
+              <div class="campaign-items">
+                {#each p.items as i}
+                  <div class="campaign-item">
+                    <div><b>{campaignName(i)} × {i.quantity||1}</b><p>{campaignPrice(i)===0?'免费领取':yuan(campaignPrice(i))}</p></div>
+                    {#if p.eligible===false}
+                      <small>暂不可参与</small>
+                    {:else if i.target_type!=='device_product'}
+                      <a class="campaign-action" href={`/shop/checkout?type=${i.target_type}&id=${i.target_id}&campaign=${p.id}`}>{campaignPresentation(p).cta_button_text}</a>
+                    {:else}
+                      <small>设备活动请在网页商城办理</small>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              {#if campaignPresentation(p).show_conditions}<footer class:denied={p.eligible===false}>{campaignCondition(p)}</footer>{/if}
+            </article>
+          {/each}
+        </div>
+      </section>
+    {/if}
     <section id="shop-time" class="shop-category">
       <header class="category-head">
         <span>时长卡</span>
@@ -239,6 +302,7 @@
   .shop-tabs{position:relative;z-index:3;display:flex;gap:8px;margin:-17px 18px 5px;padding-bottom:3px;overflow-x:auto;scrollbar-width:none}.shop-tabs::-webkit-scrollbar{display:none}.shop-tabs button{display:flex;align-items:center;gap:6px;flex:0 0 auto;min-height:43px;padding:0 14px;border:1px solid #e2e8f5;border-radius:999px;color:#73809a;background:rgba(255,255,255,.94);font-size:12px;font-weight:850;box-shadow:0 7px 20px rgba(65,83,139,.08)}.shop-tabs button svg{width:17px;height:17px;fill:currentColor}.shop-tabs button.active{border-color:transparent;color:#fff;background:linear-gradient(135deg,#6f7bff,#5a63e6);box-shadow:0 12px 24px rgba(79,87,218,.28)}
   .shop-loading,.shop-error{margin:28px 18px;padding:28px;border:1px solid #e4e9f3;border-radius:22px;color:#7d879c;text-align:center;background:#fff}.shop-loading span{display:block;width:28px;height:28px;margin:0 auto 10px;border:3px solid #e4e8f7;border-top-color:#6675e6;border-radius:50%;animation:shop-spin .8s linear infinite}.shop-loading p{margin:0;font-size:12px}.shop-error{color:#c94c59;background:#fff7f8}@keyframes shop-spin{to{transform:rotate(360deg)}}
   .shop-category{padding-top:17px;scroll-margin-top:10px}.category-head{padding:0 20px 11px}.category-head>span{color:#8490a7;font-size:11px;font-weight:850;letter-spacing:.05em}.category-head h2{margin:4px 0 3px;color:#17213b;font-size:21px;letter-spacing:-.35px}.category-head p{margin:0;color:#8a96ad;font-size:11px;line-height:1.5}
+  .campaign-category{padding-bottom:4px}.campaign-rail{display:flex;gap:12px;padding:0 20px 10px;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x mandatory;scroll-padding-inline:20px;scrollbar-width:none}.campaign-rail::-webkit-scrollbar{display:none}.campaign-card{--campaign-primary:#356dff;--campaign-accent:#ff586b;--campaign-cover:none;position:relative;display:flex;flex:0 0 84%;min-height:320px;flex-direction:column;gap:11px;padding:18px;overflow:hidden;border:1px solid color-mix(in srgb,var(--campaign-primary) 25%,#dae1ef);border-radius:22px;scroll-snap-align:start;background:radial-gradient(circle at 92% 4%,color-mix(in srgb,var(--campaign-accent) 18%,transparent),transparent 33%),linear-gradient(145deg,color-mix(in srgb,var(--campaign-primary) 9%,#fff),#fff 58%,color-mix(in srgb,var(--campaign-accent) 7%,#fff));box-shadow:0 14px 31px color-mix(in srgb,var(--campaign-primary) 11%,transparent)}.campaign-card.background-solid{background:color-mix(in srgb,var(--campaign-primary) 7%,#fff)}.campaign-card.background-spotlight{background:radial-gradient(circle at 85% 10%,color-mix(in srgb,var(--campaign-accent) 29%,transparent),transparent 35%),radial-gradient(circle at 0 100%,color-mix(in srgb,var(--campaign-primary) 16%,transparent),transparent 43%),#fff}.campaign-card.size-featured{flex-basis:94%;min-height:365px}.campaign-card.size-compact{flex-basis:72%;min-height:245px;padding:15px}.campaign-card.skin-festival_red{border-radius:15px}.campaign-card.skin-minimal_light{border-color:#e4e8f0;border-radius:14px;box-shadow:none}.campaign-card>*:not(.campaign-cover){position:relative;z-index:1}.campaign-cover{position:absolute;inset:0;opacity:.18;background-image:linear-gradient(90deg,rgba(255,255,255,.94),rgba(255,255,255,.42)),var(--campaign-cover);background-position:center;background-size:cover;pointer-events:none}.campaign-topline{display:flex;align-items:center;justify-content:space-between;gap:9px;color:var(--campaign-primary);font-size:10px;font-weight:900;letter-spacing:.04em}.campaign-topline b{padding:5px 8px;border-radius:999px;color:#fff;background:var(--campaign-accent);font-size:9px;letter-spacing:0}.campaign-card header h3{margin:0;color:#17213a;font-size:22px;line-height:1.2;letter-spacing:-.4px}.campaign-card header p{display:-webkit-box;margin:6px 0 0;overflow:hidden;color:#758199;font-size:11px;line-height:1.55;line-clamp:2;-webkit-box-orient:vertical;-webkit-line-clamp:2}.campaign-countdown{align-self:flex-start;padding:6px 9px;border-radius:9px;color:var(--campaign-primary);background:color-mix(in srgb,var(--campaign-primary) 9%,#fff);font-size:10px;font-weight:850}.campaign-values{display:grid;grid-template-columns:repeat(auto-fit,minmax(68px,1fr));gap:7px}.campaign-values span{display:grid;gap:2px;padding:8px;border-radius:10px;background:rgba(255,255,255,.72)}.campaign-values small{color:#8994a8;font-size:8px}.campaign-values strong{overflow:hidden;color:#243047;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.campaign-items{display:grid;gap:7px}.campaign-item{display:flex;align-items:center;justify-content:space-between;gap:9px;padding:9px 10px;border:1px solid rgba(220,226,239,.86);border-radius:11px;background:rgba(255,255,255,.86)}.campaign-item>div{min-width:0}.campaign-item b{display:block;overflow:hidden;color:#303a4d;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.campaign-item p{margin:3px 0 0;color:var(--campaign-accent);font-size:11px;font-weight:900}.campaign-item>small{max-width:46%;color:#919bae;font-size:9px;line-height:1.35;text-align:right}.campaign-action{display:grid;min-height:32px;flex:0 0 auto;padding:0 12px;place-items:center;border-radius:999px;color:#fff;background:linear-gradient(100deg,var(--campaign-primary),var(--campaign-accent));font-size:9px;font-weight:900;box-shadow:0 6px 14px color-mix(in srgb,var(--campaign-primary) 18%,transparent)}.campaign-card>footer{margin-top:auto;color:#7e899d;font-size:9px;line-height:1.45}.campaign-card>footer.denied{color:#c14252}.campaign-card.size-compact header p,.campaign-card.size-compact .campaign-countdown,.campaign-card.size-compact>footer{display:none}.campaign-card.size-compact .campaign-values span:nth-child(n+3),.campaign-card.size-compact .campaign-items .campaign-item:nth-child(n+2){display:none}
   .product-rail{display:flex;gap:12px;padding:0 20px 10px;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x mandatory;scroll-padding-inline:20px;scrollbar-width:none;touch-action:pan-x}.product-rail::-webkit-scrollbar{display:none}.product-card{position:relative;display:flex;flex:0 0 84%;min-height:284px;flex-direction:column;padding:17px;overflow:hidden;border:1px solid rgba(205,216,244,.9);border-radius:21px;scroll-snap-align:start;background:linear-gradient(145deg,#fff 0%,#f3f6ff 62%,#e9efff 100%);box-shadow:0 13px 30px rgba(64,82,145,.09)}.product-card::after{content:"";position:absolute;right:-46px;bottom:-55px;width:190px;height:120px;border-radius:50%;background:rgba(153,175,255,.14);transform:rotate(-17deg)}.product-card.gold{border-color:#f1dfc4;background:linear-gradient(145deg,#fff 0%,#fff9f0 58%,#fff0d8 100%)}.product-card.gold::after{background:rgba(255,187,83,.13)}.product-card.time-card{background:linear-gradient(145deg,#fff 0%,#f8f5ff 58%,#ebe5ff 100%)}.product-card.time-card.blue{background:linear-gradient(145deg,#fff 0%,#f5f9ff 58%,#e3efff 100%)}.product-card.device-card{flex-basis:92%;min-height:315px;background:linear-gradient(145deg,#fff 0%,#f3fbfc 58%,#dff8f2 100%)}
   .product-card-head{position:relative;z-index:2;display:grid;grid-template-columns:48px minmax(0,1fr);align-items:center;gap:11px}.product-icon{display:grid;width:48px;height:48px;place-items:center;border-radius:14px;color:#fff;background:linear-gradient(145deg,#78c8ff,#3b72f3);box-shadow:0 10px 20px rgba(49,105,225,.2)}.product-icon svg{width:27px;height:27px;fill:currentColor}.gold .product-icon{background:linear-gradient(145deg,#ffc969,#ff9f2e);box-shadow:0 10px 20px rgba(237,145,37,.2)}.time-card .product-icon{background:linear-gradient(145deg,#9788ff,#6250f2)}.time-card.blue .product-icon{background:linear-gradient(145deg,#5fb7ff,#246fe9)}.product-card-head strong{display:block;overflow:hidden;color:#14203a;font-size:17px;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}.product-card-head p{display:-webkit-box;margin:4px 0 0;overflow:hidden;color:#7e8aa4;font-size:11px;line-height:1.45;line-clamp:2;-webkit-box-orient:vertical;-webkit-line-clamp:2}
   .product-price{position:relative;z-index:2;display:flex;align-items:baseline;gap:6px;margin:15px 0 10px}.product-price b{color:#245bda;font-size:27px;line-height:1;letter-spacing:-1px}.gold .product-price b{color:#ce7612}.time-card .product-price b{color:#6244ea}.time-card.blue .product-price b,.device-card .product-price b{color:#1f70d9}.product-price span{color:#8994a8;font-size:11px}.product-price del{color:#9ba4b5;font-size:10px}

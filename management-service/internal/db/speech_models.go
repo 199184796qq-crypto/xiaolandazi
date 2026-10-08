@@ -94,37 +94,9 @@ func (s *Store) SaveSpeechModels(ctx context.Context, input agentgateway.SpeechM
 	if err = json.Unmarshal(keysRaw, &oldKeys); err != nil {
 		return err
 	}
-	if input.Revision != old.Revision {
-		return errors.New("配置已被其他管理员修改，请刷新后重试")
-	}
-	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, Revision: old.Revision + 1}
-	nextKeys := map[string][]byte{}
-	for _, item := range input.Profiles {
-		p := item.SpeechModel
-		key := strings.TrimSpace(item.NewAPIKey)
-		if key != "" {
-			nextKeys[p.ID], err = agentgateway.SealSpeechKey(os.Getenv("MODEL_CONFIG_ENCRYPTION_KEY"), p.ID, key)
-			if err != nil {
-				return err
-			}
-		} else {
-			for _, existing := range old.Profiles {
-				if existing.ID == p.ID && (existing.BaseURL != p.BaseURL || existing.Protocol != p.Protocol) {
-					return errors.New("API 地址或协议改变后，请重新填写密钥")
-				}
-			}
-			nextKeys[p.ID] = oldKeys[p.ID]
-		}
-		if len(nextKeys[p.ID]) == 0 {
-			return errors.New("请填写模型 API 密钥")
-		}
-		// Verify retained credentials against the server key before activation.
-		if _, err = agentgateway.OpenSpeechKey(os.Getenv("MODEL_CONFIG_ENCRYPTION_KEY"), p.ID, nextKeys[p.ID]); err != nil {
-			return err
-		}
-		p.HasAPIKey = true
-		p.APIKey = ""
-		next.Profiles = append(next.Profiles, p)
+	next, nextKeys, err := buildSpeechModelsUpdate(old, oldKeys, input, os.Getenv("MODEL_CONFIG_ENCRYPTION_KEY"))
+	if err != nil {
+		return err
 	}
 	configJSON, err := next.PublicJSON()
 	if err != nil {
@@ -138,4 +110,69 @@ func (s *Store) SaveSpeechModels(ctx context.Context, input agentgateway.SpeechM
 		return err
 	}
 	return tx.Commit()
+}
+
+// Copies use new IDs and independently sealed credentials. The copy reference
+// is input-only: neither credential plaintext nor a live link is persisted.
+func buildSpeechModelsUpdate(old agentgateway.SpeechModels, oldKeys map[string][]byte, input agentgateway.SpeechModelsInput, secret string) (agentgateway.SpeechModels, map[string][]byte, error) {
+	if err := agentgateway.ValidateSpeechModels(input); err != nil {
+		return agentgateway.SpeechModels{}, nil, err
+	}
+	if input.Revision != old.Revision {
+		return agentgateway.SpeechModels{}, nil, errors.New("配置已被其他管理员修改，请刷新后重试")
+	}
+	existingByID := make(map[string]agentgateway.SpeechModel, len(old.Profiles))
+	for _, p := range old.Profiles {
+		existingByID[p.ID] = p
+	}
+	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, Revision: old.Revision + 1}
+	nextKeys := map[string][]byte{}
+	for _, item := range input.Profiles {
+		p := item.SpeechModel
+		key := strings.TrimSpace(item.NewAPIKey)
+		if item.CopyFromID != "" {
+			if _, exists := existingByID[p.ID]; exists {
+				return next, nil, errors.New("复制必须使用新的模型配置 ID")
+			}
+			source, exists := existingByID[item.CopyFromID]
+			if !exists {
+				return next, nil, errors.New("复制来源不存在，请先保存原配置或填写密钥")
+			}
+			if key == "" {
+				if source.BaseURL != p.BaseURL || source.Protocol != p.Protocol {
+					return next, nil, errors.New("API 地址或协议改变后，请重新填写密钥")
+				}
+				var err error
+				key, err = agentgateway.OpenSpeechKey(secret, source.ID, oldKeys[source.ID])
+				if err != nil {
+					return next, nil, err
+				}
+			}
+		}
+		if key != "" {
+			sealed, err := agentgateway.SealSpeechKey(secret, p.ID, key)
+			if err != nil {
+				return next, nil, err
+			}
+			nextKeys[p.ID] = sealed
+		} else {
+			for _, existing := range old.Profiles {
+				if existing.ID == p.ID && (existing.BaseURL != p.BaseURL || existing.Protocol != p.Protocol) {
+					return next, nil, errors.New("API 地址或协议改变后，请重新填写密钥")
+				}
+			}
+			nextKeys[p.ID] = oldKeys[p.ID]
+		}
+		if len(nextKeys[p.ID]) == 0 {
+			return next, nil, errors.New("请填写模型 API 密钥")
+		}
+		// Verify retained credentials against the server key before activation.
+		if _, err := agentgateway.OpenSpeechKey(secret, p.ID, nextKeys[p.ID]); err != nil {
+			return next, nil, err
+		}
+		p.HasAPIKey = true
+		p.APIKey = ""
+		next.Profiles = append(next.Profiles, p)
+	}
+	return next, nextKeys, nil
 }

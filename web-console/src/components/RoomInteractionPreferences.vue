@@ -72,6 +72,7 @@ const predictionItems = computed(() => [
 
 function inputPayload(): RoomInteractionPreferencesInput {
   return {
+    schedule: value.value.schedule,
     overall_interaction: value.value.overall_interaction,
     question_preference: value.value.question_preference,
     welcome_preference: value.value.welcome_preference,
@@ -102,7 +103,7 @@ async function persist(key: string) {
   notice.value = ''
   try {
     value.value = await updateRoomInteractionPreferences(props.roomId, inputPayload())
-    notice.value = '已生效'
+    notice.value = key.startsWith('schedule') ? '已保存，事件权重配置将在下次启动直播搭子时使用；当前回答继续完成。' : '互动频率已更新，已入队任务保持原配置。'
     emit('updated', value.value)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '保存互动偏好失败'
@@ -222,11 +223,24 @@ onMounted(() => void load())
       </article>
     </div>
 
+    <details v-if="value.schedule" class="event-schedule-panel">
+      <summary>互动事件权重 · 方案配置 V{{ value.schedule.version }}</summary>
+      <p>优先级决定先后，权重决定同级事件的处理顺序。紧急事件排到等待队列前面，正在回答的问题先答完。保存后下次启动使用。</p>
+      <article v-for="(rule, key) in value.schedule.events" :key="key" class="event-rule-row">
+        <label><input v-model="rule.enabled" type="checkbox" :disabled="loading || Boolean(savingKey)" @change="persist('schedule:' + key)" />{{ rule.name }}</label>
+        <select v-model="rule.priority" :disabled="loading || Boolean(savingKey)" :aria-label="rule.name + '优先级'" @change="persist('schedule:' + key)">
+          <option v-for="(label, priority) in value.schedule.priority_labels" :key="priority" :value="priority">{{ label }}</option>
+        </select>
+        <label class="event-weight">处理权重 <input v-model.number="rule.weight" type="number" min="0" max="100" :disabled="loading || Boolean(savingKey)" :aria-label="rule.name + '处理权重'" @change="persist('schedule:' + key)" /></label>
+        <small>{{ rule.goals.map(goal => goal.name).join(' / ') }}</small>
+      </article>
+    </details>
+
     <section class="ai-prediction-strip">
       <div class="ai-prediction-title">
         <span class="ai-spark" aria-hidden="true">✦</span>
         <div>
-          <strong>AI 预测</strong>
+          <strong>互动频率</strong>
           <small>基于当前互动偏好与直播节奏</small>
         </div>
       </div>
@@ -255,7 +269,7 @@ onMounted(() => void load())
       <div class="auto-adjust-copy">
         <span class="ai-spark small" aria-hidden="true">✦</span>
         <div>
-          <strong>AI 自动调节</strong>
+          <strong>随热度调整</strong>
           <span>根据在线人数、互动密度和成交阶段，智能优化上述设置。</span>
           <small v-if="notice && !savingKey">{{ notice }}</small>
         </div>
@@ -275,6 +289,13 @@ onMounted(() => void load())
 </template>
 
 <style scoped>
+.event-schedule-panel{border:1px solid #dce4f4;border-radius:13px;padding:12px;background:#fbfcff;color:#24385e}
+.event-schedule-panel summary{font-weight:850;cursor:pointer}
+.event-schedule-panel p{font-size:12px;line-height:1.6;color:#62718d}
+.event-rule-row{display:grid;grid-template-columns:minmax(110px,1fr) 110px 150px;gap:8px;align-items:center;padding:9px 0;border-top:1px solid #e4e8f3;font-size:13px}
+.event-rule-row label{display:flex;gap:7px;align-items:center}.event-rule-row select,.event-rule-row input[type=number]{min-width:0;border:1px solid #dce4f4;border-radius:7px;padding:5px;background:white;color:#24385e}.event-rule-row input[type=number]{width:58px}.event-rule-row small{grid-column:1/-1;color:#62718d;line-height:1.5}.event-weight{justify-content:flex-end}
+@media(max-width:600px){.event-rule-row{grid-template-columns:minmax(100px,1fr) 105px}.event-weight{grid-column:1/-1;justify-content:flex-start}}
+
 .interaction-preferences{display:grid;gap:12px;padding:18px;border:1px solid #dce4f4;border-radius:20px;background:linear-gradient(180deg,#fff 0%,#fbfcff 100%);box-shadow:0 14px 34px rgba(65,83,140,.08)}
 .preference-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px 16px}
 .preference-heading{display:grid;gap:6px;min-width:0}

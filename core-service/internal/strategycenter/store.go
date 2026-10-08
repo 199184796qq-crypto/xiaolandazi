@@ -41,16 +41,17 @@ type Policy struct {
 }
 
 type RoomInteractionPreferences struct {
-	TenantID             int64     `json:"tenant_id"`
-	RoomID               int64     `json:"room_id"`
-	OverallInteraction   int       `json:"overall_interaction"`
-	QuestionPreference   int       `json:"question_preference"`
-	WelcomePreference    int       `json:"welcome_preference"`
-	EngagementPreference int       `json:"engagement_preference"`
-	ChatPreference       int       `json:"chat_preference"`
-	ConversionPreference int       `json:"conversion_preference"`
-	AutoHeat             bool      `json:"auto_heat"`
-	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
+	TenantID             int64                `json:"tenant_id"`
+	RoomID               int64                `json:"room_id"`
+	OverallInteraction   int                  `json:"overall_interaction"`
+	QuestionPreference   int                  `json:"question_preference"`
+	WelcomePreference    int                  `json:"welcome_preference"`
+	EngagementPreference int                  `json:"engagement_preference"`
+	ChatPreference       int                  `json:"chat_preference"`
+	ConversionPreference int                  `json:"conversion_preference"`
+	AutoHeat             bool                 `json:"auto_heat"`
+	UpdatedAt            time.Time            `json:"updated_at,omitempty"`
 }
 
 type Signals struct {
@@ -163,6 +164,7 @@ type stageAccumulator struct {
 }
 
 type Store struct {
+	scheduleDB       *sql.DB
 	mu               sync.RWMutex
 	policies         map[int64]Policy
 	roomPreferences  map[int64]RoomInteractionPreferences
@@ -218,6 +220,7 @@ func (s *Store) Load(ctx context.Context, db *sql.DB) error {
 	if s == nil || db == nil {
 		return nil
 	}
+	s.scheduleDB = db
 	rows, err := db.QueryContext(ctx, `SELECT tenant_id, CAST(config_json AS CHAR) FROM live_strategy_center_configs`)
 	if err != nil {
 		return err
@@ -353,6 +356,10 @@ func (s *Store) PutRoomInteractionPreferences(roomID int64, input RoomInteractio
 		return input
 	}
 	s.mu.Lock()
+	if input.Schedule != nil {
+		copy := CloneInteractionSchedule(*input.Schedule)
+		input.Schedule = &copy
+	}
 	s.roomPreferences[roomID] = input
 	s.mu.Unlock()
 	return input
@@ -368,6 +375,10 @@ func (s *Store) RoomInteractionPreferences(roomID int64) RoomInteractionPreferen
 	s.mu.RUnlock()
 	if !ok {
 		return defaults
+	}
+	if item.Schedule != nil {
+		copy := CloneInteractionSchedule(*item.Schedule)
+		item.Schedule = &copy
 	}
 	return normalizeRoomInteractionPreferences(roomID, item)
 }

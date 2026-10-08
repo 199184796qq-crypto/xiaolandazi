@@ -39,25 +39,28 @@ type liveStrategyIntentTarget struct {
 }
 
 type liveStrategyIntentChanges struct {
-	ProductName              string   `json:"product_name,omitempty"`
-	RoomRoles                []string `json:"room_roles,omitempty"`
-	Spec                     string   `json:"spec,omitempty"`
-	DailyPrice               string   `json:"daily_price,omitempty"`
-	Quantity                 string   `json:"quantity,omitempty"`
-	Audience                 string   `json:"audience,omitempty"`
-	AttributeCode            string   `json:"attribute_code,omitempty"`
-	AttributeLabel           string   `json:"attribute_label,omitempty"`
-	AttributeValue           string   `json:"attribute_value,omitempty"`
-	AttributeUnit            string   `json:"attribute_unit,omitempty"`
-	AttributeDisplayType     string   `json:"attribute_display_type,omitempty"`
-	AttributeDisplayPriority int      `json:"attribute_display_priority,omitempty"`
-	ActivityPrice            string   `json:"activity_price,omitempty"`
-	Gift                     string   `json:"gift,omitempty"`
-	Activity                 string   `json:"activity,omitempty"`
-	StartsAt                 string   `json:"starts_at,omitempty"`
-	EndsAt                   string   `json:"ends_at,omitempty"`
-	FactValue                string   `json:"fact_value,omitempty"`
-	ScriptText               string   `json:"script_text,omitempty"`
+	ForbiddenWording         *string                      `json:"forbidden_wording,omitempty"`
+	SafeRewrite              *string                      `json:"safe_rewrite,omitempty"`
+	NewFactCategory          *liveStrategyNewFactCategory `json:"new_fact_category,omitempty"`
+	ProductName              string                       `json:"product_name,omitempty"`
+	RoomRoles                []string                     `json:"room_roles,omitempty"`
+	Spec                     string                       `json:"spec,omitempty"`
+	DailyPrice               string                       `json:"daily_price,omitempty"`
+	Quantity                 string                       `json:"quantity,omitempty"`
+	Audience                 string                       `json:"audience,omitempty"`
+	AttributeCode            string                       `json:"attribute_code,omitempty"`
+	AttributeLabel           string                       `json:"attribute_label,omitempty"`
+	AttributeValue           string                       `json:"attribute_value,omitempty"`
+	AttributeUnit            string                       `json:"attribute_unit,omitempty"`
+	AttributeDisplayType     string                       `json:"attribute_display_type,omitempty"`
+	AttributeDisplayPriority int                          `json:"attribute_display_priority,omitempty"`
+	ActivityPrice            string                       `json:"activity_price,omitempty"`
+	Gift                     string                       `json:"gift,omitempty"`
+	Activity                 string                       `json:"activity,omitempty"`
+	StartsAt                 string                       `json:"starts_at,omitempty"`
+	EndsAt                   string                       `json:"ends_at,omitempty"`
+	FactValue                string                       `json:"fact_value,omitempty"`
+	ScriptText               string                       `json:"script_text,omitempty"`
 }
 
 type liveStrategyIntentModelOutput struct {
@@ -123,10 +126,12 @@ type liveStrategyIntentBenefitContext struct {
 }
 
 type liveStrategyIntentFactContext struct {
-	Category  string `json:"category"`
-	Key       string `json:"key"`
-	Value     string `json:"value"`
-	VersionNo int64  `json:"version_no"`
+	ForbiddenWording string `json:"forbidden_wording,omitempty"`
+	SafeRewrite      string `json:"safe_rewrite,omitempty"`
+	Category         string `json:"category"`
+	Key              string `json:"key"`
+	Value            string `json:"value"`
+	VersionNo        int64  `json:"version_no"`
 }
 
 type liveStrategyIntentPlanContext struct {
@@ -167,7 +172,7 @@ func normalizeLiveStrategyIntent(value string) string {
 	case "product.add", "product.update", "product.disable",
 		"product_attribute.add", "product_attribute.update", "product_attribute.disable",
 		"benefit.add", "benefit.update", "benefit.disable",
-		"fact.add", "fact.update", "fact.disable",
+		"fact.add", "fact.update", "fact.disable", "fact_category.add",
 		"script.add", "script.update", "script.disable",
 		"plan.bind", "plan.unbind", "plan.switch":
 		return strings.ToLower(strings.TrimSpace(value))
@@ -205,6 +210,12 @@ func liveStrategyProgramOutput(value agentunderstanding.UnifiedIntent) liveStrat
 		result.Target.PlanName = intentMapString(target, "plan_name")
 	}
 	if changes := value.Changes; changes != nil {
+		result.Changes.ForbiddenWording = intentMapOptionalString(changes, "forbidden_wording")
+		result.Changes.SafeRewrite = intentMapOptionalString(changes, "safe_rewrite")
+		if category, ok := changes["new_fact_category"]; ok {
+			raw, _ := json.Marshal(category)
+			_ = json.Unmarshal(raw, &result.Changes.NewFactCategory)
+		}
 		result.Changes.ProductName = intentMapString(changes, "product_name")
 		result.Changes.RoomRoles = intentMapStringSlice(changes, "room_roles")
 		result.Changes.Spec = intentMapString(changes, "spec")
@@ -260,6 +271,15 @@ func intentMapString(values map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func intentMapOptionalString(values map[string]any, key string) *string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return nil
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	return &text
 }
 
 func intentMapInt64(values map[string]any, key string) int64 {
@@ -410,10 +430,14 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		for _, item := range benefitItems {
+			startsAt, endsAt := formatIntentTime(item.StartsAt), formatIntentTime(item.EndsAt)
+			if item.ValidityMode == "permanent" {
+				startsAt, endsAt = "", ""
+			}
 			benefits = append(benefits, liveStrategyIntentBenefitContext{
 				Key: item.Key, LinkKey: item.LinkKey, ProductName: item.ProductName,
 				ActivityPrice: item.ActivityPrice, Gift: item.Gift, Activity: item.Activity,
-				StartsAt: formatIntentTime(item.StartsAt), EndsAt: formatIntentTime(item.EndsAt),
+				StartsAt: startsAt, EndsAt: endsAt,
 				Status: item.Status, VersionNo: item.VersionNo,
 			})
 		}
@@ -425,7 +449,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 		}
 		for _, item := range factItems {
 			facts = append(facts, liveStrategyIntentFactContext{
-				Category: item.Category, Key: item.Key, Value: item.Value, VersionNo: item.VersionNo,
+				Category: item.Category, Key: item.Key, Value: item.Value, ForbiddenWording: item.ForbiddenWording, SafeRewrite: item.SafeRewrite, VersionNo: item.VersionNo,
 			})
 		}
 
@@ -535,53 +559,24 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 	scriptReferencesJSON, _ := json.Marshal(scriptReferences)
 	plansJSON, _ := json.Marshal(plans)
 	assistantName := s.configuredAgentName(r.Context(), actor.IsInternalStaff())
-	systemPrompt := fmt.Sprintf(`
-你是%s的“直播策略意图解释器”。你的职责只有：理解用户自然语言并输出结构化意图；绝不执行写库、发布、停用或保存。
-
-当前时间：%s
-当前模块：%s
-当前方案：%s
-正式商品链接：%s
-正式活动福利：%s
-正式事实依据：%s
-正式话术参考：%s
-直播间可见方案（bound=已绑定，selected=当前运行选择）：%s
-
-【输出】只输出 JSON，不要 Markdown：
-{
-  "kind": "chat|command|clarify",
-  "intent": "chat|product.add|product.update|product.disable|product_attribute.add|product_attribute.update|product_attribute.disable|benefit.add|benefit.update|benefit.disable|fact.add|fact.update|fact.disable|script.add|script.update|script.disable|plan.bind|plan.unbind|plan.switch|unknown",
-  "reply": "普通聊天时直接回复；需要澄清时给一句简短问题；command 时可留空",
-  "target": {"link_key":"", "product_attribute_id":0, "attribute_code":"", "attribute_label":"", "benefit_key":"", "fact_category":"", "fact_key":"", "script_reference_key":"", "script_title":"", "plan_id":0, "plan_name":""},
-  "changes": {
-    "product_name":"", "room_roles":[], "spec":"", "daily_price":"", "quantity":"", "audience":"", "attribute_code":"", "attribute_label":"", "attribute_value":"", "attribute_unit":"", "attribute_display_type":"text", "attribute_display_priority":0,
-    "activity_price":"", "gift":"", "activity":"", "starts_at":"", "ends_at":"",
-    "fact_value":"", "script_text":""
-  },
-  "missing": [],
-  "confidence": 0.0
-}
-
-【核心规则】
-1. 当前模块只是上下文提示，不等于用户每句话都是修改命令。普通聊天必须 kind=chat、intent=chat。
-2. “1号链接活动”“1号链接的福利”表示以1号链接定位活动福利；如果修改的是赠品、活动价、活动内容、开始/结束/截止时间，必须是 benefit.*，不是 product.*。
-3. 修改商品名称、规格、日常价、数量、适用人群、直播间定位等稳定商品资料时是 product.*；修改品类特有的“个性属性/商品属性”时使用 product_attribute.*，不要把它误判成普通事实或商品规格。直播间定位只允许 main/traffic/benefit/profit/bundle/ordinary，分别对应主推/引流/福利/利润/搭配/普通，可多选；ordinary 不能与其它项并存。用户说“去掉福利定位”时，room_roles 必须返回修改后的完整列表，而不是只返回被删除项。
-4. update 的 changes 只放用户明确想改的字段，禁止为了凑完整对象复制旧值。
-5. 用户说“现在/立即/马上/立即生效”作为开始时间时，将 starts_at 解析成当前时间，格式 YYYY-MM-DD HH:mm。其它相对时间也尽量结合当前时间解析；无法可靠确定就放进 missing 并 kind=clarify。
-6. 用户说“修改活动”但没说字段时，benefit.update + kind=clarify；用户说“修改1号链接”且上下文无法判断是商品还是活动时，kind=clarify、intent=unknown。
-7. 用户说“取消/不用了/算了”属于上层状态机处理；如果来到这里，当普通 chat 处理，不生成业务 command。
-8. 不得说“已修改/已保存/已发布/已生效”。command 只代表理解结果，真正执行由外层确认和业务接口完成。
-9. 优先利用正式商品链接和活动福利解析“这个/刚才那个/1号链接”等指代；仍有歧义就 clarify，不猜。
-10. 发货地、快递、产地、保质期、资质、稳定库存说明等可核对信息属于 fact.*。fact.update 必须用 target.fact_category + target.fact_key 唯一定位；changes.fact_value 只放新值。
-11. “绑定方案”=plan.bind；“解绑方案”=plan.unbind；“切换/使用/运行某方案”=plan.switch。优先用方案列表匹配 plan_id 和 plan_name。切换只针对已经 bound 的方案；未绑定时仍输出 plan.switch，外层会提示先绑定，不要偷偷变成 bind。
-12. “话术参考/参考说法/主播怎么说”属于 script.*。新增用 script.add；修改已有参考用 script.update；停用/删除已有参考用 script.disable。target.script_reference_key 和 target.script_title 用正式话术参考上下文唯一定位；changes.script_text 只放用户想保存或修改的正文。话术参考只控制怎么组织、怎么说，不能把其中出现的商品事实自动升级成事实依据。
-13. 有图片时必须结合图片可见内容理解。用户只是“看看/识别/这是什么”而没有要求写入时，kind=chat，直接说明图片可见信息；用户明确要求把图片内容添加/修改到商品、活动或事实时，再输出相应 command。看不清、被遮挡或图片没有提供的字段禁止猜测。
-`, assistantName, now.Format("2006-01-02 15:04:05 MST"), input.CurrentMode, planName, string(productsJSON), string(benefitsJSON), string(factsJSON), string(scriptReferencesJSON), string(plansJSON))
+	catalog, _, err := s.tenantFactCategoryCatalog(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前账号事实分类失败")
+		return
+	}
+	categoriesJSON, _ := json.Marshal(catalog.Categories)
+	systemPrompt, promptSource, err := loadLiveStrategyIntentPrompt()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	systemPrompt = strings.NewReplacer("{{assistant_name}}", assistantName, "{{now}}", now.Format("2006-01-02 15:04:05 MST"), "{{mode}}", input.CurrentMode, "{{plan}}", planName, "{{products}}", string(productsJSON), "{{benefits}}", string(benefitsJSON), "{{facts}}", string(factsJSON), "{{categories}}", string(categoriesJSON), "{{scripts}}", string(scriptReferencesJSON), "{{plans}}", string(plansJSON)).Replace(systemPrompt)
 
 	roomRef := roomID
 	invocationID := s.beginAISingleUse(r.Context(), actor, &roomRef, "live_strategy_intent", map[string]any{
 		"plan_id": input.PlanID, "current_mode": input.CurrentMode,
 		"understanding_mode": understandingPolicy.Mode, "policy_source": understandingPolicy.ResolvedFrom,
+		"prompt_source": promptSource,
 	})
 	output, modelResponse, err := callLiveStrategyIntentModel(
 		r.Context(), systemPrompt, input.Message, input.History, input.ImageURLs, understandingPolicy.AgentUnderstandingPolicy,
@@ -589,7 +584,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		s.finishAISingleUseWithUsage(
 			r.Context(), invocationID, "failed", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
-			modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"error": err.Error()},
+			modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"error": err.Error(), "raw_response": modelResponse.Text},
 		)
 		fallback := liveStrategyProgramOutput(programIntent)
 		if fallback.Reply == "" {
@@ -614,7 +609,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 	}
 	s.finishAISingleUseWithUsage(
 		r.Context(), invocationID, "succeeded", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
-		modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, nil,
+		modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"raw_response": modelResponse.Text},
 	)
 	writeJSON(w, http.StatusOK, liveStrategyIntentOutput{
 		ProtocolVersion: agentProtocolVersion, State: agentStateResponded,
@@ -669,7 +664,7 @@ func callLiveStrategyIntentModel(
 		return liveStrategyIntentModelOutput{}, result, err
 	}
 	var output liveStrategyIntentModelOutput
-	if err := json.Unmarshal([]byte(stripPolicyJSONFence(result.Text)), &output); err != nil {
+	if err := decodeProductJSON(result.Text, &output); err != nil {
 		return liveStrategyIntentModelOutput{}, result, fmt.Errorf("decode live strategy intent: %w", err)
 	}
 	output.Kind = normalizeLiveStrategyIntentKind(output.Kind)

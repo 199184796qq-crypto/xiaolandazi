@@ -43,6 +43,18 @@ func (c *contentPolicyTestConn) Prepare(string) (driver.Stmt, error) {
 func (c *contentPolicyTestConn) Close() error              { return nil }
 func (c *contentPolicyTestConn) Begin() (driver.Tx, error) { return contentPolicyTestTx{c.state}, nil }
 func (c *contentPolicyTestConn) QueryContext(_ context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(q, "SELECT plan_id FROM live_agent_room_plan_selections") {
+		if len(args) != 2 || args[0].Value != int64(7) || args[1].Value != int64(11) {
+			return nil, errors.New("incorrect selected plan scope")
+		}
+		return &contentPolicyTestRows{columns: []string{"plan_id"}, values: [][]driver.Value{{int64(17)}}}, nil
+	}
+	if strings.Contains(q, "SELECT id FROM live_agent_plan_versions") {
+		if len(args) != 4 || args[0].Value != int64(7) || args[1].Value != int64(17) || args[2].Value != int64(11) {
+			return nil, errors.New("incorrect mode version scope")
+		}
+		return &contentPolicyTestRows{columns: []string{"id"}, values: [][]driver.Value{{int64(42)}}}, nil
+	}
 	if len(args) < 2 {
 		return nil, errors.New("missing tenant/room scope")
 	}
@@ -134,7 +146,7 @@ func TestContentModeSelectionDoesNotGrantFeatures(t *testing.T) {
 			if err := contentPolicyStore(t, state).SaveLiveContentMode(context.Background(), 7, 11, 5, mode, false); err != nil {
 				t.Fatal(err)
 			}
-			if !state.committed || len(state.writes) != 2 {
+			if !state.committed || len(state.writes) != 3 {
 				t.Fatalf("mode/audit not atomic: %+v", state)
 			}
 			if strings.Contains(state.writes[0], "dynamic_authorized=") || strings.Contains(state.writes[0], "authorization_source=") {

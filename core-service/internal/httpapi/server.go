@@ -19,6 +19,7 @@ import (
 	"livecompanion/core/internal/collector"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/media"
+	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/questionqueue"
 	roomstore "livecompanion/core/internal/room"
@@ -31,25 +32,27 @@ import (
 )
 
 type Server struct {
-	rooms            *roomstore.Store
-	events           *eventstore.Store
-	hub              *eventstore.Hub
-	collectors       *collector.Manager
-	media            *media.Manager
-	capture          *capture.Manager
-	brain            roomBrain
-	questions        *questionqueue.Queue
-	agentDecisions   *agentdecision.Queue
-	agentWork        *agentwork.Registry
-	userBlocks       *userblock.Store
-	speechAnalysis   *speechanalysis.Manager
-	speechRuntime    *speechruntime.Registry
-	audioHub         *audiohub.Hub
-	roomAudio        *roomaudio.Engine
-	semanticEmbedder semantic.Embedder
-	strategyPolicies *strategycenter.Store
-	env              string
-	internalToken    string
+	rooms             *roomstore.Store
+	events            *eventstore.Store
+	hub               *eventstore.Hub
+	collectors        *collector.Manager
+	media             *media.Manager
+	capture           *capture.Manager
+	brain             roomBrain
+	questions         *questionqueue.Queue
+	agentDecisions    *agentdecision.Queue
+	agentWork         *agentwork.Registry
+	userBlocks        *userblock.Store
+	speechAnalysis    *speechanalysis.Manager
+	speechRuntime     *speechruntime.Registry
+	audioHub          *audiohub.Hub
+	roomAudio         *roomaudio.Engine
+	semanticEmbedder  semantic.Embedder
+	strategyPolicies  *strategycenter.Store
+	env               string
+	internalToken     string
+	messages          *messagecaptain.Captain
+	messageUnregister func()
 }
 
 func New(
@@ -158,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/start", s.internal(http.HandlerFunc(s.startRoomAudioProgram)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/append", s.internal(http.HandlerFunc(s.appendRoomAudioProgram)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/audio/program", s.internal(http.HandlerFunc(s.getRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/refresh", s.internal(http.HandlerFunc(s.refreshRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/refresh/cancel", s.internal(http.HandlerFunc(s.cancelRoomAudioProgramRefresh)))
@@ -916,7 +920,8 @@ func (s *Server) createDevEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create event failed")
 		return
 	}
-	if err := s.rooms.MarkLive(r.Context(), roomItem.TenantID, roomID); err != nil {
+	reportErr := s.rooms.ReportDevelopmentLive(r.Context(), roomItem)
+	if reportErr != nil {
 		writeError(w, http.StatusInternalServerError, "update room failed")
 		return
 	}

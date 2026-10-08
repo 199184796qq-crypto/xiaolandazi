@@ -95,7 +95,7 @@ func NewManager(
 	if failoverDelay < 0 {
 		failoverDelay = 0
 	}
-	return &Manager{
+	manager := &Manager{
 		rootCtx:               rootCtx,
 		rootCancel:            rootCancel,
 		rooms:                 rooms,
@@ -113,6 +113,16 @@ func NewManager(
 		eventPipeline:         newEventPipeline(events, hub, publicEventLogEnabled),
 		runtimeUpdater:        newRuntimeUpdater(rooms),
 	}
+	rooms.Lifecycle().SetEndObserver(func(room model.Room, reason string) {
+		// Room authority emits one terminal event; free stats, paid Agent and
+		// audio cleanup continue through the existing session_end pipeline.
+		manager.eventPipeline.CloseRoom(room.ID)
+		manager.eventPipeline.Enqueue(room, model.CreateEventInput{EventType: "session_end", OccurredAt: time.Now().UTC()}, false, false)
+		manager.eventPipeline.CloseRoom(room.ID)
+		manager.runtimeUpdater.ClearRoom(room.ID)
+		log.Printf("room authority ended tenant=%d room=%d reason=%s", room.TenantID, room.ID, reason)
+	})
+	return manager
 }
 
 func (m *Manager) Resume(ctx context.Context) error {
@@ -253,12 +263,6 @@ func (m *Manager) Reconcile(room model.Room) {
 	if !room.MonitorEnabled {
 		if m.IsServingRoom(room.ID) {
 			m.Stop(room.ID)
-			_ = m.rooms.SetStatus(
-				context.Background(),
-				room.TenantID,
-				room.ID,
-				"stopped",
-			)
 		}
 		return
 	}
@@ -463,6 +467,7 @@ func (m *Manager) Preview(
 }
 func (m *Manager) Close() {
 	m.rootCancel()
+	m.rooms.Lifecycle().Close()
 
 	m.mu.Lock()
 	for _, cancel := range m.sessions {
@@ -481,52 +486,62 @@ func (m *Manager) Close() {
 	}
 }
 
-const (
-	offlineConfirmRetryDelay  = 3 * time.Second
-	offlineConfirmationWindow = 60 * time.Second
-)
-
-func nextOfflineConfirmation(suspectedAt, now time.Time) (time.Time, bool) {
-	if suspectedAt.IsZero() {
-		return now.UTC(), false
-	}
-	return suspectedAt, !now.UTC().Before(suspectedAt.Add(offlineConfirmationWindow))
-}
+const offlineConfirmRetryDelay = 3 * time.Second
 
 func (m *Manager) run(ctx context.Context, room model.Room) {
 	backoff := 5 * time.Second
 	currentPlatformRoomID, hasCachedEvents := m.cachedPlatformRoomID(room.ID)
-	sessionEnded := false
-	offlineSuspectedAt := time.Time{}
+	reopenRequired := false
+	if hasCachedEvents {
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		stats, statsErr := m.events.GetSessionStats(checkCtx, room.ID)
+		cancel()
+		reopenRequired = statsErr == nil && stats.EndedAt != nil && !stats.ResumePending
+	}
+	reporter, err := m.rooms.Lifecycle().BeginCollection(ctx, room)
+	if err != nil {
+		log.Printf("collector room=%d begin report: %v", room.ID, err)
+		return
+	}
+	defer m.rooms.Lifecycle().ReleaseCollection(reporter)
+	lastEndRevision := m.rooms.Lifecycle().Snapshot(room).EndRevision
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		if err := m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "connecting"); err != nil {
-			log.Printf("collector room=%d set connecting: %v", room.ID, err)
+		if _, err := m.rooms.ReportCollection(ctx, reporter, "connecting"); err != nil {
 			return
 		}
 
 		runner, err := m.factory.Create(room)
 		if err != nil {
-			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "error")
+			_, _ = m.rooms.ReportCollection(ctx, reporter, "disconnected")
 			log.Printf("collector room=%d create runner: %v", room.ID, err)
-			return
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
 		}
 		live := func(_ context.Context) error {
-			offlineSuspectedAt = time.Time{}
+			if _, err := m.rooms.ReportCollection(ctx, reporter, "live"); err != nil {
+				return err
+			}
 			m.runtimeUpdater.Touch(room)
 			return nil
 		}
 
-		ensureSession := func(input model.CreateEventInput) {
+		ensureSession := func(input model.CreateEventInput, endRevision uint64) {
 			platformRoomID := platformRoomIDFromPayload(input.Payload)
 			if platformRoomID == "" {
 				return
 			}
-			if platformRoomID == currentPlatformRoomID && !sessionEnded {
+			if !captureSessionChanged(platformRoomID, currentPlatformRoomID, endRevision, lastEndRevision, reopenRequired) {
 				return
 			}
 
@@ -544,70 +559,65 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 			}, true, false)
 			currentPlatformRoomID = platformRoomID
 			hasCachedEvents = true
-			sessionEnded = false
+			lastEndRevision = endRevision
+			reopenRequired = false
 		}
 
 		emit := func(_ context.Context, input model.CreateEventInput) error {
-			offlineSuspectedAt = time.Time{}
-			ensureSession(input)
-			if input.EventType == "room" {
-				m.applyRoomMetrics(room, input)
-				m.eventPipeline.Enqueue(room, input, false, false)
-				return nil
-			}
-
-			event, accepted := m.eventPipeline.Enqueue(room, input, true, true)
-			if accepted {
-				m.runtimeUpdater.Touch(room)
-				if (strings.EqualFold(input.EventType, "chat") || strings.EqualFold(input.EventType, "comment")) && roombrain.IsOrderSignalText(input.Content) {
-					payload, _ := json.Marshal(map[string]any{
-						"source_event_id": event.ID,
-						"verified_order":  false,
-						"source":          "user_chat",
-					})
-					m.eventPipeline.Enqueue(room, model.CreateEventInput{
-						EventType:  "order_signal",
-						UserID:     input.UserID,
-						Nickname:   input.Nickname,
-						Content:    input.Content,
-						OccurredAt: event.OccurredAt,
-						Payload:    payload,
-					}, true, true)
+			return m.rooms.ApplyCollectedEvent(ctx, reporter, func(snapshot roomstore.LifecycleSnapshot) error {
+				ensureSession(input, snapshot.EndRevision)
+				if input.EventType == "room" {
+					m.applyRoomMetrics(room, input)
+					m.eventPipeline.Enqueue(room, input, false, false)
+					return nil
 				}
-			}
-			return nil
+
+				event, accepted := m.eventPipeline.Enqueue(room, input, true, true)
+				if accepted {
+					m.runtimeUpdater.Touch(room)
+					if (strings.EqualFold(input.EventType, "chat") || strings.EqualFold(input.EventType, "comment")) && roombrain.IsOrderSignalText(input.Content) {
+						payload, _ := json.Marshal(map[string]any{
+							"source_event_id": event.ID,
+							"verified_order":  false,
+							"source":          "user_chat",
+						})
+						m.eventPipeline.Enqueue(room, model.CreateEventInput{
+							EventType:  "order_signal",
+							UserID:     input.UserID,
+							Nickname:   input.Nickname,
+							Content:    input.Content,
+							OccurredAt: event.OccurredAt,
+							Payload:    payload,
+						}, true, true)
+					}
+				}
+				return nil
+			})
 		}
 
 		err = runner.Run(ctx, room, live, emit)
+		if ctx.Err() != nil || errors.Is(err, roomstore.ErrCollectorReplaced) {
+			return
+		}
 		if errors.Is(err, ErrLiveEnded) {
-			if currentPlatformRoomID != "" && !sessionEnded {
-				m.eventPipeline.Enqueue(room, model.CreateEventInput{
-					EventType:  "session_end",
-					OccurredAt: time.Now().UTC(),
-				}, false, false)
-				sessionEnded = true
-			}
-			m.eventPipeline.CloseRoom(room.ID)
-			m.runtimeUpdater.ClearRoom(room.ID)
-			if ctx.Err() != nil {
+			if _, reportErr := m.rooms.ReportCollection(ctx, reporter, "ended"); reportErr != nil {
 				return
 			}
-			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "offline")
 			log.Printf("collector room=%d runner=%s platform live ended: %v", room.ID, runner.Name(), err)
 			backoff = 30 * time.Second
 		} else if errors.Is(err, ErrOffline) {
-			now := time.Now().UTC()
-			var confirmed bool
-			offlineSuspectedAt, confirmed = nextOfflineConfirmation(offlineSuspectedAt, now)
-			if !confirmed {
+			snapshot, reportErr := m.rooms.ReportCollection(ctx, reporter, "disconnected")
+			if reportErr != nil {
+				return
+			}
+			if snapshot.Status != "offline" {
 				log.Printf(
 					"collector room=%d runner=%s connectivity lost for %s; keeping live session during %s confirmation window",
 					room.ID,
 					runner.Name(),
-					now.Sub(offlineSuspectedAt).Round(time.Second),
-					offlineConfirmationWindow,
+					time.Since(*snapshot.DisconnectedAt).Round(time.Second),
+					roomstore.CollectionGrace,
 				)
-				m.eventPipeline.CloseRoom(room.ID)
 				if ctx.Err() != nil {
 					return
 				}
@@ -620,28 +630,12 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 				}
 				continue
 			}
-			if currentPlatformRoomID != "" && !sessionEnded {
-				m.eventPipeline.Enqueue(room, model.CreateEventInput{
-					EventType:  "session_end",
-					OccurredAt: now,
-				}, false, false)
-				sessionEnded = true
-			}
-			m.eventPipeline.CloseRoom(room.ID)
-			m.runtimeUpdater.ClearRoom(room.ID)
-			if ctx.Err() != nil {
-				return
-			}
-			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "offline")
-			log.Printf("collector room=%d runner=%s offline confirmed after %s: %v", room.ID, runner.Name(), offlineConfirmationWindow, err)
+			log.Printf("collector room=%d runner=%s room authority confirms offline: %v", room.ID, runner.Name(), err)
 			backoff = 30 * time.Second
 		} else {
-			m.eventPipeline.CloseRoom(room.ID)
-			m.runtimeUpdater.ClearRoom(room.ID)
-			if ctx.Err() != nil {
+			if _, reportErr := m.rooms.ReportCollection(ctx, reporter, "disconnected"); reportErr != nil {
 				return
 			}
-			_ = m.rooms.SetStatus(context.Background(), room.TenantID, room.ID, "error")
 			if err != nil {
 				log.Printf("collector room=%d runner=%s error: %v", room.ID, runner.Name(), err)
 			}
@@ -661,6 +655,12 @@ func (m *Manager) run(ctx context.Context, room model.Room) {
 		case <-timer.C:
 		}
 	}
+}
+
+// A replacement worker must still reopen an ended cached session when the
+// platform broadcast ID is unchanged. This never starts the paid Agent.
+func captureSessionChanged(platformID, previousID string, revision, previousRevision uint64, reopenRequired bool) bool {
+	return platformID != "" && (platformID != previousID || revision != previousRevision || reopenRequired)
 }
 
 func platformRoomIDFromPayload(payload json.RawMessage) string {

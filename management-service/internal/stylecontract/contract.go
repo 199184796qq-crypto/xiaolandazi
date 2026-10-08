@@ -134,6 +134,40 @@ func literalHabitPosition(source, text string) string {
 	return "混合"
 }
 
+// literalHabitSlots turns observed sentence position into a small renderer
+// contract. The model receives these slots in a compact meta prompt and the
+// deterministic post-processor uses the same contract; neither needs the raw
+// sample on every generation call.
+func literalHabitSlots(kind, position string) []string {
+	switch kind {
+	case "audience_address":
+		if position == "句尾" {
+			return []string{"post_fact_address"}
+		}
+		return []string{"segment_open", "pre_fact"}
+	case "audience_pronoun":
+		return []string{"pre_fact", "pre_question"}
+	case "self_address":
+		return []string{"subject_before_fact"}
+	case "particle":
+		return []string{"sentence_end", "post_fact"}
+	case "connector":
+		return []string{"transition_before_fact"}
+	case "catchphrase":
+		return []string{"post_fact_confirmation"}
+	case "dialect_marker":
+		if position == "句首" {
+			return []string{"sentence_open"}
+		}
+		if position == "句尾" {
+			return []string{"sentence_end"}
+		}
+		return []string{"sentence_middle"}
+	default:
+		return nil
+	}
+}
+
 func deriveRepeatedLiveHabits(source, kind string, pattern *regexp.Regexp, limit int) []model.LiveAnchorLiteralHabit {
 	matches := pattern.FindAllString(source, -1)
 	// Repeated evidence is assessed at category level. Once the speaker clearly
@@ -195,7 +229,7 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 	// policy. Only literal habits that can be grounded back to the source are
 	// admitted; code compiles the final rules after deriving source statistics.
 	sampleChars := utf8.RuneCountInString(strings.TrimSpace(source))
-	spec := &model.LiveAnchorDeliverySpec{Version: Version, Instructions: []string{}, Habits: []model.LiveAnchorLiteralHabit{}, SampleChars: sampleChars}
+	spec := &model.LiveAnchorDeliverySpec{Version: Version, Instructions: []string{}, Habits: []model.LiveAnchorLiteralHabit{}, SampleChars: sampleChars, AddressingOverride: NormalizeAddressingOverride(input.AddressingOverride)}
 	seen := map[string]bool{}
 	for _, h := range input.Habits {
 		switch h.Kind {
@@ -298,6 +332,9 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 			Stability: habitStability("dialect_marker", count, sampleChars),
 		})
 	}
+	for index := range spec.Habits {
+		spec.Habits[index].Slots = literalHabitSlots(spec.Habits[index].Kind, spec.Habits[index].Position)
+	}
 	for _, sentence := range sentenceBreak.Split(source, -1) {
 		if strings.TrimSpace(sentence) != "" {
 			spec.SentenceCount++
@@ -323,8 +360,60 @@ func Normalize(profile model.LiveAgentPlanAnchorStyleProfile, source string) mod
 			profile.Dimensions[index].Confidence = "low"
 		}
 	}
+	spec.MetaPromptMD = RenderMetaPrompt(profile)
 	spec.Rulebook = Render(profile)
 	return profile
+}
+
+// NormalizeAddressingOverride keeps user-authored generation addressing small,
+// deterministic and free of obvious business claims. The sample remains the
+// default; an override only changes the two explicit lexical groups.
+func NormalizeAddressingOverride(input *model.LiveAnchorAddressingOverride) *model.LiveAnchorAddressingOverride {
+	if input == nil {
+		return nil
+	}
+	normalizeMode := func(value string) string {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "append":
+			return "append"
+		case "replace":
+			return "replace"
+		default:
+			return "inherit"
+		}
+	}
+	normalizeTerms := func(values []string) []string {
+		result := make([]string, 0, min(len(values), 12))
+		seen := map[string]bool{}
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" || seen[value] || utf8.RuneCountInString(value) > 12 || !pureStyleText(value) {
+				continue
+			}
+			seen[value] = true
+			result = append(result, value)
+			if len(result) == 12 {
+				break
+			}
+		}
+		return result
+	}
+	result := &model.LiveAnchorAddressingOverride{
+		AudienceMode:  normalizeMode(input.AudienceMode),
+		AudienceTerms: normalizeTerms(input.AudienceTerms),
+		SelfMode:      normalizeMode(input.SelfMode),
+		SelfTerms:     normalizeTerms(input.SelfTerms),
+	}
+	if result.AudienceMode != "inherit" && len(result.AudienceTerms) == 0 {
+		result.AudienceMode = "inherit"
+	}
+	if result.SelfMode != "inherit" && len(result.SelfTerms) == 0 {
+		result.SelfMode = "inherit"
+	}
+	if result.AudienceMode == "inherit" && result.SelfMode == "inherit" {
+		return nil
+	}
+	return result
 }
 
 func Valid(profile model.LiveAgentPlanAnchorStyleProfile) bool {
@@ -428,6 +517,75 @@ func Render(profile model.LiveAgentPlanAnchorStyleProfile) string {
 	}
 	b.WriteString("\n【生成场景】\n主线及测试：高频原词按样本密度和适用场景自然分布，不得整体遗漏，不要每句堆叠。\n短互动：先准确回答再自然承接，只使用适合本轮的少量原词，不要求每条回答覆盖全词表；投诉、严肃说明避免不适当的促销腔调。\n纯文本统计不代表真实语速、音高或声音克隆参数。\n")
 	return b.String()
+}
+
+// RenderMetaPrompt is the compact, reusable Markdown prompt compiled once from
+// a sample. It describes how this anchor speaks without carrying the sample's
+// products, sales sequence, or commercial facts. Runtime generation adds only
+// the current 1000-character debt signal beside this static prefix.
+func RenderMetaPrompt(profile model.LiveAgentPlanAnchorStyleProfile) string {
+	d := profile.Delivery
+	if d == nil || d.Version != Version {
+		return ""
+	}
+	labels := map[string]string{"self_address": "主播自指", "audience_address": "观众称呼", "audience_pronoun": "观众指代", "particle": "句尾语气", "connector": "承接词", "catchphrase": "短确认", "dialect_marker": "方言点缀"}
+	var b strings.Builder
+	b.WriteString("# 主播风格元提示词\n\n")
+	b.WriteString("只控制怎么说，不决定说什么。商品、福利、价格、库存、物流、功效、口碑、承诺和促单策略全部以本次正式事实及业务任务为准，不从样本继承。\n\n")
+	fmt.Fprintf(&b, "## 样本可信度\n%d字、%d个分句，统计置信度%s。短样本只参考存在性，长样本才参考密度。\n\n", d.SampleChars, d.SentenceCount, d.SampleConfidence)
+	b.WriteString("## 稳定原词与位置槽\n")
+	written := 0
+	for _, habit := range d.Habits {
+		if habit.Stability == "noise" || written >= 18 {
+			continue
+		}
+		slots := habit.Slots
+		if len(slots) == 0 {
+			slots = literalHabitSlots(habit.Kind, habit.Position)
+		}
+		fmt.Fprintf(&b, "- %s `%s`：%s；位置槽=%s；原样本%d次。\n", labels[habit.Kind], habit.Text, habit.Stability, strings.Join(slots, "/"), habit.Count)
+		written++
+	}
+	if written == 0 {
+		b.WriteString("- 没有充分稳定的固定原词，不为直播感临时发明称呼或口头禅。\n")
+	}
+	if override := NormalizeAddressingOverride(d.AddressingOverride); override != nil {
+		b.WriteString("\n## 本主播称呼覆盖（仅用于生成话术）\n")
+		writeOverride := func(label, mode string, terms []string) {
+			if mode == "inherit" || len(terms) == 0 {
+				return
+			}
+			action := "在样本称呼基础上添加"
+			if mode == "replace" {
+				action = "替换样本中的同类称呼"
+			}
+			fmt.Fprintf(&b, "- %s：%s `%s`。\n", label, action, strings.Join(terms, "`、`"))
+		}
+		writeOverride("观众/粉丝称呼", override.AudienceMode, override.AudienceTerms)
+		writeOverride("主播自称", override.SelfMode, override.SelfTerms)
+		b.WriteString("- 这层只修改称呼词，不改变事实、业务任务、CTA或实时互动策略。\n")
+	}
+	b.WriteString("\n## 句式、节奏与情绪\n")
+	for index, rule := range d.Instructions {
+		if index >= 10 {
+			break
+		}
+		fmt.Fprintf(&b, "- %s\n", rule)
+	}
+	b.WriteString("\n## 执行边界\n- 原词按最近1000字整体分布，不要求每个短段全部出现。\n- 称呼通常放在新话题或事实之前，自指放在当前商家/商品主体之前，语气词放在自然句尾，短确认放在已确认事实之后。\n- 不添加样本没有的身份、方言或观众反馈；不把后台规则、分析过程和位置槽念给观众。\n")
+	return strings.TrimSpace(b.String())
+}
+
+func MetaPrompt(profile model.LiveAgentPlanAnchorStyleProfile) string {
+	if profile.Delivery == nil || profile.Delivery.Version != Version {
+		return ""
+	}
+	if profile.Delivery.AddressingOverride == nil {
+		if value := strings.TrimSpace(profile.Delivery.MetaPromptMD); value != "" {
+			return value
+		}
+	}
+	return RenderMetaPrompt(profile)
 }
 
 type CheckResult struct {

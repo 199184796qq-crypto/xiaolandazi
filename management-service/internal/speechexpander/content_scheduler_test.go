@@ -23,6 +23,29 @@ func schedulerFact(id, kind, source, predicate, label, value, link string) model
 	return model.LiveAgentGenerationFact{FactID: id, SourceKind: kind, SourceKey: source, Predicate: predicate, Label: label, Value: value, LinkKey: link, CanGenerate: true}
 }
 
+func TestConversionActionQuota(t *testing.T) {
+	for _, item := range []struct{ intensity, want int }{{0, 0}, {55, 2}, {80, 3}, {100, 4}} {
+		if got := ConversionActionQuota(item.intensity, 8); got != item.want {
+			t.Fatalf("intensity=%d quota=%d want=%d", item.intensity, got, item.want)
+		}
+	}
+}
+
+func TestCTATypeRequiresMatchingFacts(t *testing.T) {
+	base := schedulerFact("name", "product", "1号链接", "product_name", "商品名称", "衬衫", "1号链接")
+	if got := ctaTypeForFacts(base, nil); got != "direct" {
+		t.Fatalf("plain product should only allow direct CTA, got %s", got)
+	}
+	inventory := schedulerFact("stock", "supplemental_fact", "库存", "inventory", "剩余库存", "20件", "1号链接")
+	if got := ctaTypeForFacts(inventory, nil); got != "scarcity" {
+		t.Fatalf("inventory should allow scarcity CTA, got %s", got)
+	}
+	review := schedulerFact("review", "supplemental_fact", "评价", "review_count", "评价数量", "120条", "1号链接")
+	if got := ctaTypeForFacts(review, nil); got != "social_proof" {
+		t.Fatalf("review should allow social proof CTA, got %s", got)
+	}
+}
+
 func TestResolveContentStrategySeparatesTypeIndustryPlanAndRuntime(t *testing.T) {
 	strategy := ResolveContentStrategy(ContentStrategyInput{LiveType: "commerce", IndustryCode: "服装", PlanGoal: "讲通勤衬衫", ConversionIntensity: 80, ExpansionFreedom: 65}, nil)
 	if strategy.Version != ContentStrategyVersion || strategy.LiveType != "commerce" || strategy.IndustryCode != "apparel" {

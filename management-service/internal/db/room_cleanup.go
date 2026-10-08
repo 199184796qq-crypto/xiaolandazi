@@ -73,7 +73,9 @@ func (s *Store) CleanupDeletedRoomDerivedState(ctx context.Context, tenantID, ro
 	if _, err := tx.ExecContext(ctx, `UPDATE mgmt_user_ui_preferences SET selected_live_room_id=NULL WHERE selected_live_room_id=?`, roomID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	// Cancelling a pending, employee-targeted support request also removes an
+	// actionable inbox message for that employee.
+	return s.commitInboxTx(ctx, tx, "support")
 }
 
 func cancelDeletedRoomQuotaLeases(ctx context.Context, tx *sql.Tx, tenantID, roomID int64) error {

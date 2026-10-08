@@ -66,8 +66,31 @@ type ResolvedContentStrategy struct {
 	RoleSequence        []string                    `json:"role_sequence"`
 	SchedulingMode      string                      `json:"scheduling_mode,omitempty"`
 	ActualSteps         []ContentDecisionReceipt    `json:"actual_steps,omitempty"`
+	ActionTarget        int                         `json:"action_target"`
+	ActionPlanned       int                         `json:"action_planned"`
+	DirectCTAMentions   int                         `json:"direct_cta_mentions"`
 	ProductPlan         []ProductOperatingDirection `json:"product_plan,omitempty"`
 	Layers              []ContentStrategyLayer      `json:"layers"`
+}
+
+// ConversionActionQuota converts the customer's 0-100 slider into an
+// inspectable minimum count of explicit action-purpose units. It controls
+// frequency only; facts and policy still decide what may be said in them.
+func ConversionActionQuota(intensity, slots int) int {
+	intensity = clampContentValue(intensity)
+	if slots <= 0 || intensity < 25 {
+		return 0
+	}
+	switch {
+	case intensity >= 90:
+		return max(1, (slots+1)/2)
+	case intensity >= 75:
+		return max(1, (slots+2)/3)
+	case intensity >= 50:
+		return max(1, (slots+3)/4)
+	default:
+		return 1
+	}
 }
 
 type contentRole struct {
@@ -459,6 +482,13 @@ func compatibleSupport(primary, support model.LiveAgentGenerationFact, role stri
 func ScheduleContent(plans []model.LiveSpeechExpansionPlan, manifest []model.LiveAgentGenerationFact, input ContentStrategyInput) ([]model.LiveSpeechExpansionPlan, ResolvedContentStrategy) {
 	facts := usableGenerationFacts(manifest)
 	strategy := ResolveContentStrategy(input, facts)
+	totalSlots := 0
+	for _, plan := range plans {
+		totalSlots += len(plan.Steps)
+	}
+	if hasActionMaterial(facts) {
+		strategy.ActionTarget = ConversionActionQuota(strategy.ConversionIntensity, totalSlots)
+	}
 	if len(strategy.RoleSequence) == 0 {
 		strategy.RoleSequence = []string{"orient", "value", "recap_bridge"}
 	}

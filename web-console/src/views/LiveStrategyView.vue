@@ -1,18 +1,40 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useFeedbackErrorRef } from '../uiFeedback'
+import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
-import RoomInteractionPreferences from '../components/RoomInteractionPreferences.vue'
+import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
+import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
+import SourceRiskDetails from '../components/SourceRiskDetails.vue'
+import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
+import FactCategoryBadge from '../components/FactCategoryBadge.vue'
+import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
+import { useFactNameSuggestion } from '../factNameSuggestion'
+import agentGenerationBanner from '../assets/agent-generation-banner.png'
+import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
+import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
+import AnchorControlBar from '../components/AnchorControlBar.vue'
+import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
+import SpeechMinerWorkbench from '../components/SpeechMinerWorkbench.vue'
+import type { AnchorAvatarType } from '../anchorAvatar'
+import { limitAnchorSample } from '../anchorAnalysis'
+import type { PreviewStreamEvent } from '../agent/previewStream'
+import RealtimeGenerationOptionsPanel from '../components/RealtimeGenerationOptionsPanel.vue'
+import { realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
+import { request } from '../api'
 import {
   activateLiveAgentConfigVersion,
   adoptAgentLearningSession,
   adoptLiveAgentPlanBenefits,
   adoptLiveAgentPlanFacts,
   adoptLiveAgentPlanProductLinks,
+  copyLiveAgentPlanProductLink,
+  copyLiveAgentPlanBenefit,
   archiveLiveAgentPlan,
   bindRoomLiveAgentPlan,
   cloneLiveVoiceProfile,
@@ -55,6 +77,7 @@ import {
   confirmLiveAgentPlanScriptAnalysis,
   getLiveAgentPlanStyleOverlays,
   getAnchorStylePluginCatalog,
+  getAnchorStyleWorkbenchContext,
   activateLiveAgentPlanStylePlugin,
   interpretLiveAgentPlanStyleOverlay,
   learnLiveAgentPlanStyleOverlay,
@@ -65,18 +88,23 @@ import {
   createLiveAnchorStyle,
   getLiveAnchorStyle,
   updateLiveAnchorStyle,
+  updateLiveAnchorStyleAvatar,
   deleteLiveAnchorStyle,
   listLiveAnchorStyleSamples,
   createLiveAnchorStyleSample,
   deleteLiveAnchorStyleSample,
   analyzeLiveAnchorStyleSample,
+  getLiveAnchorAnalysisVersions,
+  fuseLiveAnchorAnalyses,
+  editLiveAnchorAnalysis,
+  useLiveAnchorAnalysis,
+  updateLiveAnchorDescription,
   upsertLiveAnchorStylePlugin,
   deleteLiveAnchorStylePlugin,
   bindLiveAnchorStyleToPlan,
   previewAnalyzeLiveAgentPlanScript,
   previewGenerateLiveAgentFullShow,
   previewRecognizeLiveAgentPlanImage,
-  publishLiveAgentPlanVersion,
   updateLiveAgentPlan,
   updateLiveAgentPlanBenefit,
   updateLiveAgentPlanFact,
@@ -93,7 +121,7 @@ import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { getLiveContentMode, setLiveContentMode } from '../liveContentMode'
-import { canSelectLiveContentMode, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
+import { canSelectLiveContentMode, liveContentModeLabels, visibleLiveContentModes, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
 import type {
   AgentMemoryItem,
   LiveAgentConfigInput,
@@ -110,11 +138,14 @@ import type {
   LiveAgentPlanAnchorStyleProfile,
   LiveAnchorStyle,
   LiveAnchorStyleSample,
+  LiveAnchorAnalysisState,
+  AnchorAnalysisSection,
   LiveAnchorStyleAnalysisQC,
   LiveAgentPlanStyleOverlayProfile,
   LiveAnchorStyleOverlayItem,
   AnchorStylePluginCatalog,
   AnchorStylePluginCatalogItem,
+  AnchorStyleSellingPointWheelResponse,
   LiveAgentFullShowGenerationContext,
   LiveAgentFullShowPreviewResponse,
   LiveAgentFullShowVariant,
@@ -145,6 +176,7 @@ const props = withDefaults(defineProps<{
 
 const rooms = ref<Room[]>([])
 const activeRoomId = ref<number | null>(props.supportRoomId || null)
+const roomSidebarCollapsed = ref(false)
 const endSupportScope = props.supportSession ? beginLiveSupportScope(props.supportRoomId) : null
 
 function liveStrategyPreferenceKey(name: string) {
@@ -157,6 +189,17 @@ function restoreLiveStrategyPreferencesLocal() {
   const roomRaw = window.localStorage.getItem(liveStrategyPreferenceKey('selected-room'))
   const parsedRoom = Number(roomRaw || 0)
   if (parsedRoom > 0) activeRoomId.value = parsedRoom
+  roomSidebarCollapsed.value = window.localStorage.getItem(liveStrategyPreferenceKey('rooms-sidebar-collapsed')) === '1'
+}
+
+function toggleRoomSidebar() {
+  roomSidebarCollapsed.value = !roomSidebarCollapsed.value
+  if (!props.supportSession) {
+    window.localStorage.setItem(
+      liveStrategyPreferenceKey('rooms-sidebar-collapsed'),
+      roomSidebarCollapsed.value ? '1' : '0',
+    )
+  }
 }
 
 function persistSelectedRoomLocal(roomID: number | null) {
@@ -182,6 +225,7 @@ type StrategyMode =
   | 'benefits'
   | 'knowledge'
   | 'memory'
+  | 'miner'
   | 'addressing'
   | 'anchor'
   | 'voice'
@@ -189,8 +233,8 @@ type StrategyMode =
   | 'plan'
   | 'basic'
   | 'strategy'
-// “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在主播风格。
-const activeMode = ref<StrategyMode>('anchor')
+// “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
+const activeMode = ref<StrategyMode>('products')
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -208,10 +252,10 @@ const settingsDraft = ref<LiveAgentSettingsInput>({
   greeting: defaultSettings.greeting,
 })
 const settingsSaving = ref(false)
-const settingsError = ref('')
+const settingsError = useFeedbackErrorRef()
 const addressingStrategy = ref<LiveAddressingStrategy>({ addressing_mode: 'system', addressing: [] })
 const addressingSaving = ref(false)
-const addressingError = ref('')
+const addressingError = useFeedbackErrorRef()
 const addressingNotice = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const livePlans = ref<LiveAgentPlan[]>([])
@@ -249,6 +293,40 @@ const analysisDraft = ref<LiveAgentPlanScriptAnalysis | null>(null)
 const knowledgeDraftText = ref('')
 const rhythmDraftText = ref('')
 const formalFacts = ref<LiveAgentPlanFact[]>([])
+const factRiskUnresolvedCount = ref(0)
+const wheelRiskUnresolvedCount = ref(0)
+const productRiskUnresolvedCount = ref(0)
+const benefitRiskUnresolvedCount = ref(0)
+const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
+const factRiskNoticeState = ref({ loading: false, error: '' })
+const factRiskTabFocused = ref(false)
+type FactRiskReviewDisplay = RiskReview & {
+	claim_sha256: string
+	source_key: string
+	text: string
+	rule_id: string
+	severity: string
+	status: string
+	evidence: string
+	reason: string
+	semantic_decision: string
+	semantic_reason?: string
+	semantic_suggestion?: string
+	appeal_status?: string
+	confirmed_at?: string
+}
+type FactRiskController = {
+	confirmReview: (item: FactRiskReviewDisplay, evidence?: string) => Promise<void>
+	submitReviewAppeal: (item: FactRiskReviewDisplay, reason?: string) => Promise<void>
+	reviewSemantics: () => Promise<void>
+}
+const factRiskController = ref<FactRiskController | null>(null)
+const factRiskReviews = ref<FactRiskReviewDisplay[]>([])
+const expandedFactRiskId = ref<number | null>(null)
+const speechMinerWorkbench = ref<InstanceType<typeof SpeechMinerWorkbench> | null>(null)
+const pendingWheelRiskHash = ref('')
+const locatedFactRiskHash = ref('')
+const factRiskAppealDrafts = ref<Record<string, string>>({})
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
 const expandedFormalBenefitIds = ref<Set<number>>(new Set())
@@ -268,6 +346,7 @@ const editingFormalFactId = ref<number | null>(null)
 const formalFactEditDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const creatingFormalFact = ref(false)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
+const formalFactCreateGuidance = ref('')
 const mutatingFormalFactId = ref<number | null>(null)
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
@@ -281,13 +360,14 @@ const editingMemoryId = ref<number | null>(null)
 const memoryEditSessionId = ref<number | null>(null)
 const memoryEditFeedback = ref('')
 const memoryEditPreview = ref('')
-const memoryEditError = ref('')
+const memoryEditError = useFeedbackErrorRef()
 const memoryMutatingId = ref<number | null>(null)
 const memoryDeleteConfirmId = ref<number | null>(null)
 const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
 const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
+const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
@@ -295,9 +375,6 @@ const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id ||
 const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
 const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
 const currentPlanIsBound = computed(() => !!currentPlan.value && boundPlanIdSet.value.has(currentPlan.value.id))
-const currentPlanIsPublished = computed(
-  () => !!currentPlan.value && publishedPlanIdSet.value.has(currentPlan.value.id),
-)
 const orderedRoomPlans = computed(() => [...livePlans.value].sort((left, right) => {
   const rank = (plan: LiveAgentPlan) => {
     if (runtimePlanId.value === plan.id) return 0
@@ -309,9 +386,9 @@ const orderedRoomPlans = computed(() => [...livePlans.value].sort((left, right) 
 }))
 
 function planRoomRelationLabel(plan: LiveAgentPlan) {
-  if (runtimePlanId.value === plan.id && publishedPlanIdSet.value.has(plan.id)) return '正在使用 · 已发布'
-  if (publishedPlanIdSet.value.has(plan.id)) return '已发布'
-  if (boundPlanIdSet.value.has(plan.id)) return '已绑定 · 未发布'
+  if (runtimePlanId.value === plan.id && publishedPlanIdSet.value.has(plan.id)) return '正在使用 · 已保存'
+  if (publishedPlanIdSet.value.has(plan.id)) return '已保存 · 可开播'
+  if (boundPlanIdSet.value.has(plan.id)) return '已绑定 · 待保存'
   return '未绑定'
 }
 const activeScript = computed(
@@ -324,8 +401,10 @@ const activeFormalBenefits = computed(() => {
   const liveLinkKeys = new Set(formalProductLinks.value.filter((item) => item.status === 'active').map((item) => item.link_key))
   return formalBenefits.value.filter((item) => {
     if (item.status !== 'active') return false
-    if (item.starts_at && new Date(item.starts_at).getTime() > now) return false
-    if (item.ends_at && new Date(item.ends_at).getTime() < now) return false
+    if (formalBenefitValidityMode(item) !== 'permanent') {
+      if (item.starts_at && new Date(item.starts_at).getTime() > now) return false
+      if (item.ends_at && new Date(item.ends_at).getTime() < now) return false
+    }
     return !item.link_key || liveLinkKeys.has(item.link_key)
   })
 })
@@ -358,6 +437,25 @@ function formalBenefitFieldValue(item: LiveAgentPlanBenefit, field: FormalBenefi
   if (Number.isNaN(parsed.getTime())) return value
   const pad = (part: number) => String(part).padStart(2, '0')
   return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+}
+
+function formalBenefitValidityMode(item: LiveAgentPlanBenefit): 'scheduled' | 'permanent' {
+  return item.validity_mode === 'permanent' ? 'permanent' : 'scheduled'
+}
+
+function formalBenefitUpdatePayload(item: LiveAgentPlanBenefit, overrides: Partial<Record<FormalBenefitField, string>> = {}, validityMode = formalBenefitValidityMode(item)) {
+  return {
+    expected_version_no: item.version_no,
+    key: item.key,
+    link_key: overrides.link_key ?? item.link_key,
+    product_name: overrides.product_name ?? item.product_name,
+    activity_price: overrides.activity_price ?? item.activity_price,
+    gift: overrides.gift ?? item.gift,
+    activity: overrides.activity ?? item.activity,
+    validity_mode: validityMode,
+    starts_at: overrides.starts_at ?? formalBenefitFieldValue(item, 'starts_at'),
+    ends_at: overrides.ends_at ?? formalBenefitFieldValue(item, 'ends_at'),
+  }
 }
 
 function isEditingFormalBenefit(item: LiveAgentPlanBenefit, field: FormalBenefitField) {
@@ -396,17 +494,12 @@ async function saveFormalBenefitEdit(item: LiveAgentPlanBenefit) {
   mutatingFormalBenefitId.value = item.id
   formalBenefitMessage.value = { id: item.id, text: '正在保存…' }
   try {
-    const updated = await updateLiveAgentPlanBenefit(planId, item.id, {
-      expected_version_no: item.version_no,
-      key: item.key,
-      link_key: current.field === 'link_key' ? value : item.link_key,
-      product_name: current.field === 'product_name' ? value : item.product_name,
-      activity_price: current.field === 'activity_price' ? value : item.activity_price,
-      gift: current.field === 'gift' ? value : item.gift,
-      activity: current.field === 'activity' ? value : item.activity,
-      starts_at: current.field === 'starts_at' ? value : formalBenefitFieldValue(item, 'starts_at'),
-      ends_at: current.field === 'ends_at' ? value : formalBenefitFieldValue(item, 'ends_at'),
-    }, item.tenant_id)
+    const updated = await updateLiveAgentPlanBenefit(
+      planId,
+      item.id,
+      formalBenefitUpdatePayload(item, { [current.field]: value }),
+      item.tenant_id,
+    )
     if (currentRoomPlanId.value === planId) {
       formalBenefits.value = formalBenefits.value.map((entry) => entry.id === item.id ? updated : entry)
     }
@@ -420,6 +513,65 @@ async function saveFormalBenefitEdit(item: LiveAgentPlanBenefit) {
     mutatingFormalBenefitId.value = null
   }
 }
+
+async function setFormalBenefitValidityMode(item: LiveAgentPlanBenefit, mode: 'scheduled' | 'permanent') {
+  if (mutatingFormalBenefitId.value || formalBenefitValidityMode(item) === mode) return
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) {
+    formalBenefitMessage.value = { id: item.id, text: '当前方案已切换，请重新操作', error: true }
+    return
+  }
+  editingFormalBenefit.value = null
+  mutatingFormalBenefitId.value = item.id
+  formalBenefitMessage.value = { id: item.id, text: mode === 'permanent' ? '正在设为长期有效…' : '正在切换为指定时间…' }
+  try {
+    const updated = await updateLiveAgentPlanBenefit(
+      planId,
+      item.id,
+      formalBenefitUpdatePayload(item, {}, mode),
+      item.tenant_id,
+    )
+    if (currentRoomPlanId.value === planId) {
+      formalBenefits.value = formalBenefits.value.map((entry) => entry.id === item.id ? updated : entry)
+    }
+    formalBenefitMessage.value = {
+      id: item.id,
+      text: mode === 'permanent'
+        ? '已设为长期有效，不再显示或统计时间段'
+        : updated.status === 'draft'
+          ? '已切换为指定时间，请补全开始和结束时间'
+          : '已切换为指定时间',
+    }
+  } catch (error) {
+    formalBenefitMessage.value = { id: item.id, text: error instanceof Error ? error.message : '切换失败，请重试', error: true }
+  } finally {
+    mutatingFormalBenefitId.value = null
+  }
+}
+
+async function duplicateFormalBenefit(item: LiveAgentPlanBenefit) {
+  if (mutatingFormalBenefitId.value) return
+  if (editingFormalBenefit.value) {
+    formalBenefitMessage.value = { id: item.id, text: '请先保存正在编辑的福利字段，再复制', error: true }
+    return
+  }
+  const plan = currentRoomPlanId.value
+  const tenant = activeRoom.value?.tenant_id
+  if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) return
+  mutatingFormalBenefitId.value = item.id
+  formalBenefitMessage.value = { id: item.id, text: '正在复制…' }
+  try {
+    const created = await copyLiveAgentPlanBenefit(plan, item)
+    if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+    const cards = [...formalBenefits.value]
+    const index = cards.findIndex(card => card.id === item.id)
+    cards.splice(index < 0 ? cards.length : index + 1, 0, created)
+    formalBenefits.value = cards
+    formalBenefitMessage.value = { id: item.id, text: '已复制，关联库中下一条真实商品链接：' + created.link_key }
+  } catch (err) {
+    if (currentRoomPlanId.value === plan && activeRoom.value?.tenant_id === tenant) formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '复制失败，请刷新确认后重试', error: true }
+  } finally { mutatingFormalBenefitId.value = null }
+}
 const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
 const selectedReusableAnchorStyleId = ref<number | null>(null)
@@ -428,10 +580,54 @@ const reusableAnchorStyleSamples = ref<LiveAnchorStyleSample[]>([])
 const reusableAnchorStyleTab = ref<'samples' | 'analysis' | 'testing' | 'personalization'>('samples')
 const reusableAnchorStyleBusy = ref(false)
 const reusableAnchorStyleNotice = ref('')
-const reusableAnchorStyleError = ref('')
-const reusableAnchorStyleDraft = ref({ name: '', description: '' })
+const reusableAnchorStyleError = useFeedbackErrorRef()
+const editingReusableAnchorStyleNameId = ref<number | null>(null)
+const reusableAnchorStyleNameDraft = ref('')
+const savingReusableAnchorStyleNameId = ref<number | null>(null)
+const savingReusableAnchorAvatarIds = ref<number[]>([])
 const reusableAnchorStyleSampleDraft = ref({ title: '', raw_text: '' })
 const reusableAnchorStyleAnalysisStage = ref('')
+const reusableAnchorStyleAnalysisProgress = ref(0)
+const reusableAnchorMultiAnalysis = ref(false)
+const legacyStyleUIVisible = ref(false)
+const reusableAnchorSampleLimitNotice = ref('')
+const reusableAnchorAnalysisVersions = ref<LiveAnchorAnalysisState>({ items: [], active_version_id: 0 })
+const reusableAnchorAnalysisPreviewId = ref(0)
+const viewedAnchorSample = ref<LiveAnchorStyleSample | null>(null)
+const savingReusableAnchorDescriptionIds = ref<number[]>([])
+let reusableAnchorSelectionEpoch = 0
+const overallAnchorAnalysisText = computed(() => reusableAnchorAnalysisVersions.value.items.find(item => item.id === reusableAnchorAnalysisPreviewId.value)?.text || selectedReusableAnchorStyle.value?.profile.delivery_spec?.meta_prompt_md || '')
+const activeAnchorAnalysisVersion = computed(() => reusableAnchorAnalysisVersions.value.items.find(item => item.id === reusableAnchorAnalysisVersions.value.active_version_id))
+function syncAnchorSampleCount() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style) return
+  const count = reusableAnchorStyleSamples.value.length
+  selectedReusableAnchorStyle.value = { ...style, sample_count: count }
+  reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, sample_count: count } : item)
+}
+function setAnchorSampleDraft(event: Event) {
+  const target = event.target as HTMLTextAreaElement
+  const limited = limitAnchorSample(target.value)
+  reusableAnchorStyleSampleDraft.value.raw_text = limited.text
+  target.value = limited.text
+  reusableAnchorSampleLimitNotice.value = limited.truncated ? '最多10000字，超出部分已截断。' : ''
+}
+function anchorAnalysisScope(styleId: number) {
+  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value, epoch = reusableAnchorSelectionEpoch
+  return { tenant, current: () => tenant === activeRoom.value?.tenant_id && room === activeRoomId.value && styleId === selectedReusableAnchorStyleId.value && epoch === reusableAnchorSelectionEpoch }
+}
+function anchorAnalysisProgress(event: PreviewStreamEvent) {
+  if (event.type !== 'progress') return
+  reusableAnchorStyleAnalysisStage.value = event.message
+  reusableAnchorStyleAnalysisProgress.value = event.percent ?? reusableAnchorStyleAnalysisProgress.value
+}
+async function refreshAnchorAnalysisVersions(styleId: number) {
+  const scope = anchorAnalysisScope(styleId)
+  const versions = await getLiveAnchorAnalysisVersions(styleId, scope.tenant)
+  if (!scope.current()) return
+  reusableAnchorAnalysisVersions.value = versions
+  reusableAnchorAnalysisPreviewId.value = versions.active_version_id
+}
 const reusableAnchorStyleLongTestRunning = ref(false)
 const reusableAnchorStyleLongTestText = ref('')
 const reusableAnchorStyleLongTestSegments = ref(0)
@@ -441,6 +637,14 @@ const reusableAnchorStyleLongTestStage = ref('等待开始')
 const reusableAnchorStyleLongTestOutput = ref<HTMLElement | null>(null)
 const reusableAnchorStyleLongTestContinuation = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['continuation'] | undefined>(undefined)
 const reusableAnchorStyleLongTestAdvisories = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['advisories']>([])
+type AnchorAddressingMode = 'inherit' | 'append' | 'replace'
+const anchorAddressingDraft = ref({
+  audience_mode: 'inherit' as AnchorAddressingMode,
+  audience_terms: '',
+  self_mode: 'inherit' as AnchorAddressingMode,
+  self_terms: '',
+})
+const anchorAddressingSaving = ref(false)
 const reusableAnchorStyleProfile = computed(() => selectedReusableAnchorStyle.value?.profile || null)
 const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dimensions?.length
   ? reusableAnchorStyleProfile.value
@@ -457,20 +661,20 @@ const anchorStyleTestTopic = ref('本轮主线介绍当前商品的核心价值�
 const anchorStyleTestTargetChars = ref(500)
 const anchorStyleConversionIntensity = ref(55)
 const anchorStyleTestResult = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>> | null>(null)
-const anchorStyleTestError = ref('')
+const anchorStyleTestError = useFeedbackErrorRef()
 const anchorStyleAnalysisQC = ref<LiveAnchorStyleAnalysisQC | null>(null)
 const anchorStyleCorrectionFeedback = ref('')
 const anchorStyleCorrectionCandidates = ref<LiveAnchorStyleOverlayItem[]>([])
 const anchorStyleCorrectionHistory = ref<Array<{ feedback: string; diagnosis: string; model: string }>>([])
 const anchorStyleAdvisoryOverrides = ref<string[]>([])
 const anchorStyleCorrectionBusy = ref(false)
-const anchorStyleCorrectionError = ref('')
+const anchorStyleCorrectionError = useFeedbackErrorRef()
 const styleOverlayProfile = ref<LiveAgentPlanStyleOverlayProfile | null>(null)
 const styleOverlaySource = ref('')
 const styleOverlayExplanation = ref('')
 const styleOverlayStrength = ref(50)
 const styleOverlayBusy = ref(false)
-const styleOverlayError = ref('')
+const styleOverlayError = useFeedbackErrorRef()
 const styleOverlayNotice = ref('')
 const styleOverlayPending = ref<LiveAnchorStyleOverlayItem | null>(null)
 const styleOverlayMemoryMatches = ref(0)
@@ -481,7 +685,67 @@ const anchorRulebook = computed(() => anchorDelivery.value?.version === 'anchor-
 const enabledStyleOverlayCount = computed(() => styleOverlayProfile.value?.items.filter((item) => item.enabled).length || 0)
 const activeStylePluginIDs = computed(() => new Set((styleOverlayProfile.value?.items || []).flatMap((item) => item.plugin?.plugin_id ? [item.plugin.plugin_id] : [])))
 const canRunAnchorStyleTest = computed(() => Boolean(anchorRulebook.value) || enabledStyleOverlayCount.value > 0)
+const learnedAnchorAudienceTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
+  .filter((item) => item.kind === 'audience_address' || item.kind === 'audience_pronoun')
+  .map((item) => item.text))
+const learnedAnchorSelfTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
+  .filter((item) => item.kind === 'self_address')
+  .map((item) => item.text))
 const anchorCopyNotice = ref('')
+
+function loadAnchorAddressingDraft(style: LiveAnchorStyle | null) {
+  const value = style?.profile.delivery_spec?.addressing_override
+  anchorAddressingDraft.value = {
+    audience_mode: (value?.audience_mode === 'append' || value?.audience_mode === 'replace' ? value.audience_mode : 'inherit') as AnchorAddressingMode,
+    audience_terms: (value?.audience_terms || []).join('、'),
+    self_mode: (value?.self_mode === 'append' || value?.self_mode === 'replace' ? value.self_mode : 'inherit') as AnchorAddressingMode,
+    self_terms: (value?.self_terms || []).join('、'),
+  }
+}
+
+function splitAnchorAddressingTerms(value: string) {
+  return Array.from(new Set(value.split(/[、,，;；\n]+/).map((item) => item.trim()).filter(Boolean))).slice(0, 12)
+}
+
+async function saveAnchorAddressingOverride() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style?.profile.delivery_spec || anchorAddressingSaving.value) return
+  const audienceTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.audience_terms)
+  const selfTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.self_terms)
+  if (anchorAddressingDraft.value.audience_mode !== 'inherit' && !audienceTerms.length) {
+    reusableAnchorStyleError.value = '观众称呼选择添加或替换时，请至少填写一个称呼。'
+    return
+  }
+  if (anchorAddressingDraft.value.self_mode !== 'inherit' && !selfTerms.length) {
+    reusableAnchorStyleError.value = '主播自称选择添加或替换时，请至少填写一个自称。'
+    return
+  }
+  anchorAddressingSaving.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const profile: LiveAgentPlanAnchorStyleProfile = JSON.parse(JSON.stringify(style.profile))
+    if (!profile.delivery_spec) return
+    profile.delivery_spec.addressing_override = {
+      audience_mode: anchorAddressingDraft.value.audience_mode,
+      audience_terms: audienceTerms,
+      self_mode: anchorAddressingDraft.value.self_mode,
+      self_terms: selfTerms,
+    }
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name: style.name,
+      description: style.description || '',
+      profile,
+    }, activeRoom.value?.tenant_id)
+    selectedReusableAnchorStyle.value = updated
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
+    loadAnchorAddressingDraft(updated)
+    reusableAnchorStyleNotice.value = '生成话术使用的称呼覆盖已保存；实时互动策略没有修改。'
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存称呼覆盖失败'
+  } finally {
+    anchorAddressingSaving.value = false
+  }
+}
 async function copyAnchorRulebook() {
   try {
     await navigator.clipboard.writeText(anchorRulebook.value)
@@ -543,27 +807,41 @@ async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
 }
 
 async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
+  const epoch = ++reusableAnchorSelectionEpoch
+  const roomId = activeRoomId.value
+  const tenantID = activeRoom.value?.tenant_id
+  viewedAnchorSample.value = null
+  reusableAnchorMultiAnalysis.value = false
+  reusableAnchorStyleAnalysisStage.value = ''
+  reusableAnchorStyleAnalysisProgress.value = 0
+  reusableAnchorSampleLimitNotice.value = ''
+  reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
+  reusableAnchorAnalysisVersions.value = { items: [], active_version_id: 0 }
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
-    const tenantID = activeRoom.value?.tenant_id
-    const [style, samples] = await Promise.all([
+    const [style, samples, versions] = await Promise.all([
       getLiveAnchorStyle(styleID, tenantID),
       listLiveAnchorStyleSamples(styleID, tenantID),
+      getLiveAnchorAnalysisVersions(styleID, tenantID),
     ])
+    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
     if (!stylePluginCatalog.value) {
       try { stylePluginCatalog.value = await getAnchorStylePluginCatalog() } catch { /* 插件目录不可用时仍可查看和训练主播 */ }
     }
+    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
     selectedReusableAnchorStyleId.value = styleID
     selectedReusableAnchorStyle.value = style
     reusableAnchorStyleSamples.value = samples.items || []
-    reusableAnchorStyleDraft.value = { name: style.name, description: style.description || '' }
+    reusableAnchorAnalysisVersions.value = versions
+    reusableAnchorAnalysisPreviewId.value = versions.active_version_id
+    loadAnchorAddressingDraft(style)
     reusableAnchorStyleTab.value = reusableAnchorStyleTab.value || 'samples'
     if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案绑定都会使用这套风格。`
   } catch (err) {
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格详情失败'
+    if (epoch === reusableAnchorSelectionEpoch) reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格详情失败'
   } finally {
-    reusableAnchorStyleBusy.value = false
+    if (epoch === reusableAnchorSelectionEpoch) reusableAnchorStyleBusy.value = false
   }
 }
 
@@ -571,7 +849,7 @@ async function createReusableAnchorStyle() {
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
-    const style = await createLiveAnchorStyle({ name: '新主播', description: '请添加这个主播的表达样本和风格说明。', tenant_id: activeRoom.value?.tenant_id })
+    const style = await createLiveAnchorStyle({ name: '新主播', description: '', tenant_id: activeRoom.value?.tenant_id })
     reusableAnchorStyles.value = [style, ...reusableAnchorStyles.value]
     await selectReusableAnchorStyle(style.id)
     reusableAnchorStyleTab.value = 'samples'
@@ -580,97 +858,255 @@ async function createReusableAnchorStyle() {
   } finally { reusableAnchorStyleBusy.value = false }
 }
 
-async function saveReusableAnchorStyleInfo() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || !reusableAnchorStyleDraft.value.name.trim()) return
-  reusableAnchorStyleBusy.value = true
+async function saveReusableAnchorAvatar(style: LiveAnchorStyle, kind: AnchorAvatarType) {
+  if (savingReusableAnchorAvatarIds.value.includes(style.id) || style.avatar_type === kind) return
+  const tenant = activeRoom.value?.tenant_id
+  const roomId = activeRoomId.value
+  savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
+  reusableAnchorStyleError.value = ''
   try {
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: reusableAnchorStyleDraft.value.name.trim(),
-      description: reusableAnchorStyleDraft.value.description.trim(),
-      profile: style.profile,
-    }, activeRoom.value?.tenant_id)
-    selectedReusableAnchorStyle.value = updated
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
-    reusableAnchorStyleNotice.value = '主播名称和介绍已保存。'
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
-  finally { reusableAnchorStyleBusy.value = false }
+    const updated = await updateLiveAnchorStyleAvatar(style.id, kind, tenant)
+    if (tenant !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
+    // Merge only presentation metadata; a concurrently completed analysis or
+    // rename must not be replaced with this request's older full response.
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_type: updated.avatar_type } : item)
+    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_type: updated.avatar_type }
+    reusableAnchorStyleNotice.value = '主播头像已自动保存。'
+  } catch (err) {
+    if (tenant === activeRoom.value?.tenant_id && roomId === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播头像失败'
+  } finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
 }
 
-async function deleteReusableAnchorStyle() {
-  const style = selectedReusableAnchorStyle.value
+function beginReusableAnchorStyleNameEdit(style: LiveAnchorStyle) {
+  editingReusableAnchorStyleNameId.value = style.id
+  reusableAnchorStyleNameDraft.value = style.name
+  reusableAnchorStyleError.value = ''
+}
+
+async function saveReusableAnchorDescription(style: LiveAnchorStyle, text: string) {
+  if (savingReusableAnchorDescriptionIds.value.includes(style.id)) return
+  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  savingReusableAnchorDescriptionIds.value.push(style.id)
+  try {
+    const result = await updateLiveAnchorDescription(style.id, Array.from(text).slice(0, 30).join(''), tenant)
+    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, description: result.description } : item)
+    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, description: result.description }
+    reusableAnchorStyleNotice.value = '主播特征介绍已自动保存。'
+  } catch (err) { if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存介绍失败' }
+  finally { savingReusableAnchorDescriptionIds.value = savingReusableAnchorDescriptionIds.value.filter(id => id !== style.id) }
+}
+
+function cancelReusableAnchorStyleNameEdit() {
+  editingReusableAnchorStyleNameId.value = null
+  reusableAnchorStyleNameDraft.value = ''
+}
+
+async function saveReusableAnchorStyleName(style: LiveAnchorStyle) {
+  if (editingReusableAnchorStyleNameId.value !== style.id || savingReusableAnchorStyleNameId.value === style.id) return
+  const name = reusableAnchorStyleNameDraft.value.trim()
+  if (!name) {
+    reusableAnchorStyleError.value = '主播名称不能为空。'
+    reusableAnchorStyleNameDraft.value = style.name
+    return
+  }
+  if (name === style.name) {
+    cancelReusableAnchorStyleNameEdit()
+    return
+  }
+  savingReusableAnchorStyleNameId.value = style.id
+  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  try {
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name,
+      description: style.description || '',
+    }, tenant)
+    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    if (selectedReusableAnchorStyleId.value === updated.id && selectedReusableAnchorStyle.value) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, name: updated.name }
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? { ...item, name: updated.name } : item)
+    reusableAnchorStyleNotice.value = `主播名称“${updated.name}”已自动保存。`
+    cancelReusableAnchorStyleNameEdit()
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
+  finally { savingReusableAnchorStyleNameId.value = null }
+}
+
+async function deleteReusableAnchorStyle(styleToDelete?: LiveAnchorStyle) {
+  const style = styleToDelete || selectedReusableAnchorStyle.value
   if (!style) return
   if (!window.confirm(`确定删除主播“${style.name}”吗？删除后该主播的样本、训练记录和绑定关系都会移除。`)) return
   if (!window.confirm('请再次确认：这不是移出列表，而是永久删除这名主播的风格资料。')) return
   try {
     await deleteLiveAnchorStyle(style.id, activeRoom.value?.tenant_id)
     reusableAnchorStyles.value = reusableAnchorStyles.value.filter((item) => item.id !== style.id)
-    selectedReusableAnchorStyleId.value = null
-    selectedReusableAnchorStyle.value = null
-    await loadReusableAnchorStyleWorkspace()
+    if (selectedReusableAnchorStyleId.value === style.id) {
+      selectedReusableAnchorStyleId.value = null
+      selectedReusableAnchorStyle.value = null
+      reusableAnchorStyleSamples.value = []
+      await loadReusableAnchorStyleWorkspace()
+    }
     reusableAnchorStyleNotice.value = '主播风格已删除。'
   } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播风格失败' }
 }
 
+async function persistAnchorSample(styleId: number, tenant: number | undefined, text: string, title: string, sourceType = 'paste', originalName = '') {
+  const limited = limitAnchorSample(text.trim())
+  if (limited.truncated) reusableAnchorSampleLimitNotice.value = '最多10000字，超出部分已截断。'
+  return createLiveAnchorStyleSample(styleId, { title: Array.from(title).slice(0, 50).join(''), source_type: sourceType, original_name: originalName, raw_text: limited.text, readable_text: limited.text }, tenant)
+}
 async function addReusableAnchorStyleSample() {
   const style = selectedReusableAnchorStyle.value
   const text = reusableAnchorStyleSampleDraft.value.raw_text.trim()
-  if (!style || !text) { reusableAnchorStyleError.value = '请先粘贴一份主播真实话术。'; return }
+  if (!style || !text || reusableAnchorStyleBusy.value) return
+  const scope = anchorAnalysisScope(style.id)
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
-    const sample = await createLiveAnchorStyleSample(style.id, {
-      title: reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`,
-      source_type: 'paste', raw_text: text, readable_text: text,
-    }, activeRoom.value?.tenant_id)
+    const sample = await persistAnchorSample(style.id, scope.tenant, text, reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`)
+    if (!scope.current()) return
     reusableAnchorStyleSamples.value = [sample, ...reusableAnchorStyleSamples.value]
+    syncAnchorSampleCount()
     reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
-    reusableAnchorStyleNotice.value = '样本已保存。请点击“分析这份样本”，系统只提取主播怎么说。'
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播样本失败' }
-  finally { reusableAnchorStyleBusy.value = false }
+    reusableAnchorStyleNotice.value = '样本已保存，点击“开始分析”提取表达风格。单份分析不会覆盖多样本总风格。'
+  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播样本失败' }
+  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
 }
-
 async function importReusableAnchorStyleSamples(event: Event) {
   const style = selectedReusableAnchorStyle.value
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
   input.value = ''
-  if (!style || !files.length) return
+  if (!style || !files.length || reusableAnchorStyleBusy.value) return
+  const scope = anchorAnalysisScope(style.id)
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
+  let count = 0, cut = 0
   try {
     for (const file of files) {
       const text = (await file.text()).trim()
+      if (!scope.current()) return
       if (!text) continue
-      const sample = await createLiveAnchorStyleSample(style.id, {
-        title: file.name.replace(/\.(txt|md)$/i, '') || '导入样本', source_type: 'upload', original_name: file.name,
-        raw_text: text, readable_text: text,
-      }, activeRoom.value?.tenant_id)
+      if (limitAnchorSample(text).truncated) cut++
+      const sample = await persistAnchorSample(style.id, scope.tenant, text, file.name.replace(/\.(txt|md)$/i, '') || '导入样本', 'upload', file.name)
+      if (!scope.current()) return
       reusableAnchorStyleSamples.value.unshift(sample)
+      syncAnchorSampleCount()
+      count++
     }
-    reusableAnchorStyleNotice.value = `已导入 ${files.length} 份样本，请逐份点击分析。`
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '导入主播样本失败' }
-  finally { reusableAnchorStyleBusy.value = false }
+    reusableAnchorStyleNotice.value = `已导入 ${count} 份样本。${cut ? `${cut} 份超过10000字，已截断。` : ''}请点击“开始分析”。`
+  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '导入主播样本失败' }
+  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
 }
-
+async function analyzeOneAnchorSample(styleId: number, sample: LiveAnchorStyleSample, scope: ReturnType<typeof anchorAnalysisScope>) {
+  sample.analysis_status = 'analyzing'
+  const result = await analyzeLiveAnchorStyleSample(styleId, sample.id, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
+  if (!scope.current()) return
+  selectedReusableAnchorStyle.value = result.style
+  reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === styleId ? result.style : item)
+  reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.map(item => item.id === sample.id ? result.sample : item)
+  reusableAnchorStyleNotice.value = result.notice
+}
+function beginAnchorAnalysis() {
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  reusableAnchorStyleAnalysisStage.value = '正在准备分析话术…'
+  reusableAnchorStyleAnalysisProgress.value = 0
+}
 async function analyzeReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
   const style = selectedReusableAnchorStyle.value
   if (!style || reusableAnchorStyleBusy.value) return
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  reusableAnchorStyleAnalysisStage.value = '正在读取样本，观察称呼、口头禅和句子节奏…'
-  sample.analysis_status = 'analyzing'
+  const scope = anchorAnalysisScope(style.id)
+  beginAnchorAnalysis()
   try {
-    const result = await analyzeLiveAnchorStyleSample(style.id, sample.id, activeRoom.value?.tenant_id)
-    selectedReusableAnchorStyle.value = result.style
-    reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.map((item) => item.id === result.sample.id ? result.sample : item)
-    reusableAnchorStyleTab.value = 'analysis'
-    reusableAnchorStyleNotice.value = `“${sample.title}”分析完成${result.style_qc?.available ? (result.style_qc.passed ? '，同步质检通过。' : '，同步质检提示了风格边界问题，请查看结果。') : '。'}`
+    // This individual action never calls the fusion endpoint, even when the
+    // header checkbox is selected.
+    await analyzeOneAnchorSample(style.id, sample, scope)
+    if (scope.current()) await refreshAnchorAnalysisVersions(style.id)
   } catch (err) {
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '主播风格分析失败，请检查样本后重试'
-    window.alert(reusableAnchorStyleError.value)
-    sample.analysis_status = 'failed'
-  } finally { reusableAnchorStyleBusy.value = false; reusableAnchorStyleAnalysisStage.value = '' }
+    if (scope.current()) {
+      reusableAnchorStyleError.value = err instanceof Error ? err.message : '样本分析失败，原总风格保持不变'
+      reusableAnchorStyleAnalysisStage.value = '分析未完成，原总风格保持不变'
+      const result = await listLiveAnchorStyleSamples(style.id, scope.tenant).catch(() => null)
+      if (scope.current() && result) reusableAnchorStyleSamples.value = result.items
+    }
+  } finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
+}
+async function startReusableAnchorAnalysis() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || reusableAnchorStyleBusy.value) return
+  // Capture explicit user intent. Never auto-enable fusion merely because more
+  // samples arrived or a single sample finished analysis.
+  const fuse = reusableAnchorMultiAnalysis.value
+  const scope = anchorAnalysisScope(style.id)
+  beginAnchorAnalysis()
+  try {
+    const text = reusableAnchorStyleSampleDraft.value.raw_text.trim()
+    if (text) {
+      const sample = await persistAnchorSample(style.id, scope.tenant, text, reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`)
+      if (!scope.current()) return
+      reusableAnchorStyleSamples.value.unshift(sample)
+      syncAnchorSampleCount()
+      reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
+    }
+    const samples = [...reusableAnchorStyleSamples.value]
+    if (!samples.length) throw new Error('请先导入主播话术。')
+    if (fuse && samples.length > 1) {
+      for (const sample of samples.filter(item => item.analysis_status !== 'analyzed')) {
+        if (!scope.current()) return
+        reusableAnchorStyleAnalysisProgress.value = 0
+        await analyzeOneAnchorSample(style.id, sample, scope)
+      }
+      if (!scope.current()) return
+      reusableAnchorStyleAnalysisProgress.value = 0
+      const result = await fuseLiveAnchorAnalyses(style.id, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
+      if (!scope.current()) return
+      selectedReusableAnchorStyle.value = result.style
+      reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
+      reusableAnchorStyleNotice.value = '多样本综合分析完成，总风格和对应评分基准已更新为新版本。'
+    } else {
+      const sample = samples.find(item => item.analysis_status !== 'analyzed') || samples[0]!
+      await analyzeOneAnchorSample(style.id, sample, scope)
+    }
+    if (scope.current()) await refreshAnchorAnalysisVersions(style.id)
+  } catch (err) {
+    if (scope.current()) {
+      reusableAnchorStyleError.value = err instanceof Error ? err.message : '分析失败，原总风格不变'
+      reusableAnchorStyleAnalysisStage.value = '分析未完成，原总风格保持不变'
+      const result = await listLiveAnchorStyleSamples(style.id, scope.tenant).catch(() => null)
+      if (scope.current() && result) reusableAnchorStyleSamples.value = result.items
+    }
+  } finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
+}
+async function saveOverallAnchorAnalysis(sections: AnchorAnalysisSection[]) {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || reusableAnchorStyleBusy.value || reusableAnchorAnalysisPreviewId.value !== reusableAnchorAnalysisVersions.value.active_version_id) return
+  const scope = anchorAnalysisScope(style.id)
+  const expected = reusableAnchorAnalysisVersions.value.active_version_id
+  beginAnchorAnalysis()
+  try {
+    const result = await editLiveAnchorAnalysis(style.id, expected, sections, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
+    if (!scope.current()) return
+    selectedReusableAnchorStyle.value = result.style
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
+    await refreshAnchorAnalysisVersions(style.id)
+    reusableAnchorStyleNotice.value = '修改已保存为新版本，元提示词结构及评分基准已同步更新。'
+  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存失败，原版本不变' }
+  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
+}
+async function useOverallAnchorAnalysis() {
+  const style = selectedReusableAnchorStyle.value
+  const versionId = reusableAnchorAnalysisPreviewId.value
+  if (!style || !versionId || reusableAnchorStyleBusy.value) return
+  const scope = anchorAnalysisScope(style.id)
+  reusableAnchorStyleBusy.value = true
+  try {
+    const result = await useLiveAnchorAnalysis(style.id, versionId, reusableAnchorAnalysisVersions.value.active_version_id, scope.tenant)
+    if (!scope.current()) return
+    selectedReusableAnchorStyle.value = result.style
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
+    await refreshAnchorAnalysisVersions(style.id)
+    reusableAnchorStyleNotice.value = '已使用所选版本及其对应评分基准，不改写单个样本。'
+  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换版本失败' }
+  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
 }
 
 async function deleteReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
@@ -679,6 +1115,7 @@ async function deleteReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
   try {
     await deleteLiveAnchorStyleSample(style.id, sample.id, activeRoom.value?.tenant_id)
     reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.filter((item) => item.id !== sample.id)
+    syncAnchorSampleCount()
   } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播样本失败' }
 }
 
@@ -709,7 +1146,7 @@ async function runReusableLongTest() {
   try {
     const totalSegments = Math.max(1, Math.ceil(Math.max(5, reusableAnchorStyleLongTestMinutes.value) / 5))
     for (let index = 0; index < totalSegments && reusableAnchorStyleLongTestRunning.value; index += 1) {
-      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，模型会先通过事实和风格检查再显示…`
+      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，事实检查通过后立即显示；风格失败会回退基础正文…`
       const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。`.slice(0, 280)
       const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
         room_id: activeRoomId.value, topic: continuityTopic,
@@ -729,14 +1166,14 @@ async function runReusableLongTest() {
       }
       reusableAnchorStyleLongTestText.value += (reusableAnchorStyleLongTestText.value ? '\n\n' : '') + result.text
       reusableAnchorStyleLongTestSegments.value += 1
-      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已通过检查，继续生成下一段`
+      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已流出，继续生成下一段`
       await nextTick()
       reusableAnchorStyleLongTestOutput.value?.scrollTo({ top: reusableAnchorStyleLongTestOutput.value.scrollHeight, behavior: 'smooth' })
     }
     if (reusableAnchorStyleLongTestRunning.value) reusableAnchorStyleLongTestStage.value = `测试完成，共生成 ${reusableAnchorStyleLongTestSegments.value} 段`
     else reusableAnchorStyleLongTestStage.value = `已停止，已保留 ${reusableAnchorStyleLongTestSegments.value} 段`
   } catch (err) {
-    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经通过检查的片段'
+    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经流出的片段'
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败'
   }
   finally { reusableAnchorStyleLongTestRunning.value = false }
@@ -908,6 +1345,7 @@ const fullShowRoundMinutes = ref(7)
 const fullShowVariantCount = ref(5)
 const anchorStyleMatchIntensity = ref(100)
 const fullShowExpansionFreedom = ref(65)
+const fullShowConversionIntensity = ref(55)
 const fullShowExpansionLabel = computed(() => {
   if (fullShowExpansionFreedom.value <= 25) return '保守扩展'
   if (fullShowExpansionFreedom.value <= 55) return '平衡扩展'
@@ -921,7 +1359,81 @@ const fullShowAvoidRecent = ref(true)
 const fullShowPreviewReady = ref(false)
 const fullShowNotice = ref('')
 const fullShowGenerating = ref(false)
-const fullShowError = ref('')
+type AnchorInitializationStep = { key: string; label: string; status: 'success' | 'failed'; message: string }
+const anchorInitializing = ref(false)
+const anchorInitializationNotice = ref('')
+const anchorInitializationError = useFeedbackErrorRef()
+const anchorInitializationSteps = ref<AnchorInitializationStep[]>([])
+const anchorInitializationProgress = ref(0)
+const anchorInitializationStage = ref('')
+const anchorSellingPointWheel = ref<AnchorStyleSellingPointWheelResponse | null>(null)
+const anchorSellingPointWheelLoading = ref(false)
+const anchorSellingPointWheelError = useFeedbackErrorRef()
+let anchorSellingPointWheelLoadToken = 0
+function startAnchorInitializationProgress() {
+  anchorInitializationProgress.value = 0
+  anchorInitializationStage.value = '正在连接初始化服务…'
+}
+async function refreshAnchorSellingPointWheel() {
+  const planId = currentRoomPlanId.value
+  const token = ++anchorSellingPointWheelLoadToken
+  if (!planId) {
+    anchorSellingPointWheel.value = null
+    anchorSellingPointWheelError.value = ''
+    return
+  }
+  anchorSellingPointWheelLoading.value = true
+  anchorSellingPointWheelError.value = ''
+  try {
+    const context = await getAnchorStyleWorkbenchContext(planId, activeRoom.value?.tenant_id)
+    if (token !== anchorSellingPointWheelLoadToken || planId !== currentRoomPlanId.value) return
+    anchorSellingPointWheel.value = context.saved_selling_point_wheel || null
+  } catch (error) {
+    if (token !== anchorSellingPointWheelLoadToken) return
+    anchorSellingPointWheelError.value = error instanceof Error ? error.message : '读取卖点轮盘失败'
+  } finally {
+    if (token === anchorSellingPointWheelLoadToken) anchorSellingPointWheelLoading.value = false
+  }
+}
+async function initializeAnchorGeneration() {
+  const planId = currentRoomPlanId.value
+  if (!planId || anchorInitializing.value) return
+  anchorInitializing.value = true
+  anchorInitializationError.value = ''
+  anchorInitializationSteps.value = []
+  anchorInitializationNotice.value = ''
+  startAnchorInitializationProgress()
+  try {
+    const query = activeRoom.value?.tenant_id ? '?tenant_id=' + activeRoom.value.tenant_id : ''
+    const result = await request<{ initialized: boolean; partial: boolean; notice: string; selling_points: number; angles: number; steps: AnchorInitializationStep[] }>('/api/v1/live-agent-plans/' + planId + '/initialize-anchor' + query, { method: 'POST', headers: { Accept: 'text/event-stream' } }, (event) => {
+      if (event.type !== 'progress') return
+      anchorInitializationProgress.value = Math.max(anchorInitializationProgress.value, event.percent || 0)
+      anchorInitializationStage.value = event.message
+    })
+    anchorInitializationSteps.value = result.steps || []
+    anchorInitializationNotice.value = result.notice || ''
+    const failed = anchorInitializationSteps.value.filter((step) => step.status === 'failed')
+    anchorInitializationError.value = failed.map((step) => `${step.label}：${step.message}`).join('\n')
+    anchorInitializationProgress.value = 100
+    anchorInitializationStage.value = failed.length ? '初始化完成，部分项目失败' : '初始化完成'
+    await refreshAnchorSellingPointWheel()
+    await new Promise((resolve) => window.setTimeout(resolve, 720))
+  } catch (e) {
+    anchorInitializationNotice.value = ''
+    anchorInitializationError.value = e instanceof Error ? e.message : '初始化失败'
+    anchorInitializationStage.value = '初始化中断'
+    await new Promise((resolve) => window.setTimeout(resolve, 500))
+  }
+  finally {
+    anchorInitializing.value = false
+    anchorInitializationProgress.value = 0
+    anchorInitializationStage.value = ''
+  }
+}
+async function refreshSpeechMinerWorkspace() {
+  await Promise.all([refreshFormalFacts(), refreshAnchorSellingPointWheel()])
+}
+const fullShowError = useFeedbackErrorRef()
 const fullShowGenerationProgress = ref({
   visible: false,
   mode: '文字预览',
@@ -937,9 +1449,9 @@ const selectedFullShowVariantKey = ref('A')
 const fullShowEditingVariantKey = ref('')
 const fullShowEditingText = ref('')
 const fullShowEditSaving = ref(false)
-const fullShowEditError = ref('')
+const fullShowEditError = useFeedbackErrorRef()
 const fullShowRegeneratingVariantKey = ref('')
-const fullShowRegenerateError = ref('')
+const fullShowRegenerateError = useFeedbackErrorRef()
 const fullShowManualEditedKeys = ref<string[]>([])
 const fullShowFormalVariantKeys = ref<string[]>([])
 const fullShowFactContextMenu = ref({
@@ -950,12 +1462,13 @@ const fullShowFactContextMenu = ref({
 })
 const fullShowFactDialogOpen = ref(false)
 const fullShowFactSaving = ref(false)
-const fullShowFactError = ref('')
+const fullShowFactError = useFeedbackErrorRef()
 const fullShowFactDraft = ref({
   category: 'other',
   key: '',
   value: '',
 })
+const fullShowFactName = useFactNameSuggestion(fullShowFactDraft, fullShowFactDialogOpen, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
 type FullShowVoiceState = {
   status: 'idle' | 'generating' | 'ready' | 'candidate' | 'failed'
   progress: number
@@ -989,9 +1502,17 @@ const fullShowOutputMode = ref<'generated' | 'custom'>('generated')
 const contentModeAccess = ref<LiveContentModeAccess | null>(null)
 const contentModeLoading = ref(false)
 const contentModeSaving = ref(false)
-const contentModeError = ref('')
+const contentModeError = useFeedbackErrorRef()
 const contentModeNotice = ref('')
+const visibleContentModes = computed(() => visibleLiveContentModes(contentModeAccess.value))
 const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_mode === 'user_audio')
+const isFixedGeneratedContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_pregenerated')
+const isRealtimeVoiceContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_dynamic')
+const hasCustomMainlineResult = computed(() => Boolean(fullShowResult.value?.variants.some((item) => item.variant_key === 'CUSTOM')))
+const fullShowVersionActionReady = computed(() => Boolean(
+  (isRealtimeVoiceContentMode.value && currentRoomPlanId.value && !realtimeOptionsLoading.value && !realtimeOptionsLoadError.value && !realtimeGenerationOptionsError(realtimeGenerationOptions.value))
+    || (fullShowResult.value && (isFixedGeneratedContentMode.value || (isUserAudioContentMode.value && hasCustomMainlineResult.value))),
+))
 const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
 let contentModeLoadNo = 0
 let contentModeRefreshTimer: number | undefined
@@ -1035,8 +1556,11 @@ async function chooseContentMode(mode: LiveContentMode) {
     const value = await setLiveContentMode(roomId, mode)
     if (token !== contentModeLoadNo || roomId !== activeRoomId.value) return
     contentModeAccess.value = value
+    fullShowOutputMode.value = mode === 'user_audio' ? 'custom' : 'generated'
     selectFullShowOutputMode(value.content_mode === 'user_audio' ? 'custom' : 'generated')
-    contentModeNotice.value = '已保存当前直播间的内容模式；文案和声音仍需确认并发布后使用。'
+    await loadFullShowWorkspace()
+    await refreshFullShowVersionHistory()
+    contentModeNotice.value = `已激活“${liveContentModeLabels[value.content_mode].title}”；其它模式的内容仍保留在当前智能体方案中。`
   } catch (err) {
     if (token !== contentModeLoadNo) return
     contentModeError.value = err instanceof Error ? err.message : '切换直播模式失败'
@@ -1053,8 +1577,9 @@ function handleContentPolicyUpdated(event: Event) {
 }
 const fullShowSubtitleDrafts = ref<Record<string, LiveAgentPlanTimelineSegment[]>>({})
 const fullShowSubtitleSavingKey = ref('')
-const fullShowSubtitleError = ref('')
+const fullShowSubtitleError = useFeedbackErrorRef()
 const customMainlineFile = ref<File | null>(null)
+const customMainlineFiles = shallowRef<File[]>([])
 const customMainlineVoiceSample = ref<File | null>(null)
 const customMainlineDurationMS = ref(0)
 const customMainlineUploadProgress = ref(0)
@@ -1063,7 +1588,7 @@ const customMainlineDraft = ref<LiveAgentCustomMainlineResponse | null>(null)
 const customMainlineTimeline = ref<LiveAgentPlanTimelineSegment[]>([])
 const customMainlineTranscript = ref('')
 const customMainlineSaveNotice = ref('')
-const customMainlineError = ref('')
+const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
 const originalAiCandidateKey = ref('')
 const originalAiSrtProgress = ref<{
@@ -1081,8 +1606,7 @@ let fullShowSetResolve: (() => void) | null = null
 const fullShowSavedVersion = ref<LiveAgentPlanVersion | null>(null)
 const fullShowVersionHistory = ref<LiveAgentPlanVersion[]>([])
 const fullShowVersionSaving = ref(false)
-const fullShowVersionPublishing = ref(false)
-const fullShowVersionError = ref('')
+const fullShowVersionError = useFeedbackErrorRef()
 const fullShowWorkspaceLoading = ref(false)
 const fullShowWorkspaceHydrating = ref(false)
 const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
@@ -1170,6 +1694,28 @@ const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
 const currentVoiceIdentity = computed<LiveAgentVoiceIdentity>(
   () => fullShowWorkspaceVoiceIdentity.value || roomVoiceIdentity.value,
 )
+const realtimeGenerationOptions = ref<RealtimeGenerationOptions | null>(null)
+const realtimeOptionsLoading = ref(false), realtimeOptionsLoadError = useFeedbackErrorRef(), realtimeOptionsChanged = ref(false)
+function updateRealtimeOptions(options: RealtimeGenerationOptions) {
+  realtimeGenerationOptions.value = { ...options }
+  realtimeOptionsChanged.value = true
+  fullShowSavedVersion.value = null
+  fullShowVersionError.value = ''
+}
+async function loadRealtimeOptionsDefaults() {
+  const planId = currentRoomPlanId.value, room = activeRoom.value, token = fullShowWorkspaceLoadToken
+  if (!planId || !room) return
+  realtimeOptionsLoading.value = true; realtimeOptionsLoadError.value = ''
+  try {
+    const query = room.tenant_id ? '?tenant_id=' + room.tenant_id : ''
+    const options = await request<RealtimeGenerationOptions>('/api/v1/live-agent-plans/' + planId + '/realtime-options' + query)
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    realtimeGenerationOptions.value = validatedRealtimeOptions(options)
+    realtimeOptionsChanged.value = false
+  } catch (err) {
+    if (token === fullShowWorkspaceLoadToken && currentRoomPlanId.value === planId && activeRoom.value?.id === room.id) realtimeOptionsLoadError.value = err instanceof Error ? err.message : '读取实时声音参数失败'
+  } finally { if (token === fullShowWorkspaceLoadToken) realtimeOptionsLoading.value = false }
+}
 const currentFullShowVoiceName = computed(() =>
   fullShowWorkspaceVoiceIdentity.value
     ? '版本恢复 · ' + currentVoiceIdentity.value.name
@@ -1245,15 +1791,15 @@ const fullShowGuideSteps = computed(() => [
   },
   {
     index: 5,
-    title: '保存版本并发布',
-    description: '文字与版本关系进 MySQL，音频进 OSS，确认后再发布给 Core',
+    title: '保存智能体方案',
+    description: '保存成功后，下次开播直接使用最新方案',
     status: fullShowGuideCurrentStep.value === 5 ? 'active' : 'pending',
   },
 ])
 const fullShowGuideNextAction = computed(() => {
   if (fullShowGenerating.value) return '当前：等待文稿生成与自动复核完成'
   if (fullShowAllFormalVoicesReady.value) {
-    return `已完成 ${fullShowVoiceReadyCount.value}/${fullShowFormalSelectedCount.value} 套正式稿声音；下一步：保存正式版本并发布`
+    return `已完成 ${fullShowVoiceReadyCount.value}/${fullShowFormalSelectedCount.value} 套正式稿声音；下一步：保存智能体方案`
   }
   if (fullShowFormalSelectedCount.value > 0) {
     return `已选 ${fullShowFormalSelectedCount.value} 套正式稿；声音完成 ${fullShowVoiceReadyCount.value}/${fullShowFormalSelectedCount.value}，继续逐稿生成并试听`
@@ -1281,11 +1827,20 @@ const fullShowSourceSummary = computed(() => {
 })
 const fullShowRoundPreview = computed(() => {
   const variants = ['A稿', 'B稿', 'C稿', 'D稿', 'E稿']
-  const openings = ['新人留人切入', '生活场景切入', '用户疑问切入', '产品价值切入', '老客信任切入']
+  const openings = ['完整进入', '轻量重新进入', '场景重新进入', '价值重新进入', '信任重新进入']
+  const flows = [
+    ['塑品', '塑信', '塑价', '行动', '消虑', '承接'],
+    ['塑品', '场景', '消虑', '行动', '塑信', '承接'],
+    ['塑价', '塑品', '塑信', '行动', '消虑', '承接'],
+    ['塑信', '塑品', '场景', '消虑', '行动', '承接'],
+    ['消虑', '塑品', '塑价', '行动', '塑信', '承接'],
+  ]
   return Array.from({ length: Math.min(fullShowRoundCount.value, 12) }, (_, index) => ({
     index: index + 1,
     variant: variants[index % variants.length],
     opening: openings[index % openings.length],
+    flow: flows[index % flows.length],
+    closing: index === fullShowRoundCount.value - 1 ? '本轮收口（收到下播信号才转全场收口）' : '本轮收口并进入下一轮',
     startMinute: index * fullShowRoundMinutes.value,
   }))
 })
@@ -1376,6 +1931,7 @@ const activeModeLabel = computed(() => {
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
   if (activeMode.value === 'memory') return '互动策略'
+  if (activeMode.value === 'miner') return '话术挖掘机'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
   if (activeMode.value === 'basic') return '基础设置'
@@ -1433,10 +1989,9 @@ function closeFullShowFactContextMenu() {
 function openFullShowFactDialog() {
   const text = fullShowFactContextMenu.value.text.trim()
   if (!text) return
-  const oneLine = text.replace(/\s+/g, ' ').trim()
   fullShowFactDraft.value = {
     category: 'other',
-    key: oneLine.length > 28 ? oneLine.slice(0, 28) + '…' : oneLine,
+    key: '',
     value: text,
   }
   fullShowFactError.value = ''
@@ -1453,16 +2008,19 @@ function closeFullShowFactDialog() {
 async function saveSelectedTextAsFormalFact() {
   const planId = currentRoomPlanId.value
   const variant = selectedFullShowVariant.value
-  const key = fullShowFactDraft.value.key.trim()
   const value = fullShowFactDraft.value.value.trim()
   if (!planId || !variant || fullShowFactSaving.value) return
-  if (!key || !value) {
-    fullShowFactError.value = '事实名称和事实内容不能为空'
+  if (!value) {
+    fullShowFactError.value = '事实内容不能为空'
     return
   }
   fullShowFactSaving.value = true
   fullShowFactError.value = ''
   try {
+    const target = fullShowFactDraft.value
+    const key = await fullShowFactName.ensure()
+    if (planId !== currentRoomPlanId.value || target !== fullShowFactDraft.value || value !== target.value.trim()) return
+    if (!key) throw new Error(fullShowFactName.error.value || '请填写事实名称')
     const candidate: LiveAgentPlanFactCandidate = {
       category: fullShowFactDraft.value.category,
       key,
@@ -1759,7 +2317,8 @@ async function createCustomMainlineVoiceSample(file: File) {
 
 async function handleCustomMainlineFile(event: Event) {
   const input = event.currentTarget as HTMLInputElement
-  const file = input.files?.[0] || null
+  const files = Array.from(input.files || [])
+  const file = files[0] || null
   customMainlineError.value = ''
   customMainlineDraft.value = null
   customMainlineTimeline.value = []
@@ -1768,24 +2327,34 @@ async function handleCustomMainlineFile(event: Event) {
   customMainlineStage.value = 'idle'
   if (!file) {
     customMainlineFile.value = null
+    customMainlineFiles.value = []
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
     return
   }
-  if (file.size > 200 * 1024 * 1024) {
+  if (files.length > 20) {
     customMainlineFile.value = null
+    customMainlineFiles.value = []
+    customMainlineError.value = '一次最多上传20段录音。'
+    input.value = ''
+    return
+  }
+  if (files.some((item) => item.size > 200 * 1024 * 1024) || files.reduce((sum, item) => sum + item.size, 0) > 500 * 1024 * 1024) {
+    customMainlineFile.value = null
+    customMainlineFiles.value = []
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
-    customMainlineError.value = '自定义音稿最大支持 200MB。'
+    customMainlineError.value = '每段录音最大200MB，多段录音总大小最大500MB。'
     input.value = ''
     return
   }
   customMainlineFile.value = file
-  const [durationMS, voiceSample] = await Promise.all([
-    readCustomMainlineDuration(file),
+  customMainlineFiles.value = files
+  const [durations, voiceSample] = await Promise.all([
+    Promise.all(files.map((item) => readCustomMainlineDuration(item))),
     createCustomMainlineVoiceSample(file),
   ])
-  customMainlineDurationMS.value = durationMS
+  customMainlineDurationMS.value = durations.reduce((sum, value) => sum + value, 0)
   customMainlineVoiceSample.value = voiceSample
 }
 
@@ -1798,8 +2367,8 @@ async function uploadCustomMainline() {
   }
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
-  const file = customMainlineFile.value
-  if (!planId || !room || !file) {
+  const files = customMainlineFiles.value
+  if (!planId || !room || !files.length) {
     customMainlineError.value = '请选择当前方案、直播间和要上传的音频。'
     return
   }
@@ -1812,7 +2381,7 @@ async function uploadCustomMainline() {
     const response = await uploadLiveAgentCustomMainline(
       planId,
       room.id,
-      file,
+      files,
       customMainlineDurationMS.value,
       customMainlineVoiceSample.value,
       (loaded, total) => {
@@ -2214,6 +2783,8 @@ async function generateOriginalAiVoice() {
       source: String(identity.source || 'official'),
       voice_id: String(identity.voice_id || ''),
       profile_id: Number(identity.profile_id || 0) || undefined,
+      binding_id: identity.binding_id,
+      model: identity.model,
       rate: identity.rate || 1,
     })
     stopFullShowVoiceTimer(targetKey)
@@ -2380,6 +2951,8 @@ async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, r
       source: source || 'official',
       voice_id: voiceID,
       profile_id: profileID || undefined,
+      binding_id: generatedIdentity.binding_id,
+      model: generatedIdentity.model,
       rate: generatedIdentity.rate || 1,
     })
     stopFullShowVoiceTimer(variant.variant_key)
@@ -2563,7 +3136,11 @@ async function refreshFullShowVersionHistory() {
   }
   try {
     const result = await getLiveAgentPlanVersions(planId, room.id, room.tenant_id)
-    fullShowVersionHistory.value = result.items || []
+    const mode = contentModeAccess.value?.content_mode
+    fullShowVersionHistory.value = (result.items || []).filter((version) => {
+      const savedMode = String((version.generation_context as Record<string, unknown> | undefined)?.content_mode || 'ai_pregenerated')
+      return !mode || savedMode === mode
+    })
   } catch {
     fullShowVersionHistory.value = []
   }
@@ -2591,6 +3168,7 @@ function resetFullShowWorkspaceState() {
   fullShowSubtitleSavingKey.value = ''
   fullShowSubtitleError.value = ''
   customMainlineFile.value = null
+  customMainlineFiles.value = []
   customMainlineVoiceSample.value = null
   customMainlineDurationMS.value = 0
   customMainlineUploadProgress.value = 0
@@ -2604,6 +3182,10 @@ function resetFullShowWorkspaceState() {
   originalAiSrtProgress.value = { status: 'idle', percent: 0, stage: '', error: '' }
   fullShowSavedVersion.value = null
   fullShowWorkspaceBaseVersion.value = null
+  realtimeGenerationOptions.value = null
+  realtimeOptionsLoading.value = false
+  realtimeOptionsLoadError.value = ''
+  realtimeOptionsChanged.value = false
   fullShowWorkspaceSource.value = ''
   fullShowWorkspaceVoiceIdentity.value = null
   fullShowWorkspaceLegacyPartial.value = false
@@ -2625,6 +3207,10 @@ function resetFullShowWorkspaceState() {
 async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 'draft' | 'published') {
   fullShowWorkspaceHydrating.value = true
   try {
+    version = normalizeLiveAgentPlanVersion(version)
+    const restoredOptions = realtimeOptionsFromVersion(version.generation_context)
+    if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
+    realtimeOptionsChanged.value = false
     const rawContext = version.generation_context as unknown as LiveAgentFullShowGenerationContext
     const context = {
       ...rawContext,
@@ -2774,8 +3360,8 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
     fullShowPreviewReady.value = true
     fullShowNotice.value =
       source === 'draft'
-        ? `已恢复待发布 V${version.version_no} 的编辑工作区，可继续修改、替换声音后保存新版本。`
-        : `已基于当前已发布 V${version.version_no} 恢复编辑副本；这里的修改不会影响正在使用的版本，保存后会生成新版本。`
+        ? '已恢复最近保存的方案，可继续修改、替换声音后保存。'
+        : '已恢复当前保存方案；修改后点击保存，下次开播直接使用。'
   } finally {
     fullShowWorkspaceHydrating.value = false
   }
@@ -2790,7 +3376,13 @@ async function loadFullShowWorkspace() {
   if (!planId || !room) return
   fullShowWorkspaceLoading.value = true
   try {
-    const workspace = await getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id)
+    const contentMode = contentModeAccess.value?.content_mode
+    if (!contentMode) return
+    const workspace = await getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode)
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
+    if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
+    else await loadRealtimeOptionsDefaults()
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
     if (!workspace.version || !workspace.source) {
       fullShowNotice.value = '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
@@ -2859,27 +3451,38 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   const result = fullShowResult.value
-  if (!planId || !room || !result || fullShowVersionSaving.value) return null
+  if (!planId || !room || (!result && !isRealtimeVoiceContentMode.value) || fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
   if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value) {
     fullShowVersionError.value = '请先确认当前直播间的可用内容模式。'
     return null
   }
-  if (!fullShowFormalVariantKeys.value.length) {
+  if (isRealtimeVoiceContentMode.value && realtimeGenerationOptionsError(realtimeGenerationOptions.value)) {
+    fullShowVersionError.value = realtimeGenerationOptionsError(realtimeGenerationOptions.value)
+    return null
+  }
+  const contentModeAtSave = contentModeAccess.value?.content_mode
+  const realtimeOptionsAtSave = isRealtimeVoiceContentMode.value ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
+  if (!isRealtimeVoiceContentMode.value && !fullShowFormalVariantKeys.value.length) {
     fullShowVersionError.value = '请先选择至少一套正式稿。'
     return null
   }
-  if (!fullShowAllFormalVoicesReady.value) {
+  if (!isRealtimeVoiceContentMode.value && !fullShowAllFormalVoicesReady.value) {
     fullShowVersionError.value = '还有正式稿没有生成声音，不能保存版本。'
     return null
   }
-  if (!fullShowVoiceIdentityConsistent.value) {
+  if (!isRealtimeVoiceContentMode.value && !fullShowVoiceIdentityConsistent.value) {
     fullShowVersionError.value = '正式稿声音身份不一致，请用当前声音身份重新生成不一致的稿件。'
     return null
   }
   const originalSource = await compactOriginalSourceManifest()
+  if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return null
+  if (realtimeOptionsAtSave && JSON.stringify(realtimeOptionsAtSave) !== JSON.stringify(realtimeGenerationOptions.value)) {
+    fullShowVersionError.value = '参数在准备保存时已变化，请重新点击保存新版本。'
+    return null
+  }
   const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
-  const variants = result.variants.filter((variant) =>
+  const variants = (isRealtimeVoiceContentMode.value ? [] : (result?.variants || [])).filter((variant) =>
     fullShowFormalVariantKeys.value.includes(variant.variant_key),
   ).map((variant) => {
     const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
@@ -2929,7 +3532,8 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       voice_identity_key: isFormal ? voice.voice_identity_key : '',
     }
   })
-  fullShowVersionSaving.value = true
+	fullShowVersionSaving.value = true
+	fullShowNotice.value = '正在检查派生事实包与卖点内容，未审核风险表达将自动转成安全版本，原始资料不会修改。'
   try {
     const payload = {
       tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
@@ -2939,13 +3543,15 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       voice_identity: cleanVersionVoiceIdentity(currentVoiceIdentity.value),
       variants,
       generation_context: {
-        content_mode: contentModeAccess.value?.content_mode,
+        content_mode: contentModeAtSave,
+        ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
         round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
         round_count: Math.max(1, Math.ceil(fullShowDuration.value / Math.max(1, fullShowRoundMinutes.value))),
         variant_count: variants.length,
         style_match_intensity: anchorStyleMatchIntensity.value,
         expansion_freedom: fullShowExpansionFreedom.value,
+        conversion_intensity: fullShowConversionIntensity.value,
         use_anchor_style: fullShowUseAnchorStyle.value,
         use_dynamic_facts: fullShowUseDynamicFacts.value,
         generate_tts_hints: fullShowGenerateTTS.value,
@@ -2958,16 +3564,27 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
         `当前版本保存数据为 ${Math.ceil(payloadBytes / 1024)}KB，超过接口可安全接收的 60KB（上限 64KB）。请减少正式话术数量或缩短话术后再保存；原始声音不会被删除。`,
       )
     }
-    const saved = await createLiveAgentPlanVersion(planId, payload)
+    const saved = await createLiveAgentPlanVersion(planId, payload, (event) => {
+      if (event.type === 'progress' && currentRoomPlanId.value === planId && activeRoom.value?.id === room.id) fullShowNotice.value = event.message
+    })
+    if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return saved
     fullShowSavedVersion.value = saved
+    if (realtimeOptionsAtSave) {
+      realtimeGenerationOptions.value = realtimeOptionsFromVersion(saved.generation_context)
+      realtimeOptionsChanged.value = false
+    }
     fullShowWorkspaceBaseVersion.value = saved
-    fullShowWorkspaceSource.value = 'draft'
+    fullShowWorkspaceSource.value = 'published'
     fullShowWorkspaceInherited.value = false
-    fullShowNotice.value = `已保存“${room.name}”直播智能体 V${saved.version_no}，当前还是待发布版本，不会影响直播间正在运行的版本。`
-    await refreshFullShowVersionHistory()
+    const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
+    fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案，下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
+    await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()]).catch(() => {
+      fullShowNotice.value += ' 方案已保存，但页面状态刷新失败，请刷新页面查看。'
+    })
     return saved
   } catch (err) {
     const message = err instanceof Error ? err.message : '保存直播智能体版本失败'
+    fullShowNotice.value = '保存失败，原方案保持不变。'
     fullShowVersionError.value = message.includes('保存智能体版本格式错误')
       ? `保存请求未通过接口格式校验。这不是声音、SRT 或语义分析失败；接口最多接收 ${Math.round(liveAgentVersionRequestLimitBytes / 1024)}KB，请刷新页面后重新保存。`
       : message
@@ -2977,49 +3594,6 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   }
 }
 
-async function publishFullShowVersion() {
-  const planId = currentRoomPlanId.value
-  const room = activeRoom.value
-  const result = fullShowResult.value
-  if (!planId || !room || !result || fullShowVersionPublishing.value || fullShowVersionSaving.value) return
-  fullShowVersionError.value = ''
-  const version = fullShowSavedVersion.value
-  if (!version || version.lifecycle_status === 'published') {
-    fullShowVersionError.value = version?.lifecycle_status === 'published'
-      ? '当前版本已经发布；有修改时请先点击 S5 保存新版本，再点击 S6 发布。'
-      : '请先点击 S5 保存新版本；保存成功后再点击 S6 发布到直播间。'
-    return
-  }
-  if (!fullShowFormalVariantKeys.value.length) {
-    fullShowVersionError.value = '请先选择至少一套正式稿。'
-    return
-  }
-  if (!fullShowAllFormalVoicesReady.value) {
-    fullShowVersionError.value = '还有正式稿没有生成声音，不能发布。'
-    return
-  }
-  if (!fullShowVoiceIdentityConsistent.value) {
-    fullShowVersionError.value = '当前声音身份与已生成正式稿不一致，不能发布。'
-    return
-  }
-  fullShowVersionPublishing.value = true
-  try {
-    const published = await publishLiveAgentPlanVersion(planId, version.id, {
-      room_id: room.id,
-      tenant_id: room.tenant_id,
-    })
-    fullShowSavedVersion.value = published
-    fullShowWorkspaceBaseVersion.value = published
-    fullShowWorkspaceSource.value = 'published'
-    fullShowWorkspaceInherited.value = false
-    fullShowNotice.value = `已将直播智能体 V${published.version_no} 发布到“${room.name}”。发布不会自动开播，回直播间点击开始后再运行这套版本。`
-    await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()])
-  } catch (err) {
-    fullShowVersionError.value = err instanceof Error ? err.message : '发布直播智能体版本失败'
-  } finally {
-    fullShowVersionPublishing.value = false
-  }
-}
 
 async function saveFullShowVariantEdit() {
   if (isUserAudioContentMode.value) return
@@ -3098,6 +3672,7 @@ async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
       round_minutes: fullShowRoundMinutes.value,
       style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
+      conversion_intensity: fullShowConversionIntensity.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
@@ -3246,6 +3821,7 @@ async function generateFullShowPreview() {
       variant_count: fullShowVariantCount.value,
       style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
+      conversion_intensity: fullShowConversionIntensity.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
@@ -3419,15 +3995,6 @@ async function refreshFormalFacts() {
   }
 }
 
-const formalFactCategoryOptions = [
-  { value: 'product', label: '商品事实' },
-  { value: 'link', label: '链接事实' },
-  { value: 'trade', label: '交易 / 售后' },
-  { value: 'fulfillment', label: '履约 / 物流' },
-  { value: 'identity_location', label: '身份 / 地点' },
-  { value: 'other', label: '其它事实' },
-]
-
 function startFormalFactEdit(item: LiveAgentPlanFact) {
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
@@ -3445,14 +4012,173 @@ function cancelFormalFactEdit() {
   formalFactEditDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
+async function editRiskSource(payload: { sourceKey: string; text: string }) {
+	if (payload.sourceKey.startsWith('wheel/')) {
+		activeMode.value = 'miner'
+		await nextTick()
+		document.querySelector('.speech-miner-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		return
+	}
+	const text = payload.text.trim()
+	const containsRiskText = (value: unknown) => {
+		const serialized = JSON.stringify(value)
+		return Boolean(text && (serialized.includes(text) || text.split(/[=＝]/).some(part => part.trim().length >= 2 && serialized.includes(part.trim()))))
+	}
+	if (formalProductLinks.value.some(containsRiskText)) {
+		activeMode.value = 'products'
+		await nextTick()
+		document.querySelector('.strategy-products-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		return
+	}
+	if (formalBenefits.value.some(containsRiskText)) {
+		activeMode.value = 'benefits'
+		await nextTick()
+		document.querySelector('.strategy-workflow-content')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		return
+	}
+	activeMode.value = 'knowledge'
+	const matched = formalFacts.value.find(item => text === item.value.trim() || text.includes(item.value.trim()) || item.value.includes(text))
+	if (matched) startFormalFactEdit(matched)
+	await nextTick()
+	document.querySelector('.strategy-formal-facts')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function setFactRiskReviews(items: FactRiskReviewDisplay[]) {
+	const reviews = Array.isArray(items) ? items : []
+	factRiskReviews.value = reviews
+	const unresolved = reviews.filter(review => review.status !== 'confirmed')
+	wheelRiskUnresolvedCount.value = pendingForArea(reviews, 'miner')
+	factRiskUnresolvedCount.value = pendingForArea(reviews, 'knowledge')
+	productRiskUnresolvedCount.value = pendingForArea(reviews, 'products')
+	benefitRiskUnresolvedCount.value = pendingForArea(reviews, 'benefits')
+	if (!unresolved.some(review => review.claim_sha256 === locatedFactRiskHash.value)) locatedFactRiskHash.value = ''
+}
+
+async function locatePendingWheelRisk() {
+	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
+	await nextTick()
+	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
+	const hash = pendingWheelRiskHash.value
+	if (await speechMinerWorkbench.value?.locateRisk(hash)) pendingWheelRiskHash.value = ''
+}
+
+async function openWheelRiskLocation() {
+	const review = factRiskReviews.value.find(item => item.status !== 'confirmed' &&
+		[item.source_key, ...(item.sources || []).map(source => source.source_key)].some(key => key.startsWith('wheel/')))
+	pendingWheelRiskHash.value = review?.claim_sha256 || ''
+	activeMode.value = 'miner'
+	await nextTick()
+	await locatePendingWheelRisk()
+}
+
+watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locatePendingWheelRisk() })
+watch(currentRoomPlanId, () => {
+	pendingWheelRiskHash.value = ''
+	locatedFactRiskHash.value = ''
+})
+
+async function openFactRiskLocation() {
+	activeMode.value = 'knowledge'
+	const review = reviewsForArea(factRiskReviews.value, 'knowledge').find(item => item.status !== 'confirmed')
+	if (!review) return
+	const fact = formalFacts.value.find(item => factRisksForFact(item).some(risk => risk.claim_sha256 === review.claim_sha256))
+	if (!fact) {
+		await editRiskSource({ sourceKey: review.source_key, text: review.text })
+		return
+	}
+	expandedFactRiskId.value = fact.id
+	locatedFactRiskHash.value = review.claim_sha256
+	await nextTick()
+	const target = Array.from(document.querySelectorAll<HTMLElement>('[data-fact-risk-hash]'))
+		.find(item => item.dataset.factRiskHash === review.claim_sha256)
+	target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+	target?.focus({ preventScroll: true })
+}
+
+function factRisksForFact(item: LiveAgentPlanFact) {
+	const value = item.value.trim()
+	const key = item.key.trim()
+	if (!value) return []
+	return reviewsForArea(factRiskReviews.value, 'knowledge', item.id).filter(review => {
+		const factSources = riskSources(review).filter(source => sourceArea(source) === 'knowledge' && source.entity_id === item.id)
+		const texts = (factSources.length ? factSources.map(source => source.text) : [review.text]).map(text => text.trim()).filter(Boolean)
+		return texts.some(text => text === value || text === `${key}${value}` || text.includes(value) || (value.length >= 4 && value.includes(text)))
+	})
+}
+
+async function openSourceRiskLocation(area: 'products' | 'benefits') {
+	activeMode.value = area
+	const review = reviewsForArea(factRiskReviews.value, area).find(item => item.status !== 'confirmed')
+	if (!review) return
+	locatedFactRiskHash.value = review.claim_sha256
+	await nextTick()
+	const source = riskSources(review).find(item => sourceArea(item) === area)
+	if (area === 'products' && source?.entity_id) await productCards.value?.locateRisk(source.entity_id, source.field)
+	if (area === 'benefits' && source?.entity_id) expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entity_id])
+	await nextTick()
+	const target = Array.from(document.querySelectorAll<HTMLElement>('[data-source-risk-hash]')).find(item => item.dataset.sourceRiskHash === review.claim_sha256)
+	target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+	target?.focus({ preventScroll: true })
+}
+
+async function editSourceRisk(review: RiskReview, area: RiskArea) {
+	const source = riskSources(review).find(item => sourceArea(item) === area)
+	if (!source?.entity_id) return
+	if (area === 'products') await productCards.value?.locateRisk(source.entity_id, source.field, true)
+	if (area === 'benefits') {
+		const item = formalBenefits.value.find(item => item.id === source.entity_id)
+		const fields: Record<string, FormalBenefitField> = { '链接': 'link_key', '商品': 'product_name', '活动价': 'activity_price', '赠品': 'gift', '活动': 'activity', '开始': 'starts_at', '结束': 'ends_at' }
+		if (item && source.field && fields[source.field]) startFormalBenefitEdit(item, fields[source.field])
+	}
+}
+
+function factRiskTone(item: LiveAgentPlanFact) {
+	const reviews = factRisksForFact(item)
+	if (!reviews.length) return ''
+	if (reviews.some(review => review.status !== 'confirmed' && review.severity === 'P0' && (review.semantic_decision === 'block' || review.semantic_decision === 'not_required'))) return 'blocked'
+	if (reviews.some(review => review.semantic_decision === 'pending')) return 'checking'
+	if (reviews.some(review => review.status !== 'confirmed' && (review.severity === 'P1' || review.semantic_decision === 'evidence_required'))) return 'decision'
+	if (reviews.some(review => review.status !== 'confirmed')) return 'decision'
+	return 'confirmed'
+}
+
+function factRiskToneLabel(item: LiveAgentPlanFact) {
+	switch (factRiskTone(item)) {
+	case 'blocked': return '禁止使用'
+	case 'checking': return '语义复核中'
+	case 'decision': return '待确认'
+	case 'confirmed': return '用户已确认'
+	default: return ''
+	}
+}
+
+function factRiskNeedsEvidence(review: FactRiskReviewDisplay) {
+	return review.severity === 'P1' || review.semantic_decision === 'evidence_required'
+}
+
+function factRiskCanConfirm(review: FactRiskReviewDisplay) {
+	return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && (review.semantic_decision === 'pass' || review.semantic_decision === 'evidence_required'))
+}
+
+async function confirmInlineFactRisk(review: FactRiskReviewDisplay) {
+	const confirmation = factRiskNeedsEvidence(review) ? '用户确认该事实内容真实，并同意按当前内容用于本方案' : ''
+	await factRiskController.value?.confirmReview(review, confirmation)
+}
+
+async function appealInlineFactRisk(review: FactRiskReviewDisplay) {
+	await factRiskController.value?.submitReviewAppeal(review, factRiskAppealDrafts.value[review.claim_sha256] || '')
+}
+
 function beginCreateFormalFact() {
 	cancelFormalFactEdit()
 	creatingFormalFact.value = true
+	formalFactCreateGuidance.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
 function cancelCreateFormalFact() {
 	creatingFormalFact.value = false
+	formalFactCreateGuidance.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
@@ -3460,15 +4186,18 @@ async function createFormalFact() {
 	const planId = currentRoomPlanId.value
 	if (!planId || mutatingFormalFactId.value) return
 	const draft = formalFactCreateDraft.value
-	const key = draft.key.trim()
+	const createdFromWheelGap = Boolean(formalFactCreateGuidance.value)
 	const value = draft.value.trim()
-	if (!key || !value) {
-		settingsError.value = '事实名称和事实内容不能为空'
+	if (!value) {
+		settingsError.value = '事实内容不能为空'
 		return
 	}
 	mutatingFormalFactId.value = -1
 	settingsError.value = ''
 	try {
+		const key = await formalFactName.ensure()
+		if (planId !== currentRoomPlanId.value || draft !== formalFactCreateDraft.value || value !== draft.value.trim()) return
+		if (!key) throw new Error(formalFactName.error.value || '请填写事实名称')
 		const result = await adoptLiveAgentPlanFacts(
 			planId,
 			[{
@@ -3489,7 +4218,9 @@ async function createFormalFact() {
 		}
 		await refreshFormalFacts()
 		cancelCreateFormalFact()
-		scriptNotice.value = '事实依据已保存，主线口播与互动回答会共同使用。'
+		scriptNotice.value = createdFromWheelGap
+			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
+			: '事实依据已保存，主线口播与互动回答会共同使用。'
 	} catch (err) {
 		settingsError.value = err instanceof Error ? err.message : '新增事实依据失败'
 	} finally {
@@ -3605,6 +4336,18 @@ async function saveProductLinkField(
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
   }
+}
+
+async function duplicateProductLink(item: LiveAgentPlanProductLink) {
+  const plan = currentRoomPlanId.value
+  const tenant = activeRoom.value?.tenant_id
+  if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) throw new Error('当前方案已切换，请刷新后复制')
+  const created = await copyLiveAgentPlanProductLink(plan, item)
+  if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+  const cards = [...formalProductLinks.value]
+  const index = cards.findIndex(card => card.id === item.id)
+  cards.splice(index < 0 ? cards.length : index + 1, 0, created)
+  formalProductLinks.value = cards
 }
 
 async function saveProductRoomRoles(item: LiveAgentPlanProductLink, roomRoles: string[]) {
@@ -3849,17 +4592,6 @@ async function handlePlanSwitch(event: Event) {
   }
 }
 
-async function openCurrentPlanPublishing() {
-  const plan = currentPlan.value
-  if (!plan || !currentPlanIsBound.value) return
-  activeMode.value = 'fullshow'
-  if (!fullShowResult.value) await loadFullShowWorkspace()
-  if (!fullShowResult.value) {
-    fullShowVersionError.value = '这个方案还没有可发布的智能体版本，请先完成文稿确认和声音生成。'
-    return
-  }
-  await publishFullShowVersion()
-}
 
 function loadCurrentPlanIntoManager() {
   newPlanName.value = currentPlan.value?.name || ''
@@ -4198,12 +4930,11 @@ async function applyAnchorStyleHot() {
 }
 
 function factCategoryLabel(category: string) {
-  if (category === 'product') return '商品事实'
-  if (category === 'link') return '商品 / 链接'
-  if (category === 'trade') return '交易事实'
-  if (category === 'fulfillment') return '履约事实'
-  if (category === 'identity_location') return '地点 / 身份'
-  return '其它事实'
+  return factCategoryDefinition(category).label
+}
+
+function factCategoryDescription(category: string) {
+  return factCategoryDefinition(category).description
 }
 
 function reviewBucketLabel(bucket?: string) {
@@ -4245,7 +4976,7 @@ async function createPlanForCurrentRoom() {
     await refreshPlanScripts()
     messages.value.push({
       role: 'agent',
-      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。当前状态为“已绑定 · 未发布”，发布后才会出现在直播间大屏的方案列表中。`,
+      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。保存智能体方案后即可在直播间使用，无需单独发布。`,
     })
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '创建智能体直播方案失败'
@@ -4886,6 +5617,7 @@ function handlePlanModuleUpdated(event: Event) {
       module === 'benefits' ||
       module === 'knowledge' ||
       module === 'memory' ||
+      module === 'miner' ||
       module === 'anchor' ||
       module === 'voice' ||
       module === 'fullshow' ||
@@ -4901,7 +5633,7 @@ function handlePlanModuleUpdated(event: Event) {
     return
   }
   if (detail.module === 'knowledge') {
-    void refreshFormalFacts()
+    void Promise.all([loadFactCategories(), refreshFormalFacts()])
     return
   }
   if (detail.module === 'benefits') {
@@ -4913,9 +5645,13 @@ function handlePlanModuleUpdated(event: Event) {
 watch(activeRoomId, async () => {
   contentModeSaving.value = false
   contentModeNotice.value = ''
-  void refreshContentMode(true)
+  anchorInitializationNotice.value = ''
+  anchorInitializationError.value = ''
+  anchorInitializationSteps.value = []
+  anchorSellingPointWheel.value = null
   currentRoomPlanId.value = null
   selectedScriptId.value = null
+  await refreshContentMode(true)
   await Promise.all([refreshRoomPolicy(), refreshCurrentRoomPlan(false), refreshMemories()])
   await refreshPlanScripts()
   await Promise.all([loadFullShowWorkspace(), refreshFullShowVersionHistory()])
@@ -4933,13 +5669,22 @@ watch(
 watch(
   activeMode,
   (mode) => {
-    if (mode === 'fullshow' && !contentModeSaving.value) void refreshContentMode(true)
+    if (mode === 'fullshow' && !contentModeSaving.value) {
+      void refreshContentMode(true)
+      void refreshAnchorSellingPointWheel()
+    }
+    if (mode === 'miner') void refreshAnchorSellingPointWheel()
     if (mode === 'anchor') void loadReusableAnchorStyleWorkspace()
     window.localStorage.setItem('system-agent-live-mode', mode)
     notifySystemAgentContext()
   },
   { immediate: true },
 )
+
+watch(currentRoomPlanId, () => {
+  if (activeMode.value === 'fullshow') void refreshAnchorSellingPointWheel()
+  if (activeMode.value === 'miner') void refreshAnchorSellingPointWheel()
+})
 
 watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
   anchorStyleOutputOpen.value = false
@@ -4992,9 +5737,11 @@ watch(
 onMounted(async () => {
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
-  await loadAgentSettings()
+  await Promise.all([loadFactCategories(), loadAgentSettings()])
   if (contentModeDisposed) return
   await refreshContentMode(true)
+  if (contentModeDisposed) return
+  await loadFullShowWorkspace()
   if (contentModeDisposed) return
   contentModeRefreshTimer = window.setInterval(() => {
     benefitClock.value = Date.now()
@@ -5019,29 +5766,44 @@ onBeforeUnmount(() => {
   <div class="live-strategy-page">
 
 
-    <section class="live-strategy-shell">
-      <aside class="live-strategy-rooms">
-        <div class="strategy-panel-title">
-          <span class="section-kicker">{{ props.supportSession ? 'CUSTOMER ROOMS' : 'MY ROOMS' }}</span>
-          <h2>{{ props.supportSession ? '客户直播间' : '我的直播间' }}</h2>
-        </div>
+    <section class="live-strategy-shell" :class="{ 'rooms-collapsed': roomSidebarCollapsed }">
+      <aside class="live-strategy-rooms" :class="{ collapsed: roomSidebarCollapsed }">
         <button
-          v-for="room in rooms"
-          :key="room.id"
-          class="strategy-room-card"
-          :class="{ active: activeRoomId === room.id }"
           type="button"
-          @click="selectLiveStrategyRoom(room.id)"
+          class="live-strategy-rooms-toggle"
+          :class="{ collapsed: roomSidebarCollapsed }"
+          :aria-label="roomSidebarCollapsed ? '展开直播间侧栏' : '折叠直播间侧栏'"
+          :title="roomSidebarCollapsed ? '展开直播间侧栏' : '折叠到最左侧'"
+          @click="toggleRoomSidebar"
         >
-          <span class="strategy-room-icon">播</span>
-          <span>
-            <strong>{{ room.name }}</strong>
-            <small>{{ room.platform }} · {{ roomStatusLabel(room.status) }}</small>
-          </span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>
         </button>
-        <section v-if="!props.supportSession" class="live-support-authorize-panel">
-          <SupportAssistantPicker :room-id="activeRoomId" />
-        </section>
+        <div class="live-strategy-rooms-rail" :class="{ visible: roomSidebarCollapsed }" aria-hidden="true">
+          <span>播</span><small>直播间</small>
+        </div>
+        <div class="live-strategy-rooms-content" :class="{ hidden: roomSidebarCollapsed }">
+          <div class="strategy-panel-title">
+            <span class="section-kicker">{{ props.supportSession ? 'CUSTOMER ROOMS' : 'MY ROOMS' }}</span>
+            <h2>{{ props.supportSession ? '客户直播间' : '我的直播间' }}</h2>
+          </div>
+          <button
+            v-for="room in rooms"
+            :key="room.id"
+            class="strategy-room-card"
+            :class="{ active: activeRoomId === room.id }"
+            type="button"
+            @click="selectLiveStrategyRoom(room.id)"
+          >
+            <span class="strategy-room-icon">播</span>
+            <span>
+              <strong>{{ room.name }}</strong>
+              <small>{{ room.platform }} · {{ roomStatusLabel(room.status) }}</small>
+            </span>
+          </button>
+          <section v-if="!props.supportSession" class="live-support-authorize-panel">
+            <SupportAssistantPicker :room-id="activeRoomId" />
+          </section>
+        </div>
       </aside>
 
       <main class="live-strategy-agent">
@@ -5073,13 +5835,6 @@ onBeforeUnmount(() => {
                 :disabled="planBusy || !activeRoom"
                 @click="bindPlanToCurrentRoom(currentPlan)"
               >绑定直播间</button>
-              <button
-                v-if="currentPlan && currentPlanIsBound && !currentPlanIsPublished"
-                class="strategy-plan-relation-button publish"
-                type="button"
-                :disabled="planBusy || fullShowVersionPublishing || fullShowVersionSaving"
-                @click="openCurrentPlanPublishing"
-              >{{ fullShowVersionPublishing || fullShowVersionSaving ? '保存并发布中…' : '发布到直播间' }}</button>
             </div>
             <p class="strategy-plan-current-line">
               <template v-if="currentPlan">
@@ -5160,23 +5915,34 @@ onBeforeUnmount(() => {
         <div class="strategy-workflow-layout" :class="'workflow-mode-' + activeMode">
           <nav class="strategy-mode-tabs strategy-mode-tabs-v2 strategy-workflow-nav" aria-label="直播方案流程">
             <div class="strategy-workflow-inputs">
-            <button class="strategy-workflow-step workflow-step-products" :class="{ active: activeMode === 'products' }" @click="activeMode = 'products'">
+            <button class="strategy-workflow-step workflow-step-products" :class="{ active: activeMode === 'products' }" :aria-label="productRiskUnresolvedCount ? `商品链接，${productRiskUnresolvedCount}项待处理` : '商品链接'" @click="openSourceRiskLocation('products')">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.2-1.2"/></svg>
               </span>
               <span class="strategy-workflow-label">商品链接</span>
+              <span v-if="productRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ productRiskUnresolvedCount }}项待处理</span>
             </button>
-            <button class="strategy-workflow-step workflow-step-benefits" :class="{ active: activeMode === 'benefits' }" @click="activeMode = 'benefits'">
+            <button class="strategy-workflow-step workflow-step-benefits" :class="{ active: activeMode === 'benefits' }" :aria-label="benefitRiskUnresolvedCount ? `福利活动，${benefitRiskUnresolvedCount}项待处理` : '福利活动'" @click="openSourceRiskLocation('benefits')">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M7.5 8C5.5 8 5 6.8 5 5.8 5 4.8 5.8 4 6.8 4c2.2 0 5.2 4 5.2 4M16.5 8C18.5 8 19 6.8 19 5.8 19 4.8 18.2 4 17.2 4 15 4 12 8 12 8"/></svg>
               </span>
               <span class="strategy-workflow-label">福利活动</span>
+              <span v-if="benefitRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ benefitRiskUnresolvedCount }}项待处理</span>
             </button>
-            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" @click="activeMode = 'knowledge'">
+            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" :aria-label="factRiskUnresolvedCount ? `事实依据，${factRiskUnresolvedCount}项待处理` : '事实依据'" @focus="factRiskTabFocused = true" @blur="factRiskTabFocused = false" @click="openFactRiskLocation">
               <span class="strategy-workflow-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
               </span>
-              <span class="strategy-workflow-label">事实依据</span>
+              <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
+            </button>
+            <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" @click="activeMode = 'memory'">
+              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
+              <span class="strategy-workflow-label">交互策略</span>
+            </button>
+            <button class="strategy-workflow-step workflow-step-miner" :class="{ active: activeMode === 'miner' }" :aria-label="wheelRiskUnresolvedCount ? `话术挖掘机，${wheelRiskUnresolvedCount}项待处理` : '话术挖掘机'" :title="wheelRiskUnresolvedCount ? '点击直接定位待处理内容' : undefined" @click="openWheelRiskLocation">
+              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 18 8-8M10 6l8 8M13 3l8 8-3 3-8-8z"/><path d="M3 21h6"/></svg></span>
+              <span class="strategy-workflow-label">话术挖掘机</span>
+              <span v-if="wheelRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ wheelRiskUnresolvedCount }}项待处理</span>
             </button>
             <button class="strategy-workflow-step workflow-step-anchor" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
               <span class="strategy-workflow-icon" aria-hidden="true">
@@ -5193,17 +5959,18 @@ onBeforeUnmount(() => {
               <button
                 class="strategy-workflow-output workflow-step-fullshow"
                 :class="{ active: activeMode === 'fullshow' }"
+                aria-label="生成智能体"
+                :aria-current="activeMode === 'fullshow' ? 'step' : undefined"
+                title="生成智能体 · 让直播说啥更简单"
                 @click="activeMode = 'fullshow'"
               >
-                <span class="strategy-workflow-output-mark">✦</span>
-                <span class="strategy-workflow-output-copy">
-                  <strong>生成智能体</strong>
-                </span>
+                <img class="strategy-agent-generation-banner" :src="agentGenerationBanner" alt="" aria-hidden="true" draggable="false" />
               </button>
             </div>
           </nav>
 
           <div class="strategy-workflow-content">
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits','miner'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -5353,7 +6120,9 @@ onBeforeUnmount(() => {
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" />
+            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
+              <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" /></template>
+            </LiveProductLinkCards>
           </section>
 
           <div class="strategy-product-link-grid">
@@ -5428,6 +6197,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="strategy-benefit-formal-list">
               <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
+                <SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'benefits', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'benefits')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" />
                 <header class="strategy-benefit-formal-card-head">
                   <div class="strategy-benefit-formal-icon strategy-benefit-formal-link-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24"><path d="M10.5 13.5 13.5 10.5M7.7 16.3l-1.4 1.4a4 4 0 0 1-5.7-5.7l3.7-3.7a4 4 0 0 1 5.7 0l.7.7M16.3 7.7l1.4-1.4a4 4 0 0 1 5.7 5.7l-3.7 3.7a4 4 0 0 1-5.7 0l-.7-.7" /></svg>
@@ -5480,7 +6250,11 @@ onBeforeUnmount(() => {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></svg>
                   <div>
                     <span>有效期</span>
-                    <strong class="strategy-benefit-formal-time-range">
+                    <div class="strategy-benefit-validity-switch" aria-label="选择福利有效方式">
+                      <button type="button" :class="{ active: formalBenefitValidityMode(item) === 'scheduled' }" :disabled="!!mutatingFormalBenefitId" @click="setFormalBenefitValidityMode(item, 'scheduled')">指定时间</button>
+                      <button type="button" :class="{ active: formalBenefitValidityMode(item) === 'permanent' }" :disabled="!!mutatingFormalBenefitId" @click="setFormalBenefitValidityMode(item, 'permanent')">长期有效</button>
+                    </div>
+                    <strong v-if="formalBenefitValidityMode(item) === 'scheduled'" class="strategy-benefit-formal-time-range">
                       <span class="strategy-benefit-formal-time-value">
                         <input v-if="isEditingFormalBenefit(item, 'starts_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" placeholder="YYYY-MM-DD HH:mm" aria-label="编辑开始时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
                         <template v-else>{{ formatBenefitTime(item.starts_at) }}</template>
@@ -5493,12 +6267,14 @@ onBeforeUnmount(() => {
                         <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改结束时间" title="修改结束时间" @mousedown.prevent @click="startFormalBenefitEdit(item, 'ends_at')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                       </span>
                     </strong>
+                    <strong v-else class="strategy-benefit-permanent-note">长期有效 <small>不显示有效期，不参与时间段统计</small></strong>
                     <small v-if="item.source_quote">依据：{{ item.source_quote }}</small>
                     <small v-else-if="item.source_review_reason">判断：{{ item.source_review_reason }}</small>
                   </div>
                 </div>
                 <p v-if="formalBenefitMessage?.id === item.id" class="strategy-benefit-edit-message" :class="{ error: formalBenefitMessage.error }" role="status">{{ formalBenefitMessage.text }}</p>
-                <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效期' : '展开条件与有效期' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
+                <button type="button" class="strategy-benefit-copy" :disabled="!!mutatingFormalBenefitId" :aria-label="'复制' + (item.product_name || item.key) + '福利卡'" @mousedown.prevent @click="duplicateFormalBenefit(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制福利卡</button>
+                <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效方式' : '展开条件与有效方式' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
               </article>
             </div>
           </section>
@@ -5549,32 +6325,40 @@ onBeforeUnmount(() => {
               <h3>事实依据</h3>
             </div>
             <div class="strategy-fact-head-actions">
-              <button class="primary-button" type="button" :disabled="!currentPlan" @click="beginCreateFormalFact">＋ 新增事实依据</button>
+              <button class="primary-button" type="button" :disabled="!currentPlan || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
             </div>
           </div>
 
           <section class="strategy-formal-facts">
+            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories">重新加载</button></div>
+            <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
             <header class="strategy-formal-facts-head">
-              <div>
-                <span class="section-kicker">CURRENT PLAN FACTS</span>
-                <strong>当前方案已采纳事实</strong>
-                <small>{{ currentPlan?.name || '未选择方案' }} · {{ formalFacts.length }} 条</small>
+              <div class="strategy-formal-facts-brand">
+                <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
+                <div class="strategy-formal-facts-heading">
+                  <strong>当前方案已采纳事实</strong>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条 · 用于主线口播与智能问答</small>
+                </div>
               </div>
-              <span>以下内容同时供主线口播和互动回答使用；修改、删除都会记录版本历史。</span>
+              <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
             </header>
 
             <div v-if="creatingFormalFact" class="strategy-formal-fact-create">
-              <label><span>事实分类</span><select v-model="formalFactCreateDraft.category"><option v-for="option in formalFactCategoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-              <label><span>事实名称</span><input v-model="formalFactCreateDraft.key" maxlength="255" placeholder="例如：适用人群" /></label>
-              <label class="is-wide"><span>事实内容（可以说）</span><textarea v-model="formalFactCreateDraft.value" rows="3" maxlength="4000" placeholder="例如：本品为非转基因菜籽油"></textarea></label>
-              <label><span>不要这样说（选填）</span><textarea v-model="formalFactCreateDraft.forbidden_wording" rows="3" maxlength="4000" placeholder="一行一句，例如：老人小孩吃了更好"></textarea></label>
-              <label><span>改成这样说（选填）</span><textarea v-model="formalFactCreateDraft.safe_rewrite" rows="3" maxlength="4000" placeholder="例如：家里日常做饭可以按页面信息选择"></textarea></label>
+              <div v-if="formalFactCreateGuidance" class="strategy-script-notice is-wide">
+                <strong>轮盘发现的待补事实</strong><br />{{ formalFactCreateGuidance }}<br />
+                请核对真实资料后填写答案；不要把问题或猜测直接保存成事实。
+              </div>
+              <label><span>事实分类</span><select v-model="formalFactCreateDraft.category" :disabled="mutatingFormalFactId === -1 || factCategoryState.loading || !!factCategoryState.error"><optgroup v-for="group in factCategoryGroups(formalFactCreateDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup></select></label>
+              <label><span>事实名称</span><input v-model="formalFactCreateDraft.key" maxlength="255" :disabled="mutatingFormalFactId === -1" @input="formalFactName.edited" /><small>{{ formalFactName.loading.value ? '正在提炼名称…' : '填写内容后自动生成名称，也可自行修改' }}</small><small v-if="formalFactName.error.value" class="inline-error">{{ formalFactName.error.value }} <button type="button" @click="formalFactName.ensure">重试</button></small></label>
+              <label class="is-wide"><span>事实内容（可以说）</span><textarea v-model="formalFactCreateDraft.value" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
+              <label><span>不要这样说（选填）</span><textarea v-model="formalFactCreateDraft.forbidden_wording" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
+              <label><span>改成这样说（选填）</span><textarea v-model="formalFactCreateDraft.safe_rewrite" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
               <div class="strategy-formal-fact-create-actions"><button class="primary-button" type="button" :disabled="mutatingFormalFactId === -1" @click="createFormalFact">{{ mutatingFormalFactId === -1 ? '保存中…' : '保存事实依据' }}</button><button type="button" :disabled="mutatingFormalFactId === -1" @click="cancelCreateFormalFact">取消</button></div>
             </div>
 
             <div v-if="!formalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
               <strong>当前方案还没有正式事实</strong>
-              <span>可以从上面的素材候选采纳，也可以点击“新增事实依据”直接录入。</span>
+              <span>点击“新增事实依据”录入真实内容。</span>
             </div>
 
             <div v-else class="strategy-formal-facts-table-wrap">
@@ -5586,22 +6370,16 @@ onBeforeUnmount(() => {
                     <th>事实内容（可以说）</th>
                     <th>不要这样说</th>
                     <th>改成这样说</th>
-                    <th>版本</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in formalFacts" :key="item.id">
+                  <template v-for="item in formalFacts" :key="item.id">
+                  <tr :class="factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : ''">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
-                        <select v-model="formalFactEditDraft.category">
-                          <option
-                            v-for="option in formalFactCategoryOptions"
-                            :key="option.value"
-                            :value="option.value"
-                          >
-                            {{ option.label }}
-                          </option>
+                        <select v-model="formalFactEditDraft.category" :disabled="factCategoryState.loading || !!factCategoryState.error">
+                          <optgroup v-for="group in factCategoryGroups(formalFactEditDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup>
                         </select>
                       </td>
                       <td>
@@ -5610,12 +6388,8 @@ onBeforeUnmount(() => {
                       <td>
                         <textarea v-model="formalFactEditDraft.value" rows="3" maxlength="4000"></textarea>
                       </td>
-                      <td><textarea v-model="formalFactEditDraft.forbidden_wording" rows="3" maxlength="4000" placeholder="选填，一行一句"></textarea></td>
-                      <td><textarea v-model="formalFactEditDraft.safe_rewrite" rows="3" maxlength="4000" placeholder="选填，写建议说法"></textarea></td>
-                      <td class="strategy-formal-fact-version">
-                        V{{ item.version_no }}
-                        <small>保存后升级版本</small>
-                      </td>
+                      <td><textarea v-model="formalFactEditDraft.forbidden_wording" rows="3" maxlength="4000"></textarea></td>
+                      <td><textarea v-model="formalFactEditDraft.safe_rewrite" rows="3" maxlength="4000"></textarea></td>
                       <td>
                         <div class="strategy-formal-fact-actions">
                           <button
@@ -5633,15 +6407,11 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                     <template v-else>
-                      <td><span class="strategy-formal-fact-category">{{ factCategoryLabel(item.category) }}</span></td>
-                      <td><strong>{{ item.key }}</strong></td>
+                      <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
+                      <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
                       <td class="strategy-formal-fact-value">{{ item.value }}</td>
-                      <td class="strategy-formal-fact-boundary">{{ item.forbidden_wording || '—' }}</td>
-                      <td class="strategy-formal-fact-rewrite">{{ item.safe_rewrite || '—' }}</td>
-                      <td class="strategy-formal-fact-version">
-                        V{{ item.version_no }}
-                        <small>{{ item.source_type === 'manual_create' ? '人工新增' : (item.source_type === 'manual_edit' ? '人工修改' : '采纳生成') }}</small>
-                      </td>
+                      <td class="strategy-formal-fact-boundary"><div class="strategy-formal-fact-wording">{{ item.forbidden_wording || '—' }}</div></td>
+                      <td class="strategy-formal-fact-rewrite"><div class="strategy-formal-fact-wording">{{ item.safe_rewrite || '—' }}</div></td>
                       <td>
                         <div class="strategy-formal-fact-actions">
                           <button
@@ -5649,7 +6419,7 @@ onBeforeUnmount(() => {
                             :disabled="!!mutatingFormalFactId"
                             @click="startFormalFactEdit(item)"
                           >
-                            修改
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>修改
                           </button>
                           <button
                             class="is-danger"
@@ -5657,12 +6427,38 @@ onBeforeUnmount(() => {
                             :disabled="!!mutatingFormalFactId"
                             @click="deleteFormalFact(item)"
                           >
-                            删除
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
                           </button>
                         </div>
                       </td>
                     </template>
                   </tr>
+                  <tr v-if="expandedFactRiskId === item.id && factRisksForFact(item).length" class="strategy-fact-risk-detail-row">
+                    <td colspan="6">
+                      <div class="strategy-fact-risk-inline">
+                        <p v-if="factRiskNoticeState.error" class="is-error" role="alert">{{ factRiskNoticeState.error }}</p>
+                        <article v-for="review in factRisksForFact(item)" :key="review.claim_sha256" :data-fact-risk-hash="review.claim_sha256" tabindex="-1" :class="['is-' + factRiskTone(item), { 'is-risk-located': locatedFactRiskHash === review.claim_sha256 }]">
+                          <header><strong>{{ review.status === 'confirmed' ? '已确认' : factRiskToneLabel(item) }}</strong><small>{{ review.rule_id }}</small></header>
+                          <p>{{ review.semantic_reason || review.reason }}</p>
+                          <p v-if="review.semantic_suggestion"><b>建议表达：</b>{{ review.semantic_suggestion }}</p>
+                          <p v-if="review.status === 'confirmed'" class="is-confirmed">确认记录：{{ review.evidence }}<template v-if="review.confirmed_at"> · {{ new Date(review.confirmed_at).toLocaleString('zh-CN', { hour12: false }) }}</template></p>
+                          <template v-else-if="review.semantic_decision === 'pending'">
+                            <button type="button" :disabled="factRiskNoticeState.loading" @click="factRiskController?.reviewSemantics()">{{ factRiskNoticeState.loading ? '复核中…' : '重新语义复核' }}</button>
+                          </template>
+                          <template v-else-if="factRiskCanConfirm(review) && session.bootstrap?.actor.role === 'customer'">
+                            <p class="is-notice">系统提示这条内容可能存在风险。确认表示你已知晓提示、认可内容真实，并同意它在当前直播间的当前方案中使用。</p>
+                            <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button class="primary-button" type="button" :disabled="factRiskNoticeState.loading" @click="confirmInlineFactRisk(review)">我已知晓并确认</button></div>
+                          </template>
+                          <template v-else-if="review.severity === 'P0' && session.bootstrap?.actor.role === 'customer'">
+                            <p class="is-blocked">该项不能直接放行，请修改事实或申请后台复核。</p>
+                            <textarea v-if="review.appeal_status !== 'pending'" v-model="factRiskAppealDrafts[review.claim_sha256]" maxlength="2000" placeholder="说明为什么认为是误拦，并填写可核对的依据"></textarea>
+                            <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button v-if="review.appeal_status !== 'pending'" type="button" :disabled="factRiskNoticeState.loading || !(factRiskAppealDrafts[review.claim_sha256] || '').trim()" @click="appealInlineFactRisk(review)">申请后台复核</button><span v-else>后台复核申请已提交</span></div>
+                          </template>
+                        </article>
+                      </div>
+                    </td>
+                  </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -5675,11 +6471,6 @@ onBeforeUnmount(() => {
               <h3>互动策略</h3>
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
-          </div>
-          <RoomInteractionPreferences v-if="activeRoomId" :room-id="activeRoomId" />
-          <div v-else class="strategy-v2-empty">
-            <strong>先选择一个直播间</strong>
-            <span>互动偏好按直播间保存，选择直播间后即可调整。</span>
           </div>
           <div class="strategy-v2-section-head interaction-rules-head">
             <div>
@@ -5872,11 +6663,11 @@ onBeforeUnmount(() => {
               <div>
                 <span>
                   {{ runtimePlanId === plan.id
-                    ? '当前直播使用中 · 已发布'
+                    ? '当前直播使用中 · 已保存'
                     : publishedPlanIdSet.has(plan.id)
-                      ? '已发布当前直播间'
+                      ? '已保存 · 可开播'
                       : boundPlanIdSet.has(plan.id)
-                        ? '已绑定 · 未发布'
+                        ? '已绑定 · 待保存'
                         : '未绑定当前直播间' }}
                 </span>
                 <strong>{{ plan.name }}</strong>
@@ -5989,75 +6780,87 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
+        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-speech-miner-workspace">
+          <SpeechMinerWorkbench
+            ref="speechMinerWorkbench"
+            :plan-id="currentRoomPlanId || 0"
+            :tenant-id="activeRoom?.tenant_id || 0"
+            :wheel="anchorSellingPointWheel"
+            :wheel-loading="anchorSellingPointWheelLoading"
+            :risk-reviews="factRiskReviews"
+            :risk-loading="factRiskNoticeState.loading"
+            @confirm-risk="confirmInlineFactRisk"
+            @appeal-risk="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)"
+            @review-semantics="factRiskController?.reviewSemantics()"
+            @updated="refreshSpeechMinerWorkspace"
+          />
+        </section>
+
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
           <div class="reusable-anchor-style-workspace">
-            <aside class="reusable-anchor-style-sidebar">
-              <div class="reusable-anchor-style-sidebar-head">
-                <div><span>主播库</span><strong>已保存的主播风格</strong></div>
-                <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy" @click="createReusableAnchorStyle">＋新建主播</button>
-              </div>
-              <p class="reusable-anchor-style-help">选中后，测试文案和当前智能体方案都会按这名主播的说话方式生成。</p>
-              <div v-if="!reusableAnchorStyles.length" class="reusable-anchor-style-empty">还没有保存主播。先新建主播，再导入一份或多份真实话术。</div>
-              <button
-                v-for="style in reusableAnchorStyles"
-                :key="style.id"
-                type="button"
-                class="reusable-anchor-style-card"
-                :class="{ selected: selectedReusableAnchorStyleId === style.id }"
-                @click="selectReusableAnchorStyle(style.id)"
-              >
-                <span class="reusable-anchor-style-card-radio">{{ selectedReusableAnchorStyleId === style.id ? '✓' : '' }}</span>
-                <span><strong>{{ style.name }}</strong><small>{{ style.description || '还没有填写风格介绍' }}</small><em>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</em></span>
-              </button>
-              <button v-if="selectedReusableAnchorStyle" type="button" class="reusable-anchor-style-bind" :disabled="!currentRoomPlanId" @click="bindReusableAnchorStyle">
-                {{ currentRoomPlanId ? '设为当前智能体主播' : '先选择智能体方案' }}
-              </button>
-              <button v-if="selectedReusableAnchorStyle" type="button" class="reusable-anchor-style-settings-link" @click="reusableAnchorStyleTab = 'personalization'">⚙ 当前系统的个性插件</button>
-            </aside>
+            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" />
 
             <div class="reusable-anchor-style-main">
-              <div class="reusable-anchor-style-main-head">
-                <div>
-                  <span>REUSABLE PRESENTER PROFILE</span>
-                  <h3>{{ selectedReusableAnchorStyle?.name || '主播风格' }}</h3>
-                  <p>{{ selectedReusableAnchorStyle?.description || '把不同商品话术中的“怎么说”沉淀为可复用主播。' }}</p>
-                </div>
-                <div class="reusable-anchor-style-main-actions" v-if="selectedReusableAnchorStyle">
-                  <button type="button" class="strategy-version-button" @click="saveReusableAnchorStyleInfo">保存名称与介绍</button>
-                  <button type="button" class="danger-button" @click="deleteReusableAnchorStyle">删除主播</button>
-                </div>
-              </div>
               <div v-if="reusableAnchorStyleError" class="inline-error">{{ reusableAnchorStyleError }}</div>
               <div v-if="reusableAnchorStyleNotice" class="notice-banner">{{ reusableAnchorStyleNotice }}</div>
-              <div v-if="selectedReusableAnchorStyle" class="reusable-anchor-style-edit-row">
-                <input v-model="reusableAnchorStyleDraft.name" maxlength="80" placeholder="主播名称，例如：四川老乡主播" />
-                <input v-model="reusableAnchorStyleDraft.description" maxlength="500" placeholder="一句话介绍这个主播的说话感觉" />
-              </div>
               <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle">
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">主播风格样本话术</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">风格分析结果</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'testing' }" @click="reusableAnchorStyleTab = 'testing'">测试与训练</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">个性化挂载</button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-samples" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>风格样本</strong><small>导入主播话术</small></span>
+                </button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-analysis" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="18" width="5" height="10" rx="1"/><rect x="13.5" y="11" width="5" height="17" rx="1"/><rect x="23" y="4" width="5" height="24" rx="1"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>风格分析结果</strong><small>提取语言特征</small></span>
+                </button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-personalization" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 4a4 4 0 1 1 8 0v5h5a4 4 0 1 1 0 8h-5v5a4 4 0 1 1-8 0v-5H7a4 4 0 1 1 0-8h5V4Z"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>个性化挂载</strong><small>配置专属风格</small></span>
+                </button>
               </nav>
 
-              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel">
-                <div class="reusable-anchor-style-panel-title"><div><strong>导入这个主播不同场景的话术</strong><small>可以分别放菜籽油、衣服、闲聊等样本。系统只学习口语、称呼、口头禅和局部推进，不学习商品事实。</small></div></div>
-                <div class="reusable-anchor-style-sample-compose">
-                  <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="120" placeholder="样本标题，例如：菜籽油主线" />
-                  <textarea v-model="reusableAnchorStyleSampleDraft.raw_text" rows="7" maxlength="30000" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴。"></textarea>
-                  <div class="reusable-anchor-style-sample-compose-actions"><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample">保存这份样本</button><label class="strategy-version-button reusable-anchor-style-file-button">导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label></div>
+              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel reusable-anchor-style-samples-panel">
+                <div class="reusable-anchor-style-samples-hero">
+                  <span class="reusable-anchor-style-samples-hero-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
+                  <div class="anchor-sample-title"><strong>导入主播话术</strong><small>文字越多风格分析越准</small></div>
+                  <div class="anchor-analysis-start"><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || (!reusableAnchorStyleSamples.length && !reusableAnchorStyleSampleDraft.raw_text.trim())" @click="startReusableAnchorAnalysis">开始分析</button><label v-if="reusableAnchorStyleSamples.length > 1"><input v-model="reusableAnchorMultiAnalysis" type="checkbox" :disabled="reusableAnchorStyleBusy" />多样本分析</label></div>
                 </div>
-                <div v-if="reusableAnchorStyleAnalysisStage" class="reusable-anchor-style-thinking"><span class="thinking-dot"></span><strong>{{ reusableAnchorStyleAnalysisStage }}</strong><small>正在调用风格分析与同步质检，请不要重复点击。</small></div>
+                <div v-if="reusableAnchorStyleAnalysisStage" class="anchor-analysis-progress" role="progressbar" aria-label="主播风格分析进度" :aria-valuenow="reusableAnchorStyleAnalysisProgress" aria-valuemin="0" aria-valuemax="100"><div :style="{ width: reusableAnchorStyleAnalysisProgress + '%' }"></div><span>{{ reusableAnchorStyleAnalysisStage }} · {{ reusableAnchorStyleAnalysisProgress }}%</span></div>
+                <p v-if="reusableAnchorSampleLimitNotice" class="anchor-sample-limit-warning" role="alert">{{ reusableAnchorSampleLimitNotice }}</p>
+                <div class="reusable-anchor-style-sample-compose">
+                  <label class="reusable-anchor-style-compose-field">
+                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M8 3h9l5 5v17H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M17 3v6h5M10 14h7M10 18h7"/></svg></span>
+                    <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="50" placeholder="样本标题，例如：菜籽油主线" />
+                    <span class="reusable-anchor-style-compose-count">{{ reusableAnchorStyleSampleDraft.title.length }}/50</span>
+                  </label>
+                  <label class="reusable-anchor-style-compose-field reusable-anchor-style-compose-textarea">
+                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h18v14H12l-5 4v-4H5V5Z"/><path d="M10 11h.01M14 11h.01M18 11h.01"/></svg></span>
+                    <textarea :value="reusableAnchorStyleSampleDraft.raw_text" rows="8" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴，最多10000字。" @input="setAnchorSampleDraft"></textarea>
+                    <span class="reusable-anchor-style-compose-count">{{ Array.from(reusableAnchorStyleSampleDraft.raw_text).length }}/10000</span>
+                  </label>
+                  <div class="reusable-anchor-style-sample-compose-actions">
+                    <div class="reusable-anchor-style-sample-compose-buttons">
+                      <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="m4 13 20-9-7 20-4-8-9-3Z"/><path d="m13 16 5-6"/></svg>保存这份样本</button>
+                      <label class="strategy-version-button reusable-anchor-style-file-button"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M7 3h10l5 5v17H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M17 3v6h5M14 12v8M10 16l4 4 4-4"/></svg>导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label>
+                    </div>
+                    <div class="reusable-anchor-style-sample-tip"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M9 18c-2-2-3-4-3-7a8 8 0 1 1 16 0c0 3-1 5-3 7l-1 2h-8l-1-2ZM10 24h8M11 21h6"/><path d="M14 1v2M3 11H1M27 11h-2M5 3l2 2M23 3l-2 2"/></svg><span>提示：样本越真实越完整，生成的风格越贴近。</span></div>
+                  </div>
+                  <div class="reusable-anchor-style-sample-examples"><strong>样本示例</strong><button type="button" @click="reusableAnchorStyleSampleDraft.title = '菜籽油主线'">菜籽油主线</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '服装卖点讲解'">服装卖点讲解</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '发货与售后'">发货与售后</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '日常闲聊互动'">日常闲聊互动</button></div>
+                </div>
                 <div class="reusable-anchor-style-sample-list">
                   <article v-for="sample in reusableAnchorStyleSamples" :key="sample.id">
-                    <header><div><strong>{{ sample.title }}</strong><small>{{ sample.readable_text.length }} 字 · {{ sample.analysis_status === 'analyzed' ? '已分析' : sample.analysis_status === 'analyzing' ? '分析中' : sample.analysis_status === 'failed' ? '分析失败' : '待分析' }}</small></div><div><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || sample.analysis_status === 'analyzing'" @click="analyzeReusableAnchorStyleSample(sample)">{{ sample.analysis_status === 'analyzed' ? '重新分析' : '分析这份样本' }}</button><button type="button" class="strategy-version-button" @click="deleteReusableAnchorStyleSample(sample)">删除</button></div></header>
+                    <header><div><strong>{{ sample.title }}</strong><small>{{ Array.from(sample.readable_text).length }} 字 · {{ sample.analysis_status === 'analyzed' ? '已分析' : sample.analysis_status === 'analyzing' ? '分析中' : sample.analysis_status === 'failed' ? '分析失败' : '待分析' }}</small></div><div><button type="button" class="strategy-version-button" :disabled="!sample.analysis.delivery_spec?.meta_prompt_md" @click="viewedAnchorSample = sample">查看样本分析</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy" @click="analyzeReusableAnchorStyleSample(sample)">{{ sample.analysis_status === 'analyzed' ? '重新分析此样本' : '分析此样本' }}</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy" @click="deleteReusableAnchorStyleSample(sample)">删除</button></div></header>
                     <details><summary>查看原始样本</summary><pre>{{ sample.readable_text }}</pre></details>
                     <p v-if="sample.error_message" class="inline-error">{{ sample.error_message }}</p>
                   </article>
                 </div>
               </div>
 
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel">
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="风格分析结果">
+                <div v-if="reusableAnchorStyleAnalysisStage" class="anchor-analysis-progress" role="progressbar" aria-label="总风格保存进度" :aria-valuenow="reusableAnchorStyleAnalysisProgress" aria-valuemin="0" aria-valuemax="100"><div :style="{ width: reusableAnchorStyleAnalysisProgress + '%' }"></div><span>{{ reusableAnchorStyleAnalysisStage }} · {{ reusableAnchorStyleAnalysisProgress }}%</span></div>
+                <AnchorStyleAnalysisDisplay :text="overallAnchorAnalysisText" :editable="!!overallAnchorAnalysisText.trim() && reusableAnchorAnalysisPreviewId === reusableAnchorAnalysisVersions.active_version_id" :busy="reusableAnchorStyleBusy" @save="saveOverallAnchorAnalysis">
+                  <template #versions><div class="anchor-analysis-version-picker"><span>{{ activeAnchorAnalysisVersion ? '当前使用 V' + activeAnchorAnalysisVersion.version_no : '暂无采纳版本' }}</span><select v-if="reusableAnchorAnalysisVersions.items.length" v-model="reusableAnchorAnalysisPreviewId" aria-label="选择历史风格版本" :disabled="reusableAnchorStyleBusy"><option v-for="version in reusableAnchorAnalysisVersions.items" :key="version.id" :value="version.id">V{{ version.version_no }} · {{ version.kind === 'multi_sample' ? '综合分析' : version.kind === 'manual_edit' ? '手动修改' : version.kind === 'legacy_import' ? '历史风格' : '单样本' }}</option></select><button v-if="reusableAnchorAnalysisVersions.items.length" type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy || reusableAnchorAnalysisPreviewId === reusableAnchorAnalysisVersions.active_version_id" @click="useOverallAnchorAnalysis">使用</button></div></template>
+                </AnchorStyleAnalysisDisplay>
+                <div v-if="legacyStyleUIVisible">
                 <div class="reusable-anchor-style-panel-title"><div><strong>风格分析结果</strong><small>下面的内容是跨商品可复用的“怎么说”，事实、价格、链接和互动策略不在这里。</small></div><span>{{ selectedReusableAnchorStyle.sample_count }} 份样本已纳入</span></div>
                 <div v-if="!selectedReusableAnchorStyle.profile.dimensions?.length" class="reusable-anchor-style-empty">还没有分析结果。请回到“主播风格样本话术”分析至少一份样本。</div>
                 <template v-else>
@@ -6065,10 +6868,26 @@ onBeforeUnmount(() => {
                     <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。样本证据置信度：{{ selectedReusableAnchorStyle.profile.delivery_spec?.sample_confidence || '待累计' }}；短样本先看存在性，长样本才按密度约束。</small></header>
                     <pre>{{ selectedReusableAnchorStyle.profile.delivery_spec?.rulebook || selectedReusableAnchorStyle.profile.reusable_rules.join('\n') }}</pre>
                   </section>
+                  <section class="anchor-addressing-override">
+                    <header>
+                      <div><strong>生成话术的称呼覆盖</strong><small>未启用时沿用样本学到的称呼；这里仅影响主线话术生成，不修改直播间实时互动策略。</small></div>
+                      <button type="button" class="primary-button" :disabled="anchorAddressingSaving" @click="saveAnchorAddressingOverride">{{ anchorAddressingSaving ? '保存中…' : '保存称呼覆盖' }}</button>
+                    </header>
+                    <div class="anchor-addressing-learned">
+                      <span>样本观众称呼：{{ learnedAnchorAudienceTerms.join('、') || '未提取到稳定称呼' }}</span>
+                      <span>样本主播自称：{{ learnedAnchorSelfTerms.join('、') || '未提取到稳定自称' }}</span>
+                    </div>
+                    <div class="anchor-addressing-grid">
+                      <label><span>观众 / 粉丝称呼</span><select v-model="anchorAddressingDraft.audience_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类称呼</option></select><textarea v-if="anchorAddressingDraft.audience_mode !== 'inherit'" v-model="anchorAddressingDraft.audience_terms" rows="2" maxlength="180" placeholder="例如：姐妹们、老朋友们；用顿号或换行分隔"></textarea></label>
+                      <label><span>主播自称</span><select v-model="anchorAddressingDraft.self_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类自称</option></select><textarea v-if="anchorAddressingDraft.self_mode !== 'inherit'" v-model="anchorAddressingDraft.self_terms" rows="2" maxlength="180" placeholder="例如：我、咱们家；用顿号或换行分隔"></textarea></label>
+                    </div>
+                  </section>
                 </template>
+                </div>
               </div>
 
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel">
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="测试与训练预留页面">
+                <div v-show="false">
                 <div class="reusable-anchor-style-panel-title"><div><strong>测试与训练</strong><small>每次先生成一小段；不满意可写差异继续校正。测试不会发布，也不会自动备份版本或改当前直播。</small></div></div>
                 <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
                   <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
@@ -6085,13 +6904,14 @@ onBeforeUnmount(() => {
                   <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
                 </section>
                 <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
-                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">放行线：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">质量目标：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达到' : '后续窗口继续补偿' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>风格分只用于质量监控，不阻塞正文。</span></div>
                 <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
                   <header><strong>本次话术安排</strong><small>系统一次规划最多8个短期小段，正文仍逐段生成、校验并立即显示；互动或事实变化时只废弃尚未生成的部分。选择不合适或超时，由系统兜底。</small></header>
                   <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
+                  <p>行动节点：目标 {{ anchorStyleTestResult.content_strategy.action_target ?? 0 }} · 实际 {{ anchorStyleTestResult.content_strategy.action_planned ?? 0 }} · 直接CTA {{ anchorStyleTestResult.content_strategy.direct_cta_mentions ?? 0 }} 处</p>
                   <template v-if="anchorStyleTestResult.content_strategy.actual_steps?.length">
                     <p>本次实际顺序：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.actual_steps.map((step) => step.role), anchorStyleTestResult.content_strategy.live_type) }}</p>
-                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }} · {{ step.source.startsWith('model') ? '模型短期规划' : '系统兜底' }}：{{ step.reason }}</p></details>
+                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ step.mainline_phase || 'body' }} / {{ step.body_function || mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }}<template v-if="step.cta_type"> · CTA={{ step.cta_type }}</template> · {{ step.source.startsWith('model') ? '模型短期规划' : '系统校正/兜底' }}：{{ step.reason }}</p></details>
                   </template>
                   <p v-else>默认环节参考（不是本次实际顺序）：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.role_sequence, anchorStyleTestResult.content_strategy.live_type) }}</p>
                   <details v-if="anchorStyleTestResult.content_strategy.product_plan?.length" open>
@@ -6100,7 +6920,7 @@ onBeforeUnmount(() => {
                       <strong>{{ item.link_key }} · {{ item.product_name || '未命名商品' }}</strong>
                       <span>直播间定位：{{ productRoomRolesLabel(item.room_roles || []) }} · {{ productPlanDirectionLabel(item.emphasis, item.revisit) }}</span>
                       <small>{{ item.reason }}</small>
-                      <small v-if="item.primary_angles?.length">优先角度：{{ item.primary_angles.join('、') }}</small>
+                      <small v-if="item.primary_angles?.length">优先内容：{{ item.primary_angles.join('、') }}</small>
                       <small v-for="transition in (item.transitions || [])" :key="transition.target_link_key">可承接 {{ transition.target_link_key }}：{{ transition.reason }}</small>
                     </article>
                   </details>
@@ -6138,10 +6958,11 @@ onBeforeUnmount(() => {
                    <section class="reusable-anchor-style-stream-window" role="dialog" aria-modal="true" aria-label="连续主线输出窗口">
                      <header class="reusable-anchor-style-stream-header"><div><span>LIVE MAINLINE PREVIEW</span><strong>主播主线连续输出</strong><small>{{ reusableAnchorStyleLongTestStage }}</small></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = false">关闭窗口</button></header>
                      <div class="reusable-anchor-style-stream-metrics"><span>已生成 <b>{{ reusableAnchorStyleLongTestSegments }}</b> 段</span><span>测试时长 <b>{{ reusableAnchorStyleLongTestMinutes }}</b> 分钟</span><span>模式 <b>小段连续生成</b></span></div>
-                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过检查…' }}</pre>
-                     <footer><span>每段通过事实、字数和风格检查后才追加；本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
+                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过事实检查并流出…' }}</pre>
+                     <footer><span>每段先通过事实和结构检查，再尝试风格包装；包装失败立即显示基础正文。本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
                    </section>
                  </div>
+                </div>
               </div>
 
               <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'personalization'" class="reusable-anchor-style-tab-panel">
@@ -6151,7 +6972,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <details class="reusable-anchor-style-legacy"><summary>兼容旧版：当前直播方案素材分析与叠加风格</summary>
+          <Teleport to="body"><div v-if="viewedAnchorSample" class="anchor-sample-modal-backdrop" @click.self="viewedAnchorSample = null"><section class="anchor-sample-modal" role="dialog" aria-modal="true" tabindex="-1" :aria-label="'样本分析：' + viewedAnchorSample.title" @keydown.esc.stop="viewedAnchorSample = null"><header><strong>{{ viewedAnchorSample.title }} · 样本分析</strong><button type="button" aria-label="关闭样本分析" @click="viewedAnchorSample = null">关闭 ×</button></header><AnchorStyleAnalysisDisplay :text="viewedAnchorSample.analysis.delivery_spec?.meta_prompt_md || ''" title="样本分析结果" /></section></div></Teleport>
+          <details v-if="legacyStyleUIVisible" class="reusable-anchor-style-legacy">
           <div class="strategy-v2-section-head">
             <div>
               <h3>主播风格</h3>
@@ -6343,12 +7165,12 @@ onBeforeUnmount(() => {
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
               <small>本次独立参数：主播风格还原强度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。还原强度是生成目标，实际分数由下方1000字窗口独立测量；两项参数互不联动。</small>
               <small v-if="anchorStyleTestResult.generation_mode === 'horizon_streaming_segments'">生成方式：每次短期规划最多8段，正文按 {{ anchorStyleTestResult.segment_count || '多个' }} 个时间单元逐段校验并流式追加；首段 {{ anchorStyleTestResult.first_segment_ms ?? '—' }}ms，规划调用 {{ anchorStyleTestResult.planning_call_count ?? 0 }} 次，正文调用 {{ anchorStyleTestResult.render_call_count ?? 0 }} 次，其中返修 {{ anchorStyleTestResult.repair_call_count ?? 0 }} 次。</small>
-              <small v-if="anchorStyleTestResult.style_degraded || anchorStyleTestResult.style_patched_segments?.length || anchorStyleTestResult.fact_template_segments?.length || anchorStyleTestResult.skipped_segments?.length" class="notice-banner">本次自动恢复：程序补风格 {{ anchorStyleTestResult.style_patched_segments?.length || 0 }} 段、确认事实模板 {{ anchorStyleTestResult.fact_template_segments?.length || 0 }} 段、跳过并重规划 {{ anchorStyleTestResult.skipped_segments?.length || 0 }} 段、中性兜底 {{ anchorStyleTestResult.fallback_segments?.length || 0 }} 段。事实和硬规则始终有效；若标记为风格降级，后续小段会继续校正。</small>
+              <small v-if="anchorStyleTestResult.style_degraded || anchorStyleTestResult.style_patched_segments?.length || anchorStyleTestResult.fact_template_segments?.length || anchorStyleTestResult.fallback_segments?.length || anchorStyleTestResult.style_fallback_segments?.length" class="notice-banner">本次自动恢复：确定性风格补丁 {{ anchorStyleTestResult.style_patched_segments?.length || 0 }} 段、确认事实模板 {{ anchorStyleTestResult.fact_template_segments?.length || 0 }} 段、中性正文兜底 {{ anchorStyleTestResult.fallback_segments?.length || 0 }} 段、风格包装回退 {{ anchorStyleTestResult.style_fallback_segments?.length || 0 }} 段；跳段始终为0。事实和硬规则始终有效，后续窗口继续补偿风格。</small>
               <small v-else-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
-              <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。90–100高还原档会在每个小段提交前验收，未过放行线会定向返修，不再把低分结果当成成功。</small>
+              <small>样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差，后续窗口继续补偿` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过内容补正或安全回退）' : '' }}。风格质量不作为直播放行闸门。</small>
               <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.style_window" :class="{ 'inline-error': anchorStyleTestResult.style_window.strict && !anchorStyleTestResult.style_window.passed }">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；当前放行线 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由策略外挂控制。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.style_window">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；质量目标 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达到' : '未达到时由后续小段补偿' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由业务策略控制。</small>
               <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">防照抄评测：与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。</small>
               <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
               <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
@@ -6396,75 +7218,74 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <div class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
-            <div class="strategy-fullshow-title-block">
-              <h3>直播智能体生成</h3>
-              <div class="strategy-fullshow-title-action">
-                <button class="primary-button" type="button" :disabled="fullShowGenerating || !currentPlan || !contentModeReady || contentModeLoading || contentModeSaving" @click="generateFullShowPreview">
-                  {{ fullShowGenerating ? 'S1 生成中…' : 'S1 生成直播智能体预览' }}
-                </button>
-              </div>
-              <p>已有方案会优先恢复最近待发布草稿，没有草稿时恢复当前已发布版本作为编辑副本；修改后保存为新版本，不覆盖历史版本。</p>
-            </div>
-          </div>
-
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
-
-          <section v-if="fullShowResult" class="strategy-fullshow-main-actions">
-            <div class="strategy-fullshow-main-actions-copy">
-              <span>版本操作</span>
-              <strong>{{ activeRoom?.name || '当前直播间' }}</strong>
-              <small>
-                S5 只保存待发布新版本；保存成功后，再用 S6 把这个版本发布到当前直播间。
-              </small>
+          <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
+            <header class="strategy-agent-control-header">
+              <AnchorControlBar
+                :initializing="anchorInitializing"
+                :initialize-progress="anchorInitializationProgress"
+                :initialize-label="anchorInitializationStage"
+                :saving="fullShowVersionSaving"
+                :initialize-disabled="anchorInitializing || !currentPlan"
+                :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
+                save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
+                @initialize="initializeAnchorGeneration"
+                @save="saveFullShowVersion"
+              />
+            </header>
+            <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
+              <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
             </div>
-            <div class="strategy-fullshow-main-actions-buttons">
-              <button
-                type="button"
-                :disabled="
-                  fullShowVersionSaving ||
-                  fullShowVersionPublishing
-                "
-                @click="saveFullShowVersion"
-              >
-                <span>{{ fullShowVersionSaving ? 'S5 保存中…' : 'S5 保存新版本' }}</span>
-                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('已保存 V' + fullShowSavedVersion.version_no + '，可以发布') : '只保存，不发布直播间' }}</small>
-              </button>
-              <button
-                class="primary"
-                type="button"
-                :disabled="
-                  fullShowVersionSaving ||
-                  fullShowVersionPublishing
-                "
-                @click="publishFullShowVersion"
-              >
-                <span>
-                  {{
-                    fullShowVersionPublishing
-                      ? 'S6 发布中…'
-                      : fullShowSavedVersion?.lifecycle_status === 'published'
-                        ? '已发布到直播间'
-                        : 'S6 发布到直播间'
-                  }}
+            <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">
+              {{ anchorInitializationNotice }}
+            </div>
+            <div class="strategy-content-mode-cards">
+              <button v-for="mode in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
+                <i>{{ mode === 'user_audio' ? '01' : mode === 'ai_pregenerated' ? '02' : '03' }}</i>
+                <span class="strategy-content-mode-icon" :class="'is-' + mode" aria-hidden="true">
+                  <svg v-if="mode === 'user_audio'" viewBox="0 0 36 36"><path d="M8 15v6M13 10v16M18 6v24M23 11v14M28 15v6" /></svg>
+                  <svg v-else-if="mode === 'ai_pregenerated'" viewBox="0 0 36 36"><path d="M11 6h11l5 5v19H11z" /><path d="M22 6v6h5M15 18h8M15 23h8" /></svg>
+                  <svg v-else viewBox="0 0 36 36"><path d="M21 4 9 20h9l-3 12 12-17h-9z" /></svg>
                 </span>
-                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('发布已保存的 V' + fullShowSavedVersion.version_no) : '请先完成 S5 保存' }}</small>
+                <div class="strategy-content-mode-card-copy">
+                  <strong>{{ mode === 'user_audio' ? '录音主线' : mode === 'ai_pregenerated' ? '固定生成' : '实时声音' }}</strong>
+                  <span>{{ liveContentModeLabels[mode].description }}</span>
+                </div>
+                <b>{{ contentModeAccess.content_mode === mode ? '✓ 已激活' : '选择' }}</b>
               </button>
             </div>
           </section>
-          <div v-if="fullShowVersionError" class="inline-error strategy-fullshow-action-error" role="alert">
+
+          <section v-if="isRealtimeVoiceContentMode" class="strategy-realtime-voice-page">
+            <RealtimeAnchorPreviewPanel :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :voice-source-room-id="activeRoomId || undefined" :generation-options="realtimeGenerationOptions" />
+            <RealtimeGenerationOptionsPanel :model-value="realtimeGenerationOptions" :loading="fullShowWorkspaceLoading || realtimeOptionsLoading" :disabled="fullShowVersionSaving" :load-error="realtimeOptionsLoadError" :changed="realtimeOptionsChanged" @update:model-value="updateRealtimeOptions" @retry="loadRealtimeOptionsDefaults" />
+          </section>
+
+          <div v-if="isFixedGeneratedContentMode" class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
+            <div class="strategy-fullshow-title-block">
+              <h3>固定生成</h3>
+              <div class="strategy-fullshow-title-action">
+                <button class="primary-button" type="button" :disabled="fullShowGenerating || !currentPlan || !contentModeReady || contentModeLoading || contentModeSaving" @click="generateFullShowPreview">
+                  {{ fullShowGenerating ? '固定文稿生成中…' : '生成固定文稿' }}
+                </button>
+              </div>
+              <p>先生成文案并确认，再生成可发布的成品声音；本页不显示录音上传业务。</p>
+            </div>
+          </div>
+
+          <div v-if="fullShowVersionError && fullShowVersionActionReady" class="inline-error strategy-fullshow-action-error" role="alert">
             {{ fullShowVersionError }}
           </div>
 
-          <section v-if="fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
+          <section v-if="isFixedGeneratedContentMode && fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
             <div>
               <strong>正在恢复智能体工作区…</strong>
               <span>正在读取文案、生成参数、正式声音和声音时间轴</span>
             </div>
           </section>
-          <section v-else-if="fullShowWorkspaceBaseVersion" class="strategy-fullshow-restore-banner">
+          <section v-else-if="isFixedGeneratedContentMode && fullShowWorkspaceBaseVersion" class="strategy-fullshow-restore-banner">
             <div>
               <strong>
                 {{ fullShowWorkspaceInherited ? '从同方案 V' : '基于 V' }}{{ fullShowWorkspaceBaseVersion.version_no }} 恢复编辑
@@ -6474,13 +7295,13 @@ onBeforeUnmount(() => {
                   fullShowWorkspaceInherited
                     ? '恢复的是该智能体方案在其它绑定直播间已有的版本副本'
                     : fullShowWorkspaceSource === 'draft'
-                    ? '恢复的是待发布草稿'
-                    : '恢复的是当前已发布版本副本'
+                    ? '恢复的是最近保存内容'
+                    : '恢复的是当前保存方案副本'
                 }}
                 · 文案、时长、正式稿、声音和时间轴已恢复
               </span>
               <span v-if="fullShowWorkspaceInherited" class="strategy-fullshow-restore-legacy">
-                当前是继承编辑副本；请先点击 S5 保存为当前直播间的新版本，再点击 S6 发布到这个直播间。
+                当前是继承编辑副本；点击保存智能体方案后，下次开播直接使用，不影响其它直播间。
               </span>
               <span v-if="fullShowWorkspaceLegacyPartial" class="strategy-fullshow-restore-legacy">
                 这是旧版历史数据：当时只保存了正式稿，未入选草稿没有历史快照；本次之后的新版本会保存全部稿件。
@@ -6488,12 +7309,12 @@ onBeforeUnmount(() => {
             </div>
             <div class="strategy-fullshow-restore-status">
               <b v-if="fullShowWorkspaceDirty" class="dirty">有未保存修改</b>
-              <b v-else>{{ fullShowWorkspaceSource === 'draft' ? '可直接继续编辑或发布' : '当前未修改' }}</b>
+              <b v-else>当前未修改</b>
               <em>这里的修改不会直接影响当前直播</em>
             </div>
           </section>
 
-          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-guide" open>
+          <details v-if="isFixedGeneratedContentMode" class="strategy-fullshow-guide" open>
             <summary class="strategy-fullshow-guide-title">
               <div>
                 <strong>生成指导步骤</strong>
@@ -6519,7 +7340,7 @@ onBeforeUnmount(() => {
           </details>
 
           <section
-            v-if="fullShowGenerationProgress.visible"
+            v-if="isFixedGeneratedContentMode && fullShowGenerationProgress.visible"
             class="strategy-fullshow-progress"
             :class="{ failed: fullShowGenerationProgress.failed, done: fullShowGenerationProgress.percent >= 100 && !fullShowGenerationProgress.failed }"
           >
@@ -6546,10 +7367,10 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <div v-if="fullShowNotice" class="strategy-script-notice">{{ fullShowNotice }}</div>
-          <div v-if="fullShowError" class="inline-error strategy-inline-error">{{ fullShowError }}</div>
+          <div v-if="fullShowNotice && (isFixedGeneratedContentMode || (isUserAudioContentMode && hasCustomMainlineResult))" class="strategy-script-notice">{{ fullShowNotice }}</div>
+          <div v-if="isFixedGeneratedContentMode && fullShowError" class="inline-error strategy-inline-error">{{ fullShowError }}</div>
 
-          <div v-if="!isUserAudioContentMode" class="strategy-fullshow-grid">
+          <div v-if="isFixedGeneratedContentMode" class="strategy-fullshow-grid">
             <section class="strategy-fullshow-panel strategy-fullshow-config">
               <header>
                 <div>
@@ -6638,9 +7459,21 @@ onBeforeUnmount(() => {
                 <small>这是独立的事实延展空间。法律、平台规则和你明确锁定的内容始终不动；数值越高，越允许场景、类比、故事化和常识推演，但不会改变主播称呼与语气密度。</small>
               </div>
 
+              <div class="strategy-fullshow-field">
+                <div class="strategy-fullshow-field-title">
+                  <span>成交推进强度</span>
+                  <strong>{{ fullShowConversionIntensity }}/100</strong>
+                </div>
+                <div class="strategy-fullshow-duration-slider">
+                  <input v-model.number="fullShowConversionIntensity" type="range" min="0" max="100" step="5" :style="{ '--duration-progress': fullShowConversionIntensity + '%' }" />
+                  <div class="strategy-fullshow-duration-ticks"><span>陈述为主</span><span>轻行动</span><span>明确行动</span><span>高频推进</span></div>
+                </div>
+                <small>控制行动节点频率和直接程度；库存、倒计时、销量、时效等CTA类型仍必须有正式事实支持。</small>
+              </div>
+
               <div class="strategy-fullshow-inline-fields">
                 <label>
-                  <span>单轮目标时长</span>
+                  <span>每轮循环时长</span>
                   <div><input v-model.number="fullShowRoundMinutes" type="number" min="5" max="12" /><em>分钟</em></div>
                 </label>
                 <label>
@@ -6687,24 +7520,24 @@ onBeforeUnmount(() => {
 
               <div class="strategy-fullshow-guardrails">
                 <div><span>固定不变</span><strong>正式事实 · 链接对应 · 当前有效活动条件</strong></div>
-                <div><span>每轮可变</span><strong>开场角度 · 讲解顺序 · 例子 · 转场 · CTA 位置</strong></div>
+                <div><span>每轮可变</span><strong>开场内容 · 讲解顺序 · 例子 · 转场 · CTA 位置</strong></div>
                 <div><span>运行时插入</span><strong>库存 · 弹幕答疑 · 欢迎 · 临场纠正</strong></div>
               </div>
             </section>
           </div>
 
-          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-panel strategy-fullshow-timeline">
+          <details v-if="isFixedGeneratedContentMode" class="strategy-fullshow-panel strategy-fullshow-timeline">
             <summary>
               <div>
                 <span>03</span>
-                <strong>整场轮次安排</strong>
+                <strong>直播骨架与整场轮次安排</strong>
               </div>
               <small>{{ fullShowDuration }} 分钟 · 约 {{ fullShowRoundCount }} 轮 · 每轮约 {{ fullShowRoundMinutes }} 分钟</small>
             </summary>
 
             <div v-if="!fullShowPreviewReady" class="strategy-fullshow-empty">
               <strong>先整理整场结构</strong>
-              <span>系统会按直播时长拆分轮次，并把 A/B/C/D/E 不同表达稿交叉安排，避免整场反复念同一篇。</span>
+              <span>系统会按“重新进入 → 主体六功能动态组合 → 本轮收口”拆分轮次；六功能不是固定顺序，真实事件只会改写尚未生成的部分。</span>
             </div>
             <div v-else class="strategy-fullshow-rounds">
               <article v-for="round in fullShowRoundPreview" :key="round.index">
@@ -6714,9 +7547,7 @@ onBeforeUnmount(() => {
                   <strong>{{ round.opening }}</strong>
                   <small>{{ round.startMinute }}–{{ Math.min(fullShowDuration, round.startMinute + fullShowRoundMinutes) }} 分钟</small>
                 </div>
-                <div class="strategy-fullshow-round-flow">
-                  <span>留人</span><i>→</i><span>讲品</span><i>→</i><span>价值</span><i>→</i><span>链接</span><i>→</i><span>CTA</span>
-                </div>
+                <div class="strategy-fullshow-round-flow"><span>{{ round.opening }}</span><template v-for="item in round.flow" :key="item"><i>→</i><span>{{ item }}</span></template><i>→</i><span>{{ round.closing }}</span></div>
                 <em>{{ fullShowGenerateTTS ? '含声音语气' : '纯文字' }}</em>
               </article>
               <div v-if="fullShowRoundCount > fullShowRoundPreview.length" class="strategy-fullshow-more-rounds">
@@ -6725,55 +7556,54 @@ onBeforeUnmount(() => {
             </div>
           </details>
 
-          <div class="strategy-fullshow-grid strategy-fullshow-output-grid">
+          <div
+            v-if="isUserAudioContentMode || isFixedGeneratedContentMode"
+            class="strategy-fullshow-grid strategy-fullshow-output-grid"
+            :class="{ 'is-recording-mainline': isUserAudioContentMode }"
+          >
             <section class="strategy-fullshow-panel strategy-fullshow-output">
               <header>
                 <div class="strategy-fullshow-output-title">
-                  <span>S3</span>
-                  <strong class="strategy-fullshow-output-section-name">话术处理区</strong>
-                  <button
-                    type="button"
-                    class="strategy-fullshow-output-mode"
-                    :class="{ active: fullShowOutputMode === 'generated' }"
-                    @click="selectFullShowOutputMode('generated')"
-                  >
-                    AI话术
-                  </button>
-                  <button
-                    type="button"
-                    class="strategy-fullshow-output-mode"
-                    :class="{ active: fullShowOutputMode === 'custom' }"
-                    @click="openCustomMainline"
-                  >
-                    原始音
-                  </button>
+                  <span v-if="isUserAudioContentMode" class="strategy-recording-title-icon" aria-hidden="true">
+                    <svg viewBox="0 0 36 36"><rect x="13" y="5" width="10" height="18" rx="5" /><path d="M9 17v1a9 9 0 0 0 18 0v-1M18 27v5M13 32h10" /></svg>
+                  </span>
+                  <span v-else>S3</span>
+                  <div class="strategy-fullshow-output-heading-copy">
+                    <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '录音主线处理' : '固定生成话术' }}</strong>
+                    <small v-if="isUserAudioContentMode">上传一段录音，系统将自动分段、识别文字并生成高质量声音资产。</small>
+                  </div>
                 </div>
                 <div
                   class="strategy-fullshow-status"
-                  :class="{ ready: fullShowOutputMode === 'custom' ? Boolean(customMainlineDraft) : Boolean(fullShowResult) }"
+                  :class="{ ready: isUserAudioContentMode ? Boolean(customMainlineDraft) : Boolean(fullShowResult) }"
                 >
                   <i></i>
                   {{
-                    fullShowOutputMode === 'custom'
+                    isUserAudioContentMode
                       ? (customMainlineDraft ? '已准备' : '等待上传')
                       : (fullShowResult ? '已生成预览' : '等待生成')
                   }}
                 </div>
               </header>
-              <section v-if="fullShowOutputMode === 'custom'" class="strategy-custom-mainline-inline">
+              <section v-if="isUserAudioContentMode" class="strategy-custom-mainline-inline">
                 <div class="strategy-custom-mainline-upload">
                   <label>
                     <input
                       type="file"
                       accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,audio/*"
+                      multiple
                       @change="handleCustomMainlineFile"
                     />
-                    <strong>{{ customMainlineFile ? customMainlineFile.name : (customMainlineDraft ? '重新上传原始声音' : '选择原始声音上传') }}</strong>
-                    <span>单文件最大 200MB · WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
-                    <span>上传后自动转换为直播播放格式（24kHz · 单声道 · 16bit PCM），无需手工转换。</span>
+                    <i class="strategy-custom-mainline-upload-icon" aria-hidden="true">
+                      <svg viewBox="0 0 36 36"><path d="M11 26H9a6 6 0 0 1-.2-12A9 9 0 0 1 26 11a7 7 0 0 1 1 13h-2" /><path d="m13 20 5-5 5 5M18 15v14" /></svg>
+                    </i>
+                    <strong>{{ customMainlineFiles.length ? `已选择 ${customMainlineFiles.length} 段录音` : (customMainlineDraft ? '重新上传一段或多段原始声音' : '选择一段或多段原始声音上传') }}</strong>
+                    <span>每段最大200MB、合计最大500MB · 最多20段</span>
+                    <span>支持格式：WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
+                    <span>系统将自动降噪、分段并统一转为直播播放格式，长录音会按语义划分为句段并生成SRT。</span>
                   </label>
-                  <div v-if="customMainlineFile" class="strategy-custom-mainline-file-meta">
-                    <span>{{ (customMainlineFile.size / 1024 / 1024).toFixed(2) }} MB</span>
+                  <div v-if="customMainlineFiles.length" class="strategy-custom-mainline-file-meta">
+                    <span>{{ (customMainlineFiles.reduce((sum, item) => sum + item.size, 0) / 1024 / 1024).toFixed(2) }} MB</span>
                     <span v-if="customMainlineDurationMS">{{ formatFullShowTimelineMS(customMainlineDurationMS) }}</span>
                     <button
                       type="button"
@@ -6789,6 +7619,7 @@ onBeforeUnmount(() => {
                       }}
                     </button>
                   </div>
+                  <div v-if="customMainlineFiles.length > 1" class="strategy-custom-mainline-file-list"><span v-for="(file, index) in customMainlineFiles" :key="file.name + ':' + index">{{ index + 1 }}. {{ file.name }}</span></div>
                   <div
                     v-if="customMainlineStage === 'uploading' || customMainlineStage === 'analyzing'"
                     class="strategy-custom-mainline-progress"
@@ -6809,6 +7640,25 @@ onBeforeUnmount(() => {
                 </div>
 
                 <template v-if="customMainlineDraft">
+                  <section class="strategy-custom-mainline-segments">
+                    <header>
+                      <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
+                      <div>
+                        <strong>原始话术</strong>
+                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
+                      </div>
+                      <button
+                        type="button"
+                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
+                        @click="rebuildCustomMainline"
+                      >
+                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
+                      </button>
+                    </header>
+                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
+                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
+                  </section>
+
                   <div class="strategy-custom-mainline-summary">
                     <div>
                       <strong>原始声音</strong>
@@ -6832,29 +7682,6 @@ onBeforeUnmount(() => {
                   </div>
 
                   <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
-
-                  <section class="strategy-custom-mainline-segments">
-                    <header>
-                      <div>
-                        <strong>原始话术</strong>
-                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
-                      </div>
-                      <button
-                        type="button"
-                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
-                        @click="rebuildCustomMainline"
-                      >
-                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
-                      </button>
-                    </header>
-                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
-                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
-                  </section>
-
-                  <details class="strategy-custom-mainline-srt">
-                    <summary>查看 SRT</summary>
-                    <pre>{{ customMainlineDraft.srt }}</pre>
-                  </details>
 
                   <footer class="strategy-custom-mainline-footer">
                     <div>
@@ -7095,19 +7922,19 @@ onBeforeUnmount(() => {
                         <div class="strategy-fullshow-fact-form">
                           <label>
                             <span>事实分类</span>
-                            <select v-model="fullShowFactDraft.category">
-                              <option v-for="option in formalFactCategoryOptions" :key="option.value" :value="option.value">
-                                {{ option.label }}
-                              </option>
+                            <select v-model="fullShowFactDraft.category" :disabled="fullShowFactSaving || factCategoryState.loading || !!factCategoryState.error">
+                              <optgroup v-for="group in factCategoryGroups(fullShowFactDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup>
                             </select>
                           </label>
                           <label>
                             <span>事实名称</span>
-                            <input v-model="fullShowFactDraft.key" maxlength="255" />
+                            <input v-model="fullShowFactDraft.key" maxlength="255" :disabled="fullShowFactSaving" @input="fullShowFactName.edited" />
+                            <small>{{ fullShowFactName.loading.value ? '正在提炼名称…' : '名称自动生成，也可自行修改' }}</small>
+                            <small v-if="fullShowFactName.error.value" class="inline-error">{{ fullShowFactName.error.value }} <button type="button" @click="fullShowFactName.ensure">重试</button></small>
                           </label>
                           <label class="wide">
                             <span>事实内容</span>
-                            <textarea v-model="fullShowFactDraft.value" rows="5" maxlength="4000"></textarea>
+                            <textarea v-model="fullShowFactDraft.value" rows="5" maxlength="4000" :disabled="fullShowFactSaving"></textarea>
                           </label>
                         </div>
                         <div v-if="fullShowFactError" class="inline-error">{{ fullShowFactError }}</div>
@@ -7331,7 +8158,38 @@ onBeforeUnmount(() => {
               </template>
             </section>
 
-            <section class="strategy-fullshow-panel strategy-fullshow-runtime">
+            <aside v-if="isUserAudioContentMode" class="strategy-recording-tips">
+              <header>
+                <i aria-hidden="true">♧</i>
+                <strong>小贴士</strong>
+              </header>
+              <div class="strategy-recording-tip-list">
+                <article>
+                  <i class="wave" aria-hidden="true">≋</i>
+                  <div><strong>录音建议</strong><span>尽量在安静环境下录制，语速清晰稳定，效果更好。</span></div>
+                </article>
+                <article>
+                  <i aria-hidden="true">✎</i>
+                  <div><strong>编辑技巧</strong><span>可以直接在文本框修改识别出的内容，系统会自动同步时间轴。</span></div>
+                </article>
+                <article>
+                  <i aria-hidden="true">▤</i>
+                  <div><strong>格式说明</strong><span>系统会自动生成分段音频与 SRT，便于直播时直接调用播放。</span></div>
+                </article>
+              </div>
+              <details v-if="customMainlineDraft" class="strategy-custom-mainline-srt strategy-recording-side-srt">
+                <summary><i aria-hidden="true">▤</i> 查看 SRT</summary>
+                <pre>{{ customMainlineDraft.srt }}</pre>
+              </details>
+              <div class="strategy-recording-mic-illustration" aria-hidden="true">
+                <span>让好声音<br />更简单！</span>
+                <div class="strategy-recording-sound-wave is-left"><i></i><i></i><i></i></div>
+                <div class="strategy-recording-mic"><i></i></div>
+                <div class="strategy-recording-sound-wave is-right"><i></i><i></i><i></i></div>
+              </div>
+            </aside>
+
+            <section v-if="isFixedGeneratedContentMode" class="strategy-fullshow-panel strategy-fullshow-runtime">
               <header><div><span>✓</span><strong>生成检查</strong></div><small>{{ fullShowResult ? (fullShowAuditPassedCount + '/' + fullShowResult.variants.length + ' 通过') : '等待生成' }}</small></header>
               <div v-if="fullShowResult" class="strategy-fullshow-compile-summary">
                 <div><span>规则 / 行业</span><strong>{{ fullShowResult.context.policy_rule_count }}</strong></div>
@@ -7350,14 +8208,14 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <section v-if="fullShowResult" class="strategy-fullshow-panel strategy-fullshow-publish">
+          <section v-if="fullShowResult && (isFixedGeneratedContentMode || (isUserAudioContentMode && hasCustomMainlineResult))" class="strategy-fullshow-panel strategy-fullshow-publish">
             <header>
-                <div><span>状态</span><strong>版本与发布状态</strong></div>
+                <div><span>状态</span><strong>方案保存状态</strong></div>
               <small>
                 {{
                   fullShowSavedVersion
-                    ? ('V' + fullShowSavedVersion.version_no + ' · ' + (fullShowSavedVersion.lifecycle_status === 'published' ? '已发布' : '待发布'))
-                    : '尚未保存版本'
+                    ? '方案已保存'
+                    : '尚未保存方案'
                 }}
               </small>
             </header>
@@ -7382,8 +8240,8 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="strategy-fullshow-publish-note">
-              <strong>发布不会自动开播</strong>
-              <span>保存先生成不可覆盖的新版本；发布后只把该版本设为当前直播间待运行版本，回直播间点击“开始”后再由 Core 加载运行。</span>
+              <strong>保存后直接用于下次开播</strong>
+              <span>无需单独发布，也不自动开播。正在直播的场次保持原配置，下一次点击“开始”使用最新保存内容。</span>
             </div>
 
             <div v-if="fullShowSavedVersion" class="strategy-fullshow-saved-version">
@@ -7401,32 +8259,10 @@ onBeforeUnmount(() => {
               </div>
               <div>
                 <span>状态</span>
-                <strong>{{ fullShowSavedVersion.lifecycle_status === 'published' ? '已发布' : '待发布' }}</strong>
+                <strong>已保存</strong>
               </div>
             </div>
 
-            <div v-if="fullShowVersionHistory.length" class="strategy-fullshow-version-history">
-              <header><strong>最近版本</strong><span>旧版本保留，不覆盖</span></header>
-              <div>
-                <article v-for="version in fullShowVersionHistory.slice(0, 5)" :key="version.id">
-                  <strong>V{{ version.version_no }}</strong>
-                  <span>
-                    正式：
-                    {{ version.variants.filter((item) => item.is_formal).map((item) => item.variant_key + '稿').join('、') }}
-                    · 共 {{ version.variants.length }} 稿
-                  </span>
-                  <em :class="{ published: version.lifecycle_status === 'published' }">
-                    {{
-                      version.lifecycle_status === 'published'
-                        ? '已发布'
-                        : version.lifecycle_status === 'superseded'
-                          ? '历史版本'
-                          : '待发布'
-                    }}
-                  </em>
-                </article>
-              </div>
-            </div>
           </section>
         </section>
 
@@ -7465,6 +8301,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.strategy-benefit-copy{display:inline-flex;align-items:center;justify-content:center;gap:5px;justify-self:end;align-self:end;padding:6px 9px;border:1px solid #dedfff;border-radius:7px;background:#f1efff;color:#6555d8;font:inherit;font-size:11px;font-weight:700;cursor:pointer}.strategy-benefit-copy svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8}.strategy-benefit-copy:disabled{opacity:.5;cursor:default}
 .strategy-content-mode-panel{display:grid;gap:14px;padding:18px 20px;border:1px solid #dce3f4;border-radius:18px;background:linear-gradient(125deg,#fff,#f6f8ff)}
 .strategy-content-mode-panel>header{display:flex;align-items:center;justify-content:space-between;gap:14px}.strategy-content-mode-panel>header strong{font-size:19px;color:#283750}.strategy-content-mode-panel>header span{font-size:13px;color:#8090a7}
 .strategy-content-mode-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.strategy-content-mode-options>button{position:relative;display:grid;gap:8px;align-content:start;min-height:100px;padding:16px;border:1px solid #dce2ef;border-radius:14px;background:#fff;text-align:left;font:inherit;cursor:pointer}.strategy-content-mode-options>button strong{color:#364764;font-size:16px;line-height:1.6}.strategy-content-mode-options>button span{color:#7c89a0;font-size:14px;line-height:1.6}.strategy-content-mode-options>button.active{border-color:#6879df;background:#f0f3ff;box-shadow:0 4px 16px #5666c215}.strategy-content-mode-options>button.active strong{color:#485bcc}.strategy-content-mode-options>button:disabled{cursor:default;opacity:.65}.strategy-content-mode-options>button em{color:#2c855d;font-style:normal;font-size:12px;font-weight:700}.strategy-content-mode-help{margin:0;color:#66778f;font-size:14px;line-height:1.8}.strategy-content-mode-help button,.strategy-content-mode-panel .inline-error button{margin-left:10px;border:0;background:transparent;color:#5366ce;font:inherit;cursor:pointer}
@@ -7476,6 +8313,117 @@ onBeforeUnmount(() => {
 .live-strategy-shell {
   min-width:0;
   max-width:100%;
+  transition:grid-template-columns .22s ease;
+}
+.live-strategy-shell.rooms-collapsed {
+  grid-template-columns:56px minmax(0,1fr);
+}
+.live-strategy-rooms {
+  position:relative;
+  min-width:0;
+  overflow:visible;
+  transition:padding .22s ease,border-radius .22s ease,background .22s ease;
+}
+.live-strategy-rooms.collapsed {
+  padding:0;
+  border-radius:0 18px 18px 0;
+  background:linear-gradient(180deg,#f4f6ff,#eef2ff);
+}
+.live-strategy-rooms-content {
+  display:grid;
+  min-width:0;
+  align-content:start;
+}
+.live-strategy-rooms-content.hidden {
+  display:none;
+}
+.live-strategy-rooms-toggle {
+  position:absolute;
+  z-index:35;
+  top:24px;
+  right:-17px;
+  display:grid;
+  width:34px;
+  height:46px;
+  place-items:center;
+  border:1px solid #cad5f2;
+  border-radius:12px;
+  background:#fff;
+  color:#6074c9;
+  box-shadow:0 7px 18px rgba(50,68,126,.16);
+  cursor:pointer;
+  transition:background .18s,border-color .18s,box-shadow .18s;
+}
+.live-strategy-rooms-toggle:hover,
+.live-strategy-rooms-toggle:focus-visible {
+  border-color:#899bea;
+  background:#f5f7ff;
+  box-shadow:0 8px 22px rgba(50,68,126,.22);
+  outline:none;
+}
+.live-strategy-rooms-toggle svg {
+  width:20px;
+  height:20px;
+  fill:none;
+  stroke:currentColor;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  stroke-width:2.2;
+  transition:transform .22s ease;
+}
+.live-strategy-rooms-toggle.collapsed svg {
+  transform:rotate(180deg);
+}
+.live-strategy-rooms-rail {
+  display:none;
+  min-height:560px;
+  align-items:center;
+  align-content:start;
+  justify-items:center;
+  gap:14px;
+  padding-top:84px;
+  color:#5b6cc5;
+}
+.live-strategy-rooms-rail.visible {
+  display:grid;
+}
+.live-strategy-rooms-rail > span {
+  display:grid;
+  width:36px;
+  height:36px;
+  place-items:center;
+  border-radius:11px;
+  background:#dfe6ff;
+  font-size:15px;
+  font-weight:900;
+}
+.live-strategy-rooms-rail small {
+  writing-mode:vertical-rl;
+  color:#7d8ab7;
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.18em;
+}
+@media(min-width:921px){
+  :global(.app-shell){--live-strategy-sidebar-dock-left:272px}
+  :global(.app-shell.sidebar-collapsed){--live-strategy-sidebar-dock-left:76px}
+  .live-strategy-shell.rooms-collapsed{grid-template-columns:minmax(0,1fr)}
+  .live-strategy-rooms.collapsed{
+    position:fixed;
+    z-index:19;
+    top:82px;
+    bottom:0;
+    left:var(--live-strategy-sidebar-dock-left);
+    width:56px;
+    min-height:0;
+    margin:0;
+    box-sizing:border-box;
+    border-radius:0 18px 0 0;
+  }
+  .live-strategy-rooms.collapsed .live-strategy-rooms-rail{
+    height:100%;
+    min-height:0;
+  }
 }
 .live-strategy-agent {
   min-width:0;
@@ -8074,32 +9022,32 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal>header span,.strategy-benefit-formal>header small { color:#8a94a7; font-size:12px; line-height:1.5; }
 .strategy-benefit-formal-empty { min-height:110px; }
 .strategy-benefit-formal-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
-.strategy-benefit-formal-list>article { position:relative; z-index:0; display:grid; width:auto; justify-self:stretch; box-sizing:border-box; gap:12px; padding:16px; border:1px solid #d8e1f3; border-radius:14px; background:#fff; box-shadow:0 8px 22px rgba(57,76,143,.10); transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease,background-color .22s ease; }
+.strategy-benefit-formal-list>article { position:relative; z-index:0; display:grid; width:auto; justify-self:stretch; box-sizing:border-box; gap:8px; padding:11px; border:1px solid #d8e1f3; border-radius:10px; background:#fff; box-shadow:0 8px 22px rgba(57,76,143,.10); transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease,background-color .22s ease; }
 .strategy-benefit-formal-list>article:hover { z-index:2; transform:translateY(-5px); border-color:#8ea5ff; background:#fff; box-shadow:0 20px 42px rgba(72,91,190,.22),0 0 0 3px rgba(91,113,244,.12),0 0 28px rgba(99,120,255,.16); }
 .strategy-benefit-formal-list>article:focus-within { z-index:2; transform:translateY(-2px); border-color:#738eff; box-shadow:0 16px 34px rgba(72,91,190,.20),0 0 0 3px rgba(91,113,244,.15); }
 @media (prefers-reduced-motion:reduce) { .strategy-benefit-formal-list>article { transition:none; } .strategy-benefit-formal-list>article:hover,.strategy-benefit-formal-list>article:focus-within { transform:none; } }
-.strategy-benefit-formal-card-head { display:grid; gap:12px; align-items:start; }
-.strategy-benefit-formal-icon { display:grid; width:76px; height:76px; place-items:center; border-radius:18px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
-.strategy-benefit-formal-icon svg { width:44px; height:44px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-benefit-formal-title { display:grid; gap:7px; min-width:0; }
+.strategy-benefit-formal-card-head { display:grid; gap:8px; align-items:start; }
+.strategy-benefit-formal-icon { display:grid; width:52px; height:52px; place-items:center; border-radius:12px; background:linear-gradient(145deg,#eef4ff,#e6edff); color:#3e63df; }
+.strategy-benefit-formal-icon svg { width:30px; height:30px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-title { display:grid; gap:5px; min-width:0; }
 .strategy-benefit-formal-title-line { display:flex; align-items:center; gap:5px; min-width:0; }
-.strategy-benefit-formal-title-line>span { min-width:0; color:#3e63df; font-size:16px; font-weight:900; line-height:1.25; overflow-wrap:anywhere; }
-.strategy-benefit-formal-title-line>strong { min-width:0; color:#172847; font-size:24px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title-line>span { min-width:0; color:#3e63df; font-size:14px; font-weight:900; line-height:1.25; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title-line>strong { min-width:0; color:#172847; font-size:20px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
 .strategy-benefit-formal-title-line input { min-width:0; flex:1; box-sizing:border-box; padding:4px 6px; border:1px solid #91a3eb; border-radius:6px; background:#fff; color:#172847; font:inherit; font-size:inherit; line-height:1.35; }
-.strategy-benefit-formal-title>small { color:#8b9ab5; font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
-.strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:6px; width:max-content; margin-top:3px; padding:5px 9px; border-radius:999px; font-size:13px; font-style:normal; font-weight:900; white-space:nowrap; }
+.strategy-benefit-formal-title>small { color:#8b9ab5; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
+.strategy-benefit-formal-title>em { display:inline-flex; align-items:center; gap:5px; width:max-content; margin-top:2px; padding:4px 7px; border-radius:999px; font-size:11px; font-style:normal; font-weight:900; white-space:nowrap; }
 .strategy-benefit-formal-title>em i { width:7px; height:7px; border-radius:50%; background:currentColor; }
 .strategy-benefit-formal-title>em.is-active { background:#e5f8ed; color:#18865d; }
 .strategy-benefit-formal-title>em.is-draft { background:#eef2ff; color:#5f6cc9; }
 .strategy-benefit-formal-title>em.is-expired { background:#f2f3f5; color:#858d9b; }
 .strategy-benefit-formal-title>em.is-disabled { background:#fff0f0; color:#b54848; }
 .strategy-benefit-formal-rule { height:1px; background:#e5ebf5; }
-.strategy-benefit-formal-detail { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
-.strategy-benefit-formal-detail-item { position:relative; display:grid; grid-template-columns:30px minmax(0,1fr); grid-template-rows:auto auto; column-gap:8px; align-items:end; min-width:0; min-height:72px; padding:10px 34px 10px 11px; border-radius:11px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
-.strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:26px; height:26px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:12px; line-height:1.35; }
-.strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:14px; line-height:1.4; font-weight:650; overflow-wrap:anywhere; }
-.strategy-benefit-formal-detail-item>input { grid-column:2; min-width:0; box-sizing:border-box; width:100%; padding:3px 5px; border:1px solid #91a3eb; border-radius:5px; background:#fff; color:#192d51; font:inherit; font-size:14px; line-height:1.4; }
+.strategy-benefit-formal-detail { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+.strategy-benefit-formal-detail-item { position:relative; display:grid; grid-template-columns:22px minmax(0,1fr); grid-template-rows:auto auto; column-gap:6px; align-items:end; min-width:0; min-height:50px; padding:7px 27px 7px 8px; border-radius:8px; background:linear-gradient(145deg,#f5f8ff,#f0f4fc); }
+.strategy-benefit-formal-detail-item>svg { grid-row:1 / span 2; width:20px; height:20px; align-self:center; fill:none; stroke:#4969de; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-benefit-formal-detail-item>span { color:#8290a9; font-size:11px; line-height:1.35; }
+.strategy-benefit-formal-detail-item>strong { color:#192d51; font-size:13px; line-height:1.4; font-weight:650; overflow-wrap:anywhere; }
+.strategy-benefit-formal-detail-item>input { grid-column:2; min-width:0; box-sizing:border-box; width:100%; padding:3px 5px; border:1px solid #91a3eb; border-radius:5px; background:#fff; color:#192d51; font:inherit; font-size:13px; line-height:1.4; }
 .strategy-benefit-edit { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; flex:0 0 22px; padding:3px; border:0; border-radius:5px; background:transparent; color:#526be0; cursor:pointer; }
 .strategy-benefit-edit svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-benefit-edit:hover { background:#e7edff; }
@@ -8113,6 +9061,12 @@ onBeforeUnmount(() => {
 .strategy-benefit-formal-window strong { color:#1c3156; font-size:14px; line-height:1.45; font-weight:650; overflow-wrap:anywhere; }
 .strategy-benefit-formal-window i { color:#7d8eac; font-style:normal; padding-inline:5px; }
 .strategy-benefit-formal-window small { color:#8d9bb3; font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
+.strategy-benefit-validity-switch { display:inline-flex; width:max-content; padding:3px; border:1px solid #dce4f3; border-radius:9px; background:#f3f6fc; }
+.strategy-benefit-validity-switch button { min-width:76px; min-height:30px; padding:5px 12px; border:0; border-radius:7px; background:transparent; color:#7786a1; font:inherit; font-size:13px; font-weight:750; cursor:pointer; }
+.strategy-benefit-validity-switch button.active { background:#fff; color:#4462d8; box-shadow:0 2px 8px rgba(49,72,145,.13); }
+.strategy-benefit-validity-switch button:disabled { cursor:wait; opacity:.6; }
+.strategy-benefit-permanent-note { display:flex; align-items:center; flex-wrap:wrap; gap:8px; color:#238461 !important; }
+.strategy-benefit-permanent-note>small { padding:3px 8px; border-radius:999px; background:#eaf8f2; color:#568979; font-size:11px; font-weight:600; }
 .strategy-benefit-formal-time-range { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
 .strategy-benefit-formal-time-value { display:inline-flex; align-items:center; gap:2px; color:#1c3156; font-size:14px; font-weight:650; }
 .strategy-benefit-formal-time-value input { width:142px; box-sizing:border-box; padding:3px 5px; border:1px solid #91a3eb; border-radius:5px; background:#fff; color:#1c3156; font:inherit; font-size:12px; font-weight:650; }
@@ -8193,12 +9147,25 @@ onBeforeUnmount(() => {
 .strategy-fact-select-cell small { display:block; margin-top:5px; color:#2f7d5a; font-size:12px; font-weight:850; white-space:nowrap; }
 .strategy-fact-select-cell small.is-danger { color:#b54848; }
 .strategy-fact-empty { padding:52px 20px !important; color:#8a95a9 !important; text-align:center !important; }
-.strategy-formal-facts { display:grid; gap:14px; margin-top:8px; padding:18px; border:1px solid #dce3ef; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.04); }
-.strategy-formal-facts-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:0 2px 12px; border-bottom:1px solid #edf0f5; }
+.strategy-formal-facts { display:grid; gap:18px; margin-top:8px; padding:20px; border:1px solid #e4eafb; border-radius:22px; background:linear-gradient(145deg,#fff,#fcfdff); box-shadow:0 10px 30px rgba(64,90,172,.06); }
+.strategy-formal-facts-head { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:0 0 2px; }
 .strategy-formal-facts-head>div { display:grid; gap:3px; }
-.strategy-formal-facts-head strong { color:#2f3b56; font-size:20px; font-weight:950; }
-.strategy-formal-facts-head small,.strategy-formal-facts-head>span { color:#8a95a8; font-size:12px; line-height:1.55; }
-.strategy-formal-facts-head>span { max-width:520px; text-align:right; }
+.strategy-formal-facts-head strong { color:#14274d; font-size:24px; font-weight:900; }
+.strategy-formal-facts-head small,.strategy-formal-facts-head>span { color:#7c8eb0; font-size:13px; line-height:1.55; }
+.strategy-formal-facts-head>span { max-width:360px; text-align:right; }
+.strategy-formal-facts-head .strategy-formal-facts-brand { display:flex; align-items:center; gap:14px; min-width:0; }
+.strategy-formal-facts-heading { display:grid; gap:4px; }
+.strategy-fact-category-error { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; background:#fff2f4; color:#b13f52; font-size:14px; }
+.strategy-fact-category-error button { border:1px solid #eeb4c0; border-radius:8px; background:#fff; color:inherit; padding:6px 10px; cursor:pointer; }
+.strategy-fact-category-loading { color:#7c8eb0; font-size:14px; }
+.strategy-formal-facts-icon { display:grid; place-items:center; width:56px; height:56px; flex:0 0 56px; border-radius:15px; background:linear-gradient(135deg,#dce7ff,#eff5ff); color:#2678ff; box-shadow:inset 0 2px 3px #fff8; }
+.strategy-formal-facts-icon svg { width:31px; height:31px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+@media (max-width:760px) {
+  .strategy-formal-facts-head { align-items:flex-start; flex-direction:column; gap:10px; }
+  .strategy-formal-facts-head>span { max-width:none; text-align:left; font-size:12px; }
+  .strategy-formal-facts-head strong { font-size:20px; }
+  .strategy-formal-facts-icon { width:46px; height:46px; flex-basis:46px; }
+}
 .strategy-fact-head-actions { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
 .strategy-fact-boundary-guide { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:0 0 14px; }
 .strategy-fact-boundary-guide>div { display:grid; gap:4px; padding:12px 14px; border:1px solid #e0e6f2; border-radius:12px; background:#f8faff; }
@@ -8212,33 +9179,69 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-create textarea { resize:vertical; }
 .strategy-formal-fact-create-actions { display:flex; gap:8px; align-items:center; grid-column:1 / -1; }
 .strategy-formal-facts-empty { min-height:120px; }
-.strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e3e8f1; border-radius:14px; }
+.strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:1280px; border-collapse:collapse; table-layout:fixed; }
-.strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:13px 14px; border-bottom:1px solid #edf0f5; color:#3d4961; font-size:14px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
-.strategy-formal-facts-table th { background:#f3f6fb; color:#647188; font-size:13px; font-weight:900; }
+.strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
+.strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:14px; font-weight:800; }
+.strategy-formal-facts-table tbody>tr:not(.strategy-fact-risk-detail-row):not(.has-fact-risk):hover td { background-color:#f9fbff; }
 .strategy-formal-facts-table tr:last-child td { border-bottom:0; }
-.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:10%; }
-.strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:14%; }
-.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:27%; }
-.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:17%; }
-.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:17%; }
-.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:7%; }
-.strategy-formal-facts-table th:nth-child(7),.strategy-formal-facts-table td:nth-child(7) { width:8%; }
+.strategy-formal-facts-table tr.has-fact-risk td:first-child { box-shadow: inset 4px 0 #8a96aa; }
+.strategy-formal-facts-table tr.risk-checking td { background:#f3f7ff; }
+.strategy-formal-facts-table tr.risk-checking td:first-child { box-shadow:inset 4px 0 #6f8ee8; }
+.strategy-formal-facts-table tr.risk-decision td { background:#fffaf0; }
+.strategy-formal-facts-table tr.risk-decision td:first-child { box-shadow:inset 4px 0 #e3a72f; }
+.strategy-formal-facts-table tr.risk-confirmed td { background:#f3fbf6; }
+.strategy-formal-facts-table tr.risk-confirmed td:first-child { box-shadow:inset 4px 0 #48a86c; }
+.strategy-formal-facts-table tr.risk-blocked td { background:#fff4f5; }
+.strategy-formal-facts-table tr.risk-blocked td:first-child { box-shadow:inset 4px 0 #d24f60; }
+.strategy-fact-risk-badge { display:block; width:fit-content; margin-top:7px; border:1px solid #cbd6e8; border-radius:999px; padding:4px 8px; background:#fff; color:#637493; font:inherit; font-size:11px; font-weight:900; cursor:pointer; }
+.strategy-fact-risk-badge.is-checking { border-color:#bdcaf1; background:#edf3ff; color:#5571c4; }
+.strategy-fact-risk-badge.is-decision { border-color:#edd39b; background:#fff4d9; color:#966718; }
+.strategy-fact-risk-badge.is-confirmed { border-color:#b9dfc7; background:#eaf8ef; color:#347c50; }
+.strategy-fact-risk-badge.is-blocked { border-color:#efbec5; background:#ffeaed; color:#b33a4a; }
+.strategy-formal-facts-table tr.strategy-fact-risk-detail-row td { padding:0 14px 14px; background:#fff; box-shadow:none; }
+.strategy-fact-risk-inline>article.is-risk-located { outline:3px solid #df6379; outline-offset:2px; scroll-margin:20px; }
+.strategy-fact-risk-inline { display:grid; gap:10px; padding:13px; border:1px solid #dce4ef; border-radius:12px; background:#fafcff; }
+.strategy-fact-risk-inline>article { display:grid; gap:8px; padding:12px; border:1px solid #e2e7f0; border-radius:10px; background:#fff; }
+.strategy-fact-risk-inline header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.strategy-fact-risk-inline header strong { color:#34425f; }
+.strategy-fact-risk-inline header small { color:#8792a7; }
+.strategy-fact-risk-inline p { margin:0; color:#526079; line-height:1.65; }
+.strategy-fact-risk-inline .is-notice { padding:9px 11px; border-radius:9px; background:#fff7e4; color:#795f23; }
+.strategy-fact-risk-inline .is-confirmed { color:#347c50; }
+.strategy-fact-risk-inline .is-blocked,.strategy-fact-risk-inline .is-error { color:#b33a4a; }
+.strategy-fact-risk-inline textarea { width:100%; min-height:70px; box-sizing:border-box; border:1px solid #d4dce9; border-radius:9px; padding:9px; font:inherit; }
+.strategy-fact-risk-inline-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.strategy-fact-risk-inline-actions button { border:1px solid #ccd6e6; border-radius:8px; padding:7px 11px; background:#fff; color:#526789; font:inherit; cursor:pointer; }
+.strategy-fact-risk-inline-actions button.primary-button { border-color:#607ce8; background:#607ce8; color:#fff; }
+.strategy-miner-risk-count{display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:3px 6px;border:1px solid #f2b4c1;border-radius:8px;background:#fff0f3;color:#c41d45;font-size:11px;font-weight:800;line-height:1.2;white-space:nowrap}
+.strategy-miner-risk-count i{display:grid;width:12px;height:12px;place-items:center;border-radius:50%;background:#c41d45;color:#fff;font-size:10px;font-style:normal}
+.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:11%; }
+.strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:15%; }
+.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:28%; }
+.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:14%; }
+.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:14%; }
+.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:18%; }
 .strategy-formal-fact-category { display:inline-flex; padding:5px 8px; border-radius:8px; background:#eef2fb; color:#5c6dbb; font-size:12px; font-weight:900; }
-.strategy-formal-fact-value { color:#34405a!important; }
-.strategy-formal-fact-boundary { color:#a25a5a!important; background:#fffafa; }
-.strategy-formal-fact-rewrite { color:#4b6d63!important; background:#fafffc; }
-.strategy-formal-fact-version { color:#596985!important; font-weight:900; white-space:nowrap; }
-.strategy-formal-fact-version small { display:block; margin-top:2px; color:#99a2b2; font-size:10px; font-weight:700; }
+.strategy-formal-fact-name { display:grid; gap:3px; }
+.strategy-formal-fact-name strong { color:#14264c; font-size:16px; font-weight:800; }
+.strategy-formal-fact-name small { color:#8393b4; font-size:13px; font-weight:400; line-height:1.45; }
+.strategy-formal-fact-value { color:#2c426b!important; white-space:pre-wrap; }
+.strategy-formal-fact-boundary { color:#c5445e!important; }
+.strategy-formal-fact-rewrite { color:#238267!important; }
+.strategy-formal-fact-wording { display:flex; align-items:center; min-height:58px; box-sizing:border-box; padding:10px 14px; border-radius:11px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.strategy-formal-fact-boundary .strategy-formal-fact-wording { background:linear-gradient(120deg,#fff5f7,#fdf7f9); }
+.strategy-formal-fact-rewrite .strategy-formal-fact-wording { background:linear-gradient(120deg,#edfdf5,#f3fcf8); }
 .strategy-formal-facts-table input,.strategy-formal-facts-table select,.strategy-formal-facts-table textarea { width:100%; border:1px solid #ccd5e5; border-radius:9px; background:#fff; color:#34405a; font:inherit; outline:none; }
 .strategy-formal-facts-table input,.strategy-formal-facts-table select { min-height:38px; padding:7px 9px; }
 .strategy-formal-facts-table textarea { min-height:76px; padding:8px 9px; resize:vertical; }
 .strategy-formal-facts-table input:focus,.strategy-formal-facts-table select:focus,.strategy-formal-facts-table textarea:focus { border-color:#8e9ddd; box-shadow:0 0 0 3px rgba(92,107,202,.08); }
-.strategy-formal-fact-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
-.strategy-formal-fact-actions button { min-height:34px; padding:6px 11px; border:1px solid #d7deea; border-radius:9px; background:#fff; color:#59667d; font:inherit; font-size:12px; font-weight:900; cursor:pointer; }
+.strategy-formal-fact-actions { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; }
+.strategy-formal-fact-actions button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-width:72px; min-height:38px; padding:7px 10px; border:1px solid #c8d9ff; border-radius:10px; background:linear-gradient(135deg,#f7faff,#eef5ff); color:#2674ed; font:inherit; font-size:14px; font-weight:800; white-space:nowrap; cursor:pointer; }
+.strategy-formal-fact-actions svg { width:17px; height:17px; flex:0 0 17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-formal-fact-actions button:hover { border-color:#aeb9d4; color:#4658b8; }
 .strategy-formal-fact-actions button.primary-button { border-color:transparent; background:#5968cb; color:#fff; }
-.strategy-formal-fact-actions button.is-danger { border-color:#f0caca; background:#fff7f7; color:#bd5b5b; }
+.strategy-formal-fact-actions button.is-danger { border-color:#ffcbd4; background:linear-gradient(135deg,#fff7f8,#fff0f3); color:#d52c4b; }
 .strategy-formal-fact-actions button:disabled { cursor:not-allowed; opacity:.55; }
 .strategy-script-actions { display:flex; align-items:center; justify-content:flex-end; gap:9px; padding:14px 16px; border:1px solid #e0e6f1; border-radius:15px; background:#fff; }
 .strategy-script-actions>div { display:grid; gap:3px; margin-right:auto; }
@@ -8943,6 +9946,7 @@ onBeforeUnmount(() => {
 .strategy-custom-mainline-upload>label span { color:#8893a8; font-size:11px; }
 .strategy-custom-mainline-file-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .strategy-custom-mainline-file-meta span { padding:5px 8px; border-radius:999px; background:#edf1f8; color:#6d788f; font-size:10px; font-weight:850; }
+.strategy-custom-mainline-file-list{display:grid;gap:4px;max-height:132px;overflow:auto;padding:10px 12px;border:1px solid #e5e9f1;border-radius:10px;background:#fafbfe;color:#6b768b;font-size:10px;line-height:1.5}
 .strategy-custom-mainline-file-meta button,
 .strategy-custom-mainline-segments>header button,
 .strategy-custom-mainline-summary button {
@@ -9125,8 +10129,6 @@ onBeforeUnmount(() => {
   .strategy-plan-mini-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .strategy-product-link-grid { grid-template-columns:1fr; }
   .strategy-benefit-grid { grid-template-columns:1fr; }
-  .strategy-benefit-formal-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .strategy-benefit-formal-list>article { width:100%; }
   .strategy-anchor-style-summary { grid-template-columns:1fr; }
   .strategy-anchor-style-group-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .strategy-fullshow-grid,.strategy-fullshow-output-grid { grid-template-columns:1fr; }
@@ -9151,8 +10153,8 @@ onBeforeUnmount(() => {
   .strategy-plan-create,.strategy-script-meta { grid-template-columns:1fr; }
   .strategy-plan-card { grid-template-columns:1fr; }
   .strategy-benefit-formal>header { flex-direction:column; }
-  .strategy-benefit-formal-list { grid-template-columns:1fr; }
-  .strategy-benefit-formal-list>article { width:100%; padding:16px; border-radius:14px; }
+  .strategy-benefit-formal-list { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .strategy-benefit-formal-list>article { width:100%; padding:11px; border-radius:10px; }
   .strategy-benefit-formal-detail { grid-template-columns:1fr; }
   .strategy-benefit-formal-detail-wide { grid-column:auto; }
   .strategy-benefit-card footer { align-items:flex-start; flex-direction:column; }
@@ -9187,6 +10189,12 @@ onBeforeUnmount(() => {
   .strategy-script-actions>div { margin-right:0; }
   .strategy-legacy-version-bar { align-items:flex-start; flex-wrap:wrap; justify-content:flex-start; }
   .strategy-legacy-version-bar>div { width:100%; }
+}
+@media (max-width: 900px) {
+  .strategy-benefit-formal-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 640px) {
+  .strategy-benefit-formal-list { grid-template-columns:1fr; }
 }
 
 /* Final workflow layout: horizontal embedded rail + content */
@@ -9547,13 +10555,213 @@ onBeforeUnmount(() => {
 }
 .addressing-workspace{display:grid;gap:16px}.addressing-notice{padding:11px 13px;border-radius:12px;background:#edf9f4;color:#347a61;font-size:12px;font-weight:800}.addressing-mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.addressing-mode-grid>button{display:grid;gap:6px;padding:16px 18px;border:1px solid rgba(95,111,174,.16);border-radius:16px;background:#fafbfe;color:#556078;text-align:left;transition:.18s ease}.addressing-mode-grid>button strong{font-size:15px;color:#38435a}.addressing-mode-grid>button span{font-size:11px;color:#8c96a8;line-height:1.55}.addressing-mode-grid>button.active{border-color:rgba(91,111,211,.46);background:linear-gradient(145deg,#f2f5ff,#e8edff);box-shadow:0 0 0 3px rgba(91,111,211,.07),0 10px 24px rgba(71,90,177,.08)}.addressing-system-card,.addressing-custom-card{padding:16px;border:1px solid rgba(94,109,169,.13);border-radius:16px;background:rgba(255,255,255,.9)}.addressing-system-card>header,.addressing-custom-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.addressing-system-card header>div,.addressing-custom-card header>div{display:grid;gap:3px}.addressing-system-card header span,.addressing-custom-card header span{color:#8d97aa;font-size:9px;font-weight:900;letter-spacing:.1em}.addressing-system-card header strong,.addressing-custom-card header strong{color:#38435a;font-size:15px}.addressing-system-card header>b{padding:5px 9px;border-radius:999px;background:#e7f7ef;color:#2f8a65;font-size:10px}.addressing-chip-list{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.addressing-chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e1e5ee;border-radius:12px;background:#f8f9fc}.addressing-chip strong{color:#455168;font-size:12px}.addressing-chip span{color:#7180a2;font-size:10px;font-weight:900}.addressing-custom-card.inactive{opacity:.72}.addressing-custom-list{display:grid;gap:9px;margin-top:14px}.addressing-custom-list>article{display:grid;grid-template-columns:90px minmax(180px,1fr) 150px auto;align-items:end;gap:10px;padding:12px;border:1px solid #e3e7f0;border-radius:13px;background:#fafbfe}.addressing-enable,.addressing-name-field,.addressing-probability-field{display:grid;gap:6px}.addressing-enable{grid-template-columns:auto 1fr;align-items:center;align-self:center}.addressing-enable input{width:18px;height:18px}.addressing-name-field>span,.addressing-probability-field>span,.addressing-enable>span{color:#6d7890;font-size:10px;font-weight:850}.addressing-name-field input,.addressing-probability-field input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 10px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#39445a;font:inherit}.addressing-probability-field>div{display:flex;align-items:center;gap:6px}.addressing-probability-field input{width:92px}.addressing-probability-field b{color:#74809a;font-size:11px}.addressing-remove{min-height:38px;padding:0 11px;border:0;border-radius:10px;background:#fff0f1;color:#bd5662;font-size:11px;font-weight:850}.addressing-total{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f4;color:#5b667d}.addressing-total strong{font-size:16px;color:#3f8a69}.addressing-total.invalid strong{color:#c3505b}.addressing-review-tip{margin:8px 0 0;color:#9099aa;font-size:10px;line-height:1.6}.addressing-empty{margin-top:12px}@media(max-width:900px){.addressing-mode-grid{grid-template-columns:1fr}.addressing-custom-list>article{grid-template-columns:80px 1fr 130px}.addressing-remove{grid-column:2/-1;justify-self:end}}
 .addressing-custom-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.addressing-save-button{min-width:112px}.addressing-custom-actions .strategy-version-button,.addressing-custom-actions .primary-button{white-space:nowrap}
+.anchor-addressing-override{display:grid;gap:14px;padding:18px;border:1px solid #dfe5f1;border-radius:16px;background:#fff}.anchor-addressing-override>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.anchor-addressing-override>header>div{display:grid;gap:4px}.anchor-addressing-override>header small,.anchor-addressing-learned{color:#7d879b;font-size:11px;line-height:1.6}.anchor-addressing-learned{display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 12px;border-radius:12px;background:#f6f8fc}.anchor-addressing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.anchor-addressing-grid label{display:grid;gap:7px;color:#56627a;font-size:11px;font-weight:800}.anchor-addressing-grid select,.anchor-addressing-grid textarea{box-sizing:border-box;width:100%;padding:10px 11px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#38445b;font:inherit}.anchor-addressing-grid textarea{resize:vertical;line-height:1.55}@media(max-width:900px){.anchor-addressing-grid{grid-template-columns:1fr}.anchor-addressing-override>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
+.strategy-realtime-voice-page{display:grid;gap:16px;padding:20px;border:1px solid #d7e5ef;border-radius:18px;background:linear-gradient(135deg,#fbffff,#f2f8ff);box-shadow:0 10px 28px rgba(65,100,151,.06)}.strategy-realtime-voice-page>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.strategy-realtime-voice-page>header>div{display:grid;gap:5px}.strategy-realtime-voice-page>header span{color:#1b998d;font-size:11px;font-weight:950;letter-spacing:.08em}.strategy-realtime-voice-page>header strong{color:#2f405b;font-size:20px}.strategy-realtime-voice-page>header small{color:#78879b;font-size:12px;line-height:1.65}.strategy-realtime-voice-page>header>em{padding:7px 11px;border-radius:999px;background:#e6f7f3;color:#268978;font-size:11px;font-style:normal;font-weight:900;white-space:nowrap}.strategy-realtime-voice-page .strategy-dynamic-settings{background:#edf8f8}@media(max-width:900px){.strategy-realtime-voice-page>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{position:relative;overflow:hidden;padding:22px 24px;border-color:#dce6f6;border-radius:22px;background:radial-gradient(circle at 92% 6%,rgba(110,153,255,.13),transparent 26%),linear-gradient(135deg,#fff 0%,#f8fbff 58%,#eef5ff 100%);box-shadow:0 12px 34px rgba(59,84,147,.07)}
+.strategy-content-mode-workflow>header{position:relative;z-index:1;align-items:center}.strategy-content-mode-heading strong{color:#17264a;font-size:24px;font-weight:950}.strategy-content-mode-heading small{color:#7c8ba6;font-size:13px;line-height:1.6}
+.strategy-content-mode-save-state{display:flex;align-items:center;gap:12px;min-width:310px}.strategy-content-mode-save-state>i{display:grid;width:32px;height:32px;flex:0 0 32px;place-items:center;border-radius:50%;background:linear-gradient(135deg,#45c394,#18a676);color:#fff;font-size:17px;font-style:normal;font-weight:950;box-shadow:0 8px 18px rgba(28,164,118,.22)}.strategy-content-mode-save-state>div{display:grid;gap:2px}.strategy-content-mode-save-state strong{color:#228163;font-size:13px}.strategy-content-mode-save-state small{color:#74839e!important;font-size:11px!important}.strategy-content-mode-save-state>span{position:relative;width:76px;height:48px;margin-left:auto;border-radius:38px 38px 24px 24px;background:linear-gradient(145deg,#d5e9ff,#86b4ff);opacity:.9;filter:drop-shadow(0 8px 10px rgba(87,130,212,.15))}.strategy-content-mode-save-state>span b{position:absolute;bottom:7px;width:3px;border-radius:999px;background:rgba(255,255,255,.9)}.strategy-content-mode-save-state>span b:nth-child(1){left:26px;height:16px}.strategy-content-mode-save-state>span b:nth-child(2){left:36px;height:26px}.strategy-content-mode-save-state>span b:nth-child(3){left:46px;height:13px}
+.strategy-content-mode-cards{position:relative;z-index:1;gap:14px}.strategy-content-mode-cards>button{grid-template-columns:32px 72px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:12px;min-height:138px;padding:18px 20px;border-color:#e6ecf6;border-radius:16px;background:linear-gradient(135deg,#fbfcff,#f4f7fd);box-shadow:0 8px 18px rgba(58,78,130,.035);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.strategy-content-mode-cards>button:hover:not(:disabled){transform:translateY(-2px);border-color:#cbd6f3;box-shadow:0 14px 30px rgba(58,78,130,.1)}.strategy-content-mode-cards>button>i{grid-column:1;grid-row:1;align-self:start;color:#4f5f8d;font-size:17px}.strategy-content-mode-icon{display:grid;grid-column:2;grid-row:1;width:68px;height:68px;place-items:center;border:1px solid rgba(255,255,255,.8);border-radius:50%;background:linear-gradient(145deg,#fff,#edf3ff);color:#4b70e8;box-shadow:0 8px 22px rgba(73,101,180,.08)}.strategy-content-mode-icon svg{width:38px;height:38px}.strategy-content-mode-icon svg *{fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-icon.is-ai_dynamic{color:#3971ed}.strategy-content-mode-card-copy{display:grid;grid-column:3;grid-row:1;align-content:center;gap:7px;min-width:0}.strategy-content-mode-card-copy strong{color:#182750!important;font-size:18px!important}.strategy-content-mode-card-copy span{color:#6f7f9e;font-size:12px;line-height:1.55}.strategy-content-mode-cards>button>b{grid-column:1/4;grid-row:2;justify-self:start;padding:7px 14px;border:1px solid #d4def2;border-radius:999px;background:#fff;color:#50618a;font-size:11px}.strategy-content-mode-cards>button.active{border-color:#6f7eff;background:linear-gradient(135deg,#4f80f2 0%,#646af0 70%,#7a64ee 100%);box-shadow:0 15px 34px rgba(77,91,222,.26),inset 0 1px 0 rgba(255,255,255,.26)}.strategy-content-mode-cards>button.active>i,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy strong,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:#fff!important}.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:rgba(255,255,255,.88)!important}.strategy-content-mode-cards>button.active .strategy-content-mode-icon{border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.12);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.23)}.strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.92);color:#5365d8}
+.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,2.18fr) minmax(280px,.96fr);align-items:stretch;gap:16px}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output{padding:20px;border-color:#dce7f5;border-radius:20px;background:rgba(255,255,255,.96);box-shadow:0 14px 36px rgba(54,78,135,.08)}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:flex-start;padding-bottom:16px}.strategy-fullshow-output-heading-copy{display:grid;gap:4px}.strategy-fullshow-output-heading-copy small{color:#71809d;font-size:12px;line-height:1.55;text-align:left}.strategy-fullshow-output-title .strategy-recording-title-icon{width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:linear-gradient(145deg,#f1f4ff,#eeeaff);color:#5b64ef}.strategy-recording-title-icon svg{width:28px;height:28px}.strategy-recording-title-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{padding:7px 13px;border-radius:999px;background:#effaf3;color:#20845a;font-weight:900}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status i{background:#45b971;box-shadow:0 0 0 5px rgba(69,185,113,.12)}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline{gap:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload{position:relative;overflow:hidden;padding:12px;border-color:#dde8f6;border-radius:16px;background:linear-gradient(135deg,#fbfdff,#f4f8ff)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::before,.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{content:"";position:absolute;left:-8%;right:42%;bottom:24px;height:80px;border-radius:50%;background:linear-gradient(120deg,rgba(93,137,242,.06),rgba(119,93,242,.09));transform:rotate(4deg);pointer-events:none}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{left:55%;right:-10%;bottom:5px;background:linear-gradient(120deg,rgba(117,93,242,.06),rgba(79,135,241,.1));transform:rotate(-7deg)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label{position:relative;z-index:1;min-height:145px;border-color:#9db4ff;border-radius:13px;background:rgba(255,255,255,.7)}.strategy-custom-mainline-upload-icon{display:grid;width:44px;height:44px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#f0f4ff,#dfe8ff);color:#5676ed;font-style:normal}.strategy-custom-mainline-upload-icon svg{width:25px;height:25px}.strategy-custom-mainline-upload-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label strong{font-size:17px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label span{font-size:10px;line-height:1.45}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments{padding:12px;border-color:#dce7f4;border-radius:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header{display:grid;grid-template-columns:38px minmax(0,1fr) auto}.strategy-custom-mainline-editor-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:10px;background:#eef2ff;color:#5369df;font-style:normal;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header strong{font-size:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header button{min-height:40px;padding:0 18px;border:0;border-radius:11px;background:linear-gradient(135deg,#697cf0,#5859e8);box-shadow:0 8px 18px rgba(79,87,211,.2)}.strategy-original-transcript-editor{width:100%;min-height:340px;box-sizing:border-box;resize:vertical;padding:14px 16px;border:1px solid #dce5f1;border-radius:12px;outline:none;background:#fff;color:#33415e;font:14px/1.85 inherit}.strategy-original-transcript-editor:focus{border-color:#7d8cf0;box-shadow:0 0 0 4px rgba(93,111,223,.08)}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div{position:relative;min-height:58px;padding-left:46px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div::before{content:"≋";position:absolute;left:14px;display:grid;width:25px;height:25px;place-items:center;border-radius:8px;background:#edf1ff;color:#5969df;font-size:20px;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div:nth-child(2)::before{content:"●";background:#e7faf3;color:#149370;font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div.ready{border-color:#b6e5d3;background:linear-gradient(135deg,#f2fcf7,#edfaf4)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline>audio{height:48px;border-radius:999px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-srt{padding:13px 15px;border-color:#dce6f3;border-radius:12px}.strategy-custom-mainline-srt summary i{margin-right:7px;color:#5870e5;font-style:normal}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer{padding:0 2px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer>div span::first-letter{color:#4d73ed}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button{min-height:44px;padding:0 20px;border-radius:11px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button.primary{border:0;background:linear-gradient(135deg,#5f76ef,#5f55ea);box-shadow:0 10px 21px rgba(79,84,211,.22)}
+.strategy-recording-tips{position:relative;display:grid;grid-template-rows:auto auto minmax(260px,1fr);align-content:start;min-width:0;overflow:hidden;padding:20px;border:1px solid #dce7f5;border-radius:20px;background:radial-gradient(circle at 50% 90%,rgba(102,123,242,.13),transparent 30%),linear-gradient(180deg,#fff 0%,#f8fbff 100%);box-shadow:0 14px 36px rgba(54,78,135,.07)}.strategy-recording-tips>header{display:flex;align-items:center;gap:10px;padding-bottom:14px}.strategy-recording-tips>header>i{display:grid;width:38px;height:38px;place-items:center;border-radius:50%;background:#f0edff;color:#6657ec;font-size:22px;font-style:normal}.strategy-recording-tips>header strong{color:#263858;font-size:19px}.strategy-recording-tip-list{display:grid;gap:12px}.strategy-recording-tip-list article{display:grid;grid-template-columns:50px minmax(0,1fr);gap:12px;align-items:start;padding:15px;border:1px solid #dfe7f3;border-radius:15px;background:rgba(255,255,255,.9);box-shadow:0 7px 17px rgba(58,82,139,.05)}.strategy-recording-tip-list article>i{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:linear-gradient(145deg,#eef0ff,#e6eaff);color:#526aec;font-size:23px;font-style:normal;font-weight:950}.strategy-recording-tip-list article>i.wave{font-size:30px;line-height:1;transform:rotate(90deg)}.strategy-recording-tip-list article>div{display:grid;gap:6px}.strategy-recording-tip-list strong{color:#263859;font-size:14px}.strategy-recording-tip-list span{color:#74829c;font-size:11px;line-height:1.65}
+.strategy-recording-mic-illustration{position:relative;align-self:end;min-height:290px}.strategy-recording-mic-illustration>span{position:absolute;z-index:2;top:52px;right:14px;color:#7790ef;font-size:22px;font-weight:850;line-height:1.5;letter-spacing:.08em;transform:rotate(-9deg)}.strategy-recording-mic{position:absolute;left:50%;bottom:42px;width:82px;height:150px;border-radius:44px;background:linear-gradient(180deg,#7ca3ff 0%,#6962f1 56%,#5266dc 100%);box-shadow:inset 12px 10px 20px rgba(255,255,255,.35),inset -8px -12px 18px rgba(49,53,164,.18),0 22px 42px rgba(84,95,220,.28);transform:translateX(-50%)}.strategy-recording-mic::before{content:"";position:absolute;left:-17px;right:-17px;bottom:-20px;height:78px;border:6px solid #6c75e8;border-top:0;border-radius:0 0 52px 52px}.strategy-recording-mic::after{content:"";position:absolute;left:50%;bottom:-50px;width:8px;height:32px;border-radius:999px;background:#6c75e8;transform:translateX(-50%)}.strategy-recording-mic>i{position:absolute;left:50%;bottom:-66px;width:116px;height:23px;border-radius:50%;background:linear-gradient(180deg,#d9e3ff,#9db1ef);box-shadow:0 14px 24px rgba(77,96,178,.18);transform:translateX(-50%)}.strategy-recording-sound-wave{position:absolute;bottom:93px;display:flex;align-items:center;gap:5px}.strategy-recording-sound-wave.is-left{left:18px}.strategy-recording-sound-wave.is-right{right:18px}.strategy-recording-sound-wave i{display:block;width:6px;border-radius:999px;background:linear-gradient(180deg,#8c76f4,#6788ef)}.strategy-recording-sound-wave i:nth-child(1){height:28px}.strategy-recording-sound-wave i:nth-child(2){height:52px}.strategy-recording-sound-wave i:nth-child(3){height:36px}
+@media(max-width:1180px){.strategy-content-mode-cards>button{grid-template-columns:28px 58px minmax(0,1fr);padding:15px}.strategy-content-mode-icon{width:56px;height:56px}.strategy-content-mode-card-copy strong{font-size:16px!important}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,1.7fr) minmax(250px,.8fr)}.strategy-recording-mic-illustration>span{font-size:18px}}
+@media(max-width:900px){.strategy-content-mode-save-state{min-width:0}.strategy-content-mode-save-state>span{display:none}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:1fr}.strategy-recording-tips{grid-template-rows:auto auto}.strategy-recording-mic-illustration{display:none}.strategy-custom-mainline-summary{grid-template-columns:1fr}.strategy-custom-mainline-footer{align-items:stretch;flex-wrap:wrap}.strategy-custom-mainline-footer>div{width:100%}.strategy-custom-mainline-footer button{flex:1}}
+.strategy-content-mode-workflow{gap:11px;padding:18px 20px}.strategy-content-mode-cards{gap:10px}.strategy-content-mode-cards>button{grid-template-columns:24px 48px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:9px;min-height:92px;padding:11px 14px;border-radius:13px}.strategy-content-mode-cards>button>i{font-size:13px}.strategy-content-mode-icon{width:46px;height:46px}.strategy-content-mode-icon svg{width:27px;height:27px}.strategy-content-mode-card-copy{gap:3px}.strategy-content-mode-card-copy strong{font-size:15px!important}.strategy-content-mode-card-copy span{font-size:10px;line-height:1.4}.strategy-content-mode-cards>button>b{padding:4px 10px;font-size:9px}
+.strategy-fullshow-panel>header .strategy-fullshow-output-title{display:flex!important;flex:1 1 auto;align-items:center;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy{display:grid!important;flex:1 1 auto;align-content:center;gap:4px;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy strong{display:block;white-space:nowrap}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy small{display:block;max-width:680px;white-space:normal;word-break:normal;text-align:left}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:center}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{flex:0 0 auto;white-space:nowrap}
+.strategy-recording-tips{grid-template-rows:auto auto auto minmax(220px,1fr)}.strategy-recording-side-srt{margin-top:14px;border-color:#d6e2f2;background:#fff}.strategy-recording-side-srt summary{font-size:13px}.strategy-recording-side-srt pre{max-height:280px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration{min-height:220px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration>span{top:28px;font-size:17px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration .strategy-recording-mic{bottom:28px;transform:translateX(-50%) scale(.78);transform-origin:bottom center}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration .strategy-recording-sound-wave{bottom:70px;transform:scale(.78)}
+@media(max-width:900px){.strategy-content-mode-cards>button{grid-template-columns:24px 44px minmax(0,1fr);min-height:88px}.strategy-content-mode-icon{width:42px;height:42px}.strategy-recording-tips{grid-template-rows:auto auto auto}.strategy-recording-side-srt{margin-top:2px}}
+.strategy-content-mode-heading strong{font-size:26px}.strategy-content-mode-heading small{font-size:15px}.strategy-content-mode-save-state strong{font-size:15px}.strategy-content-mode-save-state small{font-size:13px!important}.strategy-content-mode-cards>button>i{font-size:15px}.strategy-content-mode-card-copy strong{font-size:17px!important}.strategy-content-mode-card-copy span{font-size:12px}.strategy-content-mode-cards>button>b{font-size:11px}
+.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header strong{font-size:20px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-output-heading-copy small{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label strong{font-size:19px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-file-meta span,.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-file-list{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-progress>span{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header strong{font-size:17px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header button{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor{font-size:16px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary strong{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary button{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer span{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button{font-size:15px}
+.strategy-recording-tips>header strong{font-size:21px}.strategy-recording-tip-list strong{font-size:16px}.strategy-recording-tip-list span{font-size:13px}.strategy-recording-mic-illustration>span{font-size:24px}.strategy-recording-side-srt summary{font-size:15px}.strategy-recording-side-srt pre{min-height:280px;max-height:none;resize:vertical;font-size:13px;line-height:1.75}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration>span{font-size:19px}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor{border-color:#cfd9ec;background:linear-gradient(180deg,#fffefb 0%,#fbfcff 100%);color:#233657;line-height:1.9;box-shadow:inset 0 1px 3px rgba(42,59,101,.035)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor:focus{border-color:#7587e8;background:#fff;box-shadow:0 0 0 4px rgba(93,111,223,.09),inset 0 1px 3px rgba(42,59,101,.025)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor::selection{background:#dce5ff;color:#172c55}
+.strategy-recording-side-srt{background:linear-gradient(180deg,#fbfcff 0%,#f5f8ff 100%);box-shadow:0 8px 20px rgba(60,83,142,.045)}.strategy-recording-side-srt summary{color:#4e62cf}.strategy-recording-side-srt pre{box-sizing:border-box;width:100%;height:320px;min-height:160px;max-height:720px;resize:vertical;overflow:auto;border:1px solid #e1e7f3;background:#f3f6fc;color:#405277;font-size:13px;line-height:1.85;box-shadow:inset 0 1px 3px rgba(42,59,101,.04)}.strategy-recording-side-srt pre::selection{background:#d8e3ff;color:#20365f}
+.strategy-content-mode-workflow>header{display:grid;grid-template-columns:minmax(360px,1fr) auto;gap:24px}.strategy-content-mode-dashboard-actions{display:grid!important;grid-template-columns:minmax(190px,220px) minmax(210px,240px) minmax(270px,1fr);align-items:stretch;gap:12px}.strategy-content-mode-version-action{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:12px;min-height:68px;padding:10px 14px;border:1px solid #cfdbf5;border-radius:15px;background:linear-gradient(135deg,#fff,#f5f8ff);color:#31456d;text-align:left;font:inherit;box-shadow:0 8px 20px rgba(63,88,150,.07);cursor:pointer;transition:transform .17s ease,box-shadow .17s ease,border-color .17s ease}.strategy-content-mode-version-action:hover:not(:disabled){transform:translateY(-2px);border-color:#afc1ef;box-shadow:0 13px 26px rgba(63,88,150,.13)}.strategy-content-mode-version-action>i{display:grid;width:48px;height:48px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#edf5ff,#e2ebff);color:#3572e8;font-style:normal}.strategy-content-mode-version-action svg{width:28px;height:28px}.strategy-content-mode-version-action svg *{fill:none;stroke:currentColor;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-version-action>span{display:grid;gap:4px;min-width:0}.strategy-content-mode-version-action strong{overflow:hidden;color:#2c416a;font-size:15px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action small{overflow:hidden;color:#7686a3;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action.is-publish{border-color:#627cf0;background:linear-gradient(135deg,#3981f4 0%,#5869ef 48%,#6855e8 100%);color:#fff;box-shadow:0 13px 28px rgba(72,87,218,.24)}.strategy-content-mode-version-action.is-publish>i{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.11);color:#fff}.strategy-content-mode-version-action.is-publish strong,.strategy-content-mode-version-action.is-publish small{color:#fff}.strategy-content-mode-version-action.is-publish small{color:rgba(255,255,255,.84)}.strategy-content-mode-version-action:disabled{cursor:not-allowed;filter:saturate(.65);opacity:.52;box-shadow:none;transform:none}
+.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-width:0;padding:10px 14px;border:1px solid #ccefe0;border-radius:15px;background:linear-gradient(135deg,#f5fff9,#edf9f5);box-shadow:0 8px 20px rgba(39,143,102,.06)}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state>i{width:44px;height:44px;flex-basis:44px;font-size:21px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state strong{font-size:14px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state small{font-size:11px!important}
+.strategy-content-mode-heading{align-content:start;min-width:0}.strategy-content-mode-heading>.primary-button{width:100%;min-height:54px;border-radius:14px;font-size:18px}.strategy-anchor-initialization-error{margin:5px 0 0;white-space:pre-line;color:#c72c48!important;background:#fff2f4!important;border-color:#f1bdc7!important;font-weight:750}
+.strategy-content-mode-cards>button{position:relative;overflow:hidden}.strategy-content-mode-cards>button>*{position:relative;z-index:1}.strategy-content-mode-cards>button.active::before,.strategy-content-mode-cards>button.active::after{content:"";position:absolute;z-index:0;left:-12%;right:38%;bottom:-45px;height:76px;border-radius:50%;background:rgba(255,255,255,.07);transform:rotate(5deg)}.strategy-content-mode-cards>button.active::after{left:46%;right:-12%;bottom:-39px;background:rgba(62,133,251,.24);transform:rotate(-7deg)}
+@media(max-width:1450px){.strategy-content-mode-workflow>header{grid-template-columns:1fr}.strategy-content-mode-dashboard-actions{grid-template-columns:repeat(3,minmax(0,1fr));width:100%}}
+@media(max-width:900px){.strategy-content-mode-dashboard-actions{grid-template-columns:1fr}.strategy-content-mode-version-action{grid-template-columns:44px minmax(0,1fr)}.strategy-content-mode-version-action>i{width:40px;height:40px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-height:60px}}
 .strategy-anchor-style-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.strategy-anchor-style-actions button{white-space:nowrap}
 .strategy-workflow-nav .strategy-workflow-inputs { display:flex!important; }
 .strategy-workflow-nav .strategy-workflow-step,.strategy-workflow-nav .strategy-workflow-output { min-height:72px!important; }
 .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:16px!important; font-weight:900!important; }
 @media(max-width:1200px) { .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:15px!important; } }
-.reusable-anchor-style-advisory-panel{display:grid;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid #e4e7f3;border-radius:15px;background:linear-gradient(135deg,#fffdf5,#f8f9ff)}.reusable-anchor-style-advisory-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.reusable-anchor-style-advisory-panel>header strong{color:#4e5b80;font-size:13px}.reusable-anchor-style-advisory-panel>header small{color:#9199ac;font-size:10px;line-height:1.5}.reusable-anchor-style-advisory-panel>article{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid #ece9da;border-radius:11px;background:rgba(255,255,255,.76)}.reusable-anchor-style-advisory-panel>article strong{color:#9a6c2e;font-size:11px}.reusable-anchor-style-advisory-panel>article span,.reusable-anchor-style-advisory-panel>article small{color:#68738c;font-size:11px;line-height:1.55}.reusable-anchor-style-advisory-panel>article small{grid-column:2/-1;color:#8a93a7}.reusable-anchor-style-advisory-panel>article em{color:#be6a55;font-size:10px;font-style:normal;font-weight:800}.reusable-anchor-style-advisory-panel>article button{white-space:nowrap}@media(max-width:780px){.reusable-anchor-style-advisory-panel>header{display:grid}.reusable-anchor-style-advisory-panel>article{grid-template-columns:1fr}.reusable-anchor-style-advisory-panel>article small{grid-column:auto}}
+.reusable-anchor-style-workspace{font-size:16px}
+.reusable-anchor-style-sidebar-head{justify-content:flex-end}
+.reusable-anchor-style-sidebar-head .primary-button{font-size:14px}
+.reusable-anchor-style-card{grid-template-columns:25px minmax(0,1fr) auto;align-items:start}
+.reusable-anchor-style-card-body{display:grid;gap:4px;min-width:0}
+.reusable-anchor-style-card-name{display:flex;align-items:center;gap:6px;min-width:0}
+.reusable-anchor-style-card-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-card-name input{min-width:0;width:100%;box-sizing:border-box;padding:4px 7px;border:1px solid #7180dc;border-radius:7px;background:#fff;color:#33415f;font:inherit;font-size:16px;outline:none;box-shadow:0 0 0 3px rgba(101,117,220,.12)}
+.reusable-anchor-style-card-name small{white-space:nowrap}
+.reusable-anchor-style-card-edit,.reusable-anchor-style-card-delete{border:0;background:transparent;cursor:pointer}
+.reusable-anchor-style-card-edit{display:grid;place-items:center;flex:0 0 auto;width:25px;height:25px;padding:0;border-radius:7px;color:#5d6ed0;font-size:18px;font-weight:900}
+.reusable-anchor-style-card-edit:hover,.reusable-anchor-style-card-edit:focus-visible{background:#e4e8ff;outline:none}
+.reusable-anchor-style-card-delete{align-self:center;padding:6px 4px;color:#b45159;font-size:13px;font-weight:850;white-space:nowrap}
+.reusable-anchor-style-card-delete:hover,.reusable-anchor-style-card-delete:focus-visible{color:#963d45;text-decoration:underline;outline:none}
+.reusable-anchor-style-card strong{font-size:16px}
+.reusable-anchor-style-card small{font-size:13px}
+.reusable-anchor-style-card em{font-size:12px}
+.reusable-anchor-style-bind{font-size:16px}
+.reusable-anchor-style-empty{font-size:15px}
+.reusable-anchor-style-settings-link{font-size:14px}
+.reusable-anchor-style-tabs button{font-size:16px}
+.reusable-anchor-style-panel-title strong{font-size:21px}
+.reusable-anchor-style-panel-title small{font-size:15px}
+.reusable-anchor-style-panel-title>span{font-size:14px}
+.reusable-anchor-style-sample-compose input,.reusable-anchor-style-sample-compose textarea{font-size:16px}
+.reusable-anchor-style-sample-list header small{font-size:13px}
+.reusable-anchor-style-sample-list button{font-size:13px}
+.reusable-anchor-style-sample-list summary{font-size:14px}
+.reusable-anchor-style-thinking small{font-size:14px}
+.reusable-anchor-style-analysis-summary span{font-size:14px}
+.reusable-anchor-style-dimension-grid article span{font-size:14px}
+.reusable-anchor-style-dimension-grid article strong{font-size:15px}
+.reusable-anchor-style-dimension-grid article small{font-size:13px}
+.reusable-anchor-style-test-settings label{font-size:14px}
+.reusable-anchor-style-fact-picker{font-size:14px}
+.reusable-anchor-style-fact-picker button{font-size:13px}
+.reusable-anchor-style-generated-text{font-size:17px}
+.reusable-anchor-style-score-row{font-size:14px}
+.reusable-anchor-style-long-test header span,.reusable-anchor-style-training-list header small{font-size:13px}
+.reusable-anchor-style-training-list button{font-size:13px}
+.reusable-anchor-style-plugin-grid article small{font-size:14px}
+.reusable-anchor-style-plugin-grid button{font-size:14px}
+.reusable-anchor-style-legacy>summary{font-size:14px}
+.reusable-anchor-style-advisory-panel{display:grid;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid #e4e7f3;border-radius:15px;background:linear-gradient(135deg,#fffdf5,#f8f9ff)}.reusable-anchor-style-advisory-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.reusable-anchor-style-advisory-panel>header strong{color:#4e5b80;font-size:15px}.reusable-anchor-style-advisory-panel>header small{color:#9199ac;font-size:12px;line-height:1.5}.reusable-anchor-style-advisory-panel>article{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid #ece9da;border-radius:11px;background:rgba(255,255,255,.76)}.reusable-anchor-style-advisory-panel>article strong{color:#9a6c2e;font-size:13px}.reusable-anchor-style-advisory-panel>article span,.reusable-anchor-style-advisory-panel>article small{color:#68738c;font-size:13px;line-height:1.55}.reusable-anchor-style-advisory-panel>article small{grid-column:2/-1;color:#8a93a7}.reusable-anchor-style-advisory-panel>article em{color:#be6a55;font-size:12px;font-style:normal;font-weight:800}.reusable-anchor-style-advisory-panel>article button{white-space:nowrap}@media(max-width:780px){.reusable-anchor-style-advisory-panel>header{display:grid}.reusable-anchor-style-advisory-panel>article{grid-template-columns:1fr}.reusable-anchor-style-advisory-panel>article small{grid-column:auto}}
 .reusable-anchor-style-settings-link{padding:8px;border:0;background:transparent;color:#6574be;font-size:12px;font-weight:850;text-align:left;cursor:pointer}
 .reusable-anchor-style-sample-compose-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.reusable-anchor-style-file-button{display:inline-flex;align-items:center;cursor:pointer}.reusable-anchor-style-file-button input{display:none}
 .reusable-anchor-style-long-test header>div{display:grid;gap:3px}.reusable-anchor-style-long-test header>div span{color:#8a95a9;font-size:11px}.reusable-anchor-style-stream-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:rgba(24,34,66,.42);backdrop-filter:blur(3px)}.reusable-anchor-style-stream-window{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;width:min(1080px,calc(100vw - 48px));height:min(760px,calc(100vh - 48px));overflow:hidden;border:1px solid rgba(126,143,232,.35);border-radius:20px;background:#f8faff;box-shadow:0 26px 80px rgba(22,36,93,.28)}.reusable-anchor-style-stream-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px 16px;border-bottom:1px solid #e0e6f2;background:linear-gradient(135deg,#fff,#f0f3ff)}.reusable-anchor-style-stream-header>div{display:grid;gap:5px}.reusable-anchor-style-stream-header span{color:#6275d9;font-size:11px;font-weight:950;letter-spacing:.14em}.reusable-anchor-style-stream-header strong{color:#29395c;font-size:24px}.reusable-anchor-style-stream-header small{color:#7b879d;font-size:13px}.reusable-anchor-style-stream-metrics{display:flex;gap:10px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid #e3e8f2;color:#7b879d;font-size:12px}.reusable-anchor-style-stream-metrics span{padding:7px 10px;border-radius:999px;background:#eef1fb}.reusable-anchor-style-stream-metrics b{margin-left:3px;color:#5366cd}.reusable-anchor-style-stream-output{min-height:0;margin:0;padding:22px 24px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#283653;font:17px/1.85 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;background:#fff}.reusable-anchor-style-stream-window>footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 24px;border-top:1px solid #e0e6f2;color:#7d899e;font-size:12px;background:#fafbff}.reusable-anchor-style-stream-window>footer span{line-height:1.5}@media(max-width:720px){.reusable-anchor-style-stream-backdrop{padding:10px}.reusable-anchor-style-stream-window{width:calc(100vw - 20px);height:calc(100vh - 20px)}.reusable-anchor-style-stream-header,.reusable-anchor-style-stream-window>footer{padding-left:16px;padding-right:16px}.reusable-anchor-style-stream-header strong{font-size:20px}.reusable-anchor-style-stream-output{padding:16px;font-size:15px}.reusable-anchor-style-stream-window>footer{align-items:flex-start;flex-direction:column}}
+.reusable-anchor-style-settings-link{font-size:14px}
+.reusable-anchor-style-long-test header>div span{font-size:13px}
+.reusable-anchor-style-stream-header span{font-size:13px}
+.reusable-anchor-style-stream-header small{font-size:15px}
+.reusable-anchor-style-stream-metrics{font-size:14px}
+.reusable-anchor-style-stream-output{font-size:19px}
+.reusable-anchor-style-stream-window>footer{font-size:14px}
+@media(max-width:720px){.reusable-anchor-style-stream-output{font-size:17px}}
+.reusable-anchor-style-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:0 0 10px;border:0}
+.reusable-anchor-style-tabs .anchor-style-tab-card{position:relative;display:grid;grid-template-columns:46px minmax(0,1fr);align-items:center;gap:10px;min-height:76px;padding:10px 12px;border:1px solid rgba(109,126,197,.08);border-radius:16px;text-align:left;box-shadow:0 8px 20px rgba(76,94,167,.08);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.reusable-anchor-style-tabs .anchor-style-tab-card:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(76,94,167,.13)}
+.reusable-anchor-style-tabs .anchor-style-tab-card::after{content:"";position:absolute;left:44%;right:44%;bottom:-9px;height:4px;border-radius:999px;background:transparent;transition:.18s ease}
+.reusable-anchor-style-tabs .anchor-style-tab-samples{background:linear-gradient(135deg,#eef2ff,#e2e9ff);color:#566ce0}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis{background:linear-gradient(135deg,#effdfd,#e6f8f7);color:#12a4a7}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization{background:linear-gradient(135deg,#fff2f8,#ffe8f2);color:#ef4f85}
+.reusable-anchor-style-tabs .anchor-style-tab-samples.active{background:linear-gradient(135deg,#597df2,#6670ea);border-color:#7b95f5;color:#fff;box-shadow:0 16px 34px rgba(79,99,217,.26),inset 0 1px 0 rgba(255,255,255,.35)}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis.active{background:linear-gradient(135deg,#20b6b2,#36c8bd);border-color:#49cfc7;color:#fff;box-shadow:0 16px 34px rgba(31,166,163,.24)}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization.active{background:linear-gradient(135deg,#f66296,#e74682);border-color:#f580a9;color:#fff;box-shadow:0 16px 34px rgba(208,62,117,.24)}
+.reusable-anchor-style-tabs .anchor-style-tab-card.active::after{left:43%;right:43%;background:currentColor;box-shadow:0 0 12px currentColor}
+.reusable-anchor-style-tabs .anchor-style-tab-samples.active::after{background:#536cf0;box-shadow:0 0 12px rgba(83,108,240,.6)}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis.active::after{background:#20aaa7;box-shadow:0 0 12px rgba(32,170,167,.55)}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization.active::after{background:#e94f84;box-shadow:0 0 12px rgba(233,79,132,.55)}
+.anchor-style-tab-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:rgba(255,255,255,.6)}
+.anchor-style-tab-card.active .anchor-style-tab-icon{background:rgba(255,255,255,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.anchor-style-tab-icon svg{width:27px;height:27px;overflow:visible}
+.anchor-style-tab-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.anchor-style-tab-samples .anchor-style-tab-icon svg rect,.anchor-style-tab-analysis .anchor-style-tab-icon svg rect{fill:currentColor;stroke:none}
+.anchor-style-tab-personalization .anchor-style-tab-icon svg path{fill:currentColor;stroke:none}
+.anchor-style-tab-copy{display:grid;gap:3px;min-width:0}
+.reusable-anchor-style-tabs .anchor-style-tab-copy strong{overflow:hidden;color:#172447;font-size:16px;font-weight:950;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-tabs .anchor-style-tab-copy small{overflow:hidden;color:#71809e;font-size:12px;font-weight:650;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy strong,.reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy small{color:#fff}
+.reusable-anchor-style-reserved-empty{min-height:420px;padding:0;border-color:#e4e9f3;background:linear-gradient(135deg,#fff,#fbfcff);box-shadow:none}
+.reusable-anchor-style-samples-panel{gap:26px;padding:38px;border-color:rgba(103,123,202,.14);border-radius:26px;background:rgba(255,255,255,.94);box-shadow:0 18px 46px rgba(72,92,169,.10)}
+.reusable-anchor-style-samples-hero{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.reusable-anchor-style-samples-hero .anchor-sample-title{flex:1;min-width:190px}
+.reusable-anchor-style-samples-hero .anchor-analysis-start{display:flex;align-items:center;gap:12px;margin-left:auto}
+.anchor-analysis-start label{display:flex;align-items:center;gap:6px;color:#6b7693;font-size:13px;white-space:nowrap}
+.anchor-analysis-start input{width:16px;height:16px}
+.anchor-analysis-progress{position:relative;overflow:hidden;min-height:44px;margin:14px 0;border:1px solid #dfe2fa;border-radius:12px;background:#f0f2ff;display:grid;place-items:center}
+.anchor-analysis-progress>div{position:absolute;inset:0 auto 0 0;background:linear-gradient(95deg,#b8c9fb,#c8b6fb);transition:width .3s}
+.anchor-analysis-progress>span{position:relative;text-align:center;padding:8px 12px;color:#454e78;font-size:13px}
+.anchor-sample-limit-warning{color:#b84f57;font-size:13px}
+.anchor-analysis-version-picker{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:9px;font-size:13px;color:#766bca}
+.anchor-analysis-version-picker select{border:1px solid #d8dcef;border-radius:9px;padding:8px;background:#fff;color:#625c93;max-width:180px}
+.anchor-sample-modal-backdrop{position:fixed;inset:0;z-index:1000;background:#19223b70;display:grid;place-items:center;padding:24px}
+.anchor-sample-modal{width:min(1050px,95vw);max-height:90vh;overflow:auto;border-radius:20px;background:#fff;padding:18px;box-shadow:0 24px 80px #11152a50}
+.anchor-sample-modal>header{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;color:#394967}
+.anchor-sample-modal>header button{border:1px solid #dce1f2;border-radius:9px;padding:8px 12px;background:#fff;color:#6a6795;cursor:pointer}
+.reusable-anchor-style-samples-hero-icon{display:grid;place-items:center;flex:0 0 auto;width:82px;height:82px;border-radius:50%;background:linear-gradient(135deg,#e6eeff,#f7e5ff);color:#5c63eb}
+.reusable-anchor-style-samples-hero-icon svg{width:44px;height:44px}
+.reusable-anchor-style-samples-hero-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-samples-hero-icon svg rect{fill:currentColor;stroke:none}
+.reusable-anchor-style-samples-hero>div{display:grid;gap:8px}
+.reusable-anchor-style-samples-hero strong{color:#101d43;font-size:30px;font-weight:950;letter-spacing:-.02em}
+.reusable-anchor-style-samples-hero small{color:#7d8aa7;font-size:17px;line-height:1.6}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose{gap:18px;padding:0;border:0;background:transparent}
+.reusable-anchor-style-compose-field{position:relative;display:block;border:1px solid #dbe3f2;border-radius:18px;background:#fff;box-shadow:inset 0 1px 2px rgba(37,57,104,.02);transition:border-color .18s ease,box-shadow .18s ease}
+.reusable-anchor-style-compose-field:focus-within{border-color:#8194ef;box-shadow:0 0 0 4px rgba(99,120,225,.09)}
+.reusable-anchor-style-compose-icon{position:absolute;z-index:1;left:18px;top:13px;display:grid;place-items:center;width:54px;height:54px;border-radius:15px;background:linear-gradient(145deg,#f3f6ff,#e9efff);color:#526beb;pointer-events:none}
+.reusable-anchor-style-compose-icon svg{width:28px;height:28px}
+.reusable-anchor-style-compose-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-compose-field input,.reusable-anchor-style-compose-field textarea{position:relative;width:100%;box-sizing:border-box;border:0!important;border-radius:18px!important;background:transparent!important;color:#35425f!important;outline:none!important;box-shadow:none!important;font-size:17px!important}
+.reusable-anchor-style-compose-field input{min-height:80px;padding:0 86px 0 92px!important}
+.reusable-anchor-style-compose-field textarea{min-height:250px;padding:28px 88px 46px 92px!important;resize:vertical;line-height:1.75}
+.reusable-anchor-style-compose-textarea .reusable-anchor-style-compose-icon{top:16px}
+.reusable-anchor-style-compose-field input::placeholder,.reusable-anchor-style-compose-field textarea::placeholder{color:#7d899f;opacity:1}
+.reusable-anchor-style-compose-count{position:absolute;right:20px;bottom:20px;color:#8390ac;font-size:14px;font-variant-numeric:tabular-nums}
+.reusable-anchor-style-compose-field:not(.reusable-anchor-style-compose-textarea) .reusable-anchor-style-compose-count{top:50%;bottom:auto;transform:translateY(-50%)}
+.reusable-anchor-style-sample-compose-actions{justify-content:space-between;gap:20px}
+.reusable-anchor-style-sample-compose-buttons{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{display:inline-flex;align-items:center;justify-content:center;gap:12px;min-height:58px;padding:0 28px;border-radius:16px;font-size:17px;font-weight:900}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button{border:0;background:linear-gradient(135deg,#527cf2,#6657f0);box-shadow:0 12px 24px rgba(79,94,222,.22)}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button:disabled{box-shadow:none;opacity:.5}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{border:1px solid #d8dfed;background:#fff;color:#3d4d72}
+.reusable-anchor-style-sample-compose-buttons svg{width:25px;height:25px}
+.reusable-anchor-style-sample-compose-buttons svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-sample-tip{display:flex;align-items:center;gap:10px;padding:13px 18px;border-radius:16px;background:linear-gradient(135deg,#f8faff,#f3f6ff);color:#73809c;font-size:14px}
+.reusable-anchor-style-sample-tip svg{flex:0 0 auto;width:25px;height:25px}
+.reusable-anchor-style-sample-tip svg *{fill:none;stroke:#5d6da6;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-sample-examples{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:4px;padding-top:24px;border-top:1px solid #e7ebf3}
+.reusable-anchor-style-sample-examples>strong{margin-right:10px;color:#263657;font-size:16px}
+.reusable-anchor-style-sample-examples>button{padding:11px 22px;border:0;border-radius:14px;background:#f0f3ff;color:#5368dd;font:inherit;font-size:15px;font-weight:850;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease}
+.reusable-anchor-style-sample-examples>button:nth-of-type(2){background:#edf8ff;color:#287bc8}
+.reusable-anchor-style-sample-examples>button:nth-of-type(3){background:#eafaf5;color:#218c78}
+.reusable-anchor-style-sample-examples>button:nth-of-type(4){background:#fff2e8;color:#e76a2f}
+.reusable-anchor-style-sample-examples>button:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(64,84,159,.10)}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-thinking,.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-list{margin-top:2px}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-list{padding-top:22px;border-top:1px solid #e7ebf3}
+@media(max-width:1480px){.reusable-anchor-style-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.reusable-anchor-style-sample-compose-actions{align-items:flex-start;flex-direction:column}.reusable-anchor-style-sample-tip{width:100%;box-sizing:border-box}}
+@media(max-width:820px){.reusable-anchor-style-tabs{grid-template-columns:1fr}.reusable-anchor-style-tabs .anchor-style-tab-card{min-height:72px}.reusable-anchor-style-samples-panel{padding:24px}.reusable-anchor-style-samples-hero{align-items:flex-start}.reusable-anchor-style-samples-hero-icon{width:64px;height:64px}.reusable-anchor-style-samples-hero strong{font-size:24px}.reusable-anchor-style-samples-hero small{font-size:15px}.reusable-anchor-style-compose-field input{padding-left:78px!important}.reusable-anchor-style-compose-field textarea{padding-left:78px!important}.reusable-anchor-style-compose-icon{left:13px;width:50px;height:50px}.reusable-anchor-style-sample-compose-buttons{width:100%}.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{flex:1;padding:0 18px}}
+.fact-risk-count{display:inline-block;padding:3px 7px;border-radius:10px;background:#ffe7ec;color:#c21e39;font-size:13px;font-style:normal;font-weight:900}
+.strategy-content-mode-workflow>header.strategy-agent-control-header{display:block}.strategy-content-mode-init-feedback{display:grid;gap:7px;min-width:0}
+.strategy-content-mode-dashboard-actions{grid-template-columns:minmax(190px,220px) minmax(210px,240px)!important;justify-content:end}
+.strategy-content-mode-cards>button.active{border-color:#36b885;background:linear-gradient(135deg,#28ae78 0%,#35ba83 58%,#4bc795 100%);box-shadow:0 15px 34px rgba(35,151,104,.24),inset 0 1px 0 rgba(255,255,255,.3)}
+.strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.38);background:rgba(255,255,255,.94);color:#16815a}
+.strategy-content-mode-cards>button.active::after{background:rgba(114,238,177,.22)}
+@media(max-width:900px){.strategy-content-mode-dashboard-actions{grid-template-columns:1fr!important}}
+@media(max-width:920px){
+  .live-strategy-shell.rooms-collapsed{grid-template-columns:1fr!important}
+  .live-strategy-rooms.collapsed{padding:18px;border-radius:20px;background:#fff}
+  .live-strategy-rooms-toggle{display:none}
+  .live-strategy-rooms-content.hidden{display:grid}
+  .live-strategy-rooms-rail.visible{display:none}
+}
+/* Display the supplied banner inside the existing chevron, without changing its action. */
+.strategy-workflow-output.workflow-step-fullshow,
+.strategy-workflow-output.workflow-step-fullshow:hover,
+.strategy-workflow-output.workflow-step-fullshow.active {
+  padding:0!important;
+  background:#dce6ff!important;
+  overflow:hidden!important;
+}
+.strategy-agent-generation-banner {
+  position:absolute;
+  left:-13.28%;
+  top:-24.8%;
+  width:116.9%!important;
+  height:155.74%!important;
+  max-width:none!important;
+  object-fit:fill;
+  pointer-events:none;
+  user-select:none;
+}
+.strategy-workflow-output.workflow-step-fullshow:hover .strategy-agent-generation-banner { filter:saturate(1.12) brightness(1.025); }
+.strategy-workflow-output.workflow-step-fullshow.active .strategy-agent-generation-banner { filter:saturate(1.15); }
+.strategy-workflow-output.workflow-step-fullshow:focus-visible { outline:3px solid #3658db!important; outline-offset:-4px; }
 </style>

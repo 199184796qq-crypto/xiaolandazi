@@ -22,7 +22,7 @@ import (
 
 func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
 	short := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{"多少钱"}})
-	if !strings.Contains(short, "20–80字") || !strings.Contains(short, "绝不能超过300字") {
+	if !strings.Contains(short, "20–80字") || !strings.Contains(short, "绝不能超过360字") {
 		t.Fatalf("unexpected short guidance: %s", short)
 	}
 	complex := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{
@@ -30,7 +30,7 @@ func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
 		"活动怎么算，赠品有什么条件？",
 		"发货和售后分别怎么处理？",
 	}})
-	if !strings.Contains(complex, "80–220字") || !strings.Contains(complex, "300字是硬上限，不是目标字数") {
+	if !strings.Contains(complex, "80–220字") || !strings.Contains(complex, "必要时允许20%容差至360字，不是目标字数") {
 		t.Fatalf("unexpected complex guidance: %s", complex)
 	}
 }
@@ -653,6 +653,7 @@ type fakeCore struct {
 	dispatchRaw    string
 	claimRaw       string
 	runtimeRaw     string
+	releaseReasons []string
 	strategies     map[string]coreStrategySelection
 	strategyCalls  map[string]int
 }
@@ -662,7 +663,7 @@ func (f *fakeCore) DoRoom(
 	_, _ int64,
 	_ string,
 	path string,
-	_ url.Values,
+	query url.Values,
 	body any,
 ) (*http.Response, error) {
 	status := http.StatusOK
@@ -726,6 +727,7 @@ func (f *fakeCore) DoRoom(
 		}
 	case strings.HasSuffix(path, "/release"):
 		f.releases++
+		f.releaseReasons = append(f.releaseReasons, query.Get("reason"))
 		raw = `{"ok":true}`
 	default:
 		status = http.StatusNotFound
@@ -1317,7 +1319,7 @@ func TestProcessRoomReleasesClaimWhenTTSFails(t *testing.T) {
 	}
 }
 
-func TestProcessRoomReleasesClaimWhenSafeCutExpires(t *testing.T) {
+func TestProcessRoomReschedulesPreparedAudioWhenSafeCutExpires(t *testing.T) {
 	core := &fakeCore{
 		dispatchStatus: http.StatusConflict,
 		dispatchRaw:    `{"error":"安全句末切点已失效，继续排队"}`,
@@ -1327,14 +1329,20 @@ func TestProcessRoomReleasesClaimWhenSafeCutExpires(t *testing.T) {
 	worker := New(readyVoiceStore(), core, agent, tts)
 	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
 
-	if err := worker.processRoom(context.Background(), session); err == nil {
-		t.Fatal("expected expired safe-cut dispatch failure")
+	if err := worker.processRoom(context.Background(), session); err != nil {
+		t.Fatalf("safe cut waiting must not back off the entire room: %v", err)
 	}
-	if core.dispatches != 1 {
-		t.Fatalf("dispatches=%d want 1", core.dispatches)
+	if core.dispatches != 3 {
+		t.Fatalf("safe cut reselections=%d want 3 bounded attempts", core.dispatches)
+	}
+	if tts.calls != 1 {
+		t.Fatalf("cut reselection repeated TTS: %d", tts.calls)
 	}
 	if core.releases != 1 {
 		t.Fatalf("failed dispatch must release claim for queue retry, releases=%d", core.releases)
+	}
+	if len(core.releaseReasons) != 1 || core.releaseReasons[0] != "cut_reschedule" || len(worker.prepared) != 1 {
+		t.Fatal("prepared audio was lost or a generation retry was consumed")
 	}
 }
 

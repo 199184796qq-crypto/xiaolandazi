@@ -82,6 +82,57 @@ func TestStreamWAVPCMTreatsTailEOFAsNormalCompletion(t *testing.T) {
 	}
 }
 
+func TestStreamWAVPCMEmitsAndSilencePadsFinalPartialFrame(t *testing.T) {
+	audio := testPCM24MonoWAV(45)
+	for i := 44 + 2*PCMBytesPerFrame; i < len(audio); i++ {
+		audio[i] = 0x5a
+	}
+	var frames [][]byte
+	err := StreamWAVPCM(context.Background(), bytes.NewReader(audio), 0, func(frame []byte, _ int) error {
+		frames = append(frames, append([]byte(nil), frame...))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("frames=%d want=3", len(frames))
+	}
+	spokenBytes := SampleRate * 5 / 1000 * BytesPerSample
+	if !bytes.Equal(frames[2][:spokenBytes], bytes.Repeat([]byte{0x5a}, spokenBytes)) {
+		t.Fatal("final spoken PCM was discarded")
+	}
+	if !bytes.Equal(frames[2][spokenBytes:], make([]byte, PCMBytesPerFrame-spokenBytes)) {
+		t.Fatal("final partial frame was not silence padded")
+	}
+}
+
+func TestStreamWAVPCMEmitsPhysicalPartialFrameWithStreamingPlaceholder(t *testing.T) {
+	audio := testPCM24MonoWAV(45)
+	binary.LittleEndian.PutUint32(audio[40:44], uint32(len(audio))*100)
+	for i := 44 + 2*PCMBytesPerFrame; i < len(audio); i++ {
+		audio[i] = 0x5a
+	}
+	var frames [][]byte
+	err := StreamWAVPCM(context.Background(), bytes.NewReader(audio), 0, func(frame []byte, _ int) error {
+		frames = append(frames, append([]byte(nil), frame...))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("frames=%d want=3", len(frames))
+	}
+	spokenBytes := SampleRate * 5 / 1000 * BytesPerSample
+	if !bytes.Equal(frames[2][:spokenBytes], bytes.Repeat([]byte{0x5a}, spokenBytes)) {
+		t.Fatal("physical partial frame was discarded for streaming WAV")
+	}
+	if !bytes.Equal(frames[2][spokenBytes:], make([]byte, PCMBytesPerFrame-spokenBytes)) {
+		t.Fatal("physical partial frame was not silence padded")
+	}
+}
+
 func TestStreamWAVPCMRejectsEOFBeforeFirstFrame(t *testing.T) {
 	audio := testPCM24MonoWAV(100)
 	audio = audio[:44]

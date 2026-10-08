@@ -93,6 +93,7 @@ type SystemSettingsDashboard struct {
 }
 
 type PublicSystemConfig struct {
+	BrowserTitle                string `json:"browser_title"`
 	SiteName                    string `json:"site_name"`
 	AuthCustomerSideLabel       string `json:"auth_customer_side_label"`
 	AuthCustomerTitleLine1      string `json:"auth_customer_title_line_1"`

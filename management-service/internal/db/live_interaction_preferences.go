@@ -65,7 +65,9 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 		&updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return item, nil
+		schedule, scheduleErr := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
+		item.Schedule = &schedule
+		return item, scheduleErr
 	}
 	if err != nil {
 		return model.RoomInteractionPreferences{}, err
@@ -77,7 +79,9 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 	if updatedAt.Valid {
 		item.UpdatedAt = updatedAt.Time
 	}
-	return item, nil
+	schedule, scheduleErr := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
+	item.Schedule = &schedule
+	return item, scheduleErr
 }
 
 func (s *Store) UpsertRoomInteractionPreferences(
@@ -86,7 +90,22 @@ func (s *Store) UpsertRoomInteractionPreferences(
 	input model.RoomInteractionPreferencesInput,
 ) (model.RoomInteractionPreferences, error) {
 	input = normalizeRoomInteractionPreferencesInput(input)
-	_, err := s.db.ExecContext(ctx, `
+	current, err := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
+	if err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
+	defer tx.Rollback()
+	// Serialize all room edits, including initialization, before saving either
+	// scalar preferences or the immutable room/plan configuration version.
+	var lockID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM core_rooms WHERE tenant_id=? AND id=? FOR UPDATE`, tenantID, roomID).Scan(&lockID); err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_room_interaction_preferences (
 			tenant_id, room_id, overall_interaction, question_preference,
 			welcome_preference, engagement_preference, chat_preference,
@@ -115,6 +134,14 @@ func (s *Store) UpsertRoomInteractionPreferences(
 		userID,
 	)
 	if err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
+	if input.Schedule != nil {
+		if _, err := s.saveRoomInteractionScheduleTx(ctx, tx, tenantID, roomID, userID, *input.Schedule, current); err != nil {
+			return model.RoomInteractionPreferences{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
 		return model.RoomInteractionPreferences{}, err
 	}
 	item, err := s.GetRoomInteractionPreferences(ctx, tenantID, roomID)

@@ -10,6 +10,7 @@ type LiveAnchorStyle struct {
 	TenantID        int64                           `json:"tenant_id"`
 	Name            string                          `json:"name"`
 	Description     string                          `json:"description,omitempty"`
+	AvatarType      string                          `json:"avatar_type"`
 	Status          string                          `json:"status"`
 	Profile         LiveAgentPlanAnchorStyleProfile `json:"profile"`
 	PluginSettings  []LiveAnchorStylePluginSetting  `json:"plugin_settings"`
@@ -39,6 +40,7 @@ type LiveAnchorStyleSample struct {
 	Progress        int                             `json:"progress"`
 	Stage           string                          `json:"stage,omitempty"`
 	ErrorMessage    string                          `json:"error_message,omitempty"`
+	Truncated       bool                            `json:"truncated,omitempty"`
 	AnalyzedAt      *time.Time                      `json:"analyzed_at,omitempty"`
 	CreatedByUserID *int64                          `json:"created_by_user_id,omitempty"`
 	CreatedAt       time.Time                       `json:"created_at"`
@@ -75,6 +77,16 @@ type CreateLiveAnchorStyleInput struct {
 	TenantID    int64  `json:"tenant_id,omitempty"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+}
+
+// Presentation only: does not infer gender, alter a voice or train a style.
+func ValidLiveAnchorAvatar(kind string) bool {
+	switch kind {
+	case "male", "female", "middle_aged_male", "middle_aged_female":
+		return true
+	default:
+		return false
+	}
 }
 
 type UpdateLiveAnchorStyleInput struct {

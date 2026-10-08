@@ -87,6 +87,17 @@ func inboxQueries(sc model.InboxScope) []inboxQuery {
 	}
 	ops := has("liveops.configure") || has("liveops.ticket.manage")
 	if ops && !sc.Actor.IsSalesStaff() {
+		add("risk_review_appeal", "support", "营销运维", "review", "直播风险误拦复核申请", "/operations/live/strategy", "risk_appeal", "live_fact_risk_reviews r", "r.active=1 AND r.appeal_status='pending'", "r.id", "r.claim_sha256", "CONCAT('方案 #',r.plan_id,' · ',r.rule_id)", "r.appeal_status", "r.appeal_at", "NULL", true)
+		// A room authorization request is addressed to one selected operations
+		// employee. Keep it separate from the shared service-ticket queue so it
+		// is visible as that employee's own actionable message only.
+		add(
+			"live_support_accept", "support", "营销运维", "accept", "直播间协助申请",
+			"/operations/support", "live_support", "live_support_requests r",
+			"r.status='pending' AND r.staff_user_id=?",
+			"r.id", "CAST(r.id AS CHAR)", "CONCAT('直播间 #',r.room_id,' 的协助申请')",
+			"r.status", "r.requested_at", "NULL", false, sc.Actor.UserID,
+		)
 		add("support_accept", "support", "营销运维", "accept", "协助工单待接单", "/operations/support", "support", "crm_support_tickets k", "k.status='pending'", "k.id", "k.ticket_no", "k.title", "k.status", "k.created_at", "NULL", true)
 		w := "k.status IN ('accepted','in_progress') AND k.assigned_user_id=?"
 		args := []any{sc.Actor.UserID}

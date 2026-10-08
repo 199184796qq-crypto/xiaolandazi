@@ -814,6 +814,38 @@ CREATE TABLE IF NOT EXISTS mkt_campaigns (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 -- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_skin_assets (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    storage_driver VARCHAR(32) NOT NULL,
+    storage_bucket VARCHAR(255) NOT NULL DEFAULT '',
+    object_key VARCHAR(1024) NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    size_bytes BIGINT UNSIGNED NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_mkt_campaign_skin_assets_object (storage_driver, object_key(191)),
+    KEY idx_mkt_campaign_skin_assets_created (created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS mkt_campaign_presentations (
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    schema_version INT UNSIGNED NOT NULL DEFAULT 1,
+    template_key VARCHAR(48) NOT NULL DEFAULT 'blue_tech',
+    display_size VARCHAR(24) NOT NULL DEFAULT 'standard',
+    presentation_json JSON NOT NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (campaign_id),
+    KEY idx_mkt_campaign_presentations_template (template_key, display_size),
+    CONSTRAINT fk_mkt_campaign_presentations_campaign
+        FOREIGN KEY (campaign_id) REFERENCES mkt_campaigns(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
 CREATE TABLE IF NOT EXISTS mkt_campaign_placements (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     campaign_id BIGINT UNSIGNED NOT NULL,

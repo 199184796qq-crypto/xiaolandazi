@@ -1,0 +1,19 @@
+/* Alternation follows displayed order, including collapsed and edited cards. */
+.speech-miner .speech-miner-results .speech-miner-point-list > article:nth-child(odd) {
+  --miner-card-tone: linear-gradient(120deg, #e5ebff, #f0f3ff);
+  --miner-overview-tone: linear-gradient(120deg, #dce4ff, #e9edff);
+  --miner-index-tone: linear-gradient(180deg, #cfdaff, #e4eaff);
+  background: var(--miner-card-tone);
+}
+.speech-miner .speech-miner-results .speech-miner-point-list > article:nth-child(even) {
+  --miner-card-tone: linear-gradient(120deg, #fbfcff, #ffffff);
+  --miner-overview-tone: linear-gradient(120deg, #f4f7ff, #fafbff);
+  --miner-index-tone: linear-gradient(180deg, #edf2ff, #f8faff);
+  background: var(--miner-card-tone);
+}
+.speech-miner .speech-miner-results .speech-miner-point-list > article .speech-miner-point-overview {
+  background: var(--miner-overview-tone);
+}
+.speech-miner .speech-miner-results .speech-miner-point-list > article .speech-miner-point-index {
+  background: var(--miner-index-tone);
+}

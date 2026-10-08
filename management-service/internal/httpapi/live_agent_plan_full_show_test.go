@@ -29,8 +29,9 @@ func (g *concurrentSegmentGateway) Complete(_ context.Context, request agentgate
 	}
 	g.mu.Lock()
 	g.calls++
+	seed := g.calls
 	g.mu.Unlock()
-	return agentgateway.Response{Text: exactSegmentText(target), Provider: "fixture", Model: "fixture", LatencyMS: 1}, nil
+	return agentgateway.Response{Text: exactSegmentTextSeed(target, seed), Provider: "fixture", Model: "fixture", LatencyMS: 1}, nil
 }
 
 func TestCompileFullShowContextSeparatesFormalFactsFromDraftStructure(t *testing.T) {
@@ -137,6 +138,7 @@ func TestCompileFullShowContextRejectsGhostAndExpiredBenefits(t *testing.T) {
 			{ID: 2, Key: "2号链接:current-benefit", LinkKey: "2号链接", ActivityPrice: "89.9元", Status: "active", StartsAt: &past, EndsAt: &future, VersionNo: 1},
 			{ID: 3, Key: "expired", LinkKey: "1号链接", Gift: "过期赠品", Status: "active", EndsAt: &past, VersionNo: 1},
 			{ID: 4, Key: "room-wide", Gift: "全场赠品", Status: "active", StartsAt: &past, EndsAt: &future, VersionNo: 1},
+			{ID: 5, Key: "permanent", LinkKey: "1号链接", Gift: "长期赠品", ValidityMode: "permanent", Status: "active", StartsAt: &future, EndsAt: &past, VersionNo: 1},
 		},
 		[]model.LiveAgentPlanProductLink{
 			{ID: 11, LinkKey: "1号链接", ProductName: "菜籽油", Spec: "5L", Status: "active", VersionNo: 3},
@@ -148,8 +150,11 @@ func TestCompileFullShowContextRejectsGhostAndExpiredBenefits(t *testing.T) {
 	if len(got.ProductLinks) != 1 || got.ProductLinks[0].LinkKey != "1号链接" {
 		t.Fatalf("inactive product leaked into generation: %+v", got.ProductLinks)
 	}
-	if len(got.Benefits) != 2 || got.Benefits[0].ID != 1 || got.Benefits[1].ID != 4 {
+	if len(got.Benefits) != 3 || got.Benefits[0].ID != 1 || got.Benefits[1].ID != 4 || got.Benefits[2].ID != 5 {
 		t.Fatalf("ghost or expired benefit handling failed: %+v", got.Benefits)
+	}
+	if got.Benefits[2].StartsAt != nil || got.Benefits[2].EndsAt != nil {
+		t.Fatalf("permanent benefit leaked its stored time window: %+v", got.Benefits[2])
 	}
 	for _, fact := range got.AuthorizedFacts {
 		if strings.Contains(fact.Value, "89.9") || strings.Contains(fact.Value, "过期") || strings.Contains(fact.ProductName, "幽灵") {

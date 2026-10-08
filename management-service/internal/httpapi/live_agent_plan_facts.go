@@ -11,7 +11,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-func validateLiveAgentPlanFactCandidate(candidate model.LiveAgentPlanFactCandidate) error {
+func validateLiveAgentPlanFactCandidate(candidate model.LiveAgentPlanFactCandidate, catalogs ...factCategoryCatalog) error {
 	candidate.Key = strings.TrimSpace(candidate.Key)
 	candidate.Value = strings.TrimSpace(candidate.Value)
 	if candidate.Key == "" || candidate.Value == "" {
@@ -32,9 +32,15 @@ func validateLiveAgentPlanFactCandidate(candidate model.LiveAgentPlanFactCandida
 	if utf8.RuneCountInString(candidate.SourceQuote) > 2000 {
 		return errors.New("原文依据不能超过 2000 字")
 	}
-	switch strings.TrimSpace(candidate.Category) {
-	case "", "product", "link", "trade", "fulfillment", "identity_location", "other":
-	default:
+	catalog, _, err := loadFactCategoryCatalog()
+	if len(catalogs) > 0 {
+		catalog = catalogs[0]
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	if category := strings.TrimSpace(candidate.Category); category != "" && !catalog.contains(category) {
 		return errors.New("事实分类无效")
 	}
 	switch strings.TrimSpace(candidate.ReviewBucket) {
@@ -99,15 +105,15 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "事实来源标识过长")
 		return
 	}
-	for _, candidate := range input.Facts {
-		if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
 		return
+	}
+	for _, candidate := range input.Facts {
+		if err := s.validateTenantFactCandidate(r.Context(), tenantID, candidate); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -221,12 +227,12 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 		ForbiddenWording: strings.TrimSpace(input.ForbiddenWording),
 		SafeRewrite:      strings.TrimSpace(input.SafeRewrite),
 	}
-	if err := validateLiveAgentPlanFactCandidate(candidate); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
+		return
+	}
+	if err := s.validateTenantFactCandidate(r.Context(), tenantID, candidate); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(

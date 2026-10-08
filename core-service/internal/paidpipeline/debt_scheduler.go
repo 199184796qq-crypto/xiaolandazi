@@ -304,6 +304,10 @@ func (p *Processor) enqueueQuestionDebtBacklog(roomID int64, view roombrain.View
 			},
 		},
 	}
+	candidate.Topic = qualifiedQuestionTopic(candidate.Topic, candidate.Question)
+	if !p.decorateCandidate(roomID, p.policies.RoomInteractionPreferences(roomID).TenantID, &candidate) {
+		return false
+	}
 	result := p.decisions.Enqueue(roomID, candidate)
 	if result.Suppressed {
 		retryAt := now.Add(debtDefaultRetryDelay)
@@ -317,9 +321,7 @@ func (p *Processor) enqueueQuestionDebtBacklog(roomID int64, view roombrain.View
 		p.setDebtRetry(roomID, string(timeline.DebtQuestion), now.Add(debtDefaultRetryDelay))
 		return false
 	}
-	if !result.Merged {
-		p.recordInteractionBudgetUse(roomID, heat, highValue, now)
-	}
+
 	p.markDebtEvent(roomID, string(timeline.DebtQuestion), question.EventID)
 	p.logInteractionMission(roomID, candidate)
 	return true
@@ -340,7 +342,7 @@ func (p *Processor) enqueueInteractionDebtBacklog(roomID int64, view roombrain.V
 	if !ok {
 		return false
 	}
-	rule, ok := defaultInteractionRules[key]
+	rule, ok := p.configuredRule(roomID, event.TenantID, key)
 	if !ok {
 		return false
 	}
@@ -385,6 +387,9 @@ func (p *Processor) enqueueInteractionDebtBacklog(roomID int64, view roombrain.V
 	candidate.InteractionDecision.BudgetLevel = budget.Level
 	candidate.InteractionDecision.BudgetAllowed = true
 	candidate.InteractionDecision.Reason = strings.TrimSpace(candidate.InteractionDecision.Reason + "；" + budgetReason)
+	if !p.decorateCandidate(roomID, event.TenantID, &candidate) {
+		return false
+	}
 	result := p.decisions.Enqueue(roomID, candidate)
 	if result.Suppressed {
 		retryAt := now.Add(debtDefaultRetryDelay)
@@ -398,9 +403,7 @@ func (p *Processor) enqueueInteractionDebtBacklog(roomID int64, view roombrain.V
 		p.setDebtRetry(roomID, string(timeline.DebtInteraction), now.Add(debtDefaultRetryDelay))
 		return false
 	}
-	if !result.Merged {
-		p.recordInteractionBudgetUse(roomID, decision.Heat, highValue, now)
-	}
+
 	p.markDebtEvent(roomID, string(timeline.DebtInteraction), event.ID)
 	p.logInteractionMission(roomID, candidate)
 	return true

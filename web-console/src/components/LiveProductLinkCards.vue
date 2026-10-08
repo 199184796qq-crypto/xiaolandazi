@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import type { LiveAgentPlanBenefit, LiveAgentPlanProductAttribute, LiveAgentPlanProductLink } from '../types'
 
 type ProductField = 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience'
@@ -10,6 +10,7 @@ const props = defineProps<{
   saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
   saveRoomRoles: (item: LiveAgentPlanProductLink, roles: string[]) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
+  copyItem: (item: LiveAgentPlanProductLink) => Promise<void>
 	addAttribute: (item: LiveAgentPlanProductLink, draft: ProductAttributeDraft) => Promise<void>
 	saveAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute, draft: ProductAttributeDraft) => Promise<void>
 	removeAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) => Promise<void>
@@ -233,6 +234,45 @@ async function deleteItem(item: LiveAgentPlanProductLink) {
   }
 }
 
+async function copyItem(item: LiveAgentPlanProductLink) {
+  if (busy.value) return
+  if (edit.value && !await saveEdit()) return
+  if (attributeEdit.value || roleEditing.value) {
+    message.value = { id: item.id, text: '请先保存或关闭正在编辑的属性和定位，再复制', error: true }
+    return
+  }
+  const latest = props.items.find(card => card.id === item.id)
+  if (!latest) return
+  busy.value = true
+  message.value = { id: item.id, text: '正在复制…' }
+  try {
+    await props.copyItem(latest)
+    message.value = { id: item.id, text: '已复制为新卡片，名称与链接编号已自动分配' }
+  } catch (error) {
+    message.value = { id: item.id, text: error instanceof Error ? error.message : '复制失败，请刷新确认后再试', error: true }
+  } finally { busy.value = false }
+}
+
+async function locateRisk(itemID: number, field = '', beginEdit = false) {
+  const item = props.items.find(item => item.id === itemID)
+  if (!item) return false
+  expandedItems.value = new Set([...expandedItems.value, itemID])
+  if (beginEdit) {
+    if (edit.value || attributeEdit.value) {
+      message.value = { id: itemID, text: '请先保存或取消正在修改的内容', error: true }
+      return false
+    }
+    const attribute = (item.attributes || []).find(attribute => attribute.label === field)
+    const common: Record<string, ProductField> = { '链接': 'link_key', '商品': 'product_name', '规格': 'spec', '日常价': 'daily_price', '数量': 'quantity', '适用': 'audience' }
+    if (attribute) startEditAttribute(item, attribute)
+    else if (common[field]) await startEdit(item, common[field])
+  }
+  await nextTick()
+  document.querySelector<HTMLElement>(`[data-product-card-id="${itemID}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  return true
+}
+defineExpose({ locateRisk })
+
 watch(() => props.items.map((item) => item.id), (ids) => {
   if (edit.value && !ids.includes(edit.value.item.id)) edit.value = null
 	if (roleEditing.value && !ids.includes(roleEditing.value)) roleEditing.value = null
@@ -243,7 +283,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 
 <template>
   <div class="product-cards">
-    <article v-for="item in items" :key="item.id" class="product-card">
+    <article v-for="item in items" :key="item.id" class="product-card" :data-product-card-id="item.id">
       <header class="product-card-header">
         <div class="product-card-link">
           <input v-if="isEditing(item, 'link_key') && edit" v-model="edit.draft" v-focus :disabled="busy" maxlength="64" :aria-label="'编辑' + item.link_key + '的链接编号'" @blur="saveEdit" @keydown.enter.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" />
@@ -310,11 +350,13 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         <header><strong>当前福利事实</strong><span>会随商品事实一起进入话术生成</span></header>
         <div v-for="benefit in linkedBenefits(item)" :key="benefit.id">
           <b>{{ benefitSummary(benefit) || benefit.key }}</b>
-          <small v-if="benefit.ends_at">有效至 {{ new Date(benefit.ends_at).toLocaleString('zh-CN', { hour12: false }) }}</small>
+          <small v-if="benefit.validity_mode !== 'permanent' && benefit.ends_at">有效至 {{ new Date(benefit.ends_at).toLocaleString('zh-CN', { hour12: false }) }}</small>
         </div>
       </section>
+      <slot name="risk" :item="item" />
       <footer class="product-card-footer">
         <span role="status" :class="{ error: message?.id === item.id && message.error }">{{ message?.id === item.id ? message.text : '通用字段常显，个性属性可展开' }}</span>
+        <button type="button" class="product-copy" :disabled="busy" :aria-label="'复制' + item.link_key + '商品卡'" @mousedown.prevent @click="copyItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制</button>
         <button type="button" class="product-delete" :disabled="busy" :aria-label="'删除' + item.link_key" @mousedown.prevent @click="deleteItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>删除</button>
       </footer>
     </article>
@@ -322,6 +364,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 </template>
 
 <style scoped>
+.product-copy{display:inline-flex;align-items:center;gap:4px;flex:none;padding:6px 8px;border:1px solid #dfe3ff;border-radius:8px;background:var(--tint);color:var(--accent);font:inherit;font-size:12px;cursor:pointer}.product-copy svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7}.product-copy:disabled{opacity:.5;cursor:default}
 .product-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; min-width:0; }
 .product-card { --accent:#4d62ff; --tint:#edf0ff; position:relative; display:flex; flex-direction:column; gap:8px; min-width:0; padding:16px; border:1px solid #dfe5ff; border-radius:14px; background:linear-gradient(135deg,#fff,#fcfdff); box-shadow:0 5px 16px rgba(67,82,158,.05); transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease; }
 .product-card:nth-child(even) { --accent:#9450ed; --tint:#f3edff; }

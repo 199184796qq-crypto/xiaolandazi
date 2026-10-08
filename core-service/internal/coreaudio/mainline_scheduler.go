@@ -116,7 +116,14 @@ func (c *Client) selectNextMainlineTrack(program *programState, currentIndex int
 		lastPlayed[key] = value
 	}
 	sequence := program.Sequence
+	sequential := program.Sequential
 	c.mu.RUnlock()
+	if sequential {
+		if currentIndex+1 < len(tracks) {
+			return currentIndex + 1, 0, "sequential-queue"
+		}
+		return -1, 0, "waiting-for-content"
+	}
 	if len(tracks) == 0 {
 		return -1, 0, ""
 	}

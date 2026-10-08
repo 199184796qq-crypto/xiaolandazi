@@ -74,10 +74,17 @@ func (s *Server) speechProfileWithKey(ctx context.Context, input agentgateway.Sp
 	if p.APIKey != "" {
 		return p, nil
 	}
-	if !agentgateway.ValidSpeechProfileID(p.ID) {
+	sourceID := p.ID
+	if input.CopyFromID != "" {
+		if input.CopyFromID == p.ID || !agentgateway.ValidSpeechProfileID(input.CopyFromID) {
+			return p, errors.New("复制来源模型配置 ID 无效")
+		}
+		sourceID = input.CopyFromID
+	}
+	if !agentgateway.ValidSpeechProfileID(sourceID) {
 		return p, errors.New("请输入 API 密钥，或先保存模型配置")
 	}
-	stored, err := s.store.ResolveSpeechModel(ctx, p.ID)
+	stored, err := s.store.ResolveSpeechModel(ctx, sourceID)
 	if err != nil || stored == nil {
 		return p, errors.New("请输入 API 密钥，或先保存模型配置")
 	}

@@ -88,6 +88,7 @@ func (s *Store) AdoptLiveAgentPlanFact(
 	tenantID, planID, actorUserID int64,
 	candidate model.LiveAgentPlanFactCandidate,
 	sourceRef string,
+	newCategories ...model.LiveFactCategory,
 ) (model.LiveAgentPlanFactAdoptionResult, error) {
 	category := strings.TrimSpace(candidate.Category)
 	if category == "" {
@@ -179,6 +180,17 @@ func (s *Store) AdoptLiveAgentPlanFact(
 		return result, err
 	}
 	defer tx.Rollback()
+	if len(newCategories) > 1 {
+		return result, errors.New("每次仅能新建一个事实分类")
+	}
+	if len(newCategories) == 1 {
+		if newCategories[0].Value != category {
+			return result, errors.New("新分类与事实分类不一致")
+		}
+		if err = insertLiveFactCategory(ctx, tx, tenantID, actorUserID, newCategories[0]); err != nil {
+			return result, err
+		}
+	}
 	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_facts (
 			tenant_id, plan_id, category, fact_key, fact_value, forbidden_wording, safe_rewrite, source_quote,
@@ -293,7 +305,7 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
 			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', '', ?)
+		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', '', ?)
 	`, tenantID, planID, factID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
@@ -351,7 +363,7 @@ func (s *Store) DeleteLiveAgentPlanFactWithExpectedVersion(
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
 			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?)
+		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?)
 	`, tenantID, planID, factID, nextVersion, current.Category, current.Key, current.Value,
 		current.ForbiddenWording, current.SafeRewrite,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)

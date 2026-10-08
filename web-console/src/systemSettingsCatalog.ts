@@ -54,7 +54,7 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
           {
             key: 'global-display',
             title: '系统名称与公共文字',
-            description: '设置系统名称、登录首页宣传文案、智能体名称、备案链接和页脚内容。',
+            description: '设置浏览器标签页标题、系统名称、登录首页宣传文案、智能体名称、备案链接和页脚内容。',
             icon: '名',
             to: '/system/settings/general#global-display',
             badge: '平台级',
@@ -141,6 +141,10 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
     icon: '播',
     to: '/system/settings/live',
     groups: [
+      {
+        key: 'anchor-voice-cache', title: '声音资产缓存', description: '由后台运维统一管控生成声音缓存的生命周期。',
+        entries: [{ key: 'anchor-voice-cache', title: 'OSS声音缓存', description: '设置声音、SRT与语义资产包保留时间，默认5小时。', icon: '音', to: '/system/settings/live#anchor-voice-cache', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
+      },
       {
         key: 'policy',
         title: '行业与规则',

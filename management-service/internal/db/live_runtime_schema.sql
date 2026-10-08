@@ -1298,6 +1298,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_benefits (
     activity_price VARCHAR(255) NOT NULL DEFAULT '',
     gift VARCHAR(512) NOT NULL DEFAULT '',
     activity_text TEXT NOT NULL,
+    validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled',
     starts_at DATETIME(3) NULL,
     ends_at DATETIME(3) NULL,
     source_quote TEXT NOT NULL,
@@ -1330,6 +1331,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_benefit_revisions (
     activity_price VARCHAR(255) NOT NULL DEFAULT '',
     gift VARCHAR(512) NOT NULL DEFAULT '',
     activity_text TEXT NOT NULL,
+    validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled',
     starts_at DATETIME(3) NULL,
     ends_at DATETIME(3) NULL,
     status VARCHAR(24) NOT NULL DEFAULT 'draft',
@@ -1393,11 +1395,40 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_script_reference_revisions (
     KEY idx_live_agent_plan_script_reference_revisions_plan (tenant_id, plan_id, created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_analysis_versions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    version_no BIGINT UNSIGNED NOT NULL,
+    kind VARCHAR(32) NOT NULL,
+    sample_ids_json JSON NOT NULL,
+    source_text MEDIUMTEXT NOT NULL,
+    profile_json MEDIUMTEXT NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_anchor_analysis_version (tenant_id,style_id,version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_analysis_activations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    style_id BIGINT UNSIGNED NOT NULL,
+    from_version_id BIGINT UNSIGNED NOT NULL,
+    to_version_id BIGINT UNSIGNED NOT NULL,
+    actor_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_anchor_analysis_activation (tenant_id,style_id,created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_anchor_styles (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,
     name VARCHAR(180) NOT NULL,
     description VARCHAR(2000) NOT NULL DEFAULT '',
+    avatar_type VARCHAR(32) NOT NULL DEFAULT 'female',
+    active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
     status VARCHAR(24) NOT NULL DEFAULT 'active',
     profile_json MEDIUMTEXT NOT NULL,
     created_by_user_id BIGINT UNSIGNED NULL,
@@ -1477,4 +1508,267 @@ CREATE TABLE IF NOT EXISTS live_anchor_style_plan_bindings (
     PRIMARY KEY (id),
     UNIQUE KEY uk_live_anchor_style_plan (tenant_id, plan_id),
     KEY idx_live_anchor_style_plan_style (tenant_id, style_id, plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_meta_prompts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    scene VARCHAR(80) NOT NULL DEFAULT '',
+    sample_sha256 CHAR(64) NOT NULL DEFAULT '',
+    original_meta_prompt_md MEDIUMTEXT NOT NULL,
+    confirmed_meta_prompt_md MEDIUMTEXT NULL,
+    monitor_json MEDIUMTEXT NOT NULL,
+    analysis_prompt_source VARCHAR(1000) NOT NULL DEFAULT '',
+    request_system MEDIUMTEXT NOT NULL,
+    request_user MEDIUMTEXT NOT NULL,
+    raw_response MEDIUMTEXT NOT NULL,
+    provider VARCHAR(128) NOT NULL DEFAULT '',
+    model VARCHAR(255) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    confirmed_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    confirmed_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    KEY idx_anchor_style_meta_active (tenant_id, plan_id, active, created_at, id),
+    KEY idx_anchor_style_meta_sample (tenant_id, sample_sha256, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_selling_point_wheels (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    extraction_prompt_md MEDIUMTEXT NOT NULL,
+    prompt_source VARCHAR(1000) NOT NULL DEFAULT '',
+    fact_package_sha256 CHAR(64) NOT NULL DEFAULT '',
+    original_wheel_json MEDIUMTEXT NOT NULL,
+    confirmed_wheel_json MEDIUMTEXT NULL,
+    request_system MEDIUMTEXT NOT NULL,
+    request_user MEDIUMTEXT NOT NULL,
+    raw_response MEDIUMTEXT NOT NULL,
+    provider VARCHAR(128) NOT NULL DEFAULT '',
+    model VARCHAR(255) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    confirmed_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    confirmed_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    KEY idx_selling_point_wheel_active (tenant_id, plan_id, active, created_at, id),
+    KEY idx_selling_point_wheel_fact_hash (tenant_id, fact_package_sha256, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_anchor_style_scorecards (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    meta_prompt_asset_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    sample_sha256 CHAR(64) NOT NULL DEFAULT '',
+    sample_text MEDIUMTEXT NULL,
+    extraction_prompt_md MEDIUMTEXT NOT NULL,
+    prompt_source VARCHAR(1000) NOT NULL DEFAULT '',
+    original_scorecard_json MEDIUMTEXT NOT NULL,
+    confirmed_scorecard_json MEDIUMTEXT NULL,
+    request_system MEDIUMTEXT NOT NULL,
+    request_user MEDIUMTEXT NOT NULL,
+    raw_response MEDIUMTEXT NOT NULL,
+    provider VARCHAR(128) NOT NULL DEFAULT '',
+    model VARCHAR(255) NOT NULL DEFAULT '',
+    latency_ms BIGINT NOT NULL DEFAULT 0,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(24) NOT NULL DEFAULT 'draft',
+    calibration_error TEXT NULL,
+    active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    confirmed_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    confirmed_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    KEY idx_anchor_style_scorecard_active (tenant_id, plan_id, active, created_at, id),
+    KEY idx_anchor_style_scorecard_sample (tenant_id, sample_sha256, created_at, id),
+    KEY idx_anchor_style_scorecard_meta (tenant_id, plan_id, meta_prompt_asset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_opening_hook_assets (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    library_md MEDIUMTEXT NOT NULL,
+    prompt_source VARCHAR(1000) NOT NULL DEFAULT '',
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_opening_hook_plan (tenant_id, plan_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_fact_package_snapshots (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ source_sha256 CHAR(64) NOT NULL,
+ fact_package_md MEDIUMTEXT NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ UNIQUE KEY uk_fact_package_snapshot(tenant_id,plan_id,source_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_derived_safety_assets (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ source_sha256 CHAR(64) NOT NULL,
+ original_facts MEDIUMTEXT NOT NULL,
+ original_wheel_json MEDIUMTEXT NOT NULL,
+ safe_facts MEDIUMTEXT NOT NULL,
+ safe_wheel_json MEDIUMTEXT NOT NULL,
+ policy_hashes_json TEXT NOT NULL,
+ changes_json MEDIUMTEXT NOT NULL,
+ rewritten_count INT NOT NULL DEFAULT 0,
+ notice TEXT NOT NULL,
+ created_by_user_id BIGINT UNSIGNED NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ UNIQUE KEY uk_derived_safety_source(tenant_id,plan_id,source_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_fact_risk_reviews (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ claim_sha256 CHAR(64) NOT NULL,
+ source_key VARCHAR(160) NOT NULL,
+ claim_text MEDIUMTEXT NOT NULL,
+ rule_id VARCHAR(160) NOT NULL,
+ severity VARCHAR(8) NOT NULL,
+ rule_sha256 CHAR(64) NOT NULL,
+ status VARCHAR(32) NOT NULL DEFAULT 'pending',
+ evidence TEXT NULL,
+ reason_text TEXT NULL,
+ program_decision VARCHAR(24) NOT NULL DEFAULT 'matched',
+ semantic_decision VARCHAR(24) NOT NULL DEFAULT 'pending',
+ semantic_prompt_sha256 CHAR(64) NOT NULL DEFAULT '',
+ semantic_reason TEXT NULL,
+ semantic_suggestion TEXT NULL,
+ semantic_provider VARCHAR(96) NOT NULL DEFAULT '',
+ semantic_model VARCHAR(160) NOT NULL DEFAULT '',
+ semantic_reviewed_at DATETIME(3) NULL,
+ appeal_status VARCHAR(24) NOT NULL DEFAULT '',
+ appeal_reason TEXT NULL,
+ appeal_by_user_id BIGINT UNSIGNED NULL,
+ appeal_at DATETIME(3) NULL,
+ active TINYINT(1) NOT NULL DEFAULT 1,
+ confirmed_by_user_id BIGINT UNSIGNED NULL,
+ confirmed_at DATETIME(3) NULL,
+ semantic_key VARCHAR(200) NOT NULL DEFAULT '',
+ subject_text TEXT NULL,
+ source_refs_json MEDIUMTEXT NULL,
+ UNIQUE KEY uk_fact_risk_review(tenant_id,plan_id,claim_sha256),
+ KEY idx_fact_risk_review_active(tenant_id,plan_id,active,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_model_exchanges (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ tenant_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ plan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ room_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ style_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ run_id VARCHAR(96) NOT NULL DEFAULT '',
+ candidate_id VARCHAR(96) NOT NULL DEFAULT '',
+ stage VARCHAR(96) NOT NULL,
+ profile_id VARCHAR(160) NOT NULL DEFAULT '',
+ request_json MEDIUMTEXT NOT NULL,
+ response_json MEDIUMTEXT NULL,
+ raw_text MEDIUMTEXT NULL,
+ input_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ output_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ input_tokens BIGINT UNSIGNED NULL,
+ output_tokens BIGINT UNSIGNED NULL,
+ cached_input_tokens BIGINT UNSIGNED NULL,
+ latency_ms BIGINT NOT NULL DEFAULT 0,
+ status VARCHAR(32) NOT NULL,
+ error_text TEXT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ finished_at DATETIME(3) NULL,
+ KEY idx_model_exchange_scope(tenant_id,plan_id,room_id,created_at),
+ KEY idx_model_exchange_run(tenant_id,run_id,candidate_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_fact_categories (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    category_value VARCHAR(48) NOT NULL,
+    label VARCHAR(40) NOT NULL,
+    description VARCHAR(200) NOT NULL,
+    family VARCHAR(32) NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, category_value),
+    UNIQUE KEY idx_fact_category_label (tenant_id, label)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_p0_policy_versions (
+    rule_sha256 CHAR(64) NOT NULL,
+    policy_version VARCHAR(128) NOT NULL,
+    prompt_source VARCHAR(1000) NOT NULL,
+    policy_md MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (rule_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_p0_audit_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    run_id VARCHAR(64) NOT NULL,
+    candidate_id VARCHAR(64) NOT NULL,
+    rule_sha256 CHAR(64) NOT NULL,
+    phase VARCHAR(32) NOT NULL,
+    task_key VARCHAR(512) NOT NULL,
+    rewrite_number INT NOT NULL DEFAULT 0,
+    decision VARCHAR(32) NOT NULL,
+    candidate_text MEDIUMTEXT NOT NULL,
+    raw_response MEDIUMTEXT NOT NULL,
+    request_prompt MEDIUMTEXT NOT NULL,
+    report_json JSON NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY idx_p0_candidate (tenant_id, plan_id, run_id, candidate_id),
+    KEY idx_p0_run (tenant_id, plan_id, run_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_room_interaction_config_versions (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ room_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ version_no BIGINT UNSIGNED NOT NULL,
+ config_json JSON NOT NULL,
+ created_by_user_id BIGINT UNSIGNED NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ PRIMARY KEY (id),
+ UNIQUE KEY idx_interaction_room_plan_version (tenant_id,room_id,plan_id,version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_plan_analysis_assets (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ asset_kind VARCHAR(64) NOT NULL,
+ input_sha256 CHAR(64) NOT NULL,
+ result_json MEDIUMTEXT NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(tenant_id,plan_id,asset_kind,input_sha256)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

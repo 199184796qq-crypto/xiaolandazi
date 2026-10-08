@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
@@ -13,22 +15,94 @@ import (
 )
 
 type anchorStyleGenerationObserver struct {
-	Strategy             *speechexpander.ResolvedContentStrategy
-	Progress             func(string)
-	Segment              func(string, int)
-	PlanningCalls        int
-	RenderCalls          int
-	RepairCalls          int
-	FirstSegmentMS       int64
-	DegradedStyle        bool
-	DegradedSegments     []int
-	FallbackSegments     []int
-	SkippedSegments      []int
-	PatchedSegments      []int
-	FactTemplateSegments []int
+	Strategy              *speechexpander.ResolvedContentStrategy
+	Progress              func(string)
+	Segment               func(string, int)
+	PlanningCalls         int
+	RenderCalls           int
+	RepairCalls           int
+	BaseRenderCalls       int
+	ContentRepairCalls    int
+	StyleWrapperCalls     int
+	FirstSegmentMS        int64
+	DegradedStyle         bool
+	DegradedSegments      []int
+	FallbackSegments      []int
+	SkippedSegments       []int
+	PatchedSegments       []int
+	FactTemplateSegments  []int
+	StyleFallbackSegments []int
 }
 
 const mainlinePlanningHorizon = 8
+
+func actionFactScore(fact model.LiveAgentGenerationFact) int {
+	text := strings.ToLower(strings.Join([]string{fact.SourceKind, fact.Predicate, fact.Label, fact.SourceKey}, " "))
+	score := 0
+	if fact.SourceKind == "benefit" {
+		score += 100
+	}
+	for _, word := range []string{"price", "spec", "quantity", "size", "color", "assurance", "价格", "规格", "数量", "组合", "尺码", "颜色", "保障", "试用", "退款"} {
+		if strings.Contains(text, word) {
+			score += 30
+		}
+	}
+	if fact.Predicate == "product_name" {
+		score += 10
+	}
+	return score
+}
+
+func forceMainlineActionStep(original model.LiveSpeechExpansionStep, material []model.LiveAgentGenerationFact, strategy speechexpander.ResolvedContentStrategy) (model.LiveSpeechExpansionStep, bool) {
+	candidates := append([]model.LiveAgentGenerationFact(nil), material...)
+	sort.SliceStable(candidates, func(i, j int) bool { return actionFactScore(candidates[i]) > actionFactScore(candidates[j]) })
+	for _, fact := range candidates {
+		step, err := speechexpander.ApplyContentDecision(original, speechexpander.ContentDecision{Role: "action", PrimaryFactID: fact.FactID}, material, strategy)
+		if err == nil {
+			return step, true
+		}
+	}
+	return original, false
+}
+
+// enforceMainlineConversionQuota preserves the meaning of the conversion
+// slider after the model planner has made its choices. PlanningRoles is a map,
+// so repeated action weights would otherwise disappear before the model sees
+// them. Program-owned quotas make the result testable without inventing any
+// urgency or commercial fact.
+func enforceMainlineConversionQuota(planned []model.LiveSpeechExpansionStep, receipts []speechexpander.ContentDecisionReceipt, material []model.LiveAgentGenerationFact, strategy speechexpander.ResolvedContentStrategy, completed int) ([]model.LiveSpeechExpansionStep, []speechexpander.ContentDecisionReceipt) {
+	required := speechexpander.ConversionActionQuota(strategy.ConversionIntensity, len(planned))
+	actual := 0
+	for _, step := range planned {
+		if step.ContentRole == "action" {
+			actual++
+		}
+	}
+	if actual >= required || required == 0 {
+		return planned, receipts
+	}
+	targets := make([]int, 0, required)
+	for slot := 1; slot <= required; slot++ {
+		index := slot*len(planned)/required - 1
+		if index < 0 {
+			index = 0
+		}
+		targets = append(targets, index)
+	}
+	for _, index := range targets {
+		if actual >= required || planned[index].ContentRole == "action" {
+			continue
+		}
+		step, ok := forceMainlineActionStep(planned[index], material, strategy)
+		if !ok {
+			continue
+		}
+		planned[index] = step
+		receipts[index] = speechexpander.ContentReceipt(step, completed+index+1, "conversion_quota", fmt.Sprintf("促单强度%d/100，本批至少安排%d个有事实依据的行动节点", strategy.ConversionIntensity, required))
+		actual++
+	}
+	return planned, receipts
+}
 
 func mainlineCursor(previous speechruntime.Continuation) speechexpander.ContentScheduleCursor {
 	cursor := speechexpander.ContentScheduleCursor{CompletedUnits: previous.CompletedUnits}
@@ -158,6 +232,7 @@ func planMainlineHorizon(ctx context.Context, gateway anchorStyleCompleter, gene
 	defer cancel()
 	response, err := gateway.Complete(plannerCtx, request)
 	if err != nil {
+		fallbacks, receipts = enforceMainlineConversionQuota(fallbacks, receipts, material, strategy, previous.CompletedUnits)
 		return fallbacks, receipts, response
 	}
 	var envelope struct {
@@ -167,6 +242,7 @@ func planMainlineHorizon(ctx context.Context, gateway anchorStyleCompleter, gene
 		} `json:"decisions"`
 	}
 	if json.Unmarshal([]byte(stripPolicyJSONFence(response.Text)), &envelope) != nil {
+		fallbacks, receipts = enforceMainlineConversionQuota(fallbacks, receipts, material, strategy, previous.CompletedUnits)
 		return fallbacks, receipts, response
 	}
 	byIndex := map[int]speechexpander.ContentDecision{}
@@ -189,5 +265,6 @@ func planMainlineHorizon(ctx context.Context, gateway anchorStyleCompleter, gene
 		planned[index] = step
 		receipts[index] = speechexpander.ContentReceipt(step, previous.CompletedUnits+index+1, "model_horizon", trimRunes(choice.Reason, 180))
 	}
+	planned, receipts = enforceMainlineConversionQuota(planned, receipts, material, strategy, previous.CompletedUnits)
 	return planned, receipts, response
 }

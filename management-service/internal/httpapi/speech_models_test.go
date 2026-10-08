@@ -50,3 +50,15 @@ func TestSpeechInlineCredentialResolution(t *testing.T) {
 		t.Fatal("oversized key accepted")
 	}
 }
+
+func TestSpeechDraftCopyRejectsInvalidCredentialSourceBeforeLookup(t *testing.T) {
+	s := &Server{}
+	for _, source := range []string{"../original", "copy"} {
+		_, err := s.speechProfileWithKey(context.Background(), agentgateway.SpeechModelInput{
+			SpeechModel: agentgateway.SpeechModel{ID: "copy"}, CopyFromID: source,
+		})
+		if err == nil || !strings.Contains(err.Error(), "复制来源") {
+			t.Fatal("invalid copy source accepted")
+		}
+	}
+}

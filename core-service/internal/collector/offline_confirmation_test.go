@@ -1,35 +1,49 @@
 package collector
 
 import (
+	roomstore "livecompanion/core/internal/room"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestOfflineConfirmationRequiresFullSixtySecondWindow(t *testing.T) {
-	now := time.Date(2026, 9, 30, 17, 0, 0, 0, time.UTC)
-	suspectedAt, confirmed := nextOfflineConfirmation(time.Time{}, now)
-	if suspectedAt.IsZero() || confirmed {
-		t.Fatalf("first offline: suspected_at=%v confirmed=%v", suspectedAt, confirmed)
+func TestCollectorUsesOneRoomAuthorityAndNoLocalGrace(t *testing.T) {
+	if roomstore.CollectionGrace != 60*time.Second {
+		t.Fatal("room grace changed")
 	}
-
-	suspectedAt, confirmed = nextOfflineConfirmation(suspectedAt, now.Add(59*time.Second))
-	if confirmed {
-		t.Fatalf("59 seconds must remain reconnecting: suspected_at=%v", suspectedAt)
+	source, err := os.ReadFile("manager.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	_, confirmed = nextOfflineConfirmation(suspectedAt, now.Add(60*time.Second))
-	if !confirmed {
-		t.Fatal("60 seconds without live evidence must confirm offline")
+	for _, forbidden := range []string{"SetStatus(", "MarkLive(", "nextOfflineConfirmation(", "offlineConfirmationWindow"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("collector regained authority: %s", forbidden)
+		}
+	}
+	if !strings.Contains(string(source), "ApplyCollectedEvent(") || !strings.Contains(string(source), "ReportCollection(") {
+		t.Fatal("evidence/event ordering gate missing")
+	}
+	metrics, err := os.ReadFile("runtime_updates.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metrics), "TouchLiveMetrics(") || strings.Contains(string(metrics), "MarkLive(") {
+		t.Fatal("metrics can revive stopped room")
 	}
 }
 
-func TestOfflineConfirmationRestartsAfterLiveEvidenceReset(t *testing.T) {
-	now := time.Date(2026, 9, 30, 17, 0, 0, 0, time.UTC)
-	first, _ := nextOfflineConfirmation(time.Time{}, now)
-
-	// Manager resets the timestamp to zero whenever live evidence returns.
-	restarted, confirmed := nextOfflineConfirmation(time.Time{}, now.Add(30*time.Second))
-	if confirmed || restarted.Equal(first) {
-		t.Fatalf("restarted window=%v first=%v confirmed=%v", restarted, first, confirmed)
+func TestCapturedSessionReopensAfterWorkerReplacementWithoutBlindNewSession(t *testing.T) {
+	if !captureSessionChanged("same-platform-id", "same-platform-id", 0, 0, true) {
+		t.Fatal("ended cached session not reopened after worker replacement")
+	}
+	if captureSessionChanged("same-platform-id", "same-platform-id", 0, 0, false) {
+		t.Fatal("ordinary retry created another session")
+	}
+	if !captureSessionChanged("same-platform-id", "same-platform-id", 1, 0, false) {
+		t.Fatal("authority end revision ignored")
+	}
+	if captureSessionChanged("", "same-platform-id", 1, 0, true) {
+		t.Fatal("no platform evidence invented a session")
 	}
 }

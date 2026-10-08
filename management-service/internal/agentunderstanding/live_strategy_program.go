@@ -99,6 +99,9 @@ func ProgramInterpretLiveStrategy(message string, ctx LiveStrategyProgramContext
 		base.Confidence = 0.95
 		return base
 	}
+	if out, ok := programInterpretFactFields(message, compact, ctx); ok {
+		return out
+	}
 	if out, ok := programAnswerLiveStrategyQuery(message, compact, ctx); ok {
 		return out
 	}

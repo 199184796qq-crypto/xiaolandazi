@@ -142,7 +142,7 @@ func (s *Store) CreateLiveSupportRequest(
 			return model.LiveSupportRequest{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "support"); err != nil {
 		return model.LiveSupportRequest{}, err
 	}
 	return s.GetLiveSupportRequest(ctx, requestID)
@@ -318,7 +318,7 @@ func (s *Store) AcceptLiveSupportRequest(
 	`, staffUserID, strings.TrimSpace(note), requestID); err != nil {
 		return model.LiveSupportRequest{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "support"); err != nil {
 		return model.LiveSupportRequest{}, err
 	}
 	return s.GetLiveSupportRequest(ctx, requestID)
@@ -378,7 +378,7 @@ func (s *Store) RejectLiveSupportRequest(
 			return model.LiveSupportRequest{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitInboxTx(ctx, tx, "support"); err != nil {
 		return model.LiveSupportRequest{}, err
 	}
 	return s.GetLiveSupportRequest(ctx, requestID)

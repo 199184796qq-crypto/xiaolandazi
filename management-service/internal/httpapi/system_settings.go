@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"livecompanion/management/internal/db"
@@ -35,6 +36,7 @@ func (s *Server) systemPublicConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取系统全局配置失败")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -113,6 +115,23 @@ func validateAuthHomepageSetting(key, raw string) error {
 	return nil
 }
 
+func validateBrowserTitleSetting(key, raw string) error {
+	if key != "browser_title" {
+		return nil
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return errors.New("浏览器标签页标题不能为空")
+	}
+	if utf8.RuneCountInString(value) > 100 {
+		return errors.New("浏览器标签页标题不能超过100个字符")
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return errors.New("浏览器标签页标题不能包含换行或控制字符")
+	}
+	return nil
+}
+
 func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requirePlatformAdmin(w, r)
 	if !ok {
@@ -128,6 +147,14 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range input.Settings {
+		if err := validateBrowserTitleSetting(item.Key, item.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if item.Key == db.AnchorGenerationSetting {
+			writeError(w, http.StatusBadRequest, "生成配置请使用主播生成模型与阿里连续会话专用面板保存")
+			return
+		}
 		if err := db.ValidateFinanceReviewSetting(item.Key, item.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

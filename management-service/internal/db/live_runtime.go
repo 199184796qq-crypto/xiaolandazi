@@ -25,16 +25,21 @@ var (
 )
 
 const (
-	liveDeviceHeartbeatTimeout = 20 * time.Second
-	liveDeviceAgentStopTimeout = 60 * time.Second
+	// A device first enters a visible reconnecting state after a short heartbeat
+	// gap, but is not declared offline until the single 60-second grace window
+	// measured from its last confirmed hardware response has elapsed.
+	liveDeviceHeartbeatSuspectAfter = 20 * time.Second
+	liveDeviceHeartbeatTimeout      = 60 * time.Second
+	liveDeviceAgentStopTimeout      = 60 * time.Second
 )
 
 // LiveDevicePresence is the durable transport heartbeat used by the billing
-// reconciler. The UI may show a device offline sooner, but paid Agent runtime
-// is stopped only after the full disconnect grace period has elapsed.
+// reconciler. UI state and paid runtime shutdown share the same last confirmed
+// heartbeat anchor, so their grace periods never stack into two minutes.
 type LiveDevicePresence struct {
 	Exists              bool
 	ConnectionStatus    string
+	StopReason          string
 	LastHeartbeatAt     *time.Time
 	ConnectionUpdatedAt time.Time
 }
@@ -46,7 +51,7 @@ func (s *Store) GetLiveDevicePresence(
 	var result LiveDevicePresence
 	var heartbeat sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT connection_status, last_heartbeat_at, updated_at
+		SELECT connection_status, last_heartbeat_at, updated_at, stop_reason
 		FROM live_device_runtime_state
 		WHERE tenant_id=? AND device_id=?
 		LIMIT 1
@@ -54,6 +59,7 @@ func (s *Store) GetLiveDevicePresence(
 		&result.ConnectionStatus,
 		&heartbeat,
 		&result.ConnectionUpdatedAt,
+		&result.StopReason,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, nil
@@ -437,14 +443,27 @@ func (s *Store) PauseLiveRuntimeSession(
 		INSERT INTO live_runtime_events (
 			tenant_id, room_id, device_id, session_id,
 			actor_type, actor_user_id, event_code, title, occurred_at
-		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_PAUSED', 'AI直播伴播已暂停', ?)
-	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
+		) VALUES (?, ?, ?, ?, ?, ?, 'AI_RUNTIME_PAUSED', 'AI直播伴播已暂停', ?)
+	`, tenantID, roomID, session.DeviceID, session.ID, runtimePauseActorType(userID), nullableRuntimeActor(userID), now); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	return s.GetLiveRuntimeSession(ctx, tenantID, session.ID)
+}
+
+func runtimePauseActorType(userID int64) string {
+	if userID > 0 {
+		return "user"
+	}
+	return "system"
+}
+func nullableRuntimeActor(userID int64) any {
+	if userID > 0 {
+		return userID
+	}
+	return nil
 }
 
 func (s *Store) ResumeLiveRuntimeSession(
@@ -1858,7 +1877,7 @@ func (s *Store) ListLiveRuntimeReconcileSessions(ctx context.Context) ([]model.L
 		WHERE s.status IN ('running','paused')
 		   OR (
 			s.status='stopped'
-			AND s.stop_reason IN ('core_restart','core_runtime_reset','device_offline')
+			AND s.stop_reason IN ('core_restart','core_runtime_reset','device_offline','device_shutdown')
 			AND s.ended_at IS NOT NULL
 			AND s.ended_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 15 MINUTE)
 			AND s.id=(

@@ -26,12 +26,34 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		name  string
 		sql   string
 	}{
+		{"live_anchor_styles", "active_analysis_version_id", "ALTER TABLE live_anchor_styles ADD COLUMN active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0"},
+		{"live_anchor_styles", "avatar_type", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_type VARCHAR(32) NOT NULL DEFAULT 'female' AFTER description"},
+		{"live_fact_risk_reviews", "semantic_key", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_key VARCHAR(200) NOT NULL DEFAULT ''"},
+		{"live_fact_risk_reviews", "subject_text", "ALTER TABLE live_fact_risk_reviews ADD COLUMN subject_text TEXT NULL"},
+		{"live_fact_risk_reviews", "source_refs_json", "ALTER TABLE live_fact_risk_reviews ADD COLUMN source_refs_json MEDIUMTEXT NULL"},
+		{"live_fact_risk_reviews", "reason_text", "ALTER TABLE live_fact_risk_reviews ADD COLUMN reason_text TEXT NULL AFTER evidence"},
+		{"live_fact_risk_reviews", "program_decision", "ALTER TABLE live_fact_risk_reviews ADD COLUMN program_decision VARCHAR(24) NOT NULL DEFAULT 'matched'"},
+		{"live_fact_risk_reviews", "semantic_decision", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_decision VARCHAR(24) NOT NULL DEFAULT 'pending'"},
+		{"live_fact_risk_reviews", "semantic_prompt_sha256", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_prompt_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER semantic_decision"},
+		{"live_fact_risk_reviews", "semantic_reason", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_reason TEXT NULL"},
+		{"live_fact_risk_reviews", "semantic_suggestion", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_suggestion TEXT NULL"},
+		{"live_fact_risk_reviews", "semantic_provider", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_provider VARCHAR(96) NOT NULL DEFAULT ''"},
+		{"live_fact_risk_reviews", "semantic_model", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_model VARCHAR(160) NOT NULL DEFAULT ''"},
+		{"live_fact_risk_reviews", "semantic_reviewed_at", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_reviewed_at DATETIME(3) NULL"},
+		{"live_fact_risk_reviews", "appeal_status", "ALTER TABLE live_fact_risk_reviews ADD COLUMN appeal_status VARCHAR(24) NOT NULL DEFAULT ''"},
+		{"live_fact_risk_reviews", "appeal_reason", "ALTER TABLE live_fact_risk_reviews ADD COLUMN appeal_reason TEXT NULL"},
+		{"live_fact_risk_reviews", "appeal_by_user_id", "ALTER TABLE live_fact_risk_reviews ADD COLUMN appeal_by_user_id BIGINT UNSIGNED NULL"},
+		{"live_fact_risk_reviews", "appeal_at", "ALTER TABLE live_fact_risk_reviews ADD COLUMN appeal_at DATETIME(3) NULL"},
+		{"live_anchor_style_scorecards", "sample_text", "ALTER TABLE live_anchor_style_scorecards ADD COLUMN sample_text MEDIUMTEXT NULL AFTER sample_sha256"},
+		{"live_anchor_style_scorecards", "calibration_error", "ALTER TABLE live_anchor_style_scorecards ADD COLUMN calibration_error TEXT NULL AFTER status"},
 		{"live_agent_plan_facts", "forbidden_wording", "ALTER TABLE live_agent_plan_facts ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
 		{"live_agent_plan_facts", "safe_rewrite", "ALTER TABLE live_agent_plan_facts ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
 		{"live_agent_plan_fact_revisions", "forbidden_wording", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
 		{"live_agent_plan_fact_revisions", "safe_rewrite", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
 		{"live_agent_plan_product_links", "room_roles_json", "ALTER TABLE live_agent_plan_product_links ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
 		{"live_agent_plan_product_link_revisions", "room_roles_json", "ALTER TABLE live_agent_plan_product_link_revisions ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
+		{"live_agent_plan_benefits", "validity_mode", "ALTER TABLE live_agent_plan_benefits ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
+		{"live_agent_plan_benefit_revisions", "validity_mode", "ALTER TABLE live_agent_plan_benefit_revisions ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
 	} {
 		exists, err := s.columnExists(ctx, column.table, column.name)
 		if err != nil {
@@ -172,6 +194,42 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		ORDER BY b.id DESC
 	`); err != nil {
 		return fmt.Errorf("backfill live agent room plan selections: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS live_fact_risk_reviews_dedup_backup LIKE live_fact_risk_reviews`); err != nil {
+		return fmt.Errorf("create risk review recovery backup: %w", err)
+	}
+	backupReasonExists, err := s.columnExists(ctx, "live_fact_risk_reviews_dedup_backup", "reason_text")
+	if err != nil {
+		return fmt.Errorf("check risk review recovery reason column: %w", err)
+	}
+	if !backupReasonExists {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN reason_text TEXT NULL AFTER evidence`); err != nil {
+			return fmt.Errorf("add risk review recovery reason column: %w", err)
+		}
+	}
+	for _, column := range []struct{ name, sql string }{
+		{"program_decision", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN program_decision VARCHAR(24) NOT NULL DEFAULT 'matched'"},
+		{"semantic_decision", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_decision VARCHAR(24) NOT NULL DEFAULT 'pending'"},
+		{"semantic_prompt_sha256", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_prompt_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER semantic_decision"},
+		{"semantic_reason", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_reason TEXT NULL"},
+		{"semantic_suggestion", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_suggestion TEXT NULL"},
+		{"semantic_provider", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_provider VARCHAR(96) NOT NULL DEFAULT ''"},
+		{"semantic_model", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_model VARCHAR(160) NOT NULL DEFAULT ''"},
+		{"semantic_reviewed_at", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN semantic_reviewed_at DATETIME(3) NULL"},
+		{"appeal_status", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN appeal_status VARCHAR(24) NOT NULL DEFAULT ''"},
+		{"appeal_reason", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN appeal_reason TEXT NULL"},
+		{"appeal_by_user_id", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN appeal_by_user_id BIGINT UNSIGNED NULL"},
+		{"appeal_at", "ALTER TABLE live_fact_risk_reviews_dedup_backup ADD COLUMN appeal_at DATETIME(3) NULL"},
+	} {
+		exists, checkErr := s.columnExists(ctx, "live_fact_risk_reviews_dedup_backup", column.name)
+		if checkErr != nil {
+			return fmt.Errorf("check risk review recovery column %s: %w", column.name, checkErr)
+		}
+		if !exists {
+			if _, alterErr := s.db.ExecContext(ctx, column.sql); alterErr != nil {
+				return fmt.Errorf("add risk review recovery column %s: %w", column.name, alterErr)
+			}
+		}
 	}
 	return nil
 }

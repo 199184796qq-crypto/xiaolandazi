@@ -21,10 +21,23 @@ func TestRollingWindowWaitsForSustainedTextAndTracksTermDistribution(t *testing.
 		t.Fatalf("rolling statistics did not distinguish sustained delivery: good=%+v bad=%+v", good, bad)
 	}
 	guidance := RenderRollingWindowGuidance(profile, strings.Repeat("先说明当前内容。", 20), 180, 70)
-	for _, expected := range []string{"滑动窗口", "跨小段统计指导", "后续可在合适语境自然补足", "不属于本窗口"} {
+	for _, expected := range []string{"滑动窗口", "跨小段统计指导", "自然积累期", "不根据当前欠量追补词频", "不属于本窗口"} {
 		if !strings.Contains(guidance, expected) {
 			t.Fatalf("rolling guidance missing %q: %s", expected, guidance)
 		}
+	}
+}
+
+func TestRollingGuidanceUsesDeadbandCooldownAndOneCorrection(t *testing.T) {
+	unit := "哥哥姐姐们，你们听我们家慢慢说啊，大家先把重点听明白哟。"
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{Version: Version}}, strings.Repeat(unit, 45))
+	underused := RenderRollingWindowGuidance(profile, strings.Repeat("先说明当前内容，再继续补充相关信息。", 80), 180, 100)
+	if !strings.Contains(underused, "本段最多一个微调动作") || !strings.Contains(underused, "不得按累计差额集中补齐") || strings.Contains(underused, "约") {
+		t.Fatalf("underuse correction is not damped: %s", underused)
+	}
+	overused := RenderRollingWindowGuidance(profile, strings.Repeat("哥哥姐姐们，哥哥姐姐们，先听哥哥姐姐们说明。", 80), 180, 100)
+	if !strings.Contains(overused, "本段只执行一项降温") || !strings.Contains(overused, "不要同时补偿其它欠量") {
+		t.Fatalf("overuse correction is not damped: %s", overused)
 	}
 }
 

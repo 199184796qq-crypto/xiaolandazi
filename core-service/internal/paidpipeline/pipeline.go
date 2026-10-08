@@ -11,6 +11,7 @@ import (
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/basepipeline"
 	"livecompanion/core/internal/events"
+	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/roombrain"
 	"livecompanion/core/internal/semantic"
@@ -21,6 +22,15 @@ import (
 // is allowed to schedule large-model work, response generation, TTS and audio.
 // It must never control the collector or the free base pipeline.
 type Processor struct {
+	cutMessages    cutMessageState
+	scheduleMu     sync.Mutex
+	schedules      map[int64]sessionSchedule
+	completedSeen  map[int64]map[string]bool
+	activity       map[int64]time.Time
+	contextReader  func(int64) (string, string)
+	tenantResolver func(int64) (int64, bool)
+	warmupEligible func(int64) bool
+
 	runtime               *agentwork.Registry
 	decisions             *agentdecision.Queue
 	policies              *strategycenter.Store
@@ -43,6 +53,8 @@ type Processor struct {
 
 func New(runtime *agentwork.Registry, decisions *agentdecision.Queue, policies ...*strategycenter.Store) *Processor {
 	p := &Processor{
+		cutMessages: cutMessageState{intents: make(map[int64]*cutIntent), samples: make(map[int64][]messagecaptain.Preparation)},
+		schedules:   make(map[int64]sessionSchedule), completedSeen: make(map[int64]map[string]bool), activity: make(map[int64]time.Time),
 		runtime:               runtime,
 		decisions:             decisions,
 		stageAt:               make(map[int64]time.Time),
@@ -152,117 +164,41 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 	// 中控和主播模式都允许监控 Agent 扫描新事件并生成口播任务。
 	// 互动类不再按单事件概率抽签，而是由时间窗调度器保证在合理窗口内发生。
 
-	if signal.IsQuestion {
-		priority := 30
-		if signal.IsNegative {
-			priority = 70
-		}
-		if p.policies != nil {
-			factor := p.policies.InteractionPreferenceFactor(event.RoomID, "question")
-			if factor <= 0 {
-				return
-			}
-			priority = int(float64(priority) * factor)
-			if priority < 1 {
-				priority = 1
-			}
-			if priority > 100 {
-				priority = 100
-			}
-		}
-		now := event.OccurredAt.UTC()
-		if now.IsZero() {
-			now = p.clock()
-		}
-		topic := p.resolveSemanticTopic(event.RoomID, signal.Content, signal.Topic, 120*time.Millisecond)
-		semanticSignal := signal
-		if strings.TrimSpace(topic) != "" {
-			semanticSignal.Topic = topic
-		}
-		interactionDecision := p.questionInteractionDecision(event, semanticSignal, priority, now)
-		if interactionDecision.QuestionDebt != nil {
-			if debtPriority := int(interactionDecision.QuestionDebt.CurrentPriority + 0.5); debtPriority > priority {
-				priority = debtPriority
-			}
-		}
-		p.decisions.Enqueue(event.RoomID, agentdecision.Candidate{
-			Source:              agentdecision.SourceAgent,
-			Topic:               topic,
-			Question:            signal.Content,
-			Summary:             "观众问题已通过互动决策进入智能体候选",
-			ReplyHint:           "这是一次完整口播任务。结合当前主线、打断策略、回归策略和其它生成约束，一次生成最终可播正文。",
-			MissionKind:         "reply_question",
-			MissionEventCount:   1,
-			Priority:            priority,
-			EventID:             signal.EventID,
-			UserID:              signal.UserID,
-			Nicknames:           []string{event.Nickname},
-			InteractionDecision: interactionDecision,
-		})
+	now := event.OccurredAt.UTC()
+	if now.IsZero() {
+		now = p.clock()
+	}
+	if eventType == "chat" || eventType == "comment" || signal.IsQuestion || signal.IsOrderHint || signal.IsNegative {
+		p.scheduleMu.Lock()
+		p.activity[event.RoomID] = now
+		p.scheduleMu.Unlock()
+		p.cancelWarmup(event.RoomID)
+	}
+	if signal.IsNegative {
+		p.enqueueDirectEvent(event, signal, "complaint", "投诉与负面反馈", now)
 		return
 	}
-
-	if eventType == "chat" || eventType == "comment" {
-		if strings.TrimSpace(event.Content) != "" {
+	if signal.IsQuestion {
+		p.enqueueDirectEvent(event, signal, "reply_question", "回答问题", now)
+		return
+	}
+	if signal.IsOrderHint || eventType == "order" || eventType == "order_signal" {
+		p.enqueueDirectEvent(event, signal, "conversion_signal", "下单回应", now)
+		return
+	}
+	switch eventType {
+	case "chat", "comment":
+		if strings.TrimSpace(signal.Content) != "" {
 			p.accumulateInteraction(event, "reply_chat", signal.Topic)
 		}
-		return
-	}
-
-	if eventType == "member" {
-		if strings.TrimSpace(event.Nickname) != "" {
-			p.accumulateInteraction(event, "welcome_named", "")
-		}
-		p.accumulateInteraction(event, "welcome_batch", "")
-		return
-	}
-
-	if eventType == "like" {
+	case "member":
+		// One entry contributes to one welcome mission, never both named and
+		// batch queues. Addressing remains the existing generation policy.
+		p.accumulateInteraction(event, "welcome_named", "")
+	case "like":
 		p.accumulateInteraction(event, "reply_like", "")
-		return
-	}
-
-	if eventType == "follow" {
+	case "follow":
 		p.accumulateInteraction(event, "reply_follow", "")
-		return
-	}
-
-	if signal.IsOrderHint {
-		priority := 85
-		if p.policies != nil {
-			factor := p.policies.InteractionPreferenceFactor(event.RoomID, "conversion")
-			if factor <= 0 {
-				return
-			}
-			priority = int(float64(priority) * factor)
-			if priority < 1 {
-				priority = 1
-			}
-			if priority > 100 {
-				priority = 100
-			}
-		}
-		now := event.OccurredAt.UTC()
-		if now.IsZero() {
-			now = p.clock()
-		}
-		interactionDecision := p.conversionInteractionDecision(event, signal, now)
-		p.decisions.Enqueue(event.RoomID, agentdecision.Candidate{
-			Source:              agentdecision.SourceAgent,
-			Topic:               "SIGNAL:ORDER",
-			Title:               "下单信号",
-			Question:            signal.Content,
-			Summary:             "检测到高价值下单信号，已通过互动决策进入保留通道",
-			ReplyHint:           "优先自然回应成交信号，不能编造订单、库存、价格或承诺。",
-			MissionKind:         "conversion_signal",
-			MissionEventCount:   1,
-			Priority:            priority,
-			EventID:             signal.EventID,
-			UserID:              signal.UserID,
-			Nicknames:           []string{event.Nickname},
-			InteractionDecision: interactionDecision,
-			TTLSeconds:          45,
-		})
 	}
 }
 

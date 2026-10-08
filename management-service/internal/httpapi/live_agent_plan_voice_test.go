@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/binary"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func testPCMFormat(byteRate uint32) []byte {
 	return fmtData
 }
 
-func TestCombineGeneratedVoiceWAVBuildsExactContiguousTimeline(t *testing.T) {
+func TestCombineGeneratedVoiceWAVBuildsGuardedContiguousTimeline(t *testing.T) {
 	fmtData := testPCMFormat(1000)
 	pieces := []generatedVoiceWAVPiece{
 		{text: "第一段。", fmtData: fmtData, pcmData: make([]byte, 1000), byteRate: 1000},
@@ -29,16 +30,16 @@ func TestCombineGeneratedVoiceWAVBuildsExactContiguousTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if durationMS != 2500 {
-		t.Fatalf("duration=%d want=2500", durationMS)
+	if durationMS != 3340 {
+		t.Fatalf("duration=%d want=3340", durationMS)
 	}
 	if len(timeline) != 2 {
 		t.Fatalf("timeline segments=%d want=2", len(timeline))
 	}
-	if timeline[0].StartMS != 0 || timeline[0].EndMS != 1000 || !timeline[0].SafeCut {
+	if timeline[0].StartMS != 0 || timeline[0].EndMS != 1420 || !timeline[0].SafeCut {
 		t.Fatalf("first timeline=%+v", timeline[0])
 	}
-	if timeline[1].StartMS != 1000 || timeline[1].EndMS != 2500 || !timeline[1].SafeCut {
+	if timeline[1].StartMS != 1420 || timeline[1].EndMS != 3340 || !timeline[1].SafeCut {
 		t.Fatalf("second timeline=%+v", timeline[1])
 	}
 	parsedDuration, err := generatedVoiceWAVDurationMS(combined)
@@ -47,6 +48,65 @@ func TestCombineGeneratedVoiceWAVBuildsExactContiguousTimeline(t *testing.T) {
 	}
 	if parsedDuration != durationMS {
 		t.Fatalf("parsed duration=%d timeline duration=%d", parsedDuration, durationMS)
+	}
+	_, pcm, _, err := parseGeneratedVoiceWAV(combined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHead := bytes.Repeat([]byte{0x80}, int(generatedVoiceSegmentHeadMS))
+	wantTail := bytes.Repeat([]byte{0x80}, int(generatedVoiceSegmentTailMS))
+	if !bytes.Equal(pcm[:120], wantHead) || !bytes.Equal(pcm[1120:1420], wantTail) || !bytes.Equal(pcm[len(pcm)-300:], wantTail) {
+		t.Fatal("each generated segment must retain an exact silent guard tail")
+	}
+	points := buildFullShowSafePoints(timeline)
+	if len(points) != 2 || points[0].CutMS != 1420 || points[1].CutMS != 3340 {
+		t.Fatalf("safe cuts must follow guard tails: %+v", points)
+	}
+}
+
+func TestNormalizeGeneratedVoicePieceClampsProviderSilence(t *testing.T) {
+	fmtData := testPCMFormat(1000)
+	providerPCM := append(bytes.Repeat([]byte{0x80}, 900), bytes.Repeat([]byte{0x00}, 1000)...)
+	providerPCM = append(providerPCM, bytes.Repeat([]byte{0x80}, 1100)...)
+	normalized, err := normalizeGeneratedVoicePiecePCM(fmtData, providerPCM, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDuration := int(generatedVoiceSegmentHeadMS + 1000 + generatedVoiceSegmentTailMS)
+	if len(normalized) != wantDuration {
+		t.Fatalf("normalized bytes=%d want=%d", len(normalized), wantDuration)
+	}
+	if !bytes.Equal(normalized[:generatedVoiceSegmentHeadMS], bytes.Repeat([]byte{0x80}, int(generatedVoiceSegmentHeadMS))) {
+		t.Fatal("leading provider silence was not normalized")
+	}
+	if !bytes.Equal(normalized[len(normalized)-int(generatedVoiceSegmentTailMS):], bytes.Repeat([]byte{0x80}, int(generatedVoiceSegmentTailMS))) {
+		t.Fatal("trailing provider silence was not normalized")
+	}
+}
+
+func TestNormalizeGeneratedVoicePieceRejectsSilentOutput(t *testing.T) {
+	fmtData := testPCMFormat(1000)
+	if _, err := normalizeGeneratedVoicePiecePCM(fmtData, bytes.Repeat([]byte{0x80}, 1000), 1000); err == nil {
+		t.Fatal("fully silent generated audio must be rejected")
+	}
+}
+
+func TestCombineGeneratedVoiceWAVDoesNotDuplicateExistingGuardTail(t *testing.T) {
+	fmtData := testPCMFormat(1000)
+	first, timeline, duration, err := combineGeneratedVoiceWAV("A", []generatedVoiceWAVPiece{{text: "第一段。", fmtData: fmtData, pcmData: make([]byte, 1000), byteRate: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pieces, err := existingContentVoicePieces(first, timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondTimeline, secondDuration, err := combineGeneratedVoiceWAV("A", pieces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondDuration != duration || secondTimeline[0].EndMS != timeline[0].EndMS || !bytes.Equal(first, second) {
+		t.Fatalf("guard tail duplicated: first=%d second=%d", duration, secondDuration)
 	}
 }
 
@@ -85,7 +145,7 @@ func TestFormalVoiceTimelineOnlyMarksStrongSentenceCutsAndBuildsSRT(t *testing.T
 		t.Fatalf("strong sentence ending should be safe: %+v", timeline[1])
 	}
 	srt := liveAgentTimelineSRT(timeline)
-	if !strings.Contains(srt, "00:00:00,000 --> 00:00:00,800") || !strings.Contains(srt, "00:00:00,800 --> 00:00:02,000") {
+	if !strings.Contains(srt, "00:00:00,000 --> 00:00:01,220") || !strings.Contains(srt, "00:00:01,220 --> 00:00:02,840") {
 		t.Fatalf("unexpected srt:\n%s", srt)
 	}
 	if !strings.Contains(srt, "先把这一点说明白，") || !strings.Contains(srt, "然后这一句完整结束。") {

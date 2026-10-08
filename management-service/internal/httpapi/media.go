@@ -334,10 +334,8 @@ func (s *Server) liveMediaAssetContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "媒体存储驱动暂不可用")
 		return
 	}
-	if signedURL, err := assetStore.SignedURL(r.Context(), item.ObjectKey, s.assetURLTTL); err == nil && signedURL != "" {
-		http.Redirect(w, r, signedURL, http.StatusTemporaryRedirect)
-		return
-	}
+	// Browser downloads stay same-origin. For OSS-backed assets Open uses the
+	// configured internal endpoint, avoiding public signed URLs and CORS leaks.
 	reader, err := assetStore.Open(r.Context(), item.ObjectKey)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "媒体文件不存在")
@@ -348,6 +346,10 @@ func (s *Server) liveMediaAssetContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", safeHeaderFilename(item.OriginalName)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.Copy(w, reader)
+}
+
+func liveMediaAssetContentURL(assetID int64) string {
+	return fmt.Sprintf("/api/v1/live/media-assets/%d/content", assetID)
 }
 
 func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {

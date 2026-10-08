@@ -2,6 +2,7 @@ package liveruntime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,46 @@ import (
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
+
+func TestDeviceCleanupDoesNotRepeatSuccessfulOrHistoricalStops(t *testing.T) {
+	calls := 0
+	r := &Reconciler{}
+	r.SetDeviceStopCleanup(func(context.Context, int64, int64) error { calls++; return nil })
+	now := time.Now()
+	session := model.LiveRuntimeSession{ID: 1, TenantID: 14, RoomID: 26, EndedAt: &now}
+	for i := 0; i < 3; i++ {
+		if err := r.cleanupDeviceRoom(context.Background(), session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatal("successful cleanup repeated", calls)
+	}
+	old := now.Add(-time.Minute)
+	session.ID = 2
+	session.EndedAt = &old
+	if err := r.cleanupDeviceRoom(context.Background(), session); err != nil || calls != 1 {
+		t.Fatal("historical stop cleaned new audio", calls, err)
+	}
+	session.ID = 3
+	session.EndedAt = &now
+	r.SetDeviceStopCleanup(func(context.Context, int64, int64) error {
+		calls++
+		if calls == 2 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	})
+	if err := r.cleanupDeviceRoom(context.Background(), session); err == nil {
+		t.Fatal("failure discarded")
+	}
+	if err := r.cleanupDeviceRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cleanupDeviceRoom(context.Background(), session); err != nil || calls != 3 {
+		t.Fatal("failed cleanup not retried exactly until success", calls, err)
+	}
+}
 
 func TestAuthoritativeCoreStopReasonRejectsEmptyReason(t *testing.T) {
 	for _, state := range []string{"stopped", "stopping"} {
@@ -135,6 +176,16 @@ func TestDeviceOfflineStopDeadlineRequiresSixtyContinuousSeconds(t *testing.T) {
 				Exists: true, ConnectionStatus: "offline", ConnectionUpdatedAt: now.Add(-61 * time.Second),
 			},
 			wantDue: true,
+		},
+		{
+			name:     "disconnect detection does not restart grace",
+			presence: appdb.LiveDevicePresence{Exists: true, ConnectionStatus: "offline", LastHeartbeatAt: timePtr(now.Add(-61 * time.Second)), ConnectionUpdatedAt: now},
+			wantDue:  true,
+		},
+		{
+			name:     "explicit shutdown has no grace",
+			presence: appdb.LiveDevicePresence{Exists: true, ConnectionStatus: "offline", StopReason: "device_shutdown", LastHeartbeatAt: timePtr(now)},
+			wantDue:  true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

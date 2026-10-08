@@ -59,6 +59,11 @@ type ProgramRefreshInput struct {
 }
 
 type ProgramRefreshSnapshot struct {
+	BufferedMainlineMS int64 `json:"buffered_mainline_ms"`
+	TrackIndex        int    `json:"track_index"`
+	CurrentMS         int    `json:"current_ms"`
+	Sequential        bool   `json:"sequential"`
+	WaitingForContent bool   `json:"waiting_for_content"`
 	ProgramID         string `json:"program_id"`
 	RoomID            int64  `json:"room_id"`
 	VersionID         int64  `json:"version_id"`

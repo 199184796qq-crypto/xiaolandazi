@@ -40,7 +40,8 @@ type SpeechModels struct {
 
 type SpeechModelInput struct {
 	SpeechModel
-	NewAPIKey string `json:"api_key"`
+	NewAPIKey  string `json:"api_key"`
+	CopyFromID string `json:"copy_from_id,omitempty"`
 }
 
 type SpeechModelsInput struct {
@@ -206,6 +207,9 @@ func ValidateSpeechModels(input SpeechModelsInput) error {
 		seen[p.ID] = true
 		if len(p.NewAPIKey) > 4096 {
 			return errors.New("API 密钥过长")
+		}
+		if p.CopyFromID != "" && (!ValidSpeechProfileID(p.CopyFromID) || p.CopyFromID == p.ID) {
+			return errors.New("复制来源模型配置 ID 无效")
 		}
 		if p.ID == input.DefaultID {
 			selected = p.Enabled

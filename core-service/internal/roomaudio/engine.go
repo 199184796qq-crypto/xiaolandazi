@@ -14,6 +14,13 @@ const (
 	FrameDurationMS  = 20
 	SamplesPerFrame  = SampleRate * FrameDurationMS / 1000
 	PCMBytesPerFrame = SamplesPerFrame * Channels * BytesPerSample
+	// A short start guard lets the output stream/device become ready before the
+	// first phoneme. It is deliberately small enough to remain conversational.
+	VoiceGuardHeadMS = 120
+	// Keep the interrupt source alive briefly after its final spoken frame. The
+	// downstream device/output buffer can otherwise switch back to mainline on
+	// the same boundary and audibly swallow the final phoneme.
+	VoiceGuardTailMS = 300
 )
 
 type Phase string

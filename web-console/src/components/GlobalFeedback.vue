@@ -14,13 +14,15 @@ import {
       class="modal-backdrop system-confirm-backdrop system-alert-backdrop"
       role="alertdialog"
       aria-modal="true"
+      aria-labelledby="system-error-title"
+      aria-describedby="system-error-message"
       @click.self="dismissAlert"
     >
       <section class="system-confirm-card system-alert-card">
         <div class="system-confirm-icon danger">!</div>
         <div class="system-confirm-copy">
-          <h3>{{ feedbackState.alertTitle }}</h3>
-          <p>{{ feedbackState.alertMessage }}</p>
+          <h3 id="system-error-title">{{ feedbackState.alertTitle }}</h3>
+          <p id="system-error-message">{{ feedbackState.alertMessage }}</p>
         </div>
         <div class="system-confirm-actions">
           <button class="primary-button" type="button" @click="dismissAlert">

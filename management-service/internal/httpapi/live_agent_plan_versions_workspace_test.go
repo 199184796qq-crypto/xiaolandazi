@@ -12,7 +12,7 @@ func TestSelectLiveAgentPlanWorkspaceVersionPrefersNewerDraft(t *testing.T) {
 		{ID: 4, VersionNo: 4, LifecycleStatus: "published"},
 		{ID: 3, VersionNo: 3, LifecycleStatus: "superseded"},
 	}
-	version, source := selectLiveAgentPlanWorkspaceVersion(items)
+	version, source := selectLiveAgentPlanWorkspaceVersion(items, model.LiveContentAIPregenerated)
 	if version == nil || version.ID != 5 || source != "draft" {
 		t.Fatalf("version=%+v source=%q, want V5 draft", version, source)
 	}
@@ -24,7 +24,7 @@ func TestSelectLiveAgentPlanWorkspaceVersionIgnoresStaleDraft(t *testing.T) {
 		{ID: 7, VersionNo: 7, LifecycleStatus: "draft"},
 		{ID: 6, VersionNo: 6, LifecycleStatus: "superseded"},
 	}
-	version, source := selectLiveAgentPlanWorkspaceVersion(items)
+	version, source := selectLiveAgentPlanWorkspaceVersion(items, model.LiveContentAIPregenerated)
 	if version == nil || version.ID != 8 || source != "published" {
 		t.Fatalf("version=%+v source=%q, want V8 published", version, source)
 	}
@@ -36,9 +36,23 @@ func TestSelectLatestLiveAgentPlanWorkspaceTemplateUsesMostRecentUsableVersion(t
 		{ID: 19, RoomID: 15, VersionNo: 8, LifecycleStatus: "superseded"},
 		{ID: 18, RoomID: 15, VersionNo: 7, LifecycleStatus: "draft"},
 	}
-	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items)
+	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items, model.LiveContentAIPregenerated)
 	if version == nil || version.ID != 21 || source != "published" {
 		t.Fatalf("version=%+v source=%q, want most recent usable version id=21 published", version, source)
+	}
+}
+
+func TestSelectLiveAgentPlanWorkspaceVersionKeepsModesIndependent(t *testing.T) {
+	items := []model.LiveAgentPlanVersion{
+		{ID: 12, VersionNo: 12, LifecycleStatus: "draft", GenerationContext: map[string]any{"content_mode": model.LiveContentUserAudio}},
+		{ID: 11, VersionNo: 11, LifecycleStatus: "draft", GenerationContext: map[string]any{"content_mode": model.LiveContentAIPregenerated}},
+		{ID: 10, VersionNo: 10, LifecycleStatus: "published", GenerationContext: map[string]any{"content_mode": model.LiveContentAIDynamic}},
+	}
+	for mode, want := range map[string]int64{model.LiveContentUserAudio: 12, model.LiveContentAIPregenerated: 11, model.LiveContentAIDynamic: 10} {
+		version, _ := selectLiveAgentPlanWorkspaceVersion(items, mode)
+		if version == nil || version.ID != want {
+			t.Fatalf("mode=%s version=%+v want=%d", mode, version, want)
+		}
 	}
 }
 

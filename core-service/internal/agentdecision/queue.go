@@ -1,6 +1,7 @@
 package agentdecision
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -45,21 +46,39 @@ type QuestionDebt struct {
 }
 
 type InteractionDecision struct {
-	Handle           bool          `json:"handle"`
-	PrimaryEvent     string        `json:"primary_event,omitempty"`
-	MergedEventIDs   []int64       `json:"merged_event_ids,omitempty"`
-	EventValue       float64       `json:"event_value,omitempty"`
-	ValueLevel       string        `json:"value_level,omitempty"`
-	Reason           string        `json:"reason,omitempty"`
-	DeadlineAt       time.Time     `json:"deadline_at,omitempty"`
-	BudgetLevel      string        `json:"budget_level,omitempty"`
-	BudgetAllowed    bool          `json:"budget_allowed"`
-	Heat             string        `json:"heat,omitempty"`
-	PreferenceFactor float64       `json:"preference_factor,omitempty"`
-	QuestionDebt     *QuestionDebt `json:"question_debt,omitempty"`
+	OnlineCount       int           `json:"online_count,omitempty"`
+	UniqueChatters30s int           `json:"unique_chatters_30s,omitempty"`
+	QuestionPressure  float64       `json:"question_pressure,omitempty"`
+	Handle            bool          `json:"handle"`
+	PrimaryEvent      string        `json:"primary_event,omitempty"`
+	MergedEventIDs    []int64       `json:"merged_event_ids,omitempty"`
+	EventValue        float64       `json:"event_value,omitempty"`
+	ValueLevel        string        `json:"value_level,omitempty"`
+	Reason            string        `json:"reason,omitempty"`
+	DeadlineAt        time.Time     `json:"deadline_at,omitempty"`
+	BudgetLevel       string        `json:"budget_level,omitempty"`
+	BudgetAllowed     bool          `json:"budget_allowed"`
+	Heat              string        `json:"heat,omitempty"`
+	PreferenceFactor  float64       `json:"preference_factor,omitempty"`
+	QuestionDebt      *QuestionDebt `json:"question_debt,omitempty"`
 }
 
 type Candidate struct {
+	EventExpiresAt     time.Time       `json:"event_expires_at,omitempty"`
+	PreparedTaskID     string          `json:"prepared_task_id,omitempty"`
+	PreparedCutMS      int             `json:"prepared_cut_ms,omitempty"`
+	PriorityClass      string          `json:"priority_class,omitempty"`
+	Weight             int             `json:"weight,omitempty"`
+	Scene              string          `json:"scene,omitempty"`
+	OrderSource        string          `json:"order_source,omitempty"`
+	CooldownSeconds    int             `json:"cooldown_seconds,omitempty"`
+	RateLimitPerMinute int             `json:"rate_limit_per_minute,omitempty"`
+	MaxRetries         int             `json:"max_retries,omitempty"`
+	OriginPlanID       int64           `json:"origin_plan_id,omitempty"`
+	OriginMainline     string          `json:"origin_mainline,omitempty"`
+	OriginTrackID      string          `json:"origin_track_id,omitempty"`
+	Schedule           json.RawMessage `json:"schedule,omitempty"`
+
 	Source               Source              `json:"source"`
 	Topic                string              `json:"topic,omitempty"`
 	Question             string              `json:"question,omitempty"`
@@ -83,6 +102,27 @@ type Candidate struct {
 }
 
 type Item struct {
+	AudioPrepared      bool            `json:"audio_prepared,omitempty"`
+	PreparedTaskID     string          `json:"prepared_task_id,omitempty"`
+	PreparedCutMS      int             `json:"prepared_cut_ms,omitempty"`
+	PlaybackTaskID     string          `json:"playback_task_id,omitempty"`
+	PriorityClass      string          `json:"priority_class,omitempty"`
+	Weight             int             `json:"weight,omitempty"`
+	Scene              string          `json:"scene,omitempty"`
+	OrderSource        string          `json:"order_source,omitempty"`
+	CooldownSeconds    int             `json:"cooldown_seconds,omitempty"`
+	RateLimitPerMinute int             `json:"rate_limit_per_minute,omitempty"`
+	MaxRetries         int             `json:"max_retries,omitempty"`
+	OriginPlanID       int64           `json:"origin_plan_id,omitempty"`
+	OriginMainline     string          `json:"origin_mainline,omitempty"`
+	OriginTrackID      string          `json:"origin_track_id,omitempty"`
+	Schedule           json.RawMessage `json:"schedule,omitempty"`
+
+	Attempts     int       `json:"attempts,omitempty"`
+	RetryAfter   time.Time `json:"retry_after,omitempty"`
+	ContentGoal  string    `json:"content_goal,omitempty"`
+	ContentAngle string    `json:"content_angle,omitempty"`
+
 	ID                   string              `json:"id"`
 	RoomID               int64               `json:"room_id"`
 	Topic                string              `json:"topic"`
@@ -113,6 +153,11 @@ type Item struct {
 }
 
 type RecentAnswer struct {
+	DecisionID      string    `json:"decision_id,omitempty"`
+	MissionKind     string    `json:"mission_kind,omitempty"`
+	Scene           string    `json:"scene,omitempty"`
+	ContentGoal     string    `json:"content_goal,omitempty"`
+	ContentAngle    string    `json:"content_angle,omitempty"`
 	Topic           string    `json:"topic"`
 	Title           string    `json:"title"`
 	AnsweredAt      time.Time `json:"answered_at"`
@@ -148,6 +193,7 @@ type Summary struct {
 }
 
 type Snapshot struct {
+	PlayedHistory     []RecentAnswer     `json:"played_history"`
 	RoomID            int64              `json:"room_id"`
 	GeneratedAt       time.Time          `json:"generated_at"`
 	Summary           Summary            `json:"summary"`
@@ -170,6 +216,7 @@ type EnqueueResult struct {
 }
 
 type roomState struct {
+	played      []RecentAnswer
 	items       []*Item
 	recent      map[string]*RecentAnswer
 	notes       []Note
@@ -308,9 +355,17 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 			ttl = 10 * time.Minute
 		}
 	}
+	expiresAt := now.Add(ttl)
+	if !input.EventExpiresAt.IsZero() && input.EventExpiresAt.Before(expiresAt) {
+		expiresAt = input.EventExpiresAt
+	}
+	if !expiresAt.After(now) {
+		return EnqueueResult{}
+	}
 	priority := normalizePriority(input)
 	id := fmt.Sprintf("d-%d-%d-%06d", roomID, now.UnixMilli(), q.seq.Add(1))
 	item := &Item{
+		PreparedTaskID: input.PreparedTaskID, PreparedCutMS: input.PreparedCutMS,
 		ID:                   id,
 		RoomID:               roomID,
 		Topic:                input.Topic,
@@ -321,17 +376,22 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		MissionEventCount:    input.MissionEventCount,
 		MissionWindowSeconds: input.MissionWindowSeconds,
 		Priority:             priority,
-		Status:               StatusPending,
-		Sources:              []Source{input.Source},
-		MergedCount:          1,
-		CreatedAt:            now,
-		LastSeenAt:           now,
-		ExpiresAt:            now.Add(ttl),
-		ManualAction:         input.ManualAction,
-		ManualOrigin:         input.ManualOrigin,
-		ExecutionMode:        input.ExecutionMode,
-		FixedText:            input.FixedText,
-		InteractionDecision:  cloneInteractionDecision(input.InteractionDecision),
+		PriorityClass:        input.PriorityClass, Weight: input.Weight, Scene: input.Scene,
+		OrderSource: input.OrderSource, CooldownSeconds: input.CooldownSeconds,
+		RateLimitPerMinute: input.RateLimitPerMinute, MaxRetries: input.MaxRetries,
+		OriginPlanID: input.OriginPlanID, OriginMainline: input.OriginMainline, OriginTrackID: input.OriginTrackID,
+		Schedule:            append(json.RawMessage(nil), input.Schedule...),
+		Status:              StatusPending,
+		Sources:             []Source{input.Source},
+		MergedCount:         1,
+		CreatedAt:           now,
+		LastSeenAt:          now,
+		ExpiresAt:           expiresAt,
+		ManualAction:        input.ManualAction,
+		ManualOrigin:        input.ManualOrigin,
+		ExecutionMode:       input.ExecutionMode,
+		FixedText:           input.FixedText,
+		InteractionDecision: cloneInteractionDecision(input.InteractionDecision),
 	}
 	if input.Source == SourceManual {
 		item.ManualPromoted = true
@@ -389,16 +449,23 @@ func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
 		if item.ID != id {
 			continue
 		}
+		cooldown := q.cooldown
+		if item.Scene != "" {
+			cooldown = time.Duration(item.CooldownSeconds) * time.Second
+		}
 		recent := &RecentAnswer{
+			DecisionID: item.ID, MissionKind: item.MissionKind, Scene: item.Scene,
+			ContentGoal: item.ContentGoal, ContentAngle: item.ContentAngle,
 			Topic:           item.Topic,
 			Title:           item.Title,
 			AnsweredAt:      now,
-			CooldownUntil:   now.Add(q.cooldown),
+			CooldownUntil:   now.Add(cooldown),
 			SampleQuestions: append([]string(nil), item.SampleQuestions...),
 		}
 		state.recent[item.Topic] = recent
+		state.played = append(state.played, cloneRecent(*recent))
 		state.items = append(state.items[:index], state.items[index+1:]...)
-		q.addNoteLocked(state, now, "answered", fmt.Sprintf("“%s”已回答，%d秒内同类问题先累计", item.Title, int(q.cooldown.Seconds())))
+		q.addNoteLocked(state, now, "answered", fmt.Sprintf("“%s”已回答，%d秒内同类问题先累计", item.Title, int(cooldown.Seconds())))
 		copy := cloneRecent(*recent)
 		return &copy, true
 	}
@@ -416,10 +483,31 @@ func (q *Queue) ClaimNext(roomID int64) (*Item, bool) {
 	q.pruneLocked(roomID, state, now)
 	q.sortLocked(state)
 	for _, item := range state.items {
+		if item.Status == StatusClaimed {
+			return nil, false
+		}
+	}
+	for _, item := range state.items {
 		if item.Status != StatusPending {
 			continue
 		}
+		if now.Before(item.RetryAfter) {
+			continue
+		}
+		if item.RateLimitPerMinute > 0 {
+			count := 0
+			for _, r := range state.played {
+				if r.Scene == item.Scene && now.Sub(r.AnsweredAt) < time.Minute {
+					count++
+				}
+			}
+			if count >= item.RateLimitPerMinute {
+				q.addNoteLocked(state, now, "frequency_wait", item.Title+"本分钟回答上限已到，继续排队")
+				continue
+			}
+		}
 		item.Status = StatusClaimed
+		item.Attempts++
 		item.ClaimedAt = timePtr(now)
 		copy := cloneItem(*item)
 		q.addNoteLocked(state, now, "claim", fmt.Sprintf("准备打断：%s", item.Title))
@@ -429,6 +517,16 @@ func (q *Queue) ClaimNext(roomID int64) (*Item, bool) {
 }
 
 func (q *Queue) Release(roomID int64, id string) (*Item, bool) {
+	return q.release(roomID, id, false)
+}
+
+// A rejected cut never submitted audio. Requeue the prepared answer without
+// consuming a generation retry or extending the original admission deadline.
+func (q *Queue) RescheduleCut(roomID int64, id string) (*Item, bool) {
+	return q.release(roomID, id, true)
+}
+
+func (q *Queue) release(roomID int64, id string, cutReschedule bool) (*Item, bool) {
 	id = strings.TrimSpace(id)
 	if roomID <= 0 || id == "" {
 		return nil, false
@@ -443,13 +541,35 @@ func (q *Queue) Release(roomID int64, id string) (*Item, bool) {
 			continue
 		}
 		copy := cloneItem(*item)
-		if !now.Before(item.ExpiresAt) {
+		exhausted := !cutReschedule && item.Scene != "" && item.Attempts >= item.MaxRetries+1
+		if !now.Before(item.ExpiresAt) || exhausted {
 			state.items = append(state.items[:index], state.items[index+1:]...)
-			q.addNoteLocked(state, now, "release_expired", fmt.Sprintf("“%s”执行未完成，但原任务已过期，直接抛出", item.Title))
+			if exhausted {
+				q.addNoteLocked(state, now, "retry_exhausted", fmt.Sprintf("“%s”失败已达到最大重试次数，撤销任务", item.Title))
+			} else {
+				q.addNoteLocked(state, now, "release_expired", fmt.Sprintf("“%s”执行未完成且原任务已过期，撤销任务", item.Title))
+			}
 			return &copy, true
 		}
 		item.Status = StatusPending
 		item.ClaimedAt = nil
+		item.PlaybackTaskID = ""
+		if cutReschedule {
+			if item.Attempts > 0 {
+				item.Attempts--
+			}
+			item.PreparedTaskID, item.PreparedCutMS = "", 0
+			item.AudioPrepared = true
+			item.RetryAfter = now.Add(time.Second)
+			q.addNoteLocked(state, now, "cut_reschedule", fmt.Sprintf("“%s”声音已备好，等待当前主线的新句末切点", item.Title))
+			q.sortLocked(state)
+			copy = cloneItem(*item)
+			return &copy, true
+		}
+		item.AudioPrepared = false
+		if item.Scene != "" {
+			item.RetryAfter = now.Add(5 * time.Second)
+		}
 		q.addNoteLocked(state, now, "release", fmt.Sprintf("“%s”执行未完成，已退回待打断队列", item.Title))
 		q.sortLocked(state)
 		copy = cloneItem(*item)
@@ -588,7 +708,9 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 	manualWaiting := 0
 	agentWaiting := 0
 	for _, item := range state.items {
-		items = append(items, cloneItem(*item))
+		copy := cloneItem(*item)
+		copy.Schedule = nil
+		items = append(items, copy)
 		if hasSource(item.Sources, SourceManual) {
 			manualWaiting++
 		} else {
@@ -633,6 +755,7 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 		GeneratedAt:       now,
 		Summary:           summary,
 		Queue:             items,
+		PlayedHistory:     append([]RecentAnswer(nil), state.played...),
 		RecentlyAnswered:  recent,
 		Notes:             notes,
 		SimulationResults: simulations,
@@ -685,7 +808,9 @@ func (q *Queue) roomLocked(roomID int64) *roomState {
 func (q *Queue) mergeLocked(item *Item, input Candidate, now time.Time) {
 	item.MergedCount++
 	item.LastSeenAt = now
-	item.ExpiresAt = now.Add(q.ttl)
+	if item.Scene == "" {
+		item.ExpiresAt = now.Add(q.ttl)
+	}
 	if input.Summary != "" {
 		item.Summary = input.Summary
 	}
@@ -797,6 +922,15 @@ func (q *Queue) sortLocked(state *roomState) {
 		if leftQuick != rightQuick {
 			return leftQuick
 		}
+		if left.PriorityClass != "" && right.PriorityClass != "" {
+			if left.PriorityClass != right.PriorityClass {
+				return left.PriorityClass < right.PriorityClass
+			}
+			l, r := left.Weight+minInt(int(q.now().Sub(left.CreatedAt)/(15*time.Second)), 20), right.Weight+minInt(int(q.now().Sub(right.CreatedAt)/(15*time.Second)), 20)
+			if l != r {
+				return l > r
+			}
+		}
 		if left.Priority != right.Priority {
 			return left.Priority > right.Priority
 		}
@@ -830,6 +964,16 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 			kept = append(kept, item)
 		}
 		state.items = kept
+	}
+	keptPlayed := state.played[:0]
+	for _, r := range state.played {
+		if now.Sub(r.AnsweredAt) < 10*time.Minute {
+			keptPlayed = append(keptPlayed, r)
+		}
+	}
+	state.played = keptPlayed
+	if len(state.played) > 200 {
+		state.played = state.played[len(state.played)-200:]
 	}
 	for topic, recent := range state.recent {
 		if now.Before(recent.CooldownUntil) {
@@ -941,6 +1085,7 @@ func appendUniqueInt64(values *[]int64, value int64, limit int) {
 }
 
 func cloneItem(item Item) Item {
+	item.Schedule = append(json.RawMessage(nil), item.Schedule...)
 	item.Sources = append([]Source(nil), item.Sources...)
 	item.SampleQuestions = append([]string(nil), item.SampleQuestions...)
 	item.LinkedEventIDs = append([]int64(nil), item.LinkedEventIDs...)

@@ -15,7 +15,7 @@ var ErrLiveAgentPlanBenefitVersionConflict = errors.New("live agent plan benefit
 
 const liveAgentPlanBenefitSelect = `
 	SELECT id, tenant_id, plan_id, benefit_key, link_key, product_name, activity_price, gift,
-	       activity_text, starts_at, ends_at, source_quote, source_review_bucket, source_review_reason,
+	       activity_text, validity_mode, starts_at, ends_at, source_quote, source_review_bucket, source_review_reason,
 	       source_type, source_ref, status, version_no, created_by_user_id, updated_by_user_id,
 	       created_at, updated_at
 	FROM live_agent_plan_benefits
@@ -33,7 +33,7 @@ func scanLiveAgentPlanBenefit(row interface {
 	)
 	err := row.Scan(
 		&item.ID, &item.TenantID, &item.PlanID, &item.Key, &item.LinkKey, &item.ProductName,
-		&item.ActivityPrice, &item.Gift, &item.Activity, &startsAt, &endsAt, &item.SourceQuote,
+		&item.ActivityPrice, &item.Gift, &item.Activity, &item.ValidityMode, &startsAt, &endsAt, &item.SourceQuote,
 		&item.SourceReviewBucket, &item.SourceReviewReason, &item.SourceType, &item.SourceRef,
 		&item.Status, &item.VersionNo, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt,
 	)
@@ -78,14 +78,20 @@ func (s *Store) ListLiveAgentPlanBenefits(ctx context.Context, tenantID, planID 
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return orderCopiedCards(items, "benefit", func(item model.LiveAgentPlanBenefit) int64 { return item.ID }, func(item model.LiveAgentPlanBenefit) string { return item.SourceRef }), nil
 }
 
 func (s *Store) ListActiveLiveAgentPlanBenefits(ctx context.Context, tenantID, planID int64, now time.Time) ([]model.LiveAgentPlanBenefit, error) {
 	rows, err := s.db.QueryContext(ctx, liveAgentPlanBenefitSelect+`
 		WHERE tenant_id=? AND plan_id=? AND status='active'
-		  AND (starts_at IS NULL OR starts_at<=?)
-		  AND (ends_at IS NULL OR ends_at>=?)
+		  AND (validity_mode='permanent' OR (
+		    validity_mode='scheduled'
+		    AND (starts_at IS NULL OR starts_at<=?)
+		    AND (ends_at IS NULL OR ends_at>=?)
+		  ))
 		ORDER BY updated_at DESC, id DESC
 	`, tenantID, planID, now, now)
 	if err != nil {
@@ -139,7 +145,21 @@ func normalizeBenefitKey(candidate model.LiveAgentPlanBenefitCandidate) string {
 	return linkKey + ":current-benefit"
 }
 
-func benefitStatusForWindow(startsAt, endsAt *time.Time, now time.Time) string {
+func normalizeBenefitValidityMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "scheduled":
+		return "scheduled", nil
+	case "permanent":
+		return "permanent", nil
+	default:
+		return "", errors.New("invalid benefit validity mode")
+	}
+}
+
+func benefitStatusForWindow(validityMode string, startsAt, endsAt *time.Time, now time.Time) string {
+	if validityMode == "permanent" {
+		return "active"
+	}
 	if startsAt == nil || endsAt == nil {
 		return "draft"
 	}
@@ -167,6 +187,7 @@ func sameBenefitContent(existing model.LiveAgentPlanBenefit, candidate model.Liv
 		strings.TrimSpace(existing.ActivityPrice) == strings.TrimSpace(candidate.ActivityPrice) &&
 		strings.TrimSpace(existing.Gift) == strings.TrimSpace(candidate.Gift) &&
 		strings.TrimSpace(existing.Activity) == strings.TrimSpace(candidate.Activity) &&
+		strings.TrimSpace(existing.ValidityMode) == strings.TrimSpace(candidate.ValidityMode) &&
 		sameTime(existing.StartsAt, startsAt) && sameTime(existing.EndsAt, endsAt)
 }
 
@@ -190,8 +211,13 @@ func (s *Store) AdoptLiveAgentPlanBenefit(
 	if err != nil {
 		return result, err
 	}
+	validityMode, err := normalizeBenefitValidityMode(candidate.ValidityMode)
+	if err != nil {
+		return result, err
+	}
+	candidate.ValidityMode = validityMode
 	key := normalizeBenefitKey(candidate)
-	status := benefitStatusForWindow(startsAt, endsAt, time.Now())
+	status := benefitStatusForWindow(validityMode, startsAt, endsAt, time.Now())
 	sourceQuote := strings.Join(candidate.SourceQuotes, "\n")
 
 	existing, err := s.getLiveAgentPlanBenefitByKey(ctx, tenantID, planID, key)
@@ -218,13 +244,13 @@ func (s *Store) AdoptLiveAgentPlanBenefit(
 	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_benefits (
 			tenant_id, plan_id, benefit_key, link_key, product_name, activity_price, gift,
-			activity_text, starts_at, ends_at, source_quote, source_review_bucket,
+			activity_text, validity_mode, starts_at, ends_at, source_quote, source_review_bucket,
 			source_review_reason, source_type, source_ref, status, version_no,
 			created_by_user_id, updated_by_user_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?, 1, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?, 1, ?, ?)
 	`, tenantID, planID, key, strings.TrimSpace(candidate.LinkKey), strings.TrimSpace(candidate.ProductName),
 		strings.TrimSpace(candidate.ActivityPrice), strings.TrimSpace(candidate.Gift), strings.TrimSpace(candidate.Activity),
-		startsAt, endsAt, sourceQuote, strings.TrimSpace(candidate.ReviewBucket),
+		validityMode, startsAt, endsAt, sourceQuote, strings.TrimSpace(candidate.ReviewBucket),
 		strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), status, actorUserID, actorUserID)
 	if err != nil {
 		return result, err
@@ -236,12 +262,12 @@ func (s *Store) AdoptLiveAgentPlanBenefit(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_benefit_revisions (
 			tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
-			product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+			product_name, activity_price, gift, activity_text, validity_mode, starts_at, ends_at, status,
 			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?)
+		) VALUES (?, ?, ?, 1, 'adopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analysis_adoption', ?, ?)
 	`, tenantID, planID, benefitID, key, strings.TrimSpace(candidate.LinkKey), strings.TrimSpace(candidate.ProductName),
 		strings.TrimSpace(candidate.ActivityPrice), strings.TrimSpace(candidate.Gift), strings.TrimSpace(candidate.Activity),
-		startsAt, endsAt, status, sourceQuote, strings.TrimSpace(candidate.ReviewBucket),
+		validityMode, startsAt, endsAt, status, sourceQuote, strings.TrimSpace(candidate.ReviewBucket),
 		strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), actorUserID)
 	if err != nil {
 		return result, err
@@ -256,7 +282,11 @@ func (s *Store) AdoptLiveAgentPlanBenefit(
 	}
 	if saved.Status == "active" {
 		result.Status = "adopted"
-		result.Message = "已采纳并在有效期内生效"
+		if saved.ValidityMode == "permanent" {
+			result.Message = "已采纳并设为长期有效"
+		} else {
+			result.Message = "已采纳并在有效期内生效"
+		}
 	} else {
 		result.Status = "drafted"
 		if saved.Status == "expired" {
@@ -300,6 +330,14 @@ func (s *Store) UpdateLiveAgentPlanBenefit(
 	if err != nil {
 		return model.LiveAgentPlanBenefit{}, err
 	}
+	validityInput := strings.TrimSpace(input.ValidityMode)
+	if validityInput == "" {
+		validityInput = current.ValidityMode
+	}
+	validityMode, err := normalizeBenefitValidityMode(validityInput)
+	if err != nil {
+		return model.LiveAgentPlanBenefit{}, err
+	}
 	key := strings.TrimSpace(input.Key)
 	if key == "" {
 		key = current.Key
@@ -315,20 +353,21 @@ func (s *Store) UpdateLiveAgentPlanBenefit(
 		ActivityPrice: strings.TrimSpace(input.ActivityPrice),
 		Gift:          strings.TrimSpace(input.Gift),
 		Activity:      strings.TrimSpace(input.Activity),
+		ValidityMode:  validityMode,
 	}
 	if sameBenefitContent(current, candidate, startsAt, endsAt) {
 		return current, nil
 	}
 
-	status := benefitStatusForWindow(startsAt, endsAt, time.Now())
+	status := benefitStatusForWindow(validityMode, startsAt, endsAt, time.Now())
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_benefits
-		SET link_key=?, product_name=?, activity_price=?, gift=?, activity_text=?, starts_at=?, ends_at=?,
+		SET link_key=?, product_name=?, activity_price=?, gift=?, activity_text=?, validity_mode=?, starts_at=?, ends_at=?,
 		    status=?, source_type='system_agent_edit', source_ref='', version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status<>'disabled'
 	`, candidate.LinkKey, candidate.ProductName, candidate.ActivityPrice, candidate.Gift, candidate.Activity,
-		startsAt, endsAt, status, nextVersion, actorUserID, benefitID, tenantID, planID)
+		validityMode, startsAt, endsAt, status, nextVersion, actorUserID, benefitID, tenantID, planID)
 	if err != nil {
 		return model.LiveAgentPlanBenefit{}, err
 	}
@@ -336,11 +375,11 @@ func (s *Store) UpdateLiveAgentPlanBenefit(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_benefit_revisions (
 			tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
-			product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+			product_name, activity_price, gift, activity_text, validity_mode, starts_at, ends_at, status,
 			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system_agent_edit', '', ?)
+		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system_agent_edit', '', ?)
 	`, tenantID, planID, benefitID, nextVersion, current.Key, candidate.LinkKey, candidate.ProductName,
-		candidate.ActivityPrice, candidate.Gift, candidate.Activity, startsAt, endsAt, status,
+		candidate.ActivityPrice, candidate.Gift, candidate.Activity, validityMode, startsAt, endsAt, status,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
 		return model.LiveAgentPlanBenefit{}, err
@@ -393,11 +432,11 @@ func (s *Store) DeleteLiveAgentPlanBenefitWithExpectedVersion(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_benefit_revisions (
 			tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
-			product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+			product_name, activity_price, gift, activity_text, validity_mode, starts_at, ends_at, status,
 			source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_delete', '', ?)
+		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_delete', '', ?)
 	`, tenantID, planID, benefitID, nextVersion, current.Key, current.LinkKey, current.ProductName,
-		current.ActivityPrice, current.Gift, current.Activity, current.StartsAt, current.EndsAt,
+		current.ActivityPrice, current.Gift, current.Activity, current.ValidityMode, current.StartsAt, current.EndsAt,
 		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
 	if err != nil {
 		return err
@@ -455,11 +494,11 @@ func disableLiveAgentPlanBenefitsForLink(
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO live_agent_plan_benefit_revisions (
 				tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
-				product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+				product_name, activity_price, gift, activity_text, validity_mode, starts_at, ends_at, status,
 				source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-			) VALUES (?, ?, ?, ?, 'cascade_delete', ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_parent_delete', '', ?)
+			) VALUES (?, ?, ?, ?, 'cascade_delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, 'system_agent_parent_delete', '', ?)
 		`, tenantID, planID, current.ID, nextVersion, current.Key, current.LinkKey, current.ProductName,
-			current.ActivityPrice, current.Gift, current.Activity, current.StartsAt, current.EndsAt,
+			current.ActivityPrice, current.Gift, current.Activity, current.ValidityMode, current.StartsAt, current.EndsAt,
 			current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID); err != nil {
 			return err
 		}
@@ -515,11 +554,11 @@ func relinkLiveAgentPlanBenefitsForLink(
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO live_agent_plan_benefit_revisions (
 				tenant_id, plan_id, benefit_id, version_no, action, benefit_key, link_key,
-				product_name, activity_price, gift, activity_text, starts_at, ends_at, status,
+				product_name, activity_price, gift, activity_text, validity_mode, starts_at, ends_at, status,
 				source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-			) VALUES (?, ?, ?, ?, 'cascade_relink', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system_agent_parent_edit', '', ?)
+			) VALUES (?, ?, ?, ?, 'cascade_relink', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system_agent_parent_edit', '', ?)
 		`, tenantID, planID, current.ID, nextVersion, current.Key, newLinkKey, current.ProductName,
-			current.ActivityPrice, current.Gift, current.Activity, current.StartsAt, current.EndsAt, current.Status,
+			current.ActivityPrice, current.Gift, current.Activity, current.ValidityMode, current.StartsAt, current.EndsAt, current.Status,
 			current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID); err != nil {
 			return err
 		}

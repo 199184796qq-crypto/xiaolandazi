@@ -205,7 +205,7 @@ func (s *Server) refreshContentVariant(ctx context.Context, tenantID, actorID, p
 	if err := stillAllowed(); err != nil {
 		return original, err
 	}
-	voiceID, modelName, err := s.resolveFormalVoice(ctx, tenantID, fullShowVariantVoiceInput{Source: voice.Source, VoiceID: voice.VoiceID, ProfileID: voice.ProfileID})
+	voiceID, modelName, err := s.resolveFormalVoice(ctx, tenantID, fullShowVariantVoiceInput{Source: voice.Source, VoiceID: voice.VoiceID, ProfileID: voice.ProfileID, BindingID: voice.BindingID, Model: voice.Model})
 	if err != nil {
 		return original, err
 	}

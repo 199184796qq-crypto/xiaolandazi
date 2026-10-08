@@ -20,6 +20,12 @@ func (s *Server) registerLiveAnchorStyleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/live-anchor-styles", s.liveAnchorStyleCreate)
 	mux.HandleFunc("GET /api/v1/live-anchor-styles/{styleID}", s.liveAnchorStyleGet)
 	mux.HandleFunc("PUT /api/v1/live-anchor-styles/{styleID}", s.liveAnchorStyleUpdate)
+	mux.HandleFunc("PATCH /api/v1/live-anchor-styles/{styleID}/avatar", s.liveAnchorStyleAvatar)
+	mux.HandleFunc("PATCH /api/v1/live-anchor-styles/{styleID}/description", s.liveAnchorDescription)
+	mux.HandleFunc("GET /api/v1/live-anchor-styles/{styleID}/analysis-versions", s.liveAnchorAnalysisVersions)
+	mux.HandleFunc("POST /api/v1/live-anchor-styles/{styleID}/analysis-versions", s.liveAnchorAnalysisEdit)
+	mux.HandleFunc("POST /api/v1/live-anchor-styles/{styleID}/analysis-versions/{versionID}/use", s.liveAnchorAnalysisUse)
+	mux.HandleFunc("POST /api/v1/live-anchor-styles/{styleID}/analyze-multiple", s.liveAnchorAnalysisFuse)
 	mux.HandleFunc("DELETE /api/v1/live-anchor-styles/{styleID}", s.liveAnchorStyleDelete)
 	mux.HandleFunc("GET /api/v1/live-anchor-styles/{styleID}/samples", s.liveAnchorStyleSamples)
 	mux.HandleFunc("POST /api/v1/live-anchor-styles/{styleID}/samples", s.liveAnchorStyleSamples)
@@ -124,6 +130,11 @@ func (s *Server) liveAnchorStyleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "主播风格格式错误")
 		return
 	}
+	if input.Profile != nil && input.Profile.Delivery != nil {
+		input.Profile.Delivery.AddressingOverride = stylecontract.NormalizeAddressingOverride(input.Profile.Delivery.AddressingOverride)
+		input.Profile.Delivery.MetaPromptMD = stylecontract.RenderMetaPrompt(*input.Profile)
+		input.Profile.Delivery.Rulebook = stylecontract.Render(*input.Profile)
+	}
 	item, err := s.store.UpdateLiveAnchorStyle(r.Context(), tenantID, styleID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAnchorStyleNotFound) {
 		writeError(w, http.StatusNotFound, "主播风格不存在")
@@ -184,15 +195,15 @@ func (s *Server) liveAnchorStyleSamples(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "主播样本格式错误")
 		return
 	}
-	if utf8.RuneCountInString(input.RawText) > 30000 {
-		writeError(w, http.StatusBadRequest, "单份样本最多3万字，请拆分后再导入")
-		return
-	}
+	var rawCut, readableCut bool
+	input.RawText, rawCut = model.TruncateAnchorSample(input.RawText)
+	input.ReadableText, readableCut = model.TruncateAnchorSample(input.ReadableText)
 	item, err := s.store.CreateLiveAnchorStyleSample(r.Context(), tenantID, styleID, actor.UserID, input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	item.Truncated = rawCut || readableCut
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -299,17 +310,29 @@ func (s *Server) liveAnchorStyleSampleAnalyze(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "主播样本不存在")
 		return
 	}
-	_, _ = s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, sample.Analysis, "", "", 0, "analyzing", 10, "正在读取样本，提取主播表达习惯", "")
-	ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
-	defer cancel()
-	profile, response, err := analyzeLiveAgentAnchorStyle(ctx, sample.ReadableText)
+	state, err := s.store.LiveAnchorAnalysisState(r.Context(), tenantID, styleID)
 	if err != nil {
-		_, _ = s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, sample.Analysis, response.Provider, response.Model, response.LatencyMS, "failed", 100, "分析失败", "主播风格分析失败，请检查样本后重试")
-		writeError(w, http.StatusBadGateway, "主播风格分析失败，请稍后重试")
+		writeError(w, 500, "读取综合风格版本失败")
 		return
 	}
-	qc, qcResponse, _ := s.evaluateAnchorStyleAnalysis(ctx, sample.ReadableText, profile)
-	updated, err := s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, profile, response.Provider, response.Model, response.LatencyMS+qcResponse.LatencyMS, "analyzed", 100, "分析完成", "")
+	w, r = anchorAnalysisStream(w, r)
+	reportAnchorAnalysis(r.Context(), 5, "正在读取这份主播话术")
+	_, _ = s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, sample.Analysis, "", "", 0, "analyzing", 10, "正在读取样本，提取主播表达习惯", "")
+	ctx, cancel := context.WithTimeout(r.Context(), 240*time.Second)
+	defer cancel()
+	source, _ := model.TruncateAnchorSample(sample.ReadableText)
+	profile, response, err := s.compileProductionAnchorStyle(ctx, tenantID, styleID, source)
+	if err != nil {
+		_, _ = s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, sample.Analysis, response.Provider, response.Model, response.LatencyMS, "failed", 100, "分析失败", "主播风格分析失败，请检查样本后重试")
+		writeError(w, http.StatusBadGateway, "主播风格调教失败："+err.Error())
+		return
+	}
+	currentSample, sampleErr := s.store.GetLiveAnchorStyleSample(ctx, tenantID, styleID, sampleID)
+	if sampleErr != nil || currentSample.ReadableText != sample.ReadableText {
+		writeError(w, http.StatusConflict, "样本已变化，本次返回已记录但未覆盖新样本")
+		return
+	}
+	updated, err := s.store.UpdateLiveAnchorStyleSampleAnalysis(r.Context(), tenantID, styleID, sampleID, profile, response.Provider, response.Model, response.LatencyMS, "analyzed", 100, "元提示词与程序校对评分基准已保存", "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "保存主播样本分析失败")
 		return
@@ -319,21 +342,32 @@ func (s *Server) liveAnchorStyleSampleAnalyze(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "主播风格不存在")
 		return
 	}
-	samples, _ := s.store.ListLiveAnchorStyleSamples(r.Context(), tenantID, styleID)
-	merged := style.Profile
-	count := 0
-	for _, item := range samples {
-		if item.AnalysisStatus == "analyzed" {
-			count++
-			merged = mergeLiveAnchorStyleProfiles(merged, item.Analysis, item.ReadableText, count)
-		}
-	}
-	style, err = s.store.SaveLiveAnchorStyleProfile(r.Context(), tenantID, styleID, actor.UserID, merged)
+	samples, err := s.store.ListLiveAnchorStyleSamples(ctx, tenantID, styleID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "保存主播风格编译结果失败")
+		writeError(w, 500, "读取已分析样本失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sample": updated, "style": style, "analysis": profile, "style_qc": qc, "provider": response.Provider, "model": response.Model, "latency_ms": response.LatencyMS + qcResponse.LatencyMS})
+	overallUpdated := false
+	if model.CanAutoPromoteAnchorSample(samples, sampleID) {
+		_, err = s.store.SaveLiveAnchorAnalysisVersion(ctx, tenantID, styleID, actor.UserID, state.ActiveVersionID, "single_sample", []int64{sampleID}, source, profile)
+		if err != nil && !errors.Is(err, appdb.ErrAnchorSinglePromotionSkipped) {
+			writeAnchorAnalysisError(w, err)
+			return
+		}
+		overallUpdated = err == nil
+		style, err = s.store.GetLiveAnchorStyle(ctx, tenantID, styleID)
+		if err != nil {
+			writeError(w, 500, "读取保存后的风格失败")
+			return
+		}
+	}
+	message := "单样本分析已保存，总风格未改变；勾选多样本分析后才能更新总风格"
+	if overallUpdated {
+		message = "唯一样本分析已保存，并已进入总风格新版本"
+	}
+	reportAnchorAnalysis(ctx, 100, message)
+	updated.Provider, updated.Model = "", ""
+	writeJSON(w, http.StatusOK, map[string]any{"sample": updated, "style": style, "analysis": profile, "latency_ms": response.LatencyMS, "overall_updated": overallUpdated, "notice": message})
 }
 
 func (s *Server) liveAnchorStyleTrainings(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/anchorvoicecache"
 	"livecompanion/management/internal/audit"
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/config"
@@ -251,6 +253,13 @@ func main() {
 	go api.RunWechatRefundReconciliation(appCtx)
 	api.SetXiaozhiInternalToken(cfg.XiaozhiInternalToken)
 	api.SetExecutionRealm(cfg.RuntimeExecutionRealm)
+	cycleRedis := redis.NewClient(anchorcycle.RedisOptions(net.JoinHostPort(cfg.RedisHost, cfg.RedisPort), cfg.RedisPassword, cfg.RedisDB, cfg.AnchorCycleRedisTimeoutMS))
+	defer cycleRedis.Close()
+	api.SetAnchorCycleRepository(anchorcycle.NewRedis(cycleRedis, cfg.RuntimeExecutionRealm))
+	api.SetAnchorProducerContext(appCtx)
+	go api.RunLiveAnchorOwnerWatch(appCtx)
+	api.SetAnchorVoiceCache(anchorvoicecache.New(cycleRedis, cfg.RuntimeExecutionRealm))
+	go api.RunAnchorVoiceCacheCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
 	go api.RunCoreStatusWatch(appCtx)
 	go api.RunRoomDeletionCleanup(appCtx)
@@ -264,6 +273,7 @@ func main() {
 	)
 	runtimeReconciler.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	runtimeReconciler.SetAuditRecorder(auditStore)
+	runtimeReconciler.SetDeviceStopCleanup(api.StopHardwareRoomAudio)
 	go runtimeReconciler.Run(appCtx)
 	agentGateway := agentgateway.NewFromEnv().WithSpeechModels(store)
 	semanticEmbedder := semantic.NewFromEnv()

@@ -175,9 +175,24 @@ func BuildFixedPlans(input Input) []model.LiveSpeechExpansionPlan {
 			if index >= stepCount-2 {
 				interactionOpportunity = false
 			}
+			mainlinePhase := "body"
+			bodyFunction := map[string]string{
+				"fact_direct": "product", "fact_unfold": "product", "fact_restate": "trust",
+				"benefit_link": "price", "recap_confirm": "assurance", "cycle_bridge": "transition",
+			}[currentStage.key]
+			reentryLevel, closingType := "", ""
+			if index == 0 {
+				mainlinePhase, reentryLevel = "opening", "light"
+			}
+			if index == stepCount-1 {
+				mainlinePhase, closingType = "closing", "round"
+			}
+			energyLevel := []string{"medium", "low", "medium", "high"}[index%4]
 			plan.Steps = append(plan.Steps, model.LiveSpeechExpansionStep{
 				Index: index + 1, StartSecond: start, EndSecond: end,
 				CycleIndex: index/len(cycleStages) + 1, Stage: currentStage.key, Goal: currentStage.goal,
+				MainlinePhase: mainlinePhase, BodyFunction: bodyFunction, ReentryLevel: reentryLevel,
+				ClosingType: closingType, EnergyLevel: energyLevel,
 				TargetChars: chars, ExpressionMoves: []string{expressionMoves[moveIndex], expressionMoves[secondMove]},
 				// One primary fact per time unit. Benefits and links may support it,
 				// but a renderer must not receive two co-equal facts and turn every

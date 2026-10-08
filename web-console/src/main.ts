@@ -4,6 +4,13 @@ import { router } from './router'
 import './style.css'
 import './uiSettings'
 import { unlockSharedAudioContext } from './audioRuntime'
+import { installBrowserTitle } from './browserTitle'
+import { installUnhandledErrorFeedback } from './unhandledErrorFeedback'
+
+const stopBrowserTitle = installBrowserTitle()
+const stopErrorFeedback = installUnhandledErrorFeedback()
+if (import.meta.hot) import.meta.hot.dispose(stopBrowserTitle)
+if (import.meta.hot) import.meta.hot.dispose(stopErrorFeedback)
 
 function unlockBrowserAudioFromFirstGesture() {
   void unlockSharedAudioContext().catch(() => undefined)
@@ -28,4 +35,9 @@ if (import.meta.env.DEV) {
     }
   })
 }
-createApp(App).use(router).mount('#app')
+const app = createApp(App)
+app.config.errorHandler = (error) => {
+  console.error(error)
+  window.dispatchEvent(new ErrorEvent('error', { message: 'component error' }))
+}
+app.use(router).mount('#app')

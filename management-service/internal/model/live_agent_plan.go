@@ -126,6 +126,7 @@ type LiveAgentPlanBenefitCandidate struct {
 	ActivityPrice string   `json:"activity_price,omitempty"`
 	Gift          string   `json:"gift,omitempty"`
 	Activity      string   `json:"activity,omitempty"`
+	ValidityMode  string   `json:"validity_mode,omitempty"`
 	StartsAt      string   `json:"starts_at,omitempty"`
 	EndsAt        string   `json:"ends_at,omitempty"`
 	ReviewBucket  string   `json:"review_bucket,omitempty"`
@@ -283,25 +284,44 @@ type LiveAgentPlanAnchorStyleProfile struct {
 
 // Versioned, vendor-neutral output contract consumed by every generation path.
 type LiveAnchorDeliverySpec struct {
-	Version              string                   `json:"version"`
-	Instructions         []string                 `json:"instructions"`
-	Habits               []LiveAnchorLiteralHabit `json:"literal_habits"`
-	Rulebook             string                   `json:"rulebook,omitempty"`
-	SampleChars          int                      `json:"sample_chars"`
-	SentenceCount        int                      `json:"sentence_count"`
-	AverageSentenceChars int                      `json:"average_sentence_chars"`
-	SampleConfidence     string                   `json:"sample_confidence,omitempty"`
-	SourceSHA256         string                   `json:"source_sha256,omitempty"`
+	Version               string                        `json:"version"`
+	Instructions          []string                      `json:"instructions"`
+	Habits                []LiveAnchorLiteralHabit      `json:"literal_habits"`
+	AddressingOverride    *LiveAnchorAddressingOverride `json:"addressing_override,omitempty"`
+	Rulebook              string                        `json:"rulebook,omitempty"`
+	MetaPromptMD          string                        `json:"meta_prompt_md,omitempty"`
+	SampleChars           int                           `json:"sample_chars"`
+	SentenceCount         int                           `json:"sentence_count"`
+	AverageSentenceChars  int                           `json:"average_sentence_chars"`
+	SampleConfidence      string                        `json:"sample_confidence,omitempty"`
+	SourceSHA256          string                        `json:"source_sha256,omitempty"`
+	ScoringBaselineJSON   string                        `json:"scoring_baseline_json,omitempty"`
+	MonitoringJSON        string                        `json:"monitoring_json,omitempty"`
+	AnalysisPromptSource  string                        `json:"analysis_prompt_source,omitempty"`
+	ScorecardPromptSource string                        `json:"scorecard_prompt_source,omitempty"`
+}
+
+// LiveAnchorAddressingOverride is a generation-only layer on top of the
+// addresses learned from the anchor sample. It is deliberately separate from
+// live-room interaction addressing: mainline copy uses this profile, while
+// realtime replies merely inherit the resulting anchor voice unless a future
+// product decision introduces a dedicated interaction override.
+type LiveAnchorAddressingOverride struct {
+	AudienceMode  string   `json:"audience_mode,omitempty"` // inherit, append, replace
+	AudienceTerms []string `json:"audience_terms,omitempty"`
+	SelfMode      string   `json:"self_mode,omitempty"` // inherit, append, replace
+	SelfTerms     []string `json:"self_terms,omitempty"`
 }
 
 type LiveAnchorLiteralHabit struct {
-	Kind      string `json:"kind"`
-	Text      string `json:"text"`
-	Position  string `json:"position"`
-	When      string `json:"when"`
-	Avoid     string `json:"avoid,omitempty"`
-	Count     int    `json:"count"`
-	Stability string `json:"stability,omitempty"` // stable, candidate, noise
+	Kind      string   `json:"kind"`
+	Text      string   `json:"text"`
+	Position  string   `json:"position"`
+	When      string   `json:"when"`
+	Avoid     string   `json:"avoid,omitempty"`
+	Count     int      `json:"count"`
+	Stability string   `json:"stability,omitempty"` // stable, candidate, noise
+	Slots     []string `json:"slots,omitempty"`
 }
 
 const LiveAnchorStyleOverlayVersion = "anchor-style-overlay/v1"
@@ -453,6 +473,7 @@ type LiveAgentPlanBenefit struct {
 	ActivityPrice      string     `json:"activity_price,omitempty"`
 	Gift               string     `json:"gift,omitempty"`
 	Activity           string     `json:"activity,omitempty"`
+	ValidityMode       string     `json:"validity_mode"`
 	StartsAt           *time.Time `json:"starts_at,omitempty"`
 	EndsAt             *time.Time `json:"ends_at,omitempty"`
 	SourceQuote        string     `json:"source_quote,omitempty"`
@@ -483,6 +504,7 @@ type UpdateLiveAgentPlanBenefitInput struct {
 	ActivityPrice     string `json:"activity_price,omitempty"`
 	Gift              string `json:"gift,omitempty"`
 	Activity          string `json:"activity,omitempty"`
+	ValidityMode      string `json:"validity_mode,omitempty"`
 	StartsAt          string `json:"starts_at,omitempty"`
 	EndsAt            string `json:"ends_at,omitempty"`
 }
@@ -577,6 +599,7 @@ type LiveAgentFullShowPreviewInput struct {
 	VariantCount        int                                 `json:"variant_count"`
 	StyleMatchIntensity *int                                `json:"style_match_intensity,omitempty"`
 	ExpansionFreedom    *int                                `json:"expansion_freedom,omitempty"`
+	ConversionIntensity *int                                `json:"conversion_intensity,omitempty"`
 	UseAnchorStyle      bool                                `json:"use_anchor_style"`
 	UseDynamicFacts     bool                                `json:"use_dynamic_facts"`
 	GenerateTTSHints    bool                                `json:"generate_tts_hints"`
@@ -674,6 +697,13 @@ type LiveSpeechExpansionStep struct {
 	CycleIndex             int                          `json:"cycle_index"`
 	Stage                  string                       `json:"stage"`
 	Goal                   string                       `json:"goal"`
+	MainlinePhase          string                       `json:"mainline_phase,omitempty"`
+	BodyFunction           string                       `json:"body_function,omitempty"`
+	ReentryLevel           string                       `json:"reentry_level,omitempty"`
+	ClosingType            string                       `json:"closing_type,omitempty"`
+	CTAType                string                       `json:"cta_type,omitempty"`
+	CTAIntensity           string                       `json:"cta_intensity,omitempty"`
+	EnergyLevel            string                       `json:"energy_level,omitempty"`
 	ContentRole            string                       `json:"content_role,omitempty"`
 	PrimaryFactID          string                       `json:"primary_fact_id,omitempty"`
 	SupportFactIDs         []string                     `json:"support_fact_ids,omitempty"`
@@ -712,6 +742,7 @@ type LiveAgentFullShowGenerationContext struct {
 	RhythmNodes          []LiveAgentPlanRhythmNode                 `json:"rhythm_nodes"`
 	AnchorStyle          LiveAgentPlanAnchorStyleProfile           `json:"anchor_style"`
 	StyleMatchIntensity  int                                       `json:"style_match_intensity"`
+	ConversionIntensity  int                                       `json:"conversion_intensity,omitempty"`
 	StyleOverlayPrompt   string                                    `json:"style_overlay_prompt,omitempty"`
 	StyleOverlayCount    int                                       `json:"style_overlay_count"`
 	FactExpansion        LiveFactExpansionPolicy                   `json:"fact_expansion"`

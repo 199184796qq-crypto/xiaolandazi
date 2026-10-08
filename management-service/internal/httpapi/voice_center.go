@@ -25,7 +25,7 @@ import (
 
 const (
 	qwenCloneTTSModel      = "qwen-audio-3.0-tts-plus"
-	maxCloneAudioBytes     = 20 << 20
+	maxCloneAudioBytes     = 10 << 20
 	maxGeneratedVoiceBytes = 32 << 20
 	voicePreviewText       = "你好，我是你的主播，欢迎为你效劳。"
 )
@@ -127,14 +127,14 @@ func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	assetID, durationMS, err := s.archiveGeneratedVoice(
-		r.Context(), tenantID, actor.UserID, audioURL, voice.ID, voice.Model, "official",
+		r.Context(), tenantID, actor.UserID, audioURL, voice.ID, voice.Model, "official", supportRoomForMedia(r),
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"audio_url":      audioURL,
+		"audio_url":      liveMediaAssetContentURL(assetID),
 		"audio_asset_id": assetID,
 		"duration_ms":    durationMS,
 	})
@@ -253,7 +253,7 @@ func (s *Server) liveCloneVoiceProfile(w http.ResponseWriter, r *http.Request) {
 		sampleDurationMS, _ = generatedVoiceWAVDurationMS(raw)
 	} else {
 		if asset.SizeBytes > maxCloneAudioBytes {
-			writeError(w, http.StatusBadRequest, "普通声音样本不能超过 20MB；自定义音稿会自动截取短样本")
+			writeError(w, http.StatusBadRequest, "普通声音样本不能超过 10MB；自定义音稿会自动截取短样本")
 			return
 		}
 		tempPath, tempErr := copyAudioReaderToTemp(reader, filepath.Ext(asset.OriginalName))
@@ -271,17 +271,12 @@ func (s *Server) liveCloneVoiceProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	dataURI := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(raw)
 	preferredName := fmt.Sprintf("v%d%d", actor.UserID%10000, time.Now().Unix()%100000000)
-	tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, actor.UserID, time.Now().UnixNano())
-	if err := assetStore.Put(r.Context(), tempObjectKey, bytes.NewReader(raw), mimeType); err != nil {
-		writeError(w, http.StatusBadGateway, "上传声音复刻临时样本失败")
+	sampleURL, cleanup, err := uploadCloneSample(r.Context(), s.assetStorage, tenantID, actor.UserID, raw, mimeType)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	defer assetStore.Delete(r.Context(), tempObjectKey)
-	sampleURL, err := assetStore.SignedURL(r.Context(), tempObjectKey, 15*time.Minute)
-	if err != nil || strings.TrimSpace(sampleURL) == "" {
-		writeError(w, http.StatusBadGateway, "生成声音复刻公网样本地址失败")
-		return
-	}
+	defer cleanup()
 
 	voiceID, err := cloneVoiceProfile(r.Context(), preferredName, sampleURL, dataURI, modelName)
 	if err != nil {
@@ -445,7 +440,18 @@ func (s *Server) liveVoiceModelBindingPreview(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadGateway, "声音试听生成失败："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audio_url": result.AudioURL})
+	assetID, durationMS, err := s.archiveGeneratedVoice(
+		r.Context(), tenantID, actor.UserID, result.AudioURL, binding.VoiceID, binding.Model, "binding", supportRoomForMedia(r),
+	)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"audio_url":      liveMediaAssetContentURL(assetID),
+		"audio_asset_id": assetID,
+		"duration_ms":    durationMS,
+	})
 }
 
 func (s *Server) cloneVoiceModelBindingForProfile(
@@ -480,27 +486,26 @@ func (s *Server) cloneVoiceModelBindingForProfile(
 		mimeType = "audio/wav"
 	} else {
 		if asset.SizeBytes > maxCloneAudioBytes {
-			return model.VoiceModelBinding{}, errors.New("普通声音样本不能超过 20MB")
+			return model.VoiceModelBinding{}, errors.New("普通声音样本不能超过 10MB")
 		}
-		raw, err = io.ReadAll(io.LimitReader(reader, maxCloneAudioBytes+1))
-		if mimeType == "" {
-			mimeType = "audio/wav"
+		tempPath, tempErr := copyAudioReaderToTemp(reader, filepath.Ext(asset.OriginalName))
+		if tempErr != nil {
+			return model.VoiceModelBinding{}, tempErr
 		}
+		defer os.Remove(tempPath)
+		raw, _, err = normalizeUploadedVoiceSample(ctx, tempPath)
+		mimeType = "audio/wav"
 	}
 	if err != nil || len(raw) == 0 || len(raw) > maxCloneAudioBytes {
 		return model.VoiceModelBinding{}, errors.New("读取声音样本失败")
 	}
 	dataURI := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(raw)
 	preferredName := fmt.Sprintf("v%d%d", userID%10000, time.Now().Unix()%100000000)
-	tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, userID, time.Now().UnixNano())
-	if err := assetStore.Put(ctx, tempObjectKey, bytes.NewReader(raw), mimeType); err != nil {
+	sampleURL, cleanup, err := uploadCloneSample(ctx, s.assetStorage, tenantID, userID, raw, mimeType)
+	if err != nil {
 		return model.VoiceModelBinding{}, err
 	}
-	defer assetStore.Delete(ctx, tempObjectKey)
-	sampleURL, err := assetStore.SignedURL(ctx, tempObjectKey, 15*time.Minute)
-	if err != nil || strings.TrimSpace(sampleURL) == "" {
-		return model.VoiceModelBinding{}, errors.New("生成声音复刻公网样本地址失败")
-	}
+	defer cleanup()
 	voiceID, err := cloneVoiceProfile(ctx, preferredName, sampleURL, dataURI, targetModel)
 	if err != nil {
 		return model.VoiceModelBinding{}, err
@@ -559,14 +564,14 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	assetID, durationMS, err := s.archiveGeneratedVoice(
-		r.Context(), tenantID, actor.UserID, audioURL, profile.VoiceID, modelName, "clone",
+		r.Context(), tenantID, actor.UserID, audioURL, profile.VoiceID, modelName, "clone", supportRoomForMedia(r),
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"audio_url":      audioURL,
+		"audio_url":      liveMediaAssetContentURL(assetID),
 		"audio_asset_id": assetID,
 		"duration_ms":    durationMS,
 	})
@@ -576,6 +581,7 @@ func (s *Server) archiveGeneratedVoice(
 	ctx context.Context,
 	tenantID, actorUserID int64,
 	providerURL, voiceID, modelName, source string,
+	supportRoomIDs ...int64,
 ) (int64, int64, error) {
 	if s.assetStorage == nil {
 		return 0, 0, fmt.Errorf("媒体存储尚未初始化")
@@ -629,6 +635,16 @@ func (s *Server) archiveGeneratedVoice(
 	}
 	digest := sha256.Sum256(raw)
 	durationValue := uint64(durationMS)
+	metadata := map[string]any{
+		"source":    strings.TrimSpace(source),
+		"voice_id":  strings.TrimSpace(voiceID),
+		"tts_model": strings.TrimSpace(modelName),
+		"purpose":   "live_agent_formal_voice_candidate",
+	}
+	if len(supportRoomIDs) > 0 && supportRoomIDs[0] > 0 {
+		metadata["room_id"] = supportRoomIDs[0]
+		metadata["support_room_id"] = supportRoomIDs[0]
+	}
 	item, err := s.store.CreateMediaAsset(ctx, model.CreateMediaAssetInput{
 		TenantID:        tenantID,
 		AssetType:       "generated_voice",
@@ -641,18 +657,18 @@ func (s *Server) archiveGeneratedVoice(
 		DurationMS:      &durationValue,
 		ChecksumSHA256:  hex.EncodeToString(digest[:]),
 		CreatedByUserID: actorUserID,
-		Metadata: map[string]any{
-			"source":    strings.TrimSpace(source),
-			"voice_id":  strings.TrimSpace(voiceID),
-			"tts_model": strings.TrimSpace(modelName),
-			"purpose":   "live_agent_formal_voice_candidate",
-		},
+		Metadata:        metadata,
 	})
 	if err != nil {
 		_ = assetStore.Delete(ctx, objectKey)
 		return 0, 0, fmt.Errorf("保存声音资产记录: %w", err)
 	}
 	return item.ID, durationMS, nil
+}
+
+func supportRoomForMedia(r *http.Request) int64 {
+	roomID, _ := liveSupportScopeRoomID(r)
+	return roomID
 }
 
 func generatedVoiceWAVDurationMS(audio []byte) (int64, error) {

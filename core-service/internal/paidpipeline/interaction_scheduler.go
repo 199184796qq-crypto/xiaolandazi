@@ -29,6 +29,7 @@ type interactionRule struct {
 }
 
 type interactionWindow struct {
+	RecentEvents          []model.RoomEvent
 	TenantID              int64
 	RoomID                int64
 	Key                   string
@@ -116,6 +117,7 @@ func (p *Processor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			p.flushWarmups(now.UTC())
 			p.FlushInteractionWindows(now.UTC())
 			p.FlushDebtBacklog(now.UTC())
 		}
@@ -130,11 +132,15 @@ func (p *Processor) interactionSignals(roomID int64) strategycenter.Signals {
 	if err != nil {
 		return strategycenter.Signals{}
 	}
+	heat := view.Intelligence.Heat
+	if p.policies != nil && !p.policies.RoomInteractionPreferences(roomID).AutoHeat {
+		heat = "WARM"
+	}
 	return strategycenter.Signals{
 		Entries30s: view.Intelligence.Entries30s,
 		Likes30s:   view.Intelligence.Likes30s,
 		Follows30s: view.Intelligence.Follows30s,
-		Heat:       view.Intelligence.Heat,
+		Heat:       heat,
 	}
 }
 
@@ -142,7 +148,20 @@ func (p *Processor) interactionRuleWeight(roomID, tenantID int64, key string) (c
 	if p == nil || p.policies == nil {
 		return 100, 100, true
 	}
-	configured, effective, enabled = p.policies.RuleWeight(tenantID, "interaction", key, p.interactionSignals(roomID))
+	cfg, err := p.schedule(roomID, tenantID)
+	if err != nil {
+		return 0, 0, false
+	}
+	e := cfg.Events[strategycenter.InteractionScene(key)]
+	configured = e.Weight
+	effective = e.Weight
+	enabled = e.Enabled && e.Weight > 0
+	// Preserve existing explicit global disabling, without treating weights
+	// as per-event probability draws.
+	_, _, legacyEnabled := p.policies.RuleWeight(tenantID, "interaction", key, p.interactionSignals(roomID))
+	if !legacyEnabled {
+		enabled = false
+	}
 	if !enabled {
 		return configured, 0, false
 	}
@@ -192,6 +211,17 @@ func interactionBudgetForHeat(raw string) interactionBudget {
 
 func (p *Processor) interactionBudgetDecision(roomID int64, heat string, highValue bool, now time.Time, commit bool) (interactionBudget, bool, string) {
 	budget := interactionBudgetForHeat(heat)
+	if p != nil && p.policies != nil && !p.policies.RoomInteractionPreferences(roomID).AutoHeat {
+		budget = interactionBudgetForHeat("WARM")
+	}
+	reservations := 0
+	if p != nil && p.decisions != nil {
+		for _, item := range p.decisions.Snapshot(roomID).Queue {
+			if item.Scene != "" {
+				reservations++
+			}
+		}
+	}
 	if p == nil || roomID <= 0 {
 		return budget, true, "互动预算未限制"
 	}
@@ -215,13 +245,13 @@ func (p *Processor) interactionBudgetDecision(roomID int64, heat string, highVal
 	uses = kept
 	allowed := false
 	if highValue {
-		allowed = len(uses) < budget.MaxMissions
+		allowed = len(uses)+reservations < budget.MaxMissions
 	} else {
 		normalCapacity := budget.MaxMissions - budget.ReservedHigh
 		if normalCapacity < 0 {
 			normalCapacity = 0
 		}
-		allowed = len(uses) < budget.MaxMissions && normalUsed < normalCapacity
+		allowed = len(uses)+reservations < budget.MaxMissions && normalUsed+reservations < normalCapacity
 	}
 	if allowed && commit {
 		uses = append(uses, interactionBudgetUse{At: now, HighValue: highValue})
@@ -253,7 +283,9 @@ func (p *Processor) checkInteractionBudget(roomID int64, heat string, highValue 
 }
 
 func (p *Processor) recordInteractionBudgetUse(roomID int64, heat string, highValue bool, now time.Time) {
-	_, _, _ = p.interactionBudgetDecision(roomID, heat, highValue, now, true)
+	p.interactionBudgetMu.Lock()
+	p.interactionBudgetUsed[roomID] = append(p.interactionBudgetUsed[roomID], interactionBudgetUse{At: now, HighValue: highValue})
+	p.interactionBudgetMu.Unlock()
 }
 
 func interactionPreferenceKindForMission(key string) string {
@@ -597,6 +629,10 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 	} else {
 		now = now.UTC()
 	}
+	for _, r := range p.runtime.Snapshots() {
+		p.syncPlayed(r.RoomID, now)
+	}
+	p.requestInteractionCuts(now)
 	type dueMission struct {
 		roomID       int64
 		key          string
@@ -617,15 +653,37 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 			continue
 		}
 		for key, window := range byKey {
-			rule, ok := defaultInteractionRules[key]
+			rule, ok := p.configuredRule(roomID, window.TenantID, key)
 			if !ok || window == nil {
 				continue
+			}
+			if lowCutMission(key) {
+				pruneFreshInteraction(window, rule.TTL, now)
 			}
 			_, effectiveWeight, enabled := p.interactionRuleWeight(roomID, window.TenantID, key)
 			if !enabled {
 				window.PendingCount = 0
 				window.FirstPending = time.Time{}
 				window.RetryAfter = time.Time{}
+				continue
+			}
+			if !window.LastEventAt.IsZero() && now.Sub(window.LastEventAt) >= rule.TTL {
+				window.PendingCount = 0
+				window.FirstPending = time.Time{}
+				window.EventIDs = nil
+				window.UserIDs = nil
+				window.Names = nil
+				window.LastDecisionReason = "聚合事件已过期"
+				continue
+			}
+			queued := false
+			for _, item := range p.decisions.Snapshot(roomID).Queue {
+				if item.MissionKind == key {
+					queued = true
+					break
+				}
+			}
+			if queued {
 				continue
 			}
 			if !interactionWindowDue(rule, window, now) {
@@ -638,6 +696,9 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 			}
 			decision := p.interactionWindowDecision(rule, snapshot, effectiveWeight, now)
 			candidate.InteractionDecision = decision
+			if !p.decorateCandidate(roomID, window.TenantID, &candidate) {
+				continue
+			}
 			candidate.Priority = interactionEffectivePriority(rule.Priority, effectiveWeight)
 			if eventPriority := int(decision.EventValue + 0.5); eventPriority > candidate.Priority {
 				candidate.Priority = eventPriority
@@ -703,6 +764,23 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 			continue
 		}
 
+		if !p.admitNearCut(mission.roomID, mission.key, now, &mission.candidate) {
+			p.interactionMu.Lock()
+			if w := p.interactionWindows[mission.roomID][mission.key]; w != nil {
+				w.LastDecisionReason = "等待主线切口；尚未进入播放队列"
+			}
+			p.interactionMu.Unlock()
+			continue
+		}
+		if lowCutMission(mission.key) {
+			p.cancelWarmup(mission.roomID)
+			p.interactionMu.Lock()
+			if w := p.interactionWindows[mission.roomID][mission.key]; w != nil {
+				rule, _ := p.configuredRule(mission.roomID, w.TenantID, mission.key)
+				mission.candidate.EventExpiresAt = w.LastEventAt.Add(rule.TTL)
+			}
+			p.interactionMu.Unlock()
+		}
 		result := p.decisions.Enqueue(mission.roomID, mission.candidate)
 		if result.Suppressed {
 			retryAt := now.Add(10 * time.Second)
@@ -722,9 +800,6 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 		if result.Item == nil {
 			continue
 		}
-		if !result.Merged {
-			p.recordInteractionBudgetUse(mission.roomID, heat, mission.highValue, now)
-		}
 
 		p.interactionMu.Lock()
 		if current := p.interactionWindows[mission.roomID][mission.key]; current != nil {
@@ -733,9 +808,12 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 				consumed = current.PendingCount
 			}
 			current.LastMissionEventCount = consumed
-			current.EmittedCount++
-			current.LastEmittedAt = now
+			current.LastDecisionReason += "；已入队，等待实际播完后记账"
 			current.RetryAfter = time.Time{}
+			if lowCutMission(mission.key) && len(current.RecentEvents) > 0 {
+				n := min(consumed, len(current.RecentEvents))
+				current.RecentEvents = append([]model.RoomEvent(nil), current.RecentEvents[n:]...)
+			}
 			current.PendingCount -= consumed
 			if current.PendingCount <= 0 {
 				current.PendingCount = 0
@@ -747,6 +825,9 @@ func (p *Processor) FlushInteractionWindows(now time.Time) {
 				current.FirstPending = now
 			}
 		}
+		p.interactionMu.Unlock()
+		p.interactionMu.Lock()
+		p.consumeSiblingWelcomes(mission.roomID, mission.key, now)
 		p.interactionMu.Unlock()
 		p.logInteractionMission(mission.roomID, mission.candidate)
 	}
@@ -767,8 +848,17 @@ func (p *Processor) clearInteractionRoom(roomID int64) {
 	if p == nil || roomID <= 0 {
 		return
 	}
+	p.scheduleMu.Lock()
+	delete(p.schedules, roomID)
+	delete(p.completedSeen, roomID)
+	delete(p.activity, roomID)
+	p.scheduleMu.Unlock()
 	p.interactionMu.Lock()
 	delete(p.interactionWindows, roomID)
+	p.cutMessages.mu.Lock()
+	delete(p.cutMessages.intents, roomID)
+	delete(p.cutMessages.samples, roomID)
+	p.cutMessages.mu.Unlock()
 	p.interactionMu.Unlock()
 	p.interactionBudgetMu.Lock()
 	delete(p.interactionBudgetUsed, roomID)
@@ -799,7 +889,7 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key, topicHint 
 	if p == nil || event.RoomID <= 0 {
 		return
 	}
-	rule, ok := defaultInteractionRules[key]
+	rule, ok := p.configuredRule(event.RoomID, event.TenantID, key)
 	if !ok {
 		return
 	}
@@ -821,6 +911,13 @@ func (p *Processor) accumulateInteraction(event model.RoomEvent, key, topicHint 
 	if window == nil {
 		window = &interactionWindow{RoomID: event.RoomID, Key: key}
 		byKey[key] = window
+	}
+	if lowCutMission(key) {
+		event.OccurredAt = now
+		window.RecentEvents = append(window.RecentEvents, event)
+		if len(window.RecentEvents) > 256 {
+			window.RecentEvents = window.RecentEvents[len(window.RecentEvents)-256:]
+		}
 	}
 	window.TenantID = event.TenantID
 	window.PendingCount++
@@ -1007,6 +1104,9 @@ func (p *Processor) interactionStats(roomID int64, now time.Time) []strategycent
 	}
 	items := make([]strategycenter.InteractionWindowStat, 0, len(defaultInteractionRules))
 	for key, rule := range defaultInteractionRules {
+		if configured, ok := p.configuredRule(roomID, tenantID, key); ok {
+			rule = configured
+		}
 		configuredWeight, effectiveWeight, enabled := p.interactionRuleWeight(roomID, tenantID, key)
 		stat := strategycenter.InteractionWindowStat{
 			Key:                key,

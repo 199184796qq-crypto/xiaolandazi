@@ -21928,21 +21928,112 @@ table tbody tr > td {
 }
 
 .shop-marketing-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 14px;
 }
 
 .shop-marketing-card {
+  --campaign-primary: #356dff;
+  --campaign-accent: #ff586b;
+  --campaign-cover: none;
+  position: relative;
   display: grid;
+  width: 100%;
+  max-width: 620px;
+  flex: 0 1 620px;
   gap: 13px;
+  min-width: 0;
   padding: 17px;
+  overflow: hidden;
   border: 1px solid rgba(88, 92, 210, .24);
   border-radius: 17px;
   background:
-    radial-gradient(circle at 100% 0, rgba(101, 95, 220, .12), transparent 35%),
-    linear-gradient(145deg, #fff, #fafaff);
-  box-shadow: 0 10px 26px rgba(55, 60, 125, .075);
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--campaign-accent) 15%, transparent), transparent 38%),
+    linear-gradient(145deg, color-mix(in srgb, var(--campaign-primary) 7%, #fff), #fff 56%, color-mix(in srgb, var(--campaign-accent) 6%, #fff));
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--campaign-primary) 10%, transparent);
+}
+
+.shop-marketing-card.background-solid {
+  background: color-mix(in srgb, var(--campaign-primary) 6%, #fff);
+}
+
+.shop-marketing-card.background-spotlight {
+  background:
+    radial-gradient(circle at 86% 11%, color-mix(in srgb, var(--campaign-accent) 25%, transparent), transparent 34%),
+    radial-gradient(circle at 0 100%, color-mix(in srgb, var(--campaign-primary) 13%, transparent), transparent 42%),
+    #fff;
+}
+
+.shop-marketing-card.size-featured {
+  max-width: 900px;
+  flex-basis: 900px;
+  padding: 24px;
+}
+
+.shop-marketing-card.size-compact {
+  max-width: 460px;
+  flex-basis: 460px;
+  gap: 9px;
+  padding: 13px;
+}
+
+.shop-marketing-card.skin-festival_red {
+  border-radius: 13px;
+}
+
+.shop-marketing-card.skin-newcomer_gold {
+  border-color: color-mix(in srgb, var(--campaign-primary) 34%, #ead8b9);
+}
+
+.shop-marketing-card.skin-fresh_green {
+  border-color: color-mix(in srgb, var(--campaign-primary) 26%, #dbe8df);
+}
+
+.shop-marketing-card.skin-minimal_light {
+  border-color: #e7eaf0;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.shop-marketing-card > *:not(.shop-marketing-cover) {
+  position: relative;
+  z-index: 1;
+}
+
+.shop-marketing-cover {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  opacity: .16;
+  background-image:
+    linear-gradient(90deg, rgba(255,255,255,.94), rgba(255,255,255,.45)),
+    var(--campaign-cover);
+  background-position: center;
+  background-size: cover;
+  pointer-events: none;
+}
+
+.shop-marketing-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--campaign-primary);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+
+.shop-marketing-topline b {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--campaign-accent);
+  font-size: 10px;
+  letter-spacing: 0;
 }
 
 .shop-marketing-card > header {
@@ -21953,7 +22044,7 @@ table tbody tr > td {
 }
 
 .shop-marketing-card > header span {
-  color: #656acb;
+  color: var(--campaign-primary);
   font-size: 11px;
   font-weight: 850;
   letter-spacing: .06em;
@@ -21965,14 +22056,35 @@ table tbody tr > td {
   font-size: 20px;
 }
 
+.shop-marketing-card > header p {
+  margin: 6px 0 0;
+  max-width: 720px;
+  color: #737f93;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .shop-marketing-total {
-  color: #d92d20;
+  color: var(--campaign-accent);
   font-size: 22px;
+}
+
+.shop-marketing-countdown {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  color: var(--campaign-primary);
+  background: color-mix(in srgb, var(--campaign-primary) 9%, #fff);
+  font-size: 10px;
+  font-weight: 850;
 }
 
 .shop-marketing-value-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0,1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px,1fr));
   gap: 8px;
 }
 
@@ -22001,7 +22113,7 @@ table tbody tr > td {
 
 .shop-marketing-item {
   display: grid;
-  grid-template-columns: minmax(0,1fr) auto auto;
+  grid-template-columns: minmax(0,1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 11px;
@@ -22017,7 +22129,7 @@ table tbody tr > td {
 }
 
 .shop-marketing-item-copy span {
-  color: #6c72c8;
+  color: var(--campaign-primary);
   font-size: 10px;
   font-weight: 800;
 }
@@ -22039,8 +22151,8 @@ table tbody tr > td {
   padding: 6px 8px;
   border: 1px solid #daddfb;
   border-radius: 8px;
-  color: #5459bf;
-  background: #f5f5ff;
+  color: var(--campaign-primary);
+  background: color-mix(in srgb, var(--campaign-primary) 6%, #fff);
   font-size: 12px;
   font-weight: 850;
 }
@@ -22063,11 +22175,86 @@ table tbody tr > td {
 }
 
 .shop-marketing-item-price strong {
-  color: #d92d20;
+  color: var(--campaign-accent);
   font-size: 14px;
 }
 
+.shop-marketing-item-action {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(100deg, var(--campaign-primary), var(--campaign-accent));
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.shop-marketing-item-action:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+}
+
+.shop-marketing-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 13px;
+  margin-top: auto;
+  padding-top: 3px;
+}
+
+.shop-marketing-footer small {
+  color: #788499;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.shop-marketing-footer small.denied {
+  color: #c23b4b;
+}
+
+.shop-marketing-footer button {
+  min-width: 126px;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 11px;
+  color: #fff;
+  background: linear-gradient(100deg, var(--campaign-primary), var(--campaign-accent));
+  box-shadow: 0 9px 20px color-mix(in srgb, var(--campaign-primary) 20%, transparent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.shop-marketing-footer button:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+}
+
+.shop-marketing-card.size-compact > header p,
+.shop-marketing-card.size-compact .shop-marketing-countdown,
+.shop-marketing-card.size-compact .shop-marketing-item-copy small,
+.shop-marketing-card.size-compact .shop-marketing-footer small {
+  display: none;
+}
+
+.shop-marketing-card.size-compact .shop-marketing-value-row > div {
+  padding-block: 7px;
+}
+
 @media (max-width: 720px) {
+  .shop-marketing-card,
+  .shop-marketing-card.size-featured,
+  .shop-marketing-card.size-compact {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
   .shop-marketing-value-row {
     grid-template-columns: 1fr;
   }
@@ -22077,8 +22264,24 @@ table tbody tr > td {
   }
 
   .shop-marketing-item-price {
-    grid-column: 1 / -1;
     justify-items: start;
+  }
+
+  .shop-marketing-item-action {
+    justify-self: end;
+  }
+
+  .shop-marketing-card.size-featured {
+    padding: 18px;
+  }
+
+  .shop-marketing-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .shop-marketing-footer button {
+    width: 100%;
   }
 }
 

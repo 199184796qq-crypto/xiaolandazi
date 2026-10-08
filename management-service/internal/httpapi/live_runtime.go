@@ -27,6 +27,7 @@ type coreRoomRuntimeState struct {
 }
 
 type coreAgentRuntimeState struct {
+	RunGeneration         uint64     `json:"run_generation"`
 	BootID                string     `json:"boot_id"`
 	RoomID                int64      `json:"room_id"`
 	State                 string     `json:"state"`
@@ -456,6 +457,7 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := model.LiveRuntimeSnapshot{
+		AgentStopReason:        agentRuntime.StopReason,
 		AgentState:             agentRuntime.State,
 		AgentMode:              agentRuntime.Mode,
 		AgentPlanID:            agentRuntime.PlanID,
@@ -488,6 +490,8 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.populateLiveRuntimeFailure(r.Context(), tenantID, roomID, &snapshot)
+	s.populateLiveRuntimeStartup(r.Context(), tenantID, roomID, &snapshot)
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
@@ -647,19 +651,23 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		}
 		published, versionErr := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
 		if errors.Is(versionErr, appdb.ErrLiveAgentPlanVersionNotFound) {
-			writeError(w, http.StatusConflict, "当前直播间还没有已发布的智能体版本，请先在直播策略中保存版本并发布")
+			writeError(w, http.StatusConflict, "当前直播间还没有已保存的智能体方案，请先在直播策略中保存方案")
 			return
 		}
 		if versionErr != nil {
-			writeError(w, http.StatusInternalServerError, "读取已发布直播智能体版本失败")
+			writeError(w, http.StatusInternalServerError, "读取已保存直播智能体方案失败")
 			return
 		}
 		if published.PlanID != selectedPlan.ID {
-			writeError(w, http.StatusConflict, "当前选择的直播方案与已发布版本不一致，请重新发布当前方案")
+			writeError(w, http.StatusConflict, "当前选择的直播方案没有可用保存内容，请保存当前方案")
 			return
 		}
-		if len(published.Variants) == 0 {
-			writeError(w, http.StatusConflict, "已发布直播智能体版本没有可播放的正式声音")
+		if len(published.Variants) == 0 && !isRealtimeScheme(published.GenerationContext) {
+			writeError(w, http.StatusConflict, "已保存智能体方案没有可播放的正式声音")
+			return
+		}
+		if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 		publishedPlanVersion = &published
@@ -784,19 +792,28 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if publishedPlanVersion != nil && !isRealtimeScheme(publishedPlanVersion.GenerationContext) {
+		s.reportLiveStartup(r.Context(), tenantID, roomID, session.ID, "connecting_service")
+	}
 	if err := s.requestCoreAgentStart(r.Context(), tenantID, roomID, session.TotalBilledSeconds); err != nil {
 		_, _ = s.store.AbortLiveRuntimeSession(r.Context(), session.ID, "core_start_failed", time.Now().UTC())
 		writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
 		return
 	}
 	if publishedPlanVersion != nil {
+		if !isRealtimeScheme(publishedPlanVersion.GenerationContext) {
+			s.reportLiveStartup(r.Context(), tenantID, roomID, session.ID, "sending_audio")
+		}
 		if audioErr := s.requestCorePublishedPlanProgramStart(
 			r.Context(), tenantID, roomID, session.ID, *publishedPlanVersion,
 		); audioErr != nil {
 			stopped, _ := s.requestCoreAgentStop(r.Context(), tenantID, roomID, session.TotalBilledSeconds, "system_error")
 			_, _ = s.store.StopLiveRuntimeSessionMeterSystem(r.Context(), session.ID, "core_audio_start_failed", stopped.WorkingSeconds, time.Now().UTC())
-			writeError(w, http.StatusBadGateway, "正式声音主线加载失败，请检查已发布声音资源")
+			writeError(w, http.StatusBadGateway, "正式声音主线加载失败，请检查已保存声音资源")
 			return
+		}
+		if !isRealtimeScheme(publishedPlanVersion.GenerationContext) {
+			s.reportLiveStartup(r.Context(), tenantID, roomID, session.ID, "waiting_playback")
 		}
 	}
 
@@ -908,6 +925,17 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "当前直播间AI暂停状态属于另一运行端")
 		return
 	}
+	if published, e := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID); e == nil && isRealtimeScheme(published.GenerationContext) {
+		alive, e := s.liveAnchorProducerAlive(r.Context(), tenantID, roomID, existing.ID)
+		if e != nil {
+			writeError(w, http.StatusServiceUnavailable, "无法确认实时生成器状态，请稍后重试")
+			return
+		}
+		if !alive {
+			writeError(w, http.StatusConflict, "实时生成场次已停止或服务器已重启，请结束旧场后重新开始，不恢复旧游标")
+			return
+		}
+	}
 
 	// ResumeLiveRuntimeSession performs the single account-pool availability
 	// check. Returning to running is the durable registration with the billing
@@ -995,6 +1023,9 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "智能体停止准备失败，请稍后重试")
 		return
 	}
+	if cycleErr := s.endAnchorCyclesForRoom(r.Context(), tenantID, roomID); cycleErr != nil {
+		log.Printf("live runtime stop cycle cleanup room=%d failed: %v", roomID, cycleErr)
+	}
 	// Stopped rows are removed from the billing manager registration set. Final
 	// settlement uses Core's cumulative working seconds and is idempotent.
 	session, err := s.store.StopLiveRuntimeSessionMeter(
@@ -1010,6 +1041,9 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.store.PruneSavedPlanVersionsForRoom(r.Context(), tenantID, roomID); err != nil {
+		log.Printf("prune saved plan versions tenant=%d room=%d: %v", tenantID, roomID, err)
+	}
 	writeJSON(w, http.StatusOK, session)
 }
 
@@ -1288,6 +1322,11 @@ func (s *Server) hotReloadLiveAgentPlanRooms(
 	tenantID, planID int64,
 	modules ...string,
 ) error {
+	if planID > 0 && s.store != nil {
+		if err := s.refreshPlanFactRiskRegistry(ctx, tenantID, planID); err != nil {
+			return err
+		}
+	}
 	if s.core == nil || planID <= 0 || len(modules) == 0 {
 		return nil
 	}
@@ -1332,6 +1371,9 @@ func (s *Server) requestCorePublishedPlanProgramStart(
 	// paused/running program before loading the current published version.
 	if err := s.requestCorePublishedPlanProgramControl(ctx, tenantID, roomID, "stop"); err != nil {
 		return fmt.Errorf("reset previous audio program: %w", err)
+	}
+	if isRealtimeScheme(version.GenerationContext) {
+		return s.startLiveAnchorProducer(ctx, tenantID, roomID, runtimeSessionID, version)
 	}
 	tracks := make([]map[string]any, 0, len(version.Variants))
 	for _, variant := range version.Variants {

@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { confirmAction, useFeedbackErrorRef } from '../uiFeedback'
+import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
+import { liveRuntimeFailureMessage } from '../liveRuntimeFailure'
+import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -178,7 +180,7 @@ const sessionStats = ref<RoomSessionStats | null>(null)
 const liveReview = ref<LiveReviewResponse | null>(null)
 const liveReviewOpen = ref(false)
 const liveReviewLoading = ref(false)
-const liveReviewError = ref('')
+const liveReviewError = useFeedbackErrorRef()
 const liveReviewAvailable = computed(() => {
   const status = room.value?.status || ''
   return status === 'offline' || status === 'stopped'
@@ -263,6 +265,14 @@ let compositeAudioConnectedAt = 0
 let compositeAudioLastFrameAt = 0
 const compositeAudioSources = new Set<AudioBufferSourceNode>()
 const localAudioState = ref<'disconnected' | 'connected' | 'playing' | 'error'>('disconnected')
+const firstVoicePlaybackReceived = ref(false)
+const firstVoiceStartPending = ref(false)
+const initialVoiceStage = ref<StartupStage>('opening_audio')
+const startupWaveHeights = Array.from({ length: 84 }, (_, i) => 8 + 44 * Math.abs(Math.sin(i * .57) * Math.sin(i * .19 + 1)))
+let firstVoicePlaybackEpoch = 0
+// Receiver registration, heartbeat and stream recovery run in the background.
+// Their transient errors belong in the inline audio status; only an explicit
+// user action promotes the current message to a blocking dialog.
 const localAudioError = ref('')
 const localAudioMuted = ref(false)
 const roomAudioEngine = ref<RoomAudioEngineSnapshot | null>(null)
@@ -276,22 +286,34 @@ let streamBatchTimer: number | undefined
 let pendingStreamEvents: RoomEvent[] = []
 let dashboardTickTimer: number | undefined
 let pageBottomRestoreFrame: number | undefined
+let pageScrollUpdateEpoch = 0
 const PAGE_BOTTOM_PIN_THRESHOLD = 80
 
 function pageIsPinnedToBottom() {
   const root = document.documentElement
   const scrollHeight = Math.max(root.scrollHeight, document.body?.scrollHeight || 0)
+  // An initially short/loading page is simultaneously at top and bottom. It
+  // must not opt into following the bottom as dashboard content arrives.
+  if (window.scrollY <= PAGE_BOTTOM_PIN_THRESHOLD || scrollHeight <= window.innerHeight + PAGE_BOTTOM_PIN_THRESHOLD) return false
   return scrollHeight - (window.scrollY + window.innerHeight) <= PAGE_BOTTOM_PIN_THRESHOLD
 }
 
 function restorePageBottomAfterRender(wasPinned: boolean) {
+  const epoch = ++pageScrollUpdateEpoch
+  const requestedScrollY = window.scrollY
+  if (pageBottomRestoreFrame !== undefined) {
+    window.cancelAnimationFrame(pageBottomRestoreFrame)
+    pageBottomRestoreFrame = undefined
+  }
   if (!wasPinned) return
   void nextTick(() => {
+    if (pageUnmounted || epoch !== pageScrollUpdateEpoch || Math.abs(window.scrollY - requestedScrollY) > 1) return
     if (pageBottomRestoreFrame !== undefined) {
       window.cancelAnimationFrame(pageBottomRestoreFrame)
     }
     pageBottomRestoreFrame = window.requestAnimationFrame(() => {
       pageBottomRestoreFrame = undefined
+      if (pageUnmounted || epoch !== pageScrollUpdateEpoch || window.scrollY <= PAGE_BOTTOM_PIN_THRESHOLD || Math.abs(window.scrollY - requestedScrollY) > 1) return
       const root = document.documentElement
       const scrollHeight = Math.max(root.scrollHeight, document.body?.scrollHeight || 0)
       window.scrollTo({
@@ -313,13 +335,14 @@ type FlowSample = { at: number; type: string; weight: number }
 const flowSamples = ref<FlowSample[]>([])
 const runtimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const runtimeError = ref('')
+const notifiedRuntimeFailures = new Set<string>()
 const runtimeActionDialog = ref<{ title: string; message: string } | null>(null)
 const runtimeControlBusy = ref(false)
 const runtimeModeBusy = ref(false)
 
 function openRuntimeActionError(title: string, error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : String(error || '').trim() || fallback
-  runtimeActionDialog.value = { title, message }
+  showAlert(message, title)
 }
 
 function closeRuntimeActionError() {
@@ -328,10 +351,10 @@ function closeRuntimeActionError() {
 
 const captureSnapshot = ref<RoomCaptureSnapshot | null>(null)
 const captureBusy = ref(false)
-const captureError = ref('')
+const captureError = useFeedbackErrorRef()
 const speechAnalysisStatus = ref<RoomSpeechAnalysisStatus | null>(null)
 const speechAnalysisBusy = ref(false)
-const speechAnalysisError = ref('')
+const speechAnalysisError = useFeedbackErrorRef()
 const speechAnalysisReportOpen = ref(false)
 const speechAnalysisReportLoading = ref(false)
 const speechAnalysisReportText = ref('')
@@ -347,7 +370,7 @@ const sharedVideoCanvasEl = ref<HTMLCanvasElement | null>(null)
 const sharedVideoFloatEl = ref<HTMLElement | null>(null)
 const sharedVideoStream = ref<MediaStream | null>(null)
 const videoShareBusy = ref(false)
-const videoShareError = ref('')
+const videoShareError = useFeedbackErrorRef()
 const videoFloatCollapsed = ref(false)
 const videoCropPanelOpen = ref(false)
 const videoCropLayout = ref<'portrait' | 'landscape'>('portrait')
@@ -364,7 +387,7 @@ let videoFloatDragState: {
 } | null = null
 const liveAgentPlans = ref<LiveAgentPlan[]>([])
 const agentPlanBusy = ref(false)
-const agentPlanError = ref('')
+const agentPlanError = useFeedbackErrorRef()
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
 const speechMissions = ref<SpeechMission[]>([])
@@ -375,7 +398,7 @@ const latestSpeechMission = computed(() =>
 )
 const speechHistoryOpen = ref(false)
 const speechHistoryLoading = ref(false)
-const speechHistoryError = ref('')
+const speechHistoryError = useFeedbackErrorRef()
 const speechHistoryQuery = ref('')
 const speechHistoryPageSize = ref(15)
 const generatedSpeechHistory = ref<GeneratedSpeechHistoryPage>({
@@ -389,12 +412,12 @@ let speechHistorySearchTimer: number | undefined
 const liveSpeechRate = ref(1)
 const liveSpeechRateSaved = ref(1)
 const liveSpeechRateBusy = ref(false)
-const liveSpeechRateError = ref('')
+const liveSpeechRateError = useFeedbackErrorRef()
 const liveSpeechRateOptions = [0.8, 0.9, 1, 1.1, 1.2] as const
 const liveEmotionEnabled = ref(true)
 const liveEmotionSaved = ref(true)
 const liveEmotionBusy = ref(false)
-const liveEmotionError = ref('')
+const liveEmotionError = useFeedbackErrorRef()
 const speechHistoryTotalPages = computed(() =>
   Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
 )
@@ -609,7 +632,7 @@ const blockedDrawerOpen = ref(false)
 const blockedDrawerHandleEl = ref<HTMLElement | null>(null)
 const blockedDrawerHandleTop = ref<number | null>(null)
 const blockedBusyKey = ref('')
-const moderationError = ref('')
+const moderationError = useFeedbackErrorRef()
 const hoveredEventId = ref<number | null>(null)
 const eventContextMenu = ref<{ x: number; y: number; event: RoomEvent } | null>(null)
 const agentDecisionContextMenu = ref<{ x: number; y: number; item: AgentDecisionItem } | null>(null)
@@ -1145,10 +1168,38 @@ const aiRuntimeMode = computed<'control' | 'anchor'>(() => runtimeSnapshot.value
 const aiRunning = computed(() => aiRuntimeStatus.value === 'working')
 const aiPaused = computed(() => aiRuntimeStatus.value === 'paused')
 const aiActive = computed(() => aiRuntimeStatus.value === 'working' || aiRuntimeStatus.value === 'paused')
+const initialVoiceWaiting = computed(() =>
+  aiRuntimeMode.value === 'anchor' &&
+  (firstVoiceStartPending.value || runtimeControlBusy.value || aiRunning.value) &&
+  !firstVoicePlaybackReceived.value,
+)
+watch(
+  () => [runtimeSnapshot.value?.session?.id || 0, aiRuntimeMode.value, aiActive.value] as const,
+  (current, previous) => {
+    if (!previous || current[0] !== previous[0] || current[1] !== previous[1] || !current[2] || !previous[2]) {
+      firstVoicePlaybackReceived.value = false
+      firstVoicePlaybackEpoch += 1
+    }
+    if (current[1] !== 'anchor' || (previous?.[2] && !current[2] && !runtimeControlBusy.value)) {
+      firstVoiceStartPending.value = false
+    }
+  },
+)
+const initialVoiceWaitingTitle = computed(() => {
+  if (localAudioError.value) return '声音准备暂停'
+  if (aiPaused.value) return '声音准备已暂停'
+  return startupMilestones[initialVoiceStage.value].title
+})
+const initialVoiceWaitingDetail = computed(() => localAudioError.value || (aiPaused.value ? '点击继续后，接着准备本场声音' : startupMilestones[initialVoiceStage.value].detail))
+const initialVoiceProgress = computed(() => startupMilestones[initialVoiceStage.value].percent)
+watch(() => runtimeSnapshot.value, (snapshot) => {
+  if (!snapshot || !initialVoiceWaiting.value) return
+  initialVoiceStage.value = advanceStartupStage(initialVoiceStage.value, snapshot)
+})
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
-type DeviceVisualState = 'working' | 'standby' | 'paused' | 'offline'
+type DeviceVisualState = 'working' | 'standby' | 'paused' | 'reconnecting' | 'offline'
 const deviceControlBusy = ref(false)
-const deviceControlError = ref('')
+const deviceControlError = useFeedbackErrorRef()
 
 async function loadLiveAgentPlansForRoom() {
   if (!canConfigureRoomStrategy.value) {
@@ -1253,7 +1304,8 @@ async function setCompanionMode(mode: 'control' | 'anchor') {
 
 const deviceVisualState = computed<DeviceVisualState>(() => {
   const device = boundDevice.value
-  if (!device || device.connection_status !== 'online') return 'offline'
+  if (!device || device.connection_status === 'offline') return 'offline'
+  if (device.connection_status === 'connecting') return 'reconnecting'
   if (aiPaused.value || device.work_status === 'paused') return 'paused'
   if (aiRunning.value) return 'working'
   return 'standby'
@@ -1264,6 +1316,7 @@ const deviceStatusText = computed(() => {
   if (deviceVisualState.value === 'working') return prefix + ' · 已连接，工作中'
   if (deviceVisualState.value === 'paused') return prefix + ' · 已连接，已暂停'
   if (deviceVisualState.value === 'standby') return prefix + ' · 已连接，连续待机'
+  if (deviceVisualState.value === 'reconnecting') return prefix + ' · 连接波动，正在自动重连'
   return prefix + ' · 离线'
 })
 
@@ -1271,6 +1324,7 @@ const deviceStatusLabel = computed(() => {
   if (deviceVisualState.value === 'working') return '已连接'
   if (deviceVisualState.value === 'paused') return '已暂停'
   if (deviceVisualState.value === 'standby') return '连续待机'
+  if (deviceVisualState.value === 'reconnecting') return '自动重连中'
   return '离线'
 })
 
@@ -1550,7 +1604,10 @@ function interactionExecutionTypeLabel(item: AgentDecisionItem) {
 }
 
 function interactionExecutionDetail(item: AgentDecisionItem) {
-  return item.summary || item.reply_hint || item.sample_questions?.[0] || item.title || '等待执行'
+  const questions = Array.isArray(item.sample_questions)
+    ? [...new Set(item.sample_questions.filter((text) => typeof text === 'string').map((text) => text.trim()).filter(Boolean))]
+    : []
+  return questions.join('\n') || item.summary || item.reply_hint || item.title || '等待执行'
 }
 
 function compactInteractionTitle(value: unknown, limit = 22) {
@@ -1984,7 +2041,17 @@ async function refreshRuntime() {
         room.value.monitor_started_at = roomData.monitor_started_at
         room.value.last_event_at = roomData.last_event_at
       }
-      runtimeError.value = ''
+      const failureMessage = liveRuntimeFailureMessage(snapshot)
+      runtimeError.value = failureMessage
+      if (failureMessage) {
+        firstVoiceStartPending.value = false
+        firstVoicePlaybackEpoch += 1
+        const failureKey = `${roomId}:${snapshot.session?.id || 0}:${snapshot.failure?.code || snapshot.agent_stop_reason}`
+        if (!notifiedRuntimeFailures.has(failureKey)) {
+          notifiedRuntimeFailures.add(failureKey)
+          showAlert(failureMessage, '直播声音已停止')
+        }
+      }
       if (room.value && room.value.status === 'live' && !snapshot.room_live) {
         room.value.status = 'offline'
       }
@@ -2598,6 +2665,7 @@ function toggleLocalAudioMuted() {
 function flushCompositeAudioQueue() {
   compositeAudioNextStartTime = 0
   for (const source of compositeAudioSources) {
+    source.onended = null
     try {
       source.stop()
     } catch {
@@ -2658,8 +2726,11 @@ function scheduleCompositePCMFrame(frame: Uint8Array) {
   const buffer = context.createBuffer(1, 480, 24_000)
   const channel = buffer.getChannelData(0)
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+  let containsSound = false
   for (let index = 0; index < 480; index += 1) {
-    channel[index] = view.getInt16(index * 2, true) / 32768
+    const sample = view.getInt16(index * 2, true)
+    if (sample !== 0) containsSound = true
+    channel[index] = sample / 32768
   }
   const source = context.createBufferSource()
   source.buffer = buffer
@@ -2675,8 +2746,15 @@ function scheduleCompositePCMFrame(frame: Uint8Array) {
   const startAt = compositeAudioNextStartTime
   compositeAudioNextStartTime += 0.02
   compositeAudioSources.add(source)
+  const playbackGeneration = compositeAudioGeneration
+  const playbackSessionID = runtimeSnapshot.value?.session?.id || 0
+  const playbackEpoch = firstVoicePlaybackEpoch
   source.onended = () => {
     compositeAudioSources.delete(source)
+    if (containsSound && playbackEpoch === firstVoicePlaybackEpoch && playbackGeneration === compositeAudioGeneration && playbackSessionID === (runtimeSnapshot.value?.session?.id || 0) && aiRuntimeMode.value === 'anchor' && aiRunning.value) {
+      firstVoicePlaybackReceived.value = true
+      firstVoiceStartPending.value = false
+    }
     try {
       source.disconnect()
     } catch {
@@ -2833,6 +2911,7 @@ async function playLocalAudioTask(task: LocalAudioTask) {
 
   stopLocalAudioPlayback(Boolean(localAudioTask))
   const generation = ++localAudioPlaybackGeneration
+  const playbackEpoch = firstVoicePlaybackEpoch
   localAudioTask = task
   localAudioError.value = ''
 
@@ -2863,6 +2942,10 @@ async function playLocalAudioTask(task: LocalAudioTask) {
     audio.addEventListener('playing', () => {
       if (generation !== localAudioPlaybackGeneration) return
       localAudioState.value = 'playing'
+      if (playbackEpoch === firstVoicePlaybackEpoch && aiRuntimeMode.value === 'anchor' && aiRunning.value) {
+        firstVoicePlaybackReceived.value = true
+        firstVoiceStartPending.value = false
+      }
       localAudioError.value = ''
       void reportLocalAudioTask(task, 'PLAYING', Math.round(audio.currentTime * 1000))
     })
@@ -3111,26 +3194,35 @@ async function connectLocalAudioReceiver() {
 }
 
 async function startCompanionRuntime() {
-  if (!coreActionsAvailable.value || runtimeControlBusy.value || aiActive.value) return
+  if (!coreActionsAvailable.value || runtimeControlBusy.value || firstVoiceStartPending.value || aiActive.value) return
   closeRuntimeActionError()
-  if (!(await ensureLocalAudioUnlocked())) {
-    openRuntimeActionError('无法启动直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击开始')
-    return
-  }
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
     openRuntimeActionError('无法启动直播搭子', null, '主播模式需要先选择智能体直播方案')
     return
   }
   runtimeControlBusy.value = true
   runtimeError.value = ''
+  firstVoicePlaybackReceived.value = false
+  initialVoiceStage.value = 'opening_audio'
+  firstVoiceStartPending.value = aiRuntimeMode.value === 'anchor'
+  firstVoicePlaybackEpoch += 1
+  flushCompositeAudioQueue()
+  let startAccepted = false
   try {
+    if (!(await ensureLocalAudioUnlocked())) {
+      openRuntimeActionError('无法启动直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击开始')
+      return
+    }
     await refreshSessionStats()
     if (sessionStats.value?.resume_pending) {
       pendingStartAfterSessionDecision.value = true
       return
     }
+    initialVoiceStage.value = 'connecting'
     await connectLocalAudioReceiver()
     await startLiveRuntime(roomId)
+    startAccepted = true
+    if (startupMilestones[initialVoiceStage.value].percent < 10) initialVoiceStage.value = 'waiting_startup'
     await Promise.all([refreshRuntime(), refreshAgentDecisions()])
   } catch (err) {
     const message = err instanceof Error ? err.message : '启动直播搭子失败'
@@ -3144,6 +3236,7 @@ async function startCompanionRuntime() {
     }
     openRuntimeActionError('无法启动直播搭子', message, '启动直播搭子失败')
   } finally {
+    if (!startAccepted) firstVoiceStartPending.value = false
     runtimeControlBusy.value = false
   }
 }
@@ -3191,6 +3284,8 @@ async function stopCompanionRuntime() {
   closeRuntimeActionError()
   try {
     await stopLiveRuntime(roomId)
+    firstVoiceStartPending.value = false
+    firstVoicePlaybackEpoch += 1
     stopCompositeAudioReceiver()
     if (localAudioReconnectTimer !== undefined) {
       window.clearTimeout(localAudioReconnectTimer)
@@ -4185,6 +4280,7 @@ function handleLocalAudioUserGesture() {
 }
 
 onMounted(() => {
+  window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
   void refreshRoomStrategyAuthorization()
   authorizationTimer = window.setInterval(() => void refreshRoomStrategyAuthorization(), 15000)
   restorePublicScreenHeight()
@@ -4415,7 +4511,7 @@ onBeforeUnmount(() => {
               @change="changeLiveAgentPlan"
             >
               <option value="" disabled>
-                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择已发布方案' : '暂无已发布方案') }}
+                {{ selectedLiveAgentPlanName || (liveAgentPlans.length ? '请选择已保存方案' : '暂无已保存方案') }}
               </option>
               <option v-for="plan in liveAgentPlans" :key="plan.id" :value="String(plan.id)">
                 {{ plan.name }}
@@ -4441,9 +4537,9 @@ onBeforeUnmount(() => {
             <button
               v-if="!aiActive"
               type="button"
-              :disabled="!coreActionsAvailable || runtimeControlBusy || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
+              :disabled="!coreActionsAvailable || runtimeControlBusy || firstVoiceStartPending || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
               @click="startCompanionRuntime"
-            >{{ runtimeControlBusy ? '开始中…' : '开始' }}</button>
+            >{{ runtimeControlBusy ? '开始中…' : firstVoiceStartPending ? '等待声音…' : '开始' }}</button>
             <template v-else>
               <button
                 v-if="aiRunning"
@@ -4550,7 +4646,7 @@ onBeforeUnmount(() => {
             <strong>{{ deviceStatusLabel }}</strong>
           </div>
           <small>{{ deviceStatusText }}</small>
-          <div class="device-sim-controls" :class="{ 'is-offline': deviceVisualState === 'offline' }">
+          <div class="device-sim-controls" :class="{ 'is-offline': deviceVisualState === 'offline', 'is-reconnecting': deviceVisualState === 'reconnecting' }">
             <button
               v-if="deviceVisualState === 'offline'"
               type="button"
@@ -4558,6 +4654,12 @@ onBeforeUnmount(() => {
               :disabled="!coreActionsAvailable || deviceControlBusy"
               @click="controlBoundDevice('connect')"
             >{{ deviceControlBusy ? '连接中…' : '连接' }}</button>
+            <button
+              v-else-if="deviceVisualState === 'reconnecting'"
+              type="button"
+              class="connect"
+              disabled
+            >正在自动重连…</button>
             <template v-else>
               <button
                 type="button"
@@ -4638,23 +4740,48 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
-        <div class="speech-runtime-unified">
-          <div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">
-            <div class="speech-mainline-caption-stack">
-              <div
-                v-for="row in publicSpeechCaptionRows"
-                :key="row.key"
-                class="speech-mainline-caption-row"
-                :class="['role-' + row.role, row.transition ? 'transition-' + row.transition : '']"
-              >
-                <span>{{ row.text }}</span>
-              </div>
+        <div class="speech-runtime-unified" :class="{ 'is-initializing': initialVoiceWaiting }">
+          <div v-if="initialVoiceWaiting" class="speech-runtime-initializing" :class="{ 'is-error': !!localAudioError }" role="status" aria-live="polite">
+            <div class="speech-runtime-initializing-copy">
+              <strong>{{ initialVoiceWaitingTitle }}</strong>
+              <span>{{ initialVoiceWaitingDetail }}</span>
+            </div>
+            <div class="speech-runtime-initializing-progress" role="progressbar" aria-label="声音准备步骤" :aria-valuenow="initialVoiceProgress" :aria-valuemin="0" :aria-valuemax="100" :aria-valuetext="initialVoiceWaitingTitle" :data-stage="initialVoiceStage">
+              <svg class="startup-wave-background" viewBox="0 0 1000 64" preserveAspectRatio="none" aria-hidden="true">
+                <rect v-for="(height, index) in startupWaveHeights" :key="index" :x="index * 12" :y="32 - height / 2" width="5" :height="height" rx="2.5" />
+              </svg>
+              <svg class="startup-wave-completed" :style="{ clipPath: `inset(0 ${100 - initialVoiceProgress}% 0 0)` }" viewBox="0 0 1000 64" preserveAspectRatio="none" aria-hidden="true">
+                <rect v-for="(height, index) in startupWaveHeights" :key="index" :x="index * 12" :y="32 - height / 2" width="5" :height="height" rx="2.5" />
+              </svg>
+              <svg class="startup-wave-flow startup-wave-flow-one" viewBox="0 0 1000 64" preserveAspectRatio="none" aria-hidden="true">
+                <rect v-for="(height, index) in startupWaveHeights" :key="index" :x="index * 12" :y="32 - height / 2" width="5" :height="height" rx="2.5" />
+              </svg>
+              <svg class="startup-wave-flow startup-wave-flow-two" viewBox="0 0 1000 64" preserveAspectRatio="none" aria-hidden="true">
+                <rect v-for="(height, index) in startupWaveHeights" :key="index" :x="index * 12" :y="32 - height / 2" width="5" :height="height" rx="2.5" />
+              </svg>
+              <svg class="startup-wave-flow startup-wave-flow-three" viewBox="0 0 1000 64" preserveAspectRatio="none" aria-hidden="true">
+                <rect v-for="(height, index) in startupWaveHeights" :key="index" :x="index * 12" :y="32 - height / 2" width="5" :height="height" rx="2.5" />
+              </svg>
             </div>
           </div>
-          <p v-else class="speech-runtime-unified-mainline">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
-          <div class="speech-runtime-unified-wave" :class="{ active: displayMainlineStatus === 'playing' || (interruptSpeech.status || '') === 'playing' }" aria-hidden="true">
-            <i v-for="(height, index) in speechWaveBars" :key="index" :style="{ '--wave-height': height + 'px', '--wave-delay': (index * 37) + 'ms' }"></i>
-          </div>
+          <template v-else>
+            <div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">
+              <div class="speech-mainline-caption-stack">
+                <div
+                  v-for="row in publicSpeechCaptionRows"
+                  :key="row.key"
+                  class="speech-mainline-caption-row"
+                  :class="['role-' + row.role, row.transition ? 'transition-' + row.transition : '']"
+                >
+                  <span>{{ row.text }}</span>
+                </div>
+              </div>
+            </div>
+            <p v-else class="speech-runtime-unified-mainline">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
+            <div class="speech-runtime-unified-wave" :class="{ active: displayMainlineStatus === 'playing' || (interruptSpeech.status || '') === 'playing' }" aria-hidden="true">
+              <i v-for="(height, index) in speechWaveBars" :key="index" :style="{ '--wave-height': height + 'px', '--wave-delay': (index * 37) + 'ms' }"></i>
+            </div>
+          </template>
         </div>
 
         <div
@@ -5323,7 +5450,7 @@ onBeforeUnmount(() => {
                     <b>#{{ index + 1 }} · {{ agentDecisionPriorityLabel(item) }}</b>
                   </header>
                   <strong>{{ item.title }}</strong>
-                  <p>{{ item.summary || item.sample_questions?.[0] || '等待生成打断内容' }}</p>
+                  <p class="interaction-original-content">{{ interactionExecutionDetail(item) }}</p>
                   <footer>
                     <span v-if="item.merged_count > 1">已融合 {{ item.merged_count }} 条</span>
                     <span v-else>单条候选</span>
@@ -6440,7 +6567,9 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
+.interaction-original-content { white-space: pre-line; overflow-wrap: anywhere; }
 .interaction-execution-meta {
   display: flex;
   flex-wrap: wrap;
@@ -6496,6 +6625,27 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
 }
 .speech-runtime-unified{display:grid;gap:13px;min-height:190px;padding:18px;border:1px solid rgba(126,151,232,.22);border-radius:16px;background:linear-gradient(180deg,rgba(24,31,49,.98),rgba(18,24,39,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.speech-runtime-unified.is-initializing{place-items:center;min-height:234px;padding:24px 30px;background:radial-gradient(circle at 50% 85%,rgba(73,96,214,.13),transparent 48%),linear-gradient(180deg,rgba(24,31,49,.98),rgba(18,24,39,.98))}
+.speech-runtime-initializing{display:grid;justify-items:center;align-content:center;gap:30px;width:min(780px,88%);min-width:0;text-align:center}
+.speech-runtime-initializing-copy{display:grid;justify-items:center;gap:8px}
+.speech-runtime-initializing-copy strong{color:#f5f7ff;font-size:29px;font-weight:950;line-height:1.35;letter-spacing:.02em;text-shadow:0 4px 18px rgba(86,105,235,.2)}
+.speech-runtime-initializing-copy span{color:#aab9d3;font-size:17px;font-weight:750;line-height:1.55}
+.speech-runtime-initializing-progress{position:relative;isolation:isolate;width:100%;height:64px;overflow:hidden}
+.speech-runtime-initializing-progress svg{position:absolute;inset:0;width:100%;height:100%;fill:#fff}
+.startup-wave-background{opacity:.16}
+.startup-wave-completed{opacity:1;transition:clip-path .65s linear}
+.startup-wave-flow{z-index:2;opacity:0;pointer-events:none;mix-blend-mode:screen;animation:startup-wave-layer-scan 3.6s ease-in-out infinite}
+.startup-wave-flow-one{fill:#557cff!important;animation-delay:-.3s}
+.startup-wave-flow-two{fill:#55d8d0!important;animation-delay:-1.5s}
+.startup-wave-flow-three{fill:#b778ff!important;animation-delay:-2.7s}
+@keyframes startup-wave-layer-scan{
+  0%{clip-path:inset(0 100% 0 0);opacity:0}
+  16%{opacity:.2}
+  48%{clip-path:inset(0 0 0 0);opacity:.72}
+  62%{clip-path:inset(0 0 0 0);opacity:.45}
+  100%{clip-path:inset(0 0 0 100%);opacity:0}
+}
+.speech-runtime-initializing.is-error .speech-runtime-initializing-copy span{color:#ff9b9b}
 .speech-runtime-unified .speech-mainline-live-caption{min-height:94px}
 .speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}
 .speech-runtime-unified-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:38px;overflow:hidden}.speech-runtime-unified-wave i{display:block;width:3px;height:var(--wave-height);max-height:32px;border-radius:999px;background:#6978dd;opacity:.45;transform:scaleY(.45);transform-origin:center;transition:.18s ease}.speech-runtime-unified-wave.active i{opacity:.9;animation:speech-wave-pulse .78s ease-in-out infinite alternate;animation-delay:var(--wave-delay)}
@@ -6518,7 +6668,8 @@ onBeforeUnmount(() => {
 .speech-answer-library-button:hover{color:#fff;border-color:rgba(89,209,178,.5);background:rgba(52,185,151,.1)}
 .speech-rate-error{max-width:360px;color:#ff9b9b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (hover:none){.public-question-actions{opacity:1;transform:none}}
-@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified-interrupt{font-size:17px}.speech-runtime-footer-tools{flex-wrap:wrap}.speech-rate-error{flex-basis:100%;max-width:100%}}
+@media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified.is-initializing{min-height:210px;padding:20px 18px}.speech-runtime-initializing{width:94%;gap:26px}.speech-runtime-initializing-copy strong{font-size:22px}.speech-runtime-initializing-copy span{font-size:14px}.speech-runtime-unified-interrupt{font-size:17px}.speech-runtime-footer-tools{flex-wrap:wrap}.speech-rate-error{flex-basis:100%;max-width:100%}}
+@media (prefers-reduced-motion:reduce){.startup-wave-completed{transition:none}.startup-wave-flow{animation:none;clip-path:none;opacity:.18}}
 
 .speech-track-head-actions {
   display: flex;
@@ -7781,6 +7932,11 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 5px rgba(245, 158, 11, .13);
 }
 .xiaozhi-device-card .device-runtime-status.state-paused strong { color: #b7790b; }
+.xiaozhi-device-card .device-runtime-status.state-reconnecting i {
+  background: #f59e0b;
+  box-shadow: 0 0 0 5px rgba(245, 158, 11, .13);
+}
+.xiaozhi-device-card .device-runtime-status.state-reconnecting strong { color: #b7790b; }
 .xiaozhi-device-card .device-runtime-status.state-offline i {
   background: #ef4444;
   box-shadow: 0 0 0 5px rgba(239, 68, 68, .11);
@@ -7865,6 +8021,9 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .xiaozhi-device-card .device-sim-controls.is-offline {
+  grid-template-columns: minmax(0, 1fr);
+}
+.xiaozhi-device-card .device-sim-controls.is-reconnecting {
   grid-template-columns: minmax(0, 1fr);
 }
 .xiaozhi-device-card .device-control-error {

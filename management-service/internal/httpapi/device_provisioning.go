@@ -59,6 +59,7 @@ func (s *Server) registerDeviceProvisioningRoutes(mux *http.ServeMux) {
 	s.registerDeviceBusinessRoutes(mux)
 	mux.HandleFunc("POST /internal/v1/xiaozhi/provision", s.hardwareProvision)
 	mux.HandleFunc("POST /internal/v1/xiaozhi/heartbeat", s.hardwareHeartbeat)
+	mux.HandleFunc("POST /internal/v1/xiaozhi/connection", s.hardwareConnection)
 	mux.HandleFunc("GET /api/v1/live/devices/default-name", s.liveDeviceDefaultName)
 	mux.HandleFunc("POST /api/v1/live/devices/claim", s.liveClaimDevice)
 	mux.HandleFunc("PATCH /api/v1/live/devices/{deviceID}", s.liveRenameDevice)
@@ -97,23 +98,9 @@ func (s *Server) hardwareProvision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 func (s *Server) hardwareHeartbeat(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeHardware(w, r) {
-		return
-	}
-	var input struct {
-		HardwareMAC string `json:"hardware_mac"`
-		RoomID      int64  `json:"room_id"`
-	}
-	if err := readJSON(w, r, &input); err != nil {
-		writeError(w, 400, "请求格式错误")
-		return
-	}
-	item, err := s.store.HardwareHeartbeat(r.Context(), input.HardwareMAC, input.RoomID)
-	if err != nil {
-		s.deviceOperationError(w, err)
-		return
-	}
-	writeJSON(w, 200, item)
+	// The old endpoint also requires an identified, confirmed connection;
+	// gateway timers alone may no longer refresh a physical device heartbeat.
+	s.hardwareConnection(w, r)
 }
 func (s *Server) deviceCustomer(w http.ResponseWriter, r *http.Request) (model.Actor, int64, bool) {
 	a, ok := s.resolveActor(w, r)

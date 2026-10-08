@@ -40,6 +40,7 @@ var salesScratchTables = []string{
 	"device_addressing_preferences",
 	"device_voice_addressing",
 	"media_assets",
+	"voice_profiles",
 	"core_rooms",
 	"live_device_room_bindings",
 	"live_device_runtime_state",

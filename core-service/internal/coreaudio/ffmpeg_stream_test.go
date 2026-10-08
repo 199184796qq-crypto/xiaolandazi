@@ -1,6 +1,7 @@
 package coreaudio
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"net/http"
@@ -63,5 +64,33 @@ func TestStreamAudioURLAsCorePCMNormalizesStereo48kWAV(t *testing.T) {
 	}
 	if lastCursor != 80 {
 		t.Fatalf("last cursor=%d want=80", lastCursor)
+	}
+}
+
+func TestStreamAudioURLAsCorePCMEmitsFinalPartialFrame(t *testing.T) {
+	if _, err := exec.LookPath(ffmpegExecutable()); err != nil {
+		t.Skip("ffmpeg is not available")
+	}
+	source := stereo48kWAV(45)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(source)
+	}))
+	defer server.Close()
+
+	var frames [][]byte
+	err := streamAudioURLAsCorePCM(context.Background(), server.URL, 0, func(frame []byte, _ int) error {
+		frames = append(frames, append([]byte(nil), frame...))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("frames=%d want=3", len(frames))
+	}
+	spokenBytes := roomaudio.SampleRate * 5 / 1000 * roomaudio.BytesPerSample
+	if len(frames[2]) != roomaudio.PCMBytesPerFrame || !bytes.Equal(frames[2][spokenBytes:], make([]byte, roomaudio.PCMBytesPerFrame-spokenBytes)) {
+		t.Fatal("ffmpeg final partial frame was not silence padded")
 	}
 }

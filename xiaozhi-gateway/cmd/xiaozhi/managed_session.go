@@ -14,12 +14,20 @@ import (
 func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, mac, clientID, sessionID string, p provisioning, sampleRate int, commandsEnabled, cameraEnabled, feedbackEnabled bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	presence := newDevicePresence(time.Now())
+	_ = writer.conn.SetReadDeadline(presence.seen().Add(deviceResponseTimeout))
+	writer.conn.SetPongHandler(func(nonce string) error {
+		if presence.pong(nonce, time.Now()) {
+			return writer.conn.SetReadDeadline(presence.seen().Add(deviceResponseTimeout))
+		}
+		return nil
+	})
 	reads := readMessages(ctx, writer.conn)
 	control := newTerminalControlSession(ctx, g, writer, mac, clientID, sampleRate, commandsEnabled, cameraEnabled, feedbackEnabled)
 	defer control.close()
 	controlTicker := time.NewTicker(100 * time.Millisecond)
 	defer controlTicker.Stop()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(deviceProbeInterval)
 	defer ticker.Stop()
 	var audioCancel context.CancelFunc
 	var audioDone chan error
@@ -33,19 +41,39 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 		activeRoom = 0
 	}
 	defer stopAudio()
+	var registered provisioning
+	var lastReported time.Time
+	var displayStatus string
+	defer func() {
+		if registered.TenantID <= 0 {
+			return
+		}
+		stopAudio()
+		_ = writer.conn.Close()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cleanupCancel()
+		_, _, _ = g.reportConnection(cleanupCtx, mac, sessionID, registered, "disconnect", presence.seen())
+	}()
 	syncState := func(p provisioning) bool {
 		if control.state != "" && (p.TenantID != control.lease.TenantID || p.DeviceID != control.lease.DeviceID || (p.State != "claimed" && p.State != "bound")) {
 			control.finish("rejected", "设备归属已改变，本次指令已取消", nil)
 		}
 		status := p.Message
 		if p.State == "claimed" || p.State == "bound" {
-			heartbeatStatus, err := g.reportHeartbeat(ctx, mac, p.RoomID)
-			if err != nil {
-				stopAudio()
-				return false
+			if registered.TenantID != p.TenantID || registered.DeviceID != p.DeviceID {
+				seen := presence.seen()
+				var applied bool
+				var err error
+				displayStatus, applied, err = g.reportConnection(ctx, mac, sessionID, p, "connect", seen)
+				if err != nil || !applied {
+					stopAudio()
+					return false
+				}
+				registered = p
+				lastReported = seen
 			}
 			if p.RoomID > 0 {
-				status = heartbeatStatus
+				status = displayStatus
 			}
 		}
 		if activeRoom != p.RoomID || p.State != "bound" {
@@ -72,11 +100,20 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 	if !syncState(p) {
 		return
 	}
+	if writer.ping(presence.challenge(sessionID)) != nil {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(presence.seen()) >= deviceResponseTimeout {
+				return
+			}
+			if writer.ping(presence.challenge(sessionID)) != nil {
+				return
+			}
 			next, err := g.provision(ctx, mac)
 			if err != nil {
 				stopAudio()
@@ -85,6 +122,16 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			p = next
 			if !syncState(p) {
 				return
+			}
+		case <-presence.confirmed:
+			seen := presence.seen()
+			if registered.TenantID > 0 && seen.After(lastReported) {
+				status, applied, err := g.reportConnection(ctx, mac, sessionID, registered, "heartbeat", seen)
+				if err != nil || !applied {
+					return
+				}
+				displayStatus = status
+				lastReported = seen
 			}
 		case <-audioDone:
 			stopAudio()
@@ -127,6 +174,18 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 					continue
 				}
 				switch message.Type {
+				case "device_shutdown":
+					if message.SessionID != sessionID || registered.TenantID <= 0 {
+						_ = writer.json(map[string]any{"type": "device_shutdown_ack", "session_id": sessionID, "success": false})
+						continue
+					}
+					stopAudio()
+					control.abort()
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+					_, applied, err := g.reportConnection(shutdownCtx, mac, sessionID, registered, "shutdown", time.Now())
+					shutdownCancel()
+					_ = writer.json(map[string]any{"type": "device_shutdown_ack", "session_id": sessionID, "success": err == nil && applied})
+					return
 				case "goodbye":
 					return
 				case "abort":

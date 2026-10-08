@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,6 +27,12 @@ const (
 	maxFullShowVoiceSegments = 64
 	maxVoiceSegmentRunes     = 80
 	minVoiceSegmentRunes     = 18
+	// Every generated segment is inspected and normalized to a short, bounded
+	// guard at both edges. This protects the first/last phoneme without carrying
+	// arbitrary provider silence into the live program.
+	generatedVoiceSegmentHeadMS = int64(120)
+	generatedVoiceSegmentTailMS = int64(300)
+	generatedVoiceEdgeCushionMS = int64(30)
 )
 
 type fullShowVariantVoiceInput struct {
@@ -35,6 +42,8 @@ type fullShowVariantVoiceInput struct {
 	Source    string  `json:"source"`
 	VoiceID   string  `json:"voice_id,omitempty"`
 	ProfileID int64   `json:"profile_id,omitempty"`
+	BindingID int64   `json:"binding_id,omitempty"`
+	Model     string  `json:"model,omitempty"`
 	Rate      float64 `json:"rate,omitempty"`
 }
 
@@ -397,17 +406,57 @@ func (s *Server) resolveFormalVoice(ctx context.Context, tenantID int64, input f
 		if err != nil {
 			return "", "", errors.New("克隆声音档案不存在")
 		}
-		if !strings.EqualFold(strings.TrimSpace(profile.CloneStatus), "ready") || strings.TrimSpace(profile.VoiceID) == "" {
-			return "", "", errors.New("克隆声音还没有准备好")
+		bindings := []model.VoiceModelBinding{}
+		if input.BindingID > 0 {
+			binding, err := s.store.GetVoiceModelBinding(ctx, tenantID, input.BindingID)
+			if err != nil {
+				return "", "", errors.New("选定声音模型绑定不存在")
+			}
+			bindings = append(bindings, binding)
+		} else if (input.VoiceID != "" && input.VoiceID != profile.VoiceID) || input.Model != "" {
+			var err error
+			bindings, err = s.store.ListVoiceModelBindings(ctx, tenantID, input.ProfileID)
+			if err != nil {
+				return "", "", errors.New("读取选定声音模型失败")
+			}
 		}
-		modelName := qwenCloneTTSModel
-		if value := strings.TrimSpace(fmt.Sprint(profile.Config["target_model"])); value != "" && value != "<nil>" {
-			modelName = value
-		}
-		return strings.TrimSpace(profile.VoiceID), modelName, nil
+		return resolveSelectedCloneVoice(profile, input, bindings)
 	default:
 		return "", "", errors.New("声音来源无效")
 	}
+}
+
+func resolveSelectedCloneVoice(profile model.VoiceProfile, input fullShowVariantVoiceInput, bindings []model.VoiceModelBinding) (string, string, error) {
+	if !strings.EqualFold(strings.TrimSpace(profile.CloneStatus), "ready") {
+		return "", "", errors.New("克隆声音还没有准备好")
+	}
+	voiceID, modelName := strings.TrimSpace(input.VoiceID), strings.TrimSpace(input.Model)
+	for _, binding := range bindings {
+		if binding.ProfileID != profile.ID || binding.TenantID != profile.TenantID || binding.Status != "ready" || strings.TrimSpace(binding.VoiceID) == "" {
+			continue
+		}
+		if input.BindingID > 0 && binding.ID != input.BindingID {
+			continue
+		}
+		if voiceID != "" && voiceID != binding.VoiceID {
+			continue
+		}
+		if modelName != "" && modelName != binding.Model {
+			continue
+		}
+		return binding.VoiceID, binding.Model, nil
+	}
+	if input.BindingID > 0 || (voiceID != "" && voiceID != profile.VoiceID) {
+		return "", "", errors.New("选定音色与模型绑定不匹配，不会自动换回默认模型")
+	}
+	configured := qwenCloneTTSModel
+	if value := strings.TrimSpace(fmt.Sprint(profile.Config["target_model"])); value != "" && value != "<nil>" {
+		configured = value
+	}
+	if strings.TrimSpace(profile.VoiceID) == "" || (modelName != "" && modelName != configured) {
+		return "", "", errors.New("选定声音模型已变化，请重新选择")
+	}
+	return strings.TrimSpace(profile.VoiceID), configured, nil
 }
 
 func splitFullShowVoiceText(text string) []string {
@@ -537,11 +586,15 @@ func combineGeneratedVoiceWAV(
 		if piece.byteRate != byteRate || !bytes.Equal(piece.fmtData, fmtData) {
 			return nil, nil, 0, errors.New("声音分段 WAV 参数不一致")
 		}
+		normalizedPCM, err := normalizeGeneratedVoicePiecePCM(piece.fmtData, piece.pcmData, piece.byteRate)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("第%d段声音检查失败：%w", index+1, err)
+		}
 		startBytes := consumed
-		if _, err := pcm.Write(piece.pcmData); err != nil {
+		if _, err := pcm.Write(normalizedPCM); err != nil {
 			return nil, nil, 0, err
 		}
-		consumed += uint64(len(piece.pcmData))
+		consumed += uint64(len(normalizedPCM))
 		startMS := int64((startBytes*1000 + uint64(byteRate)/2) / uint64(byteRate))
 		endMS := int64((consumed*1000 + uint64(byteRate)/2) / uint64(byteRate))
 		if endMS <= startMS {
@@ -578,6 +631,165 @@ func combineGeneratedVoiceWAV(
 	}
 	durationMS := timeline[len(timeline)-1].EndMS
 	return out.Bytes(), timeline, durationMS, nil
+}
+
+type generatedVoicePCMFormat struct {
+	format        uint16
+	channels      int
+	sampleRate    uint32
+	byteRate      uint32
+	blockAlign    int
+	bitsPerSample int
+}
+
+func parseGeneratedVoicePCMFormat(fmtData []byte, byteRate uint32) (generatedVoicePCMFormat, error) {
+	if len(fmtData) < 16 || byteRate == 0 {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV fmt 参数无效")
+	}
+	spec := generatedVoicePCMFormat{
+		format:        binary.LittleEndian.Uint16(fmtData[0:2]),
+		channels:      int(binary.LittleEndian.Uint16(fmtData[2:4])),
+		sampleRate:    binary.LittleEndian.Uint32(fmtData[4:8]),
+		byteRate:      byteRate,
+		blockAlign:    int(binary.LittleEndian.Uint16(fmtData[12:14])),
+		bitsPerSample: int(binary.LittleEndian.Uint16(fmtData[14:16])),
+	}
+	if spec.format != 1 && spec.format != 3 {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV 不是可检查静音的 PCM 格式")
+	}
+	if spec.channels <= 0 || spec.sampleRate == 0 || spec.blockAlign <= 0 || spec.bitsPerSample <= 0 || spec.bitsPerSample%8 != 0 {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV 采样参数无效")
+	}
+	if spec.blockAlign != spec.channels*(spec.bitsPerSample/8) {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV 采样对齐不一致")
+	}
+	if spec.format == 3 && spec.bitsPerSample != 32 && spec.bitsPerSample != 64 {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV 浮点位深不受支持")
+	}
+	if spec.format == 1 && spec.bitsPerSample != 8 && spec.bitsPerSample != 16 && spec.bitsPerSample != 24 && spec.bitsPerSample != 32 {
+		return generatedVoicePCMFormat{}, errors.New("声音分段 WAV PCM 位深不受支持")
+	}
+	return spec, nil
+}
+
+func generatedVoicePCMFrameSilent(frame []byte, spec generatedVoicePCMFormat) bool {
+	bytesPerSample := spec.bitsPerSample / 8
+	for channel := 0; channel < spec.channels; channel++ {
+		sample := frame[channel*bytesPerSample : (channel+1)*bytesPerSample]
+		if spec.format == 3 {
+			var value float64
+			if spec.bitsPerSample == 32 {
+				value = float64(math.Float32frombits(binary.LittleEndian.Uint32(sample)))
+			} else {
+				value = math.Float64frombits(binary.LittleEndian.Uint64(sample))
+			}
+			if math.IsNaN(value) || math.IsInf(value, 0) || math.Abs(value) > 0.002 {
+				return false
+			}
+			continue
+		}
+		switch spec.bitsPerSample {
+		case 8:
+			value := int(sample[0]) - 128
+			if value < -2 || value > 2 {
+				return false
+			}
+		case 16:
+			value := int16(binary.LittleEndian.Uint16(sample))
+			if value < -64 || value > 64 {
+				return false
+			}
+		case 24:
+			value := int32(sample[0]) | int32(sample[1])<<8 | int32(sample[2])<<16
+			if value&0x800000 != 0 {
+				value |= ^int32(0xffffff)
+			}
+			if value < -16384 || value > 16384 {
+				return false
+			}
+		case 32:
+			value := int32(binary.LittleEndian.Uint32(sample))
+			if value < -4194304 || value > 4194304 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func generatedVoiceSilentEdgeBytes(pcm []byte, spec generatedVoicePCMFormat) (int, int, error) {
+	if len(pcm) == 0 || len(pcm)%spec.blockAlign != 0 {
+		return 0, 0, errors.New("声音分段 PCM 为空或未按采样对齐")
+	}
+	leading := 0
+	for leading < len(pcm) && generatedVoicePCMFrameSilent(pcm[leading:leading+spec.blockAlign], spec) {
+		leading += spec.blockAlign
+	}
+	if leading == len(pcm) {
+		return 0, 0, errors.New("声音分段没有检测到可播放语音")
+	}
+	trailing := 0
+	for offset := len(pcm) - spec.blockAlign; offset >= leading && generatedVoicePCMFrameSilent(pcm[offset:offset+spec.blockAlign], spec); offset -= spec.blockAlign {
+		trailing += spec.blockAlign
+	}
+	return leading, trailing, nil
+}
+
+func generatedVoiceSilencePCM(spec generatedVoicePCMFormat, durationMS int64) ([]byte, error) {
+	if durationMS < 0 {
+		return nil, errors.New("声音保护静音长度无效")
+	}
+	guardBytes := (uint64(spec.byteRate)*uint64(durationMS) + 999) / 1000
+	align := uint64(spec.blockAlign)
+	guardBytes = ((guardBytes + align - 1) / align) * align
+	if guardBytes > uint64(maxGeneratedVoiceBytes) {
+		return nil, errors.New("声音保护静音超过限制")
+	}
+	guard := make([]byte, int(guardBytes))
+	if spec.format == 1 && spec.bitsPerSample == 8 {
+		for index := range guard {
+			guard[index] = 0x80
+		}
+	}
+	return guard, nil
+}
+
+func normalizeGeneratedVoicePiecePCM(fmtData, pcm []byte, byteRate uint32) ([]byte, error) {
+	spec, err := parseGeneratedVoicePCMFormat(fmtData, byteRate)
+	if err != nil {
+		return nil, err
+	}
+	leading, trailing, err := generatedVoiceSilentEdgeBytes(pcm, spec)
+	if err != nil {
+		return nil, err
+	}
+	cushion, err := generatedVoiceSilencePCM(spec, generatedVoiceEdgeCushionMS)
+	if err != nil {
+		return nil, err
+	}
+	keptLeading := min(leading, len(cushion))
+	keptTrailing := min(trailing, len(cushion))
+	headGuard, err := generatedVoiceSilencePCM(spec, generatedVoiceSegmentHeadMS)
+	if err != nil {
+		return nil, err
+	}
+	tailGuard, err := generatedVoiceSilencePCM(spec, generatedVoiceSegmentTailMS)
+	if err != nil {
+		return nil, err
+	}
+	if keptLeading > len(headGuard) || keptTrailing > len(tailGuard) {
+		return nil, errors.New("声音边缘保护配置无效")
+	}
+	audibleStart := leading - keptLeading
+	audibleEnd := len(pcm) - trailing + keptTrailing
+	result := make([]byte, 0, len(headGuard)-keptLeading+audibleEnd-audibleStart+len(tailGuard)-keptTrailing)
+	result = append(result, headGuard[:len(headGuard)-keptLeading]...)
+	result = append(result, pcm[audibleStart:audibleEnd]...)
+	result = append(result, tailGuard[:len(tailGuard)-keptTrailing]...)
+	if len(result) == 0 || len(result) > maxGeneratedVoiceBytes {
+		return nil, errors.New("声音分段规范化后为空或超过限制")
+	}
+	return result, nil
 }
 
 func strongFullShowVoiceCut(text string) bool {
@@ -634,6 +846,18 @@ func (s *Server) archiveFullShowVoice(
 	durationMS int64,
 	timeline []model.LiveAgentPlanTimelineSegment,
 	voiceRates ...float64,
+) (fullShowVoiceArchiveResult, error) {
+	return s.archiveVoiceBundle(ctx, tenantID, actorUserID, planID, roomID, variantKey, voiceID, modelName, source, raw, durationMS, timeline, false, voiceRates...)
+}
+
+// Both fixed and generated mainline audio use this same bundle contract. A
+// workbench preview archives media only; it never binds or publishes a room.
+func (s *Server) archiveVoiceBundle(
+	ctx context.Context,
+	tenantID, actorUserID, planID, roomID int64,
+	variantKey, voiceID, modelName, source string,
+	raw []byte, durationMS int64, timeline []model.LiveAgentPlanTimelineSegment,
+	previewOnly bool, voiceRates ...float64,
 ) (fullShowVoiceArchiveResult, error) {
 	var result fullShowVoiceArchiveResult
 	voiceRate, err := optionalArchivedVoiceRate(voiceRates)
@@ -696,6 +920,8 @@ func (s *Server) archiveFullShowVoice(
 		"version":           "formal-mainline-v3",
 		"audio_duration_ms": durationMS,
 		"sentence_count":    len(timeline),
+		"segment_head_ms":   generatedVoiceSegmentHeadMS,
+		"segment_tail_ms":   generatedVoiceSegmentTailMS,
 		"sentences":         timeline,
 		"safe_points":       safePoints,
 	}
@@ -713,12 +939,18 @@ func (s *Server) archiveFullShowVoice(
 		"audio_duration_ms":      durationMS,
 		"segment_count":          len(timeline),
 		"safe_point_count":       len(safePoints),
+		"segment_head_ms":        generatedVoiceSegmentHeadMS,
+		"segment_tail_ms":        generatedVoiceSegmentTailMS,
 		"audio_object_key":       objectKey,
 		"srt_object_key":         subtitleObjectKey,
 		"timeline_object_key":    timelineObjectKey,
 		"safe_points_object_key": safePointsObjectKey,
 		"manifest_object_key":    manifestObjectKey,
 		"timeline_precision":     "segment_pcm_exact",
+	}
+	if previewOnly {
+		manifest["usage"] = "test_preview"
+		manifest["published"] = false
 	}
 	if voiceRate > 0 {
 		manifest["voice_rate"] = voiceRate
@@ -759,6 +991,12 @@ func (s *Server) archiveFullShowVoice(
 		"manifest_object_key":    manifestObjectKey,
 		"timeline_format":        "json+srt+safe_points_v3",
 		"timeline_precision":     "segment_pcm_exact",
+		"segment_head_ms":        generatedVoiceSegmentHeadMS,
+		"segment_tail_ms":        generatedVoiceSegmentTailMS,
+	}
+	if previewOnly {
+		metadata["purpose"] = "anchor_cycle_voice_preview"
+		metadata["published"] = false
 	}
 	if voiceRate > 0 {
 		metadata["voice_rate"] = voiceRate
@@ -778,20 +1016,8 @@ func (s *Server) archiveFullShowVoice(
 		_ = assetStore.Delete(ctx, manifestObjectKey)
 		return result, err
 	}
-	previewURL, signErr := assetStore.SignedURL(ctx, item.ObjectKey, 12*time.Hour)
-	if signErr != nil {
-		return result, signErr
-	}
-	if strings.TrimSpace(previewURL) == "" {
-		base := strings.TrimRight(strings.TrimSpace(s.publicWebURL), "/")
-		path := "/api/v1/live/media-assets/" + strconv.FormatInt(item.ID, 10) + "/content"
-		previewURL = path
-		if base != "" {
-			previewURL = base + path
-		}
-	}
 	result.AssetID = item.ID
-	result.PreviewURL = strings.TrimSpace(previewURL)
+	result.PreviewURL = liveMediaAssetContentURL(item.ID)
 	result.SRT = srt
 	result.SafePoints = safePoints
 	result.Manifest = manifest

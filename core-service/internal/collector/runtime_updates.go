@@ -144,11 +144,11 @@ func (u *runtimeUpdater) flush() {
 	for _, update := range pending {
 		if update.markLive {
 			ctx, cancel := context.WithTimeout(context.Background(), runtimeWriteTimeout)
-			err := u.rooms.MarkLive(ctx, update.room.TenantID, update.room.ID)
+			err := u.rooms.TouchLiveMetrics(ctx, update.room.TenantID, update.room.ID)
 			cancel()
 			if err != nil {
 				u.errors.Add(1)
-				log.Printf("collector room=%d async mark live failed: %v", update.room.ID, err)
+				log.Printf("collector room=%d async live metrics failed: %v", update.room.ID, err)
 			} else {
 				u.writes.Add(1)
 			}

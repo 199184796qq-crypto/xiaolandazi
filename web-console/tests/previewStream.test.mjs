@@ -22,3 +22,10 @@ test('terminal error and dropped connections do not remove already delivered tex
     assert.equal(events[0].text, '保留正文')
   }
 })
+test('numeric progress survives chunk boundaries, clamps invalid ranges and stays optional', async () => {
+  const events = []
+  const raw = 'event: progress\ndata: {"message":"正在准备声音…","percent":73}\n\nevent: progress\ndata: {"message":"等待","percent":120}\n\nevent: progress\ndata: {"message":"旧协议"}\n\nevent: complete\ndata: {"voice":{"status":"ready"}}\n\n'
+  const bytes = new TextEncoder().encode(raw)
+  await readPreviewStream(response([...bytes].map(value => Uint8Array.of(value))), event => events.push(event))
+  assert.deepEqual(events.map(event => event.percent), [73, 100, undefined])
+})

@@ -103,14 +103,18 @@ streamData:
 			return ctx.Err()
 		default:
 		}
-		if _, err := io.ReadFull(reader, frame); err != nil {
+		n, err := io.ReadFull(reader, frame)
+		if err != nil {
 			if emittedFrames > 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+				if n > 0 {
+					clear(frame[n:])
+					if publishErr := onFrame(append([]byte(nil), frame...), cursorMS); publishErr != nil {
+						return publishErr
+					}
+				}
 				// Some generated/TTS WAV files advertise a data chunk that is a few
-				// bytes longer than the HTTP body. Once real PCM frames were already
-				// emitted, reaching the physical end is the audible end of the clip,
-				// not a playback failure. Treat it as normal completion so the room
-				// engine can resume the mainline immediately instead of waiting for
-				// the interaction fallback timer.
+				// bytes longer than the HTTP body. Emit and silence-pad any physical
+				// final sub-frame before treating the boundary as normal completion.
 				return nil
 			}
 			return err
@@ -122,6 +126,25 @@ streamData:
 		cursorMS += FrameDurationMS
 		remaining -= int64(len(frame))
 		emittedFrames++
+	}
+	// Do not discard the final sub-frame of a generated WAV. Pad it to a full
+	// output frame so the last few milliseconds of speech are always emitted.
+	if remaining > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		clear(frame)
+		if _, err := io.ReadFull(reader, frame[:remaining]); err != nil {
+			if emittedFrames > 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+				return nil
+			}
+			return err
+		}
+		if err := onFrame(append([]byte(nil), frame...), cursorMS); err != nil {
+			return err
+		}
 	}
 	return nil
 }

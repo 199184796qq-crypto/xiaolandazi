@@ -201,6 +201,23 @@ func TestNormalizeDoesNotInventLiveAddressesForQuietSample(t *testing.T) {
 	}
 }
 
+func TestAddressingOverrideIsSeparateAndRecompiled(t *testing.T) {
+	source := strings.Repeat("哥哥姐姐们，我们家慢慢说清楚呀。", 20)
+	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{
+		Version: Version,
+		AddressingOverride: &model.LiveAnchorAddressingOverride{
+			AudienceMode: "replace", AudienceTerms: []string{"姐妹们"},
+			SelfMode: "append", SelfTerms: []string{"咱们家"},
+		},
+	}}, source)
+	prompt := RenderMetaPrompt(profile)
+	for _, expected := range []string{"本主播称呼覆盖", "姐妹们", "替换样本中的同类称呼", "咱们家", "在样本称呼基础上添加"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("override prompt missing %q: %s", expected, prompt)
+		}
+	}
+}
+
 func TestSampleEvidenceSeparatesStableCandidateAndNoise(t *testing.T) {
 	short := "第一句啊。第二句哟。偶尔哈。"
 	profile := Normalize(model.LiveAgentPlanAnchorStyleProfile{Delivery: &model.LiveAnchorDeliverySpec{

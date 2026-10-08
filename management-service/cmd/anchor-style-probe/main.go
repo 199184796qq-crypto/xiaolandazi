@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/agentstudio"
 	"livecompanion/management/internal/config"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
@@ -32,6 +33,10 @@ type probeInput struct {
 	TargetChars    int                                   `json:"target_chars"`
 	Heat           int                                   `json:"heat"`
 	Scene          stylecontract.RuntimeScene            `json:"scene"`
+	WorkspaceID    string                                `json:"workspace_id"`
+	Region         string                                `json:"region"`
+	AgentID        string                                `json:"agent_id"`
+	ProfileID      string                                `json:"credential_profile_id"`
 }
 
 type probeOutput struct {
@@ -61,6 +66,39 @@ func main() {
 		fatal(fmt.Errorf("open management database: %w", err))
 	}
 	defer store.Close()
+	if input.Action == "agentstudio-agent" {
+		profile, err := store.ResolveSpeechModel(context.Background(), strings.TrimSpace(input.ProfileID))
+		if err != nil || profile == nil {
+			if err == nil {
+				err = fmt.Errorf("configured credential profile is empty")
+			}
+			fatal(err)
+		}
+		region := strings.TrimSpace(input.Region)
+		if region == "" {
+			region = "cn-beijing"
+		}
+		client, err := agentstudio.New(input.WorkspaceID, region, profile.APIKey, 120*time.Second)
+		if err != nil {
+			fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		if strings.TrimSpace(input.AgentID) != "" {
+			agent, err := client.GetAgent(ctx, input.AgentID)
+			if err != nil {
+				fatal(err)
+			}
+			encode(agent)
+			return
+		}
+		agents, err := client.ListAgents(ctx)
+		if err != nil {
+			fatal(err)
+		}
+		encode(map[string]any{"agents": agents})
+		return
+	}
 	if input.Action == "config" {
 		configuration, err := store.SpeechModels(context.Background())
 		if err != nil {

@@ -58,3 +58,8 @@ data/exports/
 /artifacts/
 /work/
 *.exe
+
+# Local release snapshots and packages; deployment infrastructure stays tracked.
+/deploy/20*
+/deploy/validation/
+/deploy20*

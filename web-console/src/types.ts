@@ -253,6 +253,11 @@ export interface SystemAgentActionPayload {
   review_bucket?: string
   review_reason?: string
   fact_category?: string
+	new_fact_category?: { label: string; family?: string; description?: string }
+	forbidden_wording?: string
+	safe_rewrite?: string
+	current_forbidden_wording?: string
+	current_safe_rewrite?: string
   fact_key?: string
   fact_value?: string
   current_fact_value?: string
@@ -503,6 +508,7 @@ export interface SystemSettingsDashboard {
 }
 
 export interface PublicSystemConfig {
+  browser_title: string
   site_name: string
   auth_customer_side_label: string
   auth_customer_title_line_1: string
@@ -660,7 +666,43 @@ export interface RoomStrategyStageStats {
 
 export type InteractionPreferenceScore = number
 
+export interface InteractionGoal {
+  key: string
+  name: string
+  action: string
+  heats: string[]
+  stages: string[]
+  angles: string[]
+}
+export interface InteractionEventRule {
+  name: string
+  enabled: boolean
+  priority: 'P0' | 'P1' | 'P2' | 'P3'
+  weight: number
+  cooldown_seconds: number
+  ttl_seconds: number
+  max_wait_seconds: number
+  batch_threshold: number
+  goals: InteractionGoal[]
+}
+export interface InteractionSchedule {
+  timing_overrides: Record<string, { name: string; max_wait_seconds: number; ttl_seconds: number; batch_threshold: number }>
+  version: number
+  plan_id: number
+  name: string
+  template_version: number
+  template_sha256: string
+  field_labels: Record<string, string>
+  priority_labels: Record<string, string>
+  heat_labels: Record<string, string>
+  stage_labels: Record<string, string>
+  answer_limits: Record<string, number>
+  max_retries: number
+  events: Record<string, InteractionEventRule>
+}
+
 export interface RoomInteractionPreferences {
+  schedule?: InteractionSchedule
   tenant_id: number
   room_id: number
   overall_interaction: InteractionPreferenceScore
@@ -675,6 +717,7 @@ export interface RoomInteractionPreferences {
 }
 
 export interface RoomInteractionPreferencesInput {
+  schedule?: InteractionSchedule
   overall_interaction: InteractionPreferenceScore
   question_preference: InteractionPreferenceScore
   welcome_preference: InteractionPreferenceScore
@@ -1381,6 +1424,9 @@ export interface LiveQuotaSummary {
 }
 
 export interface LiveRuntimeSnapshot {
+  startup?: { session_id: number; stage: string; percent: number; updated_at: string }
+  agent_stop_reason?: string
+  failure?: { session_id: number; code: string; message: string; occurred_at: string }
   session?: LiveRuntimeSession
   agent_state: 'stopped' | 'working' | 'paused'
   agent_mode: 'control' | 'anchor'
@@ -1479,6 +1525,7 @@ export interface LiveAgentPlanBenefitCandidate {
   activity_price?: string
   gift?: string
   activity?: string
+  validity_mode?: 'scheduled' | 'permanent' | string
   starts_at?: string
   ends_at?: string
   review_bucket?: 'adoptable' | 'conflict' | 'discuss' | 'violation' | string
@@ -1571,8 +1618,19 @@ export interface LiveAgentPlanAnchorStyleProfile {
 	 delivery_spec?: {
     version: string
     instructions: string[]
-    literal_habits: { kind: string; text: string; position: string; when: string; avoid?: string; count: number; stability?: 'stable' | 'candidate' | 'noise' | string }[]
+    literal_habits: { kind: string; text: string; position: string; when: string; avoid?: string; count: number; stability?: 'stable' | 'candidate' | 'noise' | string; slots?: string[] }[]
+    addressing_override?: {
+      audience_mode?: 'inherit' | 'append' | 'replace' | string
+      audience_terms?: string[]
+      self_mode?: 'inherit' | 'append' | 'replace' | string
+      self_terms?: string[]
+    }
     rulebook: string
+    meta_prompt_md?: string
+    scoring_baseline_json?: string
+    monitoring_json?: string
+    analysis_prompt_source?: string
+    scorecard_prompt_source?: string
     sample_chars: number
     sentence_count: number
     average_sentence_chars: number
@@ -1591,6 +1649,7 @@ export interface LiveAnchorStyle {
   tenant_id: number
   name: string
   description?: string
+  avatar_type?: 'male' | 'female' | 'middle_aged_male' | 'middle_aged_female'
   status: string
   profile: LiveAgentPlanAnchorStyleProfile
   plugin_settings: LiveAnchorStylePluginSetting[]
@@ -1621,6 +1680,20 @@ export interface LiveAnchorStyleSample {
   created_at: string
   updated_at: string
 }
+
+export interface LiveAnchorAnalysisVersion {
+  id: number
+  version_no: number
+  kind: string
+  sample_ids: number[]
+  text: string
+  created_at: string
+}
+export interface LiveAnchorAnalysisState {
+  items: LiveAnchorAnalysisVersion[]
+  active_version_id: number
+}
+export interface AnchorAnalysisSection { title: string; points: string[] }
 
 export interface LiveAnchorStyleTraining {
   id: number
@@ -1879,6 +1952,7 @@ export interface LiveAgentFullShowGenerationContext {
   rhythm_nodes: LiveAgentPlanRhythmNode[]
   anchor_style: LiveAgentPlanAnchorStyleProfile
   style_match_intensity: number
+  conversion_intensity?: number
   style_overlay_prompt?: string
   style_overlay_count: number
   fact_expansion?: LiveFactExpansionPolicy
@@ -1946,6 +2020,7 @@ export interface LiveAgentFullShowPreviewInput {
   variant_count: number
   style_match_intensity: number
   expansion_freedom: number
+  conversion_intensity?: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean
   generate_tts_hints: boolean
@@ -1977,6 +2052,7 @@ export interface LiveAgentFullShowRegenerateInput {
   round_minutes: number
   style_match_intensity: number
   expansion_freedom: number
+  conversion_intensity?: number
   use_anchor_style: boolean
   use_dynamic_facts: boolean
   generate_tts_hints: boolean
@@ -2164,6 +2240,7 @@ export interface LiveAgentPlanBenefit {
   activity_price?: string
   gift?: string
   activity?: string
+  validity_mode: 'scheduled' | 'permanent' | string
   starts_at?: string
   ends_at?: string
   source_quote?: string
@@ -3204,6 +3281,32 @@ export interface CommercialMembershipVersion {
 
 export interface MarketingCampaignControls { audience: 'all' | 'new_since_start' | 'new_within_days'; new_account_days: number; max_claims: number; max_units: number; benefit_key: string; require_phone: boolean }
 
+export interface MarketingCampaignPresentation {
+  schema_version: 1
+  cover_asset_id?: number
+  template_key: 'blue_tech' | 'festival_red' | 'newcomer_gold' | 'fresh_green' | 'minimal_light'
+  display_size: 'featured' | 'standard' | 'compact'
+  background_style: 'soft_gradient' | 'spotlight' | 'solid'
+  primary_color: string
+  accent_color: string
+  eyebrow: string
+  badge_text: string
+  cta_button_text: string
+  show_countdown: boolean
+  show_saving: boolean
+  show_conditions: boolean
+}
+
+export interface MarketingPresentationAsset {
+  id: number
+  original_name: string
+  mime_type: string
+  size_bytes: number
+  created_by_user_id: number
+  created_at: string
+  content_url: string
+}
+
 export interface MarketingCampaignItem {
   fixed_price_cents?: number
   id?: number
@@ -3219,6 +3322,7 @@ export interface MarketingCampaignItem {
 
 export interface MarketingCampaign {
   controls?: MarketingCampaignControls
+  presentation: MarketingCampaignPresentation
   eligible?: boolean
   ineligible_reason?: string
   id: number
@@ -3245,6 +3349,7 @@ export interface MarketingCampaign {
 
 export interface MarketingCampaignInput {
   controls?: MarketingCampaignControls
+  presentation?: MarketingCampaignPresentation
   code: string
   name: string
   description: string
@@ -4455,4 +4560,449 @@ export interface SandboxRefundOrderInput {
   amount_cents: number
   reason: string
   idempotency_key: string
+}
+
+export interface AnchorStyleWorkbenchModel {
+  id: string
+  name: string
+  model: string
+  protocol: string
+  enabled: boolean
+  has_api_key: boolean
+  is_default: boolean
+}
+
+export interface AnchorStyleWorkbenchPoint {
+  key: string
+  label: string
+  value: string
+  category: string
+  angles: string[]
+}
+
+export interface AnchorStyleWorkbenchContext {
+  plan_id: number
+  plan_name: string
+  fact_package: string
+  selling_points: AnchorStyleWorkbenchPoint[]
+  models: AnchorStyleWorkbenchModel[]
+  default_generator_id?: string
+  analysis_provider?: string
+  analysis_model?: string
+  logit_bias_capability: string
+  saved_meta_prompt?: AnchorStyleWorkbenchMetaResponse
+  selling_point_prompt_md: string
+  selling_point_prompt_source: string
+  saved_selling_point_wheel?: AnchorStyleSellingPointWheelResponse
+  scorecard_prompt_md: string
+  scorecard_prompt_source: string
+  saved_scorecard?: AnchorStyleScorecardResponse
+  default_scorecard_compiler_id: string
+}
+
+export interface AnchorStyleScorecardResponse {
+  asset_id: number
+  meta_prompt_asset_id: number
+  sample_sha256: string
+  status: string
+  scorecard_json: string
+  original_scorecard_json: string
+  extraction_prompt_md: string
+  prompt_source: string
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  persisted_at: string
+  confirmed_at?: string
+  calibration_version: string
+  calibration_error?: string
+}
+
+export interface AnchorStyleSpeechScoreResponse {
+  feedback?: {
+    status: 'ready' | 'no_issue' | 'template_error' | 'unmapped_issue'
+    issue_key?: string
+    dimension?: string
+    issue?: string
+    dimension_deduction?: number
+    deduction?: number
+    actual?: string
+    target?: string
+    prompt: string
+    template_version?: string
+    template_source?: string
+    error?: string
+  }
+  scorecard_asset_id: number
+  meta_prompt_asset_id: number
+  sample_sha256: string
+  text_sha256: string
+  baseline_json: string
+  score: {
+    overall_score: number
+    version: string
+    counting_method: string
+    stats: {
+      chars: number
+      particles: Array<{ term: string; count: number; per_100: number }>
+      audience: Array<{ term: string; count: number; per_100: number }>
+      self: Array<{ term: string; count: number; per_100: number }>
+      self_excluded: Array<{ term: string; count: number; per_100: number }>
+      audience_groups: Array<{ term: string; count: number; per_100: number }>
+      le_count: number
+      le_included: boolean
+      main_audience_count: number
+      self_count: number
+      questions: number
+      question_marks?: number
+      forbidden_words?: Array<{ term: string; count: number; per_100: number }>
+      exclamations: number
+      average_clause_length: number
+      confirmations: Array<{ term: string; count: number; per_100: number }>
+      loops: Array<{ term: string; count: number; per_100: number }>
+      has_price: boolean
+      has_saving: boolean
+    }
+    dimensions: Array<{
+      name: string
+      max_score: number
+      score: number
+      deduction: number
+      applicable: boolean
+      note: string
+      checks: Array<{ label: string; actual: string; target: string; rule: string; deduction: number }>
+    }>
+  }
+}
+
+export interface AnchorStyleRollingFeedbackResponse {
+  status: 'ready' | 'no_issue' | 'model_error' | 'invalid_response'
+  prompt: string
+  selected_addresses: string[]
+  report: {
+    version: string
+    window_count: number
+    window_limit?: number
+    window_mode?: string
+    observation_only?: boolean
+    allowed_addresses: string[]
+    edges: Array<{ index: number; opening: string; ending: string }>
+    opening_groups: Array<{ key: string; count: number; share: number; indices: number[]; adjacent: number[][] }>
+    ending_groups: Array<{ key: string; count: number; share: number; indices: number[]; adjacent: number[][] }>
+    stats: AnchorStyleSpeechScoreResponse['score']['stats']
+    issues: Array<{ issue_key: string; category: 'opening' | 'style' | 'ending'; actual: string; target: string; segment_indices?: number[] }>
+  }
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  error?: string
+  warnings?: string[]
+  correction_sources?: Record<string, 'model' | 'program_fallback'>
+  model: string
+  provider: string
+  profile_id: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  prompt_source: string
+  style_asset_id: number
+  scorecard_asset_id: number
+}
+
+export interface AnchorStyleWorkbenchTerm {
+  kind: string
+  text: string
+  sample_count: number
+  sample_per_1000: number
+  bias?: number
+}
+
+export interface AnchorStyleWorkbenchMonitor {
+  sample_chars: number
+  terms: AnchorStyleWorkbenchTerm[]
+  forbidden_terms: string[]
+  sentence_chars_min: number
+  sentence_chars_max: number
+}
+
+export interface AnchorStyleWorkbenchTrace {
+  system: string
+  user: string
+}
+
+export interface AnchorStyleWorkbenchMetaResponse {
+  asset_id: number
+  status: 'draft' | 'confirmed' | string
+  meta_prompt_md: string
+  original_meta_prompt_md: string
+  monitor: AnchorStyleWorkbenchMonitor
+  analysis_prompt_source: string
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  persisted_at: string
+  confirmed_at?: string
+}
+
+export interface AnchorStyleSellingPointWheelResponse {
+	validation_error?: string
+  asset_id: number
+  status: 'draft' | 'confirmed' | string
+  fact_package_stale?: boolean
+  wheel_json: string
+  original_wheel_json: string
+  extraction_prompt_md: string
+  prompt_source: string
+  fact_package_sha256: string
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  selling_point_count: number
+  combination_count: number
+  persisted_at: string
+  confirmed_at?: string
+}
+
+export interface AnchorStyleSellingPointWheelItem {
+  卖点名: string
+  目标人群?: string
+  痛点?: string
+  角度: string[]
+}
+
+export interface AnchorStyleFactGapSuggestion {
+  主题: string
+  适用范围: string
+  建议分类: 'product' | 'link' | 'trade' | 'fulfillment' | 'identity_location' | 'other'
+  待补事实: string
+  补充价值: string
+  填写提示: string[]
+}
+
+export interface AnchorStyleSellingPointWheelDocument {
+  卖点列表: AnchorStyleSellingPointWheelItem[]
+  事实补充建议: AnchorStyleFactGapSuggestion[]
+}
+
+export interface SpeechMinerMessage {
+  role: 'user' | 'agent'
+  text: string
+}
+
+export interface SpeechMinerOption {
+  label: string
+  value: string
+  action: 'answer' | 'skip' | 'complete'
+}
+
+export interface SpeechMinerFactDraft {
+  category: 'product' | 'link' | 'trade' | 'fulfillment' | 'identity_location' | 'other'
+  key: string
+  value: string
+  source_quote: string
+}
+
+export interface SpeechMinerGuideResponse {
+  reply: string
+  selection_mode: 'single' | 'multiple'
+  options: SpeechMinerOption[]
+  captured_facts: SpeechMinerFactDraft[]
+  completed: boolean
+  provider?: string
+  model?: string
+  latency_ms?: number
+}
+
+export interface SpeechMinerConfirmResponse {
+  facts_saved: boolean
+  added: number
+  wheel_ready: boolean
+  wheel_asset_id?: number
+  selling_points?: number
+  angles?: number
+  published: false
+  notice: string
+  error?: string
+}
+
+export interface AnchorStyleWheelTestResponse {
+  task: {
+    pointer: number
+    cycle: number
+    position: number
+    total: number
+    selling_point: string
+    angle: string
+    key: string
+    target_audience?: string
+    pain_point?: string
+  }
+  next_pointer: number
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  max_chars: number
+  unlimited_chars: boolean
+  actual_chars: number
+  exceeded_limit: boolean
+}
+
+export interface AnchorStyleAgentStudioSessionResponse {
+  session_id: string
+  status: string
+  workspace_id: string
+  region: string
+  agent_id: string
+  agent_name: string
+  agent_version: number
+  agent_model: string
+  environment_id: string
+  environment_name: string
+  environment_auto_selected: boolean
+  credential_profile_id: string
+  credential_name: string
+  created_at: string
+}
+
+export interface AnchorStyleAgentStudioCatalogResponse {
+  workspace_id: string
+  region: string
+  agents: Array<{
+    id: string
+    name: string
+    description: string
+    system: string
+    model: string
+    version: number
+  }>
+  environments: Array<{
+    id: string
+    name: string
+    description: string
+  }>
+}
+
+export interface AnchorStyleAgentStudioTurnResponse {
+  session_id: string
+  first_turn: boolean
+  task: AnchorStyleWheelTestResponse['task']
+  next_pointer: number
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  provider: string
+  latency_ms: number
+  max_chars: number
+  unlimited_chars: boolean
+  actual_chars: number
+  exceeded_limit: boolean
+  stop_reason: string
+  event_ids: string[]
+  prompt_mode: 'bootstrap_style_and_facts' | 'continuation' | string
+  style_asset_id: number
+  wheel_asset_id: number
+  feedback_applied: boolean
+}
+
+export interface AnchorStyleReviewDimension {
+  name: string
+  score: number
+  evidence: string[]
+  diagnosis: string
+}
+
+export interface AnchorStyleReviewResponse {
+  review: {
+    overall_score: number
+    dimensions: AnchorStyleReviewDimension[]
+    strengths: string[]
+    deviations: string[]
+    feedback_prompt: string
+  }
+  fast_stats: {
+    window_chars: number
+    style_score: number
+    metrics: AnchorStyleWorkbenchMetric[]
+    forbidden: string[]
+  }
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  prompt_source: string
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  window_count: number
+  window_chars: number
+}
+
+export interface AnchorStyleWorkbenchState {
+  round: number
+  used_combinations: string[]
+  history: string[]
+  feedback: string[]
+}
+
+export interface AnchorStyleWorkbenchTask {
+  round: number
+  selling_point_key: string
+  selling_point_label: string
+  selling_point_value: string
+  angle: string
+  mainline_phase: string
+  body_function: string
+  cta_intensity: string
+  scarcity_level: number
+  callout: boolean
+  recap: boolean
+}
+
+export interface AnchorStyleWorkbenchMetric {
+  kind: string
+  text: string
+  target_per_1000: number
+  actual_count: number
+  actual_per_1000: number
+  status: 'low' | 'ok' | 'high' | string
+}
+
+export interface AnchorStyleWorkbenchStepResponse {
+  direct_mode: boolean
+  task: AnchorStyleWorkbenchTask
+  request: AnchorStyleWorkbenchTrace
+  raw_response: string
+  postprocess: { enabled: boolean; changes: string[]; text: string }
+  logit_bias: Array<{ text: string; bias: number }>
+  logit_bias_mode: string
+  stats: {
+    window_chars: number
+    style_score: number
+    metrics: AnchorStyleWorkbenchMetric[]
+    forbidden: string[]
+  }
+  next_feedback: string[]
+  state: AnchorStyleWorkbenchState
+  provider: string
+  model: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  target_chars: number
+  actual_raw_chars: number
+  actual_output_chars: number
 }

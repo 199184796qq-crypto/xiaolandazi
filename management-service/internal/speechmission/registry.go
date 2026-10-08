@@ -57,18 +57,21 @@ type QuestionDebtPlan struct {
 }
 
 type InteractionDecisionPlan struct {
-	Handle           bool              `json:"handle"`
-	PrimaryEvent     string            `json:"primary_event,omitempty"`
-	MergedEventIDs   []int64           `json:"merged_event_ids,omitempty"`
-	EventValue       float64           `json:"event_value,omitempty"`
-	ValueLevel       string            `json:"value_level,omitempty"`
-	Reason           string            `json:"reason,omitempty"`
-	DeadlineAt       time.Time         `json:"deadline_at,omitempty"`
-	BudgetLevel      string            `json:"budget_level,omitempty"`
-	BudgetAllowed    bool              `json:"budget_allowed"`
-	Heat             string            `json:"heat,omitempty"`
-	PreferenceFactor float64           `json:"preference_factor,omitempty"`
-	QuestionDebt     *QuestionDebtPlan `json:"question_debt,omitempty"`
+	OnlineCount       int               `json:"online_count,omitempty"`
+	UniqueChatters30s int               `json:"unique_chatters_30s,omitempty"`
+	QuestionPressure  float64           `json:"question_pressure,omitempty"`
+	Handle            bool              `json:"handle"`
+	PrimaryEvent      string            `json:"primary_event,omitempty"`
+	MergedEventIDs    []int64           `json:"merged_event_ids,omitempty"`
+	EventValue        float64           `json:"event_value,omitempty"`
+	ValueLevel        string            `json:"value_level,omitempty"`
+	Reason            string            `json:"reason,omitempty"`
+	DeadlineAt        time.Time         `json:"deadline_at,omitempty"`
+	BudgetLevel       string            `json:"budget_level,omitempty"`
+	BudgetAllowed     bool              `json:"budget_allowed"`
+	Heat              string            `json:"heat,omitempty"`
+	PreferenceFactor  float64           `json:"preference_factor,omitempty"`
+	QuestionDebt      *QuestionDebtPlan `json:"question_debt,omitempty"`
 }
 
 type InteractionPlan struct {

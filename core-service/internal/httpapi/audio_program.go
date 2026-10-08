@@ -39,11 +39,12 @@ func (s *Server) startRoomAudioProgram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		SessionID string                  `json:"session_id"`
-		Label     string                  `json:"label"`
-		VersionID int64                   `json:"version_id"`
-		VersionNo int64                   `json:"version_no"`
-		Tracks    []audioout.ProgramTrack `json:"tracks"`
+		Sequential bool                    `json:"sequential"`
+		SessionID  string                  `json:"session_id"`
+		Label      string                  `json:"label"`
+		VersionID  int64                   `json:"version_id"`
+		VersionNo  int64                   `json:"version_no"`
+		Tracks     []audioout.ProgramTrack `json:"tracks"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -54,12 +55,13 @@ func (s *Server) startRoomAudioProgram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot, err := client.StartProgram(r.Context(), audioout.StartProgramInput{
-		RoomID:    roomID,
-		SessionID: strings.TrimSpace(input.SessionID),
-		Label:     strings.TrimSpace(input.Label),
-		VersionID: input.VersionID,
-		VersionNo: input.VersionNo,
-		Tracks:    input.Tracks,
+		Sequential: input.Sequential,
+		RoomID:     roomID,
+		SessionID:  strings.TrimSpace(input.SessionID),
+		Label:      strings.TrimSpace(input.Label),
+		VersionID:  input.VersionID,
+		VersionNo:  input.VersionNo,
+		Tracks:     input.Tracks,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "启动正式主线声音失败: "+err.Error())

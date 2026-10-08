@@ -40,6 +40,7 @@ type controlHarness struct {
 	eventsBilling      atomic.Value
 	eventsBlocking     atomic.Bool
 	eventsBlock        chan struct{}
+	connectionEvents   chan map[string]any
 }
 
 func TestListenerBindingOnlyAllowsLocalDisplayAndAudioControls(t *testing.T) {
@@ -61,7 +62,7 @@ func TestListenerBindingOnlyAllowsLocalDisplayAndAudioControls(t *testing.T) {
 
 func newControlHarness(t *testing.T, text string, block bool) *controlHarness {
 	t.Helper()
-	h := &controlHarness{events: make(chan map[string]any, 100), dispatchBlock: make(chan struct{}), eventsBlock: make(chan struct{})}
+	h := &controlHarness{events: make(chan map[string]any, 100), connectionEvents: make(chan map[string]any, 100), dispatchBlock: make(chan struct{}), eventsBlock: make(chan struct{})}
 	h.tenant.Store(7)
 	h.dispatchHTTPStatus.Store(200)
 	h.voiceKind.Store("command")
@@ -83,6 +84,11 @@ func newControlHarness(t *testing.T, text string, block bool) *controlHarness {
 			writeJSON(w, 200, provisioning{DeviceID: 9, TenantID: h.tenant.Load(), State: "claimed", DeviceName: "客户自定义小蓝直播助手"})
 		case "/internal/v1/xiaozhi/heartbeat":
 			writeJSON(w, 200, map[string]string{"display_status": "连续待机"})
+		case "/internal/v1/xiaozhi/connection":
+			var event map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&event)
+			h.connectionEvents <- event
+			writeJSON(w, 200, map[string]any{"display_status": "连续待机", "applied": true})
 		case "/internal/v1/xiaozhi/voice":
 			h.voiceCalls.Add(1)
 			if r.Header.Get("X-Device-MAC") != controlTestMAC {

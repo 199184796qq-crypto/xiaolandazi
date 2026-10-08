@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   activateLiveAgentConfigVersion,
   cloneLiveVoiceModelBinding,
   cloneLiveVoiceProfile,
   createLiveAgentConfigDraft,
   deleteLiveVoiceProfile,
+  renameLiveVoiceProfile,
+  saveLiveVoiceModelPreference,
   getLiveAgentConfigVersions,
   getLiveOfficialVoices,
   getLiveVoiceModelBindings,
@@ -18,12 +20,16 @@ import {
 } from '../api'
 import type { LiveAgentConfigVersion, OfficialVoice, VoiceModelBinding, VoiceProfile } from '../types'
 import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
+import { useFeedbackErrorRef } from '../uiFeedback'
 
 const props = defineProps<{ roomId: number | null; roomName?: string; supportSession?: boolean }>()
 const emit = defineEmits<{ changed: [] }>()
 
 const VOICE_PREVIEW_TEXT = '你好，我是你的主播，欢迎为你效劳。'
 const DEFAULT_CLONE_MODEL = 'qwen-audio-3.0-tts-plus'
+const MIN_SAMPLE_SECONDS = 5
+const MAX_SAMPLE_SECONDS = 60
+const MAX_SAMPLE_BYTES = 10 * 1024 * 1024
 const cloneModels = [
   { id: 'qwen-audio-3.0-tts-plus', label: '通用模型（推荐）' },
   { id: 'qwen-audio-3.1-tts-flash', label: '极速模型' },
@@ -46,13 +52,21 @@ const voiceBindings = ref<VoiceModelBinding[]>([])
 const versions = ref<LiveAgentConfigVersion[]>([])
 const quota = ref({ limit: 0, used: 0, remaining: 0 })
 const selectedModels = ref<Record<number, string>>({})
+const savingModelIds = ref<number[]>([])
 const loading = ref(false)
 const selecting = ref(false)
 const bindingBusyKey = ref('')
 const deletingProfileId = ref(0)
-const error = ref('')
+const editingNameId = ref(0)
+const savingNameId = ref(0)
+const nameDraft = ref('')
+const nameError = ref('')
+let nameScope = 0
+const error = useFeedbackErrorRef('')
 const notice = ref('')
 const previewingKey = ref('')
+const previewPhase = ref<'idle' | 'loading' | 'playing'>('idle')
+let previewEpoch = 0
 let previewAudio: HTMLAudioElement | null = null
 
 const cloneOpen = ref(false)
@@ -62,6 +76,7 @@ const selectedAvatarKey = ref<(typeof avatarOptions)[number]['key']>('female_you
 const sampleFile = ref<File | null>(null)
 const sampleDuration = ref(0)
 const sampleError = ref('')
+const cloneError = ref('')
 const sampleInput = ref<HTMLInputElement | null>(null)
 const cloneStage = ref<'idle' | 'uploading' | 'processing'>('idle')
 
@@ -81,10 +96,10 @@ const selectedVoice = computed(() => {
   return asRecord(room.selected_voice)
 })
 
-const currentVoiceName = computed(() => String(selectedVoice.value.name || '').trim() || '龙安灵心')
+const currentVoiceName = computed(() => voiceProfiles.value.find(profile => profile.id === selectedProfileId.value)?.name || String(selectedVoice.value.name || '').trim() || '龙安灵心')
 const selectedProfileId = computed(() => Number(selectedVoice.value.profile_id || 0))
 const canSubmitClone = computed(
-  () => Boolean(cloneName.value.trim() && sampleFile.value && !sampleError.value && sampleDuration.value >= 5 && sampleDuration.value <= 10 && !selecting.value),
+  () => Boolean(cloneName.value.trim() && sampleFile.value && !sampleError.value && sampleDuration.value >= MIN_SAMPLE_SECONDS && sampleDuration.value <= MAX_SAMPLE_SECONDS && !selecting.value),
 )
 
 async function load() {
@@ -96,6 +111,7 @@ async function load() {
     return
   }
   loading.value = true
+  const scope = nameScope, room = props.roomId
   error.value = ''
   try {
     const [official, profiles, bindings, configVersions, profileQuota] = await Promise.all([
@@ -105,28 +121,92 @@ async function load() {
       getLiveAgentConfigVersions(),
       getLiveVoiceProfileQuota(),
     ])
+    if (scope !== nameScope || room !== props.roomId) return
     officialVoices.value = official.items || []
     voiceProfiles.value = (profiles || []).filter((item) => item.clone_status !== 'disabled')
     voiceBindings.value = (bindings || []).filter((item) => item.status !== 'disabled')
     versions.value = configVersions || []
     quota.value = profileQuota
     for (const profile of voiceProfiles.value) {
-      if (!selectedModels.value[profile.id]) selectedModels.value[profile.id] = profileTargetModel(profile)
+      if (!savingModelIds.value.includes(profile.id)) selectedModels.value[profile.id] = profileTargetModel(profile)
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取声音中心失败'
+    if (scope === nameScope && room === props.roomId) error.value = err instanceof Error ? err.message : '读取声音中心失败'
   } finally {
-    loading.value = false
+    if (scope === nameScope && room === props.roomId) loading.value = false
   }
 }
 
+function beginRename(profile: VoiceProfile, event: MouseEvent) {
+  if (props.supportSession || savingNameId.value) return
+  const row = (event.currentTarget as HTMLElement).closest('.custom-copy')
+  editingNameId.value = profile.id
+  nameDraft.value = profile.name
+  nameError.value = ''
+  void nextTick(() => { const input = row?.querySelector('input'); input?.focus(); input?.select() })
+}
+
+function cancelRename() { if (savingNameId.value) return; editingNameId.value = 0; nameError.value = '' }
+
+function nameKeydown(event: KeyboardEvent, profile: VoiceProfile) {
+  if (event.isComposing) return
+  if (event.key === 'Enter') { event.preventDefault(); void saveName(profile) }
+  if (event.key === 'Escape') { event.preventDefault(); cancelRename() }
+}
+
+async function saveName(profile: VoiceProfile) {
+  if (editingNameId.value !== profile.id || savingNameId.value) return
+  const name = nameDraft.value.trim()
+  if (!name || Array.from(name).length > 80) { nameError.value = '声音名称须为1～80字'; return }
+  if (name === profile.name) { cancelRename(); return }
+  const scope = nameScope
+  savingNameId.value = profile.id
+  nameError.value = ''
+  try {
+    const updated = await renameLiveVoiceProfile(profile.id, name, profile.name)
+    if (scope !== nameScope) return
+    voiceProfiles.value = voiceProfiles.value.map(item => item.id === profile.id ? { ...item, name: updated.name } : item)
+    editingNameId.value = 0
+    notice.value = '声音名称已保存'
+  } catch (err) {
+    if (scope === nameScope) nameError.value = err instanceof Error ? err.message : '名称没有保存，请重试'
+  } finally { if (scope === nameScope) savingNameId.value = 0 }
+}
+
 function profileTargetModel(profile: VoiceProfile) {
+  const saved = String(asRecord(asRecord(profile.config).ui_model_preferences)[String(props.roomId || 0)] || '')
+  if (cloneModels.some(item => item.id === saved)) return saved
   if (selectedProfileId.value === profile.id && selectedVoice.value.model) return String(selectedVoice.value.model)
   const configured = String(asRecord(profile.config).target_model || '').trim()
   return cloneModels.some((item) => item.id === configured) ? configured : DEFAULT_CLONE_MODEL
 }
 
+async function rememberModel(profile: VoiceProfile) {
+  if (props.supportSession || !props.roomId || savingModelIds.value.includes(profile.id)) return
+  const scope = nameScope, room = props.roomId, chosen = selectedModels.value[profile.id] || DEFAULT_CLONE_MODEL
+  const previous = profileTargetModel(profile)
+  savingModelIds.value.push(profile.id)
+  error.value = ''; notice.value = ''
+  stopPreview()
+  try {
+    const updated = await saveLiveVoiceModelPreference(room, profile.id, chosen)
+    if (scope !== nameScope || room !== props.roomId) return
+    voiceProfiles.value = voiceProfiles.value.map(item => item.id === profile.id ? updated : item)
+    notice.value = '模型选择已记住；试听不改变直播声音，点击“使用这个模型”后应用到当前直播间。'
+  } catch (err) {
+    if (scope === nameScope && room === props.roomId) { selectedModels.value[profile.id] = previous; error.value = err instanceof Error ? err.message : '模型选择保存失败' }
+  } finally { if (scope === nameScope) savingModelIds.value = savingModelIds.value.filter(id => id !== profile.id) }
+}
+
+function isCustomModelSelected(profile: VoiceProfile) {
+  return isCustomSelected(profile) && String(selectedVoice.value.model || profileTargetModel(profile)) === (selectedModels.value[profile.id] || profileTargetModel(profile))
+}
+
+function customPreviewKey(profile: VoiceProfile) { return `custom-${profile.id}-${selectedModels.value[profile.id] || profileTargetModel(profile)}` }
+
 function stopPreview() {
+  ++previewEpoch
+  previewPhase.value = 'idle'
   if (previewAudio) {
     previewAudio.pause()
     previewAudio.src = ''
@@ -141,17 +221,24 @@ async function playURL(key: string, factory: () => Promise<{ audio_url: string }
     return
   }
   stopPreview()
+  const epoch = previewEpoch
   previewingKey.value = key
+  previewPhase.value = 'loading'
   error.value = ''
   notice.value = ''
   try {
     const result = await factory()
+    if (epoch !== previewEpoch) return
     const audio = new Audio(liveSupportMediaPlaybackURL(result.audio_url))
     previewAudio = audio
-    audio.addEventListener('ended', stopPreview, { once: true })
-    audio.addEventListener('error', stopPreview, { once: true })
+    audio.addEventListener('playing', () => { if (epoch === previewEpoch) previewPhase.value = 'playing' })
+    audio.addEventListener('waiting', () => { if (epoch === previewEpoch) previewPhase.value = 'loading' })
+    audio.addEventListener('ended', () => { if (epoch === previewEpoch) stopPreview() }, { once: true })
+    audio.addEventListener('error', () => { if (epoch === previewEpoch) { stopPreview(); error.value = '试听声音加载失败，请重试' } }, { once: true })
+    audio.addEventListener('pause', () => { if (epoch === previewEpoch) previewPhase.value = 'idle' })
     await audio.play()
   } catch (err) {
+    if (epoch !== previewEpoch) return
     stopPreview()
     error.value = err instanceof Error ? err.message : '声音试听失败'
   }
@@ -170,6 +257,7 @@ function updatedSpeechConfig(voice: Record<string, unknown>) {
 
 async function bindVoice(voice: Record<string, unknown>): Promise<boolean> {
   if (!props.roomId || selecting.value) return false
+  const scope = nameScope, room = props.roomId
   selecting.value = true
   error.value = ''
   notice.value = ''
@@ -177,16 +265,19 @@ async function bindVoice(voice: Record<string, unknown>): Promise<boolean> {
     const draft = await createLiveAgentConfigDraft({
       speech_config: updatedSpeechConfig({ ...voice, selected_at: new Date().toISOString() }),
     })
+    if (scope !== nameScope || room !== props.roomId) return false
     await activateLiveAgentConfigVersion(draft.id)
+    if (scope !== nameScope || room !== props.roomId) return false
     await load()
+    if (scope !== nameScope || room !== props.roomId) return false
     notice.value = `“${String(voice.name || '声音')}”已用于直播间「${props.roomName || '当前直播间'}」`
     emit('changed')
     return true
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '保存直播间声音失败'
+    if (scope === nameScope) error.value = err instanceof Error ? err.message : '保存直播间声音失败'
     return false
   } finally {
-    selecting.value = false
+    if (scope === nameScope) selecting.value = false
   }
 }
 
@@ -209,45 +300,53 @@ async function ensureBinding(profile: VoiceProfile, model: string): Promise<Voic
   if (existing) return existing
   const key = profile.id + ':' + model
   if (!profile.sample_asset_id || bindingBusyKey.value) return null
+  const scope = nameScope
   bindingBusyKey.value = key
   error.value = ''
   try {
     const binding = await cloneLiveVoiceModelBinding(profile.id, { model })
+    if (scope !== nameScope) return null
     voiceBindings.value = [binding, ...voiceBindings.value.filter((item) => item.id !== binding.id)]
     return binding
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '生成模型音色失败'
+    if (scope === nameScope) error.value = err instanceof Error ? err.message : '生成模型音色失败'
     return null
   } finally {
-    bindingBusyKey.value = ''
+    if (scope === nameScope) bindingBusyKey.value = ''
   }
 }
 
 async function previewCustom(profile: VoiceProfile) {
+  if (savingModelIds.value.includes(profile.id)) return
   const model = selectedModels.value[profile.id] || profileTargetModel(profile)
-  const binding = await ensureBinding(profile, model)
-  if (!binding) return
-  await playURL('binding-' + binding.id, () => previewLiveVoiceModelBinding(binding.id, VOICE_PREVIEW_TEXT))
+  await playURL(customPreviewKey(profile), async () => {
+    const binding = await ensureBinding(profile, model)
+    if (!binding) throw new Error(error.value || '声音模型尚未准备好')
+    return previewLiveVoiceModelBinding(binding.id, VOICE_PREVIEW_TEXT)
+  })
 }
 
 async function useCustom(profile: VoiceProfile) {
+  if (savingModelIds.value.includes(profile.id) || !props.roomId) return
+  const scope = nameScope, room = props.roomId
   const model = selectedModels.value[profile.id] || profileTargetModel(profile)
   const binding = await ensureBinding(profile, model)
-  if (!binding || binding.status !== 'ready' || !props.roomId) return
+  if (!binding || binding.status !== 'ready' || scope !== nameScope || room !== props.roomId) return
   const saved = await bindVoice({
     source: 'clone', provider: binding.provider, name: profile.name, voice_id: binding.voice_id,
     profile_id: profile.id, binding_id: binding.id, model: binding.model, rate: binding.rate || 1,
   })
-  if (!saved) return
+  if (!saved || scope !== nameScope || room !== props.roomId) return
   selecting.value = true
   try {
-    await publishLiveAgentVoiceBinding(props.roomId, binding.id)
+    await publishLiveAgentVoiceBinding(room, binding.id)
+    if (scope !== nameScope || room !== props.roomId) return
     await load()
     emit('changed')
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '声音已保存，但发布到直播间失败'
+    if (scope === nameScope) error.value = err instanceof Error ? err.message : '声音已保存，但应用到智能体方案失败'
   } finally {
-    selecting.value = false
+    if (scope === nameScope) selecting.value = false
   }
 }
 
@@ -269,6 +368,7 @@ function resetCloneForm() {
   sampleFile.value = null
   sampleDuration.value = 0
   sampleError.value = ''
+  cloneError.value = ''
   cloneStage.value = 'idle'
   if (sampleInput.value) sampleInput.value.value = ''
 }
@@ -300,17 +400,24 @@ async function readAudioDuration(file: File) {
 }
 
 async function chooseSample(event: Event) {
+  if (selecting.value) return
   const target = event.target as HTMLInputElement
   const file = target.files?.[0] || null
   sampleFile.value = null
   sampleDuration.value = 0
   sampleError.value = ''
+  cloneError.value = ''
   if (!file) return
+  if (file.size > MAX_SAMPLE_BYTES) {
+    sampleError.value = '声音样本不能超过 10MB，请压缩后重新选择。'
+    target.value = ''
+    return
+  }
   try {
     const duration = await readAudioDuration(file)
     sampleDuration.value = duration
-    if (duration < 5 || duration > 10) {
-      sampleError.value = `录音必须为 5–10 秒，当前约 ${duration.toFixed(1)} 秒，请重新选择。`
+    if (duration < MIN_SAMPLE_SECONDS || duration > MAX_SAMPLE_SECONDS) {
+      sampleError.value = `录音需为 5–60 秒，推荐 10–20 秒；当前约 ${duration.toFixed(1)} 秒，请重新选择。`
       target.value = ''
       return
     }
@@ -325,6 +432,7 @@ async function submitClone() {
   if (!canSubmitClone.value || !sampleFile.value) return
   selecting.value = true
   error.value = ''
+  cloneError.value = ''
   notice.value = ''
   try {
     cloneStage.value = 'uploading'
@@ -345,7 +453,7 @@ async function submitClone() {
     await load()
     notice.value = '声音已转为规范格式并生成成功，现在可以试听或用于当前直播间。'
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '声音生成失败'
+    cloneError.value = err instanceof Error ? err.message : '声音生成失败'
     cloneStage.value = 'idle'
   } finally {
     selecting.value = false
@@ -398,9 +506,9 @@ function createdLabel(value: string) {
   })
 }
 
-watch(() => props.roomId, () => void load())
+watch(() => props.roomId, () => { nameScope++; stopPreview(); bindingBusyKey.value = ''; selecting.value = false; selectedModels.value = {}; savingModelIds.value = []; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
 onMounted(() => void load())
-onBeforeUnmount(stopPreview)
+onBeforeUnmount(() => { nameScope++; stopPreview() })
 </script>
 
 <template>
@@ -457,38 +565,44 @@ onBeforeUnmount(stopPreview)
         <div v-else-if="voiceProfiles.length" class="voice-rows custom-voice-rows">
           <article v-for="profile in voiceProfiles" :key="profile.id" class="voice-row custom-voice-row" :class="{ selected: isCustomSelected(profile) }">
             <div class="voice-avatar custom-avatar" :class="'tone-' + avatarForProfile(profile).tone"><span>{{ avatarForProfile(profile).emoji }}</span><i class="avatar-edit">✓</i></div>
-            <div class="voice-row-copy custom-copy"><div><strong>{{ profile.name }}</strong><span v-if="isCustomSelected(profile)">当前使用</span></div><p>创建于 {{ createdLabel(profile.created_at) }}</p></div>
-            <label class="model-picker"><span>选择模型</span><select v-model="selectedModels[profile.id]"><option v-for="model in cloneModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
+            <div class="voice-row-copy custom-copy"><div>
+              <input v-if="editingNameId === profile.id" v-model="nameDraft" class="voice-name-input" aria-label="声音名称" maxlength="80" :disabled="savingNameId === profile.id" @keydown.stop="nameKeydown($event, profile)" @blur="saveName(profile)" />
+              <template v-else><strong>{{ profile.name }}</strong><button v-if="!props.supportSession" type="button" class="voice-name-edit" :aria-label="'修改声音名称：' + profile.name" title="修改名称" :disabled="!!savingNameId" @click.stop="beginRename(profile, $event)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button></template>
+              <span v-if="isCustomSelected(profile)">当前使用</span>
+            </div><small v-if="editingNameId === profile.id && nameError" class="voice-name-error" role="alert">{{ nameError }}</small><small v-else-if="savingNameId === profile.id" class="voice-name-status" role="status">正在保存…</small><p>创建于 {{ createdLabel(profile.created_at) }}</p></div>
+            <label class="model-picker"><span>{{ savingModelIds.includes(profile.id) ? '正在记住选择…' : '选择模型' }}</span><select v-model="selectedModels[profile.id]" :disabled="selecting || savingModelIds.includes(profile.id)" @change="rememberModel(profile)"><option v-for="model in cloneModels" :key="model.id" :value="model.id">{{ model.label }}</option></select><small v-if="isCustomSelected(profile) && !isCustomModelSelected(profile)">当前生效：{{ cloneModels.find(model => model.id === selectedVoice.model)?.label || selectedVoice.model }}</small></label>
             <div class="voice-row-actions custom-actions">
-              <button type="button" class="preview-button" :disabled="Boolean(bindingBusyKey)" @click="previewCustom(profile)"><span>▶</span>{{ bindingBusyKey.startsWith(profile.id + ':') ? '生成中…' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isCustomSelected(profile) }" :disabled="selecting || Boolean(bindingBusyKey)" @click="useCustom(profile)">{{ isCustomSelected(profile) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="preview-button" :disabled="savingModelIds.includes(profile.id) || (Boolean(bindingBusyKey) && previewingKey !== customPreviewKey(profile))" @click="previewCustom(profile)"><span>{{ previewingKey === customPreviewKey(profile) ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === customPreviewKey(profile) ? previewPhase === 'playing' ? '停止试听' : '准备中…' : '试听' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :disabled="selecting || Boolean(bindingBusyKey) || savingModelIds.includes(profile.id)" @click="useCustom(profile)">{{ isCustomModelSelected(profile) ? '当前使用' : isCustomSelected(profile) ? '使用这个模型' : '使用这个声音' }}</button>
               <button v-if="!props.supportSession" type="button" class="delete-voice-button" :disabled="deletingProfileId === profile.id" title="删除自定义声音" @click="removeCustomVoice(profile)">{{ deletingProfileId === profile.id ? '…' : '删除' }}</button>
             </div>
           </article>
         </div>
 
-        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>还没有自定义声音</strong><p>上传一段 5–10 秒的清晰录音，创建你的专属音色。</p><button type="button" @click="openCloneDialog">＋ 上传声音样本</button></div>
+        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>还没有自定义声音</strong><p>上传清晰录音，推荐 10–20 秒，最长 60 秒，创建你的专属音色。</p><button type="button" @click="openCloneDialog">＋ 上传声音样本</button></div>
+        <div v-if="previewingKey" class="voice-preview-wave-panel" :class="{ 'is-playing': previewPhase === 'playing' }" role="status"><span>{{ previewPhase === 'playing' ? '正在试听' : '正在准备试听声音…' }}</span><div class="voice-preview-wave" aria-hidden="true"><i v-for="bar in 27" :key="bar" :style="{ '--bar-height': (12 + Math.abs(Math.sin(bar * .77)) * 30) + 'px', '--bar-delay': (bar % 7) * -.12 + 's' }"></i></div><button type="button" @click="stopPreview">停止</button></div>
       </section>
     </div>
 
     <Teleport to="body">
       <div v-if="cloneOpen" class="voice-dialog-overlay" @click.self="closeCloneDialog">
         <section class="voice-dialog" role="dialog" aria-modal="true" aria-label="上传声音样本">
-          <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>上传声音样本</h3><p>选择头像、填写名称，再上传 5–10 秒的单人清晰录音。</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
+          <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>上传声音样本</h3><p>选择头像、填写名称，再上传单人清晰录音：推荐 10–20 秒，最长 60 秒。</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
           <div class="dialog-quota"><span>自定义声音名额</span><b>已用 {{ quota.used }} 个，共 {{ quota.limit }} 个</b></div>
-          <fieldset class="avatar-picker">
+          <fieldset class="avatar-picker" :disabled="selecting">
             <legend>选择头像</legend>
             <button v-for="avatar in avatarOptions" :key="avatar.key" type="button" :class="['avatar-option', 'tone-' + avatar.tone, { active: selectedAvatarKey === avatar.key }]" @click="selectedAvatarKey = avatar.key"><span>{{ avatar.emoji }}</span><small>{{ avatar.label }}</small></button>
           </fieldset>
-          <label class="voice-clone-field"><span>声音名字</span><input v-model="cloneName" maxlength="60" placeholder="例如：小悠、门店主播" /></label>
+          <label class="voice-clone-field"><span>声音名字</span><input v-model="cloneName" :disabled="selecting" maxlength="60" placeholder="例如：小悠、门店主播" /></label>
           <label class="voice-clone-upload" :class="{ invalid: sampleError }">
-            <input ref="sampleInput" type="file" accept="audio/*" @change="chooseSample" /><span class="upload-icon">↑</span>
-            <strong>{{ sampleFile ? sampleFile.name : '选择 5–10 秒声音文件' }}</strong>
-            <small v-if="sampleFile">时长 {{ sampleDuration.toFixed(1) }} 秒 · 将自动转为标准 WAV 格式</small><small v-else>支持常见音频格式，要求单人、无音乐、无噪声</small>
+            <input ref="sampleInput" type="file" accept="audio/*" :disabled="selecting" @change="chooseSample" /><span class="upload-icon">↑</span>
+            <strong>{{ sampleFile ? sampleFile.name : '选择声音文件（最长 60 秒）' }}</strong>
+            <small v-if="sampleFile">时长 {{ sampleDuration.toFixed(1) }} 秒 · 将自动转为标准 WAV 格式</small><small v-else>5–60 秒、不超过 10MB；至少 5 秒清晰人声，无音乐、无噪声</small>
           </label>
           <p v-if="sampleError" class="sample-error">{{ sampleError }}</p>
+          <p v-if="cloneError" class="voice-clone-error" role="alert">{{ cloneError }}</p>
           <footer class="voice-clone-actions">
-            <span v-if="cloneStage === 'uploading'">正在上传声音样本…</span><span v-else-if="cloneStage === 'processing'">正在转为规范格式并生成声音 ID…</span><span v-else>生成成功后会自动显示在“我的声音”中</span>
+            <span role="status" aria-live="polite" :class="{ 'clone-progress': selecting }"><i v-if="selecting" class="clone-spinner" aria-hidden="true"></i>{{ cloneStage === 'uploading' ? '正在上传声音样本…' : cloneStage === 'processing' ? '正在处理样本并生成声音，请稍候…' : '生成成功后会自动显示在“我的声音”中' }}</span>
             <div><button type="button" :disabled="selecting" @click="closeCloneDialog">取消</button><button type="button" class="primary-button" :disabled="!canSubmitClone" @click="submitClone">{{ selecting ? '处理中…' : '确定并生成' }}</button></div>
           </footer>
         </section>
@@ -498,6 +612,9 @@ onBeforeUnmount(stopPreview)
 </template>
 
 <style scoped>
+.voice-name-edit{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:7px;background:transparent;color:#6271ec;cursor:pointer}.voice-name-edit:hover{background:#edf0ff}.voice-name-edit:focus-visible{outline:2px solid #6373ed;outline-offset:2px}.voice-name-input{min-width:80px;width:210px;max-width:100%;padding:4px 8px;border:1px solid #8d9af6;border-radius:8px;background:#fff;color:#17233a;font:inherit;font-weight:800;outline:none}.voice-name-error{display:block;color:#b92e45;margin-top:6px}.voice-name-status{display:block;color:#7786a6;margin-top:6px}
+.voice-clone-error{display:block;margin:12px 0 0;padding:11px 14px;border:1px solid #ffcfd7;border-radius:12px;background:#fff0f2;color:#b92e45;font-weight:700;overflow-wrap:anywhere}
+.clone-progress{display:flex;align-items:center;gap:8px}.clone-spinner{width:16px;height:16px;flex:none;border:2px solid #dce2ff;border-top-color:#5669f5;border-radius:50%;animation:clone-spin .8s linear infinite}@keyframes clone-spin{to{transform:rotate(360deg)}}
 .voice-center{display:grid;gap:14px;padding:2px 0 28px;color:#17233a}.voice-room-strip{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border:1px solid #e2e8f5;border-radius:18px;background:linear-gradient(120deg,#fff,#f6f9ff);box-shadow:0 12px 30px rgba(76,101,168,.06)}.voice-room-strip>div:first-child{display:grid;gap:2px}.section-kicker{font-size:11px;font-weight:900;letter-spacing:.16em;color:#8391aa}.voice-room-strip strong{font-size:20px}.room-voice-state{display:flex;align-items:center;gap:8px;color:#8490a5;font-size:12px}.room-voice-state b{color:#253654;font-size:13px}.room-voice-state i{width:1px;height:22px;margin:0 8px;background:#dde5f2}.inline-error,.inline-notice{margin:0;padding:11px 14px;border-radius:12px;font-weight:700}.inline-error{color:#b92e45;background:#fff0f2;border:1px solid #ffcfd7}.inline-notice{color:#087a5a;background:#edfff8;border:1px solid #bdeedd}
 .voice-workspace{display:grid;grid-template-columns:minmax(270px,310px) minmax(0,1fr);gap:14px;min-height:590px;padding:12px;border:1px solid #dfe7f6;border-radius:26px;background:linear-gradient(145deg,#f7f9ff,#edf3ff);box-shadow:0 24px 60px rgba(41,76,150,.08)}.voice-side-card,.voice-list-panel{position:relative;overflow:hidden;border:1px solid rgba(222,230,245,.9);border-radius:22px;background:rgba(255,255,255,.82)}.voice-side-card{display:flex;flex-direction:column;padding:28px 22px 22px;background:linear-gradient(160deg,#fff 0%,#f7f9ff 64%,#eaf0ff 100%)}.side-eyebrow{display:block;margin-bottom:7px;color:#8190a9;font-size:12px;font-weight:800}.voice-side-card h3{margin:0;font-size:25px;line-height:1.25}.voice-side-card>div>p{margin:10px 0 0;color:#75849d;font-size:14px;line-height:1.6}.voice-library-nav{display:grid;gap:12px;margin-top:34px}.voice-library-nav button{display:grid;grid-template-columns:52px 1fr auto;align-items:center;gap:13px;min-height:84px;padding:12px 14px;border:1px solid #e1e7f3;border-radius:17px;background:rgba(255,255,255,.86);color:#243450;text-align:left;cursor:pointer;transition:.22s ease}.voice-library-nav button:hover{transform:translateY(-2px);box-shadow:0 12px 26px rgba(62,91,165,.12)}.voice-library-nav button.active{border-color:#6f82ff;background:linear-gradient(135deg,#7194ff,#5764ed);color:#fff;box-shadow:0 16px 30px rgba(76,91,235,.24)}.voice-library-nav button>span:nth-child(2){display:grid;gap:3px}.voice-library-nav b{font-size:18px}.voice-library-nav small{color:#8a96aa}.voice-library-nav button.active small{color:#e6ebff}.voice-library-nav em{font-style:normal;font-size:32px;font-weight:300}.nav-icon{width:50px;height:50px;display:grid;place-items:center;border-radius:15px;background:linear-gradient(145deg,#edf1ff,#dfe6ff);color:#5368ed;font-size:22px;box-shadow:inset 0 1px #fff}.voice-library-nav button.active .nav-icon{background:linear-gradient(145deg,#3459f4,#2440cf);color:#fff}.voice-side-art{position:absolute;left:0;right:0;bottom:0;height:180px;pointer-events:none;background:radial-gradient(circle at 74% 58%,rgba(86,114,239,.16),transparent 35%),linear-gradient(160deg,transparent 38%,rgba(207,218,248,.45) 39%,rgba(183,198,239,.36) 65%,transparent 66%)}.chat-bubble{position:absolute;left:48%;top:42px;padding:16px 20px;border-radius:15px;background:linear-gradient(145deg,#e3eaff,#becdf9);color:#fff;letter-spacing:4px;font-weight:900}.microphone{position:absolute;right:42px;top:64px;width:54px;height:72px;display:grid;place-items:center;border-radius:30px;background:linear-gradient(#7aa0ff,#334ee4);color:#fff;font-size:34px;box-shadow:0 12px 30px rgba(57,82,222,.25)}.sound-wave{position:absolute;right:15px;top:95px;color:#8da4f3;letter-spacing:2px}
 .voice-list-panel{padding:26px;background:rgba(255,255,255,.88)}.voice-list-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:22px}.voice-list-head h3{margin:0;font-size:25px}.voice-list-head p{margin:6px 0 0;color:#75839b;font-size:14px}.voice-title-line{display:flex;align-items:center;gap:10px}.quota-chip{padding:4px 9px;border-radius:999px;background:#eef0ff;color:#5e61df;font-size:12px;font-weight:800}.upload-sample-button{min-height:43px;padding:0 17px;border:1px solid #d9e1f0;border-radius:13px;background:#fff;color:#30415f;font-weight:900;cursor:pointer;box-shadow:0 8px 18px rgba(48,74,132,.06);transition:.2s}.upload-sample-button:hover{transform:translateY(-2px);border-color:#8ea0ff;box-shadow:0 12px 24px rgba(79,94,226,.18)}.upload-sample-button span{font-size:21px;margin-right:5px}.voice-loading{padding:50px;text-align:center;color:#8090a7}.voice-rows{display:grid;gap:10px}.voice-row{display:grid;grid-template-columns:76px minmax(180px,1fr) auto;align-items:center;gap:16px;min-height:112px;padding:14px 16px;border:1px solid #e0e7f3;border-radius:18px;background:rgba(255,255,255,.92);transition:.2s}.voice-row:hover{transform:translateY(-1px);border-color:#bdc9f0;box-shadow:0 12px 28px rgba(48,74,132,.08)}.voice-row.selected{border-color:#8799ff;box-shadow:0 0 0 2px rgba(104,124,247,.08),0 12px 28px rgba(68,89,203,.11)}
@@ -505,4 +622,5 @@ onBeforeUnmount(stopPreview)
 .custom-voice-row{grid-template-columns:76px minmax(150px,1fr) minmax(190px,230px) auto}.custom-avatar .avatar-edit{position:absolute;right:-2px;bottom:0;width:21px;height:21px;display:grid;place-items:center;border:3px solid #fff;border-radius:50%;background:#6178ef;color:#fff;font-size:10px;font-style:normal}.model-picker{display:grid;gap:5px}.model-picker>span{color:#8090a8;font-size:11px}.model-picker select{width:100%;min-height:43px;padding:0 36px 0 12px;border:1px solid #dbe3f1;border-radius:12px;background:#fff;color:#2d3e5d;font-weight:700}.delete-voice-button{min-width:56px!important;padding:0 10px!important;color:#b54a5b!important}.delete-voice-button:hover:not(:disabled){border-color:#f1b7c0!important;background:#fff3f5!important;box-shadow:none!important}.voice-empty{min-height:330px;display:grid;place-items:center;align-content:center;gap:8px;border:1px dashed #cbd6eb;border-radius:20px;background:linear-gradient(145deg,#fff,#f5f8ff);text-align:center;color:#77869e}.voice-empty>span{width:66px;height:66px;display:grid;place-items:center;border-radius:20px;background:#edf1ff;color:#5368ea;font-size:32px}.voice-empty strong{color:#253551;font-size:20px}.voice-empty p{margin:0}.voice-empty button{margin-top:8px;min-height:42px;padding:0 16px;border:0;border-radius:12px;background:#5669eb;color:#fff;font-weight:900;cursor:pointer}
 .voice-dialog-overlay{position:fixed;inset:0;z-index:4400;display:grid;place-items:center;padding:22px;background:rgba(18,31,60,.52);backdrop-filter:blur(5px)}.voice-dialog{width:min(720px,95vw);max-height:92vh;overflow:auto;padding:24px;border:1px solid rgba(255,255,255,.8);border-radius:24px;background:linear-gradient(145deg,#fff,#f5f8ff);box-shadow:0 34px 90px rgba(16,31,72,.34)}.voice-dialog>header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.voice-dialog h3{margin:4px 0 0;font-size:27px}.voice-dialog header p{margin:6px 0 0;color:#75849b}.voice-close{border:0;background:transparent;color:#7b889e;font-size:31px;cursor:pointer}.dialog-quota{display:flex;justify-content:space-between;gap:14px;margin-top:18px;padding:11px 14px;border-radius:12px;background:#edf2ff;color:#61718d;font-size:13px}.dialog-quota b{color:#445cdc}.avatar-picker{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:18px 0 0;padding:0;border:0}.avatar-picker legend{grid-column:1/-1;margin-bottom:8px;color:#33435f;font-weight:900}.avatar-option{display:grid;place-items:center;gap:3px;min-height:84px;padding:7px;border:2px solid transparent;border-radius:15px;cursor:pointer;transition:.18s}.avatar-option:hover{transform:translateY(-2px)}.avatar-option.active{border-color:#5b70ee;box-shadow:0 0 0 3px rgba(91,112,238,.11)}.avatar-option span{font-size:34px}.avatar-option small{color:#40506c;font-weight:800}.voice-clone-field{display:grid;gap:7px;margin-top:17px;color:#34445f;font-weight:900}.voice-clone-field input{min-height:45px;padding:9px 12px;border:1px solid #d2dbea;border-radius:12px;background:#fff;font:inherit}.voice-clone-upload{display:grid;place-items:center;gap:5px;margin-top:15px;padding:18px;border:1px dashed #aebce0;border-radius:16px;background:rgba(255,255,255,.86);cursor:pointer;text-align:center}.voice-clone-upload.invalid{border-color:#ef9cac;background:#fff6f7}.voice-clone-upload input{width:100%;font-size:12px}.voice-clone-upload .upload-icon{width:36px;height:36px;display:grid;place-items:center;border-radius:11px;background:#e9eeff;color:#536bed;font-size:22px;font-weight:900}.voice-clone-upload small{color:#7e8ca2}.sample-error{margin:7px 0 0;color:#bd3e52;font-size:13px;font-weight:700}.voice-clone-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:16px;border-top:1px solid #e1e7f1}.voice-clone-actions>span{color:#75839a;font-size:12px}.voice-clone-actions>div{display:flex;gap:9px}.voice-clone-actions button{min-height:42px;padding:0 17px;border:1px solid #d7dfed;border-radius:11px;background:#fff;color:#34455f;font-weight:900;cursor:pointer}.primary-button{border-color:#5367ec!important;background:linear-gradient(135deg,#5978ff,#5360e5)!important;color:#fff!important}.voice-clone-actions button:disabled{opacity:.5;cursor:not-allowed}
 @media (max-width:1180px){.voice-workspace{grid-template-columns:240px minmax(0,1fr)}.voice-side-card{padding:22px 16px}.custom-voice-row{grid-template-columns:66px 1fr 190px}.custom-actions{grid-column:2/-1;justify-content:flex-end}.voice-row-actions button{padding:0 13px}}@media (max-width:860px){.voice-room-strip{align-items:flex-start;flex-direction:column}.voice-workspace{grid-template-columns:1fr}.voice-side-card{min-height:auto}.voice-side-art{display:none}.voice-library-nav{grid-template-columns:1fr 1fr;margin-top:20px}.voice-list-panel{padding:18px}.voice-row,.custom-voice-row{grid-template-columns:64px 1fr}.voice-row-actions,.model-picker{grid-column:2}.voice-row-actions{justify-content:flex-start;flex-wrap:wrap}.voice-list-head{align-items:flex-start}.avatar-picker{grid-template-columns:repeat(2,1fr)}}@media (max-width:560px){.voice-library-nav{grid-template-columns:1fr}.voice-list-head{flex-direction:column}.voice-row-actions button{flex:1}.voice-clone-actions{align-items:flex-start;flex-direction:column}.voice-clone-actions>div{width:100%;justify-content:flex-end}}
+.voice-preview-wave-panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10030;box-sizing:border-box;display:grid;justify-items:center;gap:16px;width:min(380px,calc(100vw - 32px));padding:25px 28px;border:1px solid #e2dcff;border-radius:24px;background:linear-gradient(135deg,#fff,#f1edff);box-shadow:0 18px 60px #6451b34d;color:#6655bd;font-weight:800}.voice-preview-wave{height:48px;display:flex;align-items:center;justify-content:center;gap:4px}.voice-preview-wave i{width:5px;height:7px;border-radius:5px;background:linear-gradient(#69baff,#8a64ed);opacity:.65}.voice-preview-wave-panel.is-playing .voice-preview-wave i{height:var(--bar-height);opacity:1;animation:voice-audition-wave .85s ease-in-out infinite alternate;animation-delay:var(--bar-delay)}.voice-preview-wave-panel button{border:1px solid #ded7f8;border-radius:10px;background:#fff;color:#7865bf;padding:7px 25px;font:inherit;cursor:pointer}.model-picker small{color:#9a7b39;font-size:11px;line-height:1.6}@keyframes voice-audition-wave{from{transform:scaleY(.35)}to{transform:scaleY(1)}}@media(prefers-reduced-motion:reduce){.voice-preview-wave-panel.is-playing .voice-preview-wave i{animation:none}}
 </style>

@@ -28,6 +28,9 @@ interface FeedbackState {
 
 let nextToastID = 1
 let confirmResolver: ((value: boolean) => void) | null = null
+const requestFailures = new Map<string, string>()
+const pendingAlerts: { title: string; message: string }[] = []
+let lastReadFailureNoticeAt = 0
 
 export const feedbackState = reactive<FeedbackState>({
   alertOpen: false,
@@ -47,13 +50,43 @@ export const feedbackState = reactive<FeedbackState>({
 export function showAlert(message: string, title = '操作提示') {
   const normalized = String(message || '').trim()
   if (!normalized) return
+  if (feedbackState.alertOpen) {
+    if (feedbackState.alertMessage !== normalized && !pendingAlerts.some(item => item.message === normalized)) pendingAlerts.push({ title, message: normalized })
+    return
+  }
   feedbackState.alertTitle = String(title || '操作提示').trim() || '操作提示'
   feedbackState.alertMessage = normalized
   feedbackState.alertOpen = true
 }
 
+// GET is used heavily by background polling. A deployment or brief Core restart
+// can make many different reads fail together; never queue one blocking dialog
+// per endpoint. Writes still report their exact failure as a modal.
+export function showRequestError(url: string, method: string, message: string) {
+  const normalizedMethod = method.toUpperCase()
+  const key = `${normalizedMethod} ${url}`
+  if (normalizedMethod === 'GET' && requestFailures.get(key) === message) return
+  requestFailures.set(key, message)
+  if (requestFailures.size > 200) requestFailures.delete(requestFailures.keys().next().value!)
+  if (normalizedMethod === 'GET') {
+    const now = Date.now()
+    if (now - lastReadFailureNoticeAt >= 15_000) {
+      lastReadFailureNoticeAt = now
+      showToast('数据连接波动', '后台正在自动重连，不影响已经保存的内容。', 'warning', 3600)
+    }
+    return
+  }
+  showAlert(message, '请求未完成')
+}
+
+export function clearRequestError(url: string, method: string) {
+  requestFailures.delete(`${method.toUpperCase()} ${url}`)
+}
+
 export function dismissAlert() {
   feedbackState.alertOpen = false
+  const next = pendingAlerts.shift()
+  if (next) showAlert(next.message, next.title)
 }
 
 export function useFeedbackErrorRef(initial = ''): Ref<string> {
@@ -64,9 +97,10 @@ export function useFeedbackErrorRef(initial = ''): Ref<string> {
       return value
     },
     set(next) {
+      const previous = value
       value = String(next || '')
       trigger()
-      if (value.trim()) showAlert(value, '操作未完成')
+      if (value.trim() && value !== previous && ![...requestFailures.values()].includes(value)) showAlert(value, '操作未完成')
     },
   }))
 }

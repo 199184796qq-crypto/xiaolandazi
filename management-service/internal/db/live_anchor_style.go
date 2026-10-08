@@ -53,7 +53,7 @@ func scanLiveAnchorStyle(row interface{ Scan(...any) error }) (model.LiveAnchorS
 	var item model.LiveAnchorStyle
 	var profileRaw string
 	var createdBy, updatedBy sql.NullInt64
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.AvatarType); err != nil {
 		return item, err
 	}
 	item.Profile = decodeLiveAnchorStyleProfile(profileRaw)
@@ -73,7 +73,7 @@ const liveAnchorStyleSelect = `
 		(SELECT COUNT(*) FROM live_anchor_style_samples sm WHERE sm.style_id=s.id) AS sample_count,
 		(SELECT COUNT(*) FROM live_anchor_style_trainings tr WHERE tr.style_id=s.id) AS training_count,
 		(SELECT COUNT(*) FROM live_anchor_style_plan_bindings b WHERE b.style_id=s.id) AS bound_plan_count,
-		s.created_by_user_id, s.updated_by_user_id, s.created_at, s.updated_at
+		s.created_by_user_id, s.updated_by_user_id, s.created_at, s.updated_at, s.avatar_type
 	FROM live_anchor_styles s
 `
 
@@ -137,10 +137,22 @@ func (s *Store) UpdateLiveAnchorStyle(ctx context.Context, tenantID, styleID, ac
 	args := []any{name, strings.TrimSpace(input.Description), actorID, styleID, tenantID}
 	query := `UPDATE live_anchor_styles SET name=?, description=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)`
 	if input.Profile != nil {
+		// The versioned overall result is authoritative. Metadata saves must not
+		// overwrite it with a stale browser profile or a single sample result.
+		var active int64
+		if err := s.db.QueryRowContext(ctx, `SELECT active_analysis_version_id FROM live_anchor_styles WHERE id=? AND tenant_id=? AND status='active'`, styleID, tenantID).Scan(&active); err != nil {
+			return model.LiveAnchorStyle{}, err
+		}
+		if active != 0 {
+			return model.LiveAnchorStyle{}, errors.New("请通过综合风格版本编辑或切换风格，不可直接覆盖")
+		}
 		query += `, profile_json=?`
 		args = []any{name, strings.TrimSpace(input.Description), actorID, encodeJSON(*input.Profile), styleID, tenantID}
 	}
 	query += ` WHERE id=? AND tenant_id=? AND status='active'`
+	if input.Profile != nil {
+		query += ` AND active_analysis_version_id=0`
+	}
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return model.LiveAnchorStyle{}, err
@@ -163,6 +175,21 @@ func (s *Store) DeleteLiveAnchorStyle(ctx context.Context, tenantID, styleID int
 	}
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM live_anchor_style_plan_bindings WHERE tenant_id=? AND style_id=?`, tenantID, styleID)
 	return nil
+}
+
+func (s *Store) UpdateLiveAnchorStyleAvatar(ctx context.Context, tenantID, styleID, actorID int64, kind string) (model.LiveAnchorStyle, error) {
+	if !model.ValidLiveAnchorAvatar(kind) {
+		return model.LiveAnchorStyle{}, errors.New("头像类型无效")
+	}
+	// Check ownership first; RowsAffected=0 may simply mean an unchanged avatar.
+	if _, err := s.GetLiveAnchorStyle(ctx, tenantID, styleID); err != nil {
+		return model.LiveAnchorStyle{}, err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE live_anchor_styles SET avatar_type=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'`, kind, actorID, styleID, tenantID)
+	if err != nil {
+		return model.LiveAnchorStyle{}, err
+	}
+	return s.GetLiveAnchorStyle(ctx, tenantID, styleID)
 }
 
 func scanLiveAnchorStyleSample(row interface{ Scan(...any) error }) (model.LiveAnchorStyleSample, error) {
@@ -193,6 +220,8 @@ const liveAnchorStyleSampleSelect = `
 `
 
 func (s *Store) CreateLiveAnchorStyleSample(ctx context.Context, tenantID, styleID, actorID int64, input model.CreateLiveAnchorStyleSampleInput) (model.LiveAnchorStyleSample, error) {
+	input.RawText, _ = model.TruncateAnchorSample(input.RawText)
+	input.ReadableText, _ = model.TruncateAnchorSample(input.ReadableText)
 	readable := strings.TrimSpace(input.ReadableText)
 	if readable == "" {
 		readable = strings.TrimSpace(input.RawText)

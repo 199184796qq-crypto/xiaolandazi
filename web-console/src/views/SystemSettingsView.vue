@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import LiveContentPolicyPanel from '../components/LiveContentPolicyPanel.vue'
+import AnchorVoiceCacheSettingsPanel from '../components/AnchorVoiceCacheSettingsPanel.vue'
+import AnchorGenerationSettingsPanel from '../components/AnchorGenerationSettingsPanel.vue'
 import {
   createSystemDictionaryItem,
   createSystemWarehouse,
@@ -365,6 +367,7 @@ async function load() {
 
 const globalDisplaySettingKeys = new Set([
   'site_name',
+  'browser_title',
   'auth_customer_side_label',
   'auth_customer_title_line_1',
   'auth_customer_title_line_2',
@@ -389,6 +392,7 @@ const globalDisplaySettingKeys = new Set([
 ])
 
 const authHomepageSettingRules = [
+  { key: 'browser_title', label: '浏览器标签页标题', max: 100 },
   { key: 'auth_customer_side_label', label: '客户登录页英文眉标', max: 64 },
   { key: 'auth_customer_title_line_1', label: '客户登录页主标题第一行', max: 48 },
   { key: 'auth_customer_title_line_2', label: '客户登录页主标题第二行', max: 48 },
@@ -404,6 +408,10 @@ const authHomepageSettingRules = [
 async function saveGlobalSettings(scope: 'display' | 'commerce' = 'display') {
   if (!dashboard.value || saving.value) return
   if (scope === 'display') {
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(settingsDraft.browser_title || '')) {
+      error.value = '浏览器标签页标题不能包含换行或控制字符'
+      return
+    }
     const internalAgentName = (settingsDraft.internal_agent_name || '').trim()
     const clientAgentName = (settingsDraft.client_agent_name || '').trim()
     if (!internalAgentName || !clientAgentName) {
@@ -909,7 +917,7 @@ onMounted(load)
         <div>
           <span class="section-kicker">GLOBAL TEXT</span>
           <h3>全局文字</h3>
-          <p>配置登录首页宣传文案、系统品牌名称、前后台智能体名称和页面底部文字。</p>
+          <p>配置浏览器标签页标题、登录首页宣传文案、系统品牌名称、前后台智能体名称和页面底部文字。</p>
         </div>
         <button class="primary-button" type="button" :disabled="saving || loading" @click="saveGlobalSettings('display')">
           {{ saving ? '保存中...' : '保存全局配置' }}
@@ -922,6 +930,11 @@ onMounted(load)
         <label class="system-setting-wide">
           <span>系统显示名称</span>
           <input v-model="settingsDraft.site_name" type="text" placeholder="例如 小蓝搭子" />
+        </label>
+        <label class="system-setting-wide">
+          <span>浏览器标签页标题</span>
+          <input v-model="settingsDraft.browser_title" type="text" maxlength="100" />
+          <small>浏览器顶部显示的名称；保存后当前页面立即更新，其他已打开的页面在刷新或重新切回时更新。</small>
         </label>
 
         <div class="system-setting-subsection system-setting-wide">
@@ -1130,6 +1143,7 @@ onMounted(load)
       <div v-else class="panel-loading">暂无模型配置，刷新后重试。</div>
     </section>
 
+    <AnchorGenerationSettingsPanel v-if="showIntelligenceSettings && canManageAgentPrompts" />
     <LiveContentPolicyPanel v-if="showIntelligenceSettings && isPlatformAdmin" />
     <section v-if="showIntelligenceSettings && canManageStrategyCenter" id="strategy-center" class="system-settings-card live-strategy-center-card">
       <header>
@@ -1221,6 +1235,7 @@ onMounted(load)
       <div v-else class="panel-loading">正在读取直播策略中心…</div>
     </section>
 
+    <AnchorVoiceCacheSettingsPanel v-if="showLiveSettings && canManageMembershipLimits" />
     <section v-if="showLiveSettings && canViewGlobal" id="live-typography" class="system-settings-card">
       <header>
         <div>

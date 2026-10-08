@@ -49,6 +49,13 @@ func normalizeMarketingCampaignInput(input model.MarketingCampaignInput) (model.
 	input.StartsAt = strings.TrimSpace(input.StartsAt)
 	input.EndsAt = strings.TrimSpace(input.EndsAt)
 	input.DisplayLocations = normalizeMarketingDisplayLocations(input.DisplayLocations)
+	if input.Presentation != nil {
+		presentation, err := normalizeMarketingCampaignPresentation(input.Presentation)
+		if err != nil {
+			return input, err
+		}
+		input.Presentation = &presentation
+	}
 
 	if input.PricingRule == "" {
 		input.PricingRule = "floor_yuan"
@@ -314,6 +321,9 @@ func (s *Store) listNormalizedMarketingCampaigns(ctx context.Context) ([]model.M
 	if err := s.loadCampaignControls(ctx, items); err != nil {
 		return nil, err
 	}
+	if err := s.loadMarketingCampaignPresentations(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -374,6 +384,9 @@ func (s *Store) CreateMarketingCampaign(
 		return model.MarketingCampaign{}, err
 	}
 	if err := saveCampaignControlsTx(ctx, tx, campaignID, input.Controls); err != nil {
+		return model.MarketingCampaign{}, err
+	}
+	if err := saveMarketingCampaignPresentationTx(ctx, tx, campaignID, userID, input.Presentation); err != nil {
 		return model.MarketingCampaign{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -586,6 +599,11 @@ func (s *Store) UpdateMarketingCampaign(
 		input.DisplayLocations,
 	); err != nil {
 		return model.MarketingCampaign{}, err
+	}
+	if input.Presentation != nil {
+		if err := saveMarketingCampaignPresentationTx(ctx, tx, campaignID, userID, input.Presentation); err != nil {
+			return model.MarketingCampaign{}, err
+		}
 	}
 	if !preserveItems {
 		if err := saveCampaignControlsTx(ctx, tx, campaignID, input.Controls); err != nil {

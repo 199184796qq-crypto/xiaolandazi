@@ -19,18 +19,19 @@ type MarketingCampaignItem struct {
 // product targets, and each target can have its own package period, quantity
 // and discount. Product base definitions remain independent from marketing.
 type MarketingCampaign struct {
-	Controls         MarketingCampaignControls `json:"controls"`
-	Eligible         *bool                     `json:"eligible,omitempty"`
-	IneligibleReason string                    `json:"ineligible_reason,omitempty"`
-	ID               int64                     `json:"id"`
-	Code             string                    `json:"code"`
-	Name             string                    `json:"name"`
-	Description      string                    `json:"description"`
-	Status           string                    `json:"status"`
-	SortOrder        int                       `json:"sort_order"`
-	PricingRule      string                    `json:"pricing_rule"`
-	Items            []MarketingCampaignItem   `json:"items"`
-	DisplayLocations []string                  `json:"display_locations"`
+	Controls         MarketingCampaignControls     `json:"controls"`
+	Presentation     MarketingCampaignPresentation `json:"presentation"`
+	Eligible         *bool                         `json:"eligible,omitempty"`
+	IneligibleReason string                        `json:"ineligible_reason,omitempty"`
+	ID               int64                         `json:"id"`
+	Code             string                        `json:"code"`
+	Name             string                        `json:"name"`
+	Description      string                        `json:"description"`
+	Status           string                        `json:"status"`
+	SortOrder        int                           `json:"sort_order"`
+	PricingRule      string                        `json:"pricing_rule"`
+	Items            []MarketingCampaignItem       `json:"items"`
+	DisplayLocations []string                      `json:"display_locations"`
 
 	// Legacy first-item fields are retained for older clients and historical
 	// orders. New code should use Items.
@@ -49,17 +50,49 @@ type MarketingCampaign struct {
 }
 
 type MarketingCampaignInput struct {
-	Controls         MarketingCampaignControls `json:"controls"`
-	Code             string                    `json:"code"`
-	Name             string                    `json:"name"`
-	Description      string                    `json:"description"`
-	Status           string                    `json:"status"`
-	SortOrder        int                       `json:"sort_order"`
-	PricingRule      string                    `json:"pricing_rule"`
-	StartsAt         string                    `json:"starts_at"`
-	EndsAt           string                    `json:"ends_at"`
-	Items            []MarketingCampaignItem   `json:"items"`
-	DisplayLocations []string                  `json:"display_locations"`
+	Controls         MarketingCampaignControls      `json:"controls"`
+	Presentation     *MarketingCampaignPresentation `json:"presentation,omitempty"`
+	Code             string                         `json:"code"`
+	Name             string                         `json:"name"`
+	Description      string                         `json:"description"`
+	Status           string                         `json:"status"`
+	SortOrder        int                            `json:"sort_order"`
+	PricingRule      string                         `json:"pricing_rule"`
+	StartsAt         string                         `json:"starts_at"`
+	EndsAt           string                         `json:"ends_at"`
+	Items            []MarketingCampaignItem        `json:"items"`
+	DisplayLocations []string                       `json:"display_locations"`
+}
+
+// MarketingCampaignPresentation is presentation-only configuration. Pricing,
+// eligibility, inventory and order behavior must never be inferred from it.
+type MarketingCampaignPresentation struct {
+	SchemaVersion   uint32 `json:"schema_version"`
+	CoverAssetID    *int64 `json:"cover_asset_id,omitempty"`
+	TemplateKey     string `json:"template_key"`
+	DisplaySize     string `json:"display_size"`
+	BackgroundStyle string `json:"background_style"`
+	PrimaryColor    string `json:"primary_color"`
+	AccentColor     string `json:"accent_color"`
+	Eyebrow         string `json:"eyebrow"`
+	BadgeText       string `json:"badge_text"`
+	CTAButtonText   string `json:"cta_button_text"`
+	ShowCountdown   bool   `json:"show_countdown"`
+	ShowSaving      bool   `json:"show_saving"`
+	ShowConditions  bool   `json:"show_conditions"`
+}
+
+type MarketingPresentationAsset struct {
+	ID              int64     `json:"id"`
+	StorageDriver   string    `json:"-"`
+	StorageBucket   string    `json:"-"`
+	ObjectKey       string    `json:"-"`
+	OriginalName    string    `json:"original_name"`
+	MIMEType        string    `json:"mime_type"`
+	SizeBytes       uint64    `json:"size_bytes"`
+	CreatedByUserID int64     `json:"created_by_user_id"`
+	CreatedAt       time.Time `json:"created_at"`
+	ContentURL      string    `json:"content_url"`
 }
 
 // Limits count successful and reserved claims; cancellation releases only

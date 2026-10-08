@@ -1,0 +1,573 @@
+{
+  "version": 0,
+  "plan_id": 0,
+  "name": "直播互动调度母版",
+  "template_version": 2,
+  "template_sha256": "",
+  "field_labels": {
+    "version": "配置版本",
+    "name": "中文名称",
+    "template_version": "母版版本",
+    "template_sha256": "母版指纹",
+    "plan_id": "所属方案",
+    "events": "互动事件",
+    "enabled": "是否启用",
+    "priority": "优先级",
+    "weight": "处理权重",
+    "cooldown_seconds": "播完后冷却秒数",
+    "ttl_seconds": "事件有效秒数",
+    "max_wait_seconds": "聚合等待秒数",
+    "batch_threshold": "聚合数量",
+    "max_retries": "最大重试次数",
+    "answer_limits": "每分钟回答上限",
+    "goals": "互动目的",
+    "key": "内部标识",
+    "action": "期望观众行动",
+    "heats": "适用热度",
+    "stages": "适用主线阶段",
+    "angles": "内容角度",
+    "field_labels": "字段中文说明",
+    "priority_labels": "优先级中文说明",
+    "heat_labels": "热度中文说明",
+    "stage_labels": "阶段中文说明",
+    "timing_overrides": "子事件聚合规则",
+    "less": "偏少",
+    "natural": "自然",
+    "more": "偏多"
+  },
+  "priority_labels": {
+    "P0": "紧急处理",
+    "P1": "高优先",
+    "P2": "普通互动",
+    "P3": "低优先"
+  },
+  "heat_labels": {
+    "COLD": "冷场",
+    "WARM": "平稳",
+    "BUSY": "较忙",
+    "HOT": "热闹",
+    "OVERHEATED": "非常密集"
+  },
+  "stage_labels": {
+    "opening": "开场",
+    "explanation": "商品讲解",
+    "selection": "帮助选型",
+    "purchase": "购买说明",
+    "closing": "收尾"
+  },
+  "answer_limits": {
+    "less": 2,
+    "natural": 4,
+    "more": 6
+  },
+  "max_retries": 2,
+  "events": {
+    "complaint": {
+      "name": "投诉与负面反馈",
+      "enabled": true,
+      "priority": "P0",
+      "weight": 100,
+      "cooldown_seconds": 30,
+      "ttl_seconds": 600,
+      "max_wait_seconds": 0,
+      "batch_threshold": 1,
+      "goals": [
+        {
+          "key": "resolve_issue",
+          "name": "接住具体问题",
+          "action": "观众清楚已知情况与可执行处理步骤",
+          "heats": [],
+          "stages": [],
+          "angles": [
+            "问题确认",
+            "已知情况",
+            "已确认的处理途径"
+          ]
+        }
+      ]
+    },
+    "product_question": {
+      "name": "商品提问",
+      "enabled": true,
+      "priority": "P1",
+      "weight": 90,
+      "cooldown_seconds": 90,
+      "ttl_seconds": 300,
+      "max_wait_seconds": 0,
+      "batch_threshold": 1,
+      "goals": [
+        {
+          "key": "answer_question",
+          "name": "解决观众的具体问题",
+          "action": "观众得到明确答案或知道还需核实什么",
+          "heats": [],
+          "stages": [],
+          "angles": [
+            "直接答案",
+            "必要解释"
+          ]
+        }
+      ]
+    },
+    "order": {
+      "name": "下单回应",
+      "enabled": true,
+      "priority": "P1",
+      "weight": 85,
+      "cooldown_seconds": 45,
+      "ttl_seconds": 60,
+      "max_wait_seconds": 0,
+      "batch_threshold": 1,
+      "goals": [
+        {
+          "key": "acknowledge_support",
+          "name": "回应真实支持",
+          "action": "已购买者得到回应，考虑中的观众能问清问题",
+          "heats": [],
+          "stages": [],
+          "angles": [
+            "感谢支持",
+            "照顾仍在选择的人",
+            "必要信息答疑"
+          ]
+        }
+      ]
+    },
+    "warmup": {
+      "name": "暖场互动",
+      "enabled": true,
+      "priority": "P2",
+      "weight": 40,
+      "cooldown_seconds": 90,
+      "ttl_seconds": 25,
+      "max_wait_seconds": 90,
+      "batch_threshold": 1,
+      "goals": [
+        {
+          "key": "discover_need",
+          "name": "了解需求",
+          "action": "观众说出用途或选择困难",
+          "heats": [
+            "COLD",
+            "WARM"
+          ],
+          "stages": [
+            "opening",
+            "explanation"
+          ],
+          "angles": [
+            "使用场景",
+            "规格选择",
+            "关注的问题"
+          ]
+        },
+        {
+          "key": "join_topic",
+          "name": "帮助新人进入当前话题",
+          "action": "观众理解正在讲的内容并提出相关问题",
+          "heats": [],
+          "stages": [
+            "explanation"
+          ],
+          "angles": [
+            "当前用途",
+            "当前规格",
+            "正在解释的疑问"
+          ]
+        },
+        {
+          "key": "resolve_choice",
+          "name": "解决选择疑问",
+          "action": "观众说清需求并作出合适选择",
+          "heats": [],
+          "stages": [
+            "selection"
+          ],
+          "angles": [
+            "用途匹配",
+            "规格差异",
+            "购买前还需确认的信息"
+          ]
+        },
+        {
+          "key": "clarify_purchase",
+          "name": "讲清购买信息",
+          "action": "观众弄清已确认的购买条件",
+          "heats": [],
+          "stages": [
+            "purchase"
+          ],
+          "angles": [
+            "购买步骤",
+            "活动适用条件",
+            "仍未解答的购买疑问"
+          ]
+        },
+        {
+          "key": "close_questions",
+          "name": "收住尚未解决的疑问",
+          "action": "观众提出最后需要确认的问题",
+          "heats": [],
+          "stages": [
+            "closing"
+          ],
+          "angles": [
+            "未解决的问题",
+            "需要核实的信息"
+          ]
+        },
+        {
+          "key": "brief_orientation",
+          "name": "简短指明当前内容",
+          "action": "观众跟上当前讲解",
+          "heats": [
+            "BUSY",
+            "HOT",
+            "OVERHEATED"
+          ],
+          "stages": [],
+          "angles": [
+            "当前讲解重点",
+            "相关问题入口"
+          ]
+        }
+      ]
+    },
+    "welcome": {
+      "name": "欢迎新人",
+      "enabled": true,
+      "priority": "P2",
+      "weight": 35,
+      "cooldown_seconds": 60,
+      "ttl_seconds": 20,
+      "max_wait_seconds": 5,
+      "batch_threshold": 3,
+      "goals": [
+        {
+          "key": "discover_need",
+          "name": "了解需求",
+          "action": "观众说出用途或选择困难",
+          "heats": [
+            "COLD",
+            "WARM"
+          ],
+          "stages": [
+            "opening",
+            "explanation"
+          ],
+          "angles": [
+            "使用场景",
+            "规格选择",
+            "关注的问题"
+          ]
+        },
+        {
+          "key": "join_topic",
+          "name": "帮助新人进入当前话题",
+          "action": "观众理解正在讲的内容并提出相关问题",
+          "heats": [],
+          "stages": [
+            "explanation"
+          ],
+          "angles": [
+            "当前用途",
+            "当前规格",
+            "正在解释的疑问"
+          ]
+        },
+        {
+          "key": "resolve_choice",
+          "name": "解决选择疑问",
+          "action": "观众说清需求并作出合适选择",
+          "heats": [],
+          "stages": [
+            "selection"
+          ],
+          "angles": [
+            "用途匹配",
+            "规格差异",
+            "购买前还需确认的信息"
+          ]
+        },
+        {
+          "key": "clarify_purchase",
+          "name": "讲清购买信息",
+          "action": "观众弄清已确认的购买条件",
+          "heats": [],
+          "stages": [
+            "purchase"
+          ],
+          "angles": [
+            "购买步骤",
+            "活动适用条件",
+            "仍未解答的购买疑问"
+          ]
+        },
+        {
+          "key": "close_questions",
+          "name": "收住尚未解决的疑问",
+          "action": "观众提出最后需要确认的问题",
+          "heats": [],
+          "stages": [
+            "closing"
+          ],
+          "angles": [
+            "未解决的问题",
+            "需要核实的信息"
+          ]
+        },
+        {
+          "key": "brief_orientation",
+          "name": "简短指明当前内容",
+          "action": "观众跟上当前讲解",
+          "heats": [
+            "BUSY",
+            "HOT",
+            "OVERHEATED"
+          ],
+          "stages": [],
+          "angles": [
+            "当前讲解重点",
+            "相关问题入口"
+          ]
+        }
+      ]
+    },
+    "like_follow": {
+      "name": "点赞与关注",
+      "enabled": true,
+      "priority": "P2",
+      "weight": 25,
+      "cooldown_seconds": 45,
+      "ttl_seconds": 30,
+      "max_wait_seconds": 10,
+      "batch_threshold": 3,
+      "goals": [
+        {
+          "key": "discover_need",
+          "name": "了解需求",
+          "action": "观众说出用途或选择困难",
+          "heats": [
+            "COLD",
+            "WARM"
+          ],
+          "stages": [
+            "opening",
+            "explanation"
+          ],
+          "angles": [
+            "使用场景",
+            "规格选择",
+            "关注的问题"
+          ]
+        },
+        {
+          "key": "join_topic",
+          "name": "帮助新人进入当前话题",
+          "action": "观众理解正在讲的内容并提出相关问题",
+          "heats": [],
+          "stages": [
+            "explanation"
+          ],
+          "angles": [
+            "当前用途",
+            "当前规格",
+            "正在解释的疑问"
+          ]
+        },
+        {
+          "key": "resolve_choice",
+          "name": "解决选择疑问",
+          "action": "观众说清需求并作出合适选择",
+          "heats": [],
+          "stages": [
+            "selection"
+          ],
+          "angles": [
+            "用途匹配",
+            "规格差异",
+            "购买前还需确认的信息"
+          ]
+        },
+        {
+          "key": "clarify_purchase",
+          "name": "讲清购买信息",
+          "action": "观众弄清已确认的购买条件",
+          "heats": [],
+          "stages": [
+            "purchase"
+          ],
+          "angles": [
+            "购买步骤",
+            "活动适用条件",
+            "仍未解答的购买疑问"
+          ]
+        },
+        {
+          "key": "close_questions",
+          "name": "收住尚未解决的疑问",
+          "action": "观众提出最后需要确认的问题",
+          "heats": [],
+          "stages": [
+            "closing"
+          ],
+          "angles": [
+            "未解决的问题",
+            "需要核实的信息"
+          ]
+        },
+        {
+          "key": "brief_orientation",
+          "name": "简短指明当前内容",
+          "action": "观众跟上当前讲解",
+          "heats": [
+            "BUSY",
+            "HOT",
+            "OVERHEATED"
+          ],
+          "stages": [],
+          "angles": [
+            "当前讲解重点",
+            "相关问题入口"
+          ]
+        },
+        {
+          "key": "useful_followup",
+          "name": "回应支持并提供有用内容",
+          "action": "观众知道后续相关内容",
+          "heats": [],
+          "stages": [],
+          "angles": [
+            "与当前商品相关的实用信息"
+          ]
+        }
+      ]
+    },
+    "smalltalk": {
+      "name": "普通闲聊",
+      "enabled": true,
+      "priority": "P3",
+      "weight": 15,
+      "cooldown_seconds": 12,
+      "ttl_seconds": 60,
+      "max_wait_seconds": 12,
+      "batch_threshold": 1,
+      "goals": [
+        {
+          "key": "discover_need",
+          "name": "了解需求",
+          "action": "观众说出用途或选择困难",
+          "heats": [
+            "COLD",
+            "WARM"
+          ],
+          "stages": [
+            "opening",
+            "explanation"
+          ],
+          "angles": [
+            "使用场景",
+            "规格选择",
+            "关注的问题"
+          ]
+        },
+        {
+          "key": "join_topic",
+          "name": "帮助新人进入当前话题",
+          "action": "观众理解正在讲的内容并提出相关问题",
+          "heats": [],
+          "stages": [
+            "explanation"
+          ],
+          "angles": [
+            "当前用途",
+            "当前规格",
+            "正在解释的疑问"
+          ]
+        },
+        {
+          "key": "resolve_choice",
+          "name": "解决选择疑问",
+          "action": "观众说清需求并作出合适选择",
+          "heats": [],
+          "stages": [
+            "selection"
+          ],
+          "angles": [
+            "用途匹配",
+            "规格差异",
+            "购买前还需确认的信息"
+          ]
+        },
+        {
+          "key": "clarify_purchase",
+          "name": "讲清购买信息",
+          "action": "观众弄清已确认的购买条件",
+          "heats": [],
+          "stages": [
+            "purchase"
+          ],
+          "angles": [
+            "购买步骤",
+            "活动适用条件",
+            "仍未解答的购买疑问"
+          ]
+        },
+        {
+          "key": "close_questions",
+          "name": "收住尚未解决的疑问",
+          "action": "观众提出最后需要确认的问题",
+          "heats": [],
+          "stages": [
+            "closing"
+          ],
+          "angles": [
+            "未解决的问题",
+            "需要核实的信息"
+          ]
+        },
+        {
+          "key": "brief_orientation",
+          "name": "简短指明当前内容",
+          "action": "观众跟上当前讲解",
+          "heats": [
+            "BUSY",
+            "HOT",
+            "OVERHEATED"
+          ],
+          "stages": [],
+          "angles": [
+            "当前讲解重点",
+            "相关问题入口"
+          ]
+        }
+      ]
+    }
+  },
+  "timing_overrides": {
+    "reply_like": {
+      "name": "点赞聚合",
+      "max_wait_seconds": 10,
+      "ttl_seconds": 30,
+      "batch_threshold": 30
+    },
+    "reply_follow": {
+      "name": "关注聚合",
+      "max_wait_seconds": 10,
+      "ttl_seconds": 30,
+      "batch_threshold": 3
+    },
+    "welcome_named": {
+      "name": "新人欢迎聚合",
+      "max_wait_seconds": 5,
+      "ttl_seconds": 20,
+      "batch_threshold": 5
+    },
+    "welcome_batch": {
+      "name": "批量欢迎聚合",
+      "max_wait_seconds": 5,
+      "ttl_seconds": 20,
+      "batch_threshold": 5
+    }
+  }
+}

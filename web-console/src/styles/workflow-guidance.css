@@ -623,20 +623,24 @@ details.strategy-fullshow-guide:not([open]) > summary::after {
   order: 5;
 }
 
-.strategy-workflow-nav .workflow-step-anchor {
+.strategy-workflow-nav .workflow-step-miner {
   order: 6;
 }
 
-.strategy-workflow-nav .workflow-step-rhythm {
+.strategy-workflow-nav .workflow-step-anchor {
   order: 7;
 }
 
-.strategy-workflow-nav .workflow-step-voice {
+.strategy-workflow-nav .workflow-step-rhythm {
   order: 8;
 }
 
-.strategy-workflow-nav .workflow-step-fullshow {
+.strategy-workflow-nav .workflow-step-voice {
   order: 9;
+}
+
+.strategy-workflow-nav .workflow-step-fullshow {
+  order: 10;
 }
 
 .strategy-workflow-nav .workflow-step-addressing {

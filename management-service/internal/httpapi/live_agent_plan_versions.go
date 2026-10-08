@@ -85,6 +85,10 @@ func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionIn
 		return err
 	}
 	if len(input.Variants) == 0 {
+		if isRealtimeScheme(input.GenerationContext) {
+			_, err := realtimeScheme(input.GenerationContext)
+			return err
+		}
 		return errors.New("版本至少需要一套稿件")
 	}
 	if len(input.Variants) > 10 {
@@ -272,8 +276,8 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "保存智能体版本格式错误")
 		return
 	}
-	if err := validateLiveAgentPlanVersionInput(&input); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if input.RoomID <= 0 {
+		writeError(w, http.StatusBadRequest, "请选择发布直播间")
 		return
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
@@ -283,8 +287,18 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
 		return
 	}
+	w, r = anchorAnalysisStream(w, r)
+	reportAnchorAnalysis(r.Context(), 5, "正在核对方案参数与主播声音")
 	if err := s.applyLiveContentModeVersion(r.Context(), tenantID, input.RoomID, &input); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := s.captureRealtimeScheme(r.Context(), tenantID, planID, &input); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := validateLiveAgentPlanVersionInput(&input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.validateLiveAgentVersionAssets(r.Context(), tenantID, input.Variants); err != nil {
@@ -310,6 +324,28 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
+	reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据，未变化的审核结果直接复用")
+	safety, err := s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if input.GenerationContext == nil {
+		input.GenerationContext = map[string]any{}
+	}
+	input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
+	reportAnchorAnalysis(r.Context(), 55, "正在检查各商品的讲解范围")
+	if err := s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if isRealtimeScheme(input.GenerationContext) {
+		if err := s.validateRealtimeScheme(r.Context(), tenantID, planID, input.GenerationContext); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -323,6 +359,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "保存直播智能体版本失败")
 		return
 	}
+	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -352,10 +389,13 @@ func (s *Server) liveAgentPlanVersionList(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func selectLiveAgentPlanWorkspaceVersion(items []model.LiveAgentPlanVersion) (*model.LiveAgentPlanVersion, string) {
+func selectLiveAgentPlanWorkspaceVersion(items []model.LiveAgentPlanVersion, contentMode string) (*model.LiveAgentPlanVersion, string) {
 	var latestDraft *model.LiveAgentPlanVersion
 	var latestPublished *model.LiveAgentPlanVersion
 	for index := range items {
+		if model.LiveContentModeFromGenerationContext(items[index].GenerationContext) != contentMode {
+			continue
+		}
 		status := strings.ToLower(strings.TrimSpace(items[index].LifecycleStatus))
 		if status == "draft" && latestDraft == nil {
 			item := items[index]
@@ -375,8 +415,11 @@ func selectLiveAgentPlanWorkspaceVersion(items []model.LiveAgentPlanVersion) (*m
 	return nil, ""
 }
 
-func selectLatestLiveAgentPlanWorkspaceTemplate(items []model.LiveAgentPlanVersion) (*model.LiveAgentPlanVersion, string) {
+func selectLatestLiveAgentPlanWorkspaceTemplate(items []model.LiveAgentPlanVersion, contentMode string) (*model.LiveAgentPlanVersion, string) {
 	for index := range items {
+		if model.LiveContentModeFromGenerationContext(items[index].GenerationContext) != contentMode {
+			continue
+		}
 		status := strings.ToLower(strings.TrimSpace(items[index].LifecycleStatus))
 		if status != "draft" && status != "published" {
 			continue
@@ -437,12 +480,32 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	access, err := s.store.GetLiveContentMode(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取当前直播模式失败")
+		return
+	}
+	contentMode := strings.TrimSpace(r.URL.Query().Get("content_mode"))
+	if contentMode == "" {
+		contentMode = access.ContentMode
+	}
+	allowed := false
+	for _, mode := range access.AvailableModes {
+		if mode == contentMode {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "当前直播间不能读取该内容模式")
+		return
+	}
 	items, err := s.store.ListLiveAgentPlanVersions(r.Context(), tenantID, planID, roomID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体编辑工作区失败")
 		return
 	}
-	version, source := selectLiveAgentPlanWorkspaceVersion(items)
+	version, source := selectLiveAgentPlanWorkspaceVersion(items, contentMode)
 	if version == nil {
 		// A room grant does not authorize reading another room's saved runtime
 		// configuration, even when both rooms share a plan.
@@ -455,7 +518,7 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, "读取直播智能体方案版本失败")
 			return
 		}
-		version, source = selectLatestLiveAgentPlanWorkspaceTemplate(planItems)
+		version, source = selectLatestLiveAgentPlanWorkspaceTemplate(planItems, contentMode)
 		if version == nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"version":   nil,
@@ -517,40 +580,15 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "待发布版本不属于当前直播间")
 		return
 	}
-	if err := s.validateLiveContentVersion(r.Context(), tenantID, input.RoomID, pending); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	// Compatibility for old browser clients. Saving is now the only activation
+	// step; this endpoint cannot select or rewrite an older saved snapshot.
+	latest, latestErr := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, input.RoomID)
+	if latestErr != nil || latest.ID != pending.ID {
+		writeError(w, http.StatusConflict, "方案保存后即生效，不再单独发布或回滚；请保存当前方案后开始直播")
 		return
 	}
-	check := model.CreateLiveAgentPlanVersionInput{
-		RoomID: pending.RoomID, DurationMinutes: pending.DurationMinutes, RoundMinutes: pending.RoundMinutes,
-		VoiceIdentity: pending.VoiceIdentity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), pending.Variants...),
-		GenerationContext: pending.GenerationContext,
-	}
-	if err := validateLiveAgentPlanVersionInput(&check); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if err := s.validateLiveAgentVersionAssets(r.Context(), tenantID, pending.Variants); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	item, err := s.store.PublishLiveAgentPlanVersion(
-		r.Context(),
-		tenantID,
-		planID,
-		input.RoomID,
-		versionID,
-		actor.UserID,
-	)
-	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
-		writeError(w, http.StatusNotFound, "待发布智能体版本不存在")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "发布直播智能体版本失败")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, latest)
+	return
 }
 
 func liveAgentEmotionEnabled(identity model.LiveAgentVoiceIdentity) bool {
@@ -601,6 +639,14 @@ func (s *Server) liveAgentPlanPublishRoomEmotion(w http.ResponseWriter, r *http.
 		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
 		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
 		GenerationContext: published.GenerationContext,
+	}
+	if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := s.refreshVersionDerivedSafety(r.Context(), tenantID, published.PlanID, actor.UserID, &inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
 	}
 	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -673,6 +719,14 @@ func (s *Server) liveAgentPlanPublishRoomVoiceRate(w http.ResponseWriter, r *htt
 		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
 		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
 		GenerationContext: published.GenerationContext,
+	}
+	if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := s.refreshVersionDerivedSafety(r.Context(), tenantID, published.PlanID, actor.UserID, &inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
 	}
 	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -757,6 +811,14 @@ func (s *Server) liveAgentPlanPublishRoomVoiceBinding(w http.ResponseWriter, r *
 		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
 		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
 		GenerationContext: published.GenerationContext,
+	}
+	if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := s.refreshVersionDerivedSafety(r.Context(), tenantID, published.PlanID, actor.UserID, &inputVersion); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
 	}
 	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
 		writeError(w, http.StatusConflict, err.Error())

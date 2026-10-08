@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,8 @@ type Client struct {
 	token   string
 	http    *http.Client
 }
+
+var ErrInteractionSwitchStale = errors.New("interaction switch no longer belongs to current mainline")
 
 type CreateTestTaskInput struct {
 	RoomID       int64
@@ -37,6 +40,7 @@ type CreateExternalTaskInput struct {
 }
 
 type InsertInteractionInput struct {
+	ExpectedTaskID string
 	RoomID         int64
 	SessionID      string
 	Label          string
@@ -79,12 +83,13 @@ type ProgramSafePoint struct {
 }
 
 type StartProgramInput struct {
-	RoomID    int64          `json:"room_id"`
-	SessionID string         `json:"session_id,omitempty"`
-	Label     string         `json:"label,omitempty"`
-	VersionID int64          `json:"version_id,omitempty"`
-	VersionNo int64          `json:"version_no,omitempty"`
-	Tracks    []ProgramTrack `json:"tracks"`
+	Sequential bool           `json:"sequential,omitempty"`
+	RoomID     int64          `json:"room_id"`
+	SessionID  string         `json:"session_id,omitempty"`
+	Label      string         `json:"label,omitempty"`
+	VersionID  int64          `json:"version_id,omitempty"`
+	VersionNo  int64          `json:"version_no,omitempty"`
+	Tracks     []ProgramTrack `json:"tracks"`
 }
 
 type RefreshProgramInput struct {
@@ -98,6 +103,14 @@ type RefreshProgramInput struct {
 	NewVersionNo       int64          `json:"new_version_no"`
 	ValidUntil         time.Time      `json:"valid_until"`
 	Tracks             []ProgramTrack `json:"tracks"`
+}
+
+// Append immutable ready units without replacing the current playback cursor.
+type AppendProgramInput struct {
+	RoomID            int64          `json:"-"`
+	ExpectedProgramID string         `json:"expected_program_id"`
+	ExpectedVersionID int64          `json:"expected_version_id"`
+	Tracks            []ProgramTrack `json:"tracks"`
 }
 
 type CancelProgramRefreshInput struct {
@@ -131,6 +144,10 @@ type SpeechTask struct {
 }
 
 type RoomProgramSnapshot struct {
+	BufferedMainlineMS int64                    `json:"buffered_mainline_ms"`
+	NextTrackText      string                   `json:"next_track_text,omitempty"`
+	Sequential         bool                     `json:"sequential,omitempty"`
+	WaitingForContent  bool                     `json:"waiting_for_content,omitempty"`
 	ProgramID          string                   `json:"program_id,omitempty"`
 	Generation         uint64                   `json:"generation"`
 	PendingGeneration  uint64                   `json:"pending_generation,omitempty"`

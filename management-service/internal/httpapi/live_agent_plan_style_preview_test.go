@@ -20,11 +20,27 @@ type adaptiveSegmentGateway struct {
 }
 
 func exactSegmentText(size int) string {
+	return exactSegmentTextSeed(size, 0)
+}
+
+func exactSegmentTextSeed(size, seed int) string {
 	if size < 1 {
 		return "。"
 	}
-	unit := []rune("哥哥姐姐们，咱们顺着这个重点自然说清楚，听明白就行。")
+	starts := []string{
+		"先从这里说起，", "接着往下说明，", "换到这个角度看，", "再把关键处展开，",
+		"顺着前面的内容讲，", "这一段关注使用感受，", "下面看看选择方法，", "现在转到日常场景，",
+		"另一个重点在这里，", "随后说明适用条件，", "从家庭使用来看，", "回到产品本身来说，",
+		"把前后的信息连起来，", "再看大家关心的细节，", "这次换个生活角度，", "接下来说明具体区别，",
+		"沿着实际需要判断，", "再从操作过程展开，", "最后看清页面条件，", "这一处单独解释一下，",
+	}
+	prefix := []rune(starts[seed%len(starts)])
+	unit := []rune("把已经确认的信息自然说清楚，让大家听明白以后再按自己的需要判断，")
 	result := make([]rune, 0, size)
+	result = append(result, prefix...)
+	if len(result) > size {
+		result = result[:size]
+	}
 	for len(result) < size {
 		remaining := size - len(result)
 		if remaining >= len(unit) {
@@ -50,7 +66,7 @@ func (g *adaptiveSegmentGateway) Complete(_ context.Context, request agentgatewa
 	if g.oversizeFirst && len(g.calls) == 1 {
 		target += 100
 	}
-	return agentgateway.Response{Text: exactSegmentText(target), Provider: "fixture", Model: "fixture", LatencyMS: 2}, nil
+	return agentgateway.Response{Text: exactSegmentTextSeed(target, len(g.calls)), Provider: "fixture", Model: "fixture", LatencyMS: 2}, nil
 }
 
 func TestAnchorStyleCoreDimensionsPreserveLiteralHabits(t *testing.T) {
@@ -73,9 +89,14 @@ func TestAnchorStyleCoreDimensionsPreserveLiteralHabits(t *testing.T) {
 		}
 	}
 	prompt := anchorStyleTestPrompt(profile, model.LiveAgentFullShowGenerationContext{}, "正式规则", "欢迎新粉", 500)
-	for _, expected := range []string{"目标500字", "475到525字", "我们家", "哥哥姐姐们", "我再给大家说一下", "哟", "本次主播风格还原强度】100/100", "本次运行预算", "风格热度=100/100", "原文证据只证明说话方式", "这不是摘要任务", "允许同一事实非连续重复", "fact_expansion 是另一项独立", "换个说法、再重复一遍", "虚拟时间 steps", "内部模拟参数", "没有正式商品事实时", "测试不保存、不发布、不生成声音"} {
+	for _, expected := range []string{"目标500字", "475到525字", "主播风格、称呼覆盖和语气包装不在本阶段执行", "原文证据只证明说话方式", "这不是摘要任务", "允许同一事实非连续重复", "fact_expansion 是另一项独立", "换个说法、再重复一遍", "虚拟时间 steps", "内部模拟参数", "没有正式商品事实时", "测试不保存、不发布、不生成声音"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("test prompt missing %q", expected)
+		}
+	}
+	for _, forbidden := range []string{"我们家", "哥哥姐姐们", "本次主播风格还原强度", "本次运行预算"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("base prompt leaked anchor style %q", forbidden)
 		}
 	}
 }
@@ -88,7 +109,7 @@ func TestAnchorStyleSimilarityAndFactExpansionStayIndependent(t *testing.T) {
 		FactExpansion: model.LiveFactExpansionPolicy{Freedom: 25},
 	}
 	prompt := anchorStyleTestPrompt(profile, facts, "正式规则", "自然介绍", 500)
-	for _, expected := range []string{"本次主播风格还原强度】85/100", "风格热度=85/100", `"freedom":25`, "不能改变主播风格还原强度"} {
+	for _, expected := range []string{`"style_match_intensity":85`, `"freedom":25`, "基础正文通过后再由最终包装器处理"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("independent control missing %q", expected)
 		}
@@ -162,8 +183,8 @@ func TestAnchorStyleGenerationUsesOrderedTimeUnitsAndCarriesLengthDebt(t *testin
 		if !strings.Contains(call.Messages[1].Content, "主播时间记忆（仅用于连续承接，不是事实来源）") || !strings.Contains(call.Messages[1].Content, `"memory"`) {
 			t.Fatalf("call %d did not receive the shadow mainline context", index+1)
 		}
-		if !strings.Contains(call.Messages[1].Content, "主播风格滑动窗口") || !strings.Contains(call.Messages[1].Content, "最近1000字统计") {
-			t.Fatalf("call %d did not receive rolling style guidance", index+1)
+		if strings.Contains(call.Messages[1].Content, "主播风格滑动窗口") || strings.Contains(call.Messages[1].Content, "主播风格元提示词") {
+			t.Fatalf("call %d leaked style into base rendering", index+1)
 		}
 	}
 }

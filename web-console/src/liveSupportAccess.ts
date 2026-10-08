@@ -38,6 +38,7 @@ export function liveSupportRoomForRequest(url: string): number | null {
   const path = url.split('?')[0] || ''
   const resources = [
     '/api/v1/live-agent-plans',
+    '/api/v1/live-agent-fact-categories',
     '/api/v1/live-anchor-styles',
     '/api/v1/live/rooms',
     '/api/v1/live/agent',

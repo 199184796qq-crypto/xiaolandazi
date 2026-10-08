@@ -41,6 +41,16 @@ func (s *Server) validateLiveContentVersion(ctx context.Context, tenantID, roomI
 	if err != nil {
 		return err
 	}
+	versionMode := model.LiveContentModeFromGenerationContext(version.GenerationContext)
+	if versionMode != access.ContentMode {
+		return errors.New("当前版本属于其它主线模式，请切换到对应模式后再发布")
+	}
+	if isRealtimeScheme(version.GenerationContext) {
+		if access.ContentMode != model.LiveContentAIDynamic || !access.DynamicAuthorized {
+			return db.ErrContentModeNotAuthorized
+		}
+		return s.validateRealtimeScheme(ctx, tenantID, version.PlanID, version.GenerationContext)
+	}
 	// Entitlement controls future automatic generation, not playback of already
 	// approved/generated static assets. Revocation falls back to pregenerated.
 	return s.validateContentModeAssets(ctx, tenantID, access.ContentMode, version.Variants)
@@ -139,7 +149,9 @@ func (s *Server) roomLiveContentMode(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		var input struct {
-			ContentMode string `json:"content_mode"`
+			ContentMode            string `json:"content_mode"`
+			RefreshIntervalSeconds *int   `json:"refresh_interval_seconds,omitempty"`
+			ReplacementPercent     *int   `json:"replacement_percent,omitempty"`
 		}
 		if err := readJSON(w, r, &input); err != nil {
 			writeError(w, http.StatusBadRequest, "仅允许修改内容模式，更新周期由后台配置")
@@ -149,6 +161,14 @@ func (s *Server) roomLiveContentMode(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "无效的内容模式")
 			return
 		}
+		if input.RefreshIntervalSeconds != nil && (*input.RefreshIntervalSeconds < 1800 || *input.RefreshIntervalSeconds > 86400) {
+			writeError(w, http.StatusBadRequest, "动态更新间隔必须在30分钟到24小时之间")
+			return
+		}
+		if input.ReplacementPercent != nil && (*input.ReplacementPercent < 1 || *input.ReplacementPercent > 100) {
+			writeError(w, http.StatusBadRequest, "每次更新比例必须在1到100之间")
+			return
+		}
 		if err := s.store.SaveLiveContentMode(r.Context(), tenantID, roomID, actor.UserID, input.ContentMode, actor.IsInternalStaff()); err != nil {
 			if errors.Is(err, db.ErrContentModeNotAuthorized) || errors.Is(err, db.ErrContentPolicyConsent) {
 				writeError(w, http.StatusForbidden, err.Error())
@@ -156,6 +176,28 @@ func (s *Server) roomLiveContentMode(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "保存内容模式失败")
 			}
 			return
+		}
+		if input.RefreshIntervalSeconds != nil || input.ReplacementPercent != nil {
+			current, err := s.store.GetLiveContentMode(r.Context(), tenantID, roomID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "读取动态更新参数失败")
+				return
+			}
+			interval, replacement := current.RefreshIntervalSeconds, current.ReplacementPercent
+			if input.RefreshIntervalSeconds != nil {
+				interval = *input.RefreshIntervalSeconds
+			}
+			if input.ReplacementPercent != nil {
+				replacement = *input.ReplacementPercent
+			}
+			if err := s.store.SaveLiveContentRefreshPreference(r.Context(), tenantID, roomID, actor.UserID, interval, replacement); err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, db.ErrContentModeNotAuthorized) {
+					status = http.StatusForbidden
+				}
+				writeError(w, status, err.Error())
+				return
+			}
 		}
 	}
 	result, err := s.store.GetLiveContentMode(r.Context(), tenantID, roomID)

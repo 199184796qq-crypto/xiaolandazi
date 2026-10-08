@@ -248,8 +248,10 @@ func segmentBounds(target, remainingUnits int) (int, int, string, string) {
 	return max(1, target-delta), target + delta, level, finish
 }
 
-// Next converts one virtual-clock step into a small, adaptive generation task.
-// Earlier length variance is automatically carried into the remaining units.
+// Next converts one virtual-clock step into a small, bounded generation task.
+// Length variance influences later units only within a narrow band; one failed
+// or short unit must never inflate a later live segment from ~250 characters to
+// 600+, which delays streaming and sounds unlike continuous speech.
 func (l *Ledger) Next(step model.LiveSpeechExpansionStep, index, count int) SegmentSpec {
 	if count < 1 {
 		count = 1
@@ -262,7 +264,13 @@ func (l *Ledger) Next(step model.LiveSpeechExpansionStep, index, count int) Segm
 		remainingUnits = 1
 	}
 	remaining := l.RemainingChars()
-	target := (remaining + remainingUnits - 1) / remainingUnits
+	baseTarget := step.TargetChars
+	if baseTarget < 1 {
+		baseTarget = (l.totalTarget + count - 1) / count
+	}
+	adaptiveTarget := (remaining + remainingUnits - 1) / remainingUnits
+	maxShift := max(12, baseTarget/5)
+	target := min(max(adaptiveTarget, baseTarget-maxShift), baseTarget+maxShift)
 	minChars, maxChars, level, finish := segmentBounds(target, remainingUnits)
 	avoid := make([]string, 0, 10)
 	for _, key := range step.FactKeys {

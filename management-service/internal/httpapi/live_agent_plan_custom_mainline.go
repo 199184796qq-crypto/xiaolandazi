@@ -22,7 +22,11 @@ import (
 	assetstorage "livecompanion/management/internal/storage"
 )
 
-const maxCustomMainlineBytes int64 = 200 << 20
+const (
+	maxCustomMainlineBytes      int64 = 200 << 20
+	maxCustomMainlineTotalBytes int64 = 500 << 20
+	maxCustomMainlineFiles            = 20
+)
 
 type customMainlineDraftResponse struct {
 	AudioAssetID  int64                                `json:"audio_asset_id"`
@@ -54,7 +58,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxCustomMainlineBytes+(4<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxCustomMainlineTotalBytes+(8<<20))
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "自定义音稿文件过大或上传格式错误")
 		return
@@ -76,20 +80,35 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	headers := r.MultipartForm.File["file"]
+	if len(headers) == 0 {
 		writeError(w, http.StatusBadRequest, "请选择自定义主线音频")
 		return
 	}
-	defer file.Close()
-	if header.Size <= 0 || header.Size > maxCustomMainlineBytes {
-		writeError(w, http.StatusBadRequest, "自定义主线音频必须小于等于 200MB")
+	if len(headers) > maxCustomMainlineFiles {
+		writeError(w, http.StatusBadRequest, "一次最多上传20段录音")
 		return
 	}
-	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(header.Filename)))
-	contentType, allowed := speechAnalysisUploadContentTypes[extension]
-	if !allowed {
-		writeError(w, http.StatusBadRequest, "仅支持 WAV、MP3、M4A、AAC、FLAC、OGG、WEBM 音频")
+	var totalSourceBytes int64
+	sourceNames := make([]string, 0, len(headers))
+	contentTypes := make([]string, 0, len(headers))
+	for _, header := range headers {
+		if header.Size <= 0 || header.Size > maxCustomMainlineBytes {
+			writeError(w, http.StatusBadRequest, "每段自定义主线音频必须小于等于200MB")
+			return
+		}
+		totalSourceBytes += header.Size
+		extension := strings.ToLower(filepath.Ext(strings.TrimSpace(header.Filename)))
+		contentType, allowed := speechAnalysisUploadContentTypes[extension]
+		if !allowed {
+			writeError(w, http.StatusBadRequest, "仅支持 WAV、MP3、M4A、AAC、FLAC、OGG、WEBM 音频")
+			return
+		}
+		sourceNames = append(sourceNames, filepath.Base(header.Filename))
+		contentTypes = append(contentTypes, contentType)
+	}
+	if totalSourceBytes > maxCustomMainlineTotalBytes {
+		writeError(w, http.StatusBadRequest, "多段录音总大小必须小于等于500MB")
 		return
 	}
 	durationHint, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("duration_ms")), 10, 64)
@@ -107,19 +126,44 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	sourcePath, err := copyAudioReaderToTemp(file, extension)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
-		return
+	normalizedPaths := make([]string, 0, len(headers))
+	defer func() {
+		for _, path := range normalizedPaths {
+			_ = os.Remove(path)
+		}
+	}()
+	for _, header := range headers {
+		file, err := header.Open()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
+			return
+		}
+		extension := strings.ToLower(filepath.Ext(strings.TrimSpace(header.Filename)))
+		sourcePath, copyErr := copyAudioReaderToTemp(file, extension)
+		_ = file.Close()
+		if copyErr != nil {
+			writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
+			return
+		}
+		normalizedPath, normalizeErr := normalizeAudioToCoreWAV(r.Context(), sourcePath)
+		_ = os.Remove(sourcePath)
+		if normalizeErr != nil {
+			for _, path := range normalizedPaths {
+				_ = os.Remove(path)
+			}
+			writeError(w, http.StatusBadRequest, normalizeErr.Error())
+			return
+		}
+		normalizedPaths = append(normalizedPaths, normalizedPath)
 	}
-	defer os.Remove(sourcePath)
-
-	normalizedPath, err := normalizeAudioToCoreWAV(r.Context(), sourcePath)
+	normalizedPath, err := concatenateCoreWAVs(r.Context(), normalizedPaths)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	defer os.Remove(normalizedPath)
+	if len(normalizedPaths) > 1 {
+		defer os.Remove(normalizedPath)
+	}
 	normalizedInfo, err := os.Stat(normalizedPath)
 	if err != nil || normalizedInfo.Size() <= 44 {
 		writeError(w, http.StatusInternalServerError, "读取规范化后的自定义音稿失败")
@@ -178,10 +222,14 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 	durationValue := uint64(durationMS)
+	originalName := strings.TrimSuffix(sourceNames[0], filepath.Ext(sourceNames[0])) + ".wav"
+	if len(sourceNames) > 1 {
+		originalName = fmt.Sprintf("%s-等%d段合并.wav", strings.TrimSuffix(sourceNames[0], filepath.Ext(sourceNames[0])), len(sourceNames))
+	}
 	asset, err := s.store.CreateMediaAsset(r.Context(), model.CreateMediaAssetInput{
 		TenantID:        tenantID,
 		AssetType:       "audio",
-		OriginalName:    strings.TrimSuffix(filepath.Base(header.Filename), extension) + ".wav",
+		OriginalName:    originalName,
 		StorageDriver:   ossStore.Driver(),
 		StorageBucket:   ossStore.Bucket(),
 		ObjectKey:       audioObjectKey,
@@ -194,9 +242,11 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			"purpose":                "live_agent_custom_mainline_audio",
 			"plan_id":                planID,
 			"room_id":                roomID,
-			"source_original_name":   filepath.Base(header.Filename),
-			"source_content_type":    contentType,
-			"source_size_bytes":      header.Size,
+			"source_original_name":   sourceNames[0],
+			"source_original_names":  sourceNames,
+			"source_content_types":   contentTypes,
+			"source_size_bytes":      totalSourceBytes,
+			"source_file_count":      len(sourceNames),
 			"playback_format":        "pcm_s16le_24k_mono",
 			"subtitle_object_key":    bundle["srt_object_key"],
 			"timeline_object_key":    bundle["timeline_object_key"],
@@ -264,7 +314,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		if cloneErr != nil {
 			response.CloneError = cloneErr.Error()
 		} else {
-			profileName := strings.TrimSuffix(filepath.Base(header.Filename), extension) + " · 自定义音色"
+			profileName := strings.TrimSuffix(sourceNames[0], filepath.Ext(sourceNames[0])) + " · 自定义音色"
 			profile, saveErr := s.store.SaveVoiceProfile(r.Context(), tenantID, actor.UserID, 0, model.VoiceProfileInput{
 				Name:          profileName,
 				Provider:      "aliyun_qwen_clone",

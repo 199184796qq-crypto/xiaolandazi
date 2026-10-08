@@ -47,6 +47,10 @@ func normalizeFullShowPreviewInput(input *model.LiveAgentFullShowPreviewInput) e
 		value := anchorStyleDefaultMatchIntensity
 		input.StyleMatchIntensity = &value
 	}
+	if input.ConversionIntensity == nil {
+		value := 55
+		input.ConversionIntensity = &value
+	}
 	if input.DurationMinutes < 30 || input.DurationMinutes > 240 {
 		return errors.New("直播时长只允许 30 到 240 分钟")
 	}
@@ -61,6 +65,9 @@ func normalizeFullShowPreviewInput(input *model.LiveAgentFullShowPreviewInput) e
 	}
 	if *input.StyleMatchIntensity < 1 || *input.StyleMatchIntensity > 100 {
 		return errors.New("主播风格还原强度只允许 1 到 100")
+	}
+	if *input.ConversionIntensity < 0 || *input.ConversionIntensity > 100 {
+		return errors.New("成交推进强度只允许 0 到 100")
 	}
 	if len(input.ProductLinks) > 20 {
 		return errors.New("商品链接草稿最多 20 个")
@@ -98,6 +105,13 @@ func fullShowStyleMatchIntensity(input model.LiveAgentFullShowPreviewInput) int 
 	return *input.StyleMatchIntensity
 }
 
+func fullShowConversionIntensity(input model.LiveAgentFullShowPreviewInput) int {
+	if input.ConversionIntensity == nil {
+		return 55
+	}
+	return *input.ConversionIntensity
+}
+
 func generationProductLinks(items []model.LiveAgentPlanProductLink) []model.LiveAgentPlanProductLink {
 	result := make([]model.LiveAgentPlanProductLink, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
@@ -129,11 +143,16 @@ func generationBenefits(items []model.LiveAgentPlanBenefit, productLinks []model
 		if !strings.EqualFold(strings.TrimSpace(item.Status), "active") {
 			continue
 		}
-		if item.StartsAt != nil && item.StartsAt.After(now) {
-			continue
-		}
-		if item.EndsAt != nil && item.EndsAt.Before(now) {
-			continue
+		if item.ValidityMode == "permanent" {
+			// Permanent benefits do not expose or participate in time windows.
+			item.StartsAt, item.EndsAt = nil, nil
+		} else {
+			if item.StartsAt != nil && item.StartsAt.After(now) {
+				continue
+			}
+			if item.EndsAt != nil && item.EndsAt.Before(now) {
+				continue
+			}
 		}
 		item.LinkKey = canonicalPlanProductLinkKey(item.LinkKey)
 		// Empty link_key is a plan-wide benefit. A link-scoped benefit must still
@@ -226,11 +245,15 @@ func compileAuthorizedGenerationFacts(
 			scopeKind = "plan"
 		}
 		for _, field := range benefitFields {
+			validFrom, validUntil := benefit.StartsAt, benefit.EndsAt
+			if benefit.ValidityMode == "permanent" {
+				validFrom, validUntil = nil, nil
+			}
 			appendFact(model.LiveAgentGenerationFact{
 				FactID:     fmt.Sprintf("benefit:%d:%s:v%d", benefit.ID, field.predicate, benefit.VersionNo),
 				SourceKind: "benefit", SourceID: benefit.ID, SourceKey: benefit.Key, ScopeKind: scopeKind,
 				LinkKey: benefit.LinkKey, ProductName: strings.TrimSpace(benefit.ProductName), Predicate: field.predicate,
-				Label: field.label, Value: field.value(benefit), ValidFrom: benefit.StartsAt, ValidUntil: benefit.EndsAt,
+				Label: field.label, Value: field.value(benefit), ValidFrom: validFrom, ValidUntil: validUntil,
 				Version: benefit.VersionNo,
 			})
 		}
@@ -350,6 +373,7 @@ func compileFullShowContextAt(
 		RhythmNodes:         rhythmNodes,
 		AnchorStyle:         style,
 		StyleMatchIntensity: fullShowStyleMatchIntensity(input),
+		ConversionIntensity: fullShowConversionIntensity(input),
 		FactExpansion:       factexpansion.Compile(fullShowExpansionFreedom(input)),
 		ExpansionMode:       "fixed_simulation",
 		ExpansionPlans:      expansionPlans,

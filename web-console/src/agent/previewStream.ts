@@ -1,5 +1,5 @@
 export type PreviewStreamEvent =
-  | { type: 'progress'; message: string }
+  | { type: 'progress'; message: string; percent?: number }
   | { type: 'segment'; text: string; segment_index: number }
 
 // Parses real server frames across arbitrary UTF-8/network boundaries.
@@ -27,7 +27,10 @@ export async function readPreviewStream<T>(response: Response, onEvent: (event: 
         const data = JSON.parse(lines.join('\n'))
         if (type === 'complete') return data as T
         if (type === 'error') throw new Error(typeof data.error === 'string' ? data.error : '生成未完成，已返回文字仍保留')
-        if (type === 'progress' && typeof data.message === 'string') onEvent({ type, message: data.message })
+        if (type === 'progress' && typeof data.message === 'string') {
+          const percent = typeof data.percent === 'number' && Number.isFinite(data.percent) ? Math.max(0, Math.min(100, data.percent)) : undefined
+          onEvent({ type, message: data.message, ...(percent === undefined ? {} : { percent }) })
+        }
         if (type === 'segment' && typeof data.text === 'string') onEvent({ type, text: data.text, segment_index: Number(data.segment_index) || 0 })
       }
       if (pending.length > 2_000_000) throw new Error('服务器返回内容过长')

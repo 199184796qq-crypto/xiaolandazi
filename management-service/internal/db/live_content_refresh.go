@@ -71,10 +71,11 @@ func (s *Store) ListLiveContentRefreshCandidatesAfter(ctx context.Context, realm
 	 LEFT JOIN live_content_policies global_policy ON global_policy.tenant_id=0 AND global_policy.room_id=0
 	 LEFT JOIN live_agent_room_plan_selections selected ON selected.tenant_id=r.tenant_id AND selected.room_id=r.room_id
 	 LEFT JOIN live_agent_room_plan_publications pub ON pub.tenant_id=r.tenant_id AND pub.room_id=r.room_id
-	 JOIN live_agent_plan_versions v ON v.tenant_id=r.tenant_id AND v.room_id=r.room_id AND v.plan_id=COALESCE(selected.plan_id,pub.plan_id)
+	 JOIN live_agent_plan_versions v ON v.id=pub.version_id AND v.tenant_id=r.tenant_id AND v.room_id=r.room_id AND v.plan_id=COALESCE(selected.plan_id,pub.plan_id)
 	 WHERE r.status='running' AND r.execution_realm=? AND r.id>? AND access.dynamic_authorized=1 AND access.selected_mode='ai_dynamic'
 	 AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(room_policy.policy_json,'$.auto_refresh_enabled')),JSON_UNQUOTE(JSON_EXTRACT(global_policy.policy_json,'$.auto_refresh_enabled')),'true')='true'
-	 AND v.lifecycle_status='published' AND v.id=(SELECT v2.id FROM live_agent_plan_versions v2 WHERE v2.tenant_id=v.tenant_id AND v2.room_id=v.room_id AND v2.plan_id=v.plan_id AND v2.lifecycle_status='published' ORDER BY v2.version_no DESC,v2.id DESC LIMIT 1)
+	 AND v.published_at IS NOT NULL
+	 AND JSON_EXTRACT(v.generation_context_json,'$.anchor_generation') IS NULL
 	 AND NOT EXISTS(SELECT 1 FROM mgmt_room_deletions d WHERE d.tenant_id=r.tenant_id AND d.room_id=r.room_id)
 	 ORDER BY r.id LIMIT ?`, model.NormalizeExecutionRealm(realm), afterRuntimeID, limit)
 	if err != nil {
@@ -109,7 +110,7 @@ func refreshSourceFingerprint(ctx context.Context, q refreshQuerier, tenantID, r
 	}{
 		{`SELECT CAST(JSON_OBJECT('id',id,'v',version_no,'state',status,'value',fact_value,'key',fact_key) AS CHAR) FROM live_agent_plan_facts WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{tenantID, planID}},
 		{`SELECT CAST(JSON_OBJECT('id',id,'v',version_no,'state',status,'updated',updated_at) AS CHAR) FROM live_agent_plan_product_links WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{tenantID, planID}},
-		{`SELECT CAST(JSON_OBJECT('id',id,'v',version_no,'state',status,'updated',updated_at,'window',CASE WHEN starts_at>? THEN 'future' WHEN ends_at<=? THEN 'expired' ELSE 'current' END) AS CHAR) FROM live_agent_plan_benefits WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{now, now, tenantID, planID}},
+		{`SELECT CAST(JSON_OBJECT('id',id,'v',version_no,'state',status,'updated',updated_at,'window',CASE WHEN validity_mode='permanent' THEN 'permanent' WHEN starts_at>? THEN 'future' WHEN ends_at<=? THEN 'expired' ELSE 'current' END) AS CHAR) FROM live_agent_plan_benefits WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{now, now, tenantID, planID}},
 		{`SELECT CAST(JSON_OBJECT('id',id,'state',status,'analysis',SHA2(analysis_json,256),'text',SHA2(readable_text,256)) AS CHAR) FROM live_agent_plan_scripts WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{tenantID, planID}},
 		{`SELECT CAST(JSON_OBJECT('id',id,'v',version_no,'state',status,'updated',updated_at) AS CHAR) FROM live_agent_plan_script_references WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{tenantID, planID}},
 		{`SELECT CAST(JSON_OBJECT('id',id,'state',status,'text',canonical_text,'note',note,'updated',updated_at) AS CHAR) FROM live_agent_plan_terms WHERE tenant_id=? AND plan_id=? ORDER BY id`, []any{tenantID, planID}},
@@ -384,7 +385,7 @@ func validateRefreshVersionTx(ctx context.Context, tx *sql.Tx, tenantID, roomID,
 		return err
 	}
 	var current int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_versions WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published' ORDER BY version_no DESC,id DESC LIMIT 1 FOR UPDATE`, tenantID, roomID, planID).Scan(&current)
+	err = tx.QueryRowContext(ctx, `SELECT version_id FROM live_agent_room_plan_publications WHERE tenant_id=? AND room_id=? AND plan_id=? FOR UPDATE`, tenantID, roomID, planID).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrLiveContentRefreshObsolete
 	}
@@ -620,7 +621,7 @@ func (s *Store) CompleteLiveContentRefreshJob(ctx context.Context, job model.Liv
 	if n != 1 {
 		return cancelRefreshTx(ctx, tx, j.ID, "prepared_version_changed")
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_versions SET lifecycle_status='superseded' WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published' AND id<>?`, j.TenantID, j.RoomID, j.PlanID, j.ResultVersionID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_versions SET lifecycle_status='superseded' WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published' AND id<>? AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')='ai_dynamic'`, j.TenantID, j.RoomID, j.PlanID, j.ResultVersionID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO live_agent_room_plan_publications(tenant_id,room_id,plan_id,version_id,published_at) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE plan_id=VALUES(plan_id),version_id=VALUES(version_id),published_at=VALUES(published_at)`, j.TenantID, j.RoomID, j.PlanID, j.ResultVersionID, now); err != nil {

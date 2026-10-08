@@ -23,11 +23,11 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
-	"livecompanion/management/internal/stylecontract"
 	"livecompanion/management/internal/styleoverlay"
 	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/voicecatalog"
@@ -106,9 +106,21 @@ type Worker struct {
 	addressMu   sync.Mutex
 	recentNamed map[int64]map[string]time.Time
 	faqCache    *faqAnswerCache
+	prepared    map[preparedInteractionKey]preparedInteraction
 }
 
 type decisionItem struct {
+	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
+	Scene          string          `json:"scene,omitempty"`
+	OrderSource    string          `json:"order_source,omitempty"`
+	OriginPlanID   int64           `json:"origin_plan_id,omitempty"`
+	OriginMainline string          `json:"origin_mainline,omitempty"`
+	OriginTrackID  string          `json:"origin_track_id,omitempty"`
+	Schedule       json.RawMessage `json:"schedule,omitempty"`
+	ContentGoal    string          `json:"-"`
+	ContentAngle   string          `json:"-"`
+	contentError   error
+
 	ID                     string                                `json:"id"`
 	MissionID              string                                `json:"mission_id,omitempty"`
 	Topic                  string                                `json:"topic"`
@@ -207,6 +219,7 @@ func speechMissionPrompt(item decisionItem) string {
 		"reply_like":     "回应点赞",
 		"welcome_named":  "点名欢迎",
 		"welcome_batch":  "打包欢迎",
+		"complaint":      "投诉与负面反馈", "conversion_signal": "下单回应", "warmup": "暖场互动",
 	}[kind]
 	if label == "" {
 		label = kind
@@ -317,63 +330,33 @@ func (w *Worker) applyStrategyPipeline(
 	)
 }
 
-func (w *Worker) applyInteractionStrategyStage(
-	_ context.Context,
-	_ model.LiveRuntimeSession,
-	_ string,
-	item *decisionItem,
-) {
-	if item == nil {
+func (w *Worker) applyInteractionStrategyStage(ctx context.Context, session model.LiveRuntimeSession, _ string, item *decisionItem) {
+	if item == nil || strings.TrimSpace(item.MissionKind) == "" {
 		return
 	}
-	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
-	goal := interactionMissionGoal(kind)
-	if goal == "" {
+	guidance, goal, angle, err := w.interactionContentGuidance(ctx, session, *item)
+	if err != nil {
+		item.contentError = err
 		return
 	}
-	decisionGuidance := ""
-	if item.InteractionDecision.EventValue > 0 {
-		decisionGuidance = " 该任务已经过事件价值和互动预算判断；不要在口播中透露热度、分值、预算、优先级或内部策略信息。"
-		if debt := item.InteractionDecision.QuestionDebt; debt != nil && debt.UniqueUsers >= 2 {
-			decisionGuidance += " 若语境自然，可概括为有不止一位观众关注这个问题，但不要机械报内部人数。"
-		}
-	}
-	item.addStrategyConstraint(strategyConstraint{
-		Stage:    "interaction",
-		Key:      kind,
-		Name:     item.Title,
-		Guidance: "本轮互动目标：" + goal + "；只处理本轮需要回应的事件，不机械报数，不额外扩展不存在的事实。" + decisionGuidance,
-		Required: true,
-	})
+	item.ContentGoal = goal.Key
+	item.ContentAngle = angle
+	item.addStrategyConstraint(strategyConstraint{Stage: "interaction", Key: item.MissionKind, Name: goal.Name, Guidance: guidance, Required: true})
 	w.updateMission(item, func(m *speechmission.Mission) {
-		m.Interaction = speechmission.InteractionPlan{
-			Kind:          kind,
-			Goal:          goal,
-			EventCount:    item.MissionEventCount,
-			WindowSeconds: item.MissionWindowSeconds,
-			Decision:      item.InteractionDecision,
-			Required:      true,
-		}
+		m.Interaction = speechmission.InteractionPlan{Kind: item.MissionKind, Goal: goal.Name + "；" + goal.Action + "；角度：" + angle, EventCount: item.MissionEventCount, WindowSeconds: item.MissionWindowSeconds, Decision: item.InteractionDecision, Required: true}
 	})
 }
 
 func interactionMissionGoal(kind string) string {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "reply_chat":
-		return "自然回应当前有效弹幕或问题"
-	case "reply_follow":
-		return "自然感谢刚刚发生的关注，不机械报关注数量"
-	case "reply_like":
-		return "自然回应点赞支持，把多次点赞聚合成一次真人式感谢"
-	case "welcome_named":
-		return "低频自然欢迎刚进入直播间的具体观众；是否真正点名仍由称呼策略和语境决定"
-	case "welcome_batch":
-		return "自然欢迎最近进入的一批新朋友，不逐个报名字"
-	case "conversion_signal":
-		return "自然回应当前成交或下单信号，优先解决成交相关信息，但不得编造订单状态、库存、价格或承诺"
-	default:
+	cfg, err := interactionpolicy.Load()
+	if err != nil {
 		return ""
 	}
+	event := cfg.Events[interactionScene(kind)]
+	if len(event.Goals) == 0 {
+		return ""
+	}
+	return event.Goals[0].Name
 }
 
 func (w *Worker) applyInterruptStrategyStage(
@@ -1233,6 +1216,7 @@ func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...le
 		retryAfter:     make(map[int64]time.Time),
 		recentNamed:    make(map[int64]map[string]time.Time),
 		faqCache:       &faqAnswerCache{buckets: make(map[string][]faqAnswerVariant)},
+		prepared:       make(map[preparedInteractionKey]preparedInteraction),
 	}
 	if len(leaders) > 0 {
 		w.leader = leaders[0]
@@ -1406,6 +1390,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 		log.Printf("decision executor list runtime sessions: %v", err)
 		return
 	}
+	w.prunePreparedInteractions(sessions)
 	for _, session := range sessions {
 		if !session.BelongsToExecutionRealm(w.executionRealm) {
 			continue
@@ -1582,11 +1567,16 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	w.ensureMission(session, item)
 	w.transitionMission(item, speechmission.StatePlanningInteraction, "claimed", "口播任务已领取，开始汇总本轮策略黑板")
 	completed := false
+	reschedule := false
 	defer func() {
 		if !completed {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := w.release(releaseCtx, session, item.ID); err != nil {
+			reason := ""
+			if reschedule {
+				reason = "cut_reschedule"
+			}
+			if err := w.release(releaseCtx, session, item.ID, reason); err != nil {
 				log.Printf("decision executor release tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, err)
 			}
 		}
@@ -1594,6 +1584,33 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 
 	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
 	isSimulation := manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview"
+	memoryBefore, err := w.interactionMemoryFingerprint(ctx, session)
+	if err != nil {
+		return err
+	}
+	var preparationScope string
+	if !isSimulation {
+		preparationScope, err = w.interactionPreparationScope(ctx, session, *item)
+		if err != nil {
+			return err
+		}
+		if prepared, ok := w.takePreparedInteraction(session, *item, preparationScope, memoryBefore); ok {
+			// Keep the generated reply and its voice directives, but let Core
+			// select a safe boundary on the current mainline instead of the old one.
+			current, resume, segment := item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID
+			*item = prepared.Item
+			item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID = current, resume, segment
+			item.PlannedSwitchAtMS = 0
+			w.transitionMission(item, speechmission.StateWaitingCutPoint, "prepared_audio_reused", "复用已审核正文和声音，仅重新安排当前主线切点")
+			err = w.dispatchPreparedInteraction(ctx, session, item, prepared.Text, prepared.AudioURL, preparationScope, memoryBefore, prepared.ExpiresAt)
+			if errors.Is(err, errPreparedInteractionWaiting) {
+				reschedule = true
+				return nil // release for scheduling without the room-wide error backoff
+			}
+			completed = err == nil
+			return err
+		}
+	}
 	text, err := w.generateDecisionTextMutable(ctx, session, item)
 	if err != nil {
 		w.transitionMission(item, speechmission.StateFailed, "generation_failed", err.Error())
@@ -1674,13 +1691,70 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		session.TenantID, session.RoomID, item.ID, item.SelectedInterrupt, voiceRate(voice), strings.TrimSpace(ttsInstruction) != "", ttsModel,
 	)
 
+	// Queue expiry governs admission. A claimed answer remains owned by its
+	// execution lease until playback completes, fails or is explicitly removed.
+	memoryNow, err := w.interactionMemoryFingerprint(ctx, session)
+	if err != nil {
+		return err
+	}
+	if memoryNow != memoryBefore {
+		// Corrections remain hard constraints, unlike advisory host style.
+		text, err = w.finalizeSpeechText(ctx, session, *item, text)
+		if err != nil {
+			return err
+		}
+		text, err = w.tolerantInteractionLength(ctx, session, *item, text)
+		if err != nil {
+			return err
+		}
+		item.faqCacheTicket = nil
+		audio, err = w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: text, Rate: voiceRate(voice), Instruction: ttsInstruction})
+		if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
+			return fmt.Errorf("纠正规则更新后重新生成语音失败: %v", err)
+		}
+		latest, e := w.interactionMemoryFingerprint(ctx, session)
+		if e != nil {
+			return e
+		}
+		if latest != memoryNow {
+			return fmt.Errorf("纠正规则再次更新，撤销旧回答并重新排队")
+		}
+	}
+	latestScope, err := w.interactionPreparationScope(ctx, session, *item)
+	if err != nil {
+		return err
+	}
+	if latestScope != preparationScope {
+		return fmt.Errorf("商品事实、方案或播出规则已变化，撤销旧声音并重新排队")
+	}
+	err = w.dispatchPreparedInteraction(ctx, session, item, text, audio.AudioURL, preparationScope, memoryNow, w.now().Add(preparedInteractionTTL))
+	if errors.Is(err, errPreparedInteractionWaiting) {
+		reschedule = true
+		return nil
+	}
+	completed = err == nil
+	return err
+}
+
+func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) error {
+	w.updateMission(item, func(m *speechmission.Mission) {
+		m.GeneratedText = text
+		m.TTS.AudioURL = strings.TrimSpace(audioURL)
+	})
 	action := "answer"
 	if strings.EqualFold(strings.TrimSpace(item.ManualAction), "quick") {
 		action = "quick"
 	}
 	w.transitionMission(item, speechmission.StateWaitingCutPoint, "dispatch_start", "TTS已生成，等待Core确认实际打断与回归位置")
-	dispatchResult, err := w.dispatch(ctx, session, *item, action, text, audio.AudioURL)
+	dispatchResult, err := w.dispatch(ctx, session, *item, action, text, audioURL)
 	if err != nil {
+		var conflict *safeSwitchRetry
+		if errors.As(err, &conflict) && ctx.Err() == nil {
+			w.savePreparedInteraction(session, *item, text, audioURL, scope, memory, expiresAt)
+			w.transitionMission(item, speechmission.StateCreated, "cut_reschedule", "切点已变化，保留已审核声音等待重新调度")
+			log.Printf("decision prepared audio retained tenant=%d room=%d decision=%s reason=%s", session.TenantID, session.RoomID, item.ID, conflict.message)
+			return errPreparedInteractionWaiting
+		}
 		w.transitionMission(item, speechmission.StateFailed, "dispatch_failed", err.Error())
 		return err
 	}
@@ -1729,7 +1803,6 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		log.Printf("decision executor history tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, historyErr)
 	}
 	// Core 自己按 started_at + duration_ms 完成播音任务；终端回报只用于设备健康与排查。
-	completed = true
 	w.clearBackoff(session.RoomID)
 	return nil
 }
@@ -1976,6 +2049,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			seed = strings.TrimSpace(primaryQuestion(*item))
 		}
 		w.applyStrategyPipeline(ctx, session, seed, item)
+		if item.contentError != nil {
+			return "", item.contentError
+		}
 		w.transitionMission(item, speechmission.StateGeneratingText, "generate_text", "全部策略已汇总，开始一次性生成最终可播正文")
 		prompt, err := w.answerPrompt(ctx, session, faqPromptItem(*item))
 		if err != nil {
@@ -2020,7 +2096,10 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if err != nil {
 		return "", err
 	}
-	text = limitSpeechText(finalText, maxSpeechRunes)
+	text, err = w.tolerantInteractionLength(ctx, session, *item, finalText)
+	if err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("最终播出文字为空")
 	}
@@ -2146,8 +2225,11 @@ func (w *Worker) claim(ctx context.Context, session model.LiveRuntimeSession) (c
 	return result, nil
 }
 
-func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, decisionID string) error {
+func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, decisionID string, reasons ...string) error {
 	query := tenantQuery(session.TenantID)
+	if len(reasons) > 0 && reasons[0] == "cut_reschedule" {
+		query.Set("reason", "cut_reschedule")
+	}
 	resp, err := w.core.DoRoom(
 		ctx, session.TenantID, session.RoomID, http.MethodPost,
 		fmt.Sprintf("/internal/v1/rooms/%d/agent-decisions/%s/release", session.RoomID, url.PathEscape(decisionID)),
@@ -2235,6 +2317,32 @@ func (result dispatchResult) traceNote() string {
 }
 
 func (w *Worker) dispatch(
+	ctx context.Context, session model.LiveRuntimeSession, item decisionItem, action, text, audioURL string,
+) (dispatchResult, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := w.dispatchOnce(ctx, session, item, action, text, audioURL)
+		var conflict *safeSwitchRetry
+		if err == nil || !errors.As(err, &conflict) || attempt >= 2 {
+			return result, err
+		}
+		// Core explicitly rejected before publishing. Reuse complete audio;
+		// uncertain transport outcomes are never repeated automatically.
+		item.PlannedSwitchAtMS = 0
+		timer := time.NewTimer(300 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return dispatchResult{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+type safeSwitchRetry struct{ message string }
+
+func (e *safeSwitchRetry) Error() string { return e.message }
+
+func (w *Worker) dispatchOnce(
 	ctx context.Context,
 	session model.LiveRuntimeSession,
 	item decisionItem,
@@ -2246,9 +2354,10 @@ func (w *Worker) dispatch(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"decision_id":           item.ID,
-			"mission_id":            missionID(&item),
-			"mission_kind":          strings.ToLower(strings.TrimSpace(item.MissionKind)),
+			"decision_id":  item.ID,
+			"mission_id":   missionID(&item),
+			"mission_kind": strings.ToLower(strings.TrimSpace(item.MissionKind)),
+			"content_goal": item.ContentGoal, "content_angle": item.ContentAngle,
 			"session_id":            session.ExternalID,
 			"action":                action,
 			"audio_url":             audioURL,
@@ -2270,6 +2379,9 @@ func (w *Worker) dispatch(
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点")) {
+			return dispatchResult{}, &safeSwitchRetry{message: string(raw)}
+		}
 		return dispatchResult{}, fmt.Errorf("audio dispatch http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var result dispatchResult
@@ -2471,8 +2583,14 @@ func (w *Worker) finalizeSpeechText(
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
 	}
-	contextText, _ := w.answerPrompt(ctx, session, item)
+	contextText, contextErr := w.answerPrompt(ctx, session, item)
+	if contextErr != nil {
+		return "", contextErr
+	}
 	riskTerms, reasons := finalSpeechRisks(text, contextText, effective)
+	if strings.Contains(contextText, "【本场正式事实快照】") {
+		reasons = append(reasons, "逐项核对本场商品链接、规格、价格与福利条件；事实快照以外的业务数值不得补造，旧素材只能作为表达参考")
+	}
 	for _, term := range internalSpeechLeakTerms {
 		if term != "" && strings.Contains(text, term) {
 			reasons = append(reasons, "内部生成控制信息不得进入播出文本")
@@ -3016,50 +3134,33 @@ func liveAgentPlanStylePrompt(scripts []model.LiveAgentPlanScript) string {
 }
 
 func liveAnchorStyleProfilePrompt(profile model.LiveAgentPlanAnchorStyleProfile) string {
-	if stylecontract.Valid(profile) {
-		return "\n【当前主播口播规范：实时热更新】\n" + stylecontract.Render(profile)
-	}
-	if len(profile.Dimensions) == 0 && len(profile.ReusableRules) == 0 && strings.TrimSpace(profile.Summary) == "" {
+	if profile.Delivery == nil && len(profile.Dimensions) == 0 && len(profile.ReusableRules) == 0 && strings.TrimSpace(profile.Summary) == "" {
 		return ""
 	}
-	{
-		var builder strings.Builder
-		builder.WriteString("\n【当前主播风格：实时热更新】")
-		builder.WriteString("\n这里只控制怎么说，绝不能改变事实、价格、规格、库存、活动、物流或承诺。")
-		builder.WriteString("\n短互动优先直接回答问题，再自然接回主线；保留已确认的主播自称和原词口头禅，但不强制每句出现。观众称呼不能用作主播自称，不得凭风格推断身份。")
-		if summary := strings.TrimSpace(profile.Summary); summary != "" {
-			builder.WriteString("\n风格摘要：")
-			builder.WriteString(summary)
-		}
-		dimensionCount := 0
-		for _, dimension := range profile.Dimensions {
-			if dimensionCount >= 40 {
-				break
-			}
-			rule := strings.TrimSpace(dimension.Rule)
-			label := strings.TrimSpace(dimension.Label)
-			if strings.TrimSpace(dimension.Level) == "样本不足" || (rule == "" && label == "") {
+	raw, err := interactionpolicy.Read("interaction-anchor-style.md")
+	if err != nil {
+		log.Printf("interaction style mother: %v", err)
+		return ""
+	}
+	data := map[string]any{"风格摘要": profile.Summary, "表达特点": profile.Dimensions, "可参考表达": profile.ReusableRules}
+	if d := profile.Delivery; d != nil {
+		habits := append([]model.LiveAnchorLiteralHabit(nil), d.Habits...)
+		sort.SliceStable(habits, func(i, j int) bool { return habits[i].Count > habits[j].Count })
+		features := []map[string]string{}
+		for _, h := range habits {
+			if h.Stability == "noise" || h.Text == "" {
 				continue
 			}
-			dimensionCount++
-			builder.WriteString("\n- ")
-			if label != "" {
-				builder.WriteString(label)
-				builder.WriteString("：")
-			}
-			builder.WriteString(rule)
-		}
-		for index, rule := range profile.ReusableRules {
-			if index >= 12 {
+			features = append(features, map[string]string{"类型": h.Kind, "原词": h.Text, "使用语境": h.When})
+			if len(features) >= 6 {
 				break
 			}
-			if rule = strings.TrimSpace(rule); rule != "" {
-				builder.WriteString("\n- 可复用表达：")
-				builder.WriteString(rule)
-			}
 		}
-		return builder.String()
+		data["重点表达特点"] = features
+		data["表达指导"] = d.Instructions
 	}
+	content, _ := json.Marshal(data)
+	return "\n【当前主播风格：实时热更新】\n" + strings.ReplaceAll(string(raw), "{{STYLE_DATA}}", string(content))
 }
 
 type liveAgentPlanStyleOverlayStore interface {
@@ -3093,6 +3194,11 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			return "", fmt.Errorf("读取直播方案动态事实失败: %w", factsErr)
 		}
 		dynamicFactsPrompt = liveAgentPlanFactsPrompt(facts)
+		if snapshot, snapshotErr := w.interactionFactSnapshot(ctx, session, plan.ID); snapshotErr != nil {
+			return "", snapshotErr
+		} else if snapshot != "" {
+			dynamicFactsPrompt = snapshot
+		}
 
 		scripts, scriptsErr := w.store.ListLiveAgentPlanScripts(ctx, session.TenantID, plan.ID)
 		if scriptsErr != nil {
@@ -3263,7 +3369,26 @@ func adaptiveAnswerLengthGuidance(item decisionItem) string {
 	case totalRunes >= 55:
 		recommended = "60–180字"
 	}
-	return "300字是硬上限，不是目标字数。请根据当前问题复杂度、是否需要解释以及尽快回到主线的节奏自行决定长度；通常不少于20字。能一句讲清就短答，禁止为了凑字重复扩写。本次建议 " + recommended + "，确有必要可延长，但绝不能超过300字。"
+	heat := strings.ToUpper(strings.TrimSpace(item.InteractionDecision.Heat))
+	switch interactionScene(item.MissionKind) {
+	case "welcome", "like_follow", "order":
+		recommended = "20–50字"
+	case "warmup":
+		recommended = "30–60字"
+	case "complaint":
+		recommended = "80–160字"
+	case "product_question":
+		recommended = "30–80字"
+		if len(questions) >= 3 || totalRunes >= 55 {
+			recommended = "80–160字"
+		} else if totalRunes > 14 {
+			recommended = "60–120字"
+		}
+	}
+	if heat == "HOT" || heat == "OVERHEATED" {
+		recommended += "，优先接近范围下限，复杂问题仍以说清楚为先"
+	}
+	return "建议总长不超过300字，必要时允许20%容差至360字，不是目标字数。请根据当前问题复杂度、是否需要解释以及尽快回到主线的节奏自行决定长度；通常不少于20字。能一句讲清就短答，禁止为了凑字重复扩写。本次建议 " + recommended + "，略超建议范围但内容必要、自然时可直接使用，绝不能超过360字容差上限。"
 }
 
 func primaryQuestion(item decisionItem) string {
