@@ -21,7 +21,7 @@ type strategyFactStore struct {
 
 func (s *strategyFactStore) GetLatestPlanContentStrategy(_ context.Context, tenant, plan int64, hash string, before time.Time) (string, error) {
 	s.before = before
-	if tenant != 7 || plan != 2 || hash != contentstrategy.SHA(s.asset.SafeFacts) || s.failed {
+	if tenant != 7 || plan != 2 || (hash != "" && hash != contentstrategy.SHA(s.asset.SafeFacts)) || s.failed {
 		return "", appdb.ErrPlanAnalysisAssetNotFound
 	}
 	return s.raw, nil

@@ -54,6 +54,9 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 		return result, nil
 	}
 	if strategyStore, ok := w.store.(contentStrategyStore); ok {
+		if control, err := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, "", session.StartedAt); err == nil && contentstrategy.Disabled(control) {
+			return result, nil
+		}
 		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(asset.SafeFacts), session.StartedAt)
 		if errors.Is(strategyErr, appdb.ErrPlanAnalysisAssetNotFound) {
 			return result, nil

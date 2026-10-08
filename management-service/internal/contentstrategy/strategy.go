@@ -56,6 +56,20 @@ type Snapshot struct {
 
 func SHA(text string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(text))) }
 
+// Only an explicit, valid disabled version is a plan-level opt-out. Absence
+// of a field or malformed JSON must never silently disable an existing asset.
+func Disabled(raw string) bool {
+	var s Snapshot
+	if Decode(raw, &s) != nil || s.Version != 1 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &fields) != nil {
+		return false
+	}
+	return strings.TrimSpace(string(fields["enabled"])) == "false"
+}
+
 // A record includes all continuation lines and expression controls. In
 // particular, numbers in a forbidden example must not become product specs.
 func Facts(text string) []Fact {

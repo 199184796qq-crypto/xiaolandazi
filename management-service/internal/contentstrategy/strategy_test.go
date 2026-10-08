@@ -66,3 +66,14 @@ func TestProductScopeCannotBorrowOtherLinks(t *testing.T) {
 		t.Fatal("disabled strategy changed original generation", prompt, err)
 	}
 }
+
+func TestOnlyExplicitValidDisableCounts(t *testing.T) {
+	if !Disabled(`{"version":1,"enabled":false}`) {
+		t.Fatal("explicit disable ignored")
+	}
+	for _, raw := range []string{`{"version":1}`, `{"version":1,"enabled":null}`, `{"version":1,"enabled":true}`, `{"version":1,"enabled":false,"unknown":1}`} {
+		if Disabled(raw) {
+			t.Fatal("malformed or absent control disabled strategy", raw)
+		}
+	}
+}

@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Server) loadContentStrategy(ctx context.Context, tenant, plan int64, facts string) *contentstrategy.Snapshot {
+	if control, err := s.store.GetLatestPlanContentStrategy(ctx, tenant, plan, "", time.Now().UTC()); err == nil && contentstrategy.Disabled(control) {
+		return &contentstrategy.Snapshot{Version: 1, Enabled: false}
+	}
 	raw, err := s.store.GetLatestPlanContentStrategy(ctx, tenant, plan, contentstrategy.SHA(facts), time.Now().UTC())
 	if errors.Is(err, appdb.ErrPlanAnalysisAssetNotFound) {
 		return nil
@@ -173,8 +176,7 @@ func (s *Server) planContentStrategy(w http.ResponseWriter, r *http.Request) {
 	if input.Enabled != nil && !*input.Enabled {
 		snapshot := s.loadContentStrategy(ctx, tenant, plan, safety.SafeFacts)
 		if snapshot == nil {
-			writeJSON(w, 200, map[string]any{"enabled": false})
-			return
+			snapshot = &contentstrategy.Snapshot{Version: 1, FactsSHA: contentstrategy.SHA(safety.SafeFacts), Facts: contentstrategy.Facts(safety.SafeFacts)}
 		}
 		snapshot.Enabled = false
 		if err = s.saveContentStrategy(ctx, tenant, plan, snapshot); err != nil {
