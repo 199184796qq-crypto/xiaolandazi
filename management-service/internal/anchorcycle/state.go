@@ -14,6 +14,7 @@ import (
 
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/contentguard"
+	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/model"
 )
 
@@ -128,6 +129,7 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	ContentStrategy           *contentstrategy.Snapshot      `json:"content_strategy,omitempty"`
 	ProductFocus              *ProductFocus                  `json:"product_focus,omitempty"`
 	AcceptedOffset            int                            `json:"accepted_offset,omitempty"`
 	Delivery                  *MainlineDelivery              `json:"mainline_delivery,omitempty"`

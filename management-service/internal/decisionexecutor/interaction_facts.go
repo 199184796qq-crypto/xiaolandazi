@@ -2,17 +2,26 @@ package decisionexecutor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"livecompanion/management/internal/contentstrategy"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
+	"log"
 	"strings"
+	"time"
 )
 
 type interactionFactSnapshotStore interface {
 	GetLiveDerivedSafety(context.Context, int64, int64, string) (model.LiveDerivedSafetyAsset, error)
 }
 
-func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64) (string, error) {
+type contentStrategyStore interface {
+	GetLatestPlanContentStrategy(context.Context, int64, int64, string, time.Time) (string, error)
+}
+
+func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, skipStrategy ...bool) (string, error) {
 	source, ok := w.store.(interactionFactSnapshotStore)
 	if !ok {
 		return "", nil
@@ -40,5 +49,27 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	if err != nil {
 		return "", err
 	}
-	return "\n" + strings.ReplaceAll(string(raw), "{{FACTS}}", asset.SafeFacts), nil
+	result := "\n" + strings.ReplaceAll(string(raw), "{{FACTS}}", asset.SafeFacts)
+	if len(skipStrategy) > 0 && skipStrategy[0] {
+		return result, nil
+	}
+	if strategyStore, ok := w.store.(contentStrategyStore); ok {
+		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(asset.SafeFacts), session.StartedAt)
+		if errors.Is(strategyErr, appdb.ErrPlanAnalysisAssetNotFound) {
+			return result, nil
+		}
+		if strategyErr == nil {
+			var snapshot *contentstrategy.Snapshot
+			snapshot, strategyErr = contentstrategy.Parse(strategyRaw, asset.SafeFacts)
+			if strategyErr == nil {
+				var guidance string
+				guidance, strategyErr = snapshot.Render("互动", asset.SafeFacts)
+				if strategyErr == nil {
+					return result + "\n\n" + guidance, nil
+				}
+			}
+		}
+		log.Printf("interaction content strategy fallback tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, strategyErr)
+	}
+	return result, nil
 }

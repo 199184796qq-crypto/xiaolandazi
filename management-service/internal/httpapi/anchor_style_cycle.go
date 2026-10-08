@@ -369,6 +369,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		state.DerivedSafetyAssetID = safety.ID
 	}
 	state.TenantID, state.PlanID, state.RoomID = tenant, plan, room
+	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, plan, state.Facts)
 	state.ProductFocus, err = s.buildCycleProductFocus(ctx, &state, links)
 	if err != nil {
 		writeError(w, 409, err.Error())
@@ -534,6 +535,12 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 	}
 	if productScope != "" {
 		md = productScope + "\n\n" + md
+	}
+	// Optional content enrichment: existing task and product scoping always win.
+	if strategy, e := state.ContentStrategy.Render("主线", state.ProductFacts(task)); e == nil && strategy != "" {
+		md += "\n\n" + strategy
+	} else if e != nil {
+		state.Warn("内容策略母版不可用，本段按原生成流程：" + e.Error())
 	}
 	return md, nil
 }

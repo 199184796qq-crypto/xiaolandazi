@@ -14,6 +14,8 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/anchorvoicecache"
+	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/storage"
 )
@@ -29,6 +31,14 @@ func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment)
 	}
 	if state.ProductFocus != nil {
 		contract += ":product-focus-v2:" + state.ProductScopeSHA(segment.Task)
+	}
+	if strategy := state.ContentStrategy; strategy != nil && strategy.Enabled {
+		contract += ":content-strategy-v1:" + anchorvoicecache.Digest(strategy)
+		if mother, err := interactionpolicy.Read("fact-purpose-angle-generation.md"); err == nil {
+			contract += ":" + contentstrategy.SHA(string(mother))
+		} else {
+			contract += ":mother-unavailable"
+		}
 	}
 	var voice any
 	if v := state.Config.TTS; v != nil {

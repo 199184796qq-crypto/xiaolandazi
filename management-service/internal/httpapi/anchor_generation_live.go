@@ -163,6 +163,7 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	state.Surface = "formal_live"
 	state.StyleID, state.ScorecardID, state.WheelID = scheme.StyleID, scheme.ScorecardID, scheme.WheelID
 	state.StyleMD, state.BaselineJSON, state.Facts = scheme.StyleMD, scheme.BaselineJSON, safety.SafeFacts
+	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, version.PlanID, state.Facts)
 	if scheme.ProductFocus != nil {
 		if scheme.ProductFocus.FactsSHA != derivedHash(safety.SafeFacts) {
 			return nil, errors.New("商品范围与已保存安全事实不一致，请保存发布新方案")

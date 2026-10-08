@@ -2639,6 +2639,13 @@ func (w *Worker) finalizeSpeechText(
 	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	reviewSystemPrompt := w.store.AgentPromptValue(ctx, "live.final_review.system", "只返回修正后的可直接播出正文，删除无依据事实和绝对化承诺。")
+	if strings.Contains(contextText, "# 事实、目的与角度内容策略 v1") && !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+		if guidance, e := interactionpolicy.Read("fact-purpose-angle-review.md"); e == nil {
+			reviewSystemPrompt += "\n\n" + string(guidance)
+		} else {
+			log.Printf("content strategy expression review fallback tenant=%d room=%d: %v", session.TenantID, session.RoomID, e)
+		}
+	}
 	if hasAgentMemories {
 		reviewSystemPrompt += "\n\n【智能体记忆终审硬要求】\n当前直播间智能体记忆都是用户已经采用、正在生效的约束。必须逐条核对与当前问题相关的记忆，不能遗漏：\n- semantic：必须结合当前问题、商品和上下文判断含义，禁止无条件字符串替换；\n- fact：不得与已确认事实冲突，不得把未知事实补成确定事实；\n- wording：禁止使用 avoid/blocked 类表达，并优先采用已确认的表达口径；\n- style：只能改变说话方式，不能改变事实。\n若待播话术已经正确，保持原意和自然度；若存在冲突，直接修正。只返回最终可播正文。"
 	}
@@ -3194,7 +3201,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			return "", fmt.Errorf("读取直播方案动态事实失败: %w", factsErr)
 		}
 		dynamicFactsPrompt = liveAgentPlanFactsPrompt(facts)
-		if snapshot, snapshotErr := w.interactionFactSnapshot(ctx, session, plan.ID); snapshotErr != nil {
+		if snapshot, snapshotErr := w.interactionFactSnapshot(ctx, session, plan.ID, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim")); snapshotErr != nil {
 			return "", snapshotErr
 		} else if snapshot != "" {
 			dynamicFactsPrompt = snapshot

@@ -394,6 +394,16 @@ func (s *Server) liveAnchorGenerationInitialize(w http.ResponseWriter, r *http.R
 		anchorGenerationStep("selling_point_wheel", "卖点角度", fmt.Sprintf("已生成 %d 个卖点、%d 个角度组合", points, angles), wheelErr),
 	}
 	initialized, partial, notice := anchorGenerationInitializationNotice(steps)
+	// Optional content analysis does not change the four existing prerequisites.
+	strategyStep := anchorGenerationInitializationStep{Key: "content_strategy", Label: "目的角度内容策略", Status: "skipped", Message: "等待事实与卖点初始化完成，原流程不变"}
+	if factErr == nil && wheelErr == nil {
+		reportAnchorAnalysis(ctx, 96, "正在准备独立的目的角度内容策略，原有方案保留")
+		strategyErr := s.initializeContentStrategy(ctx, tenant, plan, actor.UserID)
+		strategyStep = anchorGenerationStep("content_strategy", "目的角度内容策略", "方案内容策略已准备，原有调度继续执行", strategyErr)
+		if strategyErr != nil {
+			notice += " 内容策略未准备成功，原生成流程可继续：" + strategyErr.Error()
+		}
+	}
 	reportAnchorAnalysis(ctx, 100, notice)
-	writeJSON(w, 200, map[string]any{"initialized": initialized, "partial": partial, "selling_points": points, "angles": angles, "notice": notice, "steps": steps})
+	writeJSON(w, 200, map[string]any{"initialized": initialized, "partial": partial, "selling_points": points, "angles": angles, "notice": notice, "steps": steps, "content_strategy": strategyStep})
 }
