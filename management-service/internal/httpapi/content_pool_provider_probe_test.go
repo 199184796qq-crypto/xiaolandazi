@@ -90,7 +90,7 @@ func TestContentPoolProviderProbe(t *testing.T) {
 				t.Fatal(e)
 			}
 			outputs = append(outputs, map[string]any{"stage": "generated", "pool": p.Key, "raw": result.Text})
-			p.Tasks, e = decodePoolTaskResponse(result.Text, p, nil, source.Products)
+			p.Tasks, e = decodePoolTaskResponse(result.Text, p, nil)
 			if e != nil {
 				t.Fatal("generated protocol", e)
 			}
@@ -100,7 +100,7 @@ func TestContentPoolProviderProbe(t *testing.T) {
 				t.Fatal(e)
 			}
 			outputs = append(outputs, map[string]any{"stage": "reviewed", "pool": p.Key, "raw": result.Text})
-			p.Tasks, e = decodePoolTaskResponse(result.Text, p, p.Tasks, source.Products)
+			p.Tasks, e = decodePoolTaskResponse(result.Text, p, p.Tasks)
 			if e != nil {
 				t.Fatal("reviewed protocol", e)
 			}

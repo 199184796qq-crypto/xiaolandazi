@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
-	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentpools"
 	appdb "livecompanion/management/internal/db"
 )
@@ -24,7 +23,7 @@ func poolProtocolField(m map[string]json.RawMessage, keys ...string) json.RawMes
 	}
 	return nil
 }
-func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []contentpools.Task, allProducts []contentpools.Product) ([]contentpools.Task, error) {
+func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []contentpools.Task) ([]contentpools.Task, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(stripPolicyJSONFence(raw)), &top); err != nil {
 		return nil, err
@@ -57,37 +56,17 @@ func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []conte
 			return nil, errors.New("任务缺少事实引用编号")
 		}
 		t.Point, t.Angle = strings.TrimSpace(t.Point), strings.TrimSpace(t.Angle)
-		if t.Point == "" || t.Angle == "" || len([]rune(t.Point)) > 120 || len([]rune(t.Angle)) > 500 || len(t.Sources) == 0 {
+		if t.Point == "" || t.Angle == "" || len(t.Sources) == 0 {
 			return nil, errors.New("任务卖点、角度或引用无效")
 		}
 		sort.Strings(t.Sources)
-		evidence := []string{}
 		refs := map[string]bool{}
 		for _, id := range t.Sources {
-			f, ok := facts[id]
+			_, ok := facts[id]
 			if !ok || refs[id] {
 				return nil, errors.New("任务引用了其他池的事实或重复编号")
 			}
 			refs[id] = true
-			evidence = append(evidence, f.Text)
-		}
-		body := sellingPointFactEvidenceBody(strings.Join(evidence, "\n"))
-		numbers := map[string]bool{}
-		for _, n := range derivedNumerals.FindAllString(body, -1) {
-			numbers[n] = true
-		}
-		for _, n := range derivedNumerals.FindAllString(t.Point+" "+t.Angle+" "+t.TargetAudience+" "+t.PainPoint, -1) {
-			if !numbers[n] {
-				return nil, fmt.Errorf("任务引入引用事实之外的数字%s", n)
-			}
-		}
-		for _, p := range allProducts {
-			if pool.Owner == 0 && len(pool.Products) > 1 && anchorcycle.MentionsLink(t.Point+" "+t.Angle, p.Link) {
-				return nil, errors.New("公共任务不能点名单个商品链接")
-			}
-			if !contentpools.Contains(pool.Products, p.ID) && anchorcycle.MentionsLink(t.Point+" "+t.Angle, p.Link) {
-				return nil, errors.New("任务混入其他商品链接")
-			}
 		}
 		if _, ok := old[t.ID]; !ok {
 			t.ID = "task-" + contentpools.Digest(struct {
@@ -103,6 +82,44 @@ func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []conte
 	}
 	return result, nil
 }
+
+// The program validates task shape and referential integrity only. Numeric,
+// product and wording judgments belong to the review model.
+func (s *Server) reviewContentPoolTaskDraft(ctx context.Context, profile, mother string, pool *contentpools.Pool, previous []contentpools.Task, products []contentpools.Product, draft string, beforeCall func() error) error {
+	tasks, structureErr := decodePoolTaskResponse(draft, *pool, previous)
+	if structureErr == nil {
+		pool.Tasks = tasks
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if beforeCall != nil {
+			if err := beforeCall(); err != nil {
+				return err
+			}
+		}
+		input := map[string]any{"pool": pool, "products": products}
+		if structureErr != nil {
+			input["draft_response"] = draft
+			input["structure_issue"] = structureErr.Error()
+		}
+		data, _ := json.Marshal(input)
+		result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "content_pool_task_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(data)}}, 12000, false)
+		if err != nil {
+			return err
+		}
+		draft = result.Text
+		known := previous
+		if len(pool.Tasks) > 0 {
+			known = pool.Tasks
+		}
+		tasks, structureErr = decodePoolTaskResponse(draft, *pool, known)
+		if structureErr == nil {
+			pool.Tasks = tasks
+			return nil
+		}
+	}
+	return fmt.Errorf("模型返回结构仍不完整，已自动复核两次：%w", structureErr)
+}
+
 func mergeEqualProductFacts(input []contentpools.Fact) []contentpools.Fact {
 	out := []contentpools.Fact{}
 	groups := map[string][]contentpools.Fact{}
@@ -291,14 +308,16 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 						var result agentgateway.Response
 						result, _, e = s.completeAnchorStyleWorkbench(work, cfg.SellingPointProfileID, "content_pool_task_generation", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: gen}, {Role: "user", Content: string(data)}}, 12000, false)
 						if e == nil {
-							p.Tasks, e = decodePoolTaskResponse(result.Text, *p, previous.Tasks, source.Products)
-						}
-						if e == nil {
-							data, _ = json.Marshal(map[string]any{"pool": p, "products": source.Products})
-							result, _, e = s.completeAnchorStyleWorkbench(work, cfg.SellingPointProfileID, "content_pool_task_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: review}, {Role: "user", Content: string(data)}}, 12000, false)
-							if e == nil {
-								p.Tasks, e = decodePoolTaskResponse(result.Text, *p, p.Tasks, source.Products)
-							}
+							e = s.reviewContentPoolTaskDraft(work, cfg.SellingPointProfileID, review, p, previous.Tasks, source.Products, result.Text, func() error {
+								rev, err := s.store.ContentSourceRevision(work, tenant, plan)
+								if err != nil {
+									return err
+								}
+								if rev != source.Revision {
+									return appdb.ErrPoolSourceChanged
+								}
+								return nil
+							})
 						}
 					}
 					if e != nil {

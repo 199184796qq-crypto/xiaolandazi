@@ -12,24 +12,39 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-func TestPoolTasksAcceptAliasesPreserveIDAndRejectInventedFacts(t *testing.T) {
+func TestPoolTasksValidateStructureOnlyAndPreserveID(t *testing.T) {
 	p := contentpools.Pool{Key: "product:1", Owner: 1, Products: []int64{1}, Facts: []contentpools.Fact{{ID: "f", Text: "- [商品事实] 日常价=19元", Products: []int64{1}}}}
-	products := []contentpools.Product{{ID: 1, Link: "1"}, {ID: 2, Link: "2"}}
 	raw := `{"任务":[{"编号":"old","卖点":"改名","角度":"日常价19元","事实编号":["f"],"额外中文字段":"兼容"}]}`
-	got, err := decodePoolTaskResponse(raw, p, []contentpools.Task{{ID: "old", Point: "旧名字"}}, products)
+	got, err := decodePoolTaskResponse(raw, p, []contentpools.Task{{ID: "old", Point: "旧名字"}})
 	if err != nil || got[0].ID != "old" {
 		t.Fatal(got, err)
 	}
-	for _, bad := range []string{strings.Replace(raw, "19元", "9元", 1), strings.Replace(raw, `["f"]`, `["unknown"]`, 1), strings.Replace(raw, "日常价19元", "看2号链接", 1)} {
-		if _, err = decodePoolTaskResponse(bad, p, nil, products); err == nil {
-			t.Fatal("invalid task accepted", bad)
+	// Words and numbers are passed to model review, never judged by the decoder.
+	for _, content := range []string{"日常价9元", "看2号链接", strings.Repeat("讲解角度", 200)} {
+		candidate := strings.Replace(raw, "日常价19元", content, 1)
+		got, err = decodePoolTaskResponse(candidate, p, nil)
+		if err != nil || got[0].Angle != content {
+			t.Fatal("program rejected/changed content", err)
+		}
+	}
+	for _, bad := range []string{strings.Replace(raw, `["f"]`, `["unknown"]`, 1), strings.Replace(raw, `["f"]`, `["f","f"]`, 1), strings.Replace(raw, `["f"]`, `[19]`, 1), strings.Replace(raw, `"改名"`, `null`, 1), `{"tasks":{}}`} {
+		if _, err = decodePoolTaskResponse(bad, p, nil); err == nil {
+			t.Fatal("invalid structure accepted", bad)
 		}
 	}
 	p.Owner = 0
 	p.Products = []int64{1, 2}
 	p.Facts[0].Products = p.Products
-	if _, err = decodePoolTaskResponse(strings.Replace(raw, "日常价19元", "看1号链接", 1), p, nil, products); err == nil {
-		t.Fatal("common pool named a single product")
+	if _, err = decodePoolTaskResponse(strings.Replace(raw, "日常价19元", "看1号链接", 1), p, nil); err != nil {
+		t.Fatal("decoder interpreted common-pool wording", err)
+	}
+}
+func TestPoolTasksPreserveActualFailedBelowFiftySummary(t *testing.T) {
+	pool := contentpools.Pool{Key: "product:5", Owner: 5, Products: []int64{5}, Facts: []contentpools.Fact{{ID: "price", Text: "- [商品事实] 日常价=48.8", Products: []int64{5}}, {ID: "spec", Text: "- [商品事实] 规格=450g(半只)", Products: []int64{5}}}}
+	raw := `{"tasks":[{"id":"","selling_point":"半只装规格实惠","angle":"450g半只装日常价48.8元，适合个人或小家庭一餐享用，按只计算不到50元，性价比高。","source_ids":["price","spec"]}]}`
+	tasks, err := decodePoolTaskResponse(raw, pool, nil)
+	if err != nil || len(tasks) != 1 || !strings.Contains(tasks[0].Angle, "不到50元") {
+		t.Fatal("actual production draft cannot reach model review", err)
 	}
 }
 func TestCardFactsKeepConditionsAndStableAttributeID(t *testing.T) {
