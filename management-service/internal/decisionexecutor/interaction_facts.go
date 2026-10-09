@@ -21,7 +21,7 @@ type contentStrategyStore interface {
 	GetLatestPlanContentStrategy(context.Context, int64, int64, string, time.Time) (string, error)
 }
 
-func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, skipStrategy ...bool) (string, error) {
+func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, options ...any) (string, error) {
 	source, ok := w.store.(interactionFactSnapshotStore)
 	if !ok {
 		return "", nil
@@ -50,7 +50,13 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 		return "", err
 	}
 	result := "\n" + strings.ReplaceAll(string(raw), "{{FACTS}}", asset.SafeFacts)
-	if len(skipStrategy) > 0 && skipStrategy[0] {
+	skipStrategy := false
+	for _, option := range options {
+		if flag, ok := option.(bool); ok {
+			skipStrategy = flag
+		}
+	}
+	if skipStrategy {
 		return result, nil
 	}
 	if strategyStore, ok := w.store.(contentStrategyStore); ok {

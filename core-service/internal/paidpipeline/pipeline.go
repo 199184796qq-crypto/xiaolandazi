@@ -22,6 +22,7 @@ import (
 // is allowed to schedule large-model work, response generation, TTS and audio.
 // It must never control the collector or the free base pipeline.
 type Processor struct {
+	purpose        purposeState
 	cutMessages    cutMessageState
 	scheduleMu     sync.Mutex
 	schedules      map[int64]sessionSchedule
@@ -30,6 +31,7 @@ type Processor struct {
 	contextReader  func(int64) (string, string)
 	tenantResolver func(int64) (int64, bool)
 	warmupEligible func(int64) bool
+	audioStarted   func(int64) time.Time
 
 	runtime               *agentwork.Registry
 	decisions             *agentdecision.Queue
@@ -125,6 +127,9 @@ func (p *Processor) sessionStartedAt(roomID int64, fallback *time.Time) time.Tim
 
 func (p *Processor) resolveSemanticTopic(roomID int64, text, fallback string, timeout time.Duration) string {
 	fallback = strings.TrimSpace(fallback)
+	if strings.HasPrefix(fallback, "PURPOSE:") || strings.HasPrefix(fallback, "FAMILY:") {
+		return fallback
+	}
 	if p == nil || p.topicResolver == nil || roomID <= 0 {
 		return fallback
 	}
@@ -173,6 +178,9 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 		p.activity[event.RoomID] = now
 		p.scheduleMu.Unlock()
 		p.cancelWarmup(event.RoomID)
+	}
+	if strings.TrimSpace(signal.Content) != "" && !signal.IsNegative && !signal.IsOrderHint && (eventType == "chat" || eventType == "comment") && p.submitPurpose(event, signal) {
+		return
 	}
 	if signal.IsNegative {
 		p.enqueueDirectEvent(event, signal, "complaint", "投诉与负面反馈", now)

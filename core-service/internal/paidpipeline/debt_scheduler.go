@@ -231,6 +231,10 @@ func (p *Processor) enqueueQuestionDebtBacklog(roomID int64, view roombrain.View
 	if !ok {
 		return false
 	}
+	if p.purposeEventPending(roomID, question.EventID) || p.purposeAlreadyAdmitted(roomID, question.EventID) {
+		return false
+	}
+	resolved := p.purposeKnowledgeFor(roomID, question.EventID)
 	topic := p.resolveSemanticTopic(roomID, question.Content, question.Topic, debtSemanticResolveBudget)
 	if strings.TrimSpace(topic) == "" {
 		topic = strings.TrimSpace(question.Topic)
@@ -304,6 +308,11 @@ func (p *Processor) enqueueQuestionDebtBacklog(roomID int64, view roombrain.View
 			},
 		},
 	}
+	if p.purposeAlreadyAdmitted(roomID, question.EventID) {
+		return false
+	}
+	candidate.PurposeID = resolved.PurposeID
+	candidate.PurposeKnowledge = resolved.Knowledge
 	candidate.Topic = qualifiedQuestionTopic(candidate.Topic, candidate.Question)
 	if !p.decorateCandidate(roomID, p.policies.RoomInteractionPreferences(roomID).TenantID, &candidate) {
 		return false

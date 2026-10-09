@@ -33,7 +33,8 @@
     "timing_overrides": "子事件聚合规则",
     "less": "偏少",
     "natural": "自然",
-    "more": "偏多"
+    "more": "偏多",
+    "opening_observation_seconds": "实际起播后观察秒数"
   },
   "priority_labels": {
     "P0": "紧急处理",
@@ -569,5 +570,6 @@
       "ttl_seconds": 20,
       "batch_threshold": 5
     }
-  }
+  },
+  "opening_observation_seconds": 120
 }

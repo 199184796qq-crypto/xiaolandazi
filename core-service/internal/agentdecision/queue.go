@@ -64,6 +64,8 @@ type InteractionDecision struct {
 }
 
 type Candidate struct {
+	PurposeID          string          `json:"purpose_id,omitempty"`
+	PurposeKnowledge   json.RawMessage `json:"purpose_knowledge,omitempty"`
 	EventExpiresAt     time.Time       `json:"event_expires_at,omitempty"`
 	PreparedTaskID     string          `json:"prepared_task_id,omitempty"`
 	PreparedCutMS      int             `json:"prepared_cut_ms,omitempty"`
@@ -102,21 +104,28 @@ type Candidate struct {
 }
 
 type Item struct {
-	AudioPrepared      bool            `json:"audio_prepared,omitempty"`
-	PreparedTaskID     string          `json:"prepared_task_id,omitempty"`
-	PreparedCutMS      int             `json:"prepared_cut_ms,omitempty"`
-	PlaybackTaskID     string          `json:"playback_task_id,omitempty"`
-	PriorityClass      string          `json:"priority_class,omitempty"`
-	Weight             int             `json:"weight,omitempty"`
-	Scene              string          `json:"scene,omitempty"`
-	OrderSource        string          `json:"order_source,omitempty"`
-	CooldownSeconds    int             `json:"cooldown_seconds,omitempty"`
-	RateLimitPerMinute int             `json:"rate_limit_per_minute,omitempty"`
-	MaxRetries         int             `json:"max_retries,omitempty"`
-	OriginPlanID       int64           `json:"origin_plan_id,omitempty"`
-	OriginMainline     string          `json:"origin_mainline,omitempty"`
-	OriginTrackID      string          `json:"origin_track_id,omitempty"`
-	Schedule           json.RawMessage `json:"schedule,omitempty"`
+	CompletionUntil     time.Time       `json:"completion_until,omitempty"`
+	PreparationCutPlans json.RawMessage `json:"preparation_cut_plans,omitempty"`
+	CutLevel            string          `json:"cut_level,omitempty"`
+	SelectedContentPlan json.RawMessage `json:"selected_content_plan,omitempty"`
+	PurposeID           string          `json:"purpose_id,omitempty"`
+	PurposeKnowledge    json.RawMessage `json:"purpose_knowledge,omitempty"`
+	AudioPrepared       bool            `json:"audio_prepared,omitempty"`
+	PreparedUntil       time.Time       `json:"prepared_until,omitempty"`
+	PreparedTaskID      string          `json:"prepared_task_id,omitempty"`
+	PreparedCutMS       int             `json:"prepared_cut_ms,omitempty"`
+	PlaybackTaskID      string          `json:"playback_task_id,omitempty"`
+	PriorityClass       string          `json:"priority_class,omitempty"`
+	Weight              int             `json:"weight,omitempty"`
+	Scene               string          `json:"scene,omitempty"`
+	OrderSource         string          `json:"order_source,omitempty"`
+	CooldownSeconds     int             `json:"cooldown_seconds,omitempty"`
+	RateLimitPerMinute  int             `json:"rate_limit_per_minute,omitempty"`
+	MaxRetries          int             `json:"max_retries,omitempty"`
+	OriginPlanID        int64           `json:"origin_plan_id,omitempty"`
+	OriginMainline      string          `json:"origin_mainline,omitempty"`
+	OriginTrackID       string          `json:"origin_track_id,omitempty"`
+	Schedule            json.RawMessage `json:"schedule,omitempty"`
 
 	Attempts     int       `json:"attempts,omitempty"`
 	RetryAfter   time.Time `json:"retry_after,omitempty"`
@@ -152,18 +161,31 @@ type Item struct {
 	FixedText            string              `json:"fixed_text,omitempty"`
 }
 
+func itemDeadline(item *Item) time.Time {
+	if item.AudioPrepared && !item.PreparedUntil.IsZero() {
+		return item.PreparedUntil
+	}
+	if !item.CompletionUntil.IsZero() {
+		return item.CompletionUntil
+	}
+	return item.ExpiresAt
+}
+
 type RecentAnswer struct {
-	DecisionID      string    `json:"decision_id,omitempty"`
-	MissionKind     string    `json:"mission_kind,omitempty"`
-	Scene           string    `json:"scene,omitempty"`
-	ContentGoal     string    `json:"content_goal,omitempty"`
-	ContentAngle    string    `json:"content_angle,omitempty"`
-	Topic           string    `json:"topic"`
-	Title           string    `json:"title"`
-	AnsweredAt      time.Time `json:"answered_at"`
-	CooldownUntil   time.Time `json:"cooldown_until"`
-	Accumulated     int       `json:"accumulated"`
-	SampleQuestions []string  `json:"sample_questions,omitempty"`
+	PreparationCutPlans json.RawMessage `json:"preparation_cut_plans,omitempty"`
+	CutLevel            string          `json:"cut_level,omitempty"`
+	SelectedContentPlan json.RawMessage `json:"selected_content_plan,omitempty"`
+	DecisionID          string          `json:"decision_id,omitempty"`
+	MissionKind         string          `json:"mission_kind,omitempty"`
+	Scene               string          `json:"scene,omitempty"`
+	ContentGoal         string          `json:"content_goal,omitempty"`
+	ContentAngle        string          `json:"content_angle,omitempty"`
+	Topic               string          `json:"topic"`
+	Title               string          `json:"title"`
+	AnsweredAt          time.Time       `json:"answered_at"`
+	CooldownUntil       time.Time       `json:"cooldown_until"`
+	Accumulated         int             `json:"accumulated"`
+	SampleQuestions     []string        `json:"sample_questions,omitempty"`
 }
 
 type Note struct {
@@ -192,18 +214,36 @@ type Summary struct {
 	CoolingTopics int    `json:"cooling_topics"`
 }
 
+type CompletionStats struct {
+	Admitted          int `json:"admitted"`
+	Completed         int `json:"completed"`
+	Failed            int `json:"failed"`
+	Cancelled         int `json:"cancelled"`
+	Merged            int `json:"merged"`
+	AdmissionDeferred int `json:"admission_deferred"`
+}
+type TerminalOutcome struct {
+	DecisionID string    `json:"decision_id"`
+	EventIDs   []int64   `json:"event_ids"`
+	Status     string    `json:"status"`
+	Reason     string    `json:"reason"`
+	At         time.Time `json:"at"`
+}
 type Snapshot struct {
-	PlayedHistory     []RecentAnswer     `json:"played_history"`
-	RoomID            int64              `json:"room_id"`
-	GeneratedAt       time.Time          `json:"generated_at"`
-	Summary           Summary            `json:"summary"`
-	Queue             []Item             `json:"queue"`
-	RecentlyAnswered  []RecentAnswer     `json:"recently_answered"`
-	Notes             []Note             `json:"notes"`
-	SimulationResults []SimulationResult `json:"simulation_results,omitempty"`
-	Capacity          int                `json:"capacity"`
-	TTLSeconds        int64              `json:"ttl_seconds"`
-	CooldownSeconds   int64              `json:"cooldown_seconds"`
+	Completion         CompletionStats    `json:"completion"`
+	TerminalHistory    []TerminalOutcome  `json:"terminal_history"`
+	CompletedCutCounts map[string]int     `json:"completed_cut_counts"`
+	PlayedHistory      []RecentAnswer     `json:"played_history"`
+	RoomID             int64              `json:"room_id"`
+	GeneratedAt        time.Time          `json:"generated_at"`
+	Summary            Summary            `json:"summary"`
+	Queue              []Item             `json:"queue"`
+	RecentlyAnswered   []RecentAnswer     `json:"recently_answered"`
+	Notes              []Note             `json:"notes"`
+	SimulationResults  []SimulationResult `json:"simulation_results,omitempty"`
+	Capacity           int                `json:"capacity"`
+	TTLSeconds         int64              `json:"ttl_seconds"`
+	CooldownSeconds    int64              `json:"cooldown_seconds"`
 }
 
 type EnqueueResult struct {
@@ -216,6 +256,9 @@ type EnqueueResult struct {
 }
 
 type roomState struct {
+	completion  CompletionStats
+	outcomes    []TerminalOutcome
+	cutCounts   map[string]int
 	played      []RecentAnswer
 	items       []*Item
 	recent      map[string]*RecentAnswer
@@ -332,6 +375,7 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		}
 		beforePriority := item.Priority
 		q.mergeLocked(item, input, now)
+		state.completion.Merged++
 		promoted := input.Source == SourceManual && (beforePriority < item.Priority || !item.ManualPromoted)
 		if input.Source == SourceManual {
 			item.ManualPromoted = true
@@ -348,6 +392,12 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		return EnqueueResult{Item: &copy, Merged: true, Promoted: promoted}
 	}
 
+	// Capacity belongs to admission. Never evict work already selected to run.
+	if len(state.items) >= q.capacity {
+		state.completion.AdmissionDeferred++
+		q.addNoteLocked(state, now, "capacity_wait", "执行队列已满，新候选保留在问题池等待准入；已入队任务继续完成")
+		return EnqueueResult{}
+	}
 	ttl := q.ttl
 	if input.TTLSeconds > 0 {
 		ttl = time.Duration(input.TTLSeconds) * time.Second
@@ -365,6 +415,7 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	priority := normalizePriority(input)
 	id := fmt.Sprintf("d-%d-%d-%06d", roomID, now.UnixMilli(), q.seq.Add(1))
 	item := &Item{
+		PurposeID: input.PurposeID, PurposeKnowledge: append(json.RawMessage(nil), input.PurposeKnowledge...),
 		PreparedTaskID: input.PreparedTaskID, PreparedCutMS: input.PreparedCutMS,
 		ID:                   id,
 		RoomID:               roomID,
@@ -405,22 +456,9 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	state.items = append(state.items, item)
 	q.sortLocked(state)
 
-	var dropped *Item
-	if len(state.items) > q.capacity {
-		dropIndex := -1
-		for index := len(state.items) - 1; index >= 0; index-- {
-			if state.items[index].Status == StatusPending {
-				dropIndex = index
-				break
-			}
-		}
-		if dropIndex >= 0 {
-			candidate := state.items[dropIndex]
-			copy := cloneItem(*candidate)
-			dropped = &copy
-			state.items = append(state.items[:dropIndex], state.items[dropIndex+1:]...)
-			q.addNoteLocked(state, now, "capacity_drop", fmt.Sprintf("队列已满，低优先级“%s”已抛出", candidate.Title))
-		}
+	state.completion.Admitted++
+	if item.Scene == "product_question" || item.Scene == "complaint" || item.Scene == "order" {
+		item.CompletionUntil = now.Add(10 * time.Minute)
 	}
 	if input.Source == SourceManual {
 		if input.ManualAction == "quick" {
@@ -432,7 +470,7 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		q.addNoteLocked(state, now, "agent_enqueue", fmt.Sprintf("Agent发现“%s”，已进入待打断队列", item.Title))
 	}
 	copy := cloneItem(*item)
-	return EnqueueResult{Item: &copy, Dropped: dropped}
+	return EnqueueResult{Item: &copy}
 }
 
 func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
@@ -456,6 +494,7 @@ func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
 		recent := &RecentAnswer{
 			DecisionID: item.ID, MissionKind: item.MissionKind, Scene: item.Scene,
 			ContentGoal: item.ContentGoal, ContentAngle: item.ContentAngle,
+			CutLevel: item.CutLevel, SelectedContentPlan: append(json.RawMessage(nil), item.SelectedContentPlan...), PreparationCutPlans: append(json.RawMessage(nil), item.PreparationCutPlans...),
 			Topic:           item.Topic,
 			Title:           item.Title,
 			AnsweredAt:      now,
@@ -464,7 +503,11 @@ func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
 		}
 		state.recent[item.Topic] = recent
 		state.played = append(state.played, cloneRecent(*recent))
+		if recent.CutLevel != "" {
+			state.cutCounts[recent.CutLevel]++
+		}
 		state.items = append(state.items[:index], state.items[index+1:]...)
+		q.recordTerminalLocked(state, item, "COMPLETED", "actual_mainline_return", now)
 		q.addNoteLocked(state, now, "answered", fmt.Sprintf("“%s”已回答，%d秒内同类问题先累计", item.Title, int(cooldown.Seconds())))
 		copy := cloneRecent(*recent)
 		return &copy, true
@@ -522,11 +565,11 @@ func (q *Queue) Release(roomID int64, id string) (*Item, bool) {
 
 // A rejected cut never submitted audio. Requeue the prepared answer without
 // consuming a generation retry or extending the original admission deadline.
-func (q *Queue) RescheduleCut(roomID int64, id string) (*Item, bool) {
-	return q.release(roomID, id, true)
+func (q *Queue) RescheduleCut(roomID int64, id string, preparedUntil ...time.Time) (*Item, bool) {
+	return q.release(roomID, id, true, preparedUntil...)
 }
 
-func (q *Queue) release(roomID int64, id string, cutReschedule bool) (*Item, bool) {
+func (q *Queue) release(roomID int64, id string, cutReschedule bool, preparedUntil ...time.Time) (*Item, bool) {
 	id = strings.TrimSpace(id)
 	if roomID <= 0 || id == "" {
 		return nil, false
@@ -542,7 +585,22 @@ func (q *Queue) release(roomID int64, id string, cutReschedule bool) (*Item, boo
 		}
 		copy := cloneItem(*item)
 		exhausted := !cutReschedule && item.Scene != "" && item.Attempts >= item.MaxRetries+1
-		if !now.Before(item.ExpiresAt) || exhausted {
+		expired := !now.Before(itemDeadline(item))
+		if cutReschedule {
+			if item.PreparedUntil.IsZero() {
+				item.PreparedUntil = now.Add(2 * time.Minute)
+				if len(preparedUntil) > 0 && !preparedUntil[0].IsZero() && preparedUntil[0].Before(item.PreparedUntil) {
+					item.PreparedUntil = preparedUntil[0]
+				}
+			}
+			expired = !now.Before(item.PreparedUntil)
+		}
+		if expired || exhausted {
+			reason := "execution_deadline"
+			if exhausted {
+				reason = "retry_exhausted"
+			}
+			q.recordTerminalLocked(state, item, "FAILED", reason, now)
 			state.items = append(state.items[:index], state.items[index+1:]...)
 			if exhausted {
 				q.addNoteLocked(state, now, "retry_exhausted", fmt.Sprintf("“%s”失败已达到最大重试次数，撤销任务", item.Title))
@@ -595,8 +653,9 @@ func (q *Queue) ReleaseClaimed(roomID int64) (released, dropped int) {
 			kept = append(kept, item)
 			continue
 		}
-		if !now.Before(item.ExpiresAt) {
+		if !now.Before(itemDeadline(item)) {
 			dropped++
+			q.recordTerminalLocked(state, item, "FAILED", "agent_stop_deadline", now)
 			q.addNoteLocked(state, now, "agent_stop_expired", fmt.Sprintf("“%s”执行中断时已过期，自动抛出", item.Title))
 			continue
 		}
@@ -627,6 +686,7 @@ func (q *Queue) Remove(roomID int64, id string) (*Item, bool) {
 		}
 		copy := cloneItem(*item)
 		state.items = append(state.items[:index], state.items[index+1:]...)
+		q.recordTerminalLocked(state, item, "CANCELLED", "manual_cancel", now)
 		q.addNoteLocked(state, now, "manual_remove", fmt.Sprintf("“%s”已从待打断队列移除", item.Title))
 		return &copy, true
 	}
@@ -751,17 +811,19 @@ func (q *Queue) Snapshot(roomID int64) Snapshot {
 	notes := append([]Note(nil), state.notes...)
 	simulations := append([]SimulationResult(nil), state.simulations...)
 	return Snapshot{
-		RoomID:            roomID,
-		GeneratedAt:       now,
-		Summary:           summary,
-		Queue:             items,
-		PlayedHistory:     append([]RecentAnswer(nil), state.played...),
-		RecentlyAnswered:  recent,
-		Notes:             notes,
-		SimulationResults: simulations,
-		Capacity:          q.capacity,
-		TTLSeconds:        int64(q.ttl.Seconds()),
-		CooldownSeconds:   int64(q.cooldown.Seconds()),
+		Completion: state.completion, TerminalHistory: cloneOutcomes(state.outcomes),
+		RoomID:             roomID,
+		GeneratedAt:        now,
+		Summary:            summary,
+		Queue:              items,
+		CompletedCutCounts: map[string]int{"A": state.cutCounts["A"], "B": state.cutCounts["B"], "C": state.cutCounts["C"]},
+		PlayedHistory:      append([]RecentAnswer(nil), state.played...),
+		RecentlyAnswered:   recent,
+		Notes:              notes,
+		SimulationResults:  simulations,
+		Capacity:           q.capacity,
+		TTLSeconds:         int64(q.ttl.Seconds()),
+		CooldownSeconds:    int64(q.cooldown.Seconds()),
 	}
 }
 
@@ -799,7 +861,7 @@ func (q *Queue) ClearRoom(roomID int64) {
 func (q *Queue) roomLocked(roomID int64) *roomState {
 	state := q.rooms[roomID]
 	if state == nil {
-		state = &roomState{recent: make(map[string]*RecentAnswer)}
+		state = &roomState{recent: make(map[string]*RecentAnswer), cutCounts: map[string]int{"A": 0, "B": 0, "C": 0}}
 		q.rooms[roomID] = state
 	}
 	return state
@@ -945,14 +1007,17 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 			// Queue TTL only governs waiting work. Once a decision has been
 			// claimed, its lifetime is owned by the execution state machine and it
 			// must remain visible until execution completes or explicitly releases.
-			if item.Status == StatusPending && !now.Before(item.ExpiresAt) {
-				q.addNoteLocked(state, now, "expired", fmt.Sprintf("“%s”等待过久已自动抛出", item.Title))
+			deadline := itemDeadline(item)
+			if item.Status == StatusPending && !now.Before(deadline) {
+				q.recordTerminalLocked(state, item, "FAILED", "waiting_deadline", now)
+				q.addNoteLocked(state, now, "execution_failed", fmt.Sprintf("“%s”达到执行期限，记录失败原因并释放占用", item.Title))
 				continue
 			}
 			if item.Status == StatusClaimed {
 				claimedAt := item.ClaimedAt
 				if claimedAt == nil || now.Sub(claimedAt.UTC()) >= ClaimExecutionTimeout {
-					if !now.Before(item.ExpiresAt) {
+					if !now.Before(deadline) {
+						q.recordTerminalLocked(state, item, "FAILED", "claim_timeout_deadline", now)
 						q.addNoteLocked(state, now, "claim_timeout_expired", fmt.Sprintf("“%s”执行超时且原任务已过期，自动抛出", item.Title))
 						continue
 					}
@@ -1085,6 +1150,9 @@ func appendUniqueInt64(values *[]int64, value int64, limit int) {
 }
 
 func cloneItem(item Item) Item {
+	item.PreparationCutPlans = append(json.RawMessage(nil), item.PreparationCutPlans...)
+	item.PurposeKnowledge = append(json.RawMessage(nil), item.PurposeKnowledge...)
+	item.SelectedContentPlan = append(json.RawMessage(nil), item.SelectedContentPlan...)
 	item.Schedule = append(json.RawMessage(nil), item.Schedule...)
 	item.Sources = append([]Source(nil), item.Sources...)
 	item.SampleQuestions = append([]string(nil), item.SampleQuestions...)
@@ -1109,6 +1177,8 @@ func cloneInteractionDecision(input InteractionDecision) InteractionDecision {
 }
 
 func cloneRecent(value RecentAnswer) RecentAnswer {
+	value.PreparationCutPlans = append(json.RawMessage(nil), value.PreparationCutPlans...)
+	value.SelectedContentPlan = append(json.RawMessage(nil), value.SelectedContentPlan...)
 	value.SampleQuestions = append([]string(nil), value.SampleQuestions...)
 	return value
 }
@@ -1130,4 +1200,26 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (q *Queue) recordTerminalLocked(state *roomState, item *Item, status, reason string, now time.Time) {
+	switch status {
+	case "COMPLETED":
+		state.completion.Completed++
+	case "FAILED":
+		state.completion.Failed++
+	case "CANCELLED":
+		state.completion.Cancelled++
+	}
+	state.outcomes = append(state.outcomes, TerminalOutcome{DecisionID: item.ID, EventIDs: append([]int64(nil), item.LinkedEventIDs...), Status: status, Reason: reason, At: now})
+	if len(state.outcomes) > 200 {
+		state.outcomes = state.outcomes[len(state.outcomes)-200:]
+	}
+}
+func cloneOutcomes(input []TerminalOutcome) []TerminalOutcome {
+	result := append([]TerminalOutcome(nil), input...)
+	for i := range result {
+		result[i].EventIDs = append([]int64(nil), result[i].EventIDs...)
+	}
+	return result
 }

@@ -90,6 +90,9 @@ func (p *Processor) configuredRule(roomID, tenantID int64, key string) (interact
 	return base, true
 }
 func (p *Processor) decorateCandidate(roomID, tenantID int64, c *agentdecision.Candidate) bool {
+	if !p.InteractionsAllowed(roomID, tenantID) {
+		return false
+	}
 	cfg, err := p.schedule(roomID, tenantID)
 	if err != nil {
 		return false
@@ -156,7 +159,7 @@ func (p *Processor) enqueueDirectEvent(event model.RoomEvent, signal basepipelin
 	if topic == "" {
 		topic = title
 	}
-	if kind == "reply_question" {
+	if kind == "reply_question" && !strings.HasPrefix(topic, "PURPOSE:") {
 		topic = p.resolveSemanticTopic(event.RoomID, signal.Content, topic, 120*time.Millisecond)
 	}
 	topic = qualifiedQuestionTopic(topic, signal.Content)
@@ -174,7 +177,7 @@ func (p *Processor) enqueueDirectEvent(event model.RoomEvent, signal basepipelin
 		}
 		topic = "SIGNAL:ORDER:" + source
 	}
-	c := agentdecision.Candidate{Source: agentdecision.SourceAgent, Topic: topic, Title: title, Question: signal.Content, Summary: "事件已筛选，进入现有队列，由队列管理播放顺序", MissionKind: kind, MissionEventCount: 1, Priority: 30, EventID: event.ID, UserID: event.UserID, Nicknames: []string{event.Nickname}, InteractionDecision: decision, OrderSource: source}
+	c := agentdecision.Candidate{PurposeID: signal.PurposeID, PurposeKnowledge: signal.PurposeKnowledge, Source: agentdecision.SourceAgent, Topic: topic, Title: title, Question: signal.Content, Summary: "事件已筛选，进入现有队列，由队列管理播放顺序", MissionKind: kind, MissionEventCount: 1, Priority: 30, EventID: event.ID, UserID: event.UserID, Nicknames: []string{event.Nickname}, InteractionDecision: decision, OrderSource: source}
 	if kind == "complaint" {
 		c.Priority = 90
 	}
@@ -184,7 +187,14 @@ func (p *Processor) enqueueDirectEvent(event model.RoomEvent, signal basepipelin
 	if !p.decorateCandidate(event.RoomID, event.TenantID, &c) {
 		return
 	}
-	p.decisions.Enqueue(event.RoomID, c)
+	result := p.decisions.Enqueue(event.RoomID, c)
+	if result.Item != nil {
+		p.purpose.mu.Lock()
+		if p.purpose.admitted != nil {
+			p.purpose.admitted[p.purposeEventKey(event)] = true
+		}
+		p.purpose.mu.Unlock()
+	}
 }
 
 // Cooling and spent budgets come exclusively from the queue's actual played

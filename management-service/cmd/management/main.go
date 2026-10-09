@@ -252,6 +252,7 @@ func main() {
 	go api.RunWechatPaymentReconciliation(appCtx)
 	go api.RunWechatRefundReconciliation(appCtx)
 	api.SetXiaozhiInternalToken(cfg.XiaozhiInternalToken)
+	api.SetPurposeInternalToken(cfg.CoreToken)
 	api.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	cycleRedis := redis.NewClient(anchorcycle.RedisOptions(net.JoinHostPort(cfg.RedisHost, cfg.RedisPort), cfg.RedisPassword, cfg.RedisDB, cfg.AnchorCycleRedisTimeoutMS))
 	defer cycleRedis.Close()

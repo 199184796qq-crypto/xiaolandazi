@@ -10,7 +10,7 @@ func testSnapshot(text string) *Snapshot {
 	facts := Facts(text)
 	return &Snapshot{Version: 1, Enabled: true, FactsSHA: SHA(text), Facts: facts,
 		Purposes: []Purpose{{"P01", "理解价格", "担心价格偏高", []string{facts[0].ID}}},
-		Rows:     []Row{{"P01", "按只理解预算", "讲清一只的花费，联系选购判断", []string{facts[0].ID}, "价格讲解或贵不贵的问题"}}}
+		Rows:     []Row{{PurposeID: "P01", Angle: "按只理解预算", Task: "讲清一只的花费，联系选购判断", FactIDs: []string{facts[0].ID}, When: "价格讲解或贵不贵的问题"}}}
 }
 func TestFullRecordsPreserveControlsAndCounterexample(t *testing.T) {
 	text := "# 正式事实包\n- [other/算账] 一只85.5；安全改写=按只或斤\n不要算一克多少钱，900克只是反例\n- [商品卡] 商品=油炸鸭；工艺=现卤现炸\n边界：不要编造"
@@ -55,7 +55,7 @@ func TestSnapshotRejectsChangedFactOrForgedRecord(t *testing.T) {
 func TestProductScopeCannotBorrowOtherLinks(t *testing.T) {
 	text := "- [商品卡] 1号油129.9元\n- [商品卡] 2号鸭85.5元"
 	s := testSnapshot(text)
-	s.Rows = append(s.Rows, Row{"P01", "另一商品预算", "2号鸭讲解", []string{"F002"}, "鸭子价格问题"})
+	s.Rows = append(s.Rows, Row{PurposeID: "P01", Angle: "另一商品预算", Task: "2号鸭讲解", FactIDs: []string{"F002"}, When: "鸭子价格问题"})
 	scope := "- [商品卡] 1号油129.9元"
 	prompt, err := s.Render("主线", scope)
 	if err != nil || !strings.Contains(prompt, "1号油129.9元") || strings.Contains(prompt, "2号鸭85.5元") || strings.Contains(prompt, "2号鸭讲解") {

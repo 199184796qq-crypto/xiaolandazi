@@ -167,6 +167,47 @@ func (p *Pool) Add(event Event) {
 	}
 }
 
+// Revise the existing event, preserving raw words and all session counters.
+// Purpose analysis must never call Add a second time.
+func (p *Pool) ReviseQuestion(eventID int64, topic string, question bool) bool {
+	if eventID <= 0 {
+		return false
+	}
+	var revised Event
+	found := false
+	for i := range p.events {
+		if p.events[i].EventID == eventID {
+			p.events[i].Question, p.events[i].Topic = question, topic
+			revised, found = p.events[i], true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	for key, bucket := range p.buckets {
+		kept := bucket.events[:0]
+		for _, event := range bucket.events {
+			if event.EventID != eventID {
+				kept = append(kept, event)
+			}
+		}
+		bucket.events = kept
+		if len(kept) == 0 && bucket.archivedCount == 0 {
+			delete(p.buckets, key)
+		}
+	}
+	if question && topic != "" {
+		bucket := p.buckets[topic]
+		if bucket == nil {
+			bucket = &bucketState{topic: topic, seed: normalizeQuestionText(revised.Content)}
+			p.buckets[topic] = bucket
+		}
+		bucket.events = append(bucket.events, revised)
+	}
+	return true
+}
+
 func (p *Pool) RemoveUser(userID string) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
@@ -548,6 +589,21 @@ func coarseQuestionFamily(text string) (string, string, bool) {
 	}
 	if containsAny("退款", "退货", "售后", "破损", "坏了", "漏气", "少发", "漏发", "错发", "补发", "退换") {
 		return family("售后退款")
+	}
+	if containsAny("哪个快递", "什么快递", "哪家快递", "快递公司", "发哪个", "发什么快递") {
+		return family("快递公司")
+	}
+	if containsAny("哪里发", "哪儿发", "哪发货", "发货地", "从哪发") {
+		return family("发货地点")
+	}
+	if containsAny("多久到", "几天到", "什么时候到", "何时到", "几天发", "多久发", "好久发", "什么时候发", "何时发", "啥时候发") {
+		return family("发货时效")
+	}
+	if containsAny("包邮", "邮费", "运费") {
+		return family("运费包邮")
+	}
+	if containsAny("生油", "熟油", "生的还是熟", "熟的还是生") {
+		return family("生熟用途")
 	}
 	if containsAny("发货", "快递", "物流", "多久到", "几天到", "什么时候到", "何时到", "包邮", "邮费", "运费", "送货上楼", "送上楼", "上楼吗") {
 		return family("发货物流")

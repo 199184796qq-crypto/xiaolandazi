@@ -10,6 +10,7 @@ func TestCutReschedulePreservesPreparedAnswerWithoutSpendingGenerationRetry(t *t
 	q := NewWithClock(func() time.Time { return now }, time.Minute, time.Minute, 10)
 	item := q.Enqueue(27, Candidate{Topic: "shipping", Scene: "product_question", MaxRetries: 0, PreparedTaskID: "old-track", PreparedCutMS: 26376}).Item
 	expires := item.ExpiresAt
+	var protection time.Time
 	for attempt := 0; attempt < 5; attempt++ {
 		claimed, ok := q.ClaimNext(27)
 		if !ok || claimed.Attempts != 1 {
@@ -22,14 +23,25 @@ func TestCutReschedulePreservesPreparedAnswerWithoutSpendingGenerationRetry(t *t
 		if pending.PreparedTaskID != "" || pending.PreparedCutMS != 0 {
 			t.Fatal("old mainline cut survived rescheduling")
 		}
+		if protection.IsZero() {
+			protection = pending.PreparedUntil
+		}
+		if !pending.PreparedUntil.Equal(protection) {
+			t.Fatal("prepared protection extended on retry")
+		}
 		if _, ok := q.ClaimNext(27); ok {
 			t.Fatal("cut reschedule should yield briefly to other queued work")
 		}
 		now = now.Add(time.Second)
 	}
 	now = expires.Add(time.Millisecond)
+	if _, ok := q.ClaimNext(27); !ok {
+		t.Fatal("prepared audio expired with ordinary event TTL")
+	}
+	q.RescheduleCut(27, item.ID)
+	now = protection
 	if _, ok := q.ClaimNext(27); ok {
-		t.Fatal("cut reschedule extended the event lifetime")
+		t.Fatal("prepared audio survived finite protection")
 	}
 }
 

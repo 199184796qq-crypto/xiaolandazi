@@ -14,6 +14,7 @@ import (
 	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/model"
+	"livecompanion/core/internal/roomaudio"
 	"livecompanion/core/internal/roombrain"
 	"livecompanion/core/internal/speechruntime"
 	"livecompanion/core/internal/timeline"
@@ -223,6 +224,9 @@ func TestInteractionDecisionCompletesOnlyAfterMainlineResume(t *testing.T) {
 	}
 
 	if _, err := server.roomAudio.CompleteResume(44); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.roomAudio.PublishPCMAt(44, roomaudio.SourceMainline, make([]byte, roomaudio.PCMBytesPerFrame), "S002", 20); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)

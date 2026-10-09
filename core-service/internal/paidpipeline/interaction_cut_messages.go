@@ -39,6 +39,9 @@ func (p *Processor) SetMessageCaptain(c *messagecaptain.Captain) {
 	}
 }
 func (p *Processor) handleRuntimeMessage(_ context.Context, m messagecaptain.Message) error {
+	if m.Kind == messagecaptain.PurposeResolved {
+		return p.acceptPurpose(m)
+	}
 	if m.Kind != messagecaptain.CutOffered && m.Kind != messagecaptain.InteractionPrepared {
 		return nil
 	}
@@ -158,7 +161,11 @@ func (p *Processor) admitNearCut(roomID int64, key string, now time.Time, c *age
 		return false
 	}
 	lead := intent.offer.LeadMS - int(now.Sub(intent.offeredAt).Milliseconds())
-	if lead < max(5000, intent.request.LeadMS-3000) || lead > intent.request.LeadMS+2000 {
+	if intent.offer.PreparationWindow {
+		if lead < 3000 || lead > 60000 {
+			return false
+		}
+	} else if lead < max(5000, intent.request.LeadMS-3000) || lead > intent.request.LeadMS+2000 {
 		return false
 	}
 	for _, item := range p.decisions.Snapshot(roomID).Queue {

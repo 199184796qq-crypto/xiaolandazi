@@ -114,3 +114,9 @@ func streamAudioURLAsCorePCM(
 	}
 	return nil
 }
+
+// CollectNormalizedPCM uses the same normalization path as the paced output;
+// the caller owns its deadline and bounded in-memory frame collector.
+func CollectNormalizedPCM(ctx context.Context, url string, onFrame func([]byte, int) error) error {
+	return streamAudioURLAsCorePCM(ctx, url, 0, onFrame)
+}

@@ -22,6 +22,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
@@ -86,6 +87,8 @@ type leader interface {
 }
 
 type Worker struct {
+	bridgeSlots      chan struct{}
+	bridgeSamples    []time.Duration
 	store            store
 	core             coreDoer
 	agent            completer
@@ -110,16 +113,23 @@ type Worker struct {
 }
 
 type decisionItem struct {
-	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
-	Scene          string          `json:"scene,omitempty"`
-	OrderSource    string          `json:"order_source,omitempty"`
-	OriginPlanID   int64           `json:"origin_plan_id,omitempty"`
-	OriginMainline string          `json:"origin_mainline,omitempty"`
-	OriginTrackID  string          `json:"origin_track_id,omitempty"`
-	Schedule       json.RawMessage `json:"schedule,omitempty"`
-	ContentGoal    string          `json:"-"`
-	ContentAngle   string          `json:"-"`
-	contentError   error
+	PreparationCutPlans json.RawMessage            `json:"-"`
+	CompletionUntil     time.Time                  `json:"completion_until,omitempty"`
+	AudioPrepared       bool                       `json:"audio_prepared,omitempty"`
+	PreparedUntil       time.Time                  `json:"prepared_until,omitempty"`
+	PurposeID           string                     `json:"purpose_id,omitempty"`
+	PurposeKnowledge    json.RawMessage            `json:"purpose_knowledge,omitempty"`
+	SelectedContentPlan *contentstrategy.Selection `json:"-"`
+	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
+	Scene               string                     `json:"scene,omitempty"`
+	OrderSource         string                     `json:"order_source,omitempty"`
+	OriginPlanID        int64                      `json:"origin_plan_id,omitempty"`
+	OriginMainline      string                     `json:"origin_mainline,omitempty"`
+	OriginTrackID       string                     `json:"origin_track_id,omitempty"`
+	Schedule            json.RawMessage            `json:"schedule,omitempty"`
+	ContentGoal         string                     `json:"-"`
+	ContentAngle        string                     `json:"-"`
+	contentError        error
 
 	ID                     string                                `json:"id"`
 	MissionID              string                                `json:"mission_id,omitempty"`
@@ -930,13 +940,12 @@ func (w *Worker) applyResumeStrategyStage(
 	}
 	if instruction := resumeStrategyInstruction(resume.Key); instruction != "" {
 		item.SelectedResume = resume.Key
-		guidance := "回答结束与回归主线的方式：" + instruction
-		if preview := strings.TrimSpace(resume.ResumePreview); preview != "" {
-			guidance += " 回归目标上下文是“" + preview + "”，不要逐字复述目标上下文。"
+		coreTemplate, err := interactionpolicy.Read("interaction-return-core-answer.md")
+		if err != nil {
+			item.contentError = err
+			return
 		}
-		if len(resume.SkippedPreviews) > 0 {
-			guidance += " 已计划跳过的内容不要在回答尾部再次预告或复述：" + strings.Join(resume.SkippedPreviews, " / ")
-		}
+		guidance := string(coreTemplate)
 		item.addStrategyConstraint(strategyConstraint{
 			Stage:    "resume",
 			Key:      resume.Key,
@@ -1192,18 +1201,20 @@ func humanizationKindName(kind string) string {
 }
 
 type claimResponse struct {
-	Claimed         bool          `json:"claimed"`
-	Reason          string        `json:"reason"`
-	Item            *decisionItem `json:"item"`
-	SwitchAtMS      int           `json:"switch_at_ms"`
-	CurrentMainline string        `json:"current_mainline"`
-	ResumeMainline  string        `json:"resume_mainline"`
-	ResumeSegmentID string        `json:"resume_segment_id"`
+	CutPlans        json.RawMessage `json:"cut_plans,omitempty"`
+	Claimed         bool            `json:"claimed"`
+	Reason          string          `json:"reason"`
+	Item            *decisionItem   `json:"item"`
+	SwitchAtMS      int             `json:"switch_at_ms"`
+	CurrentMainline string          `json:"current_mainline"`
+	ResumeMainline  string          `json:"resume_mainline"`
+	ResumeSegmentID string          `json:"resume_segment_id"`
 }
 
 func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...leader) *Worker {
 	w := &Worker{
 		store:          s,
+		bridgeSlots:    make(chan struct{}, 4),
 		core:           core,
 		agent:          agent,
 		tts:            tts,
@@ -1561,6 +1572,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 	item := claim.Item
 	item.PlannedSwitchAtMS = claim.SwitchAtMS
+	item.PreparationCutPlans = append(json.RawMessage(nil), claim.CutPlans...)
 	item.CurrentMainline = strings.TrimSpace(claim.CurrentMainline)
 	item.ResumeMainline = strings.TrimSpace(claim.ResumeMainline)
 	item.ResumeSegmentID = strings.TrimSpace(claim.ResumeSegmentID)
@@ -1610,6 +1622,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			completed = err == nil
 			return err
 		}
+	}
+	if item.AudioPrepared && !item.ExpiresAt.IsZero() && !w.now().Before(item.ExpiresAt) && (item.CompletionUntil.IsZero() || !w.now().Before(item.CompletionUntil)) {
+		return fmt.Errorf("已准备音频失效且原事件已到期，停止重新生成")
 	}
 	text, err := w.generateDecisionTextMutable(ctx, session, item)
 	if err != nil {
@@ -1746,8 +1761,10 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		action = "quick"
 	}
 	w.transitionMission(item, speechmission.StateWaitingCutPoint, "dispatch_start", "TTS已生成，等待Core确认实际打断与回归位置")
+	cancelBridge := w.startReturnBridge(session, *item, scope, memory)
 	dispatchResult, err := w.dispatch(ctx, session, *item, action, text, audioURL)
 	if err != nil {
+		cancelBridge()
 		var conflict *safeSwitchRetry
 		if errors.As(err, &conflict) && ctx.Err() == nil {
 			w.savePreparedInteraction(session, *item, text, audioURL, scope, memory, expiresAt)
@@ -1757,6 +1774,9 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		}
 		w.transitionMission(item, speechmission.StateFailed, "dispatch_failed", err.Error())
 		return err
+	}
+	if !dispatchResult.DeferredReturn {
+		cancelBridge()
 	}
 	w.updateMission(item, func(m *speechmission.Mission) {
 		if dispatchResult.SwitchAtMS != nil {
@@ -2053,7 +2073,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			return "", item.contentError
 		}
 		w.transitionMission(item, speechmission.StateGeneratingText, "generate_text", "全部策略已汇总，开始一次性生成最终可播正文")
-		prompt, err := w.answerPrompt(ctx, session, faqPromptItem(*item))
+		prompt, err := w.answerPrompt(ctx, session, faqPromptItem(*item), item)
 		if err != nil {
 			return "", err
 		}
@@ -2106,11 +2126,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if err := w.rememberFAQText(item.faqCacheTicket, text); err != nil {
 		return "", err
 	}
-	if strings.EqualFold(strings.TrimSpace(item.SelectedResume), "BRIDGE") {
-		item.BridgeText = extractFinalSpeechSentence(text)
-	} else {
-		item.BridgeText = ""
-	}
+	item.BridgeText = ""
 	w.updateMission(item, func(m *speechmission.Mission) {
 		m.GeneratedText = text
 		m.Resume.BridgeText = item.BridgeText
@@ -2229,6 +2245,12 @@ func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, 
 	query := tenantQuery(session.TenantID)
 	if len(reasons) > 0 && reasons[0] == "cut_reschedule" {
 		query.Set("reason", "cut_reschedule")
+		w.mu.Lock()
+		prepared, ok := w.prepared[preparedInteractionKey{session.TenantID, session.RoomID, session.ID, decisionID}]
+		w.mu.Unlock()
+		if ok {
+			query.Set("prepared_until", prepared.ExpiresAt.UTC().Format(time.RFC3339Nano))
+		}
 	}
 	resp, err := w.core.DoRoom(
 		ctx, session.TenantID, session.RoomID, http.MethodPost,
@@ -2280,6 +2302,11 @@ func (w *Worker) completeSimulation(
 }
 
 type dispatchResult struct {
+	DeferredReturn bool `json:"deferred_return"`
+	Task           struct {
+		ID         string `json:"speech_task_id"`
+		DurationMS int    `json:"duration_ms"`
+	} `json:"task"`
 	MissionID       string  `json:"mission_id,omitempty"`
 	Dispatched      bool    `json:"dispatched"`
 	Action          string  `json:"action,omitempty"`
@@ -2354,10 +2381,13 @@ func (w *Worker) dispatchOnce(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"decision_id":  item.ID,
-			"mission_id":   missionID(&item),
-			"mission_kind": strings.ToLower(strings.TrimSpace(item.MissionKind)),
-			"content_goal": item.ContentGoal, "content_angle": item.ContentAngle,
+			"deferred_return": true,
+			"decision_id":     item.ID,
+			"mission_id":      missionID(&item),
+			"mission_kind":    strings.ToLower(strings.TrimSpace(item.MissionKind)),
+			"content_goal":    item.ContentGoal, "content_angle": item.ContentAngle,
+			"selected_content_plan": item.SelectedContentPlan,
+			"preparation_cut_plans": item.PreparationCutPlans,
 			"session_id":            session.ExternalID,
 			"action":                action,
 			"audio_url":             audioURL,
@@ -3186,7 +3216,7 @@ func (w *Worker) liveAgentPlanStyleOverlayPrompt(ctx context.Context, tenantID, 
 	return styleoverlay.Render(profile), nil
 }
 
-func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, selectionSink ...*decisionItem) (string, error) {
 	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if planErr != nil && !errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
 		return "", fmt.Errorf("读取智能体直播方案失败: %w", planErr)
@@ -3201,12 +3231,15 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			return "", fmt.Errorf("读取直播方案动态事实失败: %w", factsErr)
 		}
 		dynamicFactsPrompt = liveAgentPlanFactsPrompt(facts)
-		if snapshot, snapshotErr := w.interactionFactSnapshot(ctx, session, plan.ID, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim")); snapshotErr != nil {
+		if snapshot, snapshotErr := w.interactionFactSnapshot(ctx, session, plan.ID, &item, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim")); snapshotErr != nil {
 			return "", snapshotErr
 		} else if snapshot != "" {
 			dynamicFactsPrompt = snapshot
 		}
 
+		if len(selectionSink) > 0 {
+			selectionSink[0].SelectedContentPlan = item.SelectedContentPlan
+		}
 		scripts, scriptsErr := w.store.ListLiveAgentPlanScripts(ctx, session.TenantID, plan.ID)
 		if scriptsErr != nil {
 			return "", fmt.Errorf("读取直播方案素材失败: %w", scriptsErr)
@@ -3277,10 +3310,11 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	factInteractionBoundary := "\n【事实依据与互动策略边界】\n事实依据决定回答内容能引用什么；其中标记为‘禁止直接表述’的原话不能输出，遇到相同意图优先使用‘建议替代表达’。互动策略只决定何时回应、优先级、频率、称呼和回答组织方式，不能新增、猜测或覆盖商品、价格、规格、物流、售后等事实。审核边缘时保留沟通目的并换成合规说法。"
 	continuityGuidance := ""
 	if strings.TrimSpace(item.ResumeMainline) != "" {
-		continuityGuidance = "\n【主线衔接硬要求】\n本次回答会在完整句末切入。切点前主线正在讲：" +
-			trimContextRunes(item.CurrentMainline, 120) +
-			"\n回答声音结束后，系统会直接从下一句主线恢复：" + trimContextRunes(item.ResumeMainline, 140) +
-			"\n你的回答最后一句必须让后面的主线句听起来像自然接着说；不要提前照念或重复下一句主线，不要机械固定说“我们继续”，不要改变下一句的事实含义。"
+		template, err := interactionpolicy.Read("interaction-continuity-generation.md")
+		if err != nil {
+			return "", err
+		}
+		continuityGuidance = "\n" + strings.NewReplacer("{{CURRENT_MAINLINE}}", item.CurrentMainline, "{{RESUME_MAINLINE}}", item.ResumeMainline).Replace(string(template))
 	}
 	questions := item.SampleQuestions
 	if len(questions) > 8 {

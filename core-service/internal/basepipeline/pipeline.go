@@ -12,14 +12,16 @@ import (
 // Signal is the free, deterministic result of processing one public-screen event.
 // It never means a large model has been called or that AI billing should start.
 type Signal struct {
-	RoomID      int64
-	EventID     int64
-	UserID      string
-	Content     string
-	Topic       string
-	IsQuestion  bool
-	IsNegative  bool
-	IsOrderHint bool
+	PurposeID        string
+	PurposeKnowledge []byte
+	RoomID           int64
+	EventID          int64
+	UserID           string
+	Content          string
+	Topic            string
+	IsQuestion       bool
+	IsNegative       bool
+	IsOrderHint      bool
 }
 
 // Processor owns the always-on, no-AI-cost event processing layer.

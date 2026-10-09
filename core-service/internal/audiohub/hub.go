@@ -336,9 +336,25 @@ func (h *Hub) Publish(task Task) (Task, error) {
 		delay = 0
 	}
 	time.AfterFunc(delay, func() {
-		h.Expire(task.ID)
+		h.expireAtTaskDeadline(task.ID)
 	})
 	return task, nil
+}
+
+func (h *Hub) ExtendTaskDuration(taskID string,durationMS int) bool {
+	h.mu.Lock();defer h.mu.Unlock()
+	state:=h.tasks[taskID]
+	if state==nil || state.terminal || durationMS<=state.task.DurationMS {return false}
+	state.task.DurationMS=durationMS
+	return true
+}
+func (h *Hub) expireAtTaskDeadline(taskID string) {
+	h.mu.RLock();state:=h.tasks[taskID]
+	if state==nil || state.terminal {h.mu.RUnlock();return}
+	delay:=state.task.StartedAt.Add(time.Duration(state.task.DurationMS)*time.Millisecond).Sub(h.now())
+	h.mu.RUnlock()
+	if delay>0 {time.AfterFunc(delay,func(){h.expireAtTaskDeadline(taskID)});return}
+	h.Expire(taskID)
 }
 
 func (h *Hub) activeTaskLocked(roomID int64, now time.Time) *Task {

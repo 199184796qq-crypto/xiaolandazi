@@ -40,6 +40,8 @@ type CreateExternalTaskInput struct {
 }
 
 type InsertInteractionInput struct {
+	DeferredReturn bool
+	DecisionID     string
 	ExpectedTaskID string
 	RoomID         int64
 	SessionID      string
@@ -143,7 +145,18 @@ type SpeechTask struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type ProgramWindowTrack struct {
+	TrackID    string                   `json:"track_id"`
+	TrackIndex int                      `json:"track_index"`
+	OffsetMS   int                      `json:"offset_ms"`
+	DurationMS int                      `json:"duration_ms"`
+	Text       string                   `json:"text"`
+	Timeline   []ProgramTimelineSegment `json:"timeline,omitempty"`
+	SafePoints []ProgramSafePoint       `json:"safe_points,omitempty"`
+}
+
 type RoomProgramSnapshot struct {
+	FutureWindow       []ProgramWindowTrack     `json:"future_window,omitempty"`
 	BufferedMainlineMS int64                    `json:"buffered_mainline_ms"`
 	NextTrackText      string                   `json:"next_track_text,omitempty"`
 	Sequential         bool                     `json:"sequential,omitempty"`
@@ -175,6 +188,7 @@ type RoomProgramSnapshot struct {
 	Slot               string                   `json:"slot,omitempty"`
 	Task               *SpeechTask              `json:"task,omitempty"`
 	StartedAt          time.Time                `json:"started_at,omitempty"`
+	ActualStartedAt    time.Time                `json:"actual_started_at,omitempty"`
 	ServerTime         time.Time                `json:"server_time"`
 }
 

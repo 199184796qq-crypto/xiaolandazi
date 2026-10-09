@@ -159,6 +159,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.getRoomSpeechRuntime)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/audio-engine", s.internal(http.HandlerFunc(s.getRoomAudioEngine)))
 	mux.Handle("PUT /internal/v1/rooms/{roomID}/speech-runtime", s.internal(http.HandlerFunc(s.updateRoomSpeechRuntime)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/audio/interaction-return", s.internal(http.HandlerFunc(s.getInteractionReturn)))
+    mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction-bridge", s.internal(http.HandlerFunc(s.stageInteractionBridge)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/interaction", s.internal(http.HandlerFunc(s.dispatchRoomAudioInteraction)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/start", s.internal(http.HandlerFunc(s.startRoomAudioProgram)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/audio/program/append", s.internal(http.HandlerFunc(s.appendRoomAudioProgram)))

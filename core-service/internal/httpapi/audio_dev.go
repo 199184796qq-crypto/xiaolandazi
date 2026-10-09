@@ -111,6 +111,9 @@ func (s *Server) SetAudioClient(client audioTaskClient, callbackBase string) {
 	}
 	removeCutPlanner := s.messages.Register("mainline-cut-planner", s.handleCutRequest)
 	removeLifecycle := s.messages.Register("interaction-lifecycle", func(ctx context.Context, message messagecaptain.Message) error {
+		if message.Kind == messagecaptain.ReturnBridgeStaged || message.Kind == messagecaptain.ReturnBridgeStarted {
+			return s.handleReturnPlaybackMessage(ctx, message)
+		}
 		if message.Kind != messagecaptain.AudioTerminal {
 			return nil
 		}
@@ -492,6 +495,13 @@ func (s *Server) receiveAudioEvent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *audioDevState, event audioout.PlaybackEvent) {
 	if state == nil {
 		return
+	}
+	if (event.Status == "COMPLETED" || event.Status == "FAILED") && event.ReceiverID != "core-pcm-output" {
+		if reader, ok := state.client.(interactionReturnReader); ok {
+			if _, err := reader.InteractionReturnSnapshot(ctx, event.RoomID, event.SpeechTaskID); err == nil {
+				return
+			}
+		}
 	}
 	state.mu.Lock()
 	previous := state.events[event.SpeechTaskID]

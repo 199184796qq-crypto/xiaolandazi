@@ -26,19 +26,20 @@ type InteractionTiming struct {
 	BatchThreshold int    `json:"batch_threshold"`
 }
 type InteractionSchedule struct {
-	TimingOverrides map[string]InteractionTiming    `json:"timing_overrides"`
-	Version         int64                           `json:"version"`
-	PlanID          int64                           `json:"plan_id"`
-	Name            string                          `json:"name"`
-	TemplateVersion int                             `json:"template_version"`
-	TemplateSHA256  string                          `json:"template_sha256"`
-	FieldLabels     map[string]string               `json:"field_labels"`
-	PriorityLabels  map[string]string               `json:"priority_labels"`
-	HeatLabels      map[string]string               `json:"heat_labels"`
-	StageLabels     map[string]string               `json:"stage_labels"`
-	AnswerLimits    map[string]int                  `json:"answer_limits"`
-	MaxRetries      int                             `json:"max_retries"`
-	Events          map[string]InteractionEventRule `json:"events"`
+	OpeningObservationSeconds *int                            `json:"opening_observation_seconds,omitempty"`
+	TimingOverrides           map[string]InteractionTiming    `json:"timing_overrides"`
+	Version                   int64                           `json:"version"`
+	PlanID                    int64                           `json:"plan_id"`
+	Name                      string                          `json:"name"`
+	TemplateVersion           int                             `json:"template_version"`
+	TemplateSHA256            string                          `json:"template_sha256"`
+	FieldLabels               map[string]string               `json:"field_labels"`
+	PriorityLabels            map[string]string               `json:"priority_labels"`
+	HeatLabels                map[string]string               `json:"heat_labels"`
+	StageLabels               map[string]string               `json:"stage_labels"`
+	AnswerLimits              map[string]int                  `json:"answer_limits"`
+	MaxRetries                int                             `json:"max_retries"`
+	Events                    map[string]InteractionEventRule `json:"events"`
 }
 
 func InteractionScene(kind string) string {

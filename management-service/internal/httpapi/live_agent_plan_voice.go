@@ -824,11 +824,15 @@ func buildFullShowSafePoints(timeline []model.LiveAgentPlanTimelineSegment) []mo
 		if index+1 < len(timeline) {
 			nextPreview = strings.TrimSpace(timeline[index+1].Text)
 		}
+		grade, score := "B", 85
+		if index == len(timeline)-1 {
+			grade, score = "A", 96
+		}
 		points = append(points, model.LiveAgentPlanSafePoint{
 			ID:          fmt.Sprintf("SP%03d", len(points)+1),
 			CutMS:       segment.EndMS,
-			Score:       96,
-			Grade:       "A",
+			Score:       score,
+			Grade:       grade,
 			Kind:        "SENTENCE",
 			SentenceID:  segment.SegmentID,
 			LeftPreview: strings.TrimSpace(segment.Text),

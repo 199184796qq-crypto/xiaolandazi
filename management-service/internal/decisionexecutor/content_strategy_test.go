@@ -35,7 +35,7 @@ func TestInteractionStrategyKeepsOfficialFactsAndExistingRules(t *testing.T) {
 	started := time.Now().Add(-time.Minute)
 	session := model.LiveRuntimeSession{ID: 100, TenantID: 7, RoomID: 15, StartedAt: started}
 	prompt, err := w.answerPrompt(context.Background(), session, decisionItem{SampleQuestions: []string{"85.5贵不贵"}, ResumeMainline: "下面讲现卤现炸"})
-	if err != nil || !strings.Contains(prompt, "单只预算") || !strings.Contains(prompt, "观众原话：85.5贵不贵") || !strings.Contains(prompt, "主线衔接硬要求") || !strings.Contains(prompt, "不要计算一克价格") || !store.before.Equal(started) {
+	if err != nil || !strings.Contains(prompt, "单只预算") || !strings.Contains(prompt, "观众原话：85.5贵不贵") || !strings.Contains(prompt, "可顺延回答的主线衔接") || !strings.Contains(prompt, "不要计算一克价格") || !store.before.Equal(started) {
 		t.Fatal(prompt, err, store.before)
 	}
 	prompt, err = w.answerPrompt(context.Background(), session, decisionItem{ExecutionMode: "verbatim", FixedText: "原句"})

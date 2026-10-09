@@ -144,8 +144,8 @@ func TestShippingQuestionAppearsImmediatelyAndLaterVariantsMerge(t *testing.T) {
 		t.Fatalf("bucket must expose the concrete question detail: %#v", first.TopTopics[0].Questions)
 	}
 
-	p.Add(Event{Type: EventChat, UserID: "u2", Content: "什么时候发货", Question: true, OccurredAt: now.Add(time.Second)})
-	p.Add(Event{Type: EventChat, UserID: "u3", Content: "多久发货", Question: true, OccurredAt: now.Add(2 * time.Second)})
+	p.Add(Event{Type: EventChat, UserID: "u2", Content: "从哪里发货", Question: true, OccurredAt: now.Add(time.Second)})
+	p.Add(Event{Type: EventChat, UserID: "u3", Content: "哪儿发货", Question: true, OccurredAt: now.Add(2 * time.Second)})
 	merged := p.Snapshot(now.Add(2*time.Second), 6)
 	if len(merged.TopTopics) != 1 || merged.TopTopics[0].Count != 3 {
 		t.Fatalf("shipping variants should merge into the first real bucket: %#v", merged.TopTopics)
@@ -180,8 +180,8 @@ func TestCoarseCommerceFamiliesGroupBroadIntentWithoutOverMerging(t *testing.T) 
 	for _, bucket := range s.TopTopics {
 		seen[bucket.Topic] = bucket
 	}
-	if seen["FAMILY:发货物流"].Count != len(shipping) {
-		t.Fatalf("shipping questions should share one coarse family: %#v", s.TopTopics)
+	if seen["FAMILY:发货地点"].Count != 1 || seen["FAMILY:快递公司"].Count != 1 || seen["FAMILY:发货时效"].Count != 2 || seen["FAMILY:发货物流"].Count != 1 {
+		t.Fatalf("shipping subpurposes must not merge: %#v", s.TopTopics)
 	}
 	if seen["FAMILY:价格费用"].Count != len(prices) {
 		t.Fatalf("money-related questions should share one coarse family: %#v", s.TopTopics)
@@ -201,7 +201,7 @@ func TestCoarseFamilyPriorityForShippingFeeAndPurchaseLocation(t *testing.T) {
 	if got := QuestionTopic("在哪里买"); got != "FAMILY:购买下单" {
 		t.Fatalf("purchase location should prefer purchase family, got %q", got)
 	}
-	if got := QuestionTopic("哪里发货"); got != "FAMILY:发货物流" {
+	if got := QuestionTopic("哪里发货"); got != "FAMILY:发货地点" {
 		t.Fatalf("shipping origin should use shipping family, got %q", got)
 	}
 }

@@ -26,11 +26,18 @@ type Purpose struct {
 	FactIDs []string `json:"关联事实"`
 }
 type Row struct {
-	PurposeID string   `json:"目的编号"`
-	Angle     string   `json:"角度"`
-	Task      string   `json:"讲述任务"`
-	FactIDs   []string `json:"关联事实"`
-	When      string   `json:"适用条件"`
+	Priority   int         `json:"优先级,omitempty"`
+	Role       string      `json:"任务类型,omitempty"`
+	Conditions []Condition `json:"采用条件,omitempty"`
+	PurposeID  string      `json:"目的编号"`
+	Angle      string      `json:"角度"`
+	Task       string      `json:"讲述任务"`
+	FactIDs    []string    `json:"关联事实"`
+	When       string      `json:"适用条件"`
+}
+type Condition struct {
+	Type  string `json:"类型"`
+	Value string `json:"值,omitempty"`
 }
 type Purposes struct {
 	Items []Purpose `json:"目的列表"`
@@ -60,7 +67,7 @@ func SHA(text string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(tex
 // of a field or malformed JSON must never silently disable an existing asset.
 func Disabled(raw string) bool {
 	var s Snapshot
-	if Decode(raw, &s) != nil || s.Version != 1 {
+	if Decode(raw, &s) != nil || (s.Version != 1 && s.Version != 2) {
 		return false
 	}
 	var fields map[string]json.RawMessage
@@ -149,6 +156,9 @@ func Validate(facts []Fact, purposes []Purpose, rows []Row, requireRows bool) er
 	}
 	seen := map[string]bool{}
 	for _, r := range rows {
+		if err := ValidateRowPolicy(r, false); err != nil {
+			return err
+		}
 		if !ids[r.PurposeID] || !validText(r.Angle, 60) || !validText(r.Task, 240) || !validText(r.When, 200) {
 			return fmt.Errorf("角度字段缺失、引用未知目的或过长")
 		}
@@ -168,7 +178,7 @@ func Parse(raw, factPackage string) (*Snapshot, error) {
 	if err := Decode(raw, &s); err != nil {
 		return nil, err
 	}
-	if s.Version != 1 || s.FactsSHA != SHA(factPackage) {
+	if (s.Version != 1 && s.Version != 2) || s.FactsSHA != SHA(factPackage) {
 		return nil, fmt.Errorf("策略版本或正式事实指纹不匹配")
 	}
 	actual, _ := json.Marshal(Facts(factPackage))
@@ -178,6 +188,13 @@ func Parse(raw, factPackage string) (*Snapshot, error) {
 	}
 	if err := Validate(s.Facts, s.Purposes, s.Rows, true); err != nil {
 		return nil, err
+	}
+	if s.Version == 2 {
+		for _, row := range s.Rows {
+			if err := ValidateRowPolicy(row, true); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return &s, nil
 }

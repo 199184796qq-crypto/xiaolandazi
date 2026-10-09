@@ -977,7 +977,7 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Interrupt.Strategy != "read_comment_softly" {
 		t.Fatalf("interrupt plan=%#v", mission.Interrupt)
 	}
-	if mission.Resume.Strategy != "BRIDGE" || strings.TrimSpace(mission.Resume.BridgeText) == "" {
+	if mission.Resume.Strategy != "BRIDGE" || strings.TrimSpace(mission.Resume.BridgeText) != "" || !strings.Contains(mission.Resume.Guidance, "不提前加入具体桥话术") {
 		t.Fatalf("resume plan=%#v", mission.Resume)
 	}
 	if mission.Resume.PlannedResumeAtMS != 2400 || mission.Resume.ResumeSegmentID != "seg-r2" || !strings.Contains(mission.Resume.ResumePreview, "压榨工艺") {

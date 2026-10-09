@@ -15,7 +15,7 @@ func TestManualPromotesExistingAgentTopicInsteadOfDuplicating(t *testing.T) {
 		t.Fatal("agent candidate missing")
 	}
 	now = now.Add(time.Second)
-	manual := q.Enqueue(1, Candidate{Source: SourceManual, Question: "发什么快递"})
+	manual := q.Enqueue(1, Candidate{Source: SourceManual, Question: "多久发货"})
 	if !manual.Merged || manual.Item == nil {
 		t.Fatalf("manual should merge existing shipping task: %#v", manual)
 	}
@@ -59,13 +59,13 @@ func TestCooldownSuppressesRepeatedAgentAndManualUnlessForced(t *testing.T) {
 		t.Fatal("complete failed")
 	}
 	now = now.Add(10 * time.Second)
-	if got := q.Enqueue(1, Candidate{Source: SourceAgent, Question: "发什么快递"}); !got.Suppressed {
+	if got := q.Enqueue(1, Candidate{Source: SourceAgent, Question: "从哪里发货"}); !got.Suppressed {
 		t.Fatalf("agent should be suppressed during cooldown: %#v", got)
 	}
-	if got := q.Enqueue(1, Candidate{Source: SourceManual, Question: "什么时候发货"}); !got.Suppressed {
+	if got := q.Enqueue(1, Candidate{Source: SourceManual, Question: "哪儿发货"}); !got.Suppressed {
 		t.Fatalf("manual default should respect cooldown: %#v", got)
 	}
-	forced := q.Enqueue(1, Candidate{Source: SourceManual, Question: "多久发货", ForceReopen: true})
+	forced := q.Enqueue(1, Candidate{Source: SourceManual, Question: "哪里发货", ForceReopen: true})
 	if forced.Suppressed || forced.Item == nil || forced.Item.Priority != ManualPriority {
 		t.Fatalf("forced manual should reopen: %#v", forced)
 	}
@@ -93,7 +93,7 @@ func TestQuickAnswerBeatsNormalManualAndBypassesCooldown(t *testing.T) {
 		t.Fatal("complete failed")
 	}
 	now = now.Add(10 * time.Second)
-	forced := q.Enqueue(2, Candidate{Source: SourceManual, Question: "发什么快递", ManualAction: "quick"})
+	forced := q.Enqueue(2, Candidate{Source: SourceManual, Question: "从哪里发货", ManualAction: "quick"})
 	if forced.Suppressed || forced.Item == nil || forced.Item.ManualAction != "quick" {
 		t.Fatalf("quick answer should bypass cooldown: %#v", forced)
 	}
@@ -161,7 +161,7 @@ func TestCooldownStateExpiresEvenAfterAccumulatingSimilarQuestions(t *testing.T)
 		t.Fatal("complete failed")
 	}
 	now = now.Add(10 * time.Second)
-	q.Enqueue(1, Candidate{Source: SourceAgent, Question: "发什么快递"})
+	q.Enqueue(1, Candidate{Source: SourceAgent, Question: "从哪里发货"})
 	if got := q.Snapshot(1).RecentlyAnswered; len(got) != 1 || got[0].Accumulated != 1 {
 		t.Fatalf("cooldown accumulation missing: %#v", got)
 	}
@@ -291,8 +291,8 @@ func TestCapacityNeverDropsClaimedTask(t *testing.T) {
 	}
 	q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:high-1", Question: "高优先级1", Priority: 80})
 	result := q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:high-2", Question: "高优先级2", Priority: 70})
-	if result.Dropped == nil || result.Dropped.Topic != "Q:high-2" {
-		t.Fatalf("expected lowest pending task to be dropped, got %#v", result.Dropped)
+	if result.Item != nil || result.Dropped != nil {
+		t.Fatalf("full queue must defer admission without evicting selected work: %#v", result)
 	}
 	snapshot := q.Snapshot(1)
 	foundClaimed := false
@@ -444,7 +444,7 @@ func TestAgentInputPreviewIsIsolatedAndCompletesWithoutCooldown(t *testing.T) {
 	}
 }
 
-func TestCapacityDropsLowestPriorityAndTTLExpires(t *testing.T) {
+func TestCapacityDefersNewAdmissionAndRecordsExpiredOutcomes(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := NewWithClock(func() time.Time { return now }, 30*time.Second, 90*time.Second, 2)
 	q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:low", Question: "低", Priority: 10})
@@ -452,8 +452,8 @@ func TestCapacityDropsLowestPriorityAndTTLExpires(t *testing.T) {
 	q.Enqueue(1, Candidate{Source: SourceAgent, Topic: "Q:mid", Question: "中", Priority: 30})
 	now = now.Add(time.Second)
 	result := q.Enqueue(1, Candidate{Source: SourceManual, Topic: "Q:manual", Question: "人工"})
-	if result.Dropped == nil || result.Dropped.Topic != "Q:low" {
-		t.Fatalf("expected low priority drop: %#v", result)
+	if result.Dropped != nil || result.Item != nil || q.Snapshot(1).Completion.AdmissionDeferred != 1 {
+		t.Fatalf("new work must wait outside a full execution queue: %#v", result)
 	}
 	now = now.Add(31 * time.Second)
 	if got := q.Snapshot(1).Queue; len(got) != 0 {

@@ -59,6 +59,9 @@ func Load() (model.InteractionSchedule, error) {
 	return s, nil
 }
 func Validate(s model.InteractionSchedule) error {
+	if s.OpeningObservationSeconds != nil && (*s.OpeningObservationSeconds < 0 || *s.OpeningObservationSeconds > 600) {
+		return fmt.Errorf("开场观察窗须为0至600秒")
+	}
 	if (s.TemplateVersion != 1 && s.TemplateVersion != 2) || s.Name == "" || s.MaxRetries < 0 || s.MaxRetries > 5 {
 		return fmt.Errorf("互动配置版本或重试次数错误")
 	}

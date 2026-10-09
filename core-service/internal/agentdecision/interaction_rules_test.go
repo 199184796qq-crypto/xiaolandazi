@@ -47,9 +47,10 @@ func TestFailedAndExpiredWorkNeverSpendAnswerFrequency(t *testing.T) {
 	q.Complete(7, b.ID)
 	now = now.Add(21 * time.Second)
 	q.Sweep()
-	if _, ok := q.Get(7, a.ID); ok {
-		t.Fatal("expired failure remained queued")
+	if _, ok := q.Get(7, a.ID); !ok {
+		t.Fatal("selected question vanished at candidate TTL")
 	}
+	q.Remove(7, a.ID)
 	q.Enqueue(7, Candidate{Source: SourceAgent, Topic: "c", Scene: "product_question", RateLimitPerMinute: 1, TTLSeconds: 180})
 	if _, ok := q.ClaimNext(7); ok {
 		t.Fatal("actual answer did not spend frequency")

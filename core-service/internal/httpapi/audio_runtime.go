@@ -23,24 +23,27 @@ import (
 )
 
 type roomAudioInteractionInput struct {
-	ContentGoal          string `json:"content_goal,omitempty"`
-	ContentAngle         string `json:"content_angle,omitempty"`
-	DecisionID           string `json:"decision_id"`
-	MissionID            string `json:"mission_id,omitempty"`
-	MissionKind          string `json:"mission_kind,omitempty"`
-	SessionID            string `json:"session_id,omitempty"`
-	Action               string `json:"action"`
-	AudioURL             string `json:"audio_url"`
-	Question             string `json:"question,omitempty"`
-	ReplyText            string `json:"reply_text,omitempty"`
-	Topic                string `json:"topic,omitempty"`
-	InterruptStrategy    string `json:"interrupt_strategy,omitempty"`
-	ResumeStrategy       string `json:"resume_strategy,omitempty"`
-	BridgeText           string `json:"bridge_text,omitempty"`
-	HumanizationStrategy string `json:"humanization_strategy,omitempty"`
-	HumanizationKind     string `json:"humanization_kind,omitempty"`
-	HumanizationApplied  bool   `json:"humanization_applied,omitempty"`
-	SwitchAtMS           int    `json:"switch_at_ms,omitempty"`
+	DeferredReturn       bool            `json:"deferred_return,omitempty"`
+	PreparationCutPlans  json.RawMessage `json:"preparation_cut_plans,omitempty"`
+	SelectedContentPlan  json.RawMessage `json:"selected_content_plan,omitempty"`
+	ContentGoal          string          `json:"content_goal,omitempty"`
+	ContentAngle         string          `json:"content_angle,omitempty"`
+	DecisionID           string          `json:"decision_id"`
+	MissionID            string          `json:"mission_id,omitempty"`
+	MissionKind          string          `json:"mission_kind,omitempty"`
+	SessionID            string          `json:"session_id,omitempty"`
+	Action               string          `json:"action"`
+	AudioURL             string          `json:"audio_url"`
+	Question             string          `json:"question,omitempty"`
+	ReplyText            string          `json:"reply_text,omitempty"`
+	Topic                string          `json:"topic,omitempty"`
+	InterruptStrategy    string          `json:"interrupt_strategy,omitempty"`
+	ResumeStrategy       string          `json:"resume_strategy,omitempty"`
+	BridgeText           string          `json:"bridge_text,omitempty"`
+	HumanizationStrategy string          `json:"humanization_strategy,omitempty"`
+	HumanizationKind     string          `json:"humanization_kind,omitempty"`
+	HumanizationApplied  bool            `json:"humanization_applied,omitempty"`
+	SwitchAtMS           int             `json:"switch_at_ms,omitempty"`
 }
 
 func estimatedInteractionDurationMS(text string) int {
@@ -627,21 +630,29 @@ func requestedRoomProgramSafeCut(program audioout.RoomProgramSnapshot, requested
 }
 
 func resolveRoomProgramSafeCutAfterGeneration(program audioout.RoomProgramSnapshot, preferredMS, currentMS int) (int, bool) {
-	if preferredMS > 0 {
-		lead := preferredMS - currentMS
-		if lead >= 4000 && lead <= 33000 {
-			if cut, ok := requestedRoomProgramSafeCut(program, preferredMS, currentMS, 33*time.Second); ok {
-				return cut, true
+	if preferredMS-currentMS >= 3000 && preferredMS-currentMS <= 33000 {
+		for _, point := range effectiveRoomProgramSafePoints(program) {
+			if point.CutMS == preferredMS && completeSentenceCut(program, point) {
+				return preferredMS, true
 			}
 		}
 	}
-	if point, ok := chooseRoomProgramSafePointWindow(program, currentMS, 5000, 30000, 12000); ok {
-		return point.CutMS, true
+	// When the original plan passed, the nearest complete sentence wins. A distant A
+	// must not cause another preparation wait or extend the prepared lease.
+	best := 0
+	for _, point := range effectiveRoomProgramSafePoints(program) {
+		lead := point.CutMS - currentMS
+		if lead < 3000 || lead > 33000 || !completeSentenceCut(program, point) {
+			continue
+		}
+		if program.Task != nil && point.CutMS > program.Task.DurationMS {
+			continue
+		}
+		if best == 0 || point.CutMS < best {
+			best = point.CutMS
+		}
 	}
-	if point, ok := chooseRoomProgramSafePointWindow(program, currentMS, 3000, 33000, 10000); ok {
-		return point.CutMS, true
-	}
-	return 0, false
+	return best, best > 0
 }
 
 func resolveQuickRoomProgramSafeCut(program audioout.RoomProgramSnapshot, preferredMS, currentMS int) (int, bool) {
@@ -709,7 +720,21 @@ func chooseRoomProgramSafePointWindow(
 
 func effectiveRoomProgramSafePoints(program audioout.RoomProgramSnapshot) []audioout.ProgramSafePoint {
 	if len(program.SafePoints) > 0 {
-		return program.SafePoints
+		points := append([]audioout.ProgramSafePoint(nil), program.SafePoints...)
+		last := 0
+		for _, point := range points {
+			if point.CutMS > last {
+				last = point.CutMS
+			}
+		}
+		for i := range points {
+			// Older generated assets labelled every sentence A. Preserve their
+			// safe boundary, but reserve A for the complete unit's final boundary.
+			if points[i].Grade == "A" && strings.EqualFold(points[i].Kind, "SENTENCE") && points[i].CutMS < last {
+				points[i].Grade = "B"
+			}
+		}
+		return points
 	}
 	points := make([]audioout.ProgramSafePoint, 0, len(program.Timeline))
 	for index, segment := range program.Timeline {
@@ -793,6 +818,11 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 		if snapshot.Interrupt.Status != speechruntime.StatusPlaying && snapshot.Interrupt.Status != speechruntime.StatusReady {
 			return
 		}
+		if until := snapshot.Interrupt.StartedAt.Add(time.Duration(snapshot.Interrupt.DurationMS+4000) * time.Millisecond); until.After(time.Now()) {
+			task.DurationMS = snapshot.Interrupt.DurationMS
+			s.scheduleRoomAudioInteractionCompletion(roomID, task, decisionID, waitForMainline)
+			return
+		}
 		status := speechruntime.StatusFailed
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 			Track:          speechruntime.TrackInterrupt,
@@ -843,7 +873,7 @@ func (s *Server) completeInteractionAfterMainlineResume(roomID int64, taskID, de
 				return
 			}
 			engine := s.roomAudio.Snapshot(roomID)
-			if engine.Phase == roomaudio.PhaseMainline && engine.ActiveSource == roomaudio.SourceMainline {
+			if engine.Phase == roomaudio.PhaseMainline && engine.ActiveSource == roomaudio.SourceMainline && engine.MainlineCursorMS > 0 {
 				_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 					Track:          speechruntime.TrackInterrupt,
 					Status:         speechruntime.StatusCompleted,
@@ -1033,7 +1063,20 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			cutAction = "quick"
 		}
 		if cutAction == "answer" {
-			cutMS, exists = resolveRoomProgramSafeCutAfterGeneration(program, input.SwitchAtMS, currentMS)
+			preferred := input.SwitchAtMS
+			if input.DeferredReturn {
+				var plans []interactionCutPlan
+				if json.Unmarshal(input.PreparationCutPlans, &plans) == nil {
+					preferred = 0
+					for _, plan := range plans {
+						if plan.TrackID == program.TrackID {
+							preferred = plan.CutMS
+							break
+						}
+					}
+				}
+			}
+			cutMS, exists = resolveRoomProgramSafeCutAfterGeneration(program, preferred, currentMS)
 		} else {
 			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
 		}
@@ -1051,7 +1094,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			value := program.Task.DurationMS
 			resumeOffsetMS = &value
 		}
-		if switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
+		if !input.DeferredReturn && switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
 			estimatedMS := estimatedInteractionDurationMS(input.ReplyText)
 			candidates := resumeCandidatesForInteraction(program, *switchAtMS, estimatedMS, input.Topic)
 			requested := strings.ToUpper(strings.TrimSpace(input.ResumeStrategy))
@@ -1135,6 +1178,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				writeError(w, http.StatusConflict, "安全句末切点已失效，继续排队")
 				return
 			}
+			log.Printf("interaction cut selected room=%d decision=%s grade=%s track=%s cut_ms=%d", roomID, input.DecisionID, actualInteractionCutLevel(program, *switchAtMS), program.TrackID, *switchAtMS)
 			log.Printf(
 				"core audio interaction plan room=%d action=%s current_ms=%d switch_ms=%d lead_ms=%d",
 				roomID, input.Action, currentMS, *switchAtMS, *switchAtMS-currentMS,
@@ -1218,6 +1262,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			SessionID:      program.Task.SessionID,
 			Label:          fmt.Sprintf("%s · %s", label, input.Topic),
 			AudioURL:       input.AudioURL,
+			DeferredReturn: input.DeferredReturn, DecisionID: input.DecisionID,
 			Text:           strings.TrimSpace(input.ReplyText),
 			CallbackURL:    callbackURL,
 			ResumeOffsetMS: resumeOffsetMS,
@@ -1257,6 +1302,18 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	}
 
 	s.agentDecisions.BindPlayback(roomID, input.DecisionID, task.ID)
+	if input.DeferredReturn {
+		if reader, ok := state.client.(interactionReturnReader); ok {
+			if plan, err := reader.InteractionReturnSnapshot(r.Context(), roomID, task.ID); err == nil {
+				input.BridgeText = plan.BridgeText
+				bridgeUsed = false
+			}
+		}
+	}
+
+	if switchAtMS != nil {
+		s.agentDecisions.SetExecutionReceipt(roomID, input.DecisionID, actualInteractionCutLevel(program, *switchAtMS), input.SelectedContentPlan, input.PreparationCutPlans)
+	}
 	if state != nil {
 		state.mu.Lock()
 		state.interactions[task.ID] = &audioInteractionMeta{
@@ -1319,7 +1376,9 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mission_id":        input.MissionID,
 		"dispatched":        true,
+		"deferred_return":   input.DeferredReturn && program.Sequential && s.roomAudio != nil,
 		"action":            input.Action,
+		"cut_level":         actualCutLevel(program, switchAtMS),
 		"switch_at_ms":      switchAtMS,
 		"resume_offset_ms":  resumeOffsetMS,
 		"resume_strategy":   resumeMode,

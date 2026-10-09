@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
@@ -95,6 +96,10 @@ func (s *Server) enqueueAgentDecision(w http.ResponseWriter, r *http.Request, so
 		return
 	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(input.ManualOrigin))
+	if !observationExempt(manualOrigin) && s.inOpeningObservation(r.Context(), roomID, tenantID) {
+		writeError(w, http.StatusConflict, "实际起播后的开场观察窗尚未结束")
+		return
+	}
 	if source == agentdecision.SourceManual &&
 		manualOrigin != "agent_input" &&
 		manualOrigin != "agent_input_preview" &&
@@ -151,6 +156,10 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
+	if !observationExempt(manualOrigin) && s.inOpeningObservation(r.Context(), roomID, tenantID) {
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "opening_observation"})
+		return
+	}
 	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
 		item, claimed := s.agentDecisions.ClaimNext(roomID)
 		s.refreshClaimInteractionContext(roomID, item)
@@ -193,18 +202,32 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	currentMainline := ""
 	resumeMainline := ""
 	resumeSegmentID := ""
+	var preparationPlans []interactionCutPlan
 	if queue[0].ManualAction != "quick" {
 		currentMS := program.CurrentMS
 		if currentMS <= 0 {
 			currentMS = program.Task.StartMS
 		}
-		cutMS, exists := plannedDecisionSafeCut(program, currentMS, queue[0])
-		if !exists {
-			writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_safe_point", "item": queue[0]})
-			return
+		if queue[0].AudioPrepared {
+			cutMS, exists := resolveRoomProgramSafeCutAfterGeneration(program, 0, currentMS)
+			if !exists {
+				writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_safe_point", "item": queue[0]})
+				return
+			}
+			plannedSwitchMS = cutMS
+			currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
+		} else {
+			plan, plans, exists := preparationContext(program, currentMS)
+			if !exists {
+				writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_future_buffer", "item": queue[0], "buffered_mainline_ms": program.BufferedMainlineMS})
+				return
+			}
+			if plan.TrackID == program.TrackID {
+				plannedSwitchMS = plan.CutMS
+			}
+			currentMainline, resumeMainline, resumeSegmentID = plan.CurrentText, plan.ResumeText, plan.ResumeSegmentID
+			preparationPlans = plans
 		}
-		plannedSwitchMS = cutMS
-		currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
 	s.refreshClaimInteractionContext(roomID, item)
@@ -215,6 +238,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		"current_mainline":  currentMainline,
 		"resume_mainline":   resumeMainline,
 		"resume_segment_id": resumeSegmentID,
+		"cut_plans":         preparationPlans,
 	})
 }
 
@@ -234,22 +258,38 @@ func plannedDecisionSafeCut(program audioout.RoomProgramSnapshot, currentMS int,
 }
 
 func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {
-	for _, point := range program.SafePoints {
-		if point.CutMS != cutMS {
-			continue
-		}
-		return strings.TrimSpace(point.LeftPreview), strings.TrimSpace(point.NextPreview), strings.TrimSpace(point.SentenceID)
-	}
 	for index, segment := range program.Timeline {
 		if segment.EndMS != cutMS {
 			continue
 		}
-		current := strings.TrimSpace(segment.Text)
-		if index+1 >= len(program.Timeline) {
-			return current, "", ""
+		before, after := []string{}, []string{}
+		for _, unit := range program.Timeline[:index+1] {
+			before = append(before, strings.TrimSpace(unit.Text))
 		}
-		next := program.Timeline[index+1]
-		return current, strings.TrimSpace(next.Text), strings.TrimSpace(next.SegmentID)
+		segmentID := ""
+		for _, unit := range program.Timeline[index+1 : min(len(program.Timeline), index+3)] {
+			if segmentID == "" {
+				segmentID = unit.SegmentID
+			}
+			after = append(after, strings.TrimSpace(unit.Text))
+		}
+		if len(after) == 0 && program.NextTrackText != "" {
+			after = append(after, program.NextTrackText)
+		}
+		return strings.Join(before, " "), strings.Join(after, " "), segmentID
+	}
+	for _, point := range program.SafePoints {
+		if point.CutMS == cutMS {
+			before := strings.TrimSpace(point.LeftPreview)
+			if program.TrackText != "" {
+				before = program.TrackText
+			}
+			after := strings.TrimSpace(point.NextPreview)
+			if after == "" {
+				after = program.NextTrackText
+			}
+			return before, after, point.SentenceID
+		}
 	}
 	return "", "", ""
 }
@@ -346,7 +386,8 @@ func (s *Server) releaseRoomAgentDecision(w http.ResponseWriter, r *http.Request
 	var item *agentdecision.Item
 	var released bool
 	if r.URL.Query().Get("reason") == "cut_reschedule" {
-		item, released = s.agentDecisions.RescheduleCut(roomID, id)
+		deadline, _ := time.Parse(time.RFC3339Nano, r.URL.Query().Get("prepared_until"))
+		item, released = s.agentDecisions.RescheduleCut(roomID, id, deadline)
 	} else {
 		item, released = s.agentDecisions.Release(roomID, id)
 	}

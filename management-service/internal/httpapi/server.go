@@ -42,12 +42,14 @@ type SemanticMetricsReader interface {
 }
 
 type Server struct {
-	inbox  *workinbox.Service
-	store  *appdb.Store
-	auth   *auth.Resolver
-	core   *coreclient.Client
-	audit  *auditlog.Store
-	leader interface {
+	purposeInternalToken string
+	purposeSemantic      *semantic.Service
+	inbox                *workinbox.Service
+	store                *appdb.Store
+	auth                 *auth.Resolver
+	core                 *coreclient.Client
+	audit                *auditlog.Store
+	leader               interface {
 		IsLeader() bool
 		Owner() string
 	}
@@ -115,6 +117,9 @@ func (s *Server) SetSpeechMissionReader(reader SpeechMissionReader) {
 
 func (s *Server) SetSemanticMetricsReader(reader SemanticMetricsReader) {
 	s.semanticMetrics = reader
+	if service, ok := reader.(*semantic.Service); ok {
+		s.purposeSemantic = service
+	}
 }
 
 func (s *Server) SetExecutionRealm(realm string) {
@@ -133,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerLiveAgentPlanStyleOverlayRoutes(mux)
 	s.registerLiveAnchorStyleRoutes(mux)
 
+	mux.HandleFunc("POST /internal/v1/interaction-purpose/resolve", s.resolveInteractionPurpose)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
