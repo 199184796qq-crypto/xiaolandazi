@@ -27,6 +27,13 @@ export class ContinuousPreviewPCMStream {
     if (this.context.state !== 'running') throw new Error('浏览器音频输出尚未开启')
   }
   setPlaybackLimit(ms: number) { this.limitMS = Math.max(0, ms) }
+  restorePlaybackOffset(ms: number) {
+    if (!Number.isFinite(ms) || ms < 0) throw new Error('试听播放进度无效')
+    this.pause()
+    const played = this.limitMS > 0 ? Math.min(ms, this.limitMS) : ms
+    this.completedMS = played; this.scheduledMS = played
+    this.finished = this.limitMS > 0 && played >= this.limitMS
+  }
   snapshot() {
     const now = this.context?.currentTime || 0
     let playedMS = this.completedMS, caption = '', playing = false

@@ -30,6 +30,38 @@ func TestPreviewStreamPreservesFullAuditedMetadataAndHidesFiles(t *testing.T) {
 		t.Fatal("generated duration became a playback stop")
 	}
 }
+
+func TestPreviewPlaybackSnapshotIsReadOnlyAndScopedToRun(t *testing.T) {
+	state := cycleTestState(t)
+	state.StreamControlled, state.Surface = true, "generation_preview"
+	state.RoomID = 0
+	server := &Server{}
+	if snapshot := server.previewPlaybackSnapshot(&state); snapshot == nil || !snapshot.Paused || snapshot.PlayedMS != 0 || len(server.previewStreams.items) != 0 {
+		t.Fatal("reading unused preview created a producer", snapshot)
+	}
+	output := server.previewOutput(&state)
+	defer output.stop()
+	output.cycleSupply.mu.Lock()
+	output.playedMS, output.paused, output.finished = 43567.5, true, true
+	output.progress, output.progressPart = 95, "voice"
+	output.cycleSupply.mu.Unlock()
+	output.mu.Lock()
+	output.connected, output.sentMS = true, 44000
+	output.mu.Unlock()
+	snapshot := server.previewPlaybackSnapshot(&state)
+	if snapshot.PlayedMS != 43567.5 || !snapshot.Finished || !snapshot.Paused || !snapshot.Connected || snapshot.Progress != 95 || snapshot.Part != "voice" {
+		t.Fatal("snapshot lost actual playback state", snapshot)
+	}
+	other := state
+	other.RunID = "different-run"
+	if value := server.previewPlaybackSnapshot(&other); value.PlayedMS != 0 || value.Finished || value.Connected || len(server.previewStreams.items) != 1 {
+		t.Fatal("read crossed runs or created an output", value)
+	}
+	other.RoomID = 26
+	if server.previewPlaybackSnapshot(&other) != nil {
+		t.Fatal("formal room received a preview playback snapshot")
+	}
+}
 func TestPreviewPCMStreamCrossesFractionalFileBoundaryAndDisconnectStopsWrites(t *testing.T) {
 	state := cycleTestState(t)
 	state.StreamControlled = true

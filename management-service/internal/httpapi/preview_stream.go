@@ -28,6 +28,38 @@ type previewOutput struct {
 	receiverDone   chan struct{}
 }
 
+type previewPlaybackSnapshot struct {
+	PlayedMS  float64 `json:"played_ms"`
+	Paused    bool    `json:"paused"`
+	Finished  bool    `json:"finished"`
+	Connected bool    `json:"connected"`
+	Progress  int     `json:"progress"`
+	Part      string  `json:"part,omitempty"`
+	Error     string  `json:"error,omitempty"`
+}
+
+// Reading a preview must not create an output or restart its producers.
+func (s *Server) previewPlaybackSnapshot(state *anchorcycle.State) *previewPlaybackSnapshot {
+	if state == nil || !state.StreamControlled || state.Surface != "generation_preview" || state.RoomID != 0 {
+		return nil
+	}
+	s.previewStreams.Lock()
+	output := s.previewStreams.items[previewStreamKey(state)]
+	s.previewStreams.Unlock()
+	snapshot := &previewPlaybackSnapshot{Paused: true}
+	if output == nil {
+		return snapshot
+	}
+	output.cycleSupply.mu.Lock()
+	snapshot.PlayedMS, snapshot.Paused, snapshot.Finished = output.playedMS, output.paused, output.finished
+	snapshot.Progress, snapshot.Part, snapshot.Error = output.progress, output.progressPart, output.failure
+	output.cycleSupply.mu.Unlock()
+	output.mu.Lock()
+	snapshot.Connected = output.connected
+	output.mu.Unlock()
+	return snapshot
+}
+
 func (p *previewOutput) disconnect(ctx context.Context) {
 	p.mu.Lock()
 	cancel, done := p.receiverCancel, p.receiverDone

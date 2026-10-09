@@ -44,6 +44,7 @@ export interface CycleSegment {
   voice?: CycleVoiceAsset
 }
 export interface CycleState {
+  preview_limit_ms?: number; stream_controlled?: boolean
   version: number; run_id: string; revision: number; plan_id: number; room_id: number
   phase: 'opening' | 'body' | 'closing' | 'ended'; status: string
   cursor: number; queue: CycleTask[]; config: CycleConfig; session_id: string
@@ -59,7 +60,8 @@ export interface CycleState {
   p0_skipped?: { attempts: CycleCandidate[] }[]
   p0_audit_pending?: CycleCandidate
 }
-export interface CycleResponse { run: CycleState | null; warning?: string }
+export interface CyclePlayback { played_ms: number; paused: boolean; finished: boolean; connected: boolean; progress: number; part?: string; error?: string }
+export interface CycleResponse { run: CycleState | null; warning?: string; playback?: CyclePlayback | null }
 export function normalizeCycleState(state: CycleState): CycleState {
   const accepted = Array.isArray(state.accepted) ? state.accepted : []
   const attempts = Array.isArray(state.attempts) ? state.attempts : []

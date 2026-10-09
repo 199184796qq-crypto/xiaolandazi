@@ -174,6 +174,11 @@ func (s *Server) anchorStyleCycleGet(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCycleRunAccess(w, r, actor, state) {
 		return
 	}
+	if productionPreviewRequest(r) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		writeJSON(w, 200, map[string]any{"run": cyclePreviewProjectionForRequest(r, state), "playback": s.previewPlaybackSnapshot(state)})
+		return
+	}
 	cycleReply(w, r, state)
 }
 func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
