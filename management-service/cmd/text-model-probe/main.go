@@ -21,6 +21,7 @@ func main() {
 	modelID := flag.String("model", "", "explicit model to test with same authorized endpoint")
 	input := flag.String("input", "", "compiled request packets")
 	output := flag.String("output", "", "text-only result archive")
+	configured := flag.Bool("configured-roles", false, "read actual mainline/interaction role routing")
 	flag.Parse()
 	if *profileID == "" || *modelID == "" || *input == "" || *output == "" {
 		panic("explicit probe arguments required")
@@ -71,7 +72,18 @@ func main() {
 		c.Request.Timeout = 45 * time.Second
 		raw, _ := json.Marshal(c.Request)
 		started := time.Now()
-		result, callErr := agentgateway.CompleteSpeechEndpoint(ctx, *profile, c.Request)
+		var result agentgateway.Response
+		var callErr error
+		if *configured {
+			c.Request.Model = ""
+			c.Request.Provider = ""
+			result, callErr = agentgateway.NewFromEnv().WithSpeechModels(store).Complete(ctx, c.Request)
+			if callErr == nil && (result.Model != *modelID || result.Provider != "anchor:"+*profileID) {
+				callErr = fmt.Errorf("configured role/model mismatch")
+			}
+		} else {
+			result, callErr = agentgateway.CompleteSpeechEndpoint(ctx, *profile, c.Request)
+		}
 		row := map[string]any{"name": c.Name, "request": c.Request, "request_sha256": fmt.Sprintf("%x", sha256.Sum256(raw)), "response": result, "latency_ms": time.Since(started).Milliseconds(), "success": callErr == nil, "text_only": true}
 		if callErr != nil {
 			row["error"] = "model request failed"
