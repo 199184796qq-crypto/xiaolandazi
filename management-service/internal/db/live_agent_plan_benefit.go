@@ -460,6 +460,7 @@ func disableLiveAgentPlanBenefitsForLink(
 	}
 	rows, err := tx.QueryContext(ctx, liveAgentPlanBenefitSelect+`
 		WHERE tenant_id=? AND plan_id=? AND link_key=? AND status<>'disabled'
+ AND NOT EXISTS (SELECT 1 FROM live_plan_benefit_scopes s WHERE s.benefit_id=live_agent_plan_benefits.id)
 		FOR UPDATE
 	`, tenantID, planID, linkKey)
 	if err != nil {

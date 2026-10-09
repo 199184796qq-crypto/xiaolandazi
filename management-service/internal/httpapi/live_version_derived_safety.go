@@ -21,17 +21,19 @@ func (s *Server) refreshVersionDerivedSafety(ctx context.Context, tenant, plan, 
 		snapshot = map[string]any{}
 	}
 	input.GenerationContext = snapshot
-	safety, err := s.prepareDerivedSafety(ctx, tenant, plan, actor)
-	if err != nil {
+	if ref := asSupportMap(snapshot["content_pools"]); len(ref) > 0 {
+		ref["voice_only"] = true
+		snapshot["content_pools"] = ref
+	}
+	// Changing only voice/emotion must carry the same immutable content version.
+	ref := asSupportMap(snapshot["derived_safety"])
+	hash, _ := ref["source_sha256"].(string)
+	if _, err = s.store.GetLiveDerivedSafety(ctx, tenant, plan, hash); err != nil {
 		return err
 	}
-	snapshot["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
 	if isRealtimeScheme(snapshot) {
-		// Re-capture both dependent snapshots together, including voice-only saves.
-		if err = s.captureRealtimeProductFocus(ctx, tenant, plan, input, safety); err != nil {
-			return err
-		}
-		return s.validateRealtimeScheme(ctx, tenant, plan, input.GenerationContext)
+		return s.validateRealtimeScheme(ctx, tenant, plan, snapshot)
 	}
+
 	return nil
 }

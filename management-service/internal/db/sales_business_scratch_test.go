@@ -64,6 +64,8 @@ var salesScratchTables = []string{
 	"live_agent_plan_script_references",
 	"live_agent_plan_terms",
 	"live_policy_scopes",
+	"live_agent_plan_product_attributes", "live_selling_point_wheels",
+	"live_plan_content_revisions", "live_plan_content_observations", "live_plan_content_changes", "live_plan_content_sets", "live_plan_content_jobs", "live_plan_content_pool_records", "live_plan_content_tasks", "live_plan_content_task_products", "live_plan_benefit_scopes", "live_plan_benefit_scope_products",
 	"inv_warehouses",
 	"inv_stock_documents",
 	"inv_stock_document_items",
@@ -138,6 +140,12 @@ func rewriteSalesScratchSQL(q, prefix string) (string, error) {
 	}
 	cmd := strings.ToUpper(strings.Join(strings.Fields(q), " "))
 	valid := false
+	if q == `SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=?` {
+		return q, nil
+	}
+	if regexp.MustCompile(`^CREATE TRIGGER xl_pool_source_[0-6]_(INSERT|UPDATE|DELETE) AFTER (INSERT|UPDATE|DELETE) ON (live_agent_plan_facts|live_agent_plan_product_links|live_agent_plan_product_attributes|live_agent_plan_benefits|live_plan_benefit_scopes|live_plan_benefit_scope_products|live_selling_point_wheels) FOR EACH ROW INSERT INTO live_plan_content_revisions\(tenant_id,plan_id,revision\) VALUES\((NEW|OLD)\.tenant_id,(NEW|OLD)\.plan_id,1\) ON DUPLICATE KEY UPDATE revision=revision\+1$`).MatchString(q) {
+		valid = true
+	}
 	// Only the new payment columns/index may be added, and the target is still
 	// rewritten to the random test prefix. No DROP/RENAME/general ALTER support.
 	if strings.HasPrefix(cmd, "ALTER TABLE FIN_PAYMENT_TRANSACTIONS ADD COLUMN ") || strings.HasPrefix(cmd, "ALTER TABLE FIN_PAYMENT_TRANSACTIONS ADD UNIQUE KEY ") {
@@ -159,7 +167,7 @@ func rewriteSalesScratchSQL(q, prefix string) (string, error) {
 		}
 	}
 	return salesSQLToken.ReplaceAllStringFunc(q, func(token string) string {
-		if allowed[strings.ToLower(token)] || strings.HasPrefix(strings.ToLower(token), "fk_") {
+		if allowed[strings.ToLower(token)] || strings.HasPrefix(strings.ToLower(token), "fk_") || strings.HasPrefix(token, "xl_pool_source_") {
 			return prefix + token
 		}
 		return token
@@ -202,6 +210,21 @@ func (c *salesScratchConn) ExecContext(ctx context.Context, q string, args []dri
 	return nil, driver.ErrSkip
 }
 func (c *salesScratchConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	if q == `SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=?` {
+		args = append([]driver.NamedValue(nil), args...)
+		if len(args) != 1 {
+			return nil, errors.New("scratch trigger lookup denied")
+		}
+		name, ok := args[0].Value.(string)
+		if !ok || !regexp.MustCompile(`^xl_pool_source_[0-6]_(INSERT|UPDATE|DELETE)$`).MatchString(name) {
+			return nil, errors.New("scratch trigger name denied")
+		}
+		q = strings.Replace(q, "?", "'"+c.prefix+name+"'", 1)
+		if e, ok := c.Conn.(driver.QueryerContext); ok {
+			return e.QueryContext(ctx, q, nil)
+		}
+		return nil, errors.New("scratch trigger query requires direct driver")
+	}
 	r, err := rewriteSalesScratchSQL(q, c.prefix)
 	if err != nil {
 		return nil, err
@@ -241,6 +264,13 @@ func salesPrefixedDatabase(t *testing.T, cfg *mysql.Config) *sql.DB {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		// Reverse dependency order, restricted to the exact generated prefix.
+		// New content snapshot children are cleaned first; no business FK setting changes.
+		poolChildren := []string{"live_plan_benefit_scope_products", "live_plan_benefit_scopes", "live_plan_content_task_products", "live_plan_content_tasks", "live_plan_content_pool_records"}
+		for _, table := range poolChildren {
+			if _, err := cleanup.ExecContext(ctx, "DROP TABLE IF EXISTS `"+prefix+table+"`"); err != nil {
+				t.Errorf("scratch child cleanup failed: %v", err)
+			}
+		}
 		for i := len(salesScratchTables) - 1; i >= 0; i-- {
 			name := prefix + salesScratchTables[i]
 			if _, err := cleanup.ExecContext(ctx, "DROP TABLE IF EXISTS `"+name+"`"); err != nil {

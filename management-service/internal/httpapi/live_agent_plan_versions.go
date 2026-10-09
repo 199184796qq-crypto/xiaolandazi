@@ -324,20 +324,31 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
-	reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据，未变化的审核结果直接复用")
-	safety, err := s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
-	input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
-	reportAnchorAnalysis(r.Context(), 55, "正在检查各商品的讲解范围")
-	if err := s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+	if isRealtimeScheme(input.GenerationContext) {
+		reportAnchorAnalysis(r.Context(), 30, "正在固定公共池、商品专属池及对应资料版本")
+		set, err := s.captureContentPoolSnapshot(r.Context(), tenantID, planID, &input)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err = s.captureContentPoolScheme(r.Context(), tenantID, planID, &input, set); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	} else if set, readyErr := s.readyContentPoolSet(r.Context(), tenantID, planID); readyErr == nil {
+		input.GenerationContext["content_pools"] = contentPoolRef(set)
+		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": set.SafetyID, "source_sha256": set.SafetyHash, "notice": "对应公共池与商品专属池已保存。"}
+	} else {
+		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据")
+		safety, err := s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
 	}
 	if isRealtimeScheme(input.GenerationContext) {
 		if err := s.validateRealtimeScheme(r.Context(), tenantID, planID, input.GenerationContext); err != nil {
@@ -347,6 +358,10 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	}
 	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
+	if errors.Is(err, appdb.ErrPoolSourceChanged) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return

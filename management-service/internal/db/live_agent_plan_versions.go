@@ -168,6 +168,9 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&lockedPlan); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
+	if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
 	var nextVersion int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(version_no), 0) + 1

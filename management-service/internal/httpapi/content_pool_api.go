@@ -1,0 +1,239 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"livecompanion/management/internal/contentpools"
+	appdb "livecompanion/management/internal/db"
+)
+
+type contentPoolStatus struct {
+	State      string                       `json:"state"`
+	Changes    []contentpools.Change        `json:"changes"`
+	Job        appdb.PoolJob                `json:"job"`
+	Products   []contentpools.Product       `json:"products"`
+	Benefits   []appdb.BenefitScope         `json:"benefits"`
+	Pools      []map[string]any             `json:"pools"`
+	SetID      int64                        `json:"set_id"`
+	History    []appdb.ContentChangeHistory `json:"history,omitempty"`
+	SavedSetID int64                        `json:"saved_set_id"`
+}
+
+func contentPoolSetID(data map[string]any) int64 {
+	ref := asSupportMap(data["content_pools"])
+	raw, _ := json.Marshal(ref["set_id"])
+	var id int64
+	_ = json.Unmarshal(raw, &id)
+	return id
+}
+func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64, preview bool) (contentPoolStatus, error) {
+	out := contentPoolStatus{State: "needs_update", Changes: []contentpools.Change{}, Products: []contentpools.Product{}, Benefits: []appdb.BenefitScope{}, Pools: []map[string]any{}}
+	source, err := s.captureContentSources(ctx, tenant, plan)
+	if err != nil {
+		return out, err
+	}
+	out.Products = source.Products
+	baseline, err := s.store.ObserveContentSources(ctx, tenant, plan, source)
+	if err != nil {
+		return out, err
+	}
+	version, versionErr := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenant, room)
+	if versionErr == nil && version.PlanID == plan {
+		out.SavedSetID = contentPoolSetID(version.GenerationContext)
+		if out.SavedSetID > 0 {
+			saved, e := s.store.GetContentPoolSet(ctx, tenant, plan, out.SavedSetID)
+			if e != nil {
+				return out, e
+			}
+			baseline = saved.Sources
+		}
+	}
+	out.Changes = contentpools.Changes(baseline, source)
+	set, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
+	if err != nil {
+		return out, err
+	}
+	out.SetID = set.ID
+	if set.ID > 0 && set.SourceSHA == source.SHA() {
+		out.State = "ready"
+		if set.ID == out.SavedSetID {
+			out.State = "synced"
+		}
+	}
+	if out.SavedSetID == 0 {
+		out.Changes = append(out.Changes, contentpools.Change{ID: "legacy-snapshot", Area: "miner", Label: "商品专属池与公共池尚未保存", Before: "现有方案", After: "点击更新受影响内容，核对后保存智能体"})
+	}
+	job, err := s.store.LatestPoolJob(ctx, tenant, plan)
+	if err != nil {
+		return out, err
+	}
+	out.Job = job
+	if preview {
+		out.History, err = s.store.ContentChangeHistory(ctx, tenant, plan)
+		if err != nil {
+			return out, err
+		}
+	}
+	if job.Status == "running" {
+		out.State = "updating"
+	} else if job.Status == "failed" && (set.ID == 0 || set.SourceSHA != source.SHA()) {
+		out.State = "failed"
+	}
+	for _, p := range set.Pools {
+		row := map[string]any{"key": p.Key, "label": p.Label, "owner": p.Owner, "products": p.Products, "task_count": len(p.Tasks), "reused": p.Reused}
+		if preview {
+			row["tasks"] = p.Tasks
+			row["facts"] = p.Facts
+		}
+		out.Pools = append(out.Pools, row)
+	}
+	benefits, err := s.store.ListLiveAgentPlanBenefits(ctx, tenant, plan)
+	if err != nil {
+		return out, err
+	}
+	scopes, err := s.store.ListBenefitScopes(ctx, tenant, plan)
+	if err != nil {
+		return out, err
+	}
+	for _, b := range benefits {
+		scope, ok := scopes[b.ID]
+		if !ok {
+			scope = appdb.BenefitScope{BenefitID: b.ID, All: b.LinkKey == "", Products: []int64{}}
+			for _, p := range source.Products {
+				if scope.All || b.LinkKey == p.Link {
+					scope.Products = append(scope.Products, p.ID)
+				}
+			}
+		}
+		out.Benefits = append(out.Benefits, scope)
+	}
+	return out, nil
+}
+func (s *Server) contentPoolAccess(w http.ResponseWriter, r *http.Request, edit bool) (tenant, plan, room, actorID int64, ok bool) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	plan, ok = liveAgentPlanPathID(w, r)
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	tenant, ok = s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), edit)
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	room, _ = strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
+	if room <= 0 {
+		writeError(w, 400, "请选择直播间")
+		return 0, 0, 0, 0, false
+	}
+	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenant, room) {
+		return 0, 0, 0, 0, false
+	}
+	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenant, plan); err != nil {
+		writeError(w, 404, "当前方案不存在")
+		return 0, 0, 0, 0, false
+	}
+	return tenant, plan, room, actor.UserID, true
+}
+func (s *Server) contentPoolGet(w http.ResponseWriter, r *http.Request) {
+	tenant, plan, room, _, ok := s.contentPoolAccess(w, r, false)
+	if !ok {
+		return
+	}
+	status, err := s.contentPoolStatus(r.Context(), tenant, plan, room, r.URL.Query().Get("preview") == "1")
+	if err != nil {
+		writeError(w, 500, "读取方案待更新内容失败")
+		return
+	}
+	writeJSON(w, 200, status)
+}
+func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
+	tenant, plan, room, actor, ok := s.contentPoolAccess(w, r, true)
+	if !ok {
+		return
+	}
+	source, err := s.captureContentSources(r.Context(), tenant, plan)
+	if err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	if len(source.Products) == 0 {
+		writeError(w, 409, "请先采纳商品链接")
+		return
+	}
+	set, err := s.store.LatestContentPoolSet(r.Context(), tenant, plan)
+	if err != nil {
+		writeError(w, 500, "读取内容版本失败")
+		return
+	}
+	if set.ID > 0 && set.SourceSHA == source.SHA() {
+		status, e := s.contentPoolStatus(r.Context(), tenant, plan, room, false)
+		if e != nil {
+			writeError(w, 500, "读取内容状态失败")
+			return
+		}
+		writeJSON(w, 200, status)
+		return
+	}
+	job, err := s.store.ClaimPoolJob(r.Context(), tenant, plan, actor, source)
+	if errors.Is(err, appdb.ErrPoolJobRunning) {
+		writeError(w, 409, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, 409, "资料变化或任务创建失败，请刷新重试")
+		return
+	}
+	go s.runContentPoolJob(tenant, plan, actor, job, source)
+	writeJSON(w, http.StatusAccepted, map[string]any{"state": "updating", "job": job})
+}
+func (s *Server) contentBenefitScopeSave(w http.ResponseWriter, r *http.Request) {
+	tenant, plan, _, _, ok := s.contentPoolAccess(w, r, true)
+	if !ok {
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("benefitID"), 10, 64)
+	if id <= 0 {
+		writeError(w, 400, "福利编号无效")
+		return
+	}
+	var input struct {
+		All                  bool    `json:"all"`
+		Products             []int64 `json:"products"`
+		ExpectedVersion      int64   `json:"expected_version"`
+		ExpectedScopeVersion int64   `json:"expected_scope_version"`
+	}
+	if readJSON(w, r, &input) != nil {
+		writeError(w, 400, "福利适用范围格式错误")
+		return
+	}
+	if err := s.store.SaveBenefitScope(r.Context(), tenant, plan, id, input.ExpectedVersion, appdb.BenefitScope{BenefitID: id, All: input.All, Products: input.Products, VersionNo: input.ExpectedScopeVersion}); err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, 200, appdb.BenefitScope{BenefitID: id, All: input.All, Products: contentpools.IDs(input.Products), VersionNo: input.ExpectedScopeVersion + 1})
+}
+
+func (s *Server) readyContentPoolSet(ctx context.Context, tenant, plan int64) (contentpools.Set, error) {
+	source, err := s.captureContentSources(ctx, tenant, plan)
+	if err != nil {
+		return contentpools.Set{}, err
+	}
+	set, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
+	if err != nil {
+		return set, err
+	}
+	if set.ID == 0 || set.SourceSHA != source.SHA() {
+		return set, errors.New("资料有待更新内容，请在上方点击“更新受影响内容”，完成后保存智能体")
+	}
+	set.Sources.Revision = source.Revision
+	return set, contentpools.ValidateSet(set)
+}
+func contentPoolRef(set contentpools.Set) map[string]any {
+	return map[string]any{"set_id": set.ID, "source_sha": set.SourceSHA, "source_revision": set.Sources.Revision}
+}

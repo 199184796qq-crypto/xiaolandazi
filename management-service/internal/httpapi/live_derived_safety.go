@@ -269,6 +269,11 @@ func (s *Server) loadDerivedInput(ctx context.Context, tenant, plan int64, p0, p
 	if err != nil && !errors.Is(err, appdb.ErrLiveSellingPointWheelNotFound) {
 		return nil, err
 	}
+	scopes, err := s.store.ListBenefitScopes(ctx, tenant, plan)
+	if err != nil {
+		return nil, err
+	}
+	benefits = applyContentBenefitScopes(benefits, links, scopes)
 	text, origins := renderAnchorStyleWorkbenchFactsWithOrigins(planData, facts, benefits, links)
 	d, err := buildDerivedInput(text, wheel.EffectiveWheelJSON(), p0, p1, p2)
 	if err == nil {

@@ -27,6 +27,7 @@ func ID() string {
 }
 
 type Task struct {
+	ID               string `json:"id,omitempty"`
 	FocusLink        string `json:"focus_link,omitempty"`
 	AllowedLinksJSON string `json:"allowed_links_json,omitempty"`
 	ProductMode      string `json:"product_mode,omitempty"`
@@ -210,7 +211,7 @@ type MainlineDelivery struct {
 }
 
 func New(tasks []Task, cfg Config) (State, error) {
-	if len(tasks) > 500 || cfg.Threshold < 0 || cfg.Threshold > 100 || cfg.MaxRetries < 0 || cfg.MaxRetries > 5 || cfg.MaxChars < 80 || cfg.MaxChars > 1000 || cfg.PointGap < 0 || cfg.PointGap > 100 || cfg.CombinationGap < 0 || cfg.CombinationGap > 500 || cfg.BodySegments < 0 || cfg.BodySegments > 100 || cfg.MaxCycles < 0 || cfg.MaxCycles > 1000 {
+	if len(tasks) > 10000 || cfg.Threshold < 0 || cfg.Threshold > 100 || cfg.MaxRetries < 0 || cfg.MaxRetries > 5 || cfg.MaxChars < 80 || cfg.MaxChars > 1000 || cfg.PointGap < 0 || cfg.PointGap > 100 || cfg.CombinationGap < 0 || cfg.CombinationGap > 500 || cfg.BodySegments < 0 || cfg.BodySegments > 100 || cfg.MaxCycles < 0 || cfg.MaxCycles > 1000 {
 		return State{}, errors.New("大循环参数无效")
 	}
 	seen := map[string]bool{}
@@ -218,7 +219,11 @@ func New(tasks []Task, cfg Config) (State, error) {
 		if strings.TrimSpace(tasks[i].SellingPoint) == "" || strings.TrimSpace(tasks[i].Angle) == "" {
 			return State{}, errors.New("卖点角度不能为空")
 		}
-		tasks[i].Key = tasks[i].SellingPoint + "×" + tasks[i].Angle
+		if tasks[i].ID != "" {
+			tasks[i].Key = tasks[i].ID
+		} else {
+			tasks[i].Key = tasks[i].SellingPoint + "×" + tasks[i].Angle
+		}
 		if seen[tasks[i].Key] {
 			return State{}, errors.New("固定队列存在重复卖点角度")
 		}

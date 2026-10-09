@@ -7,6 +7,9 @@ import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
+import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
+import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
+import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
@@ -367,6 +370,11 @@ const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
 const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
+const contentPools = useContentPools(currentRoomPlanId, activeRoom)
+const poolStatus = contentPools.status
+const poolError = contentPools.error
+const poolSubmitting = contentPools.submitting
+const poolPreview = contentPools.preview
 const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
@@ -3536,7 +3544,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     }
   })
 	fullShowVersionSaving.value = true
-	fullShowNotice.value = '正在检查派生事实包与卖点内容，未审核风险表达将自动转成安全版本，原始资料不会修改。'
+	fullShowNotice.value = isRealtimeVoiceContentMode.value ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
   try {
     const payload = {
       tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
@@ -3579,6 +3587,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     fullShowWorkspaceBaseVersion.value = saved
     fullShowWorkspaceSource.value = 'published'
     fullShowWorkspaceChecks.value = []
+    void contentPools.refresh()
     fullShowWorkspaceInherited.value = false
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
     fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案，下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
@@ -5916,6 +5925,7 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
@@ -6213,9 +6223,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="strategy-benefit-formal-title">
                     <div class="strategy-benefit-formal-title-line">
-                      <input v-if="isEditingFormalBenefit(item, 'link_key') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="64" aria-label="编辑福利链接编号" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
-                      <span v-else>{{ item.link_key || '全直播间' }}</span>
-                      <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改福利链接编号" title="修改链接编号" @mousedown.prevent @click="startFormalBenefitEdit(item, 'link_key')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                      <BenefitScopeEditor v-if="currentRoomPlanId && activeRoom" :plan="currentRoomPlanId" :room="activeRoom.id" :tenant="activeRoom.tenant_id" :benefit="item.id" :entity-version="item.version_no" :scope="poolStatus?.benefits.find(scope => scope.benefit_id === item.id)" :products="poolStatus?.products || []" @saved="contentPools.scopeSaved" />
                     </div>
                     <div class="strategy-benefit-formal-title-line strategy-benefit-formal-product-title">
                       <input v-if="isEditingFormalBenefit(item, 'product_name') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="255" aria-label="编辑福利商品名称" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />

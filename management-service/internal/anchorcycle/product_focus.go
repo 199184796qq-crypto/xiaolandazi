@@ -32,9 +32,10 @@ type FocusProduct struct {
 	Roles   []string `json:"roles,omitempty"`
 }
 type ScopedFact struct {
-	Text   string   `json:"text"`
-	Links  []string `json:"links"`
-	Shared bool     `json:"shared"`
+	Applicable bool     `json:"applicable,omitempty"`
+	Text       string   `json:"text"`
+	Links      []string `json:"links"`
+	Shared     bool     `json:"shared"`
 }
 type ScopedTask struct {
 	Links      []string `json:"links"`
@@ -267,7 +268,14 @@ func (s *State) ProductFacts(t Task) string {
 	lines := []string{}
 	for _, fact := range s.ProductFocus.Facts {
 		allowed := fact.Shared
-		if !allowed && len(fact.Links) > 0 {
+		if !allowed && fact.Applicable {
+			for _, key := range fact.Links {
+				if key == t.FocusLink {
+					allowed = true
+					break
+				}
+			}
+		} else if !allowed && len(fact.Links) > 0 {
 			allowed = true
 			for _, key := range fact.Links {
 				if !containsLink(t.ProductLinks(), key) {

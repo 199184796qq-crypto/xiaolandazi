@@ -133,6 +133,31 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	for _, item := range flattenAnchorStyleWheelTasks(wheel) {
 		tasks = append(tasks, anchorcycle.Task{SellingPoint: item.SellingPoint, Angle: item.Angle, Key: item.Key, TargetAudience: item.TargetAudience, PainPoint: item.PainPoint})
 	}
+	set, err := s.savedContentPoolSet(ctx, tenant, version.PlanID, version.GenerationContext)
+	if err != nil {
+		return nil, err
+	}
+	var preparedFocus *anchorcycle.ProductFocus
+	if set != nil {
+		if set.SafeFacts != safety.SafeFacts || scheme.PoolPolicy == nil {
+			return nil, errors.New("已保存内容池与事实或调度配置不匹配")
+		}
+		tasks, preparedFocus, err = contentPoolRuntime(*set, *scheme.PoolPolicy)
+		if err != nil {
+			return nil, err
+		}
+	} else if scheme.ProductFocus != nil {
+		selected, wheelErr := s.store.GetLiveSellingPointWheel(ctx, tenant, version.PlanID, scheme.WheelID)
+		if wheelErr != nil {
+			return nil, wheelErr
+		}
+		var savedWheel anchorStyleSellingPointWheel
+		if json.Unmarshal([]byte(selected.EffectiveWheelJSON()), &savedWheel) == nil {
+			if savedTasks := savedLegacyQueue(savedWheel, scheme.ProductFocus); len(savedTasks) > 0 {
+				tasks = savedTasks
+			}
+		}
+	}
 	identity := version.VoiceIdentity
 	voiceID, modelName, err := s.resolveFormalVoice(ctx, tenant, fullShowVariantVoiceInput{Source: identity.Source, VoiceID: identity.VoiceID, ProfileID: identity.ProfileID, BindingID: identity.BindingID, Model: identity.Model})
 	if err != nil {
@@ -150,7 +175,14 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	state.StyleID, state.ScorecardID, state.WheelID = scheme.StyleID, scheme.ScorecardID, scheme.WheelID
 	state.StyleMD, state.BaselineJSON, state.Facts = scheme.StyleMD, scheme.BaselineJSON, safety.SafeFacts
 	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, version.PlanID, state.Facts)
-	if scheme.ProductFocus != nil {
+	if preparedFocus != nil {
+		state.ProductFocus = preparedFocus
+		state.ProductFocus.ResetRun()
+		state.SelectProductTask()
+		if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
+			return nil, errors.New(state.Error)
+		}
+	} else if scheme.ProductFocus != nil {
 		state.ProductFocus, err = savedProductFocusForFacts(scheme.ProductFocus, safety.SafeFacts)
 		if err != nil {
 			return nil, err

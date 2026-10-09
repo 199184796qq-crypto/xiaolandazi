@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/config"
 	appdb "livecompanion/management/internal/db"
 )
@@ -43,6 +44,26 @@ func TestSavedPlanWorkspaceReadOnlyProbe(t *testing.T) {
 	if err != nil || len(focus.Facts) != len(scheme.ProductFocus.Facts) || focus.FactsSHA != derivedHash(safety.SafeFacts) {
 		t.Fatal("actual saved facts could not be compatibly bound", err)
 	}
+	selected, err := store.GetLiveSellingPointWheel(ctx, 14, version.PlanID, scheme.WheelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wheel anchorStyleSellingPointWheel
+	if err = json.Unmarshal([]byte(selected.EffectiveWheelJSON()), &wheel); err != nil {
+		t.Fatal(err)
+	}
+	queue := savedLegacyQueue(wheel, focus)
+	state, err := anchorcycle.New(queue, scheme.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ProductFocus = focus
+	focus.ResetRun()
+	state.SelectProductTask()
+	if len(queue) != 40 || state.Status != "ready" || state.Task().FocusLink == "" {
+		t.Fatalf("actual old version first selection failed: tasks=%d status=%s", len(queue), state.Status)
+	}
+	t.Logf("saved original wheel=%d matching_tasks=%d first_mainline_selection=ready no_model_no_audio=true", scheme.WheelID, len(queue))
 	checks := s.liveAgentPlanWorkspaceChecks(ctx, 14, version.PlanID, &version)
 	raw, _ := json.Marshal(checks)
 	t.Logf("tenant=14 room=26 version=%d scoped_facts=%d compatible=true immutable=true checks=%s", version.ID, len(focus.Facts), raw)
