@@ -12,9 +12,9 @@ const server=await createServer({server:{host:'127.0.0.1',port:0},appType:'custo
 const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true})
 try{
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(server.resolvedUrls.local[0]+'__shared')
- const selector=page.getByLabel('主线文字生成与回灌',{exact:true});await selector.waitFor();assert.equal(await page.getByText('回灌辅助模型',{exact:true}).count(),0)
+ const selector=page.getByRole('combobox',{name:/主线文字生成与回灌/});await selector.waitFor();assert.equal(await page.getByText('回灌辅助模型',{exact:true}).count(),0)
  await selector.selectOption('other');await page.getByRole('button',{name:'保存生成配置',exact:true}).click();await page.waitForFunction(()=>window.fixture.saves.length===1)
  const body=await page.evaluate(()=>window.fixture.saves[0]);assert.equal(body.cycle.text_profile_id,'other');assert.equal(body.cycle.feedback_profile_id,'other');assert.equal(body.interaction_profile_id,'flash','interaction remains separately selected')
- await selector.selectOption('');await page.getByLabel('阿里凭据配置',{exact:true}).waitFor();assert.equal(await page.getByText('回灌辅助模型',{exact:true}).count(),0)
+ await selector.selectOption('');await page.getByRole('combobox',{name:/阿里凭据配置/}).waitFor();assert.equal(await page.getByText('回灌辅助模型',{exact:true}).count(),0)
  assert.deepEqual(errors,[]);console.log('PASS: one mainline/feedback selector; switching model sends matching feedback profile; interaction preserved; Agent mode remains available')
 }finally{await browser.close();await server.close()}
