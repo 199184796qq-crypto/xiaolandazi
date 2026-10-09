@@ -80,6 +80,16 @@ func TestInteractionLearningMySQL(t *testing.T) {
 	if err := s.CloseInteractionLearningReview(ctx, 14, 8, id); err != nil {
 		t.Fatal(err)
 	}
+	history, pending, total, historyErr := s.ListInteractionLearningHistory(ctx, 14, 8, 4, "closed", "live_uncertain", "不抽", 30, 0)
+	if historyErr != nil || pending != 0 || total != 1 || len(history) != 1 || history[0].ID != id || history[0].Status != "closed" {
+		t.Fatal("closed history lost", history, pending, total, historyErr)
+	}
+	for _, scope := range [][3]int64{{15, 8, 4}, {14, 9, 4}, {14, 8, 5}} {
+		history, pending, total, err := s.ListInteractionLearningHistory(ctx, scope[0], scope[1], scope[2], "all", "", "", 30, 0)
+		if err != nil || len(history) != 0 || pending != 0 || total != 0 {
+			t.Fatal("history scope leak")
+		}
+	}
 	if err := s.RecordInteractionLearningReview(ctx, o); err != nil {
 		t.Fatal(err)
 	}

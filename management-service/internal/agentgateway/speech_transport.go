@@ -73,7 +73,11 @@ func CompleteSpeechEndpoint(ctx context.Context, p SpeechModel, request Request)
 	if err := ValidateSpeechModel(p); err != nil {
 		return Response{}, err
 	}
-	return completeSpeechEndpoint(ctx, p, request, speechHTTPClient)
+	prepared, err := PrepareTextRequest(p, request)
+	if err != nil {
+		return Response{}, err
+	}
+	return completeSpeechEndpoint(ctx, p, prepared, speechHTTPClient)
 }
 
 func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request, client *http.Client) (Response, error) {

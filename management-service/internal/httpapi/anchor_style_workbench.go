@@ -1192,6 +1192,12 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 			Stage: stage, Model: profile.Model, Messages: actual, MaxTokens: min(maxTokens, profile.MaxTokens),
 			EnableThinking: false, ResponseFormat: format, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond,
 		}
+		var prepareErr error
+		request, prepareErr = agentgateway.PrepareTextRequest(*profile, request)
+		if prepareErr != nil {
+			return agentgateway.Response{}, actual, prepareErr
+		}
+		actual = request.Messages
 		id, err := s.beginModelExchange(ctx, stage, profile.ID, request)
 		if err != nil {
 			return agentgateway.Response{}, actual, err

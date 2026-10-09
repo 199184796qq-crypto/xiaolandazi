@@ -217,6 +217,20 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	if _, err = renderAnchorOpeningHook(&state); err != nil {
 		return nil, err
 	}
+	if err = s.installCycleTextModel(ctx, &state); err != nil {
+		return nil, err
+	}
+	if state.TextModel != nil {
+		token := anchorcycle.ID()
+		if err = s.anchorCycles.Acquire(ctx, tenant, version.PlanID, room, token); err != nil {
+			return nil, err
+		}
+		defer s.anchorCycles.Release(context.WithoutCancel(ctx), tenant, version.PlanID, room, token)
+		if err = s.anchorCycles.Create(ctx, &state, token); err != nil {
+			return nil, err
+		}
+		return &state, nil
+	}
 	profile, err := s.store.ResolveSpeechModel(ctx, config.CredentialID)
 	if err != nil || profile == nil || !profile.Enabled || profile.APIKey == "" {
 		return nil, errors.New("阿里凭据不可用")

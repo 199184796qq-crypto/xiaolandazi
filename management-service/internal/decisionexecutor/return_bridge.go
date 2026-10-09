@@ -90,7 +90,15 @@ func (w *Worker) bridgeModel(ctx context.Context) (agentgateway.SpeechModel, err
 	if !ok {
 		return agentgateway.SpeechModel{}, fmt.Errorf("interaction model registry unavailable")
 	}
-	profile, err := source.ResolveSpeechModel(ctx, "")
+	id := ""
+	if roles, ok := w.store.(agentgateway.TextRoleResolver); ok {
+		var err error
+		id, err = roles.ResolveTextRole(ctx, "speech_generation")
+		if err != nil {
+			return agentgateway.SpeechModel{}, err
+		}
+	}
+	profile, err := source.ResolveSpeechModel(ctx, id)
 	if err != nil || profile == nil || !profile.Enabled {
 		return agentgateway.SpeechModel{}, fmt.Errorf("interaction model unavailable")
 	}

@@ -86,12 +86,38 @@ func (s *Server) interactionLearningList(w http.ResponseWriter, r *http.Request)
 		writeError(w, 404, "当前方案不存在")
 		return
 	}
-	items, count, err := s.store.ListInteractionLearningReviews(r.Context(), tenantID, roomID, planID)
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "pending"
+	}
+	if status != "pending" && status != "closed" && status != "adopted" && status != "all" {
+		writeError(w, 400, "记录筛选状态无效")
+		return
+	}
+	source := r.URL.Query().Get("source")
+	if source != "" && source != "initial_simulation" && source != "live_uncertain" {
+		writeError(w, 400, "记录来源无效")
+		return
+	}
+	query := r.URL.Query().Get("q")
+	if len([]rune(query)) > 200 {
+		writeError(w, 400, "检索词过长")
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	if page > 100000 {
+		writeError(w, 400, "页码无效")
+		return
+	}
+	items, count, total, err := s.store.ListInteractionLearningHistory(r.Context(), tenantID, roomID, planID, status, source, query, 30, (page-1)*30)
 	if err != nil {
 		writeError(w, 500, "读取待确认互动失败")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "pending_count": count})
+	writeJSON(w, 200, map[string]any{"items": items, "pending_count": count, "total": total, "page": page})
 }
 
 func (s *Server) interactionLearningSimulate(w http.ResponseWriter, r *http.Request) {

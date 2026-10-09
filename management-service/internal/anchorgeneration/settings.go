@@ -8,6 +8,7 @@ import (
 
 // Settings stores references to encrypted model profiles, never API keys.
 type Settings struct {
+	InteractionProfileID  string             `json:"interaction_profile_id,omitempty"`
 	MainlineBufferSeconds int                `json:"mainline_buffer_seconds"`
 	SafetyProfileID       string             `json:"safety_profile_id"`
 	StyleProfileID        string             `json:"style_profile_id"`
@@ -24,12 +25,16 @@ func (s Settings) Validate() error {
 	if s.MainlineBufferSeconds < 20 || s.MainlineBufferSeconds > 600 {
 		return errors.New("主线缓存时长须为20～600秒")
 	}
-	for _, id := range []string{s.StyleProfileID, s.ScorecardProfileID, s.SellingPointProfileID, s.Cycle.CredentialID, s.Cycle.FeedbackID} {
+	generatorID := s.Cycle.TextProfileID
+	if generatorID == "" {
+		generatorID = s.Cycle.CredentialID
+	}
+	for _, id := range []string{s.StyleProfileID, s.ScorecardProfileID, s.SellingPointProfileID, generatorID, s.Cycle.FeedbackID} {
 		if strings.TrimSpace(id) == "" || len(id) > 128 {
 			return errors.New("请配置全部模型角色对应的有效模型配置")
 		}
 	}
-	if strings.TrimSpace(s.Cycle.WorkspaceID) == "" || strings.TrimSpace(s.Cycle.AgentID) == "" {
+	if s.Cycle.TextProfileID == "" && (strings.TrimSpace(s.Cycle.WorkspaceID) == "" || strings.TrimSpace(s.Cycle.AgentID) == "") {
 		return errors.New("请配置阿里 Workspace 与母版 Agent")
 	}
 	for _, id := range []string{s.Cycle.WorkspaceID, s.Cycle.AgentID, s.Cycle.EnvironmentID, s.Cycle.Region} {

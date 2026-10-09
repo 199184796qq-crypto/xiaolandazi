@@ -1,0 +1,118 @@
+package agentgateway
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"livecompanion/management/internal/interactionpolicy"
+	"strings"
+)
+
+// Only the transport layer knows the actual model. Business code supplies a task
+// and an operator-owned role/profile reference, never model-specific instructions.
+type TextRoleResolver interface {
+	ResolveTextRole(context.Context, string) (string, error)
+}
+type textProfileRegistry struct {
+	Version  int    `json:"version"`
+	Default  string `json:"default"`
+	Profiles []struct {
+		ID       string   `json:"id"`
+		Prefixes []string `json:"model_prefixes"`
+		Prompt   string   `json:"prompt"`
+	} `json:"profiles"`
+}
+
+func textGenerationStage(stage string) bool {
+	switch stage {
+	case "mainline_text", "speech_generation", "speech_review":
+		return true
+	}
+	return false
+}
+func canonicalTextModel(model string) string {
+	return strings.NewReplacer("-", "", "_", "", " ", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(model)))
+}
+func TextPromptContract(model string) (string, string, string, error) {
+	raw, err := interactionpolicy.Read("text-model-profiles.json")
+	if err != nil {
+		return "", "", "", err
+	}
+	var registry textProfileRegistry
+	if err = json.Unmarshal(raw, &registry); err != nil || registry.Version != 1 {
+		return "", "", "", fmt.Errorf("文字模型配置格式无效")
+	}
+	selected := registry.Default
+	name := canonicalTextModel(model)
+	best := 0
+	for _, p := range registry.Profiles {
+		for _, prefix := range p.Prefixes {
+			key := canonicalTextModel(prefix)
+			if len(key) > best && strings.HasPrefix(name, key) {
+				selected = p.ID
+				best = len(key)
+			}
+		}
+	}
+	path := ""
+	for _, p := range registry.Profiles {
+		if p.ID == selected {
+			path = p.Prompt
+		}
+	}
+	if path == "" || strings.Contains(path, "..") || strings.ContainsAny(path, "/\\") {
+		return "", "", "", fmt.Errorf("文字模型提示词配置无效")
+	}
+	common, err := interactionpolicy.Read("text-generation-foundation.md")
+	if err != nil {
+		return "", "", "", err
+	}
+	adaptation, err := interactionpolicy.Read(path)
+	if err != nil {
+		return "", "", "", err
+	}
+	body := string(common) + "\n\n" + string(adaptation)
+	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body))), body, nil
+}
+func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
+	if !textGenerationStage(r.Stage) || r.TextPromptSHA != "" {
+		return r, nil
+	}
+	id, hash, body, err := TextPromptContract(p.Model)
+	if err != nil {
+		return r, err
+	}
+	r.Messages = append([]Message{{Role: "system", Content: body}}, r.Messages...)
+	r.TextPromptID, r.TextPromptSHA = id, hash
+	r.EnableThinking = false
+	return r, nil
+}
+
+// Include model, operator prompt and current mother revision in disposable text
+// cache keys, so switching providers cannot continue serving an old model's prose.
+func (g *Gateway) TextGenerationIdentity(ctx context.Context) (string, error) {
+	if g.speechModels == nil {
+		return g.defaultProvider + ":" + g.defaultModel, nil
+	}
+	id := ""
+	if roles, ok := g.speechModels.(TextRoleResolver); ok {
+		var err error
+		id, err = roles.ResolveTextRole(ctx, "speech_generation")
+		if err != nil {
+			return "", err
+		}
+	}
+	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if p == nil {
+		return g.defaultProvider + ":" + g.defaultModel, nil
+	}
+	_, hash, _, err := TextPromptContract(p.Model)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(p.ID+":"+p.Model+":"+p.BaseURL+":"+p.SystemPrompt+":"+hash))), nil
+}

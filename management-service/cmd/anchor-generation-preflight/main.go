@@ -48,7 +48,7 @@ func main() {
 	if err = cfg.Validate(); err != nil {
 		problem = err.Error()
 	}
-	out, _ := json.Marshal(map[string]any{"ready": err == nil, "error": problem, "roles_configured": map[string]bool{"style": cfg.StyleProfileID != "", "scorecard": cfg.ScorecardProfileID != "", "wheel": cfg.SellingPointProfileID != "", "ali_credential": cfg.Cycle.CredentialID != "", "feedback": cfg.Cycle.FeedbackID != ""}, "workspace_configured": cfg.Cycle.WorkspaceID != "", "agent_configured": cfg.Cycle.AgentID != "", "mainline_buffer_seconds": cfg.MainlineBufferSeconds})
+	out, _ := json.Marshal(map[string]any{"ready": err == nil, "error": problem, "roles_configured": map[string]bool{"style": cfg.StyleProfileID != "", "scorecard": cfg.ScorecardProfileID != "", "wheel": cfg.SellingPointProfileID != "", "mainline_text": cfg.Cycle.TextProfileID != "", "interaction_text": cfg.InteractionProfileID != "", "ali_credential": cfg.Cycle.CredentialID != "", "feedback": cfg.Cycle.FeedbackID != ""}, "workspace_configured": cfg.Cycle.WorkspaceID != "", "agent_configured": cfg.Cycle.AgentID != "", "mainline_buffer_seconds": cfg.MainlineBufferSeconds})
 	fmt.Println(string(out))
 	if err != nil {
 		os.Exit(2)

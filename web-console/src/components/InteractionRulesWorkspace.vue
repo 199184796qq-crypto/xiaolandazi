@@ -8,6 +8,7 @@ const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
   { key: 'adopted', label: '互动采纳' },
   { key: 'live', label: '直播互动' },
+  { key: 'history', label: '处理历史' },
 ] as const
 type Tab = typeof tabs[number]['key']
 const activeTab = ref<Tab>('adopted')
@@ -60,7 +61,8 @@ function onAdopted() {
         v-show="activeTab !== 'adopted'"
         :room-id="roomId"
         :plan-id="planId"
-        :source-type="activeTab === 'simulation' ? 'initial_simulation' : 'live_uncertain'"
+        :source-type="activeTab === 'history' ? undefined : activeTab === 'simulation' ? 'initial_simulation' : 'live_uncertain'"
+        :history="activeTab === 'history'"
         :show-simulation="activeTab === 'simulation'"
         @adopted="onAdopted"
         @open-facts="emit('openFacts')"
@@ -79,5 +81,5 @@ function onAdopted() {
 .rule-tabs button { padding: 11px 24px; border: 0; border-radius: 11px; background: transparent; color: #71819d; font: inherit; font-weight: 700; cursor: pointer; }
 .rule-tabs button.active { color: #fff; background: #6260df; box-shadow: 0 4px 12px #6260df26; }
 .rule-tabs button:focus-visible { outline: 2px solid #4e5bd6; outline-offset: 3px; }
-@media (max-width: 600px) { .rules-head { flex-wrap: wrap; } .rule-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; box-sizing: border-box; gap: 4px; } .rule-tabs button { padding: 11px 6px; } }
+@media (max-width: 600px) { .rules-head { flex-wrap: wrap; } .rule-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; box-sizing: border-box; gap: 4px; } .rule-tabs button { padding: 11px 6px; } }
 </style>

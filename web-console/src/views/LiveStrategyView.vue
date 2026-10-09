@@ -11,6 +11,7 @@ import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
+import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
@@ -5768,6 +5769,8 @@ watch(
   },
 )
 
+const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentRoomPlanId)
+
 onMounted(async () => {
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
@@ -5977,7 +5980,7 @@ onBeforeUnmount(() => {
             </button>
             <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" @click="activeMode = 'memory'">
               <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
-              <span class="strategy-workflow-label">交互策略</span>
+              <span class="strategy-workflow-label">交互策略<span v-if="interactionPendingCount > 0" class="interaction-pending-badge" :aria-label="`${interactionPendingCount}条互动待纠正`">{{ interactionPendingCount > 99 ? '99+' : interactionPendingCount }}</span></span>
             </button>
             <button class="strategy-workflow-step workflow-step-miner" :class="{ active: activeMode === 'miner' }" :aria-label="wheelRiskUnresolvedCount ? `话术挖掘机，${wheelRiskUnresolvedCount}项待处理` : '话术挖掘机'" :title="wheelRiskUnresolvedCount ? '点击直接定位待处理内容' : undefined" @click="openWheelRiskLocation">
               <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 18 8-8M10 6l8 8M13 3l8 8-3 3-8-8z"/><path d="M3 21h6"/></svg></span>
@@ -8694,6 +8697,7 @@ onBeforeUnmount(() => {
   box-shadow:0 6px 16px rgba(43,58,104,.045);
   transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,background .18s ease,color .18s ease;
 }
+.interaction-pending-badge{display:inline-flex;align-items:center;justify-content:center;min-width:21px;height:21px;margin-left:5px;padding:0 4px;box-sizing:border-box;border-radius:12px;background:#e74d65;color:#fff;font-size:12px;font-weight:800;vertical-align:top}
 .strategy-workflow-label {
   display:block;
   min-width:0;

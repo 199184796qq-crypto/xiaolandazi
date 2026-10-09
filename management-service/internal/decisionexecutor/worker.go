@@ -2655,43 +2655,25 @@ func (w *Worker) finalizeSpeechText(
 	riskTerms = uniqueNonEmptyStrings(riskTerms)
 	reasons = uniqueNonEmptyStrings(reasons)
 	hasAgentMemories := hasAgentMemoryPrompt(contextText)
-	semanticDuplicate := recentSpeechSemanticRisk{}
-	if duplicateRisk, semanticErr := w.recentSpeechSemanticRisk(ctx, session, text); semanticErr != nil {
-		log.Printf("decision recent speech semantic check degraded tenant=%d room=%d: %v", session.TenantID, session.RoomID, semanticErr)
-	} else if duplicateRisk.Matched {
-		semanticDuplicate = duplicateRisk
-		level := "相似"
-		if duplicateRisk.Strong {
-			level = "高度相似"
-		}
-		reasons = append(reasons, fmt.Sprintf("近期口播语义%s（%.3f），避免重复原意，改用新的信息角度或更短承接", level, duplicateRisk.Score))
-		if duplicateRisk.Text != "" {
-			contextText += "\n\n【近期已经播过的相似内容】\n" + trimContextRunes(duplicateRisk.Text, 260)
-		}
-		reasons = uniqueNonEmptyStrings(reasons)
-	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
 	forceOperatorReview := manualOrigin == "agent_input" || manualOrigin == "agent_input_preview"
 	if forceOperatorReview {
 		reasons = append(reasons, "操作者上行文字必须经过播出前审核")
 		reasons = uniqueNonEmptyStrings(reasons)
 	}
-	if len(reasons) == 0 && !hasAgentMemories && !forceOperatorReview {
+	if len(reasons) == 0 && !forceOperatorReview {
 		return text, nil
 	}
 
 	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	reviewSystemPrompt := w.store.AgentPromptValue(ctx, "live.final_review.system", "只返回修正后的可直接播出正文，删除无依据事实和绝对化承诺。")
+	reviewSystemPrompt := w.store.AgentPromptValue(ctx, "live.final_review.system", "只处理明确违规或内部指导泄漏，只返回修正后的口播；不裁决业务事实或正常价格表达。")
 	if strings.Contains(contextText, "# 事实、目的与角度内容策略 v1") && !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		if guidance, e := interactionpolicy.Read("fact-purpose-angle-review.md"); e == nil {
 			reviewSystemPrompt += "\n\n" + string(guidance)
 		} else {
 			log.Printf("content strategy expression review fallback tenant=%d room=%d: %v", session.TenantID, session.RoomID, e)
 		}
-	}
-	if semanticDuplicate.Matched {
-		reviewSystemPrompt += "\n\n【近期口播语义去重】\n当前待播话术与最近10分钟已经播过的内容语义相似。不要简单换同义词继续重复；优先删去已经表达过的信息，或换成新的信息角度、补充信息、自然承接。若当前问题必须再次回答，只保留必要信息并明显缩短。"
 	}
 	if strings.TrimSpace(item.PreviewInstruction) != "" {
 		reviewSystemPrompt += "\n\n【候选修正预览测试】\n本次正在测试尚未采用的候选修正。候选修正与同一用户层记忆直接冲突时，以候选修正为准；规则层、行业层和其他不冲突的已采用记忆继续执行。只评估本次回答，不得声称候选已经采用、发布或保存。"
@@ -2704,6 +2686,7 @@ func (w *Worker) finalizeSpeechText(
 	}
 	reviewSystemPrompt += "\n\n" + string(authority)
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
+		Stage: "speech_review",
 		Messages: []agentgateway.Message{
 			{
 				Role:    "system",

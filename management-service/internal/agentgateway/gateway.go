@@ -28,6 +28,8 @@ type Message struct {
 }
 
 type Request struct {
+	TextPromptID   string `json:"text_prompt_id,omitempty"`
+	TextPromptSHA  string `json:"text_prompt_sha256,omitempty"`
 	Stage          string
 	Provider       string
 	Model          string
@@ -172,7 +174,11 @@ func (g *Gateway) Complete(ctx context.Context, request Request) (Response, erro
 	if provider == nil {
 		return Response{}, errors.New("unknown agent provider: " + providerName)
 	}
-	return provider.Complete(ctx, request)
+	prepared, err := PrepareTextRequest(SpeechModel{Model: request.Model}, request)
+	if err != nil {
+		return Response{}, err
+	}
+	return provider.Complete(ctx, prepared)
 }
 
 func (g *Gateway) ListModels(ctx context.Context, providerName string) ([]ModelDescriptor, error) {

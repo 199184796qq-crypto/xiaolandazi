@@ -33,9 +33,17 @@ func (s *Server) systemAnchorGenerationSettingsPut(w http.ResponseWriter, r *htt
 		writeError(w, 400, err.Error())
 		return
 	}
-	ids := []string{config.StyleProfileID, config.ScorecardProfileID, config.SellingPointProfileID, config.Cycle.CredentialID, config.Cycle.FeedbackID}
+	ids := []string{config.StyleProfileID, config.ScorecardProfileID, config.SellingPointProfileID, config.Cycle.FeedbackID}
+	if config.Cycle.TextProfileID == "" {
+		ids = append(ids, config.Cycle.CredentialID)
+	}
 	if config.SafetyProfileID != "" {
 		ids = append(ids, config.SafetyProfileID)
+	}
+	for _, id := range []string{config.Cycle.TextProfileID, config.InteractionProfileID} {
+		if id != "" {
+			ids = append(ids, id)
+		}
 	}
 	for _, id := range ids {
 		profile, err := s.store.ResolveSpeechModel(r.Context(), id)

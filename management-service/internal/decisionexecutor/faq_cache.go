@@ -128,6 +128,17 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 	if err != nil {
 		return nil
 	}
+	modelIdentity := ""
+	if identity, ok := w.agent.(interface {
+		TextGenerationIdentity(context.Context) (string, error)
+	}); ok {
+		var err error
+		modelIdentity, err = identity.TextGenerationIdentity(ctx)
+		if err != nil {
+			return nil
+		}
+	}
+	systemPrompt += "\n文字生成配置指纹：" + modelIdentity
 	key := faqDigest([]any{session.TenantID, session.RoomID, session.ID, session.ExecutionRealm,
 		record.Policy, record.Revision, record.SystemRevision, industry, l1, l2, l3,
 		systemPrompt, prompt, w.store.AgentPromptValue(ctx, "policy.runtime.execution", ""),

@@ -80,7 +80,7 @@ func (s *Server) endAnchorCyclesForRoom(ctx context.Context, tenant, room int64)
 }
 
 func (s *Server) interruptAnchorCycle(ctx context.Context, state *anchorcycle.State) error {
-	if state == nil || (!state.Busy && !state.Uncertain) {
+	if state == nil || state.Config.TextProfileID != "" || (!state.Busy && !state.Uncertain) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -225,7 +225,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		input.Config.MaxCycles = 0
 		input.TaskLimit = 0
 	}
-	if strings.TrimSpace(input.WorkspaceID) == "" || strings.TrimSpace(input.AgentID) == "" || strings.TrimSpace(input.CredentialID) == "" || strings.TrimSpace(input.FeedbackID) == "" {
+	if input.TextProfileID == "" && (strings.TrimSpace(input.WorkspaceID) == "" || strings.TrimSpace(input.AgentID) == "" || strings.TrimSpace(input.CredentialID) == "" || strings.TrimSpace(input.FeedbackID) == "") {
 		writeError(w, 400, "必须明确选择阿里母版、凭据和回灌模型，不会自动换模型")
 		return
 	}
@@ -302,7 +302,11 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		}
 		voice.VoiceID, voice.Model = voiceID, modelName
 	}
-	profile, err := s.store.ResolveSpeechModel(r.Context(), input.CredentialID)
+	generatorID := input.CredentialID
+	if input.TextProfileID != "" {
+		generatorID = input.TextProfileID
+	}
+	profile, err := s.store.ResolveSpeechModel(r.Context(), generatorID)
 	if err != nil || profile == nil || !profile.Enabled || profile.APIKey == "" {
 		writeError(w, 400, "请选择可用的阿里API Key配置")
 		return
@@ -312,7 +316,10 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "请选择可用的回灌模型")
 		return
 	}
-	client, err := agentstudio.New(input.WorkspaceID, input.Region, profile.APIKey, agentStudioTimeout(profile.TimeoutMS))
+	var client *agentstudio.Client
+	if input.TextProfileID == "" {
+		client, err = agentstudio.New(input.WorkspaceID, input.Region, profile.APIKey, agentStudioTimeout(profile.TimeoutMS))
+	}
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
@@ -334,7 +341,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 	ctx, done := s.cycleContext(r.Context(), token, tenant, room, state.RunID)
 	defer done()
 	env := input.EnvironmentID
-	if env == "" {
+	if input.TextProfileID == "" && env == "" {
 		environments, e := client.ListEnvironments(ctx)
 		if e != nil || len(environments) == 0 {
 			writeError(w, 400, "没有可用的阿里环境")
@@ -400,7 +407,20 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	session, err := client.CreateSession(ctx, input.AgentID, env, "大循环口播测试", map[string]string{"source": "anchor-cycle-workbench", "plan_id": strconv.FormatInt(plan, 10), "tenant_id": strconv.FormatInt(tenant, 10), "room_id": strconv.FormatInt(room, 10), "run_id": state.RunID})
+	if err = s.installCycleTextModel(ctx, &state); err != nil {
+		writeError(w, 503, err.Error())
+		return
+	}
+	var session struct {
+		ID string `json:"id"`
+	}
+	if state.TextModel == nil {
+		created, e := client.CreateSession(ctx, input.AgentID, env, "大循环口播测试", map[string]string{"source": "anchor-cycle-workbench", "plan_id": strconv.FormatInt(plan, 10), "tenant_id": strconv.FormatInt(tenant, 10), "room_id": strconv.FormatInt(room, 10), "run_id": state.RunID})
+		err = e
+		session.ID = created.ID
+	} else {
+		session.ID = state.SessionID
+	}
 	if err != nil {
 		writeError(w, 502, "建立大循环会话失败："+err.Error())
 		return
@@ -426,6 +446,13 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
+	if state.Config.TextProfileID != "" {
+		messages, err := renderCycleTextMessages(state)
+		if err != nil {
+			return "", err
+		}
+		return traceAnchorStyleWorkbenchMessages(messages).System + "\n\n" + traceAnchorStyleWorkbenchMessages(messages).User, nil
+	}
 	if state.P0PendingRepair != nil {
 		return renderP0Repair(state)
 	}
@@ -703,6 +730,43 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if cached != nil {
 		text = cached.Text
 		prompt = "" // No model request was sent for a cache hit.
+	} else if state.Config.TextProfileID != "" {
+		state.Busy, state.Status, state.Error = true, "running", ""
+		if err = s.anchorCycles.Save(ctx, state); err != nil {
+			return nil, err
+		}
+		started := time.Now()
+		result, actual, callErr := s.completeCycleText(ctx, state)
+		state.Busy = false
+		prompt = traceAnchorStyleWorkbenchMessages(actual).System + "\n\n" + traceAnchorStyleWorkbenchMessages(actual).User
+		if callErr != nil {
+			state.SkipGeneration("text_generation", callErr.Error())
+			s.queueGenerationSkip(state, "text_generation", callErr.Error())
+			persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
+			defer cancel()
+			if err = s.anchorCycles.Save(persist, state); err != nil {
+				return nil, err
+			}
+			return state, nil
+		}
+		text, rawText = strings.TrimSpace(result.Text), result.Text
+		if text == "" || textControlLeak(text) {
+			state.SkipGeneration("text_output_protocol", "正文为空或包含明确的内部控制字段")
+			s.queueGenerationSkip(state, "text_output_protocol", "正文为空或包含明确的内部控制字段")
+			if err = s.anchorCycles.Save(ctx, state); err != nil {
+				return nil, err
+			}
+			return state, nil
+		}
+		generationMS = time.Since(started).Milliseconds()
+		state.BootstrapSent = true
+		if patch != nil {
+			text, err = patch.Apply(result.Text, state.Config.MaxChars)
+			if err != nil {
+				p0PatchError = err.Error()
+				text = patch.BaseText
+			}
+		}
 	} else {
 		profile, err := s.store.ResolveSpeechModel(ctx, state.Config.CredentialID)
 		if err != nil || profile == nil || !profile.Enabled || profile.APIKey == "" {

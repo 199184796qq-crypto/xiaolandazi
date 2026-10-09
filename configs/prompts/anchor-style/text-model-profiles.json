@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "default": "generic",
+  "profiles": [
+    {
+      "id": "qwen-plus",
+      "model_prefixes": [
+        "qwen3.7-plus",
+        "qwen3.7plus"
+      ],
+      "prompt": "text-model-qwen-plus.md"
+    },
+    {
+      "id": "qwen-flash",
+      "model_prefixes": [
+        "qwen3.7-flash",
+        "qwen3.8-flash"
+      ],
+      "prompt": "text-model-qwen-flash.md"
+    },
+    {
+      "id": "deepseek",
+      "model_prefixes": [
+        "deepseek"
+      ],
+      "prompt": "text-model-deepseek.md"
+    },
+    {
+      "id": "generic",
+      "model_prefixes": [],
+      "prompt": "text-model-generic.md"
+    }
+  ]
+}

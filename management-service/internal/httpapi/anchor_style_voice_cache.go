@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/anchorvoicecache"
@@ -26,6 +27,18 @@ func (s *Server) SetAnchorVoiceCache(cache anchorvoicecache.Repository) { s.anch
 // angle alone must never reuse another room's or an outdated plan's recording.
 func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment) string {
 	contract := "oss-cache-bundle-v1"
+	if state.TextModel != nil {
+		_, hash, _, err := agentgateway.TextPromptContract(state.TextModel.Model)
+		if err != nil {
+			hash = "mother-unavailable"
+		}
+		if taskMother, err := interactionpolicy.Read("mainline-text-task.md"); err == nil {
+			hash += ":" + contentstrategy.SHA(string(taskMother))
+		} else {
+			hash += ":task-mother-unavailable"
+		}
+		contract += ":text-v1:" + state.TextModel.ID + ":" + state.TextModel.Model + ":" + hash + ":" + anchorvoicecache.Digest(state.TextModel)
+	}
 	if state.PreviewLimitMS > 0 {
 		contract += ":limited-preview"
 	}

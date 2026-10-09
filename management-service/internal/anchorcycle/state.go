@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/contentstrategy"
@@ -39,6 +40,7 @@ type Task struct {
 	PainPoint        string `json:"pain_point,omitempty"`
 }
 type Config struct {
+	TextProfileID     string       `json:"text_profile_id,omitempty"`
 	WorkspaceID       string       `json:"workspace_id"`
 	Region            string       `json:"region"`
 	AgentID           string       `json:"agent_id"`
@@ -133,6 +135,8 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	TextModel                 *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
+	TextPromptSHA             string                         `json:"text_prompt_sha256,omitempty"`
 	GenerationSkips           []GenerationSkip               `json:"generation_skips,omitempty"`
 	ContentStrategy           *contentstrategy.Snapshot      `json:"content_strategy,omitempty"`
 	ProductFocus              *ProductFocus                  `json:"product_focus,omitempty"`

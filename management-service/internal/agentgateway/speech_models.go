@@ -152,8 +152,17 @@ func (g *Gateway) completeSpeechModel(ctx context.Context, request Request) (Res
 	id := ""
 	if strings.HasPrefix(request.Provider, "anchor:") {
 		id = strings.TrimPrefix(request.Provider, "anchor:")
-	} else if request.Stage != "speech_generation" || request.Provider != "" || request.Model != "" {
+	} else if !textGenerationStage(request.Stage) || request.Provider != "" || request.Model != "" {
 		return Response{}, false, nil
+	}
+	if id == "" && textGenerationStage(request.Stage) {
+		if roles, ok := g.speechModels.(TextRoleResolver); ok {
+			var err error
+			id, err = roles.ResolveTextRole(ctx, request.Stage)
+			if err != nil {
+				return Response{}, true, err
+			}
+		}
 	}
 	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
 	if err != nil {
