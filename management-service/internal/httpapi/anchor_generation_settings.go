@@ -29,6 +29,7 @@ func (s *Server) systemAnchorGenerationSettingsPut(w http.ResponseWriter, r *htt
 		writeError(w, 400, "生成配置格式错误")
 		return
 	}
+	config.NormalizeSharedFeedback()
 	if err := config.Validate(); err != nil {
 		writeError(w, 400, err.Error())
 		return

@@ -21,10 +21,13 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 	}
 	if settings.Cycle.TextProfileID != "" {
 		state.Config.TextProfileID = settings.Cycle.TextProfileID
+		state.Config.FeedbackID = settings.Cycle.FeedbackID
 	}
 	if state.Config.TextProfileID == "" {
+		state.Config.FeedbackID = settings.Cycle.FeedbackID
 		return nil
 	} // Explicit legacy Agent configuration.
+	state.Config.FeedbackID = state.Config.TextProfileID
 	profile, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
 	if err != nil || profile == nil || !profile.Enabled || profile.APIKey == "" {
 		return fmt.Errorf("主线文字模型不可用")

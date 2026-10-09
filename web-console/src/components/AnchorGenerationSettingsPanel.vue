@@ -19,6 +19,7 @@ async function load() {
 }
 async function save() {
   busy.value = true; error.value = ''; notice.value = ''
+  if (config.value?.cycle.text_profile_id) config.value.cycle.feedback_profile_id = config.value.cycle.text_profile_id
   try { config.value = await request<Settings>('/api/v1/system/anchor-generation-settings', { method: 'PUT', body: JSON.stringify(config.value) }); notice.value = '已保存，新调教/初始化/新场采用此配置；正在运行的场次保持原配置快照。' }
   catch (e) { error.value = e instanceof Error ? e.message : '保存失败' }
   finally { busy.value = false }
@@ -28,13 +29,12 @@ onMounted(load)
 <template>
   <section id="anchor-generation" class="generation-settings">
     <h2>主播文字生成模型</h2>
-    <p>各角色使用后台所选模型，自动加载对应提示词配置并关闭思考。主线由程序维护近期上下文，切换模型不改变声音设置。</p>
+    <p>各角色使用后台所选模型，自动加载对应提示词配置并关闭思考。主线与回灌共用所选文字模型，回灌先生成后续表达指导，再随下一段请求带入。主线由程序维护近期上下文，切换模型不改变声音设置。</p>
     <form v-if="config" @submit.prevent="save">
       <div class="grid">
         <label v-for="[key,label] in roles" :key="key">{{ label }}<select v-model="config[key]" :disabled="busy"><option value="">{{ key === 'safety_profile_id' ? '复用卖点挖掘模型' : key === 'interaction_profile_id' ? '使用默认文字模型' : '请选择' }}</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option></select></label>
-        <label>主线文字生成<select v-model="config.cycle.text_profile_id"><option value="">使用原 Agent 会话</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option></select></label>
+        <label>主线文字生成与回灌<select v-model="config.cycle.text_profile_id"><option value="">使用原 Agent 会话</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option></select></label>
         <label v-if="!config.cycle.text_profile_id">阿里凭据配置<select v-model="config.cycle.credential_profile_id"><option value="">请选择</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}</option></select></label>
-        <label>回灌辅助模型<select v-model="config.cycle.feedback_profile_id"><option value="">请选择</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option></select></label>
         <label v-if="!config.cycle.text_profile_id">Workspace ID<input v-model="config.cycle.workspace_id"></label>
         <label v-if="!config.cycle.text_profile_id">地域<input v-model="config.cycle.region" placeholder="cn-beijing"></label>
         <label v-if="!config.cycle.text_profile_id">母版 Agent ID<input v-model="config.cycle.agent_id"></label>

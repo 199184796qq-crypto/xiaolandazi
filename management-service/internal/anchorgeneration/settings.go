@@ -21,7 +21,22 @@ func Default() Settings {
 	return Settings{MainlineBufferSeconds: 120, Cycle: anchorcycle.Config{Region: "cn-beijing", Threshold: 40, MaxRetries: 3, MaxChars: 300, PointGap: 2, CombinationGap: 8, Rolling: true, RepairPunctuation: true, BodyMin: 2, BodyMax: 6}}
 }
 
+// The feedback transport follows the mainline text connection. Legacy Agent
+// runs use the interaction connection, then their existing credential connection.
+// Keep FeedbackID in the wire format for old clients and saved snapshots only.
+func (s *Settings) NormalizeSharedFeedback() {
+	switch {
+	case strings.TrimSpace(s.Cycle.TextProfileID) != "":
+		s.Cycle.FeedbackID = s.Cycle.TextProfileID
+	case strings.TrimSpace(s.InteractionProfileID) != "":
+		s.Cycle.FeedbackID = s.InteractionProfileID
+	case strings.TrimSpace(s.Cycle.CredentialID) != "":
+		s.Cycle.FeedbackID = s.Cycle.CredentialID
+	}
+}
+
 func (s Settings) Validate() error {
+	s.NormalizeSharedFeedback()
 	if s.MainlineBufferSeconds < 20 || s.MainlineBufferSeconds > 600 {
 		return errors.New("主线缓存时长须为20～600秒")
 	}

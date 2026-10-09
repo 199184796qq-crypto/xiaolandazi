@@ -23,6 +23,7 @@ func (s *Store) AnchorGenerationSettings(ctx context.Context) (anchorgeneration.
 	if err = json.Unmarshal([]byte(raw), &config); err != nil {
 		return config, err
 	}
+	config.NormalizeSharedFeedback()
 	return config, nil
 }
 

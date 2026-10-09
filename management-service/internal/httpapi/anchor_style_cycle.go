@@ -230,6 +230,9 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		input.Config.MaxCycles = 0
 		input.TaskLimit = 0
 	}
+	if input.TextProfileID != "" {
+		input.FeedbackID = input.TextProfileID
+	}
 	if input.TextProfileID == "" && (strings.TrimSpace(input.WorkspaceID) == "" || strings.TrimSpace(input.AgentID) == "" || strings.TrimSpace(input.CredentialID) == "" || strings.TrimSpace(input.FeedbackID) == "") {
 		writeError(w, 400, "必须明确选择阿里母版、凭据和回灌模型，不会自动换模型")
 		return
