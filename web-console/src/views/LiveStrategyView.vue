@@ -10,7 +10,7 @@ import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
-import InteractionLearningPanel from '../components/InteractionLearningPanel.vue'
+import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
@@ -5947,7 +5947,6 @@ onBeforeUnmount(() => {
         </section>
 
         <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @open-save="openContentPoolSave" />
-        <InteractionLearningPanel :room-id="activeRoomId" :plan-id="currentRoomPlanId" :compact="activeMode !== 'memory'" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
@@ -6511,13 +6510,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <div class="strategy-v2-section-head interaction-rules-head">
-            <div>
-              <h3>已采用的互动规则</h3>
-              <p>这里保留互动规范，例如“人多时不要逐个点名”“售后问题必须优先回答”。它不能新增商品事实，也不能覆盖事实依据。</p>
-            </div>
-            <button class="strategy-version-button" type="button" @click="refreshMemories">刷新规则</button>
-          </div>
+          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
           <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>
@@ -6575,6 +6568,7 @@ onBeforeUnmount(() => {
               </div>
             </article>
           </div>
+          </InteractionRulesWorkspace>
         </section>
 
         <section v-else-if="activeMode === 'addressing' && !props.supportSession" class="strategy-v2-workspace addressing-workspace">

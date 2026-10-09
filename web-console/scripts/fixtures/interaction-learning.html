@@ -1,9 +1,12 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>互动纠正组件测试</title><style>body{margin:30px auto;padding:0 18px;max-width:1050px;font-family:system-ui;background:#eef2fc;color:#263451}h1{font-size:26px}.fixture{padding:12px;background:#fff5d7;border-radius:12px}</style></head><body><h1>互动纠正组件测试</h1><p class="fixture">此页为模拟数据，不连接生产后台。</p><div id="app"></div><script type="module">
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>互动策略</title><style>body{margin:30px auto;padding:0 18px;max-width:1050px;font-family:system-ui;background:#eef2fc;color:#263451}h1{font-size:26px}.fixture{padding:12px;background:#fff5d7;border-radius:12px}.rule{margin-top:12px;padding:22px;background:white;border:1px solid #dde5f4;border-radius:16px}.rule p{line-height:1.7;color:#6c7d99}</style></head><body><h1>互动策略</h1><p class="fixture">此页为模拟数据，不连接生产后台。</p><div id="app"></div><script type="module">
 import {createApp,h,ref} from 'vue'
-import Panel from '../../src/components/InteractionLearningPanel.vue'
+import Workspace from '../../src/components/InteractionRulesWorkspace.vue'
 const base=(id,question,kind,extra)=>({id,tenant_id:14,room_id:8,question,original_reply:'',source_type:'initial_simulation',status:'editing',created_by_user_id:1,created_at:'2026-10-09',updated_at:'2026-10-09',review:{plan_id:4,kind,meaning:'食品包装选择',context:'杨鸭子食品包装',reason:'短问法需要解释',suggested_rule:'包装场景的抽指抽真空；不抽可以吗是询问非真空包装能否选择；抽奖场景不适用。',needed_facts:[],occurrences:1,...extra}})
-let rows=[base(1,'不抽可以吗？','semantic',{}),base(2,'江油好久到？','missing_fact',{meaning:'江油到货时效',context:'介绍京东物流',reason:'未提供江油运输时效',suggested_rule:'',needed_facts:['江油运输时效']})]
+let rows=[base(1,'不抽可以吗？','semantic',{}),base(2,'佛山好久到？','missing_fact',{meaning:'佛山到货时效',context:'介绍京东物流',reason:'未提供佛山运输时效',suggested_rule:'',needed_facts:['佛山运输时效']})]
+rows[1].source_type='live_uncertain'
+const adoptedRules=ref([{title:'回答策略：切块咨询',text:'用户询问切块时，先说明发货形式，再回答切块要求。'}])
+let lastFeedback=''
 window.fixtureCalls=[]
 window.fetch=async(url,init={})=>{
  const path=String(url),method=init.method||'GET';window.fixtureCalls.push({path,method})
@@ -11,10 +14,10 @@ window.fetch=async(url,init={})=>{
  if(path.includes('interaction-learning/simulate')){rows.push(base(3,'抽气没？','semantic',{}));result={generated:1}}
  else if(path.includes('/interaction-learning/')&&path.endsWith('/close')){const id=Number(path.split('/').at(-2));rows=rows.filter(x=>x.id!==id);result={closed:true}}
  else if(path.includes('interaction-learning')){result={items:rows,pending_count:rows.length}}
- else if(path.endsWith('/turns')){const id=Number(path.split('/').at(-2));const feedback=JSON.parse(init.body).feedback;result={session:rows.find(x=>x.id===id),result:{id:100,session_id:id,evidence_id:1,turn_no:1,memory_type:feedback.includes('默认抽真空')?'fact':'semantic',target:'包装问法',memory_key:'packaging',result_text:feedback,created_at:'2026-10-09'}}}
- else if(path.endsWith('/adopt')){const id=Number(path.split('/').at(-2));rows=rows.filter(x=>x.id!==id);result={}}
+ else if(path.endsWith('/turns')){const id=Number(path.split('/').at(-2));const feedback=JSON.parse(init.body).feedback;lastFeedback=feedback;result={session:rows.find(x=>x.id===id),result:{id:100,session_id:id,evidence_id:1,turn_no:1,memory_type:feedback.includes('默认抽真空')?'fact':'semantic',target:'包装问法',memory_key:'packaging',result_text:feedback,created_at:'2026-10-09'}}}
+ else if(path.endsWith('/adopt')){const id=Number(path.split('/').at(-2));rows=rows.filter(x=>x.id!==id);adoptedRules.value.push({title:'新采用的互动规则',text:lastFeedback});result={}}
  else return new Response(JSON.stringify({error:'意外测试请求'}),{status:500,headers:{'Content-Type':'application/json'}})
  return new Response(JSON.stringify(result),{status:200,headers:{'Content-Type':'application/json'}})
 }
-createApp({setup(){const room=ref(8),plan=ref(4);return()=>h('div',[h(Panel,{roomId:room.value,planId:plan.value,onOpenFacts:()=>{document.querySelector('.fixture').textContent='已收到跳转事实依据请求'},onAdopted:()=>{document.querySelector('.fixture').textContent='已收到刷新已采用规则请求'}})])}}).mount('#app')
+createApp({setup(){return()=>h(Workspace,{roomId:8,planId:4,onOpenFacts:()=>{document.querySelector('.fixture').textContent='本地模拟：已收到打开事实依据请求'},onAdopted:()=>{},onRefresh:()=>{}},{default:()=>adoptedRules.value.map(rule=>h('article',{class:'rule'},[h('strong',rule.title),h('p',rule.text)]))})}}).mount('#app')
 </script></body></html>

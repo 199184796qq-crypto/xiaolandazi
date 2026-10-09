@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { request, createAgentLearningTurn, adoptAgentLearningSession } from '../api'
 import type { AgentLearningSession, AgentLearningResult } from '../types'
 
-const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; compact?: boolean; showSimulation?: boolean }>(), { compact: false, showSimulation: true })
+const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain' }>(), { compact: false, showSimulation: true })
 const emit = defineEmits<{ adopted: []; openFacts: [] }>()
 const items = ref<AgentLearningSession[]>([])
 const count = ref(0)
@@ -16,6 +16,9 @@ const feedback = ref('')
 const preview = ref<AgentLearningResult | null>(null)
 const visible = computed(() => !props.compact || count.value > 0)
 const showItems = computed(() => !props.compact || expanded.value)
+const displayedItems = computed(() => props.sourceType ? items.value.filter(item => item.source_type === props.sourceType) : items.value)
+const displayedCount = computed(() => props.sourceType ? displayedItems.value.length : count.value)
+const panelTitle = computed(() => props.compact ? '互动待确认' : props.sourceType === 'initial_simulation' ? '模拟挖掘' : props.sourceType === 'live_uncertain' ? '直播互动' : '模拟挖掘与直播待确认')
 let epoch = 0
 let poll: ReturnType<typeof setInterval> | undefined
 
@@ -102,7 +105,7 @@ async function close(item: AgentLearningSession) {
 <template>
   <section v-if="visible && roomId && planId" class="interaction-learning" aria-label="互动纠正与待确认问题">
     <header>
-      <div role="status" aria-live="polite"><strong>{{ compact ? '互动待确认' : '模拟挖掘与直播待确认' }}</strong><span>{{ count ? `${count}条待处理` : '暂无待确认问题' }}</span></div>
+      <div role="status" aria-live="polite"><strong>{{ panelTitle }}</strong><span>{{ displayedCount ? `${displayedCount}条待处理` : '暂无待确认问题' }}</span></div>
       <div class="actions">
         <button v-if="showSimulation && !compact" :disabled="!!busy" @click="simulate">{{ busy === 'simulate' ? '模型模拟中…' : '模拟挖掘' }}</button>
         <button v-if="compact" @click="expanded = !expanded">{{ expanded ? '收起' : '查看并纠正' }}</button>
@@ -113,7 +116,8 @@ async function close(item: AgentLearningSession) {
       <p class="hint">模型只提供建议，事实由你审核。你可以修改并采用纠正，或关闭无需处理的记录；这些建议不会单独阻断互动。</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <article v-for="item in items" :key="item.id">
+      <p v-if="!displayedItems.length" class="hint">{{ sourceType === 'initial_simulation' ? '还没有模拟建议，点击“模拟挖掘”生成。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
+      <article v-for="item in displayedItems" :key="item.id">
         <div class="item-meta"><span>{{ item.source_type === 'initial_simulation' ? '模拟建议' : '直播记录' }} · {{ item.review?.kind === 'semantic' ? '问法纠正' : '缺少回答条件' }}</span><small>记录{{ item.review?.occurrences || 1 }}次</small></div>
         <strong class="question">{{ item.question }}</strong>
         <p v-if="item.review?.observed_context"><b>实际现场：</b>{{ item.review.observed_context }}</p>
