@@ -37,8 +37,8 @@ const (
 
 func normalizeVoiceCloneModel(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case qwenCloneModelPlus, qwenCloneModelFlash:
+	switch {
+	case ttsgateway.SupportsCloneModel(value):
 		return value, nil
 	default:
 		return "", errors.New("当前复刻模型暂不支持")
@@ -92,7 +92,17 @@ func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.resolveActor(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": officialVoices})
+	library, valid := voiceLibraryQuery(w, r)
+	if !valid {
+		return
+	}
+	items := make([]officialVoice, 0)
+	for _, voice := range officialVoices {
+		if ttsgateway.VoiceLibraryMatches(library, voice.Model) {
+			items = append(items, voice)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 type voicePreviewInput struct {
@@ -286,7 +296,7 @@ func (s *Server) liveCloneVoiceProfile(w http.ResponseWriter, r *http.Request) {
 	supportRoomID, _ := liveSupportScopeRoomID(r)
 	profile, err := s.store.SaveVoiceProfile(r.Context(), tenantID, actor.UserID, 0, model.VoiceProfileInput{
 		Name:          input.Name,
-		Provider:      "aliyun_qwen_clone",
+		Provider:      ttsgateway.ProviderForModel(modelName),
 		VoiceID:       voiceID,
 		SampleAssetID: &input.SampleAssetID,
 		CloneStatus:   "ready",
@@ -304,7 +314,7 @@ func (s *Server) liveCloneVoiceProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, err := s.store.CreateVoiceModelBinding(r.Context(), tenantID, actor.UserID, model.VoiceModelBindingInput{
-		ProfileID: profile.ID, SampleAssetID: input.SampleAssetID, Provider: ttsgateway.ProviderQwen,
+		ProfileID: profile.ID, SampleAssetID: input.SampleAssetID, Provider: ttsgateway.ProviderForModel(modelName),
 		Model: modelName, VoiceID: profile.VoiceID, Rate: 1, Status: "ready",
 		Config: map[string]any{"source": "customer_voice_clone"},
 	})
@@ -457,6 +467,9 @@ func (s *Server) liveVoiceModelBindingPreview(w http.ResponseWriter, r *http.Req
 func (s *Server) cloneVoiceModelBindingForProfile(
 	ctx context.Context, tenantID, userID int64, profile model.VoiceProfile, targetModel string, rate float64,
 ) (model.VoiceModelBinding, error) {
+	if err := validateVoiceLibraryBinding(profile, targetModel); err != nil {
+		return model.VoiceModelBinding{}, err
+	}
 	if profile.SampleAssetID == nil || *profile.SampleAssetID <= 0 {
 		return model.VoiceModelBinding{}, errors.New("声音档案缺少人工样本")
 	}
@@ -511,7 +524,7 @@ func (s *Server) cloneVoiceModelBindingForProfile(
 		return model.VoiceModelBinding{}, err
 	}
 	binding, err := s.store.CreateVoiceModelBinding(ctx, tenantID, userID, model.VoiceModelBindingInput{
-		ProfileID: profile.ID, SampleAssetID: *profile.SampleAssetID, Provider: ttsgateway.ProviderQwen,
+		ProfileID: profile.ID, SampleAssetID: *profile.SampleAssetID, Provider: ttsgateway.ProviderForModel(targetModel),
 		Model: targetModel, VoiceID: voiceID, Rate: rate, Status: "ready", Config: map[string]any{"source": "customer_voice_clone"},
 	})
 	if err != nil {
@@ -610,10 +623,6 @@ func (s *Server) archiveGeneratedVoice(
 	if len(raw) == 0 || len(raw) > maxGeneratedVoiceBytes {
 		return 0, 0, fmt.Errorf("生成声音为空或超过 32MB")
 	}
-	durationMS, err := generatedVoiceWAVDurationMS(raw)
-	if err != nil {
-		return 0, 0, fmt.Errorf("读取生成声音时长: %w", err)
-	}
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" || contentType == "application/octet-stream" {
 		limit := len(raw)
@@ -621,6 +630,20 @@ func (s *Server) archiveGeneratedVoice(
 			limit = 512
 		}
 		contentType = http.DetectContentType(raw[:limit])
+	}
+	return s.archiveGeneratedVoiceBytes(ctx, tenantID, actorUserID, raw, contentType, voiceID, modelName, source, supportRoomIDs...)
+}
+
+func (s *Server) archiveGeneratedVoiceBytes(ctx context.Context, tenantID, actorUserID int64, raw []byte, contentType, voiceID, modelName, source string, supportRoomIDs ...int64) (int64, int64, error) {
+	if s.assetStorage == nil {
+		return 0, 0, errors.New("媒体存储尚未初始化")
+	}
+	if len(raw) == 0 || len(raw) > maxGeneratedVoiceBytes {
+		return 0, 0, errors.New("生成声音为空或超过32MB")
+	}
+	durationMS, err := generatedVoiceWAVDurationMS(raw)
+	if err != nil {
+		return 0, 0, err
 	}
 	objectKey, err := newMediaObjectKey(tenantID, "generated_voice", "generated.wav")
 	if err != nil {

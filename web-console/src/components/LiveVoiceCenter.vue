@@ -4,6 +4,7 @@ import {
   activateLiveAgentConfigVersion,
   cloneLiveVoiceModelBinding,
   cloneLiveVoiceProfile,
+  designLiveVoiceProfile,
   createLiveAgentConfigDraft,
   deleteLiveVoiceProfile,
   renameLiveVoiceProfile,
@@ -32,8 +33,23 @@ const MAX_SAMPLE_SECONDS = 60
 const MAX_SAMPLE_BYTES = 10 * 1024 * 1024
 const cloneModels = [
   { id: 'qwen-audio-3.0-tts-plus', label: '通用模型（推荐）' },
+  { id: 'qwen-audio-3.0-tts-flash', label: '经济模型 · 3.0 Flash' },
   { id: 'qwen-audio-3.1-tts-flash', label: '极速模型' },
 ]
+const libraryModels = [
+  { id: 'qwen_audio', label: 'Qwen Audio', description: '官方音色与已有专属声音' },
+  { id: 'cosyvoice-v3.5-flash', label: 'CosyVoice 3.5 Flash', description: '声音复刻 / 声音设计 · 0.8 元 / 万字符' },
+  { id: 'cosyvoice-v3.5-plus', label: 'CosyVoice 3.5 Plus', description: '声音复刻 / 声音设计' },
+]
+const allCloneModels = [...cloneModels, ...libraryModels.filter(item => item.id !== 'qwen_audio')]
+const libraryModel = ref('qwen_audio')
+const isQwenLibrary = computed(() => libraryModel.value === 'qwen_audio')
+const libraryDetails = computed(() => libraryModels.find(item => item.id === libraryModel.value) || libraryModels[0]!)
+const visibleVoiceProfiles = computed(() => voiceProfiles.value.filter(profile => {
+  const target = String(asRecord(profile.config).target_model || '')
+  return isQwenLibrary.value ? !target.startsWith('cosyvoice-') : target === libraryModel.value
+}))
+let libraryInitialized = false
 const avatarOptions = [
   { key: 'female_young', label: '女年轻', emoji: '👩🏻', tone: 'rose' },
   { key: 'female_middle', label: '女中年', emoji: '👩', tone: 'violet' },
@@ -70,6 +86,8 @@ let previewEpoch = 0
 let previewAudio: HTMLAudioElement | null = null
 
 const cloneOpen = ref(false)
+const cloneMode = ref<'upload' | 'design'>('upload')
+const voiceDescription = ref('')
 const cloneName = ref('')
 const cloneModel = ref(DEFAULT_CLONE_MODEL)
 const selectedAvatarKey = ref<(typeof avatarOptions)[number]['key']>('female_young')
@@ -99,8 +117,32 @@ const selectedVoice = computed(() => {
 const currentVoiceName = computed(() => voiceProfiles.value.find(profile => profile.id === selectedProfileId.value)?.name || String(selectedVoice.value.name || '').trim() || '龙安灵心')
 const selectedProfileId = computed(() => Number(selectedVoice.value.profile_id || 0))
 const canSubmitClone = computed(
-  () => Boolean(cloneName.value.trim() && sampleFile.value && !sampleError.value && sampleDuration.value >= MIN_SAMPLE_SECONDS && sampleDuration.value <= MAX_SAMPLE_SECONDS && !selecting.value),
+  () => Boolean(cloneName.value.trim() && !selecting.value && (cloneMode.value === 'design'
+    ? !isQwenLibrary.value && voiceDescription.value.trim() && countVoiceCharacters(voiceDescription.value) <= 500
+    : sampleFile.value && !sampleError.value && sampleDuration.value >= MIN_SAMPLE_SECONDS && sampleDuration.value <= MAX_SAMPLE_SECONDS)),
 )
+
+function countVoiceCharacters(value: string) {
+  return Array.from(value).reduce((sum, char) => sum + (/\p{Script=Han}/u.test(char) ? 2 : 1), 0)
+}
+
+function storedLibrary() {
+  try { return localStorage.getItem(`xiaolan.voice-library.room:${props.roomId}`) || '' } catch { return '' }
+}
+
+function changeLibrary() {
+  stopPreview()
+  cancelRename()
+  closeCloneDialog()
+  error.value = ''
+  notice.value = ''
+  try { localStorage.setItem(`xiaolan.voice-library.room:${props.roomId}`, libraryModel.value) } catch { /* optional UI preference */ }
+}
+
+function modelsForProfile(profile: VoiceProfile) {
+  const target = String(asRecord(profile.config).target_model || '')
+  return target.startsWith('cosyvoice-') ? allCloneModels.filter(item => item.id === target) : cloneModels
+}
 
 async function load() {
   if (!props.roomId) {
@@ -127,6 +169,12 @@ async function load() {
     voiceBindings.value = (bindings || []).filter((item) => item.status !== 'disabled')
     versions.value = configVersions || []
     quota.value = profileQuota
+    if (!libraryInitialized) {
+      const saved = storedLibrary()
+      const current = String(selectedVoice.value.model || '')
+      libraryModel.value = libraryModels.some(item => item.id === saved) ? saved : current.startsWith('cosyvoice-') && libraryModels.some(item => item.id === current) ? current : 'qwen_audio'
+      libraryInitialized = true
+    }
     for (const profile of voiceProfiles.value) {
       if (!savingModelIds.value.includes(profile.id)) selectedModels.value[profile.id] = profileTargetModel(profile)
     }
@@ -175,10 +223,10 @@ async function saveName(profile: VoiceProfile) {
 
 function profileTargetModel(profile: VoiceProfile) {
   const saved = String(asRecord(asRecord(profile.config).ui_model_preferences)[String(props.roomId || 0)] || '')
-  if (cloneModels.some(item => item.id === saved)) return saved
+  if (modelsForProfile(profile).some(item => item.id === saved)) return saved
   if (selectedProfileId.value === profile.id && selectedVoice.value.model) return String(selectedVoice.value.model)
   const configured = String(asRecord(profile.config).target_model || '').trim()
-  return cloneModels.some((item) => item.id === configured) ? configured : DEFAULT_CLONE_MODEL
+  return allCloneModels.some((item) => item.id === configured) ? configured : DEFAULT_CLONE_MODEL
 }
 
 async function rememberModel(profile: VoiceProfile) {
@@ -350,7 +398,7 @@ async function useCustom(profile: VoiceProfile) {
   }
 }
 
-function openCloneDialog() {
+function openCloneDialog(mode: 'upload' | 'design' = 'upload') {
   error.value = ''
   notice.value = ''
   activeLibrary.value = 'custom'
@@ -359,11 +407,15 @@ function openCloneDialog() {
     return
   }
   cloneOpen.value = true
+  cloneMode.value = mode
+  cloneModel.value = isQwenLibrary.value ? DEFAULT_CLONE_MODEL : libraryModel.value
 }
 
 function resetCloneForm() {
   cloneName.value = ''
-  cloneModel.value = DEFAULT_CLONE_MODEL
+  cloneModel.value = isQwenLibrary.value ? DEFAULT_CLONE_MODEL : libraryModel.value
+  voiceDescription.value = ''
+  cloneMode.value = 'upload'
   selectedAvatarKey.value = 'female_young'
   sampleFile.value = null
   sampleDuration.value = 0
@@ -429,14 +481,18 @@ async function chooseSample(event: Event) {
 }
 
 async function submitClone() {
-  if (!canSubmitClone.value || !sampleFile.value) return
+  if (!canSubmitClone.value || (cloneMode.value === 'upload' && !sampleFile.value)) return
   selecting.value = true
   error.value = ''
   cloneError.value = ''
   notice.value = ''
   try {
+    if (cloneMode.value === 'design') {
+      cloneStage.value = 'processing'
+      await designLiveVoiceProfile({ name: cloneName.value.trim(), model: libraryModel.value, description: voiceDescription.value.trim(), avatar_key: selectedAvatarKey.value })
+    } else {
     cloneStage.value = 'uploading'
-    const uploaded = await uploadLiveMediaAsset(sampleFile.value, 'voice_sample', {
+    const uploaded = await uploadLiveMediaAsset(sampleFile.value!, 'voice_sample', {
       durationMs: Math.round(sampleDuration.value * 1000),
       metadata: {
         source: 'voice_center_clone', avatar_key: selectedAvatarKey.value,
@@ -448,6 +504,7 @@ async function submitClone() {
       name: cloneName.value.trim(), sample_asset_id: uploaded.asset.id,
       model: cloneModel.value, avatar_key: selectedAvatarKey.value,
     })
+    }
     cloneOpen.value = false
     resetCloneForm()
     await load()
@@ -506,7 +563,7 @@ function createdLabel(value: string) {
   })
 }
 
-watch(() => props.roomId, () => { nameScope++; stopPreview(); bindingBusyKey.value = ''; selecting.value = false; selectedModels.value = {}; savingModelIds.value = []; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
+watch(() => props.roomId, () => { nameScope++; libraryInitialized = false; libraryModel.value = 'qwen_audio'; cloneOpen.value = false; resetCloneForm(); stopPreview(); bindingBusyKey.value = ''; selecting.value = false; selectedModels.value = {}; savingModelIds.value = []; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
 onMounted(() => void load())
 onBeforeUnmount(() => { nameScope++; stopPreview() })
 </script>
@@ -521,6 +578,12 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
       </div>
     </div>
 
+    <div class="voice-model-bar">
+      <label><span class="side-eyebrow">大模型</span><select v-model="libraryModel" aria-label="声音大模型" :disabled="loading || selecting || Boolean(bindingBusyKey) || Boolean(savingNameId) || savingModelIds.length > 0" @change="changeLibrary"><option v-for="model in libraryModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
+      <div><strong>{{ libraryDetails.label }}</strong><p>{{ libraryDetails.description }}</p></div>
+      <span class="model-scope-note">选择声音并点击使用后生效</span>
+    </div>
+
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-if="notice" class="inline-notice">{{ notice }}</p>
 
@@ -530,11 +593,11 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
         <nav class="voice-library-nav" aria-label="声音库">
           <button type="button" :class="{ active: activeLibrary === 'official' }" @click="activeLibrary = 'official'">
             <span class="nav-icon official-icon">★</span>
-            <span><b>官方声音</b><small>精选官方优质音色</small></span><em>›</em>
+            <span><b>官方声音</b><small>{{ isQwenLibrary ? '精选官方优质音色' : '查看当前模型音色说明' }}</small></span><em>›</em>
           </button>
           <button type="button" :class="{ active: activeLibrary === 'custom' }" @click="activeLibrary = 'custom'">
             <span class="nav-icon custom-icon">●</span>
-            <span><b>我的声音</b><small>已创建的专属音色</small></span><em>›</em>
+            <span><b>我的声音</b><small>{{ isQwenLibrary ? '已创建的专属音色' : '当前模型的专属音色' }}</small></span><em>›</em>
           </button>
         </nav>
         <div class="voice-side-art" aria-hidden="true"><span class="chat-bubble">•••</span><span class="microphone">♩</span><span class="sound-wave">▂▄▆▄▂</span></div>
@@ -544,13 +607,17 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
         <header class="voice-list-head">
           <div>
             <div class="voice-title-line"><h3>{{ activeLibrary === 'official' ? '官方声音' : '我的声音' }}</h3><span v-if="activeLibrary === 'custom'" class="quota-chip">{{ quota.used }} / {{ quota.limit }} 个</span></div>
-            <p v-if="activeLibrary === 'official'">精选多种风格的官方音色，适用于不同直播场景</p>
-            <p v-else>使用你创建的专属音色，选择不同模型体验不同效果</p>
+            <p v-if="activeLibrary === 'official' && isQwenLibrary">精选多种风格的官方音色，适用于不同直播场景</p>
+            <p v-else-if="activeLibrary === 'official'">{{ libraryDetails.label }} 使用声音复刻和声音设计创建专属音色</p>
+            <p v-else>{{ isQwenLibrary ? '使用你创建的专属音色，选择不同模型体验不同效果' : '这里仅展示为当前模型创建的声音，Flash 与 Plus 分别管理' }}</p>
           </div>
-          <button v-if="activeLibrary === 'custom'" type="button" class="upload-sample-button" @click="openCloneDialog"><span>＋</span> 上传声音样本</button>
+          <div v-if="activeLibrary === 'custom'" class="voice-create-actions"><button v-if="!isQwenLibrary" type="button" class="design-voice-button" :disabled="selecting" @click="openCloneDialog('design')">描述生成声音</button><button type="button" class="upload-sample-button" :disabled="selecting" @click="openCloneDialog()"><span>＋</span> 上传声音样本</button></div>
         </header>
 
         <div v-if="loading" class="voice-loading">正在读取声音…</div>
+        <div v-else-if="activeLibrary === 'official' && !isQwenLibrary" class="voice-empty cosy-official-empty">
+          <span>♫</span><strong>用 {{ libraryDetails.label }} 创建专属声音</strong><p>此模型没有预置官方音色。上传录音复刻你的声音，或用文字描述设计新声音。</p><div class="empty-create-actions"><button type="button" @click="openCloneDialog()">＋ 上传声音样本</button><button type="button" @click="openCloneDialog('design')">描述生成声音</button></div>
+        </div>
         <div v-else-if="activeLibrary === 'official'" class="voice-rows">
           <article v-for="(item, index) in officialVoices" :key="item.id" class="voice-row" :class="{ selected: isOfficialSelected(item) }">
             <div class="voice-avatar" :class="'tone-' + officialAvatar(item, index).tone"><span>{{ officialAvatar(item, index).emoji }}</span><i class="avatar-wave">▂▅▃▆▂</i></div>
@@ -562,15 +629,15 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
           </article>
         </div>
 
-        <div v-else-if="voiceProfiles.length" class="voice-rows custom-voice-rows">
-          <article v-for="profile in voiceProfiles" :key="profile.id" class="voice-row custom-voice-row" :class="{ selected: isCustomSelected(profile) }">
+        <div v-else-if="visibleVoiceProfiles.length" class="voice-rows custom-voice-rows">
+          <article v-for="profile in visibleVoiceProfiles" :key="profile.id" class="voice-row custom-voice-row" :class="{ selected: isCustomSelected(profile) }">
             <div class="voice-avatar custom-avatar" :class="'tone-' + avatarForProfile(profile).tone"><span>{{ avatarForProfile(profile).emoji }}</span><i class="avatar-edit">✓</i></div>
             <div class="voice-row-copy custom-copy"><div>
               <input v-if="editingNameId === profile.id" v-model="nameDraft" class="voice-name-input" aria-label="声音名称" maxlength="80" :disabled="savingNameId === profile.id" @keydown.stop="nameKeydown($event, profile)" @blur="saveName(profile)" />
               <template v-else><strong>{{ profile.name }}</strong><button v-if="!props.supportSession" type="button" class="voice-name-edit" :aria-label="'修改声音名称：' + profile.name" title="修改名称" :disabled="!!savingNameId" @click.stop="beginRename(profile, $event)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button></template>
               <span v-if="isCustomSelected(profile)">当前使用</span>
             </div><small v-if="editingNameId === profile.id && nameError" class="voice-name-error" role="alert">{{ nameError }}</small><small v-else-if="savingNameId === profile.id" class="voice-name-status" role="status">正在保存…</small><p>创建于 {{ createdLabel(profile.created_at) }}</p></div>
-            <label class="model-picker"><span>{{ savingModelIds.includes(profile.id) ? '正在记住选择…' : '选择模型' }}</span><select v-model="selectedModels[profile.id]" :disabled="selecting || savingModelIds.includes(profile.id)" @change="rememberModel(profile)"><option v-for="model in cloneModels" :key="model.id" :value="model.id">{{ model.label }}</option></select><small v-if="isCustomSelected(profile) && !isCustomModelSelected(profile)">当前生效：{{ cloneModels.find(model => model.id === selectedVoice.model)?.label || selectedVoice.model }}</small></label>
+            <label class="model-picker"><span>{{ savingModelIds.includes(profile.id) ? '正在记住选择…' : isQwenLibrary ? '选择模型' : '所属模型' }}</span><select v-model="selectedModels[profile.id]" :disabled="!isQwenLibrary || selecting || savingModelIds.includes(profile.id)" @change="rememberModel(profile)"><option v-for="model in modelsForProfile(profile)" :key="model.id" :value="model.id">{{ model.label }}</option></select><small v-if="isCustomSelected(profile) && !isCustomModelSelected(profile)">当前生效：{{ allCloneModels.find(model => model.id === selectedVoice.model)?.label || selectedVoice.model }}</small></label>
             <div class="voice-row-actions custom-actions">
               <button type="button" class="preview-button" :disabled="savingModelIds.includes(profile.id) || (Boolean(bindingBusyKey) && previewingKey !== customPreviewKey(profile))" @click="previewCustom(profile)"><span>{{ previewingKey === customPreviewKey(profile) ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === customPreviewKey(profile) ? previewPhase === 'playing' ? '停止试听' : '准备中…' : '试听' }}</button>
               <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :disabled="selecting || Boolean(bindingBusyKey) || savingModelIds.includes(profile.id)" @click="useCustom(profile)">{{ isCustomModelSelected(profile) ? '当前使用' : isCustomSelected(profile) ? '使用这个模型' : '使用这个声音' }}</button>
@@ -579,22 +646,24 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
           </article>
         </div>
 
-        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>还没有自定义声音</strong><p>上传清晰录音，推荐 10–20 秒，最长 60 秒，创建你的专属音色。</p><button type="button" @click="openCloneDialog">＋ 上传声音样本</button></div>
+        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>{{ isQwenLibrary ? '还没有自定义声音' : '当前模型还没有专属声音' }}</strong><p>上传清晰录音，推荐 10–20 秒，最长 60 秒，创建你的专属音色。</p><div class="empty-create-actions"><button type="button" @click="openCloneDialog()">＋ 上传声音样本</button><button v-if="!isQwenLibrary" type="button" @click="openCloneDialog('design')">描述生成声音</button></div></div>
         <div v-if="previewingKey" class="voice-preview-wave-panel" :class="{ 'is-playing': previewPhase === 'playing' }" role="status"><span>{{ previewPhase === 'playing' ? '正在试听' : '正在准备试听声音…' }}</span><div class="voice-preview-wave" aria-hidden="true"><i v-for="bar in 27" :key="bar" :style="{ '--bar-height': (12 + Math.abs(Math.sin(bar * .77)) * 30) + 'px', '--bar-delay': (bar % 7) * -.12 + 's' }"></i></div><button type="button" @click="stopPreview">停止</button></div>
       </section>
     </div>
 
     <Teleport to="body">
       <div v-if="cloneOpen" class="voice-dialog-overlay" @click.self="closeCloneDialog">
-        <section class="voice-dialog" role="dialog" aria-modal="true" aria-label="上传声音样本">
-          <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>上传声音样本</h3><p>选择头像、填写名称，再上传单人清晰录音：推荐 10–20 秒，最长 60 秒。</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
+        <section class="voice-dialog" role="dialog" aria-modal="true" :aria-label="cloneMode === 'design' ? '描述生成声音' : '上传声音样本'">
+          <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>{{ cloneMode === 'design' ? '描述生成声音' : '上传声音样本' }}</h3><p>{{ cloneMode === 'design' ? '描述声音的性别、年龄、音调和风格，创建专属主播声音。' : '选择头像、填写名称，再上传单人清晰录音：推荐 10–20 秒，最长 60 秒。' }}</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
           <div class="dialog-quota"><span>自定义声音名额</span><b>已用 {{ quota.used }} 个，共 {{ quota.limit }} 个</b></div>
           <fieldset class="avatar-picker" :disabled="selecting">
             <legend>选择头像</legend>
             <button v-for="avatar in avatarOptions" :key="avatar.key" type="button" :class="['avatar-option', 'tone-' + avatar.tone, { active: selectedAvatarKey === avatar.key }]" @click="selectedAvatarKey = avatar.key"><span>{{ avatar.emoji }}</span><small>{{ avatar.label }}</small></button>
           </fieldset>
           <label class="voice-clone-field"><span>声音名字</span><input v-model="cloneName" :disabled="selecting" maxlength="60" placeholder="例如：小悠、门店主播" /></label>
-          <label class="voice-clone-upload" :class="{ invalid: sampleError }">
+          <label class="voice-clone-field"><span>声音模型</span><select v-if="isQwenLibrary" v-model="cloneModel" :disabled="selecting"><option v-for="model in cloneModels" :key="model.id" :value="model.id">{{ model.label }}</option></select><strong v-else class="dialog-model-label">{{ libraryDetails.label }}</strong></label>
+          <label v-if="cloneMode === 'design'" class="voice-clone-field"><span>声音描述</span><textarea v-model="voiceDescription" :disabled="selecting" placeholder="例如：30岁左右的女性，音色温暖明亮，语气亲切，吐字清晰，适合直播讲解。"></textarea><small :class="{ 'sample-error': countVoiceCharacters(voiceDescription) > 500 }">{{ countVoiceCharacters(voiceDescription) }} / 500 字符（汉字计2个）</small></label>
+          <label v-else class="voice-clone-upload" :class="{ invalid: sampleError }">
             <input ref="sampleInput" type="file" accept="audio/*" :disabled="selecting" @change="chooseSample" /><span class="upload-icon">↑</span>
             <strong>{{ sampleFile ? sampleFile.name : '选择声音文件（最长 60 秒）' }}</strong>
             <small v-if="sampleFile">时长 {{ sampleDuration.toFixed(1) }} 秒 · 将自动转为标准 WAV 格式</small><small v-else>5–60 秒、不超过 10MB；至少 5 秒清晰人声，无音乐、无噪声</small>
@@ -612,6 +681,8 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
 </template>
 
 <style scoped>
+.voice-library-nav button.active b{color:#fff}.voice-library-nav button:not(.active) b{color:#253654}
+.voice-model-bar{display:flex;align-items:center;gap:24px;padding:18px 22px;border:1px solid #dfe7f6;border-radius:20px;background:linear-gradient(120deg,#fff,#f4f7ff);box-shadow:0 10px 26px rgba(76,101,168,.05)}.voice-model-bar label{min-width:260px}.voice-model-bar select,.voice-clone-field select{width:100%;min-height:45px;padding:9px 36px 9px 13px;border:1px solid #d4ddf2;border-radius:12px;background:#fff;color:#253654;font:inherit;font-weight:800}.voice-model-bar select:focus-visible{outline:2px solid #7586f8;outline-offset:2px}.voice-model-bar select:disabled{opacity:.6}.voice-model-bar strong{font-size:16px}.voice-model-bar p{margin:5px 0 0;color:#7e8ca3;font-size:13px}.model-scope-note{margin-left:auto;color:#8a96ac;font-size:12px}.voice-create-actions,.empty-create-actions{display:flex;gap:10px;flex-wrap:wrap}.design-voice-button{min-height:43px;padding:0 17px;border:1px solid #d9e1f0;border-radius:13px;background:#f0f3ff;color:#5265d9;font-weight:900;cursor:pointer}.cosy-official-empty{min-height:380px}.voice-clone-field textarea{min-height:110px;padding:12px;border:1px solid #d2dbea;border-radius:12px;background:#fff;resize:vertical;font:inherit;line-height:1.6}.voice-clone-field small{font-size:12px;color:#7e8ca3;font-weight:500}.dialog-model-label{padding:11px 13px;border-radius:12px;background:#edf1ff;color:#5265d9;font-size:14px}@media(max-width:860px){.voice-model-bar{align-items:flex-start;flex-wrap:wrap;gap:14px}.voice-model-bar label{min-width:0;flex:1 1 250px}.model-scope-note{margin-left:0}.voice-create-actions{justify-content:flex-end}}@media(max-width:560px){.voice-model-bar{flex-direction:column}.voice-model-bar label{flex:none;width:100%}.voice-create-actions{justify-content:flex-start}}
 .voice-name-edit{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:7px;background:transparent;color:#6271ec;cursor:pointer}.voice-name-edit:hover{background:#edf0ff}.voice-name-edit:focus-visible{outline:2px solid #6373ed;outline-offset:2px}.voice-name-input{min-width:80px;width:210px;max-width:100%;padding:4px 8px;border:1px solid #8d9af6;border-radius:8px;background:#fff;color:#17233a;font:inherit;font-weight:800;outline:none}.voice-name-error{display:block;color:#b92e45;margin-top:6px}.voice-name-status{display:block;color:#7786a6;margin-top:6px}
 .voice-clone-error{display:block;margin:12px 0 0;padding:11px 14px;border:1px solid #ffcfd7;border-radius:12px;background:#fff0f2;color:#b92e45;font-weight:700;overflow-wrap:anywhere}
 .clone-progress{display:flex;align-items:center;gap:8px}.clone-spinner{width:16px;height:16px;flex:none;border:2px solid #dce2ff;border-top-color:#5669f5;border-radius:50%;animation:clone-spin .8s linear infinite}@keyframes clone-spin{to{transform:rotate(360deg)}}

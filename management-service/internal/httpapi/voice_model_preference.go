@@ -47,6 +47,10 @@ func (s *Server) liveVoiceModelPreference(w http.ResponseWriter, r *http.Request
 	if !s.requireLiveSupportVoice(w, r, actor, tenant, profile, true) {
 		return
 	}
+	if err := validateVoiceLibraryBinding(profile, modelName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	updated, err := s.store.SaveVoiceModelPreference(r.Context(), tenant, room, profileID, actor.UserID, modelName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

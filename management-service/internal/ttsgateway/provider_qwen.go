@@ -153,6 +153,8 @@ func qwenSupportsInstructionControl(model string) bool {
 	switch model {
 	case "qwen-audio-3.0-tts-plus", "qwen-audio-3.0-tts-flash", "qwen-audio-3.1-tts-flash":
 		return true
+	case CosyVoiceFlash, CosyVoicePlus:
+		return true
 	default:
 		return false
 	}

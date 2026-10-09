@@ -1666,6 +1666,12 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	ttsInstruction := ""
 	if !item.EmotionDisabled {
 		ttsInstruction = w.ttsInstructionForMission(item, ttsProfile.Instruction)
+		if ttsgateway.IsCosyVoiceModel(ttsModel) {
+			ttsInstruction, err = w.cosyVoiceInstructionForMission(item)
+			if err != nil {
+				return fmt.Errorf("准备CosyVoice表达指令失败: %w", err)
+			}
+		}
 	}
 	w.transitionMission(item, speechmission.StateSynthesizingTTS, "tts_start", "最终话术审核通过，开始生成语音")
 	w.updateMission(item, func(m *speechmission.Mission) {
@@ -3418,6 +3424,9 @@ func voiceModel(profile model.VoiceProfile) string {
 }
 
 func voiceProvider(profile model.VoiceProfile) string {
+	if ttsgateway.IsCosyVoiceModel(voiceModel(profile)) {
+		return ttsgateway.ProviderCosyVoice
+	}
 	switch strings.ToLower(strings.TrimSpace(profile.Provider)) {
 	case "", "aliyun_qwen", "aliyun_qwen_clone", "qwen", "dashscope", "qwen_audio_3_0", ttsgateway.ProviderQwen:
 		return ttsgateway.ProviderQwen

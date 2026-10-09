@@ -78,6 +78,7 @@ func NewFromEnv() *Gateway {
 	}
 	g := New(name, model)
 	g.Register(NewQwenProvider(QwenConfigFromEnv()), "qwen", "dashscope", "qwen_audio_3_0")
+	g.Register(NewCosyVoiceProvider(QwenConfigFromEnv()), "aliyun_cosyvoice", "aliyun_cosyvoice_clone")
 	return g
 }
 
@@ -129,6 +130,9 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 	if request.Rate < 0.5 || request.Rate > 2.0 {
 		return SynthesizeResponse{}, errors.New("tts rate must be between 0.5 and 2.0")
 	}
+	if request.Provider == "" && IsCosyVoiceModel(request.Model) {
+		request.Provider = ProviderCosyVoice
+	}
 	p, canonical, err := g.provider(request.Provider)
 	if err != nil {
 		return SynthesizeResponse{}, err
@@ -138,6 +142,9 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 }
 
 func (g *Gateway) CloneVoice(ctx context.Context, request CloneRequest) (CloneResponse, error) {
+	if request.Provider == "" && IsCosyVoiceModel(request.TargetModel) {
+		request.Provider = ProviderCosyVoice
+	}
 	p, canonical, err := g.provider(request.Provider)
 	if err != nil {
 		return CloneResponse{}, err

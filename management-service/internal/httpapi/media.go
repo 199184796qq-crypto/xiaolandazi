@@ -405,6 +405,10 @@ func (s *Server) liveListVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	library, valid := voiceLibraryQuery(w, r)
+	if !valid {
+		return
+	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), r.Method != http.MethodGet)
 	if !ok {
 		return
@@ -424,7 +428,7 @@ func (s *Server) liveListVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, filterVoiceLibrary(library, items))
 }
 
 func (s *Server) liveVoiceProfileQuota(w http.ResponseWriter, r *http.Request) {

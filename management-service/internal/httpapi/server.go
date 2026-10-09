@@ -486,6 +486,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live/official-voices", s.liveOfficialVoices)
 	mux.HandleFunc("POST /api/v1/live/official-voices/{voiceID}/preview", s.liveOfficialVoicePreview)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/clone", s.liveCloneVoiceProfile)
+	mux.HandleFunc("POST /api/v1/live/voice-profiles/design", s.liveDesignVoiceProfile)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/preview", s.liveVoiceProfilePreview)
 	mux.HandleFunc("GET /api/v1/live/voice-model-bindings", s.liveListVoiceModelBindings)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles/{profileID}/bindings/clone", s.liveCloneVoiceModelBinding)

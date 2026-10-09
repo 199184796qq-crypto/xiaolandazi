@@ -143,6 +143,7 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 		} else {
 			qwenConfig.APIKey = profile.APIKey
 			gateway.Register(ttsgateway.NewQwenProvider(qwenConfig), "qwen", "dashscope", "qwen_audio_3_0")
+			gateway.Register(ttsgateway.NewCosyVoiceProvider(qwenConfig), "aliyun_cosyvoice", "aliyun_cosyvoice_clone")
 		}
 	}
 	var raw []byte

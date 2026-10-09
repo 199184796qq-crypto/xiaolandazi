@@ -444,6 +444,9 @@ func resolveSelectedCloneVoice(profile model.VoiceProfile, input fullShowVariant
 		if modelName != "" && modelName != binding.Model {
 			continue
 		}
+		if validateVoiceLibraryBinding(profile, binding.Model) != nil {
+			continue
+		}
 		return binding.VoiceID, binding.Model, nil
 	}
 	if input.BindingID > 0 || (voiceID != "" && voiceID != profile.VoiceID) {

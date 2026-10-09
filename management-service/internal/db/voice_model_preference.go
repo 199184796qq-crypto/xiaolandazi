@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsgateway"
 	"strconv"
 )
 
 func setVoiceModelPreference(config map[string]any, room int64, modelName string) error {
-	if config == nil || room <= 0 || (modelName != "qwen-audio-3.0-tts-plus" && modelName != "qwen-audio-3.1-tts-flash") {
+	if config == nil || room <= 0 || !ttsgateway.SupportsCloneModel(modelName) {
 		return errors.New("声音模型选择无效")
 	}
 	prefs, ok := config["ui_model_preferences"].(map[string]any)

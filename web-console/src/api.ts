@@ -1867,8 +1867,12 @@ export function createLiveVoiceProfile(payload: {
   })
 }
 
-export function getLiveOfficialVoices() {
-  return request<{ items: OfficialVoice[] }>('/api/v1/live/official-voices')
+export function getLiveOfficialVoices(model?: string) {
+  return request<{ items: OfficialVoice[] }>('/api/v1/live/official-voices' + (model ? '?model=' + encodeURIComponent(model) : ''))
+}
+
+export function designLiveVoiceProfile(payload: { name: string; model: string; description: string; avatar_key: string }) {
+  return request<VoiceProfile>('/api/v1/live/voice-profiles/design', { method: 'POST', body: JSON.stringify(payload), suppressErrorDialog: true })
 }
 
 export function previewLiveOfficialVoice(voiceId: string, text = '', tenantId?: number) {
