@@ -75,7 +75,7 @@ for surface in web web-desktop web-customer web-sales;do diff -qr "$EXPECTED/$su
 python3 - "$EXPECTED" "$TARGET" "$ID" "$SHA" <<'PY'
 import datetime,hashlib,json,pathlib,sys
 base,target=map(pathlib.Path,sys.argv[1:3]);old=base/'configs/prompts/anchor-style';root=target/'configs/prompts/anchor-style'
-allowed={'interaction-scheduling.json','interaction-continuity-generation.md','interaction-purpose-resolution.md','interaction-return-core-answer.md','interaction-return-bridge-generation.md','fact-purpose-selected-generation.md','interaction-task-angle-probe-analysis.md','interaction-task-angle-probe-speech.md'}
+allowed={'fact-purpose-angle-analysis.md','interaction-scheduling.json','interaction-continuity-generation.md','interaction-purpose-resolution.md','interaction-return-core-answer.md','interaction-return-bridge-generation.md','fact-purpose-selected-generation.md','interaction-task-angle-probe-analysis.md','interaction-task-angle-probe-speech.md'}
 expected=set()
 for entry in json.loads((root/'MANIFEST.json').read_text(encoding='utf-8-sig')):
  p=(root/entry['path']).resolve()

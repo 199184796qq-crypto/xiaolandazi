@@ -89,7 +89,12 @@ func (s *Server) prepareContentStrategy(ctx context.Context, tenant, plan int64,
 	if err != nil {
 		return nil, fmt.Errorf("角度返回无效，原始返回已记录，原有策略保留：%w", err)
 	}
-	snapshot := &contentstrategy.Snapshot{Version: 1, Enabled: true, FactsSHA: contentstrategy.SHA(facts), Facts: records, Purposes: purposes.Items, Rows: table.Rows, PromptSources: sources, PurposeRaw: first.Text, AngleRaw: second.Text, Model: second.Model}
+	for _, row := range table.Rows {
+		if err := contentstrategy.ValidateRowPolicy(row, true); err != nil {
+			return nil, fmt.Errorf("角度条件协议无效，原始返回已记录：%w", err)
+		}
+	}
+	snapshot := &contentstrategy.Snapshot{Version: 2, Enabled: true, FactsSHA: contentstrategy.SHA(facts), Facts: records, Purposes: purposes.Items, Rows: table.Rows, PromptSources: sources, PurposeRaw: first.Text, AngleRaw: second.Text, Model: second.Model}
 	return snapshot, nil
 }
 

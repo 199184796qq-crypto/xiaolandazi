@@ -91,6 +91,11 @@ func TestInterruptPhase1ProviderProbe(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			outputs = append(outputs, map[string]any{"stage": "content_protocol", "strategy": snapshot})
+			t.Logf("content protocol version=%d rows=%d canonical conditions validated", snapshot.Version, len(snapshot.Rows))
+			if os.Getenv("INTERRUPT_PHASE1_SPEECH_PROBE") != "1" {
+				continue
+			}
 			active := contentstrategy.ActiveBenefitFacts(snapshot.Facts, time.Now())
 			guidance, selection, err := snapshot.RenderSelection(contentstrategy.SelectionRequest{Mode: "互动", AllowedFacts: asset.SafeFacts, Question: tc.text, PurposeID: knowledge.PurposeID, ActiveBenefit: len(active) > 0, ActiveFactIDs: active})
 			if err != nil {
