@@ -15,7 +15,7 @@
 - 打断切点、队列优先级、回归桥和连续音流架构没有新增改造。
 
 ## 代码与模板
-实现位于独立 work/interaction-learning-source 工作树，基线 f634de121aedd0a350a5f6e25ecf4f0055e100c4；未覆盖 E:\直播伴播 或另一任务的未提交修改。
+实现位于独立 work/interaction-learning-source 工作树。发布前合并最新 0feaa29（运行源码 4028d82），保留连续音流、合成字幕及内容池保存导航；未覆盖 E:\直播伴播 或其他工作树中的未提交修改。
 
 新增模板统一存放 configs/prompts/anchor-style：
 interaction-answer-assessment.md、interaction-learning-simulation.md、
@@ -31,8 +31,21 @@ fact-purpose-angle-review.md 同步改为违规表达复核，移除了事实真
 本地模拟页面验证了用户可以确认并采用 fact 分类的纠正；该页面不连接生产。
 
 MySQL 集成测试仍未完成：独立测试库创建被当前数据库账号拒绝（1044）。未使用生产业务表替代测试。
-本次没有发布应用、修改线上 Agent 或写入线上商品事实，不能声称生产流程已经验收。
+初次本地验证阶段没有发布。现已按下方记录部署；未修改线上 Agent 或写入线上商品事实，登录态实播流程仍待验收。
 
 ## 交接注意
 发布前重新核对线上版本，与其他正在开发/发布的任务合并差异；不要从旧基线覆盖整套线上版本。打包包含完整提示词目录并核对哈希。
 过去探针因测试输入遗漏“默认抽真空”而产生的缺条件判定，不能作为否认该业务事实的依据。后续测试使用用户本次确认的包装事实。
+
+## 已发布：2026-10-09 20:01
+版本：20261009-200057-interaction-user-authority。
+基线：20261009-193445-continuous-audio-captions。
+发布源码：301fcc3（功能 3a5502e + 部署脚本）。
+管理服务实际进程 467399 的 SHA256：89f4dc6c1be5a189cf48b7cf5725a4a05c4901c0f52222ddf185276885675db3，与包和发布文件相同。
+完整母版 66 文件验证成功；review_metadata_json、pending_review_key 与 uk_agent_learning_pending_review 已迁移并确认存在。
+Core PID 464738、Gateway PID 464740 保留，二进制也保留；其他移动网页、旧桌面哈希资源保留。
+三个服务 active，healthz 均 200。公网桌面入口 index-tLfe2Q3_.js SHA256 为 27eb78261ade27dc564fc73c42d5aa923cea65e083f691fc459e4c4bd37e4d5d，与包一致，包含用户事实审核权界面。公共配置与 Core 代理健康接口 200。新纠正接口及已有合成字幕接口未登录返回 401。
+合并后管理服务全套 Go 测试和桌面构建通过。MySQL 独立库事务用例仍因权限限制未运行；生产迁移成功不替代该用例。
+首次候选发布在切换前因 inventory-devices.csv 仅换行差异被拦下；重打包排除此无关文件后成功。没有激活失败候选版本，也没有覆盖原模板。
+本次没有启动用户直播、试听、播放设备或代用户采用纠正，不能以健康检查替代真实实播验收。
+归档包 SHA256：adf84d867f935a677a46adefc6408937c4e2552cb4ea2197d494ce03c557c5ba。
