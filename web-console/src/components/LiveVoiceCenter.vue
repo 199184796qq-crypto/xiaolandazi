@@ -482,38 +482,47 @@ async function chooseSample(event: Event) {
 
 async function submitClone() {
   if (!canSubmitClone.value || (cloneMode.value === 'upload' && !sampleFile.value)) return
+  const scope = nameScope
+  const mode = cloneMode.value, targetModel = cloneModel.value
+  const name = cloneName.value.trim(), avatarKey = selectedAvatarKey.value
+  const description = voiceDescription.value.trim()
+  const file = sampleFile.value, duration = sampleDuration.value
   selecting.value = true
   error.value = ''
   cloneError.value = ''
   notice.value = ''
   try {
-    if (cloneMode.value === 'design') {
+    if (mode === 'design') {
       cloneStage.value = 'processing'
-      await designLiveVoiceProfile({ name: cloneName.value.trim(), model: libraryModel.value, description: voiceDescription.value.trim(), avatar_key: selectedAvatarKey.value })
+      await designLiveVoiceProfile({ name, model: targetModel, description, avatar_key: avatarKey })
     } else {
-    cloneStage.value = 'uploading'
-    const uploaded = await uploadLiveMediaAsset(sampleFile.value!, 'voice_sample', {
-      durationMs: Math.round(sampleDuration.value * 1000),
-      metadata: {
-        source: 'voice_center_clone', avatar_key: selectedAvatarKey.value,
-        expected_duration_seconds: Number(sampleDuration.value.toFixed(2)),
-      },
-    })
-    cloneStage.value = 'processing'
-    await cloneLiveVoiceProfile({
-      name: cloneName.value.trim(), sample_asset_id: uploaded.asset.id,
-      model: cloneModel.value, avatar_key: selectedAvatarKey.value,
-    })
+      cloneStage.value = 'uploading'
+      const uploaded = await uploadLiveMediaAsset(file!, 'voice_sample', {
+        durationMs: Math.round(duration * 1000),
+        metadata: {
+          source: 'voice_center_clone', avatar_key: avatarKey,
+          expected_duration_seconds: Number(duration.toFixed(2)),
+        },
+      })
+      if (scope !== nameScope) return
+      cloneStage.value = 'processing'
+      await cloneLiveVoiceProfile({
+        name, sample_asset_id: uploaded.asset.id,
+        model: targetModel, avatar_key: avatarKey,
+      })
     }
+    if (scope !== nameScope) return
     cloneOpen.value = false
     resetCloneForm()
     await load()
-    notice.value = '声音已转为规范格式并生成成功，现在可以试听或用于当前直播间。'
+    if (scope !== nameScope) return
+    notice.value = '专属声音已生成成功，现在可以试听或用于当前直播间。'
   } catch (err) {
+    if (scope !== nameScope) return
     cloneError.value = err instanceof Error ? err.message : '声音生成失败'
     cloneStage.value = 'idle'
   } finally {
-    selecting.value = false
+    if (scope === nameScope) selecting.value = false
   }
 }
 
@@ -655,7 +664,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
       <div v-if="cloneOpen" class="voice-dialog-overlay" @click.self="closeCloneDialog">
         <section class="voice-dialog" role="dialog" aria-modal="true" :aria-label="cloneMode === 'design' ? '描述生成声音' : '上传声音样本'">
           <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>{{ cloneMode === 'design' ? '描述生成声音' : '上传声音样本' }}</h3><p>{{ cloneMode === 'design' ? '描述声音的性别、年龄、音调和风格，创建专属主播声音。' : '选择头像、填写名称，再上传单人清晰录音：推荐 10–20 秒，最长 60 秒。' }}</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
-          <div class="dialog-quota"><span>自定义声音名额</span><b>已用 {{ quota.used }} 个，共 {{ quota.limit }} 个</b></div>
+          <div class="dialog-quota"><span>自定义声音名额（所有模型共用）</span><b>已用 {{ quota.used }} 个，共 {{ quota.limit }} 个</b></div>
           <fieldset class="avatar-picker" :disabled="selecting">
             <legend>选择头像</legend>
             <button v-for="avatar in avatarOptions" :key="avatar.key" type="button" :class="['avatar-option', 'tone-' + avatar.tone, { active: selectedAvatarKey === avatar.key }]" @click="selectedAvatarKey = avatar.key"><span>{{ avatar.emoji }}</span><small>{{ avatar.label }}</small></button>
