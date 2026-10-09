@@ -2,6 +2,7 @@
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
@@ -9,6 +10,7 @@ import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
+import InteractionLearningPanel from '../components/InteractionLearningPanel.vue'
 import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
@@ -238,6 +240,8 @@ type StrategyMode =
   | 'strategy'
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
+const interactionReviewRoute=useRoute()
+watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='knowledge'}, {immediate:true})
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -5943,6 +5947,7 @@ onBeforeUnmount(() => {
         </section>
 
         <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @open-save="openContentPoolSave" />
+        <InteractionLearningPanel :room-id="activeRoomId" :plan-id="currentRoomPlanId" :compact="activeMode !== 'memory'" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>

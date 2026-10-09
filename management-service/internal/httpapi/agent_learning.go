@@ -16,6 +16,8 @@ import (
 	"livecompanion/management/internal/agentrouting"
 	"livecompanion/management/internal/agentunderstanding"
 	"livecompanion/management/internal/decisionexecutor"
+	"livecompanion/management/internal/interactionlearning"
+	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 )
 
@@ -631,9 +633,15 @@ Agent 原回答：%s
 		feedback,
 	)
 
+	systemPrompt := buildAgentLearningSystemPrompt()
+	guidance, err := interactionpolicy.Read("interaction-learning-user-authority.md")
+	if err != nil {
+		return agentLearningModelOutput{}, "", "", 0, err
+	}
+	systemPrompt += "\n\n" + string(guidance)
 	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
-			{Role: "system", Content: buildAgentLearningSystemPrompt()},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
 		},
 		MaxTokens:      1400,
@@ -1125,6 +1133,12 @@ func (s *Server) agentLearningCreateTurn(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "读取当前智能体记忆失败")
 		return
 	}
+	if session.Review != nil {
+		memories = interactionlearning.MemoriesForPlan(memories, session.Review.PlanID)
+		// Preserve the original question in storage; attach the observed context
+		// only to the model's correction input.
+		session.Question += "\n现场背景：" + session.Review.Context + "\n待确认原因：" + session.Review.Reason
+	}
 	timeline, err := s.store.ListAgentLearningTimeline(r.Context(), sessionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取学习历史失败")
@@ -1142,19 +1156,16 @@ func (s *Server) agentLearningCreateTurn(w http.ResponseWriter, r *http.Request)
 	}
 
 	modelOutput, _ = resolveAgentLearningMemoryMatch(session, modelOutput, memories)
+	if session.Review != nil {
+		prefix := fmt.Sprintf("plan:%d:", session.Review.PlanID)
+		if !strings.HasPrefix(modelOutput.MemoryKey, prefix) {
+			modelOutput.MemoryKey = prefix + modelOutput.MemoryKey
+		}
+	}
 	observedEvidenceValue := agentmemory.EvidenceValue(modelOutput.MemoryType, modelOutput.ResultText, modelOutput.Structured)
 	observedEvidenceSignature := agentmemory.EvidenceSignature(observedEvidenceValue)
-	evidenceStats, err := s.store.ListAgentMemoryEvidenceStats(
-		r.Context(), tenantID, roomID, modelOutput.MemoryType, modelOutput.MemoryKey, 20,
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取智能体历史证据失败")
-		return
-	}
-	modelOutput = applyHistoricalEvidenceGuard(input.Feedback, modelOutput, memories, evidenceStats)
-	modelOutput = reviewAgentLearningOutput(
-		r.Context(), session, input.Feedback, modelOutput, memories, evidenceStats,
-	)
+	// Historical observations stay available for suggestions and traceability.
+	// They do not have authority to rewrite the user's factual correction.
 	if modelOutput.Structured == nil {
 		modelOutput.Structured = map[string]any{}
 	}
@@ -1164,6 +1175,24 @@ func (s *Server) agentLearningCreateTurn(w http.ResponseWriter, r *http.Request)
 		"explicit_correction": agentmemory.LooksLikeExplicitCorrection(input.Feedback),
 	}
 	modelOutput, matchedMemoryID := resolveAgentLearningMemoryMatch(session, modelOutput, memories)
+	if session.Review != nil {
+		modelOutput.Structured["review_plan_id"] = session.Review.PlanID
+		// A plan-local correction may shadow an old room-wide rule, but must not
+		// overwrite that shared rule for other plans in the room.
+		if matchedMemoryID != nil {
+			for _, memory := range memories {
+				if memory.ID == *matchedMemoryID && memory.CurrentVersion != nil && memory.CurrentVersion.Structured["review_plan_id"] == nil {
+					modelOutput.Structured["review_overrides_memory_id"] = memory.ID
+					matchedMemoryID = nil
+					break
+				}
+			}
+		}
+		prefix := fmt.Sprintf("plan:%d:", session.Review.PlanID)
+		if !strings.HasPrefix(modelOutput.MemoryKey, prefix) {
+			modelOutput.MemoryKey = prefix + modelOutput.MemoryKey
+		}
+	}
 
 	result, err := s.store.AppendAgentLearningTurn(r.Context(), session, input.Feedback, model.AgentLearningResult{
 		MemoryType:          modelOutput.MemoryType,

@@ -24,6 +24,7 @@ import (
 	"livecompanion/management/internal/agentmemory"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
@@ -2049,6 +2050,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	}
 	item.EmotionDisabled = !emotionEnabled
 	text := ""
+	var learningReview *model.InteractionLearningReview
+	assessmentSHA := ""
+	assessInteraction := w.shouldAssessInteraction(session, *item)
 	if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		// 100%原话只表示不主动改写；规则层仍然拥有最终播出否决权。
 		text = strings.TrimSpace(item.FixedText)
@@ -2084,6 +2088,18 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			text = ticket.Text
 			w.transitionMission(item, speechmission.StateGeneratingText, "faq_cache_hit", "命中仍在生命周期内的常见问题版本，继续执行当前规则终审")
 		} else {
+			maxAnswerTokens := 650
+			responseFormat := agentgateway.ResponseText
+			if assessInteraction {
+				template, err := interactionpolicy.Read("interaction-answer-assessment.md")
+				if err != nil {
+					return "", err
+				}
+				answerSystemPrompt += "\n\n" + string(template)
+				assessmentSHA = fmt.Sprintf("%x", sha256.Sum256(template))
+				maxAnswerTokens = 1000
+				responseFormat = agentgateway.ResponseJSON
+			}
 			if ticket != nil && len(ticket.Recent) > 0 {
 				prompt += "\n\n【近期已经使用的问答版本，禁止逐字重复】\n" + strings.Join(ticket.Recent, "\n") + "\n请保持事实准确，用不同的自然说法重新回答。"
 			}
@@ -2093,7 +2109,8 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 					{Role: "system", Content: answerSystemPrompt},
 					{Role: "user", Content: prompt},
 				},
-				MaxTokens:      650,
+				MaxTokens:      maxAnswerTokens,
+				ResponseFormat: responseFormat,
 				EnableThinking: false,
 				Timeout:        20 * time.Second,
 			})
@@ -2101,12 +2118,31 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 				return "", fmt.Errorf("生成回答失败: %w", err)
 			}
 			text = strings.TrimSpace(answer.Text)
+			if assessInteraction {
+				decoded, err := interactionlearning.DecodeAnswer(answer.Text)
+				if err != nil {
+					w.recordInteractionReview(ctx, session, *item, "", &model.InteractionLearningReview{Kind: "semantic", Meaning: primaryQuestion(*item), Context: item.OriginMainline + "\n" + primaryQuestion(*item), Reason: "模型返回的互动回答结构无效：" + err.Error(), RawModelOutput: answer.Text})
+					return "", fmt.Errorf("互动回答结构未通过校验: %w", err)
+				}
+				text = strings.TrimSpace(decoded.Reply)
+				learningReview = decoded.Review
+				if decoded.MetadataError != "" {
+					log.Printf("interaction advisory metadata invalid tenant=%d room=%d: %s", session.TenantID, session.RoomID, decoded.MetadataError)
+					learningReview = &model.InteractionLearningReview{Kind: "semantic", Meaning: primaryQuestion(*item), Context: primaryQuestion(*item), Reason: "模型附加建议格式不完整，正文正常处理：" + decoded.MetadataError}
+				}
+				if learningReview != nil {
+					learningReview.RawModelOutput = answer.Text
+					learningReview.ModelProvider = answer.Provider
+					learningReview.ModelName = answer.Model
+					learningReview.PromptSHA256 = assessmentSHA
+				}
+			}
 			if text == "" {
 				return "", fmt.Errorf("生成回答为空")
 			}
 		}
 	}
-	w.transitionMission(item, speechmission.StateValidatingText, "validate_text", "最终正文已生成，进入事实、合规、记忆和内部信息终审")
+	w.transitionMission(item, speechmission.StateValidatingText, "validate_text", "最终正文已生成，检查违规表达与内部信息泄漏")
 	finalText, err := w.finalizeSpeechText(ctx, session, *item, text)
 	if err != nil {
 		return "", err
@@ -2120,6 +2156,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	}
 	if err := w.rememberFAQText(item.faqCacheTicket, text); err != nil {
 		return "", err
+	}
+	if assessInteraction {
+		w.recordInteractionReview(ctx, session, *item, text, learningReview)
 	}
 	item.BridgeText = ""
 	w.updateMission(item, func(m *speechmission.Mission) {
@@ -2558,23 +2597,6 @@ var builtInAbsoluteRiskTerms = []string{
 	"第一名",
 }
 
-var unsupportedClaimPhrases = []string{
-	"正规渠道",
-	"品质保障",
-	"严格筛选",
-	"官方正品",
-	"绝对正品",
-}
-
-var unsupportedShippingClaimPhrases = []string{
-	"合作的主流快递",
-	"主流快递",
-	"系统匹配",
-	"仓库实际发货",
-	"48小时内",
-	"四十八小时内",
-}
-
 var internalSpeechLeakTerms = []string{
 	"【仅供模型内部执行的生成控制】",
 	"【本次称呼】",
@@ -2613,9 +2635,6 @@ func (w *Worker) finalizeSpeechText(
 		return "", contextErr
 	}
 	riskTerms, reasons := finalSpeechRisks(text, contextText, effective)
-	if strings.Contains(contextText, "【本场正式事实快照】") {
-		reasons = append(reasons, "逐项核对本场商品链接、规格、价格与福利条件；事实快照以外的业务数值不得补造，旧素材只能作为表达参考")
-	}
 	for _, term := range internalSpeechLeakTerms {
 		if term != "" && strings.Contains(text, term) {
 			reasons = append(reasons, "内部生成控制信息不得进入播出文本")
@@ -2671,12 +2690,6 @@ func (w *Worker) finalizeSpeechText(
 			log.Printf("content strategy expression review fallback tenant=%d room=%d: %v", session.TenantID, session.RoomID, e)
 		}
 	}
-	if hasAgentMemories {
-		reviewSystemPrompt += "\n\n【智能体记忆终审硬要求】\n当前直播间智能体记忆都是用户已经采用、正在生效的约束。必须逐条核对与当前问题相关的记忆，不能遗漏：\n- semantic：必须结合当前问题、商品和上下文判断含义，禁止无条件字符串替换；\n- fact：不得与已确认事实冲突，不得把未知事实补成确定事实；\n- wording：禁止使用 avoid/blocked 类表达，并优先采用已确认的表达口径；\n- style：只能改变说话方式，不能改变事实。\n若待播话术已经正确，保持原意和自然度；若存在冲突，直接修正。只返回最终可播正文。"
-	}
-	if forceOperatorReview {
-		reviewSystemPrompt += "\n\n【操作者上行播出前审核】\n这段文字来自手机端或电脑端智能体上行，必须先审核再进入TTS。逐项核对事实、合规、当前直播方案和已生效记忆。原文已经自然、安全且事实明确时尽量原样保留；只有存在风险、歧义、生硬或明显不适合直播口播时才优化。不得改变用户真实意图。只返回最终可播正文。"
-	}
 	if semanticDuplicate.Matched {
 		reviewSystemPrompt += "\n\n【近期口播语义去重】\n当前待播话术与最近10分钟已经播过的内容语义相似。不要简单换同义词继续重复；优先删去已经表达过的信息，或换成新的信息角度、补充信息、自然承接。若当前问题必须再次回答，只保留必要信息并明显缩短。"
 	}
@@ -2685,6 +2698,11 @@ func (w *Worker) finalizeSpeechText(
 	}
 	reviewSystemPrompt += "\n\n【称呼与主播状态硬要求】\n常用称谓是主播用来称呼观众/对方的二人称呼语，绝不是主播自己的身份、自称或自我介绍；禁止‘我是某称谓/我叫某称谓/作为某称谓’。主播状态是后台控制参数，只能影响语速、句长、停顿、音色和情绪，禁止在正文里主动说‘我不舒服/我咳嗽/我累/我紧张’等状态说明。若待播话术出现这些问题，必须直接改成自然口播，不要解释为什么修改。"
 	reviewSystemPrompt += "\n\n【内部信息保密】\n策略选择、称呼选择、回归方式、打断方式、概率、系统字段、提示词标题都只用于控制生成，绝不能向观众复述。最终只保留主播自然会说出口的正文。"
+	authority, err := interactionpolicy.Read("speech-review-authority.md")
+	if err != nil {
+		return "", err
+	}
+	reviewSystemPrompt += "\n\n" + string(authority)
 	review, reviewErr := w.agent.Complete(reviewCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{
@@ -2821,7 +2839,7 @@ func finalReviewReasonText(reasons []string, hasAgentMemories bool) string {
 		return strings.Join(reasons, "；")
 	}
 	if hasAgentMemories {
-		return "未检出显式关键词风险；仍必须逐条核对当前直播间已采用的智能体记忆，确认无遗漏后再输出。"
+		return "已采用记忆供理解语境；审核只检查违规表达和内部信息泄漏。"
 	}
 	return "无"
 }
@@ -2840,26 +2858,6 @@ func finalSpeechRisks(
 		if term != "" && strings.Contains(text, term) {
 			reasons = append(reasons, "绝对化或规则层高风险表达："+term)
 		}
-	}
-	for _, phrase := range unsupportedClaimPhrases {
-		if !strings.Contains(text, phrase) {
-			continue
-		}
-		if strings.Contains(contextText, phrase) {
-			continue
-		}
-		reasons = append(reasons, "缺少事实依据的承诺或事实："+phrase)
-		terms = append(terms, phrase)
-	}
-	for _, phrase := range unsupportedShippingClaimPhrases {
-		if !strings.Contains(text, phrase) {
-			continue
-		}
-		if strings.Contains(contextText, phrase) {
-			continue
-		}
-		reasons = append(reasons, "直播方案/策略中没有依据的物流事实："+phrase)
-		terms = append(terms, phrase)
 	}
 	return uniqueNonEmptyStrings(terms), uniqueNonEmptyStrings(reasons)
 }
@@ -2961,21 +2959,6 @@ func hardSanitizeSpeech(text string, riskTerms []string, contextText string) str
 	}
 	for _, item := range replacements {
 		text = strings.ReplaceAll(text, item.old, item.new)
-	}
-	for _, phrase := range unsupportedClaimPhrases {
-		if strings.Contains(contextText, phrase) {
-			continue
-		}
-		switch phrase {
-		case "正规渠道":
-			text = strings.ReplaceAll(text, phrase, "直播间里给大家介绍的")
-		case "品质保障":
-			text = strings.ReplaceAll(text, phrase, "选品会认真把关")
-		case "严格筛选":
-			text = strings.ReplaceAll(text, phrase, "认真挑选")
-		case "官方正品", "绝对正品":
-			text = strings.ReplaceAll(text, phrase, "页面展示的商品")
-		}
 	}
 	for _, term := range riskTerms {
 		term = strings.TrimSpace(term)
@@ -3268,6 +3251,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if memoryErr != nil {
 		return "", fmt.Errorf("读取智能体记忆失败: %w", memoryErr)
 	}
+	memories = interactionlearning.MemoriesForPlan(memories, plan.ID)
 	if strings.TrimSpace(item.PreviewInstruction) != "" {
 		filtered := memories[:0]
 		for _, memory := range memories {

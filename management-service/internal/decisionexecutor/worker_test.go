@@ -551,7 +551,7 @@ func TestOperatorVerbatimStillRequiresModelReview(t *testing.T) {
 	if got != "欢迎新来的朋友们，先看看今天直播间正在讲的内容" {
 		t.Fatalf("expected reviewed text, got %q", got)
 	}
-	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[0].Content, "操作者上行播出前审核") {
+	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[0].Content, "不得审核或裁决商品事实真假") {
 		t.Fatalf("operator review guard missing: %#v", agent.requests)
 	}
 }
@@ -1282,14 +1282,19 @@ func TestAnswerPromptReadsLatestDynamicFactsAndHostStyle(t *testing.T) {
 	}
 }
 
-func TestFinalSpeechRisksFlagsUnsupportedShippingClaims(t *testing.T) {
+func TestFinalSpeechRisksLeavesBusinessFactsToUser(t *testing.T) {
 	text := "咱们默认安排合作的主流快递，一般48小时内会发出，具体由系统匹配和仓库实际发货为准。"
-	_, reasons := finalSpeechRisks(text, "观众问：发什么快递", model.LiveEffectivePolicy{})
-	joined := strings.Join(reasons, "；")
-	for _, want := range []string{"主流快递", "48小时内", "系统匹配", "仓库实际发货"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("shipping risk %q not detected: %s", want, joined)
-		}
+	terms, reasons := finalSpeechRisks(text, "观众问：发什么快递", model.LiveEffectivePolicy{})
+	if len(reasons) != 0 {
+		t.Fatalf("business facts were audited: %#v", reasons)
+	}
+	want := "咱们默认抽真空，正规渠道，品质保障，发京东物流"
+	if got := hardSanitizeSpeech(want, terms, ""); got != want {
+		t.Fatalf("business facts were rewritten: %q", got)
+	}
+	_, reasons = finalSpeechRisks("全网最低，百分百满意", "", model.LiveEffectivePolicy{})
+	if len(reasons) == 0 {
+		t.Fatal("compliance expression checks were removed")
 	}
 }
 

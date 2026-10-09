@@ -24,21 +24,22 @@ const (
 )
 
 type AgentLearningSession struct {
-	ID                  int64      `json:"id"`
-	TenantID            int64      `json:"tenant_id"`
-	RoomID              int64      `json:"room_id"`
-	SourceType          string     `json:"source_type"`
-	SourceRef           string     `json:"source_ref,omitempty"`
-	Question            string     `json:"question,omitempty"`
-	OriginalReply       string     `json:"original_reply,omitempty"`
-	Target              string     `json:"target,omitempty"`
-	Status              string     `json:"status"`
-	MemoryType          string     `json:"memory_type,omitempty"`
-	AdoptedMemoryItemID *int64     `json:"adopted_memory_item_id,omitempty"`
-	CreatedByUserID     int64      `json:"created_by_user_id"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
-	AdoptedAt           *time.Time `json:"adopted_at,omitempty"`
+	Review              *InteractionLearningReview `json:"review,omitempty"`
+	ID                  int64                      `json:"id"`
+	TenantID            int64                      `json:"tenant_id"`
+	RoomID              int64                      `json:"room_id"`
+	SourceType          string                     `json:"source_type"`
+	SourceRef           string                     `json:"source_ref,omitempty"`
+	Question            string                     `json:"question,omitempty"`
+	OriginalReply       string                     `json:"original_reply,omitempty"`
+	Target              string                     `json:"target,omitempty"`
+	Status              string                     `json:"status"`
+	MemoryType          string                     `json:"memory_type,omitempty"`
+	AdoptedMemoryItemID *int64                     `json:"adopted_memory_item_id,omitempty"`
+	CreatedByUserID     int64                      `json:"created_by_user_id"`
+	CreatedAt           time.Time                  `json:"created_at"`
+	UpdatedAt           time.Time                  `json:"updated_at"`
+	AdoptedAt           *time.Time                 `json:"adopted_at,omitempty"`
 }
 
 type AgentLearningEvidence struct {

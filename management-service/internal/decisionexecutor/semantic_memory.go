@@ -147,6 +147,15 @@ func selectRankedMemories(memories []model.AgentMemoryItem, ranked []semanticMem
 	}
 
 	result := make([]model.AgentMemoryItem, 0, len(selected)+4)
+	// The small, user-confirmed correction table must not disappear because a
+	// shorter keyword got a low embedding score. Scope is filtered beforehand.
+	pinned := 0
+	for i, m := range memories {
+		if m.MemoryType == model.AgentMemoryTypeSemantic && m.CurrentVersion != nil && m.CurrentVersion.Structured["review_plan_id"] != nil && pinned < 32 {
+			selected[i] = struct{}{}
+			pinned++
+		}
+	}
 	for index, memory := range memories {
 		if memory.MemoryType == model.AgentMemoryTypeFact {
 			result = append(result, memory)

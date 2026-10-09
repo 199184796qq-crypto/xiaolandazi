@@ -21,6 +21,9 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			return fmt.Errorf("apply live runtime schema: %w", err)
 		}
 	}
+	if err := s.MigrateInteractionLearning(ctx); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		table string
 		name  string

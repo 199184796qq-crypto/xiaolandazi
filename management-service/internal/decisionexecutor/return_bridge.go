@@ -13,6 +13,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
 	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
@@ -183,6 +184,11 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil {
 		return err
 	}
+	planID := int64(0)
+	if current, e := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID); e == nil {
+		planID = current.ID
+	}
+	memories = interactionlearning.MemoriesForPlan(memories, planID)
 	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories)})
 	result, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second})
 	if err != nil {

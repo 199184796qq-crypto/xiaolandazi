@@ -28,15 +28,21 @@ func normalizeAgentMemoryKey(value string) string {
 
 func scanAgentLearningSession(scanner interface{ Scan(...any) error }) (model.AgentLearningSession, error) {
 	var item model.AgentLearningSession
+	var reviewRaw []byte
 	var adoptedMemoryItemID sql.NullInt64
 	var adoptedAt sql.NullTime
 	err := scanner.Scan(
 		&item.ID, &item.TenantID, &item.RoomID, &item.SourceType, &item.SourceRef,
 		&item.Question, &item.OriginalReply, &item.Target, &item.Status, &item.MemoryType,
-		&adoptedMemoryItemID, &item.CreatedByUserID, &item.CreatedAt, &item.UpdatedAt, &adoptedAt,
+		&adoptedMemoryItemID, &item.CreatedByUserID, &item.CreatedAt, &item.UpdatedAt, &adoptedAt, &reviewRaw,
 	)
 	if err != nil {
 		return model.AgentLearningSession{}, err
+	}
+	if len(reviewRaw) > 0 {
+		if err := json.Unmarshal(reviewRaw, &item.Review); err != nil {
+			return model.AgentLearningSession{}, fmt.Errorf("decode interaction review: %w", err)
+		}
 	}
 	if adoptedMemoryItemID.Valid {
 		value := adoptedMemoryItemID.Int64
@@ -52,7 +58,7 @@ func scanAgentLearningSession(scanner interface{ Scan(...any) error }) (model.Ag
 const agentLearningSessionColumns = `
 	id, tenant_id, room_id, source_type, source_ref, question, original_reply,
 	target, status, memory_type, adopted_memory_item_id, created_by_user_id,
-	created_at, updated_at, adopted_at
+	created_at, updated_at, adopted_at, review_metadata_json
 `
 
 func (s *Store) CreateAgentLearningSession(
@@ -778,7 +784,7 @@ func (s *Store) AdoptAgentLearningSession(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_learning_sessions
 		SET status='adopted', memory_type=?, target=?, adopted_memory_item_id=?,
-			adopted_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
+			adopted_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3), pending_review_key=NULL
 		WHERE id=?
 	`, latest.MemoryType, latest.Target, memoryItemID, session.ID); err != nil {
 		return model.AdoptAgentLearningOutput{}, err

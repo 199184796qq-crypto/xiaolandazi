@@ -2563,6 +2563,7 @@ export interface LivePolicyTestResult {
 export type AgentMemoryType = 'semantic' | 'fact' | 'wording' | 'style' | string
 
 export interface AgentLearningSession {
+	 review?: { plan_id: number; kind: 'semantic' | 'missing_fact'; meaning: string; context: string; observed_context?: string; reason: string; suggested_rule: string; needed_facts: string[]; occurrences: number }
   id: number
   tenant_id: number
   room_id: number

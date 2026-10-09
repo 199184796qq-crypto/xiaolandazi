@@ -809,7 +809,10 @@ CREATE TABLE IF NOT EXISTS agent_learning_sessions (
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     adopted_at DATETIME(3) NULL,
+    review_metadata_json JSON NULL,
+    pending_review_key CHAR(64) NULL,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_learning_pending_review (pending_review_key),
     KEY idx_agent_learning_session_room (tenant_id, room_id, status, updated_at),
     KEY idx_agent_learning_session_creator (created_by_user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

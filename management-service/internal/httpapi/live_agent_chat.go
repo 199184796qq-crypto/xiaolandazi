@@ -12,6 +12,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
@@ -157,6 +158,11 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取当前直播间智能体记忆失败")
 		return
 	}
+	planID := int64(0)
+	if p, e := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); e == nil {
+		planID = p.ID
+	}
+	memories = interactionlearning.MemoriesForPlan(memories, planID)
 	if memoryPrompt := agentmemory.Prompt(memories); memoryPrompt != "" {
 		effectivePolicyPrompt = strings.TrimSpace(effectivePolicyPrompt + "\n\n" + memoryPrompt)
 	}
