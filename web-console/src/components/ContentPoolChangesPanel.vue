@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { PoolStatus } from '../contentPools'
 const props = defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean }>()
-const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean] }>()
+const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; openSave: [] }>()
 const title = computed(() => ({ needs_update: '资料有待更新内容', updating: '正在更新受影响内容', failed: '内容更新未完成', ready: '内容已更新，核对后保存智能体', synced: '商品专属内容与公共内容已保存' }[props.status?.state || 'needs_update']))
 const groups = computed(() => {
   const result = new Map<string, { label: string; rows: NonNullable<PoolStatus['changes']> }>()
@@ -19,9 +19,11 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
 <template>
   <section class="pool-notice" role="status">
     <div class="pool-head"><strong>{{ status ? title : '正在读取方案资料状态…' }}</strong><div>
-      <button v-if="status && status.state !== 'synced'" type="button" :disabled="submitting || status.state === 'updating' || status.state === 'ready'" @click="emit('update')">{{ submitting || status.state === 'updating' ? '更新中…' : status.state === 'failed' ? '重试更新' : status.state === 'ready' ? '等待保存智能体' : '更新受影响内容' }}</button>
+      <button v-if="status?.state === 'ready'" type="button" @click="emit('openSave')">去保存智能体</button>
+      <button v-else-if="status && status.state !== 'synced'" type="button" :disabled="submitting || status.state === 'updating'" @click="emit('update')">{{ submitting || status.state === 'updating' ? '更新中…' : status.state === 'failed' ? '重试更新' : '更新受影响内容' }}</button>
       <button type="button" @click="emit('refresh')">刷新</button>
     </div></div>
+    <p v-if="status?.state === 'ready'">下一步：展开核对内容，点击“去保存智能体”，再点击“保存智能体方案”。</p>
     <p v-if="error" class="pool-error">{{ error }}</p>
     <p v-if="status?.state === 'updating'">{{ status.job?.stage || '正在准备内容' }}</p>
     <p v-if="status?.state === 'failed'" class="pool-error">{{ status.job?.error }}</p>

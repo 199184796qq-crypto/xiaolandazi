@@ -375,6 +375,23 @@ const poolStatus = contentPools.status
 const poolError = contentPools.error
 const poolSubmitting = contentPools.submitting
 const poolPreview = contentPools.preview
+const contentPoolSaveTarget = ref<HTMLElement | null>(null)
+const contentPoolSaveRequested = ref(false)
+function focusContentPoolSaveTarget() {
+  const target = contentPoolSaveTarget.value
+  if (!contentPoolSaveRequested.value || !target) return
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target.querySelector<HTMLButtonElement>('.control-save')?.focus({ preventScroll: true })
+  contentPoolSaveRequested.value = false
+}
+async function openContentPoolSave() {
+  contentPoolSaveRequested.value = true
+  activeMode.value = 'fullshow'
+  await nextTick()
+  focusContentPoolSaveTarget()
+}
+watch(contentPoolSaveTarget, focusContentPoolSaveTarget, { flush: 'post' })
+watch([activeRoomId, currentRoomPlanId], () => { contentPoolSaveRequested.value = false })
 const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
@@ -5925,7 +5942,7 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" />
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @open-save="openContentPoolSave" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
@@ -7239,7 +7256,7 @@ onBeforeUnmount(() => {
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
-            <header class="strategy-agent-control-header">
+            <header ref="contentPoolSaveTarget" class="strategy-agent-control-header">
               <AnchorControlBar
                 :initializing="anchorInitializing"
                 :initialize-progress="anchorInitializationProgress"
