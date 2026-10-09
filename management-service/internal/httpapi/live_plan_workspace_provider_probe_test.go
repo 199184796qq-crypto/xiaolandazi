@@ -64,6 +64,37 @@ func TestSavedPlanWorkspaceReadOnlyProbe(t *testing.T) {
 		t.Fatalf("actual old version first selection failed: tasks=%d status=%s", len(queue), state.Status)
 	}
 	t.Logf("saved original wheel=%d matching_tasks=%d first_mainline_selection=ready no_model_no_audio=true", scheme.WheelID, len(queue))
+	if os.Getenv("CONTENT_POOL_WORKSPACE_PROBE") == "1" {
+		before := contentPoolSetID(version.GenerationContext)
+		status, e := s.contentPoolStatus(ctx, 14, version.PlanID, 26, true)
+		if e != nil {
+			t.Fatal(e)
+		}
+		source, e := s.captureContentSources(ctx, 14, version.PlanID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		rows := map[string]bool{}
+		for _, r := range source.Rows {
+			rows[r.ID] = true
+		}
+		facts := contentFactsFromSafety(source, safety.SafeFacts)
+		if len(facts) == 0 {
+			t.Fatal("source atomization empty")
+		}
+		for _, f := range facts {
+			for _, id := range f.Sources {
+				if !rows[id] {
+					t.Fatalf("safe fact %s has unknown original source %s", f.ID, id)
+				}
+			}
+		}
+		after, e := store.GetPublishedLiveAgentPlanVersionForRoom(ctx, 14, 26)
+		if e != nil || after.ID != version.ID || contentPoolSetID(after.GenerationContext) != before {
+			t.Fatal("workspace altered saved version", e)
+		}
+		t.Logf("workspace_state=%s active_products=%d benefits=%d original_source_atoms=%d saved_version_unchanged=%d no_model_no_audio=true", status.State, len(status.Products), len(status.Benefits), len(facts), after.ID)
+	}
 	checks := s.liveAgentPlanWorkspaceChecks(ctx, 14, version.PlanID, &version)
 	raw, _ := json.Marshal(checks)
 	t.Logf("tenant=14 room=26 version=%d scoped_facts=%d compatible=true immutable=true checks=%s", version.ID, len(focus.Facts), raw)
