@@ -70,9 +70,21 @@ func p0AuditEvent(state *anchorcycle.State, candidate anchorcycle.Candidate) mod
 		if used >= state.P0MaxRewrites {
 			decision = "skipped"
 		}
+		if state.Surface == "formal_live" {
+			decision = "skipped"
+		}
 	}
 	raw, _ := json.Marshal(candidate.P0Report)
-	return model.P0AuditEvent{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: candidate.ID, RuleSHA256: candidate.P0Report.SHA256, Phase: state.Phase, TaskKey: state.Task().Key, RewriteNumber: candidate.P0RewriteNumber, Decision: decision, Text: candidate.Text, RawResponse: candidate.RawText, Prompt: candidate.Prompt, Report: raw}
+	var report map[string]any
+	_ = json.Unmarshal(raw, &report)
+	if state.Delivery != nil {
+		report["runtime_session_id"] = state.Delivery.RuntimeSessionID
+	}
+	if len(candidate.ContentWarnings) > 0 {
+		report["warnings"] = candidate.ContentWarnings
+	}
+	raw, _ = json.Marshal(report)
+	return model.P0AuditEvent{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: candidate.ID, RuleSHA256: candidate.P0Report.SHA256, Phase: state.Phase, TaskKey: state.Task().Key, RewriteNumber: candidate.P0RewriteNumber, Decision: decision, Text: cycleVoiceText(candidate), RawResponse: candidate.RawText, Prompt: candidate.Prompt, Report: raw}
 }
 
 func (s *Server) persistP0Audit(ctx context.Context, state *anchorcycle.State, candidate anchorcycle.Candidate) error {

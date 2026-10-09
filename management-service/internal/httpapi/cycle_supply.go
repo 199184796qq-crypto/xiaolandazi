@@ -6,6 +6,7 @@ import (
 	"errors"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/productionbuffer"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ type cycleSupply struct {
 	reserved         int64
 	playedMS         float64
 	delivered        map[string]bool
+	skippedVoices    map[string]bool
 	started          map[string]time.Time
 	done             chan struct{}
 	workers          sync.WaitGroup
@@ -55,7 +57,7 @@ func newCycleSupply(s *Server, parent context.Context, state *anchorcycle.State)
 	if state.Config.TTS != nil {
 		high = int64(state.Config.TTS.BufferSeconds) * 1000
 	}
-	p := &cycleSupply{s: s, ctx: ctx, cancel: cancel, initial: state, policy: productionbuffer.New(high, state.StreamControlled), delivered: map[string]bool{}, started: map[string]time.Time{}, done: make(chan struct{})}
+	p := &cycleSupply{s: s, ctx: ctx, cancel: cancel, initial: state, policy: productionbuffer.New(high, state.StreamControlled), delivered: map[string]bool{}, skippedVoices: map[string]bool{}, started: map[string]time.Time{}, done: make(chan struct{})}
 	p.ctx = context.WithValue(ctx, productionGateKey{}, p.wait)
 	p.advance = func(ctx context.Context, current *anchorcycle.State) (*anchorcycle.State, error) {
 		return s.advanceAnchorCycle(ctx, current.TenantID, current.PlanID, current.RoomID, current.RunID, current.Revision)
@@ -149,6 +151,11 @@ func (p *cycleSupply) stock(ctx context.Context) (productionbuffer.Stock, int64,
 	delivered := map[string]bool{}
 	for id, v := range p.delivered {
 		delivered[id] = v
+	}
+	for id, v := range p.skippedVoices {
+		if v {
+			delivered[id] = true
+		}
 	}
 	p.mu.Unlock()
 	units, ms := int64(0), int64(0)
@@ -258,11 +265,27 @@ func (p *cycleSupply) textLoop() {
 			return
 		}
 		if state.Uncertain || state.Phase == "ended" || state.Status == "failed" || strings.HasSuffix(state.Status, "_blocked") {
+			if state.Surface == "formal_live" {
+				if err = p.skipGeneration(state, "text", state.Error); err != nil {
+					if errors.Is(err, anchorcycle.ErrStale) || errors.Is(err, anchorcycle.ErrBusy) {
+						_ = supplyWait(p.ctx, 300*time.Millisecond)
+						continue
+					}
+					p.fail(err)
+					return
+				}
+				_ = supplyWait(p.ctx, 300*time.Millisecond)
+				continue
+			}
 			p.fail(errors.New("本场生成暂停：" + state.Error))
 			return
 		}
 		if p.beforeText != nil {
 			if err = p.beforeText(p.ctx, state); err != nil {
+				if state.Surface == "formal_live" && (errors.Is(err, anchorcycle.ErrStale) || errors.Is(err, anchorcycle.ErrBusy)) {
+					_ = supplyWait(p.ctx, 300*time.Millisecond)
+					continue
+				}
 				p.fail(err)
 				return
 			}
@@ -283,11 +306,53 @@ func (p *cycleSupply) textLoop() {
 		}
 		p.mu.Unlock()
 		if err != nil {
+			if state.Surface == "formal_live" {
+				if errors.Is(err, anchorcycle.ErrBusy) || errors.Is(err, anchorcycle.ErrStale) {
+					_ = supplyWait(p.ctx, 300*time.Millisecond)
+					continue
+				}
+				current, e := p.load()
+				if e == nil {
+					e = p.skipGeneration(current, "generation", err.Error())
+				}
+				if e == nil || errors.Is(e, anchorcycle.ErrStale) || errors.Is(e, anchorcycle.ErrBusy) {
+					_ = supplyWait(p.ctx, 500*time.Millisecond)
+					continue
+				}
+				p.fail(e)
+				return
+			}
 			p.fail(err)
 			return
 		}
 		p.receive(latest)
 	}
+}
+func (p *cycleSupply) skipGeneration(state *anchorcycle.State, stage, reason string) error {
+	token := anchorcycle.ID()
+	if err := p.s.anchorCycles.Acquire(p.ctx, state.TenantID, state.PlanID, state.RoomID, token); err != nil {
+		return err
+	}
+	defer p.s.anchorCycles.Release(context.WithoutCancel(p.ctx), state.TenantID, state.PlanID, state.RoomID, token)
+	current, err := p.load()
+	if err != nil {
+		return err
+	}
+	current.SkipGeneration(stage, reason)
+	if err = p.s.anchorCycles.Save(p.ctx, current); err != nil {
+		return err
+	}
+	p.s.queueGenerationSkip(current, stage, reason)
+	p.receive(current)
+	return nil
+}
+func (p *cycleSupply) skipVoice(state *anchorcycle.State, id, reason string) {
+	p.mu.Lock()
+	p.skippedVoices[id] = true
+	delete(p.started, id)
+	p.mu.Unlock()
+	log.Printf("mainline segment skipped tenant=%d room=%d candidate=%s reason=%s", state.TenantID, state.RoomID, id, reason)
+	p.s.queueGenerationSkip(state, "voice", reason, id)
 }
 func (p *cycleSupply) voiceLoop() {
 	for p.ctx.Err() == nil {
@@ -304,6 +369,12 @@ func (p *cycleSupply) voiceLoop() {
 		p.receive(state)
 		for i := range state.Accepted {
 			segment := &state.Accepted[i]
+			p.mu.Lock()
+			skipped := p.skippedVoices[segment.Selected.ID]
+			p.mu.Unlock()
+			if skipped {
+				continue
+			}
 			if segment.Voice == nil || segment.Voice.Status != "ready" {
 				next = segment
 				break
@@ -316,17 +387,30 @@ func (p *cycleSupply) voiceLoop() {
 			continue
 		}
 		if next.Voice != nil && next.Voice.Status == "failed" {
+			if state.Surface == "formal_live" {
+				p.skipVoice(state, next.Selected.ID, next.Voice.Error)
+				continue
+			}
 			p.fail(errors.New(next.Voice.Error))
 			return
 		}
 		p.reportStartup("generating_voice")
 		voice, err := p.synthesize(p.progressContext("voice"), state, next.Selected.ID)
-		if err != nil {
+		if err != nil || voice == nil || voice.Status != "ready" {
+			if state.Surface == "formal_live" {
+				reason := "本段声音未完整生成"
+				if err != nil {
+					reason = err.Error()
+				} else if voice != nil && voice.Error != "" {
+					reason = voice.Error
+				}
+				p.skipVoice(state, next.Selected.ID, reason)
+				continue
+			}
+			if err == nil {
+				err = errors.New("声音未完整生成，后台供料已暂停")
+			}
 			p.fail(err)
-			return
-		}
-		if voice == nil || voice.Status != "ready" {
-			p.fail(errors.New("声音未完整生成，后台供料已暂停"))
 			return
 		}
 		p.reportStartup("voice_ready")
@@ -343,6 +427,10 @@ func (p *cycleSupply) voiceLoop() {
 		}
 		if p.onReady != nil {
 			if err = p.onReady(p.ctx, state, *next); err != nil {
+				if state.Surface == "formal_live" && p.ctx.Err() == nil {
+					p.skipVoice(state, next.Selected.ID, "下发本段失败："+err.Error())
+					continue
+				}
 				p.fail(err)
 				return
 			}

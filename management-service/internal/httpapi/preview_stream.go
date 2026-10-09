@@ -180,7 +180,7 @@ type previewPCMClip struct {
 
 func (s *Server) loadPreviewPCM(ctx context.Context, state *anchorcycle.State, index int) (previewPCMClip, error) {
 	segment := state.Accepted[index]
-	if err := checkCycleVoiceP0(state, segment); err != nil {
+	if err := checkCycleVoiceBinding(state, segment); err != nil {
 		return previewPCMClip{}, err
 	}
 	key, bucket, err := cycleVoiceCacheObject(segment.Voice)

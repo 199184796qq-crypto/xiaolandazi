@@ -5,32 +5,27 @@ import (
 	"testing"
 )
 
-func TestPriceHooksMustResolveNextAdoptionAndCannotChain(t *testing.T) {
+func TestUnresolvedPricePromiseRecordsFeedbackAndKeepsRunning(t *testing.T) {
 	s := rollingFixture(t, 2)
 	add(t, &s, "下一段我来算两桶多少钱，先看这个规格。", 70)
-	if s.PriceHook == nil || s.Task().SellingPoint != "塑价兑现" || s.PriceHook.DueIndex != 2 {
-		t.Fatal(s)
+	if s.PriceHook == nil || s.Task().SellingPoint != "塑价兑现" {
+		t.Fatal("promise scheduling lost")
 	}
-	before, task := s.BodyCount, s.Task()
-	if add(t, &s, "下一轮我再给你算账，先看看油坊。", 99) || s.BodyCount != before || s.Task() != task {
-		t.Fatal("unresolved hook advanced")
-	}
-	if !add(t, &s, "一桶129块9，两桶合计259块8，账就在这里。", 70) || s.PriceHook != nil || s.BodyCount != 1 || len(s.Used) != 1 {
-		t.Fatal(s)
-	}
-	if s.PriceHookAllowed() {
-		t.Fatal("price hooks too frequent")
+	if !add(t, &s, "下一轮我再给你算账，先看看油坊。", 99) || len(s.Accepted[1].Selected.ContentWarnings) == 0 || s.Status == "content_blocked" {
+		t.Fatal("unresolved promise stopped supply")
 	}
 }
 
-func TestUnresolvedPriceCapDoesNotSelectBestInvalidDraft(t *testing.T) {
+func TestUnresolvedPriceNotesDoNotExhaustFatalRetryLimit(t *testing.T) {
 	s := rollingFixture(t, 2)
 	s.Config.MaxRetries = 1
-	add(t, &s, "下一段我来算两桶多少钱。", 70)
-	add(t, &s, "计算器拿出来，下一轮再算账。", 99)
-	add(t, &s, "一桶129块9，另一款119块9，都划算。", 90)
-	if s.Status != "content_blocked" || len(s.Accepted) != 1 || len(s.Attempts) != 2 || s.PriceHook == nil {
-		t.Fatal(s)
+	for _, text := range []string{"下一段我来算两桶多少钱。", "计算器拿出来，下一轮再算账。", "一桶129块9，另一款119块9，都划算。"} {
+		if !add(t, &s, text, 99) {
+			t.Fatal("writing note stopped adoption")
+		}
+	}
+	if s.Status == "content_blocked" || len(s.Accepted) != 3 {
+		t.Fatal("price prose became a content stop")
 	}
 }
 

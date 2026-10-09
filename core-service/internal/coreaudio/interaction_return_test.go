@@ -8,6 +8,7 @@ import (
 	"livecompanion/core/internal/roomaudio"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,11 +102,17 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 				t.Fatal("early receiver terminal released shared interaction")
 			}
 			interruptFrames, bridgeFrames := 0, 0
+			var lastSequence uint64
+			var lastPTS int64
 			returned := false
 			deadline := time.After(3 * time.Second)
 			for !returned {
 				select {
 				case frame := <-frames:
+					if lastSequence > 0 && (frame.Sequence != lastSequence+1 || frame.PTSMS != lastPTS+roomaudio.FrameDurationMS) {
+						t.Fatal("answer/bridge/mainline are not one continuous PCM stream", frame)
+					}
+					lastSequence, lastPTS = frame.Sequence, frame.PTSMS
 					if frame.Source == roomaudio.SourceInterrupt {
 						interruptFrames++
 						if len(frame.PCM) > 0 && frame.PCM[0] == 7 {
@@ -122,6 +129,24 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 			}
 			if interruptFrames < 70 || (bridge && bridgeFrames != 10) || (!bridge && bridgeFrames != 0) {
 				t.Fatalf("core frames=%d bridge=%d", interruptFrames, bridgeFrames)
+			}
+			srt := engine.CompositeSRT(92)
+			if strings.Contains(srt, "刚才说到用法") != bridge || !strings.Contains(srt, "完整的核心互动回答") || !strings.Contains(srt, "实际回归内容") {
+				t.Fatal("composite subtitles lost actual output", srt)
+			}
+			var bridgeMS int64
+			var priorEnd int64
+			for _, cue := range engine.CompositeCues(92) {
+				if cue.StartMS < priorEnd || cue.EndMS <= cue.StartMS {
+					t.Fatal("overlapping output SRT", cue)
+				}
+				priorEnd = cue.EndMS
+				if strings.Contains(cue.Text, "刚才说到用法") {
+					bridgeMS += cue.EndMS - cue.StartMS
+				}
+			}
+			if bridge && bridgeMS != 200 {
+				t.Fatal("bridge subtitle not aligned with PCM duration", bridgeMS)
 			}
 			if _, err := client.InteractionReturnSnapshot(context.Background(), 92, plan.TaskID); err == nil {
 				t.Fatal("late bridge still accepted after mainline return")

@@ -38,6 +38,9 @@ func TestPreviewGenerationCanFinishSentenceButPlaybackCutsAtBudget(t *testing.T)
 	state.PreviewLimitMS = 120000
 	text := "哥哥姐姐们，我们家就在这个镇上啊。人少可以选择半只装！喜欢就去链接看看。"
 	segment.Selected.Text = text
+	if err := state.CheckP0Candidate(&segment.Selected); err != nil {
+		t.Fatal(err)
+	}
 	format := testPCMFormat(1000)
 	raw, timeline, duration, err := combineGeneratedVoiceWAV("preview", []generatedVoiceWAVPiece{
 		{text: "哥哥姐姐们，我们家就在这个镇上啊。", fmtData: format, pcmData: make([]byte, 7000), byteRate: 1000},
@@ -54,7 +57,7 @@ func TestPreviewGenerationCanFinishSentenceButPlaybackCutsAtBudget(t *testing.T)
 	segment.Voice = &anchorcycle.VoiceAsset{Status: "ready", PreviewTruncated: true, PreviewReservedMS: 10000, Bundle: model.LiveAgentPlanVersionVariant{
 		Text: generatedText, AudioDurationMS: generatedMS, Timeline: generatedTimeline,
 	}}
-	if err := checkCycleVoiceP0(state, segment); err != nil {
+	if err := checkCycleVoiceBinding(state, segment); err != nil {
 		t.Fatal("generated safe prefix must remain downloadable", err)
 	}
 	projected := cycleVoiceForBrowser(httptest.NewRequest("GET", "/", nil), state, segment.Selected.ID, segment.Voice)
@@ -73,12 +76,12 @@ func TestPreviewGenerationCanFinishSentenceButPlaybackCutsAtBudget(t *testing.T)
 		t.Fatal("download crossed playback deadline", actual, err)
 	}
 	segment.Voice.PreviewTruncated = false
-	if checkCycleVoiceP0(state, segment) == nil {
+	if checkCycleVoiceBinding(state, segment) == nil {
 		t.Fatal("unmarked mismatched audio was accepted")
 	}
 	segment.Voice.PreviewTruncated = true
 	segment.Voice.Bundle.Text = "另一份声音。"
-	if checkCycleVoiceP0(state, segment) == nil {
+	if checkCycleVoiceBinding(state, segment) == nil {
 		t.Fatal("foreign audio prefix was accepted")
 	}
 }

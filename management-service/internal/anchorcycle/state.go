@@ -87,28 +87,31 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
-	ProductAudit     *ProductAudit           `json:"product_audit,omitempty"`
-	ID               string                  `json:"id"`
-	Attempt          int                     `json:"attempt"`
-	Text             string                  `json:"text"`
-	RawText          string                  `json:"raw_text,omitempty"`
-	OutputText       string                  `json:"output_text,omitempty"`
-	PunctuationEdits []PunctuationEdit       `json:"punctuation_edits,omitempty"`
-	ScoreScope       string                  `json:"score_scope,omitempty"`
-	PostprocessMS    int64                   `json:"postprocess_ms,omitempty"`
-	Prompt           string                  `json:"prompt"`
-	Score            anchorstylescore.Result `json:"score"`
-	GenerationMS     int64                   `json:"generation_ms"`
-	EventIDs         []string                `json:"event_ids"`
-	RetryFeedback    string                  `json:"retry_feedback,omitempty"`
-	CreatedAt        string                  `json:"created_at"`
-	PriceCheck       PriceCheck              `json:"price_check,omitempty"`
-	ContentIssue     string                  `json:"content_issue,omitempty"`
-	CacheID          string                  `json:"cache_id,omitempty"`
-	P0Report         *contentguard.Report    `json:"p0_report,omitempty"`
-	P0Patch          *contentguard.Repair    `json:"p0_patch,omitempty"`
-	P0PatchError     string                  `json:"p0_patch_error,omitempty"`
-	P0RewriteNumber  int                     `json:"p0_rewrite_number,omitempty"`
+	P0CheckedInputSHA string                  `json:"p0_checked_input_sha,omitempty"`
+	P0ApprovedTextSHA string                  `json:"p0_approved_text_sha,omitempty"`
+	ContentWarnings   []string                `json:"content_warnings,omitempty"`
+	ProductAudit      *ProductAudit           `json:"product_audit,omitempty"`
+	ID                string                  `json:"id"`
+	Attempt           int                     `json:"attempt"`
+	Text              string                  `json:"text"`
+	RawText           string                  `json:"raw_text,omitempty"`
+	OutputText        string                  `json:"output_text,omitempty"`
+	PunctuationEdits  []PunctuationEdit       `json:"punctuation_edits,omitempty"`
+	ScoreScope        string                  `json:"score_scope,omitempty"`
+	PostprocessMS     int64                   `json:"postprocess_ms,omitempty"`
+	Prompt            string                  `json:"prompt"`
+	Score             anchorstylescore.Result `json:"score"`
+	GenerationMS      int64                   `json:"generation_ms"`
+	EventIDs          []string                `json:"event_ids"`
+	RetryFeedback     string                  `json:"retry_feedback,omitempty"`
+	CreatedAt         string                  `json:"created_at"`
+	PriceCheck        PriceCheck              `json:"price_check,omitempty"`
+	ContentIssue      string                  `json:"content_issue,omitempty"`
+	CacheID           string                  `json:"cache_id,omitempty"`
+	P0Report          *contentguard.Report    `json:"p0_report,omitempty"`
+	P0Patch           *contentguard.Repair    `json:"p0_patch,omitempty"`
+	P0PatchError      string                  `json:"p0_patch_error,omitempty"`
+	P0RewriteNumber   int                     `json:"p0_rewrite_number,omitempty"`
 }
 type Segment struct {
 	Phase          string                         `json:"phase"`
@@ -130,6 +133,7 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	GenerationSkips           []GenerationSkip               `json:"generation_skips,omitempty"`
 	ContentStrategy           *contentstrategy.Snapshot      `json:"content_strategy,omitempty"`
 	ProductFocus              *ProductFocus                  `json:"product_focus,omitempty"`
 	AcceptedOffset            int                            `json:"accepted_offset,omitempty"`
@@ -375,6 +379,31 @@ func (s *State) chooseNext() {
 			chosen = i
 		}
 	}
+	if chosen < 0 && s.Surface == "formal_live" {
+		// Spacing and previously rejected prose cannot stop a live producer.
+		// Pick the next eligible task and generate fresh text; never revive a rejected draft.
+		for offset := 1; offset <= len(s.Queue); offset++ {
+			i := (s.TaskIndex + offset) % len(s.Queue)
+			if s.productTaskEligible(s.Queue[i]) && !s.P0SkippedKeys[s.Queue[i].Key] {
+				chosen = i
+				break
+			}
+		}
+		if chosen < 0 {
+			s.P0SkippedKeys = map[string]bool{}
+			for offset := 1; offset <= len(s.Queue); offset++ {
+				i := (s.TaskIndex + offset) % len(s.Queue)
+				if s.productTaskEligible(s.Queue[i]) {
+					chosen = i
+					break
+				}
+			}
+		}
+		if chosen >= 0 {
+			s.Status, s.Error, s.TaskIndex = "ready", "", chosen
+			return
+		}
+	}
 	if chosen < 0 {
 		available := false
 		for _, task := range s.Queue {
@@ -458,47 +487,19 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		return false, nil
 	}
 	s.P0PendingRepair = nil
-	if problem := s.productCandidateIssue(c); problem != "" {
-		c.ContentIssue = problem
-		s.Attempts = append(s.Attempts, c)
-		if len(s.Attempts) > s.Config.MaxRetries {
-			s.Status = "content_blocked"
-			s.Error = "商品范围检查仍未通过，候选已保留；暂停生成，不把混讲内容转成声音"
-			s.FeedbackPending = false
-		}
-		return false, nil
-	}
+	// Non-compliance writing requirements are feedback, never fatal approval gates.
 	c.PriceCheck = InspectPrice(c.Text, s.Task())
-	openingProblem := s.openingHookProblem(c.Text)
-	if s.Phase == "opening" && s.PendingOpeningHook != nil && s.PendingOpeningHook.CheckForbidden {
-		for _, hit := range c.Score.Stats.Forbidden {
-			if hit.Count > 0 {
-				openingProblem = "opening_hook_forbidden_word"
-				break
-			}
-		}
+	if issue := s.openingHookProblem(c.Text); issue != "" {
+		c.ContentWarnings = append(c.ContentWarnings, issue)
 	}
-	if openingProblem != "" {
-		c.ContentIssue = openingProblem
-		s.Attempts = append(s.Attempts, c)
-		if len(s.Attempts) > s.Config.MaxRetries {
-			s.Status = "content_blocked"
-			s.Error = "开场钩子检查仍未通过（" + openingProblem + "），已保留候选并暂停；不继续消耗请求"
-			s.FeedbackPending = false
-		}
-		return false, nil
-	}
-	if problem := s.priceObligationProblem(c.PriceCheck); problem != "" {
-		c.ContentIssue = problem
-		s.Attempts = append(s.Attempts, c)
-		if len(s.Attempts) > s.Config.MaxRetries {
-			s.Status = "content_blocked"
-			s.Error = "塑价承接仍未兑现，已保留全部候选并暂停；不会反复预告或继续请求"
-			s.FeedbackPending = false
-		}
-		return false, nil
+	if issue := s.priceObligationProblem(c.PriceCheck); issue != "" {
+		c.ContentWarnings = append(c.ContentWarnings, issue)
 	}
 	s.Attempts = append(s.Attempts, c)
+	if s.Surface == "formal_live" && c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) > s.Config.MaxRetries {
+		s.SkipGeneration("style_generation", "生成重试后仍未达到本场风格标尺")
+		return false, nil
+	}
 	if c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) <= s.Config.MaxRetries {
 		return false, nil
 	}

@@ -68,3 +68,25 @@ func (s *Server) streamRoomCompositePCM(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 }
+
+func (s *Server) getRoomCompositeSRT(w http.ResponseWriter, r *http.Request) {
+	roomID, ok := pathID(w, r, "roomID")
+	if !ok {
+		return
+	}
+	tenant, ok := requiredTenantID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.rooms.Get(r.Context(), &tenant, roomID); err != nil {
+		writeError(w, 404, "room not found")
+		return
+	}
+	if s.roomAudio == nil {
+		writeError(w, 503, "audio engine unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(s.roomAudio.CompositeSRT(roomID)))
+}

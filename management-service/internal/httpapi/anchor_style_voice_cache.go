@@ -92,9 +92,6 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 	}
 	gap := max(5, state.Config.CombinationGap, state.Config.PointGap)
 	for _, e := range entries {
-		if state.CheckP0Voice(e.Text) != nil || state.CheckP0Voice(e.OutputText) != nil || (e.Bundle.Text != "" && state.CheckP0Voice(e.Bundle.Text) != nil) {
-			continue
-		}
 		if !cacheUsable(e, oss) || anchorstylescore.Measure(e.OutputText, b).Chars > state.Config.MaxChars || anchorcycle.InspectPrice(e.Text, state.Task()).Hook != "" {
 			continue
 		}
@@ -114,13 +111,10 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 }
 
 func (s *Server) cachedCycleVoice(ctx context.Context, state *anchorcycle.State, segment anchorcycle.Segment) (*anchorcycle.VoiceAsset, error) {
-	if err := state.CheckProductVoice(segment); err != nil {
-		return nil, err
-	}
 	if state.PreviewLimitMS > 0 {
 		return nil, nil
 	}
-	if err := state.CheckP0Voice(cycleVoiceText(segment.Selected)); err != nil {
+	if err := state.CheckApprovedText(segment.Selected, cycleVoiceText(segment.Selected)); err != nil {
 		return nil, err
 	}
 	if s.anchorVoiceCache == nil {
@@ -136,7 +130,7 @@ func (s *Server) cachedCycleVoice(ctx context.Context, state *anchorcycle.State,
 	}
 	text := cycleVoiceText(segment.Selected)
 	for _, e := range entries {
-		if e.OutputText != text || e.Bundle.Text != text || state.CheckP0Voice(e.Text) != nil || !cacheUsable(e, oss) {
+		if e.OutputText != text || e.Bundle.Text != text || !cacheUsable(e, oss) {
 			continue
 		}
 		url, err := oss.SignedURL(ctx, e.ObjectPrefix+"audio.wav", time.Until(e.ExpiresAt))
@@ -162,10 +156,7 @@ func cycleVoiceText(candidate anchorcycle.Candidate) string {
 }
 
 func (s *Server) archiveCycleVoiceCache(ctx context.Context, state *anchorcycle.State, segment anchorcycle.Segment, raw []byte, timeline []model.LiveAgentPlanTimelineSegment, duration int64, retentions ...time.Duration) (*anchorcycle.VoiceAsset, error) {
-	if err := state.CheckProductVoice(segment); err != nil {
-		return nil, err
-	}
-	if err := state.CheckP0Voice(cycleVoiceText(segment.Selected)); err != nil {
+	if err := state.CheckApprovedText(segment.Selected, cycleVoiceText(segment.Selected)); err != nil {
 		return nil, err
 	}
 	if s.anchorVoiceCache == nil {

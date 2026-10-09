@@ -27,6 +27,7 @@ import {
   getRoomImportantEvents,
   getRoomSessionStats,
   getRoomReview,
+  getRoomCompositeSubtitles,
   resolveRoomSessionDecision,
   getRoomBrain,
   getRoomSpeechRuntime,
@@ -802,11 +803,9 @@ const interruptSpeechDisplay = computed(() => {
   const bridge = interruptSpeech.value.bridge_used
     ? String(interruptSpeech.value.bridge_text || '').trim()
     : ''
-  if (!text || !bridge || !text.endsWith(bridge)) {
-    return { body: text, bridge: '' }
-  }
+  if (!bridge) return { body: text, bridge: '' }
   return {
-    body: text.slice(0, text.length - bridge.length).trimEnd(),
+    body: text.endsWith(bridge) ? text.slice(0, text.length - bridge.length).trimEnd() : text,
     bridge,
   }
 })
@@ -3317,6 +3316,20 @@ async function refreshSessionStats() {
   }
 }
 
+const compositeSubtitleLoading = ref(false)
+async function exportCompositeSubtitles() {
+  if (compositeSubtitleLoading.value) return
+  compositeSubtitleLoading.value = true
+  try {
+    const {srt} = await getRoomCompositeSubtitles(roomId)
+    if (!srt.trim()) { await showAlert('本场还没有实际播放的字幕记录'); return }
+    const url = URL.createObjectURL(new Blob([srt], {type: 'application/x-subrip;charset=utf-8'}))
+    const link = document.createElement('a'); link.href = url; link.download = '直播间' + roomId + '-合成口播.srt'; link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (err) { await showAlert(err instanceof Error ? err.message : '字幕导出失败') }
+  finally { compositeSubtitleLoading.value = false }
+}
+
 async function loadLiveReview() {
   if (liveReviewLoading.value) return
   liveReviewLoading.value = true
@@ -4714,6 +4727,14 @@ onBeforeUnmount(() => {
                 <b>+{{ item.count }}</b>
               </article>
             </div>
+            <div class="live-review-questions production-review-notes">
+              <header><strong>生成与审核记录</strong><span v-if="liveReview.audit_review">场次 {{ liveReview.audit_review.runtime_session_id }}</span></header>
+              <div v-if="liveReview.audit_review_error" class="live-review-empty">{{ liveReview.audit_review_error }}</div>
+              <div v-else-if="!liveReview.audit_review?.items.length" class="live-review-empty">暂无需要复盘的生成或审核问题。</div>
+              <article v-for="item in liveReview.audit_review?.items" :key="item.id">
+                <div><strong>{{ item.reason || '本段未采用' }}</strong><small>{{ formatTime(item.created_at) }} · {{ item.stage }} · {{ item.task_key }}</small><p v-if="item.text">{{ item.text }}</p></div>
+              </article>
+            </div>
           </template>
         </div>
       </section>
@@ -4723,6 +4744,7 @@ onBeforeUnmount(() => {
           <div class="speech-runtime-brand">
             <span class="anchor-live-dot"></span>
             <strong>主播实时口播</strong>
+            <button type="button" class="secondary" :disabled="compositeSubtitleLoading" @click="exportCompositeSubtitles">{{ compositeSubtitleLoading ? '导出中…' : '导出字幕' }}</button>
             <button
               type="button"
               class="speech-local-mute-button"

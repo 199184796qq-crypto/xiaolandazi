@@ -1541,7 +1541,16 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	c.mirrorMu.Unlock()
 
 	segmentID := roomAudioSegmentAt(track.Timeline, startOffsetMS)
-	c.roomAudio.SetMainlineTimeline(program.RoomID, roomAudioSpeechTimeline(track.Timeline))
+	captionTimeline := roomAudioSpeechTimeline(track.Timeline)
+	fallbackCaptionID := ""
+	if len(captionTimeline) == 0 && strings.TrimSpace(track.Text) != "" && track.DurationMS > 0 {
+		// Legacy tracks without sentence timing still use the same output clock.
+		// This is only a caption descriptor, never a newly inferred safe cut.
+		fallbackCaptionID = taskID + "-caption"
+		segmentID = fallbackCaptionID
+		captionTimeline = []roomaudio.SpeechSegment{{SegmentID: fallbackCaptionID, StartMS: 0, EndMS: track.DurationMS, Text: track.Text}}
+	}
+	c.roomAudio.SetMainlineTimeline(program.RoomID, captionTimeline)
 	resumePhase := c.roomAudio.Snapshot(program.RoomID).Phase == roomaudio.PhaseResume
 	if !resumePhase {
 		if _, err := c.roomAudio.StartMainline(program.RoomID, segmentID); err != nil {
@@ -1596,11 +1605,15 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 				}
 			}
 			first = false
+			captionID := roomAudioSegmentAt(track.Timeline, cursorMS)
+			if captionID == "" {
+				captionID = fallbackCaptionID
+			}
 			_, publishErr := c.roomAudio.PublishPCMAt(
 				program.RoomID,
 				roomaudio.SourceMainline,
 				pcm,
-				roomAudioSegmentAt(track.Timeline, cursorMS),
+				captionID,
 				cursorMS,
 			)
 			if publishErr == nil {
@@ -1727,13 +1740,14 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 					runID = program.ID
 				}
 				c.mu.RUnlock()
-				if captain != nil {
-					raw, _ := json.Marshal(map[string]any{"text": bridge, "task_id": taskID})
-					captain.Publish(ctx, messagecaptain.Message{Kind: messagecaptain.ReturnBridgeStarted, RoomID: roomID, RunID: runID, TaskID: taskID, Payload: raw})
-				}
+				c.roomAudio.AppendInterruptSpeechSegment(roomID, roomaudio.SpeechSegment{SegmentID: taskID + "-bridge", StartMS: nextCursorMS, EndMS: nextCursorMS + len(pcm)/roomaudio.PCMBytesPerFrame*roomaudio.FrameDurationMS, Text: bridge})
 				for at := 0; at < len(pcm); at += roomaudio.PCMBytesPerFrame {
 					if err = publishFrame(pcm[at:at+roomaudio.PCMBytesPerFrame], nextCursorMS); err != nil {
 						break
+					}
+					if at == 0 && captain != nil {
+						raw, _ := json.Marshal(map[string]any{"text": bridge, "task_id": taskID})
+						captain.Publish(ctx, messagecaptain.Message{Kind: messagecaptain.ReturnBridgeStarted, RoomID: roomID, RunID: runID, TaskID: taskID, Payload: raw})
 					}
 				}
 				if err != nil {
@@ -1833,8 +1847,8 @@ func roomAudioInteractionTimeline(text string, durationMS int) []roomaudio.Speec
 		}
 		result = append(result, roomaudio.SpeechSegment{
 			SegmentID: fmt.Sprintf("interrupt-%03d", index+1),
-			StartMS:   start,
-			EndMS:     end,
+			StartMS:   start + roomaudio.VoiceGuardHeadMS,
+			EndMS:     end + roomaudio.VoiceGuardHeadMS,
 			Text:      strings.TrimSpace(part),
 		})
 		start = end

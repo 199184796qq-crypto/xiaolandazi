@@ -689,8 +689,8 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	hasGroupLabel := strings.TrimSpace(candidate) != ""
 	hasNames := len(selectedNames) > 0
 	switch kind {
-	case "welcome_batch", "reply_follow":
-		if item.MissionEventCount > 1 {
+	case "welcome_batch", "reply_follow", "welcome_named":
+		if item.MissionEventCount > 1 || len(item.Nicknames) > 1 {
 			if hasNames && hasGroupLabel {
 				return "MIXED"
 			}
@@ -709,11 +709,6 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	case "reply_like":
 		if hasGroupLabel {
 			return "GROUP"
-		}
-		return "NONE"
-	case "welcome_named":
-		if hasNames || hasGroupLabel {
-			return "SINGLE"
 		}
 		return "NONE"
 	case "reply_chat":

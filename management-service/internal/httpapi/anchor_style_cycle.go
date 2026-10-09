@@ -774,26 +774,29 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	} else if retry.Status != "no_issue" {
 		state.Warn("单段回灌不可用，仍按基准重试：" + retry.Error)
 	}
+	candidate.OutputText = cycleVoiceText(candidate)
 	if err = state.CheckP0Candidate(&candidate); err != nil {
 		return nil, errors.New(err.Error())
 	}
-	if candidate.P0Report == nil || candidate.P0Report.Passed {
-		s.auditCycleProductCandidate(ctx, state, &candidate)
-	}
-	if err = s.persistP0Audit(ctx, state, candidate); err != nil {
-		state.P0AuditPending = &candidate
-		state.Busy = false
-		state.Uncertain = true
-		state.Status = "failed"
-		state.Error = "P0审核记录未能保存，原始返回已保留，未采纳；请核对后再开始新场"
-		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
-		defer cancel()
-		if saveErr := s.anchorCycles.Save(persist, state); saveErr != nil {
-			return nil, saveErr
-		}
-		return state, nil
-	}
+	reviewState := *state
 	adopted, err := state.AddCandidate(candidate, b)
+	for _, segment := range state.Accepted {
+		if segment.Selected.ID == candidate.ID {
+			candidate = segment.Selected
+		}
+	}
+	for _, attempt := range state.Attempts {
+		if attempt.ID == candidate.ID {
+			candidate = attempt
+		}
+	}
+	s.queueP0Review(&reviewState, candidate)
+	if len(state.GenerationSkips) > 0 && (len(reviewState.GenerationSkips) == 0 || state.GenerationSkips[len(state.GenerationSkips)-1].CreatedAt != reviewState.GenerationSkips[len(reviewState.GenerationSkips)-1].CreatedAt) {
+		item := state.GenerationSkips[len(state.GenerationSkips)-1]
+		if item.Stage != "text_review" {
+			s.queueGenerationSkip(state, item.Stage, item.Reason)
+		}
+	}
 	reportCycleProgress(ctx, 80)
 	if err != nil {
 		state.Status = "failed"

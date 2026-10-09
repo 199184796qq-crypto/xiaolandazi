@@ -31,13 +31,20 @@ with tarfile.open(sys.argv[1]) as archive:
    names.add(name)
  if not {'bin/core-service','bin/management-service','PRODUCT-CONTENT-POOLS-SOURCE.json','configs/prompts/anchor-style/MANIFEST.json','web/index.html','web-desktop/index.html'}.issubset(names):raise SystemExit('incomplete overlay')
 PY
-NEED_RESTART=$(python3 - "$ARCHIVE" "$MGMT_SHA" <<'PY'
+read -r RESTART_CORE RESTART_MGMT < <(python3 - "$ARCHIVE" "$CORE_SHA" "$MGMT_SHA" <<'PYCODE'
 import json,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
  source=json.load(archive.extractfile('PRODUCT-CONTENT-POOLS-SOURCE.json'))
- print(0 if source['binaries']['management-service']==sys.argv[2] else 1)
-PY
+ print(int(source['binaries']['core-service']!=sys.argv[2]),int(source['binaries']['management-service']!=sys.argv[3]))
+PYCODE
 )
+NEED_RESTART=$((RESTART_CORE || RESTART_MGMT))
+restart_changed_services() {
+ local services=()
+ if [[ "$RESTART_CORE" == 1 ]];then services+=(xiaolan-core);fi
+ if [[ "$RESTART_MGMT" == 1 ]];then services+=(xiaolan-management);fi
+ if (( ${#services[@]} ));then systemctl restart "${services[@]}";fi
+}
 set -a
 source /etc/xiaolan/management.env
 set +a
@@ -84,7 +91,7 @@ for surface in web-customer web-sales;do diff -qr "$EXPECTED/$surface" "$TARGET/
 python3 - "$EXPECTED" "$TARGET" "$ID" "$SHA" <<'PY'
 import datetime,hashlib,json,pathlib,sys
 base,target=map(pathlib.Path,sys.argv[1:3]);old=base/'configs/prompts/anchor-style';root=target/'configs/prompts/anchor-style'
-allowed={'fact-purpose-angle-analysis.md','interaction-scheduling.json','interaction-continuity-generation.md','interaction-purpose-resolution.md','interaction-return-core-answer.md','interaction-return-bridge-generation.md','fact-purpose-selected-generation.md','interaction-task-angle-probe-analysis.md','interaction-task-angle-probe-speech.md','content-pool-fact-scope.md','content-pool-task-generation.md','content-pool-task-review.md'}
+allowed={'fact-purpose-angle-analysis.md','interaction-scheduling.json','interaction-continuity-generation.md','interaction-purpose-resolution.md','interaction-return-core-answer.md','interaction-return-bridge-generation.md','fact-purpose-selected-generation.md','interaction-task-angle-probe-analysis.md','interaction-task-angle-probe-speech.md','content-pool-fact-scope.md','content-pool-task-generation.md','content-pool-task-review.md','interaction-core-content.md'}
 expected=set()
 for entry in json.loads((root/'MANIFEST.json').read_text(encoding='utf-8-sig')):
  p=(root/entry['path']).resolve()
@@ -106,7 +113,7 @@ for rel,sha in source['frontend_files'].items():
  if hashlib.sha256((target/rel).read_bytes()).hexdigest()!=sha:raise SystemExit('frontend hash mismatch: '+rel)
 for name,sha in source['binaries'].items():
  if hashlib.sha256((target/'bin'/name).read_bytes()).hexdigest()!=sha:raise SystemExit('binary hash mismatch')
-metadata={'release_id':sys.argv[3],'base_release':str(base),'scope':'product-common-content-pools-and-source-revision','archive_sha256':sys.argv[4],'source_commit':source['feature_commit'],'deployed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+metadata={'release_id':sys.argv[3],'base_release':str(base),'scope':source.get('scope','product-common-content-pools-and-source-revision'),'archive_sha256':sys.argv[4],'source_commit':source['feature_commit'],'deployed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat()}
 (target/'VERSION.json').write_text(json.dumps(metadata,ensure_ascii=False),encoding='utf-8');(target/'VERSION').write_text(sys.argv[3]+'\n',encoding='ascii')
 print('verified_mother_files='+str(len(actual)))
 PY
@@ -117,7 +124,7 @@ rollback() {
  if [[ "$ACTIVATED" == 1 && "$(readlink -f "$ROOT/current")" == "$TARGET" ]];then
   ln -s "$EXPECTED" "$ROOT/.plan-notice-rollback-$ID"
   mv -Tf "$ROOT/.plan-notice-rollback-$ID" "$ROOT/current"
-  if [[ "$NEED_RESTART" == 1 ]];then systemctl restart xiaolan-management;fi
+  if [[ "$NEED_RESTART" == 1 ]];then restart_changed_services;fi
   echo "rolled back to $EXPECTED" >&2
  fi
  exit "$code"
@@ -128,12 +135,12 @@ if [[ "$NEED_RESTART" == 1 ]];then assert_idle;fi
 ln -s "$TARGET" "$ROOT/.plan-notice-next-$ID"
 ACTIVATED=1
 mv -Tf "$ROOT/.plan-notice-next-$ID" "$ROOT/current"
-if [[ "$NEED_RESTART" == 1 ]];then systemctl restart xiaolan-management;fi
+if [[ "$NEED_RESTART" == 1 ]];then restart_changed_services;fi
 healthy=0
 for _ in $(seq 1 25);do if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8081/healthz >/dev/null;then healthy=1;break;fi;sleep 1;done
 [[ "$healthy" == 1 ]]
 curl -fsS --max-time 2 http://127.0.0.1:8083/healthz >/dev/null
 systemctl is-active --quiet xiaolan-management xiaolan-core xiaolan-xiaozhi
 trap - ERR INT TERM
-printf 'release_id=%s\nprevious=%s\ncurrent=%s\nscope=product-common-content-pools\nsha256=%s\n' "$ID" "$EXPECTED" "$TARGET" "$SHA" > "$ROOT/deployments/$ID.txt"
+printf 'release_id=%s\nprevious=%s\ncurrent=%s\nscope=continuous-mainline-single-stream-captions\nsha256=%s\n' "$ID" "$EXPECTED" "$TARGET" "$SHA" > "$ROOT/deployments/$ID.txt"
 echo "deploy ok: $TARGET"

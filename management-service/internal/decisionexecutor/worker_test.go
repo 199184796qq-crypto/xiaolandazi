@@ -1374,3 +1374,19 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 		}
 	}
 }
+
+func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
+	w := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
+	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}}
+	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{})
+	if plan.Mode == "SINGLE" || len(plan.SelectedNames) != 2 {
+		t.Fatal("merged welcome collapsed into one named viewer", plan)
+	}
+	single := item
+	single.MissionEventCount = 1
+	single.Nicknames = []string{"星夜"}
+	plan = w.buildAddressingPlan(11, single, "", "", model.RoomAddressingPreferences{})
+	if plan.Mode != "SINGLE" || len(plan.SelectedNames) != 1 {
+		t.Fatal("single viewer changed unnecessarily", plan)
+	}
+}

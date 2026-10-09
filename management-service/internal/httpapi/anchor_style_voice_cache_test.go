@@ -72,6 +72,9 @@ func voiceCacheFixture(t *testing.T, handler http.HandlerFunc) (*Server, *anchor
 	state.Config.TTS = &anchorcycle.VoiceConfig{Source: "official", VoiceID: "fixture-voice", Model: "fixture-model", Rate: 1, CacheTTLSeconds: 18000}
 	state.Phase = "body"
 	segment := anchorcycle.Segment{Phase: "body", Task: state.Task(), Selected: anchorcycle.Candidate{ID: "adopted", Text: "哥哥姐姐们，我们家就在这个镇上啊。"}}
+	if err := state.CheckP0Candidate(&segment.Selected); err != nil {
+		t.Fatal(err)
+	}
 	cache := &memoryVoiceCache{}
 	return &Server{assetStorage: registry, anchorVoiceCache: cache}, &state, segment, cache
 }
@@ -113,7 +116,7 @@ func TestCycleOSSCacheCompleteBundleHitAndExpiryCleanup(t *testing.T) {
 		t.Fatal("not reused", hit, err)
 	}
 	segment.Selected.Text = "另一段完全不同的话术。"
-	if hit, err = s.cachedCycleVoice(context.Background(), state, segment); err != nil || hit != nil {
+	if hit, err = s.cachedCycleVoice(context.Background(), state, segment); err == nil || hit != nil {
 		t.Fatal("voice reused for mismatched text", hit, err)
 	}
 	if err = s.cleanupAnchorVoiceCache(context.Background()); err != nil || len(deletes) > 0 {

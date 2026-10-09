@@ -158,28 +158,18 @@ func TestOpeningHookNumbersNormalizeWithoutMandatoryRewrites(t *testing.T) {
 	}
 }
 
-func TestOpeningHookHardFailureCannotBeResurrectedByBestScore(t *testing.T) {
+func TestOpeningHookQuantityMismatchIsRecordedWithoutFatalGate(t *testing.T) {
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
-	s.Config.MaxRetries = 2
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil {
 		t.Fatal(err)
 	}
-	if add(t, &s, "开盖试吃4斤。", 100) {
-		t.Fatal("invalid high score adopted")
-	}
-	if add(t, &s, "开盖试吃5斤，第二稿。", 70) {
-		t.Fatal("below score adopted early")
-	}
-	if !add(t, &s, "开盖试吃五斤，第三稿。", 60) || s.Accepted[0].Selected.Score.OverallScore != 70 {
-		t.Fatal("best valid draft not selected")
-	}
-	if strings.Contains(s.StyleWindow, "4斤") {
-		t.Fatal("invalid draft entered memory")
+	if !add(t, &s, "开盖试吃4斤。", 100) || len(s.Accepted[0].Selected.ContentWarnings) == 0 || s.Status == "content_blocked" {
+		t.Fatal("writing feedback became a fatal review")
 	}
 }
 
-func TestOpeningHookForbiddenUsesAnchorBaselineOnly(t *testing.T) {
+func TestOpeningHookStyleVocabularyDoesNotBecomeExtraContentAudit(t *testing.T) {
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil {
@@ -187,17 +177,10 @@ func TestOpeningHookForbiddenUsesAnchorBaselineOnly(t *testing.T) {
 	}
 	var b anchorstylescore.Baseline
 	b.Forbidden.Addresses = []string{"宝宝们"}
-	text := "宝宝们，开盖试吃5斤。"
-	c := candidate(text, 100)
-	c.Score = anchorstylescore.Score(text, b, "")
-	if ok, _ := s.AddCandidate(c, b); ok || s.Attempts[0].ContentIssue != "opening_hook_forbidden_word" {
-		t.Fatal("forbidden draft adopted")
-	}
-	text = "你们先看，您开盖试吃5斤。"
-	c = candidate(text, 100)
-	c.Score.Stats = anchorstylescore.Score(text, b, "").Stats
+	c := candidate("宝宝们，开盖试吃5斤。", 100)
+	c.Score.Stats = anchorstylescore.Score(c.Text, b, "").Stats
 	if ok, err := s.AddCandidate(c, b); !ok || err != nil {
-		t.Fatal("legal pronouns banned", err)
+		t.Fatal("style vocabulary blocked content", err)
 	}
 }
 

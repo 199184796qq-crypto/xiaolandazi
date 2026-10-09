@@ -30,8 +30,16 @@ func (s *Server) liveRoomReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "读取直播复盘归档失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"summary": summary,
 		"events":  events,
-	})
+	}
+	if s.store != nil {
+		if review, err := s.store.LoadProductionReview(r.Context(), tenantID, roomID); err == nil {
+			response["audit_review"] = review
+		} else if !appdb.IsLiveReviewNotFound(err) {
+			response["audit_review_error"] = "生成与审核记录暂时未能读取，请重试"
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }

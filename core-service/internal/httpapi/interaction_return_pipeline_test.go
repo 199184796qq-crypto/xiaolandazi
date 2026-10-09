@@ -164,6 +164,18 @@ func TestInteractionHTTPBridgePCMAndReturnCompletion(t *testing.T) {
 			if speech.Interrupt.Status != speechruntime.StatusCompleted || !speech.Interrupt.BridgeUsed {
 				t.Fatal("answer/bridge/return incomplete", speech.Interrupt)
 			}
+			srtRequest := httptest.NewRequest("GET", "/internal/v1/rooms/94/composite.srt?tenant_id=7", nil)
+			srtRequest.Header.Set("X-Core-Token", "probe-token")
+			srtResponse := httptest.NewRecorder()
+			s.Handler().ServeHTTP(srtResponse, srtRequest)
+			if srtResponse.Code != 200 || !strings.Contains(srtResponse.Body.String(), "刚才说到用法") || !strings.Contains(srtResponse.Body.String(), "回归后的下一完整单元") {
+				t.Fatal("SRT export missing actual bridge/return", srtResponse.Code, srtResponse.Body.String())
+			}
+			unauthorized := httptest.NewRecorder()
+			s.Handler().ServeHTTP(unauthorized, httptest.NewRequest("GET", "/internal/v1/rooms/94/composite.srt?tenant_id=7", nil))
+			if unauthorized.Code != 401 {
+				t.Fatal("subtitle export bypassed Core authentication", unauthorized.Code)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

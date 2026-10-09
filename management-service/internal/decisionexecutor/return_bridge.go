@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
@@ -41,11 +40,14 @@ type bridgeText struct {
 
 func validateBridge(raw string, plan returnBridgePlan) (bridgeText, error) {
 	var fields map[string]json.RawMessage
-	if err := contentstrategy.Decode(raw, &fields); err != nil || len(fields) != 2 || fields["type"] == nil || fields["text"] == nil || string(fields["type"]) == "null" || string(fields["text"]) == "null" {
+	if err := contentstrategy.Decode(raw, &fields); err != nil || fields["type"] == nil || fields["text"] == nil || string(fields["type"]) == "null" || string(fields["text"]) == "null" {
 		return bridgeText{}, fmt.Errorf("bridge requires type and text")
 	}
 	var output bridgeText
-	if err := contentstrategy.Decode(raw, &output); err != nil {
+	if err := json.Unmarshal(fields["type"], &output.Type); err != nil {
+		return output, err
+	}
+	if err := json.Unmarshal(fields["text"], &output.Text); err != nil {
 		return output, err
 	}
 	allowed := map[string]bool{"recall_continue": true, "same_topic": true, "topic_shift": true, "close_return": true, "reanchor": true, "none": true}
@@ -61,24 +63,6 @@ func validateBridge(raw string, plan returnBridgePlan) (bridgeText, error) {
 	}
 	if n := len([]rune(output.Text)); n < 6 || n > 24 {
 		return output, fmt.Errorf("bridge length outside 6-24 characters")
-	}
-	for _, r := range output.Text {
-		if unicode.IsNumber(r) {
-			return output, fmt.Errorf("bridge adds business numbers")
-		}
-	}
-	for _, term := range []string{"桥接", "收口", "回归点", "优惠券", "包邮", "保证", "赶紧拍", "马上下单", "最后机会"} {
-		if strings.Contains(output.Text, term) {
-			return output, fmt.Errorf("bridge includes instructions or business promotion")
-		}
-	}
-	if strings.Contains(plan.ReplyText, output.Text) {
-		return output, fmt.Errorf("bridge repeats core answer")
-	}
-	for _, unit := range plan.Units {
-		if len([]rune(unit.Text)) >= 6 && strings.Contains(output.Text, strings.TrimSpace(unit.Text)) {
-			return output, fmt.Errorf("bridge repeats return unit")
-		}
 	}
 	return output, nil
 }

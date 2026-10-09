@@ -534,6 +534,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan", s.liveAgentPlanCurrentForRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plans", s.liveAgentPlansForRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/review", s.liveRoomReview)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/composite-subtitles", s.roomCompositeSubtitles)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/room-bindings/{roomID}", s.liveAgentPlanUnbindRoom)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/terms", s.liveAgentPlanUpsertTerm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)

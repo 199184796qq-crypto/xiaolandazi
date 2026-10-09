@@ -601,6 +601,10 @@ export function updateRoomStrategyWeight(
   })
 }
 
+export function getRoomCompositeSubtitles(roomId: number) {
+  return request<{srt: string}>('/api/v1/rooms/' + roomId + '/composite-subtitles')
+}
+
 export function getRoomReview(roomId: number, limit = 5000) {
   return request<LiveReviewResponse>(
     '/api/v1/rooms/' + roomId + '/review?limit=' + encodeURIComponent(String(limit)),

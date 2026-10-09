@@ -99,8 +99,13 @@ func TestP0VoiceAndCacheGateBeforeAnyOSSWork(t *testing.T) {
 	e.Bundle.Text = e.Text
 	e.Bundle.AudioDurationMS = 1000
 	cache.entries = []anchorvoicecache.Entry{e}
-	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) != nil {
-		t.Fatal("unsafe cache candidate reused")
+	cached := s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{})
+	if cached == nil {
+		t.Fatal("cached text must reach final text review")
+	}
+	cachedCandidate := anchorcycle.Candidate{Text: cached.Text, OutputText: cached.OutputText}
+	if err := state.CheckP0Candidate(&cachedCandidate); err != nil || cachedCandidate.P0Report == nil || cachedCandidate.P0Report.Passed {
+		t.Fatal("cached unsafe text escaped final review", err)
 	}
 	segment.Selected.Text = e.Text
 	if _, err := s.cachedCycleVoice(context.Background(), state, segment); err == nil {
@@ -109,17 +114,17 @@ func TestP0VoiceAndCacheGateBeforeAnyOSSWork(t *testing.T) {
 	if _, err := s.archiveCycleVoiceCache(context.Background(), state, segment, []byte("fixture"), nil, 1000); err == nil {
 		t.Fatal("unsafe audio archived")
 	}
-	if checkCycleVoiceP0(state, segment) == nil || calls != 0 || len(cache.reserved) != 0 {
+	if checkCycleVoiceBinding(state, segment) == nil || calls != 0 || len(cache.reserved) != 0 {
 		t.Fatal("unsafe voice performed external work")
 	}
 	segment.Selected.Text = "我们家在这个镇上做油啊。"
 	segment.Voice = &anchorcycle.VoiceAsset{Status: "ready"}
 	segment.Voice.Bundle.Text = e.Text
-	if checkCycleVoiceP0(state, segment) == nil {
+	if checkCycleVoiceBinding(state, segment) == nil {
 		t.Fatal("ready bundle bypassed guard")
 	}
 	state.P0PolicyMD = ""
-	if checkCycleVoiceP0(state, segment) == nil {
+	if checkCycleVoiceBinding(state, segment) == nil {
 		t.Fatal("legacy run bypassed guard")
 	}
 }

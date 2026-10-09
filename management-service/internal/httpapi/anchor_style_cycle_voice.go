@@ -85,7 +85,7 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 		return nil, fmt.Errorf("%s", "没有这份已采纳话术，未采纳候选不会转声音")
 	}
 	segment := &state.Accepted[index]
-	if err := checkCycleVoiceP0(state, *segment); err != nil {
+	if err := checkCycleVoiceBinding(state, *segment); err != nil {
 		return nil, fmt.Errorf("%s", err.Error())
 	}
 	if segment.Voice != nil && segment.Voice.Status == "ready" {
@@ -215,7 +215,7 @@ func (s *Server) anchorStyleCycleVoiceGet(w http.ResponseWriter, r *http.Request
 	}
 	for _, segment := range state.Accepted {
 		if segment.Selected.ID == r.PathValue("candidateID") {
-			if err := checkCycleVoiceP0(state, segment); err != nil {
+			if err := checkCycleVoiceBinding(state, segment); err != nil {
 				writeError(w, 409, err.Error())
 				return
 			}
@@ -260,7 +260,7 @@ func (s *Server) anchorStyleCycleVoiceContent(w http.ResponseWriter, r *http.Req
 		if segment.Selected.ID != r.PathValue("candidateID") {
 			continue
 		}
-		if err := checkCycleVoiceP0(state, segment); err != nil {
+		if err := checkCycleVoiceBinding(state, segment); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -341,13 +341,10 @@ func cycleVoiceCacheObject(voice *anchorcycle.VoiceAsset) (string, string, error
 	return objectKey, bucket, nil
 }
 
-// This gate runs before returning an existing ready bundle or claiming any TTS
-// job. Old runs without a policy cannot bypass it through Redis/OSS cache.
-func checkCycleVoiceP0(state *anchorcycle.State, segment anchorcycle.Segment) error {
-	if err := state.CheckProductVoice(segment); err != nil {
-		return err
-	}
-	if err := state.CheckP0Voice(cycleVoiceText(segment.Selected)); err != nil {
+// Audio stages only verify the completed text receipt and bundle identity.
+// No content review runs during synthesis, cache lookup or playback.
+func checkCycleVoiceBinding(state *anchorcycle.State, segment anchorcycle.Segment) error {
+	if err := state.CheckApprovedText(segment.Selected, cycleVoiceText(segment.Selected)); err != nil {
 		return err
 	}
 	if segment.Voice != nil && segment.Voice.Status == "ready" {
@@ -360,7 +357,7 @@ func checkCycleVoiceP0(state *anchorcycle.State, segment anchorcycle.Segment) er
 		if segment.Voice.Bundle.Text != cycleVoiceText(segment.Selected) && !limitedPrefix {
 			return fmt.Errorf("声音正文与已采纳稿不一致，不输出声音")
 		}
-		return state.CheckP0Voice(segment.Voice.Bundle.Text)
+		return nil
 	}
 	return nil
 }

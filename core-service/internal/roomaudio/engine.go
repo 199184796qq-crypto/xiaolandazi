@@ -109,6 +109,7 @@ type Metrics struct {
 }
 
 type roomState struct {
+	compositeCues            []CompositeCue
 	roomID                   int64
 	phase                    Phase
 	activeSource             Source
@@ -128,10 +129,11 @@ type roomState struct {
 }
 
 type Engine struct {
-	mu           sync.RWMutex
-	rooms        map[int64]*roomState
-	deletedRooms map[int64]struct{}
-	now          func() time.Time
+	mu                sync.RWMutex
+	rooms             map[int64]*roomState
+	deletedRooms      map[int64]struct{}
+	lastCompositeCues map[int64][]CompositeCue
+	now               func() time.Time
 }
 
 func New() *Engine {
@@ -179,6 +181,9 @@ func (e *Engine) StartMainline(roomID int64, segmentID string) (Snapshot, error)
 		return Snapshot{}, errors.New("room has been permanently deleted")
 	}
 	state := e.ensureRoomLocked(roomID)
+	if state.phase == PhaseIdle && state.outputPTSMS == 0 {
+		delete(e.lastCompositeCues, roomID)
+	}
 	state.phase = PhaseMainline
 	state.activeSource = SourceMainline
 	state.mainlineCursorMS = 0
@@ -316,6 +321,12 @@ func (e *Engine) Reset(roomID int64) {
 	e.mu.Lock()
 	state := e.rooms[roomID]
 	if state != nil {
+		if e.lastCompositeCues == nil {
+			e.lastCompositeCues = map[int64][]CompositeCue{}
+		}
+		if len(state.compositeCues) > 0 {
+			e.lastCompositeCues[roomID] = append([]CompositeCue(nil), state.compositeCues...)
+		}
 		for ch := range state.subscribers {
 			close(ch)
 		}
@@ -379,6 +390,7 @@ func (e *Engine) PublishPCMAt(roomID int64, source Source, pcm []byte, segmentID
 	if source == SourceMainline && state.resumeHighlightSegmentID != "" && state.currentSegmentID != state.resumeHighlightSegmentID {
 		state.resumeHighlightSegmentID = ""
 	}
+	recordCompositeCue(state, frame, sourceCursorMS)
 	state.updatedAt = frame.CreatedAt
 	subscribers := make([]chan Frame, 0, len(state.subscribers))
 	for ch := range state.subscribers {

@@ -42,6 +42,9 @@ func TestRealtimeMainlineAdapterProducesSourceNeutralCompleteTrack(t *testing.T)
 		SafePoints:    []model.LiveAgentPlanSafePoint{{ID: "cut1", CutMS: 1000, Score: 100, Grade: "A", Kind: "sentence", SentenceID: "s1"}},
 		AssetManifest: map[string]any{"version": "bundle-v1"},
 	}}}
+	if err := state.CheckP0Candidate(&segment.Selected); err != nil {
+		t.Fatal(err)
+	}
 	state.Accepted = []anchorcycle.Segment{segment}
 	track, err := liveCycleMainlineTrack(&state, segment)
 	if err != nil {

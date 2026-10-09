@@ -159,3 +159,95 @@ func TestSupplyStockCountsTTSOnceAndUsesActualPlayback(t *testing.T) {
 		t.Fatal(stock, remaining, err)
 	}
 }
+
+func (r *supplyRepository) Acquire(context.Context, int64, int64, int64, string) error { return nil }
+func (r *supplyRepository) Release(context.Context, int64, int64, int64, string)       {}
+func (r *supplyRepository) Save(_ context.Context, state *anchorcycle.State) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	raw, _ := json.Marshal(state)
+	var copy anchorcycle.State
+	_ = json.Unmarshal(raw, &copy)
+	r.state = &copy
+	return nil
+}
+func TestFormalSupplySkipsVoiceFailuresAndDeliversNextWithoutCancel(t *testing.T) {
+	state := cycleTestState(t)
+	state.Surface = "formal_live"
+	state.Config.TTS = &anchorcycle.VoiceConfig{Rate: 1, BufferSeconds: 20}
+	state.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{ID: "bad", Text: "本段失败"}}, {Selected: anchorcycle.Candidate{ID: "good", Text: "下一段正常"}}}
+	repo := &supplyRepository{state: &state}
+	p := newCycleSupply(&Server{anchorCycles: repo}, context.Background(), &state)
+	defer p.stop()
+	p.synthesize = func(_ context.Context, _ *anchorcycle.State, id string) (*anchorcycle.VoiceAsset, error) {
+		if id == "bad" {
+			return nil, errors.New("TTS生成失败")
+		}
+		v := &anchorcycle.VoiceAsset{Status: "ready", Bundle: model.LiveAgentPlanVersionVariant{AudioDurationMS: 1000}}
+		repo.mu.Lock()
+		repo.state.Accepted[1].Voice = v
+		repo.mu.Unlock()
+		return v, nil
+	}
+	ready := make(chan string, 1)
+	p.onReady = func(_ context.Context, _ *anchorcycle.State, s anchorcycle.Segment) error {
+		ready <- s.Selected.ID
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { p.voiceLoop(); close(done) }()
+	select {
+	case id := <-ready:
+		if id != "good" {
+			t.Fatal(id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed voice blocked next segment")
+	}
+	p.mu.Lock()
+	failure := p.failure
+	skipped := p.skippedVoices["bad"]
+	p.mu.Unlock()
+	if failure != "" || !skipped || p.ctx.Err() != nil {
+		t.Fatal("segment failure stopped session", failure)
+	}
+	stock, _, err := p.stock(context.Background())
+	if err != nil || stock.PendingCount != 0 {
+		t.Fatal("failed voice kept stock permanently full", stock, err)
+	}
+	p.stop()
+	<-done
+}
+func TestFormalSupplyTextFailureMovesToNextTask(t *testing.T) {
+	state := cycleTestState(t)
+	state.Surface = "formal_live"
+	state.Config.Rolling = true
+	state.Config.PointGap = 0
+	state.Config.CombinationGap = 0
+	state.Status = "content_blocked"
+	state.Error = "本段审核失败"
+	repo := &supplyRepository{state: &state}
+	p := newCycleSupply(&Server{anchorCycles: repo}, context.Background(), &state)
+	defer p.stop()
+	continued := make(chan struct{})
+	p.advance = func(ctx context.Context, s *anchorcycle.State) (*anchorcycle.State, error) {
+		if s.Status != "ready" || len(s.GenerationSkips) != 1 {
+			t.Error("blocked state not recovered")
+		}
+		close(continued)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	done := make(chan struct{})
+	go func() { p.textLoop(); close(done) }()
+	select {
+	case <-continued:
+	case <-time.After(time.Second):
+		t.Fatal("review failure stopped text worker")
+	}
+	if p.ctx.Err() != nil {
+		t.Fatal("formal worker cancelled")
+	}
+	p.stop()
+	<-done
+}

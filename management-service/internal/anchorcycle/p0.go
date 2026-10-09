@@ -59,28 +59,43 @@ func (s *State) InstallP0(md, source string) error {
 	return nil
 }
 
-// The state machine repeats the scan itself, so a score, caller-provided
-// report or stale cached candidate cannot grant approval.
+// A completed text review follows the unchanged candidate through adoption.
+// Audio consumers verify this receipt's identity without scanning content again.
+func (s *State) candidateP0Input(c Candidate) string {
+	return ProductDigest(struct {
+		Policy, Scope, Raw, Output, PatchError string
+		Allowances                             []P0Allowance
+	}{s.P0PolicyMD, s.Config.ComplianceScope, c.Text, c.OutputText, c.P0PatchError, s.P0Allowances})
+}
 func (s *State) CheckP0Candidate(c *Candidate) error {
 	if s.P0PolicyMD == "" {
 		return nil
-	} // Isolated legacy unit fixtures only; HTTP requires installation.
+	} // Isolated legacy unit fixtures only.
+	identity := s.candidateP0Input(*c)
+	if c.P0Report != nil && c.P0CheckedInputSHA == identity {
+		return nil
+	}
 	p, err := contentguard.Compile(s.P0PolicyMD)
 	if err != nil {
 		return err
 	}
-	r := s.scanP0(p, c.Text)
-	if c.OutputText != "" {
-		output := s.scanP0(p, c.OutputText)
-		if !output.Passed {
-			r = output
-		}
-	}
+	r := s.scanP0(p, spokenCandidate(*c))
 	if c.P0PatchError != "" {
 		r.Passed = false
 		r.Error = c.P0PatchError
 	}
 	c.P0Report = &r
+	c.P0CheckedInputSHA = identity
+	c.P0ApprovedTextSHA = ""
+	if r.Passed {
+		c.P0ApprovedTextSHA = ProductDigest(spokenCandidate(*c))
+	}
+	return nil
+}
+func (s *State) CheckApprovedText(c Candidate, text string) error {
+	if c.P0Report == nil || !c.P0Report.Passed || c.P0ApprovedTextSHA == "" || c.P0ApprovedTextSHA != ProductDigest(text) || c.P0CheckedInputSHA != s.candidateP0Input(c) {
+		return errors.New("文字审核回执与当前话术不一致，请回文字阶段审核")
+	}
 	return nil
 }
 
@@ -102,6 +117,10 @@ func (s *State) CheckP0Voice(text string) error {
 func (s *State) rejectP0Candidate(c Candidate) {
 	c.ContentIssue = "p0_blocked"
 	s.Attempts = append(s.Attempts, c)
+	if s.Surface == "formal_live" {
+		s.SkipGeneration("text_review", "P0文字审核未通过")
+		return
+	}
 	if s.P0RewritesUsed < s.P0MaxRewrites {
 		r := contentguard.PlanRepair(c.Text, *c.P0Report, s.P0RewritesUsed+1)
 		s.P0PendingRepair = &r
@@ -127,7 +146,7 @@ func (s *State) rejectP0Candidate(c Candidate) {
 	s.PendingFeedback = ""
 	s.FeedbackPending = false
 	p, _ := contentguard.Compile(s.P0PolicyMD)
-	if s.P0ConsecutiveSkips >= p.Data.Execution.MaxConsecutiveSkips {
+	if s.P0ConsecutiveSkips >= p.Data.Execution.MaxConsecutiveSkips && s.Surface != "formal_live" {
 		s.Status = "compliance_blocked"
 		s.Error = "连续P0跳过已达到母版保护上限，保留已采纳稿并暂停"
 		return

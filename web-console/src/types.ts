@@ -800,6 +800,13 @@ export interface LiveReviewEvent {
 export interface LiveReviewResponse {
   summary: LiveReviewSummary
   events: LiveReviewEvent[]
+  audit_review_error?: string
+  audit_review?: {
+    runtime_session_id: number
+    started_at: string
+    ended_at?: string
+    items: {id: number; kind: string; stage: string; decision: string; task_key: string; text: string; reason: string; created_at: string}[]
+  }
 }
 
 export interface RoomBlockedUser {

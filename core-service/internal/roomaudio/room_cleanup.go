@@ -12,6 +12,7 @@ func (e *Engine) ClearRoom(roomID int64) {
 		e.deletedRooms = make(map[int64]struct{})
 	}
 	e.deletedRooms[roomID] = struct{}{}
+	delete(e.lastCompositeCues, roomID)
 	if state := e.rooms[roomID]; state != nil {
 		for ch := range state.subscribers {
 			close(ch)

@@ -13,9 +13,14 @@ func TestBridgeProtocolKeepsFiveTypesAndNone(t *testing.T) {
 			t.Fatal(kind, err)
 		}
 	}
-	for _, raw := range []string{`{"type":"other","text":"咱们接着说用法。"}`, `{"type":"none","text":"继续"}`, `{"type":"none"}`, `{"type":"none","text":null}`, `{"type":"same_topic","text":"一只85元，咱们继续说。"}`, `{"type":"same_topic","text":"赶紧拍，咱们继续说。"}`} {
+	for _, raw := range []string{`{"type":"other","text":"咱们接着说用法。"}`, `{"type":"none","text":"继续"}`, `{"type":"none"}`, `{"type":"none","text":null}`} {
 		if _, err := validateBridge(raw, plan); err == nil {
 			t.Fatal("invalid bridge accepted", raw)
+		}
+	}
+	for _, raw := range []string{`{"type":"same_topic","text":"咱们接着讲1号的吃法。","extra":"compatible"}`, `{"type":"same_topic","text":"包邮条件接着给你们讲。"}`} {
+		if _, err := validateBridge(raw, plan); err != nil {
+			t.Fatal("content hard filter still present", err)
 		}
 	}
 	if _, err := validateBridge(`{"type":"none","text":""}`, plan); err != nil {

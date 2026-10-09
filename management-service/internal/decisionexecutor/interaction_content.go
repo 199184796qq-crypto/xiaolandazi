@@ -160,6 +160,8 @@ func (w *Worker) interactionContentGuidance(ctx context.Context, session model.L
 	if item.OrderSource == "" && scene == "order" {
 		data["订单依据来源"] = "viewer_claim"
 	}
+	data["涉及多人"] = item.MissionEventCount > 1 || len(item.Nicknames) > 1
+	data["本批观众昵称"] = item.Nicknames
 	raw, err := interactionpolicy.Read("interaction-core-content.md")
 	if err != nil {
 		return "", goal, "", err

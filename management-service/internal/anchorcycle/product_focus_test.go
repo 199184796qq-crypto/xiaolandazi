@@ -105,55 +105,29 @@ func TestProductFocusScopedFactsAndComparisonBudget(t *testing.T) {
 		t.Fatal("closing kept comparison mode")
 	}
 }
-func TestProductFocusRejectedHighScoreCannotReachVoiceOrBestFallback(t *testing.T) {
+func TestProductFocusReturnToOwnMainLinkHasNoExtraDiversionGate(t *testing.T) {
 	s := focusFixture(t)
-	cursor := s.Cursor
-	bad := auditedFocusCandidate(&s, "1号和2号链接都看看，两种一起选。", 100)
-	if ok, err := s.AddCandidate(bad, anchorstylescore.Baseline{}); err != nil || ok {
-		t.Fatal(ok, err)
-	}
-	if s.Cursor != cursor || len(s.Accepted) != 0 || s.Attempts[0].ContentIssue != "product_focus_cross_link" {
-		t.Fatal("rejection consumed task")
-	}
-	good := auditedFocusCandidate(&s, "1号链接是900g整只，按整只规格选择。", 20)
-	if ok, err := s.AddCandidate(good, anchorstylescore.Baseline{}); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
-	segment := s.Accepted[0]
-	if segment.Selected.Text != good.Text {
-		t.Fatal("revived rejected high score")
-	}
-	if err := s.CheckProductVoice(segment); err != nil {
-		t.Fatal(err)
-	}
-	segment.Selected.OutputText = "半只450g只要48.8元。"
-	if s.CheckProductVoice(segment) == nil {
-		t.Fatal("mutated/cached speech bypassed voice gate")
-	}
-	segment.Selected.ProductAudit = nil
-	if s.CheckProductVoice(segment) == nil {
-		t.Fatal("missing audit bypassed voice gate")
+	c := candidate("2号是半只装，想整只的还是回1号链接看。", 100)
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); !ok || err != nil || s.Accepted[0].Selected.ProductAudit != nil {
+		t.Fatal("independent product audit still required", err)
 	}
 }
-func TestProductFocusSemanticMixWithoutLinkNumberAndRetryCap(t *testing.T) {
+
+func TestProductRoleAuditCannotBlockAnOtherwiseApprovedDraft(t *testing.T) {
 	s := focusFixture(t)
-	for i := 0; i < 2; i++ {
-		c := auditedFocusCandidate(&s, "整只87.6元，半只48.8元都可以买。", 100)
-		c.ProductAudit.Passed = false
-		c.ProductAudit.Reason = "单品段同时推销两个规格"
-		if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); ok || err != nil {
-			t.Fatal(ok, err)
-		}
-	}
-	if s.Status != "content_blocked" || len(s.Accepted) != 0 || len(s.Attempts) != 2 {
-		t.Fatal("mixing cap adopted invalid speech")
+	c := auditedFocusCandidate(&s, "整只87.6元，半只48.8元都可以买。", 100)
+	c.ProductAudit.Passed = false
+	c.ProductAudit.Reason = "历史商品角色审核拒绝"
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); !ok || err != nil || s.Status == "content_blocked" {
+		t.Fatal("historical role gate blocked supply", err)
 	}
 }
+
 func TestProductFocusAuditRequiredAndLinkAliases(t *testing.T) {
 	s := focusFixture(t)
 	c := candidate("一号规格介绍。", 100)
-	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); ok || err != nil {
-		t.Fatal("unaudited candidate adopted", err)
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); !ok || err != nil {
+		t.Fatal("extra role audit required", err)
 	}
 	for _, text := range []string{"2号链接", "二号链接", "链接2", "链接 2"} {
 		if !MentionsLink(text, "2") {
@@ -193,7 +167,7 @@ func TestProductFocusMultipleAuxiliariesRequireCompleteMainRounds(t *testing.T) 
 			if err := json.Unmarshal(raw, &s); err != nil || s.Task() != task {
 				t.Fatal("auxiliary changed on Redis reload", err)
 			}
-			bad := auditedFocusCandidate(&s, "辅推不得独立成线。", 100)
+			bad := auditedFocusCandidate(&s, "辅推仅作本轮补充。", 10)
 			bad.ProductAudit.Passed = false
 			if ok, err := s.AddCandidate(bad, anchorstylescore.Baseline{}); ok || err != nil {
 				t.Fatal(ok, err)
@@ -241,15 +215,13 @@ func TestProductFocusBudgetAndUnavailableAuxiliaryDoNotBreakMain(t *testing.T) {
 		t.Fatal("eligible auxiliary absent")
 	}
 	before := p.AuxiliaryChars
-	text := strings.Repeat("长", s.Task().ProductMaxChars+1)
-	if ok, err := s.AddCandidate(auditedFocusCandidate(&s, text, 100), anchorstylescore.Baseline{}); ok || err != nil {
+	c := auditedFocusCandidate(&s, strings.Repeat("长", s.Task().ProductMaxChars+1), 100)
+	c.OutputText = strings.Repeat("长", s.Task().ProductMaxChars)
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); !ok || err != nil {
 		t.Fatal(ok, err)
 	}
-	if p.AuxiliaryChars != before || s.Attempts[0].ContentIssue != "product_focus_auxiliary_budget" {
-		t.Fatal("oversized auxiliary spent budget")
-	}
-	if ok, err := s.AddCandidate(auditedFocusCandidate(&s, "主推不变，辅推仅为补充，回到主推。", 100), anchorstylescore.Baseline{}); !ok || err != nil {
-		t.Fatal(ok, err)
+	if p.AuxiliaryChars <= before || p.AuxiliaryActive {
+		t.Fatal("bounded spoken auxiliary did not return to main")
 	}
 	if s.beginAuxiliary() {
 		t.Fatal("auxiliary twice without another full main round")

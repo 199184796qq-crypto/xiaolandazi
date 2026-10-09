@@ -38,10 +38,12 @@ export async function startFixture() {
           if(path.endsWith('/events')&&!path.includes('/runtime/'))return Response.json({items:[{id:1,room_id:15,event_type:'chat',nickname:'测试老乡',content:'这个油怎么保存',occurred_at:now}]});
           if(path.endsWith('/runtime/events'))return Response.json([]);
           if(path.endsWith('/runtime'))return Response.json({room_id:15,room_live:window.fixture.waiting,agent_state:window.fixture.failure?'stopped':window.fixture.waiting&&!window.fixture.runtimePollLag?'working':'stopped',agent_mode:'anchor',agent_plan_id:window.fixture.startTest?4:0,session:{id:window.fixture.session},failure:window.fixture.failure,startup:window.fixture.startup,quota_remaining_seconds:7200});
-          if(path.endsWith('/audio-engine'))return Response.json({room_id:15,phase:'idle',speech_feed:window.fixture.caption?{previous:{segment_id:'prev',text:'上一句主线',tone:'mainline'},current:{segment_id:'current',text:'正在回答保存问题哟',tone:'interrupt'},next:{segment_id:'next',text:'下一句回归主线',tone:'resume'}}:{}});
+          if(path.endsWith('/audio-engine'))return Response.json(window.fixture.audioEngine||{room_id:15,phase:'idle',speech_feed:window.fixture.caption?{previous:{segment_id:'prev',text:'上一句主线',tone:'mainline'},current:{segment_id:'current',text:'正在回答保存问题哟',tone:'interrupt'},next:{segment_id:'next',text:'下一句回归主线',tone:'resume'}}:{}});
           if(path.endsWith('/agent-decisions'))return Response.json({queue:window.fixture.queue,notes:[]});
           if(path.endsWith('/brain'))return Response.json({Topics:[],Counters:{},Questions:[]});
-          if(path.endsWith('/speech-runtime'))return Response.json({room_id:15,programs:[],tasks:[]});
+          if(path.endsWith('/composite-subtitles'))return Response.json({srt:window.fixture.srt||''});
+          if(path.endsWith('/review'))return Response.json(window.fixture.review||{});
+          if(path.endsWith('/speech-runtime'))return Response.json(window.fixture.speechRuntime||{room_id:15,programs:[],tasks:[]});
           if(path.endsWith('/session-stats'))return Response.json({room_id:15,counts:{},online_count:64});
           if(path.endsWith('/capture'))return Response.json({mode:'idle'});
           if(path.endsWith('/speech-analysis'))return Response.json({configured:false});

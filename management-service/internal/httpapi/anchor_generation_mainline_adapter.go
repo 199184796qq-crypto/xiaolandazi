@@ -29,7 +29,7 @@ func liveCycleMainlineTrack(state *anchorcycle.State, segment anchorcycle.Segmen
 	if segment.Voice == nil || segment.Voice.Status != "ready" || segment.Voice.PreviewTruncated {
 		return track, errors.New("主线声音资产未完整完成")
 	}
-	if err := checkCycleVoiceP0(state, segment); err != nil {
+	if err := checkCycleVoiceBinding(state, segment); err != nil {
 		return track, err
 	}
 	bundle := segment.Voice.Bundle
