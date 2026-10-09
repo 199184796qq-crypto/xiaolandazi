@@ -31,6 +31,13 @@ with tarfile.open(sys.argv[1]) as archive:
    names.add(name)
  if not {'bin/core-service','bin/management-service','PLAN-WORKSPACE-NOTICE-SOURCE.json','configs/prompts/anchor-style/MANIFEST.json','web/index.html','web-desktop/index.html'}.issubset(names):raise SystemExit('incomplete overlay')
 PY
+NEED_RESTART=$(python3 - "$ARCHIVE" "$MGMT_SHA" <<'PY'
+import json,sys,tarfile
+with tarfile.open(sys.argv[1]) as archive:
+ source=json.load(archive.extractfile('PLAN-WORKSPACE-NOTICE-SOURCE.json'))
+ print(0 if source['binaries']['management-service']==sys.argv[2] else 1)
+PY
+)
 set -a
 source /etc/xiaolan/management.env
 set +a
@@ -53,7 +60,7 @@ for row in rooms:
 print('idle_sessions=0 checked_rooms='+str(len(rooms)))
 PY
 }
-assert_idle
+if [[ "$NEED_RESTART" == 1 ]];then assert_idle;fi
 TARGET="$ROOT/releases/$ID"
 [[ ! -e "$TARGET" ]] || exit 3
 mkdir -m 755 "$TARGET"
@@ -110,18 +117,18 @@ rollback() {
  if [[ "$ACTIVATED" == 1 && "$(readlink -f "$ROOT/current")" == "$TARGET" ]];then
   ln -s "$EXPECTED" "$ROOT/.plan-notice-rollback-$ID"
   mv -Tf "$ROOT/.plan-notice-rollback-$ID" "$ROOT/current"
-  systemctl restart xiaolan-management
+  if [[ "$NEED_RESTART" == 1 ]];then systemctl restart xiaolan-management;fi
   echo "rolled back to $EXPECTED" >&2
  fi
  exit "$code"
 }
 trap rollback ERR INT TERM
 assert_base
-assert_idle
+if [[ "$NEED_RESTART" == 1 ]];then assert_idle;fi
 ln -s "$TARGET" "$ROOT/.plan-notice-next-$ID"
 ACTIVATED=1
 mv -Tf "$ROOT/.plan-notice-next-$ID" "$ROOT/current"
-systemctl restart xiaolan-management
+if [[ "$NEED_RESTART" == 1 ]];then systemctl restart xiaolan-management;fi
 healthy=0
 for _ in $(seq 1 25);do if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8081/healthz >/dev/null;then healthy=1;break;fi;sleep 1;done
 [[ "$healthy" == 1 ]]

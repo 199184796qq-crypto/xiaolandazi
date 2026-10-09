@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
-import { liveRuntimeFailureMessage } from '../liveRuntimeFailure'
+import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -334,6 +334,7 @@ const dashboardNow = ref(Date.now())
 type FlowSample = { at: number; type: string; weight: number }
 const flowSamples = ref<FlowSample[]>([])
 const runtimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
+const observedRuntimeFailureSessions = new Set<number>()
 const runtimeError = ref('')
 const notifiedRuntimeFailures = new Set<string>()
 const runtimeActionDialog = ref<{ title: string; message: string } | null>(null)
@@ -2033,6 +2034,8 @@ async function refreshRuntime() {
       getRoom(roomId),
     ])
     updatePreservingPageBottom(() => {
+      const newFailure = isNewLiveRuntimeFailure(runtimeSnapshot.value, snapshot)
+      if (newFailure && snapshot.session) observedRuntimeFailureSessions.add(snapshot.session.id)
       runtimeSnapshot.value = snapshot
       if (room.value) {
         room.value.online_count = roomData.online_count
@@ -2041,13 +2044,15 @@ async function refreshRuntime() {
         room.value.monitor_started_at = roomData.monitor_started_at
         room.value.last_event_at = roomData.last_event_at
       }
-      const failureMessage = liveRuntimeFailureMessage(snapshot)
+      const failureMessage = observedRuntimeFailureSessions.has(snapshot.session?.id || 0)
+        ? liveRuntimeFailureMessage(snapshot)
+        : ''
       runtimeError.value = failureMessage
       if (failureMessage) {
         firstVoiceStartPending.value = false
         firstVoicePlaybackEpoch += 1
         const failureKey = `${roomId}:${snapshot.session?.id || 0}:${snapshot.failure?.code || snapshot.agent_stop_reason}`
-        if (!notifiedRuntimeFailures.has(failureKey)) {
+        if (newFailure && !notifiedRuntimeFailures.has(failureKey)) {
           notifiedRuntimeFailures.add(failureKey)
           showAlert(failureMessage, '直播声音已停止')
         }

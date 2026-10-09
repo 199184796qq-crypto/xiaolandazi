@@ -8,3 +8,10 @@ export function liveRuntimeFailureMessage(snapshot: LiveRuntimeSnapshot): string
   }
   return ''
 }
+
+// The first read restores history. Only an observed transition or a new
+// session's failure represents a fresh stop that should interrupt the user.
+export function isNewLiveRuntimeFailure(previous: LiveRuntimeSnapshot | null, snapshot: LiveRuntimeSnapshot): boolean {
+  if (!previous || !liveRuntimeFailureMessage(snapshot)) return false
+  return previous.session?.id !== snapshot.session?.id || !liveRuntimeFailureMessage(previous)
+}
