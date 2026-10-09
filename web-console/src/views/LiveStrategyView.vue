@@ -1460,7 +1460,7 @@ async function initializeAnchorGeneration() {
   }
 }
 async function refreshSpeechMinerWorkspace() {
-  await Promise.all([refreshFormalFacts(), refreshAnchorSellingPointWheel()])
+  await Promise.all([refreshFormalFacts(), refreshAnchorSellingPointWheel(), contentPools.refresh(true)])
 }
 const fullShowError = useFeedbackErrorRef()
 const fullShowGenerationProgress = ref({
@@ -6818,6 +6818,9 @@ onBeforeUnmount(() => {
             ref="speechMinerWorkbench"
             :plan-id="currentRoomPlanId || 0"
             :tenant-id="activeRoom?.tenant_id || 0"
+            :room-id="activeRoom?.id || 0"
+            :pool-status="poolStatus"
+            :pool-error="poolError"
             :wheel="anchorSellingPointWheel"
             :wheel-loading="anchorSellingPointWheelLoading"
             :risk-reviews="factRiskReviews"
@@ -6826,6 +6829,7 @@ onBeforeUnmount(() => {
             @appeal-risk="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)"
             @review-semantics="factRiskController?.reviewSemantics()"
             @updated="refreshSpeechMinerWorkspace"
+            @pool-updated="contentPools.acceptEdited"
           />
         </section>
 

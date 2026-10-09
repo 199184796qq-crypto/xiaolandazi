@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import '../styles/speech-miner-card-tones.css'
-import { confirmAnchorStyleSellingPointWheel, confirmSpeechMiner, guideSpeechMiner } from '../api'
+import { confirmAnchorStyleSellingPointWheel, confirmSpeechMiner, guideSpeechMiner, request } from '../api'
+import { contentPoolURL, type PoolStatus } from '../contentPools'
+import { minerPoolPoints, minerPointEditTasks, type MinerPoolPoint } from '../minerContentPools'
 import SourceRiskDetails from './SourceRiskDetails.vue'
 import { session } from '../session'
 import { riskSources, type RiskReview } from '../riskSources'
@@ -19,13 +21,16 @@ type MinerRiskReview = RiskReview
 const props = withDefaults(defineProps<{
   planId: number
   tenantId?: number
+  roomId?: number
+  poolStatus?: PoolStatus | null
+  poolError?: string
   wheel?: AnchorStyleSellingPointWheelResponse | null
   wheelLoading?: boolean
   riskReviews?: MinerRiskReview[]
   riskLoading?: boolean
-}>(), { tenantId: 0, wheel: null, wheelLoading: false, riskReviews: () => [], riskLoading: false })
+}>(), { tenantId: 0, roomId: 0, poolStatus: null, poolError: '', wheel: null, wheelLoading: false, riskReviews: () => [], riskLoading: false })
 
-const emit = defineEmits<{ updated: []; confirmRisk: [value: MinerRiskReview]; appealRisk: [value: MinerRiskReview, reason: string]; reviewSemantics: [] }>()
+const emit = defineEmits<{ updated: []; poolUpdated: [value: PoolStatus]; confirmRisk: [value: MinerRiskReview]; appealRisk: [value: MinerRiskReview, reason: string]; reviewSemantics: [] }>()
 
 const history = ref<SpeechMinerMessage[]>([])
 const options = ref<SpeechMinerOption[]>([])
@@ -63,17 +68,24 @@ const collapsedPointKeys = ref<string[]>([])
 const locatedRiskSource = ref('')
 const selectedPoint = ref<AnchorStyleSellingPointWheelItem | null>(null)
 const selectedPointNumber = ref(0)
+const selectedScope = ref('common')
+const legacyMode = computed(() => selectedScope.value === 'legacy')
 type SellingPointEditDraft = {
   index: number
   name: string
   painPoint: string
   targetAudience: string
   angles: string[]
+  angleTaskIds: string[]
+  originalTaskIds: string[]
+  poolKey: string
+  setId: number
   angleEditingIndex: number | null
   pendingDeleteAngleIndex: number | null
   pendingDeletePoint: boolean
 }
 const pointEdit = ref<SellingPointEditDraft | null>(null)
+const editingPointsSnapshot = ref<AnchorStyleSellingPointWheelItem[] | null>(null)
 const pointEditSaving = ref(false)
 const pointEditError = ref('')
 
@@ -89,7 +101,23 @@ const wheelDocument = computed<AnchorStyleSellingPointWheelDocument | null>(() =
     return null
   }
 })
-const points = computed(() => wheelDocument.value?.卖点列表 || [])
+const points = computed(() => pointEdit.value && editingPointsSnapshot.value ? editingPointsSnapshot.value : legacyMode.value ? wheelDocument.value?.卖点列表 || [] : minerPoolPoints(props.poolStatus, selectedScope.value))
+const scopeOptions = computed(() => [
+  { value: 'common', label: '公共内容' },
+  ...(props.poolStatus?.products || []).map(product => ({ value: `product:${product.id}`, label: `${product.link}号 · ${product.name}` })),
+  ...(wheelDocument.value ? [{ value: 'legacy', label: '原始挖掘素材' }] : []),
+])
+const scopeLabel = computed(() => scopeOptions.value.find(option => option.value === selectedScope.value)?.label || '公共内容')
+const poolEditable = computed(() => !!props.roomId && !!props.poolStatus?.set_id && ['ready', 'synced'].includes(props.poolStatus.state))
+const resultsLoading = computed(() => legacyMode.value ? props.wheelLoading : !props.poolStatus && !props.poolError)
+const resultNotice = computed(() => {
+  if (legacyMode.value) return '原始挖掘素材供内容池更新时参考；这里的修改还需更新内容池并保存智能体。'
+  if (props.poolError) return props.poolError
+  if (props.poolStatus?.state === 'updating') return '内容池正在更新，当前展示上一版内容，完成后可编辑。'
+  if (props.poolStatus && !poolEditable.value) return '资料已变化，请先点击上方“更新受影响内容”，完成后编辑并保存智能体。'
+  if (props.poolStatus?.set_id !== props.poolStatus?.saved_set_id) return '这些内容尚未保存到当前房间智能体；确认后点击“保存智能体方案”。'
+  return ''
+})
 const angleCount = computed(() => points.value.reduce((total, item) => total + (item.角度?.length || 0), 0))
 const collapsedPointCount = computed(() => points.value.reduce(
   (total, point, index) => total + (collapsedPointKeys.value.includes(pointKey(point, index)) ? 1 : 0),
@@ -165,11 +193,13 @@ function visiblePointAngles(point: AnchorStyleSellingPointWheelItem, index: numb
 }
 
 function riskForAngle(pointIndex: number, angleIndex: number) {
+  if (!legacyMode.value) return undefined
   const sourceKey = `wheel/${pointIndex}/angle/${angleIndex}`
   return props.riskReviews.find(review => review.status !== 'confirmed' && (review.source_key === sourceKey || (review.sources || []).some(source => source.source_key === sourceKey)))
 }
 
 function headerRisks(pointIndex: number) {
+  if (!legacyMode.value) return []
   return props.riskReviews.filter(review => review.status !== 'confirmed' && riskSources(review).some(source =>
     ['name', 'audience', 'pain'].some(field => source.source_key === `wheel/${pointIndex}/${field}`)))
 }
@@ -181,6 +211,9 @@ function locatedHeaderRisk(pointIndex: number) {
 async function locateRisk(claimHash: string) {
   const review = props.riskReviews.find(item => item.claim_sha256 === claimHash && item.status !== 'confirmed')
   if (!review) return false
+  if (pointEdit.value || pointEditSaving.value) return false
+  selectedScope.value = 'legacy'
+  await nextTick()
   const source = [review.source_key, ...(review.sources || []).map(item => item.source_key)]
     .find(key => {
       const match = /^wheel\/(\d+)\/(?:name|audience|pain|angle\/(\d+))$/.exec(key)
@@ -269,15 +302,21 @@ function isPointEditing(index: number) {
 
 function beginPointEdit(point: AnchorStyleSellingPointWheelItem, index: number, angleIndex: number | null = null) {
   if (pointEditSaving.value) return
+  if (!legacyMode.value && !poolEditable.value) { notice.value = resultNotice.value || '请先更新内容池。'; return }
   closePointAngles()
   const key = pointKey(point, index)
   collapsedPointKeys.value = collapsedPointKeys.value.filter(item => item !== key)
+  editingPointsSnapshot.value = JSON.parse(JSON.stringify(points.value)) as AnchorStyleSellingPointWheelItem[]
   pointEdit.value = {
     index,
     name: point.卖点名 || '',
     painPoint: point.痛点 || '',
     targetAudience: point.目标人群 || '',
     angles: [...(point.角度 || [])],
+    angleTaskIds: [...((point as MinerPoolPoint).taskIds || [])],
+    originalTaskIds: [...((point as MinerPoolPoint).taskIds || [])],
+    poolKey: (point as MinerPoolPoint).poolKey || '',
+    setId: props.poolStatus?.set_id || 0,
     angleEditingIndex: angleIndex,
     pendingDeleteAngleIndex: null,
     pendingDeletePoint: false,
@@ -305,6 +344,7 @@ function beginAngleEdit(point: AnchorStyleSellingPointWheelItem, pointIndex: num
 function addPointAngle() {
   if (!pointEdit.value || pointEditSaving.value) return
   pointEdit.value.angles.push('')
+  pointEdit.value.angleTaskIds.push('')
   const angleIndex = pointEdit.value.angles.length - 1
   pointEdit.value.angleEditingIndex = angleIndex
   pointEdit.value.pendingDeleteAngleIndex = null
@@ -331,6 +371,7 @@ function confirmDeleteAngle(index: number) {
     return
   }
   pointEdit.value.angles.splice(index, 1)
+  pointEdit.value.angleTaskIds.splice(index, 1)
   pointEdit.value.pendingDeleteAngleIndex = null
   pointEdit.value.angleEditingIndex = null
 }
@@ -339,13 +380,13 @@ function pointEditValidationError() {
   const draft = pointEdit.value
   if (!draft) return '没有正在编辑的卖点。'
   if (!draft.name.trim()) return '卖点名称不能为空。'
-  if (!draft.painPoint.trim()) return '卖点说明不能为空。'
-  if (!draft.targetAudience.trim()) return '适用人群不能为空。'
+  if (legacyMode.value && !draft.painPoint.trim()) return '卖点说明不能为空。'
+  if (legacyMode.value && !draft.targetAudience.trim()) return '适用人群不能为空。'
   if (!draft.angles.length) return '至少需要保留一条内容。'
   if (draft.angles.some(angle => !angle.trim())) return '内容不能为空，请填写或删除空白内容。'
   const normalizedAngles = draft.angles.map(angle => angle.trim())
   if (new Set(normalizedAngles).size !== normalizedAngles.length) return '同一个卖点下不能保存重复内容。'
-  const duplicateName = points.value.some((point, index) => index !== draft.index && point.卖点名.trim() === draft.name.trim())
+  const duplicateName = legacyMode.value && points.value.some((point, index) => index !== draft.index && point.卖点名.trim() === draft.name.trim())
   if (duplicateName) return '卖点名称不能与其他卖点重复。'
   return ''
 }
@@ -369,8 +410,9 @@ function buildEditedWheel(removePoint = false) {
 }
 
 async function persistEditedWheel(removePoint = false) {
-  if (!pointEdit.value || pointEditSaving.value || !props.planId || !props.wheel?.asset_id) return
-  if (removePoint && points.value.length <= 1) {
+  if (!pointEdit.value || pointEditSaving.value || !props.planId) return
+  if (legacyMode.value && !props.wheel?.asset_id) return
+  if (legacyMode.value && removePoint && points.value.length <= 1) {
     pointEditError.value = '至少需要保留一个卖点，不能删除最后一个。'
     pointEdit.value.pendingDeletePoint = false
     return
@@ -382,25 +424,33 @@ async function persistEditedWheel(removePoint = false) {
       return
     }
   }
-  const nextWheel = buildEditedWheel(removePoint)
-  if (!nextWheel) {
+  const nextWheel = legacyMode.value ? buildEditedWheel(removePoint) : null
+  if (legacyMode.value && !nextWheel) {
     pointEditError.value = '当前挖掘数据不可用，请刷新后重试。'
     return
   }
   pointEditSaving.value = true
   pointEditError.value = ''
+  const owner = { plan: props.planId, room: props.roomId, tenant: props.tenantId, scope: selectedScope.value, epoch: scopeEpoch }
+  const current = () => owner.plan === props.planId && owner.room === props.roomId && owner.tenant === props.tenantId && owner.scope === selectedScope.value && owner.epoch === scopeEpoch
   try {
-    await confirmAnchorStyleSellingPointWheel(props.planId, props.wheel.asset_id, {
-      tenant_id: props.tenantId || undefined,
-      wheel_json: JSON.stringify(nextWheel),
-    })
-    notice.value = removePoint ? '卖点已删除并保存。' : '卖点修改已保存。'
+    if (legacyMode.value) {
+      await confirmAnchorStyleSellingPointWheel(owner.plan, props.wheel!.asset_id, { tenant_id: owner.tenant || undefined, wheel_json: JSON.stringify(nextWheel) })
+    } else {
+      const draft = pointEdit.value
+      const url = contentPoolURL(owner.plan, owner.room, owner.tenant).replace('/content-pools?', '/content-pools/edit?')
+      const status = await request<PoolStatus>(url, { method: 'POST', body: JSON.stringify({ expected_set_id: draft.setId, pool_key: draft.poolKey, task_ids: draft.originalTaskIds, tasks: removePoint ? [] : minerPointEditTasks(draft) }), suppressErrorDialog: true })
+      if (!current()) return
+      emit('poolUpdated', status)
+    }
+    if (!current()) return
+    notice.value = legacyMode.value ? '原始挖掘素材已保存；更新内容池后，再保存智能体方案。' : `${scopeLabel.value}的修改已保存。点击“保存智能体方案”后，下次开播采用。`
     pointEdit.value = null
     emit('updated')
   } catch (cause) {
-    pointEditError.value = cause instanceof Error ? cause.message : '卖点修改保存失败'
+    if (current()) pointEditError.value = cause instanceof Error ? cause.message : '卖点修改保存失败'
   } finally {
-    pointEditSaving.value = false
+    if (current()) pointEditSaving.value = false
   }
 }
 
@@ -725,7 +775,7 @@ async function persistMining() {
   } finally { if (current()) applying.value = false }
 }
 
-watch([() => props.planId, () => props.tenantId], () => {
+watch([() => props.planId, () => props.tenantId, () => props.roomId], () => {
   scopeEpoch++
   busy.value = false
   applying.value = false
@@ -748,9 +798,23 @@ watch([() => props.planId, () => props.tenantId], () => {
   collapsedPointKeys.value = []
   pointEdit.value = null
   locatedRiskSource.value = ''
+  selectedScope.value = 'common'
   pointEditSaving.value = false
   pointEditError.value = ''
   closePointAngles()
+})
+
+watch(selectedScope, () => {
+  expandedPointKeys.value = []
+  collapsedPointKeys.value = []
+  pointEdit.value = null
+  pointEditError.value = ''
+  locatedRiskSource.value = ''
+  notice.value = ''
+  closePointAngles()
+})
+watch(scopeOptions, options => {
+  if (!options.some(option => option.value === selectedScope.value) && !pointEdit.value) selectedScope.value = 'common'
 })
 
 onMounted(() => window.addEventListener('keydown', handleWindowKeydown))
@@ -777,15 +841,19 @@ onBeforeUnmount(() => {
     <div ref="minerGrid" class="speech-miner-grid" :class="{ 'is-resizing': resizing }" :style="splitStyle">
       <section class="speech-miner-results">
         <header>
-          <div><strong>已经挖掘出来的</strong><small>{{ points.length }} 个卖点 · {{ angleCount }} 条内容</small></div>
-          <div v-if="points.length" class="speech-miner-results-actions">
-            <button type="button" :disabled="!collapsedPointCount" @click="expandAllPoints">全部展开</button>
-            <button type="button" :disabled="collapsedPointCount === points.length" @click="collapseAllPoints">全部收缩</button>
+          <div class="speech-miner-results-title"><strong>已经挖掘出来的</strong><small>{{ points.length }} 个卖点 · {{ angleCount }} 条内容</small></div>
+          <div class="speech-miner-results-toolbar">
+            <label class="speech-miner-pool-select"><span class="sr-only">内容范围</span><select v-model="selectedScope" aria-label="内容范围" :disabled="!!pointEdit || pointEditSaving"><option v-for="option in scopeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <div v-if="points.length" class="speech-miner-results-actions">
+              <button type="button" :disabled="!collapsedPointCount" @click="expandAllPoints">全部展开</button>
+              <button type="button" :disabled="collapsedPointCount === points.length" @click="collapseAllPoints">全部收缩</button>
+            </div>
+            <em v-if="legacyMode ? wheel?.fact_package_stale : poolStatus && !poolEditable"><i aria-hidden="true">↻</i>{{ poolStatus?.state === 'updating' && !legacyMode ? '更新中' : '资料已变化' }}</em>
           </div>
-          <em v-if="wheel?.fact_package_stale"><i aria-hidden="true">↻</i>事实已变化</em>
         </header>
-        <div v-if="wheelLoading" class="speech-miner-empty">正在读取挖掘结果…</div>
-        <div v-else-if="!points.length" class="speech-miner-empty">还没有挖掘结果。可以先在右侧开始挖掘，完成后会自动保存到这里。</div>
+        <p v-if="resultNotice" class="speech-miner-pool-notice" role="status">{{ resultNotice }}</p>
+        <div v-if="resultsLoading" class="speech-miner-empty">正在读取挖掘结果…</div>
+        <div v-else-if="!points.length" class="speech-miner-empty">{{ legacyMode ? '还没有原始挖掘素材，可以在右侧开始挖掘。' : poolStatus?.set_id ? '这个范围暂时没有卖点内容。' : '这个范围尚未生成内容池。请先点击上方“更新受影响内容”。' }}</div>
         <div v-else class="speech-miner-point-list" :style="{ height: pointListHeight + 'px' }">
           <article v-for="(point, pointIndex) in points" :key="pointIndex + ':' + point.卖点名" :data-wheel-point-index="pointIndex" tabindex="-1" :class="{ 'is-collapsed': isPointCollapsed(point, pointIndex), 'is-editing': isPointEditing(pointIndex), 'is-risk-located': locatedRiskSource.startsWith('wheel/' + pointIndex + '/') }">
             <span class="speech-miner-point-index">{{ String(pointIndex + 1).padStart(2, '0') }}</span>
@@ -825,7 +893,7 @@ onBeforeUnmount(() => {
                       <input
                         v-model="pointEdit.angles[angleIndex]"
                         :data-angle-editor="pointIndex + '-' + angleIndex"
-                        maxlength="120"
+                        maxlength="1000"
                         :disabled="pointEditSaving"
                         @keydown.enter.prevent="pointEdit.angleEditingIndex = null"
                         @keydown.esc.prevent="pointEdit.angleEditingIndex = null"
@@ -839,7 +907,7 @@ onBeforeUnmount(() => {
                       <button type="button" class="danger-icon" aria-label="删除这条内容" title="删除" @click="requestDeleteAngle(angleIndex)">×</button>
                     </template>
                   </li>
-                  <li class="speech-miner-add-angle"><button type="button" :disabled="pointEditSaving || pointEdit.angles.length >= 20" @click="addPointAngle">＋ 添加内容</button></li>
+                  <li class="speech-miner-add-angle"><button type="button" :disabled="pointEditSaving || pointEdit.angles.length >= 20" @click="addPointAngle">＋ 添加内容</button><small v-if="!legacyMode">新增内容沿用本卖点的事实依据</small></li>
                 </ul>
                 <ul v-else>
                   <li
@@ -898,6 +966,7 @@ onBeforeUnmount(() => {
                 class="speech-miner-point-edit"
                 aria-label="编辑该卖点"
                 title="编辑卖点"
+                :disabled="!legacyMode && !poolEditable"
                 @click="beginPointEdit(point, pointIndex)"
               ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.8-.8 4 4-.8L18.4 8.8l-3.2-3.2zM13.8 7l3.2 3.2M3.2 20.8h17.6"/></svg></button>
               <button v-if="!isPointEditing(pointIndex) && !isPointCollapsed(point, pointIndex)" type="button" class="speech-miner-point-chevron" :aria-label="'查看“' + point.卖点名 + '”的全部内容'" @click="openPointAngles(point, pointIndex)">›</button>
@@ -1156,15 +1225,23 @@ onBeforeUnmount(() => {
 .speech-miner-chat > header,
 .speech-miner-drafts > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .speech-miner-results > header { flex-wrap: wrap; }
-.speech-miner-results > header > div { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.speech-miner-results-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.speech-miner-results-toolbar { display: flex; align-items: center; gap: 10px; width: 100%; flex-wrap: wrap; }
+.speech-miner-pool-select { flex: 1 1 180px; min-width: 0; max-width: 330px; }
+.speech-miner-pool-select select { width: 100%; min-height: 40px; padding: 8px 30px 8px 12px; border: 1px solid #ccd7f2; border-radius: 10px; background: #f7f9ff; color: #425b96; font: inherit; font-size: 14px; font-weight: 750; text-overflow: ellipsis; }
+.speech-miner-pool-select select:focus-visible { outline: 3px solid #a4b8ff; outline-offset: 2px; }
+.speech-miner-pool-select select:disabled { opacity: .65; }
+.speech-miner-pool-select .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+.speech-miner-pool-notice { margin: 0; color: #7b83a1; font-size: 13px; line-height: 1.6; }
+.speech-miner-point-edit:disabled { opacity: .4; cursor: default; }
 .speech-miner-results > header strong { color: #152747; font-size: 22px; white-space: nowrap; }
 .speech-miner-results > header small { padding: 7px 11px; border-radius: 999px; background: #f0f4ff; color: #6c7da7; font-size: 14px; white-space: nowrap; }
 .speech-miner-results-actions { display: flex!important; align-items: center; justify-content: flex-end; gap: 8px!important; margin-left: auto; }
 .speech-miner-results-actions button { min-height: 34px; border: 1px solid #ced8ee; border-radius: 10px; padding: 6px 12px; background: #fff; color: #586c9e; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
 .speech-miner-results-actions button:last-child { border-color: #ddd4f5; background: #f8f5ff; color: #715ba8; }
 .speech-miner-results-actions button:disabled { cursor: default; opacity: .42; }
-.speech-miner-results > header em { display: flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid #ffe0aa; border-radius: 999px; background: #fff8eb; color: #df8615; font-size: 13px; font-style: normal; white-space: nowrap; }
-.speech-miner-results > header em i { font-size: 18px; font-style: normal; }
+.speech-miner-results-toolbar em { display: flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid #ffe0aa; border-radius: 999px; background: #fff8eb; color: #df8615; font-size: 13px; font-style: normal; white-space: nowrap; }
+.speech-miner-results-toolbar em i { font-size: 18px; font-style: normal; }
 .speech-miner-empty { display: grid; min-height: 300px; place-items: center; padding: 28px; border: 1px dashed #d8e1f2; border-radius: 16px; background: #f7f9fd; color: #748198; font-size: 16px; line-height: 1.7; text-align: center; }
 
 .speech-miner-point-list { display: grid; align-content: start; gap: 13px; min-height: 360px; overflow: auto; padding: 1px 8px 8px 1px; scrollbar-color: #aeb6c4 transparent; scrollbar-width: thin; }
@@ -1399,7 +1476,7 @@ onBeforeUnmount(() => {
   .speech-miner-chat-start > button { width:auto; min-width:0; gap:10px; padding:10px 11px; }
   .speech-miner-grid { min-height: 0; }
   .speech-miner-results { padding: 16px; }
-  .speech-miner-results > header > div { display: grid; gap: 5px; }
+  .speech-miner-results-title { display: grid; gap: 5px; }
   .speech-miner-point-list article { grid-template-columns: 42px minmax(0,1fr); padding: 12px; position: relative; }
   .speech-miner-point-index { min-height: 60px; padding-top: 13px; border-radius: 13px; font-size: 13px; }
   .speech-miner-point-actions { position: absolute; top: 12px; right: 12px; min-height: auto; }

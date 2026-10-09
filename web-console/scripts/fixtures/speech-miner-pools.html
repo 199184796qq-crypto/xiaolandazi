@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>分池挖掘编辑验收</title><style>body{margin:24px auto;padding:0 20px;max-width:1460px;font-family:system-ui;background:#f1f4fc;color:#263451}.fixture-bar{display:flex;gap:10px;padding:12px;margin-bottom:16px;background:#fff3cb;border-radius:12px}.fixture-bar button{padding:8px;border:1px solid #bcc9ee;border-radius:8px;background:#fff}#calls{white-space:pre-wrap;font-size:13px}</style></head><body><div id="app"></div><script type="module">
+import {createApp,h,ref} from 'vue'
+import Workbench from '../../src/components/SpeechMinerWorkbench.vue'
+const task=(id,point,angle)=>({id,selling_point:point,angle,pain_point:'根据当前商品信息讲清楚选择理由',target_audience:'正在了解商品的观众',source_ids:['fact-'+id]})
+const pool=(key,owner,products,tasks)=>({key,label:owner?'商品专属':'公共内容',owner,products,tasks,task_count:tasks.length,reused:false})
+let current={state:'synced',set_id:11,saved_set_id:11,changes:[],benefits:[],products:[{id:4,link:'1',name:'杨鸭子（整只装）'},{id:5,link:'2',name:'杨鸭子（半只装）'},{id:6,link:'3',name:'待更新商品'}],job:{status:'ready',stage:'完成'},pools:[pool('common:45',0,[4,5],[task('s1','新鲜制作','每天新鲜制作，现卤现炸'),task('s2','新鲜制作','不备隔夜货，围绕制作节奏展开')]),pool('product:4',4,[4],[task('a1','规格价格选择','1号链接为900g整只装'),task('a2','规格价格选择','整只报价85块5，按只讲清楚预算')]),pool('product:5',5,[5],[task('b1','规格价格选择','2号链接为450g半只装')])]}
+const status=ref(structuredClone(current)),room=ref(26),plan=ref(4),messages=ref([])
+const wheel={asset_id:21,wheel_json:JSON.stringify({卖点列表:[{卖点名:'旧版规格价格',痛点:'旧版说明',目标人群:'旧版人群',角度:['旧版总素材仍然保留']}]})}
+let conflict=false
+window.fetch=async(url,init={})=>{
+ const body=init.body?JSON.parse(init.body):{},method=init.method||'GET';messages.value.push(method+' '+url+' '+JSON.stringify(body))
+ if(String(url).includes('/content-pools/edit?')){
+  if(conflict||body.expected_set_id!==current.set_id)return new Response(JSON.stringify({error:'内容已被更新，请刷新后重新编辑；你的编辑草稿已保留'}),{status:409,headers:{'Content-Type':'application/json'}})
+  const selected=current.pools.find(p=>p.key===body.pool_key);if(!selected)throw Error('错池')
+  const first=selected.tasks.findIndex(t=>body.task_ids.includes(t.id));const unaffected=selected.tasks.filter(t=>!body.task_ids.includes(t.id))
+  const replacements=body.tasks.map((t,i)=>({...t,id:t.id||'new-'+i,source_ids:['existing-reference']}))
+  unaffected.splice(first,0,...replacements);selected.tasks=unaffected;selected.task_count=unaffected.length;current.set_id++;current.state='ready'
+  return new Response(JSON.stringify(current),{status:200,headers:{'Content-Type':'application/json'}})
+ }
+ if(String(url).includes('/selling-point-wheel/'))return new Response('{}',{status:200,headers:{'Content-Type':'application/json'}})
+ throw Error('此验收不允许调用其他接口：'+url)
+}
+createApp({setup(){return()=>[
+ h('div',{class:'fixture-bar'},[h('span','本地模拟，不连接生产后台'),h('button',{onClick:()=>{current.state='needs_update';status.value=structuredClone(current)}},'模拟资料变化'),h('button',{onClick:()=>{current.state='synced';status.value=structuredClone(current)}},'恢复可编辑'),h('button',{onClick:()=>{conflict=!conflict}},'切换保存冲突'),h('button',{onClick:()=>{plan.value=99;room.value=88;status.value={...structuredClone(current),set_id:22,pools:[]}}},'切换房间')]),
+ h(Workbench,{planId:plan.value,roomId:room.value,tenantId:14,poolStatus:status.value,wheel,onPoolUpdated:next=>{status.value=next},onUpdated:()=>{}}),
+ h('pre',{id:'calls'},messages.value.join('\n'))
+ ]}}).mount('#app')
+</script></body></html>

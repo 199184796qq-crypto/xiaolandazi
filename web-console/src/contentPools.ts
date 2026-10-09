@@ -4,7 +4,8 @@ import { request } from './api'
 export interface PoolProduct { id: number; link: string; name: string }
 export interface BenefitScope { benefit_id: number; all: boolean; products: number[]; version_no: number }
 export interface PoolChange { id: string; area: string; label: string; products: number[]; before: string; after: string }
-export interface PoolSummary { key: string; label: string; owner: number; products: number[]; task_count: number; reused: boolean; tasks?: { id: string; selling_point: string; angle: string }[] }
+export interface PoolTask { id: string; selling_point: string; angle: string; target_audience?: string; pain_point?: string; source_ids?: string[] }
+export interface PoolSummary { key: string; label: string; owner: number; products: number[]; task_count: number; reused: boolean; tasks?: PoolTask[] }
 export interface PoolStatus {
   state: 'needs_update' | 'updating' | 'failed' | 'ready' | 'synced'; changes: PoolChange[];
   products: PoolProduct[]; benefits: BenefitScope[]; pools: PoolSummary[]; set_id: number; saved_set_id: number;
@@ -48,5 +49,6 @@ export function useContentPools(plan: Ref<number | null>, room: Ref<{ id: number
   watch(preview, () => void refresh())
   onBeforeUnmount(() => { disposed = true; epoch++; controller?.abort(); if (timer) clearTimeout(timer) })
   function scopeSaved(scope: BenefitScope) { if (status.value) status.value.benefits = status.value.benefits.map(row => row.benefit_id === scope.benefit_id ? scope : row); void refresh(true) }
-  return { status, error, submitting, preview, refresh, update, scopeSaved }
+  function acceptEdited(next: PoolStatus) { epoch++; controller?.abort(); busy = false; status.value = next; error.value = ''; void refresh(true) }
+  return { status, error, submitting, preview, refresh, update, scopeSaved, acceptEdited }
 }

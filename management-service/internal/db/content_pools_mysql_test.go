@@ -143,6 +143,30 @@ func TestContentPoolsMySQL(t *testing.T) {
 	if scalar(`SELECT COUNT(*) FROM live_plan_content_task_products WHERE set_id=?`, saved.ID) != 20 {
 		t.Fatal("not all products persisted")
 	}
+	edit := contentpools.PoolEdit{ExpectedSetID: saved.ID, PoolKey: "common", TaskIDs: []string{"t"}, Tasks: []contentpools.TaskEdit{{ID: "t", Point: "用户修订", Angle: "改后内容"}}}
+	if _, e := s.EditContentPool(ctx, 15, 5, 1, source, edit); e == nil {
+		t.Fatal("cross-tenant edit accepted")
+	}
+	edited, e := s.EditContentPool(ctx, 14, 4, 1, source, edit)
+	if e != nil || edited.ID == saved.ID || edited.Pools[0].Tasks[0].Angle != "改后内容" {
+		t.Fatal("manual immutable snapshot", e)
+	}
+	if _, e = s.EditContentPool(ctx, 14, 4, 1, source, edit); !errors.Is(e, ErrPoolSourceChanged) {
+		t.Fatal("stale revision edit overwrote current", e)
+	}
+	source.Revision, _ = s.ContentSourceRevision(ctx, 14, 4)
+	if _, e = s.EditContentPool(ctx, 14, 4, 1, source, edit); e == nil {
+		t.Fatal("stale set edit overwrote current")
+	}
+	original, e := s.GetContentPoolSet(ctx, 14, 4, saved.ID)
+	if e != nil || original.Pools[0].Tasks[0].Angle != "角度" || scalar(`SELECT COUNT(*) FROM live_plan_content_task_products WHERE set_id=?`, edited.ID) != 20 {
+		t.Fatal("original snapshot or edited scope changed", e)
+	}
+	// Restore only this isolated fixture to preserve the remaining assertions.
+	exec(`DELETE FROM live_plan_content_task_products WHERE set_id=?`, edited.ID)
+	exec(`DELETE FROM live_plan_content_tasks WHERE set_id=?`, edited.ID)
+	exec(`DELETE FROM live_plan_content_pool_records WHERE set_id=?`, edited.ID)
+	exec(`DELETE FROM live_plan_content_sets WHERE id=?`, edited.ID)
 	if _, err = s.GetContentPoolSet(ctx, 15, 5, saved.ID); err == nil {
 		t.Fatal("cross-tenant snapshot exposed")
 	}
