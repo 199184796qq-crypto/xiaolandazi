@@ -2186,6 +2186,7 @@ export interface LiveAgentPlanVersion {
 }
 
 export interface LiveAgentPlanWorkspaceResponse {
+  checks?: { code: string; message: string }[]
   version?: LiveAgentPlanVersion | null
   source: 'draft' | 'published' | ''
   inherited?: boolean

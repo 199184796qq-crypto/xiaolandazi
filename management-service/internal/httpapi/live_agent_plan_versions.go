@@ -535,6 +535,7 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 		"source":         source,
 		"inherited":      inherited,
 		"source_room_id": version.RoomID,
+		"checks":         s.liveAgentPlanWorkspaceChecks(r.Context(), tenantID, planID, version),
 	})
 }
 

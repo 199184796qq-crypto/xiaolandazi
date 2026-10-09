@@ -1611,6 +1611,7 @@ const fullShowWorkspaceLoading = ref(false)
 const fullShowWorkspaceHydrating = ref(false)
 const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
 const fullShowWorkspaceSource = ref<'draft' | 'published' | ''>('')
+const fullShowWorkspaceChecks = ref<{ code: string; message: string }[]>([])
 const fullShowWorkspaceInherited = ref(false)
 const fullShowWorkspaceVoiceIdentity = ref<LiveAgentVoiceIdentity | null>(null)
 const fullShowWorkspaceLegacyPartial = ref(false)
@@ -3187,6 +3188,7 @@ function resetFullShowWorkspaceState() {
   realtimeOptionsLoadError.value = ''
   realtimeOptionsChanged.value = false
   fullShowWorkspaceSource.value = ''
+  fullShowWorkspaceChecks.value = []
   fullShowWorkspaceVoiceIdentity.value = null
   fullShowWorkspaceLegacyPartial.value = false
   fullShowWorkspaceInherited.value = false
@@ -3380,6 +3382,7 @@ async function loadFullShowWorkspace() {
     if (!contentMode) return
     const workspace = await getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode)
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    fullShowWorkspaceChecks.value = workspace.checks || []
     const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
     else await loadRealtimeOptionsDefaults()
@@ -3575,6 +3578,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     }
     fullShowWorkspaceBaseVersion.value = saved
     fullShowWorkspaceSource.value = 'published'
+    fullShowWorkspaceChecks.value = []
     fullShowWorkspaceInherited.value = false
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
     fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案，下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
@@ -5912,6 +5916,11 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
+        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
+          <strong>已保存方案检查提示</strong>
+          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
+          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
+        </div>
         <div class="strategy-workflow-layout" :class="'workflow-mode-' + activeMode">
           <nav class="strategy-mode-tabs strategy-mode-tabs-v2 strategy-workflow-nav" aria-label="直播方案流程">
             <div class="strategy-workflow-inputs">

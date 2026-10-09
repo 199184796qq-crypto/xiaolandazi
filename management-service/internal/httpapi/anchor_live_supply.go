@@ -62,9 +62,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		return snapshot.BufferedMainlineMS, nil
 	}
 	supply.beforeText = func(ctx context.Context, latest *anchorcycle.State) error {
-		if err := s.checkLiveAnchorSources(ctx, latest); err != nil {
-			return err
-		}
 		mu.Lock()
 		copy := delivery
 		copy.DeliveredCandidates = append([]string(nil), delivery.DeliveredCandidates...)
@@ -92,9 +89,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		return nil
 	}
 	supply.onReady = func(ctx context.Context, latest *anchorcycle.State, segment anchorcycle.Segment) error {
-		if err := s.checkLiveAnchorSources(ctx, latest); err != nil {
-			return err
-		}
 		track, err := liveCycleMainlineTrack(latest, segment)
 		if err != nil {
 			return err

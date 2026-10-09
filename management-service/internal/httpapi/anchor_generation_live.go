@@ -33,9 +33,6 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 	if _, err := s.cycleCacheOSS(); err != nil || s.anchorVoiceCache == nil {
 		return errors.New("请配置OSS声音缓存")
 	}
-	if err := s.validateRealtimeScheme(ctx, tenant, version.PlanID, version.GenerationContext); err != nil {
-		return err
-	}
 	owners, ok := s.anchorCycles.(anchorcycle.LiveOwnerRepository)
 	if !ok {
 		return errors.New("正式主线心跳租约未配置")
@@ -126,19 +123,8 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	if err != nil {
 		return nil, err
 	}
-	// Original mutable input may have changed after publication (or a welfare
-	// may have expired). Never generate from an old approved fact snapshot silently.
-	p0, p1, p2, err := loadRiskAnnotationMothers()
-	if err != nil {
-		return nil, err
-	}
-	source, err := s.loadDerivedInput(ctx, tenant, version.PlanID, p0, p1, p2)
-	if err != nil {
-		return nil, err
-	}
-	if source.Facts != safety.OriginalFacts || source.WheelJSON != safety.OriginalWheelJSON {
-		return nil, errors.New("正式事实或轮盘已变化，请重新保存方案")
-	}
+	// A live session consumes the saved version. Source differences are reported
+	// when Live Strategy loads the workspace, never by stopping its audio.
 	var wheel anchorStyleSellingPointWheel
 	if err = json.Unmarshal([]byte(safety.SafeWheelJSON), &wheel); err != nil {
 		return nil, err
@@ -165,14 +151,8 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	state.StyleMD, state.BaselineJSON, state.Facts = scheme.StyleMD, scheme.BaselineJSON, safety.SafeFacts
 	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, version.PlanID, state.Facts)
 	if scheme.ProductFocus != nil {
-		if scheme.ProductFocus.FactsSHA != derivedHash(safety.SafeFacts) {
-			return nil, errors.New("商品范围与已保存安全事实不一致，请保存发布新方案")
-		}
-		raw, marshalErr := json.Marshal(scheme.ProductFocus)
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-		if err = json.Unmarshal(raw, &state.ProductFocus); err != nil {
+		state.ProductFocus, err = savedProductFocusForFacts(scheme.ProductFocus, safety.SafeFacts)
+		if err != nil {
 			return nil, err
 		}
 		if err = state.ProductFocus.Policy.Validate(); err != nil {
@@ -327,13 +307,6 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 					return
 				}
 			}
-			if err := s.checkLiveAnchorSources(ctx, state); err != nil {
-				select {
-				case jobs <- item{err: err}:
-				case <-ctx.Done():
-				}
-				return
-			}
 			latest, err := s.anchorCycles.Get(ctx, state.TenantID, state.PlanID, state.RoomID)
 			if err == nil && latest.RunID != state.RunID {
 				err = anchorcycle.ErrStale
@@ -414,24 +387,6 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 		return nil, errors.New("正式主线预备声音不完整")
 	}
 	return tracks, nil
-}
-
-// Facts are rebuilt deterministically on every source edit. An immutable live
-// version is not silently rewritten: old offers/source claims stop new turns
-// until the newly derived safe version is saved and published.
-func (s *Server) checkLiveAnchorSources(ctx context.Context, state *anchorcycle.State) error {
-	p0, p1, p2, err := loadRiskAnnotationMothers()
-	if err != nil {
-		return err
-	}
-	input, err := s.loadDerivedInput(ctx, state.TenantID, state.PlanID, p0, p1, p2)
-	if err != nil {
-		return err
-	}
-	if state.Delivery == nil || derivedHash(input.Facts) != state.Delivery.SourceFactsSHA || derivedHash(input.WheelJSON) != state.Delivery.SourceWheelSHA {
-		return errors.New("事实、福利有效期或轮盘已变化，请保存新方案后重新开始")
-	}
-	return nil
 }
 
 func waitLiveProducer(ctx context.Context) error {

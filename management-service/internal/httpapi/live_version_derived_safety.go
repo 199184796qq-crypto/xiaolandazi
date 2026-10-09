@@ -27,7 +27,11 @@ func (s *Server) refreshVersionDerivedSafety(ctx context.Context, tenant, plan, 
 	}
 	snapshot["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
 	if isRealtimeScheme(snapshot) {
-		return s.validateRealtimeScheme(ctx, tenant, plan, snapshot)
+		// Re-capture both dependent snapshots together, including voice-only saves.
+		if err = s.captureRealtimeProductFocus(ctx, tenant, plan, input, safety); err != nil {
+			return err
+		}
+		return s.validateRealtimeScheme(ctx, tenant, plan, input.GenerationContext)
 	}
 	return nil
 }
