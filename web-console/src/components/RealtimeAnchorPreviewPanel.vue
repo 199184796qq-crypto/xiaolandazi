@@ -2,20 +2,18 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { request } from '../api'
 import type { CycleState, CycleResponse } from '../anchorCycleRun'
-import { cycleSpeech, normalizeCycleState } from '../anchorCycleRun'
+import { normalizeCycleState } from '../anchorCycleRun'
 import { liveSupportRoomForRequest } from '../liveSupportAccess'
 import { ContinuousPreviewPCMStream, readPreviewPCM, type PreviewPCMFrame } from '../continuousPreviewPCMStream'
-import RiskText from './RiskText.vue'
 import RealtimeAudioPlayer from './RealtimeAudioPlayer.vue'
 import { preparationProgress, playbackPercent, type PreparationPart } from '../realtimePlayerProgress'
 import type { PreviewStreamEvent } from '../agent/previewStream'
 import { realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
 const props = defineProps<{ planId: number; tenantId?: number; voiceSourceRoomId?: number; generationOptions: RealtimeGenerationOptions | null }>()
-const run = ref<(CycleState & { preview_limit_ms?: number }) | null>(null), retained = ref(''), error = ref(''), notice = ref('')
+const run = ref<(CycleState & { preview_limit_ms?: number }) | null>(null), error = ref(''), notice = ref('')
 const starting = ref(false), playing = ref(false), stopped = ref(true), previewFinished = ref(false)
 const prepared = ref(0), firstSound = ref(false), elapsedMS = ref(0), subtitle = ref(''), readyMS = ref(0)
 const buffered = computed(() => ({ readyMS: readyMS.value }))
-const speech = computed(() => run.value ? cycleSpeech(run.value) : retained.value)
 const progress = computed(() => previewFinished.value ? 100 : firstSound.value ? playbackPercent(elapsedMS.value, run.value?.preview_limit_ms || elapsedMS.value + readyMS.value) : prepared.value)
 const caption = computed(() => previewFinished.value ? '本场试听已播放完成' : subtitle.value || '当前播放的实时文字将在这里显示')
 let alive = true, epoch = 0, ticker: number | undefined
@@ -31,7 +29,7 @@ function progressEvent(generation: number, part: PreparationPart) {
   }
 }
 function receive(state: CycleState) {
-  run.value = normalizeCycleState(state); retained.value = cycleSpeech(run.value)
+  run.value = normalizeCycleState(state)
   audio.setPlaybackLimit(run.value.preview_limit_ms || 0)
 }
 function sync() {
@@ -142,22 +140,19 @@ async function reset(oldPlan = props.planId, oldTenant = props.tenantId) {
     } catch { /* An uncertain stop is visible through the request dialog; do not repeat paid work. */ }
   }
 }
-watch(() => [props.planId, props.tenantId] as const, (_, prior) => { if (prior) void reset(prior[0], prior[1]); retained.value = ''; error.value = '' })
+watch(() => [props.planId, props.tenantId] as const, (_, prior) => { if (prior) void reset(prior[0], prior[1]); error.value = '' })
 onBeforeUnmount(() => { alive = false; void reset() })
 </script>
 
 <template>
   <section class="realtime-anchor-preview">
-    <RiskText :plan-id="planId" :tenant-id="tenantId" :text="speech" box auto-scroll label="累计生成话术" />
-    <RealtimeAudioPlayer :preparing="!firstSound && (starting || !!run || !!error)" :playing="playing" :active="(starting || !!run) && !stopped" :progress="progress" :elapsed-m-s="elapsedMS" :ready-seconds="Math.floor(buffered.readyMS / 1000)" :unlimited="!!run && !run.preview_limit_ms" :failed="!!error" :start-disabled="starting || !planId || (!run && !!realtimeGenerationOptionsError(generationOptions))" :stop-disabled="!run && !starting" @play="start" @pause="pause" @stop="reset()" />
     <div class="playback-caption" aria-live="polite">{{ caption }}</div>
+    <RealtimeAudioPlayer :preparing="!firstSound && (starting || !!run || !!error)" :playing="playing" :active="(starting || !!run) && !stopped" :progress="progress" :elapsed-m-s="elapsedMS" :ready-seconds="Math.floor(buffered.readyMS / 1000)" :unlimited="!!run && !run.preview_limit_ms" :failed="!!error" :start-disabled="starting || !planId || (!run && !!realtimeGenerationOptionsError(generationOptions))" :stop-disabled="!run && !starting" @play="start" @pause="pause" @stop="reset()" />
     <p v-if="notice">{{ notice }}</p><p v-if="error" class="error">{{ error }}</p>
     <slot />
   </section>
 </template>
 <style scoped>
 .realtime-anchor-preview{display:grid;gap:16px}.playback-caption{display:flex;align-items:center;justify-content:center;text-align:center;min-height:100px;background:#661c2c;color:white;border-radius:14px;padding:24px;font-size:24px;line-height:1.7;overflow-wrap:anywhere}.error{color:#ba2542}p{margin:0;color:#62738b}
-.realtime-anchor-preview :deep(.risk-text.box){height:440px;min-height:0;max-height:440px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
 .realtime-anchor-preview :deep(.audio-player){width:50%;box-sizing:border-box;zoom:.5;justify-self:center}
-@media(max-width:640px){.realtime-anchor-preview :deep(.risk-text.box){height:320px;max-height:320px}}
 </style>
