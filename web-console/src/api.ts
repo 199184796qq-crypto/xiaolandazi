@@ -2467,10 +2467,10 @@ export function adjustLiveOpsRoomQuota(
   )
 }
 
-export function bindLiveDevice(deviceId: number, roomId: number, bindingRole = 'primary') {
+export function bindLiveDevice(deviceId: number, roomId: number, bindingRole = 'primary', replacePrimary = false) {
   return request<LiveDevice>('/api/v1/live/devices/' + deviceId + '/bind', {
     method: 'POST',
-    body: JSON.stringify({ room_id: roomId, binding_role: bindingRole }),
+    body: JSON.stringify({ room_id: roomId, binding_role: bindingRole, ...(replacePrimary ? { replace_primary: true } : {}) }),
   })
 }
 

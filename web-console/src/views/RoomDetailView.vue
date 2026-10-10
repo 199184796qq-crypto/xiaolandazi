@@ -63,6 +63,7 @@ import { getSharedAudioContext, unlockSharedAudioContext } from '../audioRuntime
 import ModulePageNav from '../components/ModulePageNav.vue'
 import RoomPreferenceHub from '../components/RoomPreferenceHub.vue'
 import InteractionLearningPanel from '../components/InteractionLearningPanel.vue'
+import RoomDeviceBindingPanel from '../components/RoomDeviceBindingPanel.vue'
 import type {
   LiveAgentSettings,
   LiveAgentPlan,
@@ -4697,7 +4698,8 @@ onBeforeUnmount(() => {
           </div>
         </article>
         <article class="device-runtime-card xiaozhi-device-card">
-          <span>小蓝盒子</span>
+          <RoomDeviceBindingPanel :room-id="roomId" :tenant-id="room.tenant_id" :available="coreActionsAvailable" :runtime-busy="aiActive || runtimeControlBusy || firstVoiceStartPending" :can-edit="canControlMonitoring" @changed="refreshRuntime" />
+          <span>小蓝盒子 · 主设备状态</span>
           <div class="device-runtime-status" :class="'state-' + deviceVisualState">
             <i></i>
             <strong>{{ deviceStatusLabel }}</strong>

@@ -2,7 +2,7 @@ import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath } from 'node:url'
 
-export async function startFixture({roomViewSource, speechIdentity = null}={}) {
+export async function startFixture({roomViewSource, speechIdentity = null, roomDevices = []}={}) {
   const root = fileURLToPath(new URL('..', import.meta.url))
   const plugin = { name: 'room-parity-fixture', enforce: 'pre', load(id) {
     if(roomViewSource&&id.endsWith('/src/views/RoomDetailView.vue'))return roomViewSource;
@@ -17,6 +17,7 @@ export async function startFixture({roomViewSource, speechIdentity = null}={}) {
         const params=new URLSearchParams(location.search);const role=params.get('role')||'customer';
         window.fixture={calls:[],queue:[],caption:params.get('caption')==='1'||params.get('waiting')!=='1',waiting:params.get('waiting')==='1',granted:role!=='ungranted',session:1,pcm:params.get('pcm')==='1',sources:[],startTest:params.get('start_test')==='1',delayUnlock:params.get('delay_unlock')==='1',startFailed:false,runtimePollLag:false};
         window.fixture.identity=${JSON.stringify(speechIdentity)};
+        window.fixture.devices=${JSON.stringify(roomDevices)};
         if(window.fixture.pcm){
           window.AudioContext=class {
             constructor(){this.state=window.fixture.delayUnlock?'suspended':'running';this.destination={};this.origin=performance.now();}
@@ -47,9 +48,10 @@ export async function startFixture({roomViewSource, speechIdentity = null}={}) {
           if(identity&&path.endsWith('/versions'))return Response.json({items:identity.versions||[]});
           if(path==='/api/v1/liveops/support-authorizations')return Response.json({items:window.fixture.granted?[{staff_user_id:7,room_id:15,tenant_id:14,capability:'l3_policy',status:'active'}]:[]});
           if(path==='/api/v1/rooms/15')return Response.json(room);
+          if(path==='/api/v1/live/devices')return Response.json(window.fixture.devices);
           if(path.endsWith('/events')&&!path.includes('/runtime/'))return Response.json({items:[{id:1,room_id:15,event_type:'chat',nickname:'测试老乡',content:'这个油怎么保存',occurred_at:now}]});
           if(path.endsWith('/runtime/events'))return Response.json([]);
-          if(path.endsWith('/runtime'))return Response.json({room_id:15,room_live:window.fixture.waiting,agent_state:window.fixture.failure?'stopped':window.fixture.waiting&&!window.fixture.runtimePollLag?'working':'stopped',agent_mode:'anchor',agent_plan_id:window.fixture.startTest?4:0,session:{id:window.fixture.session},failure:window.fixture.failure,startup:window.fixture.startup,quota_remaining_seconds:7200,...identity?.runtime});
+          if(path.endsWith('/runtime'))return Response.json({room_id:15,room_live:window.fixture.waiting,agent_state:window.fixture.failure?'stopped':window.fixture.waiting&&!window.fixture.runtimePollLag?'working':'stopped',agent_mode:'anchor',agent_plan_id:window.fixture.startTest?4:0,session:{id:window.fixture.session},device:window.fixture.devices.find(d=>d.room_id===15&&d.binding_role==='primary'),failure:window.fixture.failure,startup:window.fixture.startup,quota_remaining_seconds:7200,...identity?.runtime});
           if(path.endsWith('/audio-engine'))return Response.json(window.fixture.audioEngine||{room_id:15,phase:'idle',speech_feed:window.fixture.caption?{previous:{segment_id:'prev',text:'上一句主线',tone:'mainline'},current:{segment_id:'current',text:'正在回答保存问题哟',tone:'interrupt'},next:{segment_id:'next',text:'下一句回归主线',tone:'resume'}}:{}});
           if(path.endsWith('/agent-decisions'))return Response.json({queue:window.fixture.queue,notes:[]});
           if(path.endsWith('/brain'))return Response.json({Topics:[],Counters:{},Questions:[]});

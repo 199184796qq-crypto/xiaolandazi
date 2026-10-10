@@ -269,8 +269,9 @@ type RecordLiveRuntimeEventInput struct {
 }
 
 type BindLiveDeviceInput struct {
-	RoomID      int64  `json:"room_id"`
-	BindingRole string `json:"binding_role"`
+	RoomID         int64  `json:"room_id"`
+	BindingRole    string `json:"binding_role"`
+	ReplacePrimary bool   `json:"replace_primary,omitempty"`
 }
 
 type DeviceHeartbeatInput struct {

@@ -169,6 +169,7 @@ func (s *Server) liveBindDevice(w http.ResponseWriter, r *http.Request) {
 		deviceID,
 		input.RoomID,
 		input.BindingRole,
+		input.ReplacePrimary,
 	)
 	if err != nil {
 		switch {
