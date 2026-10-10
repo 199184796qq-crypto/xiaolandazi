@@ -17,6 +17,26 @@ func TestClarificationNeverRepairsDraft(t *testing.T) {
 	}
 }
 
+func TestCancellationAndPersistentRevisionHaveSeparateProgramStates(t *testing.T) {
+	task := contentpools.Task{ID: "program-task", Angle: "原错误方向"}
+	c := contentpools.Correction{TaskID: task.ID, Content: contentpools.CorrectionContent{Cancellation: "取消这段"}}
+	if !correctionTaskState(task, c).Disabled {
+		t.Fatal("local cancellation ignored")
+	}
+	c.Content.Fact = "用户已确认正确事实"
+	if correctionTaskState(task, c).Disabled {
+		t.Fatal("permanent correction was retired before repair")
+	}
+	task.Disabled = true
+	if correctionTaskState(task, c).Disabled {
+		t.Fatal("selected old item could not be revised")
+	}
+	other := contentpools.Task{ID: "other-task", Angle: "其他方向", Disabled: true}
+	if !correctionTaskState(other, c).Disabled {
+		t.Fatal("unrelated disabled item revived")
+	}
+}
+
 func TestCorrectionBindingKeepsProgramScopeAndRejectsStaleOrUnknownTargets(t *testing.T) {
 	set := taskFactPoolFixture()
 	set.ID = 7
