@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { mkdir } from 'node:fs/promises'
 import { createServer } from 'vite'
-const require = createRequire(new URL('../../collector-worker/package.json', import.meta.url))
+const require = createRequire(process.env.LECTURE_TEST_RUNTIME || new URL('../../collector-worker/package.json', import.meta.url))
 const { chromium } = require('playwright-core')
 const fixture = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="icon" href="data:,"><div id="app"></div><script type="module">
 import {createApp,h,ref} from 'vue';import Panel from '/src/components/LectureTasksPanel.vue';import {applySession} from '/src/session.ts';import '/src/style.css';
