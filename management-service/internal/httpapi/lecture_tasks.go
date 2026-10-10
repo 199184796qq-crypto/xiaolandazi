@@ -79,7 +79,7 @@ func parseLectureOrganized(raw, source string, catalog factCategoryCatalog) (lec
 	task.Title, task.Purpose, task.Angles = strings.TrimSpace(out.Title), strings.TrimSpace(out.Purpose), out.Angles
 	task.Subject = strings.TrimSpace(out.Subject)
 	if task.Subject == "" {
-		task.Subject = task.Title
+		return task, nil, errors.New("缺少资料对象，未保存任何内容")
 	}
 	if utf8.RuneCountInString(task.Subject) > 100 {
 		return task, nil, errors.New("资料对象名称过长")
