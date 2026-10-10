@@ -2566,6 +2566,8 @@ export interface LivePolicyTestResult {
 export type AgentMemoryType = 'semantic' | 'fact' | 'wording' | 'style' | string
 
 export interface AgentLearningSession {
+
+  correction_history?: AgentLearningCorrection[]
 	 review?: { plan_id: number; kind: 'semantic' | 'missing_fact'; meaning: string; context: string; observed_context?: string; reason: string; suggested_rule: string; needed_facts: string[]; occurrences: number }
   id: number
   tenant_id: number
@@ -2582,6 +2584,15 @@ export interface AgentLearningSession {
   created_at: string
   updated_at: string
   adopted_at?: string
+}
+
+export interface AgentLearningCorrection {
+  session_id: number
+  result_id: number
+  turn_no: number
+  user_feedback: string
+  preview_text: string
+  created_at: string
 }
 
 export interface AgentLearningEvidence {
