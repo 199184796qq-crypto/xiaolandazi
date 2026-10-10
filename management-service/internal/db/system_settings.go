@@ -68,6 +68,8 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	settings := []seededSystemSetting{
 		{Key: AnchorGenerationSetting, Group: "intelligence", Label: "主播生成模型与阿里会话配置", Value: "{}", InputType: "json", SortOrder: 5},
 		{Key: AnchorVoiceCacheRetentionSetting, Group: "liveops", Label: "OSS声音缓存保留（小时）", Value: "5", InputType: "number", SortOrder: 10},
+		{Key: model.MainlineGenerationCacheReuseSetting, Group: "liveops", Label: "主线话术与声音成品缓存复用", Value: "true", InputType: "boolean", SortOrder: 11},
+		{Key: model.InteractionGenerationCacheReuseSetting, Group: "liveops", Label: "互动回答与声音成品缓存复用", Value: "true", InputType: "boolean", SortOrder: 12},
 		{Key: model.FinanceDistinctReviewerSetting, Group: "finance", Label: "强制经办人与审核人不同", Value: "true", InputType: "boolean", SortOrder: 10},
 		{Key: "site_name", Group: "brand", Label: "系统显示名称", Value: "小蓝搭子", InputType: "text", SortOrder: 10},
 		{Key: "browser_title", Group: "brand", Label: "浏览器标签页标题", Value: "小蓝搭子 · 智能直播系统", InputType: "text", SortOrder: 15},
@@ -220,6 +222,9 @@ func (s *Store) UpdateSystemSettings(
 			}
 		}
 		if err := ValidateFinanceReviewSetting(update.Key, update.Value); err != nil {
+			return err
+		}
+		if err := ValidateGenerationCacheReuseSetting(update.Key, update.Value); err != nil {
 			return err
 		}
 	}

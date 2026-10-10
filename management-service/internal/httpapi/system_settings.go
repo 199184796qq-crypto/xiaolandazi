@@ -159,6 +159,10 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := db.ValidateGenerationCacheReuseSetting(item.Key, item.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if utf8.RuneCountInString(item.Value) > 4096 {
 			writeError(w, http.StatusBadRequest, "单项系统设置内容过长")
 			return

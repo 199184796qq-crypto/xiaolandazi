@@ -71,6 +71,7 @@ type Server struct {
 	stylePlugins          *styleplugin.Registry
 	anchorCycles          anchorcycle.Repository
 	anchorVoiceCache      anchorvoicecache.Repository
+	generationCachePolicy model.GenerationCachePolicyReader
 	cycleCancels          cycleCancels
 	previewStreams        previewStreams
 	anchorProducerContext context.Context

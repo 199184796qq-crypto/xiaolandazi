@@ -107,7 +107,7 @@ func faqDigest(value any) string {
 }
 
 func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, systemPrompt, prompt string) *faqCacheTicket {
-	if w.faqCache == nil || !faqCacheEligible(item) {
+	if w.faqCache == nil || !faqCacheEligible(item) || !w.interactionCacheReuseEnabled(ctx) {
 		return nil
 	}
 	source, ok := w.store.(faqPolicyStore)
@@ -170,6 +170,15 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 		ticket.Text, ticket.Hit = variant.Text, true
 	}
 	return ticket
+}
+
+func (w *Worker) interactionCacheReuseEnabled(ctx context.Context) bool {
+	reader, ok := w.store.(model.GenerationCachePolicyReader)
+	if !ok {
+		return true
+	}
+	enabled, err := reader.GenerationCacheReuseEnabled(ctx, model.InteractionGenerationCacheReuseSetting)
+	return err == nil && enabled
 }
 
 func (c *faqAnswerCache) prune(now time.Time) {
@@ -280,6 +289,9 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 
 func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
 	ticket := item.faqCacheTicket
+	if ticket != nil && !w.interactionCacheReuseEnabled(ctx) {
+		ticket = nil
+	}
 	key := faqDigest(request) // Includes exact text, provider/model, voice, speed and emotion.
 	if ticket != nil {
 		w.faqCache.mu.Lock()
