@@ -83,6 +83,12 @@ func p0AuditEvent(state *anchorcycle.State, candidate anchorcycle.Candidate) mod
 	if len(candidate.ContentWarnings) > 0 {
 		report["warnings"] = candidate.ContentWarnings
 	}
+	if len(candidate.OpeningInstructionEdits) > 0 {
+		report["opening_instruction_edits"] = candidate.OpeningInstructionEdits
+	}
+	if candidate.AnglePlan != nil {
+		report["angle_plan"] = candidate.AnglePlan
+	}
 	raw, _ = json.Marshal(report)
 	return model.P0AuditEvent{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: candidate.ID, RuleSHA256: candidate.P0Report.SHA256, Phase: state.Phase, TaskKey: state.Task().Key, RewriteNumber: candidate.P0RewriteNumber, Decision: decision, Text: cycleVoiceText(candidate), RawResponse: candidate.RawText, Prompt: candidate.Prompt, Report: raw}
 }

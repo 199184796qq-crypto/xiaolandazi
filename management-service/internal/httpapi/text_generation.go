@@ -9,6 +9,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"os"
 	"strings"
 	"time"
 )
@@ -104,6 +105,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		opener = "content_first"
 	}
 	packet := map[string]any{"开头模式": opener, "本次任务": task, "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "表达展开建议": methods[(state.TotalAccepted()+state.CycleNumber)%len(methods)], "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	applyCycleAnglePlanPacket(state, packet)
 	if hook := state.PendingOpeningHook; state.Phase == "opening" && hook != nil {
 		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}
 	}
@@ -112,7 +114,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	}
 	if strategy, err := state.ContentStrategy.Render("主线", state.ProductFacts(task)); err != nil {
 		return nil, err
-	} else if strategy != "" {
+	} else if strategy != "" && state.CurrentAnglePlan() == nil {
 		packet["内容方向与采用条件"] = strategy
 	}
 	if state.P0PendingRepair != nil {
@@ -126,16 +128,19 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	return []agentgateway.Message{{Role: "system", Content: string(foundation) + "\n\n" + string(fixed)}, {Role: "user", Content: string(dynamic)}}, nil
 }
 func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State) (agentgateway.Response, []agentgateway.Message, error) {
+	current, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
+	if err != nil || current == nil || !current.Enabled || current.APIKey == "" || state.TextModel == nil {
+		return agentgateway.Response{}, nil, fmt.Errorf("本场文字模型凭据不可用")
+	}
+	profile := *state.TextModel
+	profile.APIKey = current.APIKey
+	if os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") == "1" {
+		s.ensureCycleAnglePlan(ctx, state, profile)
+	}
 	messages, err := renderCycleTextMessages(state)
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}
-	current, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
-	if err != nil || current == nil || !current.Enabled || current.APIKey == "" || state.TextModel == nil {
-		return agentgateway.Response{}, messages, fmt.Errorf("本场文字模型凭据不可用")
-	}
-	profile := *state.TextModel
-	profile.APIKey = current.APIKey
 	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
 	if profile.SystemPrompt != "" {
 		req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)

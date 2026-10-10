@@ -758,9 +758,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			return state, nil
 		}
 		text, rawText = strings.TrimSpace(result.Text), result.Text
-		if text == "" || textControlLeak(text) {
-			state.SkipGeneration("text_output_protocol", "正文为空或包含明确的内部控制字段")
-			s.queueGenerationSkip(state, "text_output_protocol", "正文为空或包含明确的内部控制字段")
+		if text == "" {
+			state.SkipGeneration("text_output_protocol", "正文为空")
+			s.queueGenerationSkip(state, "text_output_protocol", "正文为空")
 			if err = s.anchorCycles.Save(ctx, state); err != nil {
 				return nil, err
 			}
@@ -828,6 +828,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	score := anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
 	retry := buildAnchorStyleScoreFeedback(score, b)
 	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: "model_raw_text", Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	candidate.AnglePlan = state.CurrentAnglePlan()
 	if patch != nil {
 		candidate.P0Patch = patch
 		candidate.P0PatchError = p0PatchError
@@ -847,8 +848,22 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		state.Warn("单段回灌不可用，仍按基准重试：" + retry.Error)
 	}
 	candidate.OutputText = cycleVoiceText(candidate)
+	cleanCycleOpeningInstruction(state, &candidate, "")
+	if textControlLeak(candidate.OutputText) {
+		candidate.P0PatchError = "正文包含明确的内部控制字段"
+	}
 	if err = state.CheckP0Candidate(&candidate); err != nil {
 		return nil, errors.New(err.Error())
+	}
+	s.reviewCycleP0Context(ctx, state, &candidate)
+	if len(candidate.OpeningInstructionEdits) > 0 {
+		candidate.Score = anchorstylescore.Score(candidate.OutputText, b, state.Task().SellingPoint+" × "+state.Task().Angle)
+		candidate.ScoreScope = "opening_instruction_removed"
+		if finalFeedback := buildAnchorStyleScoreFeedback(candidate.Score, b); finalFeedback.Status == "ready" {
+			candidate.RetryFeedback = finalFeedback.Prompt
+		} else {
+			candidate.RetryFeedback = ""
+		}
 	}
 	reviewState := *state
 	adopted, err := state.AddCandidate(candidate, b)
