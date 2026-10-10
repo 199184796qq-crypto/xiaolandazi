@@ -61,3 +61,40 @@ func TestSpeechModelsMySQL(t *testing.T) {
 		t.Fatal("deleted pinned model silently fell back")
 	}
 }
+
+func TestIndependentReviewModelRolesMySQL(t *testing.T) {
+	s := salesIsolatedMySQL(t)
+	ctx := context.Background()
+	t.Setenv("MODEL_CONFIG_ENCRYPTION_KEY", strings.Repeat("isolated-fixture-", 3))
+	if err := s.MigrateSpeechModels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	input := agentgateway.SpeechModelsInput{DefaultID: "writing", SystemDefaultID: "planning", ReviewDefaultID: "review"}
+	for _, id := range []string{"writing", "planning", "review"} {
+		p := agentgateway.SpeechModel{ID: id, Name: id, Protocol: "openai_chat", BaseURL: "https://api.example.com/v1", Model: "fixture-" + id, Enabled: true, TimeoutMS: 20000, MaxTokens: 16000}
+		input.Profiles = append(input.Profiles, agentgateway.SpeechModelInput{SpeechModel: p, NewAPIKey: "fixture-only-secret"})
+	}
+	if err := s.SaveSpeechModels(ctx, input, 1); err != nil {
+		t.Fatal(err)
+	}
+	for stage, want := range map[string]string{"mainline_text": "writing", "speech_generation": "writing", "mainline_angle_plan": "planning", "system_agent": "planning", "mainline_p0_context": "review", "speech_review": "review"} {
+		if got, err := s.ResolveTextRole(ctx, stage); err != nil || got != want {
+			t.Fatalf("stage=%s got=%s err=%v", stage, got, err)
+		}
+	}
+	input.Revision = 1
+	input.DefaultID = "planning"
+	input.ReviewDefaultID = "" // Old client changes writing without carrying review field.
+	for i := range input.Profiles {
+		input.Profiles[i].NewAPIKey = ""
+	}
+	if err := s.SaveSpeechModels(ctx, input, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ResolveTextRole(ctx, "speech_review"); err != nil || got != "review" {
+		t.Fatal("review moved with writer", got, err)
+	}
+	if got, err := s.ResolveTextRole(ctx, "speech_generation"); err != nil || got != "planning" {
+		t.Fatal("writer selection not saved", got, err)
+	}
+}
