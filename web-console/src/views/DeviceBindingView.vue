@@ -19,6 +19,14 @@ const search = ref('')
 const page = ref(1)
 const pageSize = 9
 const isCustomer = computed(() => session.bootstrap?.actor.role === 'customer')
+const orderStorageKey = computed(() => {
+  const actor = session.bootstrap?.actor
+  return actor?.user_id ? `xiaolan-ui:${actor.user_id}:${actor.tenant_id || 'staff'}:device-card-order` : ''
+})
+const deviceOrder = ref<number[]>([])
+const orderNotice = ref('')
+const draggingDeviceId = ref<number | null>(null)
+const dropTargetId = ref<number | null>(null)
 const showAdd = ref(false)
 const bindingCode = ref('')
 const deviceName = ref('')
@@ -27,6 +35,7 @@ const mutationBusy = computed(() => savingDeviceId.value !== null || adding.valu
 const success = ref('')
 const editingNames = ref<Record<number, string>>({})
 const editingNameId = ref<number | null>(null)
+const sortingDisabled = computed(() => !orderStorageKey.value || mutationBusy.value || editingNameId.value !== null)
 const nameError = ref('')
 let failedNameDraft = ''
 let pageActive = true
@@ -155,10 +164,14 @@ function listenerRoleDisabled(device: LiveDevice) {
   const roomId = Number(selectedRoomByDevice.value[device.id] || 0)
   return !primaryForRoom(roomId, device.id)
 }
+const orderedDevices = computed(() => {
+  const ranks = new Map(deviceOrder.value.map((id, index) => [id, index]))
+  return [...devices.value].sort((a, b) => (ranks.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (ranks.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+})
 const filteredDevices = computed(() => {
   const keyword = search.value.trim().toLowerCase()
-  if (!keyword) return devices.value
-  return devices.value.filter((device) =>
+  if (!keyword) return orderedDevices.value
+  return orderedDevices.value.filter((device) =>
     [device.device_name, device.sku_code, workStatus(device), device.connection_status]
       .some((value) => String(value || '').toLowerCase().includes(keyword)),
   )
@@ -170,6 +183,69 @@ const pagedDevices = computed(() => {
   return filteredDevices.value.slice(start, start + pageSize)
 })
 watch(pagedDevices, (items) => { for (const device of items) void loadAddressing(device) })
+
+function endCardDrag() {
+  draggingDeviceId.value = null; dropTargetId.value = null
+}
+function readDeviceOrder() {
+  endCardDrag(); orderNotice.value = ''
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(orderStorageKey.value) || '[]')
+    deviceOrder.value = Array.isArray(stored) && stored.length <= 20000
+      ? [...new Set(stored.filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0))] : []
+  } catch { deviceOrder.value = [] }
+}
+watch(orderStorageKey, readDeviceOrder, { immediate: true })
+function moveCard(sourceId: number, targetId: number) {
+  if (sortingDisabled.value || sourceId === targetId) return
+  const ids = orderedDevices.value.map(device => device.id)
+  const from = ids.indexOf(sourceId), to = ids.indexOf(targetId)
+  if (from < 0 || to < 0) return
+  ids.splice(from, 1); ids.splice(to, 0, sourceId)
+  deviceOrder.value = ids
+  try {
+    window.localStorage.setItem(orderStorageKey.value, JSON.stringify(ids))
+    orderNotice.value = '顺序已保存'
+  } catch { orderNotice.value = '顺序已调整，浏览器未能保存，刷新后可能恢复原顺序。' }
+  const position = filteredDevices.value.findIndex(device => device.id === sourceId)
+  if (position >= 0) page.value = Math.floor(position / pageSize) + 1
+}
+function canMoveCard(deviceId: number, direction: -1 | 1) {
+  const index = filteredDevices.value.findIndex(device => device.id === deviceId)
+  return !sortingDisabled.value && index >= 0 && !!filteredDevices.value[index + direction]
+}
+function moveCardBy(deviceId: number, direction: -1 | 1) {
+  if (!canMoveCard(deviceId, direction)) return
+  const index = filteredDevices.value.findIndex(device => device.id === deviceId)
+  moveCard(deviceId, filteredDevices.value[index + direction].id)
+  void nextTick(() => document.getElementById('device-sort-' + deviceId)?.focus())
+}
+function cardOrderKeydown(event: KeyboardEvent, deviceId: number) {
+  if (['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(event.key)) {
+    event.preventDefault(); moveCardBy(deviceId, event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1)
+  } else if (event.key === 'Escape') endCardDrag()
+}
+function startCardDrag(event: DragEvent, deviceId: number) {
+  if (sortingDisabled.value || !event.dataTransfer) { event.preventDefault(); return }
+  draggingDeviceId.value = deviceId; dropTargetId.value = null; deviceRefreshEpoch++
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', String(deviceId))
+  const card = (event.currentTarget as HTMLElement).closest('.device-console-card')
+  if (card) event.dataTransfer.setDragImage(card, 28, 20)
+}
+function dragOverCard(event: DragEvent, deviceId: number) {
+  if (draggingDeviceId.value === null || sortingDisabled.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dropTargetId.value = draggingDeviceId.value === deviceId ? null : deviceId
+}
+function dropCard(event: DragEvent, deviceId: number) {
+  if (draggingDeviceId.value === null) return
+  event.preventDefault(); moveCard(draggingDeviceId.value, deviceId); endCardDrag()
+}
+function storedOrderChanged(event: StorageEvent) {
+  if (event.key === orderStorageKey.value && draggingDeviceId.value === null) readDeviceOrder()
+}
 
 function formatHeartbeat(value?: string) {
   if (!value) return '暂未收到心跳'
@@ -248,8 +324,8 @@ async function saveBinding(device: LiveDevice) {
   }
 }
 
-onMounted(() => { void load(); refreshTimer = setInterval(async () => { if (mutationBusy.value || editingNameId.value !== null) return; const epoch = deviceRefreshEpoch; try { const snapshot = await getLiveDevices(); if (pageActive && epoch === deviceRefreshEpoch && !mutationBusy.value && editingNameId.value === null) devices.value = snapshot } catch { /* Keep last snapshot until next poll. */ } }, 10000) })
-onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; if (refreshTimer) clearInterval(refreshTimer) })
+onMounted(() => { window.addEventListener('storage', storedOrderChanged); void load(); refreshTimer = setInterval(async () => { if (mutationBusy.value || editingNameId.value !== null || draggingDeviceId.value !== null) return; const epoch = deviceRefreshEpoch; try { const snapshot = await getLiveDevices(); if (pageActive && epoch === deviceRefreshEpoch && !mutationBusy.value && editingNameId.value === null && draggingDeviceId.value === null) devices.value = snapshot } catch { /* Keep last snapshot until next poll. */ } }, 10000) })
+onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; endCardDrag(); window.removeEventListener('storage', storedOrderChanged); if (refreshTimer) clearInterval(refreshTimer) })
 </script>
 
 <template>
@@ -279,6 +355,7 @@ onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; if (refreshTim
       <div class="scalable-list-toolbar">
         <input v-model="search" type="search" placeholder="搜索设备名称 / 型号 / 状态" @input="page = 1" />
         <span>{{ filteredDevices.length }} / {{ devices.length }} 台</span>
+        <small class="device-order-notice" role="status">{{ orderNotice || '拖动卡片上的排序手柄可调整顺序' }}</small>
       </div>
       <section class="device-binding-grid">
       <div v-if="!devices.length" class="screen-empty">
@@ -286,7 +363,17 @@ onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; if (refreshTim
         <span>点击“添加设备”，输入设备屏幕上的6位绑定码。</span>
       </div>
 
-      <article v-for="device in pagedDevices" :key="device.id" class="device-console-card" :data-device-id="device.id">
+      <article v-for="device in pagedDevices" :key="device.id" class="device-console-card" :class="{ 'is-dragging': draggingDeviceId === device.id, 'is-drop-target': dropTargetId === device.id }" :data-device-id="device.id" @dragover="dragOverCard($event, device.id)" @drop="dropCard($event, device.id)">
+        <div class="device-card-order-controls" role="group" :aria-label="'设备 ' + device.id + ' 排序'">
+          <button :id="'device-sort-' + device.id" type="button" class="device-card-drag-handle" :draggable="!sortingDisabled" :disabled="sortingDisabled" :aria-label="'拖动设备 ' + device.id + ' 排序'" title="拖动排序，也可使用方向键调整" @dragstart="startCardDrag($event, device.id)" @dragend="endCardDrag" @keydown="cardOrderKeydown($event, device.id)">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="4" r="1.5"/><circle cx="13" cy="4" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="13" cy="10" r="1.5"/><circle cx="7" cy="16" r="1.5"/><circle cx="13" cy="16" r="1.5"/></svg>
+            <span>拖动排序</span>
+          </button>
+          <div class="device-card-order-arrows">
+            <button type="button" :disabled="!canMoveCard(device.id, -1)" :aria-label="'前移设备 ' + device.id" title="向前移动" @click="moveCardBy(device.id, -1)">←</button>
+            <button type="button" :disabled="!canMoveCard(device.id, 1)" :aria-label="'后移设备 ' + device.id" title="向后移动" @click="moveCardBy(device.id, 1)">→</button>
+          </div>
+        </div>
         <header class="device-console-header">
           <span class="device-console-mark" aria-hidden="true">设</span>
           <div class="device-console-title">
@@ -404,6 +491,20 @@ onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; if (refreshTim
 </template>
 
 <style scoped>
+.device-card-order-controls{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.device-card-order-controls button{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 7px;border:1px solid #dce3f6;border-radius:8px;background:#f7f9ff;color:#7685ad;font:inherit;font-size:12px;line-height:1.2}
+.device-card-drag-handle{gap:4px;cursor:grab;user-select:none}
+.device-card-drag-handle:active{cursor:grabbing}
+.device-card-drag-handle svg{width:16px;height:16px;fill:currentColor;pointer-events:none}
+.device-card-order-arrows{display:flex;gap:5px}
+.device-card-order-arrows button{width:30px;cursor:pointer}
+.device-card-order-controls button:hover:not(:disabled){color:#5563df;background:#edf1ff;border-color:#aab6f2}
+.device-card-order-controls button:focus-visible{outline:2px solid #7384ed;outline-offset:2px}
+.device-card-order-controls button:disabled{opacity:.4;cursor:default}
+.device-console-card.is-dragging{opacity:.5}
+.device-console-card.is-drop-target{outline:2px dashed #6878ee;outline-offset:2px}
+.device-order-notice{color:#7988a7;font-size:12px}
+@media(max-width:760px){.device-card-order-controls button{min-height:36px;font-size:13px}.device-card-order-arrows button{width:38px}}
 .device-binding-grid {
   grid-template-columns: minmax(0, 1fr);
 }

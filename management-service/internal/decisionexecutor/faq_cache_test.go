@@ -81,7 +81,6 @@ func TestFAQProcessRoomInvalidatesDependenciesAndIsolatesRooms(t *testing.T) {
 		{"fact", func(s *faqTestStore) {
 			s.facts = []model.LiveAgentPlanFact{{Status: "active", Key: "物流", Value: "按页面说明发货", VersionNo: 2}}
 		}},
-		{"temporary host state", func(s *faqTestStore) { s.humanProfile.StateText = "今天声音轻一点" }},
 		{"rules", func(s *faqTestStore) {
 			s.layer = &model.LivePolicyVersion{ID: 8, VersionNo: 2, SourceText: "新规则"}
 		}},
@@ -103,6 +102,16 @@ func TestFAQProcessRoomInvalidatesDependenciesAndIsolatesRooms(t *testing.T) {
 	executeFAQ(t, worker, core, 12, "多少钱")
 	if agent.calls != 2 {
 		t.Fatal("another room reused answer")
+	}
+}
+
+func TestFAQIgnoresTemporaryHostStateWhenEmotionIsDisabled(t *testing.T) {
+	worker, store, core, agent, tts, _ := newFAQTestWorker()
+	executeFAQ(t, worker, core, 11, "多少钱")
+	store.humanProfile.StateText = "今天声音轻一点"
+	executeFAQ(t, worker, core, 11, "多少钱")
+	if agent.calls != 1 || tts.calls != 1 || core.dispatches != 2 || tts.last.Instruction != "" {
+		t.Fatalf("disabled emotion changed answer/audio dependencies: llm=%d tts=%d dispatch=%d instruction=%q", agent.calls, tts.calls, core.dispatches, tts.last.Instruction)
 	}
 }
 

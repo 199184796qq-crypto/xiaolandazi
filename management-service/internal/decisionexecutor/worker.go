@@ -2462,17 +2462,7 @@ func (w *Worker) dispatchOnce(
 }
 
 func (w *Worker) emotionEnabledForRoom(ctx context.Context, tenantID, roomID int64) (bool, error) {
-	published, err := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, roomID)
-	if err == nil {
-		if published.VoiceIdentity.EmotionEnabled == nil {
-			return true, nil
-		}
-		return *published.VoiceIdentity.EmotionEnabled, nil
-	}
-	if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
-		return true, nil
-	}
-	return false, err
+	return model.LiveSpeechEmotionEnabled, nil
 }
 
 func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.VoiceProfile, bool, error) {
@@ -2499,7 +2489,7 @@ func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.
 				"rate":             rate,
 				"identity_version": strings.TrimSpace(identity.Version),
 				"binding_id":       identity.BindingID,
-				"emotion_enabled":  identity.EmotionEnabled == nil || *identity.EmotionEnabled,
+				"emotion_enabled":  model.LiveSpeechEmotionEnabled,
 			},
 		}, true, nil
 	} else if !errors.Is(publishedErr, appdb.ErrLiveAgentPlanVersionNotFound) {

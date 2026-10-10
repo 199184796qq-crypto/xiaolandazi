@@ -607,13 +607,6 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	return
 }
 
-func liveAgentEmotionEnabled(identity model.LiveAgentVoiceIdentity) bool {
-	if identity.EmotionEnabled == nil {
-		return true
-	}
-	return *identity.EmotionEnabled
-}
-
 type publishRoomEmotionInput struct {
 	Enabled bool `json:"enabled"`
 }
@@ -637,6 +630,10 @@ func (s *Server) liveAgentPlanPublishRoomEmotion(w http.ResponseWriter, r *http.
 	var input publishRoomEmotionInput
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "情感开关参数格式错误")
+		return
+	}
+	if input.Enabled && !model.LiveSpeechEmotionEnabled {
+		writeError(w, http.StatusConflict, "实时情感功能已关闭")
 		return
 	}
 	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)

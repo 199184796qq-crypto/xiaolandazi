@@ -27,7 +27,6 @@ import {
   getRoomImportantEvents,
   getRoomSessionStats,
   getRoomReview,
-  getRoomCompositeSubtitles,
   resolveRoomSessionDecision,
   getRoomBrain,
   getRoomSpeechRuntime,
@@ -35,7 +34,6 @@ import {
   getRoomGeneratedSpeechHistory,
   getRoomPublishedLiveAgentPlanVersion,
   publishLiveAgentVoiceRate,
-  publishLiveAgentEmotion,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
@@ -427,10 +425,6 @@ const liveSpeechRateSaved = ref(1)
 const liveSpeechRateBusy = ref(false)
 const liveSpeechRateError = useFeedbackErrorRef()
 const liveSpeechRateOptions = [0.8, 0.9, 1, 1.1, 1.2] as const
-const liveEmotionEnabled = ref(true)
-const liveEmotionSaved = ref(true)
-const liveEmotionBusy = ref(false)
-const liveEmotionError = useFeedbackErrorRef()
 const speechHistoryTotalPages = computed(() =>
   Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
 )
@@ -1070,15 +1064,9 @@ async function loadPublishedSpeechRate() {
     liveSpeechRate.value = rate
     liveSpeechRateSaved.value = rate
     liveSpeechRateError.value = ''
-    const emotionEnabled = result.version?.voice_identity?.emotion_enabled !== false
-    liveEmotionEnabled.value = emotionEnabled
-    liveEmotionSaved.value = emotionEnabled
-    liveEmotionError.value = ''
   } catch {
     liveSpeechRate.value = 1
     liveSpeechRateSaved.value = 1
-    liveEmotionEnabled.value = true
-    liveEmotionSaved.value = true
   }
 }
 
@@ -1104,26 +1092,6 @@ async function changeLiveSpeechRate(event: Event) {
     liveSpeechRateError.value = err instanceof Error ? err.message : '语速保存失败'
   } finally {
     liveSpeechRateBusy.value = false
-  }
-}
-
-async function toggleLiveEmotion() {
-  if (!canConfigureRoomStrategy.value || liveEmotionBusy.value) return
-  const previous = liveEmotionSaved.value
-  const next = !previous
-  liveEmotionEnabled.value = next
-  liveEmotionBusy.value = true
-  liveEmotionError.value = ''
-  try {
-    const version = await publishLiveAgentEmotion(roomId, next)
-    const saved = version.voice_identity?.emotion_enabled !== false
-    liveEmotionEnabled.value = saved
-    liveEmotionSaved.value = saved
-  } catch (err) {
-    liveEmotionEnabled.value = previous
-    liveEmotionError.value = err instanceof Error ? err.message : '情感设置保存失败'
-  } finally {
-    liveEmotionBusy.value = false
   }
 }
 
@@ -3327,20 +3295,6 @@ async function refreshSessionStats() {
   }
 }
 
-const compositeSubtitleLoading = ref(false)
-async function exportCompositeSubtitles() {
-  if (compositeSubtitleLoading.value) return
-  compositeSubtitleLoading.value = true
-  try {
-    const {srt} = await getRoomCompositeSubtitles(roomId)
-    if (!srt.trim()) { await showAlert('本场还没有实际播放的字幕记录'); return }
-    const url = URL.createObjectURL(new Blob([srt], {type: 'application/x-subrip;charset=utf-8'}))
-    const link = document.createElement('a'); link.href = url; link.download = '直播间' + roomId + '-合成口播.srt'; link.click()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch (err) { await showAlert(err instanceof Error ? err.message : '字幕导出失败') }
-  finally { compositeSubtitleLoading.value = false }
-}
-
 async function loadLiveReview() {
   if (liveReviewLoading.value) return
   liveReviewLoading.value = true
@@ -4756,7 +4710,6 @@ onBeforeUnmount(() => {
           <div class="speech-runtime-brand">
             <span class="anchor-live-dot"></span>
             <strong>主播实时口播</strong>
-            <button type="button" class="secondary" :disabled="compositeSubtitleLoading" @click="exportCompositeSubtitles">{{ compositeSubtitleLoading ? '导出中…' : '导出字幕' }}</button>
             <button
               type="button"
               class="speech-local-mute-button"
@@ -4911,23 +4864,12 @@ onBeforeUnmount(() => {
           </label>
           <div v-if="canConfigureRoomStrategy" class="speech-emotion-control">
             <span>情感</span>
-            <button
-              type="button"
-              class="speech-emotion-toggle"
-              :class="{ enabled: liveEmotionEnabled }"
-              :disabled="liveEmotionBusy"
-              :aria-pressed="liveEmotionEnabled"
-              @click="toggleLiveEmotion"
-            >
-              <i aria-hidden="true"></i>
-              <strong>{{ liveEmotionEnabled ? '开' : '关' }}</strong>
-            </button>
+            <strong class="speech-emotion-status">已关闭</strong>
           </div>
           <button type="button" class="speech-answer-library-button" @click="openGeneratedSpeechHistory">
             本场回答库
           </button>
           <small v-if="liveSpeechRateError" class="speech-rate-error">{{ liveSpeechRateError }}</small>
-          <small v-if="liveEmotionError" class="speech-rate-error">{{ liveEmotionError }}</small>
         </div>
       </section>
 
@@ -6696,13 +6638,7 @@ onBeforeUnmount(() => {
 .speech-rate-control select:disabled{opacity:.55;cursor:wait}
 .speech-emotion-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
 .speech-emotion-control>span{color:#8fa1bb}
-.speech-emotion-toggle{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font:inherit;font-size:12px;font-weight:900;cursor:pointer;transition:.16s ease}
-.speech-emotion-toggle i{position:relative;display:block;width:28px;height:16px;border-radius:999px;background:#3c4a61;transition:.16s ease}
-.speech-emotion-toggle i::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#cbd5e5;transition:.16s ease}
-.speech-emotion-toggle.enabled{color:#e9fff9;border-color:rgba(89,209,178,.55);background:rgba(52,185,151,.1)}
-.speech-emotion-toggle.enabled i{background:#2fbf99}
-.speech-emotion-toggle.enabled i::after{left:14px;background:#fff}
-.speech-emotion-toggle:disabled{opacity:.55;cursor:wait}
+.speech-emotion-status{display:inline-flex;align-items:center;min-height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font-size:12px;font-weight:900}
 .speech-answer-library-button{height:32px;padding:0 12px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#dbe5f5;background:rgba(255,255,255,.045);font-size:12px;font-weight:850;cursor:pointer;transition:border-color .16s ease,background .16s ease,color .16s ease}
 .speech-answer-library-button:hover{color:#fff;border-color:rgba(89,209,178,.5);background:rgba(52,185,151,.1)}
 .speech-rate-error{max-width:360px;color:#ff9b9b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

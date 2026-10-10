@@ -1,6 +1,5 @@
 // Actual customer view follows Core's unified output timeline; no live mutation.
 import assert from 'node:assert/strict'
-import {readFile} from 'node:fs/promises'
 import {createRequire} from 'node:module'
 import {startFixture} from './room-parity-fixture.mjs'
 const require=createRequire(new URL('../../collector-worker/package.json',import.meta.url)),{chromium}=require('playwright-core')
@@ -27,14 +26,8 @@ try {
  await page.waitForFunction(resume=>document.querySelector('.speech-mainline-caption-row.role-current')?.textContent.includes(resume),resume)
  assert.equal((await page.locator('.speech-mainline-caption-row.role-previous').first().innerText()).includes(bridge),true)
  await page.evaluate(()=>{
-  window.fixture.srt='1\n00:00:00,040 --> 00:00:00,060\n口味和吃法也一并说清楚。\n'
   window.fixture.review={summary:{active_seconds:60,entries:2,chats:1,likes:0,follows:0,order_signals:0,question_groups:[]},events:[],audit_review:{runtime_session_id:1,started_at:new Date().toISOString(),items:[{id:1,kind:'generation_skip',stage:'voice',decision:'skipped',task_key:'规格',text:'原段话术',reason:'本段TTS失败，继续下一段',created_at:new Date().toISOString()}]}}
  })
- const downloadEvent=page.waitForEvent('download')
- await page.getByRole('button',{name:'导出字幕',exact:true}).click()
- const download=await downloadEvent
- assert.equal(download.suggestedFilename(),'直播间15-合成口播.srt')
- assert.equal(await readFile(await download.path(),'utf8'),await page.evaluate(()=>window.fixture.srt))
  await page.getByRole('button',{name:'查看复盘',exact:true}).click()
  await page.locator('.production-review-notes').waitFor()
  assert.equal((await page.locator('.production-review-notes').innerText()).includes('本段TTS失败，继续下一段'),true)
