@@ -351,7 +351,7 @@ func callLiveAgent(
 	}
 	messages = append(messages, agentgateway.Message{Role: "user", Content: userContent, ImageURLs: input.ImageURLs})
 
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages:       messages,
 		MaxTokens:      500,
 		EnableThinking: false,

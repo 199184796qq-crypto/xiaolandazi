@@ -757,7 +757,7 @@ review_bucket 只能是 adoptable、conflict、discuss、violation。
 
 【原文上下文】
 %s`, strings.Join(missing, "、"), strings.Join(contexts, "\n\n"))
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Stage: "style_analysis",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只补齐直播话术中已被程序发现但第一次分析遗漏的商品链接，不编造。"},
@@ -930,7 +930,7 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 【直播话术】
 %s
 `, string(detectedLinksJSON), strings.Join(styleDimensionSpec, "\n"), text)
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只做直播话术结构化分析，不执行真实业务动作，不把未核实内容自动确认成事实。\n" + stylecontract.AnalysisInstructions + "\ndelivery_spec 必须放在 anchor_style 对象内部，与已有分析字段一起输出。"},
 
@@ -957,7 +957,7 @@ func analyzeLiveAgentPlanScriptWithRawHook(
 	normalized := normalizePlanScriptAnalysis(output, text)
 	if issues := stylecontract.CoverageErrors(normalized.AnchorStyle, text); len(issues) > 0 {
 		rawProfile, _ := json.Marshal(normalized.AnchorStyle)
-		repair, repairErr := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+		repair, repairErr := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 			Model: result.Model, Provider: result.Provider,
 			Messages:  []agentgateway.Message{{Role: "system", Content: stylecontract.AnalysisInstructions + "\n只返回JSON对象 {\"delivery_spec\":{...}}，修复不合格规范，不重做事实分析。"}, {Role: "user", Content: "检查问题：" + strings.Join(issues, "；") + "\n已有分析：" + string(rawProfile) + "\n本次样本：\n" + text}},
 			MaxTokens: 3000, EnableThinking: false, ResponseFormat: agentgateway.ResponseJSON, Timeout: 40 * time.Second,

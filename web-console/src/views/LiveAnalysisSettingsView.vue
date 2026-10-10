@@ -49,12 +49,6 @@ function statusLabel(status: string) {
   return status || '—'
 }
 
-function providerLabel(provider: string) {
-  if (provider === 'dashscope') return '阿里云百炼'
-  if (provider === 'openai-compatible' || provider === 'openai_compatible') return 'OpenAI 兼容接口'
-  return provider || '—'
-}
-
 function copyProfileToForm(profile: SpeechAnalysisProfile | null) {
   if (!profile) return
   form.name = profile.name
@@ -157,8 +151,8 @@ onMounted(() => loadProfiles())
         </div>
       </div>
       <dl>
-        <div><dt>模型供应商</dt><dd>{{ providerLabel(activeProfile.provider) }}</dd></div>
-        <div><dt>模型</dt><dd>{{ activeProfile.model }}</dd></div>
+        <div><dt>模型连接</dt><dd>系统智能体统一配置</dd></div>
+        <div><dt>模型选择</dt><dd>在模型连接设置中切换</dd></div>
         <div><dt>更新人</dt><dd>{{ activeProfile.updated_by_display_name || (activeProfile.updated_by_user_id ? `用户 #${activeProfile.updated_by_user_id}` : '系统默认') }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ formatTime(activeProfile.updated_at) }}</dd></div>
       </dl>
@@ -179,7 +173,7 @@ onMounted(() => loadProfiles())
         >
           <div>
             <strong>V{{ profile.version }} · {{ profile.name }}</strong>
-            <span>{{ providerLabel(profile.provider) }} / {{ profile.model }}</span>
+            <span>使用系统智能体模型</span>
           </div>
           <small :class="profile.status">{{ statusLabel(profile.status) }}</small>
         </button>
@@ -206,22 +200,12 @@ onMounted(() => loadProfiles())
             <span>方案名称</span>
             <input v-model="form.name" :disabled="!canManage" maxlength="120" />
           </label>
-          <label>
-            <span>模型供应商</span>
-            <select v-model="form.provider" :disabled="!canManage">
-              <option value="dashscope">阿里云百炼</option>
-              <option value="openai-compatible">OpenAI 兼容接口</option>
-            </select>
-          </label>
+          <p>分析模型使用系统智能体的统一配置，这里维护分析提示词和报告版本。</p>
           <label class="wide">
             <span>版本说明</span>
             <input v-model="form.description" :disabled="!canManage" placeholder="例如：加强开场留人和逼单修改建议" />
           </label>
-          <label class="wide">
-            <span>模型名称</span>
-            <input v-model="form.model" :disabled="!canManage" placeholder="例如 qwen3.8-flash" />
-            <small>这里只配置模型名；供应商密钥仍由服务器环境变量管理。</small>
-          </label>
+
         </div>
 
         <section class="prompt-block">

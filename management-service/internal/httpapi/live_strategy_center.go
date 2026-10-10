@@ -298,7 +298,7 @@ func reviewAddressingWithModel(ctx context.Context, options []model.LiveAddressi
 	}
 	sort.Strings(texts)
 	payload, _ := json.Marshal(texts)
-	response, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	response, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你是直播称呼安全审核器。判断这些称呼是否适合公开直播使用。拒绝侮辱、歧视、性暗示、骚扰、冒充身份、政治煽动、明显低俗或容易造成身份冒犯的称呼。只返回JSON：{\"safe\":true|false,\"reason\":\"简短原因\"}。"},
 			{Role: "user", Content: string(payload)},

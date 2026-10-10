@@ -161,7 +161,7 @@ func generateFullShowVariants(
 	errs := make([]error, count)
 	semaphore := make(chan struct{}, min(3, count))
 	var wait sync.WaitGroup
-	gateway := speechGenerationGateway(gateways)
+	gateway := speechGenerationGateway(ctx, gateways)
 	for index := 0; index < count; index++ {
 		index := index
 		wait.Add(1)
@@ -206,5 +206,5 @@ func generateSingleFullShowVariant(
 	recentTexts []string,
 	gateways ...anchorStyleCompleter,
 ) (model.LiveAgentFullShowVariant, string, string, int64, error) {
-	return generateOneSegmentedFullShowVariant(ctx, generation, policyPrompt, targetKey, recentTexts, currentVariants, speechGenerationGateway(gateways))
+	return generateOneSegmentedFullShowVariant(ctx, generation, policyPrompt, targetKey, recentTexts, currentVariants, speechGenerationGateway(ctx, gateways))
 }

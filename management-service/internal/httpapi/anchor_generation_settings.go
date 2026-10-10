@@ -29,6 +29,12 @@ func (s *Server) systemAnchorGenerationSettingsPut(w http.ResponseWriter, r *htt
 		writeError(w, 400, "生成配置格式错误")
 		return
 	}
+	models, err := s.store.SpeechModels(r.Context())
+	if err != nil {
+		writeError(w, 503, "读取统一模型配置失败")
+		return
+	}
+	config.ApplyModelRoles(models.SystemDefaultID, models.DefaultID)
 	config.NormalizeSharedFeedback()
 	if err := config.Validate(); err != nil {
 		writeError(w, 400, err.Error())

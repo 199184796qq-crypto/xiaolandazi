@@ -95,7 +95,7 @@ func anchorStyleOnlyAnalysisPrompt(text string) string {
 }
 
 func analyzeLiveAgentAnchorStyle(ctx context.Context, text string) (model.LiveAgentPlanAnchorStyleProfile, agentgateway.Response, error) {
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Stage:          "style_analysis",
 		MaxTokens:      2800,
 		EnableThinking: false,

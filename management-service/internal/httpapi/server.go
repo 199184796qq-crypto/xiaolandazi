@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerLiveAnchorStyleRoutes(mux)
 
 	mux.HandleFunc("POST /internal/v1/interaction-purpose/resolve", s.resolveInteractionPurpose)
+	mux.HandleFunc("POST /internal/v1/model-analysis/chat/completions", s.internalModelAnalysis)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
@@ -655,7 +656,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeEvents)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/events", s.liveRuntimeRecordEvent)
 
-	return requestLogger(s.inboxMutationMiddleware(s.adminAuditMiddleware(mux)))
+	return requestLogger(s.modelResolverMiddleware(s.inboxMutationMiddleware(s.adminAuditMiddleware(mux))))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

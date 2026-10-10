@@ -1,8 +1,24 @@
 package db
 
-import "context"
+import (
+	"context"
+	"livecompanion/management/internal/agentgateway"
+)
 
 func (s *Store) ResolveTextRole(ctx context.Context, stage string) (string, error) {
+	models, err := s.SpeechModels(ctx)
+	if err != nil {
+		return "", err
+	}
+	if models.SystemDefaultID != "" {
+		if agentgateway.UsesSpeechModel(stage) {
+			return models.DefaultID, nil
+		}
+		return models.SystemDefaultID, nil
+	}
+	if stage != "mainline_text" && stage != "speech_generation" && stage != "speech_review" {
+		return "", nil
+	}
 	settings, err := s.AnchorGenerationSettings(ctx)
 	if err != nil {
 		return "", err

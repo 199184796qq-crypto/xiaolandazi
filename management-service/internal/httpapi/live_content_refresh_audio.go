@@ -126,7 +126,7 @@ func generateContentRefreshText(ctx context.Context, generation model.LiveAgentF
 旧片段：%s
 后文：%s
 旧片段只用于理解原来的表达目的，不是事实来源；必须换角度和句式，不能提“更新”“上一版”等内部词。`, before, oldText, after)
-	text, _, _, _, _, err := generateAnchorStyleTest(ctx, speechGenerationGateway(gateways), refreshContext, policyPrompt, topic, targetChars)
+	text, _, _, _, _, err := generateAnchorStyleTest(ctx, speechGenerationGateway(ctx, gateways), refreshContext, policyPrompt, topic, targetChars)
 	if err != nil {
 		return "", err
 	}

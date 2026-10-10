@@ -487,7 +487,7 @@ avoid_recent=%t。若为 true，请避开近期文本里已经用过的开场和
 【近期文本】
 %s`, strings.TrimSpace(policyPrompt), generationContext.VariantCount, generationContext.RoundMinutes, targetChars, generationContext.AvoidRecent, string(contextJSON), string(recentJSON))
 
-	result, err := speechGenerationGateway(gateways).Complete(ctx, agentgateway.Request{
+	result, err := speechGenerationGateway(ctx, gateways).Complete(ctx, agentgateway.Request{
 		Stage: "speech_generation",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只生成直播整场主线预览稿。保持锁定事实，严格按用户的 fact_expansion 授权扩展，不执行真实业务动作，不把内部编稿过程写进正文。"},
@@ -608,7 +608,7 @@ func generateSingleFullShowVariantOneShotLegacy(
 		string(recentJSON),
 		targetKey,
 	)
-	result, err := speechGenerationGateway(gateways).Complete(ctx, agentgateway.Request{
+	result, err := speechGenerationGateway(ctx, gateways).Complete(ctx, agentgateway.Request{
 		Stage: "speech_generation",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只重新生成用户指定的一套直播主线稿。严格遵守事实边界，不修改其它稿件。"},
@@ -950,7 +950,7 @@ func repairFailedFullShowVariants(
 【近期文本】
 %s`, strings.TrimSpace(policyPrompt), generationContext.RoundMinutes, targetChars, string(contextJSON), string(failedJSON), string(recentJSON))
 
-	result, err := speechGenerationGateway(gateways).Complete(ctx, agentgateway.Request{
+	result, err := speechGenerationGateway(ctx, gateways).Complete(ctx, agentgateway.Request{
 		Stage: "speech_generation",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只修复程序审计失败的直播主线稿。不得改动锁定事实；可以在用户 fact_expansion 授权内扩展；不得执行真实业务动作或暴露内部编稿过程。"},

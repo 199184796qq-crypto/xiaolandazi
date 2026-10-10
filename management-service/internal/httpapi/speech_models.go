@@ -16,11 +16,11 @@ func (s *Server) speechGateway() *agentgateway.Gateway {
 	return agentgateway.NewFromEnv().WithSpeechModels(s.store)
 }
 
-func speechGenerationGateway(gateways []anchorStyleCompleter) anchorStyleCompleter {
+func speechGenerationGateway(ctx context.Context, gateways []anchorStyleCompleter) anchorStyleCompleter {
 	if len(gateways) > 0 && gateways[0] != nil {
 		return gateways[0]
 	}
-	return agentgateway.NewFromEnv()
+	return agentgateway.NewFromContext(ctx)
 }
 
 func (s *Server) systemSpeechModelsGet(w http.ResponseWriter, r *http.Request) {

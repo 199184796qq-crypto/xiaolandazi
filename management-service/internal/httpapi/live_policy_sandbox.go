@@ -333,7 +333,7 @@ func callPolicyTestModel(
 			Content: item["content"],
 		})
 	}
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages:       messages,
 		MaxTokens:      1200,
 		EnableThinking: false,

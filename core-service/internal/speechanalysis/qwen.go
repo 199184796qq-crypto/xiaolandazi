@@ -35,6 +35,12 @@ func newAnalysisClient() *analysisClient {
 
 func analysisProviderConfig(provider string) (analysisProviderSettings, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "management":
+		baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MANAGEMENT_BASE_URL")), "/")
+		if baseURL == "" {
+			baseURL = "http://127.0.0.1:8080"
+		}
+		return analysisProviderSettings{BaseURL: baseURL + "/internal/v1/model-analysis", APIKey: strings.TrimSpace(os.Getenv("CORE_INTERNAL_TOKEN"))}, nil
 	case "", "dashscope", "aliyun", "aliyun-dashscope":
 		baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("DASHSCOPE_BASE_URL")), "/")
 		if baseURL == "" {

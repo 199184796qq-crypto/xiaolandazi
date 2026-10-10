@@ -516,20 +516,7 @@ onMounted(load)
       </div>
 
       <div class="understanding-fields">
-        <label>
-          <span>模型供应商</span>
-          <select v-model="understandingDraft.provider" @change="loadUnderstandingModels">
-            <option value="qwen">Qwen</option>
-          </select>
-          <small>理解层已抽象供应商接口；当前运行环境正式接入 Qwen，后续注册新供应商后可直接扩展。</small>
-        </label>
-        <label>
-          <span>理解模型</span>
-          <input v-model.trim="understandingDraft.model" list="understanding-models" placeholder="模型 ID" />
-          <datalist id="understanding-models">
-            <option v-for="item in understandingModels" :key="item" :value="item" />
-          </datalist>
-        </label>
+        <p>理解模型使用“系统智能体模型”的统一选择，请在模型连接设置中切换。</p>
         <label>
           <span>最大上下文消息数</span>
           <input v-model.number="understandingDraft.max_context_messages" type="number" min="1" max="30" />

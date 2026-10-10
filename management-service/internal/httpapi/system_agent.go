@@ -1599,7 +1599,7 @@ func callSystemAgentModel(
 	}
 	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Provider:       policy.Provider,
 		Model:          policy.Model,
 		Messages:       messages,

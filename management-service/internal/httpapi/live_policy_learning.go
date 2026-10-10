@@ -171,7 +171,7 @@ func callPolicyLearningModel(
 	provider string,
 	modelName string,
 ) (livePolicyLearningModelOutput, string, string, int64, error) {
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Provider: provider,
 		Model:    modelName,
 		Messages: []agentgateway.Message{
@@ -331,7 +331,7 @@ func callPolicyLearningEvidenceModel(
 	provider string,
 	modelName string,
 ) (livePolicyLearningEvidenceModelOutput, string, string, int64, error) {
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Provider: provider,
 		Model:    modelName,
 		Messages: []agentgateway.Message{

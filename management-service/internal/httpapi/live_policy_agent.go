@@ -485,7 +485,7 @@ func callPolicyConversationModel(
 	}
 	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages:       messages,
 		MaxTokens:      1000,
 		EnableThinking: false,
@@ -539,7 +539,7 @@ func callPolicyAgentModel(
 	}
 	messages = append(messages, agentgateway.Message{Role: "user", Content: message, ImageURLs: imageURLs})
 
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages:       messages,
 		MaxTokens:      2200,
 		EnableThinking: false,

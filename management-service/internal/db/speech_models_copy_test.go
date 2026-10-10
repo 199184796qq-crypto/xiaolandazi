@@ -72,6 +72,22 @@ func TestSpeechModelCopyReencryptsIndependentKeyAndPreservesDefault(t *testing.T
 	}
 }
 
+func TestOldModelClientRetainsSystemRole(t *testing.T) {
+	old, keys, input, secret := speechCopyFixture(t)
+	old.SystemDefaultID = "original"
+	next, _, err := buildSpeechModelsUpdate(old, keys, input, secret)
+	if err != nil || next.SystemDefaultID != "original" {
+		t.Fatal("old client cleared unified system selection", err)
+	}
+	input.Profiles = []agentgateway.SpeechModelInput{input.Profiles[1]}
+	input.Profiles[0].NewAPIKey = "fixture-copy-key"
+	input.Profiles[0].CopyFromID = ""
+	input.DefaultID = "copy"
+	if _, _, err := buildSpeechModelsUpdate(old, keys, input, secret); err == nil {
+		t.Fatal("old client deleted selected system profile")
+	}
+}
+
 func TestSpeechModelCopyRejectsUnsafeOrStaleInputs(t *testing.T) {
 	cases := []struct {
 		name   string

@@ -35,6 +35,16 @@ func (s *Settings) NormalizeSharedFeedback() {
 	}
 }
 
+// Unified connections own model selection; historical role fields remain wire
+// compatible but cannot override the operator's two central choices.
+func (s *Settings) ApplyModelRoles(systemID, speechID string) {
+	if systemID == "" || speechID == "" {
+		return
+	}
+	s.StyleProfileID, s.ScorecardProfileID, s.SellingPointProfileID, s.SafetyProfileID = systemID, systemID, systemID, systemID
+	s.InteractionProfileID, s.Cycle.TextProfileID, s.Cycle.FeedbackID = speechID, speechID, speechID
+}
+
 func (s Settings) Validate() error {
 	s.NormalizeSharedFeedback()
 	if s.MainlineBufferSeconds < 20 || s.MainlineBufferSeconds > 600 {

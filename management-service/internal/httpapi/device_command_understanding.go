@@ -175,7 +175,7 @@ func (s *Server) deviceCommandUnderstand(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	modelResponse, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	modelResponse, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: deviceCommandUnderstandingPrompt},
 			{Role: "user", Content: "待分类的用户文本：" + input.Text},

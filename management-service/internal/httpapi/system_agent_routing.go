@@ -199,7 +199,7 @@ intents 的 match 仅允许 exact_any、contains_any、prefix_any 三种字符�
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 	invocationID := s.beginAISingleUse(r.Context(), actor, nil, "agent_routing_maintenance", nil)
-	response, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	response, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你只负责生成结构化路由 JSON 草稿，不执行任何真实系统动作。"},
 			{Role: "user", Content: prompt},

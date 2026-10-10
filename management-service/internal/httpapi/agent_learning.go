@@ -542,7 +542,7 @@ Agent 原回答：%s
 %s
 `, session.Question, session.OriginalReply, feedback, string(memoriesRaw), string(evidenceRaw), string(candidateRaw))
 
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: buildAgentLearningReviewPrompt()},
 			{Role: "user", Content: userMessage},
@@ -639,7 +639,7 @@ Agent 原回答：%s
 		return agentLearningModelOutput{}, "", "", 0, err
 	}
 	systemPrompt += "\n\n" + string(guidance)
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
@@ -748,7 +748,7 @@ func (s *Server) classifyAgentLearningMessage(
 	if maxTokens <= 0 || maxTokens > 180 {
 		maxTokens = 180
 	}
-	response, err := agentgateway.NewFromEnv().Complete(classifyCtx, agentgateway.Request{
+	response, err := agentgateway.NewFromContext(classifyCtx).Complete(classifyCtx, agentgateway.Request{
 		Provider: understandingPolicy.Provider,
 		Model:    understandingPolicy.Model,
 		Messages: []agentgateway.Message{
@@ -882,7 +882,7 @@ func (s *Server) agentLearningCompanionChat(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 	roomRef := roomID
 	invocationID := s.beginAISingleUse(r.Context(), actor, &roomRef, "agent_learning_chat", map[string]any{"session_id": input.SessionID})
-	response, err := agentgateway.NewFromEnv().Complete(chatCtx, agentgateway.Request{
+	response, err := agentgateway.NewFromContext(chatCtx).Complete(chatCtx, agentgateway.Request{
 		Messages:       messages,
 		MaxTokens:      500,
 		EnableThinking: false,
@@ -940,7 +940,7 @@ func generateAgentLearningPreviewQuestion(
 `, strings.TrimSpace(result.Target), strings.TrimSpace(result.ResultText))
 	genCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	response, err := agentgateway.NewFromEnv().Complete(genCtx, agentgateway.Request{
+	response, err := agentgateway.NewFromContext(genCtx).Complete(genCtx, agentgateway.Request{
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: "你是直播间测试问题生成器，只生成一句自然的观众提问。"},
 			{Role: "user", Content: prompt},

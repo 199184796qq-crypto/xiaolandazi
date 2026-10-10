@@ -107,6 +107,9 @@ func (s *Server) styleOverlayInterpreterProfile(ctx context.Context) (*agentgate
 	if err != nil {
 		return nil, err
 	}
+	if configured.SystemDefaultID != "" {
+		return s.store.ResolveSpeechModel(ctx, configured.SystemDefaultID)
+	}
 	for _, item := range configured.Profiles {
 		if item.Enabled && strings.EqualFold(strings.TrimSpace(item.Model), styleOverlayInterpreterModel) {
 			return s.store.ResolveSpeechModel(ctx, item.ID)

@@ -97,8 +97,8 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
           },
           {
             key: 'speech-models',
-            title: '主播话术与互动模型',
-            description: '配置多个模型 API、密钥和基础提示词，选择话术与实时回答的默认模型，并测试返回文字。独立于智能体模型。',
+            title: '系统智能体与口播生成模型',
+            description: '统一配置系统智能体模型和口播生成模型，可切换连接、编辑提示词并测试返回文字。',
             icon: '播',
             to: '/system/settings/intelligence/speech-models',
             badge: '独立模型',

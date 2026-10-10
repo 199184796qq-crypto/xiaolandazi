@@ -184,7 +184,7 @@ func (s *Store) ResolveAgentUnderstandingPolicy(ctx context.Context, tenantID in
 	}
 
 	if tenantID <= 0 {
-		return base, nil
+		return s.applyUnifiedUnderstandingModel(ctx, base)
 	}
 
 	cooperationStatus := model.CustomerCooperationStatusCooperating
@@ -242,5 +242,22 @@ func (s *Store) ResolveAgentUnderstandingPolicy(ctx context.Context, tenantID in
 		}
 	}
 	base.AgentUnderstandingPolicy = agentunderstanding.NormalizePolicy(base.AgentUnderstandingPolicy)
+	return s.applyUnifiedUnderstandingModel(ctx, base)
+}
+
+func (s *Store) applyUnifiedUnderstandingModel(ctx context.Context, base model.AgentUnderstandingEffectivePolicy) (model.AgentUnderstandingEffectivePolicy, error) {
+	models, err := s.SpeechModels(ctx)
+	if err != nil {
+		return base, err
+	}
+	if models.SystemDefaultID != "" {
+		for _, p := range models.Profiles {
+			if p.ID == models.SystemDefaultID {
+				base.Provider, base.Model = "anchor:"+p.ID, p.Model
+				return base, nil
+			}
+		}
+		return base, errors.New("系统智能体模型配置不存在")
+	}
 	return base, nil
 }

@@ -104,7 +104,7 @@ func recognizeLiveMaterialImage(ctx context.Context, mimeType string, raw []byte
     "audience": "直接可见的适用人群"
   }
 }`
-	result, err := agentgateway.NewFromEnv().Complete(ctx, agentgateway.Request{
+	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{
 		Model: modelName,
 		Messages: []agentgateway.Message{{
 			Role:      "user",

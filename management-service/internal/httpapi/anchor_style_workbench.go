@@ -1173,6 +1173,19 @@ func (s *Server) anchorStyleWorkbenchPlanData(w http.ResponseWriter, r *http.Req
 
 func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, stage string, format agentgateway.ResponseFormat, messages []agentgateway.Message, maxTokens int, includeProfileSystem bool) (agentgateway.Response, []agentgateway.Message, error) {
 	profileID = strings.TrimSpace(profileID)
+	configured, configErr := s.store.SpeechModels(ctx)
+	if configErr != nil {
+		return agentgateway.Response{}, messages, configErr
+	}
+	if configured.SystemDefaultID != "" {
+		if agentgateway.UsesSpeechModel(stage) {
+			if pinned, ok := ctx.Value(pinnedSpeechProfileKey{}).(string); !ok || pinned == "" || pinned != profileID {
+				profileID = configured.DefaultID
+			}
+		} else {
+			profileID = configured.SystemDefaultID
+		}
+	}
 	// Speech generation always uses the configured profile transport, including
 	// its visible system prompt. A named compiler profile does the same. Leaving
 	// the compiler blank uses the operator-owned analysis route.

@@ -33,9 +33,10 @@ type SpeechModel struct {
 }
 
 type SpeechModels struct {
-	Profiles  []SpeechModel `json:"profiles"`
-	DefaultID string        `json:"default_id"`
-	Revision  uint64        `json:"revision"`
+	Profiles        []SpeechModel `json:"profiles"`
+	DefaultID       string        `json:"default_id"`
+	SystemDefaultID string        `json:"system_default_id,omitempty"`
+	Revision        uint64        `json:"revision"`
 }
 
 type SpeechModelInput struct {
@@ -45,9 +46,10 @@ type SpeechModelInput struct {
 }
 
 type SpeechModelsInput struct {
-	Profiles  []SpeechModelInput `json:"profiles"`
-	DefaultID string             `json:"default_id"`
-	Revision  uint64             `json:"revision"`
+	Profiles        []SpeechModelInput `json:"profiles"`
+	DefaultID       string             `json:"default_id"`
+	SystemDefaultID string             `json:"system_default_id,omitempty"`
+	Revision        uint64             `json:"revision"`
 }
 
 type SpeechModelResolver interface {
@@ -152,16 +154,16 @@ func (g *Gateway) completeSpeechModel(ctx context.Context, request Request) (Res
 	id := ""
 	if strings.HasPrefix(request.Provider, "anchor:") {
 		id = strings.TrimPrefix(request.Provider, "anchor:")
-	} else if !textGenerationStage(request.Stage) || request.Provider != "" || request.Model != "" {
-		return Response{}, false, nil
-	}
-	if id == "" && textGenerationStage(request.Stage) {
+	} else {
 		if roles, ok := g.speechModels.(TextRoleResolver); ok {
 			var err error
 			id, err = roles.ResolveTextRole(ctx, request.Stage)
 			if err != nil {
 				return Response{}, true, err
 			}
+		}
+		if id == "" && (!textGenerationStage(request.Stage) || request.Provider != "" || request.Model != "") {
+			return Response{}, false, nil
 		}
 	}
 	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
@@ -206,6 +208,7 @@ func ValidateSpeechModels(input SpeechModelsInput) error {
 	}
 	seen := map[string]bool{}
 	selected := input.DefaultID == ""
+	systemSelected := input.SystemDefaultID == ""
 	for _, p := range input.Profiles {
 		if err := ValidateSpeechModel(p.SpeechModel); err != nil {
 			return fmt.Errorf("%s：%w", p.Name, err)
@@ -223,9 +226,15 @@ func ValidateSpeechModels(input SpeechModelsInput) error {
 		if p.ID == input.DefaultID {
 			selected = p.Enabled
 		}
+		if p.ID == input.SystemDefaultID {
+			systemSelected = p.Enabled
+		}
 	}
 	if !selected {
 		return errors.New("默认模型必须存在且启用")
+	}
+	if !systemSelected || (input.SystemDefaultID != "" && input.DefaultID == "") {
+		return errors.New("系统智能体与口播生成模型必须存在且启用")
 	}
 	return nil
 }

@@ -230,6 +230,14 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		input.Config.MaxCycles = 0
 		input.TaskLimit = 0
 	}
+	connections, connectionErr := s.store.SpeechModels(r.Context())
+	if connectionErr != nil {
+		writeError(w, 503, "读取统一模型配置失败")
+		return
+	}
+	if connections.SystemDefaultID != "" {
+		input.TextProfileID = connections.DefaultID
+	}
 	if input.TextProfileID != "" {
 		input.FeedbackID = input.TextProfileID
 	}
@@ -602,7 +610,7 @@ func (s *Server) completeCycleMacro(ctx context.Context, state *anchorcycle.Stat
 		messages := []agentgateway.Message{{Role: "system", Content: md}, {Role: "user", Content: string(data)}}
 		response.PromptSource = source
 		response.Request = traceAnchorStyleWorkbenchMessages(messages)
-		result, actual, e := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "accepted_macro_feedback", agentgateway.ResponseJSON, messages, 1000, false)
+		result, actual, e := s.completeAnchorStyleWorkbench(withPinnedSpeechProfile(ctx, state.Config.FeedbackID), state.Config.FeedbackID, "accepted_macro_feedback", agentgateway.ResponseJSON, messages, 1000, false)
 		err = e
 		response.Request = traceAnchorStyleWorkbenchMessages(actual)
 		response.RawResponse = result.Text

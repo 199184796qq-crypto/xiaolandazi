@@ -115,6 +115,10 @@ func (s *Store) SaveSpeechModels(ctx context.Context, input agentgateway.SpeechM
 // Copies use new IDs and independently sealed credentials. The copy reference
 // is input-only: neither credential plaintext nor a live link is persisted.
 func buildSpeechModelsUpdate(old agentgateway.SpeechModels, oldKeys map[string][]byte, input agentgateway.SpeechModelsInput, secret string) (agentgateway.SpeechModels, map[string][]byte, error) {
+	// Old clients do not carry the new system role; retain it rather than reset it.
+	if input.SystemDefaultID == "" {
+		input.SystemDefaultID = old.SystemDefaultID
+	}
 	if err := agentgateway.ValidateSpeechModels(input); err != nil {
 		return agentgateway.SpeechModels{}, nil, err
 	}
@@ -125,7 +129,7 @@ func buildSpeechModelsUpdate(old agentgateway.SpeechModels, oldKeys map[string][
 	for _, p := range old.Profiles {
 		existingByID[p.ID] = p
 	}
-	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, Revision: old.Revision + 1}
+	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, SystemDefaultID: input.SystemDefaultID, Revision: old.Revision + 1}
 	nextKeys := map[string][]byte{}
 	for _, item := range input.Profiles {
 		p := item.SpeechModel

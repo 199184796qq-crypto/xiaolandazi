@@ -10,6 +10,19 @@ import (
 )
 
 func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.State, profile agentgateway.SpeechModel) {
+	roleID, roleErr := s.store.ResolveTextRole(ctx, "mainline_angle_plan")
+	if roleErr != nil {
+		state.Warn("角度规划模型配置暂不可用，按原任务继续生成")
+		return
+	}
+	if roleID != "" {
+		selected, err := s.store.ResolveSpeechModel(ctx, roleID)
+		if err != nil || selected == nil || !selected.Enabled {
+			state.Warn("角度规划模型暂不可用，按原任务继续生成")
+			return
+		}
+		profile = *selected
+	}
 	mother, _, err := loadReplaceablePromptAsset("ANCHOR_STYLE_ANGLE_HOOK_PLAN_PROMPT_PATH", "configs/prompts/anchor-style/angle-hook-plan.md", "角度钩子规划母版")
 	if err != nil {
 		state.AnglePlanMotherSHA = ""
@@ -17,6 +30,9 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 		return
 	}
 	state.AnglePlanMotherSHA = derivedHash(mother)
+	if roleID != "" {
+		state.AnglePlanMotherSHA = derivedHash(mother + "\n" + profile.ID + ":" + profile.Model + ":" + profile.BaseURL + ":" + profile.SystemPrompt)
+	}
 	if state.CurrentAnglePlan() != nil {
 		return
 	}

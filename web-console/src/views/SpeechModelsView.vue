@@ -4,7 +4,7 @@ import { request } from '../api'
 import ModelPickerDialog from '../components/ModelPickerDialog.vue'
 import { copySpeechModel, type SpeechModelProfile as Profile } from '../speechModelCopy'
 
-interface Config { profiles: Profile[]; default_id: string; revision: number }
+interface Config { profiles: Profile[]; default_id: string; system_default_id?: string; revision: number }
 interface TestResult { text: string; model: string; protocol: string; latency_ms: number; input_tokens: number; output_tokens: number; total_tokens: number }
 interface AvailableModel { id: string; name: string }
 interface ModelList { models: AvailableModel[]; truncated: boolean }
@@ -52,22 +52,24 @@ function copy(profile: Profile) {
     const p = copySpeechModel(profile, config.value.profiles, crypto.randomUUID())
     config.value.profiles.push(p); selectedId.value = p.id; result.value = null
     modelList.value = null; listError.value = ''; listedContext.value = ''; pickerOpen.value = false
-    message.value = `已复制为“${p.name}”，点击“保存全部配置”后生效；当前默认模型不变。`
+    message.value = `已复制为“${p.name}”，点击“保存全部配置”后生效；两个用途的模型选择保持原值。`
   } catch (e) { error.value = e instanceof Error ? e.message : '复制失败' }
 }
 function remove() {
   const p = selected.value; if (!p) return
   if (!window.confirm(`删除“${p.name}”配置？保存后生效，已有稿件和音频不会删除。`)) return
   if (config.value.default_id === p.id) config.value.default_id = ''
+  if (config.value.system_default_id === p.id) config.value.system_default_id = ''
   config.value.profiles = config.value.profiles.filter(item => item.id !== p.id)
   selectedId.value = config.value.profiles[0]?.id || ''; result.value = null
 }
 async function save() {
+  if (!config.value.default_id || !config.value.system_default_id) { error.value = '请选择系统智能体模型和口播生成模型'; return }
   saving.value = true; error.value = ''; message.value = ''
   try {
     const saved = await request<{ config: Config }>('/api/v1/system/speech-models', { method: 'PUT', body: JSON.stringify(config.value) })
     config.value = saved.config
-    message.value = '已保存。后续话术与实时回答使用所选模型；不会替换已生成音频，也不会修改智能体模型。'
+    message.value = '已保存。系统智能体和口播生成分别使用所选模型；新请求采用新配置，已开始的请求和本场主线快照保持原值。'
     result.value = null
   } catch (e) { error.value = e instanceof Error ? e.message : '保存失败' }
   finally { saving.value = false }
@@ -108,19 +110,21 @@ onMounted(load)
 <template>
   <div class="speech-model-page">
     <header class="model-hero">
-      <div><small>ANCHOR MODEL CONNECTIONS</small><h2>主播话术与实时互动模型</h2><p>同一个默认模型用于主线话术、风格测试、动态更新和实时回答。智能体理解、策略决策与风格分析模型保持原配置。</p></div>
+      <div><small>MODEL CONNECTIONS</small><h2>系统智能体与口播生成模型</h2><p>按用途统一选择两个模型。各功能保留自己的任务提示词，模型连接在这里统一切换。</p></div>
       <div class="actions"><button class="ghost-button" :disabled="loading || saving || testing || listing" @click="load">刷新</button><button class="primary-button" :disabled="loading || saving || testing || listing || (!keyStorageReady && config.profiles.length > 0)" @click="save">{{ saving ? '保存中…' : '保存全部配置' }}</button></div>
     </header>
     <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="message" class="notice" role="status">{{ message }}</p>
     <p v-if="!loading && !keyStorageReady" class="notice">服务器尚未配置模型密钥加密主密钥，暂不能保存带密钥的配置。请由服务器管理员设置 MODEL_CONFIG_ENCRYPTION_KEY（至少 32 字符）；仍可填写密钥进行临时测试。</p>
     <section class="default-model">
-      <label><strong>话术与实时互动的默认模型</strong><select v-model="config.default_id" :disabled="loading || saving || testing || listing"><option value="">保留原有服务器配置</option><option v-for="p in config.profiles" :key="p.id" :value="p.id" :disabled="!p.enabled">{{ p.name }} · {{ p.model || '未填写模型 ID' }}{{ p.enabled ? '' : '（停用）' }}</option></select></label>
-      <p>保存后对后续请求生效。正在处理的请求和已有成品音频不变；模型失败不会自动切换到其它服务商。</p>
+      <label><strong>系统智能体模型</strong><select aria-label="系统智能体模型" v-model="config.system_default_id" :disabled="loading || saving || testing || listing"><option value="">请选择</option><option v-for="p in config.profiles" :key="p.id" :value="p.id" :disabled="!p.enabled">{{ p.name }} · {{ p.model || '未填写模型 ID' }}{{ p.enabled ? '' : '（停用）' }}</option></select></label>
+      <p>用于智能体对话、指令理解、策略规划、主播风格和评分基准提取、卖点与角度挖掘，以及一次性资料处理。</p>
+      <label><strong>口播生成模型</strong><select aria-label="口播生成模型" v-model="config.default_id" :disabled="loading || saving || testing || listing"><option value="">请选择</option><option v-for="p in config.profiles" :key="p.id" :value="p.id" :disabled="!p.enabled">{{ p.name }} · {{ p.model || '未填写模型 ID' }}{{ p.enabled ? '' : '（停用）' }}</option></select></label>
+      <p>用于主线口播、实时回答、回归桥、文字回灌和口播预览。保存后对新请求生效，正在运行的主线继续使用本场快照。</p>
     </section>
     <div class="model-layout">
       <aside class="model-list"><div class="list-head"><h3>模型配置</h3><button class="ghost-button" :disabled="loading || saving || testing || listing || config.profiles.length >= 30" @click="add">＋ 添加</button></div>
         <div v-for="p in config.profiles" :key="p.id" class="model-item" :class="{ active: p.id === selectedId }">
-          <button type="button" class="model-select" :disabled="loading || saving || testing || listing" @click="selectedId = p.id; result = null"><strong>{{ p.name }}</strong><span>{{ p.model || '未设置模型' }}</span><small>{{ config.default_id === p.id ? '默认模型 · ' : '' }}{{ p.enabled ? '启用' : '停用' }} · {{ p.copy_from_id ? '保存后复制密钥' : p.has_api_key ? '密钥已保存' : '待配置密钥' }}</small></button>
+          <button type="button" class="model-select" :disabled="loading || saving || testing || listing" @click="selectedId = p.id; result = null"><strong>{{ p.name }}</strong><span>{{ p.model || '未设置模型' }}</span><small>{{ config.system_default_id === p.id ? '系统智能体 · ' : '' }}{{ config.default_id === p.id ? '口播生成 · ' : '' }}{{ p.enabled ? '启用' : '停用' }} · {{ p.copy_from_id ? '保存后复制密钥' : p.has_api_key ? '密钥已保存' : '待配置密钥' }}</small></button>
           <button type="button" class="ghost-button model-copy-button" :aria-label="`复制${p.name}`" :disabled="loading || saving || testing || listing || config.profiles.length >= 30" @click="copy(p)">复制</button>
         </div>
         <p v-if="!config.profiles.length">还没有自定义模型。添加配置不会自动切换现有模型。</p>

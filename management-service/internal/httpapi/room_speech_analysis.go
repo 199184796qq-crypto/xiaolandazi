@@ -445,6 +445,19 @@ func (s *Server) runSpeechAnalysisTask(task model.SpeechAnalysisTask, roomInfo s
 	if profileErr != nil {
 		profile = appdb.DefaultSpeechAnalysisProfile()
 	}
+	connections, connectionErr := s.store.SpeechModels(ctx)
+	if connectionErr != nil {
+		fail(fmt.Errorf("读取系统智能体模型失败: %w", connectionErr))
+		return
+	}
+	if connections.SystemDefaultID != "" {
+		selected, err := s.store.ResolveSpeechModel(ctx, connections.SystemDefaultID)
+		if err != nil || selected == nil || !selected.Enabled {
+			fail(errors.New("系统智能体模型不可用"))
+			return
+		}
+		profile.Provider, profile.Model = "management", selected.Model
+	}
 	dispatchBody := map[string]any{
 		"task_id":              task.ID,
 		"tenant_id":            task.TenantID,
