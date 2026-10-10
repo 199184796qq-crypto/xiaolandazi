@@ -60,9 +60,24 @@ func (s *Server) systemSpeechModelsSave(w http.ResponseWriter, r *http.Request) 
 }
 
 type speechModelTestRequest struct {
-	Profile  agentgateway.SpeechModelInput `json:"profile"`
-	Mode     string                        `json:"mode"`
-	Question string                        `json:"question"`
+	Profile        agentgateway.SpeechModelInput `json:"profile"`
+	Mode           string                        `json:"mode"`
+	Question       string                        `json:"question"`
+	Temperature    *float64                      `json:"temperature,omitempty"`
+	EnableThinking *bool                         `json:"enable_thinking,omitempty"`
+}
+
+func (s *Server) systemSpeechModelTestOptions(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if _, ok := s.requireAgentPromptAdmin(w, r); !ok {
+		return
+	}
+	var profile agentgateway.SpeechModel
+	if err := readJSON(w, r, &profile); err != nil {
+		writeError(w, 400, "模型选项格式错误")
+		return
+	}
+	writeJSON(w, 200, agentgateway.SpeechTestOptions(profile))
 }
 
 func (s *Server) speechProfileWithKey(ctx context.Context, input agentgateway.SpeechModelInput) (agentgateway.SpeechModel, error) {
@@ -139,6 +154,14 @@ func (s *Server) systemSpeechModelsTest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, err.Error())
 		return
 	}
+	testRequest := agentgateway.Request{Temperature: input.Temperature, ThinkingOverride: input.EnableThinking}
+	if input.Mode == "connectivity" {
+		testRequest.Temperature, testRequest.ThinkingOverride = nil, nil
+	}
+	if err := agentgateway.ValidateSpeechTestOptions(p, testRequest); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
 	p, err := s.speechProfileWithKey(r.Context(), input.Profile)
 	if err != nil {
 		writeError(w, 400, err.Error())
@@ -167,7 +190,11 @@ func (s *Server) systemSpeechModelsTest(w http.ResponseWriter, r *http.Request) 
 		messages = append(messages, agentgateway.Message{Role: "system", Content: p.SystemPrompt})
 	}
 	messages = append(messages, agentgateway.Message{Role: "user", Content: question})
-	result, err := agentgateway.CompleteSpeechEndpoint(r.Context(), p, agentgateway.Request{Model: p.Model, Messages: messages, MaxTokens: maxTokens, Timeout: timeout})
+	testRequest.Model, testRequest.Messages, testRequest.MaxTokens, testRequest.Timeout = p.Model, messages, maxTokens, timeout
+	if testRequest.ThinkingOverride != nil {
+		testRequest.EnableThinking = *testRequest.ThinkingOverride
+	}
+	result, err := agentgateway.CompleteSpeechEndpoint(r.Context(), p, testRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

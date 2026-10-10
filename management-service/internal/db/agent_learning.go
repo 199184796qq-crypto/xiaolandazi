@@ -243,6 +243,16 @@ func (s *Store) AppendAgentLearningTurn(
 	}
 	defer tx.Rollback()
 
+	// A model reply can arrive after its review was deleted or adopted in another
+	// page. Serialize with those operations before writing any child records.
+	var currentStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM agent_learning_sessions WHERE id=? AND tenant_id=? AND room_id=? FOR UPDATE`, session.ID, session.TenantID, session.RoomID).Scan(&currentStatus); err != nil {
+		return model.AgentLearningResult{}, err
+	}
+	if currentStatus != model.AgentLearningStatusEditing {
+		return model.AgentLearningResult{}, fmt.Errorf("learning session is no longer editable")
+	}
+
 	var nextTurn uint64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(turn_no), 0) + 1

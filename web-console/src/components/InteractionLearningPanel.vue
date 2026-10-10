@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { request, createAgentLearningTurn, adoptAgentLearningSession, adoptLiveAgentPlanFacts } from '../api'
 import type { AgentLearningSession, AgentLearningResult, LiveAgentPlanFact } from '../types'
 import { session } from '../session'
+import { confirmAction } from '../uiFeedback'
 import InteractionFactDialog from './InteractionFactDialog.vue'
 import SimulationMiningProgress from './SimulationMiningProgress.vue'
 import InteractionTopicIcon from './InteractionTopicIcon.vue'
@@ -93,6 +94,7 @@ watch(() => [props.roomId, props.planId, props.history, props.sourceType, sessio
   factContext.value = null; factNotices.value = {}
   suggestionErrors.value = {}; adoptedSuggestions.value = {}
   if (busy.value.startsWith('suggestion:')) busy.value = ''
+  if (busy.value.startsWith('delete:')) busy.value = ''
   void refresh()
 }, { immediate: true })
 
@@ -253,6 +255,36 @@ async function close(item: AgentLearningSession) {
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '处理记录失败' }
   finally { busy.value = '' }
 }
+
+async function deleteSuggestions(item?: AgentLearningSession) {
+  const room = props.roomId, plan = props.planId, token = epoch
+  if (!isSimulationView.value || !room || !plan || busy.value || factContext.value || locating.value) return
+  if (item && (item.source_type !== 'initial_simulation' || item.status !== 'editing' || item.room_id !== room || item.review?.plan_id !== plan)) return
+  const operation = item ? `delete:${item.id}` : 'delete:all'
+  busy.value = operation
+  try {
+    const confirmed = await confirmAction({ title: item ? '删除这条模拟建议？' : '删除全部模拟建议？', message: item ? `删除“${item.question}”及尚未采纳的纠正预览？已采纳的事实依据和回答策略会保留。` : '删除当前方案在这个直播间的全部待处理模拟建议，包括其他页和筛选隐藏的条目？已采纳的事实依据和回答策略会保留。', confirmText: item ? '删除' : '全部删除', danger: true })
+    if (!confirmed || token !== epoch) return
+    error.value = ''; notice.value = ''; requestSequence++
+    const path = `/api/v1/live/rooms/${room}/interaction-learning${item ? '/' + item.id : ''}?plan_id=${plan}`
+    const result = await request<{ deleted: number }>(path, { method: 'DELETE', suppressErrorDialog: true })
+    if (token !== epoch) return
+    if (!Number.isInteger(result.deleted) || result.deleted < 0 || (item && result.deleted !== 1)) throw new Error('删除结果未完整返回，请刷新列表核对。')
+    const removedIds = item ? [item.id] : items.value.map(record => record.id)
+    for (const id of removedIds) { delete factNotices.value[id]; delete suggestionErrors.value[id]; delete adoptedSuggestions.value[id] }
+    if (!item || editing.value === item.id) { editing.value = null; preview.value = null; feedback.value = '' }
+    locatedId.value = null
+    simulationPhase.value = ''; simulationGenerated.value = 0
+    items.value = item ? items.value.filter(record => record.id !== item.id) : []
+    count.value = Math.max(0, count.value - result.deleted)
+    if (!item) { query.value = ''; topicFilter.value = 'all'; page.value = 1; total.value = 0 }
+    else { total.value = Math.max(0, total.value - 1); page.value = Math.min(page.value, Math.max(1, Math.ceil(total.value / 30))) }
+    notice.value = item ? '这条模拟建议已删除。' : `已删除${result.deleted}条待处理模拟建议。`
+    window.dispatchEvent(new Event('interaction-review-updated'))
+    if (!await refresh(true)) notice.value += ' 列表暂未刷新，请点击“刷新”查看。'
+  } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '删除模拟建议失败，请重试' }
+  finally { if (token === epoch && busy.value === operation) busy.value = '' }
+}
 </script>
 
 <template>
@@ -272,6 +304,7 @@ async function close(item: AgentLearningSession) {
         <span v-if="isSimulationView" class="simulation-generation-status" role="status" aria-live="polite" :data-simulation-phase="simulationPhase"><i aria-hidden="true"></i>{{ topicFilter !== 'all' || query.trim() ? `筛选到${total}条模拟建议` : simulationPhase === 'complete' ? `已生成${simulationGenerated}条模拟建议` : `共${total}条模拟建议` }}</span>
         <button v-if="compact" @click="expanded = !expanded">{{ expanded ? '收起' : '查看并纠正' }}</button>
         <button v-else :disabled="!!busy" @click="refresh(true)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 2M4 17l2 2a8 8 0 0 0 13-3" /></svg>刷新</button>
+        <button v-if="isSimulationView" type="button" class="simulation-delete-action" :disabled="!!busy || !!factContext || locating || !count" @click="deleteSuggestions()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === 'delete:all' ? '删除中…' : '全部删除' }}</button>
       </div>
     </header>
       <form v-if="showItems && !compact" class="history-filters" @submit.prevent="page = 1; refresh(true)">
@@ -305,6 +338,7 @@ async function close(item: AgentLearningSession) {
           <button :disabled="!!busy" @click="begin(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 5 5-.8L20 8l-4-4zM14 6l4 4" /></svg>填写纠正</button>
           <button v-if="item.review?.kind === 'missing_fact'" :disabled="!!busy" @click="openFactDialog(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg>补充事实依据</button>
           <button class="is-complete-action" :disabled="!!busy" @click="close(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{{ item.review?.kind === 'missing_fact' ? '已处理，标记完成' : '无需纠正' }}</button>
+          <button v-if="isSimulationView" type="button" class="simulation-delete-action" :aria-label="`删除模拟建议：${item.question}`" :disabled="!!busy || !!factContext || locating" @click="deleteSuggestions(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
           <details v-if="isSimulationView" class="review-record-details"><summary aria-label="查看记录详情" title="查看记录详情">•••</summary><div><strong>记录详情</strong><dl><dt>问题含义</dt><dd>{{ item.review?.meaning || '暂无说明' }}</dd><dt>记录次数</dt><dd>{{ item.review?.occurrences || 1 }}次</dd><dt>记录时间</dt><dd>{{ new Date(item.updated_at).toLocaleString() }}</dd></dl></div></details>
         </div>
         </div>
@@ -328,6 +362,7 @@ async function close(item: AgentLearningSession) {
 </template>
 
 <style scoped>
+.interaction-learning .simulation-delete-action{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;border-color:#f3cfdb;background:#fff6f9;color:#d35f7c}.simulation-delete-action svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.interaction-learning .simulation-delete-action:hover:not(:disabled){background:#ffeef3;border-color:#e79db1}
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
 .learning-search-box{display:flex;align-items:center;gap:10px;flex:1;min-width:0}.learning-search-box input{min-width:0;width:100%}
 .interaction-learning{margin:16px 0;padding:20px;border:1px solid #d9e2f8;border-radius:20px;background:#f8faff;color:#293851;font-size:16px}
