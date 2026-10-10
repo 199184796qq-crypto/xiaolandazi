@@ -324,8 +324,9 @@ func (s *Server) liveAnchorDescription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(input.Description)
-	if len([]rune(text)) > 30 {
-		text = string([]rune(text)[:30])
+	if len([]rune(text)) > 50 {
+		writeError(w, 400, "主播特征介绍最多50字")
+		return
 	}
 	item, err := s.store.UpdateAnchorDescription(r.Context(), tenant, style, actor.UserID, text)
 	if err != nil {

@@ -6,21 +6,23 @@ import "time"
 // interaction policy remain attached to the live-agent plan; this object only
 // stores how the presenter speaks.
 type LiveAnchorStyle struct {
-	ID              int64                           `json:"id"`
-	TenantID        int64                           `json:"tenant_id"`
-	Name            string                          `json:"name"`
-	Description     string                          `json:"description,omitempty"`
-	AvatarType      string                          `json:"avatar_type"`
-	Status          string                          `json:"status"`
-	Profile         LiveAgentPlanAnchorStyleProfile `json:"profile"`
-	PluginSettings  []LiveAnchorStylePluginSetting  `json:"plugin_settings"`
-	SampleCount     int                             `json:"sample_count"`
-	TrainingCount   int                             `json:"training_count"`
-	BoundPlanCount  int                             `json:"bound_plan_count"`
-	CreatedByUserID *int64                          `json:"created_by_user_id,omitempty"`
-	UpdatedByUserID *int64                          `json:"updated_by_user_id,omitempty"`
-	CreatedAt       time.Time                       `json:"created_at"`
-	UpdatedAt       time.Time                       `json:"updated_at"`
+	ID                     int64                           `json:"id"`
+	TenantID               int64                           `json:"tenant_id"`
+	Name                   string                          `json:"name"`
+	Description            string                          `json:"description,omitempty"`
+	AvatarType             string                          `json:"avatar_type"`
+	AvatarURL              string                          `json:"avatar_url,omitempty"`
+	SourceRecommendationID int64                           `json:"source_recommendation_id,omitempty"`
+	Status                 string                          `json:"status"`
+	Profile                LiveAgentPlanAnchorStyleProfile `json:"profile"`
+	PluginSettings         []LiveAnchorStylePluginSetting  `json:"plugin_settings"`
+	SampleCount            int                             `json:"sample_count"`
+	TrainingCount          int                             `json:"training_count"`
+	BoundPlanCount         int                             `json:"bound_plan_count"`
+	CreatedByUserID        *int64                          `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID        *int64                          `json:"updated_by_user_id,omitempty"`
+	CreatedAt              time.Time                       `json:"created_at"`
+	UpdatedAt              time.Time                       `json:"updated_at"`
 }
 
 type LiveAnchorStyleSample struct {

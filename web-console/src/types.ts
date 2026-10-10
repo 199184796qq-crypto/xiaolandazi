@@ -1658,6 +1658,8 @@ export interface LiveAnchorStyle {
   name: string
   description?: string
   avatar_type?: 'male' | 'female' | 'middle_aged_male' | 'middle_aged_female'
+  avatar_url?: string
+  source_recommendation_id?: number
   status: string
   profile: LiveAgentPlanAnchorStyleProfile
   plugin_settings: LiveAnchorStylePluginSetting[]

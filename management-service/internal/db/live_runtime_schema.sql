@@ -1431,6 +1431,8 @@ CREATE TABLE IF NOT EXISTS live_anchor_styles (
     name VARCHAR(180) NOT NULL,
     description VARCHAR(2000) NOT NULL DEFAULT '',
     avatar_type VARCHAR(32) NOT NULL DEFAULT 'female',
+    avatar_data MEDIUMTEXT NULL,
+    source_recommendation_id BIGINT UNSIGNED NULL,
     active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
     status VARCHAR(24) NOT NULL DEFAULT 'active',
     profile_json MEDIUMTEXT NOT NULL,
@@ -1439,7 +1441,8 @@ CREATE TABLE IF NOT EXISTS live_anchor_styles (
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
-    KEY idx_live_anchor_styles_tenant (tenant_id, status, updated_at)
+    KEY idx_live_anchor_styles_tenant (tenant_id, status, updated_at),
+    UNIQUE KEY uk_anchor_recommendation_import (tenant_id, source_recommendation_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_anchor_style_samples (

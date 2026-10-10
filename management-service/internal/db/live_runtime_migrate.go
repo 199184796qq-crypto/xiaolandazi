@@ -31,6 +31,8 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 	}{
 		{"live_anchor_styles", "active_analysis_version_id", "ALTER TABLE live_anchor_styles ADD COLUMN active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0"},
 		{"live_anchor_styles", "avatar_type", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_type VARCHAR(32) NOT NULL DEFAULT 'female' AFTER description"},
+		{"live_anchor_styles", "avatar_data", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_data MEDIUMTEXT NULL"},
+		{"live_anchor_styles", "source_recommendation_id", "ALTER TABLE live_anchor_styles ADD COLUMN source_recommendation_id BIGINT UNSIGNED NULL"},
 		{"live_fact_risk_reviews", "semantic_key", "ALTER TABLE live_fact_risk_reviews ADD COLUMN semantic_key VARCHAR(200) NOT NULL DEFAULT ''"},
 		{"live_fact_risk_reviews", "subject_text", "ALTER TABLE live_fact_risk_reviews ADD COLUMN subject_text TEXT NULL"},
 		{"live_fact_risk_reviews", "source_refs_json", "ALTER TABLE live_fact_risk_reviews ADD COLUMN source_refs_json MEDIUMTEXT NULL"},
@@ -234,7 +236,7 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return s.MigrateAnchorRecommendations(ctx)
 }
 
 func (s *Store) indexColumns(ctx context.Context, tableName, indexName string) ([]string, error) {

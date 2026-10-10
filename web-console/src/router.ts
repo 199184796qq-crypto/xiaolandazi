@@ -263,6 +263,12 @@ export const router = createRouter({
       meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
     },
     {
+      path: '/system/settings/live/anchor-recommendations',
+      name: 'system-anchor-recommendations',
+      component: () => import('./views/AnchorRecommendationsAdminView.vue'),
+      meta: { systemSettingsEntry: true, staffPermission: 'system.settings.liveops.manage' },
+    },
+    {
       path: '/system/settings/:category(general|intelligence|live|commerce|inventory|access)',
       name: 'system-settings-category',
       component: SystemSettingsView,

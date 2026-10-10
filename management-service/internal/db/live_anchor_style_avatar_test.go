@@ -34,9 +34,9 @@ func (c *avatarConn) QueryContext(_ context.Context, q string, args []driver.Nam
 	if !strings.Contains(q, "s.id=? AND s.tenant_id=? AND s.status='active'") || len(args) != 2 {
 		return nil, errors.New("unscoped avatar read")
 	}
-	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile samples trainings plans creator updater created updated avatar")}
+	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile samples trainings plans creator updater created updated avatar avatar_data source")}
 	if args[0].Value == int64(7) && args[1].Value == int64(14) {
-		rows.values = [][]driver.Value{{int64(7), int64(14), "原主播", "原介绍", "active", `{"summary":"原风格"}`, int64(1), int64(3), int64(2), int64(8), int64(8), time.Now(), time.Now(), c.kind}}
+		rows.values = [][]driver.Value{{int64(7), int64(14), "原主播", "原介绍", "active", `{"summary":"原风格"}`, int64(1), int64(3), int64(2), int64(8), int64(8), time.Now(), time.Now(), c.kind, "", int64(0)}}
 	}
 	return rows, nil
 }
@@ -44,7 +44,7 @@ func (c *avatarConn) ExecContext(_ context.Context, q string, args []driver.Name
 	if c.fail {
 		return nil, errors.New("database unavailable")
 	}
-	if q != `UPDATE live_anchor_styles SET avatar_type=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'` || len(args) != 4 || args[1].Value != int64(8) || args[2].Value != int64(7) || args[3].Value != int64(14) {
+	if q != `UPDATE live_anchor_styles SET avatar_type=?, avatar_data=NULL, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'` || len(args) != 4 || args[1].Value != int64(8) || args[2].Value != int64(7) || args[3].Value != int64(14) {
 		return nil, errors.New("avatar update touched unrelated fields or tenant")
 	}
 	c.kind = args[0].Value.(string)

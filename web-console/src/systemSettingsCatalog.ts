@@ -146,6 +146,10 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
         entries: [{ key: 'anchor-voice-cache', title: 'OSS声音缓存', description: '设置声音、SRT与语义资产包保留时间，默认5小时。', icon: '音', to: '/system/settings/live#anchor-voice-cache', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
       },
       {
+        key: 'anchor-recommendations', title: '系统推荐主播', description: '把用户的优秀主播风格推荐给全体用户。',
+        entries: [{ key: 'anchor-recommendations', title: '系统推荐主播', description: '查看用户主播、生成50字特征简介，校对后发布或下架推荐。', icon: '播', to: '/system/settings/live/anchor-recommendations', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
+      },
+      {
         key: 'policy',
         title: '行业与规则',
         description: '统一直播行业目录、系统/行业规则和规则页面显示规格。',

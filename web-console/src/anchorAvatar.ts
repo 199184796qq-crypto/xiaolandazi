@@ -10,3 +10,6 @@ export function anchorAvatarType(value?: string): AnchorAvatarType {
 export function anchorAvatarURL(value?: string): string {
   return '/assets/anchor-avatars/' + anchorAvatarType(value) + '-v1.png'
 }
+export function anchorPresenterAvatar(style: { avatar_url?: string; avatar_type?: string }): string {
+  return /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(style.avatar_url || '') ? style.avatar_url! : anchorAvatarURL(style.avatar_type)
+}

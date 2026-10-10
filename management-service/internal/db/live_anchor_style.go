@@ -53,7 +53,7 @@ func scanLiveAnchorStyle(row interface{ Scan(...any) error }) (model.LiveAnchorS
 	var item model.LiveAnchorStyle
 	var profileRaw string
 	var createdBy, updatedBy sql.NullInt64
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.AvatarType); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.AvatarType, &item.AvatarURL, &item.SourceRecommendationID); err != nil {
 		return item, err
 	}
 	item.Profile = decodeLiveAnchorStyleProfile(profileRaw)
@@ -73,7 +73,7 @@ const liveAnchorStyleSelect = `
 		(SELECT COUNT(*) FROM live_anchor_style_samples sm WHERE sm.style_id=s.id) AS sample_count,
 		(SELECT COUNT(*) FROM live_anchor_style_trainings tr WHERE tr.style_id=s.id) AS training_count,
 		(SELECT COUNT(*) FROM live_anchor_style_plan_bindings b WHERE b.style_id=s.id) AS bound_plan_count,
-		s.created_by_user_id, s.updated_by_user_id, s.created_at, s.updated_at, s.avatar_type
+		s.created_by_user_id, s.updated_by_user_id, s.created_at, s.updated_at, s.avatar_type, COALESCE(s.avatar_data,''), COALESCE(s.source_recommendation_id,0)
 	FROM live_anchor_styles s
 `
 
@@ -185,7 +185,7 @@ func (s *Store) UpdateLiveAnchorStyleAvatar(ctx context.Context, tenantID, style
 	if _, err := s.GetLiveAnchorStyle(ctx, tenantID, styleID); err != nil {
 		return model.LiveAnchorStyle{}, err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE live_anchor_styles SET avatar_type=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'`, kind, actorID, styleID, tenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE live_anchor_styles SET avatar_type=?, avatar_data=NULL, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'`, kind, actorID, styleID, tenantID)
 	if err != nil {
 		return model.LiveAnchorStyle{}, err
 	}

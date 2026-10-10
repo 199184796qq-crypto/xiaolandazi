@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { LiveAnchorStyle } from '../types'
-import { anchorAvatarOptions, anchorAvatarType, anchorAvatarURL, type AnchorAvatarType } from '../anchorAvatar'
-const props = defineProps<{ styles: LiveAnchorStyle[]; selectedId: number | null; busy: boolean; editingId: number | null; savingNameId: number | null; avatarSavingIds: number[]; descriptionSavingIds?: number[]; nameDraft: string; hasSelection: boolean; hasPlan: boolean }>()
+import { anchorAvatarOptions, anchorAvatarType, anchorAvatarURL, anchorPresenterAvatar, type AnchorAvatarType } from '../anchorAvatar'
+const props = defineProps<{ styles: LiveAnchorStyle[]; selectedId: number | null; currentId?: number; busy: boolean; editingId: number | null; savingNameId: number | null; avatarSavingIds: number[]; descriptionSavingIds?: number[]; nameDraft: string; hasSelection: boolean; hasPlan: boolean }>()
 const emit = defineEmits<{
   create: []; select: [id: number]; rename: [style: LiveAnchorStyle]; saveName: [style: LiveAnchorStyle]; cancelName: [];
   'update:nameDraft': [value: string]; avatar: [style: LiveAnchorStyle, kind: AnchorAvatarType]; description: [style: LiveAnchorStyle, text: string]; remove: [style: LiveAnchorStyle]; bind: []; plugins: []
+  uploadAvatar: [style: LiveAnchorStyle, file: File]; recommendations: []
 }>()
 const nameInput = ref<HTMLInputElement[]>([])
 watch(() => props.editingId, async id => { if (id !== null) { await nextTick(); nameInput.value[0]?.focus(); nameInput.value[0]?.select() } })
@@ -16,16 +17,21 @@ function chooseAvatar(style: LiveAnchorStyle, kind: AnchorAvatarType) {
   avatarMenuId.value = null
   emit('avatar', style, kind)
 }
-function editDescription(style: LiveAnchorStyle) { descriptionEditId.value = style.id; descriptionDraft.value = Array.from(style.description || '').slice(0, 30).join('') }
+function editDescription(style: LiveAnchorStyle) { descriptionEditId.value = style.id; descriptionDraft.value = Array.from(style.description || '').slice(0, 50).join('') }
 function descriptionInput(event: Event) {
   const input = event.target as HTMLInputElement
-  descriptionDraft.value = Array.from(input.value).slice(0, 30).join('')
+  descriptionDraft.value = Array.from(input.value).slice(0, 50).join('')
   input.value = descriptionDraft.value
 }
 function saveDescription(style: LiveAnchorStyle) {
   if (descriptionEditId.value !== style.id) return
   emit('description', style, descriptionDraft.value.trim())
   descriptionEditId.value = null
+}
+function uploadAvatar(style: LiveAnchorStyle, event: Event) {
+  const input = event.target as HTMLInputElement, file = input.files?.[0]
+  if (file) emit('uploadAvatar', style, file)
+  input.value = ''
 }
 </script>
 <template>
@@ -35,17 +41,19 @@ function saveDescription(style: LiveAnchorStyle) {
       <div class="manager-heading"><h3>主播管理</h3><p>创建和管理你的专属主播</p></div>
       <button type="button" class="manager-create" :disabled="busy" @click="emit('create')">＋新建主播</button>
     </header>
+    <button type="button" class="manager-recommendations" @click="emit('recommendations')">✦ 系统推荐主播 <span>查看并添加 ›</span></button>
     <div v-if="!styles.length" class="manager-empty">还没有保存主播。先新建主播，再导入真实话术。</div>
     <article v-for="style in styles" :key="style.id" class="presenter-card" :class="{ selected: selectedId === style.id }">
       <div class="presenter-avatar-column">
       <button type="button" class="presenter-select" :aria-label="`选择主播“${style.name}”`" :aria-pressed="selectedId === style.id" @click="emit('select', style.id)">
-        <img :src="anchorAvatarURL(style.avatar_type)" :alt="`${anchorAvatarOptions.find(o => o.value === anchorAvatarType(style.avatar_type))?.label}主播头像`" width="76" height="76" />
+        <img :src="anchorPresenterAvatar(style)" :alt="`${style.name}的头像`" width="76" height="76" />
         <span class="avatar-voice-badge" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></svg></span>
       </button>
       <button type="button" class="avatar-menu-button" :aria-label="`选择主播“${style.name}”的头像`" :aria-expanded="avatarMenuId === style.id" :disabled="avatarSavingIds.includes(style.id)" @click="avatarMenuId = avatarMenuId === style.id ? null : style.id">{{ avatarSavingIds.includes(style.id) ? '保存中…' : '选择 ▾' }}</button>
       <div v-if="avatarMenuId === style.id" class="avatar-image-menu" aria-label="可选主播头像" @keydown.esc="avatarMenuId = null">
         <button v-for="option in anchorAvatarOptions" :key="option.value" type="button" :aria-label="option.label" :aria-pressed="anchorAvatarType(style.avatar_type) === option.value" @click="chooseAvatar(style, option.value)"><img :src="anchorAvatarURL(option.value)" :alt="option.label" width="48" height="48" /><span>{{ option.label }}</span></button>
       </div>
+      <label class="avatar-upload-button">{{ avatarSavingIds.includes(style.id) ? '上传中…' : '上传头像' }}<input type="file" accept="image/jpeg,image/png" :aria-label="`上传主播“${style.name}”的头像`" :disabled="avatarSavingIds.includes(style.id)" @change="uploadAvatar(style, $event)" /></label>
       </div>
       <div class="presenter-copy">
         <div class="presenter-name-row">
@@ -55,11 +63,12 @@ function saveDescription(style: LiveAnchorStyle) {
           <button v-if="editingId !== style.id" type="button" class="presenter-rename" :aria-label="`修改主播“${style.name}”的名称`" @click="emit('rename', style)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 11-11 5 5-11 11-6 1Z"/><path d="m13 6 5 5" fill="none" stroke="white" stroke-width="1.5"/></svg></button>
         </div>
         <div class="presenter-meta"><span>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</span></div>
+        <small v-if="currentId === style.id" class="presenter-current">✓ 当前使用</small><small v-else-if="style.source_recommendation_id" class="presenter-origin">来自系统推荐</small>
       </div>
       <button type="button" class="presenter-remove" :aria-label="`删除主播“${style.name}”`" @click="emit('remove', style)">删除</button>
       <div class="presenter-description">
-        <input v-if="descriptionEditId === style.id" :value="descriptionDraft" aria-label="修改主播特征介绍，最多30字" @input="descriptionInput" @blur="saveDescription(style)" @keydown.enter.prevent="saveDescription(style)" @keydown.esc.prevent="descriptionEditId = null" />
-        <template v-else><p :title="style.description">{{ Array.from(style.description || '').slice(0, 30).join('') || (anchorAvatarType(style.avatar_type).includes('female') ? '她什么也没介绍' : '他什么也没介绍') }}</p><button type="button" class="presenter-rename" aria-label="修改主播特征介绍" :disabled="descriptionSavingIds?.includes(style.id)" @click="editDescription(style)">✎</button></template>
+        <input v-if="descriptionEditId === style.id" :value="descriptionDraft" aria-label="修改主播特征介绍，最多50字" @input="descriptionInput" @blur="saveDescription(style)" @keydown.enter.prevent="saveDescription(style)" @keydown.esc.prevent="descriptionEditId = null" />
+        <template v-else><p :title="style.description">{{ style.description || '还没有填写风格介绍' }}</p><button type="button" class="presenter-rename" aria-label="修改主播特征介绍" :disabled="descriptionSavingIds?.includes(style.id)" @click="editDescription(style)">✎</button></template>
       </div>
     </article>
     <button v-if="hasSelection" type="button" class="manager-bind" :disabled="!hasPlan || busy" @click="emit('bind')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 18 11-11 3 3L8 21Zm12-16 1 3 3 1-3 1-1 3-1-3-3-1 3-1ZM6 2l1 3 3 1-3 1-1 3-1-3-3-1 3-1Z"/></svg>{{ hasPlan ? '设为当前智能体主播' : '先选择智能体方案' }}</button>
@@ -74,3 +83,4 @@ function saveDescription(style: LiveAnchorStyle) {
 .presenter-card{align-items:start}.presenter-avatar-column{position:relative;display:grid;justify-items:center;gap:7px}.avatar-menu-button{border:1px solid #dce1f7;border-radius:7px;background:#fff;color:#7166d5;font-size:11px;padding:3px 7px;cursor:pointer}.avatar-image-menu{position:absolute;top:100%;left:0;z-index:30;display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:160px;padding:10px;background:#fff;border:1px solid #dce1f7;border-radius:12px;box-shadow:0 12px 32px #535b9630}.avatar-image-menu button{display:grid;place-items:center;gap:4px;background:#f4f5ff;border:1px solid transparent;border-radius:9px;padding:5px;cursor:pointer;color:#6a658f;font-size:11px}.avatar-image-menu button[aria-pressed=true]{border-color:#7e6fee}.avatar-image-menu img{border-radius:50%;object-fit:cover}.presenter-copy{padding-top:12px}.presenter-description{grid-column:1/-1;display:flex;align-items:center;gap:6px;min-width:0;color:#8d98ae;font-size:13px}.presenter-description p{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.presenter-description input{width:100%;min-width:0;box-sizing:border-box;padding:7px;border:1px solid #aaa0ee;border-radius:7px;color:#53617e;font:inherit}.presenter-remove{align-self:start;padding-top:16px}
 @container(max-width:310px){.presenter-description{grid-row:2}.presenter-remove{grid-column:2;grid-row:3;padding:0;margin:0}}
 </style>
+<style scoped>.manager-recommendations{display:flex;justify-content:space-between;gap:10px;padding:14px 12px;border:1px solid #dfdafa;border-radius:14px;background:#f0edff;color:#6454c8;font:inherit;font-size:14px;font-weight:750;cursor:pointer}.manager-recommendations span{font-size:11px;color:#9690c3}.avatar-upload-button{position:relative;display:block;text-align:center;margin-top:8px;font-size:11px;color:#7667da;cursor:pointer}.avatar-upload-button input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}.presenter-current{color:#2c967c;font-size:12px}.presenter-origin{color:#8c80c0;font-size:11px}.presenter-description p{white-space:normal;overflow-wrap:anywhere;line-height:1.7;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}</style>

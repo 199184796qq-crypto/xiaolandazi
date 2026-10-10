@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerLiveContentPolicyRoutes(mux)
 	s.registerLiveAgentPlanStyleOverlayRoutes(mux)
 	s.registerLiveAnchorStyleRoutes(mux)
+	s.registerAnchorRecommendationRoutes(mux)
 
 	mux.HandleFunc("POST /internal/v1/interaction-purpose/resolve", s.resolveInteractionPurpose)
 	mux.HandleFunc("POST /internal/v1/model-analysis/chat/completions", s.internalModelAnalysis)

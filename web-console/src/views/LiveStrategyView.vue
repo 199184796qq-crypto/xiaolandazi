@@ -26,6 +26,8 @@ import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel
 import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
 import AnchorControlBar from '../components/AnchorControlBar.vue'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
+import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
+import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
 import SpeechMinerWorkbench from '../components/SpeechMinerWorkbench.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
@@ -590,6 +592,9 @@ async function duplicateFormalBenefit(item: LiveAgentPlanBenefit) {
 }
 const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
+const anchorRecommendationsOpen = ref(false)
+const currentBoundAnchorId = ref(0)
+watch(() => [activeRoomId.value, currentRoomPlanId.value], () => { anchorRecommendationsOpen.value = false; currentBoundAnchorId.value = 0 })
 const selectedReusableAnchorStyleId = ref<number | null>(null)
 const selectedReusableAnchorStyle = ref<LiveAnchorStyle | null>(null)
 const reusableAnchorStyleSamples = ref<LiveAnchorStyleSample[]>([])
@@ -806,10 +811,13 @@ async function loadStyleOverlays() {
 
 async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
   const tenantID = activeRoom.value?.tenant_id
+  const roomID = activeRoomId.value, planID = currentRoomPlanId.value
   try {
-    const result = await listLiveAnchorStyles(tenantID)
+    const [result, current] = await Promise.all([listLiveAnchorStyles(tenantID), planID ? getCurrentAnchor(planID, tenantID) : Promise.resolve({ style_id: 0 })])
+    if (tenantID !== activeRoom.value?.tenant_id || roomID !== activeRoomId.value || planID !== currentRoomPlanId.value) return
+    currentBoundAnchorId.value = current.style_id || 0
     reusableAnchorStyles.value = result.items || []
-    const nextID = preferredID || selectedReusableAnchorStyleId.value || result.items?.[0]?.id || null
+    const nextID = preferredID || (result.items.some(item => item.id === selectedReusableAnchorStyleId.value) ? selectedReusableAnchorStyleId.value : null) || currentBoundAnchorId.value || result.items?.[0]?.id || null
     if (!nextID) {
       selectedReusableAnchorStyleId.value = null
       selectedReusableAnchorStyle.value = null
@@ -820,6 +828,30 @@ async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
   } catch (err) {
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格失败'
   }
+}
+
+async function acceptRecommendedAnchors(items: LiveAnchorStyle[]) {
+  const tenant = activeRoom.value?.tenant_id
+  const owned = items.filter(item => item.tenant_id === tenant)
+  if (!owned.length) return
+  const known = new Set(reusableAnchorStyles.value.map(item => item.id))
+  reusableAnchorStyles.value = [...reusableAnchorStyles.value, ...owned.filter(item => !known.has(item.id))]
+  reusableAnchorStyleNotice.value = '推荐主播已加入你的列表，选择后点击“设为当前智能体主播”即可使用。'
+  if (!selectedReusableAnchorStyleId.value) await selectReusableAnchorStyle(owned[0]!.id, false)
+}
+
+async function saveUploadedAnchorAvatar(style: LiveAnchorStyle, file: File) {
+  if (savingReusableAnchorAvatarIds.value.includes(style.id)) return
+  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
+  try {
+    const result = await uploadAnchorAvatar(style.id, file, tenant)
+    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_url: result.avatar_url } : item)
+    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_url: result.avatar_url }
+    reusableAnchorStyleNotice.value = '你的主播头像已上传并保存啦。'
+  } catch (err) { if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '上传头像失败' }
+  finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
 }
 
 async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
@@ -875,7 +907,7 @@ async function createReusableAnchorStyle() {
 }
 
 async function saveReusableAnchorAvatar(style: LiveAnchorStyle, kind: AnchorAvatarType) {
-  if (savingReusableAnchorAvatarIds.value.includes(style.id) || style.avatar_type === kind) return
+  if (savingReusableAnchorAvatarIds.value.includes(style.id) || (style.avatar_type === kind && !style.avatar_url)) return
   const tenant = activeRoom.value?.tenant_id
   const roomId = activeRoomId.value
   savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
@@ -885,8 +917,8 @@ async function saveReusableAnchorAvatar(style: LiveAnchorStyle, kind: AnchorAvat
     if (tenant !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
     // Merge only presentation metadata; a concurrently completed analysis or
     // rename must not be replaced with this request's older full response.
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_type: updated.avatar_type } : item)
-    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_type: updated.avatar_type }
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url } : item)
+    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url }
     reusableAnchorStyleNotice.value = '主播头像已自动保存。'
   } catch (err) {
     if (tenant === activeRoom.value?.tenant_id && roomId === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播头像失败'
@@ -904,7 +936,7 @@ async function saveReusableAnchorDescription(style: LiveAnchorStyle, text: strin
   const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
   savingReusableAnchorDescriptionIds.value.push(style.id)
   try {
-    const result = await updateLiveAnchorDescription(style.id, Array.from(text).slice(0, 30).join(''), tenant)
+    const result = await updateLiveAnchorDescription(style.id, Array.from(text).slice(0, 50).join(''), tenant)
     if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
     reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, description: result.description } : item)
     if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, description: result.description }
@@ -6898,8 +6930,9 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
+          <AnchorRecommendationPicker v-if="anchorRecommendationsOpen" :tenant-id="activeRoom?.tenant_id" :styles="reusableAnchorStyles" @close="anchorRecommendationsOpen = false" @imported="acceptRecommendedAnchors" />
           <div class="reusable-anchor-style-workspace">
-            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" />
+            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :current-id="currentBoundAnchorId" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @upload-avatar="saveUploadedAnchorAvatar" @recommendations="anchorRecommendationsOpen = true" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" />
 
             <div class="reusable-anchor-style-main">
               <div v-if="reusableAnchorStyleError" class="inline-error">{{ reusableAnchorStyleError }}</div>
