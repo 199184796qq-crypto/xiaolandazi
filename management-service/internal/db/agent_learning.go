@@ -70,15 +70,23 @@ func (s *Store) CreateAgentLearningSession(
 	if input.SourceType == "" {
 		input.SourceType = "direct_correction"
 	}
+	var reviewJSON any
+	if input.PlanID > 0 {
+		metadata, err := json.Marshal(model.InteractionLearningReview{PlanID: input.PlanID, Kind: "semantic", Meaning: strings.TrimSpace(input.Target), Context: "方案内模拟提问", Reason: "用户确认或纠正测试回答", NeededFacts: []string{}})
+		if err != nil {
+			return model.AgentLearningSession{}, err
+		}
+		reviewJSON = string(metadata)
+	}
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO agent_learning_sessions (
 			tenant_id, room_id, source_type, source_ref, question, original_reply,
-			target, status, memory_type, created_by_user_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'editing', '', ?)
+			target, status, memory_type, created_by_user_id, review_metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'editing', '', ?, ?)
 	`,
 		tenantID, roomID, input.SourceType, strings.TrimSpace(input.SourceRef),
 		strings.TrimSpace(input.Question), strings.TrimSpace(input.OriginalReply),
-		strings.TrimSpace(input.Target), actorUserID,
+		strings.TrimSpace(input.Target), actorUserID, reviewJSON,
 	)
 	if err != nil {
 		return model.AgentLearningSession{}, err

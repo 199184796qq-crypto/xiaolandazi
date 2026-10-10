@@ -126,6 +126,7 @@ type AgentMemoryVersion struct {
 }
 
 type CreateAgentLearningSessionInput struct {
+	PlanID        int64  `json:"plan_id,omitempty"`
 	SourceType    string `json:"source_type"`
 	SourceRef     string `json:"source_ref,omitempty"`
 	Question      string `json:"question,omitempty"`

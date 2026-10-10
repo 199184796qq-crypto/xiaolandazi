@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/decisionexecutor"
 )
@@ -57,7 +58,9 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var input struct {
-		Question string `json:"question"`
+		Question           string `json:"question"`
+		PlanID             int64  `json:"plan_id,omitempty"`
+		PreviewInstruction string `json:"preview_instruction,omitempty"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "测试问题格式错误")
@@ -68,15 +71,39 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "测试问题不能为空")
 		return
 	}
+	if input.PlanID < 0 || utf8.RuneCountInString(input.Question) > 1000 || utf8.RuneCountInString(input.PreviewInstruction) > 4000 {
+		writeError(w, http.StatusBadRequest, "测试问题或纠正内容过长，或方案编号无效")
+		return
+	}
+	if input.PreviewInstruction != "" && input.PlanID == 0 {
+		writeError(w, http.StatusBadRequest, "请明确选择测试方案")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
 	worker := decisionexecutor.New(s.store, nil, s.speechGateway(), nil)
-	result, err := worker.SimulateAnswer(ctx, tenantID, roomID, input.Question)
+	if input.PlanID > 0 {
+		_, authorizedTenant, authorizedRoom, allowed := s.requireCustomerPolicyRoom(w, r)
+		if !allowed {
+			return
+		}
+		if authorizedTenant != tenantID || authorizedRoom != roomID {
+			writeError(w, http.StatusForbidden, "测试范围不一致")
+			return
+		}
+		plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, input.PlanID)
+		if err != nil || plan.Status != "active" {
+			writeError(w, http.StatusNotFound, "当前方案不存在或不可测试")
+			return
+		}
+		worker = decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
+	}
+	result, err := worker.SimulateAnswerWithPreview(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, "semantic", "", 0)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, map[string]any{"question": result.Question, "reply": result.Reply, "execution_mode": result.ExecutionMode, "plan_name": result.PlanName, "user_layer_version": result.UserLayerVersion, "plan_id": input.PlanID})
 }
 
 func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.Request) {

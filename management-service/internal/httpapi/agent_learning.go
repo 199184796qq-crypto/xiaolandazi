@@ -1041,6 +1041,16 @@ func (s *Server) agentLearningCreateSession(w http.ResponseWriter, r *http.Reque
 	input.Question = strings.TrimSpace(input.Question)
 	input.OriginalReply = strings.TrimSpace(input.OriginalReply)
 	input.Target = strings.TrimSpace(input.Target)
+	if input.PlanID < 0 {
+		writeError(w, http.StatusBadRequest, "方案编号无效")
+		return
+	}
+	if input.PlanID > 0 {
+		if plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, input.PlanID); err != nil || plan.Status != "active" {
+			writeError(w, http.StatusNotFound, "当前方案不存在或不可编辑")
+			return
+		}
+	}
 	if utf8.RuneCountInString(input.Question) > 3000 || utf8.RuneCountInString(input.OriginalReply) > 6000 {
 		writeError(w, http.StatusBadRequest, "学习上下文过长")
 		return

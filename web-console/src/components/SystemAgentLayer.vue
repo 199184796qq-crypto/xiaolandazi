@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import WorkInboxPanel from './WorkInboxPanel.vue'
+import PlanSpeechAgentPanel from './PlanSpeechAgentPanel.vue'
 import TodoBadge from './TodoBadge.vue'
 import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
@@ -715,6 +716,9 @@ const liveStrategyMode = ref<LiveStrategyMode>(
     : 'strategy',
 )
 const liveStrategyPlanId = ref(Number(window.localStorage.getItem('system-agent-live-plan-id') || 0))
+const liveStrategyRoomId = ref(Number(window.localStorage.getItem('system-agent-live-room-id') || 0))
+const planSpeechActive = ref(false)
+const planSpeechBusy = ref(false)
 const liveStrategyModuleLabel = ref(window.localStorage.getItem('system-agent-live-module-label') || '')
 const isInternalAgentProfile = computed(() =>
   ['platform_admin', 'staff', 'sales_staff'].includes(actor.value?.role || ''),
@@ -733,6 +737,18 @@ const currentDomain = computed<AgentDomain>(() => {
   }
   return 'system'
 })
+const canUsePlanSpeech = computed(() => currentDomain.value === 'live-strategy' && liveStrategyRoomId.value > 0 && liveStrategyPlanId.value > 0)
+watch(() => [currentDomain.value, liveStrategyRoomId.value, liveStrategyPlanId.value, actor.value?.user_id, actor.value?.tenant_id], () => {
+  planSpeechActive.value = false
+  planSpeechBusy.value = false
+})
+function switchPlanSpeech(active: boolean) {
+  if (!canUsePlanSpeech.value || busy.value || executing.value || planSpeechBusy.value) return
+  planSpeechActive.value = active
+  drawerOpen.value = true
+  drawerTab.value = 'chat'
+  if (active) expanded.value = false
+}
 
 const internalAgentName = ref('小蓝工作搭子')
 const clientAgentName = ref('小蓝直播搭子')
@@ -1144,6 +1160,7 @@ const contextLabel = computed(() => {
   }
   if (currentDomain.value === 'live-room') return '直播场控'
   if (currentDomain.value === 'live-strategy') {
+    if (planSpeechActive.value) return '话术智能体 · 互动测试'
     if (liveStrategyMode.value === 'anchor') return '直播策略 · 主播训练'
     if (liveStrategyMode.value === 'script') return '直播策略 · 口播样稿'
     if (liveStrategyMode.value === 'voice') return '直播策略 · 声音配置'
@@ -1160,6 +1177,7 @@ const contextDescription = computed(() => {
     return '已进入当前直播间场控上下文，直接处理现场问题、话术和场控协作。'
   }
   if (currentDomain.value === 'live-strategy') {
+    if (planSpeechActive.value) return '模拟用户提问，测试当前方案的互动回答；确认后可采纳到事实依据或互动策略。'
     if (liveStrategyMode.value === 'anchor') return '已进入当前直播间主播训练上下文。'
     if (liveStrategyMode.value === 'script') return '已进入当前直播间口播样稿上下文。'
     if (liveStrategyMode.value === 'voice') return '已进入当前直播间声音配置上下文。'
@@ -3663,7 +3681,10 @@ function handleLiveStrategyContextEvent(event: Event) {
     }>
   ).detail
   if (detail?.room_id && detail.room_id > 0) {
+    liveStrategyRoomId.value = detail.room_id
     window.localStorage.setItem('system-agent-live-room-id', String(detail.room_id))
+  } else {
+    liveStrategyRoomId.value = 0
   }
   const mode = detail?.mode
   const supportedModes: LiveStrategyMode[] = [
@@ -6824,6 +6845,7 @@ async function copyCredential(credential?: InitialCredential) {
         <div class="system-agent-inline-main">
           <small v-if="!isTerminalCustomer">{{ assistantName }} · {{ contextLabel }} · {{ latestAgentMessage }}</small>
           <small v-else>{{ assistantName }}</small>
+          <button v-if="canUsePlanSpeech" class="plan-speech-entry" type="button" :disabled="busy || executing || planSpeechBusy" @pointerdown.stop @click.stop="switchPlanSpeech(true)">切换到话术智能体</button>
           <div
             v-if="currentDomain === 'live-room' && (answerReferencePicking || answerReferencePending)"
             class="answer-reference-context"
@@ -6985,6 +7007,10 @@ async function copyCredential(credential?: InitialCredential) {
             <span v-if="!isTerminalCustomer" class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
             <h3>{{ assistantName }}</h3>
             <small v-if="isTerminalCustomer" class="terminal-agent-subtitle" lang="en">XIAOLAN LIVE COMPANION</small>
+            <div v-if="canUsePlanSpeech" class="plan-agent-mode-switch" aria-label="智能体模式">
+              <button type="button" :aria-pressed="!planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(false)">方案配置</button>
+              <button type="button" :aria-pressed="planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(true)">{{ planSpeechActive ? '话术智能体 · 互动测试' : '切换到话术智能体' }}</button>
+            </div>
           </div>
           <button class="icon-button" type="button" @click="drawerOpen = false">×</button>
         </header>
@@ -6992,7 +7018,8 @@ async function copyCredential(credential?: InitialCredential) {
         <nav v-if="showInbox" class="agent-inbox-tabs" aria-label="智能体工作面板"><button type="button" :class="{active:drawerTab==='chat'}" @click="drawerTab='chat'">对话</button><button type="button" :class="{active:drawerTab==='inbox'}" @click="drawerTab='inbox';inboxRequest=''">我的待办<TodoBadge to="/work/inbox"/></button></nav>
         <WorkInboxPanel v-if="showInbox && drawerTab==='inbox'" :request="inboxRequest" compact />
         <div v-show="!showInbox || drawerTab==='chat'" class="system-agent-chat-shell">
-        <section ref="chatEl" class="system-agent-chat" @scroll="handleChatScroll" @wheel.stop>
+        <PlanSpeechAgentPanel v-if="canUsePlanSpeech && planSpeechActive" :room-id="liveStrategyRoomId" :plan-id="liveStrategyPlanId" @busy="planSpeechBusy = $event" />
+        <section v-else ref="chatEl" class="system-agent-chat" @scroll="handleChatScroll" @wheel.stop>
           <div v-if="!isTerminalCustomer && visibleMessages.length === 0" class="system-agent-context-empty">
             <strong>{{ contextLabel }}</strong>
             <p>{{ contextDescription }}</p>
@@ -7526,7 +7553,7 @@ async function copyCredential(credential?: InitialCredential) {
           </article>
         </section>
         <button
-          v-if="showChatJumpToBottom"
+          v-if="showChatJumpToBottom && !planSpeechActive"
           class="system-agent-jump-bottom"
           type="button"
           title="快速到底"
@@ -7535,7 +7562,7 @@ async function copyCredential(credential?: InitialCredential) {
         >⌄</button>
         </div>
 
-        <footer>
+        <footer v-if="!canUsePlanSpeech || !planSpeechActive">
           <div
             v-if="currentDomain === 'live-room' && answerReferencePending"
             class="answer-reference-context drawer-answer-reference-context"
@@ -7676,6 +7703,7 @@ async function copyCredential(credential?: InitialCredential) {
 .system-agent-drawer :deep(.work-inbox-panel.compact){min-height:0;max-height:none;overflow:auto}
 .system-agent-intent-options{display:grid;gap:8px;width:100%}.system-agent-intent-options>button{display:grid!important;grid-template-columns:1fr!important;justify-items:start!important;gap:3px!important;width:100%!important;min-height:54px!important;padding:10px 12px!important;border:1px solid rgba(86,103,207,.20)!important;border-radius:10px!important;background:linear-gradient(135deg,#fbfcff,#f4f6ff)!important;color:#34415d!important;text-align:left!important;cursor:pointer!important;box-shadow:0 3px 10px rgba(67,83,163,.05)!important}.system-agent-intent-options>button:hover{border-color:rgba(86,103,207,.48)!important;background:#eef1ff!important;box-shadow:0 6px 16px rgba(67,83,163,.10)!important}.system-agent-intent-options>button:disabled{cursor:default!important;opacity:.55}.system-agent-intent-options strong{font-size:13px;font-weight:900;color:#4356c9}.system-agent-intent-options small{font-size:11px;line-height:1.4;color:#7f8aa2}
 .system-agent-chat-shell{position:relative;min-height:0;height:100%;overflow:hidden}
+.plan-agent-mode-switch{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.plan-agent-mode-switch button,.plan-speech-entry{border:1px solid #d7def8;border-radius:10px;padding:9px 12px;background:#fff;color:#5663c5;font:inherit;font-size:14px;font-weight:700;cursor:pointer}.plan-agent-mode-switch button[aria-pressed=true]{background:#625bda;color:#fff;border-color:#625bda}.plan-agent-mode-switch button:disabled,.plan-speech-entry:disabled{opacity:.55;cursor:not-allowed}.plan-speech-entry{align-self:flex-start;margin:6px 0}.plan-agent-mode-switch button:focus-visible,.plan-speech-entry:focus-visible{outline:2px solid #788cf0;outline-offset:2px}
 .system-agent-chat-shell>.system-agent-chat{height:100%;min-height:0;box-sizing:border-box;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior-y:contain;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:rgba(102,119,194,.58) rgba(226,233,248,.72)}
 .system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar{width:10px}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-track{background:rgba(226,233,248,.72);border-radius:999px}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-thumb{border:2px solid rgba(226,233,248,.72);border-radius:999px;background:rgba(102,119,194,.58)}.system-agent-chat-shell>.system-agent-chat::-webkit-scrollbar-thumb:hover{background:rgba(81,99,184,.78)}
 .system-agent-jump-bottom{position:absolute;right:22px;bottom:16px;z-index:12;display:grid;width:42px;height:42px;place-items:center;padding:0;border:1px solid rgba(88,105,202,.28);border-radius:50%;background:rgba(255,255,255,.96);color:#5667cb;box-shadow:0 8px 24px rgba(54,71,145,.18);font:inherit;font-size:27px;font-weight:900;line-height:1;cursor:pointer;backdrop-filter:blur(10px);transition:transform .16s ease,box-shadow .16s ease,background .16s ease}.system-agent-jump-bottom:hover{transform:translateY(-2px);background:#fff;box-shadow:0 11px 28px rgba(54,71,145,.25)}
