@@ -16,6 +16,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentguard"
+	"livecompanion/management/internal/contentpools"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
@@ -275,6 +276,15 @@ func (s *Server) loadDerivedInput(ctx context.Context, tenant, plan int64, p0, p
 	}
 	benefits = applyContentBenefitScopes(benefits, links, scopes)
 	text, origins := renderAnchorStyleWorkbenchFactsWithOrigins(planData, facts, benefits, links)
+	corrections, correctionErr := s.store.ListContentCorrections(ctx, tenant, plan)
+	if correctionErr != nil {
+		return nil, correctionErr
+	}
+	correctionSource := contentpools.Sources{Corrections: corrections}
+	for _, link := range links {
+		correctionSource.Products = append(correctionSource.Products, contentpools.Product{ID: link.ID, Link: link.LinkKey})
+	}
+	text += contentpools.RenderCorrections(correctionSource)
 	d, err := buildDerivedInput(text, wheel.EffectiveWheelJSON(), p0, p1, p2)
 	if err == nil {
 		attachRiskSourceOrigins(d, origins)

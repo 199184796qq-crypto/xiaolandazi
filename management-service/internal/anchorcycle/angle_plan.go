@@ -72,13 +72,20 @@ func (s *State) AnglePlanKey() string {
 	task := s.Task()
 	// Scheduling IDs, paragraph length and session mode do not change the content
 	// question. Keep one pool for the same angle in all rooms using this plan.
-	return ProductDigest(struct {
+	base := ProductDigest(struct {
 		Point, Angle, Concern, Audience string
 		Products                        []string
 		Facts, Model, Mother, P0, Scope string
 	}{task.SellingPoint, task.Angle, task.PainPoint, task.TargetAudience,
 		s.HookProducts(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA,
 		s.P0PolicyMD, s.Config.ComplianceScope})
+	if task.FactScope != nil && len(task.FactScope.Corrections) > 0 {
+		return ProductDigest(struct {
+			Base        string
+			Corrections any
+		}{base, task.FactScope.Corrections})
+	}
+	return base
 }
 func (s *State) CurrentAnglePlan() *AnglePlan {
 	if s.AnglePlanMotherSHA == "" {

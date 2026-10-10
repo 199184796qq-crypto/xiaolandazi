@@ -146,6 +146,9 @@ func main() {
 	if err := store.MigrateContentPools(ctx); err != nil {
 		log.Fatalf("migrate product/common content pools: %v", err)
 	}
+	if err := store.MigrateContentCorrections(ctx); err != nil {
+		log.Fatal(err)
+	}
 	if err := store.MigrateLiveContentRefresh(ctx); err != nil {
 		log.Fatalf("migrate live content refresh: %v", err)
 	}

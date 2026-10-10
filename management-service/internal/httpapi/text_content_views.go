@@ -41,7 +41,7 @@ func generationP0View(md, scope string) any {
 	}
 	rules := []map[string]any{}
 	for _, r := range p.Data.Rules {
-		if r.Scope != "all" && r.Scope != scope {
+		if scope != "*" && r.Scope != "all" && r.Scope != scope {
 			continue
 		}
 		rules = append(rules, map[string]any{"类别": r.Category, "适用范围": r.Scope, "适用条件": r.Condition, "处理方式": r.ReviewMode, "相关表述": r.Terms, "匹配表达": r.Patterns, "排除表述": r.ExcludedTerms, "所需依据": r.RequiredBasis, "规则说明": r.Note})

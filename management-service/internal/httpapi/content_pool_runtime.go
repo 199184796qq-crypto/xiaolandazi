@@ -49,7 +49,11 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 			boundFacts[f.ID] = anchorcycle.HookFact{ID: f.ID, Data: f.Text, Products: factLinks, Benefits: benefits}
 		}
 		for _, t := range p.Tasks {
+			if t.Disabled {
+				continue
+			}
 			scope := &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{}}
+			scope.Corrections = contentpools.CorrectionView(set.Sources, p.Products)
 			// Identifying the item is necessary even for a narrowly scoped service
 			// or storage task. This is a name only, never the entire product card.
 			for _, productID := range p.Products {

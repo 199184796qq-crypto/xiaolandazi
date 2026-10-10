@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"livecompanion/management/internal/contentpools"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -63,7 +64,18 @@ func (s *planSpeechTestStore) CurrentInteractionFacts(ctx context.Context, tenan
 		return "", err
 	}
 	benefits = applyContentBenefitScopes(benefits, links, scopes)
-	return renderAnchorStyleWorkbenchFacts(plan, facts, benefits, links), nil
+	source, err := (&Server{store: s.Store}).captureContentSources(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	set, err := s.Store.LatestContentPoolSet(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	if set.ID > 0 && set.SourceSHA == source.SHA() {
+		return set.SafeFacts, nil
+	}
+	return renderAnchorStyleWorkbenchFacts(plan, facts, benefits, links) + contentpools.RenderCorrections(source), nil
 }
 
 type planAnswerAdoptionInput struct {

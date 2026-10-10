@@ -25,10 +25,11 @@ type SourceRow struct {
 	Fields   map[string]string `json:"fields"`
 }
 type Sources struct {
-	Revision   int64       `json:"revision"`
-	ObservedAt int64       `json:"observed_at,omitempty"`
-	Products   []Product   `json:"products"`
-	Rows       []SourceRow `json:"rows"`
+	Corrections []Correction `json:"corrections,omitempty"`
+	Revision    int64        `json:"revision"`
+	ObservedAt  int64        `json:"observed_at,omitempty"`
+	Products    []Product    `json:"products"`
+	Rows        []SourceRow  `json:"rows"`
 }
 
 func Digest(v any) string     { b, _ := json.Marshal(v); return fmt.Sprintf("%x", sha256.Sum256(b)) }
@@ -45,6 +46,12 @@ type Change struct {
 
 // Net changes are measured against the saved snapshot, not the previous poll.
 func Changes(before, after Sources) []Change {
+	for _, c := range before.Corrections {
+		before.Rows = append(append([]SourceRow{}, before.Rows...), correctionSourceRow(c))
+	}
+	for _, c := range after.Corrections {
+		after.Rows = append(append([]SourceRow{}, after.Rows...), correctionSourceRow(c))
+	}
 	a, b := map[string]SourceRow{}, map[string]SourceRow{}
 	for _, r := range before.Rows {
 		a[r.ID] = r
@@ -114,6 +121,7 @@ type Fact struct {
 	Private  bool     `json:"private,omitempty"`
 }
 type Task struct {
+	Disabled       bool     `json:"disabled,omitempty"`
 	ID             string   `json:"id"`
 	Point          string   `json:"selling_point"`
 	Angle          string   `json:"angle"`

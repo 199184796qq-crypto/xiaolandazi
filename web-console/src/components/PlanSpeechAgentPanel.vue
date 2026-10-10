@@ -4,6 +4,7 @@ import { adoptLiveAgentPlanFacts, adoptPlanTestAnswer, request } from '../api'
 import type { AgentDecisionSimulationResult, Room } from '../types'
 import { session } from '../session'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
+import NaturalContentCorrection from './NaturalContentCorrection.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 
 const props = defineProps<{ roomId: number; planId: number }>()
@@ -95,6 +96,7 @@ async function adopt(answer: Answer, kind: 'fact' | 'strategy') {
           <p v-if="answer.outlineError" class="outline-unavailable" role="status">{{ answer.outlineError }}</p>
         </section>
         <p class="test-reply"><b>智能体回答：</b>{{ answer.reply }}</p>
+        <NaturalContentCorrection :plan-id="planId" :room-id="roomId" :selected-text="answer.reply" :disabled="!!pending" @busy="emit('busy',$event)" @saved="emit('saved')" />
         <div class="answer-actions">
           <button type="button" :disabled="!!pending || !!answer.savedAs" @click="answer.editing = !answer.editing">纠正回答</button>
           <button type="button" :disabled="!!pending || !!answer.savedAs" @click="adopt(answer, 'fact')">{{ answer.savedAs === 'fact' ? '事实已采纳' : '采纳到事实依据' }}</button>

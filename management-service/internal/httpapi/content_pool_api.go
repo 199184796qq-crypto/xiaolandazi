@@ -12,6 +12,7 @@ import (
 )
 
 type contentPoolStatus struct {
+	Corrections       []contentpools.Correction    `json:"corrections,omitempty"`
 	State             string                       `json:"state"`
 	Changes           []contentpools.Change        `json:"changes"`
 	Job               appdb.PoolJob                `json:"job"`
@@ -39,6 +40,7 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 		return out, err
 	}
 	out.Products = source.Products
+	out.Corrections = source.Corrections
 	baseline, err := s.store.ObserveContentSources(ctx, tenant, plan, source)
 	if err != nil {
 		return out, err

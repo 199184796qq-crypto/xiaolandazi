@@ -71,6 +71,9 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	contentFacts := generationFactView(facts)
 	task := state.Task()
 	input := map[string]any{"卖点": task.SellingPoint, "角度": task.Angle, "观众顾虑": task.PainPoint, "本次商品链接": state.HookProducts(), "当前有效事实": contentFacts, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "方向数量上限": 4}
+	if task.FactScope != nil {
+		input["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+	}
 	if previous != nil {
 		old := []string{}
 		// Long-lived assets keep every generation. Only the latest directions

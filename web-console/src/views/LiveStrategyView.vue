@@ -6064,7 +6064,7 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>

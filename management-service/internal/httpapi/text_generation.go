@@ -118,7 +118,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if task.FactScope != nil || hookMode || state.CurrentAnglePlan() != nil {
 		facts = generationFactView(state.HookFacts())
 	}
-	fixed, _ := json.Marshal(map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
+	material := map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	if task.FactScope != nil {
+		material["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+	}
+	fixed, _ := json.Marshal(material)
 	recent := []string{}
 	for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
 		recent = append(recent, cycleVoiceText(part.Selected))
