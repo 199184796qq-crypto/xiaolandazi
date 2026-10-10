@@ -99,6 +99,9 @@ func cycleExpressionMethod(state *anchorcycle.State) string {
 	return methods[(state.TotalAccepted()+state.CycleNumber+len(state.Attempts))%len(methods)]
 }
 func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, error) {
+	if state.Task().ProductMode == "lecture" {
+		return renderLectureTaskMessages(state)
+	}
 	foundation, err := interactionpolicy.Read("mainline-text-task.md")
 	if err != nil {
 		return nil, err
@@ -125,6 +128,9 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	fixed, _ := json.Marshal(material)
 	recent := []string{}
 	for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
+		if part.Task.ProductMode == "lecture" {
+			continue
+		}
 		recent = append(recent, cycleVoiceText(part.Selected))
 	}
 	feedback := state.PendingFeedback
@@ -157,7 +163,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		// last spoken paragraph into the next paragraph's reference example.
 		memory := []map[string]any{}
 		for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
-			if task.FactScope != nil && part.Task.Key != state.Task().Key {
+			if part.Task.ProductMode == "lecture" || (task.FactScope != nil && part.Task.Key != state.Task().Key) {
 				continue
 			}
 			if h := part.Selected.AngleHook; h != nil {
@@ -202,6 +208,16 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		packet["本次明确违规修正"] = repair
 	}
 	dynamic, _ := json.Marshal(packet)
+	if len(state.Accepted) > 0 && state.Accepted[len(state.Accepted)-1].Task.ProductMode == "lecture" && !state.Accepted[len(state.Accepted)-1].LectureSkipped {
+		last := state.Accepted[len(state.Accepted)-1]
+		packet["刚结束的讲解"] = map[string]any{"主题": last.Task.SellingPoint, "结尾": tailText(cycleVoiceText(last.Selected), 80)}
+		dynamic, _ = json.Marshal(packet)
+		transition, _, e := loadReplaceablePromptAsset("ANCHOR_LECTURE_RETURN_PROMPT_PATH", "configs/prompts/anchor-style/lecture-mainline-transition.md", "讲解回归母版")
+		if e != nil {
+			return nil, e
+		}
+		foundation = append(foundation, []byte("\n\n"+transition)...)
+	}
 	return []agentgateway.Message{{Role: "system", Content: string(foundation) + "\n\n" + string(fixed)}, {Role: "user", Content: string(dynamic)}}, nil
 }
 func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State) (agentgateway.Response, []agentgateway.Message, error) {

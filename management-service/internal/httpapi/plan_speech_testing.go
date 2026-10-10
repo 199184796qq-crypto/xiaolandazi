@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 )
 
@@ -82,6 +83,17 @@ type planAnswerAdoptionInput struct {
 	PlanID   int64  `json:"plan_id"`
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
+}
+
+func (s *planSpeechTestStore) CurrentInteractionLectureFacts(ctx context.Context, tenant, room, plan int64, question string) (string, error) {
+	if _, err := s.GetLiveAgentPlanForRoom(ctx, tenant, room); err != nil || plan != s.plan.ID {
+		return "", fmt.Errorf("方案测试资料范围不一致")
+	}
+	lib, err := s.LectureQuestionLibrary(ctx, tenant, plan)
+	if err != nil {
+		return "", err
+	}
+	return lecturetask.QuestionEvidence(lib, question), nil
 }
 
 func validatePlanAnswerAdoption(input planAnswerAdoptionInput) error {

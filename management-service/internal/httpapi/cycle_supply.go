@@ -290,6 +290,18 @@ func (p *cycleSupply) textLoop() {
 				return
 			}
 		}
+		if state.Lectures != nil && state.Lectures.ReservedCandidate != "" {
+			p.mu.Lock()
+			id := state.Lectures.ReservedCandidate
+			pendingVoice := !p.delivered[id] && !p.skippedVoices[id]
+			p.mu.Unlock()
+			if pendingVoice {
+				if supplyWait(p.ctx, 250*time.Millisecond) != nil {
+					return
+				}
+				continue
+			}
+		}
 		before := len(state.Accepted)
 		started := time.Now()
 		p.mu.Lock()
@@ -354,6 +366,26 @@ func (p *cycleSupply) skipVoice(state *anchorcycle.State, id, reason string) {
 	log.Printf("mainline segment skipped tenant=%d room=%d candidate=%s reason=%s", state.TenantID, state.RoomID, id, reason)
 	p.s.queueGenerationSkip(state, "voice", reason, id)
 }
+
+func (p *cycleSupply) applyLectureSkips(state *anchorcycle.State) bool {
+	if state.Lectures == nil {
+		return false
+	}
+	p.mu.Lock()
+	ids := []string{}
+	for id := range p.skippedVoices {
+		ids = append(ids, id)
+	}
+	p.mu.Unlock()
+	changed := false
+	for _, id := range ids {
+		if track, ok := state.Lectures.Tracks[id]; ok && track.Topic > 0 {
+			state.DropLectureTrack(id)
+			changed = true
+		}
+	}
+	return changed
+}
 func (p *cycleSupply) voiceLoop() {
 	for p.ctx.Err() == nil {
 		if err := p.wait(p.ctx); err != nil {
@@ -414,6 +446,10 @@ func (p *cycleSupply) voiceLoop() {
 			return
 		}
 		p.reportStartup("voice_ready")
+		if next.Task.ProductMode == "lecture" && voice.Bundle.AudioDurationMS > 60000 {
+			p.skipVoice(state, next.Selected.ID, "可选讲解超过60秒，保留素材，继续讲品")
+			continue
+		}
 		next.Voice = voice
 		p.mu.Lock()
 		started := p.started[next.Selected.ID]

@@ -61,6 +61,8 @@ type ProgramRefreshInput struct {
 }
 
 type ProgramRefreshSnapshot struct {
+	MainlinePlayedMS         int64                              `json:"mainline_played_ms,omitempty"`
+	PlaybackReceipts         []anchorcycle.PlaybackReceipt      `json:"playback_receipts,omitempty"`
 	MainlinePlaybackReceipts []anchorcycle.AnglePlaybackReceipt `json:"mainline_playback_receipts,omitempty"`
 	BufferedMainlineMS       int64                              `json:"buffered_mainline_ms"`
 	TrackIndex               int                                `json:"track_index"`

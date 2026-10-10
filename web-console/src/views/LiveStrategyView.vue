@@ -34,6 +34,7 @@ import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
 import SpeechMinerWorkbench from '../components/SpeechMinerWorkbench.vue'
+import LectureTasksPanel from '../components/LectureTasksPanel.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
 import type { PreviewStreamEvent } from '../agent/previewStream'
@@ -1664,6 +1665,15 @@ const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
 const latestSavedVersion = computed(() => latestSavedPlanVersion(currentRoomPlanId.value || 0, [
   fullShowSavedVersion.value, fullShowWorkspaceBaseVersion.value, ...fullShowVersionHistory.value,
 ]))
+const lectureSavedFingerprint = computed(() => String((latestSavedVersion.value?.generation_context?.lecture_tasks as { fingerprint?: string } | undefined)?.fingerprint || ''))
+function onLectureTasksUpdated(event: Event) {
+  const detail = (event as CustomEvent<{ plan_id: number; room_id: number; facts_changed?: boolean }>).detail
+  if (detail?.plan_id !== currentRoomPlanId.value || detail.room_id !== activeRoomId.value) return
+  const autoSave = !!fullShowSavedVersion.value && !fullShowSaveBlockedReason.value
+  fullShowSavedVersion.value = null
+  if (detail.facts_changed) void refreshSpeechMinerWorkspace()
+  if (autoSave) void saveFullShowVersion()
+}
 const fullShowWorkspaceSource = ref<'draft' | 'published' | ''>('')
 const fullShowWorkspaceChecks = ref<{ code: string; message: string }[]>([])
 const fullShowWorkspaceInherited = ref(false)
@@ -5740,6 +5750,7 @@ function notifySystemAgentContext() {
     new CustomEvent('system-agent-live-strategy-context', {
       detail: {
         room_id: activeRoomId.value || 0,
+        tenant_id: activeRoom.value?.tenant_id || 0,
         mode: activeMode.value,
         module_label: activeModeLabel.value,
         plan_id: currentRoomPlanId.value || 0,
@@ -5886,6 +5897,7 @@ const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentR
 
 onMounted(async () => {
   window.addEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
+  window.addEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
   await Promise.all([loadFactCategories(), loadAgentSettings()])
@@ -5902,6 +5914,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
+  window.removeEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   contentModeDisposed = true
   contentModeLoadNo++
   if (contentModeRefreshTimer !== undefined) window.clearInterval(contentModeRefreshTimer)
@@ -6962,6 +6975,7 @@ onBeforeUnmount(() => {
             @updated="refreshSpeechMinerWorkspace"
             @pool-updated="contentPools.acceptEdited"
           />
+          <LectureTasksPanel :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">

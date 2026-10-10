@@ -27,6 +27,10 @@ func (s *State) SkipGeneration(stage, reason string) {
 	s.P0RewritesUsed = 0
 	s.PendingFeedback = ""
 	s.FeedbackPending = false
+	if task.ProductMode == "lecture" {
+		s.ReleaseLecture(true)
+		return
+	}
 	s.Cursor++
 	if s.Phase == "ended" || s.Phase == "closing" {
 		s.Phase = "opening"

@@ -1276,6 +1276,9 @@ func renderAnchorStyleWorkbenchFactsWithOrigins(plan model.LiveAgentPlan, facts 
 		return count
 	}
 	for _, fact := range facts {
+		if fact.SourceType == "story_lecture" {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(fact.Status), "active") || strings.TrimSpace(fact.Value) == "" {
 			continue
 		}

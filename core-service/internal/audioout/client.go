@@ -164,6 +164,8 @@ type MainlinePlaybackReceipt struct {
 }
 
 type RoomProgramSnapshot struct {
+	MainlinePlayedMS         int64                     `json:"mainline_played_ms,omitempty"`
+	PlaybackReceipts         []MainlineCoverageReceipt `json:"playback_receipts,omitempty"`
 	MainlinePlaybackReceipts []MainlinePlaybackReceipt `json:"mainline_playback_receipts,omitempty"`
 	FutureWindow             []ProgramWindowTrack      `json:"future_window,omitempty"`
 	BufferedMainlineMS       int64                     `json:"buffered_mainline_ms"`
