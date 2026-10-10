@@ -37,6 +37,10 @@ type programTrack struct {
 }
 
 type programState struct {
+	PlaybackCoverage  map[string]playbackCoverage
+	PlaybackReceipts  []audioout.MainlinePlaybackReceipt
+	PlaybackSequence  uint64
+	MainlinePlayedMS  int64
 	InteractionReturn *interactionReturn
 	Sequential        bool
 	WaitingForContent bool
@@ -704,6 +708,9 @@ func (c *Client) advanceMainline(program *programState, taskID string) {
 		return
 	}
 	program.Transitioning = true
+	if program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
+		finishPlaybackReceipt(program, program.Tracks[program.TrackIndex].ID)
+	}
 	expireProgramRefreshLocked(program, c.now().UTC())
 	nextSequence := program.Sequence + 1
 	currentTrack := program.TrackIndex
@@ -1181,6 +1188,11 @@ func (c *Client) resumeAfterInteraction(program *programState, interactionTaskID
 			c.mu.Unlock()
 			return
 		}
+		for i := program.TrackIndex; i < state.resumeTrack && i < len(program.Tracks); i++ {
+			if i >= 0 {
+				finishPlaybackReceipt(program, program.Tracks[i].ID)
+			}
+		}
 		program.TrackIndex = state.resumeTrack
 		resumeMS = state.resumeMS
 		program.InteractionReturn = nil
@@ -1344,6 +1356,7 @@ func prepareProgramResumeLocked(program *programState, resumeMS int) int {
 	}
 	durationMS := program.Tracks[program.TrackIndex].DurationMS
 	if durationMS > 0 && resumeMS >= durationMS {
+		finishPlaybackReceipt(program, program.Tracks[program.TrackIndex].ID)
 		expireProgramRefreshLocked(program, time.Now().UTC())
 		if refresh := program.PendingRefresh; refresh != nil {
 			if refresh.ProtectedNextIndex >= 0 {
@@ -1398,6 +1411,8 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		safePoints = append([]audioout.ProgramSafePoint(nil), track.SafePoints...)
 	}
 	snapshot := audioout.RoomProgramSnapshot{
+		MainlinePlayedMS:  program.MainlinePlayedMS,
+		PlaybackReceipts:  append([]audioout.MainlinePlaybackReceipt(nil), program.PlaybackReceipts...),
 		Sequential:        program.Sequential,
 		WaitingForContent: program.WaitingForContent,
 		ProgramID:         program.ID,
@@ -1631,6 +1646,7 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 			)
 			if publishErr == nil {
 				c.recordActualStart(program, taskID)
+				c.recordMainlinePCM(program, taskID, track.ID, cursorMS, cursorMS+roomaudio.FrameDurationMS, track.DurationMS)
 			}
 			if publishErr == nil && resumePhase && !resumeCompleted {
 				resumeCompleted = true

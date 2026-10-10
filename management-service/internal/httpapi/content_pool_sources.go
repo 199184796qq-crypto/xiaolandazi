@@ -102,6 +102,9 @@ func (s *Server) captureContentSources(ctx context.Context, tenant, plan int64) 
 			}
 		}
 		for _, f := range facts {
+			if f.SourceType == "story_lecture" {
+				continue
+			}
 			if f.Status != "active" {
 				continue
 			}

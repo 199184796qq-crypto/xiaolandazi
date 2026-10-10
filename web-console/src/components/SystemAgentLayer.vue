@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import WorkInboxPanel from './WorkInboxPanel.vue'
 import PlanSpeechAgentPanel from './PlanSpeechAgentPanel.vue'
+import LectureTasksPanel from './LectureTasksPanel.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useFloatingAgentDrawer, type DrawerResizeEdge } from '../useFloatingAgentDrawer'
@@ -732,7 +733,9 @@ const liveStrategyMode = ref<LiveStrategyMode>(
 )
 const liveStrategyPlanId = ref(Number(window.localStorage.getItem('system-agent-live-plan-id') || 0))
 const liveStrategyRoomId = ref(Number(window.localStorage.getItem('system-agent-live-room-id') || 0))
+const liveStrategyTenantId = ref(0)
 const planSpeechActive = ref(false)
+const planLectureActive = ref(false)
 const planSpeechBusy = ref(false)
 const liveStrategyModuleLabel = ref(window.localStorage.getItem('system-agent-live-module-label') || '')
 const isInternalAgentProfile = computed(() =>
@@ -753,16 +756,26 @@ const currentDomain = computed<AgentDomain>(() => {
   return 'system'
 })
 const canUsePlanSpeech = computed(() => currentDomain.value === 'live-strategy' && liveStrategyRoomId.value > 0 && liveStrategyPlanId.value > 0)
-watch(() => [currentDomain.value, liveStrategyRoomId.value, liveStrategyPlanId.value, actor.value?.user_id, actor.value?.tenant_id], () => {
+watch(() => [currentDomain.value, liveStrategyRoomId.value, liveStrategyPlanId.value, liveStrategyTenantId.value, actor.value?.user_id, actor.value?.tenant_id], () => {
   planSpeechActive.value = false
+  planLectureActive.value = false
   planSpeechBusy.value = false
 })
 function switchPlanSpeech(active: boolean) {
   if (!canUsePlanSpeech.value || busy.value || executing.value || planSpeechBusy.value) return
   planSpeechActive.value = active
+  planLectureActive.value = false
   drawerOpen.value = true
   drawerTab.value = 'chat'
   if (active) expanded.value = false
+}
+function switchPlanLecture() {
+  if (!canUsePlanSpeech.value || busy.value || executing.value || planSpeechBusy.value) return
+  planSpeechActive.value = false
+  planLectureActive.value = true
+  drawerOpen.value = true
+  drawerTab.value = 'chat'
+  expanded.value = false
 }
 
 const internalAgentName = ref('小蓝工作搭子')
@@ -3691,11 +3704,13 @@ function handleLiveStrategyContextEvent(event: Event) {
   const detail = (
     event as CustomEvent<{
       room_id?: number
+      tenant_id?: number
       mode?: string
       module_label?: string
       plan_id?: number
     }>
   ).detail
+  liveStrategyTenantId.value = Number(detail?.tenant_id || 0)
   if (detail?.room_id && detail.room_id > 0) {
     liveStrategyRoomId.value = detail.room_id
     window.localStorage.setItem('system-agent-live-room-id', String(detail.room_id))
@@ -7035,8 +7050,9 @@ async function copyCredential(credential?: InitialCredential) {
             <h3>{{ assistantName }}</h3>
             <small v-if="isTerminalCustomer" class="terminal-agent-subtitle" lang="en">XIAOLAN LIVE COMPANION</small>
             <div v-if="canUsePlanSpeech" class="plan-agent-mode-switch" aria-label="智能体模式">
-              <button type="button" :aria-pressed="!planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(false)">方案配置</button>
+              <button type="button" :aria-pressed="!planSpeechActive && !planLectureActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(false)">方案配置</button>
               <button type="button" :aria-pressed="planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(true)">{{ planSpeechActive ? '话术智能体 · 互动测试' : '切换到话术智能体' }}</button>
+              <button type="button" :aria-pressed="planLectureActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanLecture">任务讲解</button>
             </div>
           </div>
           <div class="agent-drawer-window-controls">
@@ -7051,6 +7067,7 @@ async function copyCredential(credential?: InitialCredential) {
         <WorkInboxPanel v-if="showInbox && drawerTab==='inbox'" :request="inboxRequest" compact />
         <div v-show="!showInbox || drawerTab==='chat'" class="system-agent-chat-shell">
         <PlanSpeechAgentPanel v-if="canUsePlanSpeech && planSpeechActive" :room-id="liveStrategyRoomId" :plan-id="liveStrategyPlanId" @busy="planSpeechBusy = $event" />
+        <LectureTasksPanel v-else-if="canUsePlanSpeech && planLectureActive" :plan-id="liveStrategyPlanId" :room-id="liveStrategyRoomId" :tenant-id="liveStrategyTenantId || undefined" compact @busy="planSpeechBusy = $event" />
         <section v-else ref="chatEl" class="system-agent-chat" @scroll="handleChatScroll" @wheel.stop>
           <div v-if="!isTerminalCustomer && visibleMessages.length === 0" class="system-agent-context-empty">
             <strong>{{ contextLabel }}</strong>
@@ -7585,7 +7602,7 @@ async function copyCredential(credential?: InitialCredential) {
           </article>
         </section>
         <button
-          v-if="showChatJumpToBottom && !planSpeechActive"
+          v-if="showChatJumpToBottom && !planSpeechActive && !planLectureActive"
           class="system-agent-jump-bottom"
           type="button"
           title="快速到底"
@@ -7594,7 +7611,7 @@ async function copyCredential(credential?: InitialCredential) {
         >⌄</button>
         </div>
 
-        <footer v-if="!canUsePlanSpeech || !planSpeechActive">
+        <footer v-if="!canUsePlanSpeech || (!planSpeechActive && !planLectureActive)">
           <div
             v-if="currentDomain === 'live-room' && answerReferencePending"
             class="answer-reference-context drawer-answer-reference-context"

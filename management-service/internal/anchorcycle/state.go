@@ -28,6 +28,10 @@ func ID() string {
 }
 
 type Task struct {
+	LectureTopic     int64  `json:"lecture_topic,omitempty"`
+	LectureAngle     int    `json:"lecture_angle,omitempty"`
+	LecturePurpose   string `json:"lecture_purpose,omitempty"`
+	LectureFacts     string `json:"lecture_facts,omitempty"`
 	ID               string `json:"id,omitempty"`
 	FocusLink        string `json:"focus_link,omitempty"`
 	AllowedLinksJSON string `json:"allowed_links_json,omitempty"`
@@ -90,6 +94,7 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
+	LectureAudit            *LectureAudit                         `json:"lecture_audit,omitempty"`
 	ExactDuplicateRemovals  int                                   `json:"exact_duplicate_removals,omitempty"`
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
@@ -122,6 +127,7 @@ type Candidate struct {
 	P0RewriteNumber         int                                   `json:"p0_rewrite_number,omitempty"`
 }
 type Segment struct {
+	LectureSkipped bool                           `json:"lecture_skipped,omitempty"`
 	Phase          string                         `json:"phase"`
 	CycleNumber    int                            `json:"cycle_number,omitempty"`
 	OpeningVersion string                         `json:"opening_version,omitempty"`
@@ -141,6 +147,7 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	Lectures                  *LectureRuntime                `json:"lectures,omitempty"`
 	AnglePlans                map[string]*AnglePlan          `json:"angle_plans,omitempty"`
 	AnglePlanMotherSHA        string                         `json:"angle_plan_mother_sha,omitempty"`
 	TextModel                 *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
@@ -341,6 +348,9 @@ func Arrange(tasks []Task, gap int) ([]Task, error) {
 	return queue, nil
 }
 func (s *State) Task() Task {
+	if s.Lectures != nil && s.Lectures.Active != nil {
+		return *s.Lectures.Active
+	}
 	if s.PriceHook != nil {
 		return s.focusTask(Task{SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
 	}
@@ -499,6 +509,10 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.rejectP0Candidate(c)
 		return false, nil
 	}
+	if s.Task().ProductMode == "lecture" && !s.LectureCandidateApproved(c) {
+		s.SkipGeneration("lecture_scope_review", "讲解正文事实复核未通过")
+		return false, nil
+	}
 	s.P0PendingRepair = nil
 	// Non-compliance writing requirements are feedback, never fatal approval gates.
 	c.PriceCheck = InspectPrice(c.Text, s.Task())
@@ -533,9 +547,10 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		selected = c
 	}
 	task := s.Task()
+	wasLecture := task.ProductMode == "lecture"
 	wasHook := s.PriceHook != nil
 	s.PriceHook = nil
-	if selected.PriceCheck.Hook != "" {
+	if selected.PriceCheck.Hook != "" && !wasLecture {
 		s.PriceHook = &PriceHook{Task: task, Promise: selected.PriceCheck.Hook, SourceText: excerpt(selected.Text, 400), CreatedIndex: s.TotalAccepted() + 1, DueIndex: s.TotalAccepted() + 2}
 	}
 	edges := anchorstylescore.AnalyzeRolling([]string{selected.Text}, 1, b, s.StyleMD).Edges
@@ -548,14 +563,27 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		openingVersion = s.OpeningVersion()
 	}
 	s.Accepted = append(s.Accepted, Segment{Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
-	s.recordProductAdoption(task, spokenCandidate(selected))
+	s.RegisterLectureTrack(selected, task, s.Phase)
+	if !wasLecture {
+		s.recordProductAdoption(task, spokenCandidate(selected))
+	}
+	if wasLecture {
+		s.Lectures.Active = nil
+		s.Phase = "opening"
+		s.Attempts = nil
+		s.P0RewritesUsed = 0
+		s.P0ConsecutiveSkips = 0
+		s.PendingFeedback = ""
+		s.FeedbackPending = false
+		return true, nil
+	}
 	if s.Phase == "opening" && s.PendingOpeningHook != nil {
 		s.Accepted[len(s.Accepted)-1].OpeningHook = s.PendingOpeningHook
 		s.RecentOpeningHookIDs = append(s.RecentOpeningHookIDs, s.PendingOpeningHook.ID)
 		s.RecentOpeningHookIDs = s.RecentOpeningHookIDs[max(0, len(s.RecentOpeningHookIDs)-s.PendingOpeningHook.RecentCount):]
 		s.PendingOpeningHook = nil
 	}
-	if s.Phase != "closing" && !wasHook {
+	if s.Phase != "closing" && !wasHook && !wasLecture {
 		u := s.Used[task.Key]
 		u.Count++
 		u.LastIndex = s.TotalAccepted()

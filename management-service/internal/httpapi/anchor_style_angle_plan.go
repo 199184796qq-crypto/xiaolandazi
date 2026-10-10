@@ -13,6 +13,9 @@ import (
 func cycleAnglePlanEnabled() bool { return os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") != "0" }
 
 func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.State, profile agentgateway.SpeechModel) {
+	if state.Task().ProductMode == "lecture" {
+		return
+	}
 	if !cycleAnglePlanEnabled() {
 		return
 	}

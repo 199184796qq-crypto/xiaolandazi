@@ -85,6 +85,9 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 		return nil, fmt.Errorf("%s", "没有这份已采纳话术，未采纳候选不会转声音")
 	}
 	segment := &state.Accepted[index]
+	if segment.Task.ProductMode == "lecture" && (segment.Selected.LectureAudit == nil || !segment.Selected.LectureAudit.Passed || segment.Selected.LectureAudit.TextSHA != anchorcycle.ProductDigest(cycleVoiceText(segment.Selected)) || segment.Selected.LectureAudit.ScopeSHA != anchorcycle.ProductDigest(segment.Task.LectureFacts)) {
+		return nil, fmt.Errorf("讲解事实复核回执缺失或与正文不一致")
+	}
 	if err := checkCycleVoiceBinding(state, *segment); err != nil {
 		return nil, fmt.Errorf("%s", err.Error())
 	}

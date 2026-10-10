@@ -7,6 +7,7 @@ import (
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 	"log"
 	"strings"
@@ -23,6 +24,9 @@ type contentStrategyStore interface {
 
 type currentInteractionFactsStore interface {
 	CurrentInteractionFacts(context.Context, int64, int64, int64) (string, error)
+}
+type currentInteractionLectureStore interface {
+	CurrentInteractionLectureFacts(context.Context, int64, int64, int64, string) (string, error)
 }
 
 func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, options ...any) (string, error) {
@@ -41,6 +45,13 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 			facts, err := source.CurrentInteractionFacts(ctx, session.TenantID, session.RoomID, planID)
 			if err != nil {
 				return "", err
+			}
+			if stories, ok := w.store.(currentInteractionLectureStore); ok {
+				extra, e := stories.CurrentInteractionLectureFacts(ctx, session.TenantID, session.RoomID, planID, primaryQuestion(*item))
+				if e != nil {
+					return "", e
+				}
+				facts += extra
 			}
 			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
 		}
@@ -68,7 +79,17 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	if err != nil || strings.TrimSpace(asset.SafeFacts) == "" {
 		return "", fmt.Errorf("本场审核事实不可用，停止生成商品回答")
 	}
-	return w.interactionFactsGuidance(ctx, session, planID, asset.SafeFacts, item, skipStrategy)
+	facts := asset.SafeFacts
+	if item != nil {
+		if value, ok := published.GenerationContext["lecture_question_assets"]; ok {
+			lib, e := lecturetask.Decode(value)
+			if e != nil {
+				return "", e
+			}
+			facts += lecturetask.QuestionEvidence(lib, primaryQuestion(*item))
+		}
+	}
+	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
 }
 
 func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool) (string, error) {

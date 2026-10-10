@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"livecompanion/management/internal/anchorcycle"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -60,22 +61,24 @@ type ProgramRefreshInput struct {
 }
 
 type ProgramRefreshSnapshot struct {
-	BufferedMainlineMS int64  `json:"buffered_mainline_ms"`
-	TrackIndex         int    `json:"track_index"`
-	CurrentMS          int    `json:"current_ms"`
-	Sequential         bool   `json:"sequential"`
-	WaitingForContent  bool   `json:"waiting_for_content"`
-	ProgramID          string `json:"program_id"`
-	RoomID             int64  `json:"room_id"`
-	VersionID          int64  `json:"version_id"`
-	VersionNo          int64  `json:"version_no"`
-	Generation         uint64 `json:"generation"`
-	PendingGeneration  uint64 `json:"pending_generation"`
-	PendingJobID       string `json:"pending_job_id"`
-	LastAppliedJobID   string `json:"last_applied_job_id"`
-	Running            bool   `json:"running"`
-	Suspended          bool   `json:"suspended"`
-	Sequence           uint64 `json:"sequence"`
+	MainlinePlayedMS   int64                         `json:"mainline_played_ms,omitempty"`
+	PlaybackReceipts   []anchorcycle.PlaybackReceipt `json:"playback_receipts,omitempty"`
+	BufferedMainlineMS int64                         `json:"buffered_mainline_ms"`
+	TrackIndex         int                           `json:"track_index"`
+	CurrentMS          int                           `json:"current_ms"`
+	Sequential         bool                          `json:"sequential"`
+	WaitingForContent  bool                          `json:"waiting_for_content"`
+	ProgramID          string                        `json:"program_id"`
+	RoomID             int64                         `json:"room_id"`
+	VersionID          int64                         `json:"version_id"`
+	VersionNo          int64                         `json:"version_no"`
+	Generation         uint64                        `json:"generation"`
+	PendingGeneration  uint64                        `json:"pending_generation"`
+	PendingJobID       string                        `json:"pending_job_id"`
+	LastAppliedJobID   string                        `json:"last_applied_job_id"`
+	Running            bool                          `json:"running"`
+	Suspended          bool                          `json:"suspended"`
+	Sequence           uint64                        `json:"sequence"`
 }
 
 func (c *Client) RefreshRoomProgram(ctx context.Context, tenantID, roomID int64, input ProgramRefreshInput) (ProgramRefreshSnapshot, error) {
