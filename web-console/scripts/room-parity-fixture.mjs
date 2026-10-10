@@ -2,9 +2,11 @@ import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath } from 'node:url'
 
-export async function startFixture() {
+export async function startFixture({roomViewSource}={}) {
   const root = fileURLToPath(new URL('..', import.meta.url))
-  const plugin = { name: 'room-parity-fixture', configureServer(server) {
+  const plugin = { name: 'room-parity-fixture', enforce: 'pre', load(id) {
+    if(roomViewSource&&id.endsWith('/src/views/RoomDetailView.vue'))return roomViewSource;
+  }, configureServer(server) {
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith('/__room-parity.html')) return next()
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -21,7 +23,7 @@ export async function startFixture() {
             async resume(){if(window.fixture.delayUnlock)await new Promise(resolve=>window.fixture.releaseUnlock=()=>{window.fixture.delayUnlock=false;resolve()});this.state='running';} async suspend(){this.state='suspended';} async close(){this.state='closed';}
             createGain(){return {context:this,gain:{value:1,setValueAtTime(){}},connect(){},disconnect(){}};}
             createBuffer(){const data=new Float32Array(480);return {getChannelData:()=>data};}
-            createBufferSource(){const context=this;let timer;const source={buffer:null,onended:null,connect(){},disconnect(){},stop(){clearTimeout(timer);},start(at){window.fixture.sources.push({sound:source.buffer.getChannelData(0).some(v=>v!==0),at});timer=setTimeout(()=>source.onended?.(),Math.max(0,(at-context.currentTime+.02)*1000));}};return source;}
+            createBufferSource(){const context=this;let timer,record;const source={buffer:null,onended:null,connect(){},disconnect(){},stop(){clearTimeout(timer);if(record)record.stopped=true;},start(at){record={sound:source.buffer.getChannelData(0).some(v=>v!==0),sample:Math.round(source.buffer.getChannelData(0)[0]*32768),at,stopped:false,ended:false};window.fixture.sources.push(record);timer=setTimeout(()=>{record.ended=true;source.onended?.()},Math.max(0,(at-context.currentTime+.02)*1000));}};return source;}
           };
         }
         const room={id:15,tenant_id:14,name:'菜籽油',platform:'douyin',external_room_id:'529757346891',status:'offline',monitor_enabled:false,online_count:64,cooperation_status:'cooperating'};
@@ -29,7 +31,7 @@ export async function startFixture() {
         window.fetch=async(url,options={})=>{
           const path=new URL(url,location.origin).pathname;window.fixture.calls.push({path,method:options.method||'GET'});
           if(path.includes('/v1/receivers/'))return Response.json({});
-          if(path.endsWith('/composite.pcm'))return new Response(new ReadableStream({start(controller){window.fixture.pcmController=controller;}}),{headers:{'Content-Type':'application/octet-stream'}});
+          if(path.endsWith('/composite.pcm'))return new Response(new ReadableStream({start(controller){window.fixture.pcmController=controller;(window.fixture.pcmStreams??=[]).push(controller);}}),{headers:{'Content-Type':'application/octet-stream'}});
           if(window.fixture.startTest&&path.endsWith('/runtime/start')){if(window.fixture.startFailed)return Response.json({error:'模拟启动失败'},{status:500});window.fixture.waiting=true;return Response.json({});}
           if(window.fixture.startTest&&path.endsWith('/runtime/stop')){window.fixture.waiting=false;return Response.json({});}
           if(options.method&&options.method!=='GET')throw Error('Unexpected mutation '+path);

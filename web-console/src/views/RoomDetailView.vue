@@ -2627,12 +2627,28 @@ function ensureLocalAudioGainNode() {
   return localAudioGainNode
 }
 
-function toggleLocalAudioMuted() {
-  localAudioMuted.value = !localAudioMuted.value
+async function toggleLocalAudioMuted() {
+  const muted = !localAudioMuted.value
+  // Flush before opening the gain: queued speech must never become audible
+  // again just because the operator returned from listening to the box.
+  flushCompositeAudioQueue()
+  if (!muted) stopCompositeAudioReceiver()
+  localAudioMuted.value = muted
   const gain = ensureLocalAudioGainNode()
   if (gain) {
     gain.gain.setValueAtTime(localAudioMuted.value ? 0 : 1, gain.context.currentTime)
   }
+  if (muted) {
+    if (compositeAudioStreamLooksAlive()) localAudioState.value = 'connected'
+    return
+  }
+  localAudioState.value = 'disconnected'
+  if (!(await ensureLocalAudioUnlocked()) || localAudioMuted.value || pageUnmounted) return
+  // A previous connect may still be finishing its aborted fetch. Wait for it
+  // without letting that old promise stand in for the new live subscription.
+  if (compositeAudioConnectPromise) await compositeAudioConnectPromise
+  if (localAudioMuted.value || pageUnmounted) return
+  await connectLocalAudioReceiver()
 }
 
 function flushCompositeAudioQueue() {
@@ -2705,6 +2721,16 @@ function scheduleCompositePCMFrame(frame: Uint8Array) {
     if (sample !== 0) containsSound = true
     channel[index] = sample / 32768
   }
+  if (localAudioMuted.value) {
+    // Frames still arrive from the actual Core output, so status/captions and
+    // first-voice readiness can progress while the box remains audible.
+    if (containsSound && aiRuntimeMode.value === 'anchor' && aiRunning.value) {
+      firstVoicePlaybackReceived.value = true
+      firstVoiceStartPending.value = false
+    }
+    localAudioState.value = 'connected'
+    return
+  }
   const source = context.createBufferSource()
   source.buffer = buffer
   const gain = ensureLocalAudioGainNode()
@@ -2749,6 +2775,8 @@ async function pumpCompositeAudioStream(
   try {
     while (!signal.aborted && generation === compositeAudioGeneration) {
       const { done, value } = await reader.read()
+      // An old pending read can resolve after unmute has opened a fresh stream.
+      if (signal.aborted || generation !== compositeAudioGeneration) break
       if (done) break
       if (!value?.byteLength) continue
       compositeAudioLastFrameAt = Date.now()
