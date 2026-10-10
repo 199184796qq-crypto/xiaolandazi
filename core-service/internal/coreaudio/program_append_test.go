@@ -69,3 +69,50 @@ func TestAppendDoesNotReplayCompletedTrackAfterPause(t *testing.T) {
 	}
 	t.Fatal("resume failed to select the fresh appended unit")
 }
+
+func TestAppendExactDuplicateOmittedAndExplicitRepeatRetained(t *testing.T) {
+	client, program, start, url := sequentialFixture(t)
+	client.mu.Lock()
+	program.Tracks[1].Text = "怕买整只吃不完浪费，这个半只装刚好。"
+	client.mu.Unlock()
+	input := appendFixtureInput(start, url)
+	input.Tracks[0].Text = program.Tracks[1].Text
+	for attempt := 0; attempt < 2; attempt++ {
+		current, err := client.AppendProgram(context.Background(), input)
+		if err != nil || current.TrackCount != 2 || current.Task.ID != start.Task.ID {
+			t.Fatal("exact duplicate queued, retry changed playback, or stream stopped", current, err)
+		}
+	}
+	input.Tracks[0].ID = "explicit-repeat"
+	input.Tracks[0].AllowConsecutiveRepeat = true
+	current, err := client.AppendProgram(context.Background(), input)
+	if err != nil || current.TrackCount != 3 {
+		t.Fatal("explicit repeat omitted", current, err)
+	}
+	input.Tracks[0].ID = "changed-wording"
+	input.Tracks[0].AllowConsecutiveRepeat = false
+	input.Tracks[0].Text = "那怕买整只吃不完浪费，这个半只装刚好。"
+	current, err = client.AppendProgram(context.Background(), input)
+	if err != nil || current.TrackCount != 4 {
+		t.Fatal("near-match omitted", current, err)
+	}
+	input.Tracks[0].ID = "nonconsecutive"
+	input.Tracks[0].Text = program.Tracks[1].Text
+	current, err = client.AppendProgram(context.Background(), input)
+	if err != nil || current.TrackCount != 5 {
+		t.Fatal("nonconsecutive repeat omitted", current, err)
+	}
+}
+
+func TestSequentialStartKeepsOneIdenticalClipAndExplicitRepeat(t *testing.T) {
+	client, _, _, url := sequentialFixture(t)
+	result, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 93, Sequential: true, Tracks: []audioout.ProgramTrack{
+		{ID: "one", Text: "欢迎老乡回来。", AudioURL: url, DurationMS: 1000},
+		{ID: "two", Text: "欢迎老乡回来。", AudioURL: url, DurationMS: 1000},
+		{ID: "three", Text: "欢迎老乡回来。", AudioURL: url, DurationMS: 1000, AllowConsecutiveRepeat: true},
+	}})
+	if err != nil || result.TrackCount != 2 || !result.Running {
+		t.Fatal("incorrect initial queue", result, err)
+	}
+	defer client.StopProgram(context.Background(), 93)
+}

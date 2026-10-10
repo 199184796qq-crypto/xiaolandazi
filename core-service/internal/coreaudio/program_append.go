@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"livecompanion/core/internal/audioout"
+	"log"
 	"strings"
 )
 
@@ -61,8 +62,13 @@ func (c *Client) AppendProgram(ctx context.Context, input audioout.AppendProgram
 		if _, ok := program.AppendedUnits[unit.ID]; ok {
 			continue
 		}
-		program.Tracks = append(program.Tracks, tracks[index])
 		program.AppendedUnits[unit.ID] = digests[unit.ID]
+		// Keep the ID receipt for retry idempotency even when no clip is queued.
+		if len(program.Tracks) > 0 && !tracks[index].AllowConsecutiveRepeat && audioout.SameSpeech(program.Tracks[len(program.Tracks)-1].Text, tracks[index].Text) {
+			log.Printf("mainline omitted room=%d track=%s reason=consecutive_exact_duplicate", input.RoomID, unit.ID)
+			continue
+		}
+		program.Tracks = append(program.Tracks, tracks[index])
 	}
 	// Keep a small past context without allowing a long broadcast's audio queue
 	// to grow indefinitely. Current task, safe points and resume offset remain.

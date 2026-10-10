@@ -2,7 +2,9 @@ package decisionexecutor
 
 import (
 	"context"
+	"encoding/json"
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/model"
 	"testing"
 )
 
@@ -25,6 +27,22 @@ func TestBridgeProtocolKeepsFiveTypesAndNone(t *testing.T) {
 	}
 	if _, err := validateBridge(`{"type":"none","text":""}`, plan); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExactDuplicateBridgeDoesNotCallTTSOrDispatch(t *testing.T) {
+	store := &bridgeProfileStore{fakeStore: readyVoiceStore()}
+	agent := &fakeAgent{responses: []string{`{"type":"topic_shift","text":"怕买整只吃不完浪费，这个半只装刚好。"}`}}
+	tts := &fakeTTS{}
+	core := &fakeCore{}
+	w := New(store, core, agent, tts)
+	var plan returnBridgePlan
+	json.Unmarshal([]byte(`{"reply_text":"已回答发货安排。","units":[{"id":"next","text":"怕买整只吃不完浪费，这个半只装刚好。半只450g。"}]}`), &plan)
+	if err := w.generateAndStageBridge(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, decisionItem{ID: "d1"}, plan, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 || tts.calls != 0 || core.dispatches != 0 {
+		t.Fatalf("calls agent=%d tts=%d dispatch=%d", agent.calls, tts.calls, core.dispatches)
 	}
 }
 

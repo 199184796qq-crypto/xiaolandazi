@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -31,8 +32,8 @@ type BridgeReady struct {
 	DurationMS int    `json:"duration_ms"`
 }
 
-func buildInteractionReturn(program *programState, taskID, reply string, cutMS, durationMS int) *interactionReturn {
-	state := &interactionReturn{resumeTrack: program.TrackIndex, resumeMS: cutMS, snapshot: audioout.InteractionReturnSnapshot{ProgramID: program.ID, TaskID: taskID, ReplyText: reply, AnswerDurationMS: durationMS, Units: []audioout.ReturnUnit{}}}
+func buildInteractionReturn(program *programState, taskID, reply string, cutMS, durationMS int, allowRepeat bool) *interactionReturn {
+	state := &interactionReturn{resumeTrack: program.TrackIndex, resumeMS: cutMS, snapshot: audioout.InteractionReturnSnapshot{ProgramID: program.ID, TaskID: taskID, ReplyText: reply, AllowConsecutiveRepeat: allowRepeat, AnswerDurationMS: durationMS, Units: []audioout.ReturnUnit{}}}
 	for trackIndex := program.TrackIndex; trackIndex < len(program.Tracks) && len(state.snapshot.Units) < 8; trackIndex++ {
 		track := program.Tracks[trackIndex]
 		if trackIndex == program.TrackIndex {
@@ -70,14 +71,15 @@ func buildInteractionReturn(program *programState, taskID, reply string, cutMS, 
 
 	}
 	// Never skip the last buffered unit without a known complete return entry.
-	for len(state.snapshot.Units) > 1 && audioout.CompleteUnitCovered(reply, state.snapshot.Units[0].Text) {
+	for !allowRepeat && len(state.snapshot.Units) > 1 && !program.Tracks[state.snapshot.Units[0].TrackIndex].AllowConsecutiveRepeat && audioout.CompleteUnitCovered(reply, state.snapshot.Units[0].Text) {
 		state.snapshot.SkippedUnits = append(state.snapshot.SkippedUnits, state.snapshot.Units[0].ID)
 		state.snapshot.Units = state.snapshot.Units[1:]
 	}
 	if len(state.snapshot.Units) > 0 {
 		state.resumeTrack, state.resumeMS = state.snapshot.Units[0].TrackIndex, state.snapshot.Units[0].StartMS
+		state.snapshot.ReturnAllowsRepeat = program.Tracks[state.resumeTrack].AllowConsecutiveRepeat
 	}
-	raw, _ := json.Marshal([]any{program.ID, program.Generation, program.VersionID, taskID, program.TrackIndex, cutMS, state.snapshot.Units})
+	raw, _ := json.Marshal([]any{program.ID, program.Generation, program.VersionID, taskID, program.TrackIndex, cutMS, allowRepeat, state.snapshot.Units})
 	state.snapshot.Token = fmt.Sprintf("%x", sha256.Sum256(raw))
 	return state
 }
@@ -131,6 +133,12 @@ func (c *Client) handleReturnMessage(ctx context.Context, message messagecaptain
 		c.mu.Unlock()
 		return fmt.Errorf("bridge identity/deadline changed")
 	}
+	if state.snapshot.DuplicatesBridge(ready.Text) {
+		state.snapshot.BridgeDropReason = "consecutive_exact_duplicate"
+		c.mu.Unlock()
+		log.Printf("bridge omitted room=%d task=%s reason=consecutive_exact_duplicate", message.RoomID, ready.TaskID)
+		return nil
+	}
 	state.bridgePCM = append([]byte(nil), ready.PCM...)
 	state.bridgeText = ready.Text
 	state.snapshot.BridgeStaged = true
@@ -161,6 +169,12 @@ func (c *Client) takeReturnBridge(roomID int64, taskID string) ([]byte, string) 
 	state.closed = true
 	if program.PendingRefresh != nil {
 		return nil, ""
+	}
+	if state.snapshot.DuplicatesBridge(state.bridgeText) {
+		state.snapshot.BridgeDropReason = "consecutive_exact_duplicate"
+		state.snapshot.BridgeStaged = false
+		state.snapshot.BridgeText = ""
+		state.bridgePCM, state.bridgeText = nil, ""
 	}
 	return state.bridgePCM, state.bridgeText
 }

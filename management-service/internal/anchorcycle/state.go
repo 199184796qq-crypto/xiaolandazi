@@ -40,26 +40,27 @@ type Task struct {
 	PainPoint        string `json:"pain_point,omitempty"`
 }
 type Config struct {
-	TextProfileID     string       `json:"text_profile_id,omitempty"`
-	WorkspaceID       string       `json:"workspace_id"`
-	Region            string       `json:"region"`
-	AgentID           string       `json:"agent_id"`
-	EnvironmentID     string       `json:"environment_id"`
-	CredentialID      string       `json:"credential_profile_id"`
-	FeedbackID        string       `json:"feedback_profile_id"`
-	Threshold         int          `json:"threshold"`
-	MaxRetries        int          `json:"max_retries"`
-	MaxChars          int          `json:"max_chars"`
-	PointGap          int          `json:"point_gap"`
-	RepairPunctuation bool         `json:"repair_punctuation"`
-	Rolling           bool         `json:"rolling"`
-	BodySegments      int          `json:"body_segments"`
-	BodyMin           int          `json:"body_min,omitempty"`
-	BodyMax           int          `json:"body_max,omitempty"`
-	CombinationGap    int          `json:"combination_gap"`
-	MaxCycles         int          `json:"max_cycles"` // Zero means until explicitly stopped.
-	TTS               *VoiceConfig `json:"tts,omitempty"`
-	ComplianceScope   string       `json:"compliance_scope,omitempty"`
+	AllowConsecutiveRepeat bool         `json:"allow_consecutive_repeat,omitempty"`
+	TextProfileID          string       `json:"text_profile_id,omitempty"`
+	WorkspaceID            string       `json:"workspace_id"`
+	Region                 string       `json:"region"`
+	AgentID                string       `json:"agent_id"`
+	EnvironmentID          string       `json:"environment_id"`
+	CredentialID           string       `json:"credential_profile_id"`
+	FeedbackID             string       `json:"feedback_profile_id"`
+	Threshold              int          `json:"threshold"`
+	MaxRetries             int          `json:"max_retries"`
+	MaxChars               int          `json:"max_chars"`
+	PointGap               int          `json:"point_gap"`
+	RepairPunctuation      bool         `json:"repair_punctuation"`
+	Rolling                bool         `json:"rolling"`
+	BodySegments           int          `json:"body_segments"`
+	BodyMin                int          `json:"body_min,omitempty"`
+	BodyMax                int          `json:"body_max,omitempty"`
+	CombinationGap         int          `json:"combination_gap"`
+	MaxCycles              int          `json:"max_cycles"` // Zero means until explicitly stopped.
+	TTS                    *VoiceConfig `json:"tts,omitempty"`
+	ComplianceScope        string       `json:"compliance_scope,omitempty"`
 }
 type VoiceConfig struct {
 	Source          string  `json:"source"`
@@ -89,6 +90,7 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
+	ExactDuplicateRemovals  int                                   `json:"exact_duplicate_removals,omitempty"`
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
 	AnglePlan               *AnglePlan                            `json:"angle_plan,omitempty"`

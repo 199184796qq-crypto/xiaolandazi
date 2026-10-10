@@ -2448,11 +2448,12 @@ func (w *Worker) dispatchOnce(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"deferred_return": true,
-			"decision_id":     item.ID,
-			"mission_id":      missionID(&item),
-			"mission_kind":    strings.ToLower(strings.TrimSpace(item.MissionKind)),
-			"content_goal":    item.ContentGoal, "content_angle": item.ContentAngle,
+			"deferred_return":          true,
+			"allow_consecutive_repeat": strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"),
+			"decision_id":              item.ID,
+			"mission_id":               missionID(&item),
+			"mission_kind":             strings.ToLower(strings.TrimSpace(item.MissionKind)),
+			"content_goal":             item.ContentGoal, "content_angle": item.ContentAngle,
 			"selected_content_plan": item.SelectedContentPlan,
 			"preparation_cut_plans": item.PreparationCutPlans,
 			"session_id":            session.ExternalID,
@@ -2639,7 +2640,7 @@ func (w *Worker) finalizeSpeechText(
 	item decisionItem,
 	text string,
 ) (string, error) {
-	text = strings.TrimSpace(text)
+	text, _ = contentstrategy.RemoveConsecutiveSpeech(text, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
 	if text == "" {
 		return "", fmt.Errorf("最终播出文字为空")
 	}
@@ -2754,6 +2755,7 @@ func (w *Worker) finalizeSpeechText(
 			return "", fmt.Errorf("称呼或主播状态终审未通过: %s", strings.Join(violations, "；"))
 		}
 	}
+	candidate, _ = contentstrategy.RemoveConsecutiveSpeech(candidate, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
 	return strings.TrimSpace(candidate), nil
 }
 

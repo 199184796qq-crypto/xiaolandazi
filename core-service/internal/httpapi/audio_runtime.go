@@ -23,27 +23,28 @@ import (
 )
 
 type roomAudioInteractionInput struct {
-	DeferredReturn       bool            `json:"deferred_return,omitempty"`
-	PreparationCutPlans  json.RawMessage `json:"preparation_cut_plans,omitempty"`
-	SelectedContentPlan  json.RawMessage `json:"selected_content_plan,omitempty"`
-	ContentGoal          string          `json:"content_goal,omitempty"`
-	ContentAngle         string          `json:"content_angle,omitempty"`
-	DecisionID           string          `json:"decision_id"`
-	MissionID            string          `json:"mission_id,omitempty"`
-	MissionKind          string          `json:"mission_kind,omitempty"`
-	SessionID            string          `json:"session_id,omitempty"`
-	Action               string          `json:"action"`
-	AudioURL             string          `json:"audio_url"`
-	Question             string          `json:"question,omitempty"`
-	ReplyText            string          `json:"reply_text,omitempty"`
-	Topic                string          `json:"topic,omitempty"`
-	InterruptStrategy    string          `json:"interrupt_strategy,omitempty"`
-	ResumeStrategy       string          `json:"resume_strategy,omitempty"`
-	BridgeText           string          `json:"bridge_text,omitempty"`
-	HumanizationStrategy string          `json:"humanization_strategy,omitempty"`
-	HumanizationKind     string          `json:"humanization_kind,omitempty"`
-	HumanizationApplied  bool            `json:"humanization_applied,omitempty"`
-	SwitchAtMS           int             `json:"switch_at_ms,omitempty"`
+	AllowConsecutiveRepeat bool            `json:"allow_consecutive_repeat,omitempty"`
+	DeferredReturn         bool            `json:"deferred_return,omitempty"`
+	PreparationCutPlans    json.RawMessage `json:"preparation_cut_plans,omitempty"`
+	SelectedContentPlan    json.RawMessage `json:"selected_content_plan,omitempty"`
+	ContentGoal            string          `json:"content_goal,omitempty"`
+	ContentAngle           string          `json:"content_angle,omitempty"`
+	DecisionID             string          `json:"decision_id"`
+	MissionID              string          `json:"mission_id,omitempty"`
+	MissionKind            string          `json:"mission_kind,omitempty"`
+	SessionID              string          `json:"session_id,omitempty"`
+	Action                 string          `json:"action"`
+	AudioURL               string          `json:"audio_url"`
+	Question               string          `json:"question,omitempty"`
+	ReplyText              string          `json:"reply_text,omitempty"`
+	Topic                  string          `json:"topic,omitempty"`
+	InterruptStrategy      string          `json:"interrupt_strategy,omitempty"`
+	ResumeStrategy         string          `json:"resume_strategy,omitempty"`
+	BridgeText             string          `json:"bridge_text,omitempty"`
+	HumanizationStrategy   string          `json:"humanization_strategy,omitempty"`
+	HumanizationKind       string          `json:"humanization_kind,omitempty"`
+	HumanizationApplied    bool            `json:"humanization_applied,omitempty"`
+	SwitchAtMS             int             `json:"switch_at_ms,omitempty"`
 }
 
 func estimatedInteractionDurationMS(text string) int {
@@ -1262,7 +1263,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			SessionID:      program.Task.SessionID,
 			Label:          fmt.Sprintf("%s · %s", label, input.Topic),
 			AudioURL:       input.AudioURL,
-			DeferredReturn: input.DeferredReturn, DecisionID: input.DecisionID,
+			DeferredReturn: input.DeferredReturn, DecisionID: input.DecisionID, AllowConsecutiveRepeat: input.AllowConsecutiveRepeat,
 			Text:           strings.TrimSpace(input.ReplyText),
 			CallbackURL:    callbackURL,
 			ResumeOffsetMS: resumeOffsetMS,
