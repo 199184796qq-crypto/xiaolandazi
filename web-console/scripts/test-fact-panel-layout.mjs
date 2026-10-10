@@ -19,7 +19,7 @@ const catalog = JSON.parse(await readFile(new URL('../../configs/fact-categories
 const ast = ts.createSourceFile('view.ts', source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
 const helpers = ts.transpileModule(ast.statements.filter(node => ts.isFunctionDeclaration(node) && ['factCategoryLabel','factCategoryDescription'].includes(node.name?.text)).map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 const fixture = `<html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;padding:20px;background:#eff3ff;font-family:Arial,'Microsoft Yahei',sans-serif}${css}</style></head><body><div id="app"></div><script type="module">
-import * as Vue from '/node_modules/.vite/deps/vue.js';import FactCategoryBadge from '/src/components/FactCategoryBadge.vue';
+import * as Vue from '/node_modules/.vite/deps/vue.js';import FactCategoryBadge from '/src/components/FactCategoryBadge.vue';import FormalFactCreateDialog from '/src/components/FormalFactCreateDialog.vue';
 import {factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories} from '/src/factCategories.ts';factCategoryState.items=${JSON.stringify(catalog.categories)};
 ${helpers}
 const rows=[['fulfillment','发货时效','一般当天发，下午6点后的订单次日上午发'],['fulfillment','售后政策','支持7天无理由退货'],['product','商品规格','商品信息以页面为准'],['trade','活动说明','活动期间下单享受优惠价'],['other','经营年限','经营70年'],['identity_location','门店地址','用户确认的门店地址']].map(([category,key,value],i)=>({id:i+1,category,key,value,forbidden_wording:i===2?'未经依据的夸大表达。'.repeat(30):i===5?'不要承诺未经核实的门店地址':'',safe_rewrite:i===2?'按已确认的商品信息介绍':i===3?'按实际活动条件介绍优惠':'',version_no:1,source_type:i===4?'manual_create':'adoption'}));
@@ -27,7 +27,7 @@ const state=Vue.reactive({currentPlan:{name:'样例方案'},formalFacts:rows,cre
 window.fixture=state;
 const review={claim_sha256:'r5',status:'confirmed',rule_id:'example',evidence:'用户确认内容真实',semantic_decision:'pass',reason:'已确认并备案',severity:'P1'};
 const handlers={factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories,factCategoryLabel,factCategoryDescription,factRiskTone:item=>item.id===5?'confirmed':item.id===3?'blocked':'',factRiskToneLabel:item=>item.id===5?'用户已确认':'禁止使用',factRisksForFact:item=>item.id===5?[review]:[],factRiskCanConfirm:()=>false,startFormalFactEdit:item=>{state.calls.push('edit:'+item.id);state.editingFormalFactId=item.id;state.formalFactEditDraft={...item}},cancelFormalFactEdit:()=>{state.editingFormalFactId=null},saveFormalFactEdit:item=>{state.calls.push('save:'+item.id);state.editingFormalFactId=null},deleteFormalFact:item=>state.calls.push('delete:'+item.id),beginCreateFormalFact:()=>{},createFormalFact:()=>{},cancelCreateFormalFact:()=>{},confirmInlineFactRisk:()=>{},appealInlineFactRisk:()=>{}};
-Vue.createApp({components:{FactCategoryBadge},setup:()=>({...Vue.toRefs(state),...handlers}),render:new Function('Vue',${JSON.stringify(renderCode)})(Vue)}).mount('#app');</script></body></html>`
+Vue.createApp({components:{FactCategoryBadge,FormalFactCreateDialog},setup:()=>({...Vue.toRefs(state),...handlers}),render:new Function('Vue',${JSON.stringify(renderCode)})(Vue)}).mount('#app');</script></body></html>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, appType: 'custom' })
 server.middlewares.use((req,res,next) => { if (req.url === '/__fact_panel') {res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fixture)} else next() })
 await server.listen()

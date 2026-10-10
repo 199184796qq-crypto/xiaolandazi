@@ -5,8 +5,9 @@ import { createRequire } from 'node:module'
 const require = createRequire(new URL('../../collector-worker/package.json', import.meta.url))
 const { chromium } = require('playwright-core')
 const source = await readFile(new URL('../src/views/LiveStrategyView.vue', import.meta.url), 'utf8')
-const createForm = source.slice(source.indexOf('<div v-if="creatingFormalFact"'), source.indexOf('<div v-if="!formalFacts.length"'))
-assert.ok(!createForm.includes('placeholder='), 'fact editor background hints must be empty')
+const createForm = await readFile(new URL('../src/components/FormalFactCreateDialog.vue', import.meta.url), 'utf8')
+assert.match(source, /<FormalFactCreateDialog v-if="creatingFormalFact"/)
+assert.match(createForm, /placeholder="请输入事实的具体内容/)
 assert.match(source, /await formalFactName\.ensure\(\)/)
 assert.match(source, /await fullShowFactName\.ensure\(\)/)
 const fixture = `<html><body><div id="app"></div><script type="module">
@@ -76,5 +77,5 @@ try {
   assert.equal(await page.locator('#name').inputValue(),'新方案手动名称')
   assert.equal(await page.locator('#content').inputValue(),'新方案真实内容')
   assert.deepEqual(errors,[])
-  console.log('PASS: empty placeholders; auto name only; manual edits; stale response/scope protection; failure/retry; save awaits current name; empty save blocked')
+  console.log('PASS: guided modal fields; auto name only; manual edits; stale response/scope protection; failure/retry; save awaits current name; empty save blocked')
 }finally{await browser.close();await server.close()}

@@ -4,7 +4,7 @@ import { request } from './api'
 type FactDraft = { key: string; value: string; category: string }
 
 // Separate UI state from the draft: suggestions never replace fact content.
-export function useFactNameSuggestion(draft: Ref<FactDraft>, enabled: Ref<boolean>, scope: () => { planId: number | null; tenantId?: number }) {
+export function useFactNameSuggestion(draft: Ref<FactDraft>, enabled: Ref<boolean>, scope: () => { planId: number | null; tenantId?: number }, options: { suppressErrorDialog?: boolean } = {}) {
   const loading = ref(false)
   const error = ref('')
   let manual = false, revision = 0, autoName = '', namedFor = ''
@@ -57,7 +57,7 @@ export function useFactNameSuggestion(draft: Ref<FactDraft>, enabled: Ref<boolea
     pending = (async () => {
       try {
         const result = await request<{ name: string }>(`/api/v1/live-agent-plans/${planId}/fact-name-suggestion`, {
-          method: 'POST', body: JSON.stringify({ tenant_id: tenantId, category, content: value }), signal,
+          method: 'POST', body: JSON.stringify({ tenant_id: tenantId, category, content: value }), signal, suppressErrorDialog: options.suppressErrorDialog,
         })
         if (token !== revision || !enabled.value || target !== draft.value || identity() !== key || manual) return ''
         if (typeof result.name !== 'string' || !result.name.trim() || [...result.name.trim()].length > 24) throw new Error('名称提炼失败，请手动填写')

@@ -19,6 +19,7 @@ import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
+import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
 import agentGenerationBanner from '../assets/agent-generation-banner.png'
@@ -360,6 +361,7 @@ const formalFactEditDraft = ref({ category: 'other', key: '', value: '', forbidd
 const creatingFormalFact = ref(false)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const formalFactCreateGuidance = ref('')
+const formalFactCreateError = ref('')
 const mutatingFormalFactId = ref<number | null>(null)
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
@@ -385,7 +387,7 @@ const poolStatus = contentPools.status
 const poolError = contentPools.error
 const poolSubmitting = contentPools.submitting
 const poolPreview = contentPools.preview
-const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
+const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }), { suppressErrorDialog: true })
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
@@ -4152,8 +4154,10 @@ watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskRe
 watch(activeMode, mode => {
 	if (mode !== 'memory') interactionLocationRequest.value = 0
 	if (pendingRiskLocation.value?.area !== mode) pendingRiskLocation.value = null
+	if (mode !== 'knowledge' && creatingFormalFact.value) cancelCreateFormalFact()
 })
 watch([activeRoomId, currentRoomPlanId], () => {
+	if (creatingFormalFact.value) cancelCreateFormalFact()
 	interactionLocationRequest.value = 0
 	pendingRiskLocation.value = null
 	pendingWheelRiskHash.value = ''
@@ -4272,12 +4276,14 @@ function beginCreateFormalFact() {
 	cancelFormalFactEdit()
 	creatingFormalFact.value = true
 	formalFactCreateGuidance.value = ''
+	formalFactCreateError.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
 function cancelCreateFormalFact() {
 	creatingFormalFact.value = false
 	formalFactCreateGuidance.value = ''
+	formalFactCreateError.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
@@ -4285,17 +4291,19 @@ async function createFormalFact() {
 	const planId = currentRoomPlanId.value
 	if (!planId || mutatingFormalFactId.value) return
 	const draft = formalFactCreateDraft.value
+	const roomId = activeRoomId.value, tenantId = activeRoom.value?.tenant_id
+	const current = () => creatingFormalFact.value && planId === currentRoomPlanId.value && roomId === activeRoomId.value && tenantId === activeRoom.value?.tenant_id && draft === formalFactCreateDraft.value
 	const createdFromWheelGap = Boolean(formalFactCreateGuidance.value)
 	const value = draft.value.trim()
 	if (!value) {
-		settingsError.value = '事实内容不能为空'
+		formalFactCreateError.value = '事实内容不能为空'
 		return
 	}
 	mutatingFormalFactId.value = -1
-	settingsError.value = ''
+	formalFactCreateError.value = ''
 	try {
 		const key = await formalFactName.ensure()
-		if (planId !== currentRoomPlanId.value || draft !== formalFactCreateDraft.value || value !== draft.value.trim()) return
+		if (!current() || value !== draft.value.trim()) return
 		if (!key) throw new Error(formalFactName.error.value || '请填写事实名称')
 		const result = await adoptLiveAgentPlanFacts(
 			planId,
@@ -4309,19 +4317,22 @@ async function createFormalFact() {
 				review_bucket: 'adoptable',
 				source_quote: '',
 			}],
-			activeRoom.value?.tenant_id,
+			tenantId,
 			'manual:fact-editor',
+			{ suppressErrorDialog: true },
 		)
+		if (!current()) return
 		if (!result.adopted && result.conflicts) {
 			throw new Error(result.results?.[0]?.message || '同分类下已经存在相同事实名称')
 		}
 		await refreshFormalFacts()
+		if (!current()) return
 		cancelCreateFormalFact()
 		scriptNotice.value = createdFromWheelGap
 			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
 			: '事实依据已保存，主线口播与互动回答会共同使用。'
 	} catch (err) {
-		settingsError.value = err instanceof Error ? err.message : '新增事实依据失败'
+		if (current()) formalFactCreateError.value = err instanceof Error ? err.message : '新增事实依据失败'
 	} finally {
 		mutatingFormalFactId.value = null
 	}
@@ -6433,7 +6444,7 @@ onBeforeUnmount(() => {
               <h3>事实依据</h3>
             </div>
             <div class="strategy-fact-head-actions">
-              <button class="primary-button" type="button" :disabled="!currentPlan || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
+              <button class="primary-button" type="button" :disabled="!currentPlan || !!mutatingFormalFactId || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
             </div>
           </div>
 
@@ -6451,18 +6462,7 @@ onBeforeUnmount(() => {
               <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
             </header>
 
-            <div v-if="creatingFormalFact" class="strategy-formal-fact-create">
-              <div v-if="formalFactCreateGuidance" class="strategy-script-notice is-wide">
-                <strong>轮盘发现的待补事实</strong><br />{{ formalFactCreateGuidance }}<br />
-                请核对真实资料后填写答案；不要把问题或猜测直接保存成事实。
-              </div>
-              <label><span>事实分类</span><select v-model="formalFactCreateDraft.category" :disabled="mutatingFormalFactId === -1 || factCategoryState.loading || !!factCategoryState.error"><optgroup v-for="group in factCategoryGroups(formalFactCreateDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup></select></label>
-              <label><span>事实名称</span><input v-model="formalFactCreateDraft.key" maxlength="255" :disabled="mutatingFormalFactId === -1" @input="formalFactName.edited" /><small>{{ formalFactName.loading.value ? '正在提炼名称…' : '填写内容后自动生成名称，也可自行修改' }}</small><small v-if="formalFactName.error.value" class="inline-error">{{ formalFactName.error.value }} <button type="button" @click="formalFactName.ensure">重试</button></small></label>
-              <label class="is-wide"><span>事实内容（可以说）</span><textarea v-model="formalFactCreateDraft.value" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
-              <label><span>不要这样说（选填）</span><textarea v-model="formalFactCreateDraft.forbidden_wording" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
-              <label><span>改成这样说（选填）</span><textarea v-model="formalFactCreateDraft.safe_rewrite" rows="3" maxlength="4000" :disabled="mutatingFormalFactId === -1"></textarea></label>
-              <div class="strategy-formal-fact-create-actions"><button class="primary-button" type="button" :disabled="mutatingFormalFactId === -1" @click="createFormalFact">{{ mutatingFormalFactId === -1 ? '保存中…' : '保存事实依据' }}</button><button type="button" :disabled="mutatingFormalFactId === -1" @click="cancelCreateFormalFact">取消</button></div>
-            </div>
+            <FormalFactCreateDialog v-if="creatingFormalFact" v-model="formalFactCreateDraft" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @name-edited="formalFactName.edited" @retry-name="formalFactName.ensure" @save="createFormalFact" @close="cancelCreateFormalFact" />
 
             <div v-if="!formalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
               <strong>当前方案还没有正式事实</strong>
@@ -9329,13 +9329,6 @@ onBeforeUnmount(() => {
 .strategy-fact-boundary-guide>div { display:grid; gap:4px; padding:12px 14px; border:1px solid #e0e6f2; border-radius:12px; background:#f8faff; }
 .strategy-fact-boundary-guide strong { color:#42518f; font-size:13px; }
 .strategy-fact-boundary-guide span { color:#7b879b; font-size:12px; line-height:1.55; }
-.strategy-formal-fact-create { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:14px; border:1px solid #dce4f2; border-radius:14px; background:#f8faff; }
-.strategy-formal-fact-create label { display:grid; gap:5px; }
-.strategy-formal-fact-create label.is-wide { grid-column:1 / -1; }
-.strategy-formal-fact-create label>span { color:#59667d; font-size:12px; font-weight:850; }
-.strategy-formal-fact-create input,.strategy-formal-fact-create select,.strategy-formal-fact-create textarea { width:100%; border:1px solid #ccd5e5; border-radius:9px; background:#fff; color:#34405a; font:inherit; outline:none; padding:8px 9px; }
-.strategy-formal-fact-create textarea { resize:vertical; }
-.strategy-formal-fact-create-actions { display:flex; gap:8px; align-items:center; grid-column:1 / -1; }
 .strategy-formal-facts-empty { min-height:120px; }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:1280px; border-collapse:collapse; table-layout:fixed; }
