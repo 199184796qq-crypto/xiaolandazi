@@ -5999,12 +5999,6 @@ onBeforeUnmount(() => {
               <span class="strategy-workflow-label">福利活动</span>
               <span v-if="benefitRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ benefitRiskUnresolvedCount }}项待处理</span>
             </button>
-            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" :aria-label="factRiskUnresolvedCount ? `事实依据，${factRiskUnresolvedCount}项待处理` : '事实依据'" @focus="factRiskTabFocused = true" @blur="factRiskTabFocused = false" @click="openFactRiskLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
-              </span>
-              <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
-            </button>
             <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" :aria-label="interactionPendingCount > 0 ? `交互策略，${interactionPendingCount}条互动待纠正` : '交互策略'" @click="openInteractionPendingLocation">
               <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
               <span class="strategy-workflow-label">交互策略<span v-if="interactionPendingCount > 0" class="interaction-pending-badge" :aria-label="`${interactionPendingCount}条互动待纠正`">{{ interactionPendingCount > 99 ? '99+' : interactionPendingCount }}</span></span>
@@ -6013,6 +6007,12 @@ onBeforeUnmount(() => {
               <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 18 8-8M10 6l8 8M13 3l8 8-3 3-8-8z"/><path d="M3 21h6"/></svg></span>
               <span class="strategy-workflow-label">话术挖掘机</span>
               <span v-if="wheelRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ wheelRiskUnresolvedCount }}项待处理</span>
+            </button>
+            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" :aria-label="factRiskUnresolvedCount ? `事实依据，${factRiskUnresolvedCount}项待处理` : '事实依据'" @focus="factRiskTabFocused = true" @blur="factRiskTabFocused = false" @click="openFactRiskLocation">
+              <span class="strategy-workflow-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
+              </span>
+              <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
             </button>
             <button class="strategy-workflow-step workflow-step-anchor" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
               <span class="strategy-workflow-icon" aria-hidden="true">
