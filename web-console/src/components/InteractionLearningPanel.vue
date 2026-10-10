@@ -296,24 +296,28 @@ async function close(item: AgentLearningSession) {
   finally { busy.value = '' }
 }
 
-async function deleteHistory(item: AgentLearningSession) {
+async function deleteRecord(item: AgentLearningSession) {
   const room = props.roomId, plan = props.planId, token = epoch
-  if (!props.history || !room || !plan || busy.value || factContext.value || item.room_id !== room || item.review?.plan_id !== plan) return
+  if ((!props.history && item.source_type !== 'live_uncertain') || !room || !plan || busy.value || factContext.value || locating.value || item.room_id !== room || item.review?.plan_id !== plan) return
+  const recordLabel = props.history ? '历史记录' : '直播互动记录'
   const operation = `delete:${item.id}`
   busy.value = operation
   try {
-    if (!await confirmAction({ title: '删除这条历史记录？', message: `从处理历史中删除“${item.question}”？已采纳的事实依据和回答策略会保留。`, confirmText: '删除', danger: true }) || token !== epoch) return
+    if (!await confirmAction({ title: `删除这条${recordLabel}？`, message: `删除“${item.question}”这条记录？已采纳的事实依据和回答策略会保留。`, confirmText: '删除', danger: true }) || token !== epoch) return
     error.value = ''; notice.value = ''; requestSequence++
     const result = await request<{ deleted: number }>(`/api/v1/live/rooms/${room}/interaction-learning/${item.id}/history?plan_id=${plan}`, { method: 'DELETE', suppressErrorDialog: true })
     if (token !== epoch) return
     if (result.deleted !== 1) throw new Error('删除结果未完整返回，请刷新列表核对。')
-    if (editing.value === item.id) { editing.value = null; preview.value = null; historyDraft.value = null; feedback.value = '' }
+    if (editing.value === item.id) { editing.value = null; preview.value = null; historyDraft.value = null; feedback.value = ''; restoredPreviewText.value = '' }
+    if (locatedId.value === item.id) locatedId.value = null
+    delete factNotices.value[item.id]; delete suggestionErrors.value[item.id]; delete adoptedSuggestions.value[item.id]
     items.value = items.value.filter(record => record.id !== item.id)
+    if (item.status === 'editing') count.value = Math.max(0, count.value - 1)
     total.value = Math.max(0, total.value - 1); page.value = Math.min(page.value, Math.max(1, Math.ceil(total.value / 30)))
-    notice.value = '这条历史记录已删除，已采纳的内容已保留。'
+    notice.value = `这条${recordLabel}已删除，已采纳的内容已保留。`
     window.dispatchEvent(new Event('interaction-review-updated'))
     if (!await refresh(true)) notice.value += ' 列表暂未刷新，请点击“刷新”查看。'
-  } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '删除历史记录失败，请重试' }
+  } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '删除记录失败，请重试' }
   finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
 
@@ -403,7 +407,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
           <button :disabled="!!busy" @click="begin(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 5 5-.8L20 8l-4-4zM14 6l4 4" /></svg>{{ history ? '纠正' : '填写纠正' }}</button>
           <button v-if="item.status === 'editing' && item.review?.kind === 'missing_fact'" :disabled="!!busy" @click="openFactDialog(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg>补充事实依据</button>
           <button v-if="item.status === 'editing'" class="is-complete-action" :disabled="!!busy" @click="close(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{{ item.review?.kind === 'missing_fact' ? '已处理，标记完成' : '无需纠正' }}</button>
-          <button v-if="history" type="button" class="simulation-delete-action" :aria-label="`删除历史记录：${item.question}`" :disabled="!!busy || !!factContext" @click="deleteHistory(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
+          <button v-if="history || item.source_type === 'live_uncertain'" type="button" class="simulation-delete-action" :aria-label="`删除${history ? '历史记录' : '直播互动记录'}：${item.question}`" :disabled="!!busy || !!factContext || locating" @click="deleteRecord(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
           <button v-if="isSimulationView" type="button" class="simulation-delete-action" :aria-label="`删除模拟建议：${item.question}`" :disabled="!!busy || !!factContext || locating" @click="deleteSuggestions(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
           <details v-if="isSimulationView" class="review-record-details"><summary aria-label="查看记录详情" title="查看记录详情">•••</summary><div><strong>记录详情</strong><dl><dt>问题含义</dt><dd>{{ item.review?.meaning || '暂无说明' }}</dd><dt>记录次数</dt><dd>{{ item.review?.occurrences || 1 }}次</dd><dt>记录时间</dt><dd>{{ new Date(item.updated_at).toLocaleString() }}</dd></dl></div></details>
         </div>
