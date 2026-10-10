@@ -395,6 +395,13 @@ func validateRefreshVersionTx(ctx context.Context, tx *sql.Tx, tenantID, roomID,
 	if current != expectedID {
 		return ErrLiveContentRefreshObsolete
 	}
+	var usable int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_agent_plan_versions WHERE tenant_id=? AND plan_id=? AND id=? AND lifecycle_status IN ('draft','published')`, tenantID, planID, expectedID).Scan(&usable); err != nil {
+		return err
+	}
+	if usable == 0 {
+		return ErrLiveContentRefreshObsolete
+	}
 	return nil
 }
 
@@ -567,7 +574,12 @@ func (s *Store) CommitLiveContentRefresh(ctx context.Context, job model.LiveCont
 		return model.LiveAgentPlanVersion{}, err
 	}
 	var versionNo int64
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_no),0)+1 FROM live_agent_plan_versions WHERE tenant_id=? AND plan_id=? AND room_id=?`, j.TenantID, j.PlanID, j.RoomID).Scan(&versionNo)
+	var lockedPlan int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? FOR UPDATE`, j.TenantID, j.PlanID).Scan(&lockedPlan)
+	if err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_no),0)+1 FROM live_agent_plan_versions WHERE tenant_id=? AND plan_id=?`, j.TenantID, j.PlanID).Scan(&versionNo)
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
@@ -621,10 +633,10 @@ func (s *Store) CompleteLiveContentRefreshJob(ctx context.Context, job model.Liv
 	if n != 1 {
 		return cancelRefreshTx(ctx, tx, j.ID, "prepared_version_changed")
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_versions SET lifecycle_status='superseded' WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published' AND id<>? AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')='ai_dynamic'`, j.TenantID, j.RoomID, j.PlanID, j.ResultVersionID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_versions SET lifecycle_status='superseded' WHERE tenant_id=? AND plan_id=? AND lifecycle_status='published' AND id<>? AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(generation_context_json,'$.content_mode')),''),'ai_pregenerated')='ai_dynamic'`, j.TenantID, j.PlanID, j.ResultVersionID); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO live_agent_room_plan_publications(tenant_id,room_id,plan_id,version_id,published_at) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE plan_id=VALUES(plan_id),version_id=VALUES(version_id),published_at=VALUES(published_at)`, j.TenantID, j.RoomID, j.PlanID, j.ResultVersionID, now); err != nil {
+	if err = publishSharedPlanPointersTx(ctx, tx, j.TenantID, j.PlanID, j.ResultVersionID, 0, model.LiveContentAIDynamic); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE live_content_refresh_jobs SET status='completed',completed_at=?,lease_token='',lease_owner='',lease_until=NULL,last_error='',updated_at=? WHERE id=?`, now, now, j.ID)

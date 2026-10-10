@@ -57,6 +57,7 @@ var salesScratchTables = []string{
 	"live_agent_room_plan_selections",
 	"live_agent_room_plan_publications",
 	"live_agent_plan_versions",
+	"live_agent_plans",
 	"live_agent_plan_facts",
 	"live_agent_plan_product_links",
 	"live_agent_plan_benefits",

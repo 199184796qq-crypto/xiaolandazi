@@ -520,7 +520,7 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "读取直播智能体编辑工作区失败")
 		return
 	}
-	version, source := selectLiveAgentPlanWorkspaceVersion(items, contentMode)
+	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items, contentMode)
 	if version == nil {
 		// A room grant does not authorize reading another room's saved runtime
 		// configuration, even when both rooms share a plan.
@@ -543,13 +543,14 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	inherited := version.RoomID != roomID
+	version.SavedFromRoomID, version.RoomID = version.RoomID, roomID
 	hydrateLiveAgentPlanVersionForWorkspace(version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        version,
 		"source":         source,
-		"inherited":      inherited,
-		"source_room_id": version.RoomID,
+		"inherited":      false,
+		"shared":         true,
+		"source_room_id": version.SavedFromRoomID,
 		"checks":         s.liveAgentPlanWorkspaceChecks(r.Context(), tenantID, planID, version),
 	})
 }
@@ -590,10 +591,6 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取待发布智能体版本失败")
-		return
-	}
-	if pending.RoomID != input.RoomID {
-		writeError(w, http.StatusBadRequest, "待发布版本不属于当前直播间")
 		return
 	}
 	// Compatibility for old browser clients. Saving is now the only activation

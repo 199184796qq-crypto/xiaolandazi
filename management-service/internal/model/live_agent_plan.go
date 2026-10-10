@@ -888,6 +888,7 @@ type LiveAgentPlanVersion struct {
 	TenantID          int64                         `json:"tenant_id"`
 	PlanID            int64                         `json:"plan_id"`
 	RoomID            int64                         `json:"room_id"`
+	SavedFromRoomID   int64                         `json:"saved_from_room_id,omitempty"`
 	VersionNo         int64                         `json:"version_no"`
 	LifecycleStatus   string                        `json:"lifecycle_status"`
 	DurationMinutes   int                           `json:"duration_minutes"`
