@@ -17,16 +17,16 @@ const renderCode = compile(template, { mode: 'function', prefixIdentifiers: true
 const css = [...source.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(match => match[1]).join('\n')
 const catalog = JSON.parse(await readFile(new URL('../../configs/fact-categories.json', import.meta.url), 'utf8'))
 const ast = ts.createSourceFile('view.ts', source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
-const helpers = ts.transpileModule(ast.statements.filter(node => ts.isFunctionDeclaration(node) && ['factCategoryLabel','factCategoryDescription','formalFactSourceLabel'].includes(node.name?.text)).map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+const helpers = ts.transpileModule(ast.statements.filter(node => ts.isFunctionDeclaration(node) && ['factCategoryLabel','factCategoryDescription'].includes(node.name?.text)).map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 const fixture = `<html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;padding:20px;background:#eff3ff;font-family:Arial,'Microsoft Yahei',sans-serif}${css}</style></head><body><div id="app"></div><script type="module">
 import * as Vue from '/node_modules/.vite/deps/vue.js';import FactCategoryBadge from '/src/components/FactCategoryBadge.vue';
 import {factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories} from '/src/factCategories.ts';factCategoryState.items=${JSON.stringify(catalog.categories)};
 ${helpers}
-const rows=[['fulfillment','发货时效','一般当天发，下午6点后的订单次日上午发'],['fulfillment','售后政策','支持7天无理由退货'],['product','商品规格','商品信息以页面为准'],['trade','活动说明','活动期间下单享受优惠价'],['other','经营年限','经营70年'],['identity_location','门店地址','用户确认的门店地址']].map(([category,key,value],i)=>({id:i+1,category,key,value,forbidden_wording:i===2?'未经依据的夸大表达':'',safe_rewrite:i===2?'按已确认的商品信息介绍':'',version_no:1,source_type:i===4?'manual_create':'adoption'}));
+const rows=[['fulfillment','发货时效','一般当天发，下午6点后的订单次日上午发'],['fulfillment','售后政策','支持7天无理由退货'],['product','商品规格','商品信息以页面为准'],['trade','活动说明','活动期间下单享受优惠价'],['other','经营年限','经营70年'],['identity_location','门店地址','用户确认的门店地址']].map(([category,key,value],i)=>({id:i+1,category,key,value,forbidden_wording:i===2?'未经依据的夸大表达。'.repeat(30):i===5?'不要承诺未经核实的门店地址':'',safe_rewrite:i===2?'按已确认的商品信息介绍':i===3?'按实际活动条件介绍优惠':'',version_no:1,source_type:i===4?'manual_create':'adoption'}));
 const state=Vue.reactive({currentPlan:{name:'样例方案'},formalFacts:rows,creatingFormalFact:false,formalFactCreateGuidance:'',formalFactCreateDraft:{},formalFactCategoryOptions:[{value:'fulfillment',label:'履约事实'},{value:'product',label:'商品事实'}],editingFormalFactId:null,formalFactEditDraft:{},mutatingFormalFactId:null,expandedFactRiskId:null,locatedFactRiskHash:'',factRiskNoticeState:{error:'',loading:false},factRiskAppealDrafts:{},session:{bootstrap:{actor:{role:'customer'}}},factRiskController:{},calls:[]});
 window.fixture=state;
 const review={claim_sha256:'r5',status:'confirmed',rule_id:'example',evidence:'用户确认内容真实',semantic_decision:'pass',reason:'已确认并备案',severity:'P1'};
-const handlers={factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories,factCategoryLabel,factCategoryDescription,formalFactSourceLabel,factRiskTone:item=>item.id===5?'confirmed':item.id===3?'blocked':'',factRiskToneLabel:item=>item.id===5?'用户已确认':'禁止使用',factRisksForFact:item=>item.id===5?[review]:[],factRiskCanConfirm:()=>false,startFormalFactEdit:item=>{state.calls.push('edit:'+item.id);state.editingFormalFactId=item.id;state.formalFactEditDraft={...item}},cancelFormalFactEdit:()=>{state.editingFormalFactId=null},saveFormalFactEdit:item=>{state.calls.push('save:'+item.id);state.editingFormalFactId=null},deleteFormalFact:item=>state.calls.push('delete:'+item.id),beginCreateFormalFact:()=>{},createFormalFact:()=>{},cancelCreateFormalFact:()=>{},confirmInlineFactRisk:()=>{},appealInlineFactRisk:()=>{}};
+const handlers={factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories,factCategoryLabel,factCategoryDescription,factRiskTone:item=>item.id===5?'confirmed':item.id===3?'blocked':'',factRiskToneLabel:item=>item.id===5?'用户已确认':'禁止使用',factRisksForFact:item=>item.id===5?[review]:[],factRiskCanConfirm:()=>false,startFormalFactEdit:item=>{state.calls.push('edit:'+item.id);state.editingFormalFactId=item.id;state.formalFactEditDraft={...item}},cancelFormalFactEdit:()=>{state.editingFormalFactId=null},saveFormalFactEdit:item=>{state.calls.push('save:'+item.id);state.editingFormalFactId=null},deleteFormalFact:item=>state.calls.push('delete:'+item.id),beginCreateFormalFact:()=>{},createFormalFact:()=>{},cancelCreateFormalFact:()=>{},confirmInlineFactRisk:()=>{},appealInlineFactRisk:()=>{}};
 Vue.createApp({components:{FactCategoryBadge},setup:()=>({...Vue.toRefs(state),...handlers}),render:new Function('Vue',${JSON.stringify(renderCode)})(Vue)}).mount('#app');</script></body></html>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, appType: 'custom' })
 server.middlewares.use((req,res,next) => { if (req.url === '/__fact_panel') {res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fixture)} else next() })
@@ -50,8 +50,23 @@ try {
     assert.equal(await actions.locator('svg').count(),2)
     assert.ok((await rows.nth(i).boundingBox()).height<104,'normal rows should be compact')
   }
-  assert.equal(await page.locator('.strategy-formal-fact-wording').count(),12)
-  assert.equal(await rows.nth(2).locator('.strategy-formal-fact-boundary').textContent(),'未经依据的夸大表达')
+  assert.equal(await page.locator('.strategy-fact-risk-detail-row').count(),0,'wording must be collapsed initially')
+  assert.equal(await rows.nth(2).locator('td[colspan="2"]').count(),1)
+  await rows.nth(2).getByRole('button',{name:'有表达提醒',exact:true}).click()
+  const detail=page.locator('#formal-fact-detail-3')
+  await detail.waitFor()
+  assert.equal(await detail.locator('td').getAttribute('colspan'),'6')
+  assert.equal(await detail.locator('.strategy-formal-fact-wording-card').count(),3)
+  assert.equal(await detail.locator('.is-forbidden .strategy-formal-fact-wording-content p').textContent(),await page.evaluate(()=>window.fixture.formalFacts[2].forbidden_wording),'full long wording retained')
+  assert.equal(await detail.locator('.is-rewrite .strategy-formal-fact-wording-content p').textContent(),'按已确认的商品信息介绍')
+  const arrow=rows.nth(2).locator('.strategy-formal-fact-expand');await arrow.focus();await arrow.press('Space');assert.equal(await detail.count(),0);await arrow.press('Enter');await detail.waitFor()
+  await rows.nth(3).getByRole('button',{name:'有参考表达',exact:true}).click()
+  assert.equal(await detail.count(),0,'only one row expands at a time')
+  assert.match(await page.locator('#formal-fact-detail-4').textContent(),/暂无已保存的表达提醒/)
+  assert.match(await page.locator('#formal-fact-detail-4').textContent(),/按实际活动条件介绍优惠/)
+  await rows.nth(5).getByRole('button',{name:'有表达提醒',exact:true}).click()
+  assert.match(await page.locator('#formal-fact-detail-6').textContent(),/暂无已保存的参考表达/)
+  assert.deepEqual(await page.evaluate(()=>window.fixture.calls),[],'expansion must not edit, delete or generate content')
   const confirmedColor=await rows.nth(4).locator('td').first().evaluate(el=>getComputedStyle(el).backgroundColor)
   await rows.nth(4).hover()
   assert.equal(await rows.nth(4).locator('td').first().evaluate(el=>getComputedStyle(el).backgroundColor),confirmedColor,'hover must retain risk color')
@@ -74,5 +89,5 @@ try {
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile overflow must stay inside table')
   assert.ok(await page.locator('.strategy-formal-facts-table-wrap').evaluate(el=>el.scrollWidth>el.clientWidth))
   assert.deepEqual(errors,[])
-  console.log('PASS: six-column fact section without visible versions; category colors/icons; compact rows; horizontal actions; wording blocks; edit/delete bindings; preserved risk detail/colors; mobile table scroll')
+  console.log('PASS: compact collapsed wording; full long text/three cards; badge/arrow/keyboard accordion; single-sided wording/empty states; expansion without mutations; edit/delete; risk details/colors; mobile table scroll')
 } finally {await browser.close();await server.close()}

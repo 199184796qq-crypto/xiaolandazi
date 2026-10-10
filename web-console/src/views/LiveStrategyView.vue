@@ -4110,6 +4110,7 @@ watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locat
 watch(currentRoomPlanId, () => {
 	pendingWheelRiskHash.value = ''
 	locatedFactRiskHash.value = ''
+	expandedFactRiskId.value = null
 })
 
 async function openFactRiskLocation() {
@@ -4309,6 +4310,7 @@ async function deleteFormalFact(item: LiveAgentPlanFact) {
   try {
     await deleteLiveAgentPlanFact(planId, item.id, activeRoom.value?.tenant_id)
     if (editingFormalFactId.value === item.id) cancelFormalFactEdit()
+    if (expandedFactRiskId.value === item.id) expandedFactRiskId.value = null
     await refreshFormalFacts()
     scriptNotice.value = '正式事实已删除；历史版本仍保留用于审计。'
   } catch (err) {
@@ -6416,7 +6418,7 @@ onBeforeUnmount(() => {
                 </thead>
                 <tbody>
                   <template v-for="item in formalFacts" :key="item.id">
-                  <tr :class="factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : ''">
+                  <tr :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
                         <select v-model="formalFactEditDraft.category" :disabled="factCategoryState.loading || !!factCategoryState.error">
@@ -6451,9 +6453,15 @@ onBeforeUnmount(() => {
                       <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
                       <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
                       <td class="strategy-formal-fact-value">{{ item.value }}</td>
-                      <td class="strategy-formal-fact-boundary"><div class="strategy-formal-fact-wording">{{ item.forbidden_wording || '—' }}</div></td>
-                      <td class="strategy-formal-fact-rewrite"><div class="strategy-formal-fact-wording">{{ item.safe_rewrite || '—' }}</div></td>
+                      <td v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" colspan="2" class="strategy-formal-fact-guidance-cell">
+                        <button type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
+                      </td>
+                      <template v-else>
+                        <td class="strategy-formal-fact-boundary"><div class="strategy-formal-fact-wording">—</div></td>
+                        <td class="strategy-formal-fact-rewrite"><div class="strategy-formal-fact-wording">—</div></td>
+                      </template>
                       <td>
+                        <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
                           <button
                             type="button"
@@ -6471,12 +6479,31 @@ onBeforeUnmount(() => {
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
                           </button>
                         </div>
+                        <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length" type="button" class="strategy-formal-fact-expand" :aria-label="(expandedFactRiskId === item.id ? '收起' : '展开') + '“' + item.key + '”的表达说明'" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
+                        </div>
                       </td>
                     </template>
                   </tr>
-                  <tr v-if="expandedFactRiskId === item.id && factRisksForFact(item).length" class="strategy-fact-risk-detail-row">
+                  <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
                     <td colspan="6">
-                      <div class="strategy-fact-risk-inline">
+                      <div class="strategy-formal-fact-expanded">
+                        <div v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" class="strategy-formal-fact-wording-grid">
+                          <article class="strategy-formal-fact-wording-card is-forbidden">
+                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v12H9l-4 4V4Z" /><path d="M9 8h.01M15 8h.01M9 12h6" /></svg></i><strong>不要这样说</strong><span v-if="item.forbidden_wording?.trim()">表达提醒</span></header>
+                            <div v-if="item.forbidden_wording?.trim()" class="strategy-formal-fact-wording-content"><i aria-hidden="true">×</i><p>{{ item.forbidden_wording }}</p></div>
+                            <p v-else class="strategy-formal-fact-wording-empty">暂无已保存的表达提醒。</p>
+                          </article>
+                          <article class="strategy-formal-fact-wording-card is-rewrite">
+                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></i><strong>改成这样说</strong><span v-if="item.safe_rewrite?.trim()">参考表达</span></header>
+                            <div v-if="item.safe_rewrite?.trim()" class="strategy-formal-fact-wording-content"><i aria-hidden="true">✓</i><p>{{ item.safe_rewrite }}</p></div>
+                            <p v-else class="strategy-formal-fact-wording-empty">暂无已保存的参考表达，可点击“修改”补充。</p>
+                          </article>
+                          <article class="strategy-formal-fact-wording-card is-context">
+                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6" /></svg></i><strong>补充说明</strong></header>
+                            <dl><div><dt>事实分类</dt><dd>{{ factCategoryLabel(item.category) }}<small>{{ factCategoryDescription(item.category) }}</small></dd></div><div><dt>适用场景</dt><dd>主线口播与互动回答</dd></div><div><dt>对应方案</dt><dd>{{ currentPlan?.name || '当前方案' }}</dd></div></dl>
+                          </article>
+                        </div>
+                      <div v-if="factRisksForFact(item).length" class="strategy-fact-risk-inline">
                         <p v-if="factRiskNoticeState.error" class="is-error" role="alert">{{ factRiskNoticeState.error }}</p>
                         <article v-for="review in factRisksForFact(item)" :key="review.claim_sha256" :data-fact-risk-hash="review.claim_sha256" tabindex="-1" :class="['is-' + factRiskTone(item), { 'is-risk-located': locatedFactRiskHash === review.claim_sha256 }]">
                           <header><strong>{{ review.status === 'confirmed' ? '已确认' : factRiskToneLabel(item) }}</strong><small>{{ review.rule_id }}</small></header>
@@ -6496,6 +6523,7 @@ onBeforeUnmount(() => {
                             <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button v-if="review.appeal_status !== 'pending'" type="button" :disabled="factRiskNoticeState.loading || !(factRiskAppealDrafts[review.claim_sha256] || '').trim()" @click="appealInlineFactRisk(review)">申请后台复核</button><span v-else>后台复核申请已提交</span></div>
                           </template>
                         </article>
+                      </div>
                       </div>
                     </td>
                   </tr>
@@ -9284,6 +9312,50 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-actions button.primary-button { border-color:transparent; background:#5968cb; color:#fff; }
 .strategy-formal-fact-actions button.is-danger { border-color:#ffcbd4; background:linear-gradient(135deg,#fff7f8,#fff0f3); color:#d52c4b; }
 .strategy-formal-fact-actions button:disabled { cursor:not-allowed; opacity:.55; }
+.strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.strategy-formal-fact-guidance-cell[colspan="2"] { width:28%; }
+.strategy-formal-fact-operation .strategy-formal-fact-expand { display:grid; place-items:center; flex:0 0 30px; width:30px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:#3475ff; cursor:pointer; }
+.strategy-formal-fact-expand svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; transition:transform .18s; }
+.strategy-formal-fact-expand[aria-expanded="true"] svg { transform:rotate(180deg); }
+.strategy-formal-fact-expand:hover { background:#e8efff; }
+.strategy-formal-fact-wording-toggle { display:inline-flex; align-items:center; gap:10px; min-height:44px; padding:10px 14px; border:1px solid transparent; border-radius:12px; background:#fff0f4; color:#d73562; font:inherit; font-size:14px; font-weight:700; cursor:pointer; }
+.strategy-formal-fact-wording-toggle>span { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; background:#ee456e; color:#fff; font-weight:900; }
+.strategy-formal-fact-wording-toggle.is-reference { background:#eafaf2; color:#138465; }
+.strategy-formal-fact-wording-toggle.is-reference>span { background:#16a47a; }
+.strategy-formal-fact-wording-toggle:hover { border-color:#f5b6c9; }
+.strategy-formal-fact-wording-toggle.is-reference:hover { border-color:#99dcc4; }
+.strategy-formal-fact-wording-toggle:focus-visible,.strategy-formal-fact-expand:focus-visible { outline:3px solid #8facff; outline-offset:2px; }
+.strategy-formal-facts-table tr.is-wording-open:not(.has-fact-risk)>td { background:#f4f7ff; border-top:1px solid #c3d5ff; border-bottom:0; }
+.strategy-formal-facts-table tbody>tr.is-wording-open:not(.has-fact-risk):hover>td { background:#f4f7ff; }
+.strategy-formal-facts-table tr.is-wording-open>td:first-child { border-left:1px solid #c3d5ff; }
+.strategy-formal-facts-table tr.is-wording-open>td:last-child { border-right:1px solid #c3d5ff; }
+.strategy-formal-facts-table tr.strategy-fact-risk-detail-row>td { padding:0 12px 12px; border:1px solid #c3d5ff; border-top:0; background:#f4f7ff; }
+.strategy-formal-fact-expanded { display:grid; gap:14px; padding:12px; border-radius:15px; background:#ffffffa6; }
+.strategy-formal-fact-wording-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:stretch; }
+.strategy-formal-fact-wording-card { min-width:0; padding:18px; border-radius:15px; background:linear-gradient(130deg,#fff3f6,#fff8fa); }
+.strategy-formal-fact-wording-card.is-rewrite { background:linear-gradient(130deg,#eafaf3,#f0fdf8); }
+.strategy-formal-fact-wording-card.is-context { background:linear-gradient(130deg,#eef2ff,#f5f7ff); }
+.strategy-formal-fact-wording-card>header { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+.strategy-formal-fact-wording-card>header>i { display:grid; place-items:center; width:30px; height:30px; border-radius:50%; background:linear-gradient(130deg,#ff8177,#ee4264); color:#fff; }
+.strategy-formal-fact-wording-card.is-rewrite>header>i { background:linear-gradient(130deg,#25c393,#009b70); }
+.strategy-formal-fact-wording-card.is-context>header>i { background:linear-gradient(130deg,#6c95ff,#376aff); }
+.strategy-formal-fact-wording-card>header svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-formal-fact-wording-card>header strong { color:#1c3158; font-size:17px; }
+.strategy-formal-fact-wording-card>header>span { padding:4px 10px; border-radius:999px; background:#ffe2eb; color:#ce4165; font-size:12px; font-weight:700; }
+.strategy-formal-fact-wording-card.is-rewrite>header>span { background:#c9f2e2; color:#178667; }
+.strategy-formal-fact-wording-content { display:flex; align-items:flex-start; gap:12px; padding:14px; border:2px solid #fff; border-radius:12px; background:#ffffffab; }
+.strategy-formal-fact-wording-content>i { display:grid; place-items:center; flex:0 0 24px; width:24px; height:24px; margin-top:2px; border-radius:50%; background:#ee5275; color:#fff; font-size:19px; font-weight:800; font-style:normal; }
+.strategy-formal-fact-wording-card.is-rewrite .strategy-formal-fact-wording-content>i { background:#0ba479; font-size:15px; }
+.strategy-formal-fact-wording-content p { min-width:0; margin:0; color:#34476b; font-size:15px; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; }
+.strategy-formal-fact-wording-empty { margin:0; padding:14px; border-radius:12px; background:#ffffff9c; color:#7c8ba4; font-size:14px; }
+.strategy-formal-fact-wording-card dl { display:grid; gap:10px; margin:0; }
+.strategy-formal-fact-wording-card dl>div { display:grid; grid-template-columns:78px minmax(0,1fr); gap:10px; padding:12px; border:2px solid #fff; border-radius:12px; background:#ffffffb8; }
+.strategy-formal-fact-wording-card dt { align-self:start; width:fit-content; padding:3px 7px; border-radius:6px; background:#e3edff; color:#3478e4; font-size:12px; font-weight:800; }
+.strategy-formal-fact-wording-card dl>div:nth-child(2) dt { background:#e1f6ef; color:#239773; }
+.strategy-formal-fact-wording-card dl>div:nth-child(3) dt { background:#ede7ff; color:#8261d8; }
+.strategy-formal-fact-wording-card dd { min-width:0; margin:0; color:#34476b; font-size:14px; line-height:1.65; overflow-wrap:anywhere; }
+.strategy-formal-fact-wording-card dd small { display:block; margin-top:4px; color:#7d8eaa; font-size:12px; }
+@media (prefers-reduced-motion:reduce) { .strategy-formal-fact-expand svg { transition:none; } }
 .strategy-script-actions { display:flex; align-items:center; justify-content:flex-end; gap:9px; padding:14px 16px; border:1px solid #e0e6f1; border-radius:15px; background:#fff; }
 .strategy-script-actions>div { display:grid; gap:3px; margin-right:auto; }
 .strategy-script-actions strong { color:#37435e; }
