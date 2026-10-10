@@ -56,7 +56,7 @@ async function send() {
     const result = await ingestLecture(props.planId, props.tenantId, text, scope.value ? [scope.value] : [])
     if (current !== epoch) return
     if (!result.saved) { issues.value = result.issues || []; notice.value = '这段素材还有几处需要调整，改好后再发给我吧～'; return }
-    notice.value = `${result.title} 已收好啦：新增 ${result.facts_added || 0} 条事实，整理出 ${result.angles?.length || 0} 个讲解角度。`
+    notice.value = `${result.title} 已收好啦：新增 ${result.facts_added || 0} 条一级事实，保存 ${result.details_added || 0} 条二级资料，整理出 ${result.angles?.length || 0} 个讲解角度。`
     if (source.value.trim() === text) source.value = ''
     changed(!!result.facts_added); await refresh()
   } catch (cause) { if (current === epoch) error.value = problem(cause) }
@@ -134,9 +134,10 @@ onBeforeUnmount(() => { ++epoch; window.removeEventListener('live-lecture-tasks-
         <div class="lecture-task-content">
           <header><h4>{{ task.title }}</h4><span class="lecture-task-status">{{ !task.valid ? '事实有变化，需重新整理' : task.enabled ? '已启用' : '已停用' }}</span></header>
           <p><strong>讲解目的：</strong>{{ task.purpose }}</p>
+          <p v-if="task.subject"><strong>资料对象：</strong>{{ task.subject }}<span v-if="task.root_fact"> · 一级关联：{{ task.root_fact.text }}</span></p>
           <div class="lecture-angles"><button v-for="(angle, i) in task.angles" :key="i" type="button" :aria-pressed="(selectedAngles[task.id] || 0) === i" @click="selectedAngles[task.id] = i; delete previews[task.id]">{{ angle.title }}</button></div>
           <p class="lecture-angle-goal">{{ task.angles[selectedAngles[task.id] || 0]?.goal }}</p>
-          <details><summary>事实依据 {{ task.facts.length }} 条 · 查看原始素材</summary><ul><li v-for="fact in task.facts" :key="fact.id"><strong>{{ fact.name }}</strong>：{{ fact.text }}</li></ul><blockquote>{{ task.source }}</blockquote><button type="button" :disabled="busy" @click="source = task.source || ''; scope = task.links.length === 1 ? task.links[0]! : ''">复制素材到输入框</button></details>
+          <details><summary>二级资料 {{ task.facts.length }} 条 · 查看原始素材</summary><p>只有选中相关讲解任务时加载，资料中的对象和条件保持原意。</p><ul><li v-for="fact in task.facts" :key="fact.id"><strong>{{ fact.name }}</strong>：{{ fact.text }}</li></ul><blockquote>{{ task.source }}</blockquote><button type="button" :disabled="busy" @click="source = task.source || ''; scope = task.links.length === 1 ? task.links[0]! : ''">复制素材到输入框</button></details>
           <div v-if="previews[task.id]" class="lecture-preview" :class="{ 'preview-rejected': !previews[task.id]!.approved }">
             <strong>{{ previews[task.id]!.approved ? '这个角度可以这样讲' : '已生成正文 · 未通过审核或审核尚未完成' }}</strong><p>{{ previews[task.id]!.text }}</p>
             <ul v-if="previews[task.id]!.issues?.length" class="preview-issues"><li v-for="(issue, i) in previews[task.id]!.issues" :key="i"><b>{{ issue.kind === 'review_error' ? '审核未完成' : issue.kind === 'fact_boundary' ? '事实边界' : issue.kind === 'output_rule' ? '输出规则' : 'P0规则' }}：</b><q v-if="issue.quote">{{ issue.quote }}</q> {{ issue.reason }}</li></ul>

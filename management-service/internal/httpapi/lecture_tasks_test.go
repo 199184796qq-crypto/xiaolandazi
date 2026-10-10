@@ -25,8 +25,8 @@ func TestLectureIsNotOrdinaryFactPromptOrUnrelatedAnswerData(t *testing.T) {
 	if strings.Contains(text, "丘陵") || !strings.Contains(text, "京东") {
 		t.Fatal(text)
 	}
-	lib := lecturetask.Library{Tasks: []lecturetask.Task{{Valid: true, QuestionTerms: []string{"产地", "哪里产的"}, Facts: []lecturetask.Fact{{Name: "产地", Text: "四川南充"}}}}}
-	if lecturetask.QuestionEvidence(lib, "发什么快递") != "" || !strings.Contains(lecturetask.QuestionEvidence(lib, "哪里的产地"), "四川南充") {
+	lib := lecturetask.Library{Tasks: []lecturetask.Task{{Valid: true, RootFact: &lecturetask.Fact{Name: "原料关联", Text: "商品使用原料A"}, QuestionTerms: []string{"产地", "哪里产的"}, Facts: []lecturetask.Fact{{Name: "产地", Text: "四川南充"}}}}}
+	if lecturetask.QuestionEvidence(lib, "发什么快递") != "" || strings.Contains(lecturetask.QuestionEvidence(lib, "哪里的产地"), "四川南充") || !strings.Contains(lecturetask.QuestionEvidence(lib, "哪里的产地"), "商品使用原料A") {
 		t.Fatal("unrelated story retrieval")
 	}
 }

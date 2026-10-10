@@ -166,16 +166,26 @@ func (s *Store) SaveLectureSubmission(ctx context.Context, tenant, plan, actor i
 	}
 	facts := make([]lecturetask.Fact, 0, len(candidates))
 	added := 0
-	for _, f := range candidates {
+	if task.RootFact != nil {
+		f := task.RootFact
 		var id, version int64
-		var value, status string
-		err = tx.QueryRowContext(ctx, `SELECT id,version_no,fact_value,status FROM live_agent_plan_facts WHERE tenant_id=? AND plan_id=? AND category=? AND fact_key=? FOR UPDATE`, tenant, plan, f.Category, f.Key).Scan(&id, &version, &value, &status)
+		var value, status, sourceType string
+		err = tx.QueryRowContext(ctx, `SELECT id,version_no,fact_value,status,source_type FROM live_agent_plan_facts WHERE tenant_id=? AND plan_id=? AND category=? AND fact_key=? FOR UPDATE`, tenant, plan, f.Category, f.Name).Scan(&id, &version, &value, &status, &sourceType)
 		if err == nil {
-			if status != "active" || strings.TrimSpace(value) != f.Value {
-				return 0, 0, fmt.Errorf("%w：%s；请先解决原事实冲突", ErrSpeechMinerFactConflict, f.Key)
+			if status != "active" || strings.TrimSpace(value) != f.Text {
+				return 0, 0, fmt.Errorf("%w：%s；请先解决原事实冲突", ErrSpeechMinerFactConflict, f.Name)
+			}
+			if sourceType != "story_subject" {
+				if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_facts SET source_type='story_subject',version_no=version_no+1,updated_by_user_id=? WHERE tenant_id=? AND plan_id=? AND id=?`, actor, tenant, plan, id); err != nil {
+					return 0, 0, err
+				}
+				version++
+				if err = saveLectureRootRevision(ctx, tx, tenant, plan, id, actor); err != nil {
+					return 0, 0, err
+				}
 			}
 		} else if errors.Is(err, sql.ErrNoRows) {
-			res, e := tx.ExecContext(ctx, `INSERT INTO live_agent_plan_facts (tenant_id,plan_id,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,status,version_no,created_by_user_id,updated_by_user_id) VALUES (?,?,?,?,?,'','',?,'adoptable','lecture_review_passed','story_lecture',?,'active',1,?,?)`, tenant, plan, f.Category, f.Key, f.Value, f.SourceQuote, sourceSHA, actor, actor)
+			res, e := tx.ExecContext(ctx, `INSERT INTO live_agent_plan_facts (tenant_id,plan_id,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,status,version_no,created_by_user_id,updated_by_user_id) VALUES (?,?,?,?,?,'','',?,'adoptable','lecture_review_passed','story_subject',?,'active',1,?,?)`, tenant, plan, f.Category, f.Name, f.Text, f.Quote, sourceSHA, actor, actor)
 			if e != nil {
 				return 0, 0, e
 			}
@@ -184,7 +194,7 @@ func (s *Store) SaveLectureSubmission(ctx context.Context, tenant, plan, actor i
 				return 0, 0, e
 			}
 			version = 1
-			_, e = tx.ExecContext(ctx, `INSERT INTO live_agent_plan_fact_revisions (tenant_id,plan_id,fact_id,version_no,action,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id) VALUES (?,?,?,1,'adopt',?,?,?,'','',?,'adoptable','lecture_review_passed','story_lecture',?,?)`, tenant, plan, id, f.Category, f.Key, f.Value, f.SourceQuote, sourceSHA, actor)
+			_, e = tx.ExecContext(ctx, `INSERT INTO live_agent_plan_fact_revisions (tenant_id,plan_id,fact_id,version_no,action,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id) VALUES (?,?,?,1,'adopt',?,?,?,'','',?,'adoptable','lecture_review_passed','story_subject',?,?)`, tenant, plan, id, f.Category, f.Name, f.Text, f.Quote, sourceSHA, actor)
 			if e != nil {
 				return 0, 0, e
 			}
@@ -192,9 +202,12 @@ func (s *Store) SaveLectureSubmission(ctx context.Context, tenant, plan, actor i
 		} else {
 			return 0, 0, err
 		}
-		facts = append(facts, lecturetask.Fact{ID: id, Version: version, Category: f.Category, Name: f.Key, Text: f.Value, Quote: f.SourceQuote})
+		task.RootFact.ID, task.RootFact.Version = id, version
 	}
-	angles, _ := json.Marshal(map[string]any{"angles": task.Angles, "question_terms": task.QuestionTerms})
+	for i, f := range candidates {
+		facts = append(facts, lecturetask.Fact{Storage: "lecture", ID: int64(i + 1), Version: 1, Category: f.Category, Name: f.Key, Text: f.Value, Quote: f.SourceQuote})
+	}
+	angles, _ := json.Marshal(map[string]any{"angles": task.Angles, "question_terms": task.QuestionTerms, "subject": task.Subject, "root_fact": task.RootFact})
 	factJSON, _ := json.Marshal(facts)
 	links, _ := json.Marshal(task.Links)
 	if oldID > 0 {
@@ -255,6 +268,8 @@ func (s *Store) lectureLibrary(ctx context.Context, tenant, plan int64, includeS
 			return lib, err
 		}
 		var angleAsset struct {
+			Subject       string              `json:"subject"`
+			RootFact      *lecturetask.Fact   `json:"root_fact"`
 			Angles        []lecturetask.Angle `json:"angles"`
 			QuestionTerms []string            `json:"question_terms"`
 		}
@@ -263,6 +278,7 @@ func (s *Store) lectureLibrary(ctx context.Context, tenant, plan int64, includeS
 			return lib, err
 		}
 		t.Angles, t.QuestionTerms = angleAsset.Angles, angleAsset.QuestionTerms
+		t.Subject, t.RootFact = angleAsset.Subject, angleAsset.RootFact
 		for _, v := range []struct {
 			s string
 			p any
@@ -283,18 +299,40 @@ func (s *Store) lectureLibrary(ctx context.Context, tenant, plan int64, includeS
 	if err != nil {
 		return lib, err
 	}
-	current, err := s.ListLiveAgentPlanFacts(ctx, tenant, plan)
+	// Compatibility dependencies are private story records; they are excluded
+	// from the ordinary fact API but retain their original IDs and revisions.
+	currentRows, err := s.db.QueryContext(ctx, liveAgentPlanFactSelect+` WHERE tenant_id=? AND plan_id=? AND status='active'`, tenant, plan)
 	if err != nil {
 		return lib, err
 	}
 	byID := map[int64]model.LiveAgentPlanFact{}
-	for _, f := range current {
+	for currentRows.Next() {
+		f, e := scanLiveAgentPlanFact(currentRows)
+		if e != nil {
+			currentRows.Close()
+			return lib, e
+		}
 		byID[f.ID] = f
+	}
+	err = currentRows.Err()
+	currentRows.Close()
+	if err != nil {
+		return lib, err
 	}
 	for i := range lib.Tasks {
 		t := &lib.Tasks[i]
 		t.Valid = len(t.Facts) > 0 && len(t.Angles) > 0
+		if t.RootFact != nil {
+			f := t.RootFact
+			v, ok := byID[f.ID]
+			if !ok || v.VersionNo != f.Version || v.Value != f.Text || v.Status != "active" {
+				t.Valid = false
+			}
+		}
 		for _, f := range t.Facts {
+			if f.Storage == "lecture" {
+				continue
+			}
 			v, ok := byID[f.ID]
 			if !ok || v.VersionNo != f.Version || v.Value != f.Text || v.Status != "active" {
 				t.Valid = false

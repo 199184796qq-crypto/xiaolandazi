@@ -5,8 +5,8 @@ import { createServer } from 'vite'
 const require = createRequire(process.env.LECTURE_TEST_RUNTIME || new URL('../../collector-worker/package.json', import.meta.url))
 const { chromium } = require('playwright-core')
 const fixture = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="icon" href="data:,"><div id="app"></div><script type="module">
-import {createApp,h,ref} from 'vue';import Panel from '/src/components/LectureTasksPanel.vue';import {applySession} from '/src/session.ts';import '/src/style.css';
-const task={id:9,revision:1,title:'南充土麻鸭与地方风味',purpose:'让观众理解原料来源与地方风味',angles:[{title:'原料产地',goal:'讲清南充背景'},{title:'本地老卤',goal:'说明地方风味'}],facts:[{id:99,name:'原料产地',text:'四川南充',quote:'四川南充'}],links:[],enabled:true,valid:true,source:'土麻鸭产自四川南充，配上本地老卤。'};
+import {createApp,h,ref} from 'vue';import Panel from '/src/components/LectureTasksPanel.vue';import Details from '/src/components/FactSubjectDetails.vue';import {applySession} from '/src/session.ts';import '/src/style.css';
+const task={id:9,revision:1,subject:'土麻鸭',root_fact:{id:100,name:'原料品种',text:'成品使用土麻鸭'},title:'南充土麻鸭与地方风味',purpose:'让观众理解原料来源与地方风味',angles:[{title:'原料产地',goal:'讲清南充背景'},{title:'本地老卤',goal:'说明地方风味'}],facts:[{id:99,name:'原料产地',text:'四川南充',quote:'四川南充'}],links:[],enabled:true,valid:true,source:'土麻鸭产自四川南充，配上本地老卤。'};
 let lib={tasks:[task],policy:{enabled:true,frequency:'normal'},fingerprint:'draft'};
 const plan=ref(4);window.fixture={calls:[],setPlan:v=>plan.value=v,delay:false};
 window.fetch=async(url,init={})=>{const p=new URL(url,location.origin).pathname;window.fixture.calls.push({url:String(url),method:init.method||'GET',body:init.body});
@@ -18,7 +18,7 @@ if(p.endsWith('/policy')){lib={...lib,policy:JSON.parse(init.body),fingerprint:'
 if(p.endsWith('/action')){const data=JSON.parse(init.body);lib={...lib,tasks:data.action==='delete'?[]:lib.tasks.map(t=>({...t,enabled:data.action==='enable',revision:t.revision+1})),fingerprint:'action'};return Response.json({ok:true});}
 throw Error('unmocked '+p);};
 applySession({actor:{user_id:14,tenant_id:14,role:'customer',username:'test'},tenants:[{id:14,name:'测试'}],environment:'test'});
-createApp({render:()=>h(Panel,{planId:plan.value,tenantId:14,roomId:26,savedFingerprint:'saved'})}).mount('#app');</script></html>`
+createApp({render:()=>h('div',{},[h(Panel,{planId:plan.value,tenantId:14,roomId:26,savedFingerprint:'saved'}),h(Details,{planId:plan.value,tenantId:14,factId:100})])}).mount('#app');</script></html>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, appType: 'custom' })
 server.middlewares.use(async (req,res,next) => { if(req.url!='/__lectures')return next();res.setHeader('Content-Type','text/html;charset=utf-8');res.end(await server.transformIndexHtml('/__lectures',fixture)) })
 await server.listen()
@@ -27,6 +27,7 @@ try {
  const page=await browser.newPage({viewport:{width:1500,height:1100}}), errors=[]
  page.on('pageerror',e=>errors.push(e.message));await page.goto(server.resolvedUrls.local[0]+'__lectures')
  await page.getByRole('heading',{name:'南充土麻鸭与地方风味'}).waitFor()
+ await page.getByRole('button',{name:'查看二级事实依据',exact:true}).click();await page.locator('.subject-content section').waitFor();assert.match(await page.locator('.subject-content').innerText(),/土麻鸭/);assert.match(await page.locator('.subject-content').innerText(),/原料产地：四川南充/)
  await mkdir('../deploy/validation/lecture-tasks',{recursive:true});await page.screenshot({path:'../deploy/validation/lecture-tasks/desktop.png',fullPage:true})
  await page.getByRole('button',{name:'预览讲解',exact:true}).click();await page.locator('.lecture-preview').waitFor()
  assert.match(await page.locator('.lecture-preview').innerText(),/这个角度可以这样讲/)

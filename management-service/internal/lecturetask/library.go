@@ -9,6 +9,7 @@ import (
 )
 
 type Fact struct {
+	Storage  string `json:"storage,omitempty"`
 	ID       int64  `json:"id"`
 	Version  int64  `json:"version"`
 	Category string `json:"category"`
@@ -21,6 +22,8 @@ type Angle struct {
 	Goal  string `json:"goal"`
 }
 type Task struct {
+	Subject       string   `json:"subject,omitempty"`
+	RootFact      *Fact    `json:"root_fact,omitempty"`
 	QuestionTerms []string `json:"question_terms"`
 	ID            int64    `json:"id"`
 	Revision      int64    `json:"revision"`
@@ -64,6 +67,12 @@ func contains(values []string, v string) bool {
 }
 func (t Task) Evidence() string {
 	var lines []string
+	if t.Subject != "" {
+		lines = append(lines, "资料对象："+t.Subject)
+	}
+	if t.RootFact != nil {
+		lines = append(lines, "与商品的已确认关系："+t.RootFact.Text)
+	}
 	for _, f := range t.Facts {
 		lines = append(lines, f.Name+"："+f.Text)
 	}
@@ -111,9 +120,15 @@ func QuestionEvidence(lib Library, question string) string {
 	if chosen < 0 {
 		return ""
 	}
-	text := lib.Tasks[chosen].Evidence()
+	// Ordinary question answering receives level-one product relations only.
+	// Level-two evidence is loaded by an explicitly selected lecture task.
+	root := lib.Tasks[chosen].RootFact
+	if root == nil {
+		return ""
+	}
+	text := root.Name + "：" + root.Text
 	if len([]rune(text)) > 2400 {
 		return ""
 	}
-	return "\n# 当前问题相关的故事事实\n" + text
+	return "\n# 当前问题相关的商品关联事实\n" + text
 }

@@ -27,6 +27,12 @@ type lectureReview struct {
 	Issues []lectureIssue `json:"issues"`
 }
 type lectureOrganized struct {
+	Subject     string `json:"subject"`
+	ProductFact *struct {
+		Category string `json:"category"`
+		Name     string `json:"name"`
+		Quote    string `json:"quote"`
+	} `json:"product_fact"`
 	QuestionTerms []string            `json:"question_terms"`
 	Title         string              `json:"title"`
 	Purpose       string              `json:"purpose"`
@@ -71,6 +77,19 @@ func parseLectureOrganized(raw, source string, catalog factCategoryCatalog) (lec
 		return task, nil, err
 	}
 	task.Title, task.Purpose, task.Angles = strings.TrimSpace(out.Title), strings.TrimSpace(out.Purpose), out.Angles
+	task.Subject = strings.TrimSpace(out.Subject)
+	if task.Subject == "" {
+		task.Subject = task.Title
+	}
+	if utf8.RuneCountInString(task.Subject) > 100 {
+		return task, nil, errors.New("资料对象名称过长")
+	}
+	if f := out.ProductFact; f != nil {
+		if !catalog.contains(f.Category) || f.Name == "" || f.Quote == "" || utf8.RuneCountInString(f.Name) > 100 || utf8.RuneCountInString(f.Quote) > 1000 || !strings.Contains(source, f.Quote) {
+			return task, nil, errors.New("商品关联事实未对应原文")
+		}
+		task.RootFact = &lecturetask.Fact{Category: f.Category, Name: f.Name, Text: f.Quote, Quote: f.Quote}
+	}
 	task.QuestionTerms = out.QuestionTerms
 	if len(task.QuestionTerms) < 1 || len(task.QuestionTerms) > 12 {
 		return task, nil, errors.New("相关问题措辞不完整")
@@ -78,11 +97,6 @@ func parseLectureOrganized(raw, source string, catalog factCategoryCatalog) (lec
 	for _, term := range task.QuestionTerms {
 		if utf8.RuneCountInString(term) < 2 || utf8.RuneCountInString(term) > 30 {
 			return task, nil, errors.New("相关问题措辞格式错误")
-		}
-		for _, broad := range []string{"产品", "鸭子", "什么", "怎么", "介绍", "你们", "这个", "我们"} {
-			if term == broad {
-				return task, nil, errors.New("相关问题措辞过于宽泛，请重新整理")
-			}
 		}
 	}
 	if task.Title == "" || utf8.RuneCountInString(task.Title) > 100 || task.Purpose == "" || utf8.RuneCountInString(task.Purpose) > 600 || len(task.Angles) < 1 || len(task.Angles) > 8 || len(out.Facts) < 1 || len(out.Facts) > 20 {
@@ -294,5 +308,5 @@ func (s *Server) lectureLibraryIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"saved": true, "task_id": id, "facts_added": added, "title": task.Title, "angles": task.Angles, "notice": "故事已整理进讲解库与事实依据；保存智能体方案后，下次开播按需讲解。"})
+	writeJSON(w, 200, map[string]any{"saved": true, "task_id": id, "facts_added": added, "details_added": len(facts), "subject": task.Subject, "title": task.Title, "angles": task.Angles, "notice": "商品关联事实已保存，详细资料归入对应资料对象，未加入成品事实；保存智能体方案后，下次开播按需讲解。"})
 }
