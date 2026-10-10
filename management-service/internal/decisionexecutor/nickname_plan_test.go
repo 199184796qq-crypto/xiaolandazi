@@ -148,3 +148,71 @@ func TestNicknameCooldownUsesOriginalIdentityInsteadOfSharedNeutralAlias(t *test
 		t.Fatal("raw nickname sent to speech")
 	}
 }
+
+func TestMaskedNicknameInputsOnlyExposeReadablePrefix(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"小陈***隐藏部分", "小陈"},
+		{"芬芬＊隐藏部分", "芬芬"},
+		{" 小 陈❤️123*隐藏部分", "小 陈"},
+		{"***小陈", "这位朋友"},
+		{"123456*隐藏部分", "这位朋友"},
+		{"❤️*隐藏部分", "这位朋友"},
+		{"Ann*隐藏部分", "Ann"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			in := nicknameInput(0, tc.raw)
+			if in.RawName != tc.want || !in.Masked || in.Chars != len([]rune(tc.want)) || in.Digits != 0 {
+				t.Fatalf("unsafe planner input: %#v", in)
+			}
+		})
+	}
+	plain := nicknameInput(0, "小林12345678")
+	if plain.RawName != "小林12345678" || plain.Masked || plain.Digits != 8 {
+		t.Fatalf("ordinary nickname changed: %#v", plain)
+	}
+}
+
+func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *testing.T) {
+	core := &fakeCore{claimRaw: `{"claimed":true,"item":{"id":"masked-welcome","topic":"欢迎","title":"欢迎小陈***隐藏原文","summary":"欢迎小陈***隐藏原文和*隐藏昵称","sample_questions":["欢迎小陈***隐藏原文和*隐藏昵称"],"nicknames":["小陈***隐藏原文","*隐藏昵称"],"mission_kind":"welcome_named","mission_event_count":2,"manual_action":"answer"}}`}
+	agent := &fakeAgent{responses: []string{
+		`{"aliases":[{"index":0,"address":"小陈老乡"},{"index":1,"address":"这位朋友"}]}`,
+		"欢迎小陈***隐藏原文和*隐藏昵称，你们刚来可以先看看，今天正在讲商品的规格和包装选择。",
+	}}
+	tts := &fakeTTS{}
+	w := New(readyVoiceStore(), core, agent, tts)
+	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
+	if err := w.processRoom(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	if tts.calls == 0 || !strings.Contains(tts.last.Text, "小陈老乡") || !strings.Contains(tts.last.Text, "你们") {
+		t.Fatalf("welcome or group coverage lost: %#v", tts)
+	}
+	if strings.ContainsAny(tts.last.Text, "*＊") || strings.Contains(tts.last.Text, "隐藏") {
+		t.Fatalf("masked nickname reached TTS: %q", tts.last.Text)
+	}
+	if core.dispatch["reply_text"] != tts.last.Text {
+		t.Fatalf("subtitle and TTS body differ: %#v / %q", core.dispatch, tts.last.Text)
+	}
+	for _, request := range agent.requests {
+		for _, message := range request.Messages {
+			if strings.Contains(message.Content, "隐藏原文") || strings.Contains(message.Content, "隐藏昵称") {
+				t.Fatalf("hidden nickname exposed to %s", request.Stage)
+			}
+		}
+	}
+	if len(agent.requests) < 2 {
+		t.Fatal("planner and writer were not exercised")
+	}
+	var in struct {
+		Names []nicknamePlanInput `json:"names"`
+	}
+	if err := json.Unmarshal([]byte(agent.requests[0].Messages[1].Content), &in); err != nil || len(in.Names) != 2 || in.Names[0].RawName != "小陈" || in.Names[1].RawName != "这位朋友" {
+		t.Fatalf("bad production planner packet: %#v, %v", in, err)
+	}
+	planItem := decisionItem{Nicknames: []string{"小陈***隐藏原文", "*隐藏昵称"}, PromptNicknames: []string{"小陈老乡", "这位朋友"}, MissionKind: "welcome_named", MissionEventCount: 2}
+	planWorker := &Worker{recentNamed: map[int64]map[string]time.Time{}}
+	plan := planWorker.buildAddressingPlan(11, planItem, "", "", model.RoomAddressingPreferences{})
+	if planItem.Nicknames[0] != "小陈***隐藏原文" || len(plan.OriginalSelectedNames) == 0 || plan.OriginalSelectedNames[0] != "小陈***隐藏原文" {
+		t.Fatalf("source account identity was changed: %#v", plan)
+	}
+}

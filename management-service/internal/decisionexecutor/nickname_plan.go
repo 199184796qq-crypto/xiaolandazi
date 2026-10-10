@@ -10,6 +10,7 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -25,15 +26,91 @@ type nicknamePlanInput struct {
 	RawName string `json:"raw_name"`
 	Chars   int    `json:"char_count"`
 	Digits  int    `json:"max_continuous_digits"`
+	Masked  bool   `json:"masked,omitempty"`
 }
 
 func (item decisionItem) promptNicknames() []string {
+	names := item.Nicknames
 	if item.PromptNicknames != nil {
-		return item.PromptNicknames
+		names = item.PromptNicknames
 	}
-	return item.Nicknames
+	if names == nil {
+		return nil
+	}
+	result := make([]string, len(names))
+	for i, name := range names {
+		result[i] = nicknameModelName(name)
+	}
+	return result
+}
+
+// Masked account identities stay in event records. Only the readable prefix
+// reaches the addressing model; suffixes are never guessed or reconstructed.
+func nicknameModelName(name string) string {
+	at := strings.IndexAny(name, "*＊")
+	if at < 0 {
+		return name
+	}
+	prefix := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsSpace(r) {
+			return r
+		}
+		return -1
+	}, name[:at])
+	prefix = strings.Join(strings.Fields(prefix), " ")
+	if prefix == "" {
+		return "这位朋友"
+	}
+	return prefix
+}
+
+// Questions, context and verbatim requests may mention the event nickname too.
+// Replace those references without changing the stored account identity.
+func (item decisionItem) nicknamePromptText(text string) string {
+	names := item.promptNicknames()
+	positions := make([]int, 0, len(item.Nicknames))
+	for i, name := range item.Nicknames {
+		if strings.ContainsAny(name, "*＊") {
+			positions = append(positions, i)
+		}
+	}
+	sort.SliceStable(positions, func(i, j int) bool {
+		return len(item.Nicknames[positions[i]]) > len(item.Nicknames[positions[j]])
+	})
+	for _, i := range positions {
+		alias := nicknameModelName(item.Nicknames[i])
+		if i < len(names) && strings.TrimSpace(names[i]) != "" {
+			alias = names[i]
+		}
+		text = strings.ReplaceAll(text, item.Nicknames[i], alias)
+	}
+	return text
+}
+
+func (item decisionItem) nicknameSpeechText(text string) string {
+	text = item.nicknamePromptText(text)
+	// A model can still emit mask/Markdown characters. These are never spoken.
+	return strings.NewReplacer("*", "", "＊", "").Replace(text)
+}
+
+func (item decisionItem) nicknamePromptItem() decisionItem {
+	questions := make([]string, len(item.SampleQuestions))
+	for i, question := range item.SampleQuestions {
+		questions[i] = item.nicknamePromptText(question)
+	}
+	item.SampleQuestions = questions
+	item.Title = item.nicknamePromptText(item.Title)
+	item.Summary = item.nicknamePromptText(item.Summary)
+	item.ReplyHint = item.nicknamePromptText(item.ReplyHint)
+	item.OriginMainline = item.nicknamePromptText(item.OriginMainline)
+	item.CurrentMainline = item.nicknamePromptText(item.CurrentMainline)
+	item.ResumeMainline = item.nicknamePromptText(item.ResumeMainline)
+	item.PreviewInstruction = item.nicknamePromptText(item.PreviewInstruction)
+	return item
 }
 func nicknameInput(index int, name string) nicknamePlanInput {
+	masked := strings.ContainsAny(name, "*＊")
+	name = nicknameModelName(name)
 	run, longest := 0, 0
 	for _, r := range name {
 		if unicode.IsDigit(r) {
@@ -43,7 +120,7 @@ func nicknameInput(index int, name string) nicknamePlanInput {
 			run = 0
 		}
 	}
-	return nicknamePlanInput{Index: index, RawName: name, Chars: utf8.RuneCountInString(name), Digits: longest}
+	return nicknamePlanInput{Index: index, RawName: name, Chars: utf8.RuneCountInString(name), Digits: longest, Masked: masked}
 }
 func decodeNicknamePlan(raw string, count int) ([]string, error) {
 	var output struct {
@@ -153,6 +230,7 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 		w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
 	}
 	for i, alias := range aliases {
+		alias = nicknameModelName(alias)
 		pos := positions[i]
 		item.PromptNicknames[pos] = alias
 		w.nicknameAliases[keys[pos]] = nicknameAliasCacheEntry{Address: alias, Expires: now.Add(30 * time.Minute)}
