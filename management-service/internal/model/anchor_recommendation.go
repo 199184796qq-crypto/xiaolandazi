@@ -43,6 +43,9 @@ func HasReusableAnchorProfile(p LiveAgentPlanAnchorStyleProfile) bool {
 func AnchorRecommendationSHA(s LiveAnchorStyle) string {
 	plugins := make([]map[string]any, 0, len(s.PluginSettings))
 	for _, p := range s.PluginSettings {
+		if p.Parameters == nil {
+			p.Parameters = map[string]any{}
+		}
 		plugins = append(plugins, map[string]any{"id": p.PluginID, "version": p.PluginVersion, "enabled": p.Enabled, "parameters": p.Parameters})
 	}
 	raw, _ := json.Marshal(map[string]any{"name": s.Name, "description": s.Description, "avatar_type": s.AvatarType, "avatar": s.AvatarURL, "profile": s.Profile, "plugins": plugins})
