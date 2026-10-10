@@ -1,6 +1,34 @@
 package agentgateway
 
-import "context"
+import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+)
+
+// A model-independent identity for disposable planning caches. Business code
+// names the stage; the gateway alone resolves the operator's chosen model.
+func (g *Gateway) ModelRoleIdentity(ctx context.Context, stage string) (string, error) {
+	if g.speechModels == nil {
+		return g.defaultProvider + ":" + g.defaultModel, nil
+	}
+	id := ""
+	if roles, ok := g.speechModels.(TextRoleResolver); ok {
+		var err error
+		id, err = roles.ResolveTextRole(ctx, stage)
+		if err != nil {
+			return "", err
+		}
+	}
+	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if p == nil {
+		return g.defaultProvider + ":" + g.defaultModel, nil
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(p.ID+":"+p.Model+":"+p.BaseURL+":"+p.SystemPrompt))), nil
+}
 
 // Roles describe work, not model names. Existing per-task prompts stay separate.
 func UsesSpeechModel(stage string) bool {

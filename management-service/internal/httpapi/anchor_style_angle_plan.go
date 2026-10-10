@@ -6,10 +6,16 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	appdb "livecompanion/management/internal/db"
+	"os"
 	"time"
 )
 
+func cycleAnglePlanEnabled() bool { return os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") != "0" }
+
 func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.State, profile agentgateway.SpeechModel) {
+	if !cycleAnglePlanEnabled() {
+		return
+	}
 	roleID, roleErr := s.store.ResolveTextRole(ctx, "mainline_angle_plan")
 	if roleErr != nil {
 		state.Warn("角度规划模型配置暂不可用，按原任务继续生成")
@@ -36,18 +42,37 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	if state.CurrentAnglePlan() != nil {
 		return
 	}
-	input := map[string]any{"task": state.Task(), "phase": state.Phase, "confirmed_facts": state.ProductFacts(state.Task()), "effective_p0": state.P0PolicyMD}
+	facts := state.HookFacts()
+	input := map[string]any{"task": state.Task(), "confirmed_facts": facts, "product_ids": state.HookProducts(), "hook_limit": 4, "effective_p0": state.P0PolicyMD}
+	benefits := []string{}
+	for _, f := range facts {
+		benefits = append(benefits, f.Benefits...)
+	}
+	input["benefit_ids"] = benefits
 	if strategy, e := state.ContentStrategy.Render("主线", state.ProductFacts(state.Task())); e == nil && strategy != "" {
 		input["candidate_directions"] = strategy
 	}
 	packet, _ := json.Marshal(input)
-	request := agentgateway.Request{Stage: "mainline_angle_plan", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(packet)}}, MaxTokens: 1100, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, Timeout: 15 * time.Second}
+	request := agentgateway.Request{Stage: "mainline_angle_plan", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(packet)}}, MaxTokens: 2000, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, Timeout: 15 * time.Second}
+	if profile.SystemPrompt != "" {
+		request.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, request.Messages...)
+	}
+	// A failed plan is a bounded, observable fallback for this immutable task,
+	// not an endless series of planning requests while the mainline waits.
+	fallback := func(message string) {
+		state.Warn(message + "，继续生成，不停止直播")
+		if state.AnglePlans == nil {
+			state.AnglePlans = map[string]*anchorcycle.AnglePlan{}
+		}
+		key := state.AnglePlanKey()
+		state.AnglePlans[key] = &anchorcycle.AnglePlan{SourceSHA: key, PromptSHA: state.AnglePlanMotherSHA, Model: profile.Model, PlanError: message}
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	callCtx = withExchangeScope(callCtx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
 	id, err := s.beginModelExchange(callCtx, request.Stage, profile.ID, request)
 	if err != nil {
-		state.Warn("角度规划记录暂不可用，按原任务继续生成")
+		fallback("角度规划记录暂不可用")
 		return
 	}
 	started := time.Now()
@@ -55,12 +80,13 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	response.Provider, response.Model = "anchor:"+profile.ID, profile.Model
 	callErr = s.finishModelExchange(callCtx, id, response, response.Text, started, response.InputTokens, response.OutputTokens, callErr)
 	if callErr != nil {
-		state.Warn("角度规划未完成，按原任务继续生成")
+		fallback("角度规划未完成")
 		return
 	}
-	plan, err := anchorcycle.ParseAnglePlan(response.Text)
+	plan, err := anchorcycle.ParseHookPlan(response.Text, facts, state.HookProducts())
 	if err != nil {
-		state.Warn("角度规划结构不兼容，原始返回已记录，按原任务继续生成")
+		fallback("角度规划结构不兼容，原始返回已记录: " + err.Error())
+		state.CurrentAnglePlan().Raw = response.Text
 		return
 	}
 	plan.SourceSHA, plan.PromptSHA, plan.Model = state.AnglePlanKey(), state.AnglePlanMotherSHA, profile.Model
@@ -77,8 +103,31 @@ func applyCycleAnglePlanPacket(state *anchorcycle.State, packet map[string]any) 
 		return
 	}
 	task := state.Task()
+	task.Key = derivedHash(task.Key) // Legacy keys may embed the old speech example.
 	// Keep the original angle in run state and the planning exchange, rather than
 	// giving the speech generator a ready-made paragraph to recite.
+	if hook := state.CurrentAngleHook(); hook != nil {
+		task.Angle, task.PainPoint, task.TargetAudience = hook.Title, hook.Concern, ""
+		packet["本次任务"] = task
+		packet["角度钩子工作卡"] = hook
+		packet["讲述目的"] = plan.Goal
+		packet["表达展开建议"] = hook.Action
+		calculated, warnings := state.CurrentHookCalculations()
+		if len(calculated) > 0 {
+			packet["程序计算的数值资料"] = calculated
+		}
+		for _, warning := range warnings {
+			state.Warn("计算辅助未采用: " + warning)
+		}
+		delete(packet, "内容方向与采用条件")
+		return
+	}
+	if len(plan.Hooks) == 0 {
+		task.Angle, task.TargetAudience = "", ""
+		packet["本次任务"] = task
+		delete(packet, "内容方向与采用条件")
+		return
+	}
 	hook := plan.Hooks[(state.Used[state.Task().Key].Count+len(state.Attempts))%len(plan.Hooks)]
 	task.Angle = hook
 	task.PainPoint = plan.AudienceConcern

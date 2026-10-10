@@ -107,10 +107,11 @@ type Worker struct {
 	inFlight   map[int64]time.Time
 	retryAfter map[int64]time.Time
 
-	addressMu   sync.Mutex
-	recentNamed map[int64]map[string]time.Time
-	faqCache    *faqAnswerCache
-	prepared    map[preparedInteractionKey]preparedInteraction
+	addressMu       sync.Mutex
+	recentNamed     map[int64]map[string]time.Time
+	nicknameAliases map[string]nicknameAliasCacheEntry
+	faqCache        *faqAnswerCache
+	prepared        map[preparedInteractionKey]preparedInteraction
 }
 
 type decisionItem struct {
@@ -140,6 +141,7 @@ type decisionItem struct {
 	ReplyHint              string                                `json:"reply_hint"`
 	SampleQuestions        []string                              `json:"sample_questions"`
 	Nicknames              []string                              `json:"nicknames,omitempty"`
+	PromptNicknames        []string                              `json:"-"`
 	ManualAction           string                                `json:"manual_action"`
 	ManualOrigin           string                                `json:"manual_origin"`
 	ExecutionMode          string                                `json:"execution_mode"`
@@ -315,6 +317,7 @@ func (w *Worker) applyStrategyPipeline(
 	if w == nil || item == nil {
 		return
 	}
+	w.planNicknameAddresses(ctx, session, item)
 	registry := w.strategyStageRegistry()
 	rawOrder := w.store.AgentPromptValue(ctx, "live.strategy.pipeline.order", "interaction,interrupt,resume,opening,addressing,humanize")
 	order := normalizeStrategyStageOrder(rawOrder, registry)
@@ -578,11 +581,12 @@ func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionIt
 	plan.Candidate = ""
 	plan.GroupLabel = ""
 	plan.SelectedNames = nil
+	plan.OriginalSelectedNames = nil
 	return plan
 }
 
 func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candidate string, preferences model.RoomAddressingPreferences) speechmission.AddressingPlan {
-	eligibleNames, recentPenalty := w.playableAddressingNames(roomID, item.Nicknames)
+	eligibleNames, recentPenalty := w.playableAddressingNames(roomID, item.promptNicknames(), item.Nicknames)
 	selectedNames := append([]string(nil), eligibleNames...)
 	preference := strings.ToLower(strings.TrimSpace(preferences.NamingPreference))
 	if preference != "less" && preference != "more" {
@@ -631,19 +635,31 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	if key = strings.TrimSpace(key); key == "" {
 		key = strings.ToLower(mode)
 	}
+	originals := []string{}
+	for _, alias := range selectedNames {
+		original := alias
+		for i, n := range item.promptNicknames() {
+			if n == alias && i < len(item.Nicknames) {
+				original = item.Nicknames[i]
+				break
+			}
+		}
+		originals = append(originals, original)
+	}
 	return speechmission.AddressingPlan{
-		Mode:              mode,
-		Candidate:         candidate,
-		Key:               key,
-		Preference:        preference,
-		NamedCandidates:   eligibleNames,
-		SelectedNames:     selectedNames,
-		PreferredTerms:    preferredTerms,
-		BlockedTerms:      blockedTerms,
-		GroupLabel:        candidate,
-		MaxNamedCount:     maxNamedCount,
-		RecentNamePenalty: recentPenalty,
-		Optional:          true,
+		Mode:                  mode,
+		Candidate:             candidate,
+		Key:                   key,
+		Preference:            preference,
+		NamedCandidates:       eligibleNames,
+		SelectedNames:         selectedNames,
+		OriginalSelectedNames: originals,
+		PreferredTerms:        preferredTerms,
+		BlockedTerms:          blockedTerms,
+		GroupLabel:            candidate,
+		MaxNamedCount:         maxNamedCount,
+		RecentNamePenalty:     recentPenalty,
+		Optional:              true,
 	}
 }
 
@@ -731,7 +747,7 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	}
 }
 
-func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, float64) {
+func (w *Worker) playableAddressingNames(roomID int64, raw []string, originals ...[]string) ([]string, float64) {
 	if w == nil || len(raw) == 0 {
 		return nil, 0
 	}
@@ -740,8 +756,9 @@ func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, 
 		now = w.now().UTC()
 	}
 	cleaned := make([]string, 0, len(raw))
+	identity := map[string]string{}
 	seen := make(map[string]struct{}, len(raw))
-	for _, rawName := range raw {
+	for i, rawName := range raw {
 		name, ok := normalizePlayableNickname(rawName)
 		if !ok {
 			continue
@@ -751,6 +768,10 @@ func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, 
 		}
 		seen[name] = struct{}{}
 		cleaned = append(cleaned, name)
+		identity[name] = name
+		if len(originals) > 0 && i < len(originals[0]) {
+			identity[name] = originals[0][i]
+		}
 	}
 	if len(cleaned) == 0 {
 		return nil, 0
@@ -767,7 +788,7 @@ func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, 
 	result := make([]string, 0, len(cleaned))
 	suppressed := 0
 	for _, name := range cleaned {
-		if usedAt, exists := recent[name]; exists && now.Sub(usedAt) < addressingNameCooldown {
+		if usedAt, exists := recent[identity[name]]; exists && now.Sub(usedAt) < addressingNameCooldown {
 			suppressed++
 			continue
 		}
@@ -780,7 +801,7 @@ func (w *Worker) playableAddressingNames(roomID int64, raw []string) ([]string, 
 	return result, penalty
 }
 
-func (w *Worker) recordUsedAddressingNames(roomID int64, names []string, finalText string) {
+func (w *Worker) recordUsedAddressingNames(roomID int64, names []string, finalText string, originals ...[]string) {
 	if w == nil || roomID <= 0 || len(names) == 0 {
 		return
 	}
@@ -793,10 +814,13 @@ func (w *Worker) recordUsedAddressingNames(roomID int64, names []string, finalTe
 		now = w.now().UTC()
 	}
 	used := make([]string, 0, len(names))
-	for _, rawName := range names {
+	for i, rawName := range names {
 		name, ok := normalizePlayableNickname(rawName)
 		if !ok || !strings.Contains(finalText, name) {
 			continue
+		}
+		if len(originals) > 0 && i < len(originals[0]) {
+			name = originals[0][i]
 		}
 		used = append(used, name)
 	}
@@ -907,6 +931,9 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	} else if strings.EqualFold(plan.Preference, "more") {
 		base += " 用户偏好多点名；系统会按较高目标频率触发，命中的这一轮必须自然使用一次称呼，但不能生硬重复。"
 	}
+	// SelectedNames retain original event identities; generated speech may use
+	// a safe short name or neutral address under the nickname prompt policy.
+	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。"
 	return base
 }
 
@@ -1802,7 +1829,7 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 	})
 	w.transitionMission(item, speechmission.StateDispatched, "core_dispatched", dispatchResult.traceNote())
 	if mission, ok := w.missionSnapshot(item); ok {
-		w.recordUsedAddressingNames(session.RoomID, mission.Addressing.SelectedNames, text)
+		w.recordUsedAddressingNames(session.RoomID, mission.Addressing.SelectedNames, text, mission.Addressing.OriginalSelectedNames)
 	}
 	sourceType := "interrupt_answer"
 	if action == "quick" {

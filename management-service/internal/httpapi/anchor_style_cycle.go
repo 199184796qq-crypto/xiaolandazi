@@ -736,6 +736,11 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if err != nil {
 		return nil, errors.New(err.Error())
 	}
+	// Planning precedes text-cache lookup so an old angle's voice cannot bypass
+	// this request's selected hook. No TTS or audio protocol is changed.
+	if state.TextModel != nil && cycleAnglePlanEnabled() {
+		s.ensureCycleAnglePlan(ctx, state, *state.TextModel)
+	}
 	cached := s.cachedCycleCandidate(ctx, state, b)
 	reportCycleProgress(ctx, 25)
 	var text, rawText string
@@ -837,6 +842,8 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	retry := buildAnchorStyleScoreFeedback(score, b)
 	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: "model_raw_text", Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	candidate.AnglePlan = state.CurrentAnglePlan()
+	candidate.AngleHook = state.CurrentAngleHook()
+	candidate.HookCalculations, _ = state.CurrentHookCalculations()
 	if patch != nil {
 		candidate.P0Patch = patch
 		candidate.P0PatchError = p0PatchError

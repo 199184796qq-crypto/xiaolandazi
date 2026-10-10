@@ -121,20 +121,21 @@ type OpeningPlan struct {
 }
 
 type AddressingPlan struct {
-	Mode              string   `json:"mode,omitempty"`
-	Candidate         string   `json:"candidate,omitempty"`
-	Key               string   `json:"key,omitempty"`
-	Preference        string   `json:"preference,omitempty"`
-	NamedCandidates   []string `json:"named_candidates,omitempty"`
-	SelectedNames     []string `json:"selected_names,omitempty"`
-	PreferredTerms    []string `json:"preferred_terms,omitempty"`
-	BlockedTerms      []string `json:"blocked_terms,omitempty"`
-	GroupLabel        string   `json:"group_label,omitempty"`
-	MaxNamedCount     int      `json:"max_named_count,omitempty"`
-	RecentNamePenalty float64  `json:"recent_name_penalty,omitempty"`
-	TargetRate        int      `json:"target_rate,omitempty"`
-	SelectedByRate    bool     `json:"selected_by_rate"`
-	Optional          bool     `json:"optional"`
+	Mode                  string   `json:"mode,omitempty"`
+	Candidate             string   `json:"candidate,omitempty"`
+	Key                   string   `json:"key,omitempty"`
+	Preference            string   `json:"preference,omitempty"`
+	NamedCandidates       []string `json:"named_candidates,omitempty"`
+	SelectedNames         []string `json:"selected_names,omitempty"`
+	OriginalSelectedNames []string `json:"original_selected_names,omitempty"`
+	PreferredTerms        []string `json:"preferred_terms,omitempty"`
+	BlockedTerms          []string `json:"blocked_terms,omitempty"`
+	GroupLabel            string   `json:"group_label,omitempty"`
+	MaxNamedCount         int      `json:"max_named_count,omitempty"`
+	RecentNamePenalty     float64  `json:"recent_name_penalty,omitempty"`
+	TargetRate            int      `json:"target_rate,omitempty"`
+	SelectedByRate        bool     `json:"selected_by_rate"`
+	Optional              bool     `json:"optional"`
 }
 
 type HumanTraitPlan struct {

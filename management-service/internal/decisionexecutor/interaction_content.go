@@ -161,7 +161,10 @@ func (w *Worker) interactionContentGuidance(ctx context.Context, session model.L
 		data["订单依据来源"] = "viewer_claim"
 	}
 	data["涉及多人"] = item.MissionEventCount > 1 || len(item.Nicknames) > 1
-	data["本批观众昵称"] = item.Nicknames
+	data["本批观众昵称"] = item.promptNicknames()
+	if item.PromptNicknames != nil {
+		data["昵称已按称呼规划处理"] = true
+	}
 	raw, err := interactionpolicy.Read("interaction-core-content.md")
 	if err != nil {
 		return "", goal, "", err

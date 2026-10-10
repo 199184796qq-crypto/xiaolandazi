@@ -32,7 +32,13 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 			for _, id := range f.Products {
 				factLinks = append(factLinks, links[id])
 			}
-			focus.Facts = append(focus.Facts, anchorcycle.ScopedFact{Text: f.Text, Links: factLinks, Shared: len(f.Products) == len(set.Sources.Products), Applicable: true})
+			benefits := []string{}
+			for _, source := range f.Sources {
+				if strings.HasPrefix(source, "benefits:") {
+					benefits = append(benefits, source)
+				}
+			}
+			focus.Facts = append(focus.Facts, anchorcycle.ScopedFact{ID: f.ID, BenefitIDs: benefits, Text: f.Text, Links: factLinks, Shared: len(f.Products) == len(set.Sources.Products), Applicable: true})
 		}
 		for _, t := range p.Tasks {
 			queue = append(queue, anchorcycle.Task{ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})

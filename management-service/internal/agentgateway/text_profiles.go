@@ -73,7 +73,11 @@ func TextPromptContract(model string) (string, string, string, error) {
 		return "", "", "", err
 	}
 	body := string(common) + "\n\n" + string(adaptation)
-	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body))), body, nil
+	nicknames, err := interactionpolicy.Read("interaction-nickname-addressing.md")
+	if err != nil {
+		return "", "", "", err
+	}
+	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body+string(nicknames)))), body, nil
 }
 func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 	if !textGenerationStage(r.Stage) || r.TextPromptSHA != "" {
@@ -84,6 +88,20 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 		return r, err
 	}
 	r.Messages = append([]Message{{Role: "system", Content: body}}, r.Messages...)
+	if r.Stage == "speech_generation" {
+		nicknames, err := interactionpolicy.Read("interaction-nickname-addressing.md")
+		if err != nil {
+			return r, err
+		}
+		// Keep name selection at the end of the actual interaction task. This is
+		// guidance in the same request, not a filter or another model/audit call.
+		for i := len(r.Messages) - 1; i >= 0; i-- {
+			if r.Messages[i].Role == "user" {
+				r.Messages[i].Content += "\n\n" + string(nicknames)
+				break
+			}
+		}
+	}
 	r.TextPromptID, r.TextPromptSHA = id, hash
 	r.EnableThinking = false
 	return r, nil

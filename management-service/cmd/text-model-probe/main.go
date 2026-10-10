@@ -69,6 +69,10 @@ func main() {
 		c.Request.Model = *modelID
 		c.Request.EnableThinking = false
 		c.Request.Timeout = 45 * time.Second
+		c.Request, err = agentgateway.PrepareTextRequest(*profile, c.Request)
+		if err != nil {
+			panic("probe prompt preparation failed")
+		}
 		raw, _ := json.Marshal(c.Request)
 		started := time.Now()
 		result, callErr := agentgateway.CompleteSpeechEndpoint(ctx, *profile, c.Request)

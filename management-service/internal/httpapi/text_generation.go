@@ -9,7 +9,6 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
-	"os"
 	"strings"
 	"time"
 )
@@ -84,8 +83,17 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		return nil, err
 	}
 	task := state.Task()
+	hookMode := state.TextModel != nil && cycleAnglePlanEnabled()
+	if hookMode {
+		task.Angle = ""
+		task.Key = derivedHash(task.Key)
+	}
 	// Stable prefix: complete current product facts and a reusable expression view.
-	fixed, _ := json.Marshal(map[string]any{"本场有效事实": state.ProductFacts(task), "主播表达标尺": view, "有效P0": state.P0PolicyMD})
+	var facts any = state.ProductFacts(task)
+	if hookMode || state.CurrentAnglePlan() != nil {
+		facts = state.HookFacts()
+	}
+	fixed, _ := json.Marshal(map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": state.P0PolicyMD})
 	recent := []string{}
 	for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
 		recent = append(recent, cycleVoiceText(part.Selected))
@@ -106,6 +114,20 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	}
 	packet := map[string]any{"开头模式": opener, "本次任务": task, "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "表达展开建议": methods[(state.TotalAccepted()+state.CycleNumber)%len(methods)], "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
 	applyCycleAnglePlanPacket(state, packet)
+	if hookMode || state.CurrentAnglePlan() != nil {
+		// Adopted work records provide bounded continuity without turning the
+		// last spoken paragraph into the next paragraph's reference example.
+		memory := []map[string]any{}
+		for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
+			if h := part.Selected.AngleHook; h != nil {
+				memory = append(memory, map[string]any{"卖点": part.Task.SellingPoint, "钩子": h.Title, "解释动作": h.Action, "事实编号": h.Facts})
+			} else {
+				memory = append(memory, map[string]any{"卖点": part.Task.SellingPoint, "环节": part.Phase})
+			}
+		}
+		delete(packet, "近期已采用内容仅供避重")
+		packet["近期已采用任务记录（不代表已播放）"] = memory
+	}
 	if hook := state.PendingOpeningHook; state.Phase == "opening" && hook != nil {
 		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}
 	}
@@ -114,7 +136,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	}
 	if strategy, err := state.ContentStrategy.Render("主线", state.ProductFacts(task)); err != nil {
 		return nil, err
-	} else if strategy != "" && state.CurrentAnglePlan() == nil {
+	} else if strategy != "" && state.CurrentAnglePlan() == nil && !hookMode {
 		packet["内容方向与采用条件"] = strategy
 	}
 	if state.P0PendingRepair != nil {
@@ -134,7 +156,7 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	}
 	profile := *state.TextModel
 	profile.APIKey = current.APIKey
-	if os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") == "1" {
+	if cycleAnglePlanEnabled() {
 		s.ensureCycleAnglePlan(ctx, state, profile)
 	}
 	messages, err := renderCycleTextMessages(state)
