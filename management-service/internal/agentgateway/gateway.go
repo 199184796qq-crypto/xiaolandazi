@@ -135,7 +135,7 @@ func (g *Gateway) Complete(ctx context.Context, request Request) (Response, erro
 	switch request.Stage {
 	case "style_analysis":
 		stageKey = "ANCHOR_ANALYSIS"
-	case "speech_generation":
+	case "speech_generation", "interaction_agent_answer":
 		stageKey = "ANCHOR_GENERATION"
 	}
 	if providerName == "" && stageKey != "" {

@@ -19,7 +19,7 @@ window.fetch=async(url,init={})=>{const p=new URL(url,location.origin).pathname,
   if(p.endsWith('/agent-decisions/simulate')){
    if(window.fixture.failNext){window.fixture.failNext=false;return Response.json({error:'测试暂时失败'},{status:502})}
    if(window.fixture.delayNext){window.fixture.delayNext=false;await new Promise(r=>window.fixture.releaseTest=r)}
-   return Response.json({question:body.question,reply:body.preview_instruction?'纠正后回答：使用京东物流。':'测试回答：使用京东物流。',plan_id:body.plan_id,plan_name:'测试方案',execution_mode:'intent'});
+   return Response.json({question:body.question,reply:body.preview_instruction?'纠正后回答：使用京东物流。':'测试回答：使用京东物流。',plan_id:body.plan_id,plan_name:'测试方案',execution_mode:'intent',answer_outline:{purpose:'确认配送公司',angle:body.preview_instruction?'快递公司与承诺边界':'配送公司',aspects:['当前使用的快递公司'],avoid:['未经确认的到货日期']}});
   }
   if(p.endsWith('/facts/adopt'))return Response.json({adopted:1,results:[{status:'adopted'}]});
   if(p.endsWith('/adopt-plan-answer'))return Response.json({session:{id:50,status:'adopted'},memory:{id:90},version:{id:91}});
@@ -141,8 +141,14 @@ try {
  const first=page.locator('[data-plan-test-answer]').first()
  await first.getByText('测试回答：使用京东物流。',{exact:false}).waitFor()
  let calls=await page.evaluate(()=>window.fixture.writes)
- assert.deepEqual(calls[0].body,{question:'发什么快递？',plan_id:4})
+ assert.deepEqual(calls[0].body,{question:'发什么快递？',plan_id:4,include_answer_outline:true})
  assert.equal(calls.length,1,'testing never auto-adopts')
+ const outline=first.getByRole('region',{name:'本次回答说明'})
+ // The section uses a label but has no heading; inspect its actual position.
+ const planning=first.locator('.test-answer-outline')
+ assert.match(await planning.innerText(),/问题目的[\s\S]*确认配送公司[\s\S]*本次角度[\s\S]*配送公司[\s\S]*回答方面[\s\S]*当前使用的快递公司[\s\S]*不要回答[\s\S]*未经确认的到货日期/)
+ const questionBox=await first.locator('.test-question').boundingBox(),planBox=await planning.boundingBox(),replyBox=await first.locator('.test-reply').boundingBox()
+ assert.ok(questionBox.y+questionBox.height<=planBox.y && planBox.y+planBox.height<=replyBox.y,'business plan appears under the question and above the answer')
  await first.getByRole('button',{name:'纠正回答',exact:true}).click()
  await first.getByLabel('正确回答或回答要求').fill('只说使用京东物流，不承诺到货日期。')
  await first.getByRole('button',{name:'应用纠正并重测'}).click()
@@ -151,6 +157,8 @@ try {
  calls=await page.evaluate(()=>window.fixture.writes)
  assert.equal(calls[1].body.plan_id,4);assert.equal(calls[1].body.preview_instruction,'只说使用京东物流，不承诺到货日期。')
  assert.equal(calls.length,2,'correction preview is not persisted before adoption')
+ assert.deepEqual(calls[1].body.recent_answers,[{question:'发什么快递？',reply:'测试回答：使用京东物流。',purpose:'确认配送公司',angle:'配送公司'}])
+ await second.locator('.test-answer-outline').getByText('快递公司与承诺边界',{exact:true}).waitFor()
  await second.getByRole('button',{name:'采纳到互动策略',exact:true}).click()
  await second.getByText('已采纳到当前方案的互动策略，可以继续测试啦。').waitFor()
  await first.getByRole('button',{name:'采纳到事实依据',exact:true}).click()
@@ -176,8 +184,12 @@ try {
  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('system-agent-live-strategy-context',{detail:{room_id:26,plan_id:5,mode:'plan'}})))
  await drawer.getByRole('button',{name:'切换到话术智能体',exact:true}).click()
  await page.evaluate(()=>window.fixture.releaseTest())
- await page.getByText('方案 #5 · 与互动智能体共用真实回答链路',{exact:true}).waitFor()
+ await page.getByText('方案 #5 · 共用互动智能体的业务核心',{exact:true}).waitFor()
  assert.equal(await page.locator('[data-plan-test-answer]').count(),0,'late answer from previous plan must not leak')
+ await input.fill('新方案发什么快递？');await send.click()
+ await page.locator('[data-plan-test-answer]').first().waitFor()
+ calls=await page.evaluate(()=>window.fixture.writes)
+ assert.equal(calls.at(-1).body.plan_id,5);assert.equal(calls.at(-1).body.recent_answers,undefined,'previous plan history must not leak')
  await page.setViewportSize({width:460,height:850})
  const button=drawer.getByRole('button',{name:'话术智能体 · 互动测试',exact:true}),box=await button.boundingBox()
  assert.ok(box.x>=0 && box.x+box.width<=460 && box.y>=0,'explicit switch fits narrow screen')

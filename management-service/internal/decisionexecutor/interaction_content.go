@@ -29,9 +29,12 @@ func interactionScene(kind string) string {
 }
 
 type playedContent struct {
-	ContentGoal  string `json:"content_goal"`
-	ContentAngle string `json:"content_angle"`
-	Scene        string `json:"scene"`
+	ContentGoal         string          `json:"content_goal"`
+	ContentAngle        string          `json:"content_angle"`
+	Scene               string          `json:"scene"`
+	SampleQuestions     []string        `json:"sample_questions,omitempty"`
+	SelectedContentPlan json.RawMessage `json:"selected_content_plan,omitempty"`
+	Purpose             string          `json:"purpose,omitempty"`
 }
 
 func (w *Worker) playedInteractionContent(ctx context.Context, s model.LiveRuntimeSession) []playedContent {
@@ -51,6 +54,20 @@ func (w *Worker) playedInteractionContent(ctx context.Context, s model.LiveRunti
 	}
 	if json.NewDecoder(resp.Body).Decode(&snapshot) != nil {
 		return nil
+	}
+	if len(snapshot.Played) > 8 {
+		snapshot.Played = snapshot.Played[len(snapshot.Played)-8:]
+	}
+	for i := range snapshot.Played {
+		played := &snapshot.Played[i]
+		var plan struct {
+			Outline *InteractionAnswerOutline `json:"answer_outline"`
+		}
+		if json.Unmarshal(played.SelectedContentPlan, &plan) == nil && plan.Outline != nil {
+			played.Purpose = plan.Outline.Purpose
+		}
+		// History is usage evidence only. Do not re-inject old fact packages.
+		played.SelectedContentPlan = nil
 	}
 	return snapshot.Played
 }

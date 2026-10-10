@@ -21,7 +21,30 @@ type contentStrategyStore interface {
 	GetLatestPlanContentStrategy(context.Context, int64, int64, string, time.Time) (string, error)
 }
 
+type currentInteractionFactsStore interface {
+	CurrentInteractionFacts(context.Context, int64, int64, int64) (string, error)
+}
+
 func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, options ...any) (string, error) {
+	var item *decisionItem
+	skipStrategy := false
+	for _, option := range options {
+		switch value := option.(type) {
+		case *decisionItem:
+			item = value
+		case bool:
+			skipStrategy = value
+		}
+	}
+	if item != nil && item.BusinessCoreOnly {
+		if source, ok := w.store.(currentInteractionFactsStore); ok {
+			facts, err := source.CurrentInteractionFacts(ctx, session.TenantID, session.RoomID, planID)
+			if err != nil {
+				return "", err
+			}
+			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
+		}
+	}
 	source, ok := w.store.(interactionFactSnapshotStore)
 	if !ok {
 		return "", nil
@@ -45,17 +68,15 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	if err != nil || strings.TrimSpace(asset.SafeFacts) == "" {
 		return "", fmt.Errorf("本场审核事实不可用，停止生成商品回答")
 	}
+	return w.interactionFactsGuidance(ctx, session, planID, asset.SafeFacts, item, skipStrategy)
+}
+
+func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool) (string, error) {
 	raw, err := interactionpolicy.Read("interaction-facts-boundary.md")
 	if err != nil {
 		return "", err
 	}
-	result := "\n" + strings.ReplaceAll(string(raw), "{{FACTS}}", asset.SafeFacts)
-	skipStrategy := false
-	for _, option := range options {
-		if flag, ok := option.(bool); ok {
-			skipStrategy = flag
-		}
-	}
+	result := "\n" + strings.ReplaceAll(string(raw), "{{FACTS}}", facts)
 	if skipStrategy {
 		return result, nil
 	}
@@ -63,16 +84,29 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 		if control, err := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, "", session.StartedAt); err == nil && contentstrategy.Disabled(control) {
 			return result, nil
 		}
-		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(asset.SafeFacts), session.StartedAt)
+		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(facts), session.StartedAt)
 		if errors.Is(strategyErr, appdb.ErrPlanAnalysisAssetNotFound) {
 			return result, nil
 		}
 		if strategyErr == nil {
 			var snapshot *contentstrategy.Snapshot
-			snapshot, strategyErr = contentstrategy.Parse(strategyRaw, asset.SafeFacts)
+			snapshot, strategyErr = contentstrategy.Parse(strategyRaw, facts)
 			if strategyErr == nil {
 				var guidance string
-				guidance, strategyErr = snapshot.Render("互动", asset.SafeFacts)
+				if item != nil && item.PurposeID != "" {
+					recent := []string{}
+					for _, played := range w.playedInteractionContent(ctx, session) {
+						recent = append(recent, played.ContentAngle)
+					}
+					active := contentstrategy.ActiveBenefitFacts(snapshot.Facts, time.Now().UTC())
+					var selected contentstrategy.Selection
+					guidance, selected, strategyErr = snapshot.RenderSelection(contentstrategy.SelectionRequest{Mode: "互动", AllowedFacts: facts, Question: primaryQuestion(*item), PurposeID: item.PurposeID, Recent: recent, ActiveBenefit: len(active) > 0, ActiveFactIDs: active})
+					if guidance != "" {
+						item.SelectedContentPlan = &selected
+					}
+				} else {
+					guidance, strategyErr = snapshot.Render("互动", facts)
+				}
 				if strategyErr == nil {
 					return result + "\n\n" + guidance, nil
 				}

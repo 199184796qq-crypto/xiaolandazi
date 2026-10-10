@@ -115,6 +115,13 @@ type Worker struct {
 }
 
 type decisionItem struct {
+	BusinessPlanError   string                     `json:"-"`
+	BusinessCoreOnly    bool                       `json:"-"`
+	BusinessPlanning    bool                       `json:"-"`
+	BusinessPlan        *interactionBusinessPlan   `json:"-"`
+	RecentAnswers       []InteractionRecentAnswer  `json:"-"`
+	AnswerOutline       *InteractionAnswerOutline  `json:"-"`
+	AnswerOutlineError  string                     `json:"-"`
 	PreparationCutPlans json.RawMessage            `json:"-"`
 	CompletionUntil     time.Time                  `json:"completion_until,omitempty"`
 	AudioPrepared       bool                       `json:"audio_prepared,omitempty"`
@@ -315,6 +322,13 @@ func (w *Worker) applyStrategyPipeline(
 	item *decisionItem,
 ) {
 	if w == nil || item == nil {
+		return
+	}
+	if item.BusinessCoreOnly {
+		// The simulation entry point executes the same business stage without
+		// creating a live mission or applying any delivery stages.
+		w.applyInteractionStrategyStage(ctx, session, seed, item)
+		item.AppliedStrategyStages = []string{"interaction"}
 		return
 	}
 	w.planNicknameAddresses(ctx, session, item)
@@ -1857,11 +1871,13 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 }
 
 type SimulationOutput struct {
-	Question         string `json:"question"`
-	Reply            string `json:"reply"`
-	ExecutionMode    string `json:"execution_mode"`
-	PlanName         string `json:"plan_name,omitempty"`
-	UserLayerVersion uint64 `json:"user_layer_version,omitempty"`
+	AnswerOutline      *InteractionAnswerOutline `json:"answer_outline,omitempty"`
+	AnswerOutlineError string                    `json:"answer_outline_error,omitempty"`
+	Question           string                    `json:"question"`
+	Reply              string                    `json:"reply"`
+	ExecutionMode      string                    `json:"execution_mode"`
+	PlanName           string                    `json:"plan_name,omitempty"`
+	UserLayerVersion   uint64                    `json:"user_layer_version,omitempty"`
 }
 
 type coreStrategySelection struct {
@@ -2077,11 +2093,19 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		return "", fmt.Errorf("待执行策略为空")
 	}
 	item.faqCacheTicket = nil
-	emotionEnabled, emotionErr := w.emotionEnabledForRoom(ctx, session.TenantID, session.RoomID)
-	if emotionErr != nil {
-		return "", fmt.Errorf("读取实时情感设置失败: %w", emotionErr)
+	item.BusinessPlan = nil
+	item.BusinessPlanError = ""
+	item.AnswerOutline = nil
+	item.AnswerOutlineError = ""
+	if item.BusinessCoreOnly {
+		item.EmotionDisabled = true
+	} else {
+		emotionEnabled, emotionErr := w.emotionEnabledForRoom(ctx, session.TenantID, session.RoomID)
+		if emotionErr != nil {
+			return "", fmt.Errorf("读取实时情感设置失败: %w", emotionErr)
+		}
+		item.EmotionDisabled = !emotionEnabled
 	}
-	item.EmotionDisabled = !emotionEnabled
 	text := ""
 	var learningReview *model.InteractionLearningReview
 	assessmentSHA := ""
@@ -2109,16 +2133,48 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		if err != nil {
 			return "", err
 		}
+		if isViewerQuestionAnswer(*item) {
+			if plan, planErr := w.planInteractionAnswer(ctx, session, faqPromptItem(*item)); planErr == nil {
+				item.BusinessPlan = plan
+				item.AnswerOutline = &plan.Outline
+				prompt, err = w.answerPrompt(ctx, session, faqPromptItem(*item), item)
+				if err != nil {
+					return "", err
+				}
+			} else {
+				log.Printf("interaction business planning incomplete tenant=%d room=%d: %v", session.TenantID, session.RoomID, planErr)
+				item.BusinessPlanError = "本次业务规划未完成，可以重新测试。"
+			}
+		}
 		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "你是直播口播合成器。根据事件、现场上下文和策略黑板，一次生成一段真实、自然、可直接播出的完整口播，不编造事实。") +
 			"\n所有策略都只是生成约束，不允许逐项解释、逐段分别生成或输出多个候选。称呼只是可选约束，不自然时必须省略。称呼配置里的常用称谓只用于称呼观众/对方，绝不能当作主播自称、主播身份或自我介绍。主播状态只用于控制语速、句长、停顿、音色和情绪，绝不能在正文里说出“我不舒服/我咳嗽/我今天状态如何”之类状态说明。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
-		if item.EmotionDisabled {
+		if item.EmotionDisabled && !item.BusinessCoreOnly {
 			answerSystemPrompt += "\n当前实时情感已关闭：只生成准确、直接、自然可播的回答正文，不增加情绪渲染、拟人化动作、额外编造的口头禅、刻意语气词、夸张停顿或主播情绪状态。已确认主播风格中的自然自称、称呼、口头禅和句式仍可在适当位置使用，但不要堆叠或强行添加。事实、问答、称呼、打断和回归要求仍正常执行。"
 		}
-		item.faqCacheTicket = w.prepareFAQCache(ctx, session, *item, answerSystemPrompt, prompt)
+		businessAnswer := isViewerQuestionAnswer(*item)
+		if businessAnswer {
+			template, err := interactionpolicy.Read("interaction-agent-answer.md")
+			if err != nil {
+				return "", err
+			}
+			answerSystemPrompt += "\n\n" + string(template)
+		}
+		// Honor the configured reuse policy. Business protocol, selected tasks
+		// and actual history are all part of the cache identity.
+		cacheSystem := answerSystemPrompt
+		if item.BusinessPlan != nil {
+			cacheSystem += "\n" + item.BusinessPlan.SourceSHA
+		}
+		item.faqCacheTicket = w.prepareFAQCache(ctx, session, *item, cacheSystem, prompt)
 		if ticket := item.faqCacheTicket; ticket != nil && ticket.Hit {
 			text = ticket.Text
+			item.AnswerOutline = ticket.AnswerOutline
+			if businessAnswer && item.AnswerOutline == nil {
+				item.AnswerOutlineError = "本次已保存回答没有回答说明，可以重新测试。"
+			}
+			item.attachInteractionAnswerOutline()
 			w.transitionMission(item, speechmission.StateGeneratingText, "faq_cache_hit", "命中仍在生命周期内的常见问题版本，继续执行当前规则终审")
 		} else {
 			maxAnswerTokens := 650
@@ -2133,10 +2189,14 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 				maxAnswerTokens = 1000
 				responseFormat = agentgateway.ResponseJSON
 			}
+			if businessAnswer {
+				maxAnswerTokens = 1400
+				responseFormat = agentgateway.ResponseJSON
+			}
 			if ticket != nil && len(ticket.Recent) > 0 {
 				prompt += "\n\n【近期已经使用的问答版本，禁止逐字重复】\n" + strings.Join(ticket.Recent, "\n") + "\n请保持事实准确，用不同的自然说法重新回答。"
 			}
-			answer, err := w.agent.Complete(answerCtx, agentgateway.Request{
+			request := agentgateway.Request{
 				Stage: "speech_generation",
 				Messages: []agentgateway.Message{
 					{Role: "system", Content: answerSystemPrompt},
@@ -2146,13 +2206,55 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 				ResponseFormat: responseFormat,
 				EnableThinking: false,
 				Timeout:        20 * time.Second,
-			})
+			}
+			if businessAnswer {
+				request.Stage = "interaction_agent_answer"
+			}
+			var answer agentgateway.Response
+			if businessAnswer {
+				answer, err = w.completeInteractionAnswer(answerCtx, session, request)
+			} else {
+				answer, err = w.agent.Complete(answerCtx, request)
+			}
 			if err != nil {
 				return "", fmt.Errorf("生成回答失败: %w", err)
 			}
 			text = strings.TrimSpace(answer.Text)
+			if businessAnswer {
+				text, item.AnswerOutline, item.AnswerOutlineError, err = decodeInteractionAnswer(answer.Text)
+				if err != nil {
+					return "", err
+				}
+				item.attachInteractionAnswerOutline()
+				if item.BusinessPlan != nil {
+					bodyWarning := item.AnswerOutlineError
+					item.AnswerOutline = &item.BusinessPlan.Outline
+					item.AnswerOutlineError = item.BusinessPlan.FormatWarning
+					if bodyWarning != "" {
+						item.AnswerOutlineError = strings.TrimSpace(item.AnswerOutlineError + " 正文的附加说明格式不完整，已保留完成的业务规划。")
+					}
+					item.attachInteractionAnswerOutline()
+				}
+				if item.AnswerOutline == nil {
+					log.Printf("interaction answer plan incomplete tenant=%d room=%d: %s", session.TenantID, session.RoomID, item.AnswerOutlineError)
+				}
+			}
+			if item.BusinessPlanError != "" {
+				item.AnswerOutline = nil
+				item.AnswerOutlineError = item.BusinessPlanError
+				item.attachInteractionAnswerOutline()
+			}
 			if assessInteraction {
-				decoded, err := interactionlearning.DecodeAnswer(answer.Text)
+				assessmentRaw := answer.Text
+				if businessAnswer {
+					var fields map[string]json.RawMessage
+					if contentstrategy.Decode(answer.Text, &fields) == nil {
+						delete(fields, "answer_outline")
+						encoded, _ := json.Marshal(fields)
+						assessmentRaw = string(encoded)
+					}
+				}
+				decoded, err := interactionlearning.DecodeAnswer(assessmentRaw)
 				if err != nil {
 					w.recordInteractionReview(ctx, session, *item, "", &model.InteractionLearningReview{Kind: "semantic", Meaning: primaryQuestion(*item), Context: item.OriginMainline + "\n" + primaryQuestion(*item), Reason: "模型返回的互动回答结构无效：" + err.Error(), RawModelOutput: answer.Text})
 					return "", fmt.Errorf("互动回答结构未通过校验: %w", err)
@@ -2187,6 +2289,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	text = item.nicknameSpeechText(text)
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("最终播出文字为空")
+	}
+	if item.faqCacheTicket != nil {
+		item.faqCacheTicket.AnswerOutline = item.AnswerOutline
 	}
 	if err := w.rememberFAQText(item.faqCacheTicket, text); err != nil {
 		return "", err
@@ -2253,6 +2358,23 @@ func (w *Worker) SimulateAnswerWithPreview(
 	question, previewInstruction, previewMemoryType, previewMemoryKey string,
 	previewMatchedMemoryID int64,
 ) (SimulationOutput, error) {
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, previewMemoryType, previewMemoryKey, previewMatchedMemoryID, nil)
+}
+
+func (w *Worker) SimulateInteraction(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer) (SimulationOutput, error) {
+	if err := ValidateInteractionRecentAnswers(recent); err != nil {
+		return SimulationOutput{}, err
+	}
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent)
+}
+
+func (w *Worker) simulateAnswer(
+	ctx context.Context,
+	tenantID, roomID int64,
+	question, previewInstruction, previewMemoryType, previewMemoryKey string,
+	previewMatchedMemoryID int64,
+	recent []InteractionRecentAnswer,
+) (SimulationOutput, error) {
 	question = strings.TrimSpace(question)
 	if tenantID <= 0 || roomID <= 0 || question == "" {
 		return SimulationOutput{}, fmt.Errorf("测试问题不能为空")
@@ -2262,6 +2384,10 @@ func (w *Worker) SimulateAnswerWithPreview(
 	}
 	session := model.LiveRuntimeSession{TenantID: tenantID, RoomID: roomID}
 	item := decisionItem{
+		BusinessCoreOnly:       true,
+		RecentAnswers:          recent,
+		MissionKind:            "reply_question",
+		Scene:                  "product_question",
 		Title:                  "测试模拟观众提问",
 		Summary:                "测试模式模拟真实观众问题，只生成最终回答，不播音",
 		SampleQuestions:        []string{question},
@@ -2273,11 +2399,11 @@ func (w *Worker) SimulateAnswerWithPreview(
 		PreviewMemoryKey:       strings.TrimSpace(previewMemoryKey),
 		PreviewMatchedMemoryID: previewMatchedMemoryID,
 	}
-	text, err := w.generateDecisionText(ctx, session, item)
+	text, err := w.generateDecisionTextMutable(ctx, session, &item)
 	if err != nil {
 		return SimulationOutput{}, err
 	}
-	result := SimulationOutput{Question: question, Reply: text, ExecutionMode: "intent"}
+	result := SimulationOutput{Question: question, Reply: text, ExecutionMode: "intent", AnswerOutline: item.AnswerOutline, AnswerOutlineError: item.AnswerOutlineError}
 	if plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, tenantID, roomID); planErr == nil {
 		result.PlanName = strings.TrimSpace(plan.Name)
 	}
@@ -2656,6 +2782,9 @@ func (w *Worker) finalizeSpeechText(
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
 	}
+	// Final rules check the complete current source, including corrections,
+	// rather than trusting the planner's extracted subset as the fact oracle.
+	item.BusinessPlan = nil
 	contextText, contextErr := w.answerPrompt(ctx, session, item)
 	if contextErr != nil {
 		return "", contextErr
@@ -3229,24 +3358,26 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		if len(selectionSink) > 0 {
 			selectionSink[0].SelectedContentPlan = item.SelectedContentPlan
 		}
-		scripts, scriptsErr := w.store.ListLiveAgentPlanScripts(ctx, session.TenantID, plan.ID)
-		if scriptsErr != nil {
-			return "", fmt.Errorf("读取直播方案素材失败: %w", scriptsErr)
-		}
-		materialPrompt = w.semanticMaterialPrompt(ctx, session.TenantID, plan.ID, scripts, item)
-		if !item.EmotionDisabled {
-			if source, ok := w.store.(liveAnchorStyleSource); ok {
-				if reusableStyle, styleErr := source.GetLiveAnchorStyleForPlan(ctx, session.TenantID, plan.ID); styleErr == nil {
-					dynamicStylePrompt = liveAnchorStyleProfilePrompt(reusableStyle.Profile)
+		if !item.BusinessCoreOnly {
+			scripts, scriptsErr := w.store.ListLiveAgentPlanScripts(ctx, session.TenantID, plan.ID)
+			if scriptsErr != nil {
+				return "", fmt.Errorf("读取直播方案素材失败: %w", scriptsErr)
+			}
+			materialPrompt = w.semanticMaterialPrompt(ctx, session.TenantID, plan.ID, scripts, item)
+			if !item.EmotionDisabled {
+				if source, ok := w.store.(liveAnchorStyleSource); ok {
+					if reusableStyle, styleErr := source.GetLiveAnchorStyleForPlan(ctx, session.TenantID, plan.ID); styleErr == nil {
+						dynamicStylePrompt = liveAnchorStyleProfilePrompt(reusableStyle.Profile)
+					}
+				}
+				if strings.TrimSpace(dynamicStylePrompt) == "" {
+					dynamicStylePrompt = liveAgentPlanStylePrompt(scripts)
 				}
 			}
-			if strings.TrimSpace(dynamicStylePrompt) == "" {
-				dynamicStylePrompt = liveAgentPlanStylePrompt(scripts)
+			dynamicStyleOverlayPrompt, scriptsErr = w.liveAgentPlanStyleOverlayPrompt(ctx, session.TenantID, plan.ID)
+			if scriptsErr != nil {
+				return "", fmt.Errorf("读取方案叠加风格失败: %w", scriptsErr)
 			}
-		}
-		dynamicStyleOverlayPrompt, scriptsErr = w.liveAgentPlanStyleOverlayPrompt(ctx, session.TenantID, plan.ID)
-		if scriptsErr != nil {
-			return "", fmt.Errorf("读取方案叠加风格失败: %w", scriptsErr)
 		}
 	}
 	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
@@ -3263,6 +3394,15 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		return "", fmt.Errorf("读取智能体记忆失败: %w", memoryErr)
 	}
 	memories = interactionlearning.MemoriesForPlan(memories, plan.ID)
+	if item.BusinessCoreOnly {
+		filtered := make([]model.AgentMemoryItem, 0, len(memories))
+		for _, memory := range memories {
+			if memory.MemoryType != model.AgentMemoryTypeStyle {
+				filtered = append(filtered, memory)
+			}
+		}
+		memories = filtered
+	}
 	if strings.TrimSpace(item.PreviewInstruction) != "" {
 		filtered := memories[:0]
 		for _, memory := range memories {
@@ -3290,16 +3430,54 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	} else {
 		memories = relevant
 	}
+	if item.BusinessPlanning {
+		// A business planning task receives scoped source data, without the
+		// speech composer, delivery instructions or a second response protocol.
+		confirmed := []string{}
+		for _, memory := range memories {
+			if memory.CurrentVersion != nil && memory.MemoryType != model.AgentMemoryTypeStyle {
+				confirmed = append(confirmed, businessSentenceUnits(memory.CurrentVersion.ContentText)...)
+			}
+		}
+		data := map[string]any{"question": item.SampleQuestions, "current_facts": dynamicFactsPrompt, "confirmed_business_content": confirmed, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction, "recent_answers_usage_only": item.RecentAnswers}
+		encoded, err := json.Marshal(data)
+		return string(encoded), err
+	}
 	memoryPrompt := agentmemory.Prompt(memories)
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
+	if item.BusinessPlan != nil {
+		encoded, _ := json.Marshal(item.BusinessPlan)
+		// The full source context is for planning and rule checks, not a
+		// paragraph template for the speech composer to copy wholesale.
+		dynamicFactsPrompt = "\n【本次业务计划：仅回答选定范围】\n" + string(encoded)
+		styleMemories := []model.AgentMemoryItem{}
+		if !item.BusinessCoreOnly {
+			for _, memory := range memories {
+				if memory.MemoryType == model.AgentMemoryTypeStyle {
+					styleMemories = append(styleMemories, memory)
+				}
+			}
+		}
+		memoryPrompt = agentmemory.Prompt(styleMemories)
+		materialPrompt = ""
+		planContext = ""
+		if item.BusinessCoreOnly {
+			data := map[string]any{"answer_mode": "business_core_only", "question": item.SampleQuestions, "business_plan": item.BusinessPlan, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction}
+			encoded, err := json.Marshal(data)
+			return string(encoded), err
+		}
+	}
 	referencePrompt := w.semanticReferencePrompt(ctx, session.TenantID, plan.ID, item)
+	if item.BusinessCoreOnly || item.BusinessPlan != nil {
+		referencePrompt = ""
+	}
 	strategyGuidance := hiddenStrategyPrompt(item)
 	missionContext := speechMissionPrompt(item)
 	lengthGuidance := adaptiveAnswerLengthGuidance(item)
 	factInteractionBoundary := "\n【事实依据与互动策略边界】\n事实依据决定回答内容能引用什么；其中标记为‘禁止直接表述’的原话不能输出，遇到相同意图优先使用‘建议替代表达’。互动策略只决定何时回应、优先级、频率、称呼和回答组织方式，不能新增、猜测或覆盖商品、价格、规格、物流、售后等事实。审核边缘时保留沟通目的并换成合规说法。"
 	continuityGuidance := ""
-	if strings.TrimSpace(item.ResumeMainline) != "" {
+	if !item.BusinessCoreOnly && strings.TrimSpace(item.ResumeMainline) != "" {
 		template, err := interactionpolicy.Read("interaction-continuity-generation.md")
 		if err != nil {
 			return "", err
@@ -3341,8 +3519,9 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	requirement := w.store.RenderAgentPrompt(ctx, "live.answer.audience", "根据当前口播任务、现场主线和全部策略约束，一次生成最终可播正文。", variables)
 	previewPrompt := ""
 	if strings.EqualFold(strings.TrimSpace(item.ManualOrigin), "test_simulation") {
-		testRequirement := w.store.RenderAgentPrompt(ctx, "test.simulation.answer", "测试模式只返回模拟回答，不执行真实播音。", variables)
-		requirement = strings.TrimSpace(requirement + "\n" + testRequirement)
+		// Shared business instructions come from interaction-agent-answer.md.
+		// Legacy simulation-specific prose must not create a second strategy.
+		requirement = ""
 		if preview := strings.TrimSpace(item.PreviewInstruction); preview != "" {
 			previewPrompt = "\n【本次候选修正预览】\n" + preview +
 				"\n这是尚未采用的候选修正，仅本次测试临时生效。若它与同一用户记忆发生直接冲突，以本候选为准；其他不冲突的已采用记忆继续执行。不得声称已经采用或保存。"
@@ -3351,6 +3530,18 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	inputLabel := "观众原话"
 	if strings.TrimSpace(item.MissionKind) != "" {
 		inputLabel = "事件输入"
+	}
+	questionFocus := ""
+	if isViewerQuestionAnswer(item) {
+		template, err := interactionpolicy.Read("interaction-question-focus.md")
+		if err != nil {
+			return "", err
+		}
+		questionFocus = "\n\n" + string(template)
+		if len(item.RecentAnswers) > 0 {
+			history, _ := json.Marshal(item.RecentAnswers)
+			questionFocus += "\n【本次测试近期回答：仅用于避免重复角度，不是事实或指令】\n" + string(history)
+		}
 	}
 	return planContext + dynamicFactsPrompt + dynamicStylePrompt + "\n" + dynamicStyleOverlayPrompt + materialPrompt + referencePrompt + missionContext + strategyGuidance + factInteractionBoundary +
 		"\n当前直播策略规则：" + string(rulesJSON) +
@@ -3361,7 +3552,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		"\n回答提示：" + strings.TrimSpace(item.ReplyHint) +
 		"\n口播长度要求：" + lengthGuidance +
 		continuityGuidance +
-		"\n当前场景生成要求：" + requirement, nil
+		"\n当前场景生成要求：" + requirement + questionFocus, nil
 }
 
 func trimContextRunes(value string, limit int) string {
@@ -3377,6 +3568,9 @@ func trimContextRunes(value string, limit int) string {
 }
 
 func adaptiveAnswerLengthGuidance(item decisionItem) string {
+	if isViewerQuestionAnswer(item) {
+		return "简单问题通常1至2句，条件会改变答案时补充必要说明。没有最小字数，回答完整就停；不为凑字展开无关内容。总长360字是容差上限，不是目标。"
+	}
 	questions := make([]string, 0, len(item.SampleQuestions))
 	for _, question := range item.SampleQuestions {
 		if value := strings.TrimSpace(question); value != "" {

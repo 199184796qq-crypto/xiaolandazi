@@ -60,7 +60,7 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 	}
 	ctx := WithModelResolver(context.Background(), r)
 	g := NewFromContext(ctx)
-	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}, {"mainline_p0_context", "review"}, {"speech_review", "review"}, {"interaction_p0_context", "review"}} {
+	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"interaction_agent_answer", "flash"}, {"interaction_agent_plan", "max"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}, {"mainline_p0_context", "review"}, {"speech_review", "review"}, {"interaction_p0_context", "review"}} {
 		req := Request{Stage: c.stage, Provider: "qwen", Model: "old-per-function-model", Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}}
 		out, err := g.Complete(ctx, req)
 		if err != nil || out.Model != "fixture-"+c.want || out.Text != out.Model {
