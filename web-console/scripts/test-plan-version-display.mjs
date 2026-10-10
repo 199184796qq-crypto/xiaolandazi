@@ -7,6 +7,7 @@ const require = createRequire(process.env.PLAYWRIGHT_CORE_PACKAGE || new URL('..
 const { chromium } = require('playwright-core')
 const roomSource = await readFile(new URL('./room-parity-fixture.mjs', import.meta.url), 'utf8')
 let roomHTML = roomSource.match(/server\.transformIndexHtml\('\/__room-parity.html', `([\s\S]*?)`\)\)/)[1]
+roomHTML = roomHTML.replace('${JSON.stringify(speechIdentity)}', 'null')
 roomHTML = roomHTML.replace('const bootstrap=', `
 const baseFetch=window.fetch;
 window.fixture.planId=4;window.fixture.savedNo=31;window.fixture.savedId=80;window.fixture.running=true;window.fixture.programSession=1;
