@@ -1440,7 +1440,7 @@ async function initializeAnchorGeneration() {
     const result = await request<{ initialized: boolean; partial: boolean; notice: string; selling_points: number; angles: number; steps: AnchorInitializationStep[] }>('/api/v1/live-agent-plans/' + planId + '/initialize-anchor' + query, { method: 'POST', headers: { Accept: 'text/event-stream' } }, (event) => {
       if (event.type !== 'progress') return
       anchorInitializationProgress.value = Math.max(anchorInitializationProgress.value, event.percent || 0)
-      anchorInitializationStage.value = event.message
+      anchorInitializationStage.value = event.message === '正在准备独立的目的角度内容策略，原有方案保留' ? '正在准备内容规划' : event.message
     })
     anchorInitializationSteps.value = result.steps || []
     anchorInitializationNotice.value = result.notice || ''
