@@ -24,15 +24,16 @@ import (
 )
 
 type programTrack struct {
-	ID         string
-	Label      string
-	Kind       string
-	Text       string
-	AudioURL   string
-	MimeType   string
-	DurationMS int
-	Timeline   []audioout.ProgramTimelineSegment
-	SafePoints []audioout.ProgramSafePoint
+	AllowConsecutiveRepeat bool
+	ID                     string
+	Label                  string
+	Kind                   string
+	Text                   string
+	AudioURL               string
+	MimeType               string
+	DurationMS             int
+	Timeline               []audioout.ProgramTimelineSegment
+	SafePoints             []audioout.ProgramSafePoint
 }
 
 type programState struct {
@@ -385,15 +386,16 @@ func (c *Client) prepareProgramTracks(ctx context.Context, tracks []audioout.Pro
 			return nil, fmt.Errorf("track %d safe points: %w", index+1, err)
 		}
 		prepared = append(prepared, programTrack{
-			ID:         id,
-			Label:      label,
-			Kind:       "mainline_program",
-			Text:       strings.TrimSpace(track.Text),
-			AudioURL:   url,
-			MimeType:   mimeType,
-			DurationMS: durationMS,
-			Timeline:   timeline,
-			SafePoints: safePoints,
+			AllowConsecutiveRepeat: track.AllowConsecutiveRepeat,
+			ID:                     id,
+			Label:                  label,
+			Kind:                   "mainline_program",
+			Text:                   strings.TrimSpace(track.Text),
+			AudioURL:               url,
+			MimeType:               mimeType,
+			DurationMS:             durationMS,
+			Timeline:               timeline,
+			SafePoints:             safePoints,
 		})
 	}
 	return prepared, nil
@@ -528,6 +530,17 @@ func (c *Client) startPreparedProgram(
 	}
 	if label == "" {
 		label = "Core 主线循环"
+	}
+	if len(sequential) > 0 && sequential[0] {
+		kept := make([]programTrack, 0, len(tracks))
+		for _, track := range tracks {
+			if len(kept) > 0 && !track.AllowConsecutiveRepeat && audioout.SameSpeech(kept[len(kept)-1].Text, track.Text) {
+				log.Printf("mainline omitted room=%d track=%s reason=consecutive_exact_duplicate", roomID, track.ID)
+				continue
+			}
+			kept = append(kept, track)
+		}
+		tracks = kept
 	}
 	c.mu.Lock()
 	if existing := c.programs[roomID]; existing != nil && existing.Running {
@@ -862,7 +875,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			cut = *input.ResumeOffsetMS
 		}
 		reservedID := fmt.Sprintf("core-interaction-%d-%s-%06d", input.RoomID, program.ID, program.Sequence+1)
-		reservedReturn = buildInteractionReturn(program, reservedID, input.Text, cut, durationMS)
+		reservedReturn = buildInteractionReturn(program, reservedID, input.Text, cut, durationMS, input.AllowConsecutiveRepeat)
 		reservedReturn.pendingMainlineTask = currentTaskID
 		reservedReturn.snapshot.DecisionID = input.DecisionID
 		reservedReturn.snapshot.Deadline = c.now().Add(time.Duration(waitMS+durationMS-800) * time.Millisecond)

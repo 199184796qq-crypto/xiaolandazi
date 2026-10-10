@@ -1,9 +1,7 @@
 package audioout
 
 import (
-	"strings"
 	"time"
-	"unicode"
 )
 
 type ReturnUnit struct {
@@ -15,33 +13,35 @@ type ReturnUnit struct {
 	Text       string `json:"text"`
 }
 type InteractionReturnSnapshot struct {
-	DecisionID       string       `json:"decision_id,omitempty"`
-	ProgramID        string       `json:"program_id"`
-	TaskID           string       `json:"task_id"`
-	Token            string       `json:"token"`
-	BeforeText       string       `json:"before_text"`
-	ReplyText        string       `json:"reply_text"`
-	Units            []ReturnUnit `json:"units"`
-	SkippedUnits     []string     `json:"skipped_units,omitempty"`
-	AudioStartedAt   time.Time    `json:"audio_started_at"`
-	AnswerDurationMS int          `json:"answer_duration_ms"`
-	Deadline         time.Time    `json:"deadline"`
-	BridgeText       string       `json:"bridge_text,omitempty"`
-	BridgeStaged     bool         `json:"bridge_staged"`
+	DecisionID             string       `json:"decision_id,omitempty"`
+	ProgramID              string       `json:"program_id"`
+	TaskID                 string       `json:"task_id"`
+	Token                  string       `json:"token"`
+	BeforeText             string       `json:"before_text"`
+	ReplyText              string       `json:"reply_text"`
+	Units                  []ReturnUnit `json:"units"`
+	SkippedUnits           []string     `json:"skipped_units,omitempty"`
+	AudioStartedAt         time.Time    `json:"audio_started_at"`
+	AnswerDurationMS       int          `json:"answer_duration_ms"`
+	Deadline               time.Time    `json:"deadline"`
+	AllowConsecutiveRepeat bool         `json:"allow_consecutive_repeat,omitempty"`
+	ReturnAllowsRepeat     bool         `json:"return_allows_repeat,omitempty"`
+	BridgeDropReason       string       `json:"bridge_drop_reason,omitempty"`
+	BridgeText             string       `json:"bridge_text,omitempty"`
+	BridgeStaged           bool         `json:"bridge_staged"`
 }
 
-// Similar topic/vector distance can nominate a unit, but cannot prove that
-// its new prices, qualifiers or promises have already been answered.
+// Only the immediately preceding complete sentence (or the entire answer)
+// can prove an exact duplicate. Earlier mentions and changed punctuation do not.
 func CompleteUnitCovered(answer, unit string) bool {
-	normalize := func(text string) string {
-		var b strings.Builder
-		for _, r := range text {
-			if unicode.IsLetter(r) || unicode.IsNumber(r) {
-				b.WriteRune(unicode.ToLower(r))
-			}
-		}
-		return b.String()
+	units := SpeechUnits(answer)
+	return SameSpeech(answer, unit) || (len(units) > 0 && SameSpeech(units[len(units)-1], unit))
+}
+
+func (s InteractionReturnSnapshot) DuplicatesBridge(text string) bool {
+	entry := ""
+	if len(s.Units) > 0 {
+		entry = s.Units[0].Text
 	}
-	covered, target := normalize(answer), normalize(unit)
-	return len([]rune(target)) >= 4 && strings.Contains(covered, target)
+	return BridgeDuplicatesAdjacent(text, s.ReplyText, entry, s.AllowConsecutiveRepeat || s.ReturnAllowsRepeat)
 }

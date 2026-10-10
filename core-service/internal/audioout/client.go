@@ -40,27 +40,29 @@ type CreateExternalTaskInput struct {
 }
 
 type InsertInteractionInput struct {
-	DeferredReturn bool
-	DecisionID     string
-	ExpectedTaskID string
-	RoomID         int64
-	SessionID      string
-	Label          string
-	AudioURL       string
-	Text           string
-	CallbackURL    string
-	ResumeOffsetMS *int
-	SwitchAtMS     *int
+	AllowConsecutiveRepeat bool
+	DeferredReturn         bool
+	DecisionID             string
+	ExpectedTaskID         string
+	RoomID                 int64
+	SessionID              string
+	Label                  string
+	AudioURL               string
+	Text                   string
+	CallbackURL            string
+	ResumeOffsetMS         *int
+	SwitchAtMS             *int
 }
 
 type ProgramTrack struct {
-	ID         string                   `json:"id,omitempty"`
-	Label      string                   `json:"label,omitempty"`
-	Text       string                   `json:"text,omitempty"`
-	AudioURL   string                   `json:"audio_url"`
-	DurationMS int                      `json:"duration_ms,omitempty"`
-	Timeline   []ProgramTimelineSegment `json:"timeline,omitempty"`
-	SafePoints []ProgramSafePoint       `json:"safe_points,omitempty"`
+	AllowConsecutiveRepeat bool                     `json:"allow_consecutive_repeat,omitempty"`
+	ID                     string                   `json:"id,omitempty"`
+	Label                  string                   `json:"label,omitempty"`
+	Text                   string                   `json:"text,omitempty"`
+	AudioURL               string                   `json:"audio_url"`
+	DurationMS             int                      `json:"duration_ms,omitempty"`
+	Timeline               []ProgramTimelineSegment `json:"timeline,omitempty"`
+	SafePoints             []ProgramSafePoint       `json:"safe_points,omitempty"`
 }
 
 type ProgramTimelineSegment struct {

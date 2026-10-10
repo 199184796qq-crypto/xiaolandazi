@@ -20,12 +20,14 @@ import (
 )
 
 type returnBridgePlan struct {
-	ProgramID  string `json:"program_id"`
-	TaskID     string `json:"task_id"`
-	Token      string `json:"token"`
-	BeforeText string `json:"before_text"`
-	ReplyText  string `json:"reply_text"`
-	Units      []struct {
+	AllowConsecutiveRepeat bool   `json:"allow_consecutive_repeat,omitempty"`
+	ReturnAllowsRepeat     bool   `json:"return_allows_repeat,omitempty"`
+	ProgramID              string `json:"program_id"`
+	TaskID                 string `json:"task_id"`
+	Token                  string `json:"token"`
+	BeforeText             string `json:"before_text"`
+	ReplyText              string `json:"reply_text"`
+	Units                  []struct {
 		ID   string `json:"id"`
 		Text string `json:"text"`
 	} `json:"units"`
@@ -209,6 +211,14 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if bridge.Type == "none" {
 		return nil
 	}
+	entry := ""
+	if len(plan.Units) > 0 {
+		entry = plan.Units[0].Text
+	}
+	if contentstrategy.BridgeDuplicatesAdjacent(bridge.Text, plan.ReplyText, entry, plan.AllowConsecutiveRepeat || plan.ReturnAllowsRepeat) {
+		log.Printf("bridge omitted before TTS room=%d decision=%s reason=consecutive_exact_duplicate", session.RoomID, item.ID)
+		return nil
+	}
 	voice, ok, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
 	if err != nil || !ok {
 		return fmt.Errorf("bridge voice unavailable")
@@ -232,6 +242,17 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
 		return fmt.Errorf("bridge missed scope/deadline: http %d", response.StatusCode)
+	}
+	var staged struct {
+		Staged bool   `json:"staged"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&staged); err != nil {
+		return err
+	}
+	if !staged.Staged {
+		log.Printf("bridge omitted room=%d decision=%s reason=%s", session.RoomID, item.ID, staged.Reason)
+		return nil
 	}
 	log.Printf("bridge staged room=%d decision=%s type=%s model=%s text=%q", session.RoomID, item.ID, bridge.Type, profile.Model, bridge.Text)
 	return nil

@@ -42,7 +42,7 @@ func liveCycleMainlineTrack(state *anchorcycle.State, segment anchorcycle.Segmen
 	if err := validateLiveAgentVariantSchedulingAssets(bundle); err != nil {
 		return track, err
 	}
-	track = coreclient.ProgramRefreshTrack{ID: segment.Selected.ID, Label: segment.Task.Key, Text: bundle.Text, AudioURL: bundle.AudioURL, DurationMS: int(bundle.AudioDurationMS)}
+	track = coreclient.ProgramRefreshTrack{AllowConsecutiveRepeat: state.Config.AllowConsecutiveRepeat, ID: segment.Selected.ID, Label: segment.Task.Key, Text: bundle.Text, AudioURL: bundle.AudioURL, DurationMS: int(bundle.AudioDurationMS)}
 	for _, part := range bundle.Timeline {
 		track.Timeline = append(track.Timeline, coreclient.ProgramRefreshTimelineSegment{SegmentID: part.SegmentID, Index: part.Index, StartMS: int(part.StartMS), EndMS: int(part.EndMS), Text: part.Text, SafeCut: part.SafeCut})
 	}

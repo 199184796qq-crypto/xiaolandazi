@@ -864,6 +864,10 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	}
 	candidate.OutputText = cycleVoiceText(candidate)
 	cleanCycleOpeningInstruction(state, &candidate, "")
+	cleanCycleConsecutiveSpeech(state, &candidate)
+	if candidate.OutputText == "" {
+		return s.skipExactDuplicateCandidate(ctx, state, candidate)
+	}
 	if textControlLeak(candidate.OutputText) {
 		candidate.P0PatchError = "正文包含明确的内部控制字段"
 	}
@@ -871,9 +875,19 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		return nil, errors.New(err.Error())
 	}
 	s.reviewCycleP0Context(ctx, state, &candidate)
-	if len(candidate.OpeningInstructionEdits) > 0 {
+	cleanCycleConsecutiveSpeech(state, &candidate)
+	if candidate.OutputText == "" {
+		return s.skipExactDuplicateCandidate(ctx, state, candidate)
+	}
+	if candidate.ExactDuplicateRemovals > 0 {
+		log.Printf("mainline exact duplicate removed room=%d candidate=%s count=%d", room, candidate.ID, candidate.ExactDuplicateRemovals)
+	}
+	if len(candidate.OpeningInstructionEdits) > 0 || candidate.ExactDuplicateRemovals > 0 {
 		candidate.Score = anchorstylescore.Score(candidate.OutputText, b, state.Task().SellingPoint+" × "+state.Task().Angle)
 		candidate.ScoreScope = "opening_instruction_removed"
+		if candidate.ExactDuplicateRemovals > 0 {
+			candidate.ScoreScope = "consecutive_exact_duplicate_removed"
+		}
 		if finalFeedback := buildAnchorStyleScoreFeedback(candidate.Score, b); finalFeedback.Status == "ready" {
 			candidate.RetryFeedback = finalFeedback.Prompt
 		} else {

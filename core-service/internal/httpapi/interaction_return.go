@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -98,6 +99,11 @@ func (s *Server) stageInteractionBridge(w http.ResponseWriter, r *http.Request) 
 	plan, err := reader.InteractionReturnSnapshot(r.Context(), roomID, input.TaskID)
 	if err != nil || plan.DecisionID != input.DecisionID || plan.Token != input.Token || plan.Deadline.IsZero() || !time.Now().Before(plan.Deadline) {
 		writeError(w, 409, "bridge scope/deadline changed")
+		return
+	}
+	if plan.DuplicatesBridge(input.Text) {
+		log.Printf("bridge omitted before audio download room=%d decision=%s reason=consecutive_exact_duplicate", roomID, input.DecisionID)
+		writeJSON(w, 200, map[string]any{"staged": false, "reason": "consecutive_exact_duplicate", "duration_ms": 0})
 		return
 	}
 	ctx, cancel := context.WithDeadline(r.Context(), plan.Deadline)
