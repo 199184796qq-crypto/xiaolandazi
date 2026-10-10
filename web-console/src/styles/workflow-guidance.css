@@ -616,15 +616,15 @@ details.strategy-fullshow-guide:not([open]) > summary::after {
 }
 
 .strategy-workflow-nav .workflow-step-knowledge {
-  order: 4;
+  order: 6;
 }
 
 .strategy-workflow-nav .workflow-step-memory {
-  order: 5;
+  order: 4;
 }
 
 .strategy-workflow-nav .workflow-step-miner {
-  order: 6;
+  order: 5;
 }
 
 .strategy-workflow-nav .workflow-step-anchor {
