@@ -205,8 +205,14 @@ func parseAnchorRecommendationSummary(raw string) (string, error) {
 	var parsed struct {
 		Summary string `json:"summary"`
 	}
-	if err := json.Unmarshal([]byte(stripPolicyJSONFence(raw)), &parsed); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(stripPolicyJSONFence(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&parsed); err != nil {
 		return "", errors.New("模型未返回有效的简介JSON，请重新生成")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return "", errors.New("模型简介须为唯一JSON对象，请重新生成")
 	}
 	text := strings.TrimSpace(parsed.Summary)
 	if utf8.RuneCountInString(text) != 50 || strings.ContainsAny(text, "\n\r") {

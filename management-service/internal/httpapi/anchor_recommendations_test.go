@@ -37,7 +37,7 @@ func TestRecommendationSummaryProtocolAnd50UnicodeCharacters(t *testing.T) {
 	if err != nil || got != expected {
 		t.Fatal(got, err)
 	}
-	for _, raw := range []string{`not json`, `{"summary":"简短的风格"}`, `{"summary":"` + strings.Repeat("长", 51) + `"}`} {
+	for _, raw := range []string{`not json`, `{"summary":"简短的风格"}`, `{"summary":"` + strings.Repeat("长", 51) + `"}`, `{"summary":"` + expected + `","unknown":true}`} {
 		if _, err := parseAnchorRecommendationSummary(raw); err == nil {
 			t.Fatal("invalid model protocol accepted", raw)
 		}
