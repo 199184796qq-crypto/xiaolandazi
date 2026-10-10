@@ -61,10 +61,6 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
             <summary><svg class="pool-entry-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg><span>查看公共池与商品专属池（{{ status.pools.length }} 个）</span><svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary>
             <div class="pool-entry-body"><div v-for="pool in status.pools" :key="pool.key" class="pool-group"><b>{{ pool.owner ? pool.label : '公共内容' }} · {{ pool.task_count }} 条</b><p>适用 {{ products(pool.products) }}{{ pool.reused ? ' · 本次复用原内容' : '' }}</p><ol><li v-for="task in pool.tasks || []" :key="task.id">{{ task.selling_point }} · {{ task.angle }}</li></ol></div></div>
           </details>
-          <details class="pool-entry pool-entry-history" @toggle="emit('preview', ($event.target as HTMLDetailsElement).open || preview)">
-            <summary><svg class="pool-entry-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6v6h4" /></svg><span>查看最近资料变更记录</span><svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary>
-            <div class="pool-entry-body"><div v-for="entry in status?.history || []" :key="entry.id" class="pool-group"><b>{{ entry.created_at }} UTC</b><p v-for="row in entry.changes" :key="row.id">{{ row.label }}：{{ row.before || '未设置' }} → {{ row.after || '已移除' }}</p></div><p v-if="!status?.history?.length" class="pool-empty">暂无已记录的资料变更。</p></div>
-          </details>
         </div>
       </div>
       <small class="pool-note"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 11v6m0-10v.5" /></svg><span>资料变化会自动记录；点击更新时才调用模型。核对并保存智能体后，下次开播使用新版本，本场继续使用已保存快照。</span></small>
@@ -78,7 +74,7 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
 .pool-notice::before{left:-80px;background:linear-gradient(100deg,#dce5ffb3,#e8edff40);transform:rotate(8deg)}
 .pool-notice::after{right:-100px;background:linear-gradient(100deg,#d8f3ff73,#dce5ffb3);transform:rotate(-8deg)}
 .pool-banner{position:relative;display:grid;grid-template-columns:176px minmax(0,1fr) auto;gap:20px 24px;align-items:start;padding:30px 30px 28px;min-height:254px}
-.pool-art{grid-column:1;grid-row:1 / span 3;align-self:center;margin:-12px -18px -12px -12px;pointer-events:none}
+.pool-art{grid-column:1;grid-row:1 / span 3;align-self:start;margin:-12px -18px -12px -12px;pointer-events:none}
 .pool-art img{display:block;width:100%;height:auto;filter:drop-shadow(0 12px 18px #7290e324)}
 .pool-intro{grid-column:2;min-width:0;padding-top:3px}
 .pool-intro h2{margin:0;color:#202e69;font-size:26px;font-weight:750;letter-spacing:-.5px;line-height:1.4;overflow-wrap:anywhere}
@@ -94,20 +90,18 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
 .pool-content{grid-column:2 / -1;min-width:0}
 .pool-progress{margin-bottom:14px;font-size:14px;line-height:1.7}
 .pool-progress p{margin:4px 0}
-.pool-entries{display:grid;grid-template-columns:1.1fr 1fr;gap:20px;max-width:880px;align-items:start}
+.pool-entries{display:grid;grid-template-columns:minmax(0,1fr);align-items:start}
 .pool-entry{min-width:0;border-radius:17px}
 .pool-entry-content{background:linear-gradient(105deg,#eeebff,#f0eeff)}
-.pool-entry-history{background:linear-gradient(105deg,#e7f7ee,#edf9f3)}
 .pool-notice summary{display:flex;align-items:center;gap:16px;cursor:pointer;list-style:none;color:#364154;font-size:16px;line-height:1.5}
 .pool-notice summary::-webkit-details-marker{display:none}
 .pool-entry summary{min-height:65px;padding:16px 20px}
 .pool-entry summary span{flex:1;min-width:0;overflow-wrap:anywhere}
 .pool-entry-icon{width:29px;height:29px;flex-shrink:0;fill:none;stroke:#8e7bfc;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 2px 1px #8e7bfc18)}
-.pool-entry-history .pool-entry-icon{stroke:#36bc7b}
 .pool-chevron{width:20px;height:20px;flex-shrink:0;margin-left:auto;fill:none;stroke:#8b96b5;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;transition:transform .2s}
 details[open]>summary .pool-chevron{transform:rotate(90deg)}
-.pool-entry-body{padding:0 12px 12px;max-height:430px;overflow:auto}
-.pool-pending{margin-bottom:16px;max-width:880px}
+.pool-entry-body{padding:0 12px 12px}
+.pool-pending{margin-bottom:16px}
 .pool-pending>summary{padding:10px 14px;border:1px solid #dfe6f8;border-radius:12px;background:#ffffff94;font-size:14px}
 .pool-group{padding:14px;margin:10px 0 0;border:1px solid #e8edf7;border-radius:12px;background:#ffffffed;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
 .pool-group b{color:#36496c}
@@ -116,15 +110,14 @@ details[open]>summary .pool-chevron{transform:rotate(90deg)}
 .pool-change:last-child{border-bottom:0}
 .pool-change div{margin-top:4px;white-space:pre-wrap}
 .pool-change del{color:#8b7080}.pool-change ins{text-decoration:none;color:#326e55}
-.pool-group ol{max-height:260px;overflow:auto;margin:8px 0 0;padding-left:24px}.pool-group li{padding:6px}
-.pool-empty{padding:12px;margin:0;font-size:14px}
+.pool-group ol{margin:8px 0 0;padding-left:24px}.pool-group li{padding:6px}
 .pool-error{color:#aa3444}
 .pool-note{grid-column:2 / -1;display:flex;align-items:flex-start;gap:10px;margin-top:2px;padding-right:170px;font-size:13px;line-height:1.8;color:#7d8dab}
 .pool-note svg{width:20px;height:20px;flex-shrink:0;margin-top:2px;fill:#a1afca;stroke:#fff;stroke-width:1.8;stroke-linecap:round}
-.pool-signature{position:absolute;bottom:38px;right:34px;color:#a6bfff;font:22px/1.4 KaiTi,STKaiti,cursive;letter-spacing:2px;transform:rotate(-10deg);pointer-events:none}
+.pool-signature{position:absolute;bottom:18px;right:34px;color:#a6bfff;font:22px/1.4 KaiTi,STKaiti,cursive;letter-spacing:2px;transform:rotate(-10deg);pointer-events:none}
 .pool-signature::after{display:block;width:130px;height:13px;margin-top:4px;border-top:2px solid #bdcfff;border-radius:50%;content:''}
 .pool-notice button:focus-visible,.pool-notice summary:focus-visible{outline:3px solid #7b98ff;outline-offset:3px}
-@container (min-width:1500px){.pool-banner{grid-template-columns:238px minmax(0,1fr) auto;gap:24px 30px;padding:38px 38px 32px;min-height:300px}.pool-intro h2{font-size:32px}.pool-intro p{font-size:18px}.pool-actions button{min-height:56px;font-size:18px;padding:13px 23px}.pool-entries{max-width:1020px}.pool-entry summary{min-height:74px;font-size:18px;padding:18px 24px}.pool-note{font-size:15px}.pool-signature{font-size:26px;bottom:48px}}
+@container (min-width:1500px){.pool-banner{grid-template-columns:238px minmax(0,1fr) auto;gap:24px 30px;padding:38px 38px 32px;min-height:300px}.pool-intro h2{font-size:32px}.pool-intro p{font-size:18px}.pool-actions button{min-height:56px;font-size:18px;padding:13px 23px}.pool-entry summary{min-height:74px;font-size:18px;padding:18px 24px}.pool-note{font-size:15px}.pool-signature{font-size:26px;bottom:24px}}
 @container (max-width:1100px){.pool-banner{grid-template-columns:142px minmax(0,1fr);gap:18px 22px;padding:26px}.pool-art{grid-row:1 / span 3}.pool-intro{grid-column:2}.pool-actions{grid-column:2;grid-row:2;padding-top:0}.pool-content{grid-column:2}.pool-note{grid-column:2;padding-right:0}.pool-signature{display:none}.pool-entry summary{padding:14px;gap:10px;font-size:14px}}
 @container (max-width:700px){.pool-banner{grid-template-columns:minmax(0,1fr);gap:18px;padding:22px}.pool-art{position:absolute;width:70px;right:12px;top:16px;margin:0;opacity:.65}.pool-intro{grid-column:1;padding-top:0}.pool-intro h2{min-height:64px;padding-right:60px;font-size:22px}.pool-intro p{font-size:14px;margin-top:10px}.pool-actions{grid-column:1;grid-row:auto;flex-wrap:wrap;gap:10px}.pool-actions button{font-size:14px;min-height:44px;padding:10px 15px}.pool-content,.pool-note{grid-column:1}.pool-entries{grid-template-columns:minmax(0,1fr);gap:12px}.pool-entry summary{min-height:58px;font-size:14px;padding:14px 16px}.pool-note{font-size:12px}.pool-group ol{padding-left:20px}}
 @media (prefers-reduced-motion:reduce){.pool-actions button,.pool-chevron{transition:none}}
