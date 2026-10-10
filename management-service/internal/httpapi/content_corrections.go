@@ -281,7 +281,7 @@ func (s *Server) repairCorrectionSet(ctx context.Context, original contentpools.
 			continue
 		}
 		for ti, t := range p.Tasks {
-			if c.Content.Cancellation != "" && ((c.TaskID != "" && t.ID == c.TaskID) || t.Angle == c.Original) {
+			if c.Content.Cancellation != "" && !c.Content.Persistent() && ((c.TaskID != "" && t.ID == c.TaskID) || t.Angle == c.Original) {
 				next.Pools[pi].Tasks[ti].Disabled = true
 			}
 		}
@@ -328,7 +328,7 @@ func (s *Server) repairCorrectionSet(ctx context.Context, original contentpools.
 			}
 			next.Pools[u.pool].Facts[u.fact].Text = revised
 		} else {
-			if revised == "" {
+			if revised == "" || (c.Content.Cancellation != "" && text == c.Original && revised == text) {
 				next.Pools[u.pool].Tasks[u.task].Disabled = true
 			} else {
 				next.Pools[u.pool].Tasks[u.task].Angle = revised
