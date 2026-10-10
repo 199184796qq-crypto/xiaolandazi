@@ -4006,18 +4006,26 @@ async function refreshPlanScripts() {
 
 async function refreshFormalFacts() {
   const planId = currentRoomPlanId.value
+  const tenantId = activeRoom.value?.tenant_id
   if (!planId) {
     formalFacts.value = []
     return
   }
   try {
-    const result = await getLiveAgentPlanFacts(planId, activeRoom.value?.tenant_id)
+    const result = await getLiveAgentPlanFacts(planId, tenantId)
+    if (planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
     formalFacts.value = result.items || []
   } catch (err) {
+    if (planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式事实依据失败'
     }
   }
+}
+
+async function onInteractionFactsUpdated(scope: { roomId: number; planId: number; tenantId: number }) {
+  if (scope.roomId !== activeRoomId.value || scope.planId !== currentRoomPlanId.value || scope.tenantId !== activeRoom.value?.tenant_id) return
+  await Promise.all([refreshFormalFacts(), contentPools.refresh(true)])
 }
 
 function startFormalFactEdit(item: LiveAgentPlanFact) {
@@ -6390,7 +6398,7 @@ onBeforeUnmount(() => {
           </div>
 
           <section class="strategy-formal-facts">
-            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories">重新加载</button></div>
+            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories()">重新加载</button></div>
             <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
             <header class="strategy-formal-facts-head">
               <div class="strategy-formal-facts-brand">
@@ -6558,7 +6566,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
+          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
           <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>

@@ -2,9 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { request, createAgentLearningTurn, adoptAgentLearningSession } from '../api'
 import type { AgentLearningSession, AgentLearningResult } from '../types'
+import { session } from '../session'
+import InteractionFactDialog from './InteractionFactDialog.vue'
 
 const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
-const emit = defineEmits<{ adopted: []; openFacts: [] }>()
+const emit = defineEmits<{ adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
 const items = ref<AgentLearningSession[]>([])
 const count = ref(0)
 const total = ref(0), page = ref(1), query = ref(''), status = ref('pending')
@@ -20,6 +22,8 @@ const preview = ref<AgentLearningResult | null>(null)
 const panelElement = ref<HTMLElement | null>(null)
 const locatedId = ref<number | null>(null)
 const locating = ref(false)
+const factContext = ref<AgentLearningSession | null>(null)
+const factNotices = ref<Record<number, string>>({})
 const visible = computed(() => !props.compact || count.value > 0)
 const showItems = computed(() => !props.compact || expanded.value)
 const displayedItems = computed(() => props.sourceType ? items.value.filter(item => item.source_type === props.sourceType) : items.value)
@@ -50,14 +54,15 @@ async function refresh(manual = false) {
   }
 }
 
-watch(() => [props.roomId, props.planId, props.history, props.sourceType], () => {
+watch(() => [props.roomId, props.planId, props.history, props.sourceType, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
   epoch++; page.value = 1; status.value = props.history ? 'all' : 'pending'; query.value = ''
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
   locatedId.value = null
+  factContext.value = null; factNotices.value = {}
   void refresh()
 }, { immediate: true })
 
-onMounted(() => { poll = setInterval(() => { if (!busy.value && !locating.value) void refresh() }, 30_000) })
+onMounted(() => { poll = setInterval(() => { if (!busy.value && !locating.value && !factContext.value) void refresh() }, 30_000) })
 onBeforeUnmount(() => { epoch++; if (poll) clearInterval(poll) })
 
 async function locatePending(itemId: number) {
@@ -101,6 +106,24 @@ function begin(item: AgentLearningSession) {
   editing.value = item.id
   feedback.value = item.review?.suggested_rule || ''
   preview.value = null; error.value = ''; notice.value = ''
+}
+
+function openFactDialog(item: AgentLearningSession) {
+  if (busy.value || item.status !== 'editing' || item.review?.kind !== 'missing_fact') return
+  if (!props.planId || !props.roomId || item.review.plan_id !== props.planId || item.room_id !== props.roomId || !(item.tenant_id > 0)) {
+    error.value = '当前问题的方案信息已变化，请刷新后重试。'
+    return
+  }
+  factContext.value = item
+}
+
+function onFactSaved(result: { roomId: number; planId: number; tenantId: number; itemId: number; unchanged: boolean }) {
+  if (props.roomId !== result.roomId || props.planId !== result.planId || factContext.value?.id !== result.itemId || factContext.value.tenant_id !== result.tenantId) return
+  factContext.value = null
+  factNotices.value[result.itemId] = result.unchanged
+    ? '当前方案已包含这条事实。核对好后，可以点击“已处理，标记完成”。'
+    : '事实依据已保存到当前方案。核对好后，可以点击“已处理，标记完成”。'
+  emit('factsUpdated', result)
 }
 
 async function generatePreview(item: AgentLearningSession) {
@@ -177,9 +200,10 @@ async function close(item: AgentLearningSession) {
         <p v-if="item.review?.suggested_rule"><b>纠正建议：</b>{{ item.review.suggested_rule }}</p>
         <div v-if="item.status === 'editing'" class="actions">
           <button :disabled="!!busy" @click="begin(item)">填写纠正</button>
-          <button v-if="item.review?.kind === 'missing_fact'" @click="emit('openFacts')">补充事实依据</button>
+          <button v-if="item.review?.kind === 'missing_fact'" :disabled="!!busy" @click="openFactDialog(item)">补充事实依据</button>
           <button :disabled="!!busy" @click="close(item)">{{ item.review?.kind === 'missing_fact' ? '已处理，标记完成' : '无需纠正' }}</button>
         </div>
+        <p v-if="factNotices[item.id]" class="notice fact-saved-notice" role="status">{{ factNotices[item.id] }}</p>
         <div v-if="editing === item.id" class="editor">
           <label :for="`review-${item.id}`">正确应该怎么理解或回答</label>
           <textarea :id="`review-${item.id}`" v-model="feedback" maxlength="5000" rows="3" placeholder="例如：食品包装场景中，抽是抽真空；不抽可以吗是在问能否选非真空包装。" @input="preview = null"></textarea>
@@ -193,6 +217,7 @@ async function close(item: AgentLearningSession) {
       </article>
       <div v-if="total > 30" class="actions" aria-label="记录翻页"><button :disabled="page <= 1 || !!busy" @click="page--; refresh(true)">上一页</button><span>第{{ page }}页 · 共{{ total }}条</span><button :disabled="page * 30 >= total || !!busy" @click="page++; refresh(true)">下一页</button></div>
     </template>
+    <InteractionFactDialog v-if="factContext" :room-id="roomId" :plan-id="planId" :item="factContext" @close="factContext = null" @saved="onFactSaved" />
   </section>
 </template>
 

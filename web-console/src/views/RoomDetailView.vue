@@ -3,7 +3,7 @@ import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
   getLiveAgentSettings,
   getLiveOpsSupportAuthorizations,
@@ -86,16 +86,6 @@ import type {
 } from '../types'
 
 const route = useRoute()
-const reviewRouter=useRouter()
-function openInteractionReviewFacts() {
-  window.localStorage.setItem('system-agent-live-room-id',String(roomId))
-  if (session.bootstrap?.actor.role === 'customer') {
-    window.localStorage.setItem(`xiaolan-ui:${session.bootstrap.actor.user_id}:live-strategy:selected-room`,String(roomId))
-    void reviewRouter.push('/operations/live/strategy?interaction_review=facts')
-  } else {
-    void reviewRouter.push(`/operations/live/rooms/${roomId}/strategy?interaction_review=facts`)
-  }
-}
 // All roles share the customer room dashboard. Legacy diagnostic surfaces are
 // not enabled just because a staff member entered a customer's room.
 const legacyAgentSurfaceEnabled = false
@@ -4450,7 +4440,7 @@ onBeforeUnmount(() => {
       <div v-if="error" class="inline-error">{{ error }}</div>
       <div v-if="runtimeError" class="inline-error">{{ runtimeError }}</div>
       <div v-if="localAudioError" class="inline-error">本机播音：{{ localAudioError }}</div>
-      <InteractionLearningPanel v-if="canConfigureRoomStrategy" :room-id="roomId" :plan-id="selectedLiveAgentPlanId" compact :show-simulation="false" @open-facts="openInteractionReviewFacts" />
+      <InteractionLearningPanel v-if="canConfigureRoomStrategy" :room-id="roomId" :plan-id="selectedLiveAgentPlanId" compact :show-simulation="false" />
 
       <div v-if="sessionStats?.resume_pending" class="session-resume-mask">
         <section class="session-resume-dialog" role="dialog" aria-modal="true" aria-label="直播重新开播处理">
