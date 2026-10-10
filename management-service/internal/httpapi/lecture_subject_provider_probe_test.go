@@ -71,20 +71,21 @@ func TestLectureSubjectProviderProbe(t *testing.T) {
 					t.Fatal(e)
 				}
 				cctx := context.WithValue(ctx, pinnedSpeechProfileKey{}, speech.ID)
-				response, _, err := server.completeAnchorStyleWorkbench(cctx, speech.ID, "lecture_subject_probe", agentgateway.ResponseText, messages, 1200, false)
-				row := map[string]any{"angle": angle, "round": round + 1, "messages": messages, "response": response, "request_success": err == nil}
+				response, actualMessages, err := server.completeAnchorStyleWorkbench(cctx, speech.ID, "lecture_task_preview", agentgateway.ResponseText, messages, 1200, false)
+				row := map[string]any{"angle": angle, "round": round + 1, "messages": actualMessages, "response": response, "request_success": err == nil}
 				rows = append(rows, row)
 				if err != nil {
 					row["error"] = "model request failed"
 					t.Errorf("lecture request failed")
 					continue
 				}
-				c := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: response.Text}
+				c := lectureTextCandidate(response.Text)
 				if err = state.CheckP0Candidate(&c); err == nil {
 					server.reviewCycleP0Context(cctx, &state, &c)
 					server.auditLectureCandidate(cctx, &state, &c)
 				}
 				row["preview"] = lecturePreviewContent(&state, c, "")
+				row["p0_report"], row["lecture_audit"] = c.P0Report, c.LectureAudit
 				t.Logf("angle=%s round=%d generated=true", angle.Title, round+1)
 			}
 		}
@@ -92,7 +93,7 @@ func TestLectureSubjectProviderProbe(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("selected two-level lecture unavailable")
 	}
-	raw, _ := json.MarshalIndent(map[string]any{"model": speech.Model, "p0_sha": derivedHash(policy), "rows": rows, "tts_generated": false, "played": false, "plan_assets_unchanged": true}, "", "  ")
+	raw, _ := json.MarshalIndent(map[string]any{"configured_speech_model": speech.Model, "p0_sha": derivedHash(policy), "rows": rows, "tts_generated": false, "played": false, "plan_assets_unchanged": true}, "", "  ")
 	if e = os.WriteFile(os.Getenv("LECTURE_SUBJECT_OUTPUT"), raw, 0600); e != nil {
 		t.Fatal("archive failed")
 	}

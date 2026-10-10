@@ -117,7 +117,7 @@ func (s *Server) lectureLibraryPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "讲解预览未完成")
 		return
 	}
-	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(result.Text)}
+	candidate := lectureTextCandidate(result.Text)
 	if err = state.CheckP0Candidate(&candidate); err != nil {
 		writeJSON(w, 200, lecturePreviewContent(&state, candidate, err.Error()))
 		return
@@ -125,6 +125,14 @@ func (s *Server) lectureLibraryPreview(w http.ResponseWriter, r *http.Request) {
 	s.reviewCycleP0Context(ctx, &state, &candidate)
 	s.auditLectureCandidate(ctx, &state, &candidate)
 	writeJSON(w, 200, lecturePreviewContent(&state, candidate, ""))
+}
+
+// Establish the final spoken body before review, so checking the same body does
+// not change the input identity of its already completed P0 receipt.
+func lectureTextCandidate(raw string) anchorcycle.Candidate {
+	c := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(raw)}
+	c.OutputText = cycleVoiceText(c)
+	return c
 }
 
 type lecturePreviewIssue struct {
@@ -217,7 +225,6 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 		return
 	}
 	text := cycleVoiceText(*c)
-	c.OutputText = text
 	audit := &anchorcycle.LectureAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: anchorcycle.ProductDigest(task.LectureFacts)}
 	c.LectureAudit = audit
 	mother, _, err := loadReplaceablePromptAsset("ANCHOR_LECTURE_TASK_REVIEW_PATH", "configs/prompts/anchor-style/lecture-task-review.md", "讲解事实边界复核母版")

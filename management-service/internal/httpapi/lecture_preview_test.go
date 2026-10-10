@@ -81,3 +81,26 @@ func TestLecturePreviewPreservesBodyAndSeparatesReviewFailure(t *testing.T) {
 		t.Fatal("scan failure lost generated body", result)
 	}
 }
+
+func TestLecturePreviewNormalizesBeforeReviewAndKeepsReceiptIdentity(t *testing.T) {
+	state := anchorcycle.State{Lectures: &anchorcycle.LectureRuntime{Active: &anchorcycle.Task{ProductMode: "lecture", LectureFacts: "资料描述原料来源"}}}
+	if err := installP0Mother(&state); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"这段讲解介绍原料来源", " 这段讲解介绍原料来源。\n", "这段讲解介绍原料来源！"} {
+		c := lectureTextCandidate(raw)
+		if err := state.CheckP0Candidate(&c); err != nil {
+			t.Fatal(err)
+		}
+		identity := c.P0CheckedInputSHA
+		c.LectureAudit = &anchorcycle.LectureAudit{Passed: true, TextSHA: anchorcycle.ProductDigest(cycleVoiceText(c)), ScopeSHA: anchorcycle.ProductDigest(state.Task().LectureFacts)}
+		preview := lecturePreviewContent(&state, c, "")
+		if preview["approved"] != true || c.P0CheckedInputSHA != identity || state.CheckApprovedText(c, cycleVoiceText(c)) != nil {
+			t.Fatal("unchanged final body lost its approval", raw, preview)
+		}
+		c.OutputText += "另加一句。"
+		if lecturePreviewContent(&state, c, "")["approved"] != false {
+			t.Fatal("changed body reused old receipt")
+		}
+	}
+}
