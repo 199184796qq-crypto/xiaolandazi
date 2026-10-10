@@ -83,7 +83,7 @@ func (s *Store) ListAnchorRecommendations(ctx context.Context, admin bool) ([]mo
 }
 func (s *Store) ListAnchorRecommendationSources(ctx context.Context, search string) ([]model.AnchorRecommendationSource, error) {
 	pattern := "%" + strings.TrimSpace(search) + "%"
-	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.tenant_id,t.name,s.name,s.description,s.avatar_type,COALESCE(s.avatar_data,''),s.profile_json FROM live_anchor_styles s JOIN tenants t ON t.id=s.tenant_id WHERE s.status='active' AND (s.name LIKE ? OR t.name LIKE ?) ORDER BY s.updated_at DESC,s.id DESC LIMIT 100`, pattern, pattern)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.tenant_id,t.name,s.name,s.description,s.avatar_type,COALESCE(s.avatar_data,''),s.profile_json FROM live_anchor_styles s JOIN mgmt_tenants t ON t.id=s.tenant_id WHERE s.status='active' AND (s.name LIKE ? OR t.name LIKE ?) ORDER BY s.updated_at DESC,s.id DESC LIMIT 100`, pattern, pattern)
 	if err != nil {
 		return nil, err
 	}

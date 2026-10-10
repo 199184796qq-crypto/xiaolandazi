@@ -58,6 +58,11 @@ func (c *recommendationConn) recommendationRows() *contentPolicyTestRows {
 }
 func (c *recommendationConn) QueryContext(_ context.Context, q string, a []driver.NamedValue) (driver.Rows, error) {
 	switch {
+	case strings.Contains(q, "JOIN mgmt_tenants"):
+		if len(a) != 2 || a[0].Value != "%主播%" || a[1].Value != "%主播%" {
+			return nil, errors.New("unbounded or invalid source search")
+		}
+		return &contentPolicyTestRows{columns: strings.Fields("id tenant tenant_name name description avatar data profile")}, nil
 	case strings.HasPrefix(q, recommendationSelect):
 		return c.recommendationRows(), nil
 	case strings.Contains(q, "SELECT id,status FROM live_anchor_styles"):
@@ -199,5 +204,11 @@ func TestPublishRequiresUnchangedSourceAndPublicListHidesSourceAssets(t *testing
 		if strings.Contains(string(raw), `"`+key+`"`) {
 			t.Fatal("public catalog exposed private source", string(raw))
 		}
+	}
+}
+func TestRecommendationSourcesUseManagementTenantDirectory(t *testing.T) {
+	s, _ := recommendationStore(t)
+	if _, err := s.ListAnchorRecommendationSources(context.Background(), "主播"); err != nil {
+		t.Fatal(err)
 	}
 }
