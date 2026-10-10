@@ -8566,13 +8566,17 @@ onBeforeUnmount(() => {
 .strategy-plan-empty { padding:28px; border:1px dashed rgba(100,113,166,.22); border-radius:16px; text-align:center; color:#8a95aa; }
 .strategy-plan-container-head { display:grid; grid-template-columns:minmax(0,1fr) max-content; align-items:start; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
 .strategy-plan-heading { min-width:0; }
-.strategy-plan-save-area { justify-self:end; width:250px; max-width:100%; min-width:0; }
+.strategy-plan-save-area { justify-self:end; width:224px; max-width:100%; min-width:0; }
 .strategy-plan-save-status { text-align:right; font-size:13px; }
 @media(max-width:900px) { .strategy-plan-container-head { grid-template-columns:minmax(0,1fr); } .strategy-plan-save-area { grid-row:1; } }
 .strategy-plan-selector-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.strategy-plan-title-switch {
+.strategy-plan-selector-row .strategy-plan-title-switch {
   display:block;
-  width:min(660px,100%);
+  flex:0 0 auto;
+  width:660px;
+  max-width:100%;
+  min-width:0;
+  height:58px;
   min-height:58px;
   margin-top:0;
   appearance:none;
@@ -10315,7 +10319,7 @@ onBeforeUnmount(() => {
   .strategy-benefit-card footer { align-items:flex-start; flex-direction:column; }
   .strategy-plan-toolbar,.strategy-v2-section-head,.strategy-script-actions { align-items:flex-start; flex-direction:column; }
   .strategy-plan-toolbar { justify-content:flex-start; }
-  .strategy-plan-title-switch { width:100%; font-size:22px; }
+  .strategy-plan-selector-row .strategy-plan-title-switch { font-size:22px; }
   .strategy-plan-mini-list { grid-template-columns:1fr; }
   .strategy-legacy-select { margin-left:0; }
   .strategy-analysis-summary { grid-template-columns:1fr; }
