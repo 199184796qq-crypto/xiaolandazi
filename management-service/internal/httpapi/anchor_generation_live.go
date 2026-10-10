@@ -297,7 +297,7 @@ func (s *Server) checkLiveAnchorOwner(ctx context.Context, tenant, room, runtime
 		return false, err
 	}
 	pinned, err := s.store.GetLiveAgentPlanVersion(ctx, tenant, selected.ID, versionID)
-	if err != nil || pinned.RoomID != room {
+	if err != nil || pinned.PlanID != selected.ID {
 		return false, errors.New("本场方案关联已变化，请重新开播")
 	}
 	return session.Status == "paused", nil

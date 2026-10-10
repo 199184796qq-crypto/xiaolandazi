@@ -59,13 +59,13 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 		return &contentPolicyTestRows{columns: []string{"next"}, values: [][]driver.Value{{int64(8)}}}, nil
 	}
 	if strings.Contains(q, "SELECT id,COALESCE") {
-		if !strings.Contains(q, "room_id=?") || !strings.Contains(q, "plan_id=?") || !strings.Contains(q, "FOR UPDATE") {
+		if strings.Contains(q, "room_id=?") || !strings.Contains(q, "plan_id=?") || !strings.Contains(q, "FOR UPDATE") {
 			return nil, errors.New("unscoped pruning")
 		}
 		return &contentPolicyTestRows{columns: []string{"id", "mode"}, values: [][]driver.Value{{int64(48), "ai_dynamic"}, {int64(47), "ai_dynamic"}, {int64(46), "ai_dynamic"}, {int64(45), "ai_dynamic"}, {int64(44), "ai_dynamic"}, {int64(43), "user_audio"}, {int64(42), "ai_dynamic"}}}, nil
 	}
 	if strings.Contains(q, "selection.tenant_id=?") {
-		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.version_no DESC") || !strings.Contains(q, "binding.status='active'") || !strings.Contains(q, "access.selected_mode") {
+		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.id DESC") || strings.Contains(q, "selection.room_id=live_agent_plan_versions.room_id") || !strings.Contains(q, "binding.status='active'") || !strings.Contains(q, "access.selected_mode") {
 			return nil, errors.New("not latest scoped saved version")
 		}
 	}
@@ -81,15 +81,15 @@ func (c *planSaveConn) ExecContext(_ context.Context, q string, a []driver.Named
 		if c.failPointer {
 			return nil, errors.New("injected pointer failure")
 		}
-		if !strings.Contains(q, "selection.plan_id<>?") {
+		if !strings.Contains(q, "selection.plan_id=binding.plan_id") {
 			return nil, errors.New("saving non-selected plan switched room")
 		}
 	}
 	if strings.Contains(q, "DELETE FROM") {
-		if !strings.Contains(q, "plan_id=? AND room_id=? AND id=?") || !strings.Contains(q, "live_content_refresh_jobs") || !strings.Contains(q, "live_agent_room_plan_publications") {
+		if !strings.Contains(q, "plan_id=? AND id=?") || !strings.Contains(q, "live_content_refresh_jobs") || !strings.Contains(q, "live_agent_room_plan_publications") {
 			return nil, errors.New("unsafe deletion")
 		}
-		c.deleted = append(c.deleted, a[3].Value.(int64))
+		c.deleted = append(c.deleted, a[2].Value.(int64))
 	}
 	return cardCopyResult{id: 48}, nil
 }

@@ -33,7 +33,7 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 	}
 	exec(`CREATE TABLE core_rooms(id BIGINT UNSIGNED PRIMARY KEY,tenant_id BIGINT UNSIGNED NOT NULL,name VARCHAR(128) NOT NULL,platform VARCHAR(32) NOT NULL DEFAULT 'douyin',external_room_id VARCHAR(128) NOT NULL DEFAULT '')`)
 	wanted := map[string]bool{}
-	for _, name := range []string{"live_runtime_sessions", "live_agent_plan_room_bindings", "live_agent_room_plan_selections", "live_agent_room_plan_publications", "live_agent_plan_versions", "live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_benefits", "live_agent_plan_scripts", "live_agent_plan_script_references", "live_agent_plan_terms", "live_policy_scopes"} {
+	for _, name := range []string{"live_agent_plans", "live_runtime_sessions", "live_agent_plan_room_bindings", "live_agent_room_plan_selections", "live_agent_room_plan_publications", "live_agent_plan_versions", "live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_benefits", "live_agent_plan_scripts", "live_agent_plan_script_references", "live_agent_plan_terms", "live_policy_scopes"} {
 		wanted[name] = true
 	}
 	for _, raw := range strings.Split(strings.ReplaceAll(liveRuntimeSchema, "\r\n", "\n"), "\n-- +statement\n") {
@@ -58,6 +58,7 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 		input := model.CreateLiveAgentPlanVersionInput{RoomID: room, DurationMinutes: 1, RoundMinutes: 1, Variants: []model.LiveAgentPlanVersionVariant{{VariantKey: "formal", IsFormal: true, Text: "哥哥姐姐们，我们家的油，您先看看。", AudioURL: "/test/original.wav", AudioAssetID: 101, GenerationNo: 1}}}
 		variants, _ := json.Marshal(input.Variants)
 		exec(`INSERT INTO core_rooms(id,tenant_id,name) VALUES(?,7,'隔离调度测试')`, room)
+		exec(`INSERT INTO live_agent_plans(id,tenant_id,name,description) VALUES(?,7,'隔离方案','')`, room)
 		exec(`INSERT INTO live_runtime_sessions(id,external_id,tenant_id,room_id,status,execution_realm,started_at,last_billed_at) VALUES(?,?,7,?,'running','refresh-test',?,?)`, room, fmt.Sprintf("refresh-%d", room), room, anchor, anchor)
 		exec(`INSERT INTO live_agent_plan_room_bindings(tenant_id,room_id,plan_id,status) VALUES(7,?,?,'active')`, room, room)
 		exec(`INSERT INTO live_agent_room_plan_selections(tenant_id,room_id,plan_id) VALUES(7,?,?)`, room, room)

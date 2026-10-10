@@ -543,12 +543,12 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	inherited := version.RoomID != roomID
 	hydrateLiveAgentPlanVersionForWorkspace(version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        version,
 		"source":         source,
-		"inherited":      inherited,
+		"inherited":      false,
+		"shared":         true,
 		"source_room_id": version.RoomID,
 		"checks":         s.liveAgentPlanWorkspaceChecks(r.Context(), tenantID, planID, version),
 	})
@@ -590,10 +590,6 @@ func (s *Server) liveAgentPlanVersionPublish(w http.ResponseWriter, r *http.Requ
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取待发布智能体版本失败")
-		return
-	}
-	if pending.RoomID != input.RoomID {
-		writeError(w, http.StatusBadRequest, "待发布版本不属于当前直播间")
 		return
 	}
 	// Compatibility for old browser clients. Saving is now the only activation

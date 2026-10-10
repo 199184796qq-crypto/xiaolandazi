@@ -3432,7 +3432,7 @@ async function loadFullShowWorkspace() {
       fullShowWorkspaceInherited.value = true
       fullShowSavedVersion.value = null
       fullShowNotice.value =
-        `已从同一智能体方案已有的 V${workspace.version.version_no} 恢复内容作为当前直播间编辑副本；保存后会生成“${room.name}”自己的新版本，不会改动其它直播间正在使用的版本。`
+        `已恢复智能体方案 V${workspace.version.version_no}；使用同一方案的房间共用这一份内容，保存后统一使用新版本。`
     }
   } catch (err) {
     if (token !== fullShowWorkspaceLoadToken) return
@@ -7382,15 +7382,15 @@ onBeforeUnmount(() => {
               <span>
                 {{
                   fullShowWorkspaceInherited
-                    ? '恢复的是该智能体方案在其它绑定直播间已有的版本副本'
+                    ? '使用同一智能体方案的房间共用这一份内容'
                     : fullShowWorkspaceSource === 'draft'
                     ? '恢复的是最近保存内容'
-                    : '恢复的是当前保存方案副本'
+                    : '恢复的是方案统一保存的内容'
                 }}
                 · 文案、时长、正式稿、声音和时间轴已恢复
               </span>
               <span v-if="fullShowWorkspaceInherited" class="strategy-fullshow-restore-legacy">
-                当前是继承编辑副本；点击保存智能体方案后，下次开播直接使用，不影响其它直播间。
+                保存后，使用同一方案的房间下次开播统一采用新版本。
               </span>
               <span v-if="fullShowWorkspaceLegacyPartial" class="strategy-fullshow-restore-legacy">
                 这是旧版历史数据：当时只保存了正式稿，未入选草稿没有历史快照；本次之后的新版本会保存全部稿件。
