@@ -18,6 +18,7 @@ import {
 import ModulePageNav from '../components/ModulePageNav.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import RegionSelect from '../components/RegionSelect.vue'
+import WalletPaymentDialog from '../components/WalletPaymentDialog.vue'
 import {
   floorToWholeYuanCents,
   marketingPayableCents,
@@ -90,6 +91,7 @@ const shippingForm = reactive({
 
 const modal = ref<'shipping' | 'payment' | 'refund' | 'order' | ''>('')
 const selectedOrder = ref<CustomerShopOrder | null>(null)
+const showWalletPayment = computed(() => modal.value === 'payment' && !!selectedOrder.value && (selectedOrder.value.payable_amount_cents === 0 || selectedOrder.value.order_type === 'time_card'))
 const paymentAmount = ref('')
 const refundAmount = ref('')
 const refundReason = ref('')
@@ -668,7 +670,7 @@ function openRefund(order: CustomerShopOrder) {
 }
 
 async function submitPayment(result: 'success' | 'failure' = simulateResult.value) {
-  if (!selectedOrder.value) return
+  if (!selectedOrder.value || paying.value) return
   if(selectedOrder.value.payable_amount_cents === 0){
     paying.value=true;paymentError.value='';try{selectedOrder.value=(await claimFreeMarketingOrder(selectedOrder.value.id)).order;await loadOrders();successMessage.value='领取成功，权益已发放。';modal.value='order'}catch(e){paymentError.value=e instanceof Error?e.message:'领取失败'}finally{paying.value=false};return
   }
@@ -1377,7 +1379,9 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
-    <div v-if="modal && modal !== 'shipping' && selectedOrder" class="feature-editor-backdrop" @click.self="modal = ''">
+    <WalletPaymentDialog v-if="showWalletPayment && selectedOrder" :order="selectedOrder" :spec="orderSpec(selectedOrder)" :paying="paying" :error="paymentError" @close="modal = ''" @confirm="submitPayment('success')" />
+
+    <div v-if="modal && modal !== 'shipping' && selectedOrder && !showWalletPayment" class="feature-editor-backdrop" @click.self="modal = ''">
       <section class="feature-editor-panel shop-payment-panel">
         <header>
           <div>
@@ -1417,22 +1421,6 @@ onBeforeUnmount(() => {
         </section>
 
         <template v-if="modal === 'payment'">
-          <template v-if="selectedOrder.payable_amount_cents === 0"><p v-if="paymentError" class="inline-error">{{paymentError}}</p><button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">{{paying?'领取中':'确认免费领取'}}</button></template>
-          <template v-else-if="selectedOrder.order_type === 'time_card'">
-            <div class="sandbox-payment-warning time-card-wallet-payment-note">
-              <strong>使用钱包余额购买</strong>
-              <p>请先充值钱包余额，再购买时长卡。支付成功后，卡片只会进入“AI 时长 → 时长卡包”，不会立即计入 AI 时长。</p>
-              <p>以后需要使用时，再手动启用指定卡片；有效期从启用时刻开始，到期后未用完的时长也会自动失效。</p>
-            </div>
-            <p v-if="paymentError" class="inline-error">{{ paymentError }}</p>
-            <footer class="sandbox-payment-actions">
-              <button class="ghost-button" type="button" :disabled="paying" @click="modal = ''">暂不购买</button>
-              <button class="primary-button" type="button" :disabled="paying" @click="submitPayment('success')">
-                {{ paying ? '正在从钱包扣款...' : '使用钱包余额支付 ' + formatMoney(selectedOrder.payable_amount_cents) }}
-              </button>
-            </footer>
-          </template>
-          <template v-else>
             <div class="sandbox-payment-warning">
               <strong>这是模拟支付页面</strong>
               <p>输入的是测试金额，不会发起任何真实扣款。金额必须与应付金额完全一致才能模拟支付成功。</p>
@@ -1474,7 +1462,6 @@ onBeforeUnmount(() => {
                 {{ paying ? '正在模拟支付...' : '确认模拟支付' }}
               </button>
             </footer>
-          </template>
         </template>
 
         <template v-else-if="modal === 'refund'">
