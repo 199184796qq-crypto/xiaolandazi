@@ -1,6 +1,8 @@
 package model
 
 type InteractionLearningReview struct {
+	HistoryDeleted  bool     `json:"history_deleted,omitempty"`
+	HistoryOriginID int64    `json:"history_origin_id,omitempty"`
 	PlanID          int64    `json:"plan_id"`
 	Kind            string   `json:"kind"`
 	Meaning         string   `json:"meaning"`

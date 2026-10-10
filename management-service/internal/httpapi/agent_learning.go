@@ -1119,7 +1119,7 @@ func (s *Server) agentLearningCreateTurn(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "学习会话不存在")
 		return
 	}
-	if session.Status != model.AgentLearningStatusEditing {
+	if session.Status != model.AgentLearningStatusEditing || (session.Review != nil && session.Review.HistoryDeleted) {
 		writeError(w, http.StatusConflict, "这次学习已经采用，不能继续修改")
 		return
 	}

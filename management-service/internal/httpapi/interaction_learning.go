@@ -259,3 +259,54 @@ func (s *Server) interactionSimulationDelete(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, 200, map[string]any{"deleted": deleted})
 }
+
+func (s *Server) interactionHistoryScope(w http.ResponseWriter, r *http.Request) (int64, int64, int64, int64, int64, bool) {
+	actor, tenant, room, ok := s.requireCustomerPolicyRoom(w, r)
+	if !ok {
+		return 0, 0, 0, 0, 0, false
+	}
+	plan, err := strconv.ParseInt(r.URL.Query().Get("plan_id"), 10, 64)
+	if err != nil || plan <= 0 {
+		writeError(w, 400, "请选择当前智能体方案")
+		return 0, 0, 0, 0, 0, false
+	}
+	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenant, plan); err != nil {
+		writeError(w, 404, "当前方案不存在")
+		return 0, 0, 0, 0, 0, false
+	}
+	id, ok := parsePositivePathID(w, r.PathValue("sessionID"))
+	return actor.UserID, tenant, room, plan, id, ok
+}
+
+func (s *Server) interactionHistoryDelete(w http.ResponseWriter, r *http.Request) {
+	_, tenant, room, plan, id, ok := s.interactionHistoryScope(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteInteractionHistory(r.Context(), tenant, room, plan, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 409, "这条历史记录已删除或不属于当前方案")
+		} else {
+			writeError(w, 500, "删除历史记录失败，请重试")
+		}
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": 1})
+}
+
+func (s *Server) interactionHistoryCorrect(w http.ResponseWriter, r *http.Request) {
+	actor, tenant, room, plan, id, ok := s.interactionHistoryScope(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.store.CreateInteractionHistoryCorrection(r.Context(), actor, tenant, room, plan, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 409, "这条历史记录已删除或不属于当前方案")
+		} else {
+			writeError(w, 500, "创建纠正草稿失败，请重试")
+		}
+		return
+	}
+	writeJSON(w, 200, item)
+}

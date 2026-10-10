@@ -28,6 +28,7 @@ let simulationRun = 0
 const editing = ref<number | null>(null)
 const feedback = ref('')
 const preview = ref<AgentLearningResult | null>(null)
+const historyDraft = ref<AgentLearningSession | null>(null)
 const panelElement = ref<HTMLElement | null>(null)
 const locatedId = ref<number | null>(null)
 const locating = ref(false)
@@ -90,6 +91,7 @@ async function refresh(manual = false) {
 watch(() => [props.roomId, props.planId, props.history, props.sourceType, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
   epoch++; page.value = 1; status.value = props.history ? 'all' : 'pending'; query.value = ''; topicFilter.value = 'all'
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
+  historyDraft.value = null; busy.value = ''
   locatedId.value = null
   factContext.value = null; factNotices.value = {}
   suggestionErrors.value = {}; adoptedSuggestions.value = {}
@@ -148,11 +150,24 @@ async function simulate() {
   finally { if (current() && busy.value === 'simulate') busy.value = '' }
 }
 
-function begin(item: AgentLearningSession) {
+async function begin(item: AgentLearningSession) {
+  if (busy.value || factContext.value) return
+  const room = props.roomId, plan = props.planId, token = epoch
+  if (!room || !plan || item.room_id !== room || item.review?.plan_id !== plan) return
   editing.value = item.id
   feedback.value = item.review?.suggested_rule || ''
-  preview.value = null; error.value = ''; notice.value = ''
+  historyDraft.value = null; preview.value = null; error.value = ''; notice.value = ''
+  if (!props.history || item.status === 'editing') return
+  const operation = `load:${item.id}`
+  busy.value = operation
+  try {
+    const detail = await request<{ latest?: AgentLearningResult }>(`/api/v1/live/rooms/${room}/agent-learning/sessions/${item.id}`, { suppressErrorDialog: true })
+    if (token === epoch && editing.value === item.id && detail.latest?.result_text) feedback.value = detail.latest.result_text
+  } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '读取历史纠正失败，请重试' }
+  finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
+
+function cancelCorrection() { if (!busy.value) { editing.value = null; historyDraft.value = null; preview.value = null; feedback.value = '' } }
 
 function selectTopic(topic: InteractionSuggestionTopic | 'all') {
   if (busy.value) return
@@ -217,14 +232,22 @@ async function adoptSuggestion(item: AgentLearningSession) {
 }
 
 async function generatePreview(item: AgentLearningSession) {
-  const room = props.roomId, token = epoch
-  if (!room || !feedback.value.trim() || busy.value) return
-  busy.value = `preview:${item.id}`; error.value = ''; preview.value = null
+  const room = props.roomId, plan = props.planId, token = epoch
+  if (!room || !plan || !feedback.value.trim() || busy.value) return
+  const operation = `preview:${item.id}`
+  busy.value = operation; error.value = ''; preview.value = null
   try {
-    const out = await createAgentLearningTurn(room, item.id, feedback.value.trim())
+    if (props.history && item.status !== 'editing' && !historyDraft.value) {
+      const draft = await request<AgentLearningSession>(`/api/v1/live/rooms/${room}/interaction-learning/${item.id}/correction?plan_id=${plan}`, { method: 'POST', suppressErrorDialog: true })
+      if (token !== epoch || editing.value !== item.id) return
+      if (!(draft.id > 0) || draft.tenant_id !== item.tenant_id || draft.room_id !== room || draft.review?.plan_id !== plan || draft.status !== 'editing') throw new Error('纠正草稿信息不完整，请刷新后重试。')
+      historyDraft.value = draft
+      window.dispatchEvent(new Event('interaction-review-updated'))
+    }
+    const out = await createAgentLearningTurn(room, historyDraft.value?.id || item.id, feedback.value.trim())
     if (token === epoch && editing.value === item.id) preview.value = out.result
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '生成纠正预览失败' }
-  finally { busy.value = '' }
+  finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
 
 async function adopt(item: AgentLearningSession) {
@@ -232,14 +255,14 @@ async function adopt(item: AgentLearningSession) {
   if (!room || !preview.value || busy.value) return
   busy.value = `adopt:${item.id}`; error.value = ''
   try {
-    await adoptAgentLearningSession(room, item.id)
+    await adoptAgentLearningSession(room, historyDraft.value?.id || item.id)
     if (token !== epoch) return
     notice.value = '纠正已采用，后续回答使用最新规则。'
     window.dispatchEvent(new Event('interaction-review-updated'))
-    editing.value = null; preview.value = null
+    editing.value = null; preview.value = null; historyDraft.value = null
     emit('adopted')
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '采用纠正失败' }
-  finally { busy.value = ''; if (token === epoch) await refresh() }
+  finally { if (token === epoch) { busy.value = ''; await refresh() } }
 }
 
 async function close(item: AgentLearningSession) {
@@ -254,6 +277,27 @@ async function close(item: AgentLearningSession) {
     }
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '处理记录失败' }
   finally { busy.value = '' }
+}
+
+async function deleteHistory(item: AgentLearningSession) {
+  const room = props.roomId, plan = props.planId, token = epoch
+  if (!props.history || !room || !plan || busy.value || factContext.value || item.room_id !== room || item.review?.plan_id !== plan) return
+  const operation = `delete:${item.id}`
+  busy.value = operation
+  try {
+    if (!await confirmAction({ title: '删除这条历史记录？', message: `从处理历史中删除“${item.question}”？已采纳的事实依据和回答策略会保留。`, confirmText: '删除', danger: true }) || token !== epoch) return
+    error.value = ''; notice.value = ''; requestSequence++
+    const result = await request<{ deleted: number }>(`/api/v1/live/rooms/${room}/interaction-learning/${item.id}/history?plan_id=${plan}`, { method: 'DELETE', suppressErrorDialog: true })
+    if (token !== epoch) return
+    if (result.deleted !== 1) throw new Error('删除结果未完整返回，请刷新列表核对。')
+    if (editing.value === item.id) { editing.value = null; preview.value = null; historyDraft.value = null; feedback.value = '' }
+    items.value = items.value.filter(record => record.id !== item.id)
+    total.value = Math.max(0, total.value - 1); page.value = Math.min(page.value, Math.max(1, Math.ceil(total.value / 30)))
+    notice.value = '这条历史记录已删除，已采纳的内容已保留。'
+    window.dispatchEvent(new Event('interaction-review-updated'))
+    if (!await refresh(true)) notice.value += ' 列表暂未刷新，请点击“刷新”查看。'
+  } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '删除历史记录失败，请重试' }
+  finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
 
 async function deleteSuggestions(item?: AgentLearningSession) {
@@ -334,10 +378,11 @@ async function deleteSuggestions(item?: AgentLearningSession) {
         <p v-if="item.review?.needed_facts?.length"><b>建议补充：</b><span>{{ item.review.needed_facts.join('；') }}</span></p>
         <p v-if="item.review?.suggested_rule"><b>纠正建议：</b><span>{{ item.review.suggested_rule }}</span></p>
         </div>
-        <div v-if="item.status === 'editing'" class="actions review-card-actions">
-          <button :disabled="!!busy" @click="begin(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 5 5-.8L20 8l-4-4zM14 6l4 4" /></svg>填写纠正</button>
-          <button v-if="item.review?.kind === 'missing_fact'" :disabled="!!busy" @click="openFactDialog(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg>补充事实依据</button>
-          <button class="is-complete-action" :disabled="!!busy" @click="close(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{{ item.review?.kind === 'missing_fact' ? '已处理，标记完成' : '无需纠正' }}</button>
+        <div v-if="item.status === 'editing' || history" class="actions review-card-actions">
+          <button :disabled="!!busy" @click="begin(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 5 5-.8L20 8l-4-4zM14 6l4 4" /></svg>{{ history ? '纠正' : '填写纠正' }}</button>
+          <button v-if="item.status === 'editing' && item.review?.kind === 'missing_fact'" :disabled="!!busy" @click="openFactDialog(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg>补充事实依据</button>
+          <button v-if="item.status === 'editing'" class="is-complete-action" :disabled="!!busy" @click="close(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{{ item.review?.kind === 'missing_fact' ? '已处理，标记完成' : '无需纠正' }}</button>
+          <button v-if="history" type="button" class="simulation-delete-action" :aria-label="`删除历史记录：${item.question}`" :disabled="!!busy || !!factContext" @click="deleteHistory(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
           <button v-if="isSimulationView" type="button" class="simulation-delete-action" :aria-label="`删除模拟建议：${item.question}`" :disabled="!!busy || !!factContext || locating" @click="deleteSuggestions(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === `delete:${item.id}` ? '删除中…' : '删除' }}</button>
           <details v-if="isSimulationView" class="review-record-details"><summary aria-label="查看记录详情" title="查看记录详情">•••</summary><div><strong>记录详情</strong><dl><dt>问题含义</dt><dd>{{ item.review?.meaning || '暂无说明' }}</dd><dt>记录次数</dt><dd>{{ item.review?.occurrences || 1 }}次</dd><dt>记录时间</dt><dd>{{ new Date(item.updated_at).toLocaleString() }}</dd></dl></div></details>
         </div>
@@ -347,6 +392,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
           <label :for="`review-${item.id}`">正确应该怎么理解或回答</label>
           <textarea :id="`review-${item.id}`" v-model="feedback" maxlength="5000" rows="3" placeholder="例如：食品包装场景中，抽是抽真空；不抽可以吗是在问能否选非真空包装。" @input="preview = null"></textarea>
           <button :disabled="!!busy || !feedback.trim()" @click="generatePreview(item)">{{ busy === `preview:${item.id}` ? '生成中…' : '生成纠正预览' }}</button>
+          <button :disabled="!!busy" @click="cancelCorrection()">取消</button>
           <div v-if="preview" class="preview">
             <strong>待确认的纠正</strong><p>{{ preview.result_text }}</p>
             <p v-if="preview.memory_type === 'fact'">这条包含业务事实，由你确认后采用。</p>
