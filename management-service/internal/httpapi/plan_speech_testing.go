@@ -38,6 +38,34 @@ func (s *planSpeechTestStore) GetPublishedLiveAgentPlanVersionForRoom(ctx contex
 	return model.LiveAgentPlanVersion{PlanID: plan.ID}, nil
 }
 
+// Supply the complete current editor facts, including product cards and valid
+// benefits. Never fall back to a different room's published scheme or prepare
+// new assets as a side effect of a test.
+func (s *planSpeechTestStore) CurrentInteractionFacts(ctx context.Context, tenantID, roomID, planID int64) (string, error) {
+	plan, err := s.GetLiveAgentPlanForRoom(ctx, tenantID, roomID)
+	if err != nil || plan.ID != planID {
+		return "", fmt.Errorf("方案测试事实范围不一致")
+	}
+	facts, err := s.ListLiveAgentPlanFacts(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	benefits, err := s.ListLiveAgentPlanBenefits(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	links, err := s.ListLiveAgentPlanProductLinks(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	scopes, err := s.ListBenefitScopes(ctx, tenantID, planID)
+	if err != nil {
+		return "", err
+	}
+	benefits = applyContentBenefitScopes(benefits, links, scopes)
+	return renderAnchorStyleWorkbenchFacts(plan, facts, benefits, links), nil
+}
+
 type planAnswerAdoptionInput struct {
 	PlanID   int64  `json:"plan_id"`
 	Question string `json:"question"`

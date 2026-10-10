@@ -25,6 +25,12 @@ func TestPlanSpeechTestReadsExplicitPlanWithoutRoomSnapshot(t *testing.T) {
 		if _, err := store.GetPublishedLiveAgentPlanVersionForRoom(ctx, scope[0], scope[1]); err == nil {
 			t.Fatal("wrong snapshot scope accepted")
 		}
+		if _, err := store.CurrentInteractionFacts(ctx, scope[0], scope[1], 4); err == nil {
+			t.Fatal("foreign test facts accepted")
+		}
+	}
+	if _, err := store.CurrentInteractionFacts(ctx, 14, 26, 5); err == nil {
+		t.Fatal("different plan facts accepted")
 	}
 	store.plan.TenantID = 15
 	if _, err := store.GetLiveAgentPlanForRoom(ctx, 14, 26); err == nil {

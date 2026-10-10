@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'vite'
 import { createRequire } from 'node:module'
+import { mkdir } from 'node:fs/promises'
 const require = createRequire(process.env.PLAYWRIGHT_CORE_PACKAGE || new URL('../../collector-worker/package.json', import.meta.url))
 const { chromium } = require('playwright-core')
 const fixture = `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:20px;font-family:'Microsoft YaHei',sans-serif}.destination{padding:20px}</style></head><body><div id="app"></div><script type="module">
@@ -26,7 +27,20 @@ try {
   const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[]
   page.on('pageerror',e=>errors.push(e.message))
   await page.goto(server.resolvedUrls.local[0]+'__sources')
-  await page.getByText('口味包装选项 · 模型整理的包装说明',{exact:true}).waitFor()
+  await page.getByRole('heading',{name:'口味包装选项',exact:true}).waitFor()
+  assert.equal(await page.locator('.pool-task-card').count(),2)
+  assert.deepEqual(await page.locator('.pool-task-number strong').allTextContents(),['01','02'])
+  assert.equal(await page.locator('.pool-task-card').first().getAttribute('class'),'pool-task-card pool-task-package')
+  assert.equal(await page.locator('.pool-task-card').nth(1).getAttribute('class'),'pool-task-card pool-task-price')
+  assert.equal(await page.locator('.pool-task-angle').first().textContent(),'模型整理的包装说明')
+  assert.equal(await page.locator('.pool-task-number span').first().textContent(),'适用 1号、2号')
+  assert.equal(await page.locator('.pool-task-sources').first().locator('summary').textContent(),'引用资料（5 处）')
+  const positions=await page.locator('.pool-task-card').first().evaluate(el=>{const rect=s=>el.querySelector(s).getBoundingClientRect();return{number:rect('.pool-task-number').right,icon:rect('.pool-task-symbol').left,title:rect('h4').left,edit:rect('.pool-task-edit').left,description:rect('.pool-task-angle').top,heading:rect('h4').bottom}})
+  assert.ok(positions.number<positions.icon&&positions.icon<positions.title&&positions.title<positions.edit,'desktop card column order')
+  assert.ok(positions.description>=positions.heading,'angle must follow its heading')
+  const screenshots=new URL('../../../outputs/content-pool-cards/',import.meta.url)
+  await mkdir(screenshots,{recursive:true})
+  await page.locator('.pool-entry-content').screenshot({path:new URL('desktop.png',screenshots).pathname.replace(/^\/([A-Za-z]:)/,'$1')})
   const refs=await page.evaluate(()=>window.fixture.refs())
   assert.deepEqual(refs.map(r=>r.id),['knowledge:13','attributes:4','attributes:5','benefits:7','facts:line:8'])
   assert.equal(refs[0].state,'changed');assert.equal(refs[3].state,'removed');assert.equal(refs[4].state,'unavailable')
@@ -38,14 +52,17 @@ try {
   assert.deepEqual(JSON.parse(await page.locator('#last-source').textContent()),{sourceId:'attributes:5',area:'products',entityId:5,attributeId:5})
   assert.equal(await page.locator('[data-product-attribute-id="5"]').evaluate(el=>document.activeElement===el),true)
   assert.equal(await page.evaluate(()=>window.fixture.productLocate(4,5)),false,'same label attribute from another product must not match')
-  await page.locator('.pool-group ol>li').nth(1).getByRole('button',{name:'修改这条',exact:true}).click()
+  await page.locator('.pool-task-card').nth(1).getByRole('button',{name:'修改这条',exact:true}).click()
   const editor=page.locator('[data-angle-editor="1-0"]')
   await editor.waitFor();assert.equal(await editor.inputValue(),'整只与半只的选择依据')
   assert.equal(await editor.evaluate(el=>document.activeElement===el),true)
   assert.equal(await page.evaluate(()=>window.fixture.locate('common','task-1',7)),false,'stale set must not edit a current task')
   assert.equal(await page.evaluate(()=>window.fixture.calls.length),0,'navigation must not regenerate or save')
   await page.setViewportSize({width:390,height:1000})
-  assert.equal(await page.locator('.pool-notice').evaluate(el=>[...el.querySelectorAll('.pool-group,.pool-source-text')].some(child=>child.getBoundingClientRect().right>el.getBoundingClientRect().right+1)),false,'provenance mobile overflow')
+  assert.equal(await page.locator('.pool-notice').evaluate(el=>[...el.querySelectorAll('.pool-preview-group,.pool-task-card,.pool-source-text')].some(child=>child.getBoundingClientRect().right>el.getBoundingClientRect().right+1)),false,'provenance mobile overflow')
+  await page.locator('.pool-entry-content').screenshot({path:new URL('narrow.png',screenshots).pathname.replace(/^\/([A-Za-z]:)/,'$1')})
+  await page.evaluate(()=>window.fixture.status.value.state='updating')
+  assert.equal(await page.locator('.pool-task-edit').first().isDisabled(),true,'cannot edit while generating a new task set')
   assert.deepEqual(errors,[])
-  console.log('PASS: source IDs/shared origins/current vs saved/removed and unknown provenance; exact attribute owner; task editor destination and stale set guard; no API calls')
+  console.log('PASS: numbered themed cards/title-angle layout/product scope; source IDs/shared origins/current vs saved/removed and unknown provenance; exact attribute owner; task editor destination and stale set guard; disabled update; desktop/mobile; no API calls')
 } finally {await browser.close();await server.close()}

@@ -58,9 +58,11 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var input struct {
-		Question           string `json:"question"`
-		PlanID             int64  `json:"plan_id,omitempty"`
-		PreviewInstruction string `json:"preview_instruction,omitempty"`
+		IncludeAnswerOutline bool                                       `json:"include_answer_outline,omitempty"`
+		Question             string                                     `json:"question"`
+		PlanID               int64                                      `json:"plan_id,omitempty"`
+		PreviewInstruction   string                                     `json:"preview_instruction,omitempty"`
+		RecentAnswers        []decisionexecutor.InteractionRecentAnswer `json:"recent_answers,omitempty"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "测试问题格式错误")
@@ -79,7 +81,15 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "请明确选择测试方案")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	if err := decisionexecutor.ValidateInteractionRecentAnswers(input.RecentAnswers); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(input.RecentAnswers) > 0 && input.PlanID == 0 {
+		writeError(w, http.StatusBadRequest, "请明确选择测试方案")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
 	worker := decisionexecutor.New(s.store, nil, s.speechGateway(), nil)
 	if input.PlanID > 0 {
@@ -98,12 +108,19 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		}
 		worker = decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
 	}
-	result, err := worker.SimulateAnswerWithPreview(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, "semantic", "", 0)
+	var result decisionexecutor.SimulationOutput
+	var err error
+	result, err = worker.SimulateInteraction(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"question": result.Question, "reply": result.Reply, "execution_mode": result.ExecutionMode, "plan_name": result.PlanName, "user_layer_version": result.UserLayerVersion, "plan_id": input.PlanID})
+	response := map[string]any{"question": result.Question, "reply": result.Reply, "execution_mode": result.ExecutionMode, "plan_name": result.PlanName, "user_layer_version": result.UserLayerVersion, "plan_id": input.PlanID}
+	if input.IncludeAnswerOutline {
+		response["answer_outline"] = result.AnswerOutline
+		response["answer_outline_error"] = result.AnswerOutlineError
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.Request) {

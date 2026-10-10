@@ -37,23 +37,25 @@ type faqRecentUse struct {
 }
 
 type faqAnswerVariant struct {
-	Text        string
-	GeneratedAt time.Time
-	ExpiresAt   time.Time
-	LastUsedAt  time.Time
-	AudioKey    string
-	AudioURL    string
-	AudioUntil  time.Time
+	AnswerOutline *InteractionAnswerOutline
+	Text          string
+	GeneratedAt   time.Time
+	ExpiresAt     time.Time
+	LastUsedAt    time.Time
+	AudioKey      string
+	AudioURL      string
+	AudioUntil    time.Time
 }
 
 type faqCacheTicket struct {
-	Key         string
-	Policy      model.LiveContentPolicy
-	GeneratedAt time.Time
-	ExpiresAt   time.Time
-	Text        string
-	Hit         bool
-	Recent      []string
+	AnswerOutline *InteractionAnswerOutline
+	Key           string
+	Policy        model.LiveContentPolicy
+	GeneratedAt   time.Time
+	ExpiresAt     time.Time
+	Text          string
+	Hit           bool
+	Recent        []string
 }
 
 func faqCacheEligible(item decisionItem) bool {
@@ -168,6 +170,7 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 		variant.LastUsedAt = now
 		ticket.GeneratedAt, ticket.ExpiresAt = variant.GeneratedAt, variant.ExpiresAt
 		ticket.Text, ticket.Hit = variant.Text, true
+		ticket.AnswerOutline = variant.AnswerOutline
 	}
 	return ticket
 }
@@ -255,6 +258,9 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 		if variants[i].Text == text {
 			// A reviewer returning the same text is not a new generation.
 			variants[i].LastUsedAt = now
+			if ticket.AnswerOutline != nil {
+				variants[i].AnswerOutline = ticket.AnswerOutline
+			}
 			ticket.Text = text
 			ticket.GeneratedAt, ticket.ExpiresAt = variants[i].GeneratedAt, variants[i].ExpiresAt
 			return nil
@@ -281,7 +287,8 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 		delete(w.faqCache.recent, oldestKey)
 	}
 	w.faqCache.buckets[ticket.Key] = append(variants, faqAnswerVariant{
-		Text: text, GeneratedAt: ticket.GeneratedAt, ExpiresAt: ticket.ExpiresAt, LastUsedAt: now,
+		AnswerOutline: ticket.AnswerOutline,
+		Text:          text, GeneratedAt: ticket.GeneratedAt, ExpiresAt: ticket.ExpiresAt, LastUsedAt: now,
 	})
 	ticket.Text = text
 	return nil

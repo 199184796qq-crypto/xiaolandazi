@@ -22,7 +22,7 @@ import (
 
 func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
 	short := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{"多少钱"}})
-	if !strings.Contains(short, "20–80字") || !strings.Contains(short, "绝不能超过360字") {
+	if !strings.Contains(short, "1至2句") || !strings.Contains(short, "没有最小字数") || !strings.Contains(short, "360字") {
 		t.Fatalf("unexpected short guidance: %s", short)
 	}
 	complex := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{
@@ -30,7 +30,7 @@ func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
 		"活动怎么算，赠品有什么条件？",
 		"发货和售后分别怎么处理？",
 	}})
-	if !strings.Contains(complex, "80–220字") || !strings.Contains(complex, "必要时允许20%容差至360字，不是目标字数") {
+	if !strings.Contains(complex, "回答完整就停") || !strings.Contains(complex, "容差上限，不是目标") {
 		t.Fatalf("unexpected complex guidance: %s", complex)
 	}
 }
@@ -741,13 +741,31 @@ func (f *fakeCore) DoRoom(
 }
 
 type fakeAgent struct {
-	calls     int
-	err       error
-	responses []string
-	requests  []agentgateway.Request
+	planningRequests []agentgateway.Request
+	calls            int
+	err              error
+	responses        []string
+	requests         []agentgateway.Request
 }
 
 func (f *fakeAgent) Complete(_ context.Context, request agentgateway.Request) (agentgateway.Response, error) {
+	if request.Stage == "interaction_agent_plan" {
+		f.planningRequests = append(f.planningRequests, request)
+		if f.err != nil {
+			return agentgateway.Response{}, f.err
+		}
+		outline := InteractionAnswerOutline{Purpose: "确认业务信息", Angle: "已确认条件", Aspects: []string{"直接回答"}, Avoid: []string{}}
+		if len(f.responses) > f.calls {
+			var fields struct {
+				Outline *InteractionAnswerOutline `json:"answer_outline"`
+			}
+			if json.Unmarshal([]byte(f.responses[f.calls]), &fields) == nil && fields.Outline != nil {
+				outline = *fields.Outline
+			}
+		}
+		raw, _ := json.Marshal(interactionBusinessPlan{Outline: outline, Basis: []string{"按当前已确认的安排执行。"}, Requirements: []string{}})
+		return agentgateway.Response{Text: string(raw)}, nil
+	}
 	f.calls++
 	f.requests = append(f.requests, request)
 	if f.err != nil {

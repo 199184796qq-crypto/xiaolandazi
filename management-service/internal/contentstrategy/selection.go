@@ -17,11 +17,21 @@ type SelectionRequest struct {
 	ActiveFactIDs                                        map[string]bool
 }
 type Selection struct {
-	PurposeID string `json:"purpose_id,omitempty"`
-	Required  []Row  `json:"required_tasks"`
-	Optional  []Row  `json:"optional_tasks"`
-	Facts     []Fact `json:"full_fact_dependencies"`
-	Reason    string `json:"reason"`
+	AnswerOutline *AnswerOutline `json:"answer_outline,omitempty"`
+	PurposeID     string         `json:"purpose_id,omitempty"`
+	Required      []Row          `json:"required_tasks"`
+	Optional      []Row          `json:"optional_tasks"`
+	Facts         []Fact         `json:"full_fact_dependencies"`
+	Reason        string         `json:"reason"`
+}
+
+// Content-only planning shared by live interaction and plan-editor tests.
+// Identity, source dependencies and execution state remain program-owned.
+type AnswerOutline struct {
+	Purpose string   `json:"purpose"`
+	Angle   string   `json:"angle"`
+	Aspects []string `json:"aspects"`
+	Avoid   []string `json:"avoid"`
 }
 
 func ValidateRowPolicy(row Row, required bool) error {

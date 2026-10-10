@@ -1207,6 +1207,8 @@ export interface AgentDecisionSummary {
 }
 
 export interface AgentDecisionSimulationResult {
+  answer_outline?: { purpose: string; angle: string; aspects: string[]; avoid: string[] } | null
+	answer_outline_error?: string
 	plan_id?: number
   decision_id: string
   question: string
