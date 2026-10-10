@@ -3,7 +3,7 @@ import {createRequire} from 'node:module'
 import {mkdir,writeFile} from 'node:fs/promises'
 import {startFixture} from './room-parity-fixture.mjs'
 const require=createRequire(new URL('../../collector-worker/package.json',import.meta.url)),{chromium}=require('playwright-core')
-const output='E:/直播伴播/work/room-first-voice'
+const output=process.env.ROOM_FIRST_VOICE_TEST_OUTPUT||'E:/直播伴播/work/room-first-voice'
 await mkdir(output,{recursive:true})
 const server=await startFixture(),browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true})
 try{
@@ -13,7 +13,7 @@ try{
   await page.locator('.speech-runtime-initializing').waitFor()
   await page.waitForFunction(()=>!!window.fixture.pcmController)
   assert.equal(await page.getByText('正在回答保存问题哟',{exact:true}).count(),0,'prepared captions must not end first-voice loading')
-  assert.match(await page.locator('.speech-runtime-initializing-runner').evaluate(e=>getComputedStyle(e).animationName),/^speech-initial-runner/)
+  assert.match(await page.locator('.startup-wave-flow').first().evaluate(e=>getComputedStyle(e).animationName),/^startup-wave-layer-scan(?:-|$)/)
   await page.evaluate(()=>window.fixture.pcmController.enqueue(new Uint8Array(960)))
   await page.waitForFunction(()=>window.fixture.sources.length>0)
   assert.equal(await page.locator('.speech-runtime-initializing').count(),1,'silent idle PCM must not end loading')
