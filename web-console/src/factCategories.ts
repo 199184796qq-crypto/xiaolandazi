@@ -42,7 +42,7 @@ export function factCategoryGroups(currentValue = '') {
   return groups
 }
 
-export function loadFactCategories(): Promise<void> {
+export function loadFactCategories(options: { suppressErrorDialog?: boolean } = {}): Promise<void> {
   const scope = catalogScope()
   if (pending && pendingScope === scope) return pending
   const requestEpoch = ++epoch
@@ -51,7 +51,7 @@ export function loadFactCategories(): Promise<void> {
   factCategoryState.loading = true
   pending = (async () => {
     try {
-      const result = await request<FactCategoryCatalog>('/api/v1/live-agent-fact-categories', { cache: 'no-store' })
+      const result = await request<FactCategoryCatalog>('/api/v1/live-agent-fact-categories', { cache: 'no-store', suppressErrorDialog: options.suppressErrorDialog })
       if (requestEpoch !== epoch || catalogScope() !== scope) return
       const seen = new Set<string>()
       if (result.schema_version !== 1 || !result.version || !Array.isArray(result.categories) || !result.categories.length || result.categories.some(item => {

@@ -5,7 +5,7 @@ import { request } from '../api'
 import type { AgentLearningSession } from '../types'
 
 const props = defineProps<{ roomId: number | null; planId: number | null; locationRequest?: number }>()
-const emit = defineEmits<{ refresh: []; adopted: []; openFacts: [] }>()
+const emit = defineEmits<{ refresh: []; adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
 const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
   { key: 'adopted', label: '互动采纳' },
@@ -111,7 +111,7 @@ function onAdopted() {
         :history="activeTab === 'history'"
         :show-simulation="activeTab === 'simulation'"
         @adopted="onAdopted"
-        @open-facts="emit('openFacts')"
+        @facts-updated="emit('factsUpdated', $event)"
       />
     </div>
   </section>

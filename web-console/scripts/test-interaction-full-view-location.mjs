@@ -16,7 +16,7 @@ if(p==='/api/v1/rooms')return Response.json({items:[room]});
 if(p.endsWith('/ui-preferences'))return Response.json({selected_live_room_id:26});
 if(p==='/api/v1/live-agent-plans'||p.endsWith('/live-agent-plans'))return Response.json({items:[plan]});
 if(p.endsWith('/config-versions'))return Response.json([]);
-if(p.endsWith('/content-mode'))return Response.json({content_mode:'static',allowed_modes:['static'],can_switch:false});
+if(p.endsWith('/content-mode'))return Response.json({content_mode:'ai_dynamic',available_modes:['user_audio','ai_pregenerated','ai_dynamic'],dynamic_authorized:true});
 if(p.endsWith('/runtime'))return Response.json({room_id:26,agent_plan_id:4,agent_state:'stopped'});
 if(p.endsWith('/interaction-learning')){let items=window.fixture.records.filter(r=>(u.searchParams.get('status')==='all'||r.status==='editing')&&(!u.searchParams.get('source')||r.source_type===u.searchParams.get('source')));return Response.json({items,total:items.length,pending_count:window.fixture.records.filter(r=>r.status==='editing').length});}
 return Response.json({items:[],plugins:[],checks:[],groups:[],catalog:[],profiles:[],version:null,source:null,addressing:[],greeting:'你好'});};

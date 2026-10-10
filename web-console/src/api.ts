@@ -910,9 +910,11 @@ export function adoptLiveAgentPlanFacts(
   facts: LiveAgentPlanFactCandidate[],
   tenantId?: number,
   sourceRef?: string,
+  options: Pick<APIRequestInit, 'suppressErrorDialog'> = {},
 ) {
   return request<AdoptLiveAgentPlanFactsOutput>('/api/v1/live-agent-plans/' + planId + '/facts/adopt', {
     method: 'POST',
+    suppressErrorDialog: options.suppressErrorDialog,
     body: JSON.stringify({
       tenant_id: tenantId,
       source_ref: sourceRef,
