@@ -86,6 +86,7 @@ func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []conte
 // The program validates task shape and referential integrity only. Numeric,
 // product and wording judgments belong to the review model.
 func (s *Server) reviewContentPoolTaskDraft(ctx context.Context, profile, mother string, pool *contentpools.Pool, previous []contentpools.Task, products []contentpools.Product, draft string, beforeCall func() error) error {
+	wire := newContentPoolWire(*pool)
 	tasks, structureErr := decodePoolTaskResponse(draft, *pool, previous)
 	if structureErr == nil {
 		pool.Tasks = tasks
@@ -96,9 +97,10 @@ func (s *Server) reviewContentPoolTaskDraft(ctx context.Context, profile, mother
 				return err
 			}
 		}
-		input := map[string]any{"pool": pool, "products": products}
+		wire = newContentPoolWire(*pool)
+		input := map[string]any{"pool": wire.pool, "products": products}
 		if structureErr != nil {
-			input["draft_response"] = draft
+			input["draft_response"] = wire.response(draft, false)
 			input["structure_issue"] = structureErr.Error()
 		}
 		data, _ := json.Marshal(input)
@@ -106,7 +108,7 @@ func (s *Server) reviewContentPoolTaskDraft(ctx context.Context, profile, mother
 		if err != nil {
 			return err
 		}
-		draft = result.Text
+		draft = wire.response(result.Text, true)
 		known := previous
 		if len(pool.Tasks) > 0 {
 			known = pool.Tasks
@@ -304,11 +306,12 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 						e = appdb.ErrPoolSourceChanged
 					}
 					if e == nil {
-						data, _ := json.Marshal(map[string]any{"pool": p, "products": source.Products, "existing_tasks": previous.Tasks, "confirmed_legacy_content": legacyMaterial})
+						wire := newContentPoolWire(*p)
+						data, _ := json.Marshal(map[string]any{"pool": wire.pool, "products": source.Products, "existing_tasks": wire.tasks(previous.Tasks), "confirmed_legacy_content": legacyMaterial})
 						var result agentgateway.Response
 						result, _, e = s.completeAnchorStyleWorkbench(work, cfg.SellingPointProfileID, "content_pool_task_generation", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: gen}, {Role: "user", Content: string(data)}}, 12000, false)
 						if e == nil {
-							e = s.reviewContentPoolTaskDraft(work, cfg.SellingPointProfileID, review, p, previous.Tasks, source.Products, result.Text, func() error {
+							e = s.reviewContentPoolTaskDraft(work, cfg.SellingPointProfileID, review, p, previous.Tasks, source.Products, wire.response(result.Text, true), func() error {
 								rev, err := s.store.ContentSourceRevision(work, tenant, plan)
 								if err != nil {
 									return err
