@@ -24,6 +24,7 @@ const (
 )
 
 type AgentLearningSession struct {
+	CorrectionHistory   []AgentLearningCorrection  `json:"correction_history,omitempty"`
 	Review              *InteractionLearningReview `json:"review,omitempty"`
 	ID                  int64                      `json:"id"`
 	TenantID            int64                      `json:"tenant_id"`
@@ -40,6 +41,15 @@ type AgentLearningSession struct {
 	CreatedAt           time.Time                  `json:"created_at"`
 	UpdatedAt           time.Time                  `json:"updated_at"`
 	AdoptedAt           *time.Time                 `json:"adopted_at,omitempty"`
+}
+
+type AgentLearningCorrection struct {
+	SessionID    int64     `json:"session_id"`
+	ResultID     int64     `json:"result_id"`
+	TurnNo       uint64    `json:"turn_no"`
+	UserFeedback string    `json:"user_feedback"`
+	PreviewText  string    `json:"preview_text"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type AgentLearningEvidence struct {

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { request, createAgentLearningTurn, adoptAgentLearningSession, adoptLiveAgentPlanFacts } from '../api'
-import type { AgentLearningSession, AgentLearningResult, LiveAgentPlanFact } from '../types'
+import type { AgentLearningSession, AgentLearningResult, AgentLearningSessionDetail, AgentLearningCorrection, LiveAgentPlanFact } from '../types'
 import { session } from '../session'
 import { confirmAction } from '../uiFeedback'
 import InteractionFactDialog from './InteractionFactDialog.vue'
 import SimulationMiningProgress from './SimulationMiningProgress.vue'
 import InteractionTopicIcon from './InteractionTopicIcon.vue'
+import InteractionCorrectionEntry from './InteractionCorrectionEntry.vue'
 import { interactionSuggestionTopic, interactionTopicFilters, interactionTopicLabels, type InteractionSuggestionTopic } from '../interactionSuggestionTopics'
 
 const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; facts?: LiveAgentPlanFact[]; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
@@ -28,6 +29,7 @@ let simulationRun = 0
 const editing = ref<number | null>(null)
 const feedback = ref('')
 const preview = ref<AgentLearningResult | null>(null)
+const restoredPreviewText = ref('')
 const historyDraft = ref<AgentLearningSession | null>(null)
 const panelElement = ref<HTMLElement | null>(null)
 const locatedId = ref<number | null>(null)
@@ -91,7 +93,7 @@ async function refresh(manual = false) {
 watch(() => [props.roomId, props.planId, props.history, props.sourceType, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
   epoch++; page.value = 1; status.value = props.history ? 'all' : 'pending'; query.value = ''; topicFilter.value = 'all'
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
-  historyDraft.value = null; busy.value = ''
+  historyDraft.value = null; restoredPreviewText.value = ''; busy.value = ''
   locatedId.value = null
   factContext.value = null; factNotices.value = {}
   suggestionErrors.value = {}; adoptedSuggestions.value = {}
@@ -155,19 +157,27 @@ async function begin(item: AgentLearningSession) {
   const room = props.roomId, plan = props.planId, token = epoch
   if (!room || !plan || item.room_id !== room || item.review?.plan_id !== plan) return
   editing.value = item.id
-  feedback.value = item.review?.suggested_rule || ''
+  const previous = latestCorrection(item)
+  feedback.value = previous?.user_feedback || ''
+  restoredPreviewText.value = previous?.preview_text || ''
   historyDraft.value = null; preview.value = null; error.value = ''; notice.value = ''
-  if (!props.history || item.status === 'editing') return
+  if (previous || !props.history || item.status === 'editing') return
   const operation = `load:${item.id}`
   busy.value = operation
   try {
-    const detail = await request<{ latest?: AgentLearningResult }>(`/api/v1/live/rooms/${room}/agent-learning/sessions/${item.id}`, { suppressErrorDialog: true })
-    if (token === epoch && editing.value === item.id && detail.latest?.result_text) feedback.value = detail.latest.result_text
+    const detail = await request<AgentLearningSessionDetail>(`/api/v1/live/rooms/${room}/agent-learning/sessions/${item.id}`, { suppressErrorDialog: true })
+    if (token === epoch && editing.value === item.id) {
+      const saved = detail.timeline?.at(-1)
+      feedback.value = saved?.evidence.feedback || ''
+      restoredPreviewText.value = saved?.result.result_text || detail.latest?.result_text || ''
+    }
   } catch (cause) { if (token === epoch) error.value = cause instanceof Error ? cause.message : '读取历史纠正失败，请重试' }
   finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
 
-function cancelCorrection() { if (!busy.value) { editing.value = null; historyDraft.value = null; preview.value = null; feedback.value = '' } }
+function latestCorrection(item: AgentLearningSession) { return item.correction_history?.at(-1) }
+function showSuggestions(item: AgentLearningSession) { return !item.correction_history?.length && editing.value !== item.id }
+function cancelCorrection() { if (!busy.value) { editing.value = null; historyDraft.value = null; preview.value = null; restoredPreviewText.value = ''; feedback.value = '' } }
 
 function selectTopic(topic: InteractionSuggestionTopic | 'all') {
   if (busy.value) return
@@ -235,6 +245,7 @@ async function generatePreview(item: AgentLearningSession) {
   const room = props.roomId, plan = props.planId, token = epoch
   if (!room || !plan || !feedback.value.trim() || busy.value) return
   const operation = `preview:${item.id}`
+  const submittedFeedback = feedback.value.trim()
   busy.value = operation; error.value = ''; preview.value = null
   try {
     if (props.history && item.status !== 'editing' && !historyDraft.value) {
@@ -244,8 +255,14 @@ async function generatePreview(item: AgentLearningSession) {
       historyDraft.value = draft
       window.dispatchEvent(new Event('interaction-review-updated'))
     }
-    const out = await createAgentLearningTurn(room, historyDraft.value?.id || item.id, feedback.value.trim())
-    if (token === epoch && editing.value === item.id) preview.value = out.result
+    const out = await createAgentLearningTurn(room, historyDraft.value?.id || item.id, submittedFeedback)
+    if (token === epoch && editing.value === item.id) {
+      preview.value = out.result; restoredPreviewText.value = ''
+      const saved: AgentLearningCorrection = { session_id: out.result.session_id, result_id: out.result.id, turn_no: out.result.turn_no, user_feedback: submittedFeedback, preview_text: out.result.result_text, created_at: out.result.created_at }
+      for (const record of items.value.filter(record => record.id === item.id || record.id === out.session.id)) {
+        record.correction_history = [...(record.correction_history || []).filter(turn => turn.result_id !== saved.result_id), saved]
+      }
+    }
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '生成纠正预览失败' }
   finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
@@ -259,7 +276,7 @@ async function adopt(item: AgentLearningSession) {
     if (token !== epoch) return
     notice.value = '纠正已采用，后续回答使用最新规则。'
     window.dispatchEvent(new Event('interaction-review-updated'))
-    editing.value = null; preview.value = null; historyDraft.value = null
+    editing.value = null; preview.value = null; restoredPreviewText.value = ''; historyDraft.value = null
     emit('adopted')
   } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '采用纠正失败' }
   finally { if (token === epoch) { busy.value = ''; await refresh() } }
@@ -373,10 +390,14 @@ async function deleteSuggestions(item?: AgentLearningSession) {
         <p v-if="item.review?.observed_context"><b>实际现场：</b><span>{{ item.review.observed_context }}</span></p>
         <p v-if="item.review?.context"><b>适用场景：</b><span>{{ item.review.context }}</span></p>
         <p v-if="item.original_reply"><b>生成的回答：</b><span>{{ item.original_reply }}</span></p>
-        <p class="model-suggestion"><b>模型建议：</b><span>{{ item.review?.reason }}</span><button v-if="item.status === 'editing' && (item.review?.reason || '').trim()" type="button" class="suggestion-adopt" :disabled="!!busy || isSuggestionAdopted(item)" :aria-label="isSuggestionAdopted(item) ? '模型建议已采纳' : '采纳模型建议'" title="将这条模型建议加入当前方案的事实依据" @click="adoptSuggestion(item)">{{ isSuggestionAdopted(item) ? '已采纳' : busy === `suggestion:${item.id}` ? '采纳中…' : '采纳' }}</button></p>
+        <p v-if="showSuggestions(item)" class="model-suggestion"><b>模型建议：</b><span>{{ item.review?.reason }}</span><button v-if="item.status === 'editing' && (item.review?.reason || '').trim()" type="button" class="suggestion-adopt" :disabled="!!busy || isSuggestionAdopted(item)" :aria-label="isSuggestionAdopted(item) ? '模型建议已采纳' : '采纳模型建议'" title="将这条模型建议加入当前方案的事实依据" @click="adoptSuggestion(item)">{{ isSuggestionAdopted(item) ? '已采纳' : busy === `suggestion:${item.id}` ? '采纳中…' : '采纳' }}</button></p>
         <p v-if="suggestionErrors[item.id]" class="error" role="alert">{{ suggestionErrors[item.id] }}</p>
-        <p v-if="item.review?.needed_facts?.length"><b>建议补充：</b><span>{{ item.review.needed_facts.join('；') }}</span></p>
-        <p v-if="item.review?.suggested_rule"><b>纠正建议：</b><span>{{ item.review.suggested_rule }}</span></p>
+        <p v-if="showSuggestions(item) && item.review?.needed_facts?.length"><b>建议补充：</b><span>{{ item.review.needed_facts.join('；') }}</span></p>
+        <p v-if="showSuggestions(item) && item.review?.suggested_rule"><b>纠正建议：</b><span>{{ item.review.suggested_rule }}</span></p>
+        <template v-if="editing !== item.id && item.correction_history?.length">
+          <InteractionCorrectionEntry :correction="latestCorrection(item)!" />
+          <details v-if="item.correction_history.length > 1" class="earlier-corrections"><summary>查看之前的{{ item.correction_history.length - 1 }}次纠正</summary><InteractionCorrectionEntry v-for="turn in item.correction_history.slice(0, -1)" :key="turn.result_id" :correction="turn" /></details>
+        </template>
         </div>
         <div v-if="item.status === 'editing' || history" class="actions review-card-actions">
           <button :disabled="!!busy" @click="begin(item)"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 5 5-.8L20 8l-4-4zM14 6l4 4" /></svg>{{ history ? '纠正' : '填写纠正' }}</button>
@@ -389,15 +410,16 @@ async function deleteSuggestions(item?: AgentLearningSession) {
         </div>
         <p v-if="factNotices[item.id]" class="notice fact-saved-notice" role="status">{{ factNotices[item.id] }}</p>
         <div v-if="editing === item.id" class="editor">
-          <label :for="`review-${item.id}`">正确应该怎么理解或回答</label>
-          <textarea :id="`review-${item.id}`" v-model="feedback" maxlength="5000" rows="3" placeholder="例如：食品包装场景中，抽是抽真空；不抽可以吗是在问能否选非真空包装。" @input="preview = null"></textarea>
+          <label :for="`review-${item.id}`">用户填写的纠正</label>
+          <textarea :id="`review-${item.id}`" v-model="feedback" :disabled="!!busy" maxlength="5000" rows="3" placeholder="请填写正确的理解或回答，写下你确认的真实情况。" @input="preview = null; restoredPreviewText = ''"></textarea>
           <button :disabled="!!busy || !feedback.trim()" @click="generatePreview(item)">{{ busy === `preview:${item.id}` ? '生成中…' : '生成纠正预览' }}</button>
           <button :disabled="!!busy" @click="cancelCorrection()">取消</button>
           <div v-if="preview" class="preview">
-            <strong>待确认的纠正</strong><p>{{ preview.result_text }}</p>
+            <strong>纠正预览</strong><p>{{ preview.result_text }}</p>
             <p v-if="preview.memory_type === 'fact'">这条包含业务事实，由你确认后采用。</p>
             <button :disabled="!!busy" @click="adopt(item)">{{ busy === `adopt:${item.id}` ? '采用中…' : '确认并采用' }}</button>
           </div>
+          <div v-else-if="restoredPreviewText" class="preview restored-preview"><strong>上次纠正预览</strong><p>{{ restoredPreviewText }}</p></div>
         </div>
         </div>
       </article>
@@ -408,6 +430,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
 </template>
 
 <style scoped>
+.earlier-corrections{margin-top:10px;color:#687aaa}.earlier-corrections summary{cursor:pointer;font-size:13px}.preview p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
 .interaction-learning .simulation-delete-action{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;border-color:#f3cfdb;background:#fff6f9;color:#d35f7c}.simulation-delete-action svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.interaction-learning .simulation-delete-action:hover:not(:disabled){background:#ffeef3;border-color:#e79db1}
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
 .learning-search-box{display:flex;align-items:center;gap:10px;flex:1;min-width:0}.learning-search-box input{min-width:0;width:100%}

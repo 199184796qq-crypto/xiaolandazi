@@ -56,5 +56,58 @@ func (s *Store) ListInteractionLearningHistory(ctx context.Context, tenant, room
 		}
 		items = append(items, item)
 	}
-	return items, pending, total, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if err = s.attachInteractionCorrections(ctx, tenant, room, plan, items); err != nil {
+		return nil, 0, 0, err
+	}
+	return items, pending, total, nil
+}
+
+// Read saved user feedback and its matching model result together. Follow-up
+// correction drafts also belong to the originating history card; copied model
+// suggestions never stand in for what the user actually entered.
+func (s *Store) attachInteractionCorrections(ctx context.Context, tenant, room, plan int64, items []model.AgentLearningSession) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]any, len(items))
+	positions := map[int64]int{}
+	for i := range items {
+		ids[i] = items[i].ID
+		positions[items[i].ID] = i
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := append([]any{tenant, room, plan}, ids...)
+	args = append(args, ids...)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id,
+	 CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(s.review_metadata_json,'$.history_origin_id')),'0') AS UNSIGNED),
+	 e.turn_no,r.id,e.feedback,r.result_text,r.created_at
+	 FROM agent_learning_sessions s JOIN agent_learning_evidence e ON e.session_id=s.id
+	 JOIN agent_learning_results r ON r.evidence_id=e.id AND r.session_id=s.id AND r.turn_no=e.turn_no
+	 WHERE s.tenant_id=? AND s.room_id=? AND JSON_EXTRACT(s.review_metadata_json,'$.plan_id')=?
+	 AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(s.review_metadata_json,'$.history_deleted')),'false')<>'true'
+	 AND (s.id IN (`+placeholders+`) OR JSON_EXTRACT(s.review_metadata_json,'$.history_origin_id') IN (`+placeholders+`))
+	 ORDER BY r.created_at ASC,r.id ASC`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var correction model.AgentLearningCorrection
+		var origin int64
+		if err := rows.Scan(&correction.SessionID, &origin, &correction.TurnNo, &correction.ResultID, &correction.UserFeedback, &correction.PreviewText, &correction.CreatedAt); err != nil {
+			return err
+		}
+		if i, ok := positions[correction.SessionID]; ok {
+			items[i].CorrectionHistory = append(items[i].CorrectionHistory, correction)
+		}
+		if i, ok := positions[origin]; ok && origin != correction.SessionID {
+			items[i].CorrectionHistory = append(items[i].CorrectionHistory, correction)
+		}
+	}
+	return rows.Err()
 }

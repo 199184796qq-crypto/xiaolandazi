@@ -109,6 +109,51 @@ func TestInteractionHistoryActionsMySQL(t *testing.T) {
 	if _, err := s.AppendAgentLearningTurn(ctx, draft, "现在可以选不辣", model.AgentLearningResult{MemoryType: "semantic", MemoryKey: "plan:4:flavour", Target: "口味选择", ResultText: "新纠正预览", Structured: map[string]any{"review_plan_id": int64(4)}}); err != nil {
 		t.Fatal(err)
 	}
+	userText := "用户自己写的第二次纠正\n保留这句原话，不要用模型建议替代。"
+	previewText := "第二次生成的纠正预览\n这与用户填写的原文是两个独立字段。"
+	if _, err := s.AppendAgentLearningTurn(ctx, draft, userText, model.AgentLearningResult{MemoryType: "semantic", MemoryKey: "plan:4:flavour", Target: "口味选择", ResultText: previewText, Structured: map[string]any{"review_plan_id": int64(4)}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range [][3]int64{{15, 8, 4}, {14, 9, 4}, {14, 8, 5}, {14, 8, 4}} {
+		id := add(scope[0], scope[1], scope[2], "editing", fmt.Sprintf("排除其他范围%v", scope))
+		if _, err := s.db.ExecContext(ctx, `UPDATE agent_learning_sessions SET review_metadata_json=JSON_SET(review_metadata_json,'$.history_origin_id',?) WHERE id=?`, adopted, id); err != nil {
+			t.Fatal(err)
+		}
+		other, err := s.GetAgentLearningSession(ctx, scope[0], scope[1], id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendAgentLearningTurn(ctx, other, "其他范围或已删除的用户原文", model.AgentLearningResult{MemoryType: "semantic", MemoryKey: "fixture", ResultText: "不应混入的预览"}); err != nil {
+			t.Fatal(err)
+		}
+		if scope == [3]int64{14, 8, 4} {
+			if err := s.DeleteInteractionHistory(ctx, 14, 8, 4, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	listed, _, _, err := s.ListInteractionLearningHistory(ctx, 14, 8, 4, "all", "", "", 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range listed {
+		if record.ID == closed && len(record.CorrectionHistory) != 0 {
+			t.Fatal("model suggestions used as user feedback")
+		}
+		if record.ID == adopted || record.ID == draftID {
+			if len(record.CorrectionHistory) != 2 {
+				t.Fatal("correction history incomplete or leaked", record)
+			}
+			last := record.CorrectionHistory[1]
+			if last.SessionID != draftID || last.TurnNo != 2 || last.UserFeedback != userText || last.PreviewText != previewText {
+				t.Fatal("saved original or matching preview changed", last)
+			}
+		}
+	}
+	listed, _, _, err = s.ListInteractionLearningHistory(ctx, 14, 8, 4, "all", "", "已经纠正的口味", 1, 0)
+	if err != nil || len(listed) != 1 || len(listed[0].CorrectionHistory) != 2 {
+		t.Fatal("paged corrections incomplete", listed, err)
+	}
 	if err := s.DeleteInteractionHistory(ctx, 14, 8, 4, adopted); err != nil {
 		t.Fatal(err)
 	}
