@@ -97,6 +97,17 @@ func scopeWithin(a, b []int64) bool {
 	}
 	return true
 }
+
+func correctionTaskState(task contentpools.Task, c contentpools.Correction) contentpools.Task {
+	selected := (c.TaskID != "" && task.ID == c.TaskID) || task.Angle == c.Original
+	if selected && c.Content.Persistent() {
+		task.Disabled = false
+	}
+	if selected && !c.Content.Persistent() && c.Content.Cancellation != "" {
+		task.Disabled = true
+	}
+	return task
+}
 func correctionMessages(mother, p0 string, packet map[string]any) ([]agentgateway.Message, error) {
 	st := &anchorcycle.State{P0PolicyMD: p0}
 	if err := requireCycleP0(st); err != nil {
@@ -281,9 +292,7 @@ func (s *Server) repairCorrectionSet(ctx context.Context, original contentpools.
 			continue
 		}
 		for ti, t := range p.Tasks {
-			if c.Content.Cancellation != "" && ((c.TaskID != "" && t.ID == c.TaskID) || t.Angle == c.Original) {
-				next.Pools[pi].Tasks[ti].Disabled = true
-			}
+			next.Pools[pi].Tasks[ti] = correctionTaskState(t, c)
 		}
 		if !c.Content.Persistent() {
 			continue
@@ -291,7 +300,7 @@ func (s *Server) repairCorrectionSet(ctx context.Context, original contentpools.
 		for fi, f := range p.Facts {
 			units = append(units, unit{pi, fi, -1, "事实材料", f.Text})
 		}
-		for ti, t := range p.Tasks {
+		for ti, t := range next.Pools[pi].Tasks {
 			if t.Disabled {
 				continue
 			}
@@ -328,7 +337,7 @@ func (s *Server) repairCorrectionSet(ctx context.Context, original contentpools.
 			}
 			next.Pools[u.pool].Facts[u.fact].Text = revised
 		} else {
-			if revised == "" {
+			if revised == "" || (c.Content.Cancellation != "" && text == c.Original && revised == text) {
 				next.Pools[u.pool].Tasks[u.task].Disabled = true
 			} else {
 				next.Pools[u.pool].Tasks[u.task].Angle = revised
