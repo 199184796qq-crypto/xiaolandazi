@@ -398,44 +398,15 @@ func renderSellingPointWheelExpansionRequest(factPackage, reviewedWheel string, 
 	return string(data)
 }
 
-func renderAnchorStyleAnalysisRequest(basePrompt, promptSource, scene, sample string) string {
+func renderAnchorStyleAnalysisRequest(basePrompt, promptSource, scene, sample string) (string, error) {
 	if strings.TrimSpace(scene) == "" {
 		scene = "带货直播"
 	}
-	return fmt.Sprintf(`# 基础分析提示词
-以下 Markdown 是本次必须执行的完整分析方法。严格按其中四个步骤分析，不得跳步；其中的示例只用于解释格式，不得当成主播真实习惯。
-
-%s
-
-# 程序集成输出协议
-完成上述分析后，只返回一个合法 JSON 对象，不要代码围栏或额外解释：
-{
-  "meta_prompt_md": "严格按基础分析提示词第四步生成的完整元提示词Markdown",
-  "monitoring": {
-    "audience_terms": ["样本中实际出现的观众称呼"],
-    "self_terms": ["样本中实际出现的主播自指"],
-    "audience_pronouns": ["样本中实际出现的观众指代"],
-    "particles": ["样本中实际出现、可逐字统计的语气词"],
-    "connectors": ["样本中实际出现的连接词"],
-    "catchphrases": ["样本中实际出现的方言或口头禅"],
-    "forbidden_terms": ["根据样本反推、确有依据的冲突称呼、自指或书面表达"],
-    "sentence_chars_min": 0,
-    "sentence_chars_max": 0
-  }
-}
-
-约束：
-1. meta_prompt_md 必须完整保留【口语风格】【情绪】【禁用词】【范文锚定】，带货直播场景还要包含【全局规则】。
-2. monitoring 只是给程序统计使用，不能替代元提示词正文。
-3. 监控词必须来自本次样本；没有证据就留空，不得套用其他主播的“哥哥姐姐们”“家人们”等称呼。
-4. 商品、价格、规格、地名、人名、库存、销量、福利、链接和承诺不得进入可复用风格；范文锚中的此类内容必须替换成【】占位。
-
-# 本次输入
-- 基础提示词来源：%s
-- 生成场景：%s
-
-【本次主播真实话术】
-%s`, basePrompt, promptSource, scene, sample)
+	protocol, _, err := loadReplaceablePromptAsset("", "configs/prompts/anchor-style/style-extraction-integration.md", "风格集成协议")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("# 基础分析提示词\n%s\n\n%s\n\n# 本次输入\n- 基础提示词来源：%s\n- 生成场景：%s\n\n【本次主播真实话术】\n%s", basePrompt, protocol, promptSource, scene, sample), nil
 }
 
 func renderAnchorStyleScorecardRequest(basePrompt, promptSource, sample string) string {

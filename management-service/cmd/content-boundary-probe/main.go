@@ -74,10 +74,14 @@ func main() {
 			defer wg.Done()
 			for i := range jobs {
 				s := packet.Samples[i]
-				body, _ := json.Marshal(map[string]any{"候选口播": s.Candidate, "当前有效事实资料": packet.Facts, "主播风格元提示词": packet.Style})
-				req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: packet.System}, {Role: "user", Content: string(body)}}, ResponseFormat: agentgateway.ResponseText, EnableThinking: false, MaxTokens: 300, Timeout: 40 * time.Second}
+				content := map[string]any{"待处理候选口播（不是事实依据）": s.Candidate, "当前有效事实资料（唯一客观依据）": packet.Facts}
+				if packet.Style != "" {
+					content["主播风格元提示词"] = packet.Style
+				}
+				body, _ := json.Marshal(content)
+				req := agentgateway.Request{Stage: "content_boundary_probe", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: packet.System}, {Role: "user", Content: string(body)}}, ResponseFormat: agentgateway.ResponseText, EnableThinking: false, MaxTokens: 300, Timeout: 40 * time.Second}
 				if profile.SystemPrompt != "" {
-					req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)
+					req.Messages = []agentgateway.Message{{Role: "system", Content: packet.System}, {Role: "system", Content: profile.SystemPrompt}, {Role: "user", Content: string(body)}}
 				}
 				req, err := agentgateway.PrepareTextRequest(*profile, req)
 				row := map[string]any{"program_sample_id": fmt.Sprintf("boundary-%02d", i+1), "name": s.Name, "candidate": s.Candidate, "expected": s.Expected, "requested_at": time.Now().UTC(), "request": req, "success": false}

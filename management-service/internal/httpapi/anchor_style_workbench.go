@@ -400,7 +400,11 @@ func (s *Server) anchorStyleWorkbenchMeta(w http.ResponseWriter, r *http.Request
 		return
 	}
 	systemPrompt := `你是主播口播风格编译器。必须完整执行用户提供的Markdown分析方法；只分析主播怎么说话，不继承样本商品事实。你只运行这一次，产物将长期交给另一个生成模型使用。`
-	userPrompt := renderAnchorStyleAnalysisRequest(basePrompt, promptSource, input.Scene, input.SampleText)
+	userPrompt, err := renderAnchorStyleAnalysisRequest(basePrompt, promptSource, input.Scene, input.SampleText)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}}
 	result, actual, err := s.completeAnchorStyleWorkbench(r.Context(), input.CompilerProfile, "style_analysis", agentgateway.ResponseJSON, messages, 4200, true)
 	if err != nil {
