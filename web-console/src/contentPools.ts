@@ -43,7 +43,7 @@ export function useContentPools(plan: Ref<number | null>, room: Ref<{ id: number
       const next = await request<PoolStatus>(target.replace('/content-pools?', '/content-pools/update?'), { method: 'POST', suppressErrorDialog: true })
       if (url.value === target && owner === epoch) status.value = { ...(status.value || {}), ...next } as PoolStatus
     } catch (err) { if (url.value === target) error.value = err instanceof Error ? err.message : '更新未完成，请重试' }
-    finally { submitting.value = false; void refresh() }
+    finally { await refresh(true); submitting.value = false }
   }
   watch(url, () => { epoch++; controller?.abort(); busy = false; status.value = null; error.value = ''; preview.value = false; if (timer) clearTimeout(timer); void refresh() }, { immediate: true })
   watch(preview, () => void refresh())

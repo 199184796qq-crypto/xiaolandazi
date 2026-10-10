@@ -383,22 +383,6 @@ const poolStatus = contentPools.status
 const poolError = contentPools.error
 const poolSubmitting = contentPools.submitting
 const poolPreview = contentPools.preview
-const contentPoolSaveTarget = ref<HTMLElement | null>(null)
-const contentPoolSaveRequested = ref(false)
-function focusContentPoolSaveTarget() {
-  const target = contentPoolSaveTarget.value
-  if (!contentPoolSaveRequested.value || !target) return
-  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  target.querySelector<HTMLButtonElement>('.control-save')?.focus({ preventScroll: true })
-  contentPoolSaveRequested.value = false
-}
-async function openContentPoolSave() {
-  contentPoolSaveRequested.value = true
-  await nextTick()
-  focusContentPoolSaveTarget()
-}
-watch(contentPoolSaveTarget, focusContentPoolSaveTarget, { flush: 'post' })
-watch([activeRoomId, currentRoomPlanId], () => { contentPoolSaveRequested.value = false })
 const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
@@ -1541,10 +1525,7 @@ const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_m
 const isFixedGeneratedContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_pregenerated')
 const isRealtimeVoiceContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_dynamic')
 const hasCustomMainlineResult = computed(() => Boolean(fullShowResult.value?.variants.some((item) => item.variant_key === 'CUSTOM')))
-const fullShowVersionActionReady = computed(() => Boolean(
-  (isRealtimeVoiceContentMode.value && currentRoomPlanId.value && !realtimeOptionsLoading.value && !realtimeOptionsLoadError.value && !realtimeGenerationOptionsError(realtimeGenerationOptions.value))
-    || (fullShowResult.value && (isFixedGeneratedContentMode.value || (isUserAudioContentMode.value && hasCustomMainlineResult.value))),
-))
+const fullShowVersionActionReady = computed(() => !fullShowSaveBlockedReason.value)
 const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
 let contentModeLoadNo = 0
 let contentModeRefreshTimer: number | undefined
@@ -1647,6 +1628,29 @@ const fullShowWorkspaceChecks = ref<{ code: string; message: string }[]>([])
 const fullShowWorkspaceInherited = ref(false)
 const fullShowWorkspaceVoiceIdentity = ref<LiveAgentVoiceIdentity | null>(null)
 const fullShowWorkspaceLegacyPartial = ref(false)
+const fullShowSaveBlockedReason = computed(() => {
+  if (!currentRoomPlanId.value || !activeRoom.value) return '先选好直播间和方案，我们再一起保存吧～'
+  if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
+  if (anchorInitializing.value) return '智能体正在准备中，等它完成后就能保存啦～'
+  if (contentModeLoading.value || contentModeSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return '正在准备当前方案，稍等一下就好啦～'
+  if (contentModeError.value || !contentModeReady.value) return '直播模式还没准备好，去“生成智能体”重新读取一下吧～'
+  if (fullShowError.value) return '方案还没成功恢复，去“生成智能体”看看提示再试吧～'
+  if (!poolStatus.value || poolError.value) return '资料状态还没读到，点一下“刷新”再试试吧～'
+  if (poolSubmitting.value || poolStatus.value.state === 'updating') return '内容正在认真准备中，完成后就能保存啦～'
+  if (poolStatus.value.state === 'needs_update' || poolStatus.value.state === 'failed') return '先把变化的资料更新好，再来保存智能体哦～'
+  if (isRealtimeVoiceContentMode.value) {
+    if (realtimeOptionsLoading.value) return '正在读取实时声音参数，马上就好啦～'
+    if (realtimeOptionsLoadError.value) return '实时声音参数没读到，去“生成智能体”点重试吧～'
+    const error = realtimeGenerationOptionsError(realtimeGenerationOptions.value)
+    return error ? `实时声音参数还需要调整哦：${error}。去“生成智能体”改好就能保存啦～` : ''
+  }
+  if (isUserAudioContentMode.value && !hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
+  if (!fullShowResult.value) return '先去“生成智能体”生成并核对文稿，再来保存吧～'
+  if (!fullShowFormalVariantKeys.value.length) return '选好至少一套正式稿，我们就能保存啦～'
+  if (!fullShowAllFormalVoicesReady.value) return '还有正式稿的声音没准备好，完成后就能保存啦～'
+  if (!fullShowVoiceIdentityConsistent.value) return '正式稿的音色还没统一，去“生成智能体”处理好再来保存哦～'
+  return ''
+})
 const fullShowWorkspaceDirty = computed(
   () =>
     Boolean(fullShowResult.value && fullShowWorkspaceBaseVersion.value) &&
@@ -3486,90 +3490,74 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   const result = fullShowResult.value
-  if (!planId || !room || (!result && !isRealtimeVoiceContentMode.value) || fullShowVersionSaving.value) return null
+  if (fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
-  if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value) {
-    fullShowVersionError.value = '请先确认当前直播间的可用内容模式。'
-    return null
-  }
-  if (isRealtimeVoiceContentMode.value && realtimeGenerationOptionsError(realtimeGenerationOptions.value)) {
-    fullShowVersionError.value = realtimeGenerationOptionsError(realtimeGenerationOptions.value)
+  if (fullShowSaveBlockedReason.value || !planId || !room) {
+    fullShowVersionError.value = fullShowSaveBlockedReason.value
     return null
   }
   const contentModeAtSave = contentModeAccess.value?.content_mode
   const realtimeOptionsAtSave = isRealtimeVoiceContentMode.value ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
-  if (!isRealtimeVoiceContentMode.value && !fullShowFormalVariantKeys.value.length) {
-    fullShowVersionError.value = '请先选择至少一套正式稿。'
-    return null
-  }
-  if (!isRealtimeVoiceContentMode.value && !fullShowAllFormalVoicesReady.value) {
-    fullShowVersionError.value = '还有正式稿没有生成声音，不能保存版本。'
-    return null
-  }
-  if (!isRealtimeVoiceContentMode.value && !fullShowVoiceIdentityConsistent.value) {
-    fullShowVersionError.value = '正式稿声音身份不一致，请用当前声音身份重新生成不一致的稿件。'
-    return null
-  }
-  const originalSource = await compactOriginalSourceManifest()
-  if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return null
-  if (realtimeOptionsAtSave && JSON.stringify(realtimeOptionsAtSave) !== JSON.stringify(realtimeGenerationOptions.value)) {
-    fullShowVersionError.value = '参数在准备保存时已变化，请重新点击保存新版本。'
-    return null
-  }
-  const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
-  const variants = (isRealtimeVoiceContentMode.value ? [] : (result?.variants || [])).filter((variant) =>
-    fullShowFormalVariantKeys.value.includes(variant.variant_key),
-  ).map((variant) => {
-    const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
-    const voice = fullShowVoiceState(variant.variant_key)
-    const assetManifest = isFormal
-      ? {
-          ...cloneVersionJSON(voice.asset_manifest || {}, {}),
-          ...(originalSource && variant.variant_key === originalSourceOwnerKey
-            ? { original_source: originalSource }
-            : {}),
-        }
-      : {}
-    return {
-      index: Math.max(1, Math.round(Number(variant.index || 1))),
-      variant_key: variant.variant_key,
-      is_formal: isFormal,
-      title: variant.title,
-      opening_angle: variant.opening_angle,
-      text: variant.text,
-      estimated_minutes: Math.max(1, Math.round(Number(variant.estimated_minutes || 1))),
-      covered_fact_keys: variant.covered_fact_keys || [],
-      covered_link_keys: variant.covered_link_keys || [],
-      tts_hints: (variant.tts_hints || []).map((item) => ({
-        segment: String(item.segment || ''),
-        instruction: String(item.instruction || ''),
-        rate: Number.isFinite(Number(item.rate)) ? Number(item.rate) : undefined,
-      })),
-      audit: {
-        passed: Boolean(variant.audit?.passed),
-        issues: (variant.audit?.issues || []).map((item) => ({
-          severity: String(item.severity || ''),
-          code: String(item.code || ''),
-          message: String(item.message || ''),
-        })),
-        fact_coverage_pct: Math.round(Number(variant.audit?.fact_coverage_pct || 0)),
-        link_coverage_pct: Math.round(Number(variant.audit?.link_coverage_pct || 0)),
-        similarity_pct: Math.round(Number(variant.audit?.similarity_pct || 0)),
-      },
-      audio_url: isFormal ? voice.audio_url : '',
-      audio_asset_id: isFormal ? Math.round(Number(voice.audio_asset_id || 0)) || undefined : undefined,
-      audio_duration_ms: isFormal ? Math.round(Number(voice.duration_ms || 0)) || undefined : undefined,
-      timeline: isFormal ? cleanVersionTimeline(voice.timeline) : [],
-      srt: isFormal ? voice.srt : '',
-      safe_points: isFormal ? cleanVersionSafePoints(voice.safe_points) : [],
-      asset_manifest: assetManifest,
-      generation_no: isFormal ? Math.max(1, Math.round(Number(voice.generation_no || 1))) : 0,
-      voice_identity_key: isFormal ? voice.voice_identity_key : '',
-    }
-  })
-	fullShowVersionSaving.value = true
-	fullShowNotice.value = isRealtimeVoiceContentMode.value ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
+  fullShowVersionSaving.value = true
+  fullShowNotice.value = isRealtimeVoiceContentMode.value ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
   try {
+    const originalSource = await compactOriginalSourceManifest()
+    if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return null
+    if (realtimeOptionsAtSave && JSON.stringify(realtimeOptionsAtSave) !== JSON.stringify(realtimeGenerationOptions.value)) {
+      fullShowVersionError.value = '参数在准备保存时已变化，请重新点击保存新版本。'
+      return null
+    }
+    const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
+    const variants = (isRealtimeVoiceContentMode.value ? [] : (result?.variants || [])).filter((variant) =>
+      fullShowFormalVariantKeys.value.includes(variant.variant_key),
+    ).map((variant) => {
+      const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
+      const voice = fullShowVoiceState(variant.variant_key)
+      const assetManifest = isFormal
+        ? {
+            ...cloneVersionJSON(voice.asset_manifest || {}, {}),
+            ...(originalSource && variant.variant_key === originalSourceOwnerKey
+              ? { original_source: originalSource }
+              : {}),
+          }
+        : {}
+      return {
+        index: Math.max(1, Math.round(Number(variant.index || 1))),
+        variant_key: variant.variant_key,
+        is_formal: isFormal,
+        title: variant.title,
+        opening_angle: variant.opening_angle,
+        text: variant.text,
+        estimated_minutes: Math.max(1, Math.round(Number(variant.estimated_minutes || 1))),
+        covered_fact_keys: variant.covered_fact_keys || [],
+        covered_link_keys: variant.covered_link_keys || [],
+        tts_hints: (variant.tts_hints || []).map((item) => ({
+          segment: String(item.segment || ''),
+          instruction: String(item.instruction || ''),
+          rate: Number.isFinite(Number(item.rate)) ? Number(item.rate) : undefined,
+        })),
+        audit: {
+          passed: Boolean(variant.audit?.passed),
+          issues: (variant.audit?.issues || []).map((item) => ({
+            severity: String(item.severity || ''),
+            code: String(item.code || ''),
+            message: String(item.message || ''),
+          })),
+          fact_coverage_pct: Math.round(Number(variant.audit?.fact_coverage_pct || 0)),
+          link_coverage_pct: Math.round(Number(variant.audit?.link_coverage_pct || 0)),
+          similarity_pct: Math.round(Number(variant.audit?.similarity_pct || 0)),
+        },
+        audio_url: isFormal ? voice.audio_url : '',
+        audio_asset_id: isFormal ? Math.round(Number(voice.audio_asset_id || 0)) || undefined : undefined,
+        audio_duration_ms: isFormal ? Math.round(Number(voice.duration_ms || 0)) || undefined : undefined,
+        timeline: isFormal ? cleanVersionTimeline(voice.timeline) : [],
+        srt: isFormal ? voice.srt : '',
+        safe_points: isFormal ? cleanVersionSafePoints(voice.safe_points) : [],
+        asset_manifest: assetManifest,
+        generation_no: isFormal ? Math.max(1, Math.round(Number(voice.generation_no || 1))) : 0,
+        voice_identity_key: isFormal ? voice.voice_identity_key : '',
+      }
+    })
     const payload = {
       tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
       room_id: Math.round(Number(room.id || 0)),
@@ -5958,20 +5946,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <div ref="contentPoolSaveTarget" class="strategy-plan-save-area">
-            <AnchorControlBar
-              mode="save"
-              :initializing="false"
-              :initialize-disabled="true"
-              :saving="fullShowVersionSaving"
-              :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
-              save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
-              @save="saveFullShowVersion"
-            />
-            <p v-if="fullShowVersionSaving || (fullShowSavedVersion && !fullShowVersionError)" class="strategy-plan-save-status" role="status">{{ fullShowVersionSaving ? '正在保存…' : '已保存' }}</p>
-          </div>
         </header>
-        <div v-if="fullShowVersionError && fullShowVersionActionReady" class="inline-error strategy-fullshow-action-error" role="alert">{{ fullShowVersionError }}</div>
 
         <section v-if="showPlanManager" class="strategy-plan-manager-inline">
           <form class="strategy-plan-create" @submit.prevent="submitPlanManager">
@@ -5993,7 +5968,7 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @open-save="openContentPoolSave" />
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @save="saveFullShowVersion" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
@@ -8564,11 +8539,8 @@ onBeforeUnmount(() => {
 .strategy-plan-card-actions button.danger { background:#fff6f6; border-color:#ffd6d9; color:#c95862; }
 .strategy-plan-card button:disabled { cursor:default; opacity:.58; }
 .strategy-plan-empty { padding:28px; border:1px dashed rgba(100,113,166,.22); border-radius:16px; text-align:center; color:#8a95aa; }
-.strategy-plan-container-head { display:grid; grid-template-columns:minmax(0,1fr) max-content; align-items:start; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
+.strategy-plan-container-head { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
 .strategy-plan-heading { min-width:0; }
-.strategy-plan-save-area { justify-self:end; width:224px; max-width:100%; min-width:0; }
-.strategy-plan-save-status { text-align:right; font-size:13px; }
-@media(max-width:900px) { .strategy-plan-container-head { grid-template-columns:minmax(0,1fr); } .strategy-plan-save-area { grid-row:1; } }
 .strategy-plan-selector-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .strategy-plan-selector-row .strategy-plan-title-switch {
   display:block;

@@ -2,14 +2,30 @@
 import { computed } from 'vue'
 import type { PoolStatus } from '../contentPools'
 import uploadIllustration from '../assets/content-update-upload.png'
-const props = defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean }>()
-const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; openSave: [] }>()
+const props = withDefaults(defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '' })
+const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: [] }>()
+const needsUpdate = computed(() => props.status?.state === 'needs_update' || props.status?.state === 'failed')
+const updating = computed(() => props.submitting || props.status?.state === 'updating')
+const actionDisabled = computed(() => !props.status || !!props.error || props.saving || updating.value || (!needsUpdate.value && props.saveDisabled))
+const actionLabel = computed(() => props.saving ? '保存中…' : updating.value ? '更新中…' : needsUpdate.value ? props.status?.state === 'failed' ? '重试更新' : '更新受影响内容' : '保存智能体')
+const disabledHint = computed(() => {
+  if (props.saving) return '正在把方案收好，稍等一下哦～'
+  if (updating.value) return '内容正在认真准备中，完成后就能保存啦～'
+  if (!props.status) return '稍等一下，正在读取方案资料～'
+  if (props.error) return '资料状态暂时没读到，点一下“刷新”再试试吧～'
+  return actionDisabled.value ? props.saveHint || '方案还在准备中，完成后就能保存啦～' : ''
+})
+function primaryAction() {
+  if (actionDisabled.value) return
+  if (needsUpdate.value) emit('update')
+  else emit('save')
+}
 const title = computed(() => ({ needs_update: '资料有待更新内容', updating: '正在更新受影响内容', failed: '内容更新未完成', ready: '内容已更新，核对后保存智能体', synced: '商品专属内容与公共内容已保存' }[props.status?.state || 'needs_update']))
 const guidance = computed(() => ({
   needs_update: '展开核对资料变化，点击“更新受影响内容”，完成后再保存智能体方案。',
   updating: '正在根据资料变化更新内容，完成后可展开核对并保存智能体方案。',
   failed: '查看更新结果与资料变化，重试更新后再核对并保存智能体方案。',
-  ready: '下一步：展开核对内容，点击“去保存智能体”，再点击“保存智能体方案”。',
+  ready: '展开核对更新内容，确认后点击“保存智能体”，下次开播使用新版本。',
   synced: '公共内容与商品专属内容已保存，下次开播将使用已保存版本。',
 }[props.status?.state || 'needs_update']))
 const groups = computed(() => {
@@ -33,15 +49,17 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
         <p v-if="status">{{ guidance }}</p>
       </div>
       <div class="pool-actions">
-        <button v-if="status?.state === 'ready'" class="pool-primary" type="button" @click="emit('openSave')">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18H5.5a4.5 4.5 0 0 1-.7-8.95 7 7 0 0 1 13.5-.55A4.8 4.8 0 0 1 18.5 18H17M12 21V10m-4 4 4-4 4 4" /></svg>
-          去保存智能体
-        </button>
-        <button v-else-if="status && status.state !== 'synced'" class="pool-primary" type="button" :disabled="submitting || status.state === 'updating'" @click="emit('update')">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3-1.5 6.5L4 11l6.5 1.5L12 19l1.5-6.5L20 11l-6.5-1.5L12 3ZM4 3v4m-2-2h4m13 12v5m-2.5-2.5h5" /></svg>
-          {{ submitting || status.state === 'updating' ? '更新中…' : status.state === 'failed' ? '重试更新' : '更新受影响内容' }}
-        </button>
-        <button class="pool-refresh" type="button" @click="emit('refresh')">
+        <div class="pool-main-action">
+          <button class="pool-primary" type="button" :disabled="actionDisabled" :aria-busy="saving || updating" :aria-describedby="disabledHint ? 'pool-primary-hint' : undefined" @click="primaryAction">
+            <svg v-if="needsUpdate || updating" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3-1.5 6.5L4 11l6.5 1.5L12 19l1.5-6.5L20 11l-6.5-1.5L12 3ZM4 3v4m-2-2h4m13 12v5m-2.5-2.5h5" /></svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18H5.5a4.5 4.5 0 0 1-.7-8.95 7 7 0 0 1 13.5-.55A4.8 4.8 0 0 1 18.5 18H17M12 21V10m-4 4 4-4 4 4" /></svg>
+            {{ actionLabel }}
+          </button>
+          <p v-if="disabledHint" id="pool-primary-hint" class="pool-action-hint" role="status"><span aria-hidden="true">✦</span>{{ disabledHint }}</p>
+          <p v-else-if="saveNotice" class="pool-action-hint" role="status">{{ saveNotice }}</p>
+          <p v-if="saveError" class="pool-action-error" role="alert">{{ saveError }}</p>
+        </div>
+        <button class="pool-refresh" type="button" :disabled="saving" @click="emit('refresh')">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a8 8 0 0 0-13.5-3L3 8m0-5v5h5M4 16a8 8 0 0 0 13.5 3L21 16m0 5v-5h-5" /></svg>
           刷新
         </button>
@@ -79,7 +97,8 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
 .pool-intro{grid-column:2;min-width:0;padding-top:3px}
 .pool-intro h2{margin:0;color:#202e69;font-size:26px;font-weight:750;letter-spacing:-.5px;line-height:1.4;overflow-wrap:anywhere}
 .pool-intro p{margin:12px 0 0;font-size:16px;line-height:1.8}
-.pool-actions{grid-column:3;display:flex;align-items:center;gap:12px;padding-top:2px}
+.pool-actions{grid-column:3;display:flex;align-items:flex-start;gap:12px;padding-top:2px}
+.pool-main-action{width:224px;max-width:100%;min-width:0;display:grid;gap:10px}.pool-main-action .pool-primary{box-sizing:border-box;width:224px;max-width:100%;height:58px;min-height:58px;padding:10px 12px;font-size:16px}.pool-action-hint,.pool-action-error{margin:0;padding:10px 12px;border-radius:12px;background:#eeefff;color:#6a71a1;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.pool-action-hint span{margin-right:6px;color:#8a83ed}.pool-action-error{background:#fff1f4;color:#aa3444}
 .pool-actions button{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:48px;padding:11px 18px;border-radius:14px;font:inherit;font-size:16px;font-weight:650;white-space:nowrap;cursor:pointer;transition:box-shadow .2s,transform .2s}
 .pool-primary{border:1px solid #6689ff;background:linear-gradient(110deg,#7b9dfb,#375df9);color:#fff;box-shadow:0 5px 12px #4770ec30,inset 0 1px 0 #ffffff35}
 .pool-refresh{border:1px solid #dce4ff;background:#ffffffdb;color:#304178;box-shadow:0 3px 8px #415fab0b}
