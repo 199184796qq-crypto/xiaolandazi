@@ -19,6 +19,8 @@ import (
 
 var salesTestPrefixedTables = flag.Bool("sales-test-prefixed-tables", false, "Explicit opt-in: use random-prefixed isolated test tables inside the permitted schema. All SQL is allowlisted and table identifiers rewritten; never accesses business tables")
 var salesScratchTables = []string{
+	"agent_learning_sessions", "agent_learning_evidence", "agent_learning_results",
+	"agent_memory_items", "agent_memory_versions", "agent_memory_evidence_stats",
 	"mgmt_anchor_model_settings",
 	"crm_customer_agent_relations", "crm_referral_relations",
 	"mkt_campaign_controls", "mkt_campaign_item_options", "mkt_claim_locks", "mkt_claim_reservations", "fin_commerce_rule_heads", "fin_commerce_rule_versions", "fin_order_reward_snapshots", "mkt_campaigns", "mkt_campaign_items", "mkt_campaign_price_rules", "mkt_campaign_inventory", "mkt_campaign_order_snapshots", "mkt_campaign_placements", "mkt_campaign_scopes", "catalog_time_card_products", "catalog_time_card_versions", "catalog_device_versions", "biz_audit_events", "catalog_membership_card_discounts",

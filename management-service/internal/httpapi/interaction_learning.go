@@ -226,3 +226,36 @@ func (s *Server) interactionLearningClose(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, 200, map[string]any{"closed": true})
 }
+
+func (s *Server) interactionSimulationDelete(w http.ResponseWriter, r *http.Request) {
+	_, tenant, room, ok := s.requireCustomerPolicyRoom(w, r)
+	if !ok {
+		return
+	}
+	plan, err := strconv.ParseInt(r.URL.Query().Get("plan_id"), 10, 64)
+	if err != nil || plan <= 0 {
+		writeError(w, 400, "请选择当前智能体方案")
+		return
+	}
+	if _, err = s.store.GetLiveAgentPlan(r.Context(), tenant, plan); err != nil {
+		writeError(w, 404, "当前方案不存在")
+		return
+	}
+	var id int64
+	if raw := r.PathValue("sessionID"); raw != "" {
+		id, ok = parsePositivePathID(w, raw)
+		if !ok {
+			return
+		}
+	}
+	deleted, err := s.store.DeleteSimulationReviews(r.Context(), tenant, room, plan, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, 409, "这条模拟建议已处理、已删除或不属于当前方案")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "删除模拟建议失败，请重试")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": deleted})
+}

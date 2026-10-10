@@ -629,6 +629,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/policy-agent/chat", s.liveRoomPolicyAgentChat)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/agent-learning/sessions", s.agentLearningCreateSession)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/interaction-learning", s.interactionLearningList)
+	mux.HandleFunc("DELETE /api/v1/live/rooms/{roomID}/interaction-learning", s.interactionSimulationDelete)
+	mux.HandleFunc("DELETE /api/v1/live/rooms/{roomID}/interaction-learning/{sessionID}", s.interactionSimulationDelete)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/interaction-learning/simulate", s.interactionLearningSimulate)
 	mux.HandleFunc("POST /api/v1/live/rooms/{roomID}/interaction-learning/{sessionID}/close", s.interactionLearningClose)
 	mux.HandleFunc("GET /api/v1/live/rooms/{roomID}/agent-learning/sessions", s.agentLearningListSessions)

@@ -1,6 +1,27 @@
 package httpapi
 
-import "testing"
+import (
+	"livecompanion/management/internal/auth"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestSimulationDeletionRequiresAuthentication(t *testing.T) {
+	s := &Server{auth: auth.NewResolver("test", nil)}
+	for _, id := range []string{"", "1"} {
+		r := httptest.NewRequest(http.MethodDelete, "/api/v1/live/rooms/8/interaction-learning?plan_id=4", nil)
+		r.SetPathValue("roomID", "8")
+		if id != "" {
+			r.SetPathValue("sessionID", id)
+		}
+		w := httptest.NewRecorder()
+		s.interactionSimulationDelete(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("deletion allowed without authentication: %d", w.Code)
+		}
+	}
+}
 
 func TestSimulationCannotSilentlyDiscardUnknownOrIncompleteFields(t *testing.T) {
 	good := `{"items":[{"question":"不抽可以吗","context":"食品包装","kind":"missing_fact","meaning":"能否选择非真空","reason":"可选规则缺失","suggested_rule":"","needed_facts":["是否可不抽真空"]}]}`
