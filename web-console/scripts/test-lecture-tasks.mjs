@@ -13,7 +13,7 @@ window.fetch=async(url,init={})=>{const p=new URL(url,location.origin).pathname;
 if(p.endsWith('/product-links'))return Response.json({items:[{link_key:'1',product_name:'整鸭',status:'active'}]});
 if(p.endsWith('/lecture-tasks') && !init.method)return Response.json(p.includes('/5/')?{...lib,tasks:[],fingerprint:'other'}:lib);
 if(p.endsWith('/ingest')){const data=JSON.parse(init.body);if(window.fixture.delay)await new Promise(r=>window.fixture.release=r);if(data.source.includes('保证'))return Response.json({saved:false,issues:[{quote:'保证',rule:'当前规则',reason:'不能承诺未经确认的效果',suggestion:'改成可核对的事实'}]});lib={...lib,fingerprint:'new'};return Response.json({saved:true,title:task.title,facts_added:2,angles:task.angles});}
-if(p.endsWith('/preview'))return Response.json({text:'咱们这只土麻鸭产自四川南充，配上本地老卤，讲的就是这份地方风味。'});
+if(p.endsWith('/preview'))return Response.json(window.fixture.rejectedPreview ? {text:'模型已生成但未完成审核的正文。',approved:false,notice:'仅供查看，不会安排播放。',issues:[{kind:'review_error',quote:'',reason:'审核返回格式不完整'}]} : {text:'咱们这只土麻鸭产自四川南充，配上本地老卤，讲的就是这份地方风味。',approved:true,notice:'文字预览，不安排播放。',review_note:'有明确事实依据',issues:[]});
 if(p.endsWith('/policy')){lib={...lib,policy:JSON.parse(init.body),fingerprint:'policy'};return Response.json({ok:true});}
 if(p.endsWith('/action')){const data=JSON.parse(init.body);lib={...lib,tasks:data.action==='delete'?[]:lib.tasks.map(t=>({...t,enabled:data.action==='enable',revision:t.revision+1})),fingerprint:'action'};return Response.json({ok:true});}
 throw Error('unmocked '+p);};
@@ -29,6 +29,9 @@ try {
  await page.getByRole('heading',{name:'南充土麻鸭与地方风味'}).waitFor()
  await mkdir('../deploy/validation/lecture-tasks',{recursive:true});await page.screenshot({path:'../deploy/validation/lecture-tasks/desktop.png',fullPage:true})
  await page.getByRole('button',{name:'预览讲解',exact:true}).click();await page.locator('.lecture-preview').waitFor()
+ assert.match(await page.locator('.lecture-preview').innerText(),/这个角度可以这样讲/)
+ await page.evaluate(()=>window.fixture.rejectedPreview=true);await page.getByRole('button',{name:'预览讲解',exact:true}).click();await page.locator('.preview-rejected').waitFor()
+ assert.match(await page.locator('.lecture-preview').innerText(),/模型已生成但未完成审核的正文/);assert.match(await page.locator('.preview-issues').innerText(),/审核未完成.*审核返回格式不完整/)
  const source=page.getByRole('textbox',{name:'故事素材'});await source.fill('保证这个效果');await page.getByRole('button',{name:'发送',exact:true}).click();await page.locator('.lecture-issues').waitFor();assert.equal(await source.inputValue(),'保证这个效果')
  await source.fill('土麻鸭产自四川南充');await page.getByRole('checkbox',{name:/回车/}).check();await source.evaluate(el=>el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true})));await source.press('Shift+Enter')
  assert.equal(await page.evaluate(()=>window.fixture.calls.filter(c=>c.url.includes('/ingest')).length),1)
