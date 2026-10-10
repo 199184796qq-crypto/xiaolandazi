@@ -6566,7 +6566,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
+          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
           <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { request, createAgentLearningTurn, adoptAgentLearningSession } from '../api'
-import type { AgentLearningSession, AgentLearningResult } from '../types'
+import { request, createAgentLearningTurn, adoptAgentLearningSession, adoptLiveAgentPlanFacts } from '../api'
+import type { AgentLearningSession, AgentLearningResult, LiveAgentPlanFact } from '../types'
 import { session } from '../session'
 import InteractionFactDialog from './InteractionFactDialog.vue'
 
-const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
+const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; facts?: LiveAgentPlanFact[]; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
 const emit = defineEmits<{ adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
 const items = ref<AgentLearningSession[]>([])
 const count = ref(0)
@@ -24,6 +24,8 @@ const locatedId = ref<number | null>(null)
 const locating = ref(false)
 const factContext = ref<AgentLearningSession | null>(null)
 const factNotices = ref<Record<number, string>>({})
+const suggestionErrors = ref<Record<number, string>>({})
+const adoptedSuggestions = ref<Record<number, boolean>>({})
 const visible = computed(() => !props.compact || count.value > 0)
 const showItems = computed(() => !props.compact || expanded.value)
 const displayedItems = computed(() => props.sourceType ? items.value.filter(item => item.source_type === props.sourceType) : items.value)
@@ -59,6 +61,8 @@ watch(() => [props.roomId, props.planId, props.history, props.sourceType, sessio
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
   locatedId.value = null
   factContext.value = null; factNotices.value = {}
+  suggestionErrors.value = {}; adoptedSuggestions.value = {}
+  if (busy.value.startsWith('suggestion:')) busy.value = ''
   void refresh()
 }, { immediate: true })
 
@@ -124,6 +128,44 @@ function onFactSaved(result: { roomId: number; planId: number; tenantId: number;
     ? '当前方案已包含这条事实。核对好后，可以点击“已处理，标记完成”。'
     : '事实依据已保存到当前方案。核对好后，可以点击“已处理，标记完成”。'
   emit('factsUpdated', result)
+}
+
+function suggestionSource(item: AgentLearningSession) {
+  return `manual:interaction-learning-suggestion:room:${item.room_id}:record:${item.id}`
+}
+
+function isSuggestionAdopted(item: AgentLearningSession) {
+  return adoptedSuggestions.value[item.id] || props.facts?.some(fact =>
+    fact.plan_id === props.planId && fact.tenant_id === item.tenant_id && fact.status === 'active'
+    && fact.source_ref === suggestionSource(item) && fact.value.trim() === (item.review?.reason || '').trim())
+}
+
+async function adoptSuggestion(item: AgentLearningSession) {
+  const room = props.roomId, plan = props.planId, token = epoch
+  const value = (item.review?.reason || '').trim()
+  if (busy.value || factContext.value || item.status !== 'editing' || !value || isSuggestionAdopted(item)) return
+  if (!room || !plan || item.review?.plan_id !== plan || item.room_id !== room || !(item.tenant_id > 0)) {
+    suggestionErrors.value[item.id] = '当前问题的方案信息已变化，请刷新后重试。'
+    return
+  }
+  const operation = `suggestion:${item.id}`
+  busy.value = operation
+  suggestionErrors.value[item.id] = ''
+  try {
+    const key = Array.from(`互动建议：${item.question || item.review.meaning || '回答条件'}`).slice(0, 255).join('')
+    const result = await adoptLiveAgentPlanFacts(plan, [{
+      category: 'other', key, value, status: 'pending', review_bucket: 'adoptable',
+      review_reason: '用户采纳模型建议', source_quote: '',
+    }], item.tenant_id, suggestionSource(item), { suppressErrorDialog: true })
+    if (token !== epoch) return
+    const unchanged = result.results?.[0]?.status === 'unchanged'
+    if (!result.adopted && !unchanged) throw new Error(result.results?.[0]?.message || '建议未采纳，请重试')
+    adoptedSuggestions.value[item.id] = true
+    factNotices.value[item.id] = unchanged ? '这条建议已经在当前方案的事实依据里啦。' : '已采纳，已加入当前方案的事实依据。'
+    emit('factsUpdated', { roomId: room, planId: plan, tenantId: item.tenant_id })
+  } catch (cause) {
+    if (token === epoch) suggestionErrors.value[item.id] = cause instanceof Error ? cause.message : '采纳建议失败，请重试'
+  } finally { if (token === epoch && busy.value === operation) busy.value = '' }
 }
 
 async function generatePreview(item: AgentLearningSession) {
@@ -195,7 +237,8 @@ async function close(item: AgentLearningSession) {
         <p v-if="item.review?.observed_context"><b>实际现场：</b>{{ item.review.observed_context }}</p>
         <p v-if="item.review?.context"><b>适用场景：</b>{{ item.review.context }}</p>
         <p v-if="item.original_reply"><b>生成的回答：</b>{{ item.original_reply }}</p>
-        <p><b>模型建议：</b>{{ item.review?.reason }}</p>
+        <p class="model-suggestion"><b>模型建议：</b><span>{{ item.review?.reason }}</span><button v-if="item.status === 'editing' && (item.review?.reason || '').trim()" type="button" class="suggestion-adopt" :disabled="!!busy || isSuggestionAdopted(item)" :aria-label="isSuggestionAdopted(item) ? '模型建议已采纳' : '采纳模型建议'" title="将这条模型建议加入当前方案的事实依据" @click="adoptSuggestion(item)">{{ isSuggestionAdopted(item) ? '已采纳' : busy === `suggestion:${item.id}` ? '采纳中…' : '采纳' }}</button></p>
+        <p v-if="suggestionErrors[item.id]" class="error" role="alert">{{ suggestionErrors[item.id] }}</p>
         <p v-if="item.review?.needed_facts?.length"><b>建议补充：</b>{{ item.review.needed_facts.join('；') }}</p>
         <p v-if="item.review?.suggested_rule"><b>纠正建议：</b>{{ item.review.suggested_rule }}</p>
         <div v-if="item.status === 'editing'" class="actions">
@@ -226,5 +269,6 @@ async function close(item: AgentLearningSession) {
 .interaction-learning{margin:16px 0;padding:20px;border:1px solid #d9e2f8;border-radius:20px;background:#f8faff;color:#293851;font-size:16px}
 .interaction-learning article.is-review-located{border-color:#e77c96;outline:3px solid #ed879e;outline-offset:3px;background:#fffafb;scroll-margin-block:24px}
 .interaction-learning .question{display:flex;align-items:flex-start;gap:10px}.pending-question-dot{flex:0 0 9px;width:9px;height:9px;margin-top:8px;border-radius:50%;background:#e74d65;box-shadow:0 0 0 4px #e74d6514}
+.interaction-learning .suggestion-adopt{display:inline-block;margin-left:12px;padding:4px 12px;vertical-align:middle;font-size:14px;line-height:1.5;white-space:nowrap;background:#eef0ff;border-color:#d5dafa}.interaction-learning .suggestion-adopt:disabled{cursor:not-allowed}
 header,header>div,.actions,.item-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}header{justify-content:space-between}header strong{font-size:19px}header span,.item-meta{color:#627391}.hint{color:#627391;line-height:1.7}button{padding:9px 15px;border:1px solid #d2dbf2;border-radius:10px;background:white;color:#4d54d5;cursor:pointer;font:inherit}button:disabled{opacity:.55;cursor:wait}article{margin-top:14px;padding:18px;border:1px solid #e0e6f5;border-radius:15px;background:white}.item-meta{justify-content:space-between;font-size:14px}.question{display:block;margin-top:12px;font-size:18px}article p{margin:10px 0;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.editor{margin-top:15px;padding-top:15px;border-top:1px solid #e8edf8}.editor label{display:block}textarea{box-sizing:border-box;width:100%;margin:10px 0;padding:12px;border:1px solid #cbd5ef;border-radius:10px;font:inherit;color:inherit}.preview{margin-top:12px;padding:15px;background:#f1f4ff;border-radius:12px}.error{color:#c33350}.notice{color:#137a69}
 </style>

@@ -2,9 +2,9 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import InteractionLearningPanel from './InteractionLearningPanel.vue'
 import { request } from '../api'
-import type { AgentLearningSession } from '../types'
+import type { AgentLearningSession, LiveAgentPlanFact } from '../types'
 
-const props = defineProps<{ roomId: number | null; planId: number | null; locationRequest?: number }>()
+const props = defineProps<{ roomId: number | null; planId: number | null; facts?: LiveAgentPlanFact[]; locationRequest?: number }>()
 const emit = defineEmits<{ refresh: []; adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
 const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
@@ -107,6 +107,7 @@ function onAdopted() {
         v-show="activeTab !== 'adopted'"
         :room-id="roomId"
         :plan-id="planId"
+        :facts="facts"
         :source-type="activeTab === 'history' ? undefined : activeTab === 'simulation' ? 'initial_simulation' : 'live_uncertain'"
         :history="activeTab === 'history'"
         :show-simulation="activeTab === 'simulation'"
