@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
-import type { PlanVersionIdentity } from '../livePlanVersionStatus'
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
+import { useRoomSpeechIdentity } from '../useRoomSpeechIdentity'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -66,6 +66,7 @@ import InteractionLearningPanel from '../components/InteractionLearningPanel.vue
 import type {
   LiveAgentSettings,
   LiveAgentPlan,
+  LiveAgentPlanVersion,
   LiveRuntimeSnapshot,
   Room,
   RoomBlockedUser,
@@ -126,8 +127,8 @@ async function refreshRoomStrategyAuthorization() {
     endRoomSupportScope = beginLiveSupportScope(roomId)
     await Promise.all([loadLiveAgentPlansForRoom(), loadPublishedSpeechRate()])
   } else if (!authorized) {
-    publishedPlanVersionLoadToken += 1
-    publishedPlanVersion.value = null
+    publishedSpeechLoadEpoch += 1
+    publishedSpeechVersion.value = null
     publishedPlanVersionError.value = false
     publishedPlanVersionLoading.value = false
     endRoomSupportScope?.()
@@ -399,10 +400,8 @@ let videoFloatDragState: {
 } | null = null
 const liveAgentPlans = ref<LiveAgentPlan[]>([])
 const agentPlanBusy = ref(false)
-const publishedPlanVersion = ref<PlanVersionIdentity | null>(null)
 const publishedPlanVersionError = ref(false)
 const publishedPlanVersionLoading = ref(false)
-let publishedPlanVersionLoadToken = 0
 const agentPlanError = useFeedbackErrorRef()
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
@@ -1063,13 +1062,13 @@ function normalizeRoomSpeechRate(value: unknown) {
 
 async function loadPublishedSpeechRate(syncRate = true) {
   if (!canConfigureRoomStrategy.value) return
-  const token = ++publishedPlanVersionLoadToken
+  const token = ++publishedSpeechLoadEpoch
   const planID = selectedLiveAgentPlanId.value
   publishedPlanVersionLoading.value = true
   try {
     const result = await getRoomPublishedLiveAgentPlanVersion(roomId)
-    if (pageUnmounted || token !== publishedPlanVersionLoadToken || !canConfigureRoomStrategy.value || selectedLiveAgentPlanId.value !== planID) return
-    publishedPlanVersion.value = result.version || null
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch || !canConfigureRoomStrategy.value || selectedLiveAgentPlanId.value !== planID) return
+    if (syncRate || publishedSpeechVersion.value?.id !== result.version?.id) publishedSpeechVersion.value = result.version || null
     publishedPlanVersionError.value = false
     if (!syncRate || liveSpeechRateBusy.value) return
     const rate = normalizeRoomSpeechRate(result.version?.voice_identity?.rate)
@@ -1077,15 +1076,15 @@ async function loadPublishedSpeechRate(syncRate = true) {
     liveSpeechRateSaved.value = rate
     liveSpeechRateError.value = ''
   } catch {
-    if (pageUnmounted || token !== publishedPlanVersionLoadToken || selectedLiveAgentPlanId.value !== planID) return
-    publishedPlanVersion.value = null
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch || selectedLiveAgentPlanId.value !== planID) return
+    publishedSpeechVersion.value = null
     publishedPlanVersionError.value = true
     if (syncRate && !liveSpeechRateBusy.value) {
       liveSpeechRate.value = 1
       liveSpeechRateSaved.value = 1
     }
   } finally {
-    if (token === publishedPlanVersionLoadToken) publishedPlanVersionLoading.value = false
+    if (token === publishedSpeechLoadEpoch) publishedPlanVersionLoading.value = false
   }
 }
 
@@ -1102,8 +1101,8 @@ async function changeLiveSpeechRate(event: Event) {
   liveSpeechRateError.value = ''
   try {
     const version = await publishLiveAgentVoiceRate(roomId, nextRate)
-    publishedPlanVersionLoadToken += 1
-    publishedPlanVersion.value = version
+    publishedSpeechLoadEpoch += 1
+    publishedSpeechVersion.value = version
     publishedPlanVersionError.value = false
     const savedRate = normalizeRoomSpeechRate(version.voice_identity?.rate || nextRate)
     liveSpeechRate.value = savedRate
@@ -1221,14 +1220,25 @@ async function loadLiveAgentPlansForRoom() {
 
 const selectedLiveAgentPlanId = computed(() => runtimeSnapshot.value?.agent_plan_id || 0)
 const selectedLiveAgentPlanName = computed(() => runtimeSnapshot.value?.agent_plan_name || '')
+const publishedSpeechVersion = ref<LiveAgentPlanVersion | null>(null)
+let publishedSpeechLoadEpoch = 0
+const { presenterLabel: speechPresenterLabel, voiceLabel: speechVoiceLabel, voiceTitle: speechVoiceTitle } = useRoomSpeechIdentity({
+  roomId,
+  tenantId: computed(() => room.value?.tenant_id || 0),
+  planId: selectedLiveAgentPlanId,
+  sessionId: computed(() => runtimeSnapshot.value?.session?.id || 0),
+  playbackVersionId: computed(() => aiActive.value ? mainlineProgram.value?.version_id || 0 : 0),
+  allowed: canConfigureRoomStrategy,
+  publishedVersion: publishedSpeechVersion,
+})
 const liveAgentPlanSelectValue = computed(() => {
   const selectedId = selectedLiveAgentPlanId.value
   if (!selectedId) return ''
   return liveAgentPlans.value.some((item) => item.id === selectedId) ? String(selectedId) : ''
 })
 watch(selectedLiveAgentPlanId, () => {
-  publishedPlanVersionLoadToken += 1
-  publishedPlanVersion.value = null
+  publishedSpeechLoadEpoch += 1
+  publishedSpeechVersion.value = null
   publishedPlanVersionError.value = false
   if (!pageUnmounted) void loadPublishedSpeechRate()
 })
@@ -4559,7 +4569,7 @@ onBeforeUnmount(() => {
             v-if="canConfigureRoomStrategy"
             class="companion-plan-version"
             :plan-id="selectedLiveAgentPlanId"
-            :saved="publishedPlanVersion"
+            :saved="publishedSpeechVersion"
             :runtime="runtimeSnapshot"
             :program="mainlineProgram"
             :error="publishedPlanVersionError"
@@ -4792,6 +4802,10 @@ onBeforeUnmount(() => {
                 <path d="M20.8 9.2l-4.3 4.3"></path>
               </svg>
             </button>
+          </div>
+          <div class="speech-runtime-identity" aria-label="主播和声音模型">
+            <span class="speech-identity-item" :title="speechPresenterLabel"><small>主播</small><b>{{ speechPresenterLabel }}</b></span>
+            <span class="speech-identity-item" :title="speechVoiceTitle"><small>声音模型</small><b>{{ speechVoiceLabel }}</b></span>
           </div>
         </header>
 
@@ -6338,6 +6352,7 @@ onBeforeUnmount(() => {
 
 .speech-runtime-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
   gap: 18px;
@@ -6354,6 +6369,10 @@ onBeforeUnmount(() => {
 
 .speech-runtime-brand strong { font-size: 16px; }
 .speech-runtime-brand small { color: #8fa3bf; font-size: 12px; }
+.speech-runtime-identity { display:flex; flex-wrap:wrap; gap:8px 16px; min-width:0; max-width:100%; }
+.speech-identity-item { display:flex; align-items:center; gap:7px; min-width:0; max-width:100%; padding:5px 10px; border:1px solid rgba(143,163,191,.2); border-radius:8px; background:rgba(255,255,255,.035); }
+.speech-identity-item small { flex-shrink:0; color:#8fa3bf; font-size:12px; }
+.speech-identity-item b { color:#dce5f5; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
 .speech-local-mute-button {
   width:30px;
   height:30px;
