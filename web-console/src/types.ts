@@ -1207,6 +1207,7 @@ export interface AgentDecisionSummary {
 }
 
 export interface AgentDecisionSimulationResult {
+	plan_id?: number
   decision_id: string
   question: string
   reply: string

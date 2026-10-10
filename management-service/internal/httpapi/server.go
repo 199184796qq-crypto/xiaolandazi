@@ -436,6 +436,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/agent-decisions", s.getRoomAgentDecisions)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-voice/transcribe", s.transcribeRoomAgentVoice)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/simulate", s.simulateRoomAgentDecision)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/adopt-plan-answer", s.adoptPlanTestAnswer)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/manual", s.enqueueRoomManualAgentDecision)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.completeRoomAgentDecision)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.removeRoomAgentDecision)

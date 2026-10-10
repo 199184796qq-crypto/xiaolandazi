@@ -4028,6 +4028,12 @@ async function onInteractionFactsUpdated(scope: { roomId: number; planId: number
   await Promise.all([refreshFormalFacts(), contentPools.refresh(true)])
 }
 
+function onPlanTestAssetsUpdated(event: Event) {
+  const scope = (event as CustomEvent<{ room_id: number; plan_id: number }>).detail
+  if (!scope || scope.room_id !== activeRoomId.value || scope.plan_id !== currentRoomPlanId.value) return
+  void Promise.all([refreshFormalFacts(), refreshMemories(), contentPools.refresh(true)])
+}
+
 function startFormalFactEdit(item: LiveAgentPlanFact) {
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
@@ -5799,6 +5805,7 @@ watch(
 const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentRoomPlanId)
 
 onMounted(async () => {
+  window.addEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
   await Promise.all([loadFactCategories(), loadAgentSettings()])
@@ -5814,6 +5821,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   contentModeDisposed = true
   contentModeLoadNo++
   if (contentModeRefreshTimer !== undefined) window.clearInterval(contentModeRefreshTimer)

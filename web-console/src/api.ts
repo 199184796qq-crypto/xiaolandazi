@@ -654,10 +654,16 @@ export function getRoomAgentDecisions(roomId: number) {
   return request<AgentDecisionSnapshot>('/api/v1/rooms/' + roomId + '/agent-decisions')
 }
 
-export function simulateRoomAgentDecision(roomId: number, payload: { question: string }) {
+export function simulateRoomAgentDecision(roomId: number, payload: { question: string; plan_id?: number; preview_instruction?: string }) {
   return request<AgentDecisionSimulationResult>('/api/v1/rooms/' + roomId + '/agent-decisions/simulate', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function adoptPlanTestAnswer(roomId: number, input: { plan_id: number; question: string; answer: string }) {
+  return request<AdoptAgentLearningOutput>(`/api/v1/rooms/${roomId}/agent-decisions/adopt-plan-answer`, {
+    method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true,
   })
 }
 
