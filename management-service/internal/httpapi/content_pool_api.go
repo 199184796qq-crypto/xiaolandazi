@@ -12,15 +12,17 @@ import (
 )
 
 type contentPoolStatus struct {
-	State      string                       `json:"state"`
-	Changes    []contentpools.Change        `json:"changes"`
-	Job        appdb.PoolJob                `json:"job"`
-	Products   []contentpools.Product       `json:"products"`
-	Benefits   []appdb.BenefitScope         `json:"benefits"`
-	Pools      []map[string]any             `json:"pools"`
-	SetID      int64                        `json:"set_id"`
-	History    []appdb.ContentChangeHistory `json:"history,omitempty"`
-	SavedSetID int64                        `json:"saved_set_id"`
+	State             string                       `json:"state"`
+	Changes           []contentpools.Change        `json:"changes"`
+	Job               appdb.PoolJob                `json:"job"`
+	Products          []contentpools.Product       `json:"products"`
+	Benefits          []appdb.BenefitScope         `json:"benefits"`
+	Pools             []map[string]any             `json:"pools"`
+	SetID             int64                        `json:"set_id"`
+	History           []appdb.ContentChangeHistory `json:"history,omitempty"`
+	SavedSetID        int64                        `json:"saved_set_id"`
+	SourceRows        []contentpools.SourceRow     `json:"source_rows,omitempty"`
+	CurrentSourceRows []contentpools.SourceRow     `json:"current_source_rows,omitempty"`
 }
 
 func contentPoolSetID(data map[string]any) int64 {
@@ -73,6 +75,8 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 	}
 	out.Job = job
 	if preview {
+		out.SourceRows = set.Sources.Rows
+		out.CurrentSourceRows = source.Rows
 		out.History, err = s.store.ContentChangeHistory(ctx, tenant, plan)
 		if err != nil {
 			return out, err

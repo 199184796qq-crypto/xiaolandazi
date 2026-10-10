@@ -62,7 +62,7 @@ func TestSpeechModelCopyReencryptsIndependentKeyAndPreservesDefault(t *testing.T
 	// Subsequent edits and deleting the source do not need its credential again.
 	copy := next.Profiles[1]
 	copy.Name, copy.Model = "独立副本", "changed-model"
-	updated, updatedKeys, err := buildSpeechModelsUpdate(next, nextKeys, agentgateway.SpeechModelsInput{Profiles: []agentgateway.SpeechModelInput{{SpeechModel: copy}}, Revision: next.Revision}, secret)
+	updated, updatedKeys, err := buildSpeechModelsUpdate(next, nextKeys, agentgateway.SpeechModelsInput{Profiles: []agentgateway.SpeechModelInput{{SpeechModel: copy}}, ReviewDefaultID: copy.ID, Revision: next.Revision}, secret)
 	if err != nil || len(updated.Profiles) != 1 {
 		t.Fatal("independent edit failed", err)
 	}
@@ -85,6 +85,34 @@ func TestOldModelClientRetainsSystemRole(t *testing.T) {
 	input.DefaultID = "copy"
 	if _, _, err := buildSpeechModelsUpdate(old, keys, input, secret); err == nil {
 		t.Fatal("old client deleted selected system profile")
+	}
+}
+
+func TestReviewSelectionPreservedAcrossWriterChangesAndOldClients(t *testing.T) {
+	old, keys, input, secret := speechCopyFixture(t)
+	// Legacy config initially reviews with its existing writing connection.
+	input.DefaultID = "copy"
+	next, nextKeys, err := buildSpeechModelsUpdate(old, keys, input, secret)
+	if err != nil || next.DefaultID != "copy" || next.ReviewDefaultID != "original" {
+		t.Fatal("writer change silently changed legacy reviewer", next, err)
+	}
+	input.Revision = next.Revision
+	input.Profiles[1].CopyFromID = ""
+	input.ReviewDefaultID = "copy"
+	next, nextKeys, err = buildSpeechModelsUpdate(next, nextKeys, input, secret)
+	if err != nil || next.ReviewDefaultID != "copy" {
+		t.Fatal("explicit review selection failed", err)
+	}
+	input.Revision = next.Revision
+	input.DefaultID, input.ReviewDefaultID = "original", ""
+	next, _, err = buildSpeechModelsUpdate(next, nextKeys, input, secret)
+	if err != nil || next.DefaultID != "original" || next.ReviewDefaultID != "copy" {
+		t.Fatal("old client cleared independent reviewer", next, err)
+	}
+	input.Revision = next.Revision
+	input.Profiles = input.Profiles[:1]
+	if _, _, err = buildSpeechModelsUpdate(next, nextKeys, input, secret); err == nil {
+		t.Fatal("selected reviewer deleted without replacement")
 	}
 }
 

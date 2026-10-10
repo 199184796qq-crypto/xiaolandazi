@@ -10,6 +10,9 @@ func (s *Store) ResolveTextRole(ctx context.Context, stage string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if agentgateway.UsesReviewModel(stage) && models.ReviewDefaultID != "" {
+		return models.ReviewDefaultID, nil
+	}
 	if models.SystemDefaultID != "" {
 		if agentgateway.UsesSpeechModel(stage) {
 			return models.DefaultID, nil

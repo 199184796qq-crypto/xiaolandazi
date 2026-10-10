@@ -271,7 +271,18 @@ async function locateRisk(itemID: number, field = '', beginEdit = false) {
   document.querySelector<HTMLElement>(`[data-product-card-id="${itemID}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   return true
 }
-defineExpose({ locateRisk })
+async function locateSource(itemID: number, attributeID?: number) {
+  const item = props.items.find(item => item.id === itemID)
+  if (!item || (attributeID && !item.attributes?.some(attribute => attribute.id === attributeID))) return false
+  expandedItems.value = new Set([...expandedItems.value, itemID])
+  await nextTick()
+  const card = document.querySelector<HTMLElement>(`[data-product-card-id="${itemID}"]`)
+  const target = attributeID ? card?.querySelector<HTMLElement>(`[data-product-attribute-id="${attributeID}"]`) : card
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target?.focus({ preventScroll: true })
+  return !!target
+}
+defineExpose({ locateRisk, locateSource })
 
 watch(() => props.items.map((item) => item.id), (ids) => {
   if (edit.value && !ids.includes(edit.value.item.id)) edit.value = null
@@ -283,7 +294,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 
 <template>
   <div class="product-cards">
-    <article v-for="item in items" :key="item.id" class="product-card" :data-product-card-id="item.id">
+    <article v-for="item in items" :key="item.id" class="product-card" :data-product-card-id="item.id" tabindex="-1">
       <header class="product-card-header">
         <div class="product-card-link">
           <input v-if="isEditing(item, 'link_key') && edit" v-model="edit.draft" v-focus :disabled="busy" maxlength="64" :aria-label="'编辑' + item.link_key + '的链接编号'" @blur="saveEdit" @keydown.enter.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" />
@@ -330,7 +341,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 		<div v-if="expandedItems.has(item.id)" :id="'product-attributes-' + item.id" class="product-personalized-body">
 		  <div v-if="!(item.attributes || []).length && attributeEdit?.itemId !== item.id" class="product-attribute-empty">这个商品还没有个性属性。可添加本品类独有、并能作为话术事实的信息。</div>
 		  <dl v-if="(item.attributes || []).length" class="product-attribute-list">
-			<div v-for="attribute in item.attributes" :key="attribute.id">
+			<div v-for="attribute in item.attributes" :key="attribute.id" :data-product-attribute-id="attribute.id" tabindex="-1">
 			  <dt>{{ attribute.label }}</dt>
 			  <dd><span>{{ attributeValue(attribute) }}</span><div><button type="button" class="product-edit" :disabled="busy" :aria-label="'修改个性属性' + attribute.label" @click="startEditAttribute(item, attribute)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button><button type="button" class="product-attribute-delete" :disabled="busy" :aria-label="'删除个性属性' + attribute.label" @click="deleteAttribute(item, attribute)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" /></svg></button></div></dd>
 			</div>

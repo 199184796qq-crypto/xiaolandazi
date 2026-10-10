@@ -32,6 +32,11 @@ func TestTextModelProfilesResolveAliasesAndPreserveOtherRoles(t *testing.T) {
 		if err != nil || len(unchanged.Messages) != 1 || !unchanged.EnableThinking {
 			t.Fatal("analysis was changed")
 		}
+		req.Stage = "speech_review"
+		review, err := PrepareTextRequest(SpeechModel{Model: c.model}, req)
+		if err != nil || len(review.Messages) != len(req.Messages) || review.TextPromptSHA != "" {
+			t.Fatal("writing adaptation mixed into final review", review, err)
+		}
 	}
 }
 
