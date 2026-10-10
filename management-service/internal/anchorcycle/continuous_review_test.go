@@ -2,8 +2,33 @@ package anchorcycle
 
 import (
 	"livecompanion/management/internal/anchorstylescore"
+	"livecompanion/management/internal/contentguard"
 	"testing"
 )
+
+func TestContextualApprovalIsReusedByAdoptionAndAudio(t *testing.T) {
+	s := p0Fixture(t, 2)
+	s.Surface = "formal_live"
+	c := candidate("开袋后最好当天吃完。", 100)
+	if err := s.CheckP0Candidate(&c); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyP0Context(&c, contentguard.ContextReview{Raw: `{"items":[{"hit_id":"h1","decision":"pass","reason":"真实食用提示"}],"instruction_leak":false}`}); err != nil {
+		t.Fatal(err)
+	}
+	review := c.P0Report
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	adopted := s.Accepted[len(s.Accepted)-1].Selected
+	if adopted.P0Report != review || s.CheckApprovedText(adopted, c.Text) != nil {
+		t.Fatal("review lost or repeated before audio")
+	}
+	adopted.OutputText = "这是全网最低价。"
+	if s.CheckApprovedText(adopted, adopted.OutputText) == nil {
+		t.Fatal("old receipt approved different text")
+	}
+}
 
 func TestApprovedFinalTextReceiptIsReusedAndMutationRequiresReview(t *testing.T) {
 	s := p0Fixture(t, 2)

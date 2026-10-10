@@ -61,6 +61,25 @@ func TestDirectMainlineOwnsBoundedContextAndNoFilledHookSkeleton(t *testing.T) {
 	}
 }
 
+func TestAnglePlanPacketCarriesIntentInsteadOfOriginalReadyMadeSpeech(t *testing.T) {
+	s := cycleTestState(t)
+	s.AnglePlanMotherSHA = "test-mother"
+	s.BaselineJSON = textTestBaseline()
+	s.Queue[0].Angle = "价格原句：一桌人吃不到90块，这是原角度例句"
+	p := &anchorcycle.AnglePlan{AudienceConcern: "整只半只怎么选", Goal: "理解份量选择", Action: "结合饭量和其他菜解释", Hooks: []string{"从尝口味或分享进入"}}
+	p.SourceSHA = s.AnglePlanKey()
+	s.AnglePlans = map[string]*anchorcycle.AnglePlan{p.SourceSHA: p}
+	packet := map[string]any{"内容方向与采用条件": "旧角度候选库"}
+	applyCycleAnglePlanPacket(&s, packet)
+	raw, _ := json.Marshal(packet)
+	if strings.Contains(string(raw), "一桌人吃不到90") || strings.Contains(string(raw), "旧角度候选库") || !strings.Contains(string(raw), "从尝口味或分享进入") {
+		t.Fatal(string(raw))
+	}
+	if s.Task().Angle != "价格原句：一桌人吃不到90块，这是原角度例句" {
+		t.Fatal("saved user angle rewritten")
+	}
+}
+
 // Export exact compiled production packets for a read-only real-provider probe.
 func TestExportTextModelProbePackets(t *testing.T) {
 	input, output := os.Getenv("TEXT_PROBE_STATE_INPUT"), os.Getenv("TEXT_PROBE_PACKET_OUTPUT")

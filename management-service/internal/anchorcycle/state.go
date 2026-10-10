@@ -89,31 +89,33 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
-	P0CheckedInputSHA string                  `json:"p0_checked_input_sha,omitempty"`
-	P0ApprovedTextSHA string                  `json:"p0_approved_text_sha,omitempty"`
-	ContentWarnings   []string                `json:"content_warnings,omitempty"`
-	ProductAudit      *ProductAudit           `json:"product_audit,omitempty"`
-	ID                string                  `json:"id"`
-	Attempt           int                     `json:"attempt"`
-	Text              string                  `json:"text"`
-	RawText           string                  `json:"raw_text,omitempty"`
-	OutputText        string                  `json:"output_text,omitempty"`
-	PunctuationEdits  []PunctuationEdit       `json:"punctuation_edits,omitempty"`
-	ScoreScope        string                  `json:"score_scope,omitempty"`
-	PostprocessMS     int64                   `json:"postprocess_ms,omitempty"`
-	Prompt            string                  `json:"prompt"`
-	Score             anchorstylescore.Result `json:"score"`
-	GenerationMS      int64                   `json:"generation_ms"`
-	EventIDs          []string                `json:"event_ids"`
-	RetryFeedback     string                  `json:"retry_feedback,omitempty"`
-	CreatedAt         string                  `json:"created_at"`
-	PriceCheck        PriceCheck              `json:"price_check,omitempty"`
-	ContentIssue      string                  `json:"content_issue,omitempty"`
-	CacheID           string                  `json:"cache_id,omitempty"`
-	P0Report          *contentguard.Report    `json:"p0_report,omitempty"`
-	P0Patch           *contentguard.Repair    `json:"p0_patch,omitempty"`
-	P0PatchError      string                  `json:"p0_patch_error,omitempty"`
-	P0RewriteNumber   int                     `json:"p0_rewrite_number,omitempty"`
+	AnglePlan               *AnglePlan                            `json:"angle_plan,omitempty"`
+	OpeningInstructionEdits []contentguard.OpeningInstructionEdit `json:"opening_instruction_edits,omitempty"`
+	P0CheckedInputSHA       string                                `json:"p0_checked_input_sha,omitempty"`
+	P0ApprovedTextSHA       string                                `json:"p0_approved_text_sha,omitempty"`
+	ContentWarnings         []string                              `json:"content_warnings,omitempty"`
+	ProductAudit            *ProductAudit                         `json:"product_audit,omitempty"`
+	ID                      string                                `json:"id"`
+	Attempt                 int                                   `json:"attempt"`
+	Text                    string                                `json:"text"`
+	RawText                 string                                `json:"raw_text,omitempty"`
+	OutputText              string                                `json:"output_text,omitempty"`
+	PunctuationEdits        []PunctuationEdit                     `json:"punctuation_edits,omitempty"`
+	ScoreScope              string                                `json:"score_scope,omitempty"`
+	PostprocessMS           int64                                 `json:"postprocess_ms,omitempty"`
+	Prompt                  string                                `json:"prompt"`
+	Score                   anchorstylescore.Result               `json:"score"`
+	GenerationMS            int64                                 `json:"generation_ms"`
+	EventIDs                []string                              `json:"event_ids"`
+	RetryFeedback           string                                `json:"retry_feedback,omitempty"`
+	CreatedAt               string                                `json:"created_at"`
+	PriceCheck              PriceCheck                            `json:"price_check,omitempty"`
+	ContentIssue            string                                `json:"content_issue,omitempty"`
+	CacheID                 string                                `json:"cache_id,omitempty"`
+	P0Report                *contentguard.Report                  `json:"p0_report,omitempty"`
+	P0Patch                 *contentguard.Repair                  `json:"p0_patch,omitempty"`
+	P0PatchError            string                                `json:"p0_patch_error,omitempty"`
+	P0RewriteNumber         int                                   `json:"p0_rewrite_number,omitempty"`
 }
 type Segment struct {
 	Phase          string                         `json:"phase"`
@@ -135,6 +137,8 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	AnglePlans                map[string]*AnglePlan          `json:"angle_plans,omitempty"`
+	AnglePlanMotherSHA        string                         `json:"angle_plan_mother_sha,omitempty"`
 	TextModel                 *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
 	TextPromptSHA             string                         `json:"text_prompt_sha256,omitempty"`
 	GenerationSkips           []GenerationSkip               `json:"generation_skips,omitempty"`
