@@ -63,6 +63,12 @@ const resizingPointList = ref(false)
 const chatMessageHeight = ref(460)
 const chatResizeStart = ref({ y: 0, height: 460 })
 const resizingChat = ref(false)
+const heightPreferenceKey = computed(() => {
+  const actor = session.bootstrap?.actor
+  if (!actor?.user_id) return ''
+  return `speech-miner-heights:v1:${actor.user_id}:${props.tenantId || actor.tenant_id || 0}`
+})
+let activeHeightPreferenceKey = ''
 const expandedPointKeys = ref<string[]>([])
 const collapsedPointKeys = ref<string[]>([])
 const locatedRiskSource = ref('')
@@ -505,6 +511,7 @@ function stopPointListResize() {
   window.removeEventListener('pointerup', stopPointListResize)
   window.removeEventListener('pointercancel', stopPointListResize)
   document.body.classList.remove('speech-miner-is-resizing-vertical')
+  saveHeightPreferences()
 }
 
 function startPointListResize(event: PointerEvent) {
@@ -524,6 +531,7 @@ function resizePointListByKeyboard(event: KeyboardEvent) {
   else if (event.key === 'End') pointListHeight.value = 1000
   else return
   event.preventDefault()
+  saveHeightPreferences()
 }
 
 function updateChatMessageHeight(event: PointerEvent) {
@@ -539,6 +547,7 @@ function stopChatResize() {
   window.removeEventListener('pointerup', stopChatResize)
   window.removeEventListener('pointercancel', stopChatResize)
   document.body.classList.remove('speech-miner-is-resizing-chat')
+  saveHeightPreferences()
 }
 
 function startChatResize(event: PointerEvent) {
@@ -558,10 +567,45 @@ function resizeChatByKeyboard(event: KeyboardEvent) {
   else if (event.key === 'End') chatMessageHeight.value = 900
   else return
   event.preventDefault()
+  saveHeightPreferences()
 }
 
 function resetChatHeight() {
   chatMessageHeight.value = 460
+  saveHeightPreferences()
+}
+
+function saveHeightPreferences() {
+  if (!activeHeightPreferenceKey) return
+  try {
+    window.localStorage.setItem(activeHeightPreferenceKey, JSON.stringify({
+      listHeight: pointListHeight.value,
+      chatHeight: chatMessageHeight.value,
+    }))
+  } catch {
+    // Resizing remains usable when browser storage is unavailable.
+  }
+}
+
+function restoreHeightPreferences(key: string) {
+  // Finish an in-progress drag under its original account before changing scope.
+  stopPointListResize()
+  stopChatResize()
+  activeHeightPreferenceKey = key
+  pointListHeight.value = 580
+  chatMessageHeight.value = 460
+  if (!key) return
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(key) || 'null')
+    if (typeof saved?.listHeight === 'number' && Number.isFinite(saved.listHeight)) {
+      pointListHeight.value = Math.round(Math.min(1000, Math.max(360, saved.listHeight)))
+    }
+    if (typeof saved?.chatHeight === 'number' && Number.isFinite(saved.chatHeight)) {
+      chatMessageHeight.value = Math.round(Math.min(900, Math.max(280, saved.chatHeight)))
+    }
+  } catch {
+    // Missing or invalid preferences use the normal default heights.
+  }
 }
 
 function optionAction(option: SpeechMinerOption) {
@@ -843,6 +887,8 @@ watch(selectedScope, () => {
 watch(scopeOptions, options => {
   if (!options.some(option => option.value === selectedScope.value) && !pointEdit.value) selectedScope.value = 'common'
 })
+
+watch(heightPreferenceKey, restoreHeightPreferences, { immediate: true })
 
 onMounted(() => window.addEventListener('keydown', handleWindowKeydown))
 onBeforeUnmount(() => {

@@ -6522,32 +6522,54 @@ onBeforeUnmount(() => {
                 </thead>
                 <tbody>
                   <template v-for="item in formalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
-                        <select v-model="formalFactEditDraft.category" :disabled="factCategoryState.loading || !!factCategoryState.error">
-                          <optgroup v-for="group in factCategoryGroups(formalFactEditDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup>
-                        </select>
+                        <div class="strategy-formal-fact-edit-category">
+                          <FactCategoryBadge :category="formalFactEditDraft.category" :label="factCategoryLabel(formalFactEditDraft.category)" :family="factCategoryDefinition(formalFactEditDraft.category).family" />
+                          <select v-model="formalFactEditDraft.category" aria-label="事实分类" :disabled="mutatingFormalFactId === item.id || factCategoryState.loading || !!factCategoryState.error">
+                            <optgroup v-for="group in factCategoryGroups(formalFactEditDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup>
+                          </select>
+                          <svg class="strategy-formal-fact-edit-category-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                        </div>
                       </td>
                       <td>
-                        <input v-model="formalFactEditDraft.key" maxlength="255" />
+                        <label class="strategy-formal-fact-edit-name"><span>事实名称</span><input v-model="formalFactEditDraft.key" aria-label="事实名称" maxlength="255" :disabled="mutatingFormalFactId === item.id" /><small>{{ factCategoryDescription(formalFactEditDraft.category) }}</small></label>
                       </td>
                       <td>
-                        <textarea v-model="formalFactEditDraft.value" rows="3" maxlength="4000"></textarea>
+                        <label class="strategy-formal-fact-edit-field is-content">
+                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容（可以说）</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
+                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容（可以说）" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" placeholder="请填写真实、准确的事实内容…" :disabled="mutatingFormalFactId === item.id"></textarea>
+                          <span :id="'fact-edit-content-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>可填写真实、准确的可对外说明内容，方便智能体回答。</span></span>
+                        </label>
                       </td>
-                      <td><textarea v-model="formalFactEditDraft.forbidden_wording" rows="3" maxlength="4000"></textarea></td>
-                      <td><textarea v-model="formalFactEditDraft.safe_rewrite" rows="3" maxlength="4000"></textarea></td>
                       <td>
-                        <div class="strategy-formal-fact-actions">
+                        <label class="strategy-formal-fact-edit-field is-forbidden">
+                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" /></svg></i><strong>不要这样说</strong></span><small>{{ formalFactEditDraft.forbidden_wording.length }}/4000</small></span>
+                          <textarea v-model="formalFactEditDraft.forbidden_wording" aria-label="不要这样说" :aria-describedby="'fact-edit-forbidden-hint-' + item.id" rows="4" maxlength="4000" placeholder="请输入不建议的说法…" :disabled="mutatingFormalFactId === item.id"></textarea>
+                          <span :id="'fact-edit-forbidden-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg><span>避免夸大、模糊或容易引起误解的表述。</span></span>
+                        </label>
+                      </td>
+                      <td>
+                        <label class="strategy-formal-fact-edit-field is-rewrite">
+                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></i><strong>改成这样说</strong></span><small>{{ formalFactEditDraft.safe_rewrite.length }}/4000</small></span>
+                          <textarea v-model="formalFactEditDraft.safe_rewrite" aria-label="改成这样说" :aria-describedby="'fact-edit-rewrite-hint-' + item.id" rows="4" maxlength="4000" placeholder="请输入建议的说法…" :disabled="mutatingFormalFactId === item.id"></textarea>
+                          <span :id="'fact-edit-rewrite-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>提供更准确、更合适的表达方式。</span></span>
+                        </label>
+                      </td>
+                      <td>
+                        <div class="strategy-formal-fact-actions strategy-formal-fact-edit-actions">
                           <button
                             class="primary-button"
                             type="button"
                             :disabled="mutatingFormalFactId === item.id"
                             @click="saveFormalFactEdit(item)"
                           >
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8" /></svg>
                             {{ mutatingFormalFactId === item.id ? '保存中…' : '保存' }}
                           </button>
                           <button type="button" :disabled="mutatingFormalFactId === item.id" @click="cancelFormalFactEdit">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
                             取消
                           </button>
                         </div>
@@ -9393,9 +9415,9 @@ onBeforeUnmount(() => {
 .strategy-miner-risk-count i{display:grid;width:12px;height:12px;place-items:center;border-radius:50%;background:#c41d45;color:#fff;font-size:10px;font-style:normal}
 .strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:11%; }
 .strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:15%; }
-.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:28%; }
-.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:14%; }
-.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:14%; }
+.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:24%; }
+.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:16%; }
+.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:16%; }
 .strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:18%; }
 .strategy-formal-fact-category { display:inline-flex; padding:5px 8px; border-radius:8px; background:#eef2fb; color:#5c6dbb; font-size:12px; font-weight:900; }
 .strategy-formal-fact-name { display:grid; gap:3px; }
@@ -9418,6 +9440,38 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-actions button.primary-button { border-color:transparent; background:#5968cb; color:#fff; }
 .strategy-formal-fact-actions button.is-danger { border-color:#ffcbd4; background:linear-gradient(135deg,#fff7f8,#fff0f3); color:#d52c4b; }
 .strategy-formal-fact-actions button:disabled { cursor:not-allowed; opacity:.55; }
+.strategy-formal-facts-table tr.is-editing-formal-fact { position:relative; }
+.strategy-formal-facts-table tr.is-editing-formal-fact::after { content:''; position:absolute; inset:0; z-index:1; border:1px solid #b7d2ff; border-left:3px solid #3475ff; border-radius:14px; box-shadow:0 8px 18px #5b92e612; pointer-events:none; }
+.strategy-formal-facts-table tbody>tr.is-editing-formal-fact>td,.strategy-formal-facts-table tbody>tr.is-editing-formal-fact:hover>td { padding:14px 8px; background:linear-gradient(140deg,#f7faff,#eef5ff); box-shadow:none; }
+.strategy-formal-facts-table tr.is-editing-formal-fact>td:first-child { padding-left:16px; }
+.strategy-formal-facts-table tr.is-editing-formal-fact>td:last-child { padding-right:16px; }
+.strategy-formal-fact-edit-category { position:relative; border-radius:12px; box-shadow:0 4px 9px #4984e61a; }
+.strategy-formal-fact-edit-category .fact-category-badge { width:100%; min-height:48px; padding-right:29px; border:1px solid #c9dfff; font-size:14px; }
+.strategy-formal-fact-edit-category select { position:absolute; inset:0; z-index:2; opacity:0; cursor:pointer; }
+.strategy-formal-fact-edit-category:focus-within { outline:3px solid #4285ff40; outline-offset:2px; }
+.strategy-formal-fact-edit-category-arrow { position:absolute; top:50%; right:9px; width:16px; height:16px; transform:translateY(-50%); fill:none; stroke:#3475ff; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+.strategy-formal-fact-edit-name { display:grid; gap:9px; }
+.strategy-formal-fact-edit-name>span { color:#506a91; font-size:14px; font-weight:700; }
+.strategy-formal-fact-edit-name>small { color:#8195b6; font-size:12px; line-height:1.6; }
+.strategy-formal-facts-table .strategy-formal-fact-edit-name input { min-height:46px; padding:10px 12px; border-radius:10px; }
+.strategy-formal-fact-edit-field { --edit-color:#557fce; --edit-panel:#edf2ff; --edit-hint:#e5edff; --edit-icon:#87adff; display:flex; flex-direction:column; gap:9px; min-height:224px; padding:12px; border-radius:14px; background:var(--edit-panel); }
+.strategy-formal-fact-edit-field.is-forbidden { --edit-color:#e85079; --edit-panel:#fff3f7; --edit-hint:#ffe8ef; --edit-icon:#fb77a1; }
+.strategy-formal-fact-edit-field.is-rewrite { --edit-color:#24a869; --edit-panel:#edfdf4; --edit-hint:#dff8e9; --edit-icon:#24bf74; }
+.strategy-formal-fact-edit-field-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.strategy-formal-fact-edit-field-head>span { display:flex; align-items:center; gap:6px; min-width:0; color:var(--edit-color); }
+.strategy-formal-fact-edit-field-head strong { font-size:13px; line-height:1.4; }
+.strategy-formal-fact-edit-field-head i { display:grid; place-items:center; flex:0 0 24px; width:24px; height:24px; border-radius:50%; background:var(--edit-icon); color:#fff; }
+.strategy-formal-fact-edit-field-head svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-formal-fact-edit-field-head>small { flex-shrink:0; color:#8391a5; font-size:12px; font-variant-numeric:tabular-nums; }
+.strategy-formal-facts-table .strategy-formal-fact-edit-field textarea { min-height:110px; flex:1; padding:11px 12px; border-color:#dae1ef; border-radius:11px; color:#213653; font-size:14px; line-height:1.65; }
+.strategy-formal-fact-edit-field textarea::placeholder { color:#9aa5b5; }
+.strategy-formal-fact-edit-hint { display:flex; align-items:flex-start; gap:6px; padding:6px 8px; border-radius:8px; background:var(--edit-hint); color:var(--edit-color); font-size:11px; line-height:1.6; }
+.strategy-formal-fact-edit-hint svg { flex:0 0 18px; width:18px; height:18px; margin-top:1px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-formal-fact-edit-actions { flex-direction:column; align-items:center; gap:12px; }
+.strategy-formal-facts-table .strategy-formal-fact-edit-actions button { width:118px; min-height:46px; border-radius:11px; font-size:16px; }
+.strategy-formal-facts-table .strategy-formal-fact-edit-actions button.primary-button { background:linear-gradient(120deg,#6876ff,#197fff); box-shadow:0 6px 14px #377efa24; }
+.strategy-formal-facts-table .strategy-formal-fact-edit-actions svg { width:20px; height:20px; flex-basis:20px; }
+.strategy-formal-facts-table tr.is-editing-formal-fact input:disabled,.strategy-formal-facts-table tr.is-editing-formal-fact textarea:disabled { opacity:.65; cursor:wait; }
 .strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .strategy-formal-fact-guidance-cell[colspan="2"] { width:28%; }
 .strategy-formal-fact-operation .strategy-formal-fact-expand { display:grid; place-items:center; flex:0 0 30px; width:30px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:#3475ff; cursor:pointer; }
