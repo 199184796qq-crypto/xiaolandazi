@@ -2184,6 +2184,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if err != nil {
 		return "", err
 	}
+	text = item.nicknameSpeechText(text)
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("最终播出文字为空")
 	}
@@ -2640,6 +2641,7 @@ func (w *Worker) finalizeSpeechText(
 	item decisionItem,
 	text string,
 ) (string, error) {
+	text = item.nicknameSpeechText(text)
 	text, _ = contentstrategy.RemoveConsecutiveSpeech(text, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
 	if text == "" {
 		return "", fmt.Errorf("最终播出文字为空")
@@ -2736,7 +2738,7 @@ func (w *Worker) finalizeSpeechText(
 		return "", fmt.Errorf("智能体记忆终审失败: %w", reviewErr)
 	}
 	if reviewErr == nil && strings.TrimSpace(review.Text) != "" {
-		candidate = strings.TrimSpace(review.Text)
+		candidate = strings.TrimSpace(item.nicknameSpeechText(review.Text))
 	} else if hasAgentMemories || forceOperatorReview {
 		if forceOperatorReview {
 			return "", fmt.Errorf("播出前审核未返回可播文字")
@@ -3203,6 +3205,7 @@ func (w *Worker) liveAgentPlanStyleOverlayPrompt(ctx context.Context, tenantID, 
 }
 
 func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, selectionSink ...*decisionItem) (string, error) {
+	item = item.nicknamePromptItem()
 	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if planErr != nil && !errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
 		return "", fmt.Errorf("读取智能体直播方案失败: %w", planErr)
