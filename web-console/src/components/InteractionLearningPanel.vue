@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { request, createAgentLearningTurn, adoptAgentLearningSession } from '../api'
 import type { AgentLearningSession, AgentLearningResult } from '../types'
 
@@ -17,38 +17,71 @@ const notice = ref('')
 const editing = ref<number | null>(null)
 const feedback = ref('')
 const preview = ref<AgentLearningResult | null>(null)
+const panelElement = ref<HTMLElement | null>(null)
+const locatedId = ref<number | null>(null)
+const locating = ref(false)
 const visible = computed(() => !props.compact || count.value > 0)
 const showItems = computed(() => !props.compact || expanded.value)
 const displayedItems = computed(() => props.sourceType ? items.value.filter(item => item.source_type === props.sourceType) : items.value)
 const displayedCount = computed(() => props.sourceType ? displayedItems.value.length : count.value)
 const panelTitle = computed(() => props.history ? '纠正处理历史' : props.compact ? '互动待确认' : props.sourceType === 'initial_simulation' ? '模拟挖掘' : props.sourceType === 'live_uncertain' ? '直播互动' : '模拟挖掘与直播待确认')
 let epoch = 0
+let requestSequence = 0
+let locationSequence = 0
 let poll: ReturnType<typeof setInterval> | undefined
 
 async function refresh(manual = false) {
   const room = props.roomId, plan = props.planId, token = epoch
-  if (!room || !plan || document.hidden) return
+  if (!room || !plan || document.hidden) return false
+  const sequence = ++requestSequence
   try {
     const params = new URLSearchParams({ plan_id: String(plan), status: props.history ? status.value : 'pending', page: String(page.value), q: query.value })
     if (props.sourceType && !props.history) params.set('source', props.sourceType)
     const result = await request<{ items: AgentLearningSession[]; pending_count: number; total: number }>(`/api/v1/live/rooms/${room}/interaction-learning?${params}`, { suppressErrorDialog: true })
-    if (token !== epoch) return
+    if (token !== epoch || sequence !== requestSequence) return false
     items.value = result.items || []
     count.value = result.pending_count || 0; total.value = result.total || 0
     if (manual) error.value = ''
+    if (!items.value.some(item => item.id === locatedId.value && item.status === 'editing')) locatedId.value = null
+    return true
   } catch (err) {
-    if (token === epoch && manual) error.value = err instanceof Error ? err.message : '读取待确认互动失败'
+    if (token === epoch && sequence === requestSequence && manual) error.value = err instanceof Error ? err.message : '读取待确认互动失败'
+    return false
   }
 }
 
 watch(() => [props.roomId, props.planId, props.history, props.sourceType], () => {
   epoch++; page.value = 1; status.value = props.history ? 'all' : 'pending'; query.value = ''
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
+  locatedId.value = null
   void refresh()
 }, { immediate: true })
 
-onMounted(() => { poll = setInterval(() => { if (!busy.value) void refresh() }, 30_000) })
+onMounted(() => { poll = setInterval(() => { if (!busy.value && !locating.value) void refresh() }, 30_000) })
 onBeforeUnmount(() => { epoch++; if (poll) clearInterval(poll) })
+
+async function locatePending(itemId: number) {
+  const token = epoch
+  const sequence = ++locationSequence
+  locating.value = true
+  expanded.value = true; page.value = 1; query.value = ''; status.value = 'pending'
+  try {
+    if (!await refresh(true) || token !== epoch || sequence !== locationSequence) return false
+    const item = displayedItems.value.find(item => item.id === itemId && item.status === 'editing')
+    if (!item) return false
+    locatedId.value = item.id
+    await nextTick()
+    if (token !== epoch || sequence !== locationSequence) return false
+    const target = panelElement.value?.querySelector<HTMLElement>(`[data-interaction-review-id="${item.id}"]`)
+    if (!target) return false
+    target.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start', inline: 'nearest' })
+    target.focus({ preventScroll: true })
+    return true
+  } finally { if (sequence === locationSequence) locating.value = false }
+}
+
+function cancelLocation() { locationSequence++; locating.value = false }
+defineExpose({ locatePending, cancelLocation })
 
 async function simulate() {
   const room = props.roomId, plan = props.planId, token = epoch
@@ -112,7 +145,7 @@ async function close(item: AgentLearningSession) {
 </script>
 
 <template>
-  <section v-if="visible && roomId && planId" class="interaction-learning" aria-label="互动纠正与待确认问题">
+  <section v-if="visible && roomId && planId" ref="panelElement" class="interaction-learning" aria-label="互动纠正与待确认问题">
     <header>
       <div role="status" aria-live="polite"><strong>{{ panelTitle }}</strong><span>{{ history ? `共${total}条记录` : (displayedCount ? `${displayedCount}条待处理` : '暂无待确认问题') }}</span></div>
       <div class="actions">
@@ -133,7 +166,7 @@ async function close(item: AgentLearningSession) {
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="!displayedItems.length" class="hint">{{ sourceType === 'initial_simulation' ? '还没有模拟建议，点击“模拟挖掘”生成。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
-      <article v-for="item in displayedItems" :key="item.id">
+      <article v-for="item in displayedItems" :key="item.id" :data-interaction-review-id="item.id" :class="{ 'is-review-located': locatedId === item.id }" tabindex="-1">
         <div class="item-meta"><span>{{ item.source_type === 'initial_simulation' ? '模拟建议' : '直播记录' }} · {{ item.review?.kind === 'semantic' ? '问法纠正' : '缺少回答条件' }}</span><small>{{ statusLabel(item.status) }} · 记录{{ item.review?.occurrences || 1 }}次 · {{ new Date(item.updated_at).toLocaleString() }}</small></div>
         <strong class="question">{{ item.question }}</strong>
         <p v-if="item.review?.observed_context"><b>实际现场：</b>{{ item.review.observed_context }}</p>
@@ -166,5 +199,6 @@ async function close(item: AgentLearningSession) {
 <style scoped>
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
 .interaction-learning{margin:16px 0;padding:20px;border:1px solid #d9e2f8;border-radius:20px;background:#f8faff;color:#293851;font-size:16px}
+.interaction-learning article.is-review-located{border-color:#e77c96;outline:3px solid #ed879e;outline-offset:3px;background:#fffafb;scroll-margin-block:24px}
 header,header>div,.actions,.item-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}header{justify-content:space-between}header strong{font-size:19px}header span,.item-meta{color:#627391}.hint{color:#627391;line-height:1.7}button{padding:9px 15px;border:1px solid #d2dbf2;border-radius:10px;background:white;color:#4d54d5;cursor:pointer;font:inherit}button:disabled{opacity:.55;cursor:wait}article{margin-top:14px;padding:18px;border:1px solid #e0e6f5;border-radius:15px;background:white}.item-meta{justify-content:space-between;font-size:14px}.question{display:block;margin-top:12px;font-size:18px}article p{margin:10px 0;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.editor{margin-top:15px;padding-top:15px;border-top:1px solid #e8edf8}.editor label{display:block}textarea{box-sizing:border-box;width:100%;margin:10px 0;padding:12px;border:1px solid #cbd5ef;border-radius:10px;font:inherit;color:inherit}.preview{margin-top:12px;padding:15px;background:#f1f4ff;border-radius:12px}.error{color:#c33350}.notice{color:#137a69}
 </style>
