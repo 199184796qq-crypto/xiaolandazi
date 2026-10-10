@@ -87,6 +87,17 @@ func tailText(value string, limit int) string {
 	}
 	return string(r)
 }
+func cycleExpressionMethod(state *anchorcycle.State) string {
+	raw, err := interactionpolicy.Read("text-expression-variations.json")
+	if err != nil {
+		return ""
+	}
+	var methods []string
+	if json.Unmarshal(raw, &methods) != nil || len(methods) == 0 {
+		return ""
+	}
+	return methods[(state.TotalAccepted()+state.CycleNumber+len(state.Attempts))%len(methods)]
+}
 func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, error) {
 	foundation, err := interactionpolicy.Read("mainline-text-task.md")
 	if err != nil {
@@ -121,12 +132,14 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		maxChars = task.ProductMaxChars
 	}
 	// Vary explanation methods within the selected purpose/angle, not the task itself.
-	methods := []string{"解释选择依据", "从具体顾虑说起", "说明日常用途", "用自然对话展开", "解释价值而非只报价格", "讲清条件和边界"}
 	opener := "address_or_content"
 	if state.TotalAccepted()%3 != 0 {
 		opener = "content_first"
 	}
-	packet := map[string]any{"开头模式": opener, "本次任务": generationTaskView(task), "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "表达展开建议": methods[(state.TotalAccepted()+state.CycleNumber)%len(methods)], "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	packet := map[string]any{"开头模式": opener, "本次任务": generationTaskView(task), "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	if method := cycleExpressionMethod(state); method != "" {
+		packet["表达展开建议"] = method
+	}
 	links := []string{}
 	for _, id := range state.HookProducts() {
 		if id != "current" {
@@ -151,6 +164,20 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		}
 		delete(packet, "近期已采用内容仅供避重")
 		packet["近期已采用任务记录（不代表已播放）"] = memory
+		// At most two same-direction paragraphs provide phrasing context only.
+		// They never become an additional source of product facts or promises.
+		if current := state.CurrentAngleHook(); current != nil {
+			previous := []string{}
+			for i := len(state.Accepted) - 1; i >= 0 && len(previous) < 2; i-- {
+				part := state.Accepted[i]
+				if part.Task.Key == state.Task().Key && part.Selected.AngleHook != nil && part.Selected.AngleHook.Action == current.Action && state.CheckApprovedText(part.Selected, cycleVoiceText(part.Selected)) == nil {
+					previous = append(previous, cycleVoiceText(part.Selected))
+				}
+			}
+			if len(previous) > 0 {
+				packet["同方向近期原文（仅避重，不是事实依据或范文）"] = tailText(strings.Join(previous, "\n"), 1200)
+			}
+		}
 	}
 	if hook := state.PendingOpeningHook; state.Phase == "opening" && hook != nil {
 		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}

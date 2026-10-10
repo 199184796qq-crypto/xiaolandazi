@@ -123,15 +123,18 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	plan.SourceSHA, plan.PromptSHA, plan.Model = key, state.AnglePlanMotherSHA, profile.Model
 	plan.InputTokens, plan.OutputTokens = response.InputTokens, response.OutputTokens
 	plan.GenerationCount = 1
+	plan.GeneratedCards = append([]anchorcycle.AngleHook(nil), plan.Cards...)
 	if persistent {
 		if err := s.store.AppendAngleDirections(ctx, state.TenantID, state.PlanID, key, source, plan); err != nil {
 			state.Warn("新方向暂未持久保存，本场仍可使用，继续供料")
 		}
 	}
 	if previous != nil {
-		plan.Cards = append(append([]anchorcycle.AngleHook(nil), previous.Cards...), plan.Cards...)
+		plan.Cards = anchorcycle.DistinctDirectionCards(previous.Cards, plan.Cards)
 		plan.GenerationCount = previous.GenerationCount + 1
 		plan.LifetimePlays = previous.LifetimePlays
+	} else {
+		plan.Cards = anchorcycle.DistinctDirectionCards(plan.Cards)
 	}
 	state.AnglePlans[key] = plan
 	usage.LastSupplementAt = usage.Plays
@@ -153,7 +156,6 @@ func applyCycleAnglePlanPacket(state *anchorcycle.State, packet map[string]any) 
 		packet["本次任务"] = generationTaskView(task)
 		packet["角度钩子工作卡"] = map[string]any{"本段要完成的沟通任务": hook.Action}
 		packet["讲述目的"] = plan.Goal
-		delete(packet, "表达展开建议")
 		calculated, warnings := state.CurrentHookCalculations()
 		if len(calculated) > 0 {
 			packet["程序计算的数值资料"] = calculated

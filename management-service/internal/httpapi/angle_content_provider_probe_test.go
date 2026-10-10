@@ -100,7 +100,7 @@ func TestAngleContentProductionProviderSmoke(t *testing.T) {
 			row["final_plan"] = state.CurrentAnglePlan()
 			row["simulated_usage"] = state.AngleProgress
 			row["warnings"] = state.Warnings
-			if state.CurrentAnglePlan().GenerationCount != 2 || len(state.CurrentAnglePlan().Cards) <= len(p.Cards) {
+			if state.CurrentAnglePlan().GenerationCount != 2 || len(state.CurrentAnglePlan().Cards) < len(p.Cards) {
 				t.Errorf("%s supplement lost old generation", name)
 			}
 		}(i, c.State, c.Name)

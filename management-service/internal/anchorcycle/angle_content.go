@@ -9,6 +9,24 @@ import (
 
 var directionListMarker = regexp.MustCompile(`^\s*([0-9]{1,3})([.、．)])(\s*)(.*)$`)
 
+// Only the selectable view is deduplicated. Raw generations and their original
+// program-owned IDs remain in permanent history and model exchange archives.
+func DistinctDirectionCards(groups ...[]AngleHook) []AngleHook {
+	result := []AngleHook{}
+	seen := map[string]bool{}
+	for _, cards := range groups {
+		for _, card := range cards {
+			key := strings.TrimSpace(card.Action)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, card)
+		}
+	}
+	return result
+}
+
 // List numbers are presentation, never identifiers. Source scope is frozen by
 // the caller. These references record request provenance, not claim citations.
 func ParseDirectionContent(raw, generation string, facts []HookFact, products []string, goal string) *AnglePlan {

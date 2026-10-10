@@ -82,7 +82,10 @@ func TextPromptContract(model string) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body+string(nicknames)+string(final)))), body, nil
+	// Expression variations are optional generation guidance, not a reason to
+	// stop the stream. When present, changes must invalidate old text receipts.
+	variations, _ := interactionpolicy.Read("text-expression-variations.json")
+	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body+string(nicknames)+string(final)+string(variations)))), body, nil
 }
 func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 	if !textGenerationStage(r.Stage) || r.TextPromptSHA != "" {

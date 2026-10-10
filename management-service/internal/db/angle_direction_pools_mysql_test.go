@@ -24,8 +24,12 @@ func TestAngleDirectionPoolMySQLRetainsGenerationsAndScopes(t *testing.T) {
 		}
 	}
 	p, err := s.LoadAngleDirections(ctx, 14, 4, key)
-	if err != nil || p.GenerationCount != 2 || len(p.Cards) != 4 {
+	if err != nil || p.GenerationCount != 2 || len(p.Cards) != 2 {
 		t.Fatal(p, err)
+	}
+	var retained int
+	if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_angle_direction_generations WHERE tenant_id=? AND plan_id=? AND pool_key=?`, 14, 4, key).Scan(&retained); err != nil || retained != 2 {
+		t.Fatal("deduplication deleted raw generation history", retained, err)
 	}
 	use := anchorcycle.AnglePlayedUse{AngleTrackBinding: anchorcycle.AngleTrackBinding{PoolKey: key, HookID: p.Cards[0].ID}, TrackID: "track", StartedAt: "now"}
 	for i := 0; i < 2; i++ {

@@ -37,7 +37,7 @@ func (s *Store) LoadAngleDirections(ctx context.Context, tenant, plan int64, key
 		if result == nil {
 			result = &anchorcycle.AnglePlan{}
 		}
-		cards := append(result.Cards, p.Cards...)
+		cards := anchorcycle.DistinctDirectionCards(result.Cards, p.Cards)
 		n := result.GenerationCount + 1
 		*result = p
 		result.Cards = cards

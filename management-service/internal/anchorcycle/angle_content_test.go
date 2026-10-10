@@ -26,6 +26,18 @@ func TestDirectionContentKeepsCallerBindingDespiteModelNumbering(t *testing.T) {
 	}
 }
 
+func TestDirectionDeduplicationPreservesOriginalHistoryAndBinding(t *testing.T) {
+	old := []AngleHook{{ID: "old/1", Action: "安排开袋即食", Facts: []string{"knowledge:16"}}}
+	added := []AngleHook{{ID: "new/1", Action: "安排开袋即食"}, {ID: "new/2", Action: "安排复热取舍"}}
+	usable := DistinctDirectionCards(old, added)
+	if len(usable) != 2 || usable[0].ID != "old/1" || usable[0].Facts[0] != "knowledge:16" || usable[1].ID != "new/2" {
+		t.Fatal(usable)
+	}
+	if len(old) != 1 || len(added) != 2 || added[0].ID != "new/1" {
+		t.Fatal("history changed")
+	}
+}
+
 func TestAngleRefreshUsesOnlyRealProgramReceipts(t *testing.T) {
 	s := State{Surface: "formal_live", Delivery: &MainlineDelivery{ProgramID: "current"}}
 	for i, id := range []string{"a", "b", "c"} {
