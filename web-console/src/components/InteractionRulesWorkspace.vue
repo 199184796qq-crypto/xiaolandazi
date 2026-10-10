@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import InteractionLearningPanel from './InteractionLearningPanel.vue'
 import { request } from '../api'
 import type { AgentLearningSession } from '../types'
 
-const props = defineProps<{ roomId: number | null; planId: number | null }>()
+const props = defineProps<{ roomId: number | null; planId: number | null; locationRequest?: number }>()
 const emit = defineEmits<{ refresh: []; adopted: []; openFacts: [] }>()
 const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
@@ -13,17 +13,24 @@ const tabs = [
   { key: 'history', label: '处理历史' },
 ] as const
 type Tab = typeof tabs[number]['key']
-const activeTab = ref<Tab>('adopted')
+const activeTab = ref<Tab>(props.locationRequest ? 'live' : 'adopted')
 const learningPanel = ref<InstanceType<typeof InteractionLearningPanel> | null>(null)
+const workspaceElement = ref<HTMLElement | null>(null)
 const locationNotice = ref('')
 let locationSequence = 0
 watch(() => [props.roomId, props.planId], () => { locationSequence++; locationNotice.value = '' })
 onBeforeUnmount(() => { locationSequence++ })
+onMounted(() => {
+  watch(() => props.locationRequest, requestId => {
+    if (requestId) void locatePending()
+  }, { immediate: true, flush: 'post' })
+})
 
 async function locatePending() {
   const room = props.roomId, plan = props.planId, sequence = ++locationSequence
   if (!room || !plan) return false
-  locationNotice.value = ''
+  locationNotice.value = '正在定位待处理问题…'
+  workspaceElement.value?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start', inline: 'nearest' })
   try {
     const result = await request<{ items: AgentLearningSession[] }>(`/api/v1/live/rooms/${room}/interaction-learning?plan_id=${plan}&status=pending&page=1`, { suppressErrorDialog: true })
     if (sequence !== locationSequence) return false
@@ -33,7 +40,7 @@ async function locatePending() {
     await nextTick()
     const found = await learningPanel.value?.locatePending(item.id)
     if (sequence !== locationSequence) return false
-    if (!found) locationNotice.value = '暂时无法定位这条记录，请点击红点重试。'
+    locationNotice.value = found ? '已定位待处理问题，带红点的记录需要核对。' : '暂时无法定位这条记录，请点击红点重试。'
     return !!found
   } catch (err) {
     if (sequence === locationSequence) locationNotice.value = err instanceof Error ? err.message : '读取待处理问题失败，请重试。'
@@ -68,7 +75,7 @@ function onAdopted() {
 </script>
 
 <template>
-  <section class="interaction-rules-workspace" aria-label="已采用的互动规则">
+  <section ref="workspaceElement" class="interaction-rules-workspace" aria-label="已采用的互动规则">
     <header class="rules-head">
       <div>
         <h3>已采用的互动规则</h3>

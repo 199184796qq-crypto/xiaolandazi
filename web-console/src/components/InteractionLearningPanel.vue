@@ -32,7 +32,7 @@ let poll: ReturnType<typeof setInterval> | undefined
 
 async function refresh(manual = false) {
   const room = props.roomId, plan = props.planId, token = epoch
-  if (!room || !plan || document.hidden) return false
+  if (!room || !plan || (!manual && document.hidden)) return false
   const sequence = ++requestSequence
   try {
     const params = new URLSearchParams({ plan_id: String(plan), status: props.history ? status.value : 'pending', page: String(page.value), q: query.value })
@@ -168,7 +168,7 @@ async function close(item: AgentLearningSession) {
       <p v-if="!displayedItems.length" class="hint">{{ sourceType === 'initial_simulation' ? '还没有模拟建议，点击“模拟挖掘”生成。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
       <article v-for="item in displayedItems" :key="item.id" :data-interaction-review-id="item.id" :class="{ 'is-review-located': locatedId === item.id }" tabindex="-1">
         <div class="item-meta"><span>{{ item.source_type === 'initial_simulation' ? '模拟建议' : '直播记录' }} · {{ item.review?.kind === 'semantic' ? '问法纠正' : '缺少回答条件' }}</span><small>{{ statusLabel(item.status) }} · 记录{{ item.review?.occurrences || 1 }}次 · {{ new Date(item.updated_at).toLocaleString() }}</small></div>
-        <strong class="question">{{ item.question }}</strong>
+        <strong class="question"><span v-if="item.status === 'editing'" class="pending-question-dot" role="img" aria-label="待处理问题"></span><span>{{ item.question }}</span></strong>
         <p v-if="item.review?.observed_context"><b>实际现场：</b>{{ item.review.observed_context }}</p>
         <p v-if="item.review?.context"><b>适用场景：</b>{{ item.review.context }}</p>
         <p v-if="item.original_reply"><b>生成的回答：</b>{{ item.original_reply }}</p>
@@ -200,5 +200,6 @@ async function close(item: AgentLearningSession) {
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
 .interaction-learning{margin:16px 0;padding:20px;border:1px solid #d9e2f8;border-radius:20px;background:#f8faff;color:#293851;font-size:16px}
 .interaction-learning article.is-review-located{border-color:#e77c96;outline:3px solid #ed879e;outline-offset:3px;background:#fffafb;scroll-margin-block:24px}
+.interaction-learning .question{display:flex;align-items:flex-start;gap:10px}.pending-question-dot{flex:0 0 9px;width:9px;height:9px;margin-top:8px;border-radius:50%;background:#e74d65;box-shadow:0 0 0 4px #e74d6514}
 header,header>div,.actions,.item-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}header{justify-content:space-between}header strong{font-size:19px}header span,.item-meta{color:#627391}.hint{color:#627391;line-height:1.7}button{padding:9px 15px;border:1px solid #d2dbf2;border-radius:10px;background:white;color:#4d54d5;cursor:pointer;font:inherit}button:disabled{opacity:.55;cursor:wait}article{margin-top:14px;padding:18px;border:1px solid #e0e6f5;border-radius:15px;background:white}.item-meta{justify-content:space-between;font-size:14px}.question{display:block;margin-top:12px;font-size:18px}article p{margin:10px 0;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.editor{margin-top:15px;padding-top:15px;border-top:1px solid #e8edf8}.editor label{display:block}textarea{box-sizing:border-box;width:100%;margin:10px 0;padding:12px;border:1px solid #cbd5ef;border-radius:10px;font:inherit;color:inherit}.preview{margin-top:12px;padding:15px;background:#f1f4ff;border-radius:12px}.error{color:#c33350}.notice{color:#137a69}
 </style>

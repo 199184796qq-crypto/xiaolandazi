@@ -306,7 +306,7 @@ const wheelRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
 const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
-const interactionRulesWorkspace = ref<InstanceType<typeof InteractionRulesWorkspace> | null>(null)
+const interactionLocationRequest = ref(0)
 const factRiskNoticeState = ref({ loading: false, error: '' })
 const factRiskTabFocused = ref(false)
 type FactRiskReviewDisplay = RiskReview & {
@@ -4111,16 +4111,17 @@ async function openWheelRiskLocation() {
 
 async function openInteractionPendingLocation() {
 	activeMode.value = 'memory'
-	await nextTick()
-	if (activeMode.value === 'memory' && interactionPendingCount.value > 0) await interactionRulesWorkspace.value?.locatePending()
+	if (interactionPendingCount.value > 0) interactionLocationRequest.value++
 }
 
 watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locatePendingWheelRisk() })
 watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskReviews], () => { void locatePendingRiskLocation() }, { flush: 'post' })
 watch(activeMode, mode => {
+	if (mode !== 'memory') interactionLocationRequest.value = 0
 	if (pendingRiskLocation.value?.area !== mode) pendingRiskLocation.value = null
 })
 watch([activeRoomId, currentRoomPlanId], () => {
+	interactionLocationRequest.value = 0
 	pendingRiskLocation.value = null
 	pendingWheelRiskHash.value = ''
 	locatedFactRiskHash.value = ''
@@ -6570,7 +6571,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <InteractionRulesWorkspace ref="interactionRulesWorkspace" :room-id="activeRoomId" :plan-id="currentRoomPlanId" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
+          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
           <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>
