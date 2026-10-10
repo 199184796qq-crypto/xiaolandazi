@@ -37,45 +37,48 @@ type programTrack struct {
 }
 
 type programState struct {
-	InteractionReturn *interactionReturn
-	Sequential        bool
-	WaitingForContent bool
-	ID                string
-	RoomID            int64
-	SessionID         string
-	Label             string
-	VersionID         int64
-	VersionNo         int64
-	Tracks            []programTrack
-	TrackIndex        int
-	StartedAt         time.Time
-	ActualStartedAt   time.Time
-	CutWaitingTaskID  string
-	CutWaitingEnded   bool
-	SegmentStartedAt  time.Time
-	CurrentTaskID     string
-	CurrentSlot       string
-	Sequence          uint64
-	Running           bool
-	Suspended         bool
-	ManualPaused      bool
-	ResumeOffsetMS    int
-	PlannedNextTrack  int
-	PlannedForTaskID  string
-	PlannedNextScore  int
-	PlannedNextReason string
-	RecentTrackIDs    []string
-	TrackPlayCount    map[string]int
-	TrackLastPlayed   map[string]time.Time
-	PrefetchedTrack   int
-	PrefetchedAudio   []byte
-	Generation        uint64
-	PendingRefresh    *programRefresh
-	ApplyingRefresh   *programRefresh
-	RefreshReceipts   map[string]programRefreshReceipt
-	LastAppliedJobID  string
-	Transitioning     bool
-	AppendedUnits     map[string][32]byte
+	ActualTrackReceipts []audioout.MainlinePlaybackReceipt
+	ActualTrackSeen     map[string]bool
+	ActualTrackSequence uint64
+	InteractionReturn   *interactionReturn
+	Sequential          bool
+	WaitingForContent   bool
+	ID                  string
+	RoomID              int64
+	SessionID           string
+	Label               string
+	VersionID           int64
+	VersionNo           int64
+	Tracks              []programTrack
+	TrackIndex          int
+	StartedAt           time.Time
+	ActualStartedAt     time.Time
+	CutWaitingTaskID    string
+	CutWaitingEnded     bool
+	SegmentStartedAt    time.Time
+	CurrentTaskID       string
+	CurrentSlot         string
+	Sequence            uint64
+	Running             bool
+	Suspended           bool
+	ManualPaused        bool
+	ResumeOffsetMS      int
+	PlannedNextTrack    int
+	PlannedForTaskID    string
+	PlannedNextScore    int
+	PlannedNextReason   string
+	RecentTrackIDs      []string
+	TrackPlayCount      map[string]int
+	TrackLastPlayed     map[string]time.Time
+	PrefetchedTrack     int
+	PrefetchedAudio     []byte
+	Generation          uint64
+	PendingRefresh      *programRefresh
+	ApplyingRefresh     *programRefresh
+	RefreshReceipts     map[string]programRefreshReceipt
+	LastAppliedJobID    string
+	Transitioning       bool
+	AppendedUnits       map[string][32]byte
 }
 
 type Client struct {
@@ -1398,30 +1401,31 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		safePoints = append([]audioout.ProgramSafePoint(nil), track.SafePoints...)
 	}
 	snapshot := audioout.RoomProgramSnapshot{
-		Sequential:        program.Sequential,
-		WaitingForContent: program.WaitingForContent,
-		ProgramID:         program.ID,
-		Generation:        program.Generation,
-		LastAppliedJobID:  program.LastAppliedJobID,
-		RoomID:            program.RoomID,
-		VersionID:         program.VersionID,
-		VersionNo:         program.VersionNo,
-		TrackID:           trackID,
-		TrackIndex:        program.TrackIndex,
-		TrackCount:        len(program.Tracks),
-		TrackText:         trackText,
-		Timeline:          timeline,
-		SafePoints:        safePoints,
-		Running:           program.Running,
-		Suspended:         program.Suspended,
-		ResumeOffsetMS:    program.ResumeOffsetMS,
-		PlannedNextScore:  program.PlannedNextScore,
-		PlannedNextReason: program.PlannedNextReason,
-		Sequence:          program.Sequence,
-		Slot:              program.CurrentSlot,
-		StartedAt:         program.StartedAt,
-		ActualStartedAt:   program.ActualStartedAt,
-		ServerTime:        now,
+		MainlinePlaybackReceipts: append([]audioout.MainlinePlaybackReceipt(nil), program.ActualTrackReceipts...),
+		Sequential:               program.Sequential,
+		WaitingForContent:        program.WaitingForContent,
+		ProgramID:                program.ID,
+		Generation:               program.Generation,
+		LastAppliedJobID:         program.LastAppliedJobID,
+		RoomID:                   program.RoomID,
+		VersionID:                program.VersionID,
+		VersionNo:                program.VersionNo,
+		TrackID:                  trackID,
+		TrackIndex:               program.TrackIndex,
+		TrackCount:               len(program.Tracks),
+		TrackText:                trackText,
+		Timeline:                 timeline,
+		SafePoints:               safePoints,
+		Running:                  program.Running,
+		Suspended:                program.Suspended,
+		ResumeOffsetMS:           program.ResumeOffsetMS,
+		PlannedNextScore:         program.PlannedNextScore,
+		PlannedNextReason:        program.PlannedNextReason,
+		Sequence:                 program.Sequence,
+		Slot:                     program.CurrentSlot,
+		StartedAt:                program.StartedAt,
+		ActualStartedAt:          program.ActualStartedAt,
+		ServerTime:               now,
 	}
 	if program.PendingRefresh != nil {
 		snapshot.PendingGeneration = program.PendingRefresh.Generation
@@ -1631,6 +1635,7 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 			)
 			if publishErr == nil {
 				c.recordActualStart(program, taskID)
+				c.recordActualTrackStart(program, taskID, track.ID)
 			}
 			if publishErr == nil && resumePhase && !resumeCompleted {
 				resumeCompleted = true

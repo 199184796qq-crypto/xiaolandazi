@@ -12,6 +12,7 @@
     },
     {
       "id": "qwen-flash",
+	  "temperature": 0.25,
       "model_prefixes": [
         "qwen3.7-flash",
         "qwen3.8-flash"

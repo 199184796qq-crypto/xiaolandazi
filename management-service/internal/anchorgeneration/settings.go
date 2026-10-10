@@ -18,7 +18,7 @@ type Settings struct {
 }
 
 func Default() Settings {
-	return Settings{MainlineBufferSeconds: 120, Cycle: anchorcycle.Config{Region: "cn-beijing", Threshold: 40, MaxRetries: 3, MaxChars: 300, PointGap: 2, CombinationGap: 8, Rolling: true, RepairPunctuation: true, BodyMin: 2, BodyMax: 6}}
+	return Settings{MainlineBufferSeconds: 120, Cycle: anchorcycle.Config{AngleRefreshAfterPlays: 3, Region: "cn-beijing", Threshold: 40, MaxRetries: 3, MaxChars: 300, PointGap: 2, CombinationGap: 8, Rolling: true, RepairPunctuation: true, BodyMin: 2, BodyMax: 6}}
 }
 
 // The feedback transport follows the mainline text connection. Legacy Agent
@@ -69,6 +69,9 @@ func (s Settings) Validate() error {
 	}
 	if s.Cycle.TTS != nil {
 		return errors.New("声音使用方案已选声音，系统设置不保存房间声音")
+	}
+	if s.Cycle.AngleRefreshAfterPlays < 0 || s.Cycle.AngleRefreshAfterPlays > 100 {
+		return errors.New("角度推演更新次数须为1到100，留空默认3次")
 	}
 	if s.Cycle.Threshold < 0 || s.Cycle.Threshold > 100 || s.Cycle.MaxRetries < 0 || s.Cycle.MaxRetries > 3 || s.Cycle.MaxChars < 80 || s.Cycle.MaxChars > 1000 || s.Cycle.BodyMin < 2 || s.Cycle.BodyMax < s.Cycle.BodyMin || s.Cycle.BodyMax > 6 || s.Cycle.PointGap < 0 || s.Cycle.PointGap > 100 || s.Cycle.CombinationGap < 0 || s.Cycle.CombinationGap > 100 || s.Cycle.MaxCycles < 0 || s.Cycle.MaxCycles > 10000 {
 		return errors.New("生成调度参数不在允许范围内")

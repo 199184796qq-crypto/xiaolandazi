@@ -8,8 +8,11 @@ import (
 )
 
 // A plan is writing guidance, never a spoken paragraph or content approval.
-// It is disposable per-run memory, tied to facts, task, model and mother version.
+// Directions are permanent plan assets; selection and usage are per-run memory.
 type AnglePlan struct {
+	GenerationID    string            `json:"generation_id,omitempty"`
+	GenerationCount int               `json:"generation_count,omitempty"`
+	LifetimePlays   map[string]int    `json:"lifetime_plays,omitempty"`
 	Cards           []AngleHook       `json:"hooks,omitempty"`
 	Calculations    []HookCalculation `json:"calculations,omitempty"`
 	PlanError       string            `json:"planning_error,omitempty"`
@@ -56,10 +59,16 @@ func (s *State) AnglePlanKey() string {
 	if p := s.TextModel; p != nil {
 		identity = p.ID + ":" + p.Model + ":" + p.BaseURL + ":" + p.SystemPrompt
 	}
+	task := s.Task()
+	// Scheduling IDs, paragraph length and session mode do not change the content
+	// question. Keep one pool for the same angle in all rooms using this plan.
 	return ProductDigest(struct {
-		Task                     Task
-		Facts, Model, Mother, P0 string
-	}{s.Task(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA, s.P0PolicyMD})
+		Point, Angle, Concern, Audience string
+		Products                        []string
+		Facts, Model, Mother, P0, Scope string
+	}{task.SellingPoint, task.Angle, task.PainPoint, task.TargetAudience,
+		s.HookProducts(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA,
+		s.P0PolicyMD, s.Config.ComplianceScope})
 }
 func (s *State) CurrentAnglePlan() *AnglePlan {
 	if s.AnglePlanMotherSHA == "" {

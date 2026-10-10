@@ -28,18 +28,20 @@ func ID() string {
 }
 
 type Task struct {
-	ID               string `json:"id,omitempty"`
-	FocusLink        string `json:"focus_link,omitempty"`
-	AllowedLinksJSON string `json:"allowed_links_json,omitempty"`
-	ProductMode      string `json:"product_mode,omitempty"`
-	ProductMaxChars  int    `json:"product_max_chars,omitempty"`
-	SellingPoint     string `json:"selling_point"`
-	Angle            string `json:"angle"`
-	Key              string `json:"key"`
-	TargetAudience   string `json:"target_audience,omitempty"`
-	PainPoint        string `json:"pain_point,omitempty"`
+	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
+	ID               string         `json:"id,omitempty"`
+	FocusLink        string         `json:"focus_link,omitempty"`
+	AllowedLinksJSON string         `json:"allowed_links_json,omitempty"`
+	ProductMode      string         `json:"product_mode,omitempty"`
+	ProductMaxChars  int            `json:"product_max_chars,omitempty"`
+	SellingPoint     string         `json:"selling_point"`
+	Angle            string         `json:"angle"`
+	Key              string         `json:"key"`
+	TargetAudience   string         `json:"target_audience,omitempty"`
+	PainPoint        string         `json:"pain_point,omitempty"`
 }
 type Config struct {
+	AngleRefreshAfterPlays int          `json:"angle_refresh_after_plays,omitempty"`
 	AllowConsecutiveRepeat bool         `json:"allow_consecutive_repeat,omitempty"`
 	TextProfileID          string       `json:"text_profile_id,omitempty"`
 	WorkspaceID            string       `json:"workspace_id"`
@@ -141,6 +143,11 @@ type Use struct {
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type State struct {
+	AnglePendingUses          []AnglePlayedUse               `json:"angle_pending_uses,omitempty"`
+	AngleProgress             map[string]*AngleUseProgress   `json:"angle_use_progress,omitempty"`
+	AngleRegisteredTracks     map[string]bool                `json:"angle_registered_tracks,omitempty"`
+	AngleTrackBindings        map[string]AngleTrackBinding   `json:"angle_track_bindings,omitempty"`
+	AngleReceiptSequence      uint64                         `json:"angle_receipt_sequence,omitempty"`
 	AnglePlans                map[string]*AnglePlan          `json:"angle_plans,omitempty"`
 	AnglePlanMotherSHA        string                         `json:"angle_plan_mother_sha,omitempty"`
 	TextModel                 *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
@@ -228,6 +235,9 @@ type MainlineDelivery struct {
 }
 
 func New(tasks []Task, cfg Config) (State, error) {
+	if cfg.AngleRefreshAfterPlays < 0 || cfg.AngleRefreshAfterPlays > 100 {
+		return State{}, errors.New("角度推演更新次数须为1到100，留空默认3次")
+	}
 	if len(tasks) > 10000 || cfg.Threshold < 0 || cfg.Threshold > 100 || cfg.MaxRetries < 0 || cfg.MaxRetries > 5 || cfg.MaxChars < 80 || cfg.MaxChars > 1000 || cfg.PointGap < 0 || cfg.PointGap > 100 || cfg.CombinationGap < 0 || cfg.CombinationGap > 500 || cfg.BodySegments < 0 || cfg.BodySegments > 100 || cfg.MaxCycles < 0 || cfg.MaxCycles > 1000 {
 		return State{}, errors.New("大循环参数无效")
 	}
@@ -342,10 +352,18 @@ func Arrange(tasks []Task, gap int) ([]Task, error) {
 }
 func (s *State) Task() Task {
 	if s.PriceHook != nil {
-		return s.focusTask(Task{SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
+		return s.focusTask(Task{FactScope: s.PriceHook.Task.FactScope, SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
 	}
 	if s.Phase == "closing" || (!s.Config.Rolling && s.Cursor >= len(s.Queue)) {
-		return s.focusTask(Task{SellingPoint: "本轮收口", Angle: "重报核心信息并自然承接", Key: "本轮收口"})
+		task := s.focusTask(Task{SellingPoint: "本轮收口", Angle: "重报核心信息并自然承接", Key: "本轮收口"})
+		for i := len(s.Accepted) - 1; i >= 0; i-- {
+			prior := s.Accepted[i].Task
+			if prior.FocusLink == task.FocusLink {
+				task.FactScope = prior.FactScope
+				break
+			}
+		}
+		return task
 	}
 	if s.Config.Rolling {
 		return s.focusTask(s.Queue[s.TaskIndex])

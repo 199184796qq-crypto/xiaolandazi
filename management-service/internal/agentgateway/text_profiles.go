@@ -18,9 +18,10 @@ type textProfileRegistry struct {
 	Version  int    `json:"version"`
 	Default  string `json:"default"`
 	Profiles []struct {
-		ID       string   `json:"id"`
-		Prefixes []string `json:"model_prefixes"`
-		Prompt   string   `json:"prompt"`
+		ID          string   `json:"id"`
+		Prefixes    []string `json:"model_prefixes"`
+		Prompt      string   `json:"prompt"`
+		Temperature *float64 `json:"temperature,omitempty"`
 	} `json:"profiles"`
 }
 
@@ -77,7 +78,11 @@ func TextPromptContract(model string) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body+string(nicknames)))), body, nil
+	final, err := interactionpolicy.Read("text-generation-final-boundary.md")
+	if err != nil {
+		return "", "", "", err
+	}
+	return selected, fmt.Sprintf("%x", sha256.Sum256([]byte(string(raw)+body+string(nicknames)+string(final)))), body, nil
 }
 func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 	if !textGenerationStage(r.Stage) || r.TextPromptSHA != "" {
@@ -86,6 +91,23 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 	id, hash, body, err := TextPromptContract(p.Model)
 	if err != nil {
 		return r, err
+	}
+	if r.Temperature == nil {
+		raw, err := interactionpolicy.Read("text-model-profiles.json")
+		if err != nil {
+			return r, err
+		}
+		var registry textProfileRegistry
+		if err = json.Unmarshal(raw, &registry); err != nil {
+			return r, err
+		}
+		for _, profile := range registry.Profiles {
+			if profile.ID == id && profile.Temperature != nil {
+				value := *profile.Temperature
+				r.Temperature = &value
+				break
+			}
+		}
 	}
 	r.Messages = append([]Message{{Role: "system", Content: body}}, r.Messages...)
 	if r.Stage == "speech_generation" {
@@ -100,6 +122,16 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 				r.Messages[i].Content += "\n\n" + string(nicknames)
 				break
 			}
+		}
+	}
+	final, err := interactionpolicy.Read("text-generation-final-boundary.md")
+	if err != nil {
+		return r, err
+	}
+	for i := len(r.Messages) - 1; i >= 0; i-- {
+		if r.Messages[i].Role == "user" {
+			r.Messages[i].Content += "\n\n" + string(final)
+			break
 		}
 	}
 	r.TextPromptID, r.TextPromptSHA = id, hash

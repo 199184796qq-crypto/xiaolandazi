@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"livecompanion/management/internal/anchorcycle"
@@ -17,8 +19,12 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 	queue := []anchorcycle.Task{}
 	focus := &anchorcycle.ProductFocus{Policy: policy, FactsSHA: derivedHash(set.SafeFacts), Products: []anchorcycle.FocusProduct{}, Facts: []anchorcycle.ScopedFact{}, Tasks: map[string]anchorcycle.ScopedTask{}}
 	links := map[int64]string{}
+	identities := map[int64]anchorcycle.HookFact{}
 	for _, p := range set.Sources.Products {
 		links[p.ID] = p.Link
+		if strings.TrimSpace(p.Name) != "" {
+			identities[p.ID] = anchorcycle.HookFact{ID: fmt.Sprintf("products:%d:identity", p.ID), Data: "商品名称=" + p.Name, Products: []string{p.Link}, Benefits: []string{}}
+		}
 		focus.Products = append(focus.Products, anchorcycle.FocusProduct{LinkKey: p.Link, Name: p.Name, Roles: p.Roles})
 	}
 	for _, p := range set.Pools {
@@ -27,6 +33,7 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 			scopeLinks = append(scopeLinks, links[id])
 		}
 		shared := len(p.Products) == len(set.Sources.Products)
+		boundFacts := map[string]anchorcycle.HookFact{}
 		for _, f := range p.Facts {
 			factLinks := []string{}
 			for _, id := range f.Products {
@@ -39,9 +46,22 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 				}
 			}
 			focus.Facts = append(focus.Facts, anchorcycle.ScopedFact{ID: f.ID, BenefitIDs: benefits, Text: f.Text, Links: factLinks, Shared: len(f.Products) == len(set.Sources.Products), Applicable: true})
+			boundFacts[f.ID] = anchorcycle.HookFact{ID: f.ID, Data: f.Text, Products: factLinks, Benefits: benefits}
 		}
 		for _, t := range p.Tasks {
-			queue = append(queue, anchorcycle.Task{ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
+			scope := &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{}}
+			// Identifying the item is necessary even for a narrowly scoped service
+			// or storage task. This is a name only, never the entire product card.
+			for _, productID := range p.Products {
+				if identity, ok := identities[productID]; ok {
+					scope.Facts = append(scope.Facts, identity)
+				}
+			}
+			for _, id := range t.Sources {
+				scope.Facts = append(scope.Facts, boundFacts[id])
+			}
+			allowedLinks, _ := json.Marshal(scopeLinks)
+			queue = append(queue, anchorcycle.Task{FactScope: scope, AllowedLinksJSON: string(allowedLinks), ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 			focus.Tasks[t.ID] = anchorcycle.ScopedTask{Links: scopeLinks, Shared: shared}
 		}
 	}
