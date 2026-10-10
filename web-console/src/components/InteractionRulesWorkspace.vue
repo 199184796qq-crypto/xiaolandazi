@@ -69,7 +69,6 @@ async function onTabKeydown(event: KeyboardEvent) {
 }
 
 function onAdopted() {
-  selectTab('adopted')
   emit('adopted')
 }
 </script>
