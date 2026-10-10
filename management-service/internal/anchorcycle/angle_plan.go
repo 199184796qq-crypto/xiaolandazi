@@ -10,16 +10,19 @@ import (
 // A plan is writing guidance, never a spoken paragraph or content approval.
 // It is disposable per-run memory, tied to facts, task, model and mother version.
 type AnglePlan struct {
-	AudienceConcern string   `json:"audience_concern"`
-	Goal            string   `json:"communication_goal"`
-	Action          string   `json:"explanation_action"`
-	Hooks           []string `json:"hook_intents"`
-	Raw             string   `json:"raw_response,omitempty"`
-	SourceSHA       string   `json:"source_sha256,omitempty"`
-	PromptSHA       string   `json:"prompt_sha256,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	InputTokens     int64    `json:"input_tokens,omitempty"`
-	OutputTokens    int64    `json:"output_tokens,omitempty"`
+	Cards           []AngleHook       `json:"hooks,omitempty"`
+	Calculations    []HookCalculation `json:"calculations,omitempty"`
+	PlanError       string            `json:"planning_error,omitempty"`
+	AudienceConcern string            `json:"audience_concern"`
+	Goal            string            `json:"communication_goal"`
+	Action          string            `json:"explanation_action"`
+	Hooks           []string          `json:"hook_intents"`
+	Raw             string            `json:"raw_response,omitempty"`
+	SourceSHA       string            `json:"source_sha256,omitempty"`
+	PromptSHA       string            `json:"prompt_sha256,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	InputTokens     int64             `json:"input_tokens,omitempty"`
+	OutputTokens    int64             `json:"output_tokens,omitempty"`
 }
 
 func ParseAnglePlan(raw string) (*AnglePlan, error) {
@@ -54,9 +57,9 @@ func (s *State) AnglePlanKey() string {
 		identity = p.ID + ":" + p.Model + ":" + p.BaseURL + ":" + p.SystemPrompt
 	}
 	return ProductDigest(struct {
-		Task                            Task
-		Phase, Facts, Model, Mother, P0 string
-	}{s.Task(), s.Phase, s.ProductFacts(s.Task()), identity, s.AnglePlanMotherSHA, s.P0PolicyMD})
+		Task                     Task
+		Facts, Model, Mother, P0 string
+	}{s.Task(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA, s.P0PolicyMD})
 }
 func (s *State) CurrentAnglePlan() *AnglePlan {
 	if s.AnglePlanMotherSHA == "" {

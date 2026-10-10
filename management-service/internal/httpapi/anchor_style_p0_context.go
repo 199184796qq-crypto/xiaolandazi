@@ -56,6 +56,9 @@ func cycleInstructionSources(state *anchorcycle.State) []string {
 	if plan := state.CurrentAnglePlan(); plan != nil {
 		sources = append(sources, plan.Goal, plan.Action)
 		sources = append(sources, plan.Hooks...)
+		if h := state.CurrentAngleHook(); h != nil {
+			sources = append(sources, h.Concern, h.Entry, h.Action)
+		}
 	}
 	return sources
 }

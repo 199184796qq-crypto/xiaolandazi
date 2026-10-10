@@ -32,6 +32,8 @@ type FocusProduct struct {
 	Roles   []string `json:"roles,omitempty"`
 }
 type ScopedFact struct {
+	ID         string   `json:"id,omitempty"`
+	BenefitIDs []string `json:"benefit_ids,omitempty"`
 	Applicable bool     `json:"applicable,omitempty"`
 	Text       string   `json:"text"`
 	Links      []string `json:"links"`

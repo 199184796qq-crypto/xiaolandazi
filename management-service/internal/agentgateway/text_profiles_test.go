@@ -17,8 +17,11 @@ func TestTextModelProfilesResolveAliasesAndPreserveOtherRoles(t *testing.T) {
 		if err != nil || prepared.EnableThinking || prepared.TextPromptID != c.id || len(prepared.Messages) != 2 {
 			t.Fatal(prepared, err)
 		}
-		if !strings.Contains(prepared.Messages[0].Content, "不到90元") {
+		if !strings.Contains(prepared.Messages[0].Content, "允许自然区间和近似表达") {
 			t.Fatal("price paraphrases lost")
+		}
+		if !strings.Contains(prepared.Messages[1].Content, "超过4位") || !strings.Contains(prepared.Messages[1].Content, "简称") {
+			t.Fatal("nickname prompt not adjacent to task")
 		}
 		again, err := PrepareTextRequest(SpeechModel{Model: c.model}, prepared)
 		if err != nil || len(again.Messages) != len(prepared.Messages) {

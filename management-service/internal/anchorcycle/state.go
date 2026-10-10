@@ -89,6 +89,8 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
+	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
+	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
 	AnglePlan               *AnglePlan                            `json:"angle_plan,omitempty"`
 	OpeningInstructionEdits []contentguard.OpeningInstructionEdit `json:"opening_instruction_edits,omitempty"`
 	P0CheckedInputSHA       string                                `json:"p0_checked_input_sha,omitempty"`

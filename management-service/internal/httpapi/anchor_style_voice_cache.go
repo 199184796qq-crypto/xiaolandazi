@@ -42,6 +42,19 @@ func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment)
 	if state.PreviewLimitMS > 0 {
 		contract += ":limited-preview"
 	}
+	if state.TextModel != nil && cycleAnglePlanEnabled() {
+		h := segment.Selected.AngleHook
+		if h == nil {
+			h = state.CurrentAngleHook()
+		}
+		// Archived segments retain their own selected card after the live cursor
+		// advances. A new planner version/card cannot reuse stale speech.
+		plan := segment.Selected.AnglePlan
+		if plan == nil {
+			plan = state.CurrentAnglePlan()
+		}
+		contract += ":hook-chain-v1:" + anchorvoicecache.Digest(plan) + ":" + anchorvoicecache.Digest(h)
+	}
 	if state.ProductFocus != nil {
 		contract += ":product-focus-v2:" + state.ProductScopeSHA(segment.Task)
 	}
