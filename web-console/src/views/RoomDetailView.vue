@@ -2,6 +2,7 @@
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
+import { useRoomSpeechIdentity } from '../useRoomSpeechIdentity'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -64,6 +65,7 @@ import InteractionLearningPanel from '../components/InteractionLearningPanel.vue
 import type {
   LiveAgentSettings,
   LiveAgentPlan,
+  LiveAgentPlanVersion,
   LiveRuntimeSnapshot,
   Room,
   RoomBlockedUser,
@@ -1048,13 +1050,19 @@ function normalizeRoomSpeechRate(value: unknown) {
 
 async function loadPublishedSpeechRate() {
   if (!canConfigureRoomStrategy.value) return
+  const token = ++publishedSpeechLoadEpoch
+  const planId = selectedLiveAgentPlanId.value
   try {
     const result = await getRoomPublishedLiveAgentPlanVersion(roomId)
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch || !canConfigureRoomStrategy.value || planId !== selectedLiveAgentPlanId.value) return
+    publishedSpeechVersion.value = result.version || null
     const rate = normalizeRoomSpeechRate(result.version?.voice_identity?.rate)
     liveSpeechRate.value = rate
     liveSpeechRateSaved.value = rate
     liveSpeechRateError.value = ''
   } catch {
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch) return
+    publishedSpeechVersion.value = null
     liveSpeechRate.value = 1
     liveSpeechRateSaved.value = 1
   }
@@ -1073,6 +1081,7 @@ async function changeLiveSpeechRate(event: Event) {
   liveSpeechRateError.value = ''
   try {
     const version = await publishLiveAgentVoiceRate(roomId, nextRate)
+    publishedSpeechVersion.value = version
     const savedRate = normalizeRoomSpeechRate(version.voice_identity?.rate || nextRate)
     liveSpeechRate.value = savedRate
     liveSpeechRateSaved.value = savedRate
@@ -1189,12 +1198,24 @@ async function loadLiveAgentPlansForRoom() {
 
 const selectedLiveAgentPlanId = computed(() => runtimeSnapshot.value?.agent_plan_id || 0)
 const selectedLiveAgentPlanName = computed(() => runtimeSnapshot.value?.agent_plan_name || '')
+const publishedSpeechVersion = ref<LiveAgentPlanVersion | null>(null)
+let publishedSpeechLoadEpoch = 0
+const { presenterLabel: speechPresenterLabel, voiceLabel: speechVoiceLabel, voiceTitle: speechVoiceTitle } = useRoomSpeechIdentity({
+  roomId,
+  tenantId: computed(() => room.value?.tenant_id || 0),
+  planId: selectedLiveAgentPlanId,
+  sessionId: computed(() => runtimeSnapshot.value?.session?.id || 0),
+  playbackVersionId: computed(() => aiActive.value ? mainlineProgram.value?.version_id || 0 : 0),
+  allowed: canConfigureRoomStrategy,
+  publishedVersion: publishedSpeechVersion,
+})
 const liveAgentPlanSelectValue = computed(() => {
   const selectedId = selectedLiveAgentPlanId.value
   if (!selectedId) return ''
   return liveAgentPlans.value.some((item) => item.id === selectedId) ? String(selectedId) : ''
 })
 watch(selectedLiveAgentPlanId, () => {
+  publishedSpeechVersion.value = null
   if (!pageUnmounted) void loadPublishedSpeechRate()
 })
 
@@ -4748,6 +4769,10 @@ onBeforeUnmount(() => {
               </svg>
             </button>
           </div>
+          <div class="speech-runtime-identity" aria-label="主播和声音模型">
+            <span class="speech-identity-item" :title="speechPresenterLabel"><small>主播</small><b>{{ speechPresenterLabel }}</b></span>
+            <span class="speech-identity-item" :title="speechVoiceTitle"><small>声音模型</small><b>{{ speechVoiceLabel }}</b></span>
+          </div>
         </header>
 
         <div class="speech-runtime-unified" :class="{ 'is-initializing': initialVoiceWaiting }">
@@ -6293,6 +6318,7 @@ onBeforeUnmount(() => {
 
 .speech-runtime-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
   gap: 18px;
@@ -6309,6 +6335,10 @@ onBeforeUnmount(() => {
 
 .speech-runtime-brand strong { font-size: 16px; }
 .speech-runtime-brand small { color: #8fa3bf; font-size: 12px; }
+.speech-runtime-identity { display:flex; flex-wrap:wrap; gap:8px 16px; min-width:0; max-width:100%; }
+.speech-identity-item { display:flex; align-items:center; gap:7px; min-width:0; max-width:100%; padding:5px 10px; border:1px solid rgba(143,163,191,.2); border-radius:8px; background:rgba(255,255,255,.035); }
+.speech-identity-item small { flex-shrink:0; color:#8fa3bf; font-size:12px; }
+.speech-identity-item b { color:#dce5f5; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
 .speech-local-mute-button {
   width:30px;
   height:30px;
