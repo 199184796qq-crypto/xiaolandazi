@@ -11,6 +11,7 @@ import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
+import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
 import type { PoolSourceLocation } from '../contentPoolSources'
@@ -5095,14 +5096,6 @@ function reviewBucketLabel(bucket?: string) {
 }
 
 
-function memoryTypeLabel(type: string) {
-  if (type === 'fact') return '事实纠正'
-  if (type === 'semantic') return '回答策略'
-  if (type === 'wording') return '用词纠正'
-  if (type === 'style') return '主播表达'
-  return type || '其它记忆'
-}
-
 async function createPlanForCurrentRoom() {
   const name = newPlanName.value.trim()
   const room = activeRoom.value
@@ -6668,32 +6661,8 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
-          <div v-if="!interactionMemories.length" class="strategy-v2-empty">
-            <strong>当前直播间还没有已采用的互动策略</strong>
-            <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>
-          </div>
-          <div v-else class="strategy-memory-list">
-            <article v-for="item in interactionMemories" :key="item.id" :class="{ editing: editingMemoryId === item.id }">
-              <span>{{ memoryTypeLabel(item.memory_type) }}</span>
-              <div>
-                <strong>{{ item.target || item.memory_key }}</strong>
-                <p>{{ item.current_version?.content_text || '当前版本暂无文字内容' }}</p>
-                <small>记忆键：{{ item.memory_key }} · V{{ item.current_version?.version_no || 1 }}</small>
-              </div>
-              <div class="strategy-memory-card-actions">
-                <button
-                  type="button"
-                  :disabled="memoryMutatingId === item.id"
-                  @click="editingMemoryId === item.id ? resetMemoryEdit() : beginMemoryEdit(item)"
-                >{{ editingMemoryId === item.id ? '收起修改' : '修改' }}</button>
-                <button
-                  type="button"
-                  class="danger"
-                  :class="{ confirming: memoryDeleteConfirmId === item.id }"
-                  :disabled="memoryMutatingId === item.id"
-                  @click="deleteMemory(item)"
-                >{{ memoryMutatingId === item.id ? '处理中…' : memoryDeleteConfirmId === item.id ? '确认删除' : '删除' }}</button>
-              </div>
+          <AnswerStrategyPanel :items="interactionMemories" :scope-key="`${activeRoom?.tenant_id}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
+            <template #editor="{ item }">
               <div v-if="editingMemoryId === item.id" class="strategy-memory-edit-panel">
                 <label>
                   <span>修改要求</span>
@@ -6723,8 +6692,8 @@ onBeforeUnmount(() => {
                 </div>
                 <small v-if="memoryEditError" class="strategy-memory-edit-error">{{ memoryEditError }}</small>
               </div>
-            </article>
-          </div>
+            </template>
+          </AnswerStrategyPanel>
           </InteractionRulesWorkspace>
         </section>
 
@@ -9550,21 +9519,10 @@ onBeforeUnmount(() => {
 .strategy-rhythm-points b { color:#8a94a7; font-size:11px; }
 .strategy-rhythm-points span { padding:5px 8px; border-radius:8px; background:#f4f6fa; color:#59657b; font-size:12px; }
 
-.strategy-memory-list { display:grid; gap:10px; }
-.strategy-memory-list article { display:grid; grid-template-columns:92px minmax(0,1fr); gap:14px; padding:15px 16px; border:1px solid #e0e6f1; border-radius:15px; background:#fff; }
-.strategy-memory-list article.editing { border-color:#c8d2f4; box-shadow:0 8px 22px rgba(67,82,158,.07); }
-.strategy-memory-list article>span { align-self:start; padding:6px 9px; border-radius:9px; background:#eef1ff; color:#5867ce; font-size:12px; font-weight:850; text-align:center; }
-.strategy-memory-list article>div { display:grid; gap:5px; min-width:0; }
-.strategy-memory-list strong { color:#34405b; }
-.strategy-memory-list p { margin:0; color:#616d83; line-height:1.6; white-space:pre-wrap; }
-.strategy-memory-list small { color:#929caf; }
-.strategy-memory-card-actions { grid-column:2; display:flex!important; grid-auto-flow:column; justify-content:end; gap:8px!important; margin-top:3px; }
-.strategy-memory-card-actions button,.strategy-memory-edit-actions button,.strategy-memory-edit-preview button { min-height:34px; padding:6px 12px; border:1px solid #d6ddec; border-radius:9px; background:#fff; color:#53617a; font:inherit; font-size:12px; font-weight:850; cursor:pointer; }
-.strategy-memory-card-actions button:hover,.strategy-memory-edit-actions button:hover { border-color:#aeb9e5; color:#4658bd; background:#f7f8ff; }
-.strategy-memory-card-actions button.danger { border-color:#f0cccc; color:#b6555f; background:#fff8f8; }
-.strategy-memory-card-actions button.danger.confirming { border-color:#d96a76; background:#d96a76; color:#fff; }
-.strategy-memory-card-actions button:disabled,.strategy-memory-edit-actions button:disabled,.strategy-memory-edit-preview button:disabled { cursor:default; opacity:.55; }
-.strategy-memory-edit-panel { grid-column:2; display:grid!important; gap:10px!important; padding-top:12px; border-top:1px solid #edf0f6; }
+.strategy-memory-edit-actions button,.strategy-memory-edit-preview button { min-height:34px; padding:6px 12px; border:1px solid #d6ddec; border-radius:9px; background:#fff; color:#53617a; font:inherit; font-size:12px; font-weight:850; cursor:pointer; }
+.strategy-memory-edit-actions button:hover { border-color:#aeb9e5; color:#4658bd; background:#f7f8ff; }
+.strategy-memory-edit-actions button:disabled,.strategy-memory-edit-preview button:disabled { cursor:default; opacity:.55; }
+.strategy-memory-edit-panel { display:grid; gap:10px; padding-top:12px; border-top:1px solid #edf0f6; }
 .strategy-memory-edit-panel label { display:grid; gap:6px; }
 .strategy-memory-edit-panel label>span { color:#657088; font-size:12px; font-weight:850; }
 .strategy-memory-edit-panel textarea { width:100%; min-height:88px; resize:vertical; padding:10px 12px; border:1px solid #d8deeb; border-radius:10px; background:#fbfcff; color:#39455e; font:inherit; line-height:1.55; outline:none; box-sizing:border-box; }

@@ -8,7 +8,7 @@ const props = defineProps<{ roomId: number | null; planId: number | null; facts?
 const emit = defineEmits<{ refresh: []; adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
 const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
-  { key: 'adopted', label: '互动采纳' },
+  { key: 'adopted', label: '回答策略' },
   { key: 'live', label: '直播互动' },
   { key: 'history', label: '处理历史' },
 ] as const
@@ -74,13 +74,12 @@ function onAdopted() {
 </script>
 
 <template>
-  <section ref="workspaceElement" class="interaction-rules-workspace" aria-label="已采用的互动规则">
-    <header v-if="activeTab !== 'simulation'" class="rules-head">
+  <section ref="workspaceElement" class="interaction-rules-workspace" aria-label="互动策略工作区">
+    <header v-if="activeTab !== 'simulation' && activeTab !== 'adopted'" class="rules-head">
       <div>
         <h3>已采用的互动规则</h3>
         <p>模拟常见问法，确认互动规则，处理直播中留下的问题；模型建议由你决定是否采用。</p>
       </div>
-      <button v-if="activeTab === 'adopted'" type="button" class="refresh-rules" @click="emit('refresh')">刷新规则</button>
     </header>
     <div class="rule-navigation">
     <nav class="rule-tabs" role="tablist" aria-label="互动规则">
