@@ -844,6 +844,7 @@ func TestReadyVoiceUsesBoundCloneBeforeSystemDefault(t *testing.T) {
 
 func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
 	store := readyVoiceStore()
+	legacyEmotionEnabled := true
 	store.publishedVersion = &model.LiveAgentPlanVersion{
 		ID:              44,
 		TenantID:        7,
@@ -852,13 +853,14 @@ func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
 		VersionNo:       6,
 		LifecycleStatus: "published",
 		VoiceIdentity: model.LiveAgentVoiceIdentity{
-			Name:     "发布主播声音",
-			Version:  "V3",
-			Source:   "clone",
-			Provider: "aliyun_qwen_clone",
-			VoiceID:  "published-voice-3",
-			Model:    "published-model-3",
-			Rate:     1.15,
+			EmotionEnabled: &legacyEmotionEnabled,
+			Name:           "发布主播声音",
+			Version:        "V3",
+			Source:         "clone",
+			Provider:       "aliyun_qwen_clone",
+			VoiceID:        "published-voice-3",
+			Model:          "published-model-3",
+			Rate:           1.15,
 		},
 	}
 	core := &fakeCore{}
@@ -881,6 +883,9 @@ func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
 	}
 	if tts.last.Provider != ttsgateway.ProviderQwen {
 		t.Fatalf("provider=%q want %q", tts.last.Provider, ttsgateway.ProviderQwen)
+	}
+	if tts.last.Instruction != "" {
+		t.Fatalf("legacy enabled flag restored emotion instructions: %q", tts.last.Instruction)
 	}
 }
 
@@ -909,6 +914,9 @@ func TestProcessRoomGeneratesTTSAndDispatches(t *testing.T) {
 	if got := core.dispatch["audio_url"]; got != "http://audio.local/reply.wav" {
 		t.Fatalf("audio_url=%v", got)
 	}
+	if tts.last.Instruction != "" {
+		t.Fatalf("unconfigured room enabled emotion instructions: %q", tts.last.Instruction)
+	}
 }
 
 func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
@@ -927,8 +935,8 @@ func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 	if core.strategyCalls["addressing"] != 0 {
 		t.Fatalf("dynamic room reply must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])
 	}
-	if !strings.Contains(tts.last.Instruction, "轻声接弹幕") {
-		t.Fatalf("TTS instruction did not receive interrupt style: %q", tts.last.Instruction)
+	if tts.last.Instruction != "" {
+		t.Fatalf("disabled emotion still received interrupt delivery style: %q", tts.last.Instruction)
 	}
 	if got := strings.TrimSpace(fmt.Sprint(core.dispatch["interrupt_strategy"])); got != "read_comment_softly" {
 		t.Fatalf("core interrupt_strategy=%q", got)
@@ -992,8 +1000,8 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if core.strategyCalls["addressing"] != 0 {
 		t.Fatalf("dynamic speech mission must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])
 	}
-	if mission.HumanStyle.Mode != "natural_live_speech" {
-		t.Fatalf("human style=%#v", mission.HumanStyle)
+	if mission.HumanStyle.Mode == "natural_live_speech" || mission.HumanStyle.Reaction.Enabled {
+		t.Fatalf("disabled emotion still ran humanization: %#v", mission.HumanStyle)
 	}
 	if strings.TrimSpace(mission.GeneratedText) == "" || strings.TrimSpace(mission.TTS.AudioURL) == "" {
 		t.Fatalf("generated text or tts missing: %#v", mission)
@@ -1001,8 +1009,8 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Mainline.SwitchAtMS != 1234 {
 		t.Fatalf("actual switch point=%d want 1234", mission.Mainline.SwitchAtMS)
 	}
-	if !strings.Contains(tts.last.Instruction, "真人直播临场感") {
-		t.Fatalf("TTS instruction missing human style: %q", tts.last.Instruction)
+	if tts.last.Instruction != "" {
+		t.Fatalf("disabled emotion still produced human style instructions: %q", tts.last.Instruction)
 	}
 	if len(mission.Trace) < 8 {
 		t.Fatalf("mission trace too short: %d", len(mission.Trace))

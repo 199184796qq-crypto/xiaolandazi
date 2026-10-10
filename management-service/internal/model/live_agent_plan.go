@@ -805,6 +805,10 @@ type LiveAgentFullShowPreviewResponse struct {
 	Preview   bool                               `json:"preview"`
 }
 
+// Historical versions keep their emotion flags for audit. Runtime emotion
+// processing is fixed off and cannot be restored by an old browser tab.
+const LiveSpeechEmotionEnabled = false
+
 type LiveAgentVoiceIdentity struct {
 	Name           string         `json:"name"`
 	Version        string         `json:"version"`
