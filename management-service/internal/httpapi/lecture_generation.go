@@ -119,16 +119,96 @@ func (s *Server) lectureLibraryPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(result.Text)}
 	if err = state.CheckP0Candidate(&candidate); err != nil {
-		writeError(w, 502, err.Error())
+		writeJSON(w, 200, lecturePreviewContent(&state, candidate, err.Error()))
 		return
 	}
 	s.reviewCycleP0Context(ctx, &state, &candidate)
 	s.auditLectureCandidate(ctx, &state, &candidate)
-	if candidate.P0Report == nil || !candidate.P0Report.Passed || !state.LectureCandidateApproved(candidate) {
-		writeError(w, 409, "本次预览未通过当前文字审核，请检查事实或换个角度后再试")
-		return
+	writeJSON(w, 200, lecturePreviewContent(&state, candidate, ""))
+}
+
+type lecturePreviewIssue struct {
+	Kind   string `json:"kind"`
+	Quote  string `json:"quote"`
+	Reason string `json:"reason"`
+}
+
+// A preview never enters the audio supply. Return the generated body even when
+// review is incomplete, with program-owned diagnostics instead of losing it to
+// a generic HTTP error. The live candidate still requires both review receipts.
+func lecturePreviewContent(state *anchorcycle.State, c anchorcycle.Candidate, scanError string) map[string]any {
+	task := state.Task()
+	issues := []lecturePreviewIssue{}
+	add := func(kind, quote, reason string) { issues = append(issues, lecturePreviewIssue{kind, quote, reason}) }
+	if scanError != "" {
+		add("review_error", "", scanError)
+	} else if c.P0Report == nil {
+		add("review_error", "", "文字审核尚未完成")
+	} else if !c.P0Report.Passed {
+		r := c.P0Report
+		if r.ContextReview != nil && r.ContextReview.Output.InstructionLeak != nil && *r.ContextReview.Output.InstructionLeak {
+			add("output_rule", r.ContextReview.Output.InstructionQuote, "正文包含内部指导文字")
+		} else if r.Error != "" {
+			add("review_error", "", r.Error)
+		}
+		for _, h := range r.Hits {
+			reason := h.Condition
+			if r.ContextReview != nil {
+				for i, original := range r.ContextReview.LexicalHits {
+					if original.Start == h.Start && original.End == h.End && i < len(r.ContextReview.Output.Items) {
+						reason = r.ContextReview.Output.Items[i].Reason
+						break
+					}
+				}
+			}
+			add("p0", h.Text, reason)
+		}
 	}
-	writeJSON(w, 200, map[string]any{"text": cycleVoiceText(candidate), "title": task.SellingPoint, "purpose": task.LecturePurpose, "angle": task.Angle, "notice": fmt.Sprintf("当前角度预览，未安排播放。")})
+	if c.LectureAudit != nil && !c.LectureAudit.Passed {
+		if c.LectureAudit.Error != "" {
+			add("review_error", "", c.LectureAudit.Error)
+		} else {
+			add("fact_boundary", c.LectureAudit.Quote, c.LectureAudit.Reason)
+		}
+	} else if c.LectureAudit == nil && scanError == "" {
+		add("review_error", "", "讲解事实复核尚未完成")
+	}
+	approved := scanError == "" && state.CheckApprovedText(c, cycleVoiceText(c)) == nil && state.LectureCandidateApproved(c)
+	if !approved && len(issues) == 0 {
+		add("review_error", "", "审核回执与当前正文不一致")
+	}
+	notice := "文字预览，未安排播放；生成成功不计讲解次数。"
+	if !approved {
+		notice = "本次正文未通过审核或审核尚未完成，仅供查看，不会安排播放。"
+	}
+	reviewNote := ""
+	if c.LectureAudit != nil && c.LectureAudit.Passed {
+		reviewNote = c.LectureAudit.Reason
+	}
+	return map[string]any{"text": cycleVoiceText(c), "raw_text": c.Text, "approved": approved, "issues": issues, "review_note": reviewNote, "title": task.SellingPoint, "purpose": task.LecturePurpose, "angle": task.Angle, "notice": notice}
+}
+
+func parseLectureTaskAudit(raw, text string) (anchorcycle.LectureAudit, error) {
+	var out struct {
+		Passed *bool  `json:"passed"`
+		Quote  string `json:"quote"`
+		Reason string `json:"reason"`
+	}
+	if err := decodeLectureContent(raw, &out); err != nil {
+		return anchorcycle.LectureAudit{}, err
+	}
+	if out.Passed == nil {
+		return anchorcycle.LectureAudit{}, fmt.Errorf("审核未返回明确判断")
+	}
+	// A nonempty explanation is valid content on a passing review, not a protocol
+	// failure. A rejection remains a rejection even if it has no quoted fragment.
+	if !*out.Passed && strings.TrimSpace(out.Reason) == "" {
+		return anchorcycle.LectureAudit{}, fmt.Errorf("未通过的审核缺少原因")
+	}
+	if out.Quote != "" && !strings.Contains(text, out.Quote) {
+		return anchorcycle.LectureAudit{}, fmt.Errorf("审核片段未对应当前正文")
+	}
+	return anchorcycle.LectureAudit{Passed: *out.Passed, Quote: out.Quote, Reason: out.Reason}, nil
 }
 
 func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
@@ -142,24 +222,19 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 	c.LectureAudit = audit
 	mother, _, err := loadReplaceablePromptAsset("ANCHOR_LECTURE_TASK_REVIEW_PATH", "configs/prompts/anchor-style/lecture-task-review.md", "讲解事实边界复核母版")
 	if err != nil {
-		audit.Reason = "讲解复核母版不可用"
+		audit.Error = "讲解复核母版不可用"
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{"text": text, "facts": task.LectureFacts, "purpose": task.LecturePurpose, "angle": task.Angle, "effective_p0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
 	result, _, err := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "lecture_task_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 1000, false)
 	if err != nil {
-		audit.Reason = "讲解事实复核未完成"
+		audit.Error = "讲解事实复核未完成"
 		return
 	}
-	var out struct {
-		Passed *bool  `json:"passed"`
-		Quote  string `json:"quote"`
-		Reason string `json:"reason"`
-	}
-	err = decodeLectureContent(result.Text, &out)
-	if err != nil || out.Passed == nil || (!*out.Passed && (out.Quote == "" || out.Reason == "" || !strings.Contains(text, out.Quote))) || (*out.Passed && (out.Quote != "" || out.Reason != "")) {
-		audit.Reason = "讲解事实复核格式无效"
+	out, err := parseLectureTaskAudit(result.Text, text)
+	if err != nil {
+		audit.Error = "讲解事实复核格式无效：" + err.Error()
 		return
 	}
-	audit.Passed, audit.Quote, audit.Reason = *out.Passed, out.Quote, out.Reason
+	audit.Passed, audit.Quote, audit.Reason = out.Passed, out.Quote, out.Reason
 }

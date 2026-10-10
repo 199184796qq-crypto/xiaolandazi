@@ -17,6 +17,7 @@ type LectureAudit struct {
 	Passed   bool   `json:"passed"`
 	Quote    string `json:"quote"`
 	Reason   string `json:"reason"`
+	Error    string `json:"error,omitempty"`
 	TextSHA  string `json:"text_sha"`
 	ScopeSHA string `json:"scope_sha"`
 }
@@ -25,7 +26,7 @@ func (s *State) LectureCandidateApproved(c Candidate) bool {
 	if s.Task().ProductMode != "lecture" {
 		return true
 	}
-	return c.LectureAudit != nil && c.LectureAudit.Passed && c.LectureAudit.TextSHA == ProductDigest(spokenCandidate(c)) && c.LectureAudit.ScopeSHA == ProductDigest(s.Task().LectureFacts)
+	return c.LectureAudit != nil && c.LectureAudit.Passed && c.LectureAudit.Error == "" && c.LectureAudit.TextSHA == ProductDigest(spokenCandidate(c)) && c.LectureAudit.ScopeSHA == ProductDigest(s.Task().LectureFacts)
 }
 
 type LectureTrack struct {
