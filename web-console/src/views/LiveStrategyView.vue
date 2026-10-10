@@ -3255,7 +3255,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
       plan_id: Number(rawContext?.plan_id || version.plan_id),
       plan_name: String(rawContext?.plan_name || currentPlan.value?.name || ''),
       plan_description: String(rawContext?.plan_description || currentPlan.value?.description || ''),
-      room_id: Number(rawContext?.room_id || version.room_id),
+      room_id: Number(activeRoom.value?.id || version.room_id),
       policy_rule_count: Number(rawContext?.policy_rule_count || 0),
       style_overlay_prompt: String(rawContext?.style_overlay_prompt || ''),
       style_overlay_count: Number(rawContext?.style_overlay_count || 0),
