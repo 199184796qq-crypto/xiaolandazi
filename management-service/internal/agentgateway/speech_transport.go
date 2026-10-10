@@ -73,6 +73,9 @@ func CompleteSpeechEndpoint(ctx context.Context, p SpeechModel, request Request)
 	if err := ValidateSpeechModel(p); err != nil {
 		return Response{}, err
 	}
+	if err := ValidateSpeechTestOptions(p, request); err != nil {
+		return Response{}, err
+	}
 	prepared, err := PrepareTextRequest(p, request)
 	if err != nil {
 		return Response{}, err
@@ -155,6 +158,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 	default:
 		return Response{}, errors.New("不支持的模型协议")
 	}
+	applySpeechTestOptions(payload, p, request)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Response{}, errors.New("模型请求编码失败")

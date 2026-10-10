@@ -28,16 +28,18 @@ type Message struct {
 }
 
 type Request struct {
-	TextPromptID   string `json:"text_prompt_id,omitempty"`
-	TextPromptSHA  string `json:"text_prompt_sha256,omitempty"`
-	Stage          string
-	Provider       string
-	Model          string
-	Messages       []Message
-	MaxTokens      int
-	EnableThinking bool
-	ResponseFormat ResponseFormat
-	Timeout        time.Duration
+	TextPromptID     string `json:"text_prompt_id,omitempty"`
+	TextPromptSHA    string `json:"text_prompt_sha256,omitempty"`
+	Stage            string
+	Provider         string
+	Model            string
+	Messages         []Message
+	MaxTokens        int
+	EnableThinking   bool
+	Temperature      *float64 `json:"temperature,omitempty"`
+	ThinkingOverride *bool    `json:"thinking_override,omitempty"`
+	ResponseFormat   ResponseFormat
+	Timeout          time.Duration
 }
 
 type Response struct {

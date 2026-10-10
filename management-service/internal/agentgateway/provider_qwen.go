@@ -225,6 +225,12 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 	if request.ResponseFormat == ResponseJSON {
 		payload["response_format"] = map[string]string{"type": "json_object"}
 	}
+	if request.Temperature != nil || request.ThinkingOverride != nil {
+		if err := ValidateSpeechTestOptions(SpeechModel{Protocol: "openai_chat", BaseURL: p.baseURL, Model: request.Model}, request); err != nil {
+			return Response{}, err
+		}
+		applySpeechTestOptions(payload, SpeechModel{Protocol: "openai_chat", BaseURL: p.baseURL, Model: request.Model}, request)
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, request.Timeout)
 	defer cancel()
 

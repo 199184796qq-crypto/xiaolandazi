@@ -188,6 +188,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/speech-models", s.systemSpeechModelsGet)
 	mux.HandleFunc("PUT /api/v1/system/speech-models", s.systemSpeechModelsSave)
 	mux.HandleFunc("POST /api/v1/system/speech-models/test", s.systemSpeechModelsTest)
+	mux.HandleFunc("POST /api/v1/system/speech-models/test-options", s.systemSpeechModelTestOptions)
 	mux.HandleFunc("POST /api/v1/system/speech-models/models", s.systemSpeechModelsList)
 	mux.HandleFunc("PUT /api/v1/system/settings", s.systemUpdateSettings)
 	mux.HandleFunc("PUT /api/v1/system/agent-prompts", s.systemUpdateAgentPromptConfigs)

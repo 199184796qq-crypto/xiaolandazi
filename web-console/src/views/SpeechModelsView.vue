@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { request } from '../api'
 import ModelPickerDialog from '../components/ModelPickerDialog.vue'
 import { copySpeechModel, type SpeechModelProfile as Profile } from '../speechModelCopy'
@@ -8,6 +8,7 @@ interface Config { profiles: Profile[]; default_id: string; system_default_id?: 
 interface TestResult { text: string; model: string; protocol: string; latency_ms: number; input_tokens: number; output_tokens: number; total_tokens: number }
 interface AvailableModel { id: string; name: string }
 interface ModelList { models: AvailableModel[]; truncated: boolean }
+interface TestOptions { thinking: 'toggle' | 'always' | 'unavailable'; thinking_hint: string; temperature_supported: boolean; temperature_max: number; temperature_disabled_when_thinking: boolean }
 const config = ref<Config>({ profiles: [], default_id: '', revision: 0 })
 const selectedId = ref('')
 const selected = computed(() => config.value.profiles.find(p => p.id === selectedId.value))
@@ -21,6 +22,28 @@ const keyStorageReady = ref(false)
 const message = ref(''), error = ref(''), result = ref<TestResult | null>(null)
 const mode = ref('prompt')
 const question = ref('请根据上面的基础提示词，回答：这个产品买回家以后应该怎么保存？')
+const enterToSend = ref(false), temperature = ref(0.7), enableThinking = ref(false)
+const testOptions = ref<TestOptions | null>(null), optionsLoading = ref(false)
+let optionsEpoch = 0
+onScopeDispose(() => { optionsEpoch += 1 })
+const temperatureDisabled = computed(() => !testOptions.value?.temperature_supported || (enableThinking.value && testOptions.value.temperature_disabled_when_thinking))
+watch(() => [selected.value?.id, selected.value?.protocol, selected.value?.base_url, selected.value?.model, selected.value?.max_tokens] as const, async () => {
+  const token = ++optionsEpoch
+  const profile = selected.value
+  testOptions.value = null
+  if (!profile) { optionsLoading.value = false; return }
+  optionsLoading.value = true
+  await new Promise(resolve => window.setTimeout(resolve, 180))
+  if (token !== optionsEpoch) return
+  try {
+    const options = await request<TestOptions>('/api/v1/system/speech-models/test-options', { method: 'POST', body: JSON.stringify({ protocol: profile.protocol, base_url: profile.base_url, model: profile.model, max_tokens: profile.max_tokens }), suppressErrorDialog: true })
+    if (token !== optionsEpoch) return
+    testOptions.value = options
+    temperature.value = Math.min(temperature.value, options.temperature_max)
+    if (options.thinking !== 'toggle') enableThinking.value = options.thinking === 'always'
+  } catch { /* Keep controls unavailable until the current connection can be identified. */ }
+  finally { if (token === optionsEpoch) optionsLoading.value = false }
+})
 const protocols = [
   { id: 'openai_chat', name: 'OpenAI 兼容 · Chat Completions', hint: '填写 API Base URL（例如以 /v1 结尾），也支持完整 /chat/completions 地址。适用于采用该协议的模型服务。' },
   { id: 'openai_responses', name: 'OpenAI · Responses', hint: '填写 API Base URL，也支持完整 /responses 地址。' },
@@ -82,13 +105,18 @@ async function save() {
   finally { saving.value = false }
 }
 async function test(connectivity = false) {
-  if (!selected.value) return
+  if (!selected.value || testing.value || saving.value || listing.value || loading.value || (!connectivity && (!question.value.trim() || optionsLoading.value))) return
   testing.value = true; error.value = ''; message.value = ''; result.value = null
   try {
-    result.value = await request<TestResult>('/api/v1/system/speech-models/test', { method: 'POST', body: JSON.stringify({ profile: selected.value, mode: connectivity ? 'connectivity' : mode.value, question: question.value }) })
+    result.value = await request<TestResult>('/api/v1/system/speech-models/test', { method: 'POST', body: JSON.stringify({ profile: selected.value, mode: connectivity ? 'connectivity' : mode.value, question: question.value, ...(!connectivity ? { temperature: temperatureDisabled.value ? undefined : temperature.value, enable_thinking: testOptions.value?.thinking !== 'unavailable' && testOptions.value ? enableThinking.value : undefined } : {}) }) })
     message.value = connectivity ? '模型已成功返回文字。测试没有改变默认模型。' : '测试完成，没有发布或改变直播内容。'
   } catch (e) { error.value = e instanceof Error ? e.message : '测试失败' }
   finally { testing.value = false }
+}
+function handleTestKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || !enterToSend.value || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  if (!event.repeat) void test(false)
 }
 async function fetchModels() {
   if (!selected.value || listing.value) return
@@ -163,15 +191,20 @@ onMounted(load)
     <section v-if="selected" class="model-test">
       <div class="editor-head"><div><h3>连接与文字测试</h3><p>使用当前编辑配置，可在保存前测试。测试会调用服务商 API，可能产生费用；不会生成声音、发布内容或切换默认模型。</p></div><button class="ghost-button" :disabled="testing || saving || listing || loading" @click="test(true)">{{ testing ? '测试中…' : '测试连通性' }}</button></div>
       <label><span>测试方式</span><select v-model="mode" :disabled="testing"><option value="direct">直接提问（不携带基础提示词）</option><option value="prompt">基础提示词＋测试问题／完整测试提示词</option></select></label>
-      <textarea v-model="question" :disabled="testing" rows="7" maxlength="30000" placeholder="粘贴测试问题、主播规则和测试设定。这里只发送你填写的内容，不自动读取客户直播间数据。" />
-      <button class="primary-button" :disabled="testing || saving || listing || loading || !question.trim()" @click="test(false)">{{ testing ? '等待模型返回…' : '生成测试文字' }}</button>
-      <div v-if="result" class="test-result"><div class="metrics"><span>{{ result.model }}</span><span>{{ result.latency_ms }} ms</span><span>输入 {{ result.input_tokens }} Token</span><span>输出 {{ result.output_tokens }} Token</span></div><pre>{{ result.text }}</pre></div>
+      <div class="test-parameters">
+        <label class="test-temperature"><span>模型温度 <b>{{ temperature.toFixed(2) }}</b></span><input v-model.number="temperature" type="range" aria-label="模型温度" min="0" :max="testOptions?.temperature_max || 2" step="0.05" :disabled="testing || optionsLoading || temperatureDisabled" /><small>{{ temperatureDisabled && enableThinking ? '思考模式下由模型决定温度' : temperatureDisabled ? '当前模型使用默认温度' : '越低越稳定，越高越灵活' }}</small></label>
+        <div class="test-thinking"><label><span>思考模式</span><input v-model="enableThinking" type="checkbox" role="switch" aria-label="思考模式" :disabled="testing || optionsLoading || testOptions?.thinking !== 'toggle'" /><b>{{ enableThinking ? '开启' : '关闭' }}</b></label><small>{{ optionsLoading ? '正在读取模型支持的选项…' : testOptions?.thinking_hint || '填写模型后可查看支持的选项' }}</small></div>
+      </div>
+      <div class="test-output"><div class="test-output-head"><strong>模型输出</strong><div v-if="result" class="metrics"><span>{{ result.model }}</span><span>{{ result.latency_ms }} ms</span><span>输入 {{ result.input_tokens }} Token</span><span>输出 {{ result.output_tokens }} Token</span></div></div><textarea :value="result?.text || ''" class="test-output-text" aria-label="模型输出" rows="5" readonly :placeholder="testing ? '模型正在准备回答，请稍等…' : '模型的回答会显示在这里'" /></div>
+      <label class="test-input-label"><span>测试输入</span><textarea v-model="question" class="test-input-text" aria-label="测试输入" :disabled="testing" rows="3" maxlength="30000" placeholder="粘贴测试问题、主播规则和测试设定。这里只发送你填写的内容，不自动读取客户直播间数据。" @keydown="handleTestKeydown" /></label>
+      <div class="test-send-actions"><label class="test-enter"><input v-model="enterToSend" type="checkbox" />回车发送</label><button type="button" class="primary-button" :disabled="testing || saving || listing || loading || optionsLoading || !question.trim()" @click="test(false)">{{ testing ? '发送中…' : '发送' }}</button><small v-if="enterToSend">Shift＋回车换行</small></div>
     </section>
     <ModelPickerDialog v-if="pickerOpen && selected" :models="currentModelList?.models || []" :loading="listing" :error="currentListError" :truncated="currentModelList?.truncated || false" :initial-id="selected.model" @close="pickerOpen = false" @refresh="fetchModels" @select="selectModel" />
   </div>
 </template>
 
 <style scoped>
+.test-parameters{display:flex;align-items:center;flex-wrap:wrap;gap:20px 36px;padding:15px 18px;border:1px solid #e4e8f6;border-radius:13px;background:#f8faff}.test-temperature{display:grid;gap:7px;width:300px;max-width:100%}.test-temperature>span{display:flex;justify-content:space-between;font-weight:700}.test-temperature b{color:#6264d6;font-variant-numeric:tabular-nums}.speech-model-page .test-temperature input[type=range]{padding:0;height:20px;border:0;background:transparent;accent-color:#6665db}.test-parameters small{color:#7a8499;font-size:12px}.test-thinking{display:grid;gap:8px}.test-thinking label{display:flex;align-items:center;gap:12px;font-weight:700}.speech-model-page .test-thinking input[type=checkbox]{appearance:none;position:relative;width:42px;min-width:42px;height:24px;min-height:0;max-height:24px;padding:0;border:0;border-radius:14px;background:#c5cede;cursor:pointer;transition:background .15s}.speech-model-page .test-thinking input[type=checkbox]::after{content:'';position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:white;box-shadow:0 1px 4px #36476125;transition:transform .15s}.speech-model-page .test-thinking input[type=checkbox]:checked{background:#6465d9}.speech-model-page .test-thinking input[type=checkbox]:checked::after{transform:translateX(18px)}.speech-model-page .test-thinking input[type=checkbox]:disabled{opacity:.55;cursor:not-allowed}.test-thinking input:focus-visible{outline:2px solid #7676ef;outline-offset:3px}.test-output{display:grid;gap:8px;min-width:0}.test-output-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}.model-test>.test-input-label{max-width:none}.speech-model-page .test-output-text,.speech-model-page .test-input-text{min-height:0;resize:none;overflow:auto}.speech-model-page .test-output-text{height:calc(8.5em + 24px);background:#f6f8fd}.speech-model-page .test-input-text{height:calc(5.1em + 24px)}.test-send-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:14px}.test-enter{display:flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap}.test-send-actions .primary-button{min-width:100px}.test-send-actions small{font-size:12px;color:#7a8499}.test-enter input{accent-color:#6565da}
 .model-select{display:grid;gap:6px;text-align:left;border:0;background:transparent;padding:0;color:inherit;font:inherit;cursor:pointer;width:100%}.model-select strong{overflow-wrap:anywhere}.model-copy-button{justify-self:end;padding:5px 12px;font-size:13px}
 .model-item{position:relative}.model-select strong{padding-right:32px;min-height:28px;line-height:1.6}.model-delete-button{position:absolute;top:11px;right:10px;display:grid;place-items:center;width:29px;height:29px;padding:0;border:1px solid #f2d7df;border-radius:8px;background:#fff7f9;color:#cd647e;cursor:pointer}.model-delete-button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.model-delete-button:hover:not(:disabled){border-color:#e8a3b5;background:#ffedf2}.model-delete-button:focus-visible{outline:2px solid #d67d94;outline-offset:2px}.model-delete-button:disabled{opacity:.5;cursor:not-allowed}
 .model-discovery{display:grid;gap:8px;align-content:start}.model-id-heading{display:flex;align-items:center;gap:14px;min-height:26px}.model-id-heading label{font-weight:700;white-space:nowrap}.model-id-heading button{padding:3px 10px;border-radius:8px;font-size:13px;line-height:18px}.model-discovery small{color:#7a8499;line-height:1.6}.fields>label{align-content:start}

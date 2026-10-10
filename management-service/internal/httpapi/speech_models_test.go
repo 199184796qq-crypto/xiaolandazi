@@ -20,6 +20,7 @@ func TestSpeechModelAdministrationRequiresAuthentication(t *testing.T) {
 		{http.MethodGet, s.systemSpeechModelsGet},
 		{http.MethodPut, s.systemSpeechModelsSave},
 		{http.MethodPost, s.systemSpeechModelsTest},
+		{http.MethodPost, s.systemSpeechModelTestOptions},
 		{http.MethodPost, s.systemSpeechModelsList},
 	} {
 		w := httptest.NewRecorder()
