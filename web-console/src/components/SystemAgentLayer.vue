@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import WorkInboxPanel from './WorkInboxPanel.vue'
 import PlanSpeechAgentPanel from './PlanSpeechAgentPanel.vue'
+import AgentEnterSendOption from './AgentEnterSendOption.vue'
+import { useAgentEnterSend } from '../useAgentEnterSend'
+import { useFloatingAgentDrawer } from '../useFloatingAgentDrawer'
 import TodoBadge from './TodoBadge.vue'
 import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
@@ -249,6 +252,12 @@ const route = useRoute()
 const router = useRouter()
 const expanded = ref(false)
 const drawerOpen = ref(false)
+const { element: drawerEl, style: drawerStyle, dragging: drawerDragging, floating: drawerFloating, startDrag: startDrawerDrag, consumeDragClick: consumeDrawerDragClick, reset: resetDrawerPosition } = useFloatingAgentDrawer(drawerOpen)
+const enterSend = useAgentEnterSend()
+const composerComposing = ref(false)
+watch(() => [session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], resetDrawerPosition)
+function collapseDrawerAfterClick() { if (!consumeDrawerDragClick()) drawerOpen.value = false }
+function setDrawerElement(value: unknown) { drawerEl.value = value as HTMLElement | null }
 const drawerPreferenceReady = ref(false)
 const drawerTab = ref<'chat' | 'inbox'>('chat')
 const inboxRequest = ref('')
@@ -1771,6 +1780,7 @@ function closeSuggestions() {
 
 function handleComposerKeydown(event: KeyboardEvent, source: ComposerSource) {
   activeComposer.value = source
+  if (event.isComposing || composerComposing.value || event.keyCode === 229) return
 
   if (showSuggestions(source)) {
     if (event.key === 'ArrowDown') {
@@ -1786,7 +1796,7 @@ function handleComposerKeydown(event: KeyboardEvent, source: ComposerSource) {
         suggestions.value.length
       return
     }
-    if (event.key === 'Enter' && !event.isComposing) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       const item = suggestions.value[suggestionIndex.value]
       if (item) selectSuggestion(item)
@@ -1799,9 +1809,9 @@ function handleComposerKeydown(event: KeyboardEvent, source: ComposerSource) {
     }
   }
 
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  if (event.key !== 'Enter' || event.shiftKey || !enterSend.value) return
   event.preventDefault()
-  void send()
+  if (!event.repeat && !executing.value && !planSpeechBusy.value) void send()
 }
 
 function expand() {
@@ -6906,6 +6916,9 @@ async function copyCredential(credential?: InitialCredential) {
               @input="composerInput('dock')"
               @paste="handleComposerPaste"
               @keydown="handleComposerKeydown($event, 'dock')"
+              @compositionstart="composerComposing = true"
+              @compositionend="composerComposing = false"
+              @blur="composerComposing = false"
             ></textarea>
             <div
               v-if="showSuggestions('dock')"
@@ -6932,6 +6945,7 @@ async function copyCredential(credential?: InitialCredential) {
             </div>
           </div>
         </div>
+        <AgentEnterSendOption class="dock-enter-send" :disabled="busy || executing" />
         <button
           class="system-agent-send"
           type="button"
@@ -6986,12 +7000,15 @@ async function copyCredential(credential?: InitialCredential) {
     >‹</button>
 
     <div
-      v-if="drawerOpen && actor"
+      v-if="actor"
+      v-show="drawerOpen"
       class="system-agent-backdrop"
     >
       <aside
+        :ref="setDrawerElement"
         class="system-agent-drawer"
-        :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer}"
+        :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer, floating: drawerFloating, dragging: drawerDragging}"
+        :style="drawerStyle"
         @wheel="handleDrawerWheel"
       >
         <button
@@ -6999,8 +7016,9 @@ async function copyCredential(credential?: InitialCredential) {
           data-edge-handle="system-agent-drawer"
           type="button"
           aria-label="折叠智能体抽屉"
-          title="折叠智能体抽屉"
-          @click="drawerOpen = false"
+          title="拖动可移动窗口，点击收起到右侧"
+          @pointerdown="startDrawerDrag"
+          @click="collapseDrawerAfterClick"
         >›</button>
         <header>
           <div>
@@ -7012,7 +7030,12 @@ async function copyCredential(credential?: InitialCredential) {
               <button type="button" :aria-pressed="planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(true)">{{ planSpeechActive ? '话术智能体 · 互动测试' : '切换到话术智能体' }}</button>
             </div>
           </div>
-          <button class="icon-button" type="button" @click="drawerOpen = false">×</button>
+          <div class="agent-drawer-window-controls">
+            <button class="agent-drawer-drag-handle" type="button" aria-label="拖动智能体对话窗口" title="按住拖动，可停放在浏览器窗口内任意位置" @pointerdown="startDrawerDrag" @click="consumeDrawerDragClick">
+              <span aria-hidden="true">⠿</span>拖动
+            </button>
+            <button class="icon-button" type="button" aria-label="收起智能体对话窗口" title="收起到右侧" @click="drawerOpen = false">×</button>
+          </div>
         </header>
 
         <nav v-if="showInbox" class="agent-inbox-tabs" aria-label="智能体工作面板"><button type="button" :class="{active:drawerTab==='chat'}" @click="drawerTab='chat'">对话</button><button type="button" :class="{active:drawerTab==='inbox'}" @click="drawerTab='inbox';inboxRequest=''">我的待办<TodoBadge to="/work/inbox"/></button></nav>
@@ -7610,6 +7633,9 @@ async function copyCredential(credential?: InitialCredential) {
               @input="composerInput('drawer')"
               @paste="handleComposerPaste"
               @keydown="handleComposerKeydown($event, 'drawer')"
+              @compositionstart="composerComposing = true"
+              @compositionend="composerComposing = false"
+              @blur="composerComposing = false"
             ></textarea>
             <div
               v-if="showSuggestions('drawer')"
@@ -7635,18 +7661,15 @@ async function copyCredential(credential?: InitialCredential) {
               </button>
             </div>
           </div>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="busy || !input.trim()"
-            @click="send"
-          >
-            {{ currentDomain === 'live-room' && answerReferencePending
-              ? '发送'
-              : currentDomain === 'live-room' && coachingSession?.active && coachingSession.kind === 'general'
-                ? '发送'
-                : '发送' }}
-          </button>
+          <div class="agent-composer-send-actions">
+            <AgentEnterSendOption :disabled="busy || executing" />
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="busy || !input.trim()"
+              @click="send"
+            >发送</button>
+          </div>
           <div v-if="currentDomain === 'live-room'" class="live-room-test-toggle drawer-live-room-test-toggle">
             <button
               type="button"
@@ -7686,6 +7709,21 @@ async function copyCredential(credential?: InitialCredential) {
 .answer-reference-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;padding:7px 9px;border:1px solid rgba(84,104,214,.2);border-radius:10px;background:linear-gradient(135deg,rgba(241,244,255,.96),rgba(250,251,255,.96));color:#5f6985;line-height:1.35}.answer-reference-context>div{min-width:0;display:grid;gap:2px}.answer-reference-context strong{color:#5362cf;font-size:12px;font-weight:900}.answer-reference-context span{max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.answer-reference-context small{color:#929bb0;font-size:10px}.answer-reference-context button{flex:0 0 auto;padding:4px 8px;border:1px solid rgba(84,104,214,.16);border-radius:8px;background:#fff;color:#6874b8;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.answer-reference-context.picking{border-style:dashed;background:rgba(244,246,255,.96)}.coaching-context{border-color:rgba(112,91,220,.22);background:linear-gradient(135deg,rgba(244,241,255,.97),rgba(251,250,255,.97))}.drawer-answer-reference-context{grid-column:1 / -1;margin:0}.answer-reference-result-card{align-items:stretch;gap:14px;flex-wrap:wrap}.answer-reference-result-copy{display:grid;gap:8px}.answer-reference-result-target{color:#7f8aa0;font-size:12px;line-height:1.45}.answer-reference-result-text{margin:0!important;padding:12px 14px;border:1px solid rgba(92,111,210,.14);border-radius:10px;background:#f8f9ff;color:#293349!important;font-size:17px!important;font-weight:750;line-height:1.7;white-space:pre-wrap}.answer-reference-result-reference{color:#8d96a8;font-size:11px;line-height:1.5}.coaching-result-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.coaching-result-actions .ghost-button{min-height:36px;padding:7px 12px}
 .agent-memory-list-card{align-items:stretch}.agent-memory-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.agent-memory-list-head>span{color:#5666d8!important;font-size:13px!important;font-weight:900}.agent-memory-list-head>small{color:#929bb0;font-size:11px}.agent-memory-empty{padding:14px;border-radius:10px;background:#f8f9fc;color:#8a93a6;text-align:center}.agent-memory-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:12px;border:1px solid #e5e8f2;border-radius:11px;background:#fafbff}.agent-memory-item>div:first-child{display:grid;min-width:0;gap:4px}.agent-memory-item>div:first-child>span{width:max-content;padding:2px 7px;border-radius:999px;background:#eef0ff;color:#5965c8;font-size:10px;font-weight:850}.agent-memory-item strong{color:#30394a;font-size:14px}.agent-memory-item p{margin:0!important;color:#596579!important;line-height:1.55;white-space:pre-wrap}.agent-memory-item small{color:#9aa2b0;font-size:10px}.agent-memory-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.agent-memory-actions button{min-height:32px;padding:5px 9px;border:1px solid #d9deeb;border-radius:8px;background:#fff;color:#5f6a7e;font:inherit;font-size:11px;font-weight:800;cursor:pointer}.agent-memory-actions button:hover{border-color:#aeb7df;background:#f4f6ff;color:#4f5fc4}@media(max-width:720px){.agent-memory-item{grid-template-columns:1fr}.agent-memory-actions{justify-content:flex-start}}
 .system-agent-drawer{position:relative;grid-template-rows:auto auto minmax(0,1fr) auto;overflow:visible}
+.system-agent-drawer.floating{border:1px solid #d9e1f5;border-radius:18px;box-shadow:0 20px 65px rgba(35,48,100,.23);animation:none}
+.system-agent-drawer.floating>header{border-radius:18px 18px 0 0}
+.system-agent-drawer.floating>footer{border-radius:0 0 18px 18px}
+.system-agent-drawer.floating>.system-agent-chat-shell:last-child{border-radius:0 0 18px 18px}
+.system-agent-drawer.dragging{user-select:none;cursor:grabbing}
+.agent-drawer-window-controls{display:flex;flex-direction:column;align-items:center;gap:8px;flex:0 0 56px}
+.agent-drawer-drag-handle{display:flex;align-items:center;justify-content:center;gap:4px;width:56px;min-height:30px;padding:4px;border:1px solid #dce3f6;border-radius:8px;background:#f5f7ff;color:#7382b4;font:inherit;font-size:11px;cursor:grab;touch-action:none;user-select:none}
+.agent-drawer-drag-handle>span{font-size:19px;line-height:1}
+.system-agent-drawer .system-agent-drawer-edge-handle.expanded{cursor:grab;touch-action:none}
+.system-agent-drawer.dragging .agent-drawer-drag-handle,.system-agent-drawer.dragging .system-agent-drawer-edge-handle.expanded{cursor:grabbing}
+.agent-drawer-drag-handle:focus-visible{outline:2px solid #788cf0;outline-offset:2px}
+.system-agent-drawer>footer .system-agent-composer-field,.agent-composer-send-actions{grid-column:1/-1}
+.agent-composer-send-actions{display:flex;justify-content:flex-end;align-items:center;gap:14px}
+.agent-composer-send-actions>.primary-button{min-width:76px;min-height:44px;margin:0;white-space:nowrap}
+.dock-enter-send{align-self:flex-end;margin-bottom:23px!important}
 .system-agent-drawer>header,.system-agent-drawer>.agent-inbox-tabs,.system-agent-drawer>.system-agent-chat,.system-agent-drawer>footer,.system-agent-drawer>:deep(.work-inbox-panel.compact){overflow:hidden}
 .system-agent-drawer-edge-handle{position:fixed;top:50%;z-index:1385;display:grid;width:28px;height:74px;place-items:center;padding:0;border:1px solid rgba(87,112,207,.30);background:rgba(239,245,255,.97);color:#5368bd;box-shadow:-5px 0 16px rgba(63,81,143,.13);font:inherit;font-size:23px;font-weight:900;line-height:1;cursor:pointer;transform:translateY(-50%);transition:background .18s ease,color .18s ease,box-shadow .18s ease}.system-agent-drawer-edge-handle:hover{background:#fff;color:#3f59d2;box-shadow:-7px 0 21px rgba(63,81,143,.18)}.system-agent-drawer-edge-handle.collapsed{right:0;border-radius:14px 0 0 14px}.system-agent-drawer .system-agent-drawer-edge-handle.expanded{position:absolute;left:-28px;right:auto;border-radius:14px 0 0 14px;pointer-events:auto}
 .system-agent-drawer.without-work-inbox{grid-template-rows:auto minmax(0,1fr) auto}
