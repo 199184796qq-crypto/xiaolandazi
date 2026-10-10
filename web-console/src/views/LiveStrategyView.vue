@@ -9415,7 +9415,7 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-actions button:disabled { cursor:not-allowed; opacity:.55; }
 .strategy-formal-facts-table tr.is-editing-formal-fact { position:relative; }
 .strategy-formal-facts-table tr.is-editing-formal-fact::after { content:''; position:absolute; inset:0; z-index:1; border:1px solid #b7d2ff; border-left:3px solid #3475ff; border-radius:14px; box-shadow:0 8px 18px #5b92e612; pointer-events:none; }
-.strategy-formal-facts-table tbody>tr.is-editing-formal-fact>td,.strategy-formal-facts-table tbody>tr.is-editing-formal-fact:hover>td { padding:14px 8px; background:linear-gradient(140deg,#f7faff,#eef5ff); box-shadow:none; }
+.strategy-formal-facts-table tbody>tr.is-editing-formal-fact>td,.strategy-formal-facts-table tbody>tr.is-editing-formal-fact:hover>td { padding:14px 8px; vertical-align:top; background:linear-gradient(140deg,#f7faff,#eef5ff); box-shadow:none; }
 .strategy-formal-facts-table tr.is-editing-formal-fact>td:first-child { padding-left:16px; }
 .strategy-formal-facts-table tr.is-editing-formal-fact>td:last-child { padding-right:16px; }
 .strategy-formal-fact-edit-category { position:relative; border-radius:12px; box-shadow:0 4px 9px #4984e61a; }

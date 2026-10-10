@@ -3,7 +3,7 @@ import WorkInboxPanel from './WorkInboxPanel.vue'
 import PlanSpeechAgentPanel from './PlanSpeechAgentPanel.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
-import { useFloatingAgentDrawer } from '../useFloatingAgentDrawer'
+import { useFloatingAgentDrawer, type DrawerResizeEdge } from '../useFloatingAgentDrawer'
 import TodoBadge from './TodoBadge.vue'
 import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
@@ -252,7 +252,13 @@ const route = useRoute()
 const router = useRouter()
 const expanded = ref(false)
 const drawerOpen = ref(false)
-const { element: drawerEl, style: drawerStyle, dragging: drawerDragging, floating: drawerFloating, startDrag: startDrawerDrag, consumeDragClick: consumeDrawerDragClick, reset: resetDrawerPosition } = useFloatingAgentDrawer(drawerOpen)
+const { element: drawerEl, style: drawerStyle, dragging: drawerDragging, resizing: drawerResizing, floating: drawerFloating, startDrag: startDrawerDrag, startResize: startDrawerResize, resizeWithKeyboard: resizeDrawerWithKeyboard, consumeDragClick: consumeDrawerDragClick, reset: resetDrawerPosition } = useFloatingAgentDrawer(drawerOpen)
+const drawerResizeHandles: { edge: DrawerResizeEdge; label: string }[] = [
+  { edge: 'n', label: '调整对话框高度（顶部）' }, { edge: 's', label: '调整对话框高度（底部）' },
+  { edge: 'e', label: '调整对话框宽度（右侧）' }, { edge: 'w', label: '调整对话框宽度（左侧）' },
+  { edge: 'ne', label: '调整对话框大小（右上角）' }, { edge: 'nw', label: '调整对话框大小（左上角）' },
+  { edge: 'se', label: '调整对话框大小（右下角）' }, { edge: 'sw', label: '调整对话框大小（左下角）' },
+]
 const enterSend = useAgentEnterSend()
 const composerComposing = ref(false)
 watch(() => [session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], resetDrawerPosition)
@@ -7007,10 +7013,13 @@ async function copyCredential(credential?: InitialCredential) {
       <aside
         :ref="setDrawerElement"
         class="system-agent-drawer"
-        :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer, floating: drawerFloating, dragging: drawerDragging}"
+        :class="{'without-work-inbox': !showInbox, 'terminal-agent-drawer': isTerminalCustomer, floating: drawerFloating, dragging: drawerDragging, resizing: drawerResizing}"
         :style="drawerStyle"
         @wheel="handleDrawerWheel"
       >
+        <template v-if="drawerFloating">
+          <button v-for="handle in drawerResizeHandles" :key="handle.edge" type="button" class="agent-drawer-resize-handle" :data-resize-edge="handle.edge" :aria-label="handle.label" :title="`${handle.label}，拖动或使用方向键调整`" @pointerdown="startDrawerResize($event, handle.edge)" @keydown="resizeDrawerWithKeyboard($event, handle.edge)" />
+        </template>
         <button
           class="system-agent-drawer-edge-handle expanded"
           data-edge-handle="system-agent-drawer"
@@ -7714,6 +7723,17 @@ async function copyCredential(credential?: InitialCredential) {
 .system-agent-drawer.floating>footer{border-radius:0 0 18px 18px}
 .system-agent-drawer.floating>.system-agent-chat-shell:last-child{border-radius:0 0 18px 18px}
 .system-agent-drawer.dragging{user-select:none;cursor:grabbing}
+.system-agent-drawer.resizing{user-select:none}
+.agent-drawer-resize-handle{position:absolute;z-index:20;display:block;min-width:0;min-height:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;touch-action:none;user-select:none}
+.agent-drawer-resize-handle[data-resize-edge=n],.agent-drawer-resize-handle[data-resize-edge=s]{left:16px;right:16px;height:8px;cursor:ns-resize}
+.agent-drawer-resize-handle[data-resize-edge=n]{top:-3px}.agent-drawer-resize-handle[data-resize-edge=s]{bottom:-3px}
+.agent-drawer-resize-handle[data-resize-edge=e],.agent-drawer-resize-handle[data-resize-edge=w]{top:16px;bottom:16px;width:8px;cursor:ew-resize}
+.agent-drawer-resize-handle[data-resize-edge=e]{right:-3px}.agent-drawer-resize-handle[data-resize-edge=w]{left:-3px}
+.agent-drawer-resize-handle[data-resize-edge=ne],.agent-drawer-resize-handle[data-resize-edge=nw],.agent-drawer-resize-handle[data-resize-edge=se],.agent-drawer-resize-handle[data-resize-edge=sw]{width:18px;height:18px}
+.agent-drawer-resize-handle[data-resize-edge=ne]{top:0;right:0;cursor:nesw-resize}.agent-drawer-resize-handle[data-resize-edge=nw]{top:0;left:0;cursor:nwse-resize}
+.agent-drawer-resize-handle[data-resize-edge=se]{bottom:0;right:0;cursor:nwse-resize}.agent-drawer-resize-handle[data-resize-edge=sw]{bottom:0;left:0;cursor:nesw-resize}
+.agent-drawer-resize-handle[data-resize-edge=se]::after{content:'';position:absolute;right:5px;bottom:5px;width:10px;height:10px;background:repeating-linear-gradient(135deg,transparent 0 3px,#8a98c9 3px 5px);clip-path:polygon(100% 0,100% 100%,0 100%)}
+.agent-drawer-resize-handle:focus-visible{outline:2px solid #788cf0;outline-offset:0;border-radius:4px}
 .agent-drawer-window-controls{display:flex;flex-direction:column;align-items:center;gap:8px;flex:0 0 56px}
 .agent-drawer-drag-handle{display:flex;align-items:center;justify-content:center;gap:4px;width:56px;min-height:30px;padding:4px;border:1px solid #dce3f6;border-radius:8px;background:#f5f7ff;color:#7382b4;font:inherit;font-size:11px;cursor:grab;touch-action:none;user-select:none}
 .agent-drawer-drag-handle>span{font-size:19px;line-height:1}
