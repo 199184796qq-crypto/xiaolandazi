@@ -107,6 +107,9 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 	if s.anchorVoiceCache == nil || state.Config.TTS == nil || state.Phase != "body" || len(state.Attempts) > 0 || state.P0PendingRepair != nil || state.PriceHook != nil || state.PendingFeedback != "" {
 		return nil
 	}
+	if !s.mainlineCacheReuseEnabled(ctx) {
+		return nil
+	}
 	oss, err := s.cycleCacheOSS()
 	if err != nil {
 		return nil
@@ -144,6 +147,9 @@ func (s *Server) cachedCycleVoice(ctx context.Context, state *anchorcycle.State,
 		return nil, err
 	}
 	if s.anchorVoiceCache == nil {
+		return nil, nil
+	}
+	if !s.mainlineCacheReuseEnabled(ctx) {
 		return nil, nil
 	}
 	oss, err := s.cycleCacheOSS()

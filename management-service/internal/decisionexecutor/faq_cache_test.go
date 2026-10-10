@@ -15,9 +15,15 @@ import (
 
 type faqTestStore struct {
 	*fakeStore
-	policy    model.LiveContentPolicyRecord
-	policyErr error
-	layer     *model.LivePolicyVersion
+	policy        model.LiveContentPolicyRecord
+	policyErr     error
+	layer         *model.LivePolicyVersion
+	reuseDisabled bool
+	reuseErr      error
+}
+
+func (s *faqTestStore) GenerationCacheReuseEnabled(context.Context, string) (bool, error) {
+	return !s.reuseDisabled, s.reuseErr
 }
 
 func (s *faqTestStore) GetLiveContentPolicy(context.Context, int64, int64) (model.LiveContentPolicyRecord, error) {
@@ -70,6 +76,30 @@ func TestFAQProcessRoomCachesSafeParaphrasesWithoutSlidingExpiry(t *testing.T) {
 	executeFAQ(t, worker, core, 11, "多少钱")
 	if agent.calls != 2 || tts.calls != 2 {
 		t.Fatalf("2h expiry must regenerate despite recent hit: llm=%d tts=%d", agent.calls, tts.calls)
+	}
+}
+
+func TestDisabledFAQCacheAlwaysCallsTextAndTTSAndKeepsExistingPool(t *testing.T) {
+	w, store, core, agent, tts, _ := newFAQTestWorker()
+	executeFAQ(t, w, core, 11, "多少钱")
+	store.reuseDisabled = true
+	executeFAQ(t, w, core, 11, "多少钱")
+	executeFAQ(t, w, core, 11, "价格是多少")
+	if agent.calls != 3 || tts.calls != 3 || core.dispatches != 3 {
+		t.Fatalf("disabled reuse must regenerate each time: text=%d tts=%d dispatch=%d", agent.calls, tts.calls, core.dispatches)
+	}
+	if len(w.faqCache.buckets) != 1 {
+		t.Fatal("disabled mode deleted or populated previous answer pool")
+	}
+	store.reuseDisabled = false
+	executeFAQ(t, w, core, 11, "多少钱")
+	if agent.calls != 3 || tts.calls != 3 {
+		t.Fatal("valid prior cache unavailable after re-enable")
+	}
+	store.reuseErr = errors.New("temporary configuration failure")
+	executeFAQ(t, w, core, 11, "多少钱")
+	if agent.calls != 4 || tts.calls != 4 {
+		t.Fatal("configuration failure did not fall back to fresh generation")
 	}
 }
 

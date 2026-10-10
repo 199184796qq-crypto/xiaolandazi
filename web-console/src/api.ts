@@ -315,12 +315,12 @@ export function getSystemSettingsDashboard() {
   return request<SystemSettingsDashboard>('/api/v1/system/settings')
 }
 
-export interface AnchorVoiceCachePolicy { retention_hours: number; default_hours: number; applies_to: string }
+export interface AnchorVoiceCachePolicy { retention_hours: number; default_hours: number; applies_to: string; mainline_cache_reuse_enabled: boolean; interaction_cache_reuse_enabled: boolean; reuse_applies_to: string }
 export function getAnchorVoiceCachePolicy() {
   return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy')
 }
-export function updateAnchorVoiceCachePolicy(retention_hours: number) {
-  return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy', { method: 'PUT', body: JSON.stringify({ retention_hours }) })
+export function updateAnchorVoiceCachePolicy(retention_hours: number, reuse?: { mainline_cache_reuse_enabled: boolean; interaction_cache_reuse_enabled: boolean }) {
+  return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy', { method: 'PUT', body: JSON.stringify({ retention_hours, ...reuse }) })
 }
 
 export function updateSystemSettings(settings: SystemSettingUpdate[]) {

@@ -20,6 +20,7 @@ import (
 type memoryVoiceCache struct {
 	reserved, entries []anchorvoicecache.Entry
 	publishError      bool
+	lookups           int
 }
 
 func (c *memoryVoiceCache) NewEntry(t int64, g, id, b string, ttl time.Duration) anchorvoicecache.Entry {
@@ -37,6 +38,7 @@ func (c *memoryVoiceCache) Publish(_ context.Context, e anchorvoicecache.Entry) 
 	return nil
 }
 func (c *memoryVoiceCache) Lookup(_ context.Context, g string) ([]anchorvoicecache.Entry, error) {
+	c.lookups++
 	out := []anchorvoicecache.Entry{}
 	for _, e := range c.entries {
 		if e.Group == g && time.Now().Before(e.ExpiresAt) {
@@ -44,6 +46,45 @@ func (c *memoryVoiceCache) Lookup(_ context.Context, g string) ([]anchorvoicecac
 		}
 	}
 	return out, nil
+}
+
+type fixtureCacheReusePolicy struct {
+	enabled bool
+	err     error
+}
+
+func (p *fixtureCacheReusePolicy) GenerationCacheReuseEnabled(context.Context, string) (bool, error) {
+	return p.enabled, p.err
+}
+
+func TestDisabledMainlineCacheBypassesBothTextAndAudioWithoutDeletingHistory(t *testing.T) {
+	s, state, segment, cache := voiceCacheFixture(t, func(w http.ResponseWriter, r *http.Request) { w.Header().Set("ETag", "fixture"); w.WriteHeader(200) })
+	e := cache.NewEntry(state.TenantID, cycleVoiceCacheGroup(state, segment), anchorcycle.ID(), "fixture-voice-cache", 5*time.Hour)
+	e.Text, e.OutputText = segment.Selected.Text, segment.Selected.Text
+	e.Bundle.Text, e.Bundle.AudioDurationMS = cycleVoiceText(segment.Selected), 1000
+	cache.entries = []anchorvoicecache.Entry{e}
+	policy := &fixtureCacheReusePolicy{}
+	s.generationCachePolicy = policy
+	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) != nil {
+		t.Fatal("disabled cache reused prose")
+	}
+	if hit, err := s.cachedCycleVoice(context.Background(), state, segment); err != nil || hit != nil {
+		t.Fatal("disabled cache reused audio", hit, err)
+	}
+	if cache.lookups != 0 || len(cache.entries) != 1 {
+		t.Fatal("disabled cache queried or deleted existing content")
+	}
+	policy.err = errors.New("temporary configuration failure")
+	if hit, err := s.cachedCycleVoice(context.Background(), state, segment); err != nil || hit != nil {
+		t.Fatal("configuration failure stopped fresh synthesis", err)
+	}
+	policy.err, policy.enabled = nil, true
+	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) == nil {
+		t.Fatal("re-enabling did not restore existing valid prose")
+	}
+	if hit, err := s.cachedCycleVoice(context.Background(), state, segment); err != nil || hit == nil || !hit.CacheHit {
+		t.Fatal("re-enabling did not restore existing audio", hit, err)
+	}
 }
 func (c *memoryVoiceCache) Due(context.Context, int) ([]anchorvoicecache.Entry, error) {
 	return c.reserved, nil
