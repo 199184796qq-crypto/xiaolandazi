@@ -120,7 +120,7 @@ func (s *Store) ListAgentLearningSessions(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+agentLearningSessionColumns+`
 		FROM agent_learning_sessions
-		WHERE tenant_id=? AND room_id=?
+		WHERE tenant_id=? AND room_id=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true'
 		ORDER BY updated_at DESC, id DESC
 		LIMIT ?
 	`, tenantID, roomID, limit)
@@ -246,7 +246,7 @@ func (s *Store) AppendAgentLearningTurn(
 	// A model reply can arrive after its review was deleted or adopted in another
 	// page. Serialize with those operations before writing any child records.
 	var currentStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM agent_learning_sessions WHERE id=? AND tenant_id=? AND room_id=? FOR UPDATE`, session.ID, session.TenantID, session.RoomID).Scan(&currentStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM agent_learning_sessions WHERE id=? AND tenant_id=? AND room_id=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true' FOR UPDATE`, session.ID, session.TenantID, session.RoomID).Scan(&currentStatus); err != nil {
 		return model.AgentLearningResult{}, err
 	}
 	if currentStatus != model.AgentLearningStatusEditing {
@@ -648,6 +648,9 @@ func (s *Store) AdoptAgentLearningSession(
 	`, sessionID, tenantID, roomID))
 	if err != nil {
 		return model.AdoptAgentLearningOutput{}, err
+	}
+	if session.Review != nil && session.Review.HistoryDeleted {
+		return model.AdoptAgentLearningOutput{}, fmt.Errorf("history record was deleted")
 	}
 	if session.Status == model.AgentLearningStatusAdopted && session.AdoptedMemoryItemID != nil {
 		if err := tx.Commit(); err != nil {

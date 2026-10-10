@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Store) ListInteractionLearningHistory(ctx context.Context, tenant, room, plan int64, status, source, query string, limit, offset int) ([]model.AgentLearningSession, int, int, error) {
-	scope := `tenant_id=? AND room_id=? AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=?`
+	scope := `tenant_id=? AND room_id=? AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true'`
 	args := []any{tenant, room, plan}
 	if source != "" {
 		if source != "live_uncertain" && source != "initial_simulation" {

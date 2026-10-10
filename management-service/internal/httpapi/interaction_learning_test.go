@@ -23,6 +23,23 @@ func TestSimulationDeletionRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestInteractionHistoryActionsRequireAuthentication(t *testing.T) {
+	s := &Server{auth: auth.NewResolver("test", nil)}
+	for _, action := range []struct {
+		method  string
+		handler http.HandlerFunc
+	}{{http.MethodDelete, s.interactionHistoryDelete}, {http.MethodPost, s.interactionHistoryCorrect}} {
+		r := httptest.NewRequest(action.method, "/api/v1/live/rooms/8/interaction-learning/1/history?plan_id=4", nil)
+		r.SetPathValue("roomID", "8")
+		r.SetPathValue("sessionID", "1")
+		w := httptest.NewRecorder()
+		action.handler(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("history mutation allowed without authentication: %d", w.Code)
+		}
+	}
+}
+
 func TestSimulationCannotSilentlyDiscardUnknownOrIncompleteFields(t *testing.T) {
 	good := `{"items":[{"question":"不抽可以吗","context":"食品包装","kind":"missing_fact","meaning":"能否选择非真空","reason":"可选规则缺失","suggested_rule":"","needed_facts":["是否可不抽真空"]}]}`
 	items, err := decodeInteractionSimulation(good)

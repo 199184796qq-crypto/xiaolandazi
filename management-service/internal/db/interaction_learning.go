@@ -71,7 +71,7 @@ func (s *Store) RecordInteractionLearningReview(ctx context.Context, o model.Int
 }
 
 func (s *Store) ListInteractionLearningReviews(ctx context.Context, tenantID, roomID, planID int64) ([]model.AgentLearningSession, int, error) {
-	where := `tenant_id=? AND room_id=? AND status='editing' AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=?`
+	where := `tenant_id=? AND room_id=? AND status='editing' AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true'`
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_learning_sessions WHERE `+where, tenantID, roomID, planID).Scan(&count); err != nil {
 		return nil, 0, err
@@ -93,7 +93,7 @@ func (s *Store) ListInteractionLearningReviews(ctx context.Context, tenantID, ro
 }
 
 func (s *Store) CloseInteractionLearningReview(ctx context.Context, tenantID, roomID, sessionID int64) error {
-	r, err := s.db.ExecContext(ctx, `UPDATE agent_learning_sessions SET status='closed',pending_review_key=NULL,updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND room_id=? AND status='editing' AND review_metadata_json IS NOT NULL`, sessionID, tenantID, roomID)
+	r, err := s.db.ExecContext(ctx, `UPDATE agent_learning_sessions SET status='closed',pending_review_key=NULL,updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND room_id=? AND status='editing' AND review_metadata_json IS NOT NULL AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true'`, sessionID, tenantID, roomID)
 	if err != nil {
 		return err
 	}

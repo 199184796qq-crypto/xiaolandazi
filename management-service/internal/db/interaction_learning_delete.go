@@ -18,7 +18,7 @@ func (s *Store) DeleteSimulationReviews(ctx context.Context, tenant, room, plan,
 		return 0, err
 	}
 	defer tx.Rollback()
-	where := `tenant_id=? AND room_id=? AND source_type='initial_simulation' AND status='editing' AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=?`
+	where := `tenant_id=? AND room_id=? AND source_type='initial_simulation' AND status='editing' AND review_metadata_json IS NOT NULL AND JSON_EXTRACT(review_metadata_json,'$.plan_id')=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(review_metadata_json,'$.history_deleted')),'false')<>'true'`
 	args := []any{tenant, room, plan}
 	if id > 0 {
 		where += ` AND id=?`
