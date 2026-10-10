@@ -42,8 +42,9 @@ const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google
 const output = process.env.PLAN_VERSION_TEST_OUTPUT
 if (output) await mkdir(output, { recursive: true })
 const errors = []
+let page
 try {
-  const page = await browser.newPage({ viewport: { width: 1680, height: 1000 }, reducedMotion: 'reduce' })
+  page = await browser.newPage({ viewport: { width: 1680, height: 1000 }, reducedMotion: 'reduce' })
   page.on('pageerror', error => errors.push(error.message))
   const base = server.resolvedUrls.local[0]
   await page.goto(base + '__version_room?role=customer')
@@ -73,6 +74,12 @@ try {
   assert.deepEqual(errors, [])
   if (output) await writeFile(output + '/result.json', JSON.stringify({ passed: true, checks: ['Core actual version', 'new save preserves loaded version', 'reject previous scene', 'stopped scene', 'mobile layout', 'inherited shared strategy version'], errors }, null, 2))
   console.log('PASS real room and strategy version displays, including updates and old-session rejection.')
+} catch (error) {
+  if (output && page) {
+    await page.screenshot({ path: output + '/failure.png', fullPage: true })
+    await writeFile(output + '/failure.json', JSON.stringify({ error: String(error), errors, body: await page.locator('body').innerText(), fixture: await page.evaluate(() => window.fixture) }, null, 2))
+  }
+  throw error
 } finally {
   await browser.close()
   await server.close()
