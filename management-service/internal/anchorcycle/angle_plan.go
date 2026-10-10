@@ -8,21 +8,34 @@ import (
 )
 
 // A plan is writing guidance, never a spoken paragraph or content approval.
-// It is disposable per-run memory, tied to facts, task, model and mother version.
+// Directions are permanent plan assets; selection and usage are per-run memory.
 type AnglePlan struct {
-	Cards           []AngleHook       `json:"hooks,omitempty"`
-	Calculations    []HookCalculation `json:"calculations,omitempty"`
-	PlanError       string            `json:"planning_error,omitempty"`
-	AudienceConcern string            `json:"audience_concern"`
-	Goal            string            `json:"communication_goal"`
-	Action          string            `json:"explanation_action"`
-	Hooks           []string          `json:"hook_intents"`
-	Raw             string            `json:"raw_response,omitempty"`
-	SourceSHA       string            `json:"source_sha256,omitempty"`
-	PromptSHA       string            `json:"prompt_sha256,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	InputTokens     int64             `json:"input_tokens,omitempty"`
-	OutputTokens    int64             `json:"output_tokens,omitempty"`
+	GenerationID        string               `json:"generation_id,omitempty"`
+	GenerationCount     int                  `json:"generation_count,omitempty"`
+	LifetimePlays       map[string]int       `json:"lifetime_plays,omitempty"`
+	Cards               []AngleHook          `json:"hooks,omitempty"`
+	GeneratedCards      []AngleHook          `json:"generated_hooks,omitempty"`
+	DirectionSelections []DirectionSelection `json:"direction_selections,omitempty"`
+	Calculations        []HookCalculation    `json:"calculations,omitempty"`
+	PlanError           string               `json:"planning_error,omitempty"`
+	AudienceConcern     string               `json:"audience_concern"`
+	Goal                string               `json:"communication_goal"`
+	Action              string               `json:"explanation_action"`
+	Hooks               []string             `json:"hook_intents"`
+	Raw                 string               `json:"raw_response,omitempty"`
+	SourceSHA           string               `json:"source_sha256,omitempty"`
+	PromptSHA           string               `json:"prompt_sha256,omitempty"`
+	Model               string               `json:"model,omitempty"`
+	InputTokens         int64                `json:"input_tokens,omitempty"`
+	OutputTokens        int64                `json:"output_tokens,omitempty"`
+}
+
+// All relation keys are assigned by the program, never returned by the model.
+type DirectionSelection struct {
+	HookID     string `json:"hook_id"`
+	Kept       bool   `json:"kept"`
+	Reason     string `json:"reason"`
+	ExchangeID int64  `json:"exchange_id,omitempty"`
 }
 
 func ParseAnglePlan(raw string) (*AnglePlan, error) {
@@ -56,10 +69,23 @@ func (s *State) AnglePlanKey() string {
 	if p := s.TextModel; p != nil {
 		identity = p.ID + ":" + p.Model + ":" + p.BaseURL + ":" + p.SystemPrompt
 	}
-	return ProductDigest(struct {
-		Task                     Task
-		Facts, Model, Mother, P0 string
-	}{s.Task(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA, s.P0PolicyMD})
+	task := s.Task()
+	// Scheduling IDs, paragraph length and session mode do not change the content
+	// question. Keep one pool for the same angle in all rooms using this plan.
+	base := ProductDigest(struct {
+		Point, Angle, Concern, Audience string
+		Products                        []string
+		Facts, Model, Mother, P0, Scope string
+	}{task.SellingPoint, task.Angle, task.PainPoint, task.TargetAudience,
+		s.HookProducts(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA,
+		s.P0PolicyMD, s.Config.ComplianceScope})
+	if task.FactScope != nil && len(task.FactScope.Corrections) > 0 {
+		return ProductDigest(struct {
+			Base        string
+			Corrections any
+		}{base, task.FactScope.Corrections})
+	}
+	return base
 }
 func (s *State) CurrentAnglePlan() *AnglePlan {
 	if s.AnglePlanMotherSHA == "" {

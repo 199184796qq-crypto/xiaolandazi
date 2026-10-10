@@ -18,6 +18,7 @@ export interface CycleOpeningHook {
 export interface OpeningHookAsset { id: number; tenant_id: number; plan_id: number; library_md: string; source: string; created_at: string }
 export interface OpeningHookSettings { asset: OpeningHookAsset | null; mother_md: string; mother_source: string }
 export interface CycleConfig {
+  angle_refresh_after_plays?: number
   workspace_id: string; region: string; agent_id: string; environment_id: string
   credential_profile_id: string; feedback_profile_id: string
   threshold: number; max_retries: number; max_chars: number; point_gap: number

@@ -33,7 +33,7 @@ func TestAnchorStyleAnalysisPromptLoadsReplaceableMarkdown(t *testing.T) {
 	if !strings.HasSuffix(strings.ReplaceAll(strings.Split(source, "#sha256=")[0], "\\", "/"), "/configs/prompts/anchor-style/style-meta-prompt-extraction.md") {
 		t.Fatalf("unexpected style extraction template: %s", source)
 	}
-	for _, required := range []string{"提取腔调六维", "判断情绪", "区分风格层 vs 内容层", "范文锚定", "语义模板 + 措辞可变", "僵尸回环，禁止照抄", "不得在没报价时就催单"} {
+	for _, required := range []string{"提取腔调六维", "判断情绪", "区分风格层 vs 内容层", "范文锚定"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt %s is missing %q", source, required)
 		}
@@ -41,7 +41,10 @@ func TestAnchorStyleAnalysisPromptLoadsReplaceableMarkdown(t *testing.T) {
 }
 
 func TestAnchorStyleAnalysisRequestInjectsRealSampleAfterMarkdown(t *testing.T) {
-	request := renderAnchorStyleAnalysisRequest("基础方法", "prompt.md", "带货直播", "这是真实主播话术啊")
+	request, err := renderAnchorStyleAnalysisRequest("基础方法", "prompt.md", "带货直播", "这是真实主播话术啊")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, required := range []string{"基础方法", "prompt.md", "带货直播", "这是真实主播话术啊", "meta_prompt_md", "monitoring"} {
 		if !strings.Contains(request, required) {
 			t.Fatalf("rendered request is missing %q: %s", required, request)

@@ -23,6 +23,9 @@ func TestTextModelProfilesResolveAliasesAndPreserveOtherRoles(t *testing.T) {
 		if !strings.Contains(prepared.Messages[1].Content, "超过4位") || !strings.Contains(prepared.Messages[1].Content, "简称") {
 			t.Fatal("nickname prompt not adjacent to task")
 		}
+		if c.id == "qwen-flash" && (prepared.Temperature == nil || *prepared.Temperature != 0.25) {
+			t.Fatal("model sampling configuration not applied")
+		}
 		again, err := PrepareTextRequest(SpeechModel{Model: c.model}, prepared)
 		if err != nil || len(again.Messages) != len(prepared.Messages) {
 			t.Fatal("adaptation duplicated")

@@ -244,8 +244,9 @@ func (s *Server) lectureLibraryIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, err.Error())
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"source_text": input.Source, "business_scope": "当前方案的商品素材", "current_rules": []string{p0, p1, p2}, "current_facts": source.Facts})
-	result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 2600, false)
+	payload, _ := json.Marshal(map[string]any{"business_scope": "当前方案的商品素材", "current_rules": []any{generationP0View(p0, "*"), p1, p2}, "current_facts": source.Facts})
+	userSource, _ := json.Marshal(map[string]any{"source_text": input.Source})
+	result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}, {Role: "user", Content: string(userSource)}}, 2600, false)
 	if err != nil {
 		writeError(w, 502, "故事审核未完成，请稍后重试；没有内容入库")
 		return
@@ -264,7 +265,7 @@ func (s *Server) lectureLibraryIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, err.Error())
 		return
 	}
-	payload, _ = json.Marshal(map[string]any{"source_text": input.Source, "available_fact_categories": catalog.Categories})
+	payload, _ = json.Marshal(map[string]any{"source_text": input.Source, "available_fact_categories": catalog.Categories, "effective_p0": generationP0View(p0, "*")})
 	result, _, err = s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_organize", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 4000, false)
 	if err != nil {
 		writeError(w, 502, "故事整理未完成，请稍后重试；没有内容入库")

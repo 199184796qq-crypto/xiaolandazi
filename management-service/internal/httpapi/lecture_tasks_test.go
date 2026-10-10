@@ -32,6 +32,9 @@ func TestLectureIsNotOrdinaryFactPromptOrUnrelatedAnswerData(t *testing.T) {
 }
 func TestLecturePacketContainsSelectedTaskWithoutLibraryOrIDs(t *testing.T) {
 	s := anchorcycle.State{Config: anchorcycle.Config{MaxChars: 220}, Facts: "无关业务全量事实", Lectures: &anchorcycle.LectureRuntime{Active: &anchorcycle.Task{LectureTopic: 998, ProductMode: "lecture", SellingPoint: "选中主题", Angle: "选中角度", LecturePurpose: "目的", LectureFacts: "所需事实"}}}
+	if err := installP0Mother(&s); err != nil {
+		t.Fatal(err)
+	}
 	messages, err := renderLectureTaskMessages(&s)
 	if err != nil {
 		t.Fatal(err)

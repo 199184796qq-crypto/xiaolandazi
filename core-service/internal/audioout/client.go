@@ -157,43 +157,50 @@ type ProgramWindowTrack struct {
 	SafePoints []ProgramSafePoint       `json:"safe_points,omitempty"`
 }
 
+type MainlinePlaybackReceipt struct {
+	Sequence  uint64    `json:"sequence"`
+	TrackID   string    `json:"track_id"`
+	StartedAt time.Time `json:"started_at"`
+}
+
 type RoomProgramSnapshot struct {
-	MainlinePlayedMS   int64                     `json:"mainline_played_ms,omitempty"`
-	PlaybackReceipts   []MainlinePlaybackReceipt `json:"playback_receipts,omitempty"`
-	FutureWindow       []ProgramWindowTrack      `json:"future_window,omitempty"`
-	BufferedMainlineMS int64                     `json:"buffered_mainline_ms"`
-	NextTrackText      string                    `json:"next_track_text,omitempty"`
-	Sequential         bool                      `json:"sequential,omitempty"`
-	WaitingForContent  bool                      `json:"waiting_for_content,omitempty"`
-	ProgramID          string                    `json:"program_id,omitempty"`
-	Generation         uint64                    `json:"generation"`
-	PendingGeneration  uint64                    `json:"pending_generation,omitempty"`
-	PendingJobID       string                    `json:"pending_job_id,omitempty"`
-	LastAppliedJobID   string                    `json:"last_applied_job_id,omitempty"`
-	RoomID             int64                     `json:"room_id"`
-	VersionID          int64                     `json:"version_id,omitempty"`
-	VersionNo          int64                     `json:"version_no,omitempty"`
-	TrackID            string                    `json:"track_id,omitempty"`
-	TrackIndex         int                       `json:"track_index,omitempty"`
-	TrackCount         int                       `json:"track_count,omitempty"`
-	TrackText          string                    `json:"track_text,omitempty"`
-	Timeline           []ProgramTimelineSegment  `json:"timeline,omitempty"`
-	SafePoints         []ProgramSafePoint        `json:"safe_points,omitempty"`
-	CurrentMS          int                       `json:"current_ms,omitempty"`
-	CurrentSegment     *ProgramTimelineSegment   `json:"current_segment,omitempty"`
-	NextSafeCutMS      int                       `json:"next_safe_cut_ms,omitempty"`
-	Running            bool                      `json:"running"`
-	Suspended          bool                      `json:"suspended,omitempty"`
-	ResumeOffsetMS     int                       `json:"resume_offset_ms,omitempty"`
-	PlannedNextTrackID string                    `json:"planned_next_track_id,omitempty"`
-	PlannedNextScore   int                       `json:"planned_next_score,omitempty"`
-	PlannedNextReason  string                    `json:"planned_next_reason,omitempty"`
-	Sequence           uint64                    `json:"sequence,omitempty"`
-	Slot               string                    `json:"slot,omitempty"`
-	Task               *SpeechTask               `json:"task,omitempty"`
-	StartedAt          time.Time                 `json:"started_at,omitempty"`
-	ActualStartedAt    time.Time                 `json:"actual_started_at,omitempty"`
-	ServerTime         time.Time                 `json:"server_time"`
+	MainlinePlayedMS         int64                     `json:"mainline_played_ms,omitempty"`
+	PlaybackReceipts         []MainlineCoverageReceipt `json:"playback_receipts,omitempty"`
+	MainlinePlaybackReceipts []MainlinePlaybackReceipt `json:"mainline_playback_receipts,omitempty"`
+	FutureWindow             []ProgramWindowTrack      `json:"future_window,omitempty"`
+	BufferedMainlineMS       int64                     `json:"buffered_mainline_ms"`
+	NextTrackText            string                    `json:"next_track_text,omitempty"`
+	Sequential               bool                      `json:"sequential,omitempty"`
+	WaitingForContent        bool                      `json:"waiting_for_content,omitempty"`
+	ProgramID                string                    `json:"program_id,omitempty"`
+	Generation               uint64                    `json:"generation"`
+	PendingGeneration        uint64                    `json:"pending_generation,omitempty"`
+	PendingJobID             string                    `json:"pending_job_id,omitempty"`
+	LastAppliedJobID         string                    `json:"last_applied_job_id,omitempty"`
+	RoomID                   int64                     `json:"room_id"`
+	VersionID                int64                     `json:"version_id,omitempty"`
+	VersionNo                int64                     `json:"version_no,omitempty"`
+	TrackID                  string                    `json:"track_id,omitempty"`
+	TrackIndex               int                       `json:"track_index,omitempty"`
+	TrackCount               int                       `json:"track_count,omitempty"`
+	TrackText                string                    `json:"track_text,omitempty"`
+	Timeline                 []ProgramTimelineSegment  `json:"timeline,omitempty"`
+	SafePoints               []ProgramSafePoint        `json:"safe_points,omitempty"`
+	CurrentMS                int                       `json:"current_ms,omitempty"`
+	CurrentSegment           *ProgramTimelineSegment   `json:"current_segment,omitempty"`
+	NextSafeCutMS            int                       `json:"next_safe_cut_ms,omitempty"`
+	Running                  bool                      `json:"running"`
+	Suspended                bool                      `json:"suspended,omitempty"`
+	ResumeOffsetMS           int                       `json:"resume_offset_ms,omitempty"`
+	PlannedNextTrackID       string                    `json:"planned_next_track_id,omitempty"`
+	PlannedNextScore         int                       `json:"planned_next_score,omitempty"`
+	PlannedNextReason        string                    `json:"planned_next_reason,omitempty"`
+	Sequence                 uint64                    `json:"sequence,omitempty"`
+	Slot                     string                    `json:"slot,omitempty"`
+	Task                     *SpeechTask               `json:"task,omitempty"`
+	StartedAt                time.Time                 `json:"started_at,omitempty"`
+	ActualStartedAt          time.Time                 `json:"actual_started_at,omitempty"`
+	ServerTime               time.Time                 `json:"server_time"`
 }
 
 type PlaybackEvent struct {

@@ -86,6 +86,10 @@ func (s *Server) captureContentSources(ctx context.Context, tenant, plan int64) 
 			return contentpools.Sources{}, err
 		}
 		out := contentpools.Sources{Revision: rev, ObservedAt: time.Now().UTC().UnixMilli(), Products: []contentpools.Product{}, Rows: []contentpools.SourceRow{}}
+		out.Corrections, err = s.store.ListContentCorrections(ctx, tenant, plan)
+		if err != nil {
+			return out, err
+		}
 		for _, p := range links {
 			if p.Status != "active" {
 				continue

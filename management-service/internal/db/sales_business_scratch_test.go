@@ -19,6 +19,7 @@ import (
 
 var salesTestPrefixedTables = flag.Bool("sales-test-prefixed-tables", false, "Explicit opt-in: use random-prefixed isolated test tables inside the permitted schema. All SQL is allowlisted and table identifiers rewritten; never accesses business tables")
 var salesScratchTables = []string{
+	"live_angle_direction_generations", "live_angle_direction_plays",
 	"agent_learning_sessions", "agent_learning_evidence", "agent_learning_results",
 	"agent_memory_items", "agent_memory_versions", "agent_memory_evidence_stats",
 	"mgmt_anchor_model_settings",

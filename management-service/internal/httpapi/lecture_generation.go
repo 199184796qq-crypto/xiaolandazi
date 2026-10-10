@@ -14,6 +14,9 @@ import (
 )
 
 func renderLectureTaskMessages(state *anchorcycle.State) ([]agentgateway.Message, error) {
+	if err := requireCycleP0(state); err != nil {
+		return nil, err
+	}
 	task := state.Task()
 	mother, _, err := loadReplaceablePromptAsset("ANCHOR_LECTURE_GENERATION_PROMPT_PATH", "configs/prompts/anchor-style/lecture-task-generation.md", "任务讲解母版")
 	if err != nil {
@@ -142,7 +145,7 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 		audit.Reason = "讲解复核母版不可用"
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"text": text, "facts": task.LectureFacts, "purpose": task.LecturePurpose, "angle": task.Angle})
+	payload, _ := json.Marshal(map[string]any{"text": text, "facts": task.LectureFacts, "purpose": task.LecturePurpose, "angle": task.Angle, "effective_p0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
 	result, _, err := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "lecture_task_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 1000, false)
 	if err != nil {
 		audit.Reason = "讲解事实复核未完成"

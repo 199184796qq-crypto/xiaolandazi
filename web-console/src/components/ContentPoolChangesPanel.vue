@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import type { PoolStatus } from '../contentPools'
 import { poolSourceText, poolTaskSources, type PoolSourceLocation } from '../contentPoolSources'
 import uploadIllustration from '../assets/content-update-upload.png'
-const props = withDefaults(defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '' })
+import NaturalContentCorrection from './NaturalContentCorrection.vue'
+const props = withDefaults(defineProps<{ planId?: number; roomId?: number; tenantId?: number; status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '' })
 const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: []; source: [value: PoolSourceLocation]; editTask: [poolKey: string, taskID: string] }>()
 const needsUpdate = computed(() => props.status?.state === 'needs_update' || props.status?.state === 'failed')
 const updating = computed(() => props.submitting || props.status?.state === 'updating')
@@ -114,7 +115,8 @@ function taskAppearance(title: string) {
                 <ol class="pool-task-cards"><li v-for="(task, index) in pool.tasks || []" :key="task.id" class="pool-task-card" :class="`pool-task-${taskAppearance(task.selling_point).kind}`">
                   <div class="pool-task-number"><strong>{{ String(index + 1).padStart(2, '0') }}</strong><span>适用 {{ products(pool.products) || '暂无关联商品' }}</span></div>
                   <svg class="pool-task-symbol" viewBox="0 0 24 24" aria-hidden="true"><path :d="taskAppearance(task.selling_point).path" /></svg>
-                  <div class="pool-task-content"><h4>{{ task.selling_point }}</h4><p class="pool-task-angle">{{ task.angle }}</p>
+                  <div class="pool-task-content"><h4>{{ task.selling_point }}<small v-if="task.disabled"> · 已停用，保留记录</small></h4><p class="pool-task-angle">{{ task.angle }}</p>
+                  <NaturalContentCorrection v-if="planId && roomId" :plan-id="planId" :room-id="roomId" :tenant-id="tenantId" :set-id="status.set_id" :pool-key="pool.key" :task-id="task.id" :selected-text="task.angle" :disabled="saving || updating || !['ready','synced'].includes(status.state)" @saved="emit('refresh')" />
                   <details class="pool-task-sources">
                     <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8a7 7 0 0 1 10 10l-9 9" /></svg>引用资料（{{ poolTaskSources(status, pool, task).length }} 处）<svg class="pool-source-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary>
                     <p v-if="!task.source_ids?.length">这条旧任务没有记录引用编号，无法定位来源。</p>
@@ -136,6 +138,15 @@ function taskAppearance(title: string) {
           </details>
         </div>
       </div>
+      <details v-if="status?.corrections?.length" class="pool-entry correction-history">
+        <summary>已保存的自然语言纠正（{{ status.corrections.length }} 条）</summary>
+        <article v-for="item in [...status.corrections].reverse()" :key="item.id" class="pool-change">
+          <div><b>{{ item.content.理解说明 }}</b><p>适用 {{ products(item.products) }}</p><p>你的原话：{{ item.feedback }}</p>
+          <p v-if="item.content.事实修正">事实修正：{{ item.content.事实修正 }}</p><p v-if="item.content.表达限制">表达限制：{{ item.content.表达限制 }}</p><p v-if="item.content.展开指导">展开指导：{{ item.content.展开指导 }}</p><p v-if="item.content.取消说明">本次停用：{{ item.content.取消说明 }}</p>
+          <NaturalContentCorrection v-if="planId && roomId" :plan-id="planId" :room-id="roomId" :tenant-id="tenantId" :product-scope="item.products" :selected-text="[item.content.事实修正,item.content.表达限制,item.content.展开指导].filter(Boolean).join('；') || item.original" :disabled="saving || updating" @saved="emit('refresh')" />
+          </div>
+        </article>
+      </details>
       <small class="pool-note"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 11v6m0-10v.5" /></svg><span>资料变化会自动记录；点击更新时才调用模型。核对并保存智能体后，下次开播使用新版本，本场继续使用已保存快照。</span></small>
       <span class="pool-signature" aria-hidden="true">让内容更智能</span>
     </div>

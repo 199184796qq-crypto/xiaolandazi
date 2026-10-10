@@ -80,7 +80,7 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "zm" + hex.EncodeToString(nonce) + "_"
-	tables := []string{"live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_product_attributes", "live_agent_plan_benefits", "live_selling_point_wheels", "live_plan_content_changes", "live_plan_content_revisions", "live_plan_content_observations", "live_plan_content_sets", "live_plan_content_jobs", "live_plan_content_pool_records", "live_plan_content_tasks", "live_plan_content_task_products", "live_plan_benefit_scopes", "live_plan_benefit_scope_products"}
+	tables := []string{"live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_product_attributes", "live_agent_plan_benefits", "live_selling_point_wheels", "live_plan_content_changes", "live_plan_content_revisions", "live_plan_content_observations", "live_plan_content_sets", "live_plan_content_jobs", "live_plan_content_pool_records", "live_plan_content_tasks", "live_plan_content_task_products", "live_plan_benefit_scopes", "live_plan_benefit_scope_products", "live_plan_content_corrections"}
 	pairs := []string{"xl_pool_source_", prefix + "trigger_"}
 	for _, name := range tables {
 		pairs = append(pairs, name, prefix+name)
@@ -118,6 +118,9 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		exec("CREATE TABLE " + name + " (id BIGINT UNSIGNED PRIMARY KEY,tenant_id BIGINT UNSIGNED NOT NULL,plan_id BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB")
 	}
 	if err = s.MigrateContentPools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MigrateContentCorrections(ctx); err != nil {
 		t.Fatal(err)
 	}
 	exec("INSERT INTO live_agent_plan_product_links VALUES(1,14,4),(2,14,4)")
@@ -175,5 +178,34 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		t.Fatal("in-flight stale agent save accepted")
 	}
 	_ = tx.Rollback()
+	correction := contentpools.Correction{ID: "program-correction", Products: []int64{1}, Original: "用户修改", Feedback: "只改这个商品，以后不要推荐机洗", Content: contentpools.CorrectionContent{Summary: "修正清洗方式", Fact: "仅支持手洗", Forbidden: "不推荐机洗"}}
+	job, err = s.ClaimPoolJob(ctx, 14, 4, 1, latest.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := contentpools.PartitionCorrectionPools(latest, correction.Products)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired.Sources.Corrections = append(repaired.Sources.Corrections, correction)
+	repaired.SourceSHA = repaired.Sources.SHA()
+	next, err := s.SaveContentCorrection(ctx, 14, 4, 1, latest, repaired, correction, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListContentCorrections(ctx, 14, 4)
+	if err != nil || len(items) != 1 || items[0].Feedback != correction.Feedback || next.ID <= latest.ID {
+		t.Fatal("correction not durably committed", items, next.ID, err)
+	}
+	if other, err := s.ListContentCorrections(ctx, 15, 4); err != nil || len(other) != 0 {
+		t.Fatal("cross-tenant correction", other, err)
+	}
+	if _, err = s.SaveContentCorrection(ctx, 14, 4, 1, latest, repaired, correction, job); err == nil {
+		t.Fatal("duplicate/stale correction committed")
+	}
+	before, err := s.GetContentPoolSet(ctx, 14, 4, latest.ID)
+	if err != nil || len(before.Sources.Corrections) != 0 {
+		t.Fatal("old snapshot overwritten", before, err)
+	}
 	t.Log(fmt.Sprintf("PASS isolated tables %s*: persistence, 2-way edit CAS, tenant/pool isolation, old snapshot, new angle references, product associations, stale agent save", prefix))
 }

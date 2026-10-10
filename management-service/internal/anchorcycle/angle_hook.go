@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// Work cards contain intent and references, never preview speech. They are
-// disposable run memory; neither planning nor calculation approves content.
+// Work cards contain intent and program-owned provenance, never preview speech.
+// Saved generations accumulate; per-run selection never approves spoken content.
 type AngleHook struct {
 	ID       string   `json:"hook_id"`
 	Title    string   `json:"title"`
@@ -27,6 +27,14 @@ type HookFact struct {
 	Products []string `json:"product_ids"`
 	Benefits []string `json:"benefit_ids"`
 	Data     string   `json:"data"`
+}
+
+// Captured by the program from the saved task's source associations. Nil means
+// a legacy task without a binding; an empty scope never grants all plan facts.
+// This provenance stays in run state and is not sent as an index for models.
+type TaskFactScope struct {
+	Corrections []map[string]any `json:"corrections,omitempty"`
+	Facts       []HookFact       `json:"facts"`
 }
 type HookCalculation struct {
 	Label    string   `json:"label"`
@@ -93,6 +101,18 @@ func (s *State) HookFacts() []HookFact {
 		}
 		facts = append(facts, HookFact{ID: id, Data: data, Products: links, Benefits: benefits})
 	}
+	if scope := s.Task().FactScope; scope != nil {
+		for _, f := range scope.Facts {
+			allowed := len(f.Products) == 0 || containsLink(products, "current")
+			for _, link := range products {
+				allowed = allowed || containsLink(f.Products, link)
+			}
+			if allowed {
+				add(f.ID, f.Data, f.Products, f.Benefits)
+			}
+		}
+		return facts
+	}
 	if s.ProductFocus == nil {
 		for _, line := range strings.Split(s.Facts, "\n") {
 			add("", line, products, nil)
@@ -112,6 +132,16 @@ func (s *State) HookFacts() []HookFact {
 		}
 	}
 	return facts
+}
+
+// Used only to supply task-local material. ProductFacts retains the complete
+// product scope for existing review/provenance consumers.
+func (s *State) GenerationFacts() string {
+	lines := []string{}
+	for _, f := range s.HookFacts() {
+		lines = append(lines, f.Data)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func ParseHookPlan(raw string, facts []HookFact, products []string) (*AnglePlan, error) {
@@ -182,7 +212,17 @@ func (s *State) CurrentAngleHook() *AngleHook {
 	if p == nil || len(p.Cards) == 0 {
 		return nil
 	}
-	h := p.Cards[(s.Used[s.Task().Key].Count+len(s.Attempts))%len(p.Cards)]
+	start := (s.Used[s.Task().Key].Count + len(s.Attempts)) % len(p.Cards)
+	best := start
+	u := s.AngleUsage(s.AnglePlanKey())
+	for offset := 1; offset < len(p.Cards); offset++ {
+		i := (start + offset) % len(p.Cards)
+		a, b := p.Cards[i].ID, p.Cards[best].ID
+		if u.DirectionPlays[a] < u.DirectionPlays[b] || (u.DirectionPlays[a] == u.DirectionPlays[b] && p.LifetimePlays[a] < p.LifetimePlays[b]) {
+			best = i
+		}
+	}
+	h := p.Cards[best]
 	return &h
 }
 

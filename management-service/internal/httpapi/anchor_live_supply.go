@@ -20,6 +20,9 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	}
 	var mu sync.Mutex
 	delivery := *state.Delivery
+	var actualReceipts []anchorcycle.AnglePlaybackReceipt
+	var lectureReceipts []anchorcycle.PlaybackReceipt
+	var playedMS int64
 	supply := newCycleSupply(s, ctx, state)
 	defer supply.stop()
 	supply.startup = func(ctx context.Context, stage string) {
@@ -43,6 +46,10 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if !snapshot.Running || snapshot.ProgramID != program || snapshot.VersionID != version.ID {
 			return false, anchorcycle.ErrStale
 		}
+		mu.Lock()
+		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
+		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
+		mu.Unlock()
 		return snapshot.Suspended, nil
 	}
 	supply.externalStock = func(ctx context.Context) (int64, error) {
@@ -59,11 +66,17 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if snapshot.ProgramID != program {
 			return 0, anchorcycle.ErrStale
 		}
+		mu.Lock()
+		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
+		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
+		mu.Unlock()
 		return snapshot.BufferedMainlineMS, nil
 	}
 	supply.beforeText = func(ctx context.Context, latest *anchorcycle.State) error {
 		mu.Lock()
 		copy := delivery
+		receipts := append([]anchorcycle.AnglePlaybackReceipt(nil), actualReceipts...)
+		lectureCopy, actualMS := append([]anchorcycle.PlaybackReceipt(nil), lectureReceipts...), playedMS
 		copy.DeliveredCandidates = append([]string(nil), delivery.DeliveredCandidates...)
 		mu.Unlock()
 		changed := latest.Delivery.ProgramID != copy.ProgramID || len(latest.Delivery.DeliveredCandidates) != len(copy.DeliveredCandidates)
@@ -71,6 +84,30 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 			changed = latest.Delivery.DeliveredCandidates[len(copy.DeliveredCandidates)-1] != copy.DeliveredCandidates[len(copy.DeliveredCandidates)-1]
 		}
 		latest.Delivery = &copy
+		if latest.Lectures != nil {
+			priorReceipt, priorPlayed := latest.Lectures.LastReceipt, latest.Lectures.PlayedMS
+			latest.ObservePlayback(lectureCopy, actualMS)
+			changed = changed || priorReceipt != latest.Lectures.LastReceipt || priorPlayed != latest.Lectures.PlayedMS
+			changed = supply.applyLectureSkips(latest) || changed
+		}
+		for _, segment := range latest.Accepted {
+			latest.RegisterAngleTrack(segment)
+		}
+		priorSeq := latest.AngleReceiptSequence
+		uses := latest.ApplyAnglePlayback(copy.ProgramID, receipts)
+		changed = changed || priorSeq != latest.AngleReceiptSequence
+		latest.AnglePendingUses = append(latest.AnglePendingUses, uses...)
+		pending := []anchorcycle.AnglePlayedUse{}
+		for _, use := range latest.AnglePendingUses {
+			if err := s.store.RecordAngleDirectionPlay(ctx, tenant, version.PlanID, copy.ProgramID, use); err != nil {
+				pending = append(pending, use)
+			}
+		}
+		changed = changed || len(pending) != len(latest.AnglePendingUses)
+		if len(pending) > 0 && len(uses) > 0 {
+			latest.Warn("部分角度使用历史暂未保存，保留待重试，本场继续供料")
+		}
+		latest.AnglePendingUses = pending
 		removed := latest.CompactDeliveredHistory()
 		if changed || len(removed) > 0 {
 			if err := s.anchorCycles.Save(ctx, latest); err != nil {

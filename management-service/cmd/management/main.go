@@ -140,10 +140,16 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateAngleDirectionPools(ctx); err != nil {
+		log.Fatalf("migrate angle direction pools: %v", err)
+	}
 	if err := store.MigrateContentPools(ctx); err != nil {
 		log.Fatalf("migrate product/common content pools: %v", err)
 	}
 	if err := store.MigrateLectureTasks(ctx); err != nil {
+		log.Fatal(err)
+	}
+	if err := store.MigrateContentCorrections(ctx); err != nil {
 		log.Fatal(err)
 	}
 	if err := store.MigrateLiveContentRefresh(ctx); err != nil {

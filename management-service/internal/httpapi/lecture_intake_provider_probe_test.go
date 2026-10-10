@@ -54,8 +54,9 @@ func TestLectureProviderIntakePreview(t *testing.T) {
 		source string
 		passed bool
 	}{{"这鸭子包治百病，绝对治糖尿病。", false}, {clean, true}} {
-		payload, _ := json.Marshal(map[string]any{"source_text": input.source, "business_scope": "当前方案的商品素材", "current_rules": []string{p0, p1, p2}, "current_facts": current.Facts})
-		result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 2600, false)
+		payload, _ := json.Marshal(map[string]any{"business_scope": "当前方案的商品素材", "current_rules": []any{generationP0View(p0, "*"), p1, p2}, "current_facts": current.Facts})
+		userSource, _ := json.Marshal(map[string]any{"source_text": input.source})
+		result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}, {Role: "user", Content: string(userSource)}}, 2600, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +73,7 @@ func TestLectureProviderIntakePreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := json.Marshal(map[string]any{"source_text": clean, "available_fact_categories": catalog.Categories})
+	payload, _ := json.Marshal(map[string]any{"source_text": clean, "available_fact_categories": catalog.Categories, "effective_p0": generationP0View(p0, "*")})
 	result, _, err := s.completeAnchorStyleWorkbench(ctx, profile, "lecture_source_organize", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(payload)}}, 4000, false)
 	if err != nil {
 		t.Fatal(err)

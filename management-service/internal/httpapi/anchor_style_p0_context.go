@@ -52,7 +52,7 @@ func (s *Server) reviewCycleP0Context(ctx context.Context, state *anchorcycle.St
 }
 
 func cycleInstructionSources(state *anchorcycle.State) []string {
-	sources := []string{state.Task().Angle, state.PendingFeedback}
+	sources := []string{state.Task().Angle, state.PendingFeedback, cycleExpressionMethod(state)}
 	if plan := state.CurrentAnglePlan(); plan != nil {
 		sources = append(sources, plan.Goal, plan.Action)
 		sources = append(sources, plan.Hooks...)

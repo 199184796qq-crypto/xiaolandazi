@@ -364,6 +364,20 @@ enqueue:
 		return contentpools.Set{}, appdb.ErrPoolSourceChanged
 	}
 	set := contentpools.Set{Sources: source, SourceSHA: source.SHA(), SafeFacts: safety.SafeFacts, SafetyID: safety.ID, SafetyHash: safety.SourceSHA256, Pools: pools}
+	// Each repair call owns one content unit; all relationships stay in code.
+	for _, correction := range source.Corrections {
+		stage("正在应用已保存的自然语言纠正")
+		set, err = s.repairCorrectionSet(ctx, set, correction, nil)
+		if err != nil {
+			return set, err
+		}
+	}
+	if len(source.Corrections) > 0 {
+		set, err = s.saveCorrectedSafety(ctx, tenant, plan, actor, set, safety.SourceSHA256)
+		if err != nil {
+			return set, err
+		}
+	}
 	if err = contentpools.ValidateSet(set); err != nil {
 		return set, err
 	}

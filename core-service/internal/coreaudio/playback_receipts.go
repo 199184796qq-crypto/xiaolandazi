@@ -43,8 +43,8 @@ func savePlaybackReceipt(p *programState, id string, coverage playbackCoverage) 
 	}
 	complete := len(coverage.Ranges) == 1 && coverage.Ranges[0][0] == 0 && coverage.Ranges[0][1] >= coverage.Duration
 	p.PlaybackSequence++
-	r := audioout.MainlinePlaybackReceipt{Sequence: p.PlaybackSequence, TrackID: id, PlayedMS: ms, Complete: complete, Terminal: coverage.Terminal}
-	out := make([]audioout.MainlinePlaybackReceipt, 0, len(p.PlaybackReceipts)+1)
+	r := audioout.MainlineCoverageReceipt{Sequence: p.PlaybackSequence, TrackID: id, PlayedMS: ms, Complete: complete, Terminal: coverage.Terminal}
+	out := make([]audioout.MainlineCoverageReceipt, 0, len(p.PlaybackReceipts)+1)
 	for _, old := range p.PlaybackReceipts {
 		if old.TrackID != id {
 			out = append(out, old)

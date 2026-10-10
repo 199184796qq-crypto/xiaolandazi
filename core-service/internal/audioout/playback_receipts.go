@@ -1,6 +1,6 @@
 package audioout
 
-type MainlinePlaybackReceipt struct {
+type MainlineCoverageReceipt struct {
 	Sequence uint64 `json:"sequence"`
 	TrackID  string `json:"track_id"`
 	PlayedMS int64  `json:"played_ms"`

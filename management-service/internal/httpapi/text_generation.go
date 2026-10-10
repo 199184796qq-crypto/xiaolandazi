@@ -19,6 +19,7 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 	if err != nil {
 		return err
 	}
+	state.Config.AngleRefreshAfterPlays = settings.Cycle.AngleRefreshAfterPlays
 	if settings.Cycle.TextProfileID != "" {
 		state.Config.TextProfileID = settings.Cycle.TextProfileID
 		state.Config.FeedbackID = settings.Cycle.FeedbackID
@@ -86,6 +87,17 @@ func tailText(value string, limit int) string {
 	}
 	return string(r)
 }
+func cycleExpressionMethod(state *anchorcycle.State) string {
+	raw, err := interactionpolicy.Read("text-expression-variations.json")
+	if err != nil {
+		return ""
+	}
+	var methods []string
+	if json.Unmarshal(raw, &methods) != nil || len(methods) == 0 {
+		return ""
+	}
+	return methods[(state.TotalAccepted()+state.CycleNumber+len(state.Attempts))%len(methods)]
+}
 func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, error) {
 	if state.Task().ProductMode == "lecture" {
 		return renderLectureTaskMessages(state)
@@ -104,12 +116,16 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		task.Angle = ""
 		task.Key = derivedHash(task.Key)
 	}
-	// Stable prefix: complete current product facts and a reusable expression view.
-	var facts any = state.ProductFacts(task)
-	if hookMode || state.CurrentAnglePlan() != nil {
-		facts = state.HookFacts()
+	// The reusable expression view is separate from this task's material.
+	var facts any = state.GenerationFacts()
+	if task.FactScope != nil || hookMode || state.CurrentAnglePlan() != nil {
+		facts = generationFactView(state.HookFacts())
 	}
-	fixed, _ := json.Marshal(map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": state.P0PolicyMD})
+	material := map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	if task.FactScope != nil {
+		material["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+	}
+	fixed, _ := json.Marshal(material)
 	recent := []string{}
 	for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
 		if part.Task.ProductMode == "lecture" {
@@ -126,29 +142,52 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		maxChars = task.ProductMaxChars
 	}
 	// Vary explanation methods within the selected purpose/angle, not the task itself.
-	methods := []string{"解释选择依据", "从具体顾虑说起", "说明日常用途", "用自然对话展开", "解释价值而非只报价格", "讲清条件和边界"}
 	opener := "address_or_content"
 	if state.TotalAccepted()%3 != 0 {
 		opener = "content_first"
 	}
-	packet := map[string]any{"开头模式": opener, "本次任务": task, "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "表达展开建议": methods[(state.TotalAccepted()+state.CycleNumber)%len(methods)], "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	packet := map[string]any{"开头模式": opener, "本次任务": generationTaskView(task), "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	if method := cycleExpressionMethod(state); method != "" {
+		packet["表达展开建议"] = method
+	}
+	links := []string{}
+	for _, id := range state.HookProducts() {
+		if id != "current" {
+			links = append(links, id+"号链接")
+		}
+	}
+	packet["本段授权的商品称呼"] = links
 	applyCycleAnglePlanPacket(state, packet)
 	if hookMode || state.CurrentAnglePlan() != nil {
 		// Adopted work records provide bounded continuity without turning the
 		// last spoken paragraph into the next paragraph's reference example.
 		memory := []map[string]any{}
 		for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
-			if part.Task.ProductMode == "lecture" {
+			if part.Task.ProductMode == "lecture" || (task.FactScope != nil && part.Task.Key != state.Task().Key) {
 				continue
 			}
 			if h := part.Selected.AngleHook; h != nil {
-				memory = append(memory, map[string]any{"卖点": part.Task.SellingPoint, "钩子": h.Title, "解释动作": h.Action, "事实编号": h.Facts})
+				memory = append(memory, map[string]any{"卖点": part.Task.SellingPoint, "展开方向": h.Action})
 			} else {
 				memory = append(memory, map[string]any{"卖点": part.Task.SellingPoint, "环节": part.Phase})
 			}
 		}
 		delete(packet, "近期已采用内容仅供避重")
 		packet["近期已采用任务记录（不代表已播放）"] = memory
+		// At most two same-direction paragraphs provide phrasing context only.
+		// They never become an additional source of product facts or promises.
+		if current := state.CurrentAngleHook(); current != nil {
+			previous := []string{}
+			for i := len(state.Accepted) - 1; i >= 0 && len(previous) < 2; i-- {
+				part := state.Accepted[i]
+				if part.Task.Key == state.Task().Key && part.Selected.AngleHook != nil && part.Selected.AngleHook.Action == current.Action && state.CheckApprovedText(part.Selected, cycleVoiceText(part.Selected)) == nil {
+					previous = append(previous, cycleVoiceText(part.Selected))
+				}
+			}
+			if len(previous) > 0 {
+				packet["同方向近期原文（仅避重，不是事实依据或范文）"] = tailText(strings.Join(previous, "\n"), 1200)
+			}
+		}
 	}
 	if hook := state.PendingOpeningHook; state.Phase == "opening" && hook != nil {
 		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}
@@ -156,7 +195,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if state.PriceHook != nil {
 		packet["上一段待解释的问题"] = state.PriceHook.Promise
 	}
-	if strategy, err := state.ContentStrategy.Render("主线", state.ProductFacts(task)); err != nil {
+	if strategy, err := state.ContentStrategy.Render("主线", state.GenerationFacts()); err != nil {
 		return nil, err
 	} else if strategy != "" && state.CurrentAnglePlan() == nil && !hookMode {
 		packet["内容方向与采用条件"] = strategy
@@ -182,6 +221,9 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	return []agentgateway.Message{{Role: "system", Content: string(foundation) + "\n\n" + string(fixed)}, {Role: "user", Content: string(dynamic)}}, nil
 }
 func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State) (agentgateway.Response, []agentgateway.Message, error) {
+	if err := requireCycleP0(state); err != nil {
+		return agentgateway.Response{}, nil, err
+	}
 	current, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
 	if err != nil || current == nil || !current.Enabled || current.APIKey == "" || state.TextModel == nil {
 		return agentgateway.Response{}, nil, fmt.Errorf("本场文字模型凭据不可用")
