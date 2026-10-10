@@ -7,14 +7,15 @@ withDefaults(defineProps<{
   initializeDisabled: boolean
   saveDisabled: boolean
   saveHint?: string
-}>(), { initializeProgress: 0, initializeLabel: '', saveHint: '' })
+  mode?: 'all' | 'initialize' | 'save'
+}>(), { initializeProgress: 0, initializeLabel: '', saveHint: '', mode: 'all' })
 defineEmits<{ initialize: []; save: [] }>()
 </script>
 
 <template>
   <section class="agent-control-bar" aria-label="直播智能体操作">
-    <div class="agent-control-grid">
-      <button type="button" class="agent-control-card control-initialize" :class="{ 'is-initializing': initializing }" :style="initializing ? { '--initialize-progress': Math.max(0, Math.min(100, initializeProgress)) + '%' } : undefined" :disabled="initializeDisabled" :aria-busy="initializing" @click="$emit('initialize')">
+    <div class="agent-control-grid" :class="{ 'initialize-only': mode === 'initialize', 'save-only': mode === 'save' }">
+      <button v-if="mode !== 'save'" type="button" class="agent-control-card control-initialize" :class="{ 'is-initializing': initializing }" :style="initializing ? { '--initialize-progress': Math.max(0, Math.min(100, initializeProgress)) + '%' } : undefined" :disabled="initializeDisabled" :aria-busy="initializing" @click="$emit('initialize')">
         <template v-if="initializing">
           <span class="control-progress-fill" aria-hidden="true"></span>
           <span class="control-progress-copy" aria-live="polite">
@@ -30,7 +31,7 @@ defineEmits<{ initialize: []; save: [] }>()
           <span class="control-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         </template>
       </button>
-      <button type="button" class="agent-control-card control-save" :disabled="saveDisabled" :aria-busy="saving" :title="saveHint" @click="$emit('save')">
+      <button v-if="mode !== 'initialize'" type="button" class="agent-control-card control-save" :disabled="saveDisabled" :aria-busy="saving" :title="saveHint" @click="$emit('save')">
         <span class="control-icon save-icon" aria-hidden="true"><svg viewBox="0 0 48 48"><defs><linearGradient id="anchor-control-document" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#456dff"/><stop offset="1" stop-color="#357bff"/></linearGradient></defs><path d="M12 5h17l9 9v29H12a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3Z" fill="url(#anchor-control-document)"/><path d="M29 5v9h9" fill="#b7caff"/><path d="M17 24h14M17 31h10" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/></svg></span>
         <strong>{{ saving ? '保存中…' : '保存智能体方案' }}</strong>
       </button>
@@ -41,6 +42,7 @@ defineEmits<{ initialize: []; save: [] }>()
 <style scoped>
 .agent-control-bar{width:100%;min-width:0;container-type:inline-size}
 .agent-control-grid{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:14px;align-items:stretch}
+.agent-control-grid.initialize-only{grid-template-columns:minmax(0,1fr)}.agent-control-grid.save-only{display:flex;justify-content:flex-end}
 .agent-control-card{position:relative;isolation:isolate;display:flex;align-items:center;gap:10px;min-width:0;min-height:clamp(62px,4.1vw,76px);padding:10px 16px;border:1px solid transparent;border-radius:14px;font:inherit;text-align:left;cursor:pointer;overflow:hidden;transition:transform .18s ease,box-shadow .18s ease,opacity .18s ease}
 .agent-control-card:hover:not(:disabled){transform:translateY(-2px)}.agent-control-card:focus-visible{outline:3px solid #8ea3ff;outline-offset:3px}.agent-control-card:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
 .agent-control-card strong{position:relative;z-index:1;min-width:0;font-size:clamp(15px,1.05vw,20px);line-height:1.2;font-weight:850;white-space:nowrap;color:inherit}

@@ -394,7 +394,6 @@ function focusContentPoolSaveTarget() {
 }
 async function openContentPoolSave() {
   contentPoolSaveRequested.value = true
-  activeMode.value = 'fullshow'
   await nextTick()
   focusContentPoolSaveTarget()
 }
@@ -5877,7 +5876,7 @@ onBeforeUnmount(() => {
 
       <main class="live-strategy-agent">
         <header class="strategy-agent-head strategy-plan-container-head">
-          <div>
+          <div class="strategy-plan-heading">
             <div class="strategy-plan-selector-row">
               <select
                 class="strategy-plan-title-switch"
@@ -5959,7 +5958,20 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
+          <div ref="contentPoolSaveTarget" class="strategy-plan-save-area">
+            <AnchorControlBar
+              mode="save"
+              :initializing="false"
+              :initialize-disabled="true"
+              :saving="fullShowVersionSaving"
+              :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
+              save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
+              @save="saveFullShowVersion"
+            />
+            <p v-if="fullShowVersionSaving || (fullShowSavedVersion && !fullShowVersionError)" class="strategy-plan-save-status" role="status">{{ fullShowVersionSaving ? '正在保存…' : '已保存' }}</p>
+          </div>
         </header>
+        <div v-if="fullShowVersionError && fullShowVersionActionReady" class="inline-error strategy-fullshow-action-error" role="alert">{{ fullShowVersionError }}</div>
 
         <section v-if="showPlanManager" class="strategy-plan-manager-inline">
           <form class="strategy-plan-create" @submit.prevent="submitPlanManager">
@@ -7320,8 +7332,9 @@ onBeforeUnmount(() => {
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
-            <header ref="contentPoolSaveTarget" class="strategy-agent-control-header">
+            <header class="strategy-agent-control-header">
               <AnchorControlBar
+                mode="initialize"
                 :initializing="anchorInitializing"
                 :initialize-progress="anchorInitializationProgress"
                 :initialize-label="anchorInitializationStage"
@@ -7330,7 +7343,6 @@ onBeforeUnmount(() => {
                 :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
                 save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
                 @initialize="initializeAnchorGeneration"
-                @save="saveFullShowVersion"
               />
             </header>
             <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
@@ -7371,10 +7383,6 @@ onBeforeUnmount(() => {
               </div>
               <p>先生成文案并确认，再生成可发布的成品声音；本页不显示录音上传业务。</p>
             </div>
-          </div>
-
-          <div v-if="fullShowVersionError && fullShowVersionActionReady" class="inline-error strategy-fullshow-action-error" role="alert">
-            {{ fullShowVersionError }}
           </div>
 
           <section v-if="isFixedGeneratedContentMode && fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
@@ -8556,11 +8564,15 @@ onBeforeUnmount(() => {
 .strategy-plan-card-actions button.danger { background:#fff6f6; border-color:#ffd6d9; color:#c95862; }
 .strategy-plan-card button:disabled { cursor:default; opacity:.58; }
 .strategy-plan-empty { padding:28px; border:1px dashed rgba(100,113,166,.22); border-radius:16px; text-align:center; color:#8a95aa; }
-.strategy-plan-container-head { align-items:center; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
+.strategy-plan-container-head { display:grid; grid-template-columns:minmax(0,1fr) max-content; align-items:start; padding:10px 22px 16px; background:linear-gradient(135deg,#fbfcff 0%,#f7f9ff 100%); }
+.strategy-plan-heading { min-width:0; }
+.strategy-plan-save-area { justify-self:end; width:250px; max-width:100%; min-width:0; }
+.strategy-plan-save-status { text-align:right; font-size:13px; }
+@media(max-width:900px) { .strategy-plan-container-head { grid-template-columns:minmax(0,1fr); } .strategy-plan-save-area { grid-row:1; } }
 .strategy-plan-selector-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .strategy-plan-title-switch {
   display:block;
-  width:min(660px,58vw);
+  width:min(660px,100%);
   min-height:58px;
   margin-top:0;
   appearance:none;
