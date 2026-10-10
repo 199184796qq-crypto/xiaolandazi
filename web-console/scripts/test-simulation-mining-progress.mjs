@@ -41,6 +41,7 @@ await page.route('**/api/v1/**', async route => {
 const start = page.getByRole('button', { name: '模拟挖掘', exact: true })
 const progress = page.getByRole('progressbar', { name: '模拟挖掘进度' })
 const state = page.getByRole('region', { name: '模拟挖掘工作状态' })
+const completed = page.locator('.simulation-generation-status[data-simulation-phase="complete"]')
 async function waitForPosts(count) { await page.waitForFunction(() => document.querySelector('.simulation-start')?.disabled); assert.equal(posts.length, count) }
 const out = new URL('../../deploy/validation/simulation-mining/', import.meta.url)
 try {
@@ -48,7 +49,7 @@ try {
   await page.getByRole('tab', { name: '模拟挖掘', exact: true }).click()
   await start.waitFor(); assert.equal(posts.length, 0, 'tab navigation must not trigger a model')
   assert.equal(await start.count(), 1, 'one explicit mining entry')
-  assert.deepEqual(await page.locator('.interaction-learning>header>.actions button').allTextContents(), ['刷新'])
+  assert.deepEqual(await page.locator('.learning-toolbar>header>.actions button').allTextContents(), ['刷新'])
   await page.getByRole('button', { name: '价格', exact: true }).click()
   await start.click(); await waitForPosts(1); await progress.waitFor()
   assert.deepEqual(posts[0].body, { plan_id: 4 }); assert.match(posts[0].path, /rooms\/26\//)
@@ -71,8 +72,8 @@ try {
   assert.ok(await start.isDisabled()); assert.equal(await progress.getAttribute('aria-valuenow'), null)
   assert.ok(heldLists.length > 0); holdLists = false
   for (const item of heldLists.splice(0)) await item.route.fulfill({ json: item.result })
-  await state.getByText('模拟挖掘完成', { exact: true }).waitFor()
-  assert.equal(await progress.getAttribute('aria-valuenow'), '100')
+  await completed.filter({ hasText: '已生成2条模拟建议' }).waitFor()
+  assert.equal(await progress.count(), 0, 'completed progress gives way to the compact results header')
   assert.ok(await start.isEnabled()); assert.equal(await page.getByRole('img', { name: '待处理问题', exact: true }).count(), 2)
   assert.equal(await page.evaluate(() => window.fixture.adoptions), 0)
   assert.equal(await page.evaluate(() => window.fixture.events), 1)
@@ -83,8 +84,7 @@ try {
   assert.ok(await start.isEnabled()); assert.equal(await progress.count(), 0)
   assert.equal(await page.evaluate(() => window.fixture.feedback.alertOpen), false)
   await start.click(); await waitForPosts(3); records = []
-  await posts[2].route.fulfill({ json: { generated: 0 } }); await state.getByText('模拟挖掘完成', { exact: true }).waitFor()
-  assert.match(await state.textContent(), /已生成0条/)
+  await posts[2].route.fulfill({ json: { generated: 0 } }); await completed.filter({ hasText: '已生成0条模拟建议' }).waitFor()
   await start.click(); await waitForPosts(4)
   await page.evaluate(() => window.fixture.setScope(27, 5)); await page.waitForFunction(() => !document.querySelector('.simulation-start')?.disabled)
   assert.equal(await state.count(), 0)
@@ -93,7 +93,7 @@ try {
   assert.ok(await start.isDisabled(), 'old response cannot clear a newer operation')
   assert.doesNotMatch(await state.textContent(), /88/)
   records = [makeRecord(3, 27, 5)]
-  await posts[4].route.fulfill({ json: { generated: 1 } }); await state.getByText('模拟挖掘完成', { exact: true }).waitFor()
+  await posts[4].route.fulfill({ json: { generated: 1 } }); await completed.filter({ hasText: '已生成1条模拟建议' }).waitFor()
   assert.match(posts[4].path, /rooms\/27\//); assert.equal(posts[4].body.plan_id, 5)
   assert.equal(await page.getByText('模拟问题1', { exact: true }).count(), 0)
   await page.emulateMedia({ reducedMotion: 'reduce' }); await start.click(); await waitForPosts(6)
