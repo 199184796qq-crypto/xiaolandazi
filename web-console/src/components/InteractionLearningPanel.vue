@@ -4,6 +4,7 @@ import { request, createAgentLearningTurn, adoptAgentLearningSession, adoptLiveA
 import type { AgentLearningSession, AgentLearningResult, LiveAgentPlanFact } from '../types'
 import { session } from '../session'
 import InteractionFactDialog from './InteractionFactDialog.vue'
+import SimulationMiningProgress from './SimulationMiningProgress.vue'
 
 const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; facts?: LiveAgentPlanFact[]; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
 const emit = defineEmits<{ adopted: []; factsUpdated: [scope: { roomId: number; planId: number; tenantId: number }] }>()
@@ -16,6 +17,9 @@ const expanded = ref(false)
 const busy = ref('')
 const error = ref('')
 const notice = ref('')
+const simulationPhase = ref<'running' | 'loading' | 'complete' | 'failed' | ''>('')
+const simulationGenerated = ref(0)
+let simulationRun = 0
 const editing = ref<number | null>(null)
 const feedback = ref('')
 const preview = ref<AgentLearningResult | null>(null)
@@ -35,6 +39,13 @@ let epoch = 0
 let requestSequence = 0
 let locationSequence = 0
 let poll: ReturnType<typeof setInterval> | undefined
+
+watch(() => [props.roomId, props.planId, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
+  simulationRun++
+  simulationPhase.value = ''
+  simulationGenerated.value = 0
+  if (busy.value === 'simulate') busy.value = ''
+}, { flush: 'sync' })
 
 async function refresh(manual = false) {
   const room = props.roomId, plan = props.planId, token = epoch
@@ -67,7 +78,7 @@ watch(() => [props.roomId, props.planId, props.history, props.sourceType, sessio
 }, { immediate: true })
 
 onMounted(() => { poll = setInterval(() => { if (!busy.value && !locating.value && !factContext.value) void refresh() }, 30_000) })
-onBeforeUnmount(() => { epoch++; if (poll) clearInterval(poll) })
+onBeforeUnmount(() => { epoch++; simulationRun++; if (poll) clearInterval(poll) })
 
 async function locatePending(itemId: number) {
   const token = epoch
@@ -93,17 +104,27 @@ function cancelLocation() { locationSequence++; locating.value = false }
 defineExpose({ locatePending, cancelLocation })
 
 async function simulate() {
-  const room = props.roomId, plan = props.planId, token = epoch
+  const room = props.roomId, plan = props.planId
   if (!room || !plan || busy.value) return
+  const run = ++simulationRun
+  const current = () => run === simulationRun && room === props.roomId && plan === props.planId
   busy.value = 'simulate'; error.value = ''; notice.value = ''
+  simulationPhase.value = 'running'; simulationGenerated.value = 0
+  query.value = ''; page.value = 1
   try {
-    const result = await request<{ generated: number }>(`/api/v1/live/rooms/${room}/interaction-learning/simulate`, { method: 'POST', body: JSON.stringify({ plan_id: plan }) })
-    if (token !== epoch) return
-    notice.value = `已生成${result.generated}条模拟建议，请查看并确认。`
+    const result = await request<{ generated: number }>(`/api/v1/live/rooms/${room}/interaction-learning/simulate`, { method: 'POST', body: JSON.stringify({ plan_id: plan }), suppressErrorDialog: true })
+    if (!current()) return
+    if (!Number.isInteger(result.generated) || result.generated < 0) throw new Error('模拟结果未完整返回，请刷新后重试。')
+    simulationGenerated.value = result.generated
+    simulationPhase.value = 'loading'
     expanded.value = true
-    await refresh(true)
-  } catch (err) { if (token === epoch) error.value = err instanceof Error ? err.message : '模拟挖掘失败' }
-  finally { busy.value = '' }
+    const refreshed = await refresh(true)
+    if (!current()) return
+    simulationPhase.value = 'complete'
+    if (!refreshed) notice.value = '模拟已完成，建议列表暂未刷新；点击右上角“刷新”查看。'
+    window.dispatchEvent(new Event('interaction-review-updated'))
+  } catch (err) { if (current()) { simulationPhase.value = 'failed'; error.value = err instanceof Error ? err.message : '模拟挖掘失败' } }
+  finally { if (current() && busy.value === 'simulate') busy.value = '' }
 }
 
 function begin(item: AgentLearningSession) {
@@ -212,25 +233,29 @@ async function close(item: AgentLearningSession) {
 <template>
   <section v-if="visible && roomId && planId" ref="panelElement" class="interaction-learning" aria-label="互动纠正与待确认问题">
     <header>
-      <div role="status" aria-live="polite"><strong>{{ panelTitle }}</strong><span>{{ history ? `共${total}条记录` : (displayedCount ? `${displayedCount}条待处理` : '暂无待确认问题') }}</span></div>
+      <div>
+        <button v-if="showSimulation && !compact && !history" type="button" class="simulation-start" aria-label="模拟挖掘" :aria-busy="busy === 'simulate'" :disabled="!!busy" title="点击开始模拟挖掘" @click="simulate"><strong>{{ panelTitle }}</strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7z" /></svg></button>
+        <strong v-else>{{ panelTitle }}</strong>
+        <span role="status" aria-live="polite">{{ history ? `共${total}条记录` : (displayedCount ? `${displayedCount}条待处理` : '暂无待确认问题') }}</span>
+      </div>
       <div class="actions">
-        <button v-if="showSimulation && !compact" :disabled="!!busy" @click="simulate">{{ busy === 'simulate' ? '模型模拟中…' : '模拟挖掘' }}</button>
         <button v-if="compact" @click="expanded = !expanded">{{ expanded ? '收起' : '查看并纠正' }}</button>
         <button v-else :disabled="!!busy" @click="refresh(true)">刷新</button>
       </div>
     </header>
+    <SimulationMiningProgress v-if="simulationPhase && showSimulation && !compact && !history" :phase="simulationPhase" :generated="simulationGenerated" />
     <template v-if="showItems">
       <form v-if="!compact" class="history-filters" @submit.prevent="page = 1; refresh(true)">
-        <select v-if="history" v-model="status" aria-label="处理状态" @change="page = 1; refresh(true)"><option value="all">全部记录</option><option value="pending">待处理</option><option value="closed">无需纠正 / 已处理</option><option value="adopted">已采用纠正</option></select>
-        <input v-model="query" maxlength="200" aria-label="检索纠正记录" placeholder="搜索问题或回答，例如：价格、包邮" />
+        <select v-if="history" v-model="status" aria-label="处理状态" :disabled="!!busy" @change="page = 1; refresh(true)"><option value="all">全部记录</option><option value="pending">待处理</option><option value="closed">无需纠正 / 已处理</option><option value="adopted">已采用纠正</option></select>
+        <input v-model="query" maxlength="200" aria-label="检索纠正记录" :disabled="busy === 'simulate'" placeholder="搜索问题或回答，例如：价格、包邮" />
         <button :disabled="!!busy" type="submit">检索</button>
-        <button type="button" @click="query = '价格'; page = 1; refresh(true)">价格</button>
-        <button type="button" @click="query = ''; page = 1; refresh(true)">全部内容</button>
+        <button type="button" :disabled="!!busy" @click="query = '价格'; page = 1; refresh(true)">价格</button>
+        <button type="button" :disabled="!!busy" @click="query = ''; page = 1; refresh(true)">全部内容</button>
       </form>
       <p class="hint">模型只提供建议，事实由你审核。你可以修改并采用纠正，或关闭无需处理的记录；这些建议不会单独阻断互动。</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-if="!displayedItems.length" class="hint">{{ sourceType === 'initial_simulation' ? '还没有模拟建议，点击“模拟挖掘”生成。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
+      <p v-if="!displayedItems.length && busy !== 'simulate'" class="hint">{{ sourceType === 'initial_simulation' ? '还没有模拟建议，点击左上方“模拟挖掘”开始。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
       <article v-for="item in displayedItems" :key="item.id" :data-interaction-review-id="item.id" :class="{ 'is-review-located': locatedId === item.id }" tabindex="-1">
         <div class="item-meta"><span>{{ item.source_type === 'initial_simulation' ? '模拟建议' : '直播记录' }} · {{ item.review?.kind === 'semantic' ? '问法纠正' : '缺少回答条件' }}</span><small>{{ statusLabel(item.status) }} · 记录{{ item.review?.occurrences || 1 }}次 · {{ new Date(item.updated_at).toLocaleString() }}</small></div>
         <strong class="question"><span v-if="item.status === 'editing'" class="pending-question-dot" role="img" aria-label="待处理问题"></span><span>{{ item.question }}</span></strong>
@@ -267,6 +292,7 @@ async function close(item: AgentLearningSession) {
 <style scoped>
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
 .interaction-learning{margin:16px 0;padding:20px;border:1px solid #d9e2f8;border-radius:20px;background:#f8faff;color:#293851;font-size:16px}
+.interaction-learning .simulation-start{display:inline-flex;align-items:center;gap:9px;padding:6px 8px;margin-left:-8px;border:1px solid transparent;border-radius:10px;background:transparent;color:#293851}.interaction-learning .simulation-start svg{width:19px;height:19px;fill:#7364e8}.interaction-learning .simulation-start:hover:not(:disabled){border-color:#d7ddff;background:#eeefff;color:#5754bd}.interaction-learning .simulation-start:focus-visible{outline:2px solid #786ee6;outline-offset:3px}
 .interaction-learning article.is-review-located{border-color:#e77c96;outline:3px solid #ed879e;outline-offset:3px;background:#fffafb;scroll-margin-block:24px}
 .interaction-learning .question{display:flex;align-items:flex-start;gap:10px}.pending-question-dot{flex:0 0 9px;width:9px;height:9px;margin-top:8px;border-radius:50%;background:#e74d65;box-shadow:0 0 0 4px #e74d6514}
 .interaction-learning .suggestion-adopt{display:inline-block;margin-left:12px;padding:4px 12px;vertical-align:middle;font-size:14px;line-height:1.5;white-space:nowrap;background:#eef0ff;border-color:#d5dafa}.interaction-learning .suggestion-adopt:disabled{cursor:not-allowed}
