@@ -1118,6 +1118,7 @@ func (s *Store) BindLiveDevice(
 	ctx context.Context,
 	tenantID, userID, deviceID, roomID int64,
 	role string,
+	replacePrimary ...bool,
 ) (model.LiveDevice, error) {
 	role = strings.TrimSpace(role)
 	if role == "" {
@@ -1214,7 +1215,7 @@ func (s *Store) BindLiveDevice(
 	}
 
 	sameRoom := hasCurrentBinding && currentRoomID == roomID
-	finalRole := resolveLiveBindingRole(role, hasTargetPrimary, targetPrimaryDeviceID == deviceID, sameRoom)
+	finalRole := resolveLiveBindingRole(role, hasTargetPrimary, targetPrimaryDeviceID == deviceID, sameRoom, replacePrimary...)
 
 	insertRoleEvent := func(eventDeviceID, eventRoomID int64, eventCode, title, eventRole string) error {
 		detail, _ := json.Marshal(map[string]any{"room_id": eventRoomID, "binding_role": eventRole})
@@ -1348,16 +1349,16 @@ func (s *Store) BindLiveDevice(
 	return s.GetLiveDevice(ctx, tenantID, deviceID)
 }
 
-func resolveLiveBindingRole(requestedRole string, hasPrimary, primaryIsDevice, sameRoom bool) string {
+func resolveLiveBindingRole(requestedRole string, hasPrimary, primaryIsDevice, sameRoom bool, replacePrimary ...bool) string {
 	if !hasPrimary || primaryIsDevice {
 		// A room with devices always keeps one primary. The existing primary
 		// cannot demote itself without promoting another listener first.
 		return "primary"
 	}
-	if requestedRole == "primary" && !sameRoom {
+	if requestedRole == "primary" && !sameRoom && !(len(replacePrimary) > 0 && replacePrimary[0]) {
 		// Adding or moving a device into a room that already has a primary is
-		// always a listener operation. An explicit promotion is only accepted
-		// after the device is already bound to that room as a listener.
+		// a listener operation unless the caller explicitly selects a replacement.
+		// Both replacement paths share the tenant lock and atomic role updates.
 		return "listener"
 	}
 	return requestedRole

@@ -26,3 +26,18 @@ func TestResolveLiveBindingRole(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitRoomDevicePrimaryReplacement(t *testing.T) {
+	if got := resolveLiveBindingRole("primary", true, false, false, true); got != "primary" {
+		t.Fatalf("explicit new primary must replace the existing one: %s", got)
+	}
+	if got := resolveLiveBindingRole("primary", true, false, false, false); got != "listener" {
+		t.Fatalf("legacy adding device must retain the existing primary: %s", got)
+	}
+	if got := resolveLiveBindingRole("listener", true, false, false, true); got != "listener" {
+		t.Fatalf("replacement flag must not promote a requested listener: %s", got)
+	}
+	if got := resolveLiveBindingRole("listener", false, false, false, true); got != "primary" {
+		t.Fatalf("the first device must keep a primary: %s", got)
+	}
+}
