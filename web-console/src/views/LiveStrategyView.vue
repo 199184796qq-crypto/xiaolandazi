@@ -306,6 +306,7 @@ const wheelRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
 const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
+const interactionRulesWorkspace = ref<InstanceType<typeof InteractionRulesWorkspace> | null>(null)
 const factRiskNoticeState = ref({ loading: false, error: '' })
 const factRiskTabFocused = ref(false)
 type FactRiskReviewDisplay = RiskReview & {
@@ -333,6 +334,8 @@ const factRiskReviews = ref<FactRiskReviewDisplay[]>([])
 const expandedFactRiskId = ref<number | null>(null)
 const speechMinerWorkbench = ref<InstanceType<typeof SpeechMinerWorkbench> | null>(null)
 const pendingWheelRiskHash = ref('')
+const pendingRiskLocation = ref<{ area: 'knowledge' | 'products' | 'benefits'; claimHash: string } | null>(null)
+let riskLocationAttempt = 0
 const locatedFactRiskHash = ref('')
 const factRiskAppealDrafts = ref<Record<string, string>>({})
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
@@ -4106,8 +4109,19 @@ async function openWheelRiskLocation() {
 	await locatePendingWheelRisk()
 }
 
+async function openInteractionPendingLocation() {
+	activeMode.value = 'memory'
+	await nextTick()
+	if (activeMode.value === 'memory' && interactionPendingCount.value > 0) await interactionRulesWorkspace.value?.locatePending()
+}
+
 watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locatePendingWheelRisk() })
-watch(currentRoomPlanId, () => {
+watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskReviews], () => { void locatePendingRiskLocation() }, { flush: 'post' })
+watch(activeMode, mode => {
+	if (pendingRiskLocation.value?.area !== mode) pendingRiskLocation.value = null
+})
+watch([activeRoomId, currentRoomPlanId], () => {
+	pendingRiskLocation.value = null
 	pendingWheelRiskHash.value = ''
 	locatedFactRiskHash.value = ''
 	expandedFactRiskId.value = null
@@ -4116,19 +4130,8 @@ watch(currentRoomPlanId, () => {
 async function openFactRiskLocation() {
 	activeMode.value = 'knowledge'
 	const review = reviewsForArea(factRiskReviews.value, 'knowledge').find(item => item.status !== 'confirmed')
-	if (!review) return
-	const fact = formalFacts.value.find(item => factRisksForFact(item).some(risk => risk.claim_sha256 === review.claim_sha256))
-	if (!fact) {
-		await editRiskSource({ sourceKey: review.source_key, text: review.text })
-		return
-	}
-	expandedFactRiskId.value = fact.id
-	locatedFactRiskHash.value = review.claim_sha256
-	await nextTick()
-	const target = Array.from(document.querySelectorAll<HTMLElement>('[data-fact-risk-hash]'))
-		.find(item => item.dataset.factRiskHash === review.claim_sha256)
-	target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
-	target?.focus({ preventScroll: true })
+	pendingRiskLocation.value = review ? { area: 'knowledge', claimHash: review.claim_sha256 } : null
+	await locatePendingRiskLocation()
 }
 
 function factRisksForFact(item: LiveAgentPlanFact) {
@@ -4145,16 +4148,42 @@ function factRisksForFact(item: LiveAgentPlanFact) {
 async function openSourceRiskLocation(area: 'products' | 'benefits') {
 	activeMode.value = area
 	const review = reviewsForArea(factRiskReviews.value, area).find(item => item.status !== 'confirmed')
-	if (!review) return
-	locatedFactRiskHash.value = review.claim_sha256
+	pendingRiskLocation.value = review ? { area, claimHash: review.claim_sha256 } : null
+	await locatePendingRiskLocation()
+}
+
+async function locatePendingRiskLocation() {
+	const location = pendingRiskLocation.value
+	if (!location || activeMode.value !== location.area) return false
+	const attempt = ++riskLocationAttempt
+	const current = () => pendingRiskLocation.value === location && activeMode.value === location.area && attempt === riskLocationAttempt
+	const review = reviewsForArea(factRiskReviews.value, location.area).find(item => item.claim_sha256 === location.claimHash && item.status !== 'confirmed')
+	if (!review) { if (current()) pendingRiskLocation.value = null; return false }
+	const source = riskSources(review).find(item => sourceArea(item) === location.area)
+	if (location.area === 'knowledge') {
+		const fact = formalFacts.value.find(item => factRisksForFact(item).some(risk => risk.claim_sha256 === location.claimHash))
+		if (!fact) return false
+		expandedFactRiskId.value = fact.id
+	} else if (location.area === 'benefits' && source?.entity_id) {
+		if (!formalBenefits.value.some(item => item.id === source.entity_id)) return false
+		expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entity_id])
+	}
+	locatedFactRiskHash.value = location.claimHash
 	await nextTick()
-	const source = riskSources(review).find(item => sourceArea(item) === area)
-	if (area === 'products' && source?.entity_id) await productCards.value?.locateRisk(source.entity_id, source.field)
-	if (area === 'benefits' && source?.entity_id) expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entity_id])
+	if (!current()) return false
+	if (location.area === 'products' && source?.entity_id) {
+		if (!await productCards.value?.locateRisk(source.entity_id, source.field) || !current()) return false
+	}
 	await nextTick()
-	const target = Array.from(document.querySelectorAll<HTMLElement>('[data-source-risk-hash]')).find(item => item.dataset.sourceRiskHash === review.claim_sha256)
-	target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-	target?.focus({ preventScroll: true })
+	if (!current()) return false
+	const attribute = location.area === 'knowledge' ? 'data-fact-risk-hash' : 'data-source-risk-hash'
+	const scope = source?.entity_id && location.area === 'products' ? document.querySelector(`[data-product-card-id="${source.entity_id}"]`) : document
+	const target = Array.from(scope?.querySelectorAll<HTMLElement>(`[${attribute}]`) || []).find(item => item.getAttribute(attribute) === location.claimHash && item.getClientRects().length > 0)
+	if (!target) return false
+	target.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center', inline: 'nearest' })
+	target.focus({ preventScroll: true })
+	if (current()) pendingRiskLocation.value = null
+	return true
 }
 
 async function editSourceRisk(review: RiskReview, area: RiskArea) {
@@ -5980,7 +6009,7 @@ onBeforeUnmount(() => {
               </span>
               <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
             </button>
-            <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" @click="activeMode = 'memory'">
+            <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" :aria-label="interactionPendingCount > 0 ? `交互策略，${interactionPendingCount}条互动待纠正` : '交互策略'" @click="openInteractionPendingLocation">
               <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
               <span class="strategy-workflow-label">交互策略<span v-if="interactionPendingCount > 0" class="interaction-pending-badge" :aria-label="`${interactionPendingCount}条互动待纠正`">{{ interactionPendingCount > 99 ? '99+' : interactionPendingCount }}</span></span>
             </button>
@@ -6541,7 +6570,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
+          <InteractionRulesWorkspace ref="interactionRulesWorkspace" :room-id="activeRoomId" :plan-id="currentRoomPlanId" @refresh="refreshMemories" @adopted="refreshMemories" @open-facts="activeMode = 'knowledge'">
           <div v-if="!interactionMemories.length" class="strategy-v2-empty">
             <strong>当前直播间还没有已采用的互动策略</strong>
             <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>

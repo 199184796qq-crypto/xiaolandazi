@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import InteractionLearningPanel from './InteractionLearningPanel.vue'
+import { request } from '../api'
+import type { AgentLearningSession } from '../types'
 
-defineProps<{ roomId: number | null; planId: number | null }>()
+const props = defineProps<{ roomId: number | null; planId: number | null }>()
 const emit = defineEmits<{ refresh: []; adopted: []; openFacts: [] }>()
 const tabs = [
   { key: 'simulation', label: '模拟挖掘' },
@@ -12,20 +14,55 @@ const tabs = [
 ] as const
 type Tab = typeof tabs[number]['key']
 const activeTab = ref<Tab>('adopted')
+const learningPanel = ref<InstanceType<typeof InteractionLearningPanel> | null>(null)
+const locationNotice = ref('')
+let locationSequence = 0
+watch(() => [props.roomId, props.planId], () => { locationSequence++; locationNotice.value = '' })
+onBeforeUnmount(() => { locationSequence++ })
+
+async function locatePending() {
+  const room = props.roomId, plan = props.planId, sequence = ++locationSequence
+  if (!room || !plan) return false
+  locationNotice.value = ''
+  try {
+    const result = await request<{ items: AgentLearningSession[] }>(`/api/v1/live/rooms/${room}/interaction-learning?plan_id=${plan}&status=pending&page=1`, { suppressErrorDialog: true })
+    if (sequence !== locationSequence) return false
+    const item = result.items?.find(item => item.status === 'editing')
+    if (!item) { locationNotice.value = '当前待处理问题已处理完毕。'; window.dispatchEvent(new Event('interaction-review-updated')); return false }
+    activeTab.value = item.source_type === 'initial_simulation' ? 'simulation' : 'live'
+    await nextTick()
+    const found = await learningPanel.value?.locatePending(item.id)
+    if (sequence !== locationSequence) return false
+    if (!found) locationNotice.value = '暂时无法定位这条记录，请点击红点重试。'
+    return !!found
+  } catch (err) {
+    if (sequence === locationSequence) locationNotice.value = err instanceof Error ? err.message : '读取待处理问题失败，请重试。'
+    return false
+  }
+}
+
+defineExpose({ locatePending })
+
+function selectTab(tab: Tab) {
+  locationSequence++
+  learningPanel.value?.cancelLocation()
+  activeTab.value = tab
+  locationNotice.value = ''
+}
 
 async function onTabKeydown(event: KeyboardEvent) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
   const index = tabs.findIndex(tab => tab.key === activeTab.value)
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
-  activeTab.value = tabs[next]!.key
+  selectTab(tabs[next]!.key)
   const tablist = (event.currentTarget as HTMLElement).closest('[role="tablist"]')
   await nextTick()
   tablist?.querySelector<HTMLButtonElement>(`[data-interaction-tab="${activeTab.value}"]`)?.focus()
 }
 
 function onAdopted() {
-  activeTab.value = 'adopted'
+  selectTab('adopted')
   emit('adopted')
 }
 </script>
@@ -51,13 +88,15 @@ function onAdopted() {
         aria-controls="interaction-rule-content"
         :tabindex="activeTab === tab.key ? 0 : -1"
         :class="{ active: activeTab === tab.key }"
-        @click="activeTab = tab.key"
+        @click="selectTab(tab.key)"
         @keydown="onTabKeydown"
       >{{ tab.label }}</button>
     </nav>
+    <p v-if="locationNotice" class="location-notice" role="status">{{ locationNotice }}</p>
     <div id="interaction-rule-content" role="tabpanel" :aria-labelledby="`interaction-rule-tab-${activeTab}`">
       <div v-show="activeTab === 'adopted'"><slot /></div>
       <InteractionLearningPanel
+        ref="learningPanel"
         v-show="activeTab !== 'adopted'"
         :room-id="roomId"
         :plan-id="planId"
@@ -73,6 +112,7 @@ function onAdopted() {
 
 <style scoped>
 .interaction-rules-workspace { min-width: 0; }
+.location-notice { padding:12px 14px; border:1px solid #e5dce9; border-radius:12px; background:#fff8fa; color:#965471; line-height:1.6; }
 .rules-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .rules-head h3 { margin: 0 0 8px; font-size: 22px; color: #1f3150; }
 .rules-head p { margin: 0; font-size: 16px; line-height: 1.7; color: #7b8eab; }

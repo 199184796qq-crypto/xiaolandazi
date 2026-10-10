@@ -21,6 +21,7 @@ page.on('pageerror', error => errors.push(error.message))
 await page.route('**/api/v1/**', route => { calls.push(route.request().url()); return route.abort() })
 try {
   await page.goto(server.resolvedUrls.local[0] + '__risk_location')
+  await page.getByRole('combobox', { name: '内容范围', exact: true }).selectOption('legacy')
   const cards = page.locator('.speech-miner-point-list > article')
   await cards.nth(7).waitFor()
   await page.getByRole('button', { name: '全部收缩', exact: true }).click()
