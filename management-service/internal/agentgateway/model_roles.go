@@ -42,6 +42,12 @@ func UsesSpeechModel(stage string) bool {
 
 type modelResolverContextKey struct{}
 
+// Only final speech review moves to this role. Planning and source analysis keep
+// their existing roles; this does not introduce additional review stages.
+func UsesReviewModel(stage string) bool {
+	return stage == "mainline_p0_context" || stage == "speech_review" || stage == "interaction_p0_context"
+}
+
 func WithModelResolver(ctx context.Context, resolver SpeechModelResolver) context.Context {
 	return context.WithValue(ctx, modelResolverContextKey{}, resolver)
 }

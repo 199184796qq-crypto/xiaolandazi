@@ -47,6 +47,9 @@ func (s *Store) readSpeechModels(ctx context.Context) (agentgateway.SpeechModels
 
 func (s *Store) SpeechModels(ctx context.Context) (agentgateway.SpeechModels, error) {
 	config, _, err := s.readSpeechModels(ctx)
+	if config.ReviewDefaultID == "" {
+		config.ReviewDefaultID = config.DefaultID
+	}
 	return config, err
 }
 
@@ -119,6 +122,15 @@ func buildSpeechModelsUpdate(old agentgateway.SpeechModels, oldKeys map[string][
 	if input.SystemDefaultID == "" {
 		input.SystemDefaultID = old.SystemDefaultID
 	}
+	if input.ReviewDefaultID == "" && len(input.Profiles) > 0 {
+		input.ReviewDefaultID = old.ReviewDefaultID
+		if input.ReviewDefaultID == "" {
+			input.ReviewDefaultID = old.DefaultID
+		}
+		if input.ReviewDefaultID == "" {
+			input.ReviewDefaultID = input.DefaultID
+		}
+	}
 	if err := agentgateway.ValidateSpeechModels(input); err != nil {
 		return agentgateway.SpeechModels{}, nil, err
 	}
@@ -129,7 +141,7 @@ func buildSpeechModelsUpdate(old agentgateway.SpeechModels, oldKeys map[string][
 	for _, p := range old.Profiles {
 		existingByID[p.ID] = p
 	}
-	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, SystemDefaultID: input.SystemDefaultID, Revision: old.Revision + 1}
+	next := agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{}, DefaultID: input.DefaultID, SystemDefaultID: input.SystemDefaultID, ReviewDefaultID: input.ReviewDefaultID, Revision: old.Revision + 1}
 	nextKeys := map[string][]byte{}
 	for _, item := range input.Profiles {
 		p := item.SpeechModel

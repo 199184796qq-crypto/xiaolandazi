@@ -144,6 +144,7 @@ type State struct {
 	AnglePlans                map[string]*AnglePlan          `json:"angle_plans,omitempty"`
 	AnglePlanMotherSHA        string                         `json:"angle_plan_mother_sha,omitempty"`
 	TextModel                 *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
+	ReviewModel               *agentgateway.SpeechModel      `json:"review_model_snapshot,omitempty"`
 	TextPromptSHA             string                         `json:"text_prompt_sha256,omitempty"`
 	GenerationSkips           []GenerationSkip               `json:"generation_skips,omitempty"`
 	ContentStrategy           *contentstrategy.Snapshot      `json:"content_strategy,omitempty"`

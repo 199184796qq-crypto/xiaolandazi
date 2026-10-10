@@ -24,12 +24,12 @@ func main() {
 	}
 	defer store.Close()
 	models, err := store.SpeechModels(ctx)
-	if err != nil || models.SystemDefaultID == "" || models.DefaultID == "" {
-		fmt.Fprintln(os.Stderr, "two model roles are not configured")
+	if err != nil || models.SystemDefaultID == "" || models.DefaultID == "" || models.ReviewDefaultID == "" {
+		fmt.Fprintln(os.Stderr, "model roles are not configured")
 		os.Exit(1)
 	}
 	checks := []map[string]any{}
-	for _, stage := range []string{"system_agent", "style_analysis", "selling_point_extraction", "mainline_angle_plan", "speech_generation", "interaction_bridge", "accepted_macro_feedback"} {
+	for _, stage := range []string{"system_agent", "style_analysis", "selling_point_extraction", "mainline_angle_plan", "speech_generation", "interaction_bridge", "accepted_macro_feedback", "mainline_p0_context", "speech_review"} {
 		id, err := store.ResolveTextRole(ctx, stage)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "role resolution failed")
@@ -49,5 +49,5 @@ func main() {
 			results = append(results, map[string]any{"stage": stage, "model": response.Model, "provider": response.Provider, "input_tokens": response.InputTokens, "output_tokens": response.OutputTokens, "latency_ms": response.LatencyMS, "nonempty_response": true})
 		}
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"system_default_id": models.SystemDefaultID, "speech_default_id": models.DefaultID, "roles": checks, "live_requests": results, "tts_generated": false, "live_sessions_started": false})
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"system_default_id": models.SystemDefaultID, "speech_default_id": models.DefaultID, "review_default_id": models.ReviewDefaultID, "roles": checks, "live_requests": results, "tts_generated": false, "live_sessions_started": false})
 }

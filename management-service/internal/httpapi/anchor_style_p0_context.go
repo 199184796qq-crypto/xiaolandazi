@@ -99,24 +99,30 @@ func (s *Server) reviewCycleP0ContextOnce(ctx context.Context, state *anchorcycl
 		return
 	}
 	id := state.Config.TextProfileID
+	if state.ReviewModel != nil {
+		id = state.ReviewModel.ID
+	}
 	if id == "" {
 		id = state.Config.FeedbackID
 	}
 	if id == "" {
 		settings, e := s.store.AnchorGenerationSettings(ctx)
 		if e != nil {
-			failed("读取共用文字模型失败")
+			failed("读取文字审核模型失败")
 			return
 		}
 		id = settings.Cycle.FeedbackID
 	}
 	current, err := s.store.ResolveSpeechModel(ctx, id)
 	if err != nil || current == nil || !current.Enabled || current.APIKey == "" {
-		failed("共用文字模型不可用")
+		failed("文字审核模型不可用")
 		return
 	}
 	profile := *current
-	if state.TextModel != nil {
+	if state.ReviewModel != nil {
+		profile = *state.ReviewModel
+		profile.APIKey = current.APIKey
+	} else if state.TextModel != nil {
 		profile = *state.TextModel
 		profile.APIKey = current.APIKey
 	}

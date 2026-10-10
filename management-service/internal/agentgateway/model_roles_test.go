@@ -11,14 +11,17 @@ import (
 )
 
 type unifiedRoleFixture struct {
-	profiles       map[string]SpeechModel
-	system, speech string
-	err            error
+	profiles               map[string]SpeechModel
+	system, speech, review string
+	err                    error
 }
 
 func (r *unifiedRoleFixture) ResolveTextRole(_ context.Context, stage string) (string, error) {
 	if r.err != nil {
 		return "", r.err
+	}
+	if UsesReviewModel(stage) {
+		return r.review, nil
 	}
 	if UsesSpeechModel(stage) {
 		return r.speech, nil
@@ -47,8 +50,8 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 	previous := speechHTTPClient
 	speechHTTPClient = server.Client()
 	defer func() { speechHTTPClient = previous }()
-	r := &unifiedRoleFixture{profiles: map[string]SpeechModel{}, system: "max", speech: "flash"}
-	for _, id := range []string{"max", "flash"} {
+	r := &unifiedRoleFixture{profiles: map[string]SpeechModel{}, system: "max", speech: "flash", review: "review"}
+	for _, id := range []string{"max", "flash", "review"} {
 		p := speechFixture()
 		p.ID = id
 		p.Model = "fixture-" + id
@@ -57,7 +60,7 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 	}
 	ctx := WithModelResolver(context.Background(), r)
 	g := NewFromContext(ctx)
-	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}} {
+	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}, {"mainline_p0_context", "review"}, {"speech_review", "review"}, {"interaction_p0_context", "review"}} {
 		req := Request{Stage: c.stage, Provider: "qwen", Model: "old-per-function-model", Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}}
 		out, err := g.Complete(ctx, req)
 		if err != nil || out.Model != "fixture-"+c.want || out.Text != out.Model {
@@ -90,5 +93,17 @@ func TestUnifiedModelSelectionsRequireEnabledProfiles(t *testing.T) {
 	input.DefaultID = ""
 	if ValidateSpeechModels(input) == nil {
 		t.Fatal("unified mode lost speech role")
+	}
+	input.DefaultID = p.ID
+	input.ReviewDefaultID = "missing"
+	if ValidateSpeechModels(input) == nil {
+		t.Fatal("missing review profile accepted")
+	}
+	input.ReviewDefaultID = "disabled"
+	disabled := p
+	disabled.ID, disabled.Enabled = "disabled", false
+	input.Profiles = append(input.Profiles, SpeechModelInput{SpeechModel: disabled})
+	if ValidateSpeechModels(input) == nil {
+		t.Fatal("disabled review profile accepted")
 	}
 }

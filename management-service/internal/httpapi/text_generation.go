@@ -23,6 +23,19 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 		state.Config.TextProfileID = settings.Cycle.TextProfileID
 		state.Config.FeedbackID = settings.Cycle.FeedbackID
 	}
+	reviewID, err := s.store.ResolveTextRole(ctx, "mainline_p0_context")
+	if err != nil {
+		return err
+	}
+	if reviewID != "" {
+		reviewer, e := s.store.ResolveSpeechModel(ctx, reviewID)
+		if e != nil || reviewer == nil || !reviewer.Enabled || reviewer.APIKey == "" {
+			return fmt.Errorf("文字审核模型不可用")
+		}
+		snapshot := *reviewer
+		snapshot.APIKey = ""
+		state.ReviewModel = &snapshot
+	}
 	if state.Config.TextProfileID == "" {
 		state.Config.FeedbackID = settings.Cycle.FeedbackID
 		return nil

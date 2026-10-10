@@ -5,12 +5,15 @@ export interface PoolProduct { id: number; link: string; name: string }
 export interface BenefitScope { benefit_id: number; all: boolean; products: number[]; version_no: number }
 export interface PoolChange { id: string; area: string; label: string; products: number[]; before: string; after: string }
 export interface PoolTask { id: string; selling_point: string; angle: string; target_audience?: string; pain_point?: string; source_ids?: string[] }
-export interface PoolSummary { key: string; label: string; owner: number; products: number[]; task_count: number; reused: boolean; tasks?: PoolTask[] }
+export interface PoolSourceRow { id: string; area: string; label: string; products: number[]; fields: Record<string, string> }
+export interface PoolFact { id: string; text: string; sources: string[]; products: number[] }
+export interface PoolSummary { key: string; label: string; owner: number; products: number[]; task_count: number; reused: boolean; tasks?: PoolTask[]; facts?: PoolFact[] }
 export interface PoolStatus {
   state: 'needs_update' | 'updating' | 'failed' | 'ready' | 'synced'; changes: PoolChange[];
   products: PoolProduct[]; benefits: BenefitScope[]; pools: PoolSummary[]; set_id: number; saved_set_id: number;
   job: { status: string; stage: string; error?: string };
   history?: { id: number; created_at: string; changes: PoolChange[] }[];
+  source_rows?: PoolSourceRow[]; current_source_rows?: PoolSourceRow[];
 }
 export function contentPoolURL(plan: number, room: number, tenant?: number) {
   const query = new URLSearchParams({ room_id: String(room) })

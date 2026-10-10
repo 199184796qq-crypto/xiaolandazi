@@ -36,6 +36,7 @@ type SpeechModels struct {
 	Profiles        []SpeechModel `json:"profiles"`
 	DefaultID       string        `json:"default_id"`
 	SystemDefaultID string        `json:"system_default_id,omitempty"`
+	ReviewDefaultID string        `json:"review_default_id,omitempty"`
 	Revision        uint64        `json:"revision"`
 }
 
@@ -49,6 +50,7 @@ type SpeechModelsInput struct {
 	Profiles        []SpeechModelInput `json:"profiles"`
 	DefaultID       string             `json:"default_id"`
 	SystemDefaultID string             `json:"system_default_id,omitempty"`
+	ReviewDefaultID string             `json:"review_default_id,omitempty"`
 	Revision        uint64             `json:"revision"`
 }
 
@@ -209,6 +211,7 @@ func ValidateSpeechModels(input SpeechModelsInput) error {
 	seen := map[string]bool{}
 	selected := input.DefaultID == ""
 	systemSelected := input.SystemDefaultID == ""
+	reviewSelected := input.ReviewDefaultID == ""
 	for _, p := range input.Profiles {
 		if err := ValidateSpeechModel(p.SpeechModel); err != nil {
 			return fmt.Errorf("%s：%w", p.Name, err)
@@ -229,12 +232,18 @@ func ValidateSpeechModels(input SpeechModelsInput) error {
 		if p.ID == input.SystemDefaultID {
 			systemSelected = p.Enabled
 		}
+		if p.ID == input.ReviewDefaultID {
+			reviewSelected = p.Enabled
+		}
 	}
 	if !selected {
 		return errors.New("默认模型必须存在且启用")
 	}
 	if !systemSelected || (input.SystemDefaultID != "" && input.DefaultID == "") {
 		return errors.New("系统智能体与口播生成模型必须存在且启用")
+	}
+	if !reviewSelected {
+		return errors.New("审核模型必须存在且启用")
 	}
 	return nil
 }

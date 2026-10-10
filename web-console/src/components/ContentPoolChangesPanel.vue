@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { PoolStatus } from '../contentPools'
+import { poolSourceText, poolTaskSources, type PoolSourceLocation } from '../contentPoolSources'
 import uploadIllustration from '../assets/content-update-upload.png'
-const props = withDefaults(defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '' })
-const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: [] }>()
+const props = withDefaults(defineProps<{ status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '' })
+const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: []; source: [value: PoolSourceLocation]; editTask: [poolKey: string, taskID: string] }>()
 const needsUpdate = computed(() => props.status?.state === 'needs_update' || props.status?.state === 'failed')
 const updating = computed(() => props.submitting || props.status?.state === 'updating')
 const actionDisabled = computed(() => !props.status || !!props.error || props.saving || updating.value || (!needsUpdate.value && props.saveDisabled))
@@ -77,7 +78,31 @@ function products(ids: number[]) { return (props.status?.products || []).filter(
         <div class="pool-entries">
           <details v-if="status?.pools?.length" class="pool-entry pool-entry-content" :open="preview" @toggle="emit('preview', ($event.target as HTMLDetailsElement).open)">
             <summary><svg class="pool-entry-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg><span>查看公共池与商品专属池（{{ status.pools.length }} 个）</span><svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary>
-            <div class="pool-entry-body"><div v-for="pool in status.pools" :key="pool.key" class="pool-group"><b>{{ pool.owner ? pool.label : '公共内容' }} · {{ pool.task_count }} 条</b><p>适用 {{ products(pool.products) }}{{ pool.reused ? ' · 本次复用原内容' : '' }}</p><ol><li v-for="task in pool.tasks || []" :key="task.id">{{ task.selling_point }} · {{ task.angle }}</li></ol></div></div>
+            <div class="pool-entry-body">
+              <p class="pool-preview-note">以下是模型整理的内容任务。可修改任务，也可展开引用资料，跳到原资料核对；修改后需保存智能体。</p>
+              <p v-if="status.set_id !== status.saved_set_id" class="pool-preview-note">当前展示待保存内容；下次开播前请核对并保存。</p>
+              <p v-if="locationError" class="pool-error" role="alert">{{ locationError }}</p>
+              <div v-for="pool in status.pools" :key="pool.key" class="pool-group">
+                <b>{{ pool.owner ? pool.label : '公共内容' }} · {{ pool.task_count }} 条</b><p>适用 {{ products(pool.products) }}{{ pool.reused ? ' · 本次复用原内容' : '' }}</p>
+                <ol><li v-for="task in pool.tasks || []" :key="task.id">
+                  <div>{{ task.selling_point }} · {{ task.angle }}</div>
+                  <button type="button" class="pool-source-button" :disabled="saving || updating || !['ready', 'synced'].includes(status.state)" @click="emit('editTask', pool.key, task.id)">修改这条</button>
+                  <details class="pool-task-sources">
+                    <summary>引用资料（{{ poolTaskSources(status, pool, task).length }} 处）</summary>
+                    <p v-if="!task.source_ids?.length">这条旧任务没有记录引用编号，无法定位来源。</p>
+                    <article v-for="source in poolTaskSources(status, pool, task)" :key="source.id">
+                      <button v-if="source.location" type="button" class="pool-source-button" @click="emit('source', source.location)">{{ source.label }} · 查看出处</button>
+                      <strong v-else>{{ source.label }}</strong>
+                      <span v-if="source.state === 'changed'" class="pool-source-state">原资料已变化，需更新内容</span>
+                      <span v-else-if="source.state === 'removed'" class="pool-source-state">原资料已移除，需更新内容</span>
+                      <p v-if="source.saved"><small>生成这份内容时的原资料</small><span class="pool-source-text">{{ poolSourceText(source.saved) }}</span></p>
+                      <p v-if="source.state === 'changed' && source.current"><small>当前原资料</small><span class="pool-source-text">{{ poolSourceText(source.current) }}</span></p>
+                      <p v-if="source.state === 'unavailable'">旧记录缺少完整来源信息；可修改这条任务或重新更新内容。</p>
+                    </article>
+                  </details>
+                </li></ol>
+              </div>
+            </div>
           </details>
         </div>
       </div>
@@ -130,6 +155,12 @@ details[open]>summary .pool-chevron{transform:rotate(90deg)}
 .pool-change div{margin-top:4px;white-space:pre-wrap}
 .pool-change del{color:#8b7080}.pool-change ins{text-decoration:none;color:#326e55}
 .pool-group ol{margin:8px 0 0;padding-left:24px}.pool-group li{padding:6px}
+.pool-preview-note{margin:12px;color:#637496;font-size:13px;line-height:1.7}
+.pool-source-button{padding:5px 10px;margin:6px 8px 4px 0;border:1px solid #ccd7f3;border-radius:8px;background:#f6f8ff;color:#4b65b7;font:inherit;cursor:pointer}
+.pool-source-button:disabled{opacity:.5;cursor:default}
+.pool-task-sources{margin:6px 0;font-size:13px}.pool-task-sources>summary{min-height:auto;padding:4px 0;color:#4b65b7}
+.pool-task-sources article{padding:10px;margin:8px 0;background:#f7f9fd;border:1px solid #e0e6f3;border-radius:10px}
+.pool-task-sources small{display:block;color:#7d8dab}.pool-source-text{display:block;white-space:pre-wrap}.pool-source-state{color:#986128}
 .pool-error{color:#aa3444}
 .pool-note{grid-column:2 / -1;display:flex;align-items:flex-start;gap:10px;margin-top:2px;padding-right:170px;font-size:13px;line-height:1.8;color:#7d8dab}
 .pool-note svg{width:20px;height:20px;flex-shrink:0;margin-top:2px;fill:#a1afca;stroke:#fff;stroke-width:1.8;stroke-linecap:round}

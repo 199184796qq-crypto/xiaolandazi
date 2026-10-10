@@ -26,7 +26,7 @@ type textProfileRegistry struct {
 
 func textGenerationStage(stage string) bool {
 	switch stage {
-	case "mainline_text", "speech_generation", "speech_review":
+	case "mainline_text", "speech_generation":
 		return true
 	}
 	return false

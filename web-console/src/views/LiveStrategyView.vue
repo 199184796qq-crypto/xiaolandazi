@@ -13,6 +13,7 @@ import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
+import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
@@ -4172,6 +4173,44 @@ async function openFactRiskLocation() {
 	await locatePendingRiskLocation()
 }
 
+const poolLocationError = ref('')
+let poolLocationAttempt = 0
+async function locatePoolSource(source: PoolSourceLocation) {
+	poolLocationError.value = ''
+	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value
+	activeMode.value = source.area
+	await nextTick()
+	const current = () => attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && activeMode.value === source.area
+	if (!current()) return
+	let located = false
+	if (source.area === 'products') located = !!await productCards.value?.locateSource(source.entityId, source.attributeId)
+	else if (source.area === 'miner') located = !!await speechMinerWorkbench.value?.locateOriginalWheel()
+	else {
+		if (source.area === 'benefits' && formalBenefits.value.some(item => item.id === source.entityId)) {
+			expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entityId])
+		}
+		await nextTick()
+		if (!current()) return
+		const attr = source.area === 'knowledge' ? 'data-formal-fact-id' : 'data-formal-benefit-id'
+		const target = document.querySelector<HTMLElement>(`[${attr}="${source.entityId}"]`)
+		target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+		target?.focus({ preventScroll: true })
+		located = !!target
+	}
+	if (current() && !located) poolLocationError.value = '当前资料中未找到这条来源，请刷新或核对它是否已移除。'
+}
+async function editPoolTask(poolKey: string, taskID: string) {
+	poolLocationError.value = ''
+	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value, setID = poolStatus.value?.set_id
+	if (!setID) return
+	activeMode.value = 'miner'
+	await nextTick()
+	if (attempt !== poolLocationAttempt || room !== activeRoomId.value || plan !== currentRoomPlanId.value || activeMode.value !== 'miner') return
+	const located = await speechMinerWorkbench.value?.locatePoolTask(poolKey, taskID, setID)
+	if (attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && !located) poolLocationError.value = '暂未进入编辑。请先保存或取消现有修改；资料变化时需先更新内容。'
+}
+watch([activeRoomId, currentRoomPlanId], () => { poolLocationAttempt++; poolLocationError.value = '' })
+
 function factRisksForFact(item: LiveAgentPlanFact) {
 	const value = item.value.trim()
 	const key = item.key.trim()
@@ -6027,7 +6066,7 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" @save="saveFullShowVersion" />
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
@@ -6317,7 +6356,7 @@ onBeforeUnmount(() => {
               <span>从下方素材候选采纳，或后续直接对系统智能体说“新增活动 / 修改活动 / 停用活动”。</span>
             </div>
             <div v-else class="strategy-benefit-formal-list">
-              <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
+              <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :data-formal-benefit-id="item.id" tabindex="-1" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
                 <SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'benefits', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'benefits')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" />
                 <header class="strategy-benefit-formal-card-head">
                   <div class="strategy-benefit-formal-icon strategy-benefit-formal-link-icon" aria-hidden="true">
@@ -6483,7 +6522,7 @@ onBeforeUnmount(() => {
                 </thead>
                 <tbody>
                   <template v-for="item in formalFacts" :key="item.id">
-                  <tr :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
                         <div class="strategy-formal-fact-edit-category">

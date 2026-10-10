@@ -247,7 +247,34 @@ watch(() => props.riskReviews, reviews => {
   }
 }, { deep: true })
 
-defineExpose({ locateRisk })
+async function locatePoolTask(poolKey: string, taskID: string, setID: number) {
+  if (pointEdit.value || pointEditSaving.value || !poolEditable.value || props.poolStatus?.set_id !== setID) return false
+  const pool = props.poolStatus.pools.find(pool => pool.key === poolKey && pool.tasks?.some(task => task.id === taskID))
+  if (!pool) return false
+  const epoch = scopeEpoch
+  selectedScope.value = pool.owner ? `product:${pool.owner}` : 'common'
+  await nextTick()
+  if (epoch !== scopeEpoch || props.poolStatus?.set_id !== setID) return false
+  const pointIndex = points.value.findIndex(point => (point as MinerPoolPoint).poolKey === poolKey && (point as MinerPoolPoint).taskIds.includes(taskID))
+  const point = points.value[pointIndex] as MinerPoolPoint | undefined
+  if (!point) return false
+  const angleIndex = point.taskIds.indexOf(taskID)
+  beginAngleEdit(point, pointIndex, angleIndex)
+  if (!expandedPointKeys.value.includes(pointKey(point, pointIndex))) expandedPointKeys.value.push(pointKey(point, pointIndex))
+  await nextTick()
+  const target = minerGrid.value?.querySelector<HTMLElement>(`[data-angle-editor="${pointIndex}-${angleIndex}"]`)
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target?.focus({ preventScroll: true })
+  return !!target
+}
+async function locateOriginalWheel() {
+  if (pointEdit.value || pointEditSaving.value || !wheelDocument.value) return false
+  selectedScope.value = 'legacy'
+  await nextTick()
+  minerGrid.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  return !!minerGrid.value
+}
+defineExpose({ locateRisk, locatePoolTask, locateOriginalWheel })
 
 function riskCanConfirm(review?: MinerRiskReview) {
   if (!review) return false

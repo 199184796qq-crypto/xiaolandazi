@@ -8,14 +8,14 @@ interface Settings {
   cycle: { text_profile_id?: string; workspace_id: string; region: string; agent_id: string; environment_id: string; credential_profile_id: string; feedback_profile_id: string; threshold: number; max_retries: number; max_chars: number; point_gap: number; combination_gap: number; body_min: number; body_max: number; rolling: boolean; repair_punctuation: boolean; max_cycles: number }
 }
 const config = ref<Settings | null>(null), profiles = ref<Profile[]>([]), busy = ref(false), error = ref(''), notice = ref('')
-const modelNames = ref({ system: '', speech: '' })
+const modelNames = ref({ system: '', speech: '', review: '' })
 async function load() {
   busy.value = true; error.value = ''
   try {
-    const [settings, models] = await Promise.all([request<Settings>('/api/v1/system/anchor-generation-settings'), request<{ config: { profiles: Profile[]; default_id: string; system_default_id?: string } }>('/api/v1/system/speech-models')])
+    const [settings, models] = await Promise.all([request<Settings>('/api/v1/system/anchor-generation-settings'), request<{ config: { profiles: Profile[]; default_id: string; system_default_id?: string; review_default_id?: string } }>('/api/v1/system/speech-models')])
     config.value = settings; profiles.value = models.config.profiles.filter(p => p.enabled && p.has_api_key)
     const label = (id?: string) => { const p = models.config.profiles.find(p => p.id === id); return p ? `${p.name} · ${p.model}` : '请在模型连接设置中选择' }
-    modelNames.value = { system: label(models.config.system_default_id), speech: label(models.config.default_id) }
+    modelNames.value = { system: label(models.config.system_default_id), speech: label(models.config.default_id), review: label(models.config.review_default_id || models.config.default_id) }
   } catch (e) { error.value = e instanceof Error ? e.message : '读取生成配置失败' }
   finally { busy.value = false }
 }
@@ -31,7 +31,7 @@ onMounted(load)
 <template>
   <section id="anchor-generation" class="generation-settings">
     <h2>文字生成调度</h2>
-    <p>系统智能体：{{ modelNames.system }}。口播生成：{{ modelNames.speech }}。模型统一在“系统智能体与口播生成模型”页面切换。</p>
+    <p>系统智能体：{{ modelNames.system }}。口播生成：{{ modelNames.speech }}。审核：{{ modelNames.review }}。在“系统智能体、口播生成与审核模型”页面分别切换。</p>
     <form v-if="config" @submit.prevent="save">
       <div class="grid">
         <label>采纳分数<input v-model.number="config.cycle.threshold" type="number" min="0" max="100"></label>
