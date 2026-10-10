@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
@@ -107,7 +108,10 @@ let endRoomSupportScope: (() => void) | null = null
 let authorizationTimer: number | undefined
 
 async function refreshRoomStrategyAuthorization() {
-  if (!isInternalViewer.value) return
+  if (!isInternalViewer.value) {
+    if (canConfigureRoomStrategy.value && selectedLiveAgentPlanId.value) await loadPublishedSpeechRate(false)
+    return
+  }
   let authorized = false
   if (session.bootstrap?.actor.role === 'platform_admin' || canDelegateLivePolicyL3(session.bootstrap)) {
     try {
@@ -123,10 +127,16 @@ async function refreshRoomStrategyAuthorization() {
     endRoomSupportScope = beginLiveSupportScope(roomId)
     await Promise.all([loadLiveAgentPlansForRoom(), loadPublishedSpeechRate()])
   } else if (!authorized) {
+    publishedSpeechLoadEpoch += 1
+    publishedSpeechVersion.value = null
+    publishedPlanVersionError.value = false
+    publishedPlanVersionLoading.value = false
     endRoomSupportScope?.()
     endRoomSupportScope = null
     liveAgentPlans.value = []
     if (publicScreenMode.value === 'preferences') publicScreenMode.value = 'events'
+  } else if (authorized) {
+    await loadPublishedSpeechRate(false)
   }
 }
 
@@ -390,6 +400,8 @@ let videoFloatDragState: {
 } | null = null
 const liveAgentPlans = ref<LiveAgentPlan[]>([])
 const agentPlanBusy = ref(false)
+const publishedPlanVersionError = ref(false)
+const publishedPlanVersionLoading = ref(false)
 const agentPlanError = useFeedbackErrorRef()
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
@@ -1048,23 +1060,31 @@ function normalizeRoomSpeechRate(value: unknown) {
   return liveSpeechRateOptions.includes(rate as 0.8 | 0.9 | 1 | 1.1 | 1.2) ? rate : 1
 }
 
-async function loadPublishedSpeechRate() {
+async function loadPublishedSpeechRate(syncRate = true) {
   if (!canConfigureRoomStrategy.value) return
   const token = ++publishedSpeechLoadEpoch
-  const planId = selectedLiveAgentPlanId.value
+  const planID = selectedLiveAgentPlanId.value
+  publishedPlanVersionLoading.value = true
   try {
     const result = await getRoomPublishedLiveAgentPlanVersion(roomId)
-    if (pageUnmounted || token !== publishedSpeechLoadEpoch || !canConfigureRoomStrategy.value || planId !== selectedLiveAgentPlanId.value) return
-    publishedSpeechVersion.value = result.version || null
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch || !canConfigureRoomStrategy.value || selectedLiveAgentPlanId.value !== planID) return
+    if (syncRate || publishedSpeechVersion.value?.id !== result.version?.id) publishedSpeechVersion.value = result.version || null
+    publishedPlanVersionError.value = false
+    if (!syncRate || liveSpeechRateBusy.value) return
     const rate = normalizeRoomSpeechRate(result.version?.voice_identity?.rate)
     liveSpeechRate.value = rate
     liveSpeechRateSaved.value = rate
     liveSpeechRateError.value = ''
   } catch {
-    if (pageUnmounted || token !== publishedSpeechLoadEpoch) return
+    if (pageUnmounted || token !== publishedSpeechLoadEpoch || selectedLiveAgentPlanId.value !== planID) return
     publishedSpeechVersion.value = null
-    liveSpeechRate.value = 1
-    liveSpeechRateSaved.value = 1
+    publishedPlanVersionError.value = true
+    if (syncRate && !liveSpeechRateBusy.value) {
+      liveSpeechRate.value = 1
+      liveSpeechRateSaved.value = 1
+    }
+  } finally {
+    if (token === publishedSpeechLoadEpoch) publishedPlanVersionLoading.value = false
   }
 }
 
@@ -1081,7 +1101,9 @@ async function changeLiveSpeechRate(event: Event) {
   liveSpeechRateError.value = ''
   try {
     const version = await publishLiveAgentVoiceRate(roomId, nextRate)
+    publishedSpeechLoadEpoch += 1
     publishedSpeechVersion.value = version
+    publishedPlanVersionError.value = false
     const savedRate = normalizeRoomSpeechRate(version.voice_identity?.rate || nextRate)
     liveSpeechRate.value = savedRate
     liveSpeechRateSaved.value = savedRate
@@ -1215,7 +1237,9 @@ const liveAgentPlanSelectValue = computed(() => {
   return liveAgentPlans.value.some((item) => item.id === selectedId) ? String(selectedId) : ''
 })
 watch(selectedLiveAgentPlanId, () => {
+  publishedSpeechLoadEpoch += 1
   publishedSpeechVersion.value = null
+  publishedPlanVersionError.value = false
   if (!pageUnmounted) void loadPublishedSpeechRate()
 })
 
@@ -4541,6 +4565,16 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
+          <LivePlanVersionBadge
+            v-if="canConfigureRoomStrategy"
+            class="companion-plan-version"
+            :plan-id="selectedLiveAgentPlanId"
+            :saved="publishedSpeechVersion"
+            :runtime="runtimeSnapshot"
+            :program="mainlineProgram"
+            :error="publishedPlanVersionError"
+            :loading="publishedPlanVersionLoading"
+          />
           <small v-if="agentPlanError" class="companion-plan-error">{{ agentPlanError }}</small>
           <div class="companion-mode-switch" aria-label="直播搭子工作模式">
             <button
@@ -8002,6 +8036,7 @@ onBeforeUnmount(() => {
   justify-self: end;
   align-self: start;
 }
+.companion-plan-version { grid-column:1/-1; position:relative; z-index:2; width:100%; margin-top:6px; }
 .companion-plan-select select {
   width: 100%;
   box-sizing: border-box;

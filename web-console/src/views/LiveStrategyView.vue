@@ -28,6 +28,8 @@ import agentGenerationBanner from '../assets/agent-generation-banner.png'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
 import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
 import AnchorControlBar from '../components/AnchorControlBar.vue'
+import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
+import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
@@ -1659,6 +1661,9 @@ const fullShowVersionError = useFeedbackErrorRef()
 const fullShowWorkspaceLoading = ref(false)
 const fullShowWorkspaceHydrating = ref(false)
 const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
+const latestSavedVersion = computed(() => latestSavedPlanVersion(currentRoomPlanId.value || 0, [
+  fullShowSavedVersion.value, fullShowWorkspaceBaseVersion.value, ...fullShowVersionHistory.value,
+]))
 const fullShowWorkspaceSource = ref<'draft' | 'published' | ''>('')
 const fullShowWorkspaceChecks = ref<{ code: string; message: string }[]>([])
 const fullShowWorkspaceInherited = ref(false)
@@ -3638,7 +3643,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     void contentPools.refresh()
     fullShowWorkspaceInherited.value = false
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
-    fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案，下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
+    fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
     await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()]).catch(() => {
       fullShowNotice.value += ' 方案已保存，但页面状态刷新失败，请刷新页面查看。'
     })
@@ -7399,6 +7404,12 @@ onBeforeUnmount(() => {
                 @initialize="initializeAnchorGeneration"
               />
             </header>
+            <LivePlanVersionBadge
+              :plan-id="currentRoomPlanId || 0"
+              :saved="latestSavedVersion"
+              :loading="fullShowWorkspaceLoading"
+              saved-only
+            />
             <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
               <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
             </div>

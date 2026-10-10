@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { startFixture } from './room-parity-fixture.mjs'
 
-const require = createRequire(new URL('../../collector-worker/package.json', import.meta.url))
+const require = createRequire(process.env.PLAYWRIGHT_CORE_PACKAGE || new URL('../../collector-worker/package.json', import.meta.url))
 const { chromium } = require('playwright-core')
 const output = resolve(process.env.WEB_SPEECH_IDENTITY_OUTPUT || '../work/room-voice-identity')
 await mkdir(output, { recursive: true })
