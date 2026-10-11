@@ -1,11 +1,11 @@
 import { request } from './api'
 
 export type LectureAngle = { title: string; goal: string }
-export type LectureTask = { id: number; revision: number; title: string; purpose: string; angles: LectureAngle[]; facts: { id: number; name: string; text: string; quote: string }[]; links: string[]; enabled: boolean; valid: boolean; source?: string; updated_at?: string }
+export type LectureTask = { id: number; revision: number; title: string; purpose: string; subject?: string; root_fact?: { id: number; name: string; text: string }; angles: LectureAngle[]; facts: { id: number; name: string; text: string; quote: string }[]; links: string[]; enabled: boolean; valid: boolean; source?: string; updated_at?: string }
 export type LecturePolicy = { enabled: boolean; frequency: 'less' | 'normal' | 'more' }
 export type LectureLibrary = { tasks: LectureTask[]; policy: LecturePolicy; fingerprint: string }
 export type LectureIssue = { quote: string; rule: string; reason: string; suggestion: string }
-export type LectureIntake = { saved: boolean; task_id?: number; facts_added?: number; title?: string; angles?: LectureAngle[]; notice?: string; issues?: LectureIssue[] }
+export type LectureIntake = { saved: boolean; task_id?: number; facts_added?: number; details_added?: number; subject?: string; title?: string; angles?: LectureAngle[]; notice?: string; issues?: LectureIssue[] }
 export type LecturePreview = { text: string; raw_text?: string; approved: boolean; purpose: string; angle: string; notice: string; review_note?: string; issues: { kind: string; quote: string; reason: string }[] }
 export function lectureURL(plan: number, tenant?: number, suffix = '') { return `/api/v1/live-agent-plans/${plan}/lecture-tasks${suffix}${tenant ? `?tenant_id=${tenant}` : ''}` }
 export function getLectures(plan: number, tenant?: number) { return request<LectureLibrary>(lectureURL(plan, tenant), { cache: 'no-store', suppressErrorDialog: true }) }

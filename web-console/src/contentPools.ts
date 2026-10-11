@@ -53,7 +53,13 @@ export function useContentPools(plan: Ref<number | null>, room: Ref<{ id: number
   watch(url, () => { epoch++; controller?.abort(); busy = false; status.value = null; error.value = ''; preview.value = false; if (timer) clearTimeout(timer); void refresh() }, { immediate: true })
   watch(preview, () => void refresh())
   onBeforeUnmount(() => { disposed = true; epoch++; controller?.abort(); if (timer) clearTimeout(timer) })
-  function scopeSaved(scope: BenefitScope) { if (status.value) status.value.benefits = status.value.benefits.map(row => row.benefit_id === scope.benefit_id ? scope : row); void refresh(true) }
+  function scopeSaved(scope: BenefitScope) {
+    if (status.value) {
+      const rows = (status.value.benefits || []).filter(row => row.benefit_id !== scope.benefit_id)
+      status.value.benefits = [...rows, scope]
+    }
+    void refresh(true)
+  }
   function acceptEdited(next: PoolStatus) { epoch++; controller?.abort(); busy = false; status.value = next; error.value = ''; void refresh(true) }
   return { status, error, submitting, preview, refresh, update, scopeSaved, acceptEdited }
 }

@@ -3,6 +3,7 @@ import WorkInboxPanel from './WorkInboxPanel.vue'
 import PlanSpeechAgentPanel from './PlanSpeechAgentPanel.vue'
 import LectureTasksPanel from './LectureTasksPanel.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
+import StyleDisplayText from './StyleDisplayText.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useFloatingAgentDrawer, type DrawerResizeEdge } from '../useFloatingAgentDrawer'
 import TodoBadge from './TodoBadge.vue'
@@ -1444,16 +1445,14 @@ function formatAgentMessageBlocks(value: string): AgentDisplayBlock[] {
   if (!text.trim()) return []
 
   text = text
-    .replace(/\s*\*\*\s*([^*\n：:]{1,20}[：:])\s*\*\*\s*/g, '\n$1 ')
-    .replace(/\s*\*\*\s*([^*\n]{2,24})\s*\*\*\s*/g, '\n$1\n')
     .replace(/(^|\n)\s*[＊*•·]\s+/g, '$1• ')
-    .replace(/\s+[＊*•·]\s+(?=[^\n])/g, '\n• ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
   const blocks: AgentDisplayBlock[] = []
   for (const rawLine of text.split('\n')) {
-    const line = cleanAgentDisplayInline(rawLine)
+    // Inline emphasis stays in its sentence; formatting must not invent blocks.
+    const line = rawLine.trim()
     if (!line) continue
 
     const structuredPrompt = structuredAgentPromptBlocks(line)
@@ -1462,19 +1461,28 @@ function formatAgentMessageBlocks(value: string): AgentDisplayBlock[] {
       continue
     }
 
-    const bullet = line.match(/^•\s*(.+)$/)
+    const bullet = line.match(/^(?:•\s*|[-+*]\s+)(.+)$/)
     if (bullet) {
-      blocks.push({ kind: 'bullet', text: cleanAgentDisplayInline(bullet[1]) })
+      blocks.push({ kind: 'bullet', text: bullet[1].trim() })
       continue
     }
 
-    const numbered = line.match(/^(\d{1,2}[.、）)])\s*(.+)$/)
+    const numbered = line.match(/^(\d{1,3}[.．、）)])(?:\s+|(?=[^\d\s]))(.+)$/)
     if (numbered) {
-      blocks.push({ kind: 'numbered', marker: numbered[1], text: cleanAgentDisplayInline(numbered[2]) })
+      blocks.push({ kind: 'numbered', marker: numbered[1], text: numbered[2].trim() })
       continue
     }
 
-    const field = line.match(/^([^：:]{1,16})[：:]\s*(.+)$/)
+    const previous = blocks.at(-1)
+    if (/^[ \t]{2,}\S/.test(rawLine) && previous && (previous.kind === 'numbered' || previous.kind === 'bullet')) {
+      previous.text += ' ' + line
+      continue
+    }
+
+    const fieldLine = line
+      .replace(/^\*\*([^*：:]{1,16}[：:])\*\*/, '$1')
+      .replace(/^__([^_：:]{1,16}[：:])__/, '$1')
+    const field = fieldLine.match(/^(?:\*\*|__)?([^：:]{1,16}?)(?:\*\*|__)?[：:]\s*(.+)$/)
     const fieldLabel = field ? cleanAgentDisplayInline(field[1]) : ''
     const looksLikeFieldLabel =
       Boolean(field) &&
@@ -1486,7 +1494,7 @@ function formatAgentMessageBlocks(value: string): AgentDisplayBlock[] {
       blocks.push({
         kind: 'field',
         label: fieldLabel,
-        text: cleanAgentDisplayInline(field[2]),
+        text: field[2].trim(),
       })
       continue
     }
@@ -7084,11 +7092,11 @@ async function copyCredential(credential?: InitialCredential) {
               class="agent-message-formatted"
             >
               <template v-for="(block, blockIndex) in formatAgentMessageBlocks(message.text)" :key="blockIndex">
-                <h4 v-if="block.kind === 'heading'">{{ block.text }}</h4>
+                <h4 v-if="block.kind === 'heading'"><StyleDisplayText :text="block.text" /></h4>
                 <div v-else-if="block.kind === 'prompt'" class="agent-message-prompt">{{ block.text }}</div>
                 <div v-else-if="block.kind === 'field'" class="agent-message-field">
                   <strong>{{ block.label }}</strong>
-                  <span>{{ block.text }}</span>
+                  <span><StyleDisplayText :text="block.text" /></span>
                 </div>
                 <div v-else-if="block.kind === 'choices'" class="agent-message-choices">
                   <button
@@ -7109,13 +7117,13 @@ async function copyCredential(credential?: InitialCredential) {
                 </div>
                 <div v-else-if="block.kind === 'bullet'" class="agent-message-bullet">
                   <i></i>
-                  <span>{{ block.text }}</span>
+                  <span><StyleDisplayText :text="block.text" /></span>
                 </div>
                 <div v-else-if="block.kind === 'numbered'" class="agent-message-numbered">
                   <b>{{ block.marker }}</b>
-                  <span>{{ block.text }}</span>
+                  <span><StyleDisplayText :text="block.text" /></span>
                 </div>
-                <p v-else>{{ block.text }}</p>
+                <p v-else><StyleDisplayText :text="block.text" /></p>
               </template>
             </div>
             <p v-else-if="!message.answerReference">{{ message.text }}</p>
@@ -7774,6 +7782,13 @@ async function copyCredential(credential?: InitialCredential) {
 .terminal-agent-drawer > footer > .primary-button{align-self:center;justify-self:end;min-width:76px;height:48px;min-height:48px;margin:0;padding:0 18px;border-radius:12px;white-space:nowrap;transform:none}
 .terminal-agent-drawer .system-agent-message.user>p,.terminal-agent-drawer textarea,.terminal-agent-drawer > footer button{font-size:18px!important;line-height:1.6}
 .agent-message-formatted{display:grid;gap:9px;min-width:0;color:#3b465b;font-size:15px;line-height:1.72}.terminal-agent-drawer .agent-message-formatted{font-size:16px}.agent-message-formatted h4{margin:2px 0 1px;color:#34415a;font-size:1em;font-weight:900;line-height:1.5}.agent-message-formatted p{margin:0!important;color:inherit!important;font-size:1em!important;line-height:1.72!important;white-space:pre-wrap}.agent-message-prompt{padding:1px 0 2px;color:#35415a;font-size:1.02em;font-weight:900;line-height:1.55}.agent-message-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.agent-message-choices>span{display:flex;align-items:center;min-height:38px;padding:7px 10px;border:1px solid rgba(94,109,205,.18);border-radius:9px;background:linear-gradient(135deg,#fafbff,#f3f5ff);color:#4858bd;font-size:.9em;font-weight:850;line-height:1.4;box-sizing:border-box}.agent-message-examples{display:grid;gap:6px;padding:9px 10px;border:1px solid rgba(214,220,238,.9);border-radius:10px;background:#fafbfe}.agent-message-examples>strong{color:#7b8599;font-size:.78em;font-weight:900;letter-spacing:.04em}.agent-message-examples>code{display:block;padding:7px 9px;border-radius:7px;background:#fff;color:#4a5570;font-family:inherit;font-size:.88em;line-height:1.55;white-space:normal;overflow-wrap:anywhere;box-shadow:0 1px 4px rgba(53,68,122,.045)}.agent-message-field{display:grid;grid-template-columns:minmax(70px,112px) minmax(0,1fr);align-items:start;gap:10px;padding:8px 10px;border-left:3px solid rgba(91,105,205,.38);border-radius:0 8px 8px 0;background:rgba(247,249,255,.72)}.agent-message-field>strong{min-width:0;color:#5362c7;font-size:.92em;font-weight:900;line-height:1.55;overflow-wrap:anywhere}.agent-message-field>span{min-width:0;color:#465268;line-height:1.62;overflow-wrap:anywhere}.agent-message-bullet,.agent-message-numbered{display:grid;grid-template-columns:14px minmax(0,1fr);align-items:start;gap:7px}.agent-message-bullet>i{display:block;width:6px;height:6px;margin:10px 0 0 3px;border-radius:50%;background:#7180dd}.agent-message-bullet>span,.agent-message-numbered>span{min-width:0;overflow-wrap:anywhere}.agent-message-numbered{grid-template-columns:24px minmax(0,1fr)}.agent-message-numbered>b{color:#5968ca;font-size:.9em;font-weight:900;line-height:1.8}.system-agent-message.agent .system-agent-action-card p{font-size:14px!important;line-height:1.55!important}@media(max-width:720px){.agent-message-choices{grid-template-columns:1fr}}
+/* Compact list rows keep the marker and inline emphasis attached to the body. */
+.agent-message-numbered{grid-template-columns:2.1em minmax(0,1fr);gap:10px;padding:9px 12px;border:1px solid rgba(111,125,208,.10);border-radius:10px;background:rgba(239,243,255,.55)}
+.agent-message-numbered>b{display:grid;place-items:center;min-height:1.9em;padding:0 3px;border-radius:7px;background:#e7edff;color:#5365c8;font-size:.85em;line-height:1.4;font-variant-numeric:tabular-nums;box-sizing:border-box}
+.agent-message-numbered>span,.agent-message-bullet>span{line-height:1.65;white-space:normal}
+.agent-message-formatted p :deep(strong),.agent-message-formatted h4 :deep(strong),.agent-message-numbered>span :deep(strong),.agent-message-bullet>span :deep(strong),.agent-message-field>span :deep(strong){display:inline;color:#34415a;font-size:inherit;font-weight:750;line-height:inherit}
+.agent-message-formatted :deep(em){display:inline;line-height:inherit}
+.agent-message-formatted :deep(code){display:inline;padding:1px 4px;border-radius:4px;background:#edf1fa;color:#475a85;font-size:.92em;overflow-wrap:anywhere}
 .agent-message-choices>button{display:flex;align-items:center;min-height:38px;padding:7px 10px;border:1px solid rgba(94,109,205,.18);border-radius:9px;background:linear-gradient(135deg,#fafbff,#f3f5ff);color:#4858bd;font:inherit;font-size:.9em;font-weight:850;line-height:1.4;text-align:left;box-sizing:border-box;cursor:pointer;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}.agent-message-choices>button:hover{border-color:rgba(83,100,211,.42);box-shadow:0 5px 14px rgba(74,91,181,.12);transform:translateY(-1px)}.agent-message-examples>button{display:block;width:100%;padding:7px 9px;border:0;border-radius:7px;background:#fff;color:#4a5570;font:inherit;font-size:.88em;line-height:1.55;text-align:left;white-space:normal;overflow-wrap:anywhere;box-shadow:0 1px 4px rgba(53,68,122,.045);cursor:pointer;transition:box-shadow .16s ease,transform .16s ease}.agent-message-examples>button:hover{box-shadow:0 5px 14px rgba(53,68,122,.10);transform:translateY(-1px)}
 .system-agent-drawer :deep(.work-inbox-panel.compact){min-height:0;max-height:none;overflow:auto}
 .system-agent-intent-options{display:grid;gap:8px;width:100%}.system-agent-intent-options>button{display:grid!important;grid-template-columns:1fr!important;justify-items:start!important;gap:3px!important;width:100%!important;min-height:54px!important;padding:10px 12px!important;border:1px solid rgba(86,103,207,.20)!important;border-radius:10px!important;background:linear-gradient(135deg,#fbfcff,#f4f6ff)!important;color:#34415d!important;text-align:left!important;cursor:pointer!important;box-shadow:0 3px 10px rgba(67,83,163,.05)!important}.system-agent-intent-options>button:hover{border-color:rgba(86,103,207,.48)!important;background:#eef1ff!important;box-shadow:0 6px 16px rgba(67,83,163,.10)!important}.system-agent-intent-options>button:disabled{cursor:default!important;opacity:.55}.system-agent-intent-options strong{font-size:13px;font-weight:900;color:#4356c9}.system-agent-intent-options small{font-size:11px;line-height:1.4;color:#7f8aa2}

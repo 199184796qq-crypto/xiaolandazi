@@ -51,7 +51,7 @@ func scanLiveAgentPlanFact(row interface {
 
 func (s *Store) ListLiveAgentPlanFacts(ctx context.Context, tenantID, planID int64) ([]model.LiveAgentPlanFact, error) {
 	rows, err := s.db.QueryContext(ctx, liveAgentPlanFactSelect+`
-		WHERE tenant_id=? AND plan_id=? AND status='active'
+		WHERE tenant_id=? AND plan_id=? AND status='active' AND source_type<>'story_lecture'
 		ORDER BY category ASC, fact_key ASC, id ASC
 	`, tenantID, planID)
 	if err != nil {

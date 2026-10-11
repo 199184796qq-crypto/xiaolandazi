@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"github.com/go-sql-driver/mysql"
@@ -95,20 +96,27 @@ func TestLectureLibraryMySQL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	task := lecturetask.Task{Title: "原料产地", Purpose: "说明来源", QuestionTerms: []string{"产地"}, Angles: []lecturetask.Angle{{Title: "来源", Goal: "解释产地"}}}
+	task := lecturetask.Task{Subject: "原料A", RootFact: &lecturetask.Fact{Category: "other", Name: "原料关联", Text: "商品使用原料A", Quote: "商品使用原料A"}, Title: "原料产地", Purpose: "说明来源", QuestionTerms: []string{"产地"}, Angles: []lecturetask.Angle{{Title: "来源", Goal: "解释产地"}}}
 	facts := []model.LiveAgentPlanFactCandidate{{Category: "other", Key: "原料产地", Value: "四川南充", SourceQuote: "四川南充"}}
 	id, added, err := s.SaveLectureSubmission(ctx, 14, 4, 8, "四川南充", `{"passed":true,"issues":[]}`, task, facts)
 	if err != nil || id == 0 || added != 1 {
 		t.Fatal(id, added, err)
 	}
-	if rev, err := s.ContentSourceRevision(ctx, 14, 4); err != nil || rev != 0 {
-		t.Fatal("story polluted ordinary source revision", rev, err)
+	if rev, err := s.ContentSourceRevision(ctx, 14, 4); err != nil || rev != 1 {
+		t.Fatal("only level-one root should change ordinary source revision", rev, err)
 	}
 	lib, err := s.LectureLibrary(ctx, 14, 4, true)
 	if err != nil || len(lib.Tasks) != 1 || !lib.Tasks[0].Valid || lib.Tasks[0].Source != "四川南充" {
 		t.Fatal(lib, err)
 	}
 	frozen, err := s.LectureLibrary(ctx, 14, 4, false)
+	ordinary, ordinaryErr := s.ListLiveAgentPlanFacts(ctx, 14, 4)
+	if ordinaryErr != nil || len(ordinary) != 1 || ordinary[0].Value != "商品使用原料A" || lib.Tasks[0].Facts[0].Storage != "lecture" {
+		t.Fatal("level-two facts leaked", ordinary, lib, ordinaryErr)
+	}
+	if q := lecturetask.QuestionEvidence(lib, "产地"); strings.Contains(q, "四川南充") || !strings.Contains(q, "商品使用原料A") {
+		t.Fatal("ordinary question loaded level-two", q)
+	}
 	if err != nil || frozen.Tasks[0].Source != "" || frozen.Fingerprint != lib.Fingerprint {
 		t.Fatal("source leaked into snapshot", err)
 	}
@@ -120,8 +128,10 @@ func TestLectureLibraryMySQL(t *testing.T) {
 	if err != nil || same != id || n != 0 {
 		t.Fatal("duplicate not idempotent", err)
 	}
-	conflict := append([]model.LiveAgentPlanFactCandidate{{Category: "other", Key: "临时事实", Value: "先写这条", SourceQuote: "先写这条"}}, model.LiveAgentPlanFactCandidate{Category: "other", Key: "原料产地", Value: "冲突", SourceQuote: "冲突"})
-	if _, _, err = s.SaveLectureSubmission(ctx, 14, 4, 8, "另一段素材", "review", task, conflict); !errors.Is(err, ErrSpeechMinerFactConflict) {
+	conflict := []model.LiveAgentPlanFactCandidate{{Category: "other", Key: "临时资料", Value: "先写这条", SourceQuote: "先写这条"}}
+	badTask := task
+	badTask.RootFact = &lecturetask.Fact{Category: "other", Name: "原料关联", Text: "冲突", Quote: "冲突"}
+	if _, _, err = s.SaveLectureSubmission(ctx, 14, 4, 8, "另一段素材", "review", badTask, conflict); !errors.Is(err, ErrSpeechMinerFactConflict) {
 		t.Fatal("missing conflict", err)
 	}
 	var count int
@@ -152,11 +162,52 @@ func TestLectureLibraryMySQL(t *testing.T) {
 	if err != nil || lib.Tasks[0].Valid {
 		t.Fatal("changed dependency still valid", err)
 	}
-	if rev, _ := s.ContentSourceRevision(ctx, 14, 4); rev != 0 {
-		t.Fatal("story edit invalidated core", rev)
+	if rev, _ := s.ContentSourceRevision(ctx, 14, 4); rev != 2 {
+		t.Fatal("root edit did not invalidate ordinary source", rev)
 	}
 	exec(`UPDATE live_agent_plan_facts SET source_type='manual' WHERE tenant_id=14 AND plan_id=4`)
-	if rev, _ := s.ContentSourceRevision(ctx, 14, 4); rev != 1 {
+	if rev, _ := s.ContentSourceRevision(ctx, 14, 4); rev != 3 {
 		t.Fatal("ordinary transition did not invalidate pools", rev)
+	}
+	// Legacy flattened imports retain evidence under their program-bound root.
+	exec(`INSERT INTO live_agent_plan_facts(tenant_id,plan_id,category,fact_key,fact_value,source_quote,source_type,source_ref,status,version_no) VALUES(14,4,'other','旧原料关联','商品使用原料B','商品使用原料B','story_lecture','old','active',1),(14,4,'other','旧二级资料','原料B可以用于煮汤','原料B可以用于煮汤','story_lecture','old','active',1)`)
+	exec(`INSERT INTO live_agent_plan_facts(tenant_id,plan_id,category,fact_key,fact_value,source_quote,source_type,source_ref,status,version_no) VALUES(14,4,'other','另存的原料资料','原料B来自丘陵','原料B来自丘陵','speech_miner','original-source','active',1)`)
+	var rootID, childID, extraID int64
+	if err = s.db.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_facts WHERE fact_key='旧原料关联'`).Scan(&rootID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_facts WHERE fact_key='旧二级资料'`).Scan(&childID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_facts WHERE fact_key='另存的原料资料'`).Scan(&extraID); err != nil {
+		t.Fatal(err)
+	}
+	factData, _ := json.Marshal([]lecturetask.Fact{{ID: rootID, Version: 1, Name: "旧原料关联", Text: "商品使用原料B"}, {ID: childID, Version: 1, Name: "旧二级资料", Text: "原料B可以用于煮汤"}})
+	exec(`INSERT INTO live_plan_lecture_tasks(tenant_id,plan_id,source_sha,source_text,title,purpose,angles_json,facts_json,links_json,review_json,created_by) VALUES(14,4,REPEAT('a',64),'旧原文','原料B','讲原料','{"angles":[{"title":"用途","goal":"讲原料用途"}],"question_terms":["原料B"]}',?,'[]','{}',8)`, string(factData))
+	var oldTaskID int64
+	if err = s.db.QueryRowContext(ctx, `SELECT id FROM live_plan_lecture_tasks WHERE source_sha=REPEAT('a',64)`).Scan(&oldTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AttachLectureSubject(ctx, 15, 5, 8, oldTaskID, 1, rootID, "原料B"); err == nil {
+		t.Fatal("cross-tenant binding accepted")
+	}
+	if err = s.AttachLectureSubject(ctx, 14, 4, 8, oldTaskID, 1, rootID, "原料B", extraID, extraID); err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err = s.ListLiveAgentPlanFacts(ctx, 14, 4)
+	if err != nil || len(ordinary) != 2 {
+		t.Fatal("legacy detail visible in ordinary facts", ordinary, err)
+	}
+	lib, err = s.LectureLibrary(ctx, 14, 4, true)
+	if err != nil || !lib.Tasks[1].Valid || lib.Tasks[1].RootFact.ID != rootID || len(lib.Tasks[1].Facts) != 2 || lib.Tasks[1].Facts[0].ID != childID || lib.Tasks[1].Facts[1].ID != extraID || lib.Tasks[1].Facts[1].Text != "原料B来自丘陵" {
+		t.Fatal("legacy subject binding lost evidence", lib, err)
+	}
+	var sourceRef string
+	var version int
+	if err = s.db.QueryRowContext(ctx, `SELECT source_ref,version_no FROM live_agent_plan_facts WHERE id=?`, extraID).Scan(&sourceRef, &version); err != nil || sourceRef != "original-source" || version != 2 {
+		t.Fatal("original provenance lost", sourceRef, version, err)
+	}
+	if err = s.AttachLectureSubject(ctx, 14, 4, 8, oldTaskID, 1, rootID, "原料B", extraID); err == nil {
+		t.Fatal("stale reattachment accepted")
 	}
 }

@@ -10,6 +10,7 @@ import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
+import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { useInteractionReviewCount } from '../interactionReviewCount'
@@ -22,6 +23,7 @@ import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
 import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
+import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
 import agentGenerationBanner from '../assets/agent-generation-banner.png'
@@ -79,6 +81,7 @@ import {
   getRooms,
   getRoom,
   deactivateAgentMemory,
+  deleteLiveAgentPlanBenefit,
   deleteLiveAgentPlanFact,
   deleteLiveAgentPlanProductLink,
 	deleteLiveAgentPlanProductAttribute,
@@ -352,7 +355,9 @@ const expandedFormalBenefitIds = ref<Set<number>>(new Set())
 type FormalBenefitField = 'link_key' | 'product_name' | 'activity_price' | 'gift' | 'activity' | 'starts_at' | 'ends_at'
 const editingFormalBenefit = ref<{ itemId: number; field: FormalBenefitField; draft: string } | null>(null)
 const mutatingFormalBenefitId = ref<number | null>(null)
+const deleteConfirmFormalBenefitId = ref<number | null>(null)
 const formalBenefitMessage = ref<{ id: number; text: string; error?: boolean } | null>(null)
+watch([currentRoomPlanId, activeRoomId], () => { deleteConfirmFormalBenefitId.value = null })
 const vFocus = {
   mounted: (element: HTMLInputElement | HTMLTextAreaElement) => {
     element.focus()
@@ -423,14 +428,14 @@ const currentAnalysis = computed(() => analysisDraft.value || activeScript.value
 const productLinks = computed<LiveAgentPlanProductLinkCandidate[]>(() => currentAnalysis.value?.product_links || [])
 const activeFormalBenefits = computed(() => {
   const now = benefitClock.value
-  const liveLinkKeys = new Set(formalProductLinks.value.filter((item) => item.status === 'active').map((item) => item.link_key))
+  const liveProducts = formalProductLinks.value.filter(item => item.status === 'active')
   return formalBenefits.value.filter((item) => {
     if (item.status !== 'active') return false
     if (formalBenefitValidityMode(item) !== 'permanent') {
       if (item.starts_at && new Date(item.starts_at).getTime() > now) return false
       if (item.ends_at && new Date(item.ends_at).getTime() < now) return false
     }
-    return !item.link_key || liveLinkKeys.has(item.link_key)
+    return liveProducts.some(product => benefitAppliesToProduct(item, product, poolStatus.value?.benefits))
   })
 })
 const activityBenefits = computed<LiveAgentPlanBenefitCandidate[]>(() => productLinks.value
@@ -527,6 +532,7 @@ async function saveFormalBenefitEdit(item: LiveAgentPlanBenefit) {
     )
     if (currentRoomPlanId.value === planId) {
       formalBenefits.value = formalBenefits.value.map((entry) => entry.id === item.id ? updated : entry)
+      void contentPools.refresh(true)
     }
     editingFormalBenefit.value = null
     formalBenefitMessage.value = { id: item.id, text: '已自动保存' }
@@ -558,6 +564,7 @@ async function setFormalBenefitValidityMode(item: LiveAgentPlanBenefit, mode: 's
     )
     if (currentRoomPlanId.value === planId) {
       formalBenefits.value = formalBenefits.value.map((entry) => entry.id === item.id ? updated : entry)
+      void contentPools.refresh(true)
     }
     formalBenefitMessage.value = {
       id: item.id,
@@ -592,9 +599,34 @@ async function duplicateFormalBenefit(item: LiveAgentPlanBenefit) {
     const index = cards.findIndex(card => card.id === item.id)
     cards.splice(index < 0 ? cards.length : index + 1, 0, created)
     formalBenefits.value = cards
+    void contentPools.refresh(true)
     formalBenefitMessage.value = { id: item.id, text: '已复制，关联库中下一条真实商品链接：' + created.link_key }
   } catch (err) {
     if (currentRoomPlanId.value === plan && activeRoom.value?.tenant_id === tenant) formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '复制失败，请刷新确认后重试', error: true }
+  } finally { mutatingFormalBenefitId.value = null }
+}
+
+async function deleteFormalBenefit(item: LiveAgentPlanBenefit) {
+  if (mutatingFormalBenefitId.value || deleteConfirmFormalBenefitId.value !== item.id) return
+  const plan = currentRoomPlanId.value
+  const tenant = activeRoom.value?.tenant_id
+  if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) return
+  mutatingFormalBenefitId.value = item.id
+  formalBenefitMessage.value = { id: item.id, text: '正在删除…' }
+  try {
+    await deleteLiveAgentPlanBenefit(plan, item.id, tenant)
+    if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+    formalBenefits.value = formalBenefits.value.filter(entry => entry.id !== item.id)
+    expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value].filter(id => id !== item.id))
+    if (editingFormalBenefit.value?.itemId === item.id) editingFormalBenefit.value = null
+    deleteConfirmFormalBenefitId.value = null
+    formalBenefitMessage.value = null
+    scriptNotice.value = '福利卡已删除，历史记录保留。请更新内容并保存智能体方案。'
+    void contentPools.refresh(true)
+  } catch (err) {
+    if (currentRoomPlanId.value === plan && activeRoom.value?.tenant_id === tenant) {
+      formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '删除失败，请重试', error: true }
+    }
   } finally { mutatingFormalBenefitId.value = null }
 }
 const savedStyleScript = computed(() => planScripts.value.find((item) => item.analysis_status === 'analyzed' && item.analysis?.anchor_style?.dimensions?.length))
@@ -4451,13 +4483,14 @@ async function deleteFormalFact(item: LiveAgentPlanFact) {
 
 async function refreshFormalBenefits() {
   const planId = currentRoomPlanId.value
+  const tenant = activeRoom.value?.tenant_id
   if (!planId) {
     formalBenefits.value = []
     return
   }
   try {
-    const result = await getLiveAgentPlanBenefits(planId, activeRoom.value?.tenant_id)
-    formalBenefits.value = result.items || []
+    const result = await getLiveAgentPlanBenefits(planId, tenant)
+    if (currentRoomPlanId.value === planId && activeRoom.value?.tenant_id === tenant) formalBenefits.value = result.items || []
   } catch (err) {
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式活动福利失败'
@@ -4501,6 +4534,8 @@ async function saveProductLinkField(
   }, item.tenant_id)
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
+    void contentPools.refresh(true)
+    if (field === 'link_key') void refreshFormalBenefits()
   }
 }
 
@@ -4514,6 +4549,7 @@ async function duplicateProductLink(item: LiveAgentPlanProductLink) {
   const index = cards.findIndex(card => card.id === item.id)
   cards.splice(index < 0 ? cards.length : index + 1, 0, created)
   formalProductLinks.value = cards
+  void contentPools.refresh(true)
 }
 
 async function saveProductRoomRoles(item: LiveAgentPlanProductLink, roomRoles: string[]) {
@@ -4540,6 +4576,8 @@ async function removeProductLink(item: LiveAgentPlanProductLink) {
   await deleteLiveAgentPlanProductLink(planId, item.id, item.tenant_id)
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.filter((link) => link.id !== item.id)
+    void contentPools.refresh(true)
+    void refreshFormalBenefits()
   }
 }
 
@@ -6291,7 +6329,7 @@ onBeforeUnmount(() => {
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
+            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
               <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" /></template>
             </LiveProductLinkCards>
           </section>
@@ -6442,7 +6480,17 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <p v-if="formalBenefitMessage?.id === item.id" class="strategy-benefit-edit-message" :class="{ error: formalBenefitMessage.error }" role="status">{{ formalBenefitMessage.text }}</p>
-                <button type="button" class="strategy-benefit-copy" :disabled="!!mutatingFormalBenefitId" :aria-label="'复制' + (item.product_name || item.key) + '福利卡'" @mousedown.prevent @click="duplicateFormalBenefit(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制福利卡</button>
+                <div class="strategy-benefit-card-actions">
+                  <button type="button" class="strategy-benefit-copy" :disabled="!!mutatingFormalBenefitId" :aria-label="'复制' + (item.product_name || item.key) + '福利卡'" @mousedown.prevent @click="duplicateFormalBenefit(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制福利卡</button>
+                  <button type="button" class="strategy-benefit-delete" :disabled="!!mutatingFormalBenefitId" :aria-label="'删除' + (item.product_name || item.key) + '福利卡'" @mousedown.prevent @click="deleteConfirmFormalBenefitId = item.id"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>删除</button>
+                </div>
+                <div v-if="deleteConfirmFormalBenefitId === item.id" class="strategy-benefit-delete-confirm" role="group" :aria-label="'确认删除' + (item.product_name || item.key) + '福利卡'">
+                  <p>删除“{{ item.product_name || item.key }}”福利卡？历史记录会保留。</p>
+                  <div>
+                    <button type="button" :disabled="!!mutatingFormalBenefitId" @mousedown.prevent @click="deleteConfirmFormalBenefitId = null">取消</button>
+                    <button type="button" class="strategy-benefit-delete" :disabled="!!mutatingFormalBenefitId" @mousedown.prevent @click="deleteFormalBenefit(item)">{{ mutatingFormalBenefitId === item.id ? '删除中…' : '确认删除' }}</button>
+                  </div>
+                </div>
                 <button type="button" class="strategy-benefit-formal-expand" :aria-expanded="expandedFormalBenefitIds.has(item.id)" @click="toggleFormalBenefit(item.id)"><span>{{ expandedFormalBenefitIds.has(item.id) ? '收起条件与有效方式' : '展开条件与有效方式' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
               </article>
             </div>
@@ -6589,7 +6637,7 @@ onBeforeUnmount(() => {
                     <template v-else>
                       <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
                       <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
-                      <td class="strategy-formal-fact-value">{{ item.value }}</td>
+                      <td class="strategy-formal-fact-value">{{ item.value }}<FactSubjectDetails v-if="item.source_type === 'story_subject' && currentRoomPlanId" :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" /></td>
                       <td v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" colspan="2" class="strategy-formal-fact-guidance-cell">
                         <button type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                       </td>
@@ -8486,6 +8534,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.strategy-benefit-card-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px}
+.strategy-benefit-delete{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:6px 9px;border:1px solid #f0ccd4;border-radius:7px;background:#fff4f5;color:#c4475c;font:inherit;font-size:11px;font-weight:700;cursor:pointer}
+.strategy-benefit-delete svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.strategy-benefit-delete:hover{background:#ffe9ed;border-color:#e8a9b7}.strategy-benefit-delete:disabled{opacity:.5;cursor:wait}
+.strategy-benefit-delete:focus-visible,.strategy-benefit-delete-confirm button:focus-visible{outline:2px solid #cc687d;outline-offset:2px}
+.strategy-benefit-delete-confirm{display:grid;gap:8px;padding:10px;border:1px solid #f0ccd4;border-radius:8px;background:#fff8f9}
+.strategy-benefit-delete-confirm p{margin:0;color:#865365;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.strategy-benefit-delete-confirm>div{display:flex;justify-content:flex-end;gap:8px}.strategy-benefit-delete-confirm button{padding:6px 9px;border:1px solid #dce2f0;border-radius:7px;background:#fff;color:#65718b;font:inherit;font-size:12px;cursor:pointer}
+.strategy-benefit-delete-confirm .strategy-benefit-delete{border-color:#edbcca;background:#fff0f3;color:#be3d53}.strategy-benefit-delete-confirm button:disabled{opacity:.5;cursor:wait}
 .strategy-benefit-copy{display:inline-flex;align-items:center;justify-content:center;gap:5px;justify-self:end;align-self:end;padding:6px 9px;border:1px solid #dedfff;border-radius:7px;background:#f1efff;color:#6555d8;font:inherit;font-size:11px;font-weight:700;cursor:pointer}.strategy-benefit-copy svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8}.strategy-benefit-copy:disabled{opacity:.5;cursor:default}
 .strategy-content-mode-panel{display:grid;gap:14px;padding:18px 20px;border:1px solid #dce3f4;border-radius:18px;background:linear-gradient(125deg,#fff,#f6f8ff)}
 .strategy-content-mode-panel>header{display:flex;align-items:center;justify-content:space-between;gap:14px}.strategy-content-mode-panel>header strong{font-size:19px;color:#283750}.strategy-content-mode-panel>header span{font-size:13px;color:#8090a7}
