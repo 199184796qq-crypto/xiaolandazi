@@ -28,6 +28,12 @@ type LectureAudit struct {
 }
 
 func (s *State) LectureCandidateApproved(c Candidate) bool {
+	if len(s.LatestExpressionConstraints) > 0 {
+		a := c.ExpressionAudit
+		if a == nil || !a.Passed || a.Error != "" || a.TextSHA != ProductDigest(spokenCandidate(c)) || a.ScopeSHA != ProductDigest(s.LatestExpressionConstraints) {
+			return false
+		}
+	}
 	if s.Task().ProductMode != "lecture" {
 		return true
 	}

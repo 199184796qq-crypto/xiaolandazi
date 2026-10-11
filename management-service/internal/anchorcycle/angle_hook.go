@@ -34,9 +34,23 @@ type HookFact struct {
 // a legacy task without a binding; an empty scope never grants all plan facts.
 // This provenance stays in run state and is not sent as an index for models.
 type TaskFactScope struct {
-	Corrections []map[string]any `json:"corrections,omitempty"`
-	Facts       []HookFact       `json:"facts"`
+	Corrections     []map[string]any `json:"corrections,omitempty"`
+	Facts           []HookFact       `json:"facts"`
+	ProductBoundary []HookFact       `json:"product_boundary,omitempty"`
 }
+
+func (s *State) EffectiveCorrections() []map[string]any {
+	out := []map[string]any{}
+	if scope := s.Task().FactScope; scope != nil {
+		for _, c := range scope.Corrections {
+			if c["用户采用的实时表达约束"] != true {
+				out = append(out, c)
+			}
+		}
+	}
+	return append(out, s.LatestExpressionConstraints...)
+}
+
 type HookCalculation struct {
 	Label    string   `json:"label"`
 	Operator string   `json:"operator"`

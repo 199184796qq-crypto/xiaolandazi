@@ -122,8 +122,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if len(expressionGuidance) > 0 {
 		material["表达约束与正向示例"] = expressionGuidance
 	}
+	material["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
 	if task.FactScope != nil {
-		material["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)
+		material["商品必要事实与使用边界（用于约束，不要求逐条讲述）"] = boundary
+		material["商品必要事实的表达约束（不是新增事实）"] = guidance
 	}
 	fixed, _ := json.Marshal(material)
 	recent := []string{}
@@ -221,6 +224,9 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	return []agentgateway.Message{{Role: "system", Content: string(foundation) + "\n\n" + string(fixed)}, {Role: "user", Content: string(dynamic)}}, nil
 }
 func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State) (agentgateway.Response, []agentgateway.Message, error) {
+	if err := s.installCurrentExpressionConstraints(ctx, state); err != nil {
+		return agentgateway.Response{}, nil, fmt.Errorf("读取用户采用的表达约束失败：%w", err)
+	}
 	if err := requireCycleP0(state); err != nil {
 		return agentgateway.Response{}, nil, err
 	}

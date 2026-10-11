@@ -82,8 +82,11 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	if len(expressionGuidance) > 0 {
 		input["表达约束与正向示例"] = expressionGuidance
 	}
+	input["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
 	if task.FactScope != nil {
-		input["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)
+		input["商品必要事实与使用边界（约束推演，不更换当前任务）"] = boundary
+		input["商品必要事实的表达约束（不是新增事实）"] = guidance
 	}
 	if previous != nil {
 		old := []string{}

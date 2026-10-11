@@ -79,11 +79,16 @@ func (s *State) AnglePlanKey() string {
 	}{task.SellingPoint, task.Angle, task.PainPoint, task.TargetAudience,
 		s.HookProducts(), ProductDigest(s.HookFacts()), identity, s.AnglePlanMotherSHA,
 		s.P0PolicyMD, s.Config.ComplianceScope})
-	if task.FactScope != nil && len(task.FactScope.Corrections) > 0 {
+	if len(s.EffectiveCorrections()) > 0 || task.FactScope != nil && len(task.FactScope.ProductBoundary) > 0 {
+		var boundary any
+		if task.FactScope != nil {
+			boundary = task.FactScope.ProductBoundary
+		}
 		return ProductDigest(struct {
-			Base        string
-			Corrections any
-		}{base, task.FactScope.Corrections})
+			Base            string
+			Corrections     any
+			ProductBoundary any
+		}{base, s.EffectiveCorrections(), boundary})
 	}
 	return base
 }

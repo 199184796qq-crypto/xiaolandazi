@@ -16,6 +16,63 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+func TestFactReviewPolicyProvider(t *testing.T) {
+	if os.Getenv("FACT_SPEECH_PREVIEW_PROBE") != "1" {
+		t.Skip("explicit paid replay required")
+	}
+	store, err := appdb.Open(config.Load())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	s := &Server{store: store}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+	if cfg, e := store.SpeechModels(ctx); e == nil {
+		selected := cfg.ReviewDefaultID
+		if selected == "" {
+			selected = cfg.SystemDefaultID
+		}
+		for _, p := range cfg.Profiles {
+			if p.ID == selected {
+				t.Logf("ACTUAL_REVIEW_ROLE alias=%s model=%s explicit_review=%t", p.Name, p.Model, cfg.ReviewDefaultID != "")
+			}
+		}
+	}
+	base := anchorcycle.State{TenantID: 14, PlanID: 4, RoomID: 26}
+	if err = installP0Mother(&base); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, facts, negative, text string
+		pass, advice                bool
+	}{
+		{"物流无负要求", "一般当天发货", "", "今天发，明天到。", true, true},
+		{"物流有负要求", "一般当天发货", "不准说物流时效。", "今天发，明天到。", false, false},
+		{"普通手感", "杯身使用304不锈钢", "", "杯身是304不锈钢，拿着沉甸甸，质感扎实。", true, false},
+		{"功能未确认", "杯身使用304不锈钢", "", "这个杯子能保温12小时。", false, false},
+		{"即食新增用法", "这款成品开袋即可直接吃", "", "开袋可以吃，还可以煮汤炖菜。", false, false},
+		{"明确支持加热", "这款成品开袋直接吃，也可以用空气炸锅加热", "", "开袋直接吃，也可以用空气炸锅加热。", true, false},
+		{"普通来源待核对", "土麻鸭产自嘉陵江流域，稻田水塘中散养", "", "鸭子喝着嘉陵江水，吃着稻谷和自然草虫。", true, true},
+	} {
+		guidance := []map[string]string{}
+		if tc.negative != "" {
+			guidance = append(guidance, map[string]string{"要求": "负向表达约束", "内容": tc.negative})
+		}
+		task := anchorcycle.Task{ProductMode: "lecture", LectureFacts: tc.facts, LecturePurpose: "审核当前表述", Angle: "当前内容", FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{Data: tc.facts, ExpressionGuidance: guidance}}}}
+		state := base
+		state.Lectures = &anchorcycle.LectureRuntime{Active: &task}
+		c := lectureTextCandidate(tc.text)
+		s.auditLectureCandidate(ctx, &state, &c)
+		if c.LectureAudit == nil || c.LectureAudit.Error != "" || c.LectureAudit.Passed != tc.pass || tc.advice && len(c.LectureAudit.Suggestions) == 0 {
+			t.Errorf("%s unexpected audit %+v", tc.name, c.LectureAudit)
+		} else {
+			raw, _ := json.Marshal(c.LectureAudit)
+			t.Logf("REVIEW_POLICY %s %s", tc.name, raw)
+		}
+	}
+}
+
 // Read-only contrast: same facts, three purposes, same/change/no example;
 // independent purpose/copying/boundary evaluation, not just lexical diversity.
 func TestFactFieldsNormalizationAndTemplateInfluenceProvider(t *testing.T) {
@@ -28,6 +85,13 @@ func TestFactFieldsNormalizationAndTemplateInfluenceProvider(t *testing.T) {
 	}
 	defer store.Close()
 	s := &Server{store: store}
+	if cfg, e := store.SpeechModels(context.Background()); e == nil {
+		for _, p := range cfg.Profiles {
+			if p.ID == cfg.ReviewDefaultID {
+				t.Logf("CONFIGURED_REVIEW_MODEL alias=%s model=%s", p.Name, p.Model)
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 220*time.Second)
 	defer cancel()
 	ctx = context.WithValue(ctx, factExamplesEphemeralKey{}, true)
@@ -138,6 +202,9 @@ func TestFactFieldsNormalizationAndTemplateInfluenceProvider(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Paired fixtures vary only the explicit logistics requirement. Other
+		// adopted plan restrictions must not make the 'no requirement' case false.
+		state.Queue[0].FactScope.Corrections = nil
 		reviewState := factPreviewReviewState(state)
 		c := lectureTextCandidate("今天发，明天到。")
 		s.auditLectureCandidate(ctx, &reviewState, &c)
@@ -214,7 +281,13 @@ func TestSecondaryLectureAcrossRoomsAndProductsProvider(t *testing.T) {
 		}
 	}
 	uncertain := lectureTextCandidate("土麻鸭喝着嘉陵江水，吃着稻谷和自然草虫。")
-	s.auditLectureCandidate(ctx, &boundaryState, &uncertain)
+	sourcingFixture := boundaryState
+	fixtureTask := *boundaryState.Lectures.Active
+	fixtureScope := *fixtureTask.FactScope
+	fixtureScope.Corrections = nil
+	fixtureTask.FactScope = &fixtureScope
+	sourcingFixture.Lectures = &anchorcycle.LectureRuntime{Active: &fixtureTask, Library: boundaryState.Lectures.Library}
+	s.auditLectureCandidate(ctx, &sourcingFixture, &uncertain)
 	if uncertain.LectureAudit == nil || uncertain.LectureAudit.Error != "" || !uncertain.LectureAudit.Passed || len(uncertain.LectureAudit.Suggestions) == 0 {
 		t.Error("ordinary sourcing question must retain nonblocking advice", uncertain.LectureAudit)
 	} else {

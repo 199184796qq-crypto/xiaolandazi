@@ -2821,7 +2821,7 @@ func (w *Worker) finalizeSpeechText(
 		reasons = uniqueNonEmptyStrings(reasons)
 	}
 	if len(reasons) == 0 && !forceOperatorReview {
-		return text, nil
+		return w.verifySpeechExpressionConstraints(ctx, session, text)
 	}
 
 	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -2891,7 +2891,7 @@ func (w *Worker) finalizeSpeechText(
 		}
 	}
 	candidate, _ = contentstrategy.RemoveConsecutiveSpeech(candidate, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
-	return strings.TrimSpace(candidate), nil
+	return w.verifySpeechExpressionConstraints(ctx, session, strings.TrimSpace(candidate))
 }
 
 func presentationControlViolations(mission speechmission.Mission, text string) []string {

@@ -24,8 +24,8 @@ func factSpeechRepairMessages(state *anchorcycle.State, previous map[string]any)
 		content = task.LectureFacts
 	}
 	packet := map[string]any{"confirmed_facts": content, "expression_guidance": guidance, "requested_purpose": task.LecturePurpose, "requested_angle": task.Angle, "expression": expression, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "unapproved_text": previous["text"], "review_issues": previous["issues"], "max_chars": state.Config.MaxChars}
-	if task.FactScope != nil {
-		packet["user_confirmed_corrections"] = task.FactScope.Corrections
+	if task.FactScope != nil || len(state.EffectiveCorrections()) > 0 {
+		packet["user_confirmed_corrections"] = state.EffectiveCorrections()
 	}
 	if task.ProductMode != "lecture" {
 		packet["requested_purpose"] = task.PainPoint

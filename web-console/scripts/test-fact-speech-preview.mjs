@@ -12,9 +12,14 @@ await server.listen()
 const browser = await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true})
 const page = await browser.newPage({viewport:{width:1280,height:900}}), errors=[], requests=[]
 page.on('pageerror',error=>errors.push(error.message))
-let mode='pass', pendingResolve
+let mode='pass', pendingResolve, constraintMode='draft', adoptedCount=0
 await page.route('**/api/v1/**',async route=>{
   const r=route.request();requests.push({url:r.url(),method:r.method(),body:r.postDataJSON()})
+  if(r.url().endsWith('/speech-constraints/prepare')) {
+    if(constraintMode==='error') {await route.fulfill({status:422,contentType:'application/json',body:JSON.stringify({error:'约束整理未完成，请重试'})});return}
+    await route.fulfill({contentType:'application/json',body:JSON.stringify(constraintMode==='clarify'?{state:'clarify',understanding:'需要定位具体场景',question:'哪个场景不合适？'}:{state:'draft',draft_id:'a'.repeat(64),understanding:'避免早餐场景举例',constraint:'不将商品作为早餐，或用早晨赶时间开袋吃等表达暗示早餐场景。',scope:['1号 · 即食产品']})});return
+  }
+  if(r.url().endsWith('/speech-constraints/adopt')) {adoptedCount++;assert.deepEqual(r.postDataJSON(),{room_id:26,tenant_id:14,version_no:2,draft_id:'a'.repeat(64)});await route.fulfill({contentType:'application/json',body:JSON.stringify({state:'adopted',constraint:'不将商品作为早餐举例。',notice:'已采用并记录，后续新生成话术使用。'})});return}
   assert.match(r.url(),/live-agent-plans\/4\/facts\/5\/speech-preview$/)
   if(mode==='pending') await new Promise(resolve=>pendingResolve=resolve)
   if(mode==='error'){await route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:'话术模型连接失败，请重试'})});return}
@@ -38,6 +43,16 @@ try {
   await dialog.locator('.issues').waitFor();assert.match(await dialog.locator('.issues').textContent(),/未保留包装条件/)
   mode='advice';await dialog.getByRole('button',{name:'重新生成',exact:true}).click();await dialog.getByRole('complementary',{name:'后台审核意见'}).waitFor()
   assert.match(await dialog.locator('.review-suggestions').textContent(),/已放行.*供你判断/s);assert.equal(await dialog.locator('.issues').count(),0);assert.equal(await dialog.locator('.warning').count(),0)
+  await dialog.getByRole('button',{name:'补充表达约束',exact:true}).click()
+  const input=dialog.getByRole('textbox',{name:'你希望以后怎么讲？'})
+  await input.fill('不要拿早餐举例');await dialog.getByRole('button',{name:'生成约束',exact:true}).click()
+  await dialog.locator('.constraint-text').waitFor();assert.equal(adoptedCount,0,'preparation must never adopt a rule')
+  assert.equal(await dialog.getByRole('button',{name:'采用约束',exact:true}).count(),1)
+  await input.fill('哪个地方不合适？');assert.equal(await dialog.locator('.constraint-draft').count(),0,'changed requirement invalidates old draft')
+  constraintMode='clarify';await dialog.getByRole('button',{name:'生成约束',exact:true}).click();await dialog.getByText('哪个场景不合适？ 请补充后重新生成。').waitFor();assert.equal(await dialog.getByRole('button',{name:'采用约束',exact:true}).count(),0)
+  constraintMode='error';await input.fill('不要拿早餐举例');await dialog.getByRole('button',{name:'生成约束',exact:true}).click();await dialog.getByRole('alert').waitFor();assert.equal(await input.inputValue(),'不要拿早餐举例')
+  constraintMode='draft';await dialog.getByRole('button',{name:'生成约束',exact:true}).click();await dialog.getByRole('button',{name:'采用约束',exact:true}).click();await dialog.getByRole('button',{name:'已采用',exact:true}).waitFor();assert.equal(adoptedCount,1);assert.equal(await dialog.getByRole('button',{name:'已采用',exact:true}).isDisabled(),true)
+  const preparedRequest=requests.find(r=>r.url.endsWith('/speech-constraints/prepare'));assert.equal(preparedRequest.body.feedback,'不要拿早餐举例');assert.equal(preparedRequest.body.products,undefined,'users never supply scope IDs')
   await dialog.getByRole('button',{name:'关闭话术预览'}).click()
   mode='pending';await opener.click();await dialog.getByRole('status').waitFor()
   await page.waitForFunction(()=>document.querySelector('dialog')?.getAttribute('aria-busy')==='true')

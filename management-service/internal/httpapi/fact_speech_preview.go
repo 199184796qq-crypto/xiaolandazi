@@ -171,6 +171,13 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 		s.auditLectureCandidate(ctx, &reviewState, &candidate)
 	}
 	output := lecturePreviewContent(&reviewState, candidate, scanError)
+	rules := []map[string]string{}
+	for _, rule := range state.LatestExpressionConstraints {
+		feedback, _ := rule["用户原话（理解纠正范围，不能扩张限制）"].(string)
+		constraint, _ := rule["表达限制"].(string)
+		rules = append(rules, map[string]string{"feedback": feedback, "constraint": constraint})
+	}
+	output["expression_constraints"] = rules
 	if state.Task().LecturePlanJSON != "" {
 		if plan, e := parseLectureSegmentPlan(state.Task().LecturePlanJSON, state.Task().LectureFacts); e == nil {
 			output["purpose"], output["angle"] = plan.Purpose, plan.Angle

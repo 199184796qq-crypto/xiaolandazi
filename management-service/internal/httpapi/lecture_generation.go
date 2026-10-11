@@ -59,12 +59,12 @@ func renderLectureTaskMessages(state *anchorcycle.State) ([]agentgateway.Message
 		data["facts"] = strings.Join(append(relation, plan.Quotes...), "\n")
 		packet, _ = json.Marshal(data)
 	}
-	if task.FactScope != nil {
+	if task.FactScope != nil || len(state.EffectiveCorrections()) > 0 {
 		_, guidance := generationMaterialViews(state.HookFacts())
 		var data map[string]any
 		_ = json.Unmarshal(packet, &data)
 		data["expression_guidance"] = guidance
-		data["user_confirmed_corrections"] = task.FactScope.Corrections
+		data["user_confirmed_corrections"] = state.EffectiveCorrections()
 		packet, _ = json.Marshal(data)
 	}
 	if len(state.Accepted) > 0 {
@@ -221,6 +221,13 @@ func lecturePreviewContent(state *anchorcycle.State, c anchorcycle.Candidate, sc
 	} else if c.LectureAudit == nil && scanError == "" {
 		add("review_error", "", "讲解事实复核尚未完成")
 	}
+	if c.ExpressionAudit != nil && !c.ExpressionAudit.Passed {
+		if c.ExpressionAudit.Error != "" {
+			add("review_error", "", c.ExpressionAudit.Error)
+		} else {
+			add("expression_constraint", c.ExpressionAudit.Quote, c.ExpressionAudit.Reason)
+		}
+	}
 	approved := scanError == "" && state.CheckApprovedText(c, cycleVoiceText(c)) == nil && state.LectureCandidateApproved(c)
 	if !approved && len(issues) == 0 {
 		add("review_error", "", "审核回执与当前正文不一致")
@@ -291,6 +298,11 @@ func parseLectureTaskAudit(raw, text string) (anchorcycle.LectureAudit, error) {
 }
 
 func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
+	if err := s.installCurrentExpressionConstraints(ctx, state); err != nil {
+		c.P0PatchError = "读取用户采用的表达约束失败"
+		return
+	}
+	s.auditSpeechExpressionConstraints(ctx, state, c)
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: c.ID})
 	task := state.Task()
 	if task.ProductMode != "lecture" {
@@ -310,8 +322,8 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 	}
 	_, guidance := generationMaterialViews(state.HookFacts())
 	packet["expression_guidance"] = guidance
-	if task.FactScope != nil {
-		packet["user_confirmed_corrections"] = task.FactScope.Corrections
+	if task.FactScope != nil || len(state.EffectiveCorrections()) > 0 {
+		packet["user_confirmed_corrections"] = state.EffectiveCorrections()
 	}
 	out, err := boundedLectureAudit(text, func(previous string) (string, error) {
 		if previous != "" {
@@ -324,6 +336,25 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 	if err != nil {
 		audit.Error = "内容审核暂未完成：" + err.Error()
 		return
+	}
+	// The deterministic P0 report remains authoritative. When this broader
+	// content reviewer cites P0 on an otherwise clear text, verify the actual
+	// supplied clause once; invented rule "spirit" cannot create a new ban.
+	if !out.Passed && strings.Contains(out.Reason, "P0") && (c.P0Report == nil || c.P0Report.Passed) {
+		packet["previous_rule_rejection"] = map[string]string{"quote": out.Quote, "reason": out.Reason}
+		checked, checkErr := boundedLectureAudit(text, func(previous string) (string, error) {
+			if previous != "" {
+				packet["previous_review_format_error"] = previous
+			}
+			raw, _ := json.Marshal(packet)
+			res, _, e := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "lecture_task_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, 1100, false)
+			return res.Text, e
+		})
+		if checkErr != nil {
+			audit.Error = "P0条款适用复核未完成"
+			return
+		}
+		out = checked
 	}
 	audit.Passed, audit.Quote, audit.Reason, audit.Suggestions = out.Passed, out.Quote, out.Reason, out.Suggestions
 }

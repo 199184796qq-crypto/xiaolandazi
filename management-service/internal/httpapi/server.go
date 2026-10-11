@@ -546,6 +546,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/facts", s.liveAgentPlanFactList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-preview", s.liveAgentPlanFactSpeechPreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-constraints/prepare", s.speechConstraintPrepare)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-constraints/adopt", s.speechConstraintAdopt)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/adopt", s.liveAgentPlanFactAdopt)
 	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactUpdate)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactDelete)

@@ -68,7 +68,7 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 		}
 	}
 	// The selected model for a reply/repair is pinned, even after the default moves.
-	for _, stage := range []string{"lecture_task_review", "lecture_source_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review"} {
+	for _, stage := range []string{"lecture_task_review", "lecture_source_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review"} {
 		out, err := g.Complete(ctx, Request{Stage: stage, Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}})
 		if err != nil || out.Model != "fixture-review" {
 			t.Fatal(stage, out, err)

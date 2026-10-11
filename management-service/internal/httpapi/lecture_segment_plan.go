@@ -59,11 +59,13 @@ func (s *Server) ensureLectureSegmentPlan(ctx context.Context, state *anchorcycl
 	if err != nil {
 		return err
 	}
-	sha := derivedHash(mother + task.LectureFacts + task.LecturePurpose + task.Angle + state.P0PolicyMD)
+	constraintJSON, _ := json.Marshal(state.EffectiveCorrections())
+	sha := derivedHash(mother + task.LectureFacts + task.LecturePurpose + task.Angle + state.P0PolicyMD + string(constraintJSON))
 	if task.LecturePlanSHA == sha && task.LecturePlanJSON != "" {
 		return nil
 	}
 	data := map[string]any{"requested_purpose": task.LecturePurpose, "requested_angle": task.Angle, "facts": task.LectureFacts, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	data["user_confirmed_corrections"] = state.EffectiveCorrections()
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
 	for attempt := 0; attempt < 2; attempt++ {
 		packet, _ := json.Marshal(data)

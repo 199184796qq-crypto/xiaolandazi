@@ -38,7 +38,7 @@ func shuffledFactExamples(examples []string) []string {
 }
 func (s *Server) ensureFactExpressionExamples(ctx context.Context, state *anchorcycle.State) {
 	task := state.Task()
-	if task.ProductMode == "lecture" || task.FactScope == nil || len(task.FactScope.Facts) != 1 {
+	if task.FactScope == nil || len(task.FactScope.Facts) != 1 {
 		return
 	}
 	if requireCycleP0(state) != nil {
@@ -93,8 +93,17 @@ func (s *Server) ensureFactExpressionExamples(ctx context.Context, state *anchor
 	if err != nil {
 		return
 	}
-	data := map[string]any{"confirmed_facts": facts, "negative_constraints": negative, "existing_example": original, "requested_purpose": task.PainPoint, "requested_angle": task.Angle, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
-	data["user_confirmed_corrections"] = task.FactScope.Corrections
+	purpose := task.PainPoint
+	var confirmed any = facts
+	if task.ProductMode == "lecture" {
+		purpose = task.LecturePurpose
+		confirmed = task.LectureFacts
+	}
+	data := map[string]any{"confirmed_facts": confirmed, "negative_constraints": negative, "existing_example": original, "requested_purpose": purpose, "requested_angle": task.Angle, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	if task.LecturePlanJSON != "" {
+		data["segment_plan"] = json.RawMessage(task.LecturePlanJSON)
+	}
+	data["user_confirmed_corrections"] = state.EffectiveCorrections()
 	raw, _ := json.Marshal(data)
 	fingerprint := derivedHash(string(raw) + f.ID + mother + reviewMother)
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
@@ -135,7 +144,7 @@ func (s *Server) ensureFactExpressionExamples(ctx context.Context, state *anchor
 			return
 		}
 		if ephemeral, _ := ctx.Value(factExamplesEphemeralKey{}).(bool); !ephemeral {
-			saved, _ := json.Marshal(map[string]any{"examples": pool.Examples, "fact_version_ref": f.ID, "input_sha256": fingerprint, "rule_sha256": derivedHash(state.P0PolicyMD + mother + reviewMother), "purpose": task.PainPoint, "angle": task.Angle, "reviewed": true, "review_response": review.Text})
+			saved, _ := json.Marshal(map[string]any{"examples": pool.Examples, "fact_version_ref": f.ID, "input_sha256": fingerprint, "rule_sha256": derivedHash(state.P0PolicyMD + mother + reviewMother), "purpose": purpose, "angle": task.Angle, "reviewed": true, "review_response": review.Text})
 			if e = s.store.SavePlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "fact_expression_examples", fingerprint, string(saved)); e != nil {
 				state.Warn("本次举例已复核，暂未保存到复用库")
 			}

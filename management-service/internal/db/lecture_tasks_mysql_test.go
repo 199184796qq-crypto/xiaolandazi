@@ -42,7 +42,7 @@ func lectureTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	prefix := "lt" + hex.EncodeToString(key) + "_"
-	tables := []string{"live_agent_plans", "live_agent_plan_facts", "live_agent_plan_fact_revisions", "live_plan_content_revisions", "live_plan_lecture_tasks", "live_plan_lecture_policies"}
+	tables := []string{"live_agent_plans", "live_agent_plan_facts", "live_agent_plan_fact_revisions", "live_plan_content_revisions", "live_plan_lecture_tasks", "live_plan_lecture_policies", "live_plan_content_corrections"}
 	pairs := []string{"xl_pool_source_", prefix + "trigger_"}
 	for _, table := range tables {
 		pairs = append(pairs, table, prefix+table)
