@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
@@ -93,7 +93,7 @@ import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { getLiveContentMode, setLiveContentMode } from '../liveContentMode'
-import { canSelectLiveContentMode, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
+import { canSelectLiveContentMode, liveContentModeLabels, visibleLiveContentModes, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
 import type {
   AgentMemoryItem,
   LiveAgentConfigInput,
@@ -429,7 +429,9 @@ const reusableAnchorStyleTab = ref<'samples' | 'analysis' | 'testing' | 'persona
 const reusableAnchorStyleBusy = ref(false)
 const reusableAnchorStyleNotice = ref('')
 const reusableAnchorStyleError = ref('')
-const reusableAnchorStyleDraft = ref({ name: '', description: '' })
+const editingReusableAnchorStyleNameId = ref<number | null>(null)
+const reusableAnchorStyleNameDraft = ref('')
+const savingReusableAnchorStyleNameId = ref<number | null>(null)
 const reusableAnchorStyleSampleDraft = ref({ title: '', raw_text: '' })
 const reusableAnchorStyleAnalysisStage = ref('')
 const reusableAnchorStyleLongTestRunning = ref(false)
@@ -441,6 +443,14 @@ const reusableAnchorStyleLongTestStage = ref('等待开始')
 const reusableAnchorStyleLongTestOutput = ref<HTMLElement | null>(null)
 const reusableAnchorStyleLongTestContinuation = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['continuation'] | undefined>(undefined)
 const reusableAnchorStyleLongTestAdvisories = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['advisories']>([])
+type AnchorAddressingMode = 'inherit' | 'append' | 'replace'
+const anchorAddressingDraft = ref({
+  audience_mode: 'inherit' as AnchorAddressingMode,
+  audience_terms: '',
+  self_mode: 'inherit' as AnchorAddressingMode,
+  self_terms: '',
+})
+const anchorAddressingSaving = ref(false)
 const reusableAnchorStyleProfile = computed(() => selectedReusableAnchorStyle.value?.profile || null)
 const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dimensions?.length
   ? reusableAnchorStyleProfile.value
@@ -481,7 +491,67 @@ const anchorRulebook = computed(() => anchorDelivery.value?.version === 'anchor-
 const enabledStyleOverlayCount = computed(() => styleOverlayProfile.value?.items.filter((item) => item.enabled).length || 0)
 const activeStylePluginIDs = computed(() => new Set((styleOverlayProfile.value?.items || []).flatMap((item) => item.plugin?.plugin_id ? [item.plugin.plugin_id] : [])))
 const canRunAnchorStyleTest = computed(() => Boolean(anchorRulebook.value) || enabledStyleOverlayCount.value > 0)
+const learnedAnchorAudienceTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
+  .filter((item) => item.kind === 'audience_address' || item.kind === 'audience_pronoun')
+  .map((item) => item.text))
+const learnedAnchorSelfTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
+  .filter((item) => item.kind === 'self_address')
+  .map((item) => item.text))
 const anchorCopyNotice = ref('')
+
+function loadAnchorAddressingDraft(style: LiveAnchorStyle | null) {
+  const value = style?.profile.delivery_spec?.addressing_override
+  anchorAddressingDraft.value = {
+    audience_mode: (value?.audience_mode === 'append' || value?.audience_mode === 'replace' ? value.audience_mode : 'inherit') as AnchorAddressingMode,
+    audience_terms: (value?.audience_terms || []).join('、'),
+    self_mode: (value?.self_mode === 'append' || value?.self_mode === 'replace' ? value.self_mode : 'inherit') as AnchorAddressingMode,
+    self_terms: (value?.self_terms || []).join('、'),
+  }
+}
+
+function splitAnchorAddressingTerms(value: string) {
+  return Array.from(new Set(value.split(/[、,，;；\n]+/).map((item) => item.trim()).filter(Boolean))).slice(0, 12)
+}
+
+async function saveAnchorAddressingOverride() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style?.profile.delivery_spec || anchorAddressingSaving.value) return
+  const audienceTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.audience_terms)
+  const selfTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.self_terms)
+  if (anchorAddressingDraft.value.audience_mode !== 'inherit' && !audienceTerms.length) {
+    reusableAnchorStyleError.value = '观众称呼选择添加或替换时，请至少填写一个称呼。'
+    return
+  }
+  if (anchorAddressingDraft.value.self_mode !== 'inherit' && !selfTerms.length) {
+    reusableAnchorStyleError.value = '主播自称选择添加或替换时，请至少填写一个自称。'
+    return
+  }
+  anchorAddressingSaving.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const profile: LiveAgentPlanAnchorStyleProfile = JSON.parse(JSON.stringify(style.profile))
+    if (!profile.delivery_spec) return
+    profile.delivery_spec.addressing_override = {
+      audience_mode: anchorAddressingDraft.value.audience_mode,
+      audience_terms: audienceTerms,
+      self_mode: anchorAddressingDraft.value.self_mode,
+      self_terms: selfTerms,
+    }
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name: style.name,
+      description: style.description || '',
+      profile,
+    }, activeRoom.value?.tenant_id)
+    selectedReusableAnchorStyle.value = updated
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
+    loadAnchorAddressingDraft(updated)
+    reusableAnchorStyleNotice.value = '生成话术使用的称呼覆盖已保存；实时互动策略没有修改。'
+  } catch (err) {
+    reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存称呼覆盖失败'
+  } finally {
+    anchorAddressingSaving.value = false
+  }
+}
 async function copyAnchorRulebook() {
   try {
     await navigator.clipboard.writeText(anchorRulebook.value)
@@ -557,7 +627,7 @@ async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
     selectedReusableAnchorStyleId.value = styleID
     selectedReusableAnchorStyle.value = style
     reusableAnchorStyleSamples.value = samples.items || []
-    reusableAnchorStyleDraft.value = { name: style.name, description: style.description || '' }
+    loadAnchorAddressingDraft(style)
     reusableAnchorStyleTab.value = reusableAnchorStyleTab.value || 'samples'
     if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案绑定都会使用这套风格。`
   } catch (err) {
@@ -580,34 +650,58 @@ async function createReusableAnchorStyle() {
   } finally { reusableAnchorStyleBusy.value = false }
 }
 
-async function saveReusableAnchorStyleInfo() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || !reusableAnchorStyleDraft.value.name.trim()) return
-  reusableAnchorStyleBusy.value = true
-  try {
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: reusableAnchorStyleDraft.value.name.trim(),
-      description: reusableAnchorStyleDraft.value.description.trim(),
-      profile: style.profile,
-    }, activeRoom.value?.tenant_id)
-    selectedReusableAnchorStyle.value = updated
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
-    reusableAnchorStyleNotice.value = '主播名称和介绍已保存。'
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
-  finally { reusableAnchorStyleBusy.value = false }
+function beginReusableAnchorStyleNameEdit(style: LiveAnchorStyle) {
+  editingReusableAnchorStyleNameId.value = style.id
+  reusableAnchorStyleNameDraft.value = style.name
+  reusableAnchorStyleError.value = ''
 }
 
-async function deleteReusableAnchorStyle() {
-  const style = selectedReusableAnchorStyle.value
+function cancelReusableAnchorStyleNameEdit() {
+  editingReusableAnchorStyleNameId.value = null
+  reusableAnchorStyleNameDraft.value = ''
+}
+
+async function saveReusableAnchorStyleName(style: LiveAnchorStyle) {
+  if (editingReusableAnchorStyleNameId.value !== style.id || savingReusableAnchorStyleNameId.value === style.id) return
+  const name = reusableAnchorStyleNameDraft.value.trim()
+  if (!name) {
+    reusableAnchorStyleError.value = '主播名称不能为空。'
+    reusableAnchorStyleNameDraft.value = style.name
+    return
+  }
+  if (name === style.name) {
+    cancelReusableAnchorStyleNameEdit()
+    return
+  }
+  savingReusableAnchorStyleNameId.value = style.id
+  try {
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name,
+      description: style.description || '',
+      profile: style.profile,
+    }, activeRoom.value?.tenant_id)
+    if (selectedReusableAnchorStyleId.value === updated.id) selectedReusableAnchorStyle.value = updated
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
+    reusableAnchorStyleNotice.value = `主播名称“${updated.name}”已自动保存。`
+    cancelReusableAnchorStyleNameEdit()
+  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
+  finally { savingReusableAnchorStyleNameId.value = null }
+}
+
+async function deleteReusableAnchorStyle(styleToDelete?: LiveAnchorStyle) {
+  const style = styleToDelete || selectedReusableAnchorStyle.value
   if (!style) return
   if (!window.confirm(`确定删除主播“${style.name}”吗？删除后该主播的样本、训练记录和绑定关系都会移除。`)) return
   if (!window.confirm('请再次确认：这不是移出列表，而是永久删除这名主播的风格资料。')) return
   try {
     await deleteLiveAnchorStyle(style.id, activeRoom.value?.tenant_id)
     reusableAnchorStyles.value = reusableAnchorStyles.value.filter((item) => item.id !== style.id)
-    selectedReusableAnchorStyleId.value = null
-    selectedReusableAnchorStyle.value = null
-    await loadReusableAnchorStyleWorkspace()
+    if (selectedReusableAnchorStyleId.value === style.id) {
+      selectedReusableAnchorStyleId.value = null
+      selectedReusableAnchorStyle.value = null
+      reusableAnchorStyleSamples.value = []
+      await loadReusableAnchorStyleWorkspace()
+    }
     reusableAnchorStyleNotice.value = '主播风格已删除。'
   } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播风格失败' }
 }
@@ -709,7 +803,7 @@ async function runReusableLongTest() {
   try {
     const totalSegments = Math.max(1, Math.ceil(Math.max(5, reusableAnchorStyleLongTestMinutes.value) / 5))
     for (let index = 0; index < totalSegments && reusableAnchorStyleLongTestRunning.value; index += 1) {
-      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，模型会先通过事实和风格检查再显示…`
+      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，事实检查通过后立即显示；风格失败会回退基础正文…`
       const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。`.slice(0, 280)
       const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
         room_id: activeRoomId.value, topic: continuityTopic,
@@ -729,14 +823,14 @@ async function runReusableLongTest() {
       }
       reusableAnchorStyleLongTestText.value += (reusableAnchorStyleLongTestText.value ? '\n\n' : '') + result.text
       reusableAnchorStyleLongTestSegments.value += 1
-      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已通过检查，继续生成下一段`
+      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已流出，继续生成下一段`
       await nextTick()
       reusableAnchorStyleLongTestOutput.value?.scrollTo({ top: reusableAnchorStyleLongTestOutput.value.scrollHeight, behavior: 'smooth' })
     }
     if (reusableAnchorStyleLongTestRunning.value) reusableAnchorStyleLongTestStage.value = `测试完成，共生成 ${reusableAnchorStyleLongTestSegments.value} 段`
     else reusableAnchorStyleLongTestStage.value = `已停止，已保留 ${reusableAnchorStyleLongTestSegments.value} 段`
   } catch (err) {
-    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经通过检查的片段'
+    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经流出的片段'
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败'
   }
   finally { reusableAnchorStyleLongTestRunning.value = false }
@@ -908,6 +1002,7 @@ const fullShowRoundMinutes = ref(7)
 const fullShowVariantCount = ref(5)
 const anchorStyleMatchIntensity = ref(100)
 const fullShowExpansionFreedom = ref(65)
+const fullShowConversionIntensity = ref(55)
 const fullShowExpansionLabel = computed(() => {
   if (fullShowExpansionFreedom.value <= 25) return '保守扩展'
   if (fullShowExpansionFreedom.value <= 55) return '平衡扩展'
@@ -991,7 +1086,16 @@ const contentModeLoading = ref(false)
 const contentModeSaving = ref(false)
 const contentModeError = ref('')
 const contentModeNotice = ref('')
+const dynamicRefreshMinutes = ref(120)
+const dynamicReplacementPercent = ref(25)
+const visibleContentModes = computed(() => visibleLiveContentModes(contentModeAccess.value))
 const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_mode === 'user_audio')
+const isFixedGeneratedContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_pregenerated')
+const isRealtimeVoiceContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_dynamic')
+const hasCustomMainlineResult = computed(() => Boolean(fullShowResult.value?.variants.some((item) => item.variant_key === 'CUSTOM')))
+const fullShowVersionActionReady = computed(() => Boolean(
+  fullShowResult.value && (isFixedGeneratedContentMode.value || (isUserAudioContentMode.value && hasCustomMainlineResult.value)),
+))
 const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
 let contentModeLoadNo = 0
 let contentModeRefreshTimer: number | undefined
@@ -1010,6 +1114,8 @@ async function refreshContentMode(reset = false) {
     if (token !== contentModeLoadNo || activeRoomId.value !== roomId) return
     const previousMode = contentModeAccess.value?.content_mode
     contentModeAccess.value = value
+    dynamicRefreshMinutes.value = Math.max(30, Math.round((value.refresh_interval_seconds || 7200) / 60))
+    dynamicReplacementPercent.value = Math.max(1, Math.min(100, value.replacement_percent || 25))
     if (previousMode !== value.content_mode) {
       fullShowOutputMode.value = value.content_mode === 'user_audio' ? 'custom' : 'generated'
     }
@@ -1032,9 +1138,14 @@ async function chooseContentMode(mode: LiveContentMode) {
   contentModeError.value = ''
   contentModeNotice.value = ''
   try {
-    const value = await setLiveContentMode(roomId, mode)
+    const dynamic = mode === 'ai_dynamic' ? {
+      refresh_interval_seconds: Math.round(dynamicRefreshMinutes.value * 60),
+      replacement_percent: Math.round(dynamicReplacementPercent.value),
+    } : undefined
+    const value = await setLiveContentMode(roomId, mode, dynamic)
     if (token !== contentModeLoadNo || roomId !== activeRoomId.value) return
     contentModeAccess.value = value
+    fullShowOutputMode.value = mode === 'user_audio' ? 'custom' : 'generated'
     selectFullShowOutputMode(value.content_mode === 'user_audio' ? 'custom' : 'generated')
     contentModeNotice.value = '已保存当前直播间的内容模式；文案和声音仍需确认并发布后使用。'
   } catch (err) {
@@ -1043,6 +1154,38 @@ async function chooseContentMode(mode: LiveContentMode) {
     contentModeAccess.value = null
   } finally {
     if (token === contentModeLoadNo) contentModeSaving.value = false
+  }
+}
+
+async function saveDynamicContentSettings() {
+  if (contentModeAccess.value?.content_mode !== 'ai_dynamic') return
+  if (dynamicRefreshMinutes.value < 30 || dynamicRefreshMinutes.value > 1440 || dynamicReplacementPercent.value < 1 || dynamicReplacementPercent.value > 100) {
+    contentModeError.value = '更新间隔须为30–1440分钟，每次替换比例须为1–100%。'
+    return
+  }
+  // Re-saving the active mode is intentional: the customer endpoint owns only
+  // these two bounded runtime preferences and leaves entitlement/admin policy intact.
+  await chooseContentModeWithRefresh('ai_dynamic')
+}
+
+async function chooseContentModeWithRefresh(mode: LiveContentMode) {
+  const roomId = activeRoomId.value
+  if (!roomId || contentModeSaving.value || !canSelectLiveContentMode(contentModeAccess.value, mode)) return
+  contentModeSaving.value = true
+  contentModeError.value = ''
+  contentModeNotice.value = ''
+  try {
+    const value = await setLiveContentMode(roomId, mode, mode === 'ai_dynamic' ? {
+      refresh_interval_seconds: Math.round(dynamicRefreshMinutes.value * 60),
+      replacement_percent: Math.round(dynamicReplacementPercent.value),
+    } : undefined)
+    contentModeAccess.value = value
+    fullShowOutputMode.value = mode === 'user_audio' ? 'custom' : 'generated'
+    contentModeNotice.value = mode === 'ai_dynamic' ? '实时声音的更新频率与替换比例已保存。' : '内容模式已保存。'
+  } catch (err) {
+    contentModeError.value = err instanceof Error ? err.message : '保存内容模式失败'
+  } finally {
+    contentModeSaving.value = false
   }
 }
 
@@ -1055,6 +1198,7 @@ const fullShowSubtitleDrafts = ref<Record<string, LiveAgentPlanTimelineSegment[]
 const fullShowSubtitleSavingKey = ref('')
 const fullShowSubtitleError = ref('')
 const customMainlineFile = ref<File | null>(null)
+const customMainlineFiles = shallowRef<File[]>([])
 const customMainlineVoiceSample = ref<File | null>(null)
 const customMainlineDurationMS = ref(0)
 const customMainlineUploadProgress = ref(0)
@@ -1281,11 +1425,20 @@ const fullShowSourceSummary = computed(() => {
 })
 const fullShowRoundPreview = computed(() => {
   const variants = ['A稿', 'B稿', 'C稿', 'D稿', 'E稿']
-  const openings = ['新人留人切入', '生活场景切入', '用户疑问切入', '产品价值切入', '老客信任切入']
+  const openings = ['完整进入', '轻量重新进入', '场景重新进入', '价值重新进入', '信任重新进入']
+  const flows = [
+    ['塑品', '塑信', '塑价', '行动', '消虑', '承接'],
+    ['塑品', '场景', '消虑', '行动', '塑信', '承接'],
+    ['塑价', '塑品', '塑信', '行动', '消虑', '承接'],
+    ['塑信', '塑品', '场景', '消虑', '行动', '承接'],
+    ['消虑', '塑品', '塑价', '行动', '塑信', '承接'],
+  ]
   return Array.from({ length: Math.min(fullShowRoundCount.value, 12) }, (_, index) => ({
     index: index + 1,
     variant: variants[index % variants.length],
     opening: openings[index % openings.length],
+    flow: flows[index % flows.length],
+    closing: index === fullShowRoundCount.value - 1 ? '本轮收口（收到下播信号才转全场收口）' : '本轮收口并进入下一轮',
     startMinute: index * fullShowRoundMinutes.value,
   }))
 })
@@ -1759,7 +1912,8 @@ async function createCustomMainlineVoiceSample(file: File) {
 
 async function handleCustomMainlineFile(event: Event) {
   const input = event.currentTarget as HTMLInputElement
-  const file = input.files?.[0] || null
+  const files = Array.from(input.files || [])
+  const file = files[0] || null
   customMainlineError.value = ''
   customMainlineDraft.value = null
   customMainlineTimeline.value = []
@@ -1768,24 +1922,34 @@ async function handleCustomMainlineFile(event: Event) {
   customMainlineStage.value = 'idle'
   if (!file) {
     customMainlineFile.value = null
+    customMainlineFiles.value = []
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
     return
   }
-  if (file.size > 200 * 1024 * 1024) {
+  if (files.length > 20) {
     customMainlineFile.value = null
+    customMainlineFiles.value = []
+    customMainlineError.value = '一次最多上传20段录音。'
+    input.value = ''
+    return
+  }
+  if (files.some((item) => item.size > 200 * 1024 * 1024) || files.reduce((sum, item) => sum + item.size, 0) > 500 * 1024 * 1024) {
+    customMainlineFile.value = null
+    customMainlineFiles.value = []
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
-    customMainlineError.value = '自定义音稿最大支持 200MB。'
+    customMainlineError.value = '每段录音最大200MB，多段录音总大小最大500MB。'
     input.value = ''
     return
   }
   customMainlineFile.value = file
-  const [durationMS, voiceSample] = await Promise.all([
-    readCustomMainlineDuration(file),
+  customMainlineFiles.value = files
+  const [durations, voiceSample] = await Promise.all([
+    Promise.all(files.map((item) => readCustomMainlineDuration(item))),
     createCustomMainlineVoiceSample(file),
   ])
-  customMainlineDurationMS.value = durationMS
+  customMainlineDurationMS.value = durations.reduce((sum, value) => sum + value, 0)
   customMainlineVoiceSample.value = voiceSample
 }
 
@@ -1798,8 +1962,8 @@ async function uploadCustomMainline() {
   }
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
-  const file = customMainlineFile.value
-  if (!planId || !room || !file) {
+  const files = customMainlineFiles.value
+  if (!planId || !room || !files.length) {
     customMainlineError.value = '请选择当前方案、直播间和要上传的音频。'
     return
   }
@@ -1812,7 +1976,7 @@ async function uploadCustomMainline() {
     const response = await uploadLiveAgentCustomMainline(
       planId,
       room.id,
-      file,
+      files,
       customMainlineDurationMS.value,
       customMainlineVoiceSample.value,
       (loaded, total) => {
@@ -2591,6 +2755,7 @@ function resetFullShowWorkspaceState() {
   fullShowSubtitleSavingKey.value = ''
   fullShowSubtitleError.value = ''
   customMainlineFile.value = null
+  customMainlineFiles.value = []
   customMainlineVoiceSample.value = null
   customMainlineDurationMS.value = 0
   customMainlineUploadProgress.value = 0
@@ -2946,6 +3111,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
         variant_count: variants.length,
         style_match_intensity: anchorStyleMatchIntensity.value,
         expansion_freedom: fullShowExpansionFreedom.value,
+        conversion_intensity: fullShowConversionIntensity.value,
         use_anchor_style: fullShowUseAnchorStyle.value,
         use_dynamic_facts: fullShowUseDynamicFacts.value,
         generate_tts_hints: fullShowGenerateTTS.value,
@@ -3098,6 +3264,7 @@ async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
       round_minutes: fullShowRoundMinutes.value,
       style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
+      conversion_intensity: fullShowConversionIntensity.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
@@ -3246,6 +3413,7 @@ async function generateFullShowPreview() {
       variant_count: fullShowVariantCount.value,
       style_match_intensity: anchorStyleMatchIntensity.value,
       expansion_freedom: fullShowExpansionFreedom.value,
+      conversion_intensity: fullShowConversionIntensity.value,
       use_anchor_style: fullShowUseAnchorStyle.value,
       use_dynamic_facts: fullShowUseDynamicFacts.value,
       generate_tts_hints: fullShowGenerateTTS.value,
@@ -5993,22 +6161,56 @@ onBeforeUnmount(() => {
           <div class="reusable-anchor-style-workspace">
             <aside class="reusable-anchor-style-sidebar">
               <div class="reusable-anchor-style-sidebar-head">
-                <div><span>主播库</span><strong>已保存的主播风格</strong></div>
                 <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy" @click="createReusableAnchorStyle">＋新建主播</button>
               </div>
-              <p class="reusable-anchor-style-help">选中后，测试文案和当前智能体方案都会按这名主播的说话方式生成。</p>
               <div v-if="!reusableAnchorStyles.length" class="reusable-anchor-style-empty">还没有保存主播。先新建主播，再导入一份或多份真实话术。</div>
-              <button
+              <article
                 v-for="style in reusableAnchorStyles"
                 :key="style.id"
-                type="button"
                 class="reusable-anchor-style-card"
                 :class="{ selected: selectedReusableAnchorStyleId === style.id }"
+                role="button"
+                tabindex="0"
                 @click="selectReusableAnchorStyle(style.id)"
+                @keydown.enter.prevent="selectReusableAnchorStyle(style.id)"
+                @keydown.space.prevent="selectReusableAnchorStyle(style.id)"
               >
                 <span class="reusable-anchor-style-card-radio">{{ selectedReusableAnchorStyleId === style.id ? '✓' : '' }}</span>
-                <span><strong>{{ style.name }}</strong><small>{{ style.description || '还没有填写风格介绍' }}</small><em>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</em></span>
-              </button>
+                <span class="reusable-anchor-style-card-body">
+                  <span class="reusable-anchor-style-card-name">
+                    <input
+                      v-if="editingReusableAnchorStyleNameId === style.id"
+                      v-model="reusableAnchorStyleNameDraft"
+                      v-focus
+                      maxlength="80"
+                      aria-label="修改主播名称"
+                      :disabled="savingReusableAnchorStyleNameId === style.id"
+                      @click.stop
+                      @blur="saveReusableAnchorStyleName(style)"
+                      @keydown.enter.stop.prevent="saveReusableAnchorStyleName(style)"
+                      @keydown.esc.stop.prevent="cancelReusableAnchorStyleNameEdit"
+                    />
+                    <strong v-else>{{ style.name }}</strong>
+                    <button
+                      v-if="editingReusableAnchorStyleNameId !== style.id"
+                      type="button"
+                      class="reusable-anchor-style-card-edit"
+                      title="修改主播名称"
+                      :aria-label="`修改主播“${style.name}”的名称`"
+                      @click.stop="beginReusableAnchorStyleNameEdit(style)"
+                    >✎</button>
+                    <small v-else-if="savingReusableAnchorStyleNameId === style.id">保存中…</small>
+                  </span>
+                  <small>{{ style.description || '还没有填写风格介绍' }}</small>
+                  <em>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</em>
+                </span>
+                <button
+                  type="button"
+                  class="reusable-anchor-style-card-delete"
+                  :aria-label="`删除主播“${style.name}”`"
+                  @click.stop="deleteReusableAnchorStyle(style)"
+                >删除</button>
+              </article>
               <button v-if="selectedReusableAnchorStyle" type="button" class="reusable-anchor-style-bind" :disabled="!currentRoomPlanId" @click="bindReusableAnchorStyle">
                 {{ currentRoomPlanId ? '设为当前智能体主播' : '先选择智能体方案' }}
               </button>
@@ -6016,36 +6218,51 @@ onBeforeUnmount(() => {
             </aside>
 
             <div class="reusable-anchor-style-main">
-              <div class="reusable-anchor-style-main-head">
-                <div>
-                  <span>REUSABLE PRESENTER PROFILE</span>
-                  <h3>{{ selectedReusableAnchorStyle?.name || '主播风格' }}</h3>
-                  <p>{{ selectedReusableAnchorStyle?.description || '把不同商品话术中的“怎么说”沉淀为可复用主播。' }}</p>
-                </div>
-                <div class="reusable-anchor-style-main-actions" v-if="selectedReusableAnchorStyle">
-                  <button type="button" class="strategy-version-button" @click="saveReusableAnchorStyleInfo">保存名称与介绍</button>
-                  <button type="button" class="danger-button" @click="deleteReusableAnchorStyle">删除主播</button>
-                </div>
-              </div>
               <div v-if="reusableAnchorStyleError" class="inline-error">{{ reusableAnchorStyleError }}</div>
               <div v-if="reusableAnchorStyleNotice" class="notice-banner">{{ reusableAnchorStyleNotice }}</div>
-              <div v-if="selectedReusableAnchorStyle" class="reusable-anchor-style-edit-row">
-                <input v-model="reusableAnchorStyleDraft.name" maxlength="80" placeholder="主播名称，例如：四川老乡主播" />
-                <input v-model="reusableAnchorStyleDraft.description" maxlength="500" placeholder="一句话介绍这个主播的说话感觉" />
-              </div>
               <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle">
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">主播风格样本话术</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">风格分析结果</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'testing' }" @click="reusableAnchorStyleTab = 'testing'">测试与训练</button>
-                <button type="button" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">个性化挂载</button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-samples" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>风格样本</strong><small>导入主播话术</small></span>
+                </button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-analysis" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="18" width="5" height="10" rx="1"/><rect x="13.5" y="11" width="5" height="17" rx="1"/><rect x="23" y="4" width="5" height="24" rx="1"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>风格分析结果</strong><small>提取语言特征</small></span>
+                </button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-testing" :class="{ active: reusableAnchorStyleTab === 'testing' }" @click="reusableAnchorStyleTab = 'testing'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m3 11 13-7 13 7-13 7-13-7Z"/><path d="M8 14v7c4 4 12 4 16 0v-7M28 12v8"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>测试与训练</strong><small>生成优化话术</small></span>
+                </button>
+                <button type="button" class="anchor-style-tab-card anchor-style-tab-personalization" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">
+                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 4a4 4 0 1 1 8 0v5h5a4 4 0 1 1 0 8h-5v5a4 4 0 1 1-8 0v-5H7a4 4 0 1 1 0-8h5V4Z"/></svg></span>
+                  <span class="anchor-style-tab-copy"><strong>个性化挂载</strong><small>配置专属风格</small></span>
+                </button>
               </nav>
 
-              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel">
-                <div class="reusable-anchor-style-panel-title"><div><strong>导入这个主播不同场景的话术</strong><small>可以分别放菜籽油、衣服、闲聊等样本。系统只学习口语、称呼、口头禅和局部推进，不学习商品事实。</small></div></div>
+              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel reusable-anchor-style-samples-panel">
+                <div class="reusable-anchor-style-samples-hero">
+                  <span class="reusable-anchor-style-samples-hero-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
+                  <div><strong>导入这个主播不同场景的话术</strong><small>可以分别放菜籽油、衣服、闲聊等样本。系统只学习口语、称呼、口头禅和局部推进，不学习商品事实。</small></div>
+                </div>
                 <div class="reusable-anchor-style-sample-compose">
-                  <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="120" placeholder="样本标题，例如：菜籽油主线" />
-                  <textarea v-model="reusableAnchorStyleSampleDraft.raw_text" rows="7" maxlength="30000" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴。"></textarea>
-                  <div class="reusable-anchor-style-sample-compose-actions"><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample">保存这份样本</button><label class="strategy-version-button reusable-anchor-style-file-button">导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label></div>
+                  <label class="reusable-anchor-style-compose-field">
+                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M8 3h9l5 5v17H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M17 3v6h5M10 14h7M10 18h7"/></svg></span>
+                    <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="50" placeholder="样本标题，例如：菜籽油主线" />
+                    <span class="reusable-anchor-style-compose-count">{{ reusableAnchorStyleSampleDraft.title.length }}/50</span>
+                  </label>
+                  <label class="reusable-anchor-style-compose-field reusable-anchor-style-compose-textarea">
+                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h18v14H12l-5 4v-4H5V5Z"/><path d="M10 11h.01M14 11h.01M18 11h.01"/></svg></span>
+                    <textarea v-model="reusableAnchorStyleSampleDraft.raw_text" rows="8" maxlength="5000" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴。"></textarea>
+                    <span class="reusable-anchor-style-compose-count">{{ reusableAnchorStyleSampleDraft.raw_text.length }}/5000</span>
+                  </label>
+                  <div class="reusable-anchor-style-sample-compose-actions">
+                    <div class="reusable-anchor-style-sample-compose-buttons">
+                      <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="m4 13 20-9-7 20-4-8-9-3Z"/><path d="m13 16 5-6"/></svg>保存这份样本</button>
+                      <label class="strategy-version-button reusable-anchor-style-file-button"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M7 3h10l5 5v17H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M17 3v6h5M14 12v8M10 16l4 4 4-4"/></svg>导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label>
+                    </div>
+                    <div class="reusable-anchor-style-sample-tip"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M9 18c-2-2-3-4-3-7a8 8 0 1 1 16 0c0 3-1 5-3 7l-1 2h-8l-1-2ZM10 24h8M11 21h6"/><path d="M14 1v2M3 11H1M27 11h-2M5 3l2 2M23 3l-2 2"/></svg><span>提示：样本越真实越完整，生成的风格越贴近。</span></div>
+                  </div>
+                  <div class="reusable-anchor-style-sample-examples"><strong>样本示例</strong><button type="button" @click="reusableAnchorStyleSampleDraft.title = '菜籽油主线'">菜籽油主线</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '服装卖点讲解'">服装卖点讲解</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '发货与售后'">发货与售后</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '日常闲聊互动'">日常闲聊互动</button></div>
                 </div>
                 <div v-if="reusableAnchorStyleAnalysisStage" class="reusable-anchor-style-thinking"><span class="thinking-dot"></span><strong>{{ reusableAnchorStyleAnalysisStage }}</strong><small>正在调用风格分析与同步质检，请不要重复点击。</small></div>
                 <div class="reusable-anchor-style-sample-list">
@@ -6057,7 +6274,8 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel">
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="风格分析结果预留页面">
+                <div v-show="false">
                 <div class="reusable-anchor-style-panel-title"><div><strong>风格分析结果</strong><small>下面的内容是跨商品可复用的“怎么说”，事实、价格、链接和互动策略不在这里。</small></div><span>{{ selectedReusableAnchorStyle.sample_count }} 份样本已纳入</span></div>
                 <div v-if="!selectedReusableAnchorStyle.profile.dimensions?.length" class="reusable-anchor-style-empty">还没有分析结果。请回到“主播风格样本话术”分析至少一份样本。</div>
                 <template v-else>
@@ -6065,10 +6283,26 @@ onBeforeUnmount(() => {
                     <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。样本证据置信度：{{ selectedReusableAnchorStyle.profile.delivery_spec?.sample_confidence || '待累计' }}；短样本先看存在性，长样本才按密度约束。</small></header>
                     <pre>{{ selectedReusableAnchorStyle.profile.delivery_spec?.rulebook || selectedReusableAnchorStyle.profile.reusable_rules.join('\n') }}</pre>
                   </section>
+                  <section class="anchor-addressing-override">
+                    <header>
+                      <div><strong>生成话术的称呼覆盖</strong><small>未启用时沿用样本学到的称呼；这里仅影响主线话术生成，不修改直播间实时互动策略。</small></div>
+                      <button type="button" class="primary-button" :disabled="anchorAddressingSaving" @click="saveAnchorAddressingOverride">{{ anchorAddressingSaving ? '保存中…' : '保存称呼覆盖' }}</button>
+                    </header>
+                    <div class="anchor-addressing-learned">
+                      <span>样本观众称呼：{{ learnedAnchorAudienceTerms.join('、') || '未提取到稳定称呼' }}</span>
+                      <span>样本主播自称：{{ learnedAnchorSelfTerms.join('、') || '未提取到稳定自称' }}</span>
+                    </div>
+                    <div class="anchor-addressing-grid">
+                      <label><span>观众 / 粉丝称呼</span><select v-model="anchorAddressingDraft.audience_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类称呼</option></select><textarea v-if="anchorAddressingDraft.audience_mode !== 'inherit'" v-model="anchorAddressingDraft.audience_terms" rows="2" maxlength="180" placeholder="例如：姐妹们、老朋友们；用顿号或换行分隔"></textarea></label>
+                      <label><span>主播自称</span><select v-model="anchorAddressingDraft.self_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类自称</option></select><textarea v-if="anchorAddressingDraft.self_mode !== 'inherit'" v-model="anchorAddressingDraft.self_terms" rows="2" maxlength="180" placeholder="例如：我、咱们家；用顿号或换行分隔"></textarea></label>
+                    </div>
+                  </section>
                 </template>
+                </div>
               </div>
 
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel">
+              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="测试与训练预留页面">
+                <div v-show="false">
                 <div class="reusable-anchor-style-panel-title"><div><strong>测试与训练</strong><small>每次先生成一小段；不满意可写差异继续校正。测试不会发布，也不会自动备份版本或改当前直播。</small></div></div>
                 <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
                   <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
@@ -6085,13 +6319,14 @@ onBeforeUnmount(() => {
                   <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
                 </section>
                 <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
-                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">放行线：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>本次测试仅供校对，不自动备份版本。</span></div>
+                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">质量目标：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达到' : '后续窗口继续补偿' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>风格分只用于质量监控，不阻塞正文。</span></div>
                 <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
                   <header><strong>本次话术安排</strong><small>系统一次规划最多8个短期小段，正文仍逐段生成、校验并立即显示；互动或事实变化时只废弃尚未生成的部分。选择不合适或超时，由系统兜底。</small></header>
                   <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
+                  <p>行动节点：目标 {{ anchorStyleTestResult.content_strategy.action_target ?? 0 }} · 实际 {{ anchorStyleTestResult.content_strategy.action_planned ?? 0 }} · 直接CTA {{ anchorStyleTestResult.content_strategy.direct_cta_mentions ?? 0 }} 处</p>
                   <template v-if="anchorStyleTestResult.content_strategy.actual_steps?.length">
                     <p>本次实际顺序：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.actual_steps.map((step) => step.role), anchorStyleTestResult.content_strategy.live_type) }}</p>
-                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }} · {{ step.source.startsWith('model') ? '模型短期规划' : '系统兜底' }}：{{ step.reason }}</p></details>
+                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ step.mainline_phase || 'body' }} / {{ step.body_function || mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }}<template v-if="step.cta_type"> · CTA={{ step.cta_type }}</template> · {{ step.source.startsWith('model') ? '模型短期规划' : '系统校正/兜底' }}：{{ step.reason }}</p></details>
                   </template>
                   <p v-else>默认环节参考（不是本次实际顺序）：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.role_sequence, anchorStyleTestResult.content_strategy.live_type) }}</p>
                   <details v-if="anchorStyleTestResult.content_strategy.product_plan?.length" open>
@@ -6138,10 +6373,11 @@ onBeforeUnmount(() => {
                    <section class="reusable-anchor-style-stream-window" role="dialog" aria-modal="true" aria-label="连续主线输出窗口">
                      <header class="reusable-anchor-style-stream-header"><div><span>LIVE MAINLINE PREVIEW</span><strong>主播主线连续输出</strong><small>{{ reusableAnchorStyleLongTestStage }}</small></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = false">关闭窗口</button></header>
                      <div class="reusable-anchor-style-stream-metrics"><span>已生成 <b>{{ reusableAnchorStyleLongTestSegments }}</b> 段</span><span>测试时长 <b>{{ reusableAnchorStyleLongTestMinutes }}</b> 分钟</span><span>模式 <b>小段连续生成</b></span></div>
-                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过检查…' }}</pre>
-                     <footer><span>每段通过事实、字数和风格检查后才追加；本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
+                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过事实检查并流出…' }}</pre>
+                     <footer><span>每段先通过事实和结构检查，再尝试风格包装；包装失败立即显示基础正文。本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
                    </section>
                  </div>
+                </div>
               </div>
 
               <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'personalization'" class="reusable-anchor-style-tab-panel">
@@ -6343,12 +6579,12 @@ onBeforeUnmount(() => {
               <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
               <small>本次独立参数：主播风格还原强度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。还原强度是生成目标，实际分数由下方1000字窗口独立测量；两项参数互不联动。</small>
               <small v-if="anchorStyleTestResult.generation_mode === 'horizon_streaming_segments'">生成方式：每次短期规划最多8段，正文按 {{ anchorStyleTestResult.segment_count || '多个' }} 个时间单元逐段校验并流式追加；首段 {{ anchorStyleTestResult.first_segment_ms ?? '—' }}ms，规划调用 {{ anchorStyleTestResult.planning_call_count ?? 0 }} 次，正文调用 {{ anchorStyleTestResult.render_call_count ?? 0 }} 次，其中返修 {{ anchorStyleTestResult.repair_call_count ?? 0 }} 次。</small>
-              <small v-if="anchorStyleTestResult.style_degraded || anchorStyleTestResult.style_patched_segments?.length || anchorStyleTestResult.fact_template_segments?.length || anchorStyleTestResult.skipped_segments?.length" class="notice-banner">本次自动恢复：程序补风格 {{ anchorStyleTestResult.style_patched_segments?.length || 0 }} 段、确认事实模板 {{ anchorStyleTestResult.fact_template_segments?.length || 0 }} 段、跳过并重规划 {{ anchorStyleTestResult.skipped_segments?.length || 0 }} 段、中性兜底 {{ anchorStyleTestResult.fallback_segments?.length || 0 }} 段。事实和硬规则始终有效；若标记为风格降级，后续小段会继续校正。</small>
+              <small v-if="anchorStyleTestResult.style_degraded || anchorStyleTestResult.style_patched_segments?.length || anchorStyleTestResult.fact_template_segments?.length || anchorStyleTestResult.fallback_segments?.length || anchorStyleTestResult.style_fallback_segments?.length" class="notice-banner">本次自动恢复：确定性风格补丁 {{ anchorStyleTestResult.style_patched_segments?.length || 0 }} 段、确认事实模板 {{ anchorStyleTestResult.fact_template_segments?.length || 0 }} 段、中性正文兜底 {{ anchorStyleTestResult.fallback_segments?.length || 0 }} 段、风格包装回退 {{ anchorStyleTestResult.style_fallback_segments?.length || 0 }} 段；跳段始终为0。事实和硬规则始终有效，后续窗口继续补偿风格。</small>
               <small v-else-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
               <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
-              <small :class="{ 'inline-error': !anchorStyleTestResult.style_check.passed }">样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过补正）' : '' }}。90–100高还原档会在每个小段提交前验收，未过放行线会定向返修，不再把低分结果当成成功。</small>
+              <small>样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差，后续窗口继续补偿` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过内容补正或安全回退）' : '' }}。风格质量不作为直播放行闸门。</small>
               <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.style_window" :class="{ 'inline-error': anchorStyleTestResult.style_window.strict && !anchorStyleTestResult.style_window.passed }">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；当前放行线 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达标' : '未达标' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由策略外挂控制。</small>
+              <small v-if="anchorRulebook && anchorStyleTestResult.style_window">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；质量目标 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达到' : '未达到时由后续小段补偿' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由业务策略控制。</small>
               <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">防照抄评测：与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。</small>
               <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
               <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
@@ -6396,75 +6632,105 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <div class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
+          <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
+            {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
+          </div>
+          <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
+            <header>
+              <div class="strategy-content-mode-heading">
+                <strong>主线内容与声音来源</strong>
+                <small>三种模式最终都会交付分段文字、SRT、语义时间点和可播放声音资产，您可随时切换。</small>
+              </div>
+              <div class="strategy-content-mode-dashboard-actions">
+                <button
+                  type="button"
+                  class="strategy-content-mode-version-action"
+                  :disabled="!fullShowVersionActionReady || fullShowVersionSaving || fullShowVersionPublishing"
+                  @click="saveFullShowVersion"
+                >
+                  <i aria-hidden="true"><svg viewBox="0 0 36 36"><path d="M11 6h11l5 5v19H11z" /><path d="M22 6v6h5M15 18h8M15 23h8" /></svg></i>
+                  <span>
+                    <strong>{{ fullShowVersionSaving ? '保存中…' : '保存新版本' }}</strong>
+                    <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('已保存 V' + fullShowSavedVersion.version_no + '，可以发布') : '保存当前配置与内容' }}</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="strategy-content-mode-version-action is-publish"
+                  :disabled="!fullShowVersionActionReady || fullShowVersionSaving || fullShowVersionPublishing"
+                  @click="publishFullShowVersion"
+                >
+                  <i aria-hidden="true"><svg viewBox="0 0 36 36"><path d="m5 17 26-11-9 25-5-10z" /><path d="m17 21 14-15" /></svg></i>
+                  <span>
+                    <strong>{{ fullShowVersionPublishing ? '发布中…' : fullShowSavedVersion?.lifecycle_status === 'published' ? '已发布到直播间' : '发布到直播间' }}</strong>
+                    <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('发布已保存的 V' + fullShowSavedVersion.version_no) : '将当前内容发布使用' }}</small>
+                  </span>
+                </button>
+                <div class="strategy-content-mode-save-state">
+                  <i>✓</i>
+                  <div>
+                    <strong>{{ contentModeNotice || '已保存当前直播间的内容模式' }}</strong>
+                    <small>文案和内容仍需确认并发布后使用。</small>
+                  </div>
+                </div>
+              </div>
+            </header>
+            <div class="strategy-content-mode-cards">
+              <button v-for="mode in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
+                <i>{{ mode === 'user_audio' ? '01' : mode === 'ai_pregenerated' ? '02' : '03' }}</i>
+                <span class="strategy-content-mode-icon" :class="'is-' + mode" aria-hidden="true">
+                  <svg v-if="mode === 'user_audio'" viewBox="0 0 36 36"><path d="M8 15v6M13 10v16M18 6v24M23 11v14M28 15v6" /></svg>
+                  <svg v-else-if="mode === 'ai_pregenerated'" viewBox="0 0 36 36"><path d="M11 6h11l5 5v19H11z" /><path d="M22 6v6h5M15 18h8M15 23h8" /></svg>
+                  <svg v-else viewBox="0 0 36 36"><path d="M21 4 9 20h9l-3 12 12-17h-9z" /></svg>
+                </span>
+                <div class="strategy-content-mode-card-copy">
+                  <strong>{{ mode === 'user_audio' ? '录音主线' : mode === 'ai_pregenerated' ? '固定生成' : '实时声音' }}</strong>
+                  <span>{{ liveContentModeLabels[mode].description }}</span>
+                </div>
+                <b>{{ contentModeAccess.content_mode === mode ? '当前使用 ✓' : '选择' }}</b>
+              </button>
+            </div>
+          </section>
+
+          <section v-if="isRealtimeVoiceContentMode" class="strategy-realtime-voice-page">
+            <header>
+              <div>
+                <span>实时声音</span>
+                <strong>直播中按周期准备并切换新声音</strong>
+                <small>本页只管理实时声音。新内容与声音准备完成后在安全音轨边界切换，失败时继续播放上一版。</small>
+              </div>
+              <em>独立业务页</em>
+            </header>
+            <div class="strategy-dynamic-settings">
+              <label><span>更新间隔</span><div><input v-model.number="dynamicRefreshMinutes" type="number" min="30" max="1440" step="30" /><em>分钟</em></div><small>例如120分钟表示每2小时准备一批新内容。</small></label>
+              <label><span>每次替换比例</span><div><input v-model.number="dynamicReplacementPercent" type="number" min="1" max="100" step="5" /><em>%</em></div><small>100%持续生成全新轮次；低比例只替换部分，其余安全资产继续复播。</small></label>
+              <button type="button" class="primary-button" :disabled="contentModeSaving" @click="saveDynamicContentSettings">{{ contentModeSaving ? '保存中…' : '保存实时声音设置' }}</button>
+            </div>
+          </section>
+
+          <div v-if="isFixedGeneratedContentMode" class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
             <div class="strategy-fullshow-title-block">
-              <h3>直播智能体生成</h3>
+              <h3>固定生成</h3>
               <div class="strategy-fullshow-title-action">
                 <button class="primary-button" type="button" :disabled="fullShowGenerating || !currentPlan || !contentModeReady || contentModeLoading || contentModeSaving" @click="generateFullShowPreview">
                   {{ fullShowGenerating ? 'S1 生成中…' : 'S1 生成直播智能体预览' }}
                 </button>
               </div>
-              <p>已有方案会优先恢复最近待发布草稿，没有草稿时恢复当前已发布版本作为编辑副本；修改后保存为新版本，不覆盖历史版本。</p>
+              <p>先生成文案并确认，再生成可发布的成品声音；本页不显示录音上传业务。</p>
             </div>
           </div>
 
-          <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
-            {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
-          </div>
-
-          <section v-if="fullShowResult" class="strategy-fullshow-main-actions">
-            <div class="strategy-fullshow-main-actions-copy">
-              <span>版本操作</span>
-              <strong>{{ activeRoom?.name || '当前直播间' }}</strong>
-              <small>
-                S5 只保存待发布新版本；保存成功后，再用 S6 把这个版本发布到当前直播间。
-              </small>
-            </div>
-            <div class="strategy-fullshow-main-actions-buttons">
-              <button
-                type="button"
-                :disabled="
-                  fullShowVersionSaving ||
-                  fullShowVersionPublishing
-                "
-                @click="saveFullShowVersion"
-              >
-                <span>{{ fullShowVersionSaving ? 'S5 保存中…' : 'S5 保存新版本' }}</span>
-                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('已保存 V' + fullShowSavedVersion.version_no + '，可以发布') : '只保存，不发布直播间' }}</small>
-              </button>
-              <button
-                class="primary"
-                type="button"
-                :disabled="
-                  fullShowVersionSaving ||
-                  fullShowVersionPublishing
-                "
-                @click="publishFullShowVersion"
-              >
-                <span>
-                  {{
-                    fullShowVersionPublishing
-                      ? 'S6 发布中…'
-                      : fullShowSavedVersion?.lifecycle_status === 'published'
-                        ? '已发布到直播间'
-                        : 'S6 发布到直播间'
-                  }}
-                </span>
-                <small>{{ fullShowSavedVersion?.lifecycle_status === 'draft' ? ('发布已保存的 V' + fullShowSavedVersion.version_no) : '请先完成 S5 保存' }}</small>
-              </button>
-            </div>
-          </section>
-          <div v-if="fullShowVersionError" class="inline-error strategy-fullshow-action-error" role="alert">
+          <div v-if="fullShowVersionError && fullShowVersionActionReady" class="inline-error strategy-fullshow-action-error" role="alert">
             {{ fullShowVersionError }}
           </div>
 
-          <section v-if="fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
+          <section v-if="isFixedGeneratedContentMode && fullShowWorkspaceLoading" class="strategy-fullshow-restore-banner is-loading">
             <div>
               <strong>正在恢复智能体工作区…</strong>
               <span>正在读取文案、生成参数、正式声音和声音时间轴</span>
             </div>
           </section>
-          <section v-else-if="fullShowWorkspaceBaseVersion" class="strategy-fullshow-restore-banner">
+          <section v-else-if="isFixedGeneratedContentMode && fullShowWorkspaceBaseVersion" class="strategy-fullshow-restore-banner">
             <div>
               <strong>
                 {{ fullShowWorkspaceInherited ? '从同方案 V' : '基于 V' }}{{ fullShowWorkspaceBaseVersion.version_no }} 恢复编辑
@@ -6493,7 +6759,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-guide" open>
+          <details v-if="isFixedGeneratedContentMode" class="strategy-fullshow-guide" open>
             <summary class="strategy-fullshow-guide-title">
               <div>
                 <strong>生成指导步骤</strong>
@@ -6519,7 +6785,7 @@ onBeforeUnmount(() => {
           </details>
 
           <section
-            v-if="fullShowGenerationProgress.visible"
+            v-if="isFixedGeneratedContentMode && fullShowGenerationProgress.visible"
             class="strategy-fullshow-progress"
             :class="{ failed: fullShowGenerationProgress.failed, done: fullShowGenerationProgress.percent >= 100 && !fullShowGenerationProgress.failed }"
           >
@@ -6546,10 +6812,10 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <div v-if="fullShowNotice" class="strategy-script-notice">{{ fullShowNotice }}</div>
-          <div v-if="fullShowError" class="inline-error strategy-inline-error">{{ fullShowError }}</div>
+          <div v-if="fullShowNotice && (isFixedGeneratedContentMode || (isUserAudioContentMode && hasCustomMainlineResult))" class="strategy-script-notice">{{ fullShowNotice }}</div>
+          <div v-if="isFixedGeneratedContentMode && fullShowError" class="inline-error strategy-inline-error">{{ fullShowError }}</div>
 
-          <div v-if="!isUserAudioContentMode" class="strategy-fullshow-grid">
+          <div v-if="isFixedGeneratedContentMode" class="strategy-fullshow-grid">
             <section class="strategy-fullshow-panel strategy-fullshow-config">
               <header>
                 <div>
@@ -6638,9 +6904,21 @@ onBeforeUnmount(() => {
                 <small>这是独立的事实延展空间。法律、平台规则和你明确锁定的内容始终不动；数值越高，越允许场景、类比、故事化和常识推演，但不会改变主播称呼与语气密度。</small>
               </div>
 
+              <div class="strategy-fullshow-field">
+                <div class="strategy-fullshow-field-title">
+                  <span>成交推进强度</span>
+                  <strong>{{ fullShowConversionIntensity }}/100</strong>
+                </div>
+                <div class="strategy-fullshow-duration-slider">
+                  <input v-model.number="fullShowConversionIntensity" type="range" min="0" max="100" step="5" :style="{ '--duration-progress': fullShowConversionIntensity + '%' }" />
+                  <div class="strategy-fullshow-duration-ticks"><span>陈述为主</span><span>轻行动</span><span>明确行动</span><span>高频推进</span></div>
+                </div>
+                <small>控制行动节点频率和直接程度；库存、倒计时、销量、时效等CTA类型仍必须有正式事实支持。</small>
+              </div>
+
               <div class="strategy-fullshow-inline-fields">
                 <label>
-                  <span>单轮目标时长</span>
+                  <span>每轮循环时长</span>
                   <div><input v-model.number="fullShowRoundMinutes" type="number" min="5" max="12" /><em>分钟</em></div>
                 </label>
                 <label>
@@ -6693,18 +6971,18 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <details v-if="!isUserAudioContentMode" class="strategy-fullshow-panel strategy-fullshow-timeline">
+          <details v-if="isFixedGeneratedContentMode" class="strategy-fullshow-panel strategy-fullshow-timeline">
             <summary>
               <div>
                 <span>03</span>
-                <strong>整场轮次安排</strong>
+                <strong>直播骨架与整场轮次安排</strong>
               </div>
               <small>{{ fullShowDuration }} 分钟 · 约 {{ fullShowRoundCount }} 轮 · 每轮约 {{ fullShowRoundMinutes }} 分钟</small>
             </summary>
 
             <div v-if="!fullShowPreviewReady" class="strategy-fullshow-empty">
               <strong>先整理整场结构</strong>
-              <span>系统会按直播时长拆分轮次，并把 A/B/C/D/E 不同表达稿交叉安排，避免整场反复念同一篇。</span>
+              <span>系统会按“重新进入 → 主体六功能动态组合 → 本轮收口”拆分轮次；六功能不是固定顺序，真实事件只会改写尚未生成的部分。</span>
             </div>
             <div v-else class="strategy-fullshow-rounds">
               <article v-for="round in fullShowRoundPreview" :key="round.index">
@@ -6714,9 +6992,7 @@ onBeforeUnmount(() => {
                   <strong>{{ round.opening }}</strong>
                   <small>{{ round.startMinute }}–{{ Math.min(fullShowDuration, round.startMinute + fullShowRoundMinutes) }} 分钟</small>
                 </div>
-                <div class="strategy-fullshow-round-flow">
-                  <span>留人</span><i>→</i><span>讲品</span><i>→</i><span>价值</span><i>→</i><span>链接</span><i>→</i><span>CTA</span>
-                </div>
+                <div class="strategy-fullshow-round-flow"><span>{{ round.opening }}</span><template v-for="item in round.flow" :key="item"><i>→</i><span>{{ item }}</span></template><i>→</i><span>{{ round.closing }}</span></div>
                 <em>{{ fullShowGenerateTTS ? '含声音语气' : '纯文字' }}</em>
               </article>
               <div v-if="fullShowRoundCount > fullShowRoundPreview.length" class="strategy-fullshow-more-rounds">
@@ -6725,55 +7001,54 @@ onBeforeUnmount(() => {
             </div>
           </details>
 
-          <div class="strategy-fullshow-grid strategy-fullshow-output-grid">
+          <div
+            v-if="isUserAudioContentMode || isFixedGeneratedContentMode"
+            class="strategy-fullshow-grid strategy-fullshow-output-grid"
+            :class="{ 'is-recording-mainline': isUserAudioContentMode }"
+          >
             <section class="strategy-fullshow-panel strategy-fullshow-output">
               <header>
                 <div class="strategy-fullshow-output-title">
-                  <span>S3</span>
-                  <strong class="strategy-fullshow-output-section-name">话术处理区</strong>
-                  <button
-                    type="button"
-                    class="strategy-fullshow-output-mode"
-                    :class="{ active: fullShowOutputMode === 'generated' }"
-                    @click="selectFullShowOutputMode('generated')"
-                  >
-                    AI话术
-                  </button>
-                  <button
-                    type="button"
-                    class="strategy-fullshow-output-mode"
-                    :class="{ active: fullShowOutputMode === 'custom' }"
-                    @click="openCustomMainline"
-                  >
-                    原始音
-                  </button>
+                  <span v-if="isUserAudioContentMode" class="strategy-recording-title-icon" aria-hidden="true">
+                    <svg viewBox="0 0 36 36"><rect x="13" y="5" width="10" height="18" rx="5" /><path d="M9 17v1a9 9 0 0 0 18 0v-1M18 27v5M13 32h10" /></svg>
+                  </span>
+                  <span v-else>S3</span>
+                  <div class="strategy-fullshow-output-heading-copy">
+                    <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '录音主线处理' : '固定生成话术' }}</strong>
+                    <small v-if="isUserAudioContentMode">上传一段录音，系统将自动分段、识别文字并生成高质量声音资产。</small>
+                  </div>
                 </div>
                 <div
                   class="strategy-fullshow-status"
-                  :class="{ ready: fullShowOutputMode === 'custom' ? Boolean(customMainlineDraft) : Boolean(fullShowResult) }"
+                  :class="{ ready: isUserAudioContentMode ? Boolean(customMainlineDraft) : Boolean(fullShowResult) }"
                 >
                   <i></i>
                   {{
-                    fullShowOutputMode === 'custom'
+                    isUserAudioContentMode
                       ? (customMainlineDraft ? '已准备' : '等待上传')
                       : (fullShowResult ? '已生成预览' : '等待生成')
                   }}
                 </div>
               </header>
-              <section v-if="fullShowOutputMode === 'custom'" class="strategy-custom-mainline-inline">
+              <section v-if="isUserAudioContentMode" class="strategy-custom-mainline-inline">
                 <div class="strategy-custom-mainline-upload">
                   <label>
                     <input
                       type="file"
                       accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,audio/*"
+                      multiple
                       @change="handleCustomMainlineFile"
                     />
-                    <strong>{{ customMainlineFile ? customMainlineFile.name : (customMainlineDraft ? '重新上传原始声音' : '选择原始声音上传') }}</strong>
-                    <span>单文件最大 200MB · WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
-                    <span>上传后自动转换为直播播放格式（24kHz · 单声道 · 16bit PCM），无需手工转换。</span>
+                    <i class="strategy-custom-mainline-upload-icon" aria-hidden="true">
+                      <svg viewBox="0 0 36 36"><path d="M11 26H9a6 6 0 0 1-.2-12A9 9 0 0 1 26 11a7 7 0 0 1 1 13h-2" /><path d="m13 20 5-5 5 5M18 15v14" /></svg>
+                    </i>
+                    <strong>{{ customMainlineFiles.length ? `已选择 ${customMainlineFiles.length} 段录音` : (customMainlineDraft ? '重新上传一段或多段原始声音' : '选择一段或多段原始声音上传') }}</strong>
+                    <span>每段最大200MB、合计最大500MB · 最多20段</span>
+                    <span>支持格式：WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
+                    <span>系统将自动降噪、分段并统一转为直播播放格式，长录音会按语义划分为句段并生成SRT。</span>
                   </label>
-                  <div v-if="customMainlineFile" class="strategy-custom-mainline-file-meta">
-                    <span>{{ (customMainlineFile.size / 1024 / 1024).toFixed(2) }} MB</span>
+                  <div v-if="customMainlineFiles.length" class="strategy-custom-mainline-file-meta">
+                    <span>{{ (customMainlineFiles.reduce((sum, item) => sum + item.size, 0) / 1024 / 1024).toFixed(2) }} MB</span>
                     <span v-if="customMainlineDurationMS">{{ formatFullShowTimelineMS(customMainlineDurationMS) }}</span>
                     <button
                       type="button"
@@ -6789,6 +7064,7 @@ onBeforeUnmount(() => {
                       }}
                     </button>
                   </div>
+                  <div v-if="customMainlineFiles.length > 1" class="strategy-custom-mainline-file-list"><span v-for="(file, index) in customMainlineFiles" :key="file.name + ':' + index">{{ index + 1 }}. {{ file.name }}</span></div>
                   <div
                     v-if="customMainlineStage === 'uploading' || customMainlineStage === 'analyzing'"
                     class="strategy-custom-mainline-progress"
@@ -6809,6 +7085,25 @@ onBeforeUnmount(() => {
                 </div>
 
                 <template v-if="customMainlineDraft">
+                  <section class="strategy-custom-mainline-segments">
+                    <header>
+                      <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
+                      <div>
+                        <strong>原始话术</strong>
+                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
+                      </div>
+                      <button
+                        type="button"
+                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
+                        @click="rebuildCustomMainline"
+                      >
+                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
+                      </button>
+                    </header>
+                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
+                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
+                  </section>
+
                   <div class="strategy-custom-mainline-summary">
                     <div>
                       <strong>原始声音</strong>
@@ -6832,29 +7127,6 @@ onBeforeUnmount(() => {
                   </div>
 
                   <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
-
-                  <section class="strategy-custom-mainline-segments">
-                    <header>
-                      <div>
-                        <strong>原始话术</strong>
-                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
-                      </div>
-                      <button
-                        type="button"
-                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
-                        @click="rebuildCustomMainline"
-                      >
-                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
-                      </button>
-                    </header>
-                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
-                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
-                  </section>
-
-                  <details class="strategy-custom-mainline-srt">
-                    <summary>查看 SRT</summary>
-                    <pre>{{ customMainlineDraft.srt }}</pre>
-                  </details>
 
                   <footer class="strategy-custom-mainline-footer">
                     <div>
@@ -7331,7 +7603,38 @@ onBeforeUnmount(() => {
               </template>
             </section>
 
-            <section class="strategy-fullshow-panel strategy-fullshow-runtime">
+            <aside v-if="isUserAudioContentMode" class="strategy-recording-tips">
+              <header>
+                <i aria-hidden="true">♧</i>
+                <strong>小贴士</strong>
+              </header>
+              <div class="strategy-recording-tip-list">
+                <article>
+                  <i class="wave" aria-hidden="true">≋</i>
+                  <div><strong>录音建议</strong><span>尽量在安静环境下录制，语速清晰稳定，效果更好。</span></div>
+                </article>
+                <article>
+                  <i aria-hidden="true">✎</i>
+                  <div><strong>编辑技巧</strong><span>可以直接在文本框修改识别出的内容，系统会自动同步时间轴。</span></div>
+                </article>
+                <article>
+                  <i aria-hidden="true">▤</i>
+                  <div><strong>格式说明</strong><span>系统会自动生成分段音频与 SRT，便于直播时直接调用播放。</span></div>
+                </article>
+              </div>
+              <details v-if="customMainlineDraft" class="strategy-custom-mainline-srt strategy-recording-side-srt">
+                <summary><i aria-hidden="true">▤</i> 查看 SRT</summary>
+                <pre>{{ customMainlineDraft.srt }}</pre>
+              </details>
+              <div class="strategy-recording-mic-illustration" aria-hidden="true">
+                <span>让好声音<br />更简单！</span>
+                <div class="strategy-recording-sound-wave is-left"><i></i><i></i><i></i></div>
+                <div class="strategy-recording-mic"><i></i></div>
+                <div class="strategy-recording-sound-wave is-right"><i></i><i></i><i></i></div>
+              </div>
+            </aside>
+
+            <section v-if="isFixedGeneratedContentMode" class="strategy-fullshow-panel strategy-fullshow-runtime">
               <header><div><span>✓</span><strong>生成检查</strong></div><small>{{ fullShowResult ? (fullShowAuditPassedCount + '/' + fullShowResult.variants.length + ' 通过') : '等待生成' }}</small></header>
               <div v-if="fullShowResult" class="strategy-fullshow-compile-summary">
                 <div><span>规则 / 行业</span><strong>{{ fullShowResult.context.policy_rule_count }}</strong></div>
@@ -7350,7 +7653,7 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <section v-if="fullShowResult" class="strategy-fullshow-panel strategy-fullshow-publish">
+          <section v-if="fullShowResult && (isFixedGeneratedContentMode || (isUserAudioContentMode && hasCustomMainlineResult))" class="strategy-fullshow-panel strategy-fullshow-publish">
             <header>
                 <div><span>状态</span><strong>版本与发布状态</strong></div>
               <small>
@@ -8943,6 +9246,7 @@ onBeforeUnmount(() => {
 .strategy-custom-mainline-upload>label span { color:#8893a8; font-size:11px; }
 .strategy-custom-mainline-file-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .strategy-custom-mainline-file-meta span { padding:5px 8px; border-radius:999px; background:#edf1f8; color:#6d788f; font-size:10px; font-weight:850; }
+.strategy-custom-mainline-file-list{display:grid;gap:4px;max-height:132px;overflow:auto;padding:10px 12px;border:1px solid #e5e9f1;border-radius:10px;background:#fafbfe;color:#6b768b;font-size:10px;line-height:1.5}
 .strategy-custom-mainline-file-meta button,
 .strategy-custom-mainline-segments>header button,
 .strategy-custom-mainline-summary button {
@@ -9547,13 +9851,165 @@ onBeforeUnmount(() => {
 }
 .addressing-workspace{display:grid;gap:16px}.addressing-notice{padding:11px 13px;border-radius:12px;background:#edf9f4;color:#347a61;font-size:12px;font-weight:800}.addressing-mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.addressing-mode-grid>button{display:grid;gap:6px;padding:16px 18px;border:1px solid rgba(95,111,174,.16);border-radius:16px;background:#fafbfe;color:#556078;text-align:left;transition:.18s ease}.addressing-mode-grid>button strong{font-size:15px;color:#38435a}.addressing-mode-grid>button span{font-size:11px;color:#8c96a8;line-height:1.55}.addressing-mode-grid>button.active{border-color:rgba(91,111,211,.46);background:linear-gradient(145deg,#f2f5ff,#e8edff);box-shadow:0 0 0 3px rgba(91,111,211,.07),0 10px 24px rgba(71,90,177,.08)}.addressing-system-card,.addressing-custom-card{padding:16px;border:1px solid rgba(94,109,169,.13);border-radius:16px;background:rgba(255,255,255,.9)}.addressing-system-card>header,.addressing-custom-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.addressing-system-card header>div,.addressing-custom-card header>div{display:grid;gap:3px}.addressing-system-card header span,.addressing-custom-card header span{color:#8d97aa;font-size:9px;font-weight:900;letter-spacing:.1em}.addressing-system-card header strong,.addressing-custom-card header strong{color:#38435a;font-size:15px}.addressing-system-card header>b{padding:5px 9px;border-radius:999px;background:#e7f7ef;color:#2f8a65;font-size:10px}.addressing-chip-list{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.addressing-chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e1e5ee;border-radius:12px;background:#f8f9fc}.addressing-chip strong{color:#455168;font-size:12px}.addressing-chip span{color:#7180a2;font-size:10px;font-weight:900}.addressing-custom-card.inactive{opacity:.72}.addressing-custom-list{display:grid;gap:9px;margin-top:14px}.addressing-custom-list>article{display:grid;grid-template-columns:90px minmax(180px,1fr) 150px auto;align-items:end;gap:10px;padding:12px;border:1px solid #e3e7f0;border-radius:13px;background:#fafbfe}.addressing-enable,.addressing-name-field,.addressing-probability-field{display:grid;gap:6px}.addressing-enable{grid-template-columns:auto 1fr;align-items:center;align-self:center}.addressing-enable input{width:18px;height:18px}.addressing-name-field>span,.addressing-probability-field>span,.addressing-enable>span{color:#6d7890;font-size:10px;font-weight:850}.addressing-name-field input,.addressing-probability-field input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 10px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#39445a;font:inherit}.addressing-probability-field>div{display:flex;align-items:center;gap:6px}.addressing-probability-field input{width:92px}.addressing-probability-field b{color:#74809a;font-size:11px}.addressing-remove{min-height:38px;padding:0 11px;border:0;border-radius:10px;background:#fff0f1;color:#bd5662;font-size:11px;font-weight:850}.addressing-total{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f4;color:#5b667d}.addressing-total strong{font-size:16px;color:#3f8a69}.addressing-total.invalid strong{color:#c3505b}.addressing-review-tip{margin:8px 0 0;color:#9099aa;font-size:10px;line-height:1.6}.addressing-empty{margin-top:12px}@media(max-width:900px){.addressing-mode-grid{grid-template-columns:1fr}.addressing-custom-list>article{grid-template-columns:80px 1fr 130px}.addressing-remove{grid-column:2/-1;justify-self:end}}
 .addressing-custom-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.addressing-save-button{min-width:112px}.addressing-custom-actions .strategy-version-button,.addressing-custom-actions .primary-button{white-space:nowrap}
+.anchor-addressing-override{display:grid;gap:14px;padding:18px;border:1px solid #dfe5f1;border-radius:16px;background:#fff}.anchor-addressing-override>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.anchor-addressing-override>header>div{display:grid;gap:4px}.anchor-addressing-override>header small,.anchor-addressing-learned{color:#7d879b;font-size:11px;line-height:1.6}.anchor-addressing-learned{display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 12px;border-radius:12px;background:#f6f8fc}.anchor-addressing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.anchor-addressing-grid label{display:grid;gap:7px;color:#56627a;font-size:11px;font-weight:800}.anchor-addressing-grid select,.anchor-addressing-grid textarea{box-sizing:border-box;width:100%;padding:10px 11px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#38445b;font:inherit}.anchor-addressing-grid textarea{resize:vertical;line-height:1.55}@media(max-width:900px){.anchor-addressing-grid{grid-template-columns:1fr}.anchor-addressing-override>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
+.strategy-realtime-voice-page{display:grid;gap:16px;padding:20px;border:1px solid #d7e5ef;border-radius:18px;background:linear-gradient(135deg,#fbffff,#f2f8ff);box-shadow:0 10px 28px rgba(65,100,151,.06)}.strategy-realtime-voice-page>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.strategy-realtime-voice-page>header>div{display:grid;gap:5px}.strategy-realtime-voice-page>header span{color:#1b998d;font-size:11px;font-weight:950;letter-spacing:.08em}.strategy-realtime-voice-page>header strong{color:#2f405b;font-size:20px}.strategy-realtime-voice-page>header small{color:#78879b;font-size:12px;line-height:1.65}.strategy-realtime-voice-page>header>em{padding:7px 11px;border-radius:999px;background:#e6f7f3;color:#268978;font-size:11px;font-style:normal;font-weight:900;white-space:nowrap}.strategy-realtime-voice-page .strategy-dynamic-settings{background:#edf8f8}@media(max-width:900px){.strategy-realtime-voice-page>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{position:relative;overflow:hidden;padding:22px 24px;border-color:#dce6f6;border-radius:22px;background:radial-gradient(circle at 92% 6%,rgba(110,153,255,.13),transparent 26%),linear-gradient(135deg,#fff 0%,#f8fbff 58%,#eef5ff 100%);box-shadow:0 12px 34px rgba(59,84,147,.07)}
+.strategy-content-mode-workflow>header{position:relative;z-index:1;align-items:center}.strategy-content-mode-heading strong{color:#17264a;font-size:24px;font-weight:950}.strategy-content-mode-heading small{color:#7c8ba6;font-size:13px;line-height:1.6}
+.strategy-content-mode-save-state{display:flex;align-items:center;gap:12px;min-width:310px}.strategy-content-mode-save-state>i{display:grid;width:32px;height:32px;flex:0 0 32px;place-items:center;border-radius:50%;background:linear-gradient(135deg,#45c394,#18a676);color:#fff;font-size:17px;font-style:normal;font-weight:950;box-shadow:0 8px 18px rgba(28,164,118,.22)}.strategy-content-mode-save-state>div{display:grid;gap:2px}.strategy-content-mode-save-state strong{color:#228163;font-size:13px}.strategy-content-mode-save-state small{color:#74839e!important;font-size:11px!important}.strategy-content-mode-save-state>span{position:relative;width:76px;height:48px;margin-left:auto;border-radius:38px 38px 24px 24px;background:linear-gradient(145deg,#d5e9ff,#86b4ff);opacity:.9;filter:drop-shadow(0 8px 10px rgba(87,130,212,.15))}.strategy-content-mode-save-state>span b{position:absolute;bottom:7px;width:3px;border-radius:999px;background:rgba(255,255,255,.9)}.strategy-content-mode-save-state>span b:nth-child(1){left:26px;height:16px}.strategy-content-mode-save-state>span b:nth-child(2){left:36px;height:26px}.strategy-content-mode-save-state>span b:nth-child(3){left:46px;height:13px}
+.strategy-content-mode-cards{position:relative;z-index:1;gap:14px}.strategy-content-mode-cards>button{grid-template-columns:32px 72px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:12px;min-height:138px;padding:18px 20px;border-color:#e6ecf6;border-radius:16px;background:linear-gradient(135deg,#fbfcff,#f4f7fd);box-shadow:0 8px 18px rgba(58,78,130,.035);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.strategy-content-mode-cards>button:hover:not(:disabled){transform:translateY(-2px);border-color:#cbd6f3;box-shadow:0 14px 30px rgba(58,78,130,.1)}.strategy-content-mode-cards>button>i{grid-column:1;grid-row:1;align-self:start;color:#4f5f8d;font-size:17px}.strategy-content-mode-icon{display:grid;grid-column:2;grid-row:1;width:68px;height:68px;place-items:center;border:1px solid rgba(255,255,255,.8);border-radius:50%;background:linear-gradient(145deg,#fff,#edf3ff);color:#4b70e8;box-shadow:0 8px 22px rgba(73,101,180,.08)}.strategy-content-mode-icon svg{width:38px;height:38px}.strategy-content-mode-icon svg *{fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-icon.is-ai_dynamic{color:#3971ed}.strategy-content-mode-card-copy{display:grid;grid-column:3;grid-row:1;align-content:center;gap:7px;min-width:0}.strategy-content-mode-card-copy strong{color:#182750!important;font-size:18px!important}.strategy-content-mode-card-copy span{color:#6f7f9e;font-size:12px;line-height:1.55}.strategy-content-mode-cards>button>b{grid-column:1/4;grid-row:2;justify-self:start;padding:7px 14px;border:1px solid #d4def2;border-radius:999px;background:#fff;color:#50618a;font-size:11px}.strategy-content-mode-cards>button.active{border-color:#6f7eff;background:linear-gradient(135deg,#4f80f2 0%,#646af0 70%,#7a64ee 100%);box-shadow:0 15px 34px rgba(77,91,222,.26),inset 0 1px 0 rgba(255,255,255,.26)}.strategy-content-mode-cards>button.active>i,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy strong,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:#fff!important}.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:rgba(255,255,255,.88)!important}.strategy-content-mode-cards>button.active .strategy-content-mode-icon{border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.12);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.23)}.strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.92);color:#5365d8}
+.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,2.18fr) minmax(280px,.96fr);align-items:stretch;gap:16px}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output{padding:20px;border-color:#dce7f5;border-radius:20px;background:rgba(255,255,255,.96);box-shadow:0 14px 36px rgba(54,78,135,.08)}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:flex-start;padding-bottom:16px}.strategy-fullshow-output-heading-copy{display:grid;gap:4px}.strategy-fullshow-output-heading-copy small{color:#71809d;font-size:12px;line-height:1.55;text-align:left}.strategy-fullshow-output-title .strategy-recording-title-icon{width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:linear-gradient(145deg,#f1f4ff,#eeeaff);color:#5b64ef}.strategy-recording-title-icon svg{width:28px;height:28px}.strategy-recording-title-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{padding:7px 13px;border-radius:999px;background:#effaf3;color:#20845a;font-weight:900}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status i{background:#45b971;box-shadow:0 0 0 5px rgba(69,185,113,.12)}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline{gap:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload{position:relative;overflow:hidden;padding:12px;border-color:#dde8f6;border-radius:16px;background:linear-gradient(135deg,#fbfdff,#f4f8ff)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::before,.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{content:"";position:absolute;left:-8%;right:42%;bottom:24px;height:80px;border-radius:50%;background:linear-gradient(120deg,rgba(93,137,242,.06),rgba(119,93,242,.09));transform:rotate(4deg);pointer-events:none}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{left:55%;right:-10%;bottom:5px;background:linear-gradient(120deg,rgba(117,93,242,.06),rgba(79,135,241,.1));transform:rotate(-7deg)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label{position:relative;z-index:1;min-height:145px;border-color:#9db4ff;border-radius:13px;background:rgba(255,255,255,.7)}.strategy-custom-mainline-upload-icon{display:grid;width:44px;height:44px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#f0f4ff,#dfe8ff);color:#5676ed;font-style:normal}.strategy-custom-mainline-upload-icon svg{width:25px;height:25px}.strategy-custom-mainline-upload-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label strong{font-size:17px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label span{font-size:10px;line-height:1.45}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments{padding:12px;border-color:#dce7f4;border-radius:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header{display:grid;grid-template-columns:38px minmax(0,1fr) auto}.strategy-custom-mainline-editor-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:10px;background:#eef2ff;color:#5369df;font-style:normal;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header strong{font-size:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header button{min-height:40px;padding:0 18px;border:0;border-radius:11px;background:linear-gradient(135deg,#697cf0,#5859e8);box-shadow:0 8px 18px rgba(79,87,211,.2)}.strategy-original-transcript-editor{width:100%;min-height:340px;box-sizing:border-box;resize:vertical;padding:14px 16px;border:1px solid #dce5f1;border-radius:12px;outline:none;background:#fff;color:#33415e;font:14px/1.85 inherit}.strategy-original-transcript-editor:focus{border-color:#7d8cf0;box-shadow:0 0 0 4px rgba(93,111,223,.08)}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div{position:relative;min-height:58px;padding-left:46px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div::before{content:"≋";position:absolute;left:14px;display:grid;width:25px;height:25px;place-items:center;border-radius:8px;background:#edf1ff;color:#5969df;font-size:20px;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div:nth-child(2)::before{content:"●";background:#e7faf3;color:#149370;font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div.ready{border-color:#b6e5d3;background:linear-gradient(135deg,#f2fcf7,#edfaf4)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline>audio{height:48px;border-radius:999px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-srt{padding:13px 15px;border-color:#dce6f3;border-radius:12px}.strategy-custom-mainline-srt summary i{margin-right:7px;color:#5870e5;font-style:normal}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer{padding:0 2px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer>div span::first-letter{color:#4d73ed}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button{min-height:44px;padding:0 20px;border-radius:11px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button.primary{border:0;background:linear-gradient(135deg,#5f76ef,#5f55ea);box-shadow:0 10px 21px rgba(79,84,211,.22)}
+.strategy-recording-tips{position:relative;display:grid;grid-template-rows:auto auto minmax(260px,1fr);align-content:start;min-width:0;overflow:hidden;padding:20px;border:1px solid #dce7f5;border-radius:20px;background:radial-gradient(circle at 50% 90%,rgba(102,123,242,.13),transparent 30%),linear-gradient(180deg,#fff 0%,#f8fbff 100%);box-shadow:0 14px 36px rgba(54,78,135,.07)}.strategy-recording-tips>header{display:flex;align-items:center;gap:10px;padding-bottom:14px}.strategy-recording-tips>header>i{display:grid;width:38px;height:38px;place-items:center;border-radius:50%;background:#f0edff;color:#6657ec;font-size:22px;font-style:normal}.strategy-recording-tips>header strong{color:#263858;font-size:19px}.strategy-recording-tip-list{display:grid;gap:12px}.strategy-recording-tip-list article{display:grid;grid-template-columns:50px minmax(0,1fr);gap:12px;align-items:start;padding:15px;border:1px solid #dfe7f3;border-radius:15px;background:rgba(255,255,255,.9);box-shadow:0 7px 17px rgba(58,82,139,.05)}.strategy-recording-tip-list article>i{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:linear-gradient(145deg,#eef0ff,#e6eaff);color:#526aec;font-size:23px;font-style:normal;font-weight:950}.strategy-recording-tip-list article>i.wave{font-size:30px;line-height:1;transform:rotate(90deg)}.strategy-recording-tip-list article>div{display:grid;gap:6px}.strategy-recording-tip-list strong{color:#263859;font-size:14px}.strategy-recording-tip-list span{color:#74829c;font-size:11px;line-height:1.65}
+.strategy-recording-mic-illustration{position:relative;align-self:end;min-height:290px}.strategy-recording-mic-illustration>span{position:absolute;z-index:2;top:52px;right:14px;color:#7790ef;font-size:22px;font-weight:850;line-height:1.5;letter-spacing:.08em;transform:rotate(-9deg)}.strategy-recording-mic{position:absolute;left:50%;bottom:42px;width:82px;height:150px;border-radius:44px;background:linear-gradient(180deg,#7ca3ff 0%,#6962f1 56%,#5266dc 100%);box-shadow:inset 12px 10px 20px rgba(255,255,255,.35),inset -8px -12px 18px rgba(49,53,164,.18),0 22px 42px rgba(84,95,220,.28);transform:translateX(-50%)}.strategy-recording-mic::before{content:"";position:absolute;left:-17px;right:-17px;bottom:-20px;height:78px;border:6px solid #6c75e8;border-top:0;border-radius:0 0 52px 52px}.strategy-recording-mic::after{content:"";position:absolute;left:50%;bottom:-50px;width:8px;height:32px;border-radius:999px;background:#6c75e8;transform:translateX(-50%)}.strategy-recording-mic>i{position:absolute;left:50%;bottom:-66px;width:116px;height:23px;border-radius:50%;background:linear-gradient(180deg,#d9e3ff,#9db1ef);box-shadow:0 14px 24px rgba(77,96,178,.18);transform:translateX(-50%)}.strategy-recording-sound-wave{position:absolute;bottom:93px;display:flex;align-items:center;gap:5px}.strategy-recording-sound-wave.is-left{left:18px}.strategy-recording-sound-wave.is-right{right:18px}.strategy-recording-sound-wave i{display:block;width:6px;border-radius:999px;background:linear-gradient(180deg,#8c76f4,#6788ef)}.strategy-recording-sound-wave i:nth-child(1){height:28px}.strategy-recording-sound-wave i:nth-child(2){height:52px}.strategy-recording-sound-wave i:nth-child(3){height:36px}
+@media(max-width:1180px){.strategy-content-mode-cards>button{grid-template-columns:28px 58px minmax(0,1fr);padding:15px}.strategy-content-mode-icon{width:56px;height:56px}.strategy-content-mode-card-copy strong{font-size:16px!important}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,1.7fr) minmax(250px,.8fr)}.strategy-recording-mic-illustration>span{font-size:18px}}
+@media(max-width:900px){.strategy-content-mode-save-state{min-width:0}.strategy-content-mode-save-state>span{display:none}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:1fr}.strategy-recording-tips{grid-template-rows:auto auto}.strategy-recording-mic-illustration{display:none}.strategy-custom-mainline-summary{grid-template-columns:1fr}.strategy-custom-mainline-footer{align-items:stretch;flex-wrap:wrap}.strategy-custom-mainline-footer>div{width:100%}.strategy-custom-mainline-footer button{flex:1}}
+.strategy-content-mode-workflow{gap:11px;padding:18px 20px}.strategy-content-mode-cards{gap:10px}.strategy-content-mode-cards>button{grid-template-columns:24px 48px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:9px;min-height:92px;padding:11px 14px;border-radius:13px}.strategy-content-mode-cards>button>i{font-size:13px}.strategy-content-mode-icon{width:46px;height:46px}.strategy-content-mode-icon svg{width:27px;height:27px}.strategy-content-mode-card-copy{gap:3px}.strategy-content-mode-card-copy strong{font-size:15px!important}.strategy-content-mode-card-copy span{font-size:10px;line-height:1.4}.strategy-content-mode-cards>button>b{padding:4px 10px;font-size:9px}
+.strategy-fullshow-panel>header .strategy-fullshow-output-title{display:flex!important;flex:1 1 auto;align-items:center;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy{display:grid!important;flex:1 1 auto;align-content:center;gap:4px;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy strong{display:block;white-space:nowrap}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy small{display:block;max-width:680px;white-space:normal;word-break:normal;text-align:left}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:center}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{flex:0 0 auto;white-space:nowrap}
+.strategy-recording-tips{grid-template-rows:auto auto auto minmax(220px,1fr)}.strategy-recording-side-srt{margin-top:14px;border-color:#d6e2f2;background:#fff}.strategy-recording-side-srt summary{font-size:13px}.strategy-recording-side-srt pre{max-height:280px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration{min-height:220px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration>span{top:28px;font-size:17px}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration .strategy-recording-mic{bottom:28px;transform:translateX(-50%) scale(.78);transform-origin:bottom center}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration .strategy-recording-sound-wave{bottom:70px;transform:scale(.78)}
+@media(max-width:900px){.strategy-content-mode-cards>button{grid-template-columns:24px 44px minmax(0,1fr);min-height:88px}.strategy-content-mode-icon{width:42px;height:42px}.strategy-recording-tips{grid-template-rows:auto auto auto}.strategy-recording-side-srt{margin-top:2px}}
+.strategy-content-mode-heading strong{font-size:26px}.strategy-content-mode-heading small{font-size:15px}.strategy-content-mode-save-state strong{font-size:15px}.strategy-content-mode-save-state small{font-size:13px!important}.strategy-content-mode-cards>button>i{font-size:15px}.strategy-content-mode-card-copy strong{font-size:17px!important}.strategy-content-mode-card-copy span{font-size:12px}.strategy-content-mode-cards>button>b{font-size:11px}
+.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header strong{font-size:20px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-output-heading-copy small{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label strong{font-size:19px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-file-meta span,.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-file-list{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-progress>span{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header strong{font-size:17px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header button{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor{font-size:16px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary strong{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary span{font-size:12px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary button{font-size:13px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer span{font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button{font-size:15px}
+.strategy-recording-tips>header strong{font-size:21px}.strategy-recording-tip-list strong{font-size:16px}.strategy-recording-tip-list span{font-size:13px}.strategy-recording-mic-illustration>span{font-size:24px}.strategy-recording-side-srt summary{font-size:15px}.strategy-recording-side-srt pre{min-height:280px;max-height:none;resize:vertical;font-size:13px;line-height:1.75}.strategy-recording-side-srt[open]~.strategy-recording-mic-illustration>span{font-size:19px}
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor{border-color:#cfd9ec;background:linear-gradient(180deg,#fffefb 0%,#fbfcff 100%);color:#233657;line-height:1.9;box-shadow:inset 0 1px 3px rgba(42,59,101,.035)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor:focus{border-color:#7587e8;background:#fff;box-shadow:0 0 0 4px rgba(93,111,223,.09),inset 0 1px 3px rgba(42,59,101,.025)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-original-transcript-editor::selection{background:#dce5ff;color:#172c55}
+.strategy-recording-side-srt{background:linear-gradient(180deg,#fbfcff 0%,#f5f8ff 100%);box-shadow:0 8px 20px rgba(60,83,142,.045)}.strategy-recording-side-srt summary{color:#4e62cf}.strategy-recording-side-srt pre{box-sizing:border-box;width:100%;height:320px;min-height:160px;max-height:720px;resize:vertical;overflow:auto;border:1px solid #e1e7f3;background:#f3f6fc;color:#405277;font-size:13px;line-height:1.85;box-shadow:inset 0 1px 3px rgba(42,59,101,.04)}.strategy-recording-side-srt pre::selection{background:#d8e3ff;color:#20365f}
+.strategy-content-mode-workflow>header{display:grid;grid-template-columns:minmax(360px,1fr) auto;gap:24px}.strategy-content-mode-dashboard-actions{display:grid!important;grid-template-columns:minmax(190px,220px) minmax(210px,240px) minmax(270px,1fr);align-items:stretch;gap:12px}.strategy-content-mode-version-action{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:12px;min-height:68px;padding:10px 14px;border:1px solid #cfdbf5;border-radius:15px;background:linear-gradient(135deg,#fff,#f5f8ff);color:#31456d;text-align:left;font:inherit;box-shadow:0 8px 20px rgba(63,88,150,.07);cursor:pointer;transition:transform .17s ease,box-shadow .17s ease,border-color .17s ease}.strategy-content-mode-version-action:hover:not(:disabled){transform:translateY(-2px);border-color:#afc1ef;box-shadow:0 13px 26px rgba(63,88,150,.13)}.strategy-content-mode-version-action>i{display:grid;width:48px;height:48px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#edf5ff,#e2ebff);color:#3572e8;font-style:normal}.strategy-content-mode-version-action svg{width:28px;height:28px}.strategy-content-mode-version-action svg *{fill:none;stroke:currentColor;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-version-action>span{display:grid;gap:4px;min-width:0}.strategy-content-mode-version-action strong{overflow:hidden;color:#2c416a;font-size:15px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action small{overflow:hidden;color:#7686a3;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action.is-publish{border-color:#627cf0;background:linear-gradient(135deg,#3981f4 0%,#5869ef 48%,#6855e8 100%);color:#fff;box-shadow:0 13px 28px rgba(72,87,218,.24)}.strategy-content-mode-version-action.is-publish>i{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.11);color:#fff}.strategy-content-mode-version-action.is-publish strong,.strategy-content-mode-version-action.is-publish small{color:#fff}.strategy-content-mode-version-action.is-publish small{color:rgba(255,255,255,.84)}.strategy-content-mode-version-action:disabled{cursor:not-allowed;filter:saturate(.65);opacity:.52;box-shadow:none;transform:none}
+.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-width:0;padding:10px 14px;border:1px solid #ccefe0;border-radius:15px;background:linear-gradient(135deg,#f5fff9,#edf9f5);box-shadow:0 8px 20px rgba(39,143,102,.06)}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state>i{width:44px;height:44px;flex-basis:44px;font-size:21px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state strong{font-size:14px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state small{font-size:11px!important}
+.strategy-content-mode-cards>button{position:relative;overflow:hidden}.strategy-content-mode-cards>button>*{position:relative;z-index:1}.strategy-content-mode-cards>button.active::before,.strategy-content-mode-cards>button.active::after{content:"";position:absolute;z-index:0;left:-12%;right:38%;bottom:-45px;height:76px;border-radius:50%;background:rgba(255,255,255,.07);transform:rotate(5deg)}.strategy-content-mode-cards>button.active::after{left:46%;right:-12%;bottom:-39px;background:rgba(62,133,251,.24);transform:rotate(-7deg)}
+@media(max-width:1450px){.strategy-content-mode-workflow>header{grid-template-columns:1fr}.strategy-content-mode-dashboard-actions{grid-template-columns:repeat(3,minmax(0,1fr));width:100%}}
+@media(max-width:900px){.strategy-content-mode-dashboard-actions{grid-template-columns:1fr}.strategy-content-mode-version-action{grid-template-columns:44px minmax(0,1fr)}.strategy-content-mode-version-action>i{width:40px;height:40px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-height:60px}}
 .strategy-anchor-style-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.strategy-anchor-style-actions button{white-space:nowrap}
 .strategy-workflow-nav .strategy-workflow-inputs { display:flex!important; }
 .strategy-workflow-nav .strategy-workflow-step,.strategy-workflow-nav .strategy-workflow-output { min-height:72px!important; }
 .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:16px!important; font-weight:900!important; }
 @media(max-width:1200px) { .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:15px!important; } }
-.reusable-anchor-style-advisory-panel{display:grid;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid #e4e7f3;border-radius:15px;background:linear-gradient(135deg,#fffdf5,#f8f9ff)}.reusable-anchor-style-advisory-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.reusable-anchor-style-advisory-panel>header strong{color:#4e5b80;font-size:13px}.reusable-anchor-style-advisory-panel>header small{color:#9199ac;font-size:10px;line-height:1.5}.reusable-anchor-style-advisory-panel>article{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid #ece9da;border-radius:11px;background:rgba(255,255,255,.76)}.reusable-anchor-style-advisory-panel>article strong{color:#9a6c2e;font-size:11px}.reusable-anchor-style-advisory-panel>article span,.reusable-anchor-style-advisory-panel>article small{color:#68738c;font-size:11px;line-height:1.55}.reusable-anchor-style-advisory-panel>article small{grid-column:2/-1;color:#8a93a7}.reusable-anchor-style-advisory-panel>article em{color:#be6a55;font-size:10px;font-style:normal;font-weight:800}.reusable-anchor-style-advisory-panel>article button{white-space:nowrap}@media(max-width:780px){.reusable-anchor-style-advisory-panel>header{display:grid}.reusable-anchor-style-advisory-panel>article{grid-template-columns:1fr}.reusable-anchor-style-advisory-panel>article small{grid-column:auto}}
+.reusable-anchor-style-workspace{font-size:16px}
+.reusable-anchor-style-sidebar-head{justify-content:flex-end}
+.reusable-anchor-style-sidebar-head .primary-button{font-size:14px}
+.reusable-anchor-style-card{grid-template-columns:25px minmax(0,1fr) auto;align-items:start}
+.reusable-anchor-style-card-body{display:grid;gap:4px;min-width:0}
+.reusable-anchor-style-card-name{display:flex;align-items:center;gap:6px;min-width:0}
+.reusable-anchor-style-card-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-card-name input{min-width:0;width:100%;box-sizing:border-box;padding:4px 7px;border:1px solid #7180dc;border-radius:7px;background:#fff;color:#33415f;font:inherit;font-size:16px;outline:none;box-shadow:0 0 0 3px rgba(101,117,220,.12)}
+.reusable-anchor-style-card-name small{white-space:nowrap}
+.reusable-anchor-style-card-edit,.reusable-anchor-style-card-delete{border:0;background:transparent;cursor:pointer}
+.reusable-anchor-style-card-edit{display:grid;place-items:center;flex:0 0 auto;width:25px;height:25px;padding:0;border-radius:7px;color:#5d6ed0;font-size:18px;font-weight:900}
+.reusable-anchor-style-card-edit:hover,.reusable-anchor-style-card-edit:focus-visible{background:#e4e8ff;outline:none}
+.reusable-anchor-style-card-delete{align-self:center;padding:6px 4px;color:#b45159;font-size:13px;font-weight:850;white-space:nowrap}
+.reusable-anchor-style-card-delete:hover,.reusable-anchor-style-card-delete:focus-visible{color:#963d45;text-decoration:underline;outline:none}
+.reusable-anchor-style-card strong{font-size:16px}
+.reusable-anchor-style-card small{font-size:13px}
+.reusable-anchor-style-card em{font-size:12px}
+.reusable-anchor-style-bind{font-size:16px}
+.reusable-anchor-style-empty{font-size:15px}
+.reusable-anchor-style-settings-link{font-size:14px}
+.reusable-anchor-style-tabs button{font-size:16px}
+.reusable-anchor-style-panel-title strong{font-size:21px}
+.reusable-anchor-style-panel-title small{font-size:15px}
+.reusable-anchor-style-panel-title>span{font-size:14px}
+.reusable-anchor-style-sample-compose input,.reusable-anchor-style-sample-compose textarea{font-size:16px}
+.reusable-anchor-style-sample-list header small{font-size:13px}
+.reusable-anchor-style-sample-list button{font-size:13px}
+.reusable-anchor-style-sample-list summary{font-size:14px}
+.reusable-anchor-style-thinking small{font-size:14px}
+.reusable-anchor-style-analysis-summary span{font-size:14px}
+.reusable-anchor-style-dimension-grid article span{font-size:14px}
+.reusable-anchor-style-dimension-grid article strong{font-size:15px}
+.reusable-anchor-style-dimension-grid article small{font-size:13px}
+.reusable-anchor-style-test-settings label{font-size:14px}
+.reusable-anchor-style-fact-picker{font-size:14px}
+.reusable-anchor-style-fact-picker button{font-size:13px}
+.reusable-anchor-style-generated-text{font-size:17px}
+.reusable-anchor-style-score-row{font-size:14px}
+.reusable-anchor-style-long-test header span,.reusable-anchor-style-training-list header small{font-size:13px}
+.reusable-anchor-style-training-list button{font-size:13px}
+.reusable-anchor-style-plugin-grid article small{font-size:14px}
+.reusable-anchor-style-plugin-grid button{font-size:14px}
+.reusable-anchor-style-legacy>summary{font-size:14px}
+.reusable-anchor-style-advisory-panel{display:grid;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid #e4e7f3;border-radius:15px;background:linear-gradient(135deg,#fffdf5,#f8f9ff)}.reusable-anchor-style-advisory-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.reusable-anchor-style-advisory-panel>header strong{color:#4e5b80;font-size:15px}.reusable-anchor-style-advisory-panel>header small{color:#9199ac;font-size:12px;line-height:1.5}.reusable-anchor-style-advisory-panel>article{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid #ece9da;border-radius:11px;background:rgba(255,255,255,.76)}.reusable-anchor-style-advisory-panel>article strong{color:#9a6c2e;font-size:13px}.reusable-anchor-style-advisory-panel>article span,.reusable-anchor-style-advisory-panel>article small{color:#68738c;font-size:13px;line-height:1.55}.reusable-anchor-style-advisory-panel>article small{grid-column:2/-1;color:#8a93a7}.reusable-anchor-style-advisory-panel>article em{color:#be6a55;font-size:12px;font-style:normal;font-weight:800}.reusable-anchor-style-advisory-panel>article button{white-space:nowrap}@media(max-width:780px){.reusable-anchor-style-advisory-panel>header{display:grid}.reusable-anchor-style-advisory-panel>article{grid-template-columns:1fr}.reusable-anchor-style-advisory-panel>article small{grid-column:auto}}
 .reusable-anchor-style-settings-link{padding:8px;border:0;background:transparent;color:#6574be;font-size:12px;font-weight:850;text-align:left;cursor:pointer}
 .reusable-anchor-style-sample-compose-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.reusable-anchor-style-file-button{display:inline-flex;align-items:center;cursor:pointer}.reusable-anchor-style-file-button input{display:none}
 .reusable-anchor-style-long-test header>div{display:grid;gap:3px}.reusable-anchor-style-long-test header>div span{color:#8a95a9;font-size:11px}.reusable-anchor-style-stream-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:rgba(24,34,66,.42);backdrop-filter:blur(3px)}.reusable-anchor-style-stream-window{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;width:min(1080px,calc(100vw - 48px));height:min(760px,calc(100vh - 48px));overflow:hidden;border:1px solid rgba(126,143,232,.35);border-radius:20px;background:#f8faff;box-shadow:0 26px 80px rgba(22,36,93,.28)}.reusable-anchor-style-stream-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px 16px;border-bottom:1px solid #e0e6f2;background:linear-gradient(135deg,#fff,#f0f3ff)}.reusable-anchor-style-stream-header>div{display:grid;gap:5px}.reusable-anchor-style-stream-header span{color:#6275d9;font-size:11px;font-weight:950;letter-spacing:.14em}.reusable-anchor-style-stream-header strong{color:#29395c;font-size:24px}.reusable-anchor-style-stream-header small{color:#7b879d;font-size:13px}.reusable-anchor-style-stream-metrics{display:flex;gap:10px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid #e3e8f2;color:#7b879d;font-size:12px}.reusable-anchor-style-stream-metrics span{padding:7px 10px;border-radius:999px;background:#eef1fb}.reusable-anchor-style-stream-metrics b{margin-left:3px;color:#5366cd}.reusable-anchor-style-stream-output{min-height:0;margin:0;padding:22px 24px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#283653;font:17px/1.85 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;background:#fff}.reusable-anchor-style-stream-window>footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 24px;border-top:1px solid #e0e6f2;color:#7d899e;font-size:12px;background:#fafbff}.reusable-anchor-style-stream-window>footer span{line-height:1.5}@media(max-width:720px){.reusable-anchor-style-stream-backdrop{padding:10px}.reusable-anchor-style-stream-window{width:calc(100vw - 20px);height:calc(100vh - 20px)}.reusable-anchor-style-stream-header,.reusable-anchor-style-stream-window>footer{padding-left:16px;padding-right:16px}.reusable-anchor-style-stream-header strong{font-size:20px}.reusable-anchor-style-stream-output{padding:16px;font-size:15px}.reusable-anchor-style-stream-window>footer{align-items:flex-start;flex-direction:column}}
+.reusable-anchor-style-settings-link{font-size:14px}
+.reusable-anchor-style-long-test header>div span{font-size:13px}
+.reusable-anchor-style-stream-header span{font-size:13px}
+.reusable-anchor-style-stream-header small{font-size:15px}
+.reusable-anchor-style-stream-metrics{font-size:14px}
+.reusable-anchor-style-stream-output{font-size:19px}
+.reusable-anchor-style-stream-window>footer{font-size:14px}
+@media(max-width:720px){.reusable-anchor-style-stream-output{font-size:17px}}
+.reusable-anchor-style-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:0 0 10px;border:0}
+.reusable-anchor-style-tabs .anchor-style-tab-card{position:relative;display:grid;grid-template-columns:46px minmax(0,1fr);align-items:center;gap:10px;min-height:76px;padding:10px 12px;border:1px solid rgba(109,126,197,.08);border-radius:16px;text-align:left;box-shadow:0 8px 20px rgba(76,94,167,.08);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.reusable-anchor-style-tabs .anchor-style-tab-card:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(76,94,167,.13)}
+.reusable-anchor-style-tabs .anchor-style-tab-card::after{content:"";position:absolute;left:44%;right:44%;bottom:-9px;height:4px;border-radius:999px;background:transparent;transition:.18s ease}
+.reusable-anchor-style-tabs .anchor-style-tab-samples{background:linear-gradient(135deg,#eef2ff,#e2e9ff);color:#566ce0}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis{background:linear-gradient(135deg,#effdfd,#e6f8f7);color:#12a4a7}
+.reusable-anchor-style-tabs .anchor-style-tab-testing{background:linear-gradient(135deg,#fff8ee,#fff1df);color:#ff8a25}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization{background:linear-gradient(135deg,#fff2f8,#ffe8f2);color:#ef4f85}
+.reusable-anchor-style-tabs .anchor-style-tab-samples.active{background:linear-gradient(135deg,#597df2,#6670ea);border-color:#7b95f5;color:#fff;box-shadow:0 16px 34px rgba(79,99,217,.26),inset 0 1px 0 rgba(255,255,255,.35)}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis.active{background:linear-gradient(135deg,#20b6b2,#36c8bd);border-color:#49cfc7;color:#fff;box-shadow:0 16px 34px rgba(31,166,163,.24)}
+.reusable-anchor-style-tabs .anchor-style-tab-testing.active{background:linear-gradient(135deg,#ff9b3e,#ff7b2d);border-color:#ffae65;color:#fff;box-shadow:0 16px 34px rgba(230,121,39,.24)}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization.active{background:linear-gradient(135deg,#f66296,#e74682);border-color:#f580a9;color:#fff;box-shadow:0 16px 34px rgba(208,62,117,.24)}
+.reusable-anchor-style-tabs .anchor-style-tab-card.active::after{left:43%;right:43%;background:currentColor;box-shadow:0 0 12px currentColor}
+.reusable-anchor-style-tabs .anchor-style-tab-samples.active::after{background:#536cf0;box-shadow:0 0 12px rgba(83,108,240,.6)}
+.reusable-anchor-style-tabs .anchor-style-tab-analysis.active::after{background:#20aaa7;box-shadow:0 0 12px rgba(32,170,167,.55)}
+.reusable-anchor-style-tabs .anchor-style-tab-testing.active::after{background:#f4882d;box-shadow:0 0 12px rgba(244,136,45,.55)}
+.reusable-anchor-style-tabs .anchor-style-tab-personalization.active::after{background:#e94f84;box-shadow:0 0 12px rgba(233,79,132,.55)}
+.anchor-style-tab-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:rgba(255,255,255,.6)}
+.anchor-style-tab-card.active .anchor-style-tab-icon{background:rgba(255,255,255,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.anchor-style-tab-icon svg{width:27px;height:27px;overflow:visible}
+.anchor-style-tab-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.anchor-style-tab-samples .anchor-style-tab-icon svg rect,.anchor-style-tab-analysis .anchor-style-tab-icon svg rect{fill:currentColor;stroke:none}
+.anchor-style-tab-testing .anchor-style-tab-icon svg path:first-child,.anchor-style-tab-personalization .anchor-style-tab-icon svg path{fill:currentColor;stroke:none}
+.anchor-style-tab-copy{display:grid;gap:3px;min-width:0}
+.reusable-anchor-style-tabs .anchor-style-tab-copy strong{overflow:hidden;color:#172447;font-size:16px;font-weight:950;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-tabs .anchor-style-tab-copy small{overflow:hidden;color:#71809e;font-size:12px;font-weight:650;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy strong,.reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy small{color:#fff}
+.reusable-anchor-style-reserved-empty{min-height:420px;padding:0;border-color:#e4e9f3;background:linear-gradient(135deg,#fff,#fbfcff);box-shadow:none}
+.reusable-anchor-style-samples-panel{gap:26px;padding:38px;border-color:rgba(103,123,202,.14);border-radius:26px;background:rgba(255,255,255,.94);box-shadow:0 18px 46px rgba(72,92,169,.10)}
+.reusable-anchor-style-samples-hero{display:flex;align-items:center;gap:22px}
+.reusable-anchor-style-samples-hero-icon{display:grid;place-items:center;flex:0 0 auto;width:82px;height:82px;border-radius:50%;background:linear-gradient(135deg,#e6eeff,#f7e5ff);color:#5c63eb}
+.reusable-anchor-style-samples-hero-icon svg{width:44px;height:44px}
+.reusable-anchor-style-samples-hero-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-samples-hero-icon svg rect{fill:currentColor;stroke:none}
+.reusable-anchor-style-samples-hero>div{display:grid;gap:8px}
+.reusable-anchor-style-samples-hero strong{color:#101d43;font-size:30px;font-weight:950;letter-spacing:-.02em}
+.reusable-anchor-style-samples-hero small{color:#7d8aa7;font-size:17px;line-height:1.6}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose{gap:18px;padding:0;border:0;background:transparent}
+.reusable-anchor-style-compose-field{position:relative;display:block;border:1px solid #dbe3f2;border-radius:18px;background:#fff;box-shadow:inset 0 1px 2px rgba(37,57,104,.02);transition:border-color .18s ease,box-shadow .18s ease}
+.reusable-anchor-style-compose-field:focus-within{border-color:#8194ef;box-shadow:0 0 0 4px rgba(99,120,225,.09)}
+.reusable-anchor-style-compose-icon{position:absolute;z-index:1;left:18px;top:13px;display:grid;place-items:center;width:54px;height:54px;border-radius:15px;background:linear-gradient(145deg,#f3f6ff,#e9efff);color:#526beb;pointer-events:none}
+.reusable-anchor-style-compose-icon svg{width:28px;height:28px}
+.reusable-anchor-style-compose-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-compose-field input,.reusable-anchor-style-compose-field textarea{position:relative;width:100%;box-sizing:border-box;border:0!important;border-radius:18px!important;background:transparent!important;color:#35425f!important;outline:none!important;box-shadow:none!important;font-size:17px!important}
+.reusable-anchor-style-compose-field input{min-height:80px;padding:0 86px 0 92px!important}
+.reusable-anchor-style-compose-field textarea{min-height:250px;padding:28px 88px 46px 92px!important;resize:vertical;line-height:1.75}
+.reusable-anchor-style-compose-textarea .reusable-anchor-style-compose-icon{top:16px}
+.reusable-anchor-style-compose-field input::placeholder,.reusable-anchor-style-compose-field textarea::placeholder{color:#7d899f;opacity:1}
+.reusable-anchor-style-compose-count{position:absolute;right:20px;bottom:20px;color:#8390ac;font-size:14px;font-variant-numeric:tabular-nums}
+.reusable-anchor-style-compose-field:not(.reusable-anchor-style-compose-textarea) .reusable-anchor-style-compose-count{top:50%;bottom:auto;transform:translateY(-50%)}
+.reusable-anchor-style-sample-compose-actions{justify-content:space-between;gap:20px}
+.reusable-anchor-style-sample-compose-buttons{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{display:inline-flex;align-items:center;justify-content:center;gap:12px;min-height:58px;padding:0 28px;border-radius:16px;font-size:17px;font-weight:900}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button{border:0;background:linear-gradient(135deg,#527cf2,#6657f0);box-shadow:0 12px 24px rgba(79,94,222,.22)}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button:disabled{box-shadow:none;opacity:.5}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{border:1px solid #d8dfed;background:#fff;color:#3d4d72}
+.reusable-anchor-style-sample-compose-buttons svg{width:25px;height:25px}
+.reusable-anchor-style-sample-compose-buttons svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-sample-tip{display:flex;align-items:center;gap:10px;padding:13px 18px;border-radius:16px;background:linear-gradient(135deg,#f8faff,#f3f6ff);color:#73809c;font-size:14px}
+.reusable-anchor-style-sample-tip svg{flex:0 0 auto;width:25px;height:25px}
+.reusable-anchor-style-sample-tip svg *{fill:none;stroke:#5d6da6;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.reusable-anchor-style-sample-examples{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:4px;padding-top:24px;border-top:1px solid #e7ebf3}
+.reusable-anchor-style-sample-examples>strong{margin-right:10px;color:#263657;font-size:16px}
+.reusable-anchor-style-sample-examples>button{padding:11px 22px;border:0;border-radius:14px;background:#f0f3ff;color:#5368dd;font:inherit;font-size:15px;font-weight:850;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease}
+.reusable-anchor-style-sample-examples>button:nth-of-type(2){background:#edf8ff;color:#287bc8}
+.reusable-anchor-style-sample-examples>button:nth-of-type(3){background:#eafaf5;color:#218c78}
+.reusable-anchor-style-sample-examples>button:nth-of-type(4){background:#fff2e8;color:#e76a2f}
+.reusable-anchor-style-sample-examples>button:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(64,84,159,.10)}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-thinking,.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-list{margin-top:2px}
+.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-list{padding-top:22px;border-top:1px solid #e7ebf3}
+@media(max-width:1480px){.reusable-anchor-style-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.reusable-anchor-style-sample-compose-actions{align-items:flex-start;flex-direction:column}.reusable-anchor-style-sample-tip{width:100%;box-sizing:border-box}}
+@media(max-width:820px){.reusable-anchor-style-tabs{grid-template-columns:1fr}.reusable-anchor-style-tabs .anchor-style-tab-card{min-height:72px}.reusable-anchor-style-samples-panel{padding:24px}.reusable-anchor-style-samples-hero{align-items:flex-start}.reusable-anchor-style-samples-hero-icon{width:64px;height:64px}.reusable-anchor-style-samples-hero strong{font-size:24px}.reusable-anchor-style-samples-hero small{font-size:15px}.reusable-anchor-style-compose-field input{padding-left:78px!important}.reusable-anchor-style-compose-field textarea{padding-left:78px!important}.reusable-anchor-style-compose-icon{left:13px;width:50px;height:50px}.reusable-anchor-style-sample-compose-buttons{width:100%}.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{flex:1;padding:0 18px}}
 </style>

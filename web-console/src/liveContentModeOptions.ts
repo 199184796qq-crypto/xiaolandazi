@@ -5,14 +5,17 @@ export interface LiveContentModeAccess {
   available_modes: LiveContentMode[]
   dynamic_authorized: boolean
   authorization_source: 'default' | 'operator' | 'membership'
+  auto_refresh_enabled: boolean
+  refresh_interval_seconds: number
+  replacement_percent: number
 }
 
-export const defaultLiveContentModes: LiveContentMode[] = ['ai_pregenerated', 'user_audio']
+export const defaultLiveContentModes: LiveContentMode[] = ['user_audio', 'ai_pregenerated']
 
 export const liveContentModeLabels: Record<LiveContentMode, { title: string; description: string }> = {
-  ai_pregenerated: { title: 'AI话术 + AI预生成 + AI实时互动', description: '先生成文案，确认后生成成品声音，直播时播放。' },
-  user_audio: { title: '原始录音 + AI实时互动', description: '上传你的原始录音作为主线，观众提问由 AI 实时回复。' },
-  ai_dynamic: { title: 'AI话术 + AI动态生成 + AI实时互动', description: '开播后按后台周期逐批更新文稿与声音，就绪后在音轨边界切换；失败保留原成品。' },
+  ai_pregenerated: { title: '固定生成', description: '先生成文案，确认后生成成品声音，直播时播放。' },
+  user_audio: { title: '录音主线', description: '上传原始录音作为主线，观众提问由 AI 实时回复。' },
+  ai_dynamic: { title: '实时声音', description: '直播中按周期准备新内容与声音，并在安全边界切换。' },
 }
 
 export function visibleLiveContentModes(access: LiveContentModeAccess | null): LiveContentMode[] {

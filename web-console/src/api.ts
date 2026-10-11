@@ -1301,14 +1301,15 @@ export function rebuildLiveAgentFullShowVariantSubtitles(
 export function uploadLiveAgentCustomMainline(
   planId: number,
   roomId: number,
-  file: File,
+  file: File | File[],
   durationMs: number,
   voiceSample?: File | null,
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ) {
   const form = new FormData()
-  form.append('file', file)
+  const files = Array.isArray(file) ? file : [file]
+  files.forEach((item) => form.append('file', item, item.name))
   if (voiceSample) form.append('voice_sample', voiceSample)
   form.append('room_id', String(roomId))
   if (durationMs > 0) form.append('duration_ms', String(Math.round(durationMs)))
@@ -1536,7 +1537,7 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     style_purity?: { passed: boolean; issues: Array<{ location: string; category: string; text: string; reason: string }> }
     style_vector_evaluation?: { available: boolean; shadow_only: true; model?: string; similarity?: number; score?: number; error?: string }
     overlay_qc?: { available: boolean; passed: boolean; adherence_score: number; overuse_risk: number; issue_codes: string[]; summary: string; model?: string; latency_ms?: number; error?: string; repair_attempted: boolean }
-    content_strategy?: { version: string; live_type: string; industry_code: string; plan_goal?: string; conversion_intensity: number; expansion_freedom: number; role_sequence: string[]; scheduling_mode?: string; actual_steps?: Array<{ index: number; role: string; primary_fact_id?: string; support_fact_ids?: string[]; source: string; reason: string }>; product_plan?: Array<{ link_key: string; product_name?: string; room_roles: string[]; emphasis: string; revisit: string; primary_angles?: string[]; transitions?: Array<{ target_link_key: string; reason: string }>; position_source: string; reason: string }>; layers: Array<{ layer: string; source: string; effects: string[] }> }
+    content_strategy?: { version: string; live_type: string; industry_code: string; plan_goal?: string; conversion_intensity: number; expansion_freedom: number; role_sequence: string[]; scheduling_mode?: string; action_target?: number; action_planned?: number; direct_cta_mentions?: number; actual_steps?: Array<{ index: number; role: string; primary_fact_id?: string; support_fact_ids?: string[]; source: string; reason: string; mainline_phase?: string; body_function?: string; cta_type?: string }>; product_plan?: Array<{ link_key: string; product_name?: string; room_roles: string[]; emphasis: string; revisit: string; primary_angles?: string[]; transitions?: Array<{ target_link_key: string; reason: string }>; position_source: string; reason: string }>; layers: Array<{ layer: string; source: string; effects: string[] }> }
     advisories?: Array<{ code: string; level: string; title: string; message: string; suggestion: string; user_decidable: boolean; decision_target?: string; hard_boundary: boolean }>
     continuation?: { completed_units: number; finish?: boolean; recent_units: Array<{ primary_fact_id?: string; support_fact_ids?: string[]; content_role?: string; fact_keys?: string[]; speech_act?: string; expression_move?: string; expression_signature?: string; text_tail?: string }> }
     speech_text_only?: boolean
@@ -1551,6 +1552,10 @@ export function testLiveAgentAnchorStyle(planId: number, input: { tenant_id?: nu
     planning_call_count?: number
     render_call_count?: number
     repair_call_count?: number
+    base_render_calls?: number
+    content_repair_calls?: number
+    style_wrapper_calls?: number
+    style_fallback_segments?: number[]
     style_degraded?: boolean
     degraded_segments?: number[]
     fallback_used?: boolean
@@ -4113,5 +4118,252 @@ export function deleteAdminAgentContractAttachment(contractId: number, attachmen
   return request<void>(
     '/api/v1/admin/agent-contracts/' + contractId + '/attachments/' + attachmentId,
     { method: 'DELETE' },
+  )
+}
+
+export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<import('./types').AnchorStyleWorkbenchContext>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/context' + query,
+    { cache: 'no-store' },
+  )
+}
+
+export function compileAnchorStyleWorkbenchMeta(
+  planId: number,
+  input: { tenant_id?: number; sample_text: string; scene?: string; compiler_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleWorkbenchMeta(
+  planId: number,
+  assetId: number,
+  input: { tenant_id?: number; meta_prompt_md: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function compileAnchorStyleScorecard(
+  planId: number,
+  input: { sample_text: string; prompt_md?: string; compiler_profile_id?: string; meta_prompt_asset_id: number; include_le?: boolean },
+) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/compile',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleScorecard(planId: number, assetId: number, scorecardJSON: string, includeLe = false) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify({ scorecard_json: scorecardJSON, include_le: includeLe }) },
+  )
+}
+
+export function calibrateAnchorStyleScorecard(planId: number, assetId: number, input: { sample_text?: string; include_le: boolean }) {
+  return request<import('./types').AnchorStyleScorecardResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/scorecard/' + assetId + '/calibrate',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function scoreAnchorStyleSpeech(
+  planId: number,
+  input: {
+    scorecard_asset_id: number
+    meta_prompt_asset_id: number
+    generated_text: string
+    task: import('./types').AnchorStyleWheelTestResponse['task']
+  },
+) {
+  return request<import('./types').AnchorStyleSpeechScoreResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/score',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function generateAnchorStyleRollingFeedback(planId: number, input: {
+  feedback_profile_id: string
+  meta_prompt_asset_id: number
+  scorecard_asset_id: number
+  recent_texts: string[]
+  start_index: number
+}) {
+  return request<import('./types').AnchorStyleRollingFeedbackResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/rolling-feedback',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+function anchorCycleURL(planId: number, roomId: number, suffix = '') {
+  return '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/cycle' + suffix + '?room_id=' + roomId
+}
+export function getAnchorCycle(planId: number, roomId = 0) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId))
+}
+export function startAnchorCycle(planId: number, roomId: number, input: import('./anchorCycleRun').CycleConfig & { task_limit: number }) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId), { method: 'POST', body: JSON.stringify(input) })
+}
+export function advanceAnchorCycle(planId: number, roomId: number, runId: string, revision: number) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId) + '/advance'), { method: 'POST', body: JSON.stringify({ expected_revision: revision }) })
+}
+export function synthesizeAnchorCycleVoice(planId: number, roomId: number, runId: string, candidateId: string) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId) + '/segments/' + encodeURIComponent(candidateId) + '/voice'), { method: 'POST', body: '{}' })
+}
+export function endAnchorCycle(planId: number, roomId: number, runId: string) {
+  return request<import('./anchorCycleRun').CycleResponse>(anchorCycleURL(planId, roomId, '/' + encodeURIComponent(runId)), { method: 'DELETE' })
+}
+
+export function manuallyConfirmAnchorStyleWorkbenchMeta(
+  planId: number,
+  input: { tenant_id?: number; scene?: string; meta_prompt_md: string },
+) {
+  return request<import('./types').AnchorStyleWorkbenchMetaResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/meta/manual-confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function compileAnchorStyleSellingPointWheel(
+  planId: number,
+  input: { tenant_id?: number; prompt_md?: string; compiler_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleSellingPointWheelResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/compile',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function confirmAnchorStyleSellingPointWheel(
+  planId: number,
+  assetId: number,
+  input: { tenant_id?: number; wheel_json: string },
+) {
+  return request<import('./types').AnchorStyleSellingPointWheelResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/' + assetId + '/confirm',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function testAnchorStyleSellingPointWheel(
+  planId: number,
+  input: { tenant_id?: number; pointer: number; max_chars: number; unlimited_chars?: boolean; generator_profile_id?: string },
+) {
+  return request<import('./types').AnchorStyleWheelTestResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/selling-point-wheel/test',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function createAnchorStyleAgentStudioSession(
+  planId: number,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    agent_id: string
+    environment_id: string
+    credential_profile_id: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioSessionResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function getAnchorStyleAgentStudioCatalog(
+  planId: number,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioCatalogResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/catalog',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function runAnchorStyleAgentStudioTurn(
+  planId: number,
+  sessionId: string,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+    pointer: number
+    max_chars: number
+    unlimited_chars?: boolean
+    first_turn: boolean
+    feedback_prompt?: string
+  },
+) {
+  return request<import('./types').AnchorStyleAgentStudioTurnResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions/' + encodeURIComponent(sessionId) + '/turns',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function reviewAnchorStyleGeneratedSpeech(
+  planId: number,
+  input: {
+    tenant_id?: number
+    supervisor_profile_id?: string
+    generated_text: string
+    recent_texts: string[]
+    task: import('./types').AnchorStyleWheelTestResponse['task']
+  },
+) {
+  return request<import('./types').AnchorStyleReviewResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/style-review',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function archiveAnchorStyleAgentStudioSession(
+  planId: number,
+  sessionId: string,
+  input: {
+    tenant_id?: number
+    workspace_id: string
+    region: string
+    credential_profile_id: string
+  },
+) {
+  return request<{ ok: boolean; session_id: string; plan_id: number }>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/agentstudio/sessions/' + encodeURIComponent(sessionId) + '/archive',
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function runAnchorStyleWorkbenchStep(
+  planId: number,
+  input: {
+    tenant_id?: number
+    meta_prompt_asset_id: number
+    meta_prompt_md: string
+    monitor: import('./types').AnchorStyleWorkbenchMonitor
+    state: import('./types').AnchorStyleWorkbenchState
+    generator_profile_id?: string
+    target_chars: number
+    postprocess: boolean
+    direct_mode?: boolean
+    task_override?: import('./types').AnchorStyleWorkbenchTask
+  },
+) {
+  return request<import('./types').AnchorStyleWorkbenchStepResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/step',
+    { method: 'POST', body: JSON.stringify(input) },
   )
 }
