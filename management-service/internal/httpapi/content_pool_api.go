@@ -84,7 +84,7 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 		out.State = "failed"
 	}
 	for _, p := range set.Pools {
-		row := map[string]any{"key": p.Key, "label": p.Label, "owner": p.Owner, "products": p.Products, "task_count": len(p.Tasks), "reused": p.Reused}
+		row := map[string]any{"key": p.Key, "label": p.Label, "owner": p.Owner, "products": p.Products, "task_count": len(p.Tasks), "reused": p.Reused, "tasks": p.Tasks}
 		if preview {
 			row["tasks"] = p.Tasks
 			row["facts"] = p.Facts
@@ -191,6 +191,37 @@ func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.runContentPoolJob(tenant, plan, actor, job, source)
 	writeJSON(w, http.StatusAccepted, map[string]any{"state": "updating", "job": job})
+}
+
+func (s *Server) contentPoolEdit(w http.ResponseWriter, r *http.Request) {
+	tenant, plan, room, actorID, ok := s.contentPoolAccess(w, r, true)
+	if !ok {
+		return
+	}
+	actor, ok := s.resolveActor(w, r)
+	if !ok || !s.requireLiveSupportPlanScope(w, r, actor, tenant, plan, true) {
+		return
+	}
+	var input contentpools.PoolEdit
+	if readJSON(w, r, &input) != nil {
+		writeError(w, 400, "卖点角度编辑格式错误")
+		return
+	}
+	source, err := s.captureContentSources(r.Context(), tenant, plan)
+	if err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	if _, err = s.store.EditContentPool(r.Context(), tenant, plan, actorID, source, input); err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	status, err := s.contentPoolStatus(r.Context(), tenant, plan, room, false)
+	if err != nil {
+		writeError(w, 500, "修改已保存，请刷新读取内容")
+		return
+	}
+	writeJSON(w, 200, status)
 }
 func (s *Server) contentBenefitScopeSave(w http.ResponseWriter, r *http.Request) {
 	tenant, plan, _, _, ok := s.contentPoolAccess(w, r, true)

@@ -305,12 +305,31 @@ func (s *Store) CommitContentPoolSet(ctx context.Context, tenant, plan, actor in
 	if status != "running" {
 		return set, ErrPoolSourceChanged
 	}
-	raw, _ := json.Marshal(set)
+	set, err = insertContentPoolSetTx(ctx, tx, tenant, plan, actor, set)
+	if err != nil {
+		return set, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE live_plan_content_jobs SET status='ready',stage='更新完成，等待保存智能体',result_set_id=?,lease_until=NULL,updated_at=CURRENT_TIMESTAMP(3) WHERE id=?`, set.ID, job.ID); err != nil {
+		return set, err
+	}
+	return set, tx.Commit()
+}
+
+func insertContentPoolSetTx(ctx context.Context, tx *sql.Tx, tenant, plan, actor int64, set contentpools.Set) (contentpools.Set, error) {
+	// The row ID is authoritative when loading the immutable JSON snapshot.
+	set.ID = 0
+	raw, err := json.Marshal(set)
+	if err != nil {
+		return set, err
+	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO live_plan_content_sets(tenant_id,plan_id,source_sha,data_json,created_by) VALUES(?,?,?,?,?)`, tenant, plan, set.SourceSHA, raw, actor)
 	if err != nil {
 		return set, err
 	}
-	set.ID, _ = r.LastInsertId()
+	set.ID, err = r.LastInsertId()
+	if err != nil {
+		return set, err
+	}
 	for _, p := range set.Pools {
 		var owner any
 		if p.Owner > 0 {
@@ -331,10 +350,7 @@ func (s *Store) CommitContentPoolSet(ctx context.Context, tenant, plan, actor in
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE live_plan_content_jobs SET status='ready',stage='更新完成，等待保存智能体',result_set_id=?,lease_until=NULL,updated_at=CURRENT_TIMESTAMP(3) WHERE id=?`, set.ID, job.ID); err != nil {
-		return set, err
-	}
-	return set, tx.Commit()
+	return set, nil
 }
 func (s *Store) ListBenefitScopes(ctx context.Context, tenant, plan int64) (map[int64]BenefitScope, error) {
 	r, err := s.db.QueryContext(ctx, `SELECT s.benefit_id,s.apply_all,s.version_no,p.product_link_id FROM live_plan_benefit_scopes s LEFT JOIN live_plan_benefit_scope_products p ON p.benefit_id=s.benefit_id WHERE s.tenant_id=? AND s.plan_id=? ORDER BY s.benefit_id,p.product_link_id`, tenant, plan)
