@@ -34,6 +34,17 @@ func contentPoolSetID(data map[string]any) int64 {
 	_ = json.Unmarshal(raw, &id)
 	return id
 }
+func contentPoolDraftState(set contentpools.Set, source contentpools.Sources, savedID int64) string {
+	// Notices live outside the executable pool. They do not veto saving the
+	// already approved current-source draft; unfinished items have optional retry.
+	if set.ID == 0 || set.SourceSHA != source.SHA() {
+		return "needs_update"
+	}
+	if set.ID == savedID {
+		return "synced"
+	}
+	return "ready"
+}
 func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64, preview bool) (contentPoolStatus, error) {
 	out := contentPoolStatus{State: "needs_update", Changes: []contentpools.Change{}, Products: []contentpools.Product{}, Benefits: []appdb.BenefitScope{}, Pools: []map[string]any{}}
 	source, err := s.captureContentSources(ctx, tenant, plan)
@@ -64,12 +75,7 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 	}
 	out.SetID = set.ID
 	out.Notices = set.Notices
-	if set.ID > 0 && set.SourceSHA == source.SHA() && !set.HasUnfinishedContent() {
-		out.State = "ready"
-		if set.ID == out.SavedSetID {
-			out.State = "synced"
-		}
-	}
+	out.State = contentPoolDraftState(set, source, out.SavedSetID)
 	if out.SavedSetID == 0 {
 		out.Changes = append(out.Changes, contentpools.Change{ID: "legacy-snapshot", Area: "miner", Label: "商品专属池与公共池尚未保存", Before: "现有方案", After: "点击更新受影响内容，核对后保存智能体"})
 	}

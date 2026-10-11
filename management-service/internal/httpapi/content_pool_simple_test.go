@@ -82,3 +82,19 @@ func TestPoolP0InstructionIsSeparatedFromFactMaterial(t *testing.T) {
 		t.Fatal("content rejection made retry mandatory")
 	}
 }
+
+func TestPoolUnfinishedSiblingNeverVetoesApprovedDraftSave(t *testing.T) {
+	source := contentpools.Sources{Products: []contentpools.Product{{ID: 1, Name: "当前商品", Link: "1"}}}
+	set := contentpools.Set{ID: 10, SourceSHA: source.SHA(), Notices: []contentpools.Notice{{Kind: "unavailable", Retryable: true}}}
+	if !set.HasUnfinishedContent() || contentPoolDraftState(set, source, 0) != "ready" || contentPoolDraftState(set, source, 10) != "synced" {
+		t.Fatal("optional retry blocks valid save", set)
+	}
+	changed := source
+	changed.Products = []contentpools.Product{{ID: 1, Name: "已经换品", Link: "1"}}
+	if contentPoolDraftState(set, changed, 10) != "needs_update" {
+		t.Fatal("stale material approved for changed product")
+	}
+	if contentPoolDraftState(contentpools.Set{}, source, 0) != "needs_update" {
+		t.Fatal("missing draft approved")
+	}
+}
