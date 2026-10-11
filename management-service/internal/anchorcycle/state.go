@@ -220,6 +220,7 @@ type State struct {
 	Accepted                     []Segment                      `json:"accepted"`
 	Used                         map[string]Use                 `json:"used_combinations"`
 	SpeechPool                   []SpeechPoolEntry              `json:"speech_pool,omitempty"`
+	DuplicateSkippedKeys         map[string]bool                `json:"duplicate_skipped_keys,omitempty"`
 	RecentSummaries              []string                       `json:"recent_summaries"`
 	StyleWindow                  string                         `json:"style_window"`
 	PendingFeedback              string                         `json:"pending_feedback"`

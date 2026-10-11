@@ -1,6 +1,10 @@
 package anchorcycle
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode"
+)
 
 const (
 	defaultFreshWindowMinutes = 60 // 默认新鲜期 60 分钟
@@ -118,4 +122,61 @@ func (s *State) MarkSpeechReused(e *SpeechPoolEntry) {
 	}
 	e.ReuseCount++
 	e.LastIndex = len(s.Accepted)
+}
+
+// normalizeSpeechForDedup 归一化：只保留字母和数字，去掉标点、空白与表情符号。
+// 用于逐字去重比对，避免"买鸭子最怕买到贴牌的、假的"与"买鸭子最怕买到贴牌的假的"被判成不同。
+func normalizeSpeechForDedup(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// IsDuplicateSpeech 判断 text 是否与已采纳话术逐字重复（归一化后比对历史话术池）。
+// 用于拦截"轮盘循环 + 模型低温复读"导致的跨轮次复读。
+func (s *State) IsDuplicateSpeech(text string) bool {
+	norm := normalizeSpeechForDedup(text)
+	if norm == "" {
+		return false
+	}
+	for i := range s.SpeechPool {
+		if normalizeSpeechForDedup(s.SpeechPool[i].Text) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+// RotateAfterDuplicate 复读时换到下一个未复读过的角度。
+// 返回 false 表示角度池已轮尽（所有角度都复读过一次），此时放弃去重、接受本段。
+func (s *State) RotateAfterDuplicate() bool {
+	if s.DuplicateSkippedKeys == nil {
+		s.DuplicateSkippedKeys = map[string]bool{}
+	}
+	s.DuplicateSkippedKeys[s.Task().Key] = true
+	remaining := 0
+	for _, t := range s.Queue {
+		if t.Key != "" && !s.DuplicateSkippedKeys[t.Key] {
+			remaining++
+		}
+	}
+	if remaining == 0 {
+		s.DuplicateSkippedKeys = map[string]bool{}
+		return false
+	}
+	for offset := 1; offset <= len(s.Queue); offset++ {
+		i := (s.TaskIndex + offset) % len(s.Queue)
+		if s.Queue[i].Key != "" && !s.DuplicateSkippedKeys[s.Queue[i].Key] {
+			s.TaskIndex = i
+			s.Cursor = i
+			s.Status = "ready"
+			return true
+		}
+	}
+	return false
 }

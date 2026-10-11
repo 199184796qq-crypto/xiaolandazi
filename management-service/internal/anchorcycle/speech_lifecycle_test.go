@@ -83,3 +83,43 @@ func TestMaxReuseEviction(t *testing.T) {
 		t.Fatal("复用达上限应淘汰")
 	}
 }
+
+func TestIsDuplicateSpeechNormalized(t *testing.T) {
+	s := &State{}
+	s.AddToSpeechPool("买鸭子最怕啥？怕买到贴牌的、假的！啊", "品牌×正品")
+	if !s.IsDuplicateSpeech("买鸭子最怕啥?怕买到贴牌的 假的 啊") {
+		t.Fatal("归一化后标点/空白差异应判为重复")
+	}
+	if s.IsDuplicateSpeech("这鸭子口感酥脆爆汁") {
+		t.Fatal("不同内容不应判为重复")
+	}
+	if s.IsDuplicateSpeech("") {
+		t.Fatal("空文本不应判为重复")
+	}
+}
+
+func TestRotateAfterDuplicate(t *testing.T) {
+	s := &State{Config: Config{}}
+	s.Queue = []Task{
+		{SellingPoint: "口感", Key: "口感×A"},
+		{SellingPoint: "工艺", Key: "工艺×B"},
+		{SellingPoint: "规格", Key: "规格×C"},
+	}
+	s.TaskIndex = 0
+	s.Cursor = 0
+	if !s.RotateAfterDuplicate() {
+		t.Fatal("应能换到下一个角度")
+	}
+	if s.Task().Key == "口感×A" {
+		t.Fatal("复读后不应停留在原角度")
+	}
+	// 连续跳过所有角度后应返回 false
+	s.DuplicateSkippedKeys["工艺×B"] = true
+	s.DuplicateSkippedKeys["规格×C"] = true
+	s.TaskIndex = 0
+	s.Cursor = 0
+	s.DuplicateSkippedKeys["口感×A"] = true
+	if s.RotateAfterDuplicate() {
+		t.Fatal("池轮尽后应返回 false")
+	}
+}

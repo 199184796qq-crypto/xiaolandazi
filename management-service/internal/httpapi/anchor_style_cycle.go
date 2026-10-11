@@ -844,6 +844,17 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			}
 		}
 	}
+	// 复读检测：实时生成的话术若与历史逐字重复，换角度重试（程序侧硬约束，不靠模型自觉）。
+	if reuseEntry == nil && state.IsDuplicateSpeech(text) {
+		if state.RotateAfterDuplicate() {
+			s.queueGenerationSkip(state, "speech_duplicate", "复读历史话术，已换角度")
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
+			_ = s.anchorCycles.Save(persistCtx, state)
+			cancel()
+			return state, nil
+		}
+		state.Warn("话术复读，但角度池已轮尽，接受本段")
+	}
 	reportCycleProgress(ctx, 60)
 	score := anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
 	retry := buildAnchorStyleScoreFeedback(score, b)
