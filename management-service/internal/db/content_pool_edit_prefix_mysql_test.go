@@ -208,6 +208,7 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		t.Fatal("old snapshot overwritten", before, err)
 	}
 	partial := next
+	partial.GenerationProtocol = contentpools.GenerationProtocol
 	partial.Sources.Revision, err = s.ContentSourceRevision(ctx, 14, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +229,7 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		t.Fatal("partial approved draft blocked", err)
 	}
 	loaded, err := s.GetContentPoolSet(ctx, 14, 4, partial.ID)
-	if err != nil || len(loaded.Notices) != 2 || !loaded.HasUnfinishedContent() {
+	if err != nil || len(loaded.Notices) != 2 || !loaded.HasUnfinishedContent() || loaded.GenerationProtocol != contentpools.GenerationProtocol {
 		t.Fatal("partial draft lost excluded material", loaded, err)
 	}
 	var excludedCount int
@@ -236,7 +237,7 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 		t.Fatal("excluded content entered executable pool", excludedCount, err)
 	}
 	previous, err := s.GetContentPoolSet(ctx, 14, 4, next.ID)
-	if err != nil || len(previous.Notices) != 0 {
+	if err != nil || len(previous.Notices) != 0 || previous.GenerationProtocol != "" {
 		t.Fatal("partial snapshot overwrote earlier approved set", err)
 	}
 	t.Log(fmt.Sprintf("PASS isolated tables %s*: persistence, 2-way edit CAS, tenant/pool isolation, old snapshot, new angle references, product associations, stale agent save", prefix))

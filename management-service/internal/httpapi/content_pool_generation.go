@@ -257,7 +257,9 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 		return contentpools.Set{}, err
 	}
 	stage("正在归纳公共资料与商品专属资料")
-	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0)
+	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0, func(done, total int) {
+		stage(fmt.Sprintf("正在核对资料适用范围 · %d/%d", done, total))
+	})
 	if err != nil {
 		return contentpools.Set{}, err
 	}
@@ -383,7 +385,7 @@ enqueue:
 	if current.SHA() != source.SHA() || current.Revision != source.Revision {
 		return contentpools.Set{}, appdb.ErrPoolSourceChanged
 	}
-	set := contentpools.Set{Sources: source, SourceSHA: source.SHA(), SafeFacts: safety.SafeFacts, SafetyID: safety.ID, SafetyHash: safety.SourceSHA256, Pools: pools, Notices: notices}
+	set := contentpools.Set{GenerationProtocol: contentpools.GenerationProtocol, Sources: source, SourceSHA: source.SHA(), SafeFacts: safety.SafeFacts, SafetyID: safety.ID, SafetyHash: safety.SourceSHA256, Pools: pools, Notices: notices}
 	// Each repair call owns one content unit; all relationships stay in code.
 	for _, correction := range source.Corrections {
 		// Expression-only rules were carried into every generation and review.

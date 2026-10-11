@@ -140,15 +140,20 @@ type Pool struct {
 	Reused      bool    `json:"reused"`
 }
 type Set struct {
-	ID         int64    `json:"id"`
-	SourceSHA  string   `json:"source_sha"`
-	Sources    Sources  `json:"sources"`
-	SafeFacts  string   `json:"safe_facts"`
-	SafetyHash string   `json:"safety_hash"`
-	SafetyID   int64    `json:"safety_id"`
-	Pools      []Pool   `json:"pools"`
-	Notices    []Notice `json:"notices,omitempty"`
+	GenerationProtocol string   `json:"generation_protocol,omitempty"`
+	ID                 int64    `json:"id"`
+	SourceSHA          string   `json:"source_sha"`
+	Sources            Sources  `json:"sources"`
+	SafeFacts          string   `json:"safe_facts"`
+	SafetyHash         string   `json:"safety_hash"`
+	SafetyID           int64    `json:"safety_id"`
+	Pools              []Pool   `json:"pools"`
+	Notices            []Notice `json:"notices,omitempty"`
 }
+
+// Program-owned protocol marker; old saved versions remain readable. An
+// explicit rebuild must not reuse the previous model-filled table protocol.
+const GenerationProtocol = "content-only-single-unit-v1"
 
 // Notices retain excluded/unfinished material outside the executable task pool.
 type Notice struct {

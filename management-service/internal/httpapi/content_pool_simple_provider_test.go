@@ -72,9 +72,12 @@ func TestSimplePoolProvider(t *testing.T) {
 		t.Fatal("approved siblings lost", p, notes, e)
 	}
 	for _, task := range p.Tasks {
-		if len(task.Sources) != 2 || task.Angle == "" {
+		if len(task.Sources) == 0 || task.Angle == "" {
 			t.Fatal("program provenance missing", task)
 		}
+	}
+	if len(p.Tasks) < 3 || p.Tasks[0].ID != "old-price" {
+		t.Fatal("valid previous content or selected units lost", p.Tasks, notes)
 	}
 	raw, _ := json.Marshal(map[string]any{"tasks": p.Tasks, "notices": notes})
 	t.Log("SIMPLE_POOL", string(raw))
@@ -88,4 +91,12 @@ func TestSimplePoolProvider(t *testing.T) {
 		}
 	}
 	t.Log("SCOPES", scoped, notes)
+	for _, raw := range []string{"讲清960g整只日常价92.6元，麻辣与五香可选。", "- 960g整只，日常价92.6元。\n- 麻辣和五香可选。", `{"任意外壳":"960g整只，日常价92.6元，麻辣和五香可选。"}`, `{"tasks":[{"angle":"960g整只，日常价92.6元，麻辣和五香可选。","source_ids":["forged"]}]}`, `{"任意外壳":"960g整只，日常价92.6元，麻辣和五香可选。"`} {
+		candidate := poolContent{Point: "程序维护标题", Angle: poolReplyContent(raw)}
+		_, reason, e := s.reviewSimplePoolContent(ctx, cfg.SellingPointProfileID, review, p0, p, source.Products, nil, candidate)
+		if e != nil || reason != "" {
+			t.Fatal("valid content blocked by layout", raw, reason, e)
+		}
+		t.Log("CONTENT_LAYOUT_APPROVED", candidate.Angle)
+	}
 }

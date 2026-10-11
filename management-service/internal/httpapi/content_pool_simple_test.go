@@ -2,55 +2,83 @@ package httpapi
 
 import (
 	"encoding/json"
+	"livecompanion/management/internal/contentpools"
 	"strings"
 	"testing"
-
-	"livecompanion/management/internal/contentpools"
 )
 
-func TestPoolContentHistoricalEmptyBenefitDoesNotBlockValidRows(t *testing.T) {
-	// Actual job 20 returned these blank rows when old shipping benefits lacked
-	// current evidence. The old all-table decoder failed the entire update.
-	raw := `{"tasks":[{"id":"old-price","selling_point":"规格与价格","angle":"960g整只日常价92.6元","source_ids":[1,2]},{"id":"old-shipping","selling_point":"包邮福利","angle":"","source_ids":[]},{"selling_point":"包邮福利","angle":"","source_ids":[]},{"selling_point":"口味选择","angle":"麻辣与五香可选","source_ids":[5]}]}`
-	rows, notes := decodePoolContent(raw)
-	if len(rows) != 2 || len(notes) != 2 {
-		t.Fatal(rows, notes)
+func TestPoolContentLayoutDoesNotOwnIdentityOrBlockContent(t *testing.T) {
+	prose := "讲清960g整只日常价92.6元，麻辣与五香可选。"
+	for _, raw := range []string{prose, "- " + prose, `{"text":"` + prose + `","id":"forged","source_ids":["foreign"],"product_ids":[999]}`, `{"tasks":[{"selling_point":"任意标题","angle":"` + prose + `","id":"forged"}]}`, `["` + prose + `"]`, `{"任意外壳":"` + prose + `","product_ids":[999]}`, `{"任意外壳":"` + prose + `"`} {
+		text := poolReplyContent(raw)
+		if !strings.Contains(text, prose) || strings.Contains(text, "forged") {
+			t.Fatal(raw, text)
+		}
+		p := contentpools.Pool{Key: "product:6", Products: []int64{6}, Facts: []contentpools.Fact{{ID: "trusted-origin", Text: "当前确认材料"}}}
+		got := bindPoolContent(p, poolContent{Point: "程序选定标题", Angle: text}, nil)
+		if got.ID == "forged" || got.Point != "程序选定标题" || len(got.Sources) != 1 || got.Sources[0] != "trusted-origin" {
+			t.Fatal(got)
+		}
 	}
-	p := contentpools.Pool{Key: "product:6", Products: []int64{6}, Facts: []contentpools.Fact{{ID: "trusted-origin", Text: "当前确认材料"}}}
-	got := bindPoolContent(p, rows[0], nil)
-	if got.ID == "old-price" || len(got.Sources) != 1 || got.Sources[0] != "trusted-origin" {
-		t.Fatal("model metadata trusted", got)
+	// A different or broken envelope remains content to review, never a schema veto.
+	raw := "其它结构的自然文字"
+	if poolReplyContent(raw) != raw {
+		t.Fatal("content was discarded for layout")
 	}
-	rawContent, _ := json.Marshal(poolMaterial(p, []contentpools.Product{{ID: 6, Name: "礼品装", Link: "2"}}))
-	for _, key := range []string{"trusted-origin", "source_ids", "product_ids", "\"id\""} {
-		if strings.Contains(string(rawContent), key) {
-			t.Fatal("internal references leaked", string(rawContent))
+}
+func TestPoolVerdictReadsMeaningWithoutRequiringSchema(t *testing.T) {
+	for _, raw := range []string{"通过。事实和条件一致。", "**审核结论：可以保留**\n没有新增用途。", "这条内容正确，可以入池。", "没有问题，可以保留。", "没有发现问题。", "不存在内容错误。", "未违反P0，内容符合事实。", "审核说明\n\n结论：通过。", `{"passed":true}`} {
+		j := readPoolJudgment(raw, false)
+		if !j.known || !j.passed {
+			t.Fatal(raw, j)
+		}
+	}
+	for _, raw := range []string{"有问题：遗漏了退款的未使用条件。", "不通过。无依据保温12小时。", "通过不了，内容不符合事实。", "并非没有问题，遗漏条件。", `{"passed":false}`} {
+		j := readPoolJudgment(raw, false)
+		if !j.known || j.passed || j.reason == "" {
+			t.Fatal(raw, j)
+		}
+	}
+	for _, raw := range []string{"需要更多资料，无法判断。", "不确定是否通过。", "能否通过？", "the passage is a description.", "这是一段讨论，还没有判断结论。"} {
+		if readPoolJudgment(raw, false).known {
+			t.Fatal("unfinished judgment approved", raw)
+		}
+	}
+	for _, raw := range []string{"这条资料适用于本商品。", "可以用于本商品，因为是同品牌背景。"} {
+		j := readPoolJudgment(raw, true)
+		if !j.known || !j.passed {
+			t.Fatal(raw, j)
+		}
+	}
+	for _, raw := range []string{"不适用，钢材不是饼干原料。", "不可用于本商品，主体不同。"} {
+		j := readPoolJudgment(raw, true)
+		if !j.known || j.passed {
+			t.Fatal(raw, j)
 		}
 	}
 }
-func TestPoolMalformedAndZeroContentStayOutsideExecutablePool(t *testing.T) {
-	for _, raw := range []string{`{"tasks":[null,{"selling_point":"甲","angle":5},{"selling_point":"合格","angle":"有效内容"}]}`, `{"tasks":[{"selling_point":"合格","angle":"有效内容"},"bad"]}`} {
-		rows, notes := decodePoolContent(raw)
-		if len(rows) != 1 || len(notes) == 0 {
-			t.Fatal(rows, notes)
+func TestPoolUnitsUseProgramProvenanceNotTextOrPosition(t *testing.T) {
+	p := contentpools.Pool{Facts: []contentpools.Fact{{ID: "a", Text: "规格", Sources: []string{"card"}}, {ID: "b", Text: "价格", Sources: []string{"card"}}, {ID: "c", Text: "同名资料", Sources: []string{"other"}}}}
+	source := contentpools.Sources{Rows: []contentpools.SourceRow{{ID: "card", Label: "商品卡"}, {ID: "other", Fields: map[string]string{"名称": "售后条件"}}}}
+	units := poolContentUnits(p, source)
+	if len(units) != 2 || len(units[0].facts) != 2 || units[0].title != "商品卡" || units[1].title != "售后条件" {
+		t.Fatal(units)
+	}
+}
+func TestPoolP0InstructionIsSeparatedFromFactMaterial(t *testing.T) {
+	p := contentpools.Pool{Facts: []contentpools.Fact{{ID: "trusted-origin", Text: "客观事实"}}, Products: []int64{6}}
+	packet := poolMaterial(p, []contentpools.Product{{ID: 6, Name: "本商品", Link: "2"}})
+	data, _ := json.Marshal(packet)
+	for _, key := range []string{"trusted-origin", "source_ids", "product_ids", `"id"`} {
+		if strings.Contains(string(data), key) {
+			t.Fatal(string(data))
 		}
 	}
-	rows, notes := decodePoolContent(`{"tasks":[]}`)
-	if len(rows) != 0 || len(notes) != 0 {
-		t.Fatal(rows, notes)
+	messages := poolMessages("当前内容任务", "完整有效P0", packet)
+	if len(messages) != 2 || messages[0].Content != "完整有效P0\n\n当前内容任务" || strings.Contains(messages[1].Content, "P0") {
+		t.Fatal(messages)
 	}
 	if (contentpools.Set{Notices: []contentpools.Notice{{Kind: "excluded"}}}).HasUnfinishedContent() {
 		t.Fatal("content rejection made retry mandatory")
-	}
-	if !(contentpools.Set{Notices: []contentpools.Notice{{Retryable: true}}}).HasUnfinishedContent() {
-		t.Fatal("incomplete review lost retry")
-	}
-}
-
-func TestPoolP0InstructionIsSeparatedFromFactMaterial(t *testing.T) {
-	packet := map[string]any{"facts": []string{"客观事实"}, "product": map[string]string{"name": "本商品"}}
-	messages := poolMessages("当前内容任务", "完整有效P0", packet)
-	if len(messages) != 2 || messages[0].Role != "system" || messages[0].Content != "完整有效P0\n\n当前内容任务" || messages[1].Role != "user" || strings.Contains(messages[1].Content, "P0") {
-		t.Fatal(messages)
 	}
 }

@@ -179,7 +179,7 @@ func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "读取内容版本失败")
 		return
 	}
-	if set.ID > 0 && set.SourceSHA == source.SHA() {
+	if set.ID > 0 && set.SourceSHA == source.SHA() && set.GenerationProtocol == contentpools.GenerationProtocol && !set.HasUnfinishedContent() {
 		status, e := s.contentPoolStatus(r.Context(), tenant, plan, room, false)
 		if e != nil {
 			writeError(w, 500, "读取内容状态失败")
