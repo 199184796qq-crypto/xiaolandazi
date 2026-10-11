@@ -71,22 +71,22 @@ function onKeydown(event: KeyboardEvent) {
           </label>
           <label class="fact-create-field is-content">
             <span class="fact-create-field-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg><strong>事实内容（可以说）</strong><b aria-hidden="true">*</b></span>
-            <span class="fact-create-textarea"><textarea ref="contentInput" v-model="draft.value" aria-label="事实内容（可以说）" :disabled="saving" rows="2" maxlength="4000" required placeholder="请输入事实的具体内容，语言越清晰越好…"></textarea><small>{{ draft.value.length }}/4000</small></span>
+            <span class="fact-create-textarea"><textarea ref="contentInput" v-model="draft.value" aria-label="事实内容（可以说）" :disabled="saving" rows="2" maxlength="4000" required placeholder="填写已确认的正向或负向事实，保存时会自动整理…"></textarea><small>{{ draft.value.length }}/4000</small></span>
           </label>
           <label class="fact-create-field is-forbidden">
             <span class="fact-create-field-title"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></i><strong>不要这样说（选填）</strong></span>
-            <span class="fact-create-textarea"><textarea v-model="draft.forbidden_wording" aria-label="不要这样说（选填）" :disabled="saving" rows="2" maxlength="4000" placeholder="请输入不建议的说法，避免误导…"></textarea><small>{{ draft.forbidden_wording.length }}/4000</small></span>
+            <span class="fact-create-textarea"><textarea v-model="draft.forbidden_wording" aria-label="不要这样说（选填）" :disabled="saving" rows="2" maxlength="4000" placeholder="填写不能说什么，保存时整理为自然语言负向约束…"></textarea><small>{{ draft.forbidden_wording.length }}/4000</small></span>
           </label>
           <label class="fact-create-field is-rewrite">
             <span class="fact-create-field-title"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></i><strong>改成这样说（选填）</strong></span>
-            <span class="fact-create-textarea"><textarea v-model="draft.safe_rewrite" aria-label="改成这样说（选填）" :disabled="saving" rows="2" maxlength="4000" placeholder="请输入推荐的说法或优化后的表述…"></textarea><small>{{ draft.safe_rewrite.length }}/4000</small></span>
+            <span class="fact-create-textarea"><textarea v-model="draft.safe_rewrite" aria-label="改成这样说（选填）" :disabled="saving" rows="2" maxlength="4000" placeholder="填写正向口播例子，也可留空由模型基于事实举例…"></textarea><small>{{ draft.safe_rewrite.length }}/4000</small></span>
           </label>
         </div>
         <p v-if="factCategoryState.error" class="fact-create-error" role="alert">分类配置读取失败：{{ factCategoryState.error }} <button type="button" :disabled="saving || factCategoryState.loading" @click="loadFactCategories({ suppressErrorDialog: true })">重新加载</button></p>
         <p v-if="nameError" class="fact-create-error" role="alert">{{ nameError }} <button type="button" :disabled="saving || nameLoading" @click="emit('retryName')">重试提炼名称</button></p>
         <p v-if="error" class="fact-create-error" role="alert">{{ error }}</p>
         <footer class="fact-create-footer">
-          <p><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg><span>{{ saving ? '正在保存事实，请稍候…' : !draft.value.trim() ? '先写一点真实内容，就可以保存啦～' : '保存后将用于当前方案的主线口播与智能问答，支持随时修改。' }}</span></p>
+          <p><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg><span>{{ saving ? '正在整理三栏并复核，请稍候…' : !draft.value.trim() ? '先写一点真实内容，就可以保存啦～' : '保存后将用于当前方案的主线口播与智能问答，支持随时修改。' }}</span></p>
           <div><button type="button" class="fact-create-cancel" :disabled="saving" @click="close">取消</button><button class="fact-create-save" type="submit" :disabled="!canSave"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8" /></svg>{{ saving ? '保存中…' : '保存事实依据' }}</button></div>
         </footer>
       </form>

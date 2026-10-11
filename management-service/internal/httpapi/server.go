@@ -599,6 +599,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/lecture-tasks/policy", s.lectureLibraryPolicy)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/lecture-tasks/{lectureID}/action", s.lectureLibraryMutate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/lecture-tasks/{lectureID}/preview", s.lectureLibraryPreview)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/lecture-tasks/{lectureID}/detail", s.lectureDetailUpdate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/sessions", s.anchorStyleWorkbenchAgentStudioSessionCreate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/catalog", s.anchorStyleWorkbenchAgentStudioCatalog)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/agentstudio/sessions/{sessionID}/turns", s.anchorStyleWorkbenchAgentStudioTurn)

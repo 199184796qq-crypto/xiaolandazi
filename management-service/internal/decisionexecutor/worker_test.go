@@ -551,7 +551,7 @@ func TestOperatorVerbatimStillRequiresModelReview(t *testing.T) {
 	if got != "欢迎新来的朋友们，先看看今天直播间正在讲的内容" {
 		t.Fatalf("expected reviewed text, got %q", got)
 	}
-	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[0].Content, "不得审核或裁决商品事实真假") {
+	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[0].Content, "不重新裁决用户已确认的普通业务事实真假") || !strings.Contains(agent.requests[0].Messages[0].Content, "商品使用错误") {
 		t.Fatalf("operator review guard missing: %#v", agent.requests)
 	}
 }

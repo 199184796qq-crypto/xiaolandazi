@@ -56,7 +56,7 @@ func generationFactView(facts []anchorcycle.HookFact) []map[string]any {
 	for _, f := range facts {
 		data := f.Data
 		cut := len(data)
-		guides := []map[string]string{}
+		guides := append([]map[string]string{}, f.ExpressionGuidance...)
 		for _, marker := range []string{"；禁说=", "；安全改写="} {
 			at := strings.Index(data, marker)
 			if at < 0 {
@@ -81,4 +81,18 @@ func generationFactView(facts []anchorcycle.HookFact) []map[string]any {
 		result = append(result, record)
 	}
 	return result
+}
+
+// Facts and writing controls occupy separate model-input blocks. This also
+// separates guidance from legacy delimiter-rendered facts without editing them.
+func generationMaterialViews(facts []anchorcycle.HookFact) ([]map[string]any, []map[string]any) {
+	content := generationFactView(facts)
+	guidance := []map[string]any{}
+	for _, record := range content {
+		if rules, exists := record["表达指导（不作为商品事实）"]; exists {
+			guidance = append(guidance, map[string]any{"对应事实": record["事实内容"], "适用商品链接": record["适用商品链接"], "负向约束及正向举例（不作为新增事实，不直接照念指导）": rules})
+			delete(record, "表达指导（不作为商品事实）")
+		}
+	}
+	return content, guidance
 }

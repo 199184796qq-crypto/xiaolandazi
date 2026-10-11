@@ -245,7 +245,12 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	ctx context.Context,
 	tenantID, planID, factID, actorUserID, expectedVersionNo int64,
 	category, key, value, forbiddenWording, safeRewrite string,
+	normalizationSourceRefs ...string,
 ) (model.LiveAgentPlanFact, error) {
+	sourceRef := ""
+	if len(normalizationSourceRefs) > 0 {
+		sourceRef = strings.TrimSpace(normalizationSourceRefs[0])
+	}
 	category = strings.TrimSpace(category)
 	if category == "" {
 		category = "other"
@@ -293,10 +298,10 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
 		UPDATE live_agent_plan_facts
-		SET category=?, fact_key=?, fact_value=?, forbidden_wording=?, safe_rewrite=?, source_type='manual_edit', source_ref='',
+		SET category=?, fact_key=?, fact_value=?, forbidden_wording=?, safe_rewrite=?, source_type='manual_edit', source_ref=?,
 		    version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
-	`, category, key, value, forbiddenWording, safeRewrite, nextVersion, actorUserID, factID, tenantID, planID)
+	`, category, key, value, forbiddenWording, safeRewrite, sourceRef, nextVersion, actorUserID, factID, tenantID, planID)
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}
@@ -305,9 +310,9 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
 			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', '', ?)
+		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', ?, ?)
 	`, tenantID, planID, factID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
-		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
+		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, sourceRef, actorUserID)
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}

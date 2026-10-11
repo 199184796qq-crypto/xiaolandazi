@@ -658,7 +658,12 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 			return liveStrategyFailed("stale_confirmation", "确认期间这条事实已经存在。为了避免把新增悄悄变成修改，请重新发起。", nil)
 		}
 	}
-	result, err := s.store.AdoptLiveAgentPlanFact(r.Context(), tenantID, p.PlanID, actor.UserID, candidate, "system-agent:intent-fact", newCategories...)
+	normalized, normalizationSource, err := s.normalizeFactForSave(r.Context(), tenantID, p.PlanID, actor.UserID, 0, 0, candidate, "system-agent:intent-fact")
+	if err != nil {
+		return liveStrategyFailed("fact_normalization_failed", err.Error(), nil)
+	}
+	candidate = normalized
+	result, err := s.store.AdoptLiveAgentPlanFact(r.Context(), tenantID, p.PlanID, actor.UserID, candidate, normalizationSource, newCategories...)
 	if err != nil || result.Status != "adopted" || result.Saved == nil {
 		msg := result.Message
 		if msg == "" {
@@ -697,9 +702,14 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 	if err := s.validateTenantFactCandidate(r.Context(), tenantID, candidate); err != nil {
 		return liveStrategyFailed("invalid_fact", err.Error(), nil)
 	}
+	normalized, normalizationSource, err := s.normalizeFactForSave(r.Context(), tenantID, p.PlanID, actor.UserID, current.ID, current.VersionNo, candidate, "manual:system-agent:intent-fact")
+	if err != nil {
+		return liveStrategyFailed("fact_normalization_failed", err.Error(), nil)
+	}
+	candidate = normalized
 	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(
 		r.Context(), tenantID, p.PlanID, current.ID, actor.UserID, current.VersionNo,
-		current.Category, current.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite,
+		current.Category, current.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite, normalizationSource,
 	)
 	if errors.Is(err, appdb.ErrLiveAgentPlanFactVersionConflict) {
 		return liveStrategyFailed("stale_confirmation", "这条事实已经产生新版本，请重新发起修改。", nil)

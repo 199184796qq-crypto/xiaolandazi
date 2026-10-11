@@ -117,11 +117,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		task.Key = derivedHash(task.Key)
 	}
 	// The reusable expression view is separate from this task's material.
-	var facts any = state.GenerationFacts()
-	if task.FactScope != nil || hookMode || state.CurrentAnglePlan() != nil {
-		facts = generationFactView(state.HookFacts())
-	}
+	facts, expressionGuidance := generationMaterialViews(state.HookFacts())
 	material := map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	if len(expressionGuidance) > 0 {
+		material["表达约束与正向示例"] = expressionGuidance
+	}
 	if task.FactScope != nil {
 		material["用户已确认的长期纠正规则"] = task.FactScope.Corrections
 	}
@@ -224,16 +224,23 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	if err := requireCycleP0(state); err != nil {
 		return agentgateway.Response{}, nil, err
 	}
+	if err := s.ensureLectureSegmentPlan(ctx, state); err != nil {
+		return agentgateway.Response{}, nil, fmt.Errorf("%w：%s", errLecturePlanning, err)
+	}
 	current, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
 	if err != nil || current == nil || !current.Enabled || current.APIKey == "" || state.TextModel == nil {
 		return agentgateway.Response{}, nil, fmt.Errorf("本场文字模型凭据不可用")
 	}
 	profile := *state.TextModel
 	profile.APIKey = current.APIKey
+	s.ensureFactExpressionExamples(ctx, state)
 	if cycleAnglePlanEnabled() {
 		s.ensureCycleAnglePlan(ctx, state, profile)
 	}
 	messages, err := renderCycleTextMessages(state)
+	if previous, ok := ctx.Value(factPreviewRepairKey{}).(map[string]any); ok {
+		messages, err = factSpeechRepairMessages(state, previous)
+	}
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}

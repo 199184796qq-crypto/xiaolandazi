@@ -1,7 +1,8 @@
 import { request } from './api'
 
 export type LectureAngle = { title: string; goal: string }
-export type LectureTask = { id: number; revision: number; title: string; purpose: string; subject?: string; root_fact?: { id: number; name: string; text: string }; angles: LectureAngle[]; facts: { id: number; name: string; text: string; quote: string }[]; links: string[]; enabled: boolean; valid: boolean; source?: string; updated_at?: string }
+export type LectureDetail = { id: number; storage?: string; version?: number; name: string; text: string; quote: string }
+export type LectureTask = { id: number; revision: number; title: string; purpose: string; subject?: string; root_fact?: { id: number; name: string; text: string }; angles: LectureAngle[]; facts: LectureDetail[]; links: string[]; enabled: boolean; valid: boolean; source?: string; updated_at?: string }
 export type LecturePolicy = { enabled: boolean; frequency: 'less' | 'normal' | 'more' }
 export type LectureLibrary = { tasks: LectureTask[]; policy: LecturePolicy; fingerprint: string }
 export type LectureIssue = { quote: string; rule: string; reason: string; suggestion: string }
@@ -13,3 +14,4 @@ export function ingestLecture(plan: number, tenant: number | undefined, source: 
 export function updateLecture(plan: number, tenant: number | undefined, task: LectureTask, action: string) { return request<{ ok: boolean }>(lectureURL(plan, tenant, `/${task.id}/action`), { method: 'POST', body: JSON.stringify({ revision: task.revision, action }), suppressErrorDialog: true }) }
 export function setLecturePolicy(plan: number, tenant: number | undefined, policy: LecturePolicy) { return request<{ ok: boolean }>(lectureURL(plan, tenant, '/policy'), { method: 'PUT', body: JSON.stringify(policy), suppressErrorDialog: true }) }
 export function previewLecture(plan: number, tenant: number | undefined, task: LectureTask, angle: number) { return request<LecturePreview>(lectureURL(plan, tenant, `/${task.id}/preview`), { method: 'POST', body: JSON.stringify({ revision: task.revision, angle }), suppressErrorDialog: true }) }
+export function editLectureDetail(plan: number, tenant: number | undefined, task: LectureTask, fact: LectureDetail, name: string, text: string) { return request<{ saved: boolean; name: string; text: string; notice: string }>(lectureURL(plan, tenant, `/${task.id}/detail`), { method: 'PUT', body: JSON.stringify({ revision: task.revision, detail_id: fact.id, storage: fact.storage || '', name, text }), suppressErrorDialog: true }) }

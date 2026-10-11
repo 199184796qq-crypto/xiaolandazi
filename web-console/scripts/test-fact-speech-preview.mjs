@@ -18,7 +18,7 @@ await page.route('**/api/v1/**',async route=>{
   assert.match(r.url(),/live-agent-plans\/4\/facts\/5\/speech-preview$/)
   if(mode==='pending') await new Promise(resolve=>pendingResolve=resolve)
   if(mode==='error'){await route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:'话术模型连接失败，请重试'})});return}
-  await route.fulfill({contentType:'application/json',body:JSON.stringify({fact_id:5,version_no:2,text:'咱们这个退货有条件，一次性包装未破损时，可以申请7天无理由退货。',approved:mode!=='warning',issues:mode==='warning'?[{kind:'fact_boundary',quote:'无条件退货',reason:'未保留包装条件'}]:[],model_alias:'真实口播模型',model_name:'test-model',room_name:'测试直播间',notice:'仅预览文字'})})
+  await route.fulfill({contentType:'application/json',body:JSON.stringify({fact_id:5,version_no:2,text:'咱们这个退货有条件，一次性包装未破损时，可以申请7天无理由退货。',approved:mode!=='warning',issues:mode==='warning'?[{kind:'fact_boundary',quote:'无条件退货',reason:'未保留包装条件'}]:[],review_suggestions:mode==='advice'?[{quote:'可以申请7天无理由退货',reason:'可自行核对具体申请条件'}]:[],model_alias:'真实口播模型',model_name:'test-model',room_name:'测试直播间',notice:'仅预览文字'})})
 })
 try {
   await page.goto(server.resolvedUrls.local[0]+'__preview')
@@ -36,6 +36,8 @@ try {
   assert.match(await dialog.getByRole('alert').textContent(),/连接失败/)
   mode='warning';await dialog.getByRole('button',{name:'重新生成',exact:true}).click()
   await dialog.locator('.issues').waitFor();assert.match(await dialog.locator('.issues').textContent(),/未保留包装条件/)
+  mode='advice';await dialog.getByRole('button',{name:'重新生成',exact:true}).click();await dialog.getByRole('complementary',{name:'后台审核意见'}).waitFor()
+  assert.match(await dialog.locator('.review-suggestions').textContent(),/已放行.*供你判断/s);assert.equal(await dialog.locator('.issues').count(),0);assert.equal(await dialog.locator('.warning').count(),0)
   await dialog.getByRole('button',{name:'关闭话术预览'}).click()
   mode='pending';await opener.click();await dialog.getByRole('status').waitFor()
   await page.waitForFunction(()=>document.querySelector('dialog')?.getAttribute('aria-busy')==='true')

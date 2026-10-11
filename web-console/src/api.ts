@@ -912,9 +912,11 @@ export function getLiveAgentPlanFacts(planId: number, tenantId?: number) {
 }
 
 export type FactSpeechPreview = {
-  fact_id: number; version_no: number; text: string; approved: boolean
+  preview_kind?: 'product' | 'lecture'; subject?: string; purpose?: string; angle?: string; secondary_facts?: { name: string; text: string }[]
+  fact_id: number; version_no: number; text: string; approved: boolean; review_state?: "approved" | "incomplete" | "rejected"
   model_alias: string; model_name: string; room_name: string; plan_name: string; notice: string
   issues: { kind: string; quote: string; reason: string }[]
+  review_suggestions?: { quote?: string; reason: string }[]
 }
 export function previewLiveAgentPlanFactSpeech(planId: number, factId: number, input: { room_id: number; tenant_id?: number; version_no: number }, signal?: AbortSignal) {
   return request<FactSpeechPreview>('/api/v1/live-agent-plans/' + planId + '/facts/' + factId + '/speech-preview', {

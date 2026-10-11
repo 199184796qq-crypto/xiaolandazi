@@ -32,6 +32,8 @@ type Task struct {
 	LectureAngle     int            `json:"lecture_angle,omitempty"`
 	LecturePurpose   string         `json:"lecture_purpose,omitempty"`
 	LectureFacts     string         `json:"lecture_facts,omitempty"`
+	LecturePlanJSON  string         `json:"lecture_plan_json,omitempty"`
+	LecturePlanSHA   string         `json:"lecture_plan_sha,omitempty"`
 	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
 	ID               string         `json:"id,omitempty"`
 	FocusLink        string         `json:"focus_link,omitempty"`

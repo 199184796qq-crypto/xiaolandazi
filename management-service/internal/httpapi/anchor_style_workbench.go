@@ -1181,15 +1181,7 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 	if configErr != nil {
 		return agentgateway.Response{}, messages, configErr
 	}
-	if configured.SystemDefaultID != "" {
-		if agentgateway.UsesSpeechModel(stage) {
-			if pinned, ok := ctx.Value(pinnedSpeechProfileKey{}).(string); !ok || pinned == "" || pinned != profileID {
-				profileID = configured.DefaultID
-			}
-		} else {
-			profileID = configured.SystemDefaultID
-		}
-	}
+	profileID = workbenchProfileForStage(ctx, configured, profileID, stage)
 	// Speech generation always uses the configured profile transport, including
 	// its visible system prompt. A named compiler profile does the same. Leaving
 	// the compiler blank uses the operator-owned analysis route.
@@ -1238,6 +1230,22 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 	result, err := s.speechGateway().Complete(ctx, request)
 	err = s.finishModelExchange(ctx, id, result, result.Text, started, result.InputTokens, result.OutputTokens, err)
 	return result, messages, err
+}
+
+func workbenchProfileForStage(ctx context.Context, configured agentgateway.SpeechModels, profileID, stage string) string {
+	if agentgateway.UsesReviewModel(stage) && configured.ReviewDefaultID != "" {
+		return configured.ReviewDefaultID
+	}
+	if configured.SystemDefaultID != "" {
+		if agentgateway.UsesSpeechModel(stage) {
+			if pinned, ok := ctx.Value(pinnedSpeechProfileKey{}).(string); !ok || pinned == "" || pinned != profileID {
+				return configured.DefaultID
+			}
+			return profileID
+		}
+		return configured.SystemDefaultID
+	}
+	return profileID
 }
 
 func traceAnchorStyleWorkbenchMessages(messages []agentgateway.Message) anchorStyleWorkbenchTrace {
