@@ -911,6 +911,17 @@ export function getLiveAgentPlanFacts(planId: number, tenantId?: number) {
   return request<{ items: LiveAgentPlanFact[] }>('/api/v1/live-agent-plans/' + planId + '/facts' + query)
 }
 
+export type FactSpeechPreview = {
+  fact_id: number; version_no: number; text: string; approved: boolean
+  model_alias: string; model_name: string; room_name: string; plan_name: string; notice: string
+  issues: { kind: string; quote: string; reason: string }[]
+}
+export function previewLiveAgentPlanFactSpeech(planId: number, factId: number, input: { room_id: number; tenant_id?: number; version_no: number }, signal?: AbortSignal) {
+  return request<FactSpeechPreview>('/api/v1/live-agent-plans/' + planId + '/facts/' + factId + '/speech-preview', {
+    method: 'POST', body: JSON.stringify(input), signal, suppressErrorDialog: true,
+  })
+}
+
 export function adoptLiveAgentPlanFacts(
   planId: number,
   facts: LiveAgentPlanFactCandidate[],

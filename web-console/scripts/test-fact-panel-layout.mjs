@@ -23,11 +23,11 @@ import * as Vue from '/node_modules/.vite/deps/vue.js';import FactCategoryBadge 
 import {factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories} from '/src/factCategories.ts';factCategoryState.items=${JSON.stringify(catalog.categories)};
 ${helpers}
 const rows=[['fulfillment','发货时效','一般当天发，下午6点后的订单次日上午发'],['fulfillment','售后政策','支持7天无理由退货'],['product','商品规格','商品信息以页面为准'],['trade','活动说明','活动期间下单享受优惠价'],['other','经营年限','经营70年'],['identity_location','门店地址','用户确认的门店地址']].map(([category,key,value],i)=>({id:i+1,category,key,value,forbidden_wording:i===2?'未经依据的夸大表达。'.repeat(30):i===5?'不要承诺未经核实的门店地址':'',safe_rewrite:i===2?'按已确认的商品信息介绍':i===3?'按实际活动条件介绍优惠':'',version_no:1,source_type:i===4?'manual_create':'adoption'}));
-const state=Vue.reactive({currentPlan:{name:'样例方案'},formalFacts:rows,creatingFormalFact:false,formalFactCreateGuidance:'',formalFactCreateDraft:{},formalFactCategoryOptions:[{value:'fulfillment',label:'履约事实'},{value:'product',label:'商品事实'}],editingFormalFactId:null,formalFactEditDraft:{},mutatingFormalFactId:null,expandedFactRiskId:null,locatedFactRiskHash:'',factRiskNoticeState:{error:'',loading:false},factRiskAppealDrafts:{},session:{bootstrap:{actor:{role:'customer'}}},factRiskController:{},calls:[]});
+const state=Vue.reactive({activeRoomId:26,currentRoomPlanId:4,previewingFormalFact:null,currentPlan:{name:'样例方案'},formalFacts:rows,creatingFormalFact:false,formalFactCreateGuidance:'',formalFactCreateDraft:{},formalFactCategoryOptions:[{value:'fulfillment',label:'履约事实'},{value:'product',label:'商品事实'}],editingFormalFactId:null,formalFactEditDraft:{},mutatingFormalFactId:null,expandedFactRiskId:null,locatedFactRiskHash:'',factRiskNoticeState:{error:'',loading:false},factRiskAppealDrafts:{},session:{bootstrap:{actor:{role:'customer'}}},factRiskController:{},calls:[]});
 window.fixture=state;
 const review={claim_sha256:'r5',status:'confirmed',rule_id:'example',evidence:'用户确认内容真实',semantic_decision:'pass',reason:'已确认并备案',severity:'P1'};
-const handlers={factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories,factCategoryLabel,factCategoryDescription,factRiskTone:item=>item.id===5?'confirmed':item.id===3?'blocked':'',factRiskToneLabel:item=>item.id===5?'用户已确认':'禁止使用',factRisksForFact:item=>item.id===5?[review]:[],factRiskCanConfirm:()=>false,startFormalFactEdit:item=>{state.calls.push('edit:'+item.id);state.editingFormalFactId=item.id;state.formalFactEditDraft={...item}},cancelFormalFactEdit:()=>{state.editingFormalFactId=null},saveFormalFactEdit:item=>{state.calls.push('save:'+item.id);state.editingFormalFactId=null},deleteFormalFact:item=>state.calls.push('delete:'+item.id),beginCreateFormalFact:()=>{},createFormalFact:()=>{},cancelCreateFormalFact:()=>{},confirmInlineFactRisk:()=>{},appealInlineFactRisk:()=>{}};
-Vue.createApp({components:{FactCategoryBadge,FormalFactCreateDialog},setup:()=>({...Vue.toRefs(state),...handlers}),render:new Function('Vue',${JSON.stringify(renderCode)})(Vue)}).mount('#app');</script></body></html>`
+const handlers={factCategoryState,factCategoryDefinition,factCategoryGroups,loadFactCategories,factCategoryLabel,factCategoryDescription,factRiskTone:item=>item.id===5?'confirmed':item.id===3?'blocked':'',factRiskToneLabel:item=>item.id===5?'用户已确认':'禁止使用',factRisksForFact:item=>item.id===5?[review]:[],factRiskCanConfirm:()=>false,startFormalFactEdit:item=>{state.calls.push('edit:'+item.id);state.editingFormalFactId=item.id;state.formalFactEditDraft={...item}},cancelFormalFactEdit:()=>{state.editingFormalFactId=null},saveFormalFactEdit:item=>{state.calls.push('save:'+item.id);state.editingFormalFactId=null},previewFormalFact:item=>state.calls.push('preview:'+item.id),deleteFormalFact:item=>state.calls.push('delete:'+item.id),beginCreateFormalFact:()=>{},createFormalFact:()=>{},cancelCreateFormalFact:()=>{},confirmInlineFactRisk:()=>{},appealInlineFactRisk:()=>{}};
+Vue.createApp({components:{FactCategoryBadge,FormalFactCreateDialog,FactSpeechPreviewDialog:{template:"<div />"},FactSubjectDetails:{template:"<div />"}},setup:()=>({...Vue.toRefs(state),...handlers}),render:new Function('Vue',${JSON.stringify(renderCode)})(Vue)}).mount('#app');</script></body></html>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, appType: 'custom' })
 server.middlewares.use((req,res,next) => { if (req.url === '/__fact_panel') {res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fixture)} else next() })
 await server.listen()
@@ -46,9 +46,10 @@ try {
   assert.notEqual(colors[0],colors[2]);assert.notEqual(colors[2],colors[3]);assert.notEqual(colors[3],colors[4])
   for(let i=0;i<6;i++) {
     const actions=rows.nth(i).locator('.strategy-formal-fact-actions button'), a=await actions.nth(0).boundingBox(), b=await actions.nth(1).boundingBox()
-    assert.ok(Math.abs(a.y-b.y)<2,'actions must be on one line')
-    assert.equal(await actions.locator('svg').count(),2)
-    assert.ok((await rows.nth(i).boundingBox()).height<104,'normal rows should be compact')
+    assert.ok(b.y>=a.y,'preview must precede edit in layout')
+    assert.deepEqual((await actions.allTextContents()).map(text=>text.trim()),['话术预览','修改','删除'])
+    assert.equal(await actions.locator('svg').count(),3)
+    assert.ok((await rows.nth(i).boundingBox()).height<145,'normal rows should be compact')
   }
   assert.equal(await page.locator('.strategy-fact-risk-detail-row').count(),0,'wording must be collapsed initially')
   assert.equal(await rows.nth(2).locator('td[colspan="2"]').count(),1)
@@ -67,6 +68,9 @@ try {
   await rows.nth(5).getByRole('button',{name:'有表达提醒',exact:true}).click()
   assert.match(await page.locator('#formal-fact-detail-6').textContent(),/暂无已保存的参考表达/)
   assert.deepEqual(await page.evaluate(()=>window.fixture.calls),[],'expansion must not edit, delete or generate content')
+  await rows.nth(0).getByRole('button',{name:'话术预览',exact:true}).click()
+  assert.deepEqual(await page.evaluate(()=>window.fixture.calls),['preview:1'])
+  await page.evaluate(()=>window.fixture.calls.length=0)
   const confirmedColor=await rows.nth(4).locator('td').first().evaluate(el=>getComputedStyle(el).backgroundColor)
   await rows.nth(4).hover()
   assert.equal(await rows.nth(4).locator('td').first().evaluate(el=>getComputedStyle(el).backgroundColor),confirmedColor,'hover must retain risk color')
