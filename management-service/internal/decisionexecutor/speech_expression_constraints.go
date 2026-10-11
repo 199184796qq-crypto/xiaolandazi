@@ -44,11 +44,10 @@ func (w *Worker) verifySpeechExpressionConstraints(ctx context.Context, session 
 	if err != nil {
 		return "", err
 	}
-	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return "", err
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
 	payload, _ := json.Marshal(map[string]any{"text": text, "adopted_constraints": adopted, "effective_p0": string(p0), "effective_runtime_rules": effective.PromptText})
 	response, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "speech_constraint_text_review", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(payload)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 900, EnableThinking: false})
 	if err != nil {

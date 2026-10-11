@@ -37,11 +37,10 @@ func (s *Server) contentRefreshGenerationContext(ctx context.Context, version mo
 	if err != nil {
 		return saved, "", err
 	}
-	industry, l1, l2, l3, err := s.store.LoadLivePolicyLayers(ctx, version.TenantID, version.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return saved, "", err
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
 	input := model.LiveAgentFullShowPreviewInput{
 		RoomID: version.RoomID, DurationMinutes: version.DurationMinutes, RoundMinutes: version.RoundMinutes,
 		VariantCount: len(version.Variants), UseAnchorStyle: saved.UseAnchorStyle, UseDynamicFacts: true,
@@ -51,7 +50,7 @@ func (s *Server) contentRefreshGenerationContext(ctx context.Context, version mo
 	if err := s.attachPlanStyleOverlay(ctx, version.TenantID, version.PlanID, &result); err != nil {
 		return result, "", err
 	}
-	result.IndustryCode = industry
+	result.IndustryCode = effective.IndustryCode
 	result.PolicyRuleCount = len(effective.Rules)
 	if len(result.FormalFacts)+len(result.Benefits)+len(result.ProductLinks) == 0 {
 		return result, "", errors.New("没有正式事实可用于自动更新")

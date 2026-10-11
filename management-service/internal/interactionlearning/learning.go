@@ -166,3 +166,23 @@ func ConfirmedMemoriesForPlan(items []model.AgentMemoryItem, planID int64) []mod
 	}
 	return out
 }
+
+// GenerationMemories requires an explicit room and plan binding for every
+// memory type. Unbound legacy records stay available to history/repair tools;
+// neither their product facts nor their style labels authorize live reuse.
+func GenerationMemories(items []model.AgentMemoryItem, tenantID, roomID, planID int64) []model.AgentMemoryItem {
+	out := make([]model.AgentMemoryItem, 0, len(items))
+	if tenantID <= 0 || roomID <= 0 || planID <= 0 {
+		return out
+	}
+	for _, item := range items {
+		if item.TenantID != tenantID || item.RoomID != roomID || item.Status != model.AgentMemoryStatusActive || item.CurrentVersion == nil {
+			continue
+		}
+		if numericID(item.CurrentVersion.Structured["review_plan_id"]) != planID {
+			continue
+		}
+		out = append(out, item)
+	}
+	return MemoriesForPlan(out, planID)
+}
