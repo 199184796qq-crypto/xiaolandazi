@@ -857,57 +857,54 @@ func (s *Server) completeInteractionAfterMainlineResume(roomID int64, taskID, de
 		return
 	}
 	go func() {
-		deadline := time.NewTimer(30 * time.Second)
-		defer deadline.Stop()
+		notice := time.NewTimer(30 * time.Second)
+		defer notice.Stop()
 		ticker := time.NewTicker(25 * time.Millisecond)
 		defer ticker.Stop()
+		s.awaitInteractionMainlineResume(roomID, taskID, decisionID, notice.C, ticker.C)
+	}()
+}
 
-		for {
-			if s.speechRuntime == nil || s.roomAudio == nil {
+// The warning marks a slow return, not the end of observation. Channels keep
+// the actual physical transitions testable without waiting 30 real seconds.
+func (s *Server) awaitInteractionMainlineResume(roomID int64, taskID, decisionID string, noticeC, pollC <-chan time.Time) {
+	for {
+		if s.speechRuntime == nil || s.roomAudio == nil {
+			return
+		}
+		speech, err := s.speechRuntime.Snapshot(roomID)
+		if err != nil || speech.Interrupt.SpeechTaskID != taskID || speech.Interrupt.DecisionID != decisionID {
+			return
+		}
+		if speech.Interrupt.Status == speechruntime.StatusIdle || speech.Interrupt.Status == speechruntime.StatusCompleted || speech.Interrupt.Status == speechruntime.StatusFailed {
+			return
+		}
+		engine := s.roomAudio.Snapshot(roomID)
+		if speech.Interrupt.Status == speechruntime.StatusReturning && engine.Phase == roomaudio.PhaseMainline && engine.ActiveSource == roomaudio.SourceMainline && engine.MainlineCursorMS > 0 {
+			if _, completed := s.speechRuntime.CompleteReturning(roomID, taskID, decisionID); !completed {
 				return
 			}
-			speech, err := s.speechRuntime.Snapshot(roomID)
-			if err != nil || speech.Interrupt.SpeechTaskID != taskID || speech.Interrupt.DecisionID != decisionID {
-				return
+			decisionRecorded := false
+			if s.agentDecisions != nil {
+				_, decisionRecorded = s.agentDecisions.Complete(roomID, decisionID)
 			}
-			if speech.Interrupt.Status == speechruntime.StatusCompleted || speech.Interrupt.Status == speechruntime.StatusFailed {
-				return
-			}
-			engine := s.roomAudio.Snapshot(roomID)
-			if engine.Phase == roomaudio.PhaseMainline && engine.ActiveSource == roomaudio.SourceMainline && engine.MainlineCursorMS > 0 {
-				_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-					Track:          speechruntime.TrackInterrupt,
-					Status:         speechruntime.StatusCompleted,
-					Text:           speech.Interrupt.Text,
-					QuestionText:   speech.Interrupt.QuestionText,
-					ReplyText:      speech.Interrupt.ReplyText,
-					ResumeStrategy: speech.Interrupt.ResumeStrategy,
-					BridgeText:     speech.Interrupt.BridgeText,
-					BridgeUsed:     speech.Interrupt.BridgeUsed,
-					Source:         speech.Interrupt.Source,
-					AudioURL:       speech.Interrupt.AudioURL,
-					DecisionID:     speech.Interrupt.DecisionID,
-					MissionID:      speech.Interrupt.MissionID,
-					SpeechTaskID:   speech.Interrupt.SpeechTaskID,
-					SwitchAtMS:     speech.Interrupt.SwitchAtMS,
-					DurationMS:     speech.Interrupt.DurationMS,
-					StartedAt:      speech.Interrupt.StartedAt,
-				})
-				if s.agentDecisions != nil {
-					_, _ = s.agentDecisions.Complete(roomID, decisionID)
-				}
-				log.Printf("interaction lifecycle completed after mainline resume room=%d task=%s decision=%s", roomID, taskID, decisionID)
-				return
-			}
+			log.Printf("interaction lifecycle completed after mainline resume room=%d task=%s decision=%s decision_recorded=%t", roomID, taskID, decisionID, decisionRecorded)
+			return
+		}
 
-			select {
-			case <-deadline.C:
-				log.Printf("interaction lifecycle still returning after timeout room=%d task=%s decision=%s phase=%s source=%s", roomID, taskID, decisionID, engine.Phase, engine.ActiveSource)
+		select {
+		case <-noticeC:
+			// A slow physical return is not a terminal failure. Keep observing
+			// until actual mainline PCM resumes, or this task is stopped/replaced.
+			// Releasing merely because 30 seconds elapsed could overlap audio.
+			log.Printf("interaction lifecycle still returning after timeout room=%d task=%s decision=%s phase=%s source=%s continuing_watch=true", roomID, taskID, decisionID, engine.Phase, engine.ActiveSource)
+			noticeC = nil
+		case _, open := <-pollC:
+			if !open {
 				return
-			case <-ticker.C:
 			}
 		}
-	}()
+	}
 }
 
 func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Request) {

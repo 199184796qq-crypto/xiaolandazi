@@ -229,6 +229,27 @@ func (r *Registry) Reset(roomID int64) {
 	r.mu.Unlock()
 }
 
+// CompleteReturning closes only the same interaction that was observed after
+// real mainline output. The comparison and transition share one lock so a late
+// callback cannot overwrite a stopped room or a newer interaction.
+func (r *Registry) CompleteReturning(roomID int64, taskID, decisionID string) (Snapshot, bool) {
+	if roomID <= 0 || strings.TrimSpace(taskID) == "" || strings.TrimSpace(decisionID) == "" {
+		return Snapshot{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.rooms[roomID]
+	if state == nil || state.interrupt.Status != StatusReturning || state.interrupt.SpeechTaskID != taskID || state.interrupt.DecisionID != decisionID {
+		return Snapshot{}, false
+	}
+	now := r.now().UTC()
+	state.interrupt.Status = StatusCompleted
+	state.interrupt.UpdatedAt = timePtr(now)
+	state.revision++
+	state.updatedAt = timePtr(now)
+	return snapshotLocked(roomID, state, now), true
+}
+
 func normalizeTrack(track Track) (Track, error) {
 	switch Track(strings.ToLower(strings.TrimSpace(string(track)))) {
 	case TrackMainline:
