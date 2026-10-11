@@ -534,7 +534,8 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.rejectP0Candidate(c)
 		return false, nil
 	}
-	if (s.Task().ProductMode == "lecture" || len(s.LatestExpressionConstraints) > 0) && !s.LectureCandidateApproved(c) {
+	if (s.Task().ProductMode == "lecture" || len(s.EffectiveExpressionConstraints()) > 0) && !s.LectureCandidateApproved(c) {
+		s.Attempts = append(s.Attempts, c)
 		s.SkipGeneration("lecture_scope_review", "讲解正文事实复核未通过")
 		return false, nil
 	}

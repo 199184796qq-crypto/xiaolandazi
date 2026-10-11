@@ -51,6 +51,19 @@ func (s *State) EffectiveCorrections() []map[string]any {
 	return append(out, s.LatestExpressionConstraints...)
 }
 
+// Frozen adopted requirements and newer adopted overlays need the same focused
+// check. Facts and optional expansion guidance do not become speech mandates.
+func (s *State) EffectiveExpressionConstraints() []map[string]any {
+	out := []map[string]any{}
+	for _, row := range s.EffectiveCorrections() {
+		instruction, _ := row["表达限制"].(string)
+		if strings.TrimSpace(instruction) != "" {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 type HookCalculation struct {
 	Label    string   `json:"label"`
 	Operator string   `json:"operator"`

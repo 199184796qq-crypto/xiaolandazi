@@ -25,6 +25,9 @@ func TestFinalReviewIncludesValidatedP0AndScopedContentWithoutIndices(t *testing
 	if e != nil {
 		t.Fatal(e)
 	}
+	if len(messages) != 3 || messages[0].Role != "system" || messages[1].Role != "system" || messages[2].Role != "user" || !strings.Contains(messages[0].Content, "完整有效P0") || strings.Contains(messages[2].Content, "完整有效P0") {
+		t.Fatal("P0 became user content instead of independent system rules")
+	}
 	raw, _ := json.Marshal(messages)
 	for _, word := range []string{"前次P0审核结果", "完整有效P0", "商品必要事实", "不用早餐举例"} {
 		if !strings.Contains(string(raw), word) {
