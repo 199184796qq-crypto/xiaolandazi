@@ -260,6 +260,7 @@ let localAudioRegisteredRoomID = 0
 let localAudioPlaybackGeneration = 0
 let compositeAudioAbort: AbortController | null = null
 let compositeAudioGeneration = 0
+let compositeAudioWaitingGeneration = 0
 let compositeAudioNextStartTime = 0
 let compositeAudioConnectPromise: Promise<void> | null = null
 let compositeAudioConnectedAt = 0
@@ -2697,6 +2698,7 @@ const COMPOSITE_AUDIO_STALE_MS = 4_000
 
 function compositeAudioStreamLooksAlive() {
   if (!compositeAudioAbort || compositeAudioAbort.signal.aborted) return false
+  if (compositeAudioWaitingGeneration === compositeAudioGeneration) return true
   if (localAudioState.value !== 'connected' && localAudioState.value !== 'playing') return false
   const referenceAt = compositeAudioLastFrameAt || compositeAudioConnectedAt
   if (!referenceAt) return false
@@ -2770,6 +2772,41 @@ function scheduleCompositePCMFrame(frame: Uint8Array) {
   localAudioError.value = ''
 }
 
+async function waitForCompositeAudioContext(generation: number, signal: AbortSignal) {
+  const context = localAudioContext
+  if (!context || signal.aborted || generation !== compositeAudioGeneration) return false
+  const contextRunning = () => context.state === 'running'
+  if (contextRunning()) return true
+  compositeAudioWaitingGeneration = generation
+  localAudioError.value = '浏览器暂停了声音，请点击页面恢复'
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      let settled = false
+      const finish = (ready: boolean, error?: unknown) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', abort)
+        context.removeEventListener('statechange', changed)
+        if (error) reject(error)
+        else resolve(ready)
+      }
+      const abort = () => finish(false)
+      const changed = () => {
+        if (signal.aborted || generation !== compositeAudioGeneration) finish(false)
+        else if (contextRunning()) finish(true)
+        else if (context.state === 'closed') finish(false, new Error('网页声音设备已关闭'))
+      }
+      signal.addEventListener('abort', abort, {once: true})
+      context.addEventListener('statechange', changed)
+      changed()
+      if (!settled) void context.resume().then(changed).catch(error => finish(false, error))
+    })
+  } finally {
+    if (compositeAudioWaitingGeneration === generation) compositeAudioWaitingGeneration = 0
+    if (generation === compositeAudioGeneration && contextRunning()) localAudioError.value = ''
+  }
+}
+
 async function pumpCompositeAudioStream(
   stream: ReadableStream<Uint8Array>,
   generation: number,
@@ -2783,6 +2820,9 @@ async function pumpCompositeAudioStream(
       if (done) break
       if (!value?.byteLength) continue
       compositeAudioLastFrameAt = Date.now()
+      // Preserve the first PCM chunk while the browser resumes its audio device.
+      // Consuming it with a suspended context would silently drop the opening words.
+      if (!(await waitForCompositeAudioContext(generation, signal))) break
       const merged = new Uint8Array(pending.byteLength + value.byteLength)
       merged.set(pending, 0)
       merged.set(value, pending.byteLength)

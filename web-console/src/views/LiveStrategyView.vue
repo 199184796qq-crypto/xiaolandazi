@@ -355,10 +355,7 @@ const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
 let scriptAnalysisProgressTimer: number | null = null
 const memories = ref<AgentMemoryItem[]>([])
-const interactionMemories = computed(() => memories.value.filter((item) => {
-	const type = String(item.memory_type || '').trim().toLowerCase()
-	return type === 'semantic' || type === 'interaction'
-}))
+const adoptedMemories = computed(() => memories.value.filter((item) => item.status === 'active'))
 const editingMemoryId = ref<number | null>(null)
 const memoryEditSessionId = ref<number | null>(null)
 const memoryEditFeedback = ref('')
@@ -6508,17 +6505,17 @@ onBeforeUnmount(() => {
           </div>
           <div class="strategy-v2-section-head interaction-rules-head">
             <div>
-              <h3>已采用的互动规则</h3>
-              <p>这里保留互动规范，例如“人多时不要逐个点名”“售后问题必须优先回答”。它不能新增商品事实，也不能覆盖事实依据。</p>
+              <h3>已采用纠正与互动规则</h3>
+              <p>这里展示当前直播间已采用的事实、用词、风格和互动纠正。正式商品资料仍在“事实依据”中维护。</p>
             </div>
             <button class="strategy-version-button" type="button" @click="refreshMemories">刷新规则</button>
           </div>
-          <div v-if="!interactionMemories.length" class="strategy-v2-empty">
-            <strong>当前直播间还没有已采用的互动策略</strong>
-            <span>在直播公屏或智能体对话中确认的互动规则会进入这里；其它类型纠正会自动路由到对应模块。</span>
+          <div v-if="!adoptedMemories.length" class="strategy-v2-empty">
+            <strong>当前直播间还没有已采用的纠正</strong>
+            <span>在直播公屏或智能体对话中采用的纠正都会在这里显示。</span>
           </div>
           <div v-else class="strategy-memory-list">
-            <article v-for="item in interactionMemories" :key="item.id" :class="{ editing: editingMemoryId === item.id }">
+            <article v-for="item in adoptedMemories" :key="item.id" :class="{ editing: editingMemoryId === item.id }">
               <span>{{ memoryTypeLabel(item.memory_type) }}</span>
               <div>
                 <strong>{{ item.target || item.memory_key }}</strong>
@@ -6545,7 +6542,7 @@ onBeforeUnmount(() => {
                   <textarea
                     v-model="memoryEditFeedback"
                     rows="3"
-                    placeholder="直接说明互动规范，例如：售后问题必须优先回答，但答案内容仍以事实依据为准。"
+                    placeholder="说明需要修改的事实、用词、风格或互动要求。"
                   ></textarea>
                 </label>
                 <div class="strategy-memory-edit-actions">

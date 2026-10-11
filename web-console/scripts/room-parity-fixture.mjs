@@ -16,12 +16,13 @@ export async function startFixture() {
         window.fixture={calls:[],queue:[],caption:params.get('caption')==='1'||params.get('waiting')!=='1',waiting:params.get('waiting')==='1',granted:role!=='ungranted',session:1,pcm:params.get('pcm')==='1',sources:[],startTest:params.get('start_test')==='1',delayUnlock:params.get('delay_unlock')==='1',startFailed:false,runtimePollLag:false};
         if(window.fixture.pcm){
           window.AudioContext=class {
-            constructor(){this.state=window.fixture.delayUnlock?'suspended':'running';this.destination={};this.origin=performance.now();}
+            constructor(){this.state=window.fixture.delayUnlock?'suspended':'running';this.destination={};this.origin=performance.now();window.fixture.audioContext=this;}
+            addEventListener(){} removeEventListener(){}
             get currentTime(){return (performance.now()-this.origin)/1000;}
             async resume(){if(window.fixture.delayUnlock)await new Promise(resolve=>window.fixture.releaseUnlock=()=>{window.fixture.delayUnlock=false;resolve()});this.state='running';} async suspend(){this.state='suspended';} async close(){this.state='closed';}
             createGain(){return {context:this,gain:{value:1,setValueAtTime(){}},connect(){},disconnect(){}};}
             createBuffer(){const data=new Float32Array(480);return {getChannelData:()=>data};}
-            createBufferSource(){const context=this;let timer;const source={buffer:null,onended:null,connect(){},disconnect(){},stop(){clearTimeout(timer);},start(at){window.fixture.sources.push({sound:source.buffer.getChannelData(0).some(v=>v!==0),at});timer=setTimeout(()=>source.onended?.(),Math.max(0,(at-context.currentTime+.02)*1000));}};return source;}
+            createBufferSource(){const context=this;let timer;const source={buffer:null,onended:null,connect(){},disconnect(){},stop(){clearTimeout(timer);},start(at){window.fixture.sources.push({sound:source.buffer.getChannelData(0).some(v=>v!==0),sample:source.buffer.getChannelData(0)[0],at});timer=setTimeout(()=>source.onended?.(),Math.max(0,(at-context.currentTime+.02)*1000));}};return source;}
           };
         }
         const room={id:15,tenant_id:14,name:'菜籽油',platform:'douyin',external_room_id:'529757346891',status:'offline',monitor_enabled:false,online_count:64,cooperation_status:'cooperating'};
