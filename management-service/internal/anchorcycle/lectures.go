@@ -18,19 +18,23 @@ type LectureReviewSuggestion struct {
 	Reason string `json:"reason"`
 }
 type LectureAudit struct {
-	Passed      bool                      `json:"passed"`
-	Quote       string                    `json:"quote"`
-	Reason      string                    `json:"reason"`
-	Error       string                    `json:"error,omitempty"`
-	TextSHA     string                    `json:"text_sha"`
-	ScopeSHA    string                    `json:"scope_sha"`
-	Suggestions []LectureReviewSuggestion `json:"suggestions,omitempty"`
+	Passed       bool                      `json:"passed"`
+	Quote        string                    `json:"quote"`
+	Reason       string                    `json:"reason"`
+	Error        string                    `json:"error,omitempty"`
+	TextSHA      string                    `json:"text_sha"`
+	ScopeSHA     string                    `json:"scope_sha"`
+	Model        string                    `json:"model,omitempty"`
+	InputTokens  int64                     `json:"input_tokens,omitempty"`
+	OutputTokens int64                     `json:"output_tokens,omitempty"`
+	LatencyMS    int64                     `json:"latency_ms,omitempty"`
+	Suggestions  []LectureReviewSuggestion `json:"suggestions,omitempty"`
 }
 
 func (s *State) LectureCandidateApproved(c Candidate) bool {
-	if len(s.LatestExpressionConstraints) > 0 {
+	if constraints := s.EffectiveExpressionConstraints(); len(constraints) > 0 {
 		a := c.ExpressionAudit
-		if a == nil || !a.Passed || a.Error != "" || a.TextSHA != ProductDigest(spokenCandidate(c)) || a.ScopeSHA != ProductDigest(s.LatestExpressionConstraints) {
+		if a == nil || !a.Passed || a.Error != "" || a.TextSHA != ProductDigest(spokenCandidate(c)) || a.ScopeSHA != ProductDigest(constraints) {
 			return false
 		}
 	}

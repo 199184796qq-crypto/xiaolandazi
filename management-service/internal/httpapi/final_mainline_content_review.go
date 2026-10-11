@@ -13,10 +13,10 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	if e := requireCycleP0(state); e != nil {
 		return nil, e
 	}
-	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "当前相关事实": generationFactView(state.HookFacts()), "完整有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "前次P0审核结果": priorP0ReviewView(state, c)}
+	facts, guidance := generationMaterialViews(state.HookFacts())
+	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "当前相关事实": facts, "相关事实的表达约束及举例": guidance, "用户已确认要求": state.EffectiveCorrections(), "前次P0审核结果": priorP0ReviewView(state, c)}
 	if scope := state.Task().FactScope; scope != nil {
 		packet["商品必要事实与适用边界"] = generationFactView(scope.ProductBoundary)
-		packet["用户已确认要求"] = scope.Corrections
 	}
 	if state.Task().ProductMode == "lecture" {
 		packet["本次讲解资料"] = state.Task().LectureFacts
@@ -25,7 +25,11 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	if e != nil {
 		return nil, e
 	}
-	return []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, nil
+	p0, e := json.Marshal(map[string]any{"完整有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
+	if e != nil {
+		return nil, e
+	}
+	return []agentgateway.Message{{Role: "system", Content: string(p0)}, {Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, nil
 }
 
 func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
@@ -51,6 +55,16 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 	if state.CheckApprovedText(*c, text) != nil {
 		fail("当前P0尚未取得匹配的通过结果")
 		return
+	}
+	if constraints := state.EffectiveExpressionConstraints(); len(constraints) > 0 {
+		previous := c.ExpressionAudit
+		if previous == nil || previous.TextSHA != anchorcycle.ProductDigest(text) || previous.ScopeSHA != anchorcycle.ProductDigest(constraints) {
+			s.auditSpeechExpressionConstraints(ctx, state, c)
+		}
+		if c.ExpressionAudit == nil || !c.ExpressionAudit.Passed || c.ExpressionAudit.Error != "" {
+			fail("当前明确表达要求未通过或核对未完成")
+			return
+		}
 	}
 	mother, _, err := loadReplaceablePromptAsset("MAINLINE_FINAL_CONTENT_REVIEW_PROMPT_PATH", "configs/prompts/anchor-style/mainline-final-content-review.md", "最终文字事实与要求审核母版")
 	if err != nil {

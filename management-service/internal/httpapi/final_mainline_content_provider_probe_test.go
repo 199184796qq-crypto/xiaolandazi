@@ -23,6 +23,7 @@ func TestFinalMainlineContentCrossCategoryProvider(t *testing.T) {
 		Name, Identity, Facts, Text string
 		WantPass                    bool
 		Corrections                 []map[string]any
+		AdoptedConstraints          []map[string]any
 	}
 	if e = json.Unmarshal(raw, &cases); e != nil || len(cases) == 0 || len(cases) > 64 {
 		t.Fatal("invalid explicit fixtures", e)
@@ -69,16 +70,21 @@ func TestFinalMainlineContentCrossCategoryProvider(t *testing.T) {
 		}
 		state.TenantID, state.PlanID, state.Surface, state.Phase = 14, 0, factPreviewSurface, "body"
 		state.ReviewModel = profile
+		state.LatestExpressionConstraints = f.AdoptedConstraints
 		state.Facts = f.Identity + "\n" + f.Facts
 		if e = state.InstallP0(p0, source); e != nil {
 			t.Fatal(e)
 		}
 		c := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: f.Text, OutputText: f.Text}
 		started := time.Now()
+		s.auditSpeechExpressionConstraints(ctx, &state, &c)
 		s.auditFinalMainlineContent(ctx, &state, &c)
 		accepted := state.FinalContentCandidateApproved(c)
+		if len(state.LatestExpressionConstraints) > 0 {
+			accepted = accepted && state.LectureCandidateApproved(c)
+		}
 		messages, _ := finalMainlineContentMessages(&state, c, mother)
-		rows = append(rows, map[string]any{"case": f, "accepted": accepted, "matches_expected": accepted == f.WantPass, "p0": c.P0Report, "audit": c.FinalContentAudit, "messages": messages, "full_ms": time.Since(started).Milliseconds()})
+		rows = append(rows, map[string]any{"case": f, "accepted": accepted, "matches_expected": accepted == f.WantPass, "p0": c.P0Report, "audit": c.FinalContentAudit, "expression_audit": c.ExpressionAudit, "messages": messages, "full_ms": time.Since(started).Milliseconds()})
 		if accepted != f.WantPass {
 			t.Errorf("case=%s expected=%v actual=%v raw=%s", f.Name, f.WantPass, accepted, c.FinalContentAudit.Raw)
 		} else {

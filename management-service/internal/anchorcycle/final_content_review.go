@@ -29,5 +29,5 @@ func (s *State) FinalContentCandidateApproved(c Candidate) bool {
 		return true
 	}
 	a := c.FinalContentAudit
-	return a != nil && a.Error == "" && a.Decision == "通过" && a.ContextSHA != "" && a.ContextSHA == s.FinalContentReviewContextSHA && a.TextSHA == ProductDigest(spokenCandidate(c)) && a.ScopeSHA == s.FinalContentSourceSHA() && s.CheckApprovedText(c, spokenCandidate(c)) == nil
+	return a != nil && a.Error == "" && a.Decision == "通过" && a.ContextSHA != "" && a.ContextSHA == s.FinalContentReviewContextSHA && a.TextSHA == ProductDigest(spokenCandidate(c)) && a.ScopeSHA == s.FinalContentSourceSHA() && s.CheckApprovedText(c, spokenCandidate(c)) == nil && s.LectureCandidateApproved(c)
 }

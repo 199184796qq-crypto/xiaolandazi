@@ -7,6 +7,8 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentpools"
+	appdb "livecompanion/management/internal/db"
+	"time"
 )
 
 func (s *Server) installCurrentExpressionConstraints(ctx context.Context, state *anchorcycle.State) error {
@@ -32,11 +34,12 @@ func (s *Server) installCurrentExpressionConstraints(ctx context.Context, state 
 }
 
 func (s *Server) auditSpeechExpressionConstraints(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
-	if len(state.LatestExpressionConstraints) == 0 {
+	constraints := state.EffectiveExpressionConstraints()
+	if len(constraints) == 0 {
 		return
 	}
 	text := cycleVoiceText(*c)
-	audit := &anchorcycle.LectureAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: anchorcycle.ProductDigest(state.LatestExpressionConstraints)}
+	audit := &anchorcycle.LectureAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: anchorcycle.ProductDigest(constraints)}
 	c.ExpressionAudit = audit
 	if err := requireCycleP0(state); err != nil {
 		audit.Error = "有效P0读取未完成"
@@ -47,15 +50,36 @@ func (s *Server) auditSpeechExpressionConstraints(ctx context.Context, state *an
 		audit.Error = "表达约束审核母版不可用"
 		return
 	}
-	packet := map[string]any{"text": text, "adopted_constraints": state.LatestExpressionConstraints, "effective_p0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	content := []map[string]any{}
+	for _, row := range constraints {
+		entry := map[string]any{"表达限制": row["表达限制"]}
+		for _, key := range []string{"用户原话（理解纠正范围，不能扩张限制）", "适用商品链接"} {
+			if value, exists := row[key]; exists {
+				entry[key] = value
+			}
+		}
+		content = append(content, entry)
+	}
+	packet := map[string]any{"text": text, "adopted_constraints": content, "前次P0审核结果": priorP0ReviewView(state, *c)}
+	p0, err := json.Marshal(map[string]any{"完整有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
+	if err != nil {
+		audit.Error = "表达约束P0传递未完成"
+		return
+	}
+	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: c.ID})
+	started := time.Now()
 	out, err := boundedExpressionConstraintAudit(text, func(previous string) (string, error) {
 		if previous != "" {
 			packet["previous_review_format_error"] = previous
 		}
 		raw, _ := json.Marshal(packet)
-		res, _, e := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "speech_constraint_text_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, 900, false)
+		res, _, e := s.completeAnchorStyleWorkbench(ctx, state.Config.FeedbackID, "speech_constraint_text_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: string(p0)}, {Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, 900, false)
+		audit.Model = res.Model
+		audit.InputTokens += res.InputTokens
+		audit.OutputTokens += res.OutputTokens
 		return res.Text, e
 	})
+	audit.LatencyMS = time.Since(started).Milliseconds()
 	if err != nil {
 		audit.Error = "表达约束审核未完成"
 		return

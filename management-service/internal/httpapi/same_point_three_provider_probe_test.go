@@ -46,7 +46,7 @@ func TestSamePointThreeProviderExample(t *testing.T) {
 	}
 	facts := "可选抽真空或不抽真空。未开封、常温条件下，抽真空6天，不抽真空3天。开封后建议当天吃完。"
 	boundary := "这是已加工好的即食卤炸鸭，开袋直接吃，不作为生肉炒菜或炖汤。"
-	task := anchorcycle.Task{Key: "offline-packing-example", SellingPoint: "包装选择及常温保存", Angle: "帮助按食用计划选对包装，分别从近期食用、晚几天食用、两种包装对比展开", PainPoint: "不知道两种包装怎样按自己的食用计划选择", AllowedLinksJSON: `["1"]`, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{ID: "program-fact", Products: []string{"1"}, Data: facts}}, ProductBoundary: []anchorcycle.HookFact{{ID: "program-boundary", Products: []string{"1"}, Data: boundary}}, Corrections: []map[string]any{{"kind": "expression_rule", "instruction": "凡讲常温保存天数，保留未开封前提；不能把6天或3天套到开封后。"}}}}
+	task := anchorcycle.Task{Key: "offline-packing-example", SellingPoint: "包装选择及常温保存", Angle: "帮助按食用计划选对包装，分别从近期食用、晚几天食用、两种包装对比展开", PainPoint: "不知道两种包装怎样按自己的食用计划选择", AllowedLinksJSON: `["1"]`, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{ID: "program-fact", Products: []string{"1"}, Data: facts}}, ProductBoundary: []anchorcycle.HookFact{{ID: "program-boundary", Products: []string{"1"}, Data: boundary}}, Corrections: []map[string]any{{"表达限制": "凡讲常温保存天数，保留未开封前提；不能把6天或3天套到开封后。"}}}}
 	state, err := anchorcycle.New([]anchorcycle.Task{task}, anchorcycle.Config{Rolling: true, MaxChars: 220, BodySegments: 3, TextProfileID: writer.ID, FeedbackID: writer.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestSamePointThreeProviderExample(t *testing.T) {
 		server.reviewCycleP0Context(ctx, &state, &candidate)
 		server.auditFinalMainlineContent(ctx, &state, &candidate)
 		passed := state.FinalContentCandidateApproved(candidate)
-		rows = append(rows, map[string]any{"visit": visit + 1, "generation": response, "generation_messages": messages, "selected_direction": candidate.AngleHook, "final_text": candidate.OutputText, "p0_report": candidate.P0Report, "p0_reference": priorP0ReviewView(&state, candidate), "final_audit": candidate.FinalContentAudit, "accepted": passed})
+		rows = append(rows, map[string]any{"visit": visit + 1, "generation": response, "generation_messages": messages, "selected_direction": candidate.AngleHook, "final_text": candidate.OutputText, "p0_report": candidate.P0Report, "p0_reference": priorP0ReviewView(&state, candidate), "final_audit": candidate.FinalContentAudit, "expression_audit": candidate.ExpressionAudit, "accepted": passed})
 		if passed {
 			accepted++
 			state.Accepted = append(state.Accepted, anchorcycle.Segment{Task: state.Task(), Selected: candidate})
