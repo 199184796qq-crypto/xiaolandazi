@@ -1,11 +1,35 @@
 package httpapi
 
 import (
+	"context"
+	"livecompanion/management/internal/agentgateway"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestWorkbenchReviewUsesConfiguredReviewRole(t *testing.T) {
+	cfg := agentgateway.SpeechModels{SystemDefaultID: "analysis", DefaultID: "speech", ReviewDefaultID: "review"}
+	for _, stage := range []string{"lecture_task_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "mainline_p0_context"} {
+		if got := workbenchProfileForStage(context.Background(), cfg, "old-analysis", stage); got != "review" {
+			t.Fatal(stage, got)
+		}
+	}
+	if got := workbenchProfileForStage(context.Background(), cfg, "old-speech", "mainline_text"); got != "speech" {
+		t.Fatal(got)
+	}
+	if got := workbenchProfileForStage(withPinnedSpeechProfile(context.Background(), "pinned"), cfg, "pinned", "mainline_text"); got != "pinned" {
+		t.Fatal(got)
+	}
+	if got := workbenchProfileForStage(context.Background(), cfg, "old", "fact_fields_normalize"); got != "analysis" {
+		t.Fatal(got)
+	}
+	cfg.ReviewDefaultID = ""
+	if got := workbenchProfileForStage(context.Background(), cfg, "old", "lecture_task_review"); got != "analysis" {
+		t.Fatal("legacy fallback changed", got)
+	}
+}
 
 func TestInternalAnalysisRejectsUnauthenticatedAndInvalidRequests(t *testing.T) {
 	s := &Server{purposeInternalToken: "fixture-core-token"}

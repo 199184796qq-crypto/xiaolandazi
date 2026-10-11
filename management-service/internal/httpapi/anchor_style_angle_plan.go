@@ -80,12 +80,17 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	facts := state.HookFacts()
 	// The wire payload contains content and business link labels only. Program
 	// identifiers and source relationships stay in the archived source binding.
-	contentFacts := generationFactView(facts)
+	contentFacts, expressionGuidance := generationMaterialViews(facts)
 	task := state.Task()
 	input := map[string]any{"卖点": task.SellingPoint, "角度": task.Angle, "观众顾虑": task.PainPoint, "本次商品链接": state.HookProducts(), "当前有效事实": contentFacts, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "方向数量上限": 4}
+	if len(expressionGuidance) > 0 {
+		input["表达约束与正向示例"] = expressionGuidance
+	}
+	input["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
 	if task.FactScope != nil {
-		input["用户已确认的长期纠正规则"] = task.FactScope.Corrections
-		input["商品必要事实与使用边界（约束推演，不更换当前任务）"] = generationFactView(task.FactScope.ProductBoundary)
+		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)
+		input["商品必要事实与使用边界（约束推演，不更换当前任务）"] = boundary
+		input["商品必要事实的表达约束（不是新增事实）"] = guidance
 	}
 	if previous != nil {
 		old := []string{}

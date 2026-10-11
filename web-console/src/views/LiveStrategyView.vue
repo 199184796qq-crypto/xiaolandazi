@@ -372,6 +372,7 @@ const vFocus = {
 const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
+const secondaryEditFactId = ref<number | null>(null)
 const formalFactEditDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const creatingFormalFact = ref(false)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
@@ -4122,7 +4123,8 @@ function onPlanTestAssetsUpdated(event: Event) {
   void Promise.all([refreshFormalFacts(), refreshMemories(), contentPools.refresh(true)])
 }
 
-function startFormalFactEdit(item: LiveAgentPlanFact) {
+function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
+	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
   formalFactEditDraft.value = {
@@ -4414,7 +4416,7 @@ async function createFormalFact() {
 			{ suppressErrorDialog: true },
 		)
 		if (!current()) return
-		if (!result.adopted && result.conflicts) {
+		if (!result.adopted && (result.conflicts || result.blocked)) {
 			throw new Error(result.results?.[0]?.message || '同分类下已经存在相同事实名称')
 		}
 		await refreshFormalFacts()
@@ -4422,7 +4424,7 @@ async function createFormalFact() {
 		cancelCreateFormalFact()
 		scriptNotice.value = createdFromWheelGap
 			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
-			: '事实依据已保存，主线口播与互动回答会共同使用。'
+			: '事实、负向约束和正向示例已规范并保存，主线口播与互动回答会共同使用。'
 	} catch (err) {
 		if (current()) formalFactCreateError.value = err instanceof Error ? err.message : '新增事实依据失败'
 	} finally {
@@ -4457,7 +4459,7 @@ async function saveFormalFactEdit(item: LiveAgentPlanFact) {
     )
     await refreshFormalFacts()
     cancelFormalFactEdit()
-    scriptNotice.value = '正式事实已修改并生成新版本。'
+    scriptNotice.value = '三栏已规范保存，正式事实已生成新版本。'
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '修改正式事实失败'
   } finally {
@@ -6643,7 +6645,7 @@ onBeforeUnmount(() => {
                     <template v-else>
                       <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
                       <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
-                      <td class="strategy-formal-fact-value">{{ item.value }}<FactSubjectDetails v-if="item.source_type === 'story_subject' && currentRoomPlanId" :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" /></td>
+                      <td class="strategy-formal-fact-value">{{ item.value }}</td>
                       <td v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" colspan="2" class="strategy-formal-fact-guidance-cell">
                         <button type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                       </td>
@@ -6676,6 +6678,7 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                   </tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="6"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
                     <td colspan="6">
                       <div class="strategy-formal-fact-expanded">

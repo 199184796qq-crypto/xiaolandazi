@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentpools"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 )
 
@@ -28,8 +30,15 @@ func selectedPreviewFact(items []model.LiveAgentPlanFact, tenant, plan, id, vers
 func factPreviewTask(f model.LiveAgentPlanFact, corrections []map[string]any) anchorcycle.Task {
 	// Only content crosses the model boundary. IDs and versions remain in the
 	// HTTP request/response and exchange scope, never in the material payload.
-	raw, _ := json.Marshal(map[string]string{"事实名称": f.Key, "事实内容（包含适用条件）": f.Value, "不要这样说": f.ForbiddenWording, "改成这样说（仅参考表达）": f.SafeRewrite})
-	return anchorcycle.Task{SellingPoint: f.Key, Angle: f.Key, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{Data: string(raw)}}, Corrections: corrections}}
+	raw, _ := json.Marshal(map[string]string{"事实名称": f.Key, "事实内容（包含适用条件）": f.Value})
+	guidance := []map[string]string{}
+	if strings.TrimSpace(f.ForbiddenWording) != "" {
+		guidance = append(guidance, map[string]string{"要求": "负向表达约束", "内容": f.ForbiddenWording})
+	}
+	if strings.TrimSpace(f.SafeRewrite) != "" {
+		guidance = append(guidance, map[string]string{"要求": "正向举例模板（只参考说法，不补充事实）", "内容": f.SafeRewrite})
+	}
+	return anchorcycle.Task{SellingPoint: f.Key, Angle: f.Key, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{ID: derivedHash(fmt.Sprintf("%d/%d/%d/%d:%s", f.TenantID, f.PlanID, f.ID, f.VersionNo, raw)), Data: string(raw), ExpressionGuidance: guidance}}, Corrections: corrections}}
 }
 
 func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, room int64, f model.LiveAgentPlanFact, roomName string) (anchorcycle.State, error) {
@@ -48,6 +57,17 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 		productIDs = append(productIDs, link.ID)
 	}
 	task := factPreviewTask(f, contentpools.CorrectionView(source, productIDs))
+	lib, err := s.store.LectureLibrary(ctx, tenant, plan, false)
+	if err != nil {
+		return anchorcycle.State{}, errors.New("读取二级资料关联失败")
+	}
+	lecture, err := selectedFactLecture(lib, f)
+	if err != nil {
+		return anchorcycle.State{}, err
+	}
+	if lecture != nil {
+		task = factLecturePreviewTask(*lecture, task.FactScope)
+	}
 	state, err := anchorcycle.New([]anchorcycle.Task{task}, anchorcycle.Config{MaxChars: 220})
 	if err != nil {
 		return state, err
@@ -55,6 +75,10 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	state.TenantID, state.PlanID, state.RoomID = tenant, plan, room
 	state.Surface, state.Phase = factPreviewSurface, "body"
 	state.Facts = task.FactScope.Facts[0].Data
+	if lecture != nil {
+		state.Phase = "lecture"
+		state.Lectures = &anchorcycle.LectureRuntime{Active: &task, Library: lecturetask.Library{Tasks: []lecturetask.Task{*lecture}}}
+	}
 	card, err := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan)
 	if err != nil {
 		return state, errors.New("请先在当前方案确认主播风格，再预览直播话术")
@@ -75,17 +99,26 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	if state.TextModel == nil {
 		return state, errors.New("请先配置口播生成模型")
 	}
-	mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
-	if err != nil {
-		return state, err
+	if lecture == nil {
+		mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
+		if err != nil {
+			return state, err
+		}
+		state.TextModel.SystemPrompt = strings.TrimSpace(state.TextModel.SystemPrompt + "\n\n" + mother)
 	}
-	state.TextModel.SystemPrompt = strings.TrimSpace(state.TextModel.SystemPrompt + "\n\n" + mother)
-	contextData, _ := json.Marshal(map[string]string{"模拟直播间": roomName, "当前环节": "围绕所选事实讲品"})
+	stage := "围绕所选事实讲品"
+	if lecture != nil {
+		stage = "围绕所选资料对象进行任务讲解"
+	}
+	contextData, _ := json.Marshal(map[string]string{"模拟直播间": roomName, "当前环节": stage})
 	state.PendingFeedback = string(contextData)
 	return state, nil
 }
 
 func factPreviewReviewState(state anchorcycle.State) anchorcycle.State {
+	if state.Task().ProductMode == "lecture" {
+		return state
+	}
 	// Use the existing content-boundary reviewer for this single fact, while
 	// generation itself still uses the normal mainline text/angle pipeline.
 	task := state.Task()
@@ -96,8 +129,33 @@ func factPreviewReviewState(state anchorcycle.State) anchorcycle.State {
 }
 
 func (s *Server) generateFactSpeechPreview(ctx context.Context, state *anchorcycle.State) (map[string]any, error) {
+	feedback := state.PendingFeedback
+	defer func() { state.PendingFeedback = feedback }()
+	history := []map[string]any{}
+	for attempt := 0; attempt < 2; attempt++ {
+		output, err := s.generateFactSpeechPreviewOnce(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		if output["review_state"] != "rejected" || attempt == 1 {
+			if len(history) > 0 {
+				output["previous_attempts"] = history
+			}
+			return output, nil
+		}
+		history = append(history, map[string]any{"text": output["text"], "issues": output["issues"]})
+		ctx = context.WithValue(ctx, factPreviewRepairKey{}, map[string]any{"text": output["text"], "issues": output["issues"]})
+	}
+	return nil, errors.New("话术预览未完成")
+}
+
+func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *anchorcycle.State) (map[string]any, error) {
+	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
 	result, _, err := s.completeCycleText(ctx, state)
 	if err != nil {
+		if errors.Is(err, errLecturePlanning) {
+			return nil, err
+		}
 		return nil, errors.New("话术生成未完成，请重试或检查当前口播模型连接")
 	}
 	if strings.TrimSpace(result.Text) == "" {
@@ -113,10 +171,38 @@ func (s *Server) generateFactSpeechPreview(ctx context.Context, state *anchorcyc
 		s.auditLectureCandidate(ctx, &reviewState, &candidate)
 	}
 	output := lecturePreviewContent(&reviewState, candidate, scanError)
+	rules := []map[string]string{}
+	for _, rule := range state.LatestExpressionConstraints {
+		feedback, _ := rule["用户原话（理解纠正范围，不能扩张限制）"].(string)
+		constraint, _ := rule["表达限制"].(string)
+		rules = append(rules, map[string]string{"feedback": feedback, "constraint": constraint})
+	}
+	output["expression_constraints"] = rules
+	if state.Task().LecturePlanJSON != "" {
+		if plan, e := parseLectureSegmentPlan(state.Task().LecturePlanJSON, state.Task().LectureFacts); e == nil {
+			output["purpose"], output["angle"] = plan.Purpose, plan.Angle
+		}
+	}
 	output["model_alias"], output["model_name"] = state.TextModel.Name, state.TextModel.Model
+	output["preview_kind"] = "product"
+	if state.Task().ProductMode == "lecture" {
+		output["preview_kind"] = "lecture"
+		if state.Lectures != nil && len(state.Lectures.Library.Tasks) == 1 {
+			t := state.Lectures.Library.Tasks[0]
+			output["subject"] = t.Subject
+			details := []map[string]string{}
+			for _, f := range t.Facts {
+				details = append(details, map[string]string{"name": f.Name, "text": f.Text})
+			}
+			output["secondary_facts"] = details
+		}
+	}
 	output["notice"] = "使用当前方案和真实口播模型生成，仅预览文字。"
-	if approved, _ := output["approved"].(bool); !approved {
-		output["notice"] = "话术存在审核提醒，请核对下方原因并修改事实或重新生成。"
+	if output["review_state"] == "incomplete" {
+		output["notice"] = "话术已生成，审核暂未完成；这不是内容违规结论，可以重新生成后重试审核。"
+	}
+	if output["review_state"] == "rejected" {
+		output["notice"] = "话术未通过内容审核，请核对下方具体原因。"
 	}
 	return output, nil
 }
@@ -198,6 +284,15 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 	if _, valid := selectedPreviewFact(current, tenant, plan, id, input.VersionNo); !valid {
 		writeError(w, 409, "生成期间事实已修改或删除，请刷新后重新预览")
 		return
+	}
+	if state.Task().ProductMode == "lecture" {
+		lib, err := s.store.LectureLibrary(ctx, tenant, plan, false)
+		now, selectErr := selectedFactLecture(lib, fact)
+		previous := state.Lectures.Library.Tasks[0]
+		if err != nil || selectErr != nil || now == nil || now.ID != previous.ID || now.Revision != previous.Revision || now.Evidence() != previous.Evidence() {
+			writeError(w, 409, "生成期间二级资料已变化，请刷新后重新预览")
+			return
+		}
 	}
 	output["fact_id"], output["version_no"], output["room_name"], output["plan_name"] = id, input.VersionNo, room.Name, planData.Name
 	writeJSON(w, 200, output)

@@ -19,9 +19,9 @@ func angleDirectionReviewMessages(state *anchorcycle.State, h anchorcycle.AngleH
 		return nil, err
 	}
 	input := map[string]any{"当前任务": generationTaskView(state.Task()), "候选方向": map[string]string{"讨论内容": h.Action, "标题": h.Title, "观众顾虑": h.Concern, "切入方法": h.Entry}, "当前相关事实": generationFactView(state.HookFacts()), "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	input["用户已确认纠正规则"] = state.EffectiveCorrections()
 	if scope := state.Task().FactScope; scope != nil {
 		input["商品必要事实与使用边界"] = generationFactView(scope.ProductBoundary)
-		input["用户已确认纠正规则"] = scope.Corrections
 	}
 	raw, err := json.Marshal(input)
 	if err != nil {

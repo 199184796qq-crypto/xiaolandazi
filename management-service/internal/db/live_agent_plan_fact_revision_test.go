@@ -89,7 +89,7 @@ func TestFactRevisionEditCommitsNewVersion(t *testing.T) {
 		t.Fatal("edit not committed", updated, c)
 	}
 	args := c.args[1]
-	if args[7].Value != "不允许说的原句" || args[8].Value != "安全建议" || args[9].Value != "原素材" || args[12].Value != int64(8) {
+	if args[7].Value != "不允许说的原句" || args[8].Value != "安全建议" || args[9].Value != "原素材" || args[13].Value != int64(8) {
 		t.Fatal("history metadata lost", args)
 	}
 }
@@ -100,6 +100,16 @@ func TestFactRevisionDeleteKeepsHistory(t *testing.T) {
 	}
 	if !c.committed || len(c.writes) != 2 || !strings.Contains(c.writes[0], "status='disabled'") || !strings.Contains(c.writes[1], "'delete'") {
 		t.Fatal("delete lost recovery history")
+	}
+}
+func TestFactRevisionLinksNormalizationArchive(t *testing.T) {
+	s, c := factRevisionStore(t)
+	_, err := s.UpdateLiveAgentPlanFactWithExpectedVersion(context.Background(), 14, 4, 7, 8, 1, "identity_location", "来源说明", "修改后的内容", "", "", "manual:fact-normalization:owned-archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.args[1][12].Value != "manual:fact-normalization:owned-archive" {
+		t.Fatal("revision lost original-input archive association")
 	}
 }
 func TestFactRevisionEditFailureRollsBack(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"livecompanion/management/internal/contentpools"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
@@ -27,6 +28,9 @@ type currentInteractionFactsStore interface {
 }
 type currentInteractionLectureStore interface {
 	CurrentInteractionLectureFacts(context.Context, int64, int64, int64, string) (string, error)
+}
+type expressionConstraintStore interface {
+	CurrentSpeechExpressionConstraints(context.Context, int64, int64) (contentpools.Sources, error)
 }
 
 func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.LiveRuntimeSession, planID int64, options ...any) (string, error) {
@@ -93,6 +97,13 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 }
 
 func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool) (string, error) {
+	if source, ok := w.store.(expressionConstraintStore); ok {
+		constraints, err := source.CurrentSpeechExpressionConstraints(ctx, session.TenantID, planID)
+		if err != nil {
+			return "", fmt.Errorf("读取用户采用的表达约束失败：%w", err)
+		}
+		facts += contentpools.RenderCorrections(constraints)
+	}
 	raw, err := interactionpolicy.Read("interaction-facts-boundary.md")
 	if err != nil {
 		return "", err

@@ -64,6 +64,13 @@ func (w *Worker) interactionPreparationScope(ctx context.Context, session model.
 	input := []any{session.ExternalID, session.ExecutionRealm, plan, facts, published, versions, voice, industry, l1, l2, l3,
 		item.PurposeID, item.PurposeKnowledge, item.Topic, item.SampleQuestions, item.Nicknames, item.ReplyHint, item.ManualAction, item.ManualOrigin, item.ExecutionMode, item.FixedText, item.MissionKind, item.Schedule,
 		w.store.AgentPromptValue(ctx, "policy.runtime.execution", ""), w.store.AgentPromptValue(ctx, "live.final_review.system", "")}
+	if source, ok := w.store.(expressionConstraintStore); ok {
+		constraints, e := source.CurrentSpeechExpressionConstraints(ctx, session.TenantID, plan.ID)
+		if e != nil {
+			return "", e
+		}
+		input = append(input, constraints)
+	}
 	if source, ok := w.store.(interface {
 		ListLiveAgentPlanBenefits(context.Context, int64, int64) ([]model.LiveAgentPlanBenefit, error)
 	}); ok {

@@ -60,7 +60,7 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 	}
 	ctx := WithModelResolver(context.Background(), r)
 	g := NewFromContext(ctx)
-	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"interaction_agent_answer", "flash"}, {"interaction_agent_plan", "max"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}, {"mainline_p0_context", "review"}, {"speech_review", "review"}, {"interaction_p0_context", "review"}, {"angle_direction_review", "review"}} {
+	for _, c := range []struct{ stage, want string }{{"", "max"}, {"style_analysis", "max"}, {"speech_miner_guide", "max"}, {"mainline_angle_plan", "max"}, {"interaction_learning", "max"}, {"speech_generation", "flash"}, {"interaction_agent_answer", "flash"}, {"interaction_agent_plan", "max"}, {"mainline_text", "flash"}, {"interaction_bridge", "flash"}, {"rolling_feedback", "flash"}, {"accepted_macro_feedback", "flash"}, {"rolling_style_feedback", "flash"}, {"mainline_p0_context", "review"}, {"speech_review", "review"}, {"interaction_p0_context", "review"}, {"angle_direction_review", "review"}, {"mainline_final_content_review", "review"}} {
 		req := Request{Stage: c.stage, Provider: "qwen", Model: "old-per-function-model", Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}}
 		out, err := g.Complete(ctx, req)
 		if err != nil || out.Model != "fixture-"+c.want || out.Text != out.Model {
@@ -68,6 +68,12 @@ func TestUnifiedRolesRouteLegacyAgentsAndPinInFlightRepairs(t *testing.T) {
 		}
 	}
 	// The selected model for a reply/repair is pinned, even after the default moves.
+	for _, stage := range []string{"lecture_task_review", "lecture_source_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review"} {
+		out, err := g.Complete(ctx, Request{Stage: stage, Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}})
+		if err != nil || out.Model != "fixture-review" {
+			t.Fatal(stage, out, err)
+		}
+	}
 	r.system = "flash"
 	out, err := g.Complete(ctx, Request{Provider: "anchor:max", Model: "fixture-max", Messages: []Message{{Role: "system", Content: "任务协议"}, {Role: "user", Content: "本次资料"}}})
 	if err != nil || out.Model != "fixture-max" {

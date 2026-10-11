@@ -44,10 +44,15 @@ func UsesSpeechModel(stage string) bool {
 
 type modelResolverContextKey struct{}
 
-// Content approval uses the independent review role. Planning and source
-// analysis retain their own roles, regardless of provider or model name.
+// Review uses the operator-owned review role. Planning and normalization remain
+// analysis; registering existing review stages does not add model calls.
 func UsesReviewModel(stage string) bool {
-	return stage == "mainline_p0_context" || stage == "speech_review" || stage == "interaction_p0_context" || stage == "angle_direction_review" || stage == "mainline_final_content_review"
+	switch stage {
+	case "mainline_p0_context", "speech_review", "interaction_p0_context", "lecture_task_review", "lecture_source_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "mainline_final_content_review":
+		return true
+	default:
+		return false
+	}
 }
 
 func WithModelResolver(ctx context.Context, resolver SpeechModelResolver) context.Context {

@@ -59,6 +59,7 @@ func ParseCorrection(raw string) (CorrectionContent, error) {
 }
 
 type Correction struct {
+	Kind      string            `json:"kind,omitempty"`
 	ID        string            `json:"id"`
 	Products  []int64           `json:"products"`
 	Sources   []string          `json:"sources"`
@@ -96,9 +97,28 @@ func CorrectionView(source Sources, products []int64) []map[string]any {
 				links = append(links, p.Link)
 			}
 		}
-		out = append(out, map[string]any{"适用商品链接": links, "用户原话（理解纠正范围，不能扩张限制）": c.Feedback, "用户确认的事实修正": c.Content.Fact, "表达限制": c.Content.Forbidden, "展开指导": c.Content.Guidance})
+		row := map[string]any{"适用商品链接": links, "用户原话（理解纠正范围，不能扩张限制）": c.Feedback, "用户确认的事实修正": c.Content.Fact, "表达限制": c.Content.Forbidden, "展开指导": c.Content.Guidance}
+		if c.Kind == ExpressionConstraintKind {
+			row["用户采用的实时表达约束"] = true
+		}
+		out = append(out, row)
 	}
 	return out
+}
+
+const ExpressionConstraintKind = "expression_constraint"
+
+// Only explicitly adopted expression rules can override a running snapshot.
+// Mutable product facts and other correction drafts keep their publication gate.
+func ExpressionConstraintSource(source Sources) Sources {
+	next := source
+	next.Corrections = nil
+	for _, c := range source.Corrections {
+		if c.Kind == ExpressionConstraintKind && c.Content.Question == "" && c.Content.Forbidden != "" && c.Content.Fact == "" && c.Content.Guidance == "" && c.Content.Cancellation == "" {
+			next.Corrections = append(next.Corrections, c)
+		}
+	}
+	return next
 }
 func RenderCorrections(source Sources) string {
 	all := []int64{}

@@ -23,10 +23,11 @@ type AngleHook struct {
 	Benefits []string `json:"benefit_ids"`
 }
 type HookFact struct {
-	ID       string   `json:"id"`
-	Products []string `json:"product_ids"`
-	Benefits []string `json:"benefit_ids"`
-	Data     string   `json:"data"`
+	ExpressionGuidance []map[string]string `json:"expression_guidance,omitempty"`
+	ID                 string              `json:"id"`
+	Products           []string            `json:"product_ids"`
+	Benefits           []string            `json:"benefit_ids"`
+	Data               string              `json:"data"`
 }
 
 // Captured by the program from the saved task's source associations. Nil means
@@ -37,6 +38,19 @@ type TaskFactScope struct {
 	Facts           []HookFact       `json:"facts"`
 	ProductBoundary []HookFact       `json:"product_boundary,omitempty"`
 }
+
+func (s *State) EffectiveCorrections() []map[string]any {
+	out := []map[string]any{}
+	if scope := s.Task().FactScope; scope != nil {
+		for _, c := range scope.Corrections {
+			if c["用户采用的实时表达约束"] != true {
+				out = append(out, c)
+			}
+		}
+	}
+	return append(out, s.LatestExpressionConstraints...)
+}
+
 type HookCalculation struct {
 	Label    string   `json:"label"`
 	Operator string   `json:"operator"`
@@ -70,7 +84,7 @@ func (s *State) HookFacts() []HookFact {
 	products := s.HookProducts()
 	facts := []HookFact{}
 	seen := map[string]bool{}
-	add := func(id, data string, links, benefits []string) {
+	add := func(id, data string, links, benefits []string, guidance []map[string]string) {
 		if strings.TrimSpace(data) == "" {
 			return
 		}
@@ -100,7 +114,7 @@ func (s *State) HookFacts() []HookFact {
 				}
 			}
 		}
-		facts = append(facts, HookFact{ID: id, Data: data, Products: links, Benefits: benefits})
+		facts = append(facts, HookFact{ID: id, Data: data, Products: links, Benefits: benefits, ExpressionGuidance: guidance})
 	}
 	if scope := s.Task().FactScope; scope != nil {
 		for _, f := range scope.Facts {
@@ -109,14 +123,14 @@ func (s *State) HookFacts() []HookFact {
 				allowed = allowed || containsLink(f.Products, link)
 			}
 			if allowed {
-				add(f.ID, f.Data, f.Products, f.Benefits)
+				add(f.ID, f.Data, f.Products, f.Benefits, f.ExpressionGuidance)
 			}
 		}
 		return facts
 	}
 	if s.ProductFocus == nil {
 		for _, line := range strings.Split(s.Facts, "\n") {
-			add("", line, products, nil)
+			add("", line, products, nil, nil)
 		}
 		return facts
 	}
@@ -129,7 +143,7 @@ func (s *State) HookFacts() []HookFact {
 		focus.Facts = []ScopedFact{f}
 		one.ProductFocus = &focus
 		if one.ProductFacts(task) != "" {
-			add(f.ID, f.Text, f.Links, f.BenefitIDs)
+			add(f.ID, f.Text, f.Links, f.BenefitIDs, nil)
 		}
 	}
 	return facts

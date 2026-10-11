@@ -32,6 +32,8 @@ type Task struct {
 	LectureAngle     int            `json:"lecture_angle,omitempty"`
 	LecturePurpose   string         `json:"lecture_purpose,omitempty"`
 	LectureFacts     string         `json:"lecture_facts,omitempty"`
+	LecturePlanJSON  string         `json:"lecture_plan_json,omitempty"`
+	LecturePlanSHA   string         `json:"lecture_plan_sha,omitempty"`
 	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
 	ID               string         `json:"id,omitempty"`
 	FocusLink        string         `json:"focus_link,omitempty"`
@@ -98,6 +100,7 @@ type P0Allowance struct {
 type Candidate struct {
 	FinalContentAudit       *FinalContentAudit                    `json:"final_content_audit,omitempty"`
 	LectureAudit            *LectureAudit                         `json:"lecture_audit,omitempty"`
+	ExpressionAudit         *LectureAudit                         `json:"expression_audit,omitempty"`
 	ExactDuplicateRemovals  int                                   `json:"exact_duplicate_removals,omitempty"`
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
@@ -152,6 +155,7 @@ type Use struct {
 type State struct {
 	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
 	FinalContentReviewContextSHA string                         `json:"final_content_review_context_sha256,omitempty"`
+	LatestExpressionConstraints  []map[string]any               `json:"latest_expression_constraints,omitempty"`
 	Lectures                     *LectureRuntime                `json:"lectures,omitempty"`
 	AnglePendingUses             []AnglePlayedUse               `json:"angle_pending_uses,omitempty"`
 	AngleProgress                map[string]*AngleUseProgress   `json:"angle_use_progress,omitempty"`
@@ -530,7 +534,7 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.rejectP0Candidate(c)
 		return false, nil
 	}
-	if s.Task().ProductMode == "lecture" && !s.LectureCandidateApproved(c) {
+	if (s.Task().ProductMode == "lecture" || len(s.LatestExpressionConstraints) > 0) && !s.LectureCandidateApproved(c) {
 		s.SkipGeneration("lecture_scope_review", "讲解正文事实复核未通过")
 		return false, nil
 	}

@@ -42,7 +42,7 @@ func lectureTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	prefix := "lt" + hex.EncodeToString(key) + "_"
-	tables := []string{"live_agent_plans", "live_agent_plan_facts", "live_agent_plan_fact_revisions", "live_plan_content_revisions", "live_plan_lecture_tasks", "live_plan_lecture_policies"}
+	tables := []string{"live_agent_plans", "live_agent_plan_facts", "live_agent_plan_fact_revisions", "live_plan_content_revisions", "live_plan_lecture_tasks", "live_plan_lecture_policies", "live_plan_content_corrections"}
 	pairs := []string{"xl_pool_source_", prefix + "trigger_"}
 	for _, table := range tables {
 		pairs = append(pairs, table, prefix+table)
@@ -209,5 +209,57 @@ func TestLectureLibraryMySQL(t *testing.T) {
 	}
 	if err = s.AttachLectureSubject(ctx, 14, 4, 8, oldTaskID, 1, rootID, "原料B", extraID); err == nil {
 		t.Fatal("stale reattachment accepted")
+	}
+	if err = s.UpdateLectureDetail(ctx, 14, 4, 8, oldTaskID, 2, childID, "", "用途", "原料B用于制作汤底", "lecture-detail-edit:fixture"); err != nil {
+		t.Fatal(err)
+	}
+	lib, err = s.LectureLibrary(ctx, 14, 4, true)
+	if err != nil || !lib.Tasks[1].Valid || lib.Tasks[1].Revision != 3 || lib.Tasks[1].Facts[0].Text != "原料B用于制作汤底" || lib.Tasks[1].Facts[0].Quote != "" {
+		t.Fatal("legacy detail edit lost scope/version", lib, err)
+	}
+	var quote, ref string
+	if err = s.db.QueryRowContext(ctx, `SELECT source_quote,source_ref FROM live_agent_plan_facts WHERE id=?`, childID).Scan(&quote, &ref); err != nil || quote != "原料B可以用于煮汤" || ref != "lecture-detail-edit:fixture" {
+		t.Fatal("legacy original archive lost", quote, ref, err)
+	}
+	modern := lecturetask.Task{Subject: "材料C", RootFact: &lecturetask.Fact{Category: "other", Name: "新独立材料关联", Text: "新商品使用材料C", Quote: "新商品使用材料C"}, Title: "材料C", Purpose: "来源", QuestionTerms: []string{"材料C"}, Angles: []lecturetask.Angle{{Title: "产地", Goal: "地区C"}}}
+	modernID, _, err := s.SaveLectureSubmission(ctx, 14, 4, 8, "新商品使用材料C，材料C来自地区C", `{"passed":true,"issues":[]}`, modern, []model.LiveAgentPlanFactCandidate{{Category: "other", Key: "产地", Value: "材料C来自地区C", SourceQuote: "材料C来自地区C"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err = s.LectureLibrary(ctx, 14, 4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original lecturetask.Task
+	for _, v := range lib.Tasks {
+		if v.ID == modernID {
+			original = v
+		}
+	}
+	if len(original.Facts) != 1 || original.Facts[0].Storage != "lecture" {
+		t.Fatal("fixture not level-two storage", original)
+	}
+	detail := original.Facts[0]
+	for _, bad := range []struct {
+		tenant, plan, revision, detail int64
+		storage                        string
+	}{{15, 5, original.Revision, detail.ID, "lecture"}, {14, 4, 99, detail.ID, "lecture"}, {14, 4, original.Revision, detail.ID + 9999, "lecture"}, {14, 4, original.Revision, detail.ID, ""}} {
+		if e := s.UpdateLectureDetail(ctx, bad.tenant, bad.plan, 8, modernID, bad.revision, bad.detail, bad.storage, "不应保存", "越界输入", "fixture"); e == nil {
+			t.Fatal("cross-scope/stale/detail collision accepted", bad)
+		}
+	}
+	if err = s.UpdateLectureDetail(ctx, 14, 4, 8, modernID, original.Revision, detail.ID, "lecture", "新的产地说明", "材料C来自地区D", "lecture-detail-edit:modern"); err != nil {
+		t.Fatal(err)
+	}
+	lib, err = s.LectureLibrary(ctx, 14, 4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range lib.Tasks {
+		if v.ID == modernID {
+			if !v.Valid || v.Revision != original.Revision+1 || v.RootFact.Version != original.RootFact.Version || v.Facts[0].Version != detail.Version+1 || v.Facts[0].Text != "材料C来自地区D" || v.Facts[0].Quote != "材料C来自地区C" {
+				t.Fatal("modern detail not saved independently", v)
+			}
+		}
 	}
 }

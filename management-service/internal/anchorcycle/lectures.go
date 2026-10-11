@@ -13,16 +13,27 @@ type PlaybackReceipt struct {
 	Complete bool   `json:"complete"`
 	Terminal bool   `json:"terminal"`
 }
+type LectureReviewSuggestion struct {
+	Quote  string `json:"quote,omitempty"`
+	Reason string `json:"reason"`
+}
 type LectureAudit struct {
-	Passed   bool   `json:"passed"`
-	Quote    string `json:"quote"`
-	Reason   string `json:"reason"`
-	Error    string `json:"error,omitempty"`
-	TextSHA  string `json:"text_sha"`
-	ScopeSHA string `json:"scope_sha"`
+	Passed      bool                      `json:"passed"`
+	Quote       string                    `json:"quote"`
+	Reason      string                    `json:"reason"`
+	Error       string                    `json:"error,omitempty"`
+	TextSHA     string                    `json:"text_sha"`
+	ScopeSHA    string                    `json:"scope_sha"`
+	Suggestions []LectureReviewSuggestion `json:"suggestions,omitempty"`
 }
 
 func (s *State) LectureCandidateApproved(c Candidate) bool {
+	if len(s.LatestExpressionConstraints) > 0 {
+		a := c.ExpressionAudit
+		if a == nil || !a.Passed || a.Error != "" || a.TextSHA != ProductDigest(spokenCandidate(c)) || a.ScopeSHA != ProductDigest(s.LatestExpressionConstraints) {
+			return false
+		}
+	}
 	if s.Task().ProductMode != "lecture" {
 		return true
 	}

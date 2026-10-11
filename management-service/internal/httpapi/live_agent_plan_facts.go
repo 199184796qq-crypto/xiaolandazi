@@ -157,13 +157,20 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 			})
 			continue
 		}
+		normalized, normalizationSource, normalizeErr := s.normalizeFactForSave(r.Context(), tenantID, planID, actor.UserID, 0, 0, candidate, strings.TrimSpace(input.SourceRef))
+		if normalizeErr != nil {
+			output.Blocked++
+			output.Results = append(output.Results, model.LiveAgentPlanFactAdoptionResult{Candidate: candidate, Status: "blocked", Message: normalizeErr.Error()})
+			continue
+		}
+		candidate = normalized
 		result, err := s.store.AdoptLiveAgentPlanFact(
 			r.Context(),
 			tenantID,
 			planID,
 			actor.UserID,
 			candidate,
-			strings.TrimSpace(input.SourceRef),
+			normalizationSource,
 		)
 		if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 			writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -235,9 +242,36 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Reject missing/stale scoped facts before paying for normalization.
+	items, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, planID)
+	if err != nil {
+		writeError(w, 503, "读取事实版本失败")
+		return
+	}
+	currentFound := false
+	for _, item := range items {
+		if item.ID == factID {
+			currentFound = true
+			if input.ExpectedVersionNo > 0 && item.VersionNo != input.ExpectedVersionNo {
+				writeError(w, 409, "事实已被修改，请刷新后重试")
+				return
+			}
+			break
+		}
+	}
+	if !currentFound {
+		writeError(w, 404, "正式事实不存在")
+		return
+	}
+	normalized, normalizationSource, err := s.normalizeFactForSave(r.Context(), tenantID, planID, actor.UserID, factID, input.ExpectedVersionNo, candidate, "manual:fact-editor")
+	if err != nil {
+		writeError(w, 422, err.Error())
+		return
+	}
+	candidate = normalized
 	updated, err := s.store.UpdateLiveAgentPlanFactWithExpectedVersion(
 		r.Context(), tenantID, planID, factID, actor.UserID, input.ExpectedVersionNo,
-		candidate.Category, candidate.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite,
+		candidate.Category, candidate.Key, candidate.Value, candidate.ForbiddenWording, candidate.SafeRewrite, normalizationSource,
 	)
 	if errors.Is(err, appdb.ErrLiveAgentPlanFactNotFound) {
 		writeError(w, http.StatusNotFound, "正式事实不存在")
