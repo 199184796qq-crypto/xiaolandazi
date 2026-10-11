@@ -252,16 +252,20 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 		return contentpools.Set{}, errors.New("请先配置卖点挖掘模型")
 	}
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
+	p0, _, err := loadP0Mother()
+	if err != nil {
+		return contentpools.Set{}, err
+	}
 	stage("正在归纳公共资料与商品专属资料")
-	facts, err := s.classifyContentFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts))
+	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0)
 	if err != nil {
 		return contentpools.Set{}, err
 	}
-	gen, _, err := loadReplaceablePromptAsset("CONTENT_POOL_TASK_PROMPT_PATH", "configs/prompts/anchor-style/content-pool-task-generation.md", "内容池卖点角度母版")
+	gen, _, err := loadReplaceablePromptAsset("CONTENT_POOL_SIMPLE_GENERATION_PATH", "configs/prompts/anchor-style/content-pool-simple-generation.md", "内容池简洁生成母版")
 	if err != nil {
 		return contentpools.Set{}, err
 	}
-	review, _, err := loadReplaceablePromptAsset("CONTENT_POOL_REVIEW_PROMPT_PATH", "configs/prompts/anchor-style/content-pool-task-review.md", "内容池任务事实核对母版")
+	review, _, err := loadReplaceablePromptAsset("CONTENT_POOL_SIMPLE_REVIEW_PATH", "configs/prompts/anchor-style/content-pool-simple-review.md", "内容池单条事实核对母版")
 	if err != nil {
 		return contentpools.Set{}, err
 	}
@@ -271,7 +275,7 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 			legacyMaterial = r.Fields["内容"]
 		}
 	}
-	pools := contentpools.GroupPools(facts, source.Products, derivedHash(gen+review+legacyMaterial))
+	pools := contentpools.GroupPools(facts, source.Products, derivedHash(gen+review+p0+legacyMaterial+contentpools.Digest(source.Corrections)))
 	old, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
 	if err != nil {
 		return contentpools.Set{}, err
@@ -297,31 +301,36 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 				}
 				p := &pools[index]
 				previous := prior[p.Key]
-				if previous.Fingerprint == p.Fingerprint {
+				if previous.Fingerprint == p.Fingerprint && !old.HasUnfinishedContent() {
 					p.Tasks = previous.Tasks
 					p.Reused = true
+					mu.Lock()
+					for _, n := range old.Notices {
+						if n.Pool == p.Label {
+							notices = append(notices, n)
+						}
+					}
+					mu.Unlock()
 				} else if len(p.Facts) > 0 {
 					rev, e := s.store.ContentSourceRevision(work, tenant, plan)
 					if e == nil && rev != source.Revision {
 						e = appdb.ErrPoolSourceChanged
 					}
 					if e == nil {
-						wire := newContentPoolWire(*p)
-						data, _ := json.Marshal(map[string]any{"pool": wire.pool, "products": source.Products, "existing_tasks": wire.tasks(previous.Tasks), "confirmed_legacy_content": legacyMaterial})
-						var result agentgateway.Response
-						result, _, e = s.completeAnchorStyleWorkbench(work, cfg.SellingPointProfileID, "content_pool_task_generation", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: gen}, {Role: "user", Content: string(data)}}, 12000, false)
-						if e == nil {
-							e = s.reviewContentPoolTaskDraft(work, cfg.SellingPointProfileID, review, p, previous.Tasks, source.Products, wire.response(result.Text, true), func() error {
-								rev, err := s.store.ContentSourceRevision(work, tenant, plan)
-								if err != nil {
-									return err
-								}
-								if rev != source.Revision {
-									return appdb.ErrPoolSourceChanged
-								}
-								return nil
-							})
-						}
+						var localNotices []contentpools.Notice
+						localNotices, e = s.generateSimplePool(work, cfg.SellingPointProfileID, gen, review, p0, p, previous.Tasks, source, func() error {
+							rev, err := s.store.ContentSourceRevision(work, tenant, plan)
+							if err != nil {
+								return err
+							}
+							if rev != source.Revision {
+								return appdb.ErrPoolSourceChanged
+							}
+							return nil
+						})
+						mu.Lock()
+						notices = append(notices, localNotices...)
+						mu.Unlock()
 					}
 					if e != nil {
 						mu.Lock()
@@ -332,6 +341,10 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 						cancel()
 						return
 					}
+				} else {
+					mu.Lock()
+					notices = append(notices, poolNotice(*p, "", "empty", "本池暂无已确认且适用的资料，未生成任务；其他内容继续", false))
+					mu.Unlock()
 				}
 				mu.Lock()
 				done++
@@ -363,13 +376,26 @@ enqueue:
 	if current.SHA() != source.SHA() || current.Revision != source.Revision {
 		return contentpools.Set{}, appdb.ErrPoolSourceChanged
 	}
-	set := contentpools.Set{Sources: source, SourceSHA: source.SHA(), SafeFacts: safety.SafeFacts, SafetyID: safety.ID, SafetyHash: safety.SourceSHA256, Pools: pools}
+	set := contentpools.Set{Sources: source, SourceSHA: source.SHA(), SafeFacts: safety.SafeFacts, SafetyID: safety.ID, SafetyHash: safety.SourceSHA256, Pools: pools, Notices: notices}
 	// Each repair call owns one content unit; all relationships stay in code.
 	for _, correction := range source.Corrections {
+		// Expression-only rules were carried into every generation and review.
+		// They must not rewrite objective facts or require another whole-pool pass.
+		if correction.Kind == contentpools.ExpressionConstraintKind {
+			continue
+		}
 		stage("正在应用已保存的自然语言纠正")
 		set, err = s.repairCorrectionSet(ctx, set, correction, nil)
 		if err != nil {
-			return set, err
+			if ctx.Err() != nil {
+				return set, ctx.Err()
+			}
+			for i, p := range set.Pools {
+				if scopeWithin(p.Products, correction.Products) {
+					set.Pools[i].Tasks = []contentpools.Task{}
+					set.Notices = append(set.Notices, poolNotice(p, "", "unavailable", "本池纠正暂未完成，相关任务未入池；其他内容继续", true))
+				}
+			}
 		}
 	}
 	if len(source.Corrections) > 0 {
@@ -381,7 +407,7 @@ enqueue:
 	if err = contentpools.ValidateSet(set); err != nil {
 		return set, err
 	}
-	stage("正在保存完整内容草稿")
+	stage("正在保存合格内容与未入池提示")
 	return s.store.CommitContentPoolSet(ctx, tenant, plan, actor, job, set)
 }
 

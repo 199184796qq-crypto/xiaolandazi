@@ -10,6 +10,7 @@ export interface PoolSourceRow { id: string; area: string; label: string; produc
 export interface PoolFact { id: string; text: string; sources: string[]; products: number[] }
 export interface PoolSummary { key: string; label: string; owner: number; products: number[]; task_count: number; reused: boolean; tasks?: PoolTask[]; facts?: PoolFact[] }
 export interface PoolStatus {
+	 notices?: { pool: string; content?: string; kind: string; reason: string; retryable?: boolean }[];
 	corrections?: ContentCorrection[];
   state: 'needs_update' | 'updating' | 'failed' | 'ready' | 'synced'; changes: PoolChange[];
   products: PoolProduct[]; benefits: BenefitScope[]; pools: PoolSummary[]; set_id: number; saved_set_id: number;

@@ -207,5 +207,37 @@ func TestContentPoolEditPrefixedMySQL(t *testing.T) {
 	if err != nil || len(before.Sources.Corrections) != 0 {
 		t.Fatal("old snapshot overwritten", before, err)
 	}
+	partial := next
+	partial.Sources.Revision, err = s.ContentSourceRevision(ctx, 14, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial.SourceSHA = partial.Sources.SHA()
+	for i := range partial.Pools {
+		if partial.Pools[i].Owner != 1 {
+			partial.Pools[i].Tasks = []contentpools.Task{}
+		}
+	}
+	partial.Notices = []contentpools.Notice{{Pool: "2号", Content: "旧包邮内容", Kind: "excluded", Reason: "缺少当前依据"}, {Pool: "公共内容", Kind: "unavailable", Reason: "单条审核未完成", Retryable: true}}
+	job, err = s.ClaimPoolJob(ctx, 14, 4, 1, partial.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial, err = s.CommitContentPoolSet(ctx, 14, 4, 1, job, partial)
+	if err != nil {
+		t.Fatal("partial approved draft blocked", err)
+	}
+	loaded, err := s.GetContentPoolSet(ctx, 14, 4, partial.ID)
+	if err != nil || len(loaded.Notices) != 2 || !loaded.HasUnfinishedContent() {
+		t.Fatal("partial draft lost excluded material", loaded, err)
+	}
+	var excludedCount int
+	if err = database.QueryRowContext(ctx, "SELECT COUNT(*) FROM live_plan_content_tasks WHERE set_id=? AND pool_key=?", partial.ID, "product:2").Scan(&excludedCount); err != nil || excludedCount != 0 {
+		t.Fatal("excluded content entered executable pool", excludedCount, err)
+	}
+	previous, err := s.GetContentPoolSet(ctx, 14, 4, next.ID)
+	if err != nil || len(previous.Notices) != 0 {
+		t.Fatal("partial snapshot overwrote earlier approved set", err)
+	}
 	t.Log(fmt.Sprintf("PASS isolated tables %s*: persistence, 2-way edit CAS, tenant/pool isolation, old snapshot, new angle references, product associations, stale agent save", prefix))
 }

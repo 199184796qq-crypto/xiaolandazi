@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
+	"strings"
 )
 
 type factPreviewRepairKey struct{}
@@ -31,7 +32,19 @@ func factSpeechRepairMessages(state *anchorcycle.State, previous map[string]any)
 		packet["requested_purpose"] = task.PainPoint
 	}
 	if task.LecturePlanJSON != "" {
-		packet["segment_plan"] = json.RawMessage(task.LecturePlanJSON)
+		plan, err := parseLectureSegmentPlan(task.LecturePlanJSON, task.LectureFacts)
+		if err != nil {
+			return nil, err
+		}
+		packet["segment_plan"] = plan
+		packet["requested_purpose"], packet["requested_angle"] = plan.Purpose, plan.Angle
+		relation := []string{}
+		for _, line := range strings.Split(task.LectureFacts, "\n") {
+			if strings.HasPrefix(line, "资料对象：") || strings.HasPrefix(line, "与商品的已确认关系：") {
+				relation = append(relation, line)
+			}
+		}
+		packet["confirmed_facts"] = strings.Join(append(relation, plan.Quotes...), "\n")
 	}
 	raw, _ := json.Marshal(packet)
 	return []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, nil

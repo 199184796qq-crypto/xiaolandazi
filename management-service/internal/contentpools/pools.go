@@ -140,13 +140,32 @@ type Pool struct {
 	Reused      bool    `json:"reused"`
 }
 type Set struct {
-	ID         int64   `json:"id"`
-	SourceSHA  string  `json:"source_sha"`
-	Sources    Sources `json:"sources"`
-	SafeFacts  string  `json:"safe_facts"`
-	SafetyHash string  `json:"safety_hash"`
-	SafetyID   int64   `json:"safety_id"`
-	Pools      []Pool  `json:"pools"`
+	ID         int64    `json:"id"`
+	SourceSHA  string   `json:"source_sha"`
+	Sources    Sources  `json:"sources"`
+	SafeFacts  string   `json:"safe_facts"`
+	SafetyHash string   `json:"safety_hash"`
+	SafetyID   int64    `json:"safety_id"`
+	Pools      []Pool   `json:"pools"`
+	Notices    []Notice `json:"notices,omitempty"`
+}
+
+// Notices retain excluded/unfinished material outside the executable task pool.
+type Notice struct {
+	Pool      string `json:"pool"`
+	Content   string `json:"content,omitempty"`
+	Kind      string `json:"kind"`
+	Reason    string `json:"reason"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
+func (s Set) HasUnfinishedContent() bool {
+	for _, n := range s.Notices {
+		if n.Retryable {
+			return true
+		}
+	}
+	return false
 }
 
 func IDs(values []int64) []int64 {
@@ -232,7 +251,6 @@ func ValidateSet(set Set) error {
 		sources[r.ID] = true
 	}
 	seen := map[string]bool{}
-	eligible := map[int64]int{}
 	poolKeys := map[string]bool{}
 	for _, p := range set.Pools {
 		if len(IDs(p.Products)) != len(p.Products) {
@@ -281,18 +299,12 @@ func ValidateSet(set Set) error {
 					}
 				}
 			}
-			for _, id := range p.Products {
-				eligible[id]++
-			}
 		}
 	}
 	if len(seen) > 10000 {
 		return errors.New("方案任务总数超过10000条，请减少重复任务后更新")
 	}
-	for id := range known {
-		if eligible[id] == 0 {
-			return fmt.Errorf("商品%d没有可用的公共或专属任务", id)
-		}
-	}
+	// An empty pool is a valid draft. It does not authorize any executable task.
+	// Other products and approved content remain editable/savable.
 	return nil
 }

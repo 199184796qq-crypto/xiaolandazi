@@ -317,6 +317,9 @@ func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.S
 		return
 	}
 	packet := map[string]any{"text": text, "facts": task.LectureFacts, "purpose": task.LecturePurpose, "angle": task.Angle, "effective_p0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	if state.CheckApprovedText(*c, text) == nil {
+		packet["matching_p0_review"] = map[string]any{"passed": true, "scope": "当前正文与当前有效P0完全一致的程序及语境核对回执"}
+	}
 	if task.LecturePlanJSON != "" {
 		packet["segment_plan"] = json.RawMessage(task.LecturePlanJSON)
 	}

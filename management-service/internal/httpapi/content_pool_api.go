@@ -12,6 +12,7 @@ import (
 )
 
 type contentPoolStatus struct {
+	Notices           []contentpools.Notice        `json:"notices,omitempty"`
 	Corrections       []contentpools.Correction    `json:"corrections,omitempty"`
 	State             string                       `json:"state"`
 	Changes           []contentpools.Change        `json:"changes"`
@@ -62,7 +63,8 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 		return out, err
 	}
 	out.SetID = set.ID
-	if set.ID > 0 && set.SourceSHA == source.SHA() {
+	out.Notices = set.Notices
+	if set.ID > 0 && set.SourceSHA == source.SHA() && !set.HasUnfinishedContent() {
 		out.State = "ready"
 		if set.ID == out.SavedSetID {
 			out.State = "synced"

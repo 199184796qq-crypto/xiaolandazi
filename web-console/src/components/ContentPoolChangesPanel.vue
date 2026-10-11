@@ -93,6 +93,14 @@ function taskAppearance(title: string) {
           <p v-if="status?.state === 'failed'" class="pool-error">{{ status.job?.error }}</p>
           <p v-if="status?.changes?.length">累计 {{ status.changes.length }} 项待保存变化。重复修改合并显示，恢复原值后移除。</p>
         </div>
+        <details v-if="status?.notices?.length" class="pool-exclusions">
+          <summary>未入池提示（{{ status.notices.length }} 条）· 合格内容可继续保存</summary>
+          <p>以下内容留在池外，不影响其他合格内容。可根据原因修改资料后重新生成。</p>
+          <article v-for="(item, index) in status.notices" :key="index">
+            <strong>{{ item.pool }}</strong><p v-if="item.content">{{ item.content }}</p><p>{{ item.reason }}</p>
+          </article>
+          <button v-if="status.notices.some(item => item.retryable)" type="button" :disabled="saving || updating" @click="emit('update')">重试未完成内容</button>
+        </details>
         <details v-if="groups.length" class="pool-pending"><summary>查看待更新资料<svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary><div v-for="group in groups" :key="group.label" class="pool-group">
           <b>{{ group.label }}</b><div v-for="row in group.rows" :key="row.id" class="pool-change"><span>{{ row.label }}</span><div><del>{{ row.before || '未设置' }}</del><span> → </span><ins>{{ row.after || '已移除' }}</ins></div></div>
         </div></details>
@@ -153,6 +161,7 @@ function taskAppearance(title: string) {
   </section>
 </template>
 <style scoped>
+.pool-exclusions{margin:12px 0;padding:14px 18px;border:1px solid #f2dbaf;border-radius:14px;background:#fff8eb;color:#8d631e;font-size:16px;line-height:1.7}.pool-exclusions summary{font-weight:650;cursor:pointer}.pool-exclusions article{padding:10px 0;border-top:1px solid #f2e4c9;overflow-wrap:anywhere}.pool-exclusions p{margin:6px 0}.pool-exclusions button{padding:9px 16px;border:1px solid #e0c793;border-radius:10px;background:white;color:inherit;font:inherit;cursor:pointer}
 .pool-notice{container-type:inline-size;position:relative;isolation:isolate;overflow:clip;margin:12px 0 20px;border:1px solid #dce5ff;border-radius:26px;background:linear-gradient(115deg,#f0f4ff 0%,#fbfdff 55%,#f3f7ff 100%);box-shadow:0 8px 28px #526de30a;color:#637496}
 .pool-notice::before,.pool-notice::after{position:absolute;z-index:-1;bottom:-67px;width:480px;height:100px;border-radius:50%;content:'';pointer-events:none}
 .pool-notice::before{left:-80px;background:linear-gradient(100deg,#dce5ffb3,#e8edff40);transform:rotate(8deg)}

@@ -149,6 +149,9 @@ func (s *Server) speechConstraintAccess(w http.ResponseWriter, r *http.Request, 
 	return
 }
 func (s *Server) speechConstraintPrepare(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.resolveActor(w, r); !ok {
+		return
+	}
 	var in struct {
 		TenantID     int64  `json:"tenant_id"`
 		RoomID       int64  `json:"room_id"`
@@ -197,6 +200,9 @@ func (s *Server) speechConstraintPrepare(w http.ResponseWriter, r *http.Request)
 }
 func fmtKnowledgeID(id int64) string { return "knowledge:" + strconv.FormatInt(id, 10) }
 func (s *Server) speechConstraintAdopt(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.resolveActor(w, r); !ok {
+		return
+	}
 	var in struct {
 		TenantID  int64  `json:"tenant_id"`
 		RoomID    int64  `json:"room_id"`
