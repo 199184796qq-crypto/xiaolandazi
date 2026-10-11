@@ -69,9 +69,13 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 		}
 	}
 	if state.CurrentAnglePlan() != nil && !state.AngleRefreshDue(key) {
+		s.reviewCycleAngleDirections(ctx, state, state.CurrentAnglePlan())
 		return
 	}
 	previous := state.CurrentAnglePlan()
+	if previous != nil {
+		s.reviewCycleAngleDirections(ctx, state, previous)
+	}
 	usage.LastAttemptAt = usage.Plays
 	facts := state.HookFacts()
 	// The wire payload contains content and business link labels only. Program
@@ -141,6 +145,7 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	plan.InputTokens, plan.OutputTokens = response.InputTokens, response.OutputTokens
 	plan.GenerationCount = 1
 	plan.GeneratedCards = append([]anchorcycle.AngleHook(nil), plan.Cards...)
+	s.reviewCycleAngleDirections(ctx, state, plan)
 	if persistent {
 		if err := s.store.AppendAngleDirections(ctx, state.TenantID, state.PlanID, key, source, plan); err != nil {
 			state.Warn("新方向暂未持久保存，本场仍可使用，继续供料")
@@ -148,6 +153,8 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	}
 	if previous != nil {
 		plan.Cards = anchorcycle.DistinctDirectionCards(previous.Cards, plan.Cards)
+		plan.ReviewCandidates = anchorcycle.DistinctDirectionCards(previous.ReviewCandidates, plan.ReviewCandidates)
+		plan.DirectionReviews = append(append([]anchorcycle.DirectionReviewReceipt(nil), previous.DirectionReviews...), plan.DirectionReviews...)
 		plan.GenerationCount = previous.GenerationCount + 1
 		plan.LifetimePlays = previous.LifetimePlays
 	} else {

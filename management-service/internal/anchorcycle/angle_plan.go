@@ -10,24 +10,27 @@ import (
 // A plan is writing guidance, never a spoken paragraph or content approval.
 // Directions are permanent plan assets; selection and usage are per-run memory.
 type AnglePlan struct {
-	GenerationID        string               `json:"generation_id,omitempty"`
-	GenerationCount     int                  `json:"generation_count,omitempty"`
-	LifetimePlays       map[string]int       `json:"lifetime_plays,omitempty"`
-	Cards               []AngleHook          `json:"hooks,omitempty"`
-	GeneratedCards      []AngleHook          `json:"generated_hooks,omitempty"`
-	DirectionSelections []DirectionSelection `json:"direction_selections,omitempty"`
-	Calculations        []HookCalculation    `json:"calculations,omitempty"`
-	PlanError           string               `json:"planning_error,omitempty"`
-	AudienceConcern     string               `json:"audience_concern"`
-	Goal                string               `json:"communication_goal"`
-	Action              string               `json:"explanation_action"`
-	Hooks               []string             `json:"hook_intents"`
-	Raw                 string               `json:"raw_response,omitempty"`
-	SourceSHA           string               `json:"source_sha256,omitempty"`
-	PromptSHA           string               `json:"prompt_sha256,omitempty"`
-	Model               string               `json:"model,omitempty"`
-	InputTokens         int64                `json:"input_tokens,omitempty"`
-	OutputTokens        int64                `json:"output_tokens,omitempty"`
+	GenerationID        string                   `json:"generation_id,omitempty"`
+	GenerationCount     int                      `json:"generation_count,omitempty"`
+	LifetimePlays       map[string]int           `json:"lifetime_plays,omitempty"`
+	Cards               []AngleHook              `json:"hooks,omitempty"`
+	GeneratedCards      []AngleHook              `json:"generated_hooks,omitempty"`
+	DirectionSelections []DirectionSelection     `json:"direction_selections,omitempty"`
+	DirectionReviews    []DirectionReviewReceipt `json:"direction_reviews,omitempty"`
+	ReviewContextSHA    string                   `json:"review_context_sha256,omitempty"`
+	ReviewCandidates    []AngleHook              `json:"review_candidates,omitempty"`
+	Calculations        []HookCalculation        `json:"calculations,omitempty"`
+	PlanError           string                   `json:"planning_error,omitempty"`
+	AudienceConcern     string                   `json:"audience_concern"`
+	Goal                string                   `json:"communication_goal"`
+	Action              string                   `json:"explanation_action"`
+	Hooks               []string                 `json:"hook_intents"`
+	Raw                 string                   `json:"raw_response,omitempty"`
+	SourceSHA           string                   `json:"source_sha256,omitempty"`
+	PromptSHA           string                   `json:"prompt_sha256,omitempty"`
+	Model               string                   `json:"model,omitempty"`
+	InputTokens         int64                    `json:"input_tokens,omitempty"`
+	OutputTokens        int64                    `json:"output_tokens,omitempty"`
 }
 
 // All relation keys are assigned by the program, never returned by the model.
