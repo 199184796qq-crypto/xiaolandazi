@@ -54,6 +54,10 @@ func PrimaryProductFacts(set Set, products []int64) []Fact {
 // This packet has content only; ordinary link numbers identify the offered
 // item, never database references to be maintained by a model.
 func ProductContext(set Set) string {
+	rows := map[string]SourceRow{}
+	for _, row := range set.Sources.Rows {
+		rows[row.ID] = row
+	}
 	lines, ids, links := []string{}, []int64{}, map[int64]string{}
 	for _, p := range set.Sources.Products {
 		ids = append(ids, p.ID)
@@ -67,7 +71,21 @@ func ProductContext(set Set) string {
 		for _, id := range f.Products {
 			names = append(names, links[id])
 		}
-		lines = append(lines, strings.Join(names, "、")+"："+f.Text)
+		text := f.Text
+		// 程序把事实边界（禁说 + 安全改写）携带给生成与审核环节，杜绝"编造事实"。
+		for _, sid := range f.Sources {
+			if row := rows[sid]; strings.TrimSpace(row.Fields["禁说"]) != "" {
+				text += "；禁说=" + strings.TrimSpace(row.Fields["禁说"])
+				break
+			}
+		}
+		for _, sid := range f.Sources {
+			if row := rows[sid]; strings.TrimSpace(row.Fields["安全表达"]) != "" {
+				text += "；安全改写=" + strings.TrimSpace(row.Fields["安全表达"])
+				break
+			}
+		}
+		lines = append(lines, strings.Join(names, "、")+"："+text)
 	}
 	return strings.Join(lines, "\n")
 }

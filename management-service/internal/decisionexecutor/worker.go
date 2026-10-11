@@ -2807,6 +2807,12 @@ func (w *Worker) finalizeSpeechText(
 			reasons = append(reasons, "当前直播间用词规范禁止表达："+term)
 		}
 	}
+	for _, term := range factBoundaryRiskTerms(contextText) {
+		if term != "" && strings.Contains(text, term) {
+			riskTerms = append(riskTerms, term)
+			reasons = append(reasons, "本场事实边界禁止表达："+term)
+		}
+	}
 	if mission, ok := w.missionSnapshot(&item); ok {
 		for _, violation := range presentationControlViolations(mission, text) {
 			reasons = append(reasons, violation)
@@ -3100,6 +3106,16 @@ func hardSanitizeSpeech(text string, riskTerms []string, contextText string) str
 		{"肯定", "更可能"},
 		{"永远", "长期"},
 		{"绝对", ""},
+		// 发货时效/到货承诺的模糊优越词：改成不承诺时效的安全说法
+		{"时效快", "物流稳妥"},
+		{"时效很快", "物流稳妥"},
+		{"物流很快", "物流稳妥"},
+		{"很快就到", "按订单安排发货"},
+		{"当天就能到", "按订单安排发货"},
+		{"次日达", "按订单安排发货"},
+		{"即日达", "按订单安排发货"},
+		{"极速", ""},
+		{"最快", ""},
 	}
 	for _, item := range replacements {
 		text = strings.ReplaceAll(text, item.old, item.new)
