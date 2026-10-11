@@ -1163,14 +1163,13 @@ func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r
 		writeError(w, http.StatusInternalServerError, "读取正式商品链接失败")
 		return
 	}
-	industryCode, l1, l2, _, err := s.store.LoadLivePolicyLayers(r.Context(), tenantID, input.RoomID)
+	effectivePolicy, err := policy.LoadGeneration()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取规则层与行业层失败")
 		return
 	}
-	effectivePolicy := policy.BuildEffective(industryCode, l1, l2, nil)
 	generationContext := compileFullShowContext(plan, facts, benefits, productLinks, nil, previewInput)
-	generationContext.IndustryCode = strings.TrimSpace(industryCode)
+	generationContext.IndustryCode = effectivePolicy.IndustryCode
 	generationContext.PolicyRuleCount = len(effectivePolicy.Rules)
 	if err := s.attachPlanStyleOverlay(r.Context(), tenantID, planID, &generationContext); err != nil {
 		writeError(w, http.StatusInternalServerError, "读取方案叠加风格失败")
@@ -1373,14 +1372,13 @@ func (s *Server) liveAgentPlanFullShowPreview(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "读取正式商品链接失败")
 		return
 	}
-	industryCode, l1, l2, _, err := s.store.LoadLivePolicyLayers(r.Context(), tenantID, input.RoomID)
+	effectivePolicy, err := policy.LoadGeneration()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取规则层与行业层失败")
 		return
 	}
-	effectivePolicy := policy.BuildEffective(industryCode, l1, l2, nil)
 	generationContext := compileFullShowContext(plan, facts, benefits, productLinks, nil, input)
-	generationContext.IndustryCode = strings.TrimSpace(industryCode)
+	generationContext.IndustryCode = effectivePolicy.IndustryCode
 	generationContext.PolicyRuleCount = len(effectivePolicy.Rules)
 	if err := s.attachPlanStyleOverlay(r.Context(), tenantID, planID, &generationContext); err != nil {
 		writeError(w, http.StatusInternalServerError, "读取方案叠加风格失败")

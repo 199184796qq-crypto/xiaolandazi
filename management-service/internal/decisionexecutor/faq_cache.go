@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/policy"
 	"livecompanion/management/internal/ttsgateway"
 )
 
@@ -126,7 +127,7 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 		log.Printf("faq cache policy unavailable tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
 		return nil
 	}
-	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return nil
 	}
@@ -142,7 +143,7 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 	}
 	systemPrompt += "\n文字生成配置指纹：" + modelIdentity
 	key := faqDigest([]any{session.TenantID, session.RoomID, session.ID, session.ExecutionRealm,
-		record.Policy, record.Revision, record.SystemRevision, industry, l1, l2, l3,
+		record.Policy, record.Revision, record.SystemRevision, effective,
 		systemPrompt, prompt, w.store.AgentPromptValue(ctx, "policy.runtime.execution", ""),
 		w.store.AgentPromptValue(ctx, "live.final_review.system", "")})
 	now := w.now()

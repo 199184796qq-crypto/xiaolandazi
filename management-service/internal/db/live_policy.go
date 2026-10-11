@@ -693,6 +693,8 @@ func (s *Store) GetLivePolicyContext(
 	return result, nil
 }
 
+// Legacy catalog editing/history only. Generation reads public P0 through
+// policy.LoadGeneration and business material from the saved agent plan.
 func (s *Store) LoadLivePolicyLayers(
 	ctx context.Context,
 	tenantID, roomID int64,
