@@ -128,13 +128,25 @@ func (s *Server) reviewSimplePoolContent(ctx context.Context, profile, mother, p
 	// has no approval for its own added claims. Require one content-only verdict
 	// before it can replace the original in the pool.
 	if result.Content != item {
-		packet["candidate"]=result.Content
-		packet["review_mode"]="judge_only"
-		response,_,err=s.completeAnchorStyleWorkbench(call,profile,"content_pool_task_review",agentgateway.ResponseJSON,poolMessages(mother,p0,packet),1200,false)
-		if err!=nil{return item,"",err}
-		var verdict struct{Passed *bool `json:"passed"`;Reason string `json:"reason"`}
-		if json.Unmarshal([]byte(stripPolicyJSONFence(response.Text)),&verdict)!=nil||verdict.Passed==nil{return item,"",errors.New("修订后单条核对未完成，未入池")}
-		if !*verdict.Passed {if strings.TrimSpace(verdict.Reason)==""{return item,"",errors.New("修订后核对缺少判断理由，未入池")};return item,verdict.Reason,nil}
+		packet["candidate"] = result.Content
+		packet["review_mode"] = "judge_only"
+		response, _, err = s.completeAnchorStyleWorkbench(call, profile, "content_pool_task_review", agentgateway.ResponseJSON, poolMessages(mother, p0, packet), 1200, false)
+		if err != nil {
+			return item, "", err
+		}
+		var verdict struct {
+			Passed *bool  `json:"passed"`
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal([]byte(stripPolicyJSONFence(response.Text)), &verdict) != nil || verdict.Passed == nil {
+			return item, "", errors.New("修订后单条核对未完成，未入池")
+		}
+		if !*verdict.Passed {
+			if strings.TrimSpace(verdict.Reason) == "" {
+				return item, "", errors.New("修订后核对缺少判断理由，未入池")
+			}
+			return item, verdict.Reason, nil
+		}
 	}
 	return result.Content, "", nil
 }

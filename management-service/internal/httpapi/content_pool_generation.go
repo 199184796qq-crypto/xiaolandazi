@@ -318,7 +318,14 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 					}
 					if e == nil {
 						var localNotices []contentpools.Notice
+						unitChecks := 0
 						localNotices, e = s.generateSimplePool(work, cfg.SellingPointProfileID, gen, review, p0, p, previous.Tasks, source, func() error {
+							if unitChecks == 0 {
+								stage("正在生成" + p.Label)
+							} else {
+								stage(fmt.Sprintf("正在逐条核对%s · 第%d项", p.Label, unitChecks))
+							}
+							unitChecks++
 							rev, err := s.store.ContentSourceRevision(work, tenant, plan)
 							if err != nil {
 								return err

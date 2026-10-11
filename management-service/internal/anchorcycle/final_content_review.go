@@ -18,10 +18,11 @@ type FinalContentAudit struct {
 
 func (s *State) FinalContentSourceSHA() string {
 	return ProductDigest(struct {
-		Task      Task
-		Facts     []HookFact
-		P0, Scope string
-	}{s.Task(), s.HookFacts(), s.P0PolicyMD, s.Config.ComplianceScope})
+		Task        Task
+		Facts       []HookFact
+		P0, Scope   string
+		Corrections []map[string]any
+	}{s.Task(), s.HookFacts(), s.P0PolicyMD, s.Config.ComplianceScope, s.EffectiveCorrections()})
 }
 
 func (s *State) FinalContentCandidateApproved(c Candidate) bool {

@@ -61,6 +61,13 @@ func (s *State) EffectiveExpressionConstraints() []map[string]any {
 			out = append(out, row)
 		}
 	}
+	for _, fact := range s.HookFacts() {
+		for _, guidance := range fact.ExpressionGuidance {
+			if guidance["要求"] == "负向表达约束" && strings.TrimSpace(guidance["内容"]) != "" {
+				out = append(out, map[string]any{"表达限制": guidance["内容"], "适用商品链接": fact.Products})
+			}
+		}
+	}
 	return out
 }
 

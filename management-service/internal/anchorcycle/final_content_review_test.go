@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestFinalContentScopeChangesWithAdoptedOverlay(t *testing.T) {
+	s := p0Fixture(t, 2)
+	before := s.FinalContentSourceSHA()
+	s.LatestExpressionConstraints = []map[string]any{{"表达限制": "不拿早餐举例"}}
+	if s.FinalContentSourceSHA() == before {
+		t.Fatal("new adopted requirement reused old final scope")
+	}
+}
+
+func TestFrozenFactNegativeGuidanceIsCheckedButExampleIsOptional(t *testing.T) {
+	s := p0Fixture(t, 2)
+	s.Queue[0].FactScope = &TaskFactScope{Facts: []HookFact{{Data: "当前事实", ExpressionGuidance: []map[string]string{{"要求": "负向表达约束", "内容": "不能拿早餐举例"}, {"要求": "正向举例模板（只参考说法，不补充事实）", "内容": "下班开袋吃"}}}}}
+	rules := s.EffectiveExpressionConstraints()
+	if len(rules) != 1 || rules[0]["表达限制"] != "不能拿早餐举例" {
+		t.Fatal("negative guidance lost or positive template made mandatory", rules)
+	}
+}
+
 func TestFinalContentAdmissionRequiresCurrentReceiptAndKeepsFailureTrace(t *testing.T) {
 	s := p0Fixture(t, 2)
 	s.Surface = "formal_live"
