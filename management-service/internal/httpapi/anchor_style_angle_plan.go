@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// Fact previews plan normally, but never change the live direction library.
+func cycleAnglePlanPersistent(state *anchorcycle.State) bool {
+	return state.TenantID > 0 && state.PlanID > 0 && state.Surface != factPreviewSurface
+}
+
 func cycleAnglePlanEnabled() bool { return os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") != "0" }
 
 func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.State, profile agentgateway.SpeechModel) {
@@ -51,7 +56,7 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	if state.AnglePlans == nil {
 		state.AnglePlans = map[string]*anchorcycle.AnglePlan{}
 	}
-	persistent := state.TenantID > 0 && state.PlanID > 0
+	persistent := cycleAnglePlanPersistent(state)
 	if state.CurrentAnglePlan() == nil && persistent {
 		saved, loadErr := s.store.LoadAngleDirections(ctx, state.TenantID, state.PlanID, key)
 		if loadErr != nil {

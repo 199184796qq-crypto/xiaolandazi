@@ -23,6 +23,7 @@ import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
 import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
+import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
@@ -311,6 +312,10 @@ const scriptAnalysisStage = ref('')
 const analysisDraft = ref<LiveAgentPlanScriptAnalysis | null>(null)
 const knowledgeDraftText = ref('')
 const rhythmDraftText = ref('')
+const previewingFormalFact = ref<LiveAgentPlanFact | null>(null)
+function previewFormalFact(item: LiveAgentPlanFact) { previewingFormalFact.value = item }
+watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = null })
+
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 const factRiskUnresolvedCount = ref(0)
 const wheelRiskUnresolvedCount = ref(0)
@@ -6560,6 +6565,7 @@ onBeforeUnmount(() => {
               <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
             </header>
 
+            <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId && activeRoomId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="activeRoomId" :tenant-id="activeRoom?.tenant_id" @close="previewingFormalFact = null" />
             <FormalFactCreateDialog v-if="creatingFormalFact" v-model="formalFactCreateDraft" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @name-edited="formalFactName.edited" @retry-name="formalFactName.ensure" @save="createFormalFact" @close="cancelCreateFormalFact" />
 
             <div v-if="!formalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
@@ -6648,6 +6654,7 @@ onBeforeUnmount(() => {
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
+                          <button type="button" class="is-preview" :disabled="!!mutatingFormalFactId || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
                             :disabled="!!mutatingFormalFactId"
@@ -9457,12 +9464,12 @@ onBeforeUnmount(() => {
 .strategy-fact-risk-inline-actions button.primary-button { border-color:#607ce8; background:#607ce8; color:#fff; }
 .strategy-miner-risk-count{display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:3px 6px;border:1px solid #f2b4c1;border-radius:8px;background:#fff0f3;color:#c41d45;font-size:11px;font-weight:800;line-height:1.2;white-space:nowrap}
 .strategy-miner-risk-count i{display:grid;width:12px;height:12px;place-items:center;border-radius:50%;background:#c41d45;color:#fff;font-size:10px;font-style:normal}
-.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:11%; }
+.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:10%; }
 .strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:15%; }
-.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:24%; }
-.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:16%; }
-.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:16%; }
-.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:18%; }
+.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:21%; }
+.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:15%; }
+.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:15%; }
+.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:24%; }
 .strategy-formal-fact-category { display:inline-flex; padding:5px 8px; border-radius:8px; background:#eef2fb; color:#5c6dbb; font-size:12px; font-weight:900; }
 .strategy-formal-fact-name { display:grid; gap:3px; }
 .strategy-formal-fact-name strong { color:#14264c; font-size:16px; font-weight:800; }
@@ -9477,7 +9484,7 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-table input,.strategy-formal-facts-table select { min-height:38px; padding:7px 9px; }
 .strategy-formal-facts-table textarea { min-height:76px; padding:8px 9px; resize:vertical; }
 .strategy-formal-facts-table input:focus,.strategy-formal-facts-table select:focus,.strategy-formal-facts-table textarea:focus { border-color:#8e9ddd; box-shadow:0 0 0 3px rgba(92,107,202,.08); }
-.strategy-formal-fact-actions { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; }
+.strategy-formal-fact-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .strategy-formal-fact-actions button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-width:72px; min-height:38px; padding:7px 10px; border:1px solid #c8d9ff; border-radius:10px; background:linear-gradient(135deg,#f7faff,#eef5ff); color:#2674ed; font:inherit; font-size:14px; font-weight:800; white-space:nowrap; cursor:pointer; }
 .strategy-formal-fact-actions svg { width:17px; height:17px; flex:0 0 17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-formal-fact-actions button:hover { border-color:#aeb9d4; color:#4658b8; }
