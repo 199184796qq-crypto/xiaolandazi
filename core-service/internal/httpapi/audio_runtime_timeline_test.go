@@ -17,14 +17,14 @@ func TestNextRoomProgramSafeCutUsesSemanticTimeline(t *testing.T) {
 	}
 
 	cut, ok := nextRoomProgramSafeCut(program, 1200, 35*time.Second)
-	if !ok || cut != 5000 {
-		t.Fatalf("cut=%d ok=%v, want 5000 true", cut, ok)
+	if !ok || cut != 10000 {
+		t.Fatalf("cut=%d ok=%v, want complete track end near the preferred lead", cut, ok)
 	}
 
-	// The exact end of a track is intentionally not returned as an interrupt
-	// cut point because the normal mainline advance owns that transition.
-	if cut, ok := nextRoomProgramSafeCut(program, 6200, 35*time.Second); ok {
-		t.Fatalf("cut=%d ok=%v, want no cut inside final semantic segment", cut, ok)
+	// The complete final sentence remains a real cut; Core reserves its end
+	// so mainline advancement cannot race the pending interaction.
+	if cut, ok := nextRoomProgramSafeCut(program, 6200, 35*time.Second); !ok || cut != 10000 {
+		t.Fatalf("cut=%d ok=%v, want complete final sentence at 10000", cut, ok)
 	}
 }
 

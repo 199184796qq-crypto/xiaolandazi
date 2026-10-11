@@ -58,6 +58,7 @@ type programState struct {
 	StartedAt           time.Time
 	ActualStartedAt     time.Time
 	CutWaitingTaskID    string
+	CutWaitingMS        int
 	CutWaitingEnded     bool
 	SegmentStartedAt    time.Time
 	CurrentTaskID       string
@@ -797,9 +798,14 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		return audioout.RoomProgramSnapshot{}, errors.New("room program already has an active interaction")
 	}
 	currentTaskID := program.CurrentTaskID
+	sequential := program.Sequential
+	track := program.Tracks[program.TrackIndex]
 	c.mu.RUnlock()
 	if input.ExpectedTaskID != "" && input.ExpectedTaskID != currentTaskID {
 		return audioout.RoomProgramSnapshot{}, audioout.ErrInteractionSwitchStale
+	}
+	if sequential && (input.SwitchAtMS == nil || !verifiedInteractionSentenceEnd(track, *input.SwitchAtMS)) {
+		return audioout.RoomProgramSnapshot{}, fmt.Errorf("%w: live interaction requires a verified sentence end", audioout.ErrInteractionSwitchStale)
 	}
 
 	currentSnapshot, ok := c.hub.Snapshot(currentTaskID)
@@ -839,20 +845,26 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		if waitMS > 35000 {
 			return audioout.RoomProgramSnapshot{}, errors.New("switch_at_ms is too far ahead")
 		}
-		// Reserve a track-end cut before its mirror can advance to the next
-		// short file. On cancellation let the completed mainline advance.
-		if target == currentSnapshot.Task.DurationMS {
+		// Reserve every sentence cut before the mirror can emit the next
+		// sentence. Track-end reservations also prevent advancing to a new file.
+		if c.roomAudio != nil || target == currentSnapshot.Task.DurationMS {
 			c.mu.Lock()
-			if c.programs[input.RoomID] != program || program.CurrentTaskID != currentTaskID {
+			if c.programs[input.RoomID] != program || program.CurrentTaskID != currentTaskID || program.CutWaitingTaskID != "" {
+				c.mu.Unlock()
+				return audioout.RoomProgramSnapshot{}, audioout.ErrInteractionSwitchStale
+			}
+			if c.roomAudio != nil && c.roomAudio.Snapshot(input.RoomID).MainlineCursorMS >= target {
 				c.mu.Unlock()
 				return audioout.RoomProgramSnapshot{}, audioout.ErrInteractionSwitchStale
 			}
 			program.CutWaitingTaskID = currentTaskID
+			program.CutWaitingMS = target
 			program.CutWaitingEnded = false
 			c.mu.Unlock()
 			defer func() {
 				c.mu.Lock()
 				program.CutWaitingTaskID = ""
+				program.CutWaitingMS = 0
 				advance := program.CutWaitingEnded && program.Running && !program.Suspended && program.CurrentTaskID == currentTaskID
 				program.CutWaitingEnded = false
 				c.mu.Unlock()
@@ -1036,7 +1048,7 @@ func (c *Client) waitForReceiverSwitchPoint(ctx context.Context, taskID string, 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			return nil
+			return fmt.Errorf("%w: sentence-end playback was not confirmed", audioout.ErrInteractionSwitchStale)
 		}
 	}
 
@@ -1055,9 +1067,7 @@ func (c *Client) waitForReceiverSwitchPoint(ctx context.Context, taskID string, 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			// Backward-compatible fallback for a receiver that reports PLAYING but
-			// does not yet acknowledge prepare_switch/progress.
-			return nil
+			return fmt.Errorf("%w: receiver has not reached sentence end", audioout.ErrInteractionSwitchStale)
 		case <-ticker.C:
 		}
 	}
@@ -1072,17 +1082,39 @@ func (c *Client) waitForRoomAudioSwitchPoint(ctx context.Context, roomID int64, 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if c.roomAudio.Snapshot(roomID).MainlineCursorMS >= targetMS {
+		observed := c.roomAudio.Snapshot(roomID)
+		if observed.ActiveSource != roomaudio.SourceMainline || (observed.Phase != roomaudio.PhaseMainline && observed.Phase != roomaudio.PhasePreparingInterrupt && observed.Phase != roomaudio.PhaseArmed) {
+			return fmt.Errorf("%w: mainline output is no longer active", audioout.ErrInteractionSwitchStale)
+		}
+		if observed.MainlineCursorMS >= targetMS {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return nil
+			return fmt.Errorf("%w: mainline PCM has not reached sentence end", audioout.ErrInteractionSwitchStale)
 		case <-ticker.C:
 		}
 	}
+}
+
+func verifiedInteractionSentenceEnd(track programTrack, cutMS int) bool {
+	if cutMS <= 0 || cutMS > track.DurationMS {
+		return false
+	}
+	for _, point := range track.SafePoints {
+		// Published points have already been checked against the timeline.
+		if point.CutMS == cutMS {
+			return true
+		}
+	}
+	for _, unit := range track.Timeline {
+		if unit.EndMS == cutMS && unit.SafeCut && strongSemanticEnding(unit.Text) {
+			return true
+		}
+	}
+	return len(track.Timeline) == 0 && cutMS == track.DurationMS && strongSemanticEnding(track.Text)
 }
 
 func hasActivePlaybackReceiver(snapshot audiohub.TaskSnapshot) bool {
@@ -1628,6 +1660,8 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 		ticker := time.NewTicker(time.Duration(roomaudio.FrameDurationMS) * time.Millisecond)
 		defer ticker.Stop()
 		planned := false
+		var cutRemainder []byte
+		cutRemainderMS := 0
 		publishFrame := func(pcm []byte, cursorMS int) error {
 			if !first {
 				select {
@@ -1637,17 +1671,17 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 				}
 			}
 			first = false
-			captionID := roomAudioSegmentAt(track.Timeline, cursorMS)
-			if captionID == "" {
-				captionID = fallbackCaptionID
+			// A non-frame-aligned cut silence-pads its final frame. If the
+			// dispatch is cancelled, restore its unplayed suffix before continuing.
+			if len(cutRemainder) > 0 {
+				_, _, err := c.publishMainlineSentenceFrame(ctx, program, taskID, track, fallbackCaptionID, cutRemainder, cutRemainderMS)
+				if err != nil {
+					return err
+				}
+				cutRemainder = nil
 			}
-			_, publishErr := c.roomAudio.PublishPCMAt(
-				program.RoomID,
-				roomaudio.SourceMainline,
-				pcm,
-				captionID,
-				cursorMS,
-			)
+			var publishErr error
+			cutRemainder, cutRemainderMS, publishErr = c.publishMainlineSentenceFrame(ctx, program, taskID, track, fallbackCaptionID, pcm, cursorMS)
 			if publishErr == nil {
 				c.recordActualStart(program, taskID)
 				c.recordActualTrackStart(program, taskID, track.ID)
@@ -1668,6 +1702,9 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 			first = true
 			log.Printf("room audio mirror normalizing legacy source room=%d task=%s", program.RoomID, taskID)
 			err = streamAudioURLAsCorePCM(ctx, track.AudioURL, startOffsetMS, publishFrame)
+		}
+		if err == nil && len(cutRemainder) > 0 {
+			_, _, err = c.publishMainlineSentenceFrame(ctx, program, taskID, track, fallbackCaptionID, cutRemainder, cutRemainderMS)
 		}
 		if err != nil && ctx.Err() == nil {
 			log.Printf("room audio mirror stream room=%d task=%s failed: %v", program.RoomID, taskID, err)
@@ -1826,6 +1863,60 @@ func (c *Client) cancelRoomAudioMirror(roomID int64) {
 	c.mirrorMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// The reservation and the last PCM frame share c.mu, so dispatch cannot miss
+// a boundary while the next sentence is already being emitted. A slow waiter
+// holds here; it never turns a complete sentence into a mid-sentence cut.
+func (c *Client) publishMainlineSentenceFrame(ctx context.Context, program *programState, taskID string, track programTrack, fallbackID string, pcm []byte, cursorMS int) ([]byte, int, error) {
+	var ticker *time.Ticker
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		c.mu.RLock()
+		if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.CurrentTaskID != taskID {
+			c.mu.RUnlock()
+			return nil, 0, audioout.ErrInteractionSwitchStale
+		}
+		cut := 0
+		if program.CutWaitingTaskID == taskID {
+			cut = program.CutWaitingMS
+		}
+		if cut > 0 && cursorMS >= cut {
+			c.mu.RUnlock()
+			if ticker == nil {
+				ticker = time.NewTicker(time.Millisecond)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, 0, ctx.Err()
+			case <-ticker.C:
+				continue
+			}
+		}
+		var remainder []byte
+		if cut > cursorMS && cut < cursorMS+roomaudio.FrameDurationMS {
+			bytesToCut := (cut - cursorMS) * roomaudio.PCMBytesPerFrame / roomaudio.FrameDurationMS
+			if cut < track.DurationMS {
+				remainder = make([]byte, roomaudio.PCMBytesPerFrame)
+				copy(remainder, pcm[bytesToCut:])
+			}
+			clear(pcm[bytesToCut:])
+		}
+		captionID := roomAudioSegmentAt(track.Timeline, cursorMS)
+		if captionID == "" {
+			captionID = fallbackID
+		}
+		_, err := c.roomAudio.PublishPCMAt(program.RoomID, roomaudio.SourceMainline, pcm, captionID, cursorMS)
+		c.mu.RUnlock()
+		return remainder, cut, err
 	}
 }
 

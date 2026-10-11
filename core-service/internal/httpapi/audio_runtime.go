@@ -623,7 +623,7 @@ func requestedRoomProgramSafeCut(program audioout.RoomProgramSnapshot, requested
 		return 0, false
 	}
 	for _, point := range effectiveRoomProgramSafePoints(program) {
-		if point.CutMS == requestedMS {
+		if point.CutMS == requestedMS && completeSentenceCut(program, point) {
 			return requestedMS, true
 		}
 	}
@@ -673,6 +673,24 @@ func resolveQuickRoomProgramSafeCut(program audioout.RoomProgramSnapshot, prefer
 	if point, ok := chooseRoomProgramSafePointWindow(program, currentMS, 1500, 24000, 6500); ok {
 		return point.CutMS, true
 	}
+	// A short remaining final sentence still has to finish. UI lead time is
+	// optional; an actual complete sentence boundary is not.
+	best := 0
+	for _, point := range effectiveRoomProgramSafePoints(program) {
+		lead := point.CutMS - currentMS
+		if lead <= 0 || lead > 24000 || !completeSentenceCut(program, point) {
+			continue
+		}
+		if program.Task != nil && point.CutMS > program.Task.DurationMS {
+			continue
+		}
+		if best == 0 || point.CutMS < best {
+			best = point.CutMS
+		}
+	}
+	if best > 0 {
+		return best, true
+	}
 	return 0, false
 }
 
@@ -702,10 +720,10 @@ func chooseRoomProgramSafePointWindow(
 	candidates := make([]audioout.ProgramSafePoint, 0, len(points))
 	for _, point := range points {
 		lead := point.CutMS - currentMS
-		if lead < minLeadMS || lead > maxLeadMS {
+		if lead < minLeadMS || lead > maxLeadMS || !completeSentenceCut(program, point) {
 			continue
 		}
-		if durationMS > 0 && point.CutMS >= durationMS {
+		if durationMS > 0 && point.CutMS > durationMS {
 			continue
 		}
 		candidates = append(candidates, point)
@@ -1078,20 +1096,15 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		} else {
 			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
 		}
-		if cutAction == "answer" {
-			if !exists {
-				writeError(w, http.StatusConflict, "当前35秒内没有安全句末切点，继续排队")
-				return
-			}
-			switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
-		} else if exists {
-			// 抢答也在完整句末切换；切点同时用于停止主线和插播后的恢复位置。
-			switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
-		} else if program.Task.DurationMS > 1 {
-			// 已处于本稿最后语义段时，抢答后直接跨到下一稿，避免回到半句和残留 1ms 杂音。
-			value := program.Task.DurationMS
-			resumeOffsetMS = &value
+		if !exists {
+			// Keep the existing management retry contract; its prepared audio
+			// must survive a missing cut instead of becoming a dispatch failure.
+			writeError(w, http.StatusConflict, "当前35秒内没有安全句末切点，继续排队")
+			return
 		}
+		// Both quick and ordinary answers wait for the same physical sentence
+		// ending. A later resume position can never authorize an immediate cut.
+		switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
 		if !input.DeferredReturn && switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
 			estimatedMS := estimatedInteractionDurationMS(input.ReplyText)
 			candidates := resumeCandidatesForInteraction(program, *switchAtMS, estimatedMS, input.Topic)

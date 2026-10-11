@@ -52,7 +52,7 @@ func TestPCMFinishedBroadcastCompletesQueueWithoutReceiverCallback(t *testing.T)
 	server.SetRoomAudioEngine(engine)
 	server.SetAudioHub(hub)
 	server.SetAudioClient(client, "")
-	start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 42, VersionID: 1, Sequential: true, Tracks: []audioout.ProgramTrack{{ID: "one", AudioURL: source.URL + "/main", DurationMS: 1500}}})
+	start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 42, VersionID: 1, Sequential: true, Tracks: []audioout.ProgramTrack{{ID: "one", AudioURL: source.URL + "/main", DurationMS: 1500, Text: "第一句。接下来的主线。", Timeline: []audioout.ProgramTimelineSegment{{SegmentID: "first", Index: 1, EndMS: 300, Text: "第一句。", SafeCut: true}, {SegmentID: "next", Index: 2, StartMS: 300, EndMS: 1500, Text: "接下来的主线。", SafeCut: true}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,8 @@ func TestPCMFinishedBroadcastCompletesQueueWithoutReceiverCallback(t *testing.T)
 	if !ok {
 		t.Fatal("claim")
 	}
-	inserted, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 42, ExpectedTaskID: start.Task.ID, AudioURL: source.URL + "/reply", Text: "回答。"})
+	cut := 300
+	inserted, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 42, ExpectedTaskID: start.Task.ID, AudioURL: source.URL + "/reply", Text: "回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
 	if err != nil {
 		t.Fatal(err)
 	}
