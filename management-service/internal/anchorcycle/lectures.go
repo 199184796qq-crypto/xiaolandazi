@@ -25,6 +25,7 @@ type LectureAudit struct {
 	TextSHA      string                    `json:"text_sha"`
 	ScopeSHA     string                    `json:"scope_sha"`
 	Model        string                    `json:"model,omitempty"`
+	PromptSHA    string                    `json:"prompt_sha256,omitempty"`
 	InputTokens  int64                     `json:"input_tokens,omitempty"`
 	OutputTokens int64                     `json:"output_tokens,omitempty"`
 	LatencyMS    int64                     `json:"latency_ms,omitempty"`

@@ -50,6 +50,7 @@ func (s *Server) auditSpeechExpressionConstraints(ctx context.Context, state *an
 		audit.Error = "表达约束审核母版不可用"
 		return
 	}
+	audit.PromptSHA = derivedHash(mother)
 	content := []map[string]any{}
 	for _, row := range constraints {
 		entry := map[string]any{"表达限制": row["表达限制"]}
