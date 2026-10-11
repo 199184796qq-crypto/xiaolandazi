@@ -59,8 +59,13 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		return
 	}
 	if constraints := state.EffectiveExpressionConstraints(); len(constraints) > 0 {
+		requirementMother, _, e := loadReplaceablePromptAsset("ANCHOR_SPEECH_CONSTRAINT_TEXT_REVIEW_PATH", "configs/prompts/anchor-style/speech-constraint-text-review.md", "用户约束文字审核母版")
+		if e != nil {
+			fail("表达要求审核母版不可用")
+			return
+		}
 		previous := c.ExpressionAudit
-		if previous == nil || previous.TextSHA != anchorcycle.ProductDigest(text) || previous.ScopeSHA != anchorcycle.ProductDigest(constraints) {
+		if previous == nil || previous.TextSHA != anchorcycle.ProductDigest(text) || previous.ScopeSHA != anchorcycle.ProductDigest(constraints) || previous.PromptSHA != derivedHash(requirementMother) {
 			s.auditSpeechExpressionConstraints(ctx, state, c)
 		}
 		if c.ExpressionAudit == nil || !c.ExpressionAudit.Passed || c.ExpressionAudit.Error != "" {
@@ -91,7 +96,11 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		profile = *state.ReviewModel
 		profile.APIKey = current.APIKey
 	}
-	contextSHA := anchorcycle.ProductDigest(struct{ Source, Model, Profile, Endpoint, Mother string }{a.ScopeSHA, profile.Model, profile.ID, profile.BaseURL, mother})
+	requirementModel, requirementMother := "", ""
+	if audit := c.ExpressionAudit; audit != nil {
+		requirementModel, requirementMother = audit.Model, audit.PromptSHA
+	}
+	contextSHA := anchorcycle.ProductDigest(struct{ Source, Model, Profile, Endpoint, Mother, RequirementModel, RequirementMother string }{a.ScopeSHA, profile.Model, profile.ID, profile.BaseURL, mother, requirementModel, requirementMother})
 	state.FinalContentReviewContextSHA = contextSHA
 	if previous := c.FinalContentAudit; previous != nil && previous.ContextSHA == contextSHA && previous.TextSHA == a.TextSHA && previous.ScopeSHA == a.ScopeSHA && previous.Error == "" {
 		return
