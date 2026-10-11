@@ -85,6 +85,32 @@ type planAnswerAdoptionInput struct {
 	Answer   string `json:"answer"`
 }
 
+func (s *planSpeechTestStore) CurrentInteractionProductContext(ctx context.Context, tenant, room, planID int64) (string, error) {
+	plan, err := s.GetLiveAgentPlanForRoom(ctx, tenant, room)
+	if err != nil || plan.ID != planID {
+		return "", fmt.Errorf("方案测试商品范围不一致")
+	}
+	facts, err := s.ListLiveAgentPlanFacts(ctx, tenant, planID)
+	if err != nil {
+		return "", err
+	}
+	primary := []model.LiveAgentPlanFact{}
+	for _, f := range facts {
+		if f.SourceType == "story_lecture" || f.Status != "active" {
+			continue
+		}
+		switch f.Category {
+		case "product", "usage", "craft", "ingredients", "flavor", "brand", "material", "function", "appearance":
+			primary = append(primary, f)
+		}
+	}
+	links, err := s.ListLiveAgentPlanProductLinks(ctx, tenant, planID)
+	if err != nil {
+		return "", err
+	}
+	return renderAnchorStyleWorkbenchFacts(plan, primary, nil, links), nil
+}
+
 func (s *planSpeechTestStore) CurrentInteractionLectureFacts(ctx context.Context, tenant, room, plan int64, question string) (string, error) {
 	if _, err := s.GetLiveAgentPlanForRoom(ctx, tenant, room); err != nil || plan != s.plan.ID {
 		return "", fmt.Errorf("方案测试资料范围不一致")

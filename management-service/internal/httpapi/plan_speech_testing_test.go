@@ -28,6 +28,9 @@ func TestPlanSpeechTestReadsExplicitPlanWithoutRoomSnapshot(t *testing.T) {
 		if _, err := store.CurrentInteractionFacts(ctx, scope[0], scope[1], 4); err == nil {
 			t.Fatal("foreign test facts accepted")
 		}
+		if _, err := store.CurrentInteractionProductContext(ctx, scope[0], scope[1], 4); err == nil {
+			t.Fatal("foreign product context accepted")
+		}
 	}
 	if _, err := store.CurrentInteractionFacts(ctx, 14, 26, 5); err == nil {
 		t.Fatal("different plan facts accepted")
