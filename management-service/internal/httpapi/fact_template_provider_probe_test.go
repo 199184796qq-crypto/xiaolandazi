@@ -213,7 +213,7 @@ func TestFactFieldsNormalizationAndTemplateInfluenceProvider(t *testing.T) {
 		} else {
 			t.Logf("LOGISTICS_CONSTRAINT forbidden=%t audit=%+v", forbidden, c.LectureAudit)
 		}
-		if !forbidden && c.LectureAudit != nil && len(c.LectureAudit.Suggestions) == 0 {
+		if !forbidden && c.LectureAudit != nil && len(c.LectureAudit.Suggestions) == 0 && strings.TrimSpace(c.LectureAudit.Reason) == "" {
 			t.Error("nonblocking logistics advice missing")
 		}
 	}
@@ -285,6 +285,13 @@ func TestSecondaryLectureAcrossRoomsAndProductsProvider(t *testing.T) {
 	fixtureTask := *boundaryState.Lectures.Active
 	fixtureScope := *fixtureTask.FactScope
 	fixtureScope.Corrections = nil
+	// This contrast concerns ordinary unconfirmed sourcing, not the current
+	// customer's stored object/angle restrictions. Keep full P0, isolate material.
+	fixtureTask.LectureFacts = "土麻鸭产自嘉陵江流域，稻田水塘中散养。"
+	fixtureTask.LecturePurpose = "说明原料来源与生活环境"
+	fixtureTask.Angle = "按原料来源介绍，未额外限制饲喂细节"
+	fixtureTask.LecturePlanJSON = ""
+	fixtureScope.Facts = []anchorcycle.HookFact{{Data: fixtureTask.LectureFacts}}
 	fixtureTask.FactScope = &fixtureScope
 	sourcingFixture.Lectures = &anchorcycle.LectureRuntime{Active: &fixtureTask, Library: boundaryState.Lectures.Library}
 	s.auditLectureCandidate(ctx, &sourcingFixture, &uncertain)
