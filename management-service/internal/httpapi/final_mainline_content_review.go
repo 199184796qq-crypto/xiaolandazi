@@ -68,8 +68,13 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		if previous == nil || previous.TextSHA != anchorcycle.ProductDigest(text) || previous.ScopeSHA != anchorcycle.ProductDigest(constraints) || previous.PromptSHA != derivedHash(requirementMother) {
 			s.auditSpeechExpressionConstraints(ctx, state, c)
 		}
-		if c.ExpressionAudit == nil || !c.ExpressionAudit.Passed || c.ExpressionAudit.Error != "" {
-			fail("当前明确表达要求未通过或核对未完成")
+		if c.ExpressionAudit == nil || c.ExpressionAudit.Error != "" {
+			fail("当前明确表达要求核对未完成")
+			return
+		}
+		if !c.ExpressionAudit.Passed {
+			a.Decision, a.UpstreamReview, a.Reason = "有问题", "speech_constraint_text_review", c.ExpressionAudit.Reason
+			c.FinalContentAudit = a
 			return
 		}
 	}

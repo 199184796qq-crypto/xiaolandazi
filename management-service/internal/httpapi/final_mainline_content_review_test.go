@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"livecompanion/management/internal/anchorcycle"
 	"strings"
@@ -48,5 +49,28 @@ func TestFinalReviewIncludesValidatedP0AndScopedContentWithoutIndices(t *testing
 	raw, _ = json.Marshal(messages)
 	if e != nil || !strings.Contains(string(raw), "不用夜宵举例") {
 		t.Fatal("live adopted requirement omitted", e)
+	}
+}
+
+func TestCompletedRequirementRejectionIsNotAFormatOrTransportFailure(t *testing.T) {
+	s := cycleTestState(t)
+	p0, source, e := loadP0Mother()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.InstallP0(p0, source); e != nil {
+		t.Fatal(e)
+	}
+	s.Queue[0].FactScope = &anchorcycle.TaskFactScope{Corrections: []map[string]any{{"表达限制": "不把商品作为早餐举例"}}}
+	mother, _, e := loadReplaceablePromptAsset("ANCHOR_SPEECH_CONSTRAINT_TEXT_REVIEW_PATH", "configs/prompts/anchor-style/speech-constraint-text-review.md", "requirement review")
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := anchorcycle.Candidate{ID: "program-case", Text: "早上赶时间，开袋直接当早餐。", OutputText: "早上赶时间，开袋直接当早餐。"}
+	c.ExpressionAudit = &anchorcycle.LectureAudit{Passed: false, Reason: "包含用户禁止的早餐场景", TextSHA: anchorcycle.ProductDigest(c.OutputText), ScopeSHA: anchorcycle.ProductDigest(s.EffectiveExpressionConstraints()), PromptSHA: derivedHash(mother)}
+	server := &Server{}
+	server.auditFinalMainlineContent(context.Background(), &s, &c)
+	if c.FinalContentAudit == nil || c.FinalContentAudit.Decision != "有问题" || c.FinalContentAudit.Error != "" || c.FinalContentAudit.UpstreamReview != "speech_constraint_text_review" || c.FinalContentAudit.ExchangeID != 0 || s.FinalContentCandidateApproved(c) {
+		t.Fatal("completed content rejection became a format failure or a fabricated final model call", c.FinalContentAudit)
 	}
 }
