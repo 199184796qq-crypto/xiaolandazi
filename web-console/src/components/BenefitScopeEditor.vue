@@ -22,11 +22,41 @@ async function save() {
 }
 </script>
 <template>
-  <div class="benefit-scope"><span>适用商品：{{ label }}</span><button v-if="!editing" type="button" :disabled="!scope" @click="edit">修改范围</button>
-    <div v-if="editing" class="scope-options"><label><input v-model="all" type="checkbox" :disabled="busy" />全部商品（含以后新增商品）</label><div v-if="!all" class="scope-products"><label v-for="product in products" :key="product.id"><input v-model="selected" type="checkbox" :value="product.id" :disabled="busy" />{{ product.link }}号 {{ product.name }}</label></div><div><button type="button" :disabled="busy || (!all && !selected.length)" @click="save">{{ busy ? '保存中…' : '保存范围' }}</button><button type="button" :disabled="busy" @click="editing = false">取消</button></div></div>
+  <div class="benefit-scope">
+    <div class="scope-summary"><span>适用商品：{{ label }}</span><button v-if="!editing" type="button" :disabled="!scope" @click="edit">修改范围</button></div>
+    <div v-if="editing" class="scope-options">
+      <label class="scope-option scope-all" :class="{ selected: all }">
+        <input v-model="all" type="checkbox" :disabled="busy" />
+        <span><strong>全部商品</strong><small>包含以后新增的商品</small></span>
+      </label>
+      <div v-if="!all" class="scope-products">
+        <label v-for="product in products" :key="product.id" class="scope-option" :class="{ selected: selected.includes(product.id) }">
+          <input v-model="selected" type="checkbox" :value="product.id" :disabled="busy" />
+          <span class="scope-product-copy"><b>{{ product.link }}号</b><span>{{ product.name }}</span></span>
+        </label>
+      </div>
+      <div class="scope-actions">
+        <small>{{ all ? '全部商品适用' : `已选 ${selected.length} 个商品` }}</small>
+        <button type="button" :disabled="busy" @click="editing = false">取消</button>
+        <button type="button" class="scope-save" :disabled="busy || (!all && !selected.length)" @click="save">{{ busy ? '保存中…' : '保存范围' }}</button>
+      </div>
+    </div>
     <p v-if="error" role="alert">{{ error }}</p>
   </div>
 </template>
 <style scoped>
-.benefit-scope{font-size:14px;line-height:1.7;overflow-wrap:anywhere}.benefit-scope button{padding:4px 10px;margin-left:8px;border:1px solid #c9cefa;border-radius:6px;background:white;color:#605ad0;cursor:pointer}.benefit-scope button:disabled{opacity:.5}.scope-options{padding:12px;background:#f5f6ff;border-radius:8px;margin:8px 0}.scope-options label{display:flex;align-items:center;gap:6px}.scope-products{max-height:240px;overflow:auto;margin:10px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}.benefit-scope p{color:#aa3444}
+.benefit-scope{width:100%;min-width:0;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+.scope-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.scope-summary>span{min-width:0}
+.benefit-scope button{flex:none;min-height:30px;padding:4px 10px;margin:0;border:1px solid #d8def4;border-radius:7px;background:#fff;color:#605ad0;font:inherit;font-size:12px;line-height:1.5;cursor:pointer}.benefit-scope button:disabled{opacity:.5;cursor:default}
+.scope-options{display:grid;gap:8px;padding:10px;border:1px solid #e1e5f3;border-radius:10px;background:#f8f9fd;margin-top:10px}
+.scope-option{display:flex;align-items:center;justify-content:flex-start;gap:9px;min-width:0;margin:0;padding:9px 10px;border:1px solid #e6e9f3;border-radius:8px;background:#fff;cursor:pointer;box-sizing:border-box}
+.scope-option.selected{border-color:#c8cffb;background:#eef1ff}.scope-option:focus-within{outline:2px solid #98a4ee;outline-offset:1px}
+.scope-option>input[type=checkbox]{display:block;flex:0 0 16px;width:16px!important;height:16px!important;min-width:16px;min-height:16px;max-width:16px;max-height:16px;padding:0!important;margin:0;accent-color:#6864df;cursor:pointer}
+.scope-option>span{display:grid;gap:2px;min-width:0;flex:1;text-align:left}.scope-option strong{font-size:13px;font-weight:750;color:#3e4864}.scope-option small{font-size:11px;color:#8791a7;line-height:1.5}
+.scope-products{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;max-height:240px;overflow:auto;overscroll-behavior:contain}
+.scope-option>.scope-product-copy{display:flex;align-items:baseline;justify-content:flex-start;gap:7px;color:#4c5974;font-size:13px;line-height:1.6}
+.scope-product-copy>b{flex:none;color:#6864c8;font-size:12px;font-weight:750;white-space:nowrap}.scope-product-copy>span{min-width:0;overflow-wrap:anywhere}
+.scope-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:7px;padding-top:8px;border-top:1px solid #e7eaf2}.scope-actions>small{margin-right:auto;color:#8b95a9;font-size:11px;line-height:1.5}
+.scope-actions .scope-save{border-color:#6864df;background:#6864df;color:#fff}.benefit-scope button:focus-visible{outline:2px solid #98a4ee;outline-offset:2px}
+.benefit-scope p{margin:8px 0 0;color:#aa3444;font-size:12px;line-height:1.6}
 </style>

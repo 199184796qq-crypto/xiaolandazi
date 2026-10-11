@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { LiveAgentPlanBenefit, LiveAgentPlanProductAttribute, LiveAgentPlanProductLink } from '../types'
+import type { BenefitScope } from '../contentPools'
+import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 
 type ProductField = 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience'
 type ProductAttributeDraft = { code: string; label: string; value: string; unit?: string; display_type?: string; display_priority?: number }
 const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
+  benefitScopes?: BenefitScope[]
   saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
   saveRoomRoles: (item: LiveAgentPlanProductLink, roles: string[]) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
@@ -207,18 +210,18 @@ async function deleteAttribute(item: LiveAgentPlanProductLink, attribute: LiveAg
 }
 
 function linkedBenefits(item: LiveAgentPlanProductLink) {
-  return (props.benefits || []).filter((benefit) => benefit.status === 'active' && benefit.link_key === item.link_key)
+  return (props.benefits || []).filter(benefit => benefit.status === 'active' && benefitAppliesToProduct(benefit, item, props.benefitScopes))
 }
 
 function benefitSummary(item: LiveAgentPlanBenefit) {
-  return [item.activity_price && `活动价 ${item.activity_price}`, item.gift && `赠品 ${item.gift}`, item.activity]
+  return [item.activity_price && `活动价 ${item.activity_price}`, item.gift && `福利 ${item.gift}`, item.activity]
     .filter(Boolean)
     .join(' · ')
 }
 
 async function deleteItem(item: LiveAgentPlanProductLink) {
   if (busy.value) return
-  const benefitCount = linkedBenefits(item).length
+  const benefitCount = (props.benefits || []).filter(benefit => benefit.link_key === item.link_key && !props.benefitScopes?.some(scope => scope.benefit_id === benefit.id && scope.version_no > 0)).length
   const benefitWarning = benefitCount ? `，并同步停用 ${benefitCount} 条链接专属福利` : ''
   if (!window.confirm(`确定删除“${item.link_key} · ${item.product_name || '未填写商品名称'}”吗？删除后当前方案将不再使用这个商品链接${benefitWarning}。`)) return
   busy.value = true
