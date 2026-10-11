@@ -47,7 +47,7 @@ type modelResolverContextKey struct{}
 // Content approval uses the independent review role. Planning and source
 // analysis retain their own roles, regardless of provider or model name.
 func UsesReviewModel(stage string) bool {
-	return stage == "mainline_p0_context" || stage == "speech_review" || stage == "interaction_p0_context" || stage == "angle_direction_review"
+	return stage == "mainline_p0_context" || stage == "speech_review" || stage == "interaction_p0_context" || stage == "angle_direction_review" || stage == "mainline_final_content_review"
 }
 
 func WithModelResolver(ctx context.Context, resolver SpeechModelResolver) context.Context {
