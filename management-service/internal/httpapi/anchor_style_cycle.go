@@ -559,7 +559,7 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		reuse = strings.NewReplacer("{{use_count}}", strconv.Itoa(use.Count), "{{last_expression}}", use.LastSummary).Replace(reuse)
+		reuse = strings.NewReplacer("{{use_count}}", strconv.Itoa(use.Count), "{{last_expression}}", use.LastSummary, "{{expression_variant}}", state.ExpressionVariant()).Replace(reuse)
 	}
 	md = renderStablePrefixTemplate(md, "{{target_audience}}", task.TargetAudience, "{{pain_point}}", task.PainPoint, "{{price_rules}}", priceRules, "{{body_plan}}", bodyPlan, "{{content_retry}}", contentIssue, "{{phase}}", phases[state.Phase], "{{cycle_number}}", strconv.Itoa(max(1, state.CycleNumber)), "{{stage_rules}}", stageRules, "{{reuse}}", reuse, "{{task}}", task.SellingPoint+" × "+task.Angle, "{{max_chars}}", strconv.Itoa(maxChars), "{{history}}", strings.Join(state.RecentSummaries, "\n"), "{{used}}", strings.Join(used, "、"), "{{retry}}", retry, "{{feedback}}", feedback)
 	if !state.BootstrapSent && len(state.Accepted) == 0 && len(state.Attempts) == 0 {

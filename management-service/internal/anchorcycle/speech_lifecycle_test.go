@@ -123,3 +123,22 @@ func TestRotateAfterDuplicate(t *testing.T) {
 		t.Fatal("池轮尽后应返回 false")
 	}
 }
+
+func TestExpressionVariantRotates(t *testing.T) {
+	s := &State{Config: Config{}}
+	s.Queue = []Task{{SellingPoint: "口感", Key: "口感×A"}}
+	s.TaskIndex = 0
+	s.Cursor = 0
+	s.Used = map[string]Use{}
+	first := s.ExpressionVariant()
+	for i := 0; i < 6; i++ {
+		s.Used[s.Task().Key] = Use{Count: i}
+		if s.ExpressionVariant() == "" {
+			t.Fatal("变体不应为空")
+		}
+	}
+	s.Used[s.Task().Key] = Use{Count: 1}
+	if s.ExpressionVariant() == first {
+		t.Fatal("不同使用次数应产生不同包装/长度变体")
+	}
+}
