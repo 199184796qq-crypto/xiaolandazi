@@ -76,6 +76,7 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	input := map[string]any{"卖点": task.SellingPoint, "角度": task.Angle, "观众顾虑": task.PainPoint, "本次商品链接": state.HookProducts(), "当前有效事实": contentFacts, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "方向数量上限": 4}
 	if task.FactScope != nil {
 		input["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+		input["商品必要事实与使用边界（约束推演，不更换当前任务）"] = generationFactView(task.FactScope.ProductBoundary)
 	}
 	if previous != nil {
 		old := []string{}

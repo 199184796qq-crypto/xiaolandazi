@@ -33,8 +33,9 @@ type HookFact struct {
 // a legacy task without a binding; an empty scope never grants all plan facts.
 // This provenance stays in run state and is not sent as an index for models.
 type TaskFactScope struct {
-	Corrections []map[string]any `json:"corrections,omitempty"`
-	Facts       []HookFact       `json:"facts"`
+	Corrections     []map[string]any `json:"corrections,omitempty"`
+	Facts           []HookFact       `json:"facts"`
+	ProductBoundary []HookFact       `json:"product_boundary,omitempty"`
 }
 type HookCalculation struct {
 	Label    string   `json:"label"`

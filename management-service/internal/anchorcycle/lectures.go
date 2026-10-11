@@ -80,23 +80,17 @@ func (s *State) BeginLecture() bool {
 	if n == 0 {
 		return false
 	}
-	minCycles, minMS, topicMS := 4, int64(600000), int64(1800000)
+	minCycles, maxCycles, minMS := r.Library.Policy.Cadence(n)
+	topicMS := int64(1800000)
 	if n >= 8 {
-		minCycles, minMS, topicMS = 2, 360000, 1200000
+		topicMS = 1200000
 	} else if n >= 3 {
-		minCycles, minMS, topicMS = 3, 480000, 1500000
-	}
-	if r.Library.Policy.Frequency == "less" {
-		minCycles += 2
-		minMS += 240000
-	} else if r.Library.Policy.Frequency == "more" {
-		minCycles = max(2, minCycles-1)
-		minMS = max(360000, minMS-120000)
+		topicMS = 1500000
 	}
 	if r.NextCycles == 0 {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(fmt.Sprintf("%s/%d", s.RunID, r.LastCycle)))
-		r.NextCycles = minCycles + int(h.Sum32()%3)
+		r.NextCycles = minCycles + int(h.Sum32()%uint32(maxCycles-minCycles+1))
 	}
 	if r.CompletedCycles-r.LastCycle < r.NextCycles || r.PlayedMS-r.LastMS < minMS || (r.LectureMS+60000)*10 > r.PlayedMS {
 		return false

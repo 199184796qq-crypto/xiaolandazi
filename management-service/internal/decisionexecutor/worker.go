@@ -22,6 +22,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionlearning"
@@ -2768,6 +2769,16 @@ func (w *Worker) finalizeSpeechText(
 	text string,
 ) (string, error) {
 	text = item.nicknameSpeechText(text)
+	controlSources := []string{item.PreviewInstruction, hiddenStrategyPrompt(item)}
+	if item.BusinessPlan != nil {
+		controlSources = append(controlSources, item.BusinessPlan.Requirements...)
+	}
+	if cleaned, edits, err := contentguard.StripRequestInstructions(text, controlSources, nil); err != nil {
+		return "", err
+	} else if len(edits) > 0 {
+		text = cleaned
+		log.Printf("interaction request instruction removed room=%d count=%d", session.RoomID, len(edits))
+	}
 	text, _ = contentstrategy.RemoveConsecutiveSpeech(text, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
 	if text == "" {
 		return "", fmt.Errorf("最终播出文字为空")
@@ -2777,7 +2788,11 @@ func (w *Worker) finalizeSpeechText(
 	if err != nil {
 		return "", fmt.Errorf("规则层终审读取失败: %w", err)
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
+	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if planErr != nil && !errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
+		return "", planErr
+	}
+	effective := policy.BuildEffective(industry, l1, l2, policy.ForPlan(l3, plan.ID))
 	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
@@ -2877,6 +2892,11 @@ func (w *Worker) finalizeSpeechText(
 
 	// 终审后再做一次确定性的硬过滤，确保内部控制信息、绝对化词和用词禁词不能进入 TTS。
 	candidate = stripInternalSpeechLeak(candidate)
+	if cleaned, _, err := contentguard.StripRequestInstructions(candidate, controlSources, nil); err != nil {
+		return "", err
+	} else {
+		candidate = cleaned
+	}
 	candidate = hardSanitizeSpeech(candidate, riskTerms, contextText)
 	if strings.TrimSpace(candidate) == "" {
 		return "", fmt.Errorf("规则层终审后没有可播出文字")
@@ -3384,7 +3404,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if err != nil {
 		return "", fmt.Errorf("读取直播策略失败: %w", err)
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
+	effective := policy.BuildEffective(industry, l1, l2, policy.ForPlan(l3, plan.ID))
 	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
@@ -3393,7 +3413,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if memoryErr != nil {
 		return "", fmt.Errorf("读取智能体记忆失败: %w", memoryErr)
 	}
-	memories = interactionlearning.MemoriesForPlan(memories, plan.ID)
+	memories = interactionlearning.ConfirmedMemoriesForPlan(memories, plan.ID)
 	if item.BusinessCoreOnly {
 		filtered := make([]model.AgentMemoryItem, 0, len(memories))
 		for _, memory := range memories {

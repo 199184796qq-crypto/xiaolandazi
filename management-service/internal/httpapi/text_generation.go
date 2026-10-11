@@ -124,6 +124,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	material := map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
 	if task.FactScope != nil {
 		material["用户已确认的长期纠正规则"] = task.FactScope.Corrections
+		material["商品必要事实与使用边界（用于约束，不要求逐条讲述）"] = generationFactView(task.FactScope.ProductBoundary)
 	}
 	fixed, _ := json.Marshal(material)
 	recent := []string{}
@@ -158,6 +159,12 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	}
 	packet["本段授权的商品称呼"] = links
 	applyCycleAnglePlanPacket(state, packet)
+	if state.Phase == "closing" {
+		// Phase names are execution labels, not a selling point for the audience.
+		delete(packet, "本次任务")
+		delete(packet, "讲述目的")
+		packet["本段沟通任务"] = "自然结束当前话题，按当前相关事实帮助观众理解选择；无需宣告环节名称。"
+	}
 	if hookMode || state.CurrentAnglePlan() != nil {
 		// Adopted work records provide bounded continuity without turning the
 		// last spoken paragraph into the next paragraph's reference example.
@@ -173,6 +180,15 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 			}
 		}
 		delete(packet, "近期已采用内容仅供避重")
+		wordings := []string{}
+		for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
+			if part.Task.Key == state.Task().Key && part.Task.ProductMode != "lecture" && state.CheckApprovedText(part.Selected, cycleVoiceText(part.Selected)) == nil {
+				wordings = append(wordings, cycleVoiceText(part.Selected))
+			}
+		}
+		if len(wordings) > 0 {
+			packet["近期正文（仅供文字避重，不是事实或范文）"] = tailText(strings.Join(wordings[max(0, len(wordings)-2):], "\n"), 1000)
+		}
 		packet["近期已采用任务记录（不代表已播放）"] = memory
 		// At most two same-direction paragraphs provide phrasing context only.
 		// They never become an additional source of product facts or promises.

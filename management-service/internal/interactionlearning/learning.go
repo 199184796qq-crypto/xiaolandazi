@@ -150,3 +150,19 @@ func numericID(value any) int64 {
 	}
 	return 0
 }
+
+// Legacy unbound business memories remain visible in history, but cannot supply
+// product facts to a selected plan. General expression style remains reusable.
+func ConfirmedMemoriesForPlan(items []model.AgentMemoryItem, planID int64) []model.AgentMemoryItem {
+	items = MemoriesForPlan(items, planID)
+	if planID <= 0 {
+		return items
+	}
+	out := make([]model.AgentMemoryItem, 0, len(items))
+	for _, item := range items {
+		if item.MemoryType == model.AgentMemoryTypeStyle || (item.CurrentVersion != nil && numericID(item.CurrentVersion.Structured["review_plan_id"]) == planID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}

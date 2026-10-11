@@ -62,3 +62,19 @@ func TestScopedCorrectionShadowsSharedRuleOnlyInsideItsPlan(t *testing.T) {
 		t.Fatal(a, b)
 	}
 }
+
+func TestFormalPlanDoesNotUseUnboundBusinessMemories(t *testing.T) {
+	items := []model.AgentMemoryItem{
+		{ID: 1, MemoryType: model.AgentMemoryTypeFact, CurrentVersion: &model.AgentMemoryVersion{ContentText: "旧油资料"}},
+		{ID: 2, MemoryType: model.AgentMemoryTypeStyle, CurrentVersion: &model.AgentMemoryVersion{ContentText: "称呼和语气"}},
+		{ID: 3, MemoryType: model.AgentMemoryTypeSemantic, CurrentVersion: &model.AgentMemoryVersion{Structured: map[string]any{"review_plan_id": float64(4)}}},
+		{ID: 4, MemoryType: model.AgentMemoryTypeFact, CurrentVersion: &model.AgentMemoryVersion{Structured: map[string]any{"review_plan_id": float64(5)}}},
+	}
+	got := ConfirmedMemoriesForPlan(items, 4)
+	if len(got) != 2 || got[0].ID != 2 || got[1].ID != 3 {
+		t.Fatal(got)
+	}
+	if len(ConfirmedMemoriesForPlan(items, 0)) != 2 {
+		t.Fatal("unbound legacy mode changed")
+	}
+}

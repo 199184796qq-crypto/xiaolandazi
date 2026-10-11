@@ -38,16 +38,52 @@ type Task struct {
 	UpdatedAt     string   `json:"updated_at,omitempty"`
 }
 type Policy struct {
-	Enabled   bool   `json:"enabled"`
-	Frequency string `json:"frequency"`
+	Enabled            bool   `json:"enabled"`
+	Frequency          string `json:"frequency"`
+	MinCycles          int    `json:"min_cycles,omitempty"`
+	MaxCycles          int    `json:"max_cycles,omitempty"`
+	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
 }
 
-func DefaultPolicy() Policy { return Policy{true, "normal"} }
+func DefaultPolicy() Policy { return Policy{Enabled: true, Frequency: "normal"} }
 func (p Policy) Validate() error {
 	if p.Frequency != "normal" && p.Frequency != "less" && p.Frequency != "more" {
 		return errors.New("讲解频率无效")
 	}
+	if p.MinCycles < 0 || p.MaxCycles < 0 || p.MinIntervalSeconds < 0 || p.MinCycles > 20 || p.MaxCycles > 20 || p.MinIntervalSeconds > 7200 {
+		return errors.New("出场轮数为1至20，间隔最长120分钟")
+	}
+	if (p.MinCycles == 0) != (p.MaxCycles == 0) || (p.MinCycles > 0 && p.MaxCycles < p.MinCycles) {
+		return errors.New("出场轮数范围无效")
+	}
+	if p.MinIntervalSeconds > 0 && p.MinIntervalSeconds < 60 {
+		return errors.New("主线播放间隔至少1分钟")
+	}
 	return nil
+}
+
+func (p Policy) Cadence(topics int) (int, int, int64) {
+	cycles, seconds := 4, 600
+	if topics >= 8 {
+		cycles, seconds = 2, 360
+	} else if topics >= 3 {
+		cycles, seconds = 3, 480
+	}
+	if p.Frequency == "less" {
+		cycles += 2
+		seconds += 240
+	} else if p.Frequency == "more" {
+		cycles = max(2, cycles-1)
+		seconds = max(360, seconds-120)
+	}
+	maximum := cycles + 2
+	if p.MinCycles > 0 {
+		cycles, maximum = p.MinCycles, p.MaxCycles
+	}
+	if p.MinIntervalSeconds > 0 {
+		seconds = p.MinIntervalSeconds
+	}
+	return cycles, maximum, int64(seconds) * 1000
 }
 
 type Library struct {
