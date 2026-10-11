@@ -146,15 +146,7 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if err != nil {
 		return 0, 0, err
 	}
-	reviewPrompt, reviewPromptSource, err := loadSellingPointWheelReviewPrompt()
-	if err != nil {
-		return 0, 0, err
-	}
-	expansionPrompt, expansionPromptSource, err := loadSellingPointWheelExpansionPrompt()
-	if err != nil {
-		return 0, 0, err
-	}
-	finalAuditPrompt, finalAuditPromptSource, err := loadSellingPointWheelFinalAuditPrompt()
+	finalAuditPrompt, _, err := loadSellingPointWheelFinalAuditPrompt()
 	if err != nil {
 		return 0, 0, err
 	}
@@ -165,7 +157,8 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if cfg.SellingPointProfileID == "" {
 		return 0, 0, errors.New("请先在后台配置卖点挖掘模型")
 	}
-	snapshot := strings.Join([]string{prompt, "# 第二阶段：事实终审母版\n\n" + reviewPrompt, "# 稀疏角度补全母版\n\n" + expansionPrompt, "# 最终事实裁决母版\n\n" + finalAuditPrompt}, "\n\n---\n\n")
+	// 两段式：一次挖掘 + 程序确定性删违规，不再走五阶段重审核。
+	snapshot := prompt
 	if handled, points, angles, reuseErr := s.reuseOrUpdateWheel(ctx, tenant, plan, actor, source.Facts, finalAuditPrompt, snapshot, cfg.SellingPointProfileID); handled {
 		return points, angles, reuseErr
 	}
@@ -180,150 +173,15 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if validation == nil {
 		validation = validateSellingPointPromptContract(result.Text, prompt)
 	}
-	finalResult := result
-	totalLatencyMS := result.LatencyMS
-	totalInputTokens := result.InputTokens
-	totalOutputTokens := result.OutputTokens
-	reviewRaw := ""
-	expansionRaw := ""
-	finalReviewRaw := ""
-	boundaryRepairRaw := ""
-	stageError := ""
-	coverageTargets := make([]sellingPointWheelCoverageTarget, 0)
-	boundaryViolations := make([]string, 0)
 	programRemovedBoundaryItems := make([]string, 0)
 	if validation == nil {
-		reviewUser := renderSellingPointWheelReviewRequest(source.Facts, canonical)
-		reportAnchorAnalysis(ctx, 60, "正在核对新生成卖点的事实依据")
-		reviewResult, reviewActual, reviewErr := s.completeAnchorStyleWorkbench(ctx, cfg.SellingPointProfileID, "selling_point_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: reviewPrompt}, {Role: "user", Content: reviewUser}}, 7000, false)
-		actual = append(actual, reviewActual...)
-		totalLatencyMS += reviewResult.LatencyMS
-		totalInputTokens += reviewResult.InputTokens
-		totalOutputTokens += reviewResult.OutputTokens
-		if reviewErr != nil {
-			validation = fmt.Errorf("卖点轮盘事实终审失败：%w", reviewErr)
-			stageError = validation.Error()
-		} else {
-			reviewRaw = reviewResult.Text
-			finalResult = reviewResult
-			reviewCanonical, reviewPoints, reviewAngles, reviewValidation := normalizeAnchorStyleSellingPointWheelJSON(reviewResult.Text)
-			if reviewValidation == nil {
-				reviewValidation = validateSellingPointPromptContract(reviewResult.Text, reviewPrompt)
-			}
-			if reviewValidation != nil {
-				validation = fmt.Errorf("卖点轮盘事实终审返回无效：%w", reviewValidation)
-				stageError = validation.Error()
-				if reviewCanonical != "" {
-					canonical = reviewCanonical
-				}
+		if violations := sellingPointFactBoundaryViolations(canonical, source.Facts); len(violations) > 0 {
+			filteredCanonical, removed, filteredPoints, filteredAngles, filterErr := removeSellingPointFactBoundaryViolations(canonical, source.Facts)
+			programRemovedBoundaryItems = removed
+			if filterErr != nil {
+				validation = fmt.Errorf("卖点轮盘仍含事实正文未提供的高风险表达且无法安全删除：%w", filterErr)
 			} else {
-				canonical, points, angles = reviewCanonical, reviewPoints, reviewAngles
-			}
-		}
-	}
-	if validation == nil {
-		coverageTargets, err = sellingPointWheelCoverageTargets(canonical, 5)
-		if err != nil {
-			validation = fmt.Errorf("检查卖点角度覆盖失败：%w", err)
-			stageError = validation.Error()
-		}
-	}
-	if validation == nil && len(coverageTargets) > 0 {
-		reportAnchorAnalysis(ctx, 74, "正在补充事实支持的缺失角度")
-		expansionUser := renderSellingPointWheelExpansionRequest(source.Facts, canonical, coverageTargets)
-		expansionResult, expansionActual, expansionErr := s.completeAnchorStyleWorkbench(ctx, cfg.SellingPointProfileID, "selling_point_angle_expansion", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: expansionPrompt}, {Role: "user", Content: expansionUser}}, 7000, false)
-		actual = append(actual, expansionActual...)
-		totalLatencyMS += expansionResult.LatencyMS
-		totalInputTokens += expansionResult.InputTokens
-		totalOutputTokens += expansionResult.OutputTokens
-		if expansionErr != nil {
-			validation = fmt.Errorf("卖点轮盘稀疏角度补全失败：%w", expansionErr)
-			stageError = validation.Error()
-		} else {
-			expansionRaw = expansionResult.Text
-			finalResult = expansionResult
-			expansionCanonical, expansionPoints, expansionAngles, expansionValidation := normalizeAnchorStyleSellingPointWheelJSON(expansionResult.Text)
-			if expansionValidation == nil {
-				expansionValidation = validateSellingPointPromptContract(expansionResult.Text, expansionPrompt)
-			}
-			if expansionValidation != nil {
-				validation = fmt.Errorf("卖点轮盘稀疏角度补全返回无效：%w", expansionValidation)
-				stageError = validation.Error()
-				if expansionCanonical != "" {
-					canonical = expansionCanonical
-				}
-			} else {
-				canonical, points, angles = expansionCanonical, expansionPoints, expansionAngles
-			}
-		}
-	}
-	if validation == nil {
-		finalReviewUser := renderSellingPointWheelFinalAuditRequest(source.Facts, canonical, nil)
-		reportAnchorAnalysis(ctx, 86, "正在完成新卖点池的最后核对")
-		finalReviewResult, finalReviewActual, finalReviewErr := s.completeAnchorStyleWorkbench(ctx, cfg.SellingPointProfileID, "selling_point_final_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: finalAuditPrompt}, {Role: "user", Content: finalReviewUser}}, 7000, false)
-		actual = append(actual, finalReviewActual...)
-		totalLatencyMS += finalReviewResult.LatencyMS
-		totalInputTokens += finalReviewResult.InputTokens
-		totalOutputTokens += finalReviewResult.OutputTokens
-		if finalReviewErr != nil {
-			validation = fmt.Errorf("卖点轮盘最终事实裁决失败：%w", finalReviewErr)
-			stageError = validation.Error()
-		} else {
-			finalReviewRaw = finalReviewResult.Text
-			finalResult = finalReviewResult
-			finalCanonical, finalPoints, finalAngles, finalValidation := normalizeAnchorStyleSellingPointWheelJSON(finalReviewResult.Text)
-			if finalValidation == nil {
-				finalValidation = validateSellingPointPromptContract(finalReviewResult.Text, finalAuditPrompt)
-			}
-			if finalValidation != nil {
-				validation = fmt.Errorf("卖点轮盘最终事实裁决返回无效：%w", finalValidation)
-				stageError = validation.Error()
-				if finalCanonical != "" {
-					canonical = finalCanonical
-				}
-			} else {
-				canonical, points, angles = finalCanonical, finalPoints, finalAngles
-				boundaryViolations = sellingPointFactBoundaryViolations(canonical, source.Facts)
-			}
-		}
-	}
-	if validation == nil && len(boundaryViolations) > 0 {
-		repairUser := renderSellingPointWheelFinalAuditRequest(source.Facts, canonical, boundaryViolations)
-		repairResult, repairActual, repairErr := s.completeAnchorStyleWorkbench(ctx, cfg.SellingPointProfileID, "selling_point_final_boundary_repair", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: finalAuditPrompt}, {Role: "user", Content: repairUser}}, 7000, false)
-		actual = append(actual, repairActual...)
-		totalLatencyMS += repairResult.LatencyMS
-		totalInputTokens += repairResult.InputTokens
-		totalOutputTokens += repairResult.OutputTokens
-		if repairErr != nil {
-			validation = fmt.Errorf("卖点轮盘事实边界修复失败：%w", repairErr)
-			stageError = validation.Error()
-		} else {
-			boundaryRepairRaw = repairResult.Text
-			finalResult = repairResult
-			repairCanonical, repairPoints, repairAngles, repairValidation := normalizeAnchorStyleSellingPointWheelJSON(repairResult.Text)
-			if repairValidation == nil {
-				repairValidation = validateSellingPointPromptContract(repairResult.Text, finalAuditPrompt)
-			}
-			if repairValidation != nil {
-				validation = fmt.Errorf("卖点轮盘事实边界修复返回无效：%w", repairValidation)
-				stageError = validation.Error()
-				if repairCanonical != "" {
-					canonical = repairCanonical
-				}
-			} else {
-				canonical, points, angles = repairCanonical, repairPoints, repairAngles
-				boundaryViolations = sellingPointFactBoundaryViolations(canonical, source.Facts)
-				if len(boundaryViolations) > 0 {
-					filteredCanonical, removed, filteredPoints, filteredAngles, filterErr := removeSellingPointFactBoundaryViolations(canonical, source.Facts)
-					programRemovedBoundaryItems = removed
-					if filterErr != nil {
-						validation = fmt.Errorf("卖点轮盘仍含事实正文未提供的高风险表达且无法安全删除：%w", filterErr)
-						stageError = validation.Error()
-					} else {
-						canonical, points, angles = filteredCanonical, filteredPoints, filteredAngles
-						boundaryViolations = sellingPointFactBoundaryViolations(canonical, source.Facts)
-					}
-				}
+				canonical, points, angles = filteredCanonical, filteredPoints, filteredAngles
 			}
 		}
 	}
@@ -338,21 +196,13 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if err != nil || latest.Facts != source.Facts {
 		return 0, 0, errors.New("初始化期间正式事实已变化，请重新初始化；原始返回已记录")
 	}
-	promptSnapshot := strings.Join([]string{prompt, "# 第二阶段：事实终审母版\n\n" + reviewPrompt, "# 稀疏角度补全母版\n\n" + expansionPrompt, "# 最终事实裁决母版\n\n" + finalAuditPrompt}, "\n\n---\n\n")
-	promptSourceSnapshot := strings.Join([]string{promptSource, reviewPromptSource, expansionPromptSource, finalAuditPromptSource}, " | ")
 	rawBundle, _ := json.MarshalIndent(map[string]any{
 		"extraction_raw_response":        result.Text,
-		"review_raw_response":            reviewRaw,
-		"expansion_raw_response":         expansionRaw,
-		"final_review_raw_response":      finalReviewRaw,
-		"boundary_repair_raw_response":   boundaryRepairRaw,
-		"coverage_targets":               coverageTargets,
-		"boundary_violations":            boundaryViolations,
 		"program_removed_boundary_items": programRemovedBoundaryItems,
-		"pipeline_error":                 stageError,
+		"pipeline":                       "two-stage",
 	}, "", "  ")
 	trace := traceAnchorStyleWorkbenchMessages(actual)
-	wheel, err := s.store.SaveLiveSellingPointWheel(ctx, tenant, plan, actor, model.SaveLiveSellingPointWheelInput{Status: status, ExtractionPromptMD: promptSnapshot, PromptSource: promptSourceSnapshot, FactPackageSHA256: derivedHash(source.Facts), OriginalWheelJSON: canonical, RequestSystem: trace.System, RequestUser: trace.User, RawResponse: string(rawBundle), Provider: finalResult.Provider, Model: finalResult.Model, LatencyMS: totalLatencyMS, InputTokens: totalInputTokens, OutputTokens: totalOutputTokens})
+	wheel, err := s.store.SaveLiveSellingPointWheel(ctx, tenant, plan, actor, model.SaveLiveSellingPointWheelInput{Status: status, ExtractionPromptMD: prompt, PromptSource: promptSource, FactPackageSHA256: derivedHash(source.Facts), OriginalWheelJSON: canonical, RequestSystem: trace.System, RequestUser: trace.User, RawResponse: string(rawBundle), Provider: result.Provider, Model: result.Model, LatencyMS: result.LatencyMS, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens})
 	if err != nil {
 		return 0, 0, errors.New("轮盘保存失败")
 	}

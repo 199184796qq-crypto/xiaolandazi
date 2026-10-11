@@ -744,16 +744,20 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if state.TextModel != nil && cycleAnglePlanEnabled() {
 		s.ensureCycleAnglePlan(ctx, state, *state.TextModel)
 	}
-	cached := s.cachedCycleCandidate(ctx, state, b)
+	reuseEntry := (*anchorcycle.SpeechPoolEntry)(nil)
+	if state.ShouldReuse() {
+		reuseEntry = state.PickReuse(state.Task().Key)
+	}
 	reportCycleProgress(ctx, 25)
 	var text, rawText string
 	var eventIDs []string
 	var generationMS int64
 	var p0PatchError string
 	patch := state.P0PendingRepair
-	if cached != nil {
-		text = cached.Text
-		prompt = "" // No model request was sent for a cache hit.
+	if reuseEntry != nil {
+		text = reuseEntry.Text
+		state.MarkSpeechReused(reuseEntry)
+		prompt = "" // 话术池复用命中，不调用模型。
 	} else if state.Config.TextProfileID != "" {
 		state.Busy, state.Status, state.Error = true, "running", ""
 		if err = s.anchorCycles.Save(ctx, state); err != nil {
@@ -853,8 +857,8 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		candidate.P0RewriteNumber = patch.RewriteNumber
 		candidate.ScoreScope = "p0_local_patch_assembled"
 	}
-	if cached != nil {
-		candidate.CacheID, candidate.OutputText, candidate.ScoreScope = cached.ID, cached.OutputText, "cached_text_rechecked"
+	if reuseEntry != nil {
+		candidate.OutputText, candidate.ScoreScope = reuseEntry.Text, "speech_pool_reused"
 	} else if state.Config.RepairPunctuation {
 		postprocessStarted := time.Now()
 		candidate.OutputText, candidate.PunctuationEdits = anchorcycle.RepairPunctuation(text, state.StyleMD, state.Config.MaxChars)

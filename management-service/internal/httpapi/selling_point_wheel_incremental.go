@@ -145,6 +145,10 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 	if err = validateSellingPointPromptContract(canonical, contract); err != nil {
 		return true, 0, 0, err
 	}
+	if asset.ExtractionPromptMD != promptSnapshot {
+		reportAnchorAnalysis(ctx, 35, "卖点挖掘母版已更新，重新完整生成卖点与角度池")
+		return false, 0, 0, nil
+	}
 	if asset.FactPackageSHA256 == derivedHash(facts) && len(sellingPointFactBoundaryViolations(canonical, facts)) == 0 {
 		reportAnchorAnalysis(ctx, 94, "现有卖点和角度池未变化，直接复用已确认内容")
 		return true, points, angles, nil

@@ -67,6 +67,9 @@ type Config struct {
 	BodyMax                int          `json:"body_max,omitempty"`
 	CombinationGap         int          `json:"combination_gap"`
 	MaxCycles              int          `json:"max_cycles"` // Zero means until explicitly stopped.
+	FreshWindowMinutes     int          `json:"fresh_window_minutes"` // 开播前 N 分钟全实时；0 表示不启用话术复用
+	ReuseEveryN            int          `json:"reuse_every_n"`        // 混合期每 N 段 1 段实时，其余复用旧话术；0 或 1 表示每段都实时
+	MaxReuse               int          `json:"max_reuse"`            // 单段话术最多复用次数，达到后淘汰
 	TTS                    *VoiceConfig `json:"tts,omitempty"`
 	ComplianceScope        string       `json:"compliance_scope,omitempty"`
 }
@@ -152,6 +155,12 @@ type Use struct {
 	LastIndex   int    `json:"last_index"`
 	LastSummary string `json:"last_summary,omitempty"`
 }
+type SpeechPoolEntry struct {
+	Text       string `json:"text"`
+	Key        string `json:"key"`
+	ReuseCount int    `json:"reuse_count"`
+	LastIndex  int    `json:"last_index"`
+}
 type State struct {
 	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
 	FinalContentReviewContextSHA string                         `json:"final_content_review_context_sha256,omitempty"`
@@ -210,6 +219,7 @@ type State struct {
 	Attempts                     []Candidate                    `json:"attempts"`
 	Accepted                     []Segment                      `json:"accepted"`
 	Used                         map[string]Use                 `json:"used_combinations"`
+	SpeechPool                   []SpeechPoolEntry              `json:"speech_pool,omitempty"`
 	RecentSummaries              []string                       `json:"recent_summaries"`
 	StyleWindow                  string                         `json:"style_window"`
 	PendingFeedback              string                         `json:"pending_feedback"`
@@ -597,6 +607,9 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	s.RegisterLectureTrack(selected, task, s.Phase)
 	if !wasLecture {
 		s.recordProductAdoption(task, spokenCandidate(selected))
+		if s.Phase == "body" && task.ProductMode != "auxiliary" {
+			s.AddToSpeechPool(spokenCandidate(selected), task.Key)
+		}
 	}
 	if wasLecture {
 		s.Lectures.Active = nil
