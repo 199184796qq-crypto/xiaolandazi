@@ -2160,7 +2160,11 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			if err != nil {
 				return "", err
 			}
-			answerSystemPrompt += "\n\n" + string(template)
+			if item.BusinessCoreOnly {
+				answerSystemPrompt = string(template)
+			} else {
+				answerSystemPrompt += "\n\n" + string(template)
+			}
 		}
 		// Honor the configured reuse policy. Business protocol, selected tasks
 		// and actual history are all part of the cache identity.
@@ -3467,10 +3471,14 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
 	if item.BusinessPlan != nil {
+		productContext, err := w.interactionProductContext(ctx, session, plan.ID, item.BusinessCoreOnly)
+		if err != nil {
+			return "", err
+		}
 		encoded, _ := json.Marshal(item.BusinessPlan)
 		// The full source context is for planning and rule checks, not a
 		// paragraph template for the speech composer to copy wholesale.
-		dynamicFactsPrompt = "\n【本次业务计划：仅回答选定范围】\n" + string(encoded)
+		dynamicFactsPrompt = "\n【商品必要事实与使用边界：用于识别对象，不是必讲清单】\n" + productContext + "\n【本次业务计划：仅回答选定范围】\n" + string(encoded)
 		styleMemories := []model.AgentMemoryItem{}
 		if !item.BusinessCoreOnly {
 			for _, memory := range memories {
@@ -3483,7 +3491,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		materialPrompt = ""
 		planContext = ""
 		if item.BusinessCoreOnly {
-			data := map[string]any{"answer_mode": "business_core_only", "question": item.SampleQuestions, "business_plan": item.BusinessPlan, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction}
+			data := map[string]any{"answer_mode": "business_core_only", "question": item.SampleQuestions, "product_context": productContext, "business_plan": item.BusinessPlan, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction}
 			encoded, err := json.Marshal(data)
 			return string(encoded), err
 		}
