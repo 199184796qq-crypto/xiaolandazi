@@ -62,7 +62,7 @@ func TestFinalMainlineContentCrossCategoryProvider(t *testing.T) {
 		}
 	}()
 	for _, f := range cases {
-		task := anchorcycle.Task{Key: "offline-current-case", SellingPoint: "围绕当前商品和要求说明", AllowedLinksJSON: `["1"]`, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{ID: "program-fact", Products: []string{"1"}, Data: f.Facts}}, ProductBoundary: []anchorcycle.HookFact{{ID: "program-identity", Products: []string{"1"}, Data: f.Identity}}, Corrections: f.Corrections}}
+		task := anchorcycle.Task{Key: "offline-current-case", SellingPoint: "围绕当前商品和要求说明", Angle: "按本次确认资料与要求说明", AllowedLinksJSON: `["1"]`, FactScope: &anchorcycle.TaskFactScope{Facts: []anchorcycle.HookFact{{ID: "program-fact", Products: []string{"1"}, Data: f.Facts}}, ProductBoundary: []anchorcycle.HookFact{{ID: "program-identity", Products: []string{"1"}, Data: f.Identity}}, Corrections: f.Corrections}}
 		state, e := anchorcycle.New([]anchorcycle.Task{task}, anchorcycle.Config{Rolling: true, MaxChars: 220, BodySegments: 3})
 		if e != nil {
 			t.Fatal(e)
