@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -115,6 +116,7 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
 		return
 	}
+	s.recordInteractionReplay(r, tenantID, roomID, input.PlanID, "simulation", result)
 	response := map[string]any{"question": result.Question, "reply": result.Reply, "execution_mode": result.ExecutionMode, "plan_name": result.PlanName, "user_layer_version": result.UserLayerVersion, "plan_id": input.PlanID}
 	if input.IncludeAnswerOutline {
 		response["answer_outline"] = result.AnswerOutline
@@ -269,4 +271,16 @@ func (s *Server) completeRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.copyCoreResponse(w, resp)
+}
+
+// recordInteractionReplay 把一次互动（问题→意图→回答）落库，供回测使用。
+// 记录失败不阻断主流程，静默忽略。
+func (s *Server) recordInteractionReplay(r *http.Request, tenantID, roomID, planID int64, origin string, result decisionexecutor.SimulationOutput) {
+	var intentJSON []byte
+	if result.AnswerOutline != nil {
+		intentJSON, _ = json.Marshal(result.AnswerOutline)
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	_ = s.store.RecordInteractionReplay(persistCtx, tenantID, roomID, planID, origin, result.Question, result.Reply, result.ExecutionMode, result.UserLayerVersion, intentJSON, result.AnswerOutlineError)
 }

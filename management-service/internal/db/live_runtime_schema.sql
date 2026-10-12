@@ -1774,7 +1774,25 @@ CREATE TABLE IF NOT EXISTS live_plan_analysis_assets (
  plan_id BIGINT UNSIGNED NOT NULL,
  asset_kind VARCHAR(64) NOT NULL,
  input_sha256 CHAR(64) NOT NULL,
- result_json MEDIUMTEXT NOT NULL,
- created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
- PRIMARY KEY(tenant_id,plan_id,asset_kind,input_sha256)
+  result_json MEDIUMTEXT NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY(tenant_id,plan_id,asset_kind,input_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_interaction_replays (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    origin VARCHAR(32) NOT NULL DEFAULT 'simulation',
+    question TEXT NOT NULL,
+    intent_json JSON NULL,
+    reply TEXT NOT NULL,
+    execution_mode VARCHAR(16) NOT NULL DEFAULT 'intent',
+    user_layer_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    outline_error TEXT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_interaction_replay_scope (tenant_id, room_id, plan_id, created_at),
+    KEY idx_interaction_replay_origin (origin, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
