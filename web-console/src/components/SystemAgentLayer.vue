@@ -4541,14 +4541,12 @@ async function sendLiveRoomSimulation(value: string) {
     }
 
     const planText = matched.plan_name || '未绑定方案'
-    const versionText = matched.user_layer_version ? 'V' + matched.user_layer_version : '无生效用户层版本'
     const modeText = matched.execution_mode || 'intent'
     pushAgentMessage(
       'live-room',
       '测试结果｜模拟观众问题\n' +
         '问题：' + matched.question + '\n' +
         '当前方案：' + planText + '\n' +
-        '用户层：' + versionText + '\n' +
         '执行模式：' + modeText + '\n' +
         '最终回复：' + matched.reply + '\n' +
         '状态：仅测试，未播音',

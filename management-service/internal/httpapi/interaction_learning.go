@@ -18,6 +18,7 @@ import (
 	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/policy"
 )
 
 type interactionSimulationItem struct {
@@ -183,7 +184,12 @@ func (s *Server) interactionLearningSimulate(w http.ResponseWriter, r *http.Requ
 		writeError(w, 500, err.Error())
 		return
 	}
-	packet, _ := json.Marshal(map[string]any{"方案": plan, "商品卡": activeProducts, "事实依据完整记录": activeFacts, "福利": activeBenefits, "已采用纠正": interactionlearning.MemoriesForPlan(memories, plan.ID)})
+	effective, err := policy.LoadGeneration()
+	if err != nil {
+		writeError(w, 500, "读取有效P0失败")
+		return
+	}
+	packet, _ := json.Marshal(map[string]any{"方案": plan, "商品卡": activeProducts, "事实依据完整记录": activeFacts, "福利": activeBenefits, "已采用纠正": interactionlearning.GenerationMemories(memories, tenantID, roomID, plan.ID), "有效P0": effective.PromptText})
 	roomRef := roomID
 	invocation := s.beginAISingleUse(ctx, actor, &roomRef, "interaction_learning_simulation", map[string]any{"plan_id": plan.ID})
 	response, err := s.speechGateway().Complete(ctx, agentgateway.Request{Stage: "interaction_learning", Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(packet)}}, MaxTokens: 3500, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, Timeout: 40 * time.Second})

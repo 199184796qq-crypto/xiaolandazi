@@ -453,13 +453,14 @@ func (s *Server) roomPolicyContext(
 	for index := range versions {
 		versions[index] = customerSafeLivePolicyVersion(versions[index])
 	}
-	industryCode, l1, l2, l3, err := s.store.LoadLivePolicyLayers(r.Context(), tenantID, roomID)
+	// Versions remain available for historical inspection, but are not the
+	// room's live business rules. Those belong to its selected saved agent plan.
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return model.LiveRoomPolicyContext{}, err
 	}
-	effective := policy.BuildEffective(industryCode, l1, l2, l3)
 	return model.LiveRoomPolicyContext{
-		IndustryCode: industryCode,
+		IndustryCode: effective.IndustryCode,
 		Effective:    customerSafeEffectivePolicy(effective),
 		Versions:     versions,
 		L3Scope:      &scope,
@@ -601,12 +602,11 @@ func (s *Server) liveRoomEffectivePolicy(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "直播间不存在")
 		return
 	}
-	industryCode, l1, l2, l3, err := s.store.LoadLivePolicyLayers(r.Context(), tenantID, roomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取有效策略失败")
 		return
 	}
-	effective := policy.BuildEffective(industryCode, l1, l2, l3)
 	if actor.Role == "customer" {
 		writeJSON(w, http.StatusOK, customerSafeEffectivePolicy(effective))
 		return

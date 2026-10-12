@@ -137,18 +137,12 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	industryCode, l1, l2, l3, err := s.store.LoadLivePolicyLayers(
-		r.Context(), tenantID, roomID,
-	)
+	effectivePolicy, err := policy.LoadGeneration()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播间有效策略失败")
 		return
 	}
-	effectivePolicy := policy.BuildEffective(industryCode, l1, l2, l3)
 	effectivePolicyPrompt := effectivePolicy.PromptText
-	if !actor.IsInternalStaff() {
-		effectivePolicyPrompt = customerSafePolicyPrompt(effectivePolicy)
-	}
 	runtimeInstruction := s.store.AgentPromptValue(r.Context(), "policy.runtime.execution", "")
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effectivePolicyPrompt = strings.TrimSpace(runtimeInstruction + "\n\n" + effectivePolicyPrompt)
@@ -162,7 +156,7 @@ func (s *Server) liveAgentChat(w http.ResponseWriter, r *http.Request) {
 	if p, e := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); e == nil {
 		planID = p.ID
 	}
-	memories = interactionlearning.MemoriesForPlan(memories, planID)
+	memories = interactionlearning.GenerationMemories(memories, tenantID, roomID, planID)
 	if memoryPrompt := agentmemory.Prompt(memories); memoryPrompt != "" {
 		effectivePolicyPrompt = strings.TrimSpace(effectivePolicyPrompt + "\n\n" + memoryPrompt)
 	}

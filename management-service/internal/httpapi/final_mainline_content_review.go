@@ -16,7 +16,9 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	facts, guidance := generationMaterialViews(state.HookFacts())
 	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "当前相关事实": facts, "相关事实的表达约束及举例": guidance, "用户已确认要求": state.EffectiveCorrections(), "前次P0审核结果": priorP0ReviewView(state, c)}
 	if scope := state.Task().FactScope; scope != nil {
-		packet["商品必要事实与适用边界"] = generationFactView(scope.ProductBoundary)
+		boundary, boundaryGuidance := generationMaterialViews(scope.ProductBoundary)
+		packet["商品必要事实与适用边界"] = boundary
+		packet["商品必要事实的表达约束"] = boundaryGuidance
 	}
 	if state.Task().ProductMode == "lecture" {
 		packet["本次讲解资料"] = state.Task().LectureFacts

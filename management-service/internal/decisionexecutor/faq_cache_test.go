@@ -111,9 +111,6 @@ func TestFAQProcessRoomInvalidatesDependenciesAndIsolatesRooms(t *testing.T) {
 		{"fact", func(s *faqTestStore) {
 			s.facts = []model.LiveAgentPlanFact{{Status: "active", Key: "物流", Value: "按页面说明发货", VersionNo: 2}}
 		}},
-		{"rules", func(s *faqTestStore) {
-			s.layer = &model.LivePolicyVersion{ID: 8, VersionNo: 2, SourceText: "新规则"}
-		}},
 		{"policy revision", func(s *faqTestStore) { s.policy.SystemRevision++ }},
 	}
 	for _, tt := range tests {

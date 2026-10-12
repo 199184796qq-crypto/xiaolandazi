@@ -918,7 +918,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			candidate.RetryFeedback = ""
 		}
 	}
-	s.auditFinalMainlineContent(ctx,state,&candidate)
+	s.auditFinalMainlineContent(ctx, state, &candidate)
 	reviewState := *state
 	adopted, err := state.AddCandidate(candidate, b)
 	for _, segment := range state.Accepted {

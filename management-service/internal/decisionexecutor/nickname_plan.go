@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
@@ -22,7 +23,7 @@ type nicknameAliasCacheEntry struct {
 	Expires time.Time
 }
 type nicknamePlanInput struct {
-	Index   int    `json:"index"`
+	Index   int    `json:"-"` // Historical fixture only; never sent to the model.
 	RawName string `json:"raw_name"`
 	Chars   int    `json:"char_count"`
 	Digits  int    `json:"max_continuous_digits"`
@@ -147,6 +148,23 @@ func decodeNicknamePlan(raw string, count int) ([]string, error) {
 	return aliases, nil
 }
 
+func decodeNicknameAddress(raw string) (string, error) {
+	address := strings.TrimSpace(raw)
+	if strings.HasPrefix(address, "{") {
+		var value struct {
+			Address string `json:"address"`
+		}
+		if json.Unmarshal([]byte(address), &value) != nil {
+			return "", fmt.Errorf("称呼内容未返回")
+		}
+		address = strings.TrimSpace(value.Address)
+	}
+	if address == "" || strings.ContainsAny(address, "\r\n") || utf8.RuneCountInString(address) > 24 {
+		return "", fmt.Errorf("称呼内容为空或过长")
+	}
+	return nicknameModelName(address), nil
+}
+
 // A short, separate planning task uses the central system-model role. It
 // chooses addresses through prompts, never a nickname keyword blacklist or a
 // post-generation semantic veto. Failures use neutral addresses and continue.
@@ -167,6 +185,14 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 		return
 	}
 	mother = append(append(policy, []byte("\n\n")...), mother...)
+	p0, e := interactionpolicy.Read("compliance/L1/p0-hard-block.md")
+	if e != nil {
+		return
+	}
+	if _, e = contentguard.Compile(string(p0)); e != nil {
+		return
+	}
+	mother = append(append(p0, []byte("\n\n")...), mother...)
 	identity := ""
 	if resolver, ok := w.agent.(interface {
 		ModelRoleIdentity(context.Context, string) (string, error)
@@ -212,27 +238,27 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 	if len(pending) == 0 {
 		return
 	}
-	packet, _ := json.Marshal(map[string]any{"names": pending, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms})
 	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	response, e := w.agent.Complete(callCtx, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, MaxTokens: 1200, Timeout: 8 * time.Second})
-	var aliases []string
-	if e == nil {
-		aliases, e = decodeNicknamePlan(response.Text, len(pending))
-	}
-	if e != nil {
-		log.Printf("nickname plan fallback tenant=%d room=%d decision=%s reason=planning_unavailable", s.TenantID, s.RoomID, item.ID)
-		return
-	}
-	w.addressMu.Lock()
-	defer w.addressMu.Unlock()
-	if len(w.nicknameAliases)+len(aliases) > 512 {
-		w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
-	}
-	for i, alias := range aliases {
-		alias = nicknameModelName(alias)
+	for i, name := range pending {
+		// One nickname per call: failures never shift another person's alias.
+		packet, _ := json.Marshal(map[string]any{"name": name, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms})
+		response, err := w.agent.Complete(callCtx, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 160, Timeout: 8 * time.Second})
+		alias := ""
+		if err == nil {
+			alias, err = decodeNicknameAddress(response.Text)
+		}
+		if err != nil {
+			log.Printf("nickname plan fallback tenant=%d room=%d decision=%s reason=planning_unavailable", s.TenantID, s.RoomID, item.ID)
+			continue
+		}
 		pos := positions[i]
 		item.PromptNicknames[pos] = alias
+		w.addressMu.Lock()
+		if len(w.nicknameAliases) >= 512 {
+			w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
+		}
 		w.nicknameAliases[keys[pos]] = nicknameAliasCacheEntry{Address: alias, Expires: now.Add(30 * time.Minute)}
+		w.addressMu.Unlock()
 	}
 }

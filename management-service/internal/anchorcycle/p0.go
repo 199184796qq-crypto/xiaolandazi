@@ -117,6 +117,23 @@ func (s *State) ApplyP0Context(c *Candidate, review contentguard.ContextReview) 
 	return nil
 }
 
+// Production content protocol: one paragraph, one verdict, program-owned IDs.
+func (s *State) ApplyP0ContextContent(c *Candidate, review contentguard.ContextReview) error {
+	if c.P0Report == nil || c.P0CheckedInputSHA != s.candidateP0Input(*c) {
+		return errors.New("语境复核候选正文或规则已经变化")
+	}
+	r, err := contentguard.ResolveContextContent(*c.P0Report, spokenCandidate(*c), review)
+	if err != nil {
+		return err
+	}
+	c.P0Report = &r
+	c.P0ApprovedTextSHA = ""
+	if r.Passed {
+		c.P0ApprovedTextSHA = ProductDigest(spokenCandidate(*c))
+	}
+	return nil
+}
+
 func (s *State) CheckP0Voice(text string) error {
 	if s.P0PolicyMD == "" {
 		return errors.New("本场未加载P0规则，不能输出声音，请开始新场")

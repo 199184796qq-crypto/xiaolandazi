@@ -149,7 +149,36 @@ func (s *Server) lectureLibraryGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "读取讲解库失败")
 		return
 	}
-	writeJSON(w, 200, lib)
+	response := map[string]any{"tasks": lib.Tasks, "policy": lib.Policy, "fingerprint": lib.Fingerprint}
+	if room, e := strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64); e == nil && room > 0 && s.anchorCycles != nil {
+		if bound, e := s.store.GetLiveAgentPlanForRoom(r.Context(), tenant, room); e == nil && bound.ID == plan {
+			progress := map[string]any{"running": false}
+			states, e := s.anchorCycles.RoomStates(r.Context(), tenant, room)
+			if e != nil {
+				progress["unavailable"] = true
+			}
+			if e == nil {
+				for _, state := range states {
+					if state.PlanID != plan || state.Surface != "formal_live" || state.Lectures == nil {
+						continue
+					}
+					x := state.Lectures
+					var versionID, sessionID int64
+					if state.Delivery != nil {
+						versionID, sessionID = state.Delivery.VersionID, state.Delivery.RuntimeSessionID
+					}
+					count := 0
+					for _, use := range x.Uses {
+						count += use.Count
+					}
+					progress = map[string]any{"running": true, "version_id": versionID, "session_id": sessionID, "loaded_fingerprint": x.Library.Fingerprint, "completed_cycles": x.CompletedCycles, "elapsed_mainline_seconds": x.PlayedMS / 1000, "since_last_cycles": x.CompletedCycles - x.LastCycle, "since_last_seconds": (x.PlayedMS - x.LastMS) / 1000, "target_cycles": x.NextCycles, "played_count": count, "scheduled": x.ReservedTopic > 0, "enabled": x.Library.Policy.Enabled}
+					break
+				}
+			}
+			response["runtime"] = progress
+		}
+	}
+	writeJSON(w, 200, response)
 }
 func (s *Server) lectureLibraryPolicy(w http.ResponseWriter, r *http.Request) {
 	_, tenant, plan, ok := s.lectureScope(w, r, true)
