@@ -594,6 +594,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/selling-point-wheel/{assetID}/confirm", s.anchorStyleWorkbenchSellingPointWheelConfirm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/selling-point-wheel/test", s.anchorStyleWorkbenchSellingPointWheelTest)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/speech-miner/guide", s.speechMinerGuide)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-supplement/chat", s.speechMinerGuide)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/fact-name-suggestion", s.suggestLiveAgentPlanFactName)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/speech-miner/confirm", s.speechMinerConfirm)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/lecture-tasks", s.lectureLibraryGet)

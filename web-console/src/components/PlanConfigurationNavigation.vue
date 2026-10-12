@@ -28,6 +28,7 @@ const sections: { key: PlanConfigurationSection; label: string }[] = [
 ]
 const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
+  { mode: 'supplement', label: '商品资料补充' },
   { mode: 'benefits', label: '活动福利' },
   { mode: 'knowledge', label: '事实依据' },
   { mode: 'miner', label: '任务讲解' },

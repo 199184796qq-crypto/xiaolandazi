@@ -39,6 +39,7 @@ import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
 import LectureTasksPanel from '../components/LectureTasksPanel.vue'
+import ProductSupplementChat from '../components/ProductSupplementChat.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
 import type { PreviewStreamEvent } from '../agent/previewStream'
@@ -241,6 +242,7 @@ function selectLiveStrategyRoom(roomID: number) {
 type StrategyMode =
   | 'script'
   | 'products'
+  | 'supplement'
   | 'benefits'
   | 'knowledge'
   | 'memory'
@@ -2081,6 +2083,7 @@ const roomPolicyActive = computed(
 
 const activeModeLabel = computed(() => {
   if (activeMode.value === 'products') return '商品链接'
+  if (activeMode.value === 'supplement') return '商品资料补充'
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
   if (activeMode.value === 'memory') return '互动策略'
@@ -6187,6 +6190,10 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" @updated="onInteractionFactsUpdated" />
+        </section>
+
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
           <div class="strategy-v2-section-head">
             <div>
@@ -8451,7 +8458,7 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-else class="strategy-agent-workspace">
+        <section v-else-if="activeMode !== 'supplement'" class="strategy-agent-workspace">
           <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
           <div class="strategy-agent-context-card">
             <span class="section-kicker">CURRENT CONTEXT</span>
@@ -11052,7 +11059,7 @@ onBeforeUnmount(() => {
 .plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
 .plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
 .plan-configuration-layout .strategy-workflow-content{margin-top:18px;border:1px solid #e5e8fd!important;border-radius:17px;background:#fff!important;box-shadow:0 8px 24px #8499eb08!important;overflow:visible}
-.plan-configuration-layout:is(.workflow-mode-products,.workflow-mode-benefits,.workflow-mode-knowledge,.workflow-mode-miner) .strategy-workflow-content{margin-top:0;border-top:0!important;border-radius:0 0 17px 17px}
+.plan-configuration-layout:is(.workflow-mode-products,.workflow-mode-supplement,.workflow-mode-benefits,.workflow-mode-knowledge,.workflow-mode-miner) .strategy-workflow-content{margin-top:0;border-top:0!important;border-radius:0 0 17px 17px}
 .plan-configuration-layout .strategy-v2-workspace{margin:0;padding:22px 24px;border:0;border-radius:17px;background:#fff!important;box-shadow:none}
 .plan-configuration-layout .strategy-v2-section-head h3{font-size:18px;font-weight:650}.plan-configuration-layout .strategy-v2-section-head p{font-size:12px}
 .plan-configuration-layout .strategy-content-mode-workflow{padding:16px;border-radius:10px;background:#fff;box-shadow:none}

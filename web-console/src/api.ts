@@ -4262,6 +4262,17 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
   )
 }
 
+export function chatProductSupplement(
+  planId: number,
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[] },
+  signal?: AbortSignal,
+) {
+  return request<import('./types').SpeechMinerGuideResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/product-supplement/chat',
+    { method: 'POST', body: JSON.stringify(input), signal, suppressErrorDialog: true },
+  )
+}
+
 export function guideSpeechMiner(
   planId: number,
   input: {

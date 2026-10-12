@@ -227,6 +227,12 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prompt, _, err := loadSpeechMinerGuidePrompt()
+	stage := "speech_miner_guide"
+	if strings.HasSuffix(r.URL.Path, "/product-supplement/chat") {
+		prompt, _, err = loadReplaceablePromptAsset("PRODUCT_SUPPLEMENT_CHAT_PROMPT_PATH", "configs/prompts/anchor-style/product-supplement-chat.md", "商品资料补充对话母版")
+		stage = "product_supplement_chat"
+		wheelValue = nil
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -241,23 +247,13 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"available_fact_categories": categories.Categories,
-		"mode":                      input.Mode,
-		"action":                    input.Action,
-		"turn_kind":                 map[bool]string{true: "start", false: "answer"}[input.Start],
-		"fact_package":              source.Facts,
-		"current_wheel":             wheelValue,
-		"draft_facts":               input.DraftFacts,
-		"history":                   input.History,
-		"latest_message":            input.Message,
-	})
+	payload, _ := json.Marshal(speechMinerGuidePayload(input, categories, source.Facts, wheelValue, p0))
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenantID, PlanID: planID})
-	result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "speech_miner_guide", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)}}, 2400, false)
+	result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, stage, agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)}}, 2400, false)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "话术挖掘机暂时没有响应，请稍后重试")
+		writeError(w, http.StatusBadGateway, "资料助手暂时没有响应，请稍后重试")
 		return
 	}
 	output, err := normalizeSpeechMinerGuideResponseWithCategories(result.Text, input.Message, categories)
@@ -271,4 +267,19 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 	output.Model = result.Model
 	output.LatencyMS = result.LatencyMS
 	writeJSON(w, http.StatusOK, output)
+}
+
+func speechMinerGuidePayload(input speechMinerGuideInput, categories factCategoryCatalog, facts string, wheel any, p0 string) map[string]any {
+	return map[string]any{
+		"effective_p0":              p0,
+		"available_fact_categories": categories.Categories,
+		"mode":                      input.Mode,
+		"action":                    input.Action,
+		"turn_kind":                 map[bool]string{true: "start", false: "answer"}[input.Start],
+		"fact_package":              facts,
+		"current_wheel":             wheel,
+		"draft_facts":               input.DraftFacts,
+		"history":                   input.History,
+		"latest_message":            input.Message,
+	}
 }

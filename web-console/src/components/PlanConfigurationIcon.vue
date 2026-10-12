@@ -6,6 +6,7 @@ const paths: Record<string, string> = {
   style: 'm12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.6l-5.7 2.9 1.1-6.3-4.6-4.5 6.4-.9z',
   voice: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 10v2a6 6 0 0 0 12 0v-2M12 18v3M9 21h6',
   products: 'm12 3 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8M7.5 5.5l9 5',
+  supplement: 'M4 4h16v13h-9l-5 4v-4H4zM8 10h8M12 6v8',
   benefits: 'M3 8h18v4H3zM5 12v9h14v-9M12 8v13M12 8H8a3 3 0 1 1 3-3l1 3zm0 0h4a3 3 0 1 0-3-3l-1 3z',
   knowledge: 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h6M8 18h4',
   miner: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM15.5 8.5l-2 5-5 2 2-5z',
