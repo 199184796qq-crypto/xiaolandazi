@@ -8,6 +8,26 @@ import (
 // 支持中英文单双引号，提取商家在"禁说"里明确列出的具体禁说词。
 var factBoundaryQuotePattern = regexp.MustCompile(`['‘’"“”]([^'‘’"“”]{1,30})['‘’"“”]`)
 
+// 提取"不能说/禁止说/禁说 XX"里的具体禁说词（到"这些/等/，/。"截止）。
+// 故意不匹配"不要提"——"不要提XX"有歧义（可能是"此场景不主动提"，XX 未必是禁词），
+// 而"不能说/禁说"是明确的禁词语义。
+var factBoundaryProhibitPattern = regexp.MustCompile(`(?:禁止说|不能说|禁说|禁止)\s*([^，,。；;这些等]{1,30})`)
+
+// 数字+量词归一化：把"2次加工"里的"2次"转成"二次"，避免阿拉伯数字写法漏检。
+var factBoundaryDigitUnitPattern = regexp.MustCompile(`([0-9])(次|遍)`)
+
+var chineseDigits = map[string]string{"0": "零", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六", "7": "七", "8": "八", "9": "九"}
+
+func normalizeDigitUnit(s string) string {
+	return factBoundaryDigitUnitPattern.ReplaceAllStringFunc(s, func(m string) string {
+		d := chineseDigits[m[0:1]]
+		if d == "" {
+			d = m[0:1]
+		}
+		return d + m[1:]
+	})
+}
+
 // 事实边界分类：把商家填的自然语言"禁说"（flash 不好理解）翻译成标准禁词。
 // flash 理解不了"不拿速度类比/不说到货时间"这类语义边界，会照样编"时效快"；
 // 程序把关：识别边界类型，映射到字面可校验的标准禁词表，生成与审核都消费，
@@ -67,6 +87,14 @@ func factBoundaryRiskTerms(contextText string) []string {
 		for _, m := range factBoundaryQuotePattern.FindAllStringSubmatch(forbidden, -1) {
 			if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
 				result = append(result, strings.TrimSpace(m[1]))
+			}
+		}
+		// 3. "不能说/禁说 XX"模式：提取具体禁词，并做数字归一化（2次→二次）
+		for _, m := range factBoundaryProhibitPattern.FindAllStringSubmatch(forbidden, -1) {
+			term := strings.TrimRight(strings.TrimSpace(m[1]), "这些等")
+			term = normalizeDigitUnit(term)
+			if term != "" {
+				result = append(result, term)
 			}
 		}
 	}

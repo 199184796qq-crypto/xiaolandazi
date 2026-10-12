@@ -58,3 +58,23 @@ func TestFactBoundaryRiskTerms(t *testing.T) {
 		t.Fatalf("无禁说应返回空，得到 %v", got)
 	}
 }
+
+func TestFactBoundaryProhibitExtraction(t *testing.T) {
+	// "不能说二次加工"应提取出"二次加工"
+	ctx := "1号链接：开袋即食；禁说=不能说二次加工；安全改写=打开就能直接吃"
+	terms := factBoundaryRiskTerms(ctx)
+	joined := strings.Join(terms, " ")
+	if !strings.Contains(joined, "二次加工") {
+		t.Fatalf("应提取'二次加工'禁词，得到 %v", terms)
+	}
+	// 数字写法"2次加工"应归一化成"二次加工"
+	ctx2 := "禁说=不能说2次加工"
+	terms2 := factBoundaryRiskTerms(ctx2)
+	joined2 := strings.Join(terms2, " ")
+	if !strings.Contains(joined2, "二次加工") {
+		t.Fatalf("数字写法'2次加工'应归一化为'二次加工'，得到 %v", terms2)
+	}
+	if strings.Contains(joined2, "2次加工") {
+		t.Fatalf("不应保留未归一化的'2次加工'，得到 %v", terms2)
+	}
+}
