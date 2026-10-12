@@ -11,7 +11,7 @@ import (
 
 func TestWorkbenchReviewUsesConfiguredReviewRole(t *testing.T) {
 	cfg := agentgateway.SpeechModels{SystemDefaultID: "analysis", DefaultID: "speech", ReviewDefaultID: "review"}
-	for _, stage := range []string{"lecture_task_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "mainline_p0_context"} {
+	for _, stage := range []string{"lecture_task_review", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "mainline_p0_context"} {
 		if got := workbenchProfileForStage(context.Background(), cfg, "old-analysis", stage); got != "review" {
 			t.Fatal(stage, got)
 		}
@@ -20,9 +20,6 @@ func TestWorkbenchReviewUsesConfiguredReviewRole(t *testing.T) {
 		t.Fatal(got)
 	}
 	if got := workbenchProfileForStage(withPinnedSpeechProfile(context.Background(), "pinned"), cfg, "pinned", "mainline_text"); got != "pinned" {
-		t.Fatal(got)
-	}
-	if got := workbenchProfileForStage(context.Background(), cfg, "old", "fact_fields_normalize"); got != "analysis" {
 		t.Fatal(got)
 	}
 	cfg.ReviewDefaultID = ""

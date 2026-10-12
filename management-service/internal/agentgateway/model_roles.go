@@ -48,7 +48,7 @@ type modelResolverContextKey struct{}
 // analysis; registering existing review stages does not add model calls.
 func UsesReviewModel(stage string) bool {
 	switch stage {
-	case "mainline_p0_context", "speech_review", "interaction_p0_context", "lecture_task_review", "lecture_source_review", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check":
+	case "mainline_p0_context", "speech_review", "interaction_p0_context", "lecture_task_review", "lecture_source_review", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "lecture_detail_normalize_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check":
 		return true
 	default:
 		return false

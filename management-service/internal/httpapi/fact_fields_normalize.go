@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -139,4 +140,40 @@ func (s *Server) normalizeFactForSave(ctx context.Context, tenant, plan, actor, 
 		prefix = "manual:fact-normalization:"
 	}
 	return next, prefix + id, nil
+}
+
+// normalizeAllPlanFacts 保存方案前，用审核模型复核方案全部事实的三栏表达，
+// 把"容易踩坑的"（禁词原词污染、自然语言禁说）翻译成标准表达并就地更新。
+// 单条归一化失败或结果未变化时跳过，不阻断保存方案。
+func (s *Server) normalizeAllPlanFacts(ctx context.Context, tenant, plan, actor int64) {
+	items, err := s.store.ListLiveAgentPlanFacts(ctx, tenant, plan)
+	if err != nil {
+		log.Printf("batch normalize list facts tenant=%d plan=%d: %v", tenant, plan, err)
+		return
+	}
+	changed := 0
+	for _, item := range items {
+		candidate := model.LiveAgentPlanFactCandidate{
+			Category:         item.Category,
+			Key:              item.Key,
+			Value:            item.Value,
+			ForbiddenWording: item.ForbiddenWording,
+			SafeRewrite:      item.SafeRewrite,
+		}
+		normalized, _, normalizeErr := s.normalizeFactForSave(ctx, tenant, plan, actor, item.ID, item.VersionNo, candidate, "manual:save-plan-normalize")
+		if normalizeErr != nil {
+			continue
+		}
+		if normalized.Value == item.Value && normalized.ForbiddenWording == item.ForbiddenWording && normalized.SafeRewrite == item.SafeRewrite {
+			continue
+		}
+		if _, err := s.store.UpdateLiveAgentPlanFact(ctx, tenant, plan, item.ID, actor, normalized.Category, normalized.Key, normalized.Value, normalized.ForbiddenWording, normalized.SafeRewrite); err != nil {
+			log.Printf("batch normalize update fact tenant=%d plan=%d fact=%d: %v", tenant, plan, item.ID, err)
+			continue
+		}
+		changed++
+	}
+	if changed > 0 {
+		log.Printf("batch normalize facts tenant=%d plan=%d changed=%d", tenant, plan, changed)
+	}
 }
