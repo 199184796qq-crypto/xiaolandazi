@@ -4,7 +4,7 @@ import type { PoolStatus } from '../contentPools'
 import { poolSourceText, poolTaskSources, type PoolSourceLocation } from '../contentPoolSources'
 import uploadIllustration from '../assets/content-update-upload.png'
 import NaturalContentCorrection from './NaturalContentCorrection.vue'
-const props = withDefaults(defineProps<{ planId?: number; roomId?: number; tenantId?: number; status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '' })
+const props = withDefaults(defineProps<{ planId?: number; roomId?: number; tenantId?: number; status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string; compact?: boolean; hideSaveAction?: boolean }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '', compact: false, hideSaveAction: false })
 const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: []; source: [value: PoolSourceLocation]; editTask: [poolKey: string, taskID: string] }>()
 const needsUpdate = computed(() => props.status?.state === 'needs_update' || props.status?.state === 'failed')
 const updating = computed(() => props.submitting || props.status?.state === 'updating')
@@ -23,6 +23,7 @@ function primaryAction() {
   else emit('save')
 }
 const title = computed(() => ({ needs_update: '资料有待更新内容', updating: '正在更新受影响内容', failed: '内容更新未完成', ready: '内容已更新，核对后保存智能体', synced: '商品专属内容与公共内容已保存' }[props.status?.state || 'needs_update']))
+const compactStateText = computed(() => ({ needs_update: '有受影响内容待更新', updating: '正在更新内容', failed: '更新未完成', ready: '内容已更新，待保存方案', synced: '内容与已保存版本一致' }[props.status?.state || 'needs_update']))
 const guidance = computed(() => ({
   needs_update: '展开核对资料变化，点击“更新受影响内容”，完成后再保存智能体方案。',
   updating: '正在根据资料变化更新内容，完成后可展开核对并保存智能体方案。',
@@ -63,15 +64,15 @@ function taskAppearance(title: string) {
 }
 </script>
 <template>
-  <section class="pool-notice" aria-label="内容更新与保存引导">
+  <section class="pool-notice" :class="{ 'is-compact': compact }" aria-label="内容更新与保存引导">
     <div class="pool-banner">
-      <div class="pool-art" aria-hidden="true"><img :src="uploadIllustration" alt="" /></div>
+      <div v-if="!compact" class="pool-art" aria-hidden="true"><img :src="uploadIllustration" alt="" /></div>
       <div class="pool-intro" role="status">
-        <h2>{{ status ? title : '正在读取方案资料状态…' }}</h2>
-        <p v-if="status">{{ guidance }}</p>
+        <h2>{{ compact ? '内容任务' : status ? title : '正在读取方案资料状态…' }}</h2>
+        <p v-if="status">{{ compact ? compactStateText : guidance }}</p>
       </div>
       <div class="pool-actions">
-        <div class="pool-main-action">
+        <div v-if="needsUpdate || updating || !hideSaveAction" class="pool-main-action">
           <button class="pool-primary" type="button" :disabled="actionDisabled" :aria-busy="saving || updating" :aria-describedby="disabledHint ? 'pool-primary-hint' : undefined" @click="primaryAction">
             <svg v-if="needsUpdate || updating" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3-1.5 6.5L4 11l6.5 1.5L12 19l1.5-6.5L20 11l-6.5-1.5L12 3ZM4 3v4m-2-2h4m13 12v5m-2.5-2.5h5" /></svg>
             <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18H5.5a4.5 4.5 0 0 1-.7-8.95 7 7 0 0 1 13.5-.55A4.8 4.8 0 0 1 18.5 18H17M12 21V10m-4 4 4-4 4 4" /></svg>
@@ -107,9 +108,9 @@ function taskAppearance(title: string) {
         <div class="pool-entries">
           <details v-if="status?.pools?.length" class="pool-entry pool-entry-content" :open="preview" @toggle="emit('preview', ($event.target as HTMLDetailsElement).open)">
             <summary class="pool-preview-header">
-              <span class="pool-preview-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg></span>
+              <span v-if="!compact" class="pool-preview-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg></span>
               <span class="pool-preview-heading"><strong>查看公共池与商品专属池（{{ status.pools.length }} 个）</strong><span class="pool-preview-description">以下是模型整理的内容任务。可修改任务，也可展开引用资料，跳到原资料核对；修改后需保存智能体。</span><span v-if="status.set_id !== status.saved_set_id" class="pool-preview-unsaved"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v.1" /></svg>当前展示待保存内容；下次开播前请核对并保存。</span></span>
-              <span class="pool-preview-art" aria-hidden="true"><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-sticker">资料更清晰<br />开播更轻松</span></span>
+              <span v-if="!compact" class="pool-preview-art" aria-hidden="true"><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-sticker">资料更清晰<br />开播更轻松</span></span>
               <svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
             </summary>
             <div class="pool-entry-body">
@@ -156,7 +157,7 @@ function taskAppearance(title: string) {
         </article>
       </details>
       <small class="pool-note"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 11v6m0-10v.5" /></svg><span>资料变化会自动记录；点击更新时才调用模型。核对并保存智能体后，下次开播使用新版本，本场继续使用已保存快照。</span></small>
-      <span class="pool-signature" aria-hidden="true">让内容更智能</span>
+      <span v-if="!compact" class="pool-signature" aria-hidden="true">让内容更智能</span>
     </div>
   </section>
 </template>
@@ -265,4 +266,16 @@ details[open]>summary .pool-chevron{transform:rotate(90deg)}
 @container (max-width:700px){.pool-banner{grid-template-columns:minmax(0,1fr);gap:18px;padding:22px}.pool-art{position:absolute;width:70px;right:12px;top:16px;margin:0;opacity:.65}.pool-intro{grid-column:1;padding-top:0}.pool-intro h2{min-height:64px;padding-right:60px;font-size:22px}.pool-intro p{font-size:14px;margin-top:10px}.pool-actions{grid-column:1;grid-row:auto;flex-wrap:wrap;gap:10px}.pool-actions button{font-size:14px;min-height:44px;padding:10px 15px}.pool-content,.pool-note{grid-column:1}.pool-note{font-size:12px}.pool-entry-content>.pool-preview-header{align-items:flex-start;gap:10px;padding:16px;border-radius:18px}.pool-preview-symbol{flex-basis:42px;width:42px;height:42px;border-radius:13px}.pool-preview-symbol svg{width:25px;height:25px}.pool-preview-heading strong{font-size:18px}.pool-preview-description{font-size:12px;margin-top:7px}.pool-preview-unsaved{font-size:12px}.pool-preview-header>.pool-chevron{width:15px;height:15px;margin-top:12px}.pool-preview-group-header{gap:10px;padding:14px;border-radius:16px}.pool-preview-group-header h3{font-size:16px}.pool-preview-group-header p{font-size:12px}.pool-task-card{grid-template-columns:46px minmax(0,1fr);gap:10px;padding:14px;border-radius:18px}.pool-task-number{grid-row:auto;grid-column:1;align-self:start;min-height:46px;padding:10px 4px;border-radius:12px}.pool-task-number strong{font-size:24px}.pool-task-number span{display:none}.pool-task-symbol{grid-column:1;grid-row:2;margin:0;justify-self:center}.pool-task-content{grid-column:2;grid-row:1 / 3;padding:0}.pool-task-content::before{display:none}.pool-task-content h4{font-size:17px}.pool-task-angle{font-size:13px}.pool-task-edit{grid-column:2;width:130px;min-height:42px;font-size:13px}.pool-task-sources>summary{font-size:12px;gap:4px;padding:7px 8px}.pool-task-sources article{padding:8px;margin:8px 0}.pool-source-button{max-width:100%;white-space:normal;overflow-wrap:anywhere}}
 @media (prefers-reduced-motion:reduce){.pool-actions button,.pool-chevron{transition:none}}
 @container (max-width:700px){.pool-task-card{grid-template-rows:46px auto auto}}
+.pool-notice.is-compact{border:1px solid #e1e7f0;border-radius:10px;background:#fff;box-shadow:none;color:#6c7a90;margin-bottom:16px}
+.pool-notice.is-compact::before,.pool-notice.is-compact::after{display:none}.is-compact .pool-banner{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;min-height:0;padding:16px}
+.is-compact .pool-intro{grid-column:1;padding:0}.is-compact .pool-intro h2{font-size:16px;font-weight:650;color:#30415b;letter-spacing:0}.is-compact .pool-intro p{margin:3px 0 0;font-size:12px;line-height:1.6;color:#7b8799}
+.is-compact .pool-actions{grid-column:2;align-items:center;gap:8px;padding:0;flex-wrap:wrap}.is-compact .pool-actions button{min-height:36px;padding:7px 11px;border-radius:7px;font-size:12px;box-shadow:none;transform:none;gap:6px}.is-compact .pool-actions svg{width:17px;height:17px}.is-compact .pool-main-action{width:auto}.is-compact .pool-main-action .pool-primary{width:auto;height:auto;min-height:36px;background:#4a60de}.is-compact .pool-action-hint{max-width:280px;padding:6px 8px;font-size:11px}
+.is-compact .pool-content{grid-column:1/-1}.is-compact .pool-progress{font-size:12px;margin-bottom:10px}.is-compact .pool-note{font-size:11px;padding:12px 16px}.is-compact .pool-exclusions{margin-bottom:12px}.is-compact .pool-exclusions>summary{padding:9px 12px;font-size:12px;border-radius:7px}
+.is-compact .pool-entry-content>.pool-preview-header{min-height:0;padding:12px 14px;border:1px solid #e1e7f0;border-radius:8px;background:#f7f9fc;gap:10px}.is-compact .pool-preview-heading strong{font-size:14px;font-weight:650;letter-spacing:0}.is-compact .pool-preview-description{margin-top:4px;font-size:12px}.is-compact .pool-preview-unsaved{margin-top:5px;font-size:11px}
+.is-compact .pool-preview-group-header{padding:12px 0;background:transparent}.is-compact .pool-preview-group-header h3{font-size:15px;font-weight:650}.is-compact .pool-group-symbol,.is-compact .pool-group-tip{display:none}.is-compact .pool-task-cards{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.is-compact .pool-task-card{grid-template-columns:52px minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px;border:1px solid #e5eaf2;border-radius:8px;background:#fff;box-shadow:none}.is-compact .pool-task-symbol{display:none}.is-compact .pool-task-content h4{font-size:14px;font-weight:650}.is-compact .pool-task-number strong{font-size:15px}.is-compact .pool-task-angle{font-size:13px}.is-compact .pool-task-edit{font-size:11px}
+.is-compact .pool-intro,.is-compact .pool-actions{grid-row:1}.is-compact .pool-intro h2{min-height:0;padding:0}.is-compact .pool-actions{justify-self:end}
+.is-compact .pool-preview-group-header{border:0;border-radius:0;box-shadow:none}
+.is-compact .pool-task-card{grid-template-rows:auto}.is-compact .pool-task-number{grid-column:1;grid-row:1;align-self:start;min-height:0;padding:8px 4px;border-radius:6px}.is-compact .pool-task-number span{display:none}
+.is-compact .pool-task-content{grid-column:2;grid-row:1;padding:0}.is-compact .pool-task-content::before{display:none}.is-compact .pool-task-edit{grid-column:3;grid-row:1;justify-self:end;align-self:start;width:auto;min-height:32px;margin:0;padding:6px 10px;border-radius:6px}.is-compact .pool-task-edit svg{width:16px;height:16px}
+@container(max-width:700px){.is-compact .pool-banner{grid-template-columns:minmax(0,1fr);padding:12px}.is-compact .pool-actions{grid-column:1;grid-row:2;justify-self:start}.is-compact .pool-task-card{grid-template-columns:32px minmax(0,1fr)}.is-compact .pool-task-edit{grid-column:2;grid-row:2;justify-self:start}}
 </style>

@@ -18,7 +18,8 @@ import { useContentPools } from '../contentPools'
 import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
-import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
+import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
+import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
@@ -27,7 +28,6 @@ import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
-import agentGenerationBanner from '../assets/agent-generation-banner.png'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
 import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
 import AnchorControlBar from '../components/AnchorControlBar.vue'
@@ -253,6 +253,20 @@ type StrategyMode =
   | 'strategy'
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
+const lastFactMode = ref<PlanFactMode>('products')
+const planActionsMenu = ref<HTMLDetailsElement | null>(null)
+watch(activeMode, mode => { if (isPlanFactMode(mode)) lastFactMode.value = mode })
+function closePlanActionsMenu() { if (planActionsMenu.value) planActionsMenu.value.open = false }
+function selectPlanConfigurationSection(section: PlanConfigurationSection) {
+  selectPlanConfigurationMode(section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
+}
+function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
+  if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
+  else if (mode === 'knowledge') openFactRiskLocation()
+  else if (mode === 'miner') openWheelRiskLocation()
+  else if (mode === 'memory') openInteractionPendingLocation()
+  else activeMode.value = mode
+}
 const interactionReviewRoute=useRoute()
 watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='knowledge'}, {immediate:true})
 const defaultSettings: LiveAgentSettings = {
@@ -324,7 +338,6 @@ const benefitRiskUnresolvedCount = ref(0)
 const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
 const interactionLocationRequest = ref(0)
 const factRiskNoticeState = ref({ loading: false, error: '' })
-const factRiskTabFocused = ref(false)
 type FactRiskReviewDisplay = RiskReview & {
 	claim_sha256: string
 	source_key: string
@@ -6088,89 +6101,45 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="live-strategy-agent">
-        <header class="strategy-agent-head strategy-plan-container-head">
+        <header class="strategy-agent-head strategy-plan-container-head plan-configuration-header">
           <div class="strategy-plan-heading">
+            <span class="plan-configuration-kicker">智能体方案</span>
             <div class="strategy-plan-selector-row">
-              <select
-                class="strategy-plan-title-switch"
-                :value="currentRoomPlanId || ''"
-                :disabled="planBusy || !livePlans.length"
-                @change="handlePlanSwitch"
-              >
+              <select class="strategy-plan-title-switch" aria-label="选择智能体方案" :value="currentRoomPlanId || ''" :disabled="planBusy || !livePlans.length" @change="handlePlanSwitch">
                 <option value="" disabled>选择智能体直播方案</option>
-                <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">
-                  {{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}
-                </option>
+                <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">{{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}</option>
               </select>
-              <button
-                v-if="currentPlan && currentPlanIsBound"
-                class="strategy-plan-relation-button danger"
-                type="button"
-                :disabled="planBusy"
-                @click="unbindPlanFromCurrentRoom(currentPlan)"
-              >解除绑定</button>
-              <button
-                v-else-if="currentPlan"
-                class="strategy-plan-relation-button"
-                type="button"
-                :disabled="planBusy || !activeRoom"
-                @click="bindPlanToCurrentRoom(currentPlan)"
-              >绑定直播间</button>
             </div>
-            <p class="strategy-plan-current-line">
-              <template v-if="currentPlan">
-                当前编辑方案：{{ currentPlan.name }}
-                · 已用于 {{ currentPlan.room_count || 0 }} 个直播间
-                · {{ planRoomRelationLabel(currentPlan) }}
-              </template>
-              <template v-else>
-                当前还没有可编辑的直播方案
-              </template>
-            </p>
-            <div class="strategy-plan-toolbar">
-              <button
-                class="strategy-version-button primary strategy-new-plan-button"
-                :class="{ expanded: showPlanManager && planManagerMode === 'create' }"
-                type="button"
-                :aria-expanded="showPlanManager && planManagerMode === 'create'"
-                @click="openCreatePlanManager"
-              >
-                <span class="strategy-plan-action-label">＋ 新建直播方案</span>
-                <span
-                  class="strategy-plan-expand-arrow"
-                  :class="{ expanded: showPlanManager && planManagerMode === 'create' }"
-                  aria-hidden="true"
-                >⌄</span>
-              </button>
-              <button
-                class="strategy-version-button strategy-manage-plan-button"
-                :class="{ expanded: showPlanManager && planManagerMode === 'edit' }"
-                type="button"
-                :aria-expanded="showPlanManager && planManagerMode === 'edit'"
-                @click="toggleEditPlanManager"
-              >
-                <span class="strategy-plan-action-label">方案管理</span>
-                <span
-                  class="strategy-plan-expand-arrow"
-                  :class="{ expanded: showPlanManager && planManagerMode === 'edit' }"
-                  aria-hidden="true"
-                >⌄</span>
-              </button>
-              <button
-                class="strategy-version-button strategy-delete-plan-button"
-                :class="{ confirming: deleteConfirmPlanId === currentPlan?.id }"
-                type="button"
-                :disabled="!currentPlan || planBusy"
-                @click="deleteCurrentPlan"
-              >
-                {{
-                  planBusy
-                    ? '删除中…'
-                    : (deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案')
-                }}
-              </button>
+            <div class="plan-configuration-meta">
+              <span v-if="currentPlan">绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
+              <span v-if="currentPlan && !currentPlanIsBound">当前房间未绑定</span>
+              <span v-if="fullShowWorkspaceDirty || poolStatus?.state === 'ready' || poolStatus?.state === 'needs_update' || poolStatus?.state === 'failed'" class="plan-draft-status">有待保存资料</span>
+              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :runtime="roomRuntimeSnapshot" :loading="fullShowWorkspaceLoading" inline />
+              <details v-if="currentPlan" class="plan-version-records">
+                <summary>版本记录</summary>
+                <div class="plan-version-record-list">
+                  <p v-if="!fullShowVersionHistory.length">{{ latestSavedVersion ? '最新保存 V' + latestSavedVersion.version_no : '尚无保存版本' }}</p>
+                  <p v-for="version in fullShowVersionHistory" :key="version.id"><strong>V{{ version.version_no }}</strong><span>{{ version.lifecycle_status === 'published' ? '已保存' : version.lifecycle_status === 'superseded' ? '历史版本' : '草稿' }}</span></p>
+                </div>
+              </details>
             </div>
           </div>
+          <div class="plan-configuration-actions">
+            <button class="strategy-version-button plan-preview-button" :class="{ active: activeMode === 'fullshow' }" type="button" :aria-pressed="activeMode === 'fullshow'" @click="activeMode = 'fullshow'">生成与预览</button>
+            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick">{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
+            <details ref="planActionsMenu" class="plan-configuration-more">
+              <summary class="strategy-version-button">更多 ▾</summary>
+              <div class="plan-configuration-menu">
+                <button type="button" :disabled="planBusy" @click="openCreatePlanManager(); closePlanActionsMenu()">新建方案</button>
+                <button type="button" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager(); closePlanActionsMenu()">修改名称与说明</button>
+                <button v-if="currentPlan && currentPlanIsBound" type="button" :disabled="planBusy" @click="unbindPlanFromCurrentRoom(currentPlan); closePlanActionsMenu()">解除房间绑定</button>
+                <button v-else-if="currentPlan" type="button" :disabled="planBusy || !activeRoom" @click="bindPlanToCurrentRoom(currentPlan); closePlanActionsMenu()">绑定当前房间</button>
+                <button class="danger" type="button" :disabled="!currentPlan || planBusy" @click="deleteCurrentPlan">{{ planBusy ? '处理中…' : deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案' }}</button>
+              </div>
+            </details>
+          </div>
+          <p v-if="savePlanOneClickHint" id="plan-save-hint" class="plan-save-hint" role="status">{{ savePlanOneClickHint }}</p>
+          <p v-if="fullShowVersionError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
         </header>
 
         <section v-if="showPlanManager" class="strategy-plan-manager-inline">
@@ -6193,68 +6162,13 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
-        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
-          <strong>已保存方案检查提示</strong>
-          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
-          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
-        </div>
-        <div class="strategy-workflow-layout" :class="'workflow-mode-' + activeMode">
-          <nav class="strategy-mode-tabs strategy-mode-tabs-v2 strategy-workflow-nav" aria-label="直播方案流程">
-            <div class="strategy-workflow-inputs">
-            <button class="strategy-workflow-step workflow-step-products" :class="{ active: activeMode === 'products' }" :aria-label="productRiskUnresolvedCount ? `商品链接，${productRiskUnresolvedCount}项待处理` : '商品链接'" @click="openSourceRiskLocation('products')">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.2-1.2"/></svg>
-              </span>
-              <span class="strategy-workflow-label">商品链接</span>
-              <span v-if="productRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ productRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-benefits" :class="{ active: activeMode === 'benefits' }" :aria-label="benefitRiskUnresolvedCount ? `福利活动，${benefitRiskUnresolvedCount}项待处理` : '福利活动'" @click="openSourceRiskLocation('benefits')">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M7.5 8C5.5 8 5 6.8 5 5.8 5 4.8 5.8 4 6.8 4c2.2 0 5.2 4 5.2 4M16.5 8C18.5 8 19 6.8 19 5.8 19 4.8 18.2 4 17.2 4 15 4 12 8 12 8"/></svg>
-              </span>
-              <span class="strategy-workflow-label">福利活动</span>
-              <span v-if="benefitRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ benefitRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" :aria-label="interactionPendingCount > 0 ? `交互策略，${interactionPendingCount}条互动待纠正` : '交互策略'" @click="openInteractionPendingLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
-              <span class="strategy-workflow-label">交互策略<span v-if="interactionPendingCount > 0" class="interaction-pending-badge" :aria-label="`${interactionPendingCount}条互动待纠正`">{{ interactionPendingCount > 99 ? '99+' : interactionPendingCount }}</span></span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-miner" :class="{ active: activeMode === 'miner' }" :aria-label="wheelRiskUnresolvedCount ? `话术挖掘机，${wheelRiskUnresolvedCount}项待处理` : '话术挖掘机'" :title="wheelRiskUnresolvedCount ? '点击直接定位待处理内容' : undefined" @click="openWheelRiskLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 18 8-8M10 6l8 8M13 3l8 8-3 3-8-8z"/><path d="M3 21h6"/></svg></span>
-              <span class="strategy-workflow-label">话术挖掘机</span>
-              <span v-if="wheelRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ wheelRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" :aria-label="factRiskUnresolvedCount ? `事实依据，${factRiskUnresolvedCount}项待处理` : '事实依据'" @focus="factRiskTabFocused = true" @blur="factRiskTabFocused = false" @click="openFactRiskLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
-              </span>
-              <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
-            </button>
-            <button class="strategy-workflow-step workflow-step-anchor" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3"/><path d="M4 20c0-4 2.5-6 6-6s6 2 6 6"/><path d="m18 4 .6 1.4L20 6l-1.4.6L18 8l-.6-1.4L16 6l1.4-.6z"/></svg>
-              </span>
-              <span class="strategy-workflow-label">主播风格</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-voice" :class="{ active: activeMode === 'voice' }" @click="activeMode = 'voice'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
-              </span>
-              <span class="strategy-workflow-label">声音</span>
-            </button>
-              <button
-                class="strategy-workflow-output workflow-step-fullshow"
-                :class="{ active: activeMode === 'fullshow' }"
-                aria-label="生成智能体"
-                :aria-current="activeMode === 'fullshow' ? 'step' : undefined"
-                title="生成智能体 · 让直播说啥更简单"
-                @click="activeMode = 'fullshow'"
-              >
-                <img class="strategy-agent-generation-banner" :src="agentGenerationBanner" alt="" aria-hidden="true" draggable="false" />
-              </button>
-            </div>
-          </nav>
+        <div class="strategy-workflow-layout plan-configuration-layout" :class="'workflow-mode-' + activeMode">
+          <PlanConfigurationNavigation
+            :mode="activeMode" :product-risk-count="productRiskUnresolvedCount" :benefit-risk-count="benefitRiskUnresolvedCount"
+            :fact-risk-count="factRiskUnresolvedCount" :direction-risk-count="wheelRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
+            :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
+            @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
+          />
 
           <div class="strategy-workflow-content">
         <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits','miner'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
@@ -6407,7 +6321,7 @@ onBeforeUnmount(() => {
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
+            <LiveProductLinkCards v-else compact ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
               <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" /></template>
             </LiveProductLinkCards>
           </section>
@@ -7104,7 +7018,7 @@ onBeforeUnmount(() => {
             @updated="refreshSpeechMinerWorkspace"
             @pool-updated="contentPools.acceptEdited"
           />
-          <LectureTasksPanel :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
+          <LectureTasksPanel hide-save-action :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
@@ -7530,13 +7444,20 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
+          <div class="plan-generation-heading"><h3>生成与预览</h3><button class="strategy-version-button" type="button" @click="activeMode = lastFactMode">返回配置</button></div>
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
+        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
+          <strong>已保存方案检查提示</strong>
+          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
+          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
+        </div>
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
             <header class="strategy-agent-control-header">
               <AnchorControlBar
-                mode="all"
+                mode="initialize" compact
                 :initializing="anchorInitializing"
                 :initialize-progress="anchorInitializationProgress"
                 :initialize-label="anchorInitializationStage"
@@ -7549,12 +7470,6 @@ onBeforeUnmount(() => {
                 @save="savePlanOneClick"
               />
             </header>
-            <LivePlanVersionBadge
-              :plan-id="currentRoomPlanId || 0"
-              :saved="latestSavedVersion"
-              :loading="fullShowWorkspaceLoading"
-              saved-only
-            />
             <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
               <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
             </div>
@@ -11152,4 +11067,36 @@ onBeforeUnmount(() => {
 .strategy-workflow-output.workflow-step-fullshow:hover .strategy-agent-generation-banner { filter:saturate(1.12) brightness(1.025); }
 .strategy-workflow-output.workflow-step-fullshow.active .strategy-agent-generation-banner { filter:saturate(1.15); }
 .strategy-workflow-output.workflow-step-fullshow:focus-visible { outline:3px solid #3658db!important; outline-offset:-4px; }
+
+/* Plan configuration: one page header, four input groups, and one saved-version action. */
+.plan-configuration-header.strategy-plan-container-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px 20px;padding:18px 22px;background:#fff;border-bottom:1px solid #e3e8f2}
+.plan-configuration-kicker{display:block;margin-bottom:3px;color:#7b879a;font-size:12px;font-weight:500}
+.plan-configuration-header .strategy-plan-title-switch{width:520px;max-width:100%;height:40px;min-height:40px;padding:0 30px 0 0;border:0;border-radius:0;background:linear-gradient(45deg,transparent 50%,#65718a 50%) calc(100% - 12px) 16px/6px 6px no-repeat;color:#25334b;font-size:19px;font-weight:650;box-shadow:none;transform:none}
+.plan-configuration-header .strategy-plan-title-switch:focus-visible{outline:2px solid #6b7ee3;outline-offset:3px;box-shadow:none}
+.plan-configuration-meta{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;color:#748197;font-size:12px}
+.plan-draft-status{color:#936921}
+.plan-configuration-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.plan-configuration-actions .strategy-version-button{min-height:38px;padding:8px 13px;border:1px solid #dce3ee;border-radius:7px;background:#fff;color:#546179;font-size:13px;font-weight:600;box-shadow:none;white-space:nowrap}
+.plan-configuration-actions .plan-save-button{border-color:#4a60de;background:#4a60de;color:#fff}
+.plan-preview-button.active{border-color:#9aa9ed!important;background:#eef2ff!important;color:#4157cc!important}
+.plan-configuration-more,.plan-version-records{position:relative}
+.plan-configuration-more>summary,.plan-version-records>summary{list-style:none;cursor:pointer}
+.plan-configuration-more>summary::-webkit-details-marker,.plan-version-records>summary::-webkit-details-marker{display:none}
+.plan-version-records>summary{color:#5269d9}
+.plan-configuration-menu,.plan-version-record-list{position:absolute;top:calc(100% + 8px);right:0;z-index:30;min-width:180px;padding:7px;border:1px solid #dfe5ee;border-radius:9px;background:#fff;box-shadow:0 8px 26px #26375016}
+.plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#59657a;font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}.plan-configuration-menu>button.danger{color:#b85260}
+.plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
+.plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
+.plan-configuration-layout{display:block!important;padding:0!important;background:#f7f9fc!important}
+.plan-configuration-layout .strategy-workflow-content{background:#f7f9fc!important}
+.plan-configuration-layout .strategy-v2-workspace{margin:18px;border-radius:10px;border-color:#e3e8f1;background:#fff;box-shadow:none}
+.plan-configuration-layout .strategy-v2-section-head h3{font-size:18px;font-weight:650}.plan-configuration-layout .strategy-v2-section-head p{font-size:12px}
+.plan-configuration-layout .strategy-content-mode-workflow{padding:16px;border-radius:10px;background:#fff;box-shadow:none}
+.plan-generation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.plan-generation-heading h3{margin:0;color:#26354d;font-size:18px;font-weight:650}
+.plan-configuration-layout .strategy-content-mode-cards>button{border-radius:10px;box-shadow:none}.plan-configuration-layout .strategy-content-mode-cards>button i{font-size:15px}.plan-configuration-layout .strategy-content-mode-card-copy strong{font-size:16px}
+.plan-configuration-layout .strategy-fullshow-restore-banner{padding:12px 16px;border-radius:9px;box-shadow:none}
+@media(max-width:1100px){.plan-configuration-header.strategy-plan-container-head{grid-template-columns:minmax(0,1fr)}.plan-configuration-actions{justify-content:flex-start}}
+@media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{padding:14px 12px}.plan-configuration-header .strategy-plan-title-switch{font-size:17px;width:100%}.plan-configuration-layout .strategy-v2-workspace{margin:12px}.plan-configuration-meta{gap:6px 10px}.plan-configuration-actions .strategy-version-button{min-height:40px;padding:8px 11px}.plan-version-record-list{left:auto;right:0}}
+
 </style>

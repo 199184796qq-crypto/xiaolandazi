@@ -5,7 +5,7 @@ import { getLectures, ingestLecture, previewLecture, setLecturePolicy, updateLec
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 
-const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; savedFingerprint?: string; compact?: boolean; saveDisabled?: boolean; saveHint?: string }>()
+const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; savedFingerprint?: string; compact?: boolean; saveDisabled?: boolean; saveHint?: string; hideSaveAction?: boolean }>()
 const emit = defineEmits<{ updated: []; busy: [value: boolean]; save: [] }>()
 const library = ref<LectureLibrary | null>(null)
 const source = ref('')
@@ -163,7 +163,7 @@ onBeforeUnmount(() => { ++epoch; window.removeEventListener('live-lecture-tasks-
       <div class="lecture-appearance-actions"><button type="button" :disabled="busy" @click="scheduleOpen=false">取消</button><button type="button" :disabled="busy || !library" @click="resetSchedule">恢复自动</button><button type="button" class="primary" :disabled="busy" @click="saveSchedule">{{ pending==='policy'?'正在保存…':'保存出场设置' }}</button></div>
     </div>
     <p v-if="runtimeText" class="lecture-runtime-status" role="status">{{ runtimeText }}</p>
-    <div v-if="library && (library.tasks.length || savedFingerprint)" class="lecture-save-state"><span>{{ saved ? '已随当前方案保存，下次开播按需使用。' : '讲解库有待保存内容；保存智能体方案后，下次开播生效。' }}</span><button v-if="!saved && !compact" class="primary" :disabled="saveDisabled || busy" :title="saveHint" @click="emit('save')">保存智能体</button></div>
+    <div v-if="library && (library.tasks.length || savedFingerprint)" class="lecture-save-state"><span>{{ saved ? '已随当前方案保存，下次开播按需使用。' : '讲解库有待保存内容；保存智能体方案后，下次开播生效。' }}</span><button v-if="!saved && !compact && !hideSaveAction" class="primary" :disabled="saveDisabled || busy" :title="saveHint" @click="emit('save')">保存智能体</button></div>
     <p v-if="loading && !library" class="lecture-empty">正在打开讲解库…</p>
     <div v-else-if="!tasks.length" class="lecture-empty"><span aria-hidden="true">✦</span><strong>{{ search ? '没有找到这个主题' : '讲解库等着你的第一个故事' }}</strong><p>素材整理后会出现在这里，不需要逐条分类，也不用跳转页面。</p></div>
     <div class="lecture-task-list">

@@ -9,20 +9,21 @@ const props = withDefaults(defineProps<{
   runtime?: LiveRuntimeSnapshot | null
   program?: SpeechProgramSnapshot | null
   savedOnly?: boolean
+  inline?: boolean
   loading?: boolean
   error?: boolean
-}>(), { runtime: null, program: null, savedOnly: false, loading: false, error: false })
+}>(), { runtime: null, program: null, savedOnly: false, inline: false, loading: false, error: false })
 const status = computed(() => livePlanVersionStatus(props.planId, props.saved, props.runtime, props.program))
 </script>
 
 <template>
-  <div v-if="planId" class="plan-version-badge" :class="{ 'is-different': !savedOnly && status.state === 'different', 'is-compact': !savedOnly }" aria-label="直播方案版本" aria-live="polite">
+  <div v-if="planId" class="plan-version-badge" :class="{ 'is-different': !savedOnly && status.state === 'different', 'is-compact': !savedOnly, 'is-inline': inline }" aria-label="直播方案版本" aria-live="polite">
     <div class="plan-version-values">
       <span>方案 #{{ planId }}</span>
       <span>最新保存 <strong>{{ status.latest ? 'V' + status.latest.version_no : error ? '读取失败' : loading ? '读取中…' : '尚未保存' }}</strong></span>
       <span v-if="!savedOnly">本场加载 <strong>{{ status.loaded ? 'V' + status.loaded.version_no : status.active ? '待确认' : '未开播' }}</strong></span>
     </div>
-    <small>{{ savedOnly ? '同一方案的所有房间共用；每次成功保存，版本号递增' : error ? '保存版本读取失败，暂时无法核对' : status.hint }}</small>
+    <small v-if="!inline">{{ savedOnly ? '同一方案的所有房间共用；每次成功保存，版本号递增' : error ? '保存版本读取失败，暂时无法核对' : status.hint }}</small>
   </div>
 </template>
 
@@ -33,4 +34,5 @@ const status = computed(() => livePlanVersionStatus(props.planId, props.saved, p
 .plan-version-badge small{color:#71819d;font-size:11px;line-height:1.45}
 .is-different{border-color:#ecd393;background:#fffaf0}.is-different small{color:#966818}
 .is-compact{gap:4px;padding:8px 10px}.is-compact .plan-version-values{gap:5px 12px;font-size:10px}.is-compact strong{font-size:12px}.is-compact small{font-size:10px}
+.is-inline{display:inline-flex;padding:0;border:0;border-radius:0;background:transparent}.is-inline .plan-version-values{gap:6px 12px;font-size:12px}.is-inline .plan-version-values strong{font-size:12px;font-weight:600}
 </style>

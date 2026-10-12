@@ -9,12 +9,13 @@ withDefaults(defineProps<{
   saveDisabled: boolean
   saveHint?: string
   mode?: 'all' | 'initialize' | 'save'
-}>(), { initializeProgress: 0, initializeLabel: '', saveLabel: '', saveHint: '', mode: 'all' })
+  compact?: boolean
+}>(), { initializeProgress: 0, initializeLabel: '', saveLabel: '', saveHint: '', mode: 'all', compact: false })
 defineEmits<{ initialize: []; save: [] }>()
 </script>
 
 <template>
-  <section class="agent-control-bar" aria-label="直播智能体操作">
+  <section class="agent-control-bar" :class="{ 'is-compact': compact }" aria-label="直播智能体操作">
     <div class="agent-control-grid" :class="{ 'initialize-only': mode === 'initialize', 'save-only': mode === 'save' }">
       <button v-if="mode !== 'save'" type="button" class="agent-control-card control-initialize" :class="{ 'is-initializing': initializing }" :style="initializing ? { '--initialize-progress': Math.max(0, Math.min(100, initializeProgress)) + '%' } : undefined" :disabled="initializeDisabled" :aria-busy="initializing" @click="$emit('initialize')">
         <template v-if="initializing">
@@ -62,6 +63,7 @@ defineEmits<{ initialize: []; save: [] }>()
 .control-arrow{position:relative;z-index:1;display:grid;place-items:center;flex:0 0 clamp(34px,2.45vw,42px);width:clamp(34px,2.45vw,42px);height:clamp(34px,2.45vw,42px);margin-left:auto;border-radius:50%;background:#ffffff27}.control-arrow svg{width:45%;height:45%}
 .control-save{border-color:#dce4fa;color:#172544;background:linear-gradient(125deg,#fff,#f3f6ff);box-shadow:0 6px 18px #5564a00b}.save-icon{background:linear-gradient(125deg,#ecf2ff,#e0e8fe)}
 .save-only .control-save{flex:0 0 224px;box-sizing:border-box;width:224px;max-width:100%;height:58px;min-height:58px;justify-content:center}
+.is-compact .agent-control-grid{display:flex;flex-wrap:wrap;gap:10px}.is-compact .agent-control-card{width:auto;min-width:0;min-height:42px;padding:9px 14px;border-radius:7px;box-shadow:none}.is-compact .control-initialize{background:#4a60de}.is-compact .agent-control-card strong,.is-compact .control-progress-copy strong{font-size:14px;line-height:1.4;font-weight:650;white-space:normal}.is-compact .control-icon{width:24px;height:24px;flex-basis:24px;border-radius:6px;background:transparent;box-shadow:none}.is-compact .control-arrow{display:none}.is-compact .control-progress-copy{gap:8px}.is-compact .control-initialize.is-initializing{min-width:220px;background:#e8edff}
 .control-publish{color:#fff;background:linear-gradient(125deg,#ba8cf3,#9653ed 70%,#b15af1);box-shadow:0 12px 22px #9363ec29}.publish-icon{background:linear-gradient(145deg,#a978ec,#9060e2)}.control-publish::before{width:80%;height:110%;right:-22%;bottom:-65%;background:#ffffff0d}.control-publish::after{width:85%;height:65%;right:-24%;bottom:-47%;background:#ffffff0b}
 @container(max-width:1050px){.agent-control-grid{grid-template-columns:minmax(0,1fr) max-content;gap:10px}.agent-control-card{padding:9px 12px;gap:8px}.agent-control-card strong{font-size:16px}.control-initialize strong{font-size:20px}.control-icon{width:38px;height:38px;flex-basis:38px}.control-arrow{width:34px;height:34px;flex-basis:34px}}
 @container(max-width:880px){.agent-control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.control-initialize{grid-column:1/-1}.agent-control-card{min-height:62px}.control-initialize strong{font-size:21px}}

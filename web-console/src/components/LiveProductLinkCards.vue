@@ -10,6 +10,7 @@ const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
   benefitScopes?: BenefitScope[]
+  compact?: boolean
   saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
   saveRoomRoles: (item: LiveAgentPlanProductLink, roles: string[]) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
@@ -38,6 +39,17 @@ const roomRoleOptions = [
   { value: 'ordinary', label: '普通' },
 ]
 const expandedItems = ref<Set<number>>(new Set())
+const expandedDetails = ref<Set<number>>(new Set())
+function toggleProductDetails(item: LiveAgentPlanProductLink) {
+  if (expandedDetails.value.has(item.id) && (edit.value?.item.id === item.id || attributeEdit.value?.itemId === item.id)) {
+    message.value = { id: item.id, text: '请先保存或取消正在修改的内容', error: true }
+    return
+  }
+  const next = new Set(expandedDetails.value)
+  if (next.has(item.id)) next.delete(item.id)
+  else next.add(item.id)
+  expandedDetails.value = next
+}
 const attributeEdit = ref<{
 	itemId: number
 	attribute: LiveAgentPlanProductAttribute | null
@@ -259,6 +271,7 @@ async function copyItem(item: LiveAgentPlanProductLink) {
 async function locateRisk(itemID: number, field = '', beginEdit = false) {
   const item = props.items.find(item => item.id === itemID)
   if (!item) return false
+  expandedDetails.value = new Set([...expandedDetails.value, itemID])
   expandedItems.value = new Set([...expandedItems.value, itemID])
   if (beginEdit) {
     if (edit.value || attributeEdit.value) {
@@ -277,6 +290,7 @@ async function locateRisk(itemID: number, field = '', beginEdit = false) {
 async function locateSource(itemID: number, attributeID?: number) {
   const item = props.items.find(item => item.id === itemID)
   if (!item || (attributeID && !item.attributes?.some(attribute => attribute.id === attributeID))) return false
+  expandedDetails.value = new Set([...expandedDetails.value, itemID])
   expandedItems.value = new Set([...expandedItems.value, itemID])
   await nextTick()
   const card = document.querySelector<HTMLElement>(`[data-product-card-id="${itemID}"]`)
@@ -292,12 +306,15 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 	if (roleEditing.value && !ids.includes(roleEditing.value)) roleEditing.value = null
 	if (attributeEdit.value && !ids.includes(attributeEdit.value.itemId)) attributeEdit.value = null
 	expandedItems.value = new Set([...expandedItems.value].filter((id) => ids.includes(id)))
+  expandedDetails.value = new Set([...expandedDetails.value].filter((id) => ids.includes(id)))
 })
 </script>
 
 <template>
-  <div class="product-cards">
+  <div class="product-cards" :class="{ 'is-compact': compact }">
+    <div v-if="compact" class="product-list-labels" aria-hidden="true"><span>链接</span><span>商品名称</span><span>直播角色</span><span>版本</span><span>操作</span></div>
     <article v-for="item in items" :key="item.id" class="product-card" :data-product-card-id="item.id" tabindex="-1">
+      <div class="product-card-summary">
       <header class="product-card-header">
         <div class="product-card-link">
           <input v-if="isEditing(item, 'link_key') && edit" v-model="edit.draft" v-focus :disabled="busy" maxlength="64" :aria-label="'编辑' + item.link_key + '的链接编号'" @blur="saveEdit" @keydown.enter.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" />
@@ -312,6 +329,10 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         <button type="button" class="product-edit" :disabled="busy" :aria-label="'修改' + item.link_key + '的商品名称'" title="修改商品名称" @mousedown.prevent @click="startEdit(item, 'product_name')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
       </div>
       <small class="product-version">V{{ item.version_no }}</small>
+      <div v-if="compact" class="product-list-roles"><span v-for="role in (item.room_roles || [])" :key="role">{{ roomRoleLabel(role) }}</span><span v-if="!(item.room_roles || []).length">未设置</span></div>
+      <button v-if="compact" class="product-details-toggle" type="button" :disabled="busy" :aria-label="`${expandedDetails.has(item.id) ? '收起' : '查看'}${item.link_key}号商品资料`" :aria-expanded="expandedDetails.has(item.id)" :aria-controls="'product-details-' + item.id" @mousedown.prevent @click="toggleProductDetails(item)">{{ expandedDetails.has(item.id) ? '收起资料' : '查看资料' }}</button>
+      </div>
+      <div v-show="!compact || expandedDetails.has(item.id)" :id="'product-details-' + item.id" class="product-card-body">
       <section class="product-room-position" :class="{ editing: roleEditing === item.id }">
         <header>
           <span><b>直播间定位</b><small>商品长期作用，方案变化时仍作为基础方向</small></span>
@@ -373,11 +394,21 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         <button type="button" class="product-copy" :disabled="busy" :aria-label="'复制' + item.link_key + '商品卡'" @mousedown.prevent @click="copyItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制</button>
         <button type="button" class="product-delete" :disabled="busy" :aria-label="'删除' + item.link_key" @mousedown.prevent @click="deleteItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>删除</button>
       </footer>
+      </div>
     </article>
   </div>
 </template>
 
 <style scoped>
+.product-card-summary,.product-card-body{display:contents}
+.product-cards.is-compact{display:block;border:1px solid #e3e8f0;border-radius:9px;background:#fff;overflow:hidden}
+.is-compact .product-list-labels,.is-compact .product-card-summary{display:grid;grid-template-columns:80px minmax(0,1fr) 120px 52px 92px;align-items:center;gap:14px;padding:12px 16px}
+.is-compact .product-list-labels{border-bottom:1px solid #e8edf4;color:#7c879b;font-size:12px}
+.product-cards.is-compact .product-card{display:block;padding:0;border:0;border-bottom:1px solid #e8edf4;border-radius:0;background:#fff;box-shadow:none;--accent:#4e63d9;--tint:#f1f4fc}
+.is-compact .product-card:last-child{border-bottom:0}.is-compact .product-card::before{display:none}.is-compact .product-card:hover,.is-compact .product-card:focus-within{transform:none;box-shadow:none;border-color:#e8edf4}
+.is-compact .product-card-header{grid-column:1;grid-row:1;align-items:flex-start;flex-direction:column;gap:3px}.is-compact .product-name{grid-column:2;grid-row:1;margin:0;align-items:center}.is-compact .product-name strong{font-size:14px;font-weight:650}.is-compact .product-version{grid-column:4;grid-row:1;font-size:12px}.is-compact .product-list-roles{grid-column:3;grid-row:1;display:flex;gap:5px;flex-wrap:wrap;color:#68768b;font-size:12px}.is-compact .product-details-toggle{grid-column:5;grid-row:1;min-height:34px;padding:4px;border:0;background:transparent;color:#4e63d9;font:inherit;font-size:12px;cursor:pointer}
+.is-compact .product-card-link{padding:2px 5px;border-radius:5px;background:#f1f4fc;font-size:13px;font-weight:600}.is-compact .product-status{padding:0;background:transparent;color:#388060;font-size:10px}.is-compact .product-card-body{display:grid;gap:10px;padding:16px;border-top:1px solid #edf0f5;background:#fafbfe}.is-compact .product-room-position{box-shadow:none;background:#fff}.is-compact .product-card-footer{margin-top:0}.is-compact .product-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 24px}
+@media(max-width:800px){.is-compact .product-list-labels{display:none}.is-compact .product-card-summary{grid-template-columns:64px minmax(0,1fr) 80px;grid-template-areas:'link name action' 'link roles version';gap:6px 10px;padding:12px}.is-compact .product-card-header{grid-area:link}.is-compact .product-name{grid-area:name}.is-compact .product-list-roles{grid-area:roles}.is-compact .product-version{grid-area:version;text-align:center}.is-compact .product-details-toggle{grid-area:action}.is-compact .product-card-body{padding:12px}.is-compact .product-details{grid-template-columns:1fr}}
 .product-copy{display:inline-flex;align-items:center;gap:4px;flex:none;padding:6px 8px;border:1px solid #dfe3ff;border-radius:8px;background:var(--tint);color:var(--accent);font:inherit;font-size:12px;cursor:pointer}.product-copy svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7}.product-copy:disabled{opacity:.5;cursor:default}
 .product-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; min-width:0; }
 .product-card { --accent:#4d62ff; --tint:#edf0ff; position:relative; display:flex; flex-direction:column; gap:8px; min-width:0; padding:16px; border:1px solid #dfe5ff; border-radius:14px; background:linear-gradient(135deg,#fff,#fcfdff); box-shadow:0 5px 16px rgba(67,82,158,.05); transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease; }
