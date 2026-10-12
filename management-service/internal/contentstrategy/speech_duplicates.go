@@ -1,6 +1,9 @@
 package contentstrategy
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // SpeechUnits retains every spoken character, including punctuation and numbers.
 // Only transport whitespace around a complete sentence is ignored for equality.
@@ -122,4 +125,60 @@ func RemoveRepeatedEntry(previous, text string, allowRepeat bool) (string, int) 
 		text = strings.TrimSpace(strings.TrimPrefix(text, right[0]))
 		removed++
 	}
+}
+
+// bridgeTransitionNGrams 是桥话术里纯承接/语气的 2-gram，出现这些不算"预告话题"。
+// 这是语言层面的通用词，不依赖任何具体商品，换商品（食品/建材/日化）都适用。
+var bridgeTransitionNGrams = map[string]bool{
+	"接着": true, "继续": true, "咱们": true, "我们": true, "大家": true,
+	"往下": true, "一下": true, "来看": true, "看看": true, "说说": true,
+	"再说": true, "还有": true, "回到": true, "拉回": true, "接下来": true,
+	"哥哥": true, "姐姐": true, "家人": true, "宝子": true, "老板": true,
+	"叔叔": true, "阿姨": true, "老乡": true, "朋友": true,
+	"好嘞": true, "好了": true, "就是": true, "这就": true, "都是": true,
+	"给您": true, "给大": true, "各位": true,
+}
+
+func normalizeSpeechText(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsSpace(r) || strings.ContainsRune("，。！？、；：,.!?;:'\"“”‘’（）()《》【】…—～-", r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func charNGrams(text string, n int) map[string]bool {
+	runes := []rune(text)
+	result := make(map[string]bool, len(runes))
+	for i := 0; i+n <= len(runes); i++ {
+		result[string(runes[i:i+n])] = true
+	}
+	return result
+}
+
+// BridgePreviewsEntry 判断桥话术是否"预告"了回归点首句要讲的内容（话题重叠）。
+// 桥话术应只做纯承接，不应携带回归点要讲的卖点/话题词。
+// 通用实现：桥话术去掉承接/语气 2-gram 后，剩下的实词 2-gram 出现在回归点首句里的
+// 个数达到阈值（>=2）即视为预告话题，应丢弃桥让主线自然继续。
+// 不依赖具体商品词表，换商品都适用。
+func BridgePreviewsEntry(bridge, entry string) bool {
+	bridge = normalizeSpeechText(bridge)
+	entry = normalizeSpeechText(entry)
+	if bridge == "" || entry == "" {
+		return false
+	}
+	entryGrams := charNGrams(entry, 2)
+	overlap := 0
+	for g := range charNGrams(bridge, 2) {
+		if bridgeTransitionNGrams[g] {
+			continue
+		}
+		if entryGrams[g] {
+			overlap++
+		}
+	}
+	return overlap >= 2
 }

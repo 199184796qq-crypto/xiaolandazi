@@ -41,3 +41,28 @@ func TestBridgeDuplicatesOnlyImmediateSentence(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgePreviewsEntryIsTopicGeneric(t *testing.T) {
+	for _, c := range []struct {
+		bridge, entry string
+		want          bool
+	}{
+		// 杨鸭子：桥预告"口感"，回归点讲口感 → 话题词直接重复
+		{"咱们接着看五香味的口感。", "这个鸭子的口感肉紧有嚼头。", true},
+		// 杨鸭子：桥已说"老字号+口碑"，回归点讲老字号 → 重复
+		{"说到老字号，这几十年的口碑可不是吹的。", "咱家是几十年的老字号。", true},
+		// 纯承接，无话题词 → 不判
+		{"好嘞，咱们继续。", "这个鸭子的口感肉紧有嚼头。", false},
+		{"来，哥哥姐姐们看这里。", "这个鸭子的口感肉紧有嚼头。", false},
+		// 换商品（建材瓷砖胶）：桥预告"粘结强度"，回归点讲 → 判重复（通用性）
+		{"咱们接着看瓷砖胶的粘结强度。", "这款瓷砖胶的粘结强度很高。", true},
+		// 换商品（菜籽油）：桥预告"压榨"，回归点讲 → 判重复
+		{"接着说说这油的压榨工艺。", "咱这油是物理压榨的。", true},
+		// 换商品：纯承接，不判
+		{"好，那咱们继续往下说。", "这款瓷砖胶的粘结强度很高。", false},
+	} {
+		if got := BridgePreviewsEntry(c.bridge, c.entry); got != c.want {
+			t.Fatalf("bridge=%q entry=%q got=%v want=%v", c.bridge, c.entry, got, c.want)
+		}
+	}
+}

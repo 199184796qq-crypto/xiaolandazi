@@ -219,6 +219,10 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		log.Printf("bridge omitted before TTS room=%d decision=%s reason=consecutive_exact_duplicate", session.RoomID, item.ID)
 		return nil
 	}
+	if contentstrategy.BridgePreviewsEntry(bridge.Text, entry) {
+		log.Printf("bridge omitted before TTS room=%d decision=%s reason=previews_entry_topic text=%q", session.RoomID, item.ID, bridge.Text)
+		return nil
+	}
 	voice, ok, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
 	if err != nil || !ok {
 		return fmt.Errorf("bridge voice unavailable")
