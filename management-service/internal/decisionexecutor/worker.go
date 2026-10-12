@@ -2738,6 +2738,10 @@ func officialVoiceProfile(voice voicecatalog.Voice) model.VoiceProfile {
 
 var quotedRiskTermPattern = regexp.MustCompile("[“\"「『]([^”\"」』]{1,24})[”\"」』]")
 
+// 风险否定句式：没有X风险 / 无X风险 / 不存在X风险 / 毫无X隐患，都是零风险承诺，
+// 事实未确认"安全性"时禁止说。例："没有卡喉的风险"。
+var riskDenialPattern = regexp.MustCompile(`(没有|无|不存在|毫无|绝对没有)[^，。；,;！!？?，。]{0,10}(风险|危险|隐患)`)
+
 var builtInAbsoluteRiskTerms = []string{
 	"绝对不踩雷",
 	"百分百",
@@ -3009,6 +3013,10 @@ func finalSpeechRisks(
 			reasons = append(reasons, "绝对化或规则层高风险表达："+term)
 		}
 	}
+	// 风险否定句式（没有X风险/无X风险），零风险承诺同样拦截
+	if m := riskDenialPattern.FindString(text); m != "" {
+		reasons = append(reasons, "绝对化或规则层高风险表达："+m)
+	}
 	return uniqueNonEmptyStrings(terms), uniqueNonEmptyStrings(reasons)
 }
 
@@ -3127,6 +3135,8 @@ func hardSanitizeSpeech(text string, riskTerms []string, contextText string) str
 		}
 		text = strings.ReplaceAll(text, term, "")
 	}
+	// 风险否定句式（没有X风险/无X风险）→ 改成安全提醒，不再做零风险承诺
+	text = riskDenialPattern.ReplaceAllString(text, "请注意食用安全")
 	for strings.Contains(text, "，，") {
 		text = strings.ReplaceAll(text, "，，", "，")
 	}
