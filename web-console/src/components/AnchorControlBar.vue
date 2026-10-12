@@ -4,11 +4,12 @@ withDefaults(defineProps<{
   initializeProgress?: number
   initializeLabel?: string
   saving: boolean
+  saveLabel?: string
   initializeDisabled: boolean
   saveDisabled: boolean
   saveHint?: string
   mode?: 'all' | 'initialize' | 'save'
-}>(), { initializeProgress: 0, initializeLabel: '', saveHint: '', mode: 'all' })
+}>(), { initializeProgress: 0, initializeLabel: '', saveLabel: '', saveHint: '', mode: 'all' })
 defineEmits<{ initialize: []; save: [] }>()
 </script>
 
@@ -33,7 +34,7 @@ defineEmits<{ initialize: []; save: [] }>()
       </button>
       <button v-if="mode !== 'initialize'" type="button" class="agent-control-card control-save" :disabled="saveDisabled" :aria-busy="saving" :title="saveHint" @click="$emit('save')">
         <span class="control-icon save-icon" aria-hidden="true"><svg viewBox="0 0 48 48"><defs><linearGradient id="anchor-control-document" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#456dff"/><stop offset="1" stop-color="#357bff"/></linearGradient></defs><path d="M12 5h17l9 9v29H12a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3Z" fill="url(#anchor-control-document)"/><path d="M29 5v9h9" fill="#b7caff"/><path d="M17 24h14M17 31h10" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/></svg></span>
-        <strong>{{ saving ? '保存中…' : '保存智能体方案' }}</strong>
+        <strong>{{ saveLabel || (saving ? '保存中…' : '保存方案') }}</strong>
       </button>
     </div>
   </section>

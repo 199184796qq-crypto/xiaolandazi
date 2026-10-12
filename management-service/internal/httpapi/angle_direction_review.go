@@ -139,7 +139,7 @@ func (s *Server) reviewCycleAngleDirections(ctx context.Context, state *anchorcy
 			r.Error = e.Error()
 			return r
 		}
-		request := agentgateway.Request{Stage: "angle_direction_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 400, EnableThinking: false, Timeout: 6 * time.Second}
+		request := agentgateway.Request{Stage: "angle_direction_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 400, EnableThinking: false, CacheSystemPrompt: true, Timeout: 6 * time.Second}
 		c = withExchangeScope(c, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
 		id, e := s.beginModelExchange(c, request.Stage, profile.ID, request)
 		if e != nil {

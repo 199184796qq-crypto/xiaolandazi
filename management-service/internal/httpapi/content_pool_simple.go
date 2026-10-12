@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentpools"
@@ -21,10 +22,11 @@ type poolContent struct {
 	Angle    string `json:"angle"`
 	Audience string `json:"target_audience,omitempty"`
 	Pain     string `json:"pain_point,omitempty"`
+	Weight   int    `json:"weight,omitempty"`
 }
 
 func taskContent(t contentpools.Task) poolContent {
-	return poolContent{t.Point, t.Angle, t.TargetAudience, t.PainPoint}
+	return poolContent{Point: t.Point, Angle: t.Angle, Audience: t.TargetAudience, Pain: t.PainPoint, Weight: t.Weight}
 }
 func poolMaterial(p contentpools.Pool, products []contentpools.Product) map[string]any {
 	facts := []string{}
@@ -125,6 +127,7 @@ func poolEnvelopeText(value any) string {
 type poolJudgment struct {
 	known, passed bool
 	reason        string
+	weight        int
 }
 
 // Parse a semantic conclusion, not an output schema. An explicit conflicting
@@ -140,7 +143,7 @@ func readPoolJudgment(raw string, scope bool) poolJudgment {
 		if !*legacy.Passed && strings.TrimSpace(legacy.Reason) == "" {
 			legacy.Reason = "模型判断这条内容有问题，暂不入池"
 		}
-		return poolJudgment{true, *legacy.Passed, strings.TrimSpace(legacy.Reason)}
+		return poolJudgment{known: true, passed: *legacy.Passed, reason: strings.TrimSpace(legacy.Reason)}
 	}
 	text = strings.ToLower(strings.NewReplacer("**", "", "__", "", "`", "", "#", "", "\r", "").Replace(text))
 	positive := []string{"通过", "内容正确", "没有发现问题", "未发现问题", "没有问题", "可以保留", "可以入池", "符合事实", "可以通过", "合格", "pass", "approved"}
@@ -172,12 +175,12 @@ func readPoolJudgment(raw string, scope bool) poolJudgment {
 		first = strings.NewReplacer("并非没有问题", "有问题", "没有问题", "可以保留", "不存在问题", "可以保留", "没有发现问题", "可以保留", "未发现问题", "可以保留", "没有内容错误", "可以保留", "不存在内容错误", "可以保留").Replace(first)
 		for _, phrase := range negative {
 			if poolJudgmentContains(first, phrase) {
-				return poolJudgment{true, false, strings.TrimSpace(raw)}
+				return poolJudgment{known: true, passed: false, reason: strings.TrimSpace(raw)}
 			}
 		}
 		for _, phrase := range positive {
 			if poolJudgmentContains(first, phrase) {
-				return poolJudgment{true, true, strings.TrimSpace(raw)}
+				return poolJudgment{known: true, passed: true, reason: strings.TrimSpace(raw)}
 			}
 		}
 	}
@@ -190,6 +193,19 @@ func poolJudgmentContains(text, phrase string) bool {
 	}
 	return strings.Contains(text, phrase)
 }
+
+var poolWeightPattern = regexp.MustCompile(`(?i)(?:权重|weight)\s*[:：]?\s*([1-5])\b`)
+
+// poolWeight 从审核模型的自然语言结论里提取讲解权重（1-5）。未给出或越界返回 0，
+// 由下游缺省为 1。
+func poolWeight(raw string) int {
+	if m := poolWeightPattern.FindStringSubmatch(raw); m != nil {
+		if w, err := strconv.Atoi(m[1]); err == nil && w >= 1 && w <= 5 {
+			return w
+		}
+	}
+	return 0
+}
 func (s *Server) judgePoolContent(ctx context.Context, profile, stage, mother, p0 string, packet map[string]any, scope bool) (poolJudgment, error) {
 	var judgment poolJudgment
 	for attempt := 0; attempt < 2; attempt++ {
@@ -200,6 +216,9 @@ func (s *Server) judgePoolContent(ctx context.Context, profile, stage, mother, p
 			return judgment, err
 		}
 		judgment = readPoolJudgment(response.Text, scope)
+		if judgment.weight == 0 {
+			judgment.weight = poolWeight(response.Text)
+		}
 		if judgment.known {
 			return judgment, nil
 		}
@@ -216,7 +235,7 @@ func bindPoolContent(p contentpools.Pool, item poolContent, previous []contentpo
 	t := contentpools.Task{ID: "task-" + contentpools.Digest(struct {
 		Pool    string
 		Content poolContent
-	}{p.Key, item})[:32], Point: item.Point, Angle: item.Angle, TargetAudience: item.Audience, PainPoint: item.Pain, Sources: refs}
+	}{p.Key, item})[:32], Point: item.Point, Angle: item.Angle, TargetAudience: item.Audience, PainPoint: item.Pain, Weight: item.Weight, Sources: refs}
 	for _, old := range previous {
 		if taskContent(old) == item {
 			t.ID = old.ID
@@ -225,6 +244,68 @@ func bindPoolContent(p contentpools.Pool, item poolContent, previous []contentpo
 		}
 	}
 	return t
+}
+
+// normalizePoolAngle 去掉标点、空白与大小写差异，只保留字符，用于角度去重的 2-gram 比较。
+func normalizePoolAngle(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsSpace(r) || strings.ContainsRune("，。！？、；：,.!?;:'\"“”‘’（）()《》【】…—～-", r) {
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
+// poolAngleNGrams 提取文本的 2-gram 字符集合。
+func poolAngleNGrams(text string) map[string]bool {
+	runes := []rune(text)
+	result := make(map[string]bool, len(runes))
+	for i := 0; i+2 <= len(runes); i++ {
+		result[string(runes[i:i+2])] = true
+	}
+	return result
+}
+
+// poolAngleOverlapRate 计算两个角度文本的 2-gram 重叠率（0~1，取较短的 gram 数为分母）。
+func poolAngleOverlapRate(a, b string) float64 {
+	a = normalizePoolAngle(a)
+	b = normalizePoolAngle(b)
+	if a == "" || b == "" {
+		return 0
+	}
+	gramsA := poolAngleNGrams(a)
+	gramsB := poolAngleNGrams(b)
+	if len(gramsA) == 0 || len(gramsB) == 0 {
+		return 0
+	}
+	overlap := 0
+	for g := range gramsA {
+		if gramsB[g] {
+			overlap++
+		}
+	}
+	denom := len(gramsA)
+	if len(gramsB) < denom {
+		denom = len(gramsB)
+	}
+	return float64(overlap) / float64(denom)
+}
+
+// poolAngleDuplicated 判断新角度是否与池内已有角度高度重叠（同一主题被拆成多个相似角度）。
+// 用 2-gram 字符重叠率（去标点空白、忽略大小写），产品无关，换任何商品都适用。
+// 返回命中的已有角度文本（用于记录提示），无重复返回空串。
+func poolAngleDuplicated(existing []contentpools.Task, angle string) string {
+	if strings.TrimSpace(angle) == "" {
+		return ""
+	}
+	for _, t := range existing {
+		if poolAngleOverlapRate(t.Angle, angle) >= 0.55 {
+			return t.Angle
+		}
+	}
+	return ""
 }
 func (s *Server) reviewSimplePoolContent(ctx context.Context, profile, mother, p0 string, p contentpools.Pool, products []contentpools.Product, corrections []map[string]any, item poolContent) (poolContent, string, error) {
 	packet := poolMaterial(p, products)
@@ -238,6 +319,7 @@ func (s *Server) reviewSimplePoolContent(ctx context.Context, profile, mother, p
 	if !judgment.passed {
 		return item, judgment.reason, nil
 	}
+	item.Weight = judgment.weight
 	// A verdict never silently rewrites the candidate it approves.
 	return item, "", nil
 }
@@ -282,7 +364,34 @@ func poolContentUnits(p contentpools.Pool, source contentpools.Sources) []poolUn
 	}
 	return units
 }
-func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p0 string, p *contentpools.Pool, previous []contentpools.Task, source contentpools.Sources, beforeCall func() error) ([]contentpools.Notice, error) {
+// factsChanged 判断一组 fact 里是否有任一 fact 内容变化（新增/改动/删除）。
+// changed 为 nil 时保守返回 true（全部重跑），保证旧调用与测试行为不变。
+func factsChanged(facts []contentpools.Fact, changed map[string]bool) bool {
+	if changed == nil {
+		return true
+	}
+	for _, f := range facts {
+		if changed[f.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceIDsChanged 判断 task 引用的 fact ID 里是否有任一变化。
+func sourceIDsChanged(ids []string, changed map[string]bool) bool {
+	if changed == nil {
+		return true
+	}
+	for _, id := range ids {
+		if changed[id] {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p0 string, p *contentpools.Pool, previous []contentpools.Task, source contentpools.Sources, changed map[string]bool, beforeCall func() error) ([]contentpools.Notice, error) {
 	notes := []contentpools.Notice{}
 	p.Tasks = []contentpools.Task{}
 	seen := map[string]bool{}
@@ -291,7 +400,7 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 		if err := beforeCall(); err != nil {
 			return err
 		}
-		checked, reason, err := s.reviewSimplePoolContent(ctx, profile, review, p0, *p, source.Products, corrections, draft)
+		checked, reason, err := s.reviewSimplePoolContent(ctx, profile, review, p0, boundary, source.Products, corrections, draft)
 		if err != nil {
 			notes = append(notes, poolNotice(*p, draft.Angle, "unavailable", "本条内容核对尚未完成，留在池外；其他内容继续，可稍后重试", true))
 			return nil
@@ -302,6 +411,11 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 		}
 		t := bindPoolContent(boundary, checked, previous)
 		if !seen[t.ID] {
+			// 角度去重：与池内已有角度高度重叠的不重复入池，避免同一主题被拆成多个相似角度。
+			if duplicated := poolAngleDuplicated(p.Tasks, t.Angle); duplicated != "" {
+				notes = append(notes, poolNotice(*p, t.Angle, "excluded", "与已有角度内容高度重叠，未重复入池", false))
+				return nil
+			}
 			p.Tasks = append(p.Tasks, t)
 			seen[t.ID] = true
 		}
@@ -315,6 +429,14 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 		}
 		if strings.TrimSpace(old.Angle) == "" {
 			notes = append(notes, poolNotice(*p, old.Point, "excluded", "旧条目没有讲述内容，未入池；其他内容继续", false))
+			continue
+		}
+		// task 级增量：Sources 未变化的旧 task 直接复用，不再逐条重新核对。
+		if !sourceIDsChanged(old.Sources, changed) {
+			if !seen[old.ID] {
+				p.Tasks = append(p.Tasks, old)
+				seen[old.ID] = true
+			}
 			continue
 		}
 		boundary := *p
@@ -336,6 +458,10 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 		}
 	}
 	for _, unit := range poolContentUnits(*p, source) {
+		// task 级增量：unit facts 未变化的跳过（旧 task 已在复用循环保留）
+		if !factsChanged(unit.facts, changed) {
+			continue
+		}
 		if err := beforeCall(); err != nil {
 			return notes, err
 		}
@@ -358,8 +484,11 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 			continue
 		}
 		// Request context owns title, source IDs and association. No format gate.
-		// The full pool is the review context, including cross-field conditions.
-		if err := check(poolContent{Point: unit.title, Angle: text}, *p); err != nil {
+		// 审核上下文扩回整池 facts：plus 审核已便宜，宁可多传也要让审核看到 candidate
+		// 引用的相关事实（如工艺、门店），避免"事实在库里却判无依据"的误杀。
+		boundary := *p
+		boundary.Facts = p.Facts
+		if err := check(poolContent{Point: unit.title, Angle: text}, boundary); err != nil {
 			return notes, err
 		}
 	}
@@ -371,7 +500,7 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 
 // One request owns one known fact/product pair. Model answers only the content
 // question; it never selects/echoes a list to maintain program relationships.
-func (s *Server) classifySimplePoolFacts(ctx context.Context, profile string, source contentpools.Sources, facts []contentpools.Fact, p0 string, progress ...func(int, int)) ([]contentpools.Fact, []contentpools.Notice, error) {
+func (s *Server) classifySimplePoolFacts(ctx context.Context, profile string, source contentpools.Sources, facts []contentpools.Fact, p0 string, prev map[string]contentpools.Fact, progress ...func(int, int)) ([]contentpools.Fact, []contentpools.Notice, error) {
 	original := facts
 	facts = mergeEqualProductFacts(facts)
 	mother, _, err := loadReplaceablePromptAsset("CONTENT_POOL_SIMPLE_SCOPE_PATH", "configs/prompts/anchor-style/content-pool-simple-scope.md", "内容池单资料范围母版")
@@ -384,9 +513,26 @@ func (s *Server) classifySimplePoolFacts(ctx context.Context, profile string, so
 		attributes []string
 	}
 	units := []scopeUnit{}
+	validProducts := map[int64]bool{}
+	for _, p := range source.Products {
+		validProducts[p.ID] = true
+	}
 	for i, f := range facts {
 		if f.Owner != 0 || f.Private {
 			continue
+		}
+		// 增量：未变化的 fact 复用上次分类的适用范围，不再逐商品核对。
+		if old, ok := prev[f.ID]; ok && old.Text == f.Text && len(old.Products) > 0 {
+			kept := []int64{}
+			for _, pid := range old.Products {
+				if validProducts[pid] {
+					kept = append(kept, pid)
+				}
+			}
+			if len(kept) > 0 {
+				facts[i].Products = contentpools.IDs(kept)
+				continue
+			}
 		}
 		facts[i].Products = nil
 		for _, product := range source.Products {

@@ -335,6 +335,25 @@ func (s *Server) syncDerivedReviews(ctx context.Context, tenant, plan int64, d *
 
 var derivedNumerals = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
+// consumptionHintWords 识别"保存/食用/加热"等消费提示语境。依据《广告绝对化用语执法指南》
+// 第六条第(二)项：仅宣传使用方法、使用时间、保存期限等消费提示的，不适用绝对化用语规定。
+// 词表是通用消费行为词，产品无关，换食品/建材/日化都适用。
+var consumptionHintWords = regexp.MustCompile(`(保存|食用|饮用|冷藏|加热|复热|当天|吃完|保质|存放|尽快|建议|即食|吃法|口感|风味)`)
+
+// isConsumptionHintHit 判断 absolute_claim 的"最/最好/最佳"命中是否属于消费提示语境。
+// 只有"最/最好/最佳"这类修饰消费行为的词，且整个字段是消费提示，才不算绝对化宣传；
+// "第一/唯一/独家/老字号"等资质排名词，或"全网最好"这种修饰商品质量的，仍拦截。
+func isConsumptionHintHit(text string, h contentguard.Annotation) bool {
+	if h.RuleID != "l1.p0.absolute_claim" {
+		return false
+	}
+	matched := strings.TrimSpace(h.Text)
+	if matched != "最" && matched != "最好" && matched != "最佳" && matched != "最对味" {
+		return false
+	}
+	return consumptionHintWords.MatchString(text)
+}
+
 func applyDerivedReplacements(d *derivedInput, raw, allowed, p0, p1, p2 string) ([]map[string]string, error) {
 	var output struct {
 		Replacements []struct {
@@ -383,8 +402,12 @@ func applyDerivedReplacements(d *derivedInput, raw, allowed, p0, p1, p2 string) 
 		}
 		// New replacements have no independent user proof. Rechecking all three tiers
 		// prevents the model from swapping one unconfirmed claim for another.
-		if len(report.Hits) > 0 {
-			return nil, fmt.Errorf("%s替换后仍有风险表达", r.ID)
+		// hard 命中直接拦；semantic 命中（如"最好"）只在非消费提示语境才拦，
+		// "最好当天吃完"这类保存期限/使用方法消费提示不算绝对化宣传（《指南》第六条第(二)项）。
+		for _, h := range report.Hits {
+			if h.ReviewMode == "hard" || !isConsumptionHintHit(text, h) {
+				return nil, fmt.Errorf("%s替换后仍有风险表达", r.ID)
+			}
 		}
 		for _, n := range derivedNumerals.FindAllString(text, -1) {
 			if !allowedNumbers[n] {

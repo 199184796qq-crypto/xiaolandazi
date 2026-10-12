@@ -712,7 +712,18 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 	combinations := 0
 	for _, rawItem := range rawItems {
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(rawItem, &fields); err != nil || fields["卖点名"] == nil || fields["角度"] == nil {
+		if err := json.Unmarshal(rawItem, &fields); err != nil {
+			return "", 0, 0, errors.New("每个卖点字段无效")
+		}
+		// 容错：模型偶尔把「角度」写成英文 "angle"，程序归一为「角度」。
+		// 字段名由程序维护，模型只负责输出内容，不因中英文字段名混用判失败。
+		if fields["角度"] == nil {
+			if alt, ok := fields["angle"]; ok {
+				fields["角度"] = alt
+				delete(fields, "angle")
+			}
+		}
+		if fields["卖点名"] == nil || fields["角度"] == nil {
 			return "", 0, 0, errors.New("每个卖点须包含“卖点名”和“角度”")
 		}
 		for key := range fields {
@@ -728,8 +739,9 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 				}
 			}
 		}
+		normalized, _ := json.Marshal(fields)
 		var item anchorStyleSellingPointWheelItem
-		if err := json.Unmarshal(rawItem, &item); err != nil {
+		if err := json.Unmarshal(normalized, &item); err != nil {
 			return "", 0, 0, errors.New("卖点字段类型无效")
 		}
 		item.Name = strings.TrimSpace(item.Name)

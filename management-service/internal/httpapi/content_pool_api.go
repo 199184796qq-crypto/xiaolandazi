@@ -62,10 +62,11 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 		out.SavedSetID = contentPoolSetID(version.GenerationContext)
 		if out.SavedSetID > 0 {
 			saved, e := s.store.GetContentPoolSet(ctx, tenant, plan, out.SavedSetID)
-			if e != nil {
-				return out, e
+			if e == nil {
+				baseline = saved.Sources
 			}
-			baseline = saved.Sources
+			// 容错：版本引用的内容池 set 可能已被清理/重建删除，忽略即可，
+			// 不应阻断状态读取（否则保存按钮会被误判为「资料状态没读到」而置灰）。
 		}
 	}
 	out.Changes = contentpools.Changes(baseline, source)
@@ -171,6 +172,8 @@ func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// force=1 时跳过「指纹未变即复用」的所有增量逻辑，强制全量重新生成内容池。
+	force := r.URL.Query().Get("force") == "1"
 	source, err := s.captureContentSources(r.Context(), tenant, plan)
 	if err != nil {
 		writeError(w, 409, err.Error())
@@ -185,7 +188,7 @@ func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "读取内容版本失败")
 		return
 	}
-	if set.ID > 0 && set.SourceSHA == source.SHA() && set.GenerationProtocol == contentpools.GenerationProtocol && !set.HasUnfinishedContent() {
+	if !force && set.ID > 0 && set.SourceSHA == source.SHA() && set.GenerationProtocol == contentpools.GenerationProtocol && !set.HasUnfinishedContent() {
 		status, e := s.contentPoolStatus(r.Context(), tenant, plan, room, false)
 		if e != nil {
 			writeError(w, 500, "读取内容状态失败")
@@ -203,7 +206,7 @@ func (s *Server) contentPoolUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "资料变化或任务创建失败，请刷新重试")
 		return
 	}
-	go s.runContentPoolJob(tenant, plan, actor, job, source)
+	go s.runContentPoolJob(tenant, plan, actor, job, source, force)
 	writeJSON(w, http.StatusAccepted, map[string]any{"state": "updating", "job": job})
 }
 

@@ -862,6 +862,11 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	candidate.AnglePlan = state.CurrentAnglePlan()
 	candidate.AngleHook = state.CurrentAngleHook()
 	candidate.HookCalculations, _ = state.CurrentHookCalculations()
+	// 记录本段切入侧面，供声音缓存 group 纳入侧面（新生成的才记录；复用段侧面留空，
+	// 走话术复用旧音频，不进声音缓存）。
+	if reuseEntry == nil {
+		candidate.FissionSide = state.CurrentFissionSide()
+	}
 	if patch != nil {
 		candidate.P0Patch = patch
 		candidate.P0PatchError = p0PatchError

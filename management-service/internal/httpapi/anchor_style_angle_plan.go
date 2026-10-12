@@ -3,12 +3,51 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	appdb "livecompanion/management/internal/db"
 	"os"
+	"strings"
 	"time"
 )
+
+// angleDirectionHighRiskPhrases 是角度方向的高危编造/贬低短语（产品无关）。
+// flash 规划方向时爱编这些通用模式，程序用相对校验（方向文本有、事实正文无）
+// 在交给审核模型之前先拦掉，降低打回率、省审核模型调用。
+var angleDirectionHighRiskPhrases = []string{
+	// 竞品对比/贬低（直播带货通病，事实正文不会写）
+	"优于", "秒杀", "吊打", "碾压", "完胜", "甩几条街", "降维打击",
+	"别家没法比", "其他家比不上", "市面上最好", "独一份", "全网第一", "全网最好",
+	// 无依据技术原理/机理外推（flash 爱编"为什么好吃"）
+	"锁水", "锁住水分", "作用机理", "科学原理", "生长机理",
+}
+
+func unsupportedDirectionPhrases(text, evidence string) []string {
+	var phrases []string
+	for _, phrase := range angleDirectionHighRiskPhrases {
+		if strings.Contains(text, phrase) && !strings.Contains(evidence, phrase) {
+			phrases = append(phrases, phrase)
+		}
+	}
+	return phrases
+}
+
+// filterAngleDirectionBoundaryViolations 过滤掉含高危编造短语的方向，
+// 返回保留的方向和命中的违规描述。事实正文已出现的短语不算违规。
+func filterAngleDirectionBoundaryViolations(cards []anchorcycle.AngleHook, evidence string) ([]anchorcycle.AngleHook, []string) {
+	kept := make([]anchorcycle.AngleHook, 0, len(cards))
+	removed := make([]string, 0)
+	for _, c := range cards {
+		text := c.Title + "\n" + c.Concern + "\n" + c.Entry + "\n" + c.Action
+		if phrases := unsupportedDirectionPhrases(text, evidence); len(phrases) > 0 {
+			removed = append(removed, fmt.Sprintf("方向“%s”含%s", c.Title, strings.Join(phrases, "、")))
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, removed
+}
 
 // Fact previews plan normally, but never change the live direction library.
 func cycleAnglePlanPersistent(state *anchorcycle.State) bool {
@@ -140,6 +179,16 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	if len(plan.Cards) == 0 {
 		fallback("角度推演返回为空，原始返回已记录")
 		return
+	}
+	// 程序字面硬拦：先过滤编造方向（竞品贬低/技术原理外推），再交给审核模型，
+	// 降低打回率、省审核模型调用。事实正文已出现的短语不算违规。
+	if kept, removed := filterAngleDirectionBoundaryViolations(plan.Cards, state.GenerationFacts()); len(removed) > 0 {
+		state.Warn("事实边界硬拦方向：" + strings.Join(removed, "；"))
+		plan.Cards = kept
+		if len(plan.Cards) == 0 {
+			fallback("角度推演方向均被事实边界拦截，原始返回已记录")
+			return
+		}
 	}
 	plan.SourceSHA, plan.PromptSHA, plan.Model = key, state.AnglePlanMotherSHA, profile.Model
 	plan.InputTokens, plan.OutputTokens = response.InputTokens, response.OutputTokens

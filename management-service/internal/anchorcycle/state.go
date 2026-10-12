@@ -109,6 +109,7 @@ type Candidate struct {
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
 	AnglePlan               *AnglePlan                            `json:"angle_plan,omitempty"`
+	FissionSide             string                                `json:"fission_side,omitempty"`
 	OpeningInstructionEdits []contentguard.OpeningInstructionEdit `json:"opening_instruction_edits,omitempty"`
 	P0CheckedInputSHA       string                                `json:"p0_checked_input_sha,omitempty"`
 	P0ApprovedTextSHA       string                                `json:"p0_approved_text_sha,omitempty"`

@@ -32,7 +32,18 @@ func marshalRun(state *State) ([]byte, error) {
 	copy := *state
 	copy.Accepted = append([]Segment{}, state.Accepted...)
 	for i := range copy.Accepted {
-		copy.Accepted[i].Voice = nil
+		seg := &copy.Accepted[i]
+		seg.Voice = nil
+		// 剥离纯调试大字段，防止长时间直播把 Redis 单 key 撑爆（16MB 上限）。
+		// 运行恢复（去重/冷却/调度）只需要 Text/Score/ID/Task，用不到这些；
+		// 审计留痕已实时落库到 live_model_exchanges.request_json/response_json、
+		// live_p0_audit_events.request_prompt，剥离后不丢审计数据。
+		seg.Attempts = nil
+		seg.Selected.Prompt = ""
+		seg.Selected.RawText = ""
+		// 保留 OutputText：它参与文字审核回执身份（candidateP0Input 含 c.OutputText），
+		// 剥离会让声音阶段 CheckApprovedText 的 P0CheckedInputSHA 失配，
+		// 全部已通过话术被判"文字审核回执与当前话术不一致"而跳过、不进 TTS。
 	}
 	return json.Marshal(copy)
 }

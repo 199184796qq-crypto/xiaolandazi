@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
 	"time"
 )
@@ -32,7 +33,7 @@ func (s *Server) finishModelExchange(ctx context.Context, id int64, response any
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	var input, output *int64
+	var input, output, cached *int64
 	// Current transports do not expose presence flags; leave unreported zero unknown.
 	if in > 0 {
 		input = &in
@@ -40,7 +41,12 @@ func (s *Server) finishModelExchange(ctx context.Context, id int64, response any
 	if out > 0 {
 		output = &out
 	}
-	if err := s.store.CompleteModelExchange(persist, id, response, text, time.Since(started).Milliseconds(), input, output, callErr); err != nil {
+	// Audit transports report cached prefix tokens inside the gateway response.
+	if r, ok := response.(agentgateway.Response); ok && r.CachedInputTokens > 0 {
+		v := r.CachedInputTokens
+		cached = &v
+	}
+	if err := s.store.CompleteModelExchange(persist, id, response, text, time.Since(started).Milliseconds(), input, output, cached, callErr); err != nil {
 		return fmt.Errorf("模型已返回，但日志保存失败：%w", err)
 	}
 	return callErr

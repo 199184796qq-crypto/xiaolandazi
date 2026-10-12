@@ -241,7 +241,7 @@ func (s *Server) classifyContentFacts(ctx context.Context, profile string, sourc
 	return facts, nil
 }
 
-func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int64, job appdb.PoolJob, source contentpools.Sources) (contentpools.Set, error) {
+func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int64, job appdb.PoolJob, source contentpools.Sources, force bool) (contentpools.Set, error) {
 	stage := func(text string) { _ = s.store.PoolJobStage(context.WithoutCancel(ctx), tenant, plan, job.ID, text) }
 	stage("正在核对事实与福利")
 	safety, err := s.prepareDerivedSafety(ctx, tenant, plan, actor)
@@ -261,7 +261,20 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 		return contentpools.Set{}, err
 	}
 	stage("正在归纳公共资料与商品专属资料")
-	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0, func(done, total int) {
+	// 提前加载上次内容池，提取事实适用范围，供范围分类增量复用（未变化的 fact 不再逐商品核对）。
+	old, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
+	if err != nil {
+		return contentpools.Set{}, err
+	}
+	prev := map[string]contentpools.Fact{}
+	if !force {
+		for _, p := range old.Pools {
+			for _, f := range p.Facts {
+				prev[f.ID] = f
+			}
+		}
+	}
+	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0, prev, func(done, total int) {
 		stage(fmt.Sprintf("正在核对资料适用范围 · %d/%d", done, total))
 	})
 	if err != nil {
@@ -281,14 +294,34 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 			legacyMaterial = r.Fields["内容"]
 		}
 	}
-	pools := contentpools.GroupPools(facts, source.Products, derivedHash(gen+review+p0+legacyMaterial+contentpools.Digest(source.Corrections)))
-	old, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
-	if err != nil {
-		return contentpools.Set{}, err
+	// 计算变化的 fact（新增、内容变化、删除），供 task 级增量复用。force 时全部标记为变化，强制全量重跑。
+	changed := map[string]bool{}
+	if force {
+		for _, f := range facts {
+			changed[f.ID] = true
+		}
+	} else {
+		factsByID := map[string]bool{}
+		for _, f := range facts {
+			factsByID[f.ID] = true
+		}
+		for _, f := range facts {
+			if oldFact, ok := prev[f.ID]; !ok || oldFact.Text != f.Text {
+				changed[f.ID] = true
+			}
+		}
+		for id := range prev {
+			if !factsByID[id] {
+				changed[id] = true
+			}
+		}
 	}
+	pools := contentpools.GroupPools(facts, source.Products, derivedHash(gen+review+p0+legacyMaterial+contentpools.Digest(source.Corrections)))
 	prior := map[string]contentpools.Pool{}
-	for _, p := range old.Pools {
-		prior[p.Key] = p
+	if !force {
+		for _, p := range old.Pools {
+			prior[p.Key] = p
+		}
 	}
 	work, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -325,7 +358,7 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 					if e == nil {
 						var localNotices []contentpools.Notice
 						unitChecks := 0
-						localNotices, e = s.generateSimplePool(work, cfg.SellingPointProfileID, gen, review, p0, p, previous.Tasks, source, func() error {
+						localNotices, e = s.generateSimplePool(work, cfg.SellingPointProfileID, gen, review, p0, p, previous.Tasks, source, changed, func() error {
 							if unitChecks == 0 {
 								stage("正在生成" + p.Label)
 							} else {
@@ -424,7 +457,7 @@ enqueue:
 	return s.store.CommitContentPoolSet(ctx, tenant, plan, actor, job, set)
 }
 
-func (s *Server) runContentPoolJob(tenant, plan, actor int64, job appdb.PoolJob, source contentpools.Sources) {
+func (s *Server) runContentPoolJob(tenant, plan, actor int64, job appdb.PoolJob, source contentpools.Sources, force bool) {
 	parent := s.anchorProducerContext
 	if parent == nil {
 		parent = context.Background()
@@ -458,7 +491,7 @@ func (s *Server) runContentPoolJob(tenant, plan, actor int64, job appdb.PoolJob,
 			s.store.FailPoolJob(context.Background(), tenant, plan, job.ID, "更新进程发生异常，可重试")
 		}
 	}()
-	if _, err := s.buildContentPools(ctx, tenant, plan, actor, job, source); err != nil {
+	if _, err := s.buildContentPools(ctx, tenant, plan, actor, job, source, force); err != nil {
 		// Provider errors may contain signed URLs; keep those in model traces.
 		reason := "更新未完成，请重试；详情已保留在后台模型记录。"
 		if errors.Is(err, appdb.ErrPoolSourceChanged) {

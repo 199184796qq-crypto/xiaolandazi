@@ -129,7 +129,7 @@ func (s *Server) reviewCycleP0ContextOnce(ctx context.Context, state *anchorcycl
 	reviewCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	reviewCtx = withExchangeScope(reviewCtx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: candidate.ID})
-	request := agentgateway.Request{Stage: "mainline_p0_context", Model: profile.Model, Messages: messages, MaxTokens: min(1800, profile.MaxTokens), ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, Timeout: 15 * time.Second}
+	request := agentgateway.Request{Stage: "mainline_p0_context", Model: profile.Model, Messages: messages, MaxTokens: min(1800, profile.MaxTokens), ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, CacheSystemPrompt: true, Timeout: 15 * time.Second}
 	exchange, err := s.beginModelExchange(reviewCtx, request.Stage, profile.ID, request)
 	if err != nil {
 		failed("P0语境复核请求记录失败")

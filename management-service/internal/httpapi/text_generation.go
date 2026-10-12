@@ -155,6 +155,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if method := cycleExpressionMethod(state); method != "" {
 		packet["表达展开建议"] = method
 	}
+	// 直播时切入侧面裂变：程序按已采纳段数轮换切入侧面，硬保证相邻段落从
+	// 不同侧面切入，让同一事实不重复讲法。侧面池产品无关，展开内容由本场事实决定。
+	if side := state.CurrentFissionSide(); side != "" {
+		packet["本次切入侧面"] = side
+	}
 	links := []string{}
 	for _, id := range state.HookProducts() {
 		if id != "current" {
@@ -252,7 +257,7 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}
-	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
+	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
 	if profile.SystemPrompt != "" {
 		req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)
 	}

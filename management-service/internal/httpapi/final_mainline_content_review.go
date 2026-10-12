@@ -115,7 +115,7 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		fail(err.Error())
 		return
 	}
-	request := agentgateway.Request{Stage: "mainline_final_content_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 600, EnableThinking: false, Timeout: 10 * time.Second}
+	request := agentgateway.Request{Stage: "mainline_final_content_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 600, EnableThinking: false, CacheSystemPrompt: true, Timeout: 10 * time.Second}
 	work, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	work = withExchangeScope(work, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: c.ID})
