@@ -18,6 +18,8 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 	}
 	queue := []anchorcycle.Task{}
 	focus := &anchorcycle.ProductFocus{Policy: policy, FactsSHA: derivedHash(set.SafeFacts), Products: []anchorcycle.FocusProduct{}, Facts: []anchorcycle.ScopedFact{}, Tasks: map[string]anchorcycle.ScopedTask{}}
+	pointWeights := map[string]int{}
+	angleWeights := map[string]int{}
 	links := map[int64]string{}
 	identities := map[int64]anchorcycle.HookFact{}
 	for _, p := range set.Sources.Products {
@@ -68,11 +70,21 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 			allowedLinks, _ := json.Marshal(scopeLinks)
 			queue = append(queue, anchorcycle.Task{FactScope: scope, AllowedLinksJSON: string(allowedLinks), ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 			focus.Tasks[t.ID] = anchorcycle.ScopedTask{Links: scopeLinks, Shared: shared}
+			w := t.Weight
+			if w < 1 {
+				w = 1
+			}
+			pointWeights[t.Point] += w
+			angleWeights[t.ID] = w
 		}
 	}
 	if len(set.Sources.Products) < 2 {
 		return queue, nil, nil
 	}
+	// 审核模型在生成智能体时分配的权重：角度权重=task.Weight，卖点权重=该卖点下角度权重之和。
+	// 只对多商品场景注入（单商品场景 focus 为空，走缺省等频）。
+	focus.Policy.PointWeights = pointWeights
+	focus.Policy.AngleWeights = angleWeights
 	if err := focus.Policy.Validate(); err != nil {
 		return nil, nil, err
 	}

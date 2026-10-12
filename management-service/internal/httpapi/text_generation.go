@@ -117,11 +117,13 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		task.Key = derivedHash(task.Key)
 	}
 	// The reusable expression view is separate from this task's material.
+	// 四块结构：必说（本段任务，见 packet）/ 可说（本场有效事实）/ 不提（未知项）/ 改写（禁说→安全改写）。
 	facts, expressionGuidance := generationMaterialViews(state.HookFacts())
-	material := map[string]any{"本场有效事实": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	material := map[string]any{"可说": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
 	if len(expressionGuidance) > 0 {
-		material["表达约束与正向示例"] = expressionGuidance
+		material["改写"] = expressionGuidance
 	}
+	material["不提"] = "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。"
 	material["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
 	if task.FactScope != nil {
 		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)

@@ -52,8 +52,12 @@ func decodePoolTaskResponse(raw string, pool contentpools.Pool, previous []conte
 		_ = json.Unmarshal(poolProtocolField(r, "angle", "角度"), &t.Angle)
 		_ = json.Unmarshal(poolProtocolField(r, "target_audience", "目标人群"), &t.TargetAudience)
 		_ = json.Unmarshal(poolProtocolField(r, "pain_point", "痛点"), &t.PainPoint)
+		_ = json.Unmarshal(poolProtocolField(r, "weight", "权重"), &t.Weight)
 		if err := json.Unmarshal(poolProtocolField(r, "source_ids", "事实编号", "依据编号"), &t.Sources); err != nil {
 			return nil, errors.New("任务缺少事实引用编号")
+		}
+		if t.Weight < 1 {
+			t.Weight = 1
 		}
 		t.Point, t.Angle = strings.TrimSpace(t.Point), strings.TrimSpace(t.Angle)
 		if t.Point == "" || t.Angle == "" || len(t.Sources) == 0 {

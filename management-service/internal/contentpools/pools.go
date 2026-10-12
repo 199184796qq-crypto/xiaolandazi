@@ -128,6 +128,7 @@ type Task struct {
 	TargetAudience string   `json:"target_audience,omitempty"`
 	PainPoint      string   `json:"pain_point,omitempty"`
 	Sources        []string `json:"source_ids"`
+	Weight         int      `json:"weight,omitempty"` // 角度权重，审核模型分配，缺省 1；卖点权重=该卖点下角度权重之和
 }
 type Pool struct {
 	Key         string  `json:"key"`
