@@ -28,6 +28,17 @@ func TestTranslateFactBoundary(t *testing.T) {
 	if !found2 {
 		t.Fatalf("到货时间类边界应翻译出'今天下单明天到'，得到 %v", terms2)
 	}
+	// 门店地域外推类边界应翻译出地域禁词
+	terms3 := translateFactBoundary("不能说全国五十多家门店、门店遍布全国，门店都在南充")
+	found3 := false
+	for _, term := range terms3 {
+		if term == "全国五十多家" {
+			found3 = true
+		}
+	}
+	if !found3 {
+		t.Fatalf("地域外推类边界应翻译出'全国五十多家'，得到 %v", terms3)
+	}
 }
 
 func TestFactBoundaryRiskTerms(t *testing.T) {

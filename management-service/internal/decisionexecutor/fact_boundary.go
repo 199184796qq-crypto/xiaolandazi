@@ -27,6 +27,14 @@ var factBoundaryCategories = []factBoundaryCategory{
 			"今天发明天到", "很快收到", "隔天就能到", "马上到", "飞速",
 		},
 	},
+	{
+		// 门店地域外推类：事实只写"五十多家门店"（都在本地），flash 常外推成"全国/遍布全国"
+		keywords: []string{"全国", "遍布", "各地", "覆盖全"},
+		terms: []string{
+			"全国五十多家", "遍布全国", "全国各地", "全国都有门店", "全国门店",
+			"门店遍布全国", "覆盖全国", "全国范围", "全国连锁",
+		},
+	},
 }
 
 // translateFactBoundary 把一条 forbidden_wording 翻译成标准禁词。
