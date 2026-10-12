@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,10 +14,13 @@ import (
 // Immutable inputs are captured with the plan version; adoption counters and
 // the optional auxiliary branch live in Redis only. No Core/audio protocol changes.
 type ProductPolicy struct {
-	Version           string `json:"version"`
-	MainSharePercent  int    `json:"main_share_percent"`
-	MinMainRounds     int    `json:"min_main_rounds"`
-	AuxiliaryMaxChars int    `json:"auxiliary_max_chars"`
+	Version           string         `json:"version"`
+	MainSharePercent  int            `json:"main_share_percent"`
+	MinMainRounds     int            `json:"min_main_rounds"`
+	AuxiliaryMaxChars int            `json:"auxiliary_max_chars"`
+	RoleWeights       map[string]int `json:"role_weights,omitempty"`  // 辅推角色权重（traffic/benefit/bundle/profit），缺省 1
+	PointWeights      map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
+	AngleWeights      map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
 }
 
 func (p ProductPolicy) Validate() error {
@@ -143,14 +147,19 @@ func (s *State) beginAuxiliary() bool {
 		return false
 	}
 	feedbackPending := s.FeedbackPending
-	other := p.auxiliaryProducts()
-	for i := 0; i < len(other); i++ {
+	seq := p.auxiliarySequence()
+	if len(seq) == 0 {
+		return false
+	}
+	for i := 0; i < len(seq); i++ {
+		idx := (p.AuxiliaryCursor + i) % len(seq)
 		s.Status, s.Error = "ready", ""
 		s.FeedbackPending = feedbackPending
-		p.CurrentLink = other[(p.AuxiliaryCursor+i)%len(other)].LinkKey
+		p.CurrentLink = seq[idx].LinkKey
 		p.AuxiliaryActive, s.Phase = true, "body"
 		s.chooseNext()
 		if s.Status != "spacing_blocked" && s.Status != "compliance_blocked" {
+			p.AuxiliaryCursor = (idx + 1) % len(seq)
 			return true
 		}
 	}
@@ -172,6 +181,56 @@ func (p *ProductFocus) auxiliaryProducts() []FocusProduct {
 	})
 	return other
 }
+
+// roleWeight 返回商品在辅推轮换中的权重，优先按 RoleWeights 配置的角色取权，未配置退化为 1。
+func (p *ProductFocus) roleWeight(item FocusProduct) int {
+	if p.Policy.RoleWeights == nil {
+		return 1
+	}
+	w := 0
+	for _, role := range item.Roles {
+		if v, ok := p.Policy.RoleWeights[role]; ok && v > w {
+			w = v
+		}
+	}
+	if w < 1 {
+		return 1
+	}
+	return w
+}
+
+// auxiliarySequence 返回按角色权重交错展开的辅推商品序列：权重高的角色出现次数多，
+// 且同类尽量不相邻。未配置权重时退化为 auxiliaryProducts 的现有顺序（traffic 优先）。
+func (p *ProductFocus) auxiliarySequence() []FocusProduct {
+	other := p.auxiliaryProducts()
+	if len(other) == 0 {
+		return nil
+	}
+	weights := make([]int, len(other))
+	total := 0
+	for i, item := range other {
+		weights[i] = p.roleWeight(item)
+		total += weights[i]
+	}
+	if total == len(other) { // 全部权重为 1，保持现有顺序
+		return other
+	}
+	// 加权交错：每次选已放置比例（count/weight）最小的商品，保证均匀分布且同类不相邻。
+	counts := make([]int, len(other))
+	seq := make([]FocusProduct, 0, total)
+	for placed := 0; placed < total; placed++ {
+		best, bestRatio := -1, math.MaxFloat64
+		for i := range other {
+			ratio := float64(counts[i]) / float64(weights[i])
+			if ratio < bestRatio || (ratio == bestRatio && (best < 0 || i < best)) {
+				best, bestRatio = i, ratio
+			}
+		}
+		counts[best]++
+		seq = append(seq, other[best])
+	}
+	return seq
+}
 func (s *State) recordProductAdoption(t Task, text string) {
 	p := s.ProductFocus
 	if p == nil {
@@ -181,12 +240,7 @@ func (s *State) recordProductAdoption(t Task, text string) {
 	if t.ProductMode == "auxiliary" {
 		p.AuxiliaryChars += chars
 		p.LastAuxiliaryRound = p.CompletedMainRounds
-		for i, product := range p.auxiliaryProducts() {
-			if product.LinkKey == t.FocusLink {
-				p.AuxiliaryCursor = i + 1
-				break
-			}
-		}
+		// AuxiliaryCursor 已在 beginAuxiliary 选中商品时推进到序列下一位置
 	} else {
 		p.MainChars += chars
 		if s.Phase == "closing" {

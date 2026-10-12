@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"livecompanion/management/internal/anchorcycle"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -104,7 +105,7 @@ func TestCycleProductFocusPromptUsesScopedFactsAndReturnsToSingle(t *testing.T) 
 	raw, _ := json.Marshal(liveAnchorScheme{Version: 1, ProductFocus: scope})
 	var saved liveAnchorScheme
 	_ = json.Unmarshal(raw, &saved)
-	if saved.ProductFocus.Policy != p || saved.ProductFocus.Facts[0].Text != facts[0].Text {
+	if !reflect.DeepEqual(saved.ProductFocus.Policy, p) || saved.ProductFocus.Facts[0].Text != facts[0].Text {
 		t.Fatal("version snapshot lost")
 	}
 }

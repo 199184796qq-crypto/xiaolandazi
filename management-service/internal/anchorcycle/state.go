@@ -66,7 +66,8 @@ type Config struct {
 	BodyMin                int          `json:"body_min,omitempty"`
 	BodyMax                int          `json:"body_max,omitempty"`
 	CombinationGap         int          `json:"combination_gap"`
-	MaxCycles              int          `json:"max_cycles"` // Zero means until explicitly stopped.
+	MinReappearCycles      int          `json:"min_reappear_cycles"` // 同一卖点×角度至少隔 N 轮再出现；0 表示不启用轮级冷却
+	MaxCycles              int          `json:"max_cycles"`          // Zero means until explicitly stopped.
 	FreshWindowMinutes     int          `json:"fresh_window_minutes"` // 开播前 N 分钟全实时；0 表示不启用话术复用
 	ReuseEveryN            int          `json:"reuse_every_n"`        // 混合期每 N 段 1 段实时，其余复用旧话术；0 或 1 表示每段都实时
 	MaxReuse               int          `json:"max_reuse"`            // 单段话术最多复用次数，达到后淘汰
@@ -153,6 +154,7 @@ type Segment struct {
 type Use struct {
 	Count       int    `json:"count"`
 	LastIndex   int    `json:"last_index"`
+	LastCycle   int    `json:"last_cycle,omitempty"` // 上次出现的轮号，用于轮级冷却
 	LastSummary string `json:"last_summary,omitempty"`
 }
 type SpeechPoolEntry struct {
@@ -406,6 +408,37 @@ func (s *State) OpeningVersion() string {
 	return "接新版"
 }
 
+// pointUsedCounts 统计每个卖点下所有角度的累计使用次数，供卖点级加权调度使用。
+func (s *State) pointUsedCounts() map[string]int {
+	counts := map[string]int{}
+	for _, task := range s.Queue {
+		counts[task.SellingPoint] += s.Used[task.Key].Count
+	}
+	return counts
+}
+
+// pointWeight 返回卖点权重，缺省 1。配合 pointUsedCounts 让各卖点按权重占比分布，
+// 而不是"角度多的卖点霸屏"。未配置权重时所有卖点等频，效果等同于卖点级均匀轮换。
+func (s *State) pointWeight(point string) int {
+	if s.ProductFocus != nil && s.ProductFocus.Policy.PointWeights != nil {
+		if w, ok := s.ProductFocus.Policy.PointWeights[point]; ok && w > 0 {
+			return w
+		}
+	}
+	return 1
+}
+
+// angleWeight 返回角度（卖点×角度）权重，缺省 1。让同一卖点下的角度也按权重分布，
+// 而不是"角度最少使用优先"的均匀轮换。key 与 Used 一致，为「卖点名×角度名」。
+func (s *State) angleWeight(key string) int {
+	if s.ProductFocus != nil && s.ProductFocus.Policy.AngleWeights != nil {
+		if w, ok := s.ProductFocus.Policy.AngleWeights[key]; ok && w > 0 {
+			return w
+		}
+	}
+	return 1
+}
+
 // Called only after adoption. Candidates and retries keep a frozen TaskIndex.
 // Gap N means at least N adopted paragraphs between occurrences; closings are
 // paragraphs too. Reusing a task never clears its old count or last expression.
@@ -418,6 +451,7 @@ func (s *State) chooseNext() {
 		}
 	}
 	chosen := -1
+	pointCounts := s.pointUsedCounts()
 	for i, task := range s.Queue {
 		if !s.productTaskEligible(task) {
 			continue
@@ -429,12 +463,26 @@ func (s *State) chooseNext() {
 		if blockedPoints[task.SellingPoint] || (u.Count > 0 && s.TotalAccepted()-u.LastIndex < s.Config.CombinationGap) {
 			continue
 		}
+		// 轮级冷却：同一卖点×角度至少隔 MinReappearCycles 轮才能再次出现。
+		// 与 CombinationGap（段内防连讲）互补，控制跨轮的重复频率。
+		if u.Count > 0 && s.Config.MinReappearCycles > 0 && s.CycleNumber-u.LastCycle < s.Config.MinReappearCycles {
+			continue
+		}
 		if chosen < 0 {
 			chosen = i
 			continue
 		}
 		prior := s.Used[s.Queue[chosen].Key]
-		if u.Count < prior.Count || (u.Count == prior.Count && u.LastIndex < prior.LastIndex) {
+		// 三级加权调度：卖点权重 → 角度权重 → 最近使用。
+		// 卖点按 PointWeights 占比（缺省等频），避免角度多的卖点霸屏；
+		// 同卖点内角度按 AngleWeights 占比（缺省等频）；再按最近使用兜底。
+		curPoint := float64(pointCounts[task.SellingPoint]) / float64(s.pointWeight(task.SellingPoint))
+		priorPoint := float64(pointCounts[s.Queue[chosen].SellingPoint]) / float64(s.pointWeight(s.Queue[chosen].SellingPoint))
+		curAngle := float64(u.Count) / float64(s.angleWeight(task.Key))
+		priorAngle := float64(prior.Count) / float64(s.angleWeight(s.Queue[chosen].Key))
+		if curPoint < priorPoint ||
+			(curPoint == priorPoint && curAngle < priorAngle) ||
+			(curPoint == priorPoint && curAngle == priorAngle && u.LastIndex < prior.LastIndex) {
 			chosen = i
 		}
 	}
@@ -632,6 +680,7 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		u := s.Used[task.Key]
 		u.Count++
 		u.LastIndex = s.TotalAccepted()
+		u.LastCycle = s.CycleNumber
 		u.LastSummary = excerpt(selected.Text, 180)
 		s.Used[task.Key] = u
 		s.Cursor++
