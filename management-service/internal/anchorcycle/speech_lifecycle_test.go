@@ -129,16 +129,20 @@ func TestExpressionVariantRotates(t *testing.T) {
 	s.Queue = []Task{{SellingPoint: "口感", Key: "口感×A"}}
 	s.TaskIndex = 0
 	s.Cursor = 0
-	s.Used = map[string]Use{}
 	first := s.ExpressionVariant()
-	for i := 0; i < 6; i++ {
-		s.Used[s.Task().Key] = Use{Count: i}
-		if s.ExpressionVariant() == "" {
-			t.Fatal("变体不应为空")
-		}
+	if first == "" {
+		t.Fatal("变体不应为空")
 	}
-	s.Used[s.Task().Key] = Use{Count: 1}
+	// 每采纳一段，表达变体应轮换（不同段数 → 不同包装/长度）
+	s.Accepted = append(s.Accepted, Segment{})
 	if s.ExpressionVariant() == first {
-		t.Fatal("不同使用次数应产生不同包装/长度变体")
+		t.Fatal("不同段数应产生不同包装/长度变体")
+	}
+	// 一轮（6 段，6 种包装 3 种长度的最小公倍数）后回到起点
+	for i := 0; i < 5; i++ {
+		s.Accepted = append(s.Accepted, Segment{})
+	}
+	if s.ExpressionVariant() != first {
+		t.Fatal("6 段后应回到初始包装/长度")
 	}
 }
