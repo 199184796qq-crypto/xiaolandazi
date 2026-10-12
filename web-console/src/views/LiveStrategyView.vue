@@ -19,6 +19,8 @@ import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
+import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
+import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
@@ -6102,33 +6104,38 @@ onBeforeUnmount(() => {
 
       <main class="live-strategy-agent">
         <header class="strategy-agent-head strategy-plan-container-head plan-configuration-header">
+          <PlanHeaderArtwork />
           <div class="strategy-plan-heading">
+            <span class="plan-hero-symbol" aria-hidden="true"><svg viewBox="0 0 48 48"><rect x="7" y="7" width="14" height="14" rx="4"/><rect x="27" y="7" width="14" height="14" rx="4"/><rect x="7" y="27" width="14" height="14" rx="4"/><rect x="27" y="27" width="14" height="14" rx="4"/></svg></span>
+            <div class="plan-heading-copy">
             <span class="plan-configuration-kicker">智能体方案</span>
             <div class="strategy-plan-selector-row">
-              <select class="strategy-plan-title-switch" aria-label="选择智能体方案" :value="currentRoomPlanId || ''" :disabled="planBusy || !livePlans.length" @change="handlePlanSwitch">
+              <select class="strategy-plan-title-switch" aria-label="选择智能体方案" title="选择智能体方案" :value="currentRoomPlanId || ''" :disabled="planBusy || !livePlans.length" @change="handlePlanSwitch">
                 <option value="" disabled>选择智能体直播方案</option>
                 <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">{{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}</option>
               </select>
+              <button class="plan-title-edit" type="button" aria-label="修改方案名称与说明" title="修改方案名称与说明" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager"><PlanConfigurationIcon name="edit" /></button>
             </div>
             <div class="plan-configuration-meta">
-              <span v-if="currentPlan">绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
+              <span v-if="currentPlan" class="plan-binding-status"><PlanConfigurationIcon name="link" />绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
               <span v-if="currentPlan && !currentPlanIsBound">当前房间未绑定</span>
               <span v-if="fullShowWorkspaceDirty || poolStatus?.state === 'ready' || poolStatus?.state === 'needs_update' || poolStatus?.state === 'failed'" class="plan-draft-status">有待保存资料</span>
-              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :runtime="roomRuntimeSnapshot" :loading="fullShowWorkspaceLoading" inline />
+              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :runtime="roomRuntimeSnapshot" :loading="fullShowWorkspaceLoading" inline hero />
               <details v-if="currentPlan" class="plan-version-records">
-                <summary>版本记录</summary>
+                <summary>版本记录<PlanConfigurationIcon name="next" /></summary>
                 <div class="plan-version-record-list">
                   <p v-if="!fullShowVersionHistory.length">{{ latestSavedVersion ? '最新保存 V' + latestSavedVersion.version_no : '尚无保存版本' }}</p>
                   <p v-for="version in fullShowVersionHistory" :key="version.id"><strong>V{{ version.version_no }}</strong><span>{{ version.lifecycle_status === 'published' ? '已保存' : version.lifecycle_status === 'superseded' ? '历史版本' : '草稿' }}</span></p>
                 </div>
               </details>
             </div>
+            </div>
           </div>
           <div class="plan-configuration-actions">
-            <button class="strategy-version-button plan-preview-button" :class="{ active: activeMode === 'fullshow' }" type="button" :aria-pressed="activeMode === 'fullshow'" @click="activeMode = 'fullshow'">生成与预览</button>
-            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick">{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
+            <button class="strategy-version-button plan-preview-button" :class="{ active: activeMode === 'fullshow' }" type="button" :aria-pressed="activeMode === 'fullshow'" @click="activeMode = 'fullshow'"><PlanConfigurationIcon name="preview" />生成与预览</button>
+            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick"><PlanConfigurationIcon name="save" />{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
             <details ref="planActionsMenu" class="plan-configuration-more">
-              <summary class="strategy-version-button">更多 ▾</summary>
+              <summary class="strategy-version-button">更多<PlanConfigurationIcon name="chevron" /></summary>
               <div class="plan-configuration-menu">
                 <button type="button" :disabled="planBusy" @click="openCreatePlanManager(); closePlanActionsMenu()">新建方案</button>
                 <button type="button" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager(); closePlanActionsMenu()">修改名称与说明</button>
@@ -6137,6 +6144,7 @@ onBeforeUnmount(() => {
                 <button class="danger" type="button" :disabled="!currentPlan || planBusy" @click="deleteCurrentPlan">{{ planBusy ? '处理中…' : deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案' }}</button>
               </div>
             </details>
+            <span class="plan-hero-signature" aria-hidden="true">让直播更简单</span>
           </div>
           <p v-if="savePlanOneClickHint" id="plan-save-hint" class="plan-save-hint" role="status">{{ savePlanOneClickHint }}</p>
           <p v-if="fullShowVersionError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
@@ -11069,34 +11077,43 @@ onBeforeUnmount(() => {
 .strategy-workflow-output.workflow-step-fullshow:focus-visible { outline:3px solid #3658db!important; outline-offset:-4px; }
 
 /* Plan configuration: one page header, four input groups, and one saved-version action. */
-.plan-configuration-header.strategy-plan-container-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px 20px;padding:18px 22px;background:#fff;border-bottom:1px solid #e3e8f2}
-.plan-configuration-kicker{display:block;margin-bottom:3px;color:#7b879a;font-size:12px;font-weight:500}
-.plan-configuration-header .strategy-plan-title-switch{width:520px;max-width:100%;height:40px;min-height:40px;padding:0 30px 0 0;border:0;border-radius:0;background:linear-gradient(45deg,transparent 50%,#65718a 50%) calc(100% - 12px) 16px/6px 6px no-repeat;color:#25334b;font-size:19px;font-weight:650;box-shadow:none;transform:none}
+.live-strategy-agent{container-type:inline-size;container-name:plan-workspace;background:linear-gradient(145deg,#f6faff,#f0f5ff 55%,#f9faff)}
+.plan-configuration-header.strategy-plan-container-head{position:relative;isolation:isolate;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px 30px;min-height:198px;margin:22px 24px 18px;padding:26px 30px;border:1px solid #e4e8ff;border-radius:20px;background:linear-gradient(115deg,#fbfcff 0%,#f8f9ff 58%,#f2f1ff 100%);box-shadow:0 8px 28px #8da3e608}
+.plan-configuration-header::after{position:absolute;bottom:0;right:0;z-index:0;width:35%;height:68px;border-radius:85% 10% 20px 0;background:linear-gradient(140deg,#cdd9ff00,#e5ddff98);content:'';pointer-events:none}
+.plan-configuration-header .strategy-plan-heading{position:relative;z-index:1;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:24px;min-width:0}.plan-heading-copy{min-width:0}
+.plan-hero-symbol{display:grid;place-items:center;width:88px;height:90px;border:1px solid #9891ff;border-radius:21px;background:linear-gradient(125deg,#a7a4fb,#6867ff 65%,#4b4aff);box-shadow:0 9px 20px #7d79e52b,inset 0 1px 3px #ffffff66}.plan-hero-symbol svg{width:47px;height:47px;fill:#ffffffef;stroke:#e1e8ff;stroke-width:2;filter:drop-shadow(0 2px 2px #352ead26)}
+.plan-configuration-kicker{display:block;margin-bottom:6px;color:#7c88aa;font-size:16px;font-weight:700}
+.plan-configuration-header .strategy-plan-selector-row{flex-wrap:nowrap;gap:9px}
+.plan-configuration-header .strategy-plan-title-switch{flex:0 1 auto;width:auto;field-sizing:content;max-width:100%;height:42px;min-height:42px;padding:0;border:0;border-radius:0;background:transparent;color:#172347;font-size:29px;font-weight:800;text-overflow:ellipsis;box-shadow:none;transform:none;cursor:pointer}
 .plan-configuration-header .strategy-plan-title-switch:focus-visible{outline:2px solid #6b7ee3;outline-offset:3px;box-shadow:none}
-.plan-configuration-meta{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;color:#748197;font-size:12px}
-.plan-draft-status{color:#936921}
-.plan-configuration-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.plan-configuration-actions .strategy-version-button{min-height:38px;padding:8px 13px;border:1px solid #dce3ee;border-radius:7px;background:#fff;color:#546179;font-size:13px;font-weight:600;box-shadow:none;white-space:nowrap}
-.plan-configuration-actions .plan-save-button{border-color:#4a60de;background:#4a60de;color:#fff}
+.plan-title-edit{display:grid;place-items:center;flex:0 0 34px;width:34px;height:38px;padding:5px;border:0;border-radius:7px;background:transparent;color:#4c5b89;cursor:pointer}.plan-title-edit:hover{background:#e9edff}.plan-title-edit:disabled{opacity:.45;cursor:default}
+.plan-configuration-meta{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;margin-top:12px;color:#647193;font-size:14px;font-weight:600}.plan-binding-status{display:flex;align-items:center;gap:6px}.plan-binding-status :deep(svg){width:17px;height:17px}
+.plan-draft-status{padding:4px 10px;border-radius:18px;background:#fff2d9;color:#936921}
+.plan-configuration-actions{position:relative;z-index:1;display:grid;grid-template-columns:auto auto auto;align-items:center;gap:12px}
+.plan-configuration-actions .strategy-version-button{display:flex;align-items:center;justify-content:center;gap:10px;min-height:51px;padding:12px 19px;border:1px solid #e4e8ff;border-radius:13px;background:#fff;color:#27365f;font-size:16px;font-weight:750;box-shadow:0 3px 10px #879cf005;white-space:nowrap;cursor:pointer}
+.plan-configuration-actions .plan-save-button{border-color:#514cff;background:linear-gradient(115deg,#645aff,#3e43ff);color:#fff;box-shadow:0 5px 12px #5a4df21a}.plan-configuration-actions .plan-save-button:disabled{opacity:.55;cursor:default}
+.plan-hero-signature{grid-column:1/-1;justify-self:center;padding:6px 0 3px;border-bottom:2px solid #b9aaff80;color:#8e7beb;font-family:KaiTi,STKaiti,cursive;font-size:21px;letter-spacing:3px;transform:rotate(-6deg)}
 .plan-preview-button.active{border-color:#9aa9ed!important;background:#eef2ff!important;color:#4157cc!important}
 .plan-configuration-more,.plan-version-records{position:relative}
 .plan-configuration-more>summary,.plan-version-records>summary{list-style:none;cursor:pointer}
 .plan-configuration-more>summary::-webkit-details-marker,.plan-version-records>summary::-webkit-details-marker{display:none}
-.plan-version-records>summary{color:#5269d9}
+.plan-version-records>summary{display:flex;align-items:center;gap:3px;color:#504af4;font-weight:750}.plan-version-records>summary :deep(svg){width:15px;height:15px}
 .plan-configuration-menu,.plan-version-record-list{position:absolute;top:calc(100% + 8px);right:0;z-index:30;min-width:180px;padding:7px;border:1px solid #dfe5ee;border-radius:9px;background:#fff;box-shadow:0 8px 26px #26375016}
 .plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#59657a;font:inherit;font-size:13px;text-align:left;cursor:pointer}
 .plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}.plan-configuration-menu>button.danger{color:#b85260}
 .plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
 .plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
-.plan-configuration-layout{display:block!important;padding:0!important;background:#f7f9fc!important}
-.plan-configuration-layout .strategy-workflow-content{background:#f7f9fc!important}
-.plan-configuration-layout .strategy-v2-workspace{margin:18px;border-radius:10px;border-color:#e3e8f1;background:#fff;box-shadow:none}
+.plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
+.plan-configuration-layout .strategy-workflow-content{margin-top:18px;border:1px solid #e5e8fd!important;border-radius:17px;background:#fff!important;box-shadow:0 8px 24px #8499eb08!important;overflow:visible}
+.plan-configuration-layout:is(.workflow-mode-products,.workflow-mode-benefits,.workflow-mode-knowledge,.workflow-mode-miner) .strategy-workflow-content{margin-top:0;border-top:0!important;border-radius:0 0 17px 17px}
+.plan-configuration-layout .strategy-v2-workspace{margin:0;padding:22px 24px;border:0;border-radius:17px;background:#fff!important;box-shadow:none}
 .plan-configuration-layout .strategy-v2-section-head h3{font-size:18px;font-weight:650}.plan-configuration-layout .strategy-v2-section-head p{font-size:12px}
 .plan-configuration-layout .strategy-content-mode-workflow{padding:16px;border-radius:10px;background:#fff;box-shadow:none}
 .plan-generation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.plan-generation-heading h3{margin:0;color:#26354d;font-size:18px;font-weight:650}
 .plan-configuration-layout .strategy-content-mode-cards>button{border-radius:10px;box-shadow:none}.plan-configuration-layout .strategy-content-mode-cards>button i{font-size:15px}.plan-configuration-layout .strategy-content-mode-card-copy strong{font-size:16px}
 .plan-configuration-layout .strategy-fullshow-restore-banner{padding:12px 16px;border-radius:9px;box-shadow:none}
-@media(max-width:1100px){.plan-configuration-header.strategy-plan-container-head{grid-template-columns:minmax(0,1fr)}.plan-configuration-actions{justify-content:flex-start}}
-@media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{padding:14px 12px}.plan-configuration-header .strategy-plan-title-switch{font-size:17px;width:100%}.plan-configuration-layout .strategy-v2-workspace{margin:12px}.plan-configuration-meta{gap:6px 10px}.plan-configuration-actions .strategy-version-button{min-height:40px;padding:8px 11px}.plan-version-record-list{left:auto;right:0}}
+@container plan-workspace (max-width:1250px){.plan-configuration-header.strategy-plan-container-head{gap:18px;padding:24px}.plan-configuration-header .strategy-plan-heading{gap:16px}.plan-hero-symbol{width:68px;height:72px;border-radius:17px}.plan-hero-symbol svg{width:39px;height:39px}.plan-configuration-header .strategy-plan-title-switch{font-size:23px}.plan-configuration-actions .strategy-version-button{min-height:48px;padding:11px 13px;font-size:14px;gap:7px}.plan-configuration-meta{gap:8px 13px;font-size:13px}.plan-configuration-header :deep(.plan-header-artwork){display:none}}
+@container plan-workspace (max-width:1000px){.plan-configuration-header.strategy-plan-container-head{grid-template-columns:minmax(0,1fr);min-height:0;gap:20px}.plan-configuration-actions{justify-content:end}.plan-hero-signature{display:none}.plan-configuration-header .strategy-plan-title-switch{flex:0 1 auto;width:auto}.plan-configuration-header::after{width:55%;height:75px}}
+@media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{margin:12px 10px;padding:17px 14px;gap:17px;border-radius:16px}.plan-configuration-header .strategy-plan-heading{gap:12px}.plan-hero-symbol{width:47px;height:52px;border-radius:13px}.plan-hero-symbol svg{width:28px;height:28px}.plan-configuration-kicker{font-size:12px;margin-bottom:2px}.plan-configuration-header .strategy-plan-title-switch{flex:1 1 auto;width:auto;min-height:34px;height:34px;font-size:17px}.plan-title-edit{flex-basis:27px;width:27px;height:30px;padding:3px}.plan-title-edit :deep(svg){width:20px;height:20px}.plan-configuration-meta{grid-column:1/-1;gap:7px 10px;margin-top:8px;font-size:12px}.plan-configuration-actions{justify-content:start;gap:8px}.plan-configuration-actions .strategy-version-button{min-height:44px;padding:10px 11px;font-size:13px;gap:6px;border-radius:10px}.plan-configuration-actions :deep(svg){width:18px;height:18px}.plan-configuration-layout{padding:0 10px 16px!important}.plan-configuration-layout .strategy-v2-workspace{padding:16px 12px}.plan-version-record-list{left:auto;right:0}}
 
 </style>
