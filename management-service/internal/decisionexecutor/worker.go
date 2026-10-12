@@ -2302,6 +2302,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		return "", err
 	}
 	if assessInteraction {
+		if review := w.checkFactGap(ctx, session, *item, text); review != nil {
+			w.recordInteractionReview(ctx, session, *item, text, review)
+		}
 		w.recordInteractionReview(ctx, session, *item, text, learningReview)
 	}
 	item.BridgeText = ""
