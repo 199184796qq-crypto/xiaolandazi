@@ -4,7 +4,7 @@ import type { PoolStatus } from '../contentPools'
 import { poolSourceText, poolTaskSources, type PoolSourceLocation } from '../contentPoolSources'
 import uploadIllustration from '../assets/content-update-upload.png'
 import NaturalContentCorrection from './NaturalContentCorrection.vue'
-const props = withDefaults(defineProps<{ planId?: number; roomId?: number; tenantId?: number; status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string; compact?: boolean; hideSaveAction?: boolean }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '', compact: false, hideSaveAction: false })
+const props = withDefaults(defineProps<{ planId?: number; roomId?: number; tenantId?: number; status: PoolStatus | null; error: string; submitting: boolean; preview: boolean; saving?: boolean; saveDisabled?: boolean; saveHint?: string; saveError?: string; saveNotice?: string; locationError?: string; compact?: boolean; hideSaveAction?: boolean; taskEditorAvailable?: boolean }>(), { saving: false, saveDisabled: false, saveHint: '', saveError: '', saveNotice: '', locationError: '', compact: false, hideSaveAction: false, taskEditorAvailable: true })
 const emit = defineEmits<{ update: []; refresh: []; preview: [value: boolean]; save: []; source: [value: PoolSourceLocation]; editTask: [poolKey: string, taskID: string] }>()
 const needsUpdate = computed(() => props.status?.state === 'needs_update' || props.status?.state === 'failed')
 const updating = computed(() => props.submitting || props.status?.state === 'updating')
@@ -109,7 +109,7 @@ function taskAppearance(title: string) {
           <details v-if="status?.pools?.length" class="pool-entry pool-entry-content" :open="preview" @toggle="emit('preview', ($event.target as HTMLDetailsElement).open)">
             <summary class="pool-preview-header">
               <span v-if="!compact" class="pool-preview-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg></span>
-              <span class="pool-preview-heading"><strong>查看公共池与商品专属池（{{ status.pools.length }} 个）</strong><span class="pool-preview-description">以下是模型整理的内容任务。可修改任务，也可展开引用资料，跳到原资料核对；修改后需保存智能体。</span><span v-if="status.set_id !== status.saved_set_id" class="pool-preview-unsaved"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v.1" /></svg>当前展示待保存内容；下次开播前请核对并保存。</span></span>
+              <span class="pool-preview-heading"><strong>查看公共池与商品专属池（{{ status.pools.length }} 个）</strong><span class="pool-preview-description">{{ taskEditorAvailable ? '以下是模型整理的内容任务。可修改任务，也可展开引用资料，跳到原资料核对；修改后需保存智能体。' : '以下是模型整理的内容任务。可展开引用资料核对原资料，也可提出自然语言纠正；修改后需保存方案。' }}</span><span v-if="status.set_id !== status.saved_set_id" class="pool-preview-unsaved"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v.1" /></svg>当前展示待保存内容；下次开播前请核对并保存。</span></span>
               <span v-if="!compact" class="pool-preview-art" aria-hidden="true"><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-paper"><i></i><i></i><i></i></span><span class="pool-preview-sticker">资料更清晰<br />开播更轻松</span></span>
               <svg class="pool-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
             </summary>
@@ -130,7 +130,7 @@ function taskAppearance(title: string) {
                     <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8a7 7 0 0 1 10 10l-9 9" /></svg>引用资料（{{ poolTaskSources(status, pool, task).length }} 处）<svg class="pool-source-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></summary>
                     <p v-if="!task.source_ids?.length">这条旧任务没有记录引用编号，无法定位来源。</p>
                     <article v-for="source in poolTaskSources(status, pool, task)" :key="source.id">
-                      <button v-if="source.location" type="button" class="pool-source-button" @click="emit('source', source.location)">{{ source.label }} · 查看出处</button>
+                      <button v-if="source.location && (taskEditorAvailable || source.location.area !== 'miner')" type="button" class="pool-source-button" @click="emit('source', source.location)">{{ source.label }} · 查看出处</button>
                       <strong v-else>{{ source.label }}</strong>
                       <span v-if="source.state === 'changed'" class="pool-source-state">原资料已变化，需更新内容</span>
                       <span v-else-if="source.state === 'removed'" class="pool-source-state">原资料已移除，需更新内容</span>
@@ -140,7 +140,7 @@ function taskAppearance(title: string) {
                     </article>
                   </details>
                   </div>
-                  <button type="button" class="pool-task-edit" :disabled="saving || updating || !['ready', 'synced'].includes(status.state)" @click="emit('editTask', pool.key, task.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3Zm-3 3 5 5M3 21h18" /></svg>修改这条</button>
+                  <button v-if="taskEditorAvailable" type="button" class="pool-task-edit" :disabled="saving || updating || !['ready', 'synced'].includes(status.state)" @click="emit('editTask', pool.key, task.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3Zm-3 3 5 5M3 21h18" /></svg>修改这条</button>
                 </li></ol>
               </section>
             </div>

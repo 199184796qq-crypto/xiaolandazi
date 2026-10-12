@@ -38,7 +38,6 @@ import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
-import SpeechMinerWorkbench from '../components/SpeechMinerWorkbench.vue'
 import LectureTasksPanel from '../components/LectureTasksPanel.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
@@ -265,7 +264,6 @@ function selectPlanConfigurationSection(section: PlanConfigurationSection) {
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
   else if (mode === 'knowledge') openFactRiskLocation()
-  else if (mode === 'miner') openWheelRiskLocation()
   else if (mode === 'memory') openInteractionPendingLocation()
   else activeMode.value = mode
 }
@@ -334,7 +332,6 @@ watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = nu
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 const factRiskUnresolvedCount = ref(0)
-const wheelRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
 const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
@@ -363,8 +360,6 @@ type FactRiskController = {
 const factRiskController = ref<FactRiskController | null>(null)
 const factRiskReviews = ref<FactRiskReviewDisplay[]>([])
 const expandedFactRiskId = ref<number | null>(null)
-const speechMinerWorkbench = ref<InstanceType<typeof SpeechMinerWorkbench> | null>(null)
-const pendingWheelRiskHash = ref('')
 const pendingRiskLocation = ref<{ area: 'knowledge' | 'products' | 'benefits'; claimHash: string } | null>(null)
 let riskLocationAttempt = 0
 const locatedFactRiskHash = ref('')
@@ -2089,7 +2084,7 @@ const activeModeLabel = computed(() => {
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
   if (activeMode.value === 'memory') return '互动策略'
-  if (activeMode.value === 'miner') return '话术挖掘机'
+  if (activeMode.value === 'miner') return '任务讲解'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
   if (activeMode.value === 'basic') return '基础设置'
@@ -4229,9 +4224,10 @@ function cancelFormalFactEdit() {
 
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
 	if (payload.sourceKey.startsWith('wheel/')) {
-		activeMode.value = 'miner'
+		activeMode.value = 'fullshow'
+		poolPreview.value = true
 		await nextTick()
-		document.querySelector('.speech-miner-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		document.querySelector('.pool-entry-content')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 		return
 	}
 	const text = payload.text.trim()
@@ -4262,28 +4258,10 @@ function setFactRiskReviews(items: FactRiskReviewDisplay[]) {
 	const reviews = Array.isArray(items) ? items : []
 	factRiskReviews.value = reviews
 	const unresolved = reviews.filter(review => review.status !== 'confirmed')
-	wheelRiskUnresolvedCount.value = pendingForArea(reviews, 'miner')
 	factRiskUnresolvedCount.value = pendingForArea(reviews, 'knowledge')
 	productRiskUnresolvedCount.value = pendingForArea(reviews, 'products')
 	benefitRiskUnresolvedCount.value = pendingForArea(reviews, 'benefits')
 	if (!unresolved.some(review => review.claim_sha256 === locatedFactRiskHash.value)) locatedFactRiskHash.value = ''
-}
-
-async function locatePendingWheelRisk() {
-	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
-	await nextTick()
-	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
-	const hash = pendingWheelRiskHash.value
-	if (await speechMinerWorkbench.value?.locateRisk(hash)) pendingWheelRiskHash.value = ''
-}
-
-async function openWheelRiskLocation() {
-	const review = factRiskReviews.value.find(item => item.status !== 'confirmed' &&
-		[item.source_key, ...(item.sources || []).map(source => source.source_key)].some(key => key.startsWith('wheel/')))
-	pendingWheelRiskHash.value = review?.claim_sha256 || ''
-	activeMode.value = 'miner'
-	await nextTick()
-	await locatePendingWheelRisk()
 }
 
 async function openInteractionPendingLocation() {
@@ -4291,7 +4269,6 @@ async function openInteractionPendingLocation() {
 	if (interactionPendingCount.value > 0) interactionLocationRequest.value++
 }
 
-watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locatePendingWheelRisk() })
 watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskReviews], () => { void locatePendingRiskLocation() }, { flush: 'post' })
 watch(activeMode, mode => {
 	if (mode !== 'memory') interactionLocationRequest.value = 0
@@ -4302,7 +4279,6 @@ watch([activeRoomId, currentRoomPlanId], () => {
 	if (creatingFormalFact.value) cancelCreateFormalFact()
 	interactionLocationRequest.value = 0
 	pendingRiskLocation.value = null
-	pendingWheelRiskHash.value = ''
 	locatedFactRiskHash.value = ''
 	expandedFactRiskId.value = null
 })
@@ -4318,6 +4294,7 @@ const poolLocationError = ref('')
 let poolLocationAttempt = 0
 async function locatePoolSource(source: PoolSourceLocation) {
 	poolLocationError.value = ''
+	if (source.area === 'miner') return
 	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value
 	activeMode.value = source.area
 	await nextTick()
@@ -4325,7 +4302,6 @@ async function locatePoolSource(source: PoolSourceLocation) {
 	if (!current()) return
 	let located = false
 	if (source.area === 'products') located = !!await productCards.value?.locateSource(source.entityId, source.attributeId)
-	else if (source.area === 'miner') located = !!await speechMinerWorkbench.value?.locateOriginalWheel()
 	else {
 		if (source.area === 'benefits' && formalBenefits.value.some(item => item.id === source.entityId)) {
 			expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entityId])
@@ -4339,16 +4315,6 @@ async function locatePoolSource(source: PoolSourceLocation) {
 		located = !!target
 	}
 	if (current() && !located) poolLocationError.value = '当前资料中未找到这条来源，请刷新或核对它是否已移除。'
-}
-async function editPoolTask(poolKey: string, taskID: string) {
-	poolLocationError.value = ''
-	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value, setID = poolStatus.value?.set_id
-	if (!setID) return
-	activeMode.value = 'miner'
-	await nextTick()
-	if (attempt !== poolLocationAttempt || room !== activeRoomId.value || plan !== currentRoomPlanId.value || activeMode.value !== 'miner') return
-	const located = await speechMinerWorkbench.value?.locatePoolTask(poolKey, taskID, setID)
-	if (attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && !located) poolLocationError.value = '暂未进入编辑。请先保存或取消现有修改；资料变化时需先更新内容。'
 }
 watch([activeRoomId, currentRoomPlanId], () => { poolLocationAttempt++; poolLocationError.value = '' })
 
@@ -5963,7 +5929,6 @@ watch(
       void refreshContentMode(true)
       void refreshAnchorSellingPointWheel()
     }
-    if (mode === 'miner') void refreshAnchorSellingPointWheel()
     if (mode === 'anchor') void loadReusableAnchorStyleWorkspace()
     window.localStorage.setItem('system-agent-live-mode', mode)
     notifySystemAgentContext()
@@ -5973,7 +5938,6 @@ watch(
 
 watch(currentRoomPlanId, () => {
   if (activeMode.value === 'fullshow') void refreshAnchorSellingPointWheel()
-  if (activeMode.value === 'miner') void refreshAnchorSellingPointWheel()
 })
 
 watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
@@ -6173,13 +6137,13 @@ onBeforeUnmount(() => {
         <div class="strategy-workflow-layout plan-configuration-layout" :class="'workflow-mode-' + activeMode">
           <PlanConfigurationNavigation
             :mode="activeMode" :product-risk-count="productRiskUnresolvedCount" :benefit-risk-count="benefitRiskUnresolvedCount"
-            :fact-risk-count="factRiskUnresolvedCount" :direction-risk-count="wheelRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
+            :fact-risk-count="factRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
             :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
             @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
           />
 
           <div class="strategy-workflow-content">
-        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits','miner'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -7008,24 +6972,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-speech-miner-workspace">
-          <SpeechMinerWorkbench
-            ref="speechMinerWorkbench"
-            :plan-id="currentRoomPlanId || 0"
-            :tenant-id="activeRoom?.tenant_id || 0"
-            :room-id="activeRoom?.id || 0"
-            :pool-status="poolStatus"
-            :pool-error="poolError"
-            :wheel="anchorSellingPointWheel"
-            :wheel-loading="anchorSellingPointWheelLoading"
-            :risk-reviews="factRiskReviews"
-            :risk-loading="factRiskNoticeState.loading"
-            @confirm-risk="confirmInlineFactRisk"
-            @appeal-risk="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)"
-            @review-semantics="factRiskController?.reviewSemantics()"
-            @updated="refreshSpeechMinerWorkspace"
-            @pool-updated="contentPools.acceptEdited"
-          />
+        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-lecture-tasks-workspace">
           <LectureTasksPanel hide-save-action :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
         </section>
 
@@ -7453,7 +7400,7 @@ onBeforeUnmount(() => {
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
           <div class="plan-generation-heading"><h3>生成与预览</h3><button class="strategy-version-button" type="button" @click="activeMode = lastFactMode">返回配置</button></div>
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" :task-editor-available="false" @save="saveFullShowVersion" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>

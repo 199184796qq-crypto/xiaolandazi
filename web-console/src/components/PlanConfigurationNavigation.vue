@@ -9,17 +9,16 @@ const props = withDefaults(defineProps<{
   productRiskCount?: number
   benefitRiskCount?: number
   factRiskCount?: number
-  directionRiskCount?: number
   interactionPending?: number
   factRiskLoading?: boolean
   factRiskError?: string
-}>(), { productRiskCount: 0, benefitRiskCount: 0, factRiskCount: 0, directionRiskCount: 0, interactionPending: 0, factRiskLoading: false, factRiskError: '' })
+}>(), { productRiskCount: 0, benefitRiskCount: 0, factRiskCount: 0, interactionPending: 0, factRiskLoading: false, factRiskError: '' })
 const emit = defineEmits<{
   selectSection: [section: PlanConfigurationSection]
   selectMode: [mode: PlanConfigurationMode]
 }>()
 const section = computed(() => planConfigurationSection(props.mode))
-const factsPending = computed(() => props.productRiskCount + props.benefitRiskCount + props.factRiskCount + props.directionRiskCount)
+const factsPending = computed(() => props.productRiskCount + props.benefitRiskCount + props.factRiskCount)
 const factFocused = ref(false)
 const sections: { key: PlanConfigurationSection; label: string }[] = [
   { key: 'facts', label: '事实与内容' },
@@ -31,10 +30,10 @@ const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
   { mode: 'benefits', label: '活动福利' },
   { mode: 'knowledge', label: '事实依据' },
-  { mode: 'miner', label: '内容方向' },
+  { mode: 'miner', label: '任务讲解' },
 ]
 function pending(mode: PlanConfigurationMode) {
-  return mode === 'products' ? props.productRiskCount : mode === 'benefits' ? props.benefitRiskCount : mode === 'miner' ? props.directionRiskCount : 0
+  return mode === 'products' ? props.productRiskCount : mode === 'benefits' ? props.benefitRiskCount : 0
 }
 </script>
 
