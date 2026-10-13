@@ -7,6 +7,7 @@
     getLiveQuotaSummary,
     getLiveTimeCards,
     getRooms,
+    setRoomMonitor,
   } from '$lib/api';
   import { session } from '$lib/session';
   import type { LiveDevice, LiveQuotaSummary, LiveTimeCardPage, LiveTimeCardSummary, Room } from '$lib/types';
@@ -15,6 +16,9 @@
   let devices: LiveDevice[] = [];
   let loading = true;
   let error = '';
+  let monitorBusyIds: number[] = [];
+  let monitorErrors: Record<number, string> = {};
+  let roomLoadRevision = 0;
   let greeting = '你好';
   let showAddRoom = false;
   let savingRoom = false;
@@ -36,7 +40,8 @@
     total: 0,
   };
 
-  onMount(async () => {
+  onMount(() => {
+    let disposed = false;
     const hour = new Date().getHours();
     if (hour >= 5 && hour < 11) greeting = '早上好';
     else if (hour >= 11 && hour < 13) greeting = '中午好';
@@ -46,23 +51,28 @@
 
     void loadAITime();
 
-    try {
-      const [roomResult, deviceResult] = await Promise.all([
-        getRooms(),
-        getLiveDevices().catch(() => []),
-      ]);
-      rooms = roomResult.items || [];
-      devices = deviceResult || [];
-    } catch (err) {
-      error = err instanceof Error ? err.message : '读取首页数据失败';
-    } finally {
-      loading = false;
-    }
+    void (async () => {
+      try {
+        const [, deviceResult] = await Promise.all([
+          refreshRooms(),
+          getLiveDevices().catch(() => []),
+        ]);
+        if (!disposed) devices = deviceResult || [];
+      } catch (err) {
+        if (!disposed) error = err instanceof Error ? err.message : '读取首页数据失败';
+      } finally {
+        if (!disposed) loading = false;
+      }
+    })();
+    const roomTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshRooms().catch(() => undefined);
+    }, 10000);
+    return () => { disposed = true; ++roomLoadRevision; clearInterval(roomTimer); };
   });
 
   $: displayName = $session.bootstrap?.actor.display_name || $session.bootstrap?.actor.username || '用户';
   $: avatarURL = String($session.bootstrap?.actor.avatar_url || '').trim();
-  $: liveRooms = rooms.filter((item) => item.status === 'live' || item.status === 'running');
+  $: liveRooms = rooms.filter((item) => item.monitor_enabled !== false && (item.status === 'live' || item.status === 'running'));
   $: liveRoomCount = liveRooms.length;
   $: liveAudienceTotal = liveRooms.reduce(
     (total, item) => total + Math.max(0, Number(item.online_count || 0)),
@@ -72,10 +82,38 @@
   $: timeCardTotalPages = Math.max(1, Math.ceil(timeCardPage.total / timeCardPackPageSize));
 
   function roomStatusLabel(room: Room) {
+    if (room.monitor_enabled === false) return '采集已停止';
     if (room.status === 'live' || room.status === 'running') return '直播中';
     if (room.status === 'offline' || room.status === 'stopped') return '未直播';
     if (room.status === 'connecting') return '连接中';
+    if (room.status === 'pending') return '等待连接';
+    if (room.status === 'error') return '连接异常';
     return room.status || '未连接';
+  }
+
+  async function refreshRooms() {
+    const revision = ++roomLoadRevision;
+    const result = await getRooms();
+    if (revision !== roomLoadRevision) return;
+    rooms = (result.items || []).map((room) => monitorBusyIds.includes(room.id)
+      ? rooms.find((current) => current.id === room.id) || room : room);
+  }
+
+  async function changeMonitoring(room: Room, enabled: boolean) {
+    if (monitorBusyIds.includes(room.id) || typeof room.monitor_enabled !== 'boolean') return;
+    monitorBusyIds = [...monitorBusyIds, room.id];
+    monitorErrors = { ...monitorErrors, [room.id]: '' };
+    ++roomLoadRevision;
+    try {
+      const updated = await setRoomMonitor(room.id, enabled);
+      ++roomLoadRevision;
+      rooms = rooms.map((current) => current.id === room.id ? { ...current, ...updated } : current);
+    } catch (err) {
+      monitorErrors = { ...monitorErrors, [room.id]: err instanceof Error ? err.message : enabled ? '连接直播间失败' : '停止采集失败' };
+    } finally {
+      ++roomLoadRevision;
+      monitorBusyIds = monitorBusyIds.filter((id) => id !== room.id);
+    }
   }
 
   function deviceConnectionLabel(device: LiveDevice) {
@@ -107,8 +145,7 @@
         name: roomName.trim(),
         collector_mode: 'auto',
       });
-      const result = await getRooms();
-      rooms = result.items || [];
+      await refreshRooms();
       showAddRoom = false;
     } catch (err) {
       error = err instanceof Error ? err.message : '添加直播间失败';
@@ -265,17 +302,23 @@
       <div class="home-loading-card">正在读取直播间…</div>
     {:else if rooms.length}
       <div class="home-card-scroller" aria-label="我的直播间">
-        {#each rooms as room}
-          <a
-            href={'/rooms/' + room.id}
+        {#each rooms as room (room.id)}
+          <article
             class="home-room-card"
             class:is-live={room.status === 'live' || room.status === 'running'}
-            aria-label={'进入' + (room.name || ('直播间 ' + room.id))}
+            aria-label={room.name || ('直播间 ' + room.id)}
           >
             <header>
               <span class:online={room.status === 'live' || room.status === 'running'}></span>
               <em>{roomStatusLabel(room)}</em>
             </header>
+            <div class="home-room-controls">
+              <button type="button" class="room-connect" aria-label={'连接直播间：' + (room.name || room.id)} disabled={monitorBusyIds.includes(room.id) || room.monitor_enabled !== false} on:click={() => changeMonitoring(room, true)}>{monitorBusyIds.includes(room.id) && !room.monitor_enabled ? '连接中…' : '连接直播间'}</button>
+              <button type="button" class="room-stop" aria-label={'停止采集：' + (room.name || room.id)} disabled={monitorBusyIds.includes(room.id) || room.monitor_enabled !== true} on:click={() => changeMonitoring(room, false)}>{monitorBusyIds.includes(room.id) && room.monitor_enabled ? '停止中…' : '停止采集'}</button>
+            </div>
+            {#if monitorErrors[room.id]}<p class="room-control-error" role="alert">{monitorErrors[room.id]}</p>{/if}
+            {#if typeof room.monitor_enabled !== 'boolean'}<p class="room-control-error">采集状态正在同步，稍后可操作</p>{/if}
+            <a class="home-room-link" href={'/rooms/' + room.id} aria-label={'进入' + (room.name || ('直播间 ' + room.id))}>
             <div class="home-card-icon">播</div>
             {#if room.status === 'live' || room.status === 'running'}
               <div class="live-audience" aria-label="当前在线人数">
@@ -297,7 +340,8 @@
               <span>房间 #{room.id}</span>
               <strong>{room.device_online ? '在线' : '待连接'}</strong>
             </footer>
-          </a>
+            </a>
+          </article>
         {/each}
 
         <button class="home-add-card" type="button" on:click={openAddRoom}>
@@ -543,6 +587,7 @@
   .home-card-scroller::-webkit-scrollbar{display:none}
   .home-room-card,.home-device-card,.home-add-card{flex:0 0 82%;min-height:226px;scroll-snap-align:center;border:1px solid #d9e0ef;border-radius:24px;box-shadow:0 14px 34px rgba(53,70,126,.10)}
   .home-room-card{background:linear-gradient(145deg,#eef3ff 0%,#e8eefb 52%,#f3f6fc 100%);position:relative;overflow:hidden}
+  .home-room-card{display:flex!important;flex-direction:column;min-width:0}.home-room-link{display:grid;grid-template-rows:auto 1fr auto;flex:1;color:inherit;text-decoration:none}.home-room-controls{display:flex;gap:8px;margin-top:13px;position:relative;z-index:1}.home-room-controls button{min-height:42px;padding:9px 12px;border-radius:12px;font:inherit;font-size:12px;font-weight:800;cursor:pointer}.room-connect{flex:1;border:1px solid #596bdc;background:#596bdc;color:white}.room-stop{border:1px solid #e2bdc2;background:#fff6f7;color:#ad4553}.home-room-controls button:disabled{opacity:.45;cursor:default}.room-control-error{font-size:12px;line-height:1.6;margin:9px 0 0;color:#ad4553}.home-room-card .live-audience{top:126px}
   .home-room-card::after{content:"";position:absolute;right:-58px;top:-72px;width:170px;height:170px;border-radius:50%;background:radial-gradient(circle,rgba(108,125,225,.18) 0%,rgba(108,125,225,0) 70%);pointer-events:none}
   .home-room-card.is-live{border-color:#bac7f2;background:linear-gradient(145deg,#e6edff 0%,#dfe8ff 48%,#edf4ff 100%);box-shadow:0 16px 38px rgba(77,96,184,.15),inset 0 0 0 1px rgba(255,255,255,.52)}
   .home-room-card.is-live::before{content:"";position:absolute;left:0;top:0;width:100%;height:3px;background:linear-gradient(90deg,#5e72e4,#7e93ff,#9fb4ff)}

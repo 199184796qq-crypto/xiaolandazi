@@ -105,6 +105,16 @@ export const getPublicSystemConfig = () => request<PublicSystemConfig>('/api/v1/
 export const getCurrentResources = () => request<ResourceDashboard>('/api/v1/resources');
 export const getRooms = () => request<ListResponse<Room>>('/api/v1/rooms');
 export const getRoom = (roomId: number) => request<Room>('/api/v1/rooms/' + roomId);
+export async function setRoomMonitor(roomId: number, enabled: boolean) {
+  const room = await request<Room>('/api/v1/rooms/' + roomId + '/monitor', {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  });
+  if (room.id !== roomId || room.monitor_enabled !== enabled) {
+    throw new Error('操作结果未确认，请稍后核对采集状态');
+  }
+  return room;
+}
 export const getRoomSessionStats = (roomId: number) =>
   request<RoomSessionStats>('/api/v1/rooms/' + roomId + '/session-stats');
 export function resolveRoomSessionDecision(roomId: number, action: 'merge' | 'fresh') {
