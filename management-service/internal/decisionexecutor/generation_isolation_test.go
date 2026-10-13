@@ -71,11 +71,26 @@ func TestGenerationIsolatesRoomsPlansAndChangedFactsAcrossCategories(t *testing.
 }
 
 func TestLegacyPolicyChangesCannotAuthorizeCachedSpeech(t *testing.T) {
-	w, s, core, agent, _, _ := newFAQTestWorker()
+	w, s, core, agent, tts, _ := newFAQTestWorker()
 	executeFAQ(t, w, core, 11, "多少钱")
+	// WorkBuddy also performs a wording rewrite. Count answer generation
+	// separately so this regression checks cache identity rather than the
+	// number of optional content stages.
+	answerCalls := func() int {
+		n := 0
+		for _, request := range agent.requests {
+			if request.Stage == "speech_generation" || request.Stage == "interaction_agent_answer" {
+				n++
+			}
+		}
+		return n
+	}
+	if answerCalls() != 1 || tts.calls != 1 || core.dispatches != 1 {
+		t.Fatal("initial answer and voice were not generated")
+	}
 	s.layer = &model.LivePolicyVersion{ID: 19, Overrides: []model.LivePolicyOverride{{Text: "旧菜籽油在2号链接"}}}
 	executeFAQ(t, w, core, 11, "多少钱")
-	if agent.calls != 1 {
+	if answerCalls() != 1 || tts.calls != 1 || core.dispatches != 2 {
 		t.Fatal("unused historical L3 changed live cache")
 	}
 }
