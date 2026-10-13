@@ -109,7 +109,7 @@
       ++roomLoadRevision;
       rooms = rooms.map((current) => current.id === room.id ? { ...current, ...updated } : current);
     } catch (err) {
-      monitorErrors = { ...monitorErrors, [room.id]: err instanceof Error ? err.message : enabled ? '连接直播间失败' : '停止采集失败' };
+      monitorErrors = { ...monitorErrors, [room.id]: err instanceof Error ? err.message : enabled ? '连接直播间失败' : '停止直播失败' };
     } finally {
       ++roomLoadRevision;
       monitorBusyIds = monitorBusyIds.filter((id) => id !== room.id);
@@ -314,7 +314,7 @@
             </header>
             <div class="home-room-controls">
               <button type="button" class="room-connect" aria-label={'连接直播间：' + (room.name || room.id)} disabled={monitorBusyIds.includes(room.id) || room.monitor_enabled !== false} on:click={() => changeMonitoring(room, true)}>{monitorBusyIds.includes(room.id) && !room.monitor_enabled ? '连接中…' : '连接直播间'}</button>
-              <button type="button" class="room-stop" aria-label={'停止采集：' + (room.name || room.id)} disabled={monitorBusyIds.includes(room.id) || room.monitor_enabled !== true} on:click={() => changeMonitoring(room, false)}>{monitorBusyIds.includes(room.id) && room.monitor_enabled ? '停止中…' : '停止采集'}</button>
+              <button type="button" class="room-stop" aria-label={'停止直播：' + (room.name || room.id)} disabled={monitorBusyIds.includes(room.id) || room.monitor_enabled !== true} on:click={() => changeMonitoring(room, false)}>{monitorBusyIds.includes(room.id) && room.monitor_enabled ? '停止中…' : '停止直播'}</button>
             </div>
             {#if monitorErrors[room.id]}<p class="room-control-error" role="alert">{monitorErrors[room.id]}</p>{/if}
             {#if typeof room.monitor_enabled !== 'boolean'}<p class="room-control-error">采集状态正在同步，稍后可操作</p>{/if}
