@@ -135,10 +135,6 @@ func (s *State) CheckP0Voice(text string) error {
 func (s *State) rejectP0Candidate(c Candidate) {
 	c.ContentIssue = "p0_blocked"
 	s.Attempts = append(s.Attempts, c)
-	if s.Surface == "formal_live" {
-		s.SkipGeneration("text_review", "P0文字审核未通过")
-		return
-	}
 	if s.P0RewritesUsed < s.P0MaxRewrites {
 		r := contentguard.PlanRepair(c.Text, *c.P0Report, s.P0RewritesUsed+1)
 		s.P0PendingRepair = &r

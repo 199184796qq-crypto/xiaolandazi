@@ -27,8 +27,24 @@ func TestFinalReviewIncludesValidatedP0AndScopedContentWithoutIndices(t *testing
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(messages) != 3 || messages[0].Role != "system" || messages[1].Role != "system" || messages[2].Role != "user" || !strings.Contains(messages[0].Content, "完整有效P0") || strings.Contains(messages[2].Content, "完整有效P0") {
+	// 有「四层母版」时为 4 条（fourLayer+P0+mother+user），无则 3 条（P0+mother+user）。
+	if len(messages) != 3 && len(messages) != 4 {
+		t.Fatal("unexpected message count", len(messages))
+	}
+	// 最后一条必须是 user，且 P0 不能混进 user 内容。
+	if messages[len(messages)-1].Role != "user" || strings.Contains(messages[len(messages)-1].Content, "完整有效P0") {
 		t.Fatal("P0 became user content instead of independent system rules")
+	}
+	// P0 必须作为独立 system 消息存在。
+	p0Independent := false
+	for _, m := range messages {
+		if m.Role == "system" && strings.Contains(m.Content, "完整有效P0") {
+			p0Independent = true
+			break
+		}
+	}
+	if !p0Independent {
+		t.Fatal("P0 lost independent system role")
 	}
 	raw, _ := json.Marshal(messages)
 	for _, word := range []string{"前次P0审核结果", "完整有效P0", "商品必要事实", "不用早餐举例", "也不能暗示早餐食用"} {
