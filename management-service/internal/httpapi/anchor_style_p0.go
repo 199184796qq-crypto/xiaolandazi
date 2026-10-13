@@ -70,9 +70,6 @@ func p0AuditEvent(state *anchorcycle.State, candidate anchorcycle.Candidate) mod
 		if used >= state.P0MaxRewrites {
 			decision = "skipped"
 		}
-		if state.Surface == "formal_live" {
-			decision = "skipped"
-		}
 	}
 	raw, _ := json.Marshal(candidate.P0Report)
 	var report map[string]any

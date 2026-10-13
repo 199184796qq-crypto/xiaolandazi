@@ -16,6 +16,14 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+// productAnalysisView 商品归属分析只看链接/名称/角色；价格与规格仅供程序比对，
+// 不进分析输入（避免模型把价格/规格误写进归属，也保持分析指纹与历史一致）。
+type productAnalysisView struct {
+	LinkKey string   `json:"link_key"`
+	Name    string   `json:"name"`
+	Roles   []string `json:"roles,omitempty"`
+}
+
 func loadCycleProductFocusPrompt() (string, string, error) {
 	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_FOCUS_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-focus.md", "商品范围与回灌母版")
 }
@@ -233,8 +241,7 @@ func cachedProductScope(ctx context.Context, scope *anchorcycle.ProductFocus, fa
 
 // Build once from the safety snapshot. This never rewrites source facts, roles,
 // the selling-point wheel or a previously saved plan version.
-func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {
-	active := []model.LiveAgentPlanProductLink{}
+func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {	active := []model.LiveAgentPlanProductLink{}
 	for _, l := range links {
 		if l.Status == "active" {
 			active = append(active, l)
@@ -249,8 +256,10 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 	}
 	scope := &anchorcycle.ProductFocus{Policy: policy, PolicySource: source, FactsSHA: derivedHash(state.Facts)}
 	roles := map[string][]string{}
+	byKey := map[string]model.LiveAgentPlanProductLink{}
 	for _, l := range active {
 		roles[l.LinkKey] = append([]string{}, l.RoomRoles...)
+		byKey[l.LinkKey] = l
 	}
 	facts := []cycleScopeFactInput{}
 	seen := map[string]bool{}
@@ -269,7 +278,8 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 				return nil, errors.New("安全商品卡与当前商品列表不一致")
 			}
 			seen[key] = true
-			scope.Products = append(scope.Products, anchorcycle.FocusProduct{LinkKey: key, Name: safeProductField(line, "商品"), Roles: roles[key]})
+			link := byKey[key]
+			scope.Products = append(scope.Products, anchorcycle.FocusProduct{LinkKey: key, Name: safeProductField(line, "商品"), Roles: roles[key], Spec: link.Spec, DailyPrice: link.DailyPrice, Quantity: link.Quantity})
 		}
 	}
 	if len(scope.Products) != len(active) {
@@ -294,7 +304,11 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 	if err != nil || settings.SellingPointProfileID == "" {
 		return nil, errors.New("多商品方案需要已配置的卖点挖掘模型分析归属")
 	}
-	data, _ := json.Marshal(map[string]any{"products": scope.Products, "facts": facts, "tasks": tasks})
+	views := make([]productAnalysisView, 0, len(scope.Products))
+	for _, p := range scope.Products {
+		views = append(views, productAnalysisView{LinkKey: p.LinkKey, Name: p.Name, Roles: p.Roles})
+	}
+	data, _ := json.Marshal(map[string]any{"products": views, "facts": facts, "tasks": tasks})
 	profile, profileErr := s.store.ResolveSpeechModel(ctx, settings.SellingPointProfileID)
 	if profileErr != nil || profile == nil {
 		return nil, errors.New("商品归属分析模型不可用")

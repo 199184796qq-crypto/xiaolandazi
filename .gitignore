@@ -28,6 +28,12 @@ data/logs/*
 Thumbs.db
 Desktop.ini
 
+# 本地编译产物
+management-service-linux-*
+management-service/management-service-*
+core-service/core-service-trim
+core-service/core-service
+
 core-service/vendor/
 management-service/vendor/
 

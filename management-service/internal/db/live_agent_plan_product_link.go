@@ -393,7 +393,7 @@ func (s *Store) DeleteLiveAgentPlanProductLinkWithExpectedVersion(ctx context.Co
 		return ErrLiveAgentPlanProductLinkVersionConflict
 	}
 	nextVersion := current.VersionNo + 1
-	_, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_product_links SET status='disabled', source_type='system_agent_delete', source_ref='', version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'`, nextVersion, actorUserID, productLinkID, tenantID, planID)
+	_, err = tx.ExecContext(ctx, `DELETE FROM live_agent_plan_product_links WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'`, productLinkID, tenantID, planID)
 	if err != nil {
 		return err
 	}

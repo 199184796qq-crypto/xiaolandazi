@@ -263,6 +263,24 @@
           ]
         },
         {
+          "key": "hook_welcome",
+          "name": "钩子式欢迎",
+          "action": "观众被钩子吸引、愿意留下听当前内容",
+          "heats": [
+            "COLD",
+            "WARM"
+          ],
+          "stages": [
+            "opening"
+          ],
+          "angles": [
+            "利益钩",
+            "反差钩",
+            "痛点钩",
+            "信任钩"
+          ]
+        },
+        {
           "key": "join_topic",
           "name": "帮助新人进入当前话题",
           "action": "观众理解正在讲的内容并提出相关问题",

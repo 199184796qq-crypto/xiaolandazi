@@ -67,7 +67,7 @@ func TestSimplePoolProvider(t *testing.T) {
 	p := contentpools.Pool{Key: "probe:gift", Label: "礼品装", Owner: 2, Products: []int64{2}, Facts: []contentpools.Fact{{ID: "price", Text: "礼品装960g整只，日常价92.6元", Products: []int64{2}}, {ID: "taste", Text: "麻辣和五香两种口味可选", Products: []int64{2}}}}
 	source := contentpools.Sources{Products: []contentpools.Product{{ID: 2, Link: "2", Name: "礼品装"}}}
 	old := []contentpools.Task{{ID: "old-empty", Point: "包邮福利", Angle: "", Sources: nil}, {ID: "old-price", Point: "规格", Angle: "960g整只日常价92.6元", Sources: []string{"price"}}}
-	notes, e := s.generateSimplePool(ctx, cfg.SellingPointProfileID, gen, review, p0, &p, old, source, func() error { return nil })
+	notes, e := s.generateSimplePool(ctx, cfg.SellingPointProfileID, gen, review, p0, &p, old, source, nil, func() error { return nil })
 	if e != nil || len(p.Tasks) == 0 {
 		t.Fatal("approved siblings lost", p, notes, e)
 	}
@@ -81,7 +81,7 @@ func TestSimplePoolProvider(t *testing.T) {
 	}
 	raw, _ := json.Marshal(map[string]any{"tasks": p.Tasks, "notices": notes})
 	t.Log("SIMPLE_POOL", string(raw))
-	scoped, notes, e := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, contentpools.Sources{Products: []contentpools.Product{{ID: 1, Link: "1", Name: "燕麦饼干"}, {ID: 2, Link: "2", Name: "保温杯"}}}, []contentpools.Fact{{ID: "grain", Text: "燕麦饼干使用燕麦原料"}, {ID: "steel", Text: "保温杯杯身使用304不锈钢"}}, p0)
+	scoped, notes, e := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, contentpools.Sources{Products: []contentpools.Product{{ID: 1, Link: "1", Name: "燕麦饼干"}, {ID: 2, Link: "2", Name: "保温杯"}}}, []contentpools.Fact{{ID: "grain", Text: "燕麦饼干使用燕麦原料"}, {ID: "steel", Text: "保温杯杯身使用304不锈钢"}}, p0, nil)
 	if e != nil {
 		t.Fatal(e)
 	}

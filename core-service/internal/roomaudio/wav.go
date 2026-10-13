@@ -10,6 +10,75 @@ import (
 
 var ErrPCMNormalizationRequired = errors.New("audio source requires pcm normalization")
 
+// leadingSilenceSampleThreshold matches the management-service voice trim: a
+// 16-bit sample whose amplitude is within ±64 (~-54 dBFS) counts as silence.
+const leadingSilenceSampleThreshold = 64
+
+// LeadingSilenceMS reports the duration in milliseconds of leading
+// near-silence in a 24kHz mono 16-bit PCM WAV payload. TTS providers (notably
+// CosyVoice clones) prepend a few hundred milliseconds of low-level silence
+// before the first phoneme; skipping it keeps captions aligned with audio.
+// Non-WAV or mismatched audio returns 0 so the caller falls back to normal
+// playback.
+func LeadingSilenceMS(data []byte) int {
+	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		return 0
+	}
+	var (
+		channels      uint16
+		sampleRate    uint32
+		bitsPerSample uint16
+	)
+	dataStart := -1
+	dataSize := 0
+	for off := 12; off+8 <= len(data); {
+		chunkID := string(data[off : off+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[off+4 : off+8]))
+		if chunkSize < 0 || off+8+chunkSize > len(data) {
+			return 0
+		}
+		switch chunkID {
+		case "fmt ":
+			if chunkSize >= 16 {
+				channels = binary.LittleEndian.Uint16(data[off+10 : off+12])
+				sampleRate = binary.LittleEndian.Uint32(data[off+12 : off+16])
+				bitsPerSample = binary.LittleEndian.Uint16(data[off+22 : off+24])
+			}
+		case "data":
+			dataStart = off + 8
+			dataSize = chunkSize
+			goto scan
+		}
+		off += 8 + chunkSize
+		if chunkSize%2 == 1 {
+			off++
+		}
+	}
+scan:
+	if dataStart < 0 || channels != Channels || sampleRate != SampleRate || bitsPerSample != BytesPerSample*8 {
+		return 0
+	}
+	pcm := data[dataStart:]
+	if dataSize < len(pcm) {
+		pcm = pcm[:dataSize]
+	}
+	bytesPerSample := int(bitsPerSample / 8)
+	totalSamples := len(pcm) / bytesPerSample
+	leadingSamples := 0
+	for i := 0; i+bytesPerSample <= len(pcm); i += bytesPerSample {
+		value := int16(binary.LittleEndian.Uint16(pcm[i : i+2]))
+		if value < -leadingSilenceSampleThreshold || value > leadingSilenceSampleThreshold {
+			break
+		}
+		leadingSamples++
+	}
+	// 整段都是静音（无语音）时不要整体跳过，保持原样播放，返回 0。
+	if leadingSamples >= totalSamples {
+		return 0
+	}
+	return leadingSamples * 1000 / int(sampleRate)
+}
+
 func StreamWAVPCM(ctx context.Context, reader io.Reader, startMS int, onFrame func([]byte, int) error) error {
 	if reader == nil {
 		return errors.New("wav reader is required")

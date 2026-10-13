@@ -3,6 +3,7 @@ package decisionexecutor
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"livecompanion/management/internal/interactionpolicy"
@@ -100,9 +101,13 @@ func containsContentValue(values []string, value string) bool {
 	return false
 }
 func chooseContentGoal(rule model.InteractionEventRule, heat, stage string, history []playedContent, scene string) (model.InteractionGoal, string, error) {
+	type candidate struct {
+		goal  model.InteractionGoal
+		angle string
+		score int
+	}
 	bestScore := -100000
-	var best model.InteractionGoal
-	angle := ""
+	var best []candidate
 	for _, g := range rule.Goals {
 		if !containsContentValue(g.Heats, heat) || !containsContentValue(g.Stages, stage) {
 			continue
@@ -128,17 +133,33 @@ func chooseContentGoal(rule model.InteractionEventRule, heat, stage string, hist
 					score -= penalty * 2
 				}
 			}
-			if score > bestScore {
+			if len(best) == 0 || score > bestScore {
 				bestScore = score
-				best = g
-				angle = a
+				best = []candidate{{g, a, score}}
+			} else if score == bestScore {
+				best = append(best, candidate{g, a, score})
 			}
 		}
 	}
-	if best.Key == "" {
-		return best, "", fmt.Errorf("当前热度和主线阶段缺少适用互动目的")
+	if len(best) == 0 {
+		return model.InteractionGoal{}, "", fmt.Errorf("当前热度和主线阶段缺少适用互动目的")
 	}
-	return best, angle, nil
+	// 同分候选按确定性哈希挑选：相同的场景/热度/阶段/近期历史得到同一结果，
+	// 历史变化时自然轮换目的与角度，不固定选第一个。
+	h := sha256.New()
+	h.Write([]byte(scene))
+	h.Write([]byte{0})
+	h.Write([]byte(heat))
+	h.Write([]byte{0})
+	h.Write([]byte(stage))
+	for _, p := range history {
+		h.Write([]byte(p.ContentGoal))
+		h.Write([]byte{0})
+		h.Write([]byte(p.ContentAngle))
+		h.Write([]byte{0})
+	}
+	pick := best[int(binary.BigEndian.Uint32(h.Sum(nil))%uint32(len(best)))]
+	return pick.goal, pick.angle, nil
 }
 func (w *Worker) interactionContentGuidance(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, model.InteractionGoal, string, error) {
 	var cfg model.InteractionSchedule

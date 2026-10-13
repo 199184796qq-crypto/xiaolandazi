@@ -36,6 +36,7 @@ type Request struct {
 	Messages         []Message
 	MaxTokens        int
 	EnableThinking   bool
+	CacheSystemPrompt bool `json:"cache_system_prompt,omitempty"`
 	Temperature      *float64 `json:"temperature,omitempty"`
 	ThinkingOverride *bool    `json:"thinking_override,omitempty"`
 	ResponseFormat   ResponseFormat
@@ -43,13 +44,14 @@ type Request struct {
 }
 
 type Response struct {
-	Text         string
-	Provider     string
-	Model        string
-	LatencyMS    int64
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
+	Text              string
+	Provider          string
+	Model             string
+	LatencyMS         int64
+	InputTokens       int64
+	OutputTokens      int64
+	TotalTokens       int64
+	CachedInputTokens int64
 }
 
 type ModelDescriptor struct {

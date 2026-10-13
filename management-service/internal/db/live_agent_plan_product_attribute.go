@@ -207,11 +207,9 @@ func disableLiveAgentPlanProductAttributesForLink(ctx context.Context, tx *sql.T
 		item.SourceRef = ""
 		item.VersionNo++
 		if _, err = tx.ExecContext(ctx, `
-			UPDATE live_agent_plan_product_attributes
-			SET status='disabled', source_type='system_agent_delete', source_ref='', version_no=?,
-			    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
-			WHERE id=? AND status='active'
-		`, item.VersionNo, actorUserID, item.ID); err != nil {
+			DELETE FROM live_agent_plan_product_attributes
+			WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
+		`, item.ID, tenantID, planID); err != nil {
 			return err
 		}
 		if err = writeLiveAgentPlanProductAttributeRevision(ctx, tx, item, "delete_with_product", actorUserID); err != nil {
@@ -337,7 +335,7 @@ func (s *Store) DeleteLiveAgentPlanProductAttribute(ctx context.Context, tenantI
 		return err
 	}
 	current.Status, current.SourceType, current.SourceRef, current.VersionNo = "disabled", "system_agent_delete", "", current.VersionNo+1
-	if _, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_product_attributes SET status='disabled', source_type='system_agent_delete', source_ref='', version_no=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3) WHERE id=?`, current.VersionNo, actorUserID, current.ID); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM live_agent_plan_product_attributes WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'`, current.ID, tenantID, planID); err != nil {
 		return err
 	}
 	if err = writeLiveAgentPlanProductAttributeRevision(ctx, tx, current, "delete", actorUserID); err != nil {
