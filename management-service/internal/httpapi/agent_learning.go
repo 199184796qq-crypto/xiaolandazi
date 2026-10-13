@@ -15,6 +15,7 @@ import (
 	"livecompanion/management/internal/agentmemory"
 	"livecompanion/management/internal/agentrouting"
 	"livecompanion/management/internal/agentunderstanding"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/decisionexecutor"
 	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/interactionpolicy"
@@ -1044,6 +1045,14 @@ func (s *Server) agentLearningCreateSession(w http.ResponseWriter, r *http.Reque
 	if input.PlanID < 0 {
 		writeError(w, http.StatusBadRequest, "方案编号无效")
 		return
+	}
+	if input.PlanID == 0 {
+		plan, err := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID)
+		if err != nil && !errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+			writeError(w, http.StatusInternalServerError, "读取当前方案失败")
+			return
+		}
+		input.PlanID = plan.ID
 	}
 	if input.PlanID > 0 {
 		if plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, input.PlanID); err != nil || plan.Status != "active" {

@@ -39,6 +39,10 @@ ASR 完成只进入 recognized，不代表设备执行成功；只有对应执�
 
 ## 用户查询
 
+- `POST /api/v1/live/devices/{deviceID}/unclaim`：客户登录，用户阅读风险提醒并明确确认后提交 `{ "confirmed": true }`。租户来自登录会话，事务中核对库存归属与硬件认领归属；其它账号不能解绑该设备。直播或房间处于运行、暂停、启动、恢复状态时返回 409。
+- 成功后同时解除账户和直播间绑定，移除当前运行状态、旧绑定码与当前账户的称呼偏好，清除设备账户名称，记录释放审计。库存档案、历史流水和审计保留；其它盒子、直播间资料和账号本身不删除。原主设备解绑时，剩余监听设备按既有规则提升为主设备。
+- 盒子通过现有网关状态查询重新取得有效期 10 分钟的六位绑定码；网关下发 `device_status.binding_code`，已有终端固件显示。离线设备下次联网取得新码。API 成功表示账户关系已解除，不冒充盒子屏幕显示回执；网页从设备列表移除该盒子，提示“联网后将重新显示”。
+
 - `GET /api/v1/live/devices/{deviceID}/business-events?limit=20&before_id=...`：客户登录、当前设备归属校验、租户隔离；返回历史事件，不包含 MAC 或 OSS object key。
 - `GET /api/v1/live/devices/{deviceID}/business-events/{eventID}/image`：客户登录、当前设备及事件同租户校验后代理读取 JPEG；private/no-store、不允许嗅探。
 

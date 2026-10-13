@@ -9,6 +9,7 @@ import (
 
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/policy"
 )
 
 const preparedInteractionTTL = 2 * time.Minute
@@ -57,11 +58,11 @@ func (w *Worker) interactionPreparationScope(ctx context.Context, session model.
 	if err != nil || !ok {
 		return "", fmt.Errorf("读取待播声音身份失败: %v", err)
 	}
-	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return "", err
 	}
-	input := []any{session.ExternalID, session.ExecutionRealm, plan, facts, published, versions, voice, industry, l1, l2, l3,
+	input := []any{session.ExternalID, session.ExecutionRealm, plan, facts, published, versions, voice, effective,
 		item.PurposeID, item.PurposeKnowledge, item.Topic, item.SampleQuestions, item.Nicknames, item.ReplyHint, item.ManualAction, item.ManualOrigin, item.ExecutionMode, item.FixedText, item.MissionKind, item.Schedule,
 		w.store.AgentPromptValue(ctx, "policy.runtime.execution", ""), w.store.AgentPromptValue(ctx, "live.final_review.system", "")}
 	if source, ok := w.store.(expressionConstraintStore); ok {

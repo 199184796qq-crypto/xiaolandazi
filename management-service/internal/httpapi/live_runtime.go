@@ -764,25 +764,19 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if industryCode, l1, l2, l3, policyErr := s.store.LoadLivePolicyLayers(
-		r.Context(), tenantID, roomID,
-	); policyErr != nil {
+	if effectivePolicy, policyErr := policy.LoadGeneration(); policyErr != nil {
 		log.Printf(
 			"live runtime policy load failed tenant=%d room=%d session=%d: %v",
 			tenantID, roomID, session.ID, policyErr,
 		)
 	} else {
-		effectivePolicy := policy.BuildEffective(industryCode, l1, l2, l3)
 		if snapshotErr := s.store.SaveLiveRuntimePolicySnapshot(
 			r.Context(),
 			model.LiveRuntimePolicySnapshot{
 				SessionID:    session.ID,
 				TenantID:     tenantID,
 				RoomID:       roomID,
-				IndustryCode: industryCode,
-				L1VersionID:  policyVersionID(l1),
-				L2VersionID:  policyVersionID(l2),
-				L3VersionID:  policyVersionID(l3),
+				IndustryCode: effectivePolicy.IndustryCode,
 				Effective:    effectivePolicy,
 			},
 		); snapshotErr != nil {

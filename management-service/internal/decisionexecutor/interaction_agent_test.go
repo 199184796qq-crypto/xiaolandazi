@@ -20,10 +20,10 @@ type interactionAgentTestStore struct {
 	reads []string
 }
 
-func (s *interactionAgentTestStore) ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error) {
+func (s *interactionAgentTestStore) ListActiveAgentMemories(_ context.Context, tenant, room int64) ([]model.AgentMemoryItem, error) {
 	return []model.AgentMemoryItem{
-		{MemoryType: model.AgentMemoryTypeSemantic, Status: "active", CurrentVersion: &model.AgentMemoryVersion{ContentText: "已确认：需要冷藏。"}},
-		{MemoryType: model.AgentMemoryTypeStyle, Status: "active", CurrentVersion: &model.AgentMemoryVersion{ContentText: "风格哨兵：开头必须说老乡们。"}},
+		{TenantID: tenant, RoomID: room, MemoryType: model.AgentMemoryTypeSemantic, Status: "active", CurrentVersion: &model.AgentMemoryVersion{ContentText: "已确认：需要冷藏。", Structured: map[string]any{"review_plan_id": s.plan.ID}}},
+		{TenantID: tenant, RoomID: room, MemoryType: model.AgentMemoryTypeStyle, Status: "active", CurrentVersion: &model.AgentMemoryVersion{ContentText: "风格哨兵：开头必须说老乡们。", Structured: map[string]any{"review_plan_id": s.plan.ID}}},
 	}, nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/policy"
 )
 
 var ErrLivePolicyScopeInvalid = errors.New("invalid live policy scope")
@@ -414,6 +415,17 @@ func (s *Store) CreateLivePolicyDraft(
 	userID int64,
 	input model.CreateLivePolicyDraftInput,
 ) (model.LivePolicyVersion, error) {
+	if input.Layer == model.LivePolicyLayerL3 && input.TenantID > 0 && input.RoomID > 0 {
+		plan, e := s.GetLiveAgentPlanForRoom(ctx, input.TenantID, input.RoomID)
+		if e != nil && !errors.Is(e, ErrLiveAgentPlanNotFound) {
+			return model.LivePolicyVersion{}, e
+		}
+		previous, e := s.GetActiveLivePolicyVersion(ctx, model.LivePolicyLayerL3, "", input.TenantID, input.RoomID)
+		if e != nil {
+			return model.LivePolicyVersion{}, e
+		}
+		input.Overrides = policy.BindPlanOverrides(input.Overrides, previous, plan.ID)
+	}
 	scope, err := s.EnsureLivePolicyScope(
 		ctx, input.Layer, input.IndustryCode, input.TenantID, input.RoomID,
 		userID, input.Name,
@@ -693,6 +705,8 @@ func (s *Store) GetLivePolicyContext(
 	return result, nil
 }
 
+// Legacy catalog editing/history only. Generation reads public P0 through
+// policy.LoadGeneration and business material from the saved agent plan.
 func (s *Store) LoadLivePolicyLayers(
 	ctx context.Context,
 	tenantID, roomID int64,

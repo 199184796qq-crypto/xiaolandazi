@@ -105,6 +105,16 @@ export const getPublicSystemConfig = () => request<PublicSystemConfig>('/api/v1/
 export const getCurrentResources = () => request<ResourceDashboard>('/api/v1/resources');
 export const getRooms = () => request<ListResponse<Room>>('/api/v1/rooms');
 export const getRoom = (roomId: number) => request<Room>('/api/v1/rooms/' + roomId);
+export async function setRoomMonitor(roomId: number, enabled: boolean) {
+  const room = await request<Room>('/api/v1/rooms/' + roomId + '/monitor', {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  });
+  if (room.id !== roomId || room.monitor_enabled !== enabled) {
+    throw new Error('操作结果未确认，请稍后核对采集状态');
+  }
+  return room;
+}
 export const getRoomSessionStats = (roomId: number) =>
   request<RoomSessionStats>('/api/v1/rooms/' + roomId + '/session-stats');
 export function resolveRoomSessionDecision(roomId: number, action: 'merge' | 'fresh') {
@@ -148,6 +158,14 @@ export const bindDeviceRoom = (id: number, roomId: number, bindingRole: 'primary
 	method: 'POST', body: JSON.stringify({ room_id: roomId, binding_role: bindingRole }),
 });
 export const unbindDeviceRoom = (id: number) => request<LiveDevice>('/api/v1/live/devices/' + id + '/bind', { method: 'DELETE' });
+export async function unclaimDevice(id: number) {
+  const result = await request<{ ok: boolean; device_id: number; message: string }>(
+    '/api/v1/live/devices/' + id + '/unclaim',
+    { method: 'POST', body: JSON.stringify({ confirmed: true }) },
+  );
+  if (result.ok !== true || result.device_id !== id) throw new Error('解绑结果未确认，请刷新设备列表核对');
+  return result;
+}
 export type DeviceAddressingMode = 'auto' | 'female' | 'male' | 'child' | 'neutral';
 export const getDeviceAddressing = (id: number) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing');
 export const saveDeviceAddressing = (id: number, mode: DeviceAddressingMode) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing', { method: 'PUT', body: JSON.stringify({ mode }) });

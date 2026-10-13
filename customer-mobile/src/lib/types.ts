@@ -52,6 +52,7 @@ export interface Room {
   name: string;
   status: string;
   collector_mode?: string;
+  monitor_enabled?: boolean;
   device_online?: boolean;
   online_count?: number;
 }

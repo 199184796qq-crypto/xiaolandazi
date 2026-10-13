@@ -62,3 +62,38 @@ func TestScopedCorrectionShadowsSharedRuleOnlyInsideItsPlan(t *testing.T) {
 		t.Fatal(a, b)
 	}
 }
+
+func TestFormalPlanDoesNotUseUnboundBusinessMemories(t *testing.T) {
+	items := []model.AgentMemoryItem{
+		{ID: 1, MemoryType: model.AgentMemoryTypeFact, CurrentVersion: &model.AgentMemoryVersion{ContentText: "旧油资料"}},
+		{ID: 2, MemoryType: model.AgentMemoryTypeStyle, CurrentVersion: &model.AgentMemoryVersion{ContentText: "称呼和语气"}},
+		{ID: 3, MemoryType: model.AgentMemoryTypeSemantic, CurrentVersion: &model.AgentMemoryVersion{Structured: map[string]any{"review_plan_id": float64(4)}}},
+		{ID: 4, MemoryType: model.AgentMemoryTypeFact, CurrentVersion: &model.AgentMemoryVersion{Structured: map[string]any{"review_plan_id": float64(5)}}},
+	}
+	got := ConfirmedMemoriesForPlan(items, 4)
+	if len(got) != 2 || got[0].ID != 2 || got[1].ID != 3 {
+		t.Fatal(got)
+	}
+	if len(ConfirmedMemoriesForPlan(items, 0)) != 2 {
+		t.Fatal("unbound legacy mode changed")
+	}
+}
+
+func TestGenerationMemoriesRequiresTenantRoomAndExplicitPlanBinding(t *testing.T) {
+	item := func(id, tenant, room, plan int64, kind string) model.AgentMemoryItem {
+		return model.AgentMemoryItem{ID: id, TenantID: tenant, RoomID: room, Status: "active", MemoryType: kind, CurrentVersion: &model.AgentMemoryVersion{Structured: map[string]any{"review_plan_id": plan}}}
+	}
+	items := []model.AgentMemoryItem{
+		item(1, 14, 15, 4, "fact"), item(2, 24, 15, 4, "fact"), item(3, 14, 26, 4, "fact"), item(4, 14, 15, 5, "fact"), item(5, 14, 15, 0, "fact"), item(6, 14, 15, 0, "style"), item(7, 14, 15, 4, "style"),
+	}
+	got := GenerationMemories(items, 14, 15, 4)
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 7 {
+		t.Fatal(got)
+	}
+	if len(GenerationMemories(items, 14, 15, 0)) != 0 {
+		t.Fatal("missing plan fell back to legacy")
+	}
+	if len(items) != 7 {
+		t.Fatal("history mutated")
+	}
+}

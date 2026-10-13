@@ -10,57 +10,51 @@ const source = await readFile(new URL('../src/views/LiveStrategyView.vue', impor
 const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const ast = ts.createSourceFile('view.ts', script, ts.ScriptTarget.Latest, true)
 const handlers = ast.statements.filter(node => ts.isFunctionDeclaration(node) &&
-  ['openWheelRiskLocation', 'locatePendingWheelRisk', 'openFactRiskLocation', 'openSourceRiskLocation'].includes(node.name?.text)).map(node => node.getText(ast)).join('\n')
+  ['selectPlanConfigurationMode', 'openFactRiskLocation', 'openSourceRiskLocation', 'locatePendingRiskLocation'].includes(node.name?.text)).map(node => node.getText(ast)).join('\n')
 const code = ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 function fixture() {
   const calls = []
   const state = {
     reviewsForArea, riskSources, sourceArea,
-    activeMode: { value: 'knowledge' }, anchorSellingPointWheelLoading: { value: false },
-    pendingWheelRiskHash: { value: '' }, locatedFactRiskHash: { value: '' }, expandedFactRiskId: { value: null },
+    activeMode: { value: 'knowledge' }, pendingRiskLocation: { value: null }, riskLocationAttempt: 0,
+    locatedFactRiskHash: { value: '' }, expandedFactRiskId: { value: null },
     formalFacts: { value: [] }, factRiskReviews: { value: [] },
-    speechMinerWorkbench: { value: { locateRisk: async hash => { calls.push(hash); return true } } },
     nextTick: async () => {}, editRiskSource: async payload => calls.push(payload),
     factRisksForFact: item => item.reviews,
-    document: { querySelectorAll: () => [] },
+    document: { querySelectorAll: () => [], querySelector: () => null }, window: { matchMedia: () => ({ matches: true }) },
     productCards: { value: { locateRisk: async (...args) => calls.push(args) } }, expandedFormalBenefitIds: {value:new Set()},
   }
   vm.createContext(state); vm.runInContext(code, state)
   return { state, calls }
 }
-test('badge selects an unresolved merged wheel risk, not a confirmed review', async () => {
+test('task explanation opens directly even when old direction risks exist', async () => {
   const { state, calls } = fixture()
   state.factRiskReviews.value = [
     { claim_sha256: 'old', status: 'confirmed', source_key: 'wheel/0/name' },
     { claim_sha256: 'fact', status: 'pending', source_key: 'facts/0/0' },
     { claim_sha256: 'merged', status: 'pending', source_key: 'facts/1/0', sources: [{ source_key: 'wheel/4/angle/6' }] },
   ]
-  await state.openWheelRiskLocation()
+  state.selectPlanConfigurationMode('miner')
   assert.equal(state.activeMode.value, 'miner')
-  assert.deepEqual(calls, ['merged'])
-  assert.equal(state.pendingWheelRiskHash.value, '')
+  assert.deepEqual(calls, [])
+  assert.equal(state.pendingRiskLocation.value, null)
 })
-test('location waits for assets and respects leaving the page before next tick', async () => {
+test('risk location respects leaving the page before next tick', async () => {
   const { state, calls } = fixture()
-  state.factRiskReviews.value = [{ claim_sha256: 'pending', status: 'pending', source_key: 'wheel/0/name' }]
-  state.anchorSellingPointWheelLoading.value = true
-  await state.openWheelRiskLocation()
-  assert.equal(state.pendingWheelRiskHash.value, 'pending')
-  assert.deepEqual(calls, [])
-  state.anchorSellingPointWheelLoading.value = false
+  const review = { claim_sha256: 'pending', status: 'pending', source_key: 'facts/2/0', sources: [{source_key:'facts/2/0',area:'knowledge',entity_id:20}] }
+  state.factRiskReviews.value = [review]
+  state.formalFacts.value = [{id:20,reviews:[review]}]
   state.nextTick = async () => { state.activeMode.value = 'products' }
-  await state.locatePendingWheelRisk()
+  await state.openFactRiskLocation()
   assert.deepEqual(calls, [])
-  state.nextTick = async () => {}; state.activeMode.value = 'miner'
-  await state.locatePendingWheelRisk()
-  assert.deepEqual(calls, ['pending'])
+  assert.equal(state.activeMode.value, 'products')
 })
 test('fact badge expands and focuses exact review rather than confirmed rows', async () => {
   const { state } = fixture(), calls = []
   const review = { claim_sha256: 'pending', status: 'pending', source_key: 'facts/2/0', sources: [{source_key:'facts/2/0',text:'test',area:'knowledge',entity_id:20}] }
   state.factRiskReviews.value = [{ ...review, claim_sha256: 'old', status: 'confirmed' }, review]
   state.formalFacts.value = [{ id: 20, reviews: [review] }]
-  state.document.querySelectorAll = () => [{ dataset: { factRiskHash: 'pending' }, scrollIntoView: () => calls.push('scroll'), focus: () => calls.push('focus') }]
+  state.document.querySelectorAll = () => [{ getAttribute: () => 'pending', getClientRects: () => [{}], scrollIntoView: () => calls.push('scroll'), focus: () => calls.push('focus') }]
   await state.openFactRiskLocation()
   assert.equal(state.expandedFactRiskId.value, 20)
   assert.equal(state.locatedFactRiskHash.value, 'pending')

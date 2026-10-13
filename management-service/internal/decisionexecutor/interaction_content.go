@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"livecompanion/management/internal/interactionlearning"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"net/http"
@@ -215,6 +216,11 @@ func (w *Worker) interactionMemoryFingerprint(ctx context.Context, s model.LiveR
 	if err != nil {
 		return "", err
 	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, s.TenantID, s.RoomID)
+	if err != nil {
+		return "", err
+	}
+	memories = interactionlearning.GenerationMemories(memories, s.TenantID, s.RoomID, plan.ID)
 	raw, err := json.Marshal(memories)
 	if err != nil {
 		return "", err

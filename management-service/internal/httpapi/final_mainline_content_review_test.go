@@ -57,6 +57,16 @@ func TestFinalReviewIncludesValidatedP0AndScopedContentWithoutIndices(t *testing
 			t.Fatal("index responsibility leaked", word)
 		}
 	}
+	before := s.FinalContentSourceSHA()
+	s.LatestExpressionConstraints = []map[string]any{{"表达限制": "不用夜宵举例", "用户采用的实时表达约束": true}}
+	if before == s.FinalContentSourceSHA() {
+		t.Fatal("adopted constraint did not invalidate final approval")
+	}
+	messages, e = finalMainlineContentMessages(&s, c, "mother")
+	raw, _ = json.Marshal(messages)
+	if e != nil || !strings.Contains(string(raw), "不用夜宵举例") {
+		t.Fatal("live adopted requirement omitted", e)
+	}
 }
 
 func TestCompletedRequirementRejectionIsNotAFormatOrTransportFailure(t *testing.T) {

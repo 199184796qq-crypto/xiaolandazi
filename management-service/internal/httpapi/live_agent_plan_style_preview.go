@@ -382,7 +382,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "读取商品链接失败")
 		return
 	}
-	industry, l1, l2, _, err := s.store.LoadLivePolicyLayers(r.Context(), tenantID, input.RoomID)
+	effectivePolicy, err := policy.LoadGeneration()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取规则层失败")
 		return
@@ -417,7 +417,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 	generation := compileFullShowContext(plan, facts, benefits, links, nil, model.LiveAgentFullShowPreviewInput{RoomID: input.RoomID, DurationMinutes: 30, RoundMinutes: 5, VariantCount: 3, ExpansionFreedom: input.ExpansionFreedom, UseAnchorStyle: true, UseDynamicFacts: true, AnchorStyle: style})
 	generation.StyleMatchIntensity = styleMatchIntensity
 	generation.ConversionIntensity = conversionIntensity
-	generation.IndustryCode = strings.TrimSpace(industry)
+	generation.IndustryCode = effectivePolicy.IndustryCode
 	virtualMinutes := (input.TargetChars + 249) / 250
 	generation.ExpansionPlans = speechexpander.BuildFixedPlans(speechexpander.Input{
 		DurationMinutes: virtualMinutes,
@@ -492,7 +492,7 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		},
 	}
 	observer.Progress("正在规划接下来最多8个小段；第一段通过校验后立即显示，不等待整轮完成。")
-	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, policy.BuildEffective(industry, l1, l2, nil).PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
+	text, result, checked, audited, repaired, continuation, err := generateAnchorStyleTestContinuing(ctx, s.speechGateway(), generation, effectivePolicy.PromptText, input.Topic, input.TargetChars, input.Continuation, observer)
 	if err != nil {
 		failureMetadata := map[string]any{"error": err.Error(), "target_chars": input.TargetChars, "planning_call_count": observer.PlanningCalls, "render_call_count": observer.RenderCalls, "repair_call_count": observer.RepairCalls, "first_segment_ms": observer.FirstSegmentMS, "style_degraded": observer.DegradedStyle, "degraded_segments": observer.DegradedSegments, "fallback_used": len(observer.FallbackSegments) > 0, "fallback_segments": observer.FallbackSegments, "skipped_segments": observer.SkippedSegments, "style_patched_segments": observer.PatchedSegments, "fact_template_segments": observer.FactTemplateSegments}
 		failureMetadata["base_render_calls"] = observer.BaseRenderCalls

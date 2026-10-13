@@ -19,11 +19,11 @@ func cycleP0ContextMessages(state *anchorcycle.State, candidate anchorcycle.Cand
 	if err != nil {
 		return nil, err
 	}
-	items, err := policy.ContextItems(*candidate.P0Report)
+	items, err := policy.ContextContent(*candidate.P0Report)
 	if err != nil {
 		return nil, err
 	}
-	packet, err := json.Marshal(map[string]any{"text": cycleVoiceText(candidate), "scope": state.Config.ComplianceScope, "confirmed_facts": state.ProductFacts(state.Task()), "request_control_sources": cycleInstructionSources(state), "items": items})
+	packet, err := json.Marshal(map[string]any{"正文": cycleVoiceText(candidate), "范围": state.Config.ComplianceScope, "确认事实": state.ProductFacts(state.Task()), "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "待核对规则内容": items})
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (s *Server) reviewCycleP0Context(ctx context.Context, state *anchorcycle.St
 }
 
 func cycleInstructionSources(state *anchorcycle.State) []string {
-	sources := []string{state.Task().Angle, state.PendingFeedback, cycleExpressionMethod(state)}
+	sources := []string{state.Task().SellingPoint, state.Task().Angle, state.PendingFeedback, cycleExpressionMethod(state)}
 	if plan := state.CurrentAnglePlan(); plan != nil {
 		sources = append(sources, plan.Goal, plan.Action)
 		sources = append(sources, plan.Hooks...)
@@ -64,13 +64,44 @@ func cycleInstructionSources(state *anchorcycle.State) []string {
 }
 
 func cleanCycleOpeningInstruction(state *anchorcycle.State, candidate *anchorcycle.Candidate, quote string) bool {
+	labels := []string{}
+	if state.Phase == "closing" && state.Task().SellingPoint == "本轮收口" {
+		labels = []string{"本轮收口", "这轮收口", "这一轮收口", "本段收口", "这段收口", "本次收口", "这次收口"}
+	}
+	changed := false
+	if quote == "" {
+		if state.TotalAccepted()%3 != 0 {
+			labels := []string{}
+			for _, link := range state.HookProducts() {
+				if link != "current" {
+					labels = append(labels, link+"号链接")
+				}
+			}
+			text, edit := contentguard.StripLeadingProductControl(cycleVoiceText(*candidate), "直接说", labels)
+			if edit != nil {
+				candidate.OutputText = text
+				candidate.OpeningInstructionEdits = append(candidate.OpeningInstructionEdits, *edit)
+				changed = true
+			}
+		}
+		text, edits, e := contentguard.StripRequestInstructions(cycleVoiceText(*candidate), cycleInstructionSources(state), labels)
+		if e != nil {
+			candidate.P0PatchError = e.Error()
+			return false
+		}
+		if len(edits) > 0 {
+			candidate.OutputText = text
+			candidate.OpeningInstructionEdits = append(candidate.OpeningInstructionEdits, edits...)
+			changed = true
+		}
+	}
 	cleaned, edit, err := contentguard.StripOpeningInstruction(cycleVoiceText(*candidate), cycleInstructionSources(state), quote)
 	if err != nil {
 		candidate.P0PatchError = err.Error()
 		return false
 	}
 	if edit == nil {
-		return false
+		return changed
 	}
 	candidate.OutputText = cleaned
 	candidate.OpeningInstructionEdits = append(candidate.OpeningInstructionEdits, *edit)
@@ -143,8 +174,8 @@ func (s *Server) reviewCycleP0ContextOnce(ctx context.Context, state *anchorcycl
 		return
 	}
 	review := contentguard.ContextReview{PromptSHA: derivedHash(mother), Provider: result.Provider, Model: result.Model, Raw: result.Text, LatencyMS: time.Since(started).Milliseconds()}
-	if err = state.ApplyP0Context(candidate, review); err != nil {
-		failed("P0语境复核结构无效：" + err.Error())
+	if err = state.ApplyP0ContextContent(candidate, review); err != nil {
+		failed("P0语境复核未完成：" + err.Error())
 		candidate.P0Report.ContextReview.Raw = result.Text
 		candidate.P0Report.ContextReview.PromptSHA = review.PromptSHA
 		candidate.P0Report.ContextReview.Provider = review.Provider

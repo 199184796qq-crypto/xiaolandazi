@@ -3,7 +3,10 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"livecompanion/management/internal/auth"
 )
 
 func TestHardwareAPIDeniesMissingOrInvalidToken(t *testing.T) {
@@ -33,5 +36,23 @@ func TestClaimLimiter(t *testing.T) {
 	}
 	if !l.allow(26) {
 		t.Fatal("independent user blocked")
+	}
+}
+
+func TestCustomerAccountUnclaimRequiresLoginAndPOST(t *testing.T) {
+	s := &Server{auth: auth.NewResolver("production", nil)}
+	mux := http.NewServeMux()
+	s.registerDeviceProvisioningRoutes(mux)
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		r := httptest.NewRequest(method, "/api/v1/live/devices/7/unclaim", strings.NewReader(`{"confirmed":true}`))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		want := http.StatusMethodNotAllowed
+		if method == http.MethodPost {
+			want = http.StatusUnauthorized
+		}
+		if w.Code != want {
+			t.Fatal(method, w.Code, w.Body.String())
+		}
 	}
 }

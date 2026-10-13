@@ -69,7 +69,7 @@ func TestPreparedInteractionInvalidatesChangedFactsCorrectionsVoiceAndQuestion(t
 			s.facts = []model.LiveAgentPlanFact{{Key: "shipping", Value: "改为周五发出", Status: "active"}}
 		}},
 		{"correction", func(s *preparedTestStore, _ *fakeCore) {
-			s.memories = []model.AgentMemoryItem{{ID: 1, Status: "active", MemoryType: "style", MemoryKey: "short", CurrentVersion: &model.AgentMemoryVersion{ContentText: "回答更简短"}}}
+			s.memories = []model.AgentMemoryItem{{ID: 1, TenantID: 7, RoomID: 11, Status: "active", MemoryType: "style", MemoryKey: "short", CurrentVersion: &model.AgentMemoryVersion{ContentText: "回答更简短", Structured: map[string]any{"review_plan_id": s.plan.ID}}}}
 		}},
 		{"voice", func(s *preparedTestStore, _ *fakeCore) { s.profiles[0].VoiceID = "new-voice" }},
 		{"question", func(_ *preparedTestStore, core *fakeCore) {

@@ -31,18 +31,12 @@ func (g *nicknameFixtureModel) ModelRoleIdentity(context.Context, string) (strin
 func (g *nicknameFixtureModel) Complete(_ context.Context, r agentgateway.Request) (agentgateway.Response, error) {
 	g.calls++
 	if g.bad {
-		return agentgateway.Response{Text: "not json"}, nil
+		return agentgateway.Response{Text: "无法确认\n请重新输入"}, nil
 	}
-	var in struct {
-		Names []nicknamePlanInput `json:"names"`
+	if strings.Contains(r.Messages[1].Content, "\"index\"") {
+		panic("program index exposed")
 	}
-	json.Unmarshal([]byte(r.Messages[1].Content), &in)
-	rows := []map[string]any{}
-	for _, n := range in.Names {
-		rows = append(rows, map[string]any{"index": n.Index, "address": "这位老乡"})
-	}
-	raw, _ := json.Marshal(map[string]any{"aliases": rows})
-	return agentgateway.Response{Text: string(raw)}, nil
+	return agentgateway.Response{Text: "这位老乡"}, nil
 }
 func TestNicknamePlanningCachesByRoleAndLeavesOriginalNamesIntact(t *testing.T) {
 	modelAPI := &nicknameFixtureModel{identity: "max-one"}
@@ -86,6 +80,16 @@ func TestNicknameCacheExpiresAndFreshRulesInvalidateIt(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(dir, name), raw, 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	p0, err := interactionpolicy.Read("compliance/L1/p0-hard-block.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Join(dir, "compliance", "L1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "compliance", "L1", "p0-hard-block.md"), p0, 0600); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("ANCHOR_STYLE_PROMPT_DIR", dir)
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
@@ -175,7 +179,8 @@ func TestMaskedNicknameInputsOnlyExposeReadablePrefix(t *testing.T) {
 func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *testing.T) {
 	core := &fakeCore{claimRaw: `{"claimed":true,"item":{"id":"masked-welcome","topic":"欢迎","title":"欢迎小陈***隐藏原文","summary":"欢迎小陈***隐藏原文和*隐藏昵称","sample_questions":["欢迎小陈***隐藏原文和*隐藏昵称"],"nicknames":["小陈***隐藏原文","*隐藏昵称"],"mission_kind":"welcome_named","mission_event_count":2,"manual_action":"answer"}}`}
 	agent := &fakeAgent{responses: []string{
-		`{"aliases":[{"index":0,"address":"小陈老乡"},{"index":1,"address":"这位朋友"}]}`,
+		"小陈老乡",
+		"这位朋友",
 		"欢迎小陈***隐藏原文和*隐藏昵称，你们刚来可以先看看，今天正在讲商品的规格和包装选择。",
 	}}
 	tts := &fakeTTS{}
@@ -204,9 +209,9 @@ func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *test
 		t.Fatal("planner and writer were not exercised")
 	}
 	var in struct {
-		Names []nicknamePlanInput `json:"names"`
+		Name nicknamePlanInput `json:"name"`
 	}
-	if err := json.Unmarshal([]byte(agent.requests[0].Messages[1].Content), &in); err != nil || len(in.Names) != 2 || in.Names[0].RawName != "小陈" || in.Names[1].RawName != "这位朋友" {
+	if err := json.Unmarshal([]byte(agent.requests[0].Messages[1].Content), &in); err != nil || in.Name.RawName != "小陈" || strings.Contains(agent.requests[0].Messages[1].Content, "\"index\"") {
 		t.Fatalf("bad production planner packet: %#v, %v", in, err)
 	}
 	planItem := decisionItem{Nicknames: []string{"小陈***隐藏原文", "*隐藏昵称"}, PromptNicknames: []string{"小陈老乡", "这位朋友"}, MissionKind: "welcome_named", MissionEventCount: 2}

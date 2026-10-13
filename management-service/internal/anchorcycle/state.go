@@ -66,8 +66,8 @@ type Config struct {
 	BodyMin                int          `json:"body_min,omitempty"`
 	BodyMax                int          `json:"body_max,omitempty"`
 	CombinationGap         int          `json:"combination_gap"`
-	MinReappearCycles      int          `json:"min_reappear_cycles"` // 同一卖点×角度至少隔 N 轮再出现；0 表示不启用轮级冷却
-	MaxCycles              int          `json:"max_cycles"`          // Zero means until explicitly stopped.
+	MinReappearCycles      int          `json:"min_reappear_cycles"`  // 同一卖点×角度至少隔 N 轮再出现；0 表示不启用轮级冷却
+	MaxCycles              int          `json:"max_cycles"`           // Zero means until explicitly stopped.
 	FreshWindowMinutes     int          `json:"fresh_window_minutes"` // 开播前 N 分钟全实时；0 表示不启用话术复用
 	ReuseEveryN            int          `json:"reuse_every_n"`        // 混合期每 N 段 1 段实时，其余复用旧话术；0 或 1 表示每段都实时
 	MaxReuse               int          `json:"max_reuse"`            // 单段话术最多复用次数，达到后淘汰

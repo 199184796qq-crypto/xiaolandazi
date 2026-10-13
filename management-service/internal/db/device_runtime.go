@@ -201,6 +201,19 @@ func (s *Store) ReleaseDeviceOwnership(ctx context.Context, userID, deviceID int
 	if err := s.db.QueryRowContext(ctx, `SELECT claimed_tenant_id FROM device_hardware_profiles WHERE device_id=? AND claimed_tenant_id IS NOT NULL`, deviceID).Scan(&tenant); err != nil {
 		return err
 	}
+	return s.releaseDeviceOwnership(ctx, tenant, userID, deviceID, reason, false)
+}
+
+// A customer can release only their own device. The caller's tenant comes from
+// the authenticated session, never from the request or an unscoped device lookup.
+func (s *Store) UnclaimLiveDevice(ctx context.Context, tenantID, userID, deviceID int64) error {
+	if tenantID <= 0 || userID <= 0 || deviceID <= 0 {
+		return sql.ErrNoRows
+	}
+	return s.releaseDeviceOwnership(ctx, tenantID, userID, deviceID, "客户确认解绑账户", true)
+}
+
+func (s *Store) releaseDeviceOwnership(ctx context.Context, tenant, userID, deviceID int64, reason string, customer bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -219,22 +232,47 @@ func (s *Store) ReleaseDeviceOwnership(ctx context.Context, userID, deviceID int
 		return err
 	}
 	if !claimed.Valid || claimed.Int64 != tenant || d.CurrentCustomerID == nil || *d.CurrentCustomerID != tenant || (d.LifecycleStatus != "SOLD" && d.LifecycleStatus != "CUSTOMER_BOUND" && d.LifecycleStatus != "ACTIVE") {
+		if customer {
+			return sql.ErrNoRows
+		}
 		return ErrDeviceClaimUnavailable
 	}
 	var busy int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_runtime_sessions WHERE tenant_id=? AND status='running' AND (device_id=? OR room_id IN (SELECT room_id FROM live_device_room_bindings WHERE device_id=? AND status='active'))`, tenant, deviceID, deviceID).Scan(&busy); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_runtime_sessions WHERE tenant_id=? AND status IN ('running','paused','starting','resuming') AND (device_id=? OR room_id IN (SELECT room_id FROM live_device_room_bindings WHERE device_id=? AND status='active'))`, tenant, deviceID, deviceID).Scan(&busy); err != nil {
 		return err
 	}
 	if busy > 0 {
 		return ErrLiveBindingBusy
 	}
+	var primaryRoom sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT room_id FROM live_device_room_bindings WHERE device_id=? AND tenant_id=? AND status='active' AND binding_role='primary' ORDER BY id DESC LIMIT 1 FOR UPDATE`, deviceID, tenant).Scan(&primaryRoom); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE live_device_room_bindings SET status='inactive',unbound_at=UTC_TIMESTAMP(3),ended_by_user_id=? WHERE device_id=? AND status='active'`, userID, deviceID); err != nil {
 		return err
+	}
+	if primaryRoom.Valid {
+		var bindingID, promotedDeviceID int64
+		err := tx.QueryRowContext(ctx, `SELECT id,device_id FROM live_device_room_bindings WHERE tenant_id=? AND room_id=? AND status='active' AND binding_role='listener' ORDER BY id DESC LIMIT 1 FOR UPDATE`, tenant, primaryRoom.Int64).Scan(&bindingID, &promotedDeviceID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE live_device_room_bindings SET binding_role='primary',updated_at=UTC_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND status='active'`, bindingID, tenant); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO live_runtime_events (tenant_id,room_id,device_id,actor_type,actor_user_id,event_code,title,detail_json,occurred_at) VALUES (?,?,?,'user',?,'DEVICE_ROLE_CHANGED','监听设备已自动设为主设备',JSON_OBJECT('room_id',?,'binding_role','primary'),UTC_TIMESTAMP(3))`, tenant, primaryRoom.Int64, promotedDeviceID, userID, primaryRoom.Int64); err != nil {
+				return err
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM live_device_runtime_state WHERE device_id=?`, deviceID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM device_claim_codes WHERE device_id=?`, deviceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM device_addressing_preferences WHERE device_id=? AND tenant_id=?`, deviceID, tenant); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE device_hardware_profiles SET claimed_tenant_id=NULL,device_name='',claimed_at=NULL,claim_enabled=FALSE WHERE device_id=?`, deviceID); err != nil {

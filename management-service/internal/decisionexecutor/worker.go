@@ -22,6 +22,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionlearning"
@@ -52,7 +53,6 @@ type store interface {
 	ListLiveAgentConfigVersions(context.Context, int64) ([]model.AgentConfigVersion, error)
 	GetVoiceProfile(context.Context, int64, int64) (model.VoiceProfile, error)
 	GetPublishedLiveAgentPlanVersionForRoom(context.Context, int64, int64) (model.LiveAgentPlanVersion, error)
-	LoadLivePolicyLayers(context.Context, int64, int64) (string, *model.LivePolicyVersion, *model.LivePolicyVersion, *model.LivePolicyVersion, error)
 	GetLiveAgentPlanForRoom(context.Context, int64, int64) (model.LiveAgentPlan, error)
 	ListLiveAgentPlanFacts(context.Context, int64, int64) ([]model.LiveAgentPlanFact, error)
 	ListLiveAgentPlanScripts(context.Context, int64, int64) ([]model.LiveAgentPlanScript, error)
@@ -1675,9 +1675,6 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			planName = strings.TrimSpace(plan.Name)
 		}
 		var userLayerVersion uint64
-		if _, _, _, l3, layerErr := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID); layerErr == nil && l3 != nil {
-			userLayerVersion = l3.VersionNo
-		}
 		executionMode := strings.TrimSpace(item.ExecutionMode)
 		if executionMode == "" {
 			executionMode = "intent"
@@ -2419,9 +2416,6 @@ func (w *Worker) simulateAnswer(
 	if plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, tenantID, roomID); planErr == nil {
 		result.PlanName = strings.TrimSpace(plan.Name)
 	}
-	if _, _, _, l3, layerErr := w.store.LoadLivePolicyLayers(ctx, tenantID, roomID); layerErr == nil && l3 != nil {
-		result.UserLayerVersion = l3.VersionNo
-	}
 	return result, nil
 }
 
@@ -2784,16 +2778,25 @@ func (w *Worker) finalizeSpeechText(
 	text string,
 ) (string, error) {
 	text = item.nicknameSpeechText(text)
+	controlSources := []string{item.PreviewInstruction, hiddenStrategyPrompt(item)}
+	if item.BusinessPlan != nil {
+		controlSources = append(controlSources, item.BusinessPlan.Requirements...)
+	}
+	if cleaned, edits, err := contentguard.StripRequestInstructions(text, controlSources, nil); err != nil {
+		return "", err
+	} else if len(edits) > 0 {
+		text = cleaned
+		log.Printf("interaction request instruction removed room=%d count=%d", session.RoomID, len(edits))
+	}
 	text, _ = contentstrategy.RemoveConsecutiveSpeech(text, strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"))
 	if text == "" {
 		return "", fmt.Errorf("最终播出文字为空")
 	}
 
-	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return "", fmt.Errorf("规则层终审读取失败: %w", err)
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
 	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
@@ -2899,6 +2902,11 @@ func (w *Worker) finalizeSpeechText(
 
 	// 终审后再做一次确定性的硬过滤，确保内部控制信息、绝对化词和用词禁词不能进入 TTS。
 	candidate = stripInternalSpeechLeak(candidate)
+	if cleaned, _, err := contentguard.StripRequestInstructions(candidate, controlSources, nil); err != nil {
+		return "", err
+	} else {
+		candidate = cleaned
+	}
 	candidate = hardSanitizeSpeech(candidate, riskTerms, contextText)
 	if strings.TrimSpace(candidate) == "" {
 		return "", fmt.Errorf("规则层终审后没有可播出文字")
@@ -3418,11 +3426,10 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			}
 		}
 	}
-	industry, l1, l2, l3, err := w.store.LoadLivePolicyLayers(ctx, session.TenantID, session.RoomID)
+	effective, err := policy.LoadGeneration()
 	if err != nil {
 		return "", fmt.Errorf("读取直播策略失败: %w", err)
 	}
-	effective := policy.BuildEffective(industry, l1, l2, l3)
 	runtimeInstruction := w.store.AgentPromptValue(ctx, "policy.runtime.execution", "")
 	if strings.TrimSpace(runtimeInstruction) != "" {
 		effective.PromptText = strings.TrimSpace(runtimeInstruction + "\n\n" + effective.PromptText)
@@ -3431,7 +3438,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	if memoryErr != nil {
 		return "", fmt.Errorf("读取智能体记忆失败: %w", memoryErr)
 	}
-	memories = interactionlearning.MemoriesForPlan(memories, plan.ID)
+	memories = interactionlearning.GenerationMemories(memories, session.TenantID, session.RoomID, plan.ID)
 	if item.BusinessCoreOnly {
 		filtered := make([]model.AgentMemoryItem, 0, len(memories))
 		for _, memory := range memories {
@@ -3537,7 +3544,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		"question":             strings.Join(questions, "；"),
 		"room_name":            fmt.Sprintf("room-%d", session.RoomID),
 		"plan_name":            strings.TrimSpace(plan.Name),
-		"industry_policy":      industry,
+		"industry_policy":      effective.IndustryCode,
 		"user_policy":          string(rulesJSON),
 		"reference_answer":     strings.TrimSpace(item.ReplyHint),
 		"conversation_history": strings.TrimSpace(item.Summary),
