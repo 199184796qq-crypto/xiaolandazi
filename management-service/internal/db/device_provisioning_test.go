@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -81,6 +82,9 @@ func TestDeviceProvisioningMySQL(t *testing.T) {
 		}
 	}
 	if err := s.MigrateDeviceProvisioning(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateRoomDeletions(ctx); err != nil {
 		t.Fatal(err)
 	}
 	exec(`INSERT INTO mgmt_tenants(id,code,name,status) VALUES (25,'device-owner','Owner','active'),(26,'device-other','Other','active')`)
@@ -211,5 +215,70 @@ func TestDeviceProvisioningMySQL(t *testing.T) {
 	name, err = s.NextDeviceName(ctx, 25)
 	if err != nil || name != "小蓝搭子03" {
 		t.Fatal("sequence reused after release", name, err)
+	}
+	// Customer account release must remove current associations, retain the
+	// inventory/audit record, issue a new claimable code and prevent old access.
+	exec(`INSERT INTO inv_devices(id,sn,sku_code,quality_status,lifecycle_status,current_customer_id) VALUES (4,'SN-004','XZ-CAM','qualified','SOLD',25)`)
+	exec(`INSERT INTO device_hardware_profiles(device_id,hardware_mac) VALUES (4,'1c:29:04:31:0e:bc')`)
+	listenerCode, err := s.ProvisionDevice(ctx, "1c:29:04:31:0e:bc", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimDevice(ctx, 25, 101, model.ClaimDeviceInput{BindingCode: listenerCode.Code, DeviceName: "保留的监听盒子"}, "test-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BindLiveDevice(ctx, 25, 101, 4, 25, "listener"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetDeviceAddressingMode(ctx, 25, 101, 1, "female"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnclaimLiveDevice(ctx, 26, 102, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("other customer released device", err)
+	}
+	for _, status := range []string{"running", "paused", "starting", "resuming"} {
+		exec(`INSERT INTO live_runtime_sessions(external_id,tenant_id,room_id,device_id,status,execution_realm,started_at,last_billed_at) VALUES('unclaim-live-test',25,25,4,?,'test',UTC_TIMESTAMP(3),UTC_TIMESTAMP(3))`, status)
+		if err := s.UnclaimLiveDevice(ctx, 25, 101, 1); !errors.Is(err, ErrLiveBindingBusy) {
+			t.Fatal("live room account release accepted", status, err)
+		}
+		exec(`DELETE FROM live_runtime_sessions WHERE external_id='unclaim-live-test'`)
+	}
+	if err := s.UnclaimLiveDevice(ctx, 25, 101, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetLiveDevice(ctx, 25, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("old account still reads released box", err)
+	}
+	if _, err := s.DeviceAddressingMode(ctx, 25, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("old account still reads preference", err)
+	}
+	var preferenceCount, inventoryCount, auditCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_addressing_preferences WHERE device_id=1`).Scan(&preferenceCount); err != nil || preferenceCount != 0 {
+		t.Fatal("account preference retained", preferenceCount, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM inv_devices WHERE id=1 AND current_customer_id IS NULL AND lifecycle_status='SOLD'`).Scan(&inventoryCount); err != nil || inventoryCount != 1 {
+		t.Fatal("inventory record removed or still owned", inventoryCount, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_provisioning_events WHERE device_id=1 AND tenant_id=25 AND actor_user_id=101 AND event_code='OWNERSHIP_RELEASED'`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatal("release not audited", auditCount, err)
+	}
+	if listener, err := s.GetLiveDevice(ctx, 25, 4); err != nil || listener.BindingRole != "primary" {
+		t.Fatal("remaining listener not promoted", listener, err)
+	}
+	if err := s.UnclaimLiveDevice(ctx, 25, 101, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("replayed release accepted", err)
+	}
+	newCode, err := s.ProvisionDevice(ctx, "1c:29:04:31:0e:b8", "test-secret")
+	if err != nil || newCode.State != "claimable" || len(newCode.Code) != 6 || newCode.TenantID != 0 || newCode.RoomID != 0 || newCode.DeviceName != "" {
+		t.Fatal("released code or former account data", newCode, err)
+	}
+	if _, err := s.ClaimDevice(ctx, 26, 102, model.ClaimDeviceInput{BindingCode: newCode.Code, DeviceName: "重新认领盒子"}, "test-secret"); err != nil {
+		t.Fatal("customer released box cannot be reclaimed", err)
+	}
+	if err := s.UnclaimLiveDevice(ctx, 25, 101, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("old request released new owner", err)
+	}
+	if got, err := s.DeviceAddressingMode(ctx, 26, 1); err != nil || got != "auto" {
+		t.Fatal("new account inherited old preference", got, err)
 	}
 }

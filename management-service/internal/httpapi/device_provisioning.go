@@ -64,6 +64,7 @@ func (s *Server) registerDeviceProvisioningRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/live/devices/claim", s.liveClaimDevice)
 	mux.HandleFunc("PATCH /api/v1/live/devices/{deviceID}", s.liveRenameDevice)
 	mux.HandleFunc("DELETE /api/v1/live/devices/{deviceID}/bind", s.liveUnbindDevice)
+	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/unclaim", s.liveUnclaimDevice)
 	mux.HandleFunc("PUT /api/v1/inventory/devices/{deviceID}/hardware", s.inventoryConfigureHardware)
 	mux.HandleFunc("POST /api/v1/inventory/devices/{deviceID}/release-ownership", s.inventoryReleaseOwnership)
 }
@@ -190,6 +191,30 @@ func (s *Server) liveUnbindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, item)
 }
+func (s *Server) liveUnclaimDevice(w http.ResponseWriter, r *http.Request) {
+	a, tenant, ok := s.deviceCustomer(w, r)
+	if !ok {
+		return
+	}
+	id, ok := namedPathID(w, r, "deviceID", "设备")
+	if !ok {
+		return
+	}
+	var input struct {
+		Confirmed bool `json:"confirmed"`
+	}
+	if err := readJSONWithLimitCompatible(w, r, &input, 1024); err != nil || !input.Confirmed {
+		writeError(w, 400, "请先阅读风险提醒并确认解绑账户")
+		return
+	}
+	if err := s.store.UnclaimLiveDevice(r.Context(), tenant, a.UserID, id); err != nil {
+		s.deviceOperationError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"ok": true, "device_id": id, "message": "已解绑账户。盒子联网后将重新显示6位绑定码，可在我的设备中重新添加。"})
+}
+
 func (s *Server) inventoryConfigureHardware(w http.ResponseWriter, r *http.Request) {
 	a, _, ok := s.requireStaffPermission(w, r, "inventory.manage")
 	if !ok {

@@ -3856,6 +3856,7 @@ export const getDefaultDeviceName = () => request<{ device_name: string }>('/api
 export const claimLiveDevice = (binding_code: string, device_name: string) => request<LiveDevice>('/api/v1/live/devices/claim', { method: 'POST', body: JSON.stringify({ binding_code, device_name }) })
 export const renameLiveDevice = (id: number, device_name: string) => request<LiveDevice>('/api/v1/live/devices/' + id, { method: 'PATCH', body: JSON.stringify({ device_name }) })
 export const unbindLiveDevice = (id: number) => request<LiveDevice>('/api/v1/live/devices/' + id + '/bind', { method: 'DELETE' })
+export const unclaimLiveDevice = (id: number) => request<{ ok: boolean; device_id: number; message: string }>('/api/v1/live/devices/' + id + '/unclaim', { method: 'POST', body: JSON.stringify({ confirmed: true }) })
 export type DeviceAddressingMode = 'auto' | 'female' | 'male' | 'child' | 'neutral'
 export const getDeviceAddressing = (id: number) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing')
 export const saveDeviceAddressing = (id: number, mode: DeviceAddressingMode) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing', { method: 'PUT', body: JSON.stringify({ mode }) })

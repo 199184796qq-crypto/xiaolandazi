@@ -83,3 +83,48 @@ func TestManagedOTAContainsNoMACAndFailsClosed(t *testing.T) {
 		t.Fatal("management failure accepted", w.Code)
 	}
 }
+
+func TestManagedReleasedDeviceReceivesNewBindingCode(t *testing.T) {
+	var released atomic.Bool
+	management := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Xiaozhi-Internal-Token") != "test-token" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		if r.URL.Path == "/internal/v1/xiaozhi/connection" {
+			writeJSON(w, 200, map[string]any{"applied": true, "display_status": "连续待机"})
+			return
+		}
+		if released.Load() {
+			writeJSON(w, 200, provisioning{DeviceID: 25, State: "claimable", Message: "请添加设备", Code: "023518"})
+		} else {
+			writeJSON(w, 200, provisioning{DeviceID: 25, TenantID: 7, State: "claimed", DeviceName: "旧账户名称", Message: "设备已添加"})
+		}
+	}))
+	defer management.Close()
+	g := newGateway(config{managementBaseURL: management.URL, internalToken: "test-token", secret: "secret"}, &bindingStore{data: map[string]int64{}})
+	server := httptest.NewServer(g.handler())
+	defer server.Close()
+	const mac = "1c:29:04:31:0e:b8"
+	headers := http.Header{"Device-Id": []string{mac}, "Client-Id": []string{"client"}, "Authorization": []string{"Bearer " + g.deviceToken(mac, "client")}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/xiaozhi/v1/", headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(deviceProbeInterval + 4*time.Second))
+	if err := conn.WriteJSON(map[string]any{"type": "hello", "version": 1, "transport": "websocket"}); err != nil {
+		t.Fatal(err)
+	}
+	var hello, status map[string]any
+	if err := conn.ReadJSON(&hello); err != nil || hello["type"] != "hello" {
+		t.Fatal(hello, err)
+	}
+	if err := conn.ReadJSON(&status); err != nil || status["state"] != "claimed" {
+		t.Fatal(status, err)
+	}
+	released.Store(true)
+	if err := conn.ReadJSON(&status); err != nil || status["type"] != "device_status" || status["state"] != "claimable" || status["binding_code"] != "023518" || status["device_name"] != "" || status["room_id"] != float64(0) {
+		t.Fatal("released device did not receive code without old account data", status, err)
+	}
+}
