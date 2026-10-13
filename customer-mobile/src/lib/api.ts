@@ -148,6 +148,14 @@ export const bindDeviceRoom = (id: number, roomId: number, bindingRole: 'primary
 	method: 'POST', body: JSON.stringify({ room_id: roomId, binding_role: bindingRole }),
 });
 export const unbindDeviceRoom = (id: number) => request<LiveDevice>('/api/v1/live/devices/' + id + '/bind', { method: 'DELETE' });
+export async function unclaimDevice(id: number) {
+  const result = await request<{ ok: boolean; device_id: number; message: string }>(
+    '/api/v1/live/devices/' + id + '/unclaim',
+    { method: 'POST', body: JSON.stringify({ confirmed: true }) },
+  );
+  if (result.ok !== true || result.device_id !== id) throw new Error('解绑结果未确认，请刷新设备列表核对');
+  return result;
+}
 export type DeviceAddressingMode = 'auto' | 'female' | 'male' | 'child' | 'neutral';
 export const getDeviceAddressing = (id: number) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing');
 export const saveDeviceAddressing = (id: number, mode: DeviceAddressingMode) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing', { method: 'PUT', body: JSON.stringify({ mode }) });

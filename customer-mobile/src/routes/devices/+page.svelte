@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getLiveDevices, getRooms, getDefaultDeviceName, claimDevice, renameDevice, bindDeviceRoom, unbindDeviceRoom, getDeviceAddressing, saveDeviceAddressing } from '$lib/api';
+  import { getLiveDevices, getRooms, getDefaultDeviceName, claimDevice, renameDevice, bindDeviceRoom, unbindDeviceRoom, unclaimDevice, getDeviceAddressing, saveDeviceAddressing } from '$lib/api';
   import type { DeviceAddressingMode } from '$lib/api';
   import type { LiveDevice, Room } from '$lib/types';
 
@@ -19,15 +19,21 @@
   let addressingMode: DeviceAddressingMode = 'auto';
   let addressingLoaded = false;
   let timer: ReturnType<typeof setInterval>;
+  let loadRevision = 0;
+  let unclaimTarget: LiveDevice | null = null;
+  let unclaimDialog: HTMLDialogElement;
+  let unclaimTrigger: HTMLButtonElement | null = null;
 
   async function load() {
+    const revision = ++loadRevision;
     const [d, r] = await Promise.all([getLiveDevices(), getRooms()]);
+    if (revision !== loadRevision) return;
     devices = d; rooms = r.items;
     if (selected) selected = devices.find((d) => d.id === selected?.id) || null;
   }
   onMount(() => {
     void load().catch((e) => { error = e instanceof Error ? e.message : '读取设备失败'; }).finally(() => { loading = false; });
-    timer = setInterval(() => { if (!saving) void load().catch(() => undefined); }, 10000);
+    timer = setInterval(() => { if (!saving && !unclaimTarget) void load().catch(() => undefined); }, 10000);
     return () => clearInterval(timer);
   });
   async function openAdd() {
@@ -80,6 +86,37 @@
   }
   function primaryDisabled() { return Boolean(selected && roomPrimary(Number(roomId), selected.id) && !(selected.room_id === Number(roomId) && selected.binding_role === 'listener')); }
   function listenerDisabled() { return !selected || !roomPrimary(Number(roomId), selected.id); }
+  function openUnclaim(d: LiveDevice, trigger: HTMLButtonElement) {
+    if (saving || unclaimTarget) return;
+    error = ''; message = '';
+    unclaimTarget = { ...d };
+    unclaimTrigger = trigger;
+    unclaimDialog.showModal();
+  }
+  function closeUnclaim() {
+    if (saving) return;
+    unclaimDialog.close();
+    unclaimTarget = null;
+    unclaimTrigger?.focus();
+    unclaimTrigger = null;
+  }
+  async function confirmUnclaim() {
+    if (!unclaimTarget || saving) return;
+    const id = unclaimTarget.id;
+    saving = true; error = ''; message = '';
+    try {
+      const result = await unclaimDevice(id);
+      ++loadRevision; // Ignore an older refresh that still contains the removed device.
+      devices = devices.filter((d) => d.id !== id);
+      if (selected?.id === id) { selected = null; roomId = ''; name = ''; addressingLoaded = false; }
+      message = result.message || '已解绑账户。盒子联网后将重新显示6位绑定码，可重新添加。';
+    } catch (e) {
+      error = e instanceof Error ? e.message : '解绑账户失败';
+    } finally {
+      saving = false;
+      closeUnclaim();
+    }
+  }
 </script>
 
 <svelte:head><title>我的设备</title></svelte:head>
@@ -96,7 +133,7 @@
     </form>
   {/if}
   {#if loading}<p>正在读取设备…</p>{:else if !devices.length}<div class="panel"><h2>还没有设备</h2><p>设备联网后会显示6位绑定码，点击“添加设备”完成认领。</p></div>{:else}
-    <div class="device-grid">{#each devices as d}<button class="device-card" disabled={saving} class:active={selected?.id === d.id} on:click={() => { adding = false; selectDevice(d); }}><strong>{d.device_name || '小蓝搭子'}</strong><span class:offline={d.display_status === '离线'} class:abnormal={d.display_status === '设备异常'}>{d.display_status || '离线'}</span><p>{d.sku_code || '小蓝搭子'}</p><small>{d.room_id ? '已绑定：' + roomName(d.room_id) + ' · ' + (d.binding_role === 'listener' ? '监听设备' : '主设备') : '未绑定直播间'}</small>{#if d.display_status === '离线' && d.last_heartbeat_at}<small>最近在线：{new Date(d.last_heartbeat_at).toLocaleString('zh-CN')}</small>{/if}</button>{/each}</div>
+    <div class="device-grid">{#each devices as d (d.id)}<article class="device-card" class:active={selected?.id === d.id}><button class="device-select" disabled={saving} on:click={() => { adding = false; selectDevice(d); }}><strong>{d.device_name || '小蓝搭子'}</strong><span class:offline={d.display_status === '离线'} class:abnormal={d.display_status === '设备异常'}>{d.display_status || '离线'}</span><p>{d.sku_code || '小蓝搭子'}</p><small>{d.room_id ? '已绑定：' + roomName(d.room_id) + ' · ' + (d.binding_role === 'listener' ? '监听设备' : '主设备') : '未绑定直播间'}</small>{#if d.display_status === '离线' && d.last_heartbeat_at}<small>最近在线：{new Date(d.last_heartbeat_at).toLocaleString('zh-CN')}</small>{/if}</button><div class="card-actions"><button class="unclaim-button" type="button" disabled={saving} aria-label={'解绑账户：' + (d.device_name || '小蓝搭子')} on:click={(event) => openUnclaim(d, event.currentTarget)}>解绑账户</button></div></article>{/each}</div>
   {/if}
   {#if selected && !adding}
     <section class="panel"><h2>{selected.device_name}</h2>
@@ -108,6 +145,20 @@
   {/if}
 </section>
 
+<dialog bind:this={unclaimDialog} class="unclaim-dialog" aria-labelledby="unclaim-title" aria-describedby="unclaim-risk" on:cancel={(event) => { event.preventDefault(); closeUnclaim(); }}>
+  <h2 id="unclaim-title">解绑账户</h2>
+  <div id="unclaim-risk">
+    <p>确定将“{unclaimTarget?.device_name || '小蓝搭子'}”从当前账户解绑吗？</p>
+    <ul>
+      <li>盒子将从“我的设备”移除，同时解除直播间绑定，清除本账户的设备名称和回应称呼设置。</li>
+      <li>当前账户将不能再控制它。盒子联网后将重新显示6位绑定码，持有新码的人可以绑定自己的账户。</li>
+      <li>请确认盒子在你手中，避免被他人认领。直播中的设备须先停止直播。</li>
+    </ul>
+  </div>
+  <div class="dialog-actions"><button type="button" disabled={saving} on:click={closeUnclaim}>取消</button><button class="confirm-unclaim" type="button" disabled={saving} on:click={confirmUnclaim}>{saving ? '解绑中…' : '确认解绑账户'}</button></div>
+</dialog>
+
 <style>
+  .device-card{background:white;border:1px solid #dbe3ef;border-radius:16px;padding:0!important;overflow:hidden}.device-select{display:grid;gap:10px;text-align:left;width:100%;border:0;border-radius:0;padding:20px;background:transparent}.card-actions{display:flex;justify-content:flex-end;padding:0 16px 14px}.unclaim-button{color:#b3434b;border-color:#f0d5d8;font-size:14px;padding:9px 12px;min-height:42px}.unclaim-dialog{width:min(420px,calc(100vw - 36px));box-sizing:border-box;max-height:calc(100dvh - 48px);border:0;border-radius:20px;padding:24px;color:#263348;box-shadow:0 20px 60px #15254633}.unclaim-dialog::backdrop{background:#17233888}.unclaim-dialog h2{font-size:21px;margin:0 0 16px}.unclaim-dialog p{color:#263348;line-height:1.6}.unclaim-dialog ul{padding-left:20px;line-height:1.7;color:#596579}.unclaim-dialog li+li{margin-top:10px}.dialog-actions{display:flex;gap:10px;margin-top:22px}.dialog-actions button{flex:1;min-height:46px;padding:12px 8px}.confirm-unclaim{background:#c34d58;border-color:#c34d58;color:white}
   .devices-page{padding:24px 18px 110px;max-width:1000px;margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:15px}h1{margin:12px 0 6px}h2{font-size:19px;margin-top:0}p,small{color:#718096}button,input,select{font:inherit;border:1px solid #dbe3ef;border-radius:12px;padding:12px;background:white}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:#596bdc;color:white;border-color:#596bdc}.panel{background:white;border:1px solid #dbe3ef;border-radius:20px;padding:20px;margin:20px 0}.panel form+form{margin-top:24px;border-top:1px solid #edf1f7;padding-top:24px}label{display:grid;gap:8px;margin-bottom:16px}input,select{width:100%;box-sizing:border-box}.actions{display:flex;flex-wrap:wrap;gap:10px}.notice{padding:12px;border-radius:12px}.error{background:#fff0f1;color:#b74e58}.success{background:#e8f6ee;color:#268554}.device-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:20px}.device-card{display:grid;gap:10px;text-align:left;padding:20px}.device-card.active{border:2px solid #596bdc}.device-card strong{font-size:19px}.device-card span{color:#268554}.device-card .offline{color:#718096}.device-card .abnormal{color:#c84949}.device-card p{margin:0}
 </style>
