@@ -50,6 +50,7 @@ export const moduleUiMap: Record<HubKey, ModuleConfig> = {
       description: '围绕直播间、策略、会员价格和商品运营组织直播运维能力。',
       entries: [
         { title: '直播间列表', description: '返回直播间列表，管理直播间并查看各房间实时状态。', icon: '播', to: '/rooms/list', badge: '现场', status: 'ready' },
+        { title: '用户声音缓存', description: '按用户开关主线与互动缓存、设置声音保留时间，或恢复平台默认。', icon: '音', to: '/operations/live/user-voice-cache', badge: '设置', status: 'ready' },
         { title: '直播间数量', description: '查看终端已开直播间、额度和剩余可开数量，由营销运维部统一管理。', icon: '额', to: '/operations/live/room-quotas', badge: '额度', status: 'ready' },
         { title: '直播策略', description: '通过策略 Agent 调教当前直播间的主播、话术、声音和用户层策略。', icon: '策', to: '/operations/live/strategy', badge: 'Agent', status: 'ready' },
         { title: '设备绑定', description: '查看名下设备状态，并管理设备与直播间的绑定关系。', icon: '设', to: '/operations/live/devices', badge: '设备', status: 'ready' },

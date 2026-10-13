@@ -27,7 +27,7 @@ func (s *Store) BeginModelExchange(ctx context.Context, scope ModelExchangeScope
 	}
 	return result.LastInsertId()
 }
-func (s *Store) CompleteModelExchange(ctx context.Context, id int64, response any, text string, latencyMS int64, inputTokens, outputTokens *int64, callErr error) error {
+func (s *Store) CompleteModelExchange(ctx context.Context, id int64, response any, text string, latencyMS int64, inputTokens, outputTokens, cachedInputTokens *int64, callErr error) error {
 	raw, err := json.Marshal(response)
 	if err != nil {
 		return err
@@ -36,6 +36,6 @@ func (s *Store) CompleteModelExchange(ctx context.Context, id int64, response an
 	if callErr != nil {
 		status, errorText = "failed", callErr.Error()
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE live_model_exchanges SET response_json=?,output_bytes=?,raw_text=?,latency_ms=?,input_tokens=?,output_tokens=?,status=?,error_text=?,finished_at=? WHERE id=? AND status='sending'`, string(raw), len(raw), text, latencyMS, inputTokens, outputTokens, status, errorText, time.Now().UTC(), id)
+	_, err = s.db.ExecContext(ctx, `UPDATE live_model_exchanges SET response_json=?,output_bytes=?,raw_text=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,status=?,error_text=?,finished_at=? WHERE id=? AND status='sending'`, string(raw), len(raw), text, latencyMS, inputTokens, outputTokens, cachedInputTokens, status, errorText, time.Now().UTC(), id)
 	return err
 }

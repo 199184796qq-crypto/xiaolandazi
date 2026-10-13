@@ -19,6 +19,7 @@ function hasStaffPermission(code: string) {
 }
 
 function canShowEntry(to?: string) {
+  if (to === '/operations/live/user-voice-cache') return hasStaffPermission('system.settings.liveops.manage')
   if (to === '/operations/live/customer-handoffs') return hasStaffPermission('liveops.configure') || hasStaffPermission('liveops.ticket.manage')
   if (to === '/sales/handovers') return hasStaffPermission('sales.assignment.manage')
   if (!to) return true

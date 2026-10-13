@@ -75,11 +75,11 @@ func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment)
 		}{v.Source, v.VoiceID, v.Model, v.ProfileID, v.Rate}
 	}
 	return anchorvoicecache.Digest(struct {
-		Tenant, Plan, Room, Style, Card, Wheel                        int64
-		StyleMD, Facts, Baseline, Agent, Phase, Opening, Point, Angle string
-		Voice                                                         any
-		Contract                                                      string
-	}{state.TenantID, state.PlanID, state.RoomID, state.StyleID, state.ScorecardID, state.WheelID, state.StyleMD, state.Facts, state.BaselineJSON, state.Config.AgentID, segment.Phase, segment.OpeningVersion, segment.Task.SellingPoint, segment.Task.Angle, voice, contract})
+		Tenant, Plan, Room, Style, Card, Wheel                              int64
+		StyleMD, Facts, Baseline, Agent, Phase, Opening, Point, Angle, Side string
+		Voice                                                               any
+		Contract                                                            string
+	}{state.TenantID, state.PlanID, state.RoomID, state.StyleID, state.ScorecardID, state.WheelID, state.StyleMD, state.Facts, state.BaselineJSON, state.Config.AgentID, segment.Phase, segment.OpeningVersion, segment.Task.SellingPoint, segment.Task.Angle, segment.Selected.FissionSide, voice, contract})
 }
 
 func (s *Server) cycleCacheOSS() (storage.Store, error) {
@@ -107,14 +107,14 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 	if s.anchorVoiceCache == nil || state.Config.TTS == nil || state.Phase != "body" || len(state.Attempts) > 0 || state.P0PendingRepair != nil || state.PriceHook != nil || state.PendingFeedback != "" {
 		return nil
 	}
-	if !s.mainlineCacheReuseEnabled(ctx) {
+	if !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		return nil
 	}
 	oss, err := s.cycleCacheOSS()
 	if err != nil {
 		return nil
 	}
-	entries, err := s.anchorVoiceCache.Lookup(ctx, cycleVoiceCacheGroup(state, anchorcycle.Segment{Phase: state.Phase, Task: state.Task()}))
+	entries, err := s.anchorVoiceCache.Lookup(ctx, cycleVoiceCacheGroup(state, anchorcycle.Segment{Phase: state.Phase, Task: state.Task(), Selected: anchorcycle.Candidate{FissionSide: state.CurrentFissionSide()}}))
 	if err != nil {
 		state.Warn("查询声音缓存失败，继续正常生成：" + err.Error())
 		return nil
@@ -149,7 +149,7 @@ func (s *Server) cachedCycleVoice(ctx context.Context, state *anchorcycle.State,
 	if s.anchorVoiceCache == nil {
 		return nil, nil
 	}
-	if !s.mainlineCacheReuseEnabled(ctx) {
+	if !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		return nil, nil
 	}
 	oss, err := s.cycleCacheOSS()

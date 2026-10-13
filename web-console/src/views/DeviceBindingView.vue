@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { bindLiveDevice, getLiveDevices, getRooms, getDefaultDeviceName, claimLiveDevice, renameLiveDevice, unbindLiveDevice, getDeviceAddressing, saveDeviceAddressing } from '../api'
+import { bindLiveDevice, getLiveDevices, getRooms, getDefaultDeviceName, claimLiveDevice, renameLiveDevice, unbindLiveDevice, unclaimLiveDevice, getDeviceAddressing, saveDeviceAddressing } from '../api'
 import type { DeviceAddressingMode } from '../api'
 import { session } from '../session'
-import { useFeedbackErrorRef } from '../uiFeedback'
+import { confirmAction, useFeedbackErrorRef } from '../uiFeedback'
 
 import PaginationBar from '../components/PaginationBar.vue'
 import type { LiveDevice, Room } from '../types'
@@ -31,7 +31,8 @@ const showAdd = ref(false)
 const bindingCode = ref('')
 const deviceName = ref('')
 const adding = ref(false)
-const mutationBusy = computed(() => savingDeviceId.value !== null || adding.value)
+const unclaimConfirming = ref(false)
+const mutationBusy = computed(() => savingDeviceId.value !== null || adding.value || unclaimConfirming.value)
 const success = ref('')
 const editingNames = ref<Record<number, string>>({})
 const editingNameId = ref<number | null>(null)
@@ -112,6 +113,41 @@ async function unbind(device: LiveDevice) {
   try { await unbindLiveDevice(device.id); await load(); success.value = '已解除直播间绑定' }
   catch (e) { error.value = e instanceof Error ? e.message : '解绑失败' }
   finally { savingDeviceId.value = null }
+}
+
+async function unclaimAccount(device: LiveDevice) {
+  if (!isCustomer.value || mutationBusy.value || editingNameId.value !== null) return
+  const identity = orderStorageKey.value
+  const stillCurrent = () => pageActive && isCustomer.value && identity === orderStorageKey.value
+  unclaimConfirming.value = true
+  deviceRefreshEpoch++
+  try {
+    const confirmed = await confirmAction({
+      title: '解绑账户风险提醒',
+      message: `确定将“${device.device_name || '小蓝搭子'}”从当前账户解绑吗？\n解绑后，盒子将从“我的设备”移除，同时解除直播间绑定并清除本账户的设备名称和称呼设置；当前账户将不能再控制它。\n盒子联网后将重新显示6位绑定码，持有新码的人可以重新绑定自己的账户。请确认盒子在您手中，避免被他人认领。\n直播中的设备须先停止直播。`,
+      confirmText: '确认解绑账户',
+      cancelText: '取消',
+      danger: true,
+    })
+    if (!confirmed || !stillCurrent() || !devices.value.some(item => item.id === device.id)) return
+    savingDeviceId.value = device.id
+    error.value = ''; success.value = ''
+    const result = await unclaimLiveDevice(device.id)
+    if (!stillCurrent()) return
+    if (!result.ok || result.device_id !== device.id) throw new Error('解绑结果未确认，请刷新设备列表核对')
+    deviceRefreshEpoch++
+    devices.value = devices.value.filter(item => item.id !== device.id)
+    for (const values of [selectedRoomByDevice.value, selectedRoleByDevice.value, editingNames.value, addressingModes.value]) delete values[device.id]
+    deviceOrder.value = deviceOrder.value.filter(id => id !== device.id)
+    try { window.localStorage.setItem(identity, JSON.stringify(deviceOrder.value)) } catch { /* The server remains authoritative. */ }
+    page.value = Math.min(page.value, totalPages.value)
+    success.value = result.message
+  } catch (e) {
+    if (stillCurrent()) error.value = e instanceof Error ? e.message : '解绑账户失败，请重试'
+  } finally {
+    savingDeviceId.value = null
+    unclaimConfirming.value = false
+  }
 }
 
 const roomNames = computed(() => {
@@ -477,6 +513,9 @@ onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; endCardDrag();
           <p>新绑定时，没有主设备就自动成为主设备；已有主设备就自动成为监听设备。<br />要切换主设备，请在已绑定的监听设备上选择“主设备”并保存角色。</p>
           <small v-if="device.room_id">{{ roomStatusLabel(device.room_id) }}</small>
         </footer>
+        <div v-if="isCustomer" class="device-console-account-actions">
+          <button type="button" class="device-account-unclaim" :disabled="mutationBusy || editingNameId !== null" @click="unclaimAccount(device)">{{ savingDeviceId === device.id && unclaimConfirming ? '解绑中…' : '解绑账户' }}</button>
+        </div>
       </article>
       </section>
       <PaginationBar
@@ -491,6 +530,11 @@ onBeforeUnmount(() => { pageActive = false; deviceRefreshEpoch++; endCardDrag();
 </template>
 
 <style scoped>
+.device-console-account-actions{display:flex;justify-content:flex-end}
+.device-account-unclaim{min-height:40px;padding:8px 14px;border:1px solid #f0cbd3;border-radius:10px;background:#fff6f7;color:#b54257;font:inherit;font-size:14px;cursor:pointer}
+.device-account-unclaim:hover:not(:disabled){background:#ffedf0;border-color:#e7a7b4}
+.device-account-unclaim:focus-visible{outline:2px solid #b54257;outline-offset:3px}
+.device-account-unclaim:disabled{opacity:.5;cursor:default}
 .device-card-order-controls{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:10px}
 .device-card-order-controls button{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 7px;border:1px solid #dce3f6;border-radius:8px;background:#f7f9ff;color:#7685ad;font:inherit;font-size:12px;line-height:1.2}
 .device-card-drag-handle{gap:4px;cursor:grab;user-select:none}

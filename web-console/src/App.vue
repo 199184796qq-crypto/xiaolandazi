@@ -280,7 +280,7 @@ const navSections = computed<NavSection[]>(() => {
       {
         label: '营销运维',
         items: [
-          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-analysis-settings', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+          navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-user-voice-cache', 'live-strategy', 'live-analysis-settings', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
           navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-beans', 'commercial-referrals', 'invitations']),
         ],
       },
@@ -385,7 +385,7 @@ const navSections = computed<NavSection[]>(() => {
       }
     } else if (groupCode === 'live_operations') {
       workItems.push(
-        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'operations-support', 'rooms', 'rooms-list', 'room-detail']),
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-user-voice-cache', 'live-strategy', 'live-devices', 'operations-support', 'rooms', 'rooms-list', 'room-detail']),
         navItem(
           '活动营销',
           '/operations/live/marketing',
@@ -423,7 +423,7 @@ const navSections = computed<NavSection[]>(() => {
         hasStaffPermission('liveops.view_all') ||
         hasStaffPermission('liveops.room_quota.view')
       ) {
-        workItems.push(navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']))
+        workItems.push(navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-user-voice-cache', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']))
       }
       if (hasStaffPermission('finance.dashboard.view')) {
         workItems.push(navItem('财务与结算', '/staff/finance', '¥', ['staff-finance-hub']))
@@ -581,7 +581,7 @@ const mobileNavItems = computed<NavItem[]>(() => {
       hasStaffPermission('liveops.room_quota.view')
     ) {
       items.push(
-        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
+        navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-user-voice-cache', 'live-strategy', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
       )
     }
     if (
@@ -1212,3 +1212,4 @@ onBeforeUnmount(stopInbox)
   .topbar-actions { max-width: 100%; margin-left: auto; flex-wrap: wrap; }
 }
 </style>
+

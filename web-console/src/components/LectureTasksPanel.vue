@@ -5,7 +5,7 @@ import { getLectures, ingestLecture, previewLecture, setLecturePolicy, updateLec
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 
-const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; savedFingerprint?: string; compact?: boolean; saveDisabled?: boolean; saveHint?: string }>()
+const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; savedFingerprint?: string; compact?: boolean; saveDisabled?: boolean; saveHint?: string; hideSaveAction?: boolean }>()
 const emit = defineEmits<{ updated: []; busy: [value: boolean]; save: [] }>()
 const library = ref<LectureLibrary | null>(null)
 const source = ref('')
@@ -20,19 +20,49 @@ const previews = ref<Record<number, LecturePreview>>({})
 const selectedAngles = ref<Record<number, number>>({})
 const deletePending = ref(0)
 const search = ref('')
+const scheduleOpen=ref(false)
+const scheduleDraft=ref({min_cycles:4,max_cycles:6,minutes:10})
 const enterSend = useAgentEnterSend()
 let epoch = 0
 let loadNo = 0
 const busy = computed(() => !!pending.value)
 const tasks = computed(() => (library.value?.tasks || []).filter(t => !search.value.trim() || `${t.title} ${t.purpose} ${t.angles.map(a => a.title).join(' ')}`.includes(search.value.trim())))
 const activeCount = computed(() => library.value?.tasks.filter(t => t.enabled && t.valid).length || 0)
-const cadence = computed(() => {
+const cadenceSettings = computed(() => {
   let cycles = activeCount.value >= 8 ? 2 : activeCount.value >= 3 ? 3 : 4
   let minutes = activeCount.value >= 8 ? 6 : activeCount.value >= 3 ? 8 : 10
   if (library.value?.policy.frequency === 'less') { cycles += 2; minutes += 4 }
   if (library.value?.policy.frequency === 'more') { cycles = Math.max(2, cycles - 1); minutes = Math.max(6, minutes - 2) }
-  return `约${cycles}—${cycles + 2}轮，至少间隔${minutes}分钟`
+  return {min_cycles:library.value?.policy.min_cycles || cycles,max_cycles:library.value?.policy.max_cycles || cycles+2,minutes:(library.value?.policy.min_interval_seconds || minutes*60)/60}
 })
+const cadence=computed(()=>`完成${cadenceSettings.value.min_cycles}—${cadenceSettings.value.max_cycles}轮，主线播放至少间隔${cadenceSettings.value.minutes}分钟`)
+const runtimeText=computed(()=>{
+ const r=library.value?.runtime
+ if(!r) return ''
+ if(r.unavailable) return '暂未取得本场讲解进度，请稍后刷新'
+ if(!r.running) return '本房间暂无运行场次'
+ if(r.loaded_fingerprint!==library.value?.fingerprint) return `本场加载了此前保存的讲解配置；新设置保存方案后，下次开播生效。已播讲解${r.played_count || 0}次。`
+ if(!r.enabled) return '本场自动讲解已关闭'
+ if(r.scheduled) return `本场已安排讲解，已播${r.played_count || 0}次。`
+ return `本场已加载，等待出场：完成${r.since_last_cycles || 0}/${r.target_cycles || cadenceSettings.value.min_cycles}轮，主线已播放${Math.floor((r.since_last_seconds || 0)/60)}分钟，已播讲解${r.played_count || 0}次。`
+})
+function openSchedule(){scheduleDraft.value={...cadenceSettings.value};scheduleOpen.value=true}
+async function saveSchedule(){
+ const d=scheduleDraft.value
+ if(!library.value || !Number.isInteger(d.min_cycles) || !Number.isInteger(d.max_cycles) || d.min_cycles<1 || d.max_cycles<d.min_cycles || d.max_cycles>20 || !Number.isFinite(d.minutes) || d.minutes<=0 || d.minutes>120){error.value='轮数需为1至20，后一轮数不能小于前一轮数；间隔为1至120分钟。';return}
+ await policy({...library.value.policy,min_cycles:d.min_cycles,max_cycles:d.max_cycles,min_interval_seconds:Math.round(d.minutes*60)})
+ if(!error.value)scheduleOpen.value=false
+}
+async function resetSchedule(){
+ if(!library.value)return
+ const current=epoch
+ await policy({...library.value.policy,min_cycles:0,max_cycles:0,min_interval_seconds:0})
+ if(current===epoch && !error.value)scheduleDraft.value={...cadenceSettings.value}
+}
+function changeFrequency(value:string){
+ if(value==='custom'){openSchedule();return}
+ if(library.value) void policy({...library.value.policy,frequency:value as LecturePolicy['frequency'],min_cycles:0,max_cycles:0,min_interval_seconds:0})
+}
 const saved = computed(() => !!props.savedFingerprint && props.savedFingerprint === library.value?.fingerprint)
 watch(busy, value => emit('busy', value))
 function problem(cause: unknown) { return cause instanceof Error ? cause.message : '暂时没有完成，请稍后再试' }
@@ -40,7 +70,7 @@ async function refresh() {
   const attempt = ++loadNo, current = epoch
   if (!props.planId) return
   loading.value = true
-  try { const result = await getLectures(props.planId, props.tenantId); if (current === epoch && attempt === loadNo) library.value = result }
+  try { const result = await getLectures(props.planId, props.tenantId,props.roomId); if (current === epoch && attempt === loadNo) library.value = result }
   catch (cause) { if (current === epoch && attempt === loadNo) error.value = problem(cause) }
   finally { if (current === epoch && attempt === loadNo) loading.value = false }
 }
@@ -93,7 +123,7 @@ function updateEvent(event: Event) {
   if (detail?.plan_id === props.planId && (!detail.room_id || detail.room_id === props.roomId)) void refresh()
 }
 watch(() => [props.planId, props.tenantId, props.roomId], async () => {
-  const current = ++epoch; source.value = ''; library.value = null; products.value = []; scope.value = ''; issues.value = []; previews.value = {}; selectedAngles.value = {}; error.value = ''; notice.value = ''; pending.value = ''; deletePending.value = 0
+  const current = ++epoch; scheduleOpen.value=false; source.value = ''; library.value = null; products.value = []; scope.value = ''; issues.value = []; previews.value = {}; selectedAngles.value = {}; error.value = ''; notice.value = ''; pending.value = ''; deletePending.value = 0
   void refresh()
   try { const result = await getLiveAgentPlanProductLinks(props.planId, props.tenantId); if (current === epoch) products.value = result.items.filter(p => p.status === 'active') }
   catch { /* The public scope remains available; the server validates any selected product. */ }
@@ -120,12 +150,20 @@ onBeforeUnmount(() => { ++epoch; window.removeEventListener('live-lecture-tasks-
     <p v-if="error" class="lecture-error" role="alert">{{ error }}</p>
     <div v-if="library" class="lecture-toolbar">
       <label class="lecture-switch"><input type="checkbox" :checked="library.policy.enabled" :disabled="busy" @change="policy({ ...library.policy, enabled: !library.policy.enabled })"/>自动讲解</label>
-      <label>频率 <select :value="library.policy.frequency" :disabled="busy" @change="policy({ ...library.policy, frequency: ($event.target as HTMLSelectElement).value as LecturePolicy['frequency'] })"><option value="less">少讲</option><option value="normal">适中</option><option value="more">多讲</option></select></label>
+      <label>频率 <select :value="library.policy.min_cycles || library.policy.min_interval_seconds ? 'custom' : library.policy.frequency" :disabled="busy" @change="changeFrequency(($event.target as HTMLSelectElement).value)"><option value="less">少讲</option><option value="normal">适中</option><option value="more">多讲</option><option value="custom">自定义</option></select></label>
+      <button type="button" :disabled="busy" :aria-expanded="scheduleOpen" @click="scheduleOpen ? scheduleOpen=false : openSchedule()">出场设置</button>
       <input v-model="search" aria-label="搜索讲解任务" placeholder="搜索主题或角度…"/>
       <button type="button" :disabled="loading || busy" @click="refresh">刷新</button>
     </div>
-    <div class="lecture-schedule"><span aria-hidden="true">◷</span><p><strong>{{ library?.policy.enabled === false ? '自动讲解已关闭' : '在完整商品小循环后，适时插入一段讲解' }}</strong><small>{{ cadence }}（按当前可用主题估算） · 每段约30—60秒 · 总时长不超过10% · 同主题充分间隔</small></p></div>
-    <div v-if="library && (library.tasks.length || savedFingerprint)" class="lecture-save-state"><span>{{ saved ? '已随当前方案保存，下次开播按需使用。' : '讲解库有待保存内容；保存智能体方案后，下次开播生效。' }}</span><button v-if="!saved && !compact" class="primary" :disabled="saveDisabled || busy" :title="saveHint" @click="emit('save')">保存智能体</button></div>
+    <div class="lecture-schedule"><span aria-hidden="true">◷</span><p><strong>{{ library?.policy.enabled === false ? '自动讲解已关闭' : '在完整商品小循环后，适时插入一段讲解' }}</strong><small>{{ cadence }} · 每段约30—60秒 · 总时长不超过10% · 同主题充分间隔</small></p></div>
+    <div v-if="scheduleOpen" class="lecture-appearance-settings">
+      <div class="lecture-appearance-heading"><strong>讲解出场设置</strong><span>轮数与主线播放时长同时满足后安排</span></div>
+      <div class="lecture-appearance-fields"><label>完成商品小循环<input v-model.number="scheduleDraft.min_cycles" type="number" min="1" max="20" aria-label="最少出场轮数"/></label><span>至</span><label>轮数上限<input v-model.number="scheduleDraft.max_cycles" type="number" min="1" max="20" aria-label="最多出场轮数"/></label><label>主线播放间隔（分钟）<input v-model.number="scheduleDraft.minutes" type="number" min="1" max="120" aria-label="讲解间隔分钟"/></label></div>
+      <p>首次出场也按这组条件等待。总讲解时长不超过10%，同主题保留间隔；预算不足时继续讲品。保存方案后，下次开播使用新设置。</p>
+      <div class="lecture-appearance-actions"><button type="button" :disabled="busy" @click="scheduleOpen=false">取消</button><button type="button" :disabled="busy || !library" @click="resetSchedule">恢复自动</button><button type="button" class="primary" :disabled="busy" @click="saveSchedule">{{ pending==='policy'?'正在保存…':'保存出场设置' }}</button></div>
+    </div>
+    <p v-if="runtimeText" class="lecture-runtime-status" role="status">{{ runtimeText }}</p>
+    <div v-if="library && (library.tasks.length || savedFingerprint)" class="lecture-save-state"><span>{{ saved ? '已随当前方案保存，下次开播按需使用。' : '讲解库有待保存内容；保存智能体方案后，下次开播生效。' }}</span><button v-if="!saved && !compact && !hideSaveAction" class="primary" :disabled="saveDisabled || busy" :title="saveHint" @click="emit('save')">保存智能体</button></div>
     <p v-if="loading && !library" class="lecture-empty">正在打开讲解库…</p>
     <div v-else-if="!tasks.length" class="lecture-empty"><span aria-hidden="true">✦</span><strong>{{ search ? '没有找到这个主题' : '讲解库等着你的第一个故事' }}</strong><p>素材整理后会出现在这里，不需要逐条分类，也不用跳转页面。</p></div>
     <div class="lecture-task-list">
@@ -153,6 +191,7 @@ onBeforeUnmount(() => { ++epoch; window.removeEventListener('live-lecture-tasks-
 </template>
 
 <style scoped>
+.lecture-appearance-settings{margin:0 0 18px;padding:22px;border:1px solid #dce3ff;border-radius:20px;background:#fff}.lecture-appearance-heading{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#273859}.lecture-appearance-heading span,.lecture-appearance-settings p{font-size:13px;color:#8191b5}.lecture-appearance-fields{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:18px 0}.lecture-appearance-fields label{display:grid;gap:8px;font-size:14px;color:#4b5d81;flex:1;min-width:135px}.lecture-appearance-fields input{width:100%;height:44px;box-sizing:border-box;padding:9px 12px;border:1px solid #d9e0f8;border-radius:10px;background:#f8faff;color:#273859;font-size:16px}.lecture-appearance-fields>span{padding-bottom:12px;color:#8c99b9}.lecture-appearance-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px}.lecture-runtime-status{margin:0 0 16px;padding:12px 16px;border-radius:12px;background:#eef4ff;color:#5575b3;font-size:14px;line-height:1.7}
 .lecture-preview.preview-rejected{border:1px solid #efc6cf;background:#fff7f8}.preview-issues{margin:12px 0;padding-left:20px;color:#ac435c;line-height:1.7}.preview-issues li+li{margin-top:7px}.lecture-preview details{margin:10px 0;font-size:13px}.lecture-preview details summary{cursor:pointer}
 .lecture-panel{--ink:#243354;--accent:#675bec;color:var(--ink);margin-top:24px;min-width:0}.lecture-panel *{box-sizing:border-box}.lecture-hero{display:flex;align-items:center;gap:18px;background:linear-gradient(115deg,#eeebff,#f5faff 60%,#e9e6ff);border:1px solid #dfdfff;padding:24px 28px;border-radius:24px;position:relative;overflow:hidden}.lecture-hero-icon{display:grid;place-items:center;background:linear-gradient(140deg,#a799ff,#675bed);color:white;width:66px;height:66px;border-radius:20px;flex-shrink:0;box-shadow:0 9px 22px #7364e22a}.lecture-hero-icon svg{width:38px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.lecture-hero h3{margin:0;font-size:24px;color:#162953}.lecture-hero h3 small{font-size:12px;color:#7b73b5;margin-left:8px}.lecture-hero p{margin:8px 0 0;color:#7382a3;font-size:14px}.lecture-count{margin-left:auto;flex-shrink:0;background:#ffffffb8;color:#6d61c3;padding:10px 15px;border-radius:20px;font-size:13px}.lecture-compose{margin-top:16px;background:linear-gradient(120deg,#fff,#f7f8ff);border:1px solid #e0e5ff;padding:20px 24px;border-radius:22px}.lecture-compose-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.lecture-compose-head strong{font-size:16px}.lecture-panel label{display:flex;align-items:center;gap:8px;font-size:13px;color:#7885a5;white-space:nowrap}.lecture-panel select,.lecture-toolbar input{background:#fff;border:1px solid #dce2fd;border-radius:10px;color:#526386;padding:8px 10px;max-width:220px}.lecture-compose textarea{width:100%;padding:15px 17px;border:1px solid #d8dfff;border-radius:14px;min-height:104px;color:var(--ink);background:#fff;line-height:1.65;font:inherit;font-size:14px;resize:vertical}.lecture-compose textarea:focus{outline:2px solid #a599ff;outline-offset:1px}.lecture-compose-foot{display:flex;align-items:center;gap:16px;margin-top:12px}.lecture-compose-foot small{margin-right:auto;color:#92a0ba;font-size:12px}.lecture-panel button{padding:10px 16px;border:1px solid #dce1ff;border-radius:12px;background:#fff;color:#665cce;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}.lecture-panel button:disabled{opacity:.48;cursor:default}.lecture-panel button.primary{background:linear-gradient(115deg,#7990ff,#6555ea);border-color:transparent;color:#fff;box-shadow:0 5px 14px #705ae42b}.lecture-panel button.danger{border-color:#ffdae3;background:#fff6f8;color:#e76584}.lecture-working{display:flex;align-items:center;gap:10px;color:#6b62d2;font-size:13px;margin-top:16px}.lecture-working i{width:16px;height:16px;border:2px solid #ded8ff;border-top-color:#7964ed;border-radius:50%;animation:lecture-spin 1s linear infinite}.lecture-notice{color:#179777;font-size:14px;margin:14px 0 0}.lecture-error{padding:12px 16px;background:#fff1f4;border:1px solid #ffdde5;color:#bc526b;border-radius:12px;white-space:pre-wrap}.lecture-issues{margin-top:15px;background:#fff5f7;border:1px solid #ffdae3;padding:15px;border-radius:14px;font-size:13px}.lecture-issues article+article{margin-top:16px}.lecture-issues blockquote{margin:0 0 8px;border-left:3px solid #f38aa2;padding-left:10px;color:#d65376}.lecture-issues p{margin:5px 0}.lecture-issues small{color:#8f758b}.lecture-toolbar{display:flex;align-items:center;gap:18px;padding:20px 6px 12px;flex-wrap:wrap}.lecture-switch input{accent-color:#7163de;width:17px;height:17px}.lecture-toolbar>input{margin-left:auto;min-width:180px;max-width:320px;flex:1}.lecture-schedule{display:flex;align-items:center;gap:12px;color:#7b86a6;background:#f4f6ff;padding:14px 18px;border-radius:14px;font-size:13px}.lecture-schedule>span{font-size:26px;color:#8e81e8}.lecture-schedule p{margin:0}.lecture-schedule strong{display:block;color:#65769a;font-size:13px}.lecture-schedule small{display:block;margin-top:5px}.lecture-save-state{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px 6px;color:#838eaa;font-size:13px}.lecture-task-list{display:grid;gap:14px;margin-top:16px}.lecture-task{--tone:#8264e6;--soft:#f0ebff;display:grid;grid-template-columns:105px minmax(0,1fr) auto;gap:22px;padding:20px;background:linear-gradient(110deg,#fff,#fcfdff);border:1px solid #e1e6ff;border-radius:22px;box-shadow:0 7px 20px #819dd10a;align-items:start}.lecture-task.tone-1{--tone:#dc852e;--soft:#fff0df}.lecture-task.tone-2{--tone:#0ca87a;--soft:#e4faf1}.lecture-task.tone-3{--tone:#4193ec;--soft:#e9f4ff}.lecture-task-number{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:114px;border-radius:16px;background:var(--soft);color:var(--tone);gap:8px}.lecture-task-number b{font-size:36px;line-height:1.2}.lecture-task-number span{font-size:12px;text-align:center;padding:0 6px}.lecture-task-content{min-width:0}.lecture-task-content header{display:flex;align-items:start;gap:15px;justify-content:space-between}.lecture-task-content h4{margin:0;font-size:19px;color:#26325a}.lecture-task-status{font-size:11px;flex-shrink:0;color:#20a984;background:#eafbf4;padding:5px 9px;border-radius:20px}.lecture-task.disabled .lecture-task-status{color:#8b90aa;background:#f0f2f9}.lecture-task-content p{font-size:14px;color:#7684a4;line-height:1.65;margin:8px 0;overflow-wrap:anywhere}.lecture-task-content p strong{color:#55678e}.lecture-angles{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.lecture-angles button{background:var(--soft);border-color:transparent;color:var(--tone);font-size:12px;padding:7px 12px}.lecture-angles button[aria-pressed=true]{border-color:var(--tone)}.lecture-task-content .lecture-angle-goal{font-size:12px}.lecture-task-content details{color:#8b96b2;font-size:12px;margin-top:12px}.lecture-task-content summary{cursor:pointer;color:var(--tone)}.lecture-task-content details li{line-height:1.7;overflow-wrap:anywhere}.lecture-task-content details blockquote{margin:10px 0;white-space:pre-wrap;background:#f7f8fe;border-radius:10px;padding:12px;line-height:1.7;overflow-wrap:anywhere}.lecture-task-actions{display:flex;flex-direction:column;gap:8px;min-width:106px}.lecture-task-actions small{max-width:110px;white-space:normal;color:#a0a8be;font-size:11px;line-height:1.5}.lecture-preview{border-radius:14px;padding:14px 18px;background:var(--soft);margin-top:15px;line-height:1.7}.lecture-preview>strong{color:var(--tone);font-size:13px}.lecture-preview p{color:#536387}.lecture-preview small{font-size:11px;color:#8995b0}.lecture-empty{text-align:center;padding:34px 20px;color:#929ab4;font-size:14px}.lecture-empty>span{display:block;color:#a895fa;font-size:30px;margin-bottom:10px}.lecture-empty>strong{font-size:16px;color:#7c82aa}.lecture-empty p{font-size:13px;line-height:1.7}.compact{margin:0;padding:18px;overflow:auto;flex:1;min-height:0}.compact .lecture-hero{padding:16px;gap:12px}.compact .lecture-hero h3{font-size:20px}.compact .lecture-hero h3 small,.compact .lecture-count{display:none}.compact .lecture-hero-icon{width:48px;height:48px;border-radius:15px}.compact .lecture-hero-icon svg{width:28px}.compact .lecture-compose{padding:16px}.compact .lecture-compose-head{align-items:start;flex-direction:column}.compact .lecture-task{grid-template-columns:60px minmax(0,1fr);gap:12px;padding:15px}.compact .lecture-task-number{min-height:76px}.compact .lecture-task-number b{font-size:25px}.compact .lecture-task-actions{grid-column:2;flex-direction:row;flex-wrap:wrap}.compact .lecture-task-content header{flex-wrap:wrap;gap:8px}.compact .lecture-toolbar{gap:10px}.compact .lecture-toolbar>input{min-width:100px}.compact .lecture-compose-foot{gap:10px;flex-wrap:wrap}.compact .lecture-compose-foot small{width:100%}@keyframes lecture-spin{to{transform:rotate(360deg)}}@media(max-width:850px){.lecture-hero{padding:20px;gap:12px}.lecture-count{display:none}.lecture-task{grid-template-columns:75px minmax(0,1fr);gap:14px}.lecture-task-actions{grid-column:2;flex-direction:row;flex-wrap:wrap}.lecture-task-content header{flex-wrap:wrap;gap:8px}.lecture-compose-head{align-items:start;flex-direction:column}.lecture-compose{padding:18px}.lecture-compose-foot{flex-wrap:wrap;gap:12px}.lecture-toolbar{gap:12px}.lecture-toolbar>input{min-width:120px}.lecture-save-state{flex-wrap:wrap}}@media(prefers-reduced-motion:reduce){.lecture-working i{animation:none}}
 </style>

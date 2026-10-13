@@ -98,7 +98,7 @@ func TestFactRevisionDeleteKeepsHistory(t *testing.T) {
 	if err := s.DeleteLiveAgentPlanFactWithExpectedVersion(context.Background(), 14, 4, 7, 8, 1); err != nil {
 		t.Fatal(err)
 	}
-	if !c.committed || len(c.writes) != 2 || !strings.Contains(c.writes[0], "status='disabled'") || !strings.Contains(c.writes[1], "'delete'") {
+	if !c.committed || len(c.writes) != 2 || !strings.Contains(c.writes[0], "DELETE FROM live_agent_plan_facts") || !strings.Contains(c.writes[1], "'delete'") {
 		t.Fatal("delete lost recovery history")
 	}
 }

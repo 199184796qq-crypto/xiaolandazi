@@ -143,7 +143,7 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
     groups: [
       {
         key: 'anchor-voice-cache', title: '声音资产缓存', description: '由后台运维统一管控生成声音缓存的生命周期。',
-        entries: [{ key: 'anchor-voice-cache', title: 'OSS声音缓存', description: '设置声音、SRT与语义资产包保留时间，默认5小时。', icon: '音', to: '/system/settings/live#anchor-voice-cache', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
+        entries: [{ key: 'anchor-voice-cache', title: '用户话术与声音缓存', description: '设置平台默认与每个用户的缓存开关、声音保留时间。', icon: '音', to: '/operations/live/user-voice-cache', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
       },
       {
         key: 'anchor-recommendations', title: '系统推荐主播', description: '把用户的优秀主播风格推荐给全体用户。',

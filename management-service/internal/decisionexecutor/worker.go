@@ -2282,6 +2282,10 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			}
 		}
 	}
+	// 生成后同义改写：换「使用方式/动作」措辞，打破"叮1分钟"等高频短语复读。失败降级用原文。
+	if rewritten := w.rewriteAnswerText(ctx, text); rewritten != "" {
+		text = rewritten
+	}
 	w.transitionMission(item, speechmission.StateValidatingText, "validate_text", "最终正文已生成，检查违规表达与内部信息泄漏")
 	finalText, err := w.finalizeSpeechText(ctx, session, *item, text)
 	if err != nil {

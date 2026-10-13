@@ -53,6 +53,9 @@ function moduleEntryVisible(key: HubKey, to: string, bootstrap: Bootstrap | null
   if (key === 'live' && to.startsWith('/operations/live/room-quotas')) {
     return hasStaffPermission(bootstrap, 'liveops.room_quota.view')
   }
+  if (key === 'live' && to.startsWith('/operations/live/user-voice-cache')) {
+    return hasStaffPermission(bootstrap, 'system.settings.liveops.manage')
+  }
   if (key === 'live' && to.startsWith('/operations/live/analysis-settings')) {
     return hasStaffPermission(bootstrap, 'liveanalysis.view')
   }

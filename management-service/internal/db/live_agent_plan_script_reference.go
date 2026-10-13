@@ -311,11 +311,9 @@ func (s *Store) DeleteLiveAgentPlanScriptReferenceWithExpectedVersion(
 	}
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
-		UPDATE live_agent_plan_script_references
-		SET status='disabled', source_type='system_agent_delete', source_ref='', version_no=?,
-		    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+		DELETE FROM live_agent_plan_script_references
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'
-	`, nextVersion, actorUserID, referenceID, tenantID, planID)
+	`, referenceID, tenantID, planID)
 	if err != nil {
 		return err
 	}

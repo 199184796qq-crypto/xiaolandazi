@@ -10,7 +10,7 @@ export interface LiveContentModeAccess {
   replacement_percent: number
 }
 
-export const defaultLiveContentModes: LiveContentMode[] = ['user_audio', 'ai_pregenerated']
+export const defaultLiveContentModes: LiveContentMode[] = ['user_audio']
 
 export const liveContentModeLabels: Record<LiveContentMode, { title: string; description: string }> = {
   ai_pregenerated: { title: '固定生成', description: '先生成文案，确认后生成成品声音，直播时播放。' },

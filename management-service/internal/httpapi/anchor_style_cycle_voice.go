@@ -99,7 +99,7 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 	if _, err := s.cycleCacheOSS(); err != nil {
 		return nil, fmt.Errorf("%s", err.Error())
 	}
-	retention, retentionErr := s.anchorVoiceCacheTTL(ctx)
+	retention, retentionErr := s.anchorVoiceCacheTTL(ctx, state.TenantID)
 	if retentionErr != nil {
 		return nil, fmt.Errorf("%s", "读取声音缓存运维配置失败，未调用TTS")
 	}

@@ -316,6 +316,17 @@ export function getSystemSettingsDashboard() {
 }
 
 export interface AnchorVoiceCachePolicy { retention_hours: number; default_hours: number; applies_to: string; mainline_cache_reuse_enabled: boolean; interaction_cache_reuse_enabled: boolean; reuse_applies_to: string }
+export interface UserVoiceCachePolicy {
+  tenant_id: number; user_id: number; username: string; display_name: string; status: string;
+  mainline_cache_reuse_enabled: boolean; interaction_cache_reuse_enabled: boolean;
+  retention_hours: number; using_default: boolean; updated_at?: string;
+}
+export function getUserVoiceCachePolicies() {
+  return request<{ items: UserVoiceCachePolicy[] }>('/api/v1/liveops/user-voice-cache-policies', { cache: 'no-store' })
+}
+export function updateUserVoiceCachePolicy(tenant: number, settings: { using_default: true } | { mainline_cache_reuse_enabled: boolean; interaction_cache_reuse_enabled: boolean; retention_hours: number }) {
+  return request<{ saved: boolean }>('/api/v1/liveops/user-voice-cache-policies/' + tenant, { method: 'PUT', body: JSON.stringify(settings) })
+}
 export function getAnchorVoiceCachePolicy() {
   return request<AnchorVoiceCachePolicy>('/api/v1/system/anchor-voice-cache-policy')
 }
@@ -3856,6 +3867,7 @@ export const getDefaultDeviceName = () => request<{ device_name: string }>('/api
 export const claimLiveDevice = (binding_code: string, device_name: string) => request<LiveDevice>('/api/v1/live/devices/claim', { method: 'POST', body: JSON.stringify({ binding_code, device_name }) })
 export const renameLiveDevice = (id: number, device_name: string) => request<LiveDevice>('/api/v1/live/devices/' + id, { method: 'PATCH', body: JSON.stringify({ device_name }) })
 export const unbindLiveDevice = (id: number) => request<LiveDevice>('/api/v1/live/devices/' + id + '/bind', { method: 'DELETE' })
+export const unclaimLiveDevice = (id: number) => request<{ ok: boolean; device_id: number; message: string }>('/api/v1/live/devices/' + id + '/unclaim', { method: 'POST', body: JSON.stringify({ confirmed: true }) })
 export type DeviceAddressingMode = 'auto' | 'female' | 'male' | 'child' | 'neutral'
 export const getDeviceAddressing = (id: number) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing')
 export const saveDeviceAddressing = (id: number, mode: DeviceAddressingMode) => request<{ mode: DeviceAddressingMode }>('/api/v1/live/devices/' + id + '/addressing', { method: 'PUT', body: JSON.stringify({ mode }) })
@@ -4259,6 +4271,34 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
   return request<import('./types').AnchorStyleWorkbenchContext>(
     '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/context' + query,
     { cache: 'no-store' },
+  )
+}
+
+export function chatProductSupplement(
+  planId: number,
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string },
+  signal?: AbortSignal,
+) {
+  return request<import('./types').SpeechMinerGuideResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/product-supplement/chat',
+    { method: 'POST', body: JSON.stringify(input), signal, suppressErrorDialog: true },
+  )
+}
+
+export interface FactGapItem {
+  '维度': string
+  '层级'?: 'missing' | 'extend'
+  '待补事实': string
+  '填写提示': string[]
+}
+export interface FactGapCheckResponse {
+  gaps: FactGapItem[]
+  summary: string
+}
+export function factGapCheck(planId: number, input: { tenant_id?: number }) {
+  return request<FactGapCheckResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/fact-gap-check',
+    { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true },
   )
 }
 

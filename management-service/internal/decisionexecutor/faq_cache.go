@@ -48,6 +48,7 @@ type faqAnswerVariant struct {
 }
 
 type faqCacheTicket struct {
+	TenantID      int64
 	AnswerOutline *InteractionAnswerOutline
 	Key           string
 	Policy        model.LiveContentPolicy
@@ -109,7 +110,7 @@ func faqDigest(value any) string {
 }
 
 func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, systemPrompt, prompt string) *faqCacheTicket {
-	if w.faqCache == nil || !faqCacheEligible(item) || !w.interactionCacheReuseEnabled(ctx) {
+	if w.faqCache == nil || !faqCacheEligible(item) || !w.interactionCacheReuseEnabled(ctx, session.TenantID) {
 		return nil
 	}
 	source, ok := w.store.(faqPolicyStore)
@@ -147,7 +148,7 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 		w.store.AgentPromptValue(ctx, "live.final_review.system", "")})
 	now := w.now()
 	_, expiry := record.Policy.ContentExpiry("faq", now)
-	ticket := &faqCacheTicket{Key: key, Policy: record.Policy, GeneratedAt: now, ExpiresAt: expiry}
+	ticket := &faqCacheTicket{TenantID: session.TenantID, Key: key, Policy: record.Policy, GeneratedAt: now, ExpiresAt: expiry}
 	w.faqCache.mu.Lock()
 	defer w.faqCache.mu.Unlock()
 	w.faqCache.prune(now)
@@ -175,7 +176,11 @@ func (w *Worker) prepareFAQCache(ctx context.Context, session model.LiveRuntimeS
 	return ticket
 }
 
-func (w *Worker) interactionCacheReuseEnabled(ctx context.Context) bool {
+func (w *Worker) interactionCacheReuseEnabled(ctx context.Context, tenants ...int64) bool {
+	if reader, ok := w.store.(model.TenantGenerationCachePolicyReader); ok && len(tenants) > 0 {
+		enabled, err := reader.GenerationCacheReuseEnabledForTenant(ctx, tenants[0], model.InteractionGenerationCacheReuseSetting)
+		return err == nil && enabled
+	}
 	reader, ok := w.store.(model.GenerationCachePolicyReader)
 	if !ok {
 		return true
@@ -296,7 +301,7 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 
 func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
 	ticket := item.faqCacheTicket
-	if ticket != nil && !w.interactionCacheReuseEnabled(ctx) {
+	if ticket != nil && !w.interactionCacheReuseEnabled(ctx, ticket.TenantID) {
 		ticket = nil
 	}
 	key := faqDigest(request) // Includes exact text, provider/model, voice, speed and emotion.
@@ -315,6 +320,15 @@ func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, req
 		return response, err
 	}
 	until := faqAudioExpiry(response.AudioURL, ticket.ExpiresAt)
+	if reader, ok := w.store.(model.TenantGenerationCachePolicyReader); ok {
+		hours, readErr := reader.AnchorVoiceCacheRetentionHoursForTenant(ctx, ticket.TenantID)
+		if readErr != nil {
+			return response, nil
+		}
+		if limit := w.now().Add(time.Duration(hours) * time.Hour); limit.Before(until) {
+			until = limit
+		}
+	}
 	if !w.now().Before(until) {
 		return response, nil
 	}

@@ -16,6 +16,10 @@ const sellingPointWheelReviewPromptRelativePath = "configs/prompts/anchor-style/
 const sellingPointWheelExpansionPromptRelativePath = "configs/prompts/anchor-style/selling-point-wheel-angle-expansion.md"
 const sellingPointWheelFinalAuditPromptRelativePath = "configs/prompts/anchor-style/selling-point-wheel-final-audit.md"
 const speechMinerGuidePromptRelativePath = "configs/prompts/anchor-style/speech-miner-guide.md"
+const factGapChecklistPromptRelativePath = "configs/prompts/anchor-style/fact-gap-checklist.md"
+const factSynonymVariantsPromptRelativePath = "configs/prompts/anchor-style/fact-synonym-variants.md"
+const factSpeechRewritePromptRelativePath = "configs/prompts/anchor-style/fact-speech-rewrite.md"
+const auditFourLayerPromptRelativePath = "configs/prompts/anchor-style/compliance/audit-four-layer.md"
 const anchorStyleReviewPromptRelativePath = "configs/prompts/anchor-style/style-feedback-review.md"
 const anchorStyleScorecardPromptRelativePath = "configs/prompts/anchor-style/anchor-style-qualitative-extraction.md"
 const anchorStyleScoreFeedbackPromptRelativePath = "configs/prompts/anchor-style/score-feedback-template.md"
@@ -207,6 +211,38 @@ func loadSpeechMinerGuidePrompt() (string, string, error) {
 		"SPEECH_MINER_GUIDE_PROMPT_PATH",
 		speechMinerGuidePromptRelativePath,
 		"话术挖掘机引导母版",
+	)
+}
+
+func loadFactGapChecklistPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"FACT_GAP_CHECKLIST_PROMPT_PATH",
+		factGapChecklistPromptRelativePath,
+		"商品事实必查母版",
+	)
+}
+
+func loadFactSynonymVariantsPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"FACT_SYNONYM_VARIANTS_PROMPT_PATH",
+		factSynonymVariantsPromptRelativePath,
+		"事实同义变体生成母版",
+	)
+}
+
+func loadFactSpeechRewritePrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"FACT_SPEECH_REWRITE_PROMPT_PATH",
+		factSpeechRewritePromptRelativePath,
+		"口播正文同义改写母版",
+	)
+}
+
+func loadAuditFourLayerPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"AUDIT_FOUR_LAYER_PROMPT_PATH",
+		auditFourLayerPromptRelativePath,
+		"四层直播话术审核母版",
 	)
 }
 

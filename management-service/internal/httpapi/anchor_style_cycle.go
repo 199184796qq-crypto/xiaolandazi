@@ -290,7 +290,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		if voice.BufferSeconds == 0 {
 			voice.BufferSeconds = 120
 		}
-		retention, retentionErr := s.anchorVoiceCacheTTL(r.Context())
+		retention, retentionErr := s.anchorVoiceCacheTTL(r.Context(), tenant)
 		if retentionErr != nil {
 			writeError(w, 503, "读取声音缓存运维配置失败")
 			return
@@ -745,7 +745,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		s.ensureCycleAnglePlan(ctx, state, *state.TextModel)
 	}
 	reuseEntry := (*anchorcycle.SpeechPoolEntry)(nil)
-	if state.ShouldReuse() {
+	if state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		reuseEntry = state.PickReuse(state.Task().Key)
 	}
 	reportCycleProgress(ctx, 25)
@@ -862,6 +862,11 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	candidate.AnglePlan = state.CurrentAnglePlan()
 	candidate.AngleHook = state.CurrentAngleHook()
 	candidate.HookCalculations, _ = state.CurrentHookCalculations()
+	// 记录本段切入侧面，供声音缓存 group 纳入侧面（新生成的才记录；复用段侧面留空，
+	// 走话术复用旧音频，不进声音缓存）。
+	if reuseEntry == nil {
+		candidate.FissionSide = state.CurrentFissionSide()
+	}
 	if patch != nil {
 		candidate.P0Patch = patch
 		candidate.P0PatchError = p0PatchError
@@ -913,7 +918,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			candidate.RetryFeedback = ""
 		}
 	}
-	s.auditFinalMainlineContent(ctx,state,&candidate)
+	s.auditFinalMainlineContent(ctx, state, &candidate)
 	reviewState := *state
 	adopted, err := state.AddCandidate(candidate, b)
 	for _, segment := range state.Accepted {

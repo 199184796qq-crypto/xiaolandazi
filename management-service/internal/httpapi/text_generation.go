@@ -106,6 +106,15 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if err != nil {
 		return nil, err
 	}
+	// 开场环节追加专用开场母版（4层结构），让口播模型写完整开场：
+	// 第一句钩子 → 身份背书 → 卖点×角度 → 轻呼告，而不是只报一句欢迎。
+	if state.Phase == "opening" {
+		opening, _, e := loadReplaceablePromptAsset("ANCHOR_STYLE_CYCLE_OPENING_PROMPT_PATH", "configs/prompts/anchor-style/cycle-opening.md", "开场母版")
+		if e != nil {
+			return nil, e
+		}
+		foundation = append(foundation, []byte("\n\n"+opening)...)
+	}
 	view, err := cycleExpressionView(state)
 	if err != nil {
 		return nil, err
@@ -155,6 +164,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if method := cycleExpressionMethod(state); method != "" {
 		packet["表达展开建议"] = method
 	}
+	// 直播时切入侧面裂变：程序按已采纳段数轮换切入侧面，硬保证相邻段落从
+	// 不同侧面切入，让同一事实不重复讲法。侧面池产品无关，展开内容由本场事实决定。
+	if side := state.CurrentFissionSide(); side != "" {
+		packet["本次切入侧面"] = side
+	}
 	links := []string{}
 	for _, id := range state.HookProducts() {
 		if id != "current" {
@@ -195,7 +209,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		}
 	}
 	if hook := state.PendingOpeningHook; state.Phase == "opening" && hook != nil {
-		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}
+		packet["开头沟通意图"] = map[string]any{"类型": hook.Kind, "第一句钩子方向（参考，不照抄）": hook.FilledTemplate, "需要说明的事实条件": hook.HardValues, "关注对象与顾虑": hook.SoftValues}
 	}
 	if state.PriceHook != nil {
 		packet["上一段待解释的问题"] = state.PriceHook.Promise
@@ -252,7 +266,7 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}
-	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
+	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
 	if profile.SystemPrompt != "" {
 		req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)
 	}
@@ -270,5 +284,12 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	response, err := agentgateway.CompleteSpeechEndpoint(ctx, profile, req)
 	response.Provider, response.Model = "anchor:"+profile.ID, profile.Model
 	err = s.finishModelExchange(ctx, id, response, response.Text, started, response.InputTokens, response.OutputTokens, err)
+	// 生成后同义改写：换「使用方式/动作」措辞、锁死数字与称呼，打破高频短语（如"叮1分钟"）复读。
+	// 失败降级用原文，不阻塞。
+	if err == nil && strings.TrimSpace(response.Text) != "" {
+		if rewritten, rwErr := s.rewriteCycleText(ctx, state, response.Text); rwErr == nil && strings.TrimSpace(rewritten) != "" {
+			response.Text = rewritten
+		}
+	}
 	return response, req.Messages, err
 }

@@ -10,15 +10,21 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-func (s *Server) anchorVoiceCacheTTL(ctx context.Context) (time.Duration, error) {
+func (s *Server) anchorVoiceCacheTTL(ctx context.Context, tenants ...int64) (time.Duration, error) {
 	if s.store == nil {
 		return 5 * time.Hour, nil
 	} // Isolated unit tests only.
-	hours, err := s.store.AnchorVoiceCacheRetentionHours(ctx)
+	var hours int
+	var err error
+	if len(tenants) > 0 {
+		hours, err = s.store.AnchorVoiceCacheRetentionHoursForTenant(ctx, tenants[0])
+	} else {
+		hours, err = s.store.AnchorVoiceCacheRetentionHours(ctx)
+	}
 	return time.Duration(hours) * time.Hour, err
 }
 
-func (s *Server) mainlineCacheReuseEnabled(ctx context.Context) bool {
+func (s *Server) mainlineCacheReuseEnabled(ctx context.Context, tenants ...int64) bool {
 	reader := s.generationCachePolicy
 	if reader == nil && s.store != nil {
 		reader = s.store
@@ -26,6 +32,10 @@ func (s *Server) mainlineCacheReuseEnabled(ctx context.Context) bool {
 	if reader == nil {
 		return true
 	} // Isolated fixtures keep existing behavior.
+	if scoped, ok := reader.(model.TenantGenerationCachePolicyReader); ok && len(tenants) > 0 {
+		enabled, err := scoped.GenerationCacheReuseEnabledForTenant(ctx, tenants[0], model.MainlineGenerationCacheReuseSetting)
+		return err == nil && enabled
+	}
 	enabled, err := reader.GenerationCacheReuseEnabled(ctx, model.MainlineGenerationCacheReuseSetting)
 	// Configuration failure must select fresh generation, never stop supply.
 	return err == nil && enabled

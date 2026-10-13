@@ -112,7 +112,7 @@ func voiceCacheFixture(t *testing.T, handler http.HandlerFunc) (*Server, *anchor
 	state.Config.Threshold = 0
 	state.Config.TTS = &anchorcycle.VoiceConfig{Source: "official", VoiceID: "fixture-voice", Model: "fixture-model", Rate: 1, CacheTTLSeconds: 18000}
 	state.Phase = "body"
-	segment := anchorcycle.Segment{Phase: "body", Task: state.Task(), Selected: anchorcycle.Candidate{ID: "adopted", Text: "哥哥姐姐们，我们家就在这个镇上啊。"}}
+	segment := anchorcycle.Segment{Phase: "body", Task: state.Task(), Selected: anchorcycle.Candidate{ID: "adopted", Text: "哥哥姐姐们，我们家就在这个镇上啊。", FissionSide: state.CurrentFissionSide()}}
 	if err := state.CheckP0Candidate(&segment.Selected); err != nil {
 		t.Fatal(err)
 	}

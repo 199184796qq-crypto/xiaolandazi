@@ -149,6 +149,7 @@ function resultLabel(value: string) {
 
 function actionLabel(value: string) {
   const map: Record<string, string> = {
+    'liveops.user_voice_cache.update': '调整用户话术与声音缓存',
     'room.create': '创建直播间',
     'room.monitor.connect': '连接直播间',
     'room.monitor.disconnect': '断开直播间',

@@ -26,7 +26,7 @@ import (
 const (
 	maxFullShowVoiceSegments = 64
 	maxVoiceSegmentRunes     = 80
-	minVoiceSegmentRunes     = 18
+	minVoiceSegmentRunes     = 30
 	// Every generated segment is inspected and normalized to a short, bounded
 	// guard at both edges. This protects the first/last phoneme without carrying
 	// arbitrary provider silence into the live program.

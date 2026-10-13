@@ -6,6 +6,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	appdb "livecompanion/management/internal/db"
+	"strings"
 	"time"
 )
 
@@ -29,7 +30,16 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	if e != nil {
 		return nil, e
 	}
-	return []agentgateway.Message{{Role: "system", Content: string(p0)}, {Role: "system", Content: mother}, {Role: "user", Content: string(raw)}}, nil
+	messages := []agentgateway.Message{}
+	if fourLayer, _, ferr := loadAuditFourLayerPrompt(); ferr == nil && strings.TrimSpace(fourLayer) != "" {
+		messages = append(messages, agentgateway.Message{Role: "system", Content: fourLayer})
+	}
+	messages = append(messages,
+		agentgateway.Message{Role: "system", Content: string(p0)},
+		agentgateway.Message{Role: "system", Content: mother},
+		agentgateway.Message{Role: "user", Content: string(raw)},
+	)
+	return messages, nil
 }
 
 func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
@@ -115,7 +125,7 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		fail(err.Error())
 		return
 	}
-	request := agentgateway.Request{Stage: "mainline_final_content_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 600, EnableThinking: false, Timeout: 10 * time.Second}
+	request := agentgateway.Request{Stage: "mainline_final_content_review", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 600, EnableThinking: false, CacheSystemPrompt: true, Timeout: 10 * time.Second}
 	work, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	work = withExchangeScope(work, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: c.ID})

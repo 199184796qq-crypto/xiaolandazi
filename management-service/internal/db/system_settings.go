@@ -183,6 +183,7 @@ func (s *Store) ListSystemSettings(ctx context.Context) ([]model.SystemSetting, 
 		SELECT setting_key, setting_group, label, value_text, input_type,
 		       sort_order, updated_by_user_id, updated_at
 		FROM mgmt_system_settings
+		WHERE setting_group <> 'user_voice_cache'
 		ORDER BY setting_group ASC, sort_order ASC, setting_key ASC
 	`)
 	if err != nil {

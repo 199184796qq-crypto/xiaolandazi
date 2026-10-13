@@ -136,6 +136,11 @@ func enrichAuditFromPayload(payload map[string]any, entry *model.AdminAuditLog) 
 	if entry == nil || payload == nil {
 		return
 	}
+	if entry.Action == "liveops.user_voice_cache.update" {
+		entry.DetailJSON = mustAuditJSON(payload)
+		entry.ObjectType = "user_voice_cache"
+		entry.ObjectName = "用户话术与声音缓存"
+	}
 	if reason, ok := payload["reason"].(string); ok {
 		entry.Reason = strings.TrimSpace(reason)
 	}
@@ -253,6 +258,8 @@ func shouldAuditRequest(method string, path string) bool {
 func auditAction(method string, path string) string {
 	if isMutationMethod(method) {
 		switch {
+		case strings.HasPrefix(path, "/api/v1/liveops/user-voice-cache-policies/"):
+			return "liveops.user_voice_cache.update"
 		case strings.HasPrefix(path, "/api/v1/customer-business/receipts"):
 			return "finance.customer_receipt.mutate"
 		case strings.HasPrefix(path, "/api/v1/service/tickets"):
@@ -520,6 +527,13 @@ func (s *Server) fillAuditTarget(
 	r *http.Request,
 	entry *model.AdminAuditLog,
 ) {
+	if entry.Action == "liveops.user_voice_cache.update" {
+		value := strings.TrimPrefix(r.URL.Path, "/api/v1/liveops/user-voice-cache-policies/")
+		if tenant, err := strconv.ParseInt(value, 10, 64); err == nil && tenant > 0 {
+			entry.TargetTenantID = tenant
+			entry.ObjectID = value
+		}
+	}
 	roomID := positivePathValue(r, "roomID")
 	if roomID <= 0 {
 		roomID = entry.TargetRoomID

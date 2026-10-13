@@ -18,7 +18,10 @@ import { useContentPools } from '../contentPools'
 import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
-import FactRiskTabNotice from '../components/FactRiskTabNotice.vue'
+import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
+import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
+import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
+import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
@@ -27,7 +30,6 @@ import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
-import agentGenerationBanner from '../assets/agent-generation-banner.png'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
 import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
 import AnchorControlBar from '../components/AnchorControlBar.vue'
@@ -36,8 +38,8 @@ import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
-import SpeechMinerWorkbench from '../components/SpeechMinerWorkbench.vue'
 import LectureTasksPanel from '../components/LectureTasksPanel.vue'
+import ProductSupplementChat from '../components/ProductSupplementChat.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
 import type { PreviewStreamEvent } from '../agent/previewStream'
@@ -240,6 +242,7 @@ function selectLiveStrategyRoom(roomID: number) {
 type StrategyMode =
   | 'script'
   | 'products'
+  | 'supplement'
   | 'benefits'
   | 'knowledge'
   | 'memory'
@@ -253,6 +256,19 @@ type StrategyMode =
   | 'strategy'
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
+const lastFactMode = ref<PlanFactMode>('products')
+const planActionsMenu = ref<HTMLDetailsElement | null>(null)
+watch(activeMode, mode => { if (isPlanFactMode(mode)) lastFactMode.value = mode })
+function closePlanActionsMenu() { if (planActionsMenu.value) planActionsMenu.value.open = false }
+function selectPlanConfigurationSection(section: PlanConfigurationSection) {
+  selectPlanConfigurationMode(section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
+}
+function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
+  if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
+  else if (mode === 'knowledge') openFactRiskLocation()
+  else if (mode === 'memory') openInteractionPendingLocation()
+  else activeMode.value = mode
+}
 const interactionReviewRoute=useRoute()
 watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='knowledge'}, {immediate:true})
 const defaultSettings: LiveAgentSettings = {
@@ -318,13 +334,11 @@ watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = nu
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 const factRiskUnresolvedCount = ref(0)
-const wheelRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
 const productCards = ref<InstanceType<typeof LiveProductLinkCards> | null>(null)
 const interactionLocationRequest = ref(0)
 const factRiskNoticeState = ref({ loading: false, error: '' })
-const factRiskTabFocused = ref(false)
 type FactRiskReviewDisplay = RiskReview & {
 	claim_sha256: string
 	source_key: string
@@ -348,8 +362,6 @@ type FactRiskController = {
 const factRiskController = ref<FactRiskController | null>(null)
 const factRiskReviews = ref<FactRiskReviewDisplay[]>([])
 const expandedFactRiskId = ref<number | null>(null)
-const speechMinerWorkbench = ref<InstanceType<typeof SpeechMinerWorkbench> | null>(null)
-const pendingWheelRiskHash = ref('')
 const pendingRiskLocation = ref<{ area: 'knowledge' | 'products' | 'benefits'; claimHash: string } | null>(null)
 let riskLocationAttempt = 0
 const locatedFactRiskHash = ref('')
@@ -1740,6 +1752,23 @@ const fullShowSaveBlockedReason = computed(() => {
   if (!fullShowVoiceIdentityConsistent.value) return '正式稿的音色还没统一，去“生成智能体”处理好再来保存哦～'
   return ''
 })
+const savePlanOneClickBusy = ref(false)
+const savePlanOneClickStage = ref('')
+// 一键保存：内容池 needs_update / failed 时自动“更新受影响内容→保存”，
+// 其余阻塞原因（未生成文稿、音色不一致等）仍沿用 fullShowSaveBlockedReason。
+const savePlanOneClickDisabled = computed(() => {
+  if (savePlanOneClickBusy.value) return true
+  if (!currentRoomPlanId.value || !activeRoom.value) return true
+  const state = poolStatus.value?.state
+  if (state === 'needs_update' || state === 'failed') return false
+  return Boolean(fullShowSaveBlockedReason.value)
+})
+const savePlanOneClickHint = computed(() => {
+  if (savePlanOneClickBusy.value) return '正在保存方案，请稍候～'
+  const state = poolStatus.value?.state
+  if (state === 'needs_update' || state === 'failed') return '保存时会先自动更新受影响内容，再保存方案'
+  return fullShowSaveBlockedReason.value
+})
 const fullShowWorkspaceDirty = computed(
   () =>
     Boolean(fullShowResult.value && fullShowWorkspaceBaseVersion.value) &&
@@ -2054,10 +2083,11 @@ const roomPolicyActive = computed(
 
 const activeModeLabel = computed(() => {
   if (activeMode.value === 'products') return '商品链接'
+  if (activeMode.value === 'supplement') return '商品资料补充'
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
   if (activeMode.value === 'memory') return '互动策略'
-  if (activeMode.value === 'miner') return '话术挖掘机'
+  if (activeMode.value === 'miner') return '任务讲解'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
   if (activeMode.value === 'basic') return '基础设置'
@@ -3708,6 +3738,60 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   }
 }
 
+function waitForContentPoolReady(planId: number, roomId: number, timeoutMs = 600000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== roomId) {
+        clearInterval(timer)
+        reject(new Error('页面已切换，保存已取消'))
+        return
+      }
+      const state = poolStatus.value?.state
+      if (state === 'ready' || state === 'synced') {
+        clearInterval(timer)
+        resolve()
+        return
+      }
+      if (state === 'failed') {
+        clearInterval(timer)
+        reject(new Error(poolStatus.value?.job?.error || '内容更新未完成，请重试'))
+        return
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        clearInterval(timer)
+        reject(new Error('内容更新超时，请稍后重试'))
+        return
+      }
+      void contentPools.refresh(true)
+    }, 2000)
+  })
+}
+
+// 一键保存方案：内容池需要更新时，自动「更新受影响内容」并等待生成完成，再保存方案。
+async function savePlanOneClick() {
+  if (savePlanOneClickBusy.value || fullShowVersionSaving.value) return
+  const planId = currentRoomPlanId.value
+  const room = activeRoom.value
+  if (!planId || !room) return
+  fullShowVersionError.value = ''
+  savePlanOneClickBusy.value = true
+  try {
+    const state = poolStatus.value?.state
+    if (state === 'needs_update' || state === 'failed') {
+      savePlanOneClickStage.value = '更新内容中…'
+      await contentPools.update()
+      await waitForContentPoolReady(planId, room.id)
+    }
+    savePlanOneClickStage.value = '保存中…'
+    await saveFullShowVersion()
+  } catch (err) {
+    fullShowVersionError.value = err instanceof Error ? err.message : '保存失败，请重试'
+  } finally {
+    savePlanOneClickBusy.value = false
+    savePlanOneClickStage.value = ''
+  }
+}
 
 async function saveFullShowVariantEdit() {
   if (isUserAudioContentMode.value) return
@@ -4143,9 +4227,10 @@ function cancelFormalFactEdit() {
 
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
 	if (payload.sourceKey.startsWith('wheel/')) {
-		activeMode.value = 'miner'
+		activeMode.value = 'fullshow'
+		poolPreview.value = true
 		await nextTick()
-		document.querySelector('.speech-miner-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		document.querySelector('.pool-entry-content')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 		return
 	}
 	const text = payload.text.trim()
@@ -4176,28 +4261,10 @@ function setFactRiskReviews(items: FactRiskReviewDisplay[]) {
 	const reviews = Array.isArray(items) ? items : []
 	factRiskReviews.value = reviews
 	const unresolved = reviews.filter(review => review.status !== 'confirmed')
-	wheelRiskUnresolvedCount.value = pendingForArea(reviews, 'miner')
 	factRiskUnresolvedCount.value = pendingForArea(reviews, 'knowledge')
 	productRiskUnresolvedCount.value = pendingForArea(reviews, 'products')
 	benefitRiskUnresolvedCount.value = pendingForArea(reviews, 'benefits')
 	if (!unresolved.some(review => review.claim_sha256 === locatedFactRiskHash.value)) locatedFactRiskHash.value = ''
-}
-
-async function locatePendingWheelRisk() {
-	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
-	await nextTick()
-	if (activeMode.value !== 'miner' || anchorSellingPointWheelLoading.value || !pendingWheelRiskHash.value) return
-	const hash = pendingWheelRiskHash.value
-	if (await speechMinerWorkbench.value?.locateRisk(hash)) pendingWheelRiskHash.value = ''
-}
-
-async function openWheelRiskLocation() {
-	const review = factRiskReviews.value.find(item => item.status !== 'confirmed' &&
-		[item.source_key, ...(item.sources || []).map(source => source.source_key)].some(key => key.startsWith('wheel/')))
-	pendingWheelRiskHash.value = review?.claim_sha256 || ''
-	activeMode.value = 'miner'
-	await nextTick()
-	await locatePendingWheelRisk()
 }
 
 async function openInteractionPendingLocation() {
@@ -4205,7 +4272,6 @@ async function openInteractionPendingLocation() {
 	if (interactionPendingCount.value > 0) interactionLocationRequest.value++
 }
 
-watch([anchorSellingPointWheelLoading, speechMinerWorkbench], () => { void locatePendingWheelRisk() })
 watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskReviews], () => { void locatePendingRiskLocation() }, { flush: 'post' })
 watch(activeMode, mode => {
 	if (mode !== 'memory') interactionLocationRequest.value = 0
@@ -4216,7 +4282,6 @@ watch([activeRoomId, currentRoomPlanId], () => {
 	if (creatingFormalFact.value) cancelCreateFormalFact()
 	interactionLocationRequest.value = 0
 	pendingRiskLocation.value = null
-	pendingWheelRiskHash.value = ''
 	locatedFactRiskHash.value = ''
 	expandedFactRiskId.value = null
 })
@@ -4232,6 +4297,7 @@ const poolLocationError = ref('')
 let poolLocationAttempt = 0
 async function locatePoolSource(source: PoolSourceLocation) {
 	poolLocationError.value = ''
+	if (source.area === 'miner') return
 	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value
 	activeMode.value = source.area
 	await nextTick()
@@ -4239,7 +4305,6 @@ async function locatePoolSource(source: PoolSourceLocation) {
 	if (!current()) return
 	let located = false
 	if (source.area === 'products') located = !!await productCards.value?.locateSource(source.entityId, source.attributeId)
-	else if (source.area === 'miner') located = !!await speechMinerWorkbench.value?.locateOriginalWheel()
 	else {
 		if (source.area === 'benefits' && formalBenefits.value.some(item => item.id === source.entityId)) {
 			expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entityId])
@@ -4253,16 +4318,6 @@ async function locatePoolSource(source: PoolSourceLocation) {
 		located = !!target
 	}
 	if (current() && !located) poolLocationError.value = '当前资料中未找到这条来源，请刷新或核对它是否已移除。'
-}
-async function editPoolTask(poolKey: string, taskID: string) {
-	poolLocationError.value = ''
-	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value, setID = poolStatus.value?.set_id
-	if (!setID) return
-	activeMode.value = 'miner'
-	await nextTick()
-	if (attempt !== poolLocationAttempt || room !== activeRoomId.value || plan !== currentRoomPlanId.value || activeMode.value !== 'miner') return
-	const located = await speechMinerWorkbench.value?.locatePoolTask(poolKey, taskID, setID)
-	if (attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && !located) poolLocationError.value = '暂未进入编辑。请先保存或取消现有修改；资料变化时需先更新内容。'
 }
 watch([activeRoomId, currentRoomPlanId], () => { poolLocationAttempt++; poolLocationError.value = '' })
 
@@ -5877,7 +5932,6 @@ watch(
       void refreshContentMode(true)
       void refreshAnchorSellingPointWheel()
     }
-    if (mode === 'miner') void refreshAnchorSellingPointWheel()
     if (mode === 'anchor') void loadReusableAnchorStyleWorkspace()
     window.localStorage.setItem('system-agent-live-mode', mode)
     notifySystemAgentContext()
@@ -5887,7 +5941,6 @@ watch(
 
 watch(currentRoomPlanId, () => {
   if (activeMode.value === 'fullshow') void refreshAnchorSellingPointWheel()
-  if (activeMode.value === 'miner') void refreshAnchorSellingPointWheel()
 })
 
 watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
@@ -6017,89 +6070,51 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="live-strategy-agent">
-        <header class="strategy-agent-head strategy-plan-container-head">
+        <header class="strategy-agent-head strategy-plan-container-head plan-configuration-header">
+          <PlanHeaderArtwork />
           <div class="strategy-plan-heading">
+            <span class="plan-hero-symbol" aria-hidden="true"><svg viewBox="0 0 48 48"><rect x="7" y="7" width="14" height="14" rx="4"/><rect x="27" y="7" width="14" height="14" rx="4"/><rect x="7" y="27" width="14" height="14" rx="4"/><rect x="27" y="27" width="14" height="14" rx="4"/></svg></span>
+            <div class="plan-heading-copy">
+            <span class="plan-configuration-kicker">智能体方案</span>
             <div class="strategy-plan-selector-row">
-              <select
-                class="strategy-plan-title-switch"
-                :value="currentRoomPlanId || ''"
-                :disabled="planBusy || !livePlans.length"
-                @change="handlePlanSwitch"
-              >
+              <select class="strategy-plan-title-switch" aria-label="选择智能体方案" title="选择智能体方案" :value="currentRoomPlanId || ''" :disabled="planBusy || !livePlans.length" @change="handlePlanSwitch">
                 <option value="" disabled>选择智能体直播方案</option>
-                <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">
-                  {{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}
-                </option>
+                <option v-for="plan in orderedRoomPlans" :key="plan.id" :value="plan.id">{{ plan.name }}{{ plan.id === currentRoomPlanId ? '' : ' · ' + planRoomRelationLabel(plan) }}</option>
               </select>
-              <button
-                v-if="currentPlan && currentPlanIsBound"
-                class="strategy-plan-relation-button danger"
-                type="button"
-                :disabled="planBusy"
-                @click="unbindPlanFromCurrentRoom(currentPlan)"
-              >解除绑定</button>
-              <button
-                v-else-if="currentPlan"
-                class="strategy-plan-relation-button"
-                type="button"
-                :disabled="planBusy || !activeRoom"
-                @click="bindPlanToCurrentRoom(currentPlan)"
-              >绑定直播间</button>
+              <button class="plan-title-edit" type="button" aria-label="修改方案名称与说明" title="修改方案名称与说明" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager"><PlanConfigurationIcon name="edit" /></button>
             </div>
-            <p class="strategy-plan-current-line">
-              <template v-if="currentPlan">
-                当前编辑方案：{{ currentPlan.name }}
-                · 已用于 {{ currentPlan.room_count || 0 }} 个直播间
-                · {{ planRoomRelationLabel(currentPlan) }}
-              </template>
-              <template v-else>
-                当前还没有可编辑的直播方案
-              </template>
-            </p>
-            <div class="strategy-plan-toolbar">
-              <button
-                class="strategy-version-button primary strategy-new-plan-button"
-                :class="{ expanded: showPlanManager && planManagerMode === 'create' }"
-                type="button"
-                :aria-expanded="showPlanManager && planManagerMode === 'create'"
-                @click="openCreatePlanManager"
-              >
-                <span class="strategy-plan-action-label">＋ 新建直播方案</span>
-                <span
-                  class="strategy-plan-expand-arrow"
-                  :class="{ expanded: showPlanManager && planManagerMode === 'create' }"
-                  aria-hidden="true"
-                >⌄</span>
-              </button>
-              <button
-                class="strategy-version-button strategy-manage-plan-button"
-                :class="{ expanded: showPlanManager && planManagerMode === 'edit' }"
-                type="button"
-                :aria-expanded="showPlanManager && planManagerMode === 'edit'"
-                @click="toggleEditPlanManager"
-              >
-                <span class="strategy-plan-action-label">方案管理</span>
-                <span
-                  class="strategy-plan-expand-arrow"
-                  :class="{ expanded: showPlanManager && planManagerMode === 'edit' }"
-                  aria-hidden="true"
-                >⌄</span>
-              </button>
-              <button
-                class="strategy-version-button strategy-delete-plan-button"
-                :class="{ confirming: deleteConfirmPlanId === currentPlan?.id }"
-                type="button"
-                :disabled="!currentPlan || planBusy"
-                @click="deleteCurrentPlan"
-              >
-                {{
-                  planBusy
-                    ? '删除中…'
-                    : (deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案')
-                }}
-              </button>
+            <div class="plan-configuration-meta">
+              <span v-if="currentPlan" class="plan-binding-status"><PlanConfigurationIcon name="link" />绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
+              <span v-if="currentPlan && !currentPlanIsBound">当前房间未绑定</span>
+              <span v-if="fullShowWorkspaceDirty || poolStatus?.state === 'ready' || poolStatus?.state === 'needs_update' || poolStatus?.state === 'failed'" class="plan-draft-status">有待保存资料</span>
+              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :runtime="roomRuntimeSnapshot" :loading="fullShowWorkspaceLoading" inline hero />
+              <details v-if="currentPlan" class="plan-version-records">
+                <summary>版本记录<PlanConfigurationIcon name="next" /></summary>
+                <div class="plan-version-record-list">
+                  <p v-if="!fullShowVersionHistory.length">{{ latestSavedVersion ? '最新保存 V' + latestSavedVersion.version_no : '尚无保存版本' }}</p>
+                  <p v-for="version in fullShowVersionHistory" :key="version.id"><strong>V{{ version.version_no }}</strong><span>{{ version.lifecycle_status === 'published' ? '已保存' : version.lifecycle_status === 'superseded' ? '历史版本' : '草稿' }}</span></p>
+                </div>
+              </details>
+            </div>
             </div>
           </div>
+          <div class="plan-configuration-actions">
+            <button class="strategy-version-button plan-preview-button" :class="{ active: activeMode === 'fullshow' }" type="button" :aria-pressed="activeMode === 'fullshow'" @click="activeMode = 'fullshow'"><PlanConfigurationIcon name="preview" />生成与预览</button>
+            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick"><PlanConfigurationIcon name="save" />{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
+            <details ref="planActionsMenu" class="plan-configuration-more">
+              <summary class="strategy-version-button">更多<PlanConfigurationIcon name="chevron" /></summary>
+              <div class="plan-configuration-menu">
+                <button type="button" :disabled="planBusy" @click="openCreatePlanManager(); closePlanActionsMenu()">新建方案</button>
+                <button type="button" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager(); closePlanActionsMenu()">修改名称与说明</button>
+                <button v-if="currentPlan && currentPlanIsBound" type="button" :disabled="planBusy" @click="unbindPlanFromCurrentRoom(currentPlan); closePlanActionsMenu()">解除房间绑定</button>
+                <button v-else-if="currentPlan" type="button" :disabled="planBusy || !activeRoom" @click="bindPlanToCurrentRoom(currentPlan); closePlanActionsMenu()">绑定当前房间</button>
+                <button class="danger" type="button" :disabled="!currentPlan || planBusy" @click="deleteCurrentPlan">{{ planBusy ? '处理中…' : deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案' }}</button>
+              </div>
+            </details>
+            <span class="plan-hero-signature" aria-hidden="true">让直播更简单</span>
+          </div>
+          <p v-if="savePlanOneClickHint" id="plan-save-hint" class="plan-save-hint" role="status">{{ savePlanOneClickHint }}</p>
+          <p v-if="fullShowVersionError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
         </header>
 
         <section v-if="showPlanManager" class="strategy-plan-manager-inline">
@@ -6122,71 +6137,16 @@ onBeforeUnmount(() => {
           </form>
         </section>
 
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" :save-error="fullShowVersionError" :save-notice="poolStatus?.state === 'synced' && fullShowSavedVersion ? '方案已保存好啦，下次开播就用它～' : ''" @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" @edit-task="editPoolTask" @save="saveFullShowVersion" />
-        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
-          <strong>已保存方案检查提示</strong>
-          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
-          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
-        </div>
-        <div class="strategy-workflow-layout" :class="'workflow-mode-' + activeMode">
-          <nav class="strategy-mode-tabs strategy-mode-tabs-v2 strategy-workflow-nav" aria-label="直播方案流程">
-            <div class="strategy-workflow-inputs">
-            <button class="strategy-workflow-step workflow-step-products" :class="{ active: activeMode === 'products' }" :aria-label="productRiskUnresolvedCount ? `商品链接，${productRiskUnresolvedCount}项待处理` : '商品链接'" @click="openSourceRiskLocation('products')">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.2-1.2"/></svg>
-              </span>
-              <span class="strategy-workflow-label">商品链接</span>
-              <span v-if="productRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ productRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-benefits" :class="{ active: activeMode === 'benefits' }" :aria-label="benefitRiskUnresolvedCount ? `福利活动，${benefitRiskUnresolvedCount}项待处理` : '福利活动'" @click="openSourceRiskLocation('benefits')">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M7.5 8C5.5 8 5 6.8 5 5.8 5 4.8 5.8 4 6.8 4c2.2 0 5.2 4 5.2 4M16.5 8C18.5 8 19 6.8 19 5.8 19 4.8 18.2 4 17.2 4 15 4 12 8 12 8"/></svg>
-              </span>
-              <span class="strategy-workflow-label">福利活动</span>
-              <span v-if="benefitRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ benefitRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-memory" :class="{ active: activeMode === 'memory' }" :aria-label="interactionPendingCount > 0 ? `交互策略，${interactionPendingCount}条互动待纠正` : '交互策略'" @click="openInteractionPendingLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg></span>
-              <span class="strategy-workflow-label">交互策略<span v-if="interactionPendingCount > 0" class="interaction-pending-badge" :aria-label="`${interactionPendingCount}条互动待纠正`">{{ interactionPendingCount > 99 ? '99+' : interactionPendingCount }}</span></span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-miner" :class="{ active: activeMode === 'miner' }" :aria-label="wheelRiskUnresolvedCount ? `话术挖掘机，${wheelRiskUnresolvedCount}项待处理` : '话术挖掘机'" :title="wheelRiskUnresolvedCount ? '点击直接定位待处理内容' : undefined" @click="openWheelRiskLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 18 8-8M10 6l8 8M13 3l8 8-3 3-8-8z"/><path d="M3 21h6"/></svg></span>
-              <span class="strategy-workflow-label">话术挖掘机</span>
-              <span v-if="wheelRiskUnresolvedCount" class="strategy-miner-risk-count"><i aria-hidden="true">!</i>{{ wheelRiskUnresolvedCount }}项待处理</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-knowledge" :class="{ active: activeMode === 'knowledge' }" :aria-label="factRiskUnresolvedCount ? `事实依据，${factRiskUnresolvedCount}项待处理` : '事实依据'" @focus="factRiskTabFocused = true" @blur="factRiskTabFocused = false" @click="openFactRiskLocation">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
-              </span>
-              <FactRiskTabNotice :count="factRiskUnresolvedCount" :loading="factRiskNoticeState.loading" :error="factRiskNoticeState.error" :focused="factRiskTabFocused" />
-            </button>
-            <button class="strategy-workflow-step workflow-step-anchor" :class="{ active: activeMode === 'anchor' }" @click="activeMode = 'anchor'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3"/><path d="M4 20c0-4 2.5-6 6-6s6 2 6 6"/><path d="m18 4 .6 1.4L20 6l-1.4.6L18 8l-.6-1.4L16 6l1.4-.6z"/></svg>
-              </span>
-              <span class="strategy-workflow-label">主播风格</span>
-            </button>
-            <button class="strategy-workflow-step workflow-step-voice" :class="{ active: activeMode === 'voice' }" @click="activeMode = 'voice'">
-              <span class="strategy-workflow-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
-              </span>
-              <span class="strategy-workflow-label">声音</span>
-            </button>
-              <button
-                class="strategy-workflow-output workflow-step-fullshow"
-                :class="{ active: activeMode === 'fullshow' }"
-                aria-label="生成智能体"
-                :aria-current="activeMode === 'fullshow' ? 'step' : undefined"
-                title="生成智能体 · 让直播说啥更简单"
-                @click="activeMode = 'fullshow'"
-              >
-                <img class="strategy-agent-generation-banner" :src="agentGenerationBanner" alt="" aria-hidden="true" draggable="false" />
-              </button>
-            </div>
-          </nav>
+        <div class="strategy-workflow-layout plan-configuration-layout" :class="'workflow-mode-' + activeMode">
+          <PlanConfigurationNavigation
+            :mode="activeMode" :product-risk-count="productRiskUnresolvedCount" :benefit-risk-count="benefitRiskUnresolvedCount"
+            :fact-risk-count="factRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
+            :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
+            @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
+          />
 
           <div class="strategy-workflow-content">
-        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits','miner'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -6229,6 +6189,10 @@ onBeforeUnmount(() => {
             {{ activeMode === 'strategy' && roomPolicyDraft?.conflicts?.length ? '存在冲突' : '发布兼容草稿' }}
           </button>
         </div>
+
+        <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" @updated="onInteractionFactsUpdated" />
+        </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
           <div class="strategy-v2-section-head">
@@ -7015,25 +6979,8 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-speech-miner-workspace">
-          <SpeechMinerWorkbench
-            ref="speechMinerWorkbench"
-            :plan-id="currentRoomPlanId || 0"
-            :tenant-id="activeRoom?.tenant_id || 0"
-            :room-id="activeRoom?.id || 0"
-            :pool-status="poolStatus"
-            :pool-error="poolError"
-            :wheel="anchorSellingPointWheel"
-            :wheel-loading="anchorSellingPointWheelLoading"
-            :risk-reviews="factRiskReviews"
-            :risk-loading="factRiskNoticeState.loading"
-            @confirm-risk="confirmInlineFactRisk"
-            @appeal-risk="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)"
-            @review-semantics="factRiskController?.reviewSemantics()"
-            @updated="refreshSpeechMinerWorkspace"
-            @pool-updated="contentPools.acceptEdited"
-          />
-          <LectureTasksPanel :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
+        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-lecture-tasks-workspace">
+          <LectureTasksPanel hide-save-action :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
@@ -7459,29 +7406,32 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
+          <div class="plan-generation-heading"><h3>生成与预览</h3><button class="strategy-version-button" type="button" @click="activeMode = lastFactMode">返回配置</button></div>
+        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" :task-editor-available="false" @save="saveFullShowVersion" />
+        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
+          <strong>已保存方案检查提示</strong>
+          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
+          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
+        </div>
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
             <header class="strategy-agent-control-header">
               <AnchorControlBar
-                mode="initialize"
+                mode="initialize" compact
                 :initializing="anchorInitializing"
                 :initialize-progress="anchorInitializationProgress"
                 :initialize-label="anchorInitializationStage"
-                :saving="fullShowVersionSaving"
+                :saving="fullShowVersionSaving || savePlanOneClickBusy"
+                :save-label="savePlanOneClickStage"
                 :initialize-disabled="anchorInitializing || !currentPlan"
-                :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
-                save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
+                :save-disabled="savePlanOneClickDisabled"
+                :save-hint="savePlanOneClickHint"
                 @initialize="initializeAnchorGeneration"
+                @save="savePlanOneClick"
               />
             </header>
-            <LivePlanVersionBadge
-              :plan-id="currentRoomPlanId || 0"
-              :saved="latestSavedVersion"
-              :loading="fullShowWorkspaceLoading"
-              saved-only
-            />
             <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
               <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
             </div>
@@ -7489,15 +7439,14 @@ onBeforeUnmount(() => {
               {{ anchorInitializationNotice }}
             </div>
             <div class="strategy-content-mode-cards">
-              <button v-for="mode in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
-                <i>{{ mode === 'user_audio' ? '01' : mode === 'ai_pregenerated' ? '02' : '03' }}</i>
+              <button v-for="(mode, index) in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
+                <i>{{ String(index + 1).padStart(2, '0') }}</i>
                 <span class="strategy-content-mode-icon" :class="'is-' + mode" aria-hidden="true">
                   <svg v-if="mode === 'user_audio'" viewBox="0 0 36 36"><path d="M8 15v6M13 10v16M18 6v24M23 11v14M28 15v6" /></svg>
-                  <svg v-else-if="mode === 'ai_pregenerated'" viewBox="0 0 36 36"><path d="M11 6h11l5 5v19H11z" /><path d="M22 6v6h5M15 18h8M15 23h8" /></svg>
                   <svg v-else viewBox="0 0 36 36"><path d="M21 4 9 20h9l-3 12 12-17h-9z" /></svg>
                 </span>
                 <div class="strategy-content-mode-card-copy">
-                  <strong>{{ mode === 'user_audio' ? '录音主线' : mode === 'ai_pregenerated' ? '固定生成' : '实时声音' }}</strong>
+                  <strong>{{ liveContentModeLabels[mode].title }}</strong>
                   <span>{{ liveContentModeLabels[mode].description }}</span>
                 </div>
                 <b>{{ contentModeAccess.content_mode === mode ? '✓ 已激活' : '选择' }}</b>
@@ -8509,7 +8458,7 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-else class="strategy-agent-workspace">
+        <section v-else-if="activeMode !== 'supplement'" class="strategy-agent-workspace">
           <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
           <div class="strategy-agent-context-card">
             <span class="section-kicker">CURRENT CONTEXT</span>
@@ -10872,7 +10821,7 @@ onBeforeUnmount(() => {
 .addressing-workspace{display:grid;gap:16px}.addressing-notice{padding:11px 13px;border-radius:12px;background:#edf9f4;color:#347a61;font-size:12px;font-weight:800}.addressing-mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.addressing-mode-grid>button{display:grid;gap:6px;padding:16px 18px;border:1px solid rgba(95,111,174,.16);border-radius:16px;background:#fafbfe;color:#556078;text-align:left;transition:.18s ease}.addressing-mode-grid>button strong{font-size:15px;color:#38435a}.addressing-mode-grid>button span{font-size:11px;color:#8c96a8;line-height:1.55}.addressing-mode-grid>button.active{border-color:rgba(91,111,211,.46);background:linear-gradient(145deg,#f2f5ff,#e8edff);box-shadow:0 0 0 3px rgba(91,111,211,.07),0 10px 24px rgba(71,90,177,.08)}.addressing-system-card,.addressing-custom-card{padding:16px;border:1px solid rgba(94,109,169,.13);border-radius:16px;background:rgba(255,255,255,.9)}.addressing-system-card>header,.addressing-custom-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.addressing-system-card header>div,.addressing-custom-card header>div{display:grid;gap:3px}.addressing-system-card header span,.addressing-custom-card header span{color:#8d97aa;font-size:9px;font-weight:900;letter-spacing:.1em}.addressing-system-card header strong,.addressing-custom-card header strong{color:#38435a;font-size:15px}.addressing-system-card header>b{padding:5px 9px;border-radius:999px;background:#e7f7ef;color:#2f8a65;font-size:10px}.addressing-chip-list{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.addressing-chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e1e5ee;border-radius:12px;background:#f8f9fc}.addressing-chip strong{color:#455168;font-size:12px}.addressing-chip span{color:#7180a2;font-size:10px;font-weight:900}.addressing-custom-card.inactive{opacity:.72}.addressing-custom-list{display:grid;gap:9px;margin-top:14px}.addressing-custom-list>article{display:grid;grid-template-columns:90px minmax(180px,1fr) 150px auto;align-items:end;gap:10px;padding:12px;border:1px solid #e3e7f0;border-radius:13px;background:#fafbfe}.addressing-enable,.addressing-name-field,.addressing-probability-field{display:grid;gap:6px}.addressing-enable{grid-template-columns:auto 1fr;align-items:center;align-self:center}.addressing-enable input{width:18px;height:18px}.addressing-name-field>span,.addressing-probability-field>span,.addressing-enable>span{color:#6d7890;font-size:10px;font-weight:850}.addressing-name-field input,.addressing-probability-field input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 10px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#39445a;font:inherit}.addressing-probability-field>div{display:flex;align-items:center;gap:6px}.addressing-probability-field input{width:92px}.addressing-probability-field b{color:#74809a;font-size:11px}.addressing-remove{min-height:38px;padding:0 11px;border:0;border-radius:10px;background:#fff0f1;color:#bd5662;font-size:11px;font-weight:850}.addressing-total{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f4;color:#5b667d}.addressing-total strong{font-size:16px;color:#3f8a69}.addressing-total.invalid strong{color:#c3505b}.addressing-review-tip{margin:8px 0 0;color:#9099aa;font-size:10px;line-height:1.6}.addressing-empty{margin-top:12px}@media(max-width:900px){.addressing-mode-grid{grid-template-columns:1fr}.addressing-custom-list>article{grid-template-columns:80px 1fr 130px}.addressing-remove{grid-column:2/-1;justify-self:end}}
 .addressing-custom-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.addressing-save-button{min-width:112px}.addressing-custom-actions .strategy-version-button,.addressing-custom-actions .primary-button{white-space:nowrap}
 .anchor-addressing-override{display:grid;gap:14px;padding:18px;border:1px solid #dfe5f1;border-radius:16px;background:#fff}.anchor-addressing-override>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.anchor-addressing-override>header>div{display:grid;gap:4px}.anchor-addressing-override>header small,.anchor-addressing-learned{color:#7d879b;font-size:11px;line-height:1.6}.anchor-addressing-learned{display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 12px;border-radius:12px;background:#f6f8fc}.anchor-addressing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.anchor-addressing-grid label{display:grid;gap:7px;color:#56627a;font-size:11px;font-weight:800}.anchor-addressing-grid select,.anchor-addressing-grid textarea{box-sizing:border-box;width:100%;padding:10px 11px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#38445b;font:inherit}.anchor-addressing-grid textarea{resize:vertical;line-height:1.55}@media(max-width:900px){.anchor-addressing-grid{grid-template-columns:1fr}.anchor-addressing-override>header{flex-wrap:wrap}}
-.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
 .strategy-realtime-voice-page{display:grid;gap:16px;padding:20px;border:1px solid #d7e5ef;border-radius:18px;background:linear-gradient(135deg,#fbffff,#f2f8ff);box-shadow:0 10px 28px rgba(65,100,151,.06)}.strategy-realtime-voice-page>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.strategy-realtime-voice-page>header>div{display:grid;gap:5px}.strategy-realtime-voice-page>header span{color:#1b998d;font-size:11px;font-weight:950;letter-spacing:.08em}.strategy-realtime-voice-page>header strong{color:#2f405b;font-size:20px}.strategy-realtime-voice-page>header small{color:#78879b;font-size:12px;line-height:1.65}.strategy-realtime-voice-page>header>em{padding:7px 11px;border-radius:999px;background:#e6f7f3;color:#268978;font-size:11px;font-style:normal;font-weight:900;white-space:nowrap}.strategy-realtime-voice-page .strategy-dynamic-settings{background:#edf8f8}@media(max-width:900px){.strategy-realtime-voice-page>header{flex-wrap:wrap}}
 .strategy-content-mode-workflow{position:relative;overflow:hidden;padding:22px 24px;border-color:#dce6f6;border-radius:22px;background:radial-gradient(circle at 92% 6%,rgba(110,153,255,.13),transparent 26%),linear-gradient(135deg,#fff 0%,#f8fbff 58%,#eef5ff 100%);box-shadow:0 12px 34px rgba(59,84,147,.07)}
 .strategy-content-mode-workflow>header{position:relative;z-index:1;align-items:center}.strategy-content-mode-heading strong{color:#17264a;font-size:24px;font-weight:950}.strategy-content-mode-heading small{color:#7c8ba6;font-size:13px;line-height:1.6}
@@ -11080,4 +11029,45 @@ onBeforeUnmount(() => {
 .strategy-workflow-output.workflow-step-fullshow:hover .strategy-agent-generation-banner { filter:saturate(1.12) brightness(1.025); }
 .strategy-workflow-output.workflow-step-fullshow.active .strategy-agent-generation-banner { filter:saturate(1.15); }
 .strategy-workflow-output.workflow-step-fullshow:focus-visible { outline:3px solid #3658db!important; outline-offset:-4px; }
+
+/* Plan configuration: one page header, four input groups, and one saved-version action. */
+.live-strategy-agent{container-type:inline-size;container-name:plan-workspace;background:linear-gradient(145deg,#f6faff,#f0f5ff 55%,#f9faff)}
+.plan-configuration-header.strategy-plan-container-head{position:relative;isolation:isolate;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px 30px;min-height:198px;margin:22px 24px 18px;padding:26px 30px;border:1px solid #e4e8ff;border-radius:20px;background:linear-gradient(115deg,#fbfcff 0%,#f8f9ff 58%,#f2f1ff 100%);box-shadow:0 8px 28px #8da3e608}
+.plan-configuration-header::after{position:absolute;bottom:0;right:0;z-index:0;width:35%;height:68px;border-radius:85% 10% 20px 0;background:linear-gradient(140deg,#cdd9ff00,#e5ddff98);content:'';pointer-events:none}
+.plan-configuration-header .strategy-plan-heading{position:relative;z-index:1;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:24px;min-width:0}.plan-heading-copy{min-width:0}
+.plan-hero-symbol{display:grid;place-items:center;width:88px;height:90px;border:1px solid #9891ff;border-radius:21px;background:linear-gradient(125deg,#a7a4fb,#6867ff 65%,#4b4aff);box-shadow:0 9px 20px #7d79e52b,inset 0 1px 3px #ffffff66}.plan-hero-symbol svg{width:47px;height:47px;fill:#ffffffef;stroke:#e1e8ff;stroke-width:2;filter:drop-shadow(0 2px 2px #352ead26)}
+.plan-configuration-kicker{display:block;margin-bottom:6px;color:#7c88aa;font-size:16px;font-weight:700}
+.plan-configuration-header .strategy-plan-selector-row{flex-wrap:nowrap;gap:9px}
+.plan-configuration-header .strategy-plan-title-switch{flex:0 1 auto;width:auto;field-sizing:content;max-width:100%;height:42px;min-height:42px;padding:0;border:0;border-radius:0;background:transparent;color:#172347;font-size:29px;font-weight:800;text-overflow:ellipsis;box-shadow:none;transform:none;cursor:pointer}
+.plan-configuration-header .strategy-plan-title-switch:focus-visible{outline:2px solid #6b7ee3;outline-offset:3px;box-shadow:none}
+.plan-title-edit{display:grid;place-items:center;flex:0 0 34px;width:34px;height:38px;padding:5px;border:0;border-radius:7px;background:transparent;color:#4c5b89;cursor:pointer}.plan-title-edit:hover{background:#e9edff}.plan-title-edit:disabled{opacity:.45;cursor:default}
+.plan-configuration-meta{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;margin-top:12px;color:#647193;font-size:14px;font-weight:600}.plan-binding-status{display:flex;align-items:center;gap:6px}.plan-binding-status :deep(svg){width:17px;height:17px}
+.plan-draft-status{padding:4px 10px;border-radius:18px;background:#fff2d9;color:#936921}
+.plan-configuration-actions{position:relative;z-index:1;display:grid;grid-template-columns:auto auto auto;align-items:center;gap:12px}
+.plan-configuration-actions .strategy-version-button{display:flex;align-items:center;justify-content:center;gap:10px;min-height:51px;padding:12px 19px;border:1px solid #e4e8ff;border-radius:13px;background:#fff;color:#27365f;font-size:16px;font-weight:750;box-shadow:0 3px 10px #879cf005;white-space:nowrap;cursor:pointer}
+.plan-configuration-actions .plan-save-button{border-color:#514cff;background:linear-gradient(115deg,#645aff,#3e43ff);color:#fff;box-shadow:0 5px 12px #5a4df21a}.plan-configuration-actions .plan-save-button:disabled{opacity:.55;cursor:default}
+.plan-hero-signature{grid-column:1/-1;justify-self:center;padding:6px 0 3px;border-bottom:2px solid #b9aaff80;color:#8e7beb;font-family:KaiTi,STKaiti,cursive;font-size:21px;letter-spacing:3px;transform:rotate(-6deg)}
+.plan-preview-button.active{border-color:#9aa9ed!important;background:#eef2ff!important;color:#4157cc!important}
+.plan-configuration-more,.plan-version-records{position:relative}
+.plan-configuration-more>summary,.plan-version-records>summary{list-style:none;cursor:pointer}
+.plan-configuration-more>summary::-webkit-details-marker,.plan-version-records>summary::-webkit-details-marker{display:none}
+.plan-version-records>summary{display:flex;align-items:center;gap:3px;color:#504af4;font-weight:750}.plan-version-records>summary :deep(svg){width:15px;height:15px}
+.plan-configuration-menu,.plan-version-record-list{position:absolute;top:calc(100% + 8px);right:0;z-index:30;min-width:180px;padding:7px;border:1px solid #dfe5ee;border-radius:9px;background:#fff;box-shadow:0 8px 26px #26375016}
+.plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#59657a;font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}.plan-configuration-menu>button.danger{color:#b85260}
+.plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
+.plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
+.plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
+.plan-configuration-layout .strategy-workflow-content{margin-top:18px;border:1px solid #e5e8fd!important;border-radius:17px;background:#fff!important;box-shadow:0 8px 24px #8499eb08!important;overflow:visible}
+.plan-configuration-layout:is(.workflow-mode-products,.workflow-mode-supplement,.workflow-mode-benefits,.workflow-mode-knowledge,.workflow-mode-miner) .strategy-workflow-content{margin-top:0;border-top:0!important;border-radius:0 0 17px 17px}
+.plan-configuration-layout .strategy-v2-workspace{margin:0;padding:22px 24px;border:0;border-radius:17px;background:#fff!important;box-shadow:none}
+.plan-configuration-layout .strategy-v2-section-head h3{font-size:18px;font-weight:650}.plan-configuration-layout .strategy-v2-section-head p{font-size:12px}
+.plan-configuration-layout .strategy-content-mode-workflow{padding:16px;border-radius:10px;background:#fff;box-shadow:none}
+.plan-generation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.plan-generation-heading h3{margin:0;color:#26354d;font-size:18px;font-weight:650}
+.plan-configuration-layout .strategy-content-mode-cards>button{border-radius:10px;box-shadow:none}.plan-configuration-layout .strategy-content-mode-cards>button i{font-size:15px}.plan-configuration-layout .strategy-content-mode-card-copy strong{font-size:16px}
+.plan-configuration-layout .strategy-fullshow-restore-banner{padding:12px 16px;border-radius:9px;box-shadow:none}
+@container plan-workspace (max-width:1250px){.plan-configuration-header.strategy-plan-container-head{gap:18px;padding:24px}.plan-configuration-header .strategy-plan-heading{gap:16px}.plan-hero-symbol{width:68px;height:72px;border-radius:17px}.plan-hero-symbol svg{width:39px;height:39px}.plan-configuration-header .strategy-plan-title-switch{font-size:23px}.plan-configuration-actions .strategy-version-button{min-height:48px;padding:11px 13px;font-size:14px;gap:7px}.plan-configuration-meta{gap:8px 13px;font-size:13px}.plan-configuration-header :deep(.plan-header-artwork){display:none}}
+@container plan-workspace (max-width:1000px){.plan-configuration-header.strategy-plan-container-head{grid-template-columns:minmax(0,1fr);min-height:0;gap:20px}.plan-configuration-actions{justify-content:end}.plan-hero-signature{display:none}.plan-configuration-header .strategy-plan-title-switch{flex:0 1 auto;width:auto}.plan-configuration-header::after{width:55%;height:75px}}
+@media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{margin:12px 10px;padding:17px 14px;gap:17px;border-radius:16px}.plan-configuration-header .strategy-plan-heading{gap:12px}.plan-hero-symbol{width:47px;height:52px;border-radius:13px}.plan-hero-symbol svg{width:28px;height:28px}.plan-configuration-kicker{font-size:12px;margin-bottom:2px}.plan-configuration-header .strategy-plan-title-switch{flex:1 1 auto;width:auto;min-height:34px;height:34px;font-size:17px}.plan-title-edit{flex-basis:27px;width:27px;height:30px;padding:3px}.plan-title-edit :deep(svg){width:20px;height:20px}.plan-configuration-meta{grid-column:1/-1;gap:7px 10px;margin-top:8px;font-size:12px}.plan-configuration-actions{justify-content:start;gap:8px}.plan-configuration-actions .strategy-version-button{min-height:44px;padding:10px 11px;font-size:13px;gap:6px;border-radius:10px}.plan-configuration-actions :deep(svg){width:18px;height:18px}.plan-configuration-layout{padding:0 10px 16px!important}.plan-configuration-layout .strategy-v2-workspace{padding:16px 12px}.plan-version-record-list{left:auto;right:0}}
+
 </style>

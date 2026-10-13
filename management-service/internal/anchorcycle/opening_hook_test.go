@@ -25,6 +25,7 @@ func hookFixture(t *testing.T) (*OpeningHookLibrary, map[string]string) {
 func TestOpeningHookRulesAndSlotNamesComeFromMother(t *testing.T) {
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
+	library.Rules.FullPreferred = []string{"利益钩"}
 	if err := s.SelectOpeningHook(library, values, "mother-v1"); err != nil || s.PendingOpeningHook.Kind != "利益钩" {
 		t.Fatal(err, s.PendingOpeningHook)
 	}
@@ -59,6 +60,7 @@ func TestOpeningHookMissingDataSkipsAndExhaustionDoesNotInvent(t *testing.T) {
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
 	delete(values, "福利")
+	library.Rules.FullPreferred = []string{"反差钩"}
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil || s.PendingOpeningHook.Kind != "反差钩" {
 		t.Fatal(err, s.PendingOpeningHook)
 	}
@@ -67,6 +69,7 @@ func TestOpeningHookMissingDataSkipsAndExhaustionDoesNotInvent(t *testing.T) {
 	delete(values, "背书")
 	delete(values, "目标人群")
 	delete(values, "痛点")
+	library.Rules.ReentryPreferred = []string{"痛点钩"}
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil || s.PendingOpeningHook.Kind != "痛点钩" {
 		t.Fatal(err, s.PendingOpeningHook)
 	}
@@ -143,6 +146,7 @@ func TestOpeningHookNumbersNormalizeWithoutMandatoryRewrites(t *testing.T) {
 	}
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
+	library.Rules.FullPreferred = []string{"利益钩"}
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +165,7 @@ func TestOpeningHookNumbersNormalizeWithoutMandatoryRewrites(t *testing.T) {
 func TestOpeningHookQuantityMismatchIsRecordedWithoutFatalGate(t *testing.T) {
 	library, values := hookFixture(t)
 	s := fixture(t, 2)
+	library.Rules.FullPreferred = []string{"利益钩"}
 	if err := s.SelectOpeningHook(library, values, "mother"); err != nil {
 		t.Fatal(err)
 	}
