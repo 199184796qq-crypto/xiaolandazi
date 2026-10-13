@@ -29,8 +29,7 @@ export function useProductSupplementChat(
   }, { flush: 'sync' })
   onScopeDispose(() => { epoch++; controller?.abort() })
 
-  async function send() {
-    const message = input.value.trim()
+  async function deliver(message: string, focusJson = '') {
     if (!ready.value || busy.value || !message) return
     if ([...message].length > 3000) { error.value = '每次最多发送3000字，请分段补充。'; return }
     if (messages.value.length > 56) { error.value = '本轮对话已较长，请先保存或取消待确认资料，再开始新一轮。'; return }
@@ -45,6 +44,7 @@ export function useProductSupplementChat(
     try {
       const result = await services.chat(capturedScope.planId, {
         tenant_id: capturedScope.tenantId, message, history, draft_facts: drafts.value.map(item => ({ ...item })),
+        focus_gap: focusJson || undefined,
       }, controller.signal)
       if (!current()) return
       if (!result.reply?.trim()) throw new Error('智能体未返回回复，请重试。')
@@ -66,6 +66,14 @@ export function useProductSupplementChat(
       if (!input.value) input.value = message
       error.value = cause instanceof Error ? cause.message : '智能体暂时没有响应，请重试。'
     } finally { if (current()) busy.value = '' }
+  }
+
+  async function send() {
+    await deliver(input.value.trim())
+  }
+
+  async function askGap(focusJson: string, triggerText: string) {
+    await deliver(triggerText, focusJson)
   }
 
   function discard() {
@@ -114,5 +122,5 @@ export function useProductSupplementChat(
     } finally { if (current()) busy.value = '' }
   }
 
-  return { messages, input, drafts, busy, ready, error, notice, send, save, discard }
+  return { messages, input, drafts, busy, ready, error, notice, send, askGap, save, discard }
 }

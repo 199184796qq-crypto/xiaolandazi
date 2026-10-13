@@ -4265,12 +4265,29 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
 
 export function chatProductSupplement(
   planId: number,
-  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[] },
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string },
   signal?: AbortSignal,
 ) {
   return request<import('./types').SpeechMinerGuideResponse>(
     '/api/v1/live-agent-plans/' + planId + '/product-supplement/chat',
     { method: 'POST', body: JSON.stringify(input), signal, suppressErrorDialog: true },
+  )
+}
+
+export interface FactGapItem {
+  '维度': string
+  '层级'?: 'missing' | 'extend'
+  '待补事实': string
+  '填写提示': string[]
+}
+export interface FactGapCheckResponse {
+  gaps: FactGapItem[]
+  summary: string
+}
+export function factGapCheck(planId: number, input: { tenant_id?: number }) {
+  return request<FactGapCheckResponse>(
+    '/api/v1/live-agent-plans/' + planId + '/fact-gap-check',
+    { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true },
   )
 }
 
