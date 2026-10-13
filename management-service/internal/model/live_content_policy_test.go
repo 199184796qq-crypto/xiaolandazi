@@ -57,22 +57,20 @@ func TestContentPolicyTwoHourQuarterDefaults(t *testing.T) {
 	}
 }
 
-func TestContentModeDefaultsAndRevocation(t *testing.T) {
-	for _, mode := range []string{"", LiveContentAIPregenerated, LiveContentUserAudio, LiveContentAIDynamic, "bad"} {
-		access := ResolveLiveContentMode(mode, false, "operator")
-		if len(access.AvailableModes) != 2 || access.DynamicAuthorized || access.AuthorizationSource != "default" || access.ContentMode == LiveContentAIDynamic {
-			t.Fatalf("advanced leaked without entitlement: %#v", access)
+func TestContentModeAvailableByDefaultPreservesSelection(t *testing.T) {
+	for _, legacyGrant := range []bool{false, true} {
+		for _, mode := range []string{"", LiveContentAIPregenerated, LiveContentUserAudio, LiveContentAIDynamic, "bad"} {
+			access := ResolveLiveContentMode(mode, legacyGrant, "operator")
+			if len(access.AvailableModes) != 3 || !access.DynamicAuthorized || access.AuthorizationSource != "default" {
+				t.Fatalf("dynamic mode requires a separate grant: %#v", access)
+			}
+			want := mode
+			if mode == "" || mode == "bad" {
+				want = LiveContentAIPregenerated
+			}
+			if access.ContentMode != want {
+				t.Fatalf("selection changed: got %s, want %s", access.ContentMode, want)
+			}
 		}
-		if mode == LiveContentUserAudio && access.ContentMode != mode {
-			t.Fatal("recorded audio default was removed")
-		}
-	}
-	access := ResolveLiveContentMode(LiveContentAIDynamic, true, "operator")
-	if len(access.AvailableModes) != 3 || access.ContentMode != LiveContentAIDynamic || access.AuthorizationSource != "operator" {
-		t.Fatalf("grant not effective: %#v", access)
-	}
-	revoked := ResolveLiveContentMode(access.ContentMode, false, "operator")
-	if revoked.ContentMode != LiveContentAIPregenerated {
-		t.Fatal("revoked advanced mode stayed selected")
 	}
 }

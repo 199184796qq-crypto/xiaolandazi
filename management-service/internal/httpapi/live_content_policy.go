@@ -26,10 +26,7 @@ func (s *Server) applyLiveContentModeVersion(ctx context.Context, tenantID, room
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
-	if supplied, _ := input.GenerationContext["content_mode"].(string); supplied == model.LiveContentAIDynamic && !access.DynamicAuthorized {
-		return db.ErrContentModeNotAuthorized
-	}
-	// Generation context is user content, never authority for timing or grants.
+	// Generation context is user content, never authority for execution timing.
 	delete(input.GenerationContext, "content_policy")
 	delete(input.GenerationContext, "dynamic_authorized")
 	input.GenerationContext["content_mode"] = access.ContentMode
@@ -46,13 +43,12 @@ func (s *Server) validateLiveContentVersion(ctx context.Context, tenantID, roomI
 		return errors.New("当前版本属于其它主线模式，请切换到对应模式后再发布")
 	}
 	if isRealtimeScheme(version.GenerationContext) {
-		if access.ContentMode != model.LiveContentAIDynamic || !access.DynamicAuthorized {
-			return db.ErrContentModeNotAuthorized
+		if access.ContentMode != model.LiveContentAIDynamic {
+			return errors.New("请先将直播模式切换为AI动态生成")
 		}
 		return s.validateRealtimeScheme(ctx, tenantID, version.PlanID, version.GenerationContext)
 	}
-	// Entitlement controls future automatic generation, not playback of already
-	// approved/generated static assets. Revocation falls back to pregenerated.
+	// Keep generated assets aligned with the explicitly selected content mode.
 	return s.validateContentModeAssets(ctx, tenantID, access.ContentMode, version.Variants)
 }
 
@@ -119,7 +115,9 @@ func (s *Server) serveLiveContentPolicy(w http.ResponseWriter, r *http.Request, 
 		if err := s.store.SaveLiveContentPolicy(r.Context(), tenantID, roomID, actor.UserID, input.ExpectedRevision, input.Policy, input.Inherit, input.DynamicAuthorized, input.ExpectedMode); err != nil {
 			if errors.Is(err, db.ErrContentPolicyConflict) {
 				writeError(w, http.StatusConflict, err.Error())
-			} else if errors.Is(err, db.ErrContentPolicyConsent) || errors.Is(err, db.ErrContentModeNotAuthorized) {
+			} else if errors.Is(err, db.ErrContentPolicyGlobalMode) {
+				writeError(w, http.StatusBadRequest, err.Error())
+			} else if errors.Is(err, db.ErrContentPolicyConsent) {
 				writeError(w, http.StatusForbidden, err.Error())
 			} else {
 				writeError(w, http.StatusInternalServerError, "保存内容更新策略失败")
@@ -170,7 +168,7 @@ func (s *Server) roomLiveContentMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SaveLiveContentMode(r.Context(), tenantID, roomID, actor.UserID, input.ContentMode, actor.IsInternalStaff()); err != nil {
-			if errors.Is(err, db.ErrContentModeNotAuthorized) || errors.Is(err, db.ErrContentPolicyConsent) {
+			if errors.Is(err, db.ErrContentPolicyConsent) {
 				writeError(w, http.StatusForbidden, err.Error())
 			} else {
 				writeError(w, http.StatusInternalServerError, "保存内容模式失败")
@@ -191,11 +189,7 @@ func (s *Server) roomLiveContentMode(w http.ResponseWriter, r *http.Request) {
 				replacement = *input.ReplacementPercent
 			}
 			if err := s.store.SaveLiveContentRefreshPreference(r.Context(), tenantID, roomID, actor.UserID, interval, replacement); err != nil {
-				status := http.StatusBadRequest
-				if errors.Is(err, db.ErrContentModeNotAuthorized) {
-					status = http.StatusForbidden
-				}
-				writeError(w, status, err.Error())
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}

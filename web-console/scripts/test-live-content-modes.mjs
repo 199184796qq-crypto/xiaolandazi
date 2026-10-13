@@ -6,21 +6,16 @@ const source = readFileSync(new URL('../src/liveContentModeOptions.ts', import.m
 const viewSource = readFileSync(new URL('../src/views/LiveStrategyView.vue', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } })
 const { visibleLiveContentModes, canSelectLiveContentMode, liveContentModeLabels } = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(outputText))
-const basic = ['user_audio', 'ai_pregenerated']
-const access = { content_mode: 'ai_pregenerated', available_modes: basic, dynamic_authorized: false, authorization_source: 'default' }
-
-assert.deepEqual(visibleLiveContentModes(null), basic, 'advanced mode must not flash before authorization loads')
-assert.equal(canSelectLiveContentMode(null, 'ai_pregenerated'), false, 'selection waits for server access')
-assert.deepEqual(visibleLiveContentModes(access), basic)
-for (const mode of basic) assert.equal(canSelectLiveContentMode(access, mode), true)
-assert.equal(canSelectLiveContentMode(access, 'ai_dynamic'), false)
-assert.deepEqual(visibleLiveContentModes({ ...access, available_modes: [...basic, 'ai_dynamic'] }), basic, 'listed mode alone cannot grant advanced access')
-assert.deepEqual(visibleLiveContentModes({ ...access, dynamic_authorized: true }), basic, 'grant flag alone cannot advertise unavailable mode')
-const authorized = { ...access, available_modes: [...basic, 'ai_dynamic'], dynamic_authorized: true, authorization_source: 'operator' }
-assert.deepEqual(visibleLiveContentModes(authorized), [...basic, 'ai_dynamic'])
-assert.equal(canSelectLiveContentMode(authorized, 'ai_dynamic'), true)
-assert.equal(canSelectLiveContentMode({ ...authorized, dynamic_authorized: false }, 'ai_dynamic'), false, 'revocation removes dynamic selection immediately')
-assert.deepEqual(visibleLiveContentModes({ ...authorized, authorization_source: 'membership' }), [...basic, 'ai_dynamic'], 'future membership uses server entitlement without frontend branching')
+const basic = ['user_audio']
+const modes = [...basic, 'ai_dynamic']
+const access = { content_mode: 'user_audio', available_modes: ['user_audio','ai_pregenerated','ai_dynamic'], dynamic_authorized: true, authorization_source: 'default' }
+assert.deepEqual(visibleLiveContentModes(null),basic,'selection waits for mode settings to load')
+assert.equal(canSelectLiveContentMode(null,'ai_dynamic'),false)
+assert.deepEqual(visibleLiveContentModes(access),modes)
+assert.equal(canSelectLiveContentMode(access,'ai_dynamic'),true)
+assert.deepEqual(visibleLiveContentModes({...access,dynamic_authorized:false}),modes,'legacy grant must not hide dynamic mode')
+assert.equal(canSelectLiveContentMode({...access,dynamic_authorized:false},'ai_dynamic'),true)
+assert.deepEqual(visibleLiveContentModes({...access,available_modes:basic}),basic,'wait for a compatible backend mode list')
 assert.equal(liveContentModeLabels.user_audio.title, '录音主线')
 assert.equal(liveContentModeLabels.ai_pregenerated.title, '固定生成')
 assert.equal(liveContentModeLabels.ai_dynamic.title, '实时声音')
@@ -49,4 +44,4 @@ assert.match(viewSource, /v-for="step in anchorInitializationSteps"/, 'initializ
 assert.match(viewSource, /step\.status === 'success' \? '成功' : '失败'/, 'initialization UI must distinguish success and failure')
 assert.doesNotMatch(viewSource, /<RoomInteractionPreferences/, 'interaction preference module must be removed from interaction strategy')
 assert.match(viewSource, /<h3>已采用的互动规则<\/h3>/, 'adopted interaction rules must remain visible')
-console.log('Content modes: two defaults, fail-closed loading, advanced grant/revoke and future membership passed')
+console.log('Content modes: default availability, legacy flag compatibility and existing workflows passed')

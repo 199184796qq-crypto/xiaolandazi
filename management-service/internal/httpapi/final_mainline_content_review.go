@@ -62,6 +62,14 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 		return
 	}
 	s.reviewCycleP0Context(ctx, state, c)
+	// 语义复核可能删除了泄露的开头指令、修改了正文，导致上面快照的 text 过期。
+	// 重新取当前正文，让 TextSHA 与 P0 回执都锁定同一份"最终要播的文本"，避免回执失效。
+	text = cycleVoiceText(*c)
+	a.TextSHA = anchorcycle.ProductDigest(text)
+	if text == "" {
+		fail("最终正文为空")
+		return
+	}
 	if state.CheckApprovedText(*c, text) != nil {
 		fail("当前P0尚未取得匹配的通过结果")
 		return

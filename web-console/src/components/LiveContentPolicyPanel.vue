@@ -54,9 +54,9 @@ function setMinutes(key: typeof timeFields[number]['key'], event: Event) {
       <label class="wide">直播模式<select v-model="record.policy.content_mode">
         <option value="ai_pregenerated">1 · AI话术 + 提前生成声音 + AI实时互动</option>
         <option value="user_audio">2 · 用户上传录音 + AI实时互动</option>
-        <option v-if="roomId && record.dynamic_authorized" value="ai_dynamic">3 · AI话术 + 动态生成 + AI实时互动（高级）</option>
+        <option v-if="roomId" value="ai_dynamic">3 · AI话术 + 动态生成 + AI实时互动（高级）</option>
       </select></label>
-      <label v-if="roomId" class="toggle wide"><input v-model="record.dynamic_authorized" type="checkbox" @change="!record.dynamic_authorized && record.policy.content_mode === 'ai_dynamic' && (record.policy.content_mode = 'ai_pregenerated')" />开通AI动态生成高级模式（仅此直播间）</label>
+      <p class="wide">AI动态生成高级模式已默认开通，所有直播间均可选择，无需单独授权。</p>
       <label class="toggle wide"><input v-model="record.policy.auto_refresh_enabled" type="checkbox" />允许高级模式自动更新主线</label>
       <label v-for="field in timeFields" :key="field.key">{{ field.title }}（分钟）
         <input type="number" :min="field.min" :max="field.max" step="1" :value="record.policy[field.key] / 60" @input="setMinutes(field.key, $event)" />
@@ -64,9 +64,9 @@ function setMinutes(key: typeof timeFields[number]['key'], event: Event) {
       <label>每批替换比例（%）<input v-model.number="record.policy.replacement_percent" type="number" min="1" max="100" /></label>
       <label>常见问题回答版本数<input v-model.number="record.policy.faq_variant_count" type="number" min="1" max="10" /></label>
       <p class="wide">系统默认主线与常见问题生命周期均为 120 分钟，每批轮换约 25% 主线片段。常见问题到期后按需重新生成；命中缓存不延长有效期。</p>
-      <p class="wide">仅已开通且选择高级模式的开播直播间自动更新主线。新文稿与声音全部通过检查后，在音轨边界切换；失败保留原成品。原始录音不会被改写，开通权限不会自动切换模式或开播。正式依据发生变化导致旧稿不再适用时，请确认并重新发布。</p>
+      <p class="wide">选择高级模式且开启自动更新的开播直播间会自动更新主线。新文稿与声音全部通过检查后，在音轨边界切换；失败保留原成品。原始录音不会被改写。正式依据发生变化导致旧稿不再适用时，请确认并重新发布。</p>
       <div v-if="roomId" class="wide" role="status">
-        <strong>最近主线更新：{{ record.refresh_status ? (refreshLabels[record.refresh_status.status] || record.refresh_status.status) : '暂无任务（开通权限不会启动更新）' }}</strong>
+        <strong>最近主线更新：{{ record.refresh_status ? (refreshLabels[record.refresh_status.status] || record.refresh_status.status) : '暂无更新任务' }}</strong>
         <p v-if="record.refresh_status">计划更新时间：{{ new Date(record.refresh_status.publish_after).toLocaleString() }} · 尝试 {{ record.refresh_status.attempts }} 次</p>
         <p v-if="record.refresh_status?.last_error" class="error">{{ record.refresh_status.last_error }}</p>
       </div>

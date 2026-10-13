@@ -25,5 +25,5 @@ export const contentPolicyURL = (roomId?: number) => roomId
   : '/api/v1/system/live-content-policy'
 export const getContentPolicy = (roomId?: number) => request<ContentPolicyRecord>(contentPolicyURL(roomId))
 export const saveContentPolicy = (record: ContentPolicyRecord, roomId?: number, inherit = false, expectedMode?: LiveContentPolicy['content_mode']) => request<ContentPolicyRecord>(contentPolicyURL(roomId), {
-  method: 'PUT', body: JSON.stringify({ policy: record.policy, expected_revision: record.revision, inherit, ...(roomId ? { dynamic_authorized: record.dynamic_authorized, expected_mode: expectedMode } : {}) }),
+  method: 'PUT', body: JSON.stringify({ policy: record.policy, expected_revision: record.revision, inherit, ...(roomId ? { expected_mode: expectedMode } : {}) }),
 })

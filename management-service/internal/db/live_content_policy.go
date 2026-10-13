@@ -12,7 +12,7 @@ import (
 
 var ErrContentPolicyConflict = errors.New("更新策略已被其他人员修改，请刷新后重试")
 var ErrContentPolicyConsent = errors.New("直播间授权已经撤回，不能保存更新策略")
-var ErrContentModeNotAuthorized = errors.New("当前直播间未开通AI动态生成高级模式")
+var ErrContentPolicyGlobalMode = errors.New("请在直播间选择AI动态生成模式，系统默认模式保持提前生成或上传录音")
 
 func (s *Store) migrateLiveContentPolicies(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS live_content_policies (
@@ -27,7 +27,7 @@ func (s *Store) migrateLiveContentPolicies(ctx context.Context) error {
 	_, err = s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS live_room_content_access (
 	 tenant_id BIGINT UNSIGNED NOT NULL, room_id BIGINT UNSIGNED NOT NULL,
 	 selected_mode VARCHAR(32) NOT NULL DEFAULT 'ai_pregenerated',
-	 dynamic_authorized TINYINT(1) NOT NULL DEFAULT 0, authorization_source VARCHAR(32) NOT NULL DEFAULT 'default',
+	 dynamic_authorized TINYINT(1) NOT NULL DEFAULT 1, authorization_source VARCHAR(32) NOT NULL DEFAULT 'default',
 	 updated_by_user_id BIGINT UNSIGNED NOT NULL, updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 	 PRIMARY KEY (tenant_id,room_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`)
@@ -35,7 +35,7 @@ func (s *Store) migrateLiveContentPolicies(ctx context.Context) error {
 }
 
 func (s *Store) GetLiveContentPolicy(ctx context.Context, tenantID, roomID int64) (model.LiveContentPolicyRecord, error) {
-	result := model.LiveContentPolicyRecord{Policy: model.DefaultLiveContentPolicy()}
+	result := model.LiveContentPolicyRecord{Policy: model.DefaultLiveContentPolicy(), DynamicAuthorized: true}
 	load := func(tid, rid int64) (bool, error) {
 		var raw string
 		var revision int64
@@ -80,12 +80,12 @@ func (s *Store) GetLiveContentPolicy(ctx context.Context, tenantID, roomID int64
 
 // SaveLiveContentPolicy uses compare-and-swap so an old operator tab cannot
 // silently overwrite another operator's update. Audit is in the same transaction.
-func (s *Store) SaveLiveContentPolicy(ctx context.Context, tenantID, roomID, userID, expected int64, p model.LiveContentPolicy, inherit bool, dynamic *bool, expectedMode string) error {
+func (s *Store) SaveLiveContentPolicy(ctx context.Context, tenantID, roomID, userID, expected int64, p model.LiveContentPolicy, inherit bool, _ *bool, expectedMode string) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	if roomID == 0 && (p.ContentMode == model.LiveContentAIDynamic || (dynamic != nil && *dynamic)) {
-		return ErrContentModeNotAuthorized
+	if roomID == 0 && p.ContentMode == model.LiveContentAIDynamic {
+		return ErrContentPolicyGlobalMode
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -126,20 +126,9 @@ func (s *Store) SaveLiveContentPolicy(ctx context.Context, tenantID, roomID, use
 		if err == nil && model.ResolveLiveContentMode(selected, allowed, "").ContentMode != expectedMode {
 			return ErrContentPolicyConflict
 		}
-		if dynamic != nil {
-			allowed = *dynamic
-		}
-		if p.ContentMode == model.LiveContentAIDynamic && !allowed {
-			if dynamic != nil && !*dynamic {
-				p.ContentMode = model.LiveContentAIPregenerated
-			} else {
-				return ErrContentModeNotAuthorized
-			}
-		}
-		source := "default"
-		if allowed {
-			source = "operator"
-		}
+		// Ignore a legacy operator tab's grant toggle. Feature availability is
+		// universal, while customer consent and mode/revision checks still apply.
+		allowed, source := true, "default"
 		_, err = tx.ExecContext(ctx, `INSERT INTO live_room_content_access (tenant_id,room_id,selected_mode,dynamic_authorized,authorization_source,updated_by_user_id) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE selected_mode=VALUES(selected_mode),dynamic_authorized=VALUES(dynamic_authorized),authorization_source=VALUES(authorization_source),updated_by_user_id=VALUES(updated_by_user_id),updated_at=CURRENT_TIMESTAMP(3)`, tenantID, roomID, p.ContentMode, allowed, source, userID)
 		if err != nil {
 			return err
@@ -160,7 +149,7 @@ func (s *Store) SaveLiveContentPolicy(ctx context.Context, tenantID, roomID, use
 		return err
 	}
 	// Existing immutable support event journal also retains system changes (room 0).
-	err = insertLiveSupportEventTx(ctx, tx, "content_policy.update", tenantID, roomID, userID, userID, "l3_policy", map[string]any{"before": previous, "after": p, "inherit": inherit, "dynamic_authorized": dynamic})
+	err = insertLiveSupportEventTx(ctx, tx, "content_policy.update", tenantID, roomID, userID, userID, "l3_policy", map[string]any{"before": previous, "after": p, "inherit": inherit, "dynamic_authorized": true})
 	if err != nil {
 		return err
 	}
@@ -233,8 +222,7 @@ func (s *Store) GetLiveContentMode(ctx context.Context, tenantID, roomID int64) 
 }
 
 // SaveLiveContentRefreshPreference exposes only the two customer-owned dynamic
-// knobs. Entitlement, retry policy, buffer safety and FAQ policy remain under
-// operator control.
+// knobs. Retry policy, buffer safety and FAQ policy remain under operator control.
 func (s *Store) SaveLiveContentRefreshPreference(ctx context.Context, tenantID, roomID, userID int64, intervalSeconds, replacementPercent int) error {
 	if intervalSeconds < 1800 || intervalSeconds > 86400 {
 		return errors.New("动态更新间隔必须在30分钟到24小时之间")
@@ -253,16 +241,6 @@ func (s *Store) SaveLiveContentRefreshPreference(ctx context.Context, tenantID, 
 	defer tx.Rollback()
 	if err := lockUsableRoomTx(ctx, tx, tenantID, roomID); err != nil {
 		return err
-	}
-	var allowed bool
-	if err := tx.QueryRowContext(ctx, `SELECT dynamic_authorized FROM live_room_content_access WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&allowed); err != nil {
-		if errors.Is(err, sql.ErrNoRows) || !allowed {
-			return ErrContentModeNotAuthorized
-		}
-		return err
-	}
-	if !allowed {
-		return ErrContentModeNotAuthorized
 	}
 	policy := record.Policy
 	var currentRaw string
@@ -321,15 +299,7 @@ func (s *Store) SaveLiveContentMode(ctx context.Context, tenantID, roomID, userI
 			return err
 		}
 	}
-	var allowed bool
-	err = tx.QueryRowContext(ctx, `SELECT dynamic_authorized FROM live_room_content_access WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&allowed)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if mode == model.LiveContentAIDynamic && !allowed {
-		return ErrContentModeNotAuthorized
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO live_room_content_access (tenant_id,room_id,selected_mode,updated_by_user_id) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE selected_mode=VALUES(selected_mode),updated_by_user_id=VALUES(updated_by_user_id),updated_at=CURRENT_TIMESTAMP(3)`, tenantID, roomID, mode, userID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO live_room_content_access (tenant_id,room_id,selected_mode,dynamic_authorized,authorization_source,updated_by_user_id) VALUES (?,?,?,1,'default',?) ON DUPLICATE KEY UPDATE selected_mode=VALUES(selected_mode),dynamic_authorized=1,authorization_source='default',updated_by_user_id=VALUES(updated_by_user_id),updated_at=CURRENT_TIMESTAMP(3)`, tenantID, roomID, mode, userID)
 	if err != nil {
 		return err
 	}

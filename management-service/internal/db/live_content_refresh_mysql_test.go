@@ -33,7 +33,7 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 	}
 	exec(`CREATE TABLE core_rooms(id BIGINT UNSIGNED PRIMARY KEY,tenant_id BIGINT UNSIGNED NOT NULL,name VARCHAR(128) NOT NULL,platform VARCHAR(32) NOT NULL DEFAULT 'douyin',external_room_id VARCHAR(128) NOT NULL DEFAULT '')`)
 	wanted := map[string]bool{}
-	for _, name := range []string{"live_agent_plans", "live_runtime_sessions", "live_agent_plan_room_bindings", "live_agent_room_plan_selections", "live_agent_room_plan_publications", "live_agent_plan_versions", "live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_benefits", "live_agent_plan_scripts", "live_agent_plan_script_references", "live_agent_plan_terms", "live_policy_scopes"} {
+	for _, name := range []string{"live_agent_plans", "live_runtime_sessions", "live_agent_plan_room_bindings", "live_agent_room_plan_selections", "live_agent_room_plan_publications", "live_agent_plan_versions", "live_agent_plan_facts", "live_agent_plan_product_links", "live_agent_plan_benefits", "live_agent_plan_scripts", "live_agent_plan_script_references", "live_agent_plan_terms", "live_policy_scopes", "live_support_authorization_events"} {
 		wanted[name] = true
 	}
 	for _, raw := range strings.Split(strings.ReplaceAll(liveRuntimeSchema, "\r\n", "\n"), "\n-- +statement\n") {
@@ -64,7 +64,7 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 		exec(`INSERT INTO live_agent_room_plan_selections(tenant_id,room_id,plan_id) VALUES(7,?,?)`, room, room)
 		exec(`INSERT INTO live_agent_plan_versions(id,tenant_id,room_id,plan_id,version_no,lifecycle_status,voice_identity_json,variants_json,generation_context_json,published_at) VALUES(?,7,?,?,1,'published','{}',?,'{}',?)`, room*1000, room, room, string(variants), anchor)
 		exec(`INSERT INTO live_agent_room_plan_publications(tenant_id,room_id,plan_id,version_id,published_at) VALUES(7,?,?,?,?)`, room, room, room*1000, anchor)
-		exec(`INSERT INTO live_room_content_access(tenant_id,room_id,selected_mode,dynamic_authorized,updated_by_user_id) VALUES(7,?,'ai_dynamic',1,1)`, room)
+		exec(`INSERT INTO live_room_content_access(tenant_id,room_id,selected_mode,dynamic_authorized,updated_by_user_id) VALUES(7,?,'ai_dynamic',0,1)`, room)
 		return model.LiveContentRefreshCandidate{TenantID: 7, RoomID: room, PlanID: room, BaseVersionID: room * 1000, RuntimeSessionID: room, ExecutionRealm: "refresh-test", StartedAt: anchor, PublishedAt: anchor}, input
 	}
 	create := func(c model.LiveContentRefreshCandidate) model.LiveContentRefreshJob {
@@ -162,7 +162,7 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 		}
 	})
 
-	for index, mutation := range []string{"facts", "stop", "delete", "revoke", "manual_publish"} {
+	for index, mutation := range []string{"facts", "stop", "delete", "mode_switch", "manual_publish"} {
 		t.Run("cancel "+mutation, func(t *testing.T) {
 			room := int64(20 + index)
 			c, input := seed(room)
@@ -185,8 +185,8 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 				if err := s.QueueRoomDeletion(ctx, 7, room, 900); err != nil {
 					t.Fatal(err)
 				}
-			case "revoke":
-				exec(`UPDATE live_room_content_access SET dynamic_authorized=0 WHERE room_id=?`, room)
+			case "mode_switch":
+				exec(`UPDATE live_room_content_access SET selected_mode='user_audio' WHERE room_id=?`, room)
 			case "manual_publish":
 				exec(`UPDATE live_agent_plan_versions SET lifecycle_status='superseded' WHERE id=?`, c.BaseVersionID)
 				exec(`INSERT INTO live_agent_plan_versions(tenant_id,room_id,plan_id,version_no,lifecycle_status,voice_identity_json,variants_json,generation_context_json,published_at) VALUES(7,?,?,3,'published','{}','[]','{}',?)`, room, room, now)
@@ -291,6 +291,40 @@ func TestLiveContentRefreshMySQL(t *testing.T) {
 		items, err := s.ListLiveContentRefreshCandidatesAfter(ctx, "refresh-test", 30, 1)
 		if err != nil || len(items) != 1 || items[0].RoomID != 40 {
 			t.Fatal("cursor cannot reach later rooms", items, err)
+		}
+	})
+
+	t.Run("default availability for old and new rooms", func(t *testing.T) {
+		exec(`INSERT INTO core_rooms(id,tenant_id,name) VALUES(900,7,'旧未开通房间'),(901,7,'新房间')`)
+		exec(`INSERT INTO live_room_content_access(tenant_id,room_id,selected_mode,dynamic_authorized,updated_by_user_id) VALUES(7,900,'ai_dynamic',0,1)`)
+		for _, room := range []int64{900, 901} {
+			mode, err := s.GetLiveContentMode(ctx, 7, room)
+			if err != nil || !mode.DynamicAuthorized || len(mode.AvailableModes) != 3 || mode.AuthorizationSource != "default" {
+				t.Fatal("default availability missing", room, mode, err)
+			}
+			want := model.LiveContentAIPregenerated
+			if room == 900 {
+				want = model.LiveContentAIDynamic
+			}
+			if mode.ContentMode != want {
+				t.Fatal("opening feature changed the selected mode", room, mode.ContentMode)
+			}
+		}
+		if scalar(`SELECT COUNT(*) FROM live_room_content_access WHERE room_id=901`) != 0 {
+			t.Fatal("reading availability selected a mode for the new room")
+		}
+		if err := s.SaveLiveContentMode(ctx, 7, 901, 1, model.LiveContentAIDynamic, false); err != nil {
+			t.Fatal("new customer cannot select dynamic mode", err)
+		}
+		if err := s.SaveLiveContentRefreshPreference(ctx, 7, 900, 1, 3600, 20); err != nil {
+			t.Fatal("legacy false flag prevented refresh preferences", err)
+		}
+		mode, err := s.GetLiveContentMode(ctx, 7, 900)
+		if err != nil || mode.ContentMode != model.LiveContentAIDynamic || mode.RefreshIntervalSeconds != 3600 || mode.ReplacementPercent != 20 {
+			t.Fatal("refresh settings not saved", mode, err)
+		}
+		if scalar(`SELECT dynamic_authorized FROM live_room_content_access WHERE room_id=900`) != 0 {
+			t.Fatal("compatibility read rewrote legacy history")
 		}
 	})
 }

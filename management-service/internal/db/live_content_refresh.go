@@ -72,7 +72,7 @@ func (s *Store) ListLiveContentRefreshCandidatesAfter(ctx context.Context, realm
 	 LEFT JOIN live_agent_room_plan_selections selected ON selected.tenant_id=r.tenant_id AND selected.room_id=r.room_id
 	 LEFT JOIN live_agent_room_plan_publications pub ON pub.tenant_id=r.tenant_id AND pub.room_id=r.room_id
 	 JOIN live_agent_plan_versions v ON v.id=pub.version_id AND v.tenant_id=r.tenant_id AND v.room_id=r.room_id AND v.plan_id=COALESCE(selected.plan_id,pub.plan_id)
-	 WHERE r.status='running' AND r.execution_realm=? AND r.id>? AND access.dynamic_authorized=1 AND access.selected_mode='ai_dynamic'
+	 WHERE r.status='running' AND r.execution_realm=? AND r.id>? AND access.selected_mode='ai_dynamic'
 	 AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(room_policy.policy_json,'$.auto_refresh_enabled')),JSON_UNQUOTE(JSON_EXTRACT(global_policy.policy_json,'$.auto_refresh_enabled')),'true')='true'
 	 AND v.published_at IS NOT NULL
 	 AND JSON_EXTRACT(v.generation_context_json,'$.anchor_generation') IS NULL
@@ -166,16 +166,15 @@ func readRefreshPolicyTx(ctx context.Context, tx *sql.Tx, tenantID, roomID int64
 		}
 	}
 	var mode string
-	var authorized bool
 	var accessUpdated time.Time
-	err := tx.QueryRowContext(ctx, `SELECT selected_mode,dynamic_authorized,updated_at FROM live_room_content_access WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&mode, &authorized, &accessUpdated)
+	err := tx.QueryRowContext(ctx, `SELECT selected_mode,updated_at FROM live_room_content_access WHERE tenant_id=? AND room_id=? FOR UPDATE`, tenantID, roomID).Scan(&mode, &accessUpdated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, "", ErrLiveContentRefreshObsolete
 	}
 	if err != nil {
 		return p, "", err
 	}
-	if !authorized || mode != model.LiveContentAIDynamic {
+	if mode != model.LiveContentAIDynamic {
 		return p, "", ErrLiveContentRefreshObsolete
 	}
 	p.ContentMode = mode
@@ -657,9 +656,9 @@ func (s *Store) CancelInactiveLiveContentRefreshJobs(ctx context.Context, realm 
 	 LEFT JOIN live_room_content_access access ON access.tenant_id=job.tenant_id AND access.room_id=job.room_id
 	 LEFT JOIN live_content_policies room_policy ON room_policy.tenant_id=job.tenant_id AND room_policy.room_id=job.room_id
 	 LEFT JOIN live_content_policies global_policy ON global_policy.tenant_id=0 AND global_policy.room_id=0
-	 SET job.status='cancelled',job.last_error='room_stopped_deleted_or_entitlement_revoked',job.lease_token='',job.lease_until=NULL,job.next_attempt_at=?,job.updated_at=?
+	 SET job.status='cancelled',job.last_error='room_stopped_deleted_or_mode_changed',job.lease_token='',job.lease_until=NULL,job.next_attempt_at=?,job.updated_at=?
 	 WHERE job.execution_realm=? AND job.status IN ('pending','running','retry','ready')
-	 AND (room.id IS NULL OR deleted.room_id IS NOT NULL OR runtime.status<>'running' OR runtime.id IS NULL OR access.dynamic_authorized IS NULL OR access.dynamic_authorized=0 OR access.selected_mode<>'ai_dynamic' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(room_policy.policy_json,'$.auto_refresh_enabled')),JSON_UNQUOTE(JSON_EXTRACT(global_policy.policy_json,'$.auto_refresh_enabled')),'true')<>'true')`, now, now, model.NormalizeExecutionRealm(realm))
+	 AND (room.id IS NULL OR deleted.room_id IS NOT NULL OR runtime.status<>'running' OR runtime.id IS NULL OR access.selected_mode IS NULL OR access.selected_mode<>'ai_dynamic' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(room_policy.policy_json,'$.auto_refresh_enabled')),JSON_UNQUOTE(JSON_EXTRACT(global_policy.policy_json,'$.auto_refresh_enabled')),'true')<>'true')`, now, now, model.NormalizeExecutionRealm(realm))
 	return err
 }
 

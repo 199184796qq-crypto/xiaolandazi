@@ -47,15 +47,12 @@ type LiveContentModeAccess struct {
 	ReplacementPercent     int      `json:"replacement_percent"`
 }
 
-// Keep entitlement resolution separate from mode preference. Membership grants
-// can be added here later without changing customer request payloads.
-func ResolveLiveContentMode(selected string, dynamicAllowed bool, source string) LiveContentModeAccess {
-	result := LiveContentModeAccess{ContentMode: selected, AvailableModes: []string{LiveContentAIPregenerated, LiveContentUserAudio}, DynamicAuthorized: dynamicAllowed, AuthorizationSource: "default"}
-	if dynamicAllowed {
-		result.AvailableModes = append(result.AvailableModes, LiveContentAIDynamic)
-		result.AuthorizationSource = source
-	}
-	if selected != LiveContentUserAudio && selected != LiveContentAIPregenerated && !(selected == LiveContentAIDynamic && dynamicAllowed) {
+// Dynamic generation is available to every room. The legacy grant arguments
+// and response fields remain compatible with older clients and stored rows;
+// they cannot disable the feature or change the selected mode.
+func ResolveLiveContentMode(selected string, _ bool, _ string) LiveContentModeAccess {
+	result := LiveContentModeAccess{ContentMode: selected, AvailableModes: []string{LiveContentAIPregenerated, LiveContentUserAudio, LiveContentAIDynamic}, DynamicAuthorized: true, AuthorizationSource: "default"}
+	if selected != LiveContentUserAudio && selected != LiveContentAIPregenerated && selected != LiveContentAIDynamic {
 		result.ContentMode = LiveContentAIPregenerated
 	}
 	return result

@@ -296,8 +296,8 @@ func (s *Server) checkLiveAnchorOwner(ctx context.Context, tenant, room, runtime
 	if err != nil {
 		return false, err
 	}
-	if mode.ContentMode != model.LiveContentAIDynamic || !mode.DynamicAuthorized {
-		return false, errors.New("实时生成授权或内容模式已变化")
+	if mode.ContentMode != model.LiveContentAIDynamic {
+		return false, errors.New("实时生成内容模式已变化")
 	}
 	// Saving a new snapshot must not cancel this session's startup snapshot.
 	selected, err := s.store.GetLiveAgentPlanForRoom(ctx, tenant, room)

@@ -20,7 +20,7 @@ export const liveContentModeLabels: Record<LiveContentMode, { title: string; des
 
 export function visibleLiveContentModes(access: LiveContentModeAccess | null): LiveContentMode[] {
   const modes = [...defaultLiveContentModes]
-  if (access?.dynamic_authorized === true && access.available_modes.includes('ai_dynamic')) modes.push('ai_dynamic')
+  if (access?.available_modes.includes('ai_dynamic')) modes.push('ai_dynamic')
   return modes
 }
 

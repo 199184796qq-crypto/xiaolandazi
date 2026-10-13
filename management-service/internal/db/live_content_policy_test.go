@@ -58,7 +58,11 @@ func (c *contentPolicyTestConn) QueryContext(_ context.Context, q string, args [
 	if len(args) < 2 {
 		return nil, errors.New("missing tenant/room scope")
 	}
-	for i, want := range []int64{7, 11} {
+	wantScope := []int64{7, 11}
+	if args[0].Value == int64(0) && args[1].Value == int64(0) {
+		wantScope = []int64{0, 0}
+	}
+	for i, want := range wantScope {
 		if args[i].Value != want {
 			return nil, errors.New("incorrect tenant/room scope")
 		}
@@ -131,28 +135,20 @@ func contentPolicyStore(t *testing.T, state *contentPolicyTestDB) *Store {
 	return &Store{db: database}
 }
 
-func TestContentModeRejectsAdvancedWithoutGrant(t *testing.T) {
-	state := &contentPolicyTestDB{}
-	err := contentPolicyStore(t, state).SaveLiveContentMode(context.Background(), 7, 11, 5, model.LiveContentAIDynamic, false)
-	if !errors.Is(err, ErrContentModeNotAuthorized) || len(state.writes) > 0 || state.committed || !state.rolledBack {
-		t.Fatalf("denied mode changed storage: %+v err=%v", state, err)
-	}
-}
-
-func TestContentModeSelectionDoesNotGrantFeatures(t *testing.T) {
+func TestContentModeAvailableWithoutLegacyGrant(t *testing.T) {
 	for _, mode := range []string{model.LiveContentAIPregenerated, model.LiveContentUserAudio, model.LiveContentAIDynamic} {
-		t.Run(mode, func(t *testing.T) {
-			state := &contentPolicyTestDB{grant: true}
+		for _, legacyGrant := range []bool{false, true} {
+			state := &contentPolicyTestDB{grant: legacyGrant}
 			if err := contentPolicyStore(t, state).SaveLiveContentMode(context.Background(), 7, 11, 5, mode, false); err != nil {
 				t.Fatal(err)
 			}
 			if !state.committed || len(state.writes) != 3 {
 				t.Fatalf("mode/audit not atomic: %+v", state)
 			}
-			if strings.Contains(state.writes[0], "dynamic_authorized=") || strings.Contains(state.writes[0], "authorization_source=") {
-				t.Fatal("customer can modify entitlement")
+			if state.writeArgs[0][2].Value != mode || !strings.Contains(state.writes[0], "dynamic_authorized=1") {
+				t.Fatalf("wrong mode/default availability: %+v", state)
 			}
-		})
+		}
 	}
 }
 
@@ -203,37 +199,30 @@ func TestLegacyContentModeOnlyInfersRegisteredRecordings(t *testing.T) {
 	}
 }
 
-func TestContentPolicyGrantAndRevokeAreAudited(t *testing.T) {
-	for _, allowed := range []bool{true, false} {
-		t.Run(map[bool]string{true: "grant", false: "revoke"}[allowed], func(t *testing.T) {
-			state := &contentPolicyTestDB{consent: true, grant: !allowed}
-			p := model.DefaultLiveContentPolicy()
-			p.ContentMode = model.LiveContentAIDynamic
-			if err := contentPolicyStore(t, state).SaveLiveContentPolicy(context.Background(), 7, 11, 5, 0, p, false, &allowed, model.LiveContentAIPregenerated); err != nil {
-				t.Fatal(err)
-			}
-			if !state.committed || len(state.writes) != 3 || !strings.Contains(state.writes[2], "live_support_authorization_events") {
-				t.Fatalf("entitlement not saved atomically with audit: %+v", state)
-			}
-			args := state.writeArgs[0]
-			wantMode := model.LiveContentAIPregenerated
-			if allowed {
-				wantMode = model.LiveContentAIDynamic
-			}
-			if args[2].Value != wantMode || args[3].Value != allowed {
-				t.Fatalf("unsafe grant/revoke payload: %+v", args)
-			}
-		})
+func TestContentPolicyIgnoresLegacyGrantToggle(t *testing.T) {
+	for _, legacyGrant := range []bool{true, false} {
+		state := &contentPolicyTestDB{consent: true, grant: false}
+		p := model.DefaultLiveContentPolicy()
+		p.ContentMode = model.LiveContentAIDynamic
+		if err := contentPolicyStore(t, state).SaveLiveContentPolicy(context.Background(), 7, 11, 5, 0, p, false, &legacyGrant, model.LiveContentAIPregenerated); err != nil {
+			t.Fatal(err)
+		}
+		if !state.committed || len(state.writes) != 3 || !strings.Contains(state.writes[2], "live_support_authorization_events") {
+			t.Fatalf("policy/audit not atomic: %+v", state)
+		}
+		args := state.writeArgs[0]
+		if args[2].Value != model.LiveContentAIDynamic || args[3].Value != true || args[4].Value != "default" {
+			t.Fatalf("legacy grant changed mode: %+v", args)
+		}
 	}
 }
 
-func TestContentPolicyCannotGrantGlobalDynamicMode(t *testing.T) {
+func TestContentPolicyGlobalModeRemainsExplicitlyRoomSelected(t *testing.T) {
 	state := &contentPolicyTestDB{}
 	p := model.DefaultLiveContentPolicy()
 	p.ContentMode = model.LiveContentAIDynamic
-	err := contentPolicyStore(t, state).SaveLiveContentPolicy(context.Background(), 0, 0, 5, 0, p, false, nil, model.LiveContentAIPregenerated)
-	if !errors.Is(err, ErrContentModeNotAuthorized) || state.committed || len(state.writes) != 0 {
-		t.Fatalf("global default granted advanced mode: %+v err=%v", state, err)
+	if err := contentPolicyStore(t, state).SaveLiveContentPolicy(context.Background(), 0, 0, 5, 0, p, false, nil, model.LiveContentAIPregenerated); !errors.Is(err, ErrContentPolicyGlobalMode) || state.committed || len(state.writes) != 0 {
+		t.Fatalf("feature availability changed the global mode: %+v, %v", state, err)
 	}
 }
 

@@ -57,6 +57,7 @@ var salesScratchTables = []string{
 	"live_content_refresh_events",
 	"live_content_policies",
 	"live_room_content_access",
+	"live_support_authorization_events",
 	"live_agent_plan_room_bindings",
 	"live_agent_room_plan_selections",
 	"live_agent_room_plan_publications",
