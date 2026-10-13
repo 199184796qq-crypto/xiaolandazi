@@ -1740,6 +1740,23 @@ const fullShowSaveBlockedReason = computed(() => {
   if (!fullShowVoiceIdentityConsistent.value) return '正式稿的音色还没统一，去“生成智能体”处理好再来保存哦～'
   return ''
 })
+const savePlanOneClickBusy = ref(false)
+const savePlanOneClickStage = ref('')
+// 一键保存：内容池 needs_update / failed 时自动“更新受影响内容→保存”，
+// 其余阻塞原因（未生成文稿、音色不一致等）仍沿用 fullShowSaveBlockedReason。
+const savePlanOneClickDisabled = computed(() => {
+  if (savePlanOneClickBusy.value) return true
+  if (!currentRoomPlanId.value || !activeRoom.value) return true
+  const state = poolStatus.value?.state
+  if (state === 'needs_update' || state === 'failed') return false
+  return Boolean(fullShowSaveBlockedReason.value)
+})
+const savePlanOneClickHint = computed(() => {
+  if (savePlanOneClickBusy.value) return '正在保存方案，请稍候～'
+  const state = poolStatus.value?.state
+  if (state === 'needs_update' || state === 'failed') return '保存时会先自动更新受影响内容，再保存方案'
+  return fullShowSaveBlockedReason.value
+})
 const fullShowWorkspaceDirty = computed(
   () =>
     Boolean(fullShowResult.value && fullShowWorkspaceBaseVersion.value) &&
@@ -3708,6 +3725,60 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   }
 }
 
+function waitForContentPoolReady(planId: number, roomId: number, timeoutMs = 600000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== roomId) {
+        clearInterval(timer)
+        reject(new Error('页面已切换，保存已取消'))
+        return
+      }
+      const state = poolStatus.value?.state
+      if (state === 'ready' || state === 'synced') {
+        clearInterval(timer)
+        resolve()
+        return
+      }
+      if (state === 'failed') {
+        clearInterval(timer)
+        reject(new Error(poolStatus.value?.job?.error || '内容更新未完成，请重试'))
+        return
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        clearInterval(timer)
+        reject(new Error('内容更新超时，请稍后重试'))
+        return
+      }
+      void contentPools.refresh(true)
+    }, 2000)
+  })
+}
+
+// 一键保存方案：内容池需要更新时，自动「更新受影响内容」并等待生成完成，再保存方案。
+async function savePlanOneClick() {
+  if (savePlanOneClickBusy.value || fullShowVersionSaving.value) return
+  const planId = currentRoomPlanId.value
+  const room = activeRoom.value
+  if (!planId || !room) return
+  fullShowVersionError.value = ''
+  savePlanOneClickBusy.value = true
+  try {
+    const state = poolStatus.value?.state
+    if (state === 'needs_update' || state === 'failed') {
+      savePlanOneClickStage.value = '更新内容中…'
+      await contentPools.update()
+      await waitForContentPoolReady(planId, room.id)
+    }
+    savePlanOneClickStage.value = '保存中…'
+    await saveFullShowVersion()
+  } catch (err) {
+    fullShowVersionError.value = err instanceof Error ? err.message : '保存失败，请重试'
+  } finally {
+    savePlanOneClickBusy.value = false
+    savePlanOneClickStage.value = ''
+  }
+}
 
 async function saveFullShowVariantEdit() {
   if (isUserAudioContentMode.value) return
@@ -7465,15 +7536,17 @@ onBeforeUnmount(() => {
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
             <header class="strategy-agent-control-header">
               <AnchorControlBar
-                mode="initialize"
+                mode="all"
                 :initializing="anchorInitializing"
                 :initialize-progress="anchorInitializationProgress"
                 :initialize-label="anchorInitializationStage"
-                :saving="fullShowVersionSaving"
+                :saving="fullShowVersionSaving || savePlanOneClickBusy"
+                :save-label="savePlanOneClickStage"
                 :initialize-disabled="anchorInitializing || !currentPlan"
-                :save-disabled="!fullShowVersionActionReady || fullShowVersionSaving"
-                save-hint="保存成功后，下次开播直接使用；不会打断当前直播"
+                :save-disabled="savePlanOneClickDisabled"
+                :save-hint="savePlanOneClickHint"
                 @initialize="initializeAnchorGeneration"
+                @save="savePlanOneClick"
               />
             </header>
             <LivePlanVersionBadge
@@ -7489,15 +7562,14 @@ onBeforeUnmount(() => {
               {{ anchorInitializationNotice }}
             </div>
             <div class="strategy-content-mode-cards">
-              <button v-for="mode in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
-                <i>{{ mode === 'user_audio' ? '01' : mode === 'ai_pregenerated' ? '02' : '03' }}</i>
+              <button v-for="(mode, index) in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
+                <i>{{ String(index + 1).padStart(2, '0') }}</i>
                 <span class="strategy-content-mode-icon" :class="'is-' + mode" aria-hidden="true">
                   <svg v-if="mode === 'user_audio'" viewBox="0 0 36 36"><path d="M8 15v6M13 10v16M18 6v24M23 11v14M28 15v6" /></svg>
-                  <svg v-else-if="mode === 'ai_pregenerated'" viewBox="0 0 36 36"><path d="M11 6h11l5 5v19H11z" /><path d="M22 6v6h5M15 18h8M15 23h8" /></svg>
                   <svg v-else viewBox="0 0 36 36"><path d="M21 4 9 20h9l-3 12 12-17h-9z" /></svg>
                 </span>
                 <div class="strategy-content-mode-card-copy">
-                  <strong>{{ mode === 'user_audio' ? '录音主线' : mode === 'ai_pregenerated' ? '固定生成' : '实时声音' }}</strong>
+                  <strong>{{ liveContentModeLabels[mode].title }}</strong>
                   <span>{{ liveContentModeLabels[mode].description }}</span>
                 </div>
                 <b>{{ contentModeAccess.content_mode === mode ? '✓ 已激活' : '选择' }}</b>
@@ -10872,7 +10944,7 @@ onBeforeUnmount(() => {
 .addressing-workspace{display:grid;gap:16px}.addressing-notice{padding:11px 13px;border-radius:12px;background:#edf9f4;color:#347a61;font-size:12px;font-weight:800}.addressing-mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.addressing-mode-grid>button{display:grid;gap:6px;padding:16px 18px;border:1px solid rgba(95,111,174,.16);border-radius:16px;background:#fafbfe;color:#556078;text-align:left;transition:.18s ease}.addressing-mode-grid>button strong{font-size:15px;color:#38435a}.addressing-mode-grid>button span{font-size:11px;color:#8c96a8;line-height:1.55}.addressing-mode-grid>button.active{border-color:rgba(91,111,211,.46);background:linear-gradient(145deg,#f2f5ff,#e8edff);box-shadow:0 0 0 3px rgba(91,111,211,.07),0 10px 24px rgba(71,90,177,.08)}.addressing-system-card,.addressing-custom-card{padding:16px;border:1px solid rgba(94,109,169,.13);border-radius:16px;background:rgba(255,255,255,.9)}.addressing-system-card>header,.addressing-custom-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.addressing-system-card header>div,.addressing-custom-card header>div{display:grid;gap:3px}.addressing-system-card header span,.addressing-custom-card header span{color:#8d97aa;font-size:9px;font-weight:900;letter-spacing:.1em}.addressing-system-card header strong,.addressing-custom-card header strong{color:#38435a;font-size:15px}.addressing-system-card header>b{padding:5px 9px;border-radius:999px;background:#e7f7ef;color:#2f8a65;font-size:10px}.addressing-chip-list{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.addressing-chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e1e5ee;border-radius:12px;background:#f8f9fc}.addressing-chip strong{color:#455168;font-size:12px}.addressing-chip span{color:#7180a2;font-size:10px;font-weight:900}.addressing-custom-card.inactive{opacity:.72}.addressing-custom-list{display:grid;gap:9px;margin-top:14px}.addressing-custom-list>article{display:grid;grid-template-columns:90px minmax(180px,1fr) 150px auto;align-items:end;gap:10px;padding:12px;border:1px solid #e3e7f0;border-radius:13px;background:#fafbfe}.addressing-enable,.addressing-name-field,.addressing-probability-field{display:grid;gap:6px}.addressing-enable{grid-template-columns:auto 1fr;align-items:center;align-self:center}.addressing-enable input{width:18px;height:18px}.addressing-name-field>span,.addressing-probability-field>span,.addressing-enable>span{color:#6d7890;font-size:10px;font-weight:850}.addressing-name-field input,.addressing-probability-field input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 10px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#39445a;font:inherit}.addressing-probability-field>div{display:flex;align-items:center;gap:6px}.addressing-probability-field input{width:92px}.addressing-probability-field b{color:#74809a;font-size:11px}.addressing-remove{min-height:38px;padding:0 11px;border:0;border-radius:10px;background:#fff0f1;color:#bd5662;font-size:11px;font-weight:850}.addressing-total{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f4;color:#5b667d}.addressing-total strong{font-size:16px;color:#3f8a69}.addressing-total.invalid strong{color:#c3505b}.addressing-review-tip{margin:8px 0 0;color:#9099aa;font-size:10px;line-height:1.6}.addressing-empty{margin-top:12px}@media(max-width:900px){.addressing-mode-grid{grid-template-columns:1fr}.addressing-custom-list>article{grid-template-columns:80px 1fr 130px}.addressing-remove{grid-column:2/-1;justify-self:end}}
 .addressing-custom-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.addressing-save-button{min-width:112px}.addressing-custom-actions .strategy-version-button,.addressing-custom-actions .primary-button{white-space:nowrap}
 .anchor-addressing-override{display:grid;gap:14px;padding:18px;border:1px solid #dfe5f1;border-radius:16px;background:#fff}.anchor-addressing-override>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.anchor-addressing-override>header>div{display:grid;gap:4px}.anchor-addressing-override>header small,.anchor-addressing-learned{color:#7d879b;font-size:11px;line-height:1.6}.anchor-addressing-learned{display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 12px;border-radius:12px;background:#f6f8fc}.anchor-addressing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.anchor-addressing-grid label{display:grid;gap:7px;color:#56627a;font-size:11px;font-weight:800}.anchor-addressing-grid select,.anchor-addressing-grid textarea{box-sizing:border-box;width:100%;padding:10px 11px;border:1px solid #dce2ec;border-radius:10px;background:#fff;color:#38445b;font:inherit}.anchor-addressing-grid textarea{resize:vertical;line-height:1.55}@media(max-width:900px){.anchor-addressing-grid{grid-template-columns:1fr}.anchor-addressing-override>header{flex-wrap:wrap}}
-.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
+.strategy-content-mode-workflow{display:grid;gap:14px;padding:18px;border:1px solid #dce3f1;border-radius:18px;background:linear-gradient(135deg,#fff,#f7f9ff)}.strategy-content-mode-workflow>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.strategy-content-mode-workflow>header>div{display:grid;gap:4px}.strategy-content-mode-workflow>header small{color:#7e899d;font-size:11px;line-height:1.55}.strategy-content-mode-workflow>header>span{color:#3b8065;font-size:11px;font-weight:800}.strategy-content-mode-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.strategy-content-mode-cards>button{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;padding:15px;border:1px solid #e0e5ef;border-radius:14px;background:#fff;text-align:left;color:#59647a}.strategy-content-mode-cards>button i{grid-row:1/3;align-self:start;color:#99a2b4;font-size:11px;font-style:normal;font-weight:900}.strategy-content-mode-cards>button strong{color:#364258;font-size:14px}.strategy-content-mode-cards>button span{grid-column:2/-1;font-size:10px;line-height:1.55}.strategy-content-mode-cards>button b{color:#7d8799;font-size:10px}.strategy-content-mode-cards>button.active{border-color:#7788df;background:#f1f4ff;box-shadow:0 0 0 3px rgba(93,111,206,.08)}.strategy-content-mode-cards>button.active b{color:#5265c7}.strategy-dynamic-settings{display:grid;grid-template-columns:1fr 1fr auto;align-items:end;gap:12px;padding:14px;border-radius:14px;background:#eef2ff}.strategy-dynamic-settings label{display:grid;gap:5px;color:#526078;font-size:11px;font-weight:800}.strategy-dynamic-settings label>div{display:flex;align-items:center;gap:7px}.strategy-dynamic-settings input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #d6def1;border-radius:9px}.strategy-dynamic-settings em{font-style:normal}.strategy-dynamic-settings small{color:#7f8ba2;font-size:9px;font-weight:500;line-height:1.5}@media(max-width:900px){.strategy-content-mode-cards,.strategy-dynamic-settings{grid-template-columns:1fr}.strategy-content-mode-workflow>header{flex-wrap:wrap}}
 .strategy-realtime-voice-page{display:grid;gap:16px;padding:20px;border:1px solid #d7e5ef;border-radius:18px;background:linear-gradient(135deg,#fbffff,#f2f8ff);box-shadow:0 10px 28px rgba(65,100,151,.06)}.strategy-realtime-voice-page>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.strategy-realtime-voice-page>header>div{display:grid;gap:5px}.strategy-realtime-voice-page>header span{color:#1b998d;font-size:11px;font-weight:950;letter-spacing:.08em}.strategy-realtime-voice-page>header strong{color:#2f405b;font-size:20px}.strategy-realtime-voice-page>header small{color:#78879b;font-size:12px;line-height:1.65}.strategy-realtime-voice-page>header>em{padding:7px 11px;border-radius:999px;background:#e6f7f3;color:#268978;font-size:11px;font-style:normal;font-weight:900;white-space:nowrap}.strategy-realtime-voice-page .strategy-dynamic-settings{background:#edf8f8}@media(max-width:900px){.strategy-realtime-voice-page>header{flex-wrap:wrap}}
 .strategy-content-mode-workflow{position:relative;overflow:hidden;padding:22px 24px;border-color:#dce6f6;border-radius:22px;background:radial-gradient(circle at 92% 6%,rgba(110,153,255,.13),transparent 26%),linear-gradient(135deg,#fff 0%,#f8fbff 58%,#eef5ff 100%);box-shadow:0 12px 34px rgba(59,84,147,.07)}
 .strategy-content-mode-workflow>header{position:relative;z-index:1;align-items:center}.strategy-content-mode-heading strong{color:#17264a;font-size:24px;font-weight:950}.strategy-content-mode-heading small{color:#7c8ba6;font-size:13px;line-height:1.6}

@@ -60,16 +60,16 @@ func TestFormalLiveRepeatedP0FailuresSkipWithoutWholeRunStop(t *testing.T) {
 	s.Config.PointGap = 0
 	s.Config.CombinationGap = 0
 	run := s.RunID
-	for i := 0; i < 20; i++ {
-		if ok, err := s.AddCandidate(candidate("我们家的油零风险啊。", 100), anchorstylescore.Baseline{}); ok || err != nil {
-			t.Fatal("rejected text adopted", err)
-		}
-		if s.Status != "ready" || s.Phase == "ended" || s.P0PendingRepair != nil || len(s.Accepted) != 0 || s.RunID != run || s.Uncertain {
+	// formal_live 下违规也走「换安全说法」局部重写（不再直接跳过），
+	// 重写耗尽后才跳过；关键安全性质：反复违规不停止整个 run（不 compliance_blocked）。
+	for i := 0; i < 4; i++ {
+		rejectP0Unfixable(t, &s)
+		if s.Status != "ready" || s.Phase == "ended" || s.RunID != run || s.Uncertain {
 			t.Fatal("review stopped or polluted formal session", i, s.Status, s.Phase)
 		}
 	}
-	if len(s.GenerationSkips) != 20 || len(s.Used) != 0 || s.StyleWindow != "" {
-		t.Fatal("skip trace or adoption memory incorrect")
+	if len(s.P0Skipped) != 1 || len(s.Accepted) != 0 || s.P0PendingRepair != nil || s.Status != "ready" {
+		t.Fatal("formal live should skip after rewrite exhaustion without stopping run")
 	}
 	if ok, err := s.AddCandidate(candidate("按商品页说明选择合适规格。", 100), anchorstylescore.Baseline{}); !ok || err != nil {
 		t.Fatal("valid next draft could not resume", err)

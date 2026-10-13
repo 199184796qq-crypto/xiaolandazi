@@ -36,12 +36,26 @@ func rejectP0(t *testing.T, s *State) {
 	}
 }
 
+// rejectP0Unfixable 用删词后也为空的违规文本（整段只剩违规词），
+// 模拟「局部重写耗尽 + 删词兜底失败」→ 仍走跳过。
+func rejectP0Unfixable(t *testing.T, s *State) {
+	t.Helper()
+	c := candidate("零风险。", 100)
+	c.P0Patch = s.P0PendingRepair
+	if c.P0Patch != nil {
+		c.P0RewriteNumber = c.P0Patch.RewriteNumber
+	}
+	if adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || adopted {
+		t.Fatal("P0 rejected draft adopted", err)
+	}
+}
+
 func TestP0FirstPlusThreeRepairsThenSkipWithoutAdoption(t *testing.T) {
 	s := p0Fixture(t, 2)
 	task := s.Task()
 	s.PendingOpeningHook = &OpeningHook{ID: "unused-hook"}
 	for i := 0; i < 4; i++ {
-		rejectP0(t, &s)
+		rejectP0Unfixable(t, &s)
 		if len(s.Accepted) != 0 || len(s.Used) != 0 || s.StyleWindow != "" || s.BodyCount != 0 || len(s.RecentOpeningHookIDs) != 0 {
 			t.Fatal("illegal text polluted memory")
 		}
@@ -102,12 +116,19 @@ func TestP0MalformedPatchConsumesBudgetAndSnapshotSurvives(t *testing.T) {
 		c.P0Patch = s.P0PendingRepair
 		c.P0PatchError = "invalid replacement schema"
 		c.RawText = "bad json"
-		if adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || adopted {
+		adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if i < 2 && adopted {
+			t.Fatal("should keep rewriting before budget exhausted", i)
+		}
+		if i == 2 && !adopted {
+			t.Fatal("delete repair should salvage after budget exhausted", i)
+		}
 	}
-	if len(s.P0Skipped) != 1 || s.P0Skipped[0].Attempts[3].RawText != "bad json" || s.Uncertain {
-		t.Fatal("bad schema stuck forever", s)
+	if len(s.Accepted) != 1 || strings.Contains(s.Accepted[0].Selected.Text, "零风险") {
+		t.Fatal("salvaged text still violates", s)
 	}
 }
 
@@ -117,7 +138,7 @@ func TestP0RollingExhaustedPoolAndConsecutiveSkipProtection(t *testing.T) {
 	s.Config.PointGap = 0
 	s.Config.CombinationGap = 0
 	for i := 0; i < 8; i++ {
-		rejectP0(t, &s)
+		rejectP0Unfixable(t, &s)
 	}
 	if s.Status != "compliance_blocked" || len(s.P0Skipped) != 2 {
 		t.Fatal("exhausted pool kept calling", s)
@@ -127,7 +148,7 @@ func TestP0RollingExhaustedPoolAndConsecutiveSkipProtection(t *testing.T) {
 	s.Config.PointGap = 0
 	s.Config.CombinationGap = 0
 	for i := 0; i < 20; i++ {
-		rejectP0(t, &s)
+		rejectP0Unfixable(t, &s)
 	}
 	if s.Status != "compliance_blocked" || len(s.P0Skipped) != 5 {
 		t.Fatal("consecutive skip cap ignored", s)

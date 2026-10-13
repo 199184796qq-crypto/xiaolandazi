@@ -31,9 +31,12 @@ func (p ProductPolicy) Validate() error {
 }
 
 type FocusProduct struct {
-	LinkKey string   `json:"link_key"`
-	Name    string   `json:"name"`
-	Roles   []string `json:"roles,omitempty"`
+	LinkKey    string   `json:"link_key"`
+	Name       string   `json:"name"`
+	Roles      []string `json:"roles,omitempty"`
+	Spec       string   `json:"spec,omitempty"`
+	DailyPrice string   `json:"daily_price,omitempty"`
+	Quantity   string   `json:"quantity,omitempty"`
 }
 type ScopedFact struct {
 	ID         string   `json:"id,omitempty"`

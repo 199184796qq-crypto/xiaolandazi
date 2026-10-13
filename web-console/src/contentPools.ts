@@ -41,12 +41,13 @@ export function useContentPools(plan: Ref<number | null>, room: Ref<{ id: number
       if (owner === epoch && url.value === target && !(err instanceof Error && err.name === 'AbortError')) error.value = err instanceof Error ? err.message : '待更新内容读取失败'
     } finally { if (owner === epoch) { busy = false; schedule() } }
   }
-  async function update() {
+  async function update(force = false) {
     if (!url.value || submitting.value || status.value?.state === 'updating') return
     const target = url.value, owner = epoch
     submitting.value = true; error.value = ''
     try {
-      const next = await request<PoolStatus>(target.replace('/content-pools?', '/content-pools/update?'), { method: 'POST', suppressErrorDialog: true })
+      const q = force ? '&force=1' : ''
+      const next = await request<PoolStatus>(target.replace('/content-pools?', '/content-pools/update?') + q, { method: 'POST', suppressErrorDialog: true })
       if (url.value === target && owner === epoch) status.value = { ...(status.value || {}), ...next } as PoolStatus
     } catch (err) { if (url.value === target) error.value = err instanceof Error ? err.message : '更新未完成，请重试' }
     finally { await refresh(true); submitting.value = false }

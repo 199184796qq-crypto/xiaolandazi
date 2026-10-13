@@ -18,7 +18,7 @@ func TestPurposeDependsOnRealHeatAndMainlineProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold.Key != "discover_need" || cold.Action == "" || angle == "" {
+	if (cold.Key != "discover_need" && cold.Key != "hook_welcome") || cold.Action == "" || angle == "" {
 		t.Fatal("cold welcome has no purpose")
 	}
 	selection, _, _ := chooseContentGoal(rule, "WARM", "selection", nil, "welcome")

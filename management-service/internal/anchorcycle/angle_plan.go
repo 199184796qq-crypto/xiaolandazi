@@ -101,3 +101,28 @@ func (s *State) CurrentAnglePlan() *AnglePlan {
 	}
 	return s.AnglePlans[s.AnglePlanKey()]
 }
+
+// 通用切入侧面池（产品无关）。直播时按已采纳段数轮换，让同一事实每次从不同
+// 侧面切入，程序硬保证相邻段落侧面不重复。侧面只决定「从哪个维度切入」，不含
+// 任何商品词、数字或承诺；每个侧面的具体内容由下游结合本场事实展开（产品相关，
+// 方案生成时注入）。换任何商品侧面池不变。
+var fissionAngleSides = []string{
+	"使用场景：什么场合、谁在什么情况下用得上",
+	"过程细节：怎么一步步做出来、用了什么原料和步骤",
+	"利益算账：划不划算、省了多少、性价比体现在哪",
+	"对比参照：和常见做法或其他选择的差别在哪",
+	"人群痛点：谁更需要、解决了什么具体顾虑",
+	"品质来源：原料、产地、工艺的来源（只讲有事实的部分）",
+	"使用方式：怎么吃、怎么保存、怎么复热",
+}
+
+// CurrentFissionSide 返回本段话术的切入侧面。按「卖点×角度」任务自身的累计使用
+// 次数轮换，同一卖点每次讲换一个侧面、7 个侧面循环——短时间（7 段内）对观众多样；
+// 声音缓存 group 纳入侧面后，第 8 次回到同侧面即可复用该侧面的旧音频，省 TTS。
+// 侧面池产品无关，展开内容由本场事实决定。
+func (s *State) CurrentFissionSide() string {
+	if len(fissionAngleSides) == 0 {
+		return ""
+	}
+	return fissionAngleSides[s.Used[s.Task().Key].Count%len(fissionAngleSides)]
+}

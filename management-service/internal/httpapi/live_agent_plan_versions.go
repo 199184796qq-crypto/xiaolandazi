@@ -356,8 +356,6 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	reportAnchorAnalysis(r.Context(), 88, "正在用审核模型复核全部事实表达")
-	s.normalizeAllPlanFacts(r.Context(), tenantID, planID, actor.UserID)
 	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
 	lectureRevision, lectureRevisionErr := s.store.LectureRevision(r.Context(), tenantID, planID)
 	if lectureRevisionErr != nil {

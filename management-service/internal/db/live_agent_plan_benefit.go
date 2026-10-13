@@ -421,11 +421,9 @@ func (s *Store) DeleteLiveAgentPlanBenefitWithExpectedVersion(
 	}
 	nextVersion := current.VersionNo + 1
 	_, err = tx.ExecContext(ctx, `
-		UPDATE live_agent_plan_benefits
-		SET status='disabled', source_type='system_agent_delete', source_ref='', version_no=?,
-		    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+		DELETE FROM live_agent_plan_benefits
 		WHERE id=? AND tenant_id=? AND plan_id=? AND status<>'disabled'
-	`, nextVersion, actorUserID, benefitID, tenantID, planID)
+	`, benefitID, tenantID, planID)
 	if err != nil {
 		return err
 	}
@@ -485,11 +483,9 @@ func disableLiveAgentPlanBenefitsForLink(
 	for _, current := range items {
 		nextVersion := current.VersionNo + 1
 		if _, err = tx.ExecContext(ctx, `
-			UPDATE live_agent_plan_benefits
-			SET status='disabled', source_type='system_agent_parent_delete', source_ref='', version_no=?,
-			    updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)
+			DELETE FROM live_agent_plan_benefits
 			WHERE id=? AND tenant_id=? AND plan_id=? AND status<>'disabled'
-		`, nextVersion, actorUserID, current.ID, tenantID, planID); err != nil {
+		`, current.ID, tenantID, planID); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `

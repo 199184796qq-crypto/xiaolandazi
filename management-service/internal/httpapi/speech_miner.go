@@ -39,6 +39,7 @@ type speechMinerGuideInput struct {
 	Mode       string                 `json:"mode,omitempty"`
 	Start      bool                   `json:"start,omitempty"`
 	Action     string                 `json:"action,omitempty"`
+	FocusGap   string                 `json:"focus_gap,omitempty"`
 }
 
 func normalizeSpeechMinerAction(action string) (string, error) {
@@ -227,6 +228,15 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prompt, _, err := loadSpeechMinerGuidePrompt()
+	stage := "speech_miner_guide"
+	chatUnavailable := "话术挖掘机暂时没有响应，请稍后重试"
+	isSupplement := strings.HasSuffix(r.URL.Path, "/product-supplement/chat")
+	if isSupplement {
+		prompt, _, err = loadReplaceablePromptAsset("PRODUCT_SUPPLEMENT_CHAT_PROMPT_PATH", "configs/prompts/anchor-style/product-supplement-chat.md", "商品资料补充对话母版")
+		stage = "product_supplement_chat"
+		chatUnavailable = "资料助手暂时没有响应，请稍后重试"
+		wheelValue = nil
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -241,23 +251,30 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"available_fact_categories": categories.Categories,
-		"mode":                      input.Mode,
-		"action":                    input.Action,
-		"turn_kind":                 map[bool]string{true: "start", false: "answer"}[input.Start],
-		"fact_package":              source.Facts,
-		"current_wheel":             wheelValue,
-		"draft_facts":               input.DraftFacts,
-		"history":                   input.History,
-		"latest_message":            input.Message,
-	})
+	// First supplement turn runs the mandatory fact-gap checklist so the
+	// assistant opens with the highest-priority missing facts (price first)
+	// instead of waiting passively. When the user picked one specific gap from
+	// the list, only that gap is injected and no full checklist run happens.
+	// Failures degrade to the passive mode.
+	gapChecklist := ""
+	if isSupplement {
+		if focus := strings.TrimSpace(input.FocusGap); focus != "" {
+			gapChecklist = `{"gaps":[` + focus + `]}`
+		} else if len(input.History) == 0 {
+			gapCtx, gapCancel := context.WithTimeout(r.Context(), 60*time.Second)
+			if gaps, gapErr := s.runFactGapCheck(gapCtx, tenantID, planID, source.Facts); gapErr == nil {
+				gapChecklist = gaps
+			}
+			gapCancel()
+		}
+	}
+	payload, _ := json.Marshal(speechMinerGuidePayload(input, categories, source.Facts, wheelValue, p0, gapChecklist))
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenantID, PlanID: planID})
-	result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "speech_miner_guide", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)}}, 2400, false)
+	result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, stage, agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)}}, 2400, false)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "话术挖掘机暂时没有响应，请稍后重试")
+		writeError(w, http.StatusBadGateway, chatUnavailable)
 		return
 	}
 	output, err := normalizeSpeechMinerGuideResponseWithCategories(result.Text, input.Message, categories)
@@ -271,4 +288,23 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 	output.Model = result.Model
 	output.LatencyMS = result.LatencyMS
 	writeJSON(w, http.StatusOK, output)
+}
+
+func speechMinerGuidePayload(input speechMinerGuideInput, categories factCategoryCatalog, facts string, wheel any, p0, gapChecklist string) map[string]any {
+	payload := map[string]any{
+		"effective_p0":              p0,
+		"available_fact_categories": categories.Categories,
+		"mode":                      input.Mode,
+		"action":                    input.Action,
+		"turn_kind":                 map[bool]string{true: "start", false: "answer"}[input.Start],
+		"fact_package":              facts,
+		"current_wheel":             wheel,
+		"draft_facts":               input.DraftFacts,
+		"history":                   input.History,
+		"latest_message":            input.Message,
+	}
+	if gapChecklist != "" {
+		payload["gap_checklist"] = gapChecklist
+	}
+	return payload
 }

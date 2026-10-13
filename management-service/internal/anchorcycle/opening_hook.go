@@ -151,20 +151,10 @@ func ParseOpeningHooks(md string) (*OpeningHookLibrary, error) {
 	}
 	for _, group := range []struct {
 		allowed, preferred []string
-		priority           string
-	}{{library.Rules.FullTypes, library.Rules.FullPreferred, "首场/重钩子"}, {library.Rules.ReentryTypes, library.Rules.ReentryPreferred, "循环/轻钩子"}} {
+	}{{library.Rules.FullTypes, library.Rules.FullPreferred}, {library.Rules.ReentryTypes, library.Rules.ReentryPreferred}} {
 		for _, kind := range group.allowed {
 			if !kinds[kind] {
 				return nil, fmt.Errorf("选择规则类型%s没有模板", kind)
-			}
-			found := false
-			for _, h := range library.Hooks {
-				if h.Kind == kind && h.Priority == group.priority {
-					found = true
-				}
-			}
-			if !found {
-				return nil, fmt.Errorf("类型%s缺少%s模板", kind, group.priority)
 			}
 		}
 		for _, kind := range group.preferred {
@@ -207,8 +197,7 @@ func (s *State) SelectOpeningHook(library *OpeningHookLibrary, values map[string
 	recentIDs = recentIDs[max(0, len(recentIDs)-*library.Rules.RecentCount):]
 	eligible := []OpeningHook{}
 	for _, h := range library.Hooks {
-		full := h.Priority == "首场/重钩子"
-		if full != (s.OpeningCount == 0) || !containsHookType(allowed, h.Kind) {
+		if !containsHookType(allowed, h.Kind) {
 			continue
 		}
 		recent := false

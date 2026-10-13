@@ -109,6 +109,7 @@ type Candidate struct {
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
 	AnglePlan               *AnglePlan                            `json:"angle_plan,omitempty"`
+	FissionSide             string                                `json:"fission_side,omitempty"`
 	OpeningInstructionEdits []contentguard.OpeningInstructionEdit `json:"opening_instruction_edits,omitempty"`
 	P0CheckedInputSHA       string                                `json:"p0_checked_input_sha,omitempty"`
 	P0ApprovedTextSHA       string                                `json:"p0_approved_text_sha,omitempty"`
@@ -590,8 +591,30 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.P0RewritesUsed++
 	}
 	if c.P0Report != nil && !c.P0Report.Passed {
-		s.rejectP0Candidate(c)
-		return false, nil
+		// 局部重写已耗尽仍违规：先尝试程序删词兜底（替代直接跳过该段）。
+		if s.P0RewritesUsed >= s.P0MaxRewrites {
+			if repaired, ok := s.deleteRepair(c); ok {
+				c.Text = repaired
+				c.OutputText = repaired
+				c.P0Patch = nil
+				c.P0PatchError = ""
+				c.ScoreScope = "p0_delete_repaired"
+				if err := s.CheckP0Candidate(&c); err != nil {
+					return false, err
+				}
+				if c.P0Report == nil || !c.P0Report.Passed {
+					s.rejectP0Candidate(c)
+					return false, nil
+				}
+				// 删词成功且再过 P0，落到下方正常采纳流程。
+			} else {
+				s.rejectP0Candidate(c)
+				return false, nil
+			}
+		} else {
+			s.rejectP0Candidate(c)
+			return false, nil
+		}
 	}
 	if (s.Task().ProductMode == "lecture" || len(s.EffectiveExpressionConstraints()) > 0) && !s.LectureCandidateApproved(c) {
 		s.Attempts = append(s.Attempts, c)

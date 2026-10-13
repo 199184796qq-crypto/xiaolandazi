@@ -1786,9 +1786,27 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 			}
 			return err
 		}
-		err = roomaudio.StreamWAVPCM(ctx, resp.Body, 0, publishAudioFrame)
+		// TTS 音色（尤其 CosyVoice 克隆音）开头常有数百毫秒低电平静音，
+		// 会让人听到「字幕已翻到第 1、2 个字、声音还没出」。这里先整段读入，
+		// 跳过前导静音，并把游标重映射回 0 起点，保证字幕与声音对齐。
+		audioData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			if ctx.Err() == nil {
+				log.Printf("room audio interrupt mirror read room=%d task=%s failed: %v", roomID, taskID, readErr)
+			}
+			return
+		}
+		leadingMS := roomaudio.LeadingSilenceMS(audioData)
+		if leadingMS > 0 {
+			log.Printf("room audio interrupt mirror trim leading silence room=%d task=%s ms=%d", roomID, taskID, leadingMS)
+		}
+		publishTrimmedAudioFrame := func(pcm []byte, cursorMS int) error {
+			// cursorMS 从 leadingMS 起（StreamWAVPCM 的 startMS），减去 leadingMS
+			// 回到 0 起点，让字幕时间轴（guard 头之后）与声音对齐。
+			return publishAudioFrame(pcm, cursorMS-leadingMS)
+		}
+		err = roomaudio.StreamWAVPCM(ctx, bytes.NewReader(audioData), leadingMS, publishTrimmedAudioFrame)
 		if errors.Is(err, roomaudio.ErrPCMNormalizationRequired) && ctx.Err() == nil {
-			_ = resp.Body.Close()
 			log.Printf("room audio interrupt mirror normalizing legacy source room=%d task=%s", roomID, taskID)
 			err = streamAudioURLAsCorePCM(ctx, audioURL, 0, publishAudioFrame)
 		}

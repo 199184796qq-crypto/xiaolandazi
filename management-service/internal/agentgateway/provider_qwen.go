@@ -39,6 +39,9 @@ type qwenChatResponse struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
 		TotalTokens      int64 `json:"total_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -181,7 +184,16 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 			continue
 		}
 		if len(images) == 0 {
-			messages = append(messages, map[string]any{"role": role, "content": content})
+			msg := map[string]any{"role": role, "content": content}
+			// Fixed prompt mothers sit at the front of the message list. Marking them
+			// with cache_control lets DashScope prefix-cache the unchanged system
+			// text across repeated review calls (stable → front, variable → back).
+			// Content below the ~1024-token threshold is simply not cached by the
+			// provider; it neither errors nor alters behavior.
+			if request.CacheSystemPrompt && role == "system" {
+				msg["cache_control"] = map[string]string{"type": "ephemeral"}
+			}
+			messages = append(messages, msg)
 			continue
 		}
 		parts := make([]map[string]any, 0, len(images)+1)
@@ -306,12 +318,13 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		return Response{}, fmt.Errorf("qwen provider returned empty reply")
 	}
 	return Response{
-		Text:         text,
-		Provider:     p.Name(),
-		Model:        request.Model,
-		LatencyMS:    latencyMS,
-		InputTokens:  decoded.Usage.PromptTokens,
-		OutputTokens: decoded.Usage.CompletionTokens,
-		TotalTokens:  decoded.Usage.TotalTokens,
+		Text:              text,
+		Provider:          p.Name(),
+		Model:             request.Model,
+		LatencyMS:         latencyMS,
+		InputTokens:       decoded.Usage.PromptTokens,
+		OutputTokens:      decoded.Usage.CompletionTokens,
+		TotalTokens:       decoded.Usage.TotalTokens,
+		CachedInputTokens: decoded.Usage.PromptTokensDetails.CachedTokens,
 	}, nil
 }
