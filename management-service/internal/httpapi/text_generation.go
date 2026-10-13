@@ -9,6 +9,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"math/rand"
 	"strings"
 	"time"
 )
@@ -289,6 +290,16 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	if err == nil && strings.TrimSpace(response.Text) != "" {
 		if rewritten, rwErr := s.rewriteCycleText(ctx, state, response.Text); rwErr == nil && strings.TrimSpace(rewritten) != "" {
 			response.Text = rewritten
+		}
+		// 润色后「商品名/价格/链接号」词语组核对：检测链接号→价格串换，串错则随机二选一纠正。
+		if state.ProductFocus != nil {
+			if drifts := anchorcycle.CheckPriceDrift(response.Text, state.ProductFocus.Products); len(drifts) > 0 {
+				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+				// 从后往前纠正，避免文本长度变化打乱后续偏移。
+				for i := len(drifts) - 1; i >= 0; i-- {
+					response.Text = anchorcycle.ApplyPriceCorrection(response.Text, drifts[i], rng)
+				}
+			}
 		}
 	}
 	return response, req.Messages, err

@@ -63,7 +63,7 @@ func TestFormalLiveRepeatedP0FailuresSkipWithoutWholeRunStop(t *testing.T) {
 	// formal_live 下违规也走「换安全说法」局部重写（不再直接跳过），
 	// 重写耗尽后才跳过；关键安全性质：反复违规不停止整个 run（不 compliance_blocked）。
 	for i := 0; i < 4; i++ {
-		rejectP0(t, &s)
+		rejectP0Unfixable(t, &s)
 		if s.Status != "ready" || s.Phase == "ended" || s.RunID != run || s.Uncertain {
 			t.Fatal("review stopped or polluted formal session", i, s.Status, s.Phase)
 		}

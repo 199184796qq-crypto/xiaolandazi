@@ -27,6 +27,34 @@ func testPCM24MonoWAV(durationMS int) []byte {
 	return audio
 }
 
+func TestLeadingSilenceMS(t *testing.T) {
+	// 构造：前导静音 120ms + 非静音。data 全零即静音，之后写入大振幅样本。
+	audio := testPCM24MonoWAV(500)
+	data := audio[44:]
+	leadingSamples := SampleRate * 120 / 1000
+	for i := 0; i < leadingSamples; i++ {
+		// 保持静音（全零，16bit 小端）
+		binary.LittleEndian.PutUint16(data[i*2:i*2+2], 0)
+	}
+	for i := leadingSamples; i < SampleRate*500/1000; i++ {
+		binary.LittleEndian.PutUint16(data[i*2:i*2+2], 1000)
+	}
+	if got := LeadingSilenceMS(audio); got != 120 {
+		t.Fatalf("LeadingSilenceMS=%dms want=120ms", got)
+	}
+
+	// 非 WAV 返回 0
+	if got := LeadingSilenceMS([]byte("not a wav")); got != 0 {
+		t.Fatalf("LeadingSilenceMS(non-wav)=%d want=0", got)
+	}
+
+	// 全静音（无语音）不应整体跳过，返回 0
+	allSilent := testPCM24MonoWAV(500)
+	if got := LeadingSilenceMS(allSilent); got != 0 {
+		t.Fatalf("LeadingSilenceMS(all-silent)=%dms want=0ms", got)
+	}
+}
+
 func TestStreamWAVPCMUsesTwentyMillisecondFrames(t *testing.T) {
 	audio := testPCM24MonoWAV(100)
 	var cursors []int

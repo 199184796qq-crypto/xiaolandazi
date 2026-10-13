@@ -2,6 +2,7 @@ package anchorcycle
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,6 +131,53 @@ func (s *State) CheckP0Voice(text string) error {
 		return errors.New("声音正文P0检查未通过，不调用TTS或复用声音")
 	}
 	return nil
+}
+
+// deleteRepair 程序删词兜底：删除命中的违规词，删后文本非空且再过 P0 通过才返回修复结果。
+// 用于「局部重写耗尽后仍违规」时，替代直接跳过，把违规词直接删掉保住这段话。
+func (s *State) deleteRepair(c Candidate) (string, bool) {
+	if c.P0Report == nil || len(c.P0Report.Hits) == 0 || s.P0PolicyMD == "" {
+		return "", false
+	}
+	text := spokenCandidate(c)
+	runes := []rune(text)
+	hits := append([]contentguard.Hit{}, c.P0Report.Hits...)
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Start > hits[j].Start })
+	for _, h := range hits {
+		if h.Start < 0 || h.End > len(runes) || h.Start >= h.End {
+			continue
+		}
+		runes = append(runes[:h.Start], runes[h.End:]...)
+	}
+	repaired := cleanAfterDelete(string(runes))
+	if repaired == "" {
+		return "", false
+	}
+	p, err := contentguard.Compile(s.P0PolicyMD)
+	if err != nil {
+		return "", false
+	}
+	if r := s.scanP0(p, repaired); !r.Passed {
+		return "", false
+	}
+	return repaired, true
+}
+
+// cleanAfterDelete 清理删词后残留的首部标点/空格。
+func cleanAfterDelete(s string) string {
+	runes := []rune(strings.TrimSpace(s))
+	cut := 0
+	for _, r := range runes {
+		if strings.ContainsRune("，。！？、；： \t\n", r) {
+			cut++
+			continue
+		}
+		break
+	}
+	if cut > 0 {
+		runes = runes[cut:]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func (s *State) rejectP0Candidate(c Candidate) {
