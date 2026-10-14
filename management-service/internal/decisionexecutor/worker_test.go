@@ -162,8 +162,8 @@ func TestAddressingModeUsesMissionScopeWithoutForcingNames(t *testing.T) {
 		})
 	}
 
-	if guidance := addressingGuidance("NONE", ""); !strings.Contains(guidance, "不主动使用称呼") {
-		t.Fatalf("NONE guidance must forbid forced addressing: %s", guidance)
+	if guidance := addressingGuidance("NONE", ""); !strings.Contains(guidance, "不要裸奔") {
+		t.Fatalf("NONE guidance must avoid bare addressing: %s", guidance)
 	}
 	if guidance := addressingGuidance("GROUP", "朋友们"); !strings.Contains(guidance, "不要逐个报名字") {
 		t.Fatalf("GROUP guidance must suppress name listing: %s", guidance)
@@ -267,13 +267,13 @@ func TestBuildAddressingPlanUsesMixedForBatchWelcome(t *testing.T) {
 	if plan.Mode != "MIXED" {
 		t.Fatalf("mode=%q want MIXED, plan=%#v", plan.Mode, plan)
 	}
-	if len(plan.SelectedNames) != 2 || plan.SelectedNames[0] != "小陈" || plan.SelectedNames[1] != "阿芳" {
-		t.Fatalf("selected names=%v want first two playable names", plan.SelectedNames)
+	if len(plan.SelectedNames) != 3 || plan.SelectedNames[0] != "小陈" || plan.SelectedNames[1] != "阿芳" || plan.SelectedNames[2] != "老周" {
+		t.Fatalf("selected names=%v want first three playable names", plan.SelectedNames)
 	}
-	if plan.MaxNamedCount != 2 || plan.GroupLabel != "朋友们" {
+	if plan.MaxNamedCount != 3 || plan.GroupLabel != "朋友们" {
 		t.Fatalf("unexpected addressing bounds: %#v", plan)
 	}
-	if guidance := addressingPlanGuidance(plan); !strings.Contains(guidance, "小陈、阿芳") || !strings.Contains(guidance, "朋友们") {
+	if guidance := addressingPlanGuidance(plan); !strings.Contains(guidance, "小陈、阿芳、老周") || !strings.Contains(guidance, "朋友们") {
 		t.Fatalf("mixed guidance missing selected names/group: %s", guidance)
 	}
 }
