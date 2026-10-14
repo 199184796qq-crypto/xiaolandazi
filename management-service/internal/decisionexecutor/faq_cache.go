@@ -301,6 +301,7 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 }
 
 func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
+	request.Text = interactionTTSText(request.Text)
 	ticket := item.faqCacheTicket
 	if ticket != nil && !w.interactionCacheReuseEnabled(ctx, ticket.TenantID) {
 		ticket = nil
