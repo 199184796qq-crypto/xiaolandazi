@@ -1900,6 +1900,10 @@ export function createLiveVoiceProfile(payload: {
   })
 }
 
+export function getLiveVoiceSettings() {
+  return request<{ custom_model: string; can_design: boolean }>('/api/v1/live/voice-settings')
+}
+
 export function getLiveOfficialVoices(model?: string) {
   return request<{ items: OfficialVoice[]; configured?: boolean }>('/api/v1/live/official-voices' + (model ? '?model=' + encodeURIComponent(model) : ''))
 }

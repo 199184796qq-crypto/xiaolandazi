@@ -92,21 +92,18 @@ func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.resolveActor(w, r); !ok {
 		return
 	}
-	library, valid := voiceLibraryQuery(w, r)
-	if !valid {
+	settings, err := s.store.VoiceModelSettings(r.Context())
+	if err != nil {
+		writeError(w, 500, "读取官方声音配置失败")
 		return
 	}
+	library := settings.OfficialLibrary
 	if library == ttsgateway.TencentPremiumModel {
-		writeJSON(w, http.StatusOK, map[string]any{"items": voicecatalog.TencentPremium(), "configured": ttsgateway.TencentConfigured()})
+		writeJSON(w, http.StatusOK, map[string]any{"items": voicecatalog.CustomerOfficial(library), "configured": ttsgateway.TencentConfigured()})
 		return
 	}
-	items := make([]officialVoice, 0)
-	for _, voice := range officialVoices {
-		if ttsgateway.VoiceLibraryMatches(library, voice.Model) {
-			items = append(items, voice)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	items := voicecatalog.CustomerOfficial(library)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "configured": ttsgateway.QwenConfigFromEnv().APIKey != ""})
 }
 
 type voicePreviewInput struct {
@@ -205,13 +202,8 @@ func (s *Server) liveCloneVoiceProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("自定义声音已达到直播间权限上限（%d 个），请先删除一个已有声音再生成", limit))
 		return
 	}
-	modelName := strings.TrimSpace(input.Model)
-	if modelName == "" {
-		modelName = qwenCloneTTSModel
-	}
-	modelName, err = normalizeVoiceCloneModel(modelName)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	modelName, valid := s.configuredCustomVoiceModel(w, r, input.Model)
+	if !valid {
 		return
 	}
 	input.AvatarKey = strings.TrimSpace(input.AvatarKey)
@@ -392,9 +384,8 @@ func (s *Server) liveCloneVoiceModelBinding(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "声音模型参数格式错误")
 		return
 	}
-	modelName, err := normalizeVoiceCloneModel(input.Model)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	modelName, valid := s.configuredCustomVoiceModel(w, r, input.Model)
+	if !valid {
 		return
 	}
 	profile, err := s.store.GetVoiceProfile(r.Context(), tenantID, profileID)
@@ -471,8 +462,8 @@ func (s *Server) liveVoiceModelBindingPreview(w http.ResponseWriter, r *http.Req
 func (s *Server) cloneVoiceModelBindingForProfile(
 	ctx context.Context, tenantID, userID int64, profile model.VoiceProfile, targetModel string, rate float64,
 ) (model.VoiceModelBinding, error) {
-	if err := validateVoiceLibraryBinding(profile, targetModel); err != nil {
-		return model.VoiceModelBinding{}, err
+	if !ttsgateway.SupportsCloneModel(targetModel) {
+		return model.VoiceModelBinding{}, errors.New("声音配置不可用")
 	}
 	if profile.SampleAssetID == nil || *profile.SampleAssetID <= 0 {
 		return model.VoiceModelBinding{}, errors.New("声音档案缺少人工样本")
@@ -529,7 +520,7 @@ func (s *Server) cloneVoiceModelBindingForProfile(
 	}
 	binding, err := s.store.CreateVoiceModelBinding(ctx, tenantID, userID, model.VoiceModelBindingInput{
 		ProfileID: profile.ID, SampleAssetID: *profile.SampleAssetID, Provider: ttsgateway.ProviderForModel(targetModel),
-		Model: targetModel, VoiceID: voiceID, Rate: rate, Status: "ready", Config: map[string]any{"source": "customer_voice_clone"},
+		Model: targetModel, VoiceID: voiceID, Rate: rate, Status: "ready", Config: map[string]any{"source": "customer_voice_clone", "sample_recloned": true},
 	})
 	if err != nil {
 		return model.VoiceModelBinding{}, err
@@ -604,7 +595,7 @@ func (s *Server) archiveGeneratedVoice(
 		return 0, 0, fmt.Errorf("媒体存储尚未初始化")
 	}
 	providerURL = strings.TrimSpace(providerURL)
- defer ttsgateway.ReleaseTemporaryAudio(providerURL)
+	defer ttsgateway.ReleaseTemporaryAudio(providerURL)
 	if providerURL == "" {
 		return 0, 0, fmt.Errorf("声音地址为空")
 	}

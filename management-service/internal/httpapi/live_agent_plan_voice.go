@@ -444,7 +444,7 @@ func resolveSelectedCloneVoice(profile model.VoiceProfile, input fullShowVariant
 		if modelName != "" && modelName != binding.Model {
 			continue
 		}
-		if validateVoiceLibraryBinding(profile, binding.Model) != nil {
+		if validateReclonedVoiceBinding(profile, binding) != nil {
 			continue
 		}
 		return binding.VoiceID, binding.Model, nil
@@ -507,7 +507,7 @@ func splitFullShowVoiceText(text string) []string {
 }
 
 func downloadGeneratedVoiceWAV(ctx context.Context, audioURL string) ([]byte, error) {
- defer ttsgateway.ReleaseTemporaryAudio(audioURL)
+	defer ttsgateway.ReleaseTemporaryAudio(audioURL)
 	audioURL = strings.TrimSpace(audioURL)
 	if audioURL == "" {
 		return nil, errors.New("声音地址为空")

@@ -2,6 +2,28 @@ package voicecatalog
 
 import "testing"
 
+func TestCustomerOfficialVoicesExcludeForeignAndChildren(t *testing.T) {
+	items := CustomerOfficial("tencent-premium")
+	if len(items) != 11 {
+		t.Fatal("incorrect adult catalogue", len(items))
+	}
+	for _, v := range items {
+		for _, tag := range v.Tags {
+			if tag == "童声" || tag == "英文" {
+				t.Fatal("unwanted voice exposed", v)
+			}
+		}
+		if v.Gender != "男声" && v.Gender != "女声" {
+			t.Fatal("unexpected voice category", v)
+		}
+	}
+	for _, id := range []string{"101015", "101016", "101050"} {
+		if _, ok := Find(id); !ok {
+			t.Fatal("saved voice compatibility lost", id)
+		}
+	}
+}
+
 func TestTencentPremiumCatalogueKeepsLegacyVoices(t *testing.T) {
 	seen := map[string]bool{}
 	for _, v := range TencentPremium() {

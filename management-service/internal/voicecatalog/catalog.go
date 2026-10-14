@@ -43,6 +43,23 @@ func TencentPremium() []Voice {
 	return items
 }
 
+// Keep the complete registry for saved voices, while the customer chooser only
+// offers adult Chinese voices. Hiding a voice never rewrites a running snapshot.
+func CustomerOfficial(library string) []Voice {
+	items := Official()
+	if library == "tencent-premium" {
+		items = TencentPremium()
+	}
+	result := make([]Voice, 0, len(items))
+	for _, v := range items {
+		if v.ID == "101015" || v.ID == "101016" || v.ID == "101050" {
+			continue
+		}
+		result = append(result, v)
+	}
+	return result
+}
+
 var official = []Voice{
 	{ID: "longanlingxin", Name: "龙安灵心", Gender: "女声", Description: "知心温暖、自然亲切", Tags: []string{"温暖", "亲切", "直播默认"}, Model: SystemTTSModel},
 	{ID: "longanlufeng", Name: "龙安鲁风", Gender: "男声", Description: "明亮开朗、自然有活力", Tags: []string{"明亮", "活力"}, Model: SystemTTSModel},

@@ -66,6 +66,7 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 	}
 
 	settings := []seededSystemSetting{
+		{Key: VoiceModelSetting, Group: "intelligence", Label: "声音模型配置", Value: `{"custom_model":"cosyvoice-v3.5-flash","official_library":"tencent-premium","revision":0}`, InputType: "json", SortOrder: 6},
 		{Key: AnchorGenerationSetting, Group: "intelligence", Label: "主播生成模型与阿里会话配置", Value: "{}", InputType: "json", SortOrder: 5},
 		{Key: AnchorVoiceCacheRetentionSetting, Group: "liveops", Label: "OSS声音缓存保留（小时）", Value: "5", InputType: "number", SortOrder: 10},
 		{Key: model.MainlineGenerationCacheReuseSetting, Group: "liveops", Label: "主线话术与声音成品缓存复用", Value: "true", InputType: "boolean", SortOrder: 11},
@@ -217,6 +218,9 @@ func (s *Store) UpdateSystemSettings(
 	actorUserID int64,
 ) error {
 	for _, update := range updates {
+		if strings.TrimSpace(update.Key) == VoiceModelSetting {
+			return errors.New("声音模型请使用专用配置面板保存")
+		}
 		if strings.TrimSpace(update.Key) == AnchorVoiceCacheRetentionSetting {
 			if _, err := ParseAnchorVoiceCacheHours(update.Value); err != nil {
 				return err

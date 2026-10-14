@@ -44,6 +44,18 @@ func validateVoiceLibraryBinding(profile model.VoiceProfile, target string) erro
 	return nil
 }
 
+// A provider-issued ID cannot be reassigned to another engine. Cross-engine
+// compatibility exists only for an actual, server-created clone of the sample.
+func validateReclonedVoiceBinding(profile model.VoiceProfile, binding model.VoiceModelBinding) error {
+	if err := validateVoiceLibraryBinding(profile, binding.Model); err != nil {
+		verified, _ := binding.Config["sample_recloned"].(bool)
+		if !verified || profile.SampleAssetID == nil || binding.SampleAssetID != *profile.SampleAssetID || binding.VoiceID == profile.VoiceID || binding.Provider != ttsgateway.ProviderForModel(binding.Model) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) liveDesignVoiceProfile(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -65,8 +77,13 @@ func (s *Server) liveDesignVoiceProfile(w http.ResponseWriter, r *http.Request) 
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
+	configuredModel, valid := s.configuredCustomVoiceModel(w, r, input.Model)
+	if !valid {
+		return
+	}
+	input.Model = configuredModel
 	if input.Name == "" || len([]rune(input.Name)) > 80 || !ttsgateway.IsCosyVoiceModel(input.Model) || input.Description == "" || ttsgateway.CharacterCount(input.Description) > 500 {
-		writeError(w, 400, "请填写声音名称、500字符以内的声音描述，并选择CosyVoice 3.5模型")
+		writeError(w, 400, "请填写声音名称和500字符以内的声音描述；当前声音配置需支持描述生成")
 		return
 	}
 	if input.AvatarKey == "" {

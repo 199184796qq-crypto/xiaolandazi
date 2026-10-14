@@ -256,6 +256,9 @@ func shouldAuditRequest(method string, path string) bool {
 }
 
 func auditAction(method string, path string) string {
+	if method == http.MethodPut && path == "/api/v1/system/voice-models" {
+		return "system.voice_models.update"
+	}
 	if isMutationMethod(method) {
 		switch {
 		case strings.HasPrefix(path, "/api/v1/liveops/user-voice-cache-policies/"):

@@ -105,6 +105,15 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
             superAdminOnly: true,
           },
           {
+            key: 'voice-models',
+            title: '声音模型配置',
+            description: '统一设置自定义声音模型与官方声音库，用户只选择声音。',
+            icon: '音',
+            to: '/system/settings/intelligence/voice-models',
+            badge: '声音',
+            superAdminOnly: true,
+          },
+          {
             key: 'live-analysis',
             title: '直播录音分析',
             description: '配置录音分析使用的模型、提示词版本和启用状态。',

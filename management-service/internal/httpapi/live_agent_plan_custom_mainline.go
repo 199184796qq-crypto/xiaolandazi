@@ -20,6 +20,7 @@ import (
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/speechasr"
 	assetstorage "livecompanion/management/internal/storage"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 const (
@@ -294,7 +295,12 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			cloneContentType = "audio/wav"
 		}
 	}
-	if len(cloneRaw) > 0 {
+	voiceConfig, configErr := s.store.VoiceModelSettings(r.Context())
+	if configErr != nil {
+		response.CloneError = "读取声音配置失败，录音主线已保存，请稍后重新生成声音"
+	}
+	if len(cloneRaw) > 0 && configErr == nil {
+		cloneModel := voiceConfig.CustomModel
 		preferredName := fmt.Sprintf("v%d%d", actor.UserID%10000, time.Now().Unix()%100000000)
 		dataURI := "data:" + cloneContentType + ";base64," + base64.StdEncoding.EncodeToString(cloneRaw)
 		tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, actor.UserID, time.Now().UnixNano())
@@ -309,7 +315,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		}
 		var voiceID string
 		if cloneErr == nil {
-			voiceID, cloneErr = cloneVoiceProfile(r.Context(), preferredName, sampleURL, dataURI, qwenCloneTTSModel)
+			voiceID, cloneErr = cloneVoiceProfile(r.Context(), preferredName, sampleURL, dataURI, cloneModel)
 		}
 		if cloneErr != nil {
 			response.CloneError = cloneErr.Error()
@@ -317,12 +323,12 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			profileName := strings.TrimSuffix(sourceNames[0], filepath.Ext(sourceNames[0])) + " · 自定义音色"
 			profile, saveErr := s.store.SaveVoiceProfile(r.Context(), tenantID, actor.UserID, 0, model.VoiceProfileInput{
 				Name:          profileName,
-				Provider:      "aliyun_qwen_clone",
+				Provider:      ttsgateway.ProviderForModel(cloneModel),
 				VoiceID:       voiceID,
 				SampleAssetID: &asset.ID,
 				CloneStatus:   "ready",
 				Config: map[string]any{
-					"target_model": qwenCloneTTSModel,
+					"target_model": cloneModel,
 					"source":       "custom_mainline_auto_clone",
 				},
 			})
@@ -330,8 +336,8 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 				response.CloneError = saveErr.Error()
 			} else {
 				binding, bindingErr := s.store.CreateVoiceModelBinding(r.Context(), tenantID, actor.UserID, model.VoiceModelBindingInput{
-					ProfileID: profile.ID, SampleAssetID: asset.ID, Provider: "qwen_audio",
-					Model: qwenCloneTTSModel, VoiceID: profile.VoiceID, Rate: 1, Status: "ready",
+					ProfileID: profile.ID, SampleAssetID: asset.ID, Provider: ttsgateway.ProviderForModel(cloneModel),
+					Model: cloneModel, VoiceID: profile.VoiceID, Rate: 1, Status: "ready",
 					Config: map[string]any{"source": "custom_mainline_auto_clone"},
 				})
 				if bindingErr != nil {
@@ -346,7 +352,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 						VoiceID:   profile.VoiceID,
 						ProfileID: profile.ID,
 						BindingID: binding.ID,
-						Model:     qwenCloneTTSModel,
+						Model:     cloneModel,
 						Rate:      1,
 					}
 					response.VoiceIdentity = &identity

@@ -264,6 +264,12 @@ export const router = createRouter({
       meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
     },
     {
+      path: '/system/settings/intelligence/voice-models',
+      name: 'system-voice-models',
+      component: () => import('./views/VoiceModelsSettingsView.vue'),
+      meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
+    },
+    {
       path: '/system/settings/live/anchor-recommendations',
       name: 'system-anchor-recommendations',
       component: () => import('./views/AnchorRecommendationsAdminView.vue'),
