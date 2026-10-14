@@ -260,6 +260,10 @@ const lastFactMode = ref<PlanFactMode>('products')
 const planActionsMenu = ref<HTMLDetailsElement | null>(null)
 watch(activeMode, mode => { if (isPlanFactMode(mode)) lastFactMode.value = mode })
 function closePlanActionsMenu() { if (planActionsMenu.value) planActionsMenu.value.open = false }
+function dismissPlanActionsMenu(event: MouseEvent) {
+  const menu = planActionsMenu.value
+  if (menu?.open && !event.composedPath().includes(menu)) closePlanActionsMenu()
+}
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
   selectPlanConfigurationMode(section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
 }
@@ -5994,6 +5998,7 @@ watch(
 const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentRoomPlanId)
 
 onMounted(async () => {
+  document.addEventListener('click', dismissPlanActionsMenu, true)
   window.addEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   window.addEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
@@ -6011,6 +6016,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('click', dismissPlanActionsMenu, true)
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   window.removeEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   contentModeDisposed = true
