@@ -249,6 +249,7 @@ func (s *Store) PersistBatch(ctx context.Context, items []model.RoomEvent) error
 	pipe.LTrim(ctx, eventsKey(roomID), 0, s.limit-1)
 	pipe.Expire(ctx, eventsKey(roomID), eventCacheTTL)
 	s.persistExtraChannels(ctx, pipe, items, values)
+	s.persistUserDimension(ctx, pipe, items)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -265,8 +266,14 @@ func (s *Store) ClearRoom(ctx context.Context, roomID int64) error {
 	if s.redis == nil {
 		return nil
 	}
-	keys := []string{eventsKey(roomID), sequenceKey(roomID), agentModeKey(roomID)}
+	keys := []string{eventsKey(roomID), sequenceKey(roomID), agentModeKey(roomID), roomUsersKey(roomID)}
 	keys = append(keys, s.extraRedisKeys(roomID)...)
+	// 用户维度：先取房间内所有 userID，再逐个 DEL 其 Hash。
+	if userIDs, err := s.redis.ZRange(ctx, roomUsersKey(roomID), 0, -1).Result(); err == nil {
+		for _, uid := range userIDs {
+			keys = append(keys, userKey(roomID, uid))
+		}
+	}
 	return s.redis.Del(ctx, keys...).Err()
 }
 
