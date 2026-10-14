@@ -1503,12 +1503,13 @@ func (w *Worker) sweepMissionLifecycle(ctx context.Context) {
 
 type coreSpeechRuntimeSnapshot struct {
 	Interrupt struct {
-		Status         string `json:"status"`
-		DecisionID     string `json:"decision_id"`
-		MissionID      string `json:"mission_id"`
-		ResumeStrategy string `json:"resume_strategy"`
-		BridgeText     string `json:"bridge_text"`
-		BridgeUsed     bool   `json:"bridge_used"`
+		Status         string     `json:"status"`
+		DecisionID     string     `json:"decision_id"`
+		MissionID      string     `json:"mission_id"`
+		ResumeStrategy string     `json:"resume_strategy"`
+		BridgeText     string     `json:"bridge_text"`
+		BridgeUsed     bool       `json:"bridge_used"`
+		StartedAt      *time.Time `json:"started_at"`
 	} `json:"interrupt"`
 }
 
@@ -1571,6 +1572,9 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 		return
 	}
 	item := &decisionItem{ID: target.DecisionID, MissionID: target.ID}
+	if target.RuntimeSessionID == session.ID {
+		w.archiveSessionPlayback(ctx, session, snapshot)
+	}
 	w.updateMission(item, func(m *speechmission.Mission) {
 		if value := strings.TrimSpace(snapshot.Interrupt.ResumeStrategy); value != "" {
 			m.Resume.Strategy = value
@@ -1839,6 +1843,7 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		m.Resume.DuplicateScore = dispatchResult.DuplicateScore
 	})
 	w.transitionMission(item, speechmission.StateDispatched, "core_dispatched", dispatchResult.traceNote())
+	w.archiveSessionAudio(ctx, session, "reply:"+item.ID, "interaction", text, audioURL, dispatchResult.Task.DurationMS)
 	if mission, ok := w.missionSnapshot(item); ok {
 		w.recordUsedAddressingNames(session.RoomID, mission.Addressing.SelectedNames, text, mission.Addressing.OriginalSelectedNames)
 	}

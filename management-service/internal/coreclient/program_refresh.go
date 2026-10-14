@@ -61,6 +61,15 @@ type ProgramRefreshInput struct {
 }
 
 type ProgramRefreshSnapshot struct {
+	TrackID      string                `json:"track_id"`
+	TrackText    string                `json:"track_text"`
+	FutureWindow []ProgramRefreshTrack `json:"future_window"`
+	Task         struct {
+		SessionID  string     `json:"session_id"`
+		AudioURL   string     `json:"audio_url"`
+		DurationMS int        `json:"duration_ms"`
+		StartedAt  *time.Time `json:"started_at"`
+	} `json:"task"`
 	MainlinePlayedMS         int64                              `json:"mainline_played_ms,omitempty"`
 	PlaybackReceipts         []anchorcycle.PlaybackReceipt      `json:"playback_receipts,omitempty"`
 	MainlinePlaybackReceipts []anchorcycle.AnglePlaybackReceipt `json:"mainline_playback_receipts,omitempty"`

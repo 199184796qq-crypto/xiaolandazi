@@ -264,5 +264,6 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		return nil
 	}
 	log.Printf("bridge staged room=%d decision=%s type=%s model=%s text=%q", session.RoomID, item.ID, bridge.Type, profile.Model, bridge.Text)
+	w.archiveSessionAudio(ctx, session, "bridge:"+item.ID, "bridge", bridge.Text, audio.AudioURL, 0)
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -138,6 +139,44 @@ func (s *RedisStore) Lookup(ctx context.Context, group string) ([]Entry, error) 
 		}
 	}
 	return result, nil
+}
+
+// Reads an immutable output for download history, without authorizing reuse.
+func (s *RedisStore) FindCandidate(ctx context.Context, tenant int64, candidate string) (model.LiveAgentPlanVersionVariant, bool) {
+	var cursor uint64
+	visited := 0
+	for {
+		values, next, err := s.client.HScan(ctx, s.prefix+"cleanup", cursor, "", 128).Result()
+		if err != nil {
+			return model.LiveAgentPlanVersionVariant{}, false
+		}
+		for i := 1; i < len(values); i += 2 {
+			visited++
+			var e Entry
+			if json.Unmarshal([]byte(values[i]), &e) != nil || e.TenantID != tenant || s.validate(e) != nil {
+				continue
+			}
+			matched := false
+			for _, segment := range e.Bundle.Timeline {
+				if strings.HasPrefix(segment.SegmentID, "test-"+candidate+"-") {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			raw, err := s.client.Get(ctx, s.prefix+"entry:"+e.ID).Bytes()
+			if err != nil || json.Unmarshal(raw, &e) != nil || e.TenantID != tenant || !time.Now().Before(e.ExpiresAt) {
+				continue
+			}
+			return e.Bundle, true
+		}
+		cursor = next
+		if cursor == 0 || visited >= 4096 {
+			return model.LiveAgentPlanVersionVariant{}, false
+		}
+	}
 }
 
 func (s *RedisStore) Due(ctx context.Context, limit int) ([]Entry, error) {

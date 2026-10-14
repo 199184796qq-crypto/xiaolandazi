@@ -76,6 +76,7 @@ type Server struct {
 	cycleCancels          cycleCancels
 	previewStreams        previewStreams
 	anchorProducerContext context.Context
+	sessionArchiveWatches sync.Map
 }
 
 func New(
@@ -440,6 +441,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/generated-speeches", s.listRoomGeneratedSpeeches)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-downloads", s.sessionDownloads)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-downloads/{assetID}/audio", s.downloadSessionAudio)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/agent-decisions", s.getRoomAgentDecisions)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-voice/transcribe", s.transcribeRoomAgentVoice)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/simulate", s.simulateRoomAgentDecision)
