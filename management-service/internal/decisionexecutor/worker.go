@@ -629,6 +629,15 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	if len(addressPool) == 0 && candidate == "" {
 		addressPool = neutralAddressTerms
 	}
+	// 主力称呼加权：anchorTerms[0] 是主播风格的主力称呼（anchorStyleAddressTerms 放最前），
+	// 重复多次让它被 hash 选中的概率占主导，辅助/候选称呼只做低频变化，保住主播人设。
+	if len(anchorTerms) > 0 {
+		if main := strings.TrimSpace(anchorTerms[0]); main != "" && !addressingTermBlocked(main, blockedTerms) {
+			for i := 0; i < 5; i++ {
+				addressPool = append(addressPool, main)
+			}
+		}
+	}
 	if preferred := choosePreferredAddressingTerm(addressPool, blockedTerms, item.ID); preferred != "" {
 		candidate = preferred
 		key = "preferred"

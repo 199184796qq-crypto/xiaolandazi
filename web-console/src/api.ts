@@ -688,6 +688,8 @@ export function enqueueRoomManualAgentDecision(
     reply_hint?: string
     event_id?: number
     user_id?: string
+    nickname?: string
+    nicknames?: string[]
     force_reopen?: boolean
     manual_action?: 'answer' | 'quick'
     manual_origin?: 'agent_input' | 'agent_input_preview' | 'question_cluster' | 'test_simulation'

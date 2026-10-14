@@ -144,9 +144,11 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 		Title         string `json:"title"`
 		Summary       string `json:"summary"`
 		ReplyHint     string `json:"reply_hint"`
-		EventID       int64  `json:"event_id"`
-		UserID        string `json:"user_id"`
-		ForceReopen   bool   `json:"force_reopen"`
+		EventID       int64    `json:"event_id"`
+		UserID        string   `json:"user_id"`
+		Nickname      string   `json:"nickname"`
+		Nicknames     []string `json:"nicknames"`
+		ForceReopen   bool     `json:"force_reopen"`
 		ManualAction  string `json:"manual_action"`
 		ManualOrigin  string `json:"manual_origin"`
 		ExecutionMode string `json:"execution_mode"`
@@ -159,6 +161,10 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 	}
 	input.Question = strings.TrimSpace(input.Question)
 	input.Topic = strings.TrimSpace(input.Topic)
+	input.Nickname = strings.TrimSpace(input.Nickname)
+	if input.Nickname != "" {
+		input.Nicknames = append([]string{input.Nickname}, input.Nicknames...)
+	}
 	input.ManualAction = strings.ToLower(strings.TrimSpace(input.ManualAction))
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
 	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))

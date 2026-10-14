@@ -3826,6 +3826,7 @@ async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAc
         : '人工从实时公屏加入待打断队列，由监控Agent安排回答时机',
       event_id: event.id,
       user_id: event.user_id,
+      nickname: event.nickname || '',
       force_reopen: action === 'quick',
       manual_action: action,
     })
@@ -3895,6 +3896,7 @@ async function submitQuestionDecision(
         : '人工对这一条观众问题发起回答，只回答当前这一条，不合并整个问题聚类',
       event_id: question.EventID,
       user_id: question.UserID,
+      nickname: question.Nickname || '',
       force_reopen: action === 'quick',
       manual_action: action,
     })
