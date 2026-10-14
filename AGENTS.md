@@ -146,3 +146,11 @@
 - 11项既有清单/对话回归、生产构建及完整父级桌面/手机验证通过，页面与卡片无水平溢出，未提交输入保留。仅更新两个入口HTML和新增资源，1620个原有非入口文件、运行服务及Nginx一致，保留已原地更新的管理二进制及主播提示词。
 - 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1280个前端文件逐项匹配服务器。验证见 `work/supplement-list-font-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-checklist-font.md`；后续继续继承当时实际current。
 
+## 更多菜单外部点击收起（2026-10-14 已上线）
+
+- 当前前端已于北京时间10:46更新为 `/opt/xiaolan/releases/20261014-strategy-more-dismiss-ef6a888`，源码ef6a888，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 更多菜单打开后，点击菜单外部自动收起；捕获阶段监听兼容其它区域阻止冒泡的点击，菜单内操作与删除二次确认保留。页面卸载移除监听，重新进入仍正常。
+- 完整LiveStrategyView合成数据桌面/手机交互、页面卸载及重新进入验证通过，14项既有导航/清单/对话回归和生产构建通过。仅更新两个入口和新增资源，1659个原有非入口文件、运行服务、手机端及Nginx一致。
+- 首次发布前守卫发现管理二进制和主播提示词并行原地更新，未切换；前端哈希未变，重新核对实际基线后继承管理进程795036与新提示词发布。不能用历史二进制或提示词覆盖回旧版。
+- 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1316个前端文件逐项匹配服务器。验证见 `work/strategy-more-dismiss-proof/production-verification.json`，说明见主线 `docs/2026-10-14-strategy-more-menu-dismiss.md`；后续继续继承当时实际current。
+
