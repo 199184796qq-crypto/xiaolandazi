@@ -49,7 +49,15 @@ async function voice(id: number) {
   try {
     await downloadSessionFile(`/api/v1/rooms/${props.roomId}/live-downloads/${id}/audio?session_id=${data.value.session_id}`, `直播声音_${data.value.session_id}_${id}.wav`, downloadController.signal)
     if (!downloadController.signal.aborted) notice.value = '声音文件已下载'
-  } catch (cause) { if (!downloadController.signal.aborted) error.value = cause instanceof Error ? cause.message : '声音下载失败' }
+  } catch (cause) {
+    if (!downloadController.signal.aborted) {
+      error.value = cause instanceof Error ? cause.message : '声音下载失败'
+      if ((cause as { status?: number })?.status === 410) {
+        const item = data.value?.items.find(item => item.id === id)
+        if (item) item.available = false
+      }
+    }
+  }
   finally { voiceBusy.value = null }
 }
 function keydown(event: KeyboardEvent) {
@@ -76,7 +84,7 @@ onBeforeUnmount(() => { ++revision; requestController?.abort(); downloadControll
           <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" class="notice" role="status">{{ notice }}</p>
           <p v-if="loading" class="empty" role="status">正在读取声音列表…</p>
           <div v-else-if="data?.items.length" class="voice-list"><article v-for="item in data.items" :key="item.id" class="voice-item"><div class="voice-copy"><div class="meta"><span>{{ labels[item.kind] || '直播声音' }}</span><time>{{ time(item.played_at) }}</time><small v-if="item.duration_ms">{{ (item.duration_ms / 1000).toFixed(1) }} 秒</small></div><p>{{ item.text }}</p></div><button :disabled="!item.available || voiceBusy !== null" @click="voice(item.id)">{{ !item.available ? '音频已到期' : voiceBusy === item.id ? '下载中…' : '下载声音' }}</button></article></div>
-          <p v-else-if="!error" class="empty">{{ from || to ? '这个时间段没有已播放的声音' : '本场还没有已播放的声音记录' }}</p>
+          <p v-else-if="!error" class="empty">{{ from || to ? '这个时间段没有已播放的声音' : '本场还没有已播放的声音记录。功能上线前已结束的场次无法补齐。' }}</p>
           <nav v-if="pages > 1" aria-label="声音列表分页"><button :disabled="page <= 1 || loading" @click="load(page - 1)">上一页</button><span>{{ page }} / {{ pages }}</span><button :disabled="page >= pages || loading" @click="load(page + 1)">下一页</button></nav>
         </section>
       </div>

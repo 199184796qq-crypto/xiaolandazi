@@ -36,7 +36,15 @@ func (s *Server) sessionDownloadScope(w http.ResponseWriter, r *http.Request) (m
 	if !ok {
 		return model.LiveRuntimeSession{}, false
 	}
-	id, _ := strconv.ParseInt(r.URL.Query().Get("session_id"), 10, 64)
+	id := int64(0)
+	if raw := r.URL.Query().Get("session_id"); raw != "" {
+		var err error
+		id, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			writeError(w, 400, "无效的直播场次")
+			return model.LiveRuntimeSession{}, false
+		}
+	}
 	session, err := s.store.GetGeneratedSpeechHistorySession(r.Context(), tenant, room, id)
 	if err != nil {
 		writeError(w, 404, "本场还没有直播记录")

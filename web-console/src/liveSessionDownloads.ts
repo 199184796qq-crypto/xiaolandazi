@@ -26,7 +26,7 @@ export async function downloadSessionFile(url: string, filename: string, signal?
   const response = await fetch(url, { credentials: 'include', headers, signal })
   if (!response.ok) {
     const error = await response.json().catch(() => ({})) as { error?: string }
-    throw new Error(error.error || '下载失败，请重试')
+	throw Object.assign(new Error(error.error || '下载失败，请重试'), { status: response.status })
   }
   const blob = await response.blob()
   if (signal?.aborted) return
