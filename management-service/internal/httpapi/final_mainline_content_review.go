@@ -15,12 +15,19 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 		return nil, e
 	}
 	facts, guidance := generationMaterialViews(state.HookFacts())
-	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "当前相关事实": facts, "相关事实的表达约束及举例": guidance, "用户已确认要求": state.EffectiveCorrections(), "前次P0审核结果": priorP0ReviewView(state, c)}
+	// 稳定事实包（本场直播不变）单独放一条 system，命中上下文缓存、省输入费。
+	factsPacket := map[string]any{"当前相关事实": facts, "相关事实的表达约束及举例": guidance, "用户已确认要求": state.EffectiveCorrections()}
 	if scope := state.Task().FactScope; scope != nil {
 		boundary, boundaryGuidance := generationMaterialViews(scope.ProductBoundary)
-		packet["商品必要事实与适用边界"] = boundary
-		packet["商品必要事实的表达约束"] = boundaryGuidance
+		factsPacket["商品必要事实与适用边界"] = boundary
+		factsPacket["商品必要事实的表达约束"] = boundaryGuidance
 	}
+	factsRaw, e := json.Marshal(factsPacket)
+	if e != nil {
+		return nil, e
+	}
+
+	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "前次P0审核结果": priorP0ReviewView(state, c)}
 	if state.Task().ProductMode == "lecture" {
 		packet["本次讲解资料"] = state.Task().LectureFacts
 	}
@@ -39,6 +46,7 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	messages = append(messages,
 		agentgateway.Message{Role: "system", Content: string(p0)},
 		agentgateway.Message{Role: "system", Content: mother},
+		agentgateway.Message{Role: "system", Content: string(factsRaw)},
 		agentgateway.Message{Role: "user", Content: string(raw)},
 	)
 	return messages, nil

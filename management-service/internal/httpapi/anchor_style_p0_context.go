@@ -23,11 +23,17 @@ func cycleP0ContextMessages(state *anchorcycle.State, candidate anchorcycle.Cand
 	if err != nil {
 		return nil, err
 	}
-	packet, err := json.Marshal(map[string]any{"正文": cycleVoiceText(candidate), "范围": state.Config.ComplianceScope, "确认事实": state.ProductFacts(state.Task()), "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "待核对规则内容": items})
+	// 稳定内容（范围/确认事实/有效P0 整场不变）挪进 system 作缓存前缀；
+	// 变化内容（正文/命中规则）留在 user。配合 CacheSystemPrompt 让 DashScope 前缀缓存 system。
+	stable, err := json.Marshal(map[string]any{"范围": state.Config.ComplianceScope, "确认事实": state.ProductFacts(state.Task()), "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)})
 	if err != nil {
 		return nil, err
 	}
-	return []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(packet)}}, nil
+	packet, err := json.Marshal(map[string]any{"正文": cycleVoiceText(candidate), "待核对规则内容": items})
+	if err != nil {
+		return nil, err
+	}
+	return []agentgateway.Message{{Role: "system", Content: mother + "\n\n" + string(stable)}, {Role: "user", Content: string(packet)}}, nil
 }
 
 // This is the sole final-text review, only for rules explicitly marked semantic.

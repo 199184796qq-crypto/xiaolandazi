@@ -591,6 +591,11 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.P0RewritesUsed++
 	}
 	if c.P0Report != nil && !c.P0Report.Passed {
+		// 局部重写格式错误（模型未返回合法 replacements JSON）时，重写本身已失败，
+		// 不消耗重写预算反复重试（会拖长主线断供），直接按「耗尽」处理：删词兜底，删不掉跳过本段。
+		if c.P0PatchError != "" {
+			s.P0RewritesUsed = s.P0MaxRewrites
+		}
 		// 局部重写已耗尽仍违规：先尝试程序删词兜底（替代直接跳过该段）。
 		if s.P0RewritesUsed >= s.P0MaxRewrites {
 			if repaired, ok := s.deleteRepair(c); ok {
@@ -622,6 +627,13 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		return false, nil
 	}
 	if !s.FinalContentCandidateApproved(c) {
+		audit := c.FinalContentAudit
+		// 审核模型明确判违规（有问题）→ 先局部重写换说法，重写耗尽才跳过。
+		// 回执失效/技术错误（Decision 为空、Error 非空）保持跳过，由审核链路单独处理。
+		if audit != nil && audit.Error == "" && audit.Decision == "有问题" && s.P0RewritesUsed < s.P0MaxRewrites {
+			s.rejectReviewCandidate(c, audit.Reason)
+			return false, nil
+		}
 		s.Attempts = append(s.Attempts, c)
 		s.SkipGeneration("final_content_review", "最终文字事实与要求审核未通过或回执失效")
 		return false, nil

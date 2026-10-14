@@ -1212,7 +1212,7 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 		}
 		request := agentgateway.Request{
 			Stage: stage, Model: profile.Model, Messages: actual, MaxTokens: min(maxTokens, profile.MaxTokens),
-			EnableThinking: false, ResponseFormat: format, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond,
+			EnableThinking: false, ResponseFormat: format, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond,
 		}
 		var prepareErr error
 		request, prepareErr = agentgateway.PrepareTextRequest(*profile, request)

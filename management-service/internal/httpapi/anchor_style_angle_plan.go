@@ -117,20 +117,17 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	}
 	usage.LastAttemptAt = usage.Plays
 	facts := state.HookFacts()
-	// The wire payload contains content and business link labels only. Program
-	// identifiers and source relationships stay in the archived source binding.
-	contentFacts, expressionGuidance := generationMaterialViews(facts)
+	// 方向规划只需要"有哪些真实事实主题"来避免编造方向，不需要 P0 规则、
+	// 表达约束或商品边界——这些约束最终话术、不约束切入方向，且方向生成后
+	// 还有程序硬拦（filterAngleDirectionBoundaryViolations）+ 审核复核
+	// （reviewCycleAngleDirections）兜底。只保留精简事实，单次输入省约 76% token。
+	contentFacts, _ := generationMaterialViews(facts)
 	task := state.Task()
-	input := map[string]any{"卖点": task.SellingPoint, "角度": task.Angle, "观众顾虑": task.PainPoint, "本次商品链接": state.HookProducts(), "当前有效事实": contentFacts, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "方向数量上限": 4}
-	if len(expressionGuidance) > 0 {
-		input["表达约束与正向示例"] = expressionGuidance
-	}
-	input["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
-	if task.FactScope != nil {
-		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)
-		input["商品必要事实与使用边界（约束推演，不更换当前任务）"] = boundary
-		input["商品必要事实的表达约束（不是新增事实）"] = guidance
-	}
+	// 稳定事实包（本场直播不变）单独放一条 system，命中上下文缓存、省输入费。
+	factsPacket := map[string]any{"当前有效事实": contentFacts}
+	factsRaw, _ := json.Marshal(factsPacket)
+
+	input := map[string]any{"卖点": task.SellingPoint, "角度": task.Angle, "观众顾虑": task.PainPoint, "本次商品链接": state.HookProducts(), "方向数量上限": 4}
 	if previous != nil {
 		old := []string{}
 		// Long-lived assets keep every generation. Only the latest directions
@@ -145,7 +142,7 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 	}
 	packet, _ := json.Marshal(input)
 	source := map[string]any{"task": task, "facts": facts, "products": state.HookProducts(), "source_sha": key, "prompt_sha": state.AnglePlanMotherSHA}
-	request := agentgateway.Request{Stage: "mainline_angle_plan", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(packet)}}, MaxTokens: 1400, ResponseFormat: agentgateway.ResponseText, EnableThinking: false, Timeout: 15 * time.Second}
+	request := agentgateway.Request{Stage: "mainline_angle_plan", Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: mother}, {Role: "system", Content: string(factsRaw)}, {Role: "user", Content: string(packet)}}, MaxTokens: 1400, ResponseFormat: agentgateway.ResponseText, EnableThinking: false, Timeout: 15 * time.Second}
 	if profile.SystemPrompt != "" {
 		request.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, request.Messages...)
 	}

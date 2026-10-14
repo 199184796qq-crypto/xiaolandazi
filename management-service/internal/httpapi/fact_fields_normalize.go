@@ -18,22 +18,39 @@ import (
 )
 
 type normalizedFactFields struct {
-	Fact      *string `json:"fact_value"`
-	Forbidden *string `json:"forbidden_wording"`
-	Example   *string `json:"safe_rewrite"`
-	Question  *string `json:"question"`
+	Fact       *string `json:"fact_value"`
+	MustSay    *string `json:"must_say"`
+	CanSay     *string `json:"can_say"`
+	Rewrite    *string `json:"rewrite"`
+	NotMention *string `json:"not_mention"`
+	Question   *string `json:"question"`
+}
+
+// fourLayerSection 把模型返回的四层结构组装成存储字段：
+// 正向两层（必说/可说）进 safe_rewrite，负向两层（改写/不提）进 forbidden_wording，
+// 每层带【标题】对齐四层结构，前端展开详情按标题分块展示。
+func fourLayerSection(parts ...[2]string) string {
+	sections := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if content := strings.TrimSpace(p[1]); content != "" {
+			sections = append(sections, "【"+p[0]+"】"+content)
+		}
+	}
+	return strings.Join(sections, "\n")
 }
 
 func parseNormalizedFactFields(raw string, original model.LiveAgentPlanFactCandidate) (model.LiveAgentPlanFactCandidate, error) {
 	var fields normalizedFactFields
-	if err := decodeLectureContent(raw, &fields); err != nil || fields.Fact == nil || fields.Forbidden == nil || fields.Example == nil || fields.Question == nil {
-		return original, errors.New("三栏整理结果不完整，未保存，请重试")
+	if err := decodeLectureContent(raw, &fields); err != nil || fields.Fact == nil || fields.MustSay == nil || fields.CanSay == nil || fields.Rewrite == nil || fields.NotMention == nil || fields.Question == nil {
+		return original, errors.New("四层整理结果不完整，未保存，请重试")
 	}
 	if question := strings.TrimSpace(*fields.Question); question != "" {
 		return original, fmt.Errorf("请补充或修改后保存：%s", question)
 	}
 	next := original // The program retains names, categories, provenance and relations.
-	next.Value, next.ForbiddenWording, next.SafeRewrite = strings.TrimSpace(*fields.Fact), strings.TrimSpace(*fields.Forbidden), strings.TrimSpace(*fields.Example)
+	next.Value = strings.TrimSpace(*fields.Fact)
+	next.SafeRewrite = fourLayerSection([2]string{"必说", *fields.MustSay}, [2]string{"可说", *fields.CanSay})
+	next.ForbiddenWording = fourLayerSection([2]string{"改写", *fields.Rewrite}, [2]string{"不提", *fields.NotMention})
 	if next.Value == "" || utf8.RuneCountInString(next.Value) > 4000 || utf8.RuneCountInString(next.ForbiddenWording) > 4000 || utf8.RuneCountInString(next.SafeRewrite) > 4000 {
 		return original, errors.New("整理后的事实为空或超过字段长度，未保存")
 	}
@@ -50,13 +67,13 @@ func normalizationReviewPassed(raw string) error {
 		Reason string `json:"reason"`
 	}
 	if decodeLectureContent(raw, &review) != nil || review.Passed == nil {
-		return errors.New("三栏整理复核未完成，未保存，请重试")
+		return errors.New("四层整理复核未完成，未保存，请重试")
 	}
 	if !*review.Passed {
 		if strings.TrimSpace(review.Reason) == "" {
-			return errors.New("三栏整理未通过复核，未保存")
+			return errors.New("四层整理未通过复核，未保存")
 		}
-		return fmt.Errorf("三栏整理未保存：%s", review.Reason)
+		return fmt.Errorf("四层整理未保存：%s", review.Reason)
 	}
 	return nil
 }
@@ -107,7 +124,7 @@ func (s *Server) normalizePlanFactFields(ctx context.Context, tenant, plan int64
 		raw, _ = json.Marshal(packet)
 		review, _, callErr := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "fact_fields_normalize_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: reviewMother}, {Role: "user", Content: string(raw)}}, 1300, false)
 		if callErr != nil {
-			return candidate, "", errors.New("三栏整理复核暂时不可用，未保存，请重试")
+			return candidate, "", errors.New("四层整理复核暂时不可用，未保存，请重试")
 		}
 		err = normalizationReviewPassed(review.Text)
 		if err == nil {
@@ -142,7 +159,7 @@ func (s *Server) normalizeFactForSave(ctx context.Context, tenant, plan, actor, 
 	return next, prefix + id, nil
 }
 
-// normalizeAllPlanFacts 保存方案前，用审核模型复核方案全部事实的三栏表达，
+// normalizeAllPlanFacts 保存方案前，用审核模型复核方案全部事实的四层表达，
 // 把"容易踩坑的"（禁词原词污染、自然语言禁说）翻译成标准表达并就地更新。
 // 单条归一化失败或结果未变化时跳过，不阻断保存方案。
 func (s *Server) normalizeAllPlanFacts(ctx context.Context, tenant, plan, actor int64) {

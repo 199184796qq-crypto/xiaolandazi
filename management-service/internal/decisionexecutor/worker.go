@@ -499,6 +499,10 @@ func (w *Worker) applyAddressingStrategyStage(
 	item.faqPersonalized = len(plan.SelectedNames) > 0
 
 	guidance := addressingPlanGuidance(plan)
+	// 打招呼句式方向：程序按 seed 确定性轮换，避免相邻几轮机械重复同一称呼/欢迎句式。
+	if phrase := greetingPhraseVariant(seed + "|" + item.MissionKind); phrase != "" {
+		guidance += " " + phrase
+	}
 	item.addStrategyConstraint(strategyConstraint{
 		Stage:    "addressing",
 		Key:      plan.Key,
@@ -568,14 +572,19 @@ func choosePreferredAddressingTerm(preferredTerms, blockedTerms []string, seed s
 }
 
 func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionItem, seed string) speechmission.AddressingPlan {
+	// NONE（无合规昵称也无群称词）：保持 NONE，但 addressingPlanGuidance 的 NONE 分支
+	// 已改为"用主播主力称呼群称"，配合 answerSystemPrompt 硬约束，不裸奔。
 	if strings.EqualFold(strings.TrimSpace(plan.Mode), "NONE") {
-		plan.Optional = true
+		plan.Optional = false
 		plan.TargetRate = 0
 		plan.SelectedByRate = false
 		return plan
 	}
 	rate := addressingTargetRate(plan.Preference)
-	if strings.EqualFold(strings.TrimSpace(item.MissionKind), "welcome_named") {
+	// 点名必带场景：点名欢迎/暖场/产品问答必须点名，不降级群称。
+	if strings.EqualFold(strings.TrimSpace(item.MissionKind), "welcome_named") ||
+		strings.EqualFold(strings.TrimSpace(item.MissionKind), "warmup") ||
+		strings.EqualFold(strings.TrimSpace(item.MissionKind), "reply_question") {
 		rate = 100
 	}
 	plan.TargetRate = rate
@@ -591,11 +600,12 @@ func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionIt
 	if selected {
 		return plan
 	}
-	plan.Mode = "NONE"
-	plan.Candidate = ""
-	plan.GroupLabel = ""
+	// 频率未命中：不裸奔，降级为群称（GROUP），保留 candidate 作群称词，清空点名名单。
+	// candidate 为空时，addressingPlanGuidance 的 GROUP 空词分支 + answerSystemPrompt 硬约束用主力称呼兜底。
+	plan.Mode = "GROUP"
 	plan.SelectedNames = nil
 	plan.OriginalSelectedNames = nil
+	plan.Optional = true
 	return plan
 }
 
@@ -615,8 +625,8 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	} else if addressingTermBlocked(candidate, blockedTerms) {
 		candidate = ""
 	}
-	if len(selectedNames) > 2 {
-		selectedNames = selectedNames[:2]
+	if len(selectedNames) > 3 {
+		selectedNames = selectedNames[:3]
 	}
 	mode := addressingModeForPlan(item, candidate, selectedNames)
 	if preference == "less" && isAggregateAddressingMission(item) {
@@ -642,7 +652,7 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 			selectedNames = selectedNames[:1]
 		}
 	}
-	maxNamedCount := 2
+	maxNamedCount := 3
 	if preference == "less" {
 		maxNamedCount = 1
 	}
@@ -718,47 +728,42 @@ func isAggregateAddressingMission(item decisionItem) bool {
 func addressingModeForPlan(item decisionItem, candidate string, selectedNames []string) string {
 	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
 	hasGroupLabel := strings.TrimSpace(candidate) != ""
-	hasNames := len(selectedNames) > 0
-	switch kind {
-	case "welcome_batch", "reply_follow", "welcome_named":
-		if item.MissionEventCount > 1 || len(item.Nicknames) > 1 {
-			if hasNames && hasGroupLabel {
-				return "MIXED"
-			}
-			if hasNames {
-				return "SAMPLE"
-			}
-			if hasGroupLabel {
-				return "GROUP"
-			}
-			return "NONE"
+	nameCount := len(selectedNames)
+	// 多人判定：多个事件、多个原始昵称、或多个问题。
+	multi := item.MissionEventCount > 1 || len(item.Nicknames) > 1 || len(item.SampleQuestions) > 1
+
+	// 点赞：群体感谢，优先群称；合规昵称够 2 个才抽点。
+	if kind == "reply_like" {
+		if hasGroupLabel {
+			return "GROUP"
 		}
-		if hasNames || hasGroupLabel {
-			return "SINGLE"
+		if nameCount >= 2 {
+			return "SAMPLE"
 		}
 		return "NONE"
-	case "reply_like":
+	}
+	// 暖场：面向群体，用大称呼，不逐个点名。
+	if kind == "warmup" {
+		return "GROUP"
+	}
+	// 多人：合规昵称够 2 个就点 2~3 人；凑不足 2 人统一群称（不裸奔）。
+	if multi {
+		if nameCount >= 2 {
+			if hasGroupLabel {
+				return "MIXED"
+			}
+			return "SAMPLE"
+		}
 		if hasGroupLabel {
 			return "GROUP"
 		}
 		return "NONE"
-	case "reply_chat":
-		if item.MissionEventCount > 1 || len(item.SampleQuestions) > 1 {
-			if hasGroupLabel {
-				return "GROUP"
-			}
-			return "NONE"
-		}
-		if hasNames || hasGroupLabel {
-			return "SINGLE"
-		}
-		return "NONE"
-	default:
-		if hasNames || hasGroupLabel {
-			return "SINGLE"
-		}
-		return "NONE"
 	}
+	// 单人：点这 1 个（有昵称）或群称（无昵称）。
+	if nameCount == 1 || hasGroupLabel {
+		return "SINGLE"
+	}
+	return "NONE"
 }
 
 func (w *Worker) playableAddressingNames(roomID int64, raw []string, originals ...[]string) ([]string, float64) {
@@ -886,23 +891,23 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	base := ""
 	switch strings.ToUpper(strings.TrimSpace(plan.Mode)) {
 	case "NONE":
-		base = "称呼计划：本轮不主动使用称呼；不要为了显得热情强塞昵称、朋友、老哥、宝子等称呼。"
+		base = "称呼计划：本轮无可用昵称，用主播主力称呼（如“哥哥姐姐们”“老乡”“新粉”）自然打一次招呼，不要裸奔（不要直接说内容而不带任何称呼）。"
 	case "GROUP":
 		if groupLabel != "" {
 			if plan.Optional {
-				base = "称呼计划：本轮面向群体；语境自然时可使用群体称呼“" + groupLabel + "”，但不要逐个报名字，也不要为了执行策略重复称呼。"
+				base = "称呼计划：本轮面向群体；自然使用一次群体称呼“" + groupLabel + "”，但不要逐个报名字，也不要为了执行策略重复称呼。"
 			} else {
 				base = "称呼计划：本轮需要自然使用一次群体称呼“" + groupLabel + "”；只出现一次，不要逐个报名字，不要重复称呼。"
 			}
 		} else {
-			base = "称呼计划：本轮面向群体；使用自然群体表达，不逐个点名。"
+			base = "称呼计划：本轮面向群体；用主播主力称呼（如“哥哥姐姐们”“老乡”）自然打一次招呼，不逐个点名，不要裸奔。"
 		}
 	case "SAMPLE":
 		if selected != "" {
 			if plan.Optional {
 				base = "称呼计划：本轮允许从可播昵称里抽样称呼“" + selected + "”，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
 			} else {
-				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 1 个，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
+				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 2 个，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
 			}
 		} else {
 			base = "称呼计划：本轮允许抽样称呼可播昵称；不得虚构昵称。"
@@ -912,7 +917,7 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 			if plan.Optional {
 				base = "称呼计划：本轮可先自然称呼“" + selected + "”，再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
 			} else {
-				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 1 个，可再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
+				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 2 个，可再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
 			}
 		} else {
 			base = "称呼计划：本轮允许点少量可播昵称后自然带到其他观众；不得逐个报完整名单，也不得虚构昵称。"
@@ -947,7 +952,7 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	}
 	// SelectedNames retain original event identities; generated speech may use
 	// a safe short name or neutral address under the nickname prompt policy.
-	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。"
+	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。带昵称打招呼时句式要自然变化（如“XX哥”“这位朋友XX”“XX你说”“XX和XX”等），不要每次都机械套同一个称呼模板。"
 	return base
 }
 
@@ -2151,7 +2156,12 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		answerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		answerSystemPrompt := w.store.AgentPromptValue(ctx, "live.answer.system", "你是直播口播合成器。根据事件、现场上下文和策略黑板，一次生成一段真实、自然、可直接播出的完整口播，不编造事实。") +
-			"\n所有策略都只是生成约束，不允许逐项解释、逐段分别生成或输出多个候选。称呼只是可选约束，不自然时必须省略。称呼配置里的常用称谓只用于称呼观众/对方，绝不能当作主播自称、主播身份或自我介绍。主播状态只用于控制语速、句长、停顿、音色和情绪，绝不能在正文里说出“我不舒服/我咳嗽/我今天状态如何”之类状态说明。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
+			"\n所有策略都只是生成约束，不允许逐项解释、逐段分别生成或输出多个候选。称呼按四层约束：" +
+			"\n【必说】每段互动回答开头都要带一个合规称呼，不得裸奔（不得直接说内容而不带任何称呼）；本轮“称呼计划”指定点名或群称时，以称呼计划为准并必须使用；多人时至少点 2 个合规昵称、最多点 3 个。" +
+			"\n【可说】有观众昵称时自然称呼昵称（安全全称、简称或代称），没有昵称或面向群体时用主播主力称呼（如“哥哥姐姐们”“老乡”“新粉”）；带昵称打招呼要变换句式，不要机械重复同一模板。" +
+			"\n【改写】称呼计划给定的昵称已按规则过滤，直接用给定名字或代称，不复述原名里的数字、引流、侮辱等风险片段；合规昵称凑不足 2 人时改用统一群称。" +
+			"\n【不提】这些称谓只用于称呼观众/对方，绝不能当作主播自称、主播身份或自我介绍；不编造姓氏、亲属、年龄、性别或身份，不念星号后的隐藏部分。" +
+			"主播状态只用于控制语速、句长、停顿、音色和情绪，绝不能在正文里说出“我不舒服/我咳嗽/我今天状态如何”之类状态说明。最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。"
 		if item.EmotionDisabled && !item.BusinessCoreOnly {
 			answerSystemPrompt += "\n当前实时情感已关闭：只生成准确、直接、自然可播的回答正文，不增加情绪渲染、拟人化动作、额外编造的口头禅、刻意语气词、夸张停顿或主播情绪状态。已确认主播风格中的自然自称、称呼、口头禅和句式仍可在适当位置使用，但不要堆叠或强行添加。事实、问答、称呼、打断和回归要求仍正常执行。"
 		}

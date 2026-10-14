@@ -35,14 +35,81 @@ func (item decisionItem) promptNicknames() []string {
 	if item.PromptNicknames != nil {
 		names = item.PromptNicknames
 	}
-	if names == nil {
-		return nil
+	// 兜底：上游任何环节丢了昵称，也绝不返回空，保证所有互动都有可播称呼。
+	if len(names) == 0 {
+		return []string{"这位朋友"}
 	}
-	result := make([]string, len(names))
-	for i, name := range names {
-		result[i] = nicknameModelName(name)
+	result := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		safe := safeNicknameAddress(name)
+		if safe == "" || seen[safe] {
+			continue
+		}
+		seen[safe] = true
+		result = append(result, safe)
+		if len(result) >= maxPromptNicknames {
+			break
+		}
+	}
+	if len(result) == 0 {
+		return []string{"这位朋友"}
 	}
 	return result
+}
+
+// maxPromptNicknames 是单次互动最多点名的观众数量；超过时只点前几个，
+// 其余由生成模型用"你们几位"等群体称呼覆盖（见母版"多人合并"规则）。
+const maxPromptNicknames = 3
+
+// safeNicknameAddress 程序硬过滤昵称（确定性，不调模型）：
+// 纯数字/4 位以上连续数字、明确引流/联系方式、明确侮辱词 → 降级"这位朋友"；
+// 掩码昵称 → 只取星号前可读前缀。
+// 语义层面（命令式/谐音/阴阳怪气/隐含侮辱）由 planNicknameAddresses 调模型判断，
+// 不在本函数处理，避免程序词表误伤正常昵称。
+func safeNicknameAddress(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if longestContinuousDigits(name) >= 4 {
+		return "这位朋友"
+	}
+	if containsUnsafeNicknameMarker(name) {
+		return "这位朋友"
+	}
+	return nicknameModelName(name)
+}
+
+// unsafeNicknameMarkers 是程序可确定的硬违规昵称词元（引流/联系方式/明确侮辱）。
+var unsafeNicknameMarkers = []string{
+	"微信", "加我", "加v", "加V", "vx", "VX", "wx", "WX", "手机", "电话",
+	"qq", "QQ", "抖音号", "快手号", "公众号", "微博", "扫码", "加好友",
+	"滚", "骗子", "假货", "垃圾", "拉黑", "滚出",
+}
+
+func containsUnsafeNicknameMarker(name string) bool {
+	for _, m := range unsafeNicknameMarkers {
+		if strings.Contains(name, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func longestContinuousDigits(name string) int {
+	longest, run := 0, 0
+	for _, r := range name {
+		if unicode.IsDigit(r) {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	return longest
 }
 
 // Masked account identities stay in event records. Only the readable prefix
