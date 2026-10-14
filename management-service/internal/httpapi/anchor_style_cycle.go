@@ -17,6 +17,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/speechlibrary"
 )
 
 type cycleCancel struct {
@@ -741,15 +742,36 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if err != nil {
 		return nil, errors.New(err.Error())
 	}
+	if state.LibrarySourceSHA == "" {
+		state.LibrarySourceSHA = anchorcycle.ProductDigest(state.Queue)
+	}
+	libraryInputsReady := true
+	if state.TextModel != nil {
+		if err := s.installCurrentExpressionConstraints(ctx, state); err != nil {
+			libraryInputsReady = false
+			state.Warn("最新表达约束读取未完成，本段不复用缓存")
+		}
+	}
+	if libraryInputsReady && s.speechLibrary != nil && libraryEligible(state) {
+		s.ensureFactExpressionExamples(ctx, state)
+	}
 	// Planning precedes text-cache lookup so an old angle's voice cannot bypass
 	// this request's selected hook. No TTS or audio protocol is changed.
 	if state.TextModel != nil && cycleAnglePlanEnabled() {
 		s.ensureCycleAnglePlan(ctx, state, *state.TextModel)
 	}
 	reuseEntry := (*anchorcycle.SpeechPoolEntry)(nil)
+	var libraryEntry *speechlibrary.Entry
+	var libraryDecision, libraryTrack, librarySHA string
+	if libraryInputsReady {
+		libraryEntry, libraryDecision, libraryTrack, librarySHA = s.selectLibraryText(ctx, state, b)
+	}
+	if libraryEntry != nil {
+		reuseEntry = &anchorcycle.SpeechPoolEntry{Text: libraryEntry.Candidate.Text}
+	}
 	// 开场(opening)话术不得缓存复用：开场是直播冷启动/每轮开头的第一段，须每次实时生成；
 	// 且 SpeechPool 只收录 body 话术，opening 若复用会误把 body 话术当开场复读。
-	if state.Phase != "opening" && state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
+	if s.speechLibrary == nil && state.Phase != "opening" && state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		reuseEntry = state.PickReuse(state.Task().Key)
 	}
 	reportCycleProgress(ctx, 25)
@@ -760,7 +782,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	patch := state.P0PendingRepair
 	if reuseEntry != nil {
 		text = reuseEntry.Text
-		state.MarkSpeechReused(reuseEntry)
+		if libraryEntry == nil {
+			state.MarkSpeechReused(reuseEntry)
+		}
 		prompt = "" // 话术池复用命中，不调用模型。
 	} else if state.Config.TextProfileID != "" {
 		state.Busy, state.Status, state.Error = true, "running", ""
@@ -863,9 +887,25 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	score := anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
 	retry := buildAnchorStyleScoreFeedback(score, b)
 	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: "model_raw_text", Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	candidate.AnglePlan = state.CurrentAnglePlan()
-	candidate.AngleHook = state.CurrentAngleHook()
-	candidate.HookCalculations, _ = state.CurrentHookCalculations()
+	if libraryEntry != nil {
+		candidate = libraryEntry.Candidate
+		candidate.ID = libraryTrack
+		candidate.CacheID = libraryEntry.ID
+		candidate.LibraryEntryID = libraryEntry.ID
+		candidate.ScoreScope = "speech_library_reused"
+		candidate.GenerationMS = 0
+		candidate.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if libraryDecision != "" {
+		candidate.ID = libraryTrack
+		candidate.LibraryDecision = libraryDecision
+		candidate.LibraryTextSHA = librarySHA
+	}
+	if libraryEntry == nil {
+		candidate.AnglePlan = state.CurrentAnglePlan()
+		candidate.AngleHook = state.CurrentAngleHook()
+		candidate.HookCalculations, _ = state.CurrentHookCalculations()
+	}
 	// 记录本段切入侧面，供声音缓存 group 纳入侧面（新生成的才记录；复用段侧面留空，
 	// 走话术复用旧音频，不进声音缓存）。
 	if reuseEntry == nil {
@@ -877,9 +917,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		candidate.P0RewriteNumber = patch.RewriteNumber
 		candidate.ScoreScope = "p0_local_patch_assembled"
 	}
-	if reuseEntry != nil {
+	if reuseEntry != nil && libraryEntry == nil {
 		candidate.OutputText, candidate.ScoreScope = reuseEntry.Text, "speech_pool_reused"
-	} else if state.Config.RepairPunctuation {
+	} else if libraryEntry == nil && state.Config.RepairPunctuation {
 		postprocessStarted := time.Now()
 		candidate.OutputText, candidate.PunctuationEdits = anchorcycle.RepairPunctuation(text, state.StyleMD, state.Config.MaxChars)
 		candidate.PostprocessMS = time.Since(postprocessStarted).Milliseconds()
@@ -901,8 +941,10 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if err = state.CheckP0Candidate(&candidate); err != nil {
 		return nil, errors.New(err.Error())
 	}
-	s.reviewCycleP0Context(ctx, state, &candidate)
-	s.auditLectureCandidate(ctx, state, &candidate)
+	if libraryEntry == nil {
+		s.reviewCycleP0Context(ctx, state, &candidate)
+		s.auditLectureCandidate(ctx, state, &candidate)
+	}
 	cleanCycleConsecutiveSpeech(state, &candidate)
 	if candidate.OutputText == "" {
 		return s.skipExactDuplicateCandidate(ctx, state, candidate)
@@ -922,9 +964,21 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			candidate.RetryFeedback = ""
 		}
 	}
-	s.auditFinalMainlineContent(ctx, state, &candidate)
+	if libraryEntry == nil {
+		s.auditFinalMainlineContent(ctx, state, &candidate)
+	}
+	if candidate.LibraryDecision != "" && !libraryTextIndependent(candidate.OutputText) {
+		_ = s.speechLibrary.Cancel(ctx, candidate.LibraryDecision)
+		candidate.LibraryDecision = ""
+		candidate.LibraryEntryID = ""
+		candidate.LibraryTextSHA = ""
+	}
 	reviewState := *state
+	s.prepareApprovedLibraryText(ctx, state, &candidate)
 	adopted, err := state.AddCandidate(candidate, b)
+	if !adopted && candidate.LibraryDecision != "" {
+		_ = s.speechLibrary.Cancel(ctx, candidate.LibraryDecision)
+	}
 	for _, segment := range state.Accepted {
 		if segment.Selected.ID == candidate.ID {
 			candidate = segment.Selected

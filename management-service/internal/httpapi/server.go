@@ -24,6 +24,7 @@ import (
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/semantic"
+	"livecompanion/management/internal/speechlibrary"
 	"livecompanion/management/internal/speechmission"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/ttsgateway"
@@ -72,6 +73,7 @@ type Server struct {
 	stylePlugins          *styleplugin.Registry
 	anchorCycles          anchorcycle.Repository
 	anchorVoiceCache      anchorvoicecache.Repository
+	speechLibrary         speechlibrary.Repository
 	generationCachePolicy model.GenerationCachePolicyReader
 	cycleCancels          cycleCancels
 	previewStreams        previewStreams
@@ -169,6 +171,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
 	mux.HandleFunc("GET /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyGet)
+	mux.HandleFunc("GET /api/v1/system/speech-library-policy", s.speechLibraryPolicyGet)
+	mux.HandleFunc("PUT /api/v1/system/speech-library-policy", s.speechLibraryPolicyPut)
 	mux.HandleFunc("PUT /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyPut)
 	mux.HandleFunc("GET /api/v1/liveops/user-voice-cache-policies", s.liveOpsUserVoiceCachePolicies)
 	mux.HandleFunc("PUT /api/v1/liveops/user-voice-cache-policies/{tenantID}", s.liveOpsUpdateUserVoiceCachePolicy)

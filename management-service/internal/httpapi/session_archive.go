@@ -43,6 +43,7 @@ func (s *Server) watchSessionArchive(session model.LiveRuntimeSession) {
 func (s *Server) syncSessionArchive(ctx context.Context, session model.LiveRuntimeSession) {
 	p, err := s.core.GetRoomProgramSnapshot(ctx, session.TenantID, session.RoomID)
 	if err == nil && p.Task.SessionID == fmt.Sprintf("live-runtime-%d", session.ID) {
+		s.observeLibraryPlayback(ctx, session.TenantID, session.RoomID, session.ID, p.MainlinePlaybackReceipts, p.PlaybackReceipts)
 		for _, track := range p.FutureWindow {
 			if track.ID == "" || track.Text == "" {
 				continue
@@ -66,6 +67,11 @@ func (s *Server) syncSessionArchive(ctx context.Context, session model.LiveRunti
 			}
 			ref := model.SessionMainlineRef(p.ProgramID, receipt.TrackID)
 			if s.store.HasSessionSpeechAudio(ctx, session.TenantID, session.RoomID, session.ID, ref) {
+				continue
+			}
+			if a, e := s.libraryTrackedAudio(ctx, session.TenantID, session.RoomID, session.ID, receipt.TrackID); e == nil && a != nil {
+				b := a.Bundle
+				_ = s.store.SaveSessionSpeechAsset(ctx, model.SessionSpeechAsset{TenantID: session.TenantID, RoomID: session.RoomID, SessionID: session.ID, SourceRef: ref, Kind: "mainline", Text: b.Text, AudioURL: b.AudioURL, DurationMS: int(b.AudioDurationMS), PlayedAt: &at, ExpiresAt: model.SessionAudioExpiry(b.AudioURL)})
 				continue
 			}
 			if reader, ok := s.anchorVoiceCache.(interface {

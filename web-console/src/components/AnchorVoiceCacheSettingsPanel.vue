@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import SpeechLibrarySettingsPanel from './SpeechLibrarySettingsPanel.vue'
 import { getAnchorVoiceCachePolicy, updateAnchorVoiceCachePolicy, getUserVoiceCachePolicies, updateUserVoiceCachePolicy, type UserVoiceCachePolicy } from '../api'
 const hours = ref(5), loading = ref(false), saving = ref(false), error = ref(''), notice = ref(''), loaded = ref(false)
 const mainlineReuse = ref(false), interactionReuse = ref(false)
@@ -55,10 +56,11 @@ onMounted(load)
       <form @submit.prevent="save">
         <label class="toggle"><input v-model="mainlineReuse" type="checkbox" :disabled="!loaded || saving">主线话术与声音缓存复用</label>
         <label class="toggle"><input v-model="interactionReuse" type="checkbox" :disabled="!loaded || saving">互动话术与声音缓存复用</label>
-        <label>声音保留时间（小时）<input v-model.number="hours" type="number" min="1" max="168" step="1" :disabled="!loaded || saving"></label>
+        <label>临时声音保留时间（小时）<input v-model.number="hours" type="number" min="1" max="168" step="1" :disabled="!loaded || saving"></label>
         <button type="submit" :disabled="!loaded || saving">{{ saving ? '保存中…' : '保存平台默认' }}</button>
       </form>
     </section>
+    <SpeechLibrarySettingsPanel />
     <div class="user-toolbar"><h3>用户单独设置</h3><label>查找用户<input v-model="search" type="search" placeholder="用户名称或账号" @input="page = 1"></label><span>共{{ filtered.length }}位用户</span></div>
     <p v-if="loading">正在读取用户设置…</p>
     <div v-else-if="loaded" class="table-wrap">
@@ -68,12 +70,12 @@ onMounted(load)
       </table>
       <nav v-if="pages > 1" aria-label="用户列表分页"><button :disabled="page <= 1" @click="page--">上一页</button><span>第{{ page }}页，共{{ pages }}页</span><button :disabled="page >= pages" @click="page++">下一页</button></nav>
     </div>
-    <p class="note">关闭复用后，后续请求重新生成话术与声音。用户设置适用于其账号下的直播间；声音保留时间影响新生成的声音、字幕和时间轴文件，已有声音按原时间到期。互动缓存还受回答有效期限制。</p>
+    <p class="note">关闭复用后，后续请求重新生成话术与声音。用户设置适用于其账号下的直播间；临时声音保留时间影响新生成的临时声音、字幕和时间轴文件；长期话术库按库容量与播放引用清理。互动缓存还受回答有效期限制。</p>
     <div v-if="selected" class="dialog-backdrop" @click.self="!saving && (selected = null)">
       <section class="cache-dialog" role="dialog" aria-modal="true" aria-labelledby="cache-user-title" @keydown.esc="!saving && (selected = null)">
         <h3 id="cache-user-title">{{ selected.display_name || selected.username }} · 缓存设置</h3>
         <p>{{ selected.using_default ? '当前沿用平台默认，保存后将使用单独设置。' : '当前使用单独设置。' }}</p>
-        <form @submit.prevent="saveUser()"><label class="toggle"><input v-model="userMainline" type="checkbox" :disabled="saving">主线话术与声音缓存复用</label><label class="toggle"><input v-model="userInteraction" type="checkbox" :disabled="saving">互动话术与声音缓存复用</label><label>声音保留时间（小时）<input v-model.number="userHours" type="number" min="1" max="168" step="1" :disabled="saving"></label><p v-if="userError" class="error" role="alert">{{ userError }}</p><div class="dialog-actions"><button type="button" :disabled="saving" @click="selected = null">取消</button><button type="button" :disabled="saving || selected.using_default" @click="saveUser(true)">恢复平台默认</button><button type="submit" class="primary" :disabled="saving">{{ saving ? '保存中…' : '保存用户设置' }}</button></div></form>
+        <form @submit.prevent="saveUser()"><label class="toggle"><input v-model="userMainline" type="checkbox" :disabled="saving">主线话术与声音缓存复用</label><label class="toggle"><input v-model="userInteraction" type="checkbox" :disabled="saving">互动话术与声音缓存复用</label><label>临时声音保留时间（小时）<input v-model.number="userHours" type="number" min="1" max="168" step="1" :disabled="saving"></label><p v-if="userError" class="error" role="alert">{{ userError }}</p><div class="dialog-actions"><button type="button" :disabled="saving" @click="selected = null">取消</button><button type="button" :disabled="saving || selected.using_default" @click="saveUser(true)">恢复平台默认</button><button type="submit" class="primary" :disabled="saving">{{ saving ? '保存中…' : '保存用户设置' }}</button></div></form>
       </section>
     </div>
   </section>

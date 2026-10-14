@@ -57,17 +57,6 @@ func (s *Server) ensureFactExpressionExamples(ctx context.Context, state *anchor
 	for _, g := range all {
 		label := g["要求"]
 		if strings.Contains(label, "多个正向举例") {
-			positions := []int{}
-			for i, g := range f.ExpressionGuidance {
-				if strings.Contains(g["要求"], "多个正向举例") {
-					positions = append(positions, i)
-				}
-			}
-			rand.Shuffle(len(positions), func(i, j int) {
-				a, b := positions[i], positions[j]
-				f.ExpressionGuidance[a], f.ExpressionGuidance[b] = f.ExpressionGuidance[b], f.ExpressionGuidance[a]
-			})
-			task.FactScope.Facts[0] = f
 			return
 		}
 		if strings.Contains(label, "改写") || strings.Contains(label, "举例") || strings.Contains(label, "参考") {
@@ -150,7 +139,7 @@ func (s *Server) ensureFactExpressionExamples(ctx context.Context, state *anchor
 			}
 		}
 	}
-	for _, example := range shuffledFactExamples(pool.Examples) {
+	for _, example := range pool.Examples {
 		f.ExpressionGuidance = append(f.ExpressionGuidance, map[string]string{"要求": "多个正向举例（仅参考准确说法，按本次目的重组，不是事实）", "内容": example})
 	}
 	task.FactScope.Facts[0] = f

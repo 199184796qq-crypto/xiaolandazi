@@ -13,6 +13,7 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/speechlibrary"
 	"livecompanion/management/internal/ttsgateway"
 )
 
@@ -122,7 +123,13 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 	segment.Voice = claimed
 	reportCycleProgress(ctx, 8)
 	started := time.Now()
-	cached, cacheErr := s.cachedCycleVoice(ctx, state, *segment)
+	var cached *anchorcycle.VoiceAsset
+	var cacheErr error
+	if segment.Selected.LibraryDecision != "" {
+		cached, cacheErr = s.libraryVoice(ctx, state, *segment)
+	} else {
+		cached, cacheErr = s.cachedCycleVoice(ctx, state, *segment)
+	}
 	if cacheErr != nil {
 		state.Warn("声音缓存查询失败，继续合成：" + cacheErr.Error())
 	}
@@ -157,11 +164,21 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 		raw, timeline, duration, err = synthesizeMainlinePreview(scoped, journaledMainlineSynthesizer{s: s, gateway: gateway, profile: state.Config.CredentialID}, *voice, text, segment.Selected.ID)
 	}
 	var archive *anchorcycle.VoiceAsset
+	var libraryAudio *speechlibrary.Audio
 	if err == nil {
 		// Keep the adopted, product-audited text and its complete audio together.
 		// The browser projection/content endpoint alone clips the remaining
 		// listening budget; rewriting OutputText here invalidates product review.
-		archive, err = s.archiveCycleVoiceCache(ctx, state, *segment, raw, timeline, duration, retention)
+		if s.speechLibrary != nil && segment.Selected.LibraryDecision != "" {
+			archive, libraryAudio, err = s.archiveLibraryVoice(ctx, state, *segment, raw, timeline, duration)
+			if err != nil && !errors.Is(err, speechlibrary.ErrStale) {
+				state.Warn("长期声音库写入失败，保留本段并使用临时声音存储")
+				archive, err = s.archiveCycleVoiceCache(ctx, state, *segment, raw, timeline, duration, retention)
+				libraryAudio = nil
+			}
+		} else {
+			archive, err = s.archiveCycleVoiceCache(ctx, state, *segment, raw, timeline, duration, retention)
+		}
 	}
 	if err != nil {
 		segment.Voice.Status, segment.Voice.Error = "failed", err.Error()
@@ -174,6 +191,9 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 	defer cancelPersist()
 	if err := voices.CompleteVoice(persist, tenant, plan, room, state.RunID, segment.Selected.ID, job, *segment.Voice); err != nil {
 		return nil, err
+	}
+	if segment.Voice.Status == "ready" {
+		s.publishLibraryVoice(persist, state, *segment, libraryAudio)
 	}
 	if segment.Voice.Status == "ready" {
 		reportCycleProgress(ctx, 100)

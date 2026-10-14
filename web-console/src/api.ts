@@ -4592,3 +4592,8 @@ export function runAnchorStyleWorkbenchStep(
     { method: 'POST', body: JSON.stringify(input) },
   )
 }
+
+export interface SpeechLibraryPolicy { capacity: number; one_rate: number; two_rate: number; full_rate: number; cooldown_seconds: number }
+export interface SpeechLibraryReply { policy: SpeechLibraryPolicy; revision: string; stats: { Texts: number; Audio: number; PlayedReuses: number } }
+export function getSpeechLibraryPolicy() { return request<SpeechLibraryReply>('/api/v1/system/speech-library-policy') }
+export function saveSpeechLibraryPolicy(policy: SpeechLibraryPolicy, expected_revision: string) { return request<SpeechLibraryReply>('/api/v1/system/speech-library-policy', { method: 'PUT', body: JSON.stringify({ policy, expected_revision }) }) }

@@ -102,6 +102,9 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
+	LibraryEntryID          string                                `json:"library_entry_id,omitempty"`
+	LibraryDecision         string                                `json:"library_decision,omitempty"`
+	LibraryTextSHA          string                                `json:"library_text_sha,omitempty"`
 	FinalContentAudit       *FinalContentAudit                    `json:"final_content_audit,omitempty"`
 	LectureAudit            *LectureAudit                         `json:"lecture_audit,omitempty"`
 	ExpressionAudit         *LectureAudit                         `json:"expression_audit,omitempty"`
@@ -165,6 +168,7 @@ type SpeechPoolEntry struct {
 	LastIndex  int    `json:"last_index"`
 }
 type State struct {
+	LibrarySourceSHA             string                         `json:"library_source_sha,omitempty"`
 	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
 	FinalContentReviewContextSHA string                         `json:"final_content_review_context_sha256,omitempty"`
 	LatestExpressionConstraints  []map[string]any               `json:"latest_expression_constraints,omitempty"`
