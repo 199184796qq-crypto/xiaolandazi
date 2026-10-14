@@ -1,5 +1,15 @@
 # 项目协作约定
 
+## 直播下载和24小时保留（2026-10-14 已上线）
+
+- 实际current为 `/opt/xiaolan/releases/20261014-live-session-download-9c1c5f9`，发布源码9c1c5f9，整合当时已部署的1608ea6。Management PID820631，SHA256=a27d3d834732e56f0c54fd1d94d7b2299c78d217cb5d433d87ec5d3c148a38c9；Core/网关未重启。
+- 字幕区“本场回答库”右边为“直播下载”。下载已开始播放的主线、互动和已使用衔接语的完整文案/原声音片段，待播候选不导出。TXT无标题/时间戳，整场查询不受声音时间筛选和50条分页影响。功能上线前已结束、缺少完整播放证据的场次不能补齐，不得冒充完整设备录音。
+- 用户指定直播下载与回答库原始文案只保留24小时。已播声音复制至独立私有 `live-downloads/tenant-*/room-*/session-*/audio-*.wav`，从开始播放计24小时；到期读取立即失效，后台删除下载文件和原稿记录。这个归档不恢复调度进度，也不参与生成、FAQ或正文/声音缓存复用。
+- 已采纳的回答策略及其版本、学习出处长期保留在agent_memory_items/agent_memory_versions等独立表；24小时清理只涉及live_session_speech_assets和live_generated_speech_history，不清理已采纳策略。当前31个既有记忆版本的内容/结构摘要逐项核对保留；不将这个版本数当作31条独立策略。
+- 两项平台缓存复用开关仍为false，供料缓存保留5小时仍是原配置。下载副本的24小时期限独立，不为下载打开缓存复用，也不删除正式方案的持久音频或已保存事实/策略。
+- 此次只替换Management及web/web-desktop入口，新增39个文件，2210个原文件逐项保持一致。共享前端备份指针 `C:/Users/19918/Documents/Codex/2026-10-09/zh/work/frontend-preservation/latest.json` 已更新，1538个前端文件与服务器逐项一致。证明位于本任务 `work/live-session-download-proof/`。
+- 下载/复制单元测试、临时MySQL表的权限/24小时清理/策略保留测试、真实OSS合成私有对象复制读取删除、RoomDetailView的151条导出/时区/分页/错误/焦点/四种屏宽验收均通过。未自动开始生产直播、生成话术或调用TTS。原称呼基线的已知失败见下载文档，未算全量Go测试通过。
+
 ## 程序与模型分工：模型返回内容，程序维护索引和关系
 
 - 2026-10-10 用户明确规定，适用于系统内全部模型、智能体、生成、规划、审核和回灌接口，不按模型供应商区别处理。
@@ -185,3 +195,40 @@
 - 已整合智能体双页布局e3151af/2f8fdeb，以及并行原地发布的WorkBuddy方案删除最新未提交源码（180e3b9及9f9e204）；没有修改原开发目录。后续不能从旧声音或旧管理源码覆盖。完整源码仍在work/main-merge-20261014及GitHub main。
 - 1781个原有无关文件、提示词、手机端、Nginx和缓存默认值一致；最新前端备份指针work/frontend-preservation/latest.json已验证1440个前端文件。证明work/voice-system-settings-proof/production-verification.json；说明docs/2026-10-14-voice-system-settings.md。
 - 五个相关Go包、前端构建、14项导航/资料补充回归及桌面/390px浏览器验证通过。数据库集成实验因现有账号无创建隔离schema权限未成功，不宣称通过；生产仅只读确认新配置及鉴权，未生成真实测试声音或操作直播队列。以后发布仍继承当时实际current并持共享锁、核对指纹及空闲状态。
+
+
+## 文字模型账号池（2026-10-14 已上线）
+
+- 当前发布 `/opt/xiaolan/releases/20261014-model-pool-7511a9c`，北京时间21:13上线，部署源码7511a9c846b4d4e2c2ca39da521de43473955e45；Management PID822987，SHA256 e1c06bb8d88d6e0b731a4b727841c77d1937aeb1efeaaa5bbc78130ebca4886b。只重启管理服务，Core/网关未重启。
+- 后台入口“系统设置 → AI 与智能体 → 模型池配置”；账号Key加密保存，可读取模型、手动设置名额、暂停新分配和查看占用。用户明确指定现有账号100个名额，已安全导入当前qwen3.7-flash并启用，系统审计记录用户授权的初始化操作，不在Git/聊天保存Key。
+- AI首次启动在同一事务领取账号和模型，口播、审核、规划、互动及回归桥统一使用同一分配；暂停及Management重启保留，实际AI终态释放。并发名额使用数据库持久化锁和当前读取，不超分，不按采集状态或TTL收回；旧运行场次不能占用或释放替换场次的名额。TTS、声音识别和非直播后台分析沿用原配置。
+- 完整源码独立开发于work/model-pool-source，已整合WorkBuddy1608ea6与GitHub最新主线02088c9，并推送main；work/main-merge-20261014同步。保留WorkBuddy称呼、人工抢答昵称、资料补充及主线直播下载/24小时记录等改动，没有修改E:/speech-generator-build的原开发文件。后续不能用未整合模型池或直播下载的旧管理/前端源码覆盖。
+- 2249个原有无关文件、提示词、手机端、缓存默认值和Nginx保持一致；前端完整指针work/frontend-preservation/latest.json已核对1578个文件。证明work/model-pool-upgrade-proof/production-verification.json、configuration-verification.json；设计说明docs/2026-10-14-model-account-pool.md。
+- 真实本地MySQL随机隔离schema验证了并发容量、重复申请、暂停/重启、密钥快照、释放、旧场隔离和配置CAS；新接口鉴权及虚拟供应商跨房间同Key/模型调用测试通过。前端21项受保护功能回归、桌面/390px模型池交互和生产构建通过；11个公网资源校验通过。五个Go包的29项既有失败与未修改02088c9逐项一致，无新增失败，不能称全套通过。未开播或向真实模型发送测试正文，真实直播使用待下一场验证。
+
+
+## 模型池占用详情分页（2026-10-14 已上线）
+
+- 占用房间从模型池主页面移入账号行“查看占用”的详情弹窗；默认每页10个，可选20/50，账号之间按池记录编号隔离。切换页大小/重新打开重置第一页，刷新减少房间后修正页码；零占用、暂停状态、Esc/遮罩关闭、焦点恢复及手机卡片显示保留。
+- 前端22:36发布20261014-model-pool-occupancy-59d6812，仅更新两个入口并新增资源，2293个非入口文件与三服务一致。随后发现管理服务被后续旧源码1608ea6原地发布为PID824750，模型池接口返回404；在确认AI空闲后，于22:42发布整合后端20261014-model-pool-integrated-59d6812，Management PID826314/SHA256 46cd71aeca3bbcc0abbf9c1611b490d3dd5dc201f4acffc0752e351bbd40386b。仅重启Management，Core/网关未重启，2335个其它文件与1618个前端文件保持一致。
+- 部署源码59d68122462fc38d60adbfa7871187d0a4248117，包含模型池、直播下载和WorkBuddy c0ad094最新TTS前缀修改；用户后来保存的qwen3.7-flash-2026-07-15及100个名额原样保留，没有重新导入Key或覆盖账号设置。三个模型池入口线上返回需登录401，已恢复路由。
+- 后续管理发布必须以最新GitHub main完整整合模型池与直播下载，不得直接用缺少这些功能的E:/speech-generator-build旧main全量覆盖。原WorkBuddy工作目录未由本聊天修改；前端仍以发布时actual current及指纹为准。
+- 浏览器虚拟24条占用验证10/20/50分页、末页、刷新收回页码、按账号隔离、空态、关闭/焦点和390px显示，21项既有前端回归与构建通过；恢复后端的模型池/调用路由/直播下载相关定向Go测试通过，未启动真实直播或生成测试内容。证明work/model-pool-occupancy-proof/production-verification.json与integrated-production-verification.json。最新前端备份指针work/frontend-preservation/latest.json已指向当前整合发布并验证1618文件，实际备份复用哈希完全一致的占用页版本。
+
+## 同房间跨场主线话术库（2026-10-15 已上线）
+
+- 北京时间02:28:30发布 `/opt/xiaolan/releases/20261015-speech-library-711b164-r2`，部署源码711b164e872871fd0d473ef1c82f022cc8456a92，Management PID836984/SHA256 32e69cad21c1d762afac1e874e2ac820034784948df68d15ac1bc6a896cbb156。Core775073与网关775930未重启；2337个旧无关文件一致，1664个前端文件和12个公网入口/资源核对通过，完整备份指针work/frontend-preservation/latest.json已更新。
+- MySQL持久主线正文库按环境/客户/房间/方案/卖点×角度隔离，默认容量3、1/2/3+条复用30%/60%/70%、同条实际起播后冷却180秒。只有当前生效事实、条件、商品与福利范围、卖点/角度卡、风格、评分、P0、表达要求、模型及提示词全部匹配才复用；变化后退役，不因改回旧值复活。补充另一张方向卡不影响原样有效的卡。仅音色/TTS模型/语速变化只重做声音，保留有效文字。
+- 完整音频包含准确PCM时间轴、字幕和安全句末切点；上传前固定引用，实际PCM起播幂等计数，完成/下一条实际主线起播释放旧引用，暂停与进程重启不释放。退役至少24小时且无活动引用才删除本库明确五对象。开场/讲解/辅助/预览/依赖前文及明确到期活动不进长期库，互动沿用现有流程。
+- 后台“直播运维 → 用户声音缓存”新增“主线跨场话术库”中文配置与统计，保留原用户覆盖、权限、审计及CAS。发布前后实际配置指纹一致：主线true、互动false、临时保留5小时。互动false的数据库更新时间为北京时间10月15日00:14:55，早于本次发布；不能按此前23:59历史记录推断当前互动仍true。本次没有写两个开关或账号设置。
+- 已整合WorkBuddy1024d36及原模型池/直播下载/声音配置，GitHub main和work/main-merge-20261014同步，开发仍在work/model-pool-source；E:/speech-generator-build原目录未改。后续不得用缺少新库或模型池的旧管理源码覆盖。
+- 五项真实隔离MySQL测试、缓存/审核回执/声音失效/句末切点专项、前端构建与20项保护回归、模型池分页和手机设置交互通过。全管理测试与未修改基线同有30项旧失败、无新增，不宣称全套通过。真实OSS五对象写入/HEAD/读取/签名/删除通过且全部清理，桶无到期生命周期。未启动真实直播、未发送真实模型/TTS口播，当前库空，实际命中率待正式开播验证。
+- 第一次切换因校验脚本误用GET检查POST模型列表而自动回滚，按真实方法校验后r2成功；未绕过守卫。证明work/speech-library-proof/report.md、production-verification.json、deployment-report.json、postcheck.json、storage-verification.json；设计见docs/2026-10-15-room-speech-library.md。
+
+## 互动与衔接语下载HTTPS修复（2026-10-15 已上线）
+
+- 用户截图21:28:42互动对应tenant14/room26/session283/asset698，旧下载和归档仅允许HTTPS，供应商却返回HTTP的DashScope结果OSS签名地址，导致invalid source audio URL。真实GET验证同一对象改HTTPS可读取，HEAD403仅说明GET签名不支持HEAD，不能据此判断文件不存在。
+- 北京时间07:00:34上线 `/opt/xiaolan/releases/20261015-interaction-download-853ea9d`，部署源码853ea9d88283606341e4a4362567bcbdc847c855，Management PID845418/SHA256 90f53adc8eff70030c8bdba06937d701aadc2a2d77f555d288dbca6542c49dc7。只改管理程序，2386个其它文件、1664个前端文件及3公网入口核验一致；Core775073、网关775930、Nginx、配置与模型池未改。
+- 直接下载和私有24小时归档统一把DashScope结果OSS的历史HTTP地址升级为HTTPS，签名及转义不变，非供应商HTTP/用户信息/非默认端口/伪造域名仍拒绝，无HTTP降级。历史条目无需重生成或改文案，按原任务重试自动补存，保留从原播放开始24小时。
+- 07:02:41已核实asset698补存成功，完整GET200、948524字节RIFF，SHA256 7f2d286b682e0b73849646921025872abfa6b111fafd9d9b40fc0bc1c9e31475，到期仍10月15日21:28:42.790；同类记录继续自动补存，期间直接下载支持HTTPS原文件。供应商原WAV头为流式占位长度，实际载荷约19.76秒、列表22.48秒来自既有播放记录，本次不改TTS/音频，不据声明帧数报告12小时。
+- HTTPAPI完整包与下载专项通过，未调用真实模型/TTS或操作直播。已推送GitHub main并同步work/main-merge-20261014，E:/speech-generator-build未改。保留同房间话术库、模型池和WorkBuddy页面。证明work/interaction-download-proof/report.md、deployment-report.json、production-verification.json、recovery-verification.json；前端备份指针work/frontend-preservation/latest.json已按全量哈希复用原备份并更新到本版本。

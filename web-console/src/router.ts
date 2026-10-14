@@ -270,6 +270,12 @@ export const router = createRouter({
       meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
     },
     {
+      path: '/system/settings/intelligence/model-pool',
+      name: 'system-model-pool',
+      component: () => import('./views/ModelPoolSettingsView.vue'),
+      meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
+    },
+    {
       path: '/system/settings/live/anchor-recommendations',
       name: 'system-anchor-recommendations',
       component: () => import('./views/AnchorRecommendationsAdminView.vue'),

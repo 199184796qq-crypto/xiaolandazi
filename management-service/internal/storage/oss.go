@@ -72,6 +72,9 @@ func (s *OSS) PutPrivate(ctx context.Context, objectKey string, source io.Reader
 func (s *OSS) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
 	return s.bucket.GetObject(objectKey, oss.WithContext(ctx))
 }
+func (s *OSS) Exists(ctx context.Context, objectKey string) (bool, error) {
+	return s.bucket.IsObjectExist(objectKey, oss.WithContext(ctx))
+}
 
 func (s *OSS) Delete(ctx context.Context, objectKey string) error {
 	return s.bucket.DeleteObject(objectKey, oss.WithContext(ctx))

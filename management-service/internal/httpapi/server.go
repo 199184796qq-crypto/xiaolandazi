@@ -24,6 +24,7 @@ import (
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/semantic"
+	"livecompanion/management/internal/speechlibrary"
 	"livecompanion/management/internal/speechmission"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/ttsgateway"
@@ -72,10 +73,12 @@ type Server struct {
 	stylePlugins          *styleplugin.Registry
 	anchorCycles          anchorcycle.Repository
 	anchorVoiceCache      anchorvoicecache.Repository
+	speechLibrary         speechlibrary.Repository
 	generationCachePolicy model.GenerationCachePolicyReader
 	cycleCancels          cycleCancels
 	previewStreams        previewStreams
 	anchorProducerContext context.Context
+	sessionArchiveWatches sync.Map
 }
 
 func New(
@@ -168,6 +171,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
 	mux.HandleFunc("GET /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyGet)
+	mux.HandleFunc("GET /api/v1/system/speech-library-policy", s.speechLibraryPolicyGet)
+	mux.HandleFunc("PUT /api/v1/system/speech-library-policy", s.speechLibraryPolicyPut)
 	mux.HandleFunc("PUT /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyPut)
 	mux.HandleFunc("GET /api/v1/liveops/user-voice-cache-policies", s.liveOpsUserVoiceCachePolicies)
 	mux.HandleFunc("PUT /api/v1/liveops/user-voice-cache-policies/{tenantID}", s.liveOpsUpdateUserVoiceCachePolicy)
@@ -193,6 +198,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/speech-models", s.systemSpeechModelsGet)
 	mux.HandleFunc("PUT /api/v1/system/speech-models", s.systemSpeechModelsSave)
 	mux.HandleFunc("POST /api/v1/system/speech-models/test", s.systemSpeechModelsTest)
+	mux.HandleFunc("GET /api/v1/system/model-pool", s.systemModelPoolGet)
+	mux.HandleFunc("POST /api/v1/system/model-pool/entries", s.systemModelPoolSave)
+	mux.HandleFunc("DELETE /api/v1/system/model-pool/entries/{entryID}", s.systemModelPoolDelete)
+	mux.HandleFunc("POST /api/v1/system/model-pool/models", s.systemModelPoolModels)
+	mux.HandleFunc("POST /api/v1/system/model-pool/import-current", s.systemModelPoolImport)
 	mux.HandleFunc("POST /api/v1/system/speech-models/test-options", s.systemSpeechModelTestOptions)
 	mux.HandleFunc("POST /api/v1/system/speech-models/models", s.systemSpeechModelsList)
 	mux.HandleFunc("PUT /api/v1/system/settings", s.systemUpdateSettings)
@@ -440,6 +450,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/generated-speeches", s.listRoomGeneratedSpeeches)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-downloads", s.sessionDownloads)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-downloads/{assetID}/audio", s.downloadSessionAudio)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/agent-decisions", s.getRoomAgentDecisions)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-voice/transcribe", s.transcribeRoomAgentVoice)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/agent-decisions/simulate", s.simulateRoomAgentDecision)

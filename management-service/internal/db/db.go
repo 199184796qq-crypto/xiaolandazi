@@ -16,6 +16,7 @@ import (
 type Store struct {
 	db                 *sql.DB
 	inboxEventsEnabled bool
+	modelPoolReady     bool
 }
 
 func Open(cfg config.Config) (*Store, error) {

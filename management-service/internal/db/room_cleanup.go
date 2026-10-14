@@ -37,6 +37,14 @@ func (s *Store) CleanupDeletedRoomDerivedState(ctx context.Context, tenantID, ro
 	if err := cancelDeletedRoomQuotaLeases(ctx, tx, tenantID, roomID); err != nil {
 		return err
 	}
+	if s.modelPoolReady {
+		if err := lockModelPoolTx(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE mgmt_model_pool_leases SET status='released',released_at=UTC_TIMESTAMP(3),release_reason='room_deleted' WHERE tenant_id=? AND room_id=? AND status='active'`, tenantID, roomID); err != nil {
+			return err
+		}
+	}
 
 	if _, err := tx.ExecContext(ctx, "UPDATE live_device_runtime_state SET current_room_id=NULL, work_status='idle', stop_reason='room_deleted', updated_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND current_room_id=?", tenantID, roomID); err != nil {
 		return fmt.Errorf("release live device runtime state: %w", err)

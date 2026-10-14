@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 )
 
 func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
@@ -23,6 +24,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	var actualReceipts []anchorcycle.AnglePlaybackReceipt
 	var lectureReceipts []anchorcycle.PlaybackReceipt
 	var playedMS int64
+	var archivedPlaybackSequence uint64
 	supply := newCycleSupply(s, ctx, state)
 	defer supply.stop()
 	supply.startup = func(ctx context.Context, stage string) {
@@ -46,6 +48,14 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if !snapshot.Running || snapshot.ProgramID != program || snapshot.VersionID != version.ID {
 			return false, anchorcycle.ErrStale
 		}
+		s.observeLibraryPlayback(ctx, tenant, room, runtimeID, snapshot.MainlinePlaybackReceipts, snapshot.PlaybackReceipts)
+		if len(snapshot.MainlinePlaybackReceipts) > 0 {
+			last := snapshot.MainlinePlaybackReceipts[len(snapshot.MainlinePlaybackReceipts)-1].Sequence
+			if last > archivedPlaybackSequence {
+				s.archiveMainlineReceipts(ctx, tenant, room, runtimeID, snapshot)
+				archivedPlaybackSequence = last
+			}
+		}
 		mu.Lock()
 		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
 		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
@@ -66,6 +76,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if snapshot.ProgramID != program {
 			return 0, anchorcycle.ErrStale
 		}
+		s.observeLibraryPlayback(ctx, tenant, room, runtimeID, snapshot.MainlinePlaybackReceipts, snapshot.PlaybackReceipts)
 		mu.Lock()
 		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
 		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
@@ -126,6 +137,17 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		return nil
 	}
 	supply.onReady = func(ctx context.Context, latest *anchorcycle.State, segment anchorcycle.Segment) error {
+		// Re-sign at handoff, including after a long AI pause; object lifetime is
+		// independent of the temporary URL lifetime.
+		if segment.Selected.LibraryDecision != "" && segment.Voice != nil {
+			if a, e := s.libraryTrackedAudio(ctx, tenant, room, runtimeID, segment.Selected.ID); e != nil {
+				return e
+			} else if a != nil {
+				v := *segment.Voice
+				v.Bundle = a.Bundle
+				segment.Voice = &v
+			}
+		}
 		track, err := liveCycleMainlineTrack(latest, segment)
 		if err != nil {
 			return err
@@ -153,6 +175,11 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if program != "" && snapshot.ProgramID != program {
 			return anchorcycle.ErrStale
 		}
+		archiveCtx, archiveCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = s.store.SaveSessionSpeechAsset(archiveCtx, model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: runtimeID,
+			SourceRef: model.SessionMainlineRef(snapshot.ProgramID, track.ID), Kind: "mainline", Text: track.Text,
+			AudioURL: track.AudioURL, DurationMS: track.DurationMS, ExpiresAt: model.SessionAudioExpiry(track.AudioURL)})
+		archiveCancel()
 		mu.Lock()
 		delivery.ProgramID, delivery.Generation = snapshot.ProgramID, snapshot.Generation
 		delivery.DeliveredCandidates = append(delivery.DeliveredCandidates, segment.Selected.ID)

@@ -140,6 +140,15 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateModelPool(ctx); err != nil {
+		log.Fatalf("migrate model pool: %v", err)
+	}
+	if err := store.MigrateSpeechLibrary(ctx); err != nil {
+		log.Fatalf("migrate speech library: %v", err)
+	}
+	if err := store.MigrateSessionDownloads(ctx); err != nil {
+		log.Fatalf("migrate session downloads: %v", err)
+	}
 	if err := store.MigrateAngleDirectionPools(ctx); err != nil {
 		log.Fatalf("migrate angle direction pools: %v", err)
 	}
@@ -255,6 +264,7 @@ func main() {
 		leaderLease,
 	)
 	api.SetWorkInbox(inbox)
+	api.SetSpeechLibrary(store)
 	api.SetStylePluginRegistry(stylePluginRegistry)
 	wechatService, err := wechatpay.New(ctx, cfg.WechatPay)
 	if err != nil {
@@ -271,7 +281,10 @@ func main() {
 	api.SetAnchorCycleRepository(anchorcycle.NewRedis(cycleRedis, cfg.RuntimeExecutionRealm))
 	api.SetAnchorProducerContext(appCtx)
 	go api.RunLiveAnchorOwnerWatch(appCtx)
+	go api.RunSessionArchiveWatch(appCtx)
+	go api.RunSessionDownloadMaintenance(appCtx)
 	api.SetAnchorVoiceCache(anchorvoicecache.New(cycleRedis, cfg.RuntimeExecutionRealm))
+	go api.RunSpeechLibraryCleanup(appCtx)
 	go api.RunAnchorVoiceCacheCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
 	go api.RunCoreStatusWatch(appCtx)

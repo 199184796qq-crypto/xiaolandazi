@@ -140,7 +140,7 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 }
 
 func (s *Server) cachedCycleVoice(ctx context.Context, state *anchorcycle.State, segment anchorcycle.Segment) (*anchorcycle.VoiceAsset, error) {
-	if state.PreviewLimitMS > 0 {
+	if state.PreviewLimitMS > 0 || segment.Phase != "body" {
 		return nil, nil
 	}
 	if err := state.CheckApprovedText(segment.Selected, cycleVoiceText(segment.Selected)); err != nil {

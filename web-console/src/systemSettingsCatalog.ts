@@ -114,6 +114,15 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
             superAdminOnly: true,
           },
           {
+            key: 'model-pool',
+            title: '模型池配置',
+            description: '配置账号Key、可用模型及直播间名额，查看AI分配和占用。',
+            icon: '池',
+            to: '/system/settings/intelligence/model-pool',
+            badge: '账号池',
+            superAdminOnly: true,
+          },
+          {
             key: 'live-analysis',
             title: '直播录音分析',
             description: '配置录音分析使用的模型、提示词版本和启用状态。',

@@ -177,6 +177,9 @@ type interactionExchangeStore interface {
 }
 
 func (w *Worker) completeInteractionAnswer(ctx context.Context, session model.LiveRuntimeSession, request agentgateway.Request) (agentgateway.Response, error) {
+	if session.ID > 0 {
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
+	}
 	source, ok := w.store.(interactionExchangeStore)
 	if !ok {
 		return w.agent.Complete(ctx, request)

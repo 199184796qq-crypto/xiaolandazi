@@ -214,6 +214,9 @@ func (w *Worker) runCycle(ctx context.Context) {
 }
 
 func (w *Worker) refineRoom(ctx context.Context, session model.LiveRuntimeSession, includeAllSmall bool) error {
+	if session.ID > 0 {
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
+	}
 	if session.RoomID <= 0 || session.TenantID <= 0 || session.Status != "running" {
 		return nil
 	}

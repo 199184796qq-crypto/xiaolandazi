@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/speechlibrary"
 )
 
 type seededSystemSetting struct {
@@ -69,6 +70,7 @@ func (s *Store) MigrateSystemSettings(ctx context.Context) error {
 		{Key: VoiceModelSetting, Group: "intelligence", Label: "声音模型配置", Value: `{"custom_model":"cosyvoice-v3.5-flash","official_library":"tencent-premium","revision":0}`, InputType: "json", SortOrder: 6},
 		{Key: AnchorGenerationSetting, Group: "intelligence", Label: "主播生成模型与阿里会话配置", Value: "{}", InputType: "json", SortOrder: 5},
 		{Key: AnchorVoiceCacheRetentionSetting, Group: "liveops", Label: "OSS声音缓存保留（小时）", Value: "5", InputType: "number", SortOrder: 10},
+		{Key: speechlibrary.SettingKey, Group: "liveops", Label: "主线跨场话术库配置", Value: `{"capacity":3,"one_rate":30,"two_rate":60,"full_rate":70,"cooldown_seconds":180}`, InputType: "json", SortOrder: 13},
 		{Key: model.MainlineGenerationCacheReuseSetting, Group: "liveops", Label: "主线话术与声音成品缓存复用", Value: "true", InputType: "boolean", SortOrder: 11},
 		{Key: model.InteractionGenerationCacheReuseSetting, Group: "liveops", Label: "互动回答与声音成品缓存复用", Value: "false", InputType: "boolean", SortOrder: 12},
 		{Key: model.FinanceDistinctReviewerSetting, Group: "finance", Label: "强制经办人与审核人不同", Value: "true", InputType: "boolean", SortOrder: 10},
@@ -218,6 +220,9 @@ func (s *Store) UpdateSystemSettings(
 	actorUserID int64,
 ) error {
 	for _, update := range updates {
+		if update.Key == speechlibrary.SettingKey {
+			return errors.New("话术库请使用专用配置面板保存")
+		}
 		if strings.TrimSpace(update.Key) == VoiceModelSetting {
 			return errors.New("声音模型请使用专用配置面板保存")
 		}

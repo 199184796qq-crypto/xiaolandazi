@@ -131,7 +131,7 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 	if audit := c.ExpressionAudit; audit != nil {
 		requirementModel, requirementMother = audit.Model, audit.PromptSHA
 	}
-	contextSHA := anchorcycle.ProductDigest(struct{ Source, Model, Profile, Endpoint, Mother, RequirementModel, RequirementMother string }{a.ScopeSHA, profile.Model, profile.ID, profile.BaseURL, mother, requirementModel, requirementMother})
+	contextSHA := finalMainlineReviewContext(a.ScopeSHA, profile, mother, requirementModel, requirementMother)
 	state.FinalContentReviewContextSHA = contextSHA
 	if previous := c.FinalContentAudit; previous != nil && previous.ContextSHA == contextSHA && previous.TextSHA == a.TextSHA && previous.ScopeSHA == a.ScopeSHA && previous.Error == "" {
 		return

@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
@@ -392,6 +393,10 @@ func (s *Server) cancelCoreContentRefresh(ctx context.Context, job model.LiveCon
 }
 
 func (s *Server) generateContentRefresh(ctx context.Context, job model.LiveContentRefreshJob, base model.LiveAgentPlanVersion, snapshot coreclient.ProgramRefreshSnapshot) (model.CreateLiveAgentPlanVersionInput, error) {
+	ctx = agentgateway.WithModelResolver(ctx, s.store)
+	if session, err := s.store.GetLiveRuntimeByRoom(ctx, job.TenantID, job.RoomID); err == nil && (session.Status == "running" || session.Status == "paused") {
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: job.TenantID, RoomID: job.RoomID, RuntimeID: session.ID, RequireLease: true})
+	}
 	input := model.CreateLiveAgentPlanVersionInput{
 		TenantID: job.TenantID, RoomID: job.RoomID, DurationMinutes: base.DurationMinutes, RoundMinutes: base.RoundMinutes,
 		VoiceIdentity: base.VoiceIdentity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), base.Variants...),

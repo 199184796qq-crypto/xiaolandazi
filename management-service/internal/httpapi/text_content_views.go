@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentguard"
+	"math/rand/v2"
 	"strings"
 )
 
@@ -90,6 +91,17 @@ func generationMaterialViews(facts []anchorcycle.HookFact) ([]map[string]any, []
 	guidance := []map[string]any{}
 	for _, record := range content {
 		if rules, exists := record["表达指导（不作为商品事实）"]; exists {
+			if typed, ok := rules.([]map[string]string); ok {
+				copy := append([]map[string]string{}, typed...)
+				positions := []int{}
+				for i, g := range copy {
+					if strings.Contains(g["要求"], "正向举例") {
+						positions = append(positions, i)
+					}
+				}
+				rand.Shuffle(len(positions), func(i, j int) { a, b := positions[i], positions[j]; copy[a], copy[b] = copy[b], copy[a] })
+				rules = copy
+			}
 			guidance = append(guidance, map[string]any{"对应事实": record["事实内容"], "适用商品链接": record["适用商品链接"], "负向约束及正向举例（不作为新增事实，不直接照念指导）": rules})
 			delete(record, "表达指导（不作为商品事实）")
 		}
