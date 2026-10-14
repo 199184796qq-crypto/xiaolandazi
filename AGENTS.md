@@ -154,3 +154,14 @@
 - 首次发布前守卫发现管理二进制和主播提示词并行原地更新，未切换；前端哈希未变，重新核对实际基线后继承管理进程795036与新提示词发布。不能用历史二进制或提示词覆盖回旧版。
 - 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1316个前端文件逐项匹配服务器。验证见 `work/strategy-more-dismiss-proof/production-verification.json`，说明见主线 `docs/2026-10-14-strategy-more-menu-dismiss.md`；后续继续继承当时实际current。
 
+
+
+## 腾讯精品官方声音（2026-10-14 已上线）
+
+- 当前发布 `/opt/xiaolan/releases/20261014-tencent-voices-f4cc1d5`，北京时间13:01上线，源码f4cc1d5，完整源码在 `work/main-merge-20261014` 与GitHub main；包含WorkBuddy正式提交21404bf风格提取重构和此前本聊天改动。后续不能从旧声音/管理源码覆盖。
+- 声音中心官方声音展示14款腾讯实时精品音色，支持输入原文试听；不再受CosyVoice声音库选择影响。我的声音保留Qwen/CosyVoice复刻与设计，旧官方ID和默认声音兼容保留。打开或试听不改变房间已选声音，只有点击使用才保存选择；现有运行快照机制保留。
+- 腾讯凭据已由用户通过本机窗口保存至服务器环境配置并由新Management加载，不在Git或聊天中保存密钥值。WebSocket返回完整16kHz PCM后封装WAV，Core沿用24kHz转换。供应商、模型与音色ID按服务端目录绑定，主线/互动/桥接均支持腾讯；不混入超自然或大模型档。
+- Management实际PID800329，SHA256=b869b5711a52695905b87324d78e02874d821c53bb1acf0e7451d25714a0acf2；Core/网关未重启。仅覆盖管理二进制、web和web-desktop入口并新增资源，1698个原有无关文件、手机端、提示词和Nginx一致；平台缓存默认值未改。
+- 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1352个前端文件逐项匹配服务器。证明在 `work/tencent-official-voices-proof/production-verification.json`，说明见主线 `docs/2026-10-14-tencent-premium-voices.md`。
+- 腾讯真实问候接口及用户411字符原文测试成功；智柯75.46秒、智瑜80.55秒。仅生成试听文件，没有写事实、方案或直播队列，没有自动切换房间声音。协议/目录/HTTP/互动路由相关测试通过，前端14项回归通过；全量Go的27项既有失败在未修改整合基线也相同，不能记为全套通过。
+- 发布仍以当时实际current及文件指纹为基础，持共享发布锁、确认空闲后只重启已授权服务，不回退历史提示词/前端/二进制。

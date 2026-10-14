@@ -24,3 +24,7 @@
 先合入WorkBuddy正式提交21404bf的风格提取变更，并保留主线既有用户声音缓存、动态生成默认可用和资料补充界面改动。发布以当时服务器实际current文件清单为基础，继承所有现有模板、静态资源和配置；只覆盖Management二进制与web/web-desktop入口，增加新哈希资源及独立发布元数据。持共享发布锁，两次确认没有活动场次和Core节目后才重启Management；Core/网关不重启，健康异常回滚。生产前后指纹、源码、真实TTS回执与测试报告在本聊天work/tencent-official-voices-proof保存。
 
 官方依据：[腾讯实时精品音色目录](https://cloud.tencent.com/document/product/1073/92668)、[腾讯WebSocket流式文本语音合成协议](https://cloud.tencent.com/document/api/1073/108595)。
+
+## 实际发布结果
+
+北京时间2026-10-14 13:01发布成功，current为`20261014-tencent-voices-f4cc1d5`，Management PID800329，源码f4cc1d5，三个服务健康通过。保留1698个原有无关文件及所有既有手机端/模板/Nginx文件，Core和网关PID未变。1352个前端文件已重建验证备份。用户原文411字符两款精品音色完整生成并通过WAV长度/校验和核对：智柯75.46秒、合成请求6.111秒；智瑜80.55秒、合成请求11.784秒。测试回执和声音文件保存在本聊天，未进入直播播放。
