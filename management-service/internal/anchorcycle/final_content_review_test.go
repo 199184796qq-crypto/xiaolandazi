@@ -14,6 +14,30 @@ func TestFinalContentScopeChangesWithAdoptedOverlay(t *testing.T) {
 	}
 }
 
+func TestFinalReviewViolationTriggersLocalRewriteNotSkip(t *testing.T) {
+	s := p0Fixture(t, 2)
+	s.Surface = "formal_live"
+	s.FinalContentReviewRequired = true
+	s.FinalContentReviewContextSHA = "review-context"
+	c := candidate("价格直接降到底，划算多了嘛。", 100)
+	if e := s.CheckP0Candidate(&c); e != nil {
+		t.Fatal(e)
+	}
+	c.FinalContentAudit = &FinalContentAudit{Decision: "有问题", Reason: "绝对化夸大宣传"}
+	if ok, e := s.AddCandidate(c, anchorstylescore.Baseline{}); e != nil || ok {
+		t.Fatal("violation admitted without rewrite", e)
+	}
+	if s.P0PendingRepair == nil {
+		t.Fatal("violation should trigger local rewrite, not skip")
+	}
+	if s.P0PendingRepair.Reason != "绝对化夸大宣传" {
+		t.Fatal("review reason not carried into repair", s.P0PendingRepair.Reason)
+	}
+	if len(s.GenerationSkips) != 0 || len(s.Accepted) != 0 {
+		t.Fatal("violation should rewrite before skipping")
+	}
+}
+
 func TestFrozenFactNegativeGuidanceIsCheckedButExampleIsOptional(t *testing.T) {
 	s := p0Fixture(t, 2)
 	s.Queue[0].FactScope = &TaskFactScope{Facts: []HookFact{{Data: "当前事实", ExpressionGuidance: []map[string]string{{"要求": "负向表达约束", "内容": "不能拿早餐举例"}, {"要求": "正向举例模板（只参考说法，不补充事实）", "内容": "下班开袋吃"}}}}}

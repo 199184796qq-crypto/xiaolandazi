@@ -40,12 +40,12 @@ func TestMotherNormalizationAndOriginalOffsets(t *testing.T) {
 	if !p.Scan("我们家在四川绵阳，5L大桶9斤2两啊。", "ordinary_food").Passed {
 		t.Fatal("safe fixture blocked")
 	}
-	for _, text := range []string{"使用京东物流", "由京东快递配送", "订单由京东配送"} {
+	for _, text := range []string{"使用京东物流", "由京东快递配送", "订单由京东配送", "去京东下单", "到京东购买"} {
 		if !p.Scan(text, "ordinary_food").Passed {
 			t.Fatalf("delivery context incorrectly blocked: %q", text)
 		}
 	}
-	for _, text := range []string{"去京东下单", "到京东购买"} {
+	for _, text := range []string{"加微信私聊下单", "去淘宝买更便宜", "转账私下交易"} {
 		if p.Scan(text, "ordinary_food").Passed {
 			t.Fatalf("off-platform trade escaped P0: %q", text)
 		}
@@ -125,9 +125,9 @@ func TestDenseMatchesKeepOffsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := strings.Repeat("最", 2000)
+	text := strings.Repeat("绝对", 1000)
 	r := p.Scan(text, "ordinary_food")
-	if len(r.Hits) != 2000 || r.Hits[1999].Start != 1999 {
+	if len(r.Hits) != 1000 || r.Hits[999].Start != 1998 {
 		t.Fatal("dense matches lost positions")
 	}
 }

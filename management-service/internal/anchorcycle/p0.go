@@ -264,6 +264,16 @@ func (s *State) rejectP0Candidate(c Candidate) {
 	}
 }
 
+// rejectReviewCandidate 最终复核判违规时的局部重写，复用 P0 的重写链路（P0PendingRepair）。
+// 最终复核只有 reason 文字、无词级命中，交给重写模型按 reason 定位并只改违规句段。
+// 重写次数与 P0 共用 P0RewritesUsed/P0MaxRewrites 预算，耗尽后由调用方跳过。
+func (s *State) rejectReviewCandidate(c Candidate, reason string) {
+	c.ContentIssue = "final_review_blocked"
+	s.Attempts = append(s.Attempts, c)
+	r := contentguard.PlanReviewRepair(c.Text, reason, s.P0RewritesUsed+1)
+	s.P0PendingRepair = &r
+}
+
 func (s *State) P0RulesJSON() (string, error) {
 	p, err := contentguard.Compile(s.P0PolicyMD)
 	if err != nil {
