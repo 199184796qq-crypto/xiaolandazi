@@ -9,3 +9,5 @@
 `pnpm build` 类型检查及生产构建通过；资料补充、配置导航及主播操作13项既有测试通过。未修改业务接口、客户事实、模型请求或保存流程。浏览器记录及可重用整页复现入口保存在聊天工作区 `work/supplement-layout-proof`。
 
 发布仅更新桌面和兼容入口HTML及新增哈希资源，继承实际current全部其它文件；发布前后核对文件指纹、服务PID及二进制、手机端和Nginx路由。发布结果记录在 `work/supplement-layout-proof/production-verification.json`，备份指针为 `work/frontend-preservation/latest.json`。
+
+已于北京时间2026-10-14 09:11上线 `20261014-supplement-layout-2f44f4b`（源码2f44f4b）。1463个原有非入口文件保持一致，三个服务PID及运行二进制、手机端及Nginx路由保持一致；1130个前端文件备份逐项匹配服务器指纹。7项公开页面/新资源检查通过。

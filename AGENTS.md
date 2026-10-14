@@ -109,3 +109,10 @@
 - 保留新资料卡、文档插画、助手头像、对话气泡、一体化输入框、TXT/Markdown读入、快速示例与原有补全/确认保存流程。文件及示例只预填输入，不能自动提交或保存为事实。
 - 仅替换web和web-desktop两个入口HTML，新增哈希资源；1426个原有非入口文件哈希一致，三个服务PID/运行二进制、手机端和Nginx路由未变，没有重启直播。
 - 最新前端备份指针 `work/frontend-preservation/latest.json` 已指向本版，经实际服务器指纹核对1094个前端文件；验证见 `work/supplement-ui-proof/production-verification.json`。原版本和旧哈希资源继续保留，后续发布仍以当时实际current为基础。
+
+## 商品资料补充嵌入布局修复（2026-10-14 已上线）
+
+- 当前前端已于北京时间09:11更新为 `/opt/xiaolan/releases/20261014-supplement-layout-2f44f4b`，源码2f44f4b，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 根组件必须保留确定的100%宽度、最小宽度0及1560px最大宽度，避免父级网格与内联尺寸容器共同导致缩窄。响应规则按组件实际宽度判断；验证须包含方案页真实父级和全局样式，以及有数据的补全清单和对话，不能只用独立组件预览。
+- 新版资料补充交互与所有保护页面继续保留。本次仅更新两个入口HTML并新增哈希资源，1463个原有非入口文件一致，服务PID/二进制、手机端和Nginx路由未变。
+- 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1130个前端文件逐项匹配实际服务器。验证见 `work/supplement-layout-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-layout-fix.md`。后续发布仍以当时实际current为基础。
