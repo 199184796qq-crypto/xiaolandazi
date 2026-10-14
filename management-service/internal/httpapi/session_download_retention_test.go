@@ -10,6 +10,7 @@ import (
 	"livecompanion/management/internal/storage"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -151,5 +152,34 @@ func TestSessionDownloadAudioCopyPreserves24HoursAndOwnership(t *testing.T) {
 	bad.ArchiveBucket = s.Bucket()
 	if e := preserveSessionDownloadAsset(context.Background(), bad, s, s, client); e == nil {
 		t.Fatal("cross-tenant archive key accepted")
+	}
+}
+
+func TestSessionDownloadLegacyProviderURLProducesPrivateArchive(t *testing.T) {
+	at := time.Now().Add(-9 * time.Hour)
+	a := model.SessionSpeechAsset{ID: 698, TenantID: 14, RoomID: 26, SessionID: 283,
+		AudioURL: "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/cosyvoice-v3.5-flash/a.wav?Signature=fixture%2Babc%3D", PlayedAt: &at}
+	s := &downloadArchiveFixture{}
+	calls := 0
+	client := &http.Client{Transport: archiveTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Scheme != "https" || r.URL.RawQuery != "Signature=fixture%2Babc%3D" {
+			t.Fatal("plaintext request or altered signature")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("RIFF original interaction")), Header: make(http.Header)}, nil
+	})}
+	if e := preserveSessionDownloadAsset(context.Background(), a, s, s, client); e != nil || !s.completed || !s.private || calls != 1 || string(s.data) != "RIFF original interaction" || !s.expiry.Equal(at.Add(24*time.Hour)) {
+		t.Fatal("historical interaction failed private archive recovery", e)
+	}
+	client.Transport = archiveTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Scheme != "https" {
+			t.Fatal("fallback used plaintext")
+		}
+		return &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader("expired")), Header: make(http.Header)}, nil
+	})
+	blocked := &downloadArchiveFixture{}
+	if e := preserveSessionDownloadAsset(context.Background(), a, blocked, blocked, client); e == nil || blocked.completed || calls != 2 {
+		t.Fatal("failed source was treated as archived or retried unsafely")
 	}
 }

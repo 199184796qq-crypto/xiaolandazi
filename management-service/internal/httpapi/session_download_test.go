@@ -39,3 +39,27 @@ func TestSessionAudioURLScope(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionDownloadUpgradesLegacyDashScopeURLOnly(t *testing.T) {
+	address := "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/cosyvoice-v3.5-flash/a%2Fb.wav?Expires=2000000000&OSSAccessKeyId=fixture&Signature=a%2Bb%2Fc%3D"
+	got, ok := sessionAudioDownloadURL(address)
+	if !ok || got != "https"+strings.TrimPrefix(address, "http") {
+		t.Fatal("legacy provider URL not upgraded without changing its signature")
+	}
+	secured := "https://source-bucket.oss-cn-hangzhou.aliyuncs.com/a.wav?Signature=fixture%3D"
+	if got, ok = sessionAudioDownloadURL(secured); !ok || got != secured {
+		t.Fatal("existing secure archive URL changed")
+	}
+	for _, raw := range []string{
+		"http://bucket.aliyuncs.com/a.wav",
+		"http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com:80/a.wav",
+		"http://user:secret@dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.wav",
+		"http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com.evil.test/a.wav",
+		"http://dashscope-result-bj.oss-cn-beijing.evilaliyuncs.com/a.wav",
+		"http://127.0.0.1/a.wav", "file:///etc/passwd",
+	} {
+		if _, ok = sessionAudioDownloadURL(raw); ok {
+			t.Fatal("untrusted legacy URL was accepted")
+		}
+	}
+}

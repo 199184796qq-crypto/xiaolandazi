@@ -44,10 +44,11 @@ func preserveSessionDownloadAsset(ctx context.Context, a model.SessionSpeechAsse
 	if err := writer.ReserveSessionDownloadAudio(ctx, a, key, store.Bucket()); err != nil {
 		return err
 	}
-	if !sessionAudioURLAllowed(a.AudioURL) {
+	address, allowed := sessionAudioDownloadURL(a.AudioURL)
+	if !allowed {
 		return fmt.Errorf("invalid source audio URL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.AudioURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return err
 	}
@@ -81,7 +82,7 @@ func preserveSessionDownloadAsset(ctx context.Context, a model.SessionSpeechAsse
 	if ttl <= 0 {
 		return store.Delete(ctx, key)
 	}
-	address := ""
+	address = ""
 	if internal, ok := store.(interface {
 		InternalSignedURL(context.Context, string, time.Duration) (string, error)
 	}); ok {

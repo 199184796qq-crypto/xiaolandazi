@@ -132,6 +132,25 @@ func sessionAudioURLAllowed(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.User == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".aliyuncs.com")
 }
 
+// DashScope can return signed HTTP result URLs even though the same object and
+// signature support HTTPS. Upgrade at the download boundary, including saved
+// historical rows; never fetch plaintext or relax the HTTPS redirect policy.
+func sessionAudioDownloadURL(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	if u.Scheme == "http" {
+		host := strings.ToLower(u.Hostname())
+		if u.User != nil || u.Port() != "" || !strings.HasPrefix(host, "dashscope-result-") || !strings.Contains(host, ".oss-") || !strings.HasSuffix(host, ".aliyuncs.com") {
+			return "", false
+		}
+		u.Scheme = "https"
+		raw = u.String()
+	}
+	return raw, sessionAudioURLAllowed(raw)
+}
+
 func sessionAudioClient() *http.Client {
 	return &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 3 || !sessionAudioURLAllowed(req.URL.String()) {
@@ -160,14 +179,15 @@ func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 410, "声音文件已到期或不可用")
 		return
 	}
-	if !sessionAudioURLAllowed(a.AudioURL) {
+	address, allowed := sessionAudioDownloadURL(a.AudioURL)
+	if !allowed {
 		writeError(w, 502, "声音文件地址不可用")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	client := sessionAudioClient()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, a.AudioURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		writeError(w, 502, "声音下载暂不可用")
