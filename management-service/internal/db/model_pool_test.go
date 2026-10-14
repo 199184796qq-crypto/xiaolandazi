@@ -54,7 +54,6 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 	}
 	exec(`CREATE TABLE live_runtime_sessions(id BIGINT PRIMARY KEY,tenant_id BIGINT,room_id BIGINT,status VARCHAR(16),stop_reason VARCHAR(80) NOT NULL DEFAULT '')`)
 	exec(`CREATE TABLE core_rooms(id BIGINT PRIMARY KEY,tenant_id BIGINT,name VARCHAR(80),status VARCHAR(16))`)
-	exec(`CREATE TABLE mgmt_tenants(id BIGINT PRIMARY KEY,name VARCHAR(80))`)
 	for _, q := range strings.Split(strings.ReplaceAll(liveRuntimeSchema, "\r\n", "\n"), "\n-- +statement\n") {
 		if strings.HasPrefix(strings.TrimSpace(q), "CREATE TABLE IF NOT EXISTS live_model_exchanges (") {
 			exec(q)
@@ -96,6 +95,7 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 			defer wg.Done()
 			tx, e := s.db.BeginTx(ctx, nil)
 			if e != nil {
+				snapshots.Done()
 				results <- e
 				return
 			}
@@ -149,6 +149,21 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 		t.Fatalf("per-account capacity wrong: %+v", counts)
 	}
 	chosen := leases[0]
+	repeat, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.acquireModelPoolTx(ctx, repeat, 14, chosen.RoomID, chosen.RuntimeID, time.Now().UTC()); err != nil {
+		repeat.Rollback()
+		t.Fatal(err)
+	}
+	if err = repeat.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ListModelPoolLeases(ctx)
+	if err != nil || len(again) != 3 || again[0].LeaseID != chosen.LeaseID {
+		t.Fatal("repeated start consumed a second slot")
+	}
 	scope := agentgateway.RoomModelScope{TenantID: 14, RoomID: chosen.RoomID, RuntimeID: chosen.RuntimeID, RequireLease: true}
 	scoped := agentgateway.WithRoomModelScope(ctx, scope)
 	old, err := s.ResolveSpeechModel(scoped, "unrelated-old-review-profile")
@@ -184,6 +199,16 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 		}
 	}
 	changed := ModelPoolEntryInput{ID: editable.ID, AccountName: editable.AccountName, Profile: agentgateway.SpeechModelInput{SpeechModel: editable.Profile, NewAPIKey: "fixture-rotated-key"}, MaxRooms: editable.MaxRooms, Enabled: false, Revision: editable.Revision}
+	stale := changed
+	stale.Revision++
+	if _, err = s.SaveModelPoolEntry(ctx, stale, 27); !errors.Is(err, ErrModelPoolRevision) {
+		t.Fatal("stale editor changed pool capacity")
+	}
+	tooSmall := changed
+	tooSmall.MaxRooms = 0
+	if _, err = s.SaveModelPoolEntry(ctx, tooSmall, 27); err == nil {
+		t.Fatal("capacity reduced below active allocations")
+	}
 	if _, err = s.SaveModelPoolEntry(ctx, changed, 27); err != nil {
 		t.Fatal(err)
 	}
