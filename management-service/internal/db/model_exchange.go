@@ -2,7 +2,11 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"livecompanion/management/internal/agentgateway"
+	"strings"
 	"time"
 )
 
@@ -21,7 +25,27 @@ func (s *Store) BeginModelExchange(ctx context.Context, scope ModelExchangeScope
 	if err != nil {
 		return 0, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO live_model_exchanges(tenant_id,plan_id,room_id,style_id,run_id,candidate_id,stage,profile_id,request_json,input_bytes,status) VALUES(?,?,?,?,?,?,?,?,?,?,'sending')`, scope.TenantID, scope.PlanID, scope.RoomID, scope.StyleID, scope.RunID, scope.CandidateID, stage, profile, string(raw), len(raw))
+	entry, lease, account := "", "", ""
+	if s.modelPoolReady && scope.TenantID > 0 && scope.RoomID > 0 && !strings.Contains(stage, "tts") {
+		var runtime int64
+		err = s.db.QueryRowContext(ctx, `SELECT entry_id,lease_id,account_name,runtime_id FROM mgmt_model_pool_leases WHERE tenant_id=? AND room_id=? AND status='active'`, scope.TenantID, scope.RoomID).Scan(&entry, &lease, &account, &runtime)
+		room := agentgateway.ContextRoomModelScope(ctx)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		if room.RequireLease && (err != nil || (room.RuntimeID > 0 && runtime != room.RuntimeID)) {
+			return 0, ErrModelPoolLeaseMissing
+		}
+		if entry != "" {
+			profile = entry
+		}
+	}
+	var result sql.Result
+	if s.modelPoolReady {
+		result, err = s.db.ExecContext(ctx, `INSERT INTO live_model_exchanges(tenant_id,plan_id,room_id,style_id,run_id,candidate_id,stage,profile_id,request_json,input_bytes,status,pool_entry_id,pool_lease_id,pool_account_name) VALUES(?,?,?,?,?,?,?,?,?,?,'sending',?,?,?)`, scope.TenantID, scope.PlanID, scope.RoomID, scope.StyleID, scope.RunID, scope.CandidateID, stage, profile, string(raw), len(raw), entry, lease, account)
+	} else {
+		result, err = s.db.ExecContext(ctx, `INSERT INTO live_model_exchanges(tenant_id,plan_id,room_id,style_id,run_id,candidate_id,stage,profile_id,request_json,input_bytes,status) VALUES(?,?,?,?,?,?,?,?,?,?,'sending')`, scope.TenantID, scope.PlanID, scope.RoomID, scope.StyleID, scope.RunID, scope.CandidateID, stage, profile, string(raw), len(raw))
+	}
 	if err != nil {
 		return 0, err
 	}

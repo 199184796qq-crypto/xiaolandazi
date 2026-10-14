@@ -183,6 +183,9 @@ func (w *Worker) startReturnBridge(session model.LiveRuntimeSession, item decisi
 }
 
 func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, plan returnBridgePlan, scope, memory string) error {
+	if session.ID > 0 {
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
+	}
 	profile, err := w.bridgeModel(ctx)
 	if err != nil {
 		return err

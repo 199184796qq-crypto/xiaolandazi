@@ -1707,6 +1707,7 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 }
 
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
+	ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
 	w.reconcileRoomMission(ctx, session)
 	// Core is the single authority for room speech occupancy. The claim API
 	// checks speech-runtime and returns speech_busy while an interaction is
@@ -2198,6 +2199,9 @@ func (w *Worker) generateDecisionText(ctx context.Context, session model.LiveRun
 }
 
 func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem) (string, error) {
+	if session.ID > 0 {
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
+	}
 	if item == nil {
 		return "", fmt.Errorf("待执行策略为空")
 	}

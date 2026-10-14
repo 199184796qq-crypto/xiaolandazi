@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"livecompanion/management/internal/agentgateway"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,15 @@ func (s *Server) modelResolverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.store != nil {
 			r = r.WithContext(agentgateway.WithModelResolver(r.Context(), s.store))
+			// Path/query values select a room only after actor ownership is checked.
+			// Administrative model-pool endpoints never accept a customer room scope.
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) > 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "rooms" {
+				room, _ := strconv.ParseInt(parts[3], 10, 64)
+				if actor, err := s.auth.Resolve(r); err == nil && actor.TenantID != nil && room > 0 {
+					r = r.WithContext(agentgateway.WithRoomModelScope(r.Context(), agentgateway.RoomModelScope{TenantID: *actor.TenantID, RoomID: room}))
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

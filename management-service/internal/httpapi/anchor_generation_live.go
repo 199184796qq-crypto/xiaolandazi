@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"livecompanion/management/internal/agentgateway"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -56,6 +57,7 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 		parent = context.Background()
 	}
 	runCtx, cancel := context.WithCancel(parent)
+	runCtx = agentgateway.WithRoomModelScope(runCtx, agentgateway.RoomModelScope{TenantID: tenant, RoomID: room, RuntimeID: runtimeID, RequireLease: true})
 	key := "formal-" + anchorcycle.ID()
 	s.cycleCancels.Lock()
 	if s.cycleCancels.entries == nil {
@@ -113,6 +115,7 @@ func (s *Server) hasLiveAnchorProducer(tenant, room int64) bool {
 }
 
 func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) (*anchorcycle.State, error) {
+	ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: tenant, RoomID: room, RuntimeID: runtimeID, RequireLease: true})
 	s.reportLiveStartup(ctx, tenant, room, runtimeID, "reading_plan")
 	scheme, err := realtimeScheme(version.GenerationContext)
 	if err != nil {

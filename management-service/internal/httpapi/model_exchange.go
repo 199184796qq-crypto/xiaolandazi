@@ -11,6 +11,13 @@ import (
 type exchangeScopeKey struct{}
 
 func withExchangeScope(ctx context.Context, scope appdb.ModelExchangeScope) context.Context {
+	if scope.TenantID > 0 && scope.RoomID > 0 {
+		room := agentgateway.ContextRoomModelScope(ctx)
+		if room.TenantID != scope.TenantID || room.RoomID != scope.RoomID {
+			room = agentgateway.RoomModelScope{TenantID: scope.TenantID, RoomID: scope.RoomID}
+		}
+		ctx = agentgateway.WithRoomModelScope(ctx, room)
+	}
 	return context.WithValue(ctx, exchangeScopeKey{}, scope)
 }
 func (s *Server) beginModelExchange(ctx context.Context, stage, profile string, request any) (int64, error) {

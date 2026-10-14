@@ -46,6 +46,12 @@ func (s *Store) readSpeechModels(ctx context.Context) (agentgateway.SpeechModels
 }
 
 func (s *Store) SpeechModels(ctx context.Context) (agentgateway.SpeechModels, error) {
+	if p, err := s.roomModelPoolProfile(ctx); err != nil {
+		return agentgateway.SpeechModels{}, err
+	} else if p != nil {
+		p.APIKey = ""
+		return agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{*p}, DefaultID: p.ID, SystemDefaultID: p.ID, ReviewDefaultID: p.ID}, nil
+	}
 	config, _, err := s.readSpeechModels(ctx)
 	if config.ReviewDefaultID == "" {
 		config.ReviewDefaultID = config.DefaultID
@@ -56,6 +62,12 @@ func (s *Store) SpeechModels(ctx context.Context) (agentgateway.SpeechModels, er
 // Empty ID means resolve the shared default for mainline and realtime speech.
 // A named ID is a pinned repair/test target and must never fall back elsewhere.
 func (s *Store) ResolveSpeechModel(ctx context.Context, id string) (*agentgateway.SpeechModel, error) {
+	if p, err := s.roomModelPoolProfile(ctx); err != nil || p != nil {
+		return p, err
+	}
+	if strings.HasPrefix(id, "pool-") {
+		return nil, ErrModelPoolLeaseMissing
+	}
 	config, keys, err := s.readSpeechModels(ctx)
 	if err != nil {
 		return nil, err

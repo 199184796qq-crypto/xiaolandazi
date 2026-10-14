@@ -512,6 +512,9 @@ func (s *Store) ResumeLiveRuntimeSession(
 	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	if err := s.acquireModelPoolTx(ctx, tx, session.TenantID, session.RoomID, session.ID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -1672,6 +1675,9 @@ func (s *Store) StartLiveRuntimeSession(
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	if err := s.acquireModelPoolTx(ctx, tx, tenantID, roomID, sessionID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO live_runtime_events (
@@ -1931,6 +1937,9 @@ func (s *Store) RecoverLiveRuntimeSessionAfterCoreRestart(
 		return model.LiveRuntimeSession{}, err
 	}
 	if session.Status == "running" {
+		if err := s.acquireModelPoolTx(ctx, tx, session.TenantID, session.RoomID, session.ID, now); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
@@ -1977,6 +1986,9 @@ func (s *Store) RecoverLiveRuntimeSessionAfterCoreRestart(
 		mustJSON(map[string]any{"previous_stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	if err := s.acquireModelPoolTx(ctx, tx, session.TenantID, session.RoomID, session.ID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -2008,6 +2020,9 @@ func (s *Store) StopLiveRuntimeSession(
 	stoppedBy := userID
 	session, err = settleLiveRuntimeTx(ctx, tx, session, true, now, reason, &stoppedBy)
 	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -2056,6 +2071,9 @@ func (s *Store) StopLiveRuntimeSessionWithoutMeter(
 		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_STOPPED', 'AI直播伴播已停止', ?, ?)
 	`, tenantID, roomID, session.DeviceID, session.ID, userID,
 		mustJSON(map[string]any{"stop_reason": reason, "total_billed_seconds": session.TotalBilledSeconds}), now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -2114,6 +2132,9 @@ func (s *Store) AbortLiveRuntimeSession(
 			return model.LiveRuntimeSession{}, err
 		}
 	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -2143,6 +2164,9 @@ func (s *Store) ReconcileLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 	if session.Status != "running" {
+		if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
@@ -2181,6 +2205,9 @@ func (s *Store) ReconcileLiveRuntimeSession(
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -2206,6 +2233,9 @@ func (s *Store) ReconcileLiveRuntimeMeter(
 	}
 	if session.Status == "paused" {
 		if roomLive {
+			if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+				return model.LiveRuntimeSession{}, err
+			}
 			if err := tx.Commit(); err != nil {
 				return model.LiveRuntimeSession{}, err
 			}
@@ -2215,12 +2245,18 @@ func (s *Store) ReconcileLiveRuntimeMeter(
 		if err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
+		if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
 		return s.GetLiveRuntimeSession(ctx, session.TenantID, session.ID)
 	}
 	if session.Status != "running" {
+		if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
@@ -2242,6 +2278,9 @@ func (s *Store) ReconcileLiveRuntimeMeter(
 		nil,
 	)
 	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -2276,6 +2315,9 @@ func (s *Store) PauseLiveRuntimeSessionMeter(
 		return model.LiveRuntimeSession{}, err
 	}
 	if session.Status != "running" {
+		if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
@@ -2296,6 +2338,9 @@ func (s *Store) PauseLiveRuntimeSessionMeter(
 			actor_type, actor_user_id, event_code, title, occurred_at
 		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_PAUSED', 'AI直播伴播已暂停', ?)
 	`, tenantID, roomID, session.DeviceID, session.ID, userID, now); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -2338,6 +2383,9 @@ func (s *Store) StopLiveRuntimeSessionMeter(
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
@@ -2377,6 +2425,9 @@ func (s *Store) StopLiveRuntimeSessionMeterSystem(
 	}
 	switch session.Status {
 	case "stopped":
+		if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return model.LiveRuntimeSession{}, err
 		}
@@ -2391,6 +2442,9 @@ func (s *Store) StopLiveRuntimeSessionMeterSystem(
 		err = fmt.Errorf("unsupported runtime session status %q", session.Status)
 	}
 	if err != nil {
+		return model.LiveRuntimeSession{}, err
+	}
+	if err := s.releaseStoppedModelPoolTx(ctx, tx, session.ID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 	if err := tx.Commit(); err != nil {
