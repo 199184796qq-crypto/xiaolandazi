@@ -499,6 +499,10 @@ func (w *Worker) applyAddressingStrategyStage(
 	item.faqPersonalized = len(plan.SelectedNames) > 0
 
 	guidance := addressingPlanGuidance(plan)
+	// 打招呼句式方向：程序按 seed 确定性轮换，避免相邻几轮机械重复同一称呼/欢迎句式。
+	if phrase := greetingPhraseVariant(seed + "|" + item.MissionKind); phrase != "" {
+		guidance += " " + phrase
+	}
 	item.addStrategyConstraint(strategyConstraint{
 		Stage:    "addressing",
 		Key:      plan.Key,
