@@ -195,3 +195,13 @@
 - 已整合智能体双页布局e3151af/2f8fdeb，以及并行原地发布的WorkBuddy方案删除最新未提交源码（180e3b9及9f9e204）；没有修改原开发目录。后续不能从旧声音或旧管理源码覆盖。完整源码仍在work/main-merge-20261014及GitHub main。
 - 1781个原有无关文件、提示词、手机端、Nginx和缓存默认值一致；最新前端备份指针work/frontend-preservation/latest.json已验证1440个前端文件。证明work/voice-system-settings-proof/production-verification.json；说明docs/2026-10-14-voice-system-settings.md。
 - 五个相关Go包、前端构建、14项导航/资料补充回归及桌面/390px浏览器验证通过。数据库集成实验因现有账号无创建隔离schema权限未成功，不宣称通过；生产仅只读确认新配置及鉴权，未生成真实测试声音或操作直播队列。以后发布仍继承当时实际current并持共享锁、核对指纹及空闲状态。
+
+
+## 文字模型账号池（2026-10-14 已上线）
+
+- 当前发布 `/opt/xiaolan/releases/20261014-model-pool-7511a9c`，北京时间21:13上线，部署源码7511a9c846b4d4e2c2ca39da521de43473955e45；Management PID822987，SHA256 e1c06bb8d88d6e0b731a4b727841c77d1937aeb1efeaaa5bbc78130ebca4886b。只重启管理服务，Core/网关未重启。
+- 后台入口“系统设置 → AI 与智能体 → 模型池配置”；账号Key加密保存，可读取模型、手动设置名额、暂停新分配和查看占用。用户明确指定现有账号100个名额，已安全导入当前qwen3.7-flash并启用，系统审计记录用户授权的初始化操作，不在Git/聊天保存Key。
+- AI首次启动在同一事务领取账号和模型，口播、审核、规划、互动及回归桥统一使用同一分配；暂停及Management重启保留，实际AI终态释放。并发名额使用数据库持久化锁和当前读取，不超分，不按采集状态或TTL收回；旧运行场次不能占用或释放替换场次的名额。TTS、声音识别和非直播后台分析沿用原配置。
+- 完整源码独立开发于work/model-pool-source，已整合WorkBuddy1608ea6与GitHub最新主线02088c9，并推送main；work/main-merge-20261014同步。保留WorkBuddy称呼、人工抢答昵称、资料补充及主线直播下载/24小时记录等改动，没有修改E:/speech-generator-build的原开发文件。后续不能用未整合模型池或直播下载的旧管理/前端源码覆盖。
+- 2249个原有无关文件、提示词、手机端、缓存默认值和Nginx保持一致；前端完整指针work/frontend-preservation/latest.json已核对1578个文件。证明work/model-pool-upgrade-proof/production-verification.json、configuration-verification.json；设计说明docs/2026-10-14-model-account-pool.md。
+- 真实本地MySQL随机隔离schema验证了并发容量、重复申请、暂停/重启、密钥快照、释放、旧场隔离和配置CAS；新接口鉴权及虚拟供应商跨房间同Key/模型调用测试通过。前端21项受保护功能回归、桌面/390px模型池交互和生产构建通过；11个公网资源校验通过。五个Go包的29项既有失败与未修改02088c9逐项一致，无新增失败，不能称全套通过。未开播或向真实模型发送测试正文，真实直播使用待下一场验证。
