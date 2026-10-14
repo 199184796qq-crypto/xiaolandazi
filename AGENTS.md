@@ -205,3 +205,12 @@
 - 完整源码独立开发于work/model-pool-source，已整合WorkBuddy1608ea6与GitHub最新主线02088c9，并推送main；work/main-merge-20261014同步。保留WorkBuddy称呼、人工抢答昵称、资料补充及主线直播下载/24小时记录等改动，没有修改E:/speech-generator-build的原开发文件。后续不能用未整合模型池或直播下载的旧管理/前端源码覆盖。
 - 2249个原有无关文件、提示词、手机端、缓存默认值和Nginx保持一致；前端完整指针work/frontend-preservation/latest.json已核对1578个文件。证明work/model-pool-upgrade-proof/production-verification.json、configuration-verification.json；设计说明docs/2026-10-14-model-account-pool.md。
 - 真实本地MySQL随机隔离schema验证了并发容量、重复申请、暂停/重启、密钥快照、释放、旧场隔离和配置CAS；新接口鉴权及虚拟供应商跨房间同Key/模型调用测试通过。前端21项受保护功能回归、桌面/390px模型池交互和生产构建通过；11个公网资源校验通过。五个Go包的29项既有失败与未修改02088c9逐项一致，无新增失败，不能称全套通过。未开播或向真实模型发送测试正文，真实直播使用待下一场验证。
+
+
+## 模型池占用详情分页（2026-10-14 已上线）
+
+- 占用房间从模型池主页面移入账号行“查看占用”的详情弹窗；默认每页10个，可选20/50，账号之间按池记录编号隔离。切换页大小/重新打开重置第一页，刷新减少房间后修正页码；零占用、暂停状态、Esc/遮罩关闭、焦点恢复及手机卡片显示保留。
+- 前端22:36发布20261014-model-pool-occupancy-59d6812，仅更新两个入口并新增资源，2293个非入口文件与三服务一致。随后发现管理服务被后续旧源码1608ea6原地发布为PID824750，模型池接口返回404；在确认AI空闲后，于22:42发布整合后端20261014-model-pool-integrated-59d6812，Management PID826314/SHA256 46cd71aeca3bbcc0abbf9c1611b490d3dd5dc201f4acffc0752e351bbd40386b。仅重启Management，Core/网关未重启，2335个其它文件与1618个前端文件保持一致。
+- 部署源码59d68122462fc38d60adbfa7871187d0a4248117，包含模型池、直播下载和WorkBuddy c0ad094最新TTS前缀修改；用户后来保存的qwen3.7-flash-2026-07-15及100个名额原样保留，没有重新导入Key或覆盖账号设置。三个模型池入口线上返回需登录401，已恢复路由。
+- 后续管理发布必须以最新GitHub main完整整合模型池与直播下载，不得直接用缺少这些功能的E:/speech-generator-build旧main全量覆盖。原WorkBuddy工作目录未由本聊天修改；前端仍以发布时actual current及指纹为准。
+- 浏览器虚拟24条占用验证10/20/50分页、末页、刷新收回页码、按账号隔离、空态、关闭/焦点和390px显示，21项既有前端回归与构建通过；恢复后端的模型池/调用路由/直播下载相关定向Go测试通过，未启动真实直播或生成测试内容。证明work/model-pool-occupancy-proof/production-verification.json与integrated-production-verification.json。最新前端备份指针work/frontend-preservation/latest.json已指向当前整合发布并验证1618文件，实际备份复用哈希完全一致的占用页版本。
