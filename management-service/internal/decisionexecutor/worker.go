@@ -84,6 +84,17 @@ type synthesizer interface {
 	SynthesizeURL(context.Context, ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error)
 }
 
+// interactionTTSPrefix 是互动话术递交给 TTS 合成前统一加在开头的前缀。
+const interactionTTSPrefix = "****"
+
+// interactionTTSText 给互动话术前面加固定星号前缀再合成，重复调用不叠加。
+func interactionTTSText(text string) string {
+	if strings.HasPrefix(text, interactionTTSPrefix) {
+		return text
+	}
+	return interactionTTSPrefix + text
+}
+
 type leader interface {
 	IsLeader() bool
 }
@@ -1890,7 +1901,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			return err
 		}
 		item.faqCacheTicket = nil
-		audio, err = w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: text, Rate: voiceRate(voice), Instruction: ttsInstruction})
+		audio, err = w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: interactionTTSText(text), Rate: voiceRate(voice), Instruction: ttsInstruction})
 		if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
 			return fmt.Errorf("纠正规则更新后重新生成语音失败: %v", err)
 		}

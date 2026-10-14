@@ -235,7 +235,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil || !ok {
 		return fmt.Errorf("bridge voice unavailable")
 	}
-	audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: bridge.Text, Rate: voiceRate(voice)})
+	audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: interactionTTSText(bridge.Text), Rate: voiceRate(voice)})
 	if err != nil || audio.AudioURL == "" {
 		return fmt.Errorf("bridge TTS unavailable: %v", err)
 	}
