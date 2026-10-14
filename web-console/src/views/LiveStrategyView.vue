@@ -6580,7 +6580,7 @@ onBeforeUnmount(() => {
                 <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
                 <div class="strategy-formal-facts-heading">
                   <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条 · 用于主线口播与智能问答</small>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ filteredFormalFacts.length }} 条 · 用于主线口播与智能问答</small>
                 </div>
               </div>
               <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
@@ -6622,7 +6622,7 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="item in formalFacts" :key="item.id">
+                  <template v-for="item in filteredFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
