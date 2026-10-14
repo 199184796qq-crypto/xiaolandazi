@@ -338,6 +338,54 @@ function previewFormalFact(item: LiveAgentPlanFact) { previewingFormalFact.value
 watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = null })
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
+const selectedFactCategory = ref('all')
+const filteredFormalFacts = computed(() => selectedFactCategory.value === 'all' ? formalFacts.value : formalFacts.value.filter(item => item.category === selectedFactCategory.value))
+const factCategoryCounts = computed(() => {
+  const counts: Record<string, number> = { all: formalFacts.value.length }
+  for (const item of formalFacts.value) counts[item.category] = (counts[item.category] || 0) + 1
+  return counts
+})
+// 四层结构解析：把 safe_rewrite(【必说】【可说】)与 forbidden_wording(【改写】【不提】)按标题分块；旧数据无标题时整体放入对应卡片。
+function factFourLayers(item: LiveAgentPlanFact) {
+  const parse = (text: string, fallbackTitles: Record<string, string>) => {
+    const sections: Array<{ title: string; content: string }> = []
+    const matches = [...text.matchAll(/【([^【】]{1,6})】/g)]
+    if (matches.length) {
+      matches.forEach((match, index) => {
+        const start = match.index! + match[0].length
+        const end = index + 1 < matches.length ? matches[index + 1].index! : text.length
+        const content = text.slice(start, end).trim()
+        if (content) sections.push({ title: match[1], content })
+      })
+      return sections
+    }
+    const content = text.trim()
+    if (content) sections.push({ title: fallbackTitles.key, content })
+    return sections
+  }
+  const layers: Array<{ title: string; content: string }> = []
+  if (item.forbidden_wording?.trim()) layers.push(...parse(item.forbidden_wording, { key: '改写' }))
+  if (item.safe_rewrite?.trim()) layers.push(...parse(item.safe_rewrite, { key: '可说' }))
+  return layers
+}
+function factLayerTone(title: string) {
+  switch (title) {
+    case '必说': return 'must'
+    case '可说': return 'can'
+    case '改写': return 'rewrite'
+    case '不提': return 'mention'
+    default: return 'other'
+  }
+}
+function factLayerLabel(title: string) {
+  switch (title) {
+    case '必说': return '必须讲准的客观事实'
+    case '可说': return '可以口语化表达的内容'
+    case '改写': return '不要这样说，给正向说法'
+    case '不提': return '未确认，正反都不说'
+    default: return '表达参考'
+  }
+}
 const factRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
@@ -4465,8 +4513,8 @@ async function createFormalFact() {
 				category: draft.category,
 				key,
 				value,
-				forbidden_wording: draft.forbidden_wording.trim(),
-				safe_rewrite: draft.safe_rewrite.trim(),
+				forbidden_wording: '',
+				safe_rewrite: '',
 				status: 'pending',
 				review_bucket: 'adoptable',
 				source_quote: '',
@@ -4484,7 +4532,7 @@ async function createFormalFact() {
 		cancelCreateFormalFact()
 		scriptNotice.value = createdFromWheelGap
 			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
-			: '事实、负向约束和正向示例已规范并保存，主线口播与互动回答会共同使用。'
+			: '事实已保存，审核模型已整理成四层表达，主线口播与互动回答会共同使用。'
 	} catch (err) {
 		if (current()) formalFactCreateError.value = err instanceof Error ? err.message : '新增事实依据失败'
 	} finally {
@@ -4512,14 +4560,14 @@ async function saveFormalFactEdit(item: LiveAgentPlanFact) {
         category: formalFactEditDraft.value.category,
         key,
         value,
-			forbidden_wording: formalFactEditDraft.value.forbidden_wording.trim(),
-			safe_rewrite: formalFactEditDraft.value.safe_rewrite.trim(),
+			forbidden_wording: '',
+			safe_rewrite: '',
       },
       activeRoom.value?.tenant_id,
     )
     await refreshFormalFacts()
     cancelFormalFactEdit()
-    scriptNotice.value = '三栏已规范保存，正式事实已生成新版本。'
+    scriptNotice.value = '四层表达已由审核模型整理保存，正式事实已生成新版本。'
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '修改正式事实失败'
   } finally {
@@ -6546,15 +6594,30 @@ onBeforeUnmount(() => {
               <span>点击“新增事实依据”录入真实内容。</span>
             </div>
 
-            <div v-else class="strategy-formal-facts-table-wrap">
+            <div v-else class="strategy-formal-facts-layout">
+              <aside class="strategy-fact-category-panel" aria-label="事实分类筛选">
+                <button type="button" class="strategy-fact-category-item" :class="{ 'is-active': selectedFactCategory === 'all' }" @click="selectedFactCategory = 'all'">
+                  <strong>全部</strong><span class="strategy-fact-category-count">{{ factCategoryCounts.all || 0 }}</span>
+                </button>
+                <template v-for="group in factCategoryGroups()" :key="group.label">
+                  <div class="strategy-fact-category-group-title">{{ group.label }}</div>
+                  <button v-for="option in group.options" :key="option.value" type="button" class="strategy-fact-category-item" :class="{ 'is-active': selectedFactCategory === option.value }" @click="selectedFactCategory = option.value">
+                    <strong>{{ option.label }}</strong><span class="strategy-fact-category-count">{{ factCategoryCounts[option.value] || 0 }}</span>
+                  </button>
+                </template>
+              </aside>
+              <div class="strategy-formal-facts-main">
+                <div v-if="!filteredFormalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
+                  <strong>该分类下暂无事实</strong>
+                  <span>切换其他分类，或点击“新增事实依据”录入。</span>
+                </div>
+                <div v-else class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
                 <thead>
                   <tr>
                     <th>分类</th>
                     <th>事实名称</th>
-                    <th>事实内容（可以说）</th>
-                    <th>不要这样说</th>
-                    <th>改成这样说</th>
+                    <th>事实内容</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -6576,23 +6639,9 @@ onBeforeUnmount(() => {
                       </td>
                       <td>
                         <label class="strategy-formal-fact-edit-field is-content">
-                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容（可以说）</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
-                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容（可以说）" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" placeholder="请填写真实、准确的事实内容…" :disabled="mutatingFormalFactId === item.id"></textarea>
-                          <span :id="'fact-edit-content-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>可填写真实、准确的可对外说明内容，方便智能体回答。</span></span>
-                        </label>
-                      </td>
-                      <td>
-                        <label class="strategy-formal-fact-edit-field is-forbidden">
-                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" /></svg></i><strong>不要这样说</strong></span><small>{{ formalFactEditDraft.forbidden_wording.length }}/4000</small></span>
-                          <textarea v-model="formalFactEditDraft.forbidden_wording" aria-label="不要这样说" :aria-describedby="'fact-edit-forbidden-hint-' + item.id" rows="4" maxlength="4000" placeholder="请输入不建议的说法…" :disabled="mutatingFormalFactId === item.id"></textarea>
-                          <span :id="'fact-edit-forbidden-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg><span>避免夸大、模糊或容易引起误解的表述。</span></span>
-                        </label>
-                      </td>
-                      <td>
-                        <label class="strategy-formal-fact-edit-field is-rewrite">
-                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></i><strong>改成这样说</strong></span><small>{{ formalFactEditDraft.safe_rewrite.length }}/4000</small></span>
-                          <textarea v-model="formalFactEditDraft.safe_rewrite" aria-label="改成这样说" :aria-describedby="'fact-edit-rewrite-hint-' + item.id" rows="4" maxlength="4000" placeholder="请输入建议的说法…" :disabled="mutatingFormalFactId === item.id"></textarea>
-                          <span :id="'fact-edit-rewrite-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>提供更准确、更合适的表达方式。</span></span>
+                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
+                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" placeholder="用你自己的话描述真实、准确的事实即可，保存时审核模型会自动整理成四层表达…" :disabled="mutatingFormalFactId === item.id"></textarea>
+                          <span :id="'fact-edit-content-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>自由表达即可，保存时系统会整理成“必说/可说/改写/不提”四层结构。</span></span>
                         </label>
                       </td>
                       <td>
@@ -6616,14 +6665,12 @@ onBeforeUnmount(() => {
                     <template v-else>
                       <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
                       <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
-                      <td class="strategy-formal-fact-value">{{ item.value }}</td>
-                      <td v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" colspan="2" class="strategy-formal-fact-guidance-cell">
-                        <button type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
+                      <td class="strategy-formal-fact-value">
+                        <div class="strategy-formal-fact-value-body">
+                          <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
+                          <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
+                        </div>
                       </td>
-                      <template v-else>
-                        <td class="strategy-formal-fact-boundary"><div class="strategy-formal-fact-wording">—</div></td>
-                        <td class="strategy-formal-fact-rewrite"><div class="strategy-formal-fact-wording">—</div></td>
-                      </template>
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
@@ -6649,24 +6696,14 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="6"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="4"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="6">
+                    <td colspan="4">
                       <div class="strategy-formal-fact-expanded">
-                        <div v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" class="strategy-formal-fact-wording-grid">
-                          <article class="strategy-formal-fact-wording-card is-forbidden">
-                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v12H9l-4 4V4Z" /><path d="M9 8h.01M15 8h.01M9 12h6" /></svg></i><strong>不要这样说</strong><span v-if="item.forbidden_wording?.trim()">表达提醒</span></header>
-                            <div v-if="item.forbidden_wording?.trim()" class="strategy-formal-fact-wording-content"><i aria-hidden="true">×</i><p>{{ item.forbidden_wording }}</p></div>
-                            <p v-else class="strategy-formal-fact-wording-empty">暂无已保存的表达提醒。</p>
-                          </article>
-                          <article class="strategy-formal-fact-wording-card is-rewrite">
-                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></i><strong>改成这样说</strong><span v-if="item.safe_rewrite?.trim()">参考表达</span></header>
-                            <div v-if="item.safe_rewrite?.trim()" class="strategy-formal-fact-wording-content"><i aria-hidden="true">✓</i><p>{{ item.safe_rewrite }}</p></div>
-                            <p v-else class="strategy-formal-fact-wording-empty">暂无已保存的参考表达，可点击“修改”补充。</p>
-                          </article>
-                          <article class="strategy-formal-fact-wording-card is-context">
-                            <header><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6" /></svg></i><strong>补充说明</strong></header>
-                            <dl><div><dt>事实分类</dt><dd>{{ factCategoryLabel(item.category) }}<small>{{ factCategoryDescription(item.category) }}</small></dd></div><div><dt>适用场景</dt><dd>主线口播与互动回答</dd></div><div><dt>对应方案</dt><dd>{{ currentPlan?.name || '当前方案' }}</dd></div></dl>
+                        <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
+                          <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
+                            <header><strong>【{{ layer.title }}】</strong><span>{{ factLayerLabel(layer.title) }}</span></header>
+                            <p>{{ layer.content }}</p>
                           </article>
                         </div>
                       <div v-if="factRisksForFact(item).length" class="strategy-fact-risk-inline">
@@ -6696,6 +6733,8 @@ onBeforeUnmount(() => {
                   </template>
                 </tbody>
               </table>
+                </div>
+              </div>
             </div>
           </section>
         </section>
@@ -9398,8 +9437,40 @@ onBeforeUnmount(() => {
 .strategy-fact-boundary-guide strong { color:#42518f; font-size:13px; }
 .strategy-fact-boundary-guide span { color:#7b879b; font-size:12px; line-height:1.55; }
 .strategy-formal-facts-empty { min-height:120px; }
+.strategy-formal-facts-layout { display:grid; grid-template-columns:230px minmax(0,1fr); gap:16px; align-items:start; }
+.strategy-fact-category-panel { position:sticky; top:16px; display:flex; flex-direction:column; gap:4px; padding:12px; border:1px solid #e4ebfa; border-radius:15px; background:linear-gradient(150deg,#f7faff,#f2f6ff); max-height:calc(100dvh - 190px); overflow-y:auto; }
+.strategy-fact-category-panel::-webkit-scrollbar { width:6px; }
+.strategy-fact-category-panel::-webkit-scrollbar-thumb { border-radius:3px; background:#cdd8ec; }
+.strategy-fact-category-group-title { margin:9px 4px 2px; color:#8a97b5; font-size:11px; font-weight:800; letter-spacing:.04em; }
+.strategy-fact-category-item { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; border:1px solid transparent; border-radius:10px; padding:9px 11px; background:transparent; color:#41527a; font:inherit; font-size:14px; text-align:left; cursor:pointer; }
+.strategy-fact-category-item strong { font-weight:650; line-height:1.4; }
+.strategy-fact-category-item:hover { background:#eaf1ff; }
+.strategy-fact-category-item.is-active { border-color:#b9c8f2; background:#fff; color:#2f4fa8; font-weight:800; box-shadow:0 2px 8px #5b79d214; }
+.strategy-fact-category-count { flex-shrink:0; min-width:26px; padding:1px 7px; border-radius:999px; background:#e3eafb; color:#5a6f9d; font-size:12px; font-weight:800; text-align:center; font-variant-numeric:tabular-nums; }
+.strategy-fact-category-item.is-active .strategy-fact-category-count { background:#3f5fc0; color:#fff; }
+.strategy-formal-facts-main { min-width:0; }
+.strategy-formal-fact-value-body { display:flex; align-items:flex-start; gap:10px; }
+.strategy-formal-fact-value-text { flex:1 1 auto; min-width:0; }
+.strategy-formal-fact-value-body .strategy-formal-fact-wording-toggle { flex-shrink:0; margin-top:1px; }
+.strategy-fact-four-layer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-bottom:12px; }
+.strategy-fact-four-layer-card { display:grid; gap:7px; padding:13px 14px; border:1px solid #dde4f2; border-radius:12px; background:#fff; }
+.strategy-fact-four-layer-card header { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.strategy-fact-four-layer-card header strong { font-size:15px; }
+.strategy-fact-four-layer-card header span { color:#8792a7; font-size:11px; }
+.strategy-fact-four-layer-card p { margin:0; color:#4c5b78; font-size:14px; line-height:1.7; white-space:pre-wrap; }
+.strategy-fact-four-layer-card.is-must { border-color:#b9d3c4; background:linear-gradient(160deg,#f2fbf6,#fff); }
+.strategy-fact-four-layer-card.is-must header strong { color:#2c7a4b; }
+.strategy-fact-four-layer-card.is-can { border-color:#bcd4f5; background:linear-gradient(160deg,#f1f7ff,#fff); }
+.strategy-fact-four-layer-card.is-can header strong { color:#2e63b8; }
+.strategy-fact-four-layer-card.is-rewrite { border-color:#efc2cc; background:linear-gradient(160deg,#fff5f7,#fff); }
+.strategy-fact-four-layer-card.is-rewrite header strong { color:#b8435a; }
+.strategy-fact-four-layer-card.is-mention { border-color:#e3d3f1; background:linear-gradient(160deg,#faf5fe,#fff); }
+.strategy-fact-four-layer-card.is-mention header strong { color:#7c4fa8; }
+.strategy-fact-four-layer-card.is-other { border-color:#d8dee9; background:#fbfcfe; }
+.strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
+@media(max-width:1100px) { .strategy-formal-facts-layout { grid-template-columns:1fr; } .strategy-fact-category-panel { position:static; max-height:none; flex-direction:row; flex-wrap:wrap; } .strategy-fact-category-group-title { width:100%; margin:6px 2px 0; } .strategy-fact-category-item { width:auto; } }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
-.strategy-formal-facts-table { width:100%; min-width:1280px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-facts-table { width:100%; min-width:860px; border-collapse:collapse; table-layout:fixed; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
 .strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:14px; font-weight:800; }
 .strategy-formal-facts-table tbody>tr:not(.strategy-fact-risk-detail-row):not(.has-fact-risk):hover td { background-color:#f9fbff; }
