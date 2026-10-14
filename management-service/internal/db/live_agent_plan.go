@@ -3,8 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -187,6 +189,153 @@ func (s *Store) ArchiveLiveAgentPlan(ctx context.Context, tenantID, planID int64
 		return fmt.Errorf("delete archived plan semantic documents: %w", err)
 	}
 	return tx.Commit()
+}
+
+// planHardDeleteTables 删除方案时物理清理的表：方案全部专属内容 + 方案级风格快照/绑定 + 运行时日志。
+// 商品链接/事实包/福利/条款等配置资产是方案专属，随方案一并删除。
+// 声音(voice_profiles / voice_model_bindings)与主播风格(live_anchor_styles / live_anchor_style_samples)
+// 是共享资源、不含 plan_id，天然不在本清单，多方案可继续复用，不受删除影响。
+var planHardDeleteTables = []string{
+	// 方案专属配置资产（商品链接/事实包/福利/条款 及版本、属性）
+	"live_agent_plan_product_links",
+	"live_agent_plan_product_link_revisions",
+	"live_agent_plan_product_attributes",
+	"live_agent_plan_product_attribute_revisions",
+	"live_agent_plan_facts",
+	"live_agent_plan_fact_revisions",
+	"live_agent_plan_benefits",
+	"live_agent_plan_benefit_revisions",
+	"live_agent_plan_terms",
+	"live_agent_plan_room_bindings",
+	"live_agent_room_plan_selections",
+	"live_agent_room_plan_publications",
+	"live_agent_plan_versions",
+	"live_agent_plan_scripts",
+	"live_agent_plan_script_references",
+	"live_agent_plan_script_reference_revisions",
+	"live_agent_plan_style_overlays",
+	"live_anchor_style_meta_prompts",
+	"live_anchor_style_scorecards",
+	"live_anchor_style_plan_bindings",
+	"live_selling_point_wheels",
+	"live_angle_direction_generations",
+	"live_angle_direction_plays",
+	"live_angle_direction_reviews",
+	"live_plan_analysis_assets",
+	"live_plan_benefit_scopes",
+	"live_plan_benefit_scope_products",
+	"live_plan_content_changes",
+	"live_plan_content_corrections",
+	"live_plan_content_jobs",
+	"live_plan_content_observations",
+	"live_plan_content_revisions",
+	"live_plan_content_sets",
+	"live_plan_lecture_policies",
+	"live_plan_lecture_tasks",
+	"live_opening_hook_assets",
+	"live_fact_package_snapshots",
+	"live_fact_risk_reviews",
+	"live_fact_risk_reviews_dedup_backup",
+	"live_derived_safety_assets",
+	"live_agent_expression_boundaries",
+	"live_content_refresh_jobs",
+	"live_room_interaction_config_versions",
+	"semantic_documents",
+	"live_model_exchanges",
+	"live_p0_audit_events",
+	"live_interaction_replays",
+}
+
+// HardDeleteLiveAgentPlan 物理删除方案（主表 + 派生数据 + 运行时日志），
+// 商品/事实/福利等配置资产保留；删前把方案快照写入审计表。
+func (s *Store) HardDeleteLiveAgentPlan(ctx context.Context, tenantID, planID int64, audit model.AdminAuditLog) error {
+	plan, err := s.GetLiveAgentPlan(ctx, tenantID, planID)
+	if err != nil {
+		return err
+	}
+	if plan.Status != "active" {
+		return ErrLiveAgentPlanNotFound
+	}
+
+	// 收集删除前快照：方案信息 + 将删除的配置资产摘要（商品明细 + 事实 key-value），供审计追溯
+	snapshot := map[string]any{
+		"plan_id": plan.ID,
+		"name":    plan.Name,
+		"status":  plan.Status,
+	}
+	if links, err := s.ListLiveAgentPlanProductLinks(ctx, tenantID, planID); err == nil && len(links) > 0 {
+		type linkSnap struct {
+			LinkKey     string `json:"link_key"`
+			ProductName string `json:"product_name"`
+			Spec        string `json:"spec,omitempty"`
+			DailyPrice  string `json:"daily_price,omitempty"`
+		}
+		ls := make([]linkSnap, 0, len(links))
+		for _, l := range links {
+			ls = append(ls, linkSnap{LinkKey: l.LinkKey, ProductName: l.ProductName, Spec: l.Spec, DailyPrice: l.DailyPrice})
+		}
+		snapshot["product_links"] = ls
+	}
+	if facts, err := s.ListLiveAgentPlanFacts(ctx, tenantID, planID); err == nil && len(facts) > 0 {
+		type factSnap struct {
+			Category string `json:"category"`
+			Key      string `json:"key"`
+			Value    string `json:"value,omitempty"`
+		}
+		fs := make([]factSnap, 0, len(facts))
+		for _, f := range facts {
+			fs = append(fs, factSnap{Category: f.Category, Key: f.Key, Value: f.Value})
+		}
+		snapshot["facts"] = fs
+	}
+	counts := map[string]int64{}
+	for _, t := range []string{
+		"live_agent_plan_benefits",
+		"live_agent_plan_terms",
+	} {
+		var n int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+t+` WHERE tenant_id=? AND plan_id=?`, tenantID, planID).Scan(&n); err == nil {
+			counts[t] = n
+		}
+	}
+	snapshot["deleted_config_rows"] = counts
+	beforeJSON, _ := json.Marshal(snapshot)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, table := range planHardDeleteTables {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id=? AND plan_id=?`, tenantID, planID); err != nil {
+			return fmt.Errorf("hard delete plan %s: %w", table, err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM live_agent_plans WHERE id=? AND tenant_id=?`, planID, tenantID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrLiveAgentPlanNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// 删除成功后写审计记录
+	audit.Action = "plan.hard_delete"
+	audit.ObjectType = "live_agent_plan"
+	audit.ObjectID = strconv.FormatInt(planID, 10)
+	audit.ObjectName = plan.Name
+	audit.BeforeState = string(beforeJSON)
+	audit.AfterState = "{}"
+	audit.Result = "success"
+	audit.TargetTenantID = tenantID
+	if _, err := s.BeginAdminAudit(ctx, audit); err != nil {
+		return fmt.Errorf("record plan hard delete audit: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) GetLiveAgentPlanForRoom(ctx context.Context, tenantID, roomID int64) (model.LiveAgentPlan, error) {

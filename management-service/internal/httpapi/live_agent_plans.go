@@ -227,11 +227,11 @@ func (s *Server) liveAgentPlanArchive(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.ArchiveLiveAgentPlan(r.Context(), tenantID, planID); errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
-		writeError(w, http.StatusNotFound, "直播智能体方案不存在或已经归档")
+	if err := s.store.HardDeleteLiveAgentPlan(r.Context(), tenantID, planID, model.AdminAuditLog{ActorUserID: actor.UserID, ActorUsername: actor.Username}); errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "归档直播智能体方案失败")
+		writeError(w, http.StatusInternalServerError, "删除直播智能体方案失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
