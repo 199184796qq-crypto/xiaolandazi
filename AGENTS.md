@@ -138,3 +138,11 @@
 - 原刷新清单按钮改名“换下一批清单”，保留紫色实底、加粗白字、切换图标和至少42px高度；清单容器不足360px时按钮独占一行，不能挤压标题。原读取操作和禁用条件未变，未提交输入、对话和候选继续保留。
 - 11项既有清单/对话回归及真实父级桌面/手机验证通过。仅更新两个入口HTML和新增资源，1583个原有非入口文件、运行服务及Nginx一致；保留本次发布前服务器已经原地更新的管理二进制和主播提示词，不能用历史源码或哈希将其覆盖回旧版。
 - 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1244个前端文件逐项匹配服务器。验证见 `work/supplement-next-batch-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-next-batch-button.md`；后续继续继承当时实际current。
+
+## 补全清单文字增大（2026-10-14 已上线）
+
+- 当前前端已于北京时间10:34更新为 `/opt/xiaolan/releases/20261014-supplement-list-font-e051f4c`，源码e051f4c，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 清单卡片标题、说明、问题提示、标签、问这个/跳过按钮及底部补充入口统一增大1px，保留主次层级。右侧对话与换下一批清单按钮保持原样。
+- 11项既有清单/对话回归、生产构建及完整父级桌面/手机验证通过，页面与卡片无水平溢出，未提交输入保留。仅更新两个入口HTML和新增资源，1620个原有非入口文件、运行服务及Nginx一致，保留已原地更新的管理二进制及主播提示词。
+- 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1280个前端文件逐项匹配服务器。验证见 `work/supplement-list-font-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-checklist-font.md`；后续继续继承当时实际current。
+
