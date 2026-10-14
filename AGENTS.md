@@ -123,3 +123,11 @@
 - 助手回复使用ChatMessageContent显示段落、标题、列表、引用和代码，句内强调复用StyleDisplayText，不再直露常见Markdown标记。只调整显示，原消息、模型历史、事实候选及保存内容不改写；不使用v-html执行模型文本。
 - 上次根组件确定宽度和按容器响应规则继续保留。19项回归与完整方案页/手机宽度显示验证通过；本次仅更新两个入口HTML和新增资源，1500个原有非入口文件、服务PID/二进制、手机端及Nginx一致。
 - 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1166个前端文件逐项匹配实际服务器。验证见 `work/supplement-format-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-chat-format.md`；后续发布以当时实际current为基础。
+
+## 补全清单与对话分栏（2026-10-14 已上线）
+
+- 当前前端已于北京时间09:52更新为 `/opt/xiaolan/releases/20261014-supplement-split-ee08a7c`，源码ee08a7c，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 用户本次明确将原左侧待确认资料替换为补全清单；右侧对话始终挂载，问这个直接在当前历史中发起问答，无清单/对话视图切换。候选资料改为右侧输入框下方确认区，仍需用户确认保存。后续必须保留这一新结构。
+- 单独刷新/跳过清单不能重置对话、输入或候选。问这个保留尚未提交的输入；文件/示例仍只预填。清单按方案、租户、房间和账号隔离，旧读取取消、迟到响应丢弃；左侧错误不能阻塞右侧自由对话。
+- 根组件确定宽度、按容器响应、回复安全格式化与受保护运维功能保留。25项回归及完整父级布局5项验证通过。本次仅更新两个入口HTML并新增资源，1537个原有非入口文件、服务PID/二进制、手机端与Nginx保持一致。
+- 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1208个前端文件逐项匹配服务器。验证见 `work/supplement-split-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-split-panels.md`；后续发布仍以当时实际current为基础。
