@@ -165,3 +165,12 @@
 - 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1352个前端文件逐项匹配服务器。证明在 `work/tencent-official-voices-proof/production-verification.json`，说明见主线 `docs/2026-10-14-tencent-premium-voices.md`。
 - 腾讯真实问候接口及用户411字符原文测试成功；智柯75.46秒、智瑜80.55秒。仅生成试听文件，没有写事实、方案或直播队列，没有自动切换房间声音。协议/目录/HTTP/互动路由相关测试通过，前端14项回归通过；全量Go的27项既有失败在未修改整合基线也相同，不能记为全套通过。
 - 发布仍以当时实际current及文件指纹为基础，持共享发布锁、确认空闲后只重启已授权服务，不回退历史提示词/前端/二进制。
+
+## 智能体工作台双页布局（2026-10-14 已上线）
+
+- 当前前端北京时间13:24已更新为 `/opt/xiaolan/releases/20261014-agent-workspace-pages-e3151af`，发布源码e3151af，完整前端源码已合入GitHub main。本次工作目录为 `C:/Users/19918/Documents/Codex/2026-10-14/d-myskill-skill/work/model-thinking-toggle`。
+- 用户确认“智能体配置”页面放内容任务、未入池提示、待更新资料、公共池/商品专属池和方案检查提示；“生成与预览”页面放初始化直播智能体、主线方式、播放器及其以下全部参数和业务模块。不得重新把两部分上下堆在一个页面，也不把初始化挪回配置页。
+- 双页切换保持模块挂载，保留参数、池展开状态和播放器。保存沿用统一保存流程；切换不自动保存、初始化、生成或开播。房间或方案变化继续按原上下文key隔离。
+- 完整LiveStrategyView合成数据8项桌面/手机布局检查及14项既有回归通过，类型检查和生产构建通过。未修改主线基线构建的45个资源与发布前实际前端一致。发布时1737个原有非入口文件及三个服务保持一致，8项公网资源验证通过；最新前端备份指针已更新，1394个前端文件逐项验证。
+- 管理服务随后13:24:46被并行原地更新为PID801647，SHA256=7b1b016f0cba26b6d59494d63eedf708112d896dd6be44845c78cdcffe9a4605，本次核对保留该后续版本。后续发布仍继承当时实际current，不能把管理服务回退到本次发布前的800917或更早版本。
+- 发布证据位于本次工作目录上级的 `agent-workspace-pages-proof/production-verification.json`；共享备份指针仍为 `C:/Users/19918/Documents/Codex/2026-10-09/zh/work/frontend-preservation/latest.json`。说明见 `docs/2026-10-14-agent-workspace-pages.md`。
