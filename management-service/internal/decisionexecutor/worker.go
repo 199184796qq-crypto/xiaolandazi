@@ -623,11 +623,11 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	preferredTerms := cleanAddressingTerms(preferences.PreferredTerms)
 	blockedTerms := cleanAddressingTerms(preferences.BlockedTerms)
 	candidate = strings.TrimSpace(candidate)
-	// 称谓词候选池：主播风格主力称呼 + 用户 PreferredTerms 综合使用；
-	// 两者都为空时用中性托底，保证任何直播间都有可播称呼。
+	// 称谓词优先级：主播风格主力称呼 + 用户 PreferredTerms（综合）
+	// → 传入的 candidate（后端候选）→ 中性托底（都为空时兜底）。
 	addressPool := cleanAddressingTerms(append(append([]string(nil), anchorTerms...), preferredTerms...))
-	if len(addressPool) == 0 {
-		addressPool = append(addressPool, neutralAddressTerms...)
+	if len(addressPool) == 0 && candidate == "" {
+		addressPool = neutralAddressTerms
 	}
 	if preferred := choosePreferredAddressingTerm(addressPool, blockedTerms, item.ID); preferred != "" {
 		candidate = preferred

@@ -1,11 +1,5 @@
 package decisionexecutor
 
-import (
-	"crypto/sha256"
-	"encoding/binary"
-	"strings"
-)
-
 // 互动回答的表达变体种子：判断观众意图 + 完成 1-2 项最高价值目标 + 软变化。
 // 程序按"近期同问题/同角度使用次数"轮换注入，让同一答案每次说法不同。
 // 核心：先答准问题，再根据观众目的（解决顾虑 / 了解信息 / 比价确认 / 想下单）
@@ -80,13 +74,4 @@ func greetingScenePool(scene string) []string {
 		return pool
 	}
 	return greetingPhraseByScene["default"]
-}
-
-func greetingPhraseVariant(seed, scene string) string {
-	pool := greetingScenePool(scene)
-	if len(pool) == 0 {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(seed)))
-	return pool[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(pool)))]
 }
