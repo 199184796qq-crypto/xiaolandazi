@@ -101,3 +101,11 @@
 - WorkBuddy 的 `refactor/speech-generator-v2`、已上线未提交源码、受保护前端分支及本聊天用户缓存/动态默认可用提交统一合入 `main`。合并过程保留各来源历史，不重置其它开发目录。
 - 当前完整整合目录为 `C:/Users/19918/Documents/Codex/2026-10-09/zh/work/main-merge-20261014`。其它目录不会自动同步，后续开发先获取主线最新提交再开展修改。
 - 源码合并不等同生产发布；后续发布仍核对服务器实际current及原地更新，继承最新静态资源与Nginx路由。
+
+
+## 商品资料补充新版界面（2026-10-14 已上线）
+
+- 按用户图2改版资料补充区域，已于北京时间2026-10-14 08:57上线 `/opt/xiaolan/releases/20261014-supplement-assistant-6d2b5c1`。发布源码6d2b5c1；完整源码仍在 `work/main-merge-20261014` 及 GitHub main。
+- 保留新资料卡、文档插画、助手头像、对话气泡、一体化输入框、TXT/Markdown读入、快速示例与原有补全/确认保存流程。文件及示例只预填输入，不能自动提交或保存为事实。
+- 仅替换web和web-desktop两个入口HTML，新增哈希资源；1426个原有非入口文件哈希一致，三个服务PID/运行二进制、手机端和Nginx路由未变，没有重启直播。
+- 最新前端备份指针 `work/frontend-preservation/latest.json` 已指向本版，经实际服务器指纹核对1094个前端文件；验证见 `work/supplement-ui-proof/production-verification.json`。原版本和旧哈希资源继续保留，后续发布仍以当时实际current为基础。
