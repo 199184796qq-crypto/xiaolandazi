@@ -224,3 +224,11 @@
 - 已整合WorkBuddy1024d36及原模型池/直播下载/声音配置，GitHub main和work/main-merge-20261014同步，开发仍在work/model-pool-source；E:/speech-generator-build原目录未改。后续不得用缺少新库或模型池的旧管理源码覆盖。
 - 五项真实隔离MySQL测试、缓存/审核回执/声音失效/句末切点专项、前端构建与20项保护回归、模型池分页和手机设置交互通过。全管理测试与未修改基线同有30项旧失败、无新增，不宣称全套通过。真实OSS五对象写入/HEAD/读取/签名/删除通过且全部清理，桶无到期生命周期。未启动真实直播、未发送真实模型/TTS口播，当前库空，实际命中率待正式开播验证。
 - 第一次切换因校验脚本误用GET检查POST模型列表而自动回滚，按真实方法校验后r2成功；未绕过守卫。证明work/speech-library-proof/report.md、production-verification.json、deployment-report.json、postcheck.json、storage-verification.json；设计见docs/2026-10-15-room-speech-library.md。
+
+## 互动与衔接语下载HTTPS修复（2026-10-15 已上线）
+
+- 用户截图21:28:42互动对应tenant14/room26/session283/asset698，旧下载和归档仅允许HTTPS，供应商却返回HTTP的DashScope结果OSS签名地址，导致invalid source audio URL。真实GET验证同一对象改HTTPS可读取，HEAD403仅说明GET签名不支持HEAD，不能据此判断文件不存在。
+- 北京时间07:00:34上线 `/opt/xiaolan/releases/20261015-interaction-download-853ea9d`，部署源码853ea9d88283606341e4a4362567bcbdc847c855，Management PID845418/SHA256 90f53adc8eff70030c8bdba06937d701aadc2a2d77f555d288dbca6542c49dc7。只改管理程序，2386个其它文件、1664个前端文件及3公网入口核验一致；Core775073、网关775930、Nginx、配置与模型池未改。
+- 直接下载和私有24小时归档统一把DashScope结果OSS的历史HTTP地址升级为HTTPS，签名及转义不变，非供应商HTTP/用户信息/非默认端口/伪造域名仍拒绝，无HTTP降级。历史条目无需重生成或改文案，按原任务重试自动补存，保留从原播放开始24小时。
+- 07:02:41已核实asset698补存成功，完整GET200、948524字节RIFF，SHA256 7f2d286b682e0b73849646921025872abfa6b111fafd9d9b40fc0bc1c9e31475，到期仍10月15日21:28:42.790；同类记录继续自动补存，期间直接下载支持HTTPS原文件。供应商原WAV头为流式占位长度，实际载荷约19.76秒、列表22.48秒来自既有播放记录，本次不改TTS/音频，不据声明帧数报告12小时。
+- HTTPAPI完整包与下载专项通过，未调用真实模型/TTS或操作直播。已推送GitHub main并同步work/main-merge-20261014，E:/speech-generator-build未改。保留同房间话术库、模型池和WorkBuddy页面。证明work/interaction-download-proof/report.md、deployment-report.json、production-verification.json、recovery-verification.json；前端备份指针work/frontend-preservation/latest.json已按全量哈希复用原备份并更新到本版本。
