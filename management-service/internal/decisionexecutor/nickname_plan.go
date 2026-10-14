@@ -12,6 +12,7 @@ import (
 	"livecompanion/management/internal/model"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -130,6 +131,40 @@ func nicknameModelName(name string) string {
 		return "这位朋友"
 	}
 	return prefix
+}
+
+// addressSuffixTerms 是昵称末尾的称谓词表。命中时简称取「核心 1-2 字 + 该称谓」，
+// 让简称既短又保留叫得出口的称呼（如「小陈哥」「刘老板」「王师傅」）。
+// 末尾称谓只针对词表内的明确称谓，避免把「家」「的」等主题/虚词误判成称谓。
+var addressSuffixTerms = []string{
+	"老板", "老师", "师傅", "朋友", "同学", "美女", "帅哥",
+	"哥", "姐", "弟", "妹", "叔", "姨", "爷", "婆", "嫂", "伯", "婶", "总", "导",
+}
+
+// nicknameAddressSuffix 返回昵称末尾命中的最长称谓词，无则空串。
+func nicknameAddressSuffix(name string) string {
+	name = strings.TrimSpace(name)
+	best := ""
+	for _, term := range addressSuffixTerms {
+		if strings.HasSuffix(name, term) && utf8.RuneCountInString(term) > utf8.RuneCountInString(best) {
+			best = term
+		}
+	}
+	return best
+}
+
+// nicknameShorteningHint 根据昵称字数与末尾称谓，生成传给模型的简称约束。
+// 程序只定「长度目标」，具体取哪个核心字由模型在约束内选择（程序取不准核心）。
+func nicknameShorteningHint(name string) string {
+	name = strings.TrimSpace(name)
+	n := utf8.RuneCountInString(name)
+	if suffix := nicknameAddressSuffix(name); suffix != "" {
+		return "末尾带称谓「" + suffix + "」，简称取核心 1-2 字再带上该称谓（如「小陈哥」「刘老板」）"
+	}
+	if n <= 4 {
+		return "仅 " + strconv.Itoa(n) + " 字，直接使用全称，不要简称"
+	}
+	return "共 " + strconv.Itoa(n) + " 字，取最有辨识度的核心，最多 4 字（不机械截前 4 字）"
 }
 
 // Questions, context and verbatim requests may mention the event nickname too.
@@ -309,7 +344,7 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 	defer cancel()
 	for i, name := range pending {
 		// One nickname per call: failures never shift another person's alias.
-		packet, _ := json.Marshal(map[string]any{"name": name, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms})
+		packet, _ := json.Marshal(map[string]any{"name": name, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms, "shortening": nicknameShorteningHint(name.RawName)})
 		response, err := w.agent.Complete(callCtx, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 160, Timeout: 8 * time.Second})
 		alias := ""
 		if err == nil {
