@@ -1013,9 +1013,7 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
-		if p, e := s.core.GetRoomProgramSnapshot(r.Context(), tenantID, roomID); e == nil {
-			s.archiveMainlineReceipts(r.Context(), tenantID, roomID, sessionState.ID, p)
-		}
+		s.syncSessionArchive(r.Context(), sessionState)
 		if audioErr := s.requestCorePublishedPlanProgramControl(r.Context(), tenantID, roomID, "stop"); audioErr != nil {
 			log.Printf("live runtime stop mainline room=%d failed: %v", roomID, audioErr)
 		}

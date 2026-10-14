@@ -34,7 +34,7 @@ func (w *Worker) archiveSessionPlayback(ctx context.Context, session model.LiveR
 		return
 	}
 	_ = writer.MarkSessionSpeechPlayed(ctx, session.TenantID, session.RoomID, session.ID, "reply:"+p.DecisionID, *p.StartedAt)
-	if p.BridgeUsed {
-		_ = writer.MarkSessionSpeechPlayed(ctx, session.TenantID, session.RoomID, session.ID, "bridge:"+p.DecisionID, *p.StartedAt)
+	if p.BridgeUsed && p.UpdatedAt != nil {
+		_ = writer.MarkSessionSpeechPlayed(ctx, session.TenantID, session.RoomID, session.ID, "bridge:"+p.DecisionID, *p.UpdatedAt)
 	}
 }

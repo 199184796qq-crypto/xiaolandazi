@@ -61,10 +61,15 @@ type ProgramRefreshInput struct {
 }
 
 type ProgramRefreshSnapshot struct {
-	TrackID      string                `json:"track_id"`
-	TrackText    string                `json:"track_text"`
-	FutureWindow []ProgramRefreshTrack `json:"future_window"`
-	Task         struct {
+	TrackID      string                          `json:"track_id"`
+	TrackText    string                          `json:"track_text"`
+	Timeline     []ProgramRefreshTimelineSegment `json:"timeline"`
+	FutureWindow []struct {
+		ID         string `json:"track_id"`
+		Text       string `json:"text"`
+		DurationMS int    `json:"duration_ms"`
+	} `json:"future_window"`
+	Task struct {
 		SessionID  string     `json:"session_id"`
 		AudioURL   string     `json:"audio_url"`
 		DurationMS int        `json:"duration_ms"`

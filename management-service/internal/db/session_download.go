@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-func (s *Store) MigrateSessionDownloads(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS live_session_speech_assets (
+const sessionSpeechArchiveSchema = `CREATE TABLE IF NOT EXISTS live_session_speech_assets (
 	 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 	 tenant_id BIGINT UNSIGNED NOT NULL, room_id BIGINT UNSIGNED NOT NULL, session_id BIGINT UNSIGNED NOT NULL,
 	 source_ref VARCHAR(256) NOT NULL, kind VARCHAR(24) NOT NULL, text_content MEDIUMTEXT NOT NULL,
@@ -19,7 +18,10 @@ func (s *Store) MigrateSessionDownloads(ctx context.Context) error {
 	 created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 	 PRIMARY KEY(id), UNIQUE KEY uk_session_source(tenant_id,room_id,session_id,source_ref),
 	 KEY idx_session_played(tenant_id,room_id,session_id,played_at,id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+
+func (s *Store) MigrateSessionDownloads(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, sessionSpeechArchiveSchema)
 	return err
 }
 
@@ -31,9 +33,39 @@ func (s *Store) SaveSessionSpeechAsset(ctx context.Context, a model.SessionSpeec
 	 (tenant_id,room_id,session_id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at)
 	 SELECT ?,?,?,?,?,?,?,?,?,? FROM live_runtime_sessions WHERE id=? AND tenant_id=? AND room_id=?
 	 ON DUPLICATE KEY UPDATE played_at=COALESCE(played_at,VALUES(played_at)),
+	 expires_at=IF(audio_url='',VALUES(expires_at),expires_at),
 	 audio_url=IF(audio_url='',VALUES(audio_url),audio_url), duration_ms=GREATEST(duration_ms,VALUES(duration_ms))`,
 		a.TenantID, a.RoomID, a.SessionID, a.SourceRef, a.Kind, strings.TrimSpace(a.Text), a.AudioURL, a.DurationMS, a.PlayedAt, a.ExpiresAt, a.SessionID, a.TenantID, a.RoomID)
 	return err
+}
+
+// Recording mode can replay the same track. Each confirmed run has its own
+// start time; resumptions and repeated observer reads remain idempotent.
+func (s *Store) RecordSessionRecordingPlayback(ctx context.Context, tenant, room, session int64, ref string, at time.Time) error {
+	if at.IsZero() {
+		return nil
+	}
+	var latestRef string
+	err := s.db.QueryRowContext(ctx, `SELECT source_ref FROM live_session_speech_assets WHERE tenant_id=? AND room_id=? AND session_id=? AND kind='mainline' AND played_at IS NOT NULL ORDER BY played_at DESC,id DESC LIMIT 1`, tenant, room, session).Scan(&latestRef)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if strings.HasPrefix(latestRef, ref+":") {
+		return nil
+	}
+	a := model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: session, SourceRef: ref + ":" + at.UTC().Format(time.RFC3339Nano), PlayedAt: &at}
+	var expiry sql.NullTime
+	err = s.db.QueryRowContext(ctx, `SELECT kind,text_content,audio_url,duration_ms,expires_at FROM live_session_speech_assets WHERE tenant_id=? AND room_id=? AND session_id=? AND source_ref=?`, tenant, room, session, ref).Scan(&a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if expiry.Valid {
+		a.ExpiresAt = &expiry.Time
+	}
+	return s.SaveSessionSpeechAsset(ctx, a)
 }
 
 func (s *Store) MarkSessionSpeechPlayed(ctx context.Context, tenant, room, session int64, ref string, at time.Time) error {
@@ -83,14 +115,15 @@ func (s *Store) ListSessionSpeechAssets(ctx context.Context, tenant, room, sessi
 }
 
 func (s *Store) GetSessionSpeechAsset(ctx context.Context, tenant, room, session, id int64) (model.SessionSpeechAsset, error) {
-	items, err := s.ListSessionSpeechAssets(ctx, tenant, room, session, nil, nil)
-	if err != nil {
-		return model.SessionSpeechAsset{}, err
+	a := model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: session}
+	var at, expiry sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at FROM live_session_speech_assets WHERE tenant_id=? AND room_id=? AND session_id=? AND id=? AND played_at IS NOT NULL`, tenant, room, session, id).Scan(&a.ID, &a.SourceRef, &a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &at, &expiry)
+	if at.Valid {
+		a.PlayedAt = &at.Time
 	}
-	for _, a := range items {
-		if a.ID == id {
-			return a, nil
-		}
+	if expiry.Valid {
+		a.ExpiresAt = &expiry.Time
 	}
-	return model.SessionSpeechAsset{}, sql.ErrNoRows
+	a.Available = a.AudioURL != "" && (!expiry.Valid || time.Now().Before(expiry.Time))
+	return a, err
 }

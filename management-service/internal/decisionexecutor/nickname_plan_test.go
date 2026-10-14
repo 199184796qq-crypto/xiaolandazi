@@ -148,7 +148,7 @@ func TestNicknameCooldownUsesOriginalIdentityInsteadOfSharedNeutralAlias(t *test
 	if len(got) != 0 {
 		t.Fatal("original person cooldown lost")
 	}
-	if strings.Contains(addressingPlanGuidance(w.buildAddressingPlan(26, decisionItem{Nicknames: []string{"账号乙"}, PromptNicknames: []string{"这位朋友"}}, "natural", "", model.RoomAddressingPreferences{})), "账号乙") {
+	if strings.Contains(addressingPlanGuidance(w.buildAddressingPlan(26, decisionItem{Nicknames: []string{"账号乙"}, PromptNicknames: []string{"这位朋友"}}, "natural", "", model.RoomAddressingPreferences{}, nil)), "账号乙") {
 		t.Fatal("raw nickname sent to speech")
 	}
 }
@@ -216,7 +216,7 @@ func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *test
 	}
 	planItem := decisionItem{Nicknames: []string{"小陈***隐藏原文", "*隐藏昵称"}, PromptNicknames: []string{"小陈老乡", "这位朋友"}, MissionKind: "welcome_named", MissionEventCount: 2}
 	planWorker := &Worker{recentNamed: map[int64]map[string]time.Time{}}
-	plan := planWorker.buildAddressingPlan(11, planItem, "", "", model.RoomAddressingPreferences{})
+	plan := planWorker.buildAddressingPlan(11, planItem, "", "", model.RoomAddressingPreferences{}, nil)
 	if planItem.Nicknames[0] != "小陈***隐藏原文" || len(plan.OriginalSelectedNames) == 0 || plan.OriginalSelectedNames[0] != "小陈***隐藏原文" {
 		t.Fatalf("source account identity was changed: %#v", plan)
 	}

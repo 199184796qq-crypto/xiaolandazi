@@ -22,6 +22,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
+	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
@@ -109,6 +110,7 @@ type Worker struct {
 
 	addressMu       sync.Mutex
 	recentNamed     map[int64]map[string]time.Time
+	recentGreeting  map[int64][]string
 	nicknameAliases map[string]nicknameAliasCacheEntry
 	faqCache        *faqAnswerCache
 	prepared        map[preparedInteractionKey]preparedInteraction
@@ -492,15 +494,17 @@ func (w *Worker) applyAddressingStrategyStage(
 		preferences = model.RoomAddressingPreferences{NamingPreference: "natural"}
 	}
 
-	plan := w.buildAddressingPlan(session.RoomID, *item, "room_preference", "", preferences)
+	// 主播风格主力称呼（每个直播间不同，动态获取）；综合用户 PreferredTerms 与中性托底，见 buildAddressingPlan。
+	anchorTerms := w.fetchAnchorAddressTerms(ctx, session)
+	plan := w.buildAddressingPlan(session.RoomID, *item, "room_preference", "", preferences, anchorTerms)
 	plan = applyAddressingFrequency(plan, *item, seed)
 	item.SelectedAddressing = plan.Candidate
 	item.faqAddressingResolved = true
 	item.faqPersonalized = len(plan.SelectedNames) > 0
 
 	guidance := addressingPlanGuidance(plan)
-	// 打招呼句式方向：程序按 seed 确定性轮换，避免相邻几轮机械重复同一称呼/欢迎句式。
-	if phrase := greetingPhraseVariant(seed + "|" + item.MissionKind); phrase != "" {
+	// 打招呼句式方向：按场景分池 + 严格避重（跳过最近用过的方向），避免机械重复。
+	if phrase := w.pickGreetingPhrase(session.RoomID, seed, interactionScene(item.MissionKind)); phrase != "" {
 		guidance += " " + phrase
 	}
 	item.addStrategyConstraint(strategyConstraint{
@@ -609,7 +613,7 @@ func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionIt
 	return plan
 }
 
-func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candidate string, preferences model.RoomAddressingPreferences) speechmission.AddressingPlan {
+func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candidate string, preferences model.RoomAddressingPreferences, anchorTerms []string) speechmission.AddressingPlan {
 	eligibleNames, recentPenalty := w.playableAddressingNames(roomID, item.promptNicknames(), item.Nicknames)
 	selectedNames := append([]string(nil), eligibleNames...)
 	preference := strings.ToLower(strings.TrimSpace(preferences.NamingPreference))
@@ -619,7 +623,13 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	preferredTerms := cleanAddressingTerms(preferences.PreferredTerms)
 	blockedTerms := cleanAddressingTerms(preferences.BlockedTerms)
 	candidate = strings.TrimSpace(candidate)
-	if preferred := choosePreferredAddressingTerm(preferredTerms, blockedTerms, item.ID); preferred != "" {
+	// 称谓词候选池：主播风格主力称呼 + 用户 PreferredTerms 综合使用；
+	// 两者都为空时用中性托底，保证任何直播间都有可播称呼。
+	addressPool := cleanAddressingTerms(append(append([]string(nil), anchorTerms...), preferredTerms...))
+	if len(addressPool) == 0 {
+		addressPool = append(addressPool, neutralAddressTerms...)
+	}
+	if preferred := choosePreferredAddressingTerm(addressPool, blockedTerms, item.ID); preferred != "" {
 		candidate = preferred
 		key = "preferred"
 	} else if addressingTermBlocked(candidate, blockedTerms) {
@@ -685,6 +695,103 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 		RecentNamePenalty:     recentPenalty,
 		Optional:              true,
 	}
+}
+
+// anchorStyleAddressTerms 从主播风格评分基准解析主力/辅助/候选称呼。
+// 每个直播间的主播风格不同，主力称呼也不同，不能写死。
+func anchorStyleAddressTerms(profile model.LiveAgentPlanAnchorStyleProfile) []string {
+	if profile.Delivery == nil || strings.TrimSpace(profile.Delivery.ScoringBaselineJSON) == "" {
+		return nil
+	}
+	baseline, err := anchorstylescore.Parse(profile.Delivery.ScoringBaselineJSON)
+	if err != nil {
+		return nil
+	}
+	terms := []string{}
+	if m := strings.TrimSpace(baseline.Identity.Audience.Main); m != "" {
+		terms = append(terms, m)
+	}
+	terms = append(terms, baseline.Identity.Audience.Other...)
+	terms = append(terms, baseline.Identity.Audience.Candidates...)
+	return cleanAddressingTerms(terms)
+}
+
+// fetchAnchorAddressTerms 获取当前直播间主播风格的主力称呼（动态，每个直播间不同，不写死）。
+func (w *Worker) fetchAnchorAddressTerms(ctx context.Context, session model.LiveRuntimeSession) []string {
+	if w == nil || w.store == nil {
+		return nil
+	}
+	source, ok := w.store.(liveAnchorStyleSource)
+	if !ok {
+		return nil
+	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil || plan.ID <= 0 {
+		return nil
+	}
+	style, err := source.GetLiveAnchorStyleForPlan(ctx, session.TenantID, plan.ID)
+	if err != nil {
+		return nil
+	}
+	return anchorStyleAddressTerms(style.Profile)
+}
+
+// pickGreetingPhrase 按场景选打招呼句式方向，并严格避重（跳过最近用过的方向）。
+func (w *Worker) pickGreetingPhrase(roomID int64, seed, scene string) string {
+	pool := greetingScenePool(scene)
+	if len(pool) == 0 {
+		return ""
+	}
+	recent := w.recentGreetingPhrases(roomID)
+	candidates := make([]int, 0, len(pool))
+	for i, phrase := range pool {
+		used := false
+		for _, r := range recent {
+			if r == phrase {
+				used = true
+				break
+			}
+		}
+		if !used {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		for i := range pool {
+			candidates = append(candidates, i)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(seed)))
+	phrase := pool[candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]]
+	w.recordGreetingPhrase(roomID, phrase)
+	return phrase
+}
+
+func (w *Worker) recentGreetingPhrases(roomID int64) []string {
+	if w == nil {
+		return nil
+	}
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	return w.recentGreeting[roomID]
+}
+
+func (w *Worker) recordGreetingPhrase(roomID int64, phrase string) {
+	if w == nil || roomID <= 0 || phrase == "" {
+		return
+	}
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	if w.recentGreeting == nil {
+		w.recentGreeting = map[int64][]string{}
+	}
+	recent := w.recentGreeting[roomID]
+	recent = append(recent, phrase)
+	// 保留最近 2 个用过的方向，保证相邻 3 轮不重复。
+	if len(recent) > 2 {
+		recent = recent[len(recent)-2:]
+	}
+	w.recentGreeting[roomID] = recent
 }
 
 func cleanAddressingTerms(values []string) []string {
@@ -1515,6 +1622,7 @@ type coreSpeechRuntimeSnapshot struct {
 		BridgeText     string     `json:"bridge_text"`
 		BridgeUsed     bool       `json:"bridge_used"`
 		StartedAt      *time.Time `json:"started_at"`
+		UpdatedAt      *time.Time `json:"updated_at"`
 	} `json:"interrupt"`
 }
 

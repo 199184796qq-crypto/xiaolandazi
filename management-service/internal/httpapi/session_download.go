@@ -78,6 +78,7 @@ func sessionTranscript(items []model.SessionSpeechAsset) string {
 }
 
 func (s *Server) sessionDownloads(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
 	session, ok := s.sessionDownloadScope(w, r)
 	if !ok {
 		return
@@ -165,8 +166,15 @@ func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 410, "声音文件已到期或不可用")
 		return
 	}
+	if resp.ContentLength > 256<<20 {
+		writeError(w, 502, "声音文件过大，暂不可下载")
+		return
+	}
 	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="live-room-%d-session-%d-audio-%d.wav"`, session.RoomID, session.ID, a.ID))
 	w.Header().Set("Cache-Control", "private, no-store")
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 64<<20))
+	if resp.ContentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	_, _ = io.Copy(w, resp.Body)
 }

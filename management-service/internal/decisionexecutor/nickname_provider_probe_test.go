@@ -93,7 +93,7 @@ func TestNicknameProductionProviderSmoke(t *testing.T) {
 	for _, c := range cases {
 		item := decisionItem{Nicknames: c.Names, MissionKind: "welcome_named", MissionEventCount: len(c.Names)}
 		w.planNicknameAddresses(ctx, session, &item)
-		plan := w.buildAddressingPlan(26, item, "natural", "老乡", model.RoomAddressingPreferences{PreferredTerms: []string{"老乡"}})
+		plan := w.buildAddressingPlan(26, item, "natural", "老乡", model.RoomAddressingPreferences{PreferredTerms: []string{"老乡"}}, nil)
 		data, _ := json.Marshal(map[string]any{"场景": c.Kind, "本次目的": "回应来访观众，帮助进入当前话题", "当前正在讲": "商品规格和包装", "本批观众昵称": item.promptNicknames(), "昵称已按称呼规划处理": true, "涉及多人": len(c.Names) > 1, "聚合事件数": len(c.Names)})
 		body := strings.ReplaceAll(string(core), "{{SCENE_DATA}}", string(data)) + "\n" + addressingPlanGuidance(plan) + "\n本场喜欢老乡、朋友，不喜欢宝子。已确认事实：本店使用京东物流，具体到货时间未确认。正文20到50字。"
 		if c.Kind == "商品问答" {

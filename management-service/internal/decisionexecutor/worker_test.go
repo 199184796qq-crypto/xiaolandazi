@@ -263,7 +263,7 @@ func TestBuildAddressingPlanUsesMixedForBatchWelcome(t *testing.T) {
 		MissionKind:       "welcome_batch",
 		MissionEventCount: 12,
 		Nicknames:         []string{"小陈", "阿芳", "老周"},
-	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "natural"})
+	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "natural"}, nil)
 	if plan.Mode != "MIXED" {
 		t.Fatalf("mode=%q want MIXED, plan=%#v", plan.Mode, plan)
 	}
@@ -284,7 +284,7 @@ func TestAddressingPreferenceLessAvoidsNamesForAggregateMission(t *testing.T) {
 		MissionKind:       "welcome_batch",
 		MissionEventCount: 8,
 		Nicknames:         []string{"小陈", "阿芳"},
-	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "less"})
+	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "less"}, nil)
 	if plan.Mode != "GROUP" || len(plan.SelectedNames) != 0 || plan.MaxNamedCount != 1 {
 		t.Fatalf("less preference should reduce naming: %#v", plan)
 	}
@@ -297,7 +297,7 @@ func TestAddressingPreferenceMoreUsesMixedWhenAggregateQuestionHasNames(t *testi
 		MissionEventCount: 3,
 		Nicknames:         []string{"小陈", "阿芳"},
 		SampleQuestions:   []string{"多少钱", "怎么发货"},
-	}, "friends", "朋友们", model.RoomAddressingPreferences{NamingPreference: "more"})
+	}, "friends", "朋友们", model.RoomAddressingPreferences{NamingPreference: "more"}, nil)
 	if plan.Mode != "MIXED" || len(plan.SelectedNames) != 2 {
 		t.Fatalf("more preference should use safe mixed addressing: %#v", plan)
 	}
@@ -351,7 +351,7 @@ func TestPreferredAddressingTermsOverrideSystemCandidate(t *testing.T) {
 		NamingPreference: "more",
 		PreferredTerms:   []string{"老哥", "朋友", "姐妹", "老妹"},
 		BlockedTerms:     []string{"老板", "宝子"},
-	})
+	}, nil)
 	if plan.Candidate == "" {
 		t.Fatal("preferred addressing candidate should not be empty")
 	}
@@ -383,7 +383,7 @@ func TestRoomAddressingPreferencesIgnoreBlockedBackendCandidate(t *testing.T) {
 		NamingPreference: "natural",
 		PreferredTerms:   []string{"朋友"},
 		BlockedTerms:     []string{"宝子"},
-	})
+	}, nil)
 	if plan.Candidate != "朋友" || plan.Key != "preferred" {
 		t.Fatalf("room preference must replace backend candidate: %#v", plan)
 	}
@@ -1409,14 +1409,14 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
 	w := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
 	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}}
-	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{})
+	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{}, nil)
 	if plan.Mode == "SINGLE" || len(plan.SelectedNames) != 2 {
 		t.Fatal("merged welcome collapsed into one named viewer", plan)
 	}
 	single := item
 	single.MissionEventCount = 1
 	single.Nicknames = []string{"星夜"}
-	plan = w.buildAddressingPlan(11, single, "", "", model.RoomAddressingPreferences{})
+	plan = w.buildAddressingPlan(11, single, "", "", model.RoomAddressingPreferences{}, nil)
 	if plan.Mode != "SINGLE" || len(plan.SelectedNames) != 1 {
 		t.Fatal("single viewer changed unnecessarily", plan)
 	}
