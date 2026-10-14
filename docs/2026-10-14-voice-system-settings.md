@@ -23,3 +23,7 @@
 本次核对发现服务器实际版本已成为 agent-workspace-pages-e3151af，管理服务另有原地更新。已同步最新 Git main 双页布局，并独立捕获 E:/speech-generator-build 的两项未提交方案删除源码，保留其生产行为；没有修改原开发目录。声音更新仍从发布前实际 current 复制完整文件，只覆盖管理二进制及两个桌面入口并增加资源，持共享锁，两次空闲检查，失败自动回滚；不停止正在直播的场次。
 
 本聊天验证记录位于 work/voice-system-settings-proof；最新前端保存指针由 work/frontend-preservation/latest.json 管理。
+
+## 已发布核对
+
+2026-10-14北京时间13:49已上线20261014-voice-settings-9f9e204。实际Management PID803890、SHA256 fc507eed927d88c8cff8c132c1dcd7c60b501f5a79e42cef4f740995043c2e1f。三服务健康，Core/网关未重启；1781个原有无关文件及Nginx一致，缓存默认值未变；1440个前端文件已验证并更新备份指针。公网入口、两个后台懒加载资源和三个接口未登录401/no-store通过。生产只读确认custom_model=cosyvoice-v3.5-flash、official_library=tencent-premium、revision=0，双方服务凭据均已配置。

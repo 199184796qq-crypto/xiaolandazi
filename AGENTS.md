@@ -174,3 +174,14 @@
 - 完整LiveStrategyView合成数据8项桌面/手机布局检查及14项既有回归通过，类型检查和生产构建通过。未修改主线基线构建的45个资源与发布前实际前端一致。发布时1737个原有非入口文件及三个服务保持一致，8项公网资源验证通过；最新前端备份指针已更新，1394个前端文件逐项验证。
 - 管理服务随后13:24:46被并行原地更新为PID801647，SHA256=7b1b016f0cba26b6d59494d63eedf708112d896dd6be44845c78cdcffe9a4605，本次核对保留该后续版本。后续发布仍继承当时实际current，不能把管理服务回退到本次发布前的800917或更早版本。
 - 发布证据位于本次工作目录上级的 `agent-workspace-pages-proof/production-verification.json`；共享备份指针仍为 `C:/Users/19918/Documents/Codex/2026-10-09/zh/work/frontend-preservation/latest.json`。说明见 `docs/2026-10-14-agent-workspace-pages.md`。
+
+
+## 声音模型后台统一配置（2026-10-14 已上线）
+
+- 当前声音配置发布为 `/opt/xiaolan/releases/20261014-voice-settings-9f9e204`，北京时间13:49上线，Management PID803890，SHA256 fc507eed927d88c8cff8c132c1dcd7c60b501f5a79e42cef4f740995043c2e1f；仅重启管理服务，Core/网关未重启。
+- 用户声音中心不展示模型名、价格、顶部或卡片/创建弹窗模型下拉框。模型选择集中在“系统设置 → AI 与智能体 → 声音模型配置”，沿用超级管理员权限、管理审计和事务修订校验；客户不能通过旧模型偏好接口改模型。
+- 自定义模型当前为CosyVoice 3.5 Flash，官方库腾讯精品。所有已有声音可见并保留原ID、样本和房间选择；客户明确试听/使用时需要转换则真实从样本复刻新编号，不把旧编号改绑另一模型，不自动替换已运行快照。录音主线自动复刻也采用后台配置。
+- 官方声音仅提供成年中文男声/女声，隐藏外语和童声，共11款腾讯音色；完整旧目录只保留已保存声音兼容。官方卡片使用成人头像。
+- 已整合智能体双页布局e3151af/2f8fdeb，以及并行原地发布的WorkBuddy方案删除最新未提交源码（180e3b9及9f9e204）；没有修改原开发目录。后续不能从旧声音或旧管理源码覆盖。完整源码仍在work/main-merge-20261014及GitHub main。
+- 1781个原有无关文件、提示词、手机端、Nginx和缓存默认值一致；最新前端备份指针work/frontend-preservation/latest.json已验证1440个前端文件。证明work/voice-system-settings-proof/production-verification.json；说明docs/2026-10-14-voice-system-settings.md。
+- 五个相关Go包、前端构建、14项导航/资料补充回归及桌面/390px浏览器验证通过。数据库集成实验因现有账号无创建隔离schema权限未成功，不宣称通过；生产仅只读确认新配置及鉴权，未生成真实测试声音或操作直播队列。以后发布仍继承当时实际current并持共享锁、核对指纹及空闲状态。
