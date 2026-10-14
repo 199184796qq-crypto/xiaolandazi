@@ -33,7 +33,7 @@ func TestAnchorStyleAnalysisPromptLoadsReplaceableMarkdown(t *testing.T) {
 	if !strings.HasSuffix(strings.ReplaceAll(strings.Split(source, "#sha256=")[0], "\\", "/"), "/configs/prompts/anchor-style/style-meta-prompt-extraction.md") {
 		t.Fatalf("unexpected style extraction template: %s", source)
 	}
-	for _, required := range []string{"提取腔调六维", "判断情绪", "区分风格层 vs 内容层", "范文锚定"} {
+	for _, required := range []string{"提取腔调五维", "判断情绪", "区分风格层 vs 内容层", "全局规则"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt %s is missing %q", source, required)
 		}
