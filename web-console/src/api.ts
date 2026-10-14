@@ -4295,10 +4295,10 @@ export interface FactGapCheckResponse {
   gaps: FactGapItem[]
   summary: string
 }
-export function factGapCheck(planId: number, input: { tenant_id?: number }) {
+export function factGapCheck(planId: number, input: { tenant_id?: number }, signal?: AbortSignal) {
   return request<FactGapCheckResponse>(
     '/api/v1/live-agent-plans/' + planId + '/fact-gap-check',
-    { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true },
+    { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true, signal },
   )
 }
 

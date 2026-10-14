@@ -29,7 +29,7 @@ export function useProductSupplementChat(
   }, { flush: 'sync' })
   onScopeDispose(() => { epoch++; controller?.abort() })
 
-  async function deliver(message: string, focusJson = '') {
+  async function deliver(message: string, focusJson = '', preserveInput = false) {
     if (!ready.value || busy.value || !message) return
     if ([...message].length > 3000) { error.value = '每次最多发送3000字，请分段补充。'; return }
     if (messages.value.length > 56) { error.value = '本轮对话已较长，请先保存或取消待确认资料，再开始新一轮。'; return }
@@ -39,7 +39,8 @@ export function useProductSupplementChat(
     const history = messages.value.map(item => ({ ...item })).slice(-16)
     const userMessage: SpeechMinerMessage = { role: 'user', text: message }
     messages.value.push(userMessage)
-    input.value = ''; error.value = ''; notice.value = ''; busy.value = 'chat'
+    if (!preserveInput) input.value = ''
+    error.value = ''; notice.value = ''; busy.value = 'chat'
     controller = new AbortController()
     try {
       const result = await services.chat(capturedScope.planId, {
@@ -73,7 +74,7 @@ export function useProductSupplementChat(
   }
 
   async function askGap(focusJson: string, triggerText: string) {
-    await deliver(triggerText, focusJson)
+    await deliver(triggerText, focusJson, true)
   }
 
   function discard() {

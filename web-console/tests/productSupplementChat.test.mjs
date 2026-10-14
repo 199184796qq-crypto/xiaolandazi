@@ -83,3 +83,32 @@ test('取消候选不写数据库；换类目保留条件与对象关系', async
   assert.ok(state.chat.messages.value.at(-1).text.includes('尚未保存'))
   state.close()
 })
+
+test('问清单问题直接传焦点给对话，不发送或清空输入框内未提交的资料', async () => {
+  const pending = deferred(); let request
+  const state = setup({ chat: async (_, body) => { request = body; return pending.promise }, adopt: async () => { throw Error('不可自动保存') } })
+  state.chat.input.value = '文件预填：包装采用独立包装。'
+  const focus = JSON.stringify({ 维度: '物流', 待补事实: '外省配送范围' })
+  const asking = state.chat.askGap(focus, '我想补充外省配送范围')
+  assert.equal(request.focus_gap, focus)
+  assert.equal(request.message, '我想补充外省配送范围')
+  assert.equal(request.history.length, 0)
+  assert.equal(state.chat.input.value, '文件预填：包装采用独立包装。')
+  pending.resolve({ reply: '外省配送有什么已确认的要求？', captured_facts: [] })
+  await asking
+  assert.equal(state.chat.input.value, '文件预填：包装采用独立包装。')
+  assert.equal(state.chat.messages.value.at(-1).role, 'agent')
+  assert.equal(state.chat.drafts.value.length, 0)
+  state.close()
+})
+
+test('清单问答失败也保留已有输入和历史，可继续自由对话', async () => {
+  const state = setup({ chat: async () => { throw Error('暂时未响应') }, adopt: async () => { throw Error('不可保存') } })
+  state.chat.input.value = '尚未发送的资料'
+  await state.chat.askGap('{}', '我想补充产地')
+  assert.equal(state.chat.input.value, '尚未发送的资料')
+  assert.equal(state.chat.messages.value.length, 0)
+  assert.equal(state.chat.busy.value, '')
+  assert.ok(state.chat.error.value.includes('未响应'))
+  state.close()
+})
