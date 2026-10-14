@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { useAgentEnterSend } from '../useAgentEnterSend'
-defineProps<{ disabled?: boolean }>()
+withDefaults(defineProps<{ disabled?: boolean; label?: string }>(), { label: '回车' })
 const enterSend = useAgentEnterSend()
 </script>
 
 <template>
   <label class="agent-enter-send-option" title="勾选后回车发送，Shift+回车换行">
     <input v-model="enterSend" type="checkbox" :disabled="disabled" />
-    <span>回车</span>
+    <span>{{ label }}</span>
   </label>
 </template>
 

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="112" viewBox="0 0 112 112" fill="none">
+  <defs>
+    <radialGradient id="halo"><stop stop-color="#F6F4FF"/><stop offset="1" stop-color="#DAD5FF"/></radialGradient>
+    <linearGradient id="shell" x1="26" y1="28" x2="88" y2="82" gradientUnits="userSpaceOnUse"><stop stop-color="white"/><stop offset=".55" stop-color="#F0EFFF"/><stop offset="1" stop-color="#B5A7FF"/></linearGradient>
+    <linearGradient id="ear" x1="15" y1="46" x2="96" y2="78" gradientUnits="userSpaceOnUse"><stop stop-color="#AE99F8"/><stop offset=".5" stop-color="#E0D9FF"/><stop offset="1" stop-color="#9778EE"/></linearGradient>
+    <linearGradient id="face" x1="32" y1="46" x2="77" y2="76" gradientUnits="userSpaceOnUse"><stop stop-color="#152648"/><stop offset="1" stop-color="#071530"/></linearGradient>
+    <filter id="shadow" x="-40%" y="-30%" width="180%" height="190%"><feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#7960D3" flood-opacity=".23"/></filter>
+  </defs>
+  <circle cx="56" cy="56" r="48" fill="url(#halo)"/>
+  <ellipse cx="57" cy="98" rx="23" ry="5" fill="#AD9CE9" opacity=".25"/>
+  <g filter="url(#shadow)">
+    <path d="M43 84h26l7 13H36l7-13Z" fill="url(#shell)"/>
+    <path d="M43 93v9m26-9v9" stroke="#A89BF1" stroke-width="7" stroke-linecap="round"/>
+    <path d="M56 22v12" stroke="#9A81ED" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="56" cy="21" r="5" fill="#A688FA"/>
+    <rect x="16" y="49" width="14" height="29" rx="7" fill="url(#ear)"/>
+    <rect x="82" y="49" width="14" height="29" rx="7" fill="url(#ear)"/>
+    <rect x="23" y="32" width="66" height="56" rx="24" fill="url(#shell)"/>
+    <rect x="31" y="45" width="50" height="31" rx="12" fill="url(#face)"/>
+    <rect x="40" y="52" width="7" height="13" rx="3.5" fill="#8DD8FF"/>
+    <rect x="65" y="52" width="7" height="13" rx="3.5" fill="#8DD8FF"/>
+    <path d="M51 68c3 2 7 2 10 0" stroke="#75CFF4" stroke-width="2" stroke-linecap="round"/>
+    <path d="M37 39c8-6 24-7 36-2" stroke="white" stroke-width="3" stroke-linecap="round" opacity=".8"/>
+  </g>
+</svg>
