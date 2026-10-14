@@ -196,6 +196,9 @@ func (s *Store) ArchiveLiveAgentPlan(ctx context.Context, tenantID, planID int64
 // 声音(voice_profiles / voice_model_bindings)与主播风格(live_anchor_styles / live_anchor_style_samples)
 // 是共享资源、不含 plan_id，天然不在本清单，多方案可继续复用，不受删除影响。
 var planHardDeleteTables = []string{
+	// 外键引用子表：必须先于被引用的商品链接/福利表删除，否则外键约束报错
+	"live_plan_benefit_scope_products",
+	"live_plan_benefit_scopes",
 	// 方案专属配置资产（商品链接/事实包/福利/条款 及版本、属性）
 	"live_agent_plan_product_links",
 	"live_agent_plan_product_link_revisions",
@@ -222,8 +225,6 @@ var planHardDeleteTables = []string{
 	"live_angle_direction_plays",
 	"live_angle_direction_reviews",
 	"live_plan_analysis_assets",
-	"live_plan_benefit_scopes",
-	"live_plan_benefit_scope_products",
 	"live_plan_content_changes",
 	"live_plan_content_corrections",
 	"live_plan_content_jobs",
@@ -246,8 +247,8 @@ var planHardDeleteTables = []string{
 	"live_interaction_replays",
 }
 
-// HardDeleteLiveAgentPlan 物理删除方案（主表 + 派生数据 + 运行时日志），
-// 商品/事实/福利等配置资产保留；删前把方案快照写入审计表。
+// HardDeleteLiveAgentPlan 物理删除方案（主表 + 全部方案专属内容 + 方案级风格快照/绑定 + 运行时日志）。
+// 声音(voice_profiles)与主播风格(live_anchor_styles)是共享资源、不含 plan_id，不受影响；删前把方案快照写入审计表。
 func (s *Store) HardDeleteLiveAgentPlan(ctx context.Context, tenantID, planID int64, audit model.AdminAuditLog) error {
 	plan, err := s.GetLiveAgentPlan(ctx, tenantID, planID)
 	if err != nil {
@@ -306,6 +307,32 @@ func (s *Store) HardDeleteLiveAgentPlan(ctx context.Context, tenantID, planID in
 		return err
 	}
 	defer tx.Rollback()
+
+	// 先删不含 plan_id、但通过外键引用方案商品/内容集的派生数据（子查询定位，父表尚在）。
+	// 这些表(content_task_products / content_tasks / content_pool_records)无 tenant_id/plan_id 列，
+	// 只能经 product_links.id 与 content_sets.id 反查归属。
+	fkChildren := []struct {
+		query string
+		args  []any
+	}{
+		{
+			`DELETE FROM live_plan_content_task_products WHERE product_link_id IN (SELECT id FROM live_agent_plan_product_links WHERE tenant_id=? AND plan_id=?) OR set_id IN (SELECT id FROM live_plan_content_sets WHERE tenant_id=? AND plan_id=?)`,
+			[]any{tenantID, planID, tenantID, planID},
+		},
+		{
+			`DELETE FROM live_plan_content_tasks WHERE set_id IN (SELECT id FROM live_plan_content_sets WHERE tenant_id=? AND plan_id=?)`,
+			[]any{tenantID, planID},
+		},
+		{
+			`DELETE FROM live_plan_content_pool_records WHERE set_id IN (SELECT id FROM live_plan_content_sets WHERE tenant_id=? AND plan_id=?)`,
+			[]any{tenantID, planID},
+		},
+	}
+	for _, c := range fkChildren {
+		if _, err := tx.ExecContext(ctx, c.query, c.args...); err != nil {
+			return fmt.Errorf("hard delete plan foreign-key children: %w", err)
+		}
+	}
 
 	for _, table := range planHardDeleteTables {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id=? AND plan_id=?`, tenantID, planID); err != nil {
