@@ -214,3 +214,13 @@
 - 部署源码59d68122462fc38d60adbfa7871187d0a4248117，包含模型池、直播下载和WorkBuddy c0ad094最新TTS前缀修改；用户后来保存的qwen3.7-flash-2026-07-15及100个名额原样保留，没有重新导入Key或覆盖账号设置。三个模型池入口线上返回需登录401，已恢复路由。
 - 后续管理发布必须以最新GitHub main完整整合模型池与直播下载，不得直接用缺少这些功能的E:/speech-generator-build旧main全量覆盖。原WorkBuddy工作目录未由本聊天修改；前端仍以发布时actual current及指纹为准。
 - 浏览器虚拟24条占用验证10/20/50分页、末页、刷新收回页码、按账号隔离、空态、关闭/焦点和390px显示，21项既有前端回归与构建通过；恢复后端的模型池/调用路由/直播下载相关定向Go测试通过，未启动真实直播或生成测试内容。证明work/model-pool-occupancy-proof/production-verification.json与integrated-production-verification.json。最新前端备份指针work/frontend-preservation/latest.json已指向当前整合发布并验证1618文件，实际备份复用哈希完全一致的占用页版本。
+
+## 同房间跨场主线话术库（2026-10-15 已上线）
+
+- 北京时间02:28:30发布 `/opt/xiaolan/releases/20261015-speech-library-711b164-r2`，部署源码711b164e872871fd0d473ef1c82f022cc8456a92，Management PID836984/SHA256 32e69cad21c1d762afac1e874e2ac820034784948df68d15ac1bc6a896cbb156。Core775073与网关775930未重启；2337个旧无关文件一致，1664个前端文件和12个公网入口/资源核对通过，完整备份指针work/frontend-preservation/latest.json已更新。
+- MySQL持久主线正文库按环境/客户/房间/方案/卖点×角度隔离，默认容量3、1/2/3+条复用30%/60%/70%、同条实际起播后冷却180秒。只有当前生效事实、条件、商品与福利范围、卖点/角度卡、风格、评分、P0、表达要求、模型及提示词全部匹配才复用；变化后退役，不因改回旧值复活。补充另一张方向卡不影响原样有效的卡。仅音色/TTS模型/语速变化只重做声音，保留有效文字。
+- 完整音频包含准确PCM时间轴、字幕和安全句末切点；上传前固定引用，实际PCM起播幂等计数，完成/下一条实际主线起播释放旧引用，暂停与进程重启不释放。退役至少24小时且无活动引用才删除本库明确五对象。开场/讲解/辅助/预览/依赖前文及明确到期活动不进长期库，互动沿用现有流程。
+- 后台“直播运维 → 用户声音缓存”新增“主线跨场话术库”中文配置与统计，保留原用户覆盖、权限、审计及CAS。发布前后实际配置指纹一致：主线true、互动false、临时保留5小时。互动false的数据库更新时间为北京时间10月15日00:14:55，早于本次发布；不能按此前23:59历史记录推断当前互动仍true。本次没有写两个开关或账号设置。
+- 已整合WorkBuddy1024d36及原模型池/直播下载/声音配置，GitHub main和work/main-merge-20261014同步，开发仍在work/model-pool-source；E:/speech-generator-build原目录未改。后续不得用缺少新库或模型池的旧管理源码覆盖。
+- 五项真实隔离MySQL测试、缓存/审核回执/声音失效/句末切点专项、前端构建与20项保护回归、模型池分页和手机设置交互通过。全管理测试与未修改基线同有30项旧失败、无新增，不宣称全套通过。真实OSS五对象写入/HEAD/读取/签名/删除通过且全部清理，桶无到期生命周期。未启动真实直播、未发送真实模型/TTS口播，当前库空，实际命中率待正式开播验证。
+- 第一次切换因校验脚本误用GET检查POST模型列表而自动回滚，按真实方法校验后r2成功；未绕过守卫。证明work/speech-library-proof/report.md、production-verification.json、deployment-report.json、postcheck.json、storage-verification.json；设计见docs/2026-10-15-room-speech-library.md。
