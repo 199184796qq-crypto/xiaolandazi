@@ -27,8 +27,8 @@ func TestFinalReviewIncludesValidatedP0AndScopedContentWithoutIndices(t *testing
 	if e != nil {
 		t.Fatal(e)
 	}
-	// 有「四层母版」时为 4 条（fourLayer+P0+mother+user），无则 3 条（P0+mother+user）。
-	if len(messages) != 3 && len(messages) != 4 {
+	// 有「四层母版」时为 5 条（fourLayer+P0+mother+facts+user），无则 4 条（P0+mother+facts+user）。
+	if len(messages) != 4 && len(messages) != 5 {
 		t.Fatal("unexpected message count", len(messages))
 	}
 	// 最后一条必须是 user，且 P0 不能混进 user 内容。
