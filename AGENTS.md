@@ -116,3 +116,10 @@
 - 根组件必须保留确定的100%宽度、最小宽度0及1560px最大宽度，避免父级网格与内联尺寸容器共同导致缩窄。响应规则按组件实际宽度判断；验证须包含方案页真实父级和全局样式，以及有数据的补全清单和对话，不能只用独立组件预览。
 - 新版资料补充交互与所有保护页面继续保留。本次仅更新两个入口HTML并新增哈希资源，1463个原有非入口文件一致，服务PID/二进制、手机端和Nginx路由未变。
 - 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1130个前端文件逐项匹配实际服务器。验证见 `work/supplement-layout-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-layout-fix.md`。后续发布仍以当时实际current为基础。
+
+## 商品资料补充对话格式化（2026-10-14 已上线）
+
+- 当前前端已于北京时间09:21更新为 `/opt/xiaolan/releases/20261014-supplement-format-664ea03`，源码664ea03，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 助手回复使用ChatMessageContent显示段落、标题、列表、引用和代码，句内强调复用StyleDisplayText，不再直露常见Markdown标记。只调整显示，原消息、模型历史、事实候选及保存内容不改写；不使用v-html执行模型文本。
+- 上次根组件确定宽度和按容器响应规则继续保留。19项回归与完整方案页/手机宽度显示验证通过；本次仅更新两个入口HTML和新增资源，1500个原有非入口文件、服务PID/二进制、手机端及Nginx一致。
+- 最新前端备份指针 `work/frontend-preservation/latest.json` 已更新，1166个前端文件逐项匹配实际服务器。验证见 `work/supplement-format-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-chat-format.md`；后续发布以当时实际current为基础。
