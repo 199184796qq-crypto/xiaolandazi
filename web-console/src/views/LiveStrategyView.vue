@@ -6621,8 +6621,8 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="item in filteredFormalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                  <template v-for="(item, index) in filteredFormalFacts" :key="item.id">
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
                         <div class="strategy-formal-fact-edit-metadata">
@@ -9467,9 +9467,11 @@ onBeforeUnmount(() => {
 @media(max-width:1100px) { .strategy-formal-facts-layout { grid-template-columns:1fr; } .strategy-fact-category-panel { position:static; max-height:none; flex-direction:row; flex-wrap:wrap; } .strategy-fact-category-group-title { width:100%; margin:6px 2px 0; } .strategy-fact-category-item { width:auto; } }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:620px; border-collapse:collapse; table-layout:fixed; }
-.strategy-formal-fact-actions-column { width:300px; }
+.strategy-formal-fact-actions-column { width:360px; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
 .strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:14px; font-weight:800; }
+.strategy-formal-facts-table tr.is-striped-formal-fact { --formal-fact-row-bg:#f0f4fc; }
+.strategy-formal-facts-table tbody>tr[data-formal-fact-id]>td { background:var(--formal-fact-row-bg,#fff); }
 .strategy-formal-facts-table tbody>tr:not(.strategy-fact-risk-detail-row):not(.has-fact-risk):hover td { background-color:#f9fbff; }
 .strategy-formal-facts-table tr:last-child td { border-bottom:0; }
 .strategy-formal-facts-table tr.has-fact-risk td:first-child { box-shadow: inset 4px 0 #8a96aa; }
@@ -9555,6 +9557,8 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-table .strategy-formal-fact-edit-actions svg { width:20px; height:20px; flex-basis:20px; }
 .strategy-formal-facts-table tr.is-editing-formal-fact input:disabled,.strategy-formal-facts-table tr.is-editing-formal-fact textarea:disabled { opacity:.65; cursor:wait; }
 .strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.strategy-formal-fact-operation>.strategy-formal-fact-actions { flex-wrap:nowrap; flex-shrink:0; }
+.strategy-formal-fact-operation .strategy-formal-fact-actions button { flex-shrink:0; }
 .strategy-formal-fact-guidance-cell[colspan="2"] { width:28%; }
 .strategy-formal-fact-operation .strategy-formal-fact-expand { display:grid; place-items:center; flex:0 0 30px; width:30px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:#3475ff; cursor:pointer; }
 .strategy-formal-fact-expand svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; transition:transform .18s; }
