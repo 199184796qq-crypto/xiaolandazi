@@ -16,7 +16,9 @@ let revision = 0
 const pages = computed(() => Math.max(1, Math.ceil((data.value?.total || 0) / 50)))
 const previousFocus = document.activeElement as HTMLElement | null
 const previousOverflow = document.body.style.overflow
-const labels: Record<string, string> = { mainline: '主线口播', interaction: '互动回答', bridge: '衔接语' }
+const labels: Record<string, string> = { mainline: '主播说', interaction: '直播间互动' }
+const voiceLabel = (item: { kind: string; sequence?: number }) => item.kind === 'mainline'
+  ? `主播说 ${String(item.sequence || 1).padStart(5, '0')}` : labels[item.kind] || '直播声音'
 const time = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false })
 async function load(nextPage = 1) {
   if ((from.value && !Number.isFinite(Date.parse(from.value))) || (to.value && !Number.isFinite(Date.parse(to.value)))) {
@@ -47,7 +49,10 @@ async function voice(id: number) {
   if (!data.value || voiceBusy.value !== null) return
   voiceBusy.value = id; error.value = ''; notice.value = ''
   try {
-    await downloadSessionFile(`/api/v1/rooms/${props.roomId}/live-downloads/${id}/audio?session_id=${data.value.session_id}`, `直播声音_${data.value.session_id}_${id}.wav`, downloadController.signal)
+    const item = data.value.items.find(item => item.id === id)
+    if (!item) return
+    const name = item.kind === 'mainline' ? voiceLabel(item) : `直播间互动_${id}`
+    await downloadSessionFile(`/api/v1/rooms/${props.roomId}/live-downloads/${id}/audio?session_id=${data.value.session_id}`, `${name}_${data.value.session_id}.wav`, downloadController.signal)
     if (!downloadController.signal.aborted) notice.value = '声音文件已下载'
   } catch (cause) {
     if (!downloadController.signal.aborted) {
@@ -77,13 +82,13 @@ onBeforeUnmount(() => { ++revision; requestController?.abort(); downloadControll
     <section ref="panel" class="download-panel" role="dialog" aria-modal="true" aria-labelledby="live-download-title">
       <header class="download-head"><div><h2 id="live-download-title">直播下载</h2><p v-if="data">本场开始于 {{ time(data.started_at) }}</p><p v-else>本场已播放的文案与声音</p></div><button ref="closeButton" class="close" aria-label="关闭直播下载" @click="emit('close')">×</button></header>
       <div class="download-body">
-        <section class="transcript-card"><div><h3>本场直播文案</h3><p>下载已播放的主线、互动回答和衔接语，保存为纯文字 TXT。</p><small>文案和声音保留 24 小时，已采纳的回答策略长期保存。整场下载不受下方筛选和分页影响。</small></div><button class="primary" :disabled="!data || transcriptBusy" @click="transcript">{{ transcriptBusy ? '下载中…' : '下载全部文案' }}</button></section>
+        <section class="transcript-card"><div><h3>本场直播文案</h3><p>下载已播放的主播说、直播间互动，保存为纯文字 TXT。</p><small>文案和声音保留 24 小时，已采纳的回答策略长期保存。整场下载不受下方筛选和分页影响。</small></div><button class="primary" :disabled="!data || transcriptBusy" @click="transcript">{{ transcriptBusy ? '下载中…' : '下载全部文案' }}</button></section>
         <section class="voices-section"><div class="voices-heading"><h3>直播声音</h3><span v-if="data">{{ data.total }} 条</span></div>
           <form class="time-filter" @submit.prevent="load(1)"><label>开始时间<input v-model="from" type="datetime-local"></label><label>结束时间<input v-model="to" type="datetime-local"></label><button class="primary" :disabled="loading">{{ loading ? '查询中…' : '查询声音' }}</button><button type="button" :disabled="loading" @click="from = ''; to = ''; load(1)">本场全部</button></form>
           <p class="help">按声音开始播放的时间筛选。文案和声音从播放开始保留 24 小时，到期自动清理；已采纳的回答策略不受影响。</p>
           <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" class="notice" role="status">{{ notice }}</p>
           <p v-if="loading" class="empty" role="status">正在读取声音列表…</p>
-          <div v-else-if="data?.items.length" class="voice-list"><article v-for="item in data.items" :key="item.id" class="voice-item"><div class="voice-copy"><div class="meta"><span>{{ labels[item.kind] || '直播声音' }}</span><time>{{ time(item.played_at) }}</time><small v-if="item.duration_ms">{{ (item.duration_ms / 1000).toFixed(1) }} 秒</small></div><p>{{ item.text }}</p></div><button :disabled="!item.available || voiceBusy !== null" @click="voice(item.id)">{{ !item.available ? '音频已到期' : voiceBusy === item.id ? '下载中…' : '下载声音' }}</button></article></div>
+          <div v-else-if="data?.items.length" class="voice-list"><article v-for="item in data.items" :key="item.id" class="voice-item"><div class="voice-copy"><div class="meta"><span>{{ voiceLabel(item) }}</span><time>{{ time(item.played_at) }}</time><small v-if="item.duration_ms">{{ (item.duration_ms / 1000).toFixed(1) }} 秒</small></div><p>{{ item.text }}</p></div><button :disabled="!item.available || voiceBusy !== null" @click="voice(item.id)">{{ !item.available ? '音频已到期' : voiceBusy === item.id ? '下载中…' : '下载声音' }}</button></article></div>
           <p v-else-if="!error" class="empty">{{ from || to ? '这个时间段没有已播放的声音' : '本场还没有已播放的声音记录。功能上线前已结束的场次无法补齐。' }}</p>
           <nav v-if="pages > 1" aria-label="声音列表分页"><button :disabled="page <= 1 || loading" @click="load(page - 1)">上一页</button><span>{{ page }} / {{ pages }}</span><button :disabled="page >= pages || loading" @click="load(page + 1)">下一页</button></nav>
         </section>

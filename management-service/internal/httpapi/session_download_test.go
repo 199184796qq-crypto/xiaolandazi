@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"livecompanion/management/internal/model"
 	"strings"
 	"testing"
@@ -11,7 +12,14 @@ func TestSessionDownloadTranscriptAllKindsAndPages(t *testing.T) {
 	at := time.Now()
 	items := []model.SessionSpeechAsset{{Text: "待播稿"}}
 	for i := 0; i < 151; i++ {
-		items = append(items, model.SessionSpeechAsset{Kind: []string{"mainline", "interaction", "bridge"}[i%3], Text: "  已播文字  ", PlayedAt: &at})
+		ref := ""
+		if i%3 == 1 {
+			ref = fmt.Sprintf("reply:d-%d", i/3)
+		}
+		if i%3 == 2 {
+			ref = fmt.Sprintf("bridge:d-%d", i/3)
+		}
+		items = append(items, model.SessionSpeechAsset{ID: int64(i + 1), SourceRef: ref, Kind: []string{"mainline", "interaction", "bridge"}[i%3], Text: "  已播文字  ", PlayedAt: &at})
 	}
 	got := sessionTranscript(items)
 	if strings.Contains(got, "待播稿") || strings.Count(got, "已播文字") != 151 || strings.Contains(got, "mainline") || strings.HasPrefix(got, " ") {
