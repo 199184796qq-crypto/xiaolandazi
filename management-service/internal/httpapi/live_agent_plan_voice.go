@@ -507,6 +507,7 @@ func splitFullShowVoiceText(text string) []string {
 }
 
 func downloadGeneratedVoiceWAV(ctx context.Context, audioURL string) ([]byte, error) {
+ defer ttsgateway.ReleaseTemporaryAudio(audioURL)
 	audioURL = strings.TrimSpace(audioURL)
 	if audioURL == "" {
 		return nil, errors.New("声音地址为空")

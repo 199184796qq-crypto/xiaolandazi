@@ -2850,6 +2850,7 @@ export interface OfficialVoice {
   description: string
   tags: string[]
   model: string
+  provider?: string
 }
 
 export interface VoicePreviewResponse {

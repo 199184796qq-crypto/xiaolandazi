@@ -37,7 +37,7 @@ const cloneModels = [
   { id: 'qwen-audio-3.1-tts-flash', label: '极速模型' },
 ]
 const libraryModels = [
-  { id: 'qwen_audio', label: 'Qwen Audio', description: '官方音色与已有专属声音' },
+  { id: 'qwen_audio', label: 'Qwen Audio', description: '已有专属声音' },
   { id: 'cosyvoice-v3.5-flash', label: 'CosyVoice 3.5 Flash', description: '声音复刻 / 声音设计 · 0.8 元 / 万字符' },
   { id: 'cosyvoice-v3.5-plus', label: 'CosyVoice 3.5 Plus', description: '声音复刻 / 声音设计' },
 ]
@@ -63,6 +63,8 @@ const avatarOptions = [
 
 const activeLibrary = ref<'official' | 'custom'>('official')
 const officialVoices = ref<OfficialVoice[]>([])
+const officialConfigured = ref(false)
+const officialPreviewText = ref('')
 const voiceProfiles = ref<VoiceProfile[]>([])
 const voiceBindings = ref<VoiceModelBinding[]>([])
 const versions = ref<LiveAgentConfigVersion[]>([])
@@ -157,7 +159,7 @@ async function load() {
   error.value = ''
   try {
     const [official, profiles, bindings, configVersions, profileQuota] = await Promise.all([
-      getLiveOfficialVoices(),
+      getLiveOfficialVoices('tencent-premium'),
       getLiveVoiceProfiles(),
       getLiveVoiceModelBindings(),
       getLiveAgentConfigVersions(),
@@ -165,6 +167,7 @@ async function load() {
     ])
     if (scope !== nameScope || room !== props.roomId) return
     officialVoices.value = official.items || []
+    officialConfigured.value = official.configured === true
     voiceProfiles.value = (profiles || []).filter((item) => item.clone_status !== 'disabled')
     voiceBindings.value = (bindings || []).filter((item) => item.status !== 'disabled')
     versions.value = configVersions || []
@@ -330,7 +333,13 @@ async function bindVoice(voice: Record<string, unknown>): Promise<boolean> {
 }
 
 async function chooseOfficial(item: OfficialVoice) {
-  await bindVoice({ source: 'official', provider: 'aliyun_qwen', name: item.name, voice_id: item.id, model: item.model })
+  if (item.model === 'tencent-premium' && !officialConfigured.value) return
+  await bindVoice({ source: 'official', provider: item.provider || 'aliyun_qwen', name: item.name, voice_id: item.id, model: item.model })
+}
+
+function previewOfficial(item: OfficialVoice) {
+  const text = officialPreviewText.value.trim() || (item.tags.includes('英文') ? 'Hello, welcome to our live stream.' : VOICE_PREVIEW_TEXT)
+  return playURL('official-' + item.id, () => previewLiveOfficialVoice(item.id, text))
 }
 
 function bindingsForProfile(profileId: number) {
@@ -536,7 +545,10 @@ async function removeCustomVoice(profile: VoiceProfile) {
   try {
     await deleteLiveVoiceProfile(profile.id)
     await load()
-    if (wasSelected && officialVoices.value[0]) await chooseOfficial(officialVoices.value[0])
+    if (wasSelected) {
+      const fallback = await getLiveOfficialVoices('qwen_audio')
+      if (fallback.items[0]) await chooseOfficial(fallback.items[0])
+    }
     notice.value = `已删除“${profile.name}”，声音名额已释放。`
   } catch (err) {
     error.value = err instanceof Error ? err.message : '删除自定义声音失败'
@@ -587,7 +599,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
       </div>
     </div>
 
-    <div class="voice-model-bar">
+    <div v-if="activeLibrary === 'custom'" class="voice-model-bar">
       <label><span class="side-eyebrow">大模型</span><select v-model="libraryModel" aria-label="声音大模型" :disabled="loading || selecting || Boolean(bindingBusyKey) || Boolean(savingNameId) || savingModelIds.length > 0" @change="changeLibrary"><option v-for="model in libraryModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
       <div><strong>{{ libraryDetails.label }}</strong><p>{{ libraryDetails.description }}</p></div>
       <span class="model-scope-note">选择声音并点击使用后生效</span>
@@ -602,7 +614,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
         <nav class="voice-library-nav" aria-label="声音库">
           <button type="button" :class="{ active: activeLibrary === 'official' }" @click="activeLibrary = 'official'">
             <span class="nav-icon official-icon">★</span>
-            <span><b>官方声音</b><small>{{ isQwenLibrary ? '精选官方优质音色' : '查看当前模型音色说明' }}</small></span><em>›</em>
+            <span><b>官方声音</b><small>腾讯精品音色 · 可试听</small></span><em>›</em>
           </button>
           <button type="button" :class="{ active: activeLibrary === 'custom' }" @click="activeLibrary = 'custom'">
             <span class="nav-icon custom-icon">●</span>
@@ -616,24 +628,22 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
         <header class="voice-list-head">
           <div>
             <div class="voice-title-line"><h3>{{ activeLibrary === 'official' ? '官方声音' : '我的声音' }}</h3><span v-if="activeLibrary === 'custom'" class="quota-chip">{{ quota.used }} / {{ quota.limit }} 个</span></div>
-            <p v-if="activeLibrary === 'official' && isQwenLibrary">精选多种风格的官方音色，适用于不同直播场景</p>
-            <p v-else-if="activeLibrary === 'official'">{{ libraryDetails.label }} 使用声音复刻和声音设计创建专属音色</p>
+            <p v-if="activeLibrary === 'official'">腾讯精品音色，支持实时语音合成；先试听，再选择使用</p>
             <p v-else>{{ isQwenLibrary ? '使用你创建的专属音色，选择不同模型体验不同效果' : '这里仅展示为当前模型创建的声音，Flash 与 Plus 分别管理' }}</p>
           </div>
           <div v-if="activeLibrary === 'custom'" class="voice-create-actions"><button v-if="!isQwenLibrary" type="button" class="design-voice-button" :disabled="selecting" @click="openCloneDialog('design')">描述生成声音</button><button type="button" class="upload-sample-button" :disabled="selecting" @click="openCloneDialog()"><span>＋</span> 上传声音样本</button></div>
         </header>
 
         <div v-if="loading" class="voice-loading">正在读取声音…</div>
-        <div v-else-if="activeLibrary === 'official' && !isQwenLibrary" class="voice-empty cosy-official-empty">
-          <span>♫</span><strong>用 {{ libraryDetails.label }} 创建专属声音</strong><p>此模型没有预置官方音色。上传录音复刻你的声音，或用文字描述设计新声音。</p><div class="empty-create-actions"><button type="button" @click="openCloneDialog()">＋ 上传声音样本</button><button type="button" @click="openCloneDialog('design')">描述生成声音</button></div>
-        </div>
         <div v-else-if="activeLibrary === 'official'" class="voice-rows">
+          <p v-if="!officialConfigured" class="inline-notice" role="status">腾讯声音尚未配置，配置完成后即可试听和选择。</p>
+          <label class="official-preview-text"><span>试听文字</span><textarea v-model="officialPreviewText" rows="2" maxlength="1000" placeholder="可输入要测试的话术；留空使用简短问候语" /></label>
           <article v-for="(item, index) in officialVoices" :key="item.id" class="voice-row" :class="{ selected: isOfficialSelected(item) }">
             <div class="voice-avatar" :class="'tone-' + officialAvatar(item, index).tone"><span>{{ officialAvatar(item, index).emoji }}</span><i class="avatar-wave">▂▅▃▆▂</i></div>
-            <div class="voice-row-copy"><div><strong>{{ item.name }}</strong><span>{{ officialTag(item) }}</span></div><p>{{ item.description }}，适合直播讲解、互动和内容播报</p></div>
+            <div class="voice-row-copy"><div><strong>{{ item.name }}</strong><span>{{ officialTag(item) }}</span></div><p>{{ item.description }}</p></div>
             <div class="voice-row-actions">
-              <button type="button" class="preview-button" @click="playURL('official-' + item.id, () => previewLiveOfficialVoice(item.id, VOICE_PREVIEW_TEXT))"><span>{{ previewingKey === 'official-' + item.id ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === 'official-' + item.id ? '正在试听' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :disabled="selecting" @click="chooseOfficial(item)">{{ isOfficialSelected(item) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="preview-button" :disabled="!officialConfigured" @click="previewOfficial(item)"><span>{{ previewingKey === 'official-' + item.id ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === 'official-' + item.id ? previewPhase === 'playing' ? '正在试听' : '准备中…' : '试听' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :disabled="selecting || !officialConfigured" @click="chooseOfficial(item)">{{ isOfficialSelected(item) ? '当前使用' : '使用这个声音' }}</button>
             </div>
           </article>
         </div>
@@ -690,6 +700,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
 </template>
 
 <style scoped>
+.official-preview-text{display:grid;gap:8px;margin-bottom:12px;color:#53627c;font-size:14px;font-weight:700}.official-preview-text textarea{width:100%;box-sizing:border-box;min-width:0;padding:12px;border:1px solid #dce2f7;border-radius:12px;font:inherit;font-weight:400;line-height:1.65;resize:vertical}.preview-button:disabled{opacity:.5;cursor:not-allowed}
 .voice-library-nav button.active b{color:#fff}.voice-library-nav button:not(.active) b{color:#253654}
 .voice-model-bar{display:flex;align-items:center;gap:24px;padding:18px 22px;border:1px solid #dfe7f6;border-radius:20px;background:linear-gradient(120deg,#fff,#f4f7ff);box-shadow:0 10px 26px rgba(76,101,168,.05)}.voice-model-bar label{min-width:260px}.voice-model-bar select,.voice-clone-field select{width:100%;min-height:45px;padding:9px 36px 9px 13px;border:1px solid #d4ddf2;border-radius:12px;background:#fff;color:#253654;font:inherit;font-weight:800}.voice-model-bar select:focus-visible{outline:2px solid #7586f8;outline-offset:2px}.voice-model-bar select:disabled{opacity:.6}.voice-model-bar strong{font-size:16px}.voice-model-bar p{margin:5px 0 0;color:#7e8ca3;font-size:13px}.model-scope-note{margin-left:auto;color:#8a96ac;font-size:12px}.voice-create-actions,.empty-create-actions{display:flex;gap:10px;flex-wrap:wrap}.design-voice-button{min-height:43px;padding:0 17px;border:1px solid #d9e1f0;border-radius:13px;background:#f0f3ff;color:#5265d9;font-weight:900;cursor:pointer}.cosy-official-empty{min-height:380px}.voice-clone-field textarea{min-height:110px;padding:12px;border:1px solid #d2dbea;border-radius:12px;background:#fff;resize:vertical;font:inherit;line-height:1.6}.voice-clone-field small{font-size:12px;color:#7e8ca3;font-weight:500}.dialog-model-label{padding:11px 13px;border-radius:12px;background:#edf1ff;color:#5265d9;font-size:14px}@media(max-width:860px){.voice-model-bar{align-items:flex-start;flex-wrap:wrap;gap:14px}.voice-model-bar label{min-width:0;flex:1 1 250px}.model-scope-note{margin-left:0}.voice-create-actions{justify-content:flex-end}}@media(max-width:560px){.voice-model-bar{flex-direction:column}.voice-model-bar label{flex:none;width:100%}.voice-create-actions{justify-content:flex-start}}
 .voice-name-edit{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:7px;background:transparent;color:#6271ec;cursor:pointer}.voice-name-edit:hover{background:#edf0ff}.voice-name-edit:focus-visible{outline:2px solid #6373ed;outline-offset:2px}.voice-name-input{min-width:80px;width:210px;max-width:100%;padding:4px 8px;border:1px solid #8d9af6;border-radius:8px;background:#fff;color:#17233a;font:inherit;font-weight:800;outline:none}.voice-name-error{display:block;color:#b92e45;margin-top:6px}.voice-name-status{display:block;color:#7786a6;margin-top:6px}

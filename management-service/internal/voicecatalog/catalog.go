@@ -15,6 +15,32 @@ type Voice struct {
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
 	Model       string   `json:"model"`
+	Provider    string   `json:"provider,omitempty"`
+}
+
+// Tencent's published realtime premium tier. Super-natural/large-model voices
+// have separate pricing and must not be silently substituted into this list.
+var tencentPremium = []Voice{
+	{ID: "101030", Name: "智柯", Gender: "男声", Description: "中文通用男声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101054", Name: "智友", Gender: "男声", Description: "中文通用男声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101004", Name: "智云", Gender: "男声", Description: "中文通用男声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101055", Name: "智付", Gender: "女声", Description: "中文通用女声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101027", Name: "智梅", Gender: "女声", Description: "中文通用女声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101026", Name: "智希", Gender: "女声", Description: "中文通用女声", Tags: []string{"精品", "通用"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101011", Name: "智燕", Gender: "女声", Description: "中文新闻女声", Tags: []string{"精品", "新闻"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101013", Name: "智辉", Gender: "男声", Description: "中文新闻男声", Tags: []string{"精品", "新闻"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101021", Name: "智瑞", Gender: "男声", Description: "中文新闻男声", Tags: []string{"精品", "新闻"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101001", Name: "智瑜", Gender: "女声", Description: "中文情感女声", Tags: []string{"精品", "情感"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101015", Name: "智萌", Gender: "男声", Description: "中文男童声", Tags: []string{"精品", "童声"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101016", Name: "智甜", Gender: "女声", Description: "中文女童声", Tags: []string{"精品", "童声"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101019", Name: "智彤", Gender: "女声", Description: "粤语女声", Tags: []string{"精品", "粤语"}, Model: "tencent-premium", Provider: "tencent_tts"},
+	{ID: "101050", Name: "WeJack", Gender: "男声", Description: "英文男声", Tags: []string{"精品", "英文"}, Model: "tencent-premium", Provider: "tencent_tts"},
+}
+
+func TencentPremium() []Voice {
+	items := make([]Voice, len(tencentPremium))
+	copy(items, tencentPremium)
+	return items
 }
 
 var official = []Voice{
@@ -36,6 +62,11 @@ func Official() []Voice {
 func Find(id string) (Voice, bool) {
 	id = strings.TrimSpace(id)
 	for _, item := range official {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	for _, item := range tencentPremium {
 		if item.ID == id {
 			return item, true
 		}

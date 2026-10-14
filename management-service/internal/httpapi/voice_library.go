@@ -12,7 +12,7 @@ import (
 
 func voiceLibraryQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
 	library := strings.TrimSpace(r.URL.Query().Get("model"))
-	if library != "" && library != ttsgateway.ProviderQwen && !ttsgateway.IsCosyVoiceModel(library) {
+	if library != "" && library != ttsgateway.ProviderQwen && library != ttsgateway.TencentPremiumModel && !ttsgateway.IsCosyVoiceModel(library) {
 		writeError(w, http.StatusBadRequest, "声音库模型无效")
 		return "", false
 	}

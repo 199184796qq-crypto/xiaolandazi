@@ -79,6 +79,7 @@ func NewFromEnv() *Gateway {
 	g := New(name, model)
 	g.Register(NewQwenProvider(QwenConfigFromEnv()), "qwen", "dashscope", "qwen_audio_3_0")
 	g.Register(NewCosyVoiceProvider(QwenConfigFromEnv()), "aliyun_cosyvoice", "aliyun_cosyvoice_clone")
+	g.Register(NewTencentProvider(TencentConfigFromEnv()), "tencent", "tencent_cloud")
 	return g
 }
 
@@ -130,8 +131,11 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 	if request.Rate < 0.5 || request.Rate > 2.0 {
 		return SynthesizeResponse{}, errors.New("tts rate must be between 0.5 and 2.0")
 	}
-	if request.Provider == "" && IsCosyVoiceModel(request.Model) {
-		request.Provider = ProviderCosyVoice
+	if request.Provider == "" && (IsCosyVoiceModel(request.Model) || request.Model == TencentPremiumModel) {
+		request.Provider = ProviderForModel(request.Model)
+	}
+	if request.Model == TencentPremiumModel && normalize(request.Provider) != ProviderTencent && normalize(request.Provider) != "tencent" && normalize(request.Provider) != "tencent_cloud" {
+		return SynthesizeResponse{}, errors.New("腾讯精品音色必须使用腾讯合成服务")
 	}
 	p, canonical, err := g.provider(request.Provider)
 	if err != nil {

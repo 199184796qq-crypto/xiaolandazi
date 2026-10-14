@@ -22,6 +22,9 @@ func SupportsCloneModel(model string) bool {
 }
 
 func ProviderForModel(model string) string {
+	if strings.TrimSpace(model) == TencentPremiumModel {
+		return ProviderTencent
+	}
 	if IsCosyVoiceModel(model) {
 		return ProviderCosyVoice
 	}
@@ -35,7 +38,7 @@ func VoiceLibraryMatches(library, target string) bool {
 		return true
 	}
 	if library == ProviderQwen {
-		return !IsCosyVoiceModel(target)
+		return !IsCosyVoiceModel(target) && target != TencentPremiumModel
 	}
 	return library == target
 }

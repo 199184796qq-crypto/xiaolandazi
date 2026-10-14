@@ -1901,7 +1901,7 @@ export function createLiveVoiceProfile(payload: {
 }
 
 export function getLiveOfficialVoices(model?: string) {
-  return request<{ items: OfficialVoice[] }>('/api/v1/live/official-voices' + (model ? '?model=' + encodeURIComponent(model) : ''))
+  return request<{ items: OfficialVoice[]; configured?: boolean }>('/api/v1/live/official-voices' + (model ? '?model=' + encodeURIComponent(model) : ''))
 }
 
 export function designLiveVoiceProfile(payload: { name: string; model: string; description: string; avatar_key: string }) {

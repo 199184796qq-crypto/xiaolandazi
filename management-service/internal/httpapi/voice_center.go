@@ -96,6 +96,10 @@ func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 	if !valid {
 		return
 	}
+	if library == ttsgateway.TencentPremiumModel {
+		writeJSON(w, http.StatusOK, map[string]any{"items": voicecatalog.TencentPremium(), "configured": ttsgateway.TencentConfigured()})
+		return
+	}
 	items := make([]officialVoice, 0)
 	for _, voice := range officialVoices {
 		if ttsgateway.VoiceLibraryMatches(library, voice.Model) {
@@ -600,6 +604,7 @@ func (s *Server) archiveGeneratedVoice(
 		return 0, 0, fmt.Errorf("媒体存储尚未初始化")
 	}
 	providerURL = strings.TrimSpace(providerURL)
+ defer ttsgateway.ReleaseTemporaryAudio(providerURL)
 	if providerURL == "" {
 		return 0, 0, fmt.Errorf("声音地址为空")
 	}

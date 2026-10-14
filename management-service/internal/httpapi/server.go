@@ -26,6 +26,7 @@ import (
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
 	assetstorage "livecompanion/management/internal/storage"
+	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/workinbox"
 	"livecompanion/management/pkg/styleplugin"
 )
@@ -143,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/v1/interaction-purpose/resolve", s.resolveInteractionPurpose)
 	mux.HandleFunc("POST /internal/v1/model-analysis/chat/completions", s.internalModelAnalysis)
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /internal/v1/tts-audio/{audioID}", ttsgateway.ServeTencentAudio)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	if strings.EqualFold(strings.TrimSpace(s.env), "development") {
 		mux.HandleFunc("POST /internal/v1/dev/runtime/answer-tts", s.devRuntimeAnswerTTS)

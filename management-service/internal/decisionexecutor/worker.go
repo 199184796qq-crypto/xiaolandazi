@@ -2723,9 +2723,13 @@ func mapInt64(value any) int64 {
 }
 
 func officialVoiceProfile(voice voicecatalog.Voice) model.VoiceProfile {
+	provider := voice.Provider
+	if provider == "" {
+		provider = "aliyun_qwen"
+	}
 	return model.VoiceProfile{
 		Name:        voice.Name,
-		Provider:    "aliyun_qwen",
+		Provider:    provider,
 		VoiceID:     voice.ID,
 		CloneStatus: "ready",
 		IsDefault:   voice.ID == voicecatalog.DefaultVoiceID,
@@ -3690,6 +3694,9 @@ func voiceModel(profile model.VoiceProfile) string {
 }
 
 func voiceProvider(profile model.VoiceProfile) string {
+	if voiceModel(profile) == ttsgateway.TencentPremiumModel {
+		return ttsgateway.ProviderTencent
+	}
 	if ttsgateway.IsCosyVoiceModel(voiceModel(profile)) {
 		return ttsgateway.ProviderCosyVoice
 	}
