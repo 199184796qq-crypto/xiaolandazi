@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
+import LiveSessionDownloads from '../components/LiveSessionDownloads.vue'
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
@@ -413,6 +414,7 @@ const latestSpeechMission = computed(() =>
   speechMissions.value.find((item) => item.id === selectedSpeechMissionId.value) || speechMissions.value[0] || null,
 )
 const speechHistoryOpen = ref(false)
+const sessionDownloadsOpen = ref(false)
 const speechHistoryLoading = ref(false)
 const speechHistoryError = useFeedbackErrorRef()
 const speechHistoryQuery = ref('')
@@ -1004,7 +1006,7 @@ function generatedSpeechSourceLabel(sourceType: string) {
 }
 
 function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
-  if (item.correction_status === 'adopted') return '已采用修正'
+  if (item.correction_status === 'adopted') return '已采纳 · 回答策略已保存'
   if (item.correction_status === 'editing') return '纠正中'
   if (item.correction_count > 0) return '已纠正'
   return '未纠正'
@@ -3824,6 +3826,7 @@ async function answerPublicScreenEvent(event: RoomEvent, action: EventDecisionAc
         : '人工从实时公屏加入待打断队列，由监控Agent安排回答时机',
       event_id: event.id,
       user_id: event.user_id,
+      nickname: event.nickname || '',
       force_reopen: action === 'quick',
       manual_action: action,
     })
@@ -3893,6 +3896,7 @@ async function submitQuestionDecision(
         : '人工对这一条观众问题发起回答，只回答当前这一条，不合并整个问题聚类',
       event_id: question.EventID,
       user_id: question.UserID,
+      nickname: question.Nickname || '',
       force_reopen: action === 'quick',
       manual_action: action,
     })
@@ -4948,10 +4952,12 @@ onBeforeUnmount(() => {
           <button type="button" class="speech-answer-library-button" @click="openGeneratedSpeechHistory">
             本场回答库
           </button>
+          <button type="button" class="speech-answer-library-button" @click="sessionDownloadsOpen = true">直播下载</button>
           <small v-if="liveSpeechRateError" class="speech-rate-error">{{ liveSpeechRateError }}</small>
         </div>
       </section>
 
+      <LiveSessionDownloads v-if="sessionDownloadsOpen" :key="roomId" :room-id="roomId" @close="sessionDownloadsOpen = false" />
       <div v-if="speechHistoryOpen" class="speech-history-mask" @click.self="closeGeneratedSpeechHistory">
         <section class="speech-history-dialog" role="dialog" aria-modal="true" aria-label="本场回答库">
           <header class="speech-history-head">

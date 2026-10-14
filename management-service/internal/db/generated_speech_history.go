@@ -74,10 +74,10 @@ func (s *Store) ListGeneratedSpeechHistory(
 	}
 	query = strings.TrimSpace(query)
 	like := "%" + query + "%"
-	filter := ""
+	filter := " AND h.created_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR"
 	args := []any{tenantID, roomID, runtimeSessionID}
 	if query != "" {
-		filter = ` AND (
+		filter += ` AND (
 			h.generated_text LIKE ? OR h.question_text LIKE ? OR h.decision_id LIKE ? OR ` + generatedSpeechHistorySourceLabelSQL() + ` LIKE ?
 		)`
 		args = append(args, like, like, like, like)

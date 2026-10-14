@@ -143,6 +143,9 @@ func main() {
 	if err := store.MigrateModelPool(ctx); err != nil {
 		log.Fatalf("migrate model pool: %v", err)
 	}
+	if err := store.MigrateSessionDownloads(ctx); err != nil {
+		log.Fatalf("migrate session downloads: %v", err)
+	}
 	if err := store.MigrateAngleDirectionPools(ctx); err != nil {
 		log.Fatalf("migrate angle direction pools: %v", err)
 	}
@@ -274,6 +277,8 @@ func main() {
 	api.SetAnchorCycleRepository(anchorcycle.NewRedis(cycleRedis, cfg.RuntimeExecutionRealm))
 	api.SetAnchorProducerContext(appCtx)
 	go api.RunLiveAnchorOwnerWatch(appCtx)
+	go api.RunSessionArchiveWatch(appCtx)
+	go api.RunSessionDownloadMaintenance(appCtx)
 	api.SetAnchorVoiceCache(anchorvoicecache.New(cycleRedis, cfg.RuntimeExecutionRealm))
 	go api.RunAnchorVoiceCacheCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)

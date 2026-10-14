@@ -493,6 +493,9 @@ func (s *Server) liveRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 
 	s.populateLiveRuntimeFailure(r.Context(), tenantID, roomID, &snapshot)
 	s.populateLiveRuntimeStartup(r.Context(), tenantID, roomID, &snapshot)
+	if persistedSession != nil && (persistedSession.Status == "running" || persistedSession.Status == "paused") {
+		s.watchSessionArchive(*persistedSession)
+	}
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
@@ -815,6 +818,7 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, session)
+	s.watchSessionArchive(session)
 }
 
 func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
@@ -1011,6 +1015,7 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
+		s.syncSessionArchive(r.Context(), sessionState)
 		if audioErr := s.requestCorePublishedPlanProgramControl(r.Context(), tenantID, roomID, "stop"); audioErr != nil {
 			log.Printf("live runtime stop mainline room=%d failed: %v", roomID, audioErr)
 		}

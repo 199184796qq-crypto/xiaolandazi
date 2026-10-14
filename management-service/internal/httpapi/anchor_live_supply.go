@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 )
 
 func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
@@ -23,6 +24,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	var actualReceipts []anchorcycle.AnglePlaybackReceipt
 	var lectureReceipts []anchorcycle.PlaybackReceipt
 	var playedMS int64
+	var archivedPlaybackSequence uint64
 	supply := newCycleSupply(s, ctx, state)
 	defer supply.stop()
 	supply.startup = func(ctx context.Context, stage string) {
@@ -45,6 +47,13 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		}
 		if !snapshot.Running || snapshot.ProgramID != program || snapshot.VersionID != version.ID {
 			return false, anchorcycle.ErrStale
+		}
+		if len(snapshot.MainlinePlaybackReceipts) > 0 {
+			last := snapshot.MainlinePlaybackReceipts[len(snapshot.MainlinePlaybackReceipts)-1].Sequence
+			if last > archivedPlaybackSequence {
+				s.archiveMainlineReceipts(ctx, tenant, room, runtimeID, snapshot)
+				archivedPlaybackSequence = last
+			}
 		}
 		mu.Lock()
 		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
@@ -153,6 +162,11 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		if program != "" && snapshot.ProgramID != program {
 			return anchorcycle.ErrStale
 		}
+		archiveCtx, archiveCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = s.store.SaveSessionSpeechAsset(archiveCtx, model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: runtimeID,
+			SourceRef: model.SessionMainlineRef(snapshot.ProgramID, track.ID), Kind: "mainline", Text: track.Text,
+			AudioURL: track.AudioURL, DurationMS: track.DurationMS, ExpiresAt: model.SessionAudioExpiry(track.AudioURL)})
+		archiveCancel()
 		mu.Lock()
 		delivery.ProgramID, delivery.Generation = snapshot.ProgramID, snapshot.Generation
 		delivery.DeliveredCandidates = append(delivery.DeliveredCandidates, segment.Selected.ID)
