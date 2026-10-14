@@ -747,7 +747,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		s.ensureCycleAnglePlan(ctx, state, *state.TextModel)
 	}
 	reuseEntry := (*anchorcycle.SpeechPoolEntry)(nil)
-	if state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
+	// 开场(opening)话术不得缓存复用：开场是直播冷启动/每轮开头的第一段，须每次实时生成；
+	// 且 SpeechPool 只收录 body 话术，opening 若复用会误把 body 话术当开场复读。
+	if state.Phase != "opening" && state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		reuseEntry = state.PickReuse(state.Task().Key)
 	}
 	reportCycleProgress(ctx, 25)

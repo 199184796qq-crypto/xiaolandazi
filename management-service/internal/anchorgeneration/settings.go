@@ -18,7 +18,7 @@ type Settings struct {
 }
 
 func Default() Settings {
-	return Settings{MainlineBufferSeconds: 120, Cycle: anchorcycle.Config{AngleRefreshAfterPlays: 3, Region: "cn-beijing", Threshold: 40, MaxRetries: 3, MaxChars: 300, PointGap: 2, CombinationGap: 8, Rolling: true, RepairPunctuation: true, BodyMin: 2, BodyMax: 6}}
+	return Settings{MainlineBufferSeconds: 60, Cycle: anchorcycle.Config{AngleRefreshAfterPlays: 3, Region: "cn-beijing", Threshold: 40, MaxRetries: 3, MaxChars: 300, PointGap: 2, CombinationGap: 8, Rolling: true, RepairPunctuation: true, BodyMin: 2, BodyMax: 6}}
 }
 
 // The feedback transport follows the mainline text connection. Legacy Agent
