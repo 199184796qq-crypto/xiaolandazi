@@ -77,10 +77,10 @@ onBeforeUnmount(() => { ++revision; requestController?.abort(); downloadControll
     <section ref="panel" class="download-panel" role="dialog" aria-modal="true" aria-labelledby="live-download-title">
       <header class="download-head"><div><h2 id="live-download-title">直播下载</h2><p v-if="data">本场开始于 {{ time(data.started_at) }}</p><p v-else>本场已播放的文案与声音</p></div><button ref="closeButton" class="close" aria-label="关闭直播下载" @click="emit('close')">×</button></header>
       <div class="download-body">
-        <section class="transcript-card"><div><h3>本场直播文案</h3><p>下载已播放的主线、互动回答和衔接语，保存为纯文字 TXT。</p><small>下载整场内容，不受下方时间筛选和分页影响。</small></div><button class="primary" :disabled="!data || transcriptBusy" @click="transcript">{{ transcriptBusy ? '下载中…' : '下载全部文案' }}</button></section>
+        <section class="transcript-card"><div><h3>本场直播文案</h3><p>下载已播放的主线、互动回答和衔接语，保存为纯文字 TXT。</p><small>文案和声音保留 24 小时，已采纳的回答策略长期保存。整场下载不受下方筛选和分页影响。</small></div><button class="primary" :disabled="!data || transcriptBusy" @click="transcript">{{ transcriptBusy ? '下载中…' : '下载全部文案' }}</button></section>
         <section class="voices-section"><div class="voices-heading"><h3>直播声音</h3><span v-if="data">{{ data.total }} 条</span></div>
           <form class="time-filter" @submit.prevent="load(1)"><label>开始时间<input v-model="from" type="datetime-local"></label><label>结束时间<input v-model="to" type="datetime-local"></label><button class="primary" :disabled="loading">{{ loading ? '查询中…' : '查询声音' }}</button><button type="button" :disabled="loading" @click="from = ''; to = ''; load(1)">本场全部</button></form>
-          <p class="help">按声音开始播放的时间筛选；点击下载保存该条声音。声音文件到期后不可下载，文案仍保留。</p>
+          <p class="help">按声音开始播放的时间筛选。文案和声音从播放开始保留 24 小时，到期自动清理；已采纳的回答策略不受影响。</p>
           <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" class="notice" role="status">{{ notice }}</p>
           <p v-if="loading" class="empty" role="status">正在读取声音列表…</p>
           <div v-else-if="data?.items.length" class="voice-list"><article v-for="item in data.items" :key="item.id" class="voice-item"><div class="voice-copy"><div class="meta"><span>{{ labels[item.kind] || '直播声音' }}</span><time>{{ time(item.played_at) }}</time><small v-if="item.duration_ms">{{ (item.duration_ms / 1000).toFixed(1) }} 秒</small></div><p>{{ item.text }}</p></div><button :disabled="!item.available || voiceBusy !== null" @click="voice(item.id)">{{ !item.available ? '音频已到期' : voiceBusy === item.id ? '下载中…' : '下载声音' }}</button></article></div>

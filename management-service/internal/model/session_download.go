@@ -11,19 +11,25 @@ import (
 
 // Download archives are immutable output history, never resumable live state.
 type SessionSpeechAsset struct {
-	ID         int64      `json:"id"`
-	TenantID   int64      `json:"-"`
-	RoomID     int64      `json:"-"`
-	SessionID  int64      `json:"session_id"`
-	SourceRef  string     `json:"-"`
-	Kind       string     `json:"kind"`
-	Text       string     `json:"text"`
-	AudioURL   string     `json:"-"`
-	DurationMS int        `json:"duration_ms"`
-	PlayedAt   *time.Time `json:"played_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	Available  bool       `json:"available"`
+	ID               int64      `json:"id"`
+	TenantID         int64      `json:"-"`
+	RoomID           int64      `json:"-"`
+	SessionID        int64      `json:"session_id"`
+	SourceRef        string     `json:"-"`
+	Kind             string     `json:"kind"`
+	Text             string     `json:"text"`
+	AudioURL         string     `json:"-"`
+	DurationMS       int        `json:"duration_ms"`
+	PlayedAt         *time.Time `json:"played_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Available        bool       `json:"available"`
+	CreatedAt        time.Time  `json:"-"`
+	ArchiveObjectKey string     `json:"-"`
+	ArchiveBucket    string     `json:"-"`
+	ArchiveReady     bool       `json:"-"`
 }
+
+const SessionDownloadRetention = 24 * time.Hour
 
 type SessionSpeechArchiveWriter interface {
 	SaveSessionSpeechAsset(context.Context, SessionSpeechAsset) error

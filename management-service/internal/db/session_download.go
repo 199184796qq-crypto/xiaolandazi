@@ -14,6 +14,7 @@ const sessionSpeechArchiveSchema = `CREATE TABLE IF NOT EXISTS live_session_spee
 	 tenant_id BIGINT UNSIGNED NOT NULL, room_id BIGINT UNSIGNED NOT NULL, session_id BIGINT UNSIGNED NOT NULL,
 	 source_ref VARCHAR(256) NOT NULL, kind VARCHAR(24) NOT NULL, text_content MEDIUMTEXT NOT NULL,
 	 audio_url TEXT NOT NULL, duration_ms INT NOT NULL DEFAULT 0,
+	 archive_object_key VARCHAR(512) NOT NULL DEFAULT '', archive_bucket VARCHAR(128) NOT NULL DEFAULT '', archive_ready BOOLEAN NOT NULL DEFAULT FALSE, archive_retry_at DATETIME(3) NULL,
 	 played_at DATETIME(3) NULL, expires_at DATETIME(3) NULL,
 	 created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 	 PRIMARY KEY(id), UNIQUE KEY uk_session_source(tenant_id,room_id,session_id,source_ref),
@@ -26,6 +27,9 @@ func (s *Store) MigrateSessionDownloads(ctx context.Context) error {
 }
 
 func (s *Store) SaveSessionSpeechAsset(ctx context.Context, a model.SessionSpeechAsset) error {
+	if a.PlayedAt != nil && !a.PlayedAt.After(time.Now().Add(-model.SessionDownloadRetention)) {
+		return nil
+	}
 	if a.TenantID <= 0 || a.RoomID <= 0 || a.SessionID <= 0 || a.SourceRef == "" || strings.TrimSpace(a.Text) == "" {
 		return errors.New("invalid session speech archive")
 	}
@@ -78,8 +82,8 @@ func (s *Store) MarkSessionSpeechPlayed(ctx context.Context, tenant, room, sessi
 }
 
 func (s *Store) ListSessionSpeechAssets(ctx context.Context, tenant, room, session int64, from, to *time.Time) ([]model.SessionSpeechAsset, error) {
-	query := `SELECT id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at FROM live_session_speech_assets
-	 WHERE tenant_id=? AND room_id=? AND session_id=? AND played_at IS NOT NULL`
+	query := `SELECT id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at,created_at,archive_object_key,archive_bucket,archive_ready FROM live_session_speech_assets
+	 WHERE tenant_id=? AND room_id=? AND session_id=? AND played_at IS NOT NULL AND played_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR`
 	args := []any{tenant, room, session}
 	if from != nil {
 		query += " AND played_at>=?"
@@ -99,7 +103,7 @@ func (s *Store) ListSessionSpeechAssets(ctx context.Context, tenant, room, sessi
 	for rows.Next() {
 		a := model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: session}
 		var at, expiry sql.NullTime
-		if err = rows.Scan(&a.ID, &a.SourceRef, &a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &at, &expiry); err != nil {
+		if err = rows.Scan(&a.ID, &a.SourceRef, &a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &at, &expiry, &a.CreatedAt, &a.ArchiveObjectKey, &a.ArchiveBucket, &a.ArchiveReady); err != nil {
 			return nil, err
 		}
 		if at.Valid {
@@ -117,7 +121,7 @@ func (s *Store) ListSessionSpeechAssets(ctx context.Context, tenant, room, sessi
 func (s *Store) GetSessionSpeechAsset(ctx context.Context, tenant, room, session, id int64) (model.SessionSpeechAsset, error) {
 	a := model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: session}
 	var at, expiry sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at FROM live_session_speech_assets WHERE tenant_id=? AND room_id=? AND session_id=? AND id=? AND played_at IS NOT NULL`, tenant, room, session, id).Scan(&a.ID, &a.SourceRef, &a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &at, &expiry)
+	err := s.db.QueryRowContext(ctx, `SELECT id,source_ref,kind,text_content,audio_url,duration_ms,played_at,expires_at,created_at,archive_object_key,archive_bucket,archive_ready FROM live_session_speech_assets WHERE tenant_id=? AND room_id=? AND session_id=? AND id=? AND played_at IS NOT NULL AND played_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR`, tenant, room, session, id).Scan(&a.ID, &a.SourceRef, &a.Kind, &a.Text, &a.AudioURL, &a.DurationMS, &at, &expiry, &a.CreatedAt, &a.ArchiveObjectKey, &a.ArchiveBucket, &a.ArchiveReady)
 	if at.Valid {
 		a.PlayedAt = &at.Time
 	}

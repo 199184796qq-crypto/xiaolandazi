@@ -1006,7 +1006,7 @@ function generatedSpeechSourceLabel(sourceType: string) {
 }
 
 function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
-  if (item.correction_status === 'adopted') return '已采用修正'
+  if (item.correction_status === 'adopted') return '已采纳 · 回答策略已保存'
   if (item.correction_status === 'editing') return '纠正中'
   if (item.correction_count > 0) return '已纠正'
   return '未纠正'

@@ -275,6 +275,7 @@ func main() {
 	api.SetAnchorProducerContext(appCtx)
 	go api.RunLiveAnchorOwnerWatch(appCtx)
 	go api.RunSessionArchiveWatch(appCtx)
+	go api.RunSessionDownloadMaintenance(appCtx)
 	api.SetAnchorVoiceCache(anchorvoicecache.New(cycleRedis, cfg.RuntimeExecutionRealm))
 	go api.RunAnchorVoiceCacheCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)

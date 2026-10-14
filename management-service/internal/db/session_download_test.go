@@ -41,7 +41,7 @@ func TestSessionDownloadsMySQLScopeAndPlayback(t *testing.T) {
 	exec(`CREATE TEMPORARY TABLE live_runtime_sessions(id BIGINT PRIMARY KEY,tenant_id BIGINT,room_id BIGINT)`)
 	exec(strings.Replace(sessionSpeechArchiveSchema, "CREATE TABLE IF NOT EXISTS", "CREATE TEMPORARY TABLE", 1))
 	exec(`INSERT INTO live_runtime_sessions VALUES(3,1,2),(4,1,2),(5,8,9)`)
-	at := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	at := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	expiry := at.Add(-time.Hour)
 	base := model.SessionSpeechAsset{TenantID: 1, RoomID: 2, SessionID: 3, SourceRef: "first", Kind: "mainline", Text: "第一段", DurationMS: 1200}
 	save := func(a model.SessionSpeechAsset) {
@@ -113,5 +113,40 @@ func TestSessionDownloadsMySQLScopeAndPlayback(t *testing.T) {
 	}
 	if len(list(1, 2, 3, nil, nil)) != 4 {
 		t.Fatal("recording receipt not idempotent")
+	}
+	// Retention applies at read time before cleanup, including audio-by-ID.
+	exec(`INSERT INTO live_session_speech_assets(tenant_id,room_id,session_id,source_ref,kind,text_content,audio_url,played_at) VALUES(1,2,3,'expired','mainline','到期原稿','',UTC_TIMESTAMP(3)-INTERVAL 25 HOUR)`)
+	var oldID int64
+	if e := s.db.QueryRowContext(ctx, `SELECT id FROM live_session_speech_assets WHERE source_ref='expired'`).Scan(&oldID); e != nil {
+		t.Fatal(e)
+	}
+	if len(list(1, 2, 3, nil, nil)) != 4 {
+		t.Fatal("expired transcript returned")
+	}
+	if _, e := s.GetSessionSpeechAsset(ctx, 1, 2, 3, oldID); !errors.Is(e, sql.ErrNoRows) {
+		t.Fatal("expired audio returned", e)
+	}
+	expired, e := s.SessionDownloadMaintenanceAssets(ctx, true, 100)
+	if e != nil || len(expired) != 1 {
+		t.Fatal("expiry cleanup list", expired, e)
+	}
+	if e = s.DeleteExpiredSessionDownloadAsset(ctx, expired[0]); e != nil {
+		t.Fatal(e)
+	}
+	// A saved, adopted strategy is independent of its expiring raw transcript.
+	exec(`CREATE TEMPORARY TABLE live_generated_speech_history(id BIGINT PRIMARY KEY,created_at DATETIME(3),generated_text TEXT)`)
+	exec(`CREATE TEMPORARY TABLE agent_memory_versions(id BIGINT PRIMARY KEY,content_text TEXT)`)
+	exec(`INSERT INTO live_generated_speech_history VALUES(1,UTC_TIMESTAMP(3)-INTERVAL 25 HOUR,'旧原稿'),(2,UTC_TIMESTAMP(3),'新原稿')`)
+	exec(`INSERT INTO agent_memory_versions VALUES(7,'已经采纳的回答策略')`)
+	if e = s.PurgeExpiredGeneratedSpeechHistory(ctx); e != nil {
+		t.Fatal(e)
+	}
+	var count int
+	var strategy string
+	if e = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_generated_speech_history`).Scan(&count); e != nil || count != 1 {
+		t.Fatal("raw history retention", count, e)
+	}
+	if e = s.db.QueryRowContext(ctx, `SELECT content_text FROM agent_memory_versions WHERE id=7`).Scan(&strategy); e != nil || strategy != "已经采纳的回答策略" {
+		t.Fatal("adopted strategy removed", strategy, e)
 	}
 }

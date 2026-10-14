@@ -132,6 +132,15 @@ func sessionAudioURLAllowed(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.User == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".aliyuncs.com")
 }
 
+func sessionAudioClient() *http.Client {
+	return &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) > 3 || !sessionAudioURLAllowed(req.URL.String()) {
+			return fmt.Errorf("invalid audio redirect")
+		}
+		return nil
+	}}
+}
+
 func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.sessionDownloadScope(w, r)
 	if !ok {
@@ -148,7 +157,7 @@ func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.Available {
-		writeError(w, 410, "声音文件已到期，文案仍可下载")
+		writeError(w, 410, "声音文件已到期或不可用")
 		return
 	}
 	if !sessionAudioURLAllowed(a.AudioURL) {
@@ -157,12 +166,7 @@ func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) > 3 || !sessionAudioURLAllowed(req.URL.String()) {
-			return fmt.Errorf("invalid audio redirect")
-		}
-		return nil
-	}}
+	client := sessionAudioClient()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, a.AudioURL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
