@@ -591,6 +591,11 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.P0RewritesUsed++
 	}
 	if c.P0Report != nil && !c.P0Report.Passed {
+		// 局部重写格式错误（模型未返回合法 replacements JSON）时，重写本身已失败，
+		// 不消耗重写预算反复重试（会拖长主线断供），直接按「耗尽」处理：删词兜底，删不掉跳过本段。
+		if c.P0PatchError != "" {
+			s.P0RewritesUsed = s.P0MaxRewrites
+		}
 		// 局部重写已耗尽仍违规：先尝试程序删词兜底（替代直接跳过该段）。
 		if s.P0RewritesUsed >= s.P0MaxRewrites {
 			if repaired, ok := s.deleteRepair(c); ok {

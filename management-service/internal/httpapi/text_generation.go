@@ -282,7 +282,15 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}
-	req := agentgateway.Request{Stage: "mainline_text", Model: profile.Model, Messages: messages, ResponseFormat: agentgateway.ResponseText, MaxTokens: 1800, EnableThinking: false, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
+	// 局部重写（P0PendingRepair != nil）要求模型返回 {"replacements":[...]} JSON，
+	// 必须用 ResponseJSON 协议，否则 qwen 在纯文本协议下会返回整段正文导致 Apply 解析失败。
+	stage := "mainline_text"
+	responseFormat := agentgateway.ResponseText
+	if state.P0PendingRepair != nil {
+		stage = "mainline_text_repair"
+		responseFormat = agentgateway.ResponseJSON
+	}
+	req := agentgateway.Request{Stage: stage, Model: profile.Model, Messages: messages, ResponseFormat: responseFormat, MaxTokens: 1800, EnableThinking: false, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
 	if profile.SystemPrompt != "" {
 		req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)
 	}
@@ -302,7 +310,9 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	err = s.finishModelExchange(ctx, id, response, response.Text, started, response.InputTokens, response.OutputTokens, err)
 	// 生成后同义改写：换「使用方式/动作」措辞、锁死数字与称呼，打破高频短语（如"叮1分钟"）复读。
 	// 失败降级用原文，不阻塞。
-	if err == nil && strings.TrimSpace(response.Text) != "" {
+	// 局部重写（P0PendingRepair）不参与同义改写与价格漂移检查：重写结果是 replacements JSON，
+	// 同义改写会用纯文本协议把 JSON 改写成正文，破坏 patch.Apply 的解析。
+	if err == nil && state.P0PendingRepair == nil && strings.TrimSpace(response.Text) != "" {
 		if rewritten, rwErr := s.rewriteCycleText(ctx, state, response.Text); rwErr == nil && strings.TrimSpace(rewritten) != "" {
 			response.Text = rewritten
 		}

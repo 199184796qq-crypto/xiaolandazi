@@ -102,33 +102,34 @@ func TestP0SafePatchPreservesRawAndCannotSelectIllegalHighestScore(t *testing.T)
 	}
 }
 
-func TestP0MalformedPatchConsumesBudgetAndSnapshotSurvives(t *testing.T) {
+func TestP0MalformedPatchFallsBackToDeleteRepairWithoutRetry(t *testing.T) {
 	s := p0Fixture(t, 2)
 	rejectP0(t, &s)
-	for i := 0; i < 3; i++ {
-		encoded, _ := json.Marshal(s)
-		var restored State
-		if err := json.Unmarshal(encoded, &restored); err != nil {
-			t.Fatal(err)
-		}
-		s = restored
-		c := candidate(s.P0PendingRepair.BaseText, 100)
-		c.P0Patch = s.P0PendingRepair
-		c.P0PatchError = "invalid replacement schema"
-		c.RawText = "bad json"
-		adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if i < 2 && adopted {
-			t.Fatal("should keep rewriting before budget exhausted", i)
-		}
-		if i == 2 && !adopted {
-			t.Fatal("delete repair should salvage after budget exhausted", i)
-		}
+	// 快照往返（JSON 序列化/反序列化）后状态仍可继续。
+	encoded, _ := json.Marshal(s)
+	var restored State
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	s = restored
+	c := candidate(s.P0PendingRepair.BaseText, 100)
+	c.P0Patch = s.P0PendingRepair
+	c.P0PatchError = "invalid replacement schema"
+	c.RawText = "bad json"
+	adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 格式错误不再消耗重写预算反复重试（旧行为会重写 3 次拖长主线断供），
+	// 第一次提交就删词兜底采纳，保住这段话术。
+	if !adopted {
+		t.Fatal("malformed patch should fall back to delete repair immediately, not retry", s)
 	}
 	if len(s.Accepted) != 1 || strings.Contains(s.Accepted[0].Selected.Text, "零风险") {
 		t.Fatal("salvaged text still violates", s)
+	}
+	if s.P0RewritesUsed != 0 || s.P0PendingRepair != nil {
+		t.Fatal("rewrite budget/pending should reset after salvage", s.P0RewritesUsed, s.P0PendingRepair)
 	}
 }
 
