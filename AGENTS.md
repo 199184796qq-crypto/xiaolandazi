@@ -232,3 +232,12 @@
 - 直接下载和私有24小时归档统一把DashScope结果OSS的历史HTTP地址升级为HTTPS，签名及转义不变，非供应商HTTP/用户信息/非默认端口/伪造域名仍拒绝，无HTTP降级。历史条目无需重生成或改文案，按原任务重试自动补存，保留从原播放开始24小时。
 - 07:02:41已核实asset698补存成功，完整GET200、948524字节RIFF，SHA256 7f2d286b682e0b73849646921025872abfa6b111fafd9d9b40fc0bc1c9e31475，到期仍10月15日21:28:42.790；同类记录继续自动补存，期间直接下载支持HTTPS原文件。供应商原WAV头为流式占位长度，实际载荷约19.76秒、列表22.48秒来自既有播放记录，本次不改TTS/音频，不据声明帧数报告12小时。
 - HTTPAPI完整包与下载专项通过，未调用真实模型/TTS或操作直播。已推送GitHub main并同步work/main-merge-20261014，E:/speech-generator-build未改。保留同房间话术库、模型池和WorkBuddy页面。证明work/interaction-download-proof/report.md、deployment-report.json、production-verification.json、recovery-verification.json；前端备份指针work/frontend-preservation/latest.json已按全量哈希复用原备份并更新到本版本。
+
+
+## 直播下载主播编号与互动合并（2026-10-15 已上线）
+
+- 北京时间07:19:21上线 `/opt/xiaolan/releases/20261015-download-groups-d976350`，部署源码d976350a46ff28fd96b4f9cad5356022ecea1b0c，Management PID846891/SHA256 567d21f7db7ed0091a04974714797cbcf42bc477373b58d9e0d50e553187f4fa。只重启管理服务；Core775073、网关775930未重启，2385个旧无关文件、手机端、Nginx、模型池及全部系统设置保持一致。
+- 下载页主线显示“主播说 00001”起的五位序号，按本场已播放主线排序，先编号后筛选/分页；互动改名“直播间互动”。仅同一客户/房间/场次及相同决策编号的已播放回答与桥合并，文字直接衔接，不再显示独立衔接语记录。纯文字整场导出也采用同一分组。
+- 下载互动输出回答→实际已播放桥的单个完整WAV；没有桥下载原回答。相同参数保留原PCM、修复供应商占位长度文件头，不增加静音尾或截音；不同参数使用现有本地FFmpeg统一。任一部分不可用时提示失败，不将半份音频当作合并成功。保留原24小时保留、HTTPS地址校验与客户运维授权，未修改原始播放记录、音频归档或直播调度，未调用模型/TTS。
+- HTTPAPI完整包、专项合并/隔离/筛选/文件头/混合采样率/部分失败测试通过，20项前端保护回归及生产构建通过；1440/390px浏览器验证通过。283场只读核对61条原始记录合并为32条主播说和18条互动，11组桥均准确对应；真实归档一组导出GET200，完整WAV1136684字节、23.68秒。该验证是历史文件导出，不是新一场直播播放验证。
+- 已合入WorkBuddy最新1c6d2d5（Core用户维度与文档）并推送GitHub main，work/main-merge-20261014同步；本次未部署其Core改动，E:/speech-generator-build原目录未改。前端1704文件及12个公网入口/资源核验一致，最新备份指针work/frontend-preservation/latest.json已更新。证明work/download-group-proof/deployment-report.json、production-verification.json、archive-replay-verification.json、checks.json；说明docs/2026-10-15-session-download-groups.md。后续仍以实际current及最新源码整合发布，不得用旧下载/模型池/话术库源码覆盖。
