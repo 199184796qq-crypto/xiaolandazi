@@ -20,6 +20,7 @@ import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
+import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
@@ -7412,13 +7413,23 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <div class="plan-generation-heading"><h3>生成与预览</h3><button class="strategy-version-button" type="button" @click="activeMode = lastFactMode">返回配置</button></div>
+          <AgentWorkspacePages
+            :context-key="String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
+            :saving="savePlanOneClickBusy || fullShowVersionSaving"
+            :save-disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing"
+            :save-label="savePlanOneClickStage"
+            :save-hint="savePlanOneClickHint"
+            @save="savePlanOneClick"
+          >
+          <template #config>
         <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" :task-editor-available="false" @save="saveFullShowVersion" />
         <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
           <strong>已保存方案检查提示</strong>
           <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
           <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
         </div>
+          </template>
+          <template #preview>
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
@@ -8462,6 +8473,8 @@ onBeforeUnmount(() => {
             </div>
 
           </section>
+          </template>
+          </AgentWorkspacePages>
         </section>
 
         <section v-else-if="activeMode !== 'supplement'" class="strategy-agent-workspace">
