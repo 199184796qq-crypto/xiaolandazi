@@ -131,3 +131,10 @@
 - 单独刷新/跳过清单不能重置对话、输入或候选。问这个保留尚未提交的输入；文件/示例仍只预填。清单按方案、租户、房间和账号隔离，旧读取取消、迟到响应丢弃；左侧错误不能阻塞右侧自由对话。
 - 根组件确定宽度、按容器响应、回复安全格式化与受保护运维功能保留。25项回归及完整父级布局5项验证通过。本次仅更新两个入口HTML并新增资源，1537个原有非入口文件、服务PID/二进制、手机端与Nginx保持一致。
 - 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1208个前端文件逐项匹配服务器。验证见 `work/supplement-split-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-split-panels.md`；后续发布仍以当时实际current为基础。
+
+## 换下一批清单按钮（2026-10-14 已上线）
+
+- 当前前端已于北京时间10:23更新为 `/opt/xiaolan/releases/20261014-supplement-next-batch-e82534e`，源码e82534e，完整源码仍在 `work/main-merge-20261014` 及GitHub main。
+- 原刷新清单按钮改名“换下一批清单”，保留紫色实底、加粗白字、切换图标和至少42px高度；清单容器不足360px时按钮独占一行，不能挤压标题。原读取操作和禁用条件未变，未提交输入、对话和候选继续保留。
+- 11项既有清单/对话回归及真实父级桌面/手机验证通过。仅更新两个入口HTML和新增资源，1583个原有非入口文件、运行服务及Nginx一致；保留本次发布前服务器已经原地更新的管理二进制和主播提示词，不能用历史源码或哈希将其覆盖回旧版。
+- 最新备份指针 `work/frontend-preservation/latest.json` 已更新，1244个前端文件逐项匹配服务器。验证见 `work/supplement-next-batch-proof/production-verification.json`，说明见主线 `docs/2026-10-14-supplement-next-batch-button.md`；后续继续继承当时实际current。
