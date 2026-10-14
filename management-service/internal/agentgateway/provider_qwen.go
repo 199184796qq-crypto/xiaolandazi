@@ -106,6 +106,14 @@ func officialDeepSeekEndpoint(baseURL, model string) bool {
 // explicitly opt out, otherwise a modest max_tokens budget can be consumed by
 // reasoning_content and leave message.content empty.
 func applyCompatibleRequestOptions(payload map[string]any, baseURL, model string, enableThinking bool) {
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(lowerModel, "qwen3.") {
+		// qwen3 系列（3.5/3.6/3.7/3.8）在 OpenAI 兼容模式也原生支持 enable_thinking，
+		// 且默认开启思考。必须显式保留该参数，否则关闭思考不生效（拖慢生成并消耗 token）。
+		payload["enable_thinking"] = enableThinking
+		delete(payload, "reasoning_effort")
+		return
+	}
 	delete(payload, "enable_thinking")
 	delete(payload, "reasoning_effort")
 	if officialDeepSeekEndpoint(baseURL, model) && !enableThinking {

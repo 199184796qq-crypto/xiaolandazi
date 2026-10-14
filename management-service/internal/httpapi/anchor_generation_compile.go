@@ -42,26 +42,42 @@ func (s *Server) compileProductionAnchorStyle(ctx context.Context, tenant, style
 	if err != nil {
 		return profile, agentgateway.Response{}, err
 	}
-	data, _ := json.Marshal(map[string]string{"scene": "带货直播", "sample_text": sample})
-	if fusion := ctx.Value(fusionAnalysisKey{}); fusion != nil {
-		data, _ = json.Marshal(map[string]any{"analysis_results": fusion})
-	}
 	reportAnchorAnalysis(ctx, 20, "正在分析口语、称呼、句式和情绪特征")
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, StyleID: style})
-	result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.StyleProfileID, "style_analysis", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: analysis + "\n\n" + protocol}, {Role: "user", Content: string(data)}}, 6500, true)
-	if err != nil {
-		return profile, result, err
-	}
-	var compiled anchorStyleWorkbenchMetaOutput
-	if json.Unmarshal([]byte(stripPolicyJSONFence(result.Text)), &compiled) != nil || strings.TrimSpace(compiled.MetaPromptMD) == "" {
-		return profile, result, errors.New("风格返回未符合元提示词JSON协议，原始返回已保留")
-	}
-	for _, section := range []string{"【口语风格】", "【情绪】", "【禁用词】", "【范文锚定】"} {
-		if !strings.Contains(compiled.MetaPromptMD, section) {
-			return profile, result, errors.New("元提示词缺少必要风格章节，原始返回已保留")
+	productNames := s.anchorStyleProductNames(ctx, tenant, style)
+
+	var metaMD string
+	var result agentgateway.Response
+	var monitoring anchorStyleWorkbenchLexicon
+
+	if fusion := ctx.Value(fusionAnalysisKey{}); fusion != nil {
+		// 多样本融合：单次调用输出综合风格
+		data, _ := json.Marshal(map[string]any{"analysis_results": fusion})
+		result, _, err = s.completeAnchorStyleWorkbench(ctx, settings.StyleProfileID, "style_analysis", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: analysis + "\n\n" + protocol}, {Role: "user", Content: string(data)}}, 6500, true)
+		if err != nil {
+			return profile, result, err
+		}
+		var compiled anchorStyleWorkbenchMetaOutput
+		if json.Unmarshal([]byte(stripPolicyJSONFence(result.Text)), &compiled) != nil || strings.TrimSpace(compiled.MetaPromptMD) == "" {
+			return profile, result, errors.New("风格返回未符合元提示词JSON协议，原始返回已保留")
+		}
+		for _, section := range []string{"【口语风格】", "【情绪】", "【禁用词】"} {
+			if !strings.Contains(compiled.MetaPromptMD, section) {
+				return profile, result, errors.New("元提示词缺少必要风格章节，原始返回已保留")
+			}
+		}
+		metaMD = compiled.MetaPromptMD
+		monitoring = compiled.Monitoring
+	} else {
+		// 单样本：分步提取，程序逐维问、逐维答、合并成固定格式
+		metaMD, result, err = s.extractAnchorStyleByDimensions(ctx, analysis, sample, settings.StyleProfileID)
+		if err != nil {
+			return profile, result, err
 		}
 	}
-	monitor := buildAnchorStyleWorkbenchMonitor(normalizeAnchorStyleWorkbenchLexicon(compiled.Monitoring, sample), sample)
+	// 品相关内容硬剥离：链接号/数字/价格用正则，商品名靠注入词表（单样本下无法跨品对比，只能确定性剥离）。
+	metaMD, monitoring = stripAnchorStyleProductContent(metaMD, monitoring, productNames)
+	monitor := buildAnchorStyleWorkbenchMonitor(normalizeAnchorStyleWorkbenchLexicon(monitoring, sample), sample)
 	monitorJSON, _ := json.Marshal(monitor)
 	reportAnchorAnalysis(ctx, 55, "语言特征已提取，正在建立对应评分基准")
 	scoreMD, scoreSource, err := loadAnchorStyleScorecardPrompt()
@@ -76,7 +92,7 @@ func (s *Server) compileProductionAnchorStyle(ctx context.Context, tenant, style
 	if err != nil {
 		return profile, result, err
 	}
-	scoreData, _ := json.Marshal(map[string]string{"effective_style_analysis": compiled.MetaPromptMD, "sample_text": sample})
+	scoreData, _ := json.Marshal(map[string]string{"effective_style_analysis": metaMD, "sample_text": sample})
 	baseline, _, err := s.completeAnchorStyleWorkbench(ctx, settings.ScorecardProfileID, "style_scorecard_extraction", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: scoreMD + "\n\n" + scoreProtocol + "\n\n" + authority}, {Role: "user", Content: string(scoreData)}}, 6500, false)
 	if err != nil {
 		return profile, result, err
@@ -88,7 +104,40 @@ func (s *Server) compileProductionAnchorStyle(ctx context.Context, tenant, style
 	reportAnchorAnalysis(ctx, 85, "正在按原始话术校对频次与权重，并保存分析结果")
 	result.LatencyMS += baseline.LatencyMS
 	profile.Summary = "主播元提示词已提取，评分基准已按原始样本程序校对并自动保存。"
-	profile.Delivery = &model.LiveAnchorDeliverySpec{Version: "compiled-style-v1", MetaPromptMD: strings.TrimSpace(compiled.MetaPromptMD), Rulebook: strings.TrimSpace(compiled.MetaPromptMD), SourceSHA256: derivedHash(sample), SampleChars: utf8.RuneCountInString(sample), ScoringBaselineJSON: canonical, MonitoringJSON: string(monitorJSON), AnalysisPromptSource: analysisSource, ScorecardPromptSource: scoreSource}
-	profile.ReusableRules = []string{compiled.MetaPromptMD}
+	profile.Delivery = &model.LiveAnchorDeliverySpec{Version: "compiled-style-v1", MetaPromptMD: strings.TrimSpace(metaMD), Rulebook: strings.TrimSpace(metaMD), SourceSHA256: derivedHash(sample), SampleChars: utf8.RuneCountInString(sample), ScoringBaselineJSON: canonical, MonitoringJSON: string(monitorJSON), AnalysisPromptSource: analysisSource, ScorecardPromptSource: scoreSource}
+	profile.ReusableRules = []string{metaMD}
 	return profile, result, nil
+}
+
+// anchorStyleProductNames 收集主播风格绑定方案的商品名，作为品相关剥离词表。
+// 除完整商品名外，还提取常见品类后缀词，覆盖样本里的简称（如"黄菜籽油"→"菜籽油"）。
+func (s *Server) anchorStyleProductNames(ctx context.Context, tenant, style int64) []string {
+	planIDs, err := s.store.ListLiveAnchorStylePlanIDs(ctx, tenant, style)
+	if err != nil {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, pid := range planIDs {
+		links, err := s.store.ListLiveAgentPlanProductLinks(ctx, tenant, pid)
+		if err != nil {
+			continue
+		}
+		for _, l := range links {
+			name := strings.TrimSpace(l.ProductName)
+			if name == "" {
+				continue
+			}
+			names[name] = true
+			for _, suffix := range []string{"菜籽油", "菜油", "花生油", "大豆油", "橄榄油", "芝麻油", "食用油", "鸭子", "卤鸭", "白酒", "红酒", "茶叶", "大米", "面条", "米粉"} {
+				if strings.Contains(name, suffix) {
+					names[suffix] = true
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(names))
+	for n := range names {
+		out = append(out, n)
+	}
+	return out
 }

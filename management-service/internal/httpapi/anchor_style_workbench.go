@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1463,6 +1464,93 @@ func renderAnchorStyleWorkbenchStepPrompt(metaPrompt, facts string, task anchorS
 
 func renderAnchorStyleWorkbenchDirectPrompt(metaPrompt, facts string) string {
 	return strings.TrimSpace(metaPrompt) + "\n\n" + strings.TrimSpace(facts)
+}
+
+// 品相关内容剥离正则（确定性，不依赖任何外部数据）。
+var (
+	reAnchorStyleLink    = regexp.MustCompile(`\d+\s*号链接|链接\s*\d+|链接编号`)
+	reAnchorStylePrice   = regexp.MustCompile(`\d+(?:\.\d+)?\s*[块元](?:\s*\d+)?`)
+	reAnchorStyleNumUnit = regexp.MustCompile(`\d+(?:\.\d+)?\s*(?:多)?(?:斤|两|公斤|千克|克|升|毫升|桶|单|年|万单|亩|分钟|小时|天|袋|盒|瓶|支|折|%)`)
+	reAnchorStyleBareNum = regexp.MustCompile(`\d+(?:\.\d+)?`)
+	reAnchorStylePh      = regexp.MustCompile(`(\[数字\]|\[单位\]|\[链接\]|\[价格\]|\[产品\])+`)
+)
+
+// stripAnchorStyleBareNumbers 剥离未被数字单位正则匹配到的裸数字（价格/数量等），
+// 跳过列表序号（数字后紧跟 . 、 ． ： ) ） ] 】 等标点），避免误伤 1. 2. 3. 这类编号。
+func stripAnchorStyleBareNumbers(s string) string {
+	idxs := reAnchorStyleBareNum.FindAllStringIndex(s, -1)
+	for i := len(idxs) - 1; i >= 0; i-- {
+		start, end := idxs[i][0], idxs[i][1]
+		if end < len(s) {
+			r, _ := utf8.DecodeRuneInString(s[end:])
+			if strings.ContainsRune("、．：）】.:)]", r) {
+				continue
+			}
+		}
+		s = s[:start] + "[数字]" + s[end:]
+	}
+	return s
+}
+
+// stripAnchorStyleProductContent 剥离风格文本中品相关内容。
+// 单样本下无法跨品对比，只能靠确定性正则 + 词表硬剥离：
+//   链接号、价格、数字+单位 用正则（不依赖外部数据）；
+//   商品名/品类名 用 productNames 词表（调用方注入，没有就只做正则）。
+// 剥离后残留的连续占位符统一压缩成 [已剥离]。
+// 返回剥离后的元提示词文本与候选词表。
+func stripAnchorStyleProductContent(metaMD string, lexicon anchorStyleWorkbenchLexicon, productNames []string) (string, anchorStyleWorkbenchLexicon) {
+	// 1. 文本剥离：链接号 → 价格 → 数字+单位 → 裸数字（顺序不能变）
+	md := metaMD
+	md = reAnchorStyleLink.ReplaceAllString(md, "[链接]")
+	md = reAnchorStylePrice.ReplaceAllString(md, "[价格]")
+	md = reAnchorStyleNumUnit.ReplaceAllString(md, "[数字]")
+	md = stripAnchorStyleBareNumbers(md)
+	// 商品名词表剥离（调用方注入，可为空）
+	for _, p := range productNames {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			md = strings.ReplaceAll(md, p, "[产品]")
+		}
+	}
+	md = reAnchorStylePh.ReplaceAllString(md, "[已剥离]")
+
+	// 2. 候选词剥离：含链接号/价格/数字单位/商品名的词直接剔除
+	filter := func(terms []string) []string {
+		out := make([]string, 0, len(terms))
+		for _, t := range terms {
+			if isAnchorStyleProductTerm(t, productNames) {
+				continue
+			}
+			out = append(out, t)
+		}
+		return out
+	}
+	lexicon.AudienceTerms = filter(lexicon.AudienceTerms)
+	lexicon.SelfTerms = filter(lexicon.SelfTerms)
+	lexicon.AudiencePronouns = filter(lexicon.AudiencePronouns)
+	lexicon.Particles = filter(lexicon.Particles)
+	lexicon.Connectors = filter(lexicon.Connectors)
+	lexicon.Catchphrases = filter(lexicon.Catchphrases)
+	lexicon.ForbiddenTerms = filter(lexicon.ForbiddenTerms)
+	return md, lexicon
+}
+
+// isAnchorStyleProductTerm 判断候选词是否为品相关（含链接号/价格/数字单位/商品名）。
+func isAnchorStyleProductTerm(term string, productNames []string) bool {
+	t := strings.TrimSpace(term)
+	if t == "" {
+		return true
+	}
+	if reAnchorStyleLink.MatchString(t) || reAnchorStylePrice.MatchString(t) || reAnchorStyleNumUnit.MatchString(t) || reAnchorStyleBareNum.MatchString(t) {
+		return true
+	}
+	for _, p := range productNames {
+		p = strings.TrimSpace(p)
+		if p != "" && strings.Contains(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeAnchorStyleWorkbenchLexicon(input anchorStyleWorkbenchLexicon, sample string) anchorStyleWorkbenchLexicon {

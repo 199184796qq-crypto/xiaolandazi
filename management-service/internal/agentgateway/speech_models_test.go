@@ -96,7 +96,7 @@ func TestOfficialDeepSeekThinkingControl(t *testing.T) {
 	}{
 		{"official", "https://api.deepseek.com", "deepseek-v4-pro", true},
 		{"official_v1", "https://api.deepseek.com/v1", "deepseek-flash", true},
-		{"other_model", "https://api.deepseek.com", "qwen3.8-flash", false},
+		{"other_model", "https://api.deepseek.com", "kimi-k3", false},
 		{"lookalike_host", "https://api.deepseek.com.evil.example/v1", "deepseek-v4-pro", false},
 		{"generic_proxy", "https://api.example.com/v1", "deepseek-v4-pro", false},
 	} {
@@ -126,6 +126,16 @@ func TestOfficialDeepSeekThinkingControl(t *testing.T) {
 	applyCompatibleRequestOptions(payload, "https://api.deepseek.com", "deepseek-v4-pro", true)
 	if _, exists := payload["thinking"]; exists {
 		t.Fatal("enabled thinking should preserve DeepSeek's model default")
+	}
+
+	// qwen3 系列保留 enable_thinking（默认开思考，需显式传 false 关闭），删除 reasoning_effort
+	qwenPayload := map[string]any{"enable_thinking": false, "reasoning_effort": "none"}
+	applyCompatibleRequestOptions(qwenPayload, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-flash", false)
+	if v, exists := qwenPayload["enable_thinking"]; !exists || v != false {
+		t.Fatalf("qwen3 enable_thinking 应保留为 false，实际 %v", qwenPayload)
+	}
+	if _, exists := qwenPayload["reasoning_effort"]; exists {
+		t.Fatal("qwen3 reasoning_effort 应删除")
 	}
 }
 

@@ -457,3 +457,21 @@ func (s *Store) GetLiveAnchorStyleForPlan(ctx context.Context, tenantID, planID 
 	}
 	return s.GetLiveAnchorStyle(ctx, tenantID, styleID)
 }
+
+// ListLiveAnchorStylePlanIDs 返回主播风格绑定的所有方案 ID，用于收集其商品名作为品相关剥离词表。
+func (s *Store) ListLiveAnchorStylePlanIDs(ctx context.Context, tenantID, styleID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT plan_id FROM live_anchor_style_plan_bindings WHERE tenant_id=? AND style_id=? ORDER BY plan_id`, tenantID, styleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
