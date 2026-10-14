@@ -1,11 +1,5 @@
 package decisionexecutor
 
-import (
-	"crypto/sha256"
-	"encoding/binary"
-	"strings"
-)
-
 // 互动回答的表达变体种子：判断观众意图 + 完成 1-2 项最高价值目标 + 软变化。
 // 程序按"近期同问题/同角度使用次数"轮换注入，让同一答案每次说法不同。
 // 核心：先答准问题，再根据观众目的（解决顾虑 / 了解信息 / 比价确认 / 想下单）
@@ -29,21 +23,55 @@ func interactionExpressionVariant(n int) string {
 	return interactionExpressionVariants[n%len(interactionExpressionVariants)]
 }
 
-// greetingPhraseVariants 打招呼句式方向池：程序按 seed 确定性轮换，避免相邻几轮机械重复同一称呼/欢迎句式。
-// 只给"句式方向"，具体措辞由模型结合昵称/群体自然生成，不硬套模板。
-var greetingPhraseVariants = []string{
-	"打招呼用「昵称直呼」开场（如“小陈，……”），不要每次都同一个套路",
-	"打招呼用「昵称+称谓后缀」开场（如“小陈哥”“阿芳老乡”），自然变化",
-	"打招呼用「问候式」开场（如“小陈你好”），自然不重复",
-	"打招呼用「代称式」开场（如“这位朋友小陈”），自然不重复",
-	"打招呼用「轻感叹」开场（如“诶小陈”“哟阿芳”），自然不重复",
-	"多人时用「昵称合并」开场（如“小陈和阿芳，你们……”），自然不重复",
+// neutralAddressTerms 中性托底称谓词：不假设年龄/性别/地域/亲密度。
+// 当主播风格主力称呼和用户 PreferredTerms 都没有时兜底，保证任何直播间都有可播称呼。
+var neutralAddressTerms = []string{"朋友", "这位朋友", "大家", "各位"}
+
+// greetingPhraseByScene 打招呼句式方向池，按互动场景分池。
+// 程序给"句式方向"，具体措辞由模型结合昵称/群体自然生成，不硬套模板。
+var greetingPhraseByScene = map[string][]string{
+	"welcome": {
+		"欢迎用「欢迎+称呼」开场（如“欢迎小陈”），自然不重复",
+		"欢迎用「来了啊」开场（如“小陈来了啊”），自然不重复",
+		"欢迎用「问候」开场（如“小陈你好”），自然不重复",
+		"欢迎用「也来啦」开场（如“小陈也来啦”），自然不重复",
+	},
+	"product_question": {
+		"回答用「昵称直呼」开场（如“小陈，你问的……”），自然不重复",
+		"回答用「昵称+称谓后缀」开场（如“小陈哥”“阿芳老乡”），自然不重复",
+		"回答用「肯定式」开场（如“小陈问得好”“这个问题问到点子上了”），自然不重复",
+		"回答用「代称式」开场（如“这位朋友小陈”），自然不重复",
+	},
+	"warmup": {
+		"暖场用「群体称呼」开场（如“家人们”“哥哥姐姐们”），自然不重复",
+		"暖场用「招呼全体」开场（如“大家”“各位”），自然不重复",
+	},
+	"like_follow": {
+		"感谢用「谢谢+称呼」开场（如“谢谢小陈”），自然不重复",
+		"感谢用「支持」开场（如“感谢小陈支持”），自然不重复",
+	},
+	"order": {
+		"回应下单用「谢谢+称呼」开场（如“谢谢小陈”），自然不重复",
+		"回应下单用「破费了」开场（如“小陈破费了”），自然不重复",
+	},
+	"smalltalk": {
+		"打招呼用「昵称直呼」开场（如“小陈，……”），自然不重复",
+		"打招呼用「问候式」开场（如“小陈你好”），自然不重复",
+		"打招呼用「代称式」开场（如“这位朋友小陈”），自然不重复",
+		"打招呼用「轻感叹」开场（如“诶小陈”），自然不重复",
+	},
+	"default": {
+		"打招呼用「昵称直呼」开场（如“小陈，……”），自然不重复",
+		"打招呼用「昵称+称谓后缀」开场（如“小陈哥”），自然不重复",
+		"打招呼用「问候式」开场（如“小陈你好”），自然不重复",
+		"打招呼用「代称式」开场（如“这位朋友小陈”），自然不重复",
+	},
 }
 
-func greetingPhraseVariant(seed string) string {
-	if len(greetingPhraseVariants) == 0 {
-		return ""
+// greetingScenePool 返回指定场景的句式池；未知场景回退 default。
+func greetingScenePool(scene string) []string {
+	if pool, ok := greetingPhraseByScene[scene]; ok && len(pool) > 0 {
+		return pool
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(seed)))
-	return greetingPhraseVariants[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(greetingPhraseVariants)))]
+	return greetingPhraseByScene["default"]
 }
