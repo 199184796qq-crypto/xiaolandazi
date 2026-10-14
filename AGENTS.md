@@ -1,5 +1,11 @@
 # 项目协作约定
 
+## 已采纳事实列表两列布局（2026-10-15 已上线）
+
+- 用户要求隐藏 WorkBuddy“当前方案已采纳事实”列表中的分类和事实名称两列。列表只显示事实内容和操作，保留左侧分类筛选；分类及名称继续保存，点击修改时在内容编辑区上方编辑。风险提醒保留在内容区域，表达及二级资料展开行跨两列。
+- 北京时间07:24:49前端发布 `/opt/xiaolan/releases/20261015-fact-list-columns-d61ff04`，源码d61ff04，基于已整合WorkBuddy的d976350。只更新web/web-desktop入口及新增哈希资源，2427个原有非入口文件、三个服务PID/二进制与Nginx一致，未重启直播服务。未改E:/speech-generator-build原目录。
+- 未修改基线构建逐项复现当时生产资源；类型检查、生产构建、10项既有导航/风险回归，以及完整LiveStrategyView合成数据的筛选、修改保存、两类展开行和1600/1024/390/320px显示验证通过。10个公网入口/资源指纹一致，最新前端备份指针已更新，1744个前端文件匹配实际服务器。证据位于本任务work/hide-fact-columns-proof，说明docs/2026-10-15-fact-list-columns.md。后续仍继承发布时实际current及最新整合源码。
+
 ## 直播下载和24小时保留（2026-10-14 已上线）
 
 - 实际current为 `/opt/xiaolan/releases/20261014-live-session-download-9c1c5f9`，发布源码9c1c5f9，整合当时已部署的1608ea6。Management PID820631，SHA256=a27d3d834732e56f0c54fd1d94d7b2299c78d217cb5d433d87ec5d3c148a38c9；Core/网关未重启。
