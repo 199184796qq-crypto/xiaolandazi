@@ -606,8 +606,10 @@ func (s *Server) completeCycleMacro(ctx context.Context, state *anchorcycle.Stat
 		for _, segment := range state.Accepted[max(0, len(state.Accepted)-5):] {
 			recent = append(recent, segment.Selected.Text)
 		}
-		data, _ := json.Marshal(map[string]any{"style_meta_prompt": state.StyleMD, "report": state.MacroReport, "expected_categories": rollingExpectedCategories(state.MacroReport.Issues), "recent_texts": recent, "accepted_style_window": state.StyleWindow})
-		messages := []agentgateway.Message{{Role: "system", Content: md}, {Role: "user", Content: string(data)}}
+		// 主播风格 meta_prompt 整场不变，挪进 system 作缓存前缀；报告/近期文本/风格窗口随采纳变化，留在 user。
+		stable, _ := json.Marshal(map[string]any{"style_meta_prompt": state.StyleMD})
+		data, _ := json.Marshal(map[string]any{"report": state.MacroReport, "expected_categories": rollingExpectedCategories(state.MacroReport.Issues), "recent_texts": recent, "accepted_style_window": state.StyleWindow})
+		messages := []agentgateway.Message{{Role: "system", Content: md + "\n\n" + string(stable)}, {Role: "user", Content: string(data)}}
 		response.PromptSource = source
 		response.Request = traceAnchorStyleWorkbenchMessages(messages)
 		result, actual, e := s.completeAnchorStyleWorkbench(withPinnedSpeechProfile(ctx, state.Config.FeedbackID), state.Config.FeedbackID, "accepted_macro_feedback", agentgateway.ResponseJSON, messages, 1000, false)
