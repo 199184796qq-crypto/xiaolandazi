@@ -4,16 +4,16 @@ import { session } from '../session'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useProductSupplementChat } from '../productSupplementChat'
 import { factCategoryDefinition, loadFactCategories } from '../factCategories'
-import { confirmAnchorStyleSellingPointWheel, getAnchorStyleWorkbenchContext, type FactGapItem } from '../api'
+import { type FactGapItem } from '../api'
 import { useProductSupplementGaps } from '../productSupplementGaps'
-import { type AnchorStyleSellingPointWheelItem, type SpeechMinerFactDraft, type LiveAgentPlanProductLink } from '../types'
+import { type SpeechMinerFactDraft, type LiveAgentPlanProductLink } from '../types'
 import FactCategoryBadge from './FactCategoryBadge.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
 import documentsIllustration from '../assets/product-supplement-documents.svg'
 import assistantAvatar from '../assets/product-supplement-assistant.svg'
 
-const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; productLinks?: LiveAgentPlanProductLink[]; industryName?: string }>()
+const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; productLinks?: LiveAgentPlanProductLink[]; businessLabel?: string; industryName?: string }>()
 const emit = defineEmits<{ updated: [scope: { planId: number; tenantId: number; roomId: number }] }>()
 const currentScope = () => ({
   planId: props.planId, tenantId: props.tenantId, roomId: props.roomId,
@@ -95,56 +95,17 @@ function productLinkLabel(link: LiveAgentPlanProductLink) {
 }
 
 
-// 所属行业与方案「业务模式」联动：这里只展示当前方案已选行业名称，选择与修改都在业务模式面板完成。
+// 所属行业与方案「业务模式」联动：这里只读展示业务模式 + 已选行业（红字），选择与修改都在业务模式面板完成。
+const industryText = computed(() => {
+  const business = (props.businessLabel || '').trim()
+  const industry = (props.industryName || '').trim()
+  if (business && industry) return `${business} · ${industry}`
+  if (industry) return industry
+  return '未选择业务模式或行业'
+})
 
+// 卖点分级确认 UI 暂时下线，后续改到右侧智能体对话框里重新设计。
 
-
-// 卖点分级确认：加载已生成的卖点轮盘，按「核心/次级/信任福利」调整后确认保存。
-interface WheelConfirmState { assetId: number; points: AnchorStyleSellingPointWheelItem[]; raw: Record<string, unknown> }
-const wheelConfirm = ref<WheelConfirmState | null>(null)
-const wheelLoading = ref(false)
-const wheelSaving = ref(false)
-const wheelNotice = ref('')
-const wheelTierOptions = [
-  { value: 'core', label: '核心主打' },
-  { value: 'secondary', label: '次级' },
-  { value: 'trust', label: '信任福利' },
-] as const
-async function loadWheelConfirm() {
-  if (props.planId <= 0) return
-  wheelLoading.value = true; wheelNotice.value = ''
-  try {
-    const context = await getAnchorStyleWorkbenchContext(props.planId, props.tenantId)
-    const saved = context.saved_selling_point_wheel
-    if (!saved?.wheel_json) { wheelConfirm.value = null; return }
-    const doc = JSON.parse(saved.wheel_json) as { 卖点列表?: AnchorStyleSellingPointWheelItem[] }
-    wheelConfirm.value = { assetId: saved.asset_id, points: Array.isArray(doc.卖点列表) ? doc.卖点列表 : [], raw: doc as unknown as Record<string, unknown> }
-  } catch {
-    wheelConfirm.value = null
-  } finally {
-    wheelLoading.value = false
-  }
-}
-function changeWheelTier(index: number, tier: string) {
-  const point = wheelConfirm.value?.points[index]
-  if (!point) return
-  if (tier === 'core' || tier === 'secondary' || tier === 'trust') point.tier = tier
-  else delete point.tier
-}
-async function saveWheelConfirm() {
-  if (!wheelConfirm.value) return
-  wheelSaving.value = true; wheelNotice.value = ''
-  try {
-    const doc = { ...wheelConfirm.value.raw, 卖点列表: wheelConfirm.value.points }
-    await confirmAnchorStyleSellingPointWheel(props.planId, wheelConfirm.value.assetId, { tenant_id: props.tenantId, wheel_json: JSON.stringify(doc) })
-    wheelNotice.value = '卖点分级已保存'
-  } catch (cause) {
-    wheelNotice.value = cause instanceof Error ? cause.message : '卖点分级保存失败'
-  } finally {
-    wheelSaving.value = false
-  }
-}
-watch(() => props.planId, () => { void loadWheelConfirm() }, { immediate: true })
 
 async function openGap(gap: FactGapItem) {
   if (!ready.value || busy.value || importingFile.value) return
@@ -195,9 +156,8 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
         <header class="supplement-gap-list-head">
           <div class="supplement-category">
             <label>所属行业</label>
-            <span class="supplement-industry-value" :class="{ 'is-empty': !industryName }">{{ industryName || '未选择行业' }}</span>
+            <span class="supplement-industry-text">{{ industryText }}</span>
           </div>
-          <p v-if="!industryName" class="supplement-category-state" role="status">在「业务模式」中选择行业后，这里自动同步</p>
           <div class="supplement-link-toolbar">
             <div class="supplement-link-field">
               <label for="supplement-product-link">链接选择</label>
@@ -210,23 +170,6 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
           </div>
           <small class="supplement-gap-description">{{ visibleGaps.length }} 项 · 按必查维度整理，点一条开始问；已有的不重复问，只补缺的或在已有基础上深挖一层</small>
         </header>
-        <div v-if="wheelConfirm && wheelConfirm.points.length" class="supplement-wheel-confirm">
-          <div class="supplement-wheel-head">
-            <strong>卖点分级确认 <span>{{ wheelConfirm.points.length }} 个卖点</span></strong>
-            <small>程序按「差异化 &gt; 价格 &gt; 数字背书 &gt; 品质来源」初分核心，活动/售后/物流归信任福利；调整后点保存。</small>
-          </div>
-          <div v-for="(point, index) in wheelConfirm.points" :key="point.卖点名 + ':' + index" class="supplement-wheel-row">
-            <span class="supplement-wheel-name">{{ point.卖点名 }}</span>
-            <select :value="point.tier || ''" :disabled="wheelSaving" @change="changeWheelTier(index, ($event.target as HTMLSelectElement).value)">
-              <option value="">未分级</option>
-              <option v-for="opt in wheelTierOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-            </select>
-          </div>
-          <div class="supplement-wheel-actions">
-            <span v-if="wheelNotice">{{ wheelNotice }}</span>
-            <button type="button" :disabled="wheelSaving" @click="saveWheelConfirm">{{ wheelSaving ? '保存中…' : '保存卖点分级' }}</button>
-          </div>
-        </div>
         <div v-if="gapsLoading" class="supplement-gap-state">正在核对商品资料…</div>
         <div v-else-if="gapsError" class="supplement-gap-state is-error" role="alert">{{ gapsError }}</div>
         <div v-else-if="!visibleGaps.length" class="supplement-gap-state supplement-gap-empty"><img class="supplement-documents-art" :src="documentsIllustration" alt="" /><p>{{ gaps.length ? '本轮问题已跳过，可换下一批清单或在右侧自由补充。' : '目前没有待补问题，可以在右侧自由补充商品资料。' }}</p></div>
@@ -349,21 +292,11 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
 .supplement-category label,.supplement-link-field label{flex:0 0 auto;font-size:16px;font-weight:800;color:#4a5678}
 .supplement-category select,.supplement-link-field select{flex:1;box-sizing:border-box;min-width:0;width:100%;min-height:44px;padding:8px 10px;border:1px solid #d8dff0;border-radius:9px;background:#fff;color:#263752;font:inherit;font-size:16px;cursor:pointer}
 .supplement-category select:disabled,.supplement-link-field select:disabled{opacity:.6;cursor:wait}
-.supplement-industry-value{flex:1;display:inline-flex;align-items:center;box-sizing:border-box;min-height:44px;min-width:0;padding:8px 12px;border:1px solid #e3e7fb;border-radius:9px;background:#f6f7ff;color:#3b4a6d;font-size:16px;font-weight:650;line-height:1.5;overflow-wrap:anywhere}
-.supplement-industry-value.is-empty{color:#93a0bb;font-weight:500;background:#fbfcff;border-style:dashed}
+.supplement-industry-text{flex:1;min-width:0;align-self:center;color:#e02f2f;font-size:17px;font-weight:750;line-height:1.5;overflow-wrap:anywhere}
 .supplement-category-state{margin:0;font-size:16px;line-height:1.6;color:#7768da;overflow-wrap:anywhere}
 .supplement-link-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .supplement-gap-description{color:#8490ac;font-size:16px;line-height:1.8}
 .supplement-gap-refresh{display:inline-flex;align-items:center;justify-content:center;gap:7px;align-self:center;min-height:44px;min-width:0;padding:10px 12px;border:1px solid transparent;border-radius:10px;color:#fff;background:linear-gradient(115deg,#7f6ffb,#5e49e9);box-shadow:0 5px 14px #7463ed2e;font:inherit;font-size:16px;font-weight:700;line-height:1.4;white-space:nowrap;cursor:pointer}.supplement-gap-refresh svg{flex:0 0 17px;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.supplement-gap-refresh:not(:disabled):hover{background:linear-gradient(115deg,#7461f4,#553fe0);box-shadow:0 6px 16px #7463ed40}
-.supplement-wheel-confirm{display:grid;gap:7px;padding:14px 18px;border-bottom:1px solid #e9edfc;background:#fbfaff}
-.supplement-wheel-head{display:grid;gap:3px;margin-bottom:3px}.supplement-wheel-head strong{display:flex;align-items:baseline;gap:8px;color:#4a3a78;font-size:16px}.supplement-wheel-head strong span{font-size:16px;color:#9a8fc0;font-weight:500}.supplement-wheel-head small{color:#8a80a8;font-size:16px;line-height:1.6}
-.supplement-wheel-row{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;background:#fff}
-.supplement-wheel-name{flex:1;min-width:0;color:#35425c;font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.supplement-wheel-row select{flex:0 0 96px;width:96px;padding:5px 7px;border:1px solid #d8dff0;border-radius:8px;font-size:16px;color:#263752;background:#fff}
-.supplement-wheel-actions{display:flex;align-items:center;gap:10px;margin-top:4px}
-.supplement-wheel-actions span{font-size:16px;color:#7768da}
-.supplement-wheel-actions button{margin-left:auto;border:0;border-radius:8px;padding:7px 12px;background:#7b67f6;color:#fff;font:inherit;font-size:16px;font-weight:700;cursor:pointer}
-.supplement-wheel-actions button:disabled{opacity:.55;cursor:wait}
 .supplement-gap-state{flex:1;padding:28px 24px;color:#8490ac;font-size:16px;line-height:1.8}.supplement-gap-state.is-error{color:#ad4256}.supplement-gap-empty{display:grid;align-content:center;text-align:center}.supplement-gap-empty p{margin:0}
 .supplement-gap-cards{flex:1;min-height:0;padding:18px;display:grid;align-content:start;gap:14px;max-height:calc(var(--supplement-chat-height) + 66px);overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain}.supplement-gap-card{min-width:0;border:1px solid #e8ecfa;border-radius:15px;background:#fff;padding:17px 18px;overflow-wrap:anywhere}.supplement-gap-card-head{display:flex;align-items:center;gap:10px}.supplement-gap-level{flex:0 0 auto;padding:4px 9px;border-radius:7px;font-size:16px;font-weight:700}.supplement-gap-level.is-missing{background:#fff0d8;color:#c06f0a}.supplement-gap-level.is-extend{background:#e2f0ff;color:#2475ef}.supplement-gap-card-head strong{font-size:16px;color:#263752}.supplement-gap-missing{margin:12px 0 6px;font-size:16px;color:#556383;font-weight:600;line-height:1.7}.supplement-gap-prompts{list-style:none;padding:0;margin:6px 0 14px}.supplement-gap-prompts li{position:relative;margin-top:4px;padding-left:14px;font-size:16px;color:#7b86a3;line-height:1.7}.supplement-gap-prompts li::before{content:'·';position:absolute;left:4px;color:#aab3cc}.supplement-gap-actions{display:flex;gap:10px}.supplement-gap-actions button{border:1px solid #dce1f6;border-radius:9px;background:#fff;color:#6c7d9f;padding:8px 16px;font:inherit;font-size:16px;cursor:pointer}.supplement-gap-actions .supplement-gap-ask{background:#7b67f6;color:#fff;border-color:#7b67f6}.supplement-gap-free{display:block;width:100%;margin-top:auto;padding:16px;border:0;border-top:1px solid #e9edfc;background:#fff;color:#7768da;font:inherit;font-size:16px;cursor:pointer}
 @container supplement-chat (max-width:730px){.supplement-chat-doodle{display:none}.supplement-transcript:has(.supplement-chat-doodle)>.supplement-message{max-width:92%}.supplement-composer-tools{gap:15px}.supplement-tool,.supplement-composer-tools :deep(.agent-enter-send-option){font-size:16px}.supplement-send{min-width:95px}}

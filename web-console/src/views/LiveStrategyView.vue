@@ -19,6 +19,7 @@ import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
 import PlanBusinessModePanel from '../components/PlanBusinessModePanel.vue'
 import { usePlanBusinessMode } from '../usePlanBusinessMode'
+import { planBusinessModes } from '../planBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
@@ -474,7 +475,12 @@ const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
 const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => activeRoom.value?.tenant_id))
-// 资料补全页「所属行业」与业务模式联动：只读展示当前方案已选行业名称。
+// 资料补全页「所属行业」与业务模式联动：只读展示当前业务模式 + 已选行业名称（红字）。
+const supplementBusinessLabel = computed(() => {
+  const domain = planBusinessMode.value.value
+  if (!domain) return ''
+  return planBusinessModes.find((item) => item.value === domain)?.label || ''
+})
 const supplementIndustryName = computed(() => {
   const domain = planBusinessMode.value.value
   if (!domain) return ''
@@ -6257,7 +6263,7 @@ onBeforeUnmount(() => {
         </div>
 
         <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
-          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" :business-label="supplementBusinessLabel" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
         </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
