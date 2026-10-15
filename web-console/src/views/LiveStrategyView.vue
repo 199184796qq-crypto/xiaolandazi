@@ -8,14 +8,12 @@ import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
-import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
-import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
@@ -4346,34 +4344,6 @@ async function openFactRiskLocation() {
 	await locatePendingRiskLocation()
 }
 
-const poolLocationError = ref('')
-let poolLocationAttempt = 0
-async function locatePoolSource(source: PoolSourceLocation) {
-	poolLocationError.value = ''
-	if (source.area === 'miner') return
-	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value
-	activeMode.value = source.area
-	await nextTick()
-	const current = () => attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && activeMode.value === source.area
-	if (!current()) return
-	let located = false
-	if (source.area === 'products') located = !!await productCards.value?.locateSource(source.entityId, source.attributeId)
-	else {
-		if (source.area === 'benefits' && formalBenefits.value.some(item => item.id === source.entityId)) {
-			expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entityId])
-		}
-		await nextTick()
-		if (!current()) return
-		const attr = source.area === 'knowledge' ? 'data-formal-fact-id' : 'data-formal-benefit-id'
-		const target = document.querySelector<HTMLElement>(`[${attr}="${source.entityId}"]`)
-		target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-		target?.focus({ preventScroll: true })
-		located = !!target
-	}
-	if (current() && !located) poolLocationError.value = '当前资料中未找到这条来源，请刷新或核对它是否已移除。'
-}
-watch([activeRoomId, currentRoomPlanId], () => { poolLocationAttempt++; poolLocationError.value = '' })
-
 function factRisksForFact(item: LiveAgentPlanFact) {
 	const value = item.value.trim()
 	const key = item.key.trim()
@@ -7448,22 +7418,7 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <AgentWorkspacePages
-            :context-key="String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
-            :saving="savePlanOneClickBusy || fullShowVersionSaving"
-            :save-disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing"
-            :save-label="savePlanOneClickStage"
-            :save-hint="savePlanOneClickHint"
-            @save="savePlanOneClick"
-          >
-          <template #config>
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" :task-editor-available="false" @save="saveFullShowVersion" />
-        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
-          <strong>已保存方案检查提示</strong>
-          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
-          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
-        </div>
-          </template>
+          <AgentWorkspacePages>
           <template #preview>
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
