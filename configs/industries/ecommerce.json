@@ -32,12 +32,132 @@
     },
     {
       "code": "apparel",
-      "name": "服装",
+      "name": "服装鞋帽",
       "name_en": "Apparel",
       "selling_dimensions": "apparel/selling-dimensions.md",
       "sides": "apparel/sides.json",
       "fact_categories": "apparel/fact-categories.json",
-      "p0_extra": "",
+      "p0_extra": "apparel/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "fresh",
+      "name": "生鲜果蔬",
+      "name_en": "Fresh Produce",
+      "selling_dimensions": "fresh/selling-dimensions.md",
+      "sides": "fresh/sides.json",
+      "fact_categories": "fresh/fact-categories.json",
+      "p0_extra": "fresh/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "beverage",
+      "name": "酒水饮料",
+      "name_en": "Beverages",
+      "selling_dimensions": "beverage/selling-dimensions.md",
+      "sides": "beverage/sides.json",
+      "fact_categories": "beverage/fact-categories.json",
+      "p0_extra": "beverage/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "beauty",
+      "name": "美妆个护",
+      "name_en": "Beauty & Personal Care",
+      "selling_dimensions": "beauty/selling-dimensions.md",
+      "sides": "beauty/sides.json",
+      "fact_categories": "beauty/fact-categories.json",
+      "p0_extra": "beauty/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "home",
+      "name": "家居日用",
+      "name_en": "Home & Daily",
+      "selling_dimensions": "home/selling-dimensions.md",
+      "sides": "home/sides.json",
+      "fact_categories": "home/fact-categories.json",
+      "p0_extra": "home/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "appliance",
+      "name": "家电数码",
+      "name_en": "Appliances & Digital",
+      "selling_dimensions": "appliance/selling-dimensions.md",
+      "sides": "appliance/sides.json",
+      "fact_categories": "appliance/fact-categories.json",
+      "p0_extra": "appliance/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "maternal",
+      "name": "母婴用品",
+      "name_en": "Maternal & Baby",
+      "selling_dimensions": "maternal/selling-dimensions.md",
+      "sides": "maternal/sides.json",
+      "fact_categories": "maternal/fact-categories.json",
+      "p0_extra": "maternal/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "building",
+      "name": "家装建材",
+      "name_en": "Building Materials",
+      "selling_dimensions": "building/selling-dimensions.md",
+      "sides": "building/sides.json",
+      "fact_categories": "building/fact-categories.json",
+      "p0_extra": "building/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "book",
+      "name": "图书文教",
+      "name_en": "Books & Education",
+      "selling_dimensions": "book/selling-dimensions.md",
+      "sides": "book/sides.json",
+      "fact_categories": "book/fact-categories.json",
+      "p0_extra": "book/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "pet",
+      "name": "宠物用品",
+      "name_en": "Pet Supplies",
+      "selling_dimensions": "pet/selling-dimensions.md",
+      "sides": "pet/sides.json",
+      "fact_categories": "pet/fact-categories.json",
+      "p0_extra": "pet/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "sports",
+      "name": "运动户外",
+      "name_en": "Sports & Outdoor",
+      "selling_dimensions": "sports/selling-dimensions.md",
+      "sides": "sports/sides.json",
+      "fact_categories": "sports/fact-categories.json",
+      "p0_extra": "sports/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "jewelry",
+      "name": "珠宝配饰",
+      "name_en": "Jewelry & Accessories",
+      "selling_dimensions": "jewelry/selling-dimensions.md",
+      "sides": "jewelry/sides.json",
+      "fact_categories": "jewelry/fact-categories.json",
+      "p0_extra": "jewelry/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "auto",
+      "name": "汽车用品",
+      "name_en": "Auto Supplies",
+      "selling_dimensions": "auto/selling-dimensions.md",
+      "sides": "auto/sides.json",
+      "fact_categories": "auto/fact-categories.json",
+      "p0_extra": "auto/p0-extra.md",
       "children": []
     }
   ]

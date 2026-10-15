@@ -29,6 +29,136 @@
       "fact_categories": "restaurant/fact-categories.json",
       "p0_extra": "restaurant/p0-extra.md",
       "children": []
+    },
+    {
+      "code": "hotel",
+      "name": "酒店住宿",
+      "name_en": "Hotel",
+      "selling_dimensions": "hotel/selling-dimensions.md",
+      "sides": "hotel/sides.json",
+      "fact_categories": "hotel/fact-categories.json",
+      "p0_extra": "hotel/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "travel",
+      "name": "旅游景点",
+      "name_en": "Travel & Scenic",
+      "selling_dimensions": "travel/selling-dimensions.md",
+      "sides": "travel/sides.json",
+      "fact_categories": "travel/fact-categories.json",
+      "p0_extra": "travel/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "leisure",
+      "name": "休闲娱乐",
+      "name_en": "Leisure & Entertainment",
+      "selling_dimensions": "leisure/selling-dimensions.md",
+      "sides": "leisure/sides.json",
+      "fact_categories": "leisure/fact-categories.json",
+      "p0_extra": "leisure/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "beauty_care",
+      "name": "丽人美业",
+      "name_en": "Beauty & Salon",
+      "selling_dimensions": "beauty_care/selling-dimensions.md",
+      "sides": "beauty_care/sides.json",
+      "fact_categories": "beauty_care/fact-categories.json",
+      "p0_extra": "beauty_care/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "fitness",
+      "name": "运动健身",
+      "name_en": "Fitness",
+      "selling_dimensions": "fitness/selling-dimensions.md",
+      "sides": "fitness/sides.json",
+      "fact_categories": "fitness/fact-categories.json",
+      "p0_extra": "fitness/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "parenting",
+      "name": "亲子玩乐",
+      "name_en": "Parent-Child",
+      "selling_dimensions": "parenting/selling-dimensions.md",
+      "sides": "parenting/sides.json",
+      "fact_categories": "parenting/fact-categories.json",
+      "p0_extra": "parenting/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "life_services",
+      "name": "生活服务",
+      "name_en": "Life Services",
+      "selling_dimensions": "life_services/selling-dimensions.md",
+      "sides": "life_services/sides.json",
+      "fact_categories": "life_services/fact-categories.json",
+      "p0_extra": "life_services/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "home_services",
+      "name": "家政家装",
+      "name_en": "Home Services",
+      "selling_dimensions": "home_services/selling-dimensions.md",
+      "sides": "home_services/sides.json",
+      "fact_categories": "home_services/fact-categories.json",
+      "p0_extra": "home_services/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "auto_services",
+      "name": "汽车服务",
+      "name_en": "Auto Services",
+      "selling_dimensions": "auto_services/selling-dimensions.md",
+      "sides": "auto_services/sides.json",
+      "fact_categories": "auto_services/fact-categories.json",
+      "p0_extra": "auto_services/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "pet_services",
+      "name": "宠物服务",
+      "name_en": "Pet Services",
+      "selling_dimensions": "pet_services/selling-dimensions.md",
+      "sides": "pet_services/sides.json",
+      "fact_categories": "pet_services/fact-categories.json",
+      "p0_extra": "pet_services/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "wedding",
+      "name": "婚庆摄影",
+      "name_en": "Wedding & Photography",
+      "selling_dimensions": "wedding/selling-dimensions.md",
+      "sides": "wedding/sides.json",
+      "fact_categories": "wedding/fact-categories.json",
+      "p0_extra": "wedding/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "retail",
+      "name": "门店零售",
+      "name_en": "Retail Store",
+      "selling_dimensions": "retail/selling-dimensions.md",
+      "sides": "retail/sides.json",
+      "fact_categories": "retail/fact-categories.json",
+      "p0_extra": "retail/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "education",
+      "name": "教育培训",
+      "name_en": "Education & Training",
+      "selling_dimensions": "education/selling-dimensions.md",
+      "sides": "education/sides.json",
+      "fact_categories": "education/fact-categories.json",
+      "p0_extra": "education/p0-extra.md",
+      "children": []
     }
   ]
 }

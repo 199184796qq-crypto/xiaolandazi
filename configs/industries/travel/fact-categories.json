@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "categories": [
+    {
+      "value": "ticket",
+      "label": "门票 / 票种",
+      "label_en": "Ticket",
+      "description": "门票类型、成人/儿童票、套票",
+      "group": "套餐信息",
+      "group_en": "Package",
+      "family": "product"
+    },
+    {
+      "value": "route",
+      "label": "线路 / 游玩项目",
+      "label_en": "Route",
+      "description": "游玩线路、项目、景点内容",
+      "group": "套餐信息",
+      "group_en": "Package",
+      "family": "product"
+    },
+    {
+      "value": "opening",
+      "label": "开放时间 / 场次",
+      "label_en": "Opening",
+      "description": "开放时间、场次与入园规则",
+      "group": "套餐信息",
+      "group_en": "Package",
+      "family": "product"
+    },
+    {
+      "value": "transport",
+      "label": "交通 / 到达",
+      "label_en": "Transport",
+      "description": "交通方式、停车、摆渡与到达指引",
+      "group": "套餐信息",
+      "group_en": "Package",
+      "family": "product"
+    },
+    {
+      "value": "location",
+      "label": "门店位置",
+      "label_en": "Location",
+      "description": "门店地址、商圈、地铁口与停车",
+      "group": "门店信息",
+      "group_en": "Store Info",
+      "family": "identity_location"
+    },
+    {
+      "value": "environment",
+      "label": "门店环境",
+      "label_en": "Environment",
+      "description": "装修、氛围、卫生与适合场景",
+      "group": "门店信息",
+      "group_en": "Store Info",
+      "family": "product"
+    },
+    {
+      "value": "service",
+      "label": "服务体验",
+      "label_en": "Service",
+      "description": "服务态度、接待流程与上菜速度",
+      "group": "门店信息",
+      "group_en": "Store Info",
+      "family": "product"
+    },
+    {
+      "value": "reputation",
+      "label": "口碑 / 评价",
+      "label_en": "Reputation",
+      "description": "好评、评分、回头客与口碑",
+      "group": "门店信息",
+      "group_en": "Store Info",
+      "family": "other"
+    },
+    {
+      "value": "brand",
+      "label": "品牌 / 门店主体",
+      "label_en": "Brand",
+      "description": "品牌名称、门店主体与介绍",
+      "group": "门店信息",
+      "group_en": "Store Info",
+      "family": "identity_location"
+    },
+    {
+      "value": "price",
+      "label": "团购价 / 原价 / 价差",
+      "label_en": "Price",
+      "description": "团购价、到店原价与有依据的价差",
+      "group": "价格权益",
+      "group_en": "Price & Rights",
+      "family": "trade"
+    },
+    {
+      "value": "per_capita",
+      "label": "人均消费",
+      "label_en": "Per Capita",
+      "description": "人均价格与划算程度",
+      "group": "价格权益",
+      "group_en": "Price & Rights",
+      "family": "trade"
+    },
+    {
+      "value": "appointment",
+      "label": "预约规则",
+      "label_en": "Appointment",
+      "description": "是否需预约、预约方式与到店安排",
+      "group": "使用规则",
+      "group_en": "Usage Rules",
+      "family": "trade"
+    },
+    {
+      "value": "validity",
+      "label": "有效期",
+      "label_en": "Validity",
+      "description": "券的有效期限与到期条件",
+      "group": "使用规则",
+      "group_en": "Usage Rules",
+      "family": "trade"
+    },
+    {
+      "value": "redemption",
+      "label": "核销方式",
+      "label_en": "Redemption",
+      "description": "到店出示券码、核销流程与附加消费说明",
+      "group": "使用规则",
+      "group_en": "Usage Rules",
+      "family": "fulfillment"
+    },
+    {
+      "value": "audience",
+      "label": "目标人群 / 需求",
+      "label_en": "Audience",
+      "description": "适合的人群、需求与顾虑",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    },
+    {
+      "value": "scenario",
+      "label": "适用场景 / 用途",
+      "label_en": "Scenario",
+      "description": "约会、聚餐、亲子、团建等适用场景",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    },
+    {
+      "value": "other",
+      "label": "其它事实",
+      "label_en": "Other",
+      "description": "暂时不属于其它分类的补充信息",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    }
+  ]
+}
