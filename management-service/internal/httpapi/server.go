@@ -185,8 +185,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/initialize-anchor", s.liveAnchorGenerationInitialize)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/product-category", s.planProductCategoryGet)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/product-category", s.planProductCategorySet)
-	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/industry", s.planIndustryGet)
-	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/industry", s.planIndustrySet)
 	mux.HandleFunc("GET /api/v1/industries", s.listIndustryCatalog)
 	mux.HandleFunc("GET /api/v1/industry-config-packs", s.listIndustryConfigPacks)
 	mux.HandleFunc("GET /api/v1/industry-config-packs/{industryCode}", s.getIndustryConfigPack)

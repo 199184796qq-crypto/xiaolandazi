@@ -9,25 +9,25 @@ import (
 )
 
 func TestResolveIndustryNodeInheritance(t *testing.T) {
-	catalog := industryCatalog{
+	catalog := model.IndustryCatalog{
 		SchemaVersion: 2,
-		Defaults: industryPackPaths{
+		Defaults: model.IndustryPackPaths{
 			SellingDimensions: "common/selling-dimensions.md",
 			Sides:             "common/sides.json",
 		},
-		Nodes: []industryCatalogNode{
+		Nodes: []model.IndustryCatalogNode{
 			{
 				Code: "food",
 				Name: "食品",
-				industryPackPaths: industryPackPaths{
+				IndustryPackPaths: model.IndustryPackPaths{
 					SellingDimensions: "food/selling-dimensions.md",
 					Sides:             "food/sides.json",
 				},
-				Children: []industryCatalogNode{
+				Children: []model.IndustryCatalogNode{
 					{
 						Code: "snack",
 						Name: "休闲零食",
-						industryPackPaths: industryPackPaths{
+						IndustryPackPaths: model.IndustryPackPaths{
 							FactCategories: "food/snack/fact-categories.json",
 						},
 					},
@@ -35,7 +35,7 @@ func TestResolveIndustryNodeInheritance(t *testing.T) {
 			},
 		},
 	}
-	name, paths, ok := resolveIndustryNode(catalog, "snack")
+	name, paths, ok := catalog.Resolve("snack")
 	if !ok {
 		t.Fatal("snack 应能解析到")
 	}
@@ -80,8 +80,7 @@ func TestPackFissionSidesAndMap(t *testing.T) {
 }
 
 func TestLoadIndustryPackRestaurant(t *testing.T) {
-	dir := findIndustriesDir(t)
-	t.Setenv("INDUSTRY_CONFIG_DIR", dir)
+	t.Setenv("INDUSTRY_CONFIG_DIR", findIndustriesDir(t))
 	pack, err := loadIndustryPack("local_service", "restaurant")
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +100,7 @@ func TestLoadIndustryPackRestaurant(t *testing.T) {
 }
 
 func TestLoadIndustryPackFood(t *testing.T) {
-	dir := findIndustriesDir(t)
-	t.Setenv("INDUSTRY_CONFIG_DIR", dir)
+	t.Setenv("INDUSTRY_CONFIG_DIR", findIndustriesDir(t))
 	pack, err := loadIndustryPack("ecommerce", "food")
 	if err != nil {
 		t.Fatal(err)
@@ -112,6 +110,21 @@ func TestLoadIndustryPackFood(t *testing.T) {
 	}
 	if len(pack.FactCategories) != 42 {
 		t.Fatalf("食品事实分类应为 42 个，got %d", len(pack.FactCategories))
+	}
+}
+
+func TestCatalogIndustryOptionsFromFiles(t *testing.T) {
+	t.Setenv("INDUSTRY_CONFIG_DIR", findIndustriesDir(t))
+	if options := model.CatalogIndustryOptions("local_service"); len(options) > 0 {
+		found := false
+		for _, o := range options {
+			if o.Code == "restaurant" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("目录选项应含 restaurant")
+		}
 	}
 }
 
