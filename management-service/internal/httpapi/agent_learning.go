@@ -1060,6 +1060,9 @@ func (s *Server) agentLearningCreateSession(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+	if !agentLearningSourceInPlan(w, r, s.store, tenantID, roomID, input.PlanID, input.SourceRef) {
+		return
+	}
 	if utf8.RuneCountInString(input.Question) > 3000 || utf8.RuneCountInString(input.OriginalReply) > 6000 {
 		writeError(w, http.StatusBadRequest, "学习上下文过长")
 		return
@@ -1153,7 +1156,10 @@ func (s *Server) agentLearningCreateTurn(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if session.Review != nil {
-		memories = interactionlearning.MemoriesForPlan(memories, session.Review.PlanID)
+		if !agentLearningSourceInPlan(w, r, s.store, tenantID, roomID, session.Review.PlanID, session.SourceRef) {
+			return
+		}
+		memories = interactionlearning.GenerationMemories(memories, tenantID, roomID, session.Review.PlanID)
 		// Preserve the original question in storage; attach the observed context
 		// only to the model's correction input.
 		session.Question += "\n现场背景：" + session.Review.Context + "\n待确认原因：" + session.Review.Reason
@@ -1245,6 +1251,14 @@ func (s *Server) agentLearningAdoptSession(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	session, err := s.store.GetAgentLearningSession(r.Context(), tenantID, roomID, sessionID)
+	if err != nil {
+		writeError(w, 404, "学习会话不存在")
+		return
+	}
+	if session.Review != nil && !agentLearningSourceInPlan(w, r, s.store, tenantID, roomID, session.Review.PlanID, session.SourceRef) {
+		return
+	}
 	result, err := s.store.AdoptAgentLearningSession(r.Context(), tenantID, roomID, sessionID, actor.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "采用修正结果失败")
@@ -1262,12 +1276,20 @@ func (s *Server) agentMemoryList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	planID, ok := agentMemoryPlan(w, r, s.store, tenantID, roomID)
+	if !ok {
+		return
+	}
+	if planID == 0 {
+		writeJSON(w, 200, map[string]any{"items": []any{}})
+		return
+	}
 	items, err := s.store.ListActiveAgentMemories(r.Context(), tenantID, roomID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取智能体记忆失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": interactionlearning.GenerationMemories(items, tenantID, roomID, planID)})
 }
 
 func (s *Server) agentMemoryDeactivate(w http.ResponseWriter, r *http.Request) {
@@ -1277,6 +1299,13 @@ func (s *Server) agentMemoryDeactivate(w http.ResponseWriter, r *http.Request) {
 	}
 	memoryID, ok := parsePositivePathID(w, r.PathValue("memoryID"))
 	if !ok {
+		return
+	}
+	planID, ok := agentMemoryPlan(w, r, s.store, tenantID, roomID)
+	if !ok {
+		return
+	}
+	if _, ok := agentMemoryInPlan(w, r, s.store, tenantID, roomID, planID, memoryID); !ok {
 		return
 	}
 	item, err := s.store.DeactivateAgentMemory(r.Context(), tenantID, roomID, memoryID, actor.UserID)
@@ -1300,12 +1329,27 @@ func (s *Server) agentMemoryVersions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	planID, ok := agentMemoryPlan(w, r, s.store, tenantID, roomID)
+	if !ok {
+		return
+	}
+	memory, ok := agentMemoryInPlan(w, r, s.store, tenantID, roomID, planID, memoryID)
+	if !ok {
+		return
+	}
 	items, err := s.store.ListAgentMemoryVersions(r.Context(), tenantID, roomID, memoryID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "智能体记忆不存在")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	scoped := make([]model.AgentMemoryVersion, 0, len(items))
+	for _, version := range items {
+		memory.CurrentVersion = &version
+		if interactionlearning.MemoryInPlan(memory, tenantID, roomID, planID) {
+			scoped = append(scoped, version)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": scoped})
 }
 
 func (s *Server) agentMemoryRollback(w http.ResponseWriter, r *http.Request) {
@@ -1319,6 +1363,31 @@ func (s *Server) agentMemoryRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	versionID, ok := parsePositivePathID(w, r.PathValue("versionID"))
 	if !ok {
+		return
+	}
+	planID, ok := agentMemoryPlan(w, r, s.store, tenantID, roomID)
+	if !ok {
+		return
+	}
+	memory, ok := agentMemoryInPlan(w, r, s.store, tenantID, roomID, planID, memoryID)
+	if !ok {
+		return
+	}
+	versions, err := s.store.ListAgentMemoryVersions(r.Context(), tenantID, roomID, memoryID)
+	if err != nil {
+		writeError(w, 404, "策略版本不存在")
+		return
+	}
+	validVersion := false
+	for _, version := range versions {
+		if version.ID == versionID {
+			memory.CurrentVersion = &version
+			validVersion = interactionlearning.MemoryInPlan(memory, tenantID, roomID, planID)
+			break
+		}
+	}
+	if !validVersion {
+		writeError(w, 404, "当前方案中不存在这个策略版本")
 		return
 	}
 	item, err := s.store.RollbackAgentMemoryVersion(r.Context(), tenantID, roomID, memoryID, versionID, actor.UserID)

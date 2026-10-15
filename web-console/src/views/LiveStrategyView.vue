@@ -12,6 +12,7 @@ import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
+import { memoryInPlan, usePlanAnswerStrategies } from '../planAnswerStrategies'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
@@ -71,7 +72,6 @@ import {
   getLiveAgentPlanFacts,
   getLiveAgentPlanProductLinks,
   getLiveAgentPlanScripts,
-  getAgentMemories,
   getRoomLiveAgentPlans,
   getLiveRuntime,
   setLiveRuntimePlan,
@@ -450,11 +450,6 @@ const mutatingFormalFactId = ref<number | null>(null)
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
 let scriptAnalysisProgressTimer: number | null = null
-const memories = ref<AgentMemoryItem[]>([])
-const interactionMemories = computed(() => memories.value.filter((item) => {
-	const type = String(item.memory_type || '').trim().toLowerCase()
-	return type === 'semantic' || type === 'interaction'
-}))
 const editingMemoryId = ref<number | null>(null)
 const memoryEditSessionId = ref<number | null>(null)
 const memoryEditFeedback = ref('')
@@ -466,6 +461,13 @@ const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
 const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
+const answerStrategyScope = () => ({ tenantId: activeRoom.value?.tenant_id || 0, roomId: activeRoomId.value || 0, planId: currentRoomPlanId.value || 0, actorKey: session.bootstrap ? `${session.bootstrap.actor.tenant_id}:${session.bootstrap.actor.user_id}` : '' })
+const { items: memories, loading: memoriesLoading, error: memoriesError, refresh: refreshMemories } = usePlanAnswerStrategies(answerStrategyScope)
+const interactionMemories = computed(() => memories.value.filter(item => memoryInPlan(item, answerStrategyScope()) && ['semantic', 'interaction'].includes(String(item.memory_type || '').trim().toLowerCase())))
+let memoryEditEpoch = 0
+watch(() => JSON.stringify(answerStrategyScope()), () => {
+  resetMemoryEdit(); memoryMutatingId.value = null; memoryDeleteConfirmId.value = null
+}, { flush: 'sync' })
 const contentPools = useContentPools(currentRoomPlanId, activeRoom)
 const poolStatus = contentPools.status
 const poolError = contentPools.error
@@ -4776,23 +4778,9 @@ async function adoptBenefitCandidate(candidate: LiveAgentPlanBenefitCandidate) {
   }
 }
 
-async function refreshMemories() {
-  const roomId = activeRoomId.value
-  if (!roomId) {
-    memories.value = []
-    return
-  }
-  try {
-    const result = await getAgentMemories(roomId)
-    memories.value = (result.items || []).filter((item) => item.status === 'active')
-  } catch (err) {
-    if (!settingsError.value) {
-      settingsError.value = err instanceof Error ? err.message : '读取学习记忆失败'
-    }
-  }
-}
-
 function resetMemoryEdit() {
+  memoryEditEpoch++
+  memoryMutatingId.value = null
   editingMemoryId.value = null
   memoryEditSessionId.value = null
   memoryEditFeedback.value = ''
@@ -4801,6 +4789,8 @@ function resetMemoryEdit() {
 }
 
 function beginMemoryEdit(item: AgentMemoryItem) {
+  if (!memoryInPlan(item, answerStrategyScope())) return
+  resetMemoryEdit()
   memoryDeleteConfirmId.value = null
   editingMemoryId.value = item.id
   memoryEditSessionId.value = null
@@ -4811,65 +4801,79 @@ function beginMemoryEdit(item: AgentMemoryItem) {
 
 async function previewMemoryEdit(item: AgentMemoryItem) {
   const roomId = activeRoomId.value
+  const scope = answerStrategyScope(), token = memoryEditEpoch
+  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope()) && editingMemoryId.value === item.id
   const feedback = memoryEditFeedback.value.trim()
-  if (!roomId || !feedback || memoryMutatingId.value) return
+  if (!roomId || !feedback || memoryMutatingId.value || !memoryInPlan(item, scope)) return
   memoryMutatingId.value = item.id
   memoryEditError.value = ''
   try {
     let sessionId = memoryEditSessionId.value
     if (!sessionId) {
       const created = await createAgentLearningSession(roomId, {
+        plan_id: scope.planId,
         source_type: 'memory_correction',
         source_ref: 'agent_memory:' + item.id,
         original_reply: item.current_version?.content_text || '',
         target: item.target,
       })
+      if (!current()) return
       sessionId = created.id
       memoryEditSessionId.value = sessionId
     }
     const output = await createAgentLearningTurn(roomId, sessionId, feedback)
+    if (!current()) return
     memoryEditPreview.value = output.result.result_text || ''
   } catch (err) {
-    memoryEditError.value = err instanceof Error ? err.message : '生成修改预览失败'
+    if (current()) memoryEditError.value = err instanceof Error ? err.message : '生成修改预览失败'
   } finally {
-    memoryMutatingId.value = null
+    if (current()) memoryMutatingId.value = null
   }
 }
 
 async function adoptMemoryEdit(item: AgentMemoryItem) {
   const roomId = activeRoomId.value
+  const scope = answerStrategyScope(), token = memoryEditEpoch
+  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope())
   const sessionId = memoryEditSessionId.value
-  if (!roomId || !sessionId || !memoryEditPreview.value || memoryMutatingId.value) return
+  if (!roomId || !sessionId || !memoryEditPreview.value || memoryMutatingId.value || !memoryInPlan(item, scope)) return
   memoryMutatingId.value = item.id
   memoryEditError.value = ''
   try {
     await adoptAgentLearningSession(roomId, sessionId)
+    if (!current()) return
     await refreshMemories()
+    if (!current()) return
+    memoryMutatingId.value = null
     resetMemoryEdit()
   } catch (err) {
-    memoryEditError.value = err instanceof Error ? err.message : '采用修改失败'
+    if (current()) memoryEditError.value = err instanceof Error ? err.message : '采用修改失败'
   } finally {
-    memoryMutatingId.value = null
+    if (current()) memoryMutatingId.value = null
   }
 }
 
 async function deleteMemory(item: AgentMemoryItem) {
   const roomId = activeRoomId.value
-  if (!roomId || memoryMutatingId.value) return
+  const scope = answerStrategyScope(), token = memoryEditEpoch
+  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope())
+  if (!roomId || memoryMutatingId.value || !memoryInPlan(item, scope)) return
   if (memoryDeleteConfirmId.value !== item.id) {
     memoryDeleteConfirmId.value = item.id
     return
   }
   memoryMutatingId.value = item.id
   try {
-    await deactivateAgentMemory(roomId, item.id)
+    await deactivateAgentMemory(roomId, item.id, scope.planId)
+    if (!current()) return
+    memoryMutatingId.value = null
     if (editingMemoryId.value === item.id) resetMemoryEdit()
     memoryDeleteConfirmId.value = null
     await refreshMemories()
   } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '删除互动策略失败'
+    if (current()) settingsError.value = err instanceof Error ? err.message : '删除互动策略失败'
   } finally {
-    memoryMutatingId.value = null
+    if (current()) memoryMutatingId.value = null
   }
 }
 
@@ -6039,6 +6043,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  memoryEditEpoch++
   document.removeEventListener('click', dismissPlanActionsMenu, true)
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   window.removeEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
@@ -6745,7 +6750,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
-          <AnswerStrategyPanel :items="interactionMemories" :scope-key="`${activeRoom?.tenant_id}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
+          <AnswerStrategyPanel :items="interactionMemories" :loading="memoriesLoading" :error="memoriesError" :scope-key="`${activeRoom?.tenant_id}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
             <template #editor="{ item }">
               <div v-if="editingMemoryId === item.id" class="strategy-memory-edit-panel">
                 <label>

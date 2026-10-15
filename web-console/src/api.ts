@@ -2228,6 +2228,7 @@ export function chatLiveRoomPolicyAgent(
 export function createAgentLearningSession(
   roomId: number,
   payload: {
+    plan_id?: number
     source_type?: string
     source_ref?: string
     question?: string
@@ -2322,15 +2323,15 @@ export function adoptAgentLearningSession(roomId: number, sessionId: number) {
   )
 }
 
-export function getAgentMemories(roomId: number) {
+export function getAgentMemories(roomId: number, planId?: number) {
   return request<{ items: AgentMemoryItem[] }>(
-    '/api/v1/live/rooms/' + roomId + '/agent-memories',
+    '/api/v1/live/rooms/' + roomId + '/agent-memories' + (planId ? '?plan_id=' + planId : ''),
   )
 }
 
-export function deactivateAgentMemory(roomId: number, memoryId: number) {
+export function deactivateAgentMemory(roomId: number, memoryId: number, planId?: number) {
   return request<AgentMemoryItem>(
-    '/api/v1/live/rooms/' + roomId + '/agent-memories/' + memoryId + '/deactivate',
+    '/api/v1/live/rooms/' + roomId + '/agent-memories/' + memoryId + '/deactivate' + (planId ? '?plan_id=' + planId : ''),
     { method: 'POST' },
   )
 }
