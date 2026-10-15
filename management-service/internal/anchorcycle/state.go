@@ -223,6 +223,8 @@ type State struct {
 	WheelID                      int64                          `json:"wheel_asset_id"`
 	StyleMD                      string                         `json:"style_md"`
 	Facts                        string                         `json:"facts"`
+	FissionSides                 []string                       `json:"fission_sides,omitempty"`
+	FactSideMap                  map[string][]string            `json:"fact_side_map,omitempty"`
 	BaselineJSON                 string                         `json:"baseline_json"`
 	Attempts                     []Candidate                    `json:"attempts"`
 	Accepted                     []Segment                      `json:"accepted"`

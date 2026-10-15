@@ -244,6 +244,23 @@ func loadCategoryDetectionPrompt() (string, string, error) {
 	)
 }
 
+// injectIndustrySellingDimensions 把行业配置包的挖掘维度 md 注入 {{CATEGORY_MUST_CHECK}} 占位。
+// sellingDimensionsMD 来自行业四件套的 selling-dimensions.md（文件即源），industryName 用于
+// 显式标注本方案行业。占位不存在或 md 为空时原样返回。
+func injectIndustrySellingDimensions(promptMD, industryName, sellingDimensionsMD string) string {
+	if !strings.Contains(promptMD, "{{CATEGORY_MUST_CHECK}}") {
+		return promptMD
+	}
+	block := strings.TrimSpace(sellingDimensionsMD)
+	if block == "" {
+		return promptMD
+	}
+	if name := strings.TrimSpace(industryName); name != "" {
+		block = "本方案行业已判定为「" + name + "」，必须优先套用下面的核心必查维度，不得遗漏或合并。\n\n" + block
+	}
+	return strings.ReplaceAll(promptMD, "{{CATEGORY_MUST_CHECK}}", block)
+}
+
 // injectCategorySellingDimensions 把 {{CATEGORY_MUST_CHECK}} 占位替换为品类维度表。
 // category 为已判定（自动或人工）的品类 code；非空时在维度表前显式标注本方案品类，
 // 让模型优先套用对应品类维度。母版没有占位（例如用户手动提交的提示词）时原样返回。

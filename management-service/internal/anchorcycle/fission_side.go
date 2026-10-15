@@ -101,6 +101,7 @@ func CategoryFromFactText(text string) string {
 // 这是「侧面筛事实」的落地：每条事实从 Text 提取 category，category 经映射表
 // 得到侧面，只保留属于当前侧面的 + 通用事实（other/未知分类）。正文生成只拿到
 // 当前侧面的素材，信息结构随之拉开（实测：同卖点×角度 7 侧面 = 7 种话术结构）。
+// 映射表优先用行业配置（State.FactSideMap），未配置时回退默认 factCategorySides。
 //
 // 兜底：无侧面（旧状态）或过滤后一条不剩（该侧面无任何事实）时回退全量，避免空素材。
 func (s *State) HookFactsForSide() []HookFact {
@@ -110,10 +111,22 @@ func (s *State) HookFactsForSide() []HookFact {
 		return all
 	}
 	sideName := FissionSideName(side)
+	mapping := s.FactSideMap
+	if len(mapping) == 0 {
+		mapping = factCategorySides
+	}
 	out := make([]HookFact, 0, len(all))
 	for _, f := range all {
-		if FactMatchesSide(CategoryFromFactText(f.Data), sideName) {
-			out = append(out, f)
+		sides, ok := mapping[strings.ToLower(strings.TrimSpace(CategoryFromFactText(f.Data)))]
+		if !ok || len(sides) == 0 {
+			out = append(out, f) // 通用事实，不限侧面
+			continue
+		}
+		for _, sn := range sides {
+			if sn == sideName {
+				out = append(out, f)
+				break
+			}
 		}
 	}
 	if len(out) == 0 {
