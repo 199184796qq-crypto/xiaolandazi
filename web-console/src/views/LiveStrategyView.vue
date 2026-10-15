@@ -6168,7 +6168,29 @@ onBeforeUnmount(() => {
             :fact-risk-count="factRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
             :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
             @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
-          />
+          >
+            <template #actions>
+              <AnchorControlBar
+                mode="initialize" compact
+                :initializing="anchorInitializing"
+                :initialize-progress="anchorInitializationProgress"
+                :initialize-label="anchorInitializationStage"
+                :saving="fullShowVersionSaving || savePlanOneClickBusy"
+                :save-label="savePlanOneClickStage"
+                :initialize-disabled="anchorInitializing || !currentPlan"
+                :save-disabled="savePlanOneClickDisabled"
+                :save-hint="savePlanOneClickHint"
+                @initialize="initializeAnchorGeneration"
+                @save="savePlanOneClick"
+              />
+            </template>
+            <template #feedback>
+              <div v-if="anchorInitializationError || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
+                <div v-if="anchorInitializationError" class="strategy-script-notice strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
+                <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">{{ anchorInitializationNotice }}</div>
+              </div>
+            </template>
+          </PlanConfigurationNavigation>
 
           <div class="strategy-workflow-content">
         <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
@@ -7424,27 +7446,6 @@ onBeforeUnmount(() => {
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
-            <header class="strategy-agent-control-header">
-              <AnchorControlBar
-                mode="initialize" compact
-                :initializing="anchorInitializing"
-                :initialize-progress="anchorInitializationProgress"
-                :initialize-label="anchorInitializationStage"
-                :saving="fullShowVersionSaving || savePlanOneClickBusy"
-                :save-label="savePlanOneClickStage"
-                :initialize-disabled="anchorInitializing || !currentPlan"
-                :save-disabled="savePlanOneClickDisabled"
-                :save-hint="savePlanOneClickHint"
-                @initialize="initializeAnchorGeneration"
-                @save="savePlanOneClick"
-              />
-            </header>
-            <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
-              <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
-            </div>
-            <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">
-              {{ anchorInitializationNotice }}
-            </div>
             <div class="strategy-content-mode-cards">
               <button v-for="(mode, index) in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
                 <i>{{ String(index + 1).padStart(2, '0') }}</i>
@@ -11032,7 +11033,7 @@ onBeforeUnmount(() => {
 @media(max-width:1480px){.reusable-anchor-style-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.reusable-anchor-style-sample-compose-actions{align-items:flex-start;flex-direction:column}.reusable-anchor-style-sample-tip{width:100%;box-sizing:border-box}}
 @media(max-width:820px){.reusable-anchor-style-tabs{grid-template-columns:1fr}.reusable-anchor-style-tabs .anchor-style-tab-card{min-height:72px}.reusable-anchor-style-samples-panel{padding:24px}.reusable-anchor-style-samples-hero{align-items:flex-start}.reusable-anchor-style-samples-hero-icon{width:64px;height:64px}.reusable-anchor-style-samples-hero strong{font-size:24px}.reusable-anchor-style-samples-hero small{font-size:15px}.reusable-anchor-style-compose-field input{padding-left:78px!important}.reusable-anchor-style-compose-field textarea{padding-left:78px!important}.reusable-anchor-style-compose-icon{left:13px;width:50px;height:50px}.reusable-anchor-style-sample-compose-buttons{width:100%}.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{flex:1;padding:0 18px}}
 .fact-risk-count{display:inline-block;padding:3px 7px;border-radius:10px;background:#ffe7ec;color:#c21e39;font-size:13px;font-style:normal;font-weight:900}
-.strategy-content-mode-workflow>header.strategy-agent-control-header{display:block}.strategy-content-mode-init-feedback{display:grid;gap:7px;min-width:0}
+.strategy-navigation-init-feedback{display:grid;gap:8px;min-width:0;margin-top:12px}.strategy-navigation-init-feedback>div{margin:0;font-size:16px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-line}
 .strategy-content-mode-dashboard-actions{grid-template-columns:minmax(190px,220px) minmax(210px,240px)!important;justify-content:end}
 .strategy-content-mode-cards>button.active{border-color:#36b885;background:linear-gradient(135deg,#28ae78 0%,#35ba83 58%,#4bc795 100%);box-shadow:0 15px 34px rgba(35,151,104,.24),inset 0 1px 0 rgba(255,255,255,.3)}
 .strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.38);background:rgba(255,255,255,.94);color:#16815a}
