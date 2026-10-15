@@ -50,6 +50,123 @@ func TestFissionSidesAreProductAgnostic(t *testing.T) {
 	}
 }
 
+func TestFactSidesMapping(t *testing.T) {
+	cases := []struct {
+		category string
+		want     []string
+	}{
+		{"flavor", []string{"对比参照", "使用场景"}},
+		{"craft", []string{"过程细节"}},
+		{"price", []string{"利益算账", "对比参照"}},
+		{"usage", []string{"使用方式"}},
+		{"other", nil},
+		{"", nil},
+		{"UNKNOWN", nil},
+	}
+	for _, c := range cases {
+		got := FactSides(c.category)
+		if len(got) != len(c.want) {
+			t.Fatalf("FactSides(%q) len=%d want %d (%v)", c.category, len(got), len(c.want), got)
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Fatalf("FactSides(%q)[%d]=%q want %q", c.category, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestFactMatchesSide(t *testing.T) {
+	cases := []struct {
+		category, side string
+		want           bool
+	}{
+		{"craft", "过程细节", true},
+		{"craft", "利益算账", false},
+		{"flavor", "对比参照", true},
+		{"flavor", "使用场景", true},
+		{"flavor", "人群痛点", false},
+		{"other", "使用方式", true}, // 通用事实任何侧面都算匹配
+		{"", "使用方式", true},      // 空分类同通用
+		{"unknown", "品质来源", true},
+	}
+	for _, c := range cases {
+		if got := FactMatchesSide(c.category, c.side); got != c.want {
+			t.Fatalf("FactMatchesSide(%q,%q)=%v want %v", c.category, c.side, got, c.want)
+		}
+	}
+}
+
+func TestCategoryFromFactText(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{"- [product/常温保存期限] 常温保存期限为：抽真空6天，不抽真空3天。", "product"},
+		{"- [fulfillment/发货时效] 一般是下单后第二天上午发货。；安全改写=咱们", "fulfillment"},
+		{"- [other/每日现做现发] 每天新鲜制作，现卤现炸。", "other"},
+		{"- [有效福利] 福利=1:current-benefit02；链接=1、2、3", ""}, // 无 / 标记
+		{"开袋可以直接吃。", ""},                                  // 无标记
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := CategoryFromFactText(c.text); got != c.want {
+			t.Fatalf("CategoryFromFactText(%q)=%q want %q", c.text, got, c.want)
+		}
+	}
+}
+
+func TestFissionSideName(t *testing.T) {
+	cases := []struct {
+		side string
+		want string
+	}{
+		{"使用场景：什么场合、谁用得上", "使用场景"},
+		{"过程细节：怎么做出来", "过程细节"},
+		{"使用方式", "使用方式"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := FissionSideName(c.side); got != c.want {
+			t.Fatalf("FissionSideName(%q)=%q want %q", c.side, got, c.want)
+		}
+	}
+}
+
+func TestHookFactsForSideFiltersBySide(t *testing.T) {
+	s := &State{Config: Config{Rolling: true}}
+	s.Queue = []Task{{Key: "K", SellingPoint: "S", Angle: "A"}}
+	s.TaskIndex = 0
+	s.Facts = "- [price/线下门店价格] 线下门店价格为95.6元。\n" +
+		"- [craft/工艺] 老卤汤慢炖4小时。\n" +
+		"- [other/适用场景] 当零食直接吃和搭配主食当下酒菜都适合。"
+
+	countData := func() map[string]bool {
+		m := map[string]bool{}
+		for _, f := range s.HookFactsForSide() {
+			m[CategoryFromFactText(f.Data)] = true
+		}
+		return m
+	}
+
+	// 侧面 3 = 利益算账：price 匹配，craft 不匹配，other 通用兜底
+	s.Used = map[string]Use{"K": {Count: 3}}
+	got := countData()
+	if !got["price"] || !got["other"] {
+		t.Fatalf("利益算账侧面应含 price+other，got %v", got)
+	}
+	if got["craft"] {
+		t.Fatalf("利益算账侧面不应含 craft，got %v", got)
+	}
+
+	// 侧面 0 = 使用场景：price/craft 都不匹配，只有 other 通用兜底
+	s.Used = map[string]Use{"K": {Count: 0}}
+	got = countData()
+	if !got["other"] || got["price"] || got["craft"] {
+		t.Fatalf("使用场景侧面应只含 other，got %v", got)
+	}
+}
+
 func containsStr(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {
