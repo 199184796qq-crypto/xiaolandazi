@@ -327,6 +327,15 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
+	// 业务模式快照：保存方案时把方案当前的业务模式 + 该模式下的行业选择存进版本，
+	// 只用于版本记录/切换时的口径一致（复用），不参与话术生成——生成链路始终读
+	// 方案当前的业务设置（loadIndustryPackForPlan），不受版本快照影响。
+	if settings, bizErr := s.store.GetPlanBusinessSettings(r.Context(), tenantID, planID); bizErr == nil {
+		input.GenerationContext["plan_business"] = map[string]any{
+			"biz_domain": settings.BizDomain,
+			"industry":   strings.TrimSpace(settings.Industries[settings.BizDomain]),
+		}
+	}
 	if isRealtimeScheme(input.GenerationContext) {
 		// 【事实驱动新链路】不再固定「内容池文案 + 角度钩子」中间层，改为：
 		// 正式事实包(derived_safety) + 卖点轮盘×角度(含 tier) + 商品讲解范围(ProductFocus)。
