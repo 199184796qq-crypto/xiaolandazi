@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
@@ -62,6 +63,13 @@ func (s *Server) runFactGapCheck(ctx context.Context, tenantID, planID int64, fa
 	prompt, _, err := loadFactGapChecklistPrompt()
 	if err != nil {
 		return "", err
+	}
+	// 行业优先：方案在「业务模式」选了行业，就把行业四件套的挖掘维度注入清单母版
+	// 作为行业必查层；未选行业（或综合/其他）时占位置空，清单保持原有两层行为。
+	if pack, packErr := s.loadIndustryPackForPlan(ctx, tenantID, planID); packErr == nil && pack != nil {
+		prompt = injectIndustryFactChecklist(prompt, pack.IndustryName, pack.SellingDimensions)
+	} else {
+		prompt = strings.ReplaceAll(prompt, "{{INDUSTRY_MUST_CHECK}}", "")
 	}
 	settings, err := s.store.AnchorGenerationSettings(ctx)
 	if err != nil {
