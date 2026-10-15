@@ -474,6 +474,14 @@ const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
 const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => activeRoom.value?.tenant_id))
+// 资料补全页「所属行业」与业务模式联动：只读展示当前方案已选行业名称。
+const supplementIndustryName = computed(() => {
+  const domain = planBusinessMode.value.value
+  if (!domain) return ''
+  const code = planBusinessMode.industries.value[domain]
+  if (!code) return ''
+  return planBusinessMode.industryOptions.value[domain].find((item) => item.code === code)?.label || code
+})
 const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id || 0)
 const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
 const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
@@ -6249,7 +6257,7 @@ onBeforeUnmount(() => {
         </div>
 
         <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
-          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" @updated="onInteractionFactsUpdated" />
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
         </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">

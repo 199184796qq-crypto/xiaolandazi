@@ -261,6 +261,23 @@ func injectIndustrySellingDimensions(promptMD, industryName, sellingDimensionsMD
 	return strings.ReplaceAll(promptMD, "{{CATEGORY_MUST_CHECK}}", block)
 }
 
+// injectIndustryFactChecklist 把行业配置包的挖掘维度注入清单挖掘母版的
+// {{INDUSTRY_MUST_CHECK}} 占位，作为「行业必查层」。与卖点挖掘的
+// injectIndustrySellingDimensions 不同：这里无论有没有行业包都要消掉占位——
+// 有包时注入带标题的行业维度块，无包时替换为空串，占位原文不能漏进提示词。
+func injectIndustryFactChecklist(promptMD, industryName, sellingDimensionsMD string) string {
+	block := strings.TrimSpace(sellingDimensionsMD)
+	if block == "" {
+		return strings.ReplaceAll(promptMD, "{{INDUSTRY_MUST_CHECK}}", "")
+	}
+	if name := strings.TrimSpace(industryName); name != "" {
+		block = "### 三、行业必查层（本方案行业已判定为「" + name + "」，必须逐项核对，不得遗漏或合并）\n\n" + block
+	} else {
+		block = "### 三、行业必查层（必须逐项核对，不得遗漏或合并）\n\n" + block
+	}
+	return strings.ReplaceAll(promptMD, "{{INDUSTRY_MUST_CHECK}}", block)
+}
+
 // injectCategorySellingDimensions 把 {{CATEGORY_MUST_CHECK}} 占位替换为品类维度表。
 // category 为已判定（自动或人工）的品类 code；非空时在维度表前显式标注本方案品类，
 // 让模型优先套用对应品类维度。母版没有占位（例如用户手动提交的提示词）时原样返回。

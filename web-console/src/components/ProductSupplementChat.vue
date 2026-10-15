@@ -4,16 +4,16 @@ import { session } from '../session'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useProductSupplementChat } from '../productSupplementChat'
 import { factCategoryDefinition, loadFactCategories } from '../factCategories'
-import { confirmAnchorStyleSellingPointWheel, getAnchorStyleWorkbenchContext, getPlanProductCategory, setPlanProductCategory, type FactGapItem } from '../api'
+import { confirmAnchorStyleSellingPointWheel, getAnchorStyleWorkbenchContext, type FactGapItem } from '../api'
 import { useProductSupplementGaps } from '../productSupplementGaps'
-import { PRODUCT_CATEGORIES, type AnchorStyleSellingPointWheelItem, type SpeechMinerFactDraft, type LiveAgentPlanProductLink } from '../types'
+import { type AnchorStyleSellingPointWheelItem, type SpeechMinerFactDraft, type LiveAgentPlanProductLink } from '../types'
 import FactCategoryBadge from './FactCategoryBadge.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
 import documentsIllustration from '../assets/product-supplement-documents.svg'
 import assistantAvatar from '../assets/product-supplement-assistant.svg'
 
-const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; productLinks?: LiveAgentPlanProductLink[] }>()
+const props = defineProps<{ planId: number; tenantId?: number; roomId?: number; productLinks?: LiveAgentPlanProductLink[]; industryName?: string }>()
 const emit = defineEmits<{ updated: [scope: { planId: number; tenantId: number; roomId: number }] }>()
 const currentScope = () => ({
   planId: props.planId, tenantId: props.tenantId, roomId: props.roomId,
@@ -95,39 +95,9 @@ function productLinkLabel(link: LiveAgentPlanProductLink) {
 }
 
 
-// 方案级商品品类：系统可自动判定，也可手动覆盖；变化后重新初始化卖点才生效。
-const category = ref('')
-const categoryLoading = ref(false)
-const categorySaving = ref(false)
-const categoryNotice = ref('')
-async function loadCategory() {
-  if (props.planId <= 0) return
-  categoryLoading.value = true; categoryNotice.value = ''
-  try {
-    const result = await getPlanProductCategory(props.planId)
-    category.value = result.category || ''
-  } catch {
-    category.value = ''
-  } finally {
-    categoryLoading.value = false
-  }
-}
-async function changeCategory(event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  if (value === category.value) return
-  categorySaving.value = true; categoryNotice.value = ''
-  try {
-    await setPlanProductCategory(props.planId, value)
-    category.value = value
-    categoryNotice.value = value ? '已保存；重新初始化卖点后按所选行业挖掘' : '已清除；将回到自动判定'
-  } catch (cause) {
-    (event.target as HTMLSelectElement).value = category.value
-    categoryNotice.value = cause instanceof Error ? cause.message : '行业保存失败'
-  } finally {
-    categorySaving.value = false
-  }
-}
-watch(() => props.planId, () => { void loadCategory() }, { immediate: true })
+// 所属行业与方案「业务模式」联动：这里只展示当前方案已选行业名称，选择与修改都在业务模式面板完成。
+
+
 
 // 卖点分级确认：加载已生成的卖点轮盘，按「核心/次级/信任福利」调整后确认保存。
 interface WheelConfirmState { assetId: number; points: AnchorStyleSellingPointWheelItem[]; raw: Record<string, unknown> }
@@ -224,13 +194,10 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
       <aside class="supplement-gap-list" aria-label="补全清单">
         <header class="supplement-gap-list-head">
           <div class="supplement-category">
-            <label for="product-category">所属行业</label>
-            <select id="product-category" :value="category" :disabled="categoryLoading || categorySaving" @change="changeCategory">
-              <option value="">{{ categoryLoading ? '读取中…' : '自动判定' }}</option>
-              <option v-for="c in PRODUCT_CATEGORIES" :key="c.code" :value="c.code">{{ c.label }}</option>
-            </select>
+            <label>所属行业</label>
+            <span class="supplement-industry-value" :class="{ 'is-empty': !industryName }">{{ industryName || '未选择行业' }}</span>
           </div>
-          <p v-if="categorySaving || categoryNotice" class="supplement-category-state" role="status">{{ categorySaving ? '保存中…' : categoryNotice }}</p>
+          <p v-if="!industryName" class="supplement-category-state" role="status">在「业务模式」中选择行业后，这里自动同步</p>
           <div class="supplement-link-toolbar">
             <div class="supplement-link-field">
               <label for="supplement-product-link">链接选择</label>
@@ -382,6 +349,8 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
 .supplement-category label,.supplement-link-field label{flex:0 0 auto;font-size:16px;font-weight:800;color:#4a5678}
 .supplement-category select,.supplement-link-field select{flex:1;box-sizing:border-box;min-width:0;width:100%;min-height:44px;padding:8px 10px;border:1px solid #d8dff0;border-radius:9px;background:#fff;color:#263752;font:inherit;font-size:16px;cursor:pointer}
 .supplement-category select:disabled,.supplement-link-field select:disabled{opacity:.6;cursor:wait}
+.supplement-industry-value{flex:1;display:inline-flex;align-items:center;box-sizing:border-box;min-height:44px;min-width:0;padding:8px 12px;border:1px solid #e3e7fb;border-radius:9px;background:#f6f7ff;color:#3b4a6d;font-size:16px;font-weight:650;line-height:1.5;overflow-wrap:anywhere}
+.supplement-industry-value.is-empty{color:#93a0bb;font-weight:500;background:#fbfcff;border-style:dashed}
 .supplement-category-state{margin:0;font-size:16px;line-height:1.6;color:#7768da;overflow-wrap:anywhere}
 .supplement-link-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .supplement-gap-description{color:#8490ac;font-size:16px;line-height:1.8}
