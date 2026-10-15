@@ -4,9 +4,9 @@ import { session } from '../session'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useProductSupplementChat } from '../productSupplementChat'
 import { factCategoryDefinition, loadFactCategories } from '../factCategories'
-import { getPlanProductCategory, setPlanProductCategory, type FactGapItem } from '../api'
+import { confirmAnchorStyleSellingPointWheel, getAnchorStyleWorkbenchContext, getPlanProductCategory, setPlanProductCategory, type FactGapItem } from '../api'
 import { useProductSupplementGaps } from '../productSupplementGaps'
-import { PRODUCT_CATEGORIES, type SpeechMinerFactDraft } from '../types'
+import { PRODUCT_CATEGORIES, type AnchorStyleSellingPointWheelItem, type SpeechMinerFactDraft } from '../types'
 import FactCategoryBadge from './FactCategoryBadge.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
@@ -116,6 +116,53 @@ async function changeCategory(event: Event) {
 }
 watch(() => props.planId, () => { void loadCategory() }, { immediate: true })
 
+// 卖点分级确认：加载已生成的卖点轮盘，按「核心/次级/信任福利」调整后确认保存。
+interface WheelConfirmState { assetId: number; points: AnchorStyleSellingPointWheelItem[]; raw: Record<string, unknown> }
+const wheelConfirm = ref<WheelConfirmState | null>(null)
+const wheelLoading = ref(false)
+const wheelSaving = ref(false)
+const wheelNotice = ref('')
+const wheelTierOptions = [
+  { value: 'core', label: '核心主打' },
+  { value: 'secondary', label: '次级' },
+  { value: 'trust', label: '信任福利' },
+] as const
+async function loadWheelConfirm() {
+  if (props.planId <= 0) return
+  wheelLoading.value = true; wheelNotice.value = ''
+  try {
+    const context = await getAnchorStyleWorkbenchContext(props.planId, props.tenantId)
+    const saved = context.saved_selling_point_wheel
+    if (!saved?.wheel_json) { wheelConfirm.value = null; return }
+    const doc = JSON.parse(saved.wheel_json) as { 卖点列表?: AnchorStyleSellingPointWheelItem[] }
+    wheelConfirm.value = { assetId: saved.asset_id, points: Array.isArray(doc.卖点列表) ? doc.卖点列表 : [], raw: doc as unknown as Record<string, unknown> }
+  } catch {
+    wheelConfirm.value = null
+  } finally {
+    wheelLoading.value = false
+  }
+}
+function changeWheelTier(index: number, tier: string) {
+  const point = wheelConfirm.value?.points[index]
+  if (!point) return
+  if (tier === 'core' || tier === 'secondary' || tier === 'trust') point.tier = tier
+  else delete point.tier
+}
+async function saveWheelConfirm() {
+  if (!wheelConfirm.value) return
+  wheelSaving.value = true; wheelNotice.value = ''
+  try {
+    const doc = { ...wheelConfirm.value.raw, 卖点列表: wheelConfirm.value.points }
+    await confirmAnchorStyleSellingPointWheel(props.planId, wheelConfirm.value.assetId, { tenant_id: props.tenantId, wheel_json: JSON.stringify(doc) })
+    wheelNotice.value = '卖点分级已保存'
+  } catch (cause) {
+    wheelNotice.value = cause instanceof Error ? cause.message : '卖点分级保存失败'
+  } finally {
+    wheelSaving.value = false
+  }
+}
+watch(() => props.planId, () => { void loadWheelConfirm() }, { immediate: true })
+
 async function openGap(gap: FactGapItem) {
   if (!ready.value || busy.value || importingFile.value) return
   examplesOpen.value = false
@@ -174,6 +221,23 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
           </select>
           <span v-if="categorySaving" class="supplement-category-state">保存中…</span>
           <span v-else-if="categoryNotice" class="supplement-category-state">{{ categoryNotice }}</span>
+        </div>
+        <div v-if="wheelConfirm && wheelConfirm.points.length" class="supplement-wheel-confirm">
+          <div class="supplement-wheel-head">
+            <strong>卖点分级确认 <span>{{ wheelConfirm.points.length }} 个卖点</span></strong>
+            <small>程序按「差异化 &gt; 价格 &gt; 数字背书 &gt; 品质来源」初分核心，活动/售后/物流归信任福利；调整后点保存。</small>
+          </div>
+          <div v-for="(point, index) in wheelConfirm.points" :key="point.卖点名 + ':' + index" class="supplement-wheel-row">
+            <span class="supplement-wheel-name">{{ point.卖点名 }}</span>
+            <select :value="point.tier || ''" :disabled="wheelSaving" @change="changeWheelTier(index, ($event.target as HTMLSelectElement).value)">
+              <option value="">未分级</option>
+              <option v-for="opt in wheelTierOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            </select>
+          </div>
+          <div class="supplement-wheel-actions">
+            <span v-if="wheelNotice">{{ wheelNotice }}</span>
+            <button type="button" :disabled="wheelSaving" @click="saveWheelConfirm">{{ wheelSaving ? '保存中…' : '保存卖点分级' }}</button>
+          </div>
         </div>
         <div v-if="gapsLoading" class="supplement-gap-state">正在核对商品资料…</div>
         <div v-else-if="gapsError" class="supplement-gap-state is-error" role="alert">{{ gapsError }}</div>
@@ -298,6 +362,15 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
 .supplement-category select{flex:1;min-width:0;padding:8px 10px;border:1px solid #d8dff0;border-radius:9px;background:#fff;color:#263752;font:inherit;font-size:14px;cursor:pointer}
 .supplement-category select:disabled{opacity:.6;cursor:wait}
 .supplement-category-state{flex:0 0 auto;font-size:12px;color:#7768da}
+.supplement-wheel-confirm{display:grid;gap:7px;padding:14px 18px;border-bottom:1px solid #e9edfc;background:#fbfaff}
+.supplement-wheel-head{display:grid;gap:3px;margin-bottom:3px}.supplement-wheel-head strong{display:flex;align-items:baseline;gap:8px;color:#4a3a78;font-size:15px}.supplement-wheel-head strong span{font-size:11px;color:#9a8fc0;font-weight:500}.supplement-wheel-head small{color:#8a80a8;font-size:12px;line-height:1.6}
+.supplement-wheel-row{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;background:#fff}
+.supplement-wheel-name{flex:1;min-width:0;color:#35425c;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.supplement-wheel-row select{flex:0 0 96px;width:96px;padding:5px 7px;border:1px solid #d8dff0;border-radius:8px;font-size:12px;color:#263752;background:#fff}
+.supplement-wheel-actions{display:flex;align-items:center;gap:10px;margin-top:4px}
+.supplement-wheel-actions span{font-size:12px;color:#7768da}
+.supplement-wheel-actions button{margin-left:auto;border:0;border-radius:8px;padding:7px 12px;background:#7b67f6;color:#fff;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.supplement-wheel-actions button:disabled{opacity:.55;cursor:wait}
 .supplement-gap-state{flex:1;padding:28px 24px;color:#8490ac;font-size:14px;line-height:1.8}.supplement-gap-state.is-error{color:#ad4256}.supplement-gap-empty{display:grid;align-content:center;text-align:center}.supplement-gap-empty p{margin:0}
 .supplement-gap-cards{flex:1;min-height:0;padding:18px;display:grid;align-content:start;gap:14px;max-height:calc(var(--supplement-chat-height) + 66px);overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain}.supplement-gap-card{min-width:0;border:1px solid #e8ecfa;border-radius:15px;background:#fff;padding:17px 18px;overflow-wrap:anywhere}.supplement-gap-card-head{display:flex;align-items:center;gap:10px}.supplement-gap-level{flex:0 0 auto;padding:4px 9px;border-radius:7px;font-size:13px;font-weight:700}.supplement-gap-level.is-missing{background:#fff0d8;color:#c06f0a}.supplement-gap-level.is-extend{background:#e2f0ff;color:#2475ef}.supplement-gap-card-head strong{font-size:17px;color:#263752}.supplement-gap-missing{margin:12px 0 6px;font-size:15px;color:#556383;font-weight:600;line-height:1.7}.supplement-gap-prompts{list-style:none;padding:0;margin:6px 0 14px}.supplement-gap-prompts li{position:relative;margin-top:4px;padding-left:14px;font-size:14px;color:#7b86a3;line-height:1.7}.supplement-gap-prompts li::before{content:'·';position:absolute;left:4px;color:#aab3cc}.supplement-gap-actions{display:flex;gap:10px}.supplement-gap-actions button{border:1px solid #dce1f6;border-radius:9px;background:#fff;color:#6c7d9f;padding:8px 16px;font:inherit;font-size:14px;cursor:pointer}.supplement-gap-actions .supplement-gap-ask{background:#7b67f6;color:#fff;border-color:#7b67f6}.supplement-gap-free{display:block;width:100%;margin-top:auto;padding:16px;border:0;border-top:1px solid #e9edfc;background:#fff;color:#7768da;font:inherit;font-size:14px;cursor:pointer}
 @container supplement-chat (max-width:730px){.supplement-chat-doodle{display:none}.supplement-transcript:has(.supplement-chat-doodle)>.supplement-message{max-width:92%}.supplement-composer-tools{gap:15px}.supplement-tool,.supplement-composer-tools :deep(.agent-enter-send-option){font-size:13px}.supplement-send{min-width:95px}}
