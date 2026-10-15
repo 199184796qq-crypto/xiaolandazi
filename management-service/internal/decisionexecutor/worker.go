@@ -31,6 +31,7 @@ import (
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 	"livecompanion/management/internal/semantic"
+	"livecompanion/management/internal/speechbase"
 	"livecompanion/management/internal/speechmission"
 	"livecompanion/management/internal/styleoverlay"
 	"livecompanion/management/internal/ttsgateway"
@@ -3498,6 +3499,13 @@ func liveAnchorStyleProfilePrompt(profile model.LiveAgentPlanAnchorStyleProfile)
 		}
 		data["重点表达特点"] = features
 		data["表达指导"] = d.Instructions
+		// 量化表达标尺：复用主线 speechbase 的同一份渲染（称呼/语气词/自指/数字习惯/量化基准），
+		// 让互动口播的主播腔调与主线/开场保持一致，而不是三套各写各的。
+		if strings.TrimSpace(d.ScoringBaselineJSON) != "" {
+			if view, err := speechbase.RenderAnchorExpressionView(d.ScoringBaselineJSON); err == nil {
+				data["量化表达标尺"] = view
+			}
+		}
 	}
 	content, _ := json.Marshal(data)
 	return "\n【当前主播风格：实时热更新】\n" + strings.ReplaceAll(string(raw), "{{STYLE_DATA}}", string(content))
