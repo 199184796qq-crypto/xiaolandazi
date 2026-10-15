@@ -12,8 +12,10 @@ import (
 type LiveFactCategory struct {
 	Value       string `json:"value"`
 	Label       string `json:"label"`
+	LabelEN     string `json:"label_en,omitempty"`
 	Description string `json:"description"`
 	Group       string `json:"group"`
+	GroupEN     string `json:"group_en,omitempty"`
 	Family      string `json:"family"`
 }
 

@@ -1811,3 +1811,37 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_product_category (
     UNIQUE KEY uk_plan_product_category (plan_id),
     KEY idx_plan_product_category_tenant (tenant_id, plan_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_industry_config_packs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    biz_domain VARCHAR(32) NOT NULL DEFAULT 'ecommerce',
+    industry_code VARCHAR(64) NOT NULL,
+    industry_name VARCHAR(64) NOT NULL,
+    selling_dimensions_md MEDIUMTEXT NOT NULL,
+    sides_json MEDIUMTEXT NOT NULL,
+    p0_extra_md MEDIUMTEXT NULL,
+    version VARCHAR(64) NOT NULL DEFAULT '',
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_industry_domain_code (biz_domain, industry_code),
+    KEY idx_industry_domain_status (biz_domain, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_industry (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    biz_domain VARCHAR(32) NOT NULL DEFAULT 'ecommerce',
+    industry_code VARCHAR(64) NOT NULL DEFAULT '',
+    source VARCHAR(16) NOT NULL DEFAULT 'manual',
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_plan_industry (plan_id),
+    KEY idx_plan_industry_tenant (tenant_id, plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
