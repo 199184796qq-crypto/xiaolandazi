@@ -21,6 +21,7 @@ const section = computed(() => planConfigurationSection(props.mode))
 const factsPending = computed(() => props.productRiskCount + props.benefitRiskCount + props.factRiskCount)
 const factFocused = ref(false)
 const sections: { key: PlanConfigurationSection; label: string }[] = [
+  { key: 'business', label: '业务模式' },
   { key: 'facts', label: '商品与事实' },
   { key: 'interaction', label: '互动规则' },
   { key: 'style', label: '主播风格' },
@@ -82,6 +83,7 @@ function pending(mode: PlanConfigurationMode) {
 .plan-configuration-sections button:focus-visible,.plan-configuration-fact-tabs>button:focus-visible{outline:3px solid #a9a7ff;outline-offset:3px}
 @media(max-width:1400px){.plan-configuration-sections button{padding:16px 18px;font-size:16px;gap:10px}.plan-navigation-tagline{font-size:13px;padding-right:12px;gap:8px}.plan-configuration-fact-tabs>button{padding:11px 16px;font-size:14px}}
 @media(max-width:1100px){.plan-navigation-tagline{display:none}}
+@media(max-width:1700px){.plan-navigation-tagline{display:none}}
 @media(max-width:700px){.plan-configuration-sections{padding:0 4px;gap:0;border-radius:13px}.plan-configuration-sections button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:65px;padding:10px 5px;font-size:16px;gap:5px}.plan-configuration-sections :deep(.plan-configuration-icon){width:19px;height:19px}.plan-configuration-fact-tabs{gap:8px;padding:14px 12px;margin-top:12px}.plan-configuration-fact-tabs>button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:44px;padding:9px 8px;font-size:13px;gap:7px}.plan-configuration-fact-tabs :deep(.fact-risk-tab-notice){flex-wrap:wrap}}
 @media(max-width:700px){.plan-navigation-actions{flex:1 1 100%;justify-content:center;padding:8px}}
 @media(prefers-reduced-motion:reduce){.plan-configuration-sections button,.plan-configuration-fact-tabs>button{transition:none}}

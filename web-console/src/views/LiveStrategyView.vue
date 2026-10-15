@@ -17,6 +17,8 @@ import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
+import PlanBusinessModePanel from '../components/PlanBusinessModePanel.vue'
+import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
@@ -239,6 +241,7 @@ function selectLiveStrategyRoom(roomID: number) {
 }
 
 type StrategyMode =
+  | 'business'
   | 'script'
   | 'products'
   | 'supplement'
@@ -264,7 +267,7 @@ function dismissPlanActionsMenu(event: MouseEvent) {
   if (menu?.open && !event.composedPath().includes(menu)) closePlanActionsMenu()
 }
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
-  selectPlanConfigurationMode(section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
+  selectPlanConfigurationMode(section === 'business' ? 'business' : section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
 }
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
@@ -470,6 +473,7 @@ const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingForm
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
+const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => activeRoom.value?.tenant_id))
 const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id || 0)
 const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
 const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
@@ -2133,6 +2137,7 @@ const roomPolicyActive = computed(
 )
 
 const activeModeLabel = computed(() => {
+  if (activeMode.value === 'business') return '业务模式'
   if (activeMode.value === 'products') return '商品链接'
   if (activeMode.value === 'supplement') return '商品资料补充'
   if (activeMode.value === 'benefits') return '活动福利'
@@ -6193,6 +6198,11 @@ onBeforeUnmount(() => {
           </PlanConfigurationNavigation>
 
           <div class="strategy-workflow-content">
+        <PlanBusinessModePanel v-if="activeMode === 'business'"
+          :model-value="planBusinessMode.value.value" :loading="planBusinessMode.loading.value"
+          :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
+          @select="planBusinessMode.select" @retry="planBusinessMode.load"
+        />
         <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
@@ -8468,7 +8478,7 @@ onBeforeUnmount(() => {
           </AgentWorkspacePages>
         </section>
 
-        <section v-else-if="activeMode !== 'supplement'" class="strategy-agent-workspace">
+        <section v-else-if="activeMode !== 'supplement' && activeMode !== 'business'" class="strategy-agent-workspace">
           <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
           <div class="strategy-agent-context-card">
             <span class="section-kicker">CURRENT CONTEXT</span>

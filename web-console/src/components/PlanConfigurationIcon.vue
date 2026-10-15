@@ -1,6 +1,7 @@
 <script setup lang="ts">
 defineProps<{ name: string }>()
 const paths: Record<string, string> = {
+  business: 'M4 7h16v14H4zM8 7V3h8v4M4 12h16M10 12v3h4v-3',
   facts: 'M6 3h9l4 4v14H6zM15 3v5h4M9 12h7M9 16h7',
   interaction: 'M4 4h16v13h-9l-5 4v-4H4zM8 10h.01M12 10h.01M16 10h.01',
   style: 'm12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.6l-5.7 2.9 1.1-6.3-4.6-4.5 6.4-.9z',

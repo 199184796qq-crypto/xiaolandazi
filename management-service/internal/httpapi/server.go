@@ -556,6 +556,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans", s.liveAgentPlanCreate)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}", s.liveAgentPlanGet)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}", s.liveAgentPlanUpdate)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/biz-domain", s.planBizDomainGet)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/biz-domain", s.planBizDomainSet)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/archive", s.liveAgentPlanArchive)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/room-bindings", s.liveAgentPlanBindRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/live-agent-plan", s.liveAgentPlanCurrentForRoom)

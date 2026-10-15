@@ -869,6 +869,17 @@ export function getLiveAgentPlans(tenantId?: number) {
   return request<{ items: LiveAgentPlan[] }>('/api/v1/live-agent-plans' + query)
 }
 
+export function getPlanBusinessMode(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ biz_domain: import('./planBusinessMode').PlanBusinessMode }>('/api/v1/live-agent-plans/' + planId + '/biz-domain' + query, { suppressErrorDialog: true })
+}
+
+export function setPlanBusinessMode(planId: number, bizDomain: import('./planBusinessMode').PlanBusinessMode, tenantId?: number) {
+  return request<{ biz_domain: import('./planBusinessMode').PlanBusinessMode }>('/api/v1/live-agent-plans/' + planId + '/biz-domain', {
+    method: 'PUT', body: JSON.stringify({ biz_domain: bizDomain, tenant_id: tenantId }), suppressErrorDialog: true,
+  })
+}
+
 export function createLiveAgentPlan(payload: { name: string; description?: string; tenant_id?: number }) {
   return request<LiveAgentPlan>('/api/v1/live-agent-plans', {
     method: 'POST',
