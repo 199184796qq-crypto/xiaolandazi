@@ -146,6 +146,9 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		if part.Task.ProductMode == "lecture" {
 			continue
 		}
+		if task.FactScope != nil && part.Task.Key != task.Key {
+			continue
+		}
 		recent = append(recent, cycleVoiceText(part.Selected))
 	}
 	feedback := state.PendingFeedback

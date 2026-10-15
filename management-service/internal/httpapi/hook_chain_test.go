@@ -49,19 +49,22 @@ func TestHookFallbackStillRendersAndDoesNotReciteOldAngle(t *testing.T) {
 	}
 }
 
-func TestUnavailablePlannerDoesNotSendOldExampleOrOldSpeech(t *testing.T) {
+func TestPlannerDisabledSendsAngleName(t *testing.T) {
 	s := cycleTestState(t)
 	s.BaselineJSON = textTestBaseline()
 	s.TextModel = &agentgateway.SpeechModel{ID: "flash", Model: "qwen3.7-flash"}
-	s.Queue[0].Angle = "旧范文例句"
-	s.Queue[0].Key = "旧范文例句"
-	s.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{Text: "旧口播全文"}}}
+	s.Queue[0].Angle = "按包装解释保存条件"
+	s.Queue[0].Key = "保存×按包装解释保存条件"
 	m, e := renderCycleTextMessages(&s)
-	if e != nil || strings.Contains(m[1].Content, "旧范文例句") || strings.Contains(m[1].Content, "旧口播全文") {
-		t.Fatal(m, e)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// 角度钩子默认关闭：正文直接用卖点×角度名，不再被清空。
+	if !strings.Contains(m[1].Content, "按包装解释保存条件") {
+		t.Fatal("角度名未发送", m[1].Content)
 	}
 }
-func TestHookCacheIdentityRetainsArchivedSelectedCardAfterCursorAdvances(t *testing.T) {
+func TestHookCacheIdentityWithoutHookChain(t *testing.T) {
 	s := cycleTestState(t)
 	s.TextModel = &agentgateway.SpeechModel{ID: "flash", Model: "qwen3.7-flash"}
 	s.AnglePlanMotherSHA = "m1"
@@ -73,7 +76,8 @@ func TestHookCacheIdentityRetainsArchivedSelectedCardAfterCursorAdvances(t *test
 	if cycleVoiceCacheGroup(&s, seg) != one {
 		t.Fatal("archived cache follows live cursor")
 	}
-	if cycleVoiceCacheGroup(&s, anchorcycle.Segment{Phase: "body", Task: s.Task()}) == one {
-		t.Fatal("new hook reused old speech cache")
+	// 角度钩子默认关闭：缓存身份不再含 hook-chain，同一 Task 的不同 segment 身份一致。
+	if cycleVoiceCacheGroup(&s, anchorcycle.Segment{Phase: "body", Task: s.Task()}) != one {
+		t.Fatal("disabled planner should not split cache identity by hook")
 	}
 }
