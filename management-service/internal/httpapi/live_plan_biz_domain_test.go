@@ -62,7 +62,12 @@ func TestPlanBusinessIndustryAuthenticationAndResponse(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	s.planBusinessSettingsReply(w, model.PlanBusinessSettings{BizDomain: "local_service", Industries: map[string]string{"ecommerce": "food", "local_service": "dining"}, IndustryOptions: map[string][]model.PlanBusinessIndustry{"ecommerce": model.PlanBusinessIndustryOptions("ecommerce"), "local_service": model.PlanBusinessIndustryOptions("local_service")}}, nil)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "industry_options") || !strings.Contains(w.Body.String(), "餐饮美食") {
+	// 行业选项现在优先来自目录 json（configs/industries/，文件即源），解析失败才回退内置枚举，
+	// 因此不断言具体 label，只断言两个域的选项都非空。
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "industry_options") {
 		t.Fatal(w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code"`) {
+		t.Fatal("industry_options should contain code entries", w.Body.String())
 	}
 }

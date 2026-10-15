@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"livecompanion/management/internal/model"
@@ -74,17 +75,26 @@ func TestPlanBusinessIndustriesMySQLPersistenceAndScope(t *testing.T) {
 }
 
 func TestPlanBusinessIndustryCatalog(t *testing.T) {
+	// 主路径：选项来自目录 json（configs/industries/，文件即源），数量随配置变化。
 	for _, domain := range []string{"ecommerce", "local_service"} {
 		seen := map[string]bool{}
 		options := model.PlanBusinessIndustryOptions(domain)
-		if len(options) != 15 || options[0].Code != "general" {
-			t.Fatal("conventional catalog missing default", domain, options)
+		if len(options) == 0 {
+			t.Fatal("empty catalog", domain)
 		}
 		for _, option := range options {
 			if seen[option.Code] || option.Label == "" || !model.ValidPlanBusinessIndustry(domain, option.Code) {
 				t.Fatal("invalid catalog", domain, option)
 			}
 			seen[option.Code] = true
+		}
+	}
+	// 兜底路径：目录不可用时回退内置枚举，须含 general 默认项。
+	t.Setenv("INDUSTRY_CONFIG_DIR", filepath.Join(t.TempDir(), "missing"))
+	for _, domain := range []string{"ecommerce", "local_service"} {
+		options := model.PlanBusinessIndustryOptions(domain)
+		if len(options) != 15 || options[0].Code != "general" {
+			t.Fatal("fallback catalog missing default", domain, options)
 		}
 	}
 }

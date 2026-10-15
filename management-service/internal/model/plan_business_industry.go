@@ -11,7 +11,13 @@ type PlanBusinessSettings struct {
 	IndustryOptions map[string][]PlanBusinessIndustry `json:"industry_options"`
 }
 
+// PlanBusinessIndustryOptions 返回业务域的行业下拉选项。
+// 优先读行业目录 json（configs/industries/，文件即源，改 md/json 即生效）；
+// 目录缺失/解析失败时回退下面的内置兜底枚举，保证下拉框永远有值。
 func PlanBusinessIndustryOptions(domain string) []PlanBusinessIndustry {
+	if options := CatalogIndustryOptions(domain); len(options) > 0 {
+		return options
+	}
 	switch domain {
 	case "ecommerce":
 		return []PlanBusinessIndustry{
