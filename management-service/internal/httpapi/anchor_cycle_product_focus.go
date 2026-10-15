@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
@@ -29,6 +30,9 @@ func loadCycleProductFocusPrompt() (string, string, error) {
 }
 func loadCycleProductScopePrompt() (string, string, error) {
 	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_SCOPE_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-scope-classification.md", "商品归属分析母版")
+}
+func loadCycleProductScopeItemPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_SCOPE_ITEM_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-scope-item.md", "单条商品归属判定母版")
 }
 func loadCycleProductAuditPrompt() (string, string, error) {
 	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_AUDIT_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-focus-audit.md", "商品范围复核母版")
@@ -90,6 +94,28 @@ func safeProductField(line, key string) string {
 		return strings.TrimSpace(match[1])
 	}
 	return ""
+}
+
+// parseCardLinks 解析「链接=」字段的链接清单。商品卡为单链接（"1"），有效福利可为
+// 多链接（"1、2、3"，顿号/逗号分隔）。返回去重后的链接列表，空表示没有链接字段。
+func parseCardLinks(line string) []string {
+	key := safeProductField(line, "链接")
+	if key == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(key, func(r rune) bool {
+		return r == '、' || r == ',' || r == '，' || r == ' ' || r == '\t'
+	})
+	result := []string{}
+	seen := map[string]bool{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	return result
 }
 func validateScopeLinks(links []string, shared bool, products []anchorcycle.FocusProduct) error {
 	if shared && len(links) > 0 {
@@ -239,6 +265,195 @@ func cachedProductScope(ctx context.Context, scope *anchorcycle.ProductFocus, fa
 	return nil
 }
 
+// itemScopeResult 单条归属判定结果。
+type itemScopeResult struct {
+	Links      []string
+	Shared     bool
+	Comparison bool
+}
+
+// classifyProductScopeItem 对单条 fact/task 调用模型判定商品归属。单条最多重试 2 次，
+// 最终仍失败时按「未归属」兜底（shared=false, links=[]），不阻塞整体。
+func (s *Server) classifyProductScopeItem(ctx context.Context, profileID, mother string, products []productAnalysisView, itemType, itemText string) itemScopeResult {
+	data, _ := json.Marshal(map[string]any{"products": products, "item_type": itemType, "item": itemText})
+	messages := []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(data)}}
+	for attempt := 0; attempt < 2; attempt++ {
+		call, stop := context.WithTimeout(ctx, 30*time.Second)
+		result, _, err := s.completeAnchorStyleWorkbench(call, profileID, "cycle_product_scope_item", agentgateway.ResponseJSON, messages, 400, false)
+		stop()
+		if err != nil {
+			continue
+		}
+		var resp struct {
+			Links      []string `json:"links"`
+			Shared     *bool    `json:"shared"`
+			Comparison *bool    `json:"comparison"`
+		}
+		if decodeProductJSON(result.Text, &resp) != nil || resp.Shared == nil || resp.Links == nil {
+			continue
+		}
+		if *resp.Shared && len(resp.Links) > 0 {
+			continue // shared 与 links 不能同时设置
+		}
+		r := itemScopeResult{Links: resp.Links, Shared: *resp.Shared}
+		if resp.Comparison != nil {
+			r.Comparison = *resp.Comparison
+		}
+		return r
+	}
+	return itemScopeResult{}
+}
+
+// classifyProductScopeItems 并发逐条判定普通事实 + 任务，progress(done,total) 回推进度。
+// 单条失败只影响该条（按未归属兜底），不再因「返回数量对不上」整体失败。
+func (s *Server) classifyProductScopeItems(ctx context.Context, profileID, mother string, products []productAnalysisView, modelFacts []cycleScopeFactInput, tasks []anchorcycle.Task, progress func(int, int)) ([]itemScopeResult, map[string]itemScopeResult, error) {
+	total := len(modelFacts) + len(tasks)
+	if total == 0 {
+		return []itemScopeResult{}, map[string]itemScopeResult{}, nil
+	}
+	type job struct {
+		kind  string
+		index int
+		text  string
+		key   string
+	}
+	jobs := make(chan job)
+	factResults := make([]itemScopeResult, len(modelFacts))
+	taskResults := map[string]itemScopeResult{}
+	var mu sync.Mutex
+	done := 0
+	var wg sync.WaitGroup
+	for worker := 0; worker < 6; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				r := s.classifyProductScopeItem(ctx, profileID, mother, products, j.kind, j.text)
+				mu.Lock()
+				if j.kind == "fact" {
+					factResults[j.index] = r
+				} else {
+					taskResults[j.key] = r
+				}
+				done++
+				if progress != nil {
+					progress(done, total)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+enqueueFacts:
+	for i, f := range modelFacts {
+		select {
+		case jobs <- job{kind: "fact", index: i, text: f.Text}:
+		case <-ctx.Done():
+			break enqueueFacts
+		}
+	}
+enqueueTasks:
+	for _, t := range tasks {
+		select {
+		case jobs <- job{kind: "task", text: t.SellingPoint + " × " + t.Angle, key: t.Key}:
+		case <-ctx.Done():
+			break enqueueTasks
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	return factResults, taskResults, nil
+}
+
+type productScopeCacheFact struct {
+	ID     int      `json:"id"`
+	Links  []string `json:"links"`
+	Shared *bool    `json:"shared"`
+}
+type productScopeCacheTask struct {
+	Key        string   `json:"key"`
+	Links      []string `json:"links"`
+	Shared     *bool    `json:"shared"`
+	Comparison *bool    `json:"comparison"`
+}
+type productScopeCache struct {
+	Facts []productScopeCacheFact `json:"facts"`
+	Tasks []productScopeCacheTask `json:"tasks"`
+}
+
+// applyProductScopeCache 把缓存里的归属结果填进 scope（普通事实 + 任务）。商品卡/福利
+// 已由程序自判填进 scope.Facts，不在缓存里。
+func applyProductScopeCache(raw string, modelFacts []cycleScopeFactInput, tasks []anchorcycle.Task, scope *anchorcycle.ProductFocus) error {
+	var cache productScopeCache
+	if err := json.Unmarshal([]byte(raw), &cache); err != nil {
+		return err
+	}
+	if len(cache.Facts) != len(modelFacts) || len(cache.Tasks) != len(tasks) {
+		return errors.New("商品归属缓存与当前资料不一致")
+	}
+	if scope.Tasks == nil {
+		scope.Tasks = map[string]anchorcycle.ScopedTask{}
+	}
+	for i, cf := range cache.Facts {
+		if cf.ID != i+1 || cf.Shared == nil {
+			return errors.New("商品归属缓存事实编号无效")
+		}
+		scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: modelFacts[i].Text, Links: cf.Links, Shared: *cf.Shared})
+	}
+	for i, ct := range cache.Tasks {
+		if ct.Key != tasks[i].Key || ct.Shared == nil || ct.Comparison == nil {
+			return errors.New("商品归属缓存角度编号无效")
+		}
+		scope.Tasks[ct.Key] = anchorcycle.ScopedTask{Links: ct.Links, Shared: *ct.Shared, Comparison: *ct.Comparison}
+	}
+	return nil
+}
+
+// resolveProductScopeItems 先尝试读缓存，未命中则逐条并发判定并保存缓存。商品卡/福利的
+// 确定性归属由调用方程序自判，这里只处理「普通事实 + 任务」的模型判定部分。
+func (s *Server) resolveProductScopeItems(ctx context.Context, profileID, mother string, products []productAnalysisView, modelFacts []cycleScopeFactInput, tasks []anchorcycle.Task, fingerprint string, state *anchorcycle.State, scope *anchorcycle.ProductFocus) error {
+	raw, err := s.store.GetPlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "product_scope", fingerprint)
+	if err == nil {
+		if applyProductScopeCache(raw, modelFacts, tasks, scope) == nil {
+			reportAnchorAnalysis(ctx, 82, "商品资料与角度池未变化，复用已验证的讲解范围")
+			return nil
+		}
+	} else if !errors.Is(err, appdb.ErrPlanAnalysisAssetNotFound) {
+		return err
+	}
+	factResults, taskResults, err := s.classifyProductScopeItems(ctx, profileID, mother, products, modelFacts, tasks, func(done, total int) {
+		reportAnchorAnalysis(ctx, 45+done*40/max(1, total), fmt.Sprintf("正在确认商品资料范围 %d/%d", done, total))
+	})
+	if err != nil {
+		return err
+	}
+	for i, f := range modelFacts {
+		scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: f.Text, Links: factResults[i].Links, Shared: factResults[i].Shared})
+	}
+	if scope.Tasks == nil {
+		scope.Tasks = map[string]anchorcycle.ScopedTask{}
+	}
+	for _, t := range tasks {
+		r := taskResults[t.Key]
+		scope.Tasks[t.Key] = anchorcycle.ScopedTask{Links: r.Links, Shared: r.Shared, Comparison: r.Comparison}
+	}
+	cache := productScopeCache{}
+	for i := range modelFacts {
+		shared := factResults[i].Shared
+		cache.Facts = append(cache.Facts, productScopeCacheFact{ID: i + 1, Links: factResults[i].Links, Shared: &shared})
+	}
+	for _, t := range tasks {
+		r := taskResults[t.Key]
+		shared, comparison := r.Shared, r.Comparison
+		cache.Tasks = append(cache.Tasks, productScopeCacheTask{Key: t.Key, Links: r.Links, Shared: &shared, Comparison: &comparison})
+	}
+	cacheJSON, _ := json.Marshal(cache)
+	_ = s.store.SavePlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "product_scope", fingerprint, string(cacheJSON))
+	return nil
+}
+
 // Build once from the safety snapshot. This never rewrites source facts, roles,
 // the selling-point wheel or a previously saved plan version.
 func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {	active := []model.LiveAgentPlanProductLink{}
@@ -261,14 +476,13 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 		roles[l.LinkKey] = append([]string{}, l.RoomRoles...)
 		byKey[l.LinkKey] = l
 	}
-	facts := []cycleScopeFactInput{}
+	modelFacts := []cycleScopeFactInput{}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(state.Facts, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "- ") {
 			continue
 		}
-		facts = append(facts, cycleScopeFactInput{ID: len(facts) + 1, Text: line})
 		if strings.HasPrefix(line, "- [商品卡]") {
 			key := safeProductField(line, "链接")
 			if key == "" || seen[key] {
@@ -280,7 +494,22 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 			seen[key] = true
 			link := byKey[key]
 			scope.Products = append(scope.Products, anchorcycle.FocusProduct{LinkKey: key, Name: safeProductField(line, "商品"), Roles: roles[key], Spec: link.Spec, DailyPrice: link.DailyPrice, Quantity: link.Quantity})
+			// 商品卡归属程序自判：专属该链接，不需要模型判定。
+			scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: []string{key}, Shared: false})
+			continue
 		}
+		if strings.HasPrefix(line, "- [有效福利]") {
+			// 福利归属程序自判：无链接字段或链接覆盖全部商品 → 公共福利（shared，每个商品都能讲）；
+			// 否则为专属福利（links=明确列出的链接）。
+			links2 := parseCardLinks(line)
+			if len(links2) == 0 || len(links2) == len(active) {
+				scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: []string{}, Shared: true})
+			} else {
+				scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: links2, Shared: false})
+			}
+			continue
+		}
+		modelFacts = append(modelFacts, cycleScopeFactInput{ID: len(modelFacts) + 1, Text: line})
 	}
 	if len(scope.Products) != len(active) {
 		return nil, errors.New("安全事实包缺少商品卡，不能自动混讲或补造资料")
@@ -288,47 +517,30 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 	if err = scope.ValidateProducts(); err != nil {
 		return nil, err
 	}
-	tasks := []cycleScopeTaskInput{}
-	for i, t := range state.Queue {
-		tasks = append(tasks, cycleScopeTaskInput{ID: i + 1, SellingPoint: t.SellingPoint, Angle: t.Angle})
-	}
-	prompt, _, err := loadCycleProductScopePrompt()
-	if err != nil {
-		return nil, err
-	}
-	repairPrompt, _, err := loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_SCOPE_REPAIR_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-scope-repair.md", "商品归属输出校正母版")
-	if err != nil {
-		return nil, err
-	}
 	settings, err := s.store.AnchorGenerationSettings(ctx)
 	if err != nil || settings.SellingPointProfileID == "" {
 		return nil, errors.New("多商品方案需要已配置的卖点挖掘模型分析归属")
+	}
+	profile, profileErr := s.store.ResolveSpeechModel(ctx, settings.SellingPointProfileID)
+	if profileErr != nil || profile == nil {
+		return nil, errors.New("商品归属分析模型不可用")
 	}
 	views := make([]productAnalysisView, 0, len(scope.Products))
 	for _, p := range scope.Products {
 		views = append(views, productAnalysisView{LinkKey: p.LinkKey, Name: p.Name, Roles: p.Roles})
 	}
-	data, _ := json.Marshal(map[string]any{"products": views, "facts": facts, "tasks": tasks})
-	profile, profileErr := s.store.ResolveSpeechModel(ctx, settings.SellingPointProfileID)
-	if profileErr != nil || profile == nil {
-		return nil, errors.New("商品归属分析模型不可用")
-	}
-	fingerprint := anchorcycle.ProductDigest(map[string]any{"protocol": "product-scope-v4", "data": string(data), "policy": policy, "prompt": prompt, "repair_prompt": repairPrompt, "profile": settings.SellingPointProfileID, "model": profile.Model, "endpoint": profile.BaseURL})
-	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID})
-	err = cachedProductScope(ctx, scope, facts, state.Queue, func() (string, error) {
-		return s.store.GetPlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "product_scope", fingerprint)
-	}, func(raw string) error {
-		return s.store.SavePlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "product_scope", fingerprint, raw)
-	}, func() (string, error) {
-		var lastRaw string
-		err := validatedCycleProductScope(ctx, scope, facts, state.Queue, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(data)}}, repairPrompt, func(callCtx context.Context, stage string, messages []agentgateway.Message) (string, error) {
-			result, _, callErr := s.completeAnchorStyleWorkbench(callCtx, settings.SellingPointProfileID, stage, agentgateway.ResponseJSON, messages, min(16000, max(2000, (len(facts)+len(tasks))*64)), false)
-			lastRaw = result.Text
-			return result.Text, callErr
-		})
-		return lastRaw, err
-	})
+	itemMother, _, err := loadCycleProductScopeItemPrompt()
 	if err != nil {
+		return nil, err
+	}
+	taskKeys := make([]string, 0, len(state.Queue))
+	for _, t := range state.Queue {
+		taskKeys = append(taskKeys, t.Key)
+	}
+	data, _ := json.Marshal(map[string]any{"products": views, "facts": modelFacts, "task_keys": taskKeys})
+	fingerprint := anchorcycle.ProductDigest(map[string]any{"protocol": "product-scope-item-v1", "data": string(data), "policy": policy, "prompt": itemMother, "profile": settings.SellingPointProfileID, "model": profile.Model, "endpoint": profile.BaseURL})
+	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID})
+	if err = s.resolveProductScopeItems(ctx, settings.SellingPointProfileID, itemMother, views, modelFacts, state.Queue, fingerprint, state, scope); err != nil {
 		return nil, err
 	}
 	for _, product := range scope.Products {
