@@ -151,15 +151,11 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 			return nil, err
 		}
 	} else if scheme.ProductFocus != nil {
-		selected, wheelErr := s.store.GetLiveSellingPointWheel(ctx, tenant, version.PlanID, scheme.WheelID)
-		if wheelErr != nil {
-			return nil, wheelErr
-		}
-		var savedWheel anchorStyleSellingPointWheel
-		if json.Unmarshal([]byte(selected.EffectiveWheelJSON()), &savedWheel) == nil {
-			if savedTasks := savedLegacyQueue(savedWheel, scheme.ProductFocus); len(savedTasks) > 0 {
-				tasks = savedTasks
-			}
+		// 商品讲解范围(ProductFocus.Tasks)保存时按「安全轮盘快照」建立，这里必须用
+		// 同一份快照(safety.SafeWheelJSON)做 key 匹配。若改按 WheelID 重读原始/确认轮盘，
+		// 角度名经 P0 安全改写后 key 对不上，会退化成不筛商品的全量任务。
+		if savedTasks := savedLegacyQueue(wheel, scheme.ProductFocus); len(savedTasks) > 0 {
+			tasks = savedTasks
 		}
 	}
 	identity := version.VoiceIdentity

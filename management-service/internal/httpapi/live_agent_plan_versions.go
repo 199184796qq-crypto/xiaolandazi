@@ -328,13 +328,17 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		input.GenerationContext = map[string]any{}
 	}
 	if isRealtimeScheme(input.GenerationContext) {
-		reportAnchorAnalysis(r.Context(), 30, "正在固定公共池、商品专属池及对应资料版本")
-		set, err := s.captureContentPoolSnapshot(r.Context(), tenantID, planID, &input)
+		// 【事实驱动新链路】不再固定「内容池文案 + 角度钩子」中间层，改为：
+		// 正式事实包(derived_safety) + 卖点轮盘×角度(含 tier) + 商品讲解范围(ProductFocus)。
+		// 开播时 createLiveAnchorRun 走 ProductFocus 分支，正文用「卖点×角度 + 侧面筛事实」。
+		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据与商品讲解范围")
+		safety, err := s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
 		if err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		if err = s.captureContentPoolScheme(r.Context(), tenantID, planID, &input, set); err != nil {
+		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
+		if err = s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
