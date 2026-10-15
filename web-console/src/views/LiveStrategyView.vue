@@ -13,6 +13,7 @@ import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { memoryInPlan, usePlanAnswerStrategies } from '../planAnswerStrategies'
+import { planSelectionPreferenceKey, readSelectedPlan, rememberSelectedPlan, restoredPlanSelection } from '../planSelectionPreference'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
@@ -307,6 +308,21 @@ const boundRoomPlans = ref<LiveAgentPlan[]>([])
 const publishedRoomPlans = ref<LiveAgentPlan[]>([])
 const roomRuntimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const currentRoomPlanId = ref<number | null>(null)
+const planSelectionScope = () => ({
+  userId: Number(session.bootstrap?.actor.user_id || 0),
+  tenantId: Number(rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id || (props.supportSession ? props.supportTenantId : session.bootstrap?.actor.tenant_id) || 0),
+  roomId: activeRoomId.value || 0,
+  supportSession: props.supportSession,
+})
+let roomPlanLoadSequence = 0
+watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
+  roomPlanLoadSequence++
+  currentRoomPlanId.value = null
+}, { flush: 'sync' })
+watch(currentRoomPlanId, planId => {
+  const scope = planSelectionScope()
+  if (livePlans.value.some(plan => plan.id === planId && plan.tenant_id === scope.tenantId && plan.status === 'active')) rememberSelectedPlan(scope, planId)
+}, { flush: 'sync' })
 const planBusy = ref(false)
 const newPlanName = ref('')
 const newPlanDescription = ref('')
@@ -4167,6 +4183,9 @@ async function refreshLivePlans() {
 
 async function refreshCurrentRoomPlan(preserveEditing = true) {
   const roomId = activeRoomId.value
+  const scope = planSelectionScope(), scopeKey = planSelectionPreferenceKey(scope)
+  const token = ++roomPlanLoadSequence, editingAtStart = currentRoomPlanId.value
+  const current = () => token === roomPlanLoadSequence && scopeKey === planSelectionPreferenceKey(planSelectionScope()) && roomId === activeRoomId.value
   if (!roomId) {
     boundRoomPlans.value = []
     publishedRoomPlans.value = []
@@ -4174,30 +4193,29 @@ async function refreshCurrentRoomPlan(preserveEditing = true) {
     currentRoomPlanId.value = null
     return
   }
+  const remembered = readSelectedPlan(scope)
+  const selectable = (id: number | null) => livePlans.value.some(plan => plan.id === id && plan.tenant_id === scope.tenantId && plan.status === 'active')
+  if (remembered && selectable(remembered) && !selectable(currentRoomPlanId.value)) currentRoomPlanId.value = remembered
   try {
     const [boundResult, publishedResult, runtime] = await Promise.all([
       getRoomLiveAgentPlans(roomId),
       getRoomLiveAgentPlans(roomId, true),
       getLiveRuntime(roomId),
     ])
+    if (!current()) return
     boundRoomPlans.value = boundResult.items || []
     publishedRoomPlans.value = publishedResult.items || []
     roomRuntimeSnapshot.value = runtime
-    const availableIds = new Set(livePlans.value.map((item) => item.id))
+    const availableIds = new Set(livePlans.value.filter(item => item.tenant_id === scope.tenantId && item.status === 'active').map(item => item.id))
     const runtimeId = runtime.agent_plan_id || 0
-    if (preserveEditing && currentRoomPlanId.value && availableIds.has(currentRoomPlanId.value)) {
-      return
-    } else if (runtimeId && availableIds.has(runtimeId)) {
-      currentRoomPlanId.value = runtimeId
-    } else {
-      currentRoomPlanId.value =
-        publishedRoomPlans.value[0]?.id || boundRoomPlans.value[0]?.id || livePlans.value[0]?.id || null
-    }
+    currentRoomPlanId.value = restoredPlanSelection(availableIds, currentRoomPlanId.value, readSelectedPlan(scope), runtimeId,
+      [...publishedRoomPlans.value.map(plan => plan.id), ...boundRoomPlans.value.map(plan => plan.id), ...availableIds],
+      preserveEditing || currentRoomPlanId.value !== editingAtStart)
   } catch (err) {
+    if (!current()) return
     boundRoomPlans.value = []
     publishedRoomPlans.value = []
     roomRuntimeSnapshot.value = null
-    currentRoomPlanId.value = null
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取直播间方案关系失败'
     }
@@ -6043,6 +6061,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  roomPlanLoadSequence++
   memoryEditEpoch++
   document.removeEventListener('click', dismissPlanActionsMenu, true)
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
