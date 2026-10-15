@@ -129,18 +129,20 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// The reusable expression view is separate from this task's material.
 	// 四块结构：必说（本段任务，见 packet）/ 可说（本场有效事实）/ 不提（未知项）/ 改写（禁说→安全改写）。
 	facts, expressionGuidance := generationMaterialViews(state.HookFactsForSide())
-	material := map[string]any{"可说": facts, "主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope)}
+	// 稳定前缀放 system：母版 + 主播标尺 + 有效P0 + 不提 + 长期纠正规则，整场不变，命中上下文缓存。
+	// 随侧面/任务变化的内容（可说事实、改写约束、商品边界）放 user（见下方 variable），
+	// 避免 system 每段随侧面变导致前缀缓存失效。
+	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。", "用户已确认的长期纠正规则": state.EffectiveCorrections()}
+	fixed, _ := json.Marshal(stable)
+	variable := map[string]any{"可说": facts}
 	if len(expressionGuidance) > 0 {
-		material["改写"] = expressionGuidance
+		variable["改写"] = expressionGuidance
 	}
-	material["不提"] = "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。"
-	material["用户已确认的长期纠正规则"] = state.EffectiveCorrections()
 	if task.FactScope != nil {
 		boundary, guidance := generationMaterialViews(task.FactScope.ProductBoundary)
-		material["商品必要事实与使用边界（用于约束，不要求逐条讲述）"] = boundary
-		material["商品必要事实的表达约束（不是新增事实）"] = guidance
+		variable["商品必要事实与使用边界（用于约束，不要求逐条讲述）"] = boundary
+		variable["商品必要事实的表达约束（不是新增事实）"] = guidance
 	}
-	fixed, _ := json.Marshal(material)
 	recent := []string{}
 	for _, part := range state.Accepted[max(0, len(state.Accepted)-8):] {
 		if part.Task.ProductMode == "lecture" {
@@ -165,6 +167,10 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		opener = "content_first"
 	}
 	packet := map[string]any{"开头模式": opener, "本次任务": generationTaskView(task), "环节": state.Phase, "开场版本": state.OpeningVersion(), "本轮编号": state.CycleNumber, "中间段计划": state.BodyLimit(), "已完成中间段": state.BodyCount, "字数上限": maxChars, "近期已采用内容仅供避重": tailText(strings.Join(recent, "\n"), 2400), "后续表达加强建议": tailText(feedback, 1200)}
+	// 随侧面/任务变化的内容并入 user，保持 system 稳定前缀。
+	for k, v := range variable {
+		packet[k] = v
+	}
 	if method := cycleExpressionMethod(state); method != "" {
 		packet["表达展开建议"] = method
 	}

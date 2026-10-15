@@ -69,16 +69,13 @@ func TestDirectWriterSendsOnlyBoundTaskFactsWithoutRelationKeys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Parse the material block; P0 may legitimately mention logistics in rules.
-		at := strings.Index(messages[0].Content, `{"不提"`)
-		if at < 0 {
-			t.Fatal("material block absent")
-		}
-		var material map[string]any
-		if err := json.Unmarshal([]byte(messages[0].Content[at:]), &material); err != nil {
+		// 可说事实已挪到 user（保持 system 稳定前缀以命中缓存）；
+		// 从 user 解析「可说」校验，P0 规则里可能合法出现物流字样，故只查可说块。
+		var userPacket map[string]any
+		if err := json.Unmarshal([]byte(messages[1].Content), &userPacket); err != nil {
 			t.Fatal(err)
 		}
-		raw, _ := json.Marshal(material["可说"])
+		raw, _ := json.Marshal(userPacket["可说"])
 		if (i == 0 && (strings.Contains(string(raw), "物流") || !strings.Contains(string(raw), "不抽真空3天"))) || (i == 1 && (!strings.Contains(string(raw), "京东物流") || strings.Contains(string(raw), "抽真空6天"))) {
 			t.Fatal(string(raw))
 		}
