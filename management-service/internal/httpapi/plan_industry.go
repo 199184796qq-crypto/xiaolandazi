@@ -36,6 +36,44 @@ func (s *Server) loadIndustryPackForPlan(ctx context.Context, tenant, plan int64
 	return loadIndustryPack(industry.BizDomain, industry.IndustryCode)
 }
 
+// listIndustryCatalog 返回某业务域的行业目录（前端「业务模式+行业」下拉框的数据源）。
+// 读目录 json（文件即源），返回树形展开后的全部节点（code/name/name_en）。
+func (s *Server) listIndustryCatalog(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.resolveActor(w, r); !ok {
+		return
+	}
+	domain := strings.TrimSpace(r.URL.Query().Get("biz_domain"))
+	if domain == "" {
+		domain = "ecommerce"
+	}
+	if !appdbValidIndustryBizDomain(domain) {
+		writeError(w, http.StatusBadRequest, "业务域必须是 ecommerce 或 local_service")
+		return
+	}
+	catalog, err := loadIndustryCatalog(domain)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type industryItem struct {
+		Code   string `json:"code"`
+		Name   string `json:"name"`
+		NameEN string `json:"name_en,omitempty"`
+	}
+	items := []industryItem{}
+	var visit func(n industryCatalogNode)
+	visit = func(n industryCatalogNode) {
+		items = append(items, industryItem{Code: n.Code, Name: n.Name, NameEN: n.NameEN})
+		for _, c := range n.Children {
+			visit(c)
+		}
+	}
+	for _, n := range catalog.Nodes {
+		visit(n)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"biz_domain": domain, "name": catalog.Name, "name_en": catalog.NameEN, "industries": items})
+}
+
 func (s *Server) planIndustryGet(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
