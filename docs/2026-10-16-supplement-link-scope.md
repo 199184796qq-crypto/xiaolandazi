@@ -12,4 +12,8 @@ fact-gap-check和product-supplement/chat兼容增加可选product_link_id，0或
 
 用户特别指出WorkBuddy正在修改“业务模式”页面。本次保持PlanBusinessModePanel.vue、planBusinessMode.ts、usePlanBusinessMode.ts及相关业务模式接口不变；LiveStrategyView仅传入商品卡，api.ts只扩展补全接口参数。E:/speech-generator-build仅只读检查，未编辑、重置或提前发布其进行中的行业配置工作。发布以实际current为基线，检测到并行更新时重新整合并验证，保留其它前端、配置、行业选择和Nginx。管理程序更新仅在数据库及Core双重确认直播/声音空闲时进行，不重启Core或网关；母版打包包含并校验服务器实际目录全部156文件，仅覆盖本次两份。
 
-证据位于本任务work/supplement-link-scope-proof，部署状态及线上核对在发布完成后追加。
+首次发布在切换前被指纹守卫阻止：WorkBuddy刚刚将Management原地升级为3fdaa6514d60fcae3bd265b251e5a173315ffedd，加入行业目录和配置包。该尝试没有切换、重启或覆盖文件。随后只读取得其已上线源码并保留历史合入，14个行业目录文件按内容与源码核对（仅换行不同），发布仍复制服务器原始字节。新行业表的选择和配置包也纳入前后摘要保护。业务模式11项浏览器回归及整合后的行业加载4项、模型5项、调度8项定向测试通过；未修改WorkBuddy原目录。
+
+北京时间2026-10-16 00:13:36发布20261016-supplement-links-8310b66，部署源码8310b66f68ff602e42b47b98cecc2ee89a2897ad，已包含WorkBuddy 3fdaa65。Management PID886745，SHA256 a91e76eea9518d1c44f277dd19b818bdbc8ec10f0b7952d850bec67e89dbf09d。数据库及Core双重空闲确认后只重启Management，Core775073与网关775930不变。2471个旧无关文件保持一致，新增41文件；实际行业目录、系统设置、模型池、方案原字段及模式/行业选择、Nginx均保留。完整实际母版目录156文件随包核对，154份未变，仅替换上述两份。
+
+补全检查/对话及WorkBuddy行业目录、方案行业和配置包路由未登录均返回401；两个公网入口和8个资源指纹匹配。共享完整前端备份指针已更新，1743个文件的哈希、大小和权限与最新实际服务器一致。证据位于本任务work/supplement-link-scope-proof。
