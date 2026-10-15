@@ -232,7 +232,7 @@ async function begin(item: AgentLearningSession) {
 }
 
 function latestCorrection(item: AgentLearningSession) { return item.correction_history?.at(-1) }
-function showSuggestions(item: AgentLearningSession) { return !props.history && !item.correction_history?.length && editing.value !== item.id }
+function showSuggestions(item: AgentLearningSession) { return !props.history && item.source_type !== 'live_uncertain' && !item.correction_history?.length && editing.value !== item.id }
 function cancelCorrection() { if (!busy.value) { editing.value = null; historyDraft.value = null; preview.value = null; restoredPreviewText.value = ''; feedback.value = '' } }
 
 function selectTopic(topic: InteractionSuggestionTopic | 'all') {
@@ -443,7 +443,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
     <InteractionHistoryPager v-if="history && showItems && !compact" :page="page" :total="total" :disabled="!!busy || historyLoading || !!factContext || locating" position="top" @change="goHistoryPage" />
     <template v-if="showItems">
       <p v-if="history" class="hint">回看互动问题、现场内容和生成的回答，可继续纠正或删除记录。</p>
-      <p v-else-if="!isSimulationView" class="hint">模型只提供建议，事实由你审核。你可以修改并采用纠正，或关闭无需处理的记录；这些建议不会单独阻断互动。</p>
+      <p v-else-if="!isSimulationView" class="hint">核对互动问题、现场内容和生成的回答；可填写纠正，或将无需纠正的记录标记完成。</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="history && historyLoading" class="hint" role="status">正在读取处理历史…</p>
@@ -507,7 +507,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
 .history-search-entry button{flex:0 0 auto;min-height:44px;font-size:16px;white-space:nowrap}
 .history-search-entry .history-search-submit{border-color:#7165e9;background:#7165e9;color:#fff}
 .history-applied-query{grid-column:1/-1;min-width:0;margin:0;color:#627391;font-size:16px;overflow-wrap:anywhere}
-.is-history-view .item-meta,.is-history-view .item-meta small,.is-history-view .earlier-corrections summary,.is-history-view :deep(.correction-entry strong),.is-history-view :deep(.correction-entry p){font-size:16px}
+.interaction-learning:not(.is-simulation-view) .item-meta,.interaction-learning:not(.is-simulation-view) .item-meta small,.interaction-learning:not(.is-simulation-view) .earlier-corrections summary,.interaction-learning:not(.is-simulation-view) :deep(.correction-entry strong),.interaction-learning:not(.is-simulation-view) :deep(.correction-entry p){font-size:16px}
 .is-history-view .question>span:last-child{min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
 @media(max-width:800px){.history-search-form{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:600px){.interaction-learning.is-history-view{padding:12px}.history-search-form{padding:12px}.history-search-entry{flex-wrap:wrap}.history-search-entry input{flex-basis:100%}}

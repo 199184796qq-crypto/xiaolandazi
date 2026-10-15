@@ -78,7 +78,7 @@ function onAdopted() {
     <header v-if="activeTab !== 'simulation' && activeTab !== 'adopted'" class="rules-head">
       <div>
         <h3>{{ activeTab === 'history' ? '处理历史' : '已采用的互动规则' }}</h3>
-        <p>{{ activeTab === 'history' ? '回看互动问题及纠正处理记录，可按关键词和状态查找。' : '模拟常见问法，确认互动规则，处理直播中留下的问题；模型建议由你决定是否采用。' }}</p>
+        <p>{{ activeTab === 'history' ? '回看互动问题及纠正处理记录，可按关键词和状态查找。' : '核对直播中留下的问题和回答，可填写纠正或标记无需纠正。' }}</p>
       </div>
     </header>
     <div class="rule-navigation">
