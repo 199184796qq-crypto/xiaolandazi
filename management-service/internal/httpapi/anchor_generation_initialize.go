@@ -190,6 +190,13 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 			}
 		}
 	}
+	if validation == nil {
+		if tiered, terr := assignSellingPointTiers(canonical); terr == nil {
+			canonical = tiered
+		} else {
+			validation = fmt.Errorf("卖点分级失败：%w", terr)
+		}
+	}
 	status := "draft"
 	if validation != nil {
 		status = "validation_failed"

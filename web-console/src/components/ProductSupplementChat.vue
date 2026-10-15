@@ -4,9 +4,9 @@ import { session } from '../session'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useProductSupplementChat } from '../productSupplementChat'
 import { factCategoryDefinition, loadFactCategories } from '../factCategories'
-import type { FactGapItem } from '../api'
+import { getPlanProductCategory, setPlanProductCategory, type FactGapItem } from '../api'
 import { useProductSupplementGaps } from '../productSupplementGaps'
-import type { SpeechMinerFactDraft } from '../types'
+import { PRODUCT_CATEGORIES, type SpeechMinerFactDraft } from '../types'
 import FactCategoryBadge from './FactCategoryBadge.vue'
 import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
@@ -83,6 +83,39 @@ const checklist = useProductSupplementGaps(currentScope)
 const { gaps, loading: gapsLoading, error: gapsError, skipped } = checklist
 const visibleGaps = computed(() => gaps.value.filter(gap => !skipped.value.includes(gap['维度'])))
 
+// 方案级商品品类：系统可自动判定，也可手动覆盖；变化后重新初始化卖点才生效。
+const category = ref('')
+const categoryLoading = ref(false)
+const categorySaving = ref(false)
+const categoryNotice = ref('')
+async function loadCategory() {
+  if (props.planId <= 0) return
+  categoryLoading.value = true; categoryNotice.value = ''
+  try {
+    const result = await getPlanProductCategory(props.planId)
+    category.value = result.category || ''
+  } catch {
+    category.value = ''
+  } finally {
+    categoryLoading.value = false
+  }
+}
+async function changeCategory(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (value === category.value) return
+  categorySaving.value = true; categoryNotice.value = ''
+  try {
+    await setPlanProductCategory(props.planId, value)
+    category.value = value
+    categoryNotice.value = value ? '已保存；重新初始化卖点后按新品类挖掘' : '已清除；将回到自动判定'
+  } catch (cause) {
+    categoryNotice.value = cause instanceof Error ? cause.message : '品类保存失败'
+  } finally {
+    categorySaving.value = false
+  }
+}
+watch(() => props.planId, () => { void loadCategory() }, { immediate: true })
+
 async function openGap(gap: FactGapItem) {
   if (!ready.value || busy.value || importingFile.value) return
   examplesOpen.value = false
@@ -133,6 +166,15 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
           <div><strong>补全清单 <span>{{ visibleGaps.length }} 项</span></strong><small>按必查维度整理，点一条开始问；已有的不重复问，只补缺的或在已有基础上深挖一层</small></div>
           <button type="button" class="supplement-gap-refresh" :disabled="!ready || gapsLoading || !!busy" :aria-busy="gapsLoading" @click="checklist.reload"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14-5L3 9M3 3v6h6M4 13a8 8 0 0 0 14 5l3-3M21 21v-6h-6" /></svg>{{ gapsLoading ? '正在换清单…' : '换下一批清单' }}</button>
         </header>
+        <div class="supplement-category">
+          <label for="product-category">商品品类</label>
+          <select id="product-category" :value="category" :disabled="categoryLoading || categorySaving" @change="changeCategory">
+            <option value="">{{ categoryLoading ? '读取中…' : '自动判定' }}</option>
+            <option v-for="c in PRODUCT_CATEGORIES" :key="c.code" :value="c.code">{{ c.label }}</option>
+          </select>
+          <span v-if="categorySaving" class="supplement-category-state">保存中…</span>
+          <span v-else-if="categoryNotice" class="supplement-category-state">{{ categoryNotice }}</span>
+        </div>
         <div v-if="gapsLoading" class="supplement-gap-state">正在核对商品资料…</div>
         <div v-else-if="gapsError" class="supplement-gap-state is-error" role="alert">{{ gapsError }}</div>
         <div v-else-if="!visibleGaps.length" class="supplement-gap-state supplement-gap-empty"><img class="supplement-documents-art" :src="documentsIllustration" alt="" /><p>{{ gaps.length ? '本轮问题已跳过，可换下一批清单或在右侧自由补充。' : '目前没有待补问题，可以在右侧自由补充商品资料。' }}</p></div>
@@ -251,6 +293,11 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
 .supplement-confirmation{margin-top:20px;border:1px solid #e4e8fb;border-radius:19px;background:#f8faff;overflow:hidden}.supplement-confirmation>header{padding:20px 24px 0}.supplement-confirmation>header strong{display:block;color:#273953;font-size:18px}.supplement-confirmation>header strong span{margin-left:8px;color:#7c6ae5;font-size:14px}.supplement-confirmation>header small{display:block;margin-top:7px;color:#8490ac;font-size:13px;line-height:1.7}.supplement-confirmation .supplement-draft-groups{padding:0 24px;max-height:320px}
 .supplement-gap-list{container-type:inline-size;container-name:supplement-checklist;display:flex;flex-direction:column;min-width:0;min-height:calc(var(--supplement-chat-height) + 230px);border:1px solid #e5eaff;border-radius:22px;background:#f8faff;overflow:hidden}
 .supplement-gap-list-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 12px;padding:22px;border-bottom:1px solid #e9edfc;background:#fff}.supplement-gap-list-head>div{display:contents}.supplement-gap-list-head strong{display:flex;align-items:baseline;gap:8px;grid-column:1;grid-row:1;font-size:23px;color:#263752;line-height:1.5;white-space:nowrap}.supplement-gap-list-head strong span{font-size:13px;color:#8992b1;font-weight:500}.supplement-gap-list-head small{grid-column:1/-1;grid-row:2;color:#8490ac;font-size:13px;line-height:1.8}.supplement-gap-refresh{display:inline-flex;align-items:center;justify-content:center;gap:7px;grid-column:2;grid-row:1;align-self:center;min-height:42px;min-width:144px;padding:10px 14px;border:1px solid transparent;border-radius:10px;color:#fff;background:linear-gradient(115deg,#7f6ffb,#5e49e9);box-shadow:0 5px 14px #7463ed2e;font:inherit;font-size:15px;font-weight:700;line-height:1.4;white-space:nowrap;cursor:pointer}.supplement-gap-refresh svg{flex:0 0 17px;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.supplement-gap-refresh:not(:disabled):hover{background:linear-gradient(115deg,#7461f4,#553fe0);box-shadow:0 6px 16px #7463ed40}
+.supplement-category{display:flex;align-items:center;gap:10px;padding:14px 22px;border-bottom:1px solid #e9edfc;background:#fbfcff}
+.supplement-category label{flex:0 0 auto;font-size:13px;font-weight:800;color:#4a5678}
+.supplement-category select{flex:1;min-width:0;padding:8px 10px;border:1px solid #d8dff0;border-radius:9px;background:#fff;color:#263752;font:inherit;font-size:14px;cursor:pointer}
+.supplement-category select:disabled{opacity:.6;cursor:wait}
+.supplement-category-state{flex:0 0 auto;font-size:12px;color:#7768da}
 .supplement-gap-state{flex:1;padding:28px 24px;color:#8490ac;font-size:14px;line-height:1.8}.supplement-gap-state.is-error{color:#ad4256}.supplement-gap-empty{display:grid;align-content:center;text-align:center}.supplement-gap-empty p{margin:0}
 .supplement-gap-cards{flex:1;min-height:0;padding:18px;display:grid;align-content:start;gap:14px;max-height:calc(var(--supplement-chat-height) + 66px);overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain}.supplement-gap-card{min-width:0;border:1px solid #e8ecfa;border-radius:15px;background:#fff;padding:17px 18px;overflow-wrap:anywhere}.supplement-gap-card-head{display:flex;align-items:center;gap:10px}.supplement-gap-level{flex:0 0 auto;padding:4px 9px;border-radius:7px;font-size:13px;font-weight:700}.supplement-gap-level.is-missing{background:#fff0d8;color:#c06f0a}.supplement-gap-level.is-extend{background:#e2f0ff;color:#2475ef}.supplement-gap-card-head strong{font-size:17px;color:#263752}.supplement-gap-missing{margin:12px 0 6px;font-size:15px;color:#556383;font-weight:600;line-height:1.7}.supplement-gap-prompts{list-style:none;padding:0;margin:6px 0 14px}.supplement-gap-prompts li{position:relative;margin-top:4px;padding-left:14px;font-size:14px;color:#7b86a3;line-height:1.7}.supplement-gap-prompts li::before{content:'·';position:absolute;left:4px;color:#aab3cc}.supplement-gap-actions{display:flex;gap:10px}.supplement-gap-actions button{border:1px solid #dce1f6;border-radius:9px;background:#fff;color:#6c7d9f;padding:8px 16px;font:inherit;font-size:14px;cursor:pointer}.supplement-gap-actions .supplement-gap-ask{background:#7b67f6;color:#fff;border-color:#7b67f6}.supplement-gap-free{display:block;width:100%;margin-top:auto;padding:16px;border:0;border-top:1px solid #e9edfc;background:#fff;color:#7768da;font:inherit;font-size:14px;cursor:pointer}
 @container supplement-chat (max-width:730px){.supplement-chat-doodle{display:none}.supplement-transcript:has(.supplement-chat-doodle)>.supplement-message{max-width:92%}.supplement-composer-tools{gap:15px}.supplement-tool,.supplement-composer-tools :deep(.agent-enter-send-option){font-size:13px}.supplement-send{min-width:95px}}

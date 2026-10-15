@@ -4308,6 +4308,20 @@ export function factGapCheck(planId: number, input: { tenant_id?: number }, sign
   )
 }
 
+export function getPlanProductCategory(planId: number) {
+  return request<import('./types').PlanProductCategory>(
+    '/api/v1/live-agent-plans/' + planId + '/product-category',
+    { method: 'GET', suppressErrorDialog: true },
+  )
+}
+
+export function setPlanProductCategory(planId: number, category: string) {
+  return request<import('./types').PlanProductCategory>(
+    '/api/v1/live-agent-plans/' + planId + '/product-category',
+    { method: 'PUT', body: JSON.stringify({ category }) },
+  )
+}
+
 export function guideSpeechMiner(
   planId: number,
   input: {

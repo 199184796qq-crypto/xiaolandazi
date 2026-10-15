@@ -123,6 +123,7 @@ type anchorStyleSellingPointWheelItem struct {
 	TargetAudience *string  `json:"目标人群,omitempty"`
 	PainPoint      *string  `json:"痛点,omitempty"`
 	Angles         []string `json:"角度"`
+	Tier           string   `json:"tier,omitempty"`
 }
 
 type anchorStyleFactGapSuggestion struct {
@@ -611,6 +612,8 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelCompile(w http.ResponseWri
 		if wheelJSON == "" {
 			wheelJSON = stripPolicyJSONFence(raw)
 		}
+	} else if tiered, terr := assignSellingPointTiers(wheelJSON); terr == nil {
+		wheelJSON = tiered
 	}
 	trace := traceAnchorStyleWorkbenchMessages(actual)
 	asset, err := s.store.SaveLiveSellingPointWheel(r.Context(), tenantID, planID, actor.UserID, model.SaveLiveSellingPointWheelInput{
@@ -733,8 +736,8 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("每个卖点须包含“卖点名”和“角度”")
 		}
 		for key := range fields {
-			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" {
-				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度")
+			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" && key != "tier" {
+				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度、tier")
 			}
 		}
 		for _, key := range []string{"目标人群", "痛点"} {
@@ -751,6 +754,12 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("卖点字段类型无效")
 		}
 		item.Name = strings.TrimSpace(item.Name)
+		item.Tier = strings.TrimSpace(item.Tier)
+		switch item.Tier {
+		case "", "core", "secondary", "trust":
+		default:
+			return "", 0, 0, errors.New("tier 只能是 core、secondary 或 trust")
+		}
 		if item.TargetAudience != nil {
 			value := strings.TrimSpace(*item.TargetAudience)
 			item.TargetAudience = &value
