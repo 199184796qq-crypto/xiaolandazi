@@ -266,7 +266,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 	reportCycleProgress(r.Context(), 25)
 	queue := []anchorcycle.Task{}
 	for _, t := range tasks {
-		queue = append(queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
+		queue = append(queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, Tier: t.Tier, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 	}
 	if input.TaskLimit > 0 && input.TaskLimit < len(queue) {
 		queue = queue[:input.TaskLimit]
@@ -387,7 +387,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		}
 		state.Queue = nil
 		for _, t := range flattenAnchorStyleWheelTasks(safeWheel) {
-			state.Queue = append(state.Queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
+			state.Queue = append(state.Queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, Tier: t.Tier, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 		}
 		state.Facts = safety.SafeFacts
 		state.DerivedSafetyAssetID = safety.ID

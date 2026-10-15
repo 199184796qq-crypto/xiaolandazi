@@ -135,7 +135,7 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	}
 	var tasks []anchorcycle.Task
 	for _, item := range flattenAnchorStyleWheelTasks(wheel) {
-		tasks = append(tasks, anchorcycle.Task{SellingPoint: item.SellingPoint, Angle: item.Angle, Key: item.Key, TargetAudience: item.TargetAudience, PainPoint: item.PainPoint})
+		tasks = append(tasks, anchorcycle.Task{SellingPoint: item.SellingPoint, Angle: item.Angle, Key: item.Key, Tier: item.Tier, TargetAudience: item.TargetAudience, PainPoint: item.PainPoint})
 	}
 	set, err := s.savedContentPoolSet(ctx, tenant, version.PlanID, version.GenerationContext)
 	if err != nil {

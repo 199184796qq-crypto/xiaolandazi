@@ -437,7 +437,7 @@ func (s *Server) captureRealtimeProductFocus(ctx context.Context, tenant, plan i
 	}
 	probe := &anchorcycle.State{TenantID: tenant, PlanID: plan, RoomID: input.RoomID, Facts: safety.SafeFacts, Phase: "opening", CycleNumber: 1}
 	for _, t := range flattenAnchorStyleWheelTasks(wheel) {
-		probe.Queue = append(probe.Queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key})
+		probe.Queue = append(probe.Queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, Tier: t.Tier})
 	}
 	scheme.ProductFocus, err = s.buildCycleProductFocus(ctx, probe, links)
 	if err != nil {

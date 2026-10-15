@@ -106,7 +106,7 @@ func savedLegacyQueue(wheel anchorStyleSellingPointWheel, focus *anchorcycle.Pro
 				continue
 			}
 		}
-		queue = append(queue, anchorcycle.Task{Key: t.Key, SellingPoint: t.SellingPoint, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
+		queue = append(queue, anchorcycle.Task{Key: t.Key, SellingPoint: t.SellingPoint, Angle: t.Angle, Tier: t.Tier, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 	}
 	return queue
 }

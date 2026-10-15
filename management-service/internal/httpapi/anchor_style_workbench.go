@@ -171,6 +171,7 @@ type anchorStyleWheelTask struct {
 	SellingPoint   string `json:"selling_point"`
 	Angle          string `json:"angle"`
 	Key            string `json:"key"`
+	Tier           string `json:"tier,omitempty"`
 	TargetAudience string `json:"target_audience,omitempty"`
 	PainPoint      string `json:"pain_point,omitempty"`
 }
@@ -1025,7 +1026,7 @@ func flattenAnchorStyleWheelTasks(wheel anchorStyleSellingPointWheel) []anchorSt
 			if point == "" || angle == "" {
 				continue
 			}
-			tasks = append(tasks, anchorStyleWheelTask{SellingPoint: point, Angle: angle, Key: point + "×" + angle, TargetAudience: optionalWheelText(item.TargetAudience), PainPoint: optionalWheelText(item.PainPoint)})
+			tasks = append(tasks, anchorStyleWheelTask{SellingPoint: point, Angle: angle, Key: point + "×" + angle, Tier: item.Tier, TargetAudience: optionalWheelText(item.TargetAudience), PainPoint: optionalWheelText(item.PainPoint)})
 		}
 	}
 	return tasks

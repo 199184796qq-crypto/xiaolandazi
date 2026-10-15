@@ -43,6 +43,7 @@ type Task struct {
 	SellingPoint     string         `json:"selling_point"`
 	Angle            string         `json:"angle"`
 	Key              string         `json:"key"`
+	Tier             string         `json:"tier,omitempty"`
 	TargetAudience   string         `json:"target_audience,omitempty"`
 	PainPoint        string         `json:"pain_point,omitempty"`
 }
@@ -422,15 +423,30 @@ func (s *State) pointUsedCounts() map[string]int {
 	return counts
 }
 
-// pointWeight 返回卖点权重，缺省 1。配合 pointUsedCounts 让各卖点按权重占比分布，
-// 而不是"角度多的卖点霸屏"。未配置权重时所有卖点等频，效果等同于卖点级均匀轮换。
-func (s *State) pointWeight(point string) int {
+// tierWeight 返回卖点 tier 的默认权重：核心最高、次级中、信任福利最低。
+// 供节奏规划按 tier 加权出镜，核心卖点讲得多、信任福利讲得少；同级平级。
+func tierWeight(tier string) int {
+	switch tier {
+	case "core":
+		return 3
+	case "secondary":
+		return 2
+	case "trust":
+		return 1
+	}
+	return 1
+}
+
+// pointWeight 返回卖点权重。优先用运营/母版配置的 PointWeights（手动覆盖）；
+// 未配置时按卖点 tier 默认权重（core > secondary > trust），缺省 1。
+// 配合 pointUsedCounts 让各卖点按权重占比分布，而不是"角度多的卖点霸屏"。
+func (s *State) pointWeight(task Task) int {
 	if s.ProductFocus != nil && s.ProductFocus.Policy.PointWeights != nil {
-		if w, ok := s.ProductFocus.Policy.PointWeights[point]; ok && w > 0 {
+		if w, ok := s.ProductFocus.Policy.PointWeights[task.SellingPoint]; ok && w > 0 {
 			return w
 		}
 	}
-	return 1
+	return tierWeight(task.Tier)
 }
 
 // angleWeight 返回角度（卖点×角度）权重，缺省 1。让同一卖点下的角度也按权重分布，
@@ -481,8 +497,8 @@ func (s *State) chooseNext() {
 		// 三级加权调度：卖点权重 → 角度权重 → 最近使用。
 		// 卖点按 PointWeights 占比（缺省等频），避免角度多的卖点霸屏；
 		// 同卖点内角度按 AngleWeights 占比（缺省等频）；再按最近使用兜底。
-		curPoint := float64(pointCounts[task.SellingPoint]) / float64(s.pointWeight(task.SellingPoint))
-		priorPoint := float64(pointCounts[s.Queue[chosen].SellingPoint]) / float64(s.pointWeight(s.Queue[chosen].SellingPoint))
+		curPoint := float64(pointCounts[task.SellingPoint]) / float64(s.pointWeight(task))
+		priorPoint := float64(pointCounts[s.Queue[chosen].SellingPoint]) / float64(s.pointWeight(s.Queue[chosen]))
 		curAngle := float64(u.Count) / float64(s.angleWeight(task.Key))
 		priorAngle := float64(prior.Count) / float64(s.angleWeight(s.Queue[chosen].Key))
 		if curPoint < priorPoint ||
