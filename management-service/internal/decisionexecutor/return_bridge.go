@@ -207,7 +207,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil {
 		return err
 	}
-	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText})
+	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText, "近期回归桥话术": w.recentBridgePhrases(session.RoomID)})
 	result, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second})
 	if err != nil {
 		return err
@@ -268,6 +268,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		return nil
 	}
 	log.Printf("bridge staged room=%d decision=%s type=%s model=%s text=%q", session.RoomID, item.ID, bridge.Type, profile.Model, bridge.Text)
+	w.recordBridgePhrase(session.RoomID, bridge.Text)
 	w.archiveSessionAudio(ctx, session, "bridge:"+item.ID, "bridge", bridge.Text, audio.AudioURL, staged.DurationMS)
 	return nil
 }

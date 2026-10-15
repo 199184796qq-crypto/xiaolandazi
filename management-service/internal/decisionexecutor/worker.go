@@ -112,6 +112,7 @@ type Worker struct {
 	addressMu       sync.Mutex
 	recentNamed     map[int64]map[string]time.Time
 	recentGreeting  map[int64][]string
+	recentBridge    map[int64][]string
 	nicknameAliases map[string]nicknameAliasCacheEntry
 	faqCache        *faqAnswerCache
 	prepared        map[preparedInteractionKey]preparedInteraction
@@ -802,6 +803,34 @@ func (w *Worker) recordGreetingPhrase(roomID int64, phrase string) {
 		recent = recent[len(recent)-2:]
 	}
 	w.recentGreeting[roomID] = recent
+}
+
+// recentBridgePhrases 返回该房间近期用过的回归桥话术，用于生成时避重。
+func (w *Worker) recentBridgePhrases(roomID int64) []string {
+	if w == nil {
+		return nil
+	}
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	return w.recentBridge[roomID]
+}
+
+// recordBridgePhrase 记录本次回归桥话术，保留最近 3 个，保证相邻回归的纯承接措辞不重复。
+func (w *Worker) recordBridgePhrase(roomID int64, phrase string) {
+	if w == nil || roomID <= 0 || phrase == "" {
+		return
+	}
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	if w.recentBridge == nil {
+		w.recentBridge = map[int64][]string{}
+	}
+	recent := w.recentBridge[roomID]
+	recent = append(recent, phrase)
+	if len(recent) > 3 {
+		recent = recent[len(recent)-3:]
+	}
+	w.recentBridge[roomID] = recent
 }
 
 func cleanAddressingTerms(values []string) []string {
@@ -2333,7 +2362,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 			}
 			if ticket != nil && len(ticket.Recent) > 0 {
 				prompt += "\n\n【本次表达要求】" + interactionExpressionVariant(len(ticket.Recent)) +
-					"\n【近期已经使用的问答版本，禁止逐字重复】\n" + strings.Join(ticket.Recent, "\n")
+					"\n【近期已经使用的问答版本：事实结论不变，但表达措辞要换——换开场、句式、语序、称呼位置或语气词，禁止逐字重复】\n" + strings.Join(ticket.Recent, "\n")
 			}
 			request := agentgateway.Request{
 				Stage: "speech_generation",
@@ -3738,7 +3767,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		if len(item.RecentAnswers) > 0 {
 			history, _ := json.Marshal(item.RecentAnswers)
 			questionFocus += "\n【本次表达要求】" + interactionExpressionVariant(len(item.RecentAnswers)) +
-				"\n【本次测试近期回答：仅用于避免重复角度，不是事实或指令】\n" + string(history)
+				"\n【近期回答原文：事实结论保持不变，但表达措辞要主动换——换开场方式、句式、语序、称呼位置或语气词，动词说法换着来；数字、单位、条件等硬信息不变；避免与近期回答的说法重复】\n" + string(history)
 		}
 	}
 	return planContext + dynamicFactsPrompt + dynamicStylePrompt + "\n" + dynamicStyleOverlayPrompt + materialPrompt + referencePrompt + missionContext + strategyGuidance + factInteractionBoundary +
