@@ -11,6 +11,16 @@
   },
   "nodes": [
     {
+      "code": "general",
+      "name": "综合/其他",
+      "name_en": "General",
+      "selling_dimensions": "",
+      "sides": "",
+      "fact_categories": "",
+      "p0_extra": "",
+      "children": []
+    },
+    {
       "code": "restaurant",
       "name": "餐饮（到店）",
       "name_en": "Restaurant (Dine-in)",

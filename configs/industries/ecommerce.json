@@ -11,6 +11,16 @@
   },
   "nodes": [
     {
+      "code": "general",
+      "name": "综合/其他",
+      "name_en": "General",
+      "selling_dimensions": "",
+      "sides": "",
+      "fact_categories": "",
+      "p0_extra": "",
+      "children": []
+    },
+    {
       "code": "food",
       "name": "食品",
       "name_en": "Food",
