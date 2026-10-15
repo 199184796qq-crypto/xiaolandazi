@@ -585,6 +585,11 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelCompile(w http.ResponseWri
 		writeError(w, 400, err.Error())
 		return
 	}
+	promptMD, err = injectCategorySellingDimensions(promptMD, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if utf8.RuneCountInString(promptMD) < 100 || utf8.RuneCountInString(promptMD) > 60000 {
 		writeError(w, http.StatusBadRequest, "卖点挖掘提示词须为100到60000字")
 		return

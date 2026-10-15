@@ -112,6 +112,55 @@ func TestSellingPointExtractionPromptInjectsFactPackage(t *testing.T) {
 	}
 }
 
+func TestSellingPointExtractionPromptInjectsCategoryDimensions(t *testing.T) {
+	prompt, _, err := loadSellingPointExtractionPrompt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "{{CATEGORY_MUST_CHECK}}") {
+		t.Fatalf("selling-point mother must carry the category placeholder")
+	}
+	// 硬编码的食品类必查维度应已移除，改由品类维度表注入。
+	if strings.Contains(prompt, "肉紧、有嚼头") || strings.Contains(prompt, "半只装") {
+		t.Fatalf("food-specific must-check dimensions should no longer be hardcoded")
+	}
+	injected, err := injectCategorySellingDimensions(prompt, "food")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(injected, "{{CATEGORY_MUST_CHECK}}") {
+		t.Fatalf("category placeholder was not replaced")
+	}
+	for _, want := range []string{"食品/餐饮", "服装/鞋帽", "电器/数码", "通用维度"} {
+		if !strings.Contains(injected, want) {
+			t.Fatalf("injected category table missing %q", want)
+		}
+	}
+	if !strings.Contains(injected, "本方案商品品类已判定为「食品/餐饮」") {
+		t.Fatalf("explicit category label was not injected")
+	}
+	// 无判定品类时不带显式标注，仅注入维度表。
+	plain, err := injectCategorySellingDimensions(prompt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "本方案商品品类已判定为") {
+		t.Fatalf("empty category must not inject explicit label")
+	}
+}
+
+func TestInjectCategorySellingDimensionsKeepsManualPrompt(t *testing.T) {
+	custom := "自定义提示词，无占位"
+	got, err := injectCategorySellingDimensions(custom, "food")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != custom {
+		t.Fatalf("manual prompt without placeholder must stay unchanged: %q", got)
+	}
+}
+
+
 func TestFlattenAnchorStyleWheelTasksInterleavesSellingPoints(t *testing.T) {
 	wheel := anchorStyleSellingPointWheel{Items: []anchorStyleSellingPointWheelItem{
 		{Name: "老坊背书", Angles: []string{"老坊1", "老坊2"}},
