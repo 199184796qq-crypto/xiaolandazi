@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strings"
@@ -40,6 +41,46 @@ type returnBridgePlan struct {
 type bridgeText struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// bridgePhrasePool 回归桥纯承接句式池：程序写死，全部是纯承接、不含任何话题词、不预告回归内容。
+// 程序每次把池子随机洗牌后再避近期选句，模型只做套用，不给自由发挥空间，
+// 从根上避免"接着看包装/接着说这鸭子/复述回归内容"这类滑向话题词的承接。
+// 洗牌让"好嘞"这类高频句式不固定排在队首，出现更均匀。
+var bridgePhrasePool = []string{
+	"好嘞，咱们接着往下说",
+	"行，接着说",
+	"那，咱们接着聊",
+	"来，继续说",
+	"诶，接着往下走",
+	"得嘞，继续说",
+	"好，咱们继续",
+	"走，接着往下",
+	"回到刚才的话题，接着说",
+	"说回正题，咱们继续",
+	"来，接着",
+	"那，往下说",
+}
+
+// pickBridgePhrase 从池子选出本轮承接句：先随机洗牌，再选近期没用过的，全部用过则取洗牌后第一个。
+func pickBridgePhrase(recent []string) string {
+	if len(bridgePhrasePool) == 0 {
+		return ""
+	}
+	pool := append([]string(nil), bridgePhrasePool...)
+	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+	used := make(map[string]bool, len(recent))
+	for _, r := range recent {
+		if r != "" {
+			used[r] = true
+		}
+	}
+	for _, p := range pool {
+		if !used[p] {
+			return p
+		}
+	}
+	return pool[0]
 }
 
 func validateBridge(raw string, plan returnBridgePlan) (bridgeText, error) {
@@ -207,7 +248,8 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil {
 		return err
 	}
-	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText})
+	bridgePhrase := pickBridgePhrase(w.recentBridgePhrases(session.RoomID))
+	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText, "本轮承接句": bridgePhrase, "近期回归桥话术": w.recentBridgePhrases(session.RoomID)})
 	result, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second})
 	if err != nil {
 		return err
@@ -235,7 +277,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil || !ok {
 		return fmt.Errorf("bridge voice unavailable")
 	}
-	audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: interactionTTSText(bridge.Text), Rate: voiceRate(voice)})
+	audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: prefixedInteractionText(bridge.Text), Rate: voiceRate(voice)})
 	if err != nil || audio.AudioURL == "" {
 		return fmt.Errorf("bridge TTS unavailable: %v", err)
 	}
@@ -268,6 +310,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		return nil
 	}
 	log.Printf("bridge staged room=%d decision=%s type=%s model=%s text=%q", session.RoomID, item.ID, bridge.Type, profile.Model, bridge.Text)
+	w.recordBridgePhrase(session.RoomID, bridge.Text)
 	w.archiveSessionAudio(ctx, session, "bridge:"+item.ID, "bridge", bridge.Text, audio.AudioURL, staged.DurationMS)
 	return nil
 }

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
-	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/speechbase"
 	"math/rand"
 	"strings"
 	"time"
@@ -62,17 +62,17 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 // Compile expression data only. Legacy sample products, price examples and
 // filled hook skeletons remain in their original assets, never in today's facts.
 func cycleExpressionView(state *anchorcycle.State) (any, error) {
-	b, err := anchorstylescore.Parse(state.BaselineJSON)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"语气词": b.Identity.Particles, "称呼": b.Identity.Audience, "自指": b.Identity.Self,
-		"节奏":     map[string]any{"平均分句长度": b.Identity.Rhythm.Length, "长度区间": b.Identity.Rhythm.LengthRange, "问句频率": b.Identity.Rhythm.QuestionFrequency},
-		"数字表达习惯": map[string]any{"价格表述方式": b.Identity.Numbers.Style, "自然帮观众算账": b.Identity.Numbers.LikesArithmetic},
-		"量化基准":   b.Quant, "表达偏好": b.Forbidden,
-	}, nil
+	return renderAnchorExpressionView(state.BaselineJSON)
 }
+
+// renderAnchorExpressionView 委托共享包 speechbase 渲染主播表达标尺。
+// 主线/开场/互动三类话术共用同一份实现，避免主播腔调三套各写各的。
+func renderAnchorExpressionView(baselineJSON string) (any, error) {
+	return speechbase.RenderAnchorExpressionView(baselineJSON)
+}
+
+// fourLayerNotMentionText 引用共享包的四层「不提」统一文案。
+const fourLayerNotMentionText = speechbase.FourLayerNotMentionText
 func textControlLeak(text string) bool {
 	for _, marker := range []string{"{{", "}}", "本次任务：", "表达展开建议：", "开头模式：", "后续表达加强建议：", "\"本次任务\":", "\"reply\":", "\"needs_review\":", "## 本场有效事实", "## 主播表达标尺"} {
 		if strings.Contains(text, marker) {
@@ -132,7 +132,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 稳定前缀放 system：母版 + 主播标尺 + 有效P0 + 不提 + 长期纠正规则，整场不变，命中上下文缓存。
 	// 随侧面/任务变化的内容（可说事实、改写约束、商品边界）放 user（见下方 variable），
 	// 避免 system 每段随侧面变导致前缀缓存失效。
-	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。", "用户已确认的长期纠正规则": state.EffectiveCorrections()}
+	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": fourLayerNotMentionText, "用户已确认的长期纠正规则": state.EffectiveCorrections()}
 	fixed, _ := json.Marshal(stable)
 	variable := map[string]any{"可说": facts}
 	if len(expressionGuidance) > 0 {

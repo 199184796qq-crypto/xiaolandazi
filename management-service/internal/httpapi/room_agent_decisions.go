@@ -146,8 +146,8 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 		ReplyHint     string `json:"reply_hint"`
 		EventID       int64    `json:"event_id"`
 		UserID        string   `json:"user_id"`
-		Nickname      string   `json:"nickname"`
-		Nicknames     []string `json:"nicknames"`
+		Nickname      string   `json:"nickname,omitempty"`
+		Nicknames     []string `json:"nicknames,omitempty"`
 		ForceReopen   bool     `json:"force_reopen"`
 		ManualAction  string `json:"manual_action"`
 		ManualOrigin  string `json:"manual_origin"`
@@ -165,6 +165,9 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 	if input.Nickname != "" {
 		input.Nicknames = append([]string{input.Nickname}, input.Nicknames...)
 	}
+	// core Candidate 只认 nicknames 复数且 readJSON 开了 DisallowUnknownFields，
+	// 转发前清空单数字段避免序列化出 "nickname" 被 core 拒绝（invalid request body）。
+	input.Nickname = ""
 	input.ManualAction = strings.ToLower(strings.TrimSpace(input.ManualAction))
 	input.ManualOrigin = strings.ToLower(strings.TrimSpace(input.ManualOrigin))
 	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))
