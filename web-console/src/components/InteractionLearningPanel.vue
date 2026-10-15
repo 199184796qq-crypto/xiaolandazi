@@ -8,6 +8,7 @@ import InteractionFactDialog from './InteractionFactDialog.vue'
 import SimulationMiningProgress from './SimulationMiningProgress.vue'
 import InteractionTopicIcon from './InteractionTopicIcon.vue'
 import InteractionCorrectionEntry from './InteractionCorrectionEntry.vue'
+import InteractionHistoryPager from './InteractionHistoryPager.vue'
 import { interactionSuggestionTopic, interactionTopicFilters, interactionTopicLabels, type InteractionSuggestionTopic } from '../interactionSuggestionTopics'
 
 const props = withDefaults(defineProps<{ roomId: number | null; planId: number | null; facts?: LiveAgentPlanFact[]; compact?: boolean; showSimulation?: boolean; sourceType?: 'initial_simulation' | 'live_uncertain'; history?: boolean }>(), { compact: false, showSimulation: true })
@@ -15,6 +16,8 @@ const emit = defineEmits<{ adopted: []; factsUpdated: [scope: { roomId: number; 
 const items = ref<AgentLearningSession[]>([])
 const count = ref(0)
 const total = ref(0), page = ref(1), query = ref(''), status = ref('pending')
+const appliedHistoryQuery = ref('')
+const historyLoading = ref(false)
 const topicFilter = ref<InteractionSuggestionTopic | 'all'>('all')
 const isSimulationView = computed(() => props.sourceType === 'initial_simulation' && !props.history && !props.compact)
 const statusLabel = (value: string) => value === 'closed' ? '无需纠正 / 已处理' : value === 'adopted' ? '已采用纠正' : '待处理'
@@ -48,6 +51,7 @@ const panelTitle = computed(() => props.history ? '纠正处理历史' : props.c
 let epoch = 0
 let requestSequence = 0
 let locationSequence = 0
+let lastHistorySelection: { page: number; status: string; query: string } | null = null
 let poll: ReturnType<typeof setInterval> | undefined
 
 watch(() => [props.roomId, props.planId, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
@@ -61,12 +65,22 @@ async function refresh(manual = false) {
   const room = props.roomId, plan = props.planId, token = epoch
   if (!room || !plan || (!manual && document.hidden)) return false
   const sequence = ++requestSequence
+  const history = props.history
+  const source = props.sourceType
+  const actor = session.bootstrap?.actor
+  const actorKey = `${actor?.user_id || 0}:${actor?.tenant_id || 0}`
+  const current = () => token === epoch && sequence === requestSequence && room === props.roomId && plan === props.planId && history === props.history && source === props.sourceType && actorKey === `${session.bootstrap?.actor.user_id || 0}:${session.bootstrap?.actor.tenant_id || 0}`
   const selectedTopic = isSimulationView.value ? topicFilter.value : 'all'
+  if (history) historyLoading.value = true
   try {
-    const params = new URLSearchParams({ plan_id: String(plan), status: props.history ? status.value : 'pending', page: String(selectedTopic === 'all' ? page.value : 1), q: query.value })
+    const params = new URLSearchParams({ plan_id: String(plan), status: history ? status.value : 'pending', page: String(selectedTopic === 'all' ? page.value : 1), q: history ? appliedHistoryQuery.value : query.value })
     if (props.sourceType && !props.history) params.set('source', props.sourceType)
     const result = await request<{ items: AgentLearningSession[]; pending_count: number; total: number }>(`/api/v1/live/rooms/${room}/interaction-learning?${params}`, { suppressErrorDialog: true })
-    if (token !== epoch || sequence !== requestSequence) return false
+    if (!current()) return false
+    if (history && page.value > Math.max(1, Math.ceil((result.total || 0) / 30))) {
+      page.value = Math.max(1, Math.ceil((result.total || 0) / 30))
+      return await refresh(manual)
+    }
     const records = [...(result.items || [])]
     // Topic filters include subsequent pages rather than hiding matching older records.
     if (selectedTopic !== 'all') {
@@ -74,24 +88,66 @@ async function refresh(manual = false) {
       for (let nextPage = 2; nextPage <= pages; nextPage++) {
         params.set('page', String(nextPage))
         const next = await request<{ items: AgentLearningSession[] }>(`/api/v1/live/rooms/${room}/interaction-learning?${params}`, { suppressErrorDialog: true })
-        if (token !== epoch || sequence !== requestSequence) return false
+        if (!current()) return false
         records.push(...(next.items || []))
       }
     }
     items.value = [...new Map(records.map(item => [item.id, item])).values()]
     count.value = result.pending_count || 0
     total.value = selectedTopic === 'all' ? result.total || 0 : filteredItems.value.length
+    if (history) lastHistorySelection = { page: page.value, status: status.value, query: appliedHistoryQuery.value }
     if (manual) error.value = ''
     if (!items.value.some(item => item.id === locatedId.value && item.status === 'editing')) locatedId.value = null
     return true
   } catch (err) {
-    if (token === epoch && sequence === requestSequence && manual) error.value = err instanceof Error ? err.message : '读取待确认互动失败'
+    if (current() && manual) {
+      error.value = err instanceof Error ? err.message : history ? '读取处理历史失败' : '读取待确认互动失败'
+      if (history && lastHistorySelection) {
+        page.value = Math.min(lastHistorySelection.page, Math.max(1, Math.ceil(total.value / 30)))
+        status.value = lastHistorySelection.status
+        appliedHistoryQuery.value = lastHistorySelection.query
+      }
+    }
     return false
+  } finally {
+    if (history && current()) historyLoading.value = false
+  }
+}
+
+function searchHistory() {
+  if (busy.value || historyLoading.value) return
+  appliedHistoryQuery.value = query.value.trim()
+  page.value = 1
+  void refresh(true)
+}
+
+function clearHistorySearch() {
+  if (busy.value || historyLoading.value) return
+  query.value = ''; appliedHistoryQuery.value = ''; page.value = 1
+  void refresh(true)
+}
+
+function changeHistoryStatus() {
+  page.value = 1
+  void refresh(true)
+}
+
+async function goHistoryPage(nextPage: number) {
+  if (!props.history || busy.value || historyLoading.value) return
+  const next = Math.min(Math.max(nextPage, 1), Math.max(1, Math.ceil(total.value / 30)))
+  if (next === page.value) return
+  page.value = next
+  const token = epoch
+  if (await refresh(true) && token === epoch && props.history) {
+    await nextTick()
+    if (token === epoch && props.history) panelElement.value?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
   }
 }
 
 watch(() => [props.roomId, props.planId, props.history, props.sourceType, session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], () => {
   epoch++; page.value = 1; status.value = props.history ? 'all' : 'pending'; query.value = ''; topicFilter.value = 'all'
+  appliedHistoryQuery.value = ''; historyLoading.value = false
+  lastHistorySelection = null
   items.value = []; count.value = 0; total.value = 0; editing.value = null; preview.value = null; feedback.value = ''; notice.value = ''; error.value = ''
   historyDraft.value = null; restoredPreviewText.value = ''; busy.value = ''
   locatedId.value = null
@@ -102,7 +158,7 @@ watch(() => [props.roomId, props.planId, props.history, props.sourceType, sessio
   void refresh()
 }, { immediate: true })
 
-onMounted(() => { poll = setInterval(() => { if (!busy.value && !locating.value && !factContext.value) void refresh() }, 30_000) })
+onMounted(() => { poll = setInterval(() => { if (!busy.value && !historyLoading.value && !locating.value && !factContext.value) void refresh() }, 30_000) })
 onBeforeUnmount(() => { epoch++; simulationRun++; if (poll) clearInterval(poll) })
 
 async function locatePending(itemId: number) {
@@ -176,7 +232,7 @@ async function begin(item: AgentLearningSession) {
 }
 
 function latestCorrection(item: AgentLearningSession) { return item.correction_history?.at(-1) }
-function showSuggestions(item: AgentLearningSession) { return !item.correction_history?.length && editing.value !== item.id }
+function showSuggestions(item: AgentLearningSession) { return !props.history && !item.correction_history?.length && editing.value !== item.id }
 function cancelCorrection() { if (!busy.value) { editing.value = null; historyDraft.value = null; preview.value = null; restoredPreviewText.value = ''; feedback.value = '' } }
 
 function selectTopic(topic: InteractionSuggestionTopic | 'all') {
@@ -353,7 +409,7 @@ async function deleteSuggestions(item?: AgentLearningSession) {
 </script>
 
 <template>
-  <section v-if="visible && roomId && planId" ref="panelElement" class="interaction-learning" :class="{ 'is-simulation-view': isSimulationView }" aria-label="互动纠正与待确认问题">
+  <section v-if="visible && roomId && planId" ref="panelElement" class="interaction-learning" :class="{ 'is-simulation-view': isSimulationView, 'is-history-view': history }" :aria-busy="history ? historyLoading : undefined" aria-label="互动纠正与待确认问题">
     <div class="learning-toolbar">
     <header>
       <div class="learning-heading">
@@ -372,24 +428,31 @@ async function deleteSuggestions(item?: AgentLearningSession) {
         <button v-if="isSimulationView" type="button" class="simulation-delete-action" :disabled="!!busy || !!factContext || locating || !count" @click="deleteSuggestions()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></svg>{{ busy === 'delete:all' ? '删除中…' : '全部删除' }}</button>
       </div>
     </header>
-      <form v-if="showItems && !compact" class="history-filters" @submit.prevent="page = 1; refresh(true)">
-        <select v-if="history" v-model="status" aria-label="处理状态" :disabled="!!busy" @change="page = 1; refresh(true)"><option value="all">全部记录</option><option value="pending">待处理</option><option value="closed">无需纠正 / 已处理</option><option value="adopted">已采用纠正</option></select>
+      <form v-if="history && showItems && !compact" class="history-search-form" role="search" aria-label="处理历史关键词搜索" @submit.prevent="searchHistory">
+        <label class="history-keyword-field"><span>关键词搜索</span><div class="history-search-entry"><input v-model="query" type="search" maxlength="200" aria-label="处理历史关键词" :disabled="!!busy" placeholder="搜索互动问题、原回答或现场内容" /><button type="submit" class="history-search-submit" :disabled="!!busy || historyLoading">搜索</button><button type="button" :disabled="!!busy || historyLoading" @click="clearHistorySearch">清空</button></div></label>
+        <label class="history-status-field"><span>处理状态</span><select v-model="status" aria-label="处理状态" :disabled="!!busy || historyLoading" @change="changeHistoryStatus"><option value="all">全部记录</option><option value="pending">待处理</option><option value="closed">无需纠正 / 已处理</option><option value="adopted">已采用纠正</option></select></label>
+        <p v-if="appliedHistoryQuery" class="history-applied-query">当前关键词：{{ appliedHistoryQuery }}</p>
+      </form>
+      <form v-else-if="showItems && !compact" class="history-filters" @submit.prevent="page = 1; refresh(true)">
         <div class="learning-search-box"><svg v-if="isSimulationView" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="m15 15 6 6" /></svg><input v-model="query" maxlength="200" aria-label="检索纠正记录" :disabled="busy === 'simulate'" :placeholder="isSimulationView ? '搜索问题或回答，例如：价格、包邮、发货时间、退换货…' : '搜索问题或回答，例如：价格、包邮'" /><button :disabled="!!busy" type="submit">{{ isSimulationView ? '搜索' : '检索' }}</button></div>
         <div v-if="isSimulationView" class="simulation-quick-filters" aria-label="模拟建议快捷筛选"><span>快捷筛选：</span><button v-for="filter in interactionTopicFilters" :key="filter.key" type="button" :class="'is-' + filter.key" :aria-pressed="topicFilter === filter.key" :disabled="!!busy" @click="selectTopic(filter.key)"><InteractionTopicIcon :topic="filter.key" />{{ filter.label }}</button></div>
         <template v-else><button type="button" :disabled="!!busy" @click="query = '价格'; page = 1; refresh(true)">价格</button><button type="button" :disabled="!!busy" @click="query = ''; page = 1; refresh(true)">全部内容</button></template>
       </form>
     </div>
     <SimulationMiningProgress v-if="simulationPhase && showSimulation && !compact && !history && (!isSimulationView || simulationPhase !== 'complete')" :phase="simulationPhase" :generated="simulationGenerated" />
+    <InteractionHistoryPager v-if="history && showItems && !compact" :page="page" :total="total" :disabled="!!busy || historyLoading || !!factContext || locating" position="top" @change="goHistoryPage" />
     <template v-if="showItems">
-      <p v-if="!isSimulationView" class="hint">模型只提供建议，事实由你审核。你可以修改并采用纠正，或关闭无需处理的记录；这些建议不会单独阻断互动。</p>
+      <p v-if="history" class="hint">回看互动问题、现场内容和生成的回答，可继续纠正或删除记录。</p>
+      <p v-else-if="!isSimulationView" class="hint">模型只提供建议，事实由你审核。你可以修改并采用纠正，或关闭无需处理的记录；这些建议不会单独阻断互动。</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-if="!displayedItems.length && busy !== 'simulate'" class="hint">{{ isSimulationView && (topicFilter !== 'all' || query.trim()) ? '没有找到匹配的模拟建议，换个关键词或点击“全部内容”看看吧。' : sourceType === 'initial_simulation' ? '还没有模拟建议，点击左上方“模拟挖掘”开始。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
+      <p v-if="history && historyLoading" class="hint" role="status">正在读取处理历史…</p>
+      <p v-if="!displayedItems.length && busy !== 'simulate' && (!history || (!historyLoading && !error))" class="hint">{{ history ? (appliedHistoryQuery || status !== 'all' ? '没有找到匹配的历史记录，可更换关键词或处理状态。' : '暂无处理历史记录。') : isSimulationView && (topicFilter !== 'all' || query.trim()) ? '没有找到匹配的模拟建议，换个关键词或点击“全部内容”看看吧。' : sourceType === 'initial_simulation' ? '还没有模拟建议，点击左上方“模拟挖掘”开始。' : sourceType === 'live_uncertain' ? '暂无需要处理的直播互动记录。' : '暂无需要处理的互动记录。' }}</p>
       <article v-for="item in displayedItems" :key="item.id" :data-interaction-review-id="item.id" class="simulation-result-card" :class="[{ 'is-review-located': locatedId === item.id }, 'topic-' + interactionSuggestionTopic(item)]" tabindex="-1">
         <aside v-if="isSimulationView" class="simulation-topic-rail"><i><InteractionTopicIcon :topic="interactionSuggestionTopic(item)" /></i><strong>{{ interactionTopicLabels[interactionSuggestionTopic(item)] }}</strong></aside>
         <div class="review-card-content">
         <div class="item-meta"><span>{{ item.source_type === 'initial_simulation' ? '模拟建议' : '直播记录' }} · {{ item.review?.kind === 'semantic' ? '问法纠正' : '缺少回答条件' }}</span><small>{{ statusLabel(item.status) }} · 记录{{ item.review?.occurrences || 1 }}次 · {{ new Date(item.updated_at).toLocaleString() }}</small></div>
-        <strong class="question"><span v-if="item.status === 'editing'" class="pending-question-dot" role="img" aria-label="待处理问题"></span><span>{{ item.question }}</span></strong>
+        <strong class="question"><span v-if="item.status === 'editing'" class="pending-question-dot" role="img" aria-label="待处理问题"></span><span>{{ history ? '互动问题：' : '' }}{{ item.question }}</span></strong>
         <div class="review-card-body"><div class="review-card-info">
         <p v-if="item.review?.observed_context"><b>实际现场：</b><span>{{ item.review.observed_context }}</span></p>
         <p v-if="item.review?.context"><b>适用场景：</b><span>{{ item.review.context }}</span></p>
@@ -427,13 +490,27 @@ async function deleteSuggestions(item?: AgentLearningSession) {
         </div>
         </div>
       </article>
-      <div v-if="total > 30" class="actions" aria-label="记录翻页"><button :disabled="page <= 1 || !!busy" @click="page--; refresh(true)">上一页</button><span>第{{ page }}页 · 共{{ total }}条</span><button :disabled="page * 30 >= total || !!busy" @click="page++; refresh(true)">下一页</button></div>
+      <InteractionHistoryPager v-if="history && !compact" :page="page" :total="total" :disabled="!!busy || historyLoading || !!factContext || locating" position="bottom" @change="goHistoryPage" />
+      <div v-else-if="total > 30" class="actions" aria-label="记录翻页"><button :disabled="page <= 1 || !!busy" @click="page--; refresh(true)">上一页</button><span>第{{ page }}页 · 共{{ total }}条</span><button :disabled="page * 30 >= total || !!busy" @click="page++; refresh(true)">下一页</button></div>
     </template>
     <InteractionFactDialog v-if="factContext" :room-id="roomId" :plan-id="planId" :item="factContext" @close="factContext = null" @saved="onFactSaved" />
   </section>
 </template>
 
 <style scoped>
+.interaction-learning.is-history-view{min-width:0}
+.history-search-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(210px,.3fr);gap:14px 18px;margin-top:18px;padding:16px;border:1px solid #dce4f5;border-radius:13px;background:#fff;font-size:16px}
+.history-search-form label{display:grid;gap:8px;min-width:0;font-size:16px}
+.history-search-entry{display:flex;align-items:center;gap:8px;min-width:0}
+.history-search-form input,.history-search-form select{box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:9px 12px;border:1px solid #d2dbf2;border-radius:9px;background:#fff;color:inherit;font:inherit;font-size:16px}
+.history-search-entry input{flex:1}
+.history-search-entry button{flex:0 0 auto;min-height:44px;font-size:16px;white-space:nowrap}
+.history-search-entry .history-search-submit{border-color:#7165e9;background:#7165e9;color:#fff}
+.history-applied-query{grid-column:1/-1;min-width:0;margin:0;color:#627391;font-size:16px;overflow-wrap:anywhere}
+.is-history-view .item-meta,.is-history-view .item-meta small,.is-history-view .earlier-corrections summary,.is-history-view :deep(.correction-entry strong),.is-history-view :deep(.correction-entry p){font-size:16px}
+.is-history-view .question>span:last-child{min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
+@media(max-width:800px){.history-search-form{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.interaction-learning.is-history-view{padding:12px}.history-search-form{padding:12px}.history-search-entry{flex-wrap:wrap}.history-search-entry input{flex-basis:100%}}
 .earlier-corrections{margin-top:10px;color:#687aaa}.earlier-corrections summary{cursor:pointer;font-size:13px}.preview p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
 .interaction-learning .simulation-delete-action{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;border-color:#f3cfdb;background:#fff6f9;color:#d35f7c}.simulation-delete-action svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.interaction-learning .simulation-delete-action:hover:not(:disabled){background:#ffeef3;border-color:#e79db1}
 .history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}.history-filters input,.history-filters select{padding:9px 12px;border:1px solid #d2dbf2;border-radius:10px;font:inherit;color:inherit;background:#fff}.history-filters input{flex:1;min-width:220px}
