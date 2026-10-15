@@ -11,3 +11,5 @@
 服务器两个入口原本不同步：兼容web为403fa69，桌面web-desktop被WorkBuddy原地更新为6cb0ee6对应前端。独立构建6cb0ee6的49个资源与实际桌面文件逐项一致，再采用整合后的源码保留该后续更新及此前已授权的界面修改。E盘原开发目录未改。
 
 验证和发布证明位于当前任务的 `work/remove-agent-config-proof/`。发布范围仅限web/web-desktop入口及新增静态资源，保留实际current的其它文件、客户/销售手机端、Nginx和运行中的服务。
+
+北京时间18:48:29已发布 `/opt/xiaolan/releases/20261015-remove-agent-config-a9aee5b`，源码a9aee5b。2231个旧非入口文件逐项一致，新增47个文件；两个公网入口及其8个资源核对通过。发布期间保留WorkBuddy后续更新的Management878594/a43448e，Core775073和网关775930保持不变，没有重启服务或修改Nginx、后台配置与业务数据。
