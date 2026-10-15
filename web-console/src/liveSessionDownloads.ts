@@ -3,7 +3,7 @@ import { liveSupportRoomForRequest } from './liveSupportAccess'
 
 export interface SessionVoiceItem {
   id: number; session_id: number; kind: string; text: string; duration_ms: number
-  played_at: string; expires_at?: string; available: boolean
+  played_at: string; expires_at?: string; available: boolean; sequence?: number
 }
 export interface SessionVoicePage {
   session_id: number; started_at: string; ended_at?: string

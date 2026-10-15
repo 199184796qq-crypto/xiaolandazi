@@ -77,7 +77,7 @@ func parseSessionDownloadRange(from, to string) (*time.Time, *time.Time, error) 
 
 func sessionTranscript(items []model.SessionSpeechAsset) string {
 	texts := []string{}
-	for _, a := range items {
+	for _, a := range sessionDownloadItems(items) {
 		if a.PlayedAt != nil && strings.TrimSpace(a.Text) != "" {
 			texts = append(texts, strings.TrimSpace(a.Text))
 		}
@@ -114,11 +114,12 @@ func (s *Server) sessionDownloads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	items, err := s.store.ListSessionSpeechAssets(r.Context(), session.TenantID, session.RoomID, session.ID, from, to)
+	assets, err := s.store.ListSessionSpeechAssets(r.Context(), session.TenantID, session.RoomID, session.ID, nil, nil)
 	if err != nil {
 		writeError(w, 500, "读取声音列表失败")
 		return
 	}
+	items := filterSessionDownloadItems(sessionDownloadItems(assets), from, to)
 	page := parseGeneratedSpeechInt(r.URL.Query().Get("page"), 1)
 	size := 50
 	total := len(items)
@@ -170,43 +171,21 @@ func (s *Server) downloadSessionAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "无效的声音记录")
 		return
 	}
-	a, err := s.store.GetSessionSpeechAsset(r.Context(), session.TenantID, session.RoomID, session.ID, id)
+	assets, err := s.store.ListSessionSpeechAssets(r.Context(), session.TenantID, session.RoomID, session.ID, nil, nil)
 	if err != nil {
-		writeError(w, 404, "本场声音记录不存在")
-		return
-	}
-	if !a.Available {
-		writeError(w, 410, "声音文件已到期或不可用")
-		return
-	}
-	address, allowed := sessionAudioDownloadURL(a.AudioURL)
-	if !allowed {
-		writeError(w, 502, "声音文件地址不可用")
+		writeError(w, 500, "读取声音记录失败")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	client := sessionAudioClient()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		writeError(w, 502, "声音下载暂不可用")
-		return
+	for _, item := range sessionDownloadItems(assets) {
+		for _, part := range item.Parts {
+			// Old bridge links also download the complete matching interaction.
+			if part.ID == id {
+				writeSessionDownloadAudio(ctx, w, item, sessionAudioClient())
+				return
+			}
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		writeError(w, 410, "声音文件已到期或不可用")
-		return
-	}
-	if resp.ContentLength > 256<<20 {
-		writeError(w, 502, "声音文件过大，暂不可下载")
-		return
-	}
-	w.Header().Set("Content-Type", "audio/wav")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="live-room-%d-session-%d-audio-%d.wav"`, session.RoomID, session.ID, a.ID))
-	w.Header().Set("Cache-Control", "private, no-store")
-	if resp.ContentLength >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
-	}
-	_, _ = io.Copy(w, resp.Body)
+	writeError(w, 404, "本场声音记录不存在或已到期")
 }

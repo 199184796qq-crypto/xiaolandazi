@@ -11,6 +11,7 @@ export function useProductSupplementChat(
   scope: () => ProductSupplementScope,
   updated: (scope: ProductSupplementScope) => void,
   services: Services = { chat: chatProductSupplement, adopt: adoptLiveAgentPlanFacts },
+  selectedProduct: () => number | undefined = () => undefined,
 ) {
   const messages = ref<SpeechMinerMessage[]>([])
   const input = ref('')
@@ -45,7 +46,7 @@ export function useProductSupplementChat(
     try {
       const result = await services.chat(capturedScope.planId, {
         tenant_id: capturedScope.tenantId, message, history, draft_facts: drafts.value.map(item => ({ ...item })),
-        focus_gap: focusJson || undefined,
+        focus_gap: focusJson || undefined, product_link_id: selectedProduct(),
       }, controller.signal)
       if (!current()) return
       if (!result.reply?.trim()) throw new Error('智能体未返回回复，请重试。')

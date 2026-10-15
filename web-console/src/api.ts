@@ -869,6 +869,23 @@ export function getLiveAgentPlans(tenantId?: number) {
   return request<{ items: LiveAgentPlan[] }>('/api/v1/live-agent-plans' + query)
 }
 
+export function getPlanBusinessMode(planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<import('./planBusinessMode').PlanBusinessSettings>('/api/v1/live-agent-plans/' + planId + '/biz-domain' + query, { suppressErrorDialog: true })
+}
+
+export function setPlanBusinessIndustry(planId: number, bizDomain: import('./planBusinessMode').PlanBusinessMode, industry: string, tenantId?: number) {
+  return request<import('./planBusinessMode').PlanBusinessSettings>('/api/v1/live-agent-plans/' + planId + '/business-industry', {
+    method: 'PUT', body: JSON.stringify({ biz_domain: bizDomain, industry, tenant_id: tenantId }), suppressErrorDialog: true,
+  })
+}
+
+export function setPlanBusinessMode(planId: number, bizDomain: import('./planBusinessMode').PlanBusinessMode, tenantId?: number) {
+  return request<{ biz_domain: import('./planBusinessMode').PlanBusinessMode }>('/api/v1/live-agent-plans/' + planId + '/biz-domain', {
+    method: 'PUT', body: JSON.stringify({ biz_domain: bizDomain, tenant_id: tenantId }), suppressErrorDialog: true,
+  })
+}
+
 export function createLiveAgentPlan(payload: { name: string; description?: string; tenant_id?: number }) {
   return request<LiveAgentPlan>('/api/v1/live-agent-plans', {
     method: 'POST',
@@ -4282,7 +4299,7 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
 
 export function chatProductSupplement(
   planId: number,
-  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string },
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string; product_link_id?: number },
   signal?: AbortSignal,
 ) {
   return request<import('./types').SpeechMinerGuideResponse>(
@@ -4301,7 +4318,7 @@ export interface FactGapCheckResponse {
   gaps: FactGapItem[]
   summary: string
 }
-export function factGapCheck(planId: number, input: { tenant_id?: number }, signal?: AbortSignal) {
+export function factGapCheck(planId: number, input: { tenant_id?: number; product_link_id?: number }, signal?: AbortSignal) {
   return request<FactGapCheckResponse>(
     '/api/v1/live-agent-plans/' + planId + '/fact-gap-check',
     { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true, signal },

@@ -69,4 +69,5 @@ defineEmits<{ initialize: []; save: [] }>()
 @container(max-width:880px){.agent-control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.control-initialize{grid-column:1/-1}.agent-control-card{min-height:62px}.control-initialize strong{font-size:21px}}
 @container(max-width:460px){.agent-control-grid{grid-template-columns:1fr}.control-initialize{grid-column:auto;width:100%}.agent-control-card{min-height:58px;padding:8px 12px}.control-initialize strong{font-size:18px}.control-arrow{width:32px;height:32px;flex-basis:32px}}
 @media(prefers-reduced-motion:reduce){.agent-control-card,.control-progress-fill{transition:none}.agent-control-card:hover:not(:disabled){transform:none}.control-progress-fill::after{animation:none}}
+.is-compact .control-initialize strong,.is-compact .control-progress-copy em{font-size:16px}
 </style>

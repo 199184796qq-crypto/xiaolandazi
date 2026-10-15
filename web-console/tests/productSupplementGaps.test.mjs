@@ -60,3 +60,18 @@ test('未选择方案和已卸载组件不发起或接收清单请求', async ()
   pending.resolve({gaps:[gap('迟到')],summary:''});await nextTick()
   assert.equal(s.state.gaps.value.length,0)
 })
+
+test('链接切换绑定商品ID并取消旧清单；全部省略商品范围', async () => {
+  const first=deferred(), second=deferred(); const calls=[]
+  const s=setup(async (plan,input,signal) => { calls.push({plan,input,signal}); return calls.length===1 ? first.promise : second.promise })
+  s.scope.productLinkId=12
+  assert.equal(calls[0].signal.aborted,true)
+  assert.equal(calls[1].input.product_link_id,12)
+  first.resolve({gaps:[gap('旧范围')],summary:''}); await new Promise(resolve => setImmediate(resolve))
+  assert.equal(s.state.gaps.value.length,0)
+  second.resolve({gaps:[gap('2号商品')],summary:''}); await new Promise(resolve => setImmediate(resolve))
+  assert.equal(s.state.gaps.value[0].维度,'2号商品')
+  s.scope.productLinkId=undefined
+  assert.equal(calls.at(-1).input.product_link_id,undefined)
+  s.close()
+})

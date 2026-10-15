@@ -8,17 +8,17 @@ import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
-import ContentPoolChangesPanel from '../components/ContentPoolChangesPanel.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
 import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
-import type { PoolSourceLocation } from '../contentPoolSources'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
+import PlanBusinessModePanel from '../components/PlanBusinessModePanel.vue'
+import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
@@ -241,6 +241,7 @@ function selectLiveStrategyRoom(roomID: number) {
 }
 
 type StrategyMode =
+  | 'business'
   | 'script'
   | 'products'
   | 'supplement'
@@ -266,7 +267,7 @@ function dismissPlanActionsMenu(event: MouseEvent) {
   if (menu?.open && !event.composedPath().includes(menu)) closePlanActionsMenu()
 }
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
-  selectPlanConfigurationMode(section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
+  selectPlanConfigurationMode(section === 'business' ? 'business' : section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
 }
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
@@ -472,6 +473,7 @@ const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingForm
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
+const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => activeRoom.value?.tenant_id))
 const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id || 0)
 const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
 const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
@@ -2135,6 +2137,7 @@ const roomPolicyActive = computed(
 )
 
 const activeModeLabel = computed(() => {
+  if (activeMode.value === 'business') return '业务模式'
   if (activeMode.value === 'products') return '商品链接'
   if (activeMode.value === 'supplement') return '商品资料补充'
   if (activeMode.value === 'benefits') return '活动福利'
@@ -4346,34 +4349,6 @@ async function openFactRiskLocation() {
 	await locatePendingRiskLocation()
 }
 
-const poolLocationError = ref('')
-let poolLocationAttempt = 0
-async function locatePoolSource(source: PoolSourceLocation) {
-	poolLocationError.value = ''
-	if (source.area === 'miner') return
-	const attempt = ++poolLocationAttempt, room = activeRoomId.value, plan = currentRoomPlanId.value
-	activeMode.value = source.area
-	await nextTick()
-	const current = () => attempt === poolLocationAttempt && room === activeRoomId.value && plan === currentRoomPlanId.value && activeMode.value === source.area
-	if (!current()) return
-	let located = false
-	if (source.area === 'products') located = !!await productCards.value?.locateSource(source.entityId, source.attributeId)
-	else {
-		if (source.area === 'benefits' && formalBenefits.value.some(item => item.id === source.entityId)) {
-			expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value, source.entityId])
-		}
-		await nextTick()
-		if (!current()) return
-		const attr = source.area === 'knowledge' ? 'data-formal-fact-id' : 'data-formal-benefit-id'
-		const target = document.querySelector<HTMLElement>(`[${attr}="${source.entityId}"]`)
-		target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-		target?.focus({ preventScroll: true })
-		located = !!target
-	}
-	if (current() && !located) poolLocationError.value = '当前资料中未找到这条来源，请刷新或核对它是否已移除。'
-}
-watch([activeRoomId, currentRoomPlanId], () => { poolLocationAttempt++; poolLocationError.value = '' })
-
 function factRisksForFact(item: LiveAgentPlanFact) {
 	const value = item.value.trim()
 	const key = item.key.trim()
@@ -6198,9 +6173,37 @@ onBeforeUnmount(() => {
             :fact-risk-count="factRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
             :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
             @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
-          />
+          >
+            <template #actions>
+              <AnchorControlBar
+                mode="initialize" compact
+                :initializing="anchorInitializing"
+                :initialize-progress="anchorInitializationProgress"
+                :initialize-label="anchorInitializationStage"
+                :saving="fullShowVersionSaving || savePlanOneClickBusy"
+                :save-label="savePlanOneClickStage"
+                :initialize-disabled="anchorInitializing || !currentPlan"
+                :save-disabled="savePlanOneClickDisabled"
+                :save-hint="savePlanOneClickHint"
+                @initialize="initializeAnchorGeneration"
+                @save="savePlanOneClick"
+              />
+            </template>
+            <template #feedback>
+              <div v-if="anchorInitializationError || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
+                <div v-if="anchorInitializationError" class="strategy-script-notice strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
+                <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">{{ anchorInitializationNotice }}</div>
+              </div>
+            </template>
+          </PlanConfigurationNavigation>
 
           <div class="strategy-workflow-content">
+        <PlanBusinessModePanel v-if="activeMode === 'business'"
+          :model-value="planBusinessMode.value.value" :loading="planBusinessMode.loading.value"
+          :industries="planBusinessMode.industries.value" :industry-options="planBusinessMode.industryOptions.value"
+          :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
+          @select="planBusinessMode.select" @select-industry="planBusinessMode.selectIndustry" @retry="planBusinessMode.load"
+        />
         <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
@@ -6246,7 +6249,7 @@ onBeforeUnmount(() => {
         </div>
 
         <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
-          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" @updated="onInteractionFactsUpdated" />
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" @updated="onInteractionFactsUpdated" />
         </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
@@ -6613,19 +6616,19 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-else class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
+                <colgroup><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
                 <thead>
                   <tr>
-                    <th>分类</th>
-                    <th>事实名称</th>
                     <th>事实内容</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="item in filteredFormalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                  <template v-for="(item, index) in filteredFormalFacts" :key="item.id">
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <template v-if="editingFormalFactId === item.id">
                       <td>
+                        <div class="strategy-formal-fact-edit-metadata">
                         <div class="strategy-formal-fact-edit-category">
                           <FactCategoryBadge :category="formalFactEditDraft.category" :label="factCategoryLabel(formalFactEditDraft.category)" :family="factCategoryDefinition(formalFactEditDraft.category).family" />
                           <select v-model="formalFactEditDraft.category" aria-label="事实分类" :disabled="mutatingFormalFactId === item.id || factCategoryState.loading || !!factCategoryState.error">
@@ -6633,11 +6636,8 @@ onBeforeUnmount(() => {
                           </select>
                           <svg class="strategy-formal-fact-edit-category-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
                         </div>
-                      </td>
-                      <td>
                         <label class="strategy-formal-fact-edit-name"><span>事实名称</span><input v-model="formalFactEditDraft.key" aria-label="事实名称" maxlength="255" :disabled="mutatingFormalFactId === item.id" /><small>{{ factCategoryDescription(formalFactEditDraft.category) }}</small></label>
-                      </td>
-                      <td>
+                        </div>
                         <label class="strategy-formal-fact-edit-field is-content">
                           <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
                           <textarea v-model="formalFactEditDraft.value" aria-label="事实内容" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" placeholder="用你自己的话描述真实、准确的事实即可，保存时审核模型会自动整理成四层表达…" :disabled="mutatingFormalFactId === item.id"></textarea>
@@ -6663,13 +6663,12 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                     <template v-else>
-                      <td><FactCategoryBadge :category="item.category" :label="factCategoryLabel(item.category)" :family="factCategoryDefinition(item.category).family" /></td>
-                      <td><div class="strategy-formal-fact-name"><strong>{{ item.key }}</strong><small>{{ factCategoryDescription(item.category) }}</small></div><button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button></td>
                       <td class="strategy-formal-fact-value">
                         <div class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
                           <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                         </div>
+                        <button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button>
                       </td>
                       <td>
                         <div class="strategy-formal-fact-operation">
@@ -6696,9 +6695,9 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="4"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="2"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="4">
+                    <td colspan="2">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
                           <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
@@ -7452,48 +7451,12 @@ onBeforeUnmount(() => {
           :key="'fullshow:' + String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
           class="strategy-v2-workspace strategy-fullshow-workspace"
         >
-          <AgentWorkspacePages
-            :context-key="String(activeRoomId || 0) + ':' + String(currentRoomPlanId || 0)"
-            :saving="savePlanOneClickBusy || fullShowVersionSaving"
-            :save-disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing"
-            :save-label="savePlanOneClickStage"
-            :save-hint="savePlanOneClickHint"
-            @save="savePlanOneClick"
-          >
-          <template #config>
-        <ContentPoolChangesPanel v-if="currentRoomPlanId && activeRoom" compact hide-save-action :plan-id="currentRoomPlanId" :room-id="activeRoom.id" :tenant-id="activeRoom.tenant_id" :status="poolStatus" :error="poolError" :submitting="poolSubmitting" :preview="poolPreview" :saving="fullShowVersionSaving" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason"  @update="contentPools.update" @refresh="contentPools.refresh" @preview="poolPreview = $event" :location-error="poolLocationError" @source="locatePoolSource" :task-editor-available="false" @save="saveFullShowVersion" />
-        <div v-if="fullShowWorkspaceChecks.length" class="strategy-script-notice strategy-plan-checks" role="status">
-          <strong>已保存方案检查提示</strong>
-          <p v-for="check in fullShowWorkspaceChecks" :key="check.code">{{ check.message }}</p>
-          <small>这些提示不会停止直播。修改内容并保存后，下次开播使用新版本。</small>
-        </div>
-          </template>
+          <AgentWorkspacePages>
           <template #preview>
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
           <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
-            <header class="strategy-agent-control-header">
-              <AnchorControlBar
-                mode="initialize" compact
-                :initializing="anchorInitializing"
-                :initialize-progress="anchorInitializationProgress"
-                :initialize-label="anchorInitializationStage"
-                :saving="fullShowVersionSaving || savePlanOneClickBusy"
-                :save-label="savePlanOneClickStage"
-                :initialize-disabled="anchorInitializing || !currentPlan"
-                :save-disabled="savePlanOneClickDisabled"
-                :save-hint="savePlanOneClickHint"
-                @initialize="initializeAnchorGeneration"
-                @save="savePlanOneClick"
-              />
-            </header>
-            <div v-if="anchorInitializationError" class="strategy-content-mode-init-feedback">
-              <div v-if="anchorInitializationError" class="inline-error strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
-            </div>
-            <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">
-              {{ anchorInitializationNotice }}
-            </div>
             <div class="strategy-content-mode-cards">
               <button v-for="(mode, index) in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
                 <i>{{ String(index + 1).padStart(2, '0') }}</i>
@@ -8516,7 +8479,7 @@ onBeforeUnmount(() => {
           </AgentWorkspacePages>
         </section>
 
-        <section v-else-if="activeMode !== 'supplement'" class="strategy-agent-workspace">
+        <section v-else-if="activeMode !== 'supplement' && activeMode !== 'business'" class="strategy-agent-workspace">
           <div v-if="settingsError" class="inline-error strategy-inline-error">{{ settingsError }}</div>
           <div class="strategy-agent-context-card">
             <span class="section-kicker">CURRENT CONTEXT</span>
@@ -9470,9 +9433,12 @@ onBeforeUnmount(() => {
 .strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
 @media(max-width:1100px) { .strategy-formal-facts-layout { grid-template-columns:1fr; } .strategy-fact-category-panel { position:static; max-height:none; flex-direction:row; flex-wrap:wrap; } .strategy-fact-category-group-title { width:100%; margin:6px 2px 0; } .strategy-fact-category-item { width:auto; } }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
-.strategy-formal-facts-table { width:100%; min-width:860px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-facts-table { width:100%; min-width:620px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-fact-actions-column { width:360px; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
 .strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:14px; font-weight:800; }
+.strategy-formal-facts-table tr.is-striped-formal-fact { --formal-fact-row-bg:#f0f4fc; }
+.strategy-formal-facts-table tbody>tr[data-formal-fact-id]>td { background:var(--formal-fact-row-bg,#fff); }
 .strategy-formal-facts-table tbody>tr:not(.strategy-fact-risk-detail-row):not(.has-fact-risk):hover td { background-color:#f9fbff; }
 .strategy-formal-facts-table tr:last-child td { border-bottom:0; }
 .strategy-formal-facts-table tr.has-fact-risk td:first-child { box-shadow: inset 4px 0 #8a96aa; }
@@ -9506,16 +9472,7 @@ onBeforeUnmount(() => {
 .strategy-fact-risk-inline-actions button.primary-button { border-color:#607ce8; background:#607ce8; color:#fff; }
 .strategy-miner-risk-count{display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:3px 6px;border:1px solid #f2b4c1;border-radius:8px;background:#fff0f3;color:#c41d45;font-size:11px;font-weight:800;line-height:1.2;white-space:nowrap}
 .strategy-miner-risk-count i{display:grid;width:12px;height:12px;place-items:center;border-radius:50%;background:#c41d45;color:#fff;font-size:10px;font-style:normal}
-.strategy-formal-facts-table th:nth-child(1),.strategy-formal-facts-table td:nth-child(1) { width:10%; }
-.strategy-formal-facts-table th:nth-child(2),.strategy-formal-facts-table td:nth-child(2) { width:15%; }
-.strategy-formal-facts-table th:nth-child(3),.strategy-formal-facts-table td:nth-child(3) { width:21%; }
-.strategy-formal-facts-table th:nth-child(4),.strategy-formal-facts-table td:nth-child(4) { width:15%; }
-.strategy-formal-facts-table th:nth-child(5),.strategy-formal-facts-table td:nth-child(5) { width:15%; }
-.strategy-formal-facts-table th:nth-child(6),.strategy-formal-facts-table td:nth-child(6) { width:24%; }
 .strategy-formal-fact-category { display:inline-flex; padding:5px 8px; border-radius:8px; background:#eef2fb; color:#5c6dbb; font-size:12px; font-weight:900; }
-.strategy-formal-fact-name { display:grid; gap:3px; }
-.strategy-formal-fact-name strong { color:#14264c; font-size:16px; font-weight:800; }
-.strategy-formal-fact-name small { color:#8393b4; font-size:13px; font-weight:400; line-height:1.45; }
 .strategy-formal-fact-value { color:#2c426b!important; white-space:pre-wrap; }
 .strategy-formal-fact-boundary { color:#c5445e!important; }
 .strategy-formal-fact-rewrite { color:#238267!important; }
@@ -9538,6 +9495,7 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-table tbody>tr.is-editing-formal-fact>td,.strategy-formal-facts-table tbody>tr.is-editing-formal-fact:hover>td { padding:14px 8px; vertical-align:top; background:linear-gradient(140deg,#f7faff,#eef5ff); box-shadow:none; }
 .strategy-formal-facts-table tr.is-editing-formal-fact>td:first-child { padding-left:16px; }
 .strategy-formal-facts-table tr.is-editing-formal-fact>td:last-child { padding-right:16px; }
+.strategy-formal-fact-edit-metadata { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); align-items:start; gap:14px; margin-bottom:14px; }
 .strategy-formal-fact-edit-category { position:relative; border-radius:12px; box-shadow:0 4px 9px #4984e61a; }
 .strategy-formal-fact-edit-category .fact-category-badge { width:100%; min-height:48px; padding-right:29px; border:1px solid #c9dfff; font-size:14px; }
 .strategy-formal-fact-edit-category select { position:absolute; inset:0; z-index:2; opacity:0; cursor:pointer; }
@@ -9566,6 +9524,8 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-table .strategy-formal-fact-edit-actions svg { width:20px; height:20px; flex-basis:20px; }
 .strategy-formal-facts-table tr.is-editing-formal-fact input:disabled,.strategy-formal-facts-table tr.is-editing-formal-fact textarea:disabled { opacity:.65; cursor:wait; }
 .strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.strategy-formal-fact-operation>.strategy-formal-fact-actions { flex-wrap:nowrap; flex-shrink:0; }
+.strategy-formal-fact-operation .strategy-formal-fact-actions button { flex-shrink:0; }
 .strategy-formal-fact-guidance-cell[colspan="2"] { width:28%; }
 .strategy-formal-fact-operation .strategy-formal-fact-expand { display:grid; place-items:center; flex:0 0 30px; width:30px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:#3475ff; cursor:pointer; }
 .strategy-formal-fact-expand svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; transition:transform .18s; }
@@ -11084,7 +11044,7 @@ onBeforeUnmount(() => {
 @media(max-width:1480px){.reusable-anchor-style-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.reusable-anchor-style-sample-compose-actions{align-items:flex-start;flex-direction:column}.reusable-anchor-style-sample-tip{width:100%;box-sizing:border-box}}
 @media(max-width:820px){.reusable-anchor-style-tabs{grid-template-columns:1fr}.reusable-anchor-style-tabs .anchor-style-tab-card{min-height:72px}.reusable-anchor-style-samples-panel{padding:24px}.reusable-anchor-style-samples-hero{align-items:flex-start}.reusable-anchor-style-samples-hero-icon{width:64px;height:64px}.reusable-anchor-style-samples-hero strong{font-size:24px}.reusable-anchor-style-samples-hero small{font-size:15px}.reusable-anchor-style-compose-field input{padding-left:78px!important}.reusable-anchor-style-compose-field textarea{padding-left:78px!important}.reusable-anchor-style-compose-icon{left:13px;width:50px;height:50px}.reusable-anchor-style-sample-compose-buttons{width:100%}.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{flex:1;padding:0 18px}}
 .fact-risk-count{display:inline-block;padding:3px 7px;border-radius:10px;background:#ffe7ec;color:#c21e39;font-size:13px;font-style:normal;font-weight:900}
-.strategy-content-mode-workflow>header.strategy-agent-control-header{display:block}.strategy-content-mode-init-feedback{display:grid;gap:7px;min-width:0}
+.strategy-navigation-init-feedback{display:grid;gap:8px;min-width:0;margin-top:12px}.strategy-navigation-init-feedback>div{margin:0;font-size:16px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-line}
 .strategy-content-mode-dashboard-actions{grid-template-columns:minmax(190px,220px) minmax(210px,240px)!important;justify-content:end}
 .strategy-content-mode-cards>button.active{border-color:#36b885;background:linear-gradient(135deg,#28ae78 0%,#35ba83 58%,#4bc795 100%);box-shadow:0 15px 34px rgba(35,151,104,.24),inset 0 1px 0 rgba(255,255,255,.3)}
 .strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.38);background:rgba(255,255,255,.94);color:#16815a}

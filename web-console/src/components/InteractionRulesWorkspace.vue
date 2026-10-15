@@ -77,8 +77,8 @@ function onAdopted() {
   <section ref="workspaceElement" class="interaction-rules-workspace" aria-label="互动策略工作区">
     <header v-if="activeTab !== 'simulation' && activeTab !== 'adopted'" class="rules-head">
       <div>
-        <h3>已采用的互动规则</h3>
-        <p>模拟常见问法，确认互动规则，处理直播中留下的问题；模型建议由你决定是否采用。</p>
+        <h3>{{ activeTab === 'history' ? '处理历史' : '已采用的互动规则' }}</h3>
+        <p>{{ activeTab === 'history' ? '回看互动问题及纠正处理记录，可按关键词和状态查找。' : '核对直播中留下的问题和回答，可填写纠正或标记无需纠正。' }}</p>
       </div>
     </header>
     <div class="rule-navigation">
@@ -135,5 +135,5 @@ function onAdopted() {
 .rule-navigation-assistant{display:flex;align-items:center;gap:8px;flex-shrink:0}.rule-navigation-assistant p{margin:0;padding:10px 20px;border-radius:999px;background:#ffffffb8;color:#798db5;font-size:12px;line-height:1.7;text-align:center}.rule-navigation-assistant>svg{width:88px;height:71px;margin-block:-12px}
 .rule-tabs button:focus-visible { outline: 2px solid #4e5bd6; outline-offset: 3px; }
 @media(max-width:1100px){.rule-navigation-assistant{display:none}}
-@media (max-width: 600px) { .rules-head { flex-wrap: wrap; } .rule-navigation{display:block}.rule-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; box-sizing: border-box; gap:8px; } .rule-tabs button { padding: 10px 6px;gap:8px;font-size:14px }.rule-tabs button svg{width:20px;height:20px} }
+@media (max-width: 600px) { .rules-head { flex-wrap: wrap; } .rule-navigation{display:block}.rule-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; box-sizing: border-box; gap:8px; } .rule-tabs button { padding: 10px 6px;gap:8px;font-size:16px }.rule-tabs button svg{width:20px;height:20px} }
 </style>

@@ -24,6 +24,12 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 	if err := s.MigrateInteractionLearning(ctx); err != nil {
 		return err
 	}
+	if err := s.migratePlanBizDomain(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePlanBusinessIndustries(ctx); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		table string
 		name  string
