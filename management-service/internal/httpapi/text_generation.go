@@ -62,7 +62,13 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 // Compile expression data only. Legacy sample products, price examples and
 // filled hook skeletons remain in their original assets, never in today's facts.
 func cycleExpressionView(state *anchorcycle.State) (any, error) {
-	b, err := anchorstylescore.Parse(state.BaselineJSON)
+	return renderAnchorExpressionView(state.BaselineJSON)
+}
+
+// renderAnchorExpressionView 从主播打分基线 JSON 渲染「主播表达标尺」。
+// 主线/开场/互动三类话术共用同一份渲染，避免主播腔调（称呼/语气词/自指/数字习惯）三套各写各的。
+func renderAnchorExpressionView(baselineJSON string) (any, error) {
+	b, err := anchorstylescore.Parse(baselineJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +79,10 @@ func cycleExpressionView(state *anchorcycle.State) (any, error) {
 		"量化基准":   b.Quant, "表达偏好": b.Forbidden,
 	}, nil
 }
+
+// fourLayerNotMentionText 是四层结构「不提」层的统一文案：事实未提供或未确认的
+// 未知项正反都不说。主线/开场/互动共用同一句，避免三处同义措辞漂移。
+const fourLayerNotMentionText = "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。"
 func textControlLeak(text string) bool {
 	for _, marker := range []string{"{{", "}}", "本次任务：", "表达展开建议：", "开头模式：", "后续表达加强建议：", "\"本次任务\":", "\"reply\":", "\"needs_review\":", "## 本场有效事实", "## 主播表达标尺"} {
 		if strings.Contains(text, marker) {
@@ -132,7 +142,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 稳定前缀放 system：母版 + 主播标尺 + 有效P0 + 不提 + 长期纠正规则，整场不变，命中上下文缓存。
 	// 随侧面/任务变化的内容（可说事实、改写约束、商品边界）放 user（见下方 variable），
 	// 避免 system 每段随侧面变导致前缀缓存失效。
-	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。", "用户已确认的长期纠正规则": state.EffectiveCorrections()}
+	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": fourLayerNotMentionText, "用户已确认的长期纠正规则": state.EffectiveCorrections()}
 	fixed, _ := json.Marshal(stable)
 	variable := map[string]any{"可说": facts}
 	if len(expressionGuidance) > 0 {
