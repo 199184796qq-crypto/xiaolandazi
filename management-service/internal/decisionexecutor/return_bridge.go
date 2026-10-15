@@ -43,6 +43,43 @@ type bridgeText struct {
 	Text string `json:"text"`
 }
 
+// bridgePhrasePool 回归桥纯承接句式池：程序写死，全部是纯承接、不含任何话题词、不预告回归内容。
+// 程序按房间近期用过的顺序轮换选句，模型只做语气词/称呼微调，不给自由发挥空间，
+// 从根上避免"接着看包装/接着说这鸭子/复述回归内容"这类滑向话题词的承接。
+var bridgePhrasePool = []string{
+	"好嘞，咱们接着往下说",
+	"行，接着说",
+	"那，咱们接着聊",
+	"来，继续说",
+	"诶，接着往下走",
+	"得嘞，继续说",
+	"好，咱们继续",
+	"走，接着往下",
+	"回到刚才的话题，接着说",
+	"说回正题，咱们继续",
+	"来，接着",
+	"那，往下说",
+}
+
+// pickBridgePhrase 从池子选出本轮承接句：优先选近期没用过的，全部用过则按轮次取模。
+func pickBridgePhrase(recent []string) string {
+	if len(bridgePhrasePool) == 0 {
+		return ""
+	}
+	used := make(map[string]bool, len(recent))
+	for _, r := range recent {
+		if r != "" {
+			used[r] = true
+		}
+	}
+	for _, p := range bridgePhrasePool {
+		if !used[p] {
+			return p
+		}
+	}
+	return bridgePhrasePool[len(recent)%len(bridgePhrasePool)]
+}
+
 func validateBridge(raw string, plan returnBridgePlan) (bridgeText, error) {
 	var fields map[string]json.RawMessage
 	if err := contentstrategy.Decode(raw, &fields); err != nil || fields["type"] == nil || fields["text"] == nil || string(fields["type"]) == "null" || string(fields["text"]) == "null" {
@@ -219,7 +256,8 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 			}
 		}
 	}
-	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText, "近期回归桥话术": w.recentBridgePhrases(session.RoomID), "主播风格称呼": anchorAddress})
+	bridgePhrase := pickBridgePhrase(w.recentBridgePhrases(session.RoomID))
+	input, _ := json.Marshal(map[string]any{"切点前完整上下文": plan.BeforeText, "核心回答": plan.ReplyText, "实际回归及后续完整内容": plan.Units, "已跳过完整重复单元": plan.SkippedUnits, "已采用用户纠正": agentmemory.Prompt(memories), "有效P0": effective.PromptText, "本轮承接句": bridgePhrase, "近期回归桥话术": w.recentBridgePhrases(session.RoomID), "主播风格称呼": anchorAddress})
 	result, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second})
 	if err != nil {
 		return err
