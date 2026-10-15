@@ -315,9 +315,13 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	// 失败降级用原文，不阻塞。
 	// 局部重写（P0PendingRepair）不参与同义改写与价格漂移检查：重写结果是 replacements JSON，
 	// 同义改写会用纯文本协议把 JSON 改写成正文，破坏 patch.Apply 的解析。
+	// 润色降级：同一卖点×角度近期复讲（侧面轮换一圈回到同侧面）才润色，首次讲不润色，
+	// 省一次模型调用（正文 + 侧面筛事实已拉开结构）。
 	if err == nil && state.P0PendingRepair == nil && strings.TrimSpace(response.Text) != "" {
-		if rewritten, rwErr := s.rewriteCycleText(ctx, state, response.Text); rwErr == nil && strings.TrimSpace(rewritten) != "" {
-			response.Text = rewritten
+		if state.RecentSameTask(8) {
+			if rewritten, rwErr := s.rewriteCycleText(ctx, state, response.Text); rwErr == nil && strings.TrimSpace(rewritten) != "" {
+				response.Text = rewritten
+			}
 		}
 		// 润色后「商品名/价格/链接号」词语组核对：检测链接号→价格串换，串错则随机二选一纠正。
 		if state.ProductFocus != nil {

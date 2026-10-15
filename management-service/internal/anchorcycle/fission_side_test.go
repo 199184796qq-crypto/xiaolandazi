@@ -167,6 +167,26 @@ func TestHookFactsForSideFiltersBySide(t *testing.T) {
 	}
 }
 
+func TestRecentSameTask(t *testing.T) {
+	// 近期含当前角度 → 复讲
+	s := &State{}
+	s.Queue = []Task{{Key: "保存×真空"}}
+	s.TaskIndex = 0
+	s.Accepted = []Segment{{Task: Task{Key: "口感×肉紧"}}, {Task: Task{Key: "保存×真空"}}}
+	if !s.RecentSameTask(2) {
+		t.Fatal("近2段内讲过同一角度，应判定为复讲")
+	}
+
+	// 近期不含当前角度 → 首次讲
+	s2 := &State{}
+	s2.Queue = []Task{{Key: "保存×真空"}}
+	s2.TaskIndex = 0
+	s2.Accepted = []Segment{{Task: Task{Key: "口感×肉紧"}}, {Task: Task{Key: "物流×隔天"}}}
+	if s2.RecentSameTask(2) {
+		t.Fatal("近2段内未讲同一角度，不应判定为复讲")
+	}
+}
+
 func containsStr(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {
