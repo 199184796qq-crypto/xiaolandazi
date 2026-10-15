@@ -302,6 +302,11 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 
 func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
 	request.Text = interactionTTSText(request.Text)
+	// 互动话术递交给 TTS 的实际文本（含 **** 前缀），打印前 80 字用于排查 cosyvoice 对前缀/开头的处理。
+	if runes := []rune(request.Text); len(runes) > 0 {
+		n := min(80, len(runes))
+		log.Printf("interaction tts text decision=%s mission=%s text=%q", item.ID, item.MissionKind, string(runes[:n]))
+	}
 	ticket := item.faqCacheTicket
 	if ticket != nil && !w.interactionCacheReuseEnabled(ctx, ticket.TenantID) {
 		ticket = nil
