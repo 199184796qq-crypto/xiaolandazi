@@ -39,7 +39,6 @@ import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
-import LectureTasksPanel from '../components/LectureTasksPanel.vue'
 import ProductSupplementChat from '../components/ProductSupplementChat.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
@@ -260,7 +259,10 @@ type StrategyMode =
 const activeMode = ref<StrategyMode>('products')
 const lastFactMode = ref<PlanFactMode>('products')
 const planActionsMenu = ref<HTMLDetailsElement | null>(null)
-watch(activeMode, mode => { if (isPlanFactMode(mode)) lastFactMode.value = mode })
+watch(activeMode, mode => {
+  if (mode === 'miner') activeMode.value = 'knowledge'
+  else if (isPlanFactMode(mode)) lastFactMode.value = mode
+}, { flush: 'sync' })
 function closePlanActionsMenu() { if (planActionsMenu.value) planActionsMenu.value.open = false }
 function dismissPlanActionsMenu(event: MouseEvent) {
   const menu = planActionsMenu.value
@@ -1669,7 +1671,6 @@ const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_m
 const isFixedGeneratedContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_pregenerated')
 const isRealtimeVoiceContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_dynamic')
 const hasCustomMainlineResult = computed(() => Boolean(fullShowResult.value?.variants.some((item) => item.variant_key === 'CUSTOM')))
-const fullShowVersionActionReady = computed(() => !fullShowSaveBlockedReason.value)
 const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
 let contentModeLoadNo = 0
 let contentModeRefreshTimer: number | undefined
@@ -1770,7 +1771,6 @@ const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
 const latestSavedVersion = computed(() => latestSavedPlanVersion(currentRoomPlanId.value || 0, [
   fullShowSavedVersion.value, fullShowWorkspaceBaseVersion.value, ...fullShowVersionHistory.value,
 ]))
-const lectureSavedFingerprint = computed(() => String((latestSavedVersion.value?.generation_context?.lecture_tasks as { fingerprint?: string } | undefined)?.fingerprint || ''))
 function onLectureTasksUpdated(event: Event) {
   const detail = (event as CustomEvent<{ plan_id: number; room_id: number; facts_changed?: boolean }>).detail
   if (detail?.plan_id !== currentRoomPlanId.value || detail.room_id !== activeRoomId.value) return
@@ -2143,7 +2143,6 @@ const activeModeLabel = computed(() => {
   if (activeMode.value === 'benefits') return '活动福利'
   if (activeMode.value === 'knowledge') return '事实依据'
   if (activeMode.value === 'memory') return '互动策略'
-  if (activeMode.value === 'miner') return '任务讲解'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
   if (activeMode.value === 'basic') return '基础设置'
@@ -7022,10 +7021,6 @@ onBeforeUnmount(() => {
             <p>{{ settingsDraft.self_introduction || '还没有填写自我介绍。' }}</p>
             <small>{{ settingsDraft.mission }}</small>
           </div>
-        </section>
-
-        <section v-else-if="activeMode === 'miner'" class="strategy-v2-workspace strategy-lecture-tasks-workspace">
-          <LectureTasksPanel hide-save-action :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :saved-fingerprint="lectureSavedFingerprint" :save-disabled="!fullShowVersionActionReady" :save-hint="fullShowSaveBlockedReason" @save="saveFullShowVersion" />
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">

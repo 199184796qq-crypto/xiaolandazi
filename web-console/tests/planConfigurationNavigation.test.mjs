@@ -33,8 +33,9 @@ test('生成预览属于独立操作，互动及预览不展示商品子栏目',
 
 test('资料补充位于活动福利右边、事实依据左边，属于商品与事实', async () => {
   const html = await render({ mode: 'supplement' })
-  const labels = ['商品资料', '活动福利', '商品资料补充', '事实依据', '任务讲解']
+  const labels = ['商品资料', '活动福利', '商品资料补充', '事实依据']
   assert.ok(labels.every(label => html.includes(label)))
+  assert.equal(html.includes('任务讲解'), false)
   assert.ok(html.indexOf('活动福利') < html.indexOf('商品资料补充'))
   assert.ok(html.indexOf('商品资料补充') < html.indexOf('事实依据'))
   assert.equal((html.match(/aria-current="page"/g) || []).length, 2)
