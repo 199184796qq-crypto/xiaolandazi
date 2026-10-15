@@ -6200,8 +6200,9 @@ onBeforeUnmount(() => {
           <div class="strategy-workflow-content">
         <PlanBusinessModePanel v-if="activeMode === 'business'"
           :model-value="planBusinessMode.value.value" :loading="planBusinessMode.loading.value"
+          :industries="planBusinessMode.industries.value" :industry-options="planBusinessMode.industryOptions.value"
           :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
-          @select="planBusinessMode.select" @retry="planBusinessMode.load"
+          @select="planBusinessMode.select" @select-industry="planBusinessMode.selectIndustry" @retry="planBusinessMode.load"
         />
         <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 

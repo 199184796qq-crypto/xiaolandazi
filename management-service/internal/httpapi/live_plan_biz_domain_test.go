@@ -9,6 +9,7 @@ import (
 
 	"livecompanion/management/internal/auth"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/model"
 )
 
 func TestPlanBizDomainAuthenticationAndResponses(t *testing.T) {
@@ -42,5 +43,26 @@ func TestPlanBizDomainAuthenticationAndResponses(t *testing.T) {
 		if strings.Contains(w.Body.String(), "db failed") {
 			t.Fatal("internal error exposed")
 		}
+	}
+}
+
+func TestPlanBusinessIndustryAuthenticationAndResponse(t *testing.T) {
+	s := &Server{auth: auth.NewResolver("test", nil)}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/api/v1/live-agent-plans/4/business-industry", strings.NewReader(`{"biz_domain":"ecommerce","industry":"food"}`))
+	r.SetPathValue("planID", "4")
+	s.planBusinessIndustrySet(w, r)
+	if w.Code != 401 {
+		t.Fatal("industry route requires authentication", w.Code)
+	}
+	w = httptest.NewRecorder()
+	s.planBusinessSettingsReply(w, model.PlanBusinessSettings{}, appdb.ErrInvalidPlanBusinessIndustry)
+	if w.Code != 400 {
+		t.Fatal(w.Code)
+	}
+	w = httptest.NewRecorder()
+	s.planBusinessSettingsReply(w, model.PlanBusinessSettings{BizDomain: "local_service", Industries: map[string]string{"ecommerce": "food", "local_service": "dining"}, IndustryOptions: map[string][]model.PlanBusinessIndustry{"ecommerce": model.PlanBusinessIndustryOptions("ecommerce"), "local_service": model.PlanBusinessIndustryOptions("local_service")}}, nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "industry_options") || !strings.Contains(w.Body.String(), "餐饮美食") {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }

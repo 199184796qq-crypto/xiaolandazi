@@ -971,6 +971,8 @@ CREATE TABLE IF NOT EXISTS live_agent_plans (
     name VARCHAR(160) NOT NULL,
     description TEXT NOT NULL,
     biz_domain VARCHAR(32) NOT NULL DEFAULT 'ecommerce',
+    ecommerce_industry VARCHAR(32) NOT NULL DEFAULT 'general',
+    local_service_industry VARCHAR(32) NOT NULL DEFAULT 'general',
     status VARCHAR(24) NOT NULL DEFAULT 'active',
     created_by_user_id BIGINT UNSIGNED NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

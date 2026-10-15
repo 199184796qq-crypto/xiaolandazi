@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/model"
 )
 
 func (s *Server) planBizDomainGet(w http.ResponseWriter, r *http.Request) {
@@ -20,8 +21,46 @@ func (s *Server) planBizDomainGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	domain, err := s.store.GetPlanBizDomain(r.Context(), tenantID, planID)
-	s.planBizDomainReply(w, domain, err)
+	settings, err := s.store.GetPlanBusinessSettings(r.Context(), tenantID, planID)
+	s.planBusinessSettingsReply(w, settings, err)
+}
+
+func (s *Server) planBusinessIndustrySet(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		TenantID  int64  `json:"tenant_id,omitempty"`
+		BizDomain string `json:"biz_domain"`
+		Industry  string `json:"industry"`
+	}
+	if readJSON(w, r, &input) != nil {
+		writeError(w, http.StatusBadRequest, "行业选择请求格式错误")
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
+	if !ok {
+		return
+	}
+	settings, err := s.store.SetPlanBusinessIndustry(r.Context(), tenantID, planID, input.BizDomain, input.Industry)
+	s.planBusinessSettingsReply(w, settings, err)
+}
+
+func (s *Server) planBusinessSettingsReply(w http.ResponseWriter, settings model.PlanBusinessSettings, err error) {
+	if errors.Is(err, appdb.ErrInvalidPlanBusinessIndustry) {
+		writeError(w, http.StatusBadRequest, "请选择该业务模式支持的行业")
+		return
+	}
+	if err != nil {
+		s.planBizDomainReply(w, "", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (s *Server) planBizDomainSet(w http.ResponseWriter, r *http.Request) {

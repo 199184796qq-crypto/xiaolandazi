@@ -871,7 +871,13 @@ export function getLiveAgentPlans(tenantId?: number) {
 
 export function getPlanBusinessMode(planId: number, tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
-  return request<{ biz_domain: import('./planBusinessMode').PlanBusinessMode }>('/api/v1/live-agent-plans/' + planId + '/biz-domain' + query, { suppressErrorDialog: true })
+  return request<import('./planBusinessMode').PlanBusinessSettings>('/api/v1/live-agent-plans/' + planId + '/biz-domain' + query, { suppressErrorDialog: true })
+}
+
+export function setPlanBusinessIndustry(planId: number, bizDomain: import('./planBusinessMode').PlanBusinessMode, industry: string, tenantId?: number) {
+  return request<import('./planBusinessMode').PlanBusinessSettings>('/api/v1/live-agent-plans/' + planId + '/business-industry', {
+    method: 'PUT', body: JSON.stringify({ biz_domain: bizDomain, industry, tenant_id: tenantId }), suppressErrorDialog: true,
+  })
 }
 
 export function setPlanBusinessMode(planId: number, bizDomain: import('./planBusinessMode').PlanBusinessMode, tenantId?: number) {
