@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "sides": [
+    {
+      "code": "scenario",
+      "name": "到店场景",
+      "name_en": "Dine-in Scenario",
+      "description": "约会、聚餐、亲子、团建等什么场合去"
+    },
+    {
+      "code": "experience",
+      "name": "到店体验",
+      "name_en": "Dine-in Experience",
+      "description": "进店、接待、上菜、离店的流程体验"
+    },
+    {
+      "code": "value",
+      "name": "利益算账",
+      "name_en": "Value",
+      "description": "团购价、原价、人均、省多少"
+    },
+    {
+      "code": "comparison",
+      "name": "对比参照",
+      "name_en": "Comparison",
+      "description": "和别家店、直接到店的区别"
+    },
+    {
+      "code": "pain_point",
+      "name": "团购痛点",
+      "name_en": "Pain Point",
+      "description": "排队久、贵、服务差、停车难、约不上"
+    },
+    {
+      "code": "reputation",
+      "name": "口碑来源",
+      "name_en": "Reputation",
+      "description": "好评、回头客、食材与技术来源"
+    },
+    {
+      "code": "booking",
+      "name": "预约核销",
+      "name_en": "Booking",
+      "description": "怎么约、怎么核、有效期"
+    },
+    {
+      "code": "location",
+      "name": "地理位置",
+      "name_en": "Location",
+      "description": "离家近、好停车、地铁口"
+    },
+    {
+      "code": "scarcity",
+      "name": "限时稀缺",
+      "name_en": "Scarcity",
+      "description": "团购名额、节假日通用（仅已确认）"
+    }
+  ],
+  "category_sides": {
+    "location": [
+      "location"
+    ],
+    "environment": [
+      "experience"
+    ],
+    "service": [
+      "experience"
+    ],
+    "appointment": [
+      "booking"
+    ],
+    "validity": [
+      "booking",
+      "scarcity"
+    ],
+    "redemption": [
+      "booking"
+    ],
+    "per_capita": [
+      "value"
+    ],
+    "package": [
+      "experience",
+      "value"
+    ],
+    "reputation": [
+      "reputation"
+    ],
+    "price": [
+      "value",
+      "comparison"
+    ],
+    "flavor": [
+      "experience",
+      "reputation"
+    ],
+    "ingredients": [
+      "experience",
+      "reputation"
+    ],
+    "craft": [
+      "experience"
+    ],
+    "brand": [
+      "reputation"
+    ],
+    "audience": [
+      "scenario",
+      "pain_point"
+    ],
+    "scenario": [
+      "scenario"
+    ]
+  }
+}

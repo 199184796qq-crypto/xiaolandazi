@@ -117,12 +117,16 @@ var fissionAngleSides = []string{
 }
 
 // CurrentFissionSide 返回本段话术的切入侧面。按「卖点×角度」任务自身的累计使用
-// 次数轮换，同一卖点每次讲换一个侧面、7 个侧面循环——短时间（7 段内）对观众多样；
-// 声音缓存 group 纳入侧面后，第 8 次回到同侧面即可复用该侧面的旧音频，省 TTS。
-// 侧面池产品无关，展开内容由本场事实决定。
+// 次数轮换，同一卖点每次讲换一个侧面、循环——短时间（7 段内）对观众多样；
+// 声音缓存 group 纳入侧面后，回到同侧面即可复用该侧面的旧音频，省 TTS。
+// 侧面池优先用行业配置（State.FissionSides），未配置时回退默认 fissionAngleSides。
 func (s *State) CurrentFissionSide() string {
-	if len(fissionAngleSides) == 0 {
+	pool := s.FissionSides
+	if len(pool) == 0 {
+		pool = fissionAngleSides
+	}
+	if len(pool) == 0 {
 		return ""
 	}
-	return fissionAngleSides[s.Used[s.Task().Key].Count%len(fissionAngleSides)]
+	return pool[s.Used[s.Task().Key].Count%len(pool)]
 }

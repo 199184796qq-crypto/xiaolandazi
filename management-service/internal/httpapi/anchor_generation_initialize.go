@@ -157,10 +157,15 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if cfg.SellingPointProfileID == "" {
 		return 0, 0, errors.New("请先在后台配置卖点挖掘模型")
 	}
-	category, _ := s.resolveProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
-	prompt, err = injectCategorySellingDimensions(prompt, category)
-	if err != nil {
-		return 0, 0, err
+	// 行业优先：方案选了行业就注入行业四件套的挖掘维度；否则回退品类维度（旧链路）。
+	if pack, packErr := s.loadIndustryPackForPlan(ctx, tenant, plan); packErr == nil && pack != nil {
+		prompt = injectIndustrySellingDimensions(prompt, pack.IndustryName, pack.SellingDimensions)
+	} else {
+		category, _ := s.resolveProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
+		prompt, err = injectCategorySellingDimensions(prompt, category)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	// 两段式：一次挖掘 + 程序确定性删违规，不再走五阶段重审核。
 	snapshot := prompt

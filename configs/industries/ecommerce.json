@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "biz_domain": "ecommerce",
+  "name": "电商",
+  "name_en": "E-commerce",
+  "defaults": {
+    "selling_dimensions": "",
+    "sides": "",
+    "fact_categories": "",
+    "p0_extra": ""
+  },
+  "nodes": [
+    {
+      "code": "food",
+      "name": "食品",
+      "name_en": "Food",
+      "selling_dimensions": "food/selling-dimensions.md",
+      "sides": "food/sides.json",
+      "fact_categories": "food/fact-categories.json",
+      "p0_extra": "food/p0-extra.md",
+      "children": []
+    },
+    {
+      "code": "apparel",
+      "name": "服装",
+      "name_en": "Apparel",
+      "selling_dimensions": "apparel/selling-dimensions.md",
+      "sides": "apparel/sides.json",
+      "fact_categories": "apparel/fact-categories.json",
+      "p0_extra": "",
+      "children": []
+    }
+  ]
+}
