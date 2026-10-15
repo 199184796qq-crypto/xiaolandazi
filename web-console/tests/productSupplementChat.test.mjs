@@ -11,12 +11,28 @@ before(async () => {
 after(async () => { await server?.close() })
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 const fact = { category: 'fulfillment', key: '通常发货', value: '通常下单后第二天上午发货', source_quote: '通常下单后第二天上午发货' }
-function setup(services) {
+function setup(services, selectedProduct = () => undefined) {
   const scope = reactive({ planId: 4, tenantId: 14, roomId: 26, actorKey: '14:2' }), updates = []
   const lifecycle = effectScope()
-  const chat = lifecycle.run(() => useChat(() => ({ ...scope }), value => updates.push(value), services))
+  const chat = lifecycle.run(() => useChat(() => ({ ...scope }), value => updates.push(value), services, selectedProduct))
   return { chat, scope, updates, close: () => lifecycle.stop() }
 }
+
+test('切换补全商品保留对话和输入，每轮使用所选商品而不是旧范围', async () => {
+  let product=11; const requests=[]
+  const s=setup({chat:async (_,body)=>{ requests.push(body);return {reply:'请补充资料',captured_facts:[]} },adopt:async()=>{}},()=>product)
+  s.chat.input.value='尚未提交的文字'
+  await s.chat.askGap('{"维度":"价格"}','补充价格')
+  assert.equal(s.chat.input.value,'尚未提交的文字')
+  assert.equal(requests[0].product_link_id,11)
+  product=12
+  assert.equal(s.chat.messages.value.length,2)
+  await s.chat.askGap('{"维度":"规格"}','补充规格')
+  assert.equal(requests[1].product_link_id,12)
+  assert.equal(requests[1].history.length,2)
+  assert.equal(s.chat.input.value,'尚未提交的文字')
+  s.close()
+})
 
 test('一次发送绑定当前方案，完整传原话，提取仅用户本次明确提供的事实，不自动保存', async () => {
   let calls = 0, adopted = false

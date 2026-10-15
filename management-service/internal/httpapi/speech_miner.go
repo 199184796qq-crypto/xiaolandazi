@@ -32,14 +32,15 @@ type speechMinerFactDraft struct {
 }
 
 type speechMinerGuideInput struct {
-	TenantID   int64                  `json:"tenant_id,omitempty"`
-	Message    string                 `json:"message"`
-	History    []speechMinerMessage   `json:"history"`
-	DraftFacts []speechMinerFactDraft `json:"draft_facts"`
-	Mode       string                 `json:"mode,omitempty"`
-	Start      bool                   `json:"start,omitempty"`
-	Action     string                 `json:"action,omitempty"`
-	FocusGap   string                 `json:"focus_gap,omitempty"`
+	TenantID      int64                  `json:"tenant_id,omitempty"`
+	Message       string                 `json:"message"`
+	History       []speechMinerMessage   `json:"history"`
+	DraftFacts    []speechMinerFactDraft `json:"draft_facts"`
+	Mode          string                 `json:"mode,omitempty"`
+	Start         bool                   `json:"start,omitempty"`
+	Action        string                 `json:"action,omitempty"`
+	FocusGap      string                 `json:"focus_gap,omitempty"`
+	ProductLinkID int64                  `json:"product_link_id,omitempty"`
 }
 
 func normalizeSpeechMinerAction(action string) (string, error) {
@@ -206,14 +207,19 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	isSupplement := strings.HasSuffix(r.URL.Path, "/product-supplement/chat")
+	if input.ProductLinkID < 0 || (!isSupplement && input.ProductLinkID != 0) {
+		writeError(w, http.StatusBadRequest, "商品链接选择无效")
+		return
+	}
 	p0, p1, p2, err := loadRiskAnnotationMothers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	source, err := s.loadDerivedInput(r.Context(), tenantID, planID, p0, p1, p2)
+	source, err := s.loadSupplementFactPackage(r.Context(), tenantID, planID, input.ProductLinkID, p0, p1, p2)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取正式事实包失败")
+		supplementScopeError(w, err)
 		return
 	}
 	wheelValue := any(map[string]any{})
@@ -230,7 +236,6 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 	prompt, _, err := loadSpeechMinerGuidePrompt()
 	stage := "speech_miner_guide"
 	chatUnavailable := "话术挖掘机暂时没有响应，请稍后重试"
-	isSupplement := strings.HasSuffix(r.URL.Path, "/product-supplement/chat")
 	if isSupplement {
 		prompt, _, err = loadReplaceablePromptAsset("PRODUCT_SUPPLEMENT_CHAT_PROMPT_PATH", "configs/prompts/anchor-style/product-supplement-chat.md", "商品资料补充对话母版")
 		stage = "product_supplement_chat"
@@ -262,13 +267,17 @@ func (s *Server) speechMinerGuide(w http.ResponseWriter, r *http.Request) {
 			gapChecklist = `{"gaps":[` + focus + `]}`
 		} else if len(input.History) == 0 {
 			gapCtx, gapCancel := context.WithTimeout(r.Context(), 60*time.Second)
-			if gaps, gapErr := s.runFactGapCheck(gapCtx, tenantID, planID, source.Facts); gapErr == nil {
+			if gaps, gapErr := s.runFactGapCheck(gapCtx, tenantID, planID, source.Facts, p0, source.Target); gapErr == nil {
 				gapChecklist = gaps
 			}
 			gapCancel()
 		}
 	}
-	payload, _ := json.Marshal(speechMinerGuidePayload(input, categories, source.Facts, wheelValue, p0, gapChecklist))
+	requestPayload := speechMinerGuidePayload(input, categories, source.Facts, wheelValue, p0, gapChecklist)
+	if isSupplement {
+		requestPayload["target_product"] = source.Target
+	}
+	payload, _ := json.Marshal(requestPayload)
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenantID, PlanID: planID})

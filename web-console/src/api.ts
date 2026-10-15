@@ -4299,7 +4299,7 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
 
 export function chatProductSupplement(
   planId: number,
-  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string },
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string; product_link_id?: number },
   signal?: AbortSignal,
 ) {
   return request<import('./types').SpeechMinerGuideResponse>(
@@ -4318,7 +4318,7 @@ export interface FactGapCheckResponse {
   gaps: FactGapItem[]
   summary: string
 }
-export function factGapCheck(planId: number, input: { tenant_id?: number }, signal?: AbortSignal) {
+export function factGapCheck(planId: number, input: { tenant_id?: number; product_link_id?: number }, signal?: AbortSignal) {
   return request<FactGapCheckResponse>(
     '/api/v1/live-agent-plans/' + planId + '/fact-gap-check',
     { method: 'POST', body: JSON.stringify(input), suppressErrorDialog: true, signal },

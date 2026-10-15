@@ -12,7 +12,8 @@ import (
 )
 
 type factGapCheckInput struct {
-	TenantID int64 `json:"tenant_id,omitempty"`
+	TenantID      int64 `json:"tenant_id,omitempty"`
+	ProductLinkID int64 `json:"product_link_id,omitempty"`
 }
 
 type factGapItem struct {
@@ -57,7 +58,7 @@ func normalizeFactGapCheck(raw string) (factGapCheckResponse, error) {
 // fact package using the system review model and returns the raw gap JSON
 // produced by the model. Shared by the fact-gap-check endpoint and the first
 // product-supplement chat turn.
-func (s *Server) runFactGapCheck(ctx context.Context, tenantID, planID int64, facts string) (string, error) {
+func (s *Server) runFactGapCheck(ctx context.Context, tenantID, planID int64, facts, p0 string, target *supplementProductTarget) (string, error) {
 	prompt, _, err := loadFactGapChecklistPrompt()
 	if err != nil {
 		return "", err
@@ -76,12 +77,16 @@ func (s *Server) runFactGapCheck(ctx context.Context, tenantID, planID int64, fa
 	if reviewID == "" {
 		return "", errors.New("请先在后台配置审核模型")
 	}
-	payload, _ := json.Marshal(map[string]any{"fact_package": facts})
+	payload, _ := json.Marshal(factGapCheckPayload(facts, p0, target))
 	result, _, callErr := s.completeAnchorStyleWorkbench(ctx, reviewID, "fact_gap_check", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)}}, 2000, false)
 	if callErr != nil {
 		return "", errors.New("商品查漏暂时没有响应，请稍后重试")
 	}
 	return result.Text, nil
+}
+
+func factGapCheckPayload(facts, p0 string, target *supplementProductTarget) map[string]any {
+	return map[string]any{"fact_package": facts, "effective_p0": p0, "target_product": target}
 }
 
 // factGapCheck runs the "商品事实必查" checklist against the plan's current
@@ -98,7 +103,14 @@ func (s *Server) factGapCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input factGapCheckInput
-	_ = readJSON(w, r, &input) // body is optional; tenant may also be inferred.
+	if r.ContentLength != 0 && readJSON(w, r, &input) != nil {
+		writeError(w, http.StatusBadRequest, "补全检查请求格式错误")
+		return
+	}
+	if input.ProductLinkID < 0 {
+		writeError(w, http.StatusBadRequest, "商品链接选择无效")
+		return
+	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
 	if !ok {
 		return
@@ -109,15 +121,15 @@ func (s *Server) factGapCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	source, err := s.loadDerivedInput(r.Context(), tenantID, planID, p0, p1, p2)
+	source, err := s.loadSupplementFactPackage(r.Context(), tenantID, planID, input.ProductLinkID, p0, p1, p2)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取正式事实包失败")
+		supplementScopeError(w, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenantID, PlanID: planID})
-	raw, err := s.runFactGapCheck(ctx, tenantID, planID, source.Facts)
+	raw, err := s.runFactGapCheck(ctx, tenantID, planID, source.Facts, p0, source.Target)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
