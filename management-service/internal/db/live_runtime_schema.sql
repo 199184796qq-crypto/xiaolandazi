@@ -1796,3 +1796,18 @@ CREATE TABLE IF NOT EXISTS live_interaction_replays (
     KEY idx_interaction_replay_scope (tenant_id, room_id, plan_id, created_at),
     KEY idx_interaction_replay_origin (origin, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_product_category (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    category VARCHAR(64) NOT NULL DEFAULT '',
+    source VARCHAR(16) NOT NULL DEFAULT 'auto',
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_plan_product_category (plan_id),
+    KEY idx_plan_product_category_tenant (tenant_id, plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

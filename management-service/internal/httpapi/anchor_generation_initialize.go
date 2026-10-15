@@ -157,7 +157,7 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if cfg.SellingPointProfileID == "" {
 		return 0, 0, errors.New("请先在后台配置卖点挖掘模型")
 	}
-	category, _ := s.detectProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
+	category, _ := s.resolveProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
 	prompt, err = injectCategorySellingDimensions(prompt, category)
 	if err != nil {
 		return 0, 0, err

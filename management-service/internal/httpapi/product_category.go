@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"livecompanion/management/internal/agentgateway"
@@ -74,4 +75,82 @@ func (s *Server) detectProductCategory(ctx context.Context, tenant, plan int64, 
 		return "", nil
 	}
 	return code, nil
+}
+
+// resolveProductCategory 返回方案当前生效的商品品类 code：优先读已保存（自动或人工），
+// 未判定时自动检测并落盘。检测失败或不确定返回空串，调用方回退母版自判。
+func (s *Server) resolveProductCategory(ctx context.Context, tenant, plan int64, profileID, facts string) (string, error) {
+	if saved, err := s.store.GetPlanProductCategory(ctx, tenant, plan); err == nil && strings.TrimSpace(saved) != "" {
+		return saved, nil
+	}
+	detected, err := s.detectProductCategory(ctx, tenant, plan, profileID, facts)
+	if err != nil {
+		return "", err
+	}
+	if detected == "" {
+		return "", nil
+	}
+	// 落盘失败不阻塞：本次仍用检测结果，下次重新检测。
+	_ = s.store.SetPlanProductCategory(ctx, tenant, plan, detected, "auto", 0)
+	return detected, nil
+}
+
+type planProductCategoryResponse struct {
+	Category string `json:"category"`
+	Label    string `json:"label"`
+	Source   string `json:"source,omitempty"`
+}
+
+func (s *Server) planProductCategoryGet(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, 0, false)
+	if !ok {
+		return
+	}
+	category, source := "", ""
+	if saved, err := s.store.GetPlanProductCategory(r.Context(), tenantID, planID); err == nil {
+		category = saved
+		source = "saved"
+	}
+	writeJSON(w, http.StatusOK, planProductCategoryResponse{Category: category, Label: productCategoryLabel(category), Source: source})
+}
+
+func (s *Server) planProductCategorySet(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, 0, true)
+	if !ok {
+		return
+	}
+	var input struct {
+		Category string `json:"category"`
+	}
+	if readJSON(w, r, &input) != nil {
+		writeError(w, http.StatusBadRequest, "品类设置请求格式错误")
+		return
+	}
+	category := strings.TrimSpace(input.Category)
+	// 允许空串 = 清除手动指定，回到自动判定。
+	if category != "" && !validProductCategoryCode(category) {
+		writeError(w, http.StatusBadRequest, "品类不在支持清单内")
+		return
+	}
+	if err := s.store.SetPlanProductCategory(r.Context(), tenantID, planID, category, "manual", actor.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, "品类保存失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, planProductCategoryResponse{Category: category, Label: productCategoryLabel(category), Source: "manual"})
 }
