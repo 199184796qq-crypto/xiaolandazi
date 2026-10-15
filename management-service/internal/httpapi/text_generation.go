@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
-	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/speechbase"
 	"math/rand"
 	"strings"
 	"time"
@@ -65,24 +65,14 @@ func cycleExpressionView(state *anchorcycle.State) (any, error) {
 	return renderAnchorExpressionView(state.BaselineJSON)
 }
 
-// renderAnchorExpressionView 从主播打分基线 JSON 渲染「主播表达标尺」。
-// 主线/开场/互动三类话术共用同一份渲染，避免主播腔调（称呼/语气词/自指/数字习惯）三套各写各的。
+// renderAnchorExpressionView 委托共享包 speechbase 渲染主播表达标尺。
+// 主线/开场/互动三类话术共用同一份实现，避免主播腔调三套各写各的。
 func renderAnchorExpressionView(baselineJSON string) (any, error) {
-	b, err := anchorstylescore.Parse(baselineJSON)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"语气词": b.Identity.Particles, "称呼": b.Identity.Audience, "自指": b.Identity.Self,
-		"节奏":     map[string]any{"平均分句长度": b.Identity.Rhythm.Length, "长度区间": b.Identity.Rhythm.LengthRange, "问句频率": b.Identity.Rhythm.QuestionFrequency},
-		"数字表达习惯": map[string]any{"价格表述方式": b.Identity.Numbers.Style, "自然帮观众算账": b.Identity.Numbers.LikesArithmetic},
-		"量化基准":   b.Quant, "表达偏好": b.Forbidden,
-	}, nil
+	return speechbase.RenderAnchorExpressionView(baselineJSON)
 }
 
-// fourLayerNotMentionText 是四层结构「不提」层的统一文案：事实未提供或未确认的
-// 未知项正反都不说。主线/开场/互动共用同一句，避免三处同义措辞漂移。
-const fourLayerNotMentionText = "事实未提供、未确认的未知项，正反都不说：既不说“能/有/支持”，也不说“不能/没有/不支持”；必要时只说“这点需要帮您确认”。"
+// fourLayerNotMentionText 引用共享包的四层「不提」统一文案。
+const fourLayerNotMentionText = speechbase.FourLayerNotMentionText
 func textControlLeak(text string) bool {
 	for _, marker := range []string{"{{", "}}", "本次任务：", "表达展开建议：", "开头模式：", "后续表达加强建议：", "\"本次任务\":", "\"reply\":", "\"needs_review\":", "## 本场有效事实", "## 主播表达标尺"} {
 		if strings.Contains(text, marker) {
