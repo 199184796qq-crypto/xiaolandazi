@@ -6,11 +6,12 @@ import (
 )
 
 // 卖点 tier 分级：程序按可复核规则初分，用户在界面确认/调整，不靠模型拍脑袋。
-// 三级：core(核心主打，最多1个) / secondary(次级) / trust(信任福利：活动/售后/物流)。
+// 三级：core(核心主打，可多个，平级) / secondary(次级，可多个) / trust(信任福利：活动/售后/物流)。
+// 权重层级：核心 > 次级 > 信任福利，供节奏规划分配出镜权重；多个同级之间平级。
 var tierTrustWords = []string{"物流", "发货", "快递", "配送", "售后", "退换", "退款", "包邮", "运费", "保障", "活动", "优惠", "赠品", "福利"}
 
-// tierCoreGroups 按优先级从高到低：差异化亮点 > 价格算账 > 数字背书 > 品质来源。
-// 命中优先级越靠前的卖点越优先当核心主打。
+// tierCoreGroups 按「核心购买理由」分组：差异化亮点 > 价格算账 > 数字背书 > 品质来源。
+// 命中任一组即判 core；组序目前用于将来「同级之间谁多谁少」的细分，现在仅作判定依据。
 var tierCoreGroups = [][]string{
 	{"独家", "独特", "独有", "唯一", "差异化", "非遗", "老字号", "首创", "专利", "特色"},
 	{"价格", "差价", "算账", "性价比", "省钱", "优惠价", "活动价", "日常价"},
@@ -31,7 +32,7 @@ func matchesAnyTierWord(text string, words []string) bool {
 	return false
 }
 
-// coreCandidatePriority 返回该卖点作为核心主打的优先级（0 最高），非候选返回 -1。
+// coreCandidatePriority 返回该卖点命中的核心组序号（0 最高），非候选返回 -1。
 func coreCandidatePriority(text string) int {
 	for p, group := range tierCoreGroups {
 		if matchesAnyTierWord(text, group) {
@@ -41,37 +42,32 @@ func coreCandidatePriority(text string) int {
 	return -1
 }
 
-// assignSellingPointTiers 给轮盘每个卖点补 tier：信任福利类 → trust；其余按优先级
-// 选出一个 core（差异化 > 价格 > 数字背书 > 品质来源），剩下的 → secondary。
-// 只补缺或重新按规则初分，不覆盖用户已确认的 tier（已有合法 tier 时保持不变）。
+// assignSellingPointTiers 给轮盘每个卖点补 tier：命中核心关键词 → core（可多个）；
+// 命中信任福利词（物流/售后/活动/福利）且非核心 → trust；其余 → secondary。
+// 只补空 tier，不覆盖用户已确认的 tier（core/secondary/trust 均保持不变）。
 func assignSellingPointTiers(wheelJSON string) (string, error) {
 	var wheel anchorStyleSellingPointWheel
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stripPolicyJSONFence(wheelJSON))), &wheel); err != nil {
 		return "", err
 	}
-	coreIdx, corePriority, hasCore := -1, -1, false
 	for i := range wheel.Items {
 		item := &wheel.Items[i]
-		// 用户已确认的 tier 保持不变；已存在 core 时不再另选核心。
-		if item.Tier == "core" {
-			hasCore = true
-			continue
-		}
-		if item.Tier == "secondary" || item.Tier == "trust" {
+		// 用户已确认的 tier 保持不变。
+		if item.Tier == "core" || item.Tier == "secondary" || item.Tier == "trust" {
 			continue
 		}
 		text := sellingPointTierText(*item)
+		// core 优先于 trust：含核心关键词（价格/工艺/品牌/原料等）先判 core，
+		// 即使同时含「福利/保障」等词也不按 trust 处理，避免「价格算账与福利权益」被误判。
+		if coreCandidatePriority(text) >= 0 {
+			item.Tier = "core"
+			continue
+		}
 		if matchesAnyTierWord(text, tierTrustWords) {
 			item.Tier = "trust"
 			continue
 		}
-		if p := coreCandidatePriority(text); p >= 0 && !hasCore && (coreIdx < 0 || p < corePriority) {
-			coreIdx, corePriority = i, p
-		}
 		item.Tier = "secondary"
-	}
-	if coreIdx >= 0 && !hasCore {
-		wheel.Items[coreIdx].Tier = "core"
 	}
 	out, err := json.Marshal(wheel)
 	return string(out), err
