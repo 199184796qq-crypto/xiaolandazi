@@ -1826,6 +1826,11 @@ export function bindLiveAnchorStyleToPlan(styleId: number, planId: number, tenan
   return request<{ bound: boolean; style_id: number; plan_id: number }>('/api/v1/live-anchor-styles/' + styleId + '/bind-plan' + query, { method: 'POST', body: JSON.stringify({ plan_id: planId }) })
 }
 
+export function unbindLiveAnchorStyleFromPlan(styleId: number, planId: number, tenantId?: number) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ unbound: boolean; style_id: number; plan_id: number }>('/api/v1/live-anchor-styles/' + styleId + '/bind-plan' + query, { method: 'DELETE', body: JSON.stringify({ plan_id: planId }), suppressErrorDialog: true })
+}
+
 export function activateLiveAgentPlanStylePlugin(
   planId: number,
   input: { expected_revision: number; plugin_id: string; plugin_version: string; strength: number; parameters?: Record<string, unknown> },

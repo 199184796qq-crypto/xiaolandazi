@@ -29,6 +29,24 @@ test('empty list and no-plan/saving states retain existing action guards', async
   assert.ok(saving.includes('先选择智能体方案'))
 })
 
+test('bound presenter sorts first with usage check and cancel pill independently of selected card', async () => {
+  const html=await renderToString(createSSRApp(component,{...props,styles:[style,{...style,id:8,name:'另一主播'}],selectedId:7,currentId:8}))
+  assert.ok(html.indexOf('data-presenter-id="8"')<html.indexOf('data-presenter-id="7"'))
+  assert.equal((html.match(/<article\b[^>]*class="[^"]*\bis-current\b[^"]*"/g)||[]).length,1)
+  assert.ok(html.includes('取消使用主播“另一主播”'))
+  assert.ok(html.includes('当前使用主播“另一主播”，点击查看'))
+  assert.ok(html.includes('设为当前智能体主播'),'another selection can replace the bound presenter')
+})
+
+test('viewing a card never marks it as in use; current selection cannot be rebound accidentally', async () => {
+  const unbound=await renderToString(createSSRApp(component,{...props,currentId:0}))
+  assert.equal(unbound.includes('取消使用'),false)
+  assert.equal(unbound.includes('presenter-check checked'),false)
+  const current=await renderToString(createSSRApp(component,{...props,currentId:7,bindingBusy:true}))
+  assert.match(current,/<button[^>]*class="presenter-unbind"[^>]*disabled/)
+  assert.equal(current.includes('class="manager-bind"'),false)
+})
+
 test('intro is independent, defaults by displayed avatar and truncates at 30 characters', async () => {
  const empty = await renderToString(createSSRApp(component, { ...props, styles: [{...style, description: ''}] }))
  assert.ok(empty.includes('她什么也没介绍'))

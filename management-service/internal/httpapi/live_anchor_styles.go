@@ -38,6 +38,7 @@ func (s *Server) registerLiveAnchorStyleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/live-anchor-styles/{styleID}/plugins", s.liveAnchorStylePluginUpsert)
 	mux.HandleFunc("DELETE /api/v1/live-anchor-styles/{styleID}/plugins/{pluginID}", s.liveAnchorStylePluginDelete)
 	mux.HandleFunc("POST /api/v1/live-anchor-styles/{styleID}/bind-plan", s.liveAnchorStyleBindPlan)
+	mux.HandleFunc("DELETE /api/v1/live-anchor-styles/{styleID}/bind-plan", s.liveAnchorStyleUnbindPlan)
 }
 
 func liveAnchorStylePathID(w http.ResponseWriter, r *http.Request, key, label string) (int64, bool) {
@@ -510,8 +511,44 @@ func (s *Server) liveAnchorStyleBindPlan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.store.BindLiveAnchorStyleToPlan(r.Context(), tenantID, styleID, input.PlanID, actor.UserID); err != nil {
+		if errors.Is(err, appdb.ErrLiveAnchorStyleNotFound) || errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+			writeError(w, 404, "当前方案或主播不存在")
+			return
+		}
 		writeError(w, 500, "绑定主播风格失败")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"bound": true, "style_id": styleID, "plan_id": input.PlanID})
+}
+
+func (s *Server) liveAnchorStyleUnbindPlan(w http.ResponseWriter, r *http.Request) {
+	_, tenantID, ok := s.liveAnchorStyleTenant(w, r, true)
+	if !ok {
+		return
+	}
+	styleID, ok := liveAnchorStylePathID(w, r, "styleID", "主播风格")
+	if !ok {
+		return
+	}
+	var input struct {
+		PlanID int64 `json:"plan_id"`
+	}
+	if err := readJSON(w, r, &input); err != nil || input.PlanID <= 0 {
+		writeError(w, 400, "智能体方案 ID 无效")
+		return
+	}
+	err := s.store.UnbindLiveAnchorStyleFromPlan(r.Context(), tenantID, styleID, input.PlanID)
+	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+		writeError(w, 404, "当前智能体方案不存在")
+		return
+	}
+	if errors.Is(err, appdb.ErrLiveAnchorBindingChanged) {
+		writeError(w, 409, "当前使用的主播已变化，请刷新后重试")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "取消使用主播失败，请重试")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"unbound": true, "style_id": styleID, "plan_id": input.PlanID})
 }

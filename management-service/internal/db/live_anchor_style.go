@@ -11,6 +11,7 @@ import (
 )
 
 var ErrLiveAnchorStyleNotFound = errors.New("live anchor style not found")
+var ErrLiveAnchorBindingChanged = errors.New("live anchor binding changed")
 
 func emptyLiveAnchorStyleProfile() model.LiveAgentPlanAnchorStyleProfile {
 	return model.LiveAgentPlanAnchorStyleProfile{
@@ -442,8 +443,59 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) BindLiveAnchorStyleToPlan(ctx context.Context, tenantID, styleID, planID, actorID int64) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_anchor_style_plan_bindings (tenant_id, style_id, plan_id, bound_by_user_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE style_id=VALUES(style_id), bound_by_user_id=VALUES(bound_by_user_id), bound_at=CURRENT_TIMESTAMP(3)`, tenantID, styleID, planID, actorID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLiveAgentPlanNotFound
+		}
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM live_anchor_styles WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, styleID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLiveAnchorStyleNotFound
+		}
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO live_anchor_style_plan_bindings (tenant_id, style_id, plan_id, bound_by_user_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE style_id=VALUES(style_id), bound_by_user_id=VALUES(bound_by_user_id), bound_at=CURRENT_TIMESTAMP(3)`, tenantID, styleID, planID, actorID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Lock the same plan as binding, so an old cancel click cannot detach a newer
+// presenter. Only this relation is removed; presenter assets and saved versions stay.
+func (s *Store) UnbindLiveAnchorStyleFromPlan(ctx context.Context, tenantID, styleID, planID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLiveAgentPlanNotFound
+		}
+		return err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT style_id FROM live_anchor_style_plan_bindings WHERE tenant_id=? AND plan_id=? FOR UPDATE`, tenantID, planID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	if id != styleID {
+		return ErrLiveAnchorBindingChanged
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM live_anchor_style_plan_bindings WHERE tenant_id=? AND plan_id=? AND style_id=?`, tenantID, planID, styleID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetLiveAnchorStyleForPlan(ctx context.Context, tenantID, planID int64) (model.LiveAnchorStyle, error) {
