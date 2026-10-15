@@ -4805,6 +4805,7 @@ export interface AnchorStyleSellingPointWheelItem {
   目标人群?: string
   痛点?: string
   角度: string[]
+  tier?: 'core' | 'secondary' | 'trust'
 }
 
 export interface AnchorStyleFactGapSuggestion {
@@ -4820,6 +4821,28 @@ export interface AnchorStyleSellingPointWheelDocument {
   卖点列表: AnchorStyleSellingPointWheelItem[]
   事实补充建议: AnchorStyleFactGapSuggestion[]
 }
+
+export interface PlanProductCategory {
+  category: string
+  label: string
+  source?: string
+}
+
+// 与后端 productCategoryCatalog 对齐：code 用于存储，label 用于展示。
+export const PRODUCT_CATEGORIES = [
+  { code: 'food', label: '食品/餐饮' },
+  { code: 'fresh', label: '生鲜/农产品' },
+  { code: 'beverage', label: '酒水饮料' },
+  { code: 'apparel', label: '服装/鞋帽' },
+  { code: 'beauty', label: '美妆/个护' },
+  { code: 'appliance', label: '电器/数码' },
+  { code: 'home', label: '家居/日用' },
+  { code: 'maternal', label: '母婴' },
+  { code: 'building', label: '建材/家装' },
+  { code: 'book', label: '图书/文教' },
+  { code: 'pet', label: '宠物' },
+] as const
+export type ProductCategoryCode = (typeof PRODUCT_CATEGORIES)[number]['code']
 
 export interface SpeechMinerMessage {
   role: 'user' | 'agent'

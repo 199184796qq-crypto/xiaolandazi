@@ -67,3 +67,19 @@ func TestValidateSetRejectsWrongScopeSourceAndTaskIDs(t *testing.T) {
 		t.Fatal("duplicate stable task ID accepted")
 	}
 }
+
+func TestUncoveredFacts(t *testing.T) {
+	set := Set{Pools: []Pool{{
+		Key: "common",
+		Facts: []Fact{
+			{ID: "f1"},
+			{ID: "f2"},
+			{ID: "f3"},
+		},
+		Tasks: []Task{{ID: "t1", Point: "卖点", Angle: "角度", Sources: []string{"f1"}}},
+	}}}
+	got := set.UncoveredFacts()
+	if len(got) != 2 || got[0] != "f2" || got[1] != "f3" {
+		t.Fatalf("UncoveredFacts 应返回未被引用的 f2/f3，got %v", got)
+	}
+}

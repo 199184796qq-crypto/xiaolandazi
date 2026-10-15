@@ -54,7 +54,9 @@ func cycleAnglePlanPersistent(state *anchorcycle.State) bool {
 	return state.TenantID > 0 && state.PlanID > 0 && state.Surface != factPreviewSurface
 }
 
-func cycleAnglePlanEnabled() bool { return os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") != "0" }
+// 角度钩子规划（中间层）默认关闭：正文生成直接用「卖点×角度名 + 侧面筛事实」。
+// 显式设 ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED=1 才开启（保留旧行为回退用）。
+func cycleAnglePlanEnabled() bool { return os.Getenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED") == "1" }
 
 func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.State, profile agentgateway.SpeechModel) {
 	if err := requireCycleP0(state); err != nil {

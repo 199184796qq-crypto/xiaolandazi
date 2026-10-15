@@ -174,6 +174,31 @@ func (s Set) HasUnfinishedContent() bool {
 	return false
 }
 
+// UncoveredFacts 返回未被任何 task 引用的事实 ID（覆盖校验）。
+// 事实包每条事实都应被至少一个卖点×角度（task）覆盖；未被覆盖的说明漏挖了维度，
+// 应回灌补全清单提示补角度，保证"任何品都能自动挖完"。
+func (s Set) UncoveredFacts() []string {
+	covered := map[string]bool{}
+	for _, p := range s.Pools {
+		for _, t := range p.Tasks {
+			for _, src := range t.Sources {
+				covered[src] = true
+			}
+		}
+	}
+	uncovered := []string{}
+	seen := map[string]bool{}
+	for _, p := range s.Pools {
+		for _, f := range p.Facts {
+			if !covered[f.ID] && !seen[f.ID] {
+				uncovered = append(uncovered, f.ID)
+				seen[f.ID] = true
+			}
+		}
+	}
+	return uncovered
+}
+
 func IDs(values []int64) []int64 {
 	m := map[int64]bool{}
 	for _, v := range values {

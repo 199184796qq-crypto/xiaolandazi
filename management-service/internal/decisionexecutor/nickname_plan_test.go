@@ -221,3 +221,40 @@ func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *test
 		t.Fatalf("source account identity was changed: %#v", plan)
 	}
 }
+
+func TestNicknameAddressSuffixAndShorteningHint(t *testing.T) {
+	suffixCases := []struct {
+		name   string
+		suffix string
+	}{
+		{"小明", ""},
+		{"老王", ""},
+		{"爱吃苹果", ""},
+		{"爱吃辣的小陈哥", "哥"},
+		{"卖水果的刘老板", "老板"},
+		{"做菜很好吃的王师傅", "师傅"},
+		{"爱跳舞的丽丽姐", "姐"},
+		{"湖南香辣妹", "妹"},
+		{"我是你永远的家", ""}, // "家"是主题词，不是称谓，不应误判
+	}
+	for _, c := range suffixCases {
+		if got := nicknameAddressSuffix(c.name); got != c.suffix {
+			t.Errorf("nicknameAddressSuffix(%q)=%q want %q", c.name, got, c.suffix)
+		}
+	}
+
+	hintCases := []struct {
+		name   string
+		expect string
+	}{
+		{"小明", "仅 2 字，直接使用全称，不要简称"},
+		{"爱吃苹果", "仅 4 字，直接使用全称，不要简称"},
+		{"超级爱吃苹果的人", "共 8 字，取最有辨识度的核心，最多 4 字（不机械截前 4 字）"},
+		{"爱吃辣的小陈哥", "末尾带称谓「哥」，简称取核心 1-2 字再带上该称谓（如「小陈哥」「刘老板」）"},
+	}
+	for _, c := range hintCases {
+		if got := nicknameShorteningHint(c.name); got != c.expect {
+			t.Errorf("nicknameShorteningHint(%q)=%q want %q", c.name, got, c.expect)
+		}
+	}
+}

@@ -17,6 +17,8 @@ const sellingPointWheelExpansionPromptRelativePath = "configs/prompts/anchor-sty
 const sellingPointWheelFinalAuditPromptRelativePath = "configs/prompts/anchor-style/selling-point-wheel-final-audit.md"
 const speechMinerGuidePromptRelativePath = "configs/prompts/anchor-style/speech-miner-guide.md"
 const factGapChecklistPromptRelativePath = "configs/prompts/anchor-style/fact-gap-checklist.md"
+const categorySellingDimensionsPromptRelativePath = "configs/prompts/anchor-style/category-selling-dimensions.md"
+const categoryDetectionPromptRelativePath = "configs/prompts/anchor-style/category-detection.md"
 const factSynonymVariantsPromptRelativePath = "configs/prompts/anchor-style/fact-synonym-variants.md"
 const factSpeechRewritePromptRelativePath = "configs/prompts/anchor-style/fact-speech-rewrite.md"
 const auditFourLayerPromptRelativePath = "configs/prompts/anchor-style/compliance/audit-four-layer.md"
@@ -220,6 +222,44 @@ func loadFactGapChecklistPrompt() (string, string, error) {
 		factGapChecklistPromptRelativePath,
 		"商品事实必查母版",
 	)
+}
+
+// loadCategorySellingDimensionsPrompt 读取「品类核心卖点维度表」，供卖点挖掘母版
+// 按商品品类注入必查维度，替代原先硬编码的食品类维度。运营可在不改 Go 代码的前提下
+// 增删品类，重跑卖点挖掘即生效。
+func loadCategorySellingDimensionsPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"CATEGORY_SELLING_DIMENSIONS_PROMPT_PATH",
+		categorySellingDimensionsPromptRelativePath,
+		"品类核心卖点维度表",
+	)
+}
+
+// loadCategoryDetectionPrompt 读取「商品品类判定母版」，供卖点挖掘前自动判定方案品类。
+func loadCategoryDetectionPrompt() (string, string, error) {
+	return loadReplaceablePromptAsset(
+		"CATEGORY_DETECTION_PROMPT_PATH",
+		categoryDetectionPromptRelativePath,
+		"商品品类判定母版",
+	)
+}
+
+// injectCategorySellingDimensions 把 {{CATEGORY_MUST_CHECK}} 占位替换为品类维度表。
+// category 为已判定（自动或人工）的品类 code；非空时在维度表前显式标注本方案品类，
+// 让模型优先套用对应品类维度。母版没有占位（例如用户手动提交的提示词）时原样返回。
+func injectCategorySellingDimensions(promptMD, category string) (string, error) {
+	if !strings.Contains(promptMD, "{{CATEGORY_MUST_CHECK}}") {
+		return promptMD, nil
+	}
+	dims, _, err := loadCategorySellingDimensionsPrompt()
+	if err != nil {
+		return "", err
+	}
+	block := strings.TrimSpace(dims)
+	if label := productCategoryLabel(strings.TrimSpace(category)); label != "" {
+		block = "本方案商品品类已判定为「" + label + "」，必须优先套用下面对应品类的核心必查维度，不得遗漏或合并。\n\n" + block
+	}
+	return strings.ReplaceAll(promptMD, "{{CATEGORY_MUST_CHECK}}", block), nil
 }
 
 func loadFactSynonymVariantsPrompt() (string, string, error) {

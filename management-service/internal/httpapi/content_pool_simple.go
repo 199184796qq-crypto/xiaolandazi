@@ -465,30 +465,12 @@ func (s *Server) generateSimplePool(ctx context.Context, profile, gen, review, p
 		if err := beforeCall(); err != nil {
 			return notes, err
 		}
-		packet := poolMaterial(*p, source.Products)
-		selected := []string{}
-		for _, f := range unit.facts {
-			selected = append(selected, f.Text)
-		}
-		packet["selected_material"], packet["user_confirmed_corrections"] = selected, corrections
-		call, stop := context.WithTimeout(ctx, 30*time.Second)
-		response, _, err := s.completeAnchorStyleWorkbench(call, profile, "content_pool_task_generation", agentgateway.ResponseText, poolMessages(gen, p0, packet), 1800, false)
-		stop()
-		if err != nil {
-			notes = append(notes, poolNotice(*p, strings.Join(selected, "\n"), "unavailable", "本条内容生成暂未完成；其他资料继续，可稍后重试", true))
-			continue
-		}
-		text := poolReplyContent(response.Text)
-		if text == "" {
-			notes = append(notes, poolNotice(*p, strings.Join(selected, "\n"), "unavailable", "本条没有返回讲述内容，其他资料继续", true))
-			continue
-		}
-		// Request context owns title, source IDs and association. No format gate.
-		// 审核上下文扩回整池 facts：plus 审核已便宜，宁可多传也要让审核看到 candidate
-		// 引用的相关事实（如工艺、门店），避免"事实在库里却判无依据"的误杀。
+		// 【剥离中间层】不再调用 content_pool_task_generation 扩写口播文案。
+		// 直接用卖点轮盘角度名作为 angle：正文生成用「角度名 + 侧面筛事实」即可，
+		// 原 angle 文案被角度钩子绕过、属冗余生成，剥离后省一次模型调用。
 		boundary := *p
 		boundary.Facts = p.Facts
-		if err := check(poolContent{Point: unit.title, Angle: text}, boundary); err != nil {
+		if err := check(poolContent{Point: unit.title, Angle: unit.title}, boundary); err != nil {
 			return notes, err
 		}
 	}

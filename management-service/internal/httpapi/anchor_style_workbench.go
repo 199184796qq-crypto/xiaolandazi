@@ -123,6 +123,7 @@ type anchorStyleSellingPointWheelItem struct {
 	TargetAudience *string  `json:"目标人群,omitempty"`
 	PainPoint      *string  `json:"痛点,omitempty"`
 	Angles         []string `json:"角度"`
+	Tier           string   `json:"tier,omitempty"`
 }
 
 type anchorStyleFactGapSuggestion struct {
@@ -170,6 +171,7 @@ type anchorStyleWheelTask struct {
 	SellingPoint   string `json:"selling_point"`
 	Angle          string `json:"angle"`
 	Key            string `json:"key"`
+	Tier           string `json:"tier,omitempty"`
 	TargetAudience string `json:"target_audience,omitempty"`
 	PainPoint      string `json:"pain_point,omitempty"`
 }
@@ -585,6 +587,11 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelCompile(w http.ResponseWri
 		writeError(w, 400, err.Error())
 		return
 	}
+	promptMD, err = injectCategorySellingDimensions(promptMD, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if utf8.RuneCountInString(promptMD) < 100 || utf8.RuneCountInString(promptMD) > 60000 {
 		writeError(w, http.StatusBadRequest, "卖点挖掘提示词须为100到60000字")
 		return
@@ -606,6 +613,8 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelCompile(w http.ResponseWri
 		if wheelJSON == "" {
 			wheelJSON = stripPolicyJSONFence(raw)
 		}
+	} else if tiered, terr := assignSellingPointTiers(wheelJSON); terr == nil {
+		wheelJSON = tiered
 	}
 	trace := traceAnchorStyleWorkbenchMessages(actual)
 	asset, err := s.store.SaveLiveSellingPointWheel(r.Context(), tenantID, planID, actor.UserID, model.SaveLiveSellingPointWheelInput{
@@ -728,8 +737,8 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("每个卖点须包含“卖点名”和“角度”")
 		}
 		for key := range fields {
-			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" {
-				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度")
+			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" && key != "tier" {
+				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度、tier")
 			}
 		}
 		for _, key := range []string{"目标人群", "痛点"} {
@@ -746,6 +755,12 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("卖点字段类型无效")
 		}
 		item.Name = strings.TrimSpace(item.Name)
+		item.Tier = strings.TrimSpace(item.Tier)
+		switch item.Tier {
+		case "", "core", "secondary", "trust":
+		default:
+			return "", 0, 0, errors.New("tier 只能是 core、secondary 或 trust")
+		}
 		if item.TargetAudience != nil {
 			value := strings.TrimSpace(*item.TargetAudience)
 			item.TargetAudience = &value
@@ -1011,7 +1026,7 @@ func flattenAnchorStyleWheelTasks(wheel anchorStyleSellingPointWheel) []anchorSt
 			if point == "" || angle == "" {
 				continue
 			}
-			tasks = append(tasks, anchorStyleWheelTask{SellingPoint: point, Angle: angle, Key: point + "×" + angle, TargetAudience: optionalWheelText(item.TargetAudience), PainPoint: optionalWheelText(item.PainPoint)})
+			tasks = append(tasks, anchorStyleWheelTask{SellingPoint: point, Angle: angle, Key: point + "×" + angle, Tier: item.Tier, TargetAudience: optionalWheelText(item.TargetAudience), PainPoint: optionalWheelText(item.PainPoint)})
 		}
 	}
 	return tasks

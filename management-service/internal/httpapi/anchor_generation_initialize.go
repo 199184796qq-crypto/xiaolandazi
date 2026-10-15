@@ -157,6 +157,11 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if cfg.SellingPointProfileID == "" {
 		return 0, 0, errors.New("请先在后台配置卖点挖掘模型")
 	}
+	category, _ := s.resolveProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
+	prompt, err = injectCategorySellingDimensions(prompt, category)
+	if err != nil {
+		return 0, 0, err
+	}
 	// 两段式：一次挖掘 + 程序确定性删违规，不再走五阶段重审核。
 	snapshot := prompt
 	if handled, points, angles, reuseErr := s.reuseOrUpdateWheel(ctx, tenant, plan, actor, source.Facts, finalAuditPrompt, snapshot, cfg.SellingPointProfileID); handled {
@@ -183,6 +188,13 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 			} else {
 				canonical, points, angles = filteredCanonical, filteredPoints, filteredAngles
 			}
+		}
+	}
+	if validation == nil {
+		if tiered, terr := assignSellingPointTiers(canonical); terr == nil {
+			canonical = tiered
+		} else {
+			validation = fmt.Errorf("卖点分级失败：%w", terr)
 		}
 	}
 	status := "draft"

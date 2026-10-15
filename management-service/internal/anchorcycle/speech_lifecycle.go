@@ -152,6 +152,26 @@ func (s *State) IsDuplicateSpeech(text string) bool {
 	return false
 }
 
+// RecentSameTask 判断当前任务（卖点×角度）是否在近期已采纳段里出现过。
+// 用于润色降级：同一角度首次讲不润色（正文 + 侧面筛事实已拉开结构），
+// 近期复讲（≈侧面轮换一圈回到同侧面）才润色换措辞，避免"叮1分钟"这类数字短语照抄。
+func (s *State) RecentSameTask(recentN int) bool {
+	if recentN <= 0 {
+		return false
+	}
+	task := s.Task()
+	start := len(s.Accepted) - recentN
+	if start < 0 {
+		start = 0
+	}
+	for _, part := range s.Accepted[start:] {
+		if part.Task.Key == task.Key {
+			return true
+		}
+	}
+	return false
+}
+
 // RotateAfterDuplicate 复读时换到下一个未复读过的角度。
 // 返回 false 表示角度池已轮尽（所有角度都复读过一次），此时放弃去重、接受本段。
 func (s *State) RotateAfterDuplicate() bool {
