@@ -1,0 +1,185 @@
+{
+  "schema_version": 2,
+  "sides": [
+    {
+      "code": "scenario",
+      "name": "使用场景",
+      "name_en": "Usage Scenario",
+      "description": "什么场合、什么季节、怎么用"
+    },
+    {
+      "code": "process",
+      "name": "过程细节",
+      "name_en": "Process Detail",
+      "description": "材质/原料怎么选、工艺怎么做"
+    },
+    {
+      "code": "value",
+      "name": "利益算账",
+      "name_en": "Value",
+      "description": "划不划算、省了多少、性价比在哪"
+    },
+    {
+      "code": "comparison",
+      "name": "对比参照",
+      "name_en": "Comparison",
+      "description": "和别家、别的型号、别的原料的差别"
+    },
+    {
+      "code": "pain_point",
+      "name": "人群痛点",
+      "name_en": "Pain Point",
+      "description": "谁更需要、解决了什么顾虑"
+    },
+    {
+      "code": "origin",
+      "name": "品质来源",
+      "name_en": "Origin",
+      "description": "原料、品牌、产地的来源（只讲有事实的部分）"
+    },
+    {
+      "code": "usage",
+      "name": "使用方式",
+      "name_en": "Usage",
+      "description": "怎么用、怎么保存、怎么保养"
+    }
+  ],
+  "category_sides": {
+    "product": [
+      "process",
+      "origin"
+    ],
+    "specification": [
+      "scenario",
+      "comparison"
+    ],
+    "ingredients": [
+      "process",
+      "origin"
+    ],
+    "craft": [
+      "process"
+    ],
+    "flavor": [
+      "comparison",
+      "scenario"
+    ],
+    "functions": [
+      "scenario"
+    ],
+    "usage": [
+      "usage"
+    ],
+    "storage": [
+      "usage"
+    ],
+    "shelf_life": [
+      "usage"
+    ],
+    "product_experience": [
+      "scenario"
+    ],
+    "compatibility": [
+      "scenario"
+    ],
+    "link": [
+      "value"
+    ],
+    "variant": [
+      "scenario",
+      "comparison"
+    ],
+    "trade": [
+      "value"
+    ],
+    "price": [
+      "value",
+      "comparison"
+    ],
+    "promotion": [
+      "value"
+    ],
+    "gift": [
+      "value"
+    ],
+    "stock": [
+      "pain_point"
+    ],
+    "payment": [
+      "value"
+    ],
+    "fulfillment": [
+      "comparison",
+      "usage"
+    ],
+    "shipping_time": [
+      "usage"
+    ],
+    "shipping_area": [
+      "comparison"
+    ],
+    "shipping_fee": [
+      "value"
+    ],
+    "delivery": [
+      "usage"
+    ],
+    "pickup": [
+      "scenario"
+    ],
+    "after_sales": [
+      "pain_point"
+    ],
+    "return_policy": [
+      "pain_point"
+    ],
+    "warranty": [
+      "pain_point"
+    ],
+    "customer_service": [
+      "pain_point"
+    ],
+    "service_content": [
+      "scenario"
+    ],
+    "identity_location": [
+      "origin"
+    ],
+    "brand": [
+      "origin"
+    ],
+    "qualification": [
+      "origin"
+    ],
+    "inspection": [
+      "origin"
+    ],
+    "origin": [
+      "origin"
+    ],
+    "stores": [
+      "scenario"
+    ],
+    "business_history": [
+      "origin"
+    ],
+    "audience": [
+      "scenario",
+      "pain_point"
+    ],
+    "scenario": [
+      "scenario"
+    ],
+    "other": [
+      "scenario"
+    ],
+    "age_range": [
+      "scenario",
+      "pain_point"
+    ],
+    "material_safety": [
+      "process",
+      "origin"
+    ]
+  }
+}

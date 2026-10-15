@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "categories": [
+    {
+      "value": "product",
+      "label": "商品综合",
+      "label_en": "Product Overview",
+      "description": "商品整体介绍与综合属性",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "specification",
+      "label": "规格 / 尺寸 / 容量",
+      "label_en": "Specification",
+      "description": "重量、数量、尺寸、容量与型号",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "ingredients",
+      "label": "原料 / 成分 / 材质",
+      "label_en": "Ingredients",
+      "description": "原料来源、配料成分与材质信息",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "craft",
+      "label": "制作 / 加工工艺",
+      "label_en": "Craft",
+      "description": "制作流程、加工方式与工艺说明",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "flavor",
+      "label": "口味 / 口感 / 气味",
+      "label_en": "Flavor",
+      "description": "口味种类、口感、风味与气味特点",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "functions",
+      "label": "功能 / 性能 / 参数",
+      "label_en": "Functions",
+      "description": "已提供依据的功能、性能与技术参数",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "usage",
+      "label": "使用 / 食用方法",
+      "label_en": "Usage",
+      "description": "使用步骤、食用方式与操作说明",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "compatibility",
+      "label": "适配 / 兼容范围",
+      "label_en": "Compatibility",
+      "description": "适配设备、兼容型号与使用条件",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "storage",
+      "label": "保存 / 养护方式",
+      "label_en": "Storage",
+      "description": "储存条件、开封后处理与维护方式",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "shelf_life",
+      "label": "保质期 / 使用期限",
+      "label_en": "Shelf Life",
+      "description": "保质期限、有效期限与到期条件",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "packaging",
+      "label": "包装 / 配件 / 清单",
+      "label_en": "Packaging",
+      "description": "包装形式、配件与交付清单",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "safety_notice",
+      "label": "安全提示 / 限制条件",
+      "label_en": "Safety Notice",
+      "description": "过敏原、禁忌、注意事项与使用限制",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "product_experience",
+      "label": "外观 / 质感 / 体验",
+      "label_en": "Experience",
+      "description": "颜色、外观、触感与已确认的体验特点",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "link",
+      "label": "链接综合",
+      "label_en": "Link Overview",
+      "description": "商品链接编号与链接整体信息",
+      "group": "链接选购",
+      "group_en": "Link Selection",
+      "family": "link"
+    },
+    {
+      "value": "variant",
+      "label": "款式 / SKU / 选购对应",
+      "label_en": "Variant",
+      "description": "款式组合、SKU与对应链接的选购关系",
+      "group": "链接选购",
+      "group_en": "Link Selection",
+      "family": "link"
+    },
+    {
+      "value": "trade",
+      "label": "交易综合",
+      "label_en": "Trade Overview",
+      "description": "订单、交易规则与购买条件",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "price",
+      "label": "价格 / 单价 / 价差",
+      "label_en": "Price",
+      "description": "商品价格、单位价格与有依据的价格比较",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "promotion",
+      "label": "优惠 / 活动规则",
+      "label_en": "Promotion",
+      "description": "优惠范围、活动期限与参加条件",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "gift",
+      "label": "赠品 / 附赠权益",
+      "label_en": "Gift",
+      "description": "赠品内容、领取条件与附赠权益",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "stock",
+      "label": "库存 / 限购 / 补货",
+      "label_en": "Stock",
+      "description": "库存情况、限购规则与已确认的补货安排",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "payment",
+      "label": "付款 / 发票 / 订单",
+      "label_en": "Payment",
+      "description": "支付方式、发票与订单处理规则",
+      "group": "价格活动",
+      "group_en": "Price & Promotion",
+      "family": "trade"
+    },
+    {
+      "value": "fulfillment",
+      "label": "履约综合",
+      "label_en": "Fulfillment Overview",
+      "description": "发货、物流与交付的整体规则",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "shipping_time",
+      "label": "发货时间 / 截单时间",
+      "label_en": "Shipping Time",
+      "description": "发货安排、截单时间与预售交付时间",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "shipping_area",
+      "label": "配送范围 / 地区限制",
+      "label_en": "Shipping Area",
+      "description": "可配送地区与不支持配送的范围",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "shipping_fee",
+      "label": "运费 / 包邮条件",
+      "label_en": "Shipping Fee",
+      "description": "运费标准、包邮范围与例外条件",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "delivery",
+      "label": "快递 / 配送方式 / 时效",
+      "label_en": "Delivery",
+      "description": "物流渠道、配送方式与有依据的预计时效",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "pickup",
+      "label": "自提 / 到店 / 核销",
+      "label_en": "Pickup",
+      "description": "到店、自提与预约核销规则",
+      "group": "发货配送",
+      "group_en": "Shipping",
+      "family": "fulfillment"
+    },
+    {
+      "value": "after_sales",
+      "label": "售后综合",
+      "label_en": "After-sales Overview",
+      "description": "售后范围、联系渠道与处理流程",
+      "group": "售后服务",
+      "group_en": "After-sales",
+      "family": "fulfillment"
+    },
+    {
+      "value": "return_policy",
+      "label": "退货 / 换货 / 退款",
+      "label_en": "Return Policy",
+      "description": "退换货条件、退款流程与运费承担",
+      "group": "售后服务",
+      "group_en": "After-sales",
+      "family": "fulfillment"
+    },
+    {
+      "value": "warranty",
+      "label": "保修 / 维修 / 保障",
+      "label_en": "Warranty",
+      "description": "保修期限、维修范围与保障条件",
+      "group": "售后服务",
+      "group_en": "After-sales",
+      "family": "fulfillment"
+    },
+    {
+      "value": "customer_service",
+      "label": "客服 / 咨询时间",
+      "label_en": "Customer Service",
+      "description": "客服渠道、在线时间与咨询方式",
+      "group": "售后服务",
+      "group_en": "After-sales",
+      "family": "other"
+    },
+    {
+      "value": "service_content",
+      "label": "服务内容 / 服务权益",
+      "label_en": "Service Content",
+      "description": "服务项目、权益内容与交付范围",
+      "group": "售后服务",
+      "group_en": "After-sales",
+      "family": "product"
+    },
+    {
+      "value": "identity_location",
+      "label": "身份 / 地点综合",
+      "label_en": "Identity & Location",
+      "description": "经营主体、身份与地点的综合说明",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "brand",
+      "label": "品牌 / 主体信息",
+      "label_en": "Brand",
+      "description": "品牌名称、经营主体与品牌介绍",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "qualification",
+      "label": "资质 / 许可 / 认证",
+      "label_en": "Qualification",
+      "description": "已提供的许可证、资质与认证信息",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "inspection",
+      "label": "检测 / 标准 / 依据",
+      "label_en": "Inspection",
+      "description": "已提供的检测结果、适用标准与证明依据",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "origin",
+      "label": "产地 / 来源 / 生产信息",
+      "label_en": "Origin",
+      "description": "生产地点、原料来源与生产主体信息",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "stores",
+      "label": "门店 / 地址 / 经营范围",
+      "label_en": "Stores",
+      "description": "门店数量、具体地址与经营范围",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "business_history",
+      "label": "经营历史 / 年限",
+      "label_en": "Business History",
+      "description": "有来源说明的经营起始时间与历史信息",
+      "group": "品牌资质",
+      "group_en": "Brand & Credentials",
+      "family": "identity_location"
+    },
+    {
+      "value": "audience",
+      "label": "目标人群 / 用户需求",
+      "label_en": "Audience",
+      "description": "用户提供的目标人群、需求与顾虑",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    },
+    {
+      "value": "scenario",
+      "label": "适用场景 / 使用用途",
+      "label_en": "Scenario",
+      "description": "已确认的使用场景、用途与适用范围",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    },
+    {
+      "value": "other",
+      "label": "其它事实",
+      "label_en": "Other",
+      "description": "暂时不属于其它分类的补充信息",
+      "group": "场景其它",
+      "group_en": "Scenario & Other",
+      "family": "other"
+    },
+    {
+      "value": "alcohol",
+      "label": "酒精度 / 度数",
+      "label_en": "Alcohol",
+      "description": "酒精度、度数、容量规格",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    },
+    {
+      "value": "taste",
+      "label": "口感 / 香气",
+      "label_en": "Taste",
+      "description": "口味、香气、回甘等风味特点",
+      "group": "商品信息",
+      "group_en": "Product Info",
+      "family": "product"
+    }
+  ]
+}
