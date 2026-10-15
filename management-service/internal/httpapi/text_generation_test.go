@@ -33,8 +33,16 @@ func TestDirectMainlineOwnsBoundedContextAndNoFilledHookSkeleton(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || !strings.Contains(messages[0].Content, state.Facts) {
+	if len(messages) != 2 {
 		t.Fatal(messages)
+	}
+	// 可说事实已挪到 user（保持 system 稳定前缀以命中上下文缓存），
+	// 校验 facts 出现在 user 而非 system。
+	if strings.Contains(messages[0].Content, state.Facts) {
+		t.Fatal("可说事实不应留在 system，否则前缀缓存每段失效")
+	}
+	if !strings.Contains(messages[1].Content, state.Facts) {
+		t.Fatal("可说事实应出现在 user 中")
 	}
 	if strings.Contains(messages[0].Content, "假一赔十") || strings.Contains(messages[1].Content, "{目标人群}") || strings.Contains(messages[1].Content, "FilledTemplate") {
 		t.Fatal("sample claim or filled skeleton leaked")
