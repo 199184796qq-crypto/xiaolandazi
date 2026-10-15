@@ -96,11 +96,11 @@ async function refresh(manual = false) {
     count.value = result.pending_count || 0
     total.value = selectedTopic === 'all' ? result.total || 0 : filteredItems.value.length
     if (history) lastHistorySelection = { page: page.value, status: status.value, query: appliedHistoryQuery.value }
-    if (manual) error.value = ''
+    if (manual || history) error.value = ''
     if (!items.value.some(item => item.id === locatedId.value && item.status === 'editing')) locatedId.value = null
     return true
   } catch (err) {
-    if (current() && manual) {
+    if (current() && (manual || history)) {
       error.value = err instanceof Error ? err.message : history ? '读取处理历史失败' : '读取待确认互动失败'
       if (history && lastHistorySelection) {
         page.value = Math.min(lastHistorySelection.page, Math.max(1, Math.ceil(total.value / 30)))
