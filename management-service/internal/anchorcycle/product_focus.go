@@ -65,12 +65,12 @@ func (p ProductPolicy) Validate() error {
 }
 
 type FocusProduct struct {
-	LinkKey         string             `json:"link_key"`
-	Name            string             `json:"name"`
-	Roles           []string           `json:"roles,omitempty"`
-	Spec            string             `json:"spec,omitempty"`
-	DailyPrice      string             `json:"daily_price,omitempty"`
-	Quantity        string             `json:"quantity,omitempty"`
+	LinkKey         string              `json:"link_key"`
+	Name            string              `json:"name"`
+	Roles           []string            `json:"roles,omitempty"`
+	Spec            string              `json:"spec,omitempty"`
+	DailyPrice      string              `json:"daily_price,omitempty"`
+	Quantity        string              `json:"quantity,omitempty"`
 	FrequencyWeight int                 `json:"frequency_weight,omitempty"` // 手动微调系数×100（100=1.0 不干预，范围 50~200 即 0.5~2.0；0=未设置=1.0）
 	SellingPoints   []FocusSellingPoint `json:"selling_points,omitempty"`
 }
@@ -78,14 +78,14 @@ type FocusProduct struct {
 // FocusSellingPoint 是「每个商品独立」的卖点池成员：卖点名 + tier + 主推标记 + 权重，
 // 以及该卖点下的角度（每个角度带独立讲解权重）。归属由商品（LinkKey）程序保证。
 type FocusSellingPoint struct {
-	ID             int64                `json:"id,omitempty"` // DB 稳定主键，跨场复用 Slot 用它，不受卖点措辞变化影响
-	Name           string               `json:"name"`
-	Tier           string               `json:"tier,omitempty"`
-	Weight         int                  `json:"weight,omitempty"`
-	IsMain         bool                 `json:"is_main,omitempty"`
-	TargetAudience string               `json:"target_audience,omitempty"`
-	PainPoint      string               `json:"pain_point,omitempty"`
-	Angles         []FocusSellingAngle  `json:"angles,omitempty"`
+	ID             int64               `json:"id,omitempty"` // DB 稳定主键，跨场复用 Slot 用它，不受卖点措辞变化影响
+	Name           string              `json:"name"`
+	Tier           string              `json:"tier,omitempty"`
+	Weight         int                 `json:"weight,omitempty"`
+	IsMain         bool                `json:"is_main,omitempty"`
+	TargetAudience string              `json:"target_audience,omitempty"`
+	PainPoint      string              `json:"pain_point,omitempty"`
+	Angles         []FocusSellingAngle `json:"angles,omitempty"`
 }
 
 type FocusSellingAngle struct {
@@ -521,27 +521,26 @@ func ExpandProductSellingPoints(products []FocusProduct, policy *ProductPolicy) 
 				if angleWeight < 1 {
 					angleWeight = 1
 				}
-				angleKey := product.LinkKey + "×" + sp.Name + "×" + angle.Angle
-				policy.AngleWeights[angleKey] = angleWeight
 				// 跨场复用稳定键：卖点用 DB 主键（若有），角度用卖点内循环序号，
 				// 卖点/角度措辞变化不影响跨场命中。卖点无 ID 时退回卖点名（兼容旧数据）。
 				spIdent := sp.Name
 				if sp.ID > 0 {
 					spIdent = fmt.Sprintf("#%d", sp.ID)
 				}
-				tasks = append(tasks, Task{
+				task := Task{
 					LinkKey:        product.LinkKey,
-					SellingPoint:    sp.Name,
-					Angle:           angle.Angle,
-					Key:             angleKey,
-					SlotKey:         fmt.Sprintf("%s×%s×#%d", product.LinkKey, spIdent, ai+1),
-					Tier:            sp.Tier,
-					TargetAudience:  sp.TargetAudience,
-					PainPoint:       sp.PainPoint,
-				})
+					SellingPoint:   sp.Name,
+					Angle:          angle.Angle,
+					SlotKey:        fmt.Sprintf("%s×%s×#%d", product.LinkKey, spIdent, ai+1),
+					Tier:           sp.Tier,
+					TargetAudience: sp.TargetAudience,
+					PainPoint:      sp.PainPoint,
+				}
+				task.Key = task.schedulingKey()
+				policy.AngleWeights[task.Key] = angleWeight
+				tasks = append(tasks, task)
 			}
 		}
 	}
 	return tasks
 }
-

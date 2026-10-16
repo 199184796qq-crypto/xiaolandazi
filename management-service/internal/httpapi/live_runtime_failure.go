@@ -12,7 +12,7 @@ import (
 )
 
 func publicLiveFailure(session int64, err error) anchorcycle.LiveFailure {
-	failure := anchorcycle.LiveFailure{SessionID: session, Code: "formal_mainline_failed", Message: "主线声音生成失败，本场已停止。请重新开始；如仍失败，请联系后台并提供场次编号。", OccurredAt: time.Now().UTC()}
+	failure := anchorcycle.LiveFailure{SessionID: session, Code: "formal_mainline_failed", Message: "直播程序运行异常，本场已停止。请联系后台并提供场次编号，以便核对具体原因。", OccurredAt: time.Now().UTC()}
 	if err == nil {
 		return failure
 	}

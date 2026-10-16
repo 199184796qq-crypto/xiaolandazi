@@ -289,3 +289,53 @@ func TestFormalSupplyTextFailureMovesToNextTask(t *testing.T) {
 	p.stop()
 	<-done
 }
+
+func TestFormalSupplyHandoffFailureContinuesWithoutCancellingAI(t *testing.T) {
+	state := cycleTestState(t)
+	state.Surface = "formal_live"
+	state.Config.TTS = &anchorcycle.VoiceConfig{Rate: 1, BufferSeconds: 20}
+	voice := &anchorcycle.VoiceAsset{Status: "ready", Bundle: model.LiveAgentPlanVersionVariant{AudioDurationMS: 1000}}
+	state.Accepted = []anchorcycle.Segment{
+		{Selected: anchorcycle.Candidate{ID: "bad-handoff", Text: "下发失败的段落"}},
+		{Selected: anchorcycle.Candidate{ID: "good-handoff", Text: "后续有效段落"}},
+	}
+	repo := &supplyRepository{state: &state}
+	p := newCycleSupply(&Server{anchorCycles: repo}, context.Background(), &state)
+	defer p.stop()
+	p.synthesize = func(_ context.Context, _ *anchorcycle.State, id string) (*anchorcycle.VoiceAsset, error) {
+		repo.mu.Lock()
+		defer repo.mu.Unlock()
+		for i := range repo.state.Accepted {
+			if repo.state.Accepted[i].Selected.ID == id {
+				repo.state.Accepted[i].Voice = voice
+			}
+		}
+		return voice, nil
+	}
+	ready := make(chan string, 1)
+	p.onReady = func(_ context.Context, _ *anchorcycle.State, segment anchorcycle.Segment) error {
+		if segment.Selected.ID == "bad-handoff" {
+			return errors.New("one track delivery failed")
+		}
+		ready <- segment.Selected.ID
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { p.voiceLoop(); close(done) }()
+	select {
+	case id := <-ready:
+		if id != "good-handoff" {
+			t.Fatal(id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed handoff blocked later audio")
+	}
+	p.mu.Lock()
+	failure, skipped := p.failure, p.skippedVoices["bad-handoff"]
+	p.mu.Unlock()
+	if failure != "" || !skipped || p.ctx.Err() != nil {
+		t.Fatal("one handoff failure cancelled AI", failure)
+	}
+	p.stop()
+	<-done
+}

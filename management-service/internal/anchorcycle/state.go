@@ -49,6 +49,19 @@ type Task struct {
 	TargetAudience   string         `json:"target_audience,omitempty"`
 	PainPoint        string         `json:"pain_point,omitempty"`
 }
+
+// schedulingKey is owned by the program. Expansion and run initialization must
+// use the same identity; SlotKey has a separate cache lifetime and is unchanged.
+func (t Task) schedulingKey() string {
+	if t.ID != "" {
+		return t.ID
+	}
+	if t.LinkKey != "" {
+		return t.LinkKey + "×" + t.SellingPoint + "×" + t.Angle
+	}
+	return t.SellingPoint + "×" + t.Angle
+}
+
 type Config struct {
 	AngleRefreshAfterPlays int          `json:"angle_refresh_after_plays,omitempty"`
 	AllowConsecutiveRepeat bool         `json:"allow_consecutive_repeat,omitempty"`
@@ -283,15 +296,7 @@ func New(tasks []Task, cfg Config) (State, error) {
 		if strings.TrimSpace(tasks[i].SellingPoint) == "" || strings.TrimSpace(tasks[i].Angle) == "" {
 			return State{}, errors.New("卖点角度不能为空")
 		}
-		if tasks[i].ID != "" {
-			tasks[i].Key = tasks[i].ID
-		} else if tasks[i].LinkKey != "" {
-			// Product task scopes and weights use this program-owned qualified key.
-			// Dropping the product prefix here makes every saved task ineligible.
-			tasks[i].Key = tasks[i].LinkKey + "×" + tasks[i].SellingPoint + "×" + tasks[i].Angle
-		} else {
-			tasks[i].Key = tasks[i].SellingPoint + "×" + tasks[i].Angle
-		}
+		tasks[i].Key = tasks[i].schedulingKey()
 		if seen[tasks[i].Key] {
 			return State{}, errors.New("固定队列存在重复卖点角度")
 		}

@@ -126,5 +126,6 @@ func (s *Server) validateRealtimeScheme(ctx context.Context, tenant, plan int64,
 	if err != nil || safety.SafeFacts == "" || safety.SafeWheelJSON == "" {
 		return errors.New("已保存安全事实包和轮盘不存在")
 	}
-	return nil
+	_, err = s.prepareSavedAnchorTaskState(ctx, tenant, plan, data, scheme, safety)
+	return err
 }

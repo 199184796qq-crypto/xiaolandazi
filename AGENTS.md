@@ -388,3 +388,12 @@
 - 已通过客户原正常登录页面点击保存，16:12:04.593正式生成巴国布衣方案5的V3/id116，tenant14/room26发布记录指向116。新快照为ai_dynamic、wheel43，包含1号普通商品5卖点21角度、2号主推商品7卖点35角度及当前product-focus-v3策略。旧V2/id115保留；未开播或切换正在运行快照。正式保存验证与新场实际讲解频率验证须区分。
 - 主线完整整合源码5be851d包含WorkBuddy ef480ce及捕获的后续源码，保留原字段名称编辑等功能；GitHub main及work/main-merge-20261014已同步。桌面基线用现用WorkBuddy源码重建49产物全部匹配后，仅合入保存修复，源码64e6064另存GitHub codex/production-plan-save-20261016分支。此次不部署任何新后端或提示词，不修改E:/speech-generator-build原文件。
 - 36项主线前端回归、桌面实际源码15项保存流程测试、两份生产构建及完整方案页桌面/390px交互通过；整合Go model/db完整包通过。真实页面显示本次保存成功V3且DB已发布，12个公网入口/资源核对通过。最新完整前端备份指针work/frontend-preservation/latest.json已核验1751文件。证明work/plan-version-save-proof/production-verification.json、formal-save-verification.json、deployment-report.json与production-saved-v3.jpg；后续仍继承发布时actual current并重新核对指纹。
+
+
+## 多商品启动编号修复（2026-10-16 已上线，后续统一准备链路正在验证）
+
+- 16:14:57起巴国布衣V3/id116的293、294、296—300场启动约30—43毫秒即formal_mainline_failed，并非TTS失败。ExpandProductSellingPoints的编号带商品前缀，New却改成无前缀，导致真实快照56任务0归属匹配；不能归因为客户池不足。
+- 16:21:09上线20261016-product-task-start-9c71849，仅替换Management，PID949136，SHA256 c16acf37073c76a87804575ab57501941af49d7ad346e8901dd03a2376c86da7，源码9c7184967f69fb04c8602b5c3656813190ec210d。2594旧无关文件、1751前端、提示词、设置/模型池、Core775073、网关775930与Nginx一致。共享锁及两次真实AI/Core空闲守卫通过，没有停止客户直播。完整前端备份复用并逐项核验，最新指针已更新。
+- 修复在程序中保留商品任务完整编号；真实V3离线重放修复后56/56匹配、ready，anchorcycle完整118项和相关HTTPAPI通过。不重写V3或修改客户事实/权重。用户随后自行保存V4/id117，V3被正常superseded，不能说本聊天保存了V4。
+- 16:24:06用户另开301场，当前只读采样Core实际program version114，不能把它当V3多商品实际播放证明；不可为后续加固停止或重启该场。
+- 用户进一步要求解决根本问题：后续统一任务编号函数，保存验证与正式启动共用prepareSavedAnchorTaskState，从不可变商品快照重建运行索引，并验证单段生成/审核/TTS/下发失败继续供料。此后续代码在work/model-pool-source，尚需空闲后发布；不能把已上线9c71849描述成已包含这套后续加固。证明work/live-stop-check-20261016/production-verification.json、reproduction-before.log、reproduction-after.log、root-full-tests.jsonl、shared-v3-preparation-replay.log。

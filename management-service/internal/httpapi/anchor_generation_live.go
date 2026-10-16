@@ -129,54 +129,18 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	}
 	// A live session consumes the saved version. Source differences are reported
 	// when Live Strategy loads the workspace, never by stopping its audio.
-	var wheel anchorStyleSellingPointWheel
-	if err = json.Unmarshal([]byte(safety.SafeWheelJSON), &wheel); err != nil {
-		return nil, err
-	}
-	var tasks []anchorcycle.Task
-	for _, item := range flattenAnchorStyleWheelTasks(wheel) {
-		tasks = append(tasks, anchorcycle.Task{SellingPoint: item.SellingPoint, Angle: item.Angle, Key: item.Key, Tier: item.Tier, TargetAudience: item.TargetAudience, PainPoint: item.PainPoint})
-	}
-	set, err := s.savedContentPoolSet(ctx, tenant, version.PlanID, version.GenerationContext)
+	state, err := s.prepareSavedAnchorTaskState(ctx, tenant, version.PlanID, version.GenerationContext, scheme, safety)
 	if err != nil {
 		return nil, err
-	}
-	var preparedFocus *anchorcycle.ProductFocus
-	if set != nil {
-		if set.SafeFacts != safety.SafeFacts || scheme.PoolPolicy == nil {
-			return nil, errors.New("已保存内容池与事实或调度配置不匹配")
-		}
-		tasks, preparedFocus, err = contentPoolRuntime(*set, *scheme.PoolPolicy)
-		if err != nil {
-			return nil, err
-		}
-	} else if scheme.ProductFocus != nil {
-		// 商品级卖点池：方案保存时按「每个商品独立卖点池」展开的任务，开播时从 Products 重新展开，
-		// 保证「商品轮→卖点轮→角度」两级结构与商品频率权重在正式直播里一致生效。
-		if hasProductLevelSellingPoints(scheme.ProductFocus.Products) {
-			expanded := anchorcycle.ExpandProductSellingPoints(scheme.ProductFocus.Products, &scheme.ProductFocus.Policy)
-			if len(expanded) > 0 {
-				tasks = expanded
-			}
-		} else if savedTasks := savedLegacyQueue(wheel, scheme.ProductFocus); len(savedTasks) > 0 {
-			// 商品讲解范围(ProductFocus.Tasks)保存时按「安全轮盘快照」建立，这里必须用
-			// 同一份快照(safety.SafeWheelJSON)做 key 匹配。若改按 WheelID 重读原始/确认轮盘，
-			// 角度名经 P0 安全改写后 key 对不上，会退化成不筛商品的全量任务。
-			tasks = savedTasks
-		}
 	}
 	identity := version.VoiceIdentity
 	voiceID, modelName, err := s.resolveFormalVoice(ctx, tenant, fullShowVariantVoiceInput{Source: identity.Source, VoiceID: identity.VoiceID, ProfileID: identity.ProfileID, BindingID: identity.BindingID, Model: identity.Model})
 	if err != nil {
 		return nil, err
 	}
-	config := scheme.Config
-	config.MaxCycles = 0
+	config := state.Config
 	config.TTS = &anchorcycle.VoiceConfig{Source: identity.Source, VoiceID: voiceID, ProfileID: identity.ProfileID, Model: modelName, Rate: identity.Rate, BufferSeconds: scheme.BufferSeconds}
-	state, err := anchorcycle.New(tasks, config)
-	if err != nil {
-		return nil, err
-	}
+	state.Config = config
 	state.TenantID, state.PlanID, state.RoomID = tenant, version.PlanID, room
 	state.Surface = "formal_live"
 	if saved, exists := version.GenerationContext["lecture_tasks"]; exists {
@@ -195,30 +159,6 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 		state.FactSideMap = packFactSideMap(pack.Sides)
 	}
 	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, version.PlanID, state.Facts)
-	if preparedFocus != nil {
-		state.ProductFocus = preparedFocus
-		state.ProductFocus.ResetRun()
-		state.SelectProductTask()
-		if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
-			return nil, errors.New(state.Error)
-		}
-	} else if scheme.ProductFocus != nil {
-		state.ProductFocus, err = savedProductFocusForFacts(scheme.ProductFocus, safety.SafeFacts)
-		if err != nil {
-			return nil, err
-		}
-		if err = state.ProductFocus.Policy.Validate(); err != nil {
-			return nil, err
-		}
-		if err = state.ProductFocus.ValidateProducts(); err != nil {
-			return nil, err
-		}
-		state.ProductFocus.ResetRun()
-		state.SelectProductTask()
-		if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
-			return nil, errors.New(state.Error)
-		}
-	}
 	state.DerivedSafetyAssetID = safety.ID
 	state.Delivery = &anchorcycle.MainlineDelivery{VersionID: version.ID, RuntimeSessionID: runtimeID}
 	state.Delivery.SourceFactsSHA, state.Delivery.SourceWheelSHA = derivedHash(safety.OriginalFacts), derivedHash(safety.OriginalWheelJSON)
