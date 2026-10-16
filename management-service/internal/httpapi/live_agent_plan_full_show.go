@@ -211,7 +211,7 @@ func compileAuthorizedGenerationFacts(
 				FactID:     fmt.Sprintf("product_link:%d:%s:v%d", link.ID, field.predicate, link.VersionNo),
 				SourceKind: "product", SourceID: link.ID, SourceKey: link.LinkKey, ScopeKind: "product_link",
 				LinkKey: link.LinkKey, ProductName: strings.TrimSpace(link.ProductName), Predicate: field.predicate,
-				Label: field.label, Value: field.value(link), Version: link.VersionNo,
+				Label: link.FieldLabel(field.predicate, field.label), Value: field.value(link), Version: link.VersionNo,
 			})
 		}
 		for _, attribute := range link.Attributes {

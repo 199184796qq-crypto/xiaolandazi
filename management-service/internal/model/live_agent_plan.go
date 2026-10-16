@@ -157,6 +157,7 @@ type LiveAgentPlanProductLink struct {
 	CreatedAt          time.Time                       `json:"created_at"`
 	UpdatedAt          time.Time                       `json:"updated_at"`
 	Attributes         []LiveAgentPlanProductAttribute `json:"attributes"`
+	FieldLabels        map[string]string               `json:"field_labels,omitempty"`
 }
 
 type LiveAgentPlanProductAttribute struct {
@@ -210,15 +211,16 @@ type AdoptLiveAgentPlanProductLinksInput struct {
 }
 
 type UpdateLiveAgentPlanProductLinkInput struct {
-	TenantID          int64    `json:"tenant_id,omitempty"`
-	ExpectedVersionNo int64    `json:"expected_version_no,omitempty"`
-	LinkKey           string   `json:"link_key"`
-	ProductName       string   `json:"product_name"`
-	RoomRoles         []string `json:"room_roles,omitempty"`
-	Spec              string   `json:"spec,omitempty"`
-	DailyPrice        string   `json:"daily_price,omitempty"`
-	Quantity          string   `json:"quantity,omitempty"`
-	Audience          string   `json:"audience,omitempty"`
+	TenantID          int64             `json:"tenant_id,omitempty"`
+	ExpectedVersionNo int64             `json:"expected_version_no,omitempty"`
+	LinkKey           string            `json:"link_key"`
+	ProductName       string            `json:"product_name"`
+	RoomRoles         []string          `json:"room_roles,omitempty"`
+	Spec              string            `json:"spec,omitempty"`
+	DailyPrice        string            `json:"daily_price,omitempty"`
+	Quantity          string            `json:"quantity,omitempty"`
+	Audience          string            `json:"audience,omitempty"`
+	FieldLabels       map[string]string `json:"field_labels,omitempty"`
 }
 
 const (

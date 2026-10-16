@@ -97,7 +97,7 @@ func (s *Server) captureContentSources(ctx context.Context, tenant, plan int64) 
 			out.Products = append(out.Products, contentpools.Product{ID: p.ID, Link: p.LinkKey, Name: p.ProductName, Roles: p.RoomRoles})
 			roles := append([]string{}, p.RoomRoles...)
 			sort.Strings(roles)
-			out.Rows = append(out.Rows, contentpools.SourceRow{ID: fmt.Sprintf("products:%d", p.ID), Area: "products", Label: p.LinkKey + "号 · " + p.ProductName, Products: []int64{p.ID}, Fields: map[string]string{"商品名称": p.ProductName, "链接": p.LinkKey, "规格": p.Spec, "日常价": p.DailyPrice, "数量": p.Quantity, "适用人群": p.Audience, "定位": strings.Join(roles, "、")}})
+			out.Rows = append(out.Rows, contentpools.SourceRow{ID: fmt.Sprintf("products:%d", p.ID), Area: "products", Label: p.LinkKey + "号 · " + p.ProductName, Products: []int64{p.ID}, Fields: map[string]string{"商品名称": p.ProductName, "链接": p.LinkKey, p.SourceFieldLabel("spec", "规格"): p.Spec, p.SourceFieldLabel("daily_price", "日常价"): p.DailyPrice, p.SourceFieldLabel("quantity", "数量"): p.Quantity, p.SourceFieldLabel("audience", "适用人群"): p.Audience, "定位": strings.Join(roles, "、")}})
 			for _, a := range p.Attributes {
 				if a.Status != "active" {
 					continue

@@ -184,9 +184,9 @@ func copyProductCardTx(ctx context.Context, tx *sql.Tx, tenant, plan, sourceID, 
 	}
 	ref := fmt.Sprintf("copy:product:%d:v%d", source.ID, source.VersionNo)
 	result, err := tx.ExecContext(ctx, `INSERT INTO live_agent_plan_product_links (
- tenant_id,plan_id,link_key,product_name,room_roles_json,spec,daily_price,quantity,audience,
+ tenant_id,plan_id,link_key,product_name,room_roles_json,field_labels_json,spec,daily_price,quantity,audience,
  source_quote,source_review_bucket,source_review_reason,source_type,source_ref,status,version_no,created_by_user_id,updated_by_user_id)
- SELECT tenant_id,plan_id,?,?,room_roles_json,spec,daily_price,quantity,audience,
+ SELECT tenant_id,plan_id,?,?,room_roles_json,field_labels_json,spec,daily_price,quantity,audience,
  source_quote,source_review_bucket,source_review_reason,'manual_copy',?,'active',1,?,?
  FROM live_agent_plan_product_links WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'`, key, name, ref, actor, actor, sourceID, tenant, plan)
 	if err != nil {
@@ -197,8 +197,8 @@ func copyProductCardTx(ctx context.Context, tx *sql.Tx, tenant, plan, sourceID, 
 		return source, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO live_agent_plan_product_link_revisions (
- tenant_id,plan_id,product_link_id,version_no,action,link_key,product_name,room_roles_json,spec,daily_price,quantity,audience,status,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id)
- SELECT tenant_id,plan_id,id,version_no,'copy',link_key,product_name,room_roles_json,spec,daily_price,quantity,audience,status,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,?
+ tenant_id,plan_id,product_link_id,version_no,action,link_key,product_name,room_roles_json,field_labels_json,spec,daily_price,quantity,audience,status,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id)
+ SELECT tenant_id,plan_id,id,version_no,'copy',link_key,product_name,room_roles_json,field_labels_json,spec,daily_price,quantity,audience,status,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,?
  FROM live_agent_plan_product_links WHERE id=? AND tenant_id=? AND plan_id=?`, actor, id, tenant, plan); err != nil {
 		return source, err
 	}

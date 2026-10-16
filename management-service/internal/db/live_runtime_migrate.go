@@ -63,6 +63,8 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		{"live_agent_plan_fact_revisions", "safe_rewrite", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
 		{"live_agent_plan_product_links", "room_roles_json", "ALTER TABLE live_agent_plan_product_links ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
 		{"live_agent_plan_product_link_revisions", "room_roles_json", "ALTER TABLE live_agent_plan_product_link_revisions ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
+		{"live_agent_plan_product_links", "field_labels_json", "ALTER TABLE live_agent_plan_product_links ADD COLUMN field_labels_json JSON NULL AFTER room_roles_json"},
+		{"live_agent_plan_product_link_revisions", "field_labels_json", "ALTER TABLE live_agent_plan_product_link_revisions ADD COLUMN field_labels_json JSON NULL AFTER room_roles_json"},
 		{"live_agent_plan_benefits", "validity_mode", "ALTER TABLE live_agent_plan_benefits ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
 		{"live_agent_plan_benefit_revisions", "validity_mode", "ALTER TABLE live_agent_plan_benefit_revisions ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
 	} {

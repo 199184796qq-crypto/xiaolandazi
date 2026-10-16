@@ -431,6 +431,10 @@ func (s *Server) liveAgentPlanProductLinkUpdate(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := model.MergeProductFieldLabels(nil, input.FieldLabels); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	input.LinkKey = canonicalPlanProductLinkKey(candidate.LinkKey)
 	input.ProductName = candidate.ProductName
 	if input.RoomRoles != nil {

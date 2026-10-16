@@ -1332,7 +1332,7 @@ func renderAnchorStyleWorkbenchFactsWithOrigins(plan model.LiveAgentPlan, facts 
 		if !strings.EqualFold(strings.TrimSpace(link.Status), "active") {
 			continue
 		}
-		fields := []string{"链接=" + link.LinkKey, "商品=" + link.ProductName, "规格=" + link.Spec, "日常价=" + link.DailyPrice, "数量=" + link.Quantity, "适用=" + link.Audience}
+		fields := []string{"链接=" + link.LinkKey, "商品=" + link.ProductName, link.FieldLabel("spec", "规格") + "=" + link.Spec, link.FieldLabel("daily_price", "日常价") + "=" + link.DailyPrice, link.FieldLabel("quantity", "数量") + "=" + link.Quantity, link.FieldLabel("audience", "适用") + "=" + link.Audience}
 		for _, attr := range link.Attributes {
 			if strings.EqualFold(strings.TrimSpace(attr.Status), "active") && strings.TrimSpace(attr.Value) != "" {
 				fields = append(fields, attr.Label+"="+attr.Value+attr.Unit)

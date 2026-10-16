@@ -1107,6 +1107,7 @@ export function updateLiveAgentPlanProductLink(
     daily_price?: string
     quantity?: string
     audience?: string
+    field_labels?: LiveAgentPlanProductLink['field_labels']
   },
   tenantId?: number,
 ) {

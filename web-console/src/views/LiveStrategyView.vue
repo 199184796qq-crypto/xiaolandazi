@@ -4681,6 +4681,7 @@ async function saveProductLinkField(
   item: LiveAgentPlanProductLink,
   field: 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience',
   value: string,
+  fieldLabel?: string,
 ) {
   const planId = currentRoomPlanId.value
   if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新编辑')
@@ -4694,6 +4695,7 @@ async function saveProductLinkField(
     quantity: item.quantity || '',
     audience: item.audience || '',
     [field]: value,
+    ...(fieldLabel !== undefined ? { field_labels: { [field]: fieldLabel } } : {}),
   }, item.tenant_id)
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)

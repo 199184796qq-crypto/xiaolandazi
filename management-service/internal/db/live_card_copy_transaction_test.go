@@ -91,8 +91,8 @@ func (c *cardCopyConn) QueryContext(_ context.Context, q string, args []driver.N
 	if strings.Contains(q, "FROM live_agent_plan_product_attributes") {
 		return &contentPolicyTestRows{columns: strings.Fields("id tenant plan product code label value unit display priority quote type ref status version creator updater created updated"), values: [][]driver.Value{{int64(101), int64(14), int64(4), id, "flavour", "口味", "麻辣", "", "text", int64(10), "原属性证据", "manual_copy", "copy:product:7:v3", "active", int64(1), int64(8), int64(8), time.Now(), time.Now()}}}, nil
 	}
-	columns := strings.Fields("id tenant plan key name roles spec price quantity audience quote bucket reason type ref status version creator updater created updated")
-	row := []driver.Value{id, int64(14), int64(4), "1号链接", "杨鸭子", `["main"]`, "900g", "87.6", "1", "喜欢麻辣和五香", "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}
+	columns := strings.Fields("id tenant plan key name roles labels spec price quantity audience quote bucket reason type ref status version creator updater created updated")
+	row := []driver.Value{id, int64(14), int64(4), "1号链接", "杨鸭子", `["main"]`, `{"quantity":"包装数量"}`, "900g", "87.6", "1", "喜欢麻辣和五香", "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}
 	if c.benefit {
 		columns = strings.Fields("id tenant plan key link name price gift activity mode starts ends quote bucket reason type ref status version creator updater created updated")
 		row = []driver.Value{id, int64(14), int64(4), "活动A", "1号链接", "杨鸭子", "79.9", "赠试吃装", "原福利", "permanent", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}
@@ -104,7 +104,7 @@ func (c *cardCopyConn) QueryContext(_ context.Context, q string, args []driver.N
 		if c.benefit {
 			row[3], row[4], row[5], row[16], row[18] = insert[0].Value, insert[1].Value, insert[2].Value, insert[3].Value, int64(1)
 		} else {
-			row[3], row[4], row[14], row[16] = insert[0].Value, insert[1].Value, insert[2].Value, int64(1)
+			row[3], row[4], row[15], row[17] = insert[0].Value, insert[1].Value, insert[2].Value, int64(1)
 		}
 		rows.values = [][]driver.Value{row}
 	}
@@ -149,7 +149,7 @@ func TestProductCardCopyCommitsIndependentRowsAndNextDatabaseNumber(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.committed || c.rolled || len(c.writes) != 4 || first.ID == 7 || first.LinkKey != "10号链接" || first.ProductName != "杨鸭子01" || first.VersionNo != 1 || first.Spec != "900g" || len(first.Attributes) != 1 || first.Attributes[0].ProductLinkID != first.ID {
+	if !c.committed || c.rolled || len(c.writes) != 4 || first.ID == 7 || first.LinkKey != "10号链接" || first.ProductName != "杨鸭子01" || first.VersionNo != 1 || first.Spec != "900g" || first.FieldLabels["quantity"] != "包装数量" || len(first.Attributes) != 1 || first.Attributes[0].ProductLinkID != first.ID {
 		t.Fatal("copy lost original fields, attributes or history", first, c)
 	}
 	second, err := s.CopyLiveAgentPlanProductLink(context.Background(), 14, 4, 7, 8, 3)
