@@ -11171,8 +11171,8 @@ onBeforeUnmount(() => {
 .plan-configuration-more>summary::-webkit-details-marker,.plan-version-records>summary::-webkit-details-marker{display:none}
 .plan-version-records>summary{display:flex;align-items:center;gap:3px;color:#504af4;font-weight:750}.plan-version-records>summary :deep(svg){width:15px;height:15px}
 .plan-configuration-menu,.plan-version-record-list{position:absolute;top:calc(100% + 8px);right:0;z-index:30;min-width:180px;padding:7px;border:1px solid #dfe5ee;border-radius:9px;background:#fff;box-shadow:0 8px 26px #26375016}
-.plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#59657a;font:inherit;font-size:13px;text-align:left;cursor:pointer}
-.plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}.plan-configuration-menu>button.danger{color:#b85260}
+.plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#111;font:inherit;font-size:16px;font-weight:500;line-height:1.6;text-align:left;cursor:pointer}
+.plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}
 .plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
 .plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
 .plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
