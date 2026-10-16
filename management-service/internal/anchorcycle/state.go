@@ -28,6 +28,7 @@ func ID() string {
 }
 
 type Task struct {
+	Common           bool           `json:"common,omitempty"`
 	LectureTopic     int64          `json:"lecture_topic,omitempty"`
 	LectureAngle     int            `json:"lecture_angle,omitempty"`
 	LecturePurpose   string         `json:"lecture_purpose,omitempty"`

@@ -175,12 +175,12 @@ func (s *State) chooseProductWeightedTask() bool {
 	angleWeight, angleCount := 0, 0
 	for _, i := range g.tasks {
 		angleWeight += s.schedulingAngleWeight(s.Queue[i])
-		angleCount += s.ScheduledAngleUses[owner+":"+s.Queue[i].Key]
+		angleCount += s.ScheduledAngleUses[s.schedulingAngleKey(s.Queue[i], owner)]
 	}
 	chosen, best, tie := -1, math.Inf(-1), -1.0
 	for _, i := range candidates {
 		t := s.Queue[i]
-		score := float64(angleCount+1)*float64(s.schedulingAngleWeight(t))/float64(angleWeight) - float64(s.ScheduledAngleUses[owner+":"+t.Key])
+		score := float64(angleCount+1)*float64(s.schedulingAngleWeight(t))/float64(angleWeight) - float64(s.ScheduledAngleUses[s.schedulingAngleKey(t, owner)])
 		r := schedulerSeed(s.RunID, t.Key+":"+strconv.Itoa(angleCount))
 		if score > best+1e-9 || math.Abs(score-best) < 1e-9 && r > tie {
 			best, tie, chosen = score, r, i
@@ -203,9 +203,20 @@ func (s *State) schedulingOwner(t Task) string {
 	}
 	return "single"
 }
-func (s *State) schedulingPointKey(t Task, owner string) string { return owner + ":" + t.SellingPoint }
+func (s *State) schedulingPointKey(t Task, owner string) string {
+	if t.Common {
+		return owner + ":common:" + t.SellingPoint
+	}
+	return owner + ":" + t.SellingPoint
+}
+func (s *State) schedulingAngleKey(t Task, owner string) string {
+	if t.Common {
+		return "common:" + t.Key
+	}
+	return owner + ":" + t.Key
+}
 func (s *State) schedulingPointWeight(t Task) int {
-	if s.ProductFocus != nil {
+	if s.ProductFocus != nil && !t.Common {
 		for _, key := range []string{productSellingPointKey(s.ProductFocus.CurrentLink, t.SellingPoint), taskPointKey(t), t.SellingPoint} {
 			if w := s.ProductFocus.Policy.PointWeights[key]; w > 0 {
 				return w
@@ -244,7 +255,7 @@ func (s *State) recordScheduledAdoption(t Task) {
 	if s.ScheduledAngleUses == nil {
 		s.ScheduledAngleUses = map[string]int{}
 	}
-	s.ScheduledAngleUses[owner+":"+t.Key]++
+	s.ScheduledAngleUses[s.schedulingAngleKey(t, owner)]++
 	if bag := s.PointSchedules[owner]; bag != nil {
 		bag.Cursor++
 	}

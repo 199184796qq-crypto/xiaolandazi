@@ -37,7 +37,7 @@ func validateSellingPointPromptContract(raw, prompt string) error {
 	if err := json.Unmarshal([]byte(stripPolicyJSONFence(raw)), &top); err != nil {
 		return err
 	}
-	for _, key := range []string{"目标人群", "痛点"} {
+	for _, key := range []string{"目标人群", "痛点", "归属"} {
 		if !strings.Contains(prompt, `"`+key+`"`) {
 			continue
 		}

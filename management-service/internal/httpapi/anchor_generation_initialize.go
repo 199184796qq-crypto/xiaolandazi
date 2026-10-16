@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
@@ -158,7 +159,11 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 		return 0, 0, errors.New("请先在后台配置卖点挖掘模型")
 	}
 	// 行业优先：方案选了行业就注入行业四件套的挖掘维度；否则回退品类维度（旧链路）。
-	if pack, packErr := s.loadIndustryPackForPlan(ctx, tenant, plan); packErr == nil && pack != nil {
+	pack, packErr := s.loadIndustryPackForPlan(ctx, tenant, plan)
+	if packErr != nil {
+		return 0, 0, fmt.Errorf("当前行业挖掘维度加载失败：%w", packErr)
+	}
+	if pack != nil {
 		prompt = injectIndustrySellingDimensions(prompt, pack.IndustryName, pack.SellingDimensions)
 	} else {
 		category, _ := s.resolveProductCategory(ctx, tenant, plan, cfg.SellingPointProfileID, source.Facts)
@@ -168,6 +173,29 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 		}
 	}
 	// 两段式：一次挖掘 + 程序确定性删违规，不再走五阶段重审核。
+	scopeMother, scopeSource, scopeErr := loadReplaceablePromptAsset("ANCHOR_PRODUCT_COMMON_EXTRACTION_PROMPT_PATH", "configs/prompts/anchor-style/product-common-extraction.md", "商品公共卖点归属母版")
+	if scopeErr != nil {
+		return 0, 0, scopeErr
+	}
+	if !strings.Contains(scopeMother, "{{BASE_EXTRACTION}}") {
+		return 0, 0, errors.New("商品公共卖点母版缺少行业挖掘内容插槽")
+	}
+	prompt = strings.ReplaceAll(scopeMother, "{{BASE_EXTRACTION}}", prompt)
+	industrySignature, signatureErr := s.productCommonIndustrySignature(ctx, tenant, plan)
+	if signatureErr != nil {
+		return 0, 0, signatureErr
+	}
+	prompt += "\n" + productCommonIndustryMarker(industrySignature)
+	if pack != nil {
+		prompt += "\n\n# 当前行业额外边界\n" + pack.P0Extra
+	}
+	promptSource += ";" + scopeSource
+	p0MD, _, p0Err := loadP0Mother()
+	if p0Err != nil {
+		return 0, 0, p0Err
+	}
+	p0JSON, _ := json.Marshal(generationP0View(p0MD, "*"))
+	prompt += "\n\n# effective_p0\n" + string(p0JSON)
 	snapshot := prompt
 	if handled, points, angles, reuseErr := s.reuseOrUpdateWheel(ctx, tenant, plan, actor, source.Facts, finalAuditPrompt, snapshot, cfg.SellingPointProfileID); handled {
 		if reuseErr == nil {
@@ -184,9 +212,10 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if err != nil {
 		return 0, 0, err
 	}
-	canonical, points, angles, validation := normalizeAnchorStyleSellingPointWheelJSON(result.Text)
+	deduplicated := dedupeScopedWheelJSON(result.Text, false)
+	canonical, points, angles, validation := normalizeAnchorStyleSellingPointWheelJSON(deduplicated)
 	if validation == nil {
-		validation = validateSellingPointPromptContract(result.Text, prompt)
+		validation = validateSellingPointPromptContract(deduplicated, prompt)
 	}
 	programRemovedBoundaryItems := make([]string, 0)
 	if validation == nil {
@@ -235,7 +264,7 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 		return 0, 0, err
 	}
 	// 每商品独立卖点池：全局轮盘生成确认后，为每个 active 商品单独调模型挖卖点，
-	// 归属由程序保证（productLinkID），输入只投该商品的商品卡行 + 共享事实。
+	// 模型判断普通事实的商品/公共归属；程序绑定当前商品并投完整商品事实 + 公共事实。
 	// 权重合并：用户已调过的卖点/角度权重保留，未调过的默认等权。
 	if err = s.syncProductSellingPointPools(ctx, tenant, plan, actor, source, prompt, cfg.SellingPointProfileID); err != nil {
 		return 0, 0, err
@@ -264,27 +293,21 @@ func containsLink(links []string, key string) bool {
 func productFactPackage(linkKey string, facts string) string {
 	var card, benefit []string
 	shared := []string{}
-	for _, line := range strings.Split(facts, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
+	for _, trimmed := range productFactBlocks(facts) {
 		if strings.HasPrefix(trimmed, "- [商品卡]") {
 			if safeProductField(trimmed, "链接") == linkKey {
 				card = append(card, trimmed)
 			}
 			continue
 		}
+		fact := scopedPlanProductFact(trimmed)
 		if strings.HasPrefix(trimmed, "- [有效福利]") {
-			links := parseCardLinks(trimmed)
-			// 无链接字段或覆盖全部商品 → 共享；否则仅当明确列出该商品时归属它。
-			if len(links) == 0 || containsLink(links, linkKey) {
+			if fact.Shared || containsLink(fact.Links, linkKey) {
 				benefit = append(benefit, trimmed)
 			}
 			continue
 		}
-		// 普通事实：无链接字段，属全方案共享背书，对每个商品可用。
-		if strings.HasPrefix(trimmed, "- [") {
+		if fact.Shared || containsLink(fact.Links, linkKey) {
 			shared = append(shared, trimmed)
 		}
 	}
@@ -332,6 +355,13 @@ func mergedProductSellingAngleWeight(existing []model.LiveAgentPlanProductSellin
 // 商品归属由 productLinkID 程序保证；权重合并保留用户已调、未调等权。
 // 鲁棒性：逐商品隔离——单商品失败不中断其它商品，成功商品保留、失败商品汇总报出。
 func (s *Server) syncProductSellingPointPools(ctx context.Context, tenant, plan, actor int64, source *derivedInput, prompt, profileID string) error {
+	industrySignature, err := s.productCommonIndustrySignature(ctx, tenant, plan)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(prompt, productCommonIndustryMarker(industrySignature)) {
+		return errors.New("初始化期间所属行业已变化，请重新初始化")
+	}
 	links, err := s.store.ListLiveAgentPlanProductLinks(ctx, tenant, plan)
 	if err != nil {
 		return err
@@ -345,6 +375,22 @@ func (s *Server) syncProductSellingPointPools(ctx context.Context, tenant, plan,
 	if len(active) == 0 {
 		return nil
 	}
+	scopedFacts, err := s.resolveProductCommonFacts(ctx, tenant, plan, source.Facts, active, profileID)
+	if err != nil {
+		return err
+	}
+	asset, err := s.store.GetActiveLiveSellingPointWheel(ctx, tenant, plan)
+	if err != nil {
+		return err
+	}
+	var commonWheel anchorStyleSellingPointWheel
+	if err = json.Unmarshal([]byte(asset.EffectiveWheelJSON()), &commonWheel); err != nil {
+		return err
+	}
+	common, err := commonWheelPoints(commonWheel)
+	if err != nil {
+		return err
+	}
 	reportAnchorAnalysis(ctx, 92, "正在为每个商品单独梳理讲解要点")
 	scoped := withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
 	succeeded, failed := 0, 0
@@ -355,7 +401,7 @@ func (s *Server) syncProductSellingPointPools(ctx context.Context, tenant, plan,
 			failures = append(failures, fmt.Sprintf("商品%s：%v", link.LinkKey, ctx.Err()))
 			break
 		}
-		if err := s.syncSingleProductSellingPointPool(scoped, tenant, plan, actor, source, prompt, profileID, link); err != nil {
+		if err := s.syncSingleProductSellingPointPool(scoped, tenant, plan, actor, source, prompt, profileID, link, scopedFacts, common); err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("商品%s：%v", link.LinkKey, err))
 			continue
@@ -363,25 +409,49 @@ func (s *Server) syncProductSellingPointPools(ctx context.Context, tenant, plan,
 		succeeded++
 	}
 	if failed == 0 {
-		return nil
+		currentSignature, e := s.productCommonIndustrySignature(ctx, tenant, plan)
+		if e != nil || currentSignature != industrySignature {
+			return errors.New("初始化期间所属行业已变化，请重新初始化")
+		}
+		p0, p1, p2, e := loadRiskAnnotationMothers()
+		if e != nil {
+			return e
+		}
+		latest, e := s.loadDerivedInput(ctx, tenant, plan, p0, p1, p2)
+		if e != nil || latest.Facts != source.Facts {
+			return errors.New("初始化期间资料已变化，请重新初始化；未将旧资料标为完成")
+		}
+		current, e := s.store.GetActiveLiveSellingPointWheel(ctx, tenant, plan)
+		if e != nil || current.ID != asset.ID {
+			return errors.New("初始化期间公共轮盘已变化，请重新初始化")
+		}
+		return s.store.SavePlanAnalysisAsset(ctx, tenant, plan, "product_common_ready", productCommonReadyKey(asset, active), `{"ready":true}`)
 	}
 	return fmt.Errorf("商品讲解要点梳理：成功 %d 项、失败 %d 项（%s）；已成功内容保留，可重试补齐失败商品", succeeded, failed, strings.Join(failures, "；"))
 }
 
 // syncSingleProductSellingPointPool 梳理并保存单个商品的卖点池；模型调用带一次瞬时错误重试。
-func (s *Server) syncSingleProductSellingPointPool(ctx context.Context, tenant, plan, actor int64, source *derivedInput, prompt, profileID string, link model.LiveAgentPlanProductLink) error {
-	pkg := productFactPackage(link.LinkKey, source.Facts)
+func (s *Server) syncSingleProductSellingPointPool(ctx context.Context, tenant, plan, actor int64, source *derivedInput, prompt, profileID string, link model.LiveAgentPlanProductLink, scopedFacts []anchorcycle.ScopedFact, common []anchorcycle.FocusSellingPoint) error {
+	pkg := classifiedProductFactPackage(link.LinkKey, scopedFacts)
 	if strings.TrimSpace(pkg) == "" {
 		return fmt.Errorf("商品%s无可用的商品资料", link.LinkKey)
 	}
-	user, _ := json.Marshal(map[string]string{"fact_package": pkg})
+	user, _ := json.Marshal(map[string]any{"fact_package": pkg, "focus_product": link.LinkKey + "：" + link.ProductName, "common_points": common})
 	result, callErr := s.completeSellingPointExtractionWithRetry(ctx, profileID, prompt, string(user))
 	if callErr != nil {
 		return fmt.Errorf("讲解要点梳理失败：%w", callErr)
 	}
-	canonical, _, _, validation := normalizeAnchorStyleSellingPointWheelJSON(result.Text)
+	deduplicated := dedupeScopedWheelJSON(result.Text, true)
+	canonical, _, _, validation := normalizeAnchorStyleSellingPointWheelJSON(deduplicated)
+	var empty anchorStyleSellingPointWheel
+	if len(common) > 0 && decodeProductJSON(result.Text, &empty) == nil && empty.Items != nil && len(empty.Items) == 0 && empty.FactGaps != nil {
+		canonical = result.Text
+		validation = nil
+	}
 	if validation == nil {
-		validation = validateSellingPointPromptContract(result.Text, prompt)
+		if len(empty.Items) != 0 || empty.Items == nil {
+			validation = validateSellingPointPromptContract(deduplicated, prompt)
+		}
 	}
 	if validation != nil {
 		return fmt.Errorf("卖点结果校验未通过：%w", validation)
@@ -403,6 +473,12 @@ func (s *Server) syncSingleProductSellingPointPool(ctx context.Context, tenant, 
 	existing := link.SellingPoints
 	inputs := make([]model.LiveAgentPlanProductSellingPointInput, 0, len(wheel.Items))
 	for _, item := range wheel.Items {
+		if item.Scope == "公共" {
+			continue
+		} // The full-plan common wheel is canonical; do not multiply it per product.
+		if item.Scope != "商品" {
+			return errors.New("卖点缺少商品或公共归属，请重新初始化")
+		}
 		angles := make([]model.LiveAgentPlanProductSellingAngle, 0, len(item.Angles))
 		for _, angle := range item.Angles {
 			angles = append(angles, model.LiveAgentPlanProductSellingAngle{Angle: strings.TrimSpace(angle), Weight: mergedProductSellingAngleWeight(existing, item.Name, strings.TrimSpace(angle))})
@@ -420,8 +496,21 @@ func (s *Server) syncSingleProductSellingPointPool(ctx context.Context, tenant, 
 			PainPoint:      derefString(item.PainPoint),
 		})
 	}
-	if len(inputs) == 0 {
+	if len(inputs) == 0 && len(common) == 0 {
 		return errors.New("卖点池为空")
+	}
+	currentLinks, e := s.store.ListLiveAgentPlanProductLinks(ctx, tenant, plan)
+	if e != nil {
+		return e
+	}
+	found := false
+	for _, current := range currentLinks {
+		if current.ID == link.ID {
+			found = current.Status == "active" && anchorcycle.ProductDigest(current.SellingPoints) == anchorcycle.ProductDigest(link.SellingPoints)
+		}
+	}
+	if !found {
+		return errors.New("梳理期间商品或卖点已修改，未覆盖用户编辑，请重新初始化")
 	}
 	if _, err := s.store.SaveLiveAgentPlanProductSellingPoints(ctx, tenant, plan, link.ID, actor, inputs, "product_selling_point_extraction", ""); err != nil {
 		return fmt.Errorf("卖点池保存失败：%w", err)

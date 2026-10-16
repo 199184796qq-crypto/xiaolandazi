@@ -119,6 +119,7 @@ type anchorStyleWorkbenchMetaResponse struct {
 }
 
 type anchorStyleSellingPointWheelItem struct {
+	Scope          string   `json:"归属,omitempty"`
 	Name           string   `json:"卖点名"`
 	TargetAudience *string  `json:"目标人群,omitempty"`
 	PainPoint      *string  `json:"痛点,omitempty"`
@@ -737,8 +738,8 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("每个卖点须包含“卖点名”和“角度”")
 		}
 		for key := range fields {
-			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" && key != "tier" {
-				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度、tier")
+			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" && key != "tier" && key != "归属" {
+				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度、tier、归属")
 			}
 		}
 		for _, key := range []string{"目标人群", "痛点"} {
@@ -755,6 +756,9 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("卖点字段类型无效")
 		}
 		item.Name = strings.TrimSpace(item.Name)
+		if item.Scope != "" && item.Scope != "商品" && item.Scope != "公共" {
+			return "", 0, 0, errors.New("卖点归属只能是商品或公共")
+		}
 		item.Tier = strings.TrimSpace(item.Tier)
 		switch item.Tier {
 		case "", "core", "secondary", "trust":
@@ -1352,7 +1356,7 @@ func renderAnchorStyleWorkbenchFactsWithOrigins(plan model.LiveAgentPlan, facts 
 		origins[lineIndex()] = model.LiveRiskReviewSource{Area: "benefits", EntityID: benefit.ID}
 		lines = append(lines, "- [有效福利] "+strings.Join(nonEmptyAnchorStyleWorkbench(fields), "；"))
 	}
-	lines = append(lines, "边界：只能使用以上事实；缺少库存、销量、倒计时或现场事件时不得虚构。")
+	lines = append(lines, anchorWorkbenchFactsBoundary)
 	return strings.Join(lines, "\n"), origins
 }
 
@@ -1509,8 +1513,10 @@ func stripAnchorStyleBareNumbers(s string) string {
 
 // stripAnchorStyleProductContent 剥离风格文本中品相关内容。
 // 单样本下无法跨品对比，只能靠确定性正则 + 词表硬剥离：
-//   链接号、价格、数字+单位 用正则（不依赖外部数据）；
-//   商品名/品类名 用 productNames 词表（调用方注入，没有就只做正则）。
+//
+//	链接号、价格、数字+单位 用正则（不依赖外部数据）；
+//	商品名/品类名 用 productNames 词表（调用方注入，没有就只做正则）。
+//
 // 剥离后残留的连续占位符统一压缩成 [已剥离]。
 // 返回剥离后的元提示词文本与候选词表。
 func stripAnchorStyleProductContent(metaMD string, lexicon anchorStyleWorkbenchLexicon, productNames []string) (string, anchorStyleWorkbenchLexicon) {

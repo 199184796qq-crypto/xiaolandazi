@@ -39,14 +39,17 @@ func (s *Server) prepareSavedAnchorTaskState(ctx context.Context, tenant, plan i
 		if err != nil {
 			return anchorcycle.State{}, err
 		}
-		if hasProductLevelSellingPoints(focus.Products) {
+		if focus.MaterialVersion == productCommonMaterialVersion || hasProductLevelSellingPoints(focus.Products) {
 			// These scopes are internal program relationships, not model output.
 			// Rebuild the run-only index from the immutable per-product snapshot;
 			// never inherit a stale key map or expand another product's facts.
 			tasks = anchorcycle.ExpandProductSellingPoints(focus.Products, &focus.Policy)
-			focus.Tasks = make(map[string]anchorcycle.ScopedTask, len(tasks))
-			for _, task := range tasks {
-				focus.Tasks[task.Key] = anchorcycle.ScopedTask{Links: []string{task.LinkKey}}
+			focus.Tasks = anchorcycle.ProductTaskScopes(tasks)
+			if focus.MaterialVersion == productCommonMaterialVersion {
+				if err = validateProductFactSnapshot(safety.SafeFacts, focus); err != nil {
+					return anchorcycle.State{}, err
+				}
+				focus.RefreshProductBundles()
 			}
 		} else if savedTasks := savedLegacyQueue(wheel, focus); len(savedTasks) > 0 {
 			tasks = savedTasks

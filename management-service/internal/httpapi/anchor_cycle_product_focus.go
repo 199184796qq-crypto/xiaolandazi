@@ -504,149 +504,120 @@ func (s *Server) resolveProductScopeItems(ctx context.Context, profileID, mother
 
 // Build once from the safety snapshot. This never rewrites source facts, roles,
 // the selling-point wheel or a previously saved plan version.
-func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {
+func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink, safeWheelJSON ...string) (*anchorcycle.ProductFocus, error) {
 	active := []model.LiveAgentPlanProductLink{}
-	for _, l := range links {
-		if l.Status == "active" {
-			active = append(active, l)
+	for _, link := range links {
+		if link.Status == "active" {
+			active = append(active, link)
 		}
 	}
-	if len(active) < 2 {
+	if len(active) == 0 {
 		return nil, nil
 	}
+	asset, err := s.store.GetActiveLiveSellingPointWheel(ctx, state.TenantID, state.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	industrySignature, err := s.productCommonIndustrySignature(ctx, state.TenantID, state.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.Contains(asset.ExtractionPromptMD, productCommonIndustryMarker(industrySignature)) {
+		return nil, errors.New("所属行业或行业挖掘维度已变化，请重新初始化直播智能体")
+	}
+	if _, err = s.store.GetPlanAnalysisAsset(ctx, state.TenantID, state.PlanID, "product_common_ready", productCommonReadyKey(asset, active)); err != nil {
+		return nil, errors.New("商品与公共资料尚未完整初始化，请先点击初始化直播智能体，再保存方案")
+	}
+	p0, p1, p2, err := loadRiskAnnotationMothers()
+	if err != nil {
+		return nil, err
+	}
+	current, err := s.loadDerivedInput(ctx, state.TenantID, state.PlanID, p0, p1, p2)
+	if err != nil {
+		return nil, err
+	}
+	if asset.FactPackageSHA256 != derivedHash(current.Facts) {
+		return nil, errors.New("事实已变化，请先重新初始化直播智能体再保存方案")
+	}
+	var wheel anchorStyleSellingPointWheel
+	materialWheel := asset.EffectiveWheelJSON()
+	if len(safeWheelJSON) > 0 && safeWheelJSON[0] != "" {
+		materialWheel = safeWheelJSON[0]
+	}
+	if err = json.Unmarshal([]byte(materialWheel), &wheel); err != nil {
+		return nil, err
+	}
+	// The saved safety wheel is authoritative: retain only directions still in
+	// the safe queue, never resurrect an angle removed by risk preparation.
+	safe := map[string]bool{}
+	for _, task := range state.Queue {
+		safe[task.SellingPoint+"×"+task.Angle] = true
+	}
+	for i := range wheel.Items {
+		if len(safeWheelJSON) > 0 && safeWheelJSON[0] != "" {
+			break
+		}
+		filtered := []string{}
+		for _, angle := range wheel.Items[i].Angles {
+			if safe[wheel.Items[i].Name+"×"+angle] {
+				filtered = append(filtered, angle)
+			}
+		}
+		wheel.Items[i].Angles = filtered
+	}
+	facts, err := s.resolveProductCommonFacts(ctx, state.TenantID, state.PlanID, state.Facts, active, "")
+	if err != nil {
+		return nil, err
+	}
+	return buildClassifiedProductFocus(state, active, facts, wheel)
+}
+
+func buildClassifiedProductFocus(state *anchorcycle.State, links []model.LiveAgentPlanProductLink, facts []anchorcycle.ScopedFact, wheel anchorStyleSellingPointWheel) (*anchorcycle.ProductFocus, error) {
 	policy, source, err := loadCycleProductPolicy()
 	if err != nil {
 		return nil, err
 	}
-	scope := &anchorcycle.ProductFocus{Policy: policy, PolicySource: source, FactsSHA: derivedHash(state.Facts)}
-	roles := map[string][]string{}
-	byKey := map[string]model.LiveAgentPlanProductLink{}
-	for _, l := range active {
-		roles[l.LinkKey] = append([]string{}, l.RoomRoles...)
-		byKey[l.LinkKey] = l
-	}
-	modelFacts := []cycleScopeFactInput{}
-	seen := map[string]bool{}
-	for _, line := range strings.Split(state.Facts, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "- ") {
-			continue
-		}
-		if strings.HasPrefix(line, "- [商品卡]") {
-			key := safeProductField(line, "链接")
-			if key == "" || seen[key] {
-				return nil, errors.New("安全商品卡缺少或重复链接，不能限定讲解范围")
-			}
-			if _, ok := roles[key]; !ok {
-				return nil, errors.New("安全商品卡与当前商品列表不一致")
-			}
-			seen[key] = true
-			link := byKey[key]
-			scope.Products = append(scope.Products, anchorcycle.FocusProduct{
-				LinkKey:         key,
-				Name:            safeProductField(line, "商品"),
-				Roles:           roles[key],
-				Spec:            link.Spec,
-				DailyPrice:      link.DailyPrice,
-				Quantity:        link.Quantity,
-				FrequencyWeight: link.FrequencyWeight,
-				SellingPoints:   focusSellingPointsFromModel(link.SellingPoints),
-			})
-			// 商品卡归属程序自判：专属该链接，不需要模型判定。
-			scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: []string{key}, Shared: false})
-			continue
-		}
-		if strings.HasPrefix(line, "- [有效福利]") {
-			// 福利归属程序自判：无链接字段或链接覆盖全部商品 → 公共福利（shared，每个商品都能讲）；
-			// 否则为专属福利（links=明确列出的链接）。
-			links2 := parseCardLinks(line)
-			if len(links2) == 0 || len(links2) == len(active) {
-				scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: []string{}, Shared: true})
-			} else {
-				scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: links2, Shared: false})
-			}
-			continue
-		}
-		modelFacts = append(modelFacts, cycleScopeFactInput{ID: len(modelFacts) + 1, Text: line})
-	}
-	if len(scope.Products) != len(active) {
-		return nil, errors.New("安全事实包缺少商品卡，不能自动混讲或补造资料")
-	}
-	if err = scope.ValidateProducts(); err != nil {
-		return nil, err
-	}
-	// 商品级卖点池路径：每个商品都配置了独立卖点池时，任务天然带商品归属（LinkKey），
-	// 直接用 ExpandProductSellingPoints 展开重建队列并填权重，跳过模型归属判定（不新增"填错链接"风险）。
-	if hasProductLevelSellingPoints(scope.Products) {
-		expanded := anchorcycle.ExpandProductSellingPoints(scope.Products, &scope.Policy)
-		if len(expanded) == 0 {
-			return nil, errors.New("商品卖点池为空，请先在商品卡配置卖点")
-		}
-		state.Queue = expanded
-		if scope.Tasks == nil {
-			scope.Tasks = map[string]anchorcycle.ScopedTask{}
-		}
-		for _, t := range expanded {
-			scope.Tasks[t.Key] = anchorcycle.ScopedTask{Links: []string{t.LinkKey}, Shared: false}
-		}
-		for _, product := range scope.Products {
-			probe := *state
-			probe.ProductFocus = scope
-			probe.CycleNumber = max(1, state.CycleNumber)
-			scope.CurrentCycle = probe.CycleNumber
-			scope.CurrentLink = product.LinkKey
-			scope.CurrentSlot = scope.ScheduleCursor
-			scope.AuxiliaryActive = product.LinkKey != scope.MainLink()
-			probe.SelectProductTask()
-			if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {
-				return nil, fmt.Errorf("链接%s没有可用单品角度，请补充对应事实或角度后保存", product.LinkKey)
-			}
-		}
-		scope.ResetRun()
-		return scope, nil
-	}
-	settings, err := s.store.AnchorGenerationSettings(ctx)
-	if err != nil || settings.SellingPointProfileID == "" {
-		return nil, errors.New("多商品方案需要已配置的卖点挖掘模型分析归属")
-	}
-	profile, profileErr := s.store.ResolveSpeechModel(ctx, settings.SellingPointProfileID)
-	if profileErr != nil || profile == nil {
-		return nil, errors.New("商品归属分析模型不可用")
-	}
-	views := make([]productAnalysisView, 0, len(scope.Products))
-	for _, p := range scope.Products {
-		views = append(views, productAnalysisView{LinkKey: p.LinkKey, Name: p.Name, Roles: p.Roles})
-	}
-	itemMother, _, err := loadCycleProductScopeItemPrompt()
+	common, err := commonWheelPoints(wheel)
 	if err != nil {
 		return nil, err
 	}
-	taskKeys := make([]string, 0, len(state.Queue))
-	for _, t := range state.Queue {
-		taskKeys = append(taskKeys, t.Key)
-	}
-	data, _ := json.Marshal(map[string]any{"products": views, "facts": modelFacts, "task_keys": taskKeys})
-	fingerprint := anchorcycle.ProductDigest(map[string]any{"protocol": "product-scope-item-v1", "data": string(data), "policy": policy, "prompt": itemMother, "profile": settings.SellingPointProfileID, "model": profile.Model, "endpoint": profile.BaseURL})
-	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID})
-	if err = s.resolveProductScopeItems(ctx, settings.SellingPointProfileID, itemMother, views, modelFacts, state.Queue, fingerprint, state, scope); err != nil {
-		return nil, err
-	}
-	for _, product := range scope.Products {
-		probe := *state
-		probe.ProductFocus = scope
-		probe.CycleNumber = max(1, state.CycleNumber)
-		scope.CurrentCycle = probe.CycleNumber
-		scope.CurrentLink = product.LinkKey
-		scope.CurrentSlot = scope.ScheduleCursor
-		scope.AuxiliaryActive = product.LinkKey != scope.MainLink()
-		probe.SelectProductTask()
-		if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {
-			return nil, fmt.Errorf("链接%s没有可用单品角度，请补充对应事实或角度后保存", product.LinkKey)
+	focus := &anchorcycle.ProductFocus{MaterialVersion: productCommonMaterialVersion, Policy: policy, PolicySource: source, FactsSHA: derivedHash(state.Facts), Facts: facts}
+	cards := map[string]string{}
+	for _, block := range productFactBlocks(state.Facts) {
+		if strings.HasPrefix(block, "- [商品卡]") {
+			key := safeProductField(block, "链接")
+			if key == "" || cards[key] != "" {
+				return nil, errors.New("安全商品卡缺少或重复链接")
+			}
+			cards[key] = block
 		}
 	}
-	scope.ResetRun()
-	return scope, nil
+	for _, link := range links {
+		if link.Status != "active" {
+			continue
+		}
+		if cards[link.LinkKey] == "" {
+			return nil, errors.New("安全事实包缺少商品卡，请重新初始化")
+		}
+		own := focusSellingPointsFromModel(link.SellingPoints)
+		if len(own) == 0 && len(common) == 0 {
+			return nil, fmt.Errorf("链接%s没有可用的商品或公共卖点，请初始化直播智能体", link.LinkKey)
+		}
+		focus.Products = append(focus.Products, anchorcycle.FocusProduct{LinkKey: link.LinkKey, Name: safeProductField(cards[link.LinkKey], "商品"), Roles: append([]string(nil), link.RoomRoles...), Spec: link.Spec, DailyPrice: link.DailyPrice, Quantity: link.Quantity, FrequencyWeight: link.FrequencyWeight, SellingPoints: own, CommonPoints: common})
+	}
+	if err = focus.ValidateProducts(); err != nil {
+		return nil, err
+	}
+	if err = validateProductFactSnapshot(state.Facts, focus); err != nil {
+		return nil, err
+	}
+	focus.RefreshProductBundles()
+	state.Queue = anchorcycle.ExpandProductSellingPoints(focus.Products, &focus.Policy)
+	focus.Tasks = anchorcycle.ProductTaskScopes(state.Queue)
+	focus.ResetRun()
+	return focus, nil
 }
+
 func cycleProductScopeData(state *anchorcycle.State, t anchorcycle.Task) map[string]any {
 	return map[string]any{"main_link": state.ProductFocus.MainLink(), "focus_link": t.FocusLink, "allowed_links": t.ProductLinks(), "mode": t.ProductMode, "max_chars": t.ProductMaxChars, "policy": state.ProductFocus.Policy, "completed_main_rounds": state.ProductFocus.CompletedMainRounds, "authorized_facts": state.ProductFacts(t)}
 }
@@ -740,9 +711,14 @@ func (s *Server) captureRealtimeProductFocus(ctx context.Context, tenant, plan i
 	for _, t := range flattenAnchorStyleWheelTasks(wheel) {
 		probe.Queue = append(probe.Queue, anchorcycle.Task{SellingPoint: t.SellingPoint, Angle: t.Angle, Key: t.Key, Tier: t.Tier})
 	}
-	scheme.ProductFocus, err = s.buildCycleProductFocus(ctx, probe, links)
+	scheme.ProductFocus, err = s.buildCycleProductFocus(ctx, probe, links, safety.SafeWheelJSON)
 	if err != nil {
 		return err
+	}
+	if scheme.ProductFocus != nil && scheme.ProductFocus.MaterialVersion == productCommonMaterialVersion {
+		if err = validateProductFactSnapshot(safety.SafeFacts, scheme.ProductFocus); err != nil {
+			return err
+		}
 	}
 	scheme.SingleProductSchedule = singleProductSchedule(links)
 	input.GenerationContext["anchor_generation"] = scheme

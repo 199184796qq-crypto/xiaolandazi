@@ -66,6 +66,8 @@ type FocusProduct struct {
 	Quantity        string              `json:"quantity,omitempty"`
 	FrequencyWeight int                 `json:"frequency_weight,omitempty"` // 手动微调系数×100（100=1.0 不干预，范围 50~200 即 0.5~2.0；0=未设置=1.0）
 	SellingPoints   []FocusSellingPoint `json:"selling_points,omitempty"`
+	CommonPoints    []FocusSellingPoint `json:"common_points,omitempty"`
+	Facts           []ScopedFact        `json:"facts,omitempty"`
 }
 
 // FocusSellingPoint 是「每个商品独立」的卖点池成员：卖点名 + tier + 主推标记 + 权重，
@@ -99,6 +101,7 @@ type ScopedTask struct {
 	Comparison bool     `json:"comparison"`
 }
 type ProductFocus struct {
+	MaterialVersion     string                `json:"material_version,omitempty"`
 	Policy              ProductPolicy         `json:"policy"`
 	PolicySource        string                `json:"policy_source"`
 	FactsSHA            string                `json:"facts_sha256"`
@@ -167,7 +170,7 @@ func (p *ProductFocus) ValidateProducts() error {
 		}
 		seen[item.LinkKey] = true
 	}
-	if len(p.Products) < 2 {
+	if len(p.Products) < 2 && !(p.MaterialVersion == "product-common-v1" && len(p.Products) == 1) {
 		return errors.New("多商品讲解须至少两个商品；原方案不变")
 	}
 	return nil
@@ -302,6 +305,14 @@ func (s *State) focusTask(t Task) Task {
 	t.FocusLink = s.ProductFocus.CurrentLink
 	t.setProductLinks([]string{t.FocusLink})
 	t.ProductMode = "single"
+	if a := s.ProductFocus.Tasks[t.Key]; t.Common && a.Shared {
+		t.ProductMode = "common"
+		var allowed []string
+		for _, product := range s.ProductFocus.Products {
+			allowed = append(allowed, product.LinkKey)
+		}
+		t.setProductLinks(allowed)
+	}
 	t.ProductMaxChars = s.Config.MaxChars
 	if s.PriceHook != nil && s.PriceHook.Task.FocusLink != "" {
 		t.FocusLink = s.PriceHook.Task.FocusLink
@@ -321,6 +332,9 @@ func (s *State) ProductFacts(t Task) string {
 	lines := []string{}
 	for _, fact := range s.ProductFocus.Facts {
 		allowed := fact.Shared
+		if t.Common && t.ProductMode == "common" {
+			allowed = true
+		}
 		if !allowed && fact.Applicable {
 			for _, key := range fact.Links {
 				if key == t.FocusLink {
@@ -461,6 +475,7 @@ func ExpandProductSellingPoints(products []FocusProduct, policy *ProductPolicy) 
 		policy.AngleWeights = map[string]int{}
 	}
 	tasks := make([]Task, 0)
+	commonSeen := map[string]bool{}
 	for _, product := range products {
 		for _, sp := range product.SellingPoints {
 			pointKey := productSellingPointKey(product.LinkKey, sp.Name)
@@ -496,6 +511,40 @@ func ExpandProductSellingPoints(products []FocusProduct, policy *ProductPolicy) 
 				tasks = append(tasks, task)
 			}
 		}
+		for _, sp := range product.CommonPoints {
+			for _, angle := range sp.Angles {
+				key := "common:" + ProductDigest([]string{sp.Name, angle.Angle})
+				if commonSeen[key] {
+					continue
+				}
+				commonSeen[key] = true
+				tasks = append(tasks, Task{ID: key, Key: key, SlotKey: key, Common: true, PointWeight: max(1, sp.Weight), AngleWeight: max(1, angle.Weight), SellingPoint: sp.Name, Angle: angle.Angle, Tier: sp.Tier, TargetAudience: sp.TargetAudience, PainPoint: sp.PainPoint})
+			}
+		}
 	}
 	return tasks
+}
+
+// The same common task is shared by every product; it is expanded only once.
+func ProductTaskScopes(tasks []Task) map[string]ScopedTask {
+	result := make(map[string]ScopedTask, len(tasks))
+	for _, task := range tasks {
+		if task.Common {
+			result[task.Key] = ScopedTask{Shared: true}
+		} else {
+			result[task.Key] = ScopedTask{Links: []string{task.LinkKey}}
+		}
+	}
+	return result
+}
+
+func (p *ProductFocus) RefreshProductBundles() {
+	for i := range p.Products {
+		p.Products[i].Facts = nil
+		for _, fact := range p.Facts {
+			if fact.Shared || containsLink(fact.Links, p.Products[i].LinkKey) {
+				p.Products[i].Facts = append(p.Products[i].Facts, fact)
+			}
+		}
+	}
 }

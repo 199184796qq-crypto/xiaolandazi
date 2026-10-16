@@ -133,6 +133,9 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 	if asset.Status != "confirmed" {
 		return false, 0, 0, nil
 	}
+	if strings.Contains(promptSnapshot, "product-common-v1") && (asset.ExtractionPromptMD != promptSnapshot || asset.FactPackageSHA256 != derivedHash(facts)) {
+		return false, 0, 0, nil
+	}
 	if emptySellingPointPool(asset.EffectiveWheelJSON()) {
 		reportAnchorAnalysis(ctx, 35, "尚未有讲解要点，开始完整梳理与核对")
 		return false, 0, 0, nil

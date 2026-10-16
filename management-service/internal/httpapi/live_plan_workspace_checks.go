@@ -57,13 +57,10 @@ func savedProductFocusForFacts(saved *anchorcycle.ProductFocus, facts string) (*
 		savedIdentities[savedFactIdentity(fact.Text)]++
 	}
 	exact := map[string]bool{}
-	for _, line := range strings.Split(facts, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- ") {
-			exact[line] = true
-			key := savedFactIdentity(line)
-			byIdentity[key] = append(byIdentity[key], line)
-		}
+	for _, line := range productFactBlocks(facts) {
+		exact[line] = true
+		key := savedFactIdentity(line)
+		byIdentity[key] = append(byIdentity[key], line)
 	}
 	retained := make([]anchorcycle.ScopedFact, 0, len(focus.Facts))
 	for _, fact := range focus.Facts {
@@ -77,6 +74,9 @@ func savedProductFocusForFacts(saved *anchorcycle.ProductFocus, facts string) (*
 		}
 	}
 	focus.Facts, focus.FactsSHA = retained, derivedHash(facts)
+	if focus.MaterialVersion == productCommonMaterialVersion {
+		focus.RefreshProductBundles()
+	}
 	return &focus, nil
 }
 
