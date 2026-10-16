@@ -106,8 +106,8 @@ func validateBridge(raw string, plan returnBridgePlan) (bridgeText, error) {
 		}
 		return output, nil
 	}
-	if n := len([]rune(output.Text)); n < 6 || n > 24 {
-		return output, fmt.Errorf("bridge length outside 6-24 characters")
+	if len([]rune(strings.TrimSpace(output.Text))) == 0 {
+		return output, fmt.Errorf("bridge text is empty")
 	}
 	return output, nil
 }

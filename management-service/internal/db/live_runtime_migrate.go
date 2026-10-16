@@ -62,6 +62,7 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		{"live_agent_plan_fact_revisions", "forbidden_wording", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
 		{"live_agent_plan_fact_revisions", "safe_rewrite", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
 		{"live_agent_plan_product_links", "room_roles_json", "ALTER TABLE live_agent_plan_product_links ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
+		{"live_agent_plan_product_links", "frequency_weight", "ALTER TABLE live_agent_plan_product_links ADD COLUMN frequency_weight INT NOT NULL DEFAULT 0 AFTER audience"},
 		{"live_agent_plan_product_link_revisions", "room_roles_json", "ALTER TABLE live_agent_plan_product_link_revisions ADD COLUMN room_roles_json JSON NULL AFTER product_name"},
 		{"live_agent_plan_benefits", "validity_mode", "ALTER TABLE live_agent_plan_benefits ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
 		{"live_agent_plan_benefit_revisions", "validity_mode", "ALTER TABLE live_agent_plan_benefit_revisions ADD COLUMN validity_mode VARCHAR(24) NOT NULL DEFAULT 'scheduled' AFTER activity_text"},
@@ -241,6 +242,12 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 				return fmt.Errorf("add risk review recovery column %s: %w", column.name, alterErr)
 			}
 		}
+	}
+	// 频率权重语义迁移：旧版 frequency_weight 为 1~100 绝对值，新版改为 0.5~2.0 系数（×100）。
+	// 幂等规则：只重置「不可能是合法系数」的旧值（1~49 及 >200），落到 0（未设置=系数 1.0）；
+	// 合法系数区间 50~200 原样保留。测试阶段无正式投产数据，旧绝对值直接归 0 回到纯角色基准。
+	if _, err := s.db.ExecContext(ctx, `UPDATE live_agent_plan_product_links SET frequency_weight = 0 WHERE frequency_weight > 0 AND (frequency_weight < 50 OR frequency_weight > 200)`); err != nil {
+		return fmt.Errorf("reset legacy frequency weight: %w", err)
 	}
 	return s.MigrateAnchorRecommendations(ctx)
 }

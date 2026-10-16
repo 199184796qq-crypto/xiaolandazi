@@ -1,0 +1,546 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "af63fc6c0c53e1d09a9860d2e5d4d49d9c6a31d3336b536474897eeeef603054"
+  },
+  {
+    "path": "anchor-recommendation-summary.md",
+    "sha256": "08480b5d5b7e2229026cf20a93dcf07f42e637c134a111055ba0642f07541415"
+  },
+  {
+    "path": "anchor-style-qualitative-extraction.md",
+    "sha256": "9078d06fdc55338e6a2789defb6e3579fa874c7cdc97e54b8d5c0f67a88d932a"
+  },
+  {
+    "path": "anchor-style-scorecard-extraction.md",
+    "sha256": "f456065f3d57e9e313c1cf3bce9754943917bedbaef80760c83312633658ebaf"
+  },
+  {
+    "path": "angle-direction-novelty.md",
+    "sha256": "9800d4ee92e8fdc98d6245181cbad91f167d29c2daa2521a1e4f1a961a5a8aec"
+  },
+  {
+    "path": "angle-direction-review.md",
+    "sha256": "0a8de14b4f5529d7293654118a8145973f9642962af85f1f978bc7e0209c4e15"
+  },
+  {
+    "path": "angle-direction-supplement-probe.md",
+    "sha256": "ee0dc742b8118b362890541e52f86e3f075109a9370bf03efc6ec56b8fae2a7a"
+  },
+  {
+    "path": "angle-expression-probe.md",
+    "sha256": "5623cce1a3232b1c3040b9dacbdab387b7871c9d9eed4e7085b7d59bcc756755"
+  },
+  {
+    "path": "angle-hook-plan.md",
+    "sha256": "7e0d7c67f229cbda28f04ccadfe9f75eccee44ce63c75ee5c02c6aa50d942343"
+  },
+  {
+    "path": "category-detection.md",
+    "sha256": "fb6be8b248b16e44935f9fd825fbe79b92a15b684161a12974cf25fcb6f6bf34"
+  },
+  {
+    "path": "category-selling-dimensions.md",
+    "sha256": "9e2ade2cc7552092efdb1f484a025964ef987ecf467e9f372f8968a379b90db9"
+  },
+  {
+    "path": "compliance/L1/p0-context-review.md",
+    "sha256": "a3b47d7ed658bba33f1e2b6cbf80df2239941afd2e13996c5fd9519bafb661bf"
+  },
+  {
+    "path": "compliance/L1/p0-generation-boundary.md",
+    "sha256": "a00543f73c37bcd858372c4a9ba0648ba113e55191059b193ca0b51693ce3fd4"
+  },
+  {
+    "path": "compliance/L1/p0-hard-block.md",
+    "sha256": "2b5e72639bacc7c8ea499fc6c415000231454fa2ef49a1df1f34372336cdfa1d"
+  },
+  {
+    "path": "compliance/L1/p0-local-rewrite.md",
+    "sha256": "849fe8bf37368609c119eb0178ad600fc7040df3a52d6a6f86b8241224878496"
+  },
+  {
+    "path": "compliance/L2/food/p1-evidence-cards.md",
+    "sha256": "44b8f46393d5c9230f1d0fc6c6cd47a96f42b013aa5750b2c5b9062bda398e17"
+  },
+  {
+    "path": "compliance/L2/food/p2-wording-rewrite.md",
+    "sha256": "dd4a6d7f8b4e519fe5944486761cedc5e57af89e30c8976249bc2ec0e3a89b27"
+  },
+  {
+    "path": "compliance/README.md",
+    "sha256": "a78fdd78d9a4f8fa1c6c5f4be8137fe1503fcef03284e62d4bec3a0ca853c62f"
+  },
+  {
+    "path": "compliance/audit-four-layer.md",
+    "sha256": "d33869e98d115dab70387deea709ed2fd4c2b3065849bf3de9b45e96fd117919"
+  },
+  {
+    "path": "compliance/derived-assets-safe-rewrite.md",
+    "sha256": "611b1d460c3cb91dba198909b6ff6414c0532784d26387f1016e0f661717ff72"
+  },
+  {
+    "path": "compliance/fact-risk-semantic-review.md",
+    "sha256": "ba2e2d87d66d1ba601ef3498cb166f63b9c4e8f02adccf43b3ea4295e1c07e5a"
+  },
+  {
+    "path": "content-boundary-probe.md",
+    "sha256": "76018a1ec4a50ea4377b3ba46a9fab03383d5088346dce7d40a216fa63ce0a3e"
+  },
+  {
+    "path": "content-correction-normalize.md",
+    "sha256": "65006962abb6191a9f9643025137c306fa975b5930a092fc657fd6ab6ffd8418"
+  },
+  {
+    "path": "content-correction-repair.md",
+    "sha256": "e221b7eb2ec486522a804d66edffb048d73fbaf3b775c11538ac04dcfc4b722d"
+  },
+  {
+    "path": "content-pool-fact-scope.md",
+    "sha256": "554743452c689ebf3974fceaab3ddec03ebaab3feba77b23e184538239609f3e"
+  },
+  {
+    "path": "content-pool-simple-generation.md",
+    "sha256": "42cad7b7c8b214ccb5c521d605c41e5da84df90962aee4320d5f57db36d03482"
+  },
+  {
+    "path": "content-pool-simple-review.md",
+    "sha256": "70676bc2b032ee0bfe45c6aa103051677ea9c05a3345584c30cb73f81e989e87"
+  },
+  {
+    "path": "content-pool-simple-scope.md",
+    "sha256": "34fff7f472a52f7f02aa408c92cd74f62a6a66570d00aec597c8cec5e8a47a75"
+  },
+  {
+    "path": "content-pool-task-generation.md",
+    "sha256": "2d438fa2efb101c2170a7ba16bcd5d35de63747704265aa7e7bf3e5ff84d37fd"
+  },
+  {
+    "path": "content-pool-task-review.md",
+    "sha256": "be31cf6ad7b47975a57a21170ca51d8c8e0d23a6ab7711bad3309a7fc4d60482"
+  },
+  {
+    "path": "content-result-plan-probe.md",
+    "sha256": "368ca19c5dca6233b1df053ef5c4204c1fbd57f3a4fbb156caaf2ad8200a94f9"
+  },
+  {
+    "path": "content-result-speech-probe.md",
+    "sha256": "f62b2f91c6531b98b87ad728cb19796da5a8a951e42ca543347d1913bbfefa56"
+  },
+  {
+    "path": "cosyvoice-tts-delivery.md",
+    "sha256": "0f4f1ced5187c6077e3d6911fd5c7429ef54ed9a0a166961521741a0ff0981b6"
+  },
+  {
+    "path": "cross-category-content-assessment.md",
+    "sha256": "13cc16e7c5f575d487a1847cf0e07126c857ec860df4efa6b6fc7ca09b5f7206"
+  },
+  {
+    "path": "cycle-bootstrap.md",
+    "sha256": "e615e140bc503cc267d66a60ef5d67b15cc490301f84366cc00317d7cf62cc5b"
+  },
+  {
+    "path": "cycle-closing.md",
+    "sha256": "e78e52cd7accf7920569a78af63d343297775ef96ea7ce7010854d62b81aef1f"
+  },
+  {
+    "path": "cycle-opening-full.md",
+    "sha256": "1d8c29cd32d0e793051ee45ad62651809d9b2f086355be904752cb5d8484f842"
+  },
+  {
+    "path": "cycle-opening-reentry.md",
+    "sha256": "68ec3b4634676b69d226f190b917f2bca63da7395127a226bfc5c87628ced743"
+  },
+  {
+    "path": "cycle-opening.md",
+    "sha256": "0dd6c0149e23042309e9a30afb6597886c5d9884d53e672450866ff2a7c364e7"
+  },
+  {
+    "path": "cycle-price-delivery.md",
+    "sha256": "4c93fb8f50a9179bfcc21abfe5f673e5bcd18fbff644137d251aeb470e2865bd"
+  },
+  {
+    "path": "cycle-product-focus-audit.md",
+    "sha256": "23b5d914c36b9680ed1a2d1cfc2ac3df07ac20916eef78ec902d1851d7d27edf"
+  },
+  {
+    "path": "cycle-product-focus.md",
+    "sha256": "ba70d78cc2cbe2d86156e3fdead1bc5749017abe78b70dc1eeea9a3779098b6d"
+  },
+  {
+    "path": "cycle-product-scope-classification.md",
+    "sha256": "47fada592574a249b9762ee9bdb118d475297b49e6b673b09aa039756c37e731"
+  },
+  {
+    "path": "cycle-product-scope-item.md",
+    "sha256": "3b8bc61103ee8ebe32018028a3d98c094399d83a3733dcfee8e8fbb5aa9c7a68"
+  },
+  {
+    "path": "cycle-product-scope-repair.md",
+    "sha256": "a1c2cdea5348e252b56e843ba0f36d6b98b3c3967e8a2cc8e0e844a32ea7267f"
+  },
+  {
+    "path": "cycle-retry.md",
+    "sha256": "d8b5597e1397590919775e75bf839478da8ebd813819350e5b2f87421e3c0bf3"
+  },
+  {
+    "path": "cycle-reuse.md",
+    "sha256": "dcd6335a28cd77f10c31ecc12984175141a089984875cc8ebde393be20d8fc5d"
+  },
+  {
+    "path": "cycle-scheduling-data.md",
+    "sha256": "e7843fba18432bec57aecb5181e7b93aa432fcbb9d7f3e4111be28374dd650ba"
+  },
+  {
+    "path": "cycle-segment-generation.md",
+    "sha256": "5dd4c3d08c86269531c0d6baaadfbc43e94e83cd06e613748e4f8a5d60108586"
+  },
+  {
+    "path": "fact-expression-examples-review.md",
+    "sha256": "e03efd4647c5793993bc12019c330143cae32287e8c431c49cfac8afc15d0da7"
+  },
+  {
+    "path": "fact-expression-examples.md",
+    "sha256": "ec2c60edd6268f2de4c0122256703ef22fe29cbe6752a95d3978ddca9b2e1cd6"
+  },
+  {
+    "path": "fact-fields-normalize-review.md",
+    "sha256": "dbf31852dde0263a7eeda4f22d994c43796ab1a46671b4a0d7ae9a019deca802"
+  },
+  {
+    "path": "fact-fields-normalize.md",
+    "sha256": "0412e450dcf55fa73b310d5abf050cdd6a96b5223aa15c3965e18219732d18cc"
+  },
+  {
+    "path": "fact-gap-check.md",
+    "sha256": "e5c33cbd569a759dd0bbf899fbf5e925c568d5821639eb863d997832e6b5ccc9"
+  },
+  {
+    "path": "fact-gap-checklist.md",
+    "sha256": "6f05fd66655b6145a5dd88dd56574fe658c67410b2379f418ee012a47959a6a2"
+  },
+  {
+    "path": "fact-name-suggestion.md",
+    "sha256": "6bf2def45db2852e069e2467a11c645af2fdaad731d412028116c03ff32d4fc1"
+  },
+  {
+    "path": "fact-purpose-analysis.md",
+    "sha256": "d3b897c439bf85ffad65189287879d0519d438e4fec422d6a5105924161e6e28"
+  },
+  {
+    "path": "fact-purpose-angle-analysis.md",
+    "sha256": "c1d56cfc040d330da7e705c42e1e941016f6a30e03283936c0067f80f843a7a6"
+  },
+  {
+    "path": "fact-purpose-angle-generation.md",
+    "sha256": "c697908c830b098fe9b7f056b98f4de1b08879ea65d1b052cc887a569ab96874"
+  },
+  {
+    "path": "fact-purpose-angle-review.md",
+    "sha256": "1fca402d3aa7bf646f9cfa0946a72a2c8010ec8a562471bfba5fb1ca5d359a8f"
+  },
+  {
+    "path": "fact-purpose-selected-generation.md",
+    "sha256": "e42ac667373934eb1effedc7d2ab548f7a1b53501722c2213f3cad786bab7fae"
+  },
+  {
+    "path": "fact-speech-preview.md",
+    "sha256": "60415d603ad00c406096e21e6fde6c856fe1ba0993bdd6abb5b5a950290b41fa"
+  },
+  {
+    "path": "fact-speech-repair.md",
+    "sha256": "9fda98f74d57901e955d513b048c7e75fab35089f87c023645a08b1b8db075c0"
+  },
+  {
+    "path": "fact-speech-rewrite.md",
+    "sha256": "857394157be85bdd6044669c6d8b58f40788bc8a283f144ff3e7261ec907043c"
+  },
+  {
+    "path": "fact-synonym-variants.md",
+    "sha256": "f776eecb9a3b45b9656ae186349ac62d334d683b2e03dac98308f2a4a187f24c"
+  },
+  {
+    "path": "fact-template-influence-test-review.md",
+    "sha256": "883a97d201d3f6b57210bbd81ab6bcf7cabc886d5f627ae0ae58222b1d0089ee"
+  },
+  {
+    "path": "hook-chain-generation-probe.md",
+    "sha256": "6ba0be93c716ae0295f5b0b3b59ff356ebd7ef31605dedbdd28e771f43aa3a03"
+  },
+  {
+    "path": "hook-chain-planning-probe.md",
+    "sha256": "6c8184d11c6d9177a7ae8213235c110c4f35919e3ead312db6e7b527dbd18487"
+  },
+  {
+    "path": "interaction-agent-answer.md",
+    "sha256": "0e3cfa8018f2b4aa092644a58fee63dc21bccb0fa1097b9fe9bc405dd3fd819e"
+  },
+  {
+    "path": "interaction-agent-plan.md",
+    "sha256": "8032aec8b3978253d80ad7211f031665b76d328eeb7e470f833daa8962be623e"
+  },
+  {
+    "path": "interaction-anchor-style.md",
+    "sha256": "41d65658412864b70546765b0857b10aaeaeaef015699aad367e23b10cf349a1"
+  },
+  {
+    "path": "interaction-answer-assessment.md",
+    "sha256": "cf6e89f9315d46e152b009fe64406d364e068144eb7fe19b397181f9bc07e3ea"
+  },
+  {
+    "path": "interaction-continuity-generation.md",
+    "sha256": "fc38571abeddcd30f41892e787b198d4ff10b6104840e9de0ae810f76f9bbe12"
+  },
+  {
+    "path": "interaction-core-content.md",
+    "sha256": "79305014ef57c0e9e6227e5a10f3d33db858db9ba418a5cd9af87714fa7d54ea"
+  },
+  {
+    "path": "interaction-facts-boundary.md",
+    "sha256": "aa36f54f02ca750354679bc4b7f50b769a4f8d7b3871e9601a510f7c240d91c5"
+  },
+  {
+    "path": "interaction-learning-simulation.md",
+    "sha256": "421c17641e7a44b1b09e4bf10e4dc3502171ec56289bda31c020c838a9cfa8c9"
+  },
+  {
+    "path": "interaction-learning-user-authority.md",
+    "sha256": "dcca3ef1edc4fe2127969b697e00a4a241d725565fb7f2bcc603b00a4a785268"
+  },
+  {
+    "path": "interaction-length-repair.md",
+    "sha256": "7ab66bb5f0788150056365c840800b37833a0c066928ddd2fa96d6eeb991cbf0"
+  },
+  {
+    "path": "interaction-nickname-addressing.md",
+    "sha256": "106a587e3b80086325ef8909965e17c0e3e1d7611e7574c1fad7470f1f1cdad3"
+  },
+  {
+    "path": "interaction-nickname-plan.md",
+    "sha256": "7b70c1967daa9d5ead8947b5300246d4797990edd2f469243ba5f202b482f9bb"
+  },
+  {
+    "path": "interaction-purpose-resolution.md",
+    "sha256": "2821cd13bff4eb7909a95202778945c911be3f31505fb8e21aaa88cfb2d35330"
+  },
+  {
+    "path": "interaction-question-focus.md",
+    "sha256": "caa637457d0bd509341fd4fa4736cc592f4366c0f018882ed735d23439def352"
+  },
+  {
+    "path": "interaction-return-bridge-baseline-probe.md",
+    "sha256": "151e04d9de42028e0a4aa18e9c3a3fc5896776a4ddb8f0fa15e9b55a0f3b78a7"
+  },
+  {
+    "path": "interaction-return-bridge-generation.md",
+    "sha256": "83e9a918f4eef8d7c19215ca5e27106935aa3ce818eab83be4c42d6c9a3cb84e"
+  },
+  {
+    "path": "interaction-return-core-answer.md",
+    "sha256": "9c98c3d384eee0815bbd12a3901846a17077b39123f40da18379bc62d6486486"
+  },
+  {
+    "path": "interaction-scheduling.json",
+    "sha256": "f4c264ca4669fee8f376c66a5f4686cdf53ad266bfc6f66ff6e3539c61808162"
+  },
+  {
+    "path": "interaction-task-angle-probe-analysis.md",
+    "sha256": "d0f75d96eab67a2ad4b6cdf51e13aac4854673fdcd64878f783f0aa479e82f27"
+  },
+  {
+    "path": "interaction-task-angle-probe-speech.md",
+    "sha256": "4b14cfcdd53271b1372d7cdb669f8765e65d6345a005625ddcbedfeb322f3e9e"
+  },
+  {
+    "path": "lecture-detail-normalize-review.md",
+    "sha256": "80c3ffd3842e1f589eb45dbca78c01ac74f7e3ae30e269ea5103daaa5a654cd4"
+  },
+  {
+    "path": "lecture-detail-normalize.md",
+    "sha256": "331529b3846c597d373a7395d56e4a4059f824107be5bd45cddfb8776bf819f5"
+  },
+  {
+    "path": "lecture-flow-demo.md",
+    "sha256": "dbf8d23a6502ba6c1480ce8974490442b3410a4e197a100464311aaafa63b9c2"
+  },
+  {
+    "path": "lecture-mainline-transition.md",
+    "sha256": "776a1ff28eaa67cd36b5436ea7018ab5a44ba7425c8f67d6e34cbf933d85c0ae"
+  },
+  {
+    "path": "lecture-segment-plan.md",
+    "sha256": "3dc20fc1943e556c9a3532f1df80e51c6fccbf6b04a62a18c035d26402f61574"
+  },
+  {
+    "path": "lecture-source-organize.md",
+    "sha256": "c90c4e2458ffdd4792d647161a40f0dfab21aa22df662f7c72a754fb09fa6fb9"
+  },
+  {
+    "path": "lecture-source-review.md",
+    "sha256": "a7b3c268d5f57b36291e7c4b9e0fb9b766a784c755bceeb436accc4d8b3d0ccf"
+  },
+  {
+    "path": "lecture-task-generation.md",
+    "sha256": "0d68b847029ac639cb41d878ff64c19e9a58e23f907cf8473756383cc42dec44"
+  },
+  {
+    "path": "lecture-task-review.md",
+    "sha256": "9c7b5a1e13d49e53895d5942f574be4541534d0340aa4790b2a46ce3047fc449"
+  },
+  {
+    "path": "live-content-agent-foundation.md",
+    "sha256": "930cc9e44dc4b5f42a5e65720dc97f3197d67c93cd759ead826b575072c9b560"
+  },
+  {
+    "path": "live-strategy-intent.md",
+    "sha256": "0eb36251bb429e938c02eea9ced8cb86e8e3b982ac64b696e46adf8430277c94"
+  },
+  {
+    "path": "mainline-final-content-review.md",
+    "sha256": "4e59e8c3529d6c1fa76b997375a0a82ff739f2aa328b0eb1fa285136577d4834"
+  },
+  {
+    "path": "mainline-text-task.md",
+    "sha256": "7e850a675e4c485f5729272cb3ced3ec372e1ade333384251c64a0706baebbd3"
+  },
+  {
+    "path": "opening-hook-library.md",
+    "sha256": "36e57601221629dbf0a22c9447419e260e4ee0f97927b5fb9e4a6b0b2f997467"
+  },
+  {
+    "path": "product-supplement-chat.md",
+    "sha256": "7c6d567634a8ac3a651f604535abd07c2c7bb756239c2cc2669bee1833c9191b"
+  },
+  {
+    "path": "qwen-selling-point-angle-extraction.md",
+    "sha256": "6658d998dba629af3fe3e552139c8e8edcce8eeb881727185dd85ac120d9d543"
+  },
+  {
+    "path": "rolling-feedback-fallback.md",
+    "sha256": "ab1d75d7f765d13e945bf6f8f837d09e918a25f450d5b16138d8e3281293c5ee"
+  },
+  {
+    "path": "rolling-feedback-generation.md",
+    "sha256": "3b7d50493e3535d3b33e4dc53b45acfed715dbb3d8dcaabbe7fe054f50de644c"
+  },
+  {
+    "path": "score-feedback-template.md",
+    "sha256": "1cf504e2195ee7f4c3ce3cc838a3702dc8d012f0af249887806847ff5e190770"
+  },
+  {
+    "path": "scorecard-effective-style-integration.md",
+    "sha256": "abb3f11ce58b39f28a1fe38cebcb97386879d08214513063d0e5bd1afedc3980"
+  },
+  {
+    "path": "scorecard-extraction-integration.md",
+    "sha256": "4f8b6f52a8c4bf1bbaccc84cdd1930e39fdcf473361fbfe6c23c06eb1fa23654"
+  },
+  {
+    "path": "selling-point-angle-hook-pool-draft.md",
+    "sha256": "0e1016363d7a0025616349617578d0aaa0e2eb5940d6cca44517b69ae54cd626"
+  },
+  {
+    "path": "selling-point-wheel-angle-expansion.md",
+    "sha256": "9bbc37aa112b863cbf4d2fde6f7c0ea5d2cf2d460d7c59a2041595802d3c9989"
+  },
+  {
+    "path": "selling-point-wheel-final-audit.md",
+    "sha256": "633aa2579b19421122e1ca1e93ed5d533524a794e905951b9b90dd2e28c66d16"
+  },
+  {
+    "path": "selling-point-wheel-incremental.md",
+    "sha256": "7ae24fa62363a948a9e4bbb019c3be5699cd6d32d5396dc287301a965ee16ec5"
+  },
+  {
+    "path": "selling-point-wheel-review.md",
+    "sha256": "aeaf759d1e87a4937a3675d39dd36b94a89fdaae0c9c0a209986bf83680ec64f"
+  },
+  {
+    "path": "speech-constraint-normalize.md",
+    "sha256": "b939486d7dbcd6b3a8ae2d569f0b25161f7078f0e9986ff80043d7da8d6cc6ec"
+  },
+  {
+    "path": "speech-constraint-review.md",
+    "sha256": "00dbf6b699eb5c6b9e7cdff5318a938199bba78384e06868dfb4aa001a5434be"
+  },
+  {
+    "path": "speech-constraint-text-review.md",
+    "sha256": "8b26c7575e4c13f30a34cc547a491d17c6baf759aaa7ced5af9849aab421341e"
+  },
+  {
+    "path": "speech-miner-guide.md",
+    "sha256": "57841e8d300820d2d60a2818f59a7666a1531729a703d5b33ee3ecb10d77b7dc"
+  },
+  {
+    "path": "speech-review-authority.md",
+    "sha256": "e86536f22ea5e1b30e9c945749f9c08ebdcf018fa84e79572a262ceebb559212"
+  },
+  {
+    "path": "style-extraction-integration.md",
+    "sha256": "881234b8dfc716b1e68737d612a3285eee7d781d8d7fe5ca57a7699b7c5fd38a"
+  },
+  {
+    "path": "style-feedback-review.md",
+    "sha256": "58f9b4a2317c6ca8f6eca50b7c4ba994d2fcfcec8b5e88df65859c4b4bc7314b"
+  },
+  {
+    "path": "style-meta-prompt-extraction.md",
+    "sha256": "8edfa9aa05c0de09fa202d42c02e08ad64affbdc783546bc450207604fafeedf"
+  },
+  {
+    "path": "style-multi-sample-fusion.md",
+    "sha256": "ce89a80b49b0927ab5eda939f8b116f05046101f3f0bf00d1e8391e521c03983"
+  },
+  {
+    "path": "style-scoring-policy.md",
+    "sha256": "e5106c613a44f051ba6e6b20edd803dc2cd48dc09d61b9dad2ee17e0520dc25f"
+  },
+  {
+    "path": "text-expression-variations.json",
+    "sha256": "5bf4fc838624d585c9bd6530b86d0c82085228c12a101184534528f48ccbf54e"
+  },
+  {
+    "path": "text-generation-final-boundary.md",
+    "sha256": "9450906619e12979111ebf7af58e3337805cf5c52a190aad8f5112ce4bd262fa"
+  },
+  {
+    "path": "text-generation-foundation.md",
+    "sha256": "0c1bc9b4ede4b55b273446375e68284bb9ab90f81fd3848c3959c0679e646e46"
+  },
+  {
+    "path": "text-model-deepseek.md",
+    "sha256": "b8cbcca03a026d93e8265e4960b809692c7146b3ed9b70501cb35f6252ec4578"
+  },
+  {
+    "path": "text-model-generic.md",
+    "sha256": "c78e7735603cc3afcb0a031c4abd7b28b888d2e581bfc0222d1282571e3bd130"
+  },
+  {
+    "path": "text-model-profiles.json",
+    "sha256": "da07baf6526ac34e9addf8313d413b3181466c4e52563190879502f9e475b074"
+  },
+  {
+    "path": "text-model-qwen-flash.md",
+    "sha256": "d591ae07af831c3409d22d9f2c1b0b22dc0d31399dd258e0b65451e83d27549d"
+  },
+  {
+    "path": "text-model-qwen-plus.md",
+    "sha256": "243f10aa2aaf9ba5c83102d3eff8cf1f1d3883e2e425414b3112d4bb6dafb68e"
+  },
+  {
+    "path": "text-simple-facts-probe-no-minimum.md",
+    "sha256": "3bf893495a5a3d66e4b2287bbee3d5457ed7f9311669cd0735ac700c6557f99d"
+  },
+  {
+    "path": "text-simple-facts-probe-plain-claims.md",
+    "sha256": "7af65ddeea2f3959546d72248ca71710b6e9ddbe2eb180a371d3b31db3e8d015"
+  },
+  {
+    "path": "text-simple-facts-probe-role.md",
+    "sha256": "124d2056cfdc9859095cbf75112e5c6e2e6a85056aef1cad7f800568991150e9"
+  },
+  {
+    "path": "text-simple-facts-probe.md",
+    "sha256": "b84079155dd1e054fea306e694085369aed0785cf26735db845e1e9bdbb402dc"
+  }
+]

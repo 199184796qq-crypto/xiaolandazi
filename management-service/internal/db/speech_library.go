@@ -43,6 +43,22 @@ func (s *Store) MigrateSpeechLibrary(ctx context.Context) error {
 			return e
 		}
 	}
+	// 复用命中率埋点：reason 列记录每次 Select 的命中/未命中原因（text_hit / fresh_empty /
+	// fresh_cooldown / fresh_probability / retry_existing_decision），供统计真实复用命中率。
+	if e := s.ensureSpeechLibraryReasonColumns(ctx); e != nil {
+		return e
+	}
+	return nil
+}
+
+func (s *Store) ensureSpeechLibraryReasonColumns(ctx context.Context) error {
+	if has, e := s.columnExists(ctx, "mgmt_speech_library_leases", "reason"); e != nil {
+		return e
+	} else if !has {
+		if _, e := s.db.ExecContext(ctx, `ALTER TABLE mgmt_speech_library_leases ADD COLUMN reason VARCHAR(32) CHARACTER SET ascii NOT NULL DEFAULT ''`); e != nil {
+			return e
+		}
+	}
 	return nil
 }
 func (s *Store) SpeechLibraryPolicy(ctx context.Context) (lib.Policy, error) {
@@ -192,7 +208,7 @@ func (s *Store) Select(ctx context.Context, sc lib.Scope, p lib.Policy, decision
 			out.Reason = "text_hit"
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `INSERT INTO mgmt_speech_library_leases(decision_key,scope_key,tenant_id,room_id,runtime_id,track_id,entry_id,reused,created_ms) VALUES(?,?,?,?,?,?,?,?,?)`, decision, sc.Key(), sc.Tenant, sc.Room, sc.Runtime, track, chosen, chosen != "", time.Now().UnixMilli()); e != nil {
+	if _, e = tx.ExecContext(ctx, `INSERT INTO mgmt_speech_library_leases(decision_key,scope_key,tenant_id,room_id,runtime_id,track_id,entry_id,reused,reason,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, decision, sc.Key(), sc.Tenant, sc.Room, sc.Runtime, track, chosen, chosen != "", out.Reason, time.Now().UnixMilli()); e != nil {
 		return out, e
 	}
 	if chosen != "" {

@@ -77,7 +77,15 @@ type LectureRuntime struct {
 func NewLectures(lib lecturetask.Library) *LectureRuntime {
 	return &LectureRuntime{Library: lib, Tracks: map[string]LectureTrack{}, Uses: map[int64]LectureUse{}, FailedUntilMS: map[int64]int64{}}
 }
+// 主线讲解任务已暂缓：本期主线直播不插播「主题讲解」，只跑商品卖点×角度轮换。
+// 代码与 live_plan_lecture_tasks 表均保留，待后续重新设计讲解任务时恢复。
+// 恢复方式：把 lectureEnabled 改回 true。
+const lectureEnabled = false
+
 func (s *State) BeginLecture() bool {
+	if !lectureEnabled {
+		return false
+	}
 	r := s.Lectures
 	if r == nil || !r.Library.Policy.Enabled || r.ReservedTopic != 0 || s.Surface != "formal_live" || s.Phase != "opening" || s.CycleNumber < 2 || s.PriceHook != nil || len(s.Attempts) > 0 || (s.ProductFocus != nil && s.ProductFocus.AuxiliaryActive) {
 		return false

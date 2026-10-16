@@ -184,7 +184,11 @@ func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segm
 	if e == nil {
 		e = be
 	}
-	return lib.Scope{Realm: s.executionRealm, Tenant: state.TenantID, Plan: state.PlanID, Room: state.RoomID, Runtime: state.Delivery.RuntimeSessionID, Slot: segment.Task.Key, TextContext: text, VoiceContext: libraryVoiceSHA(state), RoomContext: base}, e
+	slot := segment.Task.SlotKey
+	if slot == "" {
+		slot = segment.Task.Key
+	}
+	return lib.Scope{Realm: s.executionRealm, Tenant: state.TenantID, Plan: state.PlanID, Room: state.RoomID, Runtime: state.Delivery.RuntimeSessionID, Slot: slot, TextContext: text, VoiceContext: libraryVoiceSHA(state), RoomContext: base}, e
 }
 func libraryEligible(state *anchorcycle.State) bool {
 	return state.Surface == "formal_live" && state.Phase == "body" && state.Task().ProductMode != "lecture" && state.Task().ProductMode != "auxiliary" && state.PreviewLimitMS == 0 && state.Config.TTS != nil && len(state.Attempts) == 0 && state.P0PendingRepair == nil && state.PriceHook == nil && state.PendingFeedback == "" && !libraryDeadlineSensitive(state)
@@ -346,6 +350,11 @@ func (s *Server) archiveLibraryVoice(ctx context.Context, state *anchorcycle.Sta
 	c := seg.Selected
 	sc, e := s.libraryScope(state, seg)
 	if e != nil || sc.TextContext != c.LibraryTextSHA {
+		// 诊断：打印两边指纹不一致时的关键输入，定位文字阶段与语音阶段 scope 差异。
+		log.Printf("library scope stale room=%d candidate=%s want=%s got=%s err=%v task_key=%s seg_task_key=%s slotkey=%s seg_slotkey=%s angleplan_nil=%v seg_angleplan_nil=%v",
+			state.RoomID, c.ID, c.LibraryTextSHA, sc.TextContext, e,
+			state.Task().Key, seg.Task.Key, state.Task().SlotKey, seg.Task.SlotKey,
+			state.CurrentAnglePlan() == nil, seg.Selected.AnglePlan == nil)
 		return nil, nil, lib.ErrStale
 	}
 	if e = state.CheckApprovedText(c, cycleVoiceText(c)); e != nil {

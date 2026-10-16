@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import type { LiveAgentPlanBenefit, LiveAgentPlanProductAttribute, LiveAgentPlanProductLink } from '../types'
+import type { LiveAgentPlanBenefit, LiveAgentPlanProductAttribute, LiveAgentPlanProductLink, LiveAgentPlanProductSellingPoint } from '../types'
 import type { BenefitScope } from '../contentPools'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 
 type ProductField = 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience'
 type ProductAttributeDraft = { code: string; label: string; value: string; unit?: string; display_type?: string; display_priority?: number }
+type SellingPointDraft = { selling_point: string; tier?: string; point_weight: number; is_main: boolean; angles: { angle: string; weight: number }[]; target_audience?: string; pain_point?: string }
 const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
@@ -17,6 +18,7 @@ const props = defineProps<{
 	addAttribute: (item: LiveAgentPlanProductLink, draft: ProductAttributeDraft) => Promise<void>
 	saveAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute, draft: ProductAttributeDraft) => Promise<void>
 	removeAttribute: (item: LiveAgentPlanProductLink, attribute: LiveAgentPlanProductAttribute) => Promise<void>
+	saveSellingPoints: (item: LiveAgentPlanProductLink, points: SellingPointDraft[]) => Promise<void>
 }>()
 const fields: { key: ProductField; label: string; path: string }[] = [
   { key: 'spec', label: '规格', path: 'm12 3 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8M7.5 5.5l9 5V14' },
@@ -213,6 +215,51 @@ function linkedBenefits(item: LiveAgentPlanProductLink) {
   return (props.benefits || []).filter(benefit => benefit.status === 'active' && benefitAppliesToProduct(benefit, item, props.benefitScopes))
 }
 
+// 商品卖点权重面板：点击商品卡底部「权重」按钮弹出，垂直列出该商品的卖点，
+// 每个卖点一条滑轨（1~100），值越大该卖点在这个商品内部讲得越多。
+const weightPanelOpen = ref<number | null>(null)
+const weightSavingKey = ref<string>('')
+const weightPanelError = ref('')
+
+function openWeightPanel(item: LiveAgentPlanProductLink) {
+	weightPanelOpen.value = weightPanelOpen.value === item.id ? null : item.id
+	weightPanelError.value = ''
+}
+
+function sellingPointsDraft(item: LiveAgentPlanProductLink): SellingPointDraft[] {
+	return (item.selling_points || []).map((point) => ({
+		selling_point: point.selling_point,
+		tier: point.tier,
+		point_weight: point.point_weight || 0,
+		is_main: point.is_main,
+		angles: (point.angles || []).map((angle) => ({ angle: angle.angle, weight: angle.weight || 1 })),
+		target_audience: point.target_audience,
+		pain_point: point.pain_point,
+	}))
+}
+
+async function savePointWeight(item: LiveAgentPlanProductLink, point: LiveAgentPlanProductSellingPoint, weight: number) {
+	if (busy.value) return
+	const draft = sellingPointsDraft(item).map((p) => p.selling_point === point.selling_point ? { ...p, point_weight: weight } : p)
+	weightSavingKey.value = item.id + ':' + point.selling_point
+	weightPanelError.value = ''
+	busy.value = true
+	try {
+		await props.saveSellingPoints(item, draft)
+	} catch (error) {
+		weightPanelError.value = error instanceof Error ? error.message : '保存卖点权重失败'
+	} finally {
+		busy.value = false
+		weightSavingKey.value = ''
+	}
+}
+
+function onPointWeightChange(item: LiveAgentPlanProductLink, point: LiveAgentPlanProductSellingPoint, event: Event) {
+	const target = event.target as HTMLInputElement
+	const weight = Number(target.value) || 0
+	void savePointWeight(item, point, weight)
+}
+
 function benefitSummary(item: LiveAgentPlanBenefit) {
   return [item.activity_price && `活动价 ${item.activity_price}`, item.gift && `福利 ${item.gift}`, item.activity]
     .filter(Boolean)
@@ -351,9 +398,9 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 		  </dl>
 		  <form v-if="attributeEdit?.itemId === item.id" class="product-attribute-form" @submit.prevent="submitAttribute(item)">
 			<strong>{{ attributeEdit.attribute ? '修改个性属性' : '添加个性属性' }}</strong>
-			<label><span>属性名称</span><input v-model="attributeEdit.draft.label" v-focus :disabled="busy" maxlength="96" placeholder="如：压榨工艺、面料、功率" /></label>
-			<label><span>属性值</span><textarea v-model="attributeEdit.draft.value" :disabled="busy" maxlength="2000" rows="2" placeholder="填写可核实、可用于话术的商品事实" /></label>
-			<label class="product-attribute-unit"><span>单位（可选）</span><input v-model="attributeEdit.draft.unit" :disabled="busy" maxlength="48" placeholder="如 L、W、%" /></label>
+			<label><span>属性名称</span><input v-model="attributeEdit.draft.label" v-focus :disabled="busy" maxlength="96" /></label>
+			<label><span>属性值</span><textarea v-model="attributeEdit.draft.value" :disabled="busy" maxlength="2000" rows="2" /></label>
+			<label class="product-attribute-unit"><span>单位（可选）</span><input v-model="attributeEdit.draft.unit" :disabled="busy" maxlength="48" /></label>
 			<div><button type="button" :disabled="busy" @click="cancelAttributeEdit">取消</button><button type="submit" class="primary" :disabled="busy">保存属性</button></div>
 		  </form>
 		  <button v-else type="button" class="product-attribute-add" :disabled="busy" @click="startAddAttribute(item)">＋ 添加个性属性</button>
@@ -367,9 +414,21 @@ watch(() => props.items.map((item) => item.id), (ids) => {
           <small v-if="benefit.validity_mode !== 'permanent' && benefit.ends_at">有效至 {{ new Date(benefit.ends_at).toLocaleString('zh-CN', { hour12: false }) }}</small>
         </div>
       </section>
+      <section v-if="weightPanelOpen === item.id" class="product-weight-panel">
+        <header>
+          <strong>讲解权重</strong>
+        </header>
+        <div v-for="point in (item.selling_points || [])" :key="point.id || point.selling_point" class="product-weight-row">
+          <span class="product-weight-label">{{ point.selling_point }}</span>
+          <input type="range" min="0" max="100" step="1" :value="point.point_weight || 0" :disabled="busy || !!weightSavingKey" :aria-label="item.link_key + '卖点' + point.selling_point + '权重'" @change="onPointWeightChange(item, point, $event)" />
+          <span class="product-weight-value">{{ point.point_weight || 0 }}</span>
+        </div>
+        <p v-if="weightPanelError" class="product-weight-error">{{ weightPanelError }}</p>
+      </section>
       <slot name="risk" :item="item" />
       <footer class="product-card-footer">
         <span role="status" :class="{ error: message?.id === item.id && message.error }">{{ message?.id === item.id ? message.text : '通用字段常显，个性属性可展开' }}</span>
+        <button type="button" class="product-weight-toggle" :disabled="busy" :aria-label="item.link_key + '讲解权重'" @mousedown.prevent @click="openWeightPanel(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M5 8v8M19 8v8M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3" /></svg>{{ weightPanelOpen === item.id ? '收起权重' : '权重' }}</button>
         <button type="button" class="product-copy" :disabled="busy" :aria-label="'复制' + item.link_key + '商品卡'" @mousedown.prevent @click="copyItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h12v12H9zM15 9V3H3v12h6" /></svg>复制</button>
         <button type="button" class="product-delete" :disabled="busy" :aria-label="'删除' + item.link_key" @mousedown.prevent @click="deleteItem(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>删除</button>
       </footer>
@@ -379,6 +438,20 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 
 <style scoped>
 .product-copy{display:inline-flex;align-items:center;gap:4px;flex:none;padding:6px 8px;border:1px solid #dfe3ff;border-radius:8px;background:var(--tint);color:var(--accent);font:inherit;font-size:16px;cursor:pointer}.product-copy svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7}.product-copy:disabled{opacity:.5;cursor:default}
+.product-weight-panel { display:grid; gap:8px; padding:11px; border:1px solid color-mix(in srgb,var(--accent) 28%,#e5e9f5); border-radius:11px; background:linear-gradient(135deg,#fafbff,#f4f6ff); }
+.product-weight-panel>header { display:grid; gap:2px; }
+.product-weight-panel>header strong { color:var(--accent); font-size:16px; }
+.product-weight-panel>header span { color:#7c879c; font-size:16px; line-height:1.45; }
+.product-weight-empty { padding:9px; border-radius:8px; background:#f5f7fc; color:#778297; font-size:16px; line-height:1.55; }
+.product-weight-row { display:grid; grid-template-columns:minmax(72px,auto) minmax(90px,1fr) 36px; align-items:center; gap:8px; }
+.product-weight-label { color:#172440; font-size:16px; font-weight:800; }
+.product-weight-row input[type="range"] { width:100%; accent-color:var(--accent); }
+.product-weight-value { text-align:right; color:var(--accent); font-size:16px; font-weight:800; }
+.product-weight-angles { grid-column:1/-1; color:#8b95aa; font-size:16px; line-height:1.45; }
+.product-weight-error { margin:0; color:#c84858; font-size:16px; }
+.product-weight-toggle { display:inline-flex; align-items:center; gap:4px; flex:none; padding:6px 8px; border:1px solid #dfe3ff; border-radius:8px; background:var(--tint); color:var(--accent); font:inherit; font-size:16px; cursor:pointer; }
+.product-weight-toggle svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.7; }
+.product-weight-toggle:disabled { opacity:.5; cursor:default; }
 .product-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; min-width:0; }
 .product-card { --accent:#4d62ff; --tint:#edf0ff; font-size:16px; position:relative; display:flex; flex-direction:column; gap:8px; min-width:0; padding:16px; border:1px solid #dfe5ff; border-radius:14px; background:linear-gradient(135deg,#fff,#fcfdff); box-shadow:0 5px 16px rgba(67,82,158,.05); transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease; }
 .product-card:nth-child(even) { --accent:#9450ed; --tint:#f3edff; }

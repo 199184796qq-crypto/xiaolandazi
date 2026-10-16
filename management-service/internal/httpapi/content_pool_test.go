@@ -115,7 +115,7 @@ func TestRuntimeManyProductsStableIDsAndCommonSubsetFacts(t *testing.T) {
 	}
 	pools = append(pools, contentpools.Pool{Key: "common", Products: []int64{1, 2}, Facts: []contentpools.Fact{{ID: "common-fact", Text: "AB共有事实", Sources: []string{"shared"}, Products: []int64{1, 2}}}, Tasks: []contentpools.Task{{ID: "common-task", Point: "公共卖点", Angle: "角度", Sources: []string{"common-fact"}}}})
 	set := contentpools.Set{Sources: source, SourceSHA: source.SHA(), SafeFacts: "保存事实", Pools: pools}
-	tasks, focus, err := contentPoolRuntime(set, anchorcycle.ProductPolicy{Version: "v1", MainSharePercent: 70, MinMainRounds: 1, AuxiliaryMaxChars: 200})
+	tasks, focus, err := contentPoolRuntime(set, anchorcycle.ProductPolicy{Version: "v1"})
 	if err != nil {
 		t.Fatal(err)
 	}

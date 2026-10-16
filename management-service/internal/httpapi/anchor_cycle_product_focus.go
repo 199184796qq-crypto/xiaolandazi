@@ -28,6 +28,54 @@ type productAnalysisView struct {
 func loadCycleProductFocusPrompt() (string, string, error) {
 	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_FOCUS_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-focus.md", "商品范围与回灌母版")
 }
+
+// focusSellingPointsFromModel 把商品链接上的卖点池（model 层）转成调度层的 FocusSellingPoint。
+func focusSellingPointsFromModel(points []model.LiveAgentPlanProductSellingPoint) []anchorcycle.FocusSellingPoint {
+	if len(points) == 0 {
+		return nil
+	}
+	result := make([]anchorcycle.FocusSellingPoint, 0, len(points))
+	for _, p := range points {
+		if p.Status != "active" || strings.TrimSpace(p.SellingPoint) == "" {
+			continue
+		}
+		angles := make([]anchorcycle.FocusSellingAngle, 0, len(p.Angles))
+		for _, a := range p.Angles {
+			if strings.TrimSpace(a.Angle) == "" {
+				continue
+			}
+			angles = append(angles, anchorcycle.FocusSellingAngle{Angle: strings.TrimSpace(a.Angle), Weight: a.Weight})
+		}
+		if len(angles) == 0 {
+			continue
+		}
+		result = append(result, anchorcycle.FocusSellingPoint{
+			ID:             p.ID,
+			Name:           strings.TrimSpace(p.SellingPoint),
+			Tier:           p.Tier,
+			Weight:         p.PointWeight,
+			IsMain:         p.IsMain,
+			TargetAudience: p.TargetAudience,
+			PainPoint:      p.PainPoint,
+			Angles:         angles,
+		})
+	}
+	return result
+}
+
+// hasProductLevelSellingPoints 判断所有商品是否都已配置独立的商品级卖点池。
+// 只有全部商品都有卖点池才走商品级展开路径，否则回退旧的模型归属判定。
+func hasProductLevelSellingPoints(products []anchorcycle.FocusProduct) bool {
+	if len(products) < 2 {
+		return false
+	}
+	for _, p := range products {
+		if len(p.SellingPoints) == 0 {
+			return false
+		}
+	}
+	return true
+}
 func loadCycleProductScopePrompt() (string, string, error) {
 	return loadReplaceablePromptAsset("ANCHOR_CYCLE_PRODUCT_SCOPE_PROMPT_PATH", "configs/prompts/anchor-style/cycle-product-scope-classification.md", "商品归属分析母版")
 }
@@ -493,7 +541,16 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 			}
 			seen[key] = true
 			link := byKey[key]
-			scope.Products = append(scope.Products, anchorcycle.FocusProduct{LinkKey: key, Name: safeProductField(line, "商品"), Roles: roles[key], Spec: link.Spec, DailyPrice: link.DailyPrice, Quantity: link.Quantity})
+			scope.Products = append(scope.Products, anchorcycle.FocusProduct{
+				LinkKey:         key,
+				Name:            safeProductField(line, "商品"),
+				Roles:           roles[key],
+				Spec:            link.Spec,
+				DailyPrice:      link.DailyPrice,
+				Quantity:        link.Quantity,
+				FrequencyWeight: link.FrequencyWeight,
+				SellingPoints:   focusSellingPointsFromModel(link.SellingPoints),
+			})
 			// 商品卡归属程序自判：专属该链接，不需要模型判定。
 			scope.Facts = append(scope.Facts, anchorcycle.ScopedFact{Text: line, Links: []string{key}, Shared: false})
 			continue
@@ -516,6 +573,35 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 	}
 	if err = scope.ValidateProducts(); err != nil {
 		return nil, err
+	}
+	// 商品级卖点池路径：每个商品都配置了独立卖点池时，任务天然带商品归属（LinkKey），
+	// 直接用 ExpandProductSellingPoints 展开重建队列并填权重，跳过模型归属判定（不新增"填错链接"风险）。
+	if hasProductLevelSellingPoints(scope.Products) {
+		expanded := anchorcycle.ExpandProductSellingPoints(scope.Products, &scope.Policy)
+		if len(expanded) == 0 {
+			return nil, errors.New("商品卖点池为空，请先在商品卡配置卖点")
+		}
+		state.Queue = expanded
+		if scope.Tasks == nil {
+			scope.Tasks = map[string]anchorcycle.ScopedTask{}
+		}
+		for _, t := range expanded {
+			scope.Tasks[t.Key] = anchorcycle.ScopedTask{Links: []string{t.LinkKey}, Shared: false}
+		}
+		for _, product := range scope.Products {
+			probe := *state
+			probe.ProductFocus = scope
+			probe.CycleNumber = max(1, state.CycleNumber)
+			scope.CurrentCycle = probe.CycleNumber
+			scope.CurrentLink = product.LinkKey
+			scope.AuxiliaryActive = product.LinkKey != scope.MainLink()
+			probe.SelectProductTask()
+			if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {
+				return nil, fmt.Errorf("链接%s没有可用单品角度，请补充对应事实或角度后保存", product.LinkKey)
+			}
+		}
+		scope.ResetRun()
+		return scope, nil
 	}
 	settings, err := s.store.AnchorGenerationSettings(ctx)
 	if err != nil || settings.SellingPointProfileID == "" {
