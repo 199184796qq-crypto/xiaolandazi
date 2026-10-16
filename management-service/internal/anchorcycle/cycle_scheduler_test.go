@@ -313,3 +313,55 @@ func TestWeightedMixFreshSessionDoesNotInheritProgress(t *testing.T) {
 		t.Fatal("new live session inherited old scheduling debt")
 	}
 }
+
+func TestWeightedMixDuplicateRotationKeepsPendingProductAndPoint(t *testing.T) {
+	s := mixFixture(t, 2, "duplicate-rotation")
+	s.Phase = "body"
+	before := s.Task()
+	if !s.RotateAfterDuplicate() {
+		t.Fatal("point has another angle")
+	}
+	after := s.Task()
+	if after.Key == before.Key || after.SellingPoint != before.SellingPoint || after.LinkKey != before.LinkKey || after.FocusLink != after.LinkKey {
+		t.Fatal("duplicate rotation escaped pending product/point", before, after)
+	}
+	if s.ProductFocus.ScheduleCursor != 0 || len(s.PointUses) != 0 || len(s.ScheduledAngleUses) != 0 || s.PointSchedules[before.FocusLink].Cursor != 0 {
+		t.Fatal("duplicate draft consumed an adopted quota")
+	}
+	// Exhaust this point; fallback may change point but must retain ownership.
+	for _, task := range s.Queue {
+		if task.LinkKey == before.LinkKey && task.SellingPoint == before.SellingPoint {
+			s.DuplicateSkippedKeys[task.Key] = true
+		}
+	}
+	if !s.RotateAfterDuplicate() || s.Task().SellingPoint == before.SellingPoint || s.Task().LinkKey != before.LinkKey || s.Task().FocusLink != before.LinkKey {
+		t.Fatal("exhausted point borrowed another product", s.Task())
+	}
+	if s.ProductFocus.ScheduleCursor != 0 || len(s.PointUses) != 0 {
+		t.Fatal("point fallback consumed a product quota")
+	}
+	// Restore through the real Redis representation before exhausting a product.
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	otherKey := ""
+	for _, task := range s.Queue {
+		if task.LinkKey == before.LinkKey {
+			s.DuplicateSkippedKeys[task.Key] = true
+		} else {
+			otherKey = task.Key
+		}
+	}
+	s.DuplicateSkippedKeys[otherKey] = true
+	last := s.Task()
+	if s.RotateAfterDuplicate() || s.Task() != last {
+		t.Fatal("exhausted product must retain its pending task", s.Task())
+	}
+	if !s.DuplicateSkippedKeys[otherKey] || len(s.DuplicateSkippedKeys) != 1 {
+		t.Fatal("exhaustion reset another product's duplicate history", s.DuplicateSkippedKeys)
+	}
+}

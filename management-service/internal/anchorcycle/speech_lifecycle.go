@@ -179,6 +179,21 @@ func (s *State) RotateAfterDuplicate() bool {
 		s.DuplicateSkippedKeys = map[string]bool{}
 	}
 	s.DuplicateSkippedKeys[s.Task().Key] = true
+	if s.Config.Rolling && s.PriceHook == nil {
+		// A duplicate changes the pending direction, not its product quota.
+		// Use the same point/angle scheduler instead of walking the global queue.
+		if s.chooseProductWeightedTask() {
+			return true
+		}
+		// Only this product is exhausted. Preserve other products' history and
+		// the existing accept-on-exhaustion behavior without borrowing a task.
+		for _, task := range s.Queue {
+			if s.productTaskEligible(task) {
+				delete(s.DuplicateSkippedKeys, task.Key)
+			}
+		}
+		return false
+	}
 	remaining := 0
 	for _, t := range s.Queue {
 		if t.Key != "" && !s.DuplicateSkippedKeys[t.Key] {

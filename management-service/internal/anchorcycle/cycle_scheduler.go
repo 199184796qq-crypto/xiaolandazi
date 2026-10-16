@@ -125,7 +125,7 @@ func (s *State) chooseProductWeightedTask() bool {
 	owner := s.schedulingOwner(s.Task())
 	groups, order := map[string]*weightedPoint{}, []string{}
 	for i, t := range s.Queue {
-		if !s.productTaskEligible(t) || s.P0SkippedKeys[t.Key] {
+		if !s.productTaskEligible(t) || s.P0SkippedKeys[t.Key] || s.DuplicateSkippedKeys[t.Key] {
 			continue
 		}
 		key := s.schedulingPointKey(t, owner)
