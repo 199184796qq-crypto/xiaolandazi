@@ -21,3 +21,5 @@
 新场播放效果待用户自行测试；本次没有自动开播、调用模型/TTS或改写正式版本。公共材料仍可用，但尚未增加公共事项触发器，不能以调度回放宣称公共条件已实际说出。2号商品卖点数量不足是另一项已定位到提取原始输出的待处理问题，本版未包含其提取修改。
 
 生产证据在本聊天`work/product-only-scheduler-20261016/deployment-report.json`、`production-verification.json`、`deployment-command.log`及`work/product-only-deploy-tests.jsonl`。完整前端备份指针已更新到本版，后续仍需按实际current重新核对，不能用历史哈希强制覆盖。
+
+23:22执行用户先前授权的发布收尾，持共享锁并复核精确路径、引用、保护文件指纹后，删除9个过期发布、44个旧二进制备份、13个旧包和9个闲置测试程序，释放7.97GiB。保留current、最近两次回滚、Core/网关实际引用及两小时内产物；没有服务重启，配置与全部保护文件保持。current仅减少11个旧bin备份，清理后实际2595文件，1751前端与完整备份再次核对一致；完整指纹和前端指针已更新，不能将清理前的全文件清单当作当前基线。清理证据在同目录`cleanup/report.json`与`deletion-journal.jsonl`。
