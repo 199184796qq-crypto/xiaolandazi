@@ -5329,8 +5329,21 @@ async function createPlanForCurrentRoom() {
       tenant_id: room?.tenant_id,
     })
     if (room) {
-      await bindRoomLiveAgentPlan(created.id, room.id, room.tenant_id)
-      currentRoomPlanId.value = created.id
+      try {
+        await bindRoomLiveAgentPlan(created.id, room.id, room.tenant_id)
+        currentRoomPlanId.value = created.id
+      } catch (bindErr) {
+        // 方案已创建成功，但自动绑定失败——不能让方案变成静默的 0 绑定孤儿。
+        settingsError.value = `方案“${created.name}”已创建，但绑定当前直播间失败：${bindErr instanceof Error ? bindErr.message : '绑定失败'}。请稍后在方案列表手动绑定房间。`
+        planBusy.value = false
+        newPlanName.value = ''
+        newPlanDescription.value = ''
+        await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
+        return
+      }
+    } else {
+      // 没有可选直播间：方案本身是客户级资产，可先建后绑，但要明确告知用户当前无房间、暂不可用。
+      settingsError.value = `方案“${created.name}”已创建，但当前没有可用的直播间，未自动绑定。直播间就绪后，在方案列表绑定房间即可使用。`
     }
     newPlanName.value = ''
     newPlanDescription.value = ''
@@ -5339,7 +5352,7 @@ async function createPlanForCurrentRoom() {
     await refreshPlanScripts()
     messages.value.push({
       role: 'agent',
-      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : ''}。保存智能体方案后即可在直播间使用，无需单独发布。`,
+      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : '（当前无直播间，未绑定）'}。保存智能体方案后即可在直播间使用，无需单独发布。`,
     })
   } catch (err) {
     settingsError.value = err instanceof Error ? err.message : '创建智能体直播方案失败'

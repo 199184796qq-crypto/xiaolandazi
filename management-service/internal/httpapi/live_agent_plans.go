@@ -139,7 +139,11 @@ func (s *Server) liveAgentPlanCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if actor.IsInternalStaff() {
-		roomID, _ := liveSupportScopeRoomID(r)
+		roomID, valid := liveSupportScopeRoomID(r)
+		if !valid || roomID <= 0 {
+			writeError(w, http.StatusBadRequest, "请选择已获得客户授权的直播间")
+			return
+		}
 		item, err = s.store.BindRoomToLiveAgentPlan(r.Context(), tenantID, item.ID, roomID, actor.UserID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "创建方案成功但绑定授权直播间失败")

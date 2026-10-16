@@ -572,6 +572,9 @@ func (s *Store) BindRoomToLiveAgentPlan(
 	ctx context.Context,
 	tenantID, planID, roomID, actorUserID int64,
 ) (model.LiveAgentPlan, error) {
+	if roomID <= 0 {
+		return model.LiveAgentPlan{}, errors.New("直播间 ID 无效")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.LiveAgentPlan{}, err
