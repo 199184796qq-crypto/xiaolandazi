@@ -397,3 +397,12 @@
 - 修复在程序中保留商品任务完整编号；真实V3离线重放修复后56/56匹配、ready，anchorcycle完整118项和相关HTTPAPI通过。不重写V3或修改客户事实/权重。用户随后自行保存V4/id117，V3被正常superseded，不能说本聊天保存了V4。
 - 16:24:06用户另开301场，当前只读采样Core实际program version114，不能把它当V3多商品实际播放证明；不可为后续加固停止或重启该场。
 - 用户进一步要求解决根本问题：后续统一任务编号函数，保存验证与正式启动共用prepareSavedAnchorTaskState，从不可变商品快照重建运行索引，并验证单段生成/审核/TTS/下发失败继续供料。此后续代码在work/model-pool-source，尚需空闲后发布；不能把已上线9c71849描述成已包含这套后续加固。证明work/live-stop-check-20261016/production-verification.json、reproduction-before.log、reproduction-after.log、root-full-tests.jsonl、shared-v3-preparation-replay.log。
+
+
+## 保存与启动任务准备统一（2026-10-16 已上线，覆盖前述加固待办）
+
+- 北京时间16:33:53上线 `/opt/xiaolan/releases/20261016-task-preparation-d278c2e`，部署源码d278c2e5cdaa048b2aa795ae4e2f673784f52752，Management PID950204/SHA256 c1ec6cbf5684d3e7f2fd7d1fa4f81402b6f2020ddd56e8d8c69b78add48aff13。只替换管理程序，2595旧无关文件、1751前端、提示词、模型池/系统设置、Core775073、网关775930与Nginx一致；12公网入口/资源和完整前端备份核验通过。
+- Task.schedulingKey统一商品展开与New编号。保存validateRealtimeScheme和启动createLiveAnchorRun共用prepareSavedAnchorTaskState：按不可变商品卖点快照重建运行索引/归属，事实、权重、旧共享池/显式ID及缓存SlotKey保留，每个商品均通过实际构造器和选取器。不能再用尚未经New的Queue检查替代启动检查，也不让模型维护内部ID。
+- 同类可恢复的正文/审核、TTS、单段下发失败通过既有cycleSupply跳过续播；已回归核验，并新增下发失败不取消AI的测试。未知运行异常不再统称TTS生成失败。两个完整Go包anchorcycle/httpapi共799项（含子测试）通过，真实V3/id116及用户自行保存的V4/id117均56/56任务通过共享保存/启动离线重放，没有真实模型/TTS/Core调用。
+- 301场于16:31:11.963由用户manual_stop，发布前两次AI/Core空闲守卫通过；没有为发布停止用户场次。发布后只读核对plan5最新V4/id117、room26发布117，没有改写方案或自动开播。本统一版的新场实际播放尚待后续开播验证；301的Core version114不算这次多商品验证。
+- 当前没有待发布任务。代码已推送GitHub main并同步work/main-merge-20261014，完整开发仍work/model-pool-source；WorkBuddy原E:/speech-generator-build文件35项捕获指纹再次一致。证明work/live-stop-check-20261016/root-deployment-report.json、root-production-verification.json、root-full-tests.jsonl、shared-v3-preparation-replay.log、shared-v4-preparation-replay.log；前端指针work/frontend-preservation/latest.json已指向本版本并复用逐项核验一致的完整备份。后续仍按actual current和实际指纹发布，不能强制历史版本。
