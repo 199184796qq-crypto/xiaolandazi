@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
 )
 
@@ -42,5 +43,15 @@ func TestSingleProductScheduleUsesFrozenWeightsWithoutChangingFactPath(t *testin
 	links = append(links, model.LiveAgentPlanProductLink{LinkKey: "2", Status: "active"})
 	if singleProductSchedule(links) != nil {
 		t.Fatal("multi-product snapshot was mistaken for a single product")
+	}
+}
+
+func TestSingleProductScheduleCannotUseCommonOnlyMaterialAsOwnPoints(t *testing.T) {
+	scheme, safety := taskPreparationFixture()
+	scheme.ProductFocus = nil
+	scheme.SingleProductSchedule = &anchorcycle.FocusProduct{LinkKey: "1", CommonPoints: []anchorcycle.FocusSellingPoint{{Name: "门店", Angles: []anchorcycle.FocusSellingAngle{{Angle: "停车"}}}}}
+	_, err := (&Server{}).prepareSavedAnchorTaskState(context.Background(), 14, 5, nil, scheme, safety)
+	if err == nil {
+		t.Fatal("common-only material incorrectly passed save/start validation")
 	}
 }

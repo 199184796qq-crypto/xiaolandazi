@@ -2,14 +2,24 @@ package anchorcycle
 
 import "testing"
 
-func TestCommonPoolIdentityAndAngleUseAreSharedAcrossProducts(t *testing.T) {
+func TestCommonPoolIdentityIsPreservedWithoutIndependentScheduling(t *testing.T) {
 	point := FocusSellingPoint{Name: "公共停车", Weight: 1, Angles: []FocusSellingAngle{{Angle: "到店怎么停车", Weight: 1}, {Angle: "离店怎么取车", Weight: 1}}}
+	own := FocusSellingPoint{Name: "套餐", Angles: []FocusSellingAngle{{Angle: "套餐内容"}}}
 	focus := &ProductFocus{MaterialVersion: "product-common-v1", Policy: ProductPolicy{Version: "test"}, Products: []FocusProduct{
-		{LinkKey: "1", CommonPoints: []FocusSellingPoint{point}},
-		{LinkKey: "2", CommonPoints: []FocusSellingPoint{point}},
+		{LinkKey: "1", SellingPoints: []FocusSellingPoint{own}, CommonPoints: []FocusSellingPoint{point}},
+		{LinkKey: "2", SellingPoints: []FocusSellingPoint{own}, CommonPoints: []FocusSellingPoint{point}},
 	}}
 	tasks := ExpandProductSellingPoints(focus.Products, &focus.Policy)
-	if len(tasks) != 2 || !tasks[0].Common || tasks[0].Key != tasks[0].SlotKey {
+	common := 0
+	for _, task := range tasks {
+		if task.Common {
+			common++
+			if task.Key != task.SlotKey {
+				t.Fatal("common material identity changed", task)
+			}
+		}
+	}
+	if len(tasks) != 4 || common != 2 {
 		t.Fatal("common pool multiplied or lost stable identity", tasks)
 	}
 	focus.Tasks = ProductTaskScopes(tasks)
@@ -19,24 +29,10 @@ func TestCommonPoolIdentityAndAngleUseAreSharedAcrossProducts(t *testing.T) {
 	}
 	s.ProductFocus = focus
 	s.Phase = "body"
-	focus.CurrentLink = "1"
-	s.SelectProductTask()
-	first := s.Task()
-	if first.ProductMode != "common" {
-		t.Fatal(first)
-	}
-	s.recordScheduledAdoption(first)
-	focus.CurrentLink = "2"
-	focus.CurrentSlot = focus.ScheduleCursor
-	s.SelectProductTask()
-	second := s.Task()
-	if first.Key == second.Key {
-		t.Fatal("second product forgot common angle use", first, second)
-	}
-	if s.ScheduledAngleUses[s.schedulingAngleKey(first, "2")] != 1 {
-		t.Fatal("common angle history split by product")
-	}
-	if s.ProductFocus.ScheduleCursor != 1 {
-		t.Fatal("one adopted common body must consume one product slot")
+	for i := 0; i < 48; i++ {
+		task, _ := simulateBody(&s)
+		if task.Common || task.ProductMode == "common" {
+			t.Fatal("common material took an independent product slot", task)
+		}
 	}
 }

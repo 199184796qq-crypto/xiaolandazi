@@ -67,6 +67,9 @@ func (s *Server) prepareSavedAnchorTaskState(ctx context.Context, tenant, plan i
 	state.Surface = "formal_live"
 	if focus == nil {
 		state.SelectProductTask()
+		if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
+			return state, errors.New("商品任务准备失败：没有可用的商品专属卖点，公共资料仅按需穿插")
+		}
 		return state, nil
 	}
 	if err = focus.Policy.Validate(); err != nil {

@@ -68,7 +68,7 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 				scope.Facts = append(scope.Facts, boundFacts[id])
 			}
 			allowedLinks, _ := json.Marshal(scopeLinks)
-			queue = append(queue, anchorcycle.Task{FactScope: scope, AllowedLinksJSON: string(allowedLinks), ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
+			queue = append(queue, anchorcycle.Task{Common: p.Key == "common", FactScope: scope, AllowedLinksJSON: string(allowedLinks), ID: t.ID, Key: t.ID, SellingPoint: t.Point, Angle: t.Angle, TargetAudience: t.TargetAudience, PainPoint: t.PainPoint})
 			focus.Tasks[t.ID] = anchorcycle.ScopedTask{Links: scopeLinks, Shared: shared}
 			w := t.Weight
 			if w < 1 {

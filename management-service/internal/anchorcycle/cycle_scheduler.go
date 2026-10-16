@@ -244,6 +244,11 @@ func (s *State) schedulingAngleWeight(t Task) int {
 // failed drafts and retries keep the pending slot; promised continuations are
 // accounted separately by the caller's existing phase/obligation handling.
 func (s *State) recordScheduledAdoption(t Task) {
+	// Old persisted states can still carry a pending common task. Such a
+	// paragraph cannot spend a product, point or angle quota on completion.
+	if t.Common {
+		return
+	}
 	owner := s.schedulingOwner(t)
 	if s.ProductFocus != nil {
 		s.ProductFocus.ScheduleCursor++
