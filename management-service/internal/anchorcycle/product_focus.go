@@ -285,11 +285,17 @@ func (t *Task) setProductLinks(links []string) {
 	t.AllowedLinksJSON = string(raw)
 }
 func (s *State) productTaskEligible(t Task) bool {
-	// Public material remains available as factual context. It is never an
-	// independent rolling task, including retry and exhaustion fallbacks.
-	if s.Config.Rolling && t.Common {
-		return false
+	if s.Config.Rolling {
+		// Public and product tasks use separate top-level shares. Retries and
+		// point exhaustion must stay inside the pending category.
+		if t.Common != (s.Phase == "body" && s.PendingContentKind == commonContentKind) {
+			return false
+		}
 	}
+	return s.taskScopeEligible(t)
+}
+
+func (s *State) taskScopeEligible(t Task) bool {
 	if s.ProductFocus == nil {
 		return true
 	}

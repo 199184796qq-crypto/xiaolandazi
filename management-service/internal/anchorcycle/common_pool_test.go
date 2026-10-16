@@ -2,7 +2,7 @@ package anchorcycle
 
 import "testing"
 
-func TestCommonPoolIdentityIsPreservedWithoutIndependentScheduling(t *testing.T) {
+func TestCommonPoolIdentityAndShareAreGlobalAcrossProducts(t *testing.T) {
 	point := FocusSellingPoint{Name: "公共停车", Weight: 1, Angles: []FocusSellingAngle{{Angle: "到店怎么停车", Weight: 1}, {Angle: "离店怎么取车", Weight: 1}}}
 	own := FocusSellingPoint{Name: "套餐", Angles: []FocusSellingAngle{{Angle: "套餐内容"}}}
 	focus := &ProductFocus{MaterialVersion: "product-common-v1", Policy: ProductPolicy{Version: "test"}, Products: []FocusProduct{
@@ -29,10 +29,17 @@ func TestCommonPoolIdentityIsPreservedWithoutIndependentScheduling(t *testing.T)
 	}
 	s.ProductFocus = focus
 	s.Phase = "body"
-	for i := 0; i < 48; i++ {
+	played := 0
+	for i := 0; i < 50; i++ {
 		task, _ := simulateBody(&s)
-		if task.Common || task.ProductMode == "common" {
-			t.Fatal("common material took an independent product slot", task)
+		if task.Common {
+			played++
+			if task.ProductMode != "common" || len(task.ProductLinks()) != 2 {
+				t.Fatal("shared task lost its original scope", task)
+			}
 		}
+	}
+	if played != 10 || s.ProductFocus.AdoptedSegments["1"]+s.ProductFocus.AdoptedSegments["2"] != 40 {
+		t.Fatal("common copies amplified the global share", played, s.ProductFocus.ScheduleCursor)
 	}
 }

@@ -243,6 +243,9 @@ type State struct {
 	Facts                        string                         `json:"facts"`
 	FissionSides                 []string                       `json:"fission_sides,omitempty"`
 	PointSchedules               map[string]*WeightedSchedule   `json:"point_schedules,omitempty"`
+	ContentSchedule              *WeightedSchedule              `json:"content_schedule,omitempty"`
+	ContentAdopted               map[string]int                 `json:"content_adopted,omitempty"`
+	PendingContentKind           string                         `json:"pending_content_kind,omitempty"`
 	PointUses                    map[string]int                 `json:"point_uses,omitempty"`
 	ScheduledAngleUses           map[string]int                 `json:"scheduled_angle_uses,omitempty"`
 	SideUses                     map[string]map[string]int      `json:"side_uses,omitempty"`
@@ -408,7 +411,7 @@ func (s *State) Task() Task {
 		return *s.Lectures.Active
 	}
 	if s.PriceHook != nil {
-		return s.focusTask(Task{FactScope: s.PriceHook.Task.FactScope, SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
+		return s.focusTask(Task{Common: s.PriceHook.Task.Common, FactScope: s.PriceHook.Task.FactScope, SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
 	}
 	if s.Phase == "closing" || (!s.Config.Rolling && s.Cursor >= len(s.Queue)) {
 		task := s.focusTask(Task{SellingPoint: "本轮收口", Angle: "重报核心信息并自然承接", Key: "本轮收口"})
@@ -507,6 +510,7 @@ func taskPointKey(task Task) string {
 func (s *State) chooseNext() {
 	s.EnsureProductFocus()
 	if s.Config.Rolling {
+		s.prepareContentSelection()
 		if s.PriceHook != nil || s.chooseProductWeightedTask() {
 			return
 		}

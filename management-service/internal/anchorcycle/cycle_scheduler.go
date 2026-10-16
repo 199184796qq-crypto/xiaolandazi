@@ -60,10 +60,13 @@ func schedulerSeed(run, key string) float64 {
 // Allocate against cumulative adopted deficits, then shuffle the window. Quotas
 // span cycles: neither a small cycle nor its prefix has a fixed product mix.
 func weightedWindow(keys []string, shares map[string]float64, counts map[string]int, seed string) []string {
+	return weightedWindowSize(keys, shares, counts, seed, min(240, max(24, 12*len(keys))))
+}
+
+func weightedWindowSize(keys []string, shares map[string]float64, counts map[string]int, seed string, n int) []string {
 	if len(keys) == 0 {
 		return nil
 	}
-	n := min(240, max(24, 12*len(keys)))
 	placed, total := map[string]int{}, 0
 	for _, key := range keys {
 		placed[key] = counts[key]
@@ -122,7 +125,7 @@ func (s *State) chooseProductWeightedTask() bool {
 	if !s.Config.Rolling || s.PriceHook != nil {
 		return false
 	}
-	owner := s.schedulingOwner(s.Task())
+	owner := s.selectionScheduleOwner()
 	groups, order := map[string]*weightedPoint{}, []string{}
 	for i, t := range s.Queue {
 		if !s.productTaskEligible(t) || s.P0SkippedKeys[t.Key] || s.DuplicateSkippedKeys[t.Key] {
@@ -195,6 +198,9 @@ func (s *State) chooseProductWeightedTask() bool {
 }
 
 func (s *State) schedulingOwner(t Task) string {
+	if t.Common {
+		return commonScheduleOwner
+	}
 	if s.ProductFocus != nil && s.ProductFocus.CurrentLink != "" {
 		return s.ProductFocus.CurrentLink
 	}
@@ -205,7 +211,7 @@ func (s *State) schedulingOwner(t Task) string {
 }
 func (s *State) schedulingPointKey(t Task, owner string) string {
 	if t.Common {
-		return owner + ":common:" + t.SellingPoint
+		return "common:" + t.SellingPoint
 	}
 	return owner + ":" + t.SellingPoint
 }
@@ -244,13 +250,21 @@ func (s *State) schedulingAngleWeight(t Task) int {
 // failed drafts and retries keep the pending slot; promised continuations are
 // accounted separately by the caller's existing phase/obligation handling.
 func (s *State) recordScheduledAdoption(t Task) {
-	// Old persisted states can still carry a pending common task. Such a
-	// paragraph cannot spend a product, point or angle quota on completion.
-	if t.Common {
-		return
+	if s.Config.Rolling {
+		if s.ContentAdopted == nil {
+			s.ContentAdopted = map[string]int{}
+		}
+		kind := productContentKind
+		if t.Common {
+			kind = commonContentKind
+		}
+		s.ContentAdopted[kind]++
+		if s.ContentSchedule != nil && s.ContentSchedule.Cursor < len(s.ContentSchedule.Items) {
+			s.ContentSchedule.Cursor++
+		}
 	}
 	owner := s.schedulingOwner(t)
-	if s.ProductFocus != nil {
+	if s.ProductFocus != nil && !t.Common {
 		s.ProductFocus.ScheduleCursor++
 	}
 	if s.PointUses == nil {
