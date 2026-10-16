@@ -10,4 +10,14 @@
 
 额外验证两商品同权重2400段为1200/1200，普通/主推为1091/1309；加入30个高权重公共卖点后，逐步选择与不含公共池的运行一致。anchorcycle/httpapi两个完整Go包835项通过（含子测试），58项按环境跳过，无失败。
 
-这是离线调度及采纳状态回放，采纳稿使用程序占位，不调用模型、审核供应商、TTS或播放，不代表话术准确性或实际设备声音验证。没有部署或重启生产。本聊天证据：`work/product-only-scheduler-20261016/report.md`、`before.json`、`after.json`、`snapshot.json`、`package-tests.jsonl`。
+这是离线调度及采纳状态回放，采纳稿使用程序占位，不调用模型、审核供应商、TTS或播放，不代表话术准确性或实际设备声音验证。上述离线阶段没有部署或重启生产。本聊天证据：`work/product-only-scheduler-20261016/report.md`、`before.json`、`after.json`、`snapshot.json`、`package-tests.jsonl`。
+
+## 生产发布
+
+用户随后要求先上线测试。北京时间2026-10-16 23:18:35—23:18:38发布`20261016-product-only-scheduler-80c3448`；构建源码`80c3448c22ea6ad5aaba65723803e250769fc08b`同时保留当时实际生产`af8f0bc`的互动按商品取材修复。相对生产仅本次调度程序变化，没有部署新的模型提示词或前端。
+
+发布持共享锁，三次检查全部实际AI及Core音轨空闲，没有停止用户场次。仅替换管理程序并重启Management至PID967042，实际二进制SHA256为`800c7b07a60d99f35a37d16f97c9fded6177a6092957c288dea55b487aef2ed7`。Core775073和网关775930均未重启；2604个旧无关文件、1751个前端文件及完整备份、170份母版、115个行业文件、Nginx路由均相同，10项公网读取成功，全部系统设置和模型池、10类客户方案资产前后指纹一致。最新整合源码的anchorcycle/httpapi两个完整包836项通过、58项因环境跳过，无失败。
+
+新场播放效果待用户自行测试；本次没有自动开播、调用模型/TTS或改写正式版本。公共材料仍可用，但尚未增加公共事项触发器，不能以调度回放宣称公共条件已实际说出。2号商品卖点数量不足是另一项已定位到提取原始输出的待处理问题，本版未包含其提取修改。
+
+生产证据在本聊天`work/product-only-scheduler-20261016/deployment-report.json`、`production-verification.json`、`deployment-command.log`及`work/product-only-deploy-tests.jsonl`。完整前端备份指针已更新到本版，后续仍需按实际current重新核对，不能用历史哈希强制覆盖。
