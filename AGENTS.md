@@ -379,3 +379,12 @@
 - 商品卡规格/销售价/数量/适用的同行修改笔同时编辑名称与内容，提供保存/取消，名称按商品保存，刷新及复制保留。输入间换焦点不提前保存，行外沿用自动保存；空名与控制字符拒绝，文字至少16px，长名和320px宽度不溢出。内部字段键、商品ID、福利关系保持稳定，原客户授权及版本CAS保留；旧客户端更新不抹去改名。版本历史与新方案快照携带名称，生成事实同步使用名称，运行快照不擅自更改。
 - 已合入最新GitHub主线及WorkBuddy ad864cf/33473da的方案保存/房间绑定修改，并推送main；完整开发源码work/model-pool-source，整合副本work/main-merge-20261014同步。原E:/speech-generator-build未改。上线前捕获同名release内管理/桌面并行更新，重新按实际文件重建备份与基线后发布，后续仍不能按历史指纹覆盖。
 - DB/Model/HTTPAPI三个完整Go包、真实本地隔离MySQL持久化/复制/版本冲突/旧客户端/范围隔离、22项前端保护回归与构建、完整方案页四种宽度浏览器检查通过。两个JSON列核验、12个公网入口/资源与1739个前端文件/备份核验通过；最新指针work/frontend-preservation/latest.json已更新。未修改真实客户商品或发送模型/TTS请求。证明work/product-field-names-proof/deployment-report.json、production-verification.json、checks.json；说明docs/2026-10-16-product-field-names.md。
+
+
+## 巴国布衣正式版本保存修复（2026-10-16 已上线）
+
+- 北京时间16:10:31上线 `/opt/xiaolan/releases/20261016-plan-save-64e6064`，仅更新web和web-desktop两个入口并新增43个资源；2549个原有无关文件、三个实际运行服务、提示词、手机端、Nginx及全部系统设置/模型池保持一致，没有服务重启。
+- 根因是方案列表只有room_count而无room_ids，保存页用room_ids推断绑定，将已绑定实时方案误判为未绑定并无错误退出。现在保存前读取房间实际绑定，内容更新成功后继续创建正式版本；失败、参数/账号/房间/方案变化、迟到回执均明确处理，只有当前范围且版本递增的真实回执显示本次成功。
+- 已通过客户原正常登录页面点击保存，16:12:04.593正式生成巴国布衣方案5的V3/id116，tenant14/room26发布记录指向116。新快照为ai_dynamic、wheel43，包含1号普通商品5卖点21角度、2号主推商品7卖点35角度及当前product-focus-v3策略。旧V2/id115保留；未开播或切换正在运行快照。正式保存验证与新场实际讲解频率验证须区分。
+- 主线完整整合源码5be851d包含WorkBuddy ef480ce及捕获的后续源码，保留原字段名称编辑等功能；GitHub main及work/main-merge-20261014已同步。桌面基线用现用WorkBuddy源码重建49产物全部匹配后，仅合入保存修复，源码64e6064另存GitHub codex/production-plan-save-20261016分支。此次不部署任何新后端或提示词，不修改E:/speech-generator-build原文件。
+- 36项主线前端回归、桌面实际源码15项保存流程测试、两份生产构建及完整方案页桌面/390px交互通过；整合Go model/db完整包通过。真实页面显示本次保存成功V3且DB已发布，12个公网入口/资源核对通过。最新完整前端备份指针work/frontend-preservation/latest.json已核验1751文件。证明work/plan-version-save-proof/production-verification.json、formal-save-verification.json、deployment-report.json与production-saved-v3.jpg；后续仍继承发布时actual current并重新核对指纹。
