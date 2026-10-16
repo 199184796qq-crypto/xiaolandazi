@@ -451,8 +451,12 @@ func (s *Store) ListLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID 
 }
 
 // ListPublishedLiveAgentPlansForRoom returns only plans that are both bound to
-// the room and have a published version for that room. A room may keep several
-// published plans so operators can switch between them without republishing.
+// the room and have a saved (effective) version. Saving is the only activation
+// step: a plan's latest saved snapshot is shared by every room bound to it,
+// regardless of which room the snapshot was originally saved against (or whether
+// it was saved as a room-agnostic archive with room_id=0). A room may keep
+// several published plans so operators can switch between them without
+// republishing.
 func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID int64) ([]model.LiveAgentPlan, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT plan.id
@@ -464,7 +468,6 @@ func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID
 				SELECT 1
 				FROM live_agent_plan_versions version
 				WHERE version.tenant_id=binding.tenant_id
-					AND version.room_id=binding.room_id
 					AND version.plan_id=binding.plan_id
 					AND version.lifecycle_status IN ('draft','published','superseded')
 			)
@@ -504,13 +507,18 @@ func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID
 }
 
 func (s *Store) IsLiveAgentPlanPublishedForRoom(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
+	// Saving is the only activation step. A plan is considered "published for a
+	// room" as soon as it has any saved (effective) version, independent of the
+	// room the snapshot was originally saved against. This lets a room-agnostic
+	// archive (saved with room_id=0) become usable in a room the moment that
+	// room is bound — no separate republish step.
 	var exists int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT 1
 		FROM live_agent_plan_versions
-		WHERE tenant_id=? AND room_id=? AND plan_id=? AND lifecycle_status='published'
+		WHERE tenant_id=? AND plan_id=? AND lifecycle_status='published'
 		LIMIT 1
-	`, tenantID, roomID, planID).Scan(&exists)
+	`, tenantID, planID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -609,6 +617,12 @@ func (s *Store) BindRoomToLiveAgentPlan(
 			return model.LiveAgentPlan{}, err
 		}
 	case err != nil:
+		return model.LiveAgentPlan{}, err
+	}
+
+	// 绑定即生效：把该方案当前已保存的有效版本（含 room_id=0 的方案级存档）回填给
+	// 这个新绑定的房间，这样直播间无需再走一次「发布」就能直接使用最新已保存内容。
+	if err := publishLatestPlanPointersTx(ctx, tx, tenantID, planID, roomID, actorUserID); err != nil {
 		return model.LiveAgentPlan{}, err
 	}
 
@@ -813,4 +827,28 @@ func (s *Store) ListLiveAgentPlanTerms(ctx context.Context, tenantID, planID int
 		}
 	}
 	return items, rows.Err()
+}
+
+// GetLiveAgentPlanTenantByID resolves a plan's owning tenant from the plan ID
+// alone. It is used by the plan-level (room-independent) access path so that
+// internal staff can operate on a plan they are authorized for without a
+// currently selected live room context.
+func (s *Store) GetLiveAgentPlanTenantByID(ctx context.Context, planID int64) (int64, error) {
+	if planID <= 0 {
+		return 0, ErrLiveAgentPlanNotFound
+	}
+	var tenantID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT tenant_id
+		FROM live_agent_plans
+		WHERE id=? AND status <> 'deleted'
+		LIMIT 1
+	`, planID).Scan(&tenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrLiveAgentPlanNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return tenantID, nil
 }

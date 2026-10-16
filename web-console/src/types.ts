@@ -227,6 +227,8 @@ export interface SystemAgentActionPayload {
   daily_price?: string
   quantity?: string
   audience?: string
+  attributes?: LiveAgentPlanProductAttributeCandidate[]
+	import_mode?: 'merge' | 'replace' | string
 	attribute_code?: string
 	attribute_label?: string
 	attribute_value?: string
@@ -1516,6 +1518,7 @@ export interface LiveAgentPlanProductLinkCandidate {
   source_quotes?: string[]
   confidence?: 'high' | 'medium' | 'low' | string
 	attributes?: LiveAgentPlanProductAttributeCandidate[]
+  import_mode?: 'merge' | 'replace' | string
 }
 
 export interface LiveAgentPlanProductAttributeCandidate {
@@ -1891,6 +1894,8 @@ export interface LiveAgentPlanImageRecognitionPreviewResponse {
     daily_price?: string
     quantity?: string
     audience?: string
+    room_roles?: string[]
+    attributes?: LiveAgentPlanProductAttributeCandidate[]
   } | null
   provider?: string
   model?: string

@@ -162,10 +162,18 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 	}
 
 	linkKey := strings.TrimSpace(candidate.LinkKey)
+	importMode := strings.ToLower(strings.TrimSpace(candidate.ImportMode))
+	if importMode == "" {
+		importMode = "merge"
+	}
+	if importMode != "merge" && importMode != "replace" {
+		return result, errors.New("商品导入方式无效，仅支持 merge（新增/修改）或 replace（替换）")
+	}
 	existing, err := s.getLiveAgentPlanProductLinkByKey(ctx, tenantID, planID, linkKey)
 	if err == nil {
 		result.Existing = &existing
-		if existing.Status == "disabled" {
+		// replace：无论当前 active 还是 disabled，都整体按本次识别结果覆盖（未识别字段置空、属性整体替换）。
+		if existing.Status == "disabled" || importMode == "replace" {
 			tx, txErr := s.db.BeginTx(ctx, nil)
 			if txErr != nil {
 				return result, txErr
@@ -174,7 +182,8 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			nextVersion := existing.VersionNo + 1
 			sourceQuote := strings.Join(candidate.SourceQuotes, "\n")
 			roomRoles := candidate.RoomRoles
-			if len(roomRoles) == 0 {
+			// replace 下以本次识别为准，未识别定位就置空；merge（重新采纳已停用卡片）下保留原有定位。
+			if importMode != "replace" && len(roomRoles) == 0 {
 				roomRoles = existing.RoomRoles
 			}
 			roomRolesJSON := liveRoomProductRolesJSON(roomRoles)
@@ -191,13 +200,17 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			if txErr != nil {
 				return result, txErr
 			}
+			revisionAction := "readopt"
+			if importMode == "replace" {
+				revisionAction = "replace"
+			}
 			_, txErr = tx.ExecContext(ctx, `
 				INSERT INTO live_agent_plan_product_link_revisions (
 					tenant_id, plan_id, product_link_id, version_no, action, link_key, product_name, room_roles_json, spec,
 					daily_price, quantity, audience, status, source_quote, source_review_bucket,
 					source_review_reason, source_type, source_ref, actor_user_id
-				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
-			`, tenantID, planID, existing.ID, nextVersion, linkKey, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec),
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'analysis_adoption', ?, ?)
+			`, tenantID, planID, existing.ID, nextVersion, revisionAction, linkKey, strings.TrimSpace(candidate.ProductName), roomRolesJSON, strings.TrimSpace(candidate.Spec),
 				strings.TrimSpace(candidate.DailyPrice), strings.TrimSpace(candidate.Quantity), strings.TrimSpace(candidate.Audience),
 				sourceQuote, strings.TrimSpace(candidate.ReviewBucket), strings.TrimSpace(candidate.ReviewReason), strings.TrimSpace(sourceRef), actorUserID)
 			if txErr != nil {
@@ -219,7 +232,11 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 			}
 			saved = links[0]
 			result.Status = "adopted"
-			result.Message = "已重新采纳为当前直播方案正式商品链接"
+			if importMode == "replace" {
+				result.Message = "已按替换方式覆盖为当前直播方案正式商品链接"
+			} else {
+				result.Message = "已重新采纳为当前直播方案正式商品链接"
+			}
 			result.Saved = &saved
 			return result, nil
 		}

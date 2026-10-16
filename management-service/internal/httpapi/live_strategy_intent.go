@@ -394,16 +394,10 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, "当前直播智能体方案不存在")
 			return
 		}
-		bound, err := s.store.IsRoomBoundToLiveAgentPlan(r.Context(), tenantID, roomID, input.PlanID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "校验直播间方案绑定失败")
-			return
-		}
-		if !bound {
-			writeError(w, http.StatusForbidden, "当前方案未绑定到这个直播间")
-			return
-		}
-		planName = plan.Name
+	// 方案是租户级资产，不要求绑定到当前直播间：上面已通过 tenantForRoom +
+	// requireLiveStrategyRoomAccess 校验操作者对该房间的授权，GetLiveAgentPlan
+	// 已校验方案归属该租户，这里的绑定关系不再限制智能体读取方案上下文。
+	planName = plan.Name
 
 		productItems, err := s.store.ListLiveAgentPlanProductLinks(r.Context(), tenantID, input.PlanID)
 		if err != nil {
