@@ -128,15 +128,19 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if exists == 0 {
 		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanNotFound
 	}
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM live_agent_plan_room_bindings
-		WHERE tenant_id=? AND plan_id=? AND room_id=? AND status='active'
-	`, tenantID, planID, input.RoomID).Scan(&exists); err != nil {
-		return model.LiveAgentPlanVersion{}, err
-	}
-	if exists == 0 {
-		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanRoomNotBound
+	// 允许「仅保存、不绑定房间」的草稿型版本：未选房间(RoomID<=0)时跳过房间绑定校验，
+	// 这类版本只存档方案内容，不投送到任何直播间；绑定/发布到具体房间时再走发布链路校验。
+	if input.RoomID > 0 {
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM live_agent_plan_room_bindings
+			WHERE tenant_id=? AND plan_id=? AND room_id=? AND status='active'
+		`, tenantID, planID, input.RoomID).Scan(&exists); err != nil {
+			return model.LiveAgentPlanVersion{}, err
+		}
+		if exists == 0 {
+			return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanRoomNotBound
+		}
 	}
 
 	voiceJSON, err := json.Marshal(input.VoiceIdentity)

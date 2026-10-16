@@ -276,22 +276,32 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "保存智能体版本格式错误")
 		return
 	}
-	if input.RoomID <= 0 {
-		writeError(w, http.StatusBadRequest, "请选择发布直播间")
-		return
-	}
+	// 允许「仅保存、不绑定房间」：RoomID<=0 表示只存档方案内容、不投送任何直播间。
+	// 此时跳过房间访问与房间级内容模式校验，content_mode 采用默认值；绑定到具体房间
+	// 再发布时走 publish 链路的房间级校验。
+	boundRoom := input.RoomID > 0
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
+	if boundRoom {
+		if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+			return
+		}
 	}
 	w, r = anchorAnalysisStream(w, r)
 	reportAnchorAnalysis(r.Context(), 5, "正在核对方案参数与主播声音")
-	if err := s.applyLiveContentModeVersion(r.Context(), tenantID, input.RoomID, &input); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
-		return
+	if boundRoom {
+		if err := s.applyLiveContentModeVersion(r.Context(), tenantID, input.RoomID, &input); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	} else {
+		// 不绑房间：清掉可能由调用方注入的 content_mode，统一落为默认预生成模式。
+		// 内容模式本质是房间级策略，方案级存档不持有它；待绑定房间发布时再按该房间模式校验。
+		delete(input.GenerationContext, "content_policy")
+		delete(input.GenerationContext, "dynamic_authorized")
+		delete(input.GenerationContext, "content_mode")
 	}
 	if err := s.captureRealtimeScheme(r.Context(), tenantID, planID, &input); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
