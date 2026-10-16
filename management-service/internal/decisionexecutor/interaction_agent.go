@@ -173,8 +173,10 @@ func selectInteractionPlanAngle(plan *interactionBusinessPlan, used []string) {
 
 type interactionExchangeStore interface {
 	BeginModelExchange(context.Context, appdb.ModelExchangeScope, string, string, any) (int64, error)
-	CompleteModelExchange(context.Context, int64, any, string, int64, *int64, *int64, error) error
+	CompleteModelExchange(context.Context, int64, any, string, int64, *int64, *int64, *int64, error) error
 }
+
+var _ interactionExchangeStore = (*appdb.Store)(nil)
 
 func (w *Worker) completeInteractionAnswer(ctx context.Context, session model.LiveRuntimeSession, request agentgateway.Request) (agentgateway.Response, error) {
 	if session.ID > 0 {
@@ -216,14 +218,17 @@ func (w *Worker) completeInteractionAnswer(ctx context.Context, session model.Li
 	response, callErr := w.agent.Complete(ctx, request)
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
-	var input, output *int64
+	var input, output, cached *int64
 	if response.InputTokens > 0 {
 		input = &response.InputTokens
 	}
 	if response.OutputTokens > 0 {
 		output = &response.OutputTokens
 	}
-	if err := source.CompleteModelExchange(persist, id, response, response.Text, time.Since(started).Milliseconds(), input, output, callErr); err != nil {
+	if response.CachedInputTokens > 0 {
+		cached = &response.CachedInputTokens
+	}
+	if err := source.CompleteModelExchange(persist, id, response, response.Text, time.Since(started).Milliseconds(), input, output, cached, callErr); err != nil {
 		return agentgateway.Response{}, fmt.Errorf("互动返回记录失败: %w", err)
 	}
 	return response, callErr

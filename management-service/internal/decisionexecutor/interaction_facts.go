@@ -60,30 +60,10 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
 		}
 	}
-	source, ok := w.store.(interactionFactSnapshotStore)
-	if !ok {
-		return "", nil
+	published, facts, err := w.interactionApprovedFacts(ctx, session, planID)
+	if err != nil || facts == "" {
+		return "", err
 	}
-	published, err := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
-	if err != nil {
-		return "", fmt.Errorf("读取本场正式事实版本失败: %w", err)
-	}
-	if published.PlanID != planID {
-		return "", fmt.Errorf("本场方案已改变，不能混用商品事实")
-	}
-	ref, hasSnapshot := published.GenerationContext["derived_safety"].(map[string]any)
-	if !hasSnapshot {
-		return "", nil
-	}
-	hash, _ := ref["source_sha256"].(string)
-	if hash == "" {
-		return "", fmt.Errorf("本场正式事实指纹缺失")
-	}
-	asset, err := source.GetLiveDerivedSafety(ctx, session.TenantID, planID, hash)
-	if err != nil || strings.TrimSpace(asset.SafeFacts) == "" {
-		return "", fmt.Errorf("本场审核事实不可用，停止生成商品回答")
-	}
-	facts := asset.SafeFacts
 	if item != nil {
 		if value, ok := published.GenerationContext["lecture_question_assets"]; ok {
 			lib, e := lecturetask.Decode(value)
@@ -94,6 +74,39 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 		}
 	}
 	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
+}
+
+// Use the immutable approved package for both answer generation and fact checks.
+// An absent reference is legacy data; an invalid reference must not fall back.
+func (w *Worker) interactionApprovedFacts(ctx context.Context, session model.LiveRuntimeSession, planID int64) (model.LiveAgentPlanVersion, string, error) {
+	source, ok := w.store.(interactionFactSnapshotStore)
+	if !ok {
+		return model.LiveAgentPlanVersion{}, "", nil
+	}
+	published, err := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil {
+		return published, "", fmt.Errorf("读取本场正式事实版本失败: %w", err)
+	}
+	if published.PlanID != planID {
+		return published, "", fmt.Errorf("本场方案已改变，不能混用商品事实")
+	}
+	value, hasSnapshot := published.GenerationContext["derived_safety"]
+	if !hasSnapshot {
+		return published, "", nil
+	}
+	ref, ok := value.(map[string]any)
+	if !ok {
+		return published, "", fmt.Errorf("本场正式事实引用无效")
+	}
+	hash, _ := ref["source_sha256"].(string)
+	if strings.TrimSpace(hash) == "" {
+		return published, "", fmt.Errorf("本场正式事实指纹缺失")
+	}
+	asset, err := source.GetLiveDerivedSafety(ctx, session.TenantID, planID, hash)
+	if err != nil || strings.TrimSpace(asset.SafeFacts) == "" {
+		return published, "", fmt.Errorf("本场审核事实不可用，停止生成商品回答")
+	}
+	return published, asset.SafeFacts, nil
 }
 
 func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool) (string, error) {

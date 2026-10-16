@@ -21,6 +21,9 @@ func (w *Worker) interactionProductContext(ctx context.Context, s model.LiveRunt
 			return source.CurrentInteractionProductContext(ctx, s.TenantID, s.RoomID, plan)
 		}
 	}
+	if _, facts, err := w.interactionApprovedFacts(ctx, s, plan); err != nil || facts != "" {
+		return facts, err
+	}
 	source, ok := w.store.(interactionProductPoolStore)
 	if !ok {
 		return "", nil

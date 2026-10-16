@@ -3563,6 +3563,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		return "", fmt.Errorf("读取智能体直播方案失败: %w", planErr)
 	}
 	dynamicFactsPrompt := ""
+	hasFullFactSnapshot := false
 	dynamicStylePrompt := ""
 	dynamicStyleOverlayPrompt := ""
 	materialPrompt := ""
@@ -3576,6 +3577,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 			return "", snapshotErr
 		} else if snapshot != "" {
 			dynamicFactsPrompt = snapshot
+			hasFullFactSnapshot = true
 		}
 
 		if len(selectionSink) > 0 {
@@ -3669,14 +3671,22 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 	rulesJSON, _ := json.Marshal(effective.Rules)
 	planContext := liveAgentPlanPromptContext(plan)
 	if item.BusinessPlan != nil {
-		productContext, err := w.interactionProductContext(ctx, session, plan.ID, item.BusinessCoreOnly)
-		if err != nil {
-			return "", err
+		productContext := ""
+		if !hasFullFactSnapshot {
+			var err error
+			productContext, err = w.interactionProductContext(ctx, session, plan.ID, item.BusinessCoreOnly)
+			if err != nil {
+				return "", err
+			}
 		}
 		encoded, _ := json.Marshal(item.BusinessPlan)
-		// The full source context is for planning and rule checks, not a
-		// paragraph template for the speech composer to copy wholesale.
-		dynamicFactsPrompt = "\n【商品必要事实与使用边界：用于识别对象，不是必讲清单】\n" + productContext + "\n【本次业务计划：仅回答选定范围】\n" + string(encoded)
+		// Planning narrows the answer, never the authoritative fact package.
+		// Legacy pools may add product cards absent from the older fact list.
+		if productContext != "" && !strings.Contains(dynamicFactsPrompt, productContext) {
+			dynamicFactsPrompt += "\n【商品事实与使用边界：不是必讲清单】\n" + productContext
+		}
+		fullFactsPrompt := dynamicFactsPrompt
+		dynamicFactsPrompt += "\n【本次业务计划：仅限定回答范围，不能新增或覆盖事实；只回答相关内容，无须复述全部事实】\n" + string(encoded)
 		styleMemories := []model.AgentMemoryItem{}
 		if !item.BusinessCoreOnly {
 			for _, memory := range memories {
@@ -3689,7 +3699,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 		materialPrompt = ""
 		planContext = ""
 		if item.BusinessCoreOnly {
-			data := map[string]any{"answer_mode": "business_core_only", "question": item.SampleQuestions, "product_context": productContext, "business_plan": item.BusinessPlan, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction}
+			data := map[string]any{"answer_mode": "business_core_only", "question": item.SampleQuestions, "current_facts": fullFactsPrompt, "business_plan": item.BusinessPlan, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction}
 			encoded, err := json.Marshal(data)
 			return string(encoded), err
 		}
