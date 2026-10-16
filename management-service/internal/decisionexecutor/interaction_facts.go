@@ -26,6 +26,10 @@ type contentStrategyStore interface {
 type currentInteractionFactsStore interface {
 	CurrentInteractionFacts(context.Context, int64, int64, int64) (string, error)
 }
+
+type currentInteractionScopeStore interface {
+	CurrentInteractionScopeVersion(context.Context, int64, int64, int64, string) (model.LiveAgentPlanVersion, error)
+}
 type currentInteractionLectureStore interface {
 	CurrentInteractionLectureFacts(context.Context, int64, int64, int64, string) (string, error)
 }
@@ -50,19 +54,35 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 			if err != nil {
 				return "", err
 			}
+			scope := interactionFactScope{FullFacts: facts}
+			if source, ok := w.store.(currentInteractionScopeStore); ok && isViewerQuestionAnswer(*item) && !skipStrategy {
+				version, e := source.CurrentInteractionScopeVersion(ctx, session.TenantID, session.RoomID, planID, facts)
+				if e != nil {
+					return "", e
+				}
+				if version.PlanID != planID {
+					return "", fmt.Errorf("互动测试不能混用另一方案的商品范围")
+				}
+				facts, scope = narrowInteractionFacts(version.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
+			}
 			if stories, ok := w.store.(currentInteractionLectureStore); ok {
 				extra, e := stories.CurrentInteractionLectureFacts(ctx, session.TenantID, session.RoomID, planID, primaryQuestion(*item))
 				if e != nil {
 					return "", e
 				}
 				facts += extra
+				scope.FullFacts += extra
 			}
-			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
+			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 		}
 	}
 	published, facts, err := w.interactionApprovedFacts(ctx, session, planID)
 	if err != nil || facts == "" {
 		return "", err
+	}
+	scope := interactionFactScope{FullFacts: facts}
+	if item != nil && isViewerQuestionAnswer(*item) && !skipStrategy {
+		facts, scope = narrowInteractionFacts(published.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
 	}
 	if item != nil {
 		if value, ok := published.GenerationContext["lecture_question_assets"]; ok {
@@ -70,10 +90,12 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 			if e != nil {
 				return "", e
 			}
-			facts += lecturetask.QuestionEvidence(lib, primaryQuestion(*item))
+			extra := lecturetask.QuestionEvidence(lib, primaryQuestion(*item))
+			facts += extra
+			scope.FullFacts += extra
 		}
 	}
-	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy)
+	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 }
 
 // Use the immutable approved package for both answer generation and fact checks.
@@ -109,11 +131,29 @@ func (w *Worker) interactionApprovedFacts(ctx context.Context, session model.Liv
 	return published, asset.SafeFacts, nil
 }
 
-func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool) (string, error) {
+func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.LiveRuntimeSession, planID int64, facts string, item *decisionItem, skipStrategy bool, scopes ...interactionFactScope) (string, error) {
+	fullFacts := facts
+	var scopeLinks []string
+	if len(scopes) > 0 {
+		fullFacts, scopeLinks = scopes[0].FullFacts, scopes[0].Links
+	}
 	if source, ok := w.store.(expressionConstraintStore); ok {
 		constraints, err := source.CurrentSpeechExpressionConstraints(ctx, session.TenantID, planID)
 		if err != nil {
 			return "", fmt.Errorf("读取用户采用的表达约束失败：%w", err)
+		}
+		fullFacts += contentpools.RenderCorrections(constraints)
+		if len(scopeLinks) > 0 {
+			selected := []contentpools.Product{}
+			for _, product := range constraints.Products {
+				for _, link := range scopeLinks {
+					if product.Link == link || (interactionProductNumber(link) != "" && interactionProductNumber(product.Link) == interactionProductNumber(link)) {
+						selected = append(selected, product)
+						break
+					}
+				}
+			}
+			constraints.Products = selected
 		}
 		facts += contentpools.RenderCorrections(constraints)
 	}
@@ -129,13 +169,13 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 		if control, err := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, "", session.StartedAt); err == nil && contentstrategy.Disabled(control) {
 			return result, nil
 		}
-		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(facts), session.StartedAt)
+		strategyRaw, strategyErr := strategyStore.GetLatestPlanContentStrategy(ctx, session.TenantID, planID, contentstrategy.SHA(fullFacts), session.StartedAt)
 		if errors.Is(strategyErr, appdb.ErrPlanAnalysisAssetNotFound) {
 			return result, nil
 		}
 		if strategyErr == nil {
 			var snapshot *contentstrategy.Snapshot
-			snapshot, strategyErr = contentstrategy.Parse(strategyRaw, facts)
+			snapshot, strategyErr = contentstrategy.Parse(strategyRaw, fullFacts)
 			if strategyErr == nil {
 				var guidance string
 				if item != nil && item.PurposeID != "" {

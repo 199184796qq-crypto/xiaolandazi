@@ -17,6 +17,9 @@ type interactionProductPoolStore interface {
 
 func (w *Worker) interactionProductContext(ctx context.Context, s model.LiveRuntimeSession, plan int64, current bool) (string, error) {
 	if current {
+		if source, ok := w.store.(currentInteractionFactsStore); ok {
+			return source.CurrentInteractionFacts(ctx, s.TenantID, s.RoomID, plan)
+		}
 		if source, ok := w.store.(interactionProductContextStore); ok {
 			return source.CurrentInteractionProductContext(ctx, s.TenantID, s.RoomID, plan)
 		}

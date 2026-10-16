@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"livecompanion/management/internal/contentpools"
 	"net/http"
@@ -38,6 +39,44 @@ func (s *planSpeechTestStore) GetPublishedLiveAgentPlanVersionForRoom(ctx contex
 		return model.LiveAgentPlanVersion{}, err
 	}
 	return model.LiveAgentPlanVersion{PlanID: plan.ID}, nil
+}
+
+// Use saved product ownership only while it matches the editor's complete
+// current facts. Unsaved changes/legacy versions use the full current package.
+func (s *planSpeechTestStore) CurrentInteractionScopeVersion(ctx context.Context, tenant, room, planID int64, facts string) (model.LiveAgentPlanVersion, error) {
+	plan, err := s.GetLiveAgentPlanForRoom(ctx, tenant, room)
+	if err != nil || plan.ID != planID {
+		return model.LiveAgentPlanVersion{}, fmt.Errorf("方案测试商品范围不一致")
+	}
+	versions, err := s.ListLiveAgentPlanVersionsForPlan(ctx, tenant, planID)
+	if err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	for _, version := range versions {
+		scheme, e := realtimeScheme(version.GenerationContext)
+		if e == nil && scheme.ProductFocus != nil && scheme.ProductFocus.FactsSHA == derivedHash(facts) {
+			return version, nil
+		}
+		if e != nil || scheme.ProductFocus == nil {
+			continue
+		}
+		ref := asSupportMap(version.GenerationContext["derived_safety"])
+		hash, _ := ref["source_sha256"].(string)
+		if hash == "" {
+			continue
+		}
+		safety, e := s.GetLiveDerivedSafety(ctx, tenant, planID, hash)
+		if errors.Is(e, appdb.ErrDerivedSafetyNotFound) {
+			continue
+		}
+		if e != nil {
+			return model.LiveAgentPlanVersion{}, e
+		}
+		if focus := editorInteractionScopeForSafety(facts, scheme.ProductFocus, safety); focus != nil {
+			return model.LiveAgentPlanVersion{ID: version.ID, PlanID: planID, GenerationContext: map[string]any{"anchor_generation": map[string]any{"product_focus": focus}}}, nil
+		}
+	}
+	return model.LiveAgentPlanVersion{PlanID: planID}, nil
 }
 
 // Supply the complete current editor facts, including product cards and valid
