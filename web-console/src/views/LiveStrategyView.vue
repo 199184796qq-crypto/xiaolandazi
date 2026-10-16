@@ -1831,6 +1831,17 @@ const fullShowSetListeningKey = ref('')
 let fullShowSetAudio: HTMLAudioElement | null = null
 let fullShowSetResolve: (() => void) | null = null
 const fullShowSavedVersion = ref<LiveAgentPlanVersion | null>(null)
+// This receipt is set only by this page's successful version-create response.
+const fullShowSaveReceipt = ref<LiveAgentPlanVersion | null>(null)
+let planVersionSaveEpoch = 0
+watch(() => JSON.stringify([
+  session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id, session.bootstrap?.actor.role,
+  props.supportSession, props.supportTenantId, props.supportRoomId,
+  activeRoomId.value, activeRoom.value?.tenant_id, currentRoomPlanId.value, contentModeAccess.value?.content_mode,
+]), () => {
+  planVersionSaveEpoch++
+  fullShowSaveReceipt.value = null
+}, { flush: 'sync' })
 const fullShowVersionHistory = ref<LiveAgentPlanVersion[]>([])
 const fullShowVersionSaving = ref(false)
 const fullShowVersionError = useFeedbackErrorRef()
@@ -3736,23 +3747,35 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   if (fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
   if (fullShowSaveBlockedReason.value || !planId || !room) {
-    fullShowVersionError.value = fullShowSaveBlockedReason.value
+    fullShowSaveReceipt.value = null
+    fullShowVersionError.value = fullShowSaveBlockedReason.value || '请先选择有效的直播间和方案，本次尚未保存。'
+    fullShowNotice.value = '本次未保存，原方案保持不变。'
     return null
   }
-  // 方案是否绑定到当前选中的房间：绑定则按房间级内容模式保存；未绑定则作为「方案级存档」，
-  // room_id 传 0，内容模式落默认预生成（ai_pregenerated），不与任何房间绑定。
-  const planBoundToRoom = !!(room && currentPlan.value?.room_ids?.includes(room.id))
-  const contentModeAtSave = planBoundToRoom ? contentModeAccess.value?.content_mode : 'ai_pregenerated'
-  const realtimeActive = planBoundToRoom && isRealtimeVoiceContentMode.value
-  const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
+  const ownerEpoch = planVersionSaveEpoch
+  const previousVersionNo = latestSavedVersion.value?.version_no || 0
+  const roomModeAtSave = contentModeAccess.value?.content_mode
+  const current = () => !contentModeDisposed && ownerEpoch === planVersionSaveEpoch
+  const assertCurrent = () => {
+    if (!current()) throw new Error('保存准备期间账号、房间、方案或直播模式已变化，本次保存已取消，请在当前方案重新保存。')
+  }
+  fullShowSaveReceipt.value = null
   fullShowVersionSaving.value = true
-  fullShowNotice.value = realtimeActive ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
+  fullShowNotice.value = '正在核对房间绑定关系与保存内容。'
   try {
+    // The plan list is a summary: room_count does not imply it contains room_ids.
+    // Read the room's actual bindings rather than inferring them from that list.
+    const bindings = await getRoomLiveAgentPlans(room.id)
+    assertCurrent()
+    const planBoundToRoom = (bindings.items || []).some(item => item.id === planId && item.tenant_id === room.tenant_id)
+    const contentModeAtSave = planBoundToRoom ? roomModeAtSave : 'ai_pregenerated'
+    const realtimeActive = planBoundToRoom && roomModeAtSave === 'ai_dynamic'
+    const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
+    fullShowNotice.value = realtimeActive ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
     const originalSource = await compactOriginalSourceManifest()
-    if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return null
+    assertCurrent()
     if (realtimeOptionsAtSave && JSON.stringify(realtimeOptionsAtSave) !== JSON.stringify(realtimeGenerationOptions.value)) {
-      fullShowVersionError.value = '参数在准备保存时已变化，请重新点击保存新版本。'
-      return null
+      throw new Error('参数在准备保存时已变化，请重新点击保存新版本。')
     }
     const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
     const variants = (realtimeActive ? [] : (result?.variants || [])).filter((variant) =>
@@ -3835,9 +3858,13 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       )
     }
     const saved = await createLiveAgentPlanVersion(planId, payload, (event) => {
-      if (event.type === 'progress' && currentRoomPlanId.value === planId && activeRoom.value?.id === room.id) fullShowNotice.value = event.message
+      if (event.type === 'progress' && current()) fullShowNotice.value = event.message
     })
-    if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return saved
+    if (!saved || saved.plan_id !== planId || saved.tenant_id !== room.tenant_id || !(saved.id > 0) || !(saved.version_no > previousVersionNo)) {
+      throw new Error('服务端未返回当前方案的新版本保存回执，请刷新核对；本次不显示保存成功。')
+    }
+    if (!current()) return saved
+    fullShowSaveReceipt.value = saved
     fullShowSavedVersion.value = saved
     if (realtimeOptionsAtSave) {
       realtimeGenerationOptions.value = realtimeOptionsFromVersion(saved.generation_context)
@@ -3858,6 +3885,8 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     return saved
   } catch (err) {
     const message = err instanceof Error ? err.message : '保存直播智能体版本失败'
+    if (!current()) return null
+    fullShowSaveReceipt.value = null
     fullShowNotice.value = '保存失败，原方案保持不变。'
     fullShowVersionError.value = message.includes('保存智能体版本格式错误')
       ? `保存请求未通过接口格式校验。这不是声音、SRT 或语义分析失败；接口最多接收 ${Math.round(liveAgentVersionRequestLimitBytes / 1024)}KB，请刷新页面后重新保存。`
@@ -3868,13 +3897,13 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   }
 }
 
-function waitForContentPoolReady(planId: number, roomId: number, timeoutMs = 600000): Promise<void> {
+function waitForContentPoolReady(planId: number, roomId: number, ownerEpoch: number, timeoutMs = 600000): Promise<void> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     const timer = setInterval(() => {
-      if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== roomId) {
+      if (contentModeDisposed || ownerEpoch !== planVersionSaveEpoch || currentRoomPlanId.value !== planId || activeRoom.value?.id !== roomId) {
         clearInterval(timer)
-        reject(new Error('页面已切换，保存已取消'))
+        reject(new Error('页面范围或直播模式已变化，本次保存已取消'))
         return
       }
       const state = poolStatus.value?.state
@@ -3904,6 +3933,9 @@ async function savePlanOneClick() {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
   if (!planId || !room) return
+  const ownerEpoch = planVersionSaveEpoch
+  const current = () => !contentModeDisposed && ownerEpoch === planVersionSaveEpoch
+  fullShowSaveReceipt.value = null
   fullShowVersionError.value = ''
   savePlanOneClickBusy.value = true
   try {
@@ -3911,12 +3943,21 @@ async function savePlanOneClick() {
     if (state === 'needs_update' || state === 'failed') {
       savePlanOneClickStage.value = '更新内容中…'
       await contentPools.update()
-      await waitForContentPoolReady(planId, room.id)
+      if (poolError.value) throw new Error(poolError.value)
+      await waitForContentPoolReady(planId, room.id, ownerEpoch)
     }
+    if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
-    await saveFullShowVersion()
+    const saved = await saveFullShowVersion()
+    if (!saved && current() && !fullShowVersionError.value) {
+      throw new Error('本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')
+    }
   } catch (err) {
-    fullShowVersionError.value = err instanceof Error ? err.message : '保存失败，请重试'
+    if (current()) {
+      fullShowSaveReceipt.value = null
+      fullShowNotice.value = '本次未保存，原方案保持不变。'
+      fullShowVersionError.value = err instanceof Error ? err.message : '保存失败，请重试'
+    }
   } finally {
     savePlanOneClickBusy.value = false
     savePlanOneClickStage.value = ''
@@ -6324,6 +6365,7 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="savePlanOneClickHint" id="plan-save-hint" class="plan-save-hint" role="status">{{ savePlanOneClickHint }}</p>
           <p v-if="fullShowVersionError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
+          <p v-else-if="fullShowSaveReceipt" class="plan-save-success" role="status">本次保存成功 V{{ fullShowSaveReceipt.version_no }}。{{ fullShowSaveReceipt.room_id ? '下一次开播使用新版本，当前场次保持原快照。' : '方案内容已存档，尚未绑定当前直播间。' }}</p>
         </header>
 
         <section v-if="showPlanManager" class="strategy-plan-manager-inline">
@@ -11296,6 +11338,7 @@ onBeforeUnmount(() => {
 .plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}
 .plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
 .plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
+.plan-save-success{grid-column:1/-1;margin:0!important;color:#157347;font-size:16px;line-height:1.6}
 .plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
 .plan-configuration-layout .strategy-workflow-content{margin-top:18px;border:1px solid #e5e8fd!important;border-radius:17px;background:#fff!important;box-shadow:0 8px 24px #8499eb08!important;overflow:visible}
 .plan-configuration-layout:is(.workflow-mode-products,.workflow-mode-supplement,.workflow-mode-benefits,.workflow-mode-knowledge,.workflow-mode-miner) .strategy-workflow-content{margin-top:0;border-top:0!important;border-radius:0 0 17px 17px}

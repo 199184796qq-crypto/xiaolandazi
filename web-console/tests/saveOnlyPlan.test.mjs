@@ -8,7 +8,9 @@ test('plan UI has save but no separate publication or rollback action', () => {
   assert.equal((view.match(/id="plan-save-button"/g) || []).length, 1)
   assert.match(view, /@click="savePlanOneClick"/)
   assert.match(view, /mode="initialize" compact/)
-  assert.match(view, /compact hide-save-action/)
+  // The former preview footer control has been removed; only the navigation's
+  // initialization control remains alongside the single header save button.
+  assert.equal((view.match(/<AnchorControlBar\b/g) || []).length, 1)
   assert.doesNotMatch(controls, /emit\('publish'\)|发布到直播间/)
   assert.doesNotMatch(view, /publishFullShowVersion|openCurrentPlanPublishing|@publish=/)
   assert.doesNotMatch(view, /S6 发布|待发布草稿|已绑定 · 未发布/)
