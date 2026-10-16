@@ -22,7 +22,7 @@ const currentScope = () => ({
 const selectedProductLink = ref('')
 const selectedProductLinkId = () => Number(selectedProductLink.value) || undefined
 const chat = useProductSupplementChat(currentScope, scope => emit('updated', { planId: scope.planId, tenantId: scope.tenantId || 0, roomId: scope.roomId || 0 }), undefined, selectedProductLinkId)
-const { messages, input, drafts, busy, ready, error, notice } = chat
+const { messages, input, drafts, busy, ready, error, notice, skip, save } = chat
 const enterSend = useAgentEnterSend()
 const composing = ref(false)
 const transcript = ref<HTMLElement | null>(null)
@@ -208,6 +208,10 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
                 <span class="supplement-speaker">{{ message.role === 'user' ? '我' : '资料助手' }}</span>
                 <p v-if="message.role === 'user'">{{ message.text }}</p>
                 <div v-else class="supplement-message-body"><ChatMessageContent :text="message.text" /></div>
+                <div v-if="message.role === 'agent' && message.kind === 'reply' && !busy" class="supplement-message-actions">
+                  <button v-if="message.captured && drafts.length" type="button" class="supplement-action-confirm" @click="save">确定，保存这 {{ message.captured }} 条资料</button>
+                  <button type="button" class="supplement-action-skip" :disabled="index !== messages.length - 1" @click="skip">跳过</button>
+                </div>
               </div>
             </article>
             <article v-if="busy === 'chat'" class="supplement-message is-agent"><img class="supplement-assistant-avatar" :src="assistantAvatar" alt="" /><div class="supplement-message-content"><span class="supplement-speaker">资料助手</span><p class="supplement-thinking">正在整理<span class="supplement-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span></p></div></article>
@@ -272,6 +276,7 @@ watch(() => [messages.value.length, drafts.value.length, busy.value], async () =
 .supplement-transcript{position:relative;display:flex;flex-direction:column;gap:24px;box-sizing:border-box;height:var(--supplement-chat-height);overflow-y:auto;padding:26px 22px;border:1px solid #e5eaff;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#f5f7ff 58%,#f1f4ff);overscroll-behavior:contain;scrollbar-width:thin}
 .supplement-message{position:relative;z-index:1;display:flex;align-items:flex-start;gap:13px;width:fit-content;max-width:88%;min-width:0;overflow-wrap:anywhere}.supplement-assistant-avatar{flex:0 0 62px;width:62px;height:62px;margin-top:-5px;pointer-events:none}.supplement-message-content{min-width:0}.supplement-speaker{display:block;margin:0 0 9px;color:#7b6cf0;font-size:16px;font-weight:700;line-height:1.5}.supplement-message-content>p,.supplement-message-body{margin:0;padding:15px 20px;border:1px solid #e6eaff;border-radius:17px;background:#ffffffed;color:#314463;font-size:16px;white-space:pre-wrap;line-height:1.85;box-shadow:0 2px 5px #9da8d505}
 .supplement-message.is-user{align-self:flex-end;max-width:80%}.supplement-message.is-user .supplement-speaker{text-align:right;color:#8980b8}.supplement-message.is-user p{background:#efebff;border-color:#e3dcff;color:#51456f}
+.supplement-message-actions{display:flex;gap:10px;margin-top:10px}.supplement-message-actions button{border:1px solid #d8ddf3;border-radius:10px;background:#fff;color:#66759c;padding:8px 16px;font:inherit;font-size:16px;line-height:1.5;cursor:pointer}.supplement-message-actions .supplement-action-confirm{border-color:transparent;background:linear-gradient(115deg,#8675fa,#6351f8);color:#fff}.supplement-message-actions button:not(:disabled):hover{box-shadow:0 4px 12px #8174e22e}.supplement-message-actions button:disabled{opacity:.45;cursor:default}
 .supplement-chat-doodle{position:absolute;right:25px;top:58px;color:#b4adff;font-family:KaiTi,STKaiti,serif;font-size:16px;font-style:italic;line-height:1.7;letter-spacing:1px;transform:rotate(-12deg);text-align:center;pointer-events:none}.supplement-chat-doodle::before{content:'';position:absolute;width:30px;height:30px;border-radius:50%;left:6px;top:-27px;background:#e6eaff;z-index:-1}.supplement-chat-doodle svg{display:block;width:200px;height:20px;fill:none;stroke:#c0b8ff;stroke-width:2.5;stroke-linecap:round}
 .supplement-transcript:has(.supplement-chat-doodle)>.supplement-message{max-width:72%}
 .supplement-composer{position:relative;box-sizing:border-box;margin-top:20px;padding:3px 6px 6px;border:1px solid #e0dfff;border-radius:19px;background:#fff;box-shadow:0 4px 12px #8074dc08}.supplement-composer:focus-within{border-color:#ada4fa;box-shadow:0 0 0 3px #edeaff}

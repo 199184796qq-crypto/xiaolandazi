@@ -153,6 +153,7 @@ type LiveAgentPlanProductLink struct {
 	SourceType         string                          `json:"source_type"`
 	SourceRef          string                          `json:"source_ref,omitempty"`
 	Status             string                          `json:"status"`
+	FrequencyWeight    int                             `json:"frequency_weight,omitempty"`
 	VersionNo          int64                           `json:"version_no"`
 	CreatedByUserID    *int64                          `json:"created_by_user_id,omitempty"`
 	UpdatedByUserID    *int64                          `json:"updated_by_user_id,omitempty"`
@@ -160,6 +161,7 @@ type LiveAgentPlanProductLink struct {
 	UpdatedAt          time.Time                       `json:"updated_at"`
 	Attributes         []LiveAgentPlanProductAttribute `json:"attributes"`
 	FieldLabels        map[string]string               `json:"field_labels,omitempty"`
+	SellingPoints      []LiveAgentPlanProductSellingPoint `json:"selling_points,omitempty"`
 }
 
 type LiveAgentPlanProductAttribute struct {
@@ -182,6 +184,51 @@ type LiveAgentPlanProductAttribute struct {
 	UpdatedByUserID *int64    `json:"updated_by_user_id,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// LiveAgentPlanProductSellingPoint 是「每个商品独立」的卖点池成员：一个卖点 + 若干角度，
+// 每个角度带独立讲解权重。归属由 product_link_id 程序保证，模型不回传链接字段，不存在填错链接。
+type LiveAgentPlanProductSellingPoint struct {
+	ID             int64                             `json:"id"`
+	TenantID       int64                             `json:"tenant_id"`
+	PlanID         int64                             `json:"plan_id"`
+	ProductLinkID  int64                             `json:"product_link_id"`
+	SellingPoint   string                            `json:"selling_point"`
+	Tier           string                            `json:"tier,omitempty"`
+	PointWeight    int                               `json:"point_weight"`
+	IsMain         bool                              `json:"is_main"`
+	Angles         []LiveAgentPlanProductSellingAngle `json:"angles"`
+	TargetAudience string                            `json:"target_audience,omitempty"`
+	PainPoint      string                            `json:"pain_point,omitempty"`
+	SourceType     string                            `json:"source_type"`
+	SourceRef      string                            `json:"source_ref,omitempty"`
+	Status         string                            `json:"status"`
+	VersionNo      int64                             `json:"version_no"`
+	CreatedByUserID *int64                           `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID *int64                           `json:"updated_by_user_id,omitempty"`
+	CreatedAt      time.Time                         `json:"created_at"`
+	UpdatedAt      time.Time                         `json:"updated_at"`
+}
+
+// LiveAgentPlanProductSellingAngle 是单个卖点下的一个切入角度及其讲解权重。
+type LiveAgentPlanProductSellingAngle struct {
+	Angle  string `json:"angle"`
+	Weight int    `json:"weight"`
+}
+
+type SaveLiveAgentPlanProductSellingPointsInput struct {
+	TenantID      int64                                   `json:"tenant_id,omitempty"`
+	SellingPoints []LiveAgentPlanProductSellingPointInput `json:"selling_points"`
+}
+
+type LiveAgentPlanProductSellingPointInput struct {
+	SellingPoint   string                            `json:"selling_point"`
+	Tier           string                            `json:"tier,omitempty"`
+	PointWeight    int                               `json:"point_weight,omitempty"`
+	IsMain         bool                              `json:"is_main,omitempty"`
+	Angles         []LiveAgentPlanProductSellingAngle `json:"angles"`
+	TargetAudience string                            `json:"target_audience,omitempty"`
+	PainPoint      string                            `json:"pain_point,omitempty"`
 }
 
 type CreateLiveAgentPlanProductAttributeInput struct {

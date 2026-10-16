@@ -1202,6 +1202,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_product_links (
     daily_price VARCHAR(255) NOT NULL DEFAULT '',
     quantity VARCHAR(255) NOT NULL DEFAULT '',
     audience VARCHAR(512) NOT NULL DEFAULT '',
+    frequency_weight INT NOT NULL DEFAULT 0,
     source_quote TEXT NOT NULL,
     source_review_bucket VARCHAR(24) NOT NULL DEFAULT 'adoptable',
     source_review_reason VARCHAR(512) NOT NULL DEFAULT '',
@@ -1294,6 +1295,31 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_product_attribute_revisions (
     PRIMARY KEY (id),
     UNIQUE KEY uk_live_agent_plan_product_attribute_revision (attribute_id, version_no),
     KEY idx_live_agent_plan_product_attribute_revisions (tenant_id, plan_id, product_link_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_product_selling_points (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    product_link_id BIGINT UNSIGNED NOT NULL,
+    selling_point VARCHAR(255) NOT NULL,
+    tier VARCHAR(24) NOT NULL DEFAULT '',
+    point_weight INT NOT NULL DEFAULT 0,
+    is_main TINYINT(1) NOT NULL DEFAULT 0,
+    angles_json JSON NOT NULL,
+    target_audience VARCHAR(512) NOT NULL DEFAULT '',
+    pain_point VARCHAR(512) NOT NULL DEFAULT '',
+    source_type VARCHAR(48) NOT NULL DEFAULT 'model_extraction',
+    source_ref VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    version_no BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_agent_plan_product_selling_point (plan_id, product_link_id, selling_point),
+    KEY idx_live_agent_plan_product_selling_points (tenant_id, plan_id, product_link_id, status, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plan_benefits (

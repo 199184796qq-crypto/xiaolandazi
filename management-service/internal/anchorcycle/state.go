@@ -36,6 +36,7 @@ type Task struct {
 	LecturePlanSHA   string         `json:"lecture_plan_sha,omitempty"`
 	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
 	ID               string         `json:"id,omitempty"`
+	LinkKey          string         `json:"link_key,omitempty"`
 	FocusLink        string         `json:"focus_link,omitempty"`
 	AllowedLinksJSON string         `json:"allowed_links_json,omitempty"`
 	ProductMode      string         `json:"product_mode,omitempty"`
@@ -43,6 +44,7 @@ type Task struct {
 	SellingPoint     string         `json:"selling_point"`
 	Angle            string         `json:"angle"`
 	Key              string         `json:"key"`
+	SlotKey          string         `json:"slot_key,omitempty"` // 跨场复用稳定键：LinkKey×卖点ID×角度序号，不受措辞变化影响
 	Tier             string         `json:"tier,omitempty"`
 	TargetAudience   string         `json:"target_audience,omitempty"`
 	PainPoint        string         `json:"pain_point,omitempty"`
@@ -417,10 +419,15 @@ func (s *State) OpeningVersion() string {
 }
 
 // pointUsedCounts 统计每个卖点下所有角度的累计使用次数，供卖点级加权调度使用。
+// 商品级卖点池展开的 task 带 LinkKey，按「商品链接×卖点名」隔离统计，同名卖点跨商品互不干扰。
 func (s *State) pointUsedCounts() map[string]int {
 	counts := map[string]int{}
 	for _, task := range s.Queue {
-		counts[task.SellingPoint] += s.Used[task.Key].Count
+		key := task.SellingPoint
+		if task.LinkKey != "" {
+			key = productSellingPointKey(task.LinkKey, task.SellingPoint)
+		}
+		counts[key] += s.Used[task.Key].Count
 	}
 	return counts
 }
@@ -442,8 +449,14 @@ func tierWeight(tier string) int {
 // pointWeight 返回卖点权重。优先用运营/母版配置的 PointWeights（手动覆盖）；
 // 未配置时按卖点 tier 默认权重（core > secondary > trust），缺省 1。
 // 配合 pointUsedCounts 让各卖点按权重占比分布，而不是"角度多的卖点霸屏"。
+// 商品级卖点池展开的 task 带 LinkKey，权重键为「商品链接×卖点名」，同名卖点按商品隔离。
 func (s *State) pointWeight(task Task) int {
 	if s.ProductFocus != nil && s.ProductFocus.Policy.PointWeights != nil {
+		if task.LinkKey != "" {
+			if w, ok := s.ProductFocus.Policy.PointWeights[productSellingPointKey(task.LinkKey, task.SellingPoint)]; ok && w > 0 {
+				return w
+			}
+		}
 		if w, ok := s.ProductFocus.Policy.PointWeights[task.SellingPoint]; ok && w > 0 {
 			return w
 		}
@@ -452,7 +465,8 @@ func (s *State) pointWeight(task Task) int {
 }
 
 // angleWeight 返回角度（卖点×角度）权重，缺省 1。让同一卖点下的角度也按权重分布，
-// 而不是"角度最少使用优先"的均匀轮换。key 与 Used 一致，为「卖点名×角度名」。
+// 而不是"角度最少使用优先"的均匀轮换。key 与 Used 一致，为「卖点名×角度名」，
+// 商品级卖点池展开时带商品前缀「商品链接×卖点名×角度名」。
 func (s *State) angleWeight(key string) int {
 	if s.ProductFocus != nil && s.ProductFocus.Policy.AngleWeights != nil {
 		if w, ok := s.ProductFocus.Policy.AngleWeights[key]; ok && w > 0 {
@@ -460,6 +474,15 @@ func (s *State) angleWeight(key string) int {
 		}
 	}
 	return 1
+}
+
+// taskPointKey 返回任务在卖点级加权与避重里使用的键：商品级卖点池带 LinkKey 时
+// 用「商品链接×卖点名」隔离，否则用卖点名。
+func taskPointKey(task Task) string {
+	if task.LinkKey != "" {
+		return productSellingPointKey(task.LinkKey, task.SellingPoint)
+	}
+	return task.SellingPoint
 }
 
 // Called only after adoption. Candidates and retries keep a frozen TaskIndex.
@@ -470,7 +493,7 @@ func (s *State) chooseNext() {
 	blockedPoints := map[string]bool{}
 	for _, segment := range s.Accepted[max(0, len(s.Accepted)-s.Config.PointGap):] {
 		if segment.Phase != "closing" {
-			blockedPoints[segment.Task.SellingPoint] = true
+			blockedPoints[taskPointKey(segment.Task)] = true
 		}
 	}
 	chosen := -1
@@ -483,7 +506,7 @@ func (s *State) chooseNext() {
 			continue
 		}
 		u := s.Used[task.Key]
-		if blockedPoints[task.SellingPoint] || (u.Count > 0 && s.TotalAccepted()-u.LastIndex < s.Config.CombinationGap) {
+		if blockedPoints[taskPointKey(task)] || (u.Count > 0 && s.TotalAccepted()-u.LastIndex < s.Config.CombinationGap) {
 			continue
 		}
 		// 轮级冷却：同一卖点×角度至少隔 MinReappearCycles 轮才能再次出现。
@@ -499,8 +522,8 @@ func (s *State) chooseNext() {
 		// 三级加权调度：卖点权重 → 角度权重 → 最近使用。
 		// 卖点按 PointWeights 占比（缺省等频），避免角度多的卖点霸屏；
 		// 同卖点内角度按 AngleWeights 占比（缺省等频）；再按最近使用兜底。
-		curPoint := float64(pointCounts[task.SellingPoint]) / float64(s.pointWeight(task))
-		priorPoint := float64(pointCounts[s.Queue[chosen].SellingPoint]) / float64(s.pointWeight(s.Queue[chosen]))
+		curPoint := float64(pointCounts[taskPointKey(task)]) / float64(s.pointWeight(task))
+		priorPoint := float64(pointCounts[taskPointKey(s.Queue[chosen])]) / float64(s.pointWeight(s.Queue[chosen]))
 		curAngle := float64(u.Count) / float64(s.angleWeight(task.Key))
 		priorAngle := float64(prior.Count) / float64(s.angleWeight(s.Queue[chosen].Key))
 		if curPoint < priorPoint ||
@@ -781,9 +804,7 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 				s.BodyCount = 0
 				s.planBodyTarget()
 				s.Phase = "opening"
-				if s.PriceHook == nil && !s.beginAuxiliary() {
-					s.chooseNext()
-				}
+				s.chooseNext()
 			}
 		} else if s.BodyCount >= s.BodyLimit() {
 			// A hook in the final planned body paragraph may extend this round
@@ -798,6 +819,7 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		} else {
 			s.Phase = "body"
 			if s.PriceHook == nil {
+				s.advanceProduct()
 				s.chooseNext()
 			}
 		}

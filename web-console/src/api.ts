@@ -143,6 +143,7 @@ import type {
   LiveAgentPlanProductLink,
   LiveAgentPlanProductLinkCandidate,
 	LiveAgentPlanProductAttribute,
+	LiveAgentPlanProductSellingPoint,
   AdoptLiveAgentPlanProductLinksOutput,
   LiveAgentPlanScript,
   LiveAgentPlanScriptAnalysis,
@@ -1070,7 +1071,7 @@ export function deleteLiveAgentPlanBenefit(
 
 export function getLiveAgentPlanProductLinks(planId: number, tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
-  return request<{ items: LiveAgentPlanProductLink[] }>('/api/v1/live-agent-plans/' + planId + '/product-links' + query)
+  return request<{ items: LiveAgentPlanProductLink[] }>('/api/v1/live-agent-plans/' + planId + '/product-links' + query, { cache: 'no-store' })
 }
 
 export function copyLiveAgentPlanProductLink(planId: number, item: LiveAgentPlanProductLink) {
@@ -1186,6 +1187,38 @@ export function deleteLiveAgentPlanProductAttribute(
 	return request<void>(
 		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/attributes/' + attributeId + query,
 		{ method: 'DELETE' },
+	)
+}
+
+export function saveLiveAgentPlanProductSellingPoints(
+	planId: number,
+	productLinkId: number,
+	sellingPoints: {
+		selling_point: string
+		tier?: string
+		point_weight?: number
+		is_main?: boolean
+		angles: { angle: string; weight: number }[]
+		target_audience?: string
+		pain_point?: string
+	}[],
+	tenantId?: number,
+) {
+	return request<{ items: LiveAgentPlanProductSellingPoint[] }>(
+		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/selling-points',
+		{ method: 'PUT', body: JSON.stringify({ tenant_id: tenantId, selling_points: sellingPoints }) },
+	)
+}
+
+export function saveLiveAgentPlanProductLinkFrequencyWeight(
+	planId: number,
+	productLinkId: number,
+	weight: number,
+	tenantId?: number,
+) {
+	return request<LiveAgentPlanProductLink>(
+		'/api/v1/live-agent-plans/' + planId + '/product-links/' + productLinkId + '/frequency-weight',
+		{ method: 'PATCH', body: JSON.stringify({ tenant_id: tenantId, weight }) },
 	)
 }
 
@@ -4306,7 +4339,7 @@ export function getAnchorStyleWorkbenchContext(planId: number, tenantId?: number
 
 export function chatProductSupplement(
   planId: number,
-  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string; product_link_id?: number },
+  input: { tenant_id?: number; message: string; history: import('./types').SpeechMinerMessage[]; draft_facts: import('./types').SpeechMinerFactDraft[]; focus_gap?: string; product_link_id?: number; action?: string },
   signal?: AbortSignal,
 ) {
   return request<import('./types').SpeechMinerGuideResponse>(

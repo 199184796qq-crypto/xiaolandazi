@@ -8,6 +8,9 @@ import (
 )
 
 func TestLectureAdoptionPreservesOrdinaryCursorAndFailureCooldown(t *testing.T) {
+	if !lectureEnabled {
+		t.Skip("主线讲解任务已暂缓（lectureEnabled=false）")
+	}
 	s := lectureFixture(t)
 	s.Lectures.PlayedMS, s.Lectures.CompletedCycles = 720000, 6
 	before, cursor, cycle, body := s.Task(), s.Cursor, s.CycleNumber, s.BodyCount
@@ -45,6 +48,9 @@ func lectureFixture(t *testing.T) State {
 	return s
 }
 func TestLectureRequiresActualPlaybackAndOneReservation(t *testing.T) {
+	if !lectureEnabled {
+		t.Skip("主线讲解任务已暂缓（lectureEnabled=false）")
+	}
 	s := lectureFixture(t)
 	if s.BeginLecture() {
 		t.Fatal("generated cycles counted as played")

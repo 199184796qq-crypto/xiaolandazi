@@ -151,10 +151,17 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 			return nil, err
 		}
 	} else if scheme.ProductFocus != nil {
-		// 商品讲解范围(ProductFocus.Tasks)保存时按「安全轮盘快照」建立，这里必须用
-		// 同一份快照(safety.SafeWheelJSON)做 key 匹配。若改按 WheelID 重读原始/确认轮盘，
-		// 角度名经 P0 安全改写后 key 对不上，会退化成不筛商品的全量任务。
-		if savedTasks := savedLegacyQueue(wheel, scheme.ProductFocus); len(savedTasks) > 0 {
+		// 商品级卖点池：方案保存时按「每个商品独立卖点池」展开的任务，开播时从 Products 重新展开，
+		// 保证「商品轮→卖点轮→角度」两级结构与商品频率权重在正式直播里一致生效。
+		if hasProductLevelSellingPoints(scheme.ProductFocus.Products) {
+			expanded := anchorcycle.ExpandProductSellingPoints(scheme.ProductFocus.Products, &scheme.ProductFocus.Policy)
+			if len(expanded) > 0 {
+				tasks = expanded
+			}
+		} else if savedTasks := savedLegacyQueue(wheel, scheme.ProductFocus); len(savedTasks) > 0 {
+			// 商品讲解范围(ProductFocus.Tasks)保存时按「安全轮盘快照」建立，这里必须用
+			// 同一份快照(safety.SafeWheelJSON)做 key 匹配。若改按 WheelID 重读原始/确认轮盘，
+			// 角度名经 P0 安全改写后 key 对不上，会退化成不筛商品的全量任务。
 			tasks = savedTasks
 		}
 	}

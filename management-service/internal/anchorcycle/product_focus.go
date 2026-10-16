@@ -7,36 +7,90 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"sort"
 	"strings"
 )
 
 // Immutable inputs are captured with the plan version; adoption counters and
-// the optional auxiliary branch live in Redis only. No Core/audio protocol changes.
+// the product rotation cursor live in Redis only. No Core/audio protocol changes.
 type ProductPolicy struct {
-	Version           string         `json:"version"`
-	MainSharePercent  int            `json:"main_share_percent"`
-	MinMainRounds     int            `json:"min_main_rounds"`
-	AuxiliaryMaxChars int            `json:"auxiliary_max_chars"`
-	RoleWeights       map[string]int `json:"role_weights,omitempty"`  // 辅推角色权重（traffic/benefit/bundle/profit），缺省 1
-	PointWeights      map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
-	AngleWeights      map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
+	Version      string         `json:"version"`
+	RoleWeights  map[string]int `json:"role_weights,omitempty"`  // 角色→基准频率比例（main/traffic/benefit/profit/...），缺省见 defaultRoleWeight
+	PointWeights map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
+	AngleWeights map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
+}
+
+// defaultRoleWeight 返回角色的基准频率比例（后台可配，这里给缺省值）。
+// 未配置的角色一律 1；用户可通过调节频率系数（frequency_weight）在其上放大/缩小。
+func defaultRoleWeight(role string) int {
+	switch role {
+	case "main":
+		return 40
+	case "traffic":
+		return 25
+	case "benefit":
+		return 20
+	case "profit":
+		return 10
+	default:
+		return 5
+	}
+}
+
+// roleBaselineWeight 返回商品的角色基准频率（多角色取最大；未配置走默认值）。
+func (p ProductPolicy) roleBaselineWeight(item FocusProduct) int {
+	best := 0
+	for _, role := range item.Roles {
+		w := 0
+		if p.RoleWeights != nil {
+			w = p.RoleWeights[role]
+		}
+		if w <= 0 {
+			w = defaultRoleWeight(role)
+		}
+		if w > best {
+			best = w
+		}
+	}
+	if best <= 0 {
+		return 1
+	}
+	return best
 }
 
 func (p ProductPolicy) Validate() error {
-	if p.Version == "" || p.MainSharePercent < 50 || p.MainSharePercent > 90 || p.MinMainRounds < 1 || p.MinMainRounds > 20 || p.AuxiliaryMaxChars < 80 || p.AuxiliaryMaxChars > 300 {
+	if p.Version == "" {
 		return errors.New("商品讲解调度母版配置无效")
 	}
 	return nil
 }
 
 type FocusProduct struct {
-	LinkKey    string   `json:"link_key"`
-	Name       string   `json:"name"`
-	Roles      []string `json:"roles,omitempty"`
-	Spec       string   `json:"spec,omitempty"`
-	DailyPrice string   `json:"daily_price,omitempty"`
-	Quantity   string   `json:"quantity,omitempty"`
+	LinkKey         string             `json:"link_key"`
+	Name            string             `json:"name"`
+	Roles           []string           `json:"roles,omitempty"`
+	Spec            string             `json:"spec,omitempty"`
+	DailyPrice      string             `json:"daily_price,omitempty"`
+	Quantity        string             `json:"quantity,omitempty"`
+	FrequencyWeight int                 `json:"frequency_weight,omitempty"` // 手动微调系数×100（100=1.0 不干预，范围 50~200 即 0.5~2.0；0=未设置=1.0）
+	SellingPoints   []FocusSellingPoint `json:"selling_points,omitempty"`
+}
+
+// FocusSellingPoint 是「每个商品独立」的卖点池成员：卖点名 + tier + 主推标记 + 权重，
+// 以及该卖点下的角度（每个角度带独立讲解权重）。归属由商品（LinkKey）程序保证。
+type FocusSellingPoint struct {
+	ID             int64                `json:"id,omitempty"` // DB 稳定主键，跨场复用 Slot 用它，不受卖点措辞变化影响
+	Name           string               `json:"name"`
+	Tier           string               `json:"tier,omitempty"`
+	Weight         int                  `json:"weight,omitempty"`
+	IsMain         bool                 `json:"is_main,omitempty"`
+	TargetAudience string               `json:"target_audience,omitempty"`
+	PainPoint      string               `json:"pain_point,omitempty"`
+	Angles         []FocusSellingAngle  `json:"angles,omitempty"`
+}
+
+type FocusSellingAngle struct {
+	Angle  string `json:"angle"`
+	Weight int    `json:"weight,omitempty"`
 }
 type ScopedFact struct {
 	ID         string   `json:"id,omitempty"`
@@ -101,21 +155,21 @@ func (p *ProductFocus) MainLink() string {
 			return item.LinkKey
 		}
 	}
+	if len(p.Products) > 0 {
+		return p.Products[0].LinkKey
+	}
 	return ""
 }
 func (p *ProductFocus) ValidateProducts() error {
-	seen, mainCount := map[string]bool{}, 0
+	seen := map[string]bool{}
 	for _, item := range p.Products {
 		if item.LinkKey == "" || seen[item.LinkKey] {
 			return errors.New("商品调度存在空或重复链接")
 		}
 		seen[item.LinkKey] = true
-		if hasProductRole(item, "main") {
-			mainCount++
-		}
 	}
-	if len(p.Products) < 2 || mainCount != 1 {
-		return errors.New("多商品讲解须在商品卡中设置且仅设置一个主推商品，其余定位作为辅推；原方案不变")
+	if len(p.Products) < 2 {
+		return errors.New("多商品讲解须至少两个商品；原方案不变")
 	}
 	return nil
 }
@@ -124,113 +178,122 @@ func (p *ProductFocus) ResetRun() {
 	p.AuxiliaryActive, p.AuxiliaryCursor = false, 0
 	p.CompletedMainRounds, p.LastAuxiliaryRound, p.MainChars, p.AuxiliaryChars = 0, 0, 0, 0
 }
+
+// EnsureProductFocus 仅在 CurrentLink 为空时初始化到加权序列首元素；之后轮换由 advanceProduct 显式推进。
 func (s *State) EnsureProductFocus() {
 	p := s.ProductFocus
 	if p == nil {
 		return
 	}
-	if !p.AuxiliaryActive {
-		p.CurrentLink = p.MainLink()
+	if p.CurrentLink == "" {
+		seq := p.productSequence()
+		if len(seq) == 0 {
+			p.CurrentLink = p.MainLink()
+		} else {
+			p.CurrentLink = seq[0].LinkKey
+			p.AuxiliaryCursor = 0
+		}
 	}
 	p.CurrentCycle = s.CycleNumber
 }
-func (s *State) AuxiliaryCharBudget() int {
-	p := s.ProductFocus
-	if p == nil || p.Policy.MainSharePercent < 50 {
-		return 0
-	}
-	return min(s.Config.MaxChars, p.Policy.AuxiliaryMaxChars, max(0, p.MainChars*(100-p.Policy.MainSharePercent)/p.Policy.MainSharePercent-p.AuxiliaryChars))
-}
 
-// An auxiliary is one bounded body paragraph after a completed main round,
-// never a second opening/body/closing cycle. Only adopted speech spends budget.
-func (s *State) beginAuxiliary() bool {
+// advanceProduct 把 CurrentLink 推进到加权轮换序列的下一个商品（不区分主/辅）。
+// 返回是否成功推进（供 body 段落切换使用）。
+func (s *State) advanceProduct() bool {
 	p := s.ProductFocus
-	if p == nil || s.PriceHook != nil || p.CompletedMainRounds-p.LastAuxiliaryRound < p.Policy.MinMainRounds || s.AuxiliaryCharBudget() < 80 {
+	if p == nil {
 		return false
 	}
-	feedbackPending := s.FeedbackPending
-	seq := p.auxiliarySequence()
+	seq := p.productSequence()
 	if len(seq) == 0 {
 		return false
 	}
-	for i := 0; i < len(seq); i++ {
-		idx := (p.AuxiliaryCursor + i) % len(seq)
-		s.Status, s.Error = "ready", ""
-		s.FeedbackPending = feedbackPending
-		p.CurrentLink = seq[idx].LinkKey
-		p.AuxiliaryActive, s.Phase = true, "body"
-		s.chooseNext()
-		if s.Status != "spacing_blocked" && s.Status != "compliance_blocked" {
-			p.AuxiliaryCursor = (idx + 1) % len(seq)
-			return true
-		}
-	}
-	p.AuxiliaryActive, s.Phase, s.Status, s.Error = false, "opening", "ready", ""
-	s.FeedbackPending = feedbackPending
-	s.EnsureProductFocus()
-	return false
-}
-func (p *ProductFocus) auxiliaryProducts() []FocusProduct {
-	other := []FocusProduct{}
-	for _, item := range p.Products {
-		if !hasProductRole(item, "main") {
-			other = append(other, item)
-		}
-	}
-	// Traffic is visited before other secondary roles; ties retain card order.
-	sort.SliceStable(other, func(i, j int) bool {
-		return hasProductRole(other[i], "traffic") && !hasProductRole(other[j], "traffic")
-	})
-	return other
+	p.AuxiliaryCursor = (p.AuxiliaryCursor + 1) % len(seq)
+	p.CurrentLink = seq[p.AuxiliaryCursor].LinkKey
+	return true
 }
 
-// roleWeight 返回商品在辅推轮换中的权重，优先按 RoleWeights 配置的角色取权，未配置退化为 1。
-func (p *ProductFocus) roleWeight(item FocusProduct) int {
-	if p.Policy.RoleWeights == nil {
-		return 1
-	}
-	w := 0
-	for _, role := range item.Roles {
-		if v, ok := p.Policy.RoleWeights[role]; ok && v > w {
-			w = v
-		}
-	}
-	if w < 1 {
-		return 1
-	}
-	return w
+func (p *ProductFocus) allProducts() []FocusProduct {
+	return p.Products
 }
 
-// auxiliarySequence 返回按角色权重交错展开的辅推商品序列：权重高的角色出现次数多，
-// 且同类尽量不相邻。未配置权重时退化为 auxiliaryProducts 的现有顺序（traffic 优先）。
-func (p *ProductFocus) auxiliarySequence() []FocusProduct {
-	other := p.auxiliaryProducts()
-	if len(other) == 0 {
+// coefficient 返回商品的手动微调系数（frequency_weight×100，默认 1.0，钳制 0.5~2.0）。
+func (p *ProductFocus) coefficient(item FocusProduct) float64 {
+	c := item.FrequencyWeight
+	if c <= 0 {
+		return 1.0
+	}
+	f := float64(c) / 100.0
+	if f < 0.5 {
+		f = 0.5
+	}
+	if f > 2.0 {
+		f = 2.0
+	}
+	return f
+}
+
+// normalizedProductWeights 返回「链接→归一化频率占比」（总和=1.0）。
+// 每个商品的原始频率 = 角色基准比例 × 手动微调系数，再整体归一化。
+func (p *ProductFocus) normalizedProductWeights() map[string]float64 {
+	if len(p.Products) == 0 {
+		return map[string]float64{}
+	}
+	raw := make([]float64, len(p.Products))
+	total := 0.0
+	for i, item := range p.Products {
+		raw[i] = float64(p.Policy.roleBaselineWeight(item)) * p.coefficient(item)
+		total += raw[i]
+	}
+	out := map[string]float64{}
+	if total <= 0 {
+		each := 1.0 / float64(len(p.Products))
+		for _, item := range p.Products {
+			out[item.LinkKey] = each
+		}
+		return out
+	}
+	for i, item := range p.Products {
+		out[item.LinkKey] = raw[i] / total
+	}
+	return out
+}
+
+// productSequence 返回按「角色基准 × 手动系数」归一化后加权交错展开的全商品轮换序列：
+// 频率占比越高的商品出现次数越多，且同类尽量不相邻。所有商品平等参与（含主推）。
+func (p *ProductFocus) productSequence() []FocusProduct {
+	items := p.allProducts()
+	if len(items) == 0 {
 		return nil
 	}
-	weights := make([]int, len(other))
+	if len(items) == 1 {
+		return items
+	}
+	weights := p.normalizedProductWeights()
+	// 归一化占比转成整数权重（×10000 取整，避免浮点误差），再做加权交错。
+	scale := 10000
+	intWeights := make([]int, len(items))
 	total := 0
-	for i, item := range other {
-		weights[i] = p.roleWeight(item)
-		total += weights[i]
+	for i, item := range items {
+		w := int(weights[item.LinkKey]*float64(scale) + 0.5)
+		if w < 1 {
+			w = 1
+		}
+		intWeights[i] = w
+		total += w
 	}
-	if total == len(other) { // 全部权重为 1，保持现有顺序
-		return other
-	}
-	// 加权交错：每次选已放置比例（count/weight）最小的商品，保证均匀分布且同类不相邻。
-	counts := make([]int, len(other))
+	counts := make([]int, len(items))
 	seq := make([]FocusProduct, 0, total)
 	for placed := 0; placed < total; placed++ {
 		best, bestRatio := -1, math.MaxFloat64
-		for i := range other {
-			ratio := float64(counts[i]) / float64(weights[i])
+		for i := range items {
+			ratio := float64(counts[i]) / float64(intWeights[i])
 			if ratio < bestRatio || (ratio == bestRatio && (best < 0 || i < best)) {
 				best, bestRatio = i, ratio
 			}
 		}
 		counts[best]++
-		seq = append(seq, other[best])
+		seq = append(seq, items[best])
 	}
 	return seq
 }
@@ -240,15 +303,9 @@ func (s *State) recordProductAdoption(t Task, text string) {
 		return
 	}
 	chars := len([]rune(strings.TrimSpace(text)))
-	if t.ProductMode == "auxiliary" {
-		p.AuxiliaryChars += chars
-		p.LastAuxiliaryRound = p.CompletedMainRounds
-		// AuxiliaryCursor 已在 beginAuxiliary 选中商品时推进到序列下一位置
-	} else {
-		p.MainChars += chars
-		if s.Phase == "closing" {
-			p.CompletedMainRounds++
-		}
+	p.MainChars += chars
+	if s.Phase == "closing" {
+		p.CompletedMainRounds++
 	}
 }
 
@@ -279,20 +336,6 @@ func (s *State) productTaskEligible(t Task) bool {
 	if !ok {
 		return false
 	}
-	p := s.ProductFocus
-	if p.AuxiliaryActive {
-		if a.Shared || !containsLink(a.Links, p.CurrentLink) {
-			return false
-		}
-		if a.Comparison {
-			for _, key := range a.Links {
-				if key != p.CurrentLink && key != p.MainLink() {
-					return false
-				}
-			}
-		}
-		return true
-	}
 	if a.Comparison {
 		return false
 	}
@@ -312,11 +355,6 @@ func (s *State) focusTask(t Task) Task {
 		t.AllowedLinksJSON = s.PriceHook.Task.AllowedLinksJSON
 		t.ProductMode = s.PriceHook.Task.ProductMode
 		return t
-	}
-	if s.ProductFocus.AuxiliaryActive && s.PriceHook == nil {
-		t.setProductLinks([]string{s.ProductFocus.MainLink(), t.FocusLink})
-		t.ProductMode = "auxiliary"
-		t.ProductMaxChars = s.AuxiliaryCharBudget()
 	}
 	return t
 }
@@ -447,3 +485,63 @@ func (s *State) CheckProductVoice(segment Segment) error {
 	}
 	return nil
 }
+
+// productSellingPointKey 返回「商品链接×卖点名」的加权键。同一卖点在不同商品下独立加权，
+// 复用与计数也按商品隔离（Key 已带商品前缀）。
+func productSellingPointKey(linkKey, sellingPoint string) string {
+	return linkKey + "×" + sellingPoint
+}
+
+// ExpandProductSellingPoints 把每个商品独立的卖点池展开成任务队列（商品轮→卖点轮→角度）。
+// 展开后的 Task.Key 带商品链接前缀，保证同名卖点在不同商品下不复用/不撞 key；
+// SellingPoint/Angle 保持原始名（用于生成提示词），LinkKey 记录商品归属。
+// 同时按卖点/角度的权重回填 Policy.PointWeights/AngleWeights（带商品前缀的键），
+// 供 chooseNext 的卖点级、角度级加权调度使用。
+func ExpandProductSellingPoints(products []FocusProduct, policy *ProductPolicy) []Task {
+	if policy == nil {
+		return nil
+	}
+	if policy.PointWeights == nil {
+		policy.PointWeights = map[string]int{}
+	}
+	if policy.AngleWeights == nil {
+		policy.AngleWeights = map[string]int{}
+	}
+	tasks := make([]Task, 0)
+	for _, product := range products {
+		for _, sp := range product.SellingPoints {
+			pointKey := productSellingPointKey(product.LinkKey, sp.Name)
+			weight := sp.Weight
+			if weight < 1 {
+				weight = 1
+			}
+			policy.PointWeights[pointKey] = weight
+			for ai, angle := range sp.Angles {
+				angleWeight := angle.Weight
+				if angleWeight < 1 {
+					angleWeight = 1
+				}
+				angleKey := product.LinkKey + "×" + sp.Name + "×" + angle.Angle
+				policy.AngleWeights[angleKey] = angleWeight
+				// 跨场复用稳定键：卖点用 DB 主键（若有），角度用卖点内循环序号，
+				// 卖点/角度措辞变化不影响跨场命中。卖点无 ID 时退回卖点名（兼容旧数据）。
+				spIdent := sp.Name
+				if sp.ID > 0 {
+					spIdent = fmt.Sprintf("#%d", sp.ID)
+				}
+				tasks = append(tasks, Task{
+					LinkKey:        product.LinkKey,
+					SellingPoint:    sp.Name,
+					Angle:           angle.Angle,
+					Key:             angleKey,
+					SlotKey:         fmt.Sprintf("%s×%s×#%d", product.LinkKey, spIdent, ai+1),
+					Tier:            sp.Tier,
+					TargetAudience:  sp.TargetAudience,
+					PainPoint:       sp.PainPoint,
+				})
+			}
+		}
+	}
+	return tasks
+}
+

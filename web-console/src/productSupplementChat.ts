@@ -7,13 +7,15 @@ type Services = { chat: typeof chatProductSupplement; adopt: typeof adoptLiveAge
 const identity = (fact: SpeechMinerFactDraft) => JSON.stringify([fact.category, fact.key])
 const sameFact = (a: SpeechMinerFactDraft, b: SpeechMinerFactDraft) => identity(a) === identity(b) && a.value === b.value && a.source_quote === b.source_quote
 
+export type SupplementChatMessage = SpeechMinerMessage & { kind?: 'reply' | 'notice'; captured?: number }
+
 export function useProductSupplementChat(
   scope: () => ProductSupplementScope,
   updated: (scope: ProductSupplementScope) => void,
   services: Services = { chat: chatProductSupplement, adopt: adoptLiveAgentPlanFacts },
   selectedProduct: () => number | undefined = () => undefined,
 ) {
-  const messages = ref<SpeechMinerMessage[]>([])
+  const messages = ref<SupplementChatMessage[]>([])
   const input = ref('')
   const drafts = ref<SpeechMinerFactDraft[]>([])
   const busy = ref<'chat' | 'save' | ''>('')
@@ -30,15 +32,15 @@ export function useProductSupplementChat(
   }, { flush: 'sync' })
   onScopeDispose(() => { epoch++; controller?.abort() })
 
-  async function deliver(message: string, focusJson = '', preserveInput = false) {
+  async function deliver(message: string, focusJson = '', preserveInput = false, action: '' | 'skip' = '') {
     if (!ready.value || busy.value || !message) return
     if ([...message].length > 3000) { error.value = '每次最多发送3000字，请分段补充。'; return }
     if (messages.value.length > 56) { error.value = '本轮对话已较长，请先保存或取消待确认资料，再开始新一轮。'; return }
     if (drafts.value.length >= 12) { error.value = '请先保存或取消待确认资料，再继续补充。'; return }
     const capturedScope = { ...scope() }, token = epoch
     const current = () => token === epoch && JSON.stringify(capturedScope) === JSON.stringify(scope())
-    const history = messages.value.map(item => ({ ...item })).slice(-16)
-    const userMessage: SpeechMinerMessage = { role: 'user', text: message }
+    const history = messages.value.map(({ role, text }) => ({ role, text })).slice(-16)
+    const userMessage: SupplementChatMessage = { role: 'user', text: message }
     messages.value.push(userMessage)
     if (!preserveInput) input.value = ''
     error.value = ''; notice.value = ''; busy.value = 'chat'
@@ -46,10 +48,11 @@ export function useProductSupplementChat(
     try {
       const result = await services.chat(capturedScope.planId, {
         tenant_id: capturedScope.tenantId, message, history, draft_facts: drafts.value.map(item => ({ ...item })),
-        focus_gap: focusJson || undefined, product_link_id: selectedProduct(),
+        focus_gap: focusJson || undefined, product_link_id: selectedProduct(), action: action || undefined,
       }, controller.signal)
       if (!current()) return
       if (!result.reply?.trim()) throw new Error('智能体未返回回复，请重试。')
+      const before = drafts.value.length
       const next = [...drafts.value]
       for (const fact of result.captured_facts || []) {
         // Preserve only material traced to this user's message; IDs belong to the program.
@@ -59,7 +62,7 @@ export function useProductSupplementChat(
         else next.push({ ...fact })
       }
       drafts.value = next
-      messages.value.push({ role: 'agent', text: result.reply })
+      messages.value.push({ role: 'agent', text: result.reply, kind: 'reply', captured: Math.max(0, next.length - before) })
       if (next.length > 12) notice.value = '已保留全部资料，请分批确认保存。'
     } catch (cause) {
       if (!current()) return
@@ -78,11 +81,17 @@ export function useProductSupplementChat(
     await deliver(triggerText, focusJson, true)
   }
 
+  // 跳过当前问题：告知助手本题不答，继续问下一个；不产生任何事实。
+  async function skip() {
+    if (busy.value) return
+    await deliver('（这个问题先跳过，继续下一个）', '', false, 'skip')
+  }
+
   function discard() {
     if (busy.value) return
     drafts.value = []
     sessionId = ''
-    messages.value.push({ role: 'agent', text: '待确认资料已取消，尚未保存。你可以继续补充。' })
+    messages.value.push({ role: 'agent', text: '待确认资料已取消，尚未保存。你可以继续补充。', kind: 'notice' })
     notice.value = ''
     error.value = ''
     messages.value = messages.value.slice(-16)
@@ -110,7 +119,7 @@ export function useProductSupplementChat(
       if (unresolved.length) error.value = unresolved.map(item => `${item.candidate.key}：${item.message || '本条尚未保存'}`).join('\n')
       if (saved.length) {
         const text = `已保存${result.adopted || 0}条补充资料${result.skipped ? `，${result.skipped}条已存在` : ''}。可在“事实依据”查看，并点击顶部“保存方案”。`
-        messages.value.push({ role: 'agent', text })
+        messages.value.push({ role: 'agent', text, kind: 'notice' })
         notice.value = text
       } else if (!unresolved.length) error.value = '未收到保存结果，请重试或到“事实依据”核对。'
       if (!completeResults) error.value = '保存结果不完整，请到“事实依据”核对后再试。'
@@ -124,5 +133,5 @@ export function useProductSupplementChat(
     } finally { if (current()) busy.value = '' }
   }
 
-  return { messages, input, drafts, busy, ready, error, notice, send, askGap, save, discard }
+  return { messages, input, drafts, busy, ready, error, notice, send, askGap, skip, save, discard }
 }

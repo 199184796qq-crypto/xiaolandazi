@@ -91,8 +91,8 @@ func (c *cardCopyConn) QueryContext(_ context.Context, q string, args []driver.N
 	if strings.Contains(q, "FROM live_agent_plan_product_attributes") {
 		return &contentPolicyTestRows{columns: strings.Fields("id tenant plan product code label value unit display priority quote type ref status version creator updater created updated"), values: [][]driver.Value{{int64(101), int64(14), int64(4), id, "flavour", "口味", "麻辣", "", "text", int64(10), "原属性证据", "manual_copy", "copy:product:7:v3", "active", int64(1), int64(8), int64(8), time.Now(), time.Now()}}}, nil
 	}
-	columns := strings.Fields("id tenant plan key name roles labels spec price quantity audience quote bucket reason type ref status version creator updater created updated")
-	row := []driver.Value{id, int64(14), int64(4), "1号链接", "杨鸭子", `["main"]`, `{"quantity":"包装数量"}`, "900g", "87.6", "1", "喜欢麻辣和五香", "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}
+	columns := strings.Fields("id tenant plan key name roles labels spec price quantity audience weight quote bucket reason type ref status version creator updater created updated")
+	row := []driver.Value{id, int64(14), int64(4), "1号链接", "杨鸭子", `["main"]`, `{"quantity":"包装数量"}`, "900g", "87.6", "1", "喜欢麻辣和五香", int64(0), "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}
 	if c.benefit {
 		columns = strings.Fields("id tenant plan key link name price gift activity mode starts ends quote bucket reason type ref status version creator updater created updated")
 		row = []driver.Value{id, int64(14), int64(4), "活动A", "1号链接", "杨鸭子", "79.9", "赠试吃装", "原福利", "permanent", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), "原始证据", "discuss", "原审核信息", "manual", "original", "active", int64(3), int64(8), int64(8), time.Now(), time.Now()}

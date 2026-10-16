@@ -6,6 +6,9 @@ import (
 )
 
 func TestExplicitLectureCadenceRespectsActualCyclesAndPlayback(t *testing.T) {
+	if !lectureEnabled {
+		t.Skip("主线讲解任务已暂缓（lectureEnabled=false）")
+	}
 	s := lectureFixture(t)
 	s.Lectures.Library.Policy = lecturetask.Policy{Enabled: true, Frequency: "normal", MinCycles: 2, MaxCycles: 2, MinIntervalSeconds: 600}
 	s.CycleNumber = 3

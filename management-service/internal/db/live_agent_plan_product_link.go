@@ -15,7 +15,7 @@ var ErrLiveAgentPlanProductLinkVersionConflict = errors.New("live agent plan pro
 
 const liveAgentPlanProductLinkSelect = `
 	SELECT id, tenant_id, plan_id, link_key, product_name, room_roles_json, field_labels_json, spec, daily_price, quantity, audience,
-	       source_quote, source_review_bucket, source_review_reason, source_type, source_ref,
+	       frequency_weight, source_quote, source_review_bucket, source_review_reason, source_type, source_ref,
 	       status, version_no, created_by_user_id, updated_by_user_id, created_at, updated_at
 	FROM live_agent_plan_product_links
 `
@@ -28,7 +28,7 @@ func scanLiveAgentPlanProductLink(row interface {
 	var roomRolesJSON, fieldLabelsJSON sql.NullString
 	err := row.Scan(
 		&item.ID, &item.TenantID, &item.PlanID, &item.LinkKey, &item.ProductName,
-		&roomRolesJSON, &fieldLabelsJSON, &item.Spec, &item.DailyPrice, &item.Quantity, &item.Audience, &item.SourceQuote,
+		&roomRolesJSON, &fieldLabelsJSON, &item.Spec, &item.DailyPrice, &item.Quantity, &item.Audience, &item.FrequencyWeight, &item.SourceQuote,
 		&item.SourceReviewBucket, &item.SourceReviewReason, &item.SourceType, &item.SourceRef,
 		&item.Status, &item.VersionNo, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt,
 	)
@@ -101,6 +101,9 @@ func (s *Store) ListLiveAgentPlanProductLinks(ctx context.Context, tenantID, pla
 		return nil, err
 	}
 	if err := s.attachLiveAgentPlanProductAttributes(ctx, tenantID, planID, items); err != nil {
+		return nil, err
+	}
+	if err := s.attachLiveAgentPlanProductSellingPoints(ctx, tenantID, planID, items); err != nil {
 		return nil, err
 	}
 	items = orderCopiedCards(items, "product", func(item model.LiveAgentPlanProductLink) int64 { return item.ID }, func(item model.LiveAgentPlanProductLink) string { return item.SourceRef })
@@ -433,6 +436,9 @@ func (s *Store) DeleteLiveAgentPlanProductLinkWithExpectedVersion(ctx context.Co
 		return err
 	}
 	if err := disableLiveAgentPlanProductAttributesForLink(ctx, tx, tenantID, planID, productLinkID, actorUserID); err != nil {
+		return err
+	}
+	if err := disableLiveAgentPlanProductSellingPointsForLink(ctx, tx, tenantID, planID, productLinkID, actorUserID); err != nil {
 		return err
 	}
 	return tx.Commit()

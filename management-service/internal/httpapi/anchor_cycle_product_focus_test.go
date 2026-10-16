@@ -48,7 +48,7 @@ func TestCycleProductFocusTTSProofAndCacheIsolation(t *testing.T) {
 		t.Fatal("tenant cache not isolated")
 	}
 	s.TenantID--
-	s.ProductFocus.Policy.MainSharePercent = 80
+	s.ProductFocus.Policy.RoleWeights = map[string]int{"main": 80}
 	if group == cycleVoiceCacheGroup(s, segment) {
 		t.Fatal("new policy reused old cache")
 	}

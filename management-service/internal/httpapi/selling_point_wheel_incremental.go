@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"livecompanion/management/internal/agentgateway"
@@ -135,7 +134,7 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 		return false, 0, 0, nil
 	}
 	if emptySellingPointPool(asset.EffectiveWheelJSON()) {
-		reportAnchorAnalysis(ctx, 35, "卖点和角度池为空，开始完整生成与核对")
+		reportAnchorAnalysis(ctx, 35, "尚未有讲解要点，开始完整梳理与核对")
 		return false, 0, 0, nil
 	}
 	canonical, points, angles, err := normalizeAnchorStyleSellingPointWheelJSON(asset.EffectiveWheelJSON())
@@ -146,16 +145,16 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 		return true, 0, 0, err
 	}
 	if asset.ExtractionPromptMD != promptSnapshot {
-		reportAnchorAnalysis(ctx, 35, "卖点挖掘母版已更新，重新完整生成卖点与角度池")
+		reportAnchorAnalysis(ctx, 35, "讲解要点生成规则已更新，重新完整梳理讲解要点")
 		return false, 0, 0, nil
 	}
 	if asset.FactPackageSHA256 == derivedHash(facts) && len(sellingPointFactBoundaryViolations(canonical, facts)) == 0 {
-		reportAnchorAnalysis(ctx, 94, "现有卖点和角度池未变化，直接复用已确认内容")
+		reportAnchorAnalysis(ctx, 94, "讲解要点没有变化，直接使用已确认内容")
 		return true, points, angles, nil
 	}
 	before := wheelSourceFacts(asset)
 	if before == "" {
-		reportAnchorAnalysis(ctx, 35, "旧卖点池缺少原始依据，需要完整核对一次")
+		reportAnchorAnalysis(ctx, 35, "旧讲解要点缺少原始依据，需要完整核对一次")
 		return false, 0, 0, nil
 	}
 	mother, source, err := loadReplaceablePromptAsset("ANCHOR_WHEEL_INCREMENTAL_PROMPT_PATH", "configs/prompts/anchor-style/selling-point-wheel-incremental.md", "卖点池增量更新母版")
@@ -177,17 +176,19 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 	data := map[string]any{"phase": "update", "fact_package": facts, "added_facts": added, "removed_facts": removed, "existing_points": rows, "existing_fact_gap_suggestions": existing.FactGaps}
 	scoped := withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
 	request, _ := json.Marshal(data)
-	reportAnchorAnalysis(ctx, 45, "正在更新新增事实和受影响的卖点，其余内容保留")
+	reportAnchorAnalysis(ctx, 45, "正在更新新增资料和受影响的讲解要点，其余内容保留")
 	result, _, err := s.completeAnchorStyleWorkbench(scoped, profile, "selling_point_incremental_update", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: mother}, {Role: "user", Content: string(request)}}, 5000, false)
 	if err != nil {
 		return true, 0, 0, err
 	}
 	var patch wheelPatch
 	if err = decodeProductJSON(result.Text, &patch); err != nil {
-		return true, 0, 0, fmt.Errorf("卖点增量返回无效：%w", err)
+		reportAnchorAnalysis(ctx, 35, "讲解要点更新结果无效，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	if _, err = mergeWheelPatch(existing, patch, nil); err != nil {
-		return true, 0, 0, err
+		reportAnchorAnalysis(ctx, 35, "讲解要点更新合并失败，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	allowed := map[int]bool{}
 	for _, u := range patch.Updates {
@@ -195,7 +196,7 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 	}
 	data["phase"], data["proposed_patch"] = "review", patch
 	request, _ = json.Marshal(data)
-	reportAnchorAnalysis(ctx, 75, "正在复核本次变化内容，不重新生成整个卖点池")
+	reportAnchorAnalysis(ctx, 75, "正在校对本次变化内容，不重新梳理全部讲解要点")
 	auditRules := strings.Split(contract, "## 五、输出协议")[0]
 	review, _, err := s.completeAnchorStyleWorkbench(scoped, profile, "selling_point_incremental_review", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: auditRules + "\n\n" + mother}, {Role: "user", Content: string(request)}}, 5000, false)
 	if err != nil {
@@ -203,27 +204,33 @@ func (s *Server) reuseOrUpdateWheel(ctx context.Context, tenant, plan, actor int
 	}
 	var checked wheelPatch
 	if err = decodeProductJSON(review.Text, &checked); err != nil {
-		return true, 0, 0, err
+		reportAnchorAnalysis(ctx, 35, "讲解要点校对结果无效，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	merged, err := mergeWheelPatch(existing, checked, allowed)
 	if err != nil {
-		return true, 0, 0, err
+		reportAnchorAnalysis(ctx, 35, "讲解要点校对合并失败，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	// A review must explicitly account for each affected old point. Omission
 	// must not silently restore obsolete prices or claims from the old pool.
 	if len(checked.Updates) != len(patch.Updates) || len(checked.Additions) > len(patch.Additions) {
-		return true, 0, 0, errors.New("增量复核遗漏受影响卖点或新增了未生成的内容")
+		reportAnchorAnalysis(ctx, 35, "校对遗漏了受影响的讲解要点，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	raw, _ := json.Marshal(merged)
 	final, points, angles, err := normalizeAnchorStyleSellingPointWheelJSON(string(raw))
 	if err != nil {
-		return true, 0, 0, err
+		reportAnchorAnalysis(ctx, 35, "更新结果不合法，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	if err = validateSellingPointPromptContract(final, contract); err != nil {
-		return true, 0, 0, err
+		reportAnchorAnalysis(ctx, 35, "更新结果未通过校验，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	if violations := sellingPointFactBoundaryViolations(final, facts); len(violations) > 0 {
-		return true, 0, 0, fmt.Errorf("增量轮盘仍有事实边界问题，原池未修改：%s", strings.Join(violations, "；"))
+		reportAnchorAnalysis(ctx, 35, "更新结果存在资料不符，重新完整梳理讲解要点")
+		return false, 0, 0, nil
 	}
 	p0, p1, p2, err := loadRiskAnnotationMothers()
 	if err != nil {

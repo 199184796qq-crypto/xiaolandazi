@@ -1557,6 +1557,7 @@ export interface LiveAgentPlanProductLink {
   daily_price?: string
   quantity?: string
   audience?: string
+  frequency_weight?: number
   source_quote?: string
   source_review_bucket?: string
   source_review_reason?: string
@@ -1570,6 +1571,32 @@ export interface LiveAgentPlanProductLink {
   updated_at: string
 	attributes: LiveAgentPlanProductAttribute[]
   field_labels?: Partial<Record<'spec' | 'daily_price' | 'quantity' | 'audience', string>>
+	selling_points?: LiveAgentPlanProductSellingPoint[]
+}
+
+export interface LiveAgentPlanProductSellingPoint {
+	id: number
+	tenant_id: number
+	plan_id: number
+	product_link_id: number
+	selling_point: string
+	tier?: string
+	point_weight: number
+	is_main: boolean
+	angles: LiveAgentPlanProductSellingAngle[]
+	target_audience?: string
+	pain_point?: string
+	source_type: string
+	source_ref?: string
+	status: string
+	version_no: number
+	created_at: string
+	updated_at: string
+}
+
+export interface LiveAgentPlanProductSellingAngle {
+	angle: string
+	weight: number
 }
 
 export interface LiveAgentPlanProductAttribute {

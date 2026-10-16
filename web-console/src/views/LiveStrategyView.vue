@@ -133,6 +133,8 @@ import {
   updateLiveAgentPlanFact,
   updateLiveAgentPlanProductLink,
 	updateLiveAgentPlanProductAttribute,
+	saveLiveAgentPlanProductLinkFrequencyWeight,
+	saveLiveAgentPlanProductSellingPoints,
   updateLiveAgentPlanScript,
   updateLiveAgentSettings,
   updateLiveAddressingStrategy,
@@ -1636,7 +1638,7 @@ async function initializeAnchorGeneration() {
     const result = await request<{ initialized: boolean; partial: boolean; notice: string; selling_points: number; angles: number; steps: AnchorInitializationStep[] }>('/api/v1/live-agent-plans/' + planId + '/initialize-anchor' + query, { method: 'POST', headers: { Accept: 'text/event-stream' } }, (event) => {
       if (event.type !== 'progress') return
       anchorInitializationProgress.value = Math.max(anchorInitializationProgress.value, event.percent || 0)
-      anchorInitializationStage.value = event.message === '正在准备独立的目的角度内容策略，原有方案保留' ? '正在准备内容规划' : event.message
+      anchorInitializationStage.value = event.message
     })
     anchorInitializationSteps.value = result.steps || []
     anchorInitializationNotice.value = result.notice || ''
@@ -1645,6 +1647,7 @@ async function initializeAnchorGeneration() {
     anchorInitializationProgress.value = 100
     anchorInitializationStage.value = failed.length ? '初始化完成，部分项目失败' : '初始化完成'
     await refreshAnchorSellingPointWheel()
+    await refreshFormalProductLinks()
     await new Promise((resolve) => window.setTimeout(resolve, 720))
   } catch (e) {
     anchorInitializationNotice.value = ''
@@ -4735,6 +4738,89 @@ async function saveProductRoomRoles(item: LiveAgentPlanProductLink, roomRoles: s
   }
 }
 
+// 商品讲解频率面板：垂直列出商品链接，每个链接一条 1~100 滑块，越大整场讲越多。
+const frequencyPanelOpen = ref(false)
+const frequencySavingKey = ref('')
+const frequencyPanelError = ref('')
+
+// 角色→基准频率比例（与后端 ProductPolicy 默认值一致：main 40 / traffic 25 / benefit 20 / profit 10 / 其它 5）。
+const ROLE_BASELINE: Record<string, number> = { main: 40, traffic: 25, benefit: 20, profit: 10 }
+
+function roleBaseline(roles: string[]): number {
+  let best = 0
+  for (const r of roles || []) {
+    const w = ROLE_BASELINE[r] ?? 5
+    if (w > best) best = w
+  }
+  return best > 0 ? best : 5
+}
+
+// 系数（×100 存储，默认 1.0）。
+function frequencyCoefficient(item: LiveAgentPlanProductLink): number {
+  const w = item.frequency_weight || 0
+  if (w <= 0) return 1.0
+  let f = w / 100
+  if (f < 0.5) f = 0.5
+  if (f > 2.0) f = 2.0
+  return f
+}
+
+// 归一化占比（总和恒为 100%）。前端仅用于展示，实际调度由后端同一算法决定。
+function normalizedProductShares(items: LiveAgentPlanProductLink[]): Map<number, number> {
+  const out = new Map<number, number>()
+  if (!items.length) return out
+  const raw = items.map((it) => roleBaseline(it.room_roles || []) * frequencyCoefficient(it))
+  const total = raw.reduce((a, b) => a + b, 0)
+  if (total <= 0) {
+    const each = 100 / items.length
+    items.forEach((it) => out.set(it.id, each))
+    return out
+  }
+  items.forEach((it, i) => out.set(it.id, (raw[i] / total) * 100))
+  return out
+}
+
+const frequencyShares = computed(() => normalizedProductShares(formalProductLinks.value))
+
+async function saveProductFrequencyWeight(item: LiveAgentPlanProductLink, weight: number) {
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+  frequencySavingKey.value = item.link_key
+  frequencyPanelError.value = ''
+  try {
+    const updated = await saveLiveAgentPlanProductLinkFrequencyWeight(planId, item.id, weight, item.tenant_id)
+    if (currentRoomPlanId.value === planId) {
+      formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
+    }
+  } catch (error) {
+    frequencyPanelError.value = error instanceof Error ? error.message : '保存频率系数失败'
+    throw error
+  } finally {
+    frequencySavingKey.value = ''
+  }
+}
+
+function onFrequencyChange(item: LiveAgentPlanProductLink, event: Event) {
+  const target = event.target as HTMLInputElement
+  // 滑块值 = 系数 ×100（50~200；0=不干预=1.0）。
+  const coefficient = Number(target.value) || 0
+  void saveProductFrequencyWeight(item, coefficient).catch(() => {})
+}
+
+async function saveProductSellingPoints(
+  item: LiveAgentPlanProductLink,
+  points: { selling_point: string; tier?: string; point_weight?: number; is_main?: boolean; angles: { angle: string; weight: number }[]; target_audience?: string; pain_point?: string }[],
+) {
+  const planId = currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
+  const result = await saveLiveAgentPlanProductSellingPoints(planId, item.id, points, item.tenant_id)
+  if (currentRoomPlanId.value === planId) {
+    formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id
+      ? { ...link, selling_points: result.items }
+      : link)
+  }
+}
+
 async function removeProductLink(item: LiveAgentPlanProductLink) {
   const planId = currentRoomPlanId.value
   if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
@@ -6244,11 +6330,11 @@ onBeforeUnmount(() => {
           <form class="strategy-plan-create" @submit.prevent="submitPlanManager">
             <label>
               <span>方案名称</span>
-              <input v-model="newPlanName" maxlength="160" placeholder="例如：菜籽油主推方案" />
+              <input v-model="newPlanName" maxlength="160" />
             </label>
             <label>
               <span>方案说明</span>
-              <input v-model="newPlanDescription" maxlength="2000" placeholder="例如：菜籽油主线 + 答疑 + 物流事实" />
+              <input v-model="newPlanDescription" maxlength="2000" />
             </label>
             <button class="primary-button" type="submit" :disabled="planBusy || !newPlanName.trim()">
               {{
@@ -6404,7 +6490,6 @@ onBeforeUnmount(() => {
               <textarea
                 v-model="scriptReadableText"
                 rows="22"
-                placeholder="粘贴或上传当前直播素材。当前已接通 TXT / MD 文本素材；图片、截图、PDF、Word、Excel 等会继续接入同一素材入口。"
                 @input="syncSimpleScriptText"
               ></textarea>
             </section>
@@ -6446,12 +6531,23 @@ onBeforeUnmount(() => {
                 <strong>已采纳商品链接</strong>
                 <span>当前正式 {{ formalProductLinks.length }} 个</span>
               </div>
+              <button v-if="formalProductLinks.length >= 2" type="button" class="strategy-frequency-toggle" :aria-expanded="frequencyPanelOpen" @click="frequencyPanelOpen = !frequencyPanelOpen">{{ frequencyPanelOpen ? '收起频率' : '调节频率' }}</button>
             </header>
+            <section v-if="frequencyPanelOpen" class="strategy-frequency-panel">
+              <p>系数越大，这个商品讲得越多；所有商品占比之和恒为 100%，调高一个会自动压低其它。1.0 表示按定位基准、不额外偏重。</p>
+              <div v-for="item in formalProductLinks" :key="item.id" class="strategy-frequency-row">
+                <span class="strategy-frequency-label">{{ item.link_key }}</span>
+                <input type="range" min="0" max="200" step="5" :value="item.frequency_weight || 0" :disabled="!!frequencySavingKey" :aria-label="item.link_key + '讲解频率'" @change="onFrequencyChange(item, $event)" />
+                <span class="strategy-frequency-value">{{ frequencyCoefficient(item).toFixed(2) }}×</span>
+                <span class="strategy-frequency-share">{{ (frequencyShares.get(item.id) ?? 0).toFixed(0) }}%</span>
+              </div>
+              <p v-if="frequencyPanelError" class="strategy-frequency-error">{{ frequencyPanelError }}</p>
+            </section>
             <div v-if="!formalProductLinks.length" class="strategy-v2-empty strategy-product-formal-empty">
               <strong>还没有正式商品链接</strong>
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
-            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
+            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" :save-selling-points="saveProductSellingPoints">
               <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" /></template>
             </LiveProductLinkCards>
           </section>
@@ -6585,13 +6681,13 @@ onBeforeUnmount(() => {
                     </div>
                     <strong v-if="formalBenefitValidityMode(item) === 'scheduled'" class="strategy-benefit-formal-time-range">
                       <span class="strategy-benefit-formal-time-value">
-                        <input v-if="isEditingFormalBenefit(item, 'starts_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" placeholder="YYYY-MM-DD HH:mm" aria-label="编辑开始时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                        <input v-if="isEditingFormalBenefit(item, 'starts_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" aria-label="编辑开始时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
                         <template v-else>{{ formatBenefitTime(item.starts_at) }}</template>
                         <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改开始时间" title="修改开始时间" @mousedown.prevent @click="startFormalBenefitEdit(item, 'starts_at')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                       </span>
                       <i>→</i>
                       <span class="strategy-benefit-formal-time-value">
-                        <input v-if="isEditingFormalBenefit(item, 'ends_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" placeholder="YYYY-MM-DD HH:mm" aria-label="编辑结束时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
+                        <input v-if="isEditingFormalBenefit(item, 'ends_at') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" aria-label="编辑结束时间" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
                         <template v-else>{{ formatBenefitTime(item.ends_at) }}</template>
                         <button type="button" class="strategy-benefit-edit" :disabled="!!mutatingFormalBenefitId" aria-label="修改结束时间" title="修改结束时间" @mousedown.prevent @click="startFormalBenefitEdit(item, 'ends_at')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                       </span>
@@ -6733,7 +6829,7 @@ onBeforeUnmount(() => {
                         </div>
                         <label class="strategy-formal-fact-edit-field is-content">
                           <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
-                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" placeholder="用你自己的话描述真实、准确的事实即可，保存时审核模型会自动整理成四层表达…" :disabled="mutatingFormalFactId === item.id"></textarea>
+                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" :disabled="mutatingFormalFactId === item.id"></textarea>
                           <span :id="'fact-edit-content-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>自由表达即可，保存时系统会整理成“必说/可说/改写/不提”四层结构。</span></span>
                         </label>
                       </td>
@@ -6814,7 +6910,7 @@ onBeforeUnmount(() => {
                           </template>
                           <template v-else-if="review.severity === 'P0' && session.bootstrap?.actor.role === 'customer'">
                             <p class="is-blocked">该项不能直接放行，请修改事实或申请后台复核。</p>
-                            <textarea v-if="review.appeal_status !== 'pending'" v-model="factRiskAppealDrafts[review.claim_sha256]" maxlength="2000" placeholder="说明为什么认为是误拦，并填写可核对的依据"></textarea>
+                            <textarea v-if="review.appeal_status !== 'pending'" v-model="factRiskAppealDrafts[review.claim_sha256]" maxlength="2000"></textarea>
                             <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button v-if="review.appeal_status !== 'pending'" type="button" :disabled="factRiskNoticeState.loading || !(factRiskAppealDrafts[review.claim_sha256] || '').trim()" @click="appealInlineFactRisk(review)">申请后台复核</button><span v-else>后台复核申请已提交</span></div>
                           </template>
                         </article>
@@ -6847,7 +6943,6 @@ onBeforeUnmount(() => {
                   <textarea
                     v-model="memoryEditFeedback"
                     rows="3"
-                    placeholder="直接说明互动规范，例如：售后问题必须优先回答，但答案内容仍以事实依据为准。"
                   ></textarea>
                 </label>
                 <div class="strategy-memory-edit-actions">
@@ -6956,7 +7051,7 @@ onBeforeUnmount(() => {
                 </label>
                 <label class="addressing-name-field">
                   <span>称呼</span>
-                  <input v-model="option.text" maxlength="12" placeholder="例如：老哥" />
+                  <input v-model="option.text" maxlength="12" />
                 </label>
                 <label class="addressing-probability-field">
                   <span>随机概率</span>
@@ -6982,8 +7077,8 @@ onBeforeUnmount(() => {
           <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
 
           <form class="strategy-plan-create" @submit.prevent="createPlanForCurrentRoom">
-            <input v-model="newPlanName" maxlength="160" placeholder="方案名称，例如：跑山鸡中控方案" />
-            <input v-model="newPlanDescription" maxlength="2000" placeholder="方案说明，例如：中控答疑、物流/价格/吃法优先" />
+            <input v-model="newPlanName" maxlength="160" />
+            <input v-model="newPlanDescription" maxlength="2000" />
             <button class="primary-button" type="submit" :disabled="planBusy || !newPlanName.trim()">
               {{ planBusy ? '处理中…' : '＋ 新建方案' }}
             </button>
@@ -7069,7 +7164,6 @@ onBeforeUnmount(() => {
               <input
                 v-model="settingsDraft.display_name"
                 maxlength="128"
-                placeholder="例如：小伴直播教练"
               />
             </label>
             <label>
@@ -7077,7 +7171,6 @@ onBeforeUnmount(() => {
               <input
                 v-model="settingsDraft.role_name"
                 maxlength="160"
-                placeholder="例如：直播策略与场控 Agent"
               />
             </label>
             <label class="wide">
@@ -7086,7 +7179,6 @@ onBeforeUnmount(() => {
                 v-model="settingsDraft.self_introduction"
                 rows="2"
                 maxlength="600"
-                placeholder="用户问“你是谁”时，优先按这里回答。"
               ></textarea>
             </label>
             <label class="wide">
@@ -7095,7 +7187,6 @@ onBeforeUnmount(() => {
                 v-model="settingsDraft.mission"
                 rows="3"
                 maxlength="1200"
-                placeholder="说明能做什么、负责什么，以及不能越过哪些系统边界。"
               ></textarea>
             </label>
             <label class="wide">
@@ -7104,7 +7195,6 @@ onBeforeUnmount(() => {
                 v-model="settingsDraft.greeting"
                 rows="2"
                 maxlength="600"
-                placeholder="进入直播策略 Agent 后第一句话。"
               ></textarea>
             </label>
           </div>
@@ -7151,12 +7241,12 @@ onBeforeUnmount(() => {
                 <div class="reusable-anchor-style-sample-compose">
                   <label class="reusable-anchor-style-compose-field">
                     <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M8 3h9l5 5v17H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M17 3v6h5M10 14h7M10 18h7"/></svg></span>
-                    <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="50" placeholder="样本标题，例如：菜籽油主线" />
+                    <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="50" />
                     <span class="reusable-anchor-style-compose-count">{{ reusableAnchorStyleSampleDraft.title.length }}/50</span>
                   </label>
                   <label class="reusable-anchor-style-compose-field reusable-anchor-style-compose-textarea">
                     <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h18v14H12l-5 4v-4H5V5Z"/><path d="M10 11h.01M14 11h.01M18 11h.01"/></svg></span>
-                    <textarea :value="reusableAnchorStyleSampleDraft.raw_text" rows="8" placeholder="粘贴主播真实说过的话。多段话可以一起粘贴，最多10000字。" @input="setAnchorSampleDraft"></textarea>
+                    <textarea :value="reusableAnchorStyleSampleDraft.raw_text" rows="8" @input="setAnchorSampleDraft"></textarea>
                     <span class="reusable-anchor-style-compose-count">{{ Array.from(reusableAnchorStyleSampleDraft.raw_text).length }}/10000</span>
                   </label>
                   <div class="reusable-anchor-style-sample-compose-actions">
@@ -7200,8 +7290,8 @@ onBeforeUnmount(() => {
                       <span>样本主播自称：{{ learnedAnchorSelfTerms.join('、') || '未提取到稳定自称' }}</span>
                     </div>
                     <div class="anchor-addressing-grid">
-                      <label><span>观众 / 粉丝称呼</span><select v-model="anchorAddressingDraft.audience_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类称呼</option></select><textarea v-if="anchorAddressingDraft.audience_mode !== 'inherit'" v-model="anchorAddressingDraft.audience_terms" rows="2" maxlength="180" placeholder="例如：姐妹们、老朋友们；用顿号或换行分隔"></textarea></label>
-                      <label><span>主播自称</span><select v-model="anchorAddressingDraft.self_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类自称</option></select><textarea v-if="anchorAddressingDraft.self_mode !== 'inherit'" v-model="anchorAddressingDraft.self_terms" rows="2" maxlength="180" placeholder="例如：我、咱们家；用顿号或换行分隔"></textarea></label>
+                      <label><span>观众 / 粉丝称呼</span><select v-model="anchorAddressingDraft.audience_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类称呼</option></select><textarea v-if="anchorAddressingDraft.audience_mode !== 'inherit'" v-model="anchorAddressingDraft.audience_terms" rows="2" maxlength="180"></textarea></label>
+                      <label><span>主播自称</span><select v-model="anchorAddressingDraft.self_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类自称</option></select><textarea v-if="anchorAddressingDraft.self_mode !== 'inherit'" v-model="anchorAddressingDraft.self_terms" rows="2" maxlength="180"></textarea></label>
                     </div>
                   </section>
                 </template>
@@ -7212,7 +7302,7 @@ onBeforeUnmount(() => {
                 <div v-show="false">
                 <div class="reusable-anchor-style-panel-title"><div><strong>测试与训练</strong><small>每次先生成一小段；不满意可写差异继续校正。测试不会发布，也不会自动备份版本或改当前直播。</small></div></div>
                 <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
-                  <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：从衣服面料和尺码开始讲一轮主线" /></label>
+                  <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" /></label>
                   <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
                   <label>主播风格还原强度：{{ anchorStyleMatchIntensity }}/100<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5" /></label>
                   <label>事实延展空间：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
@@ -7265,7 +7355,7 @@ onBeforeUnmount(() => {
                       <p><b>系统归纳：</b>{{ entry.diagnosis }}</p>
                     </article>
                   </div>
-                  <label><span>这版哪里还不像</span><textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300" placeholder="例如：说得太完整太顺了，原主播更喜欢短句，偶尔回头补一句。也可以粘贴其他 AI 的分析。"></textarea></label>
+                  <label><span>这版哪里还不像</span><textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300"></textarea></label>
                   <div class="strategy-style-correction-actions">
                     <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">{{ anchorStyleCorrectionBusy ? '正在学习并重生成…' : '学习这条反馈并重新生成' }}</button>
                     <button v-if="anchorStyleCorrectionCandidates.length" class="primary-button" type="button" :disabled="anchorStyleCorrectionBusy || styleOverlayBusy" @click="saveAnchorStyleCorrections">满意，保存这些调整</button>
@@ -7325,7 +7415,7 @@ onBeforeUnmount(() => {
             <header><strong>主流程：粘贴主播原文 → 分析 → 生成测试文案 → 反馈校正</strong><button class="strategy-version-button" @click="anchorStyleSampleExpanded = !anchorStyleSampleExpanded">{{ anchorStyleSampleExpanded ? '收起主播原文' : '展开并粘贴主播原文' }}</button></header>
             <p>这里才是主播样本入口。下面的“额外习惯”不是样本分析；它只用于你主动追加一句长期要求。</p>
             <template v-if="anchorStyleSampleExpanded">
-              <label>主播真实口播原文（必填）<textarea v-model="scriptReadableText" rows="8" maxlength="60000" placeholder="请在这里粘贴一份或多份主播真实说过的话。粘贴后，下方会显示实际字数。" @input="syncSimpleScriptText"></textarea></label>
+              <label>主播真实口播原文（必填）<textarea v-model="scriptReadableText" rows="8" maxlength="60000" @input="syncSimpleScriptText"></textarea></label>
               <small>当前已输入 {{ scriptReadableText.trim().length }} 字；灰色提示文字不计入输入。</small>
               <button class="primary-button" :disabled="scriptAnalyzing" @click="analyzeCurrentPlanScript">{{ scriptAnalyzing ? '分析规则中…' : '开始分析主播样本' }}</button>
               <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
@@ -7395,11 +7485,11 @@ onBeforeUnmount(() => {
             <div class="strategy-style-overlay-compose">
               <label>
                 <span>希望增加什么风格或本场策略</span>
-                <textarea v-model="styleOverlaySource" rows="2" maxlength="300" placeholder="例如：偶尔幽默一下；或喜欢用已确认数字做比价，但不要自己编数字。"></textarea>
+                <textarea v-model="styleOverlaySource" rows="2" maxlength="300"></textarea>
               </label>
               <label>
                 <span>补充我的意思 <small>选填；系统理解不准时再填写</small></span>
-                <textarea v-model="styleOverlayExplanation" rows="2" maxlength="600" placeholder="例如：一千字两三次，短回答不强求，只做自然接话或轻微自嘲。"></textarea>
+                <textarea v-model="styleOverlayExplanation" rows="2" maxlength="600"></textarea>
               </label>
               <label class="strategy-style-overlay-strength">
                 <span>叠加强度：{{ styleOverlayStrengthLabel(styleOverlayStrength) }}</span>
@@ -7473,7 +7563,7 @@ onBeforeUnmount(() => {
           <section v-if="canRunAnchorStyleTest" class="strategy-anchor-core-panel">
             <header><strong>用当前风格生成测试文案</strong><button class="primary-button" :disabled="!canRunAnchorStyleTest || anchorStyleTestBusy || scriptAnalyzing" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成并自动校验中…' : '生成测试文案' }}</button></header>
             <div class="strategy-anchor-test-settings">
-              <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300" placeholder="例如：欢迎新观众并介绍当前商品"></label>
+              <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300"></label>
               <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
               <label>主播风格还原强度（{{ anchorStyleMatchIntensity }}/100）<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5"></label>
               <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
@@ -7510,7 +7600,7 @@ onBeforeUnmount(() => {
                 </div>
                 <label>
                   <span>这版哪里还不像</span>
-                  <textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300" placeholder="例如：说得太完整太顺了，原主播更喜欢短句，偶尔回头补一句。也可以粘贴其他 AI 的分析。"></textarea>
+                  <textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300"></textarea>
                 </label>
                 <div class="strategy-style-correction-actions">
                   <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">
@@ -9304,6 +9394,16 @@ onBeforeUnmount(() => {
 .strategy-product-formal>header strong { color:#172440; font-size:18px; font-weight:900; }
 .strategy-product-formal>header span,.strategy-product-formal>header small { color:#8a94a7; font-size:15px; line-height:1.5; }
 .strategy-product-formal-empty { min-height:110px; }
+.strategy-frequency-toggle { flex:none; padding:7px 14px; border:1px solid #c9d3f4; border-radius:999px; background:var(--tint,#edf0ff); color:var(--accent,#4d62ff); font:inherit; font-size:15px; font-weight:750; cursor:pointer; }
+.strategy-frequency-toggle:hover { border-color:var(--accent,#4d62ff); }
+.strategy-frequency-panel { display:grid; gap:12px; padding:14px; border:1px solid #e3e8f7; border-radius:14px; background:linear-gradient(135deg,#fafbff,#f4f6ff); }
+.strategy-frequency-panel>p { margin:0; color:#6a7590; font-size:14px; line-height:1.55; }
+.strategy-frequency-panel>p.strategy-frequency-error { color:#c84858; }
+.strategy-frequency-row { display:grid; grid-template-columns:72px minmax(120px,1fr) 56px 48px; align-items:center; gap:12px; }
+.strategy-frequency-label { color:#172440; font-size:15px; font-weight:800; }
+.strategy-frequency-row input[type="range"] { width:100%; accent-color:var(--accent,#4d62ff); }
+.strategy-frequency-value { text-align:right; color:#4d62ff; font-size:15px; font-weight:800; }
+.strategy-frequency-share { text-align:right; color:#7a5af5; font-size:14px; font-weight:800; }
 .strategy-product-intro { font-size:14px!important; line-height:1.55!important; }
 @media(max-width:600px) { .strategy-product-formal { padding:12px; } }
 .strategy-product-link-card { display:grid; gap:14px; padding:18px; border:1px solid #dfe5f0; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
