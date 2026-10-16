@@ -215,7 +215,10 @@ func (s *Server) requireLiveStrategyAgentWrite(
 	return actor, tenantID, roomID, true
 }
 
-func (s *Server) requireBoundLiveStrategyPlan(
+// requireLiveStrategyPlan 校验方案存在且可用。方案是租户级资产，不再要求
+// 绑定到当前直播间——操作者对房间的授权已在入口处（tenantForRoom +
+// requireLiveStrategyRoomAccess）完成，绑定关系不应阻断方案级操作。
+func (s *Server) requireLiveStrategyPlan(
 	r *http.Request,
 	tenantID, roomID, planID int64,
 ) (model.LiveAgentPlan, error) {
@@ -225,13 +228,6 @@ func (s *Server) requireBoundLiveStrategyPlan(
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if err != nil || plan.Status != "active" {
 		return model.LiveAgentPlan{}, errors.New("plan_not_found")
-	}
-	bound, err := s.store.IsRoomBoundToLiveAgentPlan(r.Context(), tenantID, roomID, planID)
-	if err != nil {
-		return model.LiveAgentPlan{}, err
-	}
-	if !bound {
-		return model.LiveAgentPlan{}, errors.New("plan_not_bound")
 	}
 	return plan, nil
 }
@@ -269,7 +265,7 @@ func writeLiveStrategyActionFailure(w http.ResponseWriter, code, reply string, d
 }
 
 func (s *Server) executeLiveStrategyAddProduct(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请刷新后重新发起。", nil)
 	}
 	candidate := model.LiveAgentPlanProductLinkCandidate{
@@ -328,7 +324,7 @@ func (s *Server) liveStrategyProductAttributeTarget(r *http.Request, tenantID in
 }
 
 func (s *Server) executeLiveStrategyAddProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请重新发起。", nil)
 	}
 	if p.ProductLinkID <= 0 && strings.TrimSpace(p.LinkKey) == "" {
@@ -369,7 +365,7 @@ func (s *Server) executeLiveStrategyAddProductAttribute(r *http.Request, actor m
 }
 
 func (s *Server) executeLiveStrategyUpdateProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请重新发起修改。", nil)
 	}
 	link, current, err := s.liveStrategyProductAttributeTarget(r, tenantID, p)
@@ -413,7 +409,7 @@ func (s *Server) executeLiveStrategyUpdateProductAttribute(r *http.Request, acto
 }
 
 func (s *Server) executeLiveStrategyDisableProductAttribute(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	link, current, err := s.liveStrategyProductAttributeTarget(r, tenantID, p)
@@ -435,7 +431,7 @@ func (s *Server) executeLiveStrategyDisableProductAttribute(r *http.Request, act
 }
 
 func (s *Server) executeLiveStrategyUpdateProduct(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间，请重新发起修改。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanProductLinks(r.Context(), tenantID, p.PlanID)
@@ -479,7 +475,7 @@ func (s *Server) executeLiveStrategyUpdateProduct(r *http.Request, actor model.A
 }
 
 func (s *Server) executeLiveStrategyDisableProduct(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanProductLinks(r.Context(), tenantID, p.PlanID)
@@ -505,7 +501,7 @@ func (s *Server) executeLiveStrategyDisableProduct(r *http.Request, actor model.
 }
 
 func (s *Server) executeLiveStrategyAddBenefit(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	candidate := model.LiveAgentPlanBenefitCandidate{
@@ -541,7 +537,7 @@ func (s *Server) executeLiveStrategyAddBenefit(r *http.Request, actor model.Acto
 }
 
 func (s *Server) executeLiveStrategyUpdateBenefit(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanBenefits(r.Context(), tenantID, p.PlanID)
@@ -588,7 +584,7 @@ func (s *Server) executeLiveStrategyUpdateBenefit(r *http.Request, actor model.A
 }
 
 func (s *Server) executeLiveStrategyDisableBenefit(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanBenefits(r.Context(), tenantID, p.PlanID)
@@ -614,7 +610,7 @@ func (s *Server) executeLiveStrategyDisableBenefit(r *http.Request, actor model.
 }
 
 func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	candidate := model.LiveAgentPlanFactCandidate{
@@ -678,7 +674,7 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 }
 
 func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, p.PlanID)
@@ -724,7 +720,7 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 }
 
 func (s *Server) executeLiveStrategyDisableFact(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, p.PlanID)
@@ -753,7 +749,7 @@ func (s *Server) executeLiveStrategyDisableFact(r *http.Request, actor model.Act
 }
 
 func (s *Server) executeLiveStrategyAddScriptReference(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	input := model.CreateLiveAgentPlanScriptReferenceInput{
@@ -781,7 +777,7 @@ func (s *Server) executeLiveStrategyAddScriptReference(r *http.Request, actor mo
 }
 
 func (s *Server) executeLiveStrategyUpdateScriptReference(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanScriptReferences(r.Context(), tenantID, p.PlanID)
@@ -827,7 +823,7 @@ func (s *Server) executeLiveStrategyUpdateScriptReference(r *http.Request, actor
 }
 
 func (s *Server) executeLiveStrategyDisableScriptReference(r *http.Request, actor model.Actor, tenantID int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenantID, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	items, err := s.store.ListLiveAgentPlanScriptReferences(r.Context(), tenantID, p.PlanID)

@@ -104,6 +104,8 @@ type LiveAgentPlanProductLinkCandidate struct {
 	SourceQuotes  []string                                 `json:"source_quotes,omitempty"`
 	Confidence    string                                   `json:"confidence,omitempty"`
 	Attributes    []LiveAgentPlanProductAttributeCandidate `json:"attributes,omitempty"`
+	// ImportMode 控制采纳方式："merge"（默认）已存在则补齐、不存在则新增；"replace" 全部按本次识别结果覆盖，未识别字段置空、个性属性整体替换。
+	ImportMode string `json:"import_mode,omitempty"`
 }
 
 // LiveAgentPlanProductAttributeCandidate contains category-specific product

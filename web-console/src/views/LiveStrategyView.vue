@@ -3848,7 +3848,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
     fullShowNotice.value = planBoundToRoom
       ? `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
-      : `${safetyNotice} 已存档方案 V${saved.version_no}（未绑定当前直播间，仅保存方案内容，直播间不可使用）。绑定房间后再发布即可使用。`
+      : `${safetyNotice} 已存档方案 V${saved.version_no}（未绑定当前直播间，仅保存方案内容，直播间暂不可用）。之后把方案绑定到直播间即可直接使用，无需再发布。`
     await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()]).catch(() => {
       fullShowNotice.value += ' 方案已保存，但页面状态刷新失败，请刷新页面查看。'
     })

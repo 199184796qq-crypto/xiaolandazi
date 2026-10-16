@@ -99,6 +99,14 @@ export function liveProductLinkActionFromText(value: string): LiveProductLinkAct
   return ''
 }
 
+export function liveProductImportModeFromText(value: string): 'merge' | 'replace' {
+  const compact = String(value || '').replace(/\s+/g, '')
+  if (/(?:替换|整体替换|覆盖|全部重来|重新识别|重录).*(?:链接|商品)|(?:链接|商品).*(?:替换|整体替换|覆盖|全部重来|重新识别|重录)/.test(compact)) {
+    return 'replace'
+  }
+  return 'merge'
+}
+
 export function liveProductLinkTypoCorrection(value: string) {
   if (!/(?:商品)?连接/.test(value)) return ''
   const corrected = value.replace(/商品连接/g, '商品链接').replace(/连接/g, '链接')

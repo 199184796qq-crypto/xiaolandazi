@@ -25,12 +25,23 @@ type liveMaterialImageRecognition struct {
 }
 
 type liveMaterialImageProduct struct {
-	ProductName string `json:"product_name,omitempty"`
-	Spec        string `json:"spec,omitempty"`
-	DailyPrice  string `json:"daily_price,omitempty"`
-	Quantity    string `json:"quantity,omitempty"`
-	Audience    string `json:"audience,omitempty"`
+	ProductName string                       `json:"product_name,omitempty"`
+	Spec        string                       `json:"spec,omitempty"`
+	DailyPrice  string                       `json:"daily_price,omitempty"`
+	Quantity    string                       `json:"quantity,omitempty"`
+	Audience    string                       `json:"audience,omitempty"`
+	RoomRoles   []string                     `json:"room_roles,omitempty"`
+	Attributes  []liveMaterialImageAttribute `json:"attributes,omitempty"`
 }
+
+type liveMaterialImageAttribute struct {
+	Code  string `json:"code,omitempty"`
+	Label string `json:"label,omitempty"`
+	Value string `json:"value,omitempty"`
+	Unit  string `json:"unit,omitempty"`
+}
+
+var liveRoomProductRoleValues = []string{"main", "traffic", "benefit", "profit", "bundle", "ordinary"}
 
 func normalizeLiveMaterialImageRecognition(input liveMaterialImageRecognition) liveMaterialImageRecognition {
 	input.Text = strings.TrimSpace(input.Text)
@@ -61,15 +72,69 @@ func normalizeLiveMaterialImageRecognition(input liveMaterialImageRecognition) l
 		input.Product.DailyPrice = strings.TrimSpace(input.Product.DailyPrice)
 		input.Product.Quantity = strings.TrimSpace(input.Product.Quantity)
 		input.Product.Audience = strings.TrimSpace(input.Product.Audience)
+		input.Product.RoomRoles = normalizeLiveMaterialRoomRoles(input.Product.RoomRoles)
+		// 清洗个性属性：去掉空值、去重 code、限数量，过滤与通用字段/直播间定位冲突的 code。
+		attrs := make([]liveMaterialImageAttribute, 0, len(input.Product.Attributes))
+		seen := map[string]struct{}{}
+		reserved := map[string]struct{}{
+			"link_key": {}, "product_name": {}, "spec": {}, "daily_price": {},
+			"quantity": {}, "audience": {}, "room_roles": {},
+		}
+		for _, attr := range input.Product.Attributes {
+			attr.Code = strings.ToLower(strings.TrimSpace(attr.Code))
+			attr.Label = strings.TrimSpace(attr.Label)
+			attr.Value = strings.TrimSpace(attr.Value)
+			attr.Unit = strings.TrimSpace(attr.Unit)
+			if attr.Code == "" || attr.Label == "" || attr.Value == "" {
+				continue
+			}
+			if _, ok := reserved[attr.Code]; ok {
+				continue
+			}
+			if _, ok := seen[attr.Code]; ok {
+				continue
+			}
+			seen[attr.Code] = struct{}{}
+			attrs = append(attrs, attr)
+			if len(attrs) >= 40 {
+				break
+			}
+		}
+		input.Product.Attributes = attrs
 		if input.Product.ProductName == "" &&
 			input.Product.Spec == "" &&
 			input.Product.DailyPrice == "" &&
 			input.Product.Quantity == "" &&
-			input.Product.Audience == "" {
+			input.Product.Audience == "" &&
+			len(input.Product.RoomRoles) == 0 &&
+			len(input.Product.Attributes) == 0 {
 			input.Product = nil
 		}
 	}
 	return input
+}
+
+func normalizeLiveMaterialRoomRoles(values []string) []string {
+	allowed := make(map[string]bool, len(liveRoomProductRoleValues))
+	for _, value := range liveRoomProductRoleValues {
+		allowed[value] = true
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if !allowed[value] {
+			continue
+		}
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	if seen["ordinary"] && len(result) > 1 {
+		result = []string{"ordinary"}
+	}
+	return result
 }
 
 func recognizeLiveMaterialImage(ctx context.Context, mimeType string, raw []byte) (liveMaterialImageRecognition, string, string, int64, error) {
@@ -89,7 +154,16 @@ func recognizeLiveMaterialImage(ctx context.Context, mimeType string, raw []byte
 请完成三件事：
 1. text：按自然阅读顺序逐字提取所有可辨认文字，尽量保留原有换行、数字、单位、标点和链接编号。看不清的地方写“[无法辨认]”，不要猜。
 2. visual_context：只描述对直播素材有用、且图片中直接可见的非文字信息，例如商品外观、包装、表格/海报结构、明显的数量关系。不得推断品牌背景、功效、价格、产地、库存、快递、资质或活动规则。
-3. product：如果图片明显是在展示一个商品，则只根据图片直接可见内容提取商品字段；没有显示的字段必须为空字符串。product_name 只写能从包装/标题直接确认的商品名称；spec 写规格或净含量；daily_price 仅在图片明确显示普通/日常/原价时填写；quantity 写明确显示的数量；audience 仅在图片明确写出适用人群时填写。图片不是商品资料时 product 返回 null。
+3. product：如果图片明显是在展示一个商品，则只根据图片直接可见内容提取商品字段；没有显示的字段必须为空字符串或不返回。
+
+product 字段规则：
+- product_name：只写能从包装/标题直接确认的商品名称。
+- spec：写规格或净含量。
+- daily_price：仅在图片明确显示普通/日常/原价时填写。
+- quantity：写明确显示的数量。
+- audience：仅在图片明确写出适用人群时填写。
+- room_roles：仅当图片明确标注直播间定位（主推=main / 引流=traffic / 福利=benefit / 利润=profit / 搭配=bundle / 普通=ordinary）时，返回对应英文枚举数组；没有明示就返回空数组。
+- attributes：只提取图片直接可见、且不属于上面通用字段的商品关键信息，例如品牌、产地、材质、保质期、净含量、工艺、执行标准等。每项包含 code（英文小写下划线）、label（中文字段名）、value（内容）、unit（可选单位）。**严禁把用户评价、好评、口碑、销量、功效宣传、限时活动当作字段内容**；图片不是商品资料时 product 返回 null。
 
 严格返回 JSON：
 {
@@ -101,7 +175,12 @@ func recognizeLiveMaterialImage(ctx context.Context, mimeType string, raw []byte
     "spec": "直接可见的规格",
     "daily_price": "直接可见的日常/原价",
     "quantity": "直接可见的数量",
-    "audience": "直接可见的适用人群"
+    "audience": "直接可见的适用人群",
+    "room_roles": ["main"],
+    "attributes": [
+      {"code": "brand", "label": "品牌", "value": "某某牌", "unit": ""},
+      {"code": "origin", "label": "产地", "value": "四川绵阳", "unit": ""}
+    ]
   }
 }`
 	result, err := agentgateway.NewFromContext(ctx).Complete(ctx, agentgateway.Request{

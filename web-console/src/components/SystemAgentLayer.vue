@@ -82,6 +82,8 @@ import type {
   AgentMemoryVersion,
   LiveAgentPlanFactCandidate,
   LiveAgentPlanBenefitCandidate,
+  LiveAgentPlanProductAttributeCandidate,
+  LiveAgentPlanImageRecognitionPreviewResponse,
   LivePolicyLearningCandidate,
   SystemAgentActionPreview,
   SystemAgentChatResponse,
@@ -108,6 +110,7 @@ import {
   liveBenefitUpdateValues,
   liveProductField,
   liveProductImplicitSpecFromCommand,
+  liveProductImportModeFromText,
   liveProductLinkActionFromText,
   liveProductLinkKeyFromText,
   liveProductLinkTypoCorrection,
@@ -2290,7 +2293,77 @@ function liveImageProductCandidate(userText: string, replyText: string) {
     dailyPrice: liveProductField(cleanReply, ['价格', '日常价', '原价']),
     quantity: liveProductField(cleanReply, ['数量']),
     audience: liveProductField(cleanReply, ['适用人群', '适用对象', '适用']),
+    roomRoles: [] as string[],
+    attributes: [] as LiveAgentPlanProductAttributeCandidate[],
+    importMode: liveProductImportModeFromText(userText),
     sourceText: cleanReply,
+  }
+}
+
+type LiveImageProductCandidate = {
+  linkKey: string
+  productName: string
+  spec: string
+  dailyPrice: string
+  quantity: string
+  audience: string
+  roomRoles: string[]
+  attributes: LiveAgentPlanProductAttributeCandidate[]
+  importMode: 'merge' | 'replace'
+  sourceText: string
+}
+
+function liveImageProductCandidateFromRecognition(
+  userText: string,
+  images: RecognizedAgentImage[],
+): LiveImageProductCandidate | null {
+  const linkKey = liveProductLinkKeyFromText(userText)
+  if (!linkKey) return null
+
+  // 从结构化识别结果里取第一个带商品信息的 product。
+  let product: LiveAgentPlanImageRecognitionPreviewResponse['product'] = null
+  for (const image of images) {
+    const candidate = image.result.product
+    if (candidate && (candidate.product_name?.trim() || candidate.spec?.trim() || candidate.daily_price?.trim() || candidate.quantity?.trim() || candidate.audience?.trim() || (candidate.attributes?.length || 0) > 0)) {
+      product = candidate
+      break
+    }
+  }
+
+  // 结构化结果里的商品名称优先；拿不到再退回文本里的显式商品名。
+  const productName =
+    (product?.product_name || '').trim() ||
+    liveImageProductName(
+      images.map((image) => image.result.text).join('\n'),
+      linkKey,
+    ) ||
+    ''
+
+  if (!productName) return null
+
+  const attributes: LiveAgentPlanProductAttributeCandidate[] = (product?.attributes || [])
+    .filter((attribute) => attribute.code && attribute.label && attribute.value)
+    .map((attribute) => ({
+      code: attribute.code,
+      label: attribute.label,
+      value: attribute.value,
+      unit: attribute.unit || '',
+      display_type: attribute.display_type || 'text',
+      display_priority: attribute.display_priority || 0,
+      source_quote: attribute.source_quote || '',
+    }))
+
+  return {
+    linkKey,
+    productName,
+    spec: (product?.spec || '').trim(),
+    dailyPrice: (product?.daily_price || '').trim(),
+    quantity: (product?.quantity || '').trim(),
+    audience: (product?.audience || '').trim(),
+    roomRoles: Array.isArray(product?.room_roles) ? product!.room_roles!.map((role) => String(role).trim()).filter(Boolean) : [],
+    attributes,
+    importMode: liveProductImportModeFromText(userText),
+    sourceText: images.map((image) => image.result.text).filter(Boolean).join('\n'),
   }
 }
 
@@ -5458,7 +5531,11 @@ async function send() {
           history,
         })
         const planId = unifiedPlanId
-        const candidate = liveImageProductCandidate(value, response.reply)
+        // 优先用结构化识别结果构建候选（字段名：内容可靠、含个性属性与直播间定位）；
+        // 结构化无商品资料时退回文本回复解析兜底。
+        const candidate =
+          liveImageProductCandidateFromRecognition(value, recognizedImages) ||
+          liveImageProductCandidate(value, response.reply)
         const clarification = !candidate && planId
           ? buildLiveStrategyIntentClarification(
               value,
@@ -5476,9 +5553,11 @@ async function send() {
           candidate
             ? {
                 type: 'add_live_image_product',
-                title: '添加' + candidate.linkKey + '商品',
-                summary: '图片识别结果尚未写入。点击“添加”后写入当前直播智能体方案，并生成可追溯版本。',
-                risk_level: 'low',
+                title: (candidate.importMode === 'replace' ? '替换' : '添加') + candidate.linkKey + '商品',
+                summary: candidate.importMode === 'replace'
+                  ? '将按本次识别结果整体替换“' + candidate.linkKey + '”，未识别到的字段会清空、个性属性整体重建。点击“替换”后写入当前方案。'
+                  : '图片识别结果尚未写入。若“' + candidate.linkKey + '”已存在则补齐更新、不存在则新增；点击“添加”后写入当前方案，并生成可追溯版本。',
+                risk_level: candidate.importMode === 'replace' ? 'medium' : 'low',
                 requires_confirmation: true,
                 payload: {
                   plan_id: planId,
@@ -5489,6 +5568,9 @@ async function send() {
                   daily_price: candidate.dailyPrice,
                   quantity: candidate.quantity,
                   audience: candidate.audience,
+                  room_roles: candidate.roomRoles || [],
+                  attributes: candidate.attributes || [],
+                  import_mode: candidate.importMode,
                   source_text: candidate.sourceText,
                 },
               }
@@ -6571,10 +6653,40 @@ async function executeAction(message: ChatMessage) {
 
     executing.value = true
     try {
+      const importMode = action.payload.import_mode === 'replace' ? 'replace' : 'merge'
       const current = await getLiveAgentPlanProductLinks(planId)
       const existing = (current.items || []).find((item) => item.link_key === linkKey)
       let resultText = ''
-      if (existing) {
+      // replace：无论是否已存在，都整体按本次识别结果覆盖（未识别字段置空、属性整体替换），统一走 adopt 让后端覆盖。
+      if (importMode === 'replace') {
+        const adopted = await adoptLiveAgentPlanProductLinks(
+          planId,
+          [{
+            link_key: linkKey,
+            product_name: productName,
+            room_roles: intentStringArray(action.payload.room_roles),
+            spec: String(action.payload.spec || '').trim(),
+            daily_price: String(action.payload.daily_price || '').trim(),
+            quantity: String(action.payload.quantity || '').trim(),
+            audience: String(action.payload.audience || '').trim(),
+            attributes: Array.isArray(action.payload.attributes) ? action.payload.attributes : [],
+            review_bucket: 'adoptable',
+            import_mode: 'replace',
+            source_quotes: [
+              String(action.payload.source_text || '').trim(),
+              '用户确认：替换商品链接（整体按新识别结果覆盖）',
+            ].filter(Boolean),
+          }],
+          undefined,
+          'system-agent:image-product:replace',
+        )
+        const saved = adopted.results?.find((item) => item.saved)?.saved
+        if (!adopted.adopted) {
+          throw new Error(adopted.results?.[0]?.message || '商品信息没有写入，请检查当前方案是否存在冲突。')
+        }
+        resultText = '已按替换方式覆盖“' + linkKey + ' · ' + productName + '”' +
+          (saved?.version_no ? '，当前正式版本 V' + saved.version_no : '') + '。未识别到的字段已清空、个性属性已按识别结果重建。'
+      } else if (existing) {
         if (!isImageProduct) {
           throw new Error('确认期间“' + linkKey + '”已经存在。为避免把“新增”悄悄变成“修改”，请重新发起操作。')
         }
@@ -6601,7 +6713,9 @@ async function executeAction(message: ChatMessage) {
             daily_price: String(action.payload.daily_price || '').trim(),
             quantity: String(action.payload.quantity || '').trim(),
             audience: String(action.payload.audience || '').trim(),
+            attributes: Array.isArray(action.payload.attributes) ? action.payload.attributes : [],
             review_bucket: 'adoptable',
+            import_mode: 'merge',
             source_quotes: [
               String(action.payload.source_text || '').trim(),
               isImageProduct ? '用户确认：添加图片识别结果' : '用户确认：添加商品链接',
@@ -7333,6 +7447,10 @@ async function copyCredential(credential?: InitialCredential) {
                 </div>
               </dl>
               <dl v-else-if="message.action.type === 'add_live_image_product' || message.action.type === 'add_live_product'">
+                <div v-if="message.action.payload.import_mode">
+                  <dt>导入方式</dt>
+                  <dd>{{ message.action.payload.import_mode === 'replace' ? '替换（整体覆盖）' : '添加（已存在则补齐）' }}</dd>
+                </div>
                 <div>
                   <dt>链接</dt>
                   <dd>{{ message.action.payload.link_key || '-' }}</dd>
@@ -7352,6 +7470,18 @@ async function copyCredential(credential?: InitialCredential) {
                 <div v-if="message.action.payload.spec">
                   <dt>规格/卖点</dt>
                   <dd>{{ message.action.payload.spec }}</dd>
+                </div>
+                <div v-if="message.action.payload.quantity">
+                  <dt>数量</dt>
+                  <dd>{{ message.action.payload.quantity }}</dd>
+                </div>
+                <div v-if="message.action.payload.audience">
+                  <dt>适用</dt>
+                  <dd>{{ message.action.payload.audience }}</dd>
+                </div>
+                <div v-for="attribute in (message.action.payload.attributes || [])" :key="attribute.code">
+                  <dt>{{ attribute.label }}</dt>
+                  <dd>{{ attribute.value }}{{ attribute.unit || '' }}</dd>
                 </div>
               </dl>
               <dl v-else-if="message.action.type === 'add_live_benefit'">

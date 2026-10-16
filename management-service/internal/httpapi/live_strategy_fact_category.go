@@ -49,7 +49,7 @@ func proposedFactCategory(catalog factCategoryCatalog, input *liveStrategyNewFac
 }
 
 func (s *Server) executeLiveStrategyAddFactCategory(r *http.Request, actor model.Actor, tenant int64, p liveStrategyExecutePayload) systemAgentChatOutput {
-	if _, err := s.requireBoundLiveStrategyPlan(r, tenant, p.RoomID, p.PlanID); err != nil {
+	if _, err := s.requireLiveStrategyPlan(r, tenant, p.RoomID, p.PlanID); err != nil {
 		return liveStrategyFailed("plan_scope_changed", "当前方案已经不再绑定这个直播间。", nil)
 	}
 	catalog, _, err := s.tenantFactCategoryCatalog(r.Context(), tenant)
