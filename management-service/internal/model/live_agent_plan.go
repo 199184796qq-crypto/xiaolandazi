@@ -137,30 +137,30 @@ type LiveAgentPlanBenefitCandidate struct {
 }
 
 type LiveAgentPlanProductLink struct {
-	ID                 int64                           `json:"id"`
-	TenantID           int64                           `json:"tenant_id"`
-	PlanID             int64                           `json:"plan_id"`
-	LinkKey            string                          `json:"link_key"`
-	ProductName        string                          `json:"product_name,omitempty"`
-	RoomRoles          []string                        `json:"room_roles"`
-	Spec               string                          `json:"spec,omitempty"`
-	DailyPrice         string                          `json:"daily_price,omitempty"`
-	Quantity           string                          `json:"quantity,omitempty"`
-	Audience           string                          `json:"audience,omitempty"`
-	SourceQuote        string                          `json:"source_quote,omitempty"`
-	SourceReviewBucket string                          `json:"source_review_bucket,omitempty"`
-	SourceReviewReason string                          `json:"source_review_reason,omitempty"`
-	SourceType         string                          `json:"source_type"`
-	SourceRef          string                          `json:"source_ref,omitempty"`
-	Status             string                          `json:"status"`
-	FrequencyWeight    int                             `json:"frequency_weight,omitempty"`
-	VersionNo          int64                           `json:"version_no"`
-	CreatedByUserID    *int64                          `json:"created_by_user_id,omitempty"`
-	UpdatedByUserID    *int64                          `json:"updated_by_user_id,omitempty"`
-	CreatedAt          time.Time                       `json:"created_at"`
-	UpdatedAt          time.Time                       `json:"updated_at"`
-	Attributes         []LiveAgentPlanProductAttribute `json:"attributes"`
-	FieldLabels        map[string]string               `json:"field_labels,omitempty"`
+	ID                 int64                              `json:"id"`
+	TenantID           int64                              `json:"tenant_id"`
+	PlanID             int64                              `json:"plan_id"`
+	LinkKey            string                             `json:"link_key"`
+	ProductName        string                             `json:"product_name,omitempty"`
+	RoomRoles          []string                           `json:"room_roles"`
+	Spec               string                             `json:"spec,omitempty"`
+	DailyPrice         string                             `json:"daily_price,omitempty"`
+	Quantity           string                             `json:"quantity,omitempty"`
+	Audience           string                             `json:"audience,omitempty"`
+	SourceQuote        string                             `json:"source_quote,omitempty"`
+	SourceReviewBucket string                             `json:"source_review_bucket,omitempty"`
+	SourceReviewReason string                             `json:"source_review_reason,omitempty"`
+	SourceType         string                             `json:"source_type"`
+	SourceRef          string                             `json:"source_ref,omitempty"`
+	Status             string                             `json:"status"`
+	FrequencyWeight    int                                `json:"frequency_weight,omitempty"`
+	VersionNo          int64                              `json:"version_no"`
+	CreatedByUserID    *int64                             `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID    *int64                             `json:"updated_by_user_id,omitempty"`
+	CreatedAt          time.Time                          `json:"created_at"`
+	UpdatedAt          time.Time                          `json:"updated_at"`
+	Attributes         []LiveAgentPlanProductAttribute    `json:"attributes"`
+	FieldLabels        map[string]string                  `json:"field_labels,omitempty"`
 	SellingPoints      []LiveAgentPlanProductSellingPoint `json:"selling_points,omitempty"`
 }
 
@@ -189,25 +189,25 @@ type LiveAgentPlanProductAttribute struct {
 // LiveAgentPlanProductSellingPoint 是「每个商品独立」的卖点池成员：一个卖点 + 若干角度，
 // 每个角度带独立讲解权重。归属由 product_link_id 程序保证，模型不回传链接字段，不存在填错链接。
 type LiveAgentPlanProductSellingPoint struct {
-	ID             int64                             `json:"id"`
-	TenantID       int64                             `json:"tenant_id"`
-	PlanID         int64                             `json:"plan_id"`
-	ProductLinkID  int64                             `json:"product_link_id"`
-	SellingPoint   string                            `json:"selling_point"`
-	Tier           string                            `json:"tier,omitempty"`
-	PointWeight    int                               `json:"point_weight"`
-	IsMain         bool                              `json:"is_main"`
-	Angles         []LiveAgentPlanProductSellingAngle `json:"angles"`
-	TargetAudience string                            `json:"target_audience,omitempty"`
-	PainPoint      string                            `json:"pain_point,omitempty"`
-	SourceType     string                            `json:"source_type"`
-	SourceRef      string                            `json:"source_ref,omitempty"`
-	Status         string                            `json:"status"`
-	VersionNo      int64                             `json:"version_no"`
-	CreatedByUserID *int64                           `json:"created_by_user_id,omitempty"`
-	UpdatedByUserID *int64                           `json:"updated_by_user_id,omitempty"`
-	CreatedAt      time.Time                         `json:"created_at"`
-	UpdatedAt      time.Time                         `json:"updated_at"`
+	ID              int64                              `json:"id"`
+	TenantID        int64                              `json:"tenant_id"`
+	PlanID          int64                              `json:"plan_id"`
+	ProductLinkID   int64                              `json:"product_link_id"`
+	SellingPoint    string                             `json:"selling_point"`
+	Tier            string                             `json:"tier,omitempty"`
+	PointWeight     int                                `json:"point_weight"`
+	IsMain          bool                               `json:"is_main"`
+	Angles          []LiveAgentPlanProductSellingAngle `json:"angles"`
+	TargetAudience  string                             `json:"target_audience,omitempty"`
+	PainPoint       string                             `json:"pain_point,omitempty"`
+	SourceType      string                             `json:"source_type"`
+	SourceRef       string                             `json:"source_ref,omitempty"`
+	Status          string                             `json:"status"`
+	VersionNo       int64                              `json:"version_no"`
+	CreatedByUserID *int64                             `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID *int64                             `json:"updated_by_user_id,omitempty"`
+	CreatedAt       time.Time                          `json:"created_at"`
+	UpdatedAt       time.Time                          `json:"updated_at"`
 }
 
 // LiveAgentPlanProductSellingAngle 是单个卖点下的一个切入角度及其讲解权重。
@@ -222,13 +222,13 @@ type SaveLiveAgentPlanProductSellingPointsInput struct {
 }
 
 type LiveAgentPlanProductSellingPointInput struct {
-	SellingPoint   string                            `json:"selling_point"`
-	Tier           string                            `json:"tier,omitempty"`
-	PointWeight    int                               `json:"point_weight,omitempty"`
-	IsMain         bool                              `json:"is_main,omitempty"`
+	SellingPoint   string                             `json:"selling_point"`
+	Tier           string                             `json:"tier,omitempty"`
+	PointWeight    int                                `json:"point_weight,omitempty"`
+	IsMain         bool                               `json:"is_main,omitempty"`
 	Angles         []LiveAgentPlanProductSellingAngle `json:"angles"`
-	TargetAudience string                            `json:"target_audience,omitempty"`
-	PainPoint      string                            `json:"pain_point,omitempty"`
+	TargetAudience string                             `json:"target_audience,omitempty"`
+	PainPoint      string                             `json:"pain_point,omitempty"`
 }
 
 type CreateLiveAgentPlanProductAttributeInput struct {

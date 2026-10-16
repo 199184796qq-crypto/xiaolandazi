@@ -104,7 +104,7 @@ func (c *cardCopyConn) QueryContext(_ context.Context, q string, args []driver.N
 		if c.benefit {
 			row[3], row[4], row[5], row[16], row[18] = insert[0].Value, insert[1].Value, insert[2].Value, insert[3].Value, int64(1)
 		} else {
-			row[3], row[4], row[15], row[17] = insert[0].Value, insert[1].Value, insert[2].Value, int64(1)
+			row[3], row[4], row[16], row[18] = insert[0].Value, insert[1].Value, insert[2].Value, int64(1)
 		}
 		rows.values = [][]driver.Value{row}
 	}
