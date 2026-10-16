@@ -257,7 +257,7 @@ func (s *State) recordProductAdoption(t Task, text string) {
 	if s.Phase == "closing" {
 		p.CompletedMainRounds++
 	}
-	if s.Phase == "body" {
+	if s.Phase == "body" && !t.Common {
 		if p.AdoptedSegments == nil {
 			p.AdoptedSegments = map[string]int{}
 		}
@@ -285,6 +285,11 @@ func (t *Task) setProductLinks(links []string) {
 	t.AllowedLinksJSON = string(raw)
 }
 func (s *State) productTaskEligible(t Task) bool {
+	// Public material remains available as factual context. It is never an
+	// independent rolling task, including retry and exhaustion fallbacks.
+	if s.Config.Rolling && t.Common {
+		return false
+	}
 	if s.ProductFocus == nil {
 		return true
 	}

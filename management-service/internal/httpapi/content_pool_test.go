@@ -119,6 +119,11 @@ func TestRuntimeManyProductsStableIDsAndCommonSubsetFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, task := range tasks {
+		if task.ID == "common-task" && !task.Common {
+			t.Fatal("legacy common pool lost its scheduling exclusion")
+		}
+	}
 	state, err := anchorcycle.New(tasks, anchorcycle.Config{MaxChars: 300, PointGap: 2, CombinationGap: 8})
 	if err != nil {
 		t.Fatal(err)

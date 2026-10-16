@@ -132,7 +132,16 @@ func TestProductCommonSingleProductAndEmptyCommonPools(t *testing.T) {
 		}
 		focus, e := buildClassifiedProductFocus(input, links, facts, wheel)
 		if e != nil || len(input.Queue) != 1 || focus.ValidateProducts() != nil {
-			t.Fatal("single product/common-only pool cannot run", e)
+			t.Fatal("single product/common material snapshot was lost", e)
+		}
+		scheme := liveAnchorScheme{Config: anchorcycle.Config{Rolling: true, MaxChars: 300}, ProductFocus: focus}
+		prepared, prepareErr := (&Server{}).prepareSavedAnchorTaskState(context.Background(), 14, 5, nil, scheme, model.LiveDerivedSafetyAsset{SafeFacts: input.Facts, SafeWheelJSON: `{"卖点列表":[{"卖点名":"套餐","角度":["价格"]}]}`})
+		if onlyCommon {
+			if prepareErr == nil || !strings.Contains(prepareErr.Error(), "单品任务") {
+				t.Fatal("common-only material was accepted as a product rotation", prepareErr)
+			}
+		} else if prepareErr != nil || prepared.Task().Common {
+			t.Fatal("single product with own points cannot start", prepareErr)
 		}
 		links[0].SellingPoints = own
 	}
