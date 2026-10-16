@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	ErrLiveRuntimeAlreadyRunning = errors.New("live runtime already running")
-	ErrLiveRuntimeNotRunning     = errors.New("live runtime not running")
-	ErrLiveRuntimeNotRecoverable = errors.New("live runtime is not recoverable")
-	ErrLiveQuotaExhausted        = errors.New("live quota exhausted")
-	ErrLiveDeviceNotBound        = errors.New("live device not bound")
-	ErrLiveDeviceOffline         = errors.New("live device offline")
-	ErrLiveBindingBusy           = errors.New("live device or room is running")
+	ErrLiveRuntimeAlreadyRunning   = errors.New("live runtime already running")
+	ErrLiveRuntimeNotRunning       = errors.New("live runtime not running")
+	ErrLiveRuntimeNotRecoverable   = errors.New("live runtime is not recoverable")
+	ErrLiveQuotaExhausted          = errors.New("live quota exhausted")
+	ErrLiveDeviceNotBound          = errors.New("live device not bound")
+	ErrLiveDeviceOffline           = errors.New("live device offline")
+	ErrLiveBindingBusy             = errors.New("live device or room is running")
+	ErrUnsupportedLiveRuntimeEvent = errors.New("unsupported live runtime event code")
 )
 
 const (
@@ -3123,10 +3124,16 @@ func (s *Store) RecordLiveRuntimeEvent(
 		"DEVICE_SIM_STARTED":       "模拟设备开始工作",
 		"DEVICE_SIM_PAUSED":        "模拟设备已连接但暂停工作",
 		"DEVICE_SIM_CLOSED":        "模拟设备已关闭并离线",
+		"LIVE_AGENT_PLAN_CREATED":  "用户创建并选择智能体直播方案",
+		"LIVE_AGENT_PLAN_SELECTED": "用户切换智能体直播方案",
+		"AGENT_REPLY_RECEIVED":     "场控Agent已回复",
+		"AGENT_DOCK_MOVED":         "用户移动场控Agent入口",
+		"PUBLIC_USER_BLOCKED":      "用户屏蔽公屏用户",
+		"PUBLIC_USER_RESTORED":     "用户取消屏蔽公屏用户",
 	}
 	defaultTitle, ok := allowed[code]
 	if !ok {
-		return model.LiveRuntimeEvent{}, fmt.Errorf("unsupported live runtime event code")
+		return model.LiveRuntimeEvent{}, ErrUnsupportedLiveRuntimeEvent
 	}
 	title := strings.TrimSpace(input.Title)
 	if title == "" {

@@ -1075,10 +1075,19 @@ func (s *Server) liveRuntimeRecordEvent(w http.ResponseWriter, r *http.Request) 
 		r.Context(), tenantID, roomID, actor.UserID, input,
 	)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "不支持的直播操作记录")
+		writeLiveRuntimeRecordEventError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func writeLiveRuntimeRecordEventError(w http.ResponseWriter, err error) {
+	if errors.Is(err, appdb.ErrUnsupportedLiveRuntimeEvent) {
+		writeError(w, http.StatusBadRequest, "不支持的直播操作记录")
+		return
+	}
+	log.Printf("record live runtime event failed: %v", err)
+	writeError(w, http.StatusInternalServerError, "保存直播操作记录失败，请稍后重试")
 }
 
 func (s *Server) liveRuntimeEvents(w http.ResponseWriter, r *http.Request) {
