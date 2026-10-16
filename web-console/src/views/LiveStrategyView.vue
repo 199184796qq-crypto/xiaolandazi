@@ -3685,10 +3685,14 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     fullShowVersionError.value = fullShowSaveBlockedReason.value
     return null
   }
-  const contentModeAtSave = contentModeAccess.value?.content_mode
-  const realtimeOptionsAtSave = isRealtimeVoiceContentMode.value ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
+  // 方案是否绑定到当前选中的房间：绑定则按房间级内容模式保存；未绑定则作为「方案级存档」，
+  // room_id 传 0，内容模式落默认预生成（ai_pregenerated），不与任何房间绑定。
+  const planBoundToRoom = !!(room && currentPlan.value?.room_ids?.includes(room.id))
+  const contentModeAtSave = planBoundToRoom ? contentModeAccess.value?.content_mode : 'ai_pregenerated'
+  const realtimeActive = planBoundToRoom && isRealtimeVoiceContentMode.value
+  const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
   fullShowVersionSaving.value = true
-  fullShowNotice.value = isRealtimeVoiceContentMode.value ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
+  fullShowNotice.value = realtimeActive ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
   try {
     const originalSource = await compactOriginalSourceManifest()
     if (currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id || contentModeAccess.value?.content_mode !== contentModeAtSave) return null
@@ -3697,7 +3701,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       return null
     }
     const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
-    const variants = (isRealtimeVoiceContentMode.value ? [] : (result?.variants || [])).filter((variant) =>
+    const variants = (realtimeActive ? [] : (result?.variants || [])).filter((variant) =>
       fullShowFormalVariantKeys.value.includes(variant.variant_key),
     ).map((variant) => {
       const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
@@ -3749,7 +3753,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     })
     const payload = {
       tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
-      room_id: Math.round(Number(room.id || 0)),
+      room_id: planBoundToRoom ? Math.round(Number(room.id || 0)) : 0,
       duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
       round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
       voice_identity: cleanVersionVoiceIdentity(currentVoiceIdentity.value),
@@ -3791,7 +3795,9 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     void contentPools.refresh()
     fullShowWorkspaceInherited.value = false
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
-    fullShowNotice.value = `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
+    fullShowNotice.value = planBoundToRoom
+      ? `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
+      : `${safetyNotice} 已存档方案 V${saved.version_no}（未绑定当前直播间，仅保存方案内容，直播间不可使用）。绑定房间后再发布即可使用。`
     await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()]).catch(() => {
       fullShowNotice.value += ' 方案已保存，但页面状态刷新失败，请刷新页面查看。'
     })
