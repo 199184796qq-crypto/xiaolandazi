@@ -7,3 +7,7 @@
 验证包括真实隔离MySQL的刷新、版本冲突、跨用户/方案隔离、旧客户端保留、复制/重新采纳/删除审计；事实生成和名称校验专项；完整DB/Model/HTTPAPI测试；22项资料补充/格式化/导航保护回归；生产构建。完整LiveStrategyView父级模拟接口浏览器覆盖四个字段分别改名、值不变、刷新、另一商品不变、取消、空名及失败保留草稿，1600/1024/390/320px不溢出且控件至少16px。未操作真实客户商品或调用模型/TTS。
 
 发布继承当时实际current与全部静态文件，完整保留WorkBuddy和最新后台功能；仅更新管理程序及桌面/兼容入口并增加资源。发布前已确认最新主线前端源码在原始换行和desktop标识处理后，49个构建文件与实际web逐项一致；现场web-desktop保留较早入口和资源，新包沿用全部旧资源并使用整合源码。验证材料见当前聊天work/product-field-names-proof。
+
+2026-10-16北京时间09:36:32完成上线，current为`20261016-product-field-names-e34fe12`，部署源码`e34fe1238a293de45a5a994162a0dc7a094fc408`。Management PID907639，SHA256 `edce4c270440cec487aef8f98eacfe0ca872da42e4e3cc451f79cb5b84db42b6`；Core775073和网关775930未重启。发布持共享锁并两次确认AI空闲，2583个原有无关文件、系统设置与模型池配置、手机端及Nginx保持一致；两个JSON列已存在。1739个前端文件与完整新备份逐项一致，12个公网入口/资源校验通过，商品卡及模型池真实路由仍要求登录。未修改真实客户字段或启动直播。
+
+上线前发现WorkBuddy在同一旧release内原地更新了管理程序与桌面文件，未用旧指纹强行覆盖；重新核对全部2586个实际文件，以21个现场差异文件重建并验证发布前备份。最终整合WorkBuddy的ad864cf与33473da（方案保存及房间绑定修复）后发布，保留当时服务器所有静态文件。原E:/speech-generator-build工作目录未修改。部署、测试及备份证明分别见`deployment-report.json`、`production-verification.json`、`checks.json`、`pre-deploy-backup-verification.json`和`route-auth-verification.json`。

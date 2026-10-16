@@ -371,3 +371,11 @@
 - 下载互动输出回答→实际已播放桥的单个完整WAV；没有桥下载原回答。相同参数保留原PCM、修复供应商占位长度文件头，不增加静音尾或截音；不同参数使用现有本地FFmpeg统一。任一部分不可用时提示失败，不将半份音频当作合并成功。保留原24小时保留、HTTPS地址校验与客户运维授权，未修改原始播放记录、音频归档或直播调度，未调用模型/TTS。
 - HTTPAPI完整包、专项合并/隔离/筛选/文件头/混合采样率/部分失败测试通过，20项前端保护回归及生产构建通过；1440/390px浏览器验证通过。283场只读核对61条原始记录合并为32条主播说和18条互动，11组桥均准确对应；真实归档一组导出GET200，完整WAV1136684字节、23.68秒。该验证是历史文件导出，不是新一场直播播放验证。
 - 已合入WorkBuddy最新1c6d2d5（Core用户维度与文档）并推送GitHub main，work/main-merge-20261014同步；本次未部署其Core改动，E:/speech-generator-build原目录未改。前端1704文件及12个公网入口/资源核验一致，最新备份指针work/frontend-preservation/latest.json已更新。证明work/download-group-proof/deployment-report.json、production-verification.json、archive-replay-verification.json、checks.json；说明docs/2026-10-15-session-download-groups.md。后续仍以实际current及最新源码整合发布，不得用旧下载/模型池/话术库源码覆盖。
+
+
+## 商品卡字段名称编辑（2026-10-16 已上线）
+
+- 北京时间09:36:32上线 `/opt/xiaolan/releases/20261016-product-field-names-e34fe12`，部署源码e34fe1238a293de45a5a994162a0dc7a094fc408，Management PID907639/SHA256 edce4c270440cec487aef8f98eacfe0ca872da42e4e3cc451f79cb5b84db42b6。只重启Management，Core775073和网关775930未重启；2583个原有无关文件、系统设置与模型池、手机端和Nginx一致。
+- 商品卡规格/销售价/数量/适用的同行修改笔同时编辑名称与内容，提供保存/取消，名称按商品保存，刷新及复制保留。输入间换焦点不提前保存，行外沿用自动保存；空名与控制字符拒绝，文字至少16px，长名和320px宽度不溢出。内部字段键、商品ID、福利关系保持稳定，原客户授权及版本CAS保留；旧客户端更新不抹去改名。版本历史与新方案快照携带名称，生成事实同步使用名称，运行快照不擅自更改。
+- 已合入最新GitHub主线及WorkBuddy ad864cf/33473da的方案保存/房间绑定修改，并推送main；完整开发源码work/model-pool-source，整合副本work/main-merge-20261014同步。原E:/speech-generator-build未改。上线前捕获同名release内管理/桌面并行更新，重新按实际文件重建备份与基线后发布，后续仍不能按历史指纹覆盖。
+- DB/Model/HTTPAPI三个完整Go包、真实本地隔离MySQL持久化/复制/版本冲突/旧客户端/范围隔离、22项前端保护回归与构建、完整方案页四种宽度浏览器检查通过。两个JSON列核验、12个公网入口/资源与1739个前端文件/备份核验通过；最新指针work/frontend-preservation/latest.json已更新。未修改真实客户商品或发送模型/TTS请求。证明work/product-field-names-proof/deployment-report.json、production-verification.json、checks.json；说明docs/2026-10-16-product-field-names.md。
