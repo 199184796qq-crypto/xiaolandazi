@@ -285,6 +285,10 @@ func New(tasks []Task, cfg Config) (State, error) {
 		}
 		if tasks[i].ID != "" {
 			tasks[i].Key = tasks[i].ID
+		} else if tasks[i].LinkKey != "" {
+			// Product task scopes and weights use this program-owned qualified key.
+			// Dropping the product prefix here makes every saved task ineligible.
+			tasks[i].Key = tasks[i].LinkKey + "×" + tasks[i].SellingPoint + "×" + tasks[i].Angle
 		} else {
 			tasks[i].Key = tasks[i].SellingPoint + "×" + tasks[i].Angle
 		}
