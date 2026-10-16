@@ -13,17 +13,18 @@ import (
 // IDs, credentials and policies are populated by the server on save. Only the
 // validated customer scheduling whitelist can vary. Runs take Redis-only copies.
 type liveAnchorScheme struct {
-	PoolPolicy       *anchorcycle.ProductPolicy `json:"pool_policy,omitempty"`
-	PoolPolicySource string                     `json:"pool_policy_source,omitempty"`
-	ProductFocus     *anchorcycle.ProductFocus  `json:"product_focus,omitempty"`
-	StyleMD          string                     `json:"style_md"`
-	BaselineJSON     string                     `json:"baseline_json"`
-	BufferSeconds    int                        `json:"buffer_seconds"`
-	Version          int                        `json:"version"`
-	StyleID          int64                      `json:"style_id"`
-	ScorecardID      int64                      `json:"scorecard_id"`
-	WheelID          int64                      `json:"wheel_id"`
-	Config           anchorcycle.Config         `json:"config"`
+	PoolPolicy            *anchorcycle.ProductPolicy `json:"pool_policy,omitempty"`
+	PoolPolicySource      string                     `json:"pool_policy_source,omitempty"`
+	ProductFocus          *anchorcycle.ProductFocus  `json:"product_focus,omitempty"`
+	SingleProductSchedule *anchorcycle.FocusProduct  `json:"single_product_schedule,omitempty"`
+	StyleMD               string                     `json:"style_md"`
+	BaselineJSON          string                     `json:"baseline_json"`
+	BufferSeconds         int                        `json:"buffer_seconds"`
+	Version               int                        `json:"version"`
+	StyleID               int64                      `json:"style_id"`
+	ScorecardID           int64                      `json:"scorecard_id"`
+	WheelID               int64                      `json:"wheel_id"`
+	Config                anchorcycle.Config         `json:"config"`
 }
 
 func realtimeScheme(data map[string]any) (liveAnchorScheme, error) {

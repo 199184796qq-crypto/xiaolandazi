@@ -35,6 +35,8 @@ type Task struct {
 	LecturePlanJSON  string         `json:"lecture_plan_json,omitempty"`
 	LecturePlanSHA   string         `json:"lecture_plan_sha,omitempty"`
 	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
+	PointWeight      int            `json:"point_weight,omitempty"`
+	AngleWeight      int            `json:"angle_weight,omitempty"`
 	ID               string         `json:"id,omitempty"`
 	LinkKey          string         `json:"link_key,omitempty"`
 	FocusLink        string         `json:"focus_link,omitempty"`
@@ -239,6 +241,10 @@ type State struct {
 	StyleMD                      string                         `json:"style_md"`
 	Facts                        string                         `json:"facts"`
 	FissionSides                 []string                       `json:"fission_sides,omitempty"`
+	PointSchedules               map[string]*WeightedSchedule   `json:"point_schedules,omitempty"`
+	PointUses                    map[string]int                 `json:"point_uses,omitempty"`
+	ScheduledAngleUses           map[string]int                 `json:"scheduled_angle_uses,omitempty"`
+	SideUses                     map[string]map[string]int      `json:"side_uses,omitempty"`
 	FactSideMap                  map[string][]string            `json:"fact_side_map,omitempty"`
 	BaselineJSON                 string                         `json:"baseline_json"`
 	Attempts                     []Candidate                    `json:"attempts"`
@@ -499,6 +505,23 @@ func taskPointKey(task Task) string {
 // paragraphs too. Reusing a task never clears its old count or last expression.
 func (s *State) chooseNext() {
 	s.EnsureProductFocus()
+	if s.Config.Rolling {
+		if s.PriceHook != nil || s.chooseProductWeightedTask() {
+			return
+		}
+		if s.Surface == "formal_live" && len(s.P0SkippedKeys) > 0 {
+			s.P0SkippedKeys = map[string]bool{}
+			if s.chooseProductWeightedTask() {
+				return
+			}
+		}
+		s.Status, s.Error = "spacing_blocked", "当前商品没有可用卖点×角度，已保留本场记录"
+		if len(s.P0SkippedKeys) > 0 {
+			s.Status, s.Error = "compliance_blocked", "本场可用卖点×角度已被P0全部跳过，已暂停；不无限生成"
+		}
+		s.FeedbackPending = false
+		return
+	}
 	blockedPoints := map[string]bool{}
 	for _, segment := range s.Accepted[max(0, len(s.Accepted)-s.Config.PointGap):] {
 		if segment.Phase != "closing" {
@@ -742,9 +765,15 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		openingVersion = s.OpeningVersion()
 	}
 	s.Accepted = append(s.Accepted, Segment{Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
+	if !wasLecture && selected.FissionSide != "" {
+		s.recordFissionSide(task.Key, selected.FissionSide)
+	}
 	s.RegisterLectureTrack(selected, task, s.Phase)
 	if !wasLecture {
 		s.recordProductAdoption(task, spokenCandidate(selected))
+		if s.Phase == "body" && !wasHook {
+			s.recordScheduledAdoption(task)
+		}
 		if s.Phase == "body" && task.ProductMode != "auxiliary" {
 			s.AddToSpeechPool(spokenCandidate(selected), task.Key)
 		}
@@ -828,7 +857,6 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		} else {
 			s.Phase = "body"
 			if s.PriceHook == nil {
-				s.advanceProduct()
 				s.chooseNext()
 			}
 		}

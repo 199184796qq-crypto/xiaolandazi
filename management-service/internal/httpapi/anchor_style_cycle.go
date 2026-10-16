@@ -399,12 +399,16 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, err.Error())
 		return
 	}
-	if state.ProductFocus != nil {
-		state.SelectProductTask()
-		if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
-			writeError(w, 409, state.Error)
-			return
+	if state.ProductFocus == nil {
+		if single := singleProductSchedule(links); single != nil {
+			policy := anchorcycle.ProductPolicy{}
+			state.Queue = anchorcycle.ExpandProductSellingPoints([]anchorcycle.FocusProduct{*single}, &policy)
 		}
+	}
+	state.SelectProductTask()
+	if state.Status == "spacing_blocked" || state.Status == "compliance_blocked" {
+		writeError(w, 409, state.Error)
+		return
 	}
 	if err = installP0Mother(&state); err != nil {
 		writeError(w, 400, err.Error())

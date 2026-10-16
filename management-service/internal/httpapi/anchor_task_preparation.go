@@ -51,6 +51,9 @@ func (s *Server) prepareSavedAnchorTaskState(ctx context.Context, tenant, plan i
 		} else if savedTasks := savedLegacyQueue(wheel, focus); len(savedTasks) > 0 {
 			tasks = savedTasks
 		}
+	} else if scheme.SingleProductSchedule != nil {
+		policy := anchorcycle.ProductPolicy{}
+		tasks = anchorcycle.ExpandProductSellingPoints([]anchorcycle.FocusProduct{*scheme.SingleProductSchedule}, &policy)
 	}
 	config := scheme.Config
 	config.MaxCycles = 0
@@ -60,6 +63,7 @@ func (s *Server) prepareSavedAnchorTaskState(ctx context.Context, tenant, plan i
 	}
 	state.Surface = "formal_live"
 	if focus == nil {
+		state.SelectProductTask()
 		return state, nil
 	}
 	if err = focus.Policy.Validate(); err != nil {
@@ -75,6 +79,7 @@ func (s *Server) prepareSavedAnchorTaskState(ctx context.Context, tenant, plan i
 	for _, product := range focus.Products {
 		probe, scoped := state, *focus
 		scoped.CurrentLink = product.LinkKey
+		scoped.CurrentSlot = scoped.ScheduleCursor
 		probe.ProductFocus = &scoped
 		probe.SelectProductTask()
 		if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {

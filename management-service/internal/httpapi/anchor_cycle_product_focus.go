@@ -504,7 +504,8 @@ func (s *Server) resolveProductScopeItems(ctx context.Context, profileID, mother
 
 // Build once from the safety snapshot. This never rewrites source facts, roles,
 // the selling-point wheel or a previously saved plan version.
-func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {	active := []model.LiveAgentPlanProductLink{}
+func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.State, links []model.LiveAgentPlanProductLink) (*anchorcycle.ProductFocus, error) {
+	active := []model.LiveAgentPlanProductLink{}
 	for _, l := range links {
 		if l.Status == "active" {
 			active = append(active, l)
@@ -594,6 +595,7 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 			probe.CycleNumber = max(1, state.CycleNumber)
 			scope.CurrentCycle = probe.CycleNumber
 			scope.CurrentLink = product.LinkKey
+			scope.CurrentSlot = scope.ScheduleCursor
 			scope.AuxiliaryActive = product.LinkKey != scope.MainLink()
 			probe.SelectProductTask()
 			if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {
@@ -635,6 +637,7 @@ func (s *Server) buildCycleProductFocus(ctx context.Context, state *anchorcycle.
 		probe.CycleNumber = max(1, state.CycleNumber)
 		scope.CurrentCycle = probe.CycleNumber
 		scope.CurrentLink = product.LinkKey
+		scope.CurrentSlot = scope.ScheduleCursor
 		scope.AuxiliaryActive = product.LinkKey != scope.MainLink()
 		probe.SelectProductTask()
 		if probe.Status == "spacing_blocked" || probe.Status == "compliance_blocked" {
@@ -741,6 +744,27 @@ func (s *Server) captureRealtimeProductFocus(ctx context.Context, tenant, plan i
 	if err != nil {
 		return err
 	}
+	scheme.SingleProductSchedule = singleProductSchedule(links)
 	input.GenerationContext["anchor_generation"] = scheme
 	return nil
+}
+
+// Capture only scheduling inputs for a single product. Its existing fact path
+// stays unchanged; never create a ProductFocus merely to carry point weights.
+func singleProductSchedule(links []model.LiveAgentPlanProductLink) *anchorcycle.FocusProduct {
+	var active []model.LiveAgentPlanProductLink
+	for _, l := range links {
+		if l.Status == "active" {
+			active = append(active, l)
+		}
+	}
+	if len(active) != 1 {
+		return nil
+	}
+	l := active[0]
+	points := focusSellingPointsFromModel(l.SellingPoints)
+	if len(points) == 0 {
+		return nil
+	}
+	return &anchorcycle.FocusProduct{LinkKey: l.LinkKey, SellingPoints: points}
 }

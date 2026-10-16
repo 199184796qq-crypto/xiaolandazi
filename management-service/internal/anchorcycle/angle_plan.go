@@ -103,7 +103,7 @@ func (s *State) CurrentAnglePlan() *AnglePlan {
 }
 
 // 通用切入侧面池（产品无关）。直播时按已采纳段数轮换，让同一事实每次从不同
-// 侧面切入，程序硬保证相邻段落侧面不重复。侧面只决定「从哪个维度切入」，不含
+// 侧面切入。侧面只决定「从哪个维度切入」，不含
 // 任何商品词、数字或承诺；每个侧面的具体内容由下游结合本场事实展开（产品相关，
 // 方案生成时注入）。换任何商品侧面池不变。
 var fissionAngleSides = []string{
@@ -116,17 +116,59 @@ var fissionAngleSides = []string{
 	"使用方式：怎么吃、怎么保存、怎么复热",
 }
 
-// CurrentFissionSide 返回本段话术的切入侧面。按「卖点×角度」任务自身的累计使用
-// 次数轮换，同一卖点每次讲换一个侧面、循环——短时间（7 段内）对观众多样；
-// 声音缓存 group 纳入侧面后，回到同侧面即可复用该侧面的旧音频，省 TTS。
-// 侧面池优先用行业配置（State.FissionSides），未配置时回退默认 fissionAngleSides。
-func (s *State) CurrentFissionSide() string {
-	pool := s.FissionSides
-	if len(pool) == 0 {
-		pool = fissionAngleSides
+// Normalize the existing industry pool without changing its content or mapping.
+func schedulingSides(sides []string) []string {
+	if len(sides) == 0 {
+		sides = fissionAngleSides
 	}
+	out, seen := []string{}, map[string]bool{}
+	for _, side := range sides {
+		side = strings.TrimSpace(side)
+		if side != "" && !seen[side] {
+			out = append(out, side)
+			seen[side] = true
+		}
+	}
+	return out
+}
+
+// CurrentFissionSide balances each angle's existing pool, preferring a different
+// side when equally used choices exist, and stays stable through retries. New tasks have different
+// seeded starts instead of all starting at the first industry side.
+func (s *State) CurrentFissionSide() string {
+	task := s.Task()
+	pool := schedulingSides(s.FissionSides)
 	if len(pool) == 0 {
 		return ""
 	}
-	return pool[s.Used[s.Task().Key].Count%len(pool)]
+	start := s.Used[task.Key].Count % len(pool)
+	if s.RunID != "" {
+		start = (start + int(schedulerSeed(s.RunID, task.Key)*float64(len(pool)))) % len(pool)
+	}
+	previous := ""
+	if len(s.Accepted) > 0 {
+		previous = FissionSideName(s.Accepted[len(s.Accepted)-1].Selected.FissionSide)
+	}
+	chosen, best := "", int(^uint(0)>>1)
+	for offset := 0; offset < len(pool); offset++ {
+		side := pool[(start+offset)%len(pool)]
+		count := s.SideUses[task.Key][FissionSideName(side)]
+		if count < best || count == best && FissionSideName(chosen) == previous && FissionSideName(side) != previous {
+			best, chosen = count, side
+		}
+	}
+	if chosen != "" {
+		return chosen
+	}
+	return pool[start]
+}
+
+func (s *State) recordFissionSide(key, side string) {
+	if s.SideUses == nil {
+		s.SideUses = map[string]map[string]int{}
+	}
+	if s.SideUses[key] == nil {
+		s.SideUses[key] = map[string]int{}
+	}
+	s.SideUses[key][FissionSideName(side)]++
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"strings"
 )
@@ -14,45 +13,39 @@ import (
 // the product rotation cursor live in Redis only. No Core/audio protocol changes.
 type ProductPolicy struct {
 	Version      string         `json:"version"`
-	RoleWeights  map[string]int `json:"role_weights,omitempty"`  // 角色→基准频率比例（main/traffic/benefit/profit/...），缺省见 defaultRoleWeight
+	RoleWeights  map[string]int `json:"role_weights,omitempty"`  // Historical snapshot compatibility only; never used by the scheduler.
 	PointWeights map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
 	AngleWeights map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
 }
 
-// defaultRoleWeight 返回角色的基准频率比例（后台可配，这里给缺省值）。
-// 未配置的角色一律 1；用户可通过调节频率系数（frequency_weight）在其上放大/缩小。
+// Role preferences are intentionally close. Historical role_weights are not
+// inputs to this contract; changing a legacy mother cannot revive that policy.
 func defaultRoleWeight(role string) int {
 	switch role {
 	case "main":
-		return 40
+		return 120
 	case "traffic":
-		return 25
+		return 110
 	case "benefit":
-		return 20
+		return 105
 	case "profit":
-		return 10
+		return 102
 	default:
-		return 5
+		return 100
 	}
 }
 
-// roleBaselineWeight 返回商品的角色基准频率（多角色取最大；未配置走默认值）。
+// Multiple roles use the largest preference, never their sum.
 func (p ProductPolicy) roleBaselineWeight(item FocusProduct) int {
 	best := 0
 	for _, role := range item.Roles {
-		w := 0
-		if p.RoleWeights != nil {
-			w = p.RoleWeights[role]
-		}
-		if w <= 0 {
-			w = defaultRoleWeight(role)
-		}
+		w := defaultRoleWeight(role)
 		if w > best {
 			best = w
 		}
 	}
 	if best <= 0 {
-		return 1
+		return 100
 	}
 	return best
 }
@@ -112,6 +105,12 @@ type ProductFocus struct {
 	Products            []FocusProduct        `json:"products"`
 	Facts               []ScopedFact          `json:"facts"`
 	Tasks               map[string]ScopedTask `json:"tasks"`
+	Schedule            []string              `json:"schedule,omitempty"`
+	ScheduleCursor      int                   `json:"schedule_cursor,omitempty"`
+	ScheduleWindow      int                   `json:"schedule_window,omitempty"`
+	AllocatedSegments   map[string]int        `json:"allocated_segments,omitempty"`
+	AdoptedSegments     map[string]int        `json:"adopted_segments,omitempty"`
+	CurrentSlot         int                   `json:"current_slot,omitempty"`
 	CurrentLink         string                `json:"current_link,omitempty"`
 	CurrentCycle        int                   `json:"current_cycle,omitempty"`
 	AuxiliaryActive     bool                  `json:"auxiliary_active,omitempty"`
@@ -175,41 +174,42 @@ func (p *ProductFocus) ValidateProducts() error {
 }
 func (p *ProductFocus) ResetRun() {
 	p.CurrentLink, p.CurrentCycle = "", 0
+	p.Schedule, p.ScheduleCursor, p.ScheduleWindow = nil, 0, 0
+	p.AllocatedSegments, p.AdoptedSegments = nil, nil
+	p.CurrentSlot = -1
 	p.AuxiliaryActive, p.AuxiliaryCursor = false, 0
 	p.CompletedMainRounds, p.LastAuxiliaryRound, p.MainChars, p.AuxiliaryChars = 0, 0, 0, 0
 }
 
-// EnsureProductFocus 仅在 CurrentLink 为空时初始化到加权序列首元素；之后轮换由 advanceProduct 显式推进。
+// Freeze the selected product across retries and closing. A body adoption
+// consumes one slot; the next body/opening may then select another product.
 func (s *State) EnsureProductFocus() {
 	p := s.ProductFocus
 	if p == nil {
 		return
 	}
-	if p.CurrentLink == "" {
-		seq := p.productSequence()
-		if len(seq) == 0 {
-			p.CurrentLink = p.MainLink()
-		} else {
-			p.CurrentLink = seq[0].LinkKey
-			p.AuxiliaryCursor = 0
-		}
+	// The new scheduler is for rolling livestreams. Keep the existing default
+	// product for non-rolling tools which only ask for a scoped fact view.
+	if !s.Config.Rolling && p.CurrentLink == "" {
+		p.CurrentLink, p.CurrentCycle, p.CurrentSlot = p.MainLink(), s.CycleNumber, p.ScheduleCursor
+		return
 	}
+	if p.CurrentLink != "" && (s.Phase == "closing" || p.CurrentSlot == p.ScheduleCursor) {
+		return
+	}
+	p.CurrentLink = s.scheduledProduct()
 	p.CurrentCycle = s.CycleNumber
+	p.CurrentSlot = p.ScheduleCursor
 }
 
-// advanceProduct 把 CurrentLink 推进到加权轮换序列的下一个商品（不区分主/辅）。
-// 返回是否成功推进（供 body 段落切换使用）。
+// Retained for adapters which explicitly finish a body segment.
 func (s *State) advanceProduct() bool {
-	p := s.ProductFocus
-	if p == nil {
+	if s.ProductFocus == nil || len(s.ProductFocus.Products) == 0 {
 		return false
 	}
-	seq := p.productSequence()
-	if len(seq) == 0 {
-		return false
-	}
-	p.AuxiliaryCursor = (p.AuxiliaryCursor + 1) % len(seq)
-	p.CurrentLink = seq[p.AuxiliaryCursor].LinkKey
+	s.ProductFocus.ScheduleCursor++
+	s.ProductFocus.CurrentLink = ""
+	s.EnsureProductFocus()
 	return true
 }
 
@@ -234,69 +234,16 @@ func (p *ProductFocus) coefficient(item FocusProduct) float64 {
 }
 
 // normalizedProductWeights 返回「链接→归一化频率占比」（总和=1.0）。
-// 每个商品的原始频率 = 角色基准比例 × 手动微调系数，再整体归一化。
+// 每个商品的原始偏好 = 角色基准 × 手动系数，限幅后再整体归一化。
 func (p *ProductFocus) normalizedProductWeights() map[string]float64 {
-	if len(p.Products) == 0 {
-		return map[string]float64{}
+	keys, preferences := []string{}, map[string]float64{}
+	for _, item := range p.Products {
+		keys = append(keys, item.LinkKey)
+		preferences[item.LinkKey] = float64(p.Policy.roleBaselineWeight(item)) * p.coefficient(item)
 	}
-	raw := make([]float64, len(p.Products))
-	total := 0.0
-	for i, item := range p.Products {
-		raw[i] = float64(p.Policy.roleBaselineWeight(item)) * p.coefficient(item)
-		total += raw[i]
-	}
-	out := map[string]float64{}
-	if total <= 0 {
-		each := 1.0 / float64(len(p.Products))
-		for _, item := range p.Products {
-			out[item.LinkKey] = each
-		}
-		return out
-	}
-	for i, item := range p.Products {
-		out[item.LinkKey] = raw[i] / total
-	}
-	return out
+	return boundedShares(keys, preferences, ProductFrequencyRatio)
 }
 
-// productSequence 返回按「角色基准 × 手动系数」归一化后加权交错展开的全商品轮换序列：
-// 频率占比越高的商品出现次数越多，且同类尽量不相邻。所有商品平等参与（含主推）。
-func (p *ProductFocus) productSequence() []FocusProduct {
-	items := p.allProducts()
-	if len(items) == 0 {
-		return nil
-	}
-	if len(items) == 1 {
-		return items
-	}
-	weights := p.normalizedProductWeights()
-	// 归一化占比转成整数权重（×10000 取整，避免浮点误差），再做加权交错。
-	scale := 10000
-	intWeights := make([]int, len(items))
-	total := 0
-	for i, item := range items {
-		w := int(weights[item.LinkKey]*float64(scale) + 0.5)
-		if w < 1 {
-			w = 1
-		}
-		intWeights[i] = w
-		total += w
-	}
-	counts := make([]int, len(items))
-	seq := make([]FocusProduct, 0, total)
-	for placed := 0; placed < total; placed++ {
-		best, bestRatio := -1, math.MaxFloat64
-		for i := range items {
-			ratio := float64(counts[i]) / float64(intWeights[i])
-			if ratio < bestRatio || (ratio == bestRatio && (best < 0 || i < best)) {
-				best, bestRatio = i, ratio
-			}
-		}
-		counts[best]++
-		seq = append(seq, items[best])
-	}
-	return seq
-}
 func (s *State) recordProductAdoption(t Task, text string) {
 	p := s.ProductFocus
 	if p == nil {
@@ -306,6 +253,12 @@ func (s *State) recordProductAdoption(t Task, text string) {
 	p.MainChars += chars
 	if s.Phase == "closing" {
 		p.CompletedMainRounds++
+	}
+	if s.Phase == "body" {
+		if p.AdoptedSegments == nil {
+			p.AdoptedSegments = map[string]int{}
+		}
+		p.AdoptedSegments[t.FocusLink]++
 	}
 }
 
@@ -529,6 +482,8 @@ func ExpandProductSellingPoints(products []FocusProduct, policy *ProductPolicy) 
 				}
 				task := Task{
 					LinkKey:        product.LinkKey,
+					PointWeight:    weight,
+					AngleWeight:    angleWeight,
 					SellingPoint:   sp.Name,
 					Angle:          angle.Angle,
 					SlotKey:        fmt.Sprintf("%s×%s×#%d", product.LinkKey, spIdent, ai+1),

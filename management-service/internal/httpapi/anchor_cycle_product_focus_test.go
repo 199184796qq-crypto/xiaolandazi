@@ -25,6 +25,7 @@ func TestCycleProductFocusTTSProofAndCacheIsolation(t *testing.T) {
 	scope.Policy = policy
 	s := &anchorcycle.State{TenantID: 81001, PlanID: 92002, RoomID: 73003, Phase: "body", CycleNumber: 1, Queue: tasks, ProductFocus: scope}
 	s.Config.MaxChars = 300
+	s.ProductFocus.CurrentLink = "1" // deterministic scope for the unaudited cross-link fixture
 	s.EnsureProductFocus()
 	c := anchorcycle.Candidate{Text: "2号链接越界了"}
 	(&Server{}).auditCycleProductCandidate(context.Background(), s, &c)
@@ -88,6 +89,7 @@ func TestCycleProductFocusPromptUsesScopedFactsAndReturnsToSingle(t *testing.T) 
 	}
 	scope.Policy, scope.PolicySource = p, source
 	s := &anchorcycle.State{Phase: "opening", CycleNumber: 1, ProductFocus: scope, Queue: tasks, Facts: "全量事实包含他品"}
+	scope.CurrentLink = "1"
 	s.EnsureProductFocus()
 	md, err := renderCycleProductScope(s)
 	if err != nil {

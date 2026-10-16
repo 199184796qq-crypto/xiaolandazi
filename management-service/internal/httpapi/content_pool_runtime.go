@@ -74,14 +74,16 @@ func contentPoolRuntime(set contentpools.Set, policy anchorcycle.ProductPolicy) 
 			if w < 1 {
 				w = 1
 			}
-			pointWeights[t.Point] += w
+			// A pool task's weight belongs to its angle. Angle count must not
+			// manufacture a parent point preference in legacy snapshots.
+			pointWeights[t.Point] = 1
 			angleWeights[t.ID] = w
 		}
 	}
 	if len(set.Sources.Products) < 2 {
 		return queue, nil, nil
 	}
-	// 审核模型在生成智能体时分配的权重：角度权重=task.Weight，卖点权重=该卖点下角度权重之和。
+	// 旧内容池只有角度权重，没有显式卖点权重；卖点缺省等频。
 	// 只对多商品场景注入（单商品场景 focus 为空，走缺省等频）。
 	focus.Policy.PointWeights = pointWeights
 	focus.Policy.AngleWeights = angleWeights

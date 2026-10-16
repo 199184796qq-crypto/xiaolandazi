@@ -30,6 +30,7 @@ func focusFixture(t *testing.T) State {
 		}
 		s.ProductFocus.Tasks[q.Key] = scope
 	}
+	s.ProductFocus.Schedule = []string{"1", "2", "1"} // explicit fixture, not the randomized production order
 	s.SelectProductTask()
 	return s
 }
@@ -42,7 +43,7 @@ func auditedFocusCandidate(s *State, text string, score int) Candidate {
 // 轮换起始：主推（角色基准最高）先出，但不再独占——advanceProduct 会推进到下一个商品。
 func TestProductFocusInitializesToMainThenRotates(t *testing.T) {
 	s := focusFixture(t)
-	// 初始 CurrentLink 应为权重最高的主推（1 号）。
+	// 本夹具显式给出1、2、1窗口；生产首项由本场种子打乱。
 	if s.Task().FocusLink != "1" {
 		t.Fatal("初始应聚焦主推，得到", s.Task().FocusLink)
 	}

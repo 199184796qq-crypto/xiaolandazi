@@ -37,7 +37,11 @@ func TestRollingOpeningCountAndTaskAdvanceOnlyAfterAdoption(t *testing.T) {
 	}
 	window := s.StyleWindow
 	add(t, &s, "收口留话头", 70)
-	if s.Phase != "opening" || s.CycleNumber != 2 || s.OpeningCount != 1 || s.OpeningVersion() != "接新版" || s.SessionID != "sesn_same-live" || !strings.Contains(s.StyleWindow, window) || len(s.Used) != 3 {
+	uses := 0
+	for _, use := range s.Used {
+		uses += use.Count
+	}
+	if s.Phase != "opening" || s.CycleNumber != 2 || s.OpeningCount != 1 || s.OpeningVersion() != "接新版" || s.SessionID != "sesn_same-live" || !strings.Contains(s.StyleWindow, window) || uses != 3 {
 		t.Fatal("closing reset live memory", s)
 	}
 	add(t, &s, "接新简短身份和钩子", 70)
@@ -52,20 +56,9 @@ func TestRollingOpeningCountAndTaskAdvanceOnlyAfterAdoption(t *testing.T) {
 	}
 }
 
-func TestRollingPoolReusePreservesCountsAndSpacingAcrossManyCycles(t *testing.T) {
+func TestRollingPoolReusePreservesCountsAndWeightedProgressAcrossManyCycles(t *testing.T) {
 	s := rollingFixture(t, 0)
 	for i := 0; i < 80; i++ {
-		task, phase := s.Task(), s.Phase
-		if phase != "closing" {
-			for _, prior := range s.Accepted[max(0, len(s.Accepted)-s.Config.PointGap):] {
-				if prior.Phase != "closing" && prior.Task.SellingPoint == task.SellingPoint {
-					t.Fatal("adjacent point repeated")
-				}
-			}
-			if u := s.Used[task.Key]; u.Count > 0 && len(s.Accepted)-u.LastIndex < s.Config.CombinationGap {
-				t.Fatal("combination cooldown violated")
-			}
-		}
 		add(t, &s, fmt.Sprintf("第%d次采纳的不同讲法%s", i, strings.Repeat("啊", 30)), 70)
 		if s.Status == "spacing_blocked" || s.Phase == "ended" {
 			t.Fatal("continuous run stopped prematurely", s.Error)
@@ -74,24 +67,32 @@ func TestRollingPoolReusePreservesCountsAndSpacingAcrossManyCycles(t *testing.T)
 	if s.OpeningCount != 20 || s.CycleNumber != 21 || len(s.Used) != 3 || s.Cursor != 60 || s.MacroReport.Stats.Chars != 1000 {
 		t.Fatal("cross-cycle counters/window reset", s)
 	}
+	uses, scheduled := 0, 0
 	for _, u := range s.Used {
-		if u.Count != 20 || u.LastSummary == "" {
+		uses += u.Count
+		if u.Count == 0 || u.LastSummary == "" {
 			t.Fatal("used pool was cleared", u)
 		}
 	}
+	for _, count := range s.PointUses {
+		scheduled += count
+	}
+	if uses != 60 || scheduled != 40 {
+		t.Fatal("opening/closing contaminated body scheduling progress", uses, scheduled)
+	}
 }
 
-func TestRollingBlockedPoolKeepsAdoptionAndDoesNotInventNextTask(t *testing.T) {
+func TestRollingSingleDirectionDoesNotBlockOnLegacyHardGaps(t *testing.T) {
 	s, err := New([]Task{{SellingPoint: "唯一卖点", Angle: "唯一角度"}}, Config{Threshold: 40, MaxRetries: 3, MaxChars: 300, Rolling: true, BodySegments: 2, PointGap: 2, CombinationGap: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	add(t, &s, "唯一卖点采纳稿", 70)
-	if s.Status != "spacing_blocked" || s.Uncertain || len(s.Accepted) != 1 || s.OpeningCount != 1 || s.Cursor != 1 || s.FeedbackPending {
-		t.Fatal("spacing failure discarded adoption or cost another call", s)
+	if s.Status != "ready" || s.Uncertain || len(s.Accepted) != 1 || s.OpeningCount != 1 || s.Cursor != 1 || s.TaskIndex != 0 || len(s.PointUses) != 0 {
+		t.Fatal("small pool should retain the same legal direction without consuming a body quota", s.Status)
 	}
-	if _, err := s.AddCandidate(candidate("不应请求的重复稿", 90), anchorstylescore.Baseline{}); err == nil {
-		t.Fatal("blocked run adopted again")
+	if ok, err := s.AddCandidate(candidate("同一角度的新讲法", 90), anchorstylescore.Baseline{}); err != nil || !ok || s.PointUses["single:唯一卖点"] != 1 {
+		t.Fatal("next body should be allowed and consume exactly one quota", err)
 	}
 }
 
@@ -105,8 +106,8 @@ func TestGenerationPreviewReusesSafeTaskWhenPoolCannotFillDuration(t *testing.T)
 	if s.Status == "spacing_blocked" || s.Phase == "ended" || s.TaskIndex != 0 {
 		t.Fatal("duration-driven preview stopped on a small safe pool", s.Status, s.Error)
 	}
-	if len(s.Warnings) == 0 || !strings.Contains(s.Warnings[len(s.Warnings)-1], "补足2分钟") {
-		t.Fatal("preview fallback was not recorded")
+	if len(s.PointUses) != 0 {
+		t.Fatal("preview opening consumed a body quota")
 	}
 }
 
