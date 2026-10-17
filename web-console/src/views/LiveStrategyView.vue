@@ -30,6 +30,7 @@ import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
 import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
+import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
@@ -439,6 +440,12 @@ const locatedFactRiskHash = ref('')
 const factRiskAppealDrafts = ref<Record<string, string>>({})
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
+const factScopeSortOrder = ref<FactScopeSortOrder>('none')
+const sortedFormalFacts = computed(() => sortFormalFactsByScope(formalFacts.value, formalProductLinks.value, factScopeSortOrder.value))
+const factScopeSortHint = computed(() => factScopeSortOrder.value === 'none' ? '按归属范围归类排序' : factScopeSortOrder.value === 'ascending' ? '当前正序，点击倒序' : '当前倒序，点击恢复原顺序')
+function cycleFactScopeSort() {
+  factScopeSortOrder.value = factScopeSortOrder.value === 'none' ? 'ascending' : factScopeSortOrder.value === 'ascending' ? 'descending' : 'none'
+}
 const expandedFormalBenefitIds = ref<Set<number>>(new Set())
 type FormalBenefitField = 'link_key' | 'product_name' | 'activity_price' | 'gift' | 'activity' | 'starts_at' | 'ends_at'
 const editingFormalBenefit = ref<{ itemId: number; field: FormalBenefitField; draft: string } | null>(null)
@@ -466,6 +473,7 @@ const factScopeSavingId = ref<number | null>(null)
 let factScopeSequence = 0
 let formalFactReadSequence = 0
 watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
+  factScopeSortOrder.value = 'none'
   factScopeSequence++
   factScopeSavingId.value = null
 }, { flush: 'sync' })
@@ -6856,13 +6864,18 @@ onBeforeUnmount(() => {
                 <thead>
                   <tr>
                     <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
-                    <th>归属范围</th>
+                    <th scope="col" :aria-sort="factScopeSortOrder">
+                      <button type="button" class="strategy-fact-scope-sort" :class="{ 'is-sorted': factScopeSortOrder !== 'none' }" :disabled="editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" :aria-label="'归属范围：' + factScopeSortHint" :title="factScopeSortHint" @click="cycleFactScopeSort">
+                        归属范围
+                        <svg viewBox="0 0 16 20" aria-hidden="true"><path d="m3 7 5-5 5 5" :class="{ active: factScopeSortOrder === 'ascending' }"/><path d="m3 13 5 5 5-5" :class="{ active: factScopeSortOrder === 'descending' }"/></svg>
+                      </button>
+                    </th>
                     <th>事实内容</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="(item, index) in formalFacts" :key="item.id">
+                  <template v-for="(item, index) in sortedFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
                     <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || editingFormalFactId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
@@ -9663,6 +9676,12 @@ onBeforeUnmount(() => {
 .strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:840px; border-collapse:collapse; table-layout:fixed; }
+.strategy-fact-scope-sort { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:0; border:0; background:transparent; color:inherit; font:inherit; font-size:16px; font-weight:inherit; white-space:nowrap; cursor:pointer; }
+.strategy-fact-scope-sort:hover:not(:disabled),.strategy-fact-scope-sort.is-sorted { color:#4545df; }
+.strategy-fact-scope-sort:focus-visible { outline:2px solid #6557ff; outline-offset:4px; border-radius:3px; }
+.strategy-fact-scope-sort:disabled { cursor:default; opacity:.6; }
+.strategy-fact-scope-sort svg { flex:0 0 14px; width:14px; height:20px; fill:none; stroke:#8d9bb7; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-fact-scope-sort svg path.active { stroke:#4545df; stroke-width:2.5; }
 .strategy-formal-fact-number-column { width:64px; }
 .strategy-formal-facts-table .strategy-formal-fact-number-cell { text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .strategy-formal-fact-scope-column { width:160px; }
