@@ -19,9 +19,9 @@ export interface FactCategoryCatalog {
 export const factCategoryState = reactive({ items: [] as FactCategoryDefinition[], version: '', loading: false, error: '' })
 let pending: Promise<void> | undefined
 let pendingScope = '', loadedScope = '', epoch = 0
-function catalogScope() {
+function catalogScope(planId?: number) {
   const actor = session.bootstrap?.actor
-  return `${actor?.user_id || 0}:${actor?.tenant_id || 0}:${liveSupportRoomForRequest('/api/v1/live-agent-fact-categories') || 0}`
+  return `${actor?.user_id || 0}:${actor?.tenant_id || 0}:${liveSupportRoomForRequest('/api/v1/live-agent-fact-categories') || 0}:${planId || 0}`
 }
 
 export function factCategoryDefinition(value: string): FactCategoryDefinition {
@@ -42,17 +42,19 @@ export function factCategoryGroups(currentValue = '') {
   return groups
 }
 
-export function loadFactCategories(options: { suppressErrorDialog?: boolean } = {}): Promise<void> {
-  const scope = catalogScope()
+export function loadFactCategories(options: { suppressErrorDialog?: boolean; planId?: number | null } = {}): Promise<void> {
+  const planId = Number.isSafeInteger(options.planId) && Number(options.planId) > 0 ? Number(options.planId) : undefined
+  const scope = catalogScope(planId)
   if (pending && pendingScope === scope) return pending
   const requestEpoch = ++epoch
+  if (pendingScope !== scope || loadedScope && loadedScope !== scope) { factCategoryState.items = []; factCategoryState.version = ''; factCategoryState.error = '' }
   pendingScope = scope
-  if (loadedScope && loadedScope !== scope) { factCategoryState.items = []; factCategoryState.version = ''; factCategoryState.error = '' }
   factCategoryState.loading = true
   pending = (async () => {
     try {
-      const result = await request<FactCategoryCatalog>('/api/v1/live-agent-fact-categories', { cache: 'no-store', suppressErrorDialog: options.suppressErrorDialog })
-      if (requestEpoch !== epoch || catalogScope() !== scope) return
+      const path = '/api/v1/live-agent-fact-categories' + (planId ? `?plan_id=${planId}` : '')
+      const result = await request<FactCategoryCatalog>(path, { cache: 'no-store', suppressErrorDialog: options.suppressErrorDialog })
+      if (requestEpoch !== epoch || catalogScope(planId) !== scope) return
       const seen = new Set<string>()
       if (result.schema_version !== 1 || !result.version || !Array.isArray(result.categories) || !result.categories.length || result.categories.some(item => {
         if (!item.value || !item.label || !item.group || !item.description || !item.family || seen.has(item.value)) return true
@@ -63,7 +65,7 @@ export function loadFactCategories(options: { suppressErrorDialog?: boolean } = 
       factCategoryState.error = ''
       loadedScope = scope
     } catch (cause) {
-      if (requestEpoch !== epoch || catalogScope() !== scope) return
+      if (requestEpoch !== epoch || catalogScope(planId) !== scope) return
       factCategoryState.error = cause instanceof Error ? cause.message : '事实分类配置读取失败'
     } finally { if (requestEpoch === epoch) { factCategoryState.loading = false; pending = undefined } }
   })()

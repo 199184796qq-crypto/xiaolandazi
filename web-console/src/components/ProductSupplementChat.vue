@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { session } from '../session'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useProductSupplementChat } from '../productSupplementChat'
@@ -78,7 +78,9 @@ async function chooseExample(text: string) {
   await nextTick(); inputBox.value?.focus()
 }
 
-onMounted(() => { void loadFactCategories({ suppressErrorDialog: true }) })
+watch(() => [props.planId, props.tenantId, props.roomId, session.bootstrap?.actor?.user_id], () => {
+  void loadFactCategories({ planId: props.planId, suppressErrorDialog: true })
+}, { immediate: true })
 
 // The checklist and conversation are independent, always-visible panels.
 const checklist = useProductSupplementGaps(() => ({ ...currentScope(), productLinkId: selectedProductLinkId() }))
