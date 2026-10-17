@@ -4,7 +4,7 @@
 
 - 用户取消“导入商品信息及福利”，覆盖下方添加该功能的历史约定。移除按钮/进度/失败列表、专用导入模块和样式及仅为它添加的并发禁用；不再从商品卡批量生成事实。保留事实类型空列、原排序/过滤/搜索、手工新增/修改四层和WorkBuddy其它功能，不改后端/数据/配置、不重启。
 - 先前37条导入事实ID67—103已按用户授权删除并有备份/37条审计；杨鸭子原41条、巴国布衣9条及商品卡/福利/已保存版本保留。不得因取消功能重新采纳或恢复这些记录。删除证据本聊天work/import-product-facts-duplicate-proof/deletion-report.json。
-- 普通web及独立桌面同步，桌面继承7f088a5，不写E:/speech-generator-build，不整树覆盖main。说明docs/2026-10-17-remove-product-fact-import.md，证据本聊天work/remove-product-fact-import-proof，核验后记录上线结果。
+- 普通web及独立桌面同步，桌面继承7f088a5，不写E:/speech-generator-build，不整树覆盖main。说明docs/2026-10-17-remove-product-fact-import.md，证据本聊天work/remove-product-fact-import-proof；北京时间21:58:18—21:58:19已上线20261017-remove-product-fact-import-61d8c6d，独立桌面c2ec3ce分支已推送。两份构建及入口移除/原功能/多宽度检查通过；仅换两入口，3053旧无关文件、三服务/Nginx/配置保持，无重启。12公网、6鉴权及2197完整前端备份哈希/大小/权限通过，指针更新。未恢复已删数据或写客户事实。
 
 ## 导入商品卡及福利为事实（2026-10-17 最新用户要求）
 
