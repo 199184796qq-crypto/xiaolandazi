@@ -6820,12 +6820,6 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'knowledge'" class="strategy-v2-workspace">
-          <div class="strategy-v2-section-head">
-            <div>
-              <h3>事实依据</h3>
-            </div>
-          </div>
-
           <section class="strategy-formal-facts">
             <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories()">重新加载</button></div>
             <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
@@ -6834,10 +6828,9 @@ onBeforeUnmount(() => {
                 <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
                 <div class="strategy-formal-facts-heading">
                   <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条 · 用于主线口播与智能问答</small>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条</small>
                 </div>
               </div>
-              <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
             </header>
 
             <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId && activeRoomId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="activeRoomId" :tenant-id="activeRoom?.tenant_id" @close="previewingFormalFact = null" />
