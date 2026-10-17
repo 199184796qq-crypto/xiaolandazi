@@ -1,5 +1,11 @@
 # 项目协作约定
 
+## 桌面移除任务讲解（2026-10-17 已上线）
+
+- 用户再次要求移除入口；普通web已有，但旧桌面快照仍显示。以5d02e1a独立修复四个子栏目、取消LectureTasksPanel挂载、旧miner跳转事实依据，导航文字最小16px。保留讲解数据/后台、事实归属、商品字段改名、正式保存及WorkBuddy业务模式/行业。
+- 北京时间12:43:35上线20261017-desktop-no-lecture-d363e1e，源码d363e1e0d7ac346f595fe601a6a711e49b309b29已推送fix/desktop-remove-lecture-20261017；后续桌面继承该分支，不回退旧快照或将其整树覆盖main。只换桌面入口和新增20资源，2663旧无关文件、三服务、Nginx及设置/模型池保持，不重启或写客户资料；E:/speech-generator-build未改。
+- 类型检查/构建、3项导航回归、完整父级8项导航/业务模式/四宽度验收及事实归属流程通过。12公网检查、1837完整前端备份哈希/大小/权限通过，共享指针更新。说明docs/2026-10-17-desktop-remove-lecture.md，证据本聊天work/remove-lecture-desktop-proof。
+
 ## 事实归属范围（2026-10-17）
 
 - 用户要求事实内容前增加归属范围下拉框，公共或当前方案商品链接。事实scope.kind=common/product、scope.product_link_id按商品卡ID保存，数据库scope_json；旧NULL继续模型分类，UI显示请选择，不冒充已确认公共。
