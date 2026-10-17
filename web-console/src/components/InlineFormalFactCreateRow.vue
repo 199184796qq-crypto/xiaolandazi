@@ -32,7 +32,7 @@ onMounted(async () => {
 
 <template>
   <tr ref="row" class="inline-formal-fact-create-row" data-formal-fact-draft :aria-busy="saving" @focusout="blur">
-    <td class="draft-number">{{ number }}</td>
+    <td class="draft-number"><span>{{ number }}</span></td>
     <td><span class="draft-scope">保存后选择归属</span></td>
     <td class="draft-content">
       <p v-if="guidance" class="draft-guidance">{{ guidance }}</p>
@@ -41,6 +41,7 @@ onMounted(async () => {
       <p id="inline-create-status" class="draft-status" role="status">{{ saving ? '正在保存并整理四层内容…' : nameLoading ? '正在提炼事实名称…' : '输入完成后移开焦点自动保存' }}</p>
       <p v-if="error || nameError" class="draft-error" role="alert">{{ error || nameError }}</p>
     </td>
+    <td class="draft-progress">{{ saving ? '整理中' : '待保存' }}</td>
     <td><div class="draft-actions"><button type="button" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存' }}</button><button type="button" class="draft-cancel" :disabled="saving" @click="emit('close')">取消</button></div></td>
   </tr>
 </template>
@@ -48,6 +49,8 @@ onMounted(async () => {
 <style scoped>
 .inline-formal-fact-create-row>td { padding:12px; border-top:1px solid #ccd9fb; background:#f4f7ff; vertical-align:top; font-size:16px; line-height:1.6; }
 .draft-number { text-align:center; font-variant-numeric:tabular-nums; }
+.draft-number>span { display:inline-grid; place-items:center; width:38px; height:38px; border-radius:12px; background:#e5eaff; color:#5272f5; font-size:16px; }
+.draft-progress { color:#687ca4; font-size:16px; }
 .draft-scope,.draft-status { color:#637795; font-size:16px; }
 .draft-content { min-width:0; }
 .draft-content textarea,.draft-content input { box-sizing:border-box; display:block; width:100%; padding:10px 12px; border:1px solid #9cb1e7; border-radius:9px; background:#fff; color:#111; font:inherit; font-size:16px; line-height:1.7; }
