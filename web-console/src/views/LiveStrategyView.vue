@@ -426,6 +426,9 @@ const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
 const factScopeSortOrder = ref<FactScopeSortOrder>('none')
 const sortedFormalFacts = computed(() => sortFormalFactsByScope(formalFacts.value, formalProductLinks.value, factScopeSortOrder.value))
 const factScopeFilter = ref('all')
+const factSearchQuery = ref('')
+const factSearchTerm = computed(() => factSearchQuery.value.trim().normalize('NFKC').toLocaleLowerCase())
+function resetFormalFactFilters() { factScopeFilter.value = 'all'; factSearchQuery.value = '' }
 const factFilterProducts = computed(() => formalProductLinks.value
   .filter(item => item.status === 'active' && item.plan_id === currentRoomPlanId.value && item.tenant_id === rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id)
   .sort((a, b) => a.link_key.localeCompare(b.link_key, 'zh-CN', { numeric: true }) || a.id - b.id))
@@ -445,7 +448,10 @@ const factScopeFilterOptions = computed(() => [
   ...(formalFacts.value.some(item => formalFactFilterScope(item) === 'unassigned') ? [{ value: 'unassigned', label: '未指定归属' }] : []),
   ...(formalFacts.value.some(item => formalFactFilterScope(item) === 'unavailable') ? [{ value: 'unavailable', label: '关联商品已失效' }] : []),
 ])
-const visibleFormalFacts = computed(() => factScopeFilter.value === 'all' ? sortedFormalFacts.value : sortedFormalFacts.value.filter(item => formalFactFilterScope(item) === factScopeFilter.value))
+const visibleFormalFacts = computed(() => sortedFormalFacts.value.filter(item =>
+  (factScopeFilter.value === 'all' || formalFactFilterScope(item) === factScopeFilter.value) &&
+  (!factSearchTerm.value || item.value.normalize('NFKC').toLocaleLowerCase().includes(factSearchTerm.value)),
+))
 watch(factScopeFilterOptions, options => { if (!options.some(item => item.value === factScopeFilter.value)) factScopeFilter.value = 'all' })
 const factScopeSortHint = computed(() => factScopeSortOrder.value === 'none' ? '按归属范围归类排序' : factScopeSortOrder.value === 'ascending' ? '当前正序，点击倒序' : '当前倒序，点击恢复原顺序')
 function cycleFactScopeSort() {
@@ -482,7 +488,7 @@ watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.v
   editingFormalFactId.value = null
   inlineFactSavingId.value = null
   factScopeSortOrder.value = 'none'
-  factScopeFilter.value = 'all'
+  resetFormalFactFilters()
   if (creatingFormalFact.value) cancelCreateFormalFact()
   if (mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
   factScopeSequence++
@@ -4383,7 +4389,7 @@ function onPlanTestAssetsUpdated(event: Event) {
 }
 
 function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
-  if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) factScopeFilter.value = 'all'
+  if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) resetFormalFactFilters()
 	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
@@ -4490,7 +4496,7 @@ async function locatePendingRiskLocation() {
 	if (location.area === 'knowledge') {
 		const fact = formalFacts.value.find(item => factRisksForFact(item).some(risk => risk.claim_sha256 === location.claimHash))
 		if (!fact) return false
-		if (!visibleFormalFacts.value.some(item => item.id === fact.id)) factScopeFilter.value = 'all'
+		if (!visibleFormalFacts.value.some(item => item.id === fact.id)) resetFormalFactFilters()
 		expandedFactRiskId.value = fact.id
 	} else if (location.area === 'benefits' && source?.entity_id) {
 		if (!formalBenefits.value.some(item => item.id === source.entity_id)) return false
@@ -4565,7 +4571,7 @@ async function appealInlineFactRisk(review: FactRiskReviewDisplay) {
 function beginCreateFormalFact() {
 	if (creatingFormalFact.value || editingFormalFactId.value !== null || mutatingFormalFactId.value || factScopeSavingId.value !== null || !currentRoomPlanId.value || factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')) return
 	cancelFormalFactEdit()
-	factScopeFilter.value = 'all'
+	resetFormalFactFilters()
 	creatingFormalFact.value = true
 	formalFactCreateGuidance.value = ''
 	formalFactCreateError.value = ''
@@ -6787,18 +6793,37 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'knowledge'" class="strategy-v2-workspace">
-          <section class="strategy-formal-facts">
+          <section class="strategy-formal-facts facts-panel-redesign">
             <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories()">重新加载</button></div>
             <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
+            <div class="formal-facts-hero">
             <header class="strategy-formal-facts-head">
               <div class="strategy-formal-facts-brand">
                 <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
                 <div class="strategy-formal-facts-heading">
                   <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条<template v-if="factScopeFilter !== 'all'"> · 当前显示 {{ visibleFormalFacts.length }} 条</template></small>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条<template v-if="factScopeFilter !== 'all' || factSearchTerm"> · 当前显示 {{ visibleFormalFacts.length }} 条</template></small>
                 </div>
               </div>
             </header>
+            <div class="formal-facts-hero-art" aria-hidden="true">
+              <i class="formal-facts-paper is-back"></i><i class="formal-facts-paper is-front"></i>
+              <i class="formal-facts-hero-check"><svg viewBox="0 0 40 40"><path d="m10 20 7 7 14-15" /></svg></i>
+              <span class="formal-facts-signature">让直播更简单</span>
+            </div>
+            <div class="formal-facts-toolbar">
+              <label class="formal-facts-filter-control"><span>归属范围</span>
+                <select v-model="factScopeFilter" class="strategy-fact-scope-filter" aria-label="按归属范围筛选事实" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId">
+                  <option v-for="option in factScopeFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </label>
+              <div class="formal-facts-search">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg>
+                <input v-model="factSearchQuery" type="search" aria-label="搜索事实内容" placeholder="搜索事实内容…" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" />
+                <button v-if="factSearchQuery" type="button" aria-label="清空事实搜索" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" @click="factSearchQuery = ''">×</button>
+              </div>
+            </div>
+            </div>
 
             <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId && activeRoomId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="activeRoomId" :tenant-id="activeRoom?.tenant_id" @close="previewingFormalFact = null" />
 
@@ -6811,7 +6836,7 @@ onBeforeUnmount(() => {
               <div class="strategy-formal-facts-main">
                 <div class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
-                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
+                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-status-column" /><col class="strategy-formal-fact-actions-column" /></colgroup>
                 <thead>
                   <tr>
                     <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
@@ -6820,26 +6845,30 @@ onBeforeUnmount(() => {
                         归属范围
                         <svg viewBox="0 0 16 20" aria-hidden="true"><path d="m3 7 5-5 5 5" :class="{ active: factScopeSortOrder === 'ascending' }"/><path d="m3 13 5 5 5-5" :class="{ active: factScopeSortOrder === 'descending' }"/></svg>
                       </button>
-                      <select v-model="factScopeFilter" class="strategy-fact-scope-filter" aria-label="按归属范围筛选事实" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId">
-                        <option v-for="option in factScopeFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                      </select>
                     </th>
-                    <th>事实内容</th>
-                    <th>操作</th>
+                    <th scope="col">事实内容</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <template v-for="(item, index) in visibleFormalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
-                    <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="['fact-row-tone-' + index % 4, factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
+                    <td class="strategy-formal-fact-number-cell"><span class="formal-fact-number-pill">{{ index + 1 }}</span></td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value">
                         <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
-                          <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                         </div>
+                      </td>
+                      <td class="strategy-formal-fact-status-cell">
+                        <span v-if="editingFormalFactId === item.id" class="formal-fact-neutral-status">编辑中</span>
+                        <div v-else class="formal-fact-status-stack">
+                          <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                         <button v-if="editingFormalFactId !== item.id && factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button>
+                          <span v-if="!item.forbidden_wording?.trim() && !item.safe_rewrite?.trim() && !factRiskTone(item)" class="formal-fact-neutral-status">已采纳</span>
+                        </div>
                       </td>
                       <td>
                         <div class="strategy-formal-fact-operation">
@@ -6865,9 +6894,9 @@ onBeforeUnmount(() => {
                         </div>
                       </td>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="4"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="5"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="4">
+                    <td colspan="5">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
                           <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
@@ -6900,7 +6929,7 @@ onBeforeUnmount(() => {
                     </td>
                   </tr>
                   </template>
-                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="4">暂无符合筛选条件的事实</td></tr>
+                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="5">暂无符合筛选条件的事实</td></tr>
                   <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="visibleFormalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
                 </tbody>
               </table>
@@ -11269,3 +11298,5 @@ onBeforeUnmount(() => {
 .plan-save-success{grid-column:1/-1;margin:0!important;color:#157347;font-size:16px;line-height:1.6}
 .strategy-formal-facts :is(small,span,p,label,button,input,select,textarea,th,td),.strategy-formal-facts .strategy-fact-category-item strong { font-size:16px; }
 </style>
+
+<style scoped src="../styles/formalFactsPanel.css"></style>
