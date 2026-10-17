@@ -1,8 +1,8 @@
 export type PlanConfigurationSection = 'business' | 'facts' | 'interaction' | 'style' | 'voice'
-export type PlanConfigurationMode = 'business' | 'products' | 'supplement' | 'benefits' | 'knowledge' | 'miner' | 'memory' | 'anchor' | 'voice'
-export type PlanFactMode = Extract<PlanConfigurationMode, 'products' | 'supplement' | 'benefits' | 'knowledge' | 'miner'>
+export type PlanConfigurationMode = 'business' | 'products' | 'supplement' | 'benefits' | 'knowledge' | 'memory' | 'anchor' | 'voice'
+export type PlanFactMode = Extract<PlanConfigurationMode, 'products' | 'supplement' | 'benefits' | 'knowledge'>
 
-export const planFactModes: readonly PlanFactMode[] = ['products', 'benefits', 'supplement', 'knowledge', 'miner']
+export const planFactModes: readonly PlanFactMode[] = ['products', 'benefits', 'supplement', 'knowledge']
 
 export function isPlanFactMode(mode: string): mode is PlanFactMode {
   return planFactModes.some(item => item === mode)

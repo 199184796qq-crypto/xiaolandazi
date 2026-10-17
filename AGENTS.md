@@ -1,5 +1,10 @@
 # 项目协作约定
 
+## 桌面移除任务讲解（2026-10-17）
+
+- 用户再次要求移除“任务讲解”。当前桌面5d02e1a保留了旧入口；以此独立修改四个子栏目和旧miner跳转，不挂载LectureTasksPanel。后台数据/接口保留；事实归属、字段改名、正式保存、WorkBuddy业务模式/行业不能回退。修改导航文字最小16px。
+- 桌面仅发布入口及新增哈希资源，继承actual current，不重启或改写客户资料，E:/speech-generator-build不写。详情docs/2026-10-17-desktop-remove-lecture.md；上线结果据实际证据补记。
+
 ## 事实归属范围（2026-10-17）
 
 - 用户要求事实内容前增加归属范围下拉框，公共或当前方案商品链接。事实scope.kind=common/product、scope.product_link_id按商品卡ID保存，数据库scope_json；旧NULL继续模型分类，UI显示请选择，不冒充已确认公共。
