@@ -346,13 +346,6 @@ function previewFormalFact(item: LiveAgentPlanFact) { previewingFormalFact.value
 watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = null })
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
-const selectedFactCategory = ref('all')
-const filteredFormalFacts = computed(() => selectedFactCategory.value === 'all' ? formalFacts.value : formalFacts.value.filter(item => item.category === selectedFactCategory.value))
-const factCategoryCounts = computed(() => {
-  const counts: Record<string, number> = { all: formalFacts.value.length }
-  for (const item of formalFacts.value) counts[item.category] = (counts[item.category] || 0) + 1
-  return counts
-})
 // 四层结构解析：把 safe_rewrite(【必说】【可说】)与 forbidden_wording(【改写】【不提】)按标题分块；旧数据无标题时整体放入对应卡片。
 function factFourLayers(item: LiveAgentPlanFact) {
   const parse = (text: string, fallbackTitles: Record<string, string>) => {
@@ -6782,7 +6775,7 @@ onBeforeUnmount(() => {
                 <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
                 <div class="strategy-formal-facts-heading">
                   <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ filteredFormalFacts.length }} 条 · 用于主线口播与智能问答</small>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条 · 用于主线口播与智能问答</small>
                 </div>
               </div>
               <span>以下内容同时供主线口播和互动回答使用；修改、删除均会留存操作记录。</span>
@@ -6797,35 +6790,22 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else class="strategy-formal-facts-layout">
-              <aside class="strategy-fact-category-panel" aria-label="事实分类筛选">
-                <button type="button" class="strategy-fact-category-item" :class="{ 'is-active': selectedFactCategory === 'all' }" @click="selectedFactCategory = 'all'">
-                  <strong>全部</strong><span class="strategy-fact-category-count">{{ factCategoryCounts.all || 0 }}</span>
-                </button>
-                <template v-for="group in factCategoryGroups()" :key="group.label">
-                  <div class="strategy-fact-category-group-title">{{ group.label }}</div>
-                  <button v-for="option in group.options" :key="option.value" type="button" class="strategy-fact-category-item" :class="{ 'is-active': selectedFactCategory === option.value }" @click="selectedFactCategory = option.value">
-                    <strong>{{ option.label }}</strong><span class="strategy-fact-category-count">{{ factCategoryCounts[option.value] || 0 }}</span>
-                  </button>
-                </template>
-              </aside>
               <div class="strategy-formal-facts-main">
-                <div v-if="!filteredFormalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
-                  <strong>该分类下暂无事实</strong>
-                  <span>切换其他分类，或点击“新增事实依据”录入。</span>
-                </div>
-                <div v-else class="strategy-formal-facts-table-wrap">
+                <div class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
-                <colgroup><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
+                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
                 <thead>
                   <tr>
+                    <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
                     <th>归属范围</th>
                     <th>事实内容</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="(item, index) in filteredFormalFacts" :key="item.id">
+                  <template v-for="(item, index) in formalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                    <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || editingFormalFactId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                     <template v-if="editingFormalFactId === item.id">
                       <td>
@@ -6896,9 +6876,9 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="3"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="4"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="3">
+                    <td colspan="4">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
                           <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
@@ -9602,17 +9582,7 @@ onBeforeUnmount(() => {
 .strategy-fact-boundary-guide strong { color:#42518f; font-size:13px; }
 .strategy-fact-boundary-guide span { color:#7b879b; font-size:12px; line-height:1.55; }
 .strategy-formal-facts-empty { min-height:120px; }
-.strategy-formal-facts-layout { display:grid; grid-template-columns:230px minmax(0,1fr); gap:16px; align-items:start; }
-.strategy-fact-category-panel { position:sticky; top:16px; display:flex; flex-direction:column; gap:4px; padding:12px; border:1px solid #e4ebfa; border-radius:15px; background:linear-gradient(150deg,#f7faff,#f2f6ff); max-height:calc(100dvh - 190px); overflow-y:auto; }
-.strategy-fact-category-panel::-webkit-scrollbar { width:6px; }
-.strategy-fact-category-panel::-webkit-scrollbar-thumb { border-radius:3px; background:#cdd8ec; }
-.strategy-fact-category-group-title { margin:9px 4px 2px; color:#8a97b5; font-size:11px; font-weight:800; letter-spacing:.04em; }
-.strategy-fact-category-item { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; border:1px solid transparent; border-radius:10px; padding:9px 11px; background:transparent; color:#41527a; font:inherit; font-size:14px; text-align:left; cursor:pointer; }
-.strategy-fact-category-item strong { font-weight:650; line-height:1.4; }
-.strategy-fact-category-item:hover { background:#eaf1ff; }
-.strategy-fact-category-item.is-active { border-color:#b9c8f2; background:#fff; color:#2f4fa8; font-weight:800; box-shadow:0 2px 8px #5b79d214; }
-.strategy-fact-category-count { flex-shrink:0; min-width:26px; padding:1px 7px; border-radius:999px; background:#e3eafb; color:#5a6f9d; font-size:12px; font-weight:800; text-align:center; font-variant-numeric:tabular-nums; }
-.strategy-fact-category-item.is-active .strategy-fact-category-count { background:#3f5fc0; color:#fff; }
+.strategy-formal-facts-layout { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; }
 .strategy-formal-facts-main { min-width:0; }
 .strategy-formal-fact-value-body { display:flex; align-items:flex-start; gap:10px; }
 .strategy-formal-fact-value-text { flex:1 1 auto; min-width:0; }
@@ -9633,9 +9603,10 @@ onBeforeUnmount(() => {
 .strategy-fact-four-layer-card.is-mention header strong { color:#7c4fa8; }
 .strategy-fact-four-layer-card.is-other { border-color:#d8dee9; background:#fbfcfe; }
 .strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
-@media(max-width:1100px) { .strategy-formal-facts-layout { grid-template-columns:1fr; } .strategy-fact-category-panel { position:static; max-height:none; flex-direction:row; flex-wrap:wrap; } .strategy-fact-category-group-title { width:100%; margin:6px 2px 0; } .strategy-fact-category-item { width:auto; } }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:840px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-fact-number-column { width:64px; }
+.strategy-formal-facts-table .strategy-formal-fact-number-cell { text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .strategy-formal-fact-scope-column { width:160px; }
 .strategy-formal-fact-actions-column { width:360px; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
