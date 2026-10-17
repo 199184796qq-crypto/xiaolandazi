@@ -3,7 +3,7 @@
 ## 事实类型空下拉列（2026-10-17 最新用户要求）
 
 - 仅在归属范围前增加“事实类型”列，各行与新增行放空下拉框，不填类型、不绑定事实category/数据、事件或API，不保存；留给WorkBuddy接数据。占位组件FormalFactTypePlaceholder.vue，只有可访问标签及空禁用select，16px；不能猜类型选项或字段映射。
-- 现在六列序号/事实类型/归属/正文/状态/操作，详情/子事实/空态colspan=6，新行也六格。原排序/筛选/搜索/状态展开/原位新增修改均保持。普通web与桌面同步，桌面继承bbc7985，不能写E:/speech-generator-build、改后端或重启服务。说明docs/2026-10-17-fact-type-placeholder.md，证据本聊天work/fact-type-placeholder-proof；上线据核验后补记。
+- 现在六列序号/事实类型/归属/正文/状态/操作，详情/子事实/空态colspan=6，新行也六格。原排序/筛选/搜索/状态展开/原位新增修改均保持。普通web与桌面同步，桌面继承bbc7985，不能写E:/speech-generator-build、改后端或重启服务。说明docs/2026-10-17-fact-type-placeholder.md，证据本聊天work/fact-type-placeholder-proof；北京时间15:24:46—15:24:47已上线20261017-fact-type-placeholder-55b7425，独立桌面87db15a分支已推送。两份类型检查/构建、空下拉六列及原功能和五宽度验收通过；2970旧无关文件、三服务/Nginx/配置保持，无重启。12公网、6鉴权及2157完整前端备份哈希/大小/权限通过，指针更新。未接数据/保存，未改生产事实或调用真实模型/TTS。
 
 ## 已采纳事实界面按图2改版（2026-10-17 最新用户要求）
 
