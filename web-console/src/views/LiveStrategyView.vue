@@ -425,6 +425,28 @@ const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
 const factScopeSortOrder = ref<FactScopeSortOrder>('none')
 const sortedFormalFacts = computed(() => sortFormalFactsByScope(formalFacts.value, formalProductLinks.value, factScopeSortOrder.value))
+const factScopeFilter = ref('all')
+const factFilterProducts = computed(() => formalProductLinks.value
+  .filter(item => item.status === 'active' && item.plan_id === currentRoomPlanId.value && item.tenant_id === rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id)
+  .sort((a, b) => a.link_key.localeCompare(b.link_key, 'zh-CN', { numeric: true }) || a.id - b.id))
+const factFilterProductIds = computed(() => new Set(factFilterProducts.value.map(item => item.id)))
+function formalFactFilterScope(item: LiveAgentPlanFact) {
+  if (item.scope?.kind === 'common') return 'common'
+  if (item.scope?.kind === 'product') {
+    const id = item.scope.product_link_id
+    return typeof id === 'number' && factFilterProductIds.value.has(id) ? String(id) : 'unavailable'
+  }
+  return 'unassigned'
+}
+const factScopeFilterOptions = computed(() => [
+  { value: 'all', label: '全部' },
+  { value: 'common', label: '公共' },
+  ...factFilterProducts.value.map(item => ({ value: String(item.id), label: /^\d+$/.test(item.link_key.trim()) ? item.link_key.trim() + '号链接' : item.link_key.trim() })),
+  ...(formalFacts.value.some(item => formalFactFilterScope(item) === 'unassigned') ? [{ value: 'unassigned', label: '未指定归属' }] : []),
+  ...(formalFacts.value.some(item => formalFactFilterScope(item) === 'unavailable') ? [{ value: 'unavailable', label: '关联商品已失效' }] : []),
+])
+const visibleFormalFacts = computed(() => factScopeFilter.value === 'all' ? sortedFormalFacts.value : sortedFormalFacts.value.filter(item => formalFactFilterScope(item) === factScopeFilter.value))
+watch(factScopeFilterOptions, options => { if (!options.some(item => item.value === factScopeFilter.value)) factScopeFilter.value = 'all' })
 const factScopeSortHint = computed(() => factScopeSortOrder.value === 'none' ? '按归属范围归类排序' : factScopeSortOrder.value === 'ascending' ? '当前正序，点击倒序' : '当前倒序，点击恢复原顺序')
 function cycleFactScopeSort() {
   factScopeSortOrder.value = factScopeSortOrder.value === 'none' ? 'ascending' : factScopeSortOrder.value === 'ascending' ? 'descending' : 'none'
@@ -460,6 +482,7 @@ watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.v
   editingFormalFactId.value = null
   inlineFactSavingId.value = null
   factScopeSortOrder.value = 'none'
+  factScopeFilter.value = 'all'
   if (creatingFormalFact.value) cancelCreateFormalFact()
   if (mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
   factScopeSequence++
@@ -4360,6 +4383,7 @@ function onPlanTestAssetsUpdated(event: Event) {
 }
 
 function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
+  if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) factScopeFilter.value = 'all'
 	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
@@ -4466,6 +4490,7 @@ async function locatePendingRiskLocation() {
 	if (location.area === 'knowledge') {
 		const fact = formalFacts.value.find(item => factRisksForFact(item).some(risk => risk.claim_sha256 === location.claimHash))
 		if (!fact) return false
+		if (!visibleFormalFacts.value.some(item => item.id === fact.id)) factScopeFilter.value = 'all'
 		expandedFactRiskId.value = fact.id
 	} else if (location.area === 'benefits' && source?.entity_id) {
 		if (!formalBenefits.value.some(item => item.id === source.entity_id)) return false
@@ -4540,6 +4565,7 @@ async function appealInlineFactRisk(review: FactRiskReviewDisplay) {
 function beginCreateFormalFact() {
 	if (creatingFormalFact.value || editingFormalFactId.value !== null || mutatingFormalFactId.value || factScopeSavingId.value !== null || !currentRoomPlanId.value || factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')) return
 	cancelFormalFactEdit()
+	factScopeFilter.value = 'all'
 	creatingFormalFact.value = true
 	formalFactCreateGuidance.value = ''
 	formalFactCreateError.value = ''
@@ -6769,7 +6795,7 @@ onBeforeUnmount(() => {
                 <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
                 <div class="strategy-formal-facts-heading">
                   <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条</small>
+                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条<template v-if="factScopeFilter !== 'all'"> · 当前显示 {{ visibleFormalFacts.length }} 条</template></small>
                 </div>
               </div>
             </header>
@@ -6794,13 +6820,16 @@ onBeforeUnmount(() => {
                         归属范围
                         <svg viewBox="0 0 16 20" aria-hidden="true"><path d="m3 7 5-5 5 5" :class="{ active: factScopeSortOrder === 'ascending' }"/><path d="m3 13 5 5 5-5" :class="{ active: factScopeSortOrder === 'descending' }"/></svg>
                       </button>
+                      <select v-model="factScopeFilter" class="strategy-fact-scope-filter" aria-label="按归属范围筛选事实" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId">
+                        <option v-for="option in factScopeFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                      </select>
                     </th>
                     <th>事实内容</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="(item, index) in sortedFormalFacts" :key="item.id">
+                  <template v-for="(item, index) in visibleFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
@@ -6871,7 +6900,8 @@ onBeforeUnmount(() => {
                     </td>
                   </tr>
                   </template>
-                  <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="formalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
+                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="4">暂无符合筛选条件的事实</td></tr>
+                  <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="visibleFormalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
                 </tbody>
               </table>
                 </div>
@@ -9571,6 +9601,9 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-add button { min-height:44px; padding:10px 20px; font-size:16px; line-height:1.5; }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:840px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-facts-table .strategy-fact-scope-filter { display:block; box-sizing:border-box; width:100%; margin-top:6px; min-height:38px; padding:6px 8px; border:1px solid #cbd7ed; border-radius:8px; background:#fff; color:#111; font:inherit; font-size:16px; font-weight:500; }
+.strategy-fact-scope-filter:disabled { opacity:.6; }
+.strategy-formal-facts-table .strategy-formal-fact-filter-empty td { padding:28px 12px; color:#637795; text-align:center; font-size:16px; }
 .strategy-fact-scope-sort { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:0; border:0; background:transparent; color:inherit; font:inherit; font-size:16px; font-weight:inherit; white-space:nowrap; cursor:pointer; }
 .strategy-fact-scope-sort:hover:not(:disabled),.strategy-fact-scope-sort.is-sorted { color:#4545df; }
 .strategy-fact-scope-sort:focus-visible { outline:2px solid #6557ff; outline-offset:4px; border-radius:3px; }
