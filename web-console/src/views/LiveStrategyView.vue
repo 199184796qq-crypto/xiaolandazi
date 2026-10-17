@@ -27,6 +27,7 @@ import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSecti
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import FactCategoryBadge from '../components/FactCategoryBadge.vue'
+import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
 import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
@@ -71,6 +72,7 @@ import {
   getLiveAgentPlans,
   getLiveAgentPlanBenefits,
   getLiveAgentPlanFacts,
+  updateLiveAgentPlanFactScope,
   getLiveAgentPlanProductLinks,
   getLiveAgentPlanScripts,
   getAgentMemories,
@@ -448,6 +450,29 @@ const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbi
 const formalFactCreateGuidance = ref('')
 const formalFactCreateError = ref('')
 const mutatingFormalFactId = ref<number | null>(null)
+const factScopeSavingId = ref<number | null>(null)
+let factScopeSequence = 0
+let formalFactReadSequence = 0
+watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
+  factScopeSequence++
+  factScopeSavingId.value = null
+}, { flush: 'sync' })
+async function saveFormalFactScope(item: LiveAgentPlanFact, scope: NonNullable<LiveAgentPlanFact['scope']>) {
+  const plan = currentRoomPlanId.value
+  const sequence = factScopeSequence
+  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
+  if (!plan || item.plan_id !== plan || item.tenant_id !== activeRoom.value?.tenant_id || factScopeSavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
+  factScopeSavingId.value = item.id
+  formalFactReadSequence++
+  try {
+    const updated = await updateLiveAgentPlanFactScope(plan, item, scope)
+    if (!current()) return
+    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
+    scriptNotice.value = '事实归属已保存。重新初始化并保存方案后，下次开播使用新的归属。'
+    void contentPools.refresh(true)
+  } finally { if (current()) factScopeSavingId.value = null }
+}
+
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
 let scriptAnalysisProgressTimer: number | null = null
@@ -2813,7 +2838,7 @@ async function applyCustomMainlineAsFormal() {
       plan_description: currentPlan.value.description,
       room_id: activeRoom.value.id,
       policy_rule_count: 0,
-      formal_facts: formalFacts.value.map((item) => ({ category: item.category, key: item.key, value: item.value, forbidden_wording: item.forbidden_wording, safe_rewrite: item.safe_rewrite, version: item.version_no })),
+      formal_facts: formalFacts.value.map((item) => ({ scope: item.scope, category: item.category, key: item.key, value: item.value, forbidden_wording: item.forbidden_wording, safe_rewrite: item.safe_rewrite, version: item.version_no })),
       benefits: activeFormalBenefits.value,
       product_links: formalProductLinks.value,
       script_references: [],
@@ -4298,6 +4323,8 @@ async function refreshPlanScripts() {
 }
 
 async function refreshFormalFacts() {
+  const sequence = ++formalFactReadSequence
+  const scopeSequence = factScopeSequence
   const planId = currentRoomPlanId.value
   const tenantId = activeRoom.value?.tenant_id
   if (!planId) {
@@ -4306,10 +4333,10 @@ async function refreshFormalFacts() {
   }
   try {
     const result = await getLiveAgentPlanFacts(planId, tenantId)
-    if (planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
+    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
     formalFacts.value = result.items || []
   } catch (err) {
-    if (planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
+    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式事实依据失败'
     }
@@ -6789,9 +6816,10 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-else class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
-                <colgroup><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
+                <colgroup><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-actions-column" /></colgroup>
                 <thead>
                   <tr>
+                    <th>归属范围</th>
                     <th>事实内容</th>
                     <th>操作</th>
                   </tr>
@@ -6799,6 +6827,7 @@ onBeforeUnmount(() => {
                 <tbody>
                   <template v-for="(item, index) in filteredFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || editingFormalFactId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                     <template v-if="editingFormalFactId === item.id">
                       <td>
                         <div class="strategy-formal-fact-edit-metadata">
@@ -6846,10 +6875,10 @@ onBeforeUnmount(() => {
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
-                          <button type="button" class="is-preview" :disabled="!!mutatingFormalFactId || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
+                          <button type="button" class="is-preview" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
-                            :disabled="!!mutatingFormalFactId"
+                            :disabled="!!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="startFormalFactEdit(item)"
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>修改
@@ -6857,7 +6886,7 @@ onBeforeUnmount(() => {
                           <button
                             class="is-danger"
                             type="button"
-                            :disabled="!!mutatingFormalFactId"
+                            :disabled="!!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="deleteFormalFact(item)"
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
@@ -6868,9 +6897,9 @@ onBeforeUnmount(() => {
                       </td>
                     </template>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="2"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="3"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="2">
+                    <td colspan="3">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
                           <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
@@ -9610,10 +9639,11 @@ onBeforeUnmount(() => {
 .strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
 @media(max-width:1100px) { .strategy-formal-facts-layout { grid-template-columns:1fr; } .strategy-fact-category-panel { position:static; max-height:none; flex-direction:row; flex-wrap:wrap; } .strategy-fact-category-group-title { width:100%; margin:6px 2px 0; } .strategy-fact-category-item { width:auto; } }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
-.strategy-formal-facts-table { width:100%; min-width:620px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-facts-table { width:100%; min-width:840px; border-collapse:collapse; table-layout:fixed; }
+.strategy-formal-fact-scope-column { width:160px; }
 .strategy-formal-fact-actions-column { width:360px; }
 .strategy-formal-facts-table th,.strategy-formal-facts-table td { padding:10px 12px; border-bottom:1px solid #eaf0fb; color:#2f456c; font-size:16px; line-height:1.55; vertical-align:middle; text-align:left; word-break:break-word; }
-.strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:14px; font-weight:800; }
+.strategy-formal-facts-table th { padding-block:14px; background:linear-gradient(110deg,#eef4ff,#edf3fe); color:#435b88; font-size:16px; font-weight:800; }
 .strategy-formal-facts-table tr.is-striped-formal-fact { --formal-fact-row-bg:#f0f4fc; }
 .strategy-formal-facts-table tbody>tr[data-formal-fact-id]>td { background:var(--formal-fact-row-bg,#fff); }
 .strategy-formal-facts-table tbody>tr:not(.strategy-fact-risk-detail-row):not(.has-fact-risk):hover td { background-color:#f9fbff; }
@@ -9703,7 +9733,7 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .strategy-formal-fact-operation>.strategy-formal-fact-actions { flex-wrap:nowrap; flex-shrink:0; }
 .strategy-formal-fact-operation .strategy-formal-fact-actions button { flex-shrink:0; }
-.strategy-formal-fact-guidance-cell[colspan="2"] { width:28%; }
+.strategy-formal-fact-guidance-cell[colspan="3"] { width:28%; }
 .strategy-formal-fact-operation .strategy-formal-fact-expand { display:grid; place-items:center; flex:0 0 30px; width:30px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:#3475ff; cursor:pointer; }
 .strategy-formal-fact-expand svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; transition:transform .18s; }
 .strategy-formal-fact-expand[aria-expanded="true"] svg { transform:rotate(180deg); }
@@ -11298,4 +11328,5 @@ onBeforeUnmount(() => {
 @media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{margin:12px 10px;padding:17px 14px;gap:17px;border-radius:16px}.plan-configuration-header .strategy-plan-heading{gap:12px}.plan-hero-symbol{width:47px;height:52px;border-radius:13px}.plan-hero-symbol svg{width:28px;height:28px}.plan-configuration-kicker{font-size:12px;margin-bottom:2px}.plan-configuration-header .strategy-plan-title-switch{flex:1 1 auto;width:auto;min-height:34px;height:34px;font-size:17px}.plan-title-edit{flex-basis:27px;width:27px;height:30px;padding:3px}.plan-title-edit :deep(svg){width:20px;height:20px}.plan-configuration-meta{grid-column:1/-1;gap:7px 10px;margin-top:8px;font-size:12px}.plan-configuration-actions{justify-content:start;gap:8px}.plan-configuration-actions .strategy-version-button{min-height:44px;padding:10px 11px;font-size:13px;gap:6px;border-radius:10px}.plan-configuration-actions :deep(svg){width:18px;height:18px}.plan-configuration-layout{padding:0 10px 16px!important}.plan-configuration-layout .strategy-v2-workspace{padding:16px 12px}.plan-version-record-list{left:auto;right:0}}
 
 .plan-save-success{grid-column:1/-1;margin:0!important;color:#157347;font-size:16px;line-height:1.6}
+.strategy-formal-facts :is(small,span,p,label,button,input,select,textarea,th,td),.strategy-formal-facts .strategy-fact-category-item strong { font-size:16px; }
 </style>

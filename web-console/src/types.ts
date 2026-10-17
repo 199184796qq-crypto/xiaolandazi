@@ -2239,6 +2239,7 @@ export interface LiveAgentPlanWorkspaceResponse {
 }
 
 export interface LiveAgentPlanFact {
+  scope?: { kind: 'common' | 'product'; product_link_id?: number }
   id: number
   tenant_id: number
   plan_id: number

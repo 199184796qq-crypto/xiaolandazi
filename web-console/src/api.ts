@@ -974,6 +974,12 @@ export function adoptLiveAgentPlanFacts(
   })
 }
 
+export function updateLiveAgentPlanFactScope(planId: number, fact: LiveAgentPlanFact, scope: NonNullable<LiveAgentPlanFact['scope']>) {
+  return request<LiveAgentPlanFact>('/api/v1/live-agent-plans/' + planId + '/facts/' + fact.id + '/scope', {
+    method: 'PUT', body: JSON.stringify({ tenant_id: fact.tenant_id, expected_version_no: fact.version_no, ...scope }),
+  })
+}
+
 export function updateLiveAgentPlanFact(
   planId: number,
   factId: number,
