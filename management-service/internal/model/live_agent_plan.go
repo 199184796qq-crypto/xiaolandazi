@@ -492,26 +492,32 @@ type LiveAgentPlanScriptAnalysis struct {
 	Completeness LiveAgentPlanAnalysisCompleteness   `json:"completeness"`
 }
 
+type LiveAgentPlanFactScope struct {
+	Kind          string `json:"kind"`
+	ProductLinkID int64  `json:"product_link_id,omitempty"`
+}
+
 type LiveAgentPlanFact struct {
-	ID                 int64     `json:"id"`
-	TenantID           int64     `json:"tenant_id"`
-	PlanID             int64     `json:"plan_id"`
-	Category           string    `json:"category"`
-	Key                string    `json:"key"`
-	Value              string    `json:"value"`
-	ForbiddenWording   string    `json:"forbidden_wording,omitempty"`
-	SafeRewrite        string    `json:"safe_rewrite,omitempty"`
-	SourceQuote        string    `json:"source_quote,omitempty"`
-	SourceReviewBucket string    `json:"source_review_bucket,omitempty"`
-	SourceReviewReason string    `json:"source_review_reason,omitempty"`
-	SourceType         string    `json:"source_type"`
-	SourceRef          string    `json:"source_ref,omitempty"`
-	Status             string    `json:"status"`
-	VersionNo          int64     `json:"version_no"`
-	CreatedByUserID    *int64    `json:"created_by_user_id,omitempty"`
-	UpdatedByUserID    *int64    `json:"updated_by_user_id,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	Scope              *LiveAgentPlanFactScope `json:"scope,omitempty"`
+	ID                 int64                   `json:"id"`
+	TenantID           int64                   `json:"tenant_id"`
+	PlanID             int64                   `json:"plan_id"`
+	Category           string                  `json:"category"`
+	Key                string                  `json:"key"`
+	Value              string                  `json:"value"`
+	ForbiddenWording   string                  `json:"forbidden_wording,omitempty"`
+	SafeRewrite        string                  `json:"safe_rewrite,omitempty"`
+	SourceQuote        string                  `json:"source_quote,omitempty"`
+	SourceReviewBucket string                  `json:"source_review_bucket,omitempty"`
+	SourceReviewReason string                  `json:"source_review_reason,omitempty"`
+	SourceType         string                  `json:"source_type"`
+	SourceRef          string                  `json:"source_ref,omitempty"`
+	Status             string                  `json:"status"`
+	VersionNo          int64                   `json:"version_no"`
+	CreatedByUserID    *int64                  `json:"created_by_user_id,omitempty"`
+	UpdatedByUserID    *int64                  `json:"updated_by_user_id,omitempty"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
 }
 
 type LiveAgentPlanBenefit struct {
@@ -677,13 +683,14 @@ type LiveFactExpansionPolicy struct {
 }
 
 type LiveAgentFullShowContextFact struct {
-	SourceID         int64  `json:"source_id,omitempty"`
-	Category         string `json:"category"`
-	Key              string `json:"key"`
-	Value            string `json:"value"`
-	ForbiddenWording string `json:"forbidden_wording,omitempty"`
-	SafeRewrite      string `json:"safe_rewrite,omitempty"`
-	Version          int64  `json:"version"`
+	Scope            *LiveAgentPlanFactScope `json:"scope,omitempty"`
+	SourceID         int64                   `json:"source_id,omitempty"`
+	Category         string                  `json:"category"`
+	Key              string                  `json:"key"`
+	Value            string                  `json:"value"`
+	ForbiddenWording string                  `json:"forbidden_wording,omitempty"`
+	SafeRewrite      string                  `json:"safe_rewrite,omitempty"`
+	Version          int64                   `json:"version"`
 }
 
 const LiveGenerationFactManifestVersion = "live-generation-facts/v1"

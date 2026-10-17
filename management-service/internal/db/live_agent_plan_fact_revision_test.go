@@ -37,7 +37,7 @@ func (c *factRevisionConn) QueryContext(_ context.Context, query string, args []
 	if !strings.Contains(query, "WHERE id=? AND tenant_id=? AND plan_id=?") || len(args) != 3 {
 		return nil, errors.New("unscoped fact query")
 	}
-	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant plan category key value forbidden rewrite quote bucket reason source ref status version creator updater created updated")}
+	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant plan category key value forbidden rewrite quote bucket reason source ref status version creator updater created updated scope")}
 	if args[0].Value == int64(7) && args[1].Value == int64(14) && args[2].Value == int64(4) {
 		row := append([]driver.Value(nil), c.row...)
 		if c.committed {
@@ -74,7 +74,7 @@ func (c *factRevisionConn) ExecContext(_ context.Context, query string, args []d
 }
 func factRevisionStore(t *testing.T) (*Store, *factRevisionConn) {
 	t.Helper()
-	c := &factRevisionConn{row: []driver.Value{int64(7), int64(14), int64(4), "identity_location", "来源说明", "原始内容", "不要这样说", "改成这样说", "原素材", "adoptable", "原审核理由", "manual_create", "manual:fact-editor", "active", int64(1), int64(8), int64(8), time.Now(), time.Now()}}
+	c := &factRevisionConn{row: []driver.Value{int64(7), int64(14), int64(4), "identity_location", "来源说明", "原始内容", "不要这样说", "改成这样说", "原素材", "adoptable", "原审核理由", "manual_create", "manual:fact-editor", "active", int64(1), int64(8), int64(8), time.Now(), time.Now(), "null"}}
 	database := sql.OpenDB(factRevisionConnector{c})
 	t.Cleanup(func() { _ = database.Close() })
 	return &Store{db: database}, c

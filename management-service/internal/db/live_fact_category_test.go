@@ -55,10 +55,10 @@ func (c *categoryTestConn) QueryContext(_ context.Context, q string, args []driv
 		return &contentPolicyTestRows{columns: []string{"exists"}, values: [][]driver.Value{{int64(1)}}}, nil
 	}
 	if strings.Contains(q, "FROM live_agent_plan_facts") {
-		rows := &contentPolicyTestRows{columns: strings.Fields("id tenant plan category key value forbidden rewrite quote bucket reason source ref status version creator updater created updated")}
+		rows := &contentPolicyTestRows{columns: strings.Fields("id tenant plan category key value forbidden rewrite quote bucket reason source ref status version creator updater created updated scope")}
 		if c.committed {
 			a := c.factArgs
-			rows.values = [][]driver.Value{{int64(7), a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], "active", int64(1), a[12], a[13], time.Now(), time.Now()}}
+			rows.values = [][]driver.Value{{int64(7), a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], "active", int64(1), a[12], a[13], time.Now(), time.Now(), "null"}}
 		}
 		return rows, nil
 	}

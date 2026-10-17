@@ -78,7 +78,13 @@ func (s *Server) loadSupplementFactPackage(ctx context.Context, tenant, plan, pr
 	if err != nil {
 		return supplementFactPackage{}, err
 	}
-	text := renderAnchorStyleWorkbenchFacts(planData, facts, benefits, links)
+	selectedFacts := facts[:0]
+	for _, fact := range facts {
+		if fact.Scope == nil || fact.Scope.Kind == "common" || fact.Scope.Kind == "product" && fact.Scope.ProductLinkID == product {
+			selectedFacts = append(selectedFacts, fact)
+		}
+	}
+	text := renderAnchorStyleWorkbenchFacts(planData, selectedFacts, benefits, links)
 	corrections, err := s.store.ListContentCorrections(ctx, tenant, plan)
 	if err != nil {
 		return supplementFactPackage{}, err

@@ -578,6 +578,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-constraints/adopt", s.speechConstraintAdopt)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/adopt", s.liveAgentPlanFactAdopt)
 	mux.HandleFunc("PATCH /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactUpdate)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/facts/{factID}/scope", s.liveAgentPlanFactScopeUpdate)
 	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/facts/{factID}", s.liveAgentPlanFactDelete)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/product-links", s.liveAgentPlanProductLinkList)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/product-links/adopt", s.liveAgentPlanProductLinkAdopt)

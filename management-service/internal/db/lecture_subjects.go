@@ -11,8 +11,8 @@ import (
 )
 
 func saveLectureRootRevision(ctx context.Context, tx *sql.Tx, tenant, plan, id, actor int64) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO live_agent_plan_fact_revisions(tenant_id,plan_id,fact_id,version_no,action,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id)
- SELECT tenant_id,plan_id,id,version_no,'update',category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,? FROM live_agent_plan_facts WHERE tenant_id=? AND plan_id=? AND id=?`, actor, tenant, plan, id)
+	_, err := tx.ExecContext(ctx, `INSERT INTO live_agent_plan_fact_revisions(tenant_id,plan_id,fact_id,version_no,action,category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,actor_user_id,scope_json)
+ SELECT tenant_id,plan_id,id,version_no,'update',category,fact_key,fact_value,forbidden_wording,safe_rewrite,source_quote,source_review_bucket,source_review_reason,source_type,source_ref,?,scope_json FROM live_agent_plan_facts WHERE tenant_id=? AND plan_id=? AND id=?`, actor, tenant, plan, id)
 	return err
 }
 

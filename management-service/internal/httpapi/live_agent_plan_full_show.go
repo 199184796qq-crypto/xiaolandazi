@@ -187,9 +187,21 @@ func compileAuthorizedGenerationFacts(
 		result = append(result, item)
 	}
 	for _, fact := range formalFacts {
+		scopeKind, linkKey, productName := "plan", "", ""
+		if fact.Scope != nil && fact.Scope.Kind == "product" {
+			for _, p := range productLinks {
+				if p.ID == fact.Scope.ProductLinkID {
+					scopeKind, linkKey, productName = "product_link", p.LinkKey, p.ProductName
+					break
+				}
+			}
+			if linkKey == "" {
+				continue
+			}
+		}
 		appendFact(model.LiveAgentGenerationFact{
 			FactID:     fmt.Sprintf("supplemental_fact:%d:%s:v%d", fact.SourceID, strings.TrimSpace(fact.Key), fact.Version),
-			SourceKind: "supplemental_fact", SourceID: fact.SourceID, SourceKey: strings.TrimSpace(fact.Key), ScopeKind: "plan",
+			SourceKind: "supplemental_fact", SourceID: fact.SourceID, SourceKey: strings.TrimSpace(fact.Key), ScopeKind: scopeKind, LinkKey: linkKey, ProductName: productName,
 			Predicate: strings.TrimSpace(fact.Key), Label: strings.TrimSpace(fact.Key), Value: fact.Value,
 			ForbiddenWording: fact.ForbiddenWording, SafeRewrite: fact.SafeRewrite, Version: fact.Version,
 		})
@@ -292,7 +304,20 @@ func compileFullShowContextAt(
 		if key == "" || value == "" {
 			continue
 		}
+		if fact.Scope != nil && fact.Scope.Kind == "product" {
+			found := false
+			for _, p := range productLinks {
+				if p.ID == fact.Scope.ProductLinkID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
 		formalFacts = append(formalFacts, model.LiveAgentFullShowContextFact{
+			Scope:            fact.Scope,
 			SourceID:         fact.ID,
 			Category:         strings.TrimSpace(fact.Category),
 			Key:              key,

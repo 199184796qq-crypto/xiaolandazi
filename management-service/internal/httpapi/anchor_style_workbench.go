@@ -1322,7 +1322,7 @@ func renderAnchorStyleWorkbenchFactsWithOrigins(plan model.LiveAgentPlan, facts 
 		if !strings.EqualFold(strings.TrimSpace(fact.Status), "active") || strings.TrimSpace(fact.Value) == "" {
 			continue
 		}
-		line := fmt.Sprintf("- [%s/%s] %s", strings.TrimSpace(fact.Category), strings.TrimSpace(fact.Key), strings.TrimSpace(fact.Value))
+		line := renderFactScopePrefix(fact, links) + fmt.Sprintf("%s/%s] %s", strings.TrimSpace(fact.Category), strings.TrimSpace(fact.Key), strings.TrimSpace(fact.Value))
 		if strings.TrimSpace(fact.SafeRewrite) != "" {
 			line += "；安全改写=" + strings.TrimSpace(fact.SafeRewrite)
 		}

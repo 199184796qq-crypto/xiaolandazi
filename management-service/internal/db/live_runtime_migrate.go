@@ -57,6 +57,8 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		{"live_fact_risk_reviews", "appeal_at", "ALTER TABLE live_fact_risk_reviews ADD COLUMN appeal_at DATETIME(3) NULL"},
 		{"live_anchor_style_scorecards", "sample_text", "ALTER TABLE live_anchor_style_scorecards ADD COLUMN sample_text MEDIUMTEXT NULL AFTER sample_sha256"},
 		{"live_anchor_style_scorecards", "calibration_error", "ALTER TABLE live_anchor_style_scorecards ADD COLUMN calibration_error TEXT NULL AFTER status"},
+		{"live_agent_plan_facts", "scope_json", "ALTER TABLE live_agent_plan_facts ADD COLUMN scope_json JSON NULL"},
+		{"live_agent_plan_fact_revisions", "scope_json", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN scope_json JSON NULL"},
 		{"live_agent_plan_facts", "forbidden_wording", "ALTER TABLE live_agent_plan_facts ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},
 		{"live_agent_plan_facts", "safe_rewrite", "ALTER TABLE live_agent_plan_facts ADD COLUMN safe_rewrite TEXT NULL AFTER forbidden_wording"},
 		{"live_agent_plan_fact_revisions", "forbidden_wording", "ALTER TABLE live_agent_plan_fact_revisions ADD COLUMN forbidden_wording TEXT NULL AFTER fact_value"},

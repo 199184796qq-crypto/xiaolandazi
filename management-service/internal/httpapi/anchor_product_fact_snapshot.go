@@ -42,6 +42,12 @@ func productFactBlocks(facts string) []string {
 // classifies those records with the model before materializing their bundles.
 // Only the first line carries metadata, not examples in multiline guidance.
 func scopedPlanProductFact(block string) anchorcycle.ScopedFact {
+	if fact, explicit, err := explicitPlanFactScope(block); explicit {
+		if err != nil {
+			return anchorcycle.ScopedFact{Text: block, Links: []string{"__unavailable_fact_scope__"}}
+		}
+		return fact
+	}
 	header, _, _ := strings.Cut(block, "\n")
 	links := parseCardLinks(header)
 	return anchorcycle.ScopedFact{Text: block, Links: links, Shared: len(links) == 0, Applicable: true}
@@ -68,6 +74,9 @@ func validateProductFactSnapshot(facts string, focus *anchorcycle.ProductFocus) 
 			return fmt.Errorf("商品事实快照归属无效：%w", err)
 		}
 		expected := scopedPlanProductFact(fact.Text)
+		if _, explicit, err := explicitPlanFactScope(fact.Text); explicit && (err != nil || expected.Shared != fact.Shared) {
+			return errors.New("用户指定的事实归属不能被覆盖，请重新初始化")
+		}
 		if !fact.Shared && len(fact.Links) == 0 {
 			return errors.New("商品事实缺少适用商品，未保存")
 		}

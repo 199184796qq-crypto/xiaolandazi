@@ -52,6 +52,9 @@ func productDescriptions(links []model.LiveAgentPlanProductLink) []string {
 }
 
 func classifyProductCommonFact(ctx context.Context, block string, links []model.LiveAgentPlanProductLink, judge productCommonJudgment) (anchorcycle.ScopedFact, error) {
+	if fact, explicit, err := explicitPlanFactScope(block); explicit {
+		return fact, err
+	}
 	fact := scopedPlanProductFact(block)
 	if len(fact.Links) > 0 { // Explicit program bindings remain authoritative.
 		return fact, nil

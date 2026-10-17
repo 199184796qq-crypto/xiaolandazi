@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -16,7 +17,7 @@ const liveAgentPlanFactSelect = `
 	SELECT id, tenant_id, plan_id, category, fact_key, fact_value,
 		COALESCE(forbidden_wording, ''), COALESCE(safe_rewrite, ''), source_quote,
 		source_review_bucket, source_review_reason, source_type, source_ref,
-		status, version_no, created_by_user_id, updated_by_user_id, created_at, updated_at
+		status, version_no, created_by_user_id, updated_by_user_id, created_at, updated_at, COALESCE(scope_json, 'null')
 	FROM live_agent_plan_facts
 `
 
@@ -27,15 +28,19 @@ func scanLiveAgentPlanFact(row interface {
 		item      model.LiveAgentPlanFact
 		createdBy sql.NullInt64
 		updatedBy sql.NullInt64
+		scopeJSON string
 	)
 	err := row.Scan(
 		&item.ID, &item.TenantID, &item.PlanID, &item.Category, &item.Key, &item.Value,
 		&item.ForbiddenWording, &item.SafeRewrite,
 		&item.SourceQuote, &item.SourceReviewBucket, &item.SourceReviewReason,
 		&item.SourceType, &item.SourceRef, &item.Status, &item.VersionNo,
-		&createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt,
+		&createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &scopeJSON,
 	)
 	if err != nil {
+		return model.LiveAgentPlanFact{}, err
+	}
+	if err := json.Unmarshal([]byte(scopeJSON), &item.Scope); err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}
 	if createdBy.Valid {
@@ -138,11 +143,11 @@ func (s *Store) AdoptLiveAgentPlanFact(
 			_, txErr = tx.ExecContext(ctx, `
 				INSERT INTO live_agent_plan_fact_revisions (
 					tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-					forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id, scope_json
+				) VALUES (?, ?, ?, ?, 'readopt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, tenantID, planID, existing.ID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
 				strings.TrimSpace(candidate.SourceQuote), strings.TrimSpace(candidate.ReviewBucket),
-				strings.TrimSpace(candidate.ReviewReason), sourceType, strings.TrimSpace(sourceRef), actorUserID)
+				strings.TrimSpace(candidate.ReviewReason), sourceType, strings.TrimSpace(sourceRef), actorUserID, encodeJSON(existing.Scope))
 			if txErr != nil {
 				return result, txErr
 			}
@@ -309,10 +314,10 @@ func (s *Store) UpdateLiveAgentPlanFactWithExpectedVersion(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', ?, ?)
+			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id, scope_json
+		) VALUES (?, ?, ?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_edit', ?, ?, ?)
 	`, tenantID, planID, factID, nextVersion, category, key, value, forbiddenWording, safeRewrite,
-		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, sourceRef, actorUserID)
+		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, sourceRef, actorUserID, encodeJSON(current.Scope))
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}
@@ -365,11 +370,11 @@ func (s *Store) DeleteLiveAgentPlanFactWithExpectedVersion(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO live_agent_plan_fact_revisions (
 			tenant_id, plan_id, fact_id, version_no, action, category, fact_key, fact_value,
-			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id
-		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?)
+			forbidden_wording, safe_rewrite, source_quote, source_review_bucket, source_review_reason, source_type, source_ref, actor_user_id, scope_json
+		) VALUES (?, ?, ?, ?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', '', ?, ?)
 	`, tenantID, planID, factID, nextVersion, current.Category, current.Key, current.Value,
 		current.ForbiddenWording, current.SafeRewrite,
-		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID)
+		current.SourceQuote, current.SourceReviewBucket, current.SourceReviewReason, actorUserID, encodeJSON(current.Scope))
 	if err != nil {
 		return err
 	}
