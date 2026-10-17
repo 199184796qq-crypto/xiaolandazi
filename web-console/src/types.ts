@@ -1570,6 +1570,7 @@ export interface LiveAgentPlanProductLink {
   created_at: string
   updated_at: string
 	attributes: LiveAgentPlanProductAttribute[]
+  field_labels?: Partial<Record<'spec' | 'daily_price' | 'quantity' | 'audience', string>>
 	selling_points?: LiveAgentPlanProductSellingPoint[]
 }
 

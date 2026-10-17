@@ -11,7 +11,7 @@ const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
   benefitScopes?: BenefitScope[]
-  saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string) => Promise<void>
+  saveField: (item: LiveAgentPlanProductLink, field: ProductField, value: string, fieldLabel?: string) => Promise<void>
   saveRoomRoles: (item: LiveAgentPlanProductLink, roles: string[]) => Promise<void>
   removeItem: (item: LiveAgentPlanProductLink) => Promise<void>
   copyItem: (item: LiveAgentPlanProductLink) => Promise<void>
@@ -27,7 +27,7 @@ const fields: { key: ProductField; label: string; path: string }[] = [
   { key: 'audience', label: '适用', path: 'M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM3 21v-3a6 6 0 0 1 12 0v3zM16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v3' },
 ]
 const labels: Record<ProductField, string> = { link_key: '链接编号', product_name: '商品名称', spec: '规格', daily_price: '销售价', quantity: '数量', audience: '适用' }
-const edit = ref<{ item: LiveAgentPlanProductLink; field: ProductField; draft: string } | null>(null)
+const edit = ref<{ item: LiveAgentPlanProductLink; field: ProductField; draft: string; labelDraft: string } | null>(null)
 const busy = ref(false)
 const message = ref<{ id: number; text: string; error?: boolean } | null>(null)
 const roleEditing = ref<number | null>(null)
@@ -60,14 +60,20 @@ async function saveEdit() {
     message.value = { id: current.item.id, text: labels[current.field] + '不能为空', error: true }
     return false
   }
-  if (value === String(current.item[current.field] || '').trim()) {
+  const editableLabel = fields.some(field => field.key === current.field)
+  const label = current.labelDraft.trim()
+  if (editableLabel && (!label || [...label].length > 32 || /[\u0000-\u001f\u007f]/.test(label))) {
+    message.value = { id: current.item.id, text: '字段名称须为1至32字，不能包含换行或控制字符', error: true }
+    return false
+  }
+  if (value === String(current.item[current.field] || '').trim() && (!editableLabel || label === fieldLabel(current.item, current.field))) {
     edit.value = null
     return true
   }
   busy.value = true
   message.value = { id: current.item.id, text: '正在保存…' }
   try {
-    await props.saveField(current.item, current.field, value)
+    await props.saveField(current.item, current.field, value, editableLabel ? label : undefined)
     edit.value = null
     message.value = { id: current.item.id, text: '已自动保存' }
     return true
@@ -85,8 +91,17 @@ async function startEdit(item: LiveAgentPlanProductLink, field: ProductField) {
   // Use the latest returned version when moving between fields on the same card.
   const latest = props.items.find((candidate) => candidate.id === item.id)
   if (!latest) return
-  edit.value = { item: { ...latest }, field, draft: String(latest[field] || '') }
+  edit.value = { item: { ...latest }, field, draft: String(latest[field] || ''), labelDraft: fieldLabel(latest, field) }
   message.value = null
+}
+
+function fieldLabel(item: LiveAgentPlanProductLink, field: ProductField) {
+  return item.field_labels?.[field as keyof NonNullable<LiveAgentPlanProductLink['field_labels']>]?.trim() || labels[field]
+}
+function saveRowOnBlur(event: FocusEvent) {
+  const row = event.currentTarget as HTMLElement
+  if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return
+  void saveEdit()
 }
 
 function cancelEdit() {
@@ -374,13 +389,14 @@ watch(() => props.items.map((item) => item.id), (ids) => {
         </div>
       </section>
       <dl class="product-details">
-        <div v-for="field in fields" :key="field.key">
-          <dt><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="field.path" /></svg><span>{{ field.label }}</span></dt>
+        <div v-for="field in fields" :key="field.key" :class="{ 'field-editing': isEditing(item, field.key) }" @focusout="isEditing(item, field.key) && saveRowOnBlur($event)">
+          <dt><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="field.path" /></svg><input v-if="isEditing(item, field.key) && edit" v-model="edit.labelDraft" class="field-name-input" :disabled="busy" maxlength="32" :aria-label="'编辑' + item.link_key + '的' + field.label + '字段名称'" @keydown.enter.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" /><span v-else>{{ fieldLabel(item, field.key) }}</span></dt>
           <dd>
-            <textarea v-if="isEditing(item, field.key) && edit" v-model="edit.draft" v-focus :disabled="busy" :maxlength="field.key === 'audience' ? 512 : 255" rows="2" :aria-label="'编辑' + item.link_key + '的' + field.label" @blur="saveEdit" @keydown.enter.exact.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" />
+            <textarea v-if="isEditing(item, field.key) && edit" v-model="edit.draft" v-focus :disabled="busy" :maxlength="field.key === 'audience' ? 512 : 255" rows="2" :aria-label="'编辑' + item.link_key + '的' + fieldLabel(item, field.key)" @keydown.enter.exact.prevent="saveEdit" @keydown.esc.prevent="cancelEdit" />
             <span v-else>{{ item[field.key] || '—' }}</span>
-            <button type="button" class="product-edit" :disabled="busy" :aria-label="'修改' + item.link_key + '的' + field.label" :title="'修改' + field.label" @mousedown.prevent @click="startEdit(item, field.key)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+            <button v-if="!isEditing(item, field.key)" type="button" class="product-edit" :disabled="busy" :aria-label="'修改' + item.link_key + '的' + fieldLabel(item, field.key)" :title="'修改' + fieldLabel(item, field.key) + '名称和内容'" @mousedown.prevent @click="startEdit(item, field.key)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
           </dd>
+          <div v-if="isEditing(item, field.key)" class="field-edit-actions"><button type="button" :disabled="busy" @mousedown.prevent @click="cancelEdit">取消</button><button type="button" class="primary" :disabled="busy" @mousedown.prevent @click="saveEdit">保存</button></div>
         </div>
       </dl>
 	  <section class="product-personalized" :class="{ expanded: expandedItems.has(item.id) }">
@@ -481,8 +497,9 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 .product-room-role-editor small { flex-basis:100%; color:#8b95aa; font-size:16px; line-height:1.45; }
 .product-details { display:grid; gap:8px; margin:5px 0 0; min-width:0; }
 .product-details>div { display:grid; grid-template-columns:88px minmax(0,1fr); gap:6px; align-items:center; box-sizing:border-box; min-height:46px; padding:6px 9px; border-radius:10px; background:linear-gradient(135deg,#f7f8ff,#f2f4fc); }
-.product-details dt { display:flex; align-items:center; gap:8px; color:#34415c; font-size:16px; white-space:nowrap; }
+.product-details dt { min-width:0; display:flex; align-items:center; gap:8px; color:#34415c; font-size:16px; overflow-wrap:anywhere; }
 .product-details dt svg { width:20px; height:20px; flex:0 0 20px; }
+.product-details dt>span{min-width:0;white-space:normal;overflow-wrap:anywhere}.product-details .field-editing{grid-template-columns:minmax(0,1fr);border:1px solid var(--accent)}.product-details .field-editing dt{align-items:center}.product-details .field-name-input{min-width:0;width:100%;box-sizing:border-box;font-size:16px}.field-edit-actions{display:flex;justify-content:flex-end;gap:8px}.field-edit-actions button{padding:6px 12px;border:1px solid #dce2ef;border-radius:8px;background:#fff;color:#526080;font:inherit;font-size:16px;cursor:pointer}.field-edit-actions button.primary{background:var(--accent);border-color:var(--accent);color:white}
 .product-details dd { display:flex; align-items:flex-start; gap:3px; min-width:0; margin:0; color:#24334f; font-size:16px; line-height:1.5; overflow-wrap:anywhere; }
 .product-details dd>span { flex:1; min-width:0; padding:4px 6px; border-radius:7px; background:rgba(229,234,252,.55); }
 .product-personalized { overflow:hidden; border:1px solid #e5e9f5; border-radius:11px; background:#fbfcff; }
