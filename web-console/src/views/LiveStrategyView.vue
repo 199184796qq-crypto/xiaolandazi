@@ -30,6 +30,7 @@ import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import InlineFormalFactEditor from '../components/InlineFormalFactEditor.vue'
 import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
+import FormalFactTypePlaceholder from '../components/FormalFactTypePlaceholder.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import InlineFormalFactCreateRow from '../components/InlineFormalFactCreateRow.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
@@ -6895,10 +6896,11 @@ onBeforeUnmount(() => {
               <div class="strategy-formal-facts-main">
                 <div class="strategy-formal-facts-table-wrap">
               <table class="strategy-formal-facts-table">
-                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-status-column" /><col class="strategy-formal-fact-actions-column" /></colgroup>
+                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-type-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-status-column" /><col class="strategy-formal-fact-actions-column" /></colgroup>
                 <thead>
                   <tr>
                     <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
+                    <th scope="col">事实类型</th>
                     <th scope="col" :aria-sort="factScopeSortOrder">
                       <button type="button" class="strategy-fact-scope-sort" :class="{ 'is-sorted': factScopeSortOrder !== 'none' }" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" :aria-label="'归属范围：' + factScopeSortHint" :title="factScopeSortHint" @click="cycleFactScopeSort">
                         归属范围
@@ -6914,6 +6916,7 @@ onBeforeUnmount(() => {
                   <template v-for="(item, index) in visibleFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="['fact-row-tone-' + index % 4, factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <td class="strategy-formal-fact-number-cell"><span class="formal-fact-number-pill">{{ index + 1 }}</span></td>
+                    <td class="strategy-formal-fact-type-cell"><FormalFactTypePlaceholder :label="'“' + item.key + '”的事实类型'" /></td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value">
                         <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
@@ -6953,9 +6956,9 @@ onBeforeUnmount(() => {
                         </div>
                       </td>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="5"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
+                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="6"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="5">
+                    <td colspan="6">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
                           <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
@@ -6988,7 +6991,7 @@ onBeforeUnmount(() => {
                     </td>
                   </tr>
                   </template>
-                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="5">暂无符合筛选条件的事实</td></tr>
+                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="6">暂无符合筛选条件的事实</td></tr>
                   <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="visibleFormalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
                 </tbody>
               </table>

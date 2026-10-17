@@ -28,8 +28,9 @@
 .formal-facts-search button { display:grid; place-items:center; flex:0 0 30px; width:30px; height:32px; padding:0; border:0; border-radius:8px; background:#eef0ff; color:#6178b0; font:inherit; font-size:20px; cursor:pointer; }
 .formal-facts-search button:disabled,.formal-facts-search input:disabled { opacity:.6; cursor:default; }
 .facts-panel-redesign .strategy-formal-facts-table-wrap { padding:0 14px 5px; border:0; border-radius:20px; }
-.facts-panel-redesign .strategy-formal-facts-table { min-width:1080px; border-collapse:separate; border-spacing:0 7px; }
+.facts-panel-redesign .strategy-formal-facts-table { min-width:1224px; border-collapse:separate; border-spacing:0 7px; }
 .facts-panel-redesign .strategy-formal-fact-number-column { width:68px; }
+.facts-panel-redesign .strategy-formal-fact-type-column { width:144px; }
 .facts-panel-redesign .strategy-formal-fact-scope-column { width:148px; }
 .facts-panel-redesign .strategy-formal-fact-status-column { width:168px; }
 .facts-panel-redesign .strategy-formal-fact-actions-column { width:350px; }
