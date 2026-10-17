@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { factCategoryState } from '../factCategories'
+import FormalFactTypePlaceholder from './FormalFactTypePlaceholder.vue'
 
 type FactDraft = { category: string; key: string; value: string; forbidden_wording: string; safe_rewrite: string }
 const draft = defineModel<FactDraft>({ required: true })
@@ -33,6 +34,7 @@ onMounted(async () => {
 <template>
   <tr ref="row" class="inline-formal-fact-create-row" data-formal-fact-draft :aria-busy="saving" @focusout="blur">
     <td class="draft-number"><span>{{ number }}</span></td>
+    <td><FormalFactTypePlaceholder label="新增事实的事实类型" /></td>
     <td><span class="draft-scope">保存后选择归属</span></td>
     <td class="draft-content">
       <p v-if="guidance" class="draft-guidance">{{ guidance }}</p>
