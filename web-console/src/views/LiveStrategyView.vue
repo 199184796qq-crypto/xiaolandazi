@@ -29,7 +29,7 @@ import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea,
 import InlineFormalFactEditor from '../components/InlineFormalFactEditor.vue'
 import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
-import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
+import InlineFormalFactCreateRow from '../components/InlineFormalFactCreateRow.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
@@ -448,6 +448,7 @@ const editingFormalFactId = ref<number | null>(null)
 const secondaryEditFactId = ref<number | null>(null)
 const inlineFactSavingId = ref<number | null>(null)
 const creatingFormalFact = ref(false)
+const formalFactAddButton = ref<HTMLButtonElement | null>(null)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const formalFactCreateGuidance = ref('')
 const formalFactCreateError = ref('')
@@ -459,6 +460,8 @@ watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.v
   editingFormalFactId.value = null
   inlineFactSavingId.value = null
   factScopeSortOrder.value = 'none'
+  if (creatingFormalFact.value) cancelCreateFormalFact()
+  if (mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
   factScopeSequence++
   factScopeSavingId.value = null
 }, { flush: 'sync' })
@@ -4535,6 +4538,7 @@ async function appealInlineFactRisk(review: FactRiskReviewDisplay) {
 }
 
 function beginCreateFormalFact() {
+	if (creatingFormalFact.value || editingFormalFactId.value !== null || mutatingFormalFactId.value || factScopeSavingId.value !== null || !currentRoomPlanId.value || factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')) return
 	cancelFormalFactEdit()
 	creatingFormalFact.value = true
 	formalFactCreateGuidance.value = ''
@@ -4551,17 +4555,20 @@ function cancelCreateFormalFact() {
 
 async function createFormalFact() {
 	const planId = currentRoomPlanId.value
-	if (!planId || mutatingFormalFactId.value) return
+	if (!planId || !creatingFormalFact.value || mutatingFormalFactId.value || factScopeSavingId.value !== null) return
+	const sequence = factScopeSequence
 	const draft = formalFactCreateDraft.value
 	const roomId = activeRoomId.value, tenantId = activeRoom.value?.tenant_id
-	const current = () => creatingFormalFact.value && planId === currentRoomPlanId.value && roomId === activeRoomId.value && tenantId === activeRoom.value?.tenant_id && draft === formalFactCreateDraft.value
+	const current = () => sequence === factScopeSequence && creatingFormalFact.value && planId === currentRoomPlanId.value && roomId === activeRoomId.value && tenantId === activeRoom.value?.tenant_id && draft === formalFactCreateDraft.value
 	const createdFromWheelGap = Boolean(formalFactCreateGuidance.value)
 	const value = draft.value.trim()
 	if (!value) {
 		formalFactCreateError.value = '事实内容不能为空'
 		return
 	}
+	if (factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === draft.category)) { formalFactCreateError.value = '事实分类配置尚未就绪，请重新加载'; return }
 	mutatingFormalFactId.value = -1
+	formalFactReadSequence++
 	formalFactCreateError.value = ''
 	try {
 		const key = await formalFactName.ensure()
@@ -4584,19 +4591,25 @@ async function createFormalFact() {
 			{ suppressErrorDialog: true },
 		)
 		if (!current()) return
-		if (!result.adopted && (result.conflicts || result.blocked)) {
-			throw new Error(result.results?.[0]?.message || '同分类下已经存在相同事实名称')
+		const outcome = result.results?.[0]
+		if (!outcome || !['adopted', 'unchanged'].includes(outcome.status)) {
+			throw new Error(outcome?.message || '事实未能保存，请核对内容后重试')
 		}
-		await refreshFormalFacts()
-		if (!current()) return
+		const saved = outcome.saved || outcome.existing
+		if (!saved || saved.id <= 0 || saved.plan_id !== planId || saved.tenant_id !== tenantId) throw new Error('未收到有效保存结果，请刷新核对后重试')
+		formalFactReadSequence++
+		formalFacts.value = formalFacts.value.some(item => item.id === saved.id)
+			? formalFacts.value.map(item => item.id === saved.id ? saved : item)
+			: [...formalFacts.value, saved]
 		cancelCreateFormalFact()
+		void nextTick(() => { if (sequence === factScopeSequence && activeMode.value === 'knowledge') formalFactAddButton.value?.focus({ preventScroll: true }) })
 		scriptNotice.value = createdFromWheelGap
 			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
 			: '事实已保存，审核模型已整理成四层表达，主线口播与互动回答会共同使用。'
 	} catch (err) {
 		if (current()) formalFactCreateError.value = err instanceof Error ? err.message : '新增事实依据失败'
 	} finally {
-		mutatingFormalFactId.value = null
+		if (sequence === factScopeSequence && mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
 	}
 }
 
@@ -6752,9 +6765,6 @@ onBeforeUnmount(() => {
             <div>
               <h3>事实依据</h3>
             </div>
-            <div class="strategy-fact-head-actions">
-              <button class="primary-button" type="button" :disabled="editingFormalFactId !== null || !currentPlan || !!mutatingFormalFactId || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
-            </div>
           </div>
 
           <section class="strategy-formal-facts">
@@ -6772,11 +6782,10 @@ onBeforeUnmount(() => {
             </header>
 
             <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId && activeRoomId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="activeRoomId" :tenant-id="activeRoom?.tenant_id" @close="previewingFormalFact = null" />
-            <FormalFactCreateDialog v-if="creatingFormalFact" v-model="formalFactCreateDraft" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @name-edited="formalFactName.edited" @retry-name="formalFactName.ensure" @save="createFormalFact" @close="cancelCreateFormalFact" />
 
-            <div v-if="!formalFacts.length" class="strategy-v2-empty strategy-formal-facts-empty">
+            <div v-if="!formalFacts.length && !creatingFormalFact" class="strategy-v2-empty strategy-formal-facts-empty">
               <strong>当前方案还没有正式事实</strong>
-              <span>点击“新增事实依据”录入真实内容。</span>
+              <span>点击下方“添加事实依据”录入真实内容。</span>
             </div>
 
             <div v-else class="strategy-formal-facts-layout">
@@ -6788,7 +6797,7 @@ onBeforeUnmount(() => {
                   <tr>
                     <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
                     <th scope="col" :aria-sort="factScopeSortOrder">
-                      <button type="button" class="strategy-fact-scope-sort" :class="{ 'is-sorted': factScopeSortOrder !== 'none' }" :disabled="editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" :aria-label="'归属范围：' + factScopeSortHint" :title="factScopeSortHint" @click="cycleFactScopeSort">
+                      <button type="button" class="strategy-fact-scope-sort" :class="{ 'is-sorted': factScopeSortOrder !== 'none' }" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" :aria-label="'归属范围：' + factScopeSortHint" :title="factScopeSortHint" @click="cycleFactScopeSort">
                         归属范围
                         <svg viewBox="0 0 16 20" aria-hidden="true"><path d="m3 7 5-5 5 5" :class="{ active: factScopeSortOrder === 'ascending' }"/><path d="m3 13 5 5 5-5" :class="{ active: factScopeSortOrder === 'descending' }"/></svg>
                       </button>
@@ -6801,7 +6810,7 @@ onBeforeUnmount(() => {
                   <template v-for="(item, index) in sortedFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
-                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
+                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value">
                         <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
@@ -6813,10 +6822,10 @@ onBeforeUnmount(() => {
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
-                          <button type="button" class="is-preview" :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
+                          <button type="button" class="is-preview" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
-                            :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
+                            :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="startFormalFactEdit(item)"
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>{{ editingFormalFactId === item.id ? '编辑中' : '修改' }}
@@ -6824,7 +6833,7 @@ onBeforeUnmount(() => {
                           <button
                             class="is-danger"
                             type="button"
-                            :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
+                            :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="deleteFormalFact(item)"
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
@@ -6869,10 +6878,14 @@ onBeforeUnmount(() => {
                     </td>
                   </tr>
                   </template>
+                  <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="formalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
                 </tbody>
               </table>
                 </div>
               </div>
+            </div>
+            <div class="strategy-formal-facts-add">
+              <button ref="formalFactAddButton" class="primary-button" type="button" :disabled="creatingFormalFact || editingFormalFactId !== null || !currentPlan || !!mutatingFormalFactId || factScopeSavingId !== null || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 添加事实依据</button>
             </div>
           </section>
         </section>
@@ -9561,6 +9574,8 @@ onBeforeUnmount(() => {
 .strategy-fact-four-layer-card.is-mention header strong { color:#7c4fa8; }
 .strategy-fact-four-layer-card.is-other { border-color:#d8dee9; background:#fbfcfe; }
 .strategy-fact-four-layer-card.is-other header strong { color:#5a6883; }
+.strategy-formal-facts-add { display:flex; justify-content:flex-start; margin-top:16px; }
+.strategy-formal-facts-add button { min-height:44px; padding:10px 20px; font-size:16px; line-height:1.5; }
 .strategy-formal-facts-table-wrap { overflow-x:auto; border:1px solid #e4ebfa; border-radius:17px; }
 .strategy-formal-facts-table { width:100%; min-width:840px; border-collapse:collapse; table-layout:fixed; }
 .strategy-fact-scope-sort { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:0; border:0; background:transparent; color:inherit; font:inherit; font-size:16px; font-weight:inherit; white-space:nowrap; cursor:pointer; }
