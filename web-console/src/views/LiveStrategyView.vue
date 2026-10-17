@@ -28,7 +28,7 @@ import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
-import FactCategoryBadge from '../components/FactCategoryBadge.vue'
+import InlineFormalFactEditor from '../components/InlineFormalFactEditor.vue'
 import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import FormalFactCreateDialog from '../components/FormalFactCreateDialog.vue'
@@ -463,7 +463,7 @@ const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
 const secondaryEditFactId = ref<number | null>(null)
-const formalFactEditDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
+const inlineFactSavingId = ref<number | null>(null)
 const creatingFormalFact = ref(false)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const formalFactCreateGuidance = ref('')
@@ -473,6 +473,8 @@ const factScopeSavingId = ref<number | null>(null)
 let factScopeSequence = 0
 let formalFactReadSequence = 0
 watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
+  editingFormalFactId.value = null
+  inlineFactSavingId.value = null
   factScopeSortOrder.value = 'none'
   factScopeSequence++
   factScopeSavingId.value = null
@@ -4412,18 +4414,10 @@ function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
 	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
-  formalFactEditDraft.value = {
-    category: item.category || 'other',
-    key: item.key,
-    value: item.value,
-		forbidden_wording: item.forbidden_wording || '',
-		safe_rewrite: item.safe_rewrite || '',
-  }
 }
 
 function cancelFormalFactEdit() {
   editingFormalFactId.value = null
-  formalFactEditDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
 }
 
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
@@ -4660,39 +4654,30 @@ async function createFormalFact() {
 	}
 }
 
-async function saveFormalFactEdit(item: LiveAgentPlanFact) {
+async function saveInlineFormalFactValue(item: LiveAgentPlanFact, value: string): Promise<LiveAgentPlanFact> {
   const planId = currentRoomPlanId.value
-  if (!planId || mutatingFormalFactId.value) return
-  const key = formalFactEditDraft.value.key.trim()
-  const value = formalFactEditDraft.value.value.trim()
-  if (!key || !value) {
-    settingsError.value = '事实名称和事实内容不能为空'
-    return
-  }
-  mutatingFormalFactId.value = item.id
-  settingsError.value = ''
+  const sequence = factScopeSequence
+  const current = () => sequence === factScopeSequence && planId === currentRoomPlanId.value
+  if (!planId || item.plan_id !== planId || item.tenant_id !== activeRoom.value?.tenant_id || editingFormalFactId.value !== item.id || mutatingFormalFactId.value || inlineFactSavingId.value !== null) throw new Error('当前方案或编辑状态已变化，请重新编辑')
+  if (!value.trim()) throw new Error('事实内容不能为空')
+  inlineFactSavingId.value = item.id
+  formalFactReadSequence++
   try {
-    await updateLiveAgentPlanFact(
-      planId,
-      item.id,
-      {
-			expected_version_no: item.version_no,
-        category: formalFactEditDraft.value.category,
-        key,
-        value,
-			forbidden_wording: '',
-			safe_rewrite: '',
-      },
-      activeRoom.value?.tenant_id,
-    )
-    await refreshFormalFacts()
-    cancelFormalFactEdit()
-    scriptNotice.value = '四层表达已由审核模型整理保存，正式事实已生成新版本。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '修改正式事实失败'
-  } finally {
-    mutatingFormalFactId.value = null
-  }
+    const updated = await updateLiveAgentPlanFact(planId, item.id, {
+      expected_version_no: item.version_no,
+      category: item.category,
+      key: item.key,
+      value: value.trim(),
+      forbidden_wording: '',
+      safe_rewrite: '',
+    }, item.tenant_id)
+    if (updated.id !== item.id || updated.plan_id !== item.plan_id || updated.tenant_id !== item.tenant_id || updated.version_no <= item.version_no) throw new Error('未收到有效保存结果，请刷新核对后重试')
+    if (current()) {
+      formalFactReadSequence++
+      formalFacts.value = formalFacts.value.map(fact => fact.id === item.id ? updated : fact)
+    }
+    return updated
+  } finally { if (current()) inlineFactSavingId.value = null }
 }
 
 async function deleteFormalFact(item: LiveAgentPlanFact) {
@@ -5459,9 +5444,6 @@ function factCategoryLabel(category: string) {
   return factCategoryDefinition(category).label
 }
 
-function factCategoryDescription(category: string) {
-  return factCategoryDefinition(category).description
-}
 
 function reviewBucketLabel(bucket?: string) {
   if (bucket === 'adoptable') return '可采纳'
@@ -6830,7 +6812,7 @@ onBeforeUnmount(() => {
               <h3>事实依据</h3>
             </div>
             <div class="strategy-fact-head-actions">
-              <button class="primary-button" type="button" :disabled="!currentPlan || !!mutatingFormalFactId || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
+              <button class="primary-button" type="button" :disabled="editingFormalFactId !== null || !currentPlan || !!mutatingFormalFactId || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 新增事实依据</button>
             </div>
           </div>
 
@@ -6876,68 +6858,32 @@ onBeforeUnmount(() => {
                 </thead>
                 <tbody>
                   <template v-for="(item, index) in sortedFormalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id, 'is-editing-formal-fact': editingFormalFactId === item.id }]">
+                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="[factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <td class="strategy-formal-fact-number-cell">{{ index + 1 }}</td>
-                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || editingFormalFactId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
-                    <template v-if="editingFormalFactId === item.id">
-                      <td>
-                        <div class="strategy-formal-fact-edit-metadata">
-                        <div class="strategy-formal-fact-edit-category">
-                          <FactCategoryBadge :category="formalFactEditDraft.category" :label="factCategoryLabel(formalFactEditDraft.category)" :family="factCategoryDefinition(formalFactEditDraft.category).family" />
-                          <select v-model="formalFactEditDraft.category" aria-label="事实分类" :disabled="mutatingFormalFactId === item.id || factCategoryState.loading || !!factCategoryState.error">
-                            <optgroup v-for="group in factCategoryGroups(formalFactEditDraft.category)" :key="group.label" :label="group.label"><option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option></optgroup>
-                          </select>
-                          <svg class="strategy-formal-fact-edit-category-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-                        </div>
-                        <label class="strategy-formal-fact-edit-name"><span>事实名称</span><input v-model="formalFactEditDraft.key" aria-label="事实名称" maxlength="255" :disabled="mutatingFormalFactId === item.id" /><small>{{ factCategoryDescription(formalFactEditDraft.category) }}</small></label>
-                        </div>
-                        <label class="strategy-formal-fact-edit-field is-content">
-                          <span class="strategy-formal-fact-edit-field-head"><span><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5" /></svg></i><strong>事实内容</strong></span><small>{{ formalFactEditDraft.value.length }}/4000</small></span>
-                          <textarea v-model="formalFactEditDraft.value" aria-label="事实内容" :aria-describedby="'fact-edit-content-hint-' + item.id" rows="4" maxlength="4000" :disabled="mutatingFormalFactId === item.id"></textarea>
-                          <span :id="'fact-edit-content-hint-' + item.id" class="strategy-formal-fact-edit-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8 14a6 6 0 1 1 8 0l-1 3H9z" /></svg><span>自由表达即可，保存时系统会整理成“必说/可说/改写/不提”四层结构。</span></span>
-                        </label>
-                      </td>
-                      <td>
-                        <div class="strategy-formal-fact-actions strategy-formal-fact-edit-actions">
-                          <button
-                            class="primary-button"
-                            type="button"
-                            :disabled="mutatingFormalFactId === item.id"
-                            @click="saveFormalFactEdit(item)"
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8" /></svg>
-                            {{ mutatingFormalFactId === item.id ? '保存中…' : '保存' }}
-                          </button>
-                          <button type="button" :disabled="mutatingFormalFactId === item.id" @click="cancelFormalFactEdit">
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
-                            取消
-                          </button>
-                        </div>
-                      </td>
-                    </template>
-                    <template v-else>
+                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value">
-                        <div class="strategy-formal-fact-value-body">
+                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
+                        <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
                           <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
                         </div>
-                        <button v-if="factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button>
+                        <button v-if="editingFormalFactId !== item.id && factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button>
                       </td>
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
-                          <button type="button" class="is-preview" :disabled="!!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
+                          <button type="button" class="is-preview" :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
-                            :disabled="!!mutatingFormalFactId || factScopeSavingId !== null"
+                            :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="startFormalFactEdit(item)"
                           >
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>修改
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>{{ editingFormalFactId === item.id ? '编辑中' : '修改' }}
                           </button>
                           <button
                             class="is-danger"
                             type="button"
-                            :disabled="!!mutatingFormalFactId || factScopeSavingId !== null"
+                            :disabled="editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
                             @click="deleteFormalFact(item)"
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
@@ -6946,7 +6892,6 @@ onBeforeUnmount(() => {
                         <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length" type="button" class="strategy-formal-fact-expand" :aria-label="(expandedFactRiskId === item.id ? '收起' : '展开') + '“' + item.key + '”的表达说明'" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
                         </div>
                       </td>
-                    </template>
                   </tr>
                   <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="4"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
                   <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
@@ -9741,39 +9686,6 @@ onBeforeUnmount(() => {
 .strategy-formal-fact-actions button.primary-button { border-color:transparent; background:#5968cb; color:#fff; }
 .strategy-formal-fact-actions button.is-danger { border-color:#ffcbd4; background:linear-gradient(135deg,#fff7f8,#fff0f3); color:#d52c4b; }
 .strategy-formal-fact-actions button:disabled { cursor:not-allowed; opacity:.55; }
-.strategy-formal-facts-table tr.is-editing-formal-fact { position:relative; }
-.strategy-formal-facts-table tr.is-editing-formal-fact::after { content:''; position:absolute; inset:0; z-index:1; border:1px solid #b7d2ff; border-left:3px solid #3475ff; border-radius:14px; box-shadow:0 8px 18px #5b92e612; pointer-events:none; }
-.strategy-formal-facts-table tbody>tr.is-editing-formal-fact>td,.strategy-formal-facts-table tbody>tr.is-editing-formal-fact:hover>td { padding:14px 8px; vertical-align:top; background:linear-gradient(140deg,#f7faff,#eef5ff); box-shadow:none; }
-.strategy-formal-facts-table tr.is-editing-formal-fact>td:first-child { padding-left:16px; }
-.strategy-formal-facts-table tr.is-editing-formal-fact>td:last-child { padding-right:16px; }
-.strategy-formal-fact-edit-metadata { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); align-items:start; gap:14px; margin-bottom:14px; }
-.strategy-formal-fact-edit-category { position:relative; border-radius:12px; box-shadow:0 4px 9px #4984e61a; }
-.strategy-formal-fact-edit-category .fact-category-badge { width:100%; min-height:48px; padding-right:29px; border:1px solid #c9dfff; font-size:14px; }
-.strategy-formal-fact-edit-category select { position:absolute; inset:0; z-index:2; opacity:0; cursor:pointer; }
-.strategy-formal-fact-edit-category:focus-within { outline:3px solid #4285ff40; outline-offset:2px; }
-.strategy-formal-fact-edit-category-arrow { position:absolute; top:50%; right:9px; width:16px; height:16px; transform:translateY(-50%); fill:none; stroke:#3475ff; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
-.strategy-formal-fact-edit-name { display:grid; gap:9px; }
-.strategy-formal-fact-edit-name>span { color:#506a91; font-size:14px; font-weight:700; }
-.strategy-formal-fact-edit-name>small { color:#8195b6; font-size:12px; line-height:1.6; }
-.strategy-formal-facts-table .strategy-formal-fact-edit-name input { min-height:46px; padding:10px 12px; border-radius:10px; }
-.strategy-formal-fact-edit-field { --edit-color:#557fce; --edit-panel:#edf2ff; --edit-hint:#e5edff; --edit-icon:#87adff; display:flex; flex-direction:column; gap:9px; min-height:224px; padding:12px; border-radius:14px; background:var(--edit-panel); }
-.strategy-formal-fact-edit-field.is-forbidden { --edit-color:#e85079; --edit-panel:#fff3f7; --edit-hint:#ffe8ef; --edit-icon:#fb77a1; }
-.strategy-formal-fact-edit-field.is-rewrite { --edit-color:#24a869; --edit-panel:#edfdf4; --edit-hint:#dff8e9; --edit-icon:#24bf74; }
-.strategy-formal-fact-edit-field-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
-.strategy-formal-fact-edit-field-head>span { display:flex; align-items:center; gap:6px; min-width:0; color:var(--edit-color); }
-.strategy-formal-fact-edit-field-head strong { font-size:13px; line-height:1.4; }
-.strategy-formal-fact-edit-field-head i { display:grid; place-items:center; flex:0 0 24px; width:24px; height:24px; border-radius:50%; background:var(--edit-icon); color:#fff; }
-.strategy-formal-fact-edit-field-head svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-formal-fact-edit-field-head>small { flex-shrink:0; color:#8391a5; font-size:12px; font-variant-numeric:tabular-nums; }
-.strategy-formal-facts-table .strategy-formal-fact-edit-field textarea { min-height:110px; flex:1; padding:11px 12px; border-color:#dae1ef; border-radius:11px; color:#213653; font-size:14px; line-height:1.65; }
-.strategy-formal-fact-edit-field textarea::placeholder { color:#9aa5b5; }
-.strategy-formal-fact-edit-hint { display:flex; align-items:flex-start; gap:6px; padding:6px 8px; border-radius:8px; background:var(--edit-hint); color:var(--edit-color); font-size:11px; line-height:1.6; }
-.strategy-formal-fact-edit-hint svg { flex:0 0 18px; width:18px; height:18px; margin-top:1px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.strategy-formal-fact-edit-actions { flex-direction:column; align-items:center; gap:12px; }
-.strategy-formal-facts-table .strategy-formal-fact-edit-actions button { width:118px; min-height:46px; border-radius:11px; font-size:16px; }
-.strategy-formal-facts-table .strategy-formal-fact-edit-actions button.primary-button { background:linear-gradient(120deg,#6876ff,#197fff); box-shadow:0 6px 14px #377efa24; }
-.strategy-formal-facts-table .strategy-formal-fact-edit-actions svg { width:20px; height:20px; flex-basis:20px; }
-.strategy-formal-facts-table tr.is-editing-formal-fact input:disabled,.strategy-formal-facts-table tr.is-editing-formal-fact textarea:disabled { opacity:.65; cursor:wait; }
 .strategy-formal-fact-operation { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .strategy-formal-fact-operation>.strategy-formal-fact-actions { flex-wrap:nowrap; flex-shrink:0; }
 .strategy-formal-fact-operation .strategy-formal-fact-actions button { flex-shrink:0; }
