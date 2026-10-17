@@ -15,7 +15,8 @@ import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
 import { memoryInPlan, usePlanAnswerStrategies } from '../planAnswerStrategies'
 import { planSelectionPreferenceKey, readSelectedPlan, rememberSelectedPlan, restoredPlanSelection } from '../planSelectionPreference'
 import { useInteractionReviewCount } from '../interactionReviewCount'
-import { useContentPools } from '../contentPools'
+import { useContentPools, contentPoolURL, type PoolStatus } from '../contentPools'
+import { buildProductFactImportRows, importProductFacts } from '../productFactImport'
 import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
@@ -500,6 +501,9 @@ const formalFactCreateGuidance = ref('')
 const formalFactCreateError = ref('')
 const mutatingFormalFactId = ref<number | null>(null)
 const factScopeSavingId = ref<number | null>(null)
+const importingProductFacts = computed(() => mutatingFormalFactId.value === -2)
+const productFactImportMessage = ref('')
+const productFactImportFailures = ref<string[]>([])
 let factScopeSequence = 0
 let formalFactReadSequence = 0
 watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
@@ -508,7 +512,8 @@ watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.v
   factScopeSortOrder.value = 'none'
   resetFormalFactFilters()
   if (creatingFormalFact.value) cancelCreateFormalFact()
-  if (mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
+  if (mutatingFormalFactId.value === -1 || mutatingFormalFactId.value === -2) mutatingFormalFactId.value = null
+  productFactImportMessage.value = ''; productFactImportFailures.value = []
   factScopeSequence++
   factScopeSavingId.value = null
 }, { flush: 'sync' })
@@ -1687,6 +1692,7 @@ async function refreshAnchorSellingPointWheel() {
   }
 }
 async function initializeAnchorGeneration() {
+  if (importingProductFacts.value) return
   const planId = currentRoomPlanId.value
   if (!planId || anchorInitializing.value) return
   anchorInitializing.value = true
@@ -1926,6 +1932,7 @@ const fullShowWorkspaceInherited = ref(false)
 const fullShowWorkspaceVoiceIdentity = ref<LiveAgentVoiceIdentity | null>(null)
 const fullShowWorkspaceLegacyPartial = ref(false)
 const fullShowSaveBlockedReason = computed(() => {
+  if (importingProductFacts.value) return '正在导入商品事实，请等待导入完成'
   if (!currentRoomPlanId.value || !activeRoom.value) return '先选好直播间和方案，我们再一起保存吧～'
   if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
   if (anchorInitializing.value) return '智能体正在准备中，等它完成后就能保存啦～'
@@ -1953,13 +1960,14 @@ const savePlanOneClickStage = ref('')
 // 一键保存：内容池 needs_update / failed 时自动“更新受影响内容→保存”，
 // 其余阻塞原因（未生成文稿、音色不一致等）仍沿用 fullShowSaveBlockedReason。
 const savePlanOneClickDisabled = computed(() => {
-  if (savePlanOneClickBusy.value) return true
+  if (savePlanOneClickBusy.value || importingProductFacts.value) return true
   if (!currentRoomPlanId.value || !activeRoom.value) return true
   const state = poolStatus.value?.state
   if (state === 'needs_update' || state === 'failed') return false
   return Boolean(fullShowSaveBlockedReason.value)
 })
 const savePlanOneClickHint = computed(() => {
+  if (importingProductFacts.value) return '正在导入商品事实，请等待导入完成'
   if (savePlanOneClickBusy.value) return '正在保存方案，请稍候～'
   const state = poolStatus.value?.state
   if (state === 'needs_update' || state === 'failed') return '保存时会先自动更新受影响内容，再保存方案'
@@ -4444,6 +4452,7 @@ function onPlanTestAssetsUpdated(event: Event) {
 }
 
 function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
+  if (importingProductFacts.value) return
   if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) resetFormalFactFilters()
 	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
@@ -4638,6 +4647,46 @@ function cancelCreateFormalFact() {
 	formalFactCreateGuidance.value = ''
 	formalFactCreateError.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
+}
+
+async function importConfiguredProductFacts() {
+  const plan = currentRoomPlanId.value, room = activeRoom.value
+  if (!plan || !room?.tenant_id || creatingFormalFact.value || editingFormalFactId.value !== null || mutatingFormalFactId.value || factScopeSavingId.value !== null || inlineFactSavingId.value !== null || anchorInitializing.value || savePlanOneClickBusy.value || fullShowVersionSaving.value || factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')) return
+  const tenant = room.tenant_id, sequence = factScopeSequence
+  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value && room.id === activeRoomId.value && tenant === activeRoom.value?.tenant_id
+  mutatingFormalFactId.value = -2; formalFactReadSequence++
+  productFactImportMessage.value = '正在读取当前方案的商品卡和福利…'; productFactImportFailures.value = []
+  resetFormalFactFilters()
+  try {
+    const [products, benefits, facts, pools] = await Promise.all([
+      getLiveAgentPlanProductLinks(plan, tenant), getLiveAgentPlanBenefits(plan, tenant), getLiveAgentPlanFacts(plan, tenant),
+      request<PoolStatus>(contentPoolURL(plan, room.id, tenant), { cache: 'no-store', suppressErrorDialog: true }),
+    ])
+    if (!current()) return
+    if (![products.items, benefits.items, facts.items, pools.benefits].every(Array.isArray)) throw new Error('商品、福利或归属资料未读取完整，请刷新后重试')
+    const built = await buildProductFactImportRows({ plan, tenant }, products.items || [], benefits.items || [], pools.benefits || [])
+    if (!current()) return
+    formalFacts.value = facts.items || []
+    formalProductLinks.value = products.items || []; formalBenefits.value = benefits.items || []
+    if (!built.rows.length) { productFactImportMessage.value = '没有可导入的已配置商品信息或当前有效福利。'; return }
+    const result = await importProductFacts({ plan, tenant }, built.rows, facts.items || [], {
+      current,
+      adopt: candidate => adoptLiveAgentPlanFacts(plan, [candidate], tenant, 'manual:product-card-import', { suppressErrorDialog: true }),
+      scope: (fact, product) => updateLiveAgentPlanFactScope(plan, fact, { kind: 'product', product_link_id: product }),
+      accept: fact => {
+        if (!current()) return
+        formalFactReadSequence++
+        formalFacts.value = formalFacts.value.some(item => item.id === fact.id) ? formalFacts.value.map(item => item.id === fact.id ? fact : item) : [...formalFacts.value, fact]
+      },
+      progress: (done, total) => { if (current()) productFactImportMessage.value = `正在导入并整理四层表达：${done}/${total}` },
+    })
+    if (!current()) return
+    productFactImportFailures.value = result.failures
+    productFactImportMessage.value = `已导入${result.imported}条，已存在${result.existing}条${result.failures.length ? `，${result.failures.length}条未完成` : ''}${built.skippedBenefits ? `；跳过${built.skippedBenefits}条未生效、过期或无适用商品的福利` : ''}。事实类型待人工确认。`
+    void contentPools.refresh(true)
+  } catch (err) {
+    if (current()) { productFactImportMessage.value = '本次导入未完成。'; productFactImportFailures.value = [err instanceof Error ? err.message : '读取或导入失败，请重试'] }
+  } finally { if (current()) mutatingFormalFactId.value = null }
 }
 
 async function createFormalFact() {
@@ -6313,6 +6362,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  factScopeSequence++
   anchorBindingEpoch++; anchorWorkspaceLoadSequence++; reusableAnchorSelectionEpoch++
   roomPlanLoadSequence++
   memoryEditEpoch++
@@ -6459,7 +6509,7 @@ onBeforeUnmount(() => {
                 :initialize-label="anchorInitializationStage"
                 :saving="fullShowVersionSaving || savePlanOneClickBusy"
                 :save-label="savePlanOneClickStage"
-                :initialize-disabled="anchorInitializing || !currentPlan"
+                :initialize-disabled="anchorInitializing || importingProductFacts || !currentPlan"
                 :save-disabled="savePlanOneClickDisabled"
                 :save-hint="savePlanOneClickHint"
                 @initialize="initializeAnchorGeneration"
@@ -6882,6 +6932,11 @@ onBeforeUnmount(() => {
                 <input v-model="factSearchQuery" type="search" aria-label="搜索事实内容" placeholder="搜索事实内容…" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" />
                 <button v-if="factSearchQuery" type="button" aria-label="清空事实搜索" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" @click="factSearchQuery = ''">×</button>
               </div>
+            </div>
+            <div class="formal-facts-import">
+              <button class="primary-button" type="button" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || inlineFactSavingId !== null || !currentPlan || !activeRoom?.tenant_id || anchorInitializing || savePlanOneClickBusy || fullShowVersionSaving || factCategoryState.loading || !!factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')" @click="importConfiguredProductFacts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6" /></svg>{{ importingProductFacts ? '正在导入…' : '导入商品信息及福利' }}</button>
+              <p v-if="productFactImportMessage" role="status" aria-live="polite">{{ productFactImportMessage }}</p>
+              <details v-if="productFactImportFailures.length"><summary>查看未完成项（{{ productFactImportFailures.length }}）</summary><ul><li v-for="(failure, index) in productFactImportFailures" :key="index">{{ failure }}</li></ul></details>
             </div>
             </div>
 
