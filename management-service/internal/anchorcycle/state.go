@@ -544,6 +544,9 @@ func (s *State) chooseNext() {
 		if s.P0SkippedKeys[task.Key] {
 			continue
 		}
+		if !materialAvailable(task) {
+			continue
+		}
 		u := s.Used[task.Key]
 		if blockedPoints[taskPointKey(task)] || (u.Count > 0 && s.TotalAccepted()-u.LastIndex < s.Config.CombinationGap) {
 			continue
