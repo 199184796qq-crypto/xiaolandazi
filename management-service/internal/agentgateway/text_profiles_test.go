@@ -20,7 +20,7 @@ func TestTextModelProfilesResolveAliasesAndPreserveOtherRoles(t *testing.T) {
 		if !strings.Contains(prepared.Messages[0].Content, "允许自然区间和近似表达") {
 			t.Fatal("price paraphrases lost")
 		}
-		if !strings.Contains(prepared.Messages[1].Content, "超过4位") || !strings.Contains(prepared.Messages[1].Content, "简称") {
+		if !strings.Contains(prepared.Messages[1].Content, "超过 4 位") || !strings.Contains(prepared.Messages[1].Content, "简称") {
 			t.Fatal("nickname prompt not adjacent to task")
 		}
 		if c.id == "qwen-flash" && (prepared.Temperature == nil || *prepared.Temperature != 0.25) {
