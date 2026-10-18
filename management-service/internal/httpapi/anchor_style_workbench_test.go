@@ -91,10 +91,14 @@ func TestNormalizeAnchorStyleSellingPointWheelJSON(t *testing.T) {
 	}
 }
 
-func TestNormalizeAnchorStyleSellingPointWheelJSONRejectsExtraFields(t *testing.T) {
-	_, _, _, err := normalizeAnchorStyleSellingPointWheelJSON(`{"卖点列表":[{"卖点名":"老坊背书","角度":["39年老油坊"],"说明":"不允许"}]}`)
-	if err == nil {
-		t.Fatal("expected extra field validation error")
+func TestNormalizeAnchorStyleSellingPointWheelJSONIgnoresExtraFields(t *testing.T) {
+	// 白名单已移除：模型多输出的未知字段（如「说明」）应被忽略，不再导致整体失败。
+	canonical, points, _, err := normalizeAnchorStyleSellingPointWheelJSON(`{"卖点列表":[{"卖点名":"老坊背书","角度":["39年老油坊"],"说明":"不允许"}]}`)
+	if err != nil {
+		t.Fatalf("unexpected error for extra field: %v", err)
+	}
+	if points != 1 || !strings.Contains(canonical, "老坊背书") {
+		t.Fatalf("extra field broke normalization: points=%d canonical=%s", points, canonical)
 	}
 }
 

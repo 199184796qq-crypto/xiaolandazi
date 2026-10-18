@@ -132,7 +132,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 稳定前缀放 system：母版 + 主播标尺 + 有效P0 + 不提 + 长期纠正规则，整场不变，命中上下文缓存。
 	// 随侧面/任务变化的内容（可说事实、改写约束、商品边界）放 user（见下方 variable），
 	// 避免 system 每段随侧面变导致前缀缓存失效。
-	stable := map[string]any{"主播表达标尺": view, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": fourLayerNotMentionText, "用户已确认的长期纠正规则": state.EffectiveCorrections()}
+	stable := map[string]any{"主播表达标尺": view, "主播风格母版": state.StyleMD, "有效P0": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "不提": fourLayerNotMentionText, "用户已确认的长期纠正规则": state.EffectiveCorrections()}
 	fixed, _ := json.Marshal(stable)
 	variable := map[string]any{"可说": facts}
 	if len(expressionGuidance) > 0 {

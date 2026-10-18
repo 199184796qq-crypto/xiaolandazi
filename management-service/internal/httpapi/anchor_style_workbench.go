@@ -120,6 +120,7 @@ type anchorStyleWorkbenchMetaResponse struct {
 
 type anchorStyleSellingPointWheelItem struct {
 	Scope          string   `json:"归属,omitempty"`
+	Category       string   `json:"分类,omitempty"`
 	Name           string   `json:"卖点名"`
 	TargetAudience *string  `json:"目标人群,omitempty"`
 	PainPoint      *string  `json:"痛点,omitempty"`
@@ -737,11 +738,8 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 		if fields["卖点名"] == nil || fields["角度"] == nil {
 			return "", 0, 0, errors.New("每个卖点须包含“卖点名”和“角度”")
 		}
-		for key := range fields {
-			if key != "卖点名" && key != "角度" && key != "目标人群" && key != "痛点" && key != "tier" && key != "归属" {
-				return "", 0, 0, errors.New("每个卖点只允许卖点名、目标人群、痛点、角度、tier、归属")
-			}
-		}
+		// 字段白名单已移除：模型多吐的未知字段（如「分类」「说明」）由 struct 反序列化自然忽略，
+		// 不再因枚举外字段整体拒绝（历史报错「每个卖点只允许…」）。
 		for _, key := range []string{"目标人群", "痛点"} {
 			if value, ok := fields[key]; ok {
 				var str string
@@ -756,6 +754,7 @@ func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, er
 			return "", 0, 0, errors.New("卖点字段类型无效")
 		}
 		item.Name = strings.TrimSpace(item.Name)
+		item.Category = strings.TrimSpace(item.Category)
 		if item.Scope != "" && item.Scope != "商品" && item.Scope != "公共" {
 			return "", 0, 0, errors.New("卖点归属只能是商品或公共")
 		}

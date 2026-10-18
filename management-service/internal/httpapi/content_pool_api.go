@@ -285,3 +285,18 @@ func (s *Server) readyContentPoolSet(ctx context.Context, tenant, plan int64) (c
 func contentPoolRef(set contentpools.Set) map[string]any {
 	return map[string]any{"set_id": set.ID, "source_sha": set.SourceSHA, "source_revision": set.Sources.Revision}
 }
+
+// latestSavedContentPoolSet 直接返回方案最近一次已保存的内容池，跳过「来源快照 SHA 比对」与
+// ValidateSet 全量核对。保存方案不再把「事实引用了快照之外/资料有待更新」这类完整性问题
+// 卡在保存入口——按新生成的内容原样落库标记可用，核对留给内容池自身的生成/更新链路。
+func (s *Server) latestSavedContentPoolSet(ctx context.Context, tenant, plan int64) (contentpools.Set, bool, error) {
+	set, err := s.store.LatestContentPoolSet(ctx, tenant, plan)
+	if err != nil {
+		return contentpools.Set{}, false, err
+	}
+	if set.ID == 0 {
+		// 方案还没有任何内容池：落到旧的非内容池事实核对路径，由调用方兜底。
+		return contentpools.Set{}, false, nil
+	}
+	return set, true, nil
+}

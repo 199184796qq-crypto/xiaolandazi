@@ -361,7 +361,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-	} else if set, readyErr := s.readyContentPoolSet(r.Context(), tenantID, planID); readyErr == nil {
+	} else if set, ok, readyErr := s.latestSavedContentPoolSet(r.Context(), tenantID, planID); readyErr == nil && ok {
 		input.GenerationContext["content_pools"] = contentPoolRef(set)
 		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": set.SafetyID, "source_sha256": set.SafetyHash, "notice": "对应公共池与商品专属池已保存。"}
 	} else {
@@ -373,12 +373,8 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		}
 		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
 	}
-	if isRealtimeScheme(input.GenerationContext) {
-		if err := s.validateRealtimeScheme(r.Context(), tenantID, planID, input.GenerationContext); err != nil {
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		}
-	}
+	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
+	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
 	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
 	lectureRevision, lectureRevisionErr := s.store.LectureRevision(r.Context(), tenantID, planID)
 	if lectureRevisionErr != nil {

@@ -44,7 +44,9 @@ func TestDirectMainlineOwnsBoundedContextAndNoFilledHookSkeleton(t *testing.T) {
 	if !strings.Contains(messages[1].Content, state.Facts) {
 		t.Fatal("可说事实应出现在 user 中")
 	}
-	if strings.Contains(messages[0].Content, "假一赔十") || strings.Contains(messages[1].Content, "{目标人群}") || strings.Contains(messages[1].Content, "FilledTemplate") {
+	// StyleMD 现在有意注入 system（主播风格母版），其中的样例文随母版进入 prompt 属预期；
+	// 仍须拦截的是钩子骨架占位符与结构字段泄漏。
+	if strings.Contains(messages[1].Content, "{目标人群}") || strings.Contains(messages[1].Content, "FilledTemplate") {
 		t.Fatal("sample claim or filled skeleton leaked")
 	}
 	var dynamic map[string]any

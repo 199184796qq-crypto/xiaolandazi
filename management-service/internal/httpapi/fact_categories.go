@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -146,6 +147,11 @@ func (s *Server) liveFactCategoryCatalog(w http.ResponseWriter, r *http.Request)
 			catalog, hash, err = s.tenantFactCategoryCatalog(r.Context(), tenant)
 		}
 	}
+	if err == nil {
+		// 按方案行业合并行业专属事实分类（如餐饮的 appointment/per_capita 等），
+		// 否则这类事实在类型下拉里找不到 label、回退显示英文枚举值。
+		catalog, hash = mergeIndustryFactCategories(r, catalog, hash, s)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -174,6 +180,38 @@ func (s *Server) tenantFactCategoryCatalog(ctx context.Context, tenant int64) (f
 	hash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	catalog.Version += ":" + hash[:12]
 	return catalog, hash, nil
+}
+
+// mergeIndustryFactCategories 把方案所选行业的专属事实分类合并进目录。
+// 请求带 plan_id 时生效；行业包不存在或未选行业时原样返回。
+func mergeIndustryFactCategories(r *http.Request, catalog factCategoryCatalog, hash string, s *Server) (factCategoryCatalog, string) {
+	planID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("plan_id")), 10, 64)
+	if planID <= 0 {
+		return catalog, hash
+	}
+	tenant := requestTenantID(r)
+	if tenant <= 0 {
+		return catalog, hash
+	}
+	pack, err := s.loadIndustryPackForPlan(r.Context(), tenant, planID)
+	if err != nil || pack == nil || len(pack.FactCategories) == 0 {
+		return catalog, hash
+	}
+	added := false
+	for _, item := range pack.FactCategories {
+		if catalog.contains(item.Value) {
+			continue
+		}
+		catalog.Categories = append(catalog.Categories, item)
+		added = true
+	}
+	if !added {
+		return catalog, hash
+	}
+	raw, _ := json.Marshal(catalog.Categories)
+	hash = fmt.Sprintf("%x", sha256.Sum256(raw))
+	catalog.Version += ":" + hash[:12]
+	return catalog, hash
 }
 
 func (s *Server) validateTenantFactCandidate(ctx context.Context, tenant int64, candidate model.LiveAgentPlanFactCandidate) error {
