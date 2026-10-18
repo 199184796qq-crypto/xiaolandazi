@@ -441,6 +441,7 @@ const expandedFactRiskId = ref<number | null>(null)
 const pendingRiskLocation = ref<{ area: 'knowledge' | 'products' | 'benefits'; claimHash: string } | null>(null)
 let riskLocationAttempt = 0
 const locatedFactRiskHash = ref('')
+const removedRisks = ref<Array<{ area: 'knowledge' | 'products' | 'benefits'; claim_sha256: string; text: string; reason: string }>>([])
 const factRiskAppealDrafts = ref<Record<string, string>>({})
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
@@ -640,8 +641,6 @@ watch(() => JSON.stringify(answerStrategyScope()), () => {
 }, { flush: 'sync' })
 const contentPools = useContentPools(currentRoomPlanId, activeRoom)
 const poolStatus = contentPools.status
-const poolError = contentPools.error
-const poolSubmitting = contentPools.submitting
 const poolPreview = contentPools.preview
 const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }), { suppressErrorDialog: true })
 const currentPlan = computed(
@@ -2025,9 +2024,6 @@ const fullShowSaveBlockedReason = computed(() => {
   if (contentModeLoading.value || contentModeSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return '正在准备当前方案，稍等一下就好啦～'
   if (contentModeError.value || !contentModeReady.value) return '直播模式还没准备好，去“生成智能体”重新读取一下吧～'
   if (fullShowError.value) return '方案还没成功恢复，去“生成智能体”看看提示再试吧～'
-  if (!poolStatus.value || poolError.value) return '资料状态还没读到，点一下“刷新”再试试吧～'
-  if (poolSubmitting.value || poolStatus.value.state === 'updating') return '内容正在认真准备中，完成后就能保存啦～'
-  if (poolStatus.value.state === 'needs_update' || poolStatus.value.state === 'failed') return '先把变化的资料更新好，再来保存智能体哦～'
   if (isRealtimeVoiceContentMode.value) {
     if (realtimeOptionsLoading.value) return '正在读取实时声音参数，马上就好啦～'
     if (realtimeOptionsLoadError.value) return '实时声音参数没读到，去“生成智能体”点重试吧～'
@@ -2048,14 +2044,10 @@ const savePlanOneClickStage = ref('')
 const savePlanOneClickDisabled = computed(() => {
   if (savePlanOneClickBusy.value) return true
   if (!currentRoomPlanId.value || !activeRoom.value) return true
-  const state = poolStatus.value?.state
-  if (state === 'needs_update' || state === 'failed') return false
   return Boolean(fullShowSaveBlockedReason.value)
 })
 const savePlanOneClickHint = computed(() => {
   if (savePlanOneClickBusy.value) return '正在保存方案，请稍候～'
-  const state = poolStatus.value?.state
-  if (state === 'needs_update' || state === 'failed') return '保存时会先自动更新受影响内容，再保存方案'
   return fullShowSaveBlockedReason.value
 })
 const fullShowWorkspaceDirty = computed(
@@ -4030,6 +4022,10 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     void contentPools.refresh()
     fullShowWorkspaceInherited.value = false
     const safetyNotice = String((saved.generation_context?.derived_safety as { notice?: string } | undefined)?.notice || '')
+    const removed = Array.isArray((saved.generation_context?.derived_safety as { removed_risks?: unknown } | undefined)?.removed_risks)
+      ? ((saved.generation_context?.derived_safety as { removed_risks?: unknown[] }).removed_risks as Array<{ area: 'knowledge' | 'products' | 'benefits'; claim_sha256: string; text: string; reason: string }>)
+      : []
+    removedRisks.value = removed
     fullShowNotice.value = planBoundToRoom
       ? `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
       : `${safetyNotice} 已存档方案 V${saved.version_no}（未绑定当前直播间，仅保存方案内容，直播间暂不可用）。之后把方案绑定到直播间即可直接使用，无需再发布。`
@@ -4051,37 +4047,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   }
 }
 
-function waitForContentPoolReady(planId: number, roomId: number, ownerEpoch: number, timeoutMs = 600000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const startedAt = Date.now()
-    const timer = setInterval(() => {
-      if (contentModeDisposed || ownerEpoch !== planVersionSaveEpoch || currentRoomPlanId.value !== planId || activeRoom.value?.id !== roomId) {
-        clearInterval(timer)
-        reject(new Error('页面范围或直播模式已变化，本次保存已取消'))
-        return
-      }
-      const state = poolStatus.value?.state
-      if (state === 'ready' || state === 'synced') {
-        clearInterval(timer)
-        resolve()
-        return
-      }
-      if (state === 'failed') {
-        clearInterval(timer)
-        reject(new Error(poolStatus.value?.job?.error || '内容更新未完成，请重试'))
-        return
-      }
-      if (Date.now() - startedAt > timeoutMs) {
-        clearInterval(timer)
-        reject(new Error('内容更新超时，请稍后重试'))
-        return
-      }
-      void contentPools.refresh(true)
-    }, 2000)
-  })
-}
-
-// 一键保存方案：内容池需要更新时，自动「更新受影响内容」并等待生成完成，再保存方案。
+// 一键保存方案：直接保存版本，不再因内容池状态强制前置更新或等待。
 async function savePlanOneClick() {
   if (savePlanOneClickBusy.value || fullShowVersionSaving.value) return
   const planId = currentRoomPlanId.value
@@ -4093,13 +4059,6 @@ async function savePlanOneClick() {
   fullShowVersionError.value = ''
   savePlanOneClickBusy.value = true
   try {
-    const state = poolStatus.value?.state
-    if (state === 'needs_update' || state === 'failed') {
-      savePlanOneClickStage.value = '更新内容中…'
-      await contentPools.update()
-      if (poolError.value) throw new Error(poolError.value)
-      await waitForContentPoolReady(planId, room.id, ownerEpoch)
-    }
     if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
     const saved = await saveFullShowVersion()
@@ -4630,6 +4589,14 @@ async function openSourceRiskLocation(area: 'products' | 'benefits') {
 	activeMode.value = area
 	const review = reviewsForArea(factRiskReviews.value, area).find(item => item.status !== 'confirmed')
 	pendingRiskLocation.value = review ? { area, claimHash: review.claim_sha256 } : null
+	await locatePendingRiskLocation()
+}
+
+// 定位保存时被剔除的风险事实：复用风险定位机制，跳转到编辑界面中对应的那条事实。
+async function locateRemovedRisk(risk: { area: 'knowledge' | 'products' | 'benefits'; claim_sha256: string }) {
+	if (risk.area !== 'knowledge') return
+	activeMode.value = risk.area
+	pendingRiskLocation.value = { area: risk.area, claimHash: risk.claim_sha256 }
 	await locatePendingRiskLocation()
 }
 
@@ -6568,6 +6535,13 @@ onBeforeUnmount(() => {
               <div v-if="anchorInitializationError || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
                 <div v-if="anchorInitializationError" class="strategy-script-notice strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
                 <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">{{ anchorInitializationNotice }}</div>
+              </div>
+              <div v-if="removedRisks.length" class="strategy-removed-risks" aria-live="polite">
+                <p class="strategy-removed-risks-title">以下 {{ removedRisks.length }} 条风险事实未能安全改写，已从本次方案中剔除，不进入口播素材：</p>
+                <button v-for="risk in removedRisks" :key="risk.claim_sha256" type="button" class="strategy-removed-risk-item" @click="locateRemovedRisk(risk)">
+                  <span class="strategy-removed-risk-text">{{ risk.text }}</span>
+                  <span class="strategy-removed-risk-reason">{{ risk.reason }}</span>
+                </button>
               </div>
             </template>
           </PlanConfigurationNavigation>
@@ -11404,6 +11378,7 @@ onBeforeUnmount(() => {
 @media(max-width:820px){.reusable-anchor-style-tabs{grid-template-columns:1fr}.reusable-anchor-style-tabs .anchor-style-tab-card{min-height:72px}.reusable-anchor-style-samples-panel{padding:24px}.reusable-anchor-style-samples-hero{align-items:flex-start}.reusable-anchor-style-samples-hero-icon{width:64px;height:64px}.reusable-anchor-style-samples-hero strong{font-size:24px}.reusable-anchor-style-samples-hero small{font-size:15px}.reusable-anchor-style-compose-field input{padding-left:78px!important}.reusable-anchor-style-compose-field textarea{padding-left:78px!important}.reusable-anchor-style-compose-icon{left:13px;width:50px;height:50px}.reusable-anchor-style-sample-compose-buttons{width:100%}.reusable-anchor-style-samples-panel .reusable-anchor-style-sample-compose-buttons .primary-button,.reusable-anchor-style-samples-panel .reusable-anchor-style-file-button{flex:1;padding:0 18px}}
 .fact-risk-count{display:inline-block;padding:3px 7px;border-radius:10px;background:#ffe7ec;color:#c21e39;font-size:13px;font-style:normal;font-weight:900}
 .strategy-navigation-init-feedback{display:grid;gap:8px;min-width:0;margin-top:12px}.strategy-navigation-init-feedback>div{margin:0;font-size:16px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-line}
+.strategy-removed-risks{display:grid;gap:8px;min-width:0;margin-top:12px;padding:12px 14px;border:1px solid #f1d3a8;border-radius:12px;background:#fff8ec}.strategy-removed-risks-title{margin:0;font-size:13px;font-weight:750;color:#8a5a1f;line-height:1.5}.strategy-removed-risk-item{display:grid;gap:3px;width:100%;padding:9px 11px;border:1px solid #f1dcc0;border-radius:9px;background:#fff;text-align:left;cursor:pointer;transition:.15s ease}.strategy-removed-risk-item:hover{border-color:#e5b878;background:#fffdf6}.strategy-removed-risk-text{font-size:13px;color:#5a4327;line-height:1.5;overflow-wrap:anywhere}.strategy-removed-risk-reason{font-size:11px;color:#a08050;line-height:1.5;overflow-wrap:anywhere}
 .strategy-content-mode-dashboard-actions{grid-template-columns:minmax(190px,220px) minmax(210px,240px)!important;justify-content:end}
 .strategy-content-mode-cards>button.active{border-color:#36b885;background:linear-gradient(135deg,#28ae78 0%,#35ba83 58%,#4bc795 100%);box-shadow:0 15px 34px rgba(35,151,104,.24),inset 0 1px 0 rgba(255,255,255,.3)}
 .strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.38);background:rgba(255,255,255,.94);color:#16815a}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -23,6 +24,20 @@ func liveAgentPlanVersionPathID(w http.ResponseWriter, r *http.Request) (int64, 
 		return 0, false
 	}
 	return value, true
+}
+
+// derivedSafetyRef 构造派生安全资产的版本快照引用。removed_risks 携带本次保存
+// 因无法安全改写而被整条剔除的风险事实明细，供前端定位到对应事实。
+func derivedSafetyRef(safety model.LiveDerivedSafetyAsset) map[string]any {
+	ref := map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
+	if safety.RemovedRiskCount > 0 && strings.TrimSpace(safety.RemovedRisksJSON) != "" {
+		var risks []map[string]any
+		if json.Unmarshal([]byte(safety.RemovedRisksJSON), &risks) == nil {
+			ref["removed_risks"] = risks
+			ref["removed_risk_count"] = safety.RemovedRiskCount
+		}
+	}
+	return ref
 }
 
 func liveAgentVoiceIdentityKey(identity model.LiveAgentVoiceIdentity) string {
@@ -356,7 +371,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
+		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)
 		if err = s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -371,7 +386,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": safety.ID, "source_sha256": safety.SourceSHA256, "rewritten_count": safety.RewrittenCount, "notice": safety.Notice}
+		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)
 	}
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
 	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。

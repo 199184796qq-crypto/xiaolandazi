@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,15 @@ type derivedFactLine struct {
 	prefix     string
 	parts      []string
 	separators []string
+}
+
+// removedRisk 记录一条因无法安全改写而从安全事实包中整条剔除的风险事实，
+// 供保存回执返回给前端定位（area + claim_sha256 与风险审查定位机制复用）。
+type removedRisk struct {
+	Area        string `json:"area"`
+	ClaimSHA256 string `json:"claim_sha256"`
+	Text        string `json:"text"`
+	Reason      string `json:"reason"`
 }
 
 var derivedFactSeparators = regexp.MustCompile(`[；;]`)
@@ -453,6 +463,89 @@ func applyDerivedReplacements(d *derivedInput, raw, allowed, p0, p1, p2 string) 
 	return changes, nil
 }
 
+// removeUnsafeFactLines 找出改写后仍未处理风险的事实字段，把其所在的整条事实
+// 行从 d.lines 中删除（不再进入 SafeFacts），并返回剔除的事实数及风险明细。
+// 只处理 facts/* 字段；wheel/* 卖点字段保持结构化、不在此按行剔除。
+func (d *derivedInput) removeUnsafeFactLines() (int, []removedRisk) {
+	// 找出所有「未改写且仍需改写」的事实字段，映射到其所在行号。
+	lineRemoved := map[int]bool{}
+	removed := []removedRisk{}
+	byLine := map[int][]derivedField{}
+	for _, field := range d.Fields {
+		if d.rewritten[field.ID] || !d.needsRewrite(field) {
+			continue
+		}
+		if !strings.HasPrefix(field.ID, "facts/") {
+			continue
+		}
+		line, ok := d.factLineIndex(field.ID)
+		if !ok {
+			continue
+		}
+		byLine[line] = append(byLine[line], field)
+		lineRemoved[line] = true
+	}
+	if len(lineRemoved) == 0 {
+		return 0, nil
+	}
+	// 逐行剔除，并收集该行首条风险明细（claim_sha256 供前端定位）。
+	for _, field := range d.Fields {
+		if d.rewritten[field.ID] || !d.needsRewrite(field) || !strings.HasPrefix(field.ID, "facts/") {
+			continue
+		}
+		line, ok := d.factLineIndex(field.ID)
+		if !ok || !lineRemoved[line] {
+			continue
+		}
+		claim := d.fieldClaimHash(field)
+		reason := d.fieldRiskReason(field)
+		removed = append(removed, removedRisk{Area: "knowledge", ClaimSHA256: claim, Text: field.Text, Reason: reason})
+		// 同一行只记录一次。
+		lineRemoved[line] = false
+	}
+	// 重建 lines：跳过被剔除的行。
+	kept := make([]string, 0, len(d.lines))
+	for i, line := range d.lines {
+		if _, drop := byLine[i]; drop {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	d.lines = kept
+	return len(removed), removed
+}
+
+// factLineIndex 从字段 ID（facts/<行号>/<子句号>）解析行号。
+func (d *derivedInput) factLineIndex(fieldID string) (int, bool) {
+	rest, ok := strings.CutPrefix(fieldID, "facts/")
+	if !ok {
+		return 0, false
+	}
+	head, _, _ := strings.Cut(rest, "/")
+	idx, err := strconv.Atoi(head)
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
+}
+
+// fieldClaimHash 返回字段对应风险审查记录的 claim_sha256（取首个命中）。
+func (d *derivedInput) fieldClaimHash(field derivedField) string {
+	for _, hit := range field.Hits {
+		return derivedClaimHash(field, hit, d.Hashes)
+	}
+	return ""
+}
+
+// fieldRiskReason 汇总字段命中的风险原因，供前端展示。
+func (d *derivedInput) fieldRiskReason(field derivedField) string {
+	reasons := []string{}
+	for _, hit := range field.Hits {
+		reasons = append(reasons, derivedRiskReviewReason(hit))
+	}
+	return strings.Join(reasons, "；")
+}
+
 func (s *Server) prepareDerivedSafety(ctx context.Context, tenant, plan, actor int64) (model.LiveDerivedSafetyAsset, error) {
 	p0, p1, p2, err := loadRiskAnnotationMothers()
 	if err != nil {
@@ -516,27 +609,34 @@ func (s *Server) prepareDerivedSafety(ctx context.Context, tenant, plan, actor i
 			profile = config.SellingPointProfileID
 		}
 		if profile == "" {
-			return prior, errors.New("发现未确认的风险卖点，请先由后台配置安全改写模型")
-		}
-		data, _ := json.Marshal(map[string]any{"targets": targets, "safe_material": safeMaterial})
-		ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
-		lastIssue := ""
-		for attempt := 0; attempt < 3; attempt++ {
-			result, _, callErr := s.completeAnchorStyleWorkbench(ctx, profile, "derived_assets_safe_rewrite", agentgateway.ResponseJSON, []agentgateway.Message{
-				{Role: "system", Content: prompt + "\n\n" + p0 + "\n\n" + p1 + "\n\n" + p2},
-				{Role: "user", Content: string(data) + "\n程序复检问题：" + lastIssue},
-			}, 7000, false)
-			if callErr != nil {
-				return prior, callErr
+			// 未配置安全改写模型：视为本次无法改写，交由后续剔除未处理风险事实。
+			changes = nil
+		} else {
+			data, _ := json.Marshal(map[string]any{"targets": targets, "safe_material": safeMaterial})
+			ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
+			lastIssue := ""
+			for attempt := 0; attempt < 3; attempt++ {
+				result, _, callErr := s.completeAnchorStyleWorkbench(ctx, profile, "derived_assets_safe_rewrite", agentgateway.ResponseJSON, []agentgateway.Message{
+					{Role: "system", Content: prompt + "\n\n" + p0 + "\n\n" + p1 + "\n\n" + p2},
+					{Role: "user", Content: string(data) + "\n程序复检问题：" + lastIssue},
+				}, 7000, false)
+				if callErr != nil {
+					// 模型调用失败视为本次无法改写，跳出循环改由后续剔除未处理风险事实。
+					err = callErr
+					changes = nil
+					break
+				}
+				changes, err = applyDerivedReplacements(d, result.Text, strings.Join(safeMaterial, "\n"), p0, p1, p2)
+				if err == nil {
+					break
+				}
+				lastIssue = err.Error()
 			}
-			changes, err = applyDerivedReplacements(d, result.Text, strings.Join(safeMaterial, "\n"), p0, p1, p2)
-			if err == nil {
-				break
+			// 改写未完成（三次复检未通过或模型调用失败）：不再拦保存，改由后续
+			// removeUnsafeFactLines 把这些未处理风险事实整条剔除并回报。
+			if err != nil {
+				changes = nil
 			}
-			lastIssue = err.Error()
-		}
-		if err != nil {
-			return prior, fmt.Errorf("安全改写三次复检未通过，原始材料未修改：%w", err)
 		}
 	}
 	// Check current sources again after model latency; never release a stale snapshot.
@@ -559,17 +659,28 @@ func (s *Server) prepareDerivedSafety(ctx context.Context, tenant, plan, actor i
 		}
 	}
 	hashes, _ := json.Marshal(d.Hashes)
-	for _, field := range d.Fields {
-		if !d.rewritten[field.ID] && d.needsRewrite(field) {
-			return prior, errors.New("完整派生事实包仍包含未处理风险，未放行保存发布")
-		}
-	}
+	// 对改写后仍存在未处理风险的事实字段，不再拦保存：改为把该风险事实整条从
+	// 安全事实包中剔除，并收集风险明细，随保存回执返回供前端定位。轮盘卖点（wheel/*）
+	// 属结构化字段，剔除策略单独处理，不在这里按行删除。
+	removed, remainingRisk := d.removeUnsafeFactLines()
 	changesJSON, _ := json.Marshal(changes)
 	notice := "事实包与卖点角度已完成风险检查，原始材料保持不变。"
 	if len(changes) > 0 {
 		notice = fmt.Sprintf("已将%d项未审核风险表达转换为安全事实说明/卖点角度，可继续保存和发布；原始材料与待审核资质保持不变。", len(changes))
 	}
-	return s.store.SaveLiveDerivedSafety(ctx, actor, model.LiveDerivedSafetyAsset{TenantID: tenant, PlanID: plan, SourceSHA256: d.SourceSHA, OriginalFacts: d.Facts, OriginalWheelJSON: d.WheelJSON, SafeFacts: strings.Join(d.lines, "\n"), SafeWheelJSON: safeWheel, PolicyHashesJSON: string(hashes), ChangesJSON: string(changesJSON), RewrittenCount: len(changes), Notice: notice})
+	if removed > 0 {
+		notice += fmt.Sprintf("另有%d条风险事实因未能安全改写已从本次方案中剔除，不进入口播素材。", removed)
+	}
+	removedJSON, _ := json.Marshal(remainingRisk)
+	saved, saveErr := s.store.SaveLiveDerivedSafety(ctx, actor, model.LiveDerivedSafetyAsset{TenantID: tenant, PlanID: plan, SourceSHA256: d.SourceSHA, OriginalFacts: d.Facts, OriginalWheelJSON: d.WheelJSON, SafeFacts: strings.Join(d.lines, "\n"), SafeWheelJSON: safeWheel, PolicyHashesJSON: string(hashes), ChangesJSON: string(changesJSON), RewrittenCount: len(changes), RemovedRisksJSON: string(removedJSON), RemovedRiskCount: removed, Notice: notice})
+	if saveErr != nil {
+		return saved, saveErr
+	}
+	// 风险剔除明细只随本次保存回执传递，不落库（避免改动 live_derived_safety_assets
+	// 表结构）；落库读回会丢失该内存字段，这里填回。
+	saved.RemovedRisksJSON = string(removedJSON)
+	saved.RemovedRiskCount = removed
+	return saved, nil
 }
 
 func (s *Server) liveDerivedSafetyPrepare(w http.ResponseWriter, r *http.Request) {

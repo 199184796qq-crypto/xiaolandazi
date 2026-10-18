@@ -19,6 +19,8 @@ type LiveDerivedSafetyAsset struct {
 	PolicyHashesJSON  string    `json:"-"`
 	ChangesJSON       string    `json:"-"`
 	RewrittenCount    int       `json:"rewritten_count"`
+	RemovedRisksJSON  string    `json:"-"`
+	RemovedRiskCount  int       `json:"removed_risk_count,omitempty"`
 	Notice            string    `json:"notice"`
 	CreatedAt         time.Time `json:"created_at"`
 }
