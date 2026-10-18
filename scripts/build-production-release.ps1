@@ -45,7 +45,16 @@ function Invoke-External {
   )
   Push-Location $WorkingDirectory
   try {
-    & $Command
+    # pnpm（.ps1/.cmd）会把子进程 stderr 透传（如「$ pnpm --dir …」命令回显），
+    # PowerShell 在 Stop 策略下会抛 NativeCommandError 中断。这里降级为 Continue、
+    # 并把 stderr 合并到 stdout，仅以真实退出码判定成败。
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      & $Command 2>&1
+    } finally {
+      $ErrorActionPreference = $prevEAP
+    }
     if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE" }
   } finally {
     Pop-Location
