@@ -518,6 +518,7 @@ type LiveAgentPlanFact struct {
 	UpdatedByUserID    *int64                  `json:"updated_by_user_id,omitempty"`
 	CreatedAt          time.Time               `json:"created_at"`
 	UpdatedAt          time.Time               `json:"updated_at"`
+	ConflictWarning    *FactConflictWarning    `json:"conflict_warning,omitempty"`
 }
 
 type LiveAgentPlanBenefit struct {
@@ -605,6 +606,16 @@ type LiveAgentPlanFactAdoptionResult struct {
 	Message   string                     `json:"message,omitempty"`
 	Saved     *LiveAgentPlanFact         `json:"saved,omitempty"`
 	Existing  *LiveAgentPlanFact         `json:"existing,omitempty"`
+	Warning   *FactConflictWarning       `json:"warning,omitempty"`
+}
+
+// FactConflictWarning 是事实矛盾检测的非阻塞提示：不阻止保存，
+// 仅提示用户该条事实与现有事实/商品卡可能存在语义冲突及建议改写。
+type FactConflictWarning struct {
+	Detected    bool   `json:"detected"`
+	Conflict    string `json:"conflict,omitempty"`
+	Suggestion  string `json:"suggestion,omitempty"`
+	RelatedFacts []string `json:"related_facts,omitempty"`
 }
 
 type AdoptLiveAgentPlanFactsOutput struct {
@@ -613,6 +624,7 @@ type AdoptLiveAgentPlanFactsOutput struct {
 	Skipped   int                               `json:"skipped"`
 	Blocked   int                               `json:"blocked"`
 	Conflicts int                               `json:"conflicts"`
+	Warnings  []FactConflictWarning             `json:"warnings,omitempty"`
 }
 
 type LiveAgentPlanScript struct {

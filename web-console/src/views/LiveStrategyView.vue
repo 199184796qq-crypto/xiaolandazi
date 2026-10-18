@@ -6994,6 +6994,11 @@ onBeforeUnmount(() => {
                         <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
+                          <div v-if="item.conflict_warning?.detected" class="strategy-fact-conflict-warning" role="alert">
+                            <strong>⚠ 可能存在矛盾：</strong>{{ item.conflict_warning.conflict || '该事实与现有事实或商品卡存在语义冲突' }}
+                            <template v-if="item.conflict_warning.suggestion"><br /><strong>建议修改：</strong>{{ item.conflict_warning.suggestion }}</template>
+                            <template v-if="item.conflict_warning.related_facts?.length"><br /><strong>相关事实：</strong>{{ item.conflict_warning.related_facts.join('、') }}</template>
+                          </div>
                         </div>
                       </td>
                       <td class="strategy-formal-fact-status-cell">
@@ -9757,9 +9762,11 @@ onBeforeUnmount(() => {
 .strategy-formal-facts-empty { min-height:120px; }
 .strategy-formal-facts-layout { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; }
 .strategy-formal-facts-main { min-width:0; }
-.strategy-formal-fact-value-body { display:flex; align-items:flex-start; gap:10px; }
+.strategy-formal-fact-value-body { display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; }
 .strategy-formal-fact-value-text { flex:1 1 auto; min-width:0; }
 .strategy-formal-fact-value-body .strategy-formal-fact-wording-toggle { flex-shrink:0; margin-top:1px; }
+.strategy-fact-conflict-warning { flex:1 1 100%; box-sizing:border-box; padding:8px 11px; border:1px solid #e5b4b4; border-left:3px solid #d9534f; border-radius:8px; background:#fdf2f2; color:#b02a37; font-size:13px; line-height:1.6; white-space:normal; }
+.strategy-fact-conflict-warning strong { color:#d0343c; }
 .strategy-fact-four-layer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-bottom:12px; }
 .strategy-fact-four-layer-card { display:grid; gap:7px; padding:13px 14px; border:1px solid #dde4f2; border-radius:12px; background:#fff; }
 .strategy-fact-four-layer-card header { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }

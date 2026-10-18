@@ -188,6 +188,16 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 		default:
 			output.Skipped++
 		}
+		// 非阻塞矛盾检测：仅对成功采纳的事实做提示，失败静默不影响保存。
+		if result.Status == "adopted" {
+			if warning := s.factConflictCheck(r.Context(), tenantID, planID, candidate); warning != nil {
+				result.Warning = warning
+				output.Warnings = append(output.Warnings, *warning)
+				if result.Saved != nil {
+					result.Saved.ConflictWarning = warning
+				}
+			}
+		}
 		output.Results = append(output.Results, result)
 	}
 	if output.Adopted > 0 {
@@ -292,6 +302,10 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, planID, "facts"); err != nil {
 		writeError(w, http.StatusBadGateway, "事实已修改，但热同步到直播间失败："+err.Error())
 		return
+	}
+	// 非阻塞矛盾检测：修改后提示，失败静默不影响保存。
+	if warning := s.factConflictCheck(r.Context(), tenantID, planID, candidate); warning != nil {
+		updated.ConflictWarning = warning
 	}
 	writeJSON(w, http.StatusOK, updated)
 }

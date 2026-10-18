@@ -232,6 +232,58 @@ func TestDerivedSafetyP1EvidenceRuleAbsorbsOverlappingContextualP0(t *testing.T)
 		t.Fatalf("overlapping contextual P0 was not absorbed by one P1 evidence card: p0=%d p1=%d reviews=%+v", p0Count, p1Count, input.Reviews)
 	}
 }
+func TestDerivedSafetyRemovesUnsafeFactLines(t *testing.T) {
+	d, _, _, _ := safetyFixture(t)
+	// 未改写且仍命中风险的 facts/* 字段，其所在整行应从安全事实包剔除。
+	removed, risks := d.removeUnsafeFactLines()
+	if removed == 0 {
+		t.Fatal("expected unsafe fact line to be removed")
+	}
+	if len(risks) != removed {
+		t.Fatalf("removed count %d != risk details %d", removed, len(risks))
+	}
+	for _, risk := range risks {
+		if risk.Area != "knowledge" {
+			t.Fatalf("removed risk area=%q, want knowledge", risk.Area)
+		}
+		if risk.ClaimSHA256 == "" || risk.Text == "" || risk.Reason == "" {
+			t.Fatalf("removed risk missing fields: %+v", risk)
+		}
+	}
+	if strings.Contains(strings.Join(d.lines, "\n"), "零胆固醇") {
+		t.Fatal("unsafe fact line retained after removal")
+	}
+	// 已被确认释放（不再 needsRewrite）的事实行不应被剔除。
+	released, _, _, _ := safetyFixture(t)
+	for _, review := range released.Reviews {
+		if review.Severity != "P1" {
+			continue
+		}
+		review.Status = "confirmed"
+		review.Evidence = "商品标签与批次检验报告"
+		released.Statuses[review.ClaimSHA256] = review
+	}
+	keptBefore := len(released.lines)
+	if got, _ := released.removeUnsafeFactLines(); got != 0 {
+		t.Fatalf("confirmed-safe facts were removed: %d", got)
+	}
+	if len(released.lines) != keptBefore {
+		t.Fatal("released fact line should be preserved")
+	}
+}
+
+func TestDerivedSafetyRemovesUnsafeFactLinesSkipsWheel(t *testing.T) {
+	d, _, _, _ := safetyFixture(t)
+	// 只应剔除 facts/* 字段所在行；wheel/* 卖点字段保持结构化，不按行删除。
+	removed, _ := d.removeUnsafeFactLines()
+	if removed == 0 {
+		t.Fatal("expected facts to be removed")
+	}
+	if len(d.wheel.Items) == 0 {
+		t.Fatal("wheel items should remain intact")
+	}
+}
+
 func TestDerivedSafetyRejectsMissingOrDuplicateTargets(t *testing.T) {
 	for _, raw := range []string{`{"replacements":[]}`, `{"replacements":[{"id":"facts/2","text":"查看说明"},{"id":"facts/2","text":"查看说明"}]}`, `{"replacements":[{"id":"not-a-target","text":"查看说明"}]}`, `{"replacements":[],"approval":true}`} {
 		d, p0, p1, p2 := safetyFixture(t)

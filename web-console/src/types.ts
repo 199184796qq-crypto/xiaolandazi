@@ -2260,6 +2260,14 @@ export interface LiveAgentPlanFact {
   updated_by_user_id?: number
   created_at: string
   updated_at: string
+  conflict_warning?: FactConflictWarning
+}
+
+export interface FactConflictWarning {
+  detected: boolean
+  conflict?: string
+  suggestion?: string
+  related_facts?: string[]
 }
 
 export interface LiveAgentPlanFactAdoptionResult {
@@ -2268,6 +2276,7 @@ export interface LiveAgentPlanFactAdoptionResult {
   message?: string
   saved?: LiveAgentPlanFact
   existing?: LiveAgentPlanFact
+  warning?: FactConflictWarning
 }
 
 export interface AdoptLiveAgentPlanFactsOutput {
@@ -2276,6 +2285,7 @@ export interface AdoptLiveAgentPlanFactsOutput {
   skipped: number
   blocked: number
   conflicts: number
+  warnings?: FactConflictWarning[]
 }
 
 export interface LiveAgentPlanBenefit {
