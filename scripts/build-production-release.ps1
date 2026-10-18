@@ -62,9 +62,9 @@ if (-not $SkipTests) {
   Invoke-External $RepoRoot { pnpm --dir sales-mobile check } 'sales-mobile check'
 }
 
-Invoke-External $RepoRoot { pnpm build:web } 'desktop web build'
-Invoke-External $RepoRoot { pnpm build:customer } 'customer mobile build'
-Invoke-External $RepoRoot { pnpm build:sales } 'sales mobile build'
+Invoke-External $RepoRoot { cmd /c 'pnpm build:web 2>&1' } 'desktop web build'
+Invoke-External $RepoRoot { cmd /c 'pnpm build:customer 2>&1' } 'customer mobile build'
+Invoke-External $RepoRoot { cmd /c 'pnpm build:sales 2>&1' } 'sales mobile build'
 
 foreach ($required in @(
   'web-console\dist\index.html',
