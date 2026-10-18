@@ -95,7 +95,9 @@ func TestOldFirmwarePongKeepsPresenceAlive(t *testing.T) {
 	t.Parallel()
 	h := newControlHarness(t, "", false)
 	peer := h.connect(t, false)
-	deadline := time.After(deviceProbeInterval + 2*time.Second)
+	// An immediate pong may share the connect timestamp and is then correctly
+	// coalesced. Allow two periodic probes for two strictly newer reports.
+	deadline := time.After(2*deviceProbeInterval + 2*time.Second)
 	count := 0
 	for count < 2 {
 		select {
