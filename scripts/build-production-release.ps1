@@ -45,15 +45,7 @@ function Invoke-External {
   )
   Push-Location $WorkingDirectory
   try {
-    # pnpm.ps1 / node 会把子进程 stderr 透传，PowerShell 在 Stop 策略下会当成
-    # NativeCommandError 中断。这里临时降为 Continue，仅以真实退出码判定成败。
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-      & $Command
-    } finally {
-      $ErrorActionPreference = $prevEAP
-    }
+    & $Command
     if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE" }
   } finally {
     Pop-Location
@@ -66,13 +58,13 @@ if (-not $SkipTests) {
   Invoke-External (Join-Path $RepoRoot 'core-service') { go test ./... } 'core-service tests'
   Invoke-External (Join-Path $RepoRoot 'management-service') { go test ./... } 'management-service tests'
   Invoke-External (Join-Path $RepoRoot 'xiaozhi-gateway') { go test ./... } 'xiaozhi-gateway tests'
-  Invoke-External $RepoRoot { pnpm --dir customer-mobile check } 'customer-mobile check'
-  Invoke-External $RepoRoot { pnpm --dir sales-mobile check } 'sales-mobile check'
+  Invoke-External $RepoRoot { pnpm.cmd --dir customer-mobile check } 'customer-mobile check'
+  Invoke-External $RepoRoot { pnpm.cmd --dir sales-mobile check } 'sales-mobile check'
 }
 
-Invoke-External $RepoRoot { pnpm build:web } 'desktop web build'
-Invoke-External $RepoRoot { pnpm build:customer } 'customer mobile build'
-Invoke-External $RepoRoot { pnpm build:sales } 'sales mobile build'
+Invoke-External $RepoRoot { pnpm.cmd build:web } 'desktop web build'
+Invoke-External $RepoRoot { pnpm.cmd build:customer } 'customer mobile build'
+Invoke-External $RepoRoot { pnpm.cmd build:sales } 'sales mobile build'
 
 foreach ($required in @(
   'web-console\dist\index.html',
