@@ -274,7 +274,11 @@ func (s *Server) buildContentPools(ctx context.Context, tenant, plan, actor int6
 			}
 		}
 	}
-	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, contentFactsFromSafety(source, safety.SafeFacts), p0, prev, func(done, total int) {
+	facts, err := contentFactsFromSafety(source, safety.SafeFacts)
+	if err != nil {
+		return contentpools.Set{}, err
+	}
+	facts, notices, err := s.classifySimplePoolFacts(ctx, cfg.SellingPointProfileID, source, facts, p0, prev, func(done, total int) {
 		stage(fmt.Sprintf("正在核对资料适用范围 · %d/%d", done, total))
 	})
 	if err != nil {

@@ -49,7 +49,10 @@ func TestPoolTasksPreserveActualFailedBelowFiftySummary(t *testing.T) {
 }
 func TestCardFactsKeepConditionsAndStableAttributeID(t *testing.T) {
 	source := contentpools.Sources{Products: []contentpools.Product{{ID: 7, Link: "1"}}, Rows: []contentpools.SourceRow{{ID: "products:7", Products: []int64{7}}, {ID: "attributes:9", Area: "products", Products: []int64{7}, Fields: map[string]string{"属性": "加热", "属性编号": "heating"}}}}
-	facts := contentFactsFromSafety(source, "- [商品卡] 链接=1；商品=鸭子；加热=180度；仅限拆开包装后；规格=半只")
+	facts, err := contentFactsFromSafety(source, "- [商品卡] 链接=1；商品=鸭子；加热=180度；仅限拆开包装后；规格=半只")
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
 	for _, f := range facts {
 		if f.ID == "attributes:9" {
@@ -63,7 +66,10 @@ func TestCardFactsKeepConditionsAndStableAttributeID(t *testing.T) {
 		t.Fatal(facts)
 	}
 	source.Rows[1].Fields["属性"] = "食用建议"
-	facts = contentFactsFromSafety(source, "- [商品卡] 链接=1；食用建议=180度；仅限拆开包装后；商品=鸭子")
+	facts, err = contentFactsFromSafety(source, "- [商品卡] 链接=1；食用建议=180度；仅限拆开包装后；商品=鸭子")
+	if err != nil {
+		t.Fatal(err)
+	}
 	found = false
 	for _, f := range facts {
 		if f.ID == "attributes:9" {

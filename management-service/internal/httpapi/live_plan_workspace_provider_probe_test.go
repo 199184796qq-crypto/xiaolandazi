@@ -78,7 +78,10 @@ func TestSavedPlanWorkspaceReadOnlyProbe(t *testing.T) {
 		for _, r := range source.Rows {
 			rows[r.ID] = true
 		}
-		facts := contentFactsFromSafety(source, safety.SafeFacts)
+		facts, e := contentFactsFromSafety(source, safety.SafeFacts)
+		if e != nil {
+			t.Fatal(e)
+		}
 		if len(facts) == 0 {
 			t.Fatal("source atomization empty")
 		}

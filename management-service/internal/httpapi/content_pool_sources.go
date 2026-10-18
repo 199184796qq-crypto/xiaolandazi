@@ -162,7 +162,40 @@ func (s *Server) captureContentSources(ctx context.Context, tenant, plan int64) 
 	return contentpools.Sources{}, appdb.ErrPoolSourceChanged
 }
 
-func contentFactsFromSafety(source contentpools.Sources, safe string) []contentpools.Fact {
+type contentFactHeader struct {
+	key, body, link  string
+	explicit, shared bool
+}
+
+// Scope is program-owned metadata. Read the same JSON link prefix as the
+// runtime before looking up the category/name; quoted delimiters are not keys.
+func parseContentFactHeader(line string) (contentFactHeader, error) {
+	var header contentFactHeader
+	scope, explicit, err := explicitPlanFactScope(line)
+	if err != nil {
+		return header, err
+	}
+	header.explicit, header.shared = explicit, scope.Shared
+	rest := strings.TrimPrefix(line, "- [")
+	if explicit && scope.Shared {
+		rest = strings.TrimPrefix(line, explicitCommonFactPrefix)
+	} else if explicit {
+		rest = strings.TrimPrefix(line, explicitProductFactPrefix)
+		decoder := json.NewDecoder(strings.NewReader(rest))
+		if err := decoder.Decode(&header.link); err != nil {
+			return header, errors.New("无法读取事实归属商品")
+		}
+		rest = strings.TrimPrefix(rest[decoder.InputOffset():], "；")
+	}
+	end := strings.Index(rest, "]")
+	if end < 0 || strings.TrimSpace(rest[:end]) == "" {
+		return header, errors.New("事实标题缺失或未闭合")
+	}
+	header.key, header.body = rest[:end], strings.TrimSpace(rest[end+1:])
+	return header, nil
+}
+
+func contentFactsFromSafety(source contentpools.Sources, safe string) ([]contentpools.Fact, error) {
 	products := map[string]int64{}
 	all := []int64{}
 	rows := map[string]contentpools.SourceRow{}
@@ -173,12 +206,13 @@ func contentFactsFromSafety(source contentpools.Sources, safe string) []contentp
 	for _, r := range source.Rows {
 		rows[r.ID] = r
 	}
-	// Facts keep their origin IDs even when display names change.
-	knowledge := map[string]string{}
+	// A duplicate display key is ambiguous, never permission to use the last row.
+	knowledge := map[string][]string{}
 	benefits := map[string]contentpools.SourceRow{}
 	for _, r := range source.Rows {
 		if r.Area == "knowledge" {
-			knowledge[r.Fields["分类"]+"/"+r.Fields["名称"]] = r.ID
+			key := r.Fields["分类"] + "/" + r.Fields["名称"]
+			knowledge[key] = append(knowledge[key], r.ID)
 		}
 		if r.Area == "benefits" && r.Fields["当前有效"] == "true" {
 			benefits[r.Fields["名称"]] = r
@@ -190,19 +224,17 @@ func contentFactsFromSafety(source contentpools.Sources, safe string) []contentp
 		if !strings.HasPrefix(line, "- [") {
 			continue
 		}
-		end := strings.Index(line, "]")
-		if end < 0 {
-			continue
+		header, err := parseContentFactHeader(line)
+		if err != nil {
+			return nil, fmt.Errorf("事实第%d行归属或标题无效：%w", i+1, err)
 		}
-		header := line[3:end]
-		body := strings.TrimSpace(line[end+1:])
-		if header == "商品卡" {
+		if !header.explicit && header.key == "商品卡" {
 			id := products[safeProductField(line, "链接")]
 			if id == 0 {
 				continue
 			}
 			row := rows[fmt.Sprintf("products:%d", id)]
-			for _, part := range contentCardFields(body, source, id) {
+			for _, part := range contentCardFields(header.body, source, id) {
 				key, value, ok := strings.Cut(part, "=")
 				if !ok || value == "" {
 					continue
@@ -219,7 +251,7 @@ func contentFactsFromSafety(source contentpools.Sources, safe string) []contentp
 			}
 			continue
 		}
-		if header == "有效福利" {
+		if !header.explicit && header.key == "有效福利" {
 			r := benefits[safeProductField(line, "福利")]
 			if r.ID == "" {
 				continue
@@ -227,13 +259,27 @@ func contentFactsFromSafety(source contentpools.Sources, safe string) []contentp
 			out = append(out, contentpools.Fact{ID: r.ID, Text: line, Sources: []string{r.ID}, Products: r.Products, Private: true})
 			continue
 		}
-		id := knowledge[header]
-		if id == "" {
-			id = fmt.Sprintf("facts:line:%d", i)
+		ids := knowledge[header.key]
+		if len(ids) == 0 || (len(ids) == 1 && ids[0] == "") {
+			return nil, fmt.Errorf("事实第%d行「%s」无法关联当前快照来源，请核对事实类型和名称", i+1, header.key)
 		}
-		out = append(out, contentpools.Fact{ID: id, Text: line, Sources: []string{id}, Products: append([]int64{}, all...)})
+		if len(ids) != 1 {
+			return nil, fmt.Errorf("事实第%d行「%s」对应多个快照来源，请先区分同名事实", i+1, header.key)
+		}
+		applicable := append([]int64{}, all...)
+		var owner int64
+		if header.explicit && !header.shared {
+			owner = products[header.link]
+			if owner == 0 {
+				return nil, fmt.Errorf("事实第%d行「%s」的归属商品「%s」不在当前快照中", i+1, header.key, header.link)
+			}
+			applicable = []int64{owner}
+		}
+		// Explicit common facts bypass model reclassification; explicit product
+		// facts must also survive equal-text merging without widening their scope.
+		out = append(out, contentpools.Fact{ID: ids[0], Text: line, Sources: []string{ids[0]}, Products: applicable, Owner: owner, Private: header.explicit})
 	}
-	return out
+	return out, nil
 }
 
 // Keep semicolon-separated conditions attached to their actual field. Field
