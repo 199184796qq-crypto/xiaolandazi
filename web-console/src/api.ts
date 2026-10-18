@@ -980,6 +980,32 @@ export function updateLiveAgentPlanFactScope(planId: number, fact: LiveAgentPlan
   })
 }
 
+export function updateLiveAgentPlanFactCategory(planId: number, fact: LiveAgentPlanFact, category: string) {
+  return request<LiveAgentPlanFact>('/api/v1/live-agent-plans/' + planId + '/facts/' + fact.id + '/category', {
+    method: 'PUT', body: JSON.stringify({ tenant_id: fact.tenant_id, expected_version_no: fact.version_no, category }),
+  })
+}
+
+export interface FactTypeSuggestion {
+  id: number
+  category: string
+  label: string
+  confidence: number
+  reason: string
+  low_conf: boolean
+  error?: boolean
+}
+
+export function suggestLiveAgentPlanFactTypes(
+  planId: number,
+  facts: { id: number; key: string; value: string }[],
+  tenantId?: number,
+) {
+  return request<{ results: FactTypeSuggestion[] }>('/api/v1/live-agent-plans/' + planId + '/facts/suggest-types', {
+    method: 'POST', body: JSON.stringify({ tenant_id: tenantId, facts }),
+  })
+}
+
 export function updateLiveAgentPlanFact(
   planId: number,
   factId: number,

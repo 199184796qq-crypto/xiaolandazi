@@ -6,7 +6,7 @@ import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 
 type ProductField = 'link_key' | 'product_name' | 'spec' | 'daily_price' | 'quantity' | 'audience'
 type ProductAttributeDraft = { code: string; label: string; value: string; unit?: string; display_type?: string; display_priority?: number }
-type SellingPointDraft = { selling_point: string; tier?: string; point_weight: number; is_main: boolean; angles: { angle: string; weight: number }[]; target_audience?: string; pain_point?: string }
+type SellingPointDraft = { selling_point: string; category?: string; tier?: string; point_weight: number; is_main: boolean; angles: { angle: string; weight: number }[]; target_audience?: string; pain_point?: string }
 const props = defineProps<{
   items: LiveAgentPlanProductLink[]
   benefits?: LiveAgentPlanBenefit[]
@@ -244,6 +244,7 @@ function openWeightPanel(item: LiveAgentPlanProductLink) {
 function sellingPointsDraft(item: LiveAgentPlanProductLink): SellingPointDraft[] {
 	return (item.selling_points || []).map((point) => ({
 		selling_point: point.selling_point,
+		category: point.category,
 		tier: point.tier,
 		point_weight: point.point_weight || 0,
 		is_main: point.is_main,
@@ -435,7 +436,7 @@ watch(() => props.items.map((item) => item.id), (ids) => {
           <strong>讲解权重</strong>
         </header>
         <div v-for="point in (item.selling_points || [])" :key="point.id || point.selling_point" class="product-weight-row">
-          <span class="product-weight-label">{{ point.selling_point }}</span>
+          <span class="product-weight-label">{{ point.selling_point }}<em v-if="point.category" class="product-weight-category">{{ point.category }}</em></span>
           <input type="range" min="0" max="100" step="1" :value="point.point_weight || 0" :disabled="busy || !!weightSavingKey" :aria-label="item.link_key + '卖点' + point.selling_point + '权重'" @change="onPointWeightChange(item, point, $event)" />
           <span class="product-weight-value">{{ point.point_weight || 0 }}</span>
         </div>
@@ -460,7 +461,8 @@ watch(() => props.items.map((item) => item.id), (ids) => {
 .product-weight-panel>header span { color:#7c879c; font-size:16px; line-height:1.45; }
 .product-weight-empty { padding:9px; border-radius:8px; background:#f5f7fc; color:#778297; font-size:16px; line-height:1.55; }
 .product-weight-row { display:grid; grid-template-columns:minmax(72px,auto) minmax(90px,1fr) 36px; align-items:center; gap:8px; }
-.product-weight-label { color:#172440; font-size:16px; font-weight:800; }
+.product-weight-label { color:#172440; font-size:16px; font-weight:800; display:flex; align-items:baseline; gap:6px; min-width:0; overflow-wrap:anywhere; }
+.product-weight-category { padding:2px 6px; border-radius:6px; background:var(--tint); color:var(--accent); font-size:15px; font-weight:600; font-style:normal; white-space:nowrap; }
 .product-weight-row input[type="range"] { width:100%; accent-color:var(--accent); }
 .product-weight-value { text-align:right; color:var(--accent); font-size:16px; font-weight:800; }
 .product-weight-angles { grid-column:1/-1; color:#8b95aa; font-size:16px; line-height:1.45; }

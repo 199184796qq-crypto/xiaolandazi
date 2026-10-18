@@ -1580,6 +1580,7 @@ export interface LiveAgentPlanProductSellingPoint {
 	plan_id: number
 	product_link_id: number
 	selling_point: string
+	category?: string
 	tier?: string
 	point_weight: number
 	is_main: boolean

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { factCategoryState } from '../factCategories'
-import FormalFactTypePlaceholder from './FormalFactTypePlaceholder.vue'
+import { factCategoryGroups, factCategoryState } from '../factCategories'
 
 type FactDraft = { category: string; key: string; value: string; forbidden_wording: string; safe_rewrite: string }
 const draft = defineModel<FactDraft>({ required: true })
@@ -34,7 +33,13 @@ onMounted(async () => {
 <template>
   <tr ref="row" class="inline-formal-fact-create-row" data-formal-fact-draft :aria-busy="saving" @focusout="blur">
     <td class="draft-number"><span>{{ number }}</span></td>
-    <td><FormalFactTypePlaceholder label="新增事实的事实类型" /></td>
+    <td class="draft-type">
+      <select v-model="draft.category" :disabled="saving" aria-label="新增事实的事实类型">
+        <optgroup v-for="group in factCategoryGroups(draft.category)" :key="group.label" :label="group.label">
+          <option v-for="option in group.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </optgroup>
+      </select>
+    </td>
     <td><span class="draft-scope">保存后选择归属</span></td>
     <td class="draft-content">
       <p v-if="guidance" class="draft-guidance">{{ guidance }}</p>
@@ -56,6 +61,10 @@ onMounted(async () => {
 .draft-scope,.draft-status { color:#637795; font-size:16px; }
 .draft-content { min-width:0; }
 .draft-content textarea,.draft-content input { box-sizing:border-box; display:block; width:100%; padding:10px 12px; border:1px solid #9cb1e7; border-radius:9px; background:#fff; color:#111; font:inherit; font-size:16px; line-height:1.7; }
+.draft-type { min-width:0; }
+.draft-type select { box-sizing:border-box; width:100%; min-height:42px; padding:7px 9px; border:1px solid #9cb1e7; border-radius:9px; background:#fff; color:#111; font:inherit; font-size:16px; }
+.draft-type select:focus { outline:2px solid #d2dcff; outline-offset:1px; }
+.draft-type select:disabled { opacity:.8; }
 .draft-content textarea { min-height:108px; resize:vertical; }
 .draft-content textarea:focus,.draft-content input:focus { outline:2px solid #d2dcff; outline-offset:1px; }
 .draft-content textarea:disabled,.draft-content input:disabled { opacity:.8; }

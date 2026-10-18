@@ -30,7 +30,7 @@ import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
 import InlineFormalFactEditor from '../components/InlineFormalFactEditor.vue'
 import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
-import FormalFactTypePlaceholder from '../components/FormalFactTypePlaceholder.vue'
+import FormalFactTypeSelect from '../components/FormalFactTypeSelect.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import InlineFormalFactCreateRow from '../components/InlineFormalFactCreateRow.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
@@ -76,6 +76,8 @@ import {
   getLiveAgentPlanBenefits,
   getLiveAgentPlanFacts,
   updateLiveAgentPlanFactScope,
+  updateLiveAgentPlanFactCategory,
+  suggestLiveAgentPlanFactTypes,
   getLiveAgentPlanProductLinks,
   getLiveAgentPlanScripts,
   getRoomLiveAgentPlans,
@@ -146,6 +148,7 @@ import {
   uploadLiveAgentCustomMainline,
   uploadLiveMediaAsset,
 } from '../api'
+import type { FactTypeSuggestion } from '../api'
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
@@ -500,6 +503,7 @@ const formalFactCreateGuidance = ref('')
 const formalFactCreateError = ref('')
 const mutatingFormalFactId = ref<number | null>(null)
 const factScopeSavingId = ref<number | null>(null)
+const factCategorySavingId = ref<number | null>(null)
 let factScopeSequence = 0
 let formalFactReadSequence = 0
 watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
@@ -511,6 +515,10 @@ watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.v
   if (mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
   factScopeSequence++
   factScopeSavingId.value = null
+  factCategorySavingId.value = null
+  factTypeSuggestingId.value = null
+  factTypeMenu.value.fact = null
+  factTypeSuggestionMap.value = {}
 }, { flush: 'sync' })
 async function saveFormalFactScope(item: LiveAgentPlanFact, scope: NonNullable<LiveAgentPlanFact['scope']>) {
   const plan = currentRoomPlanId.value
@@ -526,6 +534,85 @@ async function saveFormalFactScope(item: LiveAgentPlanFact, scope: NonNullable<L
     scriptNotice.value = '事实归属已保存。重新初始化并保存方案后，下次开播使用新的归属。'
     void contentPools.refresh(true)
   } finally { if (current()) factScopeSavingId.value = null }
+}
+
+async function saveFormalFactCategory(item: LiveAgentPlanFact, category: string) {
+  const plan = currentRoomPlanId.value
+  const sequence = factScopeSequence
+  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
+  if (!plan || item.plan_id !== plan || item.tenant_id !== activeRoom.value?.tenant_id || factCategorySavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
+  factCategorySavingId.value = item.id
+  formalFactReadSequence++
+  try {
+    const updated = await updateLiveAgentPlanFactCategory(plan, item, category)
+    if (!current()) return
+    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
+    // 保存成功后清除该条的低把握提示（用户已确认）。
+    if (factTypeSuggestionMap.value[item.id]) delete factTypeSuggestionMap.value[item.id]
+    scriptNotice.value = '事实类型已保存。重新初始化并保存方案后，下次开播使用新的类型。'
+    void contentPools.refresh(true)
+  } finally { if (current()) factCategorySavingId.value = null }
+}
+
+const factTypeSuggestionMap = ref<Record<number, FactTypeSuggestion>>({})
+const factTypeSuggestingId = ref<number | null>(null)
+const factTypeMenu = ref<{ x: number; y: number; fact: LiveAgentPlanFact | null }>({ x: 0, y: 0, fact: null })
+
+function openFactTypeMenu(event: MouseEvent, item: LiveAgentPlanFact) {
+  if (creatingFormalFact.value || editingFormalFactId.value !== null || !!mutatingFormalFactId.value || factCategorySavingId.value !== null || factTypeSuggestingId.value !== null || item.plan_id !== currentRoomPlanId.value) return
+  event.preventDefault()
+  factTypeMenu.value = {
+    fact: item,
+    x: Math.min(event.clientX, Math.max(12, window.innerWidth - 190)),
+    y: Math.min(event.clientY, Math.max(12, window.innerHeight - 96)),
+  }
+}
+
+function closeFactTypeMenu() {
+  factTypeMenu.value.fact = null
+}
+
+async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
+  const plan = currentRoomPlanId.value
+  if (!plan || factTypeSuggestingId.value !== null) return
+  const tenantId = activeRoom.value?.tenant_id
+  const sequence = factScopeSequence
+  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
+  factTypeMenu.value.fact = null
+  factTypeSuggestingId.value = item.id
+  try {
+    const { results } = await suggestLiveAgentPlanFactTypes(plan, [{ id: item.id, key: item.key, value: item.value }], tenantId)
+    if (!current()) return
+    const r = results[0]
+    if (!r) { scriptNotice.value = '建议分类返回为空，请手动选择'; return }
+    const displayName = r.label || r.category
+    if (r.error || r.low_conf) {
+      // 低把握或判断失败：标红提示，让用户在下拉里手动确认，不自动落库。
+      factTypeSuggestionMap.value = { ...factTypeSuggestionMap.value, [item.id]: r }
+      scriptNotice.value = r.error
+        ? '无法自动判断该条类型，请在下拉里手动选择。'
+        : `建议类型：${displayName || '未定'}（把握不足，已标红，请确认后再选）。${r.reason || ''}`
+      return
+    }
+    // 高把握：直接落库。
+    if (item.category === r.category) {
+      delete factTypeSuggestionMap.value[item.id]
+      scriptNotice.value = '该条类型已是建议值，无需修改。'
+      return
+    }
+    const updated = await updateLiveAgentPlanFactCategory(plan, item, r.category)
+    if (!current()) return
+    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
+    delete factTypeSuggestionMap.value[item.id]
+    scriptNotice.value = `已按建议改为「${displayName}」：${r.reason || ''}`
+    void contentPools.refresh(true)
+    // 可能新增了自定义分类：刷新分类下拉，让新类型立即可选。
+    void loadFactCategories({ planId: plan, suppressErrorDialog: true })
+  } catch (e) {
+    scriptNotice.value = e instanceof Error ? e.message : '建议分类失败，请重试'
+  } finally {
+    if (current()) factTypeSuggestingId.value = null
+  }
 }
 
 const adoptingBenefitKey = ref('')
@@ -1686,7 +1773,7 @@ async function refreshAnchorSellingPointWheel() {
     if (token === anchorSellingPointWheelLoadToken) anchorSellingPointWheelLoading.value = false
   }
 }
-async function initializeAnchorGeneration() {
+async function initializeAnchorGeneration(force = false) {
   const planId = currentRoomPlanId.value
   if (!planId || anchorInitializing.value) return
   anchorInitializing.value = true
@@ -1695,7 +1782,11 @@ async function initializeAnchorGeneration() {
   anchorInitializationNotice.value = ''
   startAnchorInitializationProgress()
   try {
-    const query = activeRoom.value?.tenant_id ? '?tenant_id=' + activeRoom.value.tenant_id : ''
+    const params = new URLSearchParams()
+    if (activeRoom.value?.tenant_id) params.set('tenant_id', String(activeRoom.value.tenant_id))
+    if (force) params.set('force', '1')
+    const qs = params.toString()
+    const query = qs ? '?' + qs : ''
     const result = await request<{ initialized: boolean; partial: boolean; notice: string; selling_points: number; angles: number; steps: AnchorInitializationStep[] }>('/api/v1/live-agent-plans/' + planId + '/initialize-anchor' + query, { method: 'POST', headers: { Accept: 'text/event-stream' } }, (event) => {
       if (event.type !== 'progress') return
       anchorInitializationProgress.value = Math.max(anchorInitializationProgress.value, event.percent || 0)
@@ -6467,6 +6558,7 @@ onBeforeUnmount(() => {
                 :save-disabled="savePlanOneClickDisabled"
                 :save-hint="savePlanOneClickHint"
                 @initialize="initializeAnchorGeneration"
+                @force-initialize="initializeAnchorGeneration(true)"
                 @save="savePlanOneClick"
               />
             </template>
@@ -6920,9 +7012,9 @@ onBeforeUnmount(() => {
                   <template v-for="(item, index) in visibleFormalFacts" :key="item.id">
                   <tr :data-formal-fact-id="item.id" tabindex="-1" :class="['fact-row-tone-' + index % 4, factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
                     <td class="strategy-formal-fact-number-cell"><span class="formal-fact-number-pill">{{ index + 1 }}</span></td>
-                    <td class="strategy-formal-fact-type-cell"><FormalFactTypePlaceholder :label="'“' + item.key + '”的事实类型'" /></td>
+                    <td class="strategy-formal-fact-type-cell"><FormalFactTypeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factCategorySavingId !== null || item.plan_id !== currentRoomPlanId" :suggestion="factTypeSuggestionMap[item.id] || null" :save="saveFormalFactCategory" /></td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
-                      <td class="strategy-formal-fact-value">
+                      <td class="strategy-formal-fact-value" @contextmenu="openFactTypeMenu($event, item)">
                         <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
@@ -8771,6 +8863,23 @@ onBeforeUnmount(() => {
       </main>
     </section>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="factTypeMenu.fact"
+      class="strategy-fact-type-menu-layer"
+      @mousedown.self="closeFactTypeMenu"
+      @contextmenu.prevent
+    >
+      <div class="strategy-fact-type-menu" :style="{ left: factTypeMenu.x + 'px', top: factTypeMenu.y + 'px' }" @mousedown.stop>
+        <button type="button" :disabled="factTypeSuggestingId !== null" @click="suggestFactTypeForFact(factTypeMenu.fact!)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4 4 4 0 0 0-1 7.87V17a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2.13A4 4 0 0 0 16 7a4 4 0 0 0-4-4Z"/><path d="M9 21h6"/></svg>
+          <strong>{{ factTypeSuggestingId !== null ? '分析中…' : '建议分类' }}</strong>
+        </button>
+        <small>系统按事实内容自动判断最贴切的类型</small>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -9704,6 +9813,14 @@ onBeforeUnmount(() => {
 .strategy-fact-scope-sort:disabled { cursor:default; opacity:.6; }
 .strategy-fact-scope-sort svg { flex:0 0 14px; width:14px; height:20px; fill:none; stroke:#8d9bb7; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .strategy-fact-scope-sort svg path.active { stroke:#4545df; stroke-width:2.5; }
+.strategy-formal-fact-value { cursor:context-menu; }
+.strategy-fact-type-menu-layer { position:fixed; inset:0; z-index:150; }
+.strategy-fact-type-menu { position:fixed; display:grid; min-width:210px; max-width:280px; gap:7px; padding:8px; border:1px solid rgba(120,132,166,.23); border-radius:12px; background:rgba(255,255,255,.98); box-shadow:0 16px 42px rgba(25,34,68,.18); backdrop-filter:blur(14px); }
+.strategy-fact-type-menu button { display:flex; align-items:center; gap:8px; width:100%; border:1px solid #d7dbfb; border-radius:9px; padding:9px 11px; background:#f5f6ff; color:#3a3fd0; font:inherit; font-size:14px; font-weight:700; text-align:left; cursor:pointer; }
+.strategy-fact-type-menu button svg { flex:0 0 17px; width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.strategy-fact-type-menu button:hover:not(:disabled) { border-color:#6557ff; background:#ecebff; }
+.strategy-fact-type-menu button:disabled { opacity:.55; cursor:wait; }
+.strategy-fact-type-menu small { padding:2px 7px; color:#667085; font-size:11px; line-height:1.4; }
 .strategy-formal-fact-number-column { width:64px; }
 .strategy-formal-facts-table .strategy-formal-fact-number-cell { text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .strategy-formal-fact-scope-column { width:160px; }
