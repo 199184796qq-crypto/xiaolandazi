@@ -108,14 +108,16 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if err != nil {
 		return nil, err
 	}
-	// 开场环节追加专用开场母版（4层结构），让口播模型写完整开场：
-	// 第一句钩子 → 身份背书 → 卖点×角度 → 轻呼告，而不是只报一句欢迎。
+	// 开场母版（4层结构）随环节变化：开场段才讲，非开场段不讲。
+	// 为保持 system 前缀整场逐字稳定（DashScope 前缀缓存的前提），
+	// 它不再拼进 foundation，改为在下方并入 user 消息的「环节指令」字段。
+	var phaseDirective string
 	if state.Phase == "opening" {
 		opening, _, e := loadReplaceablePromptAsset("ANCHOR_STYLE_CYCLE_OPENING_PROMPT_PATH", "configs/prompts/anchor-style/cycle-opening.md", "开场母版")
 		if e != nil {
 			return nil, e
 		}
-		foundation = append(foundation, []byte("\n\n"+opening)...)
+		phaseDirective = opening
 	}
 	view, err := cycleExpressionView(state)
 	if err != nil {
@@ -264,17 +266,24 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		}
 		packet["本次明确违规修正"] = repair
 	}
-	dynamic, _ := json.Marshal(packet)
+	// 讲解回归母版同样是环节特有指令，并入 user 保持 system 前缀稳定。
+	var transitionDirective string
 	if len(state.Accepted) > 0 && state.Accepted[len(state.Accepted)-1].Task.ProductMode == "lecture" && !state.Accepted[len(state.Accepted)-1].LectureSkipped {
 		last := state.Accepted[len(state.Accepted)-1]
 		packet["刚结束的讲解"] = map[string]any{"主题": last.Task.SellingPoint, "结尾": tailText(cycleVoiceText(last.Selected), 80)}
-		dynamic, _ = json.Marshal(packet)
 		transition, _, e := loadReplaceablePromptAsset("ANCHOR_LECTURE_RETURN_PROMPT_PATH", "configs/prompts/anchor-style/lecture-mainline-transition.md", "讲解回归母版")
 		if e != nil {
 			return nil, e
 		}
-		foundation = append(foundation, []byte("\n\n"+transition)...)
+		transitionDirective = transition
 	}
+	if phaseDirective != "" || transitionDirective != "" {
+		directive := strings.TrimSpace(strings.Join([]string{phaseDirective, transitionDirective}, "\n\n"))
+		if directive != "" {
+			packet["环节指令（仅本段生效，不作为商品事实）"] = directive
+		}
+	}
+	dynamic, _ := json.Marshal(packet)
 	return []agentgateway.Message{{Role: "system", Content: string(foundation) + "\n\n" + string(fixed)}, {Role: "user", Content: string(dynamic)}}, nil
 }
 func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State) (agentgateway.Response, []agentgateway.Message, error) {

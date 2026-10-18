@@ -53,21 +53,27 @@ func GenerationP0View(md, scope string) any {
 	if scope == "" {
 		scope = p.Data.Execution.DefaultScope
 	}
+	// 精简输出：只保留生成模型真正需要的字段。
+	// 适用范围/适用条件（all/always 等）与匹配表达（正则）是程序扫描用的元信息，
+	// 排除表述多为空，模型读它们没有意义，反而撑大每条请求的输入 token。
+	// 相关表述词表必须保留——它是模型主动回避极限词的依据，砍掉会拉高退回率。
 	rules := []map[string]any{}
 	for _, r := range p.Data.Rules {
 		if scope != "*" && r.Scope != "all" && r.Scope != scope {
 			continue
 		}
-		rules = append(rules, map[string]any{"类别": r.Category, "适用范围": r.Scope, "适用条件": r.Condition, "处理方式": r.ReviewMode, "相关表述": r.Terms, "匹配表达": r.Patterns, "排除表述": r.ExcludedTerms, "所需依据": r.RequiredBasis, "规则说明": r.Note})
+		entry := map[string]any{"类别": r.Category, "处理方式": r.ReviewMode, "相关表述": r.Terms, "规则说明": r.Note}
+		if len(r.RequiredBasis) > 0 {
+			entry["所需依据"] = r.RequiredBasis
+		}
+		rules = append(rules, entry)
 	}
 	// 说明：给生成模型看的规则总则。关键在于把「处理方式」的两种取值讲成
 	// 「默认禁用」而非「可以语境豁免」——否则模型会把 semantic 当成放行口令，
 	// 反复产出「绝对/最/第一」等极限词，再被程序扫描退回，形成生成↔审核死循环。
-	// hard 与 semantic 对生成模型而言都是「不要用」：hard 任何语境都不准出现；
-	// semantic 只有在事实包明确提供该绝对化表述的依据时才能用，否则同样回避。
 	return map[string]any{
 		"适用规则": rules,
-		"说明":   "以下是本次口播禁止出现的表述清单。处理方式为 hard 的：任何语境、任何句子都不得出现，也无任何例外。处理方式为 semantic 的：默认同样不得出现，只有当本次「可说」事实中明确写有该表述的原话或依据时才可原样引用，否则一律改用可核实、不绝对的说法；不要自行判断“这个语境下不算极限词”而照用。凡命中「极限词与绝对化宣传」「虚假与夸大功效」等类别（含“绝对”“最”“第一”“顶级”“100%”“纯天然”等），即使处理方式为 semantic，生成时也优先回避、改用事实里有的可核实表述。",
+		"说明":   "以下是本次口播禁止出现的表述清单。处理方式为 hard 的：任何语境、任何句子都不得出现。处理方式为 semantic 的：默认同样不得出现，只有当本次「可说」事实中明确写有该表述的原话或依据时才可原样引用，否则改用可核实、不绝对的说法；不要自行判断“这个语境下不算极限词”而照用。",
 	}
 }
 
