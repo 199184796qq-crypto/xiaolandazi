@@ -90,12 +90,12 @@ async function change(event: Event) {
 
 <style scoped>
 .fact-type-select { display:grid;gap:6px;min-width:0;font-size:16px;line-height:1.5; }
-.fact-type-control { position:relative;min-width:0;background:#fff;border-radius:9px; }
-.fact-type-select .fact-type-selected { display:block;box-sizing:border-box;min-height:42px;padding:8px 31px 8px 11px;color:#111;font-size:16px;line-height:24px;white-space:normal;overflow-wrap:anywhere; }
-.fact-type-control select { position:absolute;inset:0;width:100%;height:100%;box-sizing:border-box;appearance:none;border:1px solid #ccd5e5;border-radius:9px;padding:7px 30px 7px 9px;background:transparent;color:transparent;font:inherit;font-size:16px;cursor:pointer; }
+.fact-type-control { position:relative;min-width:0;height:42px;background:var(--formal-scope-bg,#eef3ff);border-radius:13px; }
+.fact-type-select .fact-type-selected { display:block;box-sizing:border-box;height:42px;padding:9px 32px 9px 12px;color:#111;font-size:16px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.fact-type-control select { position:absolute;inset:0;width:100%;height:100%;box-sizing:border-box;appearance:none;border:1px solid transparent;border-radius:inherit;padding:7px 30px 7px 9px;background:transparent;color:transparent;font:inherit;font-size:16px;cursor:pointer; }
 .fact-type-control select option,.fact-type-control select optgroup { background:#fff;color:#111;font-size:16px; }
 .fact-type-control select:disabled { cursor:default; }
-.fact-type-caret { position:absolute;right:13px;top:18px;width:7px;height:7px;border-right:2px solid #34405a;border-bottom:2px solid #34405a;transform:rotate(45deg);pointer-events:none; }
+.fact-type-caret { position:absolute;right:14px;top:50%;width:7px;height:7px;border-right:2px solid var(--formal-fact-accent,#4879fb);border-bottom:2px solid var(--formal-fact-accent,#4879fb);transform:translateY(-65%) rotate(45deg);pointer-events:none; }
 .fact-type-select select:focus-visible { outline:2px solid #6557ff;outline-offset:2px; }
 .fact-type-select span { color:#526080;overflow-wrap:anywhere;font-size:16px; }
 .fact-type-saving { white-space:nowrap; }
