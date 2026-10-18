@@ -141,6 +141,21 @@ func (s *State) CurrentFissionSide() string {
 	if len(pool) == 0 {
 		return ""
 	}
+	// 只从「当前任务事实有专属支撑」的侧面里轮换。侧面选择此前与事实完全解耦，
+	// 会轮换到事实撑不起的侧面（如特色菜角度轮换到「利益算账」），把主体事实
+	// 全滤掉、只剩价格。先按专属事实筛出支撑集，保证侧面与事实匹配。
+	supported := make([]string, 0, len(pool))
+	for _, side := range pool {
+		if s.SideHasDedicatedFact(side) {
+			supported = append(supported, side)
+		}
+	}
+	if len(supported) == 0 {
+		// 没有任何侧面有专属事实支撑：返回空，HookFactsForSide 会回退全量事实，
+		// 让模型拿到完整素材自己组织，而不是硬套一个侧面把事实筛没。
+		return ""
+	}
+	pool = supported
 	start := s.Used[task.Key].Count % len(pool)
 	if s.RunID != "" {
 		start = (start + int(schedulerSeed(s.RunID, task.Key)*float64(len(pool)))) % len(pool)

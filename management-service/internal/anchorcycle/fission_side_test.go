@@ -7,10 +7,19 @@ import (
 
 // 切入侧面按「卖点×角度」任务自身的使用次数轮换：同一任务连续讲，侧面逐次轮换，
 // 第 8 次回到首个侧面（供声音缓存复用）。这是"对观众多样、对服务器省 TTS"的关键。
+// 现在侧面只从「有专属事实支撑」的侧面里轮换，测试需给 State 配齐全分类事实。
 func TestCurrentFissionSideRotation(t *testing.T) {
 	s := &State{Config: Config{Rolling: true}}
 	s.Queue = []Task{{Key: "口感×肉紧", SellingPoint: "口感", Angle: "肉紧"}}
 	s.TaskIndex = 0
+	// 给每个侧面都配一条专属事实，保证 7 个侧面全部有支撑，轮换机制得以完整验证。
+	s.Facts = "" +
+		"- [product/规格] 规格事实\n" + // 过程细节/品质来源
+		"- [usage/吃法] 吃法事实\n" + // 使用方式
+		"- [price/价格] 价格事实\n" + // 利益算账/对比参照
+		"- [flavor/口味] 口味事实\n" + // 对比参照/使用场景
+		"- [after_sales/售后] 售后事实\n" + // 人群痛点
+		"- [origin/产地] 产地事实\n" // 品质来源
 	for i := 0; i < len(fissionAngleSides); i++ {
 		s.Used = map[string]Use{"口感×肉紧": {Count: i}}
 		if got := s.CurrentFissionSide(); got != fissionAngleSides[i] {
@@ -29,6 +38,13 @@ func TestCurrentFissionSideIndependentPerTask(t *testing.T) {
 	s := &State{Config: Config{Rolling: true}}
 	s.Queue = []Task{{Key: "口感×肉紧"}, {Key: "算账×实惠"}}
 	s.Used = map[string]Use{"口感×肉紧": {Count: 2}, "算账×实惠": {Count: 0}}
+	s.Facts = "" +
+		"- [product/规格] 规格\n" +
+		"- [usage/吃法] 吃法\n" +
+		"- [price/价格] 价格\n" +
+		"- [flavor/口味] 口味\n" +
+		"- [after_sales/售后] 售后\n" +
+		"- [origin/产地] 产地\n"
 	s.TaskIndex = 0
 	if got := s.CurrentFissionSide(); got != fissionAngleSides[2] {
 		t.Fatalf("口感(Count=2)应得侧面 %q，got %q", fissionAngleSides[2], got)
@@ -152,6 +168,8 @@ func TestHookFactsForSideFiltersBySide(t *testing.T) {
 	s := &State{Config: Config{Rolling: true}}
 	s.Queue = []Task{{Key: "K", SellingPoint: "S", Angle: "A"}}
 	s.TaskIndex = 0
+	// 只配「利益算账」一个侧面，直接验证它筛出 price 专属 + other 通用，滤掉 craft。
+	s.FissionSides = []string{"利益算账：划不划算"}
 	s.Facts = "- [price/线下门店价格] 线下门店价格为95.6元。\n" +
 		"- [craft/工艺] 老卤汤慢炖4小时。\n" +
 		"- [other/适用场景] 当零食直接吃和搭配主食当下酒菜都适合。"
@@ -164,8 +182,6 @@ func TestHookFactsForSideFiltersBySide(t *testing.T) {
 		return m
 	}
 
-	// 侧面 3 = 利益算账：price 匹配，craft 不匹配，other 通用兜底
-	s.Used = map[string]Use{"K": {Count: 3}}
 	got := countData()
 	if !got["price"] || !got["other"] {
 		t.Fatalf("利益算账侧面应含 price+other，got %v", got)
@@ -173,12 +189,42 @@ func TestHookFactsForSideFiltersBySide(t *testing.T) {
 	if got["craft"] {
 		t.Fatalf("利益算账侧面不应含 craft，got %v", got)
 	}
+}
 
-	// 侧面 0 = 使用场景：price/craft 都不匹配，只有 other 通用兜底
+// 核心回归：调度选「特色菜」角度（只有 flavor/craft/origin 事实），不能轮换到
+// 「利益算账」把主体事实滤光只剩价格。必须回退全量，让模型拿到完整素材。
+func TestCurrentFissionSideFallsBackWhenNoDedicatedFact(t *testing.T) {
+	s := &State{Config: Config{Rolling: true}}
+	s.Queue = []Task{{Key: "特色菜×招牌", SellingPoint: "特色菜", Angle: "招牌"}}
+	s.TaskIndex = 0
+	// 只有 flavor/craft/origin，没有任何 price/trade 事实。
+	s.Facts = "- [flavor/口味] 麻辣五香。\n- [craft/工艺] 老卤慢炖。\n- [origin/产地] 川渝。"
+	s.Used = map[string]Use{"特色菜×招牌": {Count: 2}} // 轮换到「利益算账」的位置
+	side := s.CurrentFissionSide()
+	// 利益算账无 price/trade 支撑，不应被选中；应落在有支撑的侧面或回退空。
+	if side != "" && FissionSideName(side) == "利益算账" {
+		t.Fatalf("特色菜角度不应选到利益算账，got %q", side)
+	}
+	// 无论如何，最终喂给生成的事实不能只剩价格——这里根本没有价格事实，也不能是空。
+	got := s.HookFactsForSide()
+	if len(got) == 0 {
+		t.Fatal("无价格事实时筛出空素材，应回退全量")
+	}
+}
+
+// 只有通用事实（无任何分类专属事实）时，任何侧面都无专属支撑，应返回空串回退全量，
+// 而不是硬套一个侧面。
+func TestCurrentFissionSideNoSideWhenOnlyGenericFacts(t *testing.T) {
+	s := &State{Config: Config{Rolling: true}}
+	s.Queue = []Task{{Key: "K"}}
+	s.TaskIndex = 0
+	s.Facts = "- [other/通用] 通用信息。\n- 无标记事实。"
 	s.Used = map[string]Use{"K": {Count: 0}}
-	got = countData()
-	if !got["other"] || got["price"] || got["craft"] {
-		t.Fatalf("使用场景侧面应只含 other，got %v", got)
+	if got := s.CurrentFissionSide(); got != "" {
+		t.Fatalf("只有通用事实时不应选侧面，got %q", got)
+	}
+	if got := s.HookFactsForSide(); len(got) != 2 {
+		t.Fatalf("应回退全量事实，got %d 条", len(got))
 	}
 }
 

@@ -121,6 +121,31 @@ func stripFactScopePrefix(header string) (string, bool) {
 	return rest, ok
 }
 
+// SideHasDedicatedFact 判断某侧面在当前任务事实里是否有「专属事实」支撑。
+// 专属事实 = category 能映射到该侧面且 category 非通用（非空、不在表里也不算专属）。
+// 通用事实（other/未知分类）任何侧面都能引用，不能作为「某侧面有支撑」的依据，
+// 否则会退化成「所有侧面都有支撑」，失去筛事实的意义。
+func (s *State) SideHasDedicatedFact(side string) bool {
+	sideName := FissionSideName(side)
+	mapping := s.FactSideMap
+	if len(mapping) == 0 {
+		mapping = factCategorySides
+	}
+	for _, f := range s.HookFacts() {
+		category := strings.ToLower(strings.TrimSpace(CategoryFromFactText(f.Data)))
+		sides, ok := mapping[category]
+		if !ok || len(sides) == 0 {
+			continue // 通用事实，不作为专属支撑
+		}
+		for _, sn := range sides {
+			if sn == sideName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HookFactsForSide 返回「当前切入侧面」下的专属事实（含通用事实）。
 //
 // 这是「侧面筛事实」的落地：每条事实从 Text 提取 category，category 经映射表
