@@ -251,6 +251,7 @@ type State struct {
 	ScheduledAngleUses           map[string]int                 `json:"scheduled_angle_uses,omitempty"`
 	SideUses                     map[string]map[string]int      `json:"side_uses,omitempty"`
 	FactSideMap                  map[string][]string            `json:"fact_side_map,omitempty"`
+	FactFamilyMap                map[string]string              `json:"fact_family_map,omitempty"`
 	BaselineJSON                 string                         `json:"baseline_json"`
 	Attempts                     []Candidate                    `json:"attempts"`
 	Accepted                     []Segment                      `json:"accepted"`

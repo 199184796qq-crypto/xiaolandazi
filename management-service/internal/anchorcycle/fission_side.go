@@ -121,8 +121,40 @@ func stripFactScopePrefix(header string) (string, bool) {
 	return rest, ok
 }
 
+// factFamilyBranding 是「品牌背书」类公共资料（identity_location 族：品牌/资质/产地/门店/历史），
+// 只进公共段、不进商品段。factFamilyTransactional 是「交易/履约条件」类（trade/fulfillment 族），
+// 商品段仅在结论依赖时按需引用。其余 family 为商品本体或其他，不受公共段/商品段区分约束。
+const (
+	factFamilyBranding       = "identity_location"
+	factFamilyTransactional  = "trade"
+	factFamilyTransactional2 = "fulfillment"
+)
+
+// factFamilyOf 从事实文本反查 family：先取 category，再查 State.FactFamilyMap（category→family，
+// 直播启动时由行业分类目录注入）。查不到返回空串（视为商品本体/其他，不受公共/商品区分约束）。
+func (s *State) factFamilyOf(text string) string {
+	category := strings.ToLower(strings.TrimSpace(CategoryFromFactText(text)))
+	if category == "" || s.FactFamilyMap == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(s.FactFamilyMap[category]))
+}
+
+// isBrandingFact 判断事实是否「品牌背书」类公共资料（B 类），商品段应挡掉。
+func (s *State) isBrandingFact(text string) bool {
+	return s.factFamilyOf(text) == factFamilyBranding
+}
+
+// isTransactionalFact 判断事实是否「交易/履约条件」类公共资料（A 类），商品段按需引用。
+func (s *State) isTransactionalFact(text string) bool {
+	switch s.factFamilyOf(text) {
+	case factFamilyTransactional, factFamilyTransactional2:
+		return true
+	}
+	return false
+}
+
 // SideHasDedicatedFact 判断某侧面在当前任务事实里是否有「专属事实」支撑。
-// 专属事实 = category 能映射到该侧面且 category 非通用（非空、不在表里也不算专属）。
 // 通用事实（other/未知分类）任何侧面都能引用，不能作为「某侧面有支撑」的依据，
 // 否则会退化成「所有侧面都有支撑」，失去筛事实的意义。
 func (s *State) SideHasDedicatedFact(side string) bool {

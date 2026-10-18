@@ -116,3 +116,18 @@ func packFactSideMap(sides model.IndustrySidesConfig) map[string][]string {
 	}
 	return out
 }
+
+// packFactFamilyMap 把行业事实分类枚举转成 分类 value → family 映射，
+// 供 State.FactFamilyMap 使用：直播时据此区分公共资料是「品牌背书」（只进公共段）
+// 还是「交易/履约条件」（商品段按需引用）。
+func packFactFamilyMap(categories []model.LiveFactCategory) map[string]string {
+	out := make(map[string]string, len(categories))
+	for _, c := range categories {
+		value := strings.ToLower(strings.TrimSpace(c.Value))
+		family := strings.ToLower(strings.TrimSpace(c.Family))
+		if value != "" && family != "" {
+			out[value] = family
+		}
+	}
+	return out
+}

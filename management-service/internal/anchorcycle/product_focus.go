@@ -362,9 +362,15 @@ func (s *State) ProductFacts(t Task) string {
 				}
 			}
 		}
-		if allowed {
-			lines = append(lines, fact.Text)
+		if !allowed {
+			continue
 		}
+		// 公共事实在商品段只保留「交易/履约条件」（A 类，结论依赖时按需引用，由模型把关），
+		// 挡掉「品牌背书」（B 类：品牌/资质/产地/门店/历史）——这些只进公共段，不再逐段混进商品段。
+		if fact.Shared && t.ProductMode != "common" && s.isBrandingFact(fact.Text) {
+			continue
+		}
+		lines = append(lines, fact.Text)
 	}
 	return strings.Join(lines, "\n")
 }

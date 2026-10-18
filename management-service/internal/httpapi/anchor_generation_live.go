@@ -157,6 +157,7 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	if pack, packErr := s.loadIndustryPackForPlan(ctx, tenant, version.PlanID); packErr == nil && pack != nil {
 		state.FissionSides = packFissionSides(pack.Sides)
 		state.FactSideMap = packFactSideMap(pack.Sides)
+		state.FactFamilyMap = packFactFamilyMap(pack.FactCategories)
 	}
 	state.ContentStrategy = s.loadContentStrategy(ctx, tenant, version.PlanID, state.Facts)
 	state.DerivedSafetyAssetID = safety.ID
