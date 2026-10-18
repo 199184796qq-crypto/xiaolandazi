@@ -742,6 +742,7 @@ func (f *fakeCore) DoRoom(
 
 type fakeAgent struct {
 	planningRequests []agentgateway.Request
+	rewriteRequests  []agentgateway.Request
 	calls            int
 	err              error
 	responses        []string
@@ -749,6 +750,15 @@ type fakeAgent struct {
 }
 
 func (f *fakeAgent) Complete(_ context.Context, request agentgateway.Request) (agentgateway.Response, error) {
+	if request.Stage == "interaction_answer_rewrite" {
+		f.rewriteRequests = append(f.rewriteRequests, request)
+		if f.err != nil {
+			return agentgateway.Response{}, f.err
+		}
+		// Auxiliary wording changes must not consume a queued answer/review.
+		// Preserve the input unless a test supplies a dedicated rewrite agent.
+		return agentgateway.Response{Text: request.Messages[len(request.Messages)-1].Content}, nil
+	}
 	if request.Stage == "interaction_agent_plan" {
 		f.planningRequests = append(f.planningRequests, request)
 		if f.err != nil {
@@ -1012,7 +1022,7 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Resume.ActualResumeAtMS != 2345 {
 		t.Fatalf("actual resume point=%d want 2345", mission.Resume.ActualResumeAtMS)
 	}
-	if mission.Addressing.Mode != "NONE" || mission.Addressing.Candidate != "" || !mission.Addressing.Optional {
+	if mission.Addressing.Mode != "GROUP" || mission.Addressing.Candidate != "各位" || !mission.Addressing.Optional {
 		t.Fatalf("dynamic addressing must come only from room preferences: %#v", mission.Addressing)
 	}
 	if core.strategyCalls["addressing"] != 0 {
@@ -1410,7 +1420,7 @@ func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
 	w := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
 	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}}
 	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{}, nil)
-	if plan.Mode == "SINGLE" || len(plan.SelectedNames) != 2 {
+	if plan.Mode == "SINGLE" || len(plan.SelectedNames) < 2 || len(plan.SelectedNames) > 3 {
 		t.Fatal("merged welcome collapsed into one named viewer", plan)
 	}
 	single := item

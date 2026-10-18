@@ -38,6 +38,9 @@ func newFAQTestWorker() (*Worker, *faqTestStore, *fakeCore, *fakeAgent, *fakeTTS
 	store := &faqTestStore{fakeStore: readyVoiceStore(), policy: model.LiveContentPolicyRecord{Policy: model.DefaultLiveContentPolicy()}}
 	store.policy.Policy.FAQVariantCount = 1
 	store.policy.Policy.MinRepeatSeconds = 0
+	// Cache lifecycle tests keep presentation inputs fixed. Rotation itself
+	// has a separate regression; changing a greeting is a new request identity.
+	store.addressingPrefs = model.RoomAddressingPreferences{NamingPreference: "natural", PreferredTerms: []string{"朋友"}}
 	core, agent, tts := &fakeCore{}, &fakeAgent{}, &fakeTTS{}
 	worker := New(store, core, agent, tts)
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
@@ -47,8 +50,11 @@ func newFAQTestWorker() (*Worker, *faqTestStore, *fakeCore, *fakeAgent, *fakeTTS
 
 func executeFAQ(t *testing.T, worker *Worker, core *fakeCore, roomID int64, question string) {
 	t.Helper()
+	worker.addressMu.Lock()
+	delete(worker.recentGreeting, roomID)
+	worker.addressMu.Unlock()
 	claim := claimResponse{Claimed: true, Item: &decisionItem{
-		ID: fmt.Sprintf("faq-%d", core.dispatches+1), Topic: "FAMILY:价格费用", Title: "商品咨询", MissionKind: "reply_chat",
+		ID: fmt.Sprintf("faq-fixture-%d", roomID), Topic: "FAMILY:价格费用", Title: "商品咨询", MissionKind: "reply_chat",
 		SampleQuestions: []string{question},
 	}}
 	data, err := json.Marshal(claim)
@@ -192,6 +198,10 @@ func TestFAQProcessRoomNeverDispatchesDuplicateDuringCooldown(t *testing.T) {
 	worker, store, core, agent, tts, _ := newFAQTestWorker()
 	store.policy.Policy.MinRepeatSeconds = 1200
 	executeFAQ(t, worker, core, 11, "多少钱")
+	// Keep the same presentation contract for this deliberate duplicate.
+	worker.addressMu.Lock()
+	delete(worker.recentGreeting, int64(11))
+	worker.addressMu.Unlock()
 	err := worker.processRoom(context.Background(), model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"})
 	if err == nil || !strings.Contains(err.Error(), "冷却期") {
 		t.Fatalf("identical fresh model output must be rejected during cooldown: %v", err)

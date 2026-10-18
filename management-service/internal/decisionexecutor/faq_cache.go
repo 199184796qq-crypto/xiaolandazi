@@ -301,6 +301,9 @@ func (w *Worker) rememberFAQText(ticket *faqCacheTicket, text string) error {
 }
 
 func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
+	// Cache variants store the spoken body; the protective TTS prefix belongs
+	// only to the synthesis request and its audio fingerprint.
+	spokenText := request.Text
 	request.Text = prefixedInteractionText(request.Text)
 	// 互动话术递交给 TTS 的实际文本（含 **** 前缀），打印前 80 字用于排查 cosyvoice 对前缀/开头的处理。
 	if runes := []rune(request.Text); len(runes) > 0 {
@@ -315,7 +318,7 @@ func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, req
 	if ticket != nil {
 		w.faqCache.mu.Lock()
 		for _, variant := range w.faqCache.buckets[ticket.Key] {
-			if variant.Text == request.Text && variant.AudioKey == key && w.now().Before(variant.AudioUntil) && w.now().Before(variant.ExpiresAt) {
+			if variant.Text == spokenText && variant.AudioKey == key && w.now().Before(variant.AudioUntil) && w.now().Before(variant.ExpiresAt) {
 				w.faqCache.mu.Unlock()
 				return ttsgateway.SynthesizeResponse{AudioURL: variant.AudioURL, Provider: request.Provider, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}, nil
 			}
@@ -343,7 +346,7 @@ func (w *Worker) synthesizeFAQAudio(ctx context.Context, item *decisionItem, req
 	defer w.faqCache.mu.Unlock()
 	variants := w.faqCache.buckets[ticket.Key]
 	for i := range variants {
-		if variants[i].Text == request.Text {
+		if variants[i].Text == spokenText {
 			variants[i].AudioKey, variants[i].AudioURL, variants[i].AudioUntil = key, response.AudioURL, until
 			break
 		}

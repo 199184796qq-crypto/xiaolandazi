@@ -192,10 +192,11 @@ func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *test
 	if tts.calls == 0 || !strings.Contains(tts.last.Text, "小陈老乡") || !strings.Contains(tts.last.Text, "你们") {
 		t.Fatalf("welcome or group coverage lost: %#v", tts)
 	}
-	if strings.ContainsAny(tts.last.Text, "*＊") || strings.Contains(tts.last.Text, "隐藏") {
+	spoken := strings.TrimPrefix(tts.last.Text, "****")
+	if strings.ContainsAny(spoken, "*＊") || strings.Contains(spoken, "隐藏") {
 		t.Fatalf("masked nickname reached TTS: %q", tts.last.Text)
 	}
-	if core.dispatch["reply_text"] != tts.last.Text {
+	if core.dispatch["reply_text"] != spoken {
 		t.Fatalf("subtitle and TTS body differ: %#v / %q", core.dispatch, tts.last.Text)
 	}
 	for _, request := range agent.requests {
