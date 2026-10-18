@@ -73,7 +73,7 @@
   },
   {
     "path": "compliance/audit-four-layer.md",
-    "sha256": "d33869e98d115dab70387deea709ed2fd4c2b3065849bf3de9b45e96fd117919"
+    "sha256": "e2e93ab6de8c1be44f33dc5c878fb174a35e4ee1e0dfde6bd52060d71d47f8a6"
   },
   {
     "path": "compliance/derived-assets-safe-rewrite.md",
