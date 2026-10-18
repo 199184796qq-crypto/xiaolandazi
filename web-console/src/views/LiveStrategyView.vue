@@ -607,7 +607,7 @@ async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
     scriptNotice.value = `已按建议改为「${displayName}」：${r.reason || ''}`
     void contentPools.refresh(true)
     // 可能新增了自定义分类：刷新分类下拉，让新类型立即可选。
-    void loadFactCategories({ planId: plan, suppressErrorDialog: true })
+    void loadFactCategories({ planId: plan, tenantId, suppressErrorDialog: true })
   } catch (e) {
     scriptNotice.value = e instanceof Error ? e.message : '建议分类失败，请重试'
   } finally {
@@ -6284,7 +6284,7 @@ function handlePlanModuleUpdated(event: Event) {
     return
   }
   if (detail.module === 'knowledge') {
-    void Promise.all([loadFactCategories({ planId: currentRoomPlanId.value }), refreshFormalFacts()])
+    void Promise.all([loadFactCategories({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }), refreshFormalFacts()])
     return
   }
   if (detail.module === 'benefits') {
@@ -6332,7 +6332,7 @@ watch(
 )
 
 watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, activeRoom.value?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
-  void loadFactCategories({ planId: currentRoomPlanId.value })
+  void loadFactCategories({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id })
 }, { immediate: true, flush: 'sync' })
 
 watch(currentRoomPlanId, () => {
@@ -6950,7 +6950,7 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeMode === 'knowledge'" class="strategy-v2-workspace">
           <section class="strategy-formal-facts facts-panel-redesign">
-            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories({ planId: currentRoomPlanId })">重新加载</button></div>
+            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories({ planId: currentRoomPlanId, tenantId: activeRoom?.tenant_id })">重新加载</button></div>
             <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
             <div class="formal-facts-hero">
             <header class="strategy-formal-facts-head">

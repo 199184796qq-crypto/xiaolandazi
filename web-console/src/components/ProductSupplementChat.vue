@@ -79,7 +79,7 @@ async function chooseExample(text: string) {
 }
 
 watch(() => [props.planId, props.tenantId, props.roomId, session.bootstrap?.actor?.user_id], () => {
-  void loadFactCategories({ planId: props.planId, suppressErrorDialog: true })
+  void loadFactCategories({ planId: props.planId, tenantId: props.tenantId, suppressErrorDialog: true })
 }, { immediate: true })
 
 // The checklist and conversation are independent, always-visible panels.

@@ -16,7 +16,7 @@ page.on('pageerror',error=>errors.push(error.message))
 await page.route('**/api/v1/**',async route=>{
   const url = new URL(route.request().url())
   calls.push({ method: route.request().method(), path: url.pathname, query: url.search })
-  const responseCatalog = plans.get(url.searchParams.get('plan_id')) || catalog
+  const responseCatalog = plans.get(url.searchParams.get('plan_id')+':'+url.searchParams.get('tenant_id')) || catalog
   if (url.searchParams.get('plan_id') === heldPlan) await new Promise(resolve => { releaseHeld = resolve })
   assert.equal(new URL(route.request().url()).pathname,'/api/v1/live-agent-fact-categories')
   await route.fulfill(fail?{status:500,json:{error:'模拟分类配置损坏'}}:{json:responseCatalog})
@@ -43,26 +43,32 @@ try {
   fail=false;await page.evaluate(()=>window.fixture.load())
   assert.equal(await page.evaluate(()=>window.fixture.state.error),'')
   const restaurant = {schema_version:1,version:'restaurant-v1',categories:Array.from({length:17},(_,i)=>({value:'restaurant_'+i,label:i===0?'套餐内容':'餐饮分类'+i,description:'行业事实分类',group:'餐饮到店',family:'product'}))}
-  plans.set('5', restaurant)
-  plans.set('4', {...restaurant,version:'ecommerce-v1',categories:[{...restaurant.categories[0],value:'material',label:'材质'}]})
-  await page.evaluate(()=>window.fixture.load({planId:5}))
-  assert.equal(calls.at(-1).query,'?plan_id=5')
+  plans.set('5:14', restaurant)
+  plans.set('4:14', {...restaurant,version:'ecommerce-v1',categories:[{...restaurant.categories[0],value:'material',label:'材质'}]})
+  await page.evaluate(()=>window.fixture.load({planId:5,tenantId:14}))
+  assert.equal(calls.at(-1).query,'?plan_id=5&tenant_id=14')
   assert.equal(await page.evaluate(()=>window.fixture.state.items.length),17)
   assert.equal(await page.evaluate(()=>window.fixture.state.items[0].label),'套餐内容')
   heldPlan='4'
-  await page.evaluate(()=>{window.fixture.oldLoad=window.fixture.load({planId:4});window.fixture.sameLoad=window.fixture.load({planId:4})})
+  await page.evaluate(()=>{window.fixture.oldLoad=window.fixture.load({planId:4,tenantId:14});window.fixture.sameLoad=window.fixture.load({planId:4,tenantId:14})})
   await page.waitForFunction(()=>window.fixture.state.loading && window.fixture.state.items.length===0)
   while(!releaseHeld) await new Promise(resolve=>setTimeout(resolve,10))
   assert.equal(await page.evaluate(()=>window.fixture.oldLoad===window.fixture.sameLoad),true,'same plan shares its pending request')
-  await page.evaluate(()=>window.fixture.load({planId:5}))
+  await page.evaluate(()=>window.fixture.load({planId:5,tenantId:14}))
   releaseHeld();heldPlan=''
   await page.evaluate(()=>window.fixture.oldLoad)
   assert.equal(await page.evaluate(()=>window.fixture.state.version),'restaurant-v1','late plan 4 response cannot replace plan 5 catalog')
+  await page.evaluate(()=>window.fixture.load({planId:5,tenantId:99}))
+  assert.equal(calls.at(-1).query,'?plan_id=5&tenant_id=99')
+  assert.equal(await page.evaluate(()=>window.fixture.state.version),catalog.version,'same plan in another tenant cannot reuse the previous tenant catalog')
+  await page.evaluate(async()=>{const {applySession}=await import('/src/session.ts');applySession({actor:{user_id:14,tenant_id:14,role:'customer',username:'test'},tenants:[],environment:'test'});await window.fixture.load({planId:5})})
+  assert.equal(calls.at(-1).query,'?plan_id=5&tenant_id=14','customer tenant can be derived from authenticated session')
+  assert.equal(await page.evaluate(()=>window.fixture.state.items.length),17)
   for(const planId of [null,0,-1,1.5,Number.MAX_SAFE_INTEGER+1]) {
     await page.evaluate(planId=>window.fixture.load({planId}),planId)
     assert.equal(calls.at(-1).query,'','no invalid plan_id sent')
   }
   assert.ok(calls.every(call=>call.method==='GET'))
   assert.deepEqual(errors,[])
-  console.log('PASS: server JSON -> 42 grouped choices; family colors; hot-added category without build; historical values retained; visible failure/retry; read-only requests; plan_id=5 gets 17 restaurant categories; plan-scoped pending deduplication and stale-response isolation; absent/invalid plan fallback')
+  console.log('PASS: server JSON -> 42 grouped choices; family colors; hot-added category without build; historical values retained; visible failure/retry; read-only requests; plan_id=5 and tenant_id=14 get 17 restaurant categories; tenant-scoped isolation and session fallback; plan-scoped pending deduplication and stale-response isolation; absent/invalid plan fallback')
 } finally {await browser.close();await server.close()}

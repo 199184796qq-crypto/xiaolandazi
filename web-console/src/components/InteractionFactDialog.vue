@@ -22,7 +22,7 @@ let disposed = false
 let previousFocus: HTMLElement | null = null
 
 async function refreshCategories() {
-  await loadFactCategories({ planId: scope.planId, suppressErrorDialog: true })
+  await loadFactCategories({ planId: scope.planId, tenantId: scope.tenantId, suppressErrorDialog: true })
   if (!disposed && !factCategoryState.items.some(item => item.value === category.value)) category.value = factCategoryState.items[0]?.value || 'other'
 }
 

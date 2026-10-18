@@ -3099,7 +3099,7 @@ async function prepareLiveFactIntentAction(
   sourceText: string,
   result: LiveStrategyIntentResponse,
 ) {
-  await loadFactCategories({ planId })
+  await loadFactCategories({ planId, tenantId: liveStrategyTenantId.value || actor.value?.tenant_id })
   if (factCategoryState.error) return { text: '分类读取失败，未生成写入动作：' + factCategoryState.error }
   const newCategory = result.changes?.new_fact_category
   const requestedCategory = intentString(result.target?.fact_category)
@@ -6146,7 +6146,7 @@ async function executeAction(message: ChatMessage) {
       )
       const selectedPlanId = Number(data.selected_plan_id || 0)
       if (response.state === 'succeeded') {
-        if (data.category_changed || action.type === 'add_live_fact_category') await loadFactCategories({ planId: liveStrategyPlanId.value || responsePlanId })
+        if (data.category_changed || action.type === 'add_live_fact_category') await loadFactCategories({ planId: liveStrategyPlanId.value || responsePlanId, tenantId: liveStrategyTenantId.value || actor.value?.tenant_id })
         if (selectedPlanId > 0) {
           liveStrategyPlanId.value = selectedPlanId
           window.localStorage.setItem('system-agent-live-plan-id', String(selectedPlanId))
