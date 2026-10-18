@@ -73,6 +73,7 @@ func renderAnchorExpressionView(baselineJSON string) (any, error) {
 
 // fourLayerNotMentionText 引用共享包的四层「不提」统一文案。
 const fourLayerNotMentionText = speechbase.FourLayerNotMentionText
+
 func textControlLeak(text string) bool {
 	for _, marker := range []string{"{{", "}}", "本次任务：", "表达展开建议：", "开头模式：", "后续表达加强建议：", "\"本次任务\":", "\"reply\":", "\"needs_review\":", "## 本场有效事实", "## 主播表达标尺"} {
 		if strings.Contains(text, marker) {
@@ -128,7 +129,8 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	}
 	// The reusable expression view is separate from this task's material.
 	// 四块结构：必说（本段任务，见 packet）/ 可说（本场有效事实）/ 不提（未知项）/ 改写（禁说→安全改写）。
-	facts, expressionGuidance := generationMaterialViews(state.HookFactsForSide())
+	sideFacts := state.HookFactsForSide()
+	facts, expressionGuidance := generationMaterialViews(sideFacts)
 	// 稳定前缀放 system：母版 + 主播标尺 + 有效P0 + 不提 + 长期纠正规则，整场不变，命中上下文缓存。
 	// 随侧面/任务变化的内容（可说事实、改写约束、商品边界）放 user（见下方 variable），
 	// 避免 system 每段随侧面变导致前缀缓存失效。
@@ -239,7 +241,13 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if state.PriceHook != nil {
 		packet["上一段待解释的问题"] = state.PriceHook.Promise
 	}
-	if strategy, err := state.ContentStrategy.Render("主线", state.GenerationFacts()); err != nil {
+	// Strategy rows must use the same side-local material as 可说. Reintroducing
+	// the full task facts here bypasses the side filter through 完整关联事实.
+	strategyFacts := make([]string, 0, len(sideFacts))
+	for _, fact := range sideFacts {
+		strategyFacts = append(strategyFacts, fact.Data)
+	}
+	if strategy, err := state.ContentStrategy.Render("主线", strings.Join(strategyFacts, "\n")); err != nil {
 		return nil, err
 	} else if strategy != "" && state.CurrentAnglePlan() == nil && !hookMode {
 		packet["内容方向与采用条件"] = strategy

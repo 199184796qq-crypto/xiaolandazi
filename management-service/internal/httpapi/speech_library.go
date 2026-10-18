@@ -136,6 +136,15 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 	}
 	mothers["text-contract"] = contract
 	mothers["time-boundary"] = libraryTimeBoundary(state)
+	// Earlier entries may have been generated with explicit scope prefixes
+	// misread as categories or full facts reintroduced through content strategy.
+	// Isolate that material contract and the injected industry mapping without
+	// deleting history or changing the operator's cache-reuse preference.
+	mothers["fact-side-material"] = lib.Digest(struct {
+		Version string
+		Sides   []string
+		Mapping map[string][]string
+	}{"explicit-scope-and-strategy-v1", state.FissionSides, state.FactSideMap})
 	config := state.Config
 	config.TTS = nil
 	config.CredentialID = ""

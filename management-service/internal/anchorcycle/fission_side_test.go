@@ -1,6 +1,9 @@
 package anchorcycle
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // 切入侧面按「卖点×角度」任务自身的使用次数轮换：同一任务连续讲，侧面逐次轮换，
 // 第 8 次回到首个侧面（供声音缓存复用）。这是"对观众多样、对服务器省 TTS"的关键。
@@ -106,8 +109,20 @@ func TestCategoryFromFactText(t *testing.T) {
 		{"- [fulfillment/发货时效] 一般是下单后第二天上午发货。；安全改写=咱们", "fulfillment"},
 		{"- [other/每日现做现发] 每天新鲜制作，现卤现炸。", "other"},
 		{"- [有效福利] 福利=1:current-benefit02；链接=1、2、3", ""}, // 无 / 标记
-		{"开袋可以直接吃。", ""},                                  // 无标记
+		{"开袋可以直接吃。", ""}, // 无标记
 		{"", ""},
+		{"- [用户指定公共；appointment/预约] 无需预约", "appointment"},
+		{`- [用户指定商品="2号链接"；audience/人数] 适合分享`, "audience"},
+		{`- [用户指定商品="套餐/双人；节日]\\\"款"；package/内容] 套餐内容`, "package"},
+		{"- [用户指定公共； price /价格] 价格已确认", "price"},
+		{"- [商品卡] 链接=1号链接", ""},
+		{"- [商品卡] 说明 [用户指定公共；location/停车] 免费停车", "location"},
+		{"事实正文提到用户指定公共；[location/停车] 免费", "location"},
+		{`- [用户指定商品="2号链接"audience/人数] 缺分号`, ""},
+		{`- [用户指定商品=""；audience/人数] 空链接`, ""},
+		{`- [用户指定商品=2；audience/人数] 非字符串`, ""},
+		{`- [用户指定商品="未闭合；audience/人数]`, ""},
+		{`- [用户指定商品="2号链接"；audience/人数 未闭合标题`, ""},
 	}
 	for _, c := range cases {
 		if got := CategoryFromFactText(c.text); got != c.want {
@@ -164,6 +179,73 @@ func TestHookFactsForSideFiltersBySide(t *testing.T) {
 	got = countData()
 	if !got["other"] || got["price"] || got["craft"] {
 		t.Fatalf("使用场景侧面应只含 other，got %v", got)
+	}
+}
+
+func TestHookFactsForSideScopedIndustryFactsKeepProductIsolation(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "product-focus", true: "task-scope"}[bound], func(t *testing.T) {
+			s := &State{Queue: []Task{{Key: "K", FocusLink: "1", AllowedLinksJSON: `["1"]`}}, FissionSides: []string{"利益算账：价格与人均"}, FactSideMap: map[string][]string{
+				"price": {"利益算账"}, "package": {"利益算账"}, "appointment": {"预约核销"}, "location": {"地理位置"},
+			}}
+			facts := []ScopedFact{
+				{ID: "own", Text: `- [用户指定商品="1"；price/价格] 本商品价格`, Links: []string{"1"}, Applicable: true},
+				{ID: "package", Text: `- [用户指定商品="1"；package/内容] 本商品套餐`, Links: []string{"1"}, Applicable: true},
+				{ID: "other", Text: `- [用户指定商品="2"；price/价格] 其它商品价格`, Links: []string{"2"}, Applicable: true},
+				{ID: "booking", Text: "- [用户指定公共；appointment/预约] 不用预约", Links: []string{"1", "2"}, Shared: true},
+				{ID: "parking", Text: "- [用户指定公共；location/停车] 免费停车", Links: []string{"1", "2"}, Shared: true},
+				{ID: "unknown", Text: "- [用户指定公共；custom/自定义] 通用信息", Links: []string{"1", "2"}, Shared: true},
+			}
+			if bound {
+				scope := &TaskFactScope{}
+				for _, f := range facts {
+					scope.Facts = append(scope.Facts, HookFact{ID: f.ID, Data: f.Text, Products: f.Links})
+				}
+				s.Queue[0].FactScope = scope
+			} else {
+				s.ProductFocus = &ProductFocus{Products: []FocusProduct{{LinkKey: "1"}, {LinkKey: "2"}}, Facts: facts}
+			}
+			sourceFacts := func() any {
+				if bound {
+					return s.Queue[0].FactScope
+				}
+				return s.ProductFocus.Facts
+			}
+			before, _ := json.Marshal(sourceFacts())
+			assertIDs := func(want ...string) {
+				t.Helper()
+				got := s.HookFactsForSide()
+				if len(got) != len(want) {
+					t.Fatalf("side %s: got %v, want %v", s.CurrentFissionSide(), got, want)
+				}
+				for i, id := range want {
+					if got[i].ID != id {
+						t.Fatalf("got %v, want %v", got, want)
+					}
+				}
+			}
+			assertIDs("own", "package", "unknown")
+			s.FissionSides = []string{"预约核销"}
+			assertIDs("booking", "unknown")
+			s.FissionSides = []string{"地理位置"}
+			assertIDs("parking", "unknown")
+			s.FissionSides = []string{"利益算账：价格与人均"}
+			after, _ := json.Marshal(sourceFacts())
+			if string(before) != string(after) {
+				t.Fatal("fact filtering mutated source state")
+			}
+		})
+	}
+}
+
+func TestHookFactsForSidePreservesEmptyFallback(t *testing.T) {
+	s := &State{Queue: []Task{{Key: "K"}}, FissionSides: []string{"利益算账"}, Facts: "- [用户指定公共；appointment/预约] 无需预约", FactSideMap: map[string][]string{"appointment": {"预约核销"}}}
+	if len(s.HookFactsForSide()) != 1 {
+		t.Fatal("existing empty-side fallback lost")
+	}
+	s.FissionSides = nil
+	if len(s.HookFactsForSide()) != 1 {
+		t.Fatal("legacy no-side fallback lost")
 	}
 }
 

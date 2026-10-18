@@ -1,6 +1,9 @@
 package anchorcycle
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // 切入侧面短名（筛选用，对应 fissionAngleSides 里「：」之前的维度名）。
 // 侧面是产品无关的通用维度，决定「这段话从哪个角度切入、喂哪几条事实」。
@@ -20,18 +23,18 @@ var fissionSideNames = []string{
 var factCategorySides = map[string][]string{
 	"flavor":        {"对比参照", "使用场景"}, // 口味：麻辣 vs 五香怎么选、什么场景吃
 	"product":       {"过程细节", "品质来源"}, // 商品信息：怎么做、用什么原料
-	"craft":         {"过程细节"},            // 制作工艺
+	"craft":         {"过程细节"},         // 制作工艺
 	"fulfillment":   {"对比参照", "使用方式"}, // 物流：川渝隔天、真空包装
 	"ingredients":   {"过程细节", "品质来源"}, // 配料成分
-	"brand":         {"品质来源"},            // 品牌/门店历史
-	"origin":        {"品质来源"},            // 产地
+	"brand":         {"品质来源"},         // 品牌/门店历史
+	"origin":        {"品质来源"},         // 产地
 	"price":         {"利益算账", "对比参照"}, // 价格：算账、线上线下对比
-	"usage":         {"使用方式"},            // 使用/食用方式
-	"after_sales":   {"人群痛点"},            // 售后保障
+	"usage":         {"使用方式"},         // 使用/食用方式
+	"after_sales":   {"人群痛点"},         // 售后保障
 	"audience":      {"使用场景", "人群痛点"}, // 目标人群/送礼对象
-	"functions":     {"使用场景"},            // 功能用途
-	"return_policy": {"人群痛点"},            // 退换货政策
-	"trade":         {"利益算账"},            // 交易条款
+	"functions":     {"使用场景"},         // 功能用途
+	"return_policy": {"人群痛点"},         // 退换货政策
+	"trade":         {"利益算账"},         // 交易条款
 }
 
 // FactSides 返回指定分类对应的切入侧面短名列表。
@@ -73,27 +76,49 @@ func FissionSideName(side string) string {
 // CategoryFromFactText 从事实文本提取分类。
 // 事实文本形如「- [product/常温保存期限] 常温保存期限为…；禁说=…；安全改写=…」，
 // 取第一个含「/」的方括号标记「[category/fact_key]」中的 category 部分。
-// 无标记返回空串。
+// 人工归属是程序元数据，先剥离后再读分类，不改变原始事实及其商品归属。
+// 无标记或归属前缀损坏时返回空串。
 func CategoryFromFactText(text string) string {
-	s := strings.TrimSpace(text)
-	start := strings.Index(s, "[")
-	for start >= 0 {
-		end := strings.IndexByte(s[start:], ']')
+	rest := strings.TrimSpace(text)
+	for {
+		start := strings.IndexByte(rest, '[')
+		if start < 0 {
+			return ""
+		}
+		header, ok := stripFactScopePrefix(rest[start+1:])
+		if !ok {
+			return ""
+		}
+		end := strings.IndexByte(header, ']')
 		if end < 0 {
 			return ""
 		}
-		inner := s[start+1 : start+end]
+		inner := header[:end]
 		if i := strings.IndexByte(inner, '/'); i > 0 {
 			return strings.TrimSpace(inner[:i])
 		}
-		rest := s[start+end+1:]
-		next := strings.Index(rest, "[")
-		if next < 0 {
-			return ""
-		}
-		start = start + end + 1 + next
+		rest = header[end+1:]
 	}
-	return ""
+}
+
+// Decode the whole JSON link before looking for header delimiters: a merchant
+// can put '/', '；', ']' or escaped quotes in the link label. Keep this small
+// parser in anchorcycle, which must not depend on its httpapi caller.
+func stripFactScopePrefix(header string) (string, bool) {
+	if rest, ok := strings.CutPrefix(header, "用户指定公共；"); ok {
+		return rest, true
+	}
+	raw, explicit := strings.CutPrefix(header, "用户指定商品=")
+	if !explicit {
+		return header, true
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var link string
+	if decoder.Decode(&link) != nil || strings.TrimSpace(link) == "" {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(raw[decoder.InputOffset():], "；")
+	return rest, ok
 }
 
 // HookFactsForSide 返回「当前切入侧面」下的专属事实（含通用事实）。
