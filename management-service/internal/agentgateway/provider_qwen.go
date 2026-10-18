@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,31 @@ type qwenProvider struct {
 	baseURL       string
 	apiKey        string
 	client        *http.Client
+}
+
+type qwenErrorResponse struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	RequestID string `json:"request_id"`
+}
+
+// qwenProviderError 把供应商非200响应中的错误码与原因保留进错误，
+// 避免上层统一吞成“模型调用失败”后丢失 HTTP 状态码与上游错误码。
+func qwenProviderError(name string, statusCode int, responseBody []byte) error {
+	msg := fmt.Sprintf("%s provider http %d", name, statusCode)
+	var decoded qwenErrorResponse
+	if err := json.Unmarshal(responseBody, &decoded); err == nil {
+		if decoded.Code != "" {
+			msg += " code=" + decoded.Code
+		}
+		if decoded.Message != "" {
+			msg += ": " + strings.TrimSpace(decoded.Message)
+		}
+		if decoded.RequestID != "" {
+			msg += " (request_id=" + decoded.RequestID + ")"
+		}
+	}
+	return errors.New(msg)
 }
 
 type qwenChatResponse struct {
@@ -311,7 +337,7 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		responseBody = fallbackBody
 	}
 	if statusCode != http.StatusOK {
-		return Response{}, fmt.Errorf("%s provider http %d", p.Name(), statusCode)
+		return Response{}, qwenProviderError(p.Name(), statusCode, responseBody)
 	}
 
 	var decoded qwenChatResponse

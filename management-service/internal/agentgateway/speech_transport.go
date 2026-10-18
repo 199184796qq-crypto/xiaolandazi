@@ -101,7 +101,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 		}
 		response, err := provider.Complete(ctx, request)
 		if err != nil {
-			return Response{}, errors.New("模型调用失败，请检查地址、密钥、模型 ID、协议或超时")
+			return Response{}, err
 		}
 		return response, nil
 	}
