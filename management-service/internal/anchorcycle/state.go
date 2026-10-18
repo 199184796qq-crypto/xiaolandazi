@@ -160,6 +160,8 @@ type Candidate struct {
 	P0RewriteNumber         int                                   `json:"p0_rewrite_number,omitempty"`
 }
 type Segment struct {
+	Quota          *SegmentQuota                  `json:"scheduled_quota,omitempty"`
+	DeliveryStatus *SegmentDelivery               `json:"delivery_status,omitempty"`
 	LectureSkipped bool                           `json:"lecture_skipped,omitempty"`
 	Phase          string                         `json:"phase"`
 	CycleNumber    int                            `json:"cycle_number,omitempty"`
@@ -187,6 +189,7 @@ type SpeechPoolEntry struct {
 	LastIndex  int    `json:"last_index"`
 }
 type State struct {
+	DeliveryQuotaRebalance       bool                           `json:"delivery_quota_rebalance,omitempty"`
 	FinalReviewRecovery          *FinalReviewRecovery           `json:"final_review_recovery,omitempty"`
 	LibrarySourceSHA             string                         `json:"library_source_sha,omitempty"`
 	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
@@ -245,6 +248,7 @@ type State struct {
 	FissionSides                 []string                       `json:"fission_sides,omitempty"`
 	PointSchedules               map[string]*WeightedSchedule   `json:"point_schedules,omitempty"`
 	ContentSchedule              *WeightedSchedule              `json:"content_schedule,omitempty"`
+	ContentScheduleBase          map[string]int                 `json:"content_schedule_base,omitempty"`
 	ContentAdopted               map[string]int                 `json:"content_adopted,omitempty"`
 	PendingContentKind           string                         `json:"pending_content_kind,omitempty"`
 	PointUses                    map[string]int                 `json:"point_uses,omitempty"`
@@ -510,6 +514,7 @@ func taskPointKey(task Task) string {
 // Gap N means at least N adopted paragraphs between occurrences; closings are
 // paragraphs too. Reusing a task never clears its old count or last expression.
 func (s *State) chooseNext() {
+	s.rebalanceReturnedDeliveryQuotas()
 	s.EnsureProductFocus()
 	if s.Config.Rolling {
 		s.prepareContentSelection()
@@ -780,7 +785,11 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	if s.Phase == "opening" {
 		openingVersion = s.OpeningVersion()
 	}
-	s.Accepted = append(s.Accepted, Segment{Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
+	var quota *SegmentQuota
+	if !wasLecture && s.Phase == "body" && !wasHook {
+		quota = s.segmentQuota(task)
+	}
+	s.Accepted = append(s.Accepted, Segment{Quota: quota, Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
 	if !wasLecture && selected.FissionSide != "" {
 		s.recordFissionSide(task.Key, selected.FissionSide)
 	}

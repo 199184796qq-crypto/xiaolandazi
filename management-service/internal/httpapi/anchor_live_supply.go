@@ -141,7 +141,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		// independent of the temporary URL lifetime.
 		if segment.Selected.LibraryDecision != "" && segment.Voice != nil {
 			if a, e := s.libraryTrackedAudio(ctx, tenant, room, runtimeID, segment.Selected.ID); e != nil {
-				return e
+				return beforeMainlineSubmit(e)
 			} else if a != nil {
 				v := *segment.Voice
 				v.Bundle = a.Bundle
@@ -150,7 +150,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		}
 		track, err := liveCycleMainlineTrack(latest, segment)
 		if err != nil {
-			return err
+			return beforeMainlineSubmit(err)
 		}
 		mu.Lock()
 		program := delivery.ProgramID

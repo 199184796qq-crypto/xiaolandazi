@@ -41,6 +41,7 @@ type cycleSupply struct {
 	playedMS         float64
 	delivered        map[string]bool
 	skippedVoices    map[string]bool
+	voiceFailures    map[string]pendingVoiceFailure
 	started          map[string]time.Time
 	done             chan struct{}
 	workers          sync.WaitGroup
@@ -57,7 +58,12 @@ func newCycleSupply(s *Server, parent context.Context, state *anchorcycle.State)
 	if state.Config.TTS != nil {
 		high = int64(state.Config.TTS.BufferSeconds) * 1000
 	}
-	p := &cycleSupply{s: s, ctx: ctx, cancel: cancel, initial: state, policy: productionbuffer.New(high, state.StreamControlled), delivered: map[string]bool{}, skippedVoices: map[string]bool{}, started: map[string]time.Time{}, done: make(chan struct{})}
+	p := &cycleSupply{s: s, ctx: ctx, cancel: cancel, initial: state, policy: productionbuffer.New(high, state.StreamControlled), delivered: map[string]bool{}, skippedVoices: map[string]bool{}, voiceFailures: map[string]pendingVoiceFailure{}, started: map[string]time.Time{}, done: make(chan struct{})}
+	for _, seg := range state.Accepted {
+		if seg.DeliveryStatus != nil {
+			p.skippedVoices[seg.Selected.ID] = true
+		}
+	}
 	p.ctx = context.WithValue(ctx, productionGateKey{}, p.wait)
 	p.advance = func(ctx context.Context, current *anchorcycle.State) (*anchorcycle.State, error) {
 		return s.advanceAnchorCycle(ctx, current.TenantID, current.PlanID, current.RoomID, current.RunID, current.Revision)
@@ -204,7 +210,13 @@ func (p *cycleSupply) start() {
 	p.workers.Add(2)
 	go func() { defer p.workers.Done(); p.textLoop() }()
 	go func() { defer p.workers.Done(); p.voiceLoop() }()
-	go func() { p.workers.Wait(); close(p.done) }()
+	go func() {
+		p.workers.Wait()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(p.ctx), 2*time.Second)
+		defer cancel()
+		_ = p.flushVoiceFailures(ctx)
+		close(p.done)
+	}()
 }
 func (p *cycleSupply) progressContext(part string) context.Context {
 	return context.WithValue(p.ctx, cycleProgressKey{}, cycleProgressReporter(func(percent int) {
@@ -244,6 +256,10 @@ func (p *cycleSupply) load() (*anchorcycle.State, error) {
 }
 func (p *cycleSupply) textLoop() {
 	for p.ctx.Err() == nil {
+		if err := p.flushVoiceFailures(p.ctx); err != nil {
+			p.fail(err)
+			return
+		}
 		if err := p.wait(p.ctx); err != nil {
 			p.fail(err)
 			return
@@ -367,13 +383,24 @@ func (p *cycleSupply) skipGeneration(state *anchorcycle.State, stage, reason str
 	p.receive(current)
 	return nil
 }
-func (p *cycleSupply) skipVoice(state *anchorcycle.State, id, reason string) {
+func (p *cycleSupply) skipVoice(state *anchorcycle.State, id, reason string, stages ...string) {
+	stage := "voice"
+	if len(stages) > 0 {
+		stage = stages[0]
+	}
 	p.mu.Lock()
 	p.skippedVoices[id] = true
+	if p.voiceFailures == nil {
+		p.voiceFailures = map[string]pendingVoiceFailure{}
+	}
+	p.voiceFailures[id] = pendingVoiceFailure{Stage: stage, Reason: reason}
 	delete(p.started, id)
 	p.mu.Unlock()
 	log.Printf("mainline segment skipped tenant=%d room=%d candidate=%s reason=%s", state.TenantID, state.RoomID, id, reason)
 	p.s.queueGenerationSkip(state, "voice", reason, id)
+	if err := p.flushVoiceFailures(p.ctx); err != nil {
+		p.fail(err)
+	}
 }
 
 func (p *cycleSupply) applyLectureSkips(state *anchorcycle.State) bool {
@@ -397,6 +424,10 @@ func (p *cycleSupply) applyLectureSkips(state *anchorcycle.State) bool {
 }
 func (p *cycleSupply) voiceLoop() {
 	for p.ctx.Err() == nil {
+		if err := p.flushVoiceFailures(p.ctx); err != nil {
+			p.fail(err)
+			return
+		}
 		if err := p.wait(p.ctx); err != nil {
 			p.fail(err)
 			return
@@ -473,7 +504,14 @@ func (p *cycleSupply) voiceLoop() {
 		if p.onReady != nil {
 			if err = p.onReady(p.ctx, state, *next); err != nil {
 				if state.Surface == "formal_live" && p.ctx.Err() == nil {
-					p.skipVoice(state, next.Selected.ID, "下发本段失败："+err.Error())
+					// A transport error can follow a successful Core append. Record
+					// it separately; never refund/replay an unconfirmed submission.
+					stage := "delivery_unconfirmed"
+					var notSent *mainlineNotSubmitted
+					if errors.As(err, &notSent) {
+						stage = "delivery"
+					}
+					p.skipVoice(state, next.Selected.ID, "下发本段失败："+err.Error(), stage)
 					continue
 				}
 				p.fail(err)

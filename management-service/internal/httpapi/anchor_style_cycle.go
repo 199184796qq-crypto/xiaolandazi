@@ -745,6 +745,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			return nil, err
 		}
 	}
+	state.PrepareReturnedDeliveryQuotas()
 	prompt, err := renderAnchorCyclePrompt(state)
 	if err != nil {
 		return nil, errors.New(err.Error())

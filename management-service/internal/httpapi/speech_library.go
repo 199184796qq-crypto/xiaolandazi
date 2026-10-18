@@ -168,6 +168,9 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 	if queueSHA == "" {
 		queueSHA = lib.Digest(state.Queue)
 	}
+	// The run's TextPromptSHA is the last request's transport receipt. Repairs
+	// clear it, normal requests fill it again. Use the resolved current contract
+	// so real mother/model changes, rather than request timing, invalidate audio.
 	return lib.Digest(struct {
 		Tenant, Room, Plan, Style, Card, Wheel                      int64
 		Task                                                        anchorcycle.Task
@@ -178,7 +181,7 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		Corrections                                                 any
 		Strategy, Focus, Angle, TextModel, ReviewModel              any
 		Mothers                                                     map[string]string
-	}{state.TenantID, state.RoomID, state.PlanID, state.StyleID, state.ScorecardID, state.WheelID, task, queueSHA, state.StyleMD, state.Facts, state.BaselineJSON, state.P0PolicyMD, state.OpeningHookLibraryMD, state.TextPromptSHA, state.P0Allowances, config, corrections, state.ContentStrategy, focus, libraryAngle(plan), libraryModel(state.TextModel), libraryModel(state.ReviewModel), mothers}), nil
+	}{state.TenantID, state.RoomID, state.PlanID, state.StyleID, state.ScorecardID, state.WheelID, task, queueSHA, state.StyleMD, state.Facts, state.BaselineJSON, state.P0PolicyMD, state.OpeningHookLibraryMD, contract, state.P0Allowances, config, corrections, state.ContentStrategy, focus, libraryAngle(plan), libraryModel(state.TextModel), libraryModel(state.ReviewModel), mothers}), nil
 }
 func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segment) (lib.Scope, error) {
 	if state.Delivery == nil {

@@ -32,7 +32,16 @@ func (s *State) prepareContentSelection() {
 	// Public items cannot disguise a product without any own directions.
 	// If public directions are absent/rejected, continue product supply.
 	if !product || !common {
+		// Unavailable public material never incurs a debt to repay later. Start a
+		// new balancing period when both pools become available again.
+		s.ContentScheduleBase = nil
 		return
+	}
+	if s.ContentScheduleBase == nil {
+		s.ContentScheduleBase = map[string]int{
+			productContentKind: s.ContentAdopted[productContentKind],
+			commonContentKind:  s.ContentAdopted[commonContentKind],
+		}
 	}
 	if s.ContentSchedule == nil {
 		s.ContentSchedule = &WeightedSchedule{}
@@ -40,8 +49,12 @@ func (s *State) prepareContentSelection() {
 	bag := s.ContentSchedule
 	if bag.Cursor >= len(bag.Items) {
 		bag.Window++
+		counts := map[string]int{}
+		for _, kind := range []string{productContentKind, commonContentKind} {
+			counts[kind] = max(0, s.ContentAdopted[kind]-s.ContentScheduleBase[kind])
+		}
 		bag.Items = weightedWindowSize([]string{productContentKind, commonContentKind},
-			map[string]float64{productContentKind: .8, commonContentKind: .2}, nil,
+			map[string]float64{productContentKind: .8, commonContentKind: .2}, counts,
 			s.RunID+":content:"+strconv.Itoa(bag.Window), 5)
 		bag.Cursor = 0
 	}
