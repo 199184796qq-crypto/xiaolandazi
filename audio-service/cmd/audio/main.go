@@ -1360,22 +1360,6 @@ func (s *server) unregisterReceiver(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"unregistered": true})
 }
 
-func (s *server) unregisterReceiver(w http.ResponseWriter, r *http.Request) {
-	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
-	var input struct {
-		RoomID int64 `json:"room_id"`
-	}
-	if err := readJSON(w, r, &input); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
-		return
-	}
-	if err := s.broker.UnregisterReceiver(receiverID, input.RoomID); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"unregistered": true})
-}
-
 func (s *server) bindReceiver(w http.ResponseWriter, r *http.Request) {
 	receiverID := strings.TrimSpace(r.PathValue("receiverID"))
 	var input struct {
