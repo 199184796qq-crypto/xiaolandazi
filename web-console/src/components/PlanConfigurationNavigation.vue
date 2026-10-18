@@ -48,7 +48,6 @@ function pending(mode: PlanConfigurationMode) {
         <span v-if="item.key === 'interaction' && interactionPending" class="plan-navigation-count" :aria-label="`${interactionPending}条互动待纠正`">{{ interactionPending > 99 ? '99+' : interactionPending }}</span>
       </button>
       <div v-if="$slots.actions" class="plan-navigation-actions"><slot name="actions" /></div>
-      <span class="plan-navigation-tagline" aria-hidden="true"><PlanConfigurationIcon name="sparkle" />智能驱动 · 高效直播</span>
     </nav>
     <slot name="feedback" />
     <nav v-if="section === 'facts'" class="plan-configuration-fact-tabs" aria-label="商品与事实栏目">
@@ -70,7 +69,6 @@ function pending(mode: PlanConfigurationMode) {
 .plan-configuration-sections button.active{border-bottom-color:#4d49ff;color:#4545f4}
 .plan-configuration-sections button:hover{color:#4d49eb;background:#f5f6ff}.plan-configuration-sections button:first-child{border-bottom-left-radius:10px}
 .plan-configuration-sections :deep(.plan-configuration-icon){width:27px;height:27px;stroke-width:1.9}
-.plan-navigation-tagline{display:flex;align-items:center;gap:14px;margin-left:auto;padding:15px 23px;color:#7c86aa;font-size:16px;font-weight:650;white-space:nowrap}.plan-navigation-tagline :deep(svg){color:#6650fb}
 .plan-configuration-fact-tabs{gap:14px;margin-top:18px;padding:18px 24px;border:1px solid #e5e8fd;border-bottom:0;border-radius:17px 17px 0 0;background:#fff}
 .plan-configuration-fact-tabs>button{display:flex;align-items:center;gap:10px;min-height:52px;padding:12px 22px;border:1px solid #e9ecfe;border-radius:12px;background:#f5f7ff;color:#495883;font:inherit;font-size:18px;font-weight:650;cursor:pointer;transition:box-shadow .15s,background .15s}
 .plan-configuration-fact-tabs>button.active{border-color:#6963ff;background:linear-gradient(115deg,#8e88fa,#4644ff);color:#fff;box-shadow:0 6px 14px #6259e52b}
@@ -80,9 +78,7 @@ function pending(mode: PlanConfigurationMode) {
 .plan-configuration-fact-tabs :deep(.fact-risk-tab-pill){padding:2px 5px;font-size:10px}
 .plan-configuration-fact-tabs>button.active :deep(.fact-risk-tab-text){color:inherit}
 .plan-configuration-sections button:focus-visible,.plan-configuration-fact-tabs>button:focus-visible{outline:3px solid #a9a7ff;outline-offset:3px}
-@media(max-width:1400px){.plan-configuration-sections button{padding:16px 18px;font-size:16px;gap:10px}.plan-navigation-tagline{font-size:13px;padding-right:12px;gap:8px}.plan-configuration-fact-tabs>button{padding:11px 16px;font-size:14px}}
-@media(max-width:1100px){.plan-navigation-tagline{display:none}}
-@media(max-width:1700px){.plan-navigation-tagline{display:none}}
+@media(max-width:1400px){.plan-configuration-sections button{padding:16px 18px;font-size:16px;gap:10px}.plan-configuration-fact-tabs>button{padding:11px 16px;font-size:14px}}
 @media(max-width:700px){.plan-configuration-sections{padding:0 4px;gap:0;border-radius:13px}.plan-configuration-sections button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:65px;padding:10px 5px;font-size:16px;gap:5px}.plan-configuration-sections :deep(.plan-configuration-icon){width:19px;height:19px}.plan-configuration-fact-tabs{gap:8px;padding:14px 12px;margin-top:12px}.plan-configuration-fact-tabs>button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:44px;padding:9px 8px;font-size:13px;gap:7px}.plan-configuration-fact-tabs :deep(.fact-risk-tab-notice){flex-wrap:wrap}}
 @media(max-width:700px){.plan-navigation-actions{flex:1 1 100%;justify-content:center;padding:8px}}
 @media(prefers-reduced-motion:reduce){.plan-configuration-sections button,.plan-configuration-fact-tabs>button{transition:none}}
