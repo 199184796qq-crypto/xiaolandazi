@@ -29,3 +29,9 @@
 浏览器验证使用隔离模拟接口，没有写生产事实、调用真实模型/TTS或创建直播。上线只更新普通 web 与桌面前端入口和新哈希资源，继承发布时实际 current 的其余文件；不部署后端、不重启服务、不改配置。
 
 原始证据在本聊天 `work/fact-category-label-fix-proof/`：`runtime-catalog-assembly.txt`、`baseline-source-reproduction.json`、`browser.log`、构建日志及后续发布核验报告。
+
+## 上线核验
+
+北京时间 2026-10-18 11:00:55—11:00:56 上线 `/opt/xiaolan/releases/20261018-fact-category-display-27921a7`。继承实际 WorkBuddy 发布，仅替换两个入口并新增40个哈希资源，3428个旧无关文件一致；Management/Core/网关的 PID 和程序哈希、Nginx、系统设置和模型池均保持，无服务重启。12个公网入口/资源核对通过，7个无登录鉴权检查均401；2609个前端文件的完整备份逐项核对哈希、大小和权限，共享备份指针已更新。WorkBuddy 原414个前端源文件指纹保持。
+
+生产构建代码为 `27921a778b5efeaea0371bd6f14ec86b359381f1`；后续文档提交不改变该构建。验证报告为 `deployment-report.json`、`production-verification.json`、`authentication-verification.json` 和 `workbuddy-source-preservation.json`。没有对真实客户事实执行保存，也没有将本地模拟浏览器回归称为生产已登录页面人工验收。
