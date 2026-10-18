@@ -57,12 +57,8 @@ func schedulerSeed(run, key string) float64 {
 	return float64(binary.BigEndian.Uint64(h[:8])>>11) / float64(uint64(1)<<53)
 }
 
-// Allocate against cumulative adopted deficits, then shuffle the window. Quotas
-// span cycles: neither a small cycle nor its prefix has a fixed product mix.
-func weightedWindow(keys []string, shares map[string]float64, counts map[string]int, seed string) []string {
-	return weightedWindowSize(keys, shares, counts, seed, min(240, max(24, 12*len(keys))))
-}
-
+// The public/product split retains its independent five-slot 20/80 window.
+// Product and selling-point selection use rollingDeficitChoice instead.
 func weightedWindowSize(keys []string, shares map[string]float64, counts map[string]int, seed string, n int) []string {
 	if len(keys) == 0 {
 		return nil
@@ -93,25 +89,28 @@ func weightedWindowSize(keys []string, shares map[string]float64, counts map[str
 
 func (s *State) scheduledProduct() string {
 	p := s.ProductFocus
-	if len(p.Products) == 0 {
-		return ""
+	keys := s.availableProducts()
+	counts := p.AdoptedSegments
+	if s.Phase != "body" {
+		counts = s.productPresentationCounts()
 	}
-	if p.ScheduleCursor >= len(p.Schedule) || len(p.Schedule) == 0 {
-		keys := []string{}
-		for _, product := range p.Products {
-			keys = append(keys, product.LinkKey)
-		}
-		p.ScheduleWindow++
-		p.Schedule = weightedWindow(keys, p.normalizedProductWeights(), p.AdoptedSegments, s.RunID+":products:"+strconv.Itoa(p.ScheduleWindow))
-		p.ScheduleCursor = 0
-		if p.AllocatedSegments == nil {
-			p.AllocatedSegments = map[string]int{}
-		}
-		for _, key := range p.Schedule {
-			p.AllocatedSegments[key]++
+	allowed := append([]string(nil), keys...)
+	if last, streak := s.productStreak(); streak >= 2 && len(keys) > 1 {
+		allowed = nil
+		for _, key := range keys {
+			if key != last {
+				allowed = append(allowed, key)
+			}
 		}
 	}
-	return p.Schedule[p.ScheduleCursor]
+	chosen := rollingDeficitChoice(keys, allowed, p.normalizedProductWeights(), counts, s.RunID+":products:"+s.Phase)
+	// Keep a single pending reservation, never a shuffled future batch. Cursor
+	// remains an adoption counter for existing runtime consumers.
+	p.Schedule = nil
+	if chosen != "" {
+		p.Schedule = []string{chosen}
+	}
+	return chosen
 }
 
 type weightedPoint struct {
@@ -119,8 +118,8 @@ type weightedPoint struct {
 	tasks  []int
 }
 
-// Point quotas are independent of angle count, and shuffled independently for
-// each product. Retries keep TaskIndex and do not consume any quota.
+// Point deficits are independent of angle count and of other products.
+// Retries keep the same pending point and never consume a quota.
 func (s *State) chooseProductWeightedTask() bool {
 	if !s.Config.Rolling || s.PriceHook != nil {
 		return false
@@ -149,18 +148,14 @@ func (s *State) chooseProductWeightedTask() bool {
 		bag = &WeightedSchedule{}
 		s.PointSchedules[owner] = bag
 	}
-	// Failed directions remain unavailable. Never fall across product ownership.
-	for bag.Cursor < len(bag.Items) && groups[bag.Items[bag.Cursor]] == nil {
-		bag.Cursor++
-	}
-	if bag.Cursor >= len(bag.Items) {
+	if len(bag.Items) > 1 || bag.Cursor >= len(bag.Items) || groups[bag.Items[bag.Cursor]] == nil {
 		preferences := map[string]float64{}
 		for _, key := range order {
 			preferences[key] = float64(groups[key].weight)
 		}
 		shares := boundedShares(order, preferences, PointFrequencyRatio)
 		bag.Window++
-		bag.Items = weightedWindow(order, shares, s.PointUses, s.RunID+":points:"+owner+":"+strconv.Itoa(bag.Window))
+		bag.Items = []string{rollingDeficitChoice(order, order, shares, s.PointUses, s.RunID+":points:"+owner)}
 		bag.Cursor = 0
 	}
 	g := groups[bag.Items[bag.Cursor]]

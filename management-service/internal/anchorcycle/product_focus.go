@@ -113,6 +113,9 @@ type ProductFocus struct {
 	ScheduleWindow      int                   `json:"schedule_window,omitempty"`
 	AllocatedSegments   map[string]int        `json:"allocated_segments,omitempty"`
 	AdoptedSegments     map[string]int        `json:"adopted_segments,omitempty"`
+	PresentedSegments   map[string]int        `json:"presented_segments,omitempty"`
+	SelectionIndex      int                   `json:"selection_index,omitempty"`
+	SelectionSet        bool                  `json:"selection_set,omitempty"`
 	CurrentSlot         int                   `json:"current_slot,omitempty"`
 	CurrentLink         string                `json:"current_link,omitempty"`
 	CurrentCycle        int                   `json:"current_cycle,omitempty"`
@@ -179,17 +182,21 @@ func (p *ProductFocus) ResetRun() {
 	p.CurrentLink, p.CurrentCycle = "", 0
 	p.Schedule, p.ScheduleCursor, p.ScheduleWindow = nil, 0, 0
 	p.AllocatedSegments, p.AdoptedSegments = nil, nil
+	p.PresentedSegments, p.SelectionIndex, p.SelectionSet = nil, 0, false
 	p.CurrentSlot = -1
 	p.AuxiliaryActive, p.AuxiliaryCursor = false, 0
 	p.CompletedMainRounds, p.LastAuxiliaryRound, p.MainChars, p.AuxiliaryChars = 0, 0, 0, 0
 }
 
-// Freeze the selected product across retries and closing. A body adoption
-// consumes one slot; the next body/opening may then select another product.
+// Freeze one product until adoption, including retries and Redis reloads.
+// Opening and closing start new decisions too; neither extends a body streak.
 func (s *State) EnsureProductFocus() {
 	p := s.ProductFocus
 	if p == nil {
 		return
+	}
+	if p.PresentedSegments == nil {
+		p.PresentedSegments = s.productPresentationCounts()
 	}
 	// The new scheduler is for rolling livestreams. Keep the existing default
 	// product for non-rolling tools which only ask for a scoped fact view.
@@ -197,12 +204,22 @@ func (s *State) EnsureProductFocus() {
 		p.CurrentLink, p.CurrentCycle, p.CurrentSlot = p.MainLink(), s.CycleNumber, p.ScheduleCursor
 		return
 	}
-	if p.CurrentLink != "" && (s.Phase == "closing" || p.CurrentSlot == p.ScheduleCursor) {
+	if !s.Config.Rolling && p.CurrentLink != "" {
+		return
+	}
+	// Preserve an explicitly scoped preparation probe or an in-flight old state
+	// once; subsequent adoptions use the rolling selector.
+	if p.CurrentLink != "" && !p.SelectionSet && p.CurrentSlot == p.ScheduleCursor {
+		p.SelectionIndex, p.SelectionSet = s.TotalAccepted(), true
+		return
+	}
+	if p.CurrentLink != "" && p.SelectionSet && p.SelectionIndex == s.TotalAccepted() {
 		return
 	}
 	p.CurrentLink = s.scheduledProduct()
 	p.CurrentCycle = s.CycleNumber
 	p.CurrentSlot = p.ScheduleCursor
+	p.SelectionIndex, p.SelectionSet = s.TotalAccepted(), true
 }
 
 // Retained for adapters which explicitly finish a body segment.
@@ -212,6 +229,7 @@ func (s *State) advanceProduct() bool {
 	}
 	s.ProductFocus.ScheduleCursor++
 	s.ProductFocus.CurrentLink = ""
+	s.ProductFocus.SelectionSet = false
 	s.EnsureProductFocus()
 	return true
 }
@@ -262,6 +280,12 @@ func (s *State) recordProductAdoption(t Task, text string) {
 			p.AdoptedSegments = map[string]int{}
 		}
 		p.AdoptedSegments[t.FocusLink]++
+	}
+	if !t.Common && t.FocusLink != "" {
+		if p.PresentedSegments == nil {
+			p.PresentedSegments = map[string]int{}
+		}
+		p.PresentedSegments[t.FocusLink]++
 	}
 }
 

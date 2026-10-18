@@ -62,8 +62,11 @@ func TestCommonShareIndependentOfPoolSizesAndProductWeights(t *testing.T) {
 					public++
 				} else {
 					original, _ := simulateBody(&without)
-					if b.LinkKey != b.FocusLink || a.FocusLink != b.FocusLink || taskPointKey(a) != taskPointKey(b) || original.FocusLink != b.FocusLink || taskPointKey(original) != taskPointKey(b) {
-						t.Fatal("public share changed internal product/point sequence", i, original, a, b)
+					// Public segment count does not change product/point targets.
+					// It may break a consecutive-product streak, so a run without
+					// public segments need not have exactly the same product order.
+					if b.LinkKey != b.FocusLink || original.LinkKey != original.FocusLink || a.FocusLink != b.FocusLink || taskPointKey(a) != taskPointKey(b) {
+						t.Fatal("pool size changed product/point ownership", i, original, a, b)
 					}
 					counts[b.FocusLink]++
 				}

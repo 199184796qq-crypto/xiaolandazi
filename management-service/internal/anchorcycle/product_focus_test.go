@@ -30,7 +30,9 @@ func focusFixture(t *testing.T) State {
 		}
 		s.ProductFocus.Tasks[q.Key] = scope
 	}
-	s.ProductFocus.Schedule = []string{"1", "2", "1"} // explicit fixture, not the randomized production order
+	// Scope assertions below deliberately start on product 1. Production chooses
+	// its first product from weights rather than from a fixed leading product.
+	s.ProductFocus.CurrentLink = "1"
 	s.SelectProductTask()
 	return s
 }
@@ -40,20 +42,18 @@ func auditedFocusCandidate(s *State, text string, score int) Candidate {
 	return c
 }
 
-// 轮换起始：主推（角色基准最高）先出，但不再独占——advanceProduct 会推进到下一个商品。
-func TestProductFocusInitializesToMainThenRotates(t *testing.T) {
+func TestProductFocusExplicitScopeThenRollingAdoptions(t *testing.T) {
 	s := focusFixture(t)
-	// 本夹具显式给出1、2、1窗口；生产首项由本场种子打乱。
 	if s.Task().FocusLink != "1" {
-		t.Fatal("初始应聚焦主推，得到", s.Task().FocusLink)
+		t.Fatal("explicit initial scope lost", s.Task())
 	}
-	// 推进一次应到 2 号（traffic）。
-	if !s.advanceProduct() || s.Task().FocusLink != "2" {
-		t.Fatal("advanceProduct 应轮换到 2 号，得到", s.Task().FocusLink)
+	counts := map[string]int{}
+	for i := 0; i < 100; i++ {
+		task, _ := simulateBody(&s)
+		counts[task.FocusLink]++
 	}
-	// 再推进一次回到 1 号（两个商品循环）。
-	if !s.advanceProduct() || s.Task().FocusLink != "1" {
-		t.Fatal("应循环回 1 号，得到", s.Task().FocusLink)
+	if counts["1"] < 45 || counts["1"] > 55 || counts["2"] < 45 {
+		t.Fatal("rolling adoptions lost bounded product balance", counts)
 	}
 }
 

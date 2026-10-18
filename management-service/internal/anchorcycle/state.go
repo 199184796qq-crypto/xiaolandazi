@@ -423,14 +423,29 @@ func (s *State) Task() Task {
 		task := s.focusTask(Task{SellingPoint: "本轮收口", Angle: "重报核心信息并自然承接", Key: "本轮收口"})
 		for i := len(s.Accepted) - 1; i >= 0; i-- {
 			prior := s.Accepted[i].Task
-			if prior.FocusLink == task.FocusLink {
+			if !prior.Common && prior.FocusLink == task.FocusLink && prior.FactScope != nil {
 				task.FactScope = prior.FactScope
 				break
+			}
+		}
+		if task.FactScope == nil {
+			for _, item := range s.Queue {
+				if !item.Common && s.taskScopeEligible(item) && materialAvailable(item) {
+					task.FactScope = item.FactScope
+					break
+				}
 			}
 		}
 		return task
 	}
 	if s.Config.Rolling {
+		s.EnsureProductFocus()
+		// Optional lecture/continuation boundaries may resume without chooseNext.
+		// Never attach a newly selected product to the previous product's angle.
+		if s.ProductFocus != nil && (!s.taskScopeEligible(s.Queue[s.TaskIndex]) || s.Phase != "body" && s.Queue[s.TaskIndex].Common) {
+			s.prepareContentSelection()
+			s.chooseProductWeightedTask()
+		}
 		return s.focusTask(s.Queue[s.TaskIndex])
 	}
 	return s.focusTask(s.Queue[s.Cursor])
@@ -523,6 +538,9 @@ func (s *State) chooseNext() {
 		}
 		if s.Surface == "formal_live" && len(s.P0SkippedKeys) > 0 {
 			s.P0SkippedKeys = map[string]bool{}
+			if s.ProductFocus != nil && s.ProductFocus.CurrentLink == "" {
+				s.EnsureProductFocus()
+			}
 			if s.chooseProductWeightedTask() {
 				return
 			}

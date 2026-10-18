@@ -134,7 +134,9 @@ func TestWeightedMixSmallCyclesAreNotFixedQuotas(t *testing.T) {
 		pointMixes[fmt.Sprint(points)] = true
 		s.CycleNumber++
 	}
-	if !mixes[4] || !mixes[3] || !mixes[1] || len(pointMixes) < 5 {
+	// A four-body cycle can vary between 1:3, 2:2 and 3:1. The new
+	// consecutive-two boundary intentionally forbids four of the same product.
+	if mixes[4] || mixes[0] || !mixes[3] || !mixes[2] || !mixes[1] || len(pointMixes) < 5 {
 		t.Fatal("small cycles became a rigid alternation", mixes, pointMixes)
 	}
 	t.Logf("four-body cycle product mixes=%v point mixes=%d", mixes, len(pointMixes))

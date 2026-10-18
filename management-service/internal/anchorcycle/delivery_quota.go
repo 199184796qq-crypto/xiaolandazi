@@ -69,6 +69,9 @@ func (s *State) RecordSegmentDeliveryFailure(id, stage, reason string, definite 
 			status = "failed"
 		}
 		seg.DeliveryStatus = &SegmentDelivery{Status: status, Stage: stage, Reason: reason, At: now.UTC().Format(time.RFC3339Nano)}
+		if definite && s.ProductFocus != nil && !seg.Task.Common {
+			decreaseQuota(s.ProductFocus.PresentedSegments, seg.Task.FocusLink)
+		}
 		if !definite || s.Surface != "formal_live" || seg.Phase != "body" || seg.Task.ProductMode == "lecture" || seg.Task.ProductMode == "auxiliary" {
 			return true
 		}
@@ -108,7 +111,8 @@ func (s *State) rebalanceReturnedDeliveryQuotas() bool {
 		for _, owner := range s.ProductFocus.Schedule[min(s.ProductFocus.ScheduleCursor, len(s.ProductFocus.Schedule)):] {
 			decreaseQuota(s.ProductFocus.AllocatedSegments, owner)
 		}
-		s.ProductFocus.Schedule, s.ProductFocus.ScheduleCursor, s.ProductFocus.CurrentSlot = nil, 0, -1
+		s.ProductFocus.Schedule, s.ProductFocus.CurrentSlot = nil, -1
+		s.ProductFocus.SelectionSet = false
 	}
 	for _, bag := range s.PointSchedules {
 		if bag != nil {
