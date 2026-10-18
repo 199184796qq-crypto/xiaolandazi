@@ -712,6 +712,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if state.Phase == "ended" {
 		return state, nil
 	}
+	if !state.FinalReviewReady(time.Now()) {
+		return state, nil
+	}
 	if state.Status == "spacing_blocked" || state.Status == "content_blocked" || state.Status == "compliance_blocked" {
 		return nil, errors.New(state.Error)
 	}

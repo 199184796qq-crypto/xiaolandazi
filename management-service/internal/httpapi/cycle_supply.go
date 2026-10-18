@@ -264,6 +264,15 @@ func (p *cycleSupply) textLoop() {
 			p.fail(err)
 			return
 		}
+		if !state.FinalReviewReady(time.Now()) {
+			// Hold only new text requests. The voice worker continues to drain
+			// previously approved content; do not route this through SkipGeneration.
+			p.receive(state)
+			if supplyWait(p.ctx, 300*time.Millisecond) != nil {
+				return
+			}
+			continue
+		}
 		if state.Uncertain || state.Phase == "ended" || state.Status == "failed" || strings.HasSuffix(state.Status, "_blocked") {
 			if state.Surface == "formal_live" {
 				if err = p.skipGeneration(state, "text", state.Error); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/anchorstylescore"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,11 @@ func TestCompletedRequirementRejectionIsNotAFormatOrTransportFailure(t *testing.
 	server.auditFinalMainlineContent(context.Background(), &s, &c)
 	if c.FinalContentAudit == nil || c.FinalContentAudit.Decision != "有问题" || c.FinalContentAudit.Error != "" || c.FinalContentAudit.UpstreamReview != "speech_constraint_text_review" || c.FinalContentAudit.ExchangeID != 0 || s.FinalContentCandidateApproved(c) {
 		t.Fatal("completed content rejection became a format failure or a fabricated final model call", c.FinalContentAudit)
+	}
+	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || ok {
+		t.Fatal("rejected requirement was adopted", ok, err)
+	}
+	if s.P0PendingRepair == nil || s.P0PendingRepair.Reason != c.ExpressionAudit.Reason || len(s.GenerationSkips) != 0 || len(s.P0SkippedKeys) != 0 || s.FinalReviewRecovery != nil {
+		t.Fatal("requirement rejection bypassed local repair or lost reason", s.P0PendingRepair, s.GenerationSkips)
 	}
 }

@@ -187,6 +187,7 @@ type SpeechPoolEntry struct {
 	LastIndex  int    `json:"last_index"`
 }
 type State struct {
+	FinalReviewRecovery          *FinalReviewRecovery           `json:"final_review_recovery,omitempty"`
 	LibrarySourceSHA             string                         `json:"library_source_sha,omitempty"`
 	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
 	FinalContentReviewContextSHA string                         `json:"final_content_review_context_sha256,omitempty"`
@@ -703,23 +704,29 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 			return false, nil
 		}
 	}
-	if (s.Task().ProductMode == "lecture" || len(s.EffectiveExpressionConstraints()) > 0) && !s.LectureCandidateApproved(c) {
+	if !s.FinalContentReviewRequired && (s.Task().ProductMode == "lecture" || len(s.EffectiveExpressionConstraints()) > 0) && !s.LectureCandidateApproved(c) {
 		s.Attempts = append(s.Attempts, c)
 		s.SkipGeneration("lecture_scope_review", "讲解正文事实复核未通过")
 		return false, nil
 	}
 	if !s.FinalContentCandidateApproved(c) {
 		audit := c.FinalContentAudit
-		// 审核模型明确判违规（有问题）→ 先局部重写换说法，重写耗尽才跳过。
-		// 回执失效/技术错误（Decision 为空、Error 非空）保持跳过，由审核链路单独处理。
-		if audit != nil && audit.Error == "" && audit.Decision == "有问题" && s.P0RewritesUsed < s.P0MaxRewrites {
-			s.rejectReviewCandidate(c, audit.Reason)
+		if audit != nil && audit.Error == "" && audit.Decision == "有问题" && strings.TrimSpace(audit.Reason) != "" {
+			s.resetFinalReviewRecovery()
+			if s.P0RewritesUsed < s.P0MaxRewrites {
+				s.rejectReviewCandidate(c, audit.Reason)
+				return false, nil
+			}
+			s.Attempts = append(s.Attempts, c)
+			s.SkipGeneration("final_content_review", "最终文字明确有误且局部重写已耗尽："+audit.Reason)
 			return false, nil
 		}
-		s.Attempts = append(s.Attempts, c)
-		s.SkipGeneration("final_content_review", "最终文字事实与要求审核未通过或回执失效")
+		// An unfinished audit says nothing about whether this angle is usable.
+		// Preserve the quota and phase; never put technical failures in P0SkippedKeys.
+		s.deferFinalReview(c, time.Now().UTC())
 		return false, nil
 	}
+	s.resetFinalReviewRecovery()
 	s.P0PendingRepair = nil
 	// Non-compliance writing requirements are feedback, never fatal approval gates.
 	c.PriceCheck = InspectPrice(c.Text, s.Task())

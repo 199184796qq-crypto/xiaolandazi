@@ -172,6 +172,56 @@ func (r *supplyRepository) Save(_ context.Context, state *anchorcycle.State) err
 	return nil
 }
 
+func TestReviewOutageHoldsTextButApprovedVoiceStillDelivers(t *testing.T) {
+	state := cycleTestState(t)
+	state.Surface = "formal_live"
+	state.Config.TTS = &anchorcycle.VoiceConfig{Rate: 1, BufferSeconds: 20}
+	state.FinalReviewRecovery = &anchorcycle.FinalReviewRecovery{Paused: true, Failures: 3, Reason: "审核不可用"}
+	state.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{ID: "approved", Text: "审核已通过的原稿"}}}
+	repo := &supplyRepository{state: &state}
+	p := newCycleSupply(&Server{anchorCycles: repo}, context.Background(), &state)
+	defer p.stop()
+	var calls atomic.Int32
+	p.advance = func(context.Context, *anchorcycle.State) (*anchorcycle.State, error) {
+		calls.Add(1)
+		return nil, errors.New("must not request a new draft")
+	}
+	p.synthesize = func(ctx context.Context, _ *anchorcycle.State, _ string) (*anchorcycle.VoiceAsset, error) {
+		voice := &anchorcycle.VoiceAsset{Status: "ready", Bundle: model.LiveAgentPlanVersionVariant{AudioDurationMS: 1000}}
+		repo.mu.Lock()
+		repo.state.Accepted[0].Voice = voice
+		repo.mu.Unlock()
+		return voice, nil
+	}
+	delivered := make(chan struct{}, 1)
+	p.onReady = func(context.Context, *anchorcycle.State, anchorcycle.Segment) error {
+		delivered <- struct{}{}
+		return nil
+	}
+	p.start()
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("review outage blocked approved audio")
+	}
+	select {
+	case <-p.done:
+		t.Fatal("review outage cancelled voice producer")
+	case <-time.After(350 * time.Millisecond):
+	}
+	if calls.Load() != 0 || p.ctx.Err() != nil {
+		t.Fatal("outage still generated text or cancelled playback", calls.Load(), p.ctx.Err())
+	}
+	repo.mu.Lock()
+	skipped := len(repo.state.P0SkippedKeys)
+	repo.mu.Unlock()
+	if skipped != 0 {
+		t.Fatal("supply loop converted review outage to P0 skip")
+	}
+	p.stop()
+	<-p.done
+}
+
 func TestFormalLectureVoiceFailureReleasesSlotBeforeNextText(t *testing.T) {
 	state := cycleTestState(t)
 	state.Surface = "formal_live"
