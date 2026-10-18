@@ -1,6 +1,7 @@
 package anchorcycle
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -31,6 +32,29 @@ func ParseDirectionReview(raw string) (string, error) {
 	for _, label := range []string{"通过", "有问题", "不确定"} {
 		if first == label || strings.HasPrefix(first, label+"：") || strings.HasPrefix(first, label+":") || strings.HasPrefix(first, label+"。") || first == label+"." || strings.HasPrefix(first, label+". ") {
 			return label, nil
+		}
+	}
+	// 同义词归一：模型自由输出时可能说「不通过」「违规」，统一映射为「有问题」。
+	for _, label := range []string{"不通过", "违规", "不过"} {
+		if first == label || strings.HasPrefix(first, label+"：") || strings.HasPrefix(first, label+":") || strings.HasPrefix(first, label+"。") || first == label+"." || strings.HasPrefix(first, label+". ") {
+			return "有问题", nil
+		}
+	}
+	// 兼容 JSON 返回：上游母版冲突时模型可能返回 JSON（如 {"decision":"违规"}）。
+	// 提取 decision 并把「违规」映射为「有问题」，避免合法判断被当成解析失败。
+	if trimmed := strings.TrimSpace(raw); strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		var payload struct {
+			Decision string `json:"decision"`
+		}
+		if json.Unmarshal([]byte(trimmed), &payload) == nil {
+			switch strings.TrimSpace(payload.Decision) {
+			case "通过":
+				return "通过", nil
+			case "有问题", "违规", "不通过":
+				return "有问题", nil
+			case "不确定":
+				return "不确定", nil
+			}
 		}
 	}
 	return "", errors.New("方向审核没有完成约定判断")

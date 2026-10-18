@@ -147,23 +147,34 @@ func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcyc
 	work, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	work = withExchangeScope(work, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID, CandidateID: c.ID})
-	exchange, err := s.beginModelExchange(work, request.Stage, profile.ID, request)
-	if err != nil {
-		fail("最终文字审核记录未完成")
-		return
-	}
-	a.ExchangeID = exchange
-	started := time.Now()
-	response, err := agentgateway.CompleteSpeechEndpoint(work, profile, request)
-	response.Model, response.Provider = profile.Model, "anchor:"+profile.ID
-	err = s.finishModelExchange(work, exchange, response, response.Text, started, response.InputTokens, response.OutputTokens, err)
-	a.Raw, a.InputTokens, a.OutputTokens, a.LatencyMS = response.Text, response.InputTokens, response.OutputTokens, time.Since(started).Milliseconds()
-	if err != nil {
-		fail("最终文字审核调用未完成")
-		return
-	}
-	a.Decision, err = anchorcycle.ParseDirectionReview(response.Text)
-	if err != nil {
+	// 审核调用+解析最多尝试两次：解析失败属于技术性失败（如模型被上游 JSON
+	// 指令带偏），单独重试，不直接把该角度标记为本场跳过。
+	for attempt := 0; attempt < 2; attempt++ {
+		exchange, err := s.beginModelExchange(work, request.Stage, profile.ID, request)
+		if err != nil {
+			fail("最终文字审核记录未完成")
+			return
+		}
+		a.ExchangeID = exchange
+		started := time.Now()
+		response, err := agentgateway.CompleteSpeechEndpoint(work, profile, request)
+		response.Model, response.Provider = profile.Model, "anchor:"+profile.ID
+		err = s.finishModelExchange(work, exchange, response, response.Text, started, response.InputTokens, response.OutputTokens, err)
+		a.Raw, a.InputTokens, a.OutputTokens, a.LatencyMS = response.Text, response.InputTokens, response.OutputTokens, time.Since(started).Milliseconds()
+		if err != nil {
+			fail("最终文字审核调用未完成")
+			return
+		}
+		a.Decision, err = anchorcycle.ParseDirectionReview(response.Text)
+		if err == nil {
+			break
+		}
+		if attempt == 0 {
+			// 重置回执后重试一次；仍失败则按解析失败处理。
+			a.ExchangeID = 0
+			a.Raw, a.InputTokens, a.OutputTokens, a.LatencyMS = "", 0, 0, 0
+			continue
+		}
 		fail(err.Error())
 	}
 }

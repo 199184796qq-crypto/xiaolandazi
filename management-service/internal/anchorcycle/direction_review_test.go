@@ -30,4 +30,23 @@ func TestDirectionReviewMustMatchCurrentContentAndContext(t *testing.T) {
 			t.Fatal("ordinary punctuation became a format failure", raw, e)
 		}
 	}
+	// 容错：同义词与 JSON 返回都要能提取出结论，不能当成解析失败屏蔽角度。
+	expect := map[string]string{
+		"通过。":                 "通过",
+		"通过":                  "通过",
+		"有问题。价格与事实不一致。":     "有问题",
+		"不通过。串了规格。":          "有问题",
+		"违规：命中极限词。":          "有问题",
+		"不确定：缺信息。":           "不确定",
+		"{\"decision\":\"通过\"}": "通过",
+		"{\"decision\":\"违规\"}": "有问题",
+		"{\"decision\":\"不通过\"}": "有问题",
+		"{\"decision\":\"不确定\"}": "不确定",
+	}
+	for raw, want := range expect {
+		got, e := ParseDirectionReview(raw)
+		if e != nil || got != want {
+			t.Fatalf("ParseDirectionReview(%q) = (%q, %v), want (%q, nil)", raw, got, e, want)
+		}
+	}
 }
