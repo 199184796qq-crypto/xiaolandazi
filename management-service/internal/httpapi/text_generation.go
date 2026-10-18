@@ -181,6 +181,11 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	if side := state.CurrentFissionSide(); side != "" {
 		packet["本次切入侧面"] = side
 	}
+	// 侧面素材存在多维度/矛盾事实时，提示模型本段只讲一条主线、其余留待后续段，
+	// 避免把「6人餐」与「适合3-4人」这类互斥信息揉进同一段。
+	if hint := state.FissionFactConflictHint(); hint != "" {
+		packet["事实维度提示"] = hint
+	}
 	links := []string{}
 	for _, id := range state.HookProducts() {
 		if id != "current" {
