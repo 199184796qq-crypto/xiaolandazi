@@ -585,13 +585,13 @@ async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
     if (!current()) return
     const r = results[0]
     if (!r) { scriptNotice.value = '建议分类返回为空，请手动选择'; return }
-    const displayName = r.label || r.category
+    const displayName = factCategoryState.items.find(category => category.value === r.category)?.label || (r.label && /[\u3400-\u9fff]/.test(r.label) ? r.label : '')
     if (r.error || r.low_conf) {
-      // 低把握或判断失败：标红提示，让用户在下拉里手动确认，不自动落库。
+      // 低把握或判断失败：显示简短状态，详细原因由行内说明按钮查看。
       factTypeSuggestionMap.value = { ...factTypeSuggestionMap.value, [item.id]: r }
       scriptNotice.value = r.error
-        ? '无法自动判断该条类型，请在下拉里手动选择。'
-        : `建议类型：${displayName || '未定'}（把握不足，已标红，请确认后再选）。${r.reason || ''}`
+        ? '暂时无法建议分类，请手动选择事实类型。'
+        : '该条事实的分类需要确认，可点击“待确认”查看说明。'
       return
     }
     // 高把握：直接落库。
@@ -604,12 +604,14 @@ async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
     if (!current()) return
     formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
     delete factTypeSuggestionMap.value[item.id]
-    scriptNotice.value = `已按建议改为「${displayName}」：${r.reason || ''}`
+    scriptNotice.value = displayName ? `事实类型已更新为「${displayName}」。` : '已按建议更新事实类型。'
     void contentPools.refresh(true)
     // 可能新增了自定义分类：刷新分类下拉，让新类型立即可选。
     void loadFactCategories({ planId: plan, tenantId, suppressErrorDialog: true })
   } catch (e) {
-    scriptNotice.value = e instanceof Error ? e.message : '建议分类失败，请重试'
+    if (!current()) return
+    factTypeSuggestionMap.value = { ...factTypeSuggestionMap.value, [item.id]: { id: item.id, category: item.category, label: '', confidence: 0, low_conf: true, error: true, reason: e instanceof Error ? e.message : '建议分类失败，请重试' } }
+    scriptNotice.value = '建议分类未完成，请重试或手动选择事实类型。'
   } finally {
     if (current()) factTypeSuggestingId.value = null
   }
