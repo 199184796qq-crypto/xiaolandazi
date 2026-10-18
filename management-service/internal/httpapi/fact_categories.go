@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"net/http"
 	"os"
@@ -33,6 +34,15 @@ func (c factCategoryCatalog) contains(value string) bool {
 		}
 	}
 	return false
+}
+
+func (c factCategoryCatalog) labelOf(value string) string {
+	for _, category := range c.Categories {
+		if category.Value == value {
+			return category.Label
+		}
+	}
+	return value
 }
 
 func parseFactCategoryCatalog(raw []byte) (factCategoryCatalog, error) {
@@ -148,9 +158,21 @@ func (s *Server) liveFactCategoryCatalog(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if err == nil {
-		// 按方案行业合并行业专属事实分类（如餐饮的 appointment/per_capita 等），
-		// 否则这类事实在类型下拉里找不到 label、回退显示英文枚举值。
-		catalog, hash = mergeIndustryFactCategories(r, catalog, hash, s)
+		if planID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("plan_id")), 10, 64); planID > 0 {
+			r.SetPathValue("planID", strconv.FormatInt(planID, 10))
+			tenant, valid := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), false)
+			if !valid {
+				return
+			}
+			if _, planErr := s.store.GetLiveAgentPlan(r.Context(), tenant, planID); errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
+				writeError(w, http.StatusNotFound, "直播智能体方案不存在")
+				return
+			} else if planErr != nil {
+				writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
+				return
+			}
+			catalog, hash, err = s.planFactCategoryCatalog(r.Context(), tenant, planID)
+		}
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -182,20 +204,19 @@ func (s *Server) tenantFactCategoryCatalog(ctx context.Context, tenant int64) (f
 	return catalog, hash, nil
 }
 
-// mergeIndustryFactCategories 把方案所选行业的专属事实分类合并进目录。
-// 请求带 plan_id 时生效；行业包不存在或未选行业时原样返回。
-func mergeIndustryFactCategories(r *http.Request, catalog factCategoryCatalog, hash string, s *Server) (factCategoryCatalog, string) {
-	planID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("plan_id")), 10, 64)
-	if planID <= 0 {
-		return catalog, hash
+// Share the deployed global/custom/industry catalog between display, manual
+// saves and suggestions, so every displayed option can be saved unchanged.
+func (s *Server) planFactCategoryCatalog(ctx context.Context, tenant, planID int64) (factCategoryCatalog, string, error) {
+	catalog, hash, err := s.tenantFactCategoryCatalog(ctx, tenant)
+	if err != nil {
+		return catalog, hash, err
 	}
-	tenant := requestTenantID(r)
-	if tenant <= 0 {
-		return catalog, hash
+	pack, err := s.loadIndustryPackForPlan(ctx, tenant, planID)
+	if err != nil {
+		return catalog, hash, err
 	}
-	pack, err := s.loadIndustryPackForPlan(r.Context(), tenant, planID)
-	if err != nil || pack == nil || len(pack.FactCategories) == 0 {
-		return catalog, hash
+	if pack == nil || len(pack.FactCategories) == 0 {
+		return catalog, hash, nil
 	}
 	added := false
 	for _, item := range pack.FactCategories {
@@ -206,12 +227,26 @@ func mergeIndustryFactCategories(r *http.Request, catalog factCategoryCatalog, h
 		added = true
 	}
 	if !added {
-		return catalog, hash
+		return catalog, hash, nil
 	}
 	raw, _ := json.Marshal(catalog.Categories)
 	hash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	catalog.Version += ":" + hash[:12]
-	return catalog, hash
+	return catalog, hash, nil
+}
+
+func (s *Server) validatePlanFactCategory(ctx context.Context, tenant, planID int64, category string) error {
+	if strings.TrimSpace(category) == "" {
+		return errors.New("事实类型不能为空")
+	}
+	catalog, _, err := s.planFactCategoryCatalog(ctx, tenant, planID)
+	if err != nil {
+		return err
+	}
+	if !catalog.contains(category) {
+		return errors.New("事实分类无效，请刷新分类列表后重新选择")
+	}
+	return nil
 }
 
 func (s *Server) validateTenantFactCandidate(ctx context.Context, tenant int64, candidate model.LiveAgentPlanFactCandidate) error {
