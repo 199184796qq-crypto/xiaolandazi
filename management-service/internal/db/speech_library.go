@@ -14,6 +14,7 @@ import (
 // to active text/audio. Retired owned objects are collected after references end.
 func (s *Store) MigrateSpeechLibrary(ctx context.Context) error {
 	for _, q := range []string{
+		speechLibraryOpeningSchema,
 		`CREATE TABLE IF NOT EXISTS mgmt_speech_library_rooms (room_key CHAR(64) CHARACTER SET ascii PRIMARY KEY, tenant_id BIGINT NOT NULL, plan_id BIGINT NOT NULL, room_id BIGINT NOT NULL, runtime_id BIGINT NOT NULL, context_sha CHAR(64) CHARACTER SET ascii NOT NULL) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS mgmt_speech_library_slots (
  scope_key CHAR(64) CHARACTER SET ascii PRIMARY KEY, room_key CHAR(64) CHARACTER SET ascii NOT NULL, tenant_id BIGINT NOT NULL, plan_id BIGINT NOT NULL, room_id BIGINT NOT NULL,

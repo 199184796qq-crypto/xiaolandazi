@@ -750,6 +750,12 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if err != nil {
 		return nil, errors.New(err.Error())
 	}
+	if state.Config.TextProfileID == "" {
+		prompt, err = s.initialLegacyOpeningPrompt(ctx, state, prompt)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if state.LibrarySourceSHA == "" {
 		state.LibrarySourceSHA = anchorcycle.ProductDigest(state.Queue)
 	}
@@ -777,10 +783,10 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if libraryEntry != nil {
 		reuseEntry = &anchorcycle.SpeechPoolEntry{Text: libraryEntry.Candidate.Text}
 	}
-	// 开场(opening)话术不得缓存复用：开场是直播冷启动/每轮开头的第一段，须每次实时生成；
-	// 且 SpeechPool 只收录 body 话术，opening 若复用会误把 body 话术当开场复读。
-	if s.speechLibrary == nil && state.Phase != "opening" && state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
-		reuseEntry = state.PickReuse(state.Task().Key)
+	// Only the first opening is always fresh. Other phases have separate keys,
+	// so a body paragraph can never masquerade as a later opening or closing.
+	if s.speechLibrary == nil && !state.FirstLiveOpening() && (state.Surface == "formal_live" || state.Phase != "opening") && state.ShouldReuse() && s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
+		reuseEntry = state.PickReuse(state.ReuseTaskKey())
 	}
 	reportCycleProgress(ctx, 25)
 	var text, rawText string
@@ -800,10 +806,19 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 			return nil, err
 		}
 		started := time.Now()
-		result, actual, callErr := s.completeCycleText(ctx, state)
+		result, actual, callErr := s.completeLiveCycleText(ctx, state)
 		state.Busy = false
 		prompt = traceAnchorStyleWorkbenchMessages(actual).System + "\n\n" + traceAnchorStyleWorkbenchMessages(actual).User
 		if callErr != nil {
+			if errors.Is(callErr, errFirstOpeningRepeated) || errors.Is(callErr, errFirstOpeningPreparation) {
+				state.Status, state.Error = "content_blocked", callErr.Error()
+				if errors.Is(callErr, errFirstOpeningRepeated) {
+					state.Error += "，两次实时生成均重复，未使用旧稿或转入TTS"
+				}
+				persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
+				defer cancel()
+				return state, s.anchorCycles.Save(persist, state)
+			}
 			state.SkipGeneration("text_generation", callErr.Error())
 			s.queueGenerationSkip(state, "text_generation", callErr.Error())
 			persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
@@ -895,6 +910,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	score := anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
 	retry := buildAnchorStyleScoreFeedback(score, b)
 	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: "model_raw_text", Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	candidate.ReuseOrigin = "fresh"
 	if libraryEntry != nil {
 		candidate = libraryEntry.Candidate
 		candidate.ID = libraryTrack
@@ -903,6 +919,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		candidate.ScoreScope = "speech_library_reused"
 		candidate.GenerationMS = 0
 		candidate.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		candidate.ReuseOrigin = "library"
 	}
 	if libraryDecision != "" {
 		candidate.ID = libraryTrack
@@ -914,9 +931,9 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		candidate.AngleHook = state.CurrentAngleHook()
 		candidate.HookCalculations, _ = state.CurrentHookCalculations()
 	}
-	// 记录本段切入侧面，供声音缓存 group 纳入侧面（新生成的才记录；复用段侧面留空，
-	// 走话术复用旧音频，不进声音缓存）。
-	if reuseEntry == nil {
+	// Persistent entries carry their frozen side. Session-pool matches also
+	// freeze the selected side, so later rotation and audio keys stay aligned.
+	if libraryEntry == nil {
 		candidate.FissionSide = state.CurrentFissionSide()
 	}
 	if patch != nil {
@@ -927,6 +944,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	}
 	if reuseEntry != nil && libraryEntry == nil {
 		candidate.OutputText, candidate.ScoreScope = reuseEntry.Text, "speech_pool_reused"
+		candidate.ReuseOrigin = "session_pool"
 	} else if libraryEntry == nil && state.Config.RepairPunctuation {
 		postprocessStarted := time.Now()
 		candidate.OutputText, candidate.PunctuationEdits = anchorcycle.RepairPunctuation(text, state.StyleMD, state.Config.MaxChars)
@@ -942,6 +960,12 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	cleanCycleConsecutiveSpeech(state, &candidate)
 	if candidate.OutputText == "" {
 		return s.skipExactDuplicateCandidate(ctx, state, candidate)
+	}
+	if state.FirstLiveOpening() && firstOpeningRepeated(candidate.OutputText, state.FirstOpeningHistory) {
+		state.Busy, state.Status, state.Error = false, "content_blocked", "首次开场仍与近期本方案开场重复，未采纳、未转入TTS"
+		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
+		defer cancel()
+		return state, s.anchorCycles.Save(persist, state)
 	}
 	if textControlLeak(candidate.OutputText) {
 		candidate.P0PatchError = "正文包含明确的内部控制字段"
@@ -984,6 +1008,11 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	reviewState := *state
 	s.prepareApprovedLibraryText(ctx, state, &candidate)
 	adopted, err := state.AddCandidate(candidate, b)
+	if adopted && reviewState.FirstLiveOpening() {
+		if historyErr := s.rememberFirstLiveOpening(ctx, &reviewState, state.Accepted[len(state.Accepted)-1].Selected); historyErr != nil {
+			state.Warn("本方案开场避重历史保存失败：" + historyErr.Error())
+		}
+	}
 	if !adopted && candidate.LibraryDecision != "" {
 		_ = s.speechLibrary.Cancel(ctx, candidate.LibraryDecision)
 	}

@@ -87,8 +87,8 @@ type Config struct {
 	CombinationGap         int          `json:"combination_gap"`
 	MinReappearCycles      int          `json:"min_reappear_cycles"`  // 同一卖点×角度至少隔 N 轮再出现；0 表示不启用轮级冷却
 	MaxCycles              int          `json:"max_cycles"`           // Zero means until explicitly stopped.
-	FreshWindowMinutes     int          `json:"fresh_window_minutes"` // 开播前 N 分钟全实时；0 表示不启用话术复用
-	ReuseEveryN            int          `json:"reuse_every_n"`        // 混合期每 N 段 1 段实时，其余复用旧话术；0 或 1 表示每段都实时
+	FreshWindowMinutes     int          `json:"fresh_window_minutes"` // 非正式场的新鲜期；正式场首开实时、后续七三混合；负值禁用复用
+	ReuseEveryN            int          `json:"reuse_every_n"`        // 非正式场每 N 段实时一次；正式场采用七三混合；负值禁用复用
 	MaxReuse               int          `json:"max_reuse"`            // 单段话术最多复用次数，达到后淘汰
 	TTS                    *VoiceConfig `json:"tts,omitempty"`
 	ComplianceScope        string       `json:"compliance_scope,omitempty"`
@@ -121,6 +121,7 @@ type P0Allowance struct {
 	Decision    string `json:"decision"`
 }
 type Candidate struct {
+	ReuseOrigin             string                                `json:"reuse_origin,omitempty"` // fresh, library, session_pool
 	LibraryEntryID          string                                `json:"library_entry_id,omitempty"`
 	LibraryDecision         string                                `json:"library_decision,omitempty"`
 	LibraryTextSHA          string                                `json:"library_text_sha,omitempty"`
@@ -189,6 +190,8 @@ type SpeechPoolEntry struct {
 	LastIndex  int    `json:"last_index"`
 }
 type State struct {
+	FirstOpeningHistory          []string                       `json:"first_opening_history,omitempty"`
+	FirstOpeningHistoryLoaded    bool                           `json:"first_opening_history_loaded,omitempty"`
 	DeliveryQuotaRebalance       bool                           `json:"delivery_quota_rebalance,omitempty"`
 	FinalReviewRecovery          *FinalReviewRecovery           `json:"final_review_recovery,omitempty"`
 	LibrarySourceSHA             string                         `json:"library_source_sha,omitempty"`
@@ -817,8 +820,8 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		if s.Phase == "body" && !wasHook {
 			s.recordScheduledAdoption(task)
 		}
-		if s.Phase == "body" && task.ProductMode != "auxiliary" {
-			s.AddToSpeechPool(spokenCandidate(selected), task.Key)
+		if task.ProductMode != "auxiliary" && (s.Phase == "body" || s.Surface == "formal_live" && (s.Phase == "opening" || s.Phase == "closing")) {
+			s.AddToSpeechPool(spokenCandidate(selected), s.reuseTaskKey(selected.FissionSide))
 		}
 	}
 	if wasLecture {

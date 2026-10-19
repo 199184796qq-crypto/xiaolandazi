@@ -111,7 +111,7 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		return "", errors.New("话术库需要完整P0及文字和审核模型快照")
 	}
 	mothers := map[string]string{}
-	for _, name := range []string{"mainline-text-task.md", "mainline-final-content-review.md", "speech-constraint-text-review.md", "angle-hook-plan.md", "fact-purpose-angle-generation.md"} {
+	for _, name := range []string{"mainline-text-task.md", "mainline-final-content-review.md", "speech-constraint-text-review.md", "angle-hook-plan.md", "fact-purpose-angle-generation.md", "first-live-opening.md"} {
 		b, e := interactionpolicy.Read(name)
 		if e != nil {
 			return "", e
@@ -144,7 +144,7 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		Version string
 		Sides   []string
 		Mapping map[string][]string
-	}{"explicit-scope-and-strategy-v1", state.FissionSides, state.FactSideMap})
+	}{"phase-side-and-initial-opening-v2", state.FissionSides, state.FactSideMap})
 	config := state.Config
 	config.TTS = nil
 	config.CredentialID = ""
@@ -192,6 +192,24 @@ func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segm
 		plan = state.CurrentAnglePlan()
 	}
 	text, e := libraryTextSHA(state, segment.Task, plan)
+	phase := segment.Phase
+	if phase == "" {
+		phase = state.Phase
+	}
+	opening := ""
+	if phase == "opening" {
+		opening = segment.OpeningVersion
+		if opening == "" {
+			opening = state.OpeningVersion()
+		}
+	}
+	side := segment.Selected.FissionSide
+	if segment.Selected.ID == "" {
+		side = state.CurrentFissionSide()
+	}
+	// Phase and side belong to a frozen segment, never the producer's next task.
+	// Keep them out of RoomContext, or every phase change invalidates the room.
+	text = lib.Digest(struct{ Contract, Phase, Opening, Side string }{text, phase, opening, side})
 	base, be := libraryTextSHA(state, anchorcycle.Task{}, nil)
 	if e == nil {
 		e = be
@@ -200,10 +218,14 @@ func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segm
 	if slot == "" {
 		slot = segment.Task.Key
 	}
+	if phase != "body" {
+		slot = phase + ":" + opening + ":" + slot
+	}
 	return lib.Scope{Realm: s.executionRealm, Tenant: state.TenantID, Plan: state.PlanID, Room: state.RoomID, Runtime: state.Delivery.RuntimeSessionID, Slot: slot, TextContext: text, VoiceContext: libraryVoiceSHA(state), RoomContext: base}, e
 }
 func libraryEligible(state *anchorcycle.State) bool {
-	return state.Surface == "formal_live" && state.Phase == "body" && state.Task().ProductMode != "lecture" && state.Task().ProductMode != "auxiliary" && state.PreviewLimitMS == 0 && state.Config.TTS != nil && len(state.Attempts) == 0 && state.P0PendingRepair == nil && state.PriceHook == nil && state.PendingFeedback == "" && !libraryDeadlineSensitive(state)
+	phase := state.Phase == "body" || state.Phase == "closing" || state.Phase == "opening" && !state.FirstLiveOpening()
+	return state.Surface == "formal_live" && phase && state.SpeechReuseEnabled() && state.Task().ProductMode != "lecture" && state.Task().ProductMode != "auxiliary" && state.PreviewLimitMS == 0 && state.Config.TTS != nil && len(state.Attempts) == 0 && state.P0PendingRepair == nil && state.PriceHook == nil && state.PendingFeedback == "" && !libraryDeadlineSensitive(state)
 }
 func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State, b anchorstylescore.Baseline) (*lib.Entry, string, string, string) {
 	if s.speechLibrary == nil || !libraryEligible(state) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
@@ -219,6 +241,13 @@ func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State
 		state.Warn("话术库配置不可用，正常生成")
 		return nil, "", "", ""
 	}
+	// Decide the mix once from adopted outputs. Do not multiply the 70% quota by
+	// the old per-slot 30/60/70 probability a second time.
+	rate := 0
+	if state.ShouldReuse() {
+		rate = 100
+	}
+	policy.OneRate, policy.TwoRate, policy.FullRate = rate, rate, rate
 	decision := lib.Digest(struct {
 		Run, Slot, Text, Voice string
 		Position               int
@@ -233,6 +262,10 @@ func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State
 	if choice.TrackID != "" {
 		track = choice.TrackID
 	}
+	if rate == 0 && choice.Entry != nil {
+		_ = s.speechLibrary.Cancel(ctx, decision)
+		return nil, "", "", ""
+	}
 	if choice.Entry != nil {
 		c := choice.Entry.Candidate
 		// Only current approval receipts can authorize reuse, without model rescans.
@@ -246,7 +279,9 @@ func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State
 		if e != nil || !libraryHookCurrent(state, c) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(c) || state.CheckApprovedText(c, cycleVoiceText(c)) != nil || copy.OutputText != c.OutputText || anchorstylescore.Measure(c.OutputText, b).Chars > state.Config.MaxChars || c.Score.OverallScore < state.Config.Threshold || anchorcycle.InspectPrice(c.OutputText, state.Task()).Hook != "" {
 			_ = s.speechLibrary.Cancel(ctx, decision)
 			log.Printf("speech library room=%d decision=%s reason=receipt_or_recent_invalid", state.RoomID, decision)
-			return nil, decision, track, sc.TextContext
+			// The cancelled lease cannot publish the fresh fallback. Let the
+			// approved fresh path reserve a new, active storage decision.
+			return nil, "", "", ""
 		}
 	}
 	return choice.Entry, decision, track, sc.TextContext
@@ -276,7 +311,8 @@ func (s *Server) libraryReviewContext(state *anchorcycle.State, c anchorcycle.Ca
 // A finally approved repair is as reusable as a first draft. This reserves
 // storage only; it never selects old text during a repair or promise task.
 func (s *Server) prepareApprovedLibraryText(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
-	if c.LibraryDecision != "" || s.speechLibrary == nil || state.Surface != "formal_live" || state.Phase != "body" || state.Config.TTS == nil || state.PriceHook != nil || state.PendingFeedback != "" || state.Task().ProductMode == "lecture" || state.Task().ProductMode == "auxiliary" || libraryDeadlineSensitive(state) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(*c) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
+	phase := state.Phase == "body" || state.Phase == "closing" || state.Phase == "opening" && !state.FirstLiveOpening()
+	if c.LibraryDecision != "" || s.speechLibrary == nil || state.Surface != "formal_live" || !phase || state.Config.TTS == nil || state.PriceHook != nil || state.PendingFeedback != "" || state.Task().ProductMode == "lecture" || state.Task().ProductMode == "auxiliary" || libraryDeadlineSensitive(state) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(*c) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		return
 	}
 	if anchorcycle.InspectPrice(c.OutputText, state.Task()).Hook != "" {

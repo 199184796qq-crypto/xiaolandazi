@@ -50,10 +50,13 @@ func (s *State) elapsedMinutes() int {
 }
 
 // ShouldReuse 判断当前这一段是否复用旧话术。
-// 新鲜期（前 freshWindowMinutes 分钟）全实时；混合期按 reuseEveryN 交替（每 N 段 1 段实时，其余复用）。
+// 正式场首次开场实时，其后普通主线按七三混合；其它表面保留旧新鲜期及 N 段交替策略。
 func (s *State) ShouldReuse() bool {
 	if !s.SpeechReuseEnabled() {
 		return false
+	}
+	if s.Surface == "formal_live" {
+		return s.formalMainlineShouldReuse()
 	}
 	if s.elapsedMinutes() < s.freshWindowMinutes() {
 		return false
@@ -95,7 +98,7 @@ func (s *State) PickReuse(key string) *SpeechPoolEntry {
 	return &s.SpeechPool[best]
 }
 
-// AddToSpeechPool 生成并采纳一段 body 话术后入池（按文本去重，复用段不会重复入池）。
+// AddToSpeechPool 采纳后入池；正式场按环节、卖点角度及侧面分别匹配。
 func (s *State) AddToSpeechPool(text, key string) {
 	if text == "" {
 		return

@@ -125,7 +125,9 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 	started := time.Now()
 	var cached *anchorcycle.VoiceAsset
 	var cacheErr error
-	if segment.Selected.LibraryDecision != "" {
+	if initialOpeningSegment(state, *segment) {
+		// Initial opening text and TTS must both be produced for this live run.
+	} else if segment.Selected.LibraryDecision != "" {
 		cached, cacheErr = s.libraryVoice(ctx, state, *segment)
 	} else {
 		cached, cacheErr = s.cachedCycleVoice(ctx, state, *segment)
