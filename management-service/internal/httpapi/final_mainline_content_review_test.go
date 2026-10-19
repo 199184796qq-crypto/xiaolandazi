@@ -94,7 +94,8 @@ func TestCompletedRequirementRejectionIsNotAFormatOrTransportFailure(t *testing.
 	if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || ok {
 		t.Fatal("rejected requirement was adopted", ok, err)
 	}
-	if s.P0PendingRepair == nil || s.P0PendingRepair.Reason != c.ExpressionAudit.Reason || len(s.GenerationSkips) != 0 || len(s.P0SkippedKeys) != 0 || s.FinalReviewRecovery != nil {
-		t.Fatal("requirement rejection bypassed local repair or lost reason", s.P0PendingRepair, s.GenerationSkips)
+	// 局部重写已移除：违规不再设 P0PendingRepair，而是直接跳过（记入 GenerationSkips）。
+	if s.P0PendingRepair != nil || len(s.GenerationSkips) == 0 || s.GenerationSkips[len(s.GenerationSkips)-1].Stage != "final_content_review" || s.FinalReviewRecovery != nil {
+		t.Fatal("requirement rejection should skip directly instead of local repair", s.P0PendingRepair, s.GenerationSkips)
 	}
 }

@@ -60,6 +60,19 @@ type OpeningHook struct {
 	RequiredQuantities []string          `json:"required_quantities,omitempty"`
 }
 
+// OpeningSelection 是首场开场「两次调用」中第一次选材的模型输出。
+// 卖点/开场方式由程序按 RunID 轮换决定，角度由模型在该卖点内挑一个。
+// LinkKey 记录选定卖点绑定的商品链接（商品专属卖点才有，公共卖点为空），
+// Common 标记该卖点是否公共卖点（门店/停车/环境等，跨商品共享，事实不绑单一 LinkKey）。
+// 第二次写话术据此分流：商品专属按 LinkKey 筛事实，公共卖点放开 branding 事实。
+type OpeningSelection struct {
+	SellingPoint string `json:"卖点"`
+	Angle        string `json:"角度"`
+	OpeningMode  string `json:"开场方式"`
+	LinkKey      string `json:"链接,omitempty"`
+	Common       bool   `json:"公共,omitempty"`
+}
+
 var hookSlot = regexp.MustCompile(`\{([^{}]+)\}`)
 var hookJSONBlock = regexp.MustCompile("(?s)```json\\s*(.*?)\\s*```")
 

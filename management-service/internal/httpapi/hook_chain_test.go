@@ -24,11 +24,11 @@ func TestHookPacketUsesSelectedCardAndWorkMemoryWithoutOldSpeech(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if strings.Contains(m[1].Content, "一桌人吃") || strings.Contains(m[1].Content, "省3块多") || !strings.Contains(m[1].Content, `"result":"2.2"`) {
-		t.Fatal(m[1].Content)
+	if strings.Contains(m[0].Content, "一桌人吃") || strings.Contains(m[0].Content, "省3块多") || !strings.Contains(m[0].Content, `"result":"2.2"`) {
+		t.Fatal(m[0].Content)
 	}
 	var packet map[string]any
-	json.Unmarshal([]byte(m[1].Content), &packet)
+	json.Unmarshal([]byte(m[0].Content), &packet)
 	if packet["角度钩子工作卡"] == nil || packet["近期已采用任务记录（不代表已播放）"] == nil {
 		t.Fatal(packet)
 	}
@@ -44,7 +44,7 @@ func TestHookFallbackStillRendersAndDoesNotReciteOldAngle(t *testing.T) {
 	s.Facts = "已确认事实"
 	s.AnglePlans = map[string]*anchorcycle.AnglePlan{s.AnglePlanKey(): {PlanError: "timeout"}}
 	m, e := renderCycleTextMessages(&s)
-	if e != nil || strings.Contains(m[1].Content, "旧范文原句") {
+	if e != nil || strings.Contains(m[0].Content, "旧范文原句") {
 		t.Fatal(m, e)
 	}
 }
@@ -60,8 +60,8 @@ func TestPlannerDisabledSendsAngleName(t *testing.T) {
 		t.Fatal(e)
 	}
 	// 角度钩子默认关闭：正文直接用卖点×角度名，不再被清空。
-	if !strings.Contains(m[1].Content, "按包装解释保存条件") {
-		t.Fatal("角度名未发送", m[1].Content)
+	if !strings.Contains(m[0].Content, "按包装解释保存条件") {
+		t.Fatal("角度名未发送", m[0].Content)
 	}
 }
 func TestHookCacheIdentityWithoutHookChain(t *testing.T) {

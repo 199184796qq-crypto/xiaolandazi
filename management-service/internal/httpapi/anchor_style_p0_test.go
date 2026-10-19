@@ -72,21 +72,6 @@ func TestP0PromptBootstrapRepairAndNormalOutputReset(t *testing.T) {
 	if strings.Contains(follow, s.StyleMD) || strings.Contains(follow, "l1.p0.absolute_claim") || !strings.Contains(follow, "恢复纯话术") {
 		t.Fatal("bootstrap repeated or JSON mode not reset", follow)
 	}
-	p, _ := contentguard.Compile(s.P0PolicyMD)
-	repair := contentguard.PlanRepair("安全句。零风险。", p.Scan("安全句。零风险。", "ordinary_food"), 1)
-	s.P0PendingRepair = &repair
-	prompt, err := renderAnchorCyclePrompt(&s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"part_1", "replacements", "零风险", "300"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatal("missing repair data", want)
-		}
-	}
-	if strings.Contains(prompt, "{{") || strings.Contains(prompt, "当前环节：开场") {
-		t.Fatal("normal task polluted partial repair", prompt)
-	}
 }
 
 func TestP0VoiceAndCacheGateBeforeAnyOSSWork(t *testing.T) {

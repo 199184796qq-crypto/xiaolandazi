@@ -28,19 +28,6 @@ func installP0Mother(state *anchorcycle.State) error {
 	return state.InstallP0(md, source)
 }
 
-func renderP0Repair(state *anchorcycle.State) (string, error) {
-	md, _, err := loadReplaceablePromptAsset("ANCHOR_STYLE_P0_REPAIR_PROMPT_PATH", "configs/prompts/anchor-style/compliance/L1/p0-local-rewrite.md", "P0局部重写母版")
-	if err != nil {
-		return "", err
-	}
-	rules, err := state.P0RulesJSON()
-	if err != nil {
-		return "", err
-	}
-	raw, _ := json.Marshal(state.P0PendingRepair)
-	return renderStablePrefixTemplate(md, "{{p0_rules}}", rules, "{{repair_request}}", string(raw), "{{max_chars}}", strconv.Itoa(state.Config.MaxChars)), nil
-}
-
 func renderP0Boundary(state *anchorcycle.State) (string, error) {
 	if state.P0PolicyMD == "" {
 		return "", nil

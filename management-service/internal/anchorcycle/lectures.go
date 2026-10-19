@@ -33,6 +33,9 @@ type LectureAudit struct {
 }
 
 func (s *State) LectureCandidateApproved(c Candidate) bool {
+	if s.Config.SkipReview {
+		return true
+	}
 	if constraints := s.EffectiveExpressionConstraints(); len(constraints) > 0 {
 		a := c.ExpressionAudit
 		if a == nil || !a.Passed || a.Error != "" || a.TextSHA != ProductDigest(spokenCandidate(c)) || a.ScopeSHA != ProductDigest(constraints) {

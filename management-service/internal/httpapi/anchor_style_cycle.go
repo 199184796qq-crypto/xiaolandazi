@@ -474,9 +474,6 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 		}
 		return traceAnchorStyleWorkbenchMessages(messages).System + "\n\n" + traceAnchorStyleWorkbenchMessages(messages).User, nil
 	}
-	if state.P0PendingRepair != nil {
-		return renderP0Repair(state)
-	}
 	md, _, err := loadReplaceablePromptAsset("ANCHOR_STYLE_CYCLE_SEGMENT_PROMPT_PATH", "configs/prompts/anchor-style/cycle-segment-generation.md", "大循环逐段提示词")
 	if err != nil {
 		return "", err

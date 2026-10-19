@@ -35,12 +35,12 @@ func TestMainlineSideMaterialCannotReenterThroughContentStrategy(t *testing.T) {
 		}
 	}
 	var packet map[string]any
-	if err := json.Unmarshal([]byte(messages[1].Content), &packet); err != nil {
+	if err := json.Unmarshal([]byte(messages[0].Content), &packet); err != nil {
 		t.Fatal(err)
 	}
-	strategy, _ := packet["内容方向与采用条件"].(string)
-	if !strings.Contains(strategy, "价格角度") || !strings.Contains(strategy, "337元") {
-		t.Fatal("matching strategy material lost")
+	// 内容策略表已移除：不再注入「内容方向与采用条件」，侧面事实只由「可说」承载。
+	if _, ok := packet["内容方向与采用条件"]; ok {
+		t.Fatal("内容方向与采用条件 should be removed from generation packet")
 	}
 	if len(packet["可说"].([]any)) != 1 {
 		t.Fatal("side facts not filtered")
@@ -71,7 +71,7 @@ func TestMainlineSideMaterialCannotReenterThroughContentStrategy(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ = json.Marshal(messages)
-	if !strings.Contains(string(raw), "核销限定测试事实") || !strings.Contains(string(raw), "核销角度") {
+	if !strings.Contains(string(raw), "核销限定测试事实") {
 		t.Fatal("selected-side conditions lost")
 	}
 }

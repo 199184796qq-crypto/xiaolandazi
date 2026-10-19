@@ -73,7 +73,7 @@ func TestCorrectionRendererRetainsP0AndRuleWithoutModelIDs(t *testing.T) {
 		t.Fatal(e)
 	}
 	raw, _ := json.Marshal(messages)
-	if !strings.Contains(string(raw), "用户已确认的长期纠正规则") || !strings.Contains(string(raw), "有效P0") || strings.Contains(string(raw), "private-correction") {
+	if !strings.Contains(string(raw), "不建议机洗") || !strings.Contains(string(raw), "不提红线词") || strings.Contains(string(raw), "private-correction") {
 		t.Fatal("rule/P0 missing or internal identity leaked", string(raw))
 	}
 	set.Pools[0].Tasks[0].Disabled = true

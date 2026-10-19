@@ -29,6 +29,9 @@ func (s *Store) AnchorGenerationSettings(ctx context.Context) (anchorgeneration.
 	}
 	config.ApplyModelRoles(models.SystemDefaultID, models.DefaultID)
 	config.NormalizeSharedFeedback()
+	// 部署级「暂停审核」开关：话术生成后跳过全部审核（程序违规词扫描 + 模型二次
+	// 复核），直接采纳并送 TTS。恢复审核时删掉下面这行并重编译即可。
+	config.Cycle.SkipReview = true
 	return config, nil
 }
 

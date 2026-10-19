@@ -23,6 +23,7 @@ func textTestBaseline() string {
 }
 func TestDirectMainlineOwnsBoundedContextAndNoFilledHookSkeleton(t *testing.T) {
 	state := cycleTestState(t)
+	state.Phase = "body" // 主线中段：验证避重内容有界 + 不泄漏钩子骨架（开场段不再避重）
 	state.Config.TextProfileID = "plus"
 	state.BaselineJSON = textTestBaseline()
 	state.StyleMD = "旧范文：油69.9元假一赔十"
@@ -33,25 +34,21 @@ func TestDirectMainlineOwnsBoundedContextAndNoFilledHookSkeleton(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 {
+	if len(messages) != 1 {
 		t.Fatal(messages)
 	}
-	// 可说事实已挪到 user（保持 system 稳定前缀以命中上下文缓存），
-	// 校验 facts 出现在 user 而非 system。
-	if strings.Contains(messages[0].Content, state.Facts) {
-		t.Fatal("可说事实不应留在 system，否则前缀缓存每段失效")
-	}
-	if !strings.Contains(messages[1].Content, state.Facts) {
+	// 改造后不再设 system：全部约束并进单条 user。可说事实应在 user 中。
+	if !strings.Contains(messages[0].Content, state.Facts) {
 		t.Fatal("可说事实应出现在 user 中")
 	}
-	// StyleMD 现在有意注入 system（主播风格母版），其中的样例文随母版进入 prompt 属预期；
+	// StyleMD 现在随腔调卡注入 user（主播风格），其中的样例文进入 prompt 属预期；
 	// 仍须拦截的是钩子骨架占位符与结构字段泄漏。
-	if strings.Contains(messages[1].Content, "{目标人群}") || strings.Contains(messages[1].Content, "FilledTemplate") {
+	if strings.Contains(messages[0].Content, "{目标人群}") || strings.Contains(messages[0].Content, "FilledTemplate") {
 		t.Fatal("sample claim or filled skeleton leaked")
 	}
 	var dynamic map[string]any
-	if json.Unmarshal([]byte(messages[1].Content), &dynamic) != nil {
-		t.Fatal(messages[1].Content)
+	if json.Unmarshal([]byte(messages[0].Content), &dynamic) != nil {
+		t.Fatal(messages[0].Content)
 	}
 	if len([]rune(dynamic["近期已采用内容仅供避重"].(string))) > 2400 {
 		t.Fatal("unbounded context")

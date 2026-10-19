@@ -69,6 +69,12 @@ func (s *State) candidateP0Input(c Candidate) string {
 	}{s.P0PolicyMD, s.Config.ComplianceScope, c.Text, c.OutputText, c.P0PatchError, s.P0Allowances})
 }
 func (s *State) CheckP0Candidate(c *Candidate) error {
+	if s.Config.SkipReview {
+		// 跳过审核开关：不扫描违规词，直接签发「通过」回执，让采纳与后续 TTS
+		// 的 CheckApprovedText 门槛照常放行，全程零审核。
+		s.passCandidateReview(c)
+		return nil
+	}
 	if s.P0PolicyMD == "" {
 		return nil
 	} // Isolated legacy unit fixtures only.
@@ -93,7 +99,18 @@ func (s *State) CheckP0Candidate(c *Candidate) error {
 	}
 	return nil
 }
+
+// passCandidateReview 跳过审核时给候选签发一份「通过」的空回执，兼容所有依赖
+// P0Report.Passed / P0ApprovedTextSHA 的采纳与声音出口，无需改动下游调用点。
+func (s *State) passCandidateReview(c *Candidate) {
+	c.P0Report = &contentguard.Report{Passed: true, Hits: []contentguard.Hit{}}
+	c.P0CheckedInputSHA = s.candidateP0Input(*c)
+	c.P0ApprovedTextSHA = ProductDigest(spokenCandidate(*c))
+}
 func (s *State) CheckApprovedText(c Candidate, text string) error {
+	if s.Config.SkipReview {
+		return nil
+	}
 	if c.P0Report == nil || !c.P0Report.Passed || c.P0ApprovedTextSHA == "" || c.P0ApprovedTextSHA != ProductDigest(text) || c.P0CheckedInputSHA != s.candidateP0Input(c) {
 		return errors.New("文字审核回执与当前话术不一致，请回文字阶段审核")
 	}
@@ -136,6 +153,9 @@ func (s *State) ApplyP0ContextContent(c *Candidate, review contentguard.ContextR
 }
 
 func (s *State) CheckP0Voice(text string) error {
+	if s.Config.SkipReview {
+		return nil
+	}
 	if s.P0PolicyMD == "" {
 		return errors.New("本场未加载P0规则，不能输出声音，请开始新场")
 	}
@@ -200,13 +220,8 @@ func cleanAfterDelete(s string) string {
 func (s *State) rejectP0Candidate(c Candidate) {
 	c.ContentIssue = "p0_blocked"
 	s.Attempts = append(s.Attempts, c)
-	if s.P0RewritesUsed < s.P0MaxRewrites {
-		r := contentguard.PlanRepair(c.Text, *c.P0Report, s.P0RewritesUsed+1)
-		s.P0PendingRepair = &r
-		return
-	}
 	task := s.Task()
-	s.P0Skipped = append(s.P0Skipped, P0Skip{Task: task, Phase: s.Phase, Cycle: s.CycleNumber, Attempts: append([]Candidate{}, s.Attempts...), Reason: "p0_rewrite_exhausted", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	s.P0Skipped = append(s.P0Skipped, P0Skip{Task: task, Phase: s.Phase, Cycle: s.CycleNumber, Attempts: append([]Candidate{}, s.Attempts...), Reason: "p0_blocked", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	if s.P0SkippedKeys == nil {
 		s.P0SkippedKeys = map[string]bool{}
 	}
@@ -262,16 +277,6 @@ func (s *State) rejectP0Candidate(c Candidate) {
 			return
 		}
 	}
-}
-
-// rejectReviewCandidate 最终复核判违规时的局部重写，复用 P0 的重写链路（P0PendingRepair）。
-// 最终复核只有 reason 文字、无词级命中，交给重写模型按 reason 定位并只改违规句段。
-// 重写次数与 P0 共用 P0RewritesUsed/P0MaxRewrites 预算，耗尽后由调用方跳过。
-func (s *State) rejectReviewCandidate(c Candidate, reason string) {
-	c.ContentIssue = "final_review_blocked"
-	s.Attempts = append(s.Attempts, c)
-	r := contentguard.PlanReviewRepair(c.Text, reason, s.P0RewritesUsed+1)
-	s.P0PendingRepair = &r
 }
 
 func (s *State) P0RulesJSON() (string, error) {

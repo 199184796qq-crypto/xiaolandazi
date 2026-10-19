@@ -28,6 +28,7 @@ type HookFact struct {
 	Products           []string            `json:"product_ids"`
 	Benefits           []string            `json:"benefit_ids"`
 	Data               string              `json:"data"`
+	Shared             bool                `json:"shared,omitempty"`
 }
 
 // Captured by the program from the saved task's source associations. Nil means
@@ -104,7 +105,7 @@ func (s *State) HookFacts() []HookFact {
 	products := s.HookProducts()
 	facts := []HookFact{}
 	seen := map[string]bool{}
-	add := func(id, data string, links, benefits []string, guidance []map[string]string) {
+	add := func(id, data string, links, benefits []string, guidance []map[string]string, shared bool) {
 		if strings.TrimSpace(data) == "" {
 			return
 		}
@@ -134,7 +135,7 @@ func (s *State) HookFacts() []HookFact {
 				}
 			}
 		}
-		facts = append(facts, HookFact{ID: id, Data: data, Products: links, Benefits: benefits, ExpressionGuidance: guidance})
+		facts = append(facts, HookFact{ID: id, Data: data, Products: links, Benefits: benefits, ExpressionGuidance: guidance, Shared: shared})
 	}
 	if scope := s.Task().FactScope; scope != nil {
 		for _, f := range scope.Facts {
@@ -143,14 +144,14 @@ func (s *State) HookFacts() []HookFact {
 				allowed = allowed || containsLink(f.Products, link)
 			}
 			if allowed {
-				add(f.ID, f.Data, f.Products, f.Benefits, f.ExpressionGuidance)
+				add(f.ID, f.Data, f.Products, f.Benefits, f.ExpressionGuidance, isCommonFactText(f.Data))
 			}
 		}
 		return facts
 	}
 	if s.ProductFocus == nil {
 		for _, line := range strings.Split(s.Facts, "\n") {
-			add("", line, products, nil, nil)
+			add("", line, products, nil, nil, isCommonFactText(line))
 		}
 		return facts
 	}
@@ -163,7 +164,7 @@ func (s *State) HookFacts() []HookFact {
 		focus.Facts = []ScopedFact{f}
 		one.ProductFocus = &focus
 		if one.ProductFacts(task) != "" {
-			add(f.ID, f.Text, f.Links, f.BenefitIDs, nil)
+			add(f.ID, f.Text, f.Links, f.BenefitIDs, nil, f.Shared || isCommonFactText(f.Text))
 		}
 	}
 	return facts

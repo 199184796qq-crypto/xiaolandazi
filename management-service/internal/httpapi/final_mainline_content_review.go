@@ -53,6 +53,9 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 }
 
 func (s *Server) auditFinalMainlineContent(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
+	if state.Config.SkipReview {
+		return
+	}
 	state.FinalContentReviewRequired = true
 	text := cycleVoiceText(*c)
 	a := &anchorcycle.FinalContentAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: state.FinalContentSourceSHA()}

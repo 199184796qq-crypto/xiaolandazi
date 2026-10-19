@@ -39,7 +39,7 @@ func (s *State) FinalContentSourceSHA() string {
 }
 
 func (s *State) FinalContentCandidateApproved(c Candidate) bool {
-	if !s.FinalContentReviewRequired {
+	if s.Config.SkipReview || !s.FinalContentReviewRequired {
 		return true
 	}
 	a := c.FinalContentAudit

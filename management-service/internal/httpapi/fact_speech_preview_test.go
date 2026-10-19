@@ -26,7 +26,7 @@ func TestFactSpeechPreviewKeepsConditionsAndOnlySelectedMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(messages)
-	for _, want := range []string{f.Value, f.ForbiddenWording, f.SafeRewrite, "不能省略包装条件", "有效P0"} {
+	for _, want := range []string{f.Value, f.ForbiddenWording, f.SafeRewrite, "不能省略包装条件", "不提红线词"} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("missing boundary %q", want)
 		}

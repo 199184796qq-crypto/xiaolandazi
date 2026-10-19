@@ -1,7 +1,6 @@
 package contentguard
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -70,53 +69,6 @@ func TestMotherValidationFailsClosed(t *testing.T) {
 		if _, err := Compile(invalid); err == nil {
 			t.Fatal("invalid mother compiled")
 		}
-	}
-}
-
-func TestPartialRepairOnlyTouchesMatchedUnitsAndRescans(t *testing.T) {
-	p, err := Compile(mother(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := "老乡啊。零风险！\n5L装哟。加微信购买。继续看规格啊。"
-	repair := PlanRepair(text, p.Scan(text, "ordinary_food"), 1)
-	if len(repair.Units) != 2 {
-		t.Fatal(repair)
-	}
-	raw := `{"replacements":[{"id":"part_2","text":"点1号链接看规格。"},{"id":"part_1","text":"先看试吃条件！"}]}`
-	result, err := repair.Apply(raw, 0)
-	if err != nil || result != "老乡啊。先看试吃条件！\n5L装哟。点1号链接看规格。继续看规格啊。" {
-		t.Fatal(result, err)
-	}
-	if !p.Scan(result, "ordinary_food").Passed {
-		t.Fatal("valid patch blocked")
-	}
-	var roundtrip Repair
-	encoded, _ := json.Marshal(repair)
-	if json.Unmarshal(encoded, &roundtrip) != nil {
-		t.Fatal("roundtrip")
-	}
-	if again, err := roundtrip.Apply(raw, 300); err != nil || again != result {
-		t.Fatal("redis snapshot changed patch", err)
-	}
-	for _, bad := range []string{
-		`{"replacements":[]}`, `{"replacements":[{"id":"part_1","text":"a"},{"id":"part_1","text":"b"}]}`,
-		`{"replacements":[{"id":"part_1","text":"a"},{"id":"other","text":"b"}]}`,
-		`{"replacements":[{"id":"part_1","text":" "},{"id":"part_2","text":"b"}]}`,
-		`{"replacements":[{"id":"part_1","text":"a"},{"id":"part_2","text":"b"}],"full_text":"change all"}`,
-		`全文改写`, raw + `{}`,
-	} {
-		if _, err := repair.Apply(bad, 300); err == nil {
-			t.Fatal("bad patch accepted", bad)
-		}
-	}
-	if _, err := repair.Apply(raw, 5); err == nil {
-		t.Fatal("assembled limit ignored")
-	}
-	newlyBad := strings.Replace(raw, "先看试吃条件", "最好", 1)
-	result, err = repair.Apply(newlyBad, 300)
-	if err != nil || p.Scan(result, "ordinary_food").Passed {
-		t.Fatal("new illegal claim escaped recheck", err)
 	}
 }
 

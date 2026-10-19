@@ -39,6 +39,9 @@ func cycleP0ContextMessages(state *anchorcycle.State, candidate anchorcycle.Cand
 // This is the sole final-text review, only for rules explicitly marked semantic.
 // It does not assess sales quality, arithmetic phrasing, or rewrite the prose.
 func (s *Server) reviewCycleP0Context(ctx context.Context, state *anchorcycle.State, candidate *anchorcycle.Candidate) {
+	if state.Config.SkipReview {
+		return
+	}
 	s.reviewCycleP0ContextOnce(ctx, state, candidate)
 	if candidate.P0Report == nil || candidate.P0Report.ContextReview == nil || candidate.P0Report.ContextReview.Output.InstructionLeak == nil || !*candidate.P0Report.ContextReview.Output.InstructionLeak {
 		return

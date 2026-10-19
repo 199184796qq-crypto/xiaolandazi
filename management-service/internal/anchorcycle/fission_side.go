@@ -2,6 +2,8 @@ package anchorcycle
 
 import (
 	"encoding/json"
+	"math/rand"
+	"strconv"
 	"strings"
 )
 
@@ -145,6 +147,30 @@ func (s *State) isBrandingFact(text string) bool {
 	return s.factFamilyOf(text) == factFamilyBranding
 }
 
+// BrandingCommonFacts 返回公共「品牌背书」事实（地址/门店/停车/环境等 B 类公共资料）。
+// 商品专属段（ProductMode!=common）会在 ProductFacts 里挡掉这类事实（只进公共段），
+// 导致开场选材轮换到「公共卖点」（门店地址/停车/堂食环境等，Common=true）时，
+// 正确事实（免费停车、门店地址）进不了事实卡 → 名不副实（实测 25669）。
+// 这里把 branding 公共事实单独拎出来，供开场公共卖点补进事实卡。
+func (s *State) BrandingCommonFacts() []HookFact {
+	if s.ProductFocus == nil {
+		return nil
+	}
+	out := make([]HookFact, 0)
+	for _, f := range s.ProductFocus.Facts {
+		if f.Shared && s.isBrandingFact(f.Text) {
+			out = append(out, HookFact{
+				ID:       f.ID,
+				Data:     f.Text,
+				Products: f.Links,
+				Benefits: f.BenefitIDs,
+				Shared:   true,
+			})
+		}
+	}
+	return out
+}
+
 // isTransactionalFact 判断事实是否「交易/履约条件」类公共资料（A 类），商品段按需引用。
 func (s *State) isTransactionalFact(text string) bool {
 	switch s.factFamilyOf(text) {
@@ -249,7 +275,7 @@ func (s *State) HookFactsForSide() []HookFact {
 	side := s.CurrentFissionSide()
 	all := s.HookFacts()
 	if side == "" {
-		return all
+		return s.limitCommonFacts(all)
 	}
 	sideName := FissionSideName(side)
 	mapping := s.FactSideMap
@@ -271,7 +297,57 @@ func (s *State) HookFactsForSide() []HookFact {
 		}
 	}
 	if len(out) == 0 {
-		return all
+		return s.limitCommonFacts(all)
 	}
-	return out
+	return s.limitCommonFacts(out)
+}
+
+// limitCommonFacts 公共事实限量：每段最多保留 0~2 条公共事实，避免话术尾巴拖长。
+//
+// 「有关优先、无关随机」：公共事实文本含当前卖点或角度关键词的算「有关」，优先保留；
+// 无关的随机补足到 2 条。随机种子含 RunID + 任务 Key + 已采纳段数，保证相邻段选到
+// 不同的公共事实（「不能每次一样」），同时同一段重试时结果稳定。
+//
+// 公共事实的识别：HookFact.Shared 为真，或文本带「用户指定公共；」前缀（isCommonFactText）。
+// 非公共事实（商品专属/身份占位）不受限量约束，原样保留。
+func (s *State) limitCommonFacts(facts []HookFact) []HookFact {
+	common, rest := make([]HookFact, 0, len(facts)), make([]HookFact, 0, len(facts))
+	for _, f := range facts {
+		if f.Shared || isCommonFactText(f.Data) {
+			common = append(common, f)
+		} else {
+			rest = append(rest, f)
+		}
+	}
+	if len(common) <= 2 {
+		return facts
+	}
+	task := s.Task()
+	relevant, irrelevant := make([]HookFact, 0, len(common)), make([]HookFact, 0, len(common))
+	for _, f := range common {
+		data := f.Data
+		if (task.SellingPoint != "" && strings.Contains(data, task.SellingPoint)) ||
+			(task.Angle != "" && strings.Contains(data, task.Angle)) {
+			relevant = append(relevant, f)
+		} else {
+			irrelevant = append(irrelevant, f)
+		}
+	}
+	picked := append([]HookFact{}, relevant...)
+	if len(picked) > 2 {
+		picked = picked[:2]
+	}
+	if len(picked) < 2 && len(irrelevant) > 0 {
+		seed := schedulerSeed(s.RunID+"|"+task.Key, strconv.Itoa(s.TotalAccepted()+s.CycleNumber))
+		rng := rand.New(rand.NewSource(int64(seed * float64(1<<63-1))))
+		pool := append([]HookFact{}, irrelevant...)
+		rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+		for _, f := range pool {
+			if len(picked) >= 2 {
+				break
+			}
+			picked = append(picked, f)
+		}
+	}
+	return append(rest, picked...)
 }

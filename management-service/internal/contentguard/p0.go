@@ -362,66 +362,6 @@ type Repair struct {
 	Reason        string `json:"reason,omitempty"`
 }
 
-func PlanRepair(text string, report Report, number int) Repair {
-	runes := []rune(text)
-	result := Repair{BaseText: text, RewriteNumber: number, Units: []Unit{}}
-	start := 0
-	appendUnit := func(end int) {
-		hits := []Hit{}
-		for _, h := range report.Hits {
-			if h.Start < end && h.End > start {
-				hits = append(hits, h)
-			}
-		}
-		if len(hits) > 0 {
-			result.Units = append(result.Units, Unit{ID: fmt.Sprintf("part_%d", len(result.Units)+1), Start: start, End: end, Text: string(runes[start:end]), Hits: hits})
-		}
-		start = end
-	}
-	for i, r := range runes {
-		if strings.ContainsRune("。！？!?\n", r) {
-			appendUnit(i + 1)
-		}
-	}
-	if start < len(runes) {
-		appendUnit(len(runes))
-	}
-	if len(result.Units) == 0 {
-		result.Units = append(result.Units, Unit{ID: "part_1", Start: 0, End: len(runes), Text: text, Hits: report.Hits})
-	}
-	return result
-}
-
-// PlanReviewRepair 最终复核违规时的局部重写。最终复核只有模型给出的 reason 文字、
-// 没有词级命中位置，因此按句切分、把每个非空句子都标为待重写单元，reason 说明违规点，
-// 由重写模型读 reason 自行定位并只改违规句段，未违规句段原样返回（程序仍按单元范围替换）。
-func PlanReviewRepair(text, reason string, number int) Repair {
-	runes := []rune(text)
-	result := Repair{BaseText: text, RewriteNumber: number, Reason: reason, Units: []Unit{}}
-	start := 0
-	appendUnit := func(end int) {
-		segment := strings.TrimSpace(string(runes[start:end]))
-		if segment == "" {
-			start = end
-			return
-		}
-		result.Units = append(result.Units, Unit{ID: fmt.Sprintf("part_%d", len(result.Units)+1), Start: start, End: end, Text: segment})
-		start = end
-	}
-	for i, r := range runes {
-		if strings.ContainsRune("。！？!?\n", r) {
-			appendUnit(i + 1)
-		}
-	}
-	if start < len(runes) {
-		appendUnit(len(runes))
-	}
-	if len(result.Units) == 0 {
-		result.Units = append(result.Units, Unit{ID: "part_1", Start: 0, End: len(runes), Text: text})
-	}
-	return result
-}
-
 // The model supplies replacements only; the server owns all original ranges.
 // Unknown/duplicate/missing IDs never turn into a full-text rewrite fallback.
 func (r Repair) Apply(raw string, maxChars int) (string, error) {

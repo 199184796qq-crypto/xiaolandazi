@@ -92,6 +92,10 @@ type Config struct {
 	MaxReuse               int          `json:"max_reuse"`            // 单段话术最多复用次数，达到后淘汰
 	TTS                    *VoiceConfig `json:"tts,omitempty"`
 	ComplianceScope        string       `json:"compliance_scope,omitempty"`
+	// SkipReview 开启后跳过全部审核：既不跑程序侧违规词扫描（P0），也不调模型
+	// 二次复核（上下文/事实边界/终审/表达约束）。生成正文直接采纳并送 TTS，
+	// 零审核 token、零审核延迟。默认 false（保留完整审核）。
+	SkipReview bool `json:"skip_review,omitempty"`
 }
 type VoiceConfig struct {
 	Source          string  `json:"source"`
@@ -229,6 +233,9 @@ type State struct {
 	Cursor                       int                            `json:"cursor"`
 	TaskIndex                    int                            `json:"task_index"`
 	OpeningCount                 int                            `json:"opening_count"`
+	// OpeningSelection 是首场开场「两次调用」中第一次选材的结果：
+	// 模型从候选池选「卖点×角度 + 开场方式」，第二次写话术据此聚焦。
+	OpeningSelection             *OpeningSelection              `json:"opening_selection,omitempty"`
 	PendingOpeningHook           *OpeningHook                   `json:"pending_opening_hook,omitempty"`
 	RecentOpeningHookIDs         []string                       `json:"recent_opening_hook_ids,omitempty"`
 	OpeningHookLibraryMD         string                         `json:"opening_hook_library_md,omitempty"`
@@ -700,35 +707,22 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	if err := s.CheckP0Candidate(&c); err != nil {
 		return false, err
 	}
-	if c.P0Patch != nil {
-		s.P0RewritesUsed++
-	}
 	if c.P0Report != nil && !c.P0Report.Passed {
-		// 局部重写格式错误（模型未返回合法 replacements JSON）时，重写本身已失败，
-		// 不消耗重写预算反复重试（会拖长主线断供），直接按「耗尽」处理：删词兜底，删不掉跳过本段。
-		if c.P0PatchError != "" {
-			s.P0RewritesUsed = s.P0MaxRewrites
-		}
-		// 局部重写已耗尽仍违规：先尝试程序删词兜底（替代直接跳过该段）。
-		if s.P0RewritesUsed >= s.P0MaxRewrites {
-			if repaired, ok := s.deleteRepair(c); ok {
-				c.Text = repaired
-				c.OutputText = repaired
-				c.P0Patch = nil
-				c.P0PatchError = ""
-				c.ScoreScope = "p0_delete_repaired"
-				if err := s.CheckP0Candidate(&c); err != nil {
-					return false, err
-				}
-				if c.P0Report == nil || !c.P0Report.Passed {
-					s.rejectP0Candidate(c)
-					return false, nil
-				}
-				// 删词成功且再过 P0，落到下方正常采纳流程。
-			} else {
+		// 局部重写已移除：P0 违规直接走程序删词兜底，删不掉跳过本段，不再调模型局部改。
+		if repaired, ok := s.deleteRepair(c); ok {
+			c.Text = repaired
+			c.OutputText = repaired
+			c.P0Patch = nil
+			c.P0PatchError = ""
+			c.ScoreScope = "p0_delete_repaired"
+			if err := s.CheckP0Candidate(&c); err != nil {
+				return false, err
+			}
+			if c.P0Report == nil || !c.P0Report.Passed {
 				s.rejectP0Candidate(c)
 				return false, nil
 			}
+			// 删词成功且再过 P0，落到下方正常采纳流程。
 		} else {
 			s.rejectP0Candidate(c)
 			return false, nil
@@ -743,12 +737,8 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		audit := c.FinalContentAudit
 		if audit != nil && audit.Error == "" && audit.Decision == "有问题" && strings.TrimSpace(audit.Reason) != "" {
 			s.resetFinalReviewRecovery()
-			if s.P0RewritesUsed < s.P0MaxRewrites {
-				s.rejectReviewCandidate(c, audit.Reason)
-				return false, nil
-			}
 			s.Attempts = append(s.Attempts, c)
-			s.SkipGeneration("final_content_review", "最终文字明确有误且局部重写已耗尽："+audit.Reason)
+			s.SkipGeneration("final_content_review", "最终文字明确有误："+audit.Reason)
 			return false, nil
 		}
 		// An unfinished audit says nothing about whether this angle is usable.

@@ -7,27 +7,27 @@ import (
 
 func TestMergeAnchorStyleSections(t *testing.T) {
 	results := map[string]string{
-		"语气词":   "哟、啊、嘛",
-		"称呼与自指": "哥哥姐姐们、我们家",
-		"句式与节奏": "短句、反问",
-		"数字表达":  "拆价对比",
+		"语气词":    "哟、啊、嘛",
+		"称呼与自指":  "哥哥姐姐们、我们家",
+		"句式与节奏":  "短句、反问",
 		"方言与口头禅": "咋个、正儿八经",
-		"情绪":    "热情接地气",
-		"禁用词":   "亲亲、宝子",
-		"全局规则":  "开头轮换",
 	}
 	md := mergeAnchorStyleSections(results)
 
-	// 四章节齐全
-	for _, s := range []string{"【口语风格】", "【情绪】", "【禁用词】", "【全局规则】"} {
-		if !strings.Contains(md, s) {
-			t.Fatalf("缺少章节 %s:\n%s", s, md)
-		}
+	// 只有【口语风格】一个章节
+	if !strings.Contains(md, "【口语风格】") {
+		t.Fatalf("缺少章节【口语风格】:\n%s", md)
 	}
-	// 前五维归入口语风格，后三维各一章节
+	// 前四维归入口语风格
 	for _, dim := range anchorStyleSpeechSections {
 		if !strings.Contains(md, "**"+dim+"**") {
 			t.Fatalf("口语风格缺少维度 %s:\n%s", dim, md)
+		}
+	}
+	// 不应出现情绪/禁用词/全局规则章节（只保留语气风格）
+	for _, s := range []string{"【情绪】", "【禁用词】", "【全局规则】"} {
+		if strings.Contains(md, s) {
+			t.Fatalf("不应有章节 %s:\n%s", s, md)
 		}
 	}
 	// 不应出现 markdown 标题（扁平结构）
@@ -37,11 +37,11 @@ func TestMergeAnchorStyleSections(t *testing.T) {
 }
 
 func TestAnchorStyleDimensionsCount(t *testing.T) {
-	if len(anchorStyleDimensions) != 8 {
-		t.Fatalf("维度数应为 8，实际 %d", len(anchorStyleDimensions))
+	if len(anchorStyleDimensions) != 4 {
+		t.Fatalf("维度数应为 4，实际 %d", len(anchorStyleDimensions))
 	}
-	if len(anchorStyleSpeechSections) != 5 {
-		t.Fatalf("口语风格维度应为 5，实际 %d", len(anchorStyleSpeechSections))
+	if len(anchorStyleSpeechSections) != 4 {
+		t.Fatalf("口语风格维度应为 4，实际 %d", len(anchorStyleSpeechSections))
 	}
 }
 
@@ -62,9 +62,9 @@ func TestCleanAnchorStyleDimensionContent(t *testing.T) {
 		t.Fatalf("维度名重复未去除: %q", got2)
 	}
 
-	// 全局规则：开头【全局规则】标签重复
-	got3 := cleanAnchorStyleDimensionContent("全局规则", "【全局规则】\n1. 链接叫法规范：统一采用编号格式。")
-	if strings.Contains(got3, "【全局规则】") || strings.Contains(got3, "\n") {
+	// 称呼与自指：开头【称呼与自指】标签重复
+	got3 := cleanAnchorStyleDimensionContent("称呼与自指", "【称呼与自指】\n1. 主力称呼「哥哥姐姐们」，自指「我们家」。")
+	if strings.Contains(got3, "【称呼与自指】") || strings.Contains(got3, "\n") {
 		t.Fatalf("标签或换行未清理: %q", got3)
 	}
 }

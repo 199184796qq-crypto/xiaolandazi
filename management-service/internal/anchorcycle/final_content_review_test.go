@@ -14,7 +14,7 @@ func TestFinalContentScopeChangesWithAdoptedOverlay(t *testing.T) {
 	}
 }
 
-func TestFinalReviewViolationTriggersLocalRewriteNotSkip(t *testing.T) {
+func TestFinalReviewViolationSkipsDirectlyNotLocalRewrite(t *testing.T) {
 	s := p0Fixture(t, 2)
 	s.Surface = "formal_live"
 	s.FinalContentReviewRequired = true
@@ -25,16 +25,17 @@ func TestFinalReviewViolationTriggersLocalRewriteNotSkip(t *testing.T) {
 	}
 	c.FinalContentAudit = &FinalContentAudit{Decision: "有问题", Reason: "绝对化夸大宣传"}
 	if ok, e := s.AddCandidate(c, anchorstylescore.Baseline{}); e != nil || ok {
-		t.Fatal("violation admitted without rewrite", e)
+		t.Fatal("violation admitted without skip", e)
 	}
-	if s.P0PendingRepair == nil {
-		t.Fatal("violation should trigger local rewrite, not skip")
+	// 局部重写已移除：最终复核违规直接跳过，不再调度重写。
+	if s.P0PendingRepair != nil {
+		t.Fatal("violation should skip directly, not schedule local rewrite")
 	}
-	if s.P0PendingRepair.Reason != "绝对化夸大宣传" {
-		t.Fatal("review reason not carried into repair", s.P0PendingRepair.Reason)
+	if len(s.GenerationSkips) == 0 || len(s.Accepted) != 0 {
+		t.Fatal("violation should skip directly without rewriting", s.GenerationSkips)
 	}
-	if len(s.GenerationSkips) != 0 || len(s.Accepted) != 0 {
-		t.Fatal("violation should rewrite before skipping")
+	if s.GenerationSkips[len(s.GenerationSkips)-1].Stage != "final_content_review" {
+		t.Fatal("skip stage lost", s.GenerationSkips)
 	}
 }
 

@@ -72,7 +72,7 @@ func TestDirectWriterSendsOnlyBoundTaskFactsWithoutRelationKeys(t *testing.T) {
 		// 可说事实已挪到 user（保持 system 稳定前缀以命中缓存）；
 		// 从 user 解析「可说」校验，P0 规则里可能合法出现物流字样，故只查可说块。
 		var userPacket map[string]any
-		if err := json.Unmarshal([]byte(messages[1].Content), &userPacket); err != nil {
+		if err := json.Unmarshal([]byte(messages[0].Content), &userPacket); err != nil {
 			t.Fatal(err)
 		}
 		raw, _ := json.Marshal(userPacket["可说"])
@@ -80,12 +80,12 @@ func TestDirectWriterSendsOnlyBoundTaskFactsWithoutRelationKeys(t *testing.T) {
 			t.Fatal(string(raw))
 		}
 		for _, key := range []string{"fact_scope", "fact_ids", "storage-job", "delivery-job", "original-storage"} {
-			if strings.Contains(messages[1].Content, key) {
-				t.Fatal("internal relation leaked", key, messages[1].Content)
+			if strings.Contains(messages[0].Content, key) {
+				t.Fatal("internal relation leaked", key, messages[0].Content)
 			}
 		}
-		if i == 0 && strings.Contains(messages[1].Content, "旧物流") {
-			t.Fatal("unrelated task memory leaked", messages[1].Content)
+		if i == 0 && strings.Contains(messages[0].Content, "旧物流") {
+			t.Fatal("unrelated task memory leaked", messages[0].Content)
 		}
 	}
 }

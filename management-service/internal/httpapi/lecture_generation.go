@@ -298,6 +298,9 @@ func parseLectureTaskAudit(raw, text string) (anchorcycle.LectureAudit, error) {
 }
 
 func (s *Server) auditLectureCandidate(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
+	if state.Config.SkipReview {
+		return
+	}
 	if err := s.installCurrentExpressionConstraints(ctx, state); err != nil {
 		c.P0PatchError = "读取用户采用的表达约束失败"
 		return

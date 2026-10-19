@@ -101,11 +101,28 @@ func decodeInteractionBusinessPlan(raw string) (*interactionBusinessPlan, error)
 	return &plan, nil
 }
 
+// intentTaskAngles extracts the task_angles the purpose resolver already mined
+// for this question. These are the purpose-scoped angle candidates the plan
+// step should choose from, not re-derive.
+func intentTaskAngles(knowledge json.RawMessage) []contentstrategy.Row {
+	if len(knowledge) == 0 {
+		return nil
+	}
+	var purpose struct {
+		TaskAngles []contentstrategy.Row `json:"task_angles"`
+	}
+	if err := json.Unmarshal(knowledge, &purpose); err != nil {
+		return nil
+	}
+	return purpose.TaskAngles
+}
+
 func (w *Worker) planInteractionAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (*interactionBusinessPlan, error) {
 	raw, err := interactionpolicy.Read("interaction-agent-plan.md")
 	if err != nil {
 		return nil, err
 	}
+	item.IntentAngles = intentTaskAngles(item.PurposeKnowledge)
 	item.BusinessCoreOnly = true
 	item.BusinessPlanning = true
 	item.BusinessPlan = nil

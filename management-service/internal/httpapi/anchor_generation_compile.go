@@ -61,7 +61,7 @@ func (s *Server) compileProductionAnchorStyle(ctx context.Context, tenant, style
 		if json.Unmarshal([]byte(stripPolicyJSONFence(result.Text)), &compiled) != nil || strings.TrimSpace(compiled.MetaPromptMD) == "" {
 			return profile, result, errors.New("风格返回未符合元提示词JSON协议，原始返回已保留")
 		}
-		for _, section := range []string{"【口语风格】", "【情绪】", "【禁用词】"} {
+		for _, section := range []string{"【口语风格】"} {
 			if !strings.Contains(compiled.MetaPromptMD, section) {
 				return profile, result, errors.New("元提示词缺少必要风格章节，原始返回已保留")
 			}

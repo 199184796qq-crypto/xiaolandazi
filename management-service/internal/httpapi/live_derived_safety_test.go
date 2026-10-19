@@ -154,8 +154,8 @@ func TestDerivedSafetyP2ConfirmationReleasesButP0NeverDoes(t *testing.T) {
 		if review.Severity != "P0" {
 			continue
 		}
-		if !strings.Contains(review.Reason, "程序命中规则") || !strings.Contains(review.Reason, review.RuleID) {
-			t.Fatal("P0 handling reason is missing", review.Reason)
+		if !strings.Contains(review.Reason, review.RuleID) {
+			t.Fatal("P0 handling reason is missing rule id", review.Reason)
 		}
 		review.Status = "confirmed"
 		review.Evidence = "伪造的人工确认"

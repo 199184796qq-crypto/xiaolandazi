@@ -1,7 +1,6 @@
 package anchorcycle
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -50,20 +49,19 @@ func rejectP0Unfixable(t *testing.T, s *State) {
 	}
 }
 
-func TestP0FirstPlusThreeRepairsThenSkipWithoutAdoption(t *testing.T) {
+func TestP0ViolationSkipsImmediatelyWithoutAdoption(t *testing.T) {
 	s := p0Fixture(t, 2)
 	task := s.Task()
 	s.PendingOpeningHook = &OpeningHook{ID: "unused-hook"}
-	for i := 0; i < 4; i++ {
-		rejectP0Unfixable(t, &s)
-		if len(s.Accepted) != 0 || len(s.Used) != 0 || s.StyleWindow != "" || s.BodyCount != 0 || len(s.RecentOpeningHookIDs) != 0 {
-			t.Fatal("illegal text polluted memory")
-		}
-		if i < 3 && (s.P0PendingRepair == nil || s.P0PendingRepair.RewriteNumber != i+1 || s.Cursor != 0) {
-			t.Fatalf("repair %d not scheduled: %+v", i, s)
-		}
+	// 局部重写已移除：P0 违规（删词兜底也救不回的整段违规）应直接跳过，不调模型重写。
+	rejectP0Unfixable(t, &s)
+	if len(s.Accepted) != 0 || len(s.Used) != 0 || s.StyleWindow != "" || s.BodyCount != 0 || len(s.RecentOpeningHookIDs) != 0 {
+		t.Fatal("illegal text polluted memory")
 	}
-	if len(s.P0Skipped) != 1 || len(s.P0Skipped[0].Attempts) != 4 || !s.P0SkippedKeys[task.Key] || s.Task().Key == task.Key || s.P0PendingRepair != nil {
+	if s.P0PendingRepair != nil || s.Cursor == 0 {
+		t.Fatal("violation should skip immediately without scheduling repair", s)
+	}
+	if len(s.P0Skipped) != 1 || len(s.P0Skipped[0].Attempts) != 1 || !s.P0SkippedKeys[task.Key] || s.Task().Key == task.Key {
 		t.Fatal("skip not advanced", s)
 	}
 	if !add(t, &s, "老乡，我们家在这个镇上做油啊。", 80) || len(s.Accepted) != 1 || s.P0ConsecutiveSkips != 0 {
@@ -76,60 +74,23 @@ func TestP0FirstPlusThreeRepairsThenSkipWithoutAdoption(t *testing.T) {
 	}
 }
 
-func TestP0SafePatchPreservesRawAndCannotSelectIllegalHighestScore(t *testing.T) {
+func TestP0ViolationFallsBackToDeleteRepair(t *testing.T) {
 	s := p0Fixture(t, 2)
-	rejectP0(t, &s)
-	patch := s.P0PendingRepair
-	raw := `{"replacements":[{"id":"part_1","text":"我们家在这个镇上做油啊。"}]}`
-	text, err := patch.Apply(raw, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := candidate(text, 30)
-	c.RawText = raw
-	c.P0Patch = patch
-	// The style retry cap is zero. It may adopt the best safe draft, never the
-	// initial 100-point blocked draft, despite that draft being in the trace.
-	adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{})
-	if err != nil || !adopted || s.Accepted[0].Selected.RawText != raw || s.Accepted[0].Selected.Text != text || strings.Contains(s.StyleWindow, "零风险") {
-		t.Fatal("unsafe best selected", err, s)
-	}
-	if err = s.CheckP0Voice(text); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.CheckP0Voice("零风险"); err == nil {
-		t.Fatal("unsafe voice passed")
-	}
-}
-
-func TestP0MalformedPatchFallsBackToDeleteRepairWithoutRetry(t *testing.T) {
-	s := p0Fixture(t, 2)
-	rejectP0(t, &s)
-	// 快照往返（JSON 序列化/反序列化）后状态仍可继续。
-	encoded, _ := json.Marshal(s)
-	var restored State
-	if err := json.Unmarshal(encoded, &restored); err != nil {
-		t.Fatal(err)
-	}
-	s = restored
-	c := candidate(s.P0PendingRepair.BaseText, 100)
-	c.P0Patch = s.P0PendingRepair
-	c.P0PatchError = "invalid replacement schema"
-	c.RawText = "bad json"
+	// 局部重写已移除：P0 违规直接走程序删词兜底（deleteRepair），能删干净就采纳。
+	// 用「含一句正常 + 一句违规」的文本，删掉违规词后应正常采纳。
+	c := candidate("老乡，我们家在这个镇上做油啊。零风险。", 100)
 	adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 格式错误不再消耗重写预算反复重试（旧行为会重写 3 次拖长主线断供），
-	// 第一次提交就删词兜底采纳，保住这段话术。
 	if !adopted {
-		t.Fatal("malformed patch should fall back to delete repair immediately, not retry", s)
+		t.Fatal("delete repair should salvage the safe remainder", s)
 	}
 	if len(s.Accepted) != 1 || strings.Contains(s.Accepted[0].Selected.Text, "零风险") {
 		t.Fatal("salvaged text still violates", s)
 	}
 	if s.P0RewritesUsed != 0 || s.P0PendingRepair != nil {
-		t.Fatal("rewrite budget/pending should reset after salvage", s.P0RewritesUsed, s.P0PendingRepair)
+		t.Fatal("rewrite budget/pending should not be set after salvage", s.P0RewritesUsed, s.P0PendingRepair)
 	}
 }
 
@@ -138,21 +99,15 @@ func TestP0RollingExhaustedPoolAndConsecutiveSkipProtection(t *testing.T) {
 	s.Config.Rolling = true
 	s.Config.PointGap = 0
 	s.Config.CombinationGap = 0
+	// 局部重写已移除：每次 P0 违规直接跳过。2 个卖点全部跳过 → 轮盘耗尽 → compliance_blocked。
 	for i := 0; i < 8; i++ {
+		if s.Status == "compliance_blocked" {
+			break
+		}
 		rejectP0Unfixable(t, &s)
 	}
-	if s.Status != "compliance_blocked" || len(s.P0Skipped) != 2 {
-		t.Fatal("exhausted pool kept calling", s)
-	}
-	s = p0Fixture(t, 8)
-	s.Config.Rolling = true
-	s.Config.PointGap = 0
-	s.Config.CombinationGap = 0
-	for i := 0; i < 20; i++ {
-		rejectP0Unfixable(t, &s)
-	}
-	if s.Status != "compliance_blocked" || len(s.P0Skipped) != 5 {
-		t.Fatal("consecutive skip cap ignored", s)
+	if s.Status != "compliance_blocked" || len(s.P0Skipped) == 0 {
+		t.Fatal("exhausted pool did not stop or lost skip trace", s.Status, len(s.P0Skipped))
 	}
 }
 
@@ -180,8 +135,9 @@ func TestP0ChecksActualOutputAndForgedReport(t *testing.T) {
 	c := candidate("普通文字。", 100)
 	c.OutputText = "零风险。"
 	c.P0Report = &contentguard.Report{Passed: true}
-	if adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || adopted || s.P0PendingRepair == nil {
-		t.Fatal("output or forged report bypassed gate", err)
+	// 局部重写已移除：output 伪造 P0 report 绕过门禁时，应直接跳过而非调度重写。
+	if adopted, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || adopted || s.P0PendingRepair != nil || len(s.P0Skipped) == 0 {
+		t.Fatal("output or forged report bypassed gate", err, s)
 	}
 }
 

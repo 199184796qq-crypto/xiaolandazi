@@ -73,7 +73,7 @@ func TestSuppressedLectureDoesNotProduceAnAudibleReturnReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(messages[1].Content, "未播出的故事") || strings.Contains(messages[1].Content, "刚结束的讲解") {
+	if strings.Contains(messages[0].Content, "未播出的故事") || strings.Contains(messages[0].Content, "刚结束的讲解") {
 		t.Fatal("referred to suppressed story", messages)
 	}
 }

@@ -17,20 +17,18 @@ type anchorStyleDimension struct {
 	Prompt string // 该维度的提取要求
 }
 
-// anchorStyleDimensions 风格提取的 8 个维度，顺序即输出顺序。
+// anchorStyleDimensions 风格提取的维度，顺序即输出顺序。
+// 只提「怎么说」的腔调，不提炼任何话术/算账/催单/情绪策略。
+// 情绪、热情、亲和等气质由语气词、称呼、长短句、口头禅自然带出，不单独成维。
 var anchorStyleDimensions = []anchorStyleDimension{
-	{"语气词", "提取样本实际出现的语气词、位置和功能，区分句末助词、普通实词和问句收尾。不把普通否定词的全部出现当作语气词。保留高频特征，不要求每句都加。"},
-	{"称呼与自指", "提取实际称呼、简称、自称和适用场景。主力称呼可以高频分布，但不等于每段固定开头。礼貌程度是表达偏好，不从样本未出现推断为绝对禁用。"},
-	{"句式与节奏", "描述长短句搭配、问答式推进、重复强调、停顿位置和承接方式，用抽象结构表达，不摘商品口播供下游照抄。"},
-	{"数字表达", "描述口语报数、拆价或对比的表达习惯，不保留样本数字，不要求每段都报价格或算账。是否算账由本次任务及可计算的事实决定。"},
-	{"方言与口头禅", "只保留真实出现、可独立复用的语言词。没有出现的方言不能因地域印象补入。含商品、功效、库存、到货或售后保证的整句不属于口头禅。"},
-	{"情绪", "从样本语言与句式判断热情程度、亲疏感、强调方式及不同语境的变化。写怎样表达热情、怎样解释和确认，不写制造紧迫感、每段逼单等业务策略。"},
-	{"禁用词", "仅保留用户明确禁用或输入已确认的风格冲突项；未明确的偏好写成少用、优先，不把样本未出现等同于禁止。不在这里制定P0或商品业务规则。"},
-	{"全局规则", "只说明高频特征分布、开头轮换、句式变化及风格服从本次有效规则和事实。不提取卖点轮换、卖点分布、促单强度、业务顺序或商品价值主张。"},
+	{"语气词", "提取样本实际出现的语气词、位置和功能，区分句末助词、普通实词和问句收尾。保留高频特征，不要求每句都加。"},
+	{"称呼与自指", "提取主播实际称呼观众、简称及自称。称呼是叫观众，自指是叫自己。主力称呼可高频分布，但不等于每段固定开头。"},
+	{"句式与节奏", "描述长短句搭配、问答式推进、重复强调、停顿位置和承接方式，用抽象结构表达，不摘口播照抄。"},
+	{"方言与口头禅", "只保留真实出现、可独立复用的语言词。没有出现的方言不能因地域印象补入。"},
 }
 
-// anchorStyleSpeechSections 前五个维度归入【口语风格】。
-var anchorStyleSpeechSections = []string{"语气词", "称呼与自指", "句式与节奏", "数字表达", "方言与口头禅"}
+// anchorStyleSpeechSections 前四个维度归入【口语风格】。
+var anchorStyleSpeechSections = []string{"语气词", "称呼与自指", "句式与节奏", "方言与口头禅"}
 
 // 单维回答的格式约束：content 必须是一段连贯纯文字。
 const anchorStyleContentFormat = "只返回 JSON：{\"content\":\"该维度的描述\"}。content 必须是一段连贯的纯文字（不超过250字），禁止编号、列表、小标题、【】标签和换行，不要重复维度名，不要分点。"
@@ -71,7 +69,7 @@ func (s *Server) extractAnchorStyleByDimensions(ctx context.Context, analysis, s
 	var agg agentgateway.Response
 	for _, dim := range anchorStyleDimensions {
 		data, _ := json.Marshal(map[string]string{"scene": "带货直播", "sample_text": sample})
-		system := analysis + "\n\n本次只提取【" + dim.Title + "】这一个维度，不要输出其它维度，也不要输出商品、价格、规格、功效、销量、库存、售后等具体内容。\n" + dim.Prompt + "\n\n" + anchorStyleContentFormat
+		system := analysis + "\n\n本次只提取【" + dim.Title + "】这一个维度，不要输出其它维度，也不要输出商品、价格、规格、功效、销量、库存、售后、催单、逼单、制造紧迫、从众引导等具体内容。\n" + dim.Prompt + "\n\n" + anchorStyleContentFormat
 		resp, _, err := s.completeAnchorStyleWorkbench(ctx, profileID, "style_analysis_"+dim.Title, agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: string(data)}}, 1200, true)
 		if err != nil {
 			return "", agg, err
@@ -93,7 +91,7 @@ func (s *Server) extractAnchorStyleByDimensions(ctx context.Context, analysis, s
 	return mergeAnchorStyleSections(results), agg, nil
 }
 
-// mergeAnchorStyleSections 把 8 个维度结果合并成四章节固定格式（扁平、不嵌套）。
+// mergeAnchorStyleSections 把 4 个纯腔调维度合并成【口语风格】单章节固定格式（扁平、不嵌套）。
 func mergeAnchorStyleSections(results map[string]string) string {
 	var b strings.Builder
 
@@ -102,21 +100,6 @@ func mergeAnchorStyleSections(results map[string]string) string {
 		if v := strings.TrimSpace(results[dim]); v != "" {
 			b.WriteString("- **" + dim + "**：" + v + "\n")
 		}
-	}
-
-	b.WriteString("\n【情绪】\n")
-	if v := strings.TrimSpace(results["情绪"]); v != "" {
-		b.WriteString(v + "\n")
-	}
-
-	b.WriteString("\n【禁用词】\n")
-	if v := strings.TrimSpace(results["禁用词"]); v != "" {
-		b.WriteString(v + "\n")
-	}
-
-	b.WriteString("\n【全局规则】\n")
-	if v := strings.TrimSpace(results["全局规则"]); v != "" {
-		b.WriteString(v + "\n")
 	}
 
 	return b.String()

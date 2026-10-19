@@ -132,7 +132,9 @@ func TestDistinctFirstOpeningRetriesOnlyOnceAndKeepsFullGenerationContext(t *tes
 		if err != nil {
 			return agentgateway.Response{}, nil, err
 		}
-		if !strings.Contains(messages[1].Content, "历史只供避重") || !strings.Contains(messages[0].Content, "有效P0") {
+		// 改造后不再有 system 消息：全部约束并进单条 user。开场指令（历史只供避重）
+		// 与 P0 红线词表（不提红线词）必须同时保留在 user 里，不能互相覆盖。
+		if len(messages) != 1 || !strings.Contains(messages[0].Content, "历史只供避重") || !strings.Contains(messages[0].Content, "不提红线词") {
 			t.Fatal("opening directive replaced complete generation rules")
 		}
 		if calls == 1 {

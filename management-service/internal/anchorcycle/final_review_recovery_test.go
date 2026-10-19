@@ -11,7 +11,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 )
 
-func TestRecordedPriceReviewsKeepAllReasonsAndReachLocalRepair(t *testing.T) {
+func TestRecordedPriceReviewsKeepAllReasonsAndSkipDirectly(t *testing.T) {
 	for _, id := range []string{"23569", "23588"} {
 		t.Run(id, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join("testdata", "final-review-"+id+".json"))
@@ -37,14 +37,18 @@ func TestRecordedPriceReviewsKeepAllReasonsAndReachLocalRepair(t *testing.T) {
 				t.Fatal(r.Reason)
 			}
 			s := fixture(t, 2)
-			s.FinalContentReviewRequired, s.P0MaxRewrites = true, 3
+			s.FinalContentReviewRequired = true
 			c := candidate(record.Text, 100)
 			c.FinalContentAudit = &FinalContentAudit{Decision: r.Decision, Reason: r.Reason, Quote: r.Quote, Raw: record.Reply, ExchangeID: record.ExchangeID}
 			if ok, err := s.AddCandidate(c, anchorstylescore.Baseline{}); err != nil || ok {
 				t.Fatal(ok, err)
 			}
-			if s.P0PendingRepair == nil || s.P0PendingRepair.Reason != r.Reason || s.P0PendingRepair.BaseText != record.Text || len(s.P0SkippedKeys) != 0 || len(s.GenerationSkips) != 0 || s.FinalReviewRecovery != nil {
+			// 局部重写已移除：有效违规直接跳过（记入 GenerationSkips），不再调度局部重写。
+			if s.P0PendingRepair != nil || len(s.GenerationSkips) == 0 || s.FinalReviewRecovery != nil {
 				t.Fatal("valid rejection was treated as a service failure or lost in repair", s)
+			}
+			if s.GenerationSkips[len(s.GenerationSkips)-1].Stage != "final_content_review" {
+				t.Fatal("skip stage lost", s.GenerationSkips)
 			}
 		})
 	}

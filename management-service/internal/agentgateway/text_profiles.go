@@ -91,6 +91,11 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 	if !textGenerationStage(r.Stage) || r.TextPromptSHA != "" {
 		return r, nil
 	}
+	// 主线（mainline_text，含开场/讲解）已由 mainline-text-task.md 提供完整的
+	// 四层结构、P0、风格标尺与事实边界，不再叠加 foundation/final-boundary 两层
+	// 总约束，避免同一套规则在 system 与 user 里反复出现。互动（speech_generation）
+	// 仍走原有叠层。
+	mainlineOnly := r.Stage == "mainline_text"
 	id, hash, body, err := TextPromptContract(p.Model)
 	if err != nil {
 		return r, err
@@ -111,6 +116,13 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 				break
 			}
 		}
+	}
+	if mainlineOnly {
+		// 主线不再叠加 foundation/final-boundary 两层总约束，直接采用
+		// renderCycleTextMessages 已拼好的 system（mainline-text-task.md + 风格卡）。
+		r.TextPromptID, r.TextPromptSHA = id, hash
+		r.EnableThinking = false
+		return r, nil
 	}
 	r.Messages = append([]Message{{Role: "system", Content: body}}, r.Messages...)
 	if r.Stage == "speech_generation" {

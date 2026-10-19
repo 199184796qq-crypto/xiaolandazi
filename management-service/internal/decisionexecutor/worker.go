@@ -132,6 +132,7 @@ type decisionItem struct {
 	PreparedUntil       time.Time                  `json:"prepared_until,omitempty"`
 	PurposeID           string                     `json:"purpose_id,omitempty"`
 	PurposeKnowledge    json.RawMessage            `json:"purpose_knowledge,omitempty"`
+	IntentAngles        []contentstrategy.Row      `json:"-"`
 	SelectedContentPlan *contentstrategy.Selection `json:"-"`
 	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
 	Scene               string                     `json:"scene,omitempty"`
@@ -3663,7 +3664,7 @@ func (w *Worker) answerPrompt(ctx context.Context, session model.LiveRuntimeSess
 				confirmed = append(confirmed, businessSentenceUnits(memory.CurrentVersion.ContentText)...)
 			}
 		}
-		data := map[string]any{"question": item.SampleQuestions, "current_facts": dynamicFactsPrompt, "confirmed_business_content": confirmed, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction, "recent_answers_usage_only": item.RecentAnswers}
+		data := map[string]any{"question": item.SampleQuestions, "current_facts": dynamicFactsPrompt, "confirmed_business_content": confirmed, "current_rules": effective.Rules, "candidate_correction": item.PreviewInstruction, "recent_answers_usage_only": item.RecentAnswers, "intent_angles": item.IntentAngles}
 		encoded, err := json.Marshal(data)
 		return string(encoded), err
 	}
