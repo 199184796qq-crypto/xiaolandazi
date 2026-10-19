@@ -1,5 +1,12 @@
 # 项目协作约定
 
+## WorkBuddy原地更新后的发布保护（2026-10-19 12:52只读核查，覆盖下方旧运行版本说明）
+
+- 用户明确要求：后续部署先检查服务器，不能覆盖WorkBuddy刚更新的内容。本次只读，未部署/重启/改生产文件。实际current名称仍为`20261019-rolling-scheduler-e93437b`，但Management已原地替换为PID1170098、VCS `1752bb6fa614cbc95c4c64db0e73c1b2f8f42f0a`、`vcs.modified=true`、SHA256 `b9ec504447dcf57df95164187e743ca6fdaf41b3a4fa93717d240497d6c94c8b`。不能用目录名、Git提交号或本聊天早先干净候选推断线上完整源码；下方PID1148393及二进制哈希已不是当前运行程序。
+- 现场`style-meta-prompt-extraction.md`已更新且匹配E盘WorkBuddy未提交母版。3689发布文件已捕获指纹；相较上次发布捕获，管理程序/该母版变化，新增两份对应备份，未见文件删除，Nginx不变，Core775073/网关775930保持。后续以发布当时actual current重新整合，保留现场前端、母版和其它附件；锁内再次核对实际指纹，有并行更新即重做基线，不能强行按旧值发布。
+- **本轮发现发布缺项**：实际`ANCHOR_STYLE_PROMPT_DIR=/opt/xiaolan/current/configs/prompts/anchor-style`缺少`first-live-opening.md`；当前二进制包含新的首次开场路径，明确配置目录不回退，会导致该路径准备失败。二进制亦含`loadGenerationP0`，但缺`compliance/L1/p0-generation.md`，无专用覆盖路径，生成侧加载同样会报缺失。没有调用真实模型/TTS或开播复现，不把静态检查当实播结果。后续须与WorkBuddy核对确切构建源码、补齐依赖和MANIFEST后联合验证，不只替换二进制或只看healthz。
+- 说明：`E:\直播伴播\docs\2026-10-19-WorkBuddy更新后部署基线与缺失母版核查.md`；证据：`E:\直播伴播-local\predeploy-workbuddy-check-20261019`。旧“Codex尚未部署1752bb6”仍属历史操作事实，但不能据此断言当前服务器未含该代码。
+
 ## 滚动权重调度发布（2026-10-19 09:06 已上线，当前生产）
 
 - 用户授权“部署”；北京时间09:06:41—09:06:44上线 `20261019-rolling-scheduler-e93437b`，固定干净源码 `e93437b04582c231b7a01bae2991c9b610ae4227`（实现 `1d655c7`），主目录仍为 `E:\直播伴播`。商品与卖点逐段按累计差额选择，普通排程的开场/讲解/收口共同参与连续两段限制；保留商品1.2、卖点1.3和公共20%，单一可用商品/已有续讲承诺例外。新场使用新逻辑，不自动初始化或保存方案。
