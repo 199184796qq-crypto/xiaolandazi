@@ -30,8 +30,11 @@ function choicesFor(row: DeviceRow) { return devices.value.filter(d => !rows.val
 function syncRows() {
   if (!devices.value.length) { rows.value = []; return }
   if (rows.value.length > devices.value.length) rows.value = rows.value.slice(0, devices.value.length)
-  // Row count is controlled only by +/-; refreshing and binding never append rows.
-  if (!rows.value.length) rows.value = [newRow(primary.value || bound.value[0] || (devices.value.length === 1 ? devices.value[0] : undefined))]
+  // Restore every saved binding on entry or a room/tenant reset. Extra selectors stay manual.
+  if (!rows.value.length) {
+    const savedBindings = [...bound.value].sort((a, b) => Number(b.binding_role === 'primary') - Number(a.binding_role === 'primary'))
+    rows.value = savedBindings.length ? savedBindings.map(newRow) : [newRow(devices.value.length === 1 ? devices.value[0] : undefined)]
+  }
   for (const row of rows.value) {
     const device = deviceFor(row)
     if (!device) { row.deviceId = ''; row.role = defaultRole(); continue }
