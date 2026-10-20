@@ -6460,15 +6460,7 @@ onBeforeUnmount(() => {
             <div class="plan-configuration-meta">
               <span v-if="currentPlan" class="plan-binding-status"><PlanConfigurationIcon name="link" />绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
               <span v-if="currentPlan && !currentPlanIsBound">当前房间未绑定</span>
-              <span v-if="fullShowWorkspaceDirty || poolStatus?.state === 'ready' || poolStatus?.state === 'needs_update' || poolStatus?.state === 'failed'" class="plan-draft-status">有待保存资料</span>
-              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :runtime="roomRuntimeSnapshot" :loading="fullShowWorkspaceLoading" inline hero />
-              <details v-if="currentPlan" class="plan-version-records">
-                <summary>版本记录<PlanConfigurationIcon name="next" /></summary>
-                <div class="plan-version-record-list">
-                  <p v-if="!fullShowVersionHistory.length">{{ latestSavedVersion ? '最新保存 V' + latestSavedVersion.version_no : '尚无保存版本' }}</p>
-                  <p v-for="version in fullShowVersionHistory" :key="version.id"><strong>V{{ version.version_no }}</strong><span>{{ version.lifecycle_status === 'published' ? '已保存' : version.lifecycle_status === 'superseded' ? '历史版本' : '草稿' }}</span></p>
-                </div>
-              </details>
+              <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :loading="fullShowWorkspaceLoading" saved-only inline hero />
             </div>
             </div>
           </div>
