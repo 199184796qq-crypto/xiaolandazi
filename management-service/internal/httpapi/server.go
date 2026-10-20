@@ -79,6 +79,7 @@ type Server struct {
 	previewStreams        previewStreams
 	anchorProducerContext context.Context
 	sessionArchiveWatches sync.Map
+	invalidateBenefitCache func(ctx context.Context, tenantID, planID int64)
 }
 
 func New(
@@ -133,6 +134,22 @@ func (s *Server) SetExecutionRealm(realm string) {
 
 func (s *Server) SetStylePluginRegistry(registry *styleplugin.Registry) {
 	s.stylePlugins = registry
+}
+
+// SetBenefitInvalidator 注入福利缓存失效回调。方案/福利/事实变更时调用，让 Redis 里的
+// 福利缓存主动失效（48 小时时效兜底之外的精确失效）。
+func (s *Server) SetBenefitInvalidator(fn func(ctx context.Context, tenantID, planID int64)) {
+	s.invalidateBenefitCache = fn
+}
+
+func (s *Server) invalidateBenefit(tenantID, planID int64) {
+	if s.invalidateBenefitCache == nil || planID <= 0 {
+		return
+	}
+	// 用一个短超时的后台上下文，避免失效阻塞主请求。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s.invalidateBenefitCache(ctx, tenantID, planID)
 }
 
 func (s *Server) Handler() http.Handler {

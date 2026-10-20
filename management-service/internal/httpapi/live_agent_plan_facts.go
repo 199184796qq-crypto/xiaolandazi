@@ -205,6 +205,7 @@ func (s *Server) liveAgentPlanFactAdopt(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadGateway, "事实已保存，但热同步到直播间失败："+err.Error())
 			return
 		}
+		s.invalidateBenefit(tenantID, planID)
 	}
 	writeJSON(w, http.StatusOK, output)
 }
@@ -307,6 +308,7 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 	if warning := s.factConflictCheck(r.Context(), tenantID, planID, candidate); warning != nil {
 		updated.ConflictWarning = warning
 	}
+	s.invalidateBenefit(tenantID, planID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -338,5 +340,6 @@ func (s *Server) liveAgentPlanFactDelete(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadGateway, "事实已删除，但热同步到直播间失败："+err.Error())
 		return
 	}
+	s.invalidateBenefit(tenantID, planID)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -268,10 +268,16 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 不再设 system 母版：全部约束并进 user，靠「内容四层 + 表达四层」驱动生成。
 	// 内容四层 = 必说（本次任务）/可说（事实包）/不提（未知项+红线词）/改写（改说）。
 	// 表达四层 = 主播腔调卡（纯风格 + 量化基准 + 禁用表达）+ 近期避重，整场人设。
+	// 空风格（直播间未配主播人设）时，voiceCard 为空字符串，给出明确占位让模型自由发挥，
+	// 而不是把空标签塞进 prompt。
+	voiceSlot := voiceCard
+	if s, ok := voiceCard.(string); ok && strings.TrimSpace(s) == "" {
+		voiceSlot = "（本场未配置主播风格，请用自然、得体的口播语气自由表达，不套任何固定腔调）"
+	}
 	variable := map[string]any{
 		"可说": facts,
 		// 主播腔调卡（表达层）：风格、量化基准、禁用表达，整场不变的人设语气。
-		"主播腔调": voiceCard,
+		"主播腔调": voiceSlot,
 		// 四层「不提」统一文案：未知项正反都不说。
 		"不提": fourLayerNotMentionText,
 		// 红线词表合并进「不提」层：主动规避高频极限词/功效词/逼单词。

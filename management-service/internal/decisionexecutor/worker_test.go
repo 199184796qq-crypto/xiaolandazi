@@ -529,7 +529,7 @@ func TestExtractFinalSpeechSentenceReturnsBridgeTailOnly(t *testing.T) {
 	}
 }
 
-func TestOperatorVerbatimStillRequiresModelReview(t *testing.T) {
+func TestOperatorVerbatimSkipsReviewFixedTextReachesTTS(t *testing.T) {
 	store := readyVoiceStore()
 	agent := &fakeAgent{responses: []string{"欢迎新来的朋友们，先看看今天直播间正在讲的内容。"}}
 	worker := New(store, nil, agent, nil)
@@ -545,14 +545,12 @@ func TestOperatorVerbatimStillRequiresModelReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 1 {
-		t.Fatalf("operator verbatim text must pass model review, calls=%d", agent.calls)
+	// TTS 前审核已去掉：操作者 verbatim 文字不再过模型审核，直接返回固定文字。
+	if agent.calls != 0 {
+		t.Fatalf("operator verbatim text must skip model review now, calls=%d", agent.calls)
 	}
-	if got != "欢迎新来的朋友们，先看看今天直播间正在讲的内容" {
-		t.Fatalf("expected reviewed text, got %q", got)
-	}
-	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[0].Content, "不重新裁决用户已确认的普通业务事实真假") || !strings.Contains(agent.requests[0].Messages[0].Content, "商品使用错误") {
-		t.Fatalf("operator review guard missing: %#v", agent.requests)
+	if got != "欢迎新来的朋友" {
+		t.Fatalf("expected fixed text unchanged, got %q", got)
 	}
 }
 
@@ -1176,7 +1174,7 @@ func TestReconcileRoomMissionImmediatelyReleasesDetachedCoreState(t *testing.T) 
 	}
 }
 
-func TestProcessRoomRewritesAbsoluteClaimBeforeTTS(t *testing.T) {
+func TestProcessRoomSkipsReviewAbsoluteClaimReachesTTS(t *testing.T) {
 	core := &fakeCore{}
 	agent := &fakeAgent{responses: []string{
 		"放心拍，咱们这个品质保障，绝对不踩雷！",
@@ -1189,18 +1187,17 @@ func TestProcessRoomRewritesAbsoluteClaimBeforeTTS(t *testing.T) {
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 2 {
-		t.Fatalf("agent calls=%d want generation + rule-layer review", agent.calls)
+	// TTS 前审核已去掉（对齐新轻量互动链路）：生成结果直接送 TTS，不再调审核模型改写。
+	if agent.calls != 1 {
+		t.Fatalf("agent calls=%d want generation only (review removed)", agent.calls)
 	}
-	if strings.Contains(tts.last.Text, "绝对") || strings.Contains(tts.last.Text, "不踩雷") {
-		t.Fatalf("unsafe absolute claim reached TTS: %q", tts.last.Text)
-	}
-	if strings.Contains(tts.last.Text, "品质保障") {
-		t.Fatalf("unsupported guarantee reached TTS: %q", tts.last.Text)
+	// 生成原文直达 TTS，不再被规则层改写。
+	if !strings.Contains(tts.last.Text, "绝对不踩雷") {
+		t.Fatalf("generation text should reach TTS unchanged after review removal: %q", tts.last.Text)
 	}
 }
 
-func TestVerbatimModeStillPassesRuleLayerFinalGate(t *testing.T) {
+func TestVerbatimModeSkipsReviewFixedTextReachesTTS(t *testing.T) {
 	core := &fakeCore{
 		claimRaw: `{"claimed":true,"item":{"id":"d-v","topic":"人工指令","title":"智能体输入抢答","summary":"100%原话","sample_questions":["严格100%原话"],"manual_action":"quick","manual_origin":"agent_input","execution_mode":"verbatim","fixed_text":"这个绝对不踩雷，保证你满意"}}`,
 	}
@@ -1214,11 +1211,13 @@ func TestVerbatimModeStillPassesRuleLayerFinalGate(t *testing.T) {
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 1 {
-		t.Fatalf("verbatim should skip generation but run one rule-layer review, calls=%d", agent.calls)
+	// TTS 前审核已去掉：verbatim 固定文字直接送 TTS，不再调规则层审核。
+	if agent.calls != 0 {
+		t.Fatalf("verbatim should skip generation and review entirely, calls=%d", agent.calls)
 	}
-	if strings.Contains(tts.last.Text, "绝对") || strings.Contains(tts.last.Text, "保证") {
-		t.Fatalf("verbatim bypassed rule-layer gate: %q", tts.last.Text)
+	// 固定文字直达 TTS，不再被规则层改写。
+	if !strings.Contains(tts.last.Text, "绝对不踩雷") {
+		t.Fatalf("verbatim fixed text should reach TTS unchanged: %q", tts.last.Text)
 	}
 	if got := core.dispatch["action"]; got != "quick" {
 		t.Fatalf("action=%v want quick", got)

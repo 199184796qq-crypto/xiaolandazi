@@ -533,6 +533,7 @@ func (s *Server) executeLiveStrategyAddBenefit(r *http.Request, actor model.Acto
 	} else if result.Saved.Status == "expired" {
 		statusText = "当前已过期"
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("benefit_added", "已确认添加活动福利，正式版本为 V"+strconv.FormatInt(result.Saved.VersionNo, 10)+"，"+statusText+"。", map[string]any{"module": "benefits", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo, "status": result.Saved.Status})
 }
 
@@ -580,6 +581,7 @@ func (s *Server) executeLiveStrategyUpdateBenefit(r *http.Request, actor model.A
 	} else if updated.Status == "expired" {
 		statusText = "当前已过期"
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("benefit_updated", "已确认修改活动福利，正式版本更新为 V"+strconv.FormatInt(updated.VersionNo, 10)+"，"+statusText+"。", map[string]any{"module": "benefits", "plan_id": p.PlanID, "version_no": updated.VersionNo, "status": updated.Status})
 }
 
@@ -606,6 +608,7 @@ func (s *Server) executeLiveStrategyDisableBenefit(r *http.Request, actor model.
 	} else if err != nil {
 		return liveStrategyFailed("benefit_disable_failed", "停用活动福利失败，请稍后重试。", nil)
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("benefit_disabled", "已确认停用这条活动福利。它不会再进入直播生成，历史版本和审计记录仍保留。", map[string]any{"module": "benefits", "plan_id": p.PlanID})
 }
 
@@ -670,6 +673,7 @@ func (s *Server) executeLiveStrategyAddFact(r *http.Request, actor model.Actor, 
 	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
 		return liveStrategyFailed("runtime_sync_failed", "事实已保存，但热同步直播间失败。", map[string]any{"error": err.Error()})
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("fact_added", "已确认添加事实“"+candidate.Key+"："+candidate.Value+"”及指定说法。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": result.Saved.VersionNo, "category_changed": len(newCategories) > 0})
 }
 
@@ -716,6 +720,7 @@ func (s *Server) executeLiveStrategyUpdateFact(r *http.Request, actor model.Acto
 	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
 		return liveStrategyFailed("runtime_sync_failed", "事实已修改，但热同步直播间失败。", map[string]any{"error": err.Error()})
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("fact_updated", "已确认修改事实“"+current.Key+"”，正式版本更新为 V"+strconv.FormatInt(updated.VersionNo, 10)+"。", map[string]any{"module": "knowledge", "plan_id": p.PlanID, "version_no": updated.VersionNo})
 }
 
@@ -745,6 +750,7 @@ func (s *Server) executeLiveStrategyDisableFact(r *http.Request, actor model.Act
 	if err := s.hotReloadLiveAgentPlanRooms(r.Context(), tenantID, p.PlanID, "facts"); err != nil {
 		return liveStrategyFailed("runtime_sync_failed", "事实已停用，但热同步直播间失败。", map[string]any{"error": err.Error()})
 	}
+	s.invalidateBenefit(tenantID, p.PlanID)
 	return liveStrategySucceeded("fact_disabled", "已确认停用事实“"+current.Key+"”。历史版本和审计记录仍保留。", map[string]any{"module": "knowledge", "plan_id": p.PlanID})
 }
 

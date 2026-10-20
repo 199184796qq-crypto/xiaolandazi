@@ -20,6 +20,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/redis/go-redis/v9"
+
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentmemory"
 	"livecompanion/management/internal/anchorstylescore"
@@ -103,7 +105,10 @@ type Worker struct {
 	missions         *speechmission.Registry
 	semanticEmbedder semantic.Embedder
 	semanticService  *semantic.Service
-	slots            chan struct{}
+	slots             chan struct{}
+	likeFollowStrategy InteractionStrategy
+	welcomeStrategy    InteractionStrategy
+	orderStrategy      InteractionStrategy
 
 	mu         sync.Mutex
 	inFlight   map[int64]time.Time
@@ -114,6 +119,7 @@ type Worker struct {
 	recentGreeting  map[int64][]string
 	recentBridge    map[int64][]string
 	nicknameAliases map[string]nicknameAliasCacheEntry
+	benefitRedis    *redis.Client
 	faqCache        *faqAnswerCache
 	prepared        map[preparedInteractionKey]preparedInteraction
 }
@@ -174,6 +180,9 @@ type decisionItem struct {
 	HumanizationKind       string                                `json:"-"`
 	HumanizationDelivery   string                                `json:"-"`
 	HumanizationApplied    bool                                  `json:"-"`
+	resolvedAddress        string                      `json:"-"`
+	addressingGuidance     string                      `json:"-"`
+	resolvedAddressingPlan speechmission.AddressingPlan `json:"-"`
 	EmotionDisabled        bool                                  `json:"-"`
 	BridgeText             string                                `json:"-"`
 	MissionKind            string                                `json:"mission_kind,omitempty"`
@@ -1099,7 +1108,11 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	}
 	// SelectedNames retain original event identities; generated speech may use
 	// a safe short name or neutral address under the nickname prompt policy.
-	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。带昵称打招呼时句式要自然变化（如“XX哥”“这位朋友XX”“XX你说”“XX和XX”等），不要每次都机械套同一个称呼模板。"
+	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。带昵称打招呼时句式要自然变化（如“这位朋友XX”“XX你说”“XX和XX”等），不要每次都机械套同一个称呼模板。"
+	// 性别未知的硬规则（用户 2026-10-20 明确）：可以给昵称加称谓，但不知道对方男女时
+	// 禁止单用「哥」或「姐」这类性别化称谓，改用「哥姐」「老乡」「老板」「朋友」「家人」等中性词；
+	// 只有昵称或上下文明确体现性别时，才可用「哥」或「姐」。
+	base += " 不确定对方性别时，禁止称呼“哥”或“姐”，改用“哥姐”“老乡”“老板”“朋友”“家人”等中性称谓；只有昵称本身已明确含性别（如“王哥”“李姐”“大哥”“妹子”）时才可沿用对应性别称谓。"
 	return base
 }
 
@@ -1418,6 +1431,10 @@ func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...le
 		faqCache:       &faqAnswerCache{buckets: make(map[string][]faqAnswerVariant)},
 		prepared:       make(map[preparedInteractionKey]preparedInteraction),
 	}
+	// 三个轻互动策略默认用模板骨架实现（不调模型），后续逐个替换为模型实现。
+	w.likeFollowStrategy = likeFollowStrategy{}
+	w.welcomeStrategy = welcomeStrategy{}
+	w.orderStrategy = orderStrategy{}
 	if len(leaders) > 0 {
 		w.leader = leaders[0]
 	}
@@ -1443,6 +1460,16 @@ func (w *Worker) SetSemanticService(service *semantic.Service) {
 		return
 	}
 	w.semanticService = service
+}
+
+// SetBenefitRedis 注入 Redis client，供欢迎策略的活动/福利缓存使用。
+// 福利缓存常驻 Redis（48 小时时效兜底），仅在「删除/修改方案或房间」时主动失效。
+// 未注入时欢迎策略退化为每次现算（模型识别 + 程序兜底），不缓存。
+func (w *Worker) SetBenefitRedis(client *redis.Client) {
+	if w == nil {
+		return
+	}
+	w.benefitRedis = client
 }
 
 func missionID(item *decisionItem) string {
@@ -1912,10 +1939,8 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 	if memoryNow != memoryBefore {
 		// Corrections remain hard constraints, unlike advisory host style.
-		text, err = w.finalizeSpeechText(ctx, session, *item, text)
-		if err != nil {
-			return err
-		}
+		// 已去掉 finalizeSpeechText 审核（对齐新链路）：仅昵称清洗后重新合成语音。
+		text = item.nicknameSpeechText(text)
 		text, err = w.tolerantInteractionLength(ctx, session, *item, text)
 		if err != nil {
 			return err
@@ -2269,7 +2294,33 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	var learningReview *model.InteractionLearningReview
 	assessmentSHA := ""
 	assessInteraction := w.shouldAssessInteraction(session, *item)
-	if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+	if useLightweightForKind(item.MissionKind) {
+		// 新轻量互动策略机（礼仪性轻互动 + 问答三兄弟）：
+		// 跳过「意图分析→规划→回答」三步模型链路，也不走 rewriteAnswerText /
+		// finalizeSpeechText / tolerantInteractionLength 等依赖旧上下文或可能调模型的尾部处理。
+		// 但调度层（interrupt 打断 / resume 回归 / addressing 称呼）+ plan 冻结必须照常，
+		// 否则 mission 黑板上缺调度策略、PlanFrozenAt 不冻结，下游切点/回归会丢。
+		seed := strings.TrimSpace(item.ID)
+		if seed == "" {
+			seed = strings.TrimSpace(primaryQuestion(*item))
+		}
+		w.applyStrategyPipeline(ctx, session, seed, item)
+		if item.contentError != nil {
+			return "", item.contentError
+		}
+		text = w.lightweightInteractionText(ctx, session, *item)
+		text = item.nicknameSpeechText(text)
+		if strings.TrimSpace(text) == "" {
+			return "", fmt.Errorf("轻量互动策略机未产出可播文字")
+		}
+		w.transitionMission(item, speechmission.StateGeneratingText, "generate_text", "轻量互动策略机已生成可播正文（黑盒，跳过合规终审）")
+		item.BridgeText = ""
+		w.updateMission(item, func(m *speechmission.Mission) {
+			m.GeneratedText = text
+			m.Resume.BridgeText = item.BridgeText
+		})
+		return text, nil
+	} else if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		// 100%原话只表示不主动改写；规则层仍然拥有最终播出否决权。
 		text = strings.TrimSpace(item.FixedText)
 		if text == "" {
@@ -2450,12 +2501,14 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if rewritten := w.rewriteAnswerText(ctx, text); rewritten != "" {
 		text = rewritten
 	}
-	w.transitionMission(item, speechmission.StateValidatingText, "validate_text", "最终正文已生成，检查违规表达与内部信息泄漏")
-	finalText, err := w.finalizeSpeechText(ctx, session, *item, text)
-	if err != nil {
-		return "", err
+	w.transitionMission(item, speechmission.StateValidatingText, "validate_text", "最终正文已生成，跳过 TTS 前审核直接送语音")
+	// 旧链路已去掉 TTS 前的 finalizeSpeechText 审核（模型终审 + 确定性硬过滤），
+	// 与新轻量互动链路对齐：生成完 → 昵称清洗 → 空判断 → 直接送 TTS。
+	text = item.nicknameSpeechText(text)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("最终播出文字为空")
 	}
-	text, err = w.tolerantInteractionLength(ctx, session, *item, finalText)
+	text, err := w.tolerantInteractionLength(ctx, session, *item, text)
 	if err != nil {
 		return "", err
 	}

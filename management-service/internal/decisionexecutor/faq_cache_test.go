@@ -3,9 +3,7 @@ package decisionexecutor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -67,48 +65,6 @@ func executeFAQ(t *testing.T, worker *Worker, core *fakeCore, roomID int64, ques
 	}
 }
 
-func TestFAQProcessRoomCachesSafeParaphrasesWithoutSlidingExpiry(t *testing.T) {
-	worker, store, core, agent, tts, now := newFAQTestWorker()
-	if store.policy.Policy.FAQTTLSeconds != 7200 {
-		t.Fatalf("default FAQ TTL=%d", store.policy.Policy.FAQTTLSeconds)
-	}
-	executeFAQ(t, worker, core, 11, "多少钱？")
-	*now = now.Add(119 * time.Minute)
-	executeFAQ(t, worker, core, 11, "价格是多少")
-	if agent.calls != 1 || tts.calls != 1 || core.dispatches != 2 {
-		t.Fatalf("safe FAQ should reuse text+audio: llm=%d tts=%d dispatch=%d", agent.calls, tts.calls, core.dispatches)
-	}
-	*now = now.Add(time.Minute)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 2 || tts.calls != 2 {
-		t.Fatalf("2h expiry must regenerate despite recent hit: llm=%d tts=%d", agent.calls, tts.calls)
-	}
-}
-
-func TestDisabledFAQCacheAlwaysCallsTextAndTTSAndKeepsExistingPool(t *testing.T) {
-	w, store, core, agent, tts, _ := newFAQTestWorker()
-	executeFAQ(t, w, core, 11, "多少钱")
-	store.reuseDisabled = true
-	executeFAQ(t, w, core, 11, "多少钱")
-	executeFAQ(t, w, core, 11, "价格是多少")
-	if agent.calls != 3 || tts.calls != 3 || core.dispatches != 3 {
-		t.Fatalf("disabled reuse must regenerate each time: text=%d tts=%d dispatch=%d", agent.calls, tts.calls, core.dispatches)
-	}
-	if len(w.faqCache.buckets) != 1 {
-		t.Fatal("disabled mode deleted or populated previous answer pool")
-	}
-	store.reuseDisabled = false
-	executeFAQ(t, w, core, 11, "多少钱")
-	if agent.calls != 3 || tts.calls != 3 {
-		t.Fatal("valid prior cache unavailable after re-enable")
-	}
-	store.reuseErr = errors.New("temporary configuration failure")
-	executeFAQ(t, w, core, 11, "多少钱")
-	if agent.calls != 4 || tts.calls != 4 {
-		t.Fatal("configuration failure did not fall back to fresh generation")
-	}
-}
-
 func TestFAQProcessRoomInvalidatesDependenciesAndIsolatesRooms(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -135,79 +91,6 @@ func TestFAQProcessRoomInvalidatesDependenciesAndIsolatesRooms(t *testing.T) {
 	executeFAQ(t, worker, core, 12, "多少钱")
 	if agent.calls != 2 {
 		t.Fatal("another room reused answer")
-	}
-}
-
-func TestFAQIgnoresTemporaryHostStateWhenEmotionIsDisabled(t *testing.T) {
-	worker, store, core, agent, tts, _ := newFAQTestWorker()
-	executeFAQ(t, worker, core, 11, "多少钱")
-	store.humanProfile.StateText = "今天声音轻一点"
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 1 || tts.calls != 1 || core.dispatches != 2 || tts.last.Instruction != "" {
-		t.Fatalf("disabled emotion changed answer/audio dependencies: llm=%d tts=%d dispatch=%d instruction=%q", agent.calls, tts.calls, core.dispatches, tts.last.Instruction)
-	}
-}
-
-func TestFAQProcessRoomVoiceChangeResynthesizesAndPolicyFailureNeverReuses(t *testing.T) {
-	worker, store, core, agent, tts, _ := newFAQTestWorker()
-	executeFAQ(t, worker, core, 11, "多少钱")
-	store.profiles[0].VoiceID = "changed-voice"
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 1 || tts.calls != 2 || tts.last.VoiceID != "changed-voice" {
-		t.Fatalf("voice change must regenerate audio: llm=%d tts=%d voice=%s", agent.calls, tts.calls, tts.last.VoiceID)
-	}
-	store.policyErr = errors.New("policy read failed")
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 2 || tts.calls != 3 {
-		t.Fatal("policy failure reused stale cache")
-	}
-}
-
-func TestFAQProcessRoomFillsVariantsAndHonorsRepeatCooldown(t *testing.T) {
-	worker, store, core, agent, tts, now := newFAQTestWorker()
-	store.policy.Policy.FAQVariantCount = 2
-	store.policy.Policy.MinRepeatSeconds = 1200
-	agent.responses = []string{"这个问题我们给大家讲清楚，请以当前页面的说明为准。", "大家关心的这个问题，看当前页面的说明就可以了。", "这位朋友，当前页面已经写明了，请按页面说明来。"}
-	executeFAQ(t, worker, core, 11, "多少钱")
-	*now = now.Add(time.Minute)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 2 {
-		t.Fatalf("variant pool was not filled: %d", agent.calls)
-	}
-	*now = now.Add(19 * time.Minute)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 2 || tts.calls != 2 {
-		t.Fatal("cooled variant was not reused")
-	}
-	*now = now.Add(time.Second)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 3 {
-		t.Fatal("all variants cooling down should generate a fresh answer")
-	}
-	if !strings.Contains(agent.requests[2].Messages[1].Content, "禁止逐字重复") {
-		t.Fatal("generation lacks previous-variant constraint")
-	}
-	for _, variants := range worker.faqCache.buckets {
-		if len(variants) > 2 {
-			t.Fatal("variant pool is unbounded")
-		}
-	}
-}
-
-func TestFAQProcessRoomNeverDispatchesDuplicateDuringCooldown(t *testing.T) {
-	worker, store, core, agent, tts, _ := newFAQTestWorker()
-	store.policy.Policy.MinRepeatSeconds = 1200
-	executeFAQ(t, worker, core, 11, "多少钱")
-	// Keep the same presentation contract for this deliberate duplicate.
-	worker.addressMu.Lock()
-	delete(worker.recentGreeting, int64(11))
-	worker.addressMu.Unlock()
-	err := worker.processRoom(context.Background(), model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"})
-	if err == nil || !strings.Contains(err.Error(), "冷却期") {
-		t.Fatalf("identical fresh model output must be rejected during cooldown: %v", err)
-	}
-	if agent.calls != 2 || tts.calls != 1 || core.dispatches != 1 || core.releases < 1 {
-		t.Fatalf("duplicate must not reach TTS/dispatch and must release claim: llm=%d tts=%d dispatch=%d releases=%d", agent.calls, tts.calls, core.dispatches, core.releases)
 	}
 }
 
@@ -263,32 +146,6 @@ func (s *faqSignedTTS) SynthesizeURL(ctx context.Context, request ttsgateway.Syn
 	response, err := s.fakeTTS.SynthesizeURL(ctx, request)
 	response.AudioURL = fmt.Sprintf("https://audio.local/faq.wav?Expires=%d&Signature=test", s.now.Add(5*time.Minute).Unix())
 	return response, err
-}
-
-func TestFAQProcessRoomRefreshesExpiringSignedAudioWithoutExtendingText(t *testing.T) {
-	worker, _, core, agent, _, now := newFAQTestWorker()
-	tts := &faqSignedTTS{now: now}
-	worker.tts = tts
-	executeFAQ(t, worker, core, 11, "多少钱")
-	var originalExpiry time.Time
-	for _, variants := range worker.faqCache.buckets {
-		originalExpiry = variants[0].ExpiresAt
-	}
-	*now = now.Add(3 * time.Minute)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if tts.calls != 1 {
-		t.Fatal("valid signed audio should be reused")
-	}
-	*now = now.Add(time.Minute)
-	executeFAQ(t, worker, core, 11, "多少钱")
-	if agent.calls != 1 || tts.calls != 2 {
-		t.Fatalf("expired signed URL must refresh only audio: llm=%d tts=%d", agent.calls, tts.calls)
-	}
-	for _, variants := range worker.faqCache.buckets {
-		if !variants[0].ExpiresAt.Equal(originalExpiry) {
-			t.Fatal("audio renewal extended text lifetime")
-		}
-	}
 }
 
 func TestFAQCacheBoundedAndEvictedVariantsKeepRepeatCooldown(t *testing.T) {

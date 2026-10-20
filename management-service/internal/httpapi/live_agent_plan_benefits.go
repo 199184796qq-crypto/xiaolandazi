@@ -176,6 +176,9 @@ func (s *Server) liveAgentPlanBenefitAdopt(w http.ResponseWriter, r *http.Reques
 		}
 		output.Results = append(output.Results, result)
 	}
+	if output.Adopted > 0 {
+		s.invalidateBenefit(tenantID, planID)
+	}
 	writeJSON(w, http.StatusOK, output)
 }
 
@@ -240,6 +243,7 @@ func (s *Server) liveAgentPlanBenefitUpdate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "修改活动福利失败："+err.Error())
 		return
 	}
+	s.invalidateBenefit(tenantID, planID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -268,5 +272,6 @@ func (s *Server) liveAgentPlanBenefitDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "停用活动福利失败")
 		return
 	}
+	s.invalidateBenefit(tenantID, planID)
 	w.WriteHeader(http.StatusNoContent)
 }

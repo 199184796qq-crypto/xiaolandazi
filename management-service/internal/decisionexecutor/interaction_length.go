@@ -48,14 +48,8 @@ func (w *Worker) tolerantInteractionLength(ctx context.Context, s model.LiveRunt
 		}
 		return "", err
 	}
-	shorter, err := w.finalizeSpeechText(repairCtx, s, item, response.Text)
-	if err != nil {
-		if focusRepair {
-			return text, nil
-		}
-		return "", err
-	}
-	if strings.TrimSpace(shorter) == "" || utf8.RuneCountInString(shorter) > interactionLengthTolerance {
+	shorter := strings.TrimSpace(item.nicknameSpeechText(response.Text))
+	if shorter == "" || utf8.RuneCountInString(shorter) > interactionLengthTolerance {
 		if focusRepair {
 			return text, nil
 		}

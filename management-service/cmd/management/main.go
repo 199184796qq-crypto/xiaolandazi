@@ -319,7 +319,9 @@ func main() {
 	decisionWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	decisionWorker.SetSemanticEmbedder(semanticEmbedder)
 	decisionWorker.SetSemanticService(semanticService)
+	decisionWorker.SetBenefitRedis(cycleRedis)
 	api.SetSpeechMissionReader(decisionWorker)
+	api.SetBenefitInvalidator(decisionWorker.InvalidateBenefitCache)
 	go decisionWorker.Run(appCtx)
 
 	// recent_speech vectors carry a short TTL. Physically purge expired rows so

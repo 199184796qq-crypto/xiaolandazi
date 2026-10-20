@@ -223,6 +223,7 @@ func (s *Server) liveAgentPlanUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "保存直播智能体方案失败")
 		return
 	}
+	s.invalidateBenefit(tenantID, planID)
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -271,6 +272,7 @@ func (s *Server) liveAgentPlanArchive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "删除直播智能体方案失败")
 		return
 	}
+	s.invalidateBenefit(tenantID, planID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

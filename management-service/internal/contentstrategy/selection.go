@@ -15,6 +15,10 @@ type SelectionRequest struct {
 	Recent                                               []string
 	ActiveBenefit                                        bool
 	ActiveFactIDs                                        map[string]bool
+	// IntentAngles 是「解意图」模型实时挖出的 task_angles（含 FactIDs）。
+	// 传入时作为选事实的主依据：优先按这些角度的关联事实精确取，
+	// 快照角度行（s.Rows）仅作兜底。空则退回纯快照角度行选角度的旧逻辑。
+	IntentAngles []Row
 }
 type Selection struct {
 	AnswerOutline *AnswerOutline `json:"answer_outline,omitempty"`
@@ -126,6 +130,50 @@ func (s *Snapshot) Select(request SelectionRequest) Selection {
 		if strings.Contains(request.AllowedFacts, f.Text) && (!strings.HasPrefix(strings.TrimSpace(f.Text), "- [有效福利]") || request.ActiveFactIDs[f.ID]) {
 			allowed[f.ID] = true
 		}
+	}
+	// 解意图角度优先：调用方传入了意图解析实时挖出的 task_angles 时，
+	// 直接按这些角度的关联事实（FactIDs）精确选事实，不再走快照角度行的词面打分。
+	// 这修复了「解意图角度 ≠ 快照角度」导致筛错事实的问题（如问包间却筛成仅堂食）。
+	if len(request.IntentAngles) > 0 {
+		used := map[string]bool{}
+		for _, ia := range request.IntentAngles {
+			if ia.PurposeID != "" && request.PurposeID != "" && ia.PurposeID != request.PurposeID {
+				continue
+			}
+			row := ia
+			if row.Role == "" {
+				row.Role = "required"
+			}
+			ok := true
+			for _, id := range row.FactIDs {
+				if !allowed[id] {
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			if row.Role == "required" && len(result.Required) < 2 {
+				result.Required = append(result.Required, row)
+			} else if row.Role != "required" && len(result.Optional) < 1 {
+				result.Optional = append(result.Optional, row)
+			}
+			for _, id := range row.FactIDs {
+				used[id] = true
+			}
+		}
+		for _, f := range s.Facts {
+			if used[f.ID] {
+				result.Facts = append(result.Facts, f)
+			}
+		}
+		if len(result.Required)+len(result.Optional) > 0 {
+			result.Reason = "intent-resolved angles, complete fact dependencies"
+			return result
+		}
+		// 意图角度全部未能命中事实，回落到快照角度行兜底。
+		result.Required, result.Optional, result.Facts = []Row{}, []Row{}, []Fact{}
 	}
 	purposes := map[string]Purpose{}
 	for _, p := range s.Purposes {

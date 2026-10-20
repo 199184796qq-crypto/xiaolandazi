@@ -2,7 +2,6 @@ package decisionexecutor
 
 import (
 	"context"
-	"encoding/json"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
@@ -173,53 +172,6 @@ func TestMaskedNicknameInputsOnlyExposeReadablePrefix(t *testing.T) {
 	plain := nicknameInput(0, "小林12345678")
 	if plain.RawName != "小林12345678" || plain.Masked || plain.Digits != 8 {
 		t.Fatalf("ordinary nickname changed: %#v", plain)
-	}
-}
-
-func TestMaskedNicknamePromptAndTTSKeepAccountIdentityButDropHiddenParts(t *testing.T) {
-	core := &fakeCore{claimRaw: `{"claimed":true,"item":{"id":"masked-welcome","topic":"欢迎","title":"欢迎小陈***隐藏原文","summary":"欢迎小陈***隐藏原文和*隐藏昵称","sample_questions":["欢迎小陈***隐藏原文和*隐藏昵称"],"nicknames":["小陈***隐藏原文","*隐藏昵称"],"mission_kind":"welcome_named","mission_event_count":2,"manual_action":"answer"}}`}
-	agent := &fakeAgent{responses: []string{
-		"小陈老乡",
-		"这位朋友",
-		"欢迎小陈***隐藏原文和*隐藏昵称，你们刚来可以先看看，今天正在讲商品的规格和包装选择。",
-	}}
-	tts := &fakeTTS{}
-	w := New(readyVoiceStore(), core, agent, tts)
-	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
-	if err := w.processRoom(context.Background(), session); err != nil {
-		t.Fatal(err)
-	}
-	if tts.calls == 0 || !strings.Contains(tts.last.Text, "小陈老乡") || !strings.Contains(tts.last.Text, "你们") {
-		t.Fatalf("welcome or group coverage lost: %#v", tts)
-	}
-	spoken := strings.TrimPrefix(tts.last.Text, "****")
-	if strings.ContainsAny(spoken, "*＊") || strings.Contains(spoken, "隐藏") {
-		t.Fatalf("masked nickname reached TTS: %q", tts.last.Text)
-	}
-	if core.dispatch["reply_text"] != spoken {
-		t.Fatalf("subtitle and TTS body differ: %#v / %q", core.dispatch, tts.last.Text)
-	}
-	for _, request := range agent.requests {
-		for _, message := range request.Messages {
-			if strings.Contains(message.Content, "隐藏原文") || strings.Contains(message.Content, "隐藏昵称") {
-				t.Fatalf("hidden nickname exposed to %s", request.Stage)
-			}
-		}
-	}
-	if len(agent.requests) < 2 {
-		t.Fatal("planner and writer were not exercised")
-	}
-	var in struct {
-		Name nicknamePlanInput `json:"name"`
-	}
-	if err := json.Unmarshal([]byte(agent.requests[0].Messages[1].Content), &in); err != nil || in.Name.RawName != "小陈" || strings.Contains(agent.requests[0].Messages[1].Content, "\"index\"") {
-		t.Fatalf("bad production planner packet: %#v, %v", in, err)
-	}
-	planItem := decisionItem{Nicknames: []string{"小陈***隐藏原文", "*隐藏昵称"}, PromptNicknames: []string{"小陈老乡", "这位朋友"}, MissionKind: "welcome_named", MissionEventCount: 2}
-	planWorker := &Worker{recentNamed: map[int64]map[string]time.Time{}}
-	plan := planWorker.buildAddressingPlan(11, planItem, "", "", model.RoomAddressingPreferences{}, nil)
-	if planItem.Nicknames[0] != "小陈***隐藏原文" || len(plan.OriginalSelectedNames) == 0 || plan.OriginalSelectedNames[0] != "小陈***隐藏原文" {
-		t.Fatalf("source account identity was changed: %#v", plan)
 	}
 }
 

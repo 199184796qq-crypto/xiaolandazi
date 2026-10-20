@@ -185,7 +185,7 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 					}
 					active := contentstrategy.ActiveBenefitFacts(snapshot.Facts, time.Now().UTC())
 					var selected contentstrategy.Selection
-					guidance, selected, strategyErr = snapshot.RenderSelection(contentstrategy.SelectionRequest{Mode: "互动", AllowedFacts: facts, Question: primaryQuestion(*item), PurposeID: item.PurposeID, Recent: recent, ActiveBenefit: len(active) > 0, ActiveFactIDs: active})
+					guidance, selected, strategyErr = snapshot.RenderSelection(contentstrategy.SelectionRequest{Mode: "互动", AllowedFacts: facts, Question: primaryQuestion(*item), PurposeID: item.PurposeID, Recent: recent, ActiveBenefit: len(active) > 0, ActiveFactIDs: active, IntentAngles: item.IntentAngles})
 					if guidance != "" {
 						item.SelectedContentPlan = &selected
 					}
