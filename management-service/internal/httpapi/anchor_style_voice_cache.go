@@ -32,11 +32,6 @@ func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment)
 		if err != nil {
 			hash = "mother-unavailable"
 		}
-		if taskMother, err := interactionpolicy.Read("mainline-text-task.md"); err == nil {
-			hash += ":" + contentstrategy.SHA(string(taskMother))
-		} else {
-			hash += ":task-mother-unavailable"
-		}
 		contract += ":text-v1:" + state.TextModel.ID + ":" + state.TextModel.Model + ":" + hash + ":" + anchorvoicecache.Digest(state.TextModel)
 	}
 	if state.PreviewLimitMS > 0 {

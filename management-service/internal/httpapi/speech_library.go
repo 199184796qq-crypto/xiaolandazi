@@ -111,7 +111,7 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		return "", errors.New("话术库需要完整P0及文字和审核模型快照")
 	}
 	mothers := map[string]string{}
-	for _, name := range []string{"mainline-text-task.md", "mainline-final-content-review.md", "speech-constraint-text-review.md", "angle-hook-plan.md", "fact-purpose-angle-generation.md", "first-live-opening.md"} {
+	for _, name := range []string{"mainline-final-content-review.md", "speech-constraint-text-review.md", "angle-hook-plan.md", "fact-purpose-angle-generation.md", "first-live-opening.md"} {
 		b, e := interactionpolicy.Read(name)
 		if e != nil {
 			return "", e

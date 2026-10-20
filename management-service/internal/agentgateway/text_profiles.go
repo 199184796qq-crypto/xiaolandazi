@@ -65,15 +65,19 @@ func TextPromptContract(model string) (string, string, string, error) {
 	if path == "" || strings.Contains(path, "..") || strings.ContainsAny(path, "/\\") {
 		return "", "", "", fmt.Errorf("文字模型提示词配置无效")
 	}
-	common, err := interactionpolicy.Read("text-generation-foundation.md")
-	if err != nil {
-		return "", "", "", err
-	}
+	// 总约束母版 text-generation-foundation.md 已废弃移除：主线（mainline_text）
+	// 的四层结构由 renderCycleTextMessages 直接拼装，不再叠加此层；互动路径
+	// 也不再读取它。读取改为可选，文件缺失不阻断生成。
+	common, _ := interactionpolicy.Read("text-generation-foundation.md")
 	adaptation, err := interactionpolicy.Read(path)
 	if err != nil {
 		return "", "", "", err
 	}
-	body := string(common) + "\n\n" + string(adaptation)
+	body := ""
+	if len(common) > 0 {
+		body = string(common) + "\n\n"
+	}
+	body += string(adaptation)
 	nicknames, err := interactionpolicy.Read("interaction-nickname-addressing.md")
 	if err != nil {
 		return "", "", "", err
