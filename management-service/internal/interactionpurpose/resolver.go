@@ -29,12 +29,20 @@ type Result struct {
 type Repository interface {
 	GetInteractionPurpose(context.Context, int64, int64, int64, string) (string, error)
 	UpsertSemanticDocument(context.Context, semantic.StoredDocument) error
+	ListPurposeBuckets(context.Context, int64, int64, int64, int) ([]semantic.PurposeBucket, error)
+	UpsertPurposeBucket(context.Context, int64, int64, int64, string, string, string) error
+	GetPurposeBucketConclusion(context.Context, int64, int64, int64, string) (string, error)
 }
+
 type Complete func(context.Context, string) (string, error)
 type Resolver struct {
 	Repo     Repository
 	Semantic *semantic.Service
 	Complete Complete
+	// Judge, when non-nil, classifies whether a new question is semantically the
+	// same as one of the room's existing purpose buckets, so the resolution model
+	// can be skipped for repeats. It consumes only question text (no fact bundle).
+	Judge Complete
 }
 type Input struct {
 	Tenant, Room, Plan  int64
@@ -85,6 +93,13 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 		if json.Unmarshal([]byte(raw), &cached) == nil && cached.FactsSHA == factsSHA && Normalize(cached.Input) == Normalize(input.Text) {
 			cached.Source = "exact"
 			return cached, nil
+		}
+	}
+	// 判断模型层：拿新问题跟本房间的语义桶比对，命中同类就复用结论，省掉完整解意图。
+	// 只喂问题原文（不带事实包），判断模型远比解意图便宜。宁可 miss 也不误命中。
+	if r.Judge != nil {
+		if result, ok := r.judgeReuse(ctx, input, factsSHA); ok {
+			return result, nil
 		}
 	}
 	if r.Semantic != nil && r.Semantic.Enabled() {
@@ -148,6 +163,13 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	if result.Question && result.Relevant && (result.Purpose == "" || result.Confidence < .75) {
 		return Result{}, fmt.Errorf("问题目的不确定，保留确定性入口")
 	}
+	// relevant=false（超出事实包范围/与当前直播无关）时，目的编号没有意义：
+	// 不该有 purpose_id，也不该触发 L 兜底生成假 ID。直接清空，让下游走「缺事实兜底」。
+	if !result.Relevant {
+		result.PurposeID = ""
+		result.Purpose = ""
+		result.Angles = nil
+	}
 	if result.PurposeID == "" && result.Purpose != "" {
 		result.PurposeID = "L" + contentstrategy.SHA(result.Purpose)[:12]
 	}
@@ -155,13 +177,27 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 		result.Angles[i].PurposeID = result.PurposeID
 	}
 	if len(result.Angles) > 0 {
-		p := contentstrategy.Purpose{ID: result.PurposeID, Name: result.Purpose, Concern: result.Purpose, FactIDs: result.Angles[0].FactIDs}
-		if err = contentstrategy.Validate(contentstrategy.Facts(input.Facts), []contentstrategy.Purpose{p}, result.Angles, true); err != nil {
-			return Result{}, err
+		// 解意图的 task_angles 是「轻量角度」，模型只输出「角度/讲述任务/关联事实」，
+		// 不输出快照专属的「优先级/任务类型/适用条件」。这里只校验解意图真正要求的：
+		//   1) 关联事实必须引用已存在的事实编号（防模型编造）
+		//   2) 角度、讲述任务非空且不超长
+		//   3) 采用条件（若给出）合法
+		// 因此用 ValidateRowPolicy(required=false)（跳过优先级/任务类型/采用条件的非空要求），
+		// 并单独校验关联事实引用，不再套用快照级 Validate（它强制适用条件/优先级等）。
+		knownFacts := map[string]bool{}
+		for _, f := range contentstrategy.Facts(input.Facts) {
+			knownFacts[f.ID] = true
 		}
 		for _, row := range result.Angles {
-			if err = contentstrategy.ValidateRowPolicy(row, true); err != nil {
+			if err = contentstrategy.ValidateRowPolicy(row, false); err != nil {
 				return Result{}, err
+			}
+			if err = contentstrategy.ValidateFactRefs(row.FactIDs, knownFacts); err != nil {
+				return Result{}, err
+			}
+			if len([]rune(strings.TrimSpace(row.Angle))) == 0 || len([]rune(row.Angle)) > 60 ||
+				len([]rune(strings.TrimSpace(row.Task))) == 0 || len([]rune(row.Task)) > 240 {
+				return Result{}, fmt.Errorf("解意图角度字段缺失或过长")
 			}
 		}
 	}
@@ -171,6 +207,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 		if err = r.save(ctx, input, id, result); err != nil {
 			return Result{}, fmt.Errorf("保存目的知识失败：%w", err)
 		}
+		r.storeBucket(ctx, input, result)
 	}
 	return result, nil
 }
@@ -182,4 +219,73 @@ func (r *Resolver) save(ctx context.Context, input Input, id string, result Resu
 		return err
 	}
 	return r.Repo.UpsertSemanticDocument(ctx, semantic.StoredDocument{Document: doc, TextHash: semantic.HashText(doc.Text), Model: "purpose-exact-v1"})
+}
+
+// judgeReuse asks the judge model whether input.Text belongs to one of the
+// room's existing purpose buckets. On a confident hit it reuses the stored
+// conclusion; on a miss it returns ok=false so the caller falls through to the
+// full resolution model.
+func (r *Resolver) judgeReuse(ctx context.Context, input Input, factsSHA string) (Result, bool) {
+	buckets, err := r.Repo.ListPurposeBuckets(ctx, input.Tenant, input.Room, input.Plan, 20)
+	if err != nil || len(buckets) == 0 {
+		return Result{}, false
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"新问题":     input.Text,
+		"历史已分析问题": bucketQuestions(buckets),
+	})
+	raw, err := r.Judge(ctx, string(payload))
+	if err != nil {
+		return Result{}, false
+	}
+	var verdict struct {
+		Same       bool `json:"same"`
+		MatchIndex int  `json:"match_index"`
+	}
+	if contentstrategy.Decode(raw, &verdict) != nil || !verdict.Same {
+		return Result{}, false
+	}
+	if verdict.MatchIndex < 0 || verdict.MatchIndex >= len(buckets) {
+		return Result{}, false
+	}
+	hit := buckets[verdict.MatchIndex]
+	conclusion, err := r.Repo.GetPurposeBucketConclusion(ctx, input.Tenant, input.Room, input.Plan, hit.SourceID)
+	if err != nil || conclusion == "" {
+		return Result{}, false
+	}
+	var cached Result
+	if json.Unmarshal([]byte(conclusion), &cached) != nil {
+		return Result{}, false
+	}
+	if cached.FactsSHA != factsSHA {
+		// 事实包变了，旧结论可能引用已失效的事实，不冒险复用。
+		return Result{}, false
+	}
+	cached.Input = input.Text
+	cached.Source = "bucket"
+	return cached, true
+}
+
+func bucketQuestions(buckets []semantic.PurposeBucket) []string {
+	out := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		if b.Question != "" {
+			out = append(out, b.Question)
+		}
+	}
+	return out
+}
+
+// storeBucket records the current question + conclusion as a semantic bucket for
+// future judge-model reuse. Called after a successful resolution.
+func (r *Resolver) storeBucket(ctx context.Context, input Input, result Result) {
+	if result.Confidence < .85 {
+		return
+	}
+	if result.Source != "model" {
+		return
+	}
+	conclusion, _ := json.Marshal(result)
+	sourceID := "bucket:" + contentstrategy.SHA(Normalize(input.Text))
+	_ = r.Repo.UpsertPurposeBucket(ctx, input.Tenant, input.Room, input.Plan, sourceID, input.Text, string(conclusion))
 }

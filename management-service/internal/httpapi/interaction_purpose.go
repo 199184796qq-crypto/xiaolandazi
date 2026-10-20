@@ -57,6 +57,10 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		writeError(w, 500, err.Error())
 		return
 	}
+	judgePrompt, judgeErr := interactionpolicy.Read("interaction-purpose-judge.md")
+	if judgeErr != nil {
+		judgePrompt = nil // 判断母版缺失时降级：不启用判断模型层，仍走完整解意图
+	}
 	settings, err := s.store.AnchorGenerationSettings(ctx)
 	if err != nil {
 		writeError(w, 500, "analysis profile unavailable")
@@ -67,6 +71,13 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "interaction_purpose_resolution", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: string(prompt)}, {Role: "user", Content: payload}}, 1800, false)
 		return result.Text, err
 	}}
+	if len(judgePrompt) > 0 {
+		resolver.Judge = func(ctx context.Context, payload string) (string, error) {
+			ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan})
+			result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "interaction_purpose_judge", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: string(judgePrompt)}, {Role: "user", Content: payload}}, 128, false)
+			return result.Text, err
+		}
+	}
 	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: asset.SafeFacts, Prompt: string(prompt)}
 	if snapshot := s.loadContentStrategy(ctx, input.Tenant, input.Plan, asset.SafeFacts); snapshot != nil {
 		query.Purposes = snapshot.Purposes

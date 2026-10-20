@@ -117,7 +117,9 @@ func Decode(raw string, target any) error {
 func validText(text string, limit int) bool {
 	return strings.TrimSpace(text) != "" && utf8.RuneCountInString(text) <= limit
 }
-func validateRefs(refs []string, known map[string]bool) error {
+// ValidateFactRefs 校验一组关联事实编号：须非空、≤20 项、编号存在且不重复。
+// 供「解意图」等场景在未走完整快照 Validate 时单独校验引用合法性（防模型编造事实编号）。
+func ValidateFactRefs(refs []string, known map[string]bool) error {
 	if len(refs) == 0 || len(refs) > 20 {
 		return fmt.Errorf("关联事实须为1至20项")
 	}
@@ -147,7 +149,7 @@ func Validate(facts []Fact, purposes []Purpose, rows []Row, requireRows bool) er
 			return fmt.Errorf("目的字段缺失、重复或过长")
 		}
 		ids[p.ID] = true
-		if err := validateRefs(p.FactIDs, known); err != nil {
+		if err := ValidateFactRefs(p.FactIDs, known); err != nil {
 			return err
 		}
 	}
@@ -159,10 +161,15 @@ func Validate(facts []Fact, purposes []Purpose, rows []Row, requireRows bool) er
 		if err := ValidateRowPolicy(r, false); err != nil {
 			return err
 		}
-		if !ids[r.PurposeID] || !validText(r.Angle, 60) || !validText(r.Task, 240) || !validText(r.When, 200) {
+		if !ids[r.PurposeID] || !validText(r.Angle, 60) || !validText(r.Task, 240) {
 			return fmt.Errorf("角度字段缺失、引用未知目的或过长")
 		}
-		if err := validateRefs(r.FactIDs, known); err != nil {
+		// 「适用条件」允许为空：解意图模型输出（task_angles）不产出该字段，
+		// 只有内容策略快照会显式填写。为空不拦截，非空时校验长度上限。
+		if r.When != "" && utf8.RuneCountInString(r.When) > 200 {
+			return fmt.Errorf("适用条件过长")
+		}
+		if err := ValidateFactRefs(r.FactIDs, known); err != nil {
 			return err
 		}
 		key := r.PurposeID + "/" + r.Angle

@@ -38,6 +38,15 @@ func (r *memoryRepo) ListSemanticDocuments(_ context.Context, q semantic.Query) 
 	}
 	return result, nil
 }
+func (r *memoryRepo) ListPurposeBuckets(context.Context, int64, int64, int64, int) ([]semantic.PurposeBucket, error) {
+	return nil, nil
+}
+func (r *memoryRepo) UpsertPurposeBucket(context.Context, int64, int64, int64, string, string, string) error {
+	return nil
+}
+func (r *memoryRepo) GetPurposeBucketConclusion(context.Context, int64, int64, int64, string) (string, error) {
+	return "", semantic.ErrDocumentNotFound
+}
 
 type constantEmbedder struct{ calls *int }
 

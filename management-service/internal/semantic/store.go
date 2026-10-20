@@ -21,7 +21,11 @@ const (
 	ContentTypeMaterialChunk   = "material_chunk"
 	ContentTypeRecentSpeech    = "recent_speech"
 	ContentTypeStyleOverlay    = "style_overlay_memory"
-	MaxSyncDocuments           = 500
+	// ContentTypePurposeBucket stores semantic buckets for purpose-resolution
+	// judge-model reuse: each bucket holds a representative question plus its
+	// purpose conclusion, keyed by room so buckets never leak across rooms.
+	ContentTypePurposeBucket = "purpose_bucket"
+	MaxSyncDocuments         = 500
 )
 
 var ErrDocumentNotFound = errors.New("semantic document not found")
@@ -102,6 +106,15 @@ type SyncRepository interface {
 type Match struct {
 	Document StoredDocument
 	Score    float64
+}
+
+// PurposeBucket is a single semantic bucket for purpose-resolution reuse. It
+// holds one representative question plus its purpose conclusion, scoped strictly
+// to a room so buckets never leak across rooms.
+type PurposeBucket struct {
+	SourceID   string
+	Question   string
+	Conclusion string
 }
 
 type ContentOperationStats struct {
