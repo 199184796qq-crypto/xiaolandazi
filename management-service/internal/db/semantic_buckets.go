@@ -20,7 +20,7 @@ func (s *Store) ListPurposeBuckets(ctx context.Context, tenant, room, plan int64
 		SELECT source_id, content_text, source_version
 		FROM semantic_documents
 		WHERE tenant_id=? AND room_id=? AND plan_id=? AND content_type='purpose_bucket'
-		  AND status='active' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3))
+		  AND source_version=1 AND status='active' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3))
 		ORDER BY updated_at DESC, id DESC LIMIT ?`,
 		tenant, room, plan, limit)
 	if err != nil {

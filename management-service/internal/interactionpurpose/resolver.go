@@ -240,15 +240,16 @@ func (r *Resolver) judgeReuse(ctx context.Context, input Input, factsSHA string)
 	}
 	var verdict struct {
 		Same       bool `json:"same"`
-		MatchIndex int  `json:"match_index"`
+		MatchIndex *int `json:"match_index"`
 	}
 	if contentstrategy.Decode(raw, &verdict) != nil || !verdict.Same {
 		return Result{}, false
 	}
-	if verdict.MatchIndex < 0 || verdict.MatchIndex >= len(buckets) {
+	// same=true 但缺 match_index 时 MatchIndex 为 nil，绝不能默认命中第 0 桶。
+	if verdict.MatchIndex == nil || *verdict.MatchIndex < 0 || *verdict.MatchIndex >= len(buckets) {
 		return Result{}, false
 	}
-	hit := buckets[verdict.MatchIndex]
+	hit := buckets[*verdict.MatchIndex]
 	conclusion, err := r.Repo.GetPurposeBucketConclusion(ctx, input.Tenant, input.Room, input.Plan, hit.SourceID)
 	if err != nil || conclusion == "" {
 		return Result{}, false
