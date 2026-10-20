@@ -281,7 +281,11 @@ function dismissPlanActionsMenu(event: MouseEvent) {
   if (menu?.open && !event.composedPath().includes(menu)) closePlanActionsMenu()
 }
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
-  selectPlanConfigurationMode(section === 'business' ? 'business' : section === 'facts' ? lastFactMode.value : section === 'interaction' ? 'memory' : section === 'style' ? 'anchor' : 'voice')
+  const modes: Record<PlanConfigurationSection, PlanConfigurationMode> = {
+    business: 'business', facts: lastFactMode.value, interaction: 'memory',
+    style: 'anchor', voice: 'voice', live: 'fullshow',
+  }
+  selectPlanConfigurationMode(modes[section])
 }
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
@@ -6469,7 +6473,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="plan-configuration-actions">
-            <button class="strategy-version-button plan-preview-button" :class="{ active: activeMode === 'fullshow' }" type="button" :aria-pressed="activeMode === 'fullshow'" @click="activeMode = 'fullshow'"><PlanConfigurationIcon name="preview" />生成与预览</button>
             <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick"><PlanConfigurationIcon name="save" />{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
             <details ref="planActionsMenu" class="plan-configuration-more">
               <summary class="strategy-version-button">更多<PlanConfigurationIcon name="chevron" /></summary>
@@ -11434,11 +11437,10 @@ onBeforeUnmount(() => {
 .plan-title-edit{display:grid;place-items:center;flex:0 0 34px;width:34px;height:38px;padding:5px;border:0;border-radius:7px;background:transparent;color:#4c5b89;cursor:pointer}.plan-title-edit:hover{background:#e9edff}.plan-title-edit:disabled{opacity:.45;cursor:default}
 .plan-configuration-meta{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;margin-top:12px;color:#647193;font-size:14px;font-weight:600}.plan-binding-status{display:flex;align-items:center;gap:6px}.plan-binding-status :deep(svg){width:17px;height:17px}
 .plan-draft-status{padding:4px 10px;border-radius:18px;background:#fff2d9;color:#936921}
-.plan-configuration-actions{position:relative;z-index:1;display:grid;grid-template-columns:auto auto auto;align-items:center;gap:12px}
+.plan-configuration-actions{position:relative;z-index:1;display:grid;grid-template-columns:auto auto;align-items:center;gap:12px}
 .plan-configuration-actions .strategy-version-button{display:flex;align-items:center;justify-content:center;gap:10px;min-height:51px;padding:12px 19px;border:1px solid #e4e8ff;border-radius:13px;background:#fff;color:#27365f;font-size:16px;font-weight:750;box-shadow:0 3px 10px #879cf005;white-space:nowrap;cursor:pointer}
 .plan-configuration-actions .plan-save-button{border-color:#514cff;background:linear-gradient(115deg,#645aff,#3e43ff);color:#fff;box-shadow:0 5px 12px #5a4df21a}.plan-configuration-actions .plan-save-button:disabled{opacity:.55;cursor:default}
 .plan-hero-signature{grid-column:1/-1;justify-self:center;padding:6px 0 3px;border-bottom:2px solid #b9aaff80;color:#8e7beb;font-family:KaiTi,STKaiti,cursive;font-size:21px;letter-spacing:3px;transform:rotate(-6deg)}
-.plan-preview-button.active{border-color:#9aa9ed!important;background:#eef2ff!important;color:#4157cc!important}
 .plan-configuration-more,.plan-version-records{position:relative}
 .plan-configuration-more>summary,.plan-version-records>summary{list-style:none;cursor:pointer}
 .plan-configuration-more>summary::-webkit-details-marker,.plan-version-records>summary::-webkit-details-marker{display:none}

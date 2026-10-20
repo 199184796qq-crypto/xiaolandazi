@@ -20,12 +20,13 @@ const emit = defineEmits<{
 const section = computed(() => planConfigurationSection(props.mode))
 const factsPending = computed(() => props.productRiskCount + props.benefitRiskCount + props.factRiskCount)
 const factFocused = ref(false)
-const sections: { key: PlanConfigurationSection; label: string }[] = [
+const sections: { key: PlanConfigurationSection; label: string; icon?: string }[] = [
   { key: 'business', label: '业务模式' },
   { key: 'facts', label: '商品与事实' },
   { key: 'interaction', label: '互动规则' },
   { key: 'style', label: '主播风格' },
   { key: 'voice', label: '声音' },
+  { key: 'live', label: '直播模式', icon: 'preview' },
 ]
 const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
@@ -42,7 +43,7 @@ function pending(mode: PlanConfigurationMode) {
   <div class="plan-configuration-navigation">
     <nav class="plan-configuration-sections" aria-label="智能体方案配置分类">
       <button v-for="item in sections" :key="item.key" type="button" :class="{ active: section === item.key }" :aria-current="section === item.key ? 'page' : undefined" @click="emit('selectSection', item.key)">
-        <PlanConfigurationIcon :name="item.key" />
+        <PlanConfigurationIcon :name="item.icon || item.key" />
         {{ item.label }}
         <span v-if="item.key === 'facts' && factsPending" class="plan-navigation-count" :aria-label="`${factsPending}项待处理`">{{ factsPending }}</span>
         <span v-if="item.key === 'interaction' && interactionPending" class="plan-navigation-count" :aria-label="`${interactionPending}条互动待纠正`">{{ interactionPending > 99 ? '99+' : interactionPending }}</span>

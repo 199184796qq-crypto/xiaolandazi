@@ -22,12 +22,18 @@ test('进入事实深链时仍显示配置和可定位的风险提示', async ()
   assert.equal((html.match(/aria-current="page"/g) || []).length, 2)
 })
 
-test('生成预览属于独立操作，互动及预览不展示商品子栏目', async () => {
+test('直播模式位于声音右侧，互动及直播模式不展示商品子栏目', async () => {
   for (const mode of ['memory', 'addressing', 'fullshow']) {
     const html = await render({ mode })
     assert.equal(html.includes('aria-label="商品与事实栏目"'), false)
-    assert.equal((html.match(/aria-current="page"/g) || []).length, mode === 'fullshow' ? 0 : 1)
-    assert.equal((html.match(/<button\b/g) || []).length, 5)
+    assert.equal((html.match(/aria-current="page"/g) || []).length, 1)
+    assert.equal((html.match(/<button\b/g) || []).length, 6)
+    assert.ok(html.indexOf('声音') < html.indexOf('直播模式'))
+    assert.equal(html.includes('生成与预览'), false)
+    if (mode === 'fullshow') {
+      const activeButton = html.match(/<button\b[^>]*aria-current="page"[^>]*>[\s\S]*?<\/button>/)?.[0]
+      assert.ok(activeButton?.includes('直播模式'))
+    }
   }
 })
 
