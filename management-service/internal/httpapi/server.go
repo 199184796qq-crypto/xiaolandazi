@@ -209,6 +209,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/content-strategy", s.planContentStrategy)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/content-strategy", s.planContentStrategy)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-options", s.liveRealtimeGenerationOptions)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/voice-rate", s.liveAgentPlanVoiceRate)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/voice-rate", s.liveAgentPlanVoiceRate)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/realtime-preview", s.anchorStyleCycleGet)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview", s.anchorStyleCycleStart)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/realtime-preview/{runID}/advance", s.anchorStyleCycleAdvance)

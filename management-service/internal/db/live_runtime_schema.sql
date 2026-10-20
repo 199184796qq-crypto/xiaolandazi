@@ -970,6 +970,7 @@ CREATE TABLE IF NOT EXISTS live_agent_plans (
     tenant_id BIGINT UNSIGNED NOT NULL,
     name VARCHAR(160) NOT NULL,
     description TEXT NOT NULL,
+    voice_rate DECIMAL(3,2) NULL DEFAULT NULL,
     biz_domain VARCHAR(32) NOT NULL DEFAULT 'ecommerce',
     ecommerce_industry VARCHAR(32) NOT NULL DEFAULT 'general',
     local_service_industry VARCHAR(32) NOT NULL DEFAULT 'general',

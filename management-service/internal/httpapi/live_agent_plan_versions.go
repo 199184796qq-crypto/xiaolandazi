@@ -775,36 +775,12 @@ func (s *Server) liveAgentPlanPublishRoomVoiceRate(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusInternalServerError, "读取当前已发布智能体版本失败")
 		return
 	}
-	identity := published.VoiceIdentity
-	identity.Rate = rate
-	inputVersion := model.CreateLiveAgentPlanVersionInput{
-		RoomID: published.RoomID, DurationMinutes: published.DurationMinutes, RoundMinutes: published.RoundMinutes,
-		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
-		GenerationContext: published.GenerationContext,
-	}
-	if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	if _, err := s.store.SetPlanVoiceRate(r.Context(), tenantID, published.PlanID, rate); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存方案语速失败")
 		return
 	}
-	if err := s.refreshVersionDerivedSafety(r.Context(), tenantID, published.PlanID, actor.UserID, &inputVersion); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if err := validateLiveAgentPlanVersionInput(&inputVersion); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	created, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, actor.UserID, inputVersion)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "保存新的实时语速版本失败")
-		return
-	}
-	result, err := s.store.PublishLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, roomID, created.ID, actor.UserID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "发布新的实时语速版本失败")
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	published.VoiceIdentity.Rate = rate
+	writeJSON(w, http.StatusOK, published)
 }
 
 type publishRoomVoiceBindingInput struct {

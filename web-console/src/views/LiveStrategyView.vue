@@ -7,6 +7,8 @@ import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel
 
 import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
+import PlanVoiceRateControl from '../components/PlanVoiceRateControl.vue'
+import { usePlanVoiceRate } from '../usePlanVoiceRate'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
@@ -2026,6 +2028,7 @@ const fullShowWorkspaceVoiceIdentity = ref<LiveAgentVoiceIdentity | null>(null)
 const fullShowWorkspaceLegacyPartial = ref(false)
 const fullShowSaveBlockedReason = computed(() => {
   if (!currentRoomPlanId.value || !activeRoom.value) return '先选好直播间和方案，我们再一起保存吧～'
+  if (planVoiceRate.loading.value || planVoiceRate.busy.value || !planVoiceRate.ready.value) return '请先在“声音”中读取或保存方案语速'
   if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
   if (anchorInitializing.value) return '智能体正在准备中，等它完成后就能保存啦～'
   if (contentModeLoading.value || contentModeSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return '正在准备当前方案，稍等一下就好啦～'
@@ -2118,6 +2121,7 @@ const currentRoomSelectedVoiceName = computed(
     return currentRoomSelectedVoice.value.system_default ? '系统默认 · ' + name : name
   },
 )
+const planVoiceRate = usePlanVoiceRate(() => ({ planId: currentRoomPlanId.value || 0, tenantId: planSelectionScope().tenantId, key: planSelectionPreferenceKey(planSelectionScope()) }))
 const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
   const voice = asRecord(currentRoomSelectedVoice.value)
   return {
@@ -2129,13 +2133,13 @@ const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
     profile_id: Number(voice.profile_id || 0) || undefined,
     binding_id: Number(voice.binding_id || 0) || undefined,
     model: String(voice.model || systemDefaultVoice.model).trim(),
-    rate: Number(voice.rate || 1) || 1,
+    rate: planVoiceRate.saved.value,
     emotion: String(voice.emotion || '').trim() || undefined,
     style: asRecord(voice.style),
   }
 })
 const currentVoiceIdentity = computed<LiveAgentVoiceIdentity>(
-  () => fullShowWorkspaceVoiceIdentity.value || roomVoiceIdentity.value,
+  () => ({ ...(fullShowWorkspaceVoiceIdentity.value || roomVoiceIdentity.value), rate: planVoiceRate.saved.value }),
 )
 const realtimeGenerationOptions = ref<RealtimeGenerationOptions | null>(null)
 const realtimeOptionsLoading = ref(false), realtimeOptionsLoadError = useFeedbackErrorRef(), realtimeOptionsChanged = ref(false)
@@ -7782,13 +7786,18 @@ onBeforeUnmount(() => {
           </details>
         </section>
 
+        <section v-else-if="activeMode === 'voice'">
+        <PlanVoiceRateControl
+          :value="planVoiceRate.rate.value" :busy="planVoiceRate.busy.value" :loading="planVoiceRate.loading.value"
+          :ready="planVoiceRate.ready.value" :error="planVoiceRate.error.value" @change="planVoiceRate.save" @retry="planVoiceRate.load"
+        />
         <LiveVoiceCenter
-          v-else-if="activeMode === 'voice'"
           :room-id="activeRoomId"
           :room-name="activeRoom?.name"
           :support-session="props.supportSession"
           @changed="handleLiveVoiceChanged"
         />
+        </section>
 
         <section
           v-else-if="activeMode === 'fullshow'"

@@ -5,6 +5,7 @@ import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
 import { useRoomSpeechIdentity } from '../useRoomSpeechIdentity'
+import { usePlanVoiceRate } from '../usePlanVoiceRate'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -36,7 +37,6 @@ import {
   getRoomSpeechMissions,
   getRoomGeneratedSpeechHistory,
   getRoomPublishedLiveAgentPlanVersion,
-  publishLiveAgentVoiceRate,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
@@ -427,10 +427,6 @@ const generatedSpeechHistory = ref<GeneratedSpeechHistoryPage>({
   runtime_session_id: 0,
 })
 let speechHistorySearchTimer: number | undefined
-const liveSpeechRate = ref(1)
-const liveSpeechRateSaved = ref(1)
-const liveSpeechRateBusy = ref(false)
-const liveSpeechRateError = useFeedbackErrorRef()
 const liveSpeechRateOptions = [0.8, 0.9, 1, 1.1, 1.2] as const
 const speechHistoryTotalPages = computed(() =>
   Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
@@ -1058,11 +1054,6 @@ function correctGeneratedSpeechHistoryItem(item: GeneratedSpeechHistoryItem) {
   })
 }
 
-function normalizeRoomSpeechRate(value: unknown) {
-  const rate = Number(value || 1)
-  return liveSpeechRateOptions.includes(rate as 0.8 | 0.9 | 1 | 1.1 | 1.2) ? rate : 1
-}
-
 async function loadPublishedSpeechRate(syncRate = true) {
   if (!canConfigureRoomStrategy.value) return
   const token = ++publishedSpeechLoadEpoch
@@ -1073,50 +1064,19 @@ async function loadPublishedSpeechRate(syncRate = true) {
     if (pageUnmounted || token !== publishedSpeechLoadEpoch || !canConfigureRoomStrategy.value || selectedLiveAgentPlanId.value !== planID) return
     if (syncRate || publishedSpeechVersion.value?.id !== result.version?.id) publishedSpeechVersion.value = result.version || null
     publishedPlanVersionError.value = false
-    if (!syncRate || liveSpeechRateBusy.value) return
-    const rate = normalizeRoomSpeechRate(result.version?.voice_identity?.rate)
-    liveSpeechRate.value = rate
-    liveSpeechRateSaved.value = rate
-    liveSpeechRateError.value = ''
   } catch {
     if (pageUnmounted || token !== publishedSpeechLoadEpoch || selectedLiveAgentPlanId.value !== planID) return
     publishedSpeechVersion.value = null
     publishedPlanVersionError.value = true
-    if (syncRate && !liveSpeechRateBusy.value) {
-      liveSpeechRate.value = 1
-      liveSpeechRateSaved.value = 1
-    }
   } finally {
     if (token === publishedSpeechLoadEpoch) publishedPlanVersionLoading.value = false
   }
 }
 
 async function changeLiveSpeechRate(event: Event) {
-  if (!canConfigureRoomStrategy.value || liveSpeechRateBusy.value) return
   const target = event.target as HTMLSelectElement
-  const nextRate = normalizeRoomSpeechRate(target.value)
-  const previousRate = liveSpeechRateSaved.value
-  if (nextRate === previousRate) {
-    liveSpeechRate.value = previousRate
-    return
-  }
-  liveSpeechRateBusy.value = true
-  liveSpeechRateError.value = ''
-  try {
-    const version = await publishLiveAgentVoiceRate(roomId, nextRate)
-    publishedSpeechLoadEpoch += 1
-    publishedSpeechVersion.value = version
-    publishedPlanVersionError.value = false
-    const savedRate = normalizeRoomSpeechRate(version.voice_identity?.rate || nextRate)
-    liveSpeechRate.value = savedRate
-    liveSpeechRateSaved.value = savedRate
-  } catch (err) {
-    liveSpeechRate.value = previousRate
-    target.value = String(previousRate)
-    liveSpeechRateError.value = err instanceof Error ? err.message : '语速保存失败'
-  } finally {
-    liveSpeechRateBusy.value = false
-  }
+  await planVoiceRate.save(Number(target.value))
+  target.value = String(liveSpeechRate.value)
 }
 
 async function loadGeneratedSpeechHistory(page = generatedSpeechHistory.value.page || 1) {
@@ -1222,6 +1182,8 @@ async function loadLiveAgentPlansForRoom() {
 }
 
 const selectedLiveAgentPlanId = computed(() => runtimeSnapshot.value?.agent_plan_id || 0)
+const planVoiceRate = usePlanVoiceRate(() => ({ planId: selectedLiveAgentPlanId.value, tenantId: room.value?.tenant_id || 0, key: String(session.bootstrap?.actor.user_id || 0) + ':' + roomId, allowed: canConfigureRoomStrategy.value }))
+const liveSpeechRate = planVoiceRate.rate, liveSpeechRateBusy = planVoiceRate.busy, liveSpeechRateError = planVoiceRate.error
 const selectedLiveAgentPlanName = computed(() => runtimeSnapshot.value?.agent_plan_name || '')
 const publishedSpeechVersion = ref<LiveAgentPlanVersion | null>(null)
 let publishedSpeechLoadEpoch = 0
@@ -4941,10 +4903,11 @@ onBeforeUnmount(() => {
         <div class="speech-runtime-footer-tools">
           <label v-if="canConfigureRoomStrategy" class="speech-rate-control">
             <span>语速</span>
-            <select v-model.number="liveSpeechRate" :disabled="liveSpeechRateBusy" @change="changeLiveSpeechRate">
+            <select aria-label="声音语速" v-model.number="liveSpeechRate" :disabled="liveSpeechRateBusy || planVoiceRate.loading.value || !planVoiceRate.ready.value" @change="changeLiveSpeechRate">
               <option v-for="rate in liveSpeechRateOptions" :key="rate" :value="rate">{{ rate.toFixed(1) }}</option>
             </select>
           </label>
+          <small v-if="canConfigureRoomStrategy && (planVoiceRate.loading.value || liveSpeechRateBusy)" class="speech-rate-status" role="status">{{ liveSpeechRateBusy ? '语速保存中…' : '语速读取中…' }}</small>
           <div v-if="canConfigureRoomStrategy" class="speech-emotion-control">
             <span>情感</span>
             <strong class="speech-emotion-status">已关闭</strong>
@@ -4954,6 +4917,7 @@ onBeforeUnmount(() => {
           </button>
           <button type="button" class="speech-answer-library-button" @click="sessionDownloadsOpen = true">直播下载</button>
           <small v-if="liveSpeechRateError" class="speech-rate-error">{{ liveSpeechRateError }}</small>
+          <button v-if="canConfigureRoomStrategy && liveSpeechRateError && !planVoiceRate.ready.value" type="button" class="speech-answer-library-button speech-rate-retry" :disabled="planVoiceRate.loading.value" @click="planVoiceRate.load">重新读取语速</button>
         </div>
       </section>
 
@@ -6721,9 +6685,9 @@ onBeforeUnmount(() => {
 .speech-runtime-unified-mainline{margin:0;color:#edf2ff;font-size:19px;font-weight:850;line-height:1.7}
 .speech-runtime-unified-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:38px;overflow:hidden}.speech-runtime-unified-wave i{display:block;width:3px;height:var(--wave-height);max-height:32px;border-radius:999px;background:#6978dd;opacity:.45;transform:scaleY(.45);transform-origin:center;transition:.18s ease}.speech-runtime-unified-wave.active i{opacity:.9;animation:speech-wave-pulse .78s ease-in-out infinite alternate;animation-delay:var(--wave-delay)}
 .speech-runtime-footer-tools{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 3px;color:#aebbd0}
-.speech-rate-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
+.speech-rate-control{display:inline-flex;align-items:center;gap:7px;min-height:40px;font-size:16px;font-weight:800;white-space:nowrap}
 .speech-rate-control>span{color:#8fa1bb}
-.speech-rate-control select{height:32px;min-width:74px;padding:0 28px 0 10px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#f2f6ff;background:#18243a;font:inherit;font-size:12px;font-weight:900;outline:none;cursor:pointer}
+.speech-rate-control select{height:40px;min-width:84px;padding:0 28px 0 10px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#f2f6ff;background:#18243a;font:inherit;font-size:16px;font-weight:900;outline:none;cursor:pointer}
 .speech-rate-control select:hover,.speech-rate-control select:focus{border-color:rgba(89,209,178,.55);background:#1c2b43}
 .speech-rate-control select:disabled{opacity:.55;cursor:wait}
 .speech-emotion-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
@@ -6731,7 +6695,8 @@ onBeforeUnmount(() => {
 .speech-emotion-status{display:inline-flex;align-items:center;min-height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font-size:12px;font-weight:900}
 .speech-answer-library-button{height:32px;padding:0 12px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#dbe5f5;background:rgba(255,255,255,.045);font-size:12px;font-weight:850;cursor:pointer;transition:border-color .16s ease,background .16s ease,color .16s ease}
 .speech-answer-library-button:hover{color:#fff;border-color:rgba(89,209,178,.5);background:rgba(52,185,151,.1)}
-.speech-rate-error{max-width:360px;color:#ff9b9b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.speech-rate-error{max-width:360px;color:#ff9b9b;font-size:16px;overflow-wrap:anywhere}
+.speech-rate-status,.speech-rate-retry{font-size:16px}
 @media (hover:none){.public-question-actions{opacity:1;transform:none}}
 @media (max-width:900px){.public-screen-mode-switch{grid-template-columns:repeat(4,minmax(0,1fr));position:sticky;top:0;z-index:2;margin-top:6px}.public-screen-mode-switch .mobile-preferences-tab{display:block}.room-middle-interaction-preferences{display:none}.mobile-public-interaction-preferences{display:grid}.public-screen-mode-switch button{min-height:44px;font-size:14px}.speech-runtime-unified{padding:14px}.speech-runtime-unified.is-initializing{min-height:210px;padding:20px 18px}.speech-runtime-initializing{width:94%;gap:26px}.speech-runtime-initializing-copy strong{font-size:22px}.speech-runtime-initializing-copy span{font-size:14px}.speech-runtime-unified-interrupt{font-size:17px}.speech-runtime-footer-tools{flex-wrap:wrap}.speech-rate-error{flex-basis:100%;max-width:100%}}
 @media (prefers-reduced-motion:reduce){.startup-wave-completed{transition:none}.startup-wave-flow{animation:none;clip-path:none;opacity:.18}}

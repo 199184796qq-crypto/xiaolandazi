@@ -146,6 +146,9 @@ func rewriteSalesScratchSQL(q, prefix string) (string, error) {
 	}
 	cmd := strings.ToUpper(strings.Join(strings.Fields(q), " "))
 	valid := false
+	if cmd == "ALTER TABLE LIVE_AGENT_PLANS ADD COLUMN VOICE_RATE DECIMAL(3,2) NULL DEFAULT NULL" {
+		valid = true
+	}
 	if q == `SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=?` {
 		return q, nil
 	}
@@ -216,6 +219,29 @@ func (c *salesScratchConn) ExecContext(ctx context.Context, q string, args []dri
 	return nil, driver.ErrSkip
 }
 func (c *salesScratchConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	if strings.Join(strings.Fields(q), " ") == "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?" {
+		if len(args) != 2 {
+			return nil, errors.New("scratch column lookup denied")
+		}
+		table, tableOK := args[0].Value.(string)
+		column, columnOK := args[1].Value.(string)
+		allowed := false
+		for _, name := range salesScratchTables {
+			if name == table {
+				allowed = true
+				break
+			}
+		}
+		if !tableOK || !columnOK || !allowed || !regexp.MustCompile(`^[a-z_][a-z0-9_]*$`).MatchString(column) {
+			return nil, errors.New("scratch column scope denied")
+		}
+		q = strings.Replace(q, "?", "'"+c.prefix+table+"'", 1)
+		q = strings.Replace(q, "?", "'"+column+"'", 1)
+		if direct, ok := c.Conn.(driver.QueryerContext); ok {
+			return direct.QueryContext(ctx, q, nil)
+		}
+		return nil, errors.New("scratch column query requires direct driver")
+	}
 	if q == `SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=?` {
 		args = append([]driver.NamedValue(nil), args...)
 		if len(args) != 1 {

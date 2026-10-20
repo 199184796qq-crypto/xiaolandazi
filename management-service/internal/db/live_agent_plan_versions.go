@@ -169,7 +169,25 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	// Serialize saves for this plan. A saved snapshot and its effective pointer
 	// must commit together; there is no separate operator publication step.
 	var lockedPlan int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&lockedPlan); err != nil {
+	var savedVoiceRate sql.NullFloat64
+	if err := tx.QueryRowContext(ctx, `SELECT id,voice_rate FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&lockedPlan, &savedVoiceRate); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	input.VoiceIdentity.Rate = 1
+	if savedVoiceRate.Valid {
+		if rate, valid := model.NormalizePlanVoiceRate(savedVoiceRate.Float64); valid {
+			input.VoiceIdentity.Rate = rate
+		}
+	} else {
+		var previousIdentity string
+		err := tx.QueryRowContext(ctx, `SELECT CAST(voice_identity_json AS CHAR) FROM live_agent_plan_versions WHERE tenant_id=? AND plan_id=? AND lifecycle_status NOT IN ('prepared','abandoned') ORDER BY id DESC LIMIT 1`, tenantID, planID).Scan(&previousIdentity)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return model.LiveAgentPlanVersion{}, err
+		}
+		input.VoiceIdentity.Rate = planVoiceRateFromJSON(previousIdentity)
+	}
+	voiceJSON, err = json.Marshal(input.VoiceIdentity)
+	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
@@ -426,6 +444,11 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 	}
 	if err == nil {
 		item.SavedFromRoomID, item.RoomID = item.RoomID, roomID
+		settings, rateErr := s.GetPlanVoiceRate(ctx, tenantID, item.PlanID)
+		if rateErr != nil {
+			return model.LiveAgentPlanVersion{}, rateErr
+		}
+		item.VoiceIdentity.Rate = settings.Rate
 	}
 	return item, err
 }
