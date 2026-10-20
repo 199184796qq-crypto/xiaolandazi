@@ -1,6 +1,6 @@
 # 直播间内设备选择与绑定
 
-2026-10-20回显修复：已实现并验证，尚未部署。用户要求退出再进入页面时真实恢复已绑定设备；下文“默认一行”的旧限制已改为恢复本房全部已保存绑定，详细结果见文末。本条覆盖2026-10-11的初始回显规则。
+2026-10-20回显修复：已于北京时间22:44:28—22:44:30上线`20261020-device-binding-restore-320929e`。用户要求退出再进入页面时真实恢复已绑定设备；下文“默认一行”的旧限制已改为恢复本房全部已保存绑定，详细结果见文末。本条覆盖2026-10-11的初始回显规则。
 
 状态：2026-10-11 已发布 `20261011-room-device-bindings-dbab61b`，源码 `dbab61b9d7fd72d8c93745a2158d8b2af627f97b`。服务、设备接口鉴权、公网实际加载的 JS/CSS/API 文件及107份母版校验通过；Core和设备网关保留原进程与二进制。本次发布没有替用户执行设备绑定。
 
@@ -22,4 +22,18 @@
 
 回归扩展`E:\直播伴播\web-console\scripts\test-room-device-bindings.mjs`：通过真实document reload丢弃组件状态，仅保留模拟接口的设备记录。修复前预期9/7/8三台，实际仅9，断言失败；修复后全部恢复，角色分别为primary/listener/listener。还覆盖两台实际绑定、切到其它房间再返回、旧房间迟到读取隔离、其它租户/报废设备过滤，确认恢复过程只有GET，没有隐式POST/DELETE。原绑定解绑、主设备替换/监听提升、失败回滚、手动增减、运行保护及390px布局检查全部通过；类型检查和生产构建通过，保留既有大包提示。
 
-证据`E:\直播伴播-local\room-device-binding-restore-20261020`：`browser-regression.log`、`typecheck.log`、`build.log`、`restored-desktop.png`、`restored-mobile.png`。截图与接口均为本地合成数据，不是线上真实设备状态或实播验证；本轮未部署，未修改真实设备绑定、后台服务或固件，未开停直播、调用付费模型/TTS或恢复监控。源码及文档编辑结束后按`E:\直播伴播\协作交接.md`交接供WorkBuddy查阅。
+实现阶段证据`E:\直播伴播-local\room-device-binding-restore-20261020`：`browser-regression.log`、`typecheck.log`、`build.log`、`restored-desktop.png`、`restored-mobile.png`。截图与接口均为本地合成数据，不是线上真实设备状态或实播验证；实现阶段未部署，未修改真实设备绑定、后台服务或固件，未开停直播、调用付费模型/TTS或恢复监控。用户随后授权部署，结果见下。
+
+## 2026-10-20 22:44 上线回执
+
+用户授权“部署”，源码固定`320929e95cbfa01b1b823da907e28050cf918828`，来源仍为唯一主目录`E:\直播伴播`。实际前驱是`/opt/xiaolan/releases/20261020-initialize-plan-2ac2d16`，核对3856现场文件、三个运行程序、Nginx及完整2935文件前端备份后隔离构建；前驱web/桌面各49产物与现场一致。固定候选的浏览器设备回显回归、类型检查/构建及原有10项前端回归通过，未使用工作区后来出现的并行后台改动构建或发布。
+
+北京时间22:44:28—22:44:30持`/opt/xiaolan/deployments/xiaolan-release.lock`共享锁，切换前重新核对全部现场指纹，继承前驱完整目录，只原子替换web/index.html和web-desktop/index.html，新增40个哈希资源及`DEVICE-BINDING-RESTORE-SOURCE.json`；3854旧文件保持，新目录共3897文件。没有重启/重载服务，未用旧前端覆盖其它线上功能。
+
+Management仍PID1334113，SHA256`bfcd1dd2e372a4579adf1f4b7a10b14d8ebfddf4d14b8597c1415f2fc4047493`、构建VCS`755eb0c96e91271894008ba107bcbab30ceacb01`；Core775073、网关775930及其程序哈希保持。WorkBuddy语义桶判断母版/MANIFEST、其它提示词、客户/销售移动端和Nginx保持。前端发布名不表示后台更新。
+
+12项公网入口/资源哈希、5项未登录401鉴权及标准生产检查通过，包含销售端及小智健康/OTA。重建完整2975文件前端备份，逐项核对字节、大小及权限，更新`E:\直播伴播-local\frontend-preservation\latest.json`和旧C盘发现指针。浏览器回显回归使用模拟接口；线上核验资源、鉴权和健康，没有登录后修改真实设备绑定或角色，未开停直播、调用模型/TTS或恢复监控。本次没有修复小蓝盒子待机重连。
+
+发布证据`E:\直播伴播-local\room-device-binding-restore-release-20261020`：`deployment-report.json`、`production-verification.json`、前驱构建比较、候选浏览器/类型/构建日志和截图。服务器持久附件目录`/opt/xiaolan/deployments/20261020-device-binding-restore-320929e/`。完整前驱保留；`rollback_frontend.py`只在当前/前驱文件、三个程序及Nginx匹配时持锁切回，不重启服务，已准备未执行。任何后续发布或原地更新须重新整合，不能强行回退。
+
+源码和文档编辑结束，按`E:\直播伴播\协作交接.md`交接供WorkBuddy查阅。
