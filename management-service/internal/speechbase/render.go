@@ -88,12 +88,30 @@ func RenderAnchorExpressionView(baselineJSON string) (any, error) {
 // 仅主线话术的「主播腔调」字段使用本函数；打分/审核等只吃量化基准的路径仍走
 // RenderAnchorExpressionView，不受影响。
 func RenderAnchorVoiceCard(styleMD, baselineJSON string) (any, error) {
+	style := pureStyle(styleMD)
+	style = strings.TrimSpace(style)
+
+	// 空风格兜底（用户 2026-10-20 明确）：直播间没配主播风格时，返回空卡、不报错，
+	// 让模型自由发挥，而不是像旧逻辑那样 Parse("") 报错导致整段生成失败。
+	if style == "" && strings.TrimSpace(baselineJSON) == "" {
+		return "", nil
+	}
+
 	b, err := anchorstylescore.Parse(baselineJSON)
 	if err != nil {
-		return nil, err
+		// BaselineJSON 空/坏：只要有风格母版就继续带腔调，量化基准与禁用表达留空；
+		// 两者都空时上面已返回空卡。
+		if style == "" {
+			return "", nil
+		}
+		return map[string]any{
+			"风格":   style,
+			"量化基准": "",
+			"禁用表达": "",
+		}, nil
 	}
-	style := pureStyle(styleMD)
-	if strings.TrimSpace(style) == "" {
+
+	if style == "" {
 		style = "（未提供主播风格描述）"
 	}
 	return map[string]any{
