@@ -887,10 +887,11 @@ export function setPlanBusinessMode(planId: number, bizDomain: import('./planBus
   })
 }
 
-export function createLiveAgentPlan(payload: { name: string; description?: string; tenant_id?: number }) {
+export function createLiveAgentPlan(payload: { name: string; description?: string; tenant_id?: number }, options?: { suppressErrorDialog?: boolean }) {
   return request<LiveAgentPlan>('/api/v1/live-agent-plans', {
     method: 'POST',
     body: JSON.stringify(payload),
+    suppressErrorDialog: options?.suppressErrorDialog,
   })
 }
 

@@ -25,6 +25,7 @@ import { planBusinessModes } from '../planBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
+import PlanCreateDialog from '../components/PlanCreateDialog.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
@@ -343,6 +344,8 @@ const newPlanName = ref('')
 const newPlanDescription = ref('')
 const showPlanManager = ref(false)
 const planManagerMode = ref<'create' | 'edit'>('edit')
+const planCreateError = ref('')
+const planCreateReturnFocus = shallowRef<HTMLElement | null>(null)
 const deleteConfirmPlanId = ref<number | null>(null)
 const roomPolicyContext = ref<LiveRoomPolicyContext | null>(null)
 const selectedVersionId = ref<number | null>(null)
@@ -5236,17 +5239,25 @@ function nextPlanSequence(roomName: string) {
 }
 
 function openCreatePlanManager() {
+  if (planBusy.value) return
+  planCreateReturnFocus.value = document.activeElement as HTMLElement | null
   deleteConfirmPlanId.value = null
-  if (showPlanManager.value && planManagerMode.value === 'create') {
-    showPlanManager.value = false
-    return
-  }
+  planCreateError.value = ''
   const roomName = String(activeRoom.value?.name || '直播间').trim() || '直播间'
   const sequence = nextPlanSequence(roomName)
   planManagerMode.value = 'create'
   newPlanName.value = `${roomName}直播间 智能体方案${sequence}`
   newPlanDescription.value = `${roomName}话术 + 事实依据 + 链接`
   showPlanManager.value = true
+}
+
+function closeCreatePlanManager() {
+  if (planBusy.value) return
+  showPlanManager.value = false
+  planManagerMode.value = 'edit'
+  planCreateError.value = ''
+  newPlanName.value = ''
+  newPlanDescription.value = ''
 }
 
 function toggleEditPlanManager() {
@@ -5568,13 +5579,18 @@ async function createPlanForCurrentRoom() {
   const room = activeRoom.value
   if (!name || planBusy.value) return
   planBusy.value = true
+  planCreateError.value = ''
   settingsError.value = ''
+  let planCreated = false
   try {
     const created = await createLiveAgentPlan({
       name,
       description: newPlanDescription.value.trim(),
       tenant_id: room?.tenant_id,
-    })
+    }, { suppressErrorDialog: true })
+    planCreated = true
+    showPlanManager.value = false
+    planManagerMode.value = 'edit'
     if (room) {
       try {
         await bindRoomLiveAgentPlan(created.id, room.id, room.tenant_id)
@@ -5582,7 +5598,6 @@ async function createPlanForCurrentRoom() {
       } catch (bindErr) {
         // 方案已创建成功，但自动绑定失败——不能让方案变成静默的 0 绑定孤儿。
         settingsError.value = `方案“${created.name}”已创建，但绑定当前直播间失败：${bindErr instanceof Error ? bindErr.message : '绑定失败'}。请稍后在方案列表手动绑定房间。`
-        planBusy.value = false
         newPlanName.value = ''
         newPlanDescription.value = ''
         await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
@@ -5602,7 +5617,9 @@ async function createPlanForCurrentRoom() {
       text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : '（当前无直播间，未绑定）'}。保存智能体方案后即可在直播间使用，无需单独发布。`,
     })
   } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '创建智能体直播方案失败'
+    const message = err instanceof Error ? err.message : '创建智能体直播方案失败'
+    if (planCreated) settingsError.value = message
+    else planCreateError.value = message
   } finally {
     planBusy.value = false
   }
@@ -5669,8 +5686,6 @@ async function deleteCurrentPlan() {
 async function submitPlanManager() {
   if (planManagerMode.value === 'create') {
     await createPlanForCurrentRoom()
-    planManagerMode.value = 'edit'
-    loadCurrentPlanIntoManager()
     return
   }
   await saveCurrentPlan()
@@ -6483,7 +6498,14 @@ onBeforeUnmount(() => {
           <p v-else-if="fullShowSaveReceipt" class="plan-save-success" role="status">本次保存成功 V{{ fullShowSaveReceipt.version_no }}。{{ fullShowSaveReceipt.room_id ? '下一次开播使用新版本，当前场次保持原快照。' : '方案内容已存档，尚未绑定当前直播间。' }}</p>
         </header>
 
-        <section v-if="showPlanManager" class="strategy-plan-manager-inline">
+        <PlanCreateDialog
+          v-if="showPlanManager && planManagerMode === 'create'"
+          v-model:name="newPlanName" v-model:description="newPlanDescription"
+          :busy="planBusy" :room-name="activeRoom?.name" :error="planCreateError" :return-focus="planCreateReturnFocus"
+          @close="closeCreatePlanManager" @create="createPlanForCurrentRoom"
+        />
+
+        <section v-if="showPlanManager && planManagerMode === 'edit'" class="strategy-plan-manager-inline">
           <form class="strategy-plan-create" @submit.prevent="submitPlanManager">
             <label>
               <span>方案名称</span>
@@ -7225,13 +7247,7 @@ onBeforeUnmount(() => {
 
           <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
 
-          <form class="strategy-plan-create" @submit.prevent="createPlanForCurrentRoom">
-            <input v-model="newPlanName" maxlength="160" />
-            <input v-model="newPlanDescription" maxlength="2000" />
-            <button class="primary-button" type="submit" :disabled="planBusy || !newPlanName.trim()">
-              {{ planBusy ? '处理中…' : '＋ 新建方案' }}
-            </button>
-          </form>
+          <button class="primary-button" type="button" :disabled="planBusy" @click="openCreatePlanManager">＋ 新建方案</button>
 
           <div v-if="!livePlans.length" class="strategy-plan-empty">还没有直播方案，先在上面创建一个。</div>
           <div v-else class="strategy-plan-grid">
