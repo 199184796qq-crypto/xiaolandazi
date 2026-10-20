@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"unicode"
 
@@ -288,5 +289,9 @@ func (r *Resolver) storeBucket(ctx context.Context, input Input, result Result) 
 	}
 	conclusion, _ := json.Marshal(result)
 	sourceID := "bucket:" + contentstrategy.SHA(Normalize(input.Text))
-	_ = r.Repo.UpsertPurposeBucket(ctx, input.Tenant, input.Room, input.Plan, sourceID, input.Text, string(conclusion))
+	if err := r.Repo.UpsertPurposeBucket(ctx, input.Tenant, input.Room, input.Plan, sourceID, input.Text, string(conclusion)); err != nil {
+		// A failed write means the bucket is never reused (every repeat re-runs
+		// full resolution). Log it so silent write failures don't mask the issue.
+		log.Printf("purpose bucket upsert failed room=%d sourceID=%s: %v", input.Room, sourceID, err)
+	}
 }

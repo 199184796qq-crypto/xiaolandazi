@@ -50,11 +50,15 @@ func (s *Store) UpsertPurposeBucket(ctx context.Context, tenant, room, plan int6
 		return nil
 	}
 	// Row 1: the question text (what the judge model reads).
+	// embedding_blob is mediumblob NOT NULL in the live schema, so a NULL here
+	// fails the INSERT and silently drops the bucket. The bucket is never read
+	// via vector search (the judge model compares question text directly), so a
+	// zero-length blob is the correct placeholder.
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO semantic_documents (
 			tenant_id, room_id, plan_id, content_type, source_id, source_version, status,
 			content_text, text_hash, embedding_model, embedding_dimensions, embedding_blob, expires_at
-		) VALUES (?, ?, ?, 'purpose_bucket', ?, 1, 'active', ?, ?, '', 0, NULL, NULL)
+		) VALUES (?, ?, ?, 'purpose_bucket', ?, 1, 'active', ?, ?, '', 0, x'', NULL)
 		ON DUPLICATE KEY UPDATE
 			status='active',
 			content_text=VALUES(content_text),
@@ -69,7 +73,7 @@ func (s *Store) UpsertPurposeBucket(ctx context.Context, tenant, room, plan int6
 			INSERT INTO semantic_documents (
 				tenant_id, room_id, plan_id, content_type, source_id, source_version, status,
 				content_text, text_hash, embedding_model, embedding_dimensions, embedding_blob, expires_at
-			) VALUES (?, ?, ?, 'purpose_bucket', ?, 2, 'active', ?, ?, '', 0, NULL, NULL)
+			) VALUES (?, ?, ?, 'purpose_bucket', ?, 2, 'active', ?, ?, '', 0, x'', NULL)
 			ON DUPLICATE KEY UPDATE
 				status='active',
 				content_text=VALUES(content_text),
