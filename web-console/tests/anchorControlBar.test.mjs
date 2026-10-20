@@ -31,7 +31,7 @@ test('初始化使用相连的主按钮和菜单箭头，保留窄屏空间和�
 test('默认只保留初始化与保存，不出现单独发布操作', async () => {
   const html = await renderToString(createSSRApp(component, ready))
   assert.equal((html.match(/<button\b/g) || []).length, 3)
-  for (const label of ['初始化直播智能体', '保存方案']) assert.ok(html.includes(label))
+  for (const label of ['初始化方案', '保存方案']) assert.ok(html.includes(label))
   for (const style of ['control-initialize', 'control-save', 'control-menu-toggle']) assert.ok(html.includes(style))
   assert.ok(html.includes('aria-haspopup="menu"'))
   assert.ok(html.includes('aria-expanded="false"'))
@@ -46,7 +46,7 @@ test('页面顶部统一保存时，紧凑初始化区不重复显示保存按�
   const html = await renderToString(createSSRApp(component, { ...ready, mode: 'initialize', compact: true }))
   assert.equal((html.match(/<button\b/g) || []).length, 2)
   assert.ok(html.includes('is-compact'))
-  assert.ok(html.includes('初始化直播智能体'))
+  assert.ok(html.includes('初始化方案'))
   assert.equal(html.includes('control-save'), false)
 })
 
@@ -57,7 +57,7 @@ test('处理中标签及原禁用条件保持，不能因美化激活禁用按�
     initializeDisabled: true, saveDisabled: true,
   }))
   for (const label of ['事实包初始化…', '46%', '保存中…']) assert.ok(html.includes(label))
-  assert.equal(html.includes('初始化直播智能体'), false)
+  assert.equal(html.includes('初始化方案'), false)
   assert.ok(html.includes('control-progress-fill'))
   assert.equal((html.match(/<button\b[^>]*\bdisabled/g) || []).length, 3)
   assert.equal((html.match(/aria-busy="true"/g) || []).length, 2)

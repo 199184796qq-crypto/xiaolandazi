@@ -71,7 +71,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutsidePoint
             <span class="control-icon initialize-icon" aria-hidden="true">
               <svg viewBox="0 0 48 48"><path fill="currentColor" d="m12 33 19-19a4 4 0 0 1 6 6L18 39a4 4 0 0 1-6-6Zm17-16 6 6 3-3-6-6-3 3Z"/><path fill="currentColor" d="m13 5 2.2 5.8L21 13l-5.8 2.2L13 21l-2.2-5.8L5 13l5.8-2.2L13 5Zm25 24 1.7 4.3L44 35l-4.3 1.7L38 41l-1.7-4.3L32 35l4.3-1.7L38 29ZM28 3l1.2 3.2L33 8l-3.8 1.2L28 13l-1.2-3.8L23 8l3.8-1.8L28 3Z"/></svg>
             </span>
-            <strong>初始化直播智能体</strong>
+            <strong>初始化方案</strong>
           </template>
         </button>
         <button ref="menuToggle" type="button" class="control-menu-toggle" :disabled="initializeDisabled || initializing" aria-label="更多初始化操作" aria-haspopup="menu" :aria-expanded="menuOpen" :aria-controls="menuId" title="更多初始化操作" @click="toggleMenu" @keydown.down.prevent="openMenu" @keydown.up.prevent="openMenu">

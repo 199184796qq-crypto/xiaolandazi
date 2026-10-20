@@ -63,17 +63,17 @@ const angleCount = computed(() => points.value.reduce((sum, item) => sum + (Arra
       当前轮盘格式需要重新生成：{{ wheel.validation_error }}
     </div>
     <div v-else-if="wheel && !parsed" class="wheel-overview-error" role="alert">
-      当前轮盘JSON无法格式化显示，请重新初始化直播智能体。
+      当前轮盘JSON无法格式化显示，请重新初始化方案。
     </div>
     <div v-else-if="!wheel" class="wheel-overview-empty">
       <strong>尚未生成轮盘池</strong>
-      <span>点击上方“初始化直播智能体”后，系统才会根据当前事实包生成。</span>
+      <span>点击上方“初始化方案”后，系统才会根据当前事实包生成。</span>
     </div>
 
     <template v-else-if="parsed">
       <div v-if="wheel?.fact_package_stale" class="wheel-overview-stale" role="status">
         <strong>事实包已经变化</strong>
-        <span>下面仍是上一次确认的轮盘。请点击“初始化直播智能体”重新生成，新事实才会进入轮盘。</span>
+        <span>下面仍是上一次确认的轮盘。请点击“初始化方案”重新生成，新事实才会进入轮盘。</span>
       </div>
       <div class="wheel-point-grid">
         <article v-for="(item, index) in points" :key="item.卖点名 + ':' + index" class="wheel-point-card">
