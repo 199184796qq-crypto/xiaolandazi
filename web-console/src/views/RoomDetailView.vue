@@ -921,7 +921,8 @@ const publicSpeechCaptionRows = computed(() => {
     ]
       .filter((row): row is { item: RoomAudioSpeechFeedItem; role: 'previous' | 'current' | 'next' } => Boolean(row))
       .map(({ item, role }) => ({
-        key: 'feed-' + item.segment_id + '-' + item.tone,
+        // Slots own their DOM nodes: upstream segment IDs can be recycled.
+        key: 'feed-' + role,
         text: item.text,
         role,
         transition: toneToTransition(item.tone),
@@ -929,7 +930,7 @@ const publicSpeechCaptionRows = computed(() => {
   }
 
   return mainlineCaptionRows.value.map((row) => ({
-    key: 'fallback-' + row.segment.segment_id,
+    key: 'fallback-' + row.role,
     text: row.segment.text,
     role: row.role,
     transition: row.transition,
