@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 20:02）
+## 当前生产（2026-10-21 21:01）
+
+- 当前 `/opt/xiaolan/releases/20261021-address-bridge2-9be7150`，源码 `9be71507e9710fc2ce38718011ba65c9e48adac5`（`c80469f` + 问答prompt修复）；前驱 `20261021-address-bridge-c80469f`。北京时间21:01:19—21:01:25发布，Management PID1436621/SHA256 `85d2a25eae99ef4473401a44efbe222ce2689d1d4f76629386108f93f5823b42`；只重启Management，Core775073/网关775930、Nginx、前端保持。
+- 本轮范围：称呼池加入中性/男女成对词（哥姐、哥哥姐姐、叔叔阿姨、兄弟姐妹、老乡、老板、朋友、家人），单性别词入池自动成对化；`爸爸/妈妈/老公/老婆/主人`等语义越界词继续拦截；事实问答改为一次“称呼+答案”，无事实直接边界，清掉“问得好/我这就/马上/稍等”空转承接；`interaction_expression`删掉“问得好”示例。
+- 真实数据对照：租户14/房间29/方案5，旧记录9条全部是“问得好+我这就”空转，新探针9条全部“称呼+直接内容”；探针把11条事实全给模型，只证明承接结构，不代表事实准确率。说明 `E:/直播伴播/docs/2026-10-21-称呼与承接真实数据对照.md`。
+- `decisionexecutor`全量、定向20轮、发布守卫、8080/8081/8083健康通过；Management全量被WorkBuddy `8decefc` 的anchorcycle对比任务用例阻断（非本轮改动，未修）。未用真实TTS、未开播。
+- 证据 `E:/直播伴播-local/address-bridge2-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-address-bridge2-9be7150.json`；回滚目标前驱c80469f。WorkBuddy的`1dc00db`（直播间规范/自家称呼）未包含在本发布。
+
+## 历史生产（2026-10-21 20:02）
 
 - 当前 `/opt/xiaolan/releases/20261021-tts-p0-guard-c51c883`，源码 `c51c8832daae286d63e94d542dd2727635f18048`；前驱 `20261021-p0-minimal-edit-91cffdc`。北京时间20:01:57—20:02:03发布，Management PID1429088/SHA256 `4d8746a84a9016e265e51aa6183ea4ad2438056c46ff8e4c4f11839cdca0a6a9`；只重启Management，Core775073/网关775930及程序哈希、Nginx保持。
 - 本轮是TTS前句级P0改写的业务锚定补丁：命中句只回喂本句，明确列出违规词，给正向替换对照，不注入轮盘卖点/事实；程序只选零P0命中且保留原“N号链接”、不新增数字的候选；仍不行丢句，全丢走安全边界；verbatim跳过。生产二进制已核验含 `interaction_p0_sentence_rewrite`；`91cffdc`的轮盘P0最小编辑和`33cefef`租户维护入口一并保留。
