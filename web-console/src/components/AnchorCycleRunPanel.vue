@@ -10,7 +10,7 @@ import OpeningHookSettingsPanel from './OpeningHookSettingsPanel.vue'
 import RiskText from './RiskText.vue'
 import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 
-const props = defineProps<{ planId: number; ready: boolean; freeStyle?: boolean; config: Omit<CycleConfig, 'threshold' | 'max_retries' | 'max_chars' | 'point_gap' | 'repair_punctuation' | 'rolling' | 'body_segments' | 'combination_gap' | 'max_cycles'>; roomIds: number[]; advanced: boolean }>()
+const props = defineProps<{ planId: number; ready: boolean; freeStyle?: boolean; hasStyle?: boolean; config: Omit<CycleConfig, 'threshold' | 'max_retries' | 'max_chars' | 'point_gap' | 'repair_punctuation' | 'rolling' | 'body_segments' | 'combination_gap' | 'max_cycles'>; roomIds: number[]; advanced: boolean }>()
 const emit = defineEmits<{ busy: [value: boolean] }>()
 const run = ref<CycleState | null>(null)
 const roomId = ref(0)
@@ -225,7 +225,8 @@ onBeforeUnmount(() => { active = false; stopped.value = true; ++epoch; clearAudi
       <button :disabled="running || creating || loading || ending" @click="restore">刷新当前进度</button>
       <button :disabled="!speech" @click="download('大循环采纳话术-' + planId + '.txt', speech)">下载话术</button>
     </div>
-    <p v-if="freeStyle" class="note">本方案没有绑定主播风格：本场由模型自由发挥语气，不打分、不设风格分门槛，只做 P0 合规审核、最终文字审核与去重。卖点×角度仍按已确认的卖点轮盘轮换。</p>
+    <p v-if="freeStyle && hasStyle" class="note">本方案用了主播风格，但没有设评分基准：本场按该主播的腔调生成，不打分、不设风格分门槛，只做 P0 合规审核、最终文字审核与去重。</p>
+    <p v-else-if="freeStyle" class="note">本方案没有绑定主播风格：本场由模型自由发挥语气，不打分、不设风格分门槛，只做 P0 合规审核、最终文字审核与去重。卖点×角度仍按已确认的卖点轮盘轮换。</p>
     <div class="tts-controls">
       <label><input v-model="ttsEnabled" type="checkbox" :disabled="!!run || creating">开启TTS声音试听（仅测试，不进入房间）</label>
       <div v-if="ttsEnabled && !run" class="controls">
@@ -265,7 +266,7 @@ onBeforeUnmount(() => { active = false; stopped.value = true; ++epoch; clearAudi
       </div>
       <div class="progress-bar" role="progressbar" aria-label="本轮已采纳任务进度" :aria-valuenow="progress.percent" :aria-valuemin="0" :aria-valuemax="100"><span :style="{ width: progress.percent + '%' }"></span></div>
       <p class="current-task">{{ run.phase === 'ended' ? '完成情况' : '当前任务' }}：{{ progress.task }}</p>
-      <p class="progress-metrics">本轮已采纳{{ progress.done }}/{{ progress.total }}段 · 卖点×角度已覆盖{{ progress.covered }}/{{ run.queue.length }}个 · {{ freeStyle ? '本方案未绑定主播风格：不打分，审核通过即采纳' : '原稿达到' + run.config.threshold + '分即采纳' }}</p>
+      <p class="progress-metrics">本轮已采纳{{ progress.done }}/{{ progress.total }}段 · 卖点×角度已覆盖{{ progress.covered }}/{{ run.queue.length }}个 · {{ freeStyle ? (hasStyle ? '本方案未设评分基准：按主播腔调生成，不打分，审核通过即采纳' : '本方案未绑定主播风格：不打分，审核通过即采纳') : '原稿达到' + run.config.threshold + '分即采纳' }}</p>
       <p v-if="run.phase !== 'ended'" class="progress-metrics">{{ requestStartedAt ? '正在请求' : '下次请求' }}第{{ progress.nextAttempt }}/{{ progress.maxAttempts }}版{{ progress.nextAttempt > 1 ? '（同任务重写）' : '（首次生成）' }}<span v-if="requestStartedAt"> · 已等待{{ requestWaitSeconds }}秒（含生成与评分）</span></p>
       <p v-if="progress.lastScore !== null" class="progress-metrics">上一采纳段：{{ progress.lastScore }}分 · 选中稿模型耗时{{ progress.lastGenerationSeconds.toFixed(2) }}秒 · 本段所有候选模型累计{{ progress.lastTaskGenerationSeconds.toFixed(2) }}秒</p>
       <p v-if="run.config.body_min" class="progress-metrics">中间讲解允许{{ run.config.body_min }}～{{ run.config.body_max }}段，本轮计划{{ progress.bodyTotal }}段；{{ run.pending_price_hook ? '下一段必须兑现：' + run.pending_price_hook.promise : '当前没有待兑现塑价钩子' }}</p>

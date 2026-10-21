@@ -1030,7 +1030,7 @@ onBeforeUnmount(() => { autoStopRequested.value = true })
       <label>测试模式<select v-model="runMode" :disabled="autoRunning || wheelTesting"><option value="cycle">大循环：采纳后1000字控制</option><option value="chars">原字数循环（对照）</option></select></label>
       <label v-if="runMode === 'cycle'">直播间方案<select v-model.number="selectedPlanID" :disabled="autoRunning || loadingContext"><option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
     </div>
-    <AnchorCycleRunPanel v-if="runMode === 'cycle'" :plan-id="selectedPlanID" :ready="cycleReady" :free-style="freeStyleMode" :config="cycleConfig" :room-ids="selectedPlan?.room_ids || []" :advanced="showAdvanced" @busy="autoRunning = $event" />
+    <AnchorCycleRunPanel v-if="runMode === 'cycle'" :plan-id="selectedPlanID" :ready="cycleReady" :free-style="freeStyleMode" :has-style="metaConfirmed" :config="cycleConfig" :room-ids="selectedPlan?.room_ids || []" :advanced="showAdvanced" @busy="autoRunning = $event" />
     <section v-else class="panel auto-generation-panel">
       <div class="auto-controls">
         <label>直播间方案
