@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 21:01）
+## 当前生产（2026-10-21 21:31）
+
+- 当前 `/opt/xiaolan/releases/20261021-anchor-style-panel-cac613b`，前端源码 `cac613b`；前驱 `20261021-convention-top-d25bdd6`。北京时间21:31:03—21:31:05前端增量发布，未重启任何服务；Management仍PID1438252/SHA256 `08afa88429e5ec639f5331ffac7192f372b292e43865dfdca5803ee9c1ef26c5`/VCS `0ca61d1`，Core775073/网关775930保持，Nginx不变。
+- 本轮仅前端：主播风格页新增“主播风格”标签（在“风格样本”左侧），提供人设、观众称呼、主播自称、口头禅、避免词、句子节奏、热情/专业/促单强度、地域口音、补充说明；保存时程序生成`anchor-delivery/v1`规范与称呼覆盖，不向用户暴露JSON。已有样本分析的主播锁定手动覆盖，需新建无样本主播。
+- 复用了现有`PUT /api/v1/live-anchor-styles/{id}`，未改后端/数据库；`pnpm run build`通过，生产`web/index.html`已指向新`index-aaV6mHGf.js`，资源内含“不导入文本也能设定”标记；8080/8081/8083健康通过。未做浏览器逐字段点击验收。
+- 证据 `E:/直播伴播-local/anchor-style-panel-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-anchor-style-panel-cac613b.json`；回滚目标前驱d25bdd6。
+- 当前Management `0ca61d1`已包含之前的称呼中性/成对、问答直接承接和问题prompt修复；本前端发布没有改Management二进制。
+
+## 历史生产（2026-10-21 21:01）
 
 - 当前 `/opt/xiaolan/releases/20261021-address-bridge2-9be7150`，源码 `9be71507e9710fc2ce38718011ba65c9e48adac5`（`c80469f` + 问答prompt修复）；前驱 `20261021-address-bridge-c80469f`。北京时间21:01:19—21:01:25发布，Management PID1436621/SHA256 `85d2a25eae99ef4473401a44efbe222ce2689d1d4f76629386108f93f5823b42`；只重启Management，Core775073/网关775930、Nginx、前端保持。
 - 本轮范围：称呼池加入中性/男女成对词（哥姐、哥哥姐姐、叔叔阿姨、兄弟姐妹、老乡、老板、朋友、家人），单性别词入池自动成对化；`爸爸/妈妈/老公/老婆/主人`等语义越界词继续拦截；事实问答改为一次“称呼+答案”，无事实直接边界，清掉“问得好/我这就/马上/稍等”空转承接；`interaction_expression`删掉“问得好”示例。
