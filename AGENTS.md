@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 21:31）
+## 当前生产（2026-10-21 21:50）
+
+- 当前 `/opt/xiaolan/releases/20261021-anchor-style-mode-344ce55`，源码 `344ce55`；前驱 `20261021-fact-diff-452c576`。北京时间21:49:52—21:49:58发布，Management PID1441973/SHA256 `20a36ab9717a835fb9ac56534fa1f8df14cb679b2c86f1eced7a4253584ce797`；只重启Management，Core775073/网关775930保持，Nginx不变；前端web/web-desktop同步更新。
+- 本轮补齐主播“风格来源”二选一：`style_source_mode=card|sample`，新增`style_card_json`；样本仍用`profile_json`，风格卡单独存。`GetLiveAnchorStyle`按来源返回生效profile，绑定/生成链路读取生效profile；已有样本的主播也可切风格卡，两套profile不互相覆盖。
+- 前端左侧主播卡新增“风格”下拉（风格卡/风格样本），左侧标签“主播风格”对应风格卡，“风格样本/分析结果”对应样本；风格卡显示自定义参数页，样本显示旧样本页。新建主播默认风格卡并写入默认参数；去掉空态建议；页面文字统一16px。
+- `go test ./internal/db ./internal/httpapi ./internal/model`、风格卡来源单测、`pnpm run build`通过；生产index指向`index-D-3QmVFm.js`，资源含“风格卡”标记；8080/8081/8083健康通过。未做浏览器逐字段点击。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/anchor-style-mode-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-anchor-style-mode-344ce55.json`；回滚目标前驱fact-diff-452c576。已绑定方案切换来源后需重新初始化/保存快照才生效。
+
+## 历史生产（2026-10-21 21:31）
 
 - 当前 `/opt/xiaolan/releases/20261021-anchor-style-panel-cac613b`，前端源码 `cac613b`；前驱 `20261021-convention-top-d25bdd6`。北京时间21:31:03—21:31:05前端增量发布，未重启任何服务；Management仍PID1438252/SHA256 `08afa88429e5ec639f5331ffac7192f372b292e43865dfdca5803ee9c1ef26c5`/VCS `0ca61d1`，Core775073/网关775930保持，Nginx不变。
 - 本轮仅前端：主播风格页新增“主播风格”标签（在“风格样本”左侧），提供人设、观众称呼、主播自称、口头禅、避免词、句子节奏、热情/专业/促单强度、地域口音、补充说明；保存时程序生成`anchor-delivery/v1`规范与称呼覆盖，不向用户暴露JSON。已有样本分析的主播锁定手动覆盖，需新建无样本主播。
