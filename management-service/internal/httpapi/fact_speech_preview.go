@@ -99,54 +99,32 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	if state.TextModel == nil {
 		return state, errors.New("请先配置口播生成模型")
 	}
+	// 对齐新主线四层结构：预览母版不再塞进 SystemPrompt（主线不设 system 消息），
+	// 而是作为「环节约束」并入 user 的 packet。单事实讲品的边界约束由
+	// fact-speech-preview.md 提供，经 PendingFeedback 携带进「后续表达加强建议」字段。
+	var previewDirective string
 	if lecture == nil {
 		mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
 		if err != nil {
 			return state, err
 		}
-		state.TextModel.SystemPrompt = strings.TrimSpace(state.TextModel.SystemPrompt + "\n\n" + mother)
+		previewDirective = strings.TrimSpace(mother)
 	}
 	stage := "围绕所选事实讲品"
 	if lecture != nil {
 		stage = "围绕所选资料对象进行任务讲解"
 	}
 	contextData, _ := json.Marshal(map[string]string{"模拟直播间": roomName, "当前环节": stage})
-	state.PendingFeedback = string(contextData)
+	feedback := string(contextData)
+	if previewDirective != "" {
+		feedback = strings.TrimSpace(feedback + "\n\n【本环节生成约束，仅本段生效，不作为商品事实】\n" + previewDirective)
+	}
+	state.PendingFeedback = feedback
 	return state, nil
 }
 
-func factPreviewReviewState(state anchorcycle.State) anchorcycle.State {
-	if state.Task().ProductMode == "lecture" {
-		return state
-	}
-	// Use the existing content-boundary reviewer for this single fact, while
-	// generation itself still uses the normal mainline text/angle pipeline.
-	task := state.Task()
-	task.ProductMode, task.LectureFacts = "lecture", state.Facts
-	task.LecturePurpose = task.SellingPoint
-	state.Lectures = &anchorcycle.LectureRuntime{Active: &task}
-	return state
-}
-
 func (s *Server) generateFactSpeechPreview(ctx context.Context, state *anchorcycle.State) (map[string]any, error) {
-	feedback := state.PendingFeedback
-	defer func() { state.PendingFeedback = feedback }()
-	history := []map[string]any{}
-	for attempt := 0; attempt < 2; attempt++ {
-		output, err := s.generateFactSpeechPreviewOnce(ctx, state)
-		if err != nil {
-			return nil, err
-		}
-		if output["review_state"] != "rejected" || attempt == 1 {
-			if len(history) > 0 {
-				output["previous_attempts"] = history
-			}
-			return output, nil
-		}
-		history = append(history, map[string]any{"text": output["text"], "issues": output["issues"]})
-		ctx = context.WithValue(ctx, factPreviewRepairKey{}, map[string]any{"text": output["text"], "issues": output["issues"]})
-	}
-	return nil, errors.New("话术预览未完成")
+	return s.generateFactSpeechPreviewOnce(ctx, state)
 }
 
 func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *anchorcycle.State) (map[string]any, error) {
@@ -161,23 +139,23 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 	if strings.TrimSpace(result.Text) == "" {
 		return nil, errors.New("模型未返回话术，请重新生成")
 	}
-	candidate := lectureTextCandidate(result.Text)
-	reviewState := factPreviewReviewState(*state)
-	scanError := ""
-	if err = state.CheckP0Candidate(&candidate); err != nil {
-		scanError = err.Error()
-	} else {
-		s.reviewCycleP0Context(ctx, state, &candidate)
-		s.auditLectureCandidate(ctx, &reviewState, &candidate)
-	}
-	output := lecturePreviewContent(&reviewState, candidate, scanError)
+	text := strings.TrimSpace(result.Text)
+	task := state.Task()
 	rules := []map[string]string{}
 	for _, rule := range state.LatestExpressionConstraints {
 		feedback, _ := rule["用户原话（理解纠正范围，不能扩张限制）"].(string)
 		constraint, _ := rule["表达限制"].(string)
 		rules = append(rules, map[string]string{"feedback": feedback, "constraint": constraint})
 	}
-	output["expression_constraints"] = rules
+	output := map[string]any{
+		"text":      text,
+		"raw_text":  text,
+		"title":     task.SellingPoint,
+		"purpose":   task.LecturePurpose,
+		"angle":     task.Angle,
+		"notice":    "使用当前方案和真实口播模型生成，仅预览文字。",
+		"expression_constraints": rules,
+	}
 	if state.Task().LecturePlanJSON != "" {
 		if plan, e := parseLectureSegmentPlan(state.Task().LecturePlanJSON, state.Task().LectureFacts); e == nil {
 			output["purpose"], output["angle"] = plan.Purpose, plan.Angle
@@ -196,13 +174,6 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 			}
 			output["secondary_facts"] = details
 		}
-	}
-	output["notice"] = "使用当前方案和真实口播模型生成，仅预览文字。"
-	if output["review_state"] == "incomplete" {
-		output["notice"] = "话术已生成，审核暂未完成；这不是内容违规结论，可以重新生成后重试审核。"
-	}
-	if output["review_state"] == "rejected" {
-		output["notice"] = "话术未通过内容审核，请核对下方具体原因。"
 	}
 	return output, nil
 }

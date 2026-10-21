@@ -26,8 +26,6 @@ type LiveDerivedSafetyAsset struct {
 }
 
 type LiveRiskReview struct {
-	// Recheck only the obsolete program override, never an actual model block.
-	RecheckLegacyBoundaryBlock bool                   `json:"-"`
 	ClaimSHA256                string                 `json:"claim_sha256"`
 	SourceKey                  string                 `json:"source_key"`
 	Text                       string                 `json:"text"`
@@ -56,21 +54,12 @@ type LiveRiskReview struct {
 	Sources                    []LiveRiskReviewSource `json:"sources,omitempty"`
 }
 
-const GeneratedWheelAbsoluteBoundaryReason = "该排他性或绝对化说法由轮盘生成，但事实包没有提供同一完整事实；列出一项保障不等于它是唯一保障。"
-
 type LiveRiskReviewSource struct {
 	SourceKey string `json:"source_key"`
 	Text      string `json:"text"`
 	Area      string `json:"area,omitempty"`
 	EntityID  int64  `json:"entity_id,omitempty"`
 	Field     string `json:"field,omitempty"`
-}
-
-type LiveRiskSemanticDecision struct {
-	ClaimSHA256 string `json:"claim_sha256"`
-	Decision    string `json:"decision"`
-	Reason      string `json:"reason"`
-	Suggestion  string `json:"suggested_text,omitempty"`
 }
 
 func NormalizeLiveRiskReviewText(text string) string {

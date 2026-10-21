@@ -55,10 +55,6 @@ func TestFactLecturePreviewAcrossProductsAndRooms(t *testing.T) {
 						t.Fatal("scope leak", bad)
 					}
 				}
-				review := factPreviewReviewState(state)
-				if review.Task().LectureFacts != task.LectureFacts {
-					t.Fatal("review lost level-two evidence")
-				}
 			})
 		}
 	}

@@ -164,7 +164,6 @@ func TestAngleSupplementProviderProbe(t *testing.T) {
 					t.Errorf("P0 scan failed")
 					continue
 				}
-				server.reviewCycleP0Context(ctx, &state, &candidate)
 				r["p0_report"], r["final_text"] = candidate.P0Report, candidate.OutputText
 				if candidate.P0Report.Passed {
 					state.Accepted = append(state.Accepted, anchorcycle.Segment{Task: state.Task(), Selected: candidate})

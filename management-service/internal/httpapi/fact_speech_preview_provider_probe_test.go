@@ -47,9 +47,6 @@ func TestFactSpeechPreviewProvider(t *testing.T) {
 		if output["text"] == "" || state.Config.TTS != nil || state.Delivery != nil {
 			t.Fatal("invalid read-only preview")
 		}
-		if output["approved"] != true {
-			t.Fatal("real policy preview did not pass", output["issues"])
-		}
 		return
 	}
 	t.Fatal("explicit return-policy fixture missing")

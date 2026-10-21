@@ -27,6 +27,9 @@ func (s *Server) installCycleTextModel(ctx context.Context, state *anchorcycle.S
 		state.Config.TextProfileID = settings.Cycle.TextProfileID
 		state.Config.FeedbackID = settings.Cycle.FeedbackID
 	}
+	// P0 语境复核已下线；此 stage 名仅作为「review 模型默认角色」的入口保留，
+	// ResolveTextRole 会因 UsesReviewModel 直接返回 ReviewDefaultID，用于装 ReviewModel
+	// 供最终文字审核（mainline_final_content_review）、角度方向审核等仍存在的环节复用。
 	reviewID, err := s.store.ResolveTextRole(ctx, "mainline_p0_context")
 	if err != nil {
 		return err
@@ -480,9 +483,6 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 		}
 	}
 	messages, err := renderCycleTextMessages(state)
-	if previous, ok := ctx.Value(factPreviewRepairKey{}).(map[string]any); ok {
-		messages, err = factSpeechRepairMessages(state, previous)
-	}
 	if err != nil {
 		return agentgateway.Response{}, nil, err
 	}

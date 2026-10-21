@@ -971,7 +971,6 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		return nil, errors.New(err.Error())
 	}
 	if libraryEntry == nil {
-		s.reviewCycleP0Context(ctx, state, &candidate)
 		s.auditLectureCandidate(ctx, state, &candidate)
 	}
 	cleanCycleConsecutiveSpeech(state, &candidate)

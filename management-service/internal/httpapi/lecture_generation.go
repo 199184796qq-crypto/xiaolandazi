@@ -159,7 +159,6 @@ func (s *Server) lectureLibraryPreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, lecturePreviewContent(&state, candidate, err.Error()))
 		return
 	}
-	s.reviewCycleP0Context(ctx, &state, &candidate)
 	s.auditLectureCandidate(ctx, &state, &candidate)
 	writeJSON(w, 200, lecturePreviewContent(&state, candidate, ""))
 }
@@ -191,24 +190,14 @@ func lecturePreviewContent(state *anchorcycle.State, c anchorcycle.Candidate, sc
 		add("review_error", "", "文字审核尚未完成")
 	} else if !c.P0Report.Passed {
 		r := c.P0Report
-		if r.ContextReview != nil && r.ContextReview.Output.InstructionLeak != nil && *r.ContextReview.Output.InstructionLeak {
-			add("output_rule", r.ContextReview.Output.InstructionQuote, "正文包含内部指导文字")
-		} else if r.Error != "" {
+		if r.Error != "" {
 			add("review_error", "", r.Error)
 		}
 		for _, h := range r.Hits {
 			if r.Error != "" {
 				continue
-			} // Pending semantic hits are not confirmed violations.
-			reason := h.Condition
-			if r.ContextReview != nil {
-				for i, original := range r.ContextReview.LexicalHits {
-					if original.Start == h.Start && original.End == h.End && i < len(r.ContextReview.Output.Items) {
-						reason = r.ContextReview.Output.Items[i].Reason
-						break
-					}
-				}
 			}
+			reason := h.Condition
 			add("p0", h.Text, reason)
 		}
 	}

@@ -39,10 +39,6 @@ func TestFactSpeechPreviewKeepsConditionsAndOnlySelectedMaterial(t *testing.T) {
 	if state.Config.TTS != nil || state.Delivery != nil {
 		t.Fatal("preview must not attach live audio")
 	}
-	review := factPreviewReviewState(state)
-	if review.Task().LectureFacts != task.FactScope.Facts[0].Data || review.Task().ProductMode != "lecture" {
-		t.Fatal("review must use the exact selected fact")
-	}
 	if state.Task().ProductMode == "lecture" {
 		t.Fatal("preview generation must remain normal mainline")
 	}

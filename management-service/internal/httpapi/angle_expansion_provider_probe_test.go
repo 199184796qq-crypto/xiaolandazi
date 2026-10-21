@@ -160,7 +160,6 @@ func TestAngleExpansionProviderComparison(t *testing.T) {
 						t.Errorf("P0 check failed")
 						continue
 					}
-					server.reviewCycleP0Context(ctx, &state, &candidate)
 					result["p0_report"], result["final_text"] = candidate.P0Report, candidate.OutputText
 					passed := candidate.P0Report != nil && candidate.P0Report.Passed
 					result["review_passed"], result["simulated_playback"] = passed, passed

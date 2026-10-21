@@ -139,20 +139,16 @@ func TestRiskConfirmationSurvivesAbsenceAndLegacyBackup(t *testing.T) {
 	}
 }
 
-func TestRiskBackupNeverOverridesChangedIdentityPolicyOrModelBlock(t *testing.T) {
-	for _, kind := range []string{"changed-claim", "changed-prompt", "model-block", "appeal"} {
+func TestRiskBackupNeverOverridesChangedIdentityOrPendingAppeal(t *testing.T) {
+	for _, kind := range []string{"changed-claim", "appeal"} {
 		t.Run(kind, func(t *testing.T) {
 			state := &riskDedupState{customRows: true, backupRows: [][]driver.Value{reviewFixture("same", "confirmed", "pass", "prompt", "旧通过")}}
-			item := model.LiveRiskReview{ClaimSHA256: "same", Severity: "P0", SemanticDecision: "pending", SemanticPromptSHA: "prompt"}
+			item := model.LiveRiskReview{ClaimSHA256: "same", Severity: "P0", SemanticDecision: "not_required"}
 			switch kind {
 			case "changed-claim":
 				item.ClaimSHA256 = "new"
-			case "changed-prompt":
-				item.SemanticPromptSHA = "new-prompt"
-			case "model-block":
-				state.liveRows = [][]driver.Value{append(reviewFixture("same", "pending", "block", "prompt", "实际模型不通过"), true)}
 			case "appeal":
-				row := reviewFixture("same", "pending", "pending", "prompt", "")
+				row := reviewFixture("same", "pending", "not_required", "prompt", "")
 				row[10] = "pending"
 				state.liveRows = [][]driver.Value{append(row, true)}
 			}
@@ -166,19 +162,3 @@ func TestRiskBackupNeverOverridesChangedIdentityPolicyOrModelBlock(t *testing.T)
 	}
 }
 
-func TestLegacyOrdinalOverrideRequeuesOnlyExactProgramBlock(t *testing.T) {
-	for _, reason := range []string{model.GeneratedWheelAbsoluteBoundaryReason, "实际模型判定违规"} {
-		state := &riskDedupState{customRows: true, liveRows: [][]driver.Value{append(reviewFixture("same", "pending", "block", "prompt", reason), true)}}
-		conn := sql.OpenDB(riskDedupConnector{state})
-		item := model.LiveRiskReview{ClaimSHA256: "same", Severity: "P0", SemanticDecision: "pending", SemanticPromptSHA: "prompt", RecheckLegacyBoundaryBlock: true}
-		result, err := (&Store{db: conn}).SyncLiveRiskReviews(context.Background(), 7, 17, []model.LiveRiskReview{item})
-		conn.Close()
-		want := "block"
-		if reason == model.GeneratedWheelAbsoluteBoundaryReason {
-			want = "pending"
-		}
-		if err != nil || result["same"].SemanticDecision != want || result["same"].Status == "confirmed" {
-			t.Fatalf("wrong recheck: %+v %v", result, err)
-		}
-	}
-}

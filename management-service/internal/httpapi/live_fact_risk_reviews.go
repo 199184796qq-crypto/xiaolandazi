@@ -16,10 +16,21 @@ func (s *Server) RebuildFactRiskReviews(ctx context.Context, tenant, plan int64)
 // Explicit scoped maintenance uses the same configured model and audit path as
 // the UI. It never performs a user confirmation or modifies original content.
 func (s *Server) RecheckPendingFactRiskReviews(ctx context.Context, tenant, plan int64) (int, error) {
+	// 语义复核已下线：重建风险登记即可，不再触发模型语境判断。
 	if err := s.refreshPlanFactRiskRegistry(ctx, tenant, plan); err != nil {
 		return 0, err
 	}
-	return s.reviewPendingFactRisks(ctx, tenant, plan)
+	items, err := s.store.ListLiveRiskReviews(ctx, tenant, plan)
+	if err != nil {
+		return 0, err
+	}
+	pending := 0
+	for _, item := range items {
+		if item.Status != "confirmed" {
+			pending++
+		}
+	}
+	return pending, nil
 }
 
 // This rebuild is deterministic and makes no model request.

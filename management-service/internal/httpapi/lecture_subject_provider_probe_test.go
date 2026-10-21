@@ -81,7 +81,6 @@ func TestLectureSubjectProviderProbe(t *testing.T) {
 				}
 				c := lectureTextCandidate(response.Text)
 				if err = state.CheckP0Candidate(&c); err == nil {
-					server.reviewCycleP0Context(cctx, &state, &c)
 					server.auditLectureCandidate(cctx, &state, &c)
 				}
 				row["preview"] = lecturePreviewContent(&state, c, "")

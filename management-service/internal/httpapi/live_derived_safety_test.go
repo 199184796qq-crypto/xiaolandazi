@@ -146,10 +146,12 @@ func TestDerivedSafetyP2ConfirmationReleasesButP0NeverDoes(t *testing.T) {
 		}
 	}
 
-	p0Input, err := buildDerivedInput("# 正式事实包\n- [表达] 加微信购买", "", p0, p1, p2)
+	// 语义复核已下线：semantic 类 P0（绝对词「老字号」）经用户确认/举证即放行。
+	p0Input, err := buildDerivedInput("# 正式事实包\n- [identity_location/经营说明] 这项记录写的是老字号年数70年", "", p0, p1, p2)
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundP0 := false
 	for _, review := range p0Input.Reviews {
 		if review.Severity != "P0" {
 			continue
@@ -157,18 +159,18 @@ func TestDerivedSafetyP2ConfirmationReleasesButP0NeverDoes(t *testing.T) {
 		if !strings.Contains(review.Reason, review.RuleID) {
 			t.Fatal("P0 handling reason is missing rule id", review.Reason)
 		}
+		foundP0 = true
 		review.Status = "confirmed"
-		review.Evidence = "伪造的人工确认"
+		review.Evidence = "用户确认"
 		p0Input.Statuses[review.ClaimSHA256] = review
 	}
-	foundBlocked := false
+	if !foundP0 {
+		t.Fatal("no P0 review registered for absolute claim")
+	}
 	for _, field := range p0Input.Fields {
 		if len(field.Hits) > 0 && p0Input.needsRewrite(field) {
-			foundBlocked = true
+			t.Fatal("confirmed semantic P0 expression was not released")
 		}
-	}
-	if !foundBlocked {
-		t.Fatal("P0 was released by a forged confirmation")
 	}
 }
 
@@ -187,7 +189,9 @@ func TestDerivedSafetyContextualP0NeedsSemanticAndCustomerDecision(t *testing.T)
 			continue
 		}
 		found = true
-		if review.SemanticDecision != "pending" {
+		// 语义复核已下线：contextual P0 不再进入 pending 等模型判断，
+		// 而是归为 not_required，由用户直接确认放行。
+		if review.SemanticDecision != "not_required" {
 			t.Fatalf("semantic decision=%q", review.SemanticDecision)
 		}
 		input.Statuses[review.ClaimSHA256] = review
@@ -196,12 +200,11 @@ func TestDerivedSafetyContextualP0NeedsSemanticAndCustomerDecision(t *testing.T)
 				continue
 			}
 			approved := review
-			approved.SemanticDecision = "pass"
 			approved.Status = "confirmed"
 			approved.Evidence = "用户确认当前语境仅为记录说明"
 			input.Statuses[review.ClaimSHA256] = approved
 			if input.needsRewrite(field) {
-				t.Fatal("semantic pass plus user decision was not released")
+				t.Fatal("user confirmation alone was not released")
 			}
 		}
 	}
@@ -292,3 +295,58 @@ func TestDerivedSafetyRejectsMissingOrDuplicateTargets(t *testing.T) {
 		}
 	}
 }
+
+// 轮盘绝对化用语程序边界：轮盘（模型生成）里出现硬绝对词（唯一/独家/最低价/100%）
+// 且事实包无逐字支撑时，该 P0 卡必须标记为 hard（不可用户确认），防止误放。
+func TestWheelGeneratedHardAbsoluteForcesHard(t *testing.T) {
+	p0, p1, p2, err := loadRiskAnnotationMothers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 事实包没有「全网最低价」，轮盘角度却编造了它 → 必须 hard。
+	facts := "# 正式事实包\n- [商品卡] 规格=5L；数量=1桶"
+	wheel := `{"卖点列表":[{"卖点名":"价格优势","角度":["全网最低价，错过不再有"]}]}`
+	d, err := buildDerivedInput(facts, wheel, p0, p1, p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, review := range d.Reviews {
+		if review.RuleID != "l1.p0.absolute_claim" {
+			continue
+		}
+		if !strings.Contains(review.Text, "最低价") {
+			continue
+		}
+		found = true
+		if review.SemanticDecision != "hard" {
+			t.Fatalf("轮盘硬绝对词应强制 hard，实际 %q", review.SemanticDecision)
+		}
+	}
+	if !found {
+		t.Fatal("未找到「最低价」命中的 absolute_claim 风险卡")
+	}
+}
+
+// 轮盘里的序数词「第一口」不是排名宣传，不应被硬绝对词边界误拦。
+func TestWheelGeneratedOrdinalNotHard(t *testing.T) {
+	p0, p1, p2, err := loadRiskAnnotationMothers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := "# 正式事实包\n- [商品卡] 规格=5L"
+	wheel := `{"卖点列表":[{"卖点名":"口感","角度":["第一口就香"]}]}`
+	d, err := buildDerivedInput(facts, wheel, p0, p1, p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, review := range d.Reviews {
+		if review.RuleID != "l1.p0.absolute_claim" || !strings.Contains(review.Text, "第一") {
+			continue
+		}
+		if review.SemanticDecision == "hard" {
+			t.Fatalf("序数词「第一口」不应被硬绝对词边界误拦为 hard")
+		}
+	}
+}
+

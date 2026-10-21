@@ -126,7 +126,6 @@ func TestFixedAngleThreeWordingsProviderProbe(t *testing.T) {
 					t.Errorf("P0 scan failed")
 					continue
 				}
-				server.reviewCycleP0Context(context.Background(), &state, &candidate)
 				r["p0_report"], r["final_text"] = candidate.P0Report, candidate.OutputText
 				r["exceeds_requested_max_chars"] = len([]rune(candidate.OutputText)) > state.Config.MaxChars
 				if candidate.P0Report.Passed {

@@ -28,18 +28,21 @@ func buildPlanP0Allowances(reviews []model.LiveRiskReview, policy *contentguard.
 			if strings.TrimSpace(source.Text) == "" {
 				continue
 			}
-			for _, hit := range policy.Scan(source.Text, scope).Hits {
-				approved := hit.ReviewMode == "semantic" && review.Severity != "P0"
-				decision := "用户已知晓并确认"
-				if review.Severity == "P0" {
-					approved = review.RuleID == hit.RuleID && ((hit.ReviewMode == "semantic" && (review.SemanticDecision == "pass" || review.SemanticDecision == "evidence_required")) || review.AppealStatus == "approved")
-				}
-				if review.AppealStatus == "approved" {
-					decision = "后台复核通过"
-				}
-				if !approved {
-					continue
-				}
+		for _, hit := range policy.Scan(source.Text, scope).Hits {
+			approved := hit.ReviewMode == "semantic" && review.Severity != "P0"
+			decision := "用户已知晓并确认"
+			if review.Severity == "P0" {
+				// 语义复核已下线：semantic 类 P0（绝对词/限时/数据背书等「有依据放行」类）
+				// 经用户确认（status=confirmed）即放行；hard 类 P0 仍只能后台 appeal 放行，
+				// 用户不能自己推翻硬红线。
+				approved = review.RuleID == hit.RuleID && ((hit.ReviewMode == "semantic" && review.Status == "confirmed") || review.AppealStatus == "approved")
+			}
+			if review.AppealStatus == "approved" {
+				decision = "后台复核通过"
+			}
+			if !approved {
+				continue
+			}
 				matchKey := policy.MatchKey(hit.Text)
 				key := hit.RuleID + "\x00" + matchKey
 				if matchKey == "" || seen[key] {

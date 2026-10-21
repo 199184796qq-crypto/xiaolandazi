@@ -30,7 +30,7 @@ const props = withDefaults(defineProps<{
   riskLoading?: boolean
 }>(), { tenantId: 0, roomId: 0, poolStatus: null, poolError: '', wheel: null, wheelLoading: false, riskReviews: () => [], riskLoading: false })
 
-const emit = defineEmits<{ updated: []; poolUpdated: [value: PoolStatus]; confirmRisk: [value: MinerRiskReview]; appealRisk: [value: MinerRiskReview, reason: string]; reviewSemantics: [] }>()
+const emit = defineEmits<{ updated: []; poolUpdated: [value: PoolStatus]; confirmRisk: [value: MinerRiskReview]; appealRisk: [value: MinerRiskReview, reason: string] }>()
 
 const history = ref<SpeechMinerMessage[]>([])
 const options = ref<SpeechMinerOption[]>([])
@@ -278,12 +278,11 @@ defineExpose({ locateRisk, locatePoolTask, locateOriginalWheel })
 
 function riskCanConfirm(review?: MinerRiskReview) {
   if (!review) return false
-  return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && (review.semantic_decision === 'pass' || review.semantic_decision === 'evidence_required'))
+  return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && review.semantic_decision !== 'hard')
 }
 
 function riskLabel(review?: MinerRiskReview) {
   if (!review) return ''
-  if (review.semantic_decision === 'pending') return '正在复核'
   if (riskCanConfirm(review)) return '待确认'
   return '请修改'
 }
@@ -947,7 +946,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div v-if="!isPointCollapsed(point, pointIndex) || isPointEditing(pointIndex)" class="speech-miner-angle-area">
-                <SourceRiskDetails :reviews="headerRisks(pointIndex)" :loading="riskLoading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedHeaderRisk(pointIndex)" @confirm="emit('confirmRisk', $event)" @edit="beginPointEdit(point, pointIndex)" @appeal="(review, reason) => emit('appealRisk', review, reason)" @semantics="emit('reviewSemantics')" />
+                <SourceRiskDetails :reviews="headerRisks(pointIndex)" :loading="riskLoading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedHeaderRisk(pointIndex)" @confirm="emit('confirmRisk', $event)" @edit="beginPointEdit(point, pointIndex)" @appeal="(review, reason) => emit('appealRisk', review, reason)" />
                 <ul v-if="isPointEditing(pointIndex) && pointEdit" class="speech-miner-angle-editor-list">
                   <li
                     v-for="(angle, angleIndex) in pointEdit.angles"

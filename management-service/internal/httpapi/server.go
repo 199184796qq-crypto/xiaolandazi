@@ -198,7 +198,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/derived-safety/prepare", s.liveDerivedSafetyPrepare)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/fact-risk-reviews", s.liveFactRiskReviews)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/fact-risk-reviews", s.liveFactRiskReviews)
-	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/fact-risk-reviews/semantic-review", s.liveFactRiskSemanticReview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/initialize-anchor", s.liveAnchorGenerationInitialize)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/product-category", s.planProductCategoryGet)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/product-category", s.planProductCategorySet)

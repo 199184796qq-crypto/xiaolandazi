@@ -104,7 +104,6 @@ func TestTextContextAngleProviderProbe(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				s.reviewCycleP0Context(ctx, state, &candidate)
 				rows[i] = map[string]any{"name": c.Name, "group": c.Group, "candidate": candidate, "approved": candidate.P0Report.Passed}
 				if candidate.P0Report.Passed && state.CheckApprovedText(candidate, candidate.OutputText) != nil {
 					t.Error("invalid final receipt")
@@ -128,7 +127,6 @@ func TestTextContextAngleProviderProbe(t *testing.T) {
 				if err := planState.CheckP0Candidate(&candidate); err != nil {
 					t.Error(err)
 				} else {
-					s.reviewCycleP0Context(ctx, planState, &candidate)
 				}
 				rows[i]["candidate"], rows[i]["approved"] = candidate, candidate.P0Report != nil && candidate.P0Report.Passed
 			}

@@ -442,7 +442,6 @@ type FactRiskReviewDisplay = RiskReview & {
 type FactRiskController = {
 	confirmReview: (item: FactRiskReviewDisplay, evidence?: string) => Promise<void>
 	submitReviewAppeal: (item: FactRiskReviewDisplay, reason?: string) => Promise<void>
-	reviewSemantics: () => Promise<void>
 }
 const factRiskController = ref<FactRiskController | null>(null)
 const factRiskReviews = ref<FactRiskReviewDisplay[]>([])
@@ -4660,9 +4659,8 @@ async function editSourceRisk(review: RiskReview, area: RiskArea) {
 function factRiskTone(item: LiveAgentPlanFact) {
 	const reviews = factRisksForFact(item)
 	if (!reviews.length) return ''
-	if (reviews.some(review => review.status !== 'confirmed' && review.severity === 'P0' && (review.semantic_decision === 'block' || review.semantic_decision === 'not_required'))) return 'blocked'
-	if (reviews.some(review => review.semantic_decision === 'pending')) return 'checking'
-	if (reviews.some(review => review.status !== 'confirmed' && (review.severity === 'P1' || review.semantic_decision === 'evidence_required'))) return 'decision'
+	if (reviews.some(review => review.status !== 'confirmed' && review.severity === 'P0' && review.semantic_decision === 'hard')) return 'blocked'
+	if (reviews.some(review => review.status !== 'confirmed' && (review.severity === 'P1' || review.severity === 'P0'))) return 'decision'
 	if (reviews.some(review => review.status !== 'confirmed')) return 'decision'
 	return 'confirmed'
 }
@@ -4670,7 +4668,6 @@ function factRiskTone(item: LiveAgentPlanFact) {
 function factRiskToneLabel(item: LiveAgentPlanFact) {
 	switch (factRiskTone(item)) {
 	case 'blocked': return '禁止使用'
-	case 'checking': return '语义复核中'
 	case 'decision': return '待确认'
 	case 'confirmed': return '用户已确认'
 	default: return ''
@@ -4678,11 +4675,11 @@ function factRiskToneLabel(item: LiveAgentPlanFact) {
 }
 
 function factRiskNeedsEvidence(review: FactRiskReviewDisplay) {
-	return review.severity === 'P1' || review.semantic_decision === 'evidence_required'
+	return review.severity === 'P1' || review.severity === 'P0'
 }
 
 function factRiskCanConfirm(review: FactRiskReviewDisplay) {
-	return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && (review.semantic_decision === 'pass' || review.semantic_decision === 'evidence_required'))
+	return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && review.semantic_decision !== 'hard')
 }
 
 async function confirmInlineFactRisk(review: FactRiskReviewDisplay) {
@@ -6739,7 +6736,7 @@ onBeforeUnmount(() => {
               <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
             </div>
             <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" :save-selling-points="saveProductSellingPoints">
-              <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" /></template>
+              <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" /></template>
             </LiveProductLinkCards>
           </section>
 
@@ -6815,7 +6812,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="strategy-benefit-formal-list">
               <article v-for="item in formalBenefits" :key="item.id" class="strategy-benefit-formal-item" :data-formal-benefit-id="item.id" tabindex="-1" :class="{ expanded: expandedFormalBenefitIds.has(item.id) }">
-                <SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'benefits', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'benefits')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" @semantics="factRiskController?.reviewSemantics()" />
+                <SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'benefits', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'benefits')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" />
                 <header class="strategy-benefit-formal-card-head">
                   <div class="strategy-benefit-formal-icon strategy-benefit-formal-link-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24"><path d="M10.5 13.5 13.5 10.5M7.7 16.3l-1.4 1.4a4 4 0 0 1-5.7-5.7l3.7-3.7a4 4 0 0 1 5.7 0l.7.7M16.3 7.7l1.4-1.4a4 4 0 0 1 5.7 5.7l-3.7 3.7a4 4 0 0 1-5.7 0l-.7-.7" /></svg>
@@ -7068,12 +7065,8 @@ onBeforeUnmount(() => {
                         <p v-if="factRiskNoticeState.error" class="is-error" role="alert">{{ factRiskNoticeState.error }}</p>
                         <article v-for="review in factRisksForFact(item)" :key="review.claim_sha256" :data-fact-risk-hash="review.claim_sha256" tabindex="-1" :class="['is-' + factRiskTone(item), { 'is-risk-located': locatedFactRiskHash === review.claim_sha256 }]">
                           <header><strong>{{ review.status === 'confirmed' ? '已确认' : factRiskToneLabel(item) }}</strong><small>{{ review.rule_id }}</small></header>
-                          <p>{{ review.semantic_reason || review.reason }}</p>
-                          <p v-if="review.semantic_suggestion"><b>建议表达：</b>{{ review.semantic_suggestion }}</p>
+                          <p>{{ review.reason }}</p>
                           <p v-if="review.status === 'confirmed'" class="is-confirmed">确认记录：{{ review.evidence }}<template v-if="review.confirmed_at"> · {{ new Date(review.confirmed_at).toLocaleString('zh-CN', { hour12: false }) }}</template></p>
-                          <template v-else-if="review.semantic_decision === 'pending'">
-                            <button type="button" :disabled="factRiskNoticeState.loading" @click="factRiskController?.reviewSemantics()">{{ factRiskNoticeState.loading ? '复核中…' : '重新语义复核' }}</button>
-                          </template>
                           <template v-else-if="factRiskCanConfirm(review) && session.bootstrap?.actor.role === 'customer'">
                             <p class="is-notice">系统提示这条内容可能存在风险。确认表示你已知晓提示、认可内容真实，并同意它在当前直播间的当前方案中使用。</p>
                             <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button class="primary-button" type="button" :disabled="factRiskNoticeState.loading" @click="confirmInlineFactRisk(review)">我已知晓并确认</button></div>

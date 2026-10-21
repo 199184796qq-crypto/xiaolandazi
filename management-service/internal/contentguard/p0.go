@@ -96,14 +96,13 @@ type Hit struct {
 	ReviewMode string `json:"review_mode,omitempty"`
 }
 type Report struct {
-	Passed        bool           `json:"passed"`
-	PolicyVersion string         `json:"policy_version"`
-	SHA256        string         `json:"rule_sha256"`
-	Scope         string         `json:"scope"`
-	Hits          []Hit          `json:"hits"`
-	Error         string         `json:"error,omitempty"`
-	LatencyMS     int64          `json:"latency_ms"`
-	ContextReview *ContextReview `json:"context_review,omitempty"`
+	Passed        bool   `json:"passed"`
+	PolicyVersion string `json:"policy_version"`
+	SHA256        string `json:"rule_sha256"`
+	Scope         string `json:"scope"`
+	Hits          []Hit  `json:"hits"`
+	Error         string `json:"error,omitempty"`
+	LatencyMS     int64  `json:"latency_ms"`
 }
 
 var jsonBlock = regexp.MustCompile("(?s)```json\\s*(.*?)\\s*```")

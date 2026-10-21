@@ -87,7 +87,6 @@ func TestSamePointThreeProviderExample(t *testing.T) {
 		if e = state.CheckP0Candidate(&candidate); e != nil {
 			t.Fatal(e)
 		}
-		server.reviewCycleP0Context(ctx, &state, &candidate)
 		server.auditFinalMainlineContent(ctx, &state, &candidate)
 		passed := state.FinalContentCandidateApproved(candidate)
 		rows = append(rows, map[string]any{"visit": visit + 1, "generation": response, "generation_messages": messages, "selected_direction": candidate.AngleHook, "final_text": candidate.OutputText, "p0_report": candidate.P0Report, "p0_reference": priorP0ReviewView(&state, candidate), "final_audit": candidate.FinalContentAudit, "expression_audit": candidate.ExpressionAudit, "accepted": passed})

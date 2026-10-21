@@ -9,9 +9,8 @@ import (
 // A deletion is scoped to a leading instruction, never a global banned phrase.
 // The original model response is retained by the caller.
 type OpeningInstructionEdit struct {
-	Removed string         `json:"removed_text"`
-	Source  string         `json:"source"`
-	Review  *ContextReview `json:"context_review,omitempty"`
+	Removed string `json:"removed_text"`
+	Source  string `json:"source"`
 }
 
 var instructionForm = regexp.MustCompile(`(?:第一句|开头|本次任务|这一段|这段|本段|目标人群|讲述角度|写作指导|表达展开建议).*(?:说|讲|写|解释|展开|介绍|输出)|(?:先|首先|直接)(?:说|讲|写|解释|介绍)|(?:现在|这会儿)就从.*说起`)

@@ -219,7 +219,6 @@ func TestCrossCategoryContentProviderProbe(t *testing.T) {
 			if err = state.CheckP0Candidate(&candidate); err != nil {
 				t.Fatal(err)
 			}
-			server.reviewCycleP0Context(ctx, &state, &candidate)
 			row["p0"] = candidate.P0Report
 			row["content_assessment"] = assess(fixture, candidate.OutputText, fixture.Point+"："+fixture.Angle)
 			if candidate.P0Report == nil || candidate.P0Report.Error != "" {

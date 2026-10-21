@@ -117,41 +117,8 @@ func (s *State) CheckApprovedText(c Candidate, text string) error {
 	return nil
 }
 
-// The final text receipt is reused by adoption and audio. A contextual pass is
-// scoped to this exact candidate, never a global allowance for a word like 最.
-func (s *State) ApplyP0Context(c *Candidate, review contentguard.ContextReview) error {
-	if c.P0Report == nil || c.P0CheckedInputSHA != s.candidateP0Input(*c) {
-		return errors.New("语境复核候选正文或规则已经变化")
-	}
-	r, err := contentguard.ResolveContext(*c.P0Report, spokenCandidate(*c), review)
-	if err != nil {
-		return err
-	}
-	c.P0Report = &r
-	c.P0ApprovedTextSHA = ""
-	if r.Passed {
-		c.P0ApprovedTextSHA = ProductDigest(spokenCandidate(*c))
-	}
-	return nil
-}
-
-// Production content protocol: one paragraph, one verdict, program-owned IDs.
-func (s *State) ApplyP0ContextContent(c *Candidate, review contentguard.ContextReview) error {
-	if c.P0Report == nil || c.P0CheckedInputSHA != s.candidateP0Input(*c) {
-		return errors.New("语境复核候选正文或规则已经变化")
-	}
-	r, err := contentguard.ResolveContextContent(*c.P0Report, spokenCandidate(*c), review)
-	if err != nil {
-		return err
-	}
-	c.P0Report = &r
-	c.P0ApprovedTextSHA = ""
-	if r.Passed {
-		c.P0ApprovedTextSHA = ProductDigest(spokenCandidate(*c))
-	}
-	return nil
-}
-
+// The final text receipt is reused by adoption and audio. P0 语境复核已下线：
+// semantic 命中的放行只靠 P0Allowances（用户已确认的风险卡），不再调模型判断。
 func (s *State) CheckP0Voice(text string) error {
 	if s.Config.SkipReview {
 		return nil

@@ -117,7 +117,7 @@ func derivedRiskReviewReason(hit contentguard.Annotation) string {
 	switch hit.Severity {
 	case "P0":
 		if hit.ReviewMode == "semantic" {
-			return fmt.Sprintf("程序命中规则「%s」（%s），匹配内容“%s”。该规则需要结合完整语境复核，程序命中不直接等同于P0。", label, hit.RuleID, matched)
+			return fmt.Sprintf("程序命中规则「%s」（%s），匹配内容“%s”。该规则需结合事实依据判断：事实卡有对应依据时由你确认放行，无依据则需修改或申请后台复核。", label, hit.RuleID, matched)
 		}
 		return fmt.Sprintf("命中P0硬拦截规则「%s」（%s），匹配内容“%s”。P0不允许人工确认放行，必须修改原始内容。", label, hit.RuleID, matched)
 	case "P1":
@@ -127,6 +127,52 @@ func derivedRiskReviewReason(hit contentguard.Annotation) string {
 	default:
 		return fmt.Sprintf("命中风险规则「%s」（%s），匹配内容“%s”。", label, hit.RuleID, matched)
 	}
+}
+
+// firstSequenceReference 匹配「第一次/第一步/第一天/第一口」等序数词。
+// 「第一」作序数词时不是排名宣传，不触发轮盘硬绝对词边界。
+var firstSequenceReference = regexp.MustCompile(`第[一二三四五六七八九十百千万0-9]+(?:个|次|步|天|口|口吃|遍|眼|下|回|条|瓶|桶|袋|单|件|人|名|家|场|轮|款|代)`)
+
+// hardAbsoluteTerms 是「不可语境豁免」的硬绝对化宣传词子集。这些词在直播口播
+// 语境里几乎只能是宣传（唯一/独家/最低价/100%），不象「最好」可作食用建议、
+// 「第一」可作序数词。轮盘（模型生成）若凭空编造这些词且事实包无逐字支撑，
+// 必须强制 block，不能让用户误确认。
+var hardAbsoluteTerms = []string{
+	"唯一", "独家", "首个", "首家", "首选", "首创",
+	"全网首发", "全球首发", "全国首家", "全国唯一",
+	"中国第一", "全球第一", "全网第一", "销量第一", "排名第一", "第一品牌", "行业第一", "世界第一",
+	"100%", "百分百", "最低价", "全网最低价", "全网最低",
+	"零风险", "独一无二", "绝无仅有", "填补空白", "史无前例",
+	"宇宙级", "国家级", "世界级", "遥遥领先",
+}
+
+// wheelGeneratedHardAbsolute 判断一条 absolute_claim 命中的 review 是否属于
+// 「轮盘生成的硬绝对词、事实包无逐字支撑」。满足：来源含 wheel/ 前缀、文本含
+// 硬绝对词、且归一化后的事实包正文里找不到这个命中的逐字内容。
+func wheelGeneratedHardAbsolute(d *derivedInput, sourceKey, matched string) bool {
+	if !strings.HasPrefix(sourceKey, "wheel/") {
+		return false
+	}
+	normalized := model.NormalizeLiveRiskReviewText(matched)
+	if normalized == "" {
+		return false
+	}
+	hard := false
+	for _, term := range hardAbsoluteTerms {
+		if strings.Contains(normalized, term) {
+			hard = true
+			break
+		}
+	}
+	if !hard {
+		return false
+	}
+	// 「第一」类：只有非序数词（不是「第一次/第一步」）才算硬绝对词。
+	if strings.Contains(normalized, "第一") && firstSequenceReference.MatchString(normalized) {
+		return false
+	}
+	facts := model.NormalizeLiveRiskReviewText(d.Facts)
+	return !strings.Contains(facts, normalized)
 }
 func buildDerivedInput(facts, wheelJSON, p0, p1, p2 string) (*derivedInput, error) {
 	input := &derivedInput{Facts: facts, WheelJSON: wheelJSON, lines: strings.Split(facts, "\n"), Statuses: map[string]model.LiveRiskReview{}, rewritten: map[string]bool{}}
@@ -220,9 +266,19 @@ func buildDerivedInput(facts, wheelJSON, p0, p1, p2 string) (*derivedInput, erro
 			}
 			semanticDecision := "not_applicable"
 			if hit.Severity == "P0" {
-				semanticDecision = "not_required"
+				// 语义复核已下线：semantic 类 P0（绝对词/限时/数据背书）归为 not_required，
+				// 由用户确认/举证直接放行；hard 类 P0 标记为 hard，只能提交后台复核。
 				if hit.ReviewMode == "semantic" {
-					semanticDecision = "pending"
+					semanticDecision = "not_required"
+				} else {
+					semanticDecision = "hard"
+				}
+				// 轮盘绝对化用语程序边界（不依赖模型）：轮盘（模型生成的卖点角度）
+				// 里出现硬绝对词（唯一/独家/最低价/100% 等），且事实包没有逐字支撑时，
+				// 强制标记为 hard，用户不能直接确认放行，只能修改原文或提交后台复核。
+				// 防止模型在轮盘里"发明"绝对化宣传词后被用户误确认。
+				if hit.RuleID == "l1.p0.absolute_claim" && wheelGeneratedHardAbsolute(input, field.ID, text) {
+					semanticDecision = "hard"
 				}
 			}
 			input.Reviews = append(input.Reviews, model.LiveRiskReview{ClaimSHA256: hash, SourceKey: field.ID, Text: text, RuleID: hit.RuleID, Severity: hit.Severity, RuleSHA256: input.Hashes[hit.Severity], Status: "pending", Reason: derivedRiskReviewReason(hit), ProgramDecision: "matched", SemanticDecision: semanticDecision, SemanticKey: field.reviewScopes[hit.RuleID], Subject: field.reviewSubjects[hit.RuleID], Sources: []model.LiveRiskReviewSource{source}})
@@ -234,7 +290,8 @@ func (d *derivedInput) needsRewrite(f derivedField) bool {
 	for _, hit := range f.Hits {
 		review := d.Statuses[derivedClaimHash(f, hit, d.Hashes)]
 		if hit.Severity == "P0" {
-			if (review.SemanticDecision == "pass" || review.SemanticDecision == "evidence_required") && review.Status == "confirmed" && strings.TrimSpace(review.Evidence) != "" {
+			// 语义复核已下线：P0 与 P1/P2 一样，用户确认/举证即放行。
+			if review.Status == "confirmed" && strings.TrimSpace(review.Evidence) != "" {
 				continue
 			}
 			return true
@@ -249,7 +306,7 @@ func (d *derivedInput) fingerprint(extra string) string {
 	claims := []string{}
 	for _, r := range d.Reviews {
 		s := d.Statuses[r.ClaimSHA256]
-		claims = append(claims, r.ClaimSHA256+":"+s.Status+":"+s.SemanticDecision+":"+derivedHash(s.Evidence))
+		claims = append(claims, r.ClaimSHA256+":"+s.Status+":"+derivedHash(s.Evidence))
 	}
 	sort.Strings(claims)
 	raw, _ := json.Marshal(struct {
@@ -322,19 +379,8 @@ func attachRiskSourceOrigins(d *derivedInput, origins map[int]model.LiveRiskRevi
 	}
 }
 func (s *Server) syncDerivedReviews(ctx context.Context, tenant, plan int64, d *derivedInput) error {
-	prompt, _, err := loadReplaceablePromptAsset("ANCHOR_STYLE_FACT_RISK_SEMANTIC_PROMPT_PATH", "configs/prompts/anchor-style/compliance/fact-risk-semantic-review.md", "事实风险语义复核母版")
-	if err != nil {
-		return err
-	}
-	promptSHA := derivedHash(prompt)
-	for i := range d.Reviews {
-		if d.Reviews[i].Severity == "P0" {
-			d.Reviews[i].SemanticPromptSHA = promptSHA
-			if d.Reviews[i].RuleID == "l1.p0.absolute_claim" && firstSequenceReference.MatchString(d.Reviews[i].Text) && !requiresVerbatimGeneratedFact(d.Reviews[i].Text) {
-				d.Reviews[i].RecheckLegacyBoundaryBlock = true
-			}
-		}
-	}
+	// 语义复核已下线：不再给 P0 风险卡设置 semantic_decision=pending，也不再触发
+	// 模型语境判断。P0 与 P1/P2 一样，由用户在风险卡界面直接确认/举证放行。
 	statuses, err := s.store.SyncLiveRiskReviews(ctx, tenant, plan, d.Reviews)
 	if err != nil {
 		return err
@@ -561,25 +607,6 @@ func (s *Server) prepareDerivedSafety(ctx context.Context, tenant, plan, actor i
 	}
 	if err = s.syncDerivedReviews(ctx, tenant, plan, d); err != nil {
 		return model.LiveDerivedSafetyAsset{}, err
-	}
-	semanticPending := false
-	for _, review := range d.Statuses {
-		if review.Severity == "P0" && review.SemanticDecision == "pending" {
-			semanticPending = true
-			break
-		}
-	}
-	if semanticPending {
-		if _, err = s.reviewPendingFactRisks(ctx, tenant, plan); err != nil {
-			return model.LiveDerivedSafetyAsset{}, err
-		}
-		d, err = s.loadDerivedInput(ctx, tenant, plan, p0, p1, p2)
-		if err != nil {
-			return model.LiveDerivedSafetyAsset{}, err
-		}
-		if err = s.syncDerivedReviews(ctx, tenant, plan, d); err != nil {
-			return model.LiveDerivedSafetyAsset{}, err
-		}
 	}
 	d.SourceSHA = d.fingerprint(source)
 	prior, err := s.store.GetLiveDerivedSafety(ctx, tenant, plan, d.SourceSHA)

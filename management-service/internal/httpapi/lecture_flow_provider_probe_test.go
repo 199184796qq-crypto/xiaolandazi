@@ -145,7 +145,6 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 			if err = state.CheckP0Candidate(&candidate); err != nil {
 				t.Fatal(err)
 			}
-			server.reviewCycleP0Context(ctx, &state, &candidate)
 			server.auditLectureCandidate(ctx, &state, &candidate)
 			if part != 1 {
 				scopeState := state

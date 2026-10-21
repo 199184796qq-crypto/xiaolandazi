@@ -91,7 +91,8 @@ func (s *Store) SyncLiveRiskReviews(ctx context.Context, tenant, plan int64, ite
 			return nil, err
 		}
 		current, exists := prior[hash]
-		if !exists || (current.status != "confirmed" && current.semanticPromptSHA == p.semanticPromptSHA && current.semanticDecision != "block" && current.appealStatus != "pending") {
+		// 语义复核已下线：仅按精确身份恢复 confirmed 记录；当前行有 pending 后台申请则不覆盖。
+		if !exists || (current.status != "confirmed" && current.appealStatus != "pending") {
 			prior[hash] = p
 		}
 	}
@@ -107,26 +108,12 @@ func (s *Store) SyncLiveRiskReviews(ctx context.Context, tenant, plan int64, ite
 			continue
 		}
 		p := prior[item.ClaimSHA256]
-		if item.RecheckLegacyBoundaryBlock && p.semanticDecision == "block" && p.semanticReason == model.GeneratedWheelAbsoluteBoundaryReason {
-			// Re-run the model; do not automatically approve or confirm the claim.
-			p.semanticDecision, p.semanticReason, p.semanticSuggestion = "", "", ""
-			p.semanticProvider, p.semanticModel = "", ""
-			p.semanticAt = sql.NullTime{}
-		}
 		item.Status, item.Evidence = "pending", ""
 		if item.ProgramDecision == "" {
 			item.ProgramDecision = "matched"
 		}
 		if item.SemanticDecision == "" {
 			item.SemanticDecision = "not_required"
-		}
-		if p.semanticDecision != "" && item.SemanticDecision == "pending" && p.semanticPromptSHA == item.SemanticPromptSHA {
-			item.SemanticDecision, item.SemanticReason, item.SemanticSuggestion = p.semanticDecision, p.semanticReason, p.semanticSuggestion
-			item.SemanticProvider, item.SemanticModel = p.semanticProvider, p.semanticModel
-			if p.semanticAt.Valid {
-				value := p.semanticAt.Time
-				item.SemanticReviewedAt = &value
-			}
 		}
 		item.AppealStatus, item.AppealReason = p.appealStatus, p.appealReason
 		if p.appealBy.Valid {
@@ -137,8 +124,9 @@ func (s *Store) SyncLiveRiskReviews(ctx context.Context, tenant, plan int64, ite
 			value := p.appealAt.Time
 			item.AppealAt = &value
 		}
-		confirmableP0 := item.Severity == "P0" && (item.SemanticDecision == "pass" || item.SemanticDecision == "evidence_required")
-		if (item.Severity != "P0" || confirmableP0) && p.status == "confirmed" && strings.TrimSpace(p.evidence) != "" {
+		// 语义复核已下线：P0 与 P1/P2 一样，用户确认（status=confirmed + evidence）
+		// 即放行，不再依赖 semantic_decision。历史遗留的 pending/block 卡同样可直接确认。
+		if p.status == "confirmed" && strings.TrimSpace(p.evidence) != "" {
 			item.Status, item.Evidence = p.status, p.evidence
 			if p.by.Valid {
 				value := p.by.Int64
@@ -229,20 +217,15 @@ func normalizeLiveRiskConfirmation(severity, semanticDecision, evidence string) 
 	evidence = strings.TrimSpace(evidence)
 	switch severity {
 	case "P0":
-		switch semanticDecision {
-		case "pass":
-			if evidence == "" {
-				evidence = "用户已确认该表达在当前完整语境中使用"
-			}
-			return evidence, nil
-		case "evidence_required":
-			if evidence == "" {
-				evidence = "用户已知晓系统提示并确认该事实内容真实，同意按当前内容用于本方案"
-			}
-			return evidence, nil
-		default:
-			return "", errors.New("该项经程序和语义复核仍为P0，不能由用户直接放行")
+		if semanticDecision == "hard" {
+			// 硬拦截规则（医疗功效/站外引流/永久禁用等）不能由用户直接确认放行，只能后台复核。
+			return "", errors.New("该项为P0硬拦截规则，不能由用户直接放行，请提交后台复核")
 		}
+		// 语义复核已下线：semantic 类 P0 与 P1/P2 一样，用户确认/举证即放行。
+		if evidence == "" {
+			evidence = "用户已知晓系统提示并确认该事实内容真实，同意按当前内容用于本方案"
+		}
+		return evidence, nil
 	case "P1":
 		if evidence == "" {
 			evidence = "用户已知晓系统提示并确认该事实内容真实，同意按当前内容用于本方案"
@@ -275,33 +258,12 @@ func (s *Store) ConfirmLiveRiskReview(ctx context.Context, tenant, plan, actor i
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE live_fact_risk_reviews SET status='confirmed',evidence=?,confirmed_by_user_id=?,confirmed_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND plan_id=? AND claim_sha256=? AND active=1 AND (severity IN ('P1','P2') OR (severity='P0' AND semantic_decision IN ('pass','evidence_required')))`, evidence, actor, tenant, plan, hash)
+	result, err := tx.ExecContext(ctx, `UPDATE live_fact_risk_reviews SET status='confirmed',evidence=?,confirmed_by_user_id=?,confirmed_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND plan_id=? AND claim_sha256=? AND active=1`, evidence, actor, tenant, plan, hash)
 	if err != nil {
 		return err
 	}
 	if n, countErr := result.RowsAffected(); countErr != nil || n != 1 {
 		return errors.New("风险卡已变化，请刷新后重新确认")
-	}
-	return tx.Commit()
-}
-
-func (s *Store) SaveLiveRiskSemanticDecisions(ctx context.Context, tenant, plan int64, promptSHA, provider, modelName string, items []model.LiveRiskSemanticDecision) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, item := range items {
-		if item.Decision != "pass" && item.Decision != "block" && item.Decision != "evidence_required" {
-			return errors.New("语义复核决定无效")
-		}
-		result, execErr := tx.ExecContext(ctx, `UPDATE live_fact_risk_reviews SET semantic_decision=?,semantic_reason=?,semantic_suggestion=?,semantic_provider=?,semantic_model=?,semantic_reviewed_at=CURRENT_TIMESTAMP(3),status='pending',evidence='',confirmed_by_user_id=NULL,confirmed_at=NULL WHERE tenant_id=? AND plan_id=? AND claim_sha256=? AND active=1 AND severity='P0' AND semantic_decision='pending' AND semantic_prompt_sha256=?`, item.Decision, strings.TrimSpace(item.Reason), strings.TrimSpace(item.Suggestion), strings.TrimSpace(provider), strings.TrimSpace(modelName), tenant, plan, item.ClaimSHA256, promptSHA)
-		if execErr != nil {
-			return execErr
-		}
-		if count, countErr := result.RowsAffected(); countErr != nil || count != 1 {
-			return errors.New("风险卡已变化，请刷新后重新语义复核")
-		}
 	}
 	return tx.Commit()
 }
@@ -316,15 +278,15 @@ func (s *Store) SubmitLiveRiskAppeal(ctx context.Context, tenant, plan, actor in
 		return err
 	}
 	defer tx.Rollback()
-	var severity, semanticDecision, appealStatus string
-	if err = tx.QueryRowContext(ctx, `SELECT severity,semantic_decision,appeal_status FROM live_fact_risk_reviews WHERE tenant_id=? AND plan_id=? AND claim_sha256=? AND active=1 FOR UPDATE`, tenant, plan, hash).Scan(&severity, &semanticDecision, &appealStatus); err != nil {
+	var severity, status, appealStatus string
+	if err = tx.QueryRowContext(ctx, `SELECT severity,status,appeal_status FROM live_fact_risk_reviews WHERE tenant_id=? AND plan_id=? AND claim_sha256=? AND active=1 FOR UPDATE`, tenant, plan, hash).Scan(&severity, &status, &appealStatus); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("风险卡已变化，请刷新后重试")
 		}
 		return err
 	}
-	if severity != "P0" || (semanticDecision != "block" && semanticDecision != "not_required") {
-		return errors.New("只有程序与语义复核仍未通过的P0项目可以提交后台申请")
+	if severity != "P0" || status == "confirmed" {
+		return errors.New("只有未被用户确认放行的P0项目可以提交后台申请")
 	}
 	if appealStatus == "pending" {
 		return errors.New("该项目已经提交后台复核，请勿重复申请")

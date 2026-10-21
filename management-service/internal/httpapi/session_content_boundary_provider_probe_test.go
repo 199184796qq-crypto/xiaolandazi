@@ -111,7 +111,6 @@ func TestSessionContentBoundaryProviderProbe(t *testing.T) {
 				continue
 			}
 			if err = state.CheckP0Candidate(&c); err == nil {
-				server.reviewCycleP0Context(ctx, &state, &c)
 			}
 			row["final_text"], row["p0"], row["instruction_edits"] = c.OutputText, c.P0Report, c.OpeningInstructionEdits
 			unique[c.OutputText] = true
