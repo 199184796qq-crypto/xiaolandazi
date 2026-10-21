@@ -71,7 +71,7 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 		return
 	}
 	variantKey := strings.ToUpper(strings.TrimSpace(r.PathValue("variantKey")))
-	if variantKey != "A" && variantKey != "B" && variantKey != "C" && variantKey != "D" && variantKey != "E" {
+	if variantKey != "A" && variantKey != "B" && variantKey != "C" && variantKey != "D" && variantKey != "E" && variantKey != "CUSTOM" {
 		writeError(w, http.StatusBadRequest, "稿件编号无效")
 		return
 	}
@@ -203,7 +203,7 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 		return
 	}
 	variantKey := strings.ToUpper(strings.TrimSpace(r.PathValue("variantKey")))
-	if variantKey != "A" && variantKey != "B" && variantKey != "C" && variantKey != "D" && variantKey != "E" {
+	if variantKey != "A" && variantKey != "B" && variantKey != "C" && variantKey != "D" && variantKey != "E" && variantKey != "CUSTOM" {
 		writeError(w, http.StatusBadRequest, "稿件编号无效")
 		return
 	}
