@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 23:07）
+## 当前生产（2026-10-21 23:58）
+
+- 当前 `/opt/xiaolan/releases/20261021-recording-save-878b075`，源码 `878b075`；前驱 `20261021-welcome-prefix-a7cd7de`。北京时间23:58:19—23:58:26二进制发布，无进行中直播；Management PID1452281/SHA256 `185bd1d2363fdac2c9a953327c4b4766d4b4242ec327b762a1e193795088c435`；Core775073/网关775930/Nginx/前端保持。
+- 修复录音模式保存：切换`user_audio`后，旧版本带过来的`content_pools`不再参与保存校验，直接落库；不需要旧“更新受影响内容”步骤，也不会再报“资料在生成期间发生变化”。
+- 这是录音模式专用兜底；AI预生成/AI动态仍保留内容池一致性校验。当前系统只保留“初始化方案”，不再要求用户找“更新受影响内容”。旧已保存方案保持可用。
+- 服务端五包测试通过；8080/8081/8083健康。未用真实页面点击复验保存回执。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-save-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-recording-save-878b075.json`；回滚目标前驱a7cd7de。
+
+## 历史生产（2026-10-21 23:07）
 
 - 当前 `/opt/xiaolan/releases/20261021-welcome-prefix-a7cd7de`，源码 `a7cd7de`；前驱 `20261021-style-shuffle-aa4682b`。北京时间23:07:16—23:07:22发布，Management PID1450506/SHA256 `97a306fc5a264e2a020b826800d4282f443aaeb163ca55b658488448abc5868f`；只重启Management，Core775073/网关775930/Nginx/前端保持。
 - 开场欢迎前缀移除：`opening-welcome-templates.json`36条全部由“欢迎欢迎{称呼}…”改为“{称呼}…”（生产校验0条以“欢迎”开头）；`text_generation.go`开场样板指令改为“不要再额外加欢迎前缀，直接从称呼或钩子进入”；MANIFEST同步新SHA256。
