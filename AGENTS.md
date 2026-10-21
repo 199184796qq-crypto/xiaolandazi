@@ -1,6 +1,12 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 21:50）
+## 当前生产（2026-10-21 21:51）
+
+- 当前 `/opt/xiaolan/releases/20261021-fact-diff-ddd5d30`，源码 `ddd5d30`；前驱 `20261021-anchor-style-mode-344ce55`。WorkBuddy于北京时间21:51:28—21:51:34发布事实差异修复，Management PID1443196/SHA256 `e3663f9fd4e13fd5be10a417ca54361a5101f6cfd9f00e7d41f548b6121e444e`；Core775073/网关775930、Nginx保持；前端继承本轮的风格来源版本，未重发。
+- `ddd5d30`的父提交是`344ce55`，因此当前线上已包含：主播风格来源二选一（风格卡/风格样本）、`style_source_mode/style_card_json`、风格卡参数面板、中性/成对呼叫、问答直接承接、TTS句级P0等。`web/index.html`仍指向`index-D-3QmVFm.js`，资源含“风格卡”标记。
+- 本轮风格来源发布（344ce55）的详细记录保留在下方历史段；当前生产由WorkBuddy事实差异发布承接，不能再用344ce55覆盖ddd5d30。
+
+## 历史生产（2026-10-21 21:50）
 
 - 当前 `/opt/xiaolan/releases/20261021-anchor-style-mode-344ce55`，源码 `344ce55`；前驱 `20261021-fact-diff-452c576`。北京时间21:49:52—21:49:58发布，Management PID1441973/SHA256 `20a36ab9717a835fb9ac56534fa1f8df14cb679b2c86f1eced7a4253584ce797`；只重启Management，Core775073/网关775930保持，Nginx不变；前端web/web-desktop同步更新。
 - 本轮补齐主播“风格来源”二选一：`style_source_mode=card|sample`，新增`style_card_json`；样本仍用`profile_json`，风格卡单独存。`GetLiveAnchorStyle`按来源返回生效profile，绑定/生成链路读取生效profile；已有样本的主播也可切风格卡，两套profile不互相覆盖。
