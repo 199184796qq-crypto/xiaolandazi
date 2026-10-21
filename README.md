@@ -1,195 +1,47 @@
 # 直播伴播
 
-AI 直播销售伴播系统。当前项目采用明确的三层结构：
+AI 直播销售伴播系统。源码主目录为 `E:/直播伴播`；临时排查证据和发布备份放在仓库外 `E:/直播伴播-local`。
 
-1. **Core Service**：无界面核心业务服务，负责真实直播业务逻辑。
-2. **Management Service**：管理/API 服务，负责身份、客户范围、权限和网页数据接口。
-3. **Web Console**：统一网页控制台。平台管理员和客户共用同一套页面，仅数据范围不同。
+文档入口：[现行文档索引](docs/README.md)、[历史与废止文档](docs/archive/README.md)、[资金库存设计](系统设计/README.md)。开发前先读 [AGENTS.md](AGENTS.md) 和 [协作交接.md](协作交接.md)。
 
-## 当前目录
+## 服务与目录
 
-~~~text
-E:\直播伴播
+| 目录 | 职责 |
+| --- | --- |
+| `core-service` | 采集、公屏事件、实时调度与音频播放执行；内部接口由管理服务调用 |
+| `management-service` | 身份与租户权限、方案及资产版本、话术生成/互动、TTS准备与管理API |
+| `web-console` | Vue 3 / TypeScript 控制台，经管理API操作业务，不直接访问Core |
+| `collector-worker` | 浏览器采集适配 |
+| `audio-service`、`xiaozhi-gateway` | 音频分发与小智设备接入 |
+| `device-simulator` | 设备协议模拟与联调 |
+| `customer-mobile`、`sales-mobile` | 客户及销售移动端 |
+| `configs` | 配置样例、运行母版及清单；不能当普通历史文档清理 |
+| `docker`、`deploy`、`scripts` | 本地依赖、发布与运维工具 |
+| `docs`、`系统设计` | 业务/运维说明和资金库存设计 |
 
-├─ core-service
-│  ├─ collector       # 直播平台采集适配层
-│  ├─ room            # 房间核心数据
-│  ├─ events          # 公屏事件与实时事件总线
-│  └─ httpapi         # 仅供 Management 使用的内部 API
-│
-├─ management-service
-│  ├─ auth            # 用户 / scope
-│  ├─ db              # 客户与账号
-│  ├─ coreclient      # Core Service 客户端
-│  └─ httpapi         # Web Console API
-│
-├─ collector-worker   # Playwright 浏览器采集 Worker（Core 子进程）
-├─ web-console        # Vue 3 + TypeScript + Vite
-├─ device-simulator   # 未来盒子协议模拟器
-├─ docker             # MySQL / Redis
-├─ configs            # Core / Management 配置样例
-├─ data
-├─ docs
-└─ scripts
-~~~
+Go服务的具体实现位于各模块的 `internal/`，不按早期示意树直接寻找根目录下的 `auth/collector/httpapi`。
 
-## 服务边界
+## 已有能力与验收边界
 
-~~~text
-直播平台
-   ↓
-Core Service
-   ↓
-MySQL / Redis
-   ↑
-Management Service
-   ↑ HTTP / SSE
-Web Console
-~~~
+- 房间、公屏采集及SSE，平台/客户权限和租户隔离。
+- 方案、商品与事实、互动规则、可选主播风格和声音配置；初始化及版本保存。
+- 正式主线按任务逐段生成，内容用“必说、可说、不提、改写”四层约束；公共与商品、卖点和角度分别调度。
+- 每场首次完整开场生成新文字与TTS，后续普通主线按滚动七三目标选择合格成品；持久文字库和完整音频包分开校验。
+- 实时互动、设备连接、播放回执与本场下载。模型生成、程序采纳、TTS、Core开始及PCM完成是不同阶段。
 
-Web Console **不直接访问 Core Service**。
+这些是仓库已有实现及记录的范围，不表示每项新改动均已部署或所有实播问题均已解决。部署以发布时实际服务器文件/进程为准；不能从发布目录名、旧PID或文档标题推断当前版本。
 
-Core Service 不知道 Vue、客户页面或平台管理页面是什么，只处理：
+## 当前维护重点
 
-- Room
-- Collector
-- RoomEvent
-- RoomState
-- Agent
-- SpeechTask
-- Device
+主线实际复用率与事实变更失效、互动答题与称呼边界、公共内容重复、设备掉线和真实错误显示仍需分别验收。现行索引保留各项问题入口；归档旧讨论不关闭遗留问题。供应商的输入token缓存不能算文字/声音成品复用。
 
-Management Service 负责：
-
-- 用户身份
-- Tenant
-- 权限范围
-- 平台管理员 / 客户 scope
-- 房间管理 API
-- 实时公屏转发
-
-## 当前已跑通
-
-- Docker / MySQL / Redis
-- Core Service Windows/Linux amd64/Linux arm64 构建
-- Management Service Windows/Linux amd64/Linux arm64 构建
-- Management → Core → MySQL 房间增删查
-- 开发期公屏事件写入与读取
-- 平台管理员 scope
-- 客户 tenant scope
-- Web Console 生产构建
-- 房间卡片
-- 添加 / 删除房间
-- 房间详情
-- 实时公屏 SSE
-- 真实抖音 WSS 采集（Playwright Worker → Go protobuf）
-
-## 下一阶段
-
-下一阶段只在 Core Service 中实现真实抖音 Collector：
-
-~~~text
-房间号
-  ↓
-Douyin Collector
-  ↓
-RoomEvent
-  ↓
-Core Event Bus
-  ↓
-Management SSE
-  ↓
-Web Console 实时公屏
-~~~
-
-采集层计划保留双内核：
-
-- Lightweight Collector：大量房间主路径
-- Browser/CDP Collector：兼容 / 降级路径
-
-上层只认统一 RoomEvent。
-
-## 当前扩展能力（2026）
-
-项目已扩展为完整的 AI 直播伴播运行平台。
-
-新增模块：
-
-- `audio-service`：声音分发服务，负责 Core 音频任务向多终端广播。
-- `semantic`：语义智能引擎，负责语义追踪、问题聚类、Embedding/RAG 接入。
-- `device`：终端设备管理体系，支持 PC、盒子、小智 ESP32-S3。
-
-## 小智设备接入链路
-
-```text
-小智 ESP32-S3
-    ↓
-www.xiaolandaizi.cn
-    ↓
-小智网关
-    ↓
-Audio Service
-    ↓
-Core 直播声音流
-```
-
-设备生命周期：
-
-```text
-注册
- ↓
-绑定直播间
- ↓
-Heartbeat 心跳
- ↓
-接收声音任务
- ↓
-解绑/注销
-```
-
-## Semantic Engine
-
-语义处理链路：
-
-```text
-直播公屏
- ↓
-事件分析
- ↓
-问题聚类
- ↓
-语义召回
- ↓
-RAG上下文
- ↓
-场控 Agent
- ↓
-TTS 输出
-```
-
-设计原则：
-
-- 不阻塞直播采集
-- AI 服务异常可降级
-- 模型供应商可替换
-- Core 与具体模型解耦
-
-## 当前推进方向
-
-- 向量数据库生产化
-- 真实直播数据灰度验证
-- 语义记忆优化
-- RAG 精准召回
-- 小智 ESP32-S3 真机联调
-- 阿里云生产部署完善
-
-## 小智设备能力规划
+## 小智设备控制协议（设计约定）
 
 小智设备收到用户语音后，优先识别设备控制指令，不进入直播智能体业务链路，不消耗 AI 时长。
 
-详细方案见：`docs/小智设备控制Agent_音量与字体控制方案.md`
+详细设计见：[小智设备控制Agent](docs/小智设备控制Agent_音量与字体控制方案.md)。协议规划不代替实际固件验收。
 
-### 第一阶段能力
+### 协议范围
 
 | 能力 | 示例指令 | 协议 action |
 | --- | --- | --- |
