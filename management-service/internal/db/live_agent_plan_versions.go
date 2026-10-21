@@ -190,7 +190,12 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
-	if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
+	// 纯录音模式不消费生成的公共池/商品专属池；切换录音后保存时，
+	// 旧版本带过来的 content_pools 不应再要求用户去更新受影响内容。
+	// 统一由“初始化方案/保存方案”承接，录音版本直接落库。
+	if model.LiveContentModeFromGenerationContext(input.GenerationContext) == model.LiveContentUserAudio {
+		delete(input.GenerationContext, "content_pools")
+	} else if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	var nextVersion int64
