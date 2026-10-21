@@ -29,24 +29,53 @@ func anchorGenerationStep(key, label, successMessage string, err error) anchorGe
 	return anchorGenerationInitializationStep{Key: key, Label: label, Status: "success", Message: successMessage}
 }
 
+// anchorGenerationSkippedStep 标记「按当前方案配置本就不需要做」的步骤。
+// 跳过不等于失败：主播风格是可选资产，方案没绑时按自由发挥模式运行。
+func anchorGenerationSkippedStep(key, label, message string) anchorGenerationInitializationStep {
+	return anchorGenerationInitializationStep{Key: key, Label: label, Status: "skipped", Message: message}
+}
+
 func anchorGenerationInitializationNotice(steps []anchorGenerationInitializationStep) (initialized, partial bool, notice string) {
-	succeeded := 0
+	succeeded, failed, skipped := 0, 0, 0
 	for _, step := range steps {
-		if step.Status == "success" {
+		switch step.Status {
+		case "success":
 			succeeded++
+		case "failed":
+			failed++
+		case "skipped":
+			skipped++
 		}
 	}
-	initialized = len(steps) > 0 && succeeded == len(steps)
-	partial = succeeded > 0 && succeeded < len(steps)
+	// 跳过项不算失败：只要没有 failed，本次初始化就算完成。
+	initialized = len(steps) > 0 && failed == 0
+	partial = failed > 0 && succeeded+skipped > 0
 	switch {
-	case initialized:
+	case initialized && skipped == 0:
 		notice = "四项初始化均已完成。"
+	case initialized:
+		notice = fmt.Sprintf("初始化已完成：%d 项保存成功、%d 项按当前方案跳过；跳过项不影响开播与生成。", succeeded, skipped)
 	case partial:
-		notice = fmt.Sprintf("分项初始化完成：成功 %d 项，失败 %d 项；已成功内容不会因其它项目失败而回退。", succeeded, len(steps)-succeeded)
+		notice = fmt.Sprintf("分项初始化完成：成功 %d 项，失败 %d 项；已成功内容不会因其它项目失败而回退。", succeeded, failed)
 	default:
-		notice = fmt.Sprintf("分项初始化未完成：%d 项均失败，请按各项提示处理后重试。", len(steps))
+		notice = fmt.Sprintf("分项初始化未完成：%d 项均失败，请按各项提示处理后重试。", failed)
 	}
 	return
+}
+
+// stylePartsOutcome 是「导入已编译好的主播风格与评分基准」这一步的对外结论。
+//
+// 主播风格是可选资产：方案没有绑定风格是合法配置（自由发挥模式，不打分、不套固定腔调），
+// 这种情况返回 skipped，不再报初始化失败。真正的读库错误仍然算失败。
+func (s *Server) stylePartsOutcome(ctx context.Context, tenant, plan, actor int64) (skipped bool, styleErr, scoreErr error) {
+	if _, err := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, plan); err != nil {
+		if errors.Is(err, appdb.ErrLiveAnchorStyleNotFound) {
+			return true, nil, nil
+		}
+		return false, err, err
+	}
+	styleErr, scoreErr = s.importBoundCompiledStyleParts(ctx, tenant, plan, actor)
+	return false, styleErr, scoreErr
 }
 
 func (s *Server) importBoundCompiledStyleParts(ctx context.Context, tenant, plan, actor int64) (styleErr, scoreErr error) {
@@ -561,14 +590,20 @@ func (s *Server) liveAnchorGenerationInitialize(w http.ResponseWriter, r *http.R
 	reportAnchorAnalysis(r.Context(), 5, "正在读取当前方案与已确认资源")
 	ctx, cancel := context.WithTimeout(r.Context(), 240*time.Second)
 	defer cancel()
-	styleErr, scoreErr := s.importBoundCompiledStyleParts(ctx, tenant, plan, actor.UserID)
+	styleSkipped, styleErr, scoreErr := s.stylePartsOutcome(ctx, tenant, plan, actor.UserID)
 	reportAnchorAnalysis(ctx, 20, "主播风格与评分基准已检查，正在核对事实")
 	factErr := s.refreshPlanFactRiskRegistry(ctx, tenant, plan)
 	reportAnchorAnalysis(ctx, 30, "正在核对商品讲解要点与最新资料的变化")
 	points, angles, wheelErr := s.initializeSellingPointWheel(ctx, tenant, plan, actor.UserID)
+	styleStep := anchorGenerationStep("anchor_style", "主播风格", "主播风格已关联保存", styleErr)
+	scoreStep := anchorGenerationStep("scorecard", "评分基准", "评分基准已关联保存", scoreErr)
+	if styleSkipped {
+		styleStep = anchorGenerationSkippedStep("anchor_style", "主播风格", "本方案没有绑定主播风格，按自由发挥模式运行：不套固定腔调，语气由模型按通用口播习惯表达")
+		scoreStep = anchorGenerationSkippedStep("scorecard", "评分基准", "没有主播风格就没有评分基准，本场不打分、不设风格分门槛")
+	}
 	steps := []anchorGenerationInitializationStep{
-		anchorGenerationStep("anchor_style", "主播风格", "主播风格已关联保存", styleErr),
-		anchorGenerationStep("scorecard", "评分基准", "评分基准已关联保存", scoreErr),
+		styleStep,
+		scoreStep,
 		anchorGenerationStep("fact_package", "事实包", "事实包已独立刷新", factErr),
 		anchorGenerationStep("selling_point_wheel", "讲解要点", fmt.Sprintf("已梳理 %d 个讲解要点、%d 种讲解角度", points, angles), wheelErr),
 	}
