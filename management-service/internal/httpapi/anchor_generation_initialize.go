@@ -264,6 +264,15 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 		}
 	}
 	if validation == nil {
+		// 命中 P0 红线的角度不直接删：单独回喂模型改写出 2 个备选，程序挑一个干净的，
+		// 保住这个讲解任务。改写失败则保留原角度，交给后面的程序边界校验处理。
+		if rewritten, count, _, rewriteErr := s.rewriteWheelP0Angles(ctx, canonical, source.Facts, p0MD, cfg.SellingPointProfileID); rewriteErr == nil && count > 0 {
+			if normalized, newPoints, newAngles, normalizeErr := normalizeAnchorStyleSellingPointWheelJSON(rewritten); normalizeErr == nil {
+				canonical, points, angles = normalized, newPoints, newAngles
+			}
+		}
+	}
+	if validation == nil {
 		if tiered, terr := assignSellingPointTiers(canonical); terr == nil {
 			canonical = tiered
 		} else {
