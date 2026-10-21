@@ -121,6 +121,17 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	if err != nil {
 		return nil, err
 	}
+	// 方案快照会一直沿用保存当时的风格。用户后来「取消使用」主播时，快照里的腔调必须失效，
+	// 否则即使绑定已解除，本场仍会按旧主播的语气生成（表现为取消了还满口「哥哥姐姐」）。
+	// 这里以当前绑定关系为准做一次兜底：绑定不在了就丢掉快照里的风格，按自由发挥跑。
+	if scheme.StyleID != 0 {
+		if bound, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, version.PlanID); errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) || (bindErr == nil && bound.ID != scheme.StyleID) {
+			scheme.StyleID, scheme.ScorecardID = 0, 0
+			scheme.StyleMD, scheme.BaselineJSON = "", ""
+		} else if bindErr != nil && !errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) {
+			return nil, errors.New("读取当前方案绑定的主播失败")
+		}
+	}
 	ref := asSupportMap(version.GenerationContext["derived_safety"])
 	hash, _ := ref["source_sha256"].(string)
 	safety, err := s.store.GetLiveDerivedSafety(ctx, tenant, version.PlanID, hash)
