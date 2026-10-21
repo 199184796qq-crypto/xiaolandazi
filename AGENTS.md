@@ -1,6 +1,15 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 22:49）
+## 当前生产（2026-10-21 23:00）
+
+- 当前 `/opt/xiaolan/releases/20261021-style-shuffle-aa4682b`，源码 `aa4682b`；前驱 `20261021-style-id-fix-5184a12`。北京时间23:00:41—23:00:48二进制发布，确认无进行中直播；Management PID1449367/SHA256 `a5f1d2c501dc168e1d8a51a92857f3f12fede6867a8af447735a2736e1983d05`；Core775073/网关775930/Nginx/前端保持。
+- 修复多选词固定顺序：`ShuffleStyleMDForPrompt`在每次主线/开场送模前，按同类（观众称呼、主播自指、短确认、方言等）打乱风格卡词序；一行内多个称呼词也打乱。模型不再总看到“朋友们”排第一。
+- 交互称呼去掉程序对`anchorTerms[0]`的5倍加权，`anchorStyleAddressTerms`返回前随机打乱，朋友们/老乡们等候选等权。
+- 场次405实测：前两段用卡正常，但“朋友们”反复出现、“老乡们”几乎不出现，验证了固定顺序/首词加权问题；本轮修复后需新场验证多称呼轮换。
+- 干净源码`go test ./internal/speechbase ./internal/decisionexecutor ./internal/httpapi ./internal/db ./internal/model`通过；8080/8081/8083健康。未用新直播验证实际轮换。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/style-shuffle-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-style-shuffle-aa4682b.json`；回滚目标前驱5184a12。
+
+## 历史生产（2026-10-21 22:49）
 
 - 当前 `/opt/xiaolan/releases/20261021-style-id-fix-5184a12`，源码 `5184a12`；前驱 `20261021-diff-gap-msg-8a1707f`。北京时间22:49:10—22:49:16二进制发布，确认无进行中直播；Management PID1447998/SHA256 `4651288d477b0a9e11905a213c483dcff354ca45377538aef0dfa417c7230184`；Core775073/网关775930/Nginx/前端保持。
 - 修复直播风格被清空：快照`style_id`是元提示词资产ID，旧校验误当主播ID比较，导致开播时清空styleMD。新增`bound_style_id`单独保存主播ID；只有它非0且与当前绑定不一致才清空。旧快照没有该字段时保留快照风格，不再误清。
