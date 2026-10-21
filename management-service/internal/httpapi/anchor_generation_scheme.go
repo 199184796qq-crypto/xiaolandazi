@@ -33,7 +33,9 @@ func realtimeScheme(data map[string]any) (liveAnchorScheme, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &scheme)
 	}
-	if err != nil || scheme.Version != 1 || scheme.StyleID <= 0 || scheme.ScorecardID <= 0 || scheme.WheelID <= 0 {
+	// 只有卖点轮盘是必填项：它是本场任务来源。主播风格与评分基准都允许为空（自由发挥模式），
+	// 这里不能因为它们为 0 就把整个方案判为「未初始化」，否则无风格方案永远开不了播。
+	if err != nil || scheme.Version != 1 || scheme.WheelID <= 0 {
 		return scheme, errors.New("实时声音方案尚未初始化或保存，请初始化直播智能体后保存发布")
 	}
 	return scheme, nil

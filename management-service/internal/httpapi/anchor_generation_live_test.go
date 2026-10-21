@@ -170,3 +170,36 @@ func TestRealtimeMetadataVersionRequiresServerSnapshotButNoPreviewAudio(t *testi
 		t.Fatal("static mode accepted zero formal voices")
 	}
 }
+
+// 无主播风格的方案同样能开播：只有卖点轮盘是必填，风格与评分基准允许为 0。
+// 若不放开，用户「取消使用主播」后保存方案会成功，但开播时报「方案尚未初始化」。
+func TestRealtimeSchemeAllowsFreeStyleWithoutAnchorStyle(t *testing.T) {
+	freeStyle := map[string]any{
+		"anchor_generation": map[string]any{
+			"version": 1, "wheel_id": 9, "style_id": 0, "scorecard_id": 0,
+			"style_md": "", "baseline_json": "",
+		},
+	}
+	scheme, err := realtimeScheme(freeStyle)
+	if err != nil {
+		t.Fatalf("free-style scheme must parse: %v", err)
+	}
+	if scheme.StyleID != 0 || scheme.StyleMD != "" || scheme.WheelID != 9 {
+		t.Fatalf("unexpected scheme: %#v", scheme)
+	}
+	styled := map[string]any{
+		"anchor_generation": map[string]any{
+			"version": 1, "wheel_id": 9, "style_id": 3, "scorecard_id": 4,
+			"style_md": "腔调", "baseline_json": "{}",
+		},
+	}
+	if _, err = realtimeScheme(styled); err != nil {
+		t.Fatalf("styled scheme must still parse: %v", err)
+	}
+	noWheel := map[string]any{
+		"anchor_generation": map[string]any{"version": 1, "style_id": 3, "scorecard_id": 4},
+	}
+	if _, err = realtimeScheme(noWheel); err == nil {
+		t.Fatal("scheme without selling-point wheel must be rejected")
+	}
+}
