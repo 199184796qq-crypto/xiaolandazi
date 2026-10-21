@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 23:00）
+## 当前生产（2026-10-21 23:07）
+
+- 当前 `/opt/xiaolan/releases/20261021-welcome-prefix-a7cd7de`，源码 `a7cd7de`；前驱 `20261021-style-shuffle-aa4682b`。北京时间23:07:16—23:07:22发布，Management PID1450506/SHA256 `97a306fc5a264e2a020b826800d4282f443aaeb163ca55b658488448abc5868f`；只重启Management，Core775073/网关775930/Nginx/前端保持。
+- 开场欢迎前缀移除：`opening-welcome-templates.json`36条全部由“欢迎欢迎{称呼}…”改为“{称呼}…”（生产校验0条以“欢迎”开头）；`text_generation.go`开场样板指令改为“不要再额外加欢迎前缀，直接从称呼或钩子进入”；MANIFEST同步新SHA256。
+- 这是开场主线欢迎模板的“欢迎”前缀，不是互动欢迎策略；互动欢迎仍保留自然欢迎语义，若也要去掉需另改。
+- `go test ./internal/httpapi ./internal/decisionexecutor ./internal/speechbase ./internal/db ./internal/model`在干净源码通过；8080/8081/8083健康。未用新直播验证开场首句。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/welcome-prefix-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-welcome-prefix-a7cd7de.json`；回滚目标前驱aa4682b。
+
+## 历史生产（2026-10-21 23:00）
 
 - 当前 `/opt/xiaolan/releases/20261021-style-shuffle-aa4682b`，源码 `aa4682b`；前驱 `20261021-style-id-fix-5184a12`。北京时间23:00:41—23:00:48二进制发布，确认无进行中直播；Management PID1449367/SHA256 `a5f1d2c501dc168e1d8a51a92857f3f12fede6867a8af447735a2736e1983d05`；Core775073/网关775930/Nginx/前端保持。
 - 修复多选词固定顺序：`ShuffleStyleMDForPrompt`在每次主线/开场送模前，按同类（观众称呼、主播自指、短确认、方言等）打乱风格卡词序；一行内多个称呼词也打乱。模型不再总看到“朋友们”排第一。
