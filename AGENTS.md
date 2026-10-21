@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 23:58）
+## 当前生产（2026-10-22 00:18）
+
+- 当前 `/opt/xiaolan/releases/20261021-recording-clone-58bad96`，源码 `58bad96`；前驱 `20261021-recording-save-878b075`。北京时间00:18:40—00:18:46发布，Management PID1454088/SHA256 `0a879cde443186c4a90c913fdf5bf2ade26d6852c6dc493e8c7003cd0ec342f7`；Core775073/网关775930/Nginx保持，前端同步更新。
+- 修复“录音话术 + 克隆声音”：旧 AI 生成声音会切到已隐藏的 `ai_pregenerated`，导致切换不生效并报通用错误；现在录音主线保持 `user_audio`，只把 `CUSTOM` 音频替换为录音原文生成的克隆 TTS。
+- 后端允许录音主线正式音轨为上传原声或 `live_agent_formal_voice_timeline` 克隆音轨；录音话术不重写，原始录音保留可切回。
+- 前端/五包测试、8080/8081/8083健康通过；生产资源含“请先保留录音主线”标记。未做真实页面点击验收。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-clone-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-recording-clone-58bad96.json`；回滚目标前驱878b075。
+
+## 历史生产（2026-10-21 23:58）
 
 - 当前 `/opt/xiaolan/releases/20261021-recording-save-878b075`，源码 `878b075`；前驱 `20261021-welcome-prefix-a7cd7de`。北京时间23:58:19—23:58:26二进制发布，无进行中直播；Management PID1452281/SHA256 `185bd1d2363fdac2c9a953327c4b4766d4b4242ec327b762a1e193795088c435`；Core775073/网关775930/Nginx/前端保持。
 - 修复录音模式保存：切换`user_audio`后，旧版本带过来的`content_pools`不再参与保存校验，直接落库；不需要旧“更新受影响内容”步骤，也不会再报“资料在生成期间发生变化”。
