@@ -481,7 +481,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 只影响开头欢迎两句，后面的 8 类开场方式钩子照旧。
 	if state.Phase == "opening" {
 		if tpl := openingWelcomeTemplateForRun(state.RunID); tpl != "" {
-			packet["本次开场欢迎样板"] = tpl + "（照这个骨架组织欢迎和留人，{称呼} 换成主播自己的称呼风格，不要逐字照抄，留人话也可以换一种说法）"
+			packet["本次开场欢迎样板"] = tpl + "（照这个骨架组织开场和留人，{称呼} 换成主播自己的称呼风格；开头不要再额外加“欢迎”前缀，直接从称呼或钩子进入，不要逐字照抄，留人话也可以换一种说法）"
 		}
 	}
 	dynamic, _ := json.Marshal(packet)
