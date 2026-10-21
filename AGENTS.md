@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-21 21:51）
+## 当前生产（2026-10-21 22:04）
+
+- 当前 `/opt/xiaolan/releases/20261021-style-card-live-9211c66`，源码 `9211c66`；前驱 `20261021-style-card-live-163c9f7`。北京时间22:04:01—22:04:08二进制增量发布，Management PID1444504/SHA256 `c0d45edf9c27822e0e94246091bddc6e6f4189c5f43a78887b3ffa0d64e2583e`；只重启Management，Core775073/网关775930、Nginx、前端保持。
+- 本轮修复风格卡真正可用于直播间：初始化时把卡的元提示词编译成方案资产，不再要求原始样本和样本评分基准；方案保存/开播允许“有风格卡、无评分基准”，本场不打分；实时互动称呼优先读取卡的称呼覆盖与 audience_address habits。
+- `go test ./internal/httpapi ./internal/decisionexecutor ./internal/db ./internal/model`在干净源码通过；风格卡称呼回退单测通过；8080/8081/8083健康。未实际开播、未用真实模型/TTS验证整场。
+- 使用顺序：主播切“风格卡”→保存卡→绑定方案→重新初始化→保存/开播；已有旧快照需重新初始化。评分基准不是风格卡必需，卡场次按不打分处理。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/style-card-live-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-style-card-live-9211c66.json`；回滚目标前驱163c9f7。
+
+## 历史生产（2026-10-21 21:51）
 
 - 当前 `/opt/xiaolan/releases/20261021-fact-diff-ddd5d30`，源码 `ddd5d30`；前驱 `20261021-anchor-style-mode-344ce55`。WorkBuddy于北京时间21:51:28—21:51:34发布事实差异修复，Management PID1443196/SHA256 `e3663f9fd4e13fd5be10a417ca54361a5101f6cfd9f00e7d41f548b6121e444e`；Core775073/网关775930、Nginx保持；前端继承本轮的风格来源版本，未重发。
 - `ddd5d30`的父提交是`344ce55`，因此当前线上已包含：主播风格来源二选一（风格卡/风格样本）、`style_source_mode/style_card_json`、风格卡参数面板、中性/成对呼叫、问答直接承接、TTS句级P0等。`web/index.html`仍指向`index-D-3QmVFm.js`，资源含“风格卡”标记。
