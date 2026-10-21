@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 00:18）
+## 当前生产（2026-10-22 00:22）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-custom-key-46801f1`，源码 `46801f1`；前驱 `20261021-recording-clone-58bad96`。北京时间00:22:21—00:22:29发布，Management PID1454803/SHA256 `bc56f60667231455d4869c666b4f50797c1de843529fac57af9d22e616ce55c1`；只重启Management，Core/网关/Nginx/前端保持。
+- 修复“稿件编号无效 / 声音设置”：声音生成与SRT重建接口原先只接受A–E，录音主线使用`CUSTOM`被拒；现在两个接口都接受`CUSTOM`。
+- 录音主线仍保持`user_audio`，克隆TTS走`CUSTOM`；录音原文不重写。五包测试、8080/8081/8083健康通过；未真实点击复验。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-custom-key-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-custom-key-46801f1.json`；回滚目标前驱58bad96。
+
+## 历史生产（2026-10-22 00:18）
 
 - 当前 `/opt/xiaolan/releases/20261021-recording-clone-58bad96`，源码 `58bad96`；前驱 `20261021-recording-save-878b075`。北京时间00:18:40—00:18:46发布，Management PID1454088/SHA256 `0a879cde443186c4a90c913fdf5bf2ade26d6852c6dc493e8c7003cd0ec342f7`；Core775073/网关775930/Nginx保持，前端同步更新。
 - 修复“录音话术 + 克隆声音”：旧 AI 生成声音会切到已隐藏的 `ai_pregenerated`，导致切换不生效并报通用错误；现在录音主线保持 `user_audio`，只把 `CUSTOM` 音频替换为录音原文生成的克隆 TTS。
