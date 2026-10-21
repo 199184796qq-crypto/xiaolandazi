@@ -12,10 +12,20 @@ import (
 // Immutable inputs are captured with the plan version; adoption counters and
 // the product rotation cursor live in Redis only. No Core/audio protocol changes.
 type ProductPolicy struct {
-	Version      string         `json:"version"`
-	RoleWeights  map[string]int `json:"role_weights,omitempty"`  // Historical snapshot compatibility only; never used by the scheduler.
-	PointWeights map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
-	AngleWeights map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
+	Version string `json:"version"`
+	// ComparisonMode 控制「跨商品对比」任务能不能被排段：
+	// 空值/off = 一律不比（历史快照的默认行为）；fact = 事实里有对比依据就比；pairs = 只比指定品对。
+	// 对比段会把两个链接的事实同时交给模型，最容易把一个链接的数字说成另一个链接的，
+	// 所以默认关闭，由方案自己决定是否开启。
+	ComparisonMode string         `json:"comparison_mode,omitempty"`
+	RoleWeights    map[string]int `json:"role_weights,omitempty"`  // Historical snapshot compatibility only; never used by the scheduler.
+	PointWeights   map[string]int `json:"point_weights,omitempty"` // 卖点权重（卖点名→权重），缺省 1
+	AngleWeights   map[string]int `json:"angle_weights,omitempty"` // 角度权重（卖点名×角度名→权重），缺省 1
+}
+
+// ComparisonAllowed 判断本方案是否允许排「跨商品对比」任务。
+func (p ProductPolicy) ComparisonAllowed() bool {
+	return p.ComparisonMode == "fact" || p.ComparisonMode == "pairs"
 }
 
 // Role preferences are intentionally close. Historical role_weights are not
@@ -319,6 +329,17 @@ func (s *State) productTaskEligible(t Task) bool {
 	return s.taskScopeEligible(t)
 }
 
+// scopeSchedulable 判断某个链接的轮次里，这个任务是否可排。
+//
+// 对比任务（要求同时讲两个及以上链接）不属于任何一个链接，只有策略允许、
+// 且当前轮到的链接在它的比较范围里时才排；否则会出现「轮到3号链接却在讲1号和2号的对比」。
+func scopeSchedulable(scope ScopedTask, linkKey string, policy ProductPolicy) bool {
+	if scope.Comparison {
+		return policy.ComparisonAllowed() && containsLink(scope.Links, linkKey)
+	}
+	return scope.Shared || containsLink(scope.Links, linkKey)
+}
+
 func (s *State) taskScopeEligible(t Task) bool {
 	if s.ProductFocus == nil {
 		return true
@@ -328,7 +349,8 @@ func (s *State) taskScopeEligible(t Task) bool {
 		return false
 	}
 	if a.Comparison {
-		return false
+		// 没开对比策略时保持历史行为：对比任务一律不排。
+		return s.ProductFocus.Policy.ComparisonAllowed() && containsLink(a.Links, s.ProductFocus.CurrentLink)
 	}
 	return a.Shared || containsLink(a.Links, s.ProductFocus.CurrentLink)
 }
@@ -347,6 +369,13 @@ func (s *State) focusTask(t Task) Task {
 			allowed = append(allowed, product.LinkKey)
 		}
 		t.setProductLinks(allowed)
+	}
+	// 对比任务：把事实范围放宽到它要比较的那几个链接。若仍按单链接给事实，
+	// 模型手里只有一边的数据，只能凭印象把另一边的价格规格自己拼出来。
+	if a, ok := s.ProductFocus.Tasks[t.Key]; ok && a.Comparison && s.ProductFocus.Policy.ComparisonAllowed() {
+		t.FocusLink = t.LinkKey
+		t.setProductLinks(a.Links)
+		t.ProductMode = "comparison"
 	}
 	t.ProductMaxChars = s.Config.MaxChars
 	if s.PriceHook != nil && s.PriceHook.Task.FocusLink != "" {

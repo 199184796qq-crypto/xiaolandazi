@@ -367,6 +367,13 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		}
 	}
 	packet["本段授权的商品称呼"] = links
+	// 对比段：两个链接的事实同时在手，最容易把一个链接的数字说成另一个链接的
+	// （实测出现过「2号链接原价547」用的是1号链接的数字）。这里把边界写成硬约束。
+	if task.ProductMode == "comparison" && len(links) > 1 {
+		packet["对比边界"] = "本段是对比任务，只讲这几个链接之间事实里写得出的差别：" + strings.Join(links, "、") +
+			"。每一处数字、规格、条件都要说清属于哪个链接；不许把一个链接的数字、规格说成另一个链接的；" +
+			"不许贬低其中任何一方，也不许说哪个更差、哪个不值得买；事实里没有写出的差别一律不比。"
+	}
 	applyCycleAnglePlanPacket(state, packet)
 	if state.Phase == "closing" {
 		// Phase names are execution labels, not a selling point for the audience.

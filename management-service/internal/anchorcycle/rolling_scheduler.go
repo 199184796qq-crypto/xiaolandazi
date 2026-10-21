@@ -54,7 +54,7 @@ func (s *State) availableProducts() []string {
 	for _, product := range s.ProductFocus.Products {
 		for _, task := range s.Queue {
 			scope, ok := s.ProductFocus.Tasks[task.Key]
-			if ok && !task.Common && !scope.Comparison && (scope.Shared || containsLink(scope.Links, product.LinkKey)) &&
+			if ok && !task.Common && scopeSchedulable(scope, product.LinkKey, s.ProductFocus.Policy) &&
 				!s.P0SkippedKeys[task.Key] && !s.DuplicateSkippedKeys[task.Key] && materialAvailable(task) {
 				keys = append(keys, product.LinkKey)
 				break
