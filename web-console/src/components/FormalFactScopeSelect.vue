@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { LiveAgentPlanFact, LiveAgentPlanProductLink } from '../types'
 const props = defineProps<{
   fact: LiveAgentPlanFact
@@ -9,9 +9,11 @@ const props = defineProps<{
 }>()
 const saving = ref(false)
 const error = ref('')
+const open = ref(false)
+const trigger = ref<HTMLButtonElement | null>(null)
+const menu = ref<HTMLDivElement | null>(null)
+const menuStyle = ref<Record<string, string>>({})
 const products = computed(() => props.products.filter(p => p.tenant_id === props.fact.tenant_id && p.plan_id === props.fact.plan_id && p.status === 'active'))
-// 归属有两种：公共，或一个/多个商品链接。多链接表示「这几个品都适用」，
-// 也是「这两个品可以对比」的唯一依据——事实里没写明，模型就不许比较。
 const selectedIDs = computed(() => {
   const scope = props.fact.scope
   if (!scope || scope.kind !== 'product') return [] as number[]
@@ -21,12 +23,29 @@ const selectedIDs = computed(() => {
 const isCommon = computed(() => props.fact.scope?.kind === 'common')
 const unavailable = computed(() => selectedIDs.value.filter(id => !products.value.some(p => p.id === id)))
 function linkLabel(key: string) { return /^\d+$/.test(key) ? key + '链接' : key }
+// 折叠态只显示最简归属：公共 / 具体链接 / 多链。
 function scopeSummary() {
-  if (isCommon.value) return '公共（所有商品都适用）'
+  if (isCommon.value) return '公共'
   if (!props.fact.scope) return '未设置'
-  const labels = products.value.filter(p => selectedIDs.value.includes(p.id)).map(p => linkLabel(p.link_key))
-  if (!labels.length) return '原关联商品已不可用'
-  return labels.join(' ＋ ')
+  if (selectedIDs.value.length > 1) return '多链'
+  const linked = products.value.find(p => p.id === selectedIDs.value[0])
+  return linked ? linkLabel(linked.link_key) : '已失效'
+}
+function close() { open.value = false }
+function toggleOpen() {
+  if (props.disabled) return
+  if (open.value) { close(); return }
+  const rect = trigger.value?.getBoundingClientRect()
+  if (rect) {
+    const estimated = 44 + products.value.length * 30
+    const below = window.innerHeight - rect.bottom > estimated + 12
+    menuStyle.value = {
+      left: Math.round(rect.left) + 'px',
+      top: Math.round(below ? rect.bottom + 4 : Math.max(8, rect.top - estimated - 4)) + 'px',
+      minWidth: Math.max(150, Math.round(rect.width)) + 'px',
+    }
+  }
+  open.value = true
 }
 async function apply(scope: NonNullable<LiveAgentPlanFact['scope']>) {
   if (saving.value || props.disabled) return
@@ -34,12 +53,13 @@ async function apply(scope: NonNullable<LiveAgentPlanFact['scope']>) {
   error.value = ''
   try {
     await props.save(props.fact, scope)
+    close()
   } catch (e) {
     error.value = e instanceof Error ? e.message : '保存归属失败，请重试'
   } finally { saving.value = false }
 }
 function chooseCommon() {
-  if (isCommon.value) return
+  if (isCommon.value) { close(); return }
   apply({ kind: 'common' })
 }
 function toggle(id: number, checked: boolean) {
@@ -48,51 +68,69 @@ function toggle(id: number, checked: boolean) {
   if (!next.length) return
   apply({ kind: 'product', product_link_id: next.length === 1 ? next[0] : 0, product_link_ids: next })
 }
+// 点到外面、滚动或缩放窗口都收起，避免浮层停在半空。
+function onPointerDown(event: PointerEvent) {
+  if (!open.value) return
+  const target = event.target as Node
+  if (menu.value?.contains(target) || trigger.value?.contains(target)) return
+  close()
+}
+function onViewportChange() { if (open.value) close() }
+onMounted(() => {
+  document.addEventListener('pointerdown', onPointerDown, true)
+  window.addEventListener('scroll', onViewportChange, true)
+  window.addEventListener('resize', onViewportChange)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onPointerDown, true)
+  window.removeEventListener('scroll', onViewportChange, true)
+  window.removeEventListener('resize', onViewportChange)
+})
 </script>
 
 <template>
   <div class="fact-scope-select">
-    <details class="scope-picker">
-      <summary :aria-label="'修改“' + fact.key + '”的归属范围'">
-        <span class="scope-summary-text">{{ scopeSummary() }}</span>
-        <span v-if="saving" role="status">保存中…</span>
-        <span v-else class="scope-hint">修改</span>
-      </summary>
-      <div class="scope-options">
-        <label class="scope-option" :class="{ checked: isCommon }">
-          <input type="radio" :checked="isCommon" :disabled="disabled || saving" @change="chooseCommon" />
-          <span>公共（所有商品都适用）</span>
-        </label>
-        <label v-for="p in products" :key="p.id" class="scope-option" :class="{ checked: selectedIDs.includes(p.id) }">
-          <input type="checkbox" :checked="selectedIDs.includes(p.id)" :disabled="disabled || saving" @change="toggle(p.id, ($event.target as HTMLInputElement).checked)" />
-          <span>{{ linkLabel(p.link_key) }}</span>
-        </label>
-        <label v-for="id in unavailable" :key="'gone-' + id" class="scope-option is-gone">
-          <input type="checkbox" checked disabled />
-          <span>原关联商品已不可用</span>
-        </label>
-        <p class="scope-tip">勾选两个及以上表示「这几个品都适用」，也代表允许它们互相对比。</p>
+    <button ref="trigger" type="button" class="scope-trigger" :class="{ open, disabled }" :disabled="disabled" :aria-expanded="open" :aria-label="'修改“' + fact.key + '”的归属范围'" @click.stop="toggleOpen">
+      <span class="scope-summary-text">{{ scopeSummary() }}</span>
+      <span v-if="saving" class="scope-saving" role="status">保存中</span>
+    </button>
+    <Teleport to="body">
+      <div v-if="open" ref="menu" class="scope-menu" :style="menuStyle" role="listbox" @pointerdown.stop>
+        <button type="button" class="scope-option" :class="{ checked: isCommon }" :disabled="saving" @click="chooseCommon">
+          <i class="scope-mark" :class="{ on: isCommon, radio: true }"></i><span>公共</span>
+        </button>
+        <button v-for="p in products" :key="p.id" type="button" class="scope-option" :class="{ checked: selectedIDs.includes(p.id) }" :disabled="saving" @click="toggle(p.id, !selectedIDs.includes(p.id))">
+          <i class="scope-mark" :class="{ on: selectedIDs.includes(p.id) }"></i><span>{{ linkLabel(p.link_key) }}</span>
+        </button>
+        <div v-for="id in unavailable" :key="'gone-' + id" class="scope-option is-gone">
+          <i class="scope-mark on"></i><span>原关联商品已不可用</span>
+        </div>
       </div>
-    </details>
+    </Teleport>
     <span v-if="error" class="error" role="alert">{{ error }}</span>
   </div>
 </template>
 
 <style scoped>
-.fact-scope-select { display:grid;gap:6px;min-width:0;font-size:16px;line-height:1.5; }
-.scope-picker { position:relative; }
-.scope-picker>summary { display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:42px;box-sizing:border-box;border:1px solid #ccd5e5;border-radius:9px;padding:7px 9px;background:#fff;color:#111;cursor:pointer;list-style:none; }
-.scope-picker>summary::-webkit-details-marker { display:none; }
-.scope-picker>summary:focus-visible { outline:2px solid #6557ff;outline-offset:2px; }
-.scope-summary-text { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.scope-hint { flex:none;color:#6557ff;font-size:14px;font-weight:700; }
-.scope-options { display:grid;gap:4px;margin-top:6px;padding:8px;border:1px solid #dbe2f1;border-radius:10px;background:#f8faff; }
-.scope-option { display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;cursor:pointer;color:#2a3550; }
-.scope-option:hover { background:#eef1ff; }
-.scope-option.checked { background:#e9ecff;font-weight:700; }
-.scope-option.is-gone { color:#a05; }
-.scope-option input { width:18px;height:18px;accent-color:#6557ff; }
-.scope-tip { margin:4px 0 0;color:#7a869b;font-size:13px;line-height:1.5; }
-.fact-scope-select span { color:#526080;overflow-wrap:anywhere;font-size:16px; }
-.fact-scope-select .error { color:#c33; }
+.fact-scope-select { display:grid;gap:3px;min-width:0;font-size:15px;line-height:1.4; }
+.scope-trigger { display:inline-flex;align-items:center;gap:6px;max-width:100%;box-sizing:border-box;min-height:32px;border:1px solid #d7deec;border-radius:8px;padding:3px 10px;background:#fff;color:#233;font:inherit;cursor:pointer; }
+.scope-trigger:hover:not(:disabled) { border-color:#9aa5f0;background:#fafbff; }
+.scope-trigger.open { border-color:#6557ff; }
+.scope-trigger:focus-visible { outline:2px solid #6557ff;outline-offset:2px; }
+.scope-trigger:disabled { opacity:.6;cursor:default; }
+.scope-summary-text { min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.scope-saving { flex:none;color:#6557ff;font-size:12px; }
+.fact-scope-select .error { color:#c33;font-size:13px; }
+</style>
+
+<style scoped>
+.scope-menu { position:fixed;z-index:1200;display:grid;gap:1px;padding:6px;border:1px solid #dbe2f1;border-radius:10px;background:#fff;box-shadow:0 10px 26px #5b6ba526; }
+.scope-menu .scope-option { display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;padding:6px 9px;border:0;border-radius:7px;background:transparent;color:#2a3550;font:inherit;text-align:left;white-space:nowrap;cursor:pointer; }
+.scope-menu .scope-option:hover:not(:disabled) { background:#f2f4ff; }
+.scope-menu .scope-option.checked { background:#e9ecff;font-weight:700; }
+.scope-menu .scope-option.is-gone { color:#a05;cursor:default; }
+.scope-menu .scope-option:disabled { opacity:.6;cursor:default; }
+.scope-mark { flex:none;width:14px;height:14px;border:1px solid #b9c3d8;border-radius:3px;background:#fff; }
+.scope-mark.radio { border-radius:50%; }
+.scope-mark.on { border-color:#6557ff;background:#6557ff;box-shadow:inset 0 0 0 3px #fff; }
 </style>
