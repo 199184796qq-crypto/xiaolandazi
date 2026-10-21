@@ -155,10 +155,6 @@ func (s *Store) CreateLiveAgentPlanVersion(
 		input.GenerationContext = map[string]any{}
 	}
 	contentMode := model.LiveContentModeFromGenerationContext(input.GenerationContext)
-	contextJSON, err := json.Marshal(input.GenerationContext)
-	if err != nil {
-		return model.LiveAgentPlanVersion{}, err
-	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -196,6 +192,10 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if model.LiveContentModeFromGenerationContext(input.GenerationContext) == model.LiveContentUserAudio {
 		delete(input.GenerationContext, "content_pools")
 	} else if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	contextJSON, err := json.Marshal(input.GenerationContext)
+	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
 	var nextVersion int64
