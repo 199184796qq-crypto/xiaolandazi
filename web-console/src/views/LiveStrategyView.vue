@@ -37,7 +37,6 @@ import FormalFactTypeSelect from '../components/FormalFactTypeSelect.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import InlineFormalFactCreateRow from '../components/InlineFormalFactCreateRow.vue'
 import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
-import FactSubjectDetails from '../components/FactSubjectDetails.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
@@ -503,7 +502,6 @@ const vFocus = {
 const benefitClock = ref(Date.now())
 const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
-const secondaryEditFactId = ref<number | null>(null)
 const inlineFactSavingId = ref<number | null>(null)
 const creatingFormalFact = ref(false)
 const formalFactAddButton = ref<HTMLButtonElement | null>(null)
@@ -1822,9 +1820,6 @@ async function initializeAnchorGeneration(force = false) {
     anchorInitializationStage.value = ''
   }
 }
-async function refreshSpeechMinerWorkspace() {
-  await Promise.all([refreshFormalFacts(), refreshAnchorSellingPointWheel(), contentPools.refresh(true)])
-}
 const fullShowError = useFeedbackErrorRef()
 const fullShowGenerationProgress = ref({
   visible: false,
@@ -2012,14 +2007,6 @@ const fullShowWorkspaceBaseVersion = ref<LiveAgentPlanVersion | null>(null)
 const latestSavedVersion = computed(() => latestSavedPlanVersion(currentRoomPlanId.value || 0, [
   fullShowSavedVersion.value, fullShowWorkspaceBaseVersion.value, ...fullShowVersionHistory.value,
 ]))
-function onLectureTasksUpdated(event: Event) {
-  const detail = (event as CustomEvent<{ plan_id: number; room_id: number; facts_changed?: boolean }>).detail
-  if (detail?.plan_id !== currentRoomPlanId.value || detail.room_id !== activeRoomId.value) return
-  const autoSave = !!fullShowSavedVersion.value && !fullShowSaveBlockedReason.value
-  fullShowSavedVersion.value = null
-  if (detail.facts_changed) void refreshSpeechMinerWorkspace()
-  if (autoSave) void saveFullShowVersion()
-}
 const fullShowWorkspaceSource = ref<'draft' | 'published' | ''>('')
 const fullShowWorkspaceChecks = ref<{ code: string; message: string }[]>([])
 const fullShowWorkspaceInherited = ref(false)
@@ -4505,9 +4492,8 @@ function onPlanTestAssetsUpdated(event: Event) {
   void Promise.all([refreshFormalFacts(), refreshMemories(), contentPools.refresh(true)])
 }
 
-function startFormalFactEdit(item: LiveAgentPlanFact, editRoot = false) {
+function startFormalFactEdit(item: LiveAgentPlanFact) {
   if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) resetFormalFactFilters()
-	if (item.source_type === 'story_subject' && !editRoot) { secondaryEditFactId.value = null; void nextTick(() => { secondaryEditFactId.value = item.id }); return }
 	creatingFormalFact.value = false
   editingFormalFactId.value = item.id
 }
@@ -6381,7 +6367,6 @@ const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentR
 onMounted(async () => {
   document.addEventListener('click', dismissPlanActionsMenu, true)
   window.addEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
-  window.addEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   window.addEventListener('live-agent-plan-module-updated', handlePlanModuleUpdated)
   window.addEventListener('live-content-policy-updated', handleContentPolicyUpdated)
   await loadAgentSettings()
@@ -6402,7 +6387,6 @@ onBeforeUnmount(() => {
   memoryEditEpoch++
   document.removeEventListener('click', dismissPlanActionsMenu, true)
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
-  window.removeEventListener('live-lecture-tasks-updated', onLectureTasksUpdated)
   contentModeDisposed = true
   contentModeLoadNo++
   if (contentModeRefreshTimer !== undefined) window.clearInterval(contentModeRefreshTimer)
@@ -7051,8 +7035,7 @@ onBeforeUnmount(() => {
                         </div>
                       </td>
                   </tr>
-                  <tr v-if="item.source_type === 'story_subject' && currentRoomPlanId && editingFormalFactId !== item.id" class="strategy-secondary-detail-row"><td colspan="6"><FactSubjectDetails :plan-id="currentRoomPlanId" :tenant-id="activeRoom?.tenant_id" :fact-id="item.id" :edit-requested="secondaryEditFactId === item.id" @edit-root="startFormalFactEdit(item, true)" /></td></tr>
-                  <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
+                                    <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
                     <td colspan="6">
                       <div class="strategy-formal-fact-expanded">
                         <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">

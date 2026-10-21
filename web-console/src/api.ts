@@ -945,7 +945,7 @@ export function getLiveAgentPlanFacts(planId: number, tenantId?: number) {
 
 export type FactSpeechPreview = {
 	 expression_constraints?: { feedback: string; constraint: string }[]
-  preview_kind?: 'product' | 'lecture'; subject?: string; purpose?: string; angle?: string; secondary_facts?: { name: string; text: string }[]
+  preview_kind?: 'product'; purpose?: string; angle?: string
   fact_id: number; version_no: number; text: string; raw_text?: string; title?: string
   model_alias: string; model_name: string; room_name: string; plan_name: string; notice: string
 }

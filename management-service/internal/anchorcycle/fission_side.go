@@ -233,7 +233,7 @@ func taskDedicatedFactCount(t Task) int {
 // 仅当「有 FactScope 绑定、且去公共去身份后专属事实为 0」才判定料不足——最保守阈值，
 // 只挡「内容池明确绑了事实却全是公共/身份占位、没有一条商品专属素材」的角度，避免误杀。
 func materialAvailable(t Task) bool {
-	if t.Common || t.ProductMode == "lecture" {
+	if t.Common {
 		return true
 	}
 	return taskDedicatedFactCount(t) != 0

@@ -22,8 +22,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	var mu sync.Mutex
 	delivery := *state.Delivery
 	var actualReceipts []anchorcycle.AnglePlaybackReceipt
-	var lectureReceipts []anchorcycle.PlaybackReceipt
-	var playedMS int64
 	var archivedPlaybackSequence uint64
 	supply := newCycleSupply(s, ctx, state)
 	defer supply.stop()
@@ -58,7 +56,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		}
 		mu.Lock()
 		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
-		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
 		mu.Unlock()
 		return snapshot.Suspended, nil
 	}
@@ -79,7 +76,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		s.observeLibraryPlayback(ctx, tenant, room, runtimeID, snapshot.MainlinePlaybackReceipts, snapshot.PlaybackReceipts)
 		mu.Lock()
 		actualReceipts = append([]anchorcycle.AnglePlaybackReceipt(nil), snapshot.MainlinePlaybackReceipts...)
-		lectureReceipts, playedMS = append([]anchorcycle.PlaybackReceipt(nil), snapshot.PlaybackReceipts...), snapshot.MainlinePlayedMS
 		mu.Unlock()
 		return snapshot.BufferedMainlineMS, nil
 	}
@@ -87,7 +83,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		mu.Lock()
 		copy := delivery
 		receipts := append([]anchorcycle.AnglePlaybackReceipt(nil), actualReceipts...)
-		lectureCopy, actualMS := append([]anchorcycle.PlaybackReceipt(nil), lectureReceipts...), playedMS
 		copy.DeliveredCandidates = append([]string(nil), delivery.DeliveredCandidates...)
 		mu.Unlock()
 		changed := latest.Delivery.ProgramID != copy.ProgramID || len(latest.Delivery.DeliveredCandidates) != len(copy.DeliveredCandidates)
@@ -95,12 +90,6 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 			changed = latest.Delivery.DeliveredCandidates[len(copy.DeliveredCandidates)-1] != copy.DeliveredCandidates[len(copy.DeliveredCandidates)-1]
 		}
 		latest.Delivery = &copy
-		if latest.Lectures != nil {
-			priorReceipt, priorPlayed := latest.Lectures.LastReceipt, latest.Lectures.PlayedMS
-			latest.ObservePlayback(lectureCopy, actualMS)
-			changed = changed || priorReceipt != latest.Lectures.LastReceipt || priorPlayed != latest.Lectures.PlayedMS
-			changed = supply.applyLectureSkips(latest) || changed
-		}
 		for _, segment := range latest.Accepted {
 			latest.RegisterAngleTrack(segment)
 		}

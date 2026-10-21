@@ -25,10 +25,6 @@ func (s *State) SkipGeneration(stage, reason string) {
 	s.P0AuditPending = nil
 	s.Attempts = nil
 	s.P0RewritesUsed = 0
-	if task.ProductMode == "lecture" {
-		s.ReleaseLecture(true)
-		return
-	}
 	s.Cursor++
 	if s.Phase == "ended" || s.Phase == "closing" {
 		s.Phase = "opening"

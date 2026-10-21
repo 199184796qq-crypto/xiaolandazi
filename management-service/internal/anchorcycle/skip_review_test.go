@@ -43,13 +43,10 @@ func TestSkipReviewBypassesAllChecks(t *testing.T) {
 		t.Fatalf("SkipReview 下 CheckP0Voice 应放行，got %v", err)
 	}
 
-	// 4) 终审与讲解复核直接通过。
+	// 4) 终审与表达约束复核直接通过。
 	s.FinalContentReviewRequired = true
 	if !s.FinalContentCandidateApproved(*c) {
 		t.Fatalf("SkipReview 下 FinalContentCandidateApproved 应为 true")
-	}
-	if !s.LectureCandidateApproved(*c) {
-		t.Fatalf("SkipReview 下 LectureCandidateApproved 应为 true")
 	}
 }
 

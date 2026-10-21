@@ -222,43 +222,6 @@ func TestReviewOutageHoldsTextButApprovedVoiceStillDelivers(t *testing.T) {
 	<-p.done
 }
 
-func TestFormalLectureVoiceFailureReleasesSlotBeforeNextText(t *testing.T) {
-	state := cycleTestState(t)
-	state.Surface = "formal_live"
-	state.Config.TTS = &anchorcycle.VoiceConfig{Rate: 1, BufferSeconds: 20}
-	state.Accepted = []anchorcycle.Segment{{Task: anchorcycle.Task{ProductMode: "lecture"}, Selected: anchorcycle.Candidate{ID: "story", Text: "原料背景讲解"}}}
-	state.Lectures = &anchorcycle.LectureRuntime{ReservedTopic: 1, ReservedCandidate: "story", Tracks: map[string]anchorcycle.LectureTrack{"story": {Topic: 1}}}
-	repo := &supplyRepository{state: &state}
-	p := newCycleSupply(&Server{anchorCycles: repo}, context.Background(), &state)
-	defer p.stop()
-	p.externalStock = func(context.Context) (int64, error) { return 0, nil }
-	p.beforeText = func(ctx context.Context, current *anchorcycle.State) error {
-		if p.applyLectureSkips(current) {
-			return repo.Save(ctx, current)
-		}
-		return nil
-	}
-	p.synthesize = func(context.Context, *anchorcycle.State, string) (*anchorcycle.VoiceAsset, error) {
-		return nil, errors.New("optional voice failure")
-	}
-	continued := make(chan struct{})
-	p.advance = func(ctx context.Context, current *anchorcycle.State) (*anchorcycle.State, error) {
-		if current.Lectures.ReservedTopic != 0 || !current.Accepted[0].LectureSkipped {
-			t.Error("next paragraph still referred to unplayed lecture")
-		}
-		close(continued)
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	p.start()
-	select {
-	case <-continued:
-	case <-time.After(2 * time.Second):
-		t.Fatal("optional lecture failure blocked normal wheel")
-	}
-	p.stop()
-	<-p.done
-}
 func TestFormalSupplySkipsVoiceFailuresAndDeliversNextWithoutCancel(t *testing.T) {
 	state := cycleTestState(t)
 	state.Surface = "formal_live"

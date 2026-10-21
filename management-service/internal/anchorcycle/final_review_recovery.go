@@ -81,7 +81,7 @@ func (s *State) deferFinalReview(c Candidate, now time.Time) {
 	// Keep the pending product, point, public/product slot, and phase frozen.
 	// Another angle of the same point may supply this slot; opening, closing,
 	// and promised continuations stay on their task rather than advancing a cycle.
-	if s.Config.Rolling && s.Phase == "body" && s.PriceHook == nil && task.ProductMode != "lecture" {
+	if s.Config.Rolling && s.Phase == "body" && s.PriceHook == nil {
 		for offset := 1; offset < len(s.Queue); offset++ {
 			i := (s.TaskIndex + offset) % len(s.Queue)
 			t := s.Queue[i]

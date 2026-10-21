@@ -34,7 +34,7 @@ func CandidateReused(c Candidate) bool {
 func (s *State) MainlineReuseWindow() (total, reused int) {
 	for i := len(s.Accepted) - 1; i >= 0 && total < 9; i-- {
 		seg := s.Accepted[i]
-		if seg.Task.ProductMode == "lecture" || seg.Task.ProductMode == "auxiliary" || seg.Task.SellingPoint == "塑价兑现" || seg.DeliveryStatus != nil && seg.DeliveryStatus.Status == "failed" || seg.Quota != nil && seg.Quota.Returned {
+		if seg.Task.ProductMode == "auxiliary" || seg.Task.SellingPoint == "塑价兑现" || seg.DeliveryStatus != nil && seg.DeliveryStatus.Status == "failed" || seg.Quota != nil && seg.Quota.Returned {
 			continue
 		}
 		if seg.Phase != "opening" && seg.Phase != "body" && seg.Phase != "closing" {
@@ -52,7 +52,7 @@ func (s *State) MainlineReuseWindow() (total, reused int) {
 }
 
 func (s *State) formalMainlineShouldReuse() bool {
-	if !s.SpeechReuseEnabled() || s.FirstLiveOpening() || s.PreviewLimitMS > 0 || s.PriceHook != nil || s.P0PendingRepair != nil || s.SegmentDirective != "" || len(s.Attempts) > 0 || s.Task().ProductMode == "lecture" || s.Task().ProductMode == "auxiliary" {
+	if !s.SpeechReuseEnabled() || s.FirstLiveOpening() || s.PreviewLimitMS > 0 || s.PriceHook != nil || s.P0PendingRepair != nil || s.SegmentDirective != "" || len(s.Attempts) > 0 || s.Task().ProductMode == "auxiliary" {
 		return false
 	}
 	total, reused := s.MainlineReuseWindow()

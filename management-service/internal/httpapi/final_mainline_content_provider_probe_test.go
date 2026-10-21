@@ -81,7 +81,7 @@ func TestFinalMainlineContentCrossCategoryProvider(t *testing.T) {
 		s.auditFinalMainlineContent(ctx, &state, &c)
 		accepted := state.FinalContentCandidateApproved(c)
 		if len(state.LatestExpressionConstraints) > 0 {
-			accepted = accepted && state.LectureCandidateApproved(c)
+			accepted = accepted && state.ExpressionCandidateApproved(c)
 		}
 		messages, _ := finalMainlineContentMessages(&state, c, mother)
 		rows = append(rows, map[string]any{"case": f, "accepted": accepted, "matches_expected": accepted == f.WantPass, "p0": c.P0Report, "audit": c.FinalContentAudit, "expression_audit": c.ExpressionAudit, "messages": messages, "full_ms": time.Since(started).Milliseconds()})

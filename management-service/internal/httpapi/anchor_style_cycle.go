@@ -694,9 +694,6 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		}
 	}
 	reportCycleProgress(ctx, 15)
-	if state.TextModel != nil {
-		state.BeginLecture()
-	}
 	ctx, done := s.cycleJobContext(ctx, token, tenant, room, state.RunID, state.Surface != "formal_live" && !state.StreamControlled)
 	defer done()
 	if err = installP0Mother(state); err != nil {
@@ -931,9 +928,6 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	}
 	if err = state.CheckP0Candidate(&candidate); err != nil {
 		return nil, errors.New(err.Error())
-	}
-	if libraryEntry == nil {
-		s.auditLectureCandidate(ctx, state, &candidate)
 	}
 	cleanCycleConsecutiveSpeech(state, &candidate)
 	if candidate.OutputText == "" {

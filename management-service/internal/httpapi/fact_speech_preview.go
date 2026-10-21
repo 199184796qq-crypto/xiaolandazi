@@ -12,7 +12,6 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentpools"
 	appdb "livecompanion/management/internal/db"
-	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 )
 
@@ -57,17 +56,6 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 		productIDs = append(productIDs, link.ID)
 	}
 	task := factPreviewTask(f, contentpools.CorrectionView(source, productIDs))
-	lib, err := s.store.LectureLibrary(ctx, tenant, plan, false)
-	if err != nil {
-		return anchorcycle.State{}, errors.New("读取二级资料关联失败")
-	}
-	lecture, err := selectedFactLecture(lib, f)
-	if err != nil {
-		return anchorcycle.State{}, err
-	}
-	if lecture != nil {
-		task = factLecturePreviewTask(*lecture, task.FactScope)
-	}
 	state, err := anchorcycle.New([]anchorcycle.Task{task}, anchorcycle.Config{MaxChars: 220})
 	if err != nil {
 		return state, err
@@ -75,18 +63,14 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	state.TenantID, state.PlanID, state.RoomID = tenant, plan, room
 	state.Surface, state.Phase = factPreviewSurface, "body"
 	state.Facts = task.FactScope.Facts[0].Data
-	if lecture != nil {
-		state.Phase = "lecture"
-		state.Lectures = &anchorcycle.LectureRuntime{Active: &task, Library: lecturetask.Library{Tasks: []lecturetask.Task{*lecture}}}
+	// 预览不再强制要求评分基准：有基准就带表达标尺，没有就让模型自由发挥。
+	if card, cardErr := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan); cardErr == nil && card.Status == "confirmed" {
+		state.BaselineJSON = card.EffectiveScorecardJSON()
+		if _, e := cycleExpressionView(&state); e != nil {
+			state.BaselineJSON = ""
+		}
 	}
-	card, err := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan)
-	if err != nil {
-		return state, errors.New("请先在当前方案确认主播风格，再预览直播话术")
-	}
-	state.BaselineJSON = card.EffectiveScorecardJSON()
-	if _, err = cycleExpressionView(&state); err != nil {
-		return state, errors.New("当前主播风格标尺不可用，请重新确认主播风格")
-	}
+	state.FreeStyle = strings.TrimSpace(state.BaselineJSON) == ""
 	if err = installP0Mother(&state); err != nil {
 		return state, err
 	}
@@ -102,18 +86,12 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	// 对齐新主线四层结构：预览母版不再塞进 SystemPrompt（主线不设 system 消息），
 	// 而是作为「环节约束」并入 user 的 packet。单事实讲品的边界约束由
 	// fact-speech-preview.md 提供，经 SegmentDirective 携带进「后续表达加强建议」字段。
-	var previewDirective string
-	if lecture == nil {
-		mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
-		if err != nil {
-			return state, err
-		}
-		previewDirective = strings.TrimSpace(mother)
+	mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
+	if err != nil {
+		return state, err
 	}
+	previewDirective := strings.TrimSpace(mother)
 	stage := "围绕所选事实讲品"
-	if lecture != nil {
-		stage = "围绕所选资料对象进行任务讲解"
-	}
 	contextData, _ := json.Marshal(map[string]string{"模拟直播间": roomName, "当前环节": stage})
 	feedback := string(contextData)
 	if previewDirective != "" {
@@ -131,9 +109,6 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
 	result, _, err := s.completeCycleText(ctx, state)
 	if err != nil {
-		if errors.Is(err, errLecturePlanning) {
-			return nil, err
-		}
 		return nil, errors.New("话术生成未完成，请重试或检查当前口播模型连接")
 	}
 	if strings.TrimSpace(result.Text) == "" {
@@ -151,30 +126,13 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 		"text":      text,
 		"raw_text":  text,
 		"title":     task.SellingPoint,
-		"purpose":   task.LecturePurpose,
+		"purpose":   task.PainPoint,
 		"angle":     task.Angle,
 		"notice":    "使用当前方案和真实口播模型生成，仅预览文字。",
 		"expression_constraints": rules,
 	}
-	if state.Task().LecturePlanJSON != "" {
-		if plan, e := parseLectureSegmentPlan(state.Task().LecturePlanJSON, state.Task().LectureFacts); e == nil {
-			output["purpose"], output["angle"] = plan.Purpose, plan.Angle
-		}
-	}
 	output["model_alias"], output["model_name"] = state.TextModel.Name, state.TextModel.Model
 	output["preview_kind"] = "product"
-	if state.Task().ProductMode == "lecture" {
-		output["preview_kind"] = "lecture"
-		if state.Lectures != nil && len(state.Lectures.Library.Tasks) == 1 {
-			t := state.Lectures.Library.Tasks[0]
-			output["subject"] = t.Subject
-			details := []map[string]string{}
-			for _, f := range t.Facts {
-				details = append(details, map[string]string{"name": f.Name, "text": f.Text})
-			}
-			output["secondary_facts"] = details
-		}
-	}
 	return output, nil
 }
 
@@ -255,15 +213,6 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 	if _, valid := selectedPreviewFact(current, tenant, plan, id, input.VersionNo); !valid {
 		writeError(w, 409, "生成期间事实已修改或删除，请刷新后重新预览")
 		return
-	}
-	if state.Task().ProductMode == "lecture" {
-		lib, err := s.store.LectureLibrary(ctx, tenant, plan, false)
-		now, selectErr := selectedFactLecture(lib, fact)
-		previous := state.Lectures.Library.Tasks[0]
-		if err != nil || selectErr != nil || now == nil || now.ID != previous.ID || now.Revision != previous.Revision || now.Evidence() != previous.Evidence() {
-			writeError(w, 409, "生成期间二级资料已变化，请刷新后重新预览")
-			return
-		}
 	}
 	output["fact_id"], output["version_no"], output["room_name"], output["plan_name"] = id, input.VersionNo, room.Name, planData.Name
 	writeJSON(w, 200, output)

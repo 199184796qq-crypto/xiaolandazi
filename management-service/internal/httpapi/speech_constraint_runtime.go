@@ -39,7 +39,7 @@ func (s *Server) auditSpeechExpressionConstraints(ctx context.Context, state *an
 		return
 	}
 	text := cycleVoiceText(*c)
-	audit := &anchorcycle.LectureAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: anchorcycle.ProductDigest(constraints)}
+	audit := &anchorcycle.ExpressionAudit{TextSHA: anchorcycle.ProductDigest(text), ScopeSHA: anchorcycle.ProductDigest(constraints)}
 	c.ExpressionAudit = audit
 	if err := requireCycleP0(state); err != nil {
 		audit.Error = "有效P0读取未完成"
@@ -88,21 +88,21 @@ func (s *Server) auditSpeechExpressionConstraints(ctx context.Context, state *an
 	audit.Passed, audit.Quote, audit.Reason = out.Passed, out.Quote, out.Reason
 }
 
-func boundedExpressionConstraintAudit(text string, call func(string) (string, error)) (anchorcycle.LectureAudit, error) {
+func boundedExpressionConstraintAudit(text string, call func(string) (string, error)) (anchorcycle.ExpressionAudit, error) {
 	previous := ""
 	for attempt := 0; attempt < 2; attempt++ {
 		raw, err := call(previous)
 		if err != nil {
-			return anchorcycle.LectureAudit{}, err
+			return anchorcycle.ExpressionAudit{}, err
 		}
 		out, err := agentgateway.ParseExpressionReview(raw, text)
 		if err == nil {
-			return anchorcycle.LectureAudit{Passed: *out.Passed, Quote: out.Quote, Reason: out.Reason}, nil
+			return anchorcycle.ExpressionAudit{Passed: *out.Passed, Quote: out.Quote, Reason: out.Reason}, nil
 		}
 		if !errors.Is(err, agentgateway.ErrExpressionReviewQuote) || attempt == 1 {
-			return anchorcycle.LectureAudit{}, err
+			return anchorcycle.ExpressionAudit{}, err
 		}
 		previous = raw
 	}
-	return anchorcycle.LectureAudit{}, errors.New("表达约束审核未完成")
+	return anchorcycle.ExpressionAudit{}, errors.New("表达约束审核未完成")
 }

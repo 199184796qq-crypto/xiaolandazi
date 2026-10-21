@@ -201,16 +201,13 @@ type openingAngleCandidate struct {
 // openingSelectionPool 从候选池（state.Queue）提取「卖点×角度」候选，按卖点归并。
 // 返回「卖点 → 该卖点下的角度候选列表」，每个角度候选带 LinkKey（商品链接）与 Common（是否公共卖点），
 // 供程序按 RunID 轮换选卖点、模型在选中卖点内挑角度，并据此分流事实卡（商品专属按 LinkKey 筛、公共放开 branding）。
-// 只取非 lecture 的任务，去重（卖点×角度去重）。
+// 去重（卖点×角度去重）。
 func openingSelectionPool(state *anchorcycle.State) map[string][]openingAngleCandidate {
 	seen := map[string]bool{}
 	// order 记录卖点首次出现顺序，保证结果稳定（map 遍历顺序随机）。
 	var order []string
 	byPoint := map[string][]openingAngleCandidate{}
 	for _, task := range state.Queue {
-		if task.ProductMode == "lecture" {
-			continue
-		}
 		if task.SellingPoint == "" {
 			continue
 		}

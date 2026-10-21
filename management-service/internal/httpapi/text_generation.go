@@ -205,9 +205,6 @@ func appendBrandingFacts(facts []anchorcycle.HookFact, branding []anchorcycle.Ho
 }
 
 func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, error) {
-	if state.Task().ProductMode == "lecture" {
-		return renderLectureTaskMessages(state)
-	}
 	// 开场母版（4层结构）随环节变化：开场段才讲，非开场段不讲。
 	// 已不设 system 消息，开场母版作为「环节指令」并入下方 user 消息（见 packet 拼装）。
 	var phaseDirective string
@@ -419,17 +416,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 内容策略表（内容方向与采用条件）已移除：话术方向就是「卖点×角度+侧面」，
 	// 由「本次任务」和「本次切入侧面」直接驱动，策略表与任务高度重复，纯浪费 token。
 	// 局部重写已移除，不再拼接「本次明确违规修正」。
-	// 讲解回归母版同样是环节特有指令，并入 user 保持 system 前缀稳定。
 	var transitionDirective string
-	if len(state.Accepted) > 0 && state.Accepted[len(state.Accepted)-1].Task.ProductMode == "lecture" && !state.Accepted[len(state.Accepted)-1].LectureSkipped {
-		last := state.Accepted[len(state.Accepted)-1]
-		packet["刚结束的讲解"] = map[string]any{"主题": last.Task.SellingPoint, "结尾": tailText(cycleVoiceText(last.Selected), 80)}
-		transition, _, e := loadReplaceablePromptAsset("ANCHOR_LECTURE_RETURN_PROMPT_PATH", "configs/prompts/anchor-style/lecture-mainline-transition.md", "讲解回归母版")
-		if e != nil {
-			return nil, e
-		}
-		transitionDirective = transition
-	}
 	if phaseDirective != "" || transitionDirective != "" {
 		directive := strings.TrimSpace(strings.Join([]string{phaseDirective, transitionDirective}, "\n\n"))
 		if directive != "" {
@@ -458,9 +445,6 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	}
 	if err := requireCycleP0(state); err != nil {
 		return agentgateway.Response{}, nil, err
-	}
-	if err := s.ensureLectureSegmentPlan(ctx, state); err != nil {
-		return agentgateway.Response{}, nil, fmt.Errorf("%w：%s", errLecturePlanning, err)
 	}
 	current, err := s.store.ResolveSpeechModel(ctx, state.Config.TextProfileID)
 	if err != nil || current == nil || !current.Enabled || current.APIKey == "" || state.TextModel == nil {

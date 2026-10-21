@@ -193,9 +193,6 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err := validatePoolSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
-	if err := validateLectureSnapshotTx(ctx, tx, tenantID, planID, input.GenerationContext); err != nil {
-		return model.LiveAgentPlanVersion{}, err
-	}
 	var nextVersion int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(version_no), 0) + 1

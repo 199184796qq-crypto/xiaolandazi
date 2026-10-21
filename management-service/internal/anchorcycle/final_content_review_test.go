@@ -106,12 +106,12 @@ func TestFrozenExpressionRequirementIsIndependentFromFinalFactApproval(t *testin
 	if s.FinalContentCandidateApproved(c) {
 		t.Fatal("final fact approval overrode missing expression receipt")
 	}
-	c.ExpressionAudit = &LectureAudit{Passed: true, TextSHA: ProductDigest(spokenCandidate(c)), ScopeSHA: ProductDigest(s.EffectiveExpressionConstraints())}
+	c.ExpressionAudit = &ExpressionAudit{Passed: true, TextSHA: ProductDigest(spokenCandidate(c)), ScopeSHA: ProductDigest(s.EffectiveExpressionConstraints())}
 	if !s.FinalContentCandidateApproved(c) {
 		t.Fatal("separate current receipts rejected")
 	}
 	s.Queue[0].FactScope.Corrections[0]["表达限制"] = "必须保留第一次上课后24小时内及线上申请条件。"
-	if s.LectureCandidateApproved(c) {
+	if s.ExpressionCandidateApproved(c) {
 		t.Fatal("changed frozen requirement reused old receipt")
 	}
 	c.ExpressionAudit.Passed = false

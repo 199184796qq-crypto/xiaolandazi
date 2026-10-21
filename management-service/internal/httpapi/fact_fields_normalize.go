@@ -41,7 +41,7 @@ func fourLayerSection(parts ...[2]string) string {
 
 func parseNormalizedFactFields(raw string, original model.LiveAgentPlanFactCandidate) (model.LiveAgentPlanFactCandidate, error) {
 	var fields normalizedFactFields
-	if err := decodeLectureContent(raw, &fields); err != nil || fields.Fact == nil || fields.MustSay == nil || fields.CanSay == nil || fields.Rewrite == nil || fields.NotMention == nil || fields.Question == nil {
+	if err := decodeStrictJSON(raw, &fields); err != nil || fields.Fact == nil || fields.MustSay == nil || fields.CanSay == nil || fields.Rewrite == nil || fields.NotMention == nil || fields.Question == nil {
 		return original, errors.New("四层整理结果不完整，未保存，请重试")
 	}
 	if question := strings.TrimSpace(*fields.Question); question != "" {
@@ -66,7 +66,7 @@ func normalizationReviewPassed(raw string) error {
 		Passed *bool  `json:"passed"`
 		Reason string `json:"reason"`
 	}
-	if decodeLectureContent(raw, &review) != nil || review.Passed == nil {
+	if decodeStrictJSON(raw, &review) != nil || review.Passed == nil {
 		return errors.New("四层整理复核未完成，未保存，请重试")
 	}
 	if !*review.Passed {

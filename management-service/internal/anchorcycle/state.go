@@ -29,12 +29,6 @@ func ID() string {
 
 type Task struct {
 	Common           bool           `json:"common,omitempty"`
-	LectureTopic     int64          `json:"lecture_topic,omitempty"`
-	LectureAngle     int            `json:"lecture_angle,omitempty"`
-	LecturePurpose   string         `json:"lecture_purpose,omitempty"`
-	LectureFacts     string         `json:"lecture_facts,omitempty"`
-	LecturePlanJSON  string         `json:"lecture_plan_json,omitempty"`
-	LecturePlanSHA   string         `json:"lecture_plan_sha,omitempty"`
 	FactScope        *TaskFactScope `json:"fact_scope,omitempty"`
 	PointWeight      int            `json:"point_weight,omitempty"`
 	AngleWeight      int            `json:"angle_weight,omitempty"`
@@ -130,8 +124,7 @@ type Candidate struct {
 	LibraryDecision         string                                `json:"library_decision,omitempty"`
 	LibraryTextSHA          string                                `json:"library_text_sha,omitempty"`
 	FinalContentAudit       *FinalContentAudit                    `json:"final_content_audit,omitempty"`
-	LectureAudit            *LectureAudit                         `json:"lecture_audit,omitempty"`
-	ExpressionAudit         *LectureAudit                         `json:"expression_audit,omitempty"`
+	ExpressionAudit         *ExpressionAudit                      `json:"expression_audit,omitempty"`
 	ExactDuplicateRemovals  int                                   `json:"exact_duplicate_removals,omitempty"`
 	AngleHook               *AngleHook                            `json:"selected_angle_hook,omitempty"`
 	HookCalculations        []ComputedHookCalculation             `json:"hook_calculations,omitempty"`
@@ -166,7 +159,6 @@ type Candidate struct {
 type Segment struct {
 	Quota          *SegmentQuota    `json:"scheduled_quota,omitempty"`
 	DeliveryStatus *SegmentDelivery `json:"delivery_status,omitempty"`
-	LectureSkipped bool             `json:"lecture_skipped,omitempty"`
 	Phase          string           `json:"phase"`
 	CycleNumber    int              `json:"cycle_number,omitempty"`
 	OpeningVersion string           `json:"opening_version,omitempty"`
@@ -199,7 +191,6 @@ type State struct {
 	FinalContentReviewRequired   bool                         `json:"final_content_review_required,omitempty"`
 	FinalContentReviewContextSHA string                       `json:"final_content_review_context_sha256,omitempty"`
 	LatestExpressionConstraints  []map[string]any             `json:"latest_expression_constraints,omitempty"`
-	Lectures                     *LectureRuntime              `json:"lectures,omitempty"`
 	AnglePendingUses             []AnglePlayedUse             `json:"angle_pending_uses,omitempty"`
 	AngleProgress                map[string]*AngleUseProgress `json:"angle_use_progress,omitempty"`
 	AngleRegisteredTracks        map[string]bool              `json:"angle_registered_tracks,omitempty"`
@@ -429,9 +420,6 @@ func (s *State) NoStyle() bool { return s.FreeStyle }
 func (s *State) Gradable() bool { return !s.FreeStyle }
 
 func (s *State) Task() Task {
-	if s.Lectures != nil && s.Lectures.Active != nil {
-		return *s.Lectures.Active
-	}
 	if s.PriceHook != nil {
 		return s.focusTask(Task{Common: s.PriceHook.Task.Common, FactScope: s.PriceHook.Task.FactScope, SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})
 	}
@@ -456,7 +444,7 @@ func (s *State) Task() Task {
 	}
 	if s.Config.Rolling {
 		s.EnsureProductFocus()
-		// Optional lecture/continuation boundaries may resume without chooseNext.
+		// Optional continuation boundaries may resume without chooseNext.
 		// Never attach a newly selected product to the previous product's angle.
 		if s.ProductFocus != nil && (!s.taskScopeEligible(s.Queue[s.TaskIndex]) || s.Phase != "body" && s.Queue[s.TaskIndex].Common) {
 			s.prepareContentSelection()
@@ -731,9 +719,9 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 			return false, nil
 		}
 	}
-	if !s.FinalContentReviewRequired && (s.Task().ProductMode == "lecture" || len(s.EffectiveExpressionConstraints()) > 0) && !s.LectureCandidateApproved(c) {
+	if !s.FinalContentReviewRequired && len(s.EffectiveExpressionConstraints()) > 0 && !s.ExpressionCandidateApproved(c) {
 		s.Attempts = append(s.Attempts, c)
-		s.SkipGeneration("lecture_scope_review", "讲解正文事实复核未通过")
+		s.SkipGeneration("expression_scope_review", "表达约束复核未通过")
 		return false, nil
 	}
 	if !s.FinalContentCandidateApproved(c) {
@@ -790,10 +778,9 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		selected = c
 	}
 	task := s.Task()
-	wasLecture := task.ProductMode == "lecture"
 	wasHook := s.PriceHook != nil
 	s.PriceHook = nil
-	if selected.PriceCheck.Hook != "" && !wasLecture {
+	if selected.PriceCheck.Hook != "" {
 		s.PriceHook = &PriceHook{Task: task, Promise: selected.PriceCheck.Hook, SourceText: excerpt(selected.Text, 400), CreatedIndex: s.TotalAccepted() + 1, DueIndex: s.TotalAccepted() + 2}
 	}
 	edges := anchorstylescore.AnalyzeRolling([]string{selected.Text}, 1, b, s.StyleMD).Edges
@@ -806,30 +793,19 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		openingVersion = s.OpeningVersion()
 	}
 	var quota *SegmentQuota
-	if !wasLecture && s.Phase == "body" && !wasHook {
+	if s.Phase == "body" && !wasHook {
 		quota = s.segmentQuota(task)
 	}
 	s.Accepted = append(s.Accepted, Segment{Quota: quota, Phase: s.Phase, CycleNumber: s.CycleNumber, OpeningVersion: openingVersion, Task: task, Selected: selected, Attempts: s.Attempts, Reason: reason, Summary: summary})
-	if !wasLecture && selected.FissionSide != "" {
+	if selected.FissionSide != "" {
 		s.recordFissionSide(task.Key, selected.FissionSide)
 	}
-	s.RegisterLectureTrack(selected, task, s.Phase)
-	if !wasLecture {
-		s.recordProductAdoption(task, spokenCandidate(selected))
-		if s.Phase == "body" && !wasHook {
-			s.recordScheduledAdoption(task)
-		}
-		if task.ProductMode != "auxiliary" && (s.Phase == "body" || s.Surface == "formal_live" && (s.Phase == "opening" || s.Phase == "closing")) {
-			s.AddToSpeechPool(spokenCandidate(selected), s.reuseTaskKey(selected.FissionSide))
-		}
+	s.recordProductAdoption(task, spokenCandidate(selected))
+	if s.Phase == "body" && !wasHook {
+		s.recordScheduledAdoption(task)
 	}
-	if wasLecture {
-		s.Lectures.Active = nil
-		s.Phase = "opening"
-		s.Attempts = nil
-		s.P0RewritesUsed = 0
-		s.P0ConsecutiveSkips = 0
-		return true, nil
+	if task.ProductMode != "auxiliary" && (s.Phase == "body" || s.Surface == "formal_live" && (s.Phase == "opening" || s.Phase == "closing")) {
+		s.AddToSpeechPool(spokenCandidate(selected), s.reuseTaskKey(selected.FissionSide))
 	}
 	if s.Phase == "opening" && s.PendingOpeningHook != nil {
 		s.Accepted[len(s.Accepted)-1].OpeningHook = s.PendingOpeningHook
@@ -837,7 +813,7 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.RecentOpeningHookIDs = s.RecentOpeningHookIDs[max(0, len(s.RecentOpeningHookIDs)-s.PendingOpeningHook.RecentCount):]
 		s.PendingOpeningHook = nil
 	}
-	if s.Phase != "closing" && !wasHook && !wasLecture {
+	if s.Phase != "closing" && !wasHook {
 		u := s.Used[task.Key]
 		u.Count++
 		u.LastIndex = s.TotalAccepted()

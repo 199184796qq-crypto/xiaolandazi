@@ -39,7 +39,7 @@ func (s *Server) libraryAdmittedEntry(state *anchorcycle.State, seg anchorcycle.
 		frozen := *state
 		frozen.Queue, frozen.Cursor, frozen.TaskIndex = []anchorcycle.Task{seg.Task}, 0, 0
 		frozen.Phase, frozen.Config.Rolling = "body", false
-		frozen.PriceHook, frozen.Lectures = nil, nil
+		frozen.PriceHook = nil
 		if state.ProductFocus != nil {
 			focus := *state.ProductFocus
 			focus.CurrentLink = seg.Task.FocusLink

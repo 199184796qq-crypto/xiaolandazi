@@ -43,7 +43,7 @@ type factVariantSource struct {
 
 func normalizeFactVariants(raw string) (factVariantsResponse, error) {
 	var out factVariantsResponse
-	if err := decodeLectureContent(raw, &out); err != nil {
+	if err := decodeStrictJSON(raw, &out); err != nil {
 		return out, errors.New("同义变体结果不是合法 JSON")
 	}
 	if out.Variants == nil {

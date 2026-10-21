@@ -17,7 +17,6 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
-	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 )
 
@@ -143,13 +142,6 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	state.Config = config
 	state.TenantID, state.PlanID, state.RoomID = tenant, version.PlanID, room
 	state.Surface = "formal_live"
-	if saved, exists := version.GenerationContext["lecture_tasks"]; exists {
-		lib, e := lecturetask.Decode(saved)
-		if e != nil {
-			return nil, errors.New("任务讲解快照格式错误")
-		}
-		state.Lectures = anchorcycle.NewLectures(lib)
-	}
 	state.StyleID, state.ScorecardID, state.WheelID = scheme.StyleID, scheme.ScorecardID, scheme.WheelID
 	state.StyleMD, state.BaselineJSON, state.Facts = scheme.StyleMD, scheme.BaselineJSON, safety.SafeFacts
 	// 快照里没有评分基准 = 方案未绑主播风格：本场自由发挥、不打分。
@@ -350,9 +342,6 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 			} // bounded engine retries/skips
 			id := latest.Accepted[len(latest.Accepted)-1].Selected.ID
 			var voiceDone chan struct{}
-			if latest.Accepted[len(latest.Accepted)-1].Task.ProductMode == "lecture" {
-				voiceDone = make(chan struct{})
-			}
 			if latest.Delivery.ProgramID == "" {
 				s.reportLiveStartup(ctx, latest.TenantID, latest.RoomID, latest.Delivery.RuntimeSessionID, "checking_content")
 			}
@@ -373,7 +362,6 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 	}()
 	defer func() { cancel(); <-done }() // no orphan turn on a voice failure
 	var tracks []coreclient.ProgramRefreshTrack
-	var skippedLectures []string
 	for job := range jobs {
 		if job.err != nil {
 			return nil, job.err
@@ -382,30 +370,6 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 			s.reportLiveStartup(ctx, job.state.TenantID, job.state.RoomID, job.state.Delivery.RuntimeSessionID, "generating_voice")
 		}
 		voice, err := s.synthesizeAnchorCycleVoice(ctx, job.state, job.id, false)
-		lecture := false
-		for _, segment := range job.state.Accepted {
-			if segment.Selected.ID == job.id {
-				lecture = segment.Task.ProductMode == "lecture"
-				break
-			}
-		}
-		if lecture && ctx.Err() == nil && (err != nil || voice == nil || voice.Status != "ready" || voice.Bundle.AudioDurationMS > 60000) {
-			skippedLectures = append(skippedLectures, job.id)
-			latest, loadErr := s.anchorCycles.Get(ctx, state.TenantID, state.PlanID, state.RoomID)
-			if loadErr != nil {
-				return nil, loadErr
-			}
-			if latest.RunID != state.RunID {
-				return nil, anchorcycle.ErrStale
-			}
-			latest.DropLectureTrack(job.id)
-			latest.Warn("本次可选讲解声音未完成或超过60秒，已跳过，继续讲品")
-			if saveErr := s.anchorCycles.Save(ctx, latest); saveErr != nil {
-				return nil, saveErr
-			}
-			close(job.voiceDone)
-			continue
-		}
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +393,7 @@ func (s *Server) produceLiveAnchorBatch(ctx context.Context, state *anchorcycle.
 			close(job.voiceDone)
 		}
 	}
-	if len(tracks)+len(skippedLectures) != target {
+	if len(tracks) != target {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -472,12 +436,6 @@ func (s *Server) runLiveAnchorProducerBatched(ctx context.Context, tenant, room,
 			}
 			if !snapshot.Running || snapshot.ProgramID != state.Delivery.ProgramID || snapshot.VersionID != version.ID {
 				return anchorcycle.ErrStale
-			}
-			if state.Lectures != nil {
-				state.ObservePlayback(snapshot.PlaybackReceipts, snapshot.MainlinePlayedMS)
-				if err = s.anchorCycles.Save(ctx, state); err != nil {
-					return err
-				}
 			}
 			if snapshot.Suspended || bufferedMainlineMS(snapshot, state.Delivery.CurrentTrackDurations) >= int64(state.Config.TTS.BufferSeconds)*1000 {
 				if err = waitLiveProducer(ctx); err != nil {

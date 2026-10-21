@@ -85,7 +85,7 @@ func TestCompletedRequirementRejectionIsNotAFormatOrTransportFailure(t *testing.
 		t.Fatal(e)
 	}
 	c := anchorcycle.Candidate{ID: "program-case", Text: "早上赶时间，开袋直接当早餐。", OutputText: "早上赶时间，开袋直接当早餐。"}
-	c.ExpressionAudit = &anchorcycle.LectureAudit{Passed: false, Reason: "包含用户禁止的早餐场景", TextSHA: anchorcycle.ProductDigest(c.OutputText), ScopeSHA: anchorcycle.ProductDigest(s.EffectiveExpressionConstraints()), PromptSHA: derivedHash(mother)}
+	c.ExpressionAudit = &anchorcycle.ExpressionAudit{Passed: false, Reason: "包含用户禁止的早餐场景", TextSHA: anchorcycle.ProductDigest(c.OutputText), ScopeSHA: anchorcycle.ProductDigest(s.EffectiveExpressionConstraints()), PromptSHA: derivedHash(mother)}
 	server := &Server{}
 	server.auditFinalMainlineContent(context.Background(), &s, &c)
 	if c.FinalContentAudit == nil || c.FinalContentAudit.Decision != "有问题" || c.FinalContentAudit.Error != "" || c.FinalContentAudit.UpstreamReview != "speech_constraint_text_review" || c.FinalContentAudit.ExchangeID != 0 || s.FinalContentCandidateApproved(c) {

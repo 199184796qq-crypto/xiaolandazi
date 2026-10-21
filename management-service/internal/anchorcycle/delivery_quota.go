@@ -72,7 +72,7 @@ func (s *State) RecordSegmentDeliveryFailure(id, stage, reason string, definite 
 		if definite && s.ProductFocus != nil && !seg.Task.Common {
 			decreaseQuota(s.ProductFocus.PresentedSegments, seg.Task.FocusLink)
 		}
-		if !definite || s.Surface != "formal_live" || seg.Phase != "body" || seg.Task.ProductMode == "lecture" || seg.Task.ProductMode == "auxiliary" {
+		if !definite || s.Surface != "formal_live" || seg.Phase != "body" || seg.Task.ProductMode == "auxiliary" {
 			return true
 		}
 		// Compatibility for already accepted segments from the previous runtime.
@@ -101,7 +101,7 @@ func (s *State) RecordSegmentDeliveryFailure(id, stage, reason string, definite 
 // Never rewind a cursor/history or interrupt an in-flight repair/promise. A
 // later body can compensate the missing share across small-cycle boundaries.
 func (s *State) rebalanceReturnedDeliveryQuotas() bool {
-	if !s.DeliveryQuotaRebalance || !s.Config.Rolling || s.Phase != "body" || len(s.Attempts) > 0 || s.P0PendingRepair != nil || s.PriceHook != nil || s.Lectures != nil && s.Lectures.Active != nil {
+	if !s.DeliveryQuotaRebalance || !s.Config.Rolling || s.Phase != "body" || len(s.Attempts) > 0 || s.P0PendingRepair != nil || s.PriceHook != nil {
 		return false
 	}
 	if s.ContentSchedule != nil {

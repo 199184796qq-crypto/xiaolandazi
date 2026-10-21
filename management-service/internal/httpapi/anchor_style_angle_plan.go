@@ -63,9 +63,6 @@ func (s *Server) ensureCycleAnglePlan(ctx context.Context, state *anchorcycle.St
 		state.Warn(err.Error())
 		return
 	}
-	if state.Task().ProductMode == "lecture" {
-		return
-	}
 	if !cycleAnglePlanEnabled() {
 		return
 	}

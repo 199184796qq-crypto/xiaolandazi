@@ -82,10 +82,8 @@ func TestReuseCountersSeparateFailuresUnknownAndSpecialTasks(t *testing.T) {
 	s.Accepted[len(s.Accepted)-1].DeliveryStatus = &SegmentDelivery{Status: "failed"}
 	acceptReusePolicyOutput(s, true, "closing")
 	s.Accepted[len(s.Accepted)-1].DeliveryStatus = &SegmentDelivery{Status: "unconfirmed"}
-	for _, mode := range []string{"lecture", "auxiliary"} {
-		acceptReusePolicyOutput(s, true, "body")
-		s.Accepted[len(s.Accepted)-1].Task.ProductMode = mode
-	}
+	acceptReusePolicyOutput(s, true, "body")
+	s.Accepted[len(s.Accepted)-1].Task.ProductMode = "auxiliary"
 	total, reused := s.MainlineReuseWindow()
 	if total != 2 || reused != 1 {
 		t.Fatal(total, reused)

@@ -28,9 +28,6 @@ func finalMainlineContentMessages(state *anchorcycle.State, c anchorcycle.Candid
 	}
 
 	packet := map[string]any{"当前任务": generationTaskView(state.Task()), "正文": cycleVoiceText(c), "前次P0审核结果": priorP0ReviewView(state, c)}
-	if state.Task().ProductMode == "lecture" {
-		packet["本次讲解资料"] = state.Task().LectureFacts
-	}
 	raw, e := json.Marshal(packet)
 	if e != nil {
 		return nil, e

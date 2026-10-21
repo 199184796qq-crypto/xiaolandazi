@@ -45,7 +45,7 @@ func TestSpeechConstraintNaturalLanguageProvider(t *testing.T) {
 		text string
 		pass bool
 	}{{"早上赶时间，撕开包装就能吃，省时省心。", false}, {"拿它当早餐，开袋吃很方便。", false}, {"超过下午6点下单，一般第二天早上发货。", true}, {"下班累了，打开包装就能直接吃。", true}} {
-		candidate := lectureTextCandidate(tc.text)
+		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: tc.text, OutputText: tc.text}
 		s.auditSpeechExpressionConstraints(ctx, &state, &candidate)
 		if candidate.ExpressionAudit == nil || candidate.ExpressionAudit.Error != "" || candidate.ExpressionAudit.Passed != tc.pass {
 			t.Errorf("semantic constraint mismatch %s %+v", tc.text, candidate.ExpressionAudit)
@@ -69,7 +69,7 @@ func TestSpeechConstraintNaturalLanguageProvider(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	candidate := lectureTextCandidate(response.Text)
+	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: response.Text, OutputText: response.Text}
 	s.auditSpeechExpressionConstraints(ctx, &prepared, &candidate)
 	if candidate.ExpressionAudit == nil || !candidate.ExpressionAudit.Passed || candidate.ExpressionAudit.Error != "" {
 		t.Fatal("same speech model ignored adopted constraint", candidate.ExpressionAudit)

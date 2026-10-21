@@ -8,7 +8,7 @@ import (
 )
 
 func TestSpeechExpressionConstraintMySQL(t *testing.T) {
-	s := lectureTestStore(t)
+	s := salesIsolatedMySQL(t)
 	ctx := context.Background()
 	exec := func(q string) {
 		t.Helper()

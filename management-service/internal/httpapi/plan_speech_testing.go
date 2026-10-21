@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	appdb "livecompanion/management/internal/db"
-	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 )
 
@@ -150,16 +149,6 @@ func (s *planSpeechTestStore) CurrentInteractionProductContext(ctx context.Conte
 	return renderAnchorStyleWorkbenchFacts(plan, primary, nil, links), nil
 }
 
-func (s *planSpeechTestStore) CurrentInteractionLectureFacts(ctx context.Context, tenant, room, plan int64, question string) (string, error) {
-	if _, err := s.GetLiveAgentPlanForRoom(ctx, tenant, room); err != nil || plan != s.plan.ID {
-		return "", fmt.Errorf("方案测试资料范围不一致")
-	}
-	lib, err := s.LectureQuestionLibrary(ctx, tenant, plan)
-	if err != nil {
-		return "", err
-	}
-	return lecturetask.QuestionEvidence(lib, question), nil
-}
 
 func validatePlanAnswerAdoption(input planAnswerAdoptionInput) error {
 	if input.PlanID <= 0 || strings.TrimSpace(input.Question) == "" || strings.TrimSpace(input.Answer) == "" {

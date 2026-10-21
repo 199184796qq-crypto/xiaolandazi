@@ -358,9 +358,6 @@ func (s *State) focusTask(t Task) Task {
 	return t
 }
 func (s *State) ProductFacts(t Task) string {
-	if t.ProductMode == "lecture" {
-		return t.LectureFacts
-	}
 	if s.ProductFocus == nil {
 		return s.Facts
 	}

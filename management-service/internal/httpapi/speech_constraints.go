@@ -32,7 +32,7 @@ type speechConstraintDraft struct {
 
 func parseSpeechConstraint(raw string) (speechConstraintContent, error) {
 	var c speechConstraintContent
-	if decodeLectureContent(raw, &c) != nil || c.Understanding == nil || c.Constraint == nil || c.Question == nil {
+	if decodeStrictJSON(raw, &c) != nil || c.Understanding == nil || c.Constraint == nil || c.Question == nil {
 		return c, errors.New("约束整理未完成，请重试")
 	}
 	for _, v := range []*string{c.Understanding, c.Constraint, c.Question} {

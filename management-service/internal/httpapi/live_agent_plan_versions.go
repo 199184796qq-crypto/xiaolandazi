@@ -391,26 +391,8 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
 	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
 	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
-	lectureRevision, lectureRevisionErr := s.store.LectureRevision(r.Context(), tenantID, planID)
-	if lectureRevisionErr != nil {
-		writeError(w, 503, "读取讲解库版本失败")
-		return
-	}
-	lectureLibrary, lectureErr := s.store.LectureLibrary(r.Context(), tenantID, planID, false)
-	if lectureErr != nil {
-		writeError(w, 503, "读取任务讲解快照失败")
-		return
-	}
-	input.GenerationContext["lecture_tasks"] = lectureLibrary
-	questionLibrary, questionErr := s.store.LectureQuestionLibrary(r.Context(), tenantID, planID)
-	if questionErr != nil {
-		writeError(w, 503, "读取讲解事实快照失败")
-		return
-	}
-	input.GenerationContext["lecture_question_assets"] = questionLibrary
-	input.GenerationContext["lecture_revision"] = lectureRevision
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
-	if errors.Is(err, appdb.ErrPoolSourceChanged) || errors.Is(err, appdb.ErrLectureChanged) {
+	if errors.Is(err, appdb.ErrPoolSourceChanged) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}

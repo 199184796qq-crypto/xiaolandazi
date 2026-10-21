@@ -40,16 +40,16 @@ func TestAdoptedExpressionOverlayInvalidatesDirectionsAndReachesGeneration(t *te
 	if len(contentpools.CorrectionView(live, []int64{1})) != 1 || len(contentpools.CorrectionView(live, []int64{2})) != 0 {
 		t.Fatal("draft/other product leaked into live rules")
 	}
-	c := lectureTextCandidate("不用额外加工，打开包装就能吃。")
-	if state.LectureCandidateApproved(c) {
+	c := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: "不用额外加工，打开包装就能吃。", OutputText: "不用额外加工，打开包装就能吃。"}
+	if state.ExpressionCandidateApproved(c) {
 		t.Fatal("unreviewed expression rule bypassed live admission")
 	}
-	c.ExpressionAudit = &anchorcycle.LectureAudit{Passed: true, TextSHA: anchorcycle.ProductDigest(c.Text), ScopeSHA: anchorcycle.ProductDigest(state.LatestExpressionConstraints)}
-	if !state.LectureCandidateApproved(c) {
+	c.ExpressionAudit = &anchorcycle.ExpressionAudit{Passed: true, TextSHA: anchorcycle.ProductDigest(c.Text), ScopeSHA: anchorcycle.ProductDigest(state.LatestExpressionConstraints)}
+	if !state.ExpressionCandidateApproved(c) {
 		t.Fatal("valid expression receipt rejected")
 	}
 	state.LatestExpressionConstraints[0]["表达限制"] = "不用午夜场景举例"
-	if state.LectureCandidateApproved(c) {
+	if state.ExpressionCandidateApproved(c) {
 		t.Fatal("stale expression receipt accepted")
 	}
 }

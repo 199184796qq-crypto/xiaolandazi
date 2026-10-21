@@ -89,9 +89,6 @@ func (s *crossCategoryProbeStore) CurrentInteractionFacts(context.Context, int64
 func (s *crossCategoryProbeStore) CurrentInteractionProductContext(context.Context, int64, int64, int64) (string, error) {
 	return s.productContext, nil
 }
-func (s *crossCategoryProbeStore) CurrentInteractionLectureFacts(context.Context, int64, int64, int64, string) (string, error) {
-	return "", nil
-}
 func (s *crossCategoryProbeStore) GetLatestPlanContentStrategy(context.Context, int64, int64, string, time.Time) (string, error) {
 	return "", appdb.ErrPlanAnalysisAssetNotFound
 }

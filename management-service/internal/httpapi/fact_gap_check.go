@@ -37,7 +37,7 @@ type factGapCheckResponse struct {
 // summary; this keeps the raw model text from leaking malformed structures.
 func normalizeFactGapCheck(raw string) (factGapCheckResponse, error) {
 	var out factGapCheckResponse
-	if err := decodeLectureContent(raw, &out); err != nil {
+	if err := decodeStrictJSON(raw, &out); err != nil {
 		return out, errors.New("查漏结果不是合法 JSON")
 	}
 	if out.Gaps == nil {

@@ -8,7 +8,6 @@ import (
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
-	"livecompanion/management/internal/lecturetask"
 	"livecompanion/management/internal/model"
 	"log"
 	"strings"
@@ -29,9 +28,6 @@ type currentInteractionFactsStore interface {
 
 type currentInteractionScopeStore interface {
 	CurrentInteractionScopeVersion(context.Context, int64, int64, int64, string) (model.LiveAgentPlanVersion, error)
-}
-type currentInteractionLectureStore interface {
-	CurrentInteractionLectureFacts(context.Context, int64, int64, int64, string) (string, error)
 }
 type expressionConstraintStore interface {
 	CurrentSpeechExpressionConstraints(context.Context, int64, int64) (contentpools.Sources, error)
@@ -65,14 +61,6 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 				}
 				facts, scope = narrowInteractionFacts(version.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
 			}
-			if stories, ok := w.store.(currentInteractionLectureStore); ok {
-				extra, e := stories.CurrentInteractionLectureFacts(ctx, session.TenantID, session.RoomID, planID, primaryQuestion(*item))
-				if e != nil {
-					return "", e
-				}
-				facts += extra
-				scope.FullFacts += extra
-			}
 			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 		}
 	}
@@ -83,17 +71,6 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	scope := interactionFactScope{FullFacts: facts}
 	if item != nil && isViewerQuestionAnswer(*item) && !skipStrategy {
 		facts, scope = narrowInteractionFacts(published.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
-	}
-	if item != nil {
-		if value, ok := published.GenerationContext["lecture_question_assets"]; ok {
-			lib, e := lecturetask.Decode(value)
-			if e != nil {
-				return "", e
-			}
-			extra := lecturetask.QuestionEvidence(lib, primaryQuestion(*item))
-			facts += extra
-			scope.FullFacts += extra
-		}
 	}
 	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 }
