@@ -10,6 +10,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/stylecontract"
 	"net/http"
 	"strings"
 	"time"
@@ -86,6 +87,35 @@ func (s *Server) importBoundCompiledStyleParts(ctx context.Context, tenant, plan
 	d := style.Profile.Delivery
 	if d == nil {
 		return errors.New("主播风格尚未完成元提示词调教"), errors.New("主播风格尚未完成评分基准调教")
+	}
+	// 风格卡不走样本链路：没有原始样本，也不需要样本评分基准。
+	// 直接把卡上的元提示词编译成当前方案可用的资产，直播间即可使用。
+	if style.StyleSourceMode == "card" {
+		metaMD := strings.TrimSpace(d.MetaPromptMD)
+		if metaMD == "" {
+			metaMD = strings.TrimSpace(stylecontract.RenderMetaPrompt(style.Profile))
+		}
+		if metaMD == "" {
+			return errors.New("主播风格卡尚未保存可用的元提示词"), nil
+		}
+		sourceSHA := strings.TrimSpace(d.SourceSHA256)
+		if sourceSHA == "" {
+			sourceSHA = derivedHash(metaMD)
+		}
+		meta, metaErr := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenant, plan)
+		if metaErr != nil && !errors.Is(metaErr, appdb.ErrLiveAnchorStyleMetaPromptNotFound) {
+			return metaErr, nil
+		}
+		if meta.ID == 0 || meta.Status != "confirmed" || meta.SampleSHA256 != sourceSHA || meta.EffectiveMetaPromptMD() != metaMD {
+			meta, metaErr = s.store.SaveLiveAnchorStyleMetaPrompt(ctx, tenant, plan, actor, model.SaveLiveAnchorStyleMetaPromptInput{
+				Scene: "带货直播", SampleSHA256: sourceSHA, OriginalMetaPromptMD: metaMD,
+				AnalysisPromptSource: "style_card", Provider: "style_card",
+			})
+			if metaErr == nil {
+				_, metaErr = s.store.ConfirmLiveAnchorStyleMetaPrompt(ctx, tenant, plan, meta.ID, actor, metaMD)
+			}
+		}
+		return metaErr, nil
 	}
 	samples, err := s.store.ListLiveAnchorStyleSamples(ctx, tenant, style.ID)
 	if err != nil {

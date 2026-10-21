@@ -660,8 +660,20 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 // anchorStyleAddressTerms 从主播风格评分基准解析主力/辅助/候选称呼。
 // 每个直播间的主播风格不同，主力称呼也不同，不能写死。
 func anchorStyleAddressTerms(profile model.LiveAgentPlanAnchorStyleProfile) []string {
-	if profile.Delivery == nil || strings.TrimSpace(profile.Delivery.ScoringBaselineJSON) == "" {
+	if profile.Delivery == nil {
 		return nil
+	}
+	if strings.TrimSpace(profile.Delivery.ScoringBaselineJSON) == "" {
+		terms := []string{}
+		if override := profile.Delivery.AddressingOverride; override != nil {
+			terms = append(terms, override.AudienceTerms...)
+		}
+		for _, habit := range profile.Delivery.Habits {
+			if habit.Kind == "audience_address" {
+				terms = append(terms, habit.Text)
+			}
+		}
+		return cleanAddressingTerms(terms)
 	}
 	baseline, err := anchorstylescore.Parse(profile.Delivery.ScoringBaselineJSON)
 	if err != nil {
