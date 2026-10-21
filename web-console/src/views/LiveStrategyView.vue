@@ -3389,14 +3389,14 @@ async function generateOriginalAiVoice() {
   }
   if (!fullShowResult.value) await applyCustomMainlineAsFormal()
   if (!fullShowResult.value) return
-  if (contentModeAccess.value?.content_mode === 'user_audio') await chooseContentMode('ai_pregenerated')
   selectFullShowOutputMode('custom')
-  if (contentModeAccess.value?.content_mode === 'user_audio') {
-    customMainlineError.value = '当前直播间暂不能切换为 AI 声音模式。'
+  if (!isUserAudioContentMode.value) {
+    customMainlineError.value = '请先保留录音主线，再生成录音原文的克隆声音。'
     return
   }
   const identity = roomVoiceIdentity.value
-  const targetKey = aiFullShowVariants.value.find((item) => item.variant_key === 'A')?.variant_key || 'A'
+  // 录音主线继续使用 user_audio，只替换 CUSTOM 的播放音频为克隆 TTS。
+  const targetKey = 'CUSTOM'
   const existing = fullShowVoiceState(targetKey)
   const sourceVariant = aiFullShowVariants.value.find((item) => item.variant_key === targetKey)
   const variant: LiveAgentFullShowVariant = {

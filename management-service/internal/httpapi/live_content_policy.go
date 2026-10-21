@@ -64,9 +64,13 @@ func (s *Server) validateContentModeAssets(ctx context.Context, tenantID int64, 
 		if err != nil {
 			return err
 		}
-		uploaded := fmt.Sprint(asset.Metadata["purpose"]) == "live_agent_custom_mainline_audio"
-		if mode == model.LiveContentUserAudio && !uploaded {
-			return errors.New("原始录音模式只能采用上传录音，请上传录音后重新保存发布")
+		purpose := fmt.Sprint(asset.Metadata["purpose"])
+		uploaded := purpose == "live_agent_custom_mainline_audio"
+		// 录音主线允许两种播放音频：上传原声，或用录音原文生成的克隆 TTS。
+		// 后者仍保持 user_audio，不切换到已隐藏的旧 ai_pregenerated 模式。
+		generatedFromRecording := purpose == "live_agent_formal_voice_timeline"
+		if mode == model.LiveContentUserAudio && !uploaded && !generatedFromRecording {
+			return errors.New("录音主线只能采用上传录音或录音原文生成的克隆声音，请重新选择声音后保存")
 		}
 		if mode != model.LiveContentUserAudio && uploaded {
 			return errors.New("当前为AI话术模式，请采用AI成品声音或切换到原始录音模式")
