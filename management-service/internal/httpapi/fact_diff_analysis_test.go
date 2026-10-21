@@ -10,11 +10,18 @@ import (
 // 对比事实最容易出的错就是把一边的数字算到另一边。
 func TestFactDiffAnalysisDigitGuard(t *testing.T) {
 	source := "1号链接：22道荤素菜，团购价337元，原价547元\n2号链接：15道荤素菜，团购价187元"
-	if got := unknownDigits("1号链接22道荤素菜，2号链接15道，相差7道", source); len(got) != 1 || got[0] != "7" {
-		t.Fatalf("7 是算出来的，事实里没有，必须被标出来：%v", got)
+	// 差额是两数相减得到的，属于可核算结论，不能误杀。
+	if got := unknownDigits("1号链接22道荤素菜，2号链接15道，相差7道", source); len(got) != 0 {
+		t.Fatalf("7 正好是 22-15，应该放行：%v", got)
 	}
-	if got := unknownDigits("1号链接团购337元，2号链接团购187元，相差150元", source); len(got) != 1 || got[0] != "150" {
-		t.Fatalf("150 未在事实中出现，必须被标出来：%v", got)
+	if got := unknownDigits("1号链接团购337元，2号链接团购187元，相差150元", source); len(got) != 0 {
+		t.Fatalf("150 正好是 337-187，应该放行：%v", got)
+	}
+	// 凭空冒出来的数字必须拦下。
+	// 「多10道」也是错的：22-15=7，10 在来源里推不出来，必须和 3 一起被标出来。
+	got := unknownDigits("1号链接比2号链接多了10道菜，另送3份小料", source)
+	if len(got) != 2 || got[0] != "10" || got[1] != "3" {
+		t.Fatalf("10 和 3 都推不出来，必须被标出来：%v", got)
 	}
 	if got := unknownDigits("1号链接团购337元，2号链接团购187元", source); len(got) != 0 {
 		t.Fatalf("数字都在事实里，不该报错：%v", got)

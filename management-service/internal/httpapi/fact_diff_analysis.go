@@ -101,6 +101,10 @@ func (s *Server) liveAgentPlanFactDiffAnalysis(w http.ResponseWriter, r *http.Re
 		return
 	}
 	perLink, allText := s.groupFactsByLink(items, linkIDs, nameByID, factID)
+	// 规格与价格多半只存在商品链接上（如「含22道荤素菜」「团购337」），事实依据里往往没抄一份。
+	// 不带上它们，模型只能回「事实不足」，用户就只能自己拍数字（实测写成了「多10道」，实际差7道）。
+	specText := appendProductSpecs(perLink, links, wantedLinkKeys(linkIDs, nameByID))
+	allText += specText
 	if strings.TrimSpace(allText) == "" {
 		writeError(w, http.StatusBadRequest, "这几个链接名下还没有任何事实，先补商品事实再来找差异")
 		return
@@ -148,6 +152,52 @@ func (s *Server) liveAgentPlanFactDiffAnalysis(w http.ResponseWriter, r *http.Re
 		}
 	}
 	writeJSON(w, http.StatusOK, analysis)
+}
+
+// wantedLinkKeys 把方案里选中的链接 id 换成 link_key 集合。
+func wantedLinkKeys(linkIDs []int64, nameByID map[int64]string) map[string]bool {
+	out := map[string]bool{}
+	for _, id := range linkIDs {
+		if key := nameByID[id]; key != "" {
+			out[key] = true
+		}
+	}
+	return out
+}
+
+// appendProductSpecs 把选中的商品链接资料（规格/团购价/数量/适用人数）并进分组，
+// 返回同样的内容用于数字核对。差异分析最常对上的就是这几项，而它们通常不在「事实依据」里。
+func appendProductSpecs(perLink map[string][]string, links []model.LiveAgentPlanProductLink, wanted map[string]bool) string {
+	var all strings.Builder
+	for _, link := range links {
+		if link.Status != "active" || !wanted[link.LinkKey] {
+			continue
+		}
+		parts := []string{}
+		if name := strings.TrimSpace(link.ProductName); name != "" {
+			parts = append(parts, "商品="+name)
+		}
+		if spec := strings.TrimSpace(link.Spec); spec != "" {
+			parts = append(parts, "规格="+spec)
+		}
+		if price := strings.TrimSpace(link.DailyPrice); price != "" {
+			parts = append(parts, "团购价="+price)
+		}
+		if qty := strings.TrimSpace(link.Quantity); qty != "" {
+			parts = append(parts, "数量="+qty)
+		}
+		if audience := strings.TrimSpace(link.Audience); audience != "" {
+			parts = append(parts, "适用人数="+audience)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		line := "商品资料：" + strings.Join(parts, "；")
+		perLink[link.LinkKey] = append(perLink[link.LinkKey], line)
+		all.WriteString(line)
+		all.WriteString("\n")
+	}
+	return all.String()
 }
 
 // groupFactsByLink 把方案事实按链接分组，返回「链接 → 事实行」和全量文本（用于数字核对）。
@@ -220,15 +270,28 @@ func parseFactDiffAnalysis(raw string) (factDiffAnalysisResult, error) {
 	return out, nil
 }
 
-// unknownDigits 返回 text 里出现、但事实来源里找不到的数字。
+// unknownDigits 返回 text 里出现、但事实来源里推不出来的数字。
+//
+// 「相差7道」「省150元」本身不在事实里，是由两个数字相减得到的，
+// 所以合法集合里要加上「来源里任意两数之差」，否则正确结论会被误杀。
 func unknownDigits(text, source string) []string {
 	source = strings.ReplaceAll(source, "，", ",")
 	have := map[string]bool{}
+	values := []float64{}
 	for _, d := range factNumberPattern.FindAllString(source, -1) {
 		have[d] = true
-		// 1.0 与 1 视为同一个数，避免小数写法差异误判。
 		if f, err := strconv.ParseFloat(d, 64); err == nil {
 			have[strconv.FormatFloat(f, 'f', -1, 64)] = true
+			values = append(values, f)
+		}
+	}
+	for i := 0; i < len(values); i++ {
+		for j := i + 1; j < len(values); j++ {
+			diff := values[i] - values[j]
+			if diff < 0 {
+				diff = -diff
+			}
+			have[strconv.FormatFloat(diff, 'f', -1, 64)] = true
 		}
 	}
 	var missing []string
