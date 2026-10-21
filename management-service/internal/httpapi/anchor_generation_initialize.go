@@ -215,16 +215,21 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 		return 0, 0, signatureErr
 	}
 	prompt += "\n" + productCommonIndustryMarker(industrySignature)
-	if pack != nil {
-		prompt += "\n\n# 当前行业额外边界\n" + pack.P0Extra
-	}
 	promptSource += ";" + scopeSource
 	p0MD, _, p0Err := loadP0Mother()
 	if p0Err != nil {
 		return 0, 0, p0Err
 	}
-	p0JSON, _ := json.Marshal(generationP0View(p0MD, "*"))
-	prompt += "\n\n# effective_p0\n" + string(p0JSON)
+	// 轮盘生成也走四层结构：必说（任务）/可说（事实包）/不提（P0 红线）/改写（禁说→改说）。
+	// 原来只有母版 + 一段 effective_p0，P0 散在几个标题下，模型容易把极限词写进角度。
+	industryExtra := ""
+	if pack != nil {
+		industryExtra = pack.P0Extra
+	}
+	prompt, p0Err = renderWheelFourLayerPrompt(prompt, p0MD, industryExtra, "")
+	if p0Err != nil {
+		return 0, 0, p0Err
+	}
 	snapshot := prompt
 	if handled, points, angles, reuseErr := s.reuseOrUpdateWheel(ctx, tenant, plan, actor, source.Facts, finalAuditPrompt, snapshot, cfg.SellingPointProfileID); handled {
 		if reuseErr == nil {

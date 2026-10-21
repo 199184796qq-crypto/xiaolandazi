@@ -599,8 +599,20 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelCompile(w http.ResponseWri
 		return
 	}
 	factPackage := renderAnchorStyleWorkbenchFacts(plan, facts, benefits, links)
-	userPrompt := renderSellingPointExtractionRequest(promptMD, factPackage)
-	messages := []agentgateway.Message{{Role: "user", Content: userPrompt}}
+	// 工作台手动生成同样走四层结构，与初始化路径共用一份 P0 红线，
+	// 否则这条路径完全没有 P0，角度里会冒出极限词。
+	p0MD, _, p0Err := loadP0Mother()
+	if p0Err != nil {
+		writeError(w, http.StatusInternalServerError, p0Err.Error())
+		return
+	}
+	systemPrompt, err := renderWheelFourLayerPrompt(promptMD, p0MD, "", "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	factJSON, _ := json.Marshal(map[string]string{"fact_package": factPackage})
+	messages := []agentgateway.Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: string(factJSON)}}
 	result, actual, err := s.completeAnchorStyleWorkbench(r.Context(), input.CompilerProfile, "selling_point_extraction", agentgateway.ResponseJSON, messages, 7000, false)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "生成卖点轮盘失败："+err.Error())
