@@ -7,6 +7,8 @@ const props = defineProps<{
   disabled?: boolean
   save: (fact: LiveAgentPlanFact, scope: NonNullable<LiveAgentPlanFact['scope']>) => Promise<void>
 }>()
+// 一条事实最多同时归属 8 个链接，与后端校验保持一致。
+const MAX_SCOPE_LINKS = 8
 const saving = ref(false)
 const error = ref('')
 const open = ref(false)
@@ -22,6 +24,11 @@ const selectedIDs = computed(() => {
 })
 const isCommon = computed(() => props.fact.scope?.kind === 'common')
 const unavailable = computed(() => selectedIDs.value.filter(id => !products.value.some(p => p.id === id)))
+// 浮层里只改本地草稿，关闭时统一提交一次：勾 8 个也只是一次请求，
+// 不会因为「保存中再点被忽略」丢掉连续勾选。
+const draftIDs = ref<number[]>([])
+const draftCommon = ref(false)
+const atLimit = computed(() => draftIDs.value.length >= MAX_SCOPE_LINKS)
 function linkLabel(key: string) { return /^\d+$/.test(key) ? key + '链接' : key }
 // 折叠态只显示最简归属：公共 / 具体链接 / 多链。
 function scopeSummary() {
@@ -31,10 +38,37 @@ function scopeSummary() {
   const linked = products.value.find(p => p.id === selectedIDs.value[0])
   return linked ? linkLabel(linked.link_key) : '已失效'
 }
-function close() { open.value = false }
+async function persist(scope: NonNullable<LiveAgentPlanFact['scope']>) {
+  saving.value = true
+  error.value = ''
+  try {
+    await props.save(props.fact, scope)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '保存归属失败，请重试'
+  } finally { saving.value = false }
+}
+// 关闭时把草稿和已保存值比一次，没变就不发请求。
+async function commitDraft() {
+  if (draftCommon.value) {
+    if (!isCommon.value) await persist({ kind: 'common' })
+    return
+  }
+  const next = [...draftIDs.value]
+  if (!next.length) return
+  const saved = selectedIDs.value
+  if (!isCommon.value && next.length === saved.length && next.every(id => saved.includes(id))) return
+  await persist({ kind: 'product', product_link_id: next.length === 1 ? next[0] : 0, product_link_ids: next })
+}
+function close(commit: boolean) {
+  if (!open.value) return
+  open.value = false
+  if (commit) void commitDraft()
+}
 function toggleOpen() {
-  if (props.disabled) return
-  if (open.value) { close(); return }
+  if (props.disabled || saving.value) return
+  if (open.value) { close(true); return }
+  draftIDs.value = [...selectedIDs.value]
+  draftCommon.value = isCommon.value
   const rect = trigger.value?.getBoundingClientRect()
   if (rect) {
     const estimated = 44 + products.value.length * 30
@@ -47,35 +81,31 @@ function toggleOpen() {
   }
   open.value = true
 }
-async function apply(scope: NonNullable<LiveAgentPlanFact['scope']>) {
-  if (saving.value || props.disabled) return
-  saving.value = true
-  error.value = ''
-  try {
-    await props.save(props.fact, scope)
-    close()
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '保存归属失败，请重试'
-  } finally { saving.value = false }
-}
 function chooseCommon() {
-  if (isCommon.value) { close(); return }
-  apply({ kind: 'common' })
+  draftCommon.value = true
+  draftIDs.value = []
+  close(true)
 }
-function toggle(id: number, checked: boolean) {
-  const next = selectedIDs.value.filter(item => item !== id)
-  if (checked) next.push(id)
-  if (!next.length) return
-  apply({ kind: 'product', product_link_id: next.length === 1 ? next[0] : 0, product_link_ids: next })
+function toggle(id: number) {
+  draftCommon.value = false
+  const at = draftIDs.value.indexOf(id)
+  if (at >= 0) {
+    // 至少保留一个链接，避免保存成「没有归属」。
+    if (draftIDs.value.length === 1) return
+    draftIDs.value.splice(at, 1)
+    return
+  }
+  if (atLimit.value) return
+  draftIDs.value.push(id)
 }
-// 点到外面、滚动或缩放窗口都收起，避免浮层停在半空。
+// 点到外面、滚动或缩放窗口都收起，并把这次勾选提交掉，避免改动丢失。
 function onPointerDown(event: PointerEvent) {
   if (!open.value) return
   const target = event.target as Node
   if (menu.value?.contains(target) || trigger.value?.contains(target)) return
-  close()
+  close(true)
 }
-function onViewportChange() { if (open.value) close() }
+function onViewportChange() { close(true) }
 onMounted(() => {
   document.addEventListener('pointerdown', onPointerDown, true)
   window.addEventListener('scroll', onViewportChange, true)
@@ -96,15 +126,16 @@ onBeforeUnmount(() => {
     </button>
     <Teleport to="body">
       <div v-if="open" ref="menu" class="scope-menu" :style="menuStyle" role="listbox" @pointerdown.stop>
-        <button type="button" class="scope-option" :class="{ checked: isCommon }" :disabled="saving" @click="chooseCommon">
-          <i class="scope-mark" :class="{ on: isCommon, radio: true }"></i><span>公共</span>
+        <button type="button" class="scope-option" :class="{ checked: draftCommon }" @click="chooseCommon">
+          <i class="scope-mark" :class="{ on: draftCommon, radio: true }"></i><span>公共</span>
         </button>
-        <button v-for="p in products" :key="p.id" type="button" class="scope-option" :class="{ checked: selectedIDs.includes(p.id) }" :disabled="saving" @click="toggle(p.id, !selectedIDs.includes(p.id))">
-          <i class="scope-mark" :class="{ on: selectedIDs.includes(p.id) }"></i><span>{{ linkLabel(p.link_key) }}</span>
+        <button v-for="p in products" :key="p.id" type="button" class="scope-option" :class="{ checked: draftIDs.includes(p.id) }" :disabled="atLimit && !draftIDs.includes(p.id)" @click="toggle(p.id)">
+          <i class="scope-mark" :class="{ on: draftIDs.includes(p.id) }"></i><span>{{ linkLabel(p.link_key) }}</span>
         </button>
         <div v-for="id in unavailable" :key="'gone-' + id" class="scope-option is-gone">
           <i class="scope-mark on"></i><span>原关联商品已不可用</span>
         </div>
+        <div v-if="atLimit" class="scope-hint">最多同时选 {{ MAX_SCOPE_LINKS }} 个链接</div>
       </div>
     </Teleport>
     <span v-if="error" class="error" role="alert">{{ error }}</span>
@@ -129,7 +160,8 @@ onBeforeUnmount(() => {
 .scope-menu .scope-option:hover:not(:disabled) { background:#f2f4ff; }
 .scope-menu .scope-option.checked { background:#e9ecff;font-weight:700; }
 .scope-menu .scope-option.is-gone { color:#a05;cursor:default; }
-.scope-menu .scope-option:disabled { opacity:.6;cursor:default; }
+.scope-menu .scope-option:disabled { opacity:.45;cursor:default; }
+.scope-menu .scope-hint { padding:4px 9px 2px;color:#7b879e;font-size:12px; }
 .scope-mark { flex:none;width:14px;height:14px;border:1px solid #b9c3d8;border-radius:3px;background:#fff; }
 .scope-mark.radio { border-radius:50%; }
 .scope-mark.on { border-color:#6557ff;background:#6557ff;box-shadow:inset 0 0 0 3px #fff; }
