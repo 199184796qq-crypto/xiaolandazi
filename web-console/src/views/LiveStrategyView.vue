@@ -77,6 +77,7 @@ import {
   getLiveAgentPlans,
   getLiveAgentPlanBenefits,
   getLiveAgentPlanFacts,
+  analyzeLiveAgentPlanFactDiff,
   updateLiveAgentPlanFactScope,
   updateLiveAgentPlanFactCategory,
   suggestLiveAgentPlanFactTypes,
@@ -4653,6 +4654,13 @@ function setInlineFactEditor(id: number, el: unknown) {
   if (el) inlineFactEditors.set(id, el as { submit: () => Promise<void> })
   else inlineFactEditors.delete(id)
 }
+// 让模型从方案已有事实里找这条事实要对比的两个链接之间的差异。
+function analyzeInlineFactDiff(item: LiveAgentPlanFact) {
+  const planId = currentRoomPlanId.value
+  if (!planId) throw new Error('当前没有方案，请刷新后重试')
+  return analyzeLiveAgentPlanFactDiff(planId, item)
+}
+
 function submitInlineFact(item: LiveAgentPlanFact) {
   const editor = inlineFactEditors.get(item.id)
   if (editor) void editor.submit()
@@ -7151,7 +7159,7 @@ onBeforeUnmount(() => {
                     <td class="strategy-formal-fact-type-cell"><FormalFactTypeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factCategorySavingId !== null || item.plan_id !== currentRoomPlanId" :suggestion="factTypeSuggestionMap[item.id] || null" :save="saveFormalFactCategory" /></td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value" @contextmenu="openFactTypeMenu($event, item)">
-                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :ref="el => setInlineFactEditor(item.id, el)" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
+                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :ref="el => setInlineFactEditor(item.id, el)" :fact="item" :save="saveInlineFormalFactValue" :analyze="analyzeInlineFactDiff" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
                           <div v-if="item.conflict_warning?.detected" class="strategy-fact-conflict-warning" role="alert">

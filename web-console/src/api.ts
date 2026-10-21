@@ -980,6 +980,15 @@ export function updateLiveAgentPlanFactScope(planId: number, fact: LiveAgentPlan
   })
 }
 
+export type FactDiffAnalysis = { found: boolean; value?: string; reason?: string; example?: string; digits?: string[] }
+
+// 让模型从方案已有事实里找这两个链接能对上的差异；找不到时返回示例格式，告诉用户补什么。
+export function analyzeLiveAgentPlanFactDiff(planId: number, fact: LiveAgentPlanFact) {
+  return request<FactDiffAnalysis>('/api/v1/live-agent-plans/' + planId + '/facts/' + fact.id + '/diff-analysis', {
+    method: 'POST', body: JSON.stringify({ tenant_id: fact.tenant_id }),
+  })
+}
+
 export function updateLiveAgentPlanFactCategory(planId: number, fact: LiveAgentPlanFact, category: string) {
   return request<LiveAgentPlanFact>('/api/v1/live-agent-plans/' + planId + '/facts/' + fact.id + '/category', {
     method: 'PUT', body: JSON.stringify({ tenant_id: fact.tenant_id, expected_version_no: fact.version_no, category }),
