@@ -54,7 +54,6 @@ export interface AutoLoopOptions<T> {
   generate: (slot: WheelSlot, maxChars: number) => Promise<T>
   receive: (turn: T) => void
   score: (turn: T) => Promise<void>
-  feedback: (turn: T) => void | Promise<void>
 }
 
 // One outstanding generation only. A received turn is committed before scoring;
@@ -75,7 +74,6 @@ export async function runAutoLoop<T>(options: AutoLoopOptions<T>): Promise<'comp
     options.receive(turn)
     if (options.generatedChars() <= previousChars) throw new Error('本轮没有有效话术，已停止，避免空返回持续消耗请求')
     await options.score(turn)
-    await options.feedback(turn)
   }
   return 'completed'
 }

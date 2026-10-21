@@ -9,7 +9,7 @@ import (
 // 供 cleanCycleOpeningInstruction 做「删除开头指导文字」的程序判断。
 // 该逻辑不依赖语境复核模型（P0 语境复核已下线）。
 func cycleInstructionSources(state *anchorcycle.State) []string {
-	sources := []string{state.Task().SellingPoint, state.Task().Angle, state.PendingFeedback, cycleExpressionMethod(state)}
+	sources := []string{state.Task().SellingPoint, state.Task().Angle, state.SegmentDirective, cycleExpressionMethod(state)}
 	if plan := state.CurrentAnglePlan(); plan != nil {
 		sources = append(sources, plan.Goal, plan.Action)
 		sources = append(sources, plan.Hooks...)

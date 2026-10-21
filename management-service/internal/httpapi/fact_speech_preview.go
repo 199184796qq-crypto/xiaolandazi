@@ -101,7 +101,7 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	}
 	// 对齐新主线四层结构：预览母版不再塞进 SystemPrompt（主线不设 system 消息），
 	// 而是作为「环节约束」并入 user 的 packet。单事实讲品的边界约束由
-	// fact-speech-preview.md 提供，经 PendingFeedback 携带进「后续表达加强建议」字段。
+	// fact-speech-preview.md 提供，经 SegmentDirective 携带进「后续表达加强建议」字段。
 	var previewDirective string
 	if lecture == nil {
 		mother, _, err := loadReplaceablePromptAsset("ANCHOR_FACT_SPEECH_PREVIEW_PROMPT_PATH", "configs/prompts/anchor-style/fact-speech-preview.md", "事实话术预览母版")
@@ -119,7 +119,7 @@ func (s *Server) prepareFactSpeechPreview(ctx context.Context, tenant, plan, roo
 	if previewDirective != "" {
 		feedback = strings.TrimSpace(feedback + "\n\n【本环节生成约束，仅本段生效，不作为商品事实】\n" + previewDirective)
 	}
-	state.PendingFeedback = feedback
+	state.SegmentDirective = feedback
 	return state, nil
 }
 

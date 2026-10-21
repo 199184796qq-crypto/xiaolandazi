@@ -24,7 +24,6 @@ const factSpeechRewritePromptRelativePath = "configs/prompts/anchor-style/fact-s
 const auditFourLayerPromptRelativePath = "configs/prompts/anchor-style/compliance/audit-four-layer.md"
 const anchorStyleReviewPromptRelativePath = "configs/prompts/anchor-style/style-feedback-review.md"
 const anchorStyleScorecardPromptRelativePath = "configs/prompts/anchor-style/anchor-style-qualitative-extraction.md"
-const anchorStyleScoreFeedbackPromptRelativePath = "configs/prompts/anchor-style/score-feedback-template.md"
 
 // Project mode deliberately ignores stale browser/database template snapshots.
 // Manual overrides must be explicitly selected for this request.
@@ -58,9 +57,6 @@ func promptVersionSource(path, content string) string {
 	return fmt.Sprintf("%s#sha256=%x", path, sha256.Sum256([]byte(content)))
 }
 
-func loadAnchorStyleScoreFeedbackPrompt() (string, string, error) {
-	return loadReplaceablePromptAsset("ANCHOR_STYLE_SCORE_FEEDBACK_PROMPT_PATH", anchorStyleScoreFeedbackPromptRelativePath, "程序评分回灌模板")
-}
 
 // loadAnchorStyleAnalysisPrompt reads the Markdown on every compilation. This
 // is intentional: operators can replace the analysis method without changing

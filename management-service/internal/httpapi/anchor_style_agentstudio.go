@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/agentstudio"
+	"livecompanion/management/internal/anchorstylescore"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
@@ -332,6 +333,60 @@ func (s *Server) confirmedAnchorStyleAgentStudioAssets(ctx context.Context, tena
 		return model.LiveAnchorStyleMetaPromptAsset{}, model.LiveSellingPointWheelAsset{}, nil, errors.New("当前卖点轮盘没有可测试组合")
 	}
 	return meta, wheelAsset, tasks, nil
+}
+
+// optionalAnchorStyleAssets 读取方案的主播风格与评分基准，二者都允许缺失：
+// 没有绑定风格时返回零值资产，调用方按「自由发挥模式」处理（不打分、腔调交给模型）。
+// 卖点轮盘仍然必填——它是整场的任务来源，没有轮盘就没有可讲的卖点×角度。
+func (s *Server) optionalAnchorStyleAssets(ctx context.Context, tenantID, planID int64) (model.LiveAnchorStyleMetaPromptAsset, model.LiveSellingPointWheelAsset, []anchorStyleWheelTask, model.LiveAnchorStyleScorecardAsset, error) {
+	var meta model.LiveAnchorStyleMetaPromptAsset
+	var card model.LiveAnchorStyleScorecardAsset
+	metaAsset, err := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenantID, planID)
+	switch {
+	case err == nil && metaAsset.Status == "confirmed":
+		meta = metaAsset
+	case errors.Is(err, appdb.ErrLiveAnchorStyleMetaPromptNotFound):
+		// 方案未绑定风格：允许，按自由发挥处理。
+	case err != nil:
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取主播风格元提示词失败")
+	default:
+		// 有资产但未确认：当作未配置，不阻塞开播。
+	}
+	wheelAsset, err := s.store.GetActiveLiveSellingPointWheel(ctx, tenantID, planID)
+	if errors.Is(err, appdb.ErrLiveSellingPointWheelNotFound) || (err == nil && wheelAsset.Status != "confirmed") {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("请先确认并保存当前方案的卖点轮盘")
+	}
+	if err != nil {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取卖点轮盘失败")
+	}
+	if _, _, _, err = normalizeAnchorStyleSellingPointWheelJSON(wheelAsset.EffectiveWheelJSON()); err != nil {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("当前卖点轮盘格式无效")
+	}
+	var wheel anchorStyleSellingPointWheel
+	if json.Unmarshal([]byte(wheelAsset.EffectiveWheelJSON()), &wheel) != nil {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("当前卖点轮盘无法解析")
+	}
+	tasks := flattenAnchorStyleWheelTasks(wheel)
+	if len(tasks) == 0 {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("当前卖点轮盘没有可测试组合")
+	}
+	if meta.ID != 0 {
+		cardAsset, cardErr := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenantID, planID)
+		switch {
+		case cardErr == nil && cardAsset.Status == "confirmed" && cardAsset.MetaPromptAssetID == meta.ID:
+			if _, parseErr := anchorstylescore.Parse(cardAsset.EffectiveScorecardJSON()); parseErr != nil {
+				return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("评分基准无效")
+			}
+			card = cardAsset
+		case errors.Is(cardErr, appdb.ErrLiveAnchorStyleScorecardNotFound):
+			// 有风格没有基准：带腔调生成，但不打分。
+		case cardErr != nil:
+			return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取主播评分基准失败")
+		default:
+			// 基准未确认或不属于当前风格：当作未配置，不阻塞开播。
+		}
+	}
+	return meta, wheelAsset, tasks, card, nil
 }
 
 func renderAnchorStyleWheelContinuationPrompt(task anchorStyleWheelTask, maxChars int, feedbackPrompt string) string {

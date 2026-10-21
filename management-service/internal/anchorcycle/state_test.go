@@ -32,18 +32,49 @@ func add(t *testing.T, s *State, text string, score int) bool {
 	}
 	return adopted
 }
+
+// 方案没绑主播风格时本场不打分：首个过 P0/终审的候选直接采纳，
+// 不能因为空基准下分数恒低于门槛而把重试次数耗光。
+func TestFreeStyleAdoptsWithoutScoreGate(t *testing.T) {
+	s := fixture(t, 2)
+	s.StyleMD = ""
+	s.FreeStyle = true
+	if !s.NoStyle() || s.Gradable() {
+		t.Fatal("free style should disable grading")
+	}
+	if !add(t, &s, "哥哥姐姐们，这段话没有风格基准也要能采纳。", 20) {
+		t.Fatal("free style draft rejected by score gate")
+	}
+	if len(s.Accepted) != 1 || s.Accepted[0].Reason != "no_style_adopted" {
+		t.Fatalf("unexpected adoption reason: %+v", s.Accepted)
+	}
+	if len(s.Attempts) != 0 {
+		t.Fatal("free style must not keep retrying")
+	}
+}
+
+// 有风格时门槛照旧：低于阈值不采纳。
+func TestStyleModeStillEnforcesThreshold(t *testing.T) {
+	s := fixture(t, 1)
+	if s.NoStyle() || !s.Gradable() {
+		t.Fatal("style state must be graded")
+	}
+	if add(t, &s, "低于门槛的稿子", 50) {
+		t.Fatal("below gate adopted")
+	}
+}
 func TestOnlyAdoptedDraftUpdatesMemory(t *testing.T) {
 	s := fixture(t, 2)
 	if add(t, &s, "哥哥姐姐们，拒绝稿。", 50) {
 		t.Fatal("premature adoption")
 	}
-	if s.Cursor != 0 || len(s.Accepted) != 0 || len(s.Used) != 0 || s.StyleWindow != "" || len(s.RecentSummaries) != 0 || s.MacroReport.Version != "" {
+	if s.Cursor != 0 || len(s.Accepted) != 0 || len(s.Used) != 0 || len(s.RecentSummaries) != 0 {
 		t.Fatal("candidate polluted memory")
 	}
 	if !add(t, &s, "老乡，采纳稿。", 80) {
 		t.Fatal("passed candidate rejected")
 	}
-	if s.Cursor != 1 || s.Phase != "body" || len(s.Accepted) != 1 || len(s.Accepted[0].Attempts) != 2 || strings.Contains(s.StyleWindow, "拒绝稿") || s.Used[s.Queue[0].Key].Count != 1 {
+	if s.Cursor != 1 || s.Phase != "body" || len(s.Accepted) != 1 || len(s.Accepted[0].Attempts) != 2 || s.Used[s.Queue[0].Key].Count != 1 {
 		t.Fatalf("bad adoption: %+v", s)
 	}
 }
@@ -66,9 +97,6 @@ func TestFortyPointGateAcceptsRawScoreWithoutInflatingPunctuation(t *testing.T) 
 	if selected.Score.OverallScore != 40 || selected.Text != text || selected.RawText != c.RawText || !strings.HasSuffix(selected.OutputText, "？") || len(selected.PunctuationEdits) == 0 {
 		t.Fatal("raw text/score/repair trace not preserved")
 	}
-	if strings.Contains(s.StyleWindow, "？") || strings.Contains(s.StyleWindow, "39分") {
-		t.Fatal("formatting or rejected draft inflated macro stats")
-	}
 }
 func TestRetryLimitIncludesInitialAttemptAndSelectsBest(t *testing.T) {
 	s := fixture(t, 1)
@@ -78,7 +106,7 @@ func TestRetryLimitIncludesInitialAttemptAndSelectsBest(t *testing.T) {
 			t.Fatalf("attempt %d adoption=%v", i+1, adopted)
 		}
 	}
-	if s.Accepted[0].Selected.Text != "最高分原稿" || s.Accepted[0].Selected.Attempt != 1 || s.Accepted[0].Reason != "retry_limit_best" || len(s.Accepted[0].Attempts) != 4 || s.Phase != "closing" || len(s.Attempts) != 0 || strings.Contains(s.StyleWindow, "第四稿") {
+	if s.Accepted[0].Selected.Text != "最高分原稿" || s.Accepted[0].Selected.Attempt != 1 || s.Accepted[0].Reason != "retry_limit_best" || len(s.Accepted[0].Attempts) != 4 || s.Phase != "closing" || len(s.Attempts) != 0 {
 		t.Fatal(s)
 	}
 }
@@ -94,7 +122,7 @@ func TestFixedQueueAndClosingEndWithoutModuloLoop(t *testing.T) {
 		t.Fatal(s)
 	}
 	add(t, &s, "总结并自然承接下一轮", 90)
-	if s.Phase != "ended" || s.Status != "completed" || s.Cursor != 3 || len(s.Accepted) != 4 || len(s.Used) != 3 || s.FeedbackPending {
+	if s.Phase != "ended" || s.Status != "completed" || s.Cursor != 3 || len(s.Accepted) != 4 || len(s.Used) != 3 {
 		t.Fatal(s)
 	}
 	if _, err := s.AddCandidate(candidate("结束后不应生成", 100), anchorstylescore.Baseline{}); err == nil {
@@ -111,16 +139,14 @@ func TestEmptyQueueClosesWithoutInventingPoint(t *testing.T) {
 		t.Fatal(s)
 	}
 }
-func TestMemoryHasThreeSummariesAndThousandCharsOnly(t *testing.T) {
+func TestMemoryKeepsThreeSummaries(t *testing.T) {
 	s := fixture(t, 7)
 	for i := 0; i < 6; i++ {
 		add(t, &s, strings.Repeat(string(rune('甲'+i)), 300), 90)
 	}
-	if len(s.RecentSummaries) != 3 || s.MacroReport.Stats.Chars != 1000 || s.MacroReport.ObservationOnly || len(s.Used) != 6 {
+	// 1000 字宏观风格窗口已随 accepted_macro_feedback 一起下线，这里只校验近期摘要保留 3 条。
+	if len(s.RecentSummaries) != 3 || len(s.Used) != 6 {
 		t.Fatal(s)
-	}
-	if strings.Contains(s.StyleWindow, "甲") || !strings.Contains(s.StyleWindow, string(rune('甲'+5))) {
-		t.Fatal("window trim failed")
 	}
 }
 func TestWindowUnicodeAndCountingMatchBaseline(t *testing.T) {
@@ -148,23 +174,6 @@ func TestStateRoundTripRestoresCandidateWithoutConsumingPoint(t *testing.T) {
 	add(t, &restored, "恢复后采纳", 90)
 	if restored.Cursor != 1 || len(restored.Accepted[0].Attempts) != 2 {
 		t.Fatal(restored)
-	}
-}
-func TestMacroRepeatedAdviceDoesNotAccumulate(t *testing.T) {
-	s := fixture(t, 4)
-	s.MacroReport.Issues = []anchorstylescore.RollingIssue{{Key: "style_density", Category: "style", Actual: "啊：偏少", Target: "基准区间"}}
-	s.FeedbackPending = true
-	s.Accepted = make([]Segment, 4)
-	if !s.ShouldFeedback() {
-		t.Fatal("first issue not sent")
-	}
-	s.Accepted = append(s.Accepted, Segment{})
-	if s.ShouldFeedback() {
-		t.Fatal("same advice repeated too soon")
-	}
-	s.Accepted = append(s.Accepted, Segment{})
-	if !s.ShouldFeedback() {
-		t.Fatal("controller never rechecks")
 	}
 }
 func TestNoRetryAndInvalidConfigs(t *testing.T) {

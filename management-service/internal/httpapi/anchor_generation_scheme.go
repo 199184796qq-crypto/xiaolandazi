@@ -64,22 +64,29 @@ func (s *Server) captureRealtimeScheme(ctx context.Context, tenant, plan int64, 
 	if err != nil {
 		return err
 	}
-	meta, wheel, _, err := s.confirmedAnchorStyleAgentStudioAssets(ctx, tenant, plan)
+	// 风格与评分基准都可选：方案没绑风格时按自由发挥模式保存快照（StyleID/ScorecardID 为 0，
+	// StyleMD/BaselineJSON 为空），开播后不打分。卖点轮盘仍必填，它是任务来源。
+	meta, wheel, _, card, err := s.optionalAnchorStyleAssets(ctx, tenant, plan)
 	if err != nil {
 		return err
 	}
-	card, err := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan)
-	if err != nil || card.Status != "confirmed" || card.MetaPromptAssetID != meta.ID {
+	if meta.ID != 0 && card.ID == 0 {
 		return errors.New("请先初始化当前主播评分基准")
-	}
-	if _, err = anchorstylescore.Parse(card.EffectiveScorecardJSON()); err != nil {
-		return err
 	}
 	config := applyRealtimeOptions(settings.Cycle, options)
 	config.MaxCycles = 0
 	config.Rolling = true
 	input.GenerationContext["anchor_generation_options"] = options
-	input.GenerationContext["anchor_generation"] = liveAnchorScheme{Version: 1, StyleID: meta.ID, ScorecardID: card.ID, WheelID: wheel.ID, Config: config, StyleMD: meta.EffectiveMetaPromptMD(), BaselineJSON: card.EffectiveScorecardJSON(), BufferSeconds: options.BufferSeconds}
+	scheme := liveAnchorScheme{Version: 1, WheelID: wheel.ID, Config: config, BufferSeconds: options.BufferSeconds}
+	if meta.ID != 0 {
+		scheme.StyleID = meta.ID
+		scheme.StyleMD = meta.EffectiveMetaPromptMD()
+	}
+	if card.ID != 0 {
+		scheme.ScorecardID = card.ID
+		scheme.BaselineJSON = card.EffectiveScorecardJSON()
+	}
+	input.GenerationContext["anchor_generation"] = scheme
 	return nil
 }
 
@@ -104,19 +111,26 @@ func (s *Server) validateRealtimeScheme(ctx context.Context, tenant, plan int64,
 	if err = (realtimeGenerationOptions{scheme.BufferSeconds, scheme.Config.BodyMin, scheme.Config.BodyMax, scheme.Config.MaxChars}).validate(); err != nil {
 		return err
 	}
-	meta, err := s.store.GetLiveAnchorStyleMetaPrompt(ctx, tenant, plan, scheme.StyleID)
-	if err != nil || meta.EffectiveMetaPromptMD() == "" {
-		return errors.New("已保存主播元提示词不存在")
-	}
-	card, err := s.store.GetLiveAnchorStyleScorecard(ctx, tenant, plan, scheme.ScorecardID)
-	if err != nil || card.MetaPromptAssetID != meta.ID {
-		return errors.New("已保存评分基准与主播风格不匹配")
-	}
-	if scheme.StyleMD == "" || scheme.BufferSeconds < 20 || scheme.BufferSeconds > 600 {
-		return errors.New("已保存主播风格或缓存配置无效")
-	}
-	if _, err = anchorstylescore.Parse(scheme.BaselineJSON); err != nil {
-		return err
+	// StyleID / ScorecardID 为 0 表示本方案未绑主播风格：允许，按自由发挥模式校验。
+	if scheme.StyleID != 0 {
+		meta, err := s.store.GetLiveAnchorStyleMetaPrompt(ctx, tenant, plan, scheme.StyleID)
+		if err != nil || meta.EffectiveMetaPromptMD() == "" {
+			return errors.New("已保存主播元提示词不存在")
+		}
+		if scheme.ScorecardID != 0 {
+			card, err := s.store.GetLiveAnchorStyleScorecard(ctx, tenant, plan, scheme.ScorecardID)
+			if err != nil || card.MetaPromptAssetID != meta.ID {
+				return errors.New("已保存评分基准与主播风格不匹配")
+			}
+			if _, err = anchorstylescore.Parse(scheme.BaselineJSON); err != nil {
+				return err
+			}
+		}
+		if scheme.StyleMD == "" || scheme.BufferSeconds < 20 || scheme.BufferSeconds > 600 {
+			return errors.New("已保存主播风格或缓存配置无效")
+		}
+	} else if scheme.BufferSeconds < 20 || scheme.BufferSeconds > 600 {
+		return errors.New("已保存缓存配置无效")
 	}
 	if _, err = s.store.GetLiveSellingPointWheel(ctx, tenant, plan, scheme.WheelID); err != nil {
 		return err

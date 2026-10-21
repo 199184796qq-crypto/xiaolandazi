@@ -4500,19 +4500,6 @@ export function scoreAnchorStyleSpeech(
   )
 }
 
-export function generateAnchorStyleRollingFeedback(planId: number, input: {
-  feedback_profile_id: string
-  meta_prompt_asset_id: number
-  scorecard_asset_id: number
-  recent_texts: string[]
-  start_index: number
-}) {
-  return request<import('./types').AnchorStyleRollingFeedbackResponse>(
-    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/rolling-feedback',
-    { method: 'POST', body: JSON.stringify(input) },
-  )
-}
-
 function anchorCycleURL(planId: number, roomId: number, suffix = '') {
   return '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/cycle' + suffix + '?room_id=' + roomId
 }

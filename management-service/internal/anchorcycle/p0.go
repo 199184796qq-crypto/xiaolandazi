@@ -204,8 +204,6 @@ func (s *State) rejectP0Candidate(c Candidate) {
 	s.Attempts = []Candidate{}
 	s.P0RewritesUsed = 0
 	s.P0ConsecutiveSkips++
-	s.PendingFeedback = ""
-	s.FeedbackPending = false
 	p, _ := contentguard.Compile(s.P0PolicyMD)
 	if s.P0ConsecutiveSkips >= p.Data.Execution.MaxConsecutiveSkips && s.Surface != "formal_live" {
 		s.Status = "compliance_blocked"

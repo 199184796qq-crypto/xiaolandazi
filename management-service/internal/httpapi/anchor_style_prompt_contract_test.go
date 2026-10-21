@@ -31,7 +31,6 @@ func TestProjectModeReadsLatestAllMotherFamilies(t *testing.T) {
 		{"configs/prompts/anchor-style/cycle-product-focus-audit.md", "ANCHOR_CYCLE_PRODUCT_AUDIT_PROMPT_PATH", loadCycleProductAuditPrompt},
 		{anchorStyleScorecardPromptRelativePath, "ANCHOR_STYLE_SCORECARD_PROMPT_PATH", loadAnchorStyleScorecardPrompt},
 		{anchorStyleReviewPromptRelativePath, "ANCHOR_STYLE_REVIEW_PROMPT_PATH", loadAnchorStyleReviewPrompt},
-		{anchorStyleScoreFeedbackPromptRelativePath, "ANCHOR_STYLE_SCORE_FEEDBACK_PROMPT_PATH", loadAnchorStyleScoreFeedbackPrompt},
 		{"configs/prompts/anchor-style/cycle-segment-generation.md", "ANCHOR_STYLE_CYCLE_SEGMENT_PROMPT_PATH", func() (string, string, error) {
 			return loadReplaceablePromptAsset("ANCHOR_STYLE_CYCLE_SEGMENT_PROMPT_PATH", "configs/prompts/anchor-style/cycle-segment-generation.md", "cycle")
 		}},

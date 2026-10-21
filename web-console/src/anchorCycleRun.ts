@@ -1,4 +1,4 @@
-import type { AnchorStyleRollingFeedbackResponse, AnchorStyleSpeechScoreResponse } from './types'
+import type { AnchorStyleSpeechScoreResponse } from './types'
 
 export interface CycleCandidate {
   id: string; attempt: number; text: string; prompt: string
@@ -38,8 +38,7 @@ export interface CycleVoiceBundle {
 }
 export interface CycleSegment {
   phase: string; task: CycleTask; selected: CycleCandidate; attempts: CycleCandidate[]
-  reason: string; summary: string; macro_report: AnchorStyleRollingFeedbackResponse['report']
-  feedback?: AnchorStyleRollingFeedbackResponse
+  reason: string; summary: string
   cycle_number?: number; opening_version?: string
   opening_hook?: CycleOpeningHook
   voice?: CycleVoiceAsset
@@ -54,8 +53,8 @@ export interface CycleState {
   pending_opening_hook?: CycleOpeningHook; recent_opening_hook_ids?: string[]
   opening_hook_library_asset_id?: number
   attempts: CycleCandidate[]; accepted: CycleSegment[]; recent_summaries: string[]
-  style_window: string; pending_feedback: string; feedback_pending: boolean
-  macro_report: AnchorStyleRollingFeedbackResponse['report']; busy: boolean
+  segment_directive?: string
+  busy: boolean
   uncertain: boolean; warnings: string[]; error?: string; created_at: string
   p0_max_rewrites?: number
   p0_skipped?: { attempts: CycleCandidate[] }[]

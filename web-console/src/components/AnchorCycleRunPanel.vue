@@ -10,7 +10,7 @@ import OpeningHookSettingsPanel from './OpeningHookSettingsPanel.vue'
 import RiskText from './RiskText.vue'
 import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 
-const props = defineProps<{ planId: number; ready: boolean; config: Omit<CycleConfig, 'threshold' | 'max_retries' | 'max_chars' | 'point_gap' | 'repair_punctuation' | 'rolling' | 'body_segments' | 'combination_gap' | 'max_cycles'>; roomIds: number[]; advanced: boolean }>()
+const props = defineProps<{ planId: number; ready: boolean; freeStyle?: boolean; config: Omit<CycleConfig, 'threshold' | 'max_retries' | 'max_chars' | 'point_gap' | 'repair_punctuation' | 'rolling' | 'body_segments' | 'combination_gap' | 'max_cycles'>; roomIds: number[]; advanced: boolean }>()
 const emit = defineEmits<{ busy: [value: boolean] }>()
 const run = ref<CycleState | null>(null)
 const roomId = ref(0)
@@ -225,6 +225,7 @@ onBeforeUnmount(() => { active = false; stopped.value = true; ++epoch; clearAudi
       <button :disabled="running || creating || loading || ending" @click="restore">刷新当前进度</button>
       <button :disabled="!speech" @click="download('大循环采纳话术-' + planId + '.txt', speech)">下载话术</button>
     </div>
+    <p v-if="freeStyle" class="note">本方案没有绑定主播风格：本场由模型自由发挥语气，不打分、不设风格分门槛，只做 P0 合规审核、最终文字审核与去重。卖点×角度仍按已确认的卖点轮盘轮换。</p>
     <div class="tts-controls">
       <label><input v-model="ttsEnabled" type="checkbox" :disabled="!!run || creating">开启TTS声音试听（仅测试，不进入房间）</label>
       <div v-if="ttsEnabled && !run" class="controls">
@@ -264,13 +265,13 @@ onBeforeUnmount(() => { active = false; stopped.value = true; ++epoch; clearAudi
       </div>
       <div class="progress-bar" role="progressbar" aria-label="本轮已采纳任务进度" :aria-valuenow="progress.percent" :aria-valuemin="0" :aria-valuemax="100"><span :style="{ width: progress.percent + '%' }"></span></div>
       <p class="current-task">{{ run.phase === 'ended' ? '完成情况' : '当前任务' }}：{{ progress.task }}</p>
-      <p class="progress-metrics">本轮已采纳{{ progress.done }}/{{ progress.total }}段 · 卖点×角度已覆盖{{ progress.covered }}/{{ run.queue.length }}个 · 原稿达到{{ run.config.threshold }}分即采纳 · 1000字窗口{{ run.macro_report?.stats?.chars || 0 }}/1000字</p>
-      <p v-if="run.phase !== 'ended'" class="progress-metrics">{{ requestStartedAt ? '正在请求' : '下次请求' }}第{{ progress.nextAttempt }}/{{ progress.maxAttempts }}版{{ progress.nextAttempt > 1 ? '（同任务重写）' : '（首次生成）' }}<span v-if="requestStartedAt"> · 已等待{{ requestWaitSeconds }}秒（含生成、评分及必要回灌）</span></p>
+      <p class="progress-metrics">本轮已采纳{{ progress.done }}/{{ progress.total }}段 · 卖点×角度已覆盖{{ progress.covered }}/{{ run.queue.length }}个 · {{ freeStyle ? '本方案未绑定主播风格：不打分，审核通过即采纳' : '原稿达到' + run.config.threshold + '分即采纳' }}</p>
+      <p v-if="run.phase !== 'ended'" class="progress-metrics">{{ requestStartedAt ? '正在请求' : '下次请求' }}第{{ progress.nextAttempt }}/{{ progress.maxAttempts }}版{{ progress.nextAttempt > 1 ? '（同任务重写）' : '（首次生成）' }}<span v-if="requestStartedAt"> · 已等待{{ requestWaitSeconds }}秒（含生成与评分）</span></p>
       <p v-if="progress.lastScore !== null" class="progress-metrics">上一采纳段：{{ progress.lastScore }}分 · 选中稿模型耗时{{ progress.lastGenerationSeconds.toFixed(2) }}秒 · 本段所有候选模型累计{{ progress.lastTaskGenerationSeconds.toFixed(2) }}秒</p>
       <p v-if="run.config.body_min" class="progress-metrics">中间讲解允许{{ run.config.body_min }}～{{ run.config.body_max }}段，本轮计划{{ progress.bodyTotal }}段；{{ run.pending_price_hook ? '下一段必须兑现：' + run.pending_price_hook.promise : '当前没有待兑现塑价钩子' }}</p>
     </div>
     <p v-else class="progress">{{ creating ? '正在建立大循环会话…' : '等待开始大循环' }}</p>
-    <p class="note">{{ notice || '首场完整版开场，后续收口后接新版开场；卖点池优先未讲组合，耗尽后隔开复用、换讲法。重写不推进任务，1000字窗口跨轮保留，只统计采纳原稿。' }}</p>
+    <p class="note">{{ notice || '首场完整版开场，后续收口后接新版开场；卖点池优先未讲组合，耗尽后隔开复用、换讲法。重写不推进任务。' }}</p>
     <RiskText :plan-id="planId" :text="speech" box auto-scroll label="大循环采纳稿" />
     <details v-if="riskDrafts.length">
       <summary>查看被拦截的风险稿（不进入正文或声音）</summary>
@@ -297,7 +298,7 @@ onBeforeUnmount(() => { active = false; stopped.value = true; ++epoch; clearAudi
       <p class="note">默认达到40分即采纳，低于阈值才重写；首次生成＋最多{{ retries }}次重试。默认测试2轮，每轮开场1段＋中间2～6段＋收口1段；每轮计划一次，重写不改计划。塑价默认本段完成，偶尔留钩时下一段先兑现，不连续吊着；必要承接可延长但不超过6段。测试轮数设0才持续。避重间隔无法满足时暂停，不偷偷放宽。补标点不改原始评分。本场状态只放Redis，结束清除，重启重新开始；生成的声音资产包另存媒体库。页面关闭后不发新请求。模型和TTS会产生费用。</p>
     </details>
     <details v-if="advanced && run">
-      <summary>候选稿、逐段评分、采纳结果和1000字回灌 JSON</summary>
+      <summary>候选稿、逐段评分和采纳结果</summary>
       <button @click="download('大循环完整记录-' + run.run_id + '.json', JSON.stringify(run, null, 2), 'application/json;charset=utf-8')">导出完整记录</button>
       <pre>{{ JSON.stringify(run, null, 2) }}</pre>
     </details>

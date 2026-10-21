@@ -52,7 +52,7 @@ func (s *State) MainlineReuseWindow() (total, reused int) {
 }
 
 func (s *State) formalMainlineShouldReuse() bool {
-	if !s.SpeechReuseEnabled() || s.FirstLiveOpening() || s.PreviewLimitMS > 0 || s.PriceHook != nil || s.P0PendingRepair != nil || s.PendingFeedback != "" || len(s.Attempts) > 0 || s.Task().ProductMode == "lecture" || s.Task().ProductMode == "auxiliary" {
+	if !s.SpeechReuseEnabled() || s.FirstLiveOpening() || s.PreviewLimitMS > 0 || s.PriceHook != nil || s.P0PendingRepair != nil || s.SegmentDirective != "" || len(s.Attempts) > 0 || s.Task().ProductMode == "lecture" || s.Task().ProductMode == "auxiliary" {
 		return false
 	}
 	total, reused := s.MainlineReuseWindow()

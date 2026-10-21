@@ -39,7 +39,7 @@ func renderLectureTaskMessages(state *anchorcycle.State) ([]agentgateway.Message
 			recent = append(recent, tailText(cycleVoiceText(part.Selected), 220))
 		}
 	}
-	packet, _ := json.Marshal(map[string]any{"title": task.SellingPoint, "purpose": task.LecturePurpose, "angle": task.Angle, "facts": task.LectureFacts, "expression": expression, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "recent_for_dedup_only": recent, "max_chars": min(220, state.Config.MaxChars), "retry_feedback": tailText(state.PendingFeedback, 700)})
+	packet, _ := json.Marshal(map[string]any{"title": task.SellingPoint, "purpose": task.LecturePurpose, "angle": task.Angle, "facts": task.LectureFacts, "expression": expression, "current_rules": generationP0View(state.P0PolicyMD, state.Config.ComplianceScope), "recent_for_dedup_only": recent, "max_chars": min(220, state.Config.MaxChars), "retry_feedback": tailText(state.SegmentDirective, 700)})
 	if task.LecturePlanJSON != "" {
 		plan, parseErr := parseLectureSegmentPlan(task.LecturePlanJSON, task.LectureFacts)
 		if parseErr != nil {

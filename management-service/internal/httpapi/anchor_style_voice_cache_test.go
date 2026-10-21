@@ -208,11 +208,11 @@ func TestCycleCacheFingerprintAndContextRules(t *testing.T) {
 	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) == nil {
 		t.Fatal("angle cache not used")
 	}
-	state.PendingFeedback = "纠正开头"
+	state.SegmentDirective = "纠正开头"
 	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) != nil {
 		t.Fatal("feedback bypassed")
 	}
-	state.PendingFeedback = ""
+	state.SegmentDirective = ""
 	state.Accepted = []anchorcycle.Segment{segment}
 	if s.cachedCycleCandidate(context.Background(), state, anchorstylescore.Baseline{}) != nil {
 		t.Fatal("recent prose repeated")

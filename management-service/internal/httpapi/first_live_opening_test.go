@@ -43,7 +43,7 @@ func TestFirstAndLaterOpeningLibraryEligibility(t *testing.T) {
 	if !libraryEligible(state) {
 		t.Fatal("closing excluded from shared mix")
 	}
-	state.PendingFeedback = "用户本次纠正"
+	state.SegmentDirective = "用户本次纠正"
 	if libraryEligible(state) {
 		t.Fatal("current correction bypassed")
 	}
@@ -124,7 +124,7 @@ func TestDistinctFirstOpeningRetriesOnlyOnceAndKeepsFullGenerationContext(t *tes
 	state.Phase = "opening"
 	state.BaselineJSON = textTestBaseline()
 	state.FirstOpeningHistory = []string{"这款商品适合朋友们一起分享，按本次资料选择规格。"}
-	state.PendingFeedback = "用户已确认的原始要求"
+	state.SegmentDirective = "用户已确认的原始要求"
 	calls := 0
 	result, _, e := generateDistinctFirstOpening(&state, "历史只供避重，完成本次任务。", func() (agentgateway.Response, []agentgateway.Message, error) {
 		calls++
@@ -142,7 +142,7 @@ func TestDistinctFirstOpeningRetriesOnlyOnceAndKeepsFullGenerationContext(t *tes
 		}
 		return agentgateway.Response{Text: "想按人数选规格的话，先看看今天有哪些人一起用，再核对资料里的适用范围。"}, messages, nil
 	})
-	if e != nil || calls != 2 || firstOpeningRepeated(result.Text, state.FirstOpeningHistory) || state.PendingFeedback != "用户已确认的原始要求" {
+	if e != nil || calls != 2 || firstOpeningRepeated(result.Text, state.FirstOpeningHistory) || state.SegmentDirective != "用户已确认的原始要求" {
 		t.Fatal("fresh opening not distinct or context leaked", calls, e)
 	}
 	if len(state.Accepted) != 0 {

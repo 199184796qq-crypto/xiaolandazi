@@ -270,7 +270,6 @@ func (s *Server) anchorStyleWorkbenchScorecardConfirm(w http.ResponseWriter, r *
 
 type anchorStyleScoreResponse struct {
 	Score             anchorstylescore.Result   `json:"score"`
-	Feedback          anchorstylescore.Feedback `json:"feedback"`
 	ScorecardAssetID  int64                     `json:"scorecard_asset_id"`
 	MetaPromptAssetID int64                     `json:"meta_prompt_asset_id"`
 	SampleSHA256      string                    `json:"sample_sha256"`
@@ -332,24 +331,10 @@ func (s *Server) anchorStyleWorkbenchScore(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	score := anchorstylescore.Score(text, b, input.Task.SellingPoint+" × "+input.Task.Angle)
-	feedback := buildAnchorStyleScoreFeedback(score, b)
 	writeJSON(w, 200, anchorStyleScoreResponse{
-		Score: score, Feedback: feedback,
+		Score: score,
 		ScorecardAssetID: a.ID, MetaPromptAssetID: a.MetaPromptAssetID, SampleSHA256: a.SampleSHA256,
 		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))), BaselineJSON: a.EffectiveScorecardJSON(),
 	})
 }
 
-func buildAnchorStyleScoreFeedback(score anchorstylescore.Result, b anchorstylescore.Baseline) anchorstylescore.Feedback {
-	md, source, err := loadAnchorStyleScoreFeedbackPrompt()
-	if err != nil {
-		return anchorstylescore.Feedback{Status: "template_error", Prompt: "", Error: err.Error(), TemplateSource: source}
-	}
-	template, err := anchorstylescore.ParseFeedbackTemplate(md)
-	if err != nil {
-		return anchorstylescore.Feedback{Status: "template_error", Prompt: "", Error: err.Error(), TemplateSource: source}
-	}
-	feedback := anchorstylescore.BuildFeedback(score, b, template)
-	feedback.TemplateSource = source
-	return feedback
-}

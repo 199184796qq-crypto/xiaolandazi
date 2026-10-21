@@ -55,7 +55,7 @@ func TestP0ViolationSkipsImmediatelyWithoutAdoption(t *testing.T) {
 	s.PendingOpeningHook = &OpeningHook{ID: "unused-hook"}
 	// 局部重写已移除：P0 违规（删词兜底也救不回的整段违规）应直接跳过，不调模型重写。
 	rejectP0Unfixable(t, &s)
-	if len(s.Accepted) != 0 || len(s.Used) != 0 || s.StyleWindow != "" || s.BodyCount != 0 || len(s.RecentOpeningHookIDs) != 0 {
+	if len(s.Accepted) != 0 || len(s.Used) != 0 || s.SegmentDirective != "" || s.BodyCount != 0 || len(s.RecentOpeningHookIDs) != 0 {
 		t.Fatal("illegal text polluted memory")
 	}
 	if s.P0PendingRepair != nil || s.Cursor == 0 {

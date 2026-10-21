@@ -256,7 +256,7 @@ func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segm
 }
 func libraryEligible(state *anchorcycle.State) bool {
 	phase := state.Phase == "body" || state.Phase == "closing" || state.Phase == "opening" && !state.FirstLiveOpening()
-	return state.Surface == "formal_live" && phase && state.SpeechReuseEnabled() && state.Task().ProductMode != "lecture" && state.Task().ProductMode != "auxiliary" && state.PreviewLimitMS == 0 && state.Config.TTS != nil && len(state.Attempts) == 0 && state.P0PendingRepair == nil && state.PriceHook == nil && state.PendingFeedback == "" && !libraryDeadlineSensitive(state)
+	return state.Surface == "formal_live" && phase && state.SpeechReuseEnabled() && state.Task().ProductMode != "lecture" && state.Task().ProductMode != "auxiliary" && state.PreviewLimitMS == 0 && state.Config.TTS != nil && len(state.Attempts) == 0 && state.P0PendingRepair == nil && state.PriceHook == nil && state.SegmentDirective == "" && !libraryDeadlineSensitive(state)
 }
 func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State, b anchorstylescore.Baseline) (*lib.Entry, string, string, string) {
 	if s.speechLibrary == nil || !libraryEligible(state) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
@@ -349,7 +349,7 @@ func (s *Server) libraryReviewContext(state *anchorcycle.State, c anchorcycle.Ca
 // storage only; it never selects old text during a repair or promise task.
 func (s *Server) prepareApprovedLibraryText(ctx context.Context, state *anchorcycle.State, c *anchorcycle.Candidate) {
 	phase := state.Phase == "body" || state.Phase == "closing" || state.Phase == "opening" && !state.FirstLiveOpening()
-	if c.LibraryDecision != "" || s.speechLibrary == nil || state.Surface != "formal_live" || !phase || state.Config.TTS == nil || state.PriceHook != nil || state.PendingFeedback != "" || state.Task().ProductMode == "lecture" || state.Task().ProductMode == "auxiliary" || libraryDeadlineSensitive(state) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(*c) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
+	if c.LibraryDecision != "" || s.speechLibrary == nil || state.Surface != "formal_live" || !phase || state.Config.TTS == nil || state.PriceHook != nil || state.SegmentDirective != "" || state.Task().ProductMode == "lecture" || state.Task().ProductMode == "auxiliary" || libraryDeadlineSensitive(state) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(*c) || !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
 		return
 	}
 	if anchorcycle.InspectPrice(c.OutputText, state.Task()).Hook != "" {

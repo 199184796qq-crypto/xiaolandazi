@@ -70,12 +70,10 @@ func (s *RedisStore) Get(ctx context.Context, tenant, plan, room int64) (*State,
 		}
 		if leased == 0 {
 			state.Busy = false
-			// Adoption was already committed; only the optional feedback may
-			// need repeating. Without adoption, never infer a lost generation failed.
-			if !state.FeedbackPending {
-				state.Uncertain = true
-				state.Error = "上一轮结果未确认，请结束本场重新开始，不能盲目重发"
-			}
+			// 宏观回灌环节已下线，Busy 期间不再有「可选的后置调用」可重复；
+			// 租约丢失只能说明上一轮结果未确认，不能按已完成处理。
+			state.Uncertain = true
+			state.Error = "上一轮结果未确认，请结束本场重新开始，不能盲目重发"
 		}
 	}
 	if err := s.loadVoices(ctx, &state); err != nil {

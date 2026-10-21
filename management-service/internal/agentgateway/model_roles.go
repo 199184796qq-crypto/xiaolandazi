@@ -35,7 +35,7 @@ func UsesSpeechModel(stage string) bool {
 	switch stage {
 	case "lecture_task_preview":
 		return true
-	case "mainline_text", "speech_generation", "interaction_agent_answer", "speech_review", "speech_style_wrapper", "rolling_feedback", "score_feedback", "accepted_macro_feedback", "rolling_style_feedback", "style_feedback_review", "mainline_p0_context", "interaction_bridge", "interaction_return_bridge", "return_bridge":
+	case "mainline_text", "speech_generation", "interaction_agent_answer", "speech_review", "speech_style_wrapper", "score_feedback", "style_feedback_review", "mainline_p0_context", "interaction_bridge", "interaction_return_bridge", "return_bridge":
 		return true
 	default:
 		return false

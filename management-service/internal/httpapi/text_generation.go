@@ -316,10 +316,7 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		}
 		recent = append(recent, cycleVoiceText(part.Selected))
 	}
-	feedback := state.PendingFeedback
-	if len(state.Attempts) > 0 {
-		feedback += "\n" + state.Attempts[len(state.Attempts)-1].RetryFeedback
-	}
+	feedback := state.SegmentDirective
 	maxChars := state.Config.MaxChars
 	if task.ProductMaxChars > 0 && task.ProductMaxChars < maxChars {
 		maxChars = task.ProductMaxChars

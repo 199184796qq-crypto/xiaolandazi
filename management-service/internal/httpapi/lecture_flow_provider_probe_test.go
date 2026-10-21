@@ -105,19 +105,19 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 	phases := []string{"正常讲品", "转入原料故事", "回到讲品"}
 	for part := 0; part < 3; part++ {
 		state.Config.MaxChars = 110
-		state.PendingFeedback = "本次只完成规格选择片段，约80—110字，沿用当前商品事实。"
+		state.SegmentDirective = "本次只完成规格选择片段，约80—110字，沿用当前商品事实。"
 		state.Queue[state.TaskIndex].Angle = "解释当前整鸭商品的900克分量与相关价格，不补其它规格或物流"
 		if part == 1 {
 			state.Config.MaxChars = 200
 			lecture := anchorcycle.Task{SellingPoint: "南充土麻鸭与本地老卤", Angle: "原料选择：从南充水土与本地鸭、本地卤解释地道口味；只讲这个角度，避免营养功效、绝对化口感和未经确认的养殖推论", Key: "demo-lecture", ProductMode: "lecture", LectureTopic: 1, LecturePurpose: "让观众理解杨鸭子为何选择本地原料，建立对原料与地方风味的认识", LectureFacts: "用户提供的原文材料：\n这杨鸭子用的土麻鸭，就产自咱们四川南充——嘉陵江穿城而过，丘陵水田、气候温润，鸭子就在这些稻田水塘里散养，天然好水土养出来的。南充本来就是吃鸭的老地方，杨鸭子更是咱们本地的老字号招牌。\n一是肉紧，散养运动多，咬下去有嚼头。\n本地水土、本地鸭子、本地老卤，这才做得出地道的杨鸭子。", ProductMaxChars: 220}
 			state.Lectures = &anchorcycle.LectureRuntime{Active: &lecture}
 			state.Phase = "lecture"
-			state.PendingFeedback = "本次完成原料故事片段，承接刚才选鸭子的介绍，约160—200字。"
+			state.SegmentDirective = "本次完成原料故事片段，承接刚才选鸭子的介绍，约160—200字。"
 		}
 		if part == 2 {
 			state.Lectures.Active = nil
 			state.Phase = "body"
-			state.PendingFeedback = "本次只完成回到口味选择片段，约80—110字，首句自然接住刚才的地方风味。"
+			state.SegmentDirective = "本次只完成回到口味选择片段，约80—110字，首句自然接住刚才的地方风味。"
 			state.TaskIndex = 0
 			for i, task := range state.Queue {
 				if strings.Contains(task.SellingPoint, "口味") || strings.Contains(task.SellingPoint, "包装") {
@@ -130,7 +130,7 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 			// material, instead of inviting another all-product introduction.
 			state.ProductFocus.Facts = []anchorcycle.ScopedFact{{Text: "麻辣和五香两种口味均可选，喜欢辣味可以选麻辣，不喜欢辣味可以选五香。", Shared: true}}
 		}
-		baseFeedback := state.PendingFeedback
+		baseFeedback := state.SegmentDirective
 		var candidate anchorcycle.Candidate
 		passed := false
 		for attempt := 0; attempt < 5; attempt++ {
@@ -151,7 +151,7 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 				scopeTask := state.Task()
 				scopeTask.ProductMode = "lecture"
 				scopeTask.LectureFacts = state.ProductFacts(state.Task())
-				scopeTask.LecturePurpose = state.PendingFeedback
+				scopeTask.LecturePurpose = state.SegmentDirective
 				scopeState.Lectures = &anchorcycle.LectureRuntime{Active: &scopeTask}
 				server.auditLectureCandidate(ctx, &scopeState, &candidate)
 			}
@@ -159,10 +159,10 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 				passed = true
 				break
 			}
-			state.PendingFeedback = baseFeedback + "上一段未通过文字审核，请依照当前事实和表达边界重新生成。"
+			state.SegmentDirective = baseFeedback + "上一段未通过文字审核，请依照当前事实和表达边界重新生成。"
 			t.Logf("part=%d retry=%d text=%s p0=%+v audit=%+v", part, attempt, cycleVoiceText(candidate), candidate.P0Report, candidate.LectureAudit)
 			if candidate.LectureAudit != nil {
-				state.PendingFeedback += "问题原句：" + candidate.LectureAudit.Quote + "；原因：" + candidate.LectureAudit.Reason
+				state.SegmentDirective += "问题原句：" + candidate.LectureAudit.Quote + "；原因：" + candidate.LectureAudit.Reason
 			}
 		}
 		if !passed {
@@ -171,7 +171,7 @@ func TestLectureFlowProviderDemo(t *testing.T) {
 		task := state.Task()
 		texts = append(texts, cycleVoiceText(candidate))
 		state.Accepted = append(state.Accepted, anchorcycle.Segment{Phase: state.Phase, Task: task, Selected: candidate})
-		state.PendingFeedback = ""
+		state.SegmentDirective = ""
 		t.Log(phases[part] + "：" + texts[len(texts)-1])
 	}
 	voiceID, modelName, err := server.resolveFormalVoice(ctx, tenant, fullShowVariantVoiceInput{Source: version.VoiceIdentity.Source, VoiceID: version.VoiceIdentity.VoiceID, ProfileID: version.VoiceIdentity.ProfileID, BindingID: version.VoiceIdentity.BindingID, Model: version.VoiceIdentity.Model})

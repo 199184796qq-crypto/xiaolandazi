@@ -154,7 +154,6 @@ type Candidate struct {
 	Score                   anchorstylescore.Result               `json:"score"`
 	GenerationMS            int64                                 `json:"generation_ms"`
 	EventIDs                []string                              `json:"event_ids"`
-	RetryFeedback           string                                `json:"retry_feedback,omitempty"`
 	CreatedAt               string                                `json:"created_at"`
 	PriceCheck              PriceCheck                            `json:"price_check,omitempty"`
 	ContentIssue            string                                `json:"content_issue,omitempty"`
@@ -165,21 +164,19 @@ type Candidate struct {
 	P0RewriteNumber         int                                   `json:"p0_rewrite_number,omitempty"`
 }
 type Segment struct {
-	Quota          *SegmentQuota                  `json:"scheduled_quota,omitempty"`
-	DeliveryStatus *SegmentDelivery               `json:"delivery_status,omitempty"`
-	LectureSkipped bool                           `json:"lecture_skipped,omitempty"`
-	Phase          string                         `json:"phase"`
-	CycleNumber    int                            `json:"cycle_number,omitempty"`
-	OpeningVersion string                         `json:"opening_version,omitempty"`
-	OpeningHook    *OpeningHook                   `json:"opening_hook,omitempty"`
-	Task           Task                           `json:"task"`
-	Selected       Candidate                      `json:"selected"`
-	Attempts       []Candidate                    `json:"attempts"`
-	Reason         string                         `json:"reason"`
-	Summary        string                         `json:"summary"`
-	MacroReport    anchorstylescore.RollingReport `json:"macro_report"`
-	Feedback       json.RawMessage                `json:"feedback,omitempty"`
-	Voice          *VoiceAsset                    `json:"voice,omitempty"`
+	Quota          *SegmentQuota    `json:"scheduled_quota,omitempty"`
+	DeliveryStatus *SegmentDelivery `json:"delivery_status,omitempty"`
+	LectureSkipped bool             `json:"lecture_skipped,omitempty"`
+	Phase          string           `json:"phase"`
+	CycleNumber    int              `json:"cycle_number,omitempty"`
+	OpeningVersion string           `json:"opening_version,omitempty"`
+	OpeningHook    *OpeningHook     `json:"opening_hook,omitempty"`
+	Task           Task             `json:"task"`
+	Selected       Candidate        `json:"selected"`
+	Attempts       []Candidate      `json:"attempts"`
+	Reason         string           `json:"reason"`
+	Summary        string           `json:"summary"`
+	Voice          *VoiceAsset      `json:"voice,omitempty"`
 }
 type Use struct {
 	Count       int    `json:"count"`
@@ -194,106 +191,106 @@ type SpeechPoolEntry struct {
 	LastIndex  int    `json:"last_index"`
 }
 type State struct {
-	FirstOpeningHistory          []string                       `json:"first_opening_history,omitempty"`
-	FirstOpeningHistoryLoaded    bool                           `json:"first_opening_history_loaded,omitempty"`
-	DeliveryQuotaRebalance       bool                           `json:"delivery_quota_rebalance,omitempty"`
-	FinalReviewRecovery          *FinalReviewRecovery           `json:"final_review_recovery,omitempty"`
-	LibrarySourceSHA             string                         `json:"library_source_sha,omitempty"`
-	FinalContentReviewRequired   bool                           `json:"final_content_review_required,omitempty"`
-	FinalContentReviewContextSHA string                         `json:"final_content_review_context_sha256,omitempty"`
-	LatestExpressionConstraints  []map[string]any               `json:"latest_expression_constraints,omitempty"`
-	Lectures                     *LectureRuntime                `json:"lectures,omitempty"`
-	AnglePendingUses             []AnglePlayedUse               `json:"angle_pending_uses,omitempty"`
-	AngleProgress                map[string]*AngleUseProgress   `json:"angle_use_progress,omitempty"`
-	AngleRegisteredTracks        map[string]bool                `json:"angle_registered_tracks,omitempty"`
-	AngleTrackBindings           map[string]AngleTrackBinding   `json:"angle_track_bindings,omitempty"`
-	AngleReceiptSequence         uint64                         `json:"angle_receipt_sequence,omitempty"`
-	AnglePlans                   map[string]*AnglePlan          `json:"angle_plans,omitempty"`
-	AnglePlanMotherSHA           string                         `json:"angle_plan_mother_sha,omitempty"`
-	TextModel                    *agentgateway.SpeechModel      `json:"text_model_snapshot,omitempty"`
-	ReviewModel                  *agentgateway.SpeechModel      `json:"review_model_snapshot,omitempty"`
-	TextPromptSHA                string                         `json:"text_prompt_sha256,omitempty"`
-	GenerationSkips              []GenerationSkip               `json:"generation_skips,omitempty"`
-	ContentStrategy              *contentstrategy.Snapshot      `json:"content_strategy,omitempty"`
-	ProductFocus                 *ProductFocus                  `json:"product_focus,omitempty"`
-	AcceptedOffset               int                            `json:"accepted_offset,omitempty"`
-	Delivery                     *MainlineDelivery              `json:"mainline_delivery,omitempty"`
-	Surface                      string                         `json:"surface,omitempty"`
-	PreviewLimitMS               int64                          `json:"preview_limit_ms,omitempty"`
-	StreamControlled             bool                           `json:"stream_controlled,omitempty"`
-	DerivedSafetyAssetID         int64                          `json:"derived_safety_asset_id,omitempty"`
-	Version                      int                            `json:"version"`
-	RunID                        string                         `json:"run_id"`
-	Revision                     int64                          `json:"revision"`
-	TenantID                     int64                          `json:"tenant_id"`
-	PlanID                       int64                          `json:"plan_id"`
-	RoomID                       int64                          `json:"room_id"`
-	Phase                        string                         `json:"phase"`
-	Status                       string                         `json:"status"`
-	Cursor                       int                            `json:"cursor"`
-	TaskIndex                    int                            `json:"task_index"`
-	OpeningCount                 int                            `json:"opening_count"`
+	FirstOpeningHistory          []string                     `json:"first_opening_history,omitempty"`
+	FirstOpeningHistoryLoaded    bool                         `json:"first_opening_history_loaded,omitempty"`
+	DeliveryQuotaRebalance       bool                         `json:"delivery_quota_rebalance,omitempty"`
+	FinalReviewRecovery          *FinalReviewRecovery         `json:"final_review_recovery,omitempty"`
+	LibrarySourceSHA             string                       `json:"library_source_sha,omitempty"`
+	FinalContentReviewRequired   bool                         `json:"final_content_review_required,omitempty"`
+	FinalContentReviewContextSHA string                       `json:"final_content_review_context_sha256,omitempty"`
+	LatestExpressionConstraints  []map[string]any             `json:"latest_expression_constraints,omitempty"`
+	Lectures                     *LectureRuntime              `json:"lectures,omitempty"`
+	AnglePendingUses             []AnglePlayedUse             `json:"angle_pending_uses,omitempty"`
+	AngleProgress                map[string]*AngleUseProgress `json:"angle_use_progress,omitempty"`
+	AngleRegisteredTracks        map[string]bool              `json:"angle_registered_tracks,omitempty"`
+	AngleTrackBindings           map[string]AngleTrackBinding `json:"angle_track_bindings,omitempty"`
+	AngleReceiptSequence         uint64                       `json:"angle_receipt_sequence,omitempty"`
+	AnglePlans                   map[string]*AnglePlan        `json:"angle_plans,omitempty"`
+	AnglePlanMotherSHA           string                       `json:"angle_plan_mother_sha,omitempty"`
+	TextModel                    *agentgateway.SpeechModel    `json:"text_model_snapshot,omitempty"`
+	ReviewModel                  *agentgateway.SpeechModel    `json:"review_model_snapshot,omitempty"`
+	TextPromptSHA                string                       `json:"text_prompt_sha256,omitempty"`
+	GenerationSkips              []GenerationSkip             `json:"generation_skips,omitempty"`
+	ContentStrategy              *contentstrategy.Snapshot    `json:"content_strategy,omitempty"`
+	ProductFocus                 *ProductFocus                `json:"product_focus,omitempty"`
+	AcceptedOffset               int                          `json:"accepted_offset,omitempty"`
+	Delivery                     *MainlineDelivery            `json:"mainline_delivery,omitempty"`
+	Surface                      string                       `json:"surface,omitempty"`
+	PreviewLimitMS               int64                        `json:"preview_limit_ms,omitempty"`
+	StreamControlled             bool                         `json:"stream_controlled,omitempty"`
+	DerivedSafetyAssetID         int64                        `json:"derived_safety_asset_id,omitempty"`
+	Version                      int                          `json:"version"`
+	RunID                        string                       `json:"run_id"`
+	Revision                     int64                        `json:"revision"`
+	TenantID                     int64                        `json:"tenant_id"`
+	PlanID                       int64                        `json:"plan_id"`
+	RoomID                       int64                        `json:"room_id"`
+	Phase                        string                       `json:"phase"`
+	Status                       string                       `json:"status"`
+	Cursor                       int                          `json:"cursor"`
+	TaskIndex                    int                          `json:"task_index"`
+	OpeningCount                 int                          `json:"opening_count"`
 	// OpeningSelection 是首场开场「两次调用」中第一次选材的结果：
 	// 模型从候选池选「卖点×角度 + 开场方式」，第二次写话术据此聚焦。
-	OpeningSelection             *OpeningSelection              `json:"opening_selection,omitempty"`
-	PendingOpeningHook           *OpeningHook                   `json:"pending_opening_hook,omitempty"`
-	RecentOpeningHookIDs         []string                       `json:"recent_opening_hook_ids,omitempty"`
-	OpeningHookLibraryMD         string                         `json:"opening_hook_library_md,omitempty"`
-	OpeningHookLibrarySource     string                         `json:"opening_hook_library_source,omitempty"`
-	OpeningHookLibraryAssetID    int64                          `json:"opening_hook_library_asset_id,omitempty"`
-	CycleNumber                  int                            `json:"cycle_number"`
-	BodyCount                    int                            `json:"body_count"`
-	BodyTarget                   int                            `json:"body_target,omitempty"`
-	PriceHook                    *PriceHook                     `json:"pending_price_hook,omitempty"`
-	Queue                        []Task                         `json:"queue"`
-	Config                       Config                         `json:"config"`
-	Session                      json.RawMessage                `json:"session"`
-	SessionID                    string                         `json:"session_id"`
-	BootstrapSent                bool                           `json:"bootstrap_sent,omitempty"`
-	StyleID                      int64                          `json:"style_asset_id"`
-	ScorecardID                  int64                          `json:"scorecard_asset_id"`
-	WheelID                      int64                          `json:"wheel_asset_id"`
-	StyleMD                      string                         `json:"style_md"`
-	Facts                        string                         `json:"facts"`
-	FissionSides                 []string                       `json:"fission_sides,omitempty"`
-	PointSchedules               map[string]*WeightedSchedule   `json:"point_schedules,omitempty"`
-	ContentSchedule              *WeightedSchedule              `json:"content_schedule,omitempty"`
-	ContentScheduleBase          map[string]int                 `json:"content_schedule_base,omitempty"`
-	ContentAdopted               map[string]int                 `json:"content_adopted,omitempty"`
-	PendingContentKind           string                         `json:"pending_content_kind,omitempty"`
-	PointUses                    map[string]int                 `json:"point_uses,omitempty"`
-	ScheduledAngleUses           map[string]int                 `json:"scheduled_angle_uses,omitempty"`
-	SideUses                     map[string]map[string]int      `json:"side_uses,omitempty"`
-	FactSideMap                  map[string][]string            `json:"fact_side_map,omitempty"`
-	FactFamilyMap                map[string]string              `json:"fact_family_map,omitempty"`
-	BaselineJSON                 string                         `json:"baseline_json"`
-	Attempts                     []Candidate                    `json:"attempts"`
-	Accepted                     []Segment                      `json:"accepted"`
-	Used                         map[string]Use                 `json:"used_combinations"`
-	SpeechPool                   []SpeechPoolEntry              `json:"speech_pool,omitempty"`
-	DuplicateSkippedKeys         map[string]bool                `json:"duplicate_skipped_keys,omitempty"`
-	RecentSummaries              []string                       `json:"recent_summaries"`
-	StyleWindow                  string                         `json:"style_window"`
-	PendingFeedback              string                         `json:"pending_feedback"`
-	MacroReport                  anchorstylescore.RollingReport `json:"macro_report"`
-	FeedbackPending              bool                           `json:"feedback_pending"`
-	LastFeedbackFingerprint      string                         `json:"last_feedback_fingerprint"`
-	LastFeedbackIndex            int                            `json:"last_feedback_index"`
-	Busy                         bool                           `json:"busy"`
-	Uncertain                    bool                           `json:"uncertain"`
-	Warnings                     []string                       `json:"warnings"`
-	Error                        string                         `json:"error,omitempty"`
-	CreatedAt                    string                         `json:"created_at"`
-	P0PolicyMD                   string                         `json:"p0_policy_md,omitempty"`
-	P0PolicySource               string                         `json:"p0_policy_source,omitempty"`
-	P0MaxRewrites                int                            `json:"p0_max_rewrites,omitempty"`
-	P0RewritesUsed               int                            `json:"p0_rewrites_used,omitempty"`
-	P0PendingRepair              *contentguard.Repair           `json:"p0_pending_repair,omitempty"`
-	P0Skipped                    []P0Skip                       `json:"p0_skipped,omitempty"`
-	P0SkippedKeys                map[string]bool                `json:"p0_skipped_keys,omitempty"`
-	P0ConsecutiveSkips           int                            `json:"p0_consecutive_skips,omitempty"`
-	P0AuditPending               *Candidate                     `json:"p0_audit_pending,omitempty"`
-	P0Allowances                 []P0Allowance                  `json:"p0_allowances,omitempty"`
+	OpeningSelection          *OpeningSelection            `json:"opening_selection,omitempty"`
+	PendingOpeningHook        *OpeningHook                 `json:"pending_opening_hook,omitempty"`
+	RecentOpeningHookIDs      []string                     `json:"recent_opening_hook_ids,omitempty"`
+	OpeningHookLibraryMD      string                       `json:"opening_hook_library_md,omitempty"`
+	OpeningHookLibrarySource  string                       `json:"opening_hook_library_source,omitempty"`
+	OpeningHookLibraryAssetID int64                        `json:"opening_hook_library_asset_id,omitempty"`
+	CycleNumber               int                          `json:"cycle_number"`
+	BodyCount                 int                          `json:"body_count"`
+	BodyTarget                int                          `json:"body_target,omitempty"`
+	PriceHook                 *PriceHook                   `json:"pending_price_hook,omitempty"`
+	Queue                     []Task                       `json:"queue"`
+	Config                    Config                       `json:"config"`
+	Session                   json.RawMessage              `json:"session"`
+	SessionID                 string                       `json:"session_id"`
+	BootstrapSent             bool                         `json:"bootstrap_sent,omitempty"`
+	StyleID                   int64                        `json:"style_asset_id"`
+	ScorecardID               int64                        `json:"scorecard_asset_id"`
+	WheelID                   int64                        `json:"wheel_asset_id"`
+	StyleMD                   string                       `json:"style_md"`
+	Facts                     string                       `json:"facts"`
+	FissionSides              []string                     `json:"fission_sides,omitempty"`
+	PointSchedules            map[string]*WeightedSchedule `json:"point_schedules,omitempty"`
+	ContentSchedule           *WeightedSchedule            `json:"content_schedule,omitempty"`
+	ContentScheduleBase       map[string]int               `json:"content_schedule_base,omitempty"`
+	ContentAdopted            map[string]int               `json:"content_adopted,omitempty"`
+	PendingContentKind        string                       `json:"pending_content_kind,omitempty"`
+	PointUses                 map[string]int               `json:"point_uses,omitempty"`
+	ScheduledAngleUses        map[string]int               `json:"scheduled_angle_uses,omitempty"`
+	SideUses                  map[string]map[string]int    `json:"side_uses,omitempty"`
+	FactSideMap               map[string][]string          `json:"fact_side_map,omitempty"`
+	FactFamilyMap             map[string]string            `json:"fact_family_map,omitempty"`
+	BaselineJSON              string                       `json:"baseline_json"`
+	// FreeStyle 由开播时决定：方案没有绑定主播风格即置 true，本场自由发挥、不打分。
+	FreeStyle bool `json:"free_style,omitempty"`
+	Attempts                  []Candidate                  `json:"attempts"`
+	Accepted                  []Segment                    `json:"accepted"`
+	Used                      map[string]Use               `json:"used_combinations"`
+	SpeechPool                []SpeechPoolEntry            `json:"speech_pool,omitempty"`
+	DuplicateSkippedKeys      map[string]bool              `json:"duplicate_skipped_keys,omitempty"`
+	RecentSummaries           []string                     `json:"recent_summaries"`
+	// SegmentDirective 只承载「本段一次性指令」：首次开场写法、试听预览约束、
+	// 重试纠偏等。宏观风格回灌（accepted_macro_feedback）已整体下线，不再往这里
+	// 写跨段的风格纠正结果。
+	SegmentDirective   string               `json:"segment_directive,omitempty"`
+	Busy               bool                 `json:"busy"`
+	Uncertain          bool                 `json:"uncertain"`
+	Warnings           []string             `json:"warnings"`
+	Error              string               `json:"error,omitempty"`
+	CreatedAt          string               `json:"created_at"`
+	P0PolicyMD         string               `json:"p0_policy_md,omitempty"`
+	P0PolicySource     string               `json:"p0_policy_source,omitempty"`
+	P0MaxRewrites      int                  `json:"p0_max_rewrites,omitempty"`
+	P0RewritesUsed     int                  `json:"p0_rewrites_used,omitempty"`
+	P0PendingRepair    *contentguard.Repair `json:"p0_pending_repair,omitempty"`
+	P0Skipped          []P0Skip             `json:"p0_skipped,omitempty"`
+	P0SkippedKeys      map[string]bool      `json:"p0_skipped_keys,omitempty"`
+	P0ConsecutiveSkips int                  `json:"p0_consecutive_skips,omitempty"`
+	P0AuditPending     *Candidate           `json:"p0_audit_pending,omitempty"`
+	P0Allowances       []P0Allowance        `json:"p0_allowances,omitempty"`
 }
 
 // Ephemeral handoff receipts are stored with this run in Redis only.
@@ -422,6 +419,15 @@ func Arrange(tasks []Task, gap int) ([]Task, error) {
 	}
 	return queue, nil
 }
+// NoStyle 表示本场按「自由发挥模式」运行：方案没绑主播风格，也没有评分基准。
+// 该模式下不打分、不设风格分门槛，只保留 P0、最终文字审核与去重这些与风格无关的关卡。
+// 用显式开关而不是「基准为空」推断，避免历史快照缺字段时被误判成无风格。
+func (s *State) NoStyle() bool { return s.FreeStyle }
+
+// Gradable 表示本场分数有意义；自由发挥模式下分数不参与采纳判断，
+// 否则空基准会让所有候选都判低分，把重试次数白白耗光。
+func (s *State) Gradable() bool { return !s.FreeStyle }
+
 func (s *State) Task() Task {
 	if s.Lectures != nil && s.Lectures.Active != nil {
 		return *s.Lectures.Active
@@ -559,7 +565,6 @@ func (s *State) chooseNext() {
 		if len(s.P0SkippedKeys) > 0 {
 			s.Status, s.Error = "compliance_blocked", "本场可用卖点×角度已被P0全部跳过，已暂停；不无限生成"
 		}
-		s.FeedbackPending = false
 		return
 	}
 	blockedPoints := map[string]bool{}
@@ -646,7 +651,6 @@ func (s *State) chooseNext() {
 		if !available && len(s.P0SkippedKeys) > 0 {
 			s.Status = "compliance_blocked"
 			s.Error = "本场可用卖点×角度已被P0全部跳过，已暂停；不无限生成"
-			s.FeedbackPending = false
 			return
 		}
 		if s.Surface == "generation_preview" {
@@ -673,7 +677,6 @@ func (s *State) chooseNext() {
 		}
 		s.Status = "spacing_blocked"
 		s.Error = "卖点池无法满足当前避重间隔，已保留采纳稿；请扩充池或结束本场后降低间隔，不会自动短期复读"
-		s.FeedbackPending = false
 		return
 	}
 	s.TaskIndex = chosen
@@ -757,16 +760,22 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		c.ContentWarnings = append(c.ContentWarnings, issue)
 	}
 	s.Attempts = append(s.Attempts, c)
-	if s.Surface == "formal_live" && c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) > s.Config.MaxRetries {
+	// 无风格模式没有评分基准，分数不作为门槛：P0、最终文字审核、去重已在上面把关，
+	// 这里直接采纳首个达标候选，避免空基准下永远不达标而把重试次数耗光。
+	graded := s.Gradable()
+	if graded && s.Surface == "formal_live" && c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) > s.Config.MaxRetries {
 		s.SkipGeneration("style_generation", "生成重试后仍未达到本场风格标尺")
 		return false, nil
 	}
-	if c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) <= s.Config.MaxRetries {
+	if graded && c.Score.OverallScore < s.Config.Threshold && len(s.Attempts) <= s.Config.MaxRetries {
 		return false, nil
 	}
 	selected := c
 	reason := "passed"
-	if c.Score.OverallScore < s.Config.Threshold {
+	if !graded {
+		reason = "no_style_adopted"
+	}
+	if graded && c.Score.OverallScore < s.Config.Threshold {
 		reason = "retry_limit_best"
 		selected = s.Attempts[0]
 		for _, candidate := range s.Attempts[1:] {
@@ -820,8 +829,6 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 		s.Attempts = nil
 		s.P0RewritesUsed = 0
 		s.P0ConsecutiveSkips = 0
-		s.PendingFeedback = ""
-		s.FeedbackPending = false
 		return true, nil
 	}
 	if s.Phase == "opening" && s.PendingOpeningHook != nil {
@@ -850,19 +857,9 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	}
 	s.RecentSummaries = append(s.RecentSummaries, summary)
 	s.RecentSummaries = s.RecentSummaries[max(0, len(s.RecentSummaries)-3):]
-	s.StyleWindow = Window(s.StyleWindow + "\n\n" + selected.Text)
-	recent := []string{}
-	start := max(0, len(s.Accepted)-5)
-	for _, segment := range s.Accepted[start:] {
-		recent = append(recent, segment.Selected.Text)
-	}
-	s.MacroReport = anchorstylescore.AnalyzeMacro1000(s.StyleWindow, recent, s.AcceptedOffset+start+1, b, s.StyleMD)
-	s.Accepted[len(s.Accepted)-1].MacroReport = s.MacroReport
 	s.Attempts = []Candidate{}
 	s.P0RewritesUsed = 0
 	s.P0ConsecutiveSkips = 0
-	s.PendingFeedback = ""
-	s.FeedbackPending = true
 	if s.Config.Rolling {
 		if task.ProductMode == "auxiliary" {
 			s.ProductFocus.AuxiliaryActive = false
@@ -872,7 +869,6 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 			if s.Config.MaxCycles > 0 && s.CycleNumber >= s.Config.MaxCycles {
 				s.Phase = "ended"
 				s.Status = "completed"
-				s.FeedbackPending = false
 			} else {
 				s.CycleNumber++
 				s.BodyCount = 0
@@ -899,7 +895,6 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	} else if s.Phase == "closing" {
 		s.Phase = "ended"
 		s.Status = "completed"
-		s.FeedbackPending = false
 	} else if s.Cursor >= len(s.Queue) {
 		s.Phase = "closing"
 	} else {
@@ -908,22 +903,5 @@ func (s *State) AddCandidate(c Candidate, b anchorstylescore.Baseline) (bool, er
 	return true, nil
 }
 
-// Decisions continue to be measured every adoption; repeated identical macro
-// advice is spaced by two accepted segments, avoiding cumulative overcorrection.
-func (s *State) ShouldFeedback() bool {
-	if !s.FeedbackPending || s.Phase == "ended" || len(s.MacroReport.Issues) == 0 {
-		return false
-	}
-	keys := []string{}
-	for _, issue := range s.MacroReport.Issues {
-		metric, _, _ := strings.Cut(issue.Actual, "：")
-		keys = append(keys, issue.Key+":"+metric+":"+issue.Target)
-	}
-	fingerprint := strings.Join(keys, "|")
-	if fingerprint == s.LastFeedbackFingerprint && s.TotalAccepted()-s.LastFeedbackIndex < 2 {
-		return false
-	}
-	s.LastFeedbackFingerprint = fingerprint
-	s.LastFeedbackIndex = s.TotalAccepted()
-	return true
-}
+// 宏观风格回灌（accepted_macro_feedback）已整体下线：不再按 1000 字窗口做宏
+// 观风格统计、不再调用模型生成纠正指令、也不再注入「下次表达纠偏」。

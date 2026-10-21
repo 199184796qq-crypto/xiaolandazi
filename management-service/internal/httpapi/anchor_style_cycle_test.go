@@ -2,12 +2,10 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"livecompanion/management/internal/anchorcycle"
-	"livecompanion/management/internal/anchorstylescore"
 )
 
 func cycleTestState(t *testing.T) anchorcycle.State {
@@ -29,7 +27,8 @@ func TestCycleFirstPromptAndContinuationStaySeparate(t *testing.T) {
 	if !strings.Contains(first, s.StyleMD) || !strings.Contains(first, s.Facts) || !strings.Contains(first, "老坊 × 产地") || !strings.Contains(first, "当前环节：开场") {
 		t.Fatal(first)
 	}
-	s.Attempts = append(s.Attempts, anchorcycle.Candidate{RetryFeedback: "轻微修正当前任务"})
+	s.Attempts = append(s.Attempts, anchorcycle.Candidate{})
+	s.SegmentDirective = "轻微修正当前任务"
 	retry, err := renderAnchorCyclePrompt(&s)
 	if err != nil {
 		t.Fatal(err)
@@ -75,28 +74,10 @@ func TestReentryPromptUsesNewTemplateAndOldExpressionWithoutRebootstrapping(t *t
 			t.Fatalf("unexpected %s in reentry", absent)
 		}
 	}
-	s.Attempts = []anchorcycle.Candidate{{RetryFeedback: "只修当前候选"}}
+	s.Attempts = []anchorcycle.Candidate{{}}
 	retry, err := renderAnchorCyclePrompt(&s)
 	if err != nil || !strings.Contains(retry, "循环开场：接新版") || strings.Contains(retry, "首次开场：完整版") {
 		t.Fatal("reentry retry reverted to first opening", err)
-	}
-}
-func TestMacroFeedbackFailureKeepsAdoptionAndMovesOn(t *testing.T) {
-	s := cycleTestState(t)
-	s.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{Text: "已采纳原文"}}}
-	s.StyleWindow = "已采纳原文"
-	s.FeedbackPending = true
-	s.PendingFeedback = "不能复用的旧反馈"
-	s.MacroReport.Issues = []anchorstylescore.RollingIssue{{Key: "style_density", Category: "style", Actual: "啊：偏少", Target: "基准区间"}}
-	t.Setenv("ANCHOR_STYLE_ROLLING_FEEDBACK_PROMPT_PATH", t.TempDir()+"/missing.md")
-	server := &Server{}
-	server.completeCycleMacro(context.Background(), &s)
-	if s.PendingFeedback != "" || s.FeedbackPending || s.Accepted[0].Selected.Text != "已采纳原文" || s.StyleWindow != "已采纳原文" || len(s.Warnings) != 1 {
-		t.Fatal(s)
-	}
-	var trace anchorStyleRollingFeedbackResponse
-	if json.Unmarshal(s.Accepted[0].Feedback, &trace) != nil || trace.Status != "model_error" {
-		t.Fatal(string(s.Accepted[0].Feedback))
 	}
 }
 func TestCycleContextEndCancellationIsRoomScoped(t *testing.T) {

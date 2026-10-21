@@ -154,10 +154,10 @@ func firstOpeningDirective(state *anchorcycle.State, mother string) string {
 }
 
 func generateDistinctFirstOpening(state *anchorcycle.State, mother string, generate func() (agentgateway.Response, []agentgateway.Message, error)) (agentgateway.Response, []agentgateway.Message, error) {
-	previousFeedback := state.PendingFeedback
-	defer func() { state.PendingFeedback = previousFeedback }()
+	previousDirective := state.SegmentDirective
+	defer func() { state.SegmentDirective = previousDirective }()
 	// 只注入「第一次开场、现场写新表达」的指令（first-live-opening.md），不注入历史开场原文。
-	state.PendingFeedback = previousFeedback + "\n" + firstOpeningDirective(state, mother)
+	state.SegmentDirective = previousDirective + "\n" + firstOpeningDirective(state, mother)
 	var response agentgateway.Response
 	var messages []agentgateway.Message
 	var e error

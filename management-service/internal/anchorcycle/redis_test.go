@@ -145,12 +145,12 @@ func TestRedisRollingReentryStateSurvivesSameProcessReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Phase != "opening" || loaded.CycleNumber != 2 || loaded.OpeningCount != 1 || loaded.OpeningVersion() != "接新版" || loaded.Task() != s.Task() || loaded.SessionID != s.SessionID || len(loaded.Used) != 3 || loaded.StyleWindow != s.StyleWindow {
+	if loaded.Phase != "opening" || loaded.CycleNumber != 2 || loaded.OpeningCount != 1 || loaded.OpeningVersion() != "接新版" || loaded.Task() != s.Task() || loaded.SessionID != s.SessionID || len(loaded.Used) != 3 {
 		t.Fatal("Redis reload lost cross-cycle state")
 	}
 }
 
-func TestRedisRecoversFeedbackOnlyButNotUnknownGeneration(t *testing.T) {
+func TestRedisRecoversUnknownGeneration(t *testing.T) {
 	addr := os.Getenv("ANCHOR_CYCLE_TEST_REDIS_ADDR")
 	if addr == "" {
 		t.Skip("real Redis opt-in")
@@ -169,23 +169,15 @@ func TestRedisRecoversFeedbackOnlyButNotUnknownGeneration(t *testing.T) {
 	if err := store.Acquire(ctx, s.TenantID, s.PlanID, s.RoomID, token); err != nil {
 		t.Fatal(err)
 	}
+	// 宏观回灌已下线：Busy 期间没有「可选的后置调用」可以重放，租约丢失
+	// 一律视为上一轮结果未确认，不能当作已完成继续。
 	s.Busy = true
-	s.FeedbackPending = true
 	if err := store.Create(ctx, &s, token); err != nil {
 		t.Fatal(err)
 	}
 	store.Release(ctx, s.TenantID, s.PlanID, s.RoomID, token)
 	recovered, err := store.Get(ctx, s.TenantID, s.PlanID, s.RoomID)
-	if err != nil || recovered.Busy || recovered.Uncertain {
-		t.Fatalf("adopted feedback cannot resume: %v %v", recovered, err)
-	}
-	recovered.Busy = true
-	recovered.FeedbackPending = false
-	if err = store.Save(ctx, recovered); err != nil {
-		t.Fatal(err)
-	}
-	unknown, err := store.Get(ctx, s.TenantID, s.PlanID, s.RoomID)
-	if err != nil || !unknown.Uncertain || unknown.Busy {
-		t.Fatalf("unknown generation could repeat: %v %v", unknown, err)
+	if err != nil || recovered.Busy || !recovered.Uncertain {
+		t.Fatalf("unknown generation could repeat: %v %v", recovered, err)
 	}
 }

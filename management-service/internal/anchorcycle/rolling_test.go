@@ -35,13 +35,12 @@ func TestRollingOpeningCountAndTaskAdvanceOnlyAfterAdoption(t *testing.T) {
 	if s.Phase != "closing" || s.OpeningCount != 1 {
 		t.Fatal("entering closing changed count")
 	}
-	window := s.StyleWindow
 	add(t, &s, "收口留话头", 70)
 	uses := 0
 	for _, use := range s.Used {
 		uses += use.Count
 	}
-	if s.Phase != "opening" || s.CycleNumber != 2 || s.OpeningCount != 1 || s.OpeningVersion() != "接新版" || s.SessionID != "sesn_same-live" || !strings.Contains(s.StyleWindow, window) || uses != 3 {
+	if s.Phase != "opening" || s.CycleNumber != 2 || s.OpeningCount != 1 || s.OpeningVersion() != "接新版" || s.SessionID != "sesn_same-live" || uses != 3 {
 		t.Fatal("closing reset live memory", s)
 	}
 	add(t, &s, "接新简短身份和钩子", 70)
@@ -64,7 +63,7 @@ func TestRollingPoolReusePreservesCountsAndWeightedProgressAcrossManyCycles(t *t
 			t.Fatal("continuous run stopped prematurely", s.Error)
 		}
 	}
-	if s.OpeningCount != 20 || s.CycleNumber != 21 || len(s.Used) != 3 || s.Cursor != 60 || s.MacroReport.Stats.Chars != 1000 {
+	if s.OpeningCount != 20 || s.CycleNumber != 21 || len(s.Used) != 3 || s.Cursor != 60 {
 		t.Fatal("cross-cycle counters/window reset", s)
 	}
 	uses, scheduled := 0, 0
@@ -124,7 +123,7 @@ func TestRollingRoundTripRetainsNextTaskAndReentryVersion(t *testing.T) {
 	if err = json.Unmarshal(raw, &restored); err != nil {
 		t.Fatal(err)
 	}
-	if restored.CycleNumber != 2 || restored.OpeningCount != 1 || restored.OpeningVersion() != "接新版" || restored.Task() != s.Task() || restored.StyleWindow != s.StyleWindow {
+	if restored.CycleNumber != 2 || restored.OpeningCount != 1 || restored.OpeningVersion() != "接新版" || restored.Task() != s.Task() {
 		t.Fatal("same-process pause/reload lost opening state")
 	}
 }

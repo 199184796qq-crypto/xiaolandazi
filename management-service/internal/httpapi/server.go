@@ -630,7 +630,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/scorecard/{assetID}/confirm", s.anchorStyleWorkbenchScorecardConfirm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/scorecard/{assetID}/calibrate", s.anchorStyleWorkbenchScorecardCalibrate)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/score", s.anchorStyleWorkbenchScore)
-	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/anchor-style-workbench/rolling-feedback", s.anchorStyleWorkbenchRollingFeedback)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/cycle", s.anchorStyleCycleGet)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/opening-hooks", s.anchorOpeningHookGet)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/anchor-style-workbench/p0-audit", s.anchorP0AuditGet)

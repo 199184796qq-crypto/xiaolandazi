@@ -29,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 	checks := []map[string]any{}
-	for _, stage := range []string{"system_agent", "style_analysis", "selling_point_extraction", "mainline_angle_plan", "speech_generation", "interaction_bridge", "accepted_macro_feedback", "mainline_p0_context", "speech_review"} {
+	for _, stage := range []string{"system_agent", "style_analysis", "selling_point_extraction", "mainline_angle_plan", "speech_generation", "interaction_bridge", "mainline_p0_context", "speech_review"} {
 		id, err := store.ResolveTextRole(ctx, stage)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "role resolution failed")

@@ -24,10 +24,7 @@ func TestForbiddenWordsArePlanSpecificSeparateAndHighestPriority(t *testing.T) {
 	if len(r.Stats.Forbidden) != 2 || r.Stats.Forbidden[0].Count != 2 || r.Stats.Forbidden[1].Count != 1 {
 		t.Fatal(r.Stats.Forbidden)
 	}
-	f := BuildFeedback(r, b, productionFeedbackTemplate(t))
-	if f.IssueKey != "forbidden_word" || f.Issue != "你们" {
-		t.Fatal(f)
-	}
+	// 评分侧纠偏草稿（BuildFeedback）已随回灌下线删除，这里只校验禁用词统计本身。
 	report := AnalyzeMacro1000("您看。", []string{"您看。"}, 1, b, rollingStyle)
 	if !report.ObservationOnly || len(report.Issues) == 0 || report.Issues[0].Key != "forbidden_word" {
 		t.Fatal(report)

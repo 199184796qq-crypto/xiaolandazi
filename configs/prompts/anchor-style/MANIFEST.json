@@ -540,18 +540,6 @@
     "sha256": "78dee441b6b8438d0870fffc8dc227d0fb12d64fc7a02398ddadf23cadd0f763"
   },
   {
-    "path": "rolling-feedback-fallback.md",
-    "sha256": "ab1d75d7f765d13e945bf6f8f837d09e918a25f450d5b16138d8e3281293c5ee"
-  },
-  {
-    "path": "rolling-feedback-generation.md",
-    "sha256": "3b7d50493e3535d3b33e4dc53b45acfed715dbb3d8dcaabbe7fe054f50de644c"
-  },
-  {
-    "path": "score-feedback-template.md",
-    "sha256": "1cf504e2195ee7f4c3ce3cc838a3702dc8d012f0af249887806847ff5e190770"
-  },
-  {
     "path": "scorecard-effective-style-integration.md",
     "sha256": "abb3f11ce58b39f28a1fe38cebcb97386879d08214513063d0e5bd1afedc3980"
   },

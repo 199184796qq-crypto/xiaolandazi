@@ -152,6 +152,8 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	}
 	state.StyleID, state.ScorecardID, state.WheelID = scheme.StyleID, scheme.ScorecardID, scheme.WheelID
 	state.StyleMD, state.BaselineJSON, state.Facts = scheme.StyleMD, scheme.BaselineJSON, safety.SafeFacts
+	// 快照里没有评分基准 = 方案未绑主播风格：本场自由发挥、不打分。
+	state.FreeStyle = strings.TrimSpace(scheme.BaselineJSON) == ""
 	// 行业配置包：把行业的侧面池 + 分类→侧面映射塞进 State（文件即源），
 	// 未选行业或加载失败时保持空、回退默认侧面/映射。
 	if pack, packErr := s.loadIndustryPackForPlan(ctx, tenant, version.PlanID); packErr == nil && pack != nil {

@@ -17,7 +17,6 @@ import {
   getRoomLiveAgentPlan,
   manuallyConfirmAnchorStyleWorkbenchMeta,
   scoreAnchorStyleSpeech,
-  generateAnchorStyleRollingFeedback,
   runAnchorStyleAgentStudioTurn,
   testAnchorStyleSellingPointWheel,
 } from '../api'
@@ -27,7 +26,6 @@ import type {
   AnchorStyleAgentStudioTurnResponse,
   AnchorStyleScorecardResponse,
   AnchorStyleSpeechScoreResponse,
-  AnchorStyleRollingFeedbackResponse,
   AnchorStyleWorkbenchContext,
   AnchorStyleWorkbenchMetaResponse,
   AnchorStyleSellingPointWheelResponse,
@@ -52,8 +50,6 @@ interface VisibleAgentStudioTurn {
   response: AnchorStyleAgentStudioTurnResponse
   score?: AnchorStyleSpeechScoreResponse
   scoreError?: string
-  rollingFeedback?: AnchorStyleRollingFeedbackResponse
-  rollingFeedbackError?: string
 }
 
 const route = useRoute()
@@ -102,7 +98,6 @@ const agentStudioFeedbackPrompt = ref(window.localStorage.getItem('anchor-style-
 const clearFeedbackAfterSuccess = ref(true)
 const styleReviewing = ref(false)
 const feedbackProfileID = ref(window.localStorage.getItem('anchor-style-workbench:rolling-feedback-profile') || '')
-const rollingFeedbackPending = ref(false)
 const agentStudioSession = ref<AnchorStyleAgentStudioSessionResponse | null>(null)
 const agentStudioTurns = ref<VisibleAgentStudioTurn[]>([])
 const agentStudioPointer = ref(0)
@@ -149,7 +144,11 @@ const canStageManualMeta = computed(() => selectedPlanID.value > 0 && Boolean(ma
 const canCompileSellingPoints = computed(() => selectedPlanID.value > 0 && (sellingPointPromptMode.value === 'project' || sellingPointPrompt.value.trim().length >= 100) && Boolean(context.value?.fact_package.trim()) && !sellingPointCompiling.value)
 const canConfirmSellingPoints = computed(() => Boolean(sellingPointWheel.value?.asset_id) && !sellingPointWheel.value?.validation_error && sellingPointWheel.value?.status !== 'validation_failed' && Boolean(sellingPointWheelJSON.value.trim()) && !sellingPointConfirming.value)
 const confirmedAssetsReady = computed(() => !loadingContext.value && context.value?.plan_id === selectedPlanID.value && metaConfirmed.value && scorecardConfirmed.value && scorecardResult.value?.meta_prompt_asset_id === metaResult.value?.asset_id && sellingPointWheelConfirmed.value)
-const idleForGeneration = computed(() => !wheelTesting.value && !autoRunning.value && !generationUncertain.value && !styleReviewing.value && !rollingFeedbackPending.value)
+// 大循环开播只强制要求卖点轮盘：方案没绑主播风格时按自由发挥模式跑，不打分。
+const wheelReadyOnly = computed(() => !loadingContext.value && context.value?.plan_id === selectedPlanID.value && sellingPointWheelConfirmed.value)
+const freeStyleMode = computed(() => !loadingContext.value && context.value?.plan_id === selectedPlanID.value && (!metaConfirmed.value || !scorecardConfirmed.value))
+const cycleReady = computed(() => wheelReadyOnly.value && agentStudioConfigReady.value && Boolean(feedbackProfileID.value) && !wheelTesting.value && !loadingContext.value)
+const idleForGeneration = computed(() => !wheelTesting.value && !autoRunning.value && !generationUncertain.value && !styleReviewing.value)
 const canTestWheel = computed(() => confirmedAssetsReady.value && idleForGeneration.value && (unlimitedChars.value || (segmentMaxChars.value >= 80 && segmentMaxChars.value <= 1000)))
 const agentStudioConfigReady = computed(() => Boolean(
 	agentStudioWorkspaceID.value.trim()
@@ -394,7 +393,7 @@ async function scoreGeneratedSpeech(item: VisibleAgentStudioTurn | VisibleWheelT
 			generated_text: item.response.raw_response,
 			task: item.response.task,
 		})
-		notice.value = '本段评分完成：' + item.score.score.overall_score + '/100，已展示评分 JSON' + (item.score.feedback?.status === 'ready' ? '和单项回灌草稿；尚未发送。' : '。')
+		notice.value = '本段评分完成：' + item.score.score.overall_score + '/100，已展示评分 JSON。'
 		persistAgentStudioState()
 		return item.score
 	} catch (value) {
@@ -454,36 +453,6 @@ function restoreAgentStudioState() {
 		if (generationUncertain.value) error.value = '刷新前有一轮请求尚未确认结束。为避免重复请求，已阻止续跑；请到高级设置核对或归档重建会话。'
 	} catch { error.value = '本地测试记录无法恢复，请保留记录并在高级设置核对会话。' }
 }
-
-async function acceptAutoFeedback(turn: VisibleAgentStudioTurn) {
-	agentStudioFeedbackPrompt.value = ''
-	if (autoStopRequested.value || autoChars.value >= autoTargetChars.value) { persistAgentStudioState(); return }
-	const plan = selectedPlanID.value, session = agentStudioSession.value?.session_id
-	const style = metaResult.value?.asset_id, scorecard = scorecardResult.value?.asset_id, profile = feedbackProfileID.value
-	if (!style || !scorecard || !profile || !session) throw new Error('缺少当前风格、基准或回灌模型')
-	const index = agentStudioTurns.value.indexOf(turn)
-	if (index < 0) throw new Error('回灌原文不属于当前会话')
-	const start = Math.max(0, index - 4)
-	const cached = turn.rollingFeedback
-	if (cached && !turn.rollingFeedbackError && ['ready', 'no_issue'].includes(cached.status) && cached.profile_id === profile && cached.style_asset_id === style && cached.scorecard_asset_id === scorecard && cached.report.edges.at(-1)?.index === index + 1) {
-		agentStudioFeedbackPrompt.value = cached.status === 'ready' ? cached.prompt : ''
-		persistAgentStudioState(); return
-	}
-	rollingFeedbackPending.value = true; turn.rollingFeedbackError = ''; autoPhase.value = '滑动窗口：开头、风格、结尾回灌'
-	try {
-		turn.rollingFeedback = await generateAnchorStyleRollingFeedback(plan, {
-			feedback_profile_id: profile, meta_prompt_asset_id: style, scorecard_asset_id: scorecard,
-			recent_texts: agentStudioTurns.value.slice(start, index + 1).map(item => item.response.raw_response), start_index: start + 1,
-		})
-		if (selectedPlanID.value !== plan || agentStudioSession.value?.session_id !== session || metaResult.value?.asset_id !== style || scorecardResult.value?.asset_id !== scorecard || feedbackProfileID.value !== profile) throw new Error('回灌期间方案、会话或模型配置发生变化')
-		if (!['ready', 'no_issue'].includes(turn.rollingFeedback.status)) throw new Error(turn.rollingFeedback.error || '快速模型回灌失败')
-		agentStudioFeedbackPrompt.value = turn.rollingFeedback.status === 'ready' ? turn.rollingFeedback.prompt : ''
-	} catch (value) {
-		turn.rollingFeedbackError = value instanceof Error ? value.message : '滑动回灌失败'
-		throw new Error(turn.rollingFeedbackError)
-	} finally { rollingFeedbackPending.value = false; persistAgentStudioState() }
-}
-
 async function startAutoGeneration(resume = false) {
 	if (!canStartAuto.value) return
 	testMode.value = 'agentstudio'
@@ -504,11 +473,10 @@ async function startAutoGeneration(resume = false) {
 	try {
 		persistAgentStudioState()
 		const last = agentStudioTurns.value.at(-1)
-		if (last && (!last.score?.feedback || last.scoreError || last.score.scorecard_asset_id !== boundScore)) {
+		if (last && (!last.score || last.scoreError || last.score.scorecard_asset_id !== boundScore)) {
 			autoPhase.value = '补做上一段评分'
 			if (!await scoreGeneratedSpeech(last)) throw new Error(last.scoreError || '评分失败')
-			await acceptAutoFeedback(last)
-		} else if (last) await acceptAutoFeedback(last)
+		}
 		autoStatus.value = await runAutoLoop({
 			targetChars: autoTargetChars.value, maxRounds: autoMaxRounds.value, segmentMaxChars: autoSegmentChars.value,
 			stopped: () => autoStopRequested.value, generatedChars: () => autoChars.value,
@@ -521,10 +489,9 @@ async function startAutoGeneration(resume = false) {
 			},
 			receive: () => {},
 			score: async turn => {
-				autoPhase.value = '评分并生成回灌'
+				autoPhase.value = '评分中'
 				if (!await scoreGeneratedSpeech(turn)) throw new Error(turn.scoreError || '评分失败，已暂停')
 			},
-			feedback: acceptAutoFeedback,
 		})
 		notice.value = autoStatus.value === 'completed' ? `已达到目标，累计${autoChars.value}字；保留完整原文，没有截断。` : '已暂停，原文和记忆已保存。'
 	} catch (value) {
@@ -540,15 +507,6 @@ function pauseAutoGeneration() {
 	notice.value = '正在暂停：收完当前段并保存评分后停止，不会再发下一轮。'
 }
 
-function applyGeneratedFeedback(item: VisibleAgentStudioTurn, prompt: string) {
-	if (autoRunning.value || wheelTesting.value || styleReviewing.value || !prompt.trim()) return
-	if (!agentStudioSession.value || item.response.session_id !== agentStudioSession.value.session_id || item.score?.scorecard_asset_id !== scorecardResult.value?.asset_id || item.score?.meta_prompt_asset_id !== metaResult.value?.asset_id) {
-		error.value = '这段评分不属于当前会话或当前基准，请使用当前会话的新评分。'
-		return
-	}
-	agentStudioFeedbackPrompt.value = prompt
-	notice.value = '回灌草稿已填入下一轮回灌框，可修改；尚未发送，点击下一轮测试才会使用。'
-}
 
 
 async function retryAgentStudioTurn(item: VisibleAgentStudioTurn) {
@@ -1072,7 +1030,7 @@ onBeforeUnmount(() => { autoStopRequested.value = true })
       <label>测试模式<select v-model="runMode" :disabled="autoRunning || wheelTesting"><option value="cycle">大循环：采纳后1000字控制</option><option value="chars">原字数循环（对照）</option></select></label>
       <label v-if="runMode === 'cycle'">直播间方案<select v-model.number="selectedPlanID" :disabled="autoRunning || loadingContext"><option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
     </div>
-    <AnchorCycleRunPanel v-if="runMode === 'cycle'" :plan-id="selectedPlanID" :ready="confirmedAssetsReady && agentStudioConfigReady && !!feedbackProfileID && !wheelTesting && !loadingContext" :config="cycleConfig" :room-ids="selectedPlan?.room_ids || []" :advanced="showAdvanced" @busy="autoRunning = $event" />
+    <AnchorCycleRunPanel v-if="runMode === 'cycle'" :plan-id="selectedPlanID" :ready="cycleReady" :free-style="freeStyleMode" :config="cycleConfig" :room-ids="selectedPlan?.room_ids || []" :advanced="showAdvanced" @busy="autoRunning = $event" />
     <section v-else class="panel auto-generation-panel">
       <div class="auto-controls">
         <label>直播间方案
@@ -1087,16 +1045,16 @@ onBeforeUnmount(() => { autoStopRequested.value = true })
         <button type="button" class="ghost" :disabled="!cumulativeSpeech" @click="download('自动生成话术-' + selectedPlanID + '-' + Date.now() + '.txt', cumulativeSpeech)">下载话术</button>
       </div>
       <p class="auto-progress">{{ loadingContext ? '正在读取方案…' : (autoRunning ? '自动生成中' : ({ idle: '等待开始', paused: '已暂停', completed: '已完成', failed: '已停止，请查看原因', running: '自动生成中' }[autoStatus])) }} · {{ autoStartedAt ? autoChars : speechChars(cumulativeSpeech) }}/{{ autoTargetChars }}字</p>
-      <p v-if="!canStartAuto && !autoRunning && !loadingContext" class="source-note">需要确认风格、评分基准和卖点轮盘，并配置阿里母版与回灌模型。请展开“生成设置”或“显示设置与单步调试”检查。</p>
+      <p v-if="!canStartAuto && !autoRunning && !loadingContext" class="source-note">需要确认风格、评分基准和卖点轮盘，并配置阿里母版与审核模型。请展开“生成设置”或“显示设置与单步调试”检查。</p>
       <RiskText :plan-id="selectedPlanID" :text="cumulativeSpeech" box auto-scroll label="累计生成话术" />
       <details class="auto-settings">
         <summary>生成设置</summary>
         <div class="auto-controls">
           <label>单段最多字数<input v-model.number="autoSegmentChars" type="number" min="80" max="1000" :disabled="autoRunning"></label>
-          <label>三项回灌模型（API）<select v-model="feedbackProfileID" :disabled="autoRunning || rollingFeedbackPending"><option v-for="item in enabledModels" :key="item.id" :value="item.id" :disabled="!item.has_api_key">{{ item.name }} · {{ item.model }}</option></select></label>
           <label>同卖点至少隔几段<input v-model.number="autoPointGap" type="number" min="0" max="100" :disabled="autoRunning"></label>
           <label>同组合至少隔几段<input v-model.number="autoCombinationGap" type="number" min="0" max="1000" :disabled="autoRunning"></label>
           <label>本次安全轮数上限<input v-model.number="autoMaxRounds" type="number" min="1" max="500" :disabled="autoRunning"></label>
+          <label>审核模型（API）<select v-model="feedbackProfileID" :disabled="autoRunning"><option v-for="item in enabledModels" :key="item.id" :value="item.id" :disabled="!item.has_api_key">{{ item.name }} · {{ item.model }}</option></select></label>
         </div>
         <p class="source-note">自动模式每段默认最多300字，与单步“不限定字数”选项分开。总量达到或超过目标后停，保留完整末段；字数含标点、不含空白。记忆贯穿整个会话，刷新恢复记录但不自动续跑。生成会产生阿里运行时和模型费用。</p>
       </details>
@@ -1411,8 +1369,7 @@ onBeforeUnmount(() => { autoStopRequested.value = true })
         <div class="response-grid direct">
           <section :class="{ exceeded: item.response.exceeded_limit }"><h3>Agent 原始返回 <small>{{ item.response.actual_chars }}字</small></h3><RiskText :plan-id="selectedPlanID" :text="item.response.raw_response" :legend="false" /><em v-if="item.response.exceeded_limit">已超过本段最大字数，请检查母版服从性。</em></section>
         </div>
-        <AnchorStyleScoreDetails :result="item.score" :error="item.scoreError" :pending="styleReviewing" :can-apply-feedback="!wheelTesting && !styleReviewing && Boolean(agentStudioSession)" @apply-feedback="applyGeneratedFeedback(item, $event)" @retry="scoreGeneratedSpeech(item)" />
-        <details v-if="item.rollingFeedback || item.rollingFeedbackError"><summary>自动回灌：开头／主播风格／结尾 · {{ item.rollingFeedback?.model || '程序检查' }} · {{ item.rollingFeedback?.latency_ms || 0 }}ms</summary><p v-if="item.rollingFeedbackError">{{ item.rollingFeedbackError }}</p><pre>{{ JSON.stringify(item.rollingFeedback, null, 2) }}</pre></details>
+        <AnchorStyleScoreDetails :result="item.score" :error="item.scoreError" :pending="styleReviewing" @retry="scoreGeneratedSpeech(item)" />
         <div class="state-strip compact">
           <span>Session {{ item.response.session_id }}</span>
           <span>stop_reason={{ item.response.stop_reason }}</span>

@@ -4694,20 +4694,6 @@ export interface AnchorStyleScorecardResponse {
 }
 
 export interface AnchorStyleSpeechScoreResponse {
-  feedback?: {
-    status: 'ready' | 'no_issue' | 'template_error' | 'unmapped_issue'
-    issue_key?: string
-    dimension?: string
-    issue?: string
-    dimension_deduction?: number
-    deduction?: number
-    actual?: string
-    target?: string
-    prompt: string
-    template_version?: string
-    template_source?: string
-    error?: string
-  }
   scorecard_asset_id: number
   meta_prompt_asset_id: number
   sample_sha256: string
@@ -4750,38 +4736,6 @@ export interface AnchorStyleSpeechScoreResponse {
   }
 }
 
-export interface AnchorStyleRollingFeedbackResponse {
-  status: 'ready' | 'no_issue' | 'model_error' | 'invalid_response'
-  prompt: string
-  selected_addresses: string[]
-  report: {
-    version: string
-    window_count: number
-    window_limit?: number
-    window_mode?: string
-    observation_only?: boolean
-    allowed_addresses: string[]
-    edges: Array<{ index: number; opening: string; ending: string }>
-    opening_groups: Array<{ key: string; count: number; share: number; indices: number[]; adjacent: number[][] }>
-    ending_groups: Array<{ key: string; count: number; share: number; indices: number[]; adjacent: number[][] }>
-    stats: AnchorStyleSpeechScoreResponse['score']['stats']
-    issues: Array<{ issue_key: string; category: 'opening' | 'style' | 'ending'; actual: string; target: string; segment_indices?: number[] }>
-  }
-  request: AnchorStyleWorkbenchTrace
-  raw_response: string
-  error?: string
-  warnings?: string[]
-  correction_sources?: Record<string, 'model' | 'program_fallback'>
-  model: string
-  provider: string
-  profile_id: string
-  latency_ms: number
-  input_tokens: number
-  output_tokens: number
-  prompt_source: string
-  style_asset_id: number
-  scorecard_asset_id: number
-}
 
 export interface AnchorStyleWorkbenchTerm {
   kind: string

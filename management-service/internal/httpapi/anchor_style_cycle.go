@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/agentstudio"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
@@ -249,18 +248,11 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 	if input.Region == "" {
 		input.Region = "cn-beijing"
 	}
-	meta, wheel, tasks, err := s.confirmedAnchorStyleAgentStudioAssets(r.Context(), tenant, plan)
+	// 风格与评分基准都可选：方案没绑风格时按「自由发挥模式」跑，不打分。
+	// 卖点轮盘仍必填，它是整场的任务来源。
+	meta, wheel, tasks, card, err := s.optionalAnchorStyleAssets(r.Context(), tenant, plan)
 	if err != nil {
 		writeError(w, 409, err.Error())
-		return
-	}
-	card, err := s.store.GetActiveLiveAnchorStyleScorecard(r.Context(), tenant, plan)
-	if err != nil || card.Status != "confirmed" || card.MetaPromptAssetID != meta.ID {
-		writeError(w, 409, "请确认当前主播评分基准")
-		return
-	}
-	if _, err = anchorstylescore.Parse(card.EffectiveScorecardJSON()); err != nil {
-		writeError(w, 409, "评分基准无效")
 		return
 	}
 	reportCycleProgress(r.Context(), 25)
@@ -366,9 +358,17 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		}
 		env = environments[0].ID
 	}
-	state.StyleMD = meta.EffectiveMetaPromptMD()
+	// 未绑定风格时保持为空：腔调交给模型自由发挥。
+	if meta.ID != 0 {
+		state.StyleMD = meta.EffectiveMetaPromptMD()
+	}
 	reportCycleProgress(ctx, 60)
-	state.BaselineJSON = card.EffectiveScorecardJSON()
+	if card.ID != 0 {
+		state.BaselineJSON = card.EffectiveScorecardJSON()
+	}
+	// 没有评分基准就不打分：既覆盖「方案没绑风格」，也覆盖「有风格但基准未确认」。
+	// 这两种情况都只保留 P0、最终文字审核与去重的把关。
+	state.FreeStyle = card.ID == 0
 	planData, facts, benefits, links, ok := s.anchorStyleWorkbenchPlanData(w, r.WithContext(ctx), tenant, plan)
 	if !ok {
 		return
@@ -511,7 +511,9 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 	}
 	retry := ""
 	contentIssue := ""
-	feedback := state.PendingFeedback
+	// 纠偏来自两路：本段一次性指令（首次开场/试听预览等）+ 重试时上一次被拒的表达问题。
+	// 宏观回灌已下线，不再注入跨段的风格纠正指令。
+	feedback := state.SegmentDirective
 	if len(state.Attempts) > 0 {
 		contentIssue = state.Attempts[len(state.Attempts)-1].ContentIssue
 		retry, _, err = loadReplaceablePromptAsset("ANCHOR_STYLE_CYCLE_RETRY_PROMPT_PATH", "configs/prompts/anchor-style/cycle-retry.md", "大循环重试提示词")
@@ -519,7 +521,6 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 			return "", err
 		}
 		retry = strings.ReplaceAll(retry, "{{attempt}}", strconv.Itoa(len(state.Attempts)+1))
-		feedback = strings.TrimSpace(feedback + "\n" + state.Attempts[len(state.Attempts)-1].RetryFeedback)
 	}
 	used := []string{}
 	for _, segment := range state.Accepted {
@@ -588,56 +589,6 @@ func renderAnchorCyclePrompt(state *anchorcycle.State) (string, error) {
 		state.Warn("内容策略母版不可用，本段按原生成流程：" + e.Error())
 	}
 	return md, nil
-}
-
-func (s *Server) completeCycleMacro(ctx context.Context, state *anchorcycle.State) {
-	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: state.TenantID, PlanID: state.PlanID, RoomID: state.RoomID, RunID: state.RunID})
-	if !state.FeedbackPending {
-		return
-	}
-	needed := state.ShouldFeedback()
-	state.PendingFeedback = ""
-	state.FeedbackPending = false
-	if !needed {
-		return
-	}
-	response := anchorStyleRollingFeedbackResponse{Status: "no_issue", Report: state.MacroReport, ProfileID: state.Config.FeedbackID, StyleAssetID: state.StyleID, ScorecardAssetID: state.ScorecardID, SelectedAddresses: []string{}}
-	md, source, err := loadReplaceablePromptAsset("ANCHOR_STYLE_ROLLING_FEEDBACK_PROMPT_PATH", "configs/prompts/anchor-style/rolling-feedback-generation.md", "1000字采纳后回灌")
-	if err == nil {
-		recent := []string{}
-		for _, segment := range state.Accepted[max(0, len(state.Accepted)-5):] {
-			recent = append(recent, segment.Selected.Text)
-		}
-		// 主播风格 meta_prompt 整场不变，挪进 system 作缓存前缀；报告/近期文本/风格窗口随采纳变化，留在 user。
-		stable, _ := json.Marshal(map[string]any{"style_meta_prompt": state.StyleMD})
-		data, _ := json.Marshal(map[string]any{"report": state.MacroReport, "expected_categories": rollingExpectedCategories(state.MacroReport.Issues), "recent_texts": recent, "accepted_style_window": state.StyleWindow})
-		messages := []agentgateway.Message{{Role: "system", Content: md + "\n\n" + string(stable)}, {Role: "user", Content: string(data)}}
-		response.PromptSource = source
-		response.Request = traceAnchorStyleWorkbenchMessages(messages)
-		result, actual, e := s.completeAnchorStyleWorkbench(withPinnedSpeechProfile(ctx, state.Config.FeedbackID), state.Config.FeedbackID, "accepted_macro_feedback", agentgateway.ResponseJSON, messages, 1000, false)
-		err = e
-		response.Request = traceAnchorStyleWorkbenchMessages(actual)
-		response.RawResponse = result.Text
-		response.Model = result.Model
-		response.Provider = result.Provider
-		response.LatencyMS = result.LatencyMS
-		response.InputTokens = result.InputTokens
-		response.OutputTokens = result.OutputTokens
-		if err == nil {
-			response.Prompt, response.SelectedAddresses, response.Warnings, response.CorrectionSources, err = normalizeRollingFeedbackDetailed(result.Text, response.Report.AllowedAddresses, response.Report.Issues)
-		}
-	}
-	if err != nil {
-		response.Status = "model_error"
-		response.Error = err.Error()
-		state.Warn("回灌失败，本场继续，未使用旧建议：" + err.Error())
-	} else {
-		response.Status = "ready"
-		state.PendingFeedback = response.Prompt
-	}
-	if len(state.Accepted) > 0 {
-		state.Accepted[len(state.Accepted)-1].Feedback, _ = json.Marshal(response)
-	}
 }
 
 func (s *Server) anchorStyleCycleAdvance(w http.ResponseWriter, r *http.Request) {
@@ -715,17 +666,32 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if state.Status == "spacing_blocked" || state.Status == "content_blocked" || state.Status == "compliance_blocked" {
 		return nil, errors.New(state.Error)
 	}
+	// 风格/基准可选：只有本场确实绑定了风格时才校验风格与基准；未绑定风格的
+	// 自由发挥场次，风格资产增删都不该打断进行中的直播。卖点轮盘仍必须一致。
 	if state.Surface != "formal_live" {
-		meta, cardErr := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenant, plan)
-		card, scoreErr := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan)
 		wheel, wheelErr := s.store.GetActiveLiveSellingPointWheel(ctx, tenant, plan)
-		if cardErr != nil || scoreErr != nil || wheelErr != nil || meta.ID != state.StyleID || card.ID != state.ScorecardID || wheel.ID != state.WheelID || meta.Status != "confirmed" || card.Status != "confirmed" || wheel.Status != "confirmed" {
-			return nil, errors.New("本场风格、基准或轮盘已变化，请结束本场后重新开始")
+		if wheelErr != nil || wheel.ID != state.WheelID || wheel.Status != "confirmed" {
+			return nil, errors.New("本场卖点轮盘已变化，请结束本场后重新开始")
+		}
+		if state.StyleID != 0 {
+			meta, styleErr := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenant, plan)
+			if styleErr != nil || meta.ID != state.StyleID || meta.Status != "confirmed" {
+				return nil, errors.New("本场风格已变化，请结束本场后重新开始")
+			}
+			if state.ScorecardID != 0 {
+				card, cardErr := s.store.GetActiveLiveAnchorStyleScorecard(ctx, tenant, plan)
+				if cardErr != nil || card.ID != state.ScorecardID || card.Status != "confirmed" {
+					return nil, errors.New("本场评分基准已变化，请结束本场后重新开始")
+				}
+			}
 		}
 	}
-	b, err := anchorstylescore.Parse(state.BaselineJSON)
-	if err != nil {
-		return nil, errors.New(err.Error())
+	// 无基准（自由发挥模式）时不解析、不打分，用零值基准跑完本场。
+	b := anchorstylescore.Baseline{}
+	if state.Gradable() {
+		if b, err = anchorstylescore.Parse(state.BaselineJSON); err != nil {
+			return nil, errors.New(err.Error())
+		}
 	}
 	reportCycleProgress(ctx, 15)
 	if state.TextModel != nil {
@@ -735,12 +701,6 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	defer done()
 	if err = installP0Mother(state); err != nil {
 		return nil, errors.New(err.Error())
-	}
-	if state.FeedbackPending {
-		s.completeCycleMacro(ctx, state)
-		if err = s.anchorCycles.Save(ctx, state); err != nil {
-			return nil, err
-		}
 	}
 	state.PrepareReturnedDeliveryQuotas()
 	prompt, err := renderAnchorCyclePrompt(state)
@@ -904,9 +864,16 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		state.Warn("话术复读，但角度池已轮尽，接受本段")
 	}
 	reportCycleProgress(ctx, 60)
-	score := anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
-	retry := buildAnchorStyleScoreFeedback(score, b)
-	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: "model_raw_text", Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	// 只打分，不再由分数生成纠偏草稿：评分侧回灌已整体下线。
+	// 无评分基准时分数没有意义，直接进入 P0 与采纳流程。
+	var score anchorstylescore.Result
+	scoreScope := "model_raw_text"
+	if state.Gradable() {
+		score = anchorstylescore.Score(text, b, state.Task().SellingPoint+" × "+state.Task().Angle)
+	} else {
+		scoreScope = "no_style"
+	}
+	candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: text, RawText: rawText, ScoreScope: scoreScope, Prompt: prompt, Score: score, GenerationMS: generationMS, EventIDs: eventIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	candidate.ReuseOrigin = "fresh"
 	if libraryEntry != nil {
 		candidate = libraryEntry.Candidate
@@ -947,11 +914,6 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		candidate.OutputText, candidate.PunctuationEdits = anchorcycle.RepairPunctuation(text, state.StyleMD, state.Config.MaxChars)
 		candidate.PostprocessMS = time.Since(postprocessStarted).Milliseconds()
 	}
-	if retry.Status == "ready" {
-		candidate.RetryFeedback = retry.Prompt
-	} else if retry.Status != "no_issue" {
-		state.Warn("单段回灌不可用，仍按基准重试：" + retry.Error)
-	}
 	candidate.OutputText = cycleVoiceText(candidate)
 	cleanCycleOpeningInstruction(state, &candidate, "")
 	cleanCycleConsecutiveSpeech(state, &candidate)
@@ -986,11 +948,7 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 		if candidate.ExactDuplicateRemovals > 0 {
 			candidate.ScoreScope = "consecutive_exact_duplicate_removed"
 		}
-		if finalFeedback := buildAnchorStyleScoreFeedback(candidate.Score, b); finalFeedback.Status == "ready" {
-			candidate.RetryFeedback = finalFeedback.Prompt
-		} else {
-			candidate.RetryFeedback = ""
-		}
+		// 评分侧回灌已下线：只记分数，不再生成纠偏草稿写进重试反馈。
 	}
 	if libraryEntry == nil {
 		s.auditFinalMainlineContent(ctx, state, &candidate)
@@ -1038,25 +996,12 @@ func (s *Server) advanceAnchorCycle(ctx context.Context, tenant, plan, room int6
 	if state.Phase != "ended" && !state.Uncertain && state.Status != "spacing_blocked" && state.Status != "content_blocked" && state.Status != "compliance_blocked" {
 		state.Status = "ready"
 	}
-	state.Busy = adopted && state.FeedbackPending && ctx.Err() == nil
-	// Commit the adoption before the optional auxiliary call. A later failure
-	// cannot cause the accepted segment to be regenerated or removed.
+	// 采纳结果直接落库。宏观回灌已下线，采纳后不再有可选的后置模型调用。
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
 	err = s.anchorCycles.Save(persistCtx, state)
 	cancel()
 	if err != nil {
 		return nil, err
-	}
-	if adopted && state.FeedbackPending && ctx.Err() == nil {
-		reportCycleProgress(ctx, 90)
-		s.completeCycleMacro(ctx, state)
-		state.Busy = false
-		feedbackPersist, cancelFeedbackPersist := context.WithTimeout(context.WithoutCancel(ctx), s.cyclePersistenceTimeout())
-		err = s.anchorCycles.Save(feedbackPersist, state)
-		cancelFeedbackPersist()
-		if err != nil {
-			return nil, err
-		}
 	}
 	return state, nil
 }

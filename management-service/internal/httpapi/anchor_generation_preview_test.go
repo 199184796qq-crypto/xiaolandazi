@@ -13,7 +13,7 @@ func TestProductionPreviewProjectionDoesNotExposeModelInstructions(t *testing.T)
 	state.Surface = "generation_preview"
 	state.Config.AgentID = "hidden-agent"
 	state.Config.CredentialID = "hidden-key-profile"
-	state.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{Text: "采纳的话术", Prompt: "hidden-prompt", RawText: "hidden-raw"}, Feedback: json.RawMessage(`{"request":"hidden-feedback"}`)}}
+	state.Accepted = []anchorcycle.Segment{{Selected: anchorcycle.Candidate{Text: "采纳的话术", Prompt: "hidden-prompt", RawText: "hidden-raw"}}}
 	raw, _ := json.Marshal(cyclePreviewProjection(&state))
 	for _, secret := range []string{"hidden-agent", "hidden-key-profile", "hidden-prompt", "hidden-raw", "hidden-feedback", state.StyleMD, state.Facts} {
 		if strings.Contains(string(raw), secret) {

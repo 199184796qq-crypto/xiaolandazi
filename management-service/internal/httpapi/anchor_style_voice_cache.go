@@ -99,7 +99,7 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 	}
 	// Opening/closing and explicit correction/promise handling must be generated
 	// in the current context. Never let cached prose bypass those obligations.
-	if s.anchorVoiceCache == nil || state.Config.TTS == nil || state.Phase != "body" || len(state.Attempts) > 0 || state.P0PendingRepair != nil || state.PriceHook != nil || state.PendingFeedback != "" {
+	if s.anchorVoiceCache == nil || state.Config.TTS == nil || state.Phase != "body" || len(state.Attempts) > 0 || state.P0PendingRepair != nil || state.PriceHook != nil || state.SegmentDirective != "" {
 		return nil
 	}
 	if !s.mainlineCacheReuseEnabled(ctx, state.TenantID) {
@@ -126,7 +126,8 @@ func (s *Server) cachedCycleCandidate(ctx context.Context, state *anchorcycle.St
 				break
 			}
 		}
-		if recent || anchorstylescore.Score(e.Text, b, state.Task().Key).OverallScore < state.Config.Threshold {
+		// 无评分基准时只看是否近期用过，不做分数门槛。
+		if recent || (state.Gradable() && anchorstylescore.Score(e.Text, b, state.Task().Key).OverallScore < state.Config.Threshold) {
 			continue
 		}
 		return &e
