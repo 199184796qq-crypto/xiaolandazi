@@ -19,6 +19,8 @@ import (
 
 var salesTestPrefixedTables = flag.Bool("sales-test-prefixed-tables", false, "Explicit opt-in: use random-prefixed isolated test tables inside the permitted schema. All SQL is allowlisted and table identifiers rewritten; never accesses business tables")
 var salesScratchTables = []string{
+	"mgmt_speech_library_rooms", "mgmt_speech_library_slots", "mgmt_speech_library_entries",
+	"mgmt_speech_library_audio", "mgmt_speech_library_leases", "mgmt_speech_library_openings",
 	"live_angle_direction_generations", "live_angle_direction_plays", "live_angle_direction_reviews",
 	"agent_learning_sessions", "agent_learning_evidence", "agent_learning_results",
 	"agent_memory_items", "agent_memory_versions", "agent_memory_evidence_stats",
@@ -147,6 +149,9 @@ func rewriteSalesScratchSQL(q, prefix string) (string, error) {
 	cmd := strings.ToUpper(strings.Join(strings.Fields(q), " "))
 	valid := false
 	if cmd == "ALTER TABLE LIVE_AGENT_PLANS ADD COLUMN VOICE_RATE DECIMAL(3,2) NULL DEFAULT NULL" {
+		valid = true
+	}
+	if cmd == "ALTER TABLE MGMT_SPEECH_LIBRARY_LEASES ADD COLUMN REASON VARCHAR(32) CHARACTER SET ASCII NOT NULL DEFAULT ''" {
 		valid = true
 	}
 	if q == `SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=?` {

@@ -52,6 +52,9 @@ func libraryWrite(t *testing.T, s *Store, ctx context.Context, sc lib.Scope, p l
 		t.Fatal(e)
 	}
 	entry := lib.Entry{ID: fmt.Sprintf("%032x", n), Candidate: anchorcycle.Candidate{ID: track, Text: fmt.Sprintf("第%d款产品开袋即可食用。", n), FinalContentAudit: &anchorcycle.FinalContentAudit{Decision: "通过"}}}
+	entry.Candidate.FinalContentAudit.TextSHA = lib.Digest(entry.Candidate.Text)
+	entry.Candidate.FinalContentAudit.ContextSHA, entry.Candidate.FinalContentAudit.ScopeSHA = lib.Digest("review"), sc.TextContext
+	entry.Admission = lib.NewAdmission(sc, entry.Candidate, lib.ReviewPassed)
 	audio := lib.Audio{ID: fmt.Sprintf("%032x", 100+n), EntryID: entry.ID, Bucket: "fixture-bucket", Prefix: lib.ObjectPrefix(sc, fmt.Sprintf("%032x", 100+n)), VoiceContext: sc.VoiceContext, Bundle: model.LiveAgentPlanVersionVariant{Text: entry.Candidate.Text, AudioDurationMS: 3400}}
 	if e := s.ReserveAudio(ctx, sc, decision, track, audio); e != nil {
 		t.Fatal(e)
@@ -60,6 +63,49 @@ func libraryWrite(t *testing.T, s *Store, ctx context.Context, sc lib.Scope, p l
 		t.Fatal(e)
 	}
 	return entry, audio, decision
+}
+
+func TestSpeechLibraryMySQLGenerationAdmissionSurvivesNextRuntime(t *testing.T) {
+	s, ctx, sc := speechLibraryFixture(t)
+	p := lib.Policy{Capacity: 3, OneRate: 100, TwoRate: 100, FullRate: 100, CooldownSeconds: 0}
+	decision, track := lib.Digest("generation-admission"), "accepted-no-final-audit"
+	if _, err := s.Select(ctx, sc, p, decision, track); err != nil {
+		t.Fatal(err)
+	}
+	c := anchorcycle.Candidate{ID: track, OutputText: "按当前商品资料选择规格。"}
+	e := lib.Entry{ID: fmt.Sprintf("%032x", 51), Candidate: c, Admission: lib.NewAdmission(sc, c, lib.GenerationAccepted)}
+	a := lib.Audio{ID: fmt.Sprintf("%032x", 151), EntryID: e.ID, Bucket: "fixture", Prefix: lib.ObjectPrefix(sc, fmt.Sprintf("%032x", 151)), VoiceContext: sc.VoiceContext, Bundle: model.LiveAgentPlanVersionVariant{Text: c.OutputText, AudioDurationMS: 3400}}
+	if err := s.ReserveAudio(ctx, sc, decision, track, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(ctx, sc, p, decision, track, e, a); err != nil {
+		t.Fatal("current accepted generation cannot enter durable library", err)
+	}
+	if err := s.MarkPlayed(ctx, sc.Tenant, sc.Room, sc.Runtime, track, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseRuntime(ctx, sc.Tenant, sc.Room, sc.Runtime); err != nil {
+		t.Fatal(err)
+	}
+	sc.Runtime++
+	choice, err := s.Select(ctx, sc, p, lib.Digest("next-generation"), "next-track")
+	if err != nil || choice.Entry == nil || choice.Reason != "text_hit" || choice.Entry.Candidate.FinalContentAudit != nil || choice.Entry.ValidateAdmission(sc, lib.GenerationAccepted) != nil {
+		t.Fatal("next runtime lost honest admission", err, choice)
+	}
+	audio, err := s.ClaimAudio(ctx, sc, lib.Digest("next-generation"), e.ID)
+	if err != nil || audio == nil || audio.ID != a.ID {
+		t.Fatal("complete audio not reusable", err)
+	}
+	changed := *choice.Entry
+	changed.Candidate.OutputText += "价格变更。"
+	if err = s.Publish(ctx, sc, p, decision, track, changed, a); err == nil {
+		t.Fatal("changed text reused old admission/audio")
+	}
+	changed = *choice.Entry
+	changed.Admission.Mode = lib.ReviewPassed
+	if err = s.Publish(ctx, sc, p, decision, track, changed, a); err == nil {
+		t.Fatal("review mode bypassed real final audit")
+	}
 }
 
 func TestSpeechLibraryMySQLDeletedSourceWaitsForAITerminal(t *testing.T) {

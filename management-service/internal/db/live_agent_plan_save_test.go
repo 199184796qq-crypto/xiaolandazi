@@ -48,6 +48,16 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 		}
 		return &contentPolicyTestRows{columns: []string{"count"}, values: [][]driver.Value{{v}}}, nil
 	}
+	if strings.Contains(q, "SELECT id,voice_rate FROM live_agent_plans") {
+		c.locked = strings.Contains(q, "FOR UPDATE")
+		return &contentPolicyTestRows{columns: []string{"id", "voice_rate"}, values: [][]driver.Value{{int64(4), nil}}}, nil
+	}
+	if strings.Contains(q, "SELECT voice_rate FROM live_agent_plans") {
+		return &contentPolicyTestRows{columns: []string{"voice_rate"}, values: [][]driver.Value{{nil}}}, nil
+	}
+	if strings.Contains(q, "SELECT CAST(voice_identity_json AS CHAR)") {
+		return &contentPolicyTestRows{columns: []string{"voice"}, values: [][]driver.Value{{`{"name":"原始音色","voice_id":"original-voice"}`}}}, nil
+	}
 	if strings.Contains(q, "SELECT id FROM live_agent_plans") {
 		c.locked = strings.Contains(q, "FOR UPDATE")
 		return &contentPolicyTestRows{columns: []string{"id"}, values: [][]driver.Value{{int64(4)}}}, nil

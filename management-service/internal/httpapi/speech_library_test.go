@@ -31,7 +31,10 @@ func (m *libraryMemory) ReserveAudio(_ context.Context, _ lib.Scope, _ string, _
 	m.reserves++
 	return nil
 }
-func (m *libraryMemory) Publish(_ context.Context, _ lib.Scope, _ lib.Policy, _ string, _ string, e lib.Entry, a lib.Audio) error {
+func (m *libraryMemory) Publish(_ context.Context, sc lib.Scope, _ lib.Policy, _ string, _ string, e lib.Entry, a lib.Audio) error {
+	if err := e.ValidateAdmission(sc, ""); err != nil {
+		return err
+	}
 	m.entry = &e
 	m.audio = &a
 	m.publishes++
@@ -188,6 +191,7 @@ func TestSpeechLibraryFullAudioBundleReuseAndVoiceRegeneration(t *testing.T) {
 	if voice.Bundle.SRT == "" || len(voice.Bundle.SafePoints) != 2 || m.reserves != 1 {
 		t.Fatal("incomplete subtitle/timeline/safe-point bundle", voice)
 	}
+	state.Accepted = []anchorcycle.Segment{seg}
 	s.publishLibraryVoice(context.Background(), state, seg, a)
 	if m.publishes != 1 {
 		t.Fatal("complete approved bundle not published")
@@ -274,8 +278,12 @@ func TestSpeechLibraryChangedDirectionCannotReuseOldCard(t *testing.T) {
 func TestSpeechLibraryHitAdvancesThroughRealAdoptionWithoutModel(t *testing.T) {
 	t.Setenv("ANCHOR_STYLE_ANGLE_HOOK_PLAN_ENABLED", "0")
 	s, state, seg, m := libraryFixture(t)
-	m.entry = &lib.Entry{ID: "0123456789abcdef0123456789abcdef", Candidate: seg.Selected}
 	state.LibrarySourceSHA = anchorcycle.ProductDigest(state.Queue)
+	sc, err := s.libraryScope(state, seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.entry = &lib.Entry{ID: "0123456789abcdef0123456789abcdef", Candidate: seg.Selected, Admission: lib.NewAdmission(sc, seg.Selected, lib.ReviewPassed)}
 	repo := &supplyRepository{state: state}
 	s.anchorCycles = repo
 	// No DB/model transport exists in this fixture. Any model invocation would

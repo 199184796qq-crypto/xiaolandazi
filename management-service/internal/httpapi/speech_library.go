@@ -44,7 +44,12 @@ func libraryTemporalSource(state *anchorcycle.State) string {
 func libraryDeadlineSensitive(state *anchorcycle.State) bool {
 	// Explicit expiring offers stay on the fresh path; they cannot outlive a
 	// deadline while the fact snapshot itself remains unchanged.
-	return regexp.MustCompile(`截止|截至|限时|活动时间|[0-9]{4}[年/-][0-9]{1,2}|[0-9]{1,2}[:：][0-9]{2}|[0-9]{1,2}点|(?:上午|下午|晚上|早上|凌晨|中午)[一二三四五六七八九十]{1,3}点`).MatchString(libraryTemporalSource(state))
+	source := libraryTemporalSource(state)
+	if scope := state.Task().FactScope; scope != nil {
+		raw, _ := json.Marshal(scope)
+		source = string(raw)
+	}
+	return regexp.MustCompile(`截止|截至|限时|活动时间|[0-9]{4}[年/-][0-9]{1,2}|[0-9]{1,2}[:：][0-9]{2}|[0-9]{1,2}点|(?:上午|下午|晚上|早上|凌晨|中午)[一二三四五六七八九十]{1,3}点`).MatchString(source)
 }
 func libraryTimeBoundary(state *anchorcycle.State) string {
 	source := libraryTemporalSource(state)
@@ -107,19 +112,26 @@ func libraryVoiceSHA(state *anchorcycle.State) string {
 	}{v.Source, v.VoiceID, v.Model, v.ProfileID, v.Rate, "pcm-exact-sentence-bundle-v1"})
 }
 func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *anchorcycle.AnglePlan) (string, error) {
-	if state.P0PolicyMD == "" || state.TextModel == nil || state.ReviewModel == nil {
-		return "", errors.New("话术库需要完整P0及文字和审核模型快照")
+	if state.P0PolicyMD == "" || state.TextModel == nil || !state.Config.SkipReview && state.ReviewModel == nil {
+		return "", errors.New("话术库需要完整P0及当前生成模式的模型快照")
 	}
 	mothers := map[string]string{}
-	for _, name := range []string{"mainline-final-content-review.md", "speech-constraint-text-review.md", "angle-hook-plan.md", "fact-purpose-angle-generation.md", "first-live-opening.md"} {
+	names := []string{"angle-hook-plan.md", "fact-purpose-angle-generation.md", "first-live-opening.md"}
+	if !state.Config.SkipReview {
+		names = append(names, "mainline-final-content-review.md", "speech-constraint-text-review.md")
+	}
+	for _, name := range names {
 		b, e := interactionpolicy.Read(name)
 		if e != nil {
 			return "", e
 		}
 		mothers[name] = lib.Digest(string(b))
 	}
-	if p, _, e := loadAuditFourLayerPrompt(); e == nil {
+	if state.Config.SkipReview {
+		mothers["admission"] = lib.AdmissionVersion + ":" + lib.GenerationAccepted
+	} else if p, _, e := loadAuditFourLayerPrompt(); e == nil {
 		mothers["audit-four-layer"] = lib.Digest(p)
+		mothers["admission"] = lib.AdmissionVersion + ":" + lib.ReviewPassed
 	} else {
 		return "", e
 	}
@@ -128,6 +140,9 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		return "", e
 	}
 	for _, m := range []struct{ env, name string }{{"MAINLINE_FINAL_CONTENT_REVIEW_PROMPT_PATH", "mainline-final-content-review.md"}, {"ANCHOR_SPEECH_CONSTRAINT_TEXT_REVIEW_PATH", "speech-constraint-text-review.md"}, {"ANCHOR_STYLE_ANGLE_HOOK_PLAN_PROMPT_PATH", "angle-hook-plan.md"}} {
+		if state.Config.SkipReview && m.name != "angle-hook-plan.md" {
+			continue
+		}
 		md, _, err := loadReplaceablePromptAsset(m.env, "configs/prompts/anchor-style/"+m.name, "话术库规则指纹")
 		if err != nil {
 			return "", err
@@ -135,6 +150,11 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		mothers[m.name] = lib.Digest(md)
 	}
 	mothers["text-contract"] = contract
+	rules, err := loadGenerationP0()
+	if err != nil {
+		return "", err
+	}
+	mothers["generation-p0"] = lib.Digest(rules)
 	mothers["time-boundary"] = libraryTimeBoundary(state)
 	// Earlier entries may have been generated with explicit scope prefixes
 	// misread as categories or full facts reintroduced through content strategy.
@@ -168,6 +188,14 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 	if queueSHA == "" {
 		queueSHA = lib.Digest(state.Queue)
 	}
+	facts := state.Facts
+	var strategy any = state.ContentStrategy
+	// Current saved tasks carry their complete facts and product boundary.
+	// Their slot changes independently; global fact/queue digests would evict
+	// unrelated products too. Legacy tasks without provenance stay conservative.
+	if libraryScopedTasks(state) {
+		facts, queueSHA, focus, strategy = "", "task-scoped-v1", nil, nil
+	}
 	// The run's TextPromptSHA is the last request's transport receipt. Repairs
 	// clear it, normal requests fill it again. Use the resolved current contract
 	// so real mother/model changes, rather than request timing, invalidate audio.
@@ -181,7 +209,7 @@ func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *ancho
 		Corrections                                                 any
 		Strategy, Focus, Angle, TextModel, ReviewModel              any
 		Mothers                                                     map[string]string
-	}{state.TenantID, state.RoomID, state.PlanID, state.StyleID, state.ScorecardID, state.WheelID, task, queueSHA, state.StyleMD, state.Facts, state.BaselineJSON, state.P0PolicyMD, state.OpeningHookLibraryMD, contract, state.P0Allowances, config, corrections, state.ContentStrategy, focus, libraryAngle(plan), libraryModel(state.TextModel), libraryModel(state.ReviewModel), mothers}), nil
+	}{state.TenantID, state.RoomID, state.PlanID, state.StyleID, state.ScorecardID, state.WheelID, task, queueSHA, state.StyleMD, facts, state.BaselineJSON, state.P0PolicyMD, state.OpeningHookLibraryMD, contract, state.P0Allowances, config, corrections, strategy, focus, libraryAngle(plan), libraryModel(state.TextModel), libraryModel(state.ReviewModel), mothers}), nil
 }
 func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segment) (lib.Scope, error) {
 	if state.Delivery == nil {
@@ -221,6 +249,9 @@ func (s *Server) libraryScope(state *anchorcycle.State, segment anchorcycle.Segm
 	if phase != "body" {
 		slot = phase + ":" + opening + ":" + slot
 	}
+	// Independent side inventories must coexist. A side change is selection,
+	// not a fact revision of the preceding side's slot.
+	slot += ":side:" + lib.Digest(side)[:16]
 	return lib.Scope{Realm: s.executionRealm, Tenant: state.TenantID, Plan: state.PlanID, Room: state.RoomID, Runtime: state.Delivery.RuntimeSessionID, Slot: slot, TextContext: text, VoiceContext: libraryVoiceSHA(state), RoomContext: base}, e
 }
 func libraryEligible(state *anchorcycle.State) bool {
@@ -269,14 +300,20 @@ func (s *Server) selectLibraryText(ctx context.Context, state *anchorcycle.State
 	if choice.Entry != nil {
 		c := choice.Entry.Candidate
 		// Only current approval receipts can authorize reuse, without model rescans.
-		expected, e := s.libraryReviewContext(state, c)
-		if e == nil {
-			state.FinalContentReviewRequired = true
-			state.FinalContentReviewContextSHA = expected
+		mode := lib.GenerationAccepted
+		var e error
+		if !state.Config.SkipReview {
+			mode = lib.ReviewPassed
+			var expected string
+			expected, e = s.libraryReviewContext(state, c)
+			if e == nil {
+				state.FinalContentReviewRequired = true
+				state.FinalContentReviewContextSHA = expected
+			}
 		}
 		copy := c
 		cleanCycleConsecutiveSpeech(state, &copy)
-		if e != nil || !libraryHookCurrent(state, c) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(c) || state.CheckApprovedText(c, cycleVoiceText(c)) != nil || copy.OutputText != c.OutputText || anchorstylescore.Measure(c.OutputText, b).Chars > state.Config.MaxChars || c.Score.OverallScore < state.Config.Threshold || anchorcycle.InspectPrice(c.OutputText, state.Task()).Hook != "" {
+		if e != nil || choice.Entry.ValidateAdmission(sc, mode) != nil || !libraryHookCurrent(state, c) || !libraryTextIndependent(c.OutputText) || !state.FinalContentCandidateApproved(c) || state.CheckApprovedText(c, cycleVoiceText(c)) != nil || copy.OutputText != c.OutputText || anchorstylescore.Measure(c.OutputText, b).Chars > state.Config.MaxChars || c.Score.OverallScore < state.Config.Threshold || anchorcycle.InspectPrice(c.OutputText, state.Task()).Hook != "" {
 			_ = s.speechLibrary.Cancel(ctx, decision)
 			log.Printf("speech library room=%d decision=%s reason=receipt_or_recent_invalid", state.RoomID, decision)
 			// The cancelled lease cannot publish the fresh fallback. Let the
@@ -332,7 +369,7 @@ func (s *Server) prepareApprovedLibraryText(ctx context.Context, state *anchorcy
 		Position                      int
 	}{state.RunID, sc.Key(), sc.TextContext, sc.VoiceContext, "approved-fresh", state.TotalAccepted()})
 	if _, e = s.speechLibrary.Select(ctx, sc, p, decision, c.ID); e != nil {
-		state.Warn("已审核正文未登记长期库，继续正常声音生成")
+		state.Warn("已采纳正文未登记长期库，继续正常声音生成")
 		return
 	}
 	c.LibraryDecision, c.LibraryTextSHA = decision, sc.TextContext
@@ -465,10 +502,18 @@ func (s *Server) publishLibraryVoice(ctx context.Context, state *anchorcycle.Sta
 	}
 	sc, e := s.libraryScope(state, seg)
 	if e != nil {
+		state.Warn("话术库入库失败，当前声音继续播放：" + e.Error())
 		return
 	}
 	p, e := s.libraryPolicy(ctx)
 	if e != nil {
+		state.Warn("话术库入库失败，当前声音继续播放：配置不可用")
+		return
+	}
+	entry, e := s.libraryAdmittedEntry(state, seg, sc, a.EntryID)
+	if e != nil {
+		state.Warn("话术库入库失败，当前声音继续播放：" + e.Error())
+		log.Printf("speech library publish room=%d candidate=%s error=%v", state.RoomID, seg.Selected.ID, e)
 		return
 	}
 	c := seg.Selected
@@ -483,9 +528,13 @@ func (s *Server) publishLibraryVoice(ctx context.Context, state *anchorcycle.Sta
 		q := *c.P0Report
 		c.P0Report = &q
 	}
-	e = s.speechLibrary.Publish(ctx, sc, p, seg.Selected.LibraryDecision, seg.Selected.ID, lib.Entry{ID: a.EntryID, Candidate: c}, *a)
+	entry.Candidate = c
+	e = s.speechLibrary.Publish(ctx, sc, p, seg.Selected.LibraryDecision, seg.Selected.ID, entry, *a)
 	if e != nil {
+		state.Warn("话术库入库失败，当前声音继续播放：" + e.Error())
 		log.Printf("speech library publish room=%d candidate=%s error=%v", state.RoomID, seg.Selected.ID, e)
+	} else {
+		log.Printf("speech library publish room=%d runtime=%d candidate=%s entry=%s audio=%s mode=%s result=ready", state.RoomID, sc.Runtime, seg.Selected.ID, entry.ID, a.ID, entry.Admission.Mode)
 	}
 }
 

@@ -154,7 +154,7 @@ func speechEntry(ctx context.Context, tx *sql.Tx, id string) (*lib.Entry, error)
 	if err != nil {
 		return nil, err
 	}
-	err = json.Unmarshal([]byte(raw), &e.Candidate)
+	err = e.UnmarshalPayload([]byte(raw))
 	return &e, err
 }
 func (s *Store) Select(ctx context.Context, sc lib.Scope, p lib.Policy, decision, track string) (lib.Choice, error) {
@@ -246,8 +246,12 @@ func (s *Store) ReserveAudio(ctx context.Context, sc lib.Scope, decision, track 
 	return tx.Commit()
 }
 func (s *Store) Publish(ctx context.Context, sc lib.Scope, p lib.Policy, decision, track string, entry lib.Entry, a lib.Audio) error {
-	if len(entry.ID) != 32 || len(a.ID) != 32 || a.EntryID != entry.ID || a.Prefix != lib.ObjectPrefix(sc, a.ID) || a.Bundle.AudioDurationMS <= 0 || a.Bundle.Text == "" || entry.Candidate.FinalContentAudit == nil || entry.Candidate.FinalContentAudit.Decision != "通过" {
-		return errors.New("话术库条目或完整审核音频包无效")
+	text := lib.SpokenText(entry.Candidate)
+	if len(entry.ID) != 32 || len(a.ID) != 32 || a.EntryID != entry.ID || a.Prefix != lib.ObjectPrefix(sc, a.ID) || a.VoiceContext != sc.VoiceContext || a.Bundle.AudioDurationMS <= 0 || (a.Bundle.Text != text && a.Bundle.Text != text+"。") {
+		return errors.New("话术库条目与完整音频包不一致")
+	}
+	if err := entry.ValidateAdmission(sc, ""); err != nil {
+		return err
 	}
 	tx, e := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
@@ -274,7 +278,10 @@ func (s *Store) Publish(ctx context.Context, sc lib.Scope, p lib.Policy, decisio
 	} else if !errors.Is(e, sql.ErrNoRows) {
 		return e
 	}
-	raw, _ := json.Marshal(entry.Candidate)
+	raw, e := entry.MarshalPayload()
+	if e != nil {
+		return e
+	}
 	if _, e = tx.ExecContext(ctx, `INSERT INTO mgmt_speech_library_entries(id,scope_key,text_sha,output_sha,payload_json,created_ms) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE payload_json=VALUES(payload_json),active=1`, entry.ID, sc.Key(), sc.TextContext, output, string(raw), time.Now().UnixMilli()); e != nil {
 		return e
 	}

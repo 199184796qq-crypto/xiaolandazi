@@ -86,6 +86,7 @@ func ObjectKeys(prefix string) []string {
 type Entry struct {
 	ID         string                `json:"id"`
 	Candidate  anchorcycle.Candidate `json:"candidate"`
+	Admission  *Admission            `json:"admission,omitempty"`
 	LastUsedMS int64                 `json:"last_used_ms"`
 	UseCount   int64                 `json:"use_count"`
 }
