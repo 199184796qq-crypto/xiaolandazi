@@ -1029,11 +1029,11 @@ func TestReconcileRoomMissionImmediatelyReleasesDetachedCoreState(t *testing.T) 
 	}
 }
 
-func TestProcessRoomSkipsReviewAbsoluteClaimReachesTTS(t *testing.T) {
+func TestProcessRoomRewritesAbsoluteClaimSentenceBeforeTTS(t *testing.T) {
 	core := &fakeCore{}
 	agent := &fakeAgent{responses: []string{
 		"放心拍，咱们这个品质保障，绝对不踩雷！",
-		"喜欢这类商品的家人可以看看，选品会认真把关，按页面信息放心选择。",
+		`{"备选":["喜欢这类商品的家人可以看看，选品会认真把关。","放心拍，咱们这个品质保障，绝对不踩雷！"]}`,
 	}}
 	tts := &fakeTTS{}
 	worker := New(readyVoiceStore(), core, agent, tts)
@@ -1042,13 +1042,15 @@ func TestProcessRoomSkipsReviewAbsoluteClaimReachesTTS(t *testing.T) {
 	if err := worker.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	// TTS 前审核已去掉（对齐新轻量互动链路）：生成结果直接送 TTS，不再调审核模型改写。
-	if agent.calls != 1 {
-		t.Fatalf("agent calls=%d want generation only (review removed)", agent.calls)
+	// 命中的那一句单独回喂一次，出两个备选；不整段重生成。
+	if agent.calls != 2 {
+		t.Fatalf("agent calls=%d want generation+sentence rewrite", agent.calls)
 	}
-	// 生成原文直达 TTS，不再被规则层改写。
-	if !strings.Contains(tts.last.Text, "绝对不踩雷") {
-		t.Fatalf("generation text should reach TTS unchanged after review removal: %q", tts.last.Text)
+	if strings.Contains(tts.last.Text, "绝对不踩雷") {
+		t.Fatalf("P0 sentence reached TTS: %q", tts.last.Text)
+	}
+	if !strings.Contains(tts.last.Text, "选品会认真把关") {
+		t.Fatalf("clean candidate not used: %q", tts.last.Text)
 	}
 }
 
