@@ -1,10 +1,16 @@
 # 项目协作约定
 
-## 当前生产更正（2026-10-21 19:55）
+## 当前生产（2026-10-21 20:02）
 
-- 当前 `/opt/xiaolan/releases/20261021-p0-minimal-edit-91cffdc`，源码 `91cffdcdd8169cb6cb80ab40adb4fe22a137b9de`；前驱 `20261021-tenant-agent-33cefef`。WorkBuddy 于19:55:04—19:55:10发布轮盘P0最小编辑，Management PID1427888/SHA256 `a6b203708c35d8fd80ab633e25571cc37f217591295d4ec58a916a3c4ef78fb5`；Core775073/网关775930及程序哈希、Nginx保持。
-- `91cffdc` 的父提交是 `8fcc6dc`（TTS前句级P0改写），因此当前线上已同时包含：租户维护智能体 `33cefef`、TTS前句级P0 `8fcc6dc`、轮盘P0最小编辑 `91cffdc`。生产Management二进制已核验含 `interaction_p0_sentence_rewrite` 阶段及TTS前 `rewriteTTSP0Sentences` hook；不能再用 `8fcc6dc` 覆盖当前线上。
-- 本轮未单独发布 `8fcc6dc`；原本准备的8fcc6dc增量包因发现生产已前进到91cffdc而停止切换。TTS功能说明 `E:/直播伴播/docs/2026-10-21-TTS前句级P0改写.md`；下方租户维护智能体条目保留为19:44历史时点。
+- 当前 `/opt/xiaolan/releases/20261021-tts-p0-guard-c51c883`，源码 `c51c8832daae286d63e94d542dd2727635f18048`；前驱 `20261021-p0-minimal-edit-91cffdc`。北京时间20:01:57—20:02:03发布，Management PID1429088/SHA256 `4d8746a84a9016e265e51aa6183ea4ad2438056c46ff8e4c4f11839cdca0a6a9`；只重启Management，Core775073/网关775930及程序哈希、Nginx保持。
+- 本轮是TTS前句级P0改写的业务锚定补丁：命中句只回喂本句，明确列出违规词，给正向替换对照，不注入轮盘卖点/事实；程序只选零P0命中且保留原“N号链接”、不新增数字的候选；仍不行丢句，全丢走安全边界；verbatim跳过。生产二进制已核验含 `interaction_p0_sentence_rewrite`；`91cffdc`的轮盘P0最小编辑和`33cefef`租户维护入口一并保留。
+- 20轮定向、`decisionexecutor`全量、Management全量`go test ./...`、发布守卫及8080/8081/8083健康检查通过。未用真实模型/TTS、未开播；真实模型20次改写仍未跑。
+- 说明 `E:/直播伴播/docs/2026-10-21-TTS前句级P0改写.md`，证据 `E:/直播伴播-local/tts-p0-guard-release-20261021`，部署记录 `/opt/xiaolan/deployments/20261021-tts-p0-guard-c51c883.json`；回滚目标前驱91cffdc。
+
+## 轮盘 P0 最小编辑（2026-10-21 19:55，历史记录）
+
+- `/opt/xiaolan/releases/20261021-p0-minimal-edit-91cffdc`，源码 `91cffdcdd8169cb6cb80ab40adb4fe22a137b9de`；前驱 `20261021-tenant-agent-33cefef`。WorkBuddy 于19:55:04—19:55:10发布，Management PID1427888/SHA256 `a6b203708c35d8fd80ab633e25571cc37f217591295d4ec58a916a3c4ef78fb5`；Core775073/网关775930及程序哈希、Nginx保持。
+- `91cffdc` 的父提交是 `8fcc6dc`（TTS前句级P0改写），当时线上同时包含租户维护智能体 `33cefef`、TTS前句级P0 `8fcc6dc`、轮盘P0最小编辑 `91cffdc`。该版本已被 `c51c883` 取代，不能再覆盖当前线上。
 
 ## 租户维护智能体（2026-10-21 19:44 已上线，历史记录）
 
