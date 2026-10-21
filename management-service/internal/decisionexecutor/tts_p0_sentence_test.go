@@ -74,11 +74,30 @@ func TestTTSP0CandidatesAndPicking(t *testing.T) {
 	if len(candidates) != 2 {
 		t.Fatalf("candidates=%#v", candidates)
 	}
-	if got := ttsP0PickCandidate(candidates, policy); got != "这是很好的" {
+	if got := ttsP0PickCandidate(candidates, "这是最好的", policy); got != "这是很好的" {
 		t.Fatalf("picked=%q", got)
 	}
-	if got := ttsP0PickCandidate([]string{"这是最好的"}, policy); got != "" {
+	if got := ttsP0PickCandidate([]string{"这是最好的"}, "这是最好的", policy); got != "" {
 		t.Fatalf("all-hit must drop, got %q", got)
+	}
+}
+
+func TestTTSP0PickRejectsLinkOrNumberDrift(t *testing.T) {
+	policy := ttsP0TestPolicy(t)
+	original := "2号链接这个很实在。"
+	candidates := []string{
+		"这个很实在。",
+		"1号链接这个很实在。",
+		"2号链接这个很实在。",
+	}
+	if got := ttsP0PickCandidate(candidates, original, policy); got != "2号链接这个很实在。" {
+		t.Fatalf("link drift accepted: %q", got)
+	}
+	if got := ttsP0PickCandidate([]string{"1号链接这个很实在。"}, original, policy); got != "" {
+		t.Fatalf("wrong link accepted: %q", got)
+	}
+	if got := ttsP0PickCandidate([]string{"今天有5个人。"}, "今天有3个人。", policy); got != "" {
+		t.Fatalf("new number accepted: %q", got)
 	}
 }
 

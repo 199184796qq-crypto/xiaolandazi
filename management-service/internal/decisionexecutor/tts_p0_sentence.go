@@ -3,6 +3,7 @@ package decisionexecutor
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,19 +21,24 @@ import (
 // 这样 token 成本只和命中句数相关，不会因为一句违规重写整段。
 
 const ttsP0RewriteSystem = `# 必说
-只改写下面这一句直播口播，保留原句要表达的沟通任务和事实。
-不新增数字、不换商品、不补充原文没有的信息。
+只改写下面这一句直播口播，保留原句的沟通任务和事实。
+不改句子结构、不换主题、不换商品链接、不新增数字、不补充原文没有的信息。
 
 # 可说
-原句就是唯一事实来源；可以换一种更自然的说法。
+原句就是唯一事实来源；只换说法，不换内容。
 
-# 不提
-以下词或说法一律不能出现：{{NOT_SAY}}
+# 不提（这些词一个都不能出现在改法里）
+{{NOT_SAY}}
 
-# 改写
-1. 绝对化/极限说法改成“很、非常、特别、相当”，或直接讲事实。
-2. 无依据的承诺、保证、排名、功效直接删掉。
-3. 保持口播语气，长度不超过原句。
+# 改写（照着换）
+- 最好 / 最佳 / 最优 → 很好 / 很不错 / 挺好
+- 最低价 / 最便宜 / 最优惠 → 价格更低 / 更便宜 / 更划算
+- 最高 / 最大 / 最多 → 很高 / 很大 / 很多
+- 顶级 / 极致 / 顶尖 → 很好 / 不错 / 到位
+- 第一 / 唯一 / 独家 → 少有的 / 比较特别
+- 100% / 绝对 / 零风险 → 基本 / 通常 / 几乎
+- 保证 / 确保 → 可以做到 / 一般都能
+保持口播语气，长度不超过原句。
 只输出 JSON：{"备选":["改写1","改写2"]}`
 
 type ttsP0RewriteDoc struct {
@@ -101,14 +107,61 @@ func ttsP0UniqueHits(hits []contentguard.Hit) []string {
 	return out
 }
 
-func ttsP0PickCandidate(candidates []string, policy *contentguard.Policy) string {
+var ttsP0NumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
+
+// ttsP0LinkMention 取出“2号链接”这类链接标记；没有返回空串。
+func ttsP0LinkMention(text string) string {
+	const suffix = "号链接"
+	if idx := strings.Index(text, suffix); idx > 0 {
+		start := idx
+		for start > 0 {
+			r := rune(text[start-1])
+			if r < '0' || r > '9' {
+				break
+			}
+			start--
+		}
+		if start < idx {
+			return text[start : idx+len(suffix)]
+		}
+	}
+	return ""
+}
+
+func ttsP0HasNewNumber(original, candidate string) bool {
+	existing := map[string]bool{}
+	for _, number := range ttsP0NumberPattern.FindAllString(original, -1) {
+		existing[number] = true
+	}
+	for _, number := range ttsP0NumberPattern.FindAllString(candidate, -1) {
+		if !existing[number] {
+			return true
+		}
+	}
+	return false
+}
+
+// ttsP0PickCandidate 选第一个仍不含 P0、且没有换链接/新增数字的备选。
+func ttsP0PickCandidate(candidates []string, original string, policy *contentguard.Policy) string {
 	if policy == nil {
 		return ""
 	}
+	originalLink := ttsP0LinkMention(original)
 	for _, item := range candidates {
-		if len(policy.Scan(item, "all").Hits) == 0 {
-			return item
+		if len(policy.Scan(item, "all").Hits) != 0 {
+			continue
 		}
+		candidateLink := ttsP0LinkMention(item)
+		if originalLink == "" && candidateLink != "" {
+			continue
+		}
+		if originalLink != "" && candidateLink != originalLink {
+			continue
+		}
+		if ttsP0HasNewNumber(original, item) {
+			continue
+		}
+		return item
 	}
 	return ""
 }
@@ -145,7 +198,7 @@ func (w *Worker) rewriteOneTTSSentence(
 		return ""
 	}
 	system := strings.Replace(ttsP0RewriteSystem, "{{NOT_SAY}}", notSay, 1)
-	user := "原句：" + strings.TrimSpace(sentence)
+	user := "原句：" + strings.TrimSpace(sentence) + "\n本句违规词：" + notSay
 	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	response, err := w.completeInteractionAnswer(callCtx, session, agentgateway.Request{
@@ -159,7 +212,7 @@ func (w *Worker) rewriteOneTTSSentence(
 	if err != nil {
 		return ""
 	}
-	picked := ttsP0PickCandidate(ttsP0RewriteCandidates(response.Text), policy)
+	picked := ttsP0PickCandidate(ttsP0RewriteCandidates(response.Text), sentence, policy)
 	if picked == "" {
 		return ""
 	}
