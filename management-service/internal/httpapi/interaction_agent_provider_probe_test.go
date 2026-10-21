@@ -48,8 +48,8 @@ func TestInteractionAgentProviderProbe(t *testing.T) {
 		}
 		encoded, _ := json.Marshal(result)
 		t.Log(string(encoded))
-		if result.AnswerOutline == nil || result.AnswerOutlineError != "" {
-			t.Error("business plan missing")
+		if strings.TrimSpace(result.Reply) == "" {
+			t.Error("reply missing")
 		}
 		if utf8.RuneCountInString(result.Reply) > 120 {
 			t.Error("simple answer too long")
@@ -65,8 +65,6 @@ func TestInteractionAgentProviderProbe(t *testing.T) {
 		if question == "发什么快递？" && (utf8.RuneCountInString(result.Reply) > 30 || strings.Contains(result.Reply, "到货")) {
 			t.Error("company-only question expanded")
 		}
-		if result.AnswerOutline != nil {
-			recent = append(recent, decisionexecutor.InteractionRecentAnswer{Question: question, Purpose: result.AnswerOutline.Purpose, Angle: result.AnswerOutline.Angle, Reply: result.Reply})
-		}
+		recent = append(recent, decisionexecutor.InteractionRecentAnswer{Question: question, Reply: result.Reply})
 	}
 }

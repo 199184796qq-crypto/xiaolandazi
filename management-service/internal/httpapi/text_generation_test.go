@@ -113,7 +113,7 @@ func TestExportTextModelProbePackets(t *testing.T) {
 		if c.Interaction != "" {
 			stage = "speech_generation"
 			format = agentgateway.ResponseJSON
-			mother, _, err := loadReplaceablePromptAsset("", "configs/prompts/anchor-style/interaction-answer-assessment.md", "互动正文")
+			mother, _, err := loadReplaceablePromptAsset("", "configs/prompts/anchor-style/interaction-core-content.md", "互动正文")
 			if err != nil {
 				t.Fatal(err)
 			}

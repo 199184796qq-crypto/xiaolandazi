@@ -196,21 +196,6 @@ func (item decisionItem) nicknameSpeechText(text string) string {
 	return strings.NewReplacer("*", "", "＊", "").Replace(text)
 }
 
-func (item decisionItem) nicknamePromptItem() decisionItem {
-	questions := make([]string, len(item.SampleQuestions))
-	for i, question := range item.SampleQuestions {
-		questions[i] = item.nicknamePromptText(question)
-	}
-	item.SampleQuestions = questions
-	item.Title = item.nicknamePromptText(item.Title)
-	item.Summary = item.nicknamePromptText(item.Summary)
-	item.ReplyHint = item.nicknamePromptText(item.ReplyHint)
-	item.OriginMainline = item.nicknamePromptText(item.OriginMainline)
-	item.CurrentMainline = item.nicknamePromptText(item.CurrentMainline)
-	item.ResumeMainline = item.nicknamePromptText(item.ResumeMainline)
-	item.PreviewInstruction = item.nicknamePromptText(item.PreviewInstruction)
-	return item
-}
 func nicknameInput(index int, name string) nicknamePlanInput {
 	masked := strings.ContainsAny(name, "*＊")
 	name = nicknameModelName(name)

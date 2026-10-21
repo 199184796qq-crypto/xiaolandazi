@@ -19,7 +19,7 @@ func (s *Store) ResolveTextRole(ctx context.Context, stage string) (string, erro
 		}
 		return models.SystemDefaultID, nil
 	}
-	if stage != "mainline_text" && stage != "speech_generation" && stage != "interaction_agent_answer" && stage != "speech_review" {
+	if stage != "mainline_text" && stage != "speech_generation" && stage != "speech_review" {
 		return "", nil
 	}
 	settings, err := s.AnchorGenerationSettings(ctx)

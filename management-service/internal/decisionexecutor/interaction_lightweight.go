@@ -8,34 +8,6 @@ import (
 	"livecompanion/management/internal/speechmission"
 )
 
-// useLightweightForKind 判定某个互动类型是否走「新轻量互动策略机」。
-//
-// 用户 2026-10-20 明确：新策略机接管「礼仪性轻互动」+「单一互动（问答三兄弟）」。
-// 分流边界（以 mission_kind 划分）：
-//
-//	走新链路（轻互动策略机）：
-//	  - 欢迎：welcome_named / welcome_batch / warmup
-//	  - 关注/点赞：reply_follow / reply_like
-//	  - 下单回应：conversion_signal
-//	  - 单一互动（问答三兄弟）：reply_question / reply_chat / complaint
-//	走老链路（完整「意图分析→规划→回答」模型链路）：无（已全量切新链路）
-//
-// 说明：2026-10-20 用户拍板「三兄弟一起切」——reply_question/reply_chat/complaint
-// 全部纳入新链路。解意图与打断调度仍留在 core，management 复用 core 传下的
-// purpose_id/purpose_knowledge，新链路内做「筛事实 + 组织答案（两段式）」。
-func useLightweightForKind(kind string) bool {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "welcome_named", "welcome_batch", "warmup",
-		"reply_follow", "reply_like",
-		"conversion_signal",
-		"reply_question", "reply_chat", "complaint":
-		return true
-	default:
-		// 未知 kind 仍走老链路，保守兜底：空 kind 或未识别不冒进，避免漏掉真实提问。
-		return false
-	}
-}
-
 // interactionTier 是三档划分的档位标识。
 // 9 类互动按「回答需不需要动脑」收敛成三档：
 //

@@ -94,7 +94,7 @@ func (w *Worker) interactionPreparationScope(ctx context.Context, session model.
 		}
 		input = append(input, links)
 	}
-	return faqDigest(input), nil
+	return interactionDigest(input), nil
 }
 
 func (w *Worker) takePreparedInteraction(session model.LiveRuntimeSession, item decisionItem, scope, memory string) (preparedInteraction, bool) {

@@ -154,8 +154,6 @@ func TestSessionContentBoundaryProviderProbe(t *testing.T) {
 				t.Errorf("old business source used: %s", wrong)
 			}
 		}
-		if result.AnswerOutline != nil {
-			recent = append(recent, decisionexecutor.InteractionRecentAnswer{Question: question, Reply: result.Reply, Purpose: result.AnswerOutline.Purpose, Angle: result.AnswerOutline.Angle})
-		}
+		recent = append(recent, decisionexecutor.InteractionRecentAnswer{Question: question, Reply: result.Reply})
 	}
 }

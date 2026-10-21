@@ -364,24 +364,8 @@
     "sha256": "6c8184d11c6d9177a7ae8213235c110c4f35919e3ead312db6e7b527dbd18487"
   },
   {
-    "path": "interaction-agent-answer.md",
-    "sha256": "88991faf2815ba012cc184a3876fb10e7770314a0b8cc22e9e2dfc067c6f0b23"
-  },
-  {
-    "path": "interaction-agent-plan.md",
-    "sha256": "8032aec8b3978253d80ad7211f031665b76d328eeb7e470f833daa8962be623e"
-  },
-  {
     "path": "interaction-anchor-style.md",
     "sha256": "41d65658412864b70546765b0857b10aaeaeaef015699aad367e23b10cf349a1"
-  },
-  {
-    "path": "interaction-answer-assessment.md",
-    "sha256": "cf6e89f9315d46e152b009fe64406d364e068144eb7fe19b397181f9bc07e3ea"
-  },
-  {
-    "path": "interaction-continuity-generation.md",
-    "sha256": "fc38571abeddcd30f41892e787b198d4ff10b6104840e9de0ae810f76f9bbe12"
   },
   {
     "path": "interaction-core-content.md",
@@ -398,10 +382,6 @@
   {
     "path": "interaction-learning-user-authority.md",
     "sha256": "dcca3ef1edc4fe2127969b697e00a4a241d725565fb7f2bcc603b00a4a785268"
-  },
-  {
-    "path": "interaction-length-repair.md",
-    "sha256": "7ab66bb5f0788150056365c840800b37833a0c066928ddd2fa96d6eeb991cbf0"
   },
   {
     "path": "interaction-nickname-addressing.md",
@@ -430,10 +410,6 @@
   {
     "path": "interaction-purpose-resolution.md",
     "sha256": "2821cd13bff4eb7909a95202778945c911be3f31505fb8e21aaa88cfb2d35330"
-  },
-  {
-    "path": "interaction-question-focus.md",
-    "sha256": "caa637457d0bd509341fd4fa4736cc592f4366c0f018882ed735d23439def352"
   },
   {
     "path": "interaction-return-bridge-baseline-probe.md",

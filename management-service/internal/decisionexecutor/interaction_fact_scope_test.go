@@ -2,7 +2,6 @@ package decisionexecutor
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -97,30 +96,6 @@ func (s *editorScopedFactsStore) CurrentSpeechExpressionConstraints(context.Cont
 	return contentpools.Sources{Products: []contentpools.Product{{ID: 10, Link: "1"}, {ID: 20, Link: "2"}}, Corrections: []contentpools.Correction{{Products: []int64{10}, Content: contentpools.CorrectionContent{Forbidden: "1号保留纠正"}}, {Products: []int64{20}, Content: contentpools.CorrectionContent{Forbidden: "2号纠正哨兵"}}}}, nil
 }
 
-func TestInteractionScopeEditorUsesCurrentFactsAndScopedCorrections(t *testing.T) {
-	full, generation, _ := interactionScopeFixture()
-	s := &editorScopedFactsStore{snapshotFactStore: &snapshotFactStore{fakeStore: &fakeStore{plan: model.LiveAgentPlan{ID: 2}}, asset: model.LiveDerivedSafetyAsset{SafeFacts: full}}, scopePlan: 2, scopeGeneration: generation}
-	w := New(s, nil, nil, nil)
-	session := model.LiveRuntimeSession{TenantID: 7, RoomID: 11}
-	if audit, err := w.interactionProductContext(context.Background(), session, 2, true); err != nil || audit != full {
-		t.Fatal("audit must retain complete current facts", audit, err)
-	}
-	item := decisionItem{SampleQuestions: []string{"1号多少钱"}, BusinessCoreOnly: true, BusinessPlanning: true}
-	prompt, err := w.answerPrompt(context.Background(), session, item)
-	if err != nil || !strings.Contains(prompt, "337元") || !strings.Contains(prompt, "1号保留纠正") || strings.Contains(prompt, "187元") || strings.Contains(prompt, "2号纠正哨兵") {
-		t.Fatal(prompt, err)
-	}
-	s.scopeGeneration = nil
-	prompt, err = w.answerPrompt(context.Background(), session, item)
-	if err != nil || !strings.Contains(prompt, "187元") || !strings.Contains(prompt, "2号纠正哨兵") {
-		t.Fatal("unverified editor scope did not fall back", prompt, err)
-	}
-	s.scopePlan = 3
-	if _, err = w.answerPrompt(context.Background(), session, item); err == nil {
-		t.Fatal("editor used another plan scope")
-	}
-}
-
 func TestInteractionScopeIncompleteLegacyAndAmbiguousDataFallBack(t *testing.T) {
 	for _, change := range []func(map[string]any, *anchorcycle.ProductFocus){
 		func(g map[string]any, _ *anchorcycle.ProductFocus) { delete(g, "anchor_generation") },
@@ -143,39 +118,5 @@ func TestInteractionScopeIncompleteLegacyAndAmbiguousDataFallBack(t *testing.T) 
 	focus.Products[1].Name = focus.Products[0].Name
 	if got, scope := narrowInteractionFacts(generation, full, "10人餐多少钱"); got != full || len(scope.Links) != 0 {
 		t.Fatal("ambiguous name guessed", got)
-	}
-}
-
-func TestInteractionScopeReachesPlannerLiveAndSimulation(t *testing.T) {
-	full, generation, _ := interactionScopeFixture()
-	s := &snapshotFactStore{fakeStore: &fakeStore{plan: model.LiveAgentPlan{ID: 2}, publishedVersion: &model.LiveAgentPlanVersion{PlanID: 2, GenerationContext: generation}}, asset: model.LiveDerivedSafetyAsset{SafeFacts: full}}
-	w := New(s, nil, nil, nil)
-	for _, planning := range []bool{false, true} {
-		for _, simulation := range []bool{false, true} {
-			item := decisionItem{SampleQuestions: []string{"1号有效期多久"}, BusinessPlanning: planning, BusinessCoreOnly: simulation}
-			if !planning {
-				item.BusinessPlan = &interactionBusinessPlan{Basis: []string{"有效期30天"}}
-			}
-			prompt, err := w.answerPrompt(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, item)
-			if err != nil || !strings.Contains(prompt, "337元") || !strings.Contains(prompt, "每桌限用1张券") || strings.Contains(prompt, "187元") || strings.Contains(prompt, "专属赠品哨兵") {
-				t.Fatal("scope lost in prompt", planning, simulation, prompt, err)
-			}
-			item.SampleQuestions = []string{"这个怎么用"}
-			prompt, err = w.answerPrompt(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, item)
-			if err != nil || !strings.Contains(prompt, "337元") || !strings.Contains(prompt, "187元") || !strings.Contains(prompt, "99元") {
-				t.Fatal("unknown fallback lost in prompt", prompt, err)
-			}
-		}
-	}
-}
-
-func TestInteractionScopePreservesStrategyWithoutOtherProductFacts(t *testing.T) {
-	full, generation, _ := interactionScopeFixture()
-	strategy := contentstrategy.Snapshot{Version: 1, Enabled: true, FactsSHA: contentstrategy.SHA(full), Facts: contentstrategy.Facts(full), Purposes: []contentstrategy.Purpose{{ID: "P01", Name: "查看套餐", Concern: "选哪个", FactIDs: []string{"F002", "F003"}}}, Rows: []contentstrategy.Row{{PurposeID: "P01", Angle: "1号方案指引", Task: "说明1号", FactIDs: []string{"F002"}, When: "商品咨询"}, {PurposeID: "P01", Angle: "2号方案指引哨兵", Task: "说明2号", FactIDs: []string{"F003"}, When: "商品咨询"}}}
-	raw, _ := json.Marshal(strategy)
-	s := &strategyFactStore{snapshotFactStore: &snapshotFactStore{fakeStore: &fakeStore{plan: model.LiveAgentPlan{ID: 2}, publishedVersion: &model.LiveAgentPlanVersion{PlanID: 2, GenerationContext: generation}}, asset: model.LiveDerivedSafetyAsset{SafeFacts: full}}, raw: string(raw)}
-	prompt, err := New(s, nil, nil, nil).answerPrompt(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, decisionItem{SampleQuestions: []string{"1号怎么选"}, BusinessPlanning: true})
-	if err != nil || !strings.Contains(prompt, "1号方案指引") || strings.Contains(prompt, "2号方案指引哨兵") || strings.Contains(prompt, "187元") {
-		t.Fatal("strategy leaked or disappeared", prompt, err)
 	}
 }

@@ -50,7 +50,7 @@ func TestInteractionExchangePersistsRequestResponseAndProviderFailure(t *testing
 		request := agentgateway.Request{Stage: "speech_generation", Messages: []agentgateway.Message{{Role: "user", Content: "完整商品和公共事实"}}}
 		w := New(s, nil, interactionExchangeTestAgent{fail}, nil)
 		_, err := w.completeInteractionAnswer(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, request)
-		if !errors.Is(err, fail) || !s.completed || s.cached != 30 || !errors.Is(s.callErr, fail) || s.stage != "interaction_agent_answer" {
+		if !errors.Is(err, fail) || !s.completed || s.cached != 30 || !errors.Is(s.callErr, fail) || s.stage != "speech_generation" {
 			t.Fatal("interaction exchange was not recorded", err, s)
 		}
 		if recorded, ok := s.request.(agentgateway.Request); !ok || recorded.Messages[0].Content != request.Messages[0].Content {

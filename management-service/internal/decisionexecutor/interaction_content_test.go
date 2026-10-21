@@ -35,14 +35,7 @@ func TestPurposeDependsOnRealHeatAndMainlineProgress(t *testing.T) {
 		t.Fatal("actual spoken angle repeated")
 	}
 }
-func TestLengthToleranceDoesNotCallModelOrCutSentences(t *testing.T) {
-	w := New(readyVoiceStore(), nil, nil, nil)
-	text := strings.Repeat("字", 320) + "。"
-	got, err := w.tolerantInteractionLength(context.Background(), model.LiveRuntimeSession{}, decisionItem{}, text)
-	if err != nil || got != text {
-		t.Fatal("within tolerance must stay complete")
-	}
-}
+
 func TestInteractionGenerationContainsPurposeAndSourceBoundary(t *testing.T) {
 	w := New(readyVoiceStore(), nil, nil, nil)
 	guidance, goal, angle, err := w.interactionContentGuidance(context.Background(), model.LiveRuntimeSession{RoomID: 7, TenantID: 2}, decisionItem{MissionKind: "conversion_signal", OrderSource: "viewer_claim", CurrentMainline: "现在讲规格区别"})

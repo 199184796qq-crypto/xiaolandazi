@@ -88,7 +88,6 @@ func TestNicknameProductionProviderSmoke(t *testing.T) {
 	}
 	planCalls := len(g.calls)
 	rows := []map[string]any{}
-	assessment, _ := interactionpolicy.Read("interaction-answer-assessment.md")
 	core, _ := interactionpolicy.Read("interaction-core-content.md")
 	for _, c := range cases {
 		item := decisionItem{Nicknames: c.Names, MissionKind: "welcome_named", MissionEventCount: len(c.Names)}
@@ -100,7 +99,7 @@ func TestNicknameProductionProviderSmoke(t *testing.T) {
 			body += "\n观众问题：什么物流？"
 		}
 		body += "\n本次最终只返回JSON对象：{\"reply\":\"口播正文\",\"needs_review\":false,\"review\":null}。"
-		r := agentgateway.Request{Stage: "speech_generation", Messages: []agentgateway.Message{{Role: "system", Content: string(assessment)}, {Role: "user", Content: body}}, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, MaxTokens: 650, Timeout: 30 * time.Second}
+		r := agentgateway.Request{Stage: "speech_generation", Messages: []agentgateway.Message{{Role: "system", Content: string(core)}, {Role: "user", Content: body}}, ResponseFormat: agentgateway.ResponseJSON, EnableThinking: false, MaxTokens: 650, Timeout: 30 * time.Second}
 		response, e := g.Complete(ctx, r)
 		answer, decodeErr := interactionlearning.DecodeAnswer(response.Text)
 		rows = append(rows, map[string]any{"name": c.Name, "original_names": item.Nicknames, "prompt_names": item.PromptNicknames, "addressing": plan, "reply": answer.Reply, "success": e == nil && decodeErr == nil, "response": response})

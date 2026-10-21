@@ -46,31 +46,6 @@ func TestClassifyChat(t *testing.T) {
 	}
 }
 
-// TestUseLightweightForKind 验证分流边界：礼仪性轻互动 + 单一互动（问答三兄弟）全走新链路，
-// 未知/空 kind 保守走老链路（2026-10-20 用户拍板「三兄弟一起切」）。
-func TestUseLightweightForKind(t *testing.T) {
-	newPath := []string{
-		"welcome_named", "welcome_batch", "warmup",
-		"reply_follow", "reply_like",
-		"conversion_signal",
-		"reply_question", "reply_chat", "complaint",
-	}
-	for _, kind := range newPath {
-		if !useLightweightForKind(kind) {
-			t.Fatalf("useLightweightForKind(%q) 应走新链路，实际走了老链路", kind)
-		}
-	}
-
-	oldPath := []string{
-		"", "unknown_kind",
-	}
-	for _, kind := range oldPath {
-		if useLightweightForKind(kind) {
-			t.Fatalf("useLightweightForKind(%q) 应走老链路，实际走了新链路", kind)
-		}
-	}
-}
-
 // TestDispatchLightInteraction 验证按 mission_kind 分派到三个独立策略：
 // 关注/点赞 → likeFollowStrategy，欢迎 → welcomeStrategy，下单 → orderStrategy。
 func TestDispatchLightInteraction(t *testing.T) {

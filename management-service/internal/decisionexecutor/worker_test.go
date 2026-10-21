@@ -20,75 +20,6 @@ import (
 	"livecompanion/management/internal/voicecatalog"
 )
 
-func TestAdaptiveAnswerLengthGuidanceUsesComplexityAndHardCap(t *testing.T) {
-	short := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{"多少钱"}})
-	if !strings.Contains(short, "1至2句") || !strings.Contains(short, "没有最小字数") || !strings.Contains(short, "360字") {
-		t.Fatalf("unexpected short guidance: %s", short)
-	}
-	complex := adaptiveAnswerLengthGuidance(decisionItem{SampleQuestions: []string{
-		"这个商品适合什么人群，规格怎么选？",
-		"活动怎么算，赠品有什么条件？",
-		"发货和售后分别怎么处理？",
-	}})
-	if !strings.Contains(complex, "回答完整就停") || !strings.Contains(complex, "容差上限，不是目标") {
-		t.Fatalf("unexpected complex guidance: %s", complex)
-	}
-}
-
-func TestAgentInputPreviewUsesOperatorReviewPrompt(t *testing.T) {
-	store := readyVoiceStore()
-	worker := New(store, nil, &fakeAgent{}, nil)
-	prompt, err := worker.answerPrompt(
-		context.Background(),
-		model.LiveRuntimeSession{TenantID: 7, RoomID: 11},
-		decisionItem{
-			ManualOrigin:    "agent_input_preview",
-			SampleQuestions: []string{"欢迎新进来的朋友"},
-			ReplyHint:       "原文合适就保留，必要时优化",
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(prompt, "操作者指令：欢迎新进来的朋友") {
-		t.Fatalf("preview must use operator instruction prompt: %s", prompt)
-	}
-	if !strings.Contains(prompt, "这是播出前预生成审核") {
-		t.Fatalf("preview review requirement missing: %s", prompt)
-	}
-	if strings.Contains(prompt, "观众原话：") {
-		t.Fatalf("operator preview must not be treated as an audience question: %s", prompt)
-	}
-}
-
-func TestHiddenStrategyGuidanceControlsModelWithoutBecomingReplyHint(t *testing.T) {
-	store := readyVoiceStore()
-	worker := New(store, nil, &fakeAgent{}, nil)
-	item := decisionItem{
-		SampleQuestions: []string{"这个怎么选？"},
-		ReplyHint:       "先把规格区别讲清楚",
-	}
-	item.addHiddenStrategyGuidance("称呼偏好：语境自然时可以称呼“宝子”，不要生硬插入。")
-	item.addHiddenStrategyGuidance("切入方式：先轻声接住问题，再自然回答。")
-	prompt, err := worker.answerPrompt(context.Background(), model.LiveRuntimeSession{TenantID: 7, RoomID: 11}, item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(prompt, "【策略黑板：仅供模型内部执行】") ||
-		!strings.Contains(prompt, "称呼偏好：语境自然时可以称呼“宝子”") ||
-		!strings.Contains(prompt, "切入方式：先轻声接住问题") {
-		t.Fatalf("hidden strategy guidance missing from model prompt: %s", prompt)
-	}
-	if !strings.Contains(prompt, "回答提示：先把规格区别讲清楚") {
-		t.Fatalf("ordinary reply hint should remain separate: %s", prompt)
-	}
-	for _, leaked := range []string{"【本次称呼】", "【本次打断行为】", "【本次回归策略】"} {
-		if strings.Contains(prompt, leaked) {
-			t.Fatalf("legacy strategy label must not be used in model prompt: %s", leaked)
-		}
-	}
-}
-
 func TestStrategyStageOrderCanBeReorderedWithoutDroppingRegisteredStages(t *testing.T) {
 	registry := map[string]strategyStageFunc{
 		"interrupt":  nil,
@@ -104,19 +35,6 @@ func TestStrategyStageOrderCanBeReorderedWithoutDroppingRegisteredStages(t *test
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("order=%v want=%v", got, want)
-		}
-	}
-}
-
-func TestSpeechMissionPromptCarriesAggregatedInteractionContext(t *testing.T) {
-	prompt := speechMissionPrompt(decisionItem{
-		MissionKind:          "reply_like",
-		MissionEventCount:    36,
-		MissionWindowSeconds: 42,
-	})
-	for _, want := range []string{"回应点赞", "聚合事件数：36", "事件聚合窗口：42秒", "只生成一段完整口播"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("mission prompt missing %q: %s", want, prompt)
 		}
 	}
 }
@@ -420,28 +338,6 @@ func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
 	}
 }
 
-func TestPresentationControlViolationsCatchSelfAddressAndStateLeak(t *testing.T) {
-	mission := speechmission.Mission{
-		Addressing: speechmission.AddressingPlan{
-			PreferredTerms: []string{"四川老妹"},
-		},
-		HumanStyle: speechmission.HumanStylePlan{
-			State: speechmission.HumanStatePlan{
-				HostState: "今天有点不舒服，有点咳嗽",
-			},
-		},
-	}
-	bad := presentationControlViolations(mission, "我是四川老妹，今天我有点咳嗽，咱们接着看。")
-	if len(bad) < 2 {
-		t.Fatalf("expected addressing and state violations, got %#v", bad)
-	}
-
-	good := presentationControlViolations(mission, "四川老妹，你看哈，这个问题我给你说清楚。")
-	if len(good) != 0 {
-		t.Fatalf("correct audience vocative must be allowed: %#v", good)
-	}
-}
-
 func TestRecentAddressingSuppressionOnlyRecordsActuallySpokenNames(t *testing.T) {
 	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
 	now := time.Date(2026, 9, 29, 18, 40, 0, 0, time.UTC)
@@ -506,16 +402,6 @@ func TestBuildHumanStyleMissionPlanDisablesReactionInFallback(t *testing.T) {
 	}
 	if plan.Trait.Persona == "" || plan.State.MissionKind != "reply_follow" {
 		t.Fatalf("trait/state should remain available in fallback: %#v", plan)
-	}
-}
-
-func TestStripInternalSpeechLeakRemovesControlMetadata(t *testing.T) {
-	got := stripInternalSpeechLeak("【本次称呼】宝子，这个规格你这样选就行。\n策略名称：桥接恢复\n别着急，我接着给你讲。")
-	if strings.Contains(got, "本次称呼") || strings.Contains(got, "策略名称") || strings.Contains(got, "桥接恢复") {
-		t.Fatalf("internal control metadata leaked: %q", got)
-	}
-	if !strings.Contains(got, "宝子，这个规格你这样选就行") || !strings.Contains(got, "别着急，我接着给你讲") {
-		t.Fatalf("natural speech should be preserved: %q", got)
 	}
 }
 
@@ -739,41 +625,13 @@ func (f *fakeCore) DoRoom(
 }
 
 type fakeAgent struct {
-	planningRequests []agentgateway.Request
-	rewriteRequests  []agentgateway.Request
-	calls            int
-	err              error
-	responses        []string
-	requests         []agentgateway.Request
+	calls     int
+	err       error
+	responses []string
+	requests  []agentgateway.Request
 }
 
 func (f *fakeAgent) Complete(_ context.Context, request agentgateway.Request) (agentgateway.Response, error) {
-	if request.Stage == "interaction_answer_rewrite" {
-		f.rewriteRequests = append(f.rewriteRequests, request)
-		if f.err != nil {
-			return agentgateway.Response{}, f.err
-		}
-		// Auxiliary wording changes must not consume a queued answer/review.
-		// Preserve the input unless a test supplies a dedicated rewrite agent.
-		return agentgateway.Response{Text: request.Messages[len(request.Messages)-1].Content}, nil
-	}
-	if request.Stage == "interaction_agent_plan" {
-		f.planningRequests = append(f.planningRequests, request)
-		if f.err != nil {
-			return agentgateway.Response{}, f.err
-		}
-		outline := InteractionAnswerOutline{Purpose: "确认业务信息", Angle: "已确认条件", Aspects: []string{"直接回答"}, Avoid: []string{}}
-		if len(f.responses) > f.calls {
-			var fields struct {
-				Outline *InteractionAnswerOutline `json:"answer_outline"`
-			}
-			if json.Unmarshal([]byte(f.responses[f.calls]), &fields) == nil && fields.Outline != nil {
-				outline = *fields.Outline
-			}
-		}
-		raw, _ := json.Marshal(interactionBusinessPlan{Outline: outline, Basis: []string{"按当前已确认的安排执行。"}, Requirements: []string{}})
-		return agentgateway.Response{Text: string(raw)}, nil
-	}
 	f.calls++
 	f.requests = append(f.requests, request)
 	if f.err != nil {
@@ -966,9 +824,6 @@ func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 	}
 	if got := strings.TrimSpace(fmt.Sprint(core.dispatch["interrupt_strategy"])); got != "read_comment_softly" {
 		t.Fatalf("core interrupt_strategy=%q", got)
-	}
-	if len(agent.requests) == 0 || !strings.Contains(agent.requests[0].Messages[1].Content, "轻声、自然地读一下或复述当前弹幕") {
-		t.Fatalf("model prompt did not receive hidden interrupt guidance: %#v", agent.requests)
 	}
 }
 
@@ -1224,120 +1079,12 @@ func TestVerbatimModeSkipsReviewFixedTextReachesTTS(t *testing.T) {
 	}
 }
 
-func TestProcessRoomCapsFinalSpeechAtThreeHundredRunes(t *testing.T) {
-	core := &fakeCore{}
-	longText := strings.Repeat("这是一段直播回答内容。", 80)
-	agent := &fakeAgent{responses: []string{longText}}
-	tts := &fakeTTS{}
-	worker := New(readyVoiceStore(), core, agent, tts)
-	session := model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11, Status: "running"}
-
-	if err := worker.processRoom(context.Background(), session); err != nil {
-		t.Fatal(err)
-	}
-	if got := len([]rune(tts.last.Text)); got > maxSpeechRunes {
-		t.Fatalf("TTS text length=%d want<=%d text=%q", got, maxSpeechRunes, tts.last.Text)
-	}
-}
-
 func TestLimitSpeechTextPrefersRecentSentenceBoundary(t *testing.T) {
 	prefix := strings.Repeat("甲", 250) + "。"
 	text := prefix + strings.Repeat("乙", 100)
 	got := limitSpeechText(text, 300)
 	if got != prefix {
 		t.Fatalf("got length=%d want sentence boundary length=%d", len([]rune(got)), len([]rune(prefix)))
-	}
-}
-
-func TestLiveAgentPlanPromptContextPrioritizesPlanFacts(t *testing.T) {
-	plan := model.LiveAgentPlan{
-		ID:          8,
-		Name:        "跑山鸡直播方案",
-		Description: "物流问题统一回答：发圆通快递。",
-		Terms: []model.LiveAgentPlanTerm{{
-			ID: 1, PlanID: 8, CanonicalText: "圆通快递", TermType: "logistics", Note: "观众问发什么快递时直接回答发圆通", Status: "active",
-			Variants: []model.LiveAgentPlanTermVariant{{VariantText: "我们发圆通"}},
-		}},
-	}
-	got := liveAgentPlanPromptContext(plan)
-	for _, want := range []string{
-		"事实与回答口径，优先执行",
-		"物流问题统一回答：发圆通快递。",
-		"圆通快递",
-		"观众问发什么快递时直接回答发圆通",
-		"我们发圆通",
-		"不得",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("plan prompt missing %q: %s", want, got)
-		}
-	}
-}
-
-func TestAnswerPromptReadsLatestDynamicFactsAndHostStyle(t *testing.T) {
-	store := readyVoiceStore()
-	store.facts = []model.LiveAgentPlanFact{
-		{
-			ID: 21, PlanID: 3, TenantID: 7, Category: "fulfillment", Key: "快递",
-			Value: "统一发圆通快递", Status: "active", VersionNo: 7,
-		},
-	}
-	store.scripts = []model.LiveAgentPlanScript{
-		{
-			ID: 8, TenantID: 7, PlanID: 3, Status: "active", AnalysisStatus: "analyzed",
-			Analysis: model.LiveAgentPlanScriptAnalysis{AnchorStyle: model.LiveAgentPlanAnchorStyleProfile{
-				Summary: "像真人主播一样短句、自然承接",
-				Dimensions: []model.LiveAgentPlanAnchorStyleDimension{
-					{Key: "pace", Label: "节奏", Rule: "短句为主，关键事实稍微放慢"},
-				},
-				ReusableRules: []string{"先接住观众，再给明确答案"},
-			}},
-		},
-	}
-	worker := New(store, nil, &fakeAgent{}, nil)
-	prompt, err := worker.answerPrompt(
-		context.Background(),
-		model.LiveRuntimeSession{TenantID: 7, RoomID: 11},
-		decisionItem{SampleQuestions: []string{"你们发什么快递？"}},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"当前方案动态事实：实时热更新",
-		"快递：统一发圆通快递（V7）",
-		"当前主播风格：实时热更新",
-		"像真人主播一样短句、自然承接",
-		"短句为主，关键事实稍微放慢",
-		"先接住观众，再给明确答案",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("hot prompt missing %q: %s", want, prompt)
-		}
-	}
-}
-
-func TestFinalSpeechRisksLeavesBusinessFactsToUser(t *testing.T) {
-	text := "咱们默认安排合作的主流快递，一般48小时内会发出，具体由系统匹配和仓库实际发货为准。"
-	terms, reasons := finalSpeechRisks(text, "观众问：发什么快递", model.LiveEffectivePolicy{})
-	if len(reasons) != 0 {
-		t.Fatalf("business facts were audited: %#v", reasons)
-	}
-	want := "咱们默认抽真空，正规渠道，品质保障，发京东物流"
-	if got := hardSanitizeSpeech(want, terms, ""); got != want {
-		t.Fatalf("business facts were rewritten: %q", got)
-	}
-	_, reasons = finalSpeechRisks("全网最低，百分百满意", "", model.LiveEffectivePolicy{})
-	if len(reasons) == 0 {
-		t.Fatal("compliance expression checks were removed")
-	}
-}
-
-func TestFinalSpeechRisksAllowsShippingFactWhenPlanProvidesIt(t *testing.T) {
-	text := "我们发圆通快递。"
-	_, reasons := finalSpeechRisks(text, "方案说明：物流问题统一回答：发圆通快递。", model.LiveEffectivePolicy{})
-	if len(reasons) != 0 {
-		t.Fatalf("plan-backed shipping fact should not be flagged: %#v", reasons)
 	}
 }
 

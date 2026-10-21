@@ -9,7 +9,7 @@ import { useAgentEnterSend } from '../useAgentEnterSend'
 
 const props = defineProps<{ roomId: number; planId: number }>()
 const emit = defineEmits<{ busy: [value: boolean]; saved: [] }>()
-type Answer = { id: number; question: string; reply: string; outline?: AgentDecisionSimulationResult['answer_outline']; outlineError: string; correction: string; editing: boolean; savedAs?: 'fact' | 'strategy'; notice: string; error: string }
+type Answer = { id: number; question: string; reply: string; correction: string; editing: boolean; savedAs?: 'fact' | 'strategy'; notice: string; error: string }
 const answers = ref<Answer[]>([]), question = ref(''), error = ref(''), pending = ref('')
 const transcript = ref<HTMLElement | null>(null)
 const enterSend = useAgentEnterSend(), composing = ref(false)
@@ -33,13 +33,13 @@ async function test(source?: Answer) {
   pending.value = source ? `correct:${source.id}` : 'test'; emit('busy', true)
   error.value = ''; if (source) source.error = ''
   try {
-    const recent = answers.value.slice(-8).map(answer => ({ question: answer.question, reply: Array.from(answer.reply).slice(0, 1000).join(''), purpose: answer.outline?.purpose || '', angle: answer.outline?.angle || '' }))
+    const recent = answers.value.slice(-8).map(answer => ({ question: answer.question, reply: Array.from(answer.reply).slice(0, 1000).join('') }))
     const result = await request<AgentDecisionSimulationResult>(`/api/v1/rooms/${room}/agent-decisions/simulate`, {
-      method: 'POST', body: JSON.stringify({ question: text, plan_id: plan, preview_instruction: correction || undefined, include_answer_outline: true, recent_answers: recent.length ? recent : undefined }), suppressErrorDialog: true,
+      method: 'POST', body: JSON.stringify({ question: text, plan_id: plan, preview_instruction: correction || undefined, recent_answers: recent.length ? recent : undefined }), suppressErrorDialog: true,
     })
     if (token !== epoch) return
     if (result.plan_id !== plan || !result.reply?.trim()) throw new Error('测试返回的方案或回答不完整，请重试')
-    answers.value.push({ id: ++nextId, question: text, reply: result.reply.trim(), outline: result.answer_outline, outlineError: result.answer_outline_error || (!result.answer_outline ? '本次未返回回答说明，可以重新测试。' : ''), correction, editing: false, notice: correction ? '已按你的纠正重新测试，尚未保存。' : '', error: '' })
+    answers.value.push({ id: ++nextId, question: text, reply: result.reply.trim(), correction, editing: false, notice: correction ? '已按你的纠正重新测试，尚未保存。' : '', error: '' })
     if (source) source.editing = false
     else question.value = ''
     await nextTick(); transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: 'smooth' })
@@ -86,15 +86,6 @@ async function adopt(answer: Answer, kind: 'fact' | 'strategy') {
       <div v-if="!answers.length" class="plan-test-empty"><strong>来问一句，看看它怎么答</strong><p>例如：发什么快递？骨头多不多？一斤多少钱？</p></div>
       <article v-for="answer in answers" :key="answer.id" :data-plan-test-answer="answer.id">
         <p class="test-question"><b>模拟观众：</b>{{ answer.question }}</p>
-        <section class="test-answer-outline" aria-label="本次回答说明">
-          <dl v-if="answer.outline">
-            <div><dt>问题目的</dt><dd>{{ answer.outline.purpose }}</dd></div>
-            <div><dt>本次角度</dt><dd>{{ answer.outline.angle }}</dd></div>
-            <div><dt>回答方面</dt><dd><ul><li v-for="(aspect, index) in answer.outline.aspects" :key="index">{{ aspect }}</li></ul></dd></div>
-            <div class="outline-avoid"><dt>不要回答</dt><dd><ul v-if="answer.outline.avoid.length"><li v-for="(avoid, index) in answer.outline.avoid" :key="index">{{ avoid }}</li></ul><span v-else>本次未列出额外限制。</span></dd></div>
-          </dl>
-          <p v-if="answer.outlineError" class="outline-unavailable" role="status">{{ answer.outlineError }}</p>
-        </section>
         <p class="test-reply"><b>智能体回答：</b>{{ answer.reply }}</p>
         <NaturalContentCorrection :plan-id="planId" :room-id="roomId" :selected-text="answer.reply" :disabled="!!pending" @busy="emit('busy',$event)" @saved="emit('saved')" />
         <div class="answer-actions">
@@ -125,8 +116,4 @@ async function adopt(answer: Answer, kind: 'fact' | 'strategy') {
 <style scoped>
 .plan-speech-agent{display:grid;grid-template-rows:auto minmax(0,1fr) auto;box-sizing:border-box;min-height:0;height:100%;font-size:14px;color:#344360;background:#f8faff}.plan-speech-agent>header{padding:16px 18px;border-bottom:1px solid #e2e7f4}.plan-speech-agent>header strong{font-size:18px;color:#374ba1}.plan-speech-agent>header p{margin:6px 0;color:#7485a6}.plan-speech-agent>header small{color:#8291ab;line-height:1.7}.plan-test-transcript{overflow:auto;min-height:0;padding:14px 16px;overscroll-behavior:contain}.plan-test-empty{padding:30px 8px;color:#8997b1;line-height:1.8}.plan-test-empty strong{color:#53688e;font-size:17px}.plan-test-transcript article{padding:15px;margin-bottom:14px;border:1px solid #e2e7f8;border-radius:15px;background:#fff}.test-question{margin:0 0 12px;color:#647699}.test-reply{margin:0;padding:12px;border-radius:10px;background:#f1f4ff;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}.answer-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.plan-speech-agent button{padding:8px 12px;border:1px solid #d7def4;border-radius:9px;background:white;color:#5a65cc;font:inherit;cursor:pointer}.plan-speech-agent button:disabled{opacity:.55;cursor:not-allowed}.plan-speech-agent textarea{box-sizing:border-box;width:100%;padding:11px;border:1px solid #d9e0f4;border-radius:10px;color:inherit;background:white;font:inherit;line-height:1.6;resize:vertical}.plan-speech-agent label{display:block;margin-bottom:8px;font-weight:700}.answer-correction{margin-top:15px}.answer-correction button{margin-top:8px}.test-error{color:#b73b54;line-height:1.7}.test-notice{color:#26816a;line-height:1.7}.test-working{color:#7683af;padding:8px}.plan-test-composer{padding:14px 16px;border-top:1px solid #e2e7f4;background:#fff}.plan-test-composer button{display:block;margin:9px 0 0 auto}.plan-speech-agent .test-primary{background:linear-gradient(110deg,#7489ee,#605bd9);color:#fff;font-weight:700}.plan-speech-agent button:focus-visible,.plan-speech-agent textarea:focus-visible{outline:2px solid #788cf0;outline-offset:2px}
 .plan-test-send-actions{display:flex;justify-content:flex-end;align-items:center;gap:14px;margin-top:9px}.plan-test-send-actions button{display:inline-block;margin:0}
-.test-answer-outline{margin:0 0 12px;padding:11px 13px;border:1px solid #e2e8f6;border-radius:10px;background:#f9fbff;font-size:13px;line-height:1.7;overflow-wrap:anywhere}
-.test-answer-outline dl{display:grid;gap:9px;margin:0}.test-answer-outline dl>div{display:grid;grid-template-columns:68px minmax(0,1fr);gap:9px;align-items:start}
-.test-answer-outline dt{color:#596fb4;font-weight:700;white-space:nowrap}.test-answer-outline dd{margin:0;color:#63738f;white-space:pre-wrap}.test-answer-outline ul{margin:0;padding-left:17px}.test-answer-outline li+li{margin-top:3px}
-.test-answer-outline .outline-avoid dt{color:#b9657d}.test-answer-outline .outline-avoid dd{color:#956276}.outline-unavailable{margin:0;color:#8993a6}
 </style>

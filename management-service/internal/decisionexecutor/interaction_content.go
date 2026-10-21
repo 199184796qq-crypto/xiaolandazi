@@ -61,15 +61,8 @@ func (w *Worker) playedInteractionContent(ctx context.Context, s model.LiveRunti
 		snapshot.Played = snapshot.Played[len(snapshot.Played)-8:]
 	}
 	for i := range snapshot.Played {
-		played := &snapshot.Played[i]
-		var plan struct {
-			Outline *InteractionAnswerOutline `json:"answer_outline"`
-		}
-		if json.Unmarshal(played.SelectedContentPlan, &plan) == nil && plan.Outline != nil {
-			played.Purpose = plan.Outline.Purpose
-		}
 		// History is usage evidence only. Do not re-inject old fact packages.
-		played.SelectedContentPlan = nil
+		snapshot.Played[i].SelectedContentPlan = nil
 	}
 	return snapshot.Played
 }

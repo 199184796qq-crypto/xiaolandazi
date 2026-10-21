@@ -60,7 +60,7 @@ func TestRoomModelUsesOneCredentialAcrossSpeechReviewAndPlanning(t *testing.T) {
 	g := New("qwen", "unrelated-default").WithSpeechModels(f)
 	for _, room := range []int64{101, 102} {
 		ctx := WithRoomModelScope(context.Background(), RoomModelScope{TenantID: 14, RoomID: room, RuntimeID: room, RequireLease: true})
-		for _, stage := range []string{"mainline_text", "mainline_final_content_review", "mainline_angle_plan", "interaction_agent_answer", "interaction_bridge"} {
+		for _, stage := range []string{"mainline_text", "mainline_final_content_review", "mainline_angle_plan", "interaction_bridge", "interaction_single_answer"} {
 			result, err := g.Complete(ctx, Request{Stage: stage, Model: "old-model", Messages: []Message{{Role: "user", Content: "fixture task"}}, Timeout: time.Second})
 			if err != nil || result.Model != "qwen3.7-flash" || result.Provider != "anchor:"+f.profiles[room].ID {
 				t.Fatal("room model routing failed", stage, result, err)

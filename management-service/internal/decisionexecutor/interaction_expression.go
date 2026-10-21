@@ -13,16 +13,6 @@ var interactionExpressionVariants = []string{
 	"先答准问题，再顺势点一个最相关的卖点或引导看链接，完成带货这一项，但不过度",
 }
 
-func interactionExpressionVariant(n int) string {
-	if len(interactionExpressionVariants) == 0 {
-		return ""
-	}
-	if n < 0 {
-		n = 0
-	}
-	return interactionExpressionVariants[n%len(interactionExpressionVariants)]
-}
-
 // neutralAddressTerms 中性托底称谓词：不假设年龄/性别/地域/亲密度。
 // 当主播风格主力称呼和用户 PreferredTerms 都没有时兜底，保证任何直播间都有可播称呼。
 var neutralAddressTerms = []string{"朋友", "这位朋友", "大家", "各位"}
