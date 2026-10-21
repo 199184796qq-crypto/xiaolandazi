@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -580,15 +581,8 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	if len(addressPool) == 0 && candidate == "" {
 		addressPool = normalizeAddressPool(neutralAddressTerms)
 	}
-	// 主力称呼加权：anchorTerms[0] 是主播风格的主力称呼（anchorStyleAddressTerms 放最前），
-	// 重复多次让它被 hash 选中的概率占主导，辅助/候选称呼只做低频变化，保住主播人设。
-	if len(anchorTerms) > 0 {
-		if main := normalizePairedAddressTerm(strings.TrimSpace(anchorTerms[0])); main != "" && !addressingTermBlocked(main, blockedTerms) {
-			for i := 0; i < 5; i++ {
-				addressPool = append(addressPool, main)
-			}
-		}
-	}
+	// 不再固定偏向 anchorTerms[0]：调用方每次已打乱同类称呼顺序，
+	// 所有候选等权参与选择，避免长期只出现“朋友们”。
 	if preferred := choosePreferredAddressingTerm(addressPool, blockedTerms, item.ID); preferred != "" {
 		candidate = preferred
 		key = "preferred"
@@ -673,7 +667,7 @@ func anchorStyleAddressTerms(profile model.LiveAgentPlanAnchorStyleProfile) []st
 				terms = append(terms, habit.Text)
 			}
 		}
-		return cleanAddressingTerms(terms)
+		return shuffledAddressTerms(terms)
 	}
 	baseline, err := anchorstylescore.Parse(profile.Delivery.ScoringBaselineJSON)
 	if err != nil {
@@ -685,7 +679,15 @@ func anchorStyleAddressTerms(profile model.LiveAgentPlanAnchorStyleProfile) []st
 	}
 	terms = append(terms, baseline.Identity.Audience.Other...)
 	terms = append(terms, baseline.Identity.Audience.Candidates...)
-	return cleanAddressingTerms(terms)
+	return shuffledAddressTerms(terms)
+}
+
+// shuffledAddressTerms keeps every candidate but removes list-order bias.
+// The model/program must not always pick the first term just because it is first.
+func shuffledAddressTerms(terms []string) []string {
+	terms = cleanAddressingTerms(terms)
+	rand.Shuffle(len(terms), func(i, j int) { terms[i], terms[j] = terms[j], terms[i] })
+	return terms
 }
 
 // fetchAnchorAddressTerms 获取当前直播间主播风格的主力称呼（动态，每个直播间不同，不写死）。

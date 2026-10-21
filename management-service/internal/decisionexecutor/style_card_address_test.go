@@ -18,13 +18,13 @@ func TestAnchorStyleAddressTermsUsesCardOverrideWithoutSampleBaseline(t *testing
 		},
 	}}
 	got := anchorStyleAddressTerms(profile)
-	want := []string{"朋友们", "哥姐们", "老乡们"}
+	want := map[string]bool{"朋友们": true, "哥姐们": true, "老乡们": true}
 	if len(got) != len(want) {
-		t.Fatalf("terms = %#v, want %#v", got, want)
+		t.Fatalf("terms = %#v, want all of %#v", got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("terms = %#v, want %#v", got, want)
+	for _, term := range got {
+		if !want[term] {
+			t.Fatalf("unexpected term %q in %#v", term, got)
 		}
 	}
 }

@@ -80,7 +80,8 @@ func renderAnchorExpressionView(baselineJSON string) (any, error) {
 // 合并成一张「主播腔调卡」，主线话术的 stable 前缀只喂这一份，消除「风格母版 vs
 // 表达标尺」两份重叠。
 func cycleVoiceCard(state *anchorcycle.State) (any, error) {
-	return speechbase.RenderAnchorVoiceCard(state.StyleMD, state.BaselineJSON)
+	// 同类多选词每次送模前打乱，避免模型固定挑第一个称呼/口头禅。
+	return speechbase.RenderAnchorVoiceCard(speechbase.ShuffleStyleMDForPrompt(state.StyleMD), state.BaselineJSON)
 }
 
 // fourLayerNotMentionText 引用共享包的四层「不提」统一文案。
