@@ -419,6 +419,43 @@ func (s *State) NoStyle() bool { return s.FreeStyle }
 // 否则空基准会让所有候选都判低分，把重试次数白白耗光。
 func (s *State) Gradable() bool { return !s.FreeStyle }
 
+// AlignOpeningSelectionTask 把当前执行任务切到开场选材选中的「卖点×角度（×链接）」。
+//
+// 开场选材的候选池跨卖点跨商品，选中的卖点可能属于另一个商品链接。若不切任务，
+// 事实卡与「本段授权的商品称呼」仍来自原商品，就会出现「任务是1号链接的角度、
+// 事实却全是2号链接」的串号输出（实测：2号链接团购187 + 1号链接原价547 缝在一起）。
+//
+// 做法：把选中的任务换到当前执行位，并让商品焦点指向它所属的链接，
+// 这样调度不会因为「当前商品不匹配」把任务重选回去，事实与授权链接自然一致。
+func (s *State) AlignOpeningSelectionTask(sellingPoint, angle, linkKey string) bool {
+	sellingPoint, angle, linkKey = strings.TrimSpace(sellingPoint), strings.TrimSpace(angle), strings.TrimSpace(linkKey)
+	if sellingPoint == "" && angle == "" {
+		return false
+	}
+	if s.TaskIndex < 0 || s.TaskIndex >= len(s.Queue) {
+		return false
+	}
+	for i := range s.Queue {
+		t := s.Queue[i]
+		if sellingPoint != "" && t.SellingPoint != sellingPoint {
+			continue
+		}
+		if angle != "" && t.Angle != angle {
+			continue
+		}
+		if linkKey != "" && !t.Common && t.LinkKey != "" && t.LinkKey != linkKey {
+			continue
+		}
+		s.Queue[i], s.Queue[s.TaskIndex] = s.Queue[s.TaskIndex], t
+		if s.ProductFocus != nil && linkKey != "" && !t.Common {
+			s.ProductFocus.CurrentLink = linkKey
+		}
+		return true
+	}
+	return false
+}
+
+
 func (s *State) Task() Task {
 	if s.PriceHook != nil {
 		return s.focusTask(Task{Common: s.PriceHook.Task.Common, FactScope: s.PriceHook.Task.FactScope, SellingPoint: "塑价兑现", Angle: s.PriceHook.Task.SellingPoint + " × " + s.PriceHook.Task.Angle, Key: "塑价兑现×" + s.PriceHook.Task.Key})

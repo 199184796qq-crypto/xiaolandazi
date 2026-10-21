@@ -223,3 +223,36 @@ func TestFixedQueueSpacingKeepsOpeningAndNeverRepeatsCombinations(t *testing.T) 
 		t.Fatal("silently violated spacing")
 	}
 }
+
+// 开场选材选中另一个商品的卖点时，任务必须真的切过去，否则会出现
+// 「任务是1号链接的角度、事实和授权链接却是2号链接」的串号。
+func TestAlignOpeningSelectionTaskMovesTaskAndProductFocus(t *testing.T) {
+	first := Task{LinkKey: "1号链接", SellingPoint: "价格与套餐内容", Angle: "核对1号链接团购价337元与原价547元的差额"}
+	first.Key = first.schedulingKey()
+	second := Task{LinkKey: "2号链接", SellingPoint: "6人餐价格与价值", Angle: "直接事实：当前2号链接团购价为187元"}
+	second.Key = second.schedulingKey()
+	s := &State{
+		Queue:     []Task{first, second},
+		TaskIndex: 1,
+		Phase:     "opening",
+		Config:    Config{Rolling: true},
+		ProductFocus: &ProductFocus{
+			Products:    []FocusProduct{{LinkKey: "1号链接"}, {LinkKey: "2号链接"}},
+			CurrentLink: "2号链接",
+			Tasks: map[string]ScopedTask{
+				first.Key:  {Links: []string{"1号链接"}},
+				second.Key: {Links: []string{"2号链接"}},
+			},
+		},
+	}
+	if !s.AlignOpeningSelectionTask("价格与套餐内容", "核对1号链接团购价337元与原价547元的差额", "1号链接") {
+		t.Fatal("selection must match the queued task")
+	}
+	got := s.Task()
+	if got.LinkKey != "1号链接" || got.FocusLink != "1号链接" {
+		t.Fatalf("task must follow the selected product: %#v", got)
+	}
+	if s.ProductFocus.CurrentLink != "1号链接" {
+		t.Fatalf("product focus must follow the selection, got %s", s.ProductFocus.CurrentLink)
+	}
+}

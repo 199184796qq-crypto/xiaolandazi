@@ -219,11 +219,17 @@ func openingSelectionPool(state *anchorcycle.State) map[string][]openingAngleCan
 		if _, exists := byPoint[task.SellingPoint]; !exists {
 			order = append(order, task.SellingPoint)
 		}
-		// 记录该角度绑定的商品链接（裸 id，如 "1"/"2"），供写话术对齐事实卡。
-		// 用 ProductLinks()（= AllowedLinksJSON）而非 LinkKey，因为 HookFacts 筛选事实用的正是它。
+		// 记录该角度绑定的商品链接，供写话术对齐事实卡。
+		// 队列里的任务还没经过 focusTask，AllowedLinksJSON 是空的，商品归属只在 LinkKey 上，
+		// 所以必须先取 LinkKey；只读 ProductLinks() 会让所有候选的归属都为空，
+		// 导致开场选中别的商品的卖点后仍按当前商品给事实（实测串号：1号链接角度 + 2号链接事实）。
 		linkKey := ""
-		if links := task.ProductLinks(); len(links) > 0 {
-			linkKey = strings.Join(links, ",")
+		if !task.Common {
+			if task.LinkKey != "" {
+				linkKey = task.LinkKey
+			} else if links := task.ProductLinks(); len(links) > 0 {
+				linkKey = strings.Join(links, ",")
+			}
 		}
 		byPoint[task.SellingPoint] = append(byPoint[task.SellingPoint], openingAngleCandidate{
 			Angle:          task.Angle,

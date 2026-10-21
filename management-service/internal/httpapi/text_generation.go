@@ -224,6 +224,13 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 	// 让第二次写话术只聚焦选中的主线，不按队列当前任务硬写。
 	if state.Phase == "opening" && state.OpeningSelection != nil {
 		sel := state.OpeningSelection
+		// 选材可能跨商品：把当前任务真正切到选中的那条，事实卡与「本段授权的商品称呼」
+		// 才会跟着走。只改 SellingPoint/Angle 而任务仍是别的商品，就会写出
+		// 「2号链接原价547、团购187」这种串号（实测 plan 5）。
+		if sel.LinkKey != "" || sel.SellingPoint != "" {
+			state.AlignOpeningSelectionTask(sel.SellingPoint, sel.Angle, sel.LinkKey)
+		}
+		task = state.Task()
 		if sel.SellingPoint != "" {
 			task.SellingPoint = sel.SellingPoint
 		}
