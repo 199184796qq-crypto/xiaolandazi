@@ -898,6 +898,8 @@ const savedStyleScript = computed(() => planScripts.value.find((item) => item.an
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
 const anchorRecommendationsOpen = ref(false)
 const currentBoundAnchorId = ref(0)
+// 主播风格是可选资产：绑了就用它的腔调与评分基准，没绑就自由发挥照常开播。这里只做状态呈现，不做拦截。
+const currentBoundAnchorStyle = computed(() => reusableAnchorStyles.value.find((item) => item.id === currentBoundAnchorId.value) || null)
 const anchorBindingBusy = ref(false)
 let anchorBindingEpoch = 0, anchorWorkspaceLoadSequence = 0
 const anchorWorkspaceScope = () => `${session.bootstrap?.actor.user_id || 0}:${activeRoom.value?.tenant_id || 0}:${activeRoomId.value || 0}:${currentRoomPlanId.value || 0}`
@@ -1744,10 +1746,11 @@ const fullShowAvoidRecent = ref(true)
 const fullShowPreviewReady = ref(false)
 const fullShowNotice = ref('')
 const fullShowGenerating = ref(false)
-type AnchorInitializationStep = { key: string; label: string; status: 'success' | 'failed'; message: string }
+type AnchorInitializationStep = { key: string; label: string; status: 'success' | 'failed' | 'skipped'; message: string }
 const anchorInitializing = ref(false)
 const anchorInitializationNotice = ref('')
 const anchorInitializationError = useFeedbackErrorRef()
+const anchorInitializationSkipped = ref('')
 const anchorInitializationSteps = ref<AnchorInitializationStep[]>([])
 const anchorInitializationProgress = ref(0)
 const anchorInitializationStage = ref('')
@@ -1785,6 +1788,7 @@ async function initializeAnchorGeneration(force = false) {
   if (!planId || anchorInitializing.value) return
   anchorInitializing.value = true
   anchorInitializationError.value = ''
+  anchorInitializationSkipped.value = ''
   anchorInitializationSteps.value = []
   anchorInitializationNotice.value = ''
   startAnchorInitializationProgress()
@@ -1803,6 +1807,8 @@ async function initializeAnchorGeneration(force = false) {
     anchorInitializationNotice.value = result.notice || ''
     const failed = anchorInitializationSteps.value.filter((step) => step.status === 'failed')
     anchorInitializationError.value = failed.map((step) => `${step.label}：${step.message}`).join('\n')
+    const skipped = anchorInitializationSteps.value.filter((step) => step.status === 'skipped')
+    anchorInitializationSkipped.value = skipped.map((step) => `${step.label}：${step.message}`).join('\n')
     anchorInitializationProgress.value = 100
     anchorInitializationStage.value = failed.length ? '初始化完成，部分项目失败' : '初始化完成'
     await refreshAnchorSellingPointWheel()
@@ -1810,6 +1816,7 @@ async function initializeAnchorGeneration(force = false) {
     await new Promise((resolve) => window.setTimeout(resolve, 720))
   } catch (e) {
     anchorInitializationNotice.value = ''
+    anchorInitializationSkipped.value = ''
     anchorInitializationError.value = e instanceof Error ? e.message : '初始化失败'
     anchorInitializationStage.value = '初始化中断'
     await new Promise((resolve) => window.setTimeout(resolve, 500))
@@ -6273,6 +6280,7 @@ watch(activeRoomId, async () => {
   contentModeNotice.value = ''
   anchorInitializationNotice.value = ''
   anchorInitializationError.value = ''
+  anchorInitializationSkipped.value = ''
   anchorInitializationSteps.value = []
   anchorSellingPointWheel.value = null
   currentRoomPlanId.value = null
@@ -6534,9 +6542,10 @@ onBeforeUnmount(() => {
               />
             </template>
             <template #feedback>
-              <div v-if="anchorInitializationError || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
+              <div v-if="anchorInitializationError || anchorInitializationSkipped || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
                 <div v-if="anchorInitializationError" class="strategy-script-notice strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
                 <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">{{ anchorInitializationNotice }}</div>
+                <div v-if="anchorInitializationSkipped && !anchorInitializing" class="strategy-script-notice strategy-anchor-initialization-skipped">{{ anchorInitializationSkipped }}</div>
               </div>
               <div v-if="removedRisks.length" class="strategy-removed-risks" aria-live="polite">
                 <p class="strategy-removed-risks-title">以下 {{ removedRisks.length }} 条风险事实未能安全改写，已从本次方案中剔除，不进入口播素材：</p>
@@ -7354,6 +7363,16 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
           <AnchorRecommendationPicker v-if="anchorRecommendationsOpen" :tenant-id="activeRoom?.tenant_id" :styles="reusableAnchorStyles" @close="anchorRecommendationsOpen = false" @imported="acceptRecommendedAnchors" />
+          <div class="anchor-style-binding-status" :class="{ 'is-free': !currentBoundAnchorStyle }" role="status">
+            <template v-if="currentBoundAnchorStyle">
+              <strong>当前方案使用主播：{{ currentBoundAnchorStyle.name }}</strong>
+              <span>语气按这个主播的风格生成，并按它的评分基准打分。换人：左侧选另一个主播 → 点“设为当前智能体主播”；不用风格：点该主播的“取消使用”。</span>
+            </template>
+            <template v-else>
+              <strong>当前方案未使用主播风格</strong>
+              <span>本场由模型自由发挥语气，不套固定腔调、不打分，照常开播。想用风格：左侧选一个主播（或＋新建主播 / 系统推荐）→ 点“设为当前智能体主播”。</span>
+            </template>
+          </div>
           <div class="reusable-anchor-style-workspace">
             <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :current-id="currentBoundAnchorId" :binding-busy="anchorBindingBusy" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @upload-avatar="saveUploadedAnchorAvatar" @recommendations="anchorRecommendationsOpen = true" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @unbind="unbindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" />
 
@@ -11232,7 +11251,7 @@ onBeforeUnmount(() => {
 .strategy-recording-side-srt{background:linear-gradient(180deg,#fbfcff 0%,#f5f8ff 100%);box-shadow:0 8px 20px rgba(60,83,142,.045)}.strategy-recording-side-srt summary{color:#4e62cf}.strategy-recording-side-srt pre{box-sizing:border-box;width:100%;height:320px;min-height:160px;max-height:720px;resize:vertical;overflow:auto;border:1px solid #e1e7f3;background:#f3f6fc;color:#405277;font-size:13px;line-height:1.85;box-shadow:inset 0 1px 3px rgba(42,59,101,.04)}.strategy-recording-side-srt pre::selection{background:#d8e3ff;color:#20365f}
 .strategy-content-mode-workflow>header{display:grid;grid-template-columns:minmax(360px,1fr) auto;gap:24px}.strategy-content-mode-dashboard-actions{display:grid!important;grid-template-columns:minmax(190px,220px) minmax(210px,240px) minmax(270px,1fr);align-items:stretch;gap:12px}.strategy-content-mode-version-action{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:12px;min-height:68px;padding:10px 14px;border:1px solid #cfdbf5;border-radius:15px;background:linear-gradient(135deg,#fff,#f5f8ff);color:#31456d;text-align:left;font:inherit;box-shadow:0 8px 20px rgba(63,88,150,.07);cursor:pointer;transition:transform .17s ease,box-shadow .17s ease,border-color .17s ease}.strategy-content-mode-version-action:hover:not(:disabled){transform:translateY(-2px);border-color:#afc1ef;box-shadow:0 13px 26px rgba(63,88,150,.13)}.strategy-content-mode-version-action>i{display:grid;width:48px;height:48px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#edf5ff,#e2ebff);color:#3572e8;font-style:normal}.strategy-content-mode-version-action svg{width:28px;height:28px}.strategy-content-mode-version-action svg *{fill:none;stroke:currentColor;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-version-action>span{display:grid;gap:4px;min-width:0}.strategy-content-mode-version-action strong{overflow:hidden;color:#2c416a;font-size:15px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action small{overflow:hidden;color:#7686a3;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.strategy-content-mode-version-action.is-publish{border-color:#627cf0;background:linear-gradient(135deg,#3981f4 0%,#5869ef 48%,#6855e8 100%);color:#fff;box-shadow:0 13px 28px rgba(72,87,218,.24)}.strategy-content-mode-version-action.is-publish>i{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.11);color:#fff}.strategy-content-mode-version-action.is-publish strong,.strategy-content-mode-version-action.is-publish small{color:#fff}.strategy-content-mode-version-action.is-publish small{color:rgba(255,255,255,.84)}.strategy-content-mode-version-action:disabled{cursor:not-allowed;filter:saturate(.65);opacity:.52;box-shadow:none;transform:none}
 .strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-width:0;padding:10px 14px;border:1px solid #ccefe0;border-radius:15px;background:linear-gradient(135deg,#f5fff9,#edf9f5);box-shadow:0 8px 20px rgba(39,143,102,.06)}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state>i{width:44px;height:44px;flex-basis:44px;font-size:21px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state strong{font-size:14px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state small{font-size:11px!important}
-.strategy-content-mode-heading{align-content:start;min-width:0}.strategy-content-mode-heading>.primary-button{width:100%;min-height:54px;border-radius:14px;font-size:18px}.strategy-anchor-initialization-error{margin:5px 0 0;white-space:pre-line;color:#c72c48!important;background:#fff2f4!important;border-color:#f1bdc7!important;font-weight:750}
+.strategy-content-mode-heading{align-content:start;min-width:0}.strategy-content-mode-heading>.primary-button{width:100%;min-height:54px;border-radius:14px;font-size:18px}.strategy-anchor-initialization-error{margin:5px 0 0;white-space:pre-line;color:#c72c48!important;background:#fff2f4!important;border-color:#f1bdc7!important;font-weight:750}.strategy-anchor-initialization-skipped{margin:5px 0 0;white-space:pre-line;color:#5d6aa8!important;background:#f5f6ff!important;border-color:#d9ddf5!important}
 .strategy-content-mode-cards>button{position:relative;overflow:hidden}.strategy-content-mode-cards>button>*{position:relative;z-index:1}.strategy-content-mode-cards>button.active::before,.strategy-content-mode-cards>button.active::after{content:"";position:absolute;z-index:0;left:-12%;right:38%;bottom:-45px;height:76px;border-radius:50%;background:rgba(255,255,255,.07);transform:rotate(5deg)}.strategy-content-mode-cards>button.active::after{left:46%;right:-12%;bottom:-39px;background:rgba(62,133,251,.24);transform:rotate(-7deg)}
 @media(max-width:1450px){.strategy-content-mode-workflow>header{grid-template-columns:1fr}.strategy-content-mode-dashboard-actions{grid-template-columns:repeat(3,minmax(0,1fr));width:100%}}
 @media(max-width:900px){.strategy-content-mode-dashboard-actions{grid-template-columns:1fr}.strategy-content-mode-version-action{grid-template-columns:44px minmax(0,1fr)}.strategy-content-mode-version-action>i{width:40px;height:40px}.strategy-content-mode-dashboard-actions .strategy-content-mode-save-state{min-height:60px}}
@@ -11242,6 +11261,11 @@ onBeforeUnmount(() => {
 .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:16px!important; font-weight:900!important; }
 @media(max-width:1200px) { .strategy-workflow-nav .strategy-workflow-label,.strategy-workflow-nav .strategy-workflow-output-copy strong { font-size:15px!important; } }
 .reusable-anchor-style-workspace{font-size:16px}
+.anchor-style-binding-status{display:grid;gap:5px;margin:0 0 14px;padding:13px 16px;border:1px solid #c9e6d8;border-radius:14px;background:#f4fcf8;color:#2f7d5b}
+.anchor-style-binding-status strong{font-size:16px;font-weight:900}
+.anchor-style-binding-status span{color:#6b8a7c;font-size:14px;line-height:1.65}
+.anchor-style-binding-status.is-free{border-color:#dadff7;background:#f6f7ff;color:#4c5aa8}
+.anchor-style-binding-status.is-free span{color:#7b85a6}
 .reusable-anchor-style-sidebar-head{justify-content:flex-end}
 .reusable-anchor-style-sidebar-head .primary-button{font-size:14px}
 .reusable-anchor-style-card{grid-template-columns:25px minmax(0,1fr) auto;align-items:start}
