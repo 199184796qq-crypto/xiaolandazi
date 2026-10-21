@@ -1,5 +1,5 @@
 import { customRef, reactive, type Ref } from 'vue'
-import { requestFailureDiagnostic, safeDiagnosticText } from './errorDiagnostic'
+import { requestFailureDiagnostic, safeDiagnosticText, userFacingErrorText } from './errorDiagnostic'
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error'
 
@@ -60,9 +60,10 @@ function rememberError(title: string, message: string) {
 export function clearErrorHistory() { feedbackState.errors.splice(0) }
 
 export function showAlert(message: string, title = '操作提示') {
-  const normalized = safeDiagnosticText(message)
+  if (!message?.trim()) return
+  const normalized = userFacingErrorText(message)
   if (!normalized) return
-  title = safeDiagnosticText(title) || '操作提示'
+  title = userFacingErrorText(title, '操作提示')
   if (/错误|失败|未完成|停止/.test(title)) rememberError(title, normalized)
   if (feedbackState.alertOpen) {
     if (feedbackState.alertMessage !== normalized && !pendingAlerts.some(item => item.message === normalized)) pendingAlerts.push({ title, message: normalized })
@@ -79,6 +80,8 @@ export function showAlert(message: string, title = '操作提示') {
 export function showRequestError(url: string, method: string, message: string) {
   const normalizedMethod = method.toUpperCase()
   const key = `${normalizedMethod} ${url}`
+  // Use the redacted original only as a private deduplication key: distinct
+  // unknown failures may share a Chinese fallback, but are separate events.
   const reason = safeDiagnosticText(message)
   if (normalizedMethod === 'GET' && requestFailures.get(key) === reason) return
   requestFailures.set(key, reason)
@@ -107,7 +110,7 @@ export function dismissAlert() {
 }
 
 export function useFeedbackErrorRef(initial = ''): Ref<string> {
-  let value = initial
+  let value = initial ? userFacingErrorText(initial) : ''
   return customRef<string>((track, trigger) => ({
     get() {
       track()
@@ -115,9 +118,9 @@ export function useFeedbackErrorRef(initial = ''): Ref<string> {
     },
     set(next) {
       const previous = value
-      value = String(next || '')
+      value = next ? userFacingErrorText(next) : ''
       trigger()
-      if (value.trim() && value !== previous && ![...requestFailures.values()].includes(value)) showAlert(value, '操作未完成')
+      if (value.trim() && value !== previous && ![...requestFailures.values()].includes(safeDiagnosticText(next))) showAlert(value, '操作未完成')
     },
   }))
 }
@@ -159,6 +162,10 @@ export function showToast(
     return 0
   }
   const id = nextToastID++
+  if (tone === 'warning') {
+    title = userFacingErrorText(title, '操作提示')
+    message = message ? userFacingErrorText(message) : ''
+  }
   feedbackState.toasts.push({ id, title, message, tone })
   window.setTimeout(() => dismissToast(id), duration)
   return id

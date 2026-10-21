@@ -29,9 +29,9 @@ test('background reads use a deduplicated notice; writes keep their actual error
  }
 })
 test('different errors queue without overwriting or duplicating the first dialog',()=>{
- feedback.showAlert('first','Save failed');feedback.showAlert('second','Publish failed');feedback.showAlert('second','Another catch')
- assert.equal(feedback.feedbackState.alertMessage,'first')
- feedback.dismissAlert();assert.equal(feedback.feedbackState.alertMessage,'second')
+ feedback.showAlert('保存资料失败','保存失败');feedback.showAlert('发布资料失败','发布失败');feedback.showAlert('发布资料失败','重复捕获')
+ assert.equal(feedback.feedbackState.alertMessage,'保存资料失败')
+ feedback.dismissAlert();assert.equal(feedback.feedbackState.alertMessage,'发布资料失败')
  feedback.dismissAlert();assert.equal(feedback.feedbackState.alertOpen,false)
  const error=feedback.useFeedbackErrorRef();error.value='business validation failed'
  assert.equal(feedback.feedbackState.alertOpen,true)

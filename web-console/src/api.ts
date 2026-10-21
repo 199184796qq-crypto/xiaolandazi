@@ -1,5 +1,5 @@
 import { showRequestError, clearRequestError } from './uiFeedback'
-import { httpFailureDiagnostic, networkFailureDiagnostic, requestFailureDiagnostic, safeDiagnosticText } from './errorDiagnostic'
+import { httpFailureDiagnostic, networkFailureDiagnostic, requestFailureDiagnostic, safeDiagnosticText, userFacingErrorText } from './errorDiagnostic'
 import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStream'
 import { liveSupportRoomForRequest } from './liveSupportAccess'
 import { normalizeLiveAgentPlanVersion } from './liveAgentPlanVersion'
@@ -290,14 +290,16 @@ export async function request<T>(url: string, init?: APIRequestInit, onPreviewEv
     try {
       return await readPreviewStream<T>(response, onPreviewEvent)
     } catch (err) {
-      if (!suppressErrorDialog && err instanceof Error && err.name !== 'AbortError') showRequestError(url, fetchInit.method || 'GET', err.message)
-      throw err
+      if (fetchInit.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) throw err
+      const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', userFacingErrorText(err))
+      if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', message)
+      throw new Error(message)
     }
   }
   try {
     return await response.json() as T
   } catch (err) {
-    const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', `后台返回数据无法解析。\n具体原因：${safeDiagnosticText(err) || '不是有效JSON'}\nHTTP状态：${response.status}\n错误码：response_parse_failed`)
+    const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', '后台返回的数据格式异常，无法读取。请稍后重试；仍失败时请联系管理员。')
     if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', message)
     throw new Error(message)
   }
@@ -801,12 +803,12 @@ export function uploadRoomSpeechAnalysis(
         ? payload.error
         : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传录音失败')
       showRequestError('/api/v1/rooms/' + roomId + '/speech-analysis/upload', 'POST', message)
-      reject(new Error(message))
+      reject(new Error(userFacingErrorText(message)))
     })
     xhr.addEventListener('error', () => {
       const message = '上传录音失败，请检查网络后重试'
       showRequestError('/api/v1/rooms/' + roomId + '/speech-analysis/upload', 'POST', message)
-      reject(new Error(message))
+      reject(new Error(userFacingErrorText(message)))
     })
     xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
     if (signal) {
@@ -842,7 +844,7 @@ export async function getRoomSpeechAnalysisReportText(roomId: number) {
       // Ignore non-JSON error bodies.
     }
     showRequestError(roomSpeechAnalysisReportUrl(roomId), 'GET', message)
-    throw new Error(message)
+    throw new Error(userFacingErrorText(message))
   }
   return response.text()
 }
@@ -1510,12 +1512,12 @@ export function uploadLiveAgentCustomMainline(
         ? payload.error
         : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传自定义音稿失败')
       showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
-      reject(new Error(message))
+      reject(new Error(userFacingErrorText(message)))
     })
     xhr.addEventListener('error', () => {
       const message = '上传自定义音稿失败，请检查网络后重试'
       showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
-      reject(new Error(message))
+      reject(new Error(userFacingErrorText(message)))
     })
     xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
     if (signal) {

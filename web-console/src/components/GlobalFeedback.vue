@@ -52,7 +52,7 @@ async function copyDiagnostic(message: string) {
     <div v-if="historyOpen" class="modal-backdrop system-confirm-backdrop" role="dialog" aria-modal="true" aria-labelledby="error-history-title" @click.self="historyOpen = false" @keydown.esc="historyOpen = false">
       <section class="system-confirm-card error-history-card">
         <h3 id="error-history-title">本页错误记录</h3>
-        <p>保留最近20条，可复制具体原因、发生位置和场次信息。</p>
+        <p>保留最近20条，可复制中文原因、处理建议和场次信息。</p>
         <ol class="error-history-list">
           <li v-for="item in feedbackState.errors" :key="item.id">
             <strong>{{ item.title }}</strong><time>{{ item.occurredAt }}</time>
