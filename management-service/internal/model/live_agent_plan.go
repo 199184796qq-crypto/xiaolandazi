@@ -495,6 +495,26 @@ type LiveAgentPlanScriptAnalysis struct {
 type LiveAgentPlanFactScope struct {
 	Kind          string `json:"kind"`
 	ProductLinkID int64  `json:"product_link_id,omitempty"`
+	// ProductLinkIDs 支持一条事实同时归属多个商品链接（用于「这两个品可以对比」这类事实）。
+	// ProductLinkID 保留给旧数据；两者都填时以 ProductLinkIDs 为准。
+	ProductLinkIDs []int64 `json:"product_link_ids,omitempty"`
+}
+
+// ProductScopeLinkIDs 返回该归属实际关联的商品链接（多链接优先，兼容旧单值）。
+func (s LiveAgentPlanFactScope) ProductScopeLinkIDs() []int64 {
+	if len(s.ProductLinkIDs) > 0 {
+		out := make([]int64, 0, len(s.ProductLinkIDs))
+		for _, id := range s.ProductLinkIDs {
+			if id > 0 {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	if s.ProductLinkID > 0 {
+		return []int64{s.ProductLinkID}
+	}
+	return nil
 }
 
 type LiveAgentPlanFact struct {

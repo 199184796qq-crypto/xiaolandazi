@@ -114,13 +114,33 @@ func stripFactScopePrefix(header string) (string, bool) {
 	if !explicit {
 		return header, true
 	}
+	// 归属值可能是单个字符串（历史）或字符串数组（一条事实挂多个链接，用于跨品对比），
+	// 这里只负责把前缀整段剥掉，不关心具体几个链接。
+	var value json.RawMessage
 	decoder := json.NewDecoder(strings.NewReader(raw))
-	var link string
-	if decoder.Decode(&link) != nil || strings.TrimSpace(link) == "" {
+	if decoder.Decode(&value) != nil || !hasUsableScopeLink(value) {
 		return "", false
 	}
 	rest, ok := strings.CutPrefix(raw[decoder.InputOffset():], "；")
 	return rest, ok
+}
+
+// hasUsableScopeLink 判断归属值里是否真的写了链接：空串、空数组、null 都算没有归属。
+func hasUsableScopeLink(raw json.RawMessage) bool {
+	var many []string
+	if json.Unmarshal(raw, &many) == nil {
+		for _, item := range many {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return strings.TrimSpace(one) != ""
+	}
+	return false
 }
 
 // factFamilyBranding 是「品牌背书」类公共资料（identity_location 族：品牌/资质/产地/门店/历史），

@@ -2238,7 +2238,9 @@ export interface LiveAgentPlanWorkspaceResponse {
 }
 
 export interface LiveAgentPlanFact {
-  scope?: { kind: 'common' | 'product'; product_link_id?: number }
+  // product_link_ids 用于一条事实同时归属多个商品（「这几个品都适用」，也是允许互相比较的依据）。
+  // product_link_id 保留给旧数据。
+  scope?: { kind: 'common' | 'product'; product_link_id?: number; product_link_ids?: number[] }
   id: number
   tenant_id: number
   plan_id: number

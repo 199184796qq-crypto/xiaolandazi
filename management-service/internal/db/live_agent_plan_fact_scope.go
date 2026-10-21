@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
+
 	"livecompanion/management/internal/model"
 )
 
@@ -11,7 +13,16 @@ var ErrLiveFactScopeInvalid = errors.New("事实归属无效")
 var ErrLiveFactScopeProductNotFound = errors.New("归属商品不存在、已停用或不属于当前方案")
 
 func (s *Store) UpdateLiveAgentPlanFactScope(ctx context.Context, tenant, plan, fact, actor, expected int64, scope model.LiveAgentPlanFactScope) (model.LiveAgentPlanFact, error) {
-	if expected <= 0 || (scope.Kind != "common" && scope.Kind != "product") || (scope.Kind == "common" && scope.ProductLinkID != 0) || (scope.Kind == "product" && scope.ProductLinkID <= 0) {
+	links := scope.ProductScopeLinkIDs()
+	// 单链接仍写旧字段（不改行为、不破坏历史读法），两个及以上才用数组。
+	if len(links) == 1 {
+		scope.ProductLinkID = links[0]
+		scope.ProductLinkIDs = nil
+	} else {
+		scope.ProductLinkID = 0
+		scope.ProductLinkIDs = links
+	}
+	if expected <= 0 || (scope.Kind != "common" && scope.Kind != "product") || (scope.Kind == "common" && len(links) != 0) || (scope.Kind == "product" && len(links) == 0) || len(links) > 8 {
 		return model.LiveAgentPlanFact{}, ErrLiveFactScopeInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -27,8 +38,13 @@ func (s *Store) UpdateLiveAgentPlanFactScope(ctx context.Context, tenant, plan, 
 	if err != nil {
 		return model.LiveAgentPlanFact{}, err
 	}
-	if scope.Kind == "product" {
-		err = tx.QueryRowContext(ctx, `SELECT 1 FROM live_agent_plan_product_links WHERE tenant_id=? AND plan_id=? AND id=? AND status='active' FOR UPDATE`, tenant, plan, scope.ProductLinkID).Scan(&exists)
+	seen := map[int64]bool{}
+	for _, linkID := range links {
+		if linkID <= 0 || seen[linkID] {
+			return model.LiveAgentPlanFact{}, ErrLiveFactScopeInvalid
+		}
+		seen[linkID] = true
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM live_agent_plan_product_links WHERE tenant_id=? AND plan_id=? AND id=? AND status='active' FOR UPDATE`, tenant, plan, linkID).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.LiveAgentPlanFact{}, ErrLiveFactScopeProductNotFound
 		}
@@ -46,7 +62,7 @@ func (s *Store) UpdateLiveAgentPlanFactScope(ctx context.Context, tenant, plan, 
 	if current.VersionNo != expected {
 		return model.LiveAgentPlanFact{}, ErrLiveAgentPlanFactVersionConflict
 	}
-	if current.Scope != nil && *current.Scope == scope {
+	if current.Scope != nil && reflect.DeepEqual(current.Scope.ProductScopeLinkIDs(), links) && current.Scope.Kind == scope.Kind {
 		return current, nil
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE live_agent_plan_facts SET scope_json=?,version_no=version_no+1,updated_by_user_id=?,updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND plan_id=? AND status='active'`, encodeJSON(scope), actor, fact, tenant, plan)

@@ -56,6 +56,8 @@ const explicitProductFactPrefix = "- [用户指定商品="
 
 // The program-owned prefix stays in the safety snapshot's metadata, outside
 // editable claim text. Bind by record ID, then resolve the current link label.
+// 多链接归属渲染成数组（"1号链接","2号链接"），单链接保持旧的字符串形式，
+// 这样历史快照仍然可解析。
 func renderFactScopePrefix(fact model.LiveAgentPlanFact, links []model.LiveAgentPlanProductLink) string {
 	if fact.Scope == nil {
 		return "- ["
@@ -63,15 +65,55 @@ func renderFactScopePrefix(fact model.LiveAgentPlanFact, links []model.LiveAgent
 	if fact.Scope.Kind == "common" {
 		return explicitCommonFactPrefix
 	}
-	var link string
-	for _, p := range links {
-		if p.ID == fact.Scope.ProductLinkID && p.PlanID == fact.PlanID && p.TenantID == fact.TenantID && p.Status == "active" {
-			link = p.LinkKey
-			break
+	labels := make([]string, 0, 2)
+	for _, linkID := range fact.Scope.ProductScopeLinkIDs() {
+		for _, p := range links {
+			if p.ID == linkID && p.PlanID == fact.PlanID && p.TenantID == fact.TenantID && p.Status == "active" {
+				labels = append(labels, p.LinkKey)
+				break
+			}
 		}
 	}
-	encoded, _ := json.Marshal(link)
+	if len(labels) > 1 {
+		encoded, _ := json.Marshal(labels)
+		return explicitProductFactPrefix + string(encoded) + "；"
+	}
+	label := ""
+	if len(labels) == 1 {
+		label = labels[0]
+	}
+	encoded, _ := json.Marshal(label)
 	return explicitProductFactPrefix + string(encoded) + "；"
+}
+
+// decodeScopeLinks 解析「用户指定商品=」后面的 JSON 值，兼容历史单字符串与新多链接数组。
+func decodeScopeLinks(raw string) ([]string, string, bool) {
+	if links, rest, ok := cutJSONValue[[]string](raw); ok {
+		trimmed := make([]string, 0, len(links))
+		for _, link := range links {
+			if link = strings.TrimSpace(link); link != "" {
+				trimmed = append(trimmed, link)
+			}
+		}
+		if len(trimmed) > 0 {
+			return trimmed, rest, true
+		}
+		return nil, rest, false
+	}
+	if link, rest, ok := cutJSONValue[string](raw); ok && strings.TrimSpace(link) != "" {
+		return []string{strings.TrimSpace(link)}, rest, true
+	}
+	return nil, raw, false
+}
+
+// cutJSONValue 解码 raw 开头的一个 JSON 值，返回剩余内容和是否成功。
+func cutJSONValue[T any](raw string) (T, string, bool) {
+	var value T
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if decoder.Decode(&value) != nil {
+		return value, raw, false
+	}
+	return value, raw[decoder.InputOffset():], true
 }
 
 func explicitPlanFactScope(block string) (anchorcycle.ScopedFact, bool, error) {
@@ -84,11 +126,10 @@ func explicitPlanFactScope(block string) (anchorcycle.ScopedFact, bool, error) {
 		return fact, false, nil
 	}
 	raw := strings.TrimPrefix(block, explicitProductFactPrefix)
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	var link string
-	if decoder.Decode(&link) != nil || strings.TrimSpace(link) == "" || !strings.HasPrefix(raw[decoder.InputOffset():], "；") {
+	links, rest, ok := decodeScopeLinks(raw)
+	if !ok || !strings.HasPrefix(rest, "；") {
 		return fact, true, errors.New("用户指定的归属商品已不可用，请在事实依据中重新选择归属范围")
 	}
-	fact.Links = []string{link}
+	fact.Links = links
 	return fact, true, nil
 }

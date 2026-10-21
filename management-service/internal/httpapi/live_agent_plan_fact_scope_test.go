@@ -99,3 +99,37 @@ func TestFactScopeGenerationManifestKeepsExplicitProductAndCommon(t *testing.T) 
 		t.Fatal("manifest widened explicit product", got)
 	}
 }
+
+// 一条事实可以同时归属多个商品链接（用于「这两个品可以对比」）。
+// 渲染成数组、解析回多链接，且旧版的单字符串形式仍要能读。
+func TestFactScopeSupportsMultipleProductLinks(t *testing.T) {
+	links := []model.LiveAgentPlanProductLink{
+		{ID: 21, TenantID: 14, PlanID: 4, LinkKey: "1号链接", Status: "active"},
+		{ID: 22, TenantID: 14, PlanID: 4, LinkKey: "2号链接", Status: "active"},
+	}
+	fact := model.LiveAgentPlanFact{ID: 9, TenantID: 14, PlanID: 4, Key: "两档差价", Value: "10人餐比6人餐多7道荤素菜", Status: "active",
+		Scope: &model.LiveAgentPlanFactScope{Kind: "product", ProductLinkIDs: []int64{21, 22}}}
+	prefix := renderFactScopePrefix(fact, links)
+	if !strings.Contains(prefix, `["1号链接","2号链接"]`) {
+		t.Fatalf("multi-link prefix must render as array: %s", prefix)
+	}
+	block := prefix + "audience/人数] 两档差价\n10人餐比6人餐多7道荤素菜"
+	scoped, explicit, err := explicitPlanFactScope(block)
+	if err != nil || !explicit {
+		t.Fatalf("multi-link scope must parse: %v", err)
+	}
+	if len(scoped.Links) != 2 || scoped.Links[0] != "1号链接" || scoped.Links[1] != "2号链接" {
+		t.Fatalf("links not restored: %#v", scoped.Links)
+	}
+	// 旧数据：单字符串形式必须继续可用。
+	single := model.LiveAgentPlanFact{ID: 10, TenantID: 14, PlanID: 4, Key: "单链接", Value: "只有6人餐", Status: "active",
+		Scope: &model.LiveAgentPlanFactScope{Kind: "product", ProductLinkID: 22}}
+	singlePrefix := renderFactScopePrefix(single, links)
+	if !strings.Contains(singlePrefix, `"2号链接"`) {
+		t.Fatalf("single link keeps string form: %s", singlePrefix)
+	}
+	scopedSingle, _, err := explicitPlanFactScope(singlePrefix + "promotion/优惠] 单链接\n只有6人餐")
+	if err != nil || len(scopedSingle.Links) != 1 || scopedSingle.Links[0] != "2号链接" {
+		t.Fatalf("legacy single link must still parse: %v %#v", err, scopedSingle.Links)
+	}
+}
