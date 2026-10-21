@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
 )
 
 func publicLiveFailure(session int64, err error) anchorcycle.LiveFailure {
-	failure := anchorcycle.LiveFailure{SessionID: session, Code: "formal_mainline_failed", Message: "直播程序运行异常，本场已停止。请联系后台并提供场次编号，以便核对具体原因。", OccurredAt: time.Now().UTC()}
+	detail := errordetail.Describe(err, "主线运行")
+	failure := anchorcycle.LiveFailure{SessionID: session, Code: detail.Code, Stage: detail.Stage, Message: detail.Message, Action: detail.Action, RequestID: detail.RequestID, HTTPStatus: detail.HTTPStatus, OccurredAt: time.Now().UTC()}
 	if err == nil {
 		return failure
 	}
@@ -21,19 +23,22 @@ func publicLiveFailure(session int64, err error) anchorcycle.LiveFailure {
 	text := err.Error()
 	if errors.Is(err, anchorcycle.ErrStale) || strings.Contains(text, anchorcycle.ErrStale.Error()) {
 		failure.Code = "runtime_state_changed"
-		failure.Message = "本场运行状态已变化，晚到结果未采纳。请确认场次状态后重新开始。"
+		failure.Stage = "场次状态校验"
+		failure.Action = "确认当前场次状态；晚到结果不会应用到新场次。"
 		return failure
 	}
 	for _, marker := range []string{"事实或轮盘已变化", "事实、福利有效期或轮盘已变化", "商品范围与已保存安全事实不一致"} {
 		if strings.Contains(text, marker) {
 			failure.Code = "plan_sources_changed"
-			failure.Message = "事实、福利或卖点轮盘已变化，当前保存方案不再适用。本场已停止，请重新保存方案后开始。"
+			failure.Stage = "方案事实校验"
+			failure.Action = "重新保存方案后再开始。"
 			return failure
 		}
 	}
 	if strings.Contains(text, "本场不能继续生成") {
 		failure.Code = "generation_blocked"
-		failure.Message = "本场口播未通过生成校验，已停止生成声音。请检查事实依据及卖点内容后重新开始；如仍失败，请联系后台。"
+		failure.Stage = "话术生成校验"
+		failure.Action = "根据上述具体原因检查事实依据和本段生成记录。"
 	}
 	return failure
 }
@@ -68,7 +73,7 @@ func applyLiveRuntimeFailure(snapshot *model.LiveRuntimeSnapshot, failure *ancho
 	if suppressLiveFailure(snapshot.Session) {
 		return
 	}
-	snapshot.Failure = &model.LiveRuntimeFailure{SessionID: failure.SessionID, Code: failure.Code, Message: failure.Message, OccurredAt: failure.OccurredAt}
+	snapshot.Failure = &model.LiveRuntimeFailure{SessionID: failure.SessionID, Code: failure.Code, Message: failure.Message, Stage: failure.Stage, Action: failure.Action, RequestID: failure.RequestID, HTTPStatus: failure.HTTPStatus, OccurredAt: failure.OccurredAt}
 	snapshot.AgentState = "stopped"
 }
 

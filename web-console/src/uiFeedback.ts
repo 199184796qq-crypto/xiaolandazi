@@ -1,4 +1,5 @@
 import { customRef, reactive, type Ref } from 'vue'
+import { requestFailureDiagnostic, safeDiagnosticText } from './errorDiagnostic'
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error'
 
@@ -24,6 +25,7 @@ interface FeedbackState {
   confirmOpen: boolean
   confirmOptions: ConfirmOptions
   toasts: ToastItem[]
+  errors: { id: number; title: string; message: string; occurredAt: string }[]
 }
 
 let nextToastID = 1
@@ -45,11 +47,23 @@ export const feedbackState = reactive<FeedbackState>({
     danger: false,
   },
   toasts: [],
+  errors: [],
 })
 
+function rememberError(title: string, message: string) {
+  const previous = feedbackState.errors.find(item => item.message === message)
+  if (previous) return
+  feedbackState.errors.unshift({ id: nextToastID++, title, message, occurredAt: new Date().toLocaleString() })
+  feedbackState.errors.splice(20)
+}
+
+export function clearErrorHistory() { feedbackState.errors.splice(0) }
+
 export function showAlert(message: string, title = '操作提示') {
-  const normalized = String(message || '').trim()
+  const normalized = safeDiagnosticText(message)
   if (!normalized) return
+  title = safeDiagnosticText(title) || '操作提示'
+  if (/错误|失败|未完成|停止/.test(title)) rememberError(title, normalized)
   if (feedbackState.alertOpen) {
     if (feedbackState.alertMessage !== normalized && !pendingAlerts.some(item => item.message === normalized)) pendingAlerts.push({ title, message: normalized })
     return
@@ -65,18 +79,21 @@ export function showAlert(message: string, title = '操作提示') {
 export function showRequestError(url: string, method: string, message: string) {
   const normalizedMethod = method.toUpperCase()
   const key = `${normalizedMethod} ${url}`
-  if (normalizedMethod === 'GET' && requestFailures.get(key) === message) return
-  requestFailures.set(key, message)
+  const reason = safeDiagnosticText(message)
+  if (normalizedMethod === 'GET' && requestFailures.get(key) === reason) return
+  requestFailures.set(key, reason)
+  const diagnostic = requestFailureDiagnostic(url, normalizedMethod, reason)
+  rememberError('请求未完成', diagnostic)
   if (requestFailures.size > 200) requestFailures.delete(requestFailures.keys().next().value!)
   if (normalizedMethod === 'GET') {
     const now = Date.now()
     if (now - lastReadFailureNoticeAt >= 15_000) {
       lastReadFailureNoticeAt = now
-      showToast('数据连接波动', '后台正在自动重连，不影响已经保存的内容。', 'warning', 3600)
+      showToast('数据读取失败', diagnostic, 'warning', 6000)
     }
     return
   }
-  showAlert(message, '请求未完成')
+  showAlert(diagnostic, '请求未完成')
 }
 
 export function clearRequestError(url: string, method: string) {

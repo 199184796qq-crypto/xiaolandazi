@@ -16,6 +16,10 @@ type LiveFailure struct {
 	SessionID  int64     `json:"session_id"`
 	Code       string    `json:"code"`
 	Message    string    `json:"message"`
+	Stage      string    `json:"stage,omitempty"`
+	Action     string    `json:"action,omitempty"`
+	RequestID  string    `json:"request_id,omitempty"`
+	HTTPStatus int       `json:"http_status,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 

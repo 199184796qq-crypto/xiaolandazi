@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
 	"log"
 	"strings"
@@ -70,13 +71,14 @@ func (s *Server) handleLiveAnchorProducerExit(tenant, room, runtimeID int64, ver
 		return
 	}
 	// Only a confirmed failure in this exact session writes failure UI/assets.
-	log.Printf("formal mainline tenant=%d room=%d version=%d failed: %v", tenant, room, version.ID, cause)
+	failure := publicLiveFailure(runtimeID, cause)
+	log.Printf("formal mainline tenant=%d room=%d session=%d version=%d code=%s stage=%s request_id=%s failed: %s", tenant, room, runtimeID, version.ID, failure.Code, failure.Stage, failure.RequestID, errordetail.Safe(cause.Error()))
 	if state, e := s.anchorCycles.Get(cleanup, tenant, version.PlanID, room); e == nil && state.Delivery != nil && state.Delivery.RuntimeSessionID == runtimeID {
-		state.Status, state.Error = "failed", cause.Error()
+		state.Status, state.Error = "failed", failure.Message
 		_ = s.anchorCycles.Save(cleanup, state)
 	}
 	if repo, ok := s.anchorCycles.(anchorcycle.LiveFailureRepository); ok {
-		if e := repo.SaveLiveFailure(cleanup, tenant, room, publicLiveFailure(runtimeID, cause)); e != nil {
+		if e := repo.SaveLiveFailure(cleanup, tenant, room, failure); e != nil {
 			log.Printf("save formal failure tenant=%d room=%d session=%d: %v", tenant, room, runtimeID, e)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"livecompanion/management/internal/anchorcycle"
+	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/productionbuffer"
 	"log"
 	"strings"
@@ -37,6 +38,7 @@ type cycleSupply struct {
 	state            *anchorcycle.State
 	paused, finished bool
 	failure          string
+	failureCause     error
 	reserved         int64
 	playedMS         float64
 	delivered        map[string]bool
@@ -66,10 +68,12 @@ func newCycleSupply(s *Server, parent context.Context, state *anchorcycle.State)
 	}
 	p.ctx = context.WithValue(ctx, productionGateKey{}, p.wait)
 	p.advance = func(ctx context.Context, current *anchorcycle.State) (*anchorcycle.State, error) {
-		return s.advanceAnchorCycle(ctx, current.TenantID, current.PlanID, current.RoomID, current.RunID, current.Revision)
+		next, err := s.advanceAnchorCycle(ctx, current.TenantID, current.PlanID, current.RoomID, current.RunID, current.Revision)
+		return next, errordetail.WithStage("主线文字生成", err)
 	}
 	p.synthesize = func(ctx context.Context, current *anchorcycle.State, id string) (*anchorcycle.VoiceAsset, error) {
-		return s.synthesizeAnchorCycleVoice(ctx, current, id, false)
+		voice, err := s.synthesizeAnchorCycleVoice(ctx, current, id, false)
+		return voice, errordetail.WithStage("声音合成", err)
 	}
 	p.receive(state)
 	return p
@@ -96,7 +100,7 @@ func (p *cycleSupply) fail(err error) {
 	}
 	p.mu.Lock()
 	if p.failure == "" {
-		p.failure = err.Error()
+		p.failure, p.failureCause = errordetail.Safe(err.Error()), err
 	}
 	p.paused = true
 	p.mu.Unlock()

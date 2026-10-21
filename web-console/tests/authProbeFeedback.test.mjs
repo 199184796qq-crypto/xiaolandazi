@@ -7,13 +7,15 @@ const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8')
 const start = source.indexOf('export async function request<')
 const end = source.indexOf('\nexport function getPublicSystemConfig', start)
 const javascript = ts.transpile(source.slice(start, end), { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS })
+const diagnosticSource = await readFile(new URL('../src/errorDiagnostic.ts', import.meta.url), 'utf8')
+const diagnostic = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(ts.transpile(diagnosticSource, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })))
 
 function fixture(status, message) {
   const calls = [], requests = []
   const response = new Response(JSON.stringify(status < 400 ? { actor: { user_id: 1, role: 'customer' } } : { error: message }), { status, headers: { 'Content-Type': 'application/json' } })
-  const api = new Function('exports', 'fetch', 'showRequestError', 'clearRequestError', 'liveSupportRoomForRequest', javascript + '\nreturn exports')(
+  const api = new Function('exports', 'fetch', 'showRequestError', 'clearRequestError', 'liveSupportRoomForRequest', ...Object.keys(diagnostic), javascript + '\nreturn exports')(
     {}, async (url, options) => { requests.push({ url, credentials: options.credentials }); return response },
-    (...args) => calls.push(args), () => {}, () => null,
+    (...args) => calls.push(args), () => {}, () => null, ...Object.values(diagnostic),
   )
   return { api, calls, requests }
 }
@@ -31,7 +33,10 @@ test('wrong credentials and captcha failures still show their actual error', asy
   for (const [status, message] of [[401, '账号或密码错误'], [400, '验证码错误']]) {
     const f = fixture(status, message)
     await assert.rejects(f.api.request('/api/v1/auth/login', { method: 'POST' }), new RegExp(message))
-    assert.deepEqual(f.calls, [['/api/v1/auth/login', 'POST', message]])
+    assert.equal(f.calls.length, 1)
+    assert.deepEqual(f.calls[0].slice(0, 2), ['/api/v1/auth/login', 'POST'])
+    assert.ok(f.calls[0][2].includes(message))
+    assert.ok(f.calls[0][2].includes(`HTTP状态：${status}`))
   }
 })
 

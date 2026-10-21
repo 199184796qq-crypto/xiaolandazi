@@ -36,8 +36,9 @@ if (import.meta.env.DEV) {
   })
 }
 const app = createApp(App)
-app.config.errorHandler = (error) => {
+app.config.errorHandler = (error, instance, info) => {
   console.error(error)
-  window.dispatchEvent(new ErrorEvent('error', { message: 'component error' }))
+  const name = instance?.$options.name || '页面组件'
+  window.dispatchEvent(new ErrorEvent('error', { message: `${name}（${info}）：${error instanceof Error ? error.message : String(error)}` }))
 }
 app.use(router).mount('#app')

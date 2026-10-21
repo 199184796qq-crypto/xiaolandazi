@@ -427,11 +427,16 @@ func (s *Server) resolveFormalVoice(ctx context.Context, tenantID int64, input f
 }
 
 func resolveSelectedCloneVoice(profile model.VoiceProfile, input fullShowVariantVoiceInput, bindings []model.VoiceModelBinding) (string, string, error) {
-	if !strings.EqualFold(strings.TrimSpace(profile.CloneStatus), "ready") {
-		return "", "", errors.New("克隆声音还没有准备好")
+	if err := selectedCloneProfileError(profile); err != nil {
+		return "", "", err
 	}
 	voiceID, modelName := strings.TrimSpace(input.VoiceID), strings.TrimSpace(input.Model)
 	for _, binding := range bindings {
+		if binding.ProfileID == profile.ID && binding.TenantID == profile.TenantID && input.BindingID > 0 && binding.ID == input.BindingID {
+			if err := selectedCloneBindingError(profile.Name, binding); err != nil {
+				return "", "", err
+			}
+		}
 		if binding.ProfileID != profile.ID || binding.TenantID != profile.TenantID || binding.Status != "ready" || strings.TrimSpace(binding.VoiceID) == "" {
 			continue
 		}

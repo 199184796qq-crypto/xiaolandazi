@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
+	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
 	"net/http"
 	"net/url"
@@ -17,7 +18,7 @@ import (
 func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
 	state, err := s.createLiveAnchorRun(ctx, tenant, room, runtimeID, version)
 	if err != nil {
-		return err
+		return errordetail.WithStage("方案与开场初始化", err)
 	}
 	var mu sync.Mutex
 	delivery := *state.Delivery
@@ -154,12 +155,12 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		}
 		resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost, path, query, input)
 		if err != nil {
-			return err
+			return errordetail.WithStage("Core音频交付", err)
 		}
 		defer resp.Body.Close()
-		var snapshot coreclient.ProgramRefreshSnapshot
-		if err = json.NewDecoder(resp.Body).Decode(&snapshot); err != nil || resp.StatusCode != 200 || !snapshot.Sequential || snapshot.VersionID != version.ID {
-			return errors.New("完整声音追加未确认，已暂停，不盲目重复提交")
+		snapshot, err := decodeLiveHandoffResponse(resp, version.ID)
+		if err != nil {
+			return err
 		}
 		if program != "" && snapshot.ProgramID != program {
 			return anchorcycle.ErrStale
@@ -188,10 +189,46 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	case <-supply.done:
 		supply.mu.Lock()
 		message := supply.failure
+		cause := supply.failureCause
 		supply.mu.Unlock()
+		if cause != nil {
+			return cause
+		}
 		if message != "" {
 			return errors.New(message)
 		}
 		return context.Canceled
 	}
+}
+
+// The delivery decision is unchanged: an unconfirmed response never permits a
+// resend. Keep the Core status/reason instead of reducing all failures to one
+// generic "audio stopped" string.
+func decodeLiveHandoffResponse(resp *http.Response, versionID int64) (coreclient.ProgramRefreshSnapshot, error) {
+	var snapshot coreclient.ProgramRefreshSnapshot
+	var raw json.RawMessage
+	err := json.NewDecoder(resp.Body).Decode(&raw)
+	if err == nil {
+		err = json.Unmarshal(raw, &snapshot)
+	}
+	if err == nil && resp.StatusCode == http.StatusOK && snapshot.Sequential && snapshot.VersionID == versionID {
+		return snapshot, nil
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &body)
+	reason := body.Error
+	if reason == "" && err != nil {
+		reason = err.Error()
+	}
+	if reason == "" {
+		reason = fmt.Sprintf("响应版本=%d，预期版本=%d，顺序播放=%t", snapshot.VersionID, versionID, snapshot.Sequential)
+	}
+	return snapshot, &errordetail.Fault{Detail: errordetail.Detail{
+		Code: "core_handoff_unconfirmed", Stage: "Core音频交付", HTTPStatus: resp.StatusCode,
+		RequestID: errordetail.Safe(resp.Header.Get("X-Request-ID")),
+		Message:   "完整声音追加未确认：" + errordetail.Safe(reason),
+		Action:    "已暂停，不盲目重复提交；按场次和Core回执核查本次交付。",
+	}, Cause: err}
 }

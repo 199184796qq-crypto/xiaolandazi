@@ -1,10 +1,24 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import {
+  clearErrorHistory,
   dismissAlert,
   dismissToast,
   feedbackState,
   resolveConfirm,
 } from '../uiFeedback'
+
+const historyOpen = ref(false)
+const copyStatus = ref('')
+watch(() => feedbackState.alertMessage, () => { copyStatus.value = '' })
+async function copyDiagnostic(message: string) {
+  try {
+    await navigator.clipboard.writeText(message)
+    copyStatus.value = '已复制'
+  } catch {
+    copyStatus.value = '复制不可用，请选中文字手动复制'
+  }
+}
 </script>
 
 <template>
@@ -25,9 +39,31 @@ import {
           <p id="system-error-message">{{ feedbackState.alertMessage }}</p>
         </div>
         <div class="system-confirm-actions">
+          <span class="diagnostic-copy-status" role="status">{{ copyStatus }}</span>
+          <button class="ghost-button" type="button" @click="copyDiagnostic(feedbackState.alertMessage)">复制错误详情</button>
           <button class="primary-button" type="button" @click="dismissAlert">
             知道了
           </button>
+        </div>
+      </section>
+    </div>
+
+    <button v-if="feedbackState.errors.length && !feedbackState.alertOpen && !feedbackState.confirmOpen && !historyOpen" class="error-history-toggle" type="button" @click="historyOpen = true">错误记录（{{ feedbackState.errors.length }}）</button>
+    <div v-if="historyOpen" class="modal-backdrop system-confirm-backdrop" role="dialog" aria-modal="true" aria-labelledby="error-history-title" @click.self="historyOpen = false" @keydown.esc="historyOpen = false">
+      <section class="system-confirm-card error-history-card">
+        <h3 id="error-history-title">本页错误记录</h3>
+        <p>保留最近20条，可复制具体原因、发生位置和场次信息。</p>
+        <ol class="error-history-list">
+          <li v-for="item in feedbackState.errors" :key="item.id">
+            <strong>{{ item.title }}</strong><time>{{ item.occurredAt }}</time>
+            <p>{{ item.message }}</p>
+            <button class="ghost-button" type="button" @click="copyDiagnostic(item.message)">复制详情</button>
+          </li>
+        </ol>
+        <span role="status">{{ copyStatus }}</span>
+        <div class="system-confirm-actions">
+          <button class="ghost-button" type="button" @click="clearErrorHistory">清空记录</button>
+          <button class="primary-button" type="button" @click="historyOpen = false">关闭</button>
         </div>
       </section>
     </div>
@@ -81,3 +117,19 @@ import {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.system-alert-card, .error-history-card { max-height: 85dvh; overflow: auto; }
+#system-error-message, .system-toast p, .error-history-list p { white-space: pre-wrap; overflow-wrap: anywhere; }
+#system-error-message, .error-history-card p, .error-history-list strong { font-size: 16px; }
+.diagnostic-copy-status { align-self: center; font-size: 16px; }
+.system-alert-card, .error-history-card, .error-history-toggle { font-size: 16px; }
+.system-alert-card button, .error-history-card button { font-size: 16px; }
+.system-toast p, .system-toast strong { font-size: 16px; }
+.error-history-toggle { position: fixed; left: 16px; bottom: 16px; z-index: 65; border: 1px solid #e6b4ba; border-radius: 12px; padding: 8px 14px; background: #fff6f7; color: #a73446; box-shadow: 0 4px 18px #1b25451a; }
+.error-history-list { padding-left: 22px; text-align: left; }
+.error-history-list li { padding: 12px 0; border-bottom: 1px solid #e8eaf1; }
+.error-history-list time { display: block; color: #6f7890; font-size: 16px; margin-top: 4px; }
+.error-history-list p { margin: 8px 0; }
+@media (max-width: 520px) { .system-confirm-actions { flex-wrap: wrap; } }
+</style>

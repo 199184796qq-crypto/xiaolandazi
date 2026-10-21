@@ -1,4 +1,5 @@
 import { showRequestError, clearRequestError } from './uiFeedback'
+import { httpFailureDiagnostic, networkFailureDiagnostic, requestFailureDiagnostic, safeDiagnosticText } from './errorDiagnostic'
 import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStream'
 import { liveSupportRoomForRequest } from './liveSupportAccess'
 import { normalizeLiveAgentPlanVersion } from './liveAgentPlanVersion'
@@ -258,21 +259,19 @@ export async function request<T>(url: string, init?: APIRequestInit, onPreviewEv
     })
   } catch (err) {
     if (fetchInit.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) throw err
-    if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', '后台服务暂不可用，请稍后重试')
-    throw new Error('后台服务暂不可用，请稍后重试')
+    const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', networkFailureDiagnostic(err))
+    if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', message)
+    throw new Error(message)
   }
 
   if (!response.ok) {
-    let message =
-      response.status >= 500
-        ? '后台服务暂不可用，请稍后重试'
-        : '请求失败'
+    let raw = ''
     try {
-      const body = await response.json() as { error?: string }
-      if (body.error) message = body.error
-    } catch {
-      // Keep the fallback message.
+      raw = await response.text()
+    } catch (err) {
+      raw = `读取错误响应失败：${safeDiagnosticText(err)}`
     }
+    const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', httpFailureDiagnostic(response.status, response.statusText, raw, response.headers.get('X-Request-ID') || ''))
     // An anonymous/expired session is an expected result of the route guard's
     // bootstrap probe. The guard shows the login page; it is not a failed action.
     if (!suppressErrorDialog && (response.status !== 401 || url.split('?')[0] !== '/api/v1/bootstrap')) {
@@ -298,7 +297,7 @@ export async function request<T>(url: string, init?: APIRequestInit, onPreviewEv
   try {
     return await response.json() as T
   } catch (err) {
-    const message = '后台返回数据格式错误，请重试；原有配置不变'
+    const message = requestFailureDiagnostic(url, fetchInit.method || 'GET', `后台返回数据无法解析。\n具体原因：${safeDiagnosticText(err) || '不是有效JSON'}\nHTTP状态：${response.status}\n错误码：response_parse_failed`)
     if (!suppressErrorDialog) showRequestError(url, fetchInit.method || 'GET', message)
     throw new Error(message)
   }

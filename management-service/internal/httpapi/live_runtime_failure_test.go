@@ -11,7 +11,7 @@ import (
 
 func TestPublicLiveFailureExplainsSourceChangeWithoutProviderSecrets(t *testing.T) {
 	failure := publicLiveFailure(19, errors.New("正式事实或轮盘已变化，请重新保存发布安全方案"))
-	if failure.SessionID != 19 || failure.Code != "plan_sources_changed" || !strings.Contains(failure.Message, "重新保存方案") || strings.Contains(failure.Message, "发布") {
+	if failure.SessionID != 19 || failure.Code != "plan_sources_changed" || !strings.Contains(failure.Message, "事实或轮盘已变化") || !strings.Contains(failure.Action, "重新保存方案") || strings.Contains(failure.Action, "发布") {
 		t.Fatal(failure)
 	}
 	failure = publicLiveFailure(20, errors.New("provider https://example.test?api_key=private-key failed"))

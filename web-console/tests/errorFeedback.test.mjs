@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import ts from 'typescript'
 const source=await readFile(new URL('../src/uiFeedback.ts',import.meta.url),'utf8')
-const js=ts.transpile(source.replace(/^import .* from 'vue'\r?\n/m,'').replace(/export /g,''),{target:ts.ScriptTarget.ES2022})
-const feedback=new Function('reactive','customRef','window',js+'\nreturn {feedbackState,showAlert,dismissAlert,showRequestError,clearRequestError,useFeedbackErrorRef}')(
+const diagnosticSource=await readFile(new URL('../src/errorDiagnostic.ts',import.meta.url),'utf8')
+const diagnostic=await import('data:text/javascript;charset=utf-8,'+encodeURIComponent(ts.transpile(diagnosticSource,{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext})))
+const js=ts.transpile(source.replace(/^import .*\r?\n/gm,'').replace(/export /g,''),{target:ts.ScriptTarget.ES2022})
+const feedback=new Function('reactive','customRef','window',...Object.keys(diagnostic),js+'\nreturn {feedbackState,showAlert,dismissAlert,showRequestError,clearRequestError,useFeedbackErrorRef}')(
  v=>v,f=>{const r=f(()=>{},()=>{});return {get value(){return r.get()},set value(v){r.set(v)}}},
- {setTimeout() {}},
+ {setTimeout() {}},...Object.values(diagnostic),
 )
 test('background reads use a deduplicated notice; writes keep their actual error dialog',()=>{
  feedback.showRequestError('/read','GET','read failed')

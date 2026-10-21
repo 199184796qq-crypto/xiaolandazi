@@ -1436,7 +1436,7 @@ export interface LiveQuotaSummary {
 export interface LiveRuntimeSnapshot {
   startup?: { session_id: number; stage: string; percent: number; updated_at: string }
   agent_stop_reason?: string
-  failure?: { session_id: number; code: string; message: string; occurred_at: string }
+  failure?: { session_id: number; code: string; message: string; occurred_at: string; stage?: string; action?: string; request_id?: string; http_status?: number }
   session?: LiveRuntimeSession
   agent_state: 'stopped' | 'working' | 'paused'
   agent_mode: 'control' | 'anchor'

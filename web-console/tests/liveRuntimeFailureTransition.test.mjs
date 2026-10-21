@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 
 const source = await readFile(new URL('../src/liveRuntimeFailure.ts', import.meta.url), 'utf8')
-const js = ts.transpile(source, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })
+const diagnosticSource = await readFile(new URL('../src/errorDiagnostic.ts', import.meta.url), 'utf8')
+const diagnosticURL = 'data:text/javascript;charset=utf-8,' + encodeURIComponent(ts.transpile(diagnosticSource, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }))
+const js = ts.transpile(source, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }).replace("'./errorDiagnostic'", JSON.stringify(diagnosticURL))
 const { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(js))
 const failed = (id, code = 'formal_mainline_failed') => ({ session: { id, status: 'stopped' }, agent_state: 'stopped', agent_stop_reason: 'system_error', failure: { session_id: id, code, message: '声音已停止' } })
 
@@ -12,7 +14,7 @@ test('refreshing a page or changing an old failure explanation never becomes a n
   assert.equal(isNewLiveRuntimeFailure(null, failed(221)), false)
   assert.equal(isNewLiveRuntimeFailure(failed(221), failed(221)), false)
   assert.equal(isNewLiveRuntimeFailure(failed(221, 'plan_sources_changed'), failed(221)), false)
-  assert.equal(liveRuntimeFailureMessage(failed(221)), '声音已停止', 'retain the history diagnosis')
+  assert.match(liveRuntimeFailureMessage(failed(221)), /声音已停止[\s\S]*场次编号：221/, 'retain the history diagnosis and session')
 })
 
 test('a running session that fails and a newly started session that fails are still reported', () => {
@@ -46,7 +48,7 @@ test('actual room refresh stays quiet for history, alerts on the next failed ses
   await refresh()
   await refresh()
   assert.equal(alerts.length, 1)
-  assert.equal(context.runtimeError.value, '声音已停止')
+  assert.match(context.runtimeError.value, /声音已停止[\s\S]*场次编号：222/)
   next = failed(222, 'generation_blocked')
   await refresh()
   assert.equal(alerts.length, 1)

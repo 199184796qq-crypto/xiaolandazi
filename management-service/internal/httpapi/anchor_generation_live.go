@@ -17,6 +17,7 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
 )
 
@@ -32,7 +33,7 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 		return errors.New("异步声音队列未配置")
 	}
 	if _, err := s.cycleCacheOSS(); err != nil || s.anchorVoiceCache == nil {
-		return errors.New("请配置OSS声音缓存")
+		return errordetail.New("audio_cache_unavailable", "声音缓存配置", "OSS声音缓存不可用", "检查OSS配置及具体连接原因。", err)
 	}
 	owners, ok := s.anchorCycles.(anchorcycle.LiveOwnerRepository)
 	if !ok {
