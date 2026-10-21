@@ -1,5 +1,7 @@
 package decisionexecutor
 
+import "strings"
+
 // 互动回答的表达变体种子：判断观众意图 + 完成 1-2 项最高价值目标 + 软变化。
 // 程序按"近期同问题/同角度使用次数"轮换注入，让同一答案每次说法不同。
 // 核心：先答准问题，再根据观众目的（解决顾虑 / 了解信息 / 比价确认 / 想下单）
@@ -15,7 +17,53 @@ var interactionExpressionVariants = []string{
 
 // neutralAddressTerms 中性托底称谓词：不假设年龄/性别/地域/亲密度。
 // 当主播风格主力称呼和用户 PreferredTerms 都没有时兜底，保证任何直播间都有可播称呼。
-var neutralAddressTerms = []string{"朋友", "这位朋友", "大家", "各位"}
+// 单用“哥/姐/叔/姨”会默认对方性别，托底池只放中性词和男女成对词。
+var neutralAddressTerms = []string{
+	"朋友", "这位朋友", "大家", "各位",
+	"哥姐", "哥哥姐姐", "叔叔阿姨", "兄弟姐妹",
+	"老乡", "老板", "家人",
+}
+
+// pairedAddressTerms 是男女同时出现的成对称呼，未知性别时优先于单性别词。
+var pairedAddressTerms = map[string]string{
+	"哥":  "哥姐",
+	"哥哥": "哥哥姐姐",
+	"姐":  "哥姐",
+	"姐姐": "哥哥姐姐",
+	"叔":  "叔叔阿姨",
+	"叔叔": "叔叔阿姨",
+	"姨":  "阿姨",
+	"阿姨": "叔叔阿姨",
+	"兄弟": "兄弟姐妹",
+	"姐妹": "兄弟姐妹",
+}
+
+// normalizePairedAddressTerm 把单个性别称呼换成男女成对词；其它词原样返回。
+func normalizePairedAddressTerm(term string) string {
+	term = strings.TrimSpace(term)
+	if paired, ok := pairedAddressTerms[term]; ok {
+		return paired
+	}
+	return term
+}
+
+// normalizeAddressPool 对称呼池逐项做成对化并去重。
+func normalizeAddressPool(terms []string) []string {
+	out := make([]string, 0, len(terms))
+	seen := map[string]struct{}{}
+	for _, term := range terms {
+		term = normalizePairedAddressTerm(term)
+		if term == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
+	}
+	return out
+}
 
 // greetingPhraseByScene 打招呼句式方向池，按互动场景分池。
 // 程序给"句式方向"，具体措辞由模型结合昵称/群体自然生成，不硬套模板。
@@ -28,8 +76,8 @@ var greetingPhraseByScene = map[string][]string{
 	},
 	"product_question": {
 		"回答用「昵称直呼」开场（如“小陈，你问的……”），自然不重复",
-		"回答用「昵称+称谓后缀」开场（如“小陈哥”“阿芳老乡”），自然不重复",
-		"回答用「肯定式」开场（如“小陈问得好”“这个问题问到点子上了”），自然不重复",
+		"回答用「昵称+中性后缀」开场（如“小陈朋友”“阿芳老乡”），自然不重复",
+		"回答用「称呼后直接给内容」开场（如“小陈，你问的规格是……”），不要先评价问题",
 		"回答用「代称式」开场（如“这位朋友小陈”），自然不重复",
 	},
 	"warmup": {
@@ -52,7 +100,7 @@ var greetingPhraseByScene = map[string][]string{
 	},
 	"default": {
 		"打招呼用「昵称直呼」开场（如“小陈，……”），自然不重复",
-		"打招呼用「昵称+称谓后缀」开场（如“小陈哥”），自然不重复",
+		"打招呼用「昵称+中性后缀」开场（如“小陈朋友”），自然不重复",
 		"打招呼用「问候式」开场（如“小陈你好”），自然不重复",
 		"打招呼用「代称式」开场（如“这位朋友小陈”），自然不重复",
 	},

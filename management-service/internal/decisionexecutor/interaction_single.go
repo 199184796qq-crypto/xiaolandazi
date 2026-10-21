@@ -18,7 +18,8 @@ import (
 // 把这三类「事实应答 + 聊天兜底」收进新轻量互动策略机，走统一的四层话术基座。
 //
 // 话术基座与欢迎完全一致（用户 2026-10-20 确认）：
-//   内容四层（必说/可说/不提/改写）+ 主播腔调卡 + 两段式（接住句 + 答案句两个气口）。
+//
+//	内容四层（必说/可说/不提/改写）+ 主播腔调卡 + 两段式（接住句 + 答案句两个气口）。
 //
 // 当前为骨架阶段：按 mission_kind 分三种占位回应，不调模型；
 // 模型实现见下方 modelSingleInteractionStrategy（两段式，答案事实取数暂留 TODO）。
@@ -89,14 +90,25 @@ func (m modelSingleInteractionStrategy) Respond(ctx context.Context, session mod
 }
 
 // generateSingleInteractionText 是单一互动策略的模型调用核心，拆两次模型调用（照欢迎两段式）：
-//   第一次「接住」：称呼 + 回应态度（问答=接住提问、投诉=安抚、chat=看到对方），不带答案。
-//   第二次「给答案」：承接句过渡 + 答案事实，不带称呼。
+//
+//	第一次「接住」：称呼 + 回应态度（问答=接住提问、投诉=安抚、chat=看到对方），不带答案。
+//	第二次「给答案」：承接句过渡 + 答案事实，不带称呼。
+//
 // 两次结果合并成一段（换行分隔），TTS 读出两个气口。
 //
 // 仍走话术基座（与主线、欢迎、下单一致）：内容四层（必说/可说/不提/改写），P0 与 pUser 拆进四层。
 func (w *Worker) generateSingleInteractionText(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
 	if w == nil || w.agent == nil {
 		return ""
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	if kind == "reply_question" {
+		// 事实问答不再先调“接住句”：一句“称呼 + 答案”或“称呼 + 边界”，
+		// 避免“问得好，我这就给你讲”这种只评价问题、不回答的客服腔。
+		if direct := w.generateSingleInteractionDirectAnswer(ctx, session, item); strings.TrimSpace(direct) != "" {
+			return direct
+		}
 	}
 
 	greet := w.generateSingleInteractionGreet(ctx, session, item)
@@ -117,6 +129,84 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 	return greet + "\n" + answer
 }
 
+// generateSingleInteractionDirectAnswer 是事实问答的一步式回答：
+// 称呼 + 答案；没有事实时直接给边界，不再先生成“问得好/我这就讲”的接住句。
+func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
+	if w == nil || w.agent == nil {
+		return ""
+	}
+	address := strings.TrimSpace(resolvedAddress(item))
+	if address == "" {
+		address = "朋友"
+	}
+	answerText := w.singleAnswerFacts(item)
+	if strings.TrimSpace(answerText) == "" {
+		return address + "，这个我这边没有依据，不能乱说，咱们以页面为准。"
+	}
+	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
+	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
+	if voiceCard != "" {
+		system += "\n\n【主播腔调】按下面的说话风格、语气词、口头禅自然表达，让人一听就是这位主播：\n" + voiceCard
+	}
+	system += "\n\n【必说】开头用称呼“" + address + "”，随后直接给答案；不要重复称呼。" +
+		"\n禁止出现“问得好、问得特别好、问得特别关键、问得真细致、问到点子上了、我这就、马上、稍等”等评价问题或让观众等待的说法。" +
+		"\n【可说】只使用下方答案事实，不编造事实里没有的信息。" +
+		"\n【不提】不要输出内部标题、策略名称、字段名或分析过程。" +
+		"\n【改写】答案用口语自然表达，事实里的价格、规格、时效不得改动。"
+	user := "【当前答案事实】\n" + answerText +
+		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
+	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
+	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
+	if text == "" || text == address || text == address+"。" {
+		return address + "，这个我这边暂时没有确认好，咱们以页面为准。"
+	}
+	if !strings.HasPrefix(text, address) {
+		text = address + "，" + text
+	}
+	return text
+}
+
+var awkwardAnswerLeadPhrases = []string{
+	"这个问题问得", "你问得正好", "你问得真好", "问得特别好",
+	"问得特别关键", "问得真细致", "问到点子上了",
+	"我这就给你", "我这就帮你", "我马上帮你", "马上给你", "稍等",
+}
+
+// stripAwkwardAnswerLead 去掉“问得好/我这就讲”这类空转从句，保留称呼和答案。
+func stripAwkwardAnswerLead(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lastPunct := ""
+	if runes := []rune(text); len(runes) > 0 && strings.ContainsRune("。！？", runes[len(runes)-1]) {
+		lastPunct = string(runes[len(runes)-1])
+	}
+	parts := strings.Split(text, "，")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		awkward := false
+		for _, phrase := range awkwardAnswerLeadPhrases {
+			if strings.Contains(part, phrase) {
+				awkward = true
+				break
+			}
+		}
+		if !awkward {
+			kept = append(kept, part)
+		}
+	}
+	result := strings.TrimSpace(strings.Join(kept, "，"))
+	if result != "" && lastPunct != "" && !strings.HasSuffix(result, lastPunct) {
+		result += lastPunct
+	}
+	return result
+}
+
 // generateSingleInteractionGreet 第一次调用：只出「接住人」的回应态度句，不带答案。
 // 按 kind 区分态度：问答=接住提问、投诉=安抚情绪、chat=看到对方。
 func (w *Worker) generateSingleInteractionGreet(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
@@ -134,8 +224,8 @@ func (w *Worker) generateSingleInteractionGreet(ctx context.Context, session mod
 		attitude = "先安抚情绪、让对方感到被重视，语气诚恳；不推卸、不争辩，先接住再给交代。"
 	case "reply_chat":
 		attitude = "先让对方感到被看见（夸赞就道谢、提问就说「我来看看」），语气轻快自然。"
-	default: // reply_question 及兜底
-		attitude = "先接住提问、让对方感到被认真对待，语气自然热情；把「我这就回答」的态度表达出来，让观众知道你马上就要给答案。禁止用「记下来」「回头说」「核实一下」「稍等」这类「延迟回答」的措辞——答案下一句就会跟上，接住句只负责「看见你 + 这就答」，不承担任何「我待会儿再回」的语义。"
+	default: // 未知类型兜底
+		attitude = "先自然回应当前观众，语气自然；不要评价问题，不要用「问得好」「我这就讲」「马上」「稍等」这类空转或让观众等待的说法。"
 	}
 
 	system := "你是直播口播合成器。根据互动事件生成一句自然、简短、可直接播出的回应话术，只负责「接住刚发言的观众、表达回应态度」，不回答任何问题、不给出任何答案、不介绍任何商品/活动/价格。" +

@@ -79,6 +79,9 @@ func safeNicknameAddress(name string) string {
 	if containsUnsafeNicknameMarker(name) {
 		return "这位朋友"
 	}
+	if containsSemanticAddressTerm(name) {
+		return "这位朋友"
+	}
 	return nicknameModelName(name)
 }
 
@@ -92,6 +95,26 @@ var unsafeNicknameMarkers = []string{
 func containsUnsafeNicknameMarker(name string) bool {
 	for _, m := range unsafeNicknameMarkers {
 		if strings.Contains(name, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticAddressTerms 是不能作为“称呼”的语义关系词。
+// “叫我爸爸”不是昵称/称谓偏好，而是语义越界；无论用户怎么要求都不叫。
+var semanticAddressTerms = []string{
+	"爸爸", "妈妈", "爷爷", "奶奶", "外公", "外婆",
+	"老公", "老婆", "主人",
+}
+
+func containsSemanticAddressTerm(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, term := range semanticAddressTerms {
+		if strings.Contains(value, term) {
 			return true
 		}
 	}

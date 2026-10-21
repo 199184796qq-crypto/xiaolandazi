@@ -875,8 +875,8 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Resume.ActualResumeAtMS != 2345 {
 		t.Fatalf("actual resume point=%d want 2345", mission.Resume.ActualResumeAtMS)
 	}
-	if mission.Addressing.Mode != "GROUP" || mission.Addressing.Candidate != "各位" || !mission.Addressing.Optional {
-		t.Fatalf("dynamic addressing must come only from room preferences: %#v", mission.Addressing)
+	if mission.Addressing.Mode != "GROUP" || !containsString(neutralAddressTerms, mission.Addressing.Candidate) || !mission.Addressing.Optional {
+		t.Fatalf("dynamic addressing must come only from room preferences/neutral pool: %#v", mission.Addressing)
 	}
 	if core.strategyCalls["addressing"] != 0 {
 		t.Fatalf("dynamic speech mission must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])

@@ -576,14 +576,14 @@ func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candi
 	candidate = strings.TrimSpace(candidate)
 	// 称谓词优先级：主播风格主力称呼 + 用户 PreferredTerms（综合）
 	// → 传入的 candidate（后端候选）→ 中性托底（都为空时兜底）。
-	addressPool := cleanAddressingTerms(append(append([]string(nil), anchorTerms...), preferredTerms...))
+	addressPool := cleanAddressingTerms(normalizeAddressPool(append(append([]string(nil), anchorTerms...), preferredTerms...)))
 	if len(addressPool) == 0 && candidate == "" {
-		addressPool = neutralAddressTerms
+		addressPool = normalizeAddressPool(neutralAddressTerms)
 	}
 	// 主力称呼加权：anchorTerms[0] 是主播风格的主力称呼（anchorStyleAddressTerms 放最前），
 	// 重复多次让它被 hash 选中的概率占主导，辅助/候选称呼只做低频变化，保住主播人设。
 	if len(anchorTerms) > 0 {
-		if main := strings.TrimSpace(anchorTerms[0]); main != "" && !addressingTermBlocked(main, blockedTerms) {
+		if main := normalizePairedAddressTerm(strings.TrimSpace(anchorTerms[0])); main != "" && !addressingTermBlocked(main, blockedTerms) {
 			for i := 0; i < 5; i++ {
 				addressPool = append(addressPool, main)
 			}
@@ -787,7 +787,7 @@ func cleanAddressingTerms(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
-		if value == "" {
+		if value == "" || containsSemanticAddressTerm(value) {
 			continue
 		}
 		key := strings.ToLower(value)
@@ -801,10 +801,14 @@ func cleanAddressingTerms(values []string) []string {
 }
 
 func addressingTermBlocked(value string, blocked []string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
+	rawValue := strings.TrimSpace(value)
+	if rawValue == "" {
 		return false
 	}
+	if containsSemanticAddressTerm(rawValue) {
+		return true
+	}
+	value = strings.ToLower(rawValue)
 	for _, raw := range blocked {
 		term := strings.ToLower(strings.TrimSpace(raw))
 		if term != "" && (value == term || strings.Contains(value, term)) {
@@ -986,7 +990,7 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	base := ""
 	switch strings.ToUpper(strings.TrimSpace(plan.Mode)) {
 	case "NONE":
-		base = "称呼计划：本轮无可用昵称，用主播主力称呼（如“哥哥姐姐们”“老乡”“新粉”）自然打一次招呼，不要裸奔（不要直接说内容而不带任何称呼）。"
+		base = "称呼计划：本轮无可用昵称，用主播主力称呼（如“哥姐”“叔叔阿姨”“兄弟姐妹”“老乡”“朋友”）自然打一次招呼，不要裸奔（不要直接说内容而不带任何称呼）。"
 	case "GROUP":
 		if groupLabel != "" {
 			if plan.Optional {
@@ -995,7 +999,7 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 				base = "称呼计划：本轮需要自然使用一次群体称呼“" + groupLabel + "”；只出现一次，不要逐个报名字，不要重复称呼。"
 			}
 		} else {
-			base = "称呼计划：本轮面向群体；用主播主力称呼（如“哥哥姐姐们”“老乡”）自然打一次招呼，不逐个点名，不要裸奔。"
+			base = "称呼计划：本轮面向群体；用主播主力称呼（如“哥姐”“叔叔阿姨”“兄弟姐妹”“老乡”“朋友”）自然打一次招呼，不逐个点名，不要裸奔。"
 		}
 	case "SAMPLE":
 		if selected != "" {
@@ -1051,7 +1055,7 @@ func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
 	// 性别未知的硬规则（用户 2026-10-20 明确）：可以给昵称加称谓，但不知道对方男女时
 	// 禁止单用「哥」或「姐」这类性别化称谓，改用「哥姐」「老乡」「老板」「朋友」「家人」等中性词；
 	// 只有昵称或上下文明确体现性别时，才可用「哥」或「姐」。
-	base += " 不确定对方性别时，禁止称呼“哥”或“姐”，改用“哥姐”“老乡”“老板”“朋友”“家人”等中性称谓；只有昵称本身已明确含性别（如“王哥”“李姐”“大哥”“妹子”）时才可沿用对应性别称谓。"
+	base += " 不确定对方性别时，禁止单用“哥”“姐”“叔”“姨”，改用“哥姐”“哥哥姐姐”“叔叔阿姨”“兄弟姐妹”“老乡”“老板”“朋友”“家人”等中性或男女成对称谓；只有昵称本身已明确含性别（如“王哥”“李姐”“大哥”“妹子”）时才可沿用对应性别称谓。"
 	return base
 }
 

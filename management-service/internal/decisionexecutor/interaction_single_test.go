@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/model"
 )
 
@@ -79,6 +80,56 @@ func TestSingleInteractionStrategySkeleton(t *testing.T) {
 	})
 }
 
+func TestStripAwkwardAnswerLeadKeepsAddressAndAnswer(t *testing.T) {
+	got := stripAwkwardAnswerLead("小陈，这个问题问得特别好，我这就给你详细讲讲，3号和6号主要差在份量和配菜。")
+	if got != "小陈，3号和6号主要差在份量和配菜。" {
+		t.Fatalf("got %q", got)
+	}
+	if got := stripAwkwardAnswerLead("小陈，你问得正好，我这就帮你确认一下。"); got != "小陈。" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
+	agent := &fakeAgent{}
+	worker := &Worker{agent: agent}
+	item := decisionItem{MissionKind: "reply_question", resolvedAddress: "小陈"}
+	got := worker.generateSingleInteractionDirectAnswer(context.Background(), model.LiveRuntimeSession{}, item)
+	if !strings.Contains(got, "小陈") || !strings.Contains(got, "没有依据") {
+		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(got, "问得好") || strings.Contains(got, "我这就") {
+		t.Fatalf("awkward greeting leaked: %q", got)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("no-fact boundary should not call model, calls=%d", agent.calls)
+	}
+}
+
+func TestDirectQuestionWithFactsUsesOneCallAndNoGreeting(t *testing.T) {
+	agent := &fakeAgent{responses: []string{"小陈，3号和6号主要差在份量和配菜。"}}
+	worker := &Worker{agent: agent}
+	item := decisionItem{
+		MissionKind:     "reply_question",
+		resolvedAddress: "小陈",
+		SelectedContentPlan: &contentstrategy.Selection{
+			Facts: []contentstrategy.Fact{{ID: "F1", Text: "3号和6号主要差在份量和配菜"}},
+		},
+	}
+	got := worker.generateSingleInteractionText(context.Background(), model.LiveRuntimeSession{}, item)
+	if agent.calls != 1 {
+		t.Fatalf("fact question should call model once, calls=%d", agent.calls)
+	}
+	if !strings.HasPrefix(got, "小陈，") || !strings.Contains(got, "份量和配菜") {
+		t.Fatalf("got %q", got)
+	}
+	for _, banned := range []string{"问得好", "我这就", "马上", "稍等"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("awkward phrase %q in %q", banned, got)
+		}
+	}
+}
+
 // TestDispatchSingleInteraction 验证「单一互动」分派：无 agent 走纯程序骨架。
 func TestDispatchSingleInteraction(t *testing.T) {
 	ctx := context.Background()
@@ -88,10 +139,10 @@ func TestDispatchSingleInteraction(t *testing.T) {
 	w := &Worker{}
 
 	cases := []struct {
-		name    string
-		kind    string
+		name     string
+		kind     string
 		question string
-		wantSub string
+		wantSub  string
 	}{
 		{"投诉走骨架", "complaint", "", "处理"},
 		{"提问走骨架", "reply_question", "这个油多少钱", "确认"},
