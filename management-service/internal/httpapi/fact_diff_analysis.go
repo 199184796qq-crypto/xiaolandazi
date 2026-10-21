@@ -23,6 +23,23 @@ import (
 
 var factNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
+// factNumbers 取出文本里的数值，跳过「1号链接」「2号套餐」这类编号。
+//
+// 不跳过的话，链接编号会被当成数值参与减差：报错会写成「差值是 1、2、12、7、150」，
+// 用户完全看不懂这些数字指什么（1 和 2 只是链接序号）。
+func factNumbers(text string) []string {
+	indexes := factNumberPattern.FindAllStringIndex(text, -1)
+	out := make([]string, 0, len(indexes))
+	for _, index := range indexes {
+		rest := strings.TrimLeft(text[index[1]:], " ")
+		if strings.HasPrefix(rest, "号") {
+			continue
+		}
+		out = append(out, text[index[0]:index[1]])
+	}
+	return out
+}
+
 type factDiffAnalysisResult struct {
 	Found   bool   `json:"found"`
 	Value   string `json:"value,omitempty"`
@@ -143,7 +160,7 @@ func (s *Server) liveAgentPlanFactDiffAnalysis(w http.ResponseWriter, r *http.Re
 				Example: "1号链接含X道荤素菜，2号链接含Y道，相差Z道",
 			}
 		} else {
-			analysis.Digits = factNumberPattern.FindAllString(analysis.Value, -1)
+			analysis.Digits = factNumbers(analysis.Value)
 		}
 	}
 	if !analysis.Found {
@@ -186,86 +203,280 @@ func (s *Server) validateFactNumbers(ctx context.Context, tenant, plan int64, fa
 	if strings.TrimSpace(source) == "" {
 		return nil
 	}
+	// 只算「链接之间」的差值：同一个链接内部的数字相减（原价减团购价）不是对比结论，
+	// 混进来会让提示变成一串没头没脑的数字。
+	gaps := crossLinkGaps(perLink, orderedLinkKeys(ids, nameByID))
 	missing := unknownDigits(value, source)
 	if len(missing) > 0 {
-		usable := sourceDifferences(source)
-		hint := "资料里没有出现" + strings.Join(missing, "、") + "，也没法从资料里的数字算出这些数"
-		if len(usable) > 0 {
-			hint += "。资料里能算出的差值是：" + strings.Join(usable, "、")
+		hint := "资料里找不到「" + strings.Join(missing, "」「") + "」这个数字"
+		if len(gaps) > 0 {
+			hint += "。这几个链接之间能对上的差值是 " + gapClause(gaps, claimCheck{})
 		}
-		return fmt.Errorf("这条事实的数字对不上：%s。请按这几个链接的商品资料核对后再保存", hint)
+		return fmt.Errorf("这条事实的数字和商品资料对不上：%s，请核对后再保存", hint)
 	}
 	// 光看「数字有没有出现过」不够：写成「多了10道菜」时，10 在「10人餐」「10道凉菜」里都出现过，
-	// 但差额结论只能是两个来源数字相减，所以差额语境要单独核对。
-	if claimed, gaps, bad := checkDifferenceClaims(value, source); bad {
-		return fmt.Errorf("这条事实写的差额「%s」算不出来：资料里两两相减得到的差值是 %s，请按商品资料核对后再保存",
-			claimed, strings.Join(gaps, "、"))
+	// 但差额结论只能是两个链接的数字相减，所以差额语境要单独核对。
+	if claim, bad := checkDifferenceClaims(value, gaps); bad {
+		if len(gaps) == 0 {
+			return fmt.Errorf("这条事实写了差额「%s」，但这几个链接的商品资料之间没有能对上的同一项，建议先补两边的明细再写差额", claim.Claimed)
+		}
+		return fmt.Errorf("这条事实写的差额「%s」和商品资料对不上：%s，请核对后再保存", claim.Claimed, gapClause(gaps, claim))
 	}
 	return nil
 }
 
-// differenceClaimPattern 抓「多了N」「少了N」「相差N」「省N」「贵N」这类差额结论里的数字。
-var differenceClaimPattern = regexp.MustCompile(`(?:多出|多了|少出|少了|多|少|相差|相差约|省下|省|贵|便宜|高出|低于)[^0-9，。；、]{0,4}([0-9]+(?:\.[0-9]+)?)`)
-
-// checkDifferenceClaims 核对差额语境里的数字是不是两个来源数字的差。
-func checkDifferenceClaims(value, source string) (string, []string, bool) {
-	gapsText := sourceDifferences(source)
-	gaps := map[float64]bool{}
-	for _, g := range gapsText {
-		if f, err := strconv.ParseFloat(g, 64); err == nil {
-			gaps[f] = true
+// gapClause 把差值写成「22道-15道=7道、337-187=150」这种带算式的一句，最多列 3 个。
+// 只列裸数字（「7、150、210」）用户看不懂谁减谁；优先列同一项对得上的算式。
+func gapClause(gaps []sourceGap, claim claimCheck) string {
+	// 用户写的是「差10道」，就只摆「道」这一项的算式，别的项目不必让他看。
+	if claim.HasUnit {
+		filtered := make([]sourceGap, 0, len(gaps))
+		for _, gap := range gaps {
+			if gap.Unit == claim.Unit {
+				filtered = append(filtered, gap)
+			}
+		}
+		if len(filtered) > 0 {
+			gaps = filtered
 		}
 	}
-	for _, match := range differenceClaimPattern.FindAllStringSubmatch(value, -1) {
-		f, err := strconv.ParseFloat(match[1], 64)
+	texts := make([]string, 0, 3)
+	for _, gap := range gaps {
+		if gap.Primary {
+			texts = append(texts, gap.Text)
+			if len(texts) >= 3 {
+				return strings.Join(texts, "、")
+			}
+		}
+	}
+	if len(texts) > 0 {
+		// 有「同一项对得上」的算式就只给这些：再摆「22道-10道=12道」只会让人更糊涂。
+		return strings.Join(texts, "、")
+	}
+	for _, gap := range gaps {
+		texts = append(texts, gap.Text)
+		if len(texts) >= 2 {
+			break
+		}
+	}
+	return strings.Join(texts, "、")
+}
+
+// orderedLinkKeys 按方案里选中的顺序返回链接名，保证差异提示的顺序稳定。
+func orderedLinkKeys(ids []int64, nameByID map[int64]string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if key := nameByID[id]; key != "" {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// differenceClaimPattern 抓「多了N」「少了N」「相差N」「省N」「贵N」这类差额结论里的数字。
+var differenceClaimPattern = regexp.MustCompile(`(?:多出|多了|少出|少了|多|少|相差约|相差|省下|省|贵|便宜|高出|低于)[^0-9，。；、]{0,4}([0-9]+(?:\.[0-9]+)?)`)
+
+// claimCheck 是一条差额断言的核对结果：写的数字、它的计量单位。
+type claimCheck struct {
+	Claimed string
+	Unit    string
+	HasUnit bool
+}
+
+// checkDifferenceClaims 核对差额语境里的数字，是不是这几个链接之间真实存在的差值。
+func checkDifferenceClaims(value string, gaps []sourceGap) (claimCheck, bool) {
+	allowed := map[float64]bool{}
+	for _, gap := range gaps {
+		allowed[gap.Diff] = true
+	}
+	indexes := differenceClaimPattern.FindAllStringSubmatchIndex(value, -1)
+	for _, index := range indexes {
+		numberStart, numberEnd := index[2], index[3]
+		// 「多了1号链接」这种，1 是链接序号不是差额。
+		if strings.HasPrefix(strings.TrimLeft(value[numberEnd:], " "), "号") {
+			continue
+		}
+		f, err := strconv.ParseFloat(value[numberStart:numberEnd], 64)
 		if err != nil {
 			continue
 		}
-		if !gaps[f] {
-			return match[1], gapsText, true
+		if !allowed[f] {
+			unit, ok := unitAfter(value, numberEnd)
+			return claimCheck{Claimed: value[numberStart:numberEnd], Unit: unit, HasUnit: ok}, true
 		}
 	}
-	return "", nil, false
+	return claimCheck{}, false
 }
 
-// sourceDifferences 列出资料里能算出的两两差值（去重、按从小到大、最多 8 个），
-// 让用户一眼看到「7」在里面、「10」不在，从而自己发现算错。
-func sourceDifferences(source string) []string {
-	source = strings.ReplaceAll(source, "，", ",")
-	seen := map[float64]bool{}
-	values := []float64{}
-	for _, d := range factNumberPattern.FindAllString(source, -1) {
-		f, err := strconv.ParseFloat(d, 64)
-		if err != nil || seen[f] || f == 0 {
+// unitAfter 取数字后面的计量单位，用于把提示收窄到同一个项目上。
+// 第二个返回值表示「确实带了单位」——价格常写成「团购价=337」没有单位，
+// 与「解析不出单位」要区分开，否则价格类提示会退化成列出所有项目。
+func unitAfter(text string, end int) (string, bool) {
+	rest := strings.TrimLeft(text[end:], " ")
+	for _, word := range unitWords {
+		if strings.HasPrefix(rest, word) {
+			return normalizeUnit(word), true
+		}
+	}
+	for _, r := range rest {
+		if unitRunes[r] {
+			return normalizeUnit(string(r)), true
+		}
+		break
+	}
+	return "", false
+}
+
+// normalizeUnit 把「元/块」归到无单位一组：商品资料里价格常写成「团购价=337」，
+// 用户却会写「贵200元」，不归一会导致提示里比对不上价格这一项。
+func normalizeUnit(unit string) string {
+	if unit == "元" || unit == "块" {
+		return ""
+	}
+	return unit
+}
+
+// sourceGap 是一个可以拿来讲的差值，Text 带算式（「22道-15道=7道」），便于用户自己核对。
+type sourceGap struct {
+	Diff float64
+	Text string
+	Unit string
+	// Primary 表示两边取的都是「该单位下第一个数」，是真正同一项的对比，
+	// 报错时优先展示它，避免把「22道荤素菜 - 10道凉菜」这种跨项目算式摆给用户看。
+	Primary bool
+}
+
+// unitRunes / unitWords 用来判断数字后面的计量单位。只有单位相同的数字才能互相减，
+// 否则会算出「22道荤素菜 - 187元 = 165」这种毫无意义的结果。
+var unitRunes = map[rune]bool{
+	'道': true, '人': true, '元': true, '种': true, '个': true, '份': true, '斤': true, '克': true,
+	'瓶': true, '盒': true, '张': true, '次': true, '天': true, '年': true, '月': true, '只': true,
+	'杯': true, '包': true, '袋': true, '块': true, '串': true, '位': true, '件': true, '套': true,
+	'条': true, '支': true, '片': true, '颗': true, '粒': true, '折': true, '层': true, '寸': true,
+}
+
+var unitWords = []string{"小时", "分钟", "公斤", "毫升", "千克", "厘米"}
+
+type numbered struct {
+	Value float64
+	Unit  string
+}
+
+// numbersWithUnit 取出文本里的数字以及它紧跟的单位，链接编号（1号链接的 1）不算。
+func numbersWithUnit(text string) []numbered {
+	indexes := factNumberPattern.FindAllStringIndex(text, -1)
+	out := make([]numbered, 0, len(indexes))
+	for _, index := range indexes {
+		rest := strings.TrimLeft(text[index[1]:], " ")
+		value, err := strconv.ParseFloat(text[index[0]:index[1]], 64)
+		if err != nil {
 			continue
 		}
-		seen[f] = true
-		values = append(values, f)
+		unit := ""
+		if strings.HasPrefix(rest, "号") {
+			continue
+		}
+		for _, word := range unitWords {
+			if strings.HasPrefix(rest, word) {
+				unit = word
+				break
+			}
+		}
+		if unit == "" {
+			for _, r := range rest {
+				if unitRunes[r] {
+					unit = string(r)
+				}
+				break
+			}
+		}
+		out = append(out, numbered{Value: value, Unit: normalizeUnit(unit)})
 	}
-	diffs := map[float64]bool{}
-	out := []float64{}
-	for i := 0; i < len(values); i++ {
-		for j := i + 1; j < len(values); j++ {
-			d := values[i] - values[j]
-			if d < 0 {
-				d = -d
+	return out
+}
+
+// crossLinkGaps 只算「不同链接、同一单位」的差值：同链接内部（原价减团购价）和跨单位
+// （道数减价格）都不是对比结论，混进来只会让提示变成一串看不懂的数字。
+func crossLinkGaps(perLink map[string][]string, order []string) []sourceGap {
+	type linkNums struct {
+		byUnit map[string][]float64
+	}
+	groups := make([]linkNums, 0, len(order))
+	seenLink := map[string]bool{}
+	for _, key := range order {
+		if seenLink[key] {
+			continue
+		}
+		seenLink[key] = true
+		byUnit := map[string][]float64{}
+		seen := map[string]map[float64]bool{}
+		for _, line := range perLink[key] {
+			for _, item := range numbersWithUnit(line) {
+				if item.Value == 0 {
+					continue
+				}
+				if seen[item.Unit] == nil {
+					seen[item.Unit] = map[float64]bool{}
+				}
+				if seen[item.Unit][item.Value] {
+					continue
+				}
+				seen[item.Unit][item.Value] = true
+				byUnit[item.Unit] = append(byUnit[item.Unit], item.Value)
 			}
-			if d == 0 || diffs[d] {
-				continue
+		}
+		groups = append(groups, linkNums{byUnit: byUnit})
+	}
+	primary := []sourceGap{}
+	others := []sourceGap{}
+	used := map[float64]bool{}
+	for i := 0; i < len(groups); i++ {
+		for j := i + 1; j < len(groups); j++ {
+			units := []string{}
+			seenUnit := map[string]bool{}
+			for unit := range groups[i].byUnit {
+				if !seenUnit[unit] {
+					seenUnit[unit] = true
+					units = append(units, unit)
+				}
 			}
-			diffs[d] = true
-			out = append(out, d)
+			for unit := range groups[j].byUnit {
+				if !seenUnit[unit] {
+					seenUnit[unit] = true
+					units = append(units, unit)
+				}
+			}
+			// 固定顺序，保证每次提示的算式排序一致（map 遍历是随机的）。
+			sort.Strings(units)
+			for _, unit := range units {
+				left, right := groups[i].byUnit[unit], groups[j].byUnit[unit]
+				for a := range left {
+					for b := range right {
+						diff := left[a] - right[b]
+						if diff < 0 {
+							diff = -diff
+						}
+						if diff == 0 || used[diff] {
+							continue
+						}
+						used[diff] = true
+						gap := sourceGap{Diff: diff, Unit: unit, Text: formatNumber(left[a]) + unit + "-" + formatNumber(right[b]) + unit + "=" + formatNumber(diff) + unit}
+						if a == 0 && b == 0 {
+							gap.Primary = true
+							primary = append(primary, gap)
+						} else {
+							others = append(others, gap)
+						}
+					}
+				}
+			}
 		}
 	}
-	sort.Float64s(out)
-	if len(out) > 8 {
-		out = out[:8]
-	}
-	texts := make([]string, 0, len(out))
-	for _, d := range out {
-		texts = append(texts, strconv.FormatFloat(d, 'f', -1, 64))
-	}
-	return texts
+	return append(primary, others...)
+}
+
+func formatNumber(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // wantedLinkKeys 把方案里选中的链接 id 换成 link_key 集合。
@@ -388,11 +599,12 @@ func parseFactDiffAnalysis(raw string) (factDiffAnalysisResult, error) {
 //
 // 「相差7道」「省150元」本身不在事实里，是由两个数字相减得到的，
 // 所以合法集合里要加上「来源里任意两数之差」，否则正确结论会被误杀。
+// 链接编号（1号链接的 1）两边都会被跳过，不参与比较。
 func unknownDigits(text, source string) []string {
 	source = strings.ReplaceAll(source, "，", ",")
 	have := map[string]bool{}
 	values := []float64{}
-	for _, d := range factNumberPattern.FindAllString(source, -1) {
+	for _, d := range factNumbers(source) {
 		have[d] = true
 		if f, err := strconv.ParseFloat(d, 64); err == nil {
 			have[strconv.FormatFloat(f, 'f', -1, 64)] = true
@@ -410,7 +622,7 @@ func unknownDigits(text, source string) []string {
 	}
 	var missing []string
 	seen := map[string]bool{}
-	for _, d := range factNumberPattern.FindAllString(text, -1) {
+	for _, d := range factNumbers(text) {
 		if seen[d] {
 			continue
 		}
