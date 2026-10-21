@@ -1,6 +1,12 @@
 # 项目协作约定
 
-## 租户维护智能体（2026-10-21 19:44 已上线，当前生产）
+## 当前生产更正（2026-10-21 19:55）
+
+- 当前 `/opt/xiaolan/releases/20261021-p0-minimal-edit-91cffdc`，源码 `91cffdcdd8169cb6cb80ab40adb4fe22a137b9de`；前驱 `20261021-tenant-agent-33cefef`。WorkBuddy 于19:55:04—19:55:10发布轮盘P0最小编辑，Management PID1427888/SHA256 `a6b203708c35d8fd80ab633e25571cc37f217591295d4ec58a916a3c4ef78fb5`；Core775073/网关775930及程序哈希、Nginx保持。
+- `91cffdc` 的父提交是 `8fcc6dc`（TTS前句级P0改写），因此当前线上已同时包含：租户维护智能体 `33cefef`、TTS前句级P0 `8fcc6dc`、轮盘P0最小编辑 `91cffdc`。生产Management二进制已核验含 `interaction_p0_sentence_rewrite` 阶段及TTS前 `rewriteTTSP0Sentences` hook；不能再用 `8fcc6dc` 覆盖当前线上。
+- 本轮未单独发布 `8fcc6dc`；原本准备的8fcc6dc增量包因发现生产已前进到91cffdc而停止切换。TTS功能说明 `E:/直播伴播/docs/2026-10-21-TTS前句级P0改写.md`；下方租户维护智能体条目保留为19:44历史时点。
+
+## 租户维护智能体（2026-10-21 19:44 已上线，历史记录）
 
 - 用户要求完善现有“小蓝直播搭子”作为租户维护入口并提交部署；实现 `33cefef6f483f8658a4477014448a84ce2ce03c0`。当前 `/opt/xiaolan/releases/20261021-tenant-agent-33cefef`，北京时间19:44:33—19:44:49上线；实际前驱WorkBuddy `20261021-wheel-p0-rewrite-812cfcb`。
 - 本轮范围：租户 `client-agent` 读取当前方案事实/福利/商品/概况；包邮按发布快照1/2/3、地区未写走边界；system域写命令复用`live_strategy_intent`+`live_strategy_actions`，覆盖事实/福利/商品/话术/方案切换，走“预览→确认→执行→版本号”；动作卡文字确认/取消、plan+room旧卡失效、方案选择器、方案绑定房间优先、写失败纯中文。
