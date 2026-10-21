@@ -1507,7 +1507,7 @@ async function updateReusableAnchorBinding(style: LiveAnchorStyle, unbind: boole
     else await bindLiveAnchorStyleToPlan(style.id, planID, tenantID)
     if (!current()) return
     currentBoundAnchorId.value = unbind ? 0 : style.id
-    reusableAnchorStyleNotice.value = unbind ? `已取消使用主播“${style.name}”，该主播与当前方案的绑定已解除。` : `主播“${style.name}”已作为当前智能体方案的主播风格。`
+    reusableAnchorStyleNotice.value = unbind ? `已取消使用主播“${style.name}”：本方案改为模型自由发挥，不打分，照常开播。想再用就选一个主播点“设为当前智能体主播”。` : `主播“${style.name}”已作为当前智能体方案的主播风格。点顶部“初始化方案”，让新腔调和评分基准写进当前方案后再生效。`
     await loadReusableAnchorStyleWorkspace(selectedReusableAnchorStyleId.value)
   } catch (err) {
     if (!current()) return

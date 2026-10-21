@@ -341,16 +341,24 @@ func (s *Server) confirmedAnchorStyleAgentStudioAssets(ctx context.Context, tena
 func (s *Server) optionalAnchorStyleAssets(ctx context.Context, tenantID, planID int64) (model.LiveAnchorStyleMetaPromptAsset, model.LiveSellingPointWheelAsset, []anchorStyleWheelTask, model.LiveAnchorStyleScorecardAsset, error) {
 	var meta model.LiveAnchorStyleMetaPromptAsset
 	var card model.LiveAnchorStyleScorecardAsset
-	metaAsset, err := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenantID, planID)
-	switch {
-	case err == nil && metaAsset.Status == "confirmed":
-		meta = metaAsset
-	case errors.Is(err, appdb.ErrLiveAnchorStyleMetaPromptNotFound):
-		// 方案未绑定风格：允许，按自由发挥处理。
-	case err != nil:
-		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取主播风格元提示词失败")
-	default:
-		// 有资产但未确认：当作未配置，不阻塞开播。
+	// 是否用风格以「方案绑定关系」为唯一事实源：没绑定就没有风格。
+	// 历史方案可能残留 active=1 的方案级资产（解绑前留下的），不能拿它生成，否则「取消使用」形同没生效。
+	_, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenantID, planID)
+	if bindErr != nil && !errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) {
+		return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取当前方案绑定的主播失败")
+	}
+	if bindErr == nil {
+		metaAsset, err := s.store.GetActiveLiveAnchorStyleMetaPrompt(ctx, tenantID, planID)
+		switch {
+		case err == nil && metaAsset.Status == "confirmed":
+			meta = metaAsset
+		case errors.Is(err, appdb.ErrLiveAnchorStyleMetaPromptNotFound):
+			// 已绑定主播但还没有可用元提示词：按自由发挥处理，不阻塞开播。
+		case err != nil:
+			return meta, model.LiveSellingPointWheelAsset{}, nil, card, errors.New("读取主播风格元提示词失败")
+		default:
+			// 有资产但未确认：当作未配置，不阻塞开播。
+		}
 	}
 	wheelAsset, err := s.store.GetActiveLiveSellingPointWheel(ctx, tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveSellingPointWheelNotFound) || (err == nil && wheelAsset.Status != "confirmed") {

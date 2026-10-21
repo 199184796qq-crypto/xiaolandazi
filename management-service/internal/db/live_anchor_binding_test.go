@@ -15,6 +15,8 @@ func TestLiveAnchorBindingMySQLScopeAndCancellation(t *testing.T) {
 		`CREATE TABLE live_anchor_styles(id BIGINT PRIMARY KEY,tenant_id BIGINT,status VARCHAR(24) DEFAULT 'active')`,
 		`CREATE TABLE live_anchor_style_plan_bindings(tenant_id BIGINT,style_id BIGINT,plan_id BIGINT PRIMARY KEY,bound_by_user_id BIGINT,bound_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3))`,
 		`CREATE TABLE live_anchor_style_samples(id BIGINT PRIMARY KEY,style_id BIGINT,content TEXT)`,
+		`CREATE TABLE live_anchor_style_meta_prompts(id BIGINT PRIMARY KEY,tenant_id BIGINT,plan_id BIGINT,active TINYINT DEFAULT 0)`,
+		`CREATE TABLE live_anchor_style_scorecards(id BIGINT PRIMARY KEY,tenant_id BIGINT,plan_id BIGINT,active TINYINT DEFAULT 0)`,
 		`INSERT INTO live_agent_plans VALUES(4,14,'active'),(5,14,'active'),(6,24,'active'),(7,14,'archived')`,
 		`INSERT INTO live_anchor_styles VALUES(7,14,'active'),(8,14,'active'),(9,24,'active'),(10,14,'archived')`,
 		`INSERT INTO live_anchor_style_samples VALUES(1,7,'原话术'),(2,8,'另一主播话术')`,
@@ -37,12 +39,41 @@ func TestLiveAnchorBindingMySQLScopeAndCancellation(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		// 方案级风格资产：解绑后必须停用，否则开播还会读到旧腔调，「取消使用」等于没生效。
+		for _, ddl := range []string{
+			`INSERT INTO live_anchor_style_meta_prompts(id,tenant_id,plan_id,active) VALUES(901,14,4,1),(902,14,5,1),(903,24,6,1)`,
+			`INSERT INTO live_anchor_style_scorecards(id,tenant_id,plan_id,active) VALUES(911,14,4,1),(912,14,5,1),(913,24,6,1)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+				t.Fatal(err)
+			}
+		}
+		activeAssets := func(plan int64) (int, int) {
+			t.Helper()
+			var metas, cards int
+			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_anchor_style_meta_prompts WHERE plan_id=? AND active=1`, plan).Scan(&metas); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_anchor_style_scorecards WHERE plan_id=? AND active=1`, plan).Scan(&cards); err != nil {
+				t.Fatal(err)
+			}
+			return metas, cards
+		}
+		if metas, cards := activeAssets(4); metas != 1 || cards != 1 {
+			t.Fatalf("plan 4 should start with active style assets: %d %d", metas, cards)
+		}
 		if err := s.UnbindLiveAnchorStyleFromPlan(ctx, 14, 7, 4); err != nil {
 			t.Fatal(err)
 		}
 		bound(4, 0)
 		bound(5, 7)
 		bound(6, 9)
+		if metas, cards := activeAssets(4); metas != 0 || cards != 0 {
+			t.Fatalf("unbind must deactivate plan style assets: %d %d", metas, cards)
+		}
+		if metas, cards := activeAssets(5); metas != 1 || cards != 1 {
+			t.Fatalf("unbind must not touch other plans: %d %d", metas, cards)
+		}
 		var styles, samples int
 		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_anchor_styles`).Scan(&styles); err != nil || styles != 4 {
 			t.Fatal(styles, err)

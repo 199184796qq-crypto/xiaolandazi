@@ -469,6 +469,8 @@ func (s *Store) BindLiveAnchorStyleToPlan(ctx context.Context, tenantID, styleID
 
 // Lock the same plan as binding, so an old cancel click cannot detach a newer
 // presenter. Only this relation is removed; presenter assets and saved versions stay.
+// 同步把方案级的风格资产置为停用：取消使用就是本方案不再用这套腔调，
+// 若只删绑定关系而资产仍 active=1，开播时还会读到旧风格，"不用"等于没生效。
 func (s *Store) UnbindLiveAnchorStyleFromPlan(ctx context.Context, tenantID, styleID, planID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -493,6 +495,12 @@ func (s *Store) UnbindLiveAnchorStyleFromPlan(ctx context.Context, tenantID, sty
 		return ErrLiveAnchorBindingChanged
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM live_anchor_style_plan_bindings WHERE tenant_id=? AND plan_id=? AND style_id=?`, tenantID, planID, styleID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE live_anchor_style_meta_prompts SET active=0 WHERE tenant_id=? AND plan_id=? AND active=1`, tenantID, planID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE live_anchor_style_scorecards SET active=0 WHERE tenant_id=? AND plan_id=? AND active=1`, tenantID, planID); err != nil {
 		return err
 	}
 	return tx.Commit()
